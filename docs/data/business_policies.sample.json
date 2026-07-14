@@ -1,0 +1,202 @@
+{
+  "version": "1.0",
+  "description": "캠페인 추천/NL2SQL에서 자연어 업무 기준을 SQL 조건 또는 정렬 정책으로 변환하기 위한 외부 정책 정의",
+  "policies": [
+    {
+      "policy_id": "top_revenue_user",
+      "canonical": "top_revenue_user",
+      "ko_label": "매출이 가장 높은 고객",
+      "description": "고객의 최근 90일 추정 매출을 기준으로 높은 순서로 정렬한다. 기준 금액을 고정하지 않는 순위형 정책이다.",
+      "synonyms": [
+        "매출이 가장 높은",
+        "매출 가장 높은",
+        "매출 상위",
+        "상위 매출",
+        "top revenue",
+        "highest revenue"
+      ],
+      "scope": "target_user",
+      "metric": "estimated_revenue_90d",
+      "table": "users",
+      "column": "avg_order_value_krw",
+      "expression": "u.avg_order_value_krw * u.purchase_count_90d",
+      "operator": null,
+      "threshold_krw": null,
+      "requires_threshold": false,
+      "sql_behavior": "rank",
+      "order_by": "desc",
+      "related_tables": ["users"],
+      "related_columns": [
+        "users.avg_order_value_krw",
+        "users.purchase_count_90d"
+      ]
+    },
+    {
+      "policy_id": "high_revenue_user",
+      "canonical": "high_revenue_user",
+      "ko_label": "고매출 고객",
+      "description": "고객의 최근 90일 추정 매출이 운영에서 정한 기준 금액 이상인지 판단한다. 기준 금액은 이 파일의 threshold_krw에만 정의한다.",
+      "synonyms": [
+        "고매출",
+        "매출 높은",
+        "매출이 높은",
+        "매출 우수",
+        "high revenue"
+      ],
+      "scope": "target_user",
+      "metric": "estimated_revenue_90d",
+      "table": "users",
+      "column": "avg_order_value_krw",
+      "expression": "u.avg_order_value_krw * u.purchase_count_90d",
+      "operator": ">=",
+      "threshold_krw": null,
+      "requires_threshold": true,
+      "sql_behavior": "filter",
+      "order_by": null,
+      "related_tables": ["users"],
+      "related_columns": [
+        "users.avg_order_value_krw",
+        "users.purchase_count_90d"
+      ]
+    },
+    {
+      "policy_id": "high_budget_campaign",
+      "canonical": "high_budget_campaign",
+      "ko_label": "예산이 큰 캠페인",
+      "description": "캠페인 예산이 운영에서 정한 기준 금액 이상인지 판단한다. 기준 금액은 이 파일의 threshold_krw에만 정의한다.",
+      "synonyms": [
+        "예산이 큰",
+        "예산 높은",
+        "고예산 캠페인",
+        "high budget campaign"
+      ],
+      "scope": "campaign_constraints",
+      "metric": "campaign_budget_krw",
+      "table": "campaigns",
+      "column": "budget_krw",
+      "expression": "c.budget_krw",
+      "operator": ">=",
+      "threshold_krw": null,
+      "requires_threshold": true,
+      "sql_behavior": "filter",
+      "order_by": null,
+      "related_tables": ["campaigns"],
+      "related_columns": ["campaigns.budget_krw"]
+    },
+    {
+      "policy_id": "region_context_default",
+      "canonical": "region_context_default",
+      "ko_label": "지역 표현 기본 해석",
+      "description": "사용자가 '구매한 사람의 지역', '고객 지역'처럼 지역을 모호하게 말하면 기본적으로 고객 거주 지역 users.region으로 해석한다. 구매 장소, 매장 지역, 배송지처럼 구매 발생 위치를 명시하면 현재 스키마에 대응 컬럼이 없으므로 추가 확인을 요청한다.",
+      "synonyms": [
+        "지역",
+        "고객 지역",
+        "고객의 지역",
+        "사람의 지역",
+        "거주 지역",
+        "사는 지역",
+        "거주지",
+        "구매한 사람의 지역"
+      ],
+      "scope": "semantic_resolution",
+      "ambiguous_term": "지역",
+      "default_resolution": "customer_residence_region",
+      "default_column": "users.region",
+      "default_select": "u.region",
+      "sql_behavior": "disambiguation",
+      "clarification_terms": [
+        "구매한 곳",
+        "구매 장소",
+        "구매 지역",
+        "매장 지역",
+        "매장",
+        "배송지",
+        "배송 지역",
+        "결제 지역"
+      ],
+      "clarification_question": "지역이 고객 거주 지역(users.region)을 의미하나요, 아니면 구매 장소/매장/배송지 지역을 의미하나요? 현재 스키마에는 구매 발생 지역 컬럼이 없습니다.",
+      "alternatives": [
+        {
+          "meaning": "customer_residence_region",
+          "column": "users.region",
+          "available": true
+        },
+        {
+          "meaning": "purchase_location_region",
+          "column": null,
+          "available": false,
+          "requires_schema": true
+        }
+      ],
+      "related_tables": ["users"],
+      "related_columns": ["users.region"]
+    },
+    {
+      "policy_id": "channel_message_generation",
+      "canonical": "channel_message_generation",
+      "ko_label": "채널 메시지 생성 정책",
+      "description": "타겟팅 SQL이 성공한 이후 LMS 또는 RCS 발송 문안을 생성할 때 적용하는 기본 정책이다. 프롬프트에 채널이 없으면 LMS를 기본 채널로 사용하고, 캠페인 offer와 기존 메시지 예시 밖의 혜택을 만들지 않는다.",
+      "synonyms": [
+        "메시지 생성",
+        "발송 문안",
+        "채널 메시지",
+        "LMS 메시지",
+        "RCS 메시지",
+        "message generation"
+      ],
+      "scope": "message_generation",
+      "default_channel": "lms",
+      "allowed_channels": ["lms", "rcs"],
+      "channel_limits": {
+        "lms": {
+          "max_chars": 1000,
+          "unit": "characters"
+        },
+        "rcs": {
+          "max_chars": 1300,
+          "unit": "characters"
+        }
+      },
+      "required_variants": [
+        "benefit_emphasis",
+        "urgency_emphasis",
+        "emotion_emphasis"
+      ],
+      "anti_hallucination": {
+        "benefit_source_fields": [
+          "campaigns.offer",
+          "campaign_message_examples.message_text",
+          "campaign_channel_messages.message_body",
+          "campaign_message_variants.message_body"
+        ],
+        "deny_unverified_benefits": true
+      },
+      "sql_behavior": "context",
+      "related_tables": [
+        "campaigns",
+        "campaign_channels",
+        "campaign_message_examples",
+        "campaign_channel_messages",
+        "campaign_experiments",
+        "campaign_message_variants",
+        "campaign_message_deliveries",
+        "campaign_message_events"
+      ],
+      "related_columns": [
+        "campaigns.offer",
+        "campaign_channels.channel",
+        "campaign_message_examples.channel",
+        "campaign_message_examples.emphasis_type",
+        "campaign_message_examples.message_text",
+        "campaign_message_examples.brand_tone",
+        "campaign_channel_messages.message_body",
+        "campaign_channel_messages.send_status",
+        "campaign_experiments.primary_metric",
+        "campaign_message_variants.variant_code",
+        "campaign_message_variants.message_body",
+        "campaign_message_deliveries.final_status",
+        "campaign_message_events.event_type"
+      ]
+    }
+  ]
+}

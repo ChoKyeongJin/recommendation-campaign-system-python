@@ -1,0 +1,607 @@
+{
+  "version": "1.0",
+  "description": "캠페인 RAG/그래프 추천 전처리용 동의어 및 정규화 사전",
+  "normalization_rules": [
+    {
+      "rule_id": "gender_male",
+      "canonical": "male",
+      "ko_label": "남성",
+      "synonyms": [
+        "남성",
+        "남자",
+        "남",
+        "남자 고객",
+        "남성 고객",
+        "male",
+        "man",
+        "men",
+        "m"
+      ],
+      "negative_synonyms": [
+        "여자가 아닌 사람",
+        "여성이 아닌 사람",
+        "female이 아닌 사람",
+        "not female"
+      ]
+    },
+    {
+      "rule_id": "gender_female",
+      "canonical": "female",
+      "ko_label": "여성",
+      "synonyms": [
+        "여성",
+        "여자",
+        "여",
+        "여자 고객",
+        "여성 고객",
+        "female",
+        "woman",
+        "women",
+        "f"
+      ],
+      "negative_synonyms": [
+        "남자가 아닌 사람",
+        "남성이 아닌 사람",
+        "male이 아닌 사람",
+        "not male"
+      ]
+    },
+    {
+      "rule_id": "new_user",
+      "canonical": "new_user",
+      "ko_label": "신규 고객",
+      "synonyms": [
+        "신규",
+        "신규 고객",
+        "새 가입자",
+        "처음 온 사람",
+        "첫 방문",
+        "가입 직후",
+        "new user",
+        "new_user",
+        "signed up"
+      ]
+    },
+    {
+      "rule_id": "no_purchase",
+      "canonical": "no_purchase",
+      "ko_label": "미구매 고객",
+      "synonyms": [
+        "미구매",
+        "구매 없음",
+        "아직 안 산 사람",
+        "첫구매 전",
+        "구매 이력 없음",
+        "no purchase",
+        "non buyer"
+      ]
+    },
+    {
+      "rule_id": "first_purchase",
+      "canonical": "first_purchase",
+      "ko_label": "첫 구매",
+      "synonyms": [
+        "첫구매",
+        "첫 구매",
+        "최초 구매",
+        "첫 결제",
+        "웰컴 구매",
+        "first purchase",
+        "first_purchase"
+      ]
+    },
+    {
+      "rule_id": "cart_abandoner",
+      "canonical": "cart_abandoner",
+      "ko_label": "장바구니 이탈 고객",
+      "synonyms": [
+        "장바구니 이탈",
+        "장바구니 방치",
+        "카트 이탈",
+        "담고 안 산 사람",
+        "결제 안 함",
+        "cart abandoner",
+        "cart_abandoned",
+        "cart abandonment"
+      ]
+    },
+    {
+      "rule_id": "inactive_90d",
+      "canonical": "inactive_90d",
+      "ko_label": "90일 이상 휴면 고객",
+      "synonyms": [
+        "휴면",
+        "휴면 고객",
+        "비활성",
+        "장기 미접속",
+        "90일 미접속",
+        "복귀 대상",
+        "inactive",
+        "inactive_90d",
+        "dormant"
+      ]
+    },
+    {
+      "rule_id": "vip",
+      "canonical": "vip",
+      "ko_label": "VIP 고객",
+      "synonyms": [
+        "VIP",
+        "우수 고객",
+        "충성 고객",
+        "고가치 고객",
+        "상위 고객",
+        "high value",
+        "high_ltv",
+        "vip"
+      ]
+    },
+    {
+      "rule_id": "price_sensitive",
+      "canonical": "price_sensitive",
+      "ko_label": "가격 민감 고객",
+      "synonyms": [
+        "가격 민감",
+        "할인 선호",
+        "쿠폰 관심",
+        "쿠폰 관심 고객",
+        "쿠폰 반응",
+        "쿠폰 선호",
+        "쿠폰 좋아함",
+        "특가 반응",
+        "저가 선호",
+        "가성비",
+        "deal seeker",
+        "discount responsive",
+        "price sensitive"
+      ]
+    },
+    {
+      "rule_id": "premium_buyer",
+      "canonical": "premium_buyer",
+      "ko_label": "프리미엄 구매 고객",
+      "synonyms": [
+        "프리미엄",
+        "고가 상품 선호",
+        "비싼 상품 구매",
+        "럭셔리",
+        "고급형",
+        "premium buyer",
+        "premium_buyer",
+        "low price sensitivity"
+      ]
+    },
+    {
+      "rule_id": "repeat_buyer",
+      "canonical": "repeat_buyer",
+      "ko_label": "반복 구매 고객",
+      "synonyms": [
+        "재구매",
+        "반복 구매",
+        "자주 사는 고객",
+        "정기 구매",
+        "repeat buyer",
+        "repurchase",
+        "repeat_buyer"
+      ]
+    },
+    {
+      "rule_id": "review_likely",
+      "canonical": "review_likely",
+      "ko_label": "리뷰 가능성이 높은 고객",
+      "synonyms": [
+        "리뷰 가능",
+        "리뷰 잘 쓰는 사람",
+        "후기 작성 가능",
+        "리뷰 참여",
+        "review likely",
+        "review_likely"
+      ]
+    },
+    {
+      "rule_id": "channel_lms",
+      "canonical": "lms",
+      "ko_label": "LMS",
+      "synonyms": [
+        "LMS",
+        "lms",
+        "장문문자",
+        "장문 문자",
+        "장문 메시지",
+        "장문메시지",
+        "long message service"
+      ]
+    },
+    {
+      "rule_id": "channel_rcs",
+      "canonical": "rcs",
+      "ko_label": "RCS",
+      "synonyms": [
+        "RCS",
+        "rcs",
+        "브랜드 메시지",
+        "브랜드메시지",
+        "리치 메시지",
+        "rich communication",
+        "rich communication services"
+      ]
+    },
+    {
+      "rule_id": "app_user",
+      "canonical": "app_user",
+      "ko_label": "앱 사용자",
+      "synonyms": [
+        "앱 사용자",
+        "앱 유저",
+        "모바일앱 사용자",
+        "앱 활성",
+        "app user",
+        "app_user",
+        "uses_app_daily"
+      ]
+    },
+    {
+      "rule_id": "office_worker",
+      "canonical": "office_worker",
+      "ko_label": "직장인",
+      "synonyms": [
+        "직장인",
+        "회사원",
+        "오피스 고객",
+        "평일 점심 고객",
+        "office worker",
+        "weekday active",
+        "weekday_lunch_browse"
+      ]
+    },
+    {
+      "rule_id": "student",
+      "canonical": "student",
+      "ko_label": "학생",
+      "synonyms": [
+        "학생",
+        "대학생",
+        "중고생",
+        "학생 인증",
+        "student",
+        "student_verified"
+      ]
+    },
+    {
+      "rule_id": "parent",
+      "canonical": "parent",
+      "ko_label": "부모/육아 고객",
+      "synonyms": [
+        "부모",
+        "엄마",
+        "아빠",
+        "육아",
+        "아이 있는 고객",
+        "parent",
+        "baby buyer"
+      ]
+    },
+    {
+      "rule_id": "pet_owner",
+      "canonical": "pet_owner",
+      "ko_label": "반려동물 보호자",
+      "synonyms": [
+        "반려동물",
+        "반려인",
+        "펫팸족",
+        "강아지",
+        "고양이",
+        "펫 오너",
+        "pet owner",
+        "pet_owner"
+      ]
+    },
+    {
+      "rule_id": "gift_buyer",
+      "canonical": "gift_buyer",
+      "ko_label": "선물 구매 고객",
+      "synonyms": [
+        "선물",
+        "선물 구매",
+        "부모님 선물",
+        "기념일 선물",
+        "gift buyer",
+        "gift_buyer"
+      ]
+    },
+    {
+      "rule_id": "fashion",
+      "canonical": "fashion",
+      "ko_label": "패션",
+      "synonyms": [
+        "패션",
+        "의류",
+        "옷",
+        "스타일",
+        "코디",
+        "fashion",
+        "clothes",
+        "apparel"
+      ]
+    },
+    {
+      "rule_id": "beauty",
+      "canonical": "beauty",
+      "ko_label": "뷰티",
+      "synonyms": [
+        "뷰티",
+        "화장품",
+        "스킨케어",
+        "메이크업",
+        "그루밍",
+        "beauty",
+        "cosmetics",
+        "grooming"
+      ]
+    },
+    {
+      "rule_id": "electronics",
+      "canonical": "electronics",
+      "ko_label": "전자제품",
+      "synonyms": [
+        "전자제품",
+        "디지털",
+        "가전",
+        "노트북",
+        "모바일기기",
+        "electronics",
+        "digital device",
+        "laptop"
+      ]
+    },
+    {
+      "rule_id": "food",
+      "canonical": "food",
+      "ko_label": "식품",
+      "synonyms": [
+        "식품",
+        "먹거리",
+        "간편식",
+        "밀키트",
+        "장보기",
+        "식료품",
+        "food",
+        "grocery",
+        "meal kit"
+      ]
+    },
+    {
+      "rule_id": "home_living",
+      "canonical": "home_living",
+      "ko_label": "홈리빙",
+      "synonyms": [
+        "홈리빙",
+        "생활용품",
+        "집꾸미기",
+        "주방",
+        "인테리어",
+        "home living",
+        "home_living"
+      ]
+    },
+    {
+      "rule_id": "travel",
+      "canonical": "travel",
+      "ko_label": "여행",
+      "synonyms": [
+        "여행",
+        "숙박",
+        "호텔",
+        "주말여행",
+        "항공",
+        "travel",
+        "hotel",
+        "trip"
+      ]
+    },
+    {
+      "rule_id": "sports",
+      "canonical": "sports",
+      "ko_label": "스포츠",
+      "synonyms": [
+        "스포츠",
+        "운동",
+        "러닝",
+        "골프",
+        "운동화",
+        "sports",
+        "running",
+        "golf"
+      ]
+    },
+    {
+      "rule_id": "outdoor",
+      "canonical": "outdoor",
+      "ko_label": "아웃도어",
+      "synonyms": [
+        "아웃도어",
+        "캠핑",
+        "등산",
+        "야외활동",
+        "outdoor",
+        "camping",
+        "hiking"
+      ]
+    },
+    {
+      "rule_id": "eco",
+      "canonical": "eco",
+      "ko_label": "친환경",
+      "synonyms": [
+        "친환경",
+        "지속가능",
+        "에코",
+        "비건",
+        "환경친화",
+        "eco",
+        "sustainable",
+        "green"
+      ]
+    },
+    {
+      "rule_id": "health_food",
+      "canonical": "health_food",
+      "ko_label": "건강식품",
+      "synonyms": [
+        "건강식품",
+        "영양제",
+        "건강 선물",
+        "홍삼",
+        "비타민",
+        "health food",
+        "health_food"
+      ]
+    },
+    {
+      "rule_id": "digital_content",
+      "canonical": "digital_content",
+      "ko_label": "디지털 콘텐츠",
+      "synonyms": [
+        "디지털 콘텐츠",
+        "콘텐츠 구독",
+        "프리미엄 구독",
+        "영상",
+        "웹툰",
+        "digital content"
+      ]
+    },
+    {
+      "rule_id": "global_shopping",
+      "canonical": "global_shopping",
+      "ko_label": "해외직구",
+      "synonyms": [
+        "해외직구",
+        "직구",
+        "관세",
+        "해외 쇼핑",
+        "global shopping",
+        "overseas shopping",
+        "customs"
+      ]
+    },
+    {
+      "rule_id": "app_push",
+      "canonical": "app_push",
+      "ko_label": "앱 푸시",
+      "synonyms": [
+        "앱푸시",
+        "앱 푸시",
+        "푸시",
+        "모바일 알림",
+        "push",
+        "app push",
+        "app_push"
+      ]
+    },
+    {
+      "rule_id": "kakao",
+      "canonical": "kakao",
+      "ko_label": "카카오",
+      "synonyms": ["카카오", "카톡", "알림톡", "친구톡", "kakao", "kakaotalk"]
+    },
+    {
+      "rule_id": "email",
+      "canonical": "email",
+      "ko_label": "이메일",
+      "synonyms": [
+        "이메일",
+        "메일",
+        "뉴스레터",
+        "email",
+        "e-mail",
+        "newsletter"
+      ]
+    },
+    {
+      "rule_id": "sms",
+      "canonical": "sms",
+      "ko_label": "문자",
+      "synonyms": ["문자", "SMS", "문자메시지", "단문", "text message"]
+    },
+    {
+      "rule_id": "instagram",
+      "canonical": "instagram",
+      "ko_label": "인스타그램",
+      "synonyms": [
+        "인스타",
+        "인스타그램",
+        "릴스",
+        "스토리 광고",
+        "instagram",
+        "ig",
+        "reels"
+      ]
+    },
+    {
+      "rule_id": "coupon",
+      "canonical": "coupon",
+      "ko_label": "쿠폰",
+      "synonyms": [
+        "쿠폰",
+        "할인권",
+        "바우처",
+        "프로모션 코드",
+        "coupon",
+        "voucher",
+        "promo code"
+      ]
+    },
+    {
+      "rule_id": "free_shipping",
+      "canonical": "free_shipping",
+      "ko_label": "무료배송",
+      "synonyms": [
+        "무료배송",
+        "배송비 무료",
+        "무배",
+        "free shipping",
+        "shipping fee waived"
+      ]
+    },
+    {
+      "rule_id": "subscription",
+      "canonical": "subscription",
+      "ko_label": "정기구독/정기배송",
+      "synonyms": [
+        "정기구독",
+        "구독",
+        "정기배송",
+        "매월 배송",
+        "subscription",
+        "recurring delivery"
+      ]
+    }
+  ],
+  "example_queries": [
+    {
+      "raw_query": "여자가 아닌 사람한테 남성 그루밍 캠페인 추천",
+      "normalized_terms": ["male", "beauty", "male_20s_30s"],
+      "recommended_filter": {
+        "gender": "male",
+        "interests_any": ["beauty"],
+        "exclude_gender": ["female"]
+      }
+    },
+    {
+      "raw_query": "장바구니 담고 안 산 사람에게 쿠폰 캠페인",
+      "normalized_terms": ["cart_abandoner", "coupon", "price_sensitive"],
+      "recommended_filter": {
+        "lifecycle_or_behavior": "cart_abandoner",
+        "offer_type": "coupon"
+      }
+    },
+    {
+      "raw_query": "앱 쓰는 특가 반응 고객",
+      "normalized_terms": ["app_user", "price_sensitive", "app_push"],
+      "recommended_filter": {
+        "preferred_channels_any": ["app_push"],
+        "price_sensitivity": "high"
+      }
+    }
+  ]
+}

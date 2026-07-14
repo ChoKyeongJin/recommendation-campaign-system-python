@@ -1,0 +1,73 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 1234
+      POSTGRES_DB: campaign_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  python:
+    build: .
+    restart: unless-stopped
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: campaign_normalization_terms
+      QDRANT_RAG_COLLECTION: campaign_user_rag_nodes
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: campaign_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "1234"
+    volumes:
+      - .:/app
+    depends_on:
+      - qdrant
+    tty: true
+    stdin_open: true
+    command: python -c "import time; time.sleep(10**9)"
+
+  api:
+    build: .
+    restart: unless-stopped
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: campaign_normalization_terms
+      QDRANT_RAG_COLLECTION: campaign_user_rag_nodes
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: campaign_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "1234"
+    volumes:
+      - .:/app
+    depends_on:
+      - qdrant
+      - postgres
+    ports:
+      - "8000:8000"
+    command: uvicorn api:app --host 0.0.0.0 --port 8000
+
+volumes:
+  postgres_data:
+  qdrant_storage:

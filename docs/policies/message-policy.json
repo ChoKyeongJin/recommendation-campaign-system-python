@@ -1,0 +1,45 @@
+{
+  "lms": {
+    "name": "LMS",
+    "encoding": "UTF-8",
+    "description": "장문 문자 메시지",
+    "constraints": {
+      "maxBytes": 2000,
+      "maxKoreanChars": 1000,
+      "maxAsciiChars": 2000,
+      "countBy": "carrier bytes: Korean/full-width characters count as 2 bytes, ASCII characters count as 1 byte"
+    },
+    "prompt": [
+      "메시지는 통신사 발송 기준 최대 2,000Byte 이내로 작성하세요.",
+      "통신사 기준으로 한글 1글자는 2Byte, 영문/숫자/ASCII 1글자는 1Byte로 계산합니다.",
+      "한글만 포함된 경우 최대 1,000자입니다.",
+      "영문/숫자만 포함된 경우 최대 2,000자입니다.",
+      "최종 결과는 반드시 통신사 발송 기준 2,000Byte를 초과하지 않아야 합니다."
+    ]
+  },
+  "rcsSms": {
+    "name": "RCS SMS",
+    "messageBaseId": "RPSSAXX001",
+    "encoding": "UTF-8",
+    "constraints": {
+      "title": {
+        "maxChars": 14
+      },
+      "description": {
+        "maxChars": 100
+      },
+      "buttons": {
+        "maxCount": 1,
+        "buttonNameMaxChars": 7
+      }
+    },
+    "prompt": [
+      "제목은 최대 14자로 작성하세요.",
+      "본문은 최대 100자로 작성하세요.",
+      "버튼은 최대 1개만 생성하세요.",
+      "혜택 확인, 구매, 신청, 예약처럼 행동 유도가 필요한 경우 버튼을 생성하세요.",
+      "버튼명은 최대 7자로 작성하세요.",
+      "광고 메시지인 경우 제목에 '(광고)'를 포함하고, 본문 끝에 무료 수신거부 문구를 포함하세요."
+    ]
+  }
+}

@@ -1,0 +1,141 @@
+{
+  "model_version": "ctr-lgbm-local-demo",
+  "created_at": "2026-07-13T17:25:01.007721+09:00",
+  "features": [
+    "variant_code",
+    "channel",
+    "objective",
+    "category",
+    "age_group",
+    "gender",
+    "region",
+    "lifecycle",
+    "price_sensitivity",
+    "predicted_ltv_segment",
+    "message_length_group",
+    "send_hour",
+    "send_day_of_week",
+    "is_weekend",
+    "is_control",
+    "allocation_weight",
+    "budget_krw",
+    "expected_ctr",
+    "expected_cvr",
+    "avg_order_value_krw",
+    "purchase_count_90d",
+    "last_active_days",
+    "is_preferred_channel",
+    "is_category_interest",
+    "has_recommendation_edge"
+  ],
+  "categorical_features": [
+    "variant_code",
+    "channel",
+    "objective",
+    "category",
+    "age_group",
+    "gender",
+    "region",
+    "lifecycle",
+    "price_sensitivity",
+    "predicted_ltv_segment",
+    "message_length_group"
+  ],
+  "categories": {
+    "variant_code": [
+      "A",
+      "B",
+      "C"
+    ],
+    "channel": [
+      "lms"
+    ],
+    "objective": [
+      "first_purchase",
+      "purchase"
+    ],
+    "category": [
+      "all",
+      "fashion"
+    ],
+    "age_group": [
+      "20s",
+      "30s",
+      "40s",
+      "50s"
+    ],
+    "gender": [
+      "female",
+      "male"
+    ],
+    "region": [
+      "Busan",
+      "Daegu",
+      "Daejeon",
+      "Gwangju",
+      "Gyeonggi",
+      "Incheon",
+      "Seoul",
+      "Ulsan"
+    ],
+    "lifecycle": [
+      "active",
+      "app_user",
+      "cart_abandoner",
+      "free_user",
+      "inactive_90d",
+      "new",
+      "no_purchase",
+      "recent_buyer",
+      "vip"
+    ],
+    "price_sensitivity": [
+      "high",
+      "low",
+      "medium"
+    ],
+    "predicted_ltv_segment": [
+      "high",
+      "low",
+      "mid",
+      "unknown",
+      "vip"
+    ],
+    "message_length_group": [
+      "long",
+      "medium",
+      "short"
+    ]
+  },
+  "best_iteration": 1,
+  "scale_pos_weight": 3.9545454545454546,
+  "train_rows": 436,
+  "validation_rows": 94,
+  "test_rows": 94,
+  "train_ctr": 0.2018348623853211,
+  "validation_metrics": {
+    "actual_ctr": 0.11702127659574468,
+    "predicted_ctr_mean": 0.2135127284893172,
+    "brier_score": 0.11222879597307797,
+    "lift_at_10_pct": 4.747474747474747,
+    "roc_auc": 0.6144578313253012,
+    "pr_auc": 0.14666666666666667,
+    "log_loss": 0.39148622264999966
+  },
+  "test_metrics": {
+    "actual_ctr": 0.19148936170212766,
+    "predicted_ctr_mean": 0.21181331916060853,
+    "brier_score": 0.15585444470792525,
+    "lift_at_10_pct": 2.9012345679012346,
+    "roc_auc": 0.3125,
+    "pr_auc": 0.1567056018880713,
+    "log_loss": 0.49153787966336887
+  },
+  "data_range": {
+    "start_at": null,
+    "end_at": null,
+    "validation_start": "2026-07-15T00:39:20+00:00",
+    "test_start": "2026-07-15T01:10:40+00:00",
+    "split_mode": "row_order_time"
+  }
+}

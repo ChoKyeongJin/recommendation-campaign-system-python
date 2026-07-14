@@ -1,0 +1,1507 @@
+{
+  "nodes": [
+    {
+      "id": "camp_001",
+      "type": "campaign",
+      "name": "여름 장바구니 리마인드",
+      "objective": "purchase",
+      "category": "fashion",
+      "channel": [
+        "kakao",
+        "app_push",
+        "lms",
+        "rcs"
+      ],
+      "target_segments": [
+        "20s_female",
+        "cart_abandoner",
+        "price_sensitive"
+      ],
+      "offer": "10% 할인 쿠폰",
+      "budget_krw": 3000000,
+      "start_date": "2026-07-15",
+      "end_date": "2026-07-31",
+      "keywords": [
+        "여름",
+        "의류",
+        "쿠폰",
+        "장바구니"
+      ],
+      "expected_ctr": 3.8,
+      "expected_cvr": 5.2,
+      "text_for_embedding": "여름 장바구니 리마인드 캠페인. 목적은 purchase이고 카테고리는 fashion입니다. 타겟 세그먼트는 20s_female, cart_abandoner, price_sensitive이며 채널은 kakao, app_push, lms, rcs입니다. 혜택은 10% 할인 쿠폰입니다. 키워드: 여름, 의류, 쿠폰, 장바구니."
+    },
+    {
+      "id": "camp_002",
+      "type": "campaign",
+      "name": "첫 구매 웰컴 쿠폰",
+      "objective": "first_purchase",
+      "category": "all",
+      "channel": [
+        "email",
+        "app_push",
+        "lms"
+      ],
+      "target_segments": [
+        "new_user",
+        "no_purchase"
+      ],
+      "offer": "첫 구매 5천원 할인",
+      "budget_krw": 5000000,
+      "start_date": "2026-07-10",
+      "end_date": "2026-08-10",
+      "keywords": [
+        "신규",
+        "첫구매",
+        "웰컴"
+      ],
+      "expected_ctr": 4.5,
+      "expected_cvr": 6.8,
+      "text_for_embedding": "첫 구매 웰컴 쿠폰 캠페인. 목적은 first_purchase이고 카테고리는 all입니다. 타겟 세그먼트는 new_user, no_purchase이며 채널은 email, app_push, lms입니다. 혜택은 첫 구매 5천원 할인입니다. 키워드: 신규, 첫구매, 웰컴."
+    },
+    {
+      "id": "camp_003",
+      "type": "campaign",
+      "name": "프리미엄 뷰티 체험단",
+      "objective": "lead",
+      "category": "beauty",
+      "channel": [
+        "instagram",
+        "sms",
+        "rcs"
+      ],
+      "target_segments": [
+        "beauty_interest",
+        "high_ltv"
+      ],
+      "offer": "샘플 키트 무료",
+      "budget_krw": 7000000,
+      "start_date": "2026-07-20",
+      "end_date": "2026-08-05",
+      "keywords": [
+        "뷰티",
+        "프리미엄",
+        "체험"
+      ],
+      "expected_ctr": 2.9,
+      "expected_cvr": 4.1,
+      "text_for_embedding": "프리미엄 뷰티 체험단 캠페인. 목적은 lead이고 카테고리는 beauty입니다. 타겟 세그먼트는 beauty_interest, high_ltv이며 채널은 instagram, sms, rcs입니다. 혜택은 샘플 키트 무료입니다. 키워드: 뷰티, 프리미엄, 체험."
+    },
+    {
+      "id": "camp_004",
+      "type": "campaign",
+      "name": "휴면 고객 복귀 혜택",
+      "objective": "reactivation",
+      "category": "all",
+      "channel": [
+        "sms",
+        "kakao",
+        "lms"
+      ],
+      "target_segments": [
+        "inactive_90d",
+        "discount_responsive"
+      ],
+      "offer": "15% 복귀 쿠폰",
+      "budget_krw": 4500000,
+      "start_date": "2026-07-12",
+      "end_date": "2026-07-26",
+      "keywords": [
+        "휴면",
+        "복귀",
+        "할인"
+      ],
+      "expected_ctr": 3.2,
+      "expected_cvr": 3.7,
+      "text_for_embedding": "휴면 고객 복귀 혜택 캠페인. 목적은 reactivation이고 카테고리는 all입니다. 타겟 세그먼트는 inactive_90d, discount_responsive이며 채널은 sms, kakao, lms입니다. 혜택은 15% 복귀 쿠폰입니다. 키워드: 휴면, 복귀, 할인."
+    },
+    {
+      "id": "camp_005",
+      "type": "campaign",
+      "name": "반려동물 정기배송 추천",
+      "objective": "subscription",
+      "category": "pet",
+      "channel": [
+        "app_push",
+        "email"
+      ],
+      "target_segments": [
+        "pet_owner",
+        "repeat_buyer"
+      ],
+      "offer": "정기배송 첫 달 20% 할인",
+      "budget_krw": 2500000,
+      "start_date": "2026-07-18",
+      "end_date": "2026-08-18",
+      "keywords": [
+        "반려동물",
+        "정기배송",
+        "사료"
+      ],
+      "expected_ctr": 4.1,
+      "expected_cvr": 5.9,
+      "text_for_embedding": "반려동물 정기배송 추천 캠페인. 목적은 subscription이고 카테고리는 pet입니다. 타겟 세그먼트는 pet_owner, repeat_buyer이며 채널은 app_push, email입니다. 혜택은 정기배송 첫 달 20% 할인입니다. 키워드: 반려동물, 정기배송, 사료."
+    },
+    {
+      "id": "camp_006",
+      "type": "campaign",
+      "name": "직장인 점심 간편식",
+      "objective": "purchase",
+      "category": "food",
+      "channel": [
+        "kakao",
+        "app_push"
+      ],
+      "target_segments": [
+        "office_worker",
+        "weekday_active"
+      ],
+      "offer": "간편식 1+1",
+      "budget_krw": 3800000,
+      "start_date": "2026-07-14",
+      "end_date": "2026-07-28",
+      "keywords": [
+        "점심",
+        "간편식",
+        "직장인"
+      ],
+      "expected_ctr": 3.7,
+      "expected_cvr": 4.8,
+      "text_for_embedding": "직장인 점심 간편식 캠페인. 목적은 purchase이고 카테고리는 food입니다. 타겟 세그먼트는 office_worker, weekday_active이며 채널은 kakao, app_push입니다. 혜택은 간편식 1+1입니다. 키워드: 점심, 간편식, 직장인."
+    },
+    {
+      "id": "camp_007",
+      "type": "campaign",
+      "name": "고관여 전자제품 비교 콘텐츠",
+      "objective": "consideration",
+      "category": "electronics",
+      "channel": [
+        "email",
+        "web_banner"
+      ],
+      "target_segments": [
+        "electronics_interest",
+        "researcher"
+      ],
+      "offer": "구매가이드 제공",
+      "budget_krw": 6000000,
+      "start_date": "2026-07-16",
+      "end_date": "2026-08-16",
+      "keywords": [
+        "전자제품",
+        "비교",
+        "가이드"
+      ],
+      "expected_ctr": 2.4,
+      "expected_cvr": 2.9,
+      "text_for_embedding": "고관여 전자제품 비교 콘텐츠 캠페인. 목적은 consideration이고 카테고리는 electronics입니다. 타겟 세그먼트는 electronics_interest, researcher이며 채널은 email, web_banner입니다. 혜택은 구매가이드 제공입니다. 키워드: 전자제품, 비교, 가이드."
+    },
+    {
+      "id": "camp_008",
+      "type": "campaign",
+      "name": "주말 여행 특가",
+      "objective": "purchase",
+      "category": "travel",
+      "channel": [
+        "app_push",
+        "kakao"
+      ],
+      "target_segments": [
+        "travel_interest",
+        "weekend_buyer"
+      ],
+      "offer": "숙박 7% 할인",
+      "budget_krw": 8000000,
+      "start_date": "2026-07-11",
+      "end_date": "2026-07-25",
+      "keywords": [
+        "여행",
+        "숙박",
+        "주말"
+      ],
+      "expected_ctr": 4.0,
+      "expected_cvr": 3.6,
+      "text_for_embedding": "주말 여행 특가 캠페인. 목적은 purchase이고 카테고리는 travel입니다. 타겟 세그먼트는 travel_interest, weekend_buyer이며 채널은 app_push, kakao입니다. 혜택은 숙박 7% 할인입니다. 키워드: 여행, 숙박, 주말."
+    },
+    {
+      "id": "camp_009",
+      "type": "campaign",
+      "name": "육아용품 재구매 알림",
+      "objective": "repurchase",
+      "category": "baby",
+      "channel": [
+        "sms",
+        "app_push"
+      ],
+      "target_segments": [
+        "parent",
+        "repeat_cycle_due"
+      ],
+      "offer": "기저귀 12% 할인",
+      "budget_krw": 3200000,
+      "start_date": "2026-07-13",
+      "end_date": "2026-07-30",
+      "keywords": [
+        "육아",
+        "기저귀",
+        "재구매"
+      ],
+      "expected_ctr": 4.8,
+      "expected_cvr": 6.1,
+      "text_for_embedding": "육아용품 재구매 알림 캠페인. 목적은 repurchase이고 카테고리는 baby입니다. 타겟 세그먼트는 parent, repeat_cycle_due이며 채널은 sms, app_push입니다. 혜택은 기저귀 12% 할인입니다. 키워드: 육아, 기저귀, 재구매."
+    },
+    {
+      "id": "camp_010",
+      "type": "campaign",
+      "name": "러닝화 신상품 런칭",
+      "objective": "awareness",
+      "category": "sports",
+      "channel": [
+        "instagram",
+        "web_banner"
+      ],
+      "target_segments": [
+        "sports_interest",
+        "20s_30s"
+      ],
+      "offer": "런칭 기념 무료배송",
+      "budget_krw": 9000000,
+      "start_date": "2026-07-21",
+      "end_date": "2026-08-11",
+      "keywords": [
+        "러닝",
+        "운동화",
+        "신상품"
+      ],
+      "expected_ctr": 2.7,
+      "expected_cvr": 3.2,
+      "text_for_embedding": "러닝화 신상품 런칭 캠페인. 목적은 awareness이고 카테고리는 sports입니다. 타겟 세그먼트는 sports_interest, 20s_30s이며 채널은 instagram, web_banner입니다. 혜택은 런칭 기념 무료배송입니다. 키워드: 러닝, 운동화, 신상품."
+    },
+    {
+      "id": "camp_011",
+      "type": "campaign",
+      "name": "VIP 생일 혜택",
+      "objective": "loyalty",
+      "category": "all",
+      "channel": [
+        "email",
+        "kakao"
+      ],
+      "target_segments": [
+        "vip",
+        "birthday_month"
+      ],
+      "offer": "3만원 바우처",
+      "budget_krw": 2000000,
+      "start_date": "2026-07-01",
+      "end_date": "2026-07-31",
+      "keywords": [
+        "VIP",
+        "생일",
+        "바우처"
+      ],
+      "expected_ctr": 5.5,
+      "expected_cvr": 7.4,
+      "text_for_embedding": "VIP 생일 혜택 캠페인. 목적은 loyalty이고 카테고리는 all입니다. 타겟 세그먼트는 vip, birthday_month이며 채널은 email, kakao입니다. 혜택은 3만원 바우처입니다. 키워드: VIP, 생일, 바우처."
+    },
+    {
+      "id": "camp_012",
+      "type": "campaign",
+      "name": "가성비 생활용품 묶음",
+      "objective": "purchase",
+      "category": "home_living",
+      "channel": [
+        "app_push",
+        "web_banner"
+      ],
+      "target_segments": [
+        "price_sensitive",
+        "bulk_buyer"
+      ],
+      "offer": "묶음 구매 18% 할인",
+      "budget_krw": 4200000,
+      "start_date": "2026-07-17",
+      "end_date": "2026-08-02",
+      "keywords": [
+        "생활용품",
+        "가성비",
+        "묶음"
+      ],
+      "expected_ctr": 3.6,
+      "expected_cvr": 5.0,
+      "text_for_embedding": "가성비 생활용품 묶음 캠페인. 목적은 purchase이고 카테고리는 home_living입니다. 타겟 세그먼트는 price_sensitive, bulk_buyer이며 채널은 app_push, web_banner입니다. 혜택은 묶음 구매 18% 할인입니다. 키워드: 생활용품, 가성비, 묶음."
+    },
+    {
+      "id": "camp_013",
+      "type": "campaign",
+      "name": "남성 그루밍 스타터",
+      "objective": "first_purchase",
+      "category": "beauty",
+      "channel": [
+        "instagram",
+        "kakao"
+      ],
+      "target_segments": [
+        "male_20s_30s",
+        "beauty_beginner"
+      ],
+      "offer": "스타터 세트 20% 할인",
+      "budget_krw": 3500000,
+      "start_date": "2026-07-19",
+      "end_date": "2026-08-09",
+      "keywords": [
+        "남성",
+        "그루밍",
+        "스타터"
+      ],
+      "expected_ctr": 3.1,
+      "expected_cvr": 4.0,
+      "text_for_embedding": "남성 그루밍 스타터 캠페인. 목적은 first_purchase이고 카테고리는 beauty입니다. 타겟 세그먼트는 male_20s_30s, beauty_beginner이며 채널은 instagram, kakao입니다. 혜택은 스타터 세트 20% 할인입니다. 키워드: 남성, 그루밍, 스타터."
+    },
+    {
+      "id": "camp_014",
+      "type": "campaign",
+      "name": "친환경 제품 추천",
+      "objective": "purchase",
+      "category": "eco",
+      "channel": [
+        "email",
+        "web_banner"
+      ],
+      "target_segments": [
+        "eco_conscious",
+        "premium_buyer"
+      ],
+      "offer": "친환경 라인 무료배송",
+      "budget_krw": 2800000,
+      "start_date": "2026-07-22",
+      "end_date": "2026-08-12",
+      "keywords": [
+        "친환경",
+        "지속가능",
+        "프리미엄"
+      ],
+      "expected_ctr": 2.8,
+      "expected_cvr": 3.9,
+      "text_for_embedding": "친환경 제품 추천 캠페인. 목적은 purchase이고 카테고리는 eco입니다. 타겟 세그먼트는 eco_conscious, premium_buyer이며 채널은 email, web_banner입니다. 혜택은 친환경 라인 무료배송입니다. 키워드: 친환경, 지속가능, 프리미엄."
+    },
+    {
+      "id": "camp_015",
+      "type": "campaign",
+      "name": "새벽배송 식품 쿠폰",
+      "objective": "purchase",
+      "category": "food",
+      "channel": [
+        "app_push",
+        "sms"
+      ],
+      "target_segments": [
+        "grocery_buyer",
+        "morning_active"
+      ],
+      "offer": "새벽배송 3천원 할인",
+      "budget_krw": 5500000,
+      "start_date": "2026-07-09",
+      "end_date": "2026-07-23",
+      "keywords": [
+        "새벽배송",
+        "식품",
+        "쿠폰"
+      ],
+      "expected_ctr": 4.3,
+      "expected_cvr": 5.7,
+      "text_for_embedding": "새벽배송 식품 쿠폰 캠페인. 목적은 purchase이고 카테고리는 food입니다. 타겟 세그먼트는 grocery_buyer, morning_active이며 채널은 app_push, sms입니다. 혜택은 새벽배송 3천원 할인입니다. 키워드: 새벽배송, 식품, 쿠폰."
+    },
+    {
+      "id": "camp_016",
+      "type": "campaign",
+      "name": "콘텐츠 구독 업셀",
+      "objective": "upsell",
+      "category": "digital_content",
+      "channel": [
+        "email",
+        "app_push"
+      ],
+      "target_segments": [
+        "free_user",
+        "content_heavy"
+      ],
+      "offer": "프리미엄 1개월 50% 할인",
+      "budget_krw": 2600000,
+      "start_date": "2026-07-15",
+      "end_date": "2026-08-15",
+      "keywords": [
+        "구독",
+        "프리미엄",
+        "콘텐츠"
+      ],
+      "expected_ctr": 3.9,
+      "expected_cvr": 4.4,
+      "text_for_embedding": "콘텐츠 구독 업셀 캠페인. 목적은 upsell이고 카테고리는 digital_content입니다. 타겟 세그먼트는 free_user, content_heavy이며 채널은 email, app_push입니다. 혜택은 프리미엄 1개월 50% 할인입니다. 키워드: 구독, 프리미엄, 콘텐츠."
+    },
+    {
+      "id": "camp_017",
+      "type": "campaign",
+      "name": "캠핑 시즌 기획전",
+      "objective": "purchase",
+      "category": "outdoor",
+      "channel": [
+        "kakao",
+        "web_banner"
+      ],
+      "target_segments": [
+        "outdoor_interest",
+        "family"
+      ],
+      "offer": "캠핑용품 최대 25%",
+      "budget_krw": 6500000,
+      "start_date": "2026-07-18",
+      "end_date": "2026-08-08",
+      "keywords": [
+        "캠핑",
+        "아웃도어",
+        "가족"
+      ],
+      "expected_ctr": 3.4,
+      "expected_cvr": 4.2,
+      "text_for_embedding": "캠핑 시즌 기획전 캠페인. 목적은 purchase이고 카테고리는 outdoor입니다. 타겟 세그먼트는 outdoor_interest, family이며 채널은 kakao, web_banner입니다. 혜택은 캠핑용품 최대 25%입니다. 키워드: 캠핑, 아웃도어, 가족."
+    },
+    {
+      "id": "camp_018",
+      "type": "campaign",
+      "name": "학생 노트북 추천",
+      "objective": "consideration",
+      "category": "electronics",
+      "channel": [
+        "email",
+        "instagram"
+      ],
+      "target_segments": [
+        "student",
+        "electronics_interest"
+      ],
+      "offer": "학생 인증 추가 할인",
+      "budget_krw": 7200000,
+      "start_date": "2026-07-25",
+      "end_date": "2026-08-25",
+      "keywords": [
+        "학생",
+        "노트북",
+        "할인"
+      ],
+      "expected_ctr": 2.6,
+      "expected_cvr": 3.1,
+      "text_for_embedding": "학생 노트북 추천 캠페인. 목적은 consideration이고 카테고리는 electronics입니다. 타겟 세그먼트는 student, electronics_interest이며 채널은 email, instagram입니다. 혜택은 학생 인증 추가 할인입니다. 키워드: 학생, 노트북, 할인."
+    },
+    {
+      "id": "camp_019",
+      "type": "campaign",
+      "name": "고객 리뷰 작성 보상",
+      "objective": "engagement",
+      "category": "all",
+      "channel": [
+        "app_push",
+        "email"
+      ],
+      "target_segments": [
+        "recent_buyer",
+        "review_likely"
+      ],
+      "offer": "리뷰 작성 1천 포인트",
+      "budget_krw": 1800000,
+      "start_date": "2026-07-10",
+      "end_date": "2026-07-31",
+      "keywords": [
+        "리뷰",
+        "포인트",
+        "참여"
+      ],
+      "expected_ctr": 5.0,
+      "expected_cvr": 8.0,
+      "text_for_embedding": "고객 리뷰 작성 보상 캠페인. 목적은 engagement이고 카테고리는 all입니다. 타겟 세그먼트는 recent_buyer, review_likely이며 채널은 app_push, email입니다. 혜택은 리뷰 작성 1천 포인트입니다. 키워드: 리뷰, 포인트, 참여."
+    },
+    {
+      "id": "camp_020",
+      "type": "campaign",
+      "name": "프리미엄 와인잔 홈파티",
+      "objective": "purchase",
+      "category": "home_living",
+      "channel": [
+        "instagram",
+        "kakao"
+      ],
+      "target_segments": [
+        "home_party",
+        "premium_buyer"
+      ],
+      "offer": "홈파티 세트 10% 할인",
+      "budget_krw": 3000000,
+      "start_date": "2026-07-20",
+      "end_date": "2026-08-03",
+      "keywords": [
+        "홈파티",
+        "주방",
+        "프리미엄"
+      ],
+      "expected_ctr": 2.5,
+      "expected_cvr": 3.4,
+      "text_for_embedding": "프리미엄 와인잔 홈파티 캠페인. 목적은 purchase이고 카테고리는 home_living입니다. 타겟 세그먼트는 home_party, premium_buyer이며 채널은 instagram, kakao입니다. 혜택은 홈파티 세트 10% 할인입니다. 키워드: 홈파티, 주방, 프리미엄."
+    },
+    {
+      "id": "camp_021",
+      "type": "campaign",
+      "name": "골프웨어 시즌오프",
+      "objective": "purchase",
+      "category": "sports",
+      "channel": [
+        "sms",
+        "kakao"
+      ],
+      "target_segments": [
+        "golf_interest",
+        "40s_50s"
+      ],
+      "offer": "시즌오프 최대 30%",
+      "budget_krw": 4800000,
+      "start_date": "2026-07-24",
+      "end_date": "2026-08-14",
+      "keywords": [
+        "골프",
+        "스포츠",
+        "시즌오프"
+      ],
+      "expected_ctr": 3.0,
+      "expected_cvr": 4.5,
+      "text_for_embedding": "골프웨어 시즌오프 캠페인. 목적은 purchase이고 카테고리는 sports입니다. 타겟 세그먼트는 golf_interest, 40s_50s이며 채널은 sms, kakao입니다. 혜택은 시즌오프 최대 30%입니다. 키워드: 골프, 스포츠, 시즌오프."
+    },
+    {
+      "id": "camp_022",
+      "type": "campaign",
+      "name": "해외직구 관세 가이드",
+      "objective": "consideration",
+      "category": "global_shopping",
+      "channel": [
+        "email",
+        "web_banner"
+      ],
+      "target_segments": [
+        "global_shopper",
+        "researcher"
+      ],
+      "offer": "직구 가이드와 추천템",
+      "budget_krw": 2200000,
+      "start_date": "2026-07-12",
+      "end_date": "2026-08-01",
+      "keywords": [
+        "해외직구",
+        "가이드",
+        "관세"
+      ],
+      "expected_ctr": 2.2,
+      "expected_cvr": 2.6,
+      "text_for_embedding": "해외직구 관세 가이드 캠페인. 목적은 consideration이고 카테고리는 global_shopping입니다. 타겟 세그먼트는 global_shopper, researcher이며 채널은 email, web_banner입니다. 혜택은 직구 가이드와 추천템입니다. 키워드: 해외직구, 가이드, 관세."
+    },
+    {
+      "id": "camp_023",
+      "type": "campaign",
+      "name": "모바일 앱 전용 딜",
+      "objective": "app_conversion",
+      "category": "all",
+      "channel": [
+        "app_push"
+      ],
+      "target_segments": [
+        "app_user",
+        "deal_seeker"
+      ],
+      "offer": "앱 전용 타임딜",
+      "budget_krw": 5000000,
+      "start_date": "2026-07-16",
+      "end_date": "2026-07-22",
+      "keywords": [
+        "앱전용",
+        "타임딜",
+        "특가"
+      ],
+      "expected_ctr": 6.2,
+      "expected_cvr": 7.0,
+      "text_for_embedding": "모바일 앱 전용 딜 캠페인. 목적은 app_conversion이고 카테고리는 all입니다. 타겟 세그먼트는 app_user, deal_seeker이며 채널은 app_push입니다. 혜택은 앱 전용 타임딜입니다. 키워드: 앱전용, 타임딜, 특가."
+    },
+    {
+      "id": "camp_024",
+      "type": "campaign",
+      "name": "부모님 건강식품 선물",
+      "objective": "purchase",
+      "category": "health_food",
+      "channel": [
+        "kakao",
+        "email"
+      ],
+      "target_segments": [
+        "gift_buyer",
+        "40s_50s"
+      ],
+      "offer": "선물세트 10% 할인",
+      "budget_krw": 4000000,
+      "start_date": "2026-07-26",
+      "end_date": "2026-08-16",
+      "keywords": [
+        "건강식품",
+        "선물",
+        "부모님"
+      ],
+      "expected_ctr": 3.3,
+      "expected_cvr": 4.6,
+      "text_for_embedding": "부모님 건강식품 선물 캠페인. 목적은 purchase이고 카테고리는 health_food입니다. 타겟 세그먼트는 gift_buyer, 40s_50s이며 채널은 kakao, email입니다. 혜택은 선물세트 10% 할인입니다. 키워드: 건강식품, 선물, 부모님."
+    },
+    {
+      "id": "camp_025",
+      "type": "campaign",
+      "name": "로컬 맛집 밀키트",
+      "objective": "purchase",
+      "category": "food",
+      "channel": [
+        "instagram",
+        "app_push"
+      ],
+      "target_segments": [
+        "foodie",
+        "local_interest"
+      ],
+      "offer": "밀키트 무료배송",
+      "budget_krw": 3400000,
+      "start_date": "2026-07-23",
+      "end_date": "2026-08-06",
+      "keywords": [
+        "맛집",
+        "밀키트",
+        "로컬"
+      ],
+      "expected_ctr": 3.9,
+      "expected_cvr": 4.9,
+      "text_for_embedding": "로컬 맛집 밀키트 캠페인. 목적은 purchase이고 카테고리는 food입니다. 타겟 세그먼트는 foodie, local_interest이며 채널은 instagram, app_push입니다. 혜택은 밀키트 무료배송입니다. 키워드: 맛집, 밀키트, 로컬."
+    },
+    {
+      "id": "user_001",
+      "type": "user",
+      "age": 27,
+      "gender": "female",
+      "region": "Seoul",
+      "lifecycle": "active",
+      "interests": [
+        "fashion",
+        "beauty",
+        "travel"
+      ],
+      "preferred_channels": [
+        "app_push",
+        "kakao",
+        "lms",
+        "rcs"
+      ],
+      "avg_order_value_krw": 68000,
+      "purchase_count_90d": 4,
+      "last_active_days": 1,
+      "price_sensitivity": "high",
+      "predicted_ltv_segment": "mid",
+      "recent_behaviors": [
+        "cart_abandoned:fashion",
+        "clicked:coupon"
+      ],
+      "text_for_embedding": "user_001 사용자는 27세 female이며 지역은 Seoul입니다. 라이프사이클은 active이고 관심사는 fashion, beauty, travel입니다. 선호 채널은 app_push, kakao, lms, rcs이며 최근 행동은 cart_abandoned:fashion, clicked:coupon입니다. 가격 민감도는 high, LTV 세그먼트는 mid입니다."
+    },
+    {
+      "id": "user_002",
+      "type": "user",
+      "age": 34,
+      "gender": "male",
+      "region": "Gyeonggi",
+      "lifecycle": "new",
+      "interests": [
+        "electronics",
+        "sports",
+        "digital_content"
+      ],
+      "preferred_channels": [
+        "email"
+      ],
+      "avg_order_value_krw": 120000,
+      "purchase_count_90d": 0,
+      "last_active_days": 2,
+      "price_sensitivity": "medium",
+      "predicted_ltv_segment": "unknown",
+      "recent_behaviors": [
+        "viewed:laptop",
+        "signed_up"
+      ],
+      "text_for_embedding": "user_002 사용자는 34세 male이며 지역은 Gyeonggi입니다. 라이프사이클은 new이고 관심사는 electronics, sports, digital_content입니다. 선호 채널은 email이며 최근 행동은 viewed:laptop, signed_up입니다. 가격 민감도는 medium, LTV 세그먼트는 unknown입니다."
+    },
+    {
+      "id": "user_003",
+      "type": "user",
+      "age": 41,
+      "gender": "female",
+      "region": "Busan",
+      "lifecycle": "active",
+      "interests": [
+        "baby",
+        "home_living",
+        "food"
+      ],
+      "preferred_channels": [
+        "sms",
+        "app_push"
+      ],
+      "avg_order_value_krw": 54000,
+      "purchase_count_90d": 7,
+      "last_active_days": 0,
+      "price_sensitivity": "high",
+      "predicted_ltv_segment": "high",
+      "recent_behaviors": [
+        "purchased:diaper",
+        "repeat_cycle_due:baby"
+      ],
+      "text_for_embedding": "user_003 사용자는 41세 female이며 지역은 Busan입니다. 라이프사이클은 active이고 관심사는 baby, home_living, food입니다. 선호 채널은 sms, app_push이며 최근 행동은 purchased:diaper, repeat_cycle_due:baby입니다. 가격 민감도는 high, LTV 세그먼트는 high입니다."
+    },
+    {
+      "id": "user_004",
+      "type": "user",
+      "age": 52,
+      "gender": "male",
+      "region": "Daegu",
+      "lifecycle": "active",
+      "interests": [
+        "golf",
+        "health_food",
+        "travel"
+      ],
+      "preferred_channels": [
+        "kakao",
+        "sms"
+      ],
+      "avg_order_value_krw": 145000,
+      "purchase_count_90d": 3,
+      "last_active_days": 5,
+      "price_sensitivity": "low",
+      "predicted_ltv_segment": "high",
+      "recent_behaviors": [
+        "clicked:golfwear",
+        "searched:gift"
+      ],
+      "text_for_embedding": "user_004 사용자는 52세 male이며 지역은 Daegu입니다. 라이프사이클은 active이고 관심사는 golf, health_food, travel입니다. 선호 채널은 kakao, sms이며 최근 행동은 clicked:golfwear, searched:gift입니다. 가격 민감도는 low, LTV 세그먼트는 high입니다."
+    },
+    {
+      "id": "user_005",
+      "type": "user",
+      "age": 29,
+      "gender": "female",
+      "region": "Incheon",
+      "lifecycle": "inactive_90d",
+      "interests": [
+        "beauty",
+        "eco",
+        "fashion"
+      ],
+      "preferred_channels": [
+        "kakao"
+      ],
+      "avg_order_value_krw": 39000,
+      "purchase_count_90d": 0,
+      "last_active_days": 96,
+      "price_sensitivity": "high",
+      "predicted_ltv_segment": "low",
+      "recent_behaviors": [
+        "inactive",
+        "previous_purchase:beauty"
+      ],
+      "text_for_embedding": "user_005 사용자는 29세 female이며 지역은 Incheon입니다. 라이프사이클은 inactive_90d이고 관심사는 beauty, eco, fashion입니다. 선호 채널은 kakao이며 최근 행동은 inactive, previous_purchase:beauty입니다. 가격 민감도는 high, LTV 세그먼트는 low입니다."
+    },
+    {
+      "id": "user_006",
+      "type": "user",
+      "age": 31,
+      "gender": "male",
+      "region": "Seoul",
+      "lifecycle": "active",
+      "interests": [
+        "food",
+        "home_living",
+        "digital_content"
+      ],
+      "preferred_channels": [
+        "app_push"
+      ],
+      "avg_order_value_krw": 43000,
+      "purchase_count_90d": 5,
+      "last_active_days": 1,
+      "price_sensitivity": "medium",
+      "predicted_ltv_segment": "mid",
+      "recent_behaviors": [
+        "weekday_lunch_browse",
+        "uses_app_daily"
+      ],
+      "text_for_embedding": "user_006 사용자는 31세 male이며 지역은 Seoul입니다. 라이프사이클은 active이고 관심사는 food, home_living, digital_content입니다. 선호 채널은 app_push이며 최근 행동은 weekday_lunch_browse, uses_app_daily입니다. 가격 민감도는 medium, LTV 세그먼트는 mid입니다."
+    },
+    {
+      "id": "user_007",
+      "type": "user",
+      "age": 24,
+      "gender": "female",
+      "region": "Daejeon",
+      "lifecycle": "new",
+      "interests": [
+        "sports",
+        "fashion",
+        "beauty"
+      ],
+      "preferred_channels": [
+        "instagram",
+        "app_push"
+      ],
+      "avg_order_value_krw": 32000,
+      "purchase_count_90d": 1,
+      "last_active_days": 3,
+      "price_sensitivity": "high",
+      "predicted_ltv_segment": "mid",
+      "recent_behaviors": [
+        "followed:brand_instagram",
+        "clicked:running"
+      ],
+      "text_for_embedding": "user_007 사용자는 24세 female이며 지역은 Daejeon입니다. 라이프사이클은 new이고 관심사는 sports, fashion, beauty입니다. 선호 채널은 instagram, app_push이며 최근 행동은 followed:brand_instagram, clicked:running입니다. 가격 민감도는 high, LTV 세그먼트는 mid입니다."
+    },
+    {
+      "id": "user_008",
+      "type": "user",
+      "age": 38,
+      "gender": "female",
+      "region": "Seoul",
+      "lifecycle": "active",
+      "interests": [
+        "pet",
+        "home_living",
+        "eco"
+      ],
+      "preferred_channels": [
+        "email",
+        "app_push"
+      ],
+      "avg_order_value_krw": 76000,
+      "purchase_count_90d": 6,
+      "last_active_days": 2,
+      "price_sensitivity": "medium",
+      "predicted_ltv_segment": "high",
+      "recent_behaviors": [
+        "purchased:pet_food",
+        "repeat_buyer"
+      ],
+      "text_for_embedding": "user_008 사용자는 38세 female이며 지역은 Seoul입니다. 라이프사이클은 active이고 관심사는 pet, home_living, eco입니다. 선호 채널은 email, app_push이며 최근 행동은 purchased:pet_food, repeat_buyer입니다. 가격 민감도는 medium, LTV 세그먼트는 high입니다."
+    },
+    {
+      "id": "user_009",
+      "type": "user",
+      "age": 46,
+      "gender": "male",
+      "region": "Gwangju",
+      "lifecycle": "active",
+      "interests": [
+        "outdoor",
+        "travel",
+        "food"
+      ],
+      "preferred_channels": [
+        "kakao"
+      ],
+      "avg_order_value_krw": 98000,
+      "purchase_count_90d": 2,
+      "last_active_days": 4,
+      "price_sensitivity": "medium",
+      "predicted_ltv_segment": "mid",
+      "recent_behaviors": [
+        "viewed:camping_tent",
+        "weekend_browse"
+      ],
+      "text_for_embedding": "user_009 사용자는 46세 male이며 지역은 Gwangju입니다. 라이프사이클은 active이고 관심사는 outdoor, travel, food입니다. 선호 채널은 kakao이며 최근 행동은 viewed:camping_tent, weekend_browse입니다. 가격 민감도는 medium, LTV 세그먼트는 mid입니다."
+    },
+    {
+      "id": "user_010",
+      "type": "user",
+      "age": 22,
+      "gender": "female",
+      "region": "Seoul",
+      "lifecycle": "active",
+      "interests": [
+        "electronics",
+        "digital_content",
+        "global_shopping"
+      ],
+      "preferred_channels": [
+        "email",
+        "instagram"
+      ],
+      "avg_order_value_krw": 87000,
+      "purchase_count_90d": 2,
+      "last_active_days": 1,
+      "price_sensitivity": "high",
+      "predicted_ltv_segment": "mid",
+      "recent_behaviors": [
+        "student_verified",
+        "viewed:notebook"
+      ],
+      "text_for_embedding": "user_010 사용자는 22세 female이며 지역은 Seoul입니다. 라이프사이클은 active이고 관심사는 electronics, digital_content, global_shopping입니다. 선호 채널은 email, instagram이며 최근 행동은 student_verified, viewed:notebook입니다. 가격 민감도는 high, LTV 세그먼트는 mid입니다."
+    },
+    {
+      "id": "user_011",
+      "type": "user",
+      "age": 55,
+      "gender": "female",
+      "region": "Ulsan",
+      "lifecycle": "vip",
+      "interests": [
+        "health_food",
+        "home_living",
+        "travel"
+      ],
+      "preferred_channels": [
+        "kakao",
+        "email"
+      ],
+      "avg_order_value_krw": 160000,
+      "purchase_count_90d": 8,
+      "last_active_days": 0,
+      "price_sensitivity": "low",
+      "predicted_ltv_segment": "vip",
+      "recent_behaviors": [
+        "birthday_month",
+        "gift_buyer"
+      ],
+      "text_for_embedding": "user_011 사용자는 55세 female이며 지역은 Ulsan입니다. 라이프사이클은 vip이고 관심사는 health_food, home_living, travel입니다. 선호 채널은 kakao, email이며 최근 행동은 birthday_month, gift_buyer입니다. 가격 민감도는 low, LTV 세그먼트는 vip입니다."
+    },
+    {
+      "id": "user_012",
+      "type": "user",
+      "age": 33,
+      "gender": "male",
+      "region": "Seoul",
+      "lifecycle": "free_user",
+      "interests": [
+        "digital_content",
+        "electronics",
+        "sports"
+      ],
+      "preferred_channels": [
+        "app_push",
+        "email"
+      ],
+      "avg_order_value_krw": 25000,
+      "purchase_count_90d": 1,
+      "last_active_days": 0,
+      "price_sensitivity": "medium",
+      "predicted_ltv_segment": "mid",
+      "recent_behaviors": [
+        "content_heavy",
+        "trial_expired"
+      ],
+      "text_for_embedding": "user_012 사용자는 33세 male이며 지역은 Seoul입니다. 라이프사이클은 free_user이고 관심사는 digital_content, electronics, sports입니다. 선호 채널은 app_push, email이며 최근 행동은 content_heavy, trial_expired입니다. 가격 민감도는 medium, LTV 세그먼트는 mid입니다."
+    },
+    {
+      "id": "user_013",
+      "type": "user",
+      "age": 36,
+      "gender": "female",
+      "region": "Jeju",
+      "lifecycle": "active",
+      "interests": [
+        "travel",
+        "food",
+        "local_interest"
+      ],
+      "preferred_channels": [
+        "app_push",
+        "instagram"
+      ],
+      "avg_order_value_krw": 61000,
+      "purchase_count_90d": 4,
+      "last_active_days": 2,
+      "price_sensitivity": "medium",
+      "predicted_ltv_segment": "mid",
+      "recent_behaviors": [
+        "searched:hotel",
+        "clicked:milkit"
+      ],
+      "text_for_embedding": "user_013 사용자는 36세 female이며 지역은 Jeju입니다. 라이프사이클은 active이고 관심사는 travel, food, local_interest입니다. 선호 채널은 app_push, instagram이며 최근 행동은 searched:hotel, clicked:milkit입니다. 가격 민감도는 medium, LTV 세그먼트는 mid입니다."
+    },
+    {
+      "id": "user_014",
+      "type": "user",
+      "age": 28,
+      "gender": "male",
+      "region": "Busan",
+      "lifecycle": "active",
+      "interests": [
+        "beauty",
+        "fashion",
+        "sports"
+      ],
+      "preferred_channels": [
+        "instagram",
+        "kakao"
+      ],
+      "avg_order_value_krw": 47000,
+      "purchase_count_90d": 3,
+      "last_active_days": 1,
+      "price_sensitivity": "high",
+      "predicted_ltv_segment": "mid",
+      "recent_behaviors": [
+        "viewed:men_grooming",
+        "clicked:starter_set"
+      ],
+      "text_for_embedding": "user_014 사용자는 28세 male이며 지역은 Busan입니다. 라이프사이클은 active이고 관심사는 beauty, fashion, sports입니다. 선호 채널은 instagram, kakao이며 최근 행동은 viewed:men_grooming, clicked:starter_set입니다. 가격 민감도는 high, LTV 세그먼트는 mid입니다."
+    },
+    {
+      "id": "user_015",
+      "type": "user",
+      "age": 44,
+      "gender": "female",
+      "region": "Gyeonggi",
+      "lifecycle": "active",
+      "interests": [
+        "eco",
+        "home_living",
+        "baby"
+      ],
+      "preferred_channels": [
+        "email"
+      ],
+      "avg_order_value_krw": 91000,
+      "purchase_count_90d": 5,
+      "last_active_days": 6,
+      "price_sensitivity": "low",
+      "predicted_ltv_segment": "high",
+      "recent_behaviors": [
+        "purchased:eco_cleaner",
+        "premium_buyer"
+      ],
+      "text_for_embedding": "user_015 사용자는 44세 female이며 지역은 Gyeonggi입니다. 라이프사이클은 active이고 관심사는 eco, home_living, baby입니다. 선호 채널은 email이며 최근 행동은 purchased:eco_cleaner, premium_buyer입니다. 가격 민감도는 low, LTV 세그먼트는 high입니다."
+    },
+    {
+      "id": "user_016",
+      "type": "user",
+      "age": 30,
+      "gender": "female",
+      "region": "Seoul",
+      "lifecycle": "cart_abandoner",
+      "interests": [
+        "fashion",
+        "home_living",
+        "food"
+      ],
+      "preferred_channels": [
+        "app_push",
+        "kakao",
+        "lms"
+      ],
+      "avg_order_value_krw": 58000,
+      "purchase_count_90d": 2,
+      "last_active_days": 0,
+      "price_sensitivity": "high",
+      "predicted_ltv_segment": "mid",
+      "recent_behaviors": [
+        "cart_abandoned:fashion",
+        "deal_seeker"
+      ],
+      "text_for_embedding": "user_016 사용자는 30세 female이며 지역은 Seoul입니다. 라이프사이클은 cart_abandoner이고 관심사는 fashion, home_living, food입니다. 선호 채널은 app_push, kakao, lms이며 최근 행동은 cart_abandoned:fashion, deal_seeker입니다. 가격 민감도는 high, LTV 세그먼트는 mid입니다."
+    },
+    {
+      "id": "user_017",
+      "type": "user",
+      "age": 49,
+      "gender": "male",
+      "region": "Incheon",
+      "lifecycle": "inactive_90d",
+      "interests": [
+        "electronics",
+        "global_shopping",
+        "golf"
+      ],
+      "preferred_channels": [
+        "sms",
+        "email"
+      ],
+      "avg_order_value_krw": 130000,
+      "purchase_count_90d": 0,
+      "last_active_days": 112,
+      "price_sensitivity": "medium",
+      "predicted_ltv_segment": "mid",
+      "recent_behaviors": [
+        "inactive",
+        "viewed:overseas_product"
+      ],
+      "text_for_embedding": "user_017 사용자는 49세 male이며 지역은 Incheon입니다. 라이프사이클은 inactive_90d이고 관심사는 electronics, global_shopping, golf입니다. 선호 채널은 sms, email이며 최근 행동은 inactive, viewed:overseas_product입니다. 가격 민감도는 medium, LTV 세그먼트는 mid입니다."
+    },
+    {
+      "id": "user_018",
+      "type": "user",
+      "age": 26,
+      "gender": "female",
+      "region": "Daegu",
+      "lifecycle": "active",
+      "interests": [
+        "food",
+        "beauty",
+        "fashion"
+      ],
+      "preferred_channels": [
+        "app_push"
+      ],
+      "avg_order_value_krw": 36000,
+      "purchase_count_90d": 6,
+      "last_active_days": 0,
+      "price_sensitivity": "high",
+      "predicted_ltv_segment": "mid",
+      "recent_behaviors": [
+        "morning_active",
+        "purchased:grocery"
+      ],
+      "text_for_embedding": "user_018 사용자는 26세 female이며 지역은 Daegu입니다. 라이프사이클은 active이고 관심사는 food, beauty, fashion입니다. 선호 채널은 app_push이며 최근 행동은 morning_active, purchased:grocery입니다. 가격 민감도는 high, LTV 세그먼트는 mid입니다."
+    },
+    {
+      "id": "user_019",
+      "type": "user",
+      "age": 39,
+      "gender": "male",
+      "region": "Seoul",
+      "lifecycle": "recent_buyer",
+      "interests": [
+        "home_living",
+        "food",
+        "outdoor"
+      ],
+      "preferred_channels": [
+        "email",
+        "app_push"
+      ],
+      "avg_order_value_krw": 83000,
+      "purchase_count_90d": 4,
+      "last_active_days": 3,
+      "price_sensitivity": "medium",
+      "predicted_ltv_segment": "mid",
+      "recent_behaviors": [
+        "recent_purchase:camping_chair",
+        "review_likely"
+      ],
+      "text_for_embedding": "user_019 사용자는 39세 male이며 지역은 Seoul입니다. 라이프사이클은 recent_buyer이고 관심사는 home_living, food, outdoor입니다. 선호 채널은 email, app_push이며 최근 행동은 recent_purchase:camping_chair, review_likely입니다. 가격 민감도는 medium, LTV 세그먼트는 mid입니다."
+    },
+    {
+      "id": "user_020",
+      "type": "user",
+      "age": 57,
+      "gender": "female",
+      "region": "Daejeon",
+      "lifecycle": "vip",
+      "interests": [
+        "home_living",
+        "health_food",
+        "golf"
+      ],
+      "preferred_channels": [
+        "kakao"
+      ],
+      "avg_order_value_krw": 175000,
+      "purchase_count_90d": 9,
+      "last_active_days": 1,
+      "price_sensitivity": "low",
+      "predicted_ltv_segment": "vip",
+      "recent_behaviors": [
+        "home_party",
+        "premium_buyer"
+      ],
+      "text_for_embedding": "user_020 사용자는 57세 female이며 지역은 Daejeon입니다. 라이프사이클은 vip이고 관심사는 home_living, health_food, golf입니다. 선호 채널은 kakao이며 최근 행동은 home_party, premium_buyer입니다. 가격 민감도는 low, LTV 세그먼트는 vip입니다."
+    },
+    {
+      "id": "user_021",
+      "type": "user",
+      "age": 23,
+      "gender": "male",
+      "region": "Seoul",
+      "lifecycle": "new",
+      "interests": [
+        "global_shopping",
+        "electronics",
+        "sports"
+      ],
+      "preferred_channels": [
+        "instagram",
+        "email"
+      ],
+      "avg_order_value_krw": 51000,
+      "purchase_count_90d": 0,
+      "last_active_days": 2,
+      "price_sensitivity": "high",
+      "predicted_ltv_segment": "unknown",
+      "recent_behaviors": [
+        "searched:customs",
+        "viewed:running_shoes"
+      ],
+      "text_for_embedding": "user_021 사용자는 23세 male이며 지역은 Seoul입니다. 라이프사이클은 new이고 관심사는 global_shopping, electronics, sports입니다. 선호 채널은 instagram, email이며 최근 행동은 searched:customs, viewed:running_shoes입니다. 가격 민감도는 high, LTV 세그먼트는 unknown입니다."
+    },
+    {
+      "id": "user_022",
+      "type": "user",
+      "age": 35,
+      "gender": "female",
+      "region": "Gyeonggi",
+      "lifecycle": "active",
+      "interests": [
+        "pet",
+        "food",
+        "travel"
+      ],
+      "preferred_channels": [
+        "app_push",
+        "kakao"
+      ],
+      "avg_order_value_krw": 69000,
+      "purchase_count_90d": 6,
+      "last_active_days": 0,
+      "price_sensitivity": "medium",
+      "predicted_ltv_segment": "high",
+      "recent_behaviors": [
+        "repeat_buyer:pet",
+        "weekend_buyer"
+      ],
+      "text_for_embedding": "user_022 사용자는 35세 female이며 지역은 Gyeonggi입니다. 라이프사이클은 active이고 관심사는 pet, food, travel입니다. 선호 채널은 app_push, kakao이며 최근 행동은 repeat_buyer:pet, weekend_buyer입니다. 가격 민감도는 medium, LTV 세그먼트는 high입니다."
+    },
+    {
+      "id": "user_023",
+      "type": "user",
+      "age": 42,
+      "gender": "male",
+      "region": "Busan",
+      "lifecycle": "active",
+      "interests": [
+        "food",
+        "health_food",
+        "home_living"
+      ],
+      "preferred_channels": [
+        "sms",
+        "kakao"
+      ],
+      "avg_order_value_krw": 74000,
+      "purchase_count_90d": 3,
+      "last_active_days": 4,
+      "price_sensitivity": "medium",
+      "predicted_ltv_segment": "mid",
+      "recent_behaviors": [
+        "gift_buyer",
+        "clicked:health_set"
+      ],
+      "text_for_embedding": "user_023 사용자는 42세 male이며 지역은 Busan입니다. 라이프사이클은 active이고 관심사는 food, health_food, home_living입니다. 선호 채널은 sms, kakao이며 최근 행동은 gift_buyer, clicked:health_set입니다. 가격 민감도는 medium, LTV 세그먼트는 mid입니다."
+    },
+    {
+      "id": "user_024",
+      "type": "user",
+      "age": 32,
+      "gender": "female",
+      "region": "Seoul",
+      "lifecycle": "active",
+      "interests": [
+        "beauty",
+        "eco",
+        "digital_content"
+      ],
+      "preferred_channels": [
+        "email",
+        "instagram"
+      ],
+      "avg_order_value_krw": 88000,
+      "purchase_count_90d": 5,
+      "last_active_days": 1,
+      "price_sensitivity": "low",
+      "predicted_ltv_segment": "high",
+      "recent_behaviors": [
+        "high_ltv",
+        "clicked:premium_beauty"
+      ],
+      "text_for_embedding": "user_024 사용자는 32세 female이며 지역은 Seoul입니다. 라이프사이클은 active이고 관심사는 beauty, eco, digital_content입니다. 선호 채널은 email, instagram이며 최근 행동은 high_ltv, clicked:premium_beauty입니다. 가격 민감도는 low, LTV 세그먼트는 high입니다."
+    },
+    {
+      "id": "user_025",
+      "type": "user",
+      "age": 37,
+      "gender": "male",
+      "region": "Gwangju",
+      "lifecycle": "app_user",
+      "interests": [
+        "food",
+        "home_living",
+        "sports"
+      ],
+      "preferred_channels": [
+        "app_push"
+      ],
+      "avg_order_value_krw": 57000,
+      "purchase_count_90d": 4,
+      "last_active_days": 0,
+      "price_sensitivity": "high",
+      "predicted_ltv_segment": "mid",
+      "recent_behaviors": [
+        "deal_seeker",
+        "uses_app_daily"
+      ],
+      "text_for_embedding": "user_025 사용자는 37세 male이며 지역은 Gwangju입니다. 라이프사이클은 app_user이고 관심사는 food, home_living, sports입니다. 선호 채널은 app_push이며 최근 행동은 deal_seeker, uses_app_daily입니다. 가격 민감도는 high, LTV 세그먼트는 mid입니다."
+    }
+  ],
+  "recommendation_edges": [
+    {
+      "user_id": "user_001",
+      "campaign_id": "camp_001",
+      "reason": "fashion cart_abandoner price_sensitive channel match",
+      "label": "high"
+    },
+    {
+      "user_id": "user_002",
+      "campaign_id": "camp_018",
+      "reason": "student electronics notebook interest",
+      "label": "high"
+    },
+    {
+      "user_id": "user_003",
+      "campaign_id": "camp_009",
+      "reason": "parent repeat_cycle_due baby category",
+      "label": "high"
+    },
+    {
+      "user_id": "user_004",
+      "campaign_id": "camp_021",
+      "reason": "golf interest 40s_50s segment",
+      "label": "high"
+    },
+    {
+      "user_id": "user_005",
+      "campaign_id": "camp_004",
+      "reason": "inactive_90d discount responsive",
+      "label": "high"
+    },
+    {
+      "user_id": "user_006",
+      "campaign_id": "camp_006",
+      "reason": "office weekday lunch behavior",
+      "label": "high"
+    },
+    {
+      "user_id": "user_007",
+      "campaign_id": "camp_010",
+      "reason": "sports running instagram",
+      "label": "medium"
+    },
+    {
+      "user_id": "user_008",
+      "campaign_id": "camp_005",
+      "reason": "pet owner repeat buyer",
+      "label": "high"
+    },
+    {
+      "user_id": "user_009",
+      "campaign_id": "camp_017",
+      "reason": "outdoor camping family-like interest",
+      "label": "high"
+    },
+    {
+      "user_id": "user_010",
+      "campaign_id": "camp_018",
+      "reason": "student notebook electronics",
+      "label": "high"
+    },
+    {
+      "user_id": "user_011",
+      "campaign_id": "camp_011",
+      "reason": "vip birthday_month",
+      "label": "high"
+    },
+    {
+      "user_id": "user_012",
+      "campaign_id": "camp_016",
+      "reason": "free_user content_heavy trial_expired",
+      "label": "high"
+    },
+    {
+      "user_id": "user_013",
+      "campaign_id": "camp_008",
+      "reason": "travel weekend buyer hotel search",
+      "label": "medium"
+    },
+    {
+      "user_id": "user_014",
+      "campaign_id": "camp_013",
+      "reason": "male grooming starter behavior",
+      "label": "high"
+    },
+    {
+      "user_id": "user_015",
+      "campaign_id": "camp_014",
+      "reason": "eco conscious premium buyer",
+      "label": "high"
+    },
+    {
+      "user_id": "user_016",
+      "campaign_id": "camp_023",
+      "reason": "deal seeker app user push channel",
+      "label": "high"
+    },
+    {
+      "user_id": "user_017",
+      "campaign_id": "camp_022",
+      "reason": "global shopping inactive consideration",
+      "label": "medium"
+    },
+    {
+      "user_id": "user_018",
+      "campaign_id": "camp_015",
+      "reason": "morning active grocery buyer",
+      "label": "high"
+    },
+    {
+      "user_id": "user_019",
+      "campaign_id": "camp_019",
+      "reason": "recent buyer review likely",
+      "label": "high"
+    },
+    {
+      "user_id": "user_020",
+      "campaign_id": "camp_020",
+      "reason": "home party premium buyer",
+      "label": "high"
+    },
+    {
+      "user_id": "user_021",
+      "campaign_id": "camp_022",
+      "reason": "global shopper customs search",
+      "label": "high"
+    },
+    {
+      "user_id": "user_022",
+      "campaign_id": "camp_005",
+      "reason": "pet repeat buyer",
+      "label": "high"
+    },
+    {
+      "user_id": "user_023",
+      "campaign_id": "camp_024",
+      "reason": "gift buyer health food",
+      "label": "high"
+    },
+    {
+      "user_id": "user_024",
+      "campaign_id": "camp_003",
+      "reason": "beauty high_ltv premium interest",
+      "label": "high"
+    },
+    {
+      "user_id": "user_025",
+      "campaign_id": "camp_023",
+      "reason": "app user deal seeker",
+      "label": "high"
+    }
+  ]
+}

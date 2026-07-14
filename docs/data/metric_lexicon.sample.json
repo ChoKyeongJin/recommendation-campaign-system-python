@@ -1,0 +1,60 @@
+{
+  "version": "0.1",
+  "description": "Natural language metric aliases for formula parsing. This maps terms to numeric schema columns; formulas are parsed dynamically.",
+  "metrics": [
+    {
+      "metric_id": "avg_order_value_krw",
+      "canonical": "avg_order_value_krw",
+      "ko_label": "평균주문금액",
+      "table": "users",
+      "column": "avg_order_value_krw",
+      "synonyms": [
+        "객단가",
+        "평균 주문 금액",
+        "평균 구매 금액",
+        "평균 결제 금액",
+        "aov"
+      ]
+    },
+    {
+      "metric_id": "purchase_count_90d",
+      "canonical": "purchase_count_90d",
+      "ko_label": "구매횟수",
+      "table": "users",
+      "column": "purchase_count_90d",
+      "synonyms": ["구매 횟수", "90일 구매 횟수", "최근 구매 횟수", "구매수"]
+    },
+    {
+      "metric_id": "last_active_days",
+      "canonical": "last_active_days",
+      "ko_label": "최근활동일",
+      "table": "users",
+      "column": "last_active_days",
+      "synonyms": ["최근 활동일", "마지막 활동일", "비활성 일수", "휴면 일수"]
+    },
+    {
+      "metric_id": "campaign_budget_krw",
+      "canonical": "campaign_budget_krw",
+      "ko_label": "캠페인예산",
+      "table": "campaigns",
+      "column": "budget_krw",
+      "synonyms": ["예산", "캠페인 예산", "budget", "budget_krw"]
+    },
+    {
+      "metric_id": "expected_ctr",
+      "canonical": "expected_ctr",
+      "ko_label": "예상클릭률",
+      "table": "campaigns",
+      "column": "expected_ctr",
+      "synonyms": ["예상 클릭률", "클릭률", "ctr"]
+    },
+    {
+      "metric_id": "expected_cvr",
+      "canonical": "expected_cvr",
+      "ko_label": "예상전환율",
+      "table": "campaigns",
+      "column": "expected_cvr",
+      "synonyms": ["예상 전환율", "전환율", "cvr"]
+    }
+  ]
+}

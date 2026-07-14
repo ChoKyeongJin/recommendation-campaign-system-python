@@ -1,0 +1,5305 @@
+{
+  "version": "1.0",
+  "description": "NL2SQL/RAG 검색용 지식 노드. 테이블 스키마, 정규화 사전, 비즈니스 용어, 업무 정책, SQL 예시를 포함한다.",
+  "source_files": {
+    "table_schema": "docs/data/schema_catalog.json",
+    "normalization_dictionary": "docs/data/normalization_rules.sample.json",
+    "business_policies": "docs/data/business_policies.sample.json",
+    "metric_lexicon": "docs/data/metric_lexicon.sample.json",
+    "sql_examples": "docs/data/sql_examples.sample.sql",
+    "business_terms": "build_rag_knowledge.py"
+  },
+  "node_counts": {
+    "schema_table": 26,
+    "normalization_rule": 40,
+    "business_term": 20,
+    "business_policy": 5,
+    "metric_alias": 6,
+    "sql_example": 27,
+    "total": 124
+  },
+  "nodes": [
+    {
+      "id": "schema_table:campaigns",
+      "type": "schema_table",
+      "table_name": "campaigns",
+      "description": "캠페인의 기본 속성, 목적, 카테고리, 예산, 기간, 예상 성과와 임베딩용 텍스트를 저장하는 중심 테이블이다.",
+      "columns": [
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "objective",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "category",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "offer",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "budget_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "start_date",
+          "type": "DATE",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "end_date",
+          "type": "DATE",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "expected_ctr",
+          "type": "NUMERIC(5,2)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "expected_cvr",
+          "type": "NUMERIC(5,2)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "text_for_embedding",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "campaign_id"
+      ],
+      "checks": [
+        "CHECK (end_date >= start_date)"
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_campaigns_category",
+          "unique": false,
+          "columns": [
+            "category"
+          ]
+        },
+        {
+          "name": "idx_campaigns_objective",
+          "unique": false,
+          "columns": [
+            "objective"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 campaigns. 캠페인의 기본 속성, 목적, 카테고리, 예산, 기간, 예상 성과와 임베딩용 텍스트를 저장하는 중심 테이블이다. 주요 컬럼과 타입: campaign_id VARCHAR(20) (PK, important); name TEXT (important); objective VARCHAR(50) (important); category VARCHAR(50) (important); offer TEXT; budget_krw INTEGER; start_date DATE; end_date DATE; expected_ctr NUMERIC(5,2); expected_cvr NUMERIC(5,2); text_for_embedding TEXT. Primary key: campaign_id. Foreign keys: 없음. Indexes: idx_campaigns_category, idx_campaigns_objective."
+    },
+    {
+      "id": "schema_table:campaign_channels",
+      "type": "schema_table",
+      "table_name": "campaign_channels",
+      "description": "각 캠페인이 노출되거나 발송되는 채널을 캠페인별 다중 값으로 저장하는 연결 테이블이다.",
+      "columns": [
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "campaign_id",
+        "channel"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [],
+      "text_for_embedding": "테이블 campaign_channels. 각 캠페인이 노출되거나 발송되는 채널을 캠페인별 다중 값으로 저장하는 연결 테이블이다. 주요 컬럼과 타입: campaign_id VARCHAR(20) (PK, FK campaigns.campaign_id, important); channel VARCHAR(50) (PK, important). Primary key: campaign_id, channel. Foreign keys: campaign_id -> campaigns.campaign_id. Indexes: 없음."
+    },
+    {
+      "id": "schema_table:campaign_target_segments",
+      "type": "schema_table",
+      "table_name": "campaign_target_segments",
+      "description": "캠페인이 겨냥하는 고객 세그먼트를 캠페인별 다중 값으로 저장하는 연결 테이블이다.",
+      "columns": [
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "target_segment",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "campaign_id",
+        "target_segment"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [],
+      "text_for_embedding": "테이블 campaign_target_segments. 캠페인이 겨냥하는 고객 세그먼트를 캠페인별 다중 값으로 저장하는 연결 테이블이다. 주요 컬럼과 타입: campaign_id VARCHAR(20) (PK, FK campaigns.campaign_id, important); target_segment VARCHAR(100) (PK, important). Primary key: campaign_id, target_segment. Foreign keys: campaign_id -> campaigns.campaign_id. Indexes: 없음."
+    },
+    {
+      "id": "schema_table:campaign_keywords",
+      "type": "schema_table",
+      "table_name": "campaign_keywords",
+      "description": "캠페인 검색과 의미 매칭에 사용할 키워드를 캠페인별로 저장하는 연결 테이블이다.",
+      "columns": [
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "keyword",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "campaign_id",
+        "keyword"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [],
+      "text_for_embedding": "테이블 campaign_keywords. 캠페인 검색과 의미 매칭에 사용할 키워드를 캠페인별로 저장하는 연결 테이블이다. 주요 컬럼과 타입: campaign_id VARCHAR(20) (PK, FK campaigns.campaign_id, important); keyword VARCHAR(100) (PK, important). Primary key: campaign_id, keyword. Foreign keys: campaign_id -> campaigns.campaign_id. Indexes: 없음."
+    },
+    {
+      "id": "schema_table:campaign_message_examples",
+      "type": "schema_table",
+      "table_name": "campaign_message_examples",
+      "description": "",
+      "columns": [
+        {
+          "name": "example_id",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "emphasis_type",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "message_text",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "brand_tone",
+          "type": "VARCHAR(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "example_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_campaign_message_examples_campaign",
+          "unique": false,
+          "columns": [
+            "campaign_id"
+          ]
+        },
+        {
+          "name": "idx_campaign_message_examples_channel",
+          "unique": false,
+          "columns": [
+            "channel"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 campaign_message_examples.  주요 컬럼과 타입: example_id VARCHAR(30) (PK); campaign_id VARCHAR(20) (FK campaigns.campaign_id, important); channel VARCHAR(50) (important); emphasis_type VARCHAR(50); message_text TEXT; brand_tone VARCHAR(100); created_at TIMESTAMP. Primary key: example_id. Foreign keys: campaign_id -> campaigns.campaign_id. Indexes: idx_campaign_message_examples_campaign, idx_campaign_message_examples_channel."
+    },
+    {
+      "id": "schema_table:users",
+      "type": "schema_table",
+      "table_name": "users",
+      "description": "사용자의 인구통계, 지역, 라이프사이클, 구매 지표, 가격 민감도, LTV 세그먼트와 임베딩용 텍스트를 저장하는 중심 테이블이다.",
+      "columns": [
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "age",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "gender",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "region",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "lifecycle",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "avg_order_value_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "purchase_count_90d",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "last_active_days",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "price_sensitivity",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "predicted_ltv_segment",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "text_for_embedding",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "user_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_users_lifecycle",
+          "unique": false,
+          "columns": [
+            "lifecycle"
+          ]
+        },
+        {
+          "name": "idx_users_region",
+          "unique": false,
+          "columns": [
+            "region"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 users. 사용자의 인구통계, 지역, 라이프사이클, 구매 지표, 가격 민감도, LTV 세그먼트와 임베딩용 텍스트를 저장하는 중심 테이블이다. 주요 컬럼과 타입: user_id VARCHAR(20) (PK, important); age INTEGER (important); gender VARCHAR(20) (important); region VARCHAR(50) (important); lifecycle VARCHAR(50) (important); avg_order_value_krw INTEGER; purchase_count_90d INTEGER; last_active_days INTEGER; price_sensitivity VARCHAR(20) (important); predicted_ltv_segment VARCHAR(20) (important); text_for_embedding TEXT. Primary key: user_id. Foreign keys: 없음. Indexes: idx_users_lifecycle, idx_users_region."
+    },
+    {
+      "id": "schema_table:user_interests",
+      "type": "schema_table",
+      "table_name": "user_interests",
+      "description": "사용자의 관심사를 사용자별 다중 값으로 저장해 캠페인 카테고리와 세그먼트 매칭에 활용하는 연결 테이블이다.",
+      "columns": [
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "users",
+            "column": "user_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "interest",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "user_id",
+        "interest"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [],
+      "text_for_embedding": "테이블 user_interests. 사용자의 관심사를 사용자별 다중 값으로 저장해 캠페인 카테고리와 세그먼트 매칭에 활용하는 연결 테이블이다. 주요 컬럼과 타입: user_id VARCHAR(20) (PK, FK users.user_id, important); interest VARCHAR(100) (PK, important). Primary key: user_id, interest. Foreign keys: user_id -> users.user_id. Indexes: 없음."
+    },
+    {
+      "id": "schema_table:user_preferred_channels",
+      "type": "schema_table",
+      "table_name": "user_preferred_channels",
+      "description": "사용자가 선호하는 커뮤니케이션 채널을 사용자별 다중 값으로 저장하는 연결 테이블이다.",
+      "columns": [
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "users",
+            "column": "user_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "preferred_channel",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "user_id",
+        "preferred_channel"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [],
+      "text_for_embedding": "테이블 user_preferred_channels. 사용자가 선호하는 커뮤니케이션 채널을 사용자별 다중 값으로 저장하는 연결 테이블이다. 주요 컬럼과 타입: user_id VARCHAR(20) (PK, FK users.user_id, important); preferred_channel VARCHAR(50) (PK, important). Primary key: user_id, preferred_channel. Foreign keys: user_id -> users.user_id. Indexes: 없음."
+    },
+    {
+      "id": "schema_table:user_recent_behaviors",
+      "type": "schema_table",
+      "table_name": "user_recent_behaviors",
+      "description": "최근 조회, 구매, 이탈, 인증 등 추천 판단에 필요한 사용자 행동 신호를 사용자별 다중 값으로 저장하는 연결 테이블이다.",
+      "columns": [
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "users",
+            "column": "user_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "behavior",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "user_id",
+        "behavior"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [],
+      "text_for_embedding": "테이블 user_recent_behaviors. 최근 조회, 구매, 이탈, 인증 등 추천 판단에 필요한 사용자 행동 신호를 사용자별 다중 값으로 저장하는 연결 테이블이다. 주요 컬럼과 타입: user_id VARCHAR(20) (PK, FK users.user_id, important); behavior VARCHAR(100) (PK, important). Primary key: user_id, behavior. Foreign keys: user_id -> users.user_id. Indexes: 없음."
+    },
+    {
+      "id": "schema_table:recommendation_edges",
+      "type": "schema_table",
+      "table_name": "recommendation_edges",
+      "description": "사용자와 캠페인 사이의 추천 관계, 추천 사유, 추천 강도 라벨을 저장하는 edge 테이블이다.",
+      "columns": [
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "users",
+            "column": "user_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "reason",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "label",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "user_id",
+        "campaign_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_recommendation_edges_campaign",
+          "unique": false,
+          "columns": [
+            "campaign_id"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 recommendation_edges. 사용자와 캠페인 사이의 추천 관계, 추천 사유, 추천 강도 라벨을 저장하는 edge 테이블이다. 주요 컬럼과 타입: user_id VARCHAR(20) (PK, FK users.user_id, important); campaign_id VARCHAR(20) (PK, FK campaigns.campaign_id, important); reason TEXT (important); label VARCHAR(20) (important). Primary key: user_id, campaign_id. Foreign keys: user_id -> users.user_id, campaign_id -> campaigns.campaign_id. Indexes: idx_recommendation_edges_campaign."
+    },
+    {
+      "id": "schema_table:campaign_target_audiences",
+      "type": "schema_table",
+      "table_name": "campaign_target_audiences",
+      "description": "",
+      "columns": [
+        {
+          "name": "audience_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "audience_key",
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "prompt",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "query_parser",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "request_options",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "generated_sql",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "sql_hash",
+          "type": "CHAR(64)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "query_plan",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "member_count",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "target_customer_count",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "target_campaign_count",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "failure_reason",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "completed_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "expires_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "audience_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_campaign_target_audiences_status_created",
+          "unique": false,
+          "columns": [
+            "status",
+            "created_at"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 campaign_target_audiences.  주요 컬럼과 타입: audience_id BIGSERIAL (PK); audience_key VARCHAR(64); prompt TEXT; query_parser VARCHAR(20); request_options JSONB; generated_sql TEXT; sql_hash CHAR(64); query_plan JSONB; status VARCHAR(20) (important); member_count BIGINT; target_customer_count BIGINT; target_campaign_count BIGINT; failure_reason TEXT; created_at TIMESTAMPTZ; completed_at TIMESTAMPTZ; expires_at TIMESTAMPTZ. Primary key: audience_id. Foreign keys: 없음. Indexes: idx_campaign_target_audiences_status_created."
+    },
+    {
+      "id": "schema_table:campaign_target_audience_members",
+      "type": "schema_table",
+      "table_name": "campaign_target_audience_members",
+      "description": "",
+      "columns": [
+        {
+          "name": "audience_id",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "campaign_target_audiences",
+            "column": "audience_id"
+          },
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "member_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "audience_id",
+        "member_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_campaign_target_audience_members_user",
+          "unique": false,
+          "columns": [
+            "audience_id",
+            "user_id"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 campaign_target_audience_members.  주요 컬럼과 타입: audience_id BIGINT (PK, FK campaign_target_audiences.audience_id); member_id BIGSERIAL (PK); user_id VARCHAR(20) (important); campaign_id VARCHAR(20) (important); created_at TIMESTAMPTZ. Primary key: audience_id, member_id. Foreign keys: audience_id -> campaign_target_audiences.audience_id. Indexes: idx_campaign_target_audience_members_user."
+    },
+    {
+      "id": "schema_table:campaign_query_failure_logs",
+      "type": "schema_table",
+      "table_name": "campaign_query_failure_logs",
+      "description": "GraphRAG/API 실행 실패를 운영 분석과 사전 보강에 활용하기 위해 누적 저장하는 로그 테이블이다.",
+      "columns": [
+        {
+          "name": "failure_log_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": "실패 로그 식별자다."
+        },
+        {
+          "name": "endpoint",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "실패가 발생한 API 엔드포인트 이름이다."
+        },
+        {
+          "name": "prompt",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "사용자가 입력한 원본 자연어 프롬프트다."
+        },
+        {
+          "name": "query_parser",
+          "type": "VARCHAR(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "rules, auto, llm 등 Query Plan 생성 모드다."
+        },
+        {
+          "name": "api_status",
+          "type": "VARCHAR(40)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "success, needs_clarification, no_verified_sql 등 API 응답 상태다."
+        },
+        {
+          "name": "failure_stage",
+          "type": "VARCHAR(60)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "startup, retrieval, sql_generation, database_execution, message_generation 등 실패 단계다."
+        },
+        {
+          "name": "failure_reason",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "실패 원인 코드 또는 요약이다."
+        },
+        {
+          "name": "error_detail",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "예외 메시지나 DB 실행 오류 상세다."
+        },
+        {
+          "name": "generated_sql",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "SQL이 생성된 뒤 실패한 경우 해당 SQL 본문이다."
+        },
+        {
+          "name": "sql_hash",
+          "type": "CHAR(64)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "generated_sql의 SHA-256 해시다."
+        },
+        {
+          "name": "request_options",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "검색 top-k, 메시지 채널, SQL 실행 여부 등 요청 옵션 snapshot이다."
+        },
+        {
+          "name": "query_plan",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "실패 당시 Query Plan snapshot이다."
+        },
+        {
+          "name": "missing_input_conditions",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "필수 조건 부족 또는 모호성으로 SQL 생성을 멈춘 조건 목록이다."
+        },
+        {
+          "name": "clarification_questions",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "사용자에게 되물을 질문 목록이다."
+        },
+        {
+          "name": "selected_candidate",
+          "type": "JSONB",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "선택되었거나 가장 가까웠던 SQL 후보와 검증 결과다."
+        },
+        {
+          "name": "stage_log",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "Query Planning부터 SQL Guard까지 단계별 로그다."
+        },
+        {
+          "name": "context_metadata",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "검색 context 조립 결과의 메타데이터다."
+        },
+        {
+          "name": "database_execution",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "PostgreSQL 실행 또는 타겟 오디언스 저장 실패 요약이다."
+        },
+        {
+          "name": "message_generation",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "LMS/RCS 메시지 생성 실패와 검증 요약이다."
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "실패 로그가 저장된 시각이다."
+        }
+      ],
+      "primary_key": [
+        "failure_log_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_campaign_query_failure_logs_created",
+          "unique": false,
+          "columns": [
+            "created_at DESC"
+          ]
+        },
+        {
+          "name": "idx_campaign_query_failure_logs_reason",
+          "unique": false,
+          "columns": [
+            "failure_stage",
+            "failure_reason",
+            "created_at DESC"
+          ]
+        },
+        {
+          "name": "idx_campaign_query_failure_logs_status",
+          "unique": false,
+          "columns": [
+            "api_status",
+            "created_at DESC"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 campaign_query_failure_logs. GraphRAG/API 실행 실패를 운영 분석과 사전 보강에 활용하기 위해 누적 저장하는 로그 테이블이다. 주요 컬럼과 타입: failure_log_id BIGSERIAL (PK); endpoint VARCHAR(100); prompt TEXT; query_parser VARCHAR(20); api_status VARCHAR(40); failure_stage VARCHAR(60); failure_reason TEXT; error_detail TEXT; generated_sql TEXT; sql_hash CHAR(64); request_options JSONB; query_plan JSONB; missing_input_conditions JSONB; clarification_questions JSONB; selected_candidate JSONB; stage_log JSONB; context_metadata JSONB; database_execution JSONB; message_generation JSONB; created_at TIMESTAMPTZ. Primary key: failure_log_id. Foreign keys: 없음. Indexes: idx_campaign_query_failure_logs_created, idx_campaign_query_failure_logs_reason, idx_campaign_query_failure_logs_status."
+    },
+    {
+      "id": "schema_table:campaign_channel_messages",
+      "type": "schema_table",
+      "table_name": "campaign_channel_messages",
+      "description": "",
+      "columns": [
+        {
+          "name": "message_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "send_type",
+          "type": "VARCHAR(10)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "message_body",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "sent_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "send_status",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "provider_message_id",
+          "type": "VARCHAR(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "message_id"
+      ],
+      "checks": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "campaign_id",
+            "channel"
+          ],
+          "references": {
+            "table": "campaign_channels",
+            "columns": [
+              "campaign_id",
+              "channel"
+            ]
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_campaign_channel_messages_campaign",
+          "unique": false,
+          "columns": [
+            "campaign_id"
+          ]
+        },
+        {
+          "name": "idx_campaign_channel_messages_sent_at",
+          "unique": false,
+          "columns": [
+            "sent_at"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 campaign_channel_messages.  주요 컬럼과 타입: message_id BIGSERIAL (PK, important); campaign_id VARCHAR(20) (important); channel VARCHAR(50) (important); send_type VARCHAR(10) (important); message_body TEXT (important); sent_at TIMESTAMPTZ; send_status VARCHAR(20) (important); provider_message_id VARCHAR(100); created_at TIMESTAMPTZ. Primary key: message_id. Foreign keys: campaign_id, channel -> campaign_channels.campaign_id, channel. Indexes: idx_campaign_channel_messages_campaign, idx_campaign_channel_messages_sent_at."
+    },
+    {
+      "id": "schema_table:campaign_experiments",
+      "type": "schema_table",
+      "table_name": "campaign_experiments",
+      "description": "",
+      "columns": [
+        {
+          "name": "experiment_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "experiment_name",
+          "type": "VARCHAR(200)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "assignment_method",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "primary_metric",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "started_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "ended_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "experiment_id"
+      ],
+      "checks": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "campaign_id",
+            "channel"
+          ],
+          "references": {
+            "table": "campaign_channels",
+            "columns": [
+              "campaign_id",
+              "channel"
+            ]
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_campaign_experiments_campaign_status",
+          "unique": false,
+          "columns": [
+            "campaign_id",
+            "status"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 campaign_experiments.  주요 컬럼과 타입: experiment_id BIGSERIAL (PK, important); campaign_id VARCHAR(20) (FK campaigns.campaign_id, important); experiment_name VARCHAR(200) (important); channel VARCHAR(50) (important); status VARCHAR(20) (important); assignment_method VARCHAR(30); primary_metric VARCHAR(30) (important); started_at TIMESTAMPTZ; ended_at TIMESTAMPTZ; created_at TIMESTAMPTZ; updated_at TIMESTAMPTZ. Primary key: experiment_id. Foreign keys: campaign_id -> campaigns.campaign_id, campaign_id, channel -> campaign_channels.campaign_id, channel. Indexes: idx_campaign_experiments_campaign_status."
+    },
+    {
+      "id": "schema_table:campaign_message_variants",
+      "type": "schema_table",
+      "table_name": "campaign_message_variants",
+      "description": "",
+      "columns": [
+        {
+          "name": "variant_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "experiment_id",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "campaign_experiments",
+            "column": "experiment_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "variant_code",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "message_name",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "message_body",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "landing_url",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "allocation_weight",
+          "type": "NUMERIC(7,4)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "is_control",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "ai_features",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "variant_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_campaign_message_variants_experiment",
+          "unique": false,
+          "columns": [
+            "experiment_id"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 campaign_message_variants.  주요 컬럼과 타입: variant_id BIGSERIAL (PK, important); experiment_id BIGINT (FK campaign_experiments.experiment_id, important); variant_code VARCHAR(20) (important); message_name VARCHAR(100) (important); message_body TEXT (important); landing_url TEXT; allocation_weight NUMERIC(7,4); is_control BOOLEAN; ai_features JSONB; created_at TIMESTAMPTZ. Primary key: variant_id. Foreign keys: experiment_id -> campaign_experiments.experiment_id. Indexes: idx_campaign_message_variants_experiment."
+    },
+    {
+      "id": "schema_table:campaign_message_deliveries",
+      "type": "schema_table",
+      "table_name": "campaign_message_deliveries",
+      "description": "",
+      "columns": [
+        {
+          "name": "delivery_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "experiment_id",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "campaign_experiments",
+            "column": "experiment_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "variant_id",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "campaign_message_variants",
+            "column": "variant_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "users",
+            "column": "user_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "assignment_source",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "model_version",
+          "type": "VARCHAR(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "predicted_click_probability",
+          "type": "NUMERIC(8,7)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "provider_message_id",
+          "type": "VARCHAR(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "assigned_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "requested_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "sent_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "final_status",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "targeting_snapshot",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "delivery_id"
+      ],
+      "checks": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "campaign_id",
+            "channel"
+          ],
+          "references": {
+            "table": "campaign_channels",
+            "columns": [
+              "campaign_id",
+              "channel"
+            ]
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_campaign_message_deliveries_campaign",
+          "unique": false,
+          "columns": [
+            "campaign_id"
+          ]
+        },
+        {
+          "name": "idx_campaign_message_deliveries_experiment_variant",
+          "unique": false,
+          "columns": [
+            "experiment_id",
+            "variant_id"
+          ]
+        },
+        {
+          "name": "idx_campaign_message_deliveries_user",
+          "unique": false,
+          "columns": [
+            "user_id"
+          ]
+        },
+        {
+          "name": "idx_campaign_message_deliveries_sent_at",
+          "unique": false,
+          "columns": [
+            "sent_at"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 campaign_message_deliveries.  주요 컬럼과 타입: delivery_id BIGSERIAL (PK, important); experiment_id BIGINT (FK campaign_experiments.experiment_id, important); variant_id BIGINT (FK campaign_message_variants.variant_id, important); campaign_id VARCHAR(20) (FK campaigns.campaign_id, important); user_id VARCHAR(20) (FK users.user_id, important); channel VARCHAR(50) (important); assignment_source VARCHAR(30) (important); model_version VARCHAR(100); predicted_click_probability NUMERIC(8,7) (important); provider_message_id VARCHAR(100); assigned_at TIMESTAMPTZ; requested_at TIMESTAMPTZ; sent_at TIMESTAMPTZ; final_status VARCHAR(20) (important); targeting_snapshot JSONB; created_at TIMESTAMPTZ. Primary key: delivery_id. Foreign keys: experiment_id -> campaign_experiments.experiment_id, variant_id -> campaign_message_variants.variant_id, campaign_id -> campaigns.campaign_id, user_id -> users.user_id, campaign_id, channel -> campaign_channels.campaign_id, channel. Indexes: idx_campaign_message_deliveries_campaign, idx_campaign_message_deliveries_experiment_variant, idx_campaign_message_deliveries_user, idx_campaign_message_deliveries_sent_at."
+    },
+    {
+      "id": "schema_table:campaign_message_events",
+      "type": "schema_table",
+      "table_name": "campaign_message_events",
+      "description": "",
+      "columns": [
+        {
+          "name": "event_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "delivery_id",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "campaign_message_deliveries",
+            "column": "delivery_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "event_type",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "event_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "event_key",
+          "type": "VARCHAR(200)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "provider_event_id",
+          "type": "VARCHAR(150)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "click_url",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "conversion_type",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "conversion_value_krw",
+          "type": "NUMERIC(14,2)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "device_type",
+          "type": "VARCHAR(30)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "os_name",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "browser_name",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "ip_hash",
+          "type": "VARCHAR(128)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "user_agent",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "event_properties",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "received_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "event_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_campaign_message_events_delivery_type_time",
+          "unique": false,
+          "columns": [
+            "delivery_id",
+            "event_type",
+            "event_at"
+          ]
+        },
+        {
+          "name": "idx_campaign_message_events_type_time",
+          "unique": false,
+          "columns": [
+            "event_type",
+            "event_at"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 campaign_message_events.  주요 컬럼과 타입: event_id BIGSERIAL (PK, important); delivery_id BIGINT (FK campaign_message_deliveries.delivery_id, important); event_type VARCHAR(30) (important); event_at TIMESTAMPTZ (important); event_key VARCHAR(200); provider_event_id VARCHAR(150); click_url TEXT; conversion_type VARCHAR(50); conversion_value_krw NUMERIC(14,2) (important); device_type VARCHAR(30); os_name VARCHAR(50); browser_name VARCHAR(50); ip_hash VARCHAR(128); user_agent TEXT; event_properties JSONB; received_at TIMESTAMPTZ. Primary key: event_id. Foreign keys: delivery_id -> campaign_message_deliveries.delivery_id. Indexes: idx_campaign_message_events_delivery_type_time, idx_campaign_message_events_type_time."
+    },
+    {
+      "id": "schema_table:shopping_carts",
+      "type": "schema_table",
+      "table_name": "shopping_carts",
+      "description": "",
+      "columns": [
+        {
+          "name": "cart_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "users",
+            "column": "user_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "cart_status",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "source_channel",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "total_quantity",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "original_amount_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "discount_amount_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "shipping_fee_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "total_amount_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "purchase_completed",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandonment_reason",
+          "type": "VARCHAR(40)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "last_activity_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandoned_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "purchased_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "expires_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "cart_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_shopping_carts_user_status",
+          "unique": false,
+          "columns": [
+            "user_id",
+            "cart_status"
+          ]
+        },
+        {
+          "name": "idx_shopping_carts_last_activity",
+          "unique": false,
+          "columns": [
+            "last_activity_at DESC"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 shopping_carts.  주요 컬럼과 타입: cart_id BIGSERIAL (PK); user_id VARCHAR(20) (FK users.user_id, important); cart_status VARCHAR(20); source_channel VARCHAR(30); total_quantity INTEGER; original_amount_krw INTEGER; discount_amount_krw INTEGER; shipping_fee_krw INTEGER; total_amount_krw INTEGER; purchase_completed BOOLEAN; abandonment_reason VARCHAR(40); created_at TIMESTAMPTZ; last_activity_at TIMESTAMPTZ; abandoned_at TIMESTAMPTZ; purchased_at TIMESTAMPTZ; expires_at TIMESTAMPTZ; updated_at TIMESTAMPTZ. Primary key: cart_id. Foreign keys: user_id -> users.user_id. Indexes: idx_shopping_carts_user_status, idx_shopping_carts_last_activity."
+    },
+    {
+      "id": "schema_table:shopping_cart_items",
+      "type": "schema_table",
+      "table_name": "shopping_cart_items",
+      "description": "",
+      "columns": [
+        {
+          "name": "cart_item_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "cart_id",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "shopping_carts",
+            "column": "cart_id"
+          },
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "product_id",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "product_name",
+          "type": "VARCHAR(200)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "category",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "brand",
+          "type": "VARCHAR(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "quantity",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "unit_price_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "discount_price_krw",
+          "type": "INTEGER",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "final_unit_price_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "inventory_quantity",
+          "type": "INTEGER",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "inventory_status",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "coupon_available",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "coupon_code",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "coupon_expire_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "wishlist_flag",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "viewed_count",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "added_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "last_viewed_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "removed_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "cart_item_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_shopping_cart_items_cart",
+          "unique": false,
+          "columns": [
+            "cart_id"
+          ]
+        },
+        {
+          "name": "idx_shopping_cart_items_category",
+          "unique": false,
+          "columns": [
+            "category"
+          ]
+        },
+        {
+          "name": "idx_shopping_cart_items_inventory",
+          "unique": false,
+          "columns": [
+            "inventory_status",
+            "coupon_available"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 shopping_cart_items.  주요 컬럼과 타입: cart_item_id BIGSERIAL (PK); cart_id BIGINT (FK shopping_carts.cart_id); product_id VARCHAR(30); product_name VARCHAR(200); category VARCHAR(100) (important); brand VARCHAR(100); quantity INTEGER; unit_price_krw INTEGER; discount_price_krw INTEGER; final_unit_price_krw INTEGER; inventory_quantity INTEGER; inventory_status VARCHAR(20); coupon_available BOOLEAN; coupon_code VARCHAR(50); coupon_expire_at TIMESTAMPTZ; wishlist_flag BOOLEAN; viewed_count INTEGER; added_at TIMESTAMPTZ; last_viewed_at TIMESTAMPTZ; removed_at TIMESTAMPTZ; created_at TIMESTAMPTZ. Primary key: cart_item_id. Foreign keys: cart_id -> shopping_carts.cart_id. Indexes: idx_shopping_cart_items_cart, idx_shopping_cart_items_category, idx_shopping_cart_items_inventory."
+    },
+    {
+      "id": "schema_table:cart_reminder_history",
+      "type": "schema_table",
+      "table_name": "cart_reminder_history",
+      "description": "",
+      "columns": [
+        {
+          "name": "reminder_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "cart_id",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "shopping_carts",
+            "column": "cart_id"
+          },
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "delivery_id",
+          "type": "BIGINT",
+          "nullable": true,
+          "primary_key": false,
+          "references": {
+            "table": "campaign_message_deliveries",
+            "column": "delivery_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "reminder_sequence",
+          "type": "SMALLINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "reminder_type",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "coupon_code",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "sent_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "delivered_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "clicked_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "converted_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "conversion_order_id",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "conversion_value_krw",
+          "type": "INTEGER",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "reminder_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_cart_reminder_history_cart_sent",
+          "unique": false,
+          "columns": [
+            "cart_id",
+            "sent_at DESC"
+          ]
+        }
+      ],
+      "text_for_embedding": "테이블 cart_reminder_history.  주요 컬럼과 타입: reminder_id BIGSERIAL (PK); cart_id BIGINT (FK shopping_carts.cart_id); campaign_id VARCHAR(20) (FK campaigns.campaign_id, important); delivery_id BIGINT (FK campaign_message_deliveries.delivery_id, important); channel VARCHAR(30) (important); reminder_sequence SMALLINT; reminder_type VARCHAR(30); coupon_code VARCHAR(50); sent_at TIMESTAMPTZ; delivered_at TIMESTAMPTZ; clicked_at TIMESTAMPTZ; converted_at TIMESTAMPTZ; conversion_order_id VARCHAR(50); conversion_value_krw INTEGER (important); created_at TIMESTAMPTZ. Primary key: reminder_id. Foreign keys: cart_id -> shopping_carts.cart_id, campaign_id -> campaigns.campaign_id, delivery_id -> campaign_message_deliveries.delivery_id. Indexes: idx_cart_reminder_history_cart_sent."
+    },
+    {
+      "id": "schema_table:v_campaign_variant_metrics",
+      "type": "schema_table",
+      "table_name": "v_campaign_variant_metrics",
+      "description": "메시지 variant별 발송, 도달, 노출, 클릭, 전환, CTR/CVR, 매출 지표를 집계하는 분석 view다.",
+      "columns": [
+        {
+          "name": "campaign_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_name",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "experiment_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "experiment_name",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "variant_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "variant_code",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "message_name",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "assigned_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "sent_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "delivered_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "impression_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "open_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "click_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "conversion_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "delivery_rate_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "impression_rate_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "open_rate_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "ctr_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "delivered_ctr_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "click_to_conversion_rate_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "cvr_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "revenue_krw",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [],
+      "text_for_embedding": "테이블 v_campaign_variant_metrics. 메시지 variant별 발송, 도달, 노출, 클릭, 전환, CTR/CVR, 매출 지표를 집계하는 분석 view다. 주요 컬럼과 타입: campaign_id VIEW_COLUMN (important); campaign_name VIEW_COLUMN; experiment_id VIEW_COLUMN (important); experiment_name VIEW_COLUMN (important); variant_id VIEW_COLUMN (important); variant_code VIEW_COLUMN (important); message_name VIEW_COLUMN (important); channel VIEW_COLUMN (important); assigned_count VIEW_COLUMN; sent_count VIEW_COLUMN; delivered_count VIEW_COLUMN; impression_count VIEW_COLUMN; open_count VIEW_COLUMN; click_count VIEW_COLUMN; conversion_count VIEW_COLUMN; delivery_rate_pct VIEW_COLUMN; impression_rate_pct VIEW_COLUMN; open_rate_pct VIEW_COLUMN; ctr_pct VIEW_COLUMN (important); delivered_ctr_pct VIEW_COLUMN; click_to_conversion_rate_pct VIEW_COLUMN; cvr_pct VIEW_COLUMN (important); revenue_krw VIEW_COLUMN (important). Primary key: 없음. Foreign keys: 없음. Indexes: 없음."
+    },
+    {
+      "id": "schema_table:v_campaign_segment_metrics",
+      "type": "schema_table",
+      "table_name": "v_campaign_segment_metrics",
+      "description": "성별, 연령대, 지역, 라이프사이클별 메시지 성과와 CTR/CVR을 집계하는 분석 view다.",
+      "columns": [
+        {
+          "name": "experiment_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "experiment_name",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "variant_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "variant_code",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "gender",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "age_group",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "region",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "lifecycle",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "assigned_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "delivered_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "impression_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "click_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "conversion_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "ctr_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "click_to_conversion_rate_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [],
+      "text_for_embedding": "테이블 v_campaign_segment_metrics. 성별, 연령대, 지역, 라이프사이클별 메시지 성과와 CTR/CVR을 집계하는 분석 view다. 주요 컬럼과 타입: experiment_id VIEW_COLUMN (important); experiment_name VIEW_COLUMN (important); variant_id VIEW_COLUMN (important); variant_code VIEW_COLUMN (important); gender VIEW_COLUMN (important); age_group VIEW_COLUMN; region VIEW_COLUMN (important); lifecycle VIEW_COLUMN (important); assigned_count VIEW_COLUMN; delivered_count VIEW_COLUMN; impression_count VIEW_COLUMN; click_count VIEW_COLUMN; conversion_count VIEW_COLUMN; ctr_pct VIEW_COLUMN (important); click_to_conversion_rate_pct VIEW_COLUMN. Primary key: 없음. Foreign keys: 없음. Indexes: 없음."
+    },
+    {
+      "id": "schema_table:v_campaign_daily_metrics",
+      "type": "schema_table",
+      "table_name": "v_campaign_daily_metrics",
+      "description": "KST 날짜별 메시지 이벤트 퍼널과 매출 추이를 집계하는 분석 view다.",
+      "columns": [
+        {
+          "name": "campaign_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "experiment_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "variant_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "event_date_kst",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "sent_event_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "delivered_event_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "impression_event_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "open_event_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "click_event_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "conversion_event_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "revenue_krw",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [],
+      "text_for_embedding": "테이블 v_campaign_daily_metrics. KST 날짜별 메시지 이벤트 퍼널과 매출 추이를 집계하는 분석 view다. 주요 컬럼과 타입: campaign_id VIEW_COLUMN (important); experiment_id VIEW_COLUMN (important); variant_id VIEW_COLUMN (important); channel VIEW_COLUMN (important); event_date_kst VIEW_COLUMN; sent_event_count VIEW_COLUMN; delivered_event_count VIEW_COLUMN; impression_event_count VIEW_COLUMN; open_event_count VIEW_COLUMN; click_event_count VIEW_COLUMN; conversion_event_count VIEW_COLUMN; revenue_krw VIEW_COLUMN (important). Primary key: 없음. Foreign keys: 없음. Indexes: 없음."
+    },
+    {
+      "id": "schema_table:v_abandoned_cart_targets",
+      "type": "schema_table",
+      "table_name": "v_abandoned_cart_targets",
+      "description": "",
+      "columns": [
+        {
+          "name": "cart_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "user_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "age",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "gender",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "region",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "price_sensitivity",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "predicted_ltv_segment",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "source_channel",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "total_quantity",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "original_amount_krw",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "discount_amount_krw",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "shipping_fee_krw",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "total_amount_krw",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandonment_reason",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandoned_at",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandoned_hours",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "item_line_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "product_names",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "categories",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "has_available_coupon",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "has_low_stock_item",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "all_items_orderable",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "reminder_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "last_reminder_sent_at",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "reminder_converted",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [],
+      "text_for_embedding": "테이블 v_abandoned_cart_targets.  주요 컬럼과 타입: cart_id VIEW_COLUMN; user_id VIEW_COLUMN (important); age VIEW_COLUMN (important); gender VIEW_COLUMN (important); region VIEW_COLUMN (important); price_sensitivity VIEW_COLUMN (important); predicted_ltv_segment VIEW_COLUMN (important); source_channel VIEW_COLUMN; total_quantity VIEW_COLUMN; original_amount_krw VIEW_COLUMN; discount_amount_krw VIEW_COLUMN; shipping_fee_krw VIEW_COLUMN; total_amount_krw VIEW_COLUMN; abandonment_reason VIEW_COLUMN; abandoned_at VIEW_COLUMN; abandoned_hours VIEW_COLUMN; item_line_count VIEW_COLUMN; product_names VIEW_COLUMN; categories VIEW_COLUMN; has_available_coupon VIEW_COLUMN; has_low_stock_item VIEW_COLUMN; all_items_orderable VIEW_COLUMN; reminder_count VIEW_COLUMN; last_reminder_sent_at VIEW_COLUMN; reminder_converted VIEW_COLUMN. Primary key: 없음. Foreign keys: 없음. Indexes: 없음."
+    },
+    {
+      "id": "schema_table:v_cart_repurchase_targets",
+      "type": "schema_table",
+      "table_name": "v_cart_repurchase_targets",
+      "description": "",
+      "columns": [
+        {
+          "name": "cart_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "user_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "age",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "gender",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "region",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "price_sensitivity",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "predicted_ltv_segment",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "source_channel",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "total_quantity",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "total_amount_krw",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandonment_reason",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandoned_at",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandoned_hours",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "categories",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "product_names",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "has_available_coupon",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "has_low_stock_item",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "all_items_orderable",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "reminder_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "last_reminder_sent_at",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "target_segment",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "targeting_intent",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "recommended_campaign_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "recommended_campaign_name",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_objective",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_category",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_offer",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "recommendation_reason",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [],
+      "text_for_embedding": "테이블 v_cart_repurchase_targets.  주요 컬럼과 타입: cart_id VIEW_COLUMN; user_id VIEW_COLUMN (important); age VIEW_COLUMN (important); gender VIEW_COLUMN (important); region VIEW_COLUMN (important); price_sensitivity VIEW_COLUMN (important); predicted_ltv_segment VIEW_COLUMN (important); source_channel VIEW_COLUMN; total_quantity VIEW_COLUMN; total_amount_krw VIEW_COLUMN; abandonment_reason VIEW_COLUMN; abandoned_at VIEW_COLUMN; abandoned_hours VIEW_COLUMN; categories VIEW_COLUMN; product_names VIEW_COLUMN; has_available_coupon VIEW_COLUMN; has_low_stock_item VIEW_COLUMN; all_items_orderable VIEW_COLUMN; reminder_count VIEW_COLUMN; last_reminder_sent_at VIEW_COLUMN; target_segment VIEW_COLUMN (important); targeting_intent VIEW_COLUMN; recommended_campaign_id VIEW_COLUMN; recommended_campaign_name VIEW_COLUMN; campaign_objective VIEW_COLUMN; campaign_category VIEW_COLUMN; campaign_offer VIEW_COLUMN; recommendation_reason VIEW_COLUMN. Primary key: 없음. Foreign keys: 없음. Indexes: 없음."
+    },
+    {
+      "id": "normalization_rule:gender_male",
+      "type": "normalization_rule",
+      "rule_id": "gender_male",
+      "canonical": "male",
+      "ko_label": "남성",
+      "synonyms": [
+        "남성",
+        "남자",
+        "남",
+        "남자 고객",
+        "남성 고객",
+        "male",
+        "man",
+        "men",
+        "m"
+      ],
+      "negative_synonyms": [
+        "여자가 아닌 사람",
+        "여성이 아닌 사람",
+        "female이 아닌 사람",
+        "not female"
+      ],
+      "text_for_embedding": "정규화 사전 male는 남성을 의미한다. 동의어: 남성, 남자, 남, 남자 고객, 남성 고객, male, man, men, m. 부정 동의어: 여자가 아닌 사람, 여성이 아닌 사람, female이 아닌 사람, not female."
+    },
+    {
+      "id": "normalization_rule:gender_female",
+      "type": "normalization_rule",
+      "rule_id": "gender_female",
+      "canonical": "female",
+      "ko_label": "여성",
+      "synonyms": [
+        "여성",
+        "여자",
+        "여",
+        "여자 고객",
+        "여성 고객",
+        "female",
+        "woman",
+        "women",
+        "f"
+      ],
+      "negative_synonyms": [
+        "남자가 아닌 사람",
+        "남성이 아닌 사람",
+        "male이 아닌 사람",
+        "not male"
+      ],
+      "text_for_embedding": "정규화 사전 female는 여성을 의미한다. 동의어: 여성, 여자, 여, 여자 고객, 여성 고객, female, woman, women, f. 부정 동의어: 남자가 아닌 사람, 남성이 아닌 사람, male이 아닌 사람, not male."
+    },
+    {
+      "id": "normalization_rule:new_user",
+      "type": "normalization_rule",
+      "rule_id": "new_user",
+      "canonical": "new_user",
+      "ko_label": "신규 고객",
+      "synonyms": [
+        "신규",
+        "신규 고객",
+        "새 가입자",
+        "처음 온 사람",
+        "첫 방문",
+        "가입 직후",
+        "new user",
+        "new_user",
+        "signed up"
+      ],
+      "text_for_embedding": "정규화 사전 new_user는 신규 고객을 의미한다. 동의어: 신규, 신규 고객, 새 가입자, 처음 온 사람, 첫 방문, 가입 직후, new user, new_user, signed up. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:no_purchase",
+      "type": "normalization_rule",
+      "rule_id": "no_purchase",
+      "canonical": "no_purchase",
+      "ko_label": "미구매 고객",
+      "synonyms": [
+        "미구매",
+        "구매 없음",
+        "아직 안 산 사람",
+        "첫구매 전",
+        "구매 이력 없음",
+        "no purchase",
+        "non buyer"
+      ],
+      "text_for_embedding": "정규화 사전 no_purchase는 미구매 고객을 의미한다. 동의어: 미구매, 구매 없음, 아직 안 산 사람, 첫구매 전, 구매 이력 없음, no purchase, non buyer. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:first_purchase",
+      "type": "normalization_rule",
+      "rule_id": "first_purchase",
+      "canonical": "first_purchase",
+      "ko_label": "첫 구매",
+      "synonyms": [
+        "첫구매",
+        "첫 구매",
+        "최초 구매",
+        "첫 결제",
+        "웰컴 구매",
+        "first purchase",
+        "first_purchase"
+      ],
+      "text_for_embedding": "정규화 사전 first_purchase는 첫 구매을 의미한다. 동의어: 첫구매, 첫 구매, 최초 구매, 첫 결제, 웰컴 구매, first purchase, first_purchase. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:cart_abandoner",
+      "type": "normalization_rule",
+      "rule_id": "cart_abandoner",
+      "canonical": "cart_abandoner",
+      "ko_label": "장바구니 이탈 고객",
+      "synonyms": [
+        "장바구니 이탈",
+        "장바구니 방치",
+        "카트 이탈",
+        "담고 안 산 사람",
+        "결제 안 함",
+        "cart abandoner",
+        "cart_abandoned",
+        "cart abandonment"
+      ],
+      "text_for_embedding": "정규화 사전 cart_abandoner는 장바구니 이탈 고객을 의미한다. 동의어: 장바구니 이탈, 장바구니 방치, 카트 이탈, 담고 안 산 사람, 결제 안 함, cart abandoner, cart_abandoned, cart abandonment. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:inactive_90d",
+      "type": "normalization_rule",
+      "rule_id": "inactive_90d",
+      "canonical": "inactive_90d",
+      "ko_label": "90일 이상 휴면 고객",
+      "synonyms": [
+        "휴면",
+        "휴면 고객",
+        "비활성",
+        "장기 미접속",
+        "90일 미접속",
+        "복귀 대상",
+        "inactive",
+        "inactive_90d",
+        "dormant"
+      ],
+      "text_for_embedding": "정규화 사전 inactive_90d는 90일 이상 휴면 고객을 의미한다. 동의어: 휴면, 휴면 고객, 비활성, 장기 미접속, 90일 미접속, 복귀 대상, inactive, inactive_90d, dormant. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:vip",
+      "type": "normalization_rule",
+      "rule_id": "vip",
+      "canonical": "vip",
+      "ko_label": "VIP 고객",
+      "synonyms": [
+        "VIP",
+        "우수 고객",
+        "충성 고객",
+        "고가치 고객",
+        "상위 고객",
+        "high value",
+        "high_ltv",
+        "vip"
+      ],
+      "text_for_embedding": "정규화 사전 vip는 VIP 고객을 의미한다. 동의어: VIP, 우수 고객, 충성 고객, 고가치 고객, 상위 고객, high value, high_ltv, vip. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:price_sensitive",
+      "type": "normalization_rule",
+      "rule_id": "price_sensitive",
+      "canonical": "price_sensitive",
+      "ko_label": "가격 민감 고객",
+      "synonyms": [
+        "가격 민감",
+        "할인 선호",
+        "쿠폰 관심",
+        "쿠폰 관심 고객",
+        "쿠폰 반응",
+        "쿠폰 선호",
+        "쿠폰 좋아함",
+        "특가 반응",
+        "저가 선호",
+        "가성비",
+        "deal seeker",
+        "discount responsive",
+        "price sensitive"
+      ],
+      "text_for_embedding": "정규화 사전 price_sensitive는 가격 민감 고객을 의미한다. 동의어: 가격 민감, 할인 선호, 쿠폰 관심, 쿠폰 관심 고객, 쿠폰 반응, 쿠폰 선호, 쿠폰 좋아함, 특가 반응, 저가 선호, 가성비, deal seeker, discount responsive, price sensitive. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:premium_buyer",
+      "type": "normalization_rule",
+      "rule_id": "premium_buyer",
+      "canonical": "premium_buyer",
+      "ko_label": "프리미엄 구매 고객",
+      "synonyms": [
+        "프리미엄",
+        "고가 상품 선호",
+        "비싼 상품 구매",
+        "럭셔리",
+        "고급형",
+        "premium buyer",
+        "premium_buyer",
+        "low price sensitivity"
+      ],
+      "text_for_embedding": "정규화 사전 premium_buyer는 프리미엄 구매 고객을 의미한다. 동의어: 프리미엄, 고가 상품 선호, 비싼 상품 구매, 럭셔리, 고급형, premium buyer, premium_buyer, low price sensitivity. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:repeat_buyer",
+      "type": "normalization_rule",
+      "rule_id": "repeat_buyer",
+      "canonical": "repeat_buyer",
+      "ko_label": "반복 구매 고객",
+      "synonyms": [
+        "재구매",
+        "반복 구매",
+        "자주 사는 고객",
+        "정기 구매",
+        "repeat buyer",
+        "repurchase",
+        "repeat_buyer"
+      ],
+      "text_for_embedding": "정규화 사전 repeat_buyer는 반복 구매 고객을 의미한다. 동의어: 재구매, 반복 구매, 자주 사는 고객, 정기 구매, repeat buyer, repurchase, repeat_buyer. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:review_likely",
+      "type": "normalization_rule",
+      "rule_id": "review_likely",
+      "canonical": "review_likely",
+      "ko_label": "리뷰 가능성이 높은 고객",
+      "synonyms": [
+        "리뷰 가능",
+        "리뷰 잘 쓰는 사람",
+        "후기 작성 가능",
+        "리뷰 참여",
+        "review likely",
+        "review_likely"
+      ],
+      "text_for_embedding": "정규화 사전 review_likely는 리뷰 가능성이 높은 고객을 의미한다. 동의어: 리뷰 가능, 리뷰 잘 쓰는 사람, 후기 작성 가능, 리뷰 참여, review likely, review_likely. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:channel_lms",
+      "type": "normalization_rule",
+      "rule_id": "channel_lms",
+      "canonical": "lms",
+      "ko_label": "LMS",
+      "synonyms": [
+        "LMS",
+        "lms",
+        "장문문자",
+        "장문 문자",
+        "장문 메시지",
+        "장문메시지",
+        "long message service"
+      ],
+      "text_for_embedding": "정규화 사전 lms는 LMS을 의미한다. 동의어: LMS, lms, 장문문자, 장문 문자, 장문 메시지, 장문메시지, long message service. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:channel_rcs",
+      "type": "normalization_rule",
+      "rule_id": "channel_rcs",
+      "canonical": "rcs",
+      "ko_label": "RCS",
+      "synonyms": [
+        "RCS",
+        "rcs",
+        "브랜드 메시지",
+        "브랜드메시지",
+        "리치 메시지",
+        "rich communication",
+        "rich communication services"
+      ],
+      "text_for_embedding": "정규화 사전 rcs는 RCS을 의미한다. 동의어: RCS, rcs, 브랜드 메시지, 브랜드메시지, 리치 메시지, rich communication, rich communication services. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:app_user",
+      "type": "normalization_rule",
+      "rule_id": "app_user",
+      "canonical": "app_user",
+      "ko_label": "앱 사용자",
+      "synonyms": [
+        "앱 사용자",
+        "앱 유저",
+        "모바일앱 사용자",
+        "앱 활성",
+        "app user",
+        "app_user",
+        "uses_app_daily"
+      ],
+      "text_for_embedding": "정규화 사전 app_user는 앱 사용자을 의미한다. 동의어: 앱 사용자, 앱 유저, 모바일앱 사용자, 앱 활성, app user, app_user, uses_app_daily. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:office_worker",
+      "type": "normalization_rule",
+      "rule_id": "office_worker",
+      "canonical": "office_worker",
+      "ko_label": "직장인",
+      "synonyms": [
+        "직장인",
+        "회사원",
+        "오피스 고객",
+        "평일 점심 고객",
+        "office worker",
+        "weekday active",
+        "weekday_lunch_browse"
+      ],
+      "text_for_embedding": "정규화 사전 office_worker는 직장인을 의미한다. 동의어: 직장인, 회사원, 오피스 고객, 평일 점심 고객, office worker, weekday active, weekday_lunch_browse. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:student",
+      "type": "normalization_rule",
+      "rule_id": "student",
+      "canonical": "student",
+      "ko_label": "학생",
+      "synonyms": [
+        "학생",
+        "대학생",
+        "중고생",
+        "학생 인증",
+        "student",
+        "student_verified"
+      ],
+      "text_for_embedding": "정규화 사전 student는 학생을 의미한다. 동의어: 학생, 대학생, 중고생, 학생 인증, student, student_verified. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:parent",
+      "type": "normalization_rule",
+      "rule_id": "parent",
+      "canonical": "parent",
+      "ko_label": "부모/육아 고객",
+      "synonyms": [
+        "부모",
+        "엄마",
+        "아빠",
+        "육아",
+        "아이 있는 고객",
+        "parent",
+        "baby buyer"
+      ],
+      "text_for_embedding": "정규화 사전 parent는 부모/육아 고객을 의미한다. 동의어: 부모, 엄마, 아빠, 육아, 아이 있는 고객, parent, baby buyer. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:pet_owner",
+      "type": "normalization_rule",
+      "rule_id": "pet_owner",
+      "canonical": "pet_owner",
+      "ko_label": "반려동물 보호자",
+      "synonyms": [
+        "반려동물",
+        "반려인",
+        "펫팸족",
+        "강아지",
+        "고양이",
+        "펫 오너",
+        "pet owner",
+        "pet_owner"
+      ],
+      "text_for_embedding": "정규화 사전 pet_owner는 반려동물 보호자을 의미한다. 동의어: 반려동물, 반려인, 펫팸족, 강아지, 고양이, 펫 오너, pet owner, pet_owner. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:gift_buyer",
+      "type": "normalization_rule",
+      "rule_id": "gift_buyer",
+      "canonical": "gift_buyer",
+      "ko_label": "선물 구매 고객",
+      "synonyms": [
+        "선물",
+        "선물 구매",
+        "부모님 선물",
+        "기념일 선물",
+        "gift buyer",
+        "gift_buyer"
+      ],
+      "text_for_embedding": "정규화 사전 gift_buyer는 선물 구매 고객을 의미한다. 동의어: 선물, 선물 구매, 부모님 선물, 기념일 선물, gift buyer, gift_buyer. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:fashion",
+      "type": "normalization_rule",
+      "rule_id": "fashion",
+      "canonical": "fashion",
+      "ko_label": "패션",
+      "synonyms": [
+        "패션",
+        "의류",
+        "옷",
+        "스타일",
+        "코디",
+        "fashion",
+        "clothes",
+        "apparel"
+      ],
+      "text_for_embedding": "정규화 사전 fashion는 패션을 의미한다. 동의어: 패션, 의류, 옷, 스타일, 코디, fashion, clothes, apparel. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:beauty",
+      "type": "normalization_rule",
+      "rule_id": "beauty",
+      "canonical": "beauty",
+      "ko_label": "뷰티",
+      "synonyms": [
+        "뷰티",
+        "화장품",
+        "스킨케어",
+        "메이크업",
+        "그루밍",
+        "beauty",
+        "cosmetics",
+        "grooming"
+      ],
+      "text_for_embedding": "정규화 사전 beauty는 뷰티을 의미한다. 동의어: 뷰티, 화장품, 스킨케어, 메이크업, 그루밍, beauty, cosmetics, grooming. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:electronics",
+      "type": "normalization_rule",
+      "rule_id": "electronics",
+      "canonical": "electronics",
+      "ko_label": "전자제품",
+      "synonyms": [
+        "전자제품",
+        "디지털",
+        "가전",
+        "노트북",
+        "모바일기기",
+        "electronics",
+        "digital device",
+        "laptop"
+      ],
+      "text_for_embedding": "정규화 사전 electronics는 전자제품을 의미한다. 동의어: 전자제품, 디지털, 가전, 노트북, 모바일기기, electronics, digital device, laptop. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:food",
+      "type": "normalization_rule",
+      "rule_id": "food",
+      "canonical": "food",
+      "ko_label": "식품",
+      "synonyms": [
+        "식품",
+        "먹거리",
+        "간편식",
+        "밀키트",
+        "장보기",
+        "식료품",
+        "food",
+        "grocery",
+        "meal kit"
+      ],
+      "text_for_embedding": "정규화 사전 food는 식품을 의미한다. 동의어: 식품, 먹거리, 간편식, 밀키트, 장보기, 식료품, food, grocery, meal kit. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:home_living",
+      "type": "normalization_rule",
+      "rule_id": "home_living",
+      "canonical": "home_living",
+      "ko_label": "홈리빙",
+      "synonyms": [
+        "홈리빙",
+        "생활용품",
+        "집꾸미기",
+        "주방",
+        "인테리어",
+        "home living",
+        "home_living"
+      ],
+      "text_for_embedding": "정규화 사전 home_living는 홈리빙을 의미한다. 동의어: 홈리빙, 생활용품, 집꾸미기, 주방, 인테리어, home living, home_living. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:travel",
+      "type": "normalization_rule",
+      "rule_id": "travel",
+      "canonical": "travel",
+      "ko_label": "여행",
+      "synonyms": [
+        "여행",
+        "숙박",
+        "호텔",
+        "주말여행",
+        "항공",
+        "travel",
+        "hotel",
+        "trip"
+      ],
+      "text_for_embedding": "정규화 사전 travel는 여행을 의미한다. 동의어: 여행, 숙박, 호텔, 주말여행, 항공, travel, hotel, trip. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:sports",
+      "type": "normalization_rule",
+      "rule_id": "sports",
+      "canonical": "sports",
+      "ko_label": "스포츠",
+      "synonyms": [
+        "스포츠",
+        "운동",
+        "러닝",
+        "골프",
+        "운동화",
+        "sports",
+        "running",
+        "golf"
+      ],
+      "text_for_embedding": "정규화 사전 sports는 스포츠을 의미한다. 동의어: 스포츠, 운동, 러닝, 골프, 운동화, sports, running, golf. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:outdoor",
+      "type": "normalization_rule",
+      "rule_id": "outdoor",
+      "canonical": "outdoor",
+      "ko_label": "아웃도어",
+      "synonyms": [
+        "아웃도어",
+        "캠핑",
+        "등산",
+        "야외활동",
+        "outdoor",
+        "camping",
+        "hiking"
+      ],
+      "text_for_embedding": "정규화 사전 outdoor는 아웃도어을 의미한다. 동의어: 아웃도어, 캠핑, 등산, 야외활동, outdoor, camping, hiking. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:eco",
+      "type": "normalization_rule",
+      "rule_id": "eco",
+      "canonical": "eco",
+      "ko_label": "친환경",
+      "synonyms": [
+        "친환경",
+        "지속가능",
+        "에코",
+        "비건",
+        "환경친화",
+        "eco",
+        "sustainable",
+        "green"
+      ],
+      "text_for_embedding": "정규화 사전 eco는 친환경을 의미한다. 동의어: 친환경, 지속가능, 에코, 비건, 환경친화, eco, sustainable, green. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:health_food",
+      "type": "normalization_rule",
+      "rule_id": "health_food",
+      "canonical": "health_food",
+      "ko_label": "건강식품",
+      "synonyms": [
+        "건강식품",
+        "영양제",
+        "건강 선물",
+        "홍삼",
+        "비타민",
+        "health food",
+        "health_food"
+      ],
+      "text_for_embedding": "정규화 사전 health_food는 건강식품을 의미한다. 동의어: 건강식품, 영양제, 건강 선물, 홍삼, 비타민, health food, health_food. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:digital_content",
+      "type": "normalization_rule",
+      "rule_id": "digital_content",
+      "canonical": "digital_content",
+      "ko_label": "디지털 콘텐츠",
+      "synonyms": [
+        "디지털 콘텐츠",
+        "콘텐츠 구독",
+        "프리미엄 구독",
+        "영상",
+        "웹툰",
+        "digital content"
+      ],
+      "text_for_embedding": "정규화 사전 digital_content는 디지털 콘텐츠을 의미한다. 동의어: 디지털 콘텐츠, 콘텐츠 구독, 프리미엄 구독, 영상, 웹툰, digital content. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:global_shopping",
+      "type": "normalization_rule",
+      "rule_id": "global_shopping",
+      "canonical": "global_shopping",
+      "ko_label": "해외직구",
+      "synonyms": [
+        "해외직구",
+        "직구",
+        "관세",
+        "해외 쇼핑",
+        "global shopping",
+        "overseas shopping",
+        "customs"
+      ],
+      "text_for_embedding": "정규화 사전 global_shopping는 해외직구을 의미한다. 동의어: 해외직구, 직구, 관세, 해외 쇼핑, global shopping, overseas shopping, customs. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:app_push",
+      "type": "normalization_rule",
+      "rule_id": "app_push",
+      "canonical": "app_push",
+      "ko_label": "앱 푸시",
+      "synonyms": [
+        "앱푸시",
+        "앱 푸시",
+        "푸시",
+        "모바일 알림",
+        "push",
+        "app push",
+        "app_push"
+      ],
+      "text_for_embedding": "정규화 사전 app_push는 앱 푸시을 의미한다. 동의어: 앱푸시, 앱 푸시, 푸시, 모바일 알림, push, app push, app_push. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kakao",
+      "type": "normalization_rule",
+      "rule_id": "kakao",
+      "canonical": "kakao",
+      "ko_label": "카카오",
+      "synonyms": [
+        "카카오",
+        "카톡",
+        "알림톡",
+        "친구톡",
+        "kakao",
+        "kakaotalk"
+      ],
+      "text_for_embedding": "정규화 사전 kakao는 카카오을 의미한다. 동의어: 카카오, 카톡, 알림톡, 친구톡, kakao, kakaotalk. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:email",
+      "type": "normalization_rule",
+      "rule_id": "email",
+      "canonical": "email",
+      "ko_label": "이메일",
+      "synonyms": [
+        "이메일",
+        "메일",
+        "뉴스레터",
+        "email",
+        "e-mail",
+        "newsletter"
+      ],
+      "text_for_embedding": "정규화 사전 email는 이메일을 의미한다. 동의어: 이메일, 메일, 뉴스레터, email, e-mail, newsletter. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:sms",
+      "type": "normalization_rule",
+      "rule_id": "sms",
+      "canonical": "sms",
+      "ko_label": "문자",
+      "synonyms": [
+        "문자",
+        "SMS",
+        "문자메시지",
+        "단문",
+        "text message"
+      ],
+      "text_for_embedding": "정규화 사전 sms는 문자을 의미한다. 동의어: 문자, SMS, 문자메시지, 단문, text message. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:instagram",
+      "type": "normalization_rule",
+      "rule_id": "instagram",
+      "canonical": "instagram",
+      "ko_label": "인스타그램",
+      "synonyms": [
+        "인스타",
+        "인스타그램",
+        "릴스",
+        "스토리 광고",
+        "instagram",
+        "ig",
+        "reels"
+      ],
+      "text_for_embedding": "정규화 사전 instagram는 인스타그램을 의미한다. 동의어: 인스타, 인스타그램, 릴스, 스토리 광고, instagram, ig, reels. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:coupon",
+      "type": "normalization_rule",
+      "rule_id": "coupon",
+      "canonical": "coupon",
+      "ko_label": "쿠폰",
+      "synonyms": [
+        "쿠폰",
+        "할인권",
+        "바우처",
+        "프로모션 코드",
+        "coupon",
+        "voucher",
+        "promo code"
+      ],
+      "text_for_embedding": "정규화 사전 coupon는 쿠폰을 의미한다. 동의어: 쿠폰, 할인권, 바우처, 프로모션 코드, coupon, voucher, promo code. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:free_shipping",
+      "type": "normalization_rule",
+      "rule_id": "free_shipping",
+      "canonical": "free_shipping",
+      "ko_label": "무료배송",
+      "synonyms": [
+        "무료배송",
+        "배송비 무료",
+        "무배",
+        "free shipping",
+        "shipping fee waived"
+      ],
+      "text_for_embedding": "정규화 사전 free_shipping는 무료배송을 의미한다. 동의어: 무료배송, 배송비 무료, 무배, free shipping, shipping fee waived. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:subscription",
+      "type": "normalization_rule",
+      "rule_id": "subscription",
+      "canonical": "subscription",
+      "ko_label": "정기구독/정기배송",
+      "synonyms": [
+        "정기구독",
+        "구독",
+        "정기배송",
+        "매월 배송",
+        "subscription",
+        "recurring delivery"
+      ],
+      "text_for_embedding": "정규화 사전 subscription는 정기구독/정기배송을 의미한다. 동의어: 정기구독, 구독, 정기배송, 매월 배송, subscription, recurring delivery. 부정 동의어: 없음."
+    },
+    {
+      "id": "business_term:campaign",
+      "type": "business_term",
+      "term_id": "business_campaign",
+      "term": "캠페인",
+      "canonical": "campaign",
+      "description": "특정 목적과 기간, 예산, 혜택, 타겟 세그먼트를 가진 마케팅 실행 단위",
+      "related_tables": [
+        "campaigns"
+      ],
+      "related_columns": [
+        "campaigns.campaign_id",
+        "campaigns.objective",
+        "campaigns.category"
+      ],
+      "synonyms": [
+        "프로모션",
+        "마케팅 캠페인",
+        "campaign"
+      ],
+      "text_for_embedding": "비즈니스 용어 캠페인 canonical campaign. 특정 목적과 기간, 예산, 혜택, 타겟 세그먼트를 가진 마케팅 실행 단위. 관련 테이블: campaigns. 관련 컬럼: campaigns.campaign_id, campaigns.objective, campaigns.category. 동의어: 프로모션, 마케팅 캠페인, campaign."
+    },
+    {
+      "id": "business_term:user",
+      "type": "business_term",
+      "term_id": "business_user",
+      "term": "사용자",
+      "canonical": "user",
+      "description": "캠페인 추천 대상이 되는 고객 또는 회원",
+      "related_tables": [
+        "users"
+      ],
+      "related_columns": [
+        "users.user_id",
+        "users.lifecycle"
+      ],
+      "synonyms": [
+        "고객",
+        "회원",
+        "유저",
+        "user"
+      ],
+      "text_for_embedding": "비즈니스 용어 사용자 canonical user. 캠페인 추천 대상이 되는 고객 또는 회원. 관련 테이블: users. 관련 컬럼: users.user_id, users.lifecycle. 동의어: 고객, 회원, 유저, user."
+    },
+    {
+      "id": "business_term:recommendation",
+      "type": "business_term",
+      "term_id": "business_recommendation",
+      "term": "추천",
+      "canonical": "recommendation",
+      "description": "사용자와 캠페인 사이의 매칭 결과와 추천 사유",
+      "related_tables": [
+        "recommendation_edges"
+      ],
+      "related_columns": [
+        "recommendation_edges.user_id",
+        "recommendation_edges.campaign_id",
+        "recommendation_edges.reason",
+        "recommendation_edges.label"
+      ],
+      "synonyms": [
+        "매칭",
+        "추천 결과",
+        "recommendation"
+      ],
+      "text_for_embedding": "비즈니스 용어 추천 canonical recommendation. 사용자와 캠페인 사이의 매칭 결과와 추천 사유. 관련 테이블: recommendation_edges. 관련 컬럼: recommendation_edges.user_id, recommendation_edges.campaign_id, recommendation_edges.reason, recommendation_edges.label. 동의어: 매칭, 추천 결과, recommendation."
+    },
+    {
+      "id": "business_term:target_segment",
+      "type": "business_term",
+      "term_id": "business_target_segment",
+      "term": "타겟 세그먼트",
+      "canonical": "target_segment",
+      "description": "캠페인이 겨냥하는 고객 조건 또는 고객군",
+      "related_tables": [
+        "campaign_target_segments"
+      ],
+      "related_columns": [
+        "campaign_target_segments.target_segment"
+      ],
+      "synonyms": [
+        "대상 세그먼트",
+        "타겟",
+        "고객군",
+        "segment"
+      ],
+      "text_for_embedding": "비즈니스 용어 타겟 세그먼트 canonical target_segment. 캠페인이 겨냥하는 고객 조건 또는 고객군. 관련 테이블: campaign_target_segments. 관련 컬럼: campaign_target_segments.target_segment. 동의어: 대상 세그먼트, 타겟, 고객군, segment."
+    },
+    {
+      "id": "business_term:channel",
+      "type": "business_term",
+      "term_id": "business_channel",
+      "term": "채널",
+      "canonical": "channel",
+      "description": "캠페인 발송 또는 노출 경로와 사용자의 선호 접점",
+      "related_tables": [
+        "campaign_channels",
+        "user_preferred_channels"
+      ],
+      "related_columns": [
+        "campaign_channels.channel",
+        "user_preferred_channels.preferred_channel"
+      ],
+      "synonyms": [
+        "발송 채널",
+        "접점",
+        "매체",
+        "channel"
+      ],
+      "text_for_embedding": "비즈니스 용어 채널 canonical channel. 캠페인 발송 또는 노출 경로와 사용자의 선호 접점. 관련 테이블: campaign_channels, user_preferred_channels. 관련 컬럼: campaign_channels.channel, user_preferred_channels.preferred_channel. 동의어: 발송 채널, 접점, 매체, channel."
+    },
+    {
+      "id": "business_term:interest",
+      "type": "business_term",
+      "term_id": "business_interest",
+      "term": "관심사",
+      "canonical": "interest",
+      "description": "사용자가 관심을 보이는 상품 카테고리 또는 주제",
+      "related_tables": [
+        "user_interests"
+      ],
+      "related_columns": [
+        "user_interests.interest"
+      ],
+      "synonyms": [
+        "취향",
+        "관심 카테고리",
+        "선호 분야",
+        "interest"
+      ],
+      "text_for_embedding": "비즈니스 용어 관심사 canonical interest. 사용자가 관심을 보이는 상품 카테고리 또는 주제. 관련 테이블: user_interests. 관련 컬럼: user_interests.interest. 동의어: 취향, 관심 카테고리, 선호 분야, interest."
+    },
+    {
+      "id": "business_term:recent_behavior",
+      "type": "business_term",
+      "term_id": "business_recent_behavior",
+      "term": "최근 행동",
+      "canonical": "recent_behavior",
+      "description": "최근 조회, 클릭, 구매, 이탈 등 추천 조건으로 쓰는 사용자 행동 신호",
+      "related_tables": [
+        "user_recent_behaviors"
+      ],
+      "related_columns": [
+        "user_recent_behaviors.behavior"
+      ],
+      "synonyms": [
+        "행동",
+        "액션",
+        "사용자 행동",
+        "behavior"
+      ],
+      "text_for_embedding": "비즈니스 용어 최근 행동 canonical recent_behavior. 최근 조회, 클릭, 구매, 이탈 등 추천 조건으로 쓰는 사용자 행동 신호. 관련 테이블: user_recent_behaviors. 관련 컬럼: user_recent_behaviors.behavior. 동의어: 행동, 액션, 사용자 행동, behavior."
+    },
+    {
+      "id": "business_term:lifecycle",
+      "type": "business_term",
+      "term_id": "business_lifecycle",
+      "term": "라이프사이클",
+      "canonical": "lifecycle",
+      "description": "신규, 활성, 휴면, VIP 등 현재 고객 상태",
+      "related_tables": [
+        "users"
+      ],
+      "related_columns": [
+        "users.lifecycle"
+      ],
+      "synonyms": [
+        "고객 상태",
+        "고객 단계",
+        "lifecycle"
+      ],
+      "text_for_embedding": "비즈니스 용어 라이프사이클 canonical lifecycle. 신규, 활성, 휴면, VIP 등 현재 고객 상태. 관련 테이블: users. 관련 컬럼: users.lifecycle. 동의어: 고객 상태, 고객 단계, lifecycle."
+    },
+    {
+      "id": "business_term:price_sensitivity",
+      "type": "business_term",
+      "term_id": "business_price_sensitivity",
+      "term": "가격 민감도",
+      "canonical": "price_sensitivity",
+      "description": "할인, 쿠폰, 특가에 반응하는 정도",
+      "related_tables": [
+        "users"
+      ],
+      "related_columns": [
+        "users.price_sensitivity"
+      ],
+      "synonyms": [
+        "할인 민감도",
+        "쿠폰 반응",
+        "특가 반응",
+        "price sensitivity"
+      ],
+      "text_for_embedding": "비즈니스 용어 가격 민감도 canonical price_sensitivity. 할인, 쿠폰, 특가에 반응하는 정도. 관련 테이블: users. 관련 컬럼: users.price_sensitivity. 동의어: 할인 민감도, 쿠폰 반응, 특가 반응, price sensitivity."
+    },
+    {
+      "id": "business_term:predicted_ltv_segment",
+      "type": "business_term",
+      "term_id": "business_ltv_segment",
+      "term": "LTV 세그먼트",
+      "canonical": "predicted_ltv_segment",
+      "description": "예측 생애가치 기준으로 나눈 고객 가치 등급",
+      "related_tables": [
+        "users"
+      ],
+      "related_columns": [
+        "users.predicted_ltv_segment"
+      ],
+      "synonyms": [
+        "고객 가치",
+        "예측 LTV",
+        "ltv segment"
+      ],
+      "text_for_embedding": "비즈니스 용어 LTV 세그먼트 canonical predicted_ltv_segment. 예측 생애가치 기준으로 나눈 고객 가치 등급. 관련 테이블: users. 관련 컬럼: users.predicted_ltv_segment. 동의어: 고객 가치, 예측 LTV, ltv segment."
+    },
+    {
+      "id": "business_term:offer",
+      "type": "business_term",
+      "term_id": "business_offer",
+      "term": "혜택",
+      "canonical": "offer",
+      "description": "캠페인이 사용자에게 제공하는 쿠폰, 할인, 무료배송, 바우처 등의 제안",
+      "related_tables": [
+        "campaigns"
+      ],
+      "related_columns": [
+        "campaigns.offer"
+      ],
+      "synonyms": [
+        "오퍼",
+        "프로모션 혜택",
+        "benefit",
+        "offer"
+      ],
+      "text_for_embedding": "비즈니스 용어 혜택 canonical offer. 캠페인이 사용자에게 제공하는 쿠폰, 할인, 무료배송, 바우처 등의 제안. 관련 테이블: campaigns. 관련 컬럼: campaigns.offer. 동의어: 오퍼, 프로모션 혜택, benefit, offer."
+    },
+    {
+      "id": "business_term:channel_message",
+      "type": "business_term",
+      "term_id": "business_channel_message",
+      "term": "채널 메시지",
+      "canonical": "channel_message",
+      "description": "타겟팅 SQL로 선정한 캠페인과 고객 세그먼트에 대해 LMS 또는 RCS로 생성하거나 실제 발송한 마케팅 문안",
+      "related_tables": [
+        "campaigns",
+        "campaign_channels",
+        "campaign_message_examples",
+        "campaign_channel_messages",
+        "campaign_message_variants"
+      ],
+      "related_columns": [
+        "campaigns.campaign_id",
+        "campaigns.offer",
+        "campaign_channels.channel",
+        "campaign_message_examples.channel",
+        "campaign_message_examples.message_text",
+        "campaign_channel_messages.message_body",
+        "campaign_message_variants.message_body"
+      ],
+      "synonyms": [
+        "발송 문안",
+        "메시지 문안",
+        "LMS 메시지",
+        "RCS 메시지",
+        "message copy"
+      ],
+      "text_for_embedding": "비즈니스 용어 채널 메시지 canonical channel_message. 타겟팅 SQL로 선정한 캠페인과 고객 세그먼트에 대해 LMS 또는 RCS로 생성하거나 실제 발송한 마케팅 문안. 관련 테이블: campaigns, campaign_channels, campaign_message_examples, campaign_channel_messages, campaign_message_variants. 관련 컬럼: campaigns.campaign_id, campaigns.offer, campaign_channels.channel, campaign_message_examples.channel, campaign_message_examples.message_text, campaign_channel_messages.message_body, campaign_message_variants.message_body. 동의어: 발송 문안, 메시지 문안, LMS 메시지, RCS 메시지, message copy."
+    },
+    {
+      "id": "business_term:message_example",
+      "type": "business_term",
+      "term_id": "business_message_example",
+      "term": "기존 메시지",
+      "canonical": "message_example",
+      "description": "캠페인별 과거 발송 문안 예시로, 새 메시지를 만들 때 혜택 표현과 브랜드 톤의 근거로 사용한다",
+      "related_tables": [
+        "campaign_message_examples"
+      ],
+      "related_columns": [
+        "campaign_message_examples.campaign_id",
+        "campaign_message_examples.channel",
+        "campaign_message_examples.emphasis_type",
+        "campaign_message_examples.message_text"
+      ],
+      "synonyms": [
+        "기존 문안",
+        "과거 메시지",
+        "참고 메시지",
+        "message example"
+      ],
+      "text_for_embedding": "비즈니스 용어 기존 메시지 canonical message_example. 캠페인별 과거 발송 문안 예시로, 새 메시지를 만들 때 혜택 표현과 브랜드 톤의 근거로 사용한다. 관련 테이블: campaign_message_examples. 관련 컬럼: campaign_message_examples.campaign_id, campaign_message_examples.channel, campaign_message_examples.emphasis_type, campaign_message_examples.message_text. 동의어: 기존 문안, 과거 메시지, 참고 메시지, message example."
+    },
+    {
+      "id": "business_term:brand_tone",
+      "type": "business_term",
+      "term_id": "business_brand_tone",
+      "term": "브랜드 톤",
+      "canonical": "brand_tone",
+      "description": "캠페인 메시지에서 유지해야 하는 말투와 표현 스타일",
+      "related_tables": [
+        "campaign_message_examples"
+      ],
+      "related_columns": [
+        "campaign_message_examples.brand_tone"
+      ],
+      "synonyms": [
+        "브랜드 말투",
+        "톤앤매너",
+        "tone of voice",
+        "brand tone"
+      ],
+      "text_for_embedding": "비즈니스 용어 브랜드 톤 canonical brand_tone. 캠페인 메시지에서 유지해야 하는 말투와 표현 스타일. 관련 테이블: campaign_message_examples. 관련 컬럼: campaign_message_examples.brand_tone. 동의어: 브랜드 말투, 톤앤매너, tone of voice, brand tone."
+    },
+    {
+      "id": "business_term:expected_ctr",
+      "type": "business_term",
+      "term_id": "business_ctr",
+      "term": "CTR",
+      "canonical": "expected_ctr",
+      "description": "캠페인에 저장된 예상 CTR 또는 실제 메시지 이벤트에서 집계한 노출 대비 클릭률",
+      "related_tables": [
+        "campaigns",
+        "v_campaign_variant_metrics",
+        "v_campaign_segment_metrics"
+      ],
+      "related_columns": [
+        "campaigns.expected_ctr",
+        "v_campaign_variant_metrics.ctr_pct",
+        "v_campaign_segment_metrics.ctr_pct"
+      ],
+      "synonyms": [
+        "클릭률",
+        "CTR",
+        "expected ctr",
+        "실제 CTR",
+        "variant ctr"
+      ],
+      "text_for_embedding": "비즈니스 용어 CTR canonical expected_ctr. 캠페인에 저장된 예상 CTR 또는 실제 메시지 이벤트에서 집계한 노출 대비 클릭률. 관련 테이블: campaigns, v_campaign_variant_metrics, v_campaign_segment_metrics. 관련 컬럼: campaigns.expected_ctr, v_campaign_variant_metrics.ctr_pct, v_campaign_segment_metrics.ctr_pct. 동의어: 클릭률, CTR, expected ctr, 실제 CTR, variant ctr."
+    },
+    {
+      "id": "business_term:expected_cvr",
+      "type": "business_term",
+      "term_id": "business_cvr",
+      "term": "예상 CVR",
+      "canonical": "expected_cvr",
+      "description": "캠페인에 저장된 예상 CVR 또는 실제 메시지 이벤트에서 집계한 전환율",
+      "related_tables": [
+        "campaigns",
+        "v_campaign_variant_metrics",
+        "v_campaign_segment_metrics"
+      ],
+      "related_columns": [
+        "campaigns.expected_cvr",
+        "v_campaign_variant_metrics.cvr_pct",
+        "v_campaign_segment_metrics.click_to_conversion_rate_pct"
+      ],
+      "synonyms": [
+        "전환율",
+        "CVR",
+        "expected cvr",
+        "실제 CVR"
+      ],
+      "text_for_embedding": "비즈니스 용어 예상 CVR canonical expected_cvr. 캠페인에 저장된 예상 CVR 또는 실제 메시지 이벤트에서 집계한 전환율. 관련 테이블: campaigns, v_campaign_variant_metrics, v_campaign_segment_metrics. 관련 컬럼: campaigns.expected_cvr, v_campaign_variant_metrics.cvr_pct, v_campaign_segment_metrics.click_to_conversion_rate_pct. 동의어: 전환율, CVR, expected cvr, 실제 CVR."
+    },
+    {
+      "id": "business_term:message_experiment",
+      "type": "business_term",
+      "term_id": "business_message_experiment",
+      "term": "메시지 실험",
+      "canonical": "message_experiment",
+      "description": "캠페인 채널 안에서 메시지 A/B/C 버전을 비교하는 실험 단위",
+      "related_tables": [
+        "campaign_experiments",
+        "campaign_message_variants"
+      ],
+      "related_columns": [
+        "campaign_experiments.experiment_id",
+        "campaign_experiments.primary_metric",
+        "campaign_message_variants.variant_code"
+      ],
+      "synonyms": [
+        "A/B 테스트",
+        "ABC 테스트",
+        "문구 실험",
+        "message experiment"
+      ],
+      "text_for_embedding": "비즈니스 용어 메시지 실험 canonical message_experiment. 캠페인 채널 안에서 메시지 A/B/C 버전을 비교하는 실험 단위. 관련 테이블: campaign_experiments, campaign_message_variants. 관련 컬럼: campaign_experiments.experiment_id, campaign_experiments.primary_metric, campaign_message_variants.variant_code. 동의어: A/B 테스트, ABC 테스트, 문구 실험, message experiment."
+    },
+    {
+      "id": "business_term:message_delivery",
+      "type": "business_term",
+      "term_id": "business_message_delivery",
+      "term": "메시지 발송",
+      "canonical": "message_delivery",
+      "description": "사용자에게 특정 캠페인 메시지 variant를 배정하고 발송한 사실",
+      "related_tables": [
+        "campaign_message_deliveries"
+      ],
+      "related_columns": [
+        "campaign_message_deliveries.delivery_id",
+        "campaign_message_deliveries.user_id",
+        "campaign_message_deliveries.final_status"
+      ],
+      "synonyms": [
+        "발송 이력",
+        "delivery",
+        "메시지 배정",
+        "발송 상태"
+      ],
+      "text_for_embedding": "비즈니스 용어 메시지 발송 canonical message_delivery. 사용자에게 특정 캠페인 메시지 variant를 배정하고 발송한 사실. 관련 테이블: campaign_message_deliveries. 관련 컬럼: campaign_message_deliveries.delivery_id, campaign_message_deliveries.user_id, campaign_message_deliveries.final_status. 동의어: 발송 이력, delivery, 메시지 배정, 발송 상태."
+    },
+    {
+      "id": "business_term:message_event",
+      "type": "business_term",
+      "term_id": "business_message_event",
+      "term": "메시지 이벤트",
+      "canonical": "message_event",
+      "description": "발송 요청, 도달, 노출, 클릭, 전환 등 메시지 반응 로그",
+      "related_tables": [
+        "campaign_message_events"
+      ],
+      "related_columns": [
+        "campaign_message_events.event_type",
+        "campaign_message_events.event_at",
+        "campaign_message_events.conversion_value_krw"
+      ],
+      "synonyms": [
+        "이벤트 로그",
+        "클릭 이벤트",
+        "전환 이벤트",
+        "message event"
+      ],
+      "text_for_embedding": "비즈니스 용어 메시지 이벤트 canonical message_event. 발송 요청, 도달, 노출, 클릭, 전환 등 메시지 반응 로그. 관련 테이블: campaign_message_events. 관련 컬럼: campaign_message_events.event_type, campaign_message_events.event_at, campaign_message_events.conversion_value_krw. 동의어: 이벤트 로그, 클릭 이벤트, 전환 이벤트, message event."
+    },
+    {
+      "id": "business_term:campaign_metrics",
+      "type": "business_term",
+      "term_id": "business_campaign_metrics",
+      "term": "캠페인 성과 지표",
+      "canonical": "campaign_metrics",
+      "description": "메시지 variant, 고객 세그먼트, 날짜 단위로 집계한 발송 퍼널, CTR/CVR, 매출 지표",
+      "related_tables": [
+        "v_campaign_variant_metrics",
+        "v_campaign_segment_metrics",
+        "v_campaign_daily_metrics"
+      ],
+      "related_columns": [
+        "v_campaign_variant_metrics.ctr_pct",
+        "v_campaign_variant_metrics.revenue_krw",
+        "v_campaign_daily_metrics.event_date_kst"
+      ],
+      "synonyms": [
+        "성과 분석",
+        "퍼널 지표",
+        "CTR 분석",
+        "CVR 분석",
+        "매출 지표"
+      ],
+      "text_for_embedding": "비즈니스 용어 캠페인 성과 지표 canonical campaign_metrics. 메시지 variant, 고객 세그먼트, 날짜 단위로 집계한 발송 퍼널, CTR/CVR, 매출 지표. 관련 테이블: v_campaign_variant_metrics, v_campaign_segment_metrics, v_campaign_daily_metrics. 관련 컬럼: v_campaign_variant_metrics.ctr_pct, v_campaign_variant_metrics.revenue_krw, v_campaign_daily_metrics.event_date_kst. 동의어: 성과 분석, 퍼널 지표, CTR 분석, CVR 분석, 매출 지표."
+    },
+    {
+      "id": "business_policy:top_revenue_user",
+      "type": "business_policy",
+      "policy_id": "top_revenue_user",
+      "canonical": "top_revenue_user",
+      "ko_label": "매출이 가장 높은 고객",
+      "description": "고객의 최근 90일 추정 매출을 기준으로 높은 순서로 정렬한다. 기준 금액을 고정하지 않는 순위형 정책이다.",
+      "synonyms": [
+        "매출이 가장 높은",
+        "매출 가장 높은",
+        "매출 상위",
+        "상위 매출",
+        "top revenue",
+        "highest revenue"
+      ],
+      "scope": "target_user",
+      "metric": "estimated_revenue_90d",
+      "table": "users",
+      "column": "avg_order_value_krw",
+      "expression": "u.avg_order_value_krw * u.purchase_count_90d",
+      "operator": null,
+      "threshold_krw": null,
+      "requires_threshold": false,
+      "sql_behavior": "rank",
+      "order_by": "desc",
+      "related_tables": [
+        "users"
+      ],
+      "related_columns": [
+        "users.avg_order_value_krw",
+        "users.purchase_count_90d"
+      ],
+      "text_for_embedding": "업무 정책 매출이 가장 높은 고객 canonical top_revenue_user. 고객의 최근 90일 추정 매출을 기준으로 높은 순서로 정렬한다. 기준 금액을 고정하지 않는 순위형 정책이다. SQL 동작: rank. metric: estimated_revenue_90d. 표현식: u.avg_order_value_krw * u.purchase_count_90d. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: users. 관련 컬럼: users.avg_order_value_krw, users.purchase_count_90d. 동의어: 매출이 가장 높은, 매출 가장 높은, 매출 상위, 상위 매출, top revenue, highest revenue."
+    },
+    {
+      "id": "business_policy:high_revenue_user",
+      "type": "business_policy",
+      "policy_id": "high_revenue_user",
+      "canonical": "high_revenue_user",
+      "ko_label": "고매출 고객",
+      "description": "고객의 최근 90일 추정 매출이 운영에서 정한 기준 금액 이상인지 판단한다. 기준 금액은 이 파일의 threshold_krw에만 정의한다.",
+      "synonyms": [
+        "고매출",
+        "매출 높은",
+        "매출이 높은",
+        "매출 우수",
+        "high revenue"
+      ],
+      "scope": "target_user",
+      "metric": "estimated_revenue_90d",
+      "table": "users",
+      "column": "avg_order_value_krw",
+      "expression": "u.avg_order_value_krw * u.purchase_count_90d",
+      "operator": ">=",
+      "threshold_krw": null,
+      "requires_threshold": true,
+      "sql_behavior": "filter",
+      "order_by": null,
+      "related_tables": [
+        "users"
+      ],
+      "related_columns": [
+        "users.avg_order_value_krw",
+        "users.purchase_count_90d"
+      ],
+      "text_for_embedding": "업무 정책 고매출 고객 canonical high_revenue_user. 고객의 최근 90일 추정 매출이 운영에서 정한 기준 금액 이상인지 판단한다. 기준 금액은 이 파일의 threshold_krw에만 정의한다. SQL 동작: filter. metric: estimated_revenue_90d. 표현식: u.avg_order_value_krw * u.purchase_count_90d. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: users. 관련 컬럼: users.avg_order_value_krw, users.purchase_count_90d. 동의어: 고매출, 매출 높은, 매출이 높은, 매출 우수, high revenue."
+    },
+    {
+      "id": "business_policy:high_budget_campaign",
+      "type": "business_policy",
+      "policy_id": "high_budget_campaign",
+      "canonical": "high_budget_campaign",
+      "ko_label": "예산이 큰 캠페인",
+      "description": "캠페인 예산이 운영에서 정한 기준 금액 이상인지 판단한다. 기준 금액은 이 파일의 threshold_krw에만 정의한다.",
+      "synonyms": [
+        "예산이 큰",
+        "예산 높은",
+        "고예산 캠페인",
+        "high budget campaign"
+      ],
+      "scope": "campaign_constraints",
+      "metric": "campaign_budget_krw",
+      "table": "campaigns",
+      "column": "budget_krw",
+      "expression": "c.budget_krw",
+      "operator": ">=",
+      "threshold_krw": null,
+      "requires_threshold": true,
+      "sql_behavior": "filter",
+      "order_by": null,
+      "related_tables": [
+        "campaigns"
+      ],
+      "related_columns": [
+        "campaigns.budget_krw"
+      ],
+      "text_for_embedding": "업무 정책 예산이 큰 캠페인 canonical high_budget_campaign. 캠페인 예산이 운영에서 정한 기준 금액 이상인지 판단한다. 기준 금액은 이 파일의 threshold_krw에만 정의한다. SQL 동작: filter. metric: campaign_budget_krw. 표현식: c.budget_krw. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: campaigns. 관련 컬럼: campaigns.budget_krw. 동의어: 예산이 큰, 예산 높은, 고예산 캠페인, high budget campaign."
+    },
+    {
+      "id": "business_policy:region_context_default",
+      "type": "business_policy",
+      "policy_id": "region_context_default",
+      "canonical": "region_context_default",
+      "ko_label": "지역 표현 기본 해석",
+      "description": "사용자가 '구매한 사람의 지역', '고객 지역'처럼 지역을 모호하게 말하면 기본적으로 고객 거주 지역 users.region으로 해석한다. 구매 장소, 매장 지역, 배송지처럼 구매 발생 위치를 명시하면 현재 스키마에 대응 컬럼이 없으므로 추가 확인을 요청한다.",
+      "synonyms": [
+        "지역",
+        "고객 지역",
+        "고객의 지역",
+        "사람의 지역",
+        "거주 지역",
+        "사는 지역",
+        "거주지",
+        "구매한 사람의 지역"
+      ],
+      "scope": "semantic_resolution",
+      "ambiguous_term": "지역",
+      "default_resolution": "customer_residence_region",
+      "default_column": "users.region",
+      "default_select": "u.region",
+      "sql_behavior": "disambiguation",
+      "clarification_terms": [
+        "구매한 곳",
+        "구매 장소",
+        "구매 지역",
+        "매장 지역",
+        "매장",
+        "배송지",
+        "배송 지역",
+        "결제 지역"
+      ],
+      "clarification_question": "지역이 고객 거주 지역(users.region)을 의미하나요, 아니면 구매 장소/매장/배송지 지역을 의미하나요? 현재 스키마에는 구매 발생 지역 컬럼이 없습니다.",
+      "alternatives": [
+        {
+          "meaning": "customer_residence_region",
+          "column": "users.region",
+          "available": true
+        },
+        {
+          "meaning": "purchase_location_region",
+          "column": null,
+          "available": false,
+          "requires_schema": true
+        }
+      ],
+      "related_tables": [
+        "users"
+      ],
+      "related_columns": [
+        "users.region"
+      ],
+      "text_for_embedding": "업무 정책 지역 표현 기본 해석 canonical region_context_default. 사용자가 '구매한 사람의 지역', '고객 지역'처럼 지역을 모호하게 말하면 기본적으로 고객 거주 지역 users.region으로 해석한다. 구매 장소, 매장 지역, 배송지처럼 구매 발생 위치를 명시하면 현재 스키마에 대응 컬럼이 없으므로 추가 확인을 요청한다. SQL 동작: disambiguation. metric: None. 표현식: None. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: users. 관련 컬럼: users.region. 동의어: 지역, 고객 지역, 고객의 지역, 사람의 지역, 거주 지역, 사는 지역, 거주지, 구매한 사람의 지역."
+    },
+    {
+      "id": "business_policy:channel_message_generation",
+      "type": "business_policy",
+      "policy_id": "channel_message_generation",
+      "canonical": "channel_message_generation",
+      "ko_label": "채널 메시지 생성 정책",
+      "description": "타겟팅 SQL이 성공한 이후 LMS 또는 RCS 발송 문안을 생성할 때 적용하는 기본 정책이다. 프롬프트에 채널이 없으면 LMS를 기본 채널로 사용하고, 캠페인 offer와 기존 메시지 예시 밖의 혜택을 만들지 않는다.",
+      "synonyms": [
+        "메시지 생성",
+        "발송 문안",
+        "채널 메시지",
+        "LMS 메시지",
+        "RCS 메시지",
+        "message generation"
+      ],
+      "scope": "message_generation",
+      "default_channel": "lms",
+      "allowed_channels": [
+        "lms",
+        "rcs"
+      ],
+      "channel_limits": {
+        "lms": {
+          "max_chars": 1000,
+          "unit": "characters"
+        },
+        "rcs": {
+          "max_chars": 1300,
+          "unit": "characters"
+        }
+      },
+      "required_variants": [
+        "benefit_emphasis",
+        "urgency_emphasis",
+        "emotion_emphasis"
+      ],
+      "anti_hallucination": {
+        "benefit_source_fields": [
+          "campaigns.offer",
+          "campaign_message_examples.message_text",
+          "campaign_channel_messages.message_body",
+          "campaign_message_variants.message_body"
+        ],
+        "deny_unverified_benefits": true
+      },
+      "sql_behavior": "context",
+      "related_tables": [
+        "campaigns",
+        "campaign_channels",
+        "campaign_message_examples",
+        "campaign_channel_messages",
+        "campaign_experiments",
+        "campaign_message_variants",
+        "campaign_message_deliveries",
+        "campaign_message_events"
+      ],
+      "related_columns": [
+        "campaigns.offer",
+        "campaign_channels.channel",
+        "campaign_message_examples.channel",
+        "campaign_message_examples.emphasis_type",
+        "campaign_message_examples.message_text",
+        "campaign_message_examples.brand_tone",
+        "campaign_channel_messages.message_body",
+        "campaign_channel_messages.send_status",
+        "campaign_experiments.primary_metric",
+        "campaign_message_variants.variant_code",
+        "campaign_message_variants.message_body",
+        "campaign_message_deliveries.final_status",
+        "campaign_message_events.event_type"
+      ],
+      "text_for_embedding": "업무 정책 채널 메시지 생성 정책 canonical channel_message_generation. 타겟팅 SQL이 성공한 이후 LMS 또는 RCS 발송 문안을 생성할 때 적용하는 기본 정책이다. 프롬프트에 채널이 없으면 LMS를 기본 채널로 사용하고, 캠페인 offer와 기존 메시지 예시 밖의 혜택을 만들지 않는다. SQL 동작: context. metric: None. 표현식: None. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: campaigns, campaign_channels, campaign_message_examples, campaign_channel_messages, campaign_experiments, campaign_message_variants, campaign_message_deliveries, campaign_message_events. 관련 컬럼: campaigns.offer, campaign_channels.channel, campaign_message_examples.channel, campaign_message_examples.emphasis_type, campaign_message_examples.message_text, campaign_message_examples.brand_tone, campaign_channel_messages.message_body, campaign_channel_messages.send_status, campaign_experiments.primary_metric, campaign_message_variants.variant_code, campaign_message_variants.message_body, campaign_message_deliveries.final_status, campaign_message_events.event_type. 동의어: 메시지 생성, 발송 문안, 채널 메시지, LMS 메시지, RCS 메시지, message generation."
+    },
+    {
+      "id": "metric_alias:avg_order_value_krw",
+      "type": "metric_alias",
+      "metric_id": "avg_order_value_krw",
+      "canonical": "avg_order_value_krw",
+      "ko_label": "평균주문금액",
+      "table": "users",
+      "column": "avg_order_value_krw",
+      "synonyms": [
+        "객단가",
+        "평균 주문 금액",
+        "평균 구매 금액",
+        "평균 결제 금액",
+        "aov"
+      ],
+      "related_tables": [
+        "users"
+      ],
+      "related_columns": [
+        "users.avg_order_value_krw"
+      ],
+      "text_for_embedding": "계산 지표 별칭 평균주문금액 canonical avg_order_value_krw. 자연어 계산식에서 users.avg_order_value_krw 숫자형 컬럼으로 해석한다. 관련 테이블: users. 관련 컬럼: users.avg_order_value_krw. 동의어: 객단가, 평균 주문 금액, 평균 구매 금액, 평균 결제 금액, aov."
+    },
+    {
+      "id": "metric_alias:purchase_count_90d",
+      "type": "metric_alias",
+      "metric_id": "purchase_count_90d",
+      "canonical": "purchase_count_90d",
+      "ko_label": "구매횟수",
+      "table": "users",
+      "column": "purchase_count_90d",
+      "synonyms": [
+        "구매 횟수",
+        "90일 구매 횟수",
+        "최근 구매 횟수",
+        "구매수"
+      ],
+      "related_tables": [
+        "users"
+      ],
+      "related_columns": [
+        "users.purchase_count_90d"
+      ],
+      "text_for_embedding": "계산 지표 별칭 구매횟수 canonical purchase_count_90d. 자연어 계산식에서 users.purchase_count_90d 숫자형 컬럼으로 해석한다. 관련 테이블: users. 관련 컬럼: users.purchase_count_90d. 동의어: 구매 횟수, 90일 구매 횟수, 최근 구매 횟수, 구매수."
+    },
+    {
+      "id": "metric_alias:last_active_days",
+      "type": "metric_alias",
+      "metric_id": "last_active_days",
+      "canonical": "last_active_days",
+      "ko_label": "최근활동일",
+      "table": "users",
+      "column": "last_active_days",
+      "synonyms": [
+        "최근 활동일",
+        "마지막 활동일",
+        "비활성 일수",
+        "휴면 일수"
+      ],
+      "related_tables": [
+        "users"
+      ],
+      "related_columns": [
+        "users.last_active_days"
+      ],
+      "text_for_embedding": "계산 지표 별칭 최근활동일 canonical last_active_days. 자연어 계산식에서 users.last_active_days 숫자형 컬럼으로 해석한다. 관련 테이블: users. 관련 컬럼: users.last_active_days. 동의어: 최근 활동일, 마지막 활동일, 비활성 일수, 휴면 일수."
+    },
+    {
+      "id": "metric_alias:campaign_budget_krw",
+      "type": "metric_alias",
+      "metric_id": "campaign_budget_krw",
+      "canonical": "campaign_budget_krw",
+      "ko_label": "캠페인예산",
+      "table": "campaigns",
+      "column": "budget_krw",
+      "synonyms": [
+        "예산",
+        "캠페인 예산",
+        "budget",
+        "budget_krw"
+      ],
+      "related_tables": [
+        "campaigns"
+      ],
+      "related_columns": [
+        "campaigns.budget_krw"
+      ],
+      "text_for_embedding": "계산 지표 별칭 캠페인예산 canonical campaign_budget_krw. 자연어 계산식에서 campaigns.budget_krw 숫자형 컬럼으로 해석한다. 관련 테이블: campaigns. 관련 컬럼: campaigns.budget_krw. 동의어: 예산, 캠페인 예산, budget, budget_krw."
+    },
+    {
+      "id": "metric_alias:expected_ctr",
+      "type": "metric_alias",
+      "metric_id": "expected_ctr",
+      "canonical": "expected_ctr",
+      "ko_label": "예상클릭률",
+      "table": "campaigns",
+      "column": "expected_ctr",
+      "synonyms": [
+        "예상 클릭률",
+        "클릭률",
+        "ctr"
+      ],
+      "related_tables": [
+        "campaigns"
+      ],
+      "related_columns": [
+        "campaigns.expected_ctr"
+      ],
+      "text_for_embedding": "계산 지표 별칭 예상클릭률 canonical expected_ctr. 자연어 계산식에서 campaigns.expected_ctr 숫자형 컬럼으로 해석한다. 관련 테이블: campaigns. 관련 컬럼: campaigns.expected_ctr. 동의어: 예상 클릭률, 클릭률, ctr."
+    },
+    {
+      "id": "metric_alias:expected_cvr",
+      "type": "metric_alias",
+      "metric_id": "expected_cvr",
+      "canonical": "expected_cvr",
+      "ko_label": "예상전환율",
+      "table": "campaigns",
+      "column": "expected_cvr",
+      "synonyms": [
+        "예상 전환율",
+        "전환율",
+        "cvr"
+      ],
+      "related_tables": [
+        "campaigns"
+      ],
+      "related_columns": [
+        "campaigns.expected_cvr"
+      ],
+      "text_for_embedding": "계산 지표 별칭 예상전환율 canonical expected_cvr. 자연어 계산식에서 campaigns.expected_cvr 숫자형 컬럼으로 해석한다. 관련 테이블: campaigns. 관련 컬럼: campaigns.expected_cvr. 동의어: 예상 전환율, 전환율, cvr."
+    },
+    {
+      "id": "sql_example:01",
+      "type": "sql_example",
+      "title": "활성 사용자 조회",
+      "sql": "SELECT user_id, age, gender, region, lifecycle\nFROM users\nWHERE lifecycle = 'active';",
+      "tables": [
+        "users"
+      ],
+      "text_for_embedding": "SQL 예시 1. 활성 사용자 조회. 관련 테이블: users. 쿼리: SELECT user_id, age, gender, region, lifecycle\nFROM users\nWHERE lifecycle = 'active';"
+    },
+    {
+      "id": "sql_example:02",
+      "type": "sql_example",
+      "title": "휴면 고객 조회",
+      "sql": "SELECT user_id, region, last_active_days, price_sensitivity\nFROM users\nWHERE lifecycle = 'inactive_90d'\nORDER BY last_active_days DESC;",
+      "tables": [
+        "users"
+      ],
+      "text_for_embedding": "SQL 예시 2. 휴면 고객 조회. 관련 테이블: users. 쿼리: SELECT user_id, region, last_active_days, price_sensitivity\nFROM users\nWHERE lifecycle = 'inactive_90d'\nORDER BY last_active_days DESC;"
+    },
+    {
+      "id": "sql_example:03",
+      "type": "sql_example",
+      "title": "패션 카테고리 캠페인 조회",
+      "sql": "SELECT campaign_id, name, objective, offer\nFROM campaigns\nWHERE category = 'fashion';",
+      "tables": [
+        "campaigns"
+      ],
+      "text_for_embedding": "SQL 예시 3. 패션 카테고리 캠페인 조회. 관련 테이블: campaigns. 쿼리: SELECT campaign_id, name, objective, offer\nFROM campaigns\nWHERE category = 'fashion';"
+    },
+    {
+      "id": "sql_example:04",
+      "type": "sql_example",
+      "title": "구매 목적 캠페인 중 예산이 큰 순서",
+      "sql": "SELECT campaign_id, name, category, budget_krw\nFROM campaigns\nWHERE objective = 'purchase'\nORDER BY budget_krw DESC;",
+      "tables": [
+        "campaigns"
+      ],
+      "text_for_embedding": "SQL 예시 4. 구매 목적 캠페인 중 예산이 큰 순서. 관련 테이블: campaigns. 쿼리: SELECT campaign_id, name, category, budget_krw\nFROM campaigns\nWHERE objective = 'purchase'\nORDER BY budget_krw DESC;"
+    },
+    {
+      "id": "sql_example:05",
+      "type": "sql_example",
+      "title": "app_push 채널 캠페인 조회",
+      "sql": "SELECT c.campaign_id, c.name, c.category\nFROM campaigns c\nJOIN campaign_channels cc ON cc.campaign_id = c.campaign_id\nWHERE cc.channel = 'app_push';",
+      "tables": [
+        "campaign_channels",
+        "campaigns"
+      ],
+      "text_for_embedding": "SQL 예시 5. app_push 채널 캠페인 조회. 관련 테이블: campaign_channels, campaigns. 쿼리: SELECT c.campaign_id, c.name, c.category\nFROM campaigns c\nJOIN campaign_channels cc ON cc.campaign_id = c.campaign_id\nWHERE cc.channel = 'app_push';"
+    },
+    {
+      "id": "sql_example:06",
+      "type": "sql_example",
+      "title": "가격 민감 타겟 캠페인 조회",
+      "sql": "SELECT c.campaign_id, c.name, c.offer\nFROM campaigns c\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE ts.target_segment = 'price_sensitive';",
+      "tables": [
+        "campaign_target_segments",
+        "campaigns"
+      ],
+      "text_for_embedding": "SQL 예시 6. 가격 민감 타겟 캠페인 조회. 관련 테이블: campaign_target_segments, campaigns. 쿼리: SELECT c.campaign_id, c.name, c.offer\nFROM campaigns c\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE ts.target_segment = 'price_sensitive';"
+    },
+    {
+      "id": "sql_example:07",
+      "type": "sql_example",
+      "title": "뷰티 관심 사용자 조회",
+      "sql": "SELECT u.user_id, u.age, u.gender, u.lifecycle\nFROM users u\nJOIN user_interests ui ON ui.user_id = u.user_id\nWHERE ui.interest = 'beauty';",
+      "tables": [
+        "user_interests",
+        "users"
+      ],
+      "text_for_embedding": "SQL 예시 7. 뷰티 관심 사용자 조회. 관련 테이블: user_interests, users. 쿼리: SELECT u.user_id, u.age, u.gender, u.lifecycle\nFROM users u\nJOIN user_interests ui ON ui.user_id = u.user_id\nWHERE ui.interest = 'beauty';"
+    },
+    {
+      "id": "sql_example:08",
+      "type": "sql_example",
+      "title": "카카오 선호 사용자 조회",
+      "sql": "SELECT u.user_id, u.region, u.price_sensitivity\nFROM users u\nJOIN user_preferred_channels upc ON upc.user_id = u.user_id\nWHERE upc.preferred_channel = 'kakao';",
+      "tables": [
+        "user_preferred_channels",
+        "users"
+      ],
+      "text_for_embedding": "SQL 예시 8. 카카오 선호 사용자 조회. 관련 테이블: user_preferred_channels, users. 쿼리: SELECT u.user_id, u.region, u.price_sensitivity\nFROM users u\nJOIN user_preferred_channels upc ON upc.user_id = u.user_id\nWHERE upc.preferred_channel = 'kakao';"
+    },
+    {
+      "id": "sql_example:09",
+      "type": "sql_example",
+      "title": "장바구니 이탈 행동 사용자 조회",
+      "sql": "SELECT u.user_id, u.gender, u.lifecycle, urb.behavior\nFROM users u\nJOIN user_recent_behaviors urb ON urb.user_id = u.user_id\nWHERE urb.behavior = 'cart_abandoned:fashion';",
+      "tables": [
+        "user_recent_behaviors",
+        "users"
+      ],
+      "text_for_embedding": "SQL 예시 9. 장바구니 이탈 행동 사용자 조회. 관련 테이블: user_recent_behaviors, users. 쿼리: SELECT u.user_id, u.gender, u.lifecycle, urb.behavior\nFROM users u\nJOIN user_recent_behaviors urb ON urb.user_id = u.user_id\nWHERE urb.behavior = 'cart_abandoned:fashion';"
+    },
+    {
+      "id": "sql_example:10",
+      "type": "sql_example",
+      "title": "특정 사용자에게 추천된 캠페인 조회",
+      "sql": "SELECT re.user_id, c.campaign_id, c.name, re.reason, re.label\nFROM recommendation_edges re\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nWHERE re.user_id = 'user_001';",
+      "tables": [
+        "campaigns",
+        "recommendation_edges"
+      ],
+      "text_for_embedding": "SQL 예시 10. 특정 사용자에게 추천된 캠페인 조회. 관련 테이블: campaigns, recommendation_edges. 쿼리: SELECT re.user_id, c.campaign_id, c.name, re.reason, re.label\nFROM recommendation_edges re\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nWHERE re.user_id = 'user_001';"
+    },
+    {
+      "id": "sql_example:11",
+      "type": "sql_example",
+      "title": "추천 강도가 높은 추천 edge 조회",
+      "sql": "SELECT re.user_id, re.campaign_id, c.name, re.reason\nFROM recommendation_edges re\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nWHERE re.label = 'high';",
+      "tables": [
+        "campaigns",
+        "recommendation_edges"
+      ],
+      "text_for_embedding": "SQL 예시 11. 추천 강도가 높은 추천 edge 조회. 관련 테이블: campaigns, recommendation_edges. 쿼리: SELECT re.user_id, re.campaign_id, c.name, re.reason\nFROM recommendation_edges re\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nWHERE re.label = 'high';"
+    },
+    {
+      "id": "sql_example:12",
+      "type": "sql_example",
+      "title": "캠페인별 추천 사용자 수 집계",
+      "sql": "SELECT c.campaign_id, c.name, COUNT(re.user_id) AS recommended_user_count\nFROM campaigns c\nLEFT JOIN recommendation_edges re ON re.campaign_id = c.campaign_id\nGROUP BY c.campaign_id, c.name\nORDER BY recommended_user_count DESC;",
+      "tables": [
+        "campaigns",
+        "recommendation_edges"
+      ],
+      "text_for_embedding": "SQL 예시 12. 캠페인별 추천 사용자 수 집계. 관련 테이블: campaigns, recommendation_edges. 쿼리: SELECT c.campaign_id, c.name, COUNT(re.user_id) AS recommended_user_count\nFROM campaigns c\nLEFT JOIN recommendation_edges re ON re.campaign_id = c.campaign_id\nGROUP BY c.campaign_id, c.name\nORDER BY recommended_user_count DESC;"
+    },
+    {
+      "id": "sql_example:13",
+      "type": "sql_example",
+      "title": "지역별 사용자 수 집계",
+      "sql": "SELECT region, COUNT(*) AS user_count\nFROM users\nGROUP BY region\nORDER BY user_count DESC;",
+      "tables": [
+        "users"
+      ],
+      "text_for_embedding": "SQL 예시 13. 지역별 사용자 수 집계. 관련 테이블: users. 쿼리: SELECT region, COUNT(*) AS user_count\nFROM users\nGROUP BY region\nORDER BY user_count DESC;"
+    },
+    {
+      "id": "sql_example:14",
+      "type": "sql_example",
+      "title": "관심사와 채널이 동시에 맞는 사용자 조회",
+      "sql": "SELECT DISTINCT u.user_id, u.gender, u.region\nFROM users u\nJOIN user_interests ui ON ui.user_id = u.user_id\nJOIN user_preferred_channels upc ON upc.user_id = u.user_id\nWHERE ui.interest = 'food'\n  AND upc.preferred_channel = 'app_push';",
+      "tables": [
+        "user_interests",
+        "user_preferred_channels",
+        "users"
+      ],
+      "text_for_embedding": "SQL 예시 14. 관심사와 채널이 동시에 맞는 사용자 조회. 관련 테이블: user_interests, user_preferred_channels, users. 쿼리: SELECT DISTINCT u.user_id, u.gender, u.region\nFROM users u\nJOIN user_interests ui ON ui.user_id = u.user_id\nJOIN user_preferred_channels upc ON upc.user_id = u.user_id\nWHERE ui.interest = 'food'\n  AND upc.preferred_channel = 'app_push';"
+    },
+    {
+      "id": "sql_example:15",
+      "type": "sql_example",
+      "title": "키워드가 쿠폰인 캠페인과 타겟 세그먼트 조회",
+      "sql": "SELECT c.campaign_id, c.name, ts.target_segment\nFROM campaigns c\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE ck.keyword = '쿠폰'\nORDER BY c.campaign_id, ts.target_segment;",
+      "tables": [
+        "campaign_keywords",
+        "campaign_target_segments",
+        "campaigns"
+      ],
+      "text_for_embedding": "SQL 예시 15. 키워드가 쿠폰인 캠페인과 타겟 세그먼트 조회. 관련 테이블: campaign_keywords, campaign_target_segments, campaigns. 쿼리: SELECT c.campaign_id, c.name, ts.target_segment\nFROM campaigns c\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE ck.keyword = '쿠폰'\nORDER BY c.campaign_id, ts.target_segment;"
+    },
+    {
+      "id": "sql_example:16",
+      "type": "sql_example",
+      "title": "20대 여성 장바구니 이탈 쿠폰 캠페인 추천",
+      "sql": "SELECT DISTINCT u.user_id, u.age, u.gender, c.campaign_id, c.category, c.offer, urb.behavior\nFROM users u\nJOIN user_recent_behaviors urb ON urb.user_id = u.user_id\nJOIN recommendation_edges re ON re.user_id = u.user_id\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE u.gender = 'female'\n  AND u.age BETWEEN 20 AND 29\n  AND urb.behavior LIKE 'cart_abandoned:%'\n  AND ck.keyword = '쿠폰'\n  AND ts.target_segment = 'cart_abandoner';",
+      "tables": [
+        "campaign_keywords",
+        "campaign_target_segments",
+        "campaigns",
+        "recommendation_edges",
+        "user_recent_behaviors",
+        "users"
+      ],
+      "text_for_embedding": "SQL 예시 16. 20대 여성 장바구니 이탈 쿠폰 캠페인 추천. 관련 테이블: campaign_keywords, campaign_target_segments, campaigns, recommendation_edges, user_recent_behaviors, users. 쿼리: SELECT DISTINCT u.user_id, u.age, u.gender, c.campaign_id, c.category, c.offer, urb.behavior\nFROM users u\nJOIN user_recent_behaviors urb ON urb.user_id = u.user_id\nJOIN recommendation_edges re ON re.user_id = u.user_id\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE u.gender = 'female'\n  AND u.age BETWEEN 20 AND 29\n  AND urb.behavior LIKE 'cart_abandoned:%'\n  AND ck.keyword = '쿠폰'\n  AND ts.target_segment = 'cart_abandoner';"
+    },
+    {
+      "id": "sql_example:17",
+      "type": "sql_example",
+      "title": "20~30대 남성이 아닌 장바구니 이탈 쿠폰 캠페인 추천",
+      "sql": "SELECT DISTINCT u.user_id, u.age, u.gender, c.campaign_id, c.category, c.offer, urb.behavior\nFROM users u\nJOIN user_recent_behaviors urb ON urb.user_id = u.user_id\nJOIN recommendation_edges re ON re.user_id = u.user_id\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE u.gender <> 'male'\n  AND u.age BETWEEN 20 AND 39\n  AND urb.behavior LIKE 'cart_abandoned:%'\n  AND ck.keyword = '쿠폰'\n  AND ts.target_segment = 'cart_abandoner';",
+      "tables": [
+        "campaign_keywords",
+        "campaign_target_segments",
+        "campaigns",
+        "recommendation_edges",
+        "user_recent_behaviors",
+        "users"
+      ],
+      "text_for_embedding": "SQL 예시 17. 20~30대 남성이 아닌 장바구니 이탈 쿠폰 캠페인 추천. 관련 테이블: campaign_keywords, campaign_target_segments, campaigns, recommendation_edges, user_recent_behaviors, users. 쿼리: SELECT DISTINCT u.user_id, u.age, u.gender, c.campaign_id, c.category, c.offer, urb.behavior\nFROM users u\nJOIN user_recent_behaviors urb ON urb.user_id = u.user_id\nJOIN recommendation_edges re ON re.user_id = u.user_id\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE u.gender <> 'male'\n  AND u.age BETWEEN 20 AND 39\n  AND urb.behavior LIKE 'cart_abandoned:%'\n  AND ck.keyword = '쿠폰'\n  AND ts.target_segment = 'cart_abandoner';"
+    },
+    {
+      "id": "sql_example:18",
+      "type": "sql_example",
+      "title": "쿠폰 관심 고객 맞춤 쿠폰 캠페인 추천",
+      "sql": "SELECT DISTINCT u.user_id, u.price_sensitivity, c.campaign_id, c.name, c.offer, ts.target_segment\nFROM users u\nJOIN recommendation_edges re ON re.user_id = u.user_id\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE u.price_sensitivity = 'high'\n  AND ts.target_segment = 'price_sensitive'\n  AND ck.keyword = '쿠폰';",
+      "tables": [
+        "campaign_keywords",
+        "campaign_target_segments",
+        "campaigns",
+        "recommendation_edges",
+        "users"
+      ],
+      "text_for_embedding": "SQL 예시 18. 쿠폰 관심 고객 맞춤 쿠폰 캠페인 추천. 관련 테이블: campaign_keywords, campaign_target_segments, campaigns, recommendation_edges, users. 쿼리: SELECT DISTINCT u.user_id, u.price_sensitivity, c.campaign_id, c.name, c.offer, ts.target_segment\nFROM users u\nJOIN recommendation_edges re ON re.user_id = u.user_id\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE u.price_sensitivity = 'high'\n  AND ts.target_segment = 'price_sensitive'\n  AND ck.keyword = '쿠폰';"
+    },
+    {
+      "id": "sql_example:19",
+      "type": "sql_example",
+      "title": "A/B/C 메시지 variant별 CTR 성과 조회",
+      "sql": "SELECT variant_code, message_name, assigned_count, delivered_count,\n       impression_count, click_count, conversion_count,\n       ctr_pct, delivered_ctr_pct, cvr_pct, revenue_krw\nFROM v_campaign_variant_metrics\nWHERE experiment_id = 1\nORDER BY delivered_ctr_pct DESC NULLS LAST;",
+      "tables": [
+        "v_campaign_variant_metrics"
+      ],
+      "text_for_embedding": "SQL 예시 19. A/B/C 메시지 variant별 CTR 성과 조회. 관련 테이블: v_campaign_variant_metrics. 쿼리: SELECT variant_code, message_name, assigned_count, delivered_count,\n       impression_count, click_count, conversion_count,\n       ctr_pct, delivered_ctr_pct, cvr_pct, revenue_krw\nFROM v_campaign_variant_metrics\nWHERE experiment_id = 1\nORDER BY delivered_ctr_pct DESC NULLS LAST;"
+    },
+    {
+      "id": "sql_example:20",
+      "type": "sql_example",
+      "title": "세그먼트별 A/B/C 클릭 성과 조회",
+      "sql": "SELECT variant_code, gender, age_group, region, lifecycle,\n       delivered_count, impression_count, click_count, conversion_count,\n       ctr_pct, click_to_conversion_rate_pct\nFROM v_campaign_segment_metrics\nWHERE experiment_id = 1\nORDER BY click_count DESC, delivered_count DESC;",
+      "tables": [
+        "v_campaign_segment_metrics"
+      ],
+      "text_for_embedding": "SQL 예시 20. 세그먼트별 A/B/C 클릭 성과 조회. 관련 테이블: v_campaign_segment_metrics. 쿼리: SELECT variant_code, gender, age_group, region, lifecycle,\n       delivered_count, impression_count, click_count, conversion_count,\n       ctr_pct, click_to_conversion_rate_pct\nFROM v_campaign_segment_metrics\nWHERE experiment_id = 1\nORDER BY click_count DESC, delivered_count DESC;"
+    },
+    {
+      "id": "sql_example:21",
+      "type": "sql_example",
+      "title": "모델 학습용 delivery 단위 클릭 label 생성",
+      "sql": "SELECT d.delivery_id, d.user_id, d.campaign_id, d.channel, v.variant_code,\n       d.assignment_source, d.predicted_click_probability,\n       CASE WHEN COUNT(e.event_id) FILTER (WHERE e.event_type = 'click') > 0 THEN 1 ELSE 0 END AS clicked\nFROM campaign_message_deliveries d\nJOIN campaign_message_variants v ON v.variant_id = d.variant_id\nLEFT JOIN campaign_message_events e ON e.delivery_id = d.delivery_id\nWHERE d.experiment_id = 1\nGROUP BY d.delivery_id, v.variant_code;",
+      "tables": [
+        "campaign_message_deliveries",
+        "campaign_message_events",
+        "campaign_message_variants"
+      ],
+      "text_for_embedding": "SQL 예시 21. 모델 학습용 delivery 단위 클릭 label 생성. 관련 테이블: campaign_message_deliveries, campaign_message_events, campaign_message_variants. 쿼리: SELECT d.delivery_id, d.user_id, d.campaign_id, d.channel, v.variant_code,\n       d.assignment_source, d.predicted_click_probability,\n       CASE WHEN COUNT(e.event_id) FILTER (WHERE e.event_type = 'click') > 0 THEN 1 ELSE 0 END AS clicked\nFROM campaign_message_deliveries d\nJOIN campaign_message_variants v ON v.variant_id = d.variant_id\nLEFT JOIN campaign_message_events e ON e.delivery_id = d.delivery_id\nWHERE d.experiment_id = 1\nGROUP BY d.delivery_id, v.variant_code;"
+    },
+    {
+      "id": "sql_example:22",
+      "type": "sql_example",
+      "title": "날짜별 메시지 이벤트 추이 조회",
+      "sql": "SELECT event_date_kst, variant_id, channel,\n       sent_event_count, delivered_event_count, impression_event_count,\n       click_event_count, conversion_event_count, revenue_krw\nFROM v_campaign_daily_metrics\nWHERE experiment_id = 1\nORDER BY event_date_kst, variant_id;",
+      "tables": [
+        "v_campaign_daily_metrics"
+      ],
+      "text_for_embedding": "SQL 예시 22. 날짜별 메시지 이벤트 추이 조회. 관련 테이블: v_campaign_daily_metrics. 쿼리: SELECT event_date_kst, variant_id, channel,\n       sent_event_count, delivered_event_count, impression_event_count,\n       click_event_count, conversion_event_count, revenue_krw\nFROM v_campaign_daily_metrics\nWHERE experiment_id = 1\nORDER BY event_date_kst, variant_id;"
+    },
+    {
+      "id": "sql_example:23",
+      "type": "sql_example",
+      "title": "장바구니에 상품을 담고 24시간 이상 결제하지 않은 고객 조회",
+      "sql": "SELECT\n    c.cart_id,\n    c.user_id,\n    c.total_amount_krw\nFROM shopping_carts c\nWHERE c.cart_status = 'abandoned'\nAND c.purchase_completed = FALSE\nAND c.abandoned_at <= NOW() - INTERVAL '24 hours';",
+      "tables": [
+        "shopping_carts"
+      ],
+      "text_for_embedding": "SQL 예시 23. 장바구니에 상품을 담고 24시간 이상 결제하지 않은 고객 조회. 관련 테이블: shopping_carts. 쿼리: SELECT\n    c.cart_id,\n    c.user_id,\n    c.total_amount_krw\nFROM shopping_carts c\nWHERE c.cart_status = 'abandoned'\nAND c.purchase_completed = FALSE\nAND c.abandoned_at <= NOW() - INTERVAL '24 hours';"
+    },
+    {
+      "id": "sql_example:24",
+      "type": "sql_example",
+      "title": "장바구니 금액이 5만원 이상인 미결제 고객",
+      "sql": "SELECT\n    user_id,\n    total_amount_krw\nFROM shopping_carts\nWHERE cart_status='abandoned'\nAND purchase_completed=FALSE\nAND total_amount_krw>=50000;",
+      "tables": [
+        "shopping_carts"
+      ],
+      "text_for_embedding": "SQL 예시 24. 장바구니 금액이 5만원 이상인 미결제 고객. 관련 테이블: shopping_carts. 쿼리: SELECT\n    user_id,\n    total_amount_krw\nFROM shopping_carts\nWHERE cart_status='abandoned'\nAND purchase_completed=FALSE\nAND total_amount_krw>=50000;"
+    },
+    {
+      "id": "sql_example:25",
+      "type": "sql_example",
+      "title": "쿠폰 발급 가능한 장바구니 이탈 고객",
+      "sql": "SELECT DISTINCT\n    c.user_id\nFROM shopping_carts c\nJOIN shopping_cart_items i\nON c.cart_id=i.cart_id\nWHERE c.cart_status='abandoned'\nAND i.coupon_available=TRUE;",
+      "tables": [
+        "shopping_cart_items",
+        "shopping_carts"
+      ],
+      "text_for_embedding": "SQL 예시 25. 쿠폰 발급 가능한 장바구니 이탈 고객. 관련 테이블: shopping_cart_items, shopping_carts. 쿼리: SELECT DISTINCT\n    c.user_id\nFROM shopping_carts c\nJOIN shopping_cart_items i\nON c.cart_id=i.cart_id\nWHERE c.cart_status='abandoned'\nAND i.coupon_available=TRUE;"
+    },
+    {
+      "id": "sql_example:26",
+      "type": "sql_example",
+      "title": "패션 상품을 장바구니에 담고 구매하지 않은 고객",
+      "sql": "SELECT DISTINCT\n    c.user_id\nFROM shopping_carts c\nJOIN shopping_cart_items i\nON c.cart_id=i.cart_id\nWHERE c.cart_status='abandoned'\nAND i.category='fashion';",
+      "tables": [
+        "shopping_cart_items",
+        "shopping_carts"
+      ],
+      "text_for_embedding": "SQL 예시 26. 패션 상품을 장바구니에 담고 구매하지 않은 고객. 관련 테이블: shopping_cart_items, shopping_carts. 쿼리: SELECT DISTINCT\n    c.user_id\nFROM shopping_carts c\nJOIN shopping_cart_items i\nON c.cart_id=i.cart_id\nWHERE c.cart_status='abandoned'\nAND i.category='fashion';"
+    },
+    {
+      "id": "sql_example:27",
+      "type": "sql_example",
+      "title": "장바구니 리마인드 문자를 아직 보내지 않은 고객",
+      "sql": "SELECT\n    c.user_id\nFROM shopping_carts c\nLEFT JOIN cart_reminder_history r\nON c.cart_id=r.cart_id\nWHERE c.cart_status='abandoned'\nAND r.reminder_id IS NULL;",
+      "tables": [
+        "cart_reminder_history",
+        "shopping_carts"
+      ],
+      "text_for_embedding": "SQL 예시 27. 장바구니 리마인드 문자를 아직 보내지 않은 고객. 관련 테이블: cart_reminder_history, shopping_carts. 쿼리: SELECT\n    c.user_id\nFROM shopping_carts c\nLEFT JOIN cart_reminder_history r\nON c.cart_id=r.cart_id\nWHERE c.cart_status='abandoned'\nAND r.reminder_id IS NULL;"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+[User Query]
+${query}
+
+[Allowed Canonical Values]
+${allowed_values}
+
+[Fallback Rules Plan]
+${fallback_plan}
+
+Fallback Rules Plan과 같은 JSON 구조로 보완된 Query Plan을 반환하라.
+명시된 canonical 값만 사용하고, 애매한 값은 null 또는 빈 배열로 유지하라.
+사용자가 제외/부정한 조건은 exclude에만 넣어라.
+policy_constraints는 Fallback Rules Plan에 있는 정책 id, threshold, sql_behavior를 보존하고 임의의 기준 금액을 만들지 마라.
+semantic_resolutions는 Fallback Rules Plan에 있는 default_column, requires_clarification, clarification_question을 보존하고 임의의 컬럼을 만들지 마라.
+set_expressions는 Fallback Rules Plan에 있는 set_ast를 우선 보존하라.
+사용자가 합집합/교집합/차집합을 말하면 target_user 조건으로 평탄화하지 말고 set_expressions.set_ast로 표현하라.
+computed_metrics는 Fallback Rules Plan에 있는 formula_ast를 우선 보존하라.
+새 숫자 계산식을 보강해야 하면 SQL이 아니라 formula_ast만 반환하고, 스키마에 없는 컬럼이나 숫자형이 아닌 컬럼은 만들지 마라.

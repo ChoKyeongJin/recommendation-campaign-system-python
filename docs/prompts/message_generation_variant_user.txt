@@ -1,0 +1,38 @@
+아래 입력만 사용해 지정된 variant 1개 메시지만 생성하라.
+반드시 한국어 JSON object만 반환한다.
+
+[Variant]
+${variant}
+
+[Requested Channel]
+${requested_channel}
+
+[Selected Channel Policy]
+${selected_channel_policy}
+
+[Campaign Context]
+${campaign_context}
+
+[Target Context]
+${target_context}
+
+[Existing Message Examples]
+${message_examples}
+
+[Tone And Manner Rules]
+${tone_manner_rules}
+
+[Repair Context]
+${repair_context}
+
+[Output Rule]
+- messages 배열은 정확히 1개 object만 포함한다.
+- messages[0].variant는 반드시 `${variant}`다.
+- messages[0].channel은 요청 채널과 일치해야 한다. rcsSms 요청도 출력 channel은 rcs다.
+- source_campaign_id는 Campaign Context에 존재하는 campaign_id만 사용한다.
+- used_offer는 선택값이다. 메시지에서 Campaign Context의 offer를 직접 근거로 사용한 경우에만 원문 그대로 입력하고, 그렇지 않으면 null로 둔다.
+- LMS는 text만 생성하고 통신사 기준 2,000Byte 이내로 작성한다. 한글/전각은 2Byte, ASCII는 1Byte다.
+- RCS는 title 14자 이하, description 100자 이하, buttons 최대 1개, button name 7자 이하로 작성한다.
+- RCS에서 혜택 확인, 구매, 신청, 예약처럼 행동 유도가 필요한 경우 buttons에 CTA 버튼 1개를 생성한다. 필요하지 않으면 빈 배열을 사용한다.
+- RCS title에는 '(광고)'를 포함하고 description에는 '무료 수신거부'를 포함한다.
+- Tone And Manner Rules를 적용하되 지정된 variant의 설득 포인트에 집중한다.

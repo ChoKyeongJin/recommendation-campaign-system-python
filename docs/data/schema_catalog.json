@@ -1,0 +1,3418 @@
+{
+  "source": "docs/data/ddl.sql",
+  "policy": {
+    "schema": "auto_extracted_from_ddl",
+    "llm": "table_descriptions_only",
+    "human_edit": "important_columns_only",
+    "sql_examples_limit": "10_to_30",
+    "ops_feedback": "add_missing_dictionary_terms_and_examples_from_logs"
+  },
+  "tables": {
+    "campaigns": {
+      "object_type": "table",
+      "description_llm": "캠페인의 기본 속성, 목적, 카테고리, 예산, 기간, 예상 성과와 임베딩용 텍스트를 저장하는 중심 테이블이다.",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "name",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "objective",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "category",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "offer",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "budget_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "start_date",
+          "type": "DATE",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "end_date",
+          "type": "DATE",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "expected_ctr",
+          "type": "NUMERIC(5,2)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "expected_cvr",
+          "type": "NUMERIC(5,2)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "text_for_embedding",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "campaign_id"
+      ],
+      "checks": [
+        "CHECK (end_date >= start_date)"
+      ],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_campaigns_category",
+          "unique": false,
+          "columns": [
+            "category"
+          ]
+        },
+        {
+          "name": "idx_campaigns_objective",
+          "unique": false,
+          "columns": [
+            "objective"
+          ]
+        }
+      ]
+    },
+    "campaign_channels": {
+      "object_type": "table",
+      "description_llm": "각 캠페인이 노출되거나 발송되는 채널을 캠페인별 다중 값으로 저장하는 연결 테이블이다.",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "campaign_id",
+        "channel"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "campaign_target_segments": {
+      "object_type": "table",
+      "description_llm": "캠페인이 겨냥하는 고객 세그먼트를 캠페인별 다중 값으로 저장하는 연결 테이블이다.",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "target_segment",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "campaign_id",
+        "target_segment"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "campaign_keywords": {
+      "object_type": "table",
+      "description_llm": "캠페인 검색과 의미 매칭에 사용할 키워드를 캠페인별로 저장하는 연결 테이블이다.",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "keyword",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "campaign_id",
+        "keyword"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "campaign_message_examples": {
+      "object_type": "table",
+      "description_llm": "",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "example_id",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "emphasis_type",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "message_text",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "brand_tone",
+          "type": "VARCHAR(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMP",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "example_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_campaign_message_examples_campaign",
+          "unique": false,
+          "columns": [
+            "campaign_id"
+          ]
+        },
+        {
+          "name": "idx_campaign_message_examples_channel",
+          "unique": false,
+          "columns": [
+            "channel"
+          ]
+        }
+      ]
+    },
+    "users": {
+      "object_type": "table",
+      "description_llm": "사용자의 인구통계, 지역, 라이프사이클, 구매 지표, 가격 민감도, LTV 세그먼트와 임베딩용 텍스트를 저장하는 중심 테이블이다.",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "age",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "gender",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "region",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "lifecycle",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "avg_order_value_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "purchase_count_90d",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "last_active_days",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "price_sensitivity",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "predicted_ltv_segment",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "text_for_embedding",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "user_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_users_lifecycle",
+          "unique": false,
+          "columns": [
+            "lifecycle"
+          ]
+        },
+        {
+          "name": "idx_users_region",
+          "unique": false,
+          "columns": [
+            "region"
+          ]
+        }
+      ]
+    },
+    "user_interests": {
+      "object_type": "table",
+      "description_llm": "사용자의 관심사를 사용자별 다중 값으로 저장해 캠페인 카테고리와 세그먼트 매칭에 활용하는 연결 테이블이다.",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "users",
+            "column": "user_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "interest",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "user_id",
+        "interest"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "user_preferred_channels": {
+      "object_type": "table",
+      "description_llm": "사용자가 선호하는 커뮤니케이션 채널을 사용자별 다중 값으로 저장하는 연결 테이블이다.",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "users",
+            "column": "user_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "preferred_channel",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "user_id",
+        "preferred_channel"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "user_recent_behaviors": {
+      "object_type": "table",
+      "description_llm": "최근 조회, 구매, 이탈, 인증 등 추천 판단에 필요한 사용자 행동 신호를 사용자별 다중 값으로 저장하는 연결 테이블이다.",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "users",
+            "column": "user_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "behavior",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "user_id",
+        "behavior"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "recommendation_edges": {
+      "object_type": "table",
+      "description_llm": "사용자와 캠페인 사이의 추천 관계, 추천 사유, 추천 강도 라벨을 저장하는 edge 테이블이다.",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "users",
+            "column": "user_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "reason",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "label",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "user_id",
+        "campaign_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_recommendation_edges_campaign",
+          "unique": false,
+          "columns": [
+            "campaign_id"
+          ]
+        }
+      ]
+    },
+    "campaign_target_audiences": {
+      "object_type": "table",
+      "description_llm": "",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "audience_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "audience_key",
+          "type": "VARCHAR(64)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "prompt",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "query_parser",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "request_options",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "generated_sql",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "sql_hash",
+          "type": "CHAR(64)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "query_plan",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "member_count",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "target_customer_count",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "target_campaign_count",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "failure_reason",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "completed_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "expires_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "audience_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_campaign_target_audiences_status_created",
+          "unique": false,
+          "columns": [
+            "status",
+            "created_at"
+          ]
+        }
+      ]
+    },
+    "campaign_target_audience_members": {
+      "object_type": "table",
+      "description_llm": "",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "audience_id",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": true,
+          "references": {
+            "table": "campaign_target_audiences",
+            "column": "audience_id"
+          },
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "member_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "audience_id",
+        "member_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_campaign_target_audience_members_user",
+          "unique": false,
+          "columns": [
+            "audience_id",
+            "user_id"
+          ]
+        }
+      ]
+    },
+    "campaign_query_failure_logs": {
+      "object_type": "table",
+      "description_llm": "GraphRAG/API 실행 실패를 운영 분석과 사전 보강에 활용하기 위해 누적 저장하는 로그 테이블이다.",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "failure_log_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": "실패 로그 식별자다."
+        },
+        {
+          "name": "endpoint",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "실패가 발생한 API 엔드포인트 이름이다."
+        },
+        {
+          "name": "prompt",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "사용자가 입력한 원본 자연어 프롬프트다."
+        },
+        {
+          "name": "query_parser",
+          "type": "VARCHAR(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "rules, auto, llm 등 Query Plan 생성 모드다."
+        },
+        {
+          "name": "api_status",
+          "type": "VARCHAR(40)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "success, needs_clarification, no_verified_sql 등 API 응답 상태다."
+        },
+        {
+          "name": "failure_stage",
+          "type": "VARCHAR(60)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "startup, retrieval, sql_generation, database_execution, message_generation 등 실패 단계다."
+        },
+        {
+          "name": "failure_reason",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "실패 원인 코드 또는 요약이다."
+        },
+        {
+          "name": "error_detail",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "예외 메시지나 DB 실행 오류 상세다."
+        },
+        {
+          "name": "generated_sql",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "SQL이 생성된 뒤 실패한 경우 해당 SQL 본문이다."
+        },
+        {
+          "name": "sql_hash",
+          "type": "CHAR(64)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "generated_sql의 SHA-256 해시다."
+        },
+        {
+          "name": "request_options",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "검색 top-k, 메시지 채널, SQL 실행 여부 등 요청 옵션 snapshot이다."
+        },
+        {
+          "name": "query_plan",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "실패 당시 Query Plan snapshot이다."
+        },
+        {
+          "name": "missing_input_conditions",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "필수 조건 부족 또는 모호성으로 SQL 생성을 멈춘 조건 목록이다."
+        },
+        {
+          "name": "clarification_questions",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "사용자에게 되물을 질문 목록이다."
+        },
+        {
+          "name": "selected_candidate",
+          "type": "JSONB",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "선택되었거나 가장 가까웠던 SQL 후보와 검증 결과다."
+        },
+        {
+          "name": "stage_log",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "Query Planning부터 SQL Guard까지 단계별 로그다."
+        },
+        {
+          "name": "context_metadata",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "검색 context 조립 결과의 메타데이터다."
+        },
+        {
+          "name": "database_execution",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "PostgreSQL 실행 또는 타겟 오디언스 저장 실패 요약이다."
+        },
+        {
+          "name": "message_generation",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "LMS/RCS 메시지 생성 실패와 검증 요약이다."
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "실패 로그가 저장된 시각이다."
+        }
+      ],
+      "primary_key": [
+        "failure_log_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_campaign_query_failure_logs_created",
+          "unique": false,
+          "columns": [
+            "created_at DESC"
+          ]
+        },
+        {
+          "name": "idx_campaign_query_failure_logs_reason",
+          "unique": false,
+          "columns": [
+            "failure_stage",
+            "failure_reason",
+            "created_at DESC"
+          ]
+        },
+        {
+          "name": "idx_campaign_query_failure_logs_status",
+          "unique": false,
+          "columns": [
+            "api_status",
+            "created_at DESC"
+          ]
+        }
+      ]
+    },
+    "campaign_channel_messages": {
+      "object_type": "table",
+      "description_llm": "",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "message_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "send_type",
+          "type": "VARCHAR(10)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "message_body",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "sent_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "send_status",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "provider_message_id",
+          "type": "VARCHAR(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "message_id"
+      ],
+      "checks": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "campaign_id",
+            "channel"
+          ],
+          "references": {
+            "table": "campaign_channels",
+            "columns": [
+              "campaign_id",
+              "channel"
+            ]
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_campaign_channel_messages_campaign",
+          "unique": false,
+          "columns": [
+            "campaign_id"
+          ]
+        },
+        {
+          "name": "idx_campaign_channel_messages_sent_at",
+          "unique": false,
+          "columns": [
+            "sent_at"
+          ]
+        }
+      ]
+    },
+    "campaign_experiments": {
+      "object_type": "table",
+      "description_llm": "",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "experiment_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "experiment_name",
+          "type": "VARCHAR(200)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "status",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "assignment_method",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "primary_metric",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "started_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "ended_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "experiment_id"
+      ],
+      "checks": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "campaign_id",
+            "channel"
+          ],
+          "references": {
+            "table": "campaign_channels",
+            "columns": [
+              "campaign_id",
+              "channel"
+            ]
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_campaign_experiments_campaign_status",
+          "unique": false,
+          "columns": [
+            "campaign_id",
+            "status"
+          ]
+        }
+      ]
+    },
+    "campaign_message_variants": {
+      "object_type": "table",
+      "description_llm": "",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "variant_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "experiment_id",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "campaign_experiments",
+            "column": "experiment_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "variant_code",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "message_name",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "message_body",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "landing_url",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "allocation_weight",
+          "type": "NUMERIC(7,4)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "is_control",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "ai_features",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "variant_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_campaign_message_variants_experiment",
+          "unique": false,
+          "columns": [
+            "experiment_id"
+          ]
+        }
+      ]
+    },
+    "campaign_message_deliveries": {
+      "object_type": "table",
+      "description_llm": "",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "delivery_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "experiment_id",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "campaign_experiments",
+            "column": "experiment_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "variant_id",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "campaign_message_variants",
+            "column": "variant_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "users",
+            "column": "user_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VARCHAR(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "assignment_source",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "model_version",
+          "type": "VARCHAR(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "predicted_click_probability",
+          "type": "NUMERIC(8,7)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "provider_message_id",
+          "type": "VARCHAR(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "assigned_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "requested_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "sent_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "final_status",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "targeting_snapshot",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "delivery_id"
+      ],
+      "checks": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "campaign_id",
+            "channel"
+          ],
+          "references": {
+            "table": "campaign_channels",
+            "columns": [
+              "campaign_id",
+              "channel"
+            ]
+          }
+        }
+      ],
+      "indexes": [
+        {
+          "name": "idx_campaign_message_deliveries_campaign",
+          "unique": false,
+          "columns": [
+            "campaign_id"
+          ]
+        },
+        {
+          "name": "idx_campaign_message_deliveries_experiment_variant",
+          "unique": false,
+          "columns": [
+            "experiment_id",
+            "variant_id"
+          ]
+        },
+        {
+          "name": "idx_campaign_message_deliveries_user",
+          "unique": false,
+          "columns": [
+            "user_id"
+          ]
+        },
+        {
+          "name": "idx_campaign_message_deliveries_sent_at",
+          "unique": false,
+          "columns": [
+            "sent_at"
+          ]
+        }
+      ]
+    },
+    "campaign_message_events": {
+      "object_type": "table",
+      "description_llm": "",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "event_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "delivery_id",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "campaign_message_deliveries",
+            "column": "delivery_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "event_type",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "event_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "event_key",
+          "type": "VARCHAR(200)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "provider_event_id",
+          "type": "VARCHAR(150)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "click_url",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "conversion_type",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "conversion_value_krw",
+          "type": "NUMERIC(14,2)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "device_type",
+          "type": "VARCHAR(30)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "os_name",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "browser_name",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "ip_hash",
+          "type": "VARCHAR(128)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "user_agent",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "event_properties",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "received_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "event_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_campaign_message_events_delivery_type_time",
+          "unique": false,
+          "columns": [
+            "delivery_id",
+            "event_type",
+            "event_at"
+          ]
+        },
+        {
+          "name": "idx_campaign_message_events_type_time",
+          "unique": false,
+          "columns": [
+            "event_type",
+            "event_at"
+          ]
+        }
+      ]
+    },
+    "shopping_carts": {
+      "object_type": "table",
+      "description_llm": "",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "cart_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "user_id",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "users",
+            "column": "user_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "cart_status",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "source_channel",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "total_quantity",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "original_amount_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "discount_amount_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "shipping_fee_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "total_amount_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "purchase_completed",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandonment_reason",
+          "type": "VARCHAR(40)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "last_activity_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandoned_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "purchased_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "expires_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "cart_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_shopping_carts_user_status",
+          "unique": false,
+          "columns": [
+            "user_id",
+            "cart_status"
+          ]
+        },
+        {
+          "name": "idx_shopping_carts_last_activity",
+          "unique": false,
+          "columns": [
+            "last_activity_at DESC"
+          ]
+        }
+      ]
+    },
+    "shopping_cart_items": {
+      "object_type": "table",
+      "description_llm": "",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "cart_item_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "cart_id",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "shopping_carts",
+            "column": "cart_id"
+          },
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "product_id",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "product_name",
+          "type": "VARCHAR(200)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "category",
+          "type": "VARCHAR(100)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "brand",
+          "type": "VARCHAR(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "quantity",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "unit_price_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "discount_price_krw",
+          "type": "INTEGER",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "final_unit_price_krw",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "inventory_quantity",
+          "type": "INTEGER",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "inventory_status",
+          "type": "VARCHAR(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "coupon_available",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "coupon_code",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "coupon_expire_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "wishlist_flag",
+          "type": "BOOLEAN",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "viewed_count",
+          "type": "INTEGER",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "added_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "last_viewed_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "removed_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "cart_item_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_shopping_cart_items_cart",
+          "unique": false,
+          "columns": [
+            "cart_id"
+          ]
+        },
+        {
+          "name": "idx_shopping_cart_items_category",
+          "unique": false,
+          "columns": [
+            "category"
+          ]
+        },
+        {
+          "name": "idx_shopping_cart_items_inventory",
+          "unique": false,
+          "columns": [
+            "inventory_status",
+            "coupon_available"
+          ]
+        }
+      ]
+    },
+    "cart_reminder_history": {
+      "object_type": "table",
+      "description_llm": "",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "reminder_id",
+          "type": "BIGSERIAL",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "cart_id",
+          "type": "BIGINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": {
+            "table": "shopping_carts",
+            "column": "cart_id"
+          },
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_id",
+          "type": "VARCHAR(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": {
+            "table": "campaigns",
+            "column": "campaign_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "delivery_id",
+          "type": "BIGINT",
+          "nullable": true,
+          "primary_key": false,
+          "references": {
+            "table": "campaign_message_deliveries",
+            "column": "delivery_id"
+          },
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "reminder_sequence",
+          "type": "SMALLINT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "reminder_type",
+          "type": "VARCHAR(30)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "coupon_code",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "sent_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "delivered_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "clicked_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "converted_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "conversion_order_id",
+          "type": "VARCHAR(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "conversion_value_krw",
+          "type": "INTEGER",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "created_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "reminder_id"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": [
+        {
+          "name": "idx_cart_reminder_history_cart_sent",
+          "unique": false,
+          "columns": [
+            "cart_id",
+            "sent_at DESC"
+          ]
+        }
+      ]
+    },
+    "v_campaign_variant_metrics": {
+      "object_type": "view",
+      "description_llm": "메시지 variant별 발송, 도달, 노출, 클릭, 전환, CTR/CVR, 매출 지표를 집계하는 분석 view다.",
+      "description_source": "ddl_view",
+      "columns": [
+        {
+          "name": "campaign_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_name",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "experiment_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "experiment_name",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "variant_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "variant_code",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "message_name",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "assigned_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "sent_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "delivered_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "impression_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "open_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "click_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "conversion_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "delivery_rate_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "impression_rate_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "open_rate_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "ctr_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "delivered_ctr_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "click_to_conversion_rate_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "cvr_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "revenue_krw",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "v_campaign_segment_metrics": {
+      "object_type": "view",
+      "description_llm": "성별, 연령대, 지역, 라이프사이클별 메시지 성과와 CTR/CVR을 집계하는 분석 view다.",
+      "description_source": "ddl_view",
+      "columns": [
+        {
+          "name": "experiment_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "experiment_name",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "variant_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "variant_code",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "gender",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "age_group",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "region",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "lifecycle",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "assigned_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "delivered_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "impression_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "click_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "conversion_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "ctr_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "click_to_conversion_rate_pct",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "v_campaign_daily_metrics": {
+      "object_type": "view",
+      "description_llm": "KST 날짜별 메시지 이벤트 퍼널과 매출 추이를 집계하는 분석 view다.",
+      "description_source": "ddl_view",
+      "columns": [
+        {
+          "name": "campaign_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "experiment_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "variant_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "channel",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "event_date_kst",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "sent_event_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "delivered_event_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "impression_event_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "open_event_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "click_event_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "conversion_event_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "revenue_krw",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "v_abandoned_cart_targets": {
+      "object_type": "view",
+      "description_llm": "",
+      "description_source": "ddl_view",
+      "columns": [
+        {
+          "name": "cart_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "user_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "age",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "gender",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "region",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "price_sensitivity",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "predicted_ltv_segment",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "source_channel",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "total_quantity",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "original_amount_krw",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "discount_amount_krw",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "shipping_fee_krw",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "total_amount_krw",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandonment_reason",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandoned_at",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandoned_hours",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "item_line_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "product_names",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "categories",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "has_available_coupon",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "has_low_stock_item",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "all_items_orderable",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "reminder_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "last_reminder_sent_at",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "reminder_converted",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "v_cart_repurchase_targets": {
+      "object_type": "view",
+      "description_llm": "",
+      "description_source": "ddl_view",
+      "columns": [
+        {
+          "name": "cart_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "user_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "age",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "gender",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "region",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "price_sensitivity",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "predicted_ltv_segment",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "source_channel",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "total_quantity",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "total_amount_krw",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandonment_reason",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandoned_at",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "abandoned_hours",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "categories",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "product_names",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "has_available_coupon",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "has_low_stock_item",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "all_items_orderable",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "reminder_count",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "last_reminder_sent_at",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "target_segment",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "targeting_intent",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "recommended_campaign_id",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "recommended_campaign_name",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_objective",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_category",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "campaign_offer",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "recommendation_reason",
+          "type": "VIEW_COLUMN",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    }
+  }
+}

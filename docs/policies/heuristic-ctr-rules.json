@@ -1,0 +1,20 @@
+{
+  "base_probability": 0.025,
+  "min_probability": 0.001,
+  "max_probability": 0.25,
+  "stable_noise_max": 0.01,
+  "score_adjustments": {
+    "preferred_channel": 0.012,
+    "campaign_category_interest_match": 0.01,
+    "high_price_sensitivity_with_price_offer": 0.012,
+    "urgency_with_recent_behavior": 0.009,
+    "personalized_lifecycle_match": 0.006,
+    "message_length_medium": 0.004,
+    "message_length_long": -0.004,
+    "control_variant": 0.001
+  },
+  "matchers": {
+    "urgency_recent_behavior_keywords": ["cart_abandoned", "deal"],
+    "personalized_lifecycles": ["active", "cart_abandoner", "vip"]
+  }
+}

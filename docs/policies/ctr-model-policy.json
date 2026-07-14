@@ -1,0 +1,8 @@
+{
+  "default_model_version": "heuristic-ctr-v1",
+  "heuristic_model_version_prefixes": ["heuristic"],
+  "fallback_to_heuristic_on_ml_error": true,
+  "exploration_enabled": false,
+  "default_epsilon": 0.0,
+  "allow_request_epsilon_override": false
+}
