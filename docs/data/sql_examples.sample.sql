@@ -7,10 +7,17 @@ FROM users
 WHERE lifecycle = 'active';
 
 -- 2. 휴면 고객 조회
-SELECT user_id, region, last_active_days, price_sensitivity
+-- 2. 6개월 이상 접속하지 않은 휴면 고객 조회
+SELECT
+    user_id,
+    region,
+    lifecycle,
+    last_login_at,
+    last_active_days,
+    price_sensitivity
 FROM users
-WHERE lifecycle = 'inactive_90d'
-ORDER BY last_active_days DESC;
+WHERE last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
+ORDER BY last_login_at ASC;
 
 -- 3. 패션 카테고리 캠페인 조회
 SELECT campaign_id, name, objective, offer
@@ -212,3 +219,52 @@ LEFT JOIN cart_reminder_history r
 ON c.cart_id=r.cart_id
 WHERE c.cart_status='abandoned'
 AND r.reminder_id IS NULL;
+
+-- 28. 6개월 이상 미접속한 휴면 고객에게 복귀 캠페인 추천
+SELECT DISTINCT
+    u.user_id,
+    u.region,
+    u.lifecycle,
+    u.last_login_at,
+    u.last_active_days,
+    c.campaign_id,
+    c.name AS campaign_name,
+    c.offer
+FROM users u
+JOIN recommendation_edges re
+    ON re.user_id = u.user_id
+JOIN campaigns c
+    ON c.campaign_id = re.campaign_id
+WHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
+  AND c.objective = 'reactivation'
+ORDER BY u.last_login_at ASC;
+
+
+-- 29. 6개월 이상 미접속하고 최근 90일 구매가 없는 고객 조회
+SELECT
+    user_id,
+    region,
+    lifecycle,
+    last_login_at,
+    last_active_days,
+    purchase_count_90d,
+    price_sensitivity
+FROM users
+WHERE last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
+  AND purchase_count_90d = 0
+ORDER BY last_active_days DESC;
+
+
+-- 30. 6개월 이상 휴면 고객 중 문자 또는 카카오 수신 선호 고객 조회
+SELECT DISTINCT
+    u.user_id,
+    u.region,
+    u.last_login_at,
+    u.last_active_days,
+    upc.preferred_channel
+FROM users u
+JOIN user_preferred_channels upc
+    ON upc.user_id = u.user_id
+WHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
+  AND upc.preferred_channel IN ('sms', 'kakao', 'lms', 'rcs')
+ORDER BY u.last_login_at ASC;

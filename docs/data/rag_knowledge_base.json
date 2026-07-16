@@ -15,8 +15,8 @@
     "business_term": 20,
     "business_policy": 5,
     "metric_alias": 6,
-    "sql_example": 27,
-    "total": 124
+    "sql_example": 30,
+    "total": 127
   },
   "nodes": [
     {
@@ -5014,11 +5014,11 @@
       "id": "sql_example:02",
       "type": "sql_example",
       "title": "휴면 고객 조회",
-      "sql": "SELECT user_id, region, last_active_days, price_sensitivity\nFROM users\nWHERE lifecycle = 'inactive_90d'\nORDER BY last_active_days DESC;",
+      "sql": "-- 2. 6개월 이상 접속하지 않은 휴면 고객 조회\nSELECT\n    user_id,\n    region,\n    lifecycle,\n    last_login_at,\n    last_active_days,\n    price_sensitivity\nFROM users\nWHERE last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\nORDER BY last_login_at ASC;",
       "tables": [
         "users"
       ],
-      "text_for_embedding": "SQL 예시 2. 휴면 고객 조회. 관련 테이블: users. 쿼리: SELECT user_id, region, last_active_days, price_sensitivity\nFROM users\nWHERE lifecycle = 'inactive_90d'\nORDER BY last_active_days DESC;"
+      "text_for_embedding": "SQL 예시 2. 휴면 고객 조회. 관련 테이블: users. 쿼리: -- 2. 6개월 이상 접속하지 않은 휴면 고객 조회\nSELECT\n    user_id,\n    region,\n    lifecycle,\n    last_login_at,\n    last_active_days,\n    price_sensitivity\nFROM users\nWHERE last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\nORDER BY last_login_at ASC;"
     },
     {
       "id": "sql_example:03",
@@ -5300,6 +5300,39 @@
         "shopping_carts"
       ],
       "text_for_embedding": "SQL 예시 27. 장바구니 리마인드 문자를 아직 보내지 않은 고객. 관련 테이블: cart_reminder_history, shopping_carts. 쿼리: SELECT\n    c.user_id\nFROM shopping_carts c\nLEFT JOIN cart_reminder_history r\nON c.cart_id=r.cart_id\nWHERE c.cart_status='abandoned'\nAND r.reminder_id IS NULL;"
+    },
+    {
+      "id": "sql_example:28",
+      "type": "sql_example",
+      "title": "6개월 이상 미접속한 휴면 고객에게 복귀 캠페인 추천",
+      "sql": "SELECT DISTINCT\n    u.user_id,\n    u.region,\n    u.lifecycle,\n    u.last_login_at,\n    u.last_active_days,\n    c.campaign_id,\n    c.name AS campaign_name,\n    c.offer\nFROM users u\nJOIN recommendation_edges re\n    ON re.user_id = u.user_id\nJOIN campaigns c\n    ON c.campaign_id = re.campaign_id\nWHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\n  AND c.objective = 'reactivation'\nORDER BY u.last_login_at ASC;",
+      "tables": [
+        "campaigns",
+        "recommendation_edges",
+        "users"
+      ],
+      "text_for_embedding": "SQL 예시 28. 6개월 이상 미접속한 휴면 고객에게 복귀 캠페인 추천. 관련 테이블: campaigns, recommendation_edges, users. 쿼리: SELECT DISTINCT\n    u.user_id,\n    u.region,\n    u.lifecycle,\n    u.last_login_at,\n    u.last_active_days,\n    c.campaign_id,\n    c.name AS campaign_name,\n    c.offer\nFROM users u\nJOIN recommendation_edges re\n    ON re.user_id = u.user_id\nJOIN campaigns c\n    ON c.campaign_id = re.campaign_id\nWHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\n  AND c.objective = 'reactivation'\nORDER BY u.last_login_at ASC;"
+    },
+    {
+      "id": "sql_example:29",
+      "type": "sql_example",
+      "title": "6개월 이상 미접속하고 최근 90일 구매가 없는 고객 조회",
+      "sql": "SELECT\n    user_id,\n    region,\n    lifecycle,\n    last_login_at,\n    last_active_days,\n    purchase_count_90d,\n    price_sensitivity\nFROM users\nWHERE last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\n  AND purchase_count_90d = 0\nORDER BY last_active_days DESC;",
+      "tables": [
+        "users"
+      ],
+      "text_for_embedding": "SQL 예시 29. 6개월 이상 미접속하고 최근 90일 구매가 없는 고객 조회. 관련 테이블: users. 쿼리: SELECT\n    user_id,\n    region,\n    lifecycle,\n    last_login_at,\n    last_active_days,\n    purchase_count_90d,\n    price_sensitivity\nFROM users\nWHERE last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\n  AND purchase_count_90d = 0\nORDER BY last_active_days DESC;"
+    },
+    {
+      "id": "sql_example:30",
+      "type": "sql_example",
+      "title": "6개월 이상 휴면 고객 중 문자 또는 카카오 수신 선호 고객 조회",
+      "sql": "SELECT DISTINCT\n    u.user_id,\n    u.region,\n    u.last_login_at,\n    u.last_active_days,\n    upc.preferred_channel\nFROM users u\nJOIN user_preferred_channels upc\n    ON upc.user_id = u.user_id\nWHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\n  AND upc.preferred_channel IN ('sms', 'kakao', 'lms', 'rcs')\nORDER BY u.last_login_at ASC;",
+      "tables": [
+        "user_preferred_channels",
+        "users"
+      ],
+      "text_for_embedding": "SQL 예시 30. 6개월 이상 휴면 고객 중 문자 또는 카카오 수신 선호 고객 조회. 관련 테이블: user_preferred_channels, users. 쿼리: SELECT DISTINCT\n    u.user_id,\n    u.region,\n    u.last_login_at,\n    u.last_active_days,\n    upc.preferred_channel\nFROM users u\nJOIN user_preferred_channels upc\n    ON upc.user_id = u.user_id\nWHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\n  AND upc.preferred_channel IN ('sms', 'kakao', 'lms', 'rcs')\nORDER BY u.last_login_at ASC;"
     }
   ]
 }

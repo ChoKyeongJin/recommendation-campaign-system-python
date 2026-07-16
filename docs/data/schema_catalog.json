@@ -414,6 +414,15 @@
           "human_note": ""
         },
         {
+          "name": "last_login_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "고객의 마지막 로그인/접속 일시. 6개월 이상 미접속 조건은 CURRENT_TIMESTAMP - INTERVAL '6 months'와 비교한다."
+        },
+        {
           "name": "price_sensitivity",
           "type": "VARCHAR(20)",
           "nullable": false,
