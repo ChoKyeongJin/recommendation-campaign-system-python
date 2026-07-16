@@ -204,277 +204,6 @@ CREATE INDEX idx_campaign_query_failure_logs_reason
     ON campaign_query_failure_logs(failure_stage, failure_reason, created_at DESC);
 CREATE INDEX idx_campaign_query_failure_logs_status
     ON campaign_query_failure_logs(api_status, created_at DESC);
-	
-COMMENT ON TABLE campaigns IS '캠페인 기본 정보를 저장하는 테이블';
-COMMENT ON COLUMN campaigns.campaign_id IS '캠페인 ID';
-COMMENT ON COLUMN campaigns.name IS '이름';
-COMMENT ON COLUMN campaigns.objective IS 'objective 컬럼';
-COMMENT ON COLUMN campaigns.category IS 'category 컬럼';
-COMMENT ON COLUMN campaigns.offer IS 'offer 컬럼';
-COMMENT ON COLUMN campaigns.budget_krw IS 'budget_krw 컬럼';
-COMMENT ON COLUMN campaigns.start_date IS 'start_date 컬럼';
-COMMENT ON COLUMN campaigns.end_date IS 'end_date 컬럼';
-COMMENT ON COLUMN campaigns.expected_ctr IS 'expected_ctr 컬럼';
-COMMENT ON COLUMN campaigns.expected_cvr IS 'expected_cvr 컬럼';
-COMMENT ON COLUMN campaigns.text_for_embedding IS 'text_for_embedding 컬럼';
-
-COMMENT ON TABLE campaign_channels IS 'campaign_channels 정보를 저장하는 테이블';
-COMMENT ON COLUMN campaign_channels.campaign_id IS '캠페인 ID';
-COMMENT ON COLUMN campaign_channels.channel IS '채널';
-
-COMMENT ON TABLE campaign_target_segments IS 'campaign_target_segments 정보를 저장하는 테이블';
-COMMENT ON COLUMN campaign_target_segments.campaign_id IS '캠페인 ID';
-COMMENT ON COLUMN campaign_target_segments.target_segment IS 'target_segment 컬럼';
-
-COMMENT ON TABLE campaign_keywords IS 'campaign_keywords 정보를 저장하는 테이블';
-COMMENT ON COLUMN campaign_keywords.campaign_id IS '캠페인 ID';
-COMMENT ON COLUMN campaign_keywords.keyword IS 'keyword 컬럼';
-
-COMMENT ON TABLE campaign_message_examples IS 'campaign_message_examples 정보를 저장하는 테이블';
-COMMENT ON COLUMN campaign_message_examples.example_id IS 'example_id 컬럼';
-COMMENT ON COLUMN campaign_message_examples.campaign_id IS '캠페인 ID';
-COMMENT ON COLUMN campaign_message_examples.channel IS '채널';
-COMMENT ON COLUMN campaign_message_examples.emphasis_type IS 'emphasis_type 컬럼';
-COMMENT ON COLUMN campaign_message_examples.message_text IS 'message_text 컬럼';
-COMMENT ON COLUMN campaign_message_examples.brand_tone IS 'brand_tone 컬럼';
-COMMENT ON COLUMN campaign_message_examples.created_at IS '생성 일시';
-
-COMMENT ON TABLE users IS '사용자 기본 정보를 저장하는 테이블';
-COMMENT ON COLUMN users.user_id IS '사용자 ID';
-COMMENT ON COLUMN users.age IS 'age 컬럼';
-COMMENT ON COLUMN users.gender IS 'gender 컬럼';
-COMMENT ON COLUMN users.region IS 'region 컬럼';
-COMMENT ON COLUMN users.lifecycle IS 'lifecycle 컬럼';
-COMMENT ON COLUMN users.avg_order_value_krw IS 'avg_order_value_krw 컬럼';
-COMMENT ON COLUMN users.purchase_count_90d IS 'purchase_count_90d 컬럼';
-COMMENT ON COLUMN users.last_active_days IS 'last_active_days 컬럼';
-COMMENT ON COLUMN users.price_sensitivity IS 'price_sensitivity 컬럼';
-COMMENT ON COLUMN users.predicted_ltv_segment IS 'predicted_ltv_segment 컬럼';
-COMMENT ON COLUMN users.text_for_embedding IS 'text_for_embedding 컬럼';
-
-COMMENT ON TABLE user_interests IS 'user_interests 정보를 저장하는 테이블';
-COMMENT ON COLUMN user_interests.user_id IS '사용자 ID';
-COMMENT ON COLUMN user_interests.interest IS 'interest 컬럼';
-
-COMMENT ON TABLE user_preferred_channels IS 'user_preferred_channels 정보를 저장하는 테이블';
-COMMENT ON COLUMN user_preferred_channels.user_id IS '사용자 ID';
-COMMENT ON COLUMN user_preferred_channels.preferred_channel IS 'preferred_channel 컬럼';
-
-COMMENT ON TABLE user_recent_behaviors IS 'user_recent_behaviors 정보를 저장하는 테이블';
-COMMENT ON COLUMN user_recent_behaviors.user_id IS '사용자 ID';
-COMMENT ON COLUMN user_recent_behaviors.behavior IS 'behavior 컬럼';
-
-COMMENT ON TABLE recommendation_edges IS 'recommendation_edges 정보를 저장하는 테이블';
-COMMENT ON COLUMN recommendation_edges.user_id IS '사용자 ID';
-COMMENT ON COLUMN recommendation_edges.campaign_id IS '캠페인 ID';
-COMMENT ON COLUMN recommendation_edges.reason IS 'reason 컬럼';
-COMMENT ON COLUMN recommendation_edges.label IS 'label 컬럼';
-
-COMMENT ON TABLE campaign_target_audiences IS 'campaign_target_audiences 정보를 저장하는 테이블';
-COMMENT ON COLUMN campaign_target_audiences.audience_id IS 'audience_id 컬럼';
-COMMENT ON COLUMN campaign_target_audiences.audience_key IS 'audience_key 컬럼';
-COMMENT ON COLUMN campaign_target_audiences.prompt IS 'prompt 컬럼';
-COMMENT ON COLUMN campaign_target_audiences.query_parser IS 'query_parser 컬럼';
-COMMENT ON COLUMN campaign_target_audiences.request_options IS 'request_options 컬럼';
-COMMENT ON COLUMN campaign_target_audiences.generated_sql IS 'generated_sql 컬럼';
-COMMENT ON COLUMN campaign_target_audiences.sql_hash IS 'sql_hash 컬럼';
-COMMENT ON COLUMN campaign_target_audiences.query_plan IS 'query_plan 컬럼';
-COMMENT ON COLUMN campaign_target_audiences.status IS '상태';
-COMMENT ON COLUMN campaign_target_audiences.member_count IS 'member_count 컬럼';
-COMMENT ON COLUMN campaign_target_audiences.target_customer_count IS 'target_customer_count 컬럼';
-COMMENT ON COLUMN campaign_target_audiences.target_campaign_count IS 'target_campaign_count 컬럼';
-COMMENT ON COLUMN campaign_target_audiences.failure_reason IS 'failure_reason 컬럼';
-COMMENT ON COLUMN campaign_target_audiences.created_at IS '생성 일시';
-COMMENT ON COLUMN campaign_target_audiences.completed_at IS 'completed_at 컬럼';
-COMMENT ON COLUMN campaign_target_audiences.expires_at IS 'expires_at 컬럼';
-
-COMMENT ON TABLE campaign_target_audience_members IS 'campaign_target_audience_members 정보를 저장하는 테이블';
-COMMENT ON COLUMN campaign_target_audience_members.audience_id IS 'audience_id 컬럼';
-COMMENT ON COLUMN campaign_target_audience_members.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN campaign_target_audience_members.member_id IS 'member_id 컬럼';
-COMMENT ON COLUMN campaign_target_audience_members.user_id IS '사용자 ID';
-COMMENT ON COLUMN campaign_target_audience_members.campaign_id IS '캠페인 ID';
-COMMENT ON COLUMN campaign_target_audience_members.created_at IS '생성 일시';
-
-COMMENT ON TABLE campaign_query_failure_logs IS 'campaign_query_failure_logs 정보를 저장하는 테이블';
-COMMENT ON COLUMN campaign_query_failure_logs.failure_log_id IS 'failure_log_id 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.endpoint IS 'endpoint 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.prompt IS 'prompt 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.query_parser IS 'query_parser 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.api_status IS 'api_status 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.failure_stage IS 'failure_stage 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.failure_reason IS 'failure_reason 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.error_detail IS 'error_detail 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.generated_sql IS 'generated_sql 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.sql_hash IS 'sql_hash 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.request_options IS 'request_options 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.query_plan IS 'query_plan 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.missing_input_conditions IS 'missing_input_conditions 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.clarification_questions IS 'clarification_questions 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.selected_candidate IS 'selected_candidate 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.stage_log IS 'stage_log 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.context_metadata IS 'context_metadata 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.database_execution IS 'database_execution 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.message_generation IS 'message_generation 컬럼';
-COMMENT ON COLUMN campaign_query_failure_logs.created_at IS '생성 일시';
-
-COMMENT ON TABLE campaign_channel_messages IS 'campaign_channel_messages 정보를 저장하는 테이블';
-COMMENT ON COLUMN campaign_channel_messages.message_id IS 'message_id 컬럼';
-COMMENT ON COLUMN campaign_channel_messages.campaign_id IS '캠페인 ID';
-COMMENT ON COLUMN campaign_channel_messages.channel IS '채널';
-COMMENT ON COLUMN campaign_channel_messages.send_type IS 'send_type 컬럼';
-COMMENT ON COLUMN campaign_channel_messages.message_body IS '메시지 내용';
-COMMENT ON COLUMN campaign_channel_messages.sent_at IS 'sent_at 컬럼';
-COMMENT ON COLUMN campaign_channel_messages.send_status IS 'send_status 컬럼';
-COMMENT ON COLUMN campaign_channel_messages.provider_message_id IS 'provider_message_id 컬럼';
-COMMENT ON COLUMN campaign_channel_messages.created_at IS '생성 일시';
-COMMENT ON COLUMN campaign_channel_messages.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN campaign_channel_messages.ON IS 'ON 컬럼';
-
-COMMENT ON TABLE campaign_experiments IS 'campaign_experiments 정보를 저장하는 테이블';
-COMMENT ON COLUMN campaign_experiments.experiment_id IS 'experiment_id 컬럼';
-COMMENT ON COLUMN campaign_experiments.campaign_id IS '캠페인 ID';
-COMMENT ON COLUMN campaign_experiments.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN campaign_experiments.experiment_name IS 'experiment_name 컬럼';
-COMMENT ON COLUMN campaign_experiments.channel IS '채널';
-COMMENT ON COLUMN campaign_experiments.status IS '상태';
-COMMENT ON COLUMN campaign_experiments.assignment_method IS 'assignment_method 컬럼';
-COMMENT ON COLUMN campaign_experiments.started_at IS 'started_at 컬럼';
-COMMENT ON COLUMN campaign_experiments.ended_at IS 'ended_at 컬럼';
-COMMENT ON COLUMN campaign_experiments.created_at IS '생성 일시';
-COMMENT ON COLUMN campaign_experiments.updated_at IS '수정 일시';
-COMMENT ON COLUMN campaign_experiments.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN campaign_experiments.ON IS 'ON 컬럼';
-
-COMMENT ON TABLE campaign_message_variants IS 'campaign_message_variants 정보를 저장하는 테이블';
-COMMENT ON COLUMN campaign_message_variants.variant_id IS 'variant_id 컬럼';
-COMMENT ON COLUMN campaign_message_variants.experiment_id IS 'experiment_id 컬럼';
-COMMENT ON COLUMN campaign_message_variants.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN campaign_message_variants.variant_code IS 'variant_code 컬럼';
-COMMENT ON COLUMN campaign_message_variants.message_name IS 'message_name 컬럼';
-COMMENT ON COLUMN campaign_message_variants.message_body IS '메시지 내용';
-COMMENT ON COLUMN campaign_message_variants.landing_url IS 'landing_url 컬럼';
-COMMENT ON COLUMN campaign_message_variants.allocation_weight IS 'allocation_weight 컬럼';
-COMMENT ON COLUMN campaign_message_variants.is_control IS 'is_control 컬럼';
-COMMENT ON COLUMN campaign_message_variants.ai_features IS 'ai_features 컬럼';
-COMMENT ON COLUMN campaign_message_variants.created_at IS '생성 일시';
-
-COMMENT ON TABLE campaign_message_deliveries IS 'campaign_message_deliveries 정보를 저장하는 테이블';
-COMMENT ON COLUMN campaign_message_deliveries.delivery_id IS 'delivery_id 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.experiment_id IS 'experiment_id 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.variant_id IS 'variant_id 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.campaign_id IS '캠페인 ID';
-COMMENT ON COLUMN campaign_message_deliveries.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.user_id IS '사용자 ID';
-COMMENT ON COLUMN campaign_message_deliveries.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.channel IS '채널';
-COMMENT ON COLUMN campaign_message_deliveries.assignment_source IS 'assignment_source 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.model_version IS 'model_version 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.predicted_click_probability IS 'predicted_click_probability 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.predicted_click_probability IS 'predicted_click_probability 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.OR IS 'OR 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.provider_message_id IS 'provider_message_id 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.assigned_at IS 'assigned_at 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.requested_at IS 'requested_at 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.sent_at IS 'sent_at 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.final_status IS 'final_status 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.targeting_snapshot IS 'targeting_snapshot 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.created_at IS '생성 일시';
-COMMENT ON COLUMN campaign_message_deliveries.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN campaign_message_deliveries.ON IS 'ON 컬럼';
-
-COMMENT ON TABLE campaign_message_events IS 'campaign_message_events 정보를 저장하는 테이블';
-COMMENT ON COLUMN campaign_message_events.event_id IS 'event_id 컬럼';
-COMMENT ON COLUMN campaign_message_events.delivery_id IS 'delivery_id 컬럼';
-COMMENT ON COLUMN campaign_message_events.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN campaign_message_events.event_type IS '이벤트 유형';
-COMMENT ON COLUMN campaign_message_events.event_at IS '이벤트 발생 일시';
-COMMENT ON COLUMN campaign_message_events.event_key IS 'event_key 컬럼';
-COMMENT ON COLUMN campaign_message_events.provider_event_id IS 'provider_event_id 컬럼';
-COMMENT ON COLUMN campaign_message_events.click_url IS 'click_url 컬럼';
-COMMENT ON COLUMN campaign_message_events.conversion_type IS 'conversion_type 컬럼';
-COMMENT ON COLUMN campaign_message_events.conversion_value_krw IS 'conversion_value_krw 컬럼';
-COMMENT ON COLUMN campaign_message_events.device_type IS 'device_type 컬럼';
-COMMENT ON COLUMN campaign_message_events.os_name IS 'os_name 컬럼';
-COMMENT ON COLUMN campaign_message_events.browser_name IS 'browser_name 컬럼';
-COMMENT ON COLUMN campaign_message_events.ip_hash IS 'ip_hash 컬럼';
-COMMENT ON COLUMN campaign_message_events.user_agent IS 'user_agent 컬럼';
-COMMENT ON COLUMN campaign_message_events.event_properties IS 'event_properties 컬럼';
-COMMENT ON COLUMN campaign_message_events.received_at IS 'received_at 컬럼';
-
-COMMENT ON TABLE shopping_carts IS 'shopping_carts 정보를 저장하는 테이블';
-COMMENT ON COLUMN shopping_carts.cart_id IS 'cart_id 컬럼';
-COMMENT ON COLUMN shopping_carts.user_id IS '사용자 ID';
-COMMENT ON COLUMN shopping_carts.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN shopping_carts.cart_status IS 'cart_status 컬럼';
-COMMENT ON COLUMN shopping_carts.source_channel IS 'source_channel 컬럼';
-COMMENT ON COLUMN shopping_carts.total_quantity IS 'total_quantity 컬럼';
-COMMENT ON COLUMN shopping_carts.original_amount_krw IS 'original_amount_krw 컬럼';
-COMMENT ON COLUMN shopping_carts.discount_amount_krw IS 'discount_amount_krw 컬럼';
-COMMENT ON COLUMN shopping_carts.shipping_fee_krw IS 'shipping_fee_krw 컬럼';
-COMMENT ON COLUMN shopping_carts.total_amount_krw IS 'total_amount_krw 컬럼';
-COMMENT ON COLUMN shopping_carts.purchase_completed IS 'purchase_completed 컬럼';
-COMMENT ON COLUMN shopping_carts.abandonment_reason IS 'abandonment_reason 컬럼';
-COMMENT ON COLUMN shopping_carts.created_at IS '생성 일시';
-COMMENT ON COLUMN shopping_carts.last_activity_at IS 'last_activity_at 컬럼';
-COMMENT ON COLUMN shopping_carts.abandoned_at IS 'abandoned_at 컬럼';
-COMMENT ON COLUMN shopping_carts.purchased_at IS 'purchased_at 컬럼';
-COMMENT ON COLUMN shopping_carts.expires_at IS 'expires_at 컬럼';
-COMMENT ON COLUMN shopping_carts.updated_at IS '수정 일시';
-COMMENT ON COLUMN shopping_carts.last_activity_at IS 'last_activity_at 컬럼';
-COMMENT ON COLUMN shopping_carts.AND IS 'AND 컬럼';
-COMMENT ON COLUMN shopping_carts.AND IS 'AND 컬럼';
-COMMENT ON COLUMN shopping_carts.AND IS 'AND 컬럼';
-
-COMMENT ON TABLE shopping_cart_items IS 'shopping_cart_items 정보를 저장하는 테이블';
-COMMENT ON COLUMN shopping_cart_items.cart_item_id IS 'cart_item_id 컬럼';
-COMMENT ON COLUMN shopping_cart_items.cart_id IS 'cart_id 컬럼';
-COMMENT ON COLUMN shopping_cart_items.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN shopping_cart_items.product_id IS 'product_id 컬럼';
-COMMENT ON COLUMN shopping_cart_items.product_name IS 'product_name 컬럼';
-COMMENT ON COLUMN shopping_cart_items.category IS 'category 컬럼';
-COMMENT ON COLUMN shopping_cart_items.brand IS 'brand 컬럼';
-COMMENT ON COLUMN shopping_cart_items.quantity IS 'quantity 컬럼';
-COMMENT ON COLUMN shopping_cart_items.unit_price_krw IS 'unit_price_krw 컬럼';
-COMMENT ON COLUMN shopping_cart_items.discount_price_krw IS 'discount_price_krw 컬럼';
-COMMENT ON COLUMN shopping_cart_items.final_unit_price_krw IS 'final_unit_price_krw 컬럼';
-COMMENT ON COLUMN shopping_cart_items.inventory_quantity IS 'inventory_quantity 컬럼';
-COMMENT ON COLUMN shopping_cart_items.inventory_status IS 'inventory_status 컬럼';
-COMMENT ON COLUMN shopping_cart_items.coupon_available IS 'coupon_available 컬럼';
-COMMENT ON COLUMN shopping_cart_items.coupon_code IS 'coupon_code 컬럼';
-COMMENT ON COLUMN shopping_cart_items.coupon_expire_at IS 'coupon_expire_at 컬럼';
-COMMENT ON COLUMN shopping_cart_items.wishlist_flag IS 'wishlist_flag 컬럼';
-COMMENT ON COLUMN shopping_cart_items.viewed_count IS 'viewed_count 컬럼';
-COMMENT ON COLUMN shopping_cart_items.added_at IS 'added_at 컬럼';
-COMMENT ON COLUMN shopping_cart_items.last_viewed_at IS 'last_viewed_at 컬럼';
-COMMENT ON COLUMN shopping_cart_items.removed_at IS 'removed_at 컬럼';
-COMMENT ON COLUMN shopping_cart_items.created_at IS '생성 일시';
-COMMENT ON COLUMN shopping_cart_items.AND IS 'AND 컬럼';
-COMMENT ON COLUMN shopping_cart_items.AND IS 'AND 컬럼';
-
-COMMENT ON TABLE cart_reminder_history IS 'cart_reminder_history 정보를 저장하는 테이블';
-COMMENT ON COLUMN cart_reminder_history.reminder_id IS 'reminder_id 컬럼';
-COMMENT ON COLUMN cart_reminder_history.cart_id IS 'cart_id 컬럼';
-COMMENT ON COLUMN cart_reminder_history.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN cart_reminder_history.campaign_id IS '캠페인 ID';
-COMMENT ON COLUMN cart_reminder_history.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN cart_reminder_history.delivery_id IS 'delivery_id 컬럼';
-COMMENT ON COLUMN cart_reminder_history.REFERENCES IS 'REFERENCES 컬럼';
-COMMENT ON COLUMN cart_reminder_history.channel IS '채널';
-COMMENT ON COLUMN cart_reminder_history.reminder_sequence IS 'reminder_sequence 컬럼';
-COMMENT ON COLUMN cart_reminder_history.reminder_type IS 'reminder_type 컬럼';
-COMMENT ON COLUMN cart_reminder_history.coupon_code IS 'coupon_code 컬럼';
-COMMENT ON COLUMN cart_reminder_history.sent_at IS 'sent_at 컬럼';
-COMMENT ON COLUMN cart_reminder_history.delivered_at IS 'delivered_at 컬럼';
-COMMENT ON COLUMN cart_reminder_history.clicked_at IS 'clicked_at 컬럼';
-COMMENT ON COLUMN cart_reminder_history.converted_at IS 'converted_at 컬럼';
-COMMENT ON COLUMN cart_reminder_history.conversion_order_id IS 'conversion_order_id 컬럼';
-COMMENT ON COLUMN cart_reminder_history.conversion_value_krw IS 'conversion_value_krw 컬럼';
-COMMENT ON COLUMN cart_reminder_history.created_at IS '생성 일시';
-COMMENT ON COLUMN cart_reminder_history.AND IS 'AND 컬럼';
-COMMENT ON COLUMN cart_reminder_history.AND IS 'AND 컬럼';
 
 INSERT INTO campaigns (campaign_id, name, objective, category, offer, budget_krw, start_date, end_date, expected_ctr, expected_cvr, text_for_embedding) VALUES
   ('camp_001', '여름 장바구니 리마인드', 'purchase', 'fashion', '10% 할인 쿠폰', 3000000, '2026-07-15', '2026-07-31', 3.8, 5.2, '여름 장바구니 리마인드 캠페인. 목적은 purchase이고 카테고리는 fashion입니다. 타겟 세그먼트는 20s_female, cart_abandoner, price_sensitive이며 채널은 kakao, app_push입니다. 혜택은 10% 할인 쿠폰입니다. 키워드: 여름, 의류, 쿠폰, 장바구니.'),
@@ -2158,3 +1887,611 @@ SELECT
 FROM v_cart_repurchase_targets
 WHERE abandoned_hours >= 24
 ORDER BY total_amount_krw DESC, abandoned_hours DESC, recommended_campaign_id;
+
+COMMENT ON TABLE campaigns IS '캠페인 기본 정보를 저장하는 테이블';
+COMMENT ON COLUMN campaigns.campaign_id IS '캠페인 ID';
+COMMENT ON COLUMN campaigns.name IS '이름';
+COMMENT ON COLUMN campaigns.objective IS 'objective 컬럼';
+COMMENT ON COLUMN campaigns.category IS 'category 컬럼';
+COMMENT ON COLUMN campaigns.offer IS 'offer 컬럼';
+COMMENT ON COLUMN campaigns.budget_krw IS 'budget_krw 컬럼';
+COMMENT ON COLUMN campaigns.start_date IS 'start_date 컬럼';
+COMMENT ON COLUMN campaigns.end_date IS 'end_date 컬럼';
+COMMENT ON COLUMN campaigns.expected_ctr IS 'expected_ctr 컬럼';
+COMMENT ON COLUMN campaigns.expected_cvr IS 'expected_cvr 컬럼';
+COMMENT ON COLUMN campaigns.text_for_embedding IS 'text_for_embedding 컬럼';
+
+COMMENT ON TABLE campaign_channels IS 'campaign_channels 정보를 저장하는 테이블';
+COMMENT ON COLUMN campaign_channels.campaign_id IS '캠페인 ID';
+COMMENT ON COLUMN campaign_channels.channel IS '채널';
+
+COMMENT ON TABLE campaign_target_segments IS 'campaign_target_segments 정보를 저장하는 테이블';
+COMMENT ON COLUMN campaign_target_segments.campaign_id IS '캠페인 ID';
+COMMENT ON COLUMN campaign_target_segments.target_segment IS 'target_segment 컬럼';
+
+COMMENT ON TABLE campaign_keywords IS 'campaign_keywords 정보를 저장하는 테이블';
+COMMENT ON COLUMN campaign_keywords.campaign_id IS '캠페인 ID';
+COMMENT ON COLUMN campaign_keywords.keyword IS 'keyword 컬럼';
+
+COMMENT ON TABLE campaign_message_examples IS 'campaign_message_examples 정보를 저장하는 테이블';
+COMMENT ON COLUMN campaign_message_examples.example_id IS 'example_id 컬럼';
+COMMENT ON COLUMN campaign_message_examples.campaign_id IS '캠페인 ID';
+COMMENT ON COLUMN campaign_message_examples.channel IS '채널';
+COMMENT ON COLUMN campaign_message_examples.emphasis_type IS 'emphasis_type 컬럼';
+COMMENT ON COLUMN campaign_message_examples.message_text IS 'message_text 컬럼';
+COMMENT ON COLUMN campaign_message_examples.brand_tone IS 'brand_tone 컬럼';
+COMMENT ON COLUMN campaign_message_examples.created_at IS '생성 일시';
+
+COMMENT ON TABLE users IS '사용자 기본 정보를 저장하는 테이블';
+COMMENT ON COLUMN users.user_id IS '사용자 ID';
+COMMENT ON COLUMN users.age IS 'age 컬럼';
+COMMENT ON COLUMN users.gender IS 'gender 컬럼';
+COMMENT ON COLUMN users.region IS 'region 컬럼';
+COMMENT ON COLUMN users.lifecycle IS 'lifecycle 컬럼';
+COMMENT ON COLUMN users.avg_order_value_krw IS 'avg_order_value_krw 컬럼';
+COMMENT ON COLUMN users.purchase_count_90d IS 'purchase_count_90d 컬럼';
+COMMENT ON COLUMN users.last_active_days IS 'last_active_days 컬럼';
+COMMENT ON COLUMN users.price_sensitivity IS 'price_sensitivity 컬럼';
+COMMENT ON COLUMN users.predicted_ltv_segment IS 'predicted_ltv_segment 컬럼';
+COMMENT ON COLUMN users.text_for_embedding IS 'text_for_embedding 컬럼';
+
+COMMENT ON TABLE user_interests IS 'user_interests 정보를 저장하는 테이블';
+COMMENT ON COLUMN user_interests.user_id IS '사용자 ID';
+COMMENT ON COLUMN user_interests.interest IS 'interest 컬럼';
+
+COMMENT ON TABLE user_preferred_channels IS 'user_preferred_channels 정보를 저장하는 테이블';
+COMMENT ON COLUMN user_preferred_channels.user_id IS '사용자 ID';
+COMMENT ON COLUMN user_preferred_channels.preferred_channel IS 'preferred_channel 컬럼';
+
+COMMENT ON TABLE user_recent_behaviors IS 'user_recent_behaviors 정보를 저장하는 테이블';
+COMMENT ON COLUMN user_recent_behaviors.user_id IS '사용자 ID';
+COMMENT ON COLUMN user_recent_behaviors.behavior IS 'behavior 컬럼';
+
+COMMENT ON TABLE recommendation_edges IS 'recommendation_edges 정보를 저장하는 테이블';
+COMMENT ON COLUMN recommendation_edges.user_id IS '사용자 ID';
+COMMENT ON COLUMN recommendation_edges.campaign_id IS '캠페인 ID';
+COMMENT ON COLUMN recommendation_edges.reason IS 'reason 컬럼';
+COMMENT ON COLUMN recommendation_edges.label IS 'label 컬럼';
+
+COMMENT ON TABLE campaign_target_audiences IS 'campaign_target_audiences 정보를 저장하는 테이블';
+COMMENT ON COLUMN campaign_target_audiences.audience_id IS 'audience_id 컬럼';
+COMMENT ON COLUMN campaign_target_audiences.audience_key IS 'audience_key 컬럼';
+COMMENT ON COLUMN campaign_target_audiences.prompt IS 'prompt 컬럼';
+COMMENT ON COLUMN campaign_target_audiences.query_parser IS 'query_parser 컬럼';
+COMMENT ON COLUMN campaign_target_audiences.request_options IS 'request_options 컬럼';
+COMMENT ON COLUMN campaign_target_audiences.generated_sql IS 'generated_sql 컬럼';
+COMMENT ON COLUMN campaign_target_audiences.sql_hash IS 'sql_hash 컬럼';
+COMMENT ON COLUMN campaign_target_audiences.query_plan IS 'query_plan 컬럼';
+COMMENT ON COLUMN campaign_target_audiences.status IS '상태';
+COMMENT ON COLUMN campaign_target_audiences.member_count IS 'member_count 컬럼';
+COMMENT ON COLUMN campaign_target_audiences.target_customer_count IS 'target_customer_count 컬럼';
+COMMENT ON COLUMN campaign_target_audiences.target_campaign_count IS 'target_campaign_count 컬럼';
+COMMENT ON COLUMN campaign_target_audiences.failure_reason IS 'failure_reason 컬럼';
+COMMENT ON COLUMN campaign_target_audiences.created_at IS '생성 일시';
+COMMENT ON COLUMN campaign_target_audiences.completed_at IS 'completed_at 컬럼';
+COMMENT ON COLUMN campaign_target_audiences.expires_at IS 'expires_at 컬럼';
+
+COMMENT ON TABLE campaign_target_audience_members IS 'campaign_target_audience_members 정보를 저장하는 테이블';
+COMMENT ON COLUMN campaign_target_audience_members.audience_id IS 'audience_id 컬럼';
+COMMENT ON COLUMN campaign_target_audience_members.member_id IS 'member_id 컬럼';
+COMMENT ON COLUMN campaign_target_audience_members.user_id IS '사용자 ID';
+COMMENT ON COLUMN campaign_target_audience_members.campaign_id IS '캠페인 ID';
+COMMENT ON COLUMN campaign_target_audience_members.created_at IS '생성 일시';
+
+COMMENT ON TABLE campaign_query_failure_logs IS 'campaign_query_failure_logs 정보를 저장하는 테이블';
+COMMENT ON COLUMN campaign_query_failure_logs.failure_log_id IS 'failure_log_id 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.endpoint IS 'endpoint 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.prompt IS 'prompt 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.query_parser IS 'query_parser 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.api_status IS 'api_status 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.failure_stage IS 'failure_stage 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.failure_reason IS 'failure_reason 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.error_detail IS 'error_detail 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.generated_sql IS 'generated_sql 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.sql_hash IS 'sql_hash 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.request_options IS 'request_options 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.query_plan IS 'query_plan 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.missing_input_conditions IS 'missing_input_conditions 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.clarification_questions IS 'clarification_questions 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.selected_candidate IS 'selected_candidate 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.stage_log IS 'stage_log 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.context_metadata IS 'context_metadata 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.database_execution IS 'database_execution 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.message_generation IS 'message_generation 컬럼';
+COMMENT ON COLUMN campaign_query_failure_logs.created_at IS '생성 일시';
+
+COMMENT ON TABLE campaign_channel_messages IS 'campaign_channel_messages 정보를 저장하는 테이블';
+COMMENT ON COLUMN campaign_channel_messages.message_id IS 'message_id 컬럼';
+COMMENT ON COLUMN campaign_channel_messages.campaign_id IS '캠페인 ID';
+COMMENT ON COLUMN campaign_channel_messages.channel IS '채널';
+COMMENT ON COLUMN campaign_channel_messages.send_type IS 'send_type 컬럼';
+COMMENT ON COLUMN campaign_channel_messages.message_body IS '메시지 내용';
+COMMENT ON COLUMN campaign_channel_messages.sent_at IS 'sent_at 컬럼';
+COMMENT ON COLUMN campaign_channel_messages.send_status IS 'send_status 컬럼';
+COMMENT ON COLUMN campaign_channel_messages.provider_message_id IS 'provider_message_id 컬럼';
+COMMENT ON COLUMN campaign_channel_messages.created_at IS '생성 일시';
+
+COMMENT ON TABLE campaign_experiments IS 'campaign_experiments 정보를 저장하는 테이블';
+COMMENT ON COLUMN campaign_experiments.experiment_id IS 'experiment_id 컬럼';
+COMMENT ON COLUMN campaign_experiments.campaign_id IS '캠페인 ID';
+COMMENT ON COLUMN campaign_experiments.experiment_name IS 'experiment_name 컬럼';
+COMMENT ON COLUMN campaign_experiments.channel IS '채널';
+COMMENT ON COLUMN campaign_experiments.status IS '상태';
+COMMENT ON COLUMN campaign_experiments.assignment_method IS 'assignment_method 컬럼';
+COMMENT ON COLUMN campaign_experiments.started_at IS 'started_at 컬럼';
+COMMENT ON COLUMN campaign_experiments.ended_at IS 'ended_at 컬럼';
+COMMENT ON COLUMN campaign_experiments.created_at IS '생성 일시';
+COMMENT ON COLUMN campaign_experiments.updated_at IS '수정 일시';
+
+COMMENT ON TABLE campaign_message_variants IS 'campaign_message_variants 정보를 저장하는 테이블';
+COMMENT ON COLUMN campaign_message_variants.variant_id IS 'variant_id 컬럼';
+COMMENT ON COLUMN campaign_message_variants.experiment_id IS 'experiment_id 컬럼';
+COMMENT ON COLUMN campaign_message_variants.variant_code IS 'variant_code 컬럼';
+COMMENT ON COLUMN campaign_message_variants.message_name IS 'message_name 컬럼';
+COMMENT ON COLUMN campaign_message_variants.message_body IS '메시지 내용';
+COMMENT ON COLUMN campaign_message_variants.landing_url IS 'landing_url 컬럼';
+COMMENT ON COLUMN campaign_message_variants.allocation_weight IS 'allocation_weight 컬럼';
+COMMENT ON COLUMN campaign_message_variants.is_control IS 'is_control 컬럼';
+COMMENT ON COLUMN campaign_message_variants.ai_features IS 'ai_features 컬럼';
+COMMENT ON COLUMN campaign_message_variants.created_at IS '생성 일시';
+
+COMMENT ON TABLE campaign_message_deliveries IS 'campaign_message_deliveries 정보를 저장하는 테이블';
+COMMENT ON COLUMN campaign_message_deliveries.delivery_id IS 'delivery_id 컬럼';
+COMMENT ON COLUMN campaign_message_deliveries.experiment_id IS 'experiment_id 컬럼';
+COMMENT ON COLUMN campaign_message_deliveries.variant_id IS 'variant_id 컬럼';
+COMMENT ON COLUMN campaign_message_deliveries.campaign_id IS '캠페인 ID';
+COMMENT ON COLUMN campaign_message_deliveries.user_id IS '사용자 ID';
+COMMENT ON COLUMN campaign_message_deliveries.channel IS '채널';
+COMMENT ON COLUMN campaign_message_deliveries.assignment_source IS 'assignment_source 컬럼';
+COMMENT ON COLUMN campaign_message_deliveries.model_version IS 'model_version 컬럼';
+COMMENT ON COLUMN campaign_message_deliveries.predicted_click_probability IS 'predicted_click_probability 컬럼';
+COMMENT ON COLUMN campaign_message_deliveries.provider_message_id IS 'provider_message_id 컬럼';
+COMMENT ON COLUMN campaign_message_deliveries.assigned_at IS 'assigned_at 컬럼';
+COMMENT ON COLUMN campaign_message_deliveries.requested_at IS 'requested_at 컬럼';
+COMMENT ON COLUMN campaign_message_deliveries.sent_at IS 'sent_at 컬럼';
+COMMENT ON COLUMN campaign_message_deliveries.final_status IS 'final_status 컬럼';
+COMMENT ON COLUMN campaign_message_deliveries.targeting_snapshot IS 'targeting_snapshot 컬럼';
+COMMENT ON COLUMN campaign_message_deliveries.created_at IS '생성 일시';
+
+COMMENT ON TABLE campaign_message_events IS 'campaign_message_events 정보를 저장하는 테이블';
+COMMENT ON COLUMN campaign_message_events.event_id IS 'event_id 컬럼';
+COMMENT ON COLUMN campaign_message_events.delivery_id IS 'delivery_id 컬럼';
+COMMENT ON COLUMN campaign_message_events.event_type IS '이벤트 유형';
+COMMENT ON COLUMN campaign_message_events.event_at IS '이벤트 발생 일시';
+COMMENT ON COLUMN campaign_message_events.event_key IS 'event_key 컬럼';
+COMMENT ON COLUMN campaign_message_events.provider_event_id IS 'provider_event_id 컬럼';
+COMMENT ON COLUMN campaign_message_events.click_url IS 'click_url 컬럼';
+COMMENT ON COLUMN campaign_message_events.conversion_type IS 'conversion_type 컬럼';
+COMMENT ON COLUMN campaign_message_events.conversion_value_krw IS 'conversion_value_krw 컬럼';
+COMMENT ON COLUMN campaign_message_events.device_type IS 'device_type 컬럼';
+COMMENT ON COLUMN campaign_message_events.os_name IS 'os_name 컬럼';
+COMMENT ON COLUMN campaign_message_events.browser_name IS 'browser_name 컬럼';
+COMMENT ON COLUMN campaign_message_events.ip_hash IS 'ip_hash 컬럼';
+COMMENT ON COLUMN campaign_message_events.user_agent IS 'user_agent 컬럼';
+COMMENT ON COLUMN campaign_message_events.event_properties IS 'event_properties 컬럼';
+COMMENT ON COLUMN campaign_message_events.received_at IS 'received_at 컬럼';
+
+COMMENT ON TABLE shopping_carts IS 'shopping_carts 정보를 저장하는 테이블';
+COMMENT ON COLUMN shopping_carts.cart_id IS 'cart_id 컬럼';
+COMMENT ON COLUMN shopping_carts.user_id IS '사용자 ID';
+COMMENT ON COLUMN shopping_carts.cart_status IS 'cart_status 컬럼';
+COMMENT ON COLUMN shopping_carts.source_channel IS 'source_channel 컬럼';
+COMMENT ON COLUMN shopping_carts.total_quantity IS 'total_quantity 컬럼';
+COMMENT ON COLUMN shopping_carts.original_amount_krw IS 'original_amount_krw 컬럼';
+COMMENT ON COLUMN shopping_carts.discount_amount_krw IS 'discount_amount_krw 컬럼';
+COMMENT ON COLUMN shopping_carts.shipping_fee_krw IS 'shipping_fee_krw 컬럼';
+COMMENT ON COLUMN shopping_carts.total_amount_krw IS 'total_amount_krw 컬럼';
+COMMENT ON COLUMN shopping_carts.purchase_completed IS 'purchase_completed 컬럼';
+COMMENT ON COLUMN shopping_carts.abandonment_reason IS 'abandonment_reason 컬럼';
+COMMENT ON COLUMN shopping_carts.created_at IS '생성 일시';
+COMMENT ON COLUMN shopping_carts.last_activity_at IS 'last_activity_at 컬럼';
+COMMENT ON COLUMN shopping_carts.abandoned_at IS 'abandoned_at 컬럼';
+COMMENT ON COLUMN shopping_carts.purchased_at IS 'purchased_at 컬럼';
+COMMENT ON COLUMN shopping_carts.expires_at IS 'expires_at 컬럼';
+COMMENT ON COLUMN shopping_carts.updated_at IS '수정 일시';
+
+COMMENT ON TABLE shopping_cart_items IS 'shopping_cart_items 정보를 저장하는 테이블';
+COMMENT ON COLUMN shopping_cart_items.cart_item_id IS 'cart_item_id 컬럼';
+COMMENT ON COLUMN shopping_cart_items.cart_id IS 'cart_id 컬럼';
+COMMENT ON COLUMN shopping_cart_items.product_id IS 'product_id 컬럼';
+COMMENT ON COLUMN shopping_cart_items.product_name IS 'product_name 컬럼';
+COMMENT ON COLUMN shopping_cart_items.category IS 'category 컬럼';
+COMMENT ON COLUMN shopping_cart_items.brand IS 'brand 컬럼';
+COMMENT ON COLUMN shopping_cart_items.quantity IS 'quantity 컬럼';
+COMMENT ON COLUMN shopping_cart_items.unit_price_krw IS 'unit_price_krw 컬럼';
+COMMENT ON COLUMN shopping_cart_items.discount_price_krw IS 'discount_price_krw 컬럼';
+COMMENT ON COLUMN shopping_cart_items.final_unit_price_krw IS 'final_unit_price_krw 컬럼';
+COMMENT ON COLUMN shopping_cart_items.inventory_quantity IS 'inventory_quantity 컬럼';
+COMMENT ON COLUMN shopping_cart_items.inventory_status IS 'inventory_status 컬럼';
+COMMENT ON COLUMN shopping_cart_items.coupon_available IS 'coupon_available 컬럼';
+COMMENT ON COLUMN shopping_cart_items.coupon_code IS 'coupon_code 컬럼';
+COMMENT ON COLUMN shopping_cart_items.coupon_expire_at IS 'coupon_expire_at 컬럼';
+COMMENT ON COLUMN shopping_cart_items.wishlist_flag IS 'wishlist_flag 컬럼';
+COMMENT ON COLUMN shopping_cart_items.viewed_count IS 'viewed_count 컬럼';
+COMMENT ON COLUMN shopping_cart_items.added_at IS 'added_at 컬럼';
+COMMENT ON COLUMN shopping_cart_items.last_viewed_at IS 'last_viewed_at 컬럼';
+COMMENT ON COLUMN shopping_cart_items.removed_at IS 'removed_at 컬럼';
+COMMENT ON COLUMN shopping_cart_items.created_at IS '생성 일시';
+
+COMMENT ON TABLE cart_reminder_history IS 'cart_reminder_history 정보를 저장하는 테이블';
+COMMENT ON COLUMN cart_reminder_history.reminder_id IS 'reminder_id 컬럼';
+COMMENT ON COLUMN cart_reminder_history.cart_id IS 'cart_id 컬럼';
+COMMENT ON COLUMN cart_reminder_history.campaign_id IS '캠페인 ID';
+COMMENT ON COLUMN cart_reminder_history.delivery_id IS 'delivery_id 컬럼';
+COMMENT ON COLUMN cart_reminder_history.channel IS '채널';
+COMMENT ON COLUMN cart_reminder_history.reminder_sequence IS 'reminder_sequence 컬럼';
+COMMENT ON COLUMN cart_reminder_history.reminder_type IS 'reminder_type 컬럼';
+COMMENT ON COLUMN cart_reminder_history.coupon_code IS 'coupon_code 컬럼';
+COMMENT ON COLUMN cart_reminder_history.sent_at IS 'sent_at 컬럼';
+COMMENT ON COLUMN cart_reminder_history.delivered_at IS 'delivered_at 컬럼';
+COMMENT ON COLUMN cart_reminder_history.clicked_at IS 'clicked_at 컬럼';
+COMMENT ON COLUMN cart_reminder_history.converted_at IS 'converted_at 컬럼';
+COMMENT ON COLUMN cart_reminder_history.conversion_order_id IS 'conversion_order_id 컬럼';
+COMMENT ON COLUMN cart_reminder_history.conversion_value_krw IS 'conversion_value_krw 컬럼';
+COMMENT ON COLUMN cart_reminder_history.created_at IS '생성 일시';
+
+
+-- ============================================================
+-- Added: 6개월 이상 미접속 휴면 고객 재활성화 데이터/조회 패치
+-- ============================================================
+
+-- ============================================================
+-- 6개월 이상 미접속 휴면 고객 재활성화용 패치
+-- PostgreSQL 14+
+-- 기존 전체 스키마 실행 후 이 파일을 실행하세요.
+-- ============================================================
+
+BEGIN;
+
+-- 1) Query Plan이 달력 기준 "6개월"을 직접 해석할 수 있도록
+--    users에 마지막 접속 일시 컬럼을 추가합니다.
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+
+-- 기존 데이터는 last_active_days를 기준으로 마지막 접속 일시를 역산합니다.
+UPDATE users
+SET last_login_at = CURRENT_TIMESTAMP - (last_active_days * INTERVAL '1 day')
+WHERE last_login_at IS NULL;
+
+ALTER TABLE users
+    ALTER COLUMN last_login_at SET NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_users_last_login_at
+    ON users(last_login_at);
+
+CREATE INDEX IF NOT EXISTS idx_users_dormant_reactivation
+    ON users(last_login_at, lifecycle)
+    WHERE lifecycle IN ('inactive_90d', 'inactive_180d', 'dormant');
+
+COMMENT ON COLUMN users.last_login_at IS
+    '고객의 마지막 로그인/접속 일시. 6개월 이상 미접속 조건은 CURRENT_TIMESTAMP - INTERVAL ''6 months''와 비교한다.';
+
+-- 2) 재활성화 캠페인이 실행 시점에도 유효하도록 보정합니다.
+UPDATE campaigns
+SET start_date = LEAST(start_date, CURRENT_DATE),
+    end_date = GREATEST(end_date, CURRENT_DATE + 30),
+    objective = 'reactivation'
+WHERE campaign_id = 'camp_004';
+
+-- Query Plan의 명시적 6개월 세그먼트와 맞춥니다.
+INSERT INTO campaign_target_segments (campaign_id, target_segment)
+VALUES ('camp_004', 'inactive_180d')
+ON CONFLICT DO NOTHING;
+
+-- 3) 6개월 이상 미접속 샘플 고객을 추가합니다.
+--    last_active_days와 last_login_at을 모두 제공하여 어떤 방식의 SQL도 결과를 반환하게 합니다.
+INSERT INTO users (
+    user_id, age, gender, region, lifecycle,
+    avg_order_value_krw, purchase_count_90d, last_active_days,
+    price_sensitivity, predicted_ltv_segment, text_for_embedding,
+    last_login_at
+) VALUES
+('user_026', 32, 'female', 'Seoul',    'inactive_180d', 72000, 0, 181, 'high',   'mid',
+ 'user_026 사용자는 181일 이상 미접속한 휴면 고객입니다. 복귀 쿠폰에 반응 가능성이 높고 kakao 채널을 선호합니다.', CURRENT_TIMESTAMP - INTERVAL '181 days'),
+('user_027', 45, 'male',   'Busan',   'inactive_180d', 118000, 0, 195, 'medium', 'high',
+ 'user_027 사용자는 약 6개월 이상 미접속한 고가치 휴면 고객입니다. sms 채널과 할인 혜택이 적합합니다.', CURRENT_TIMESTAMP - INTERVAL '195 days'),
+('user_028', 29, 'female', 'Gyeonggi','inactive_180d', 46000, 0, 220, 'high',   'low',
+ 'user_028 사용자는 220일 미접속 휴면 고객이며 가격 민감도가 높아 복귀 쿠폰 타겟입니다.', CURRENT_TIMESTAMP - INTERVAL '220 days'),
+('user_029', 51, 'male',   'Daegu',   'dormant',       155000, 0, 250, 'low',    'high',
+ 'user_029 사용자는 250일 미접속한 고가치 휴면 고객이며 개인화된 복귀 메시지가 적합합니다.', CURRENT_TIMESTAMP - INTERVAL '250 days'),
+('user_030', 38, 'female', 'Incheon', 'inactive_180d', 83000, 0, 275, 'medium', 'mid',
+ 'user_030 사용자는 275일 미접속한 휴면 고객이며 kakao와 sms 재활성화 캠페인 대상입니다.', CURRENT_TIMESTAMP - INTERVAL '275 days'),
+('user_031', 26, 'male',   'Daejeon', 'inactive_180d', 35000, 0, 310, 'high',   'low',
+ 'user_031 사용자는 310일 미접속한 휴면 고객이며 할인 중심 복귀 메시지가 적합합니다.', CURRENT_TIMESTAMP - INTERVAL '310 days'),
+('user_032', 43, 'female', 'Gwangju', 'dormant',       99000, 0, 365, 'medium', 'high',
+ 'user_032 사용자는 1년가량 미접속한 고가치 휴면 고객이며 복귀 혜택 캠페인 대상입니다.', CURRENT_TIMESTAMP - INTERVAL '365 days'),
+('user_033', 57, 'male',   'Ulsan',   'dormant',       132000, 0, 420, 'low',    'high',
+ 'user_033 사용자는 420일 미접속한 장기 휴면 고객이며 sms 기반 복귀 안내가 적합합니다.', CURRENT_TIMESTAMP - INTERVAL '420 days')
+ON CONFLICT (user_id) DO UPDATE SET
+    lifecycle = EXCLUDED.lifecycle,
+    avg_order_value_krw = EXCLUDED.avg_order_value_krw,
+    purchase_count_90d = EXCLUDED.purchase_count_90d,
+    last_active_days = EXCLUDED.last_active_days,
+    price_sensitivity = EXCLUDED.price_sensitivity,
+    predicted_ltv_segment = EXCLUDED.predicted_ltv_segment,
+    text_for_embedding = EXCLUDED.text_for_embedding,
+    last_login_at = EXCLUDED.last_login_at;
+
+-- 4) 채널, 행동, 추천 관계를 추가합니다.
+INSERT INTO user_preferred_channels (user_id, preferred_channel) VALUES
+('user_026', 'kakao'), ('user_026', 'sms'),
+('user_027', 'sms'),   ('user_027', 'email'),
+('user_028', 'kakao'),
+('user_029', 'sms'),
+('user_030', 'kakao'), ('user_030', 'sms'),
+('user_031', 'sms'),
+('user_032', 'kakao'), ('user_032', 'email'),
+('user_033', 'sms')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO user_recent_behaviors (user_id, behavior) VALUES
+('user_026', 'inactive_180d'), ('user_026', 'discount_responsive'),
+('user_027', 'inactive_180d'), ('user_027', 'high_ltv'),
+('user_028', 'inactive_180d'), ('user_028', 'coupon_clicked_before'),
+('user_029', 'long_term_dormant'), ('user_029', 'high_ltv'),
+('user_030', 'inactive_180d'), ('user_030', 'discount_responsive'),
+('user_031', 'long_term_dormant'), ('user_031', 'price_sensitive'),
+('user_032', 'long_term_dormant'), ('user_032', 'high_ltv'),
+('user_033', 'long_term_dormant'), ('user_033', 'sms_preferred')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO recommendation_edges (user_id, campaign_id, reason, label) VALUES
+('user_026', 'camp_004', '181일 미접속 및 할인 반응 가능성', 'high'),
+('user_027', 'camp_004', '195일 미접속 고가치 고객', 'high'),
+('user_028', 'camp_004', '220일 미접속 가격 민감 고객', 'high'),
+('user_029', 'camp_004', '250일 미접속 고가치 장기 휴면 고객', 'high'),
+('user_030', 'camp_004', '275일 미접속 및 메시지 채널 일치', 'high'),
+('user_031', 'camp_004', '310일 미접속 가격 민감 고객', 'medium'),
+('user_032', 'camp_004', '365일 미접속 고가치 장기 휴면 고객', 'high'),
+('user_033', 'camp_004', '420일 미접속 SMS 선호 고객', 'medium')
+ON CONFLICT (user_id, campaign_id) DO UPDATE SET
+    reason = EXCLUDED.reason,
+    label = EXCLUDED.label;
+
+-- 5) Query Plan이 바로 사용할 수 있는 검증된 타겟 뷰입니다.
+CREATE OR REPLACE VIEW v_dormant_6m_reactivation_targets AS
+SELECT
+    u.user_id,
+    u.age,
+    u.gender,
+    u.region,
+    u.lifecycle,
+    u.last_login_at,
+    (CURRENT_DATE - u.last_login_at::date) AS inactive_days,
+    u.avg_order_value_krw,
+    u.price_sensitivity,
+    u.predicted_ltv_segment,
+    c.campaign_id,
+    c.name AS campaign_name,
+    c.offer,
+    ARRAY_AGG(DISTINCT upc.preferred_channel)
+        FILTER (WHERE upc.preferred_channel IS NOT NULL) AS preferred_channels,
+    re.label AS recommendation_label,
+    re.reason AS recommendation_reason
+FROM users u
+JOIN recommendation_edges re
+  ON re.user_id = u.user_id
+ AND re.campaign_id = 'camp_004'
+JOIN campaigns c
+  ON c.campaign_id = re.campaign_id
+ AND c.objective = 'reactivation'
+LEFT JOIN user_preferred_channels upc
+  ON upc.user_id = u.user_id
+WHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
+  AND u.purchase_count_90d = 0
+  AND u.lifecycle IN ('inactive_90d', 'inactive_180d', 'dormant')
+GROUP BY
+    u.user_id, u.age, u.gender, u.region, u.lifecycle,
+    u.last_login_at, u.avg_order_value_krw, u.price_sensitivity,
+    u.predicted_ltv_segment, c.campaign_id, c.name, c.offer,
+    re.label, re.reason;
+
+COMMENT ON VIEW v_dormant_6m_reactivation_targets IS
+    '마지막 접속일이 현재 시점 기준 6개월 이전이고 최근 90일 구매가 없는 재활성화 캠페인 대상 고객';
+
+COMMIT;
+
+-- ============================================================
+-- 검증 SQL: 최소 8행이 나와야 정상입니다.
+-- ============================================================
+SELECT COUNT(*) AS dormant_6m_customer_count
+FROM v_dormant_6m_reactivation_targets;
+
+SELECT
+    user_id,
+    lifecycle,
+    last_login_at,
+    inactive_days,
+    campaign_id,
+    campaign_name,
+    offer,
+    preferred_channels,
+    recommendation_label
+FROM v_dormant_6m_reactivation_targets
+ORDER BY inactive_days DESC, user_id;
+
+-- Query Plan에서 뷰를 쓰지 않고 직접 생성할 경우 사용할 검증된 SQL
+SELECT
+    u.user_id,
+    u.age,
+    u.gender,
+    u.region,
+    u.last_login_at,
+    CURRENT_DATE - u.last_login_at::date AS inactive_days,
+    u.predicted_ltv_segment,
+    c.campaign_id,
+    c.name AS campaign_name,
+    c.offer
+FROM users u
+CROSS JOIN campaigns c
+WHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
+  AND u.purchase_count_90d = 0
+  AND u.lifecycle IN ('inactive_90d', 'inactive_180d', 'dormant')
+  AND c.objective = 'reactivation'
+  AND c.start_date <= CURRENT_DATE
+  AND c.end_date >= CURRENT_DATE
+ORDER BY inactive_days DESC, u.user_id;
+
+-- ============================================================
+-- Seed data for 6+ month dormant LMS reactivation targeting
+-- Target query conditions satisfied:
+--   last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
+--   purchase_count_90d = 0
+--   lifecycle IN ('inactive_90d', 'inactive_180d', 'dormant')
+--   preferred_channel = 'lms'
+--   campaign objective = 'reactivation'
+--   campaign channel = 'lms'
+-- PostgreSQL 14+
+-- ============================================================
+
+BEGIN;
+
+-- Ensure the reactivation campaign supports LMS.
+INSERT INTO campaign_channels (campaign_id, channel)
+VALUES ('camp_004', 'lms')
+ON CONFLICT (campaign_id, channel) DO NOTHING;
+
+-- Existing dormant users: make them satisfy the 6-month condition.
+UPDATE users
+SET last_login_at = CURRENT_TIMESTAMP - INTERVAL '240 days',
+    last_active_days = 240,
+    purchase_count_90d = 0,
+    lifecycle = 'inactive_180d'
+WHERE user_id = 'user_005';
+
+UPDATE users
+SET last_login_at = CURRENT_TIMESTAMP - INTERVAL '310 days',
+    last_active_days = 310,
+    purchase_count_90d = 0,
+    lifecycle = 'dormant'
+WHERE user_id = 'user_017';
+
+-- Add LMS as a preferred channel.
+INSERT INTO user_preferred_channels (user_id, preferred_channel)
+VALUES
+    ('user_005', 'lms'),
+    ('user_017', 'lms')
+ON CONFLICT (user_id, preferred_channel) DO NOTHING;
+
+-- Connect existing users to the LMS reactivation campaign.
+INSERT INTO recommendation_edges (user_id, campaign_id, reason, label)
+VALUES
+    ('user_005', 'camp_004', '6개월 이상 미접속, 최근 구매 없음, LMS 선호 휴면 고객', 'high'),
+    ('user_017', 'camp_004', '6개월 이상 미접속, 최근 구매 없음, LMS 선호 휴면 고객', 'high')
+ON CONFLICT (user_id, campaign_id)
+DO UPDATE SET
+    reason = EXCLUDED.reason,
+    label = EXCLUDED.label;
+
+-- Additional deterministic dormant users.
+INSERT INTO users (
+    user_id,
+    age,
+    gender,
+    region,
+    lifecycle,
+    avg_order_value_krw,
+    purchase_count_90d,
+    last_active_days,
+    price_sensitivity,
+    predicted_ltv_segment,
+    text_for_embedding,
+    last_login_at
+)
+VALUES
+    (
+        'user_026', 32, 'female', 'Seoul', 'inactive_180d',
+        72000, 0, 205, 'high', 'mid',
+        'user_026 사용자는 205일 이상 미접속한 휴면 고객이며 LMS 채널을 선호합니다. 최근 90일 구매가 없고 복귀 할인 혜택에 반응할 가능성이 높습니다.',
+        CURRENT_TIMESTAMP - INTERVAL '205 days'
+    ),
+    (
+        'user_027', 45, 'male', 'Gyeonggi', 'dormant',
+        118000, 0, 275, 'medium', 'high',
+        'user_027 사용자는 275일 이상 미접속한 장기 휴면 고객이며 LMS 채널을 선호합니다. 최근 90일 구매가 없고 재활성화 캠페인 대상입니다.',
+        CURRENT_TIMESTAMP - INTERVAL '275 days'
+    ),
+    (
+        'user_028', 39, 'female', 'Busan', 'inactive_90d',
+        46000, 0, 190, 'high', 'low',
+        'user_028 사용자는 190일 이상 미접속한 휴면 고객이며 LMS 채널을 선호합니다. 가격 민감도가 높아 복귀 쿠폰 캠페인에 적합합니다.',
+        CURRENT_TIMESTAMP - INTERVAL '190 days'
+    )
+ON CONFLICT (user_id)
+DO UPDATE SET
+    age = EXCLUDED.age,
+    gender = EXCLUDED.gender,
+    region = EXCLUDED.region,
+    lifecycle = EXCLUDED.lifecycle,
+    avg_order_value_krw = EXCLUDED.avg_order_value_krw,
+    purchase_count_90d = EXCLUDED.purchase_count_90d,
+    last_active_days = EXCLUDED.last_active_days,
+    price_sensitivity = EXCLUDED.price_sensitivity,
+    predicted_ltv_segment = EXCLUDED.predicted_ltv_segment,
+    text_for_embedding = EXCLUDED.text_for_embedding,
+    last_login_at = EXCLUDED.last_login_at;
+
+INSERT INTO user_preferred_channels (user_id, preferred_channel)
+VALUES
+    ('user_026', 'lms'),
+    ('user_027', 'lms'),
+    ('user_028', 'lms')
+ON CONFLICT (user_id, preferred_channel) DO NOTHING;
+
+INSERT INTO user_recent_behaviors (user_id, behavior)
+VALUES
+    ('user_026', 'inactive_6m_plus'),
+    ('user_026', 'discount_responsive'),
+    ('user_027', 'inactive_6m_plus'),
+    ('user_027', 'previous_high_value_customer'),
+    ('user_028', 'inactive_6m_plus'),
+    ('user_028', 'coupon_sensitive')
+ON CONFLICT (user_id, behavior) DO NOTHING;
+
+INSERT INTO recommendation_edges (user_id, campaign_id, reason, label)
+VALUES
+    ('user_026', 'camp_004', '205일 미접속, 최근 구매 없음, LMS 선호, 할인 반응 가능성', 'high'),
+    ('user_027', 'camp_004', '275일 미접속 장기 휴면, 최근 구매 없음, LMS 선호', 'high'),
+    ('user_028', 'camp_004', '190일 미접속, 가격 민감, LMS 선호 복귀 대상', 'high')
+ON CONFLICT (user_id, campaign_id)
+DO UPDATE SET
+    reason = EXCLUDED.reason,
+    label = EXCLUDED.label;
+
+COMMIT;
+
+-- ============================================================
+-- Validation: should return at least 5 users.
+-- ============================================================
+SELECT DISTINCT
+    u.user_id,
+    u.age,
+    u.gender,
+    u.price_sensitivity,
+    c.campaign_id,
+    NULL AS name_masked,
+    c.objective,
+    c.category,
+    c.offer,
+    c.start_date,
+    c.end_date,
+    u.last_login_at,
+    CURRENT_DATE - u.last_login_at::date AS inactive_days,
+    u.lifecycle
+FROM users u
+JOIN recommendation_edges re
+    ON re.user_id = u.user_id
+JOIN campaigns c
+    ON c.campaign_id = re.campaign_id
+JOIN user_preferred_channels upc
+    ON upc.user_id = u.user_id
+JOIN campaign_channels cc
+    ON cc.campaign_id = c.campaign_id
+WHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
+  AND u.purchase_count_90d = 0
+  AND u.lifecycle IN ('inactive_90d', 'inactive_180d', 'dormant')
+  AND upc.preferred_channel = 'lms'
+  AND c.objective = 'reactivation'
+  AND cc.channel = 'lms'
+ORDER BY inactive_days DESC, u.user_id ASC
+LIMIT 100;
