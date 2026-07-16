@@ -1192,9 +1192,9 @@ def _extract_message_ai_features(message_body: str) -> dict[str, Any]:
     text = message_body.strip()
     marketing_text = _message_marketing_text(text)
     discount_match = re.search(r"(\d{1,2})\s*%", marketing_text)
-    has_deadline = any(word in marketing_text for word in ["오늘", "마감", "종료", "기간", "곧", "마지막", "지금"])
+    has_deadline = any(word in marketing_text for word in ["오늘", "마감", "종료", "기간", "곧", "마지막", "지금", "서둘", "소진", "품절", "임박", "놓치지"])
     has_benefit = any(word in marketing_text for word in ["할인", "쿠폰", "혜택", "특가", "포인트", "무료배송", "무료 배송"])
-    personalized = any(word in marketing_text for word in ["고객님", "맞춤", "담아둔", "담아두신", "추천", "준비했습니다"])
+    personalized = any(word in marketing_text for word in ["고객님", "맞춤", "담아둔", "담아두신", "추천", "준비했습니다", "재구매", "다시 확인"])
     if has_deadline:
         tone = "urgent"
     elif personalized:
