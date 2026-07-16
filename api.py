@@ -31,6 +31,7 @@ from graph_rag import (
     build_graph,
     graph_stats,
     load_payload,
+    rag_llm_run_scope,
     render_message_prompt,
     retrieve,
 )
@@ -46,8 +47,12 @@ api_logger.propagate = False
 api_logger.setLevel(os.getenv("API_LOG_LEVEL", "INFO").upper())
 
 
-DEFAULT_HEURISTIC_CTR_RULES_PATH = Path(__file__).resolve().parent / "docs" / "policies" / "heuristic-ctr-rules.json"
-DEFAULT_CTR_MODEL_POLICY_PATH = Path(__file__).resolve().parent / "docs" / "policies" / "ctr-model-policy.json"
+POLICY_DIR = Path(__file__).resolve().parent / "docs" / "policies"
+DEFAULT_HEURISTIC_CTR_RULES_PATH = POLICY_DIR / "heuristic-ctr-rules.json"
+DEFAULT_CTR_MODEL_POLICY_PATH = POLICY_DIR / "ctr-model-policy.json"
+# campaign_policies 테이블의 조회 키(= 정책 파일명에서 확장자를 뺀 이름).
+CTR_MODEL_POLICY_NAME = "ctr-model-policy"
+HEURISTIC_CTR_RULES_NAME = "heuristic-ctr-rules"
 DEFAULT_HEURISTIC_CTR_RULES: dict[str, Any] = {
     "base_probability": 0.025,
     "min_probability": 0.001,
@@ -98,6 +103,16 @@ class MessageGenerationOptions(BaseModel):
     max_tokens: int | None = Field(default=None, ge=100)
     timeout_seconds: float | None = Field(default=None, ge=1.0)
     max_attempts: int | None = Field(default=None, ge=1)
+
+
+class PromptTemplateUpsertRequest(BaseModel):
+    content: str = Field(..., min_length=1, description="프롬프트 템플릿 본문(파일 내용과 동일한 형식).")
+    description: str | None = Field(default=None, description="프롬프트 용도를 설명하는 선택 메모.")
+
+
+class PolicyUpsertRequest(BaseModel):
+    content: dict[str, Any] = Field(..., description="정책 JSON 객체(파일 내용과 동일한 형식).")
+    description: str | None = Field(default=None, description="정책 용도를 설명하는 선택 메모.")
 
 
 class TargetSqlRequest(BaseModel):
@@ -303,31 +318,32 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
 
     try:
         retrieve_started_at = time.perf_counter()
-        result = retrieve(
-            query=request.prompt,
-            graph=graph,
-            collection=request.collection,
-            url=os.getenv("QDRANT_URL", "http://localhost:6333"),
-            api_key=os.getenv("QDRANT_API_KEY"),
-            embedding_model_name=os.getenv("QDRANT_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
-            vector_top_k=request.vector_top_k,
-            keyword_top_k=request.keyword_top_k,
-            graph_top_k=request.graph_top_k,
-            hops=request.hops,
-            normalization_rules=Path(os.getenv("GRAPH_RAG_NORMALIZATION_RULES", DEFAULT_NORMALIZATION_PATH)),
-            business_policies=Path(os.getenv("GRAPH_RAG_BUSINESS_POLICIES", DEFAULT_POLICY_PATH)),
-            metric_lexicon=Path(os.getenv("GRAPH_RAG_METRIC_LEXICON", DEFAULT_METRIC_LEXICON_PATH)),
-            sql_schema=Path(os.getenv("GRAPH_RAG_SQL_SCHEMA", DEFAULT_SCHEMA_PATH)),
-            sql_limit=request.sql_limit,
-            query_parser=request.query_parser,
-            llm_model=os.getenv("OPENAI_MODEL", DEFAULT_LLM_MODEL),
-            generate_answer=request.generate_answer,
-            generate_messages=request.generate_messages,
-            message_channel=request.message_channel,
-            message_generation_options=_message_generation_options_payload(request.message_generation_options),
-            message_policy=Path(os.getenv("GRAPH_RAG_MESSAGE_POLICY", DEFAULT_MESSAGE_POLICY_PATH)),
-            prompt_dir=Path(os.getenv("GRAPH_RAG_PROMPT_DIR", DEFAULT_PROMPT_DIR)),
-        )
+        with rag_llm_run_scope():
+            result = retrieve(
+                query=request.prompt,
+                graph=graph,
+                collection=request.collection,
+                url=os.getenv("QDRANT_URL", "http://localhost:6333"),
+                api_key=os.getenv("QDRANT_API_KEY"),
+                embedding_model_name=os.getenv("QDRANT_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
+                vector_top_k=request.vector_top_k,
+                keyword_top_k=request.keyword_top_k,
+                graph_top_k=request.graph_top_k,
+                hops=request.hops,
+                normalization_rules=Path(os.getenv("GRAPH_RAG_NORMALIZATION_RULES", DEFAULT_NORMALIZATION_PATH)),
+                business_policies=Path(os.getenv("GRAPH_RAG_BUSINESS_POLICIES", DEFAULT_POLICY_PATH)),
+                metric_lexicon=Path(os.getenv("GRAPH_RAG_METRIC_LEXICON", DEFAULT_METRIC_LEXICON_PATH)),
+                sql_schema=Path(os.getenv("GRAPH_RAG_SQL_SCHEMA", DEFAULT_SCHEMA_PATH)),
+                sql_limit=request.sql_limit,
+                query_parser=request.query_parser,
+                llm_model=os.getenv("OPENAI_MODEL", DEFAULT_LLM_MODEL),
+                generate_answer=request.generate_answer,
+                generate_messages=request.generate_messages,
+                message_channel=request.message_channel,
+                message_generation_options=_message_generation_options_payload(request.message_generation_options),
+                message_policy=Path(os.getenv("GRAPH_RAG_MESSAGE_POLICY", DEFAULT_MESSAGE_POLICY_PATH)),
+                prompt_dir=Path(os.getenv("GRAPH_RAG_PROMPT_DIR", DEFAULT_PROMPT_DIR)),
+            )
         retrieve_elapsed_ms = _elapsed_ms(retrieve_started_at)
     except ValueError as exc:
         _save_query_failure_log(
@@ -631,6 +647,148 @@ def cleanup_target_audiences(limit: Annotated[int, Query(ge=1, le=1000)] = 100) 
         "deleted_audiences": deleted,
         "limit": limit,
     }
+
+
+@app.get("/prompts")
+def list_prompt_templates() -> dict[str, Any]:
+    import prompt_store
+
+    try:
+        templates = prompt_store.list_templates(_postgres_conninfo())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"prompt_templates_lookup_failed:{exc.__class__.__name__}") from exc
+    return {"prompts": [_jsonable_record(item) for item in templates], "count": len(templates)}
+
+
+@app.get("/prompts/{name}")
+def get_prompt_template(name: str) -> dict[str, Any]:
+    import prompt_store
+
+    try:
+        template = prompt_store.get_one(name, _postgres_conninfo())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"prompt_template_lookup_failed:{exc.__class__.__name__}") from exc
+    if template is None:
+        raise HTTPException(status_code=404, detail="prompt_template_not_found")
+    return _jsonable_record(template)
+
+
+@app.put("/prompts/{name}")
+def upsert_prompt_template(name: str, request: PromptTemplateUpsertRequest) -> dict[str, Any]:
+    import prompt_store
+
+    try:
+        template = prompt_store.upsert(name, request.content, request.description, _postgres_conninfo())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"prompt_template_upsert_failed:{exc.__class__.__name__}") from exc
+    return {"is_success": True, "prompt": _jsonable_record(template)}
+
+
+@app.delete("/prompts/{name}")
+def delete_prompt_template(name: str) -> dict[str, Any]:
+    import prompt_store
+
+    try:
+        deleted = prompt_store.delete(name, _postgres_conninfo())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"prompt_template_delete_failed:{exc.__class__.__name__}") from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="prompt_template_not_found")
+    return {"is_success": True, "deleted_prompt": name}
+
+
+@app.post("/prompts/reload")
+def reload_prompt_templates() -> dict[str, Any]:
+    import prompt_store
+
+    try:
+        loaded = prompt_store.reload(_postgres_conninfo())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"prompt_templates_reload_failed:{exc.__class__.__name__}") from exc
+    return {"is_success": True, "loaded": loaded}
+
+
+@app.post("/prompts/seed")
+def seed_prompt_templates() -> dict[str, Any]:
+    import prompt_store
+
+    prompt_dir = Path(os.getenv("GRAPH_RAG_PROMPT_DIR", str(DEFAULT_PROMPT_DIR)))
+    try:
+        seeded = prompt_store.seed_from_dir(prompt_dir, _postgres_conninfo())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"prompt_templates_seed_failed:{exc.__class__.__name__}") from exc
+    return {"is_success": True, "seeded": [_jsonable_record(item) for item in seeded], "count": len(seeded)}
+
+
+@app.get("/policies")
+def list_policies() -> dict[str, Any]:
+    import policy_store
+
+    try:
+        policies = policy_store.list_policies(_postgres_conninfo())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"policies_lookup_failed:{exc.__class__.__name__}") from exc
+    return {"policies": [_jsonable_record(item) for item in policies], "count": len(policies)}
+
+
+@app.get("/policies/{name}")
+def get_policy(name: str) -> dict[str, Any]:
+    import policy_store
+
+    try:
+        policy = policy_store.get_one(name, _postgres_conninfo())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"policy_lookup_failed:{exc.__class__.__name__}") from exc
+    if policy is None:
+        raise HTTPException(status_code=404, detail="policy_not_found")
+    return _jsonable_record(policy)
+
+
+@app.put("/policies/{name}")
+def upsert_policy(name: str, request: PolicyUpsertRequest) -> dict[str, Any]:
+    import policy_store
+
+    try:
+        policy = policy_store.upsert(name, request.content, request.description, _postgres_conninfo())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"policy_upsert_failed:{exc.__class__.__name__}") from exc
+    return {"is_success": True, "policy": _jsonable_record(policy)}
+
+
+@app.delete("/policies/{name}")
+def delete_policy(name: str) -> dict[str, Any]:
+    import policy_store
+
+    try:
+        deleted = policy_store.delete(name, _postgres_conninfo())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"policy_delete_failed:{exc.__class__.__name__}") from exc
+    if not deleted:
+        raise HTTPException(status_code=404, detail="policy_not_found")
+    return {"is_success": True, "deleted_policy": name}
+
+
+@app.post("/policies/reload")
+def reload_policies() -> dict[str, Any]:
+    import policy_store
+
+    try:
+        loaded = policy_store.reload(_postgres_conninfo())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"policies_reload_failed:{exc.__class__.__name__}") from exc
+    return {"is_success": True, "loaded": loaded}
+
+
+@app.post("/policies/seed")
+def seed_policies() -> dict[str, Any]:
+    import policy_store
+
+    policy_dir = Path(os.getenv("CAMPAIGN_POLICY_DIR", str(POLICY_DIR)))
+    try:
+        seeded = policy_store.seed_from_dir(policy_dir, _postgres_conninfo())
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"policies_seed_failed:{exc.__class__.__name__}") from exc
+    return {"is_success": True, "seeded": [_jsonable_record(item) for item in seeded], "count": len(seeded)}
 
 
 @app.post("/api/campaign-experiments/run")
@@ -1707,6 +1865,36 @@ def _ctr_assignment_epsilon(request_epsilon: float | None) -> float:
 
 
 def _load_ctr_model_policy() -> dict[str, Any]:
+    """CTR 모델 정책을 DB -> 파일 -> 하드코딩 기본값 순으로 로드한다.
+
+    DB(campaign_policies)에 정책이 있으면 최우선으로 사용하고, DB 미사용/실패/미존재
+    시 기존 파일 기반 로직으로 자연스럽게 fallback한다. 어느 경우든 누락된 키는
+    ``DEFAULT_CTR_MODEL_POLICY`` 값으로 채운다.
+    """
+    db_policy = _load_ctr_model_policy_from_db()
+    if db_policy is not None:
+        return {**DEFAULT_CTR_MODEL_POLICY, **db_policy}
+    return _load_ctr_model_policy_from_file()
+
+
+def _load_ctr_model_policy_from_db() -> dict[str, Any] | None:
+    try:
+        import policy_store
+
+        policy = policy_store.get_policy(CTR_MODEL_POLICY_NAME, _postgres_conninfo())
+    except Exception as exc:  # noqa: BLE001 - 파일 fallback 유지가 목적
+        api_logger.warning(
+            "ctr_model_policy_db_load_failed reason=%s:%s",
+            exc.__class__.__name__,
+            exc,
+        )
+        return None
+    if isinstance(policy, dict):
+        return policy
+    return None
+
+
+def _load_ctr_model_policy_from_file() -> dict[str, Any]:
     policy_path = _ctr_model_policy_path()
     try:
         with policy_path.open("r", encoding="utf-8") as file:
@@ -2117,6 +2305,36 @@ def _format_probability_percent(value: float, signed: bool = False) -> str:
 
 
 def _load_heuristic_ctr_rules() -> dict[str, Any]:
+    """휴리스틱 CTR 룰을 DB -> 파일 -> 하드코딩 기본값 순으로 로드한다.
+
+    DB(campaign_policies)에 룰이 있으면 최우선으로 사용하고, DB 미사용/실패/미존재
+    시 기존 파일 기반 로직으로 자연스럽게 fallback한다. 어느 경우든 누락 키는
+    ``DEFAULT_HEURISTIC_CTR_RULES``와 (한 단계 중첩까지) 병합해 보정한다.
+    """
+    db_rules = _load_heuristic_ctr_rules_from_db()
+    if db_rules is not None:
+        return _merge_heuristic_ctr_rules(DEFAULT_HEURISTIC_CTR_RULES, db_rules)
+    return _load_heuristic_ctr_rules_from_file()
+
+
+def _load_heuristic_ctr_rules_from_db() -> dict[str, Any] | None:
+    try:
+        import policy_store
+
+        rules = policy_store.get_policy(HEURISTIC_CTR_RULES_NAME, _postgres_conninfo())
+    except Exception as exc:  # noqa: BLE001 - 파일 fallback 유지가 목적
+        api_logger.warning(
+            "heuristic_ctr_rules_db_load_failed reason=%s:%s",
+            exc.__class__.__name__,
+            exc,
+        )
+        return None
+    if isinstance(rules, dict):
+        return rules
+    return None
+
+
+def _load_heuristic_ctr_rules_from_file() -> dict[str, Any]:
     rules_path = _heuristic_ctr_rules_path()
     try:
         with rules_path.open("r", encoding="utf-8") as file:
