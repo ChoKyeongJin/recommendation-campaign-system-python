@@ -1770,36 +1770,350 @@ def _clamp_probability(value: float) -> float:
 
 
 def _score_variant(user: dict[str, Any], variant: dict[str, Any], experiment: dict[str, Any], model_version: str) -> float:
+    return float(_heuristic_variant_score_breakdown(user, variant, experiment, model_version)["predictedCtr"]["probability"])
+
+
+def _score_variant_breakdowns(
+    user: dict[str, Any],
+    variants: list[dict[str, Any]],
+    experiment: dict[str, Any],
+    model_version: str,
+) -> dict[str, dict[str, Any]]:
+    if not _is_heuristic_model_version(model_version):
+        return {}
+    return {
+        str(variant["variant_code"]): _heuristic_variant_score_breakdown(user, variant, experiment, model_version)
+        for variant in variants
+    }
+
+
+def _heuristic_variant_score_breakdown(user: dict[str, Any], variant: dict[str, Any], experiment: dict[str, Any], model_version: str) -> dict[str, Any]:
     rules = _load_heuristic_ctr_rules()
     score_adjustments = rules.get("score_adjustments") if isinstance(rules.get("score_adjustments"), dict) else {}
     matchers = rules.get("matchers") if isinstance(rules.get("matchers"), dict) else {}
-    features = variant.get("ai_features") if isinstance(variant.get("ai_features"), dict) else {}
+    configured_features = variant.get("ai_features") if isinstance(variant.get("ai_features"), dict) else {}
+    message_body = str(variant.get("message_body") or "")
+    extracted_features = _extract_message_ai_features(message_body) if message_body else {}
+    features = {**configured_features, **extracted_features}
     interests = set(user.get("interests") or [])
     preferred_channels = set(user.get("preferred_channels") or [])
     recent_behaviors = set(user.get("recent_behaviors") or [])
     probability = _heuristic_number(rules, "base_probability", DEFAULT_HEURISTIC_CTR_RULES["base_probability"])
-    if experiment.get("channel") in preferred_channels:
-        probability += _heuristic_number(score_adjustments, "preferred_channel", DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["preferred_channel"])
-    if experiment.get("category") in interests:
-        probability += _heuristic_number(score_adjustments, "campaign_category_interest_match", DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["campaign_category_interest_match"])
-    if user.get("price_sensitivity") == "high" and (features.get("discount_rate") or features.get("has_price")):
-        probability += _heuristic_number(score_adjustments, "high_price_sensitivity_with_price_offer", DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["high_price_sensitivity_with_price_offer"])
+    base_probability = probability
+    adjustments: list[dict[str, Any]] = []
+    calibration_adjustments: list[dict[str, Any]] = []
+    rule_evaluations: list[dict[str, Any]] = []
+
+    def evaluate_rule(key: str, label: str, default_value: float, applied: bool, reason: str, condition: str, evidence: dict[str, Any]) -> None:
+        nonlocal probability
+        amount = _heuristic_number(score_adjustments, key, default_value)
+        rule_evaluations.append(_ctr_score_rule_evaluation(key, label, amount, applied, reason, condition, evidence))
+        if applied:
+            probability += amount
+            adjustments.append(_ctr_score_adjustment(key, label, amount, reason))
+
+    channel = experiment.get("channel")
+    evaluate_rule(
+        "preferred_channel",
+        "선호 채널",
+        DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["preferred_channel"],
+        channel in preferred_channels,
+        f"사용자 선호 채널에 {channel}이 포함됩니다." if channel in preferred_channels else f"사용자 선호 채널에 {channel}이 없습니다.",
+        "campaign.channel in user.preferred_channels",
+        {
+            "campaignChannel": channel,
+            "preferredChannels": sorted(preferred_channels),
+        },
+    )
+    category = experiment.get("category")
+    evaluate_rule(
+        "campaign_category_interest_match",
+        "관심사 일치",
+        DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["campaign_category_interest_match"],
+        category in interests,
+        f"캠페인 카테고리 {category}가 사용자 관심사와 일치합니다." if category in interests else f"캠페인 카테고리 {category}가 사용자 관심사에 없습니다.",
+        "campaign.category in user.interests",
+        {
+            "campaignCategory": category,
+            "interests": sorted(interests),
+        },
+    )
+    has_price_offer = bool(features.get("discount_rate") or features.get("has_price"))
+    price_sensitive_offer_match = user.get("price_sensitivity") == "high" and has_price_offer
+    evaluate_rule(
+        "high_price_sensitivity_with_price_offer",
+        "가격 민감도",
+        DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["high_price_sensitivity_with_price_offer"],
+        price_sensitive_offer_match,
+        "가격 민감도가 높고 메시지에 가격/할인 요소가 있습니다." if price_sensitive_offer_match else "가격 민감도 또는 가격/할인 메시지 조건이 충족되지 않았습니다.",
+        "user.price_sensitivity == high and message has price or discount",
+        {
+            "priceSensitivity": user.get("price_sensitivity"),
+            "discountRate": features.get("discount_rate"),
+            "hasPrice": bool(features.get("has_price")),
+        },
+    )
     urgency_keywords = _heuristic_string_set(matchers, "urgency_recent_behavior_keywords", DEFAULT_HEURISTIC_CTR_RULES["matchers"]["urgency_recent_behavior_keywords"])
-    if features.get("urgency") and any(any(keyword in str(behavior) for keyword in urgency_keywords) for behavior in recent_behaviors):
-        probability += _heuristic_number(score_adjustments, "urgency_with_recent_behavior", DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["urgency_with_recent_behavior"])
+    matched_recent_behaviors = sorted(
+        str(behavior)
+        for behavior in recent_behaviors
+        if any(keyword in str(behavior) for keyword in urgency_keywords)
+    )
+    urgency_match = bool(features.get("urgency") and matched_recent_behaviors)
+    evaluate_rule(
+        "urgency_with_recent_behavior",
+        "최근 행동",
+        DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["urgency_with_recent_behavior"],
+        urgency_match,
+        "긴급성 메시지가 최근 행동 키워드와 맞습니다." if urgency_match else "긴급성 메시지 또는 최근 행동 키워드 조건이 충족되지 않았습니다.",
+        "message.urgency and recent_behaviors match urgency keywords",
+        {
+            "messageUrgency": bool(features.get("urgency")),
+            "urgencyKeywords": sorted(urgency_keywords),
+            "matchedRecentBehaviors": matched_recent_behaviors,
+            "recentBehaviors": sorted(str(behavior) for behavior in recent_behaviors),
+        },
+    )
     personalized_lifecycles = _heuristic_string_set(matchers, "personalized_lifecycles", DEFAULT_HEURISTIC_CTR_RULES["matchers"]["personalized_lifecycles"])
-    if features.get("personalized") and str(user.get("lifecycle")) in personalized_lifecycles:
-        probability += _heuristic_number(score_adjustments, "personalized_lifecycle_match", DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["personalized_lifecycle_match"])
-    if features.get("message_length_group") == "medium":
-        probability += _heuristic_number(score_adjustments, "message_length_medium", DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["message_length_medium"])
-    if features.get("message_length_group") == "long":
-        probability += _heuristic_number(score_adjustments, "message_length_long", DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["message_length_long"])
-    if variant.get("is_control"):
-        probability += _heuristic_number(score_adjustments, "control_variant", DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["control_variant"])
-    probability += _stable_unit_interval(user.get("user_id"), variant.get("variant_id"), model_version) * _heuristic_number(rules, "stable_noise_max", DEFAULT_HEURISTIC_CTR_RULES["stable_noise_max"])
+    lifecycle = str(user.get("lifecycle"))
+    personalized_match = bool(features.get("personalized") and lifecycle in personalized_lifecycles)
+    evaluate_rule(
+        "personalized_lifecycle_match",
+        "라이프사이클",
+        DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["personalized_lifecycle_match"],
+        personalized_match,
+        f"개인화 메시지가 {user.get('lifecycle')} 라이프사이클과 맞습니다." if personalized_match else "개인화 메시지 또는 라이프사이클 조건이 충족되지 않았습니다.",
+        "message.personalized and user.lifecycle in personalized_lifecycles",
+        {
+            "messagePersonalized": bool(features.get("personalized")),
+            "userLifecycle": user.get("lifecycle"),
+            "personalizedLifecycles": sorted(personalized_lifecycles),
+        },
+    )
+    message_length_group = features.get("message_length_group")
+    evaluate_rule(
+        "message_length_medium",
+        "메시지 길이 medium",
+        DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["message_length_medium"],
+        message_length_group == "medium",
+        "메시지 길이가 medium 그룹입니다." if message_length_group == "medium" else f"메시지 길이 그룹이 {message_length_group}입니다.",
+        "message.message_length_group == medium",
+        {
+            "messageLength": features.get("message_length"),
+            "messageLengthGroup": message_length_group,
+        },
+    )
+    evaluate_rule(
+        "message_length_long",
+        "메시지 길이 long",
+        DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["message_length_long"],
+        message_length_group == "long",
+        "메시지 길이가 long 그룹입니다." if message_length_group == "long" else f"메시지 길이 그룹이 {message_length_group}입니다.",
+        "message.message_length_group == long",
+        {
+            "messageLength": features.get("message_length"),
+            "messageLengthGroup": message_length_group,
+        },
+    )
+    evaluate_rule(
+        "control_variant",
+        "대조군",
+        DEFAULT_HEURISTIC_CTR_RULES["score_adjustments"]["control_variant"],
+        bool(variant.get("is_control")),
+        "컨트롤 variant 안정성 보정입니다." if variant.get("is_control") else "컨트롤 variant가 아닙니다.",
+        "variant.is_control == true",
+        {
+            "isControl": bool(variant.get("is_control")),
+        },
+    )
+
+    stable_noise = _stable_unit_interval(user.get("user_id"), variant.get("variant_id"), model_version) * _heuristic_number(rules, "stable_noise_max", DEFAULT_HEURISTIC_CTR_RULES["stable_noise_max"])
+    probability += stable_noise
+    if stable_noise:
+        calibration_adjustments.append(_ctr_score_adjustment("stable_noise", "안정화 보정", stable_noise, "동점 방지를 위한 결정적 보정값입니다."))
+
+    raw_probability = probability
     min_probability = _heuristic_number(rules, "min_probability", DEFAULT_HEURISTIC_CTR_RULES["min_probability"])
     max_probability = _heuristic_number(rules, "max_probability", DEFAULT_HEURISTIC_CTR_RULES["max_probability"])
-    return round(min(max(probability, min_probability), max_probability), 7)
+    final_probability = round(min(max(probability, min_probability), max_probability), 7)
+    base_score = _ctr_score_value("Base Score", base_probability)
+    predicted_ctr = _ctr_score_value("예측 CTR", final_probability)
+    applied_adjustment_total = sum(float(adjustment["probabilityDelta"]) for adjustment in adjustments)
+    calibration_adjustment_total = sum(float(adjustment["probabilityDelta"]) for adjustment in calibration_adjustments)
+    summary = {
+        "appliedRuleCount": len(adjustments),
+        "notAppliedRuleCount": len([rule for rule in rule_evaluations if not rule.get("applied")]),
+        "appliedAdjustmentTotal": _ctr_score_delta_value("규칙 가산/감산 합계", applied_adjustment_total),
+        "calibrationAdjustmentTotal": _ctr_score_delta_value("보정 합계", calibration_adjustment_total),
+        "totalDeltaFromBase": _ctr_score_delta_value("Base 대비 총 변화", final_probability - base_probability),
+        "rawBeforeClamp": _ctr_score_value("클램프 전 CTR", raw_probability),
+        "predictedCtr": predicted_ctr,
+    }
+    formula = {
+        "expression": "baseProbability + appliedAdjustments + calibrationAdjustments -> clamp(minProbability, maxProbability)",
+        "baseProbability": round(base_probability, 7),
+        "appliedAdjustmentProbability": round(applied_adjustment_total, 7),
+        "calibrationAdjustmentProbability": round(calibration_adjustment_total, 7),
+        "rawProbability": round(raw_probability, 7),
+        "minProbability": min_probability,
+        "maxProbability": max_probability,
+        "finalProbability": final_probability,
+    }
+    input_signals = _ctr_score_input_signals(user, variant, experiment, features)
+    explanation_bullets = _ctr_score_explanation_bullets(base_score, adjustments, calibration_adjustments, predicted_ctr, final_probability != round(raw_probability, 7))
+    return {
+        "modelVersion": model_version,
+        "variantCode": str(variant.get("variant_code")),
+        "baseScore": base_score,
+        "adjustments": adjustments,
+        "calibrationAdjustments": calibration_adjustments,
+        "ruleEvaluations": rule_evaluations,
+        "inputSignals": input_signals,
+        "formula": formula,
+        "summary": summary,
+        "explanationBullets": explanation_bullets,
+        "rawProbability": round(raw_probability, 7),
+        "rawPercentage": round(raw_probability * 100, 2),
+        "minProbability": min_probability,
+        "maxProbability": max_probability,
+        "isClamped": final_probability != round(raw_probability, 7),
+        "predictedCtr": predicted_ctr,
+        "display": {
+            "title": "클릭률 분석 근거",
+            "baseScore": base_score,
+            "adjustments": adjustments,
+            "calibrationAdjustments": calibration_adjustments,
+            "summary": summary,
+            "formula": formula,
+            "ruleEvaluations": rule_evaluations,
+            "inputSignals": input_signals,
+            "explanationBullets": explanation_bullets,
+            "predictedCtr": predicted_ctr,
+        },
+    }
+
+
+def _ctr_score_value(label: str, probability: float) -> dict[str, Any]:
+    return {
+        "label": label,
+        "probability": round(float(probability), 7),
+        "percentage": round(float(probability) * 100, 2),
+        "displayValue": _format_probability_percent(probability),
+    }
+
+
+def _ctr_score_probability_display(probability: float | None) -> str | None:
+    if probability is None:
+        return None
+    return _format_probability_percent(probability)
+
+
+def _ctr_score_delta_value(label: str, amount: float) -> dict[str, Any]:
+    return {
+        "label": label,
+        "probabilityDelta": round(float(amount), 7),
+        "percentagePointDelta": round(float(amount) * 100, 2),
+        "displayValue": _format_probability_percent(amount, signed=True),
+    }
+
+
+def _ctr_score_delta(label: str, value: float | None, baseline: float | None) -> dict[str, Any] | None:
+    if value is None or baseline is None:
+        return None
+    return _ctr_score_delta_value(label, float(value) - float(baseline))
+
+
+def _ctr_score_rule_evaluation(
+    key: str,
+    label: str,
+    amount: float,
+    applied: bool,
+    reason: str,
+    condition: str,
+    evidence: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "applied": applied,
+        "condition": condition,
+        "reason": reason,
+        "evidence": evidence,
+        "configuredDelta": _ctr_score_delta_value("설정 가중치", amount),
+        "appliedDelta": _ctr_score_delta_value("적용 가중치", amount if applied else 0.0),
+    }
+
+
+def _ctr_score_input_signals(user: dict[str, Any], variant: dict[str, Any], experiment: dict[str, Any], features: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "user": {
+            "userId": user.get("user_id"),
+            "lifecycle": user.get("lifecycle"),
+            "priceSensitivity": user.get("price_sensitivity"),
+            "interests": sorted(str(value) for value in (user.get("interests") or [])),
+            "preferredChannels": sorted(str(value) for value in (user.get("preferred_channels") or [])),
+            "recentBehaviors": sorted(str(value) for value in (user.get("recent_behaviors") or [])),
+            "purchaseCount90d": user.get("purchase_count_90d"),
+            "lastActiveDays": user.get("last_active_days"),
+            "predictedLtvSegment": user.get("predicted_ltv_segment"),
+        },
+        "campaign": {
+            "campaignId": experiment.get("campaign_id"),
+            "campaignName": experiment.get("campaign_name"),
+            "objective": experiment.get("objective"),
+            "category": experiment.get("category"),
+            "channel": experiment.get("channel"),
+            "offer": experiment.get("offer"),
+            "targetSegments": sorted(str(value) for value in (experiment.get("target_segments") or [])),
+            "keywords": sorted(str(value) for value in (experiment.get("keywords") or [])),
+        },
+        "variant": {
+            "variantCode": str(variant.get("variant_code")),
+            "name": variant.get("message_name"),
+            "isControl": bool(variant.get("is_control")),
+            "features": features,
+        },
+    }
+
+
+def _ctr_score_explanation_bullets(
+    base_score: dict[str, Any],
+    adjustments: list[dict[str, Any]],
+    calibration_adjustments: list[dict[str, Any]],
+    predicted_ctr: dict[str, Any],
+    is_clamped: bool,
+) -> list[str]:
+    bullets = [f"기본 점수 {base_score['displayValue']}에서 시작합니다."]
+    if adjustments:
+        adjustment_total = sum(float(adjustment["probabilityDelta"]) for adjustment in adjustments)
+        applied_labels = ", ".join(str(adjustment["label"]) for adjustment in adjustments)
+        bullets.append(f"적용 규칙 {len(adjustments)}개({applied_labels})로 {_format_probability_percent(adjustment_total, signed=True)}가 반영됐습니다.")
+    else:
+        bullets.append("적용된 가산/감산 규칙이 없어 기본 점수만 사용했습니다.")
+    if calibration_adjustments:
+        calibration_total = sum(float(adjustment["probabilityDelta"]) for adjustment in calibration_adjustments)
+        bullets.append(f"결정적 보정값 {_format_probability_percent(calibration_total, signed=True)}를 더해 동점 가능성을 낮췄습니다.")
+    if is_clamped:
+        bullets.append("정책상 최소/최대 CTR 범위로 최종 값을 보정했습니다.")
+    bullets.append(f"최종 예측 CTR은 {predicted_ctr['displayValue']}입니다.")
+    return bullets
+
+
+def _ctr_score_adjustment(key: str, label: str, amount: float, reason: str) -> dict[str, Any]:
+    return {
+        "key": key,
+        "label": label,
+        "probabilityDelta": round(float(amount), 7),
+        "percentagePointDelta": round(float(amount) * 100, 2),
+        "displayValue": _format_probability_percent(amount, signed=True),
+        "reason": reason,
+    }
+
+
+def _format_probability_percent(value: float, signed: bool = False) -> str:
+    percentage = float(value) * 100
+    sign = "+" if signed and percentage >= 0 else ""
+    return f"{sign}{percentage:.2f}%"
 
 
 def _load_heuristic_ctr_rules() -> dict[str, Any]:
