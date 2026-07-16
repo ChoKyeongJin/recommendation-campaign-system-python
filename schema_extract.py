@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -117,6 +118,262 @@ def merge_existing_annotations(schema: dict[str, Any], existing_schema: dict[str
             existing_column = existing_columns.get(column["name"], {})
             column["human_note"] = existing_column.get("human_note", column["human_note"])
 
+    return schema
+
+
+# ---------------------------------------------------------------------------
+# 라이브 DB 인트로스펙션 (source of truth = PostgreSQL)
+#
+# 손으로 유지하는 ddl.sql 미러 대신 실제 DB의 information_schema/pg_catalog를 읽어
+# extract_schema()와 동일한 구조의 catalog를 만든다. description_llm/human_note 같은
+# 사람이 쓴 주석은 merge_existing_annotations()로 기존 catalog에서 그대로 보존한다.
+# ---------------------------------------------------------------------------
+
+TYPE_BASE_MAP = {
+    "character varying": "VARCHAR",
+    "character": "CHAR",
+    "timestamp without time zone": "TIMESTAMP",
+    "timestamp with time zone": "TIMESTAMPTZ",
+    "time without time zone": "TIME",
+    "time with time zone": "TIMETZ",
+    "double precision": "DOUBLE PRECISION",
+    "boolean": "BOOLEAN",
+    "integer": "INTEGER",
+    "bigint": "BIGINT",
+    "smallint": "SMALLINT",
+    "numeric": "NUMERIC",
+    "text": "TEXT",
+    "date": "DATE",
+    "json": "JSON",
+    "jsonb": "JSONB",
+    "uuid": "UUID",
+    "real": "REAL",
+}
+
+_INTROSPECT_COLUMNS_SQL = """
+SELECT c.relname AS table_name,
+       (c.relkind IN ('v', 'm')) AS is_view,
+       a.attname AS column_name,
+       a.attnum AS ordinal,
+       format_type(a.atttypid, a.atttypmod) AS data_type,
+       a.attnotnull AS not_null,
+       pg_get_expr(ad.adbin, ad.adrelid) AS default_expr
+FROM pg_attribute a
+JOIN pg_class c ON c.oid = a.attrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+LEFT JOIN pg_attrdef ad ON ad.adrelid = a.attrelid AND ad.adnum = a.attnum
+WHERE n.nspname = %(schema)s
+  AND c.relkind IN ('r', 'p', 'v', 'm')
+  AND a.attnum > 0
+  AND NOT a.attisdropped
+ORDER BY c.relname, a.attnum
+"""
+
+SERIAL_TYPE_MAP = {"INTEGER": "SERIAL", "BIGINT": "BIGSERIAL", "SMALLINT": "SMALLSERIAL"}
+
+_INTROSPECT_PK_SQL = """
+SELECT c.relname AS table_name, a.attname AS column_name,
+       array_position(con.conkey, a.attnum) AS pos
+FROM pg_constraint con
+JOIN pg_class c ON c.oid = con.conrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = ANY (con.conkey)
+WHERE con.contype = 'p' AND n.nspname = %(schema)s
+ORDER BY c.relname, pos
+"""
+
+_INTROSPECT_FK_SQL = """
+SELECT con.conname, c.relname AS table_name, rc.relname AS ref_table,
+       a.attname AS column_name, fa.attname AS ref_column, k.ord
+FROM pg_constraint con
+JOIN pg_class c ON c.oid = con.conrelid
+JOIN pg_class rc ON rc.oid = con.confrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN LATERAL unnest(con.conkey, con.confkey) WITH ORDINALITY AS k(attnum, fattnum, ord) ON TRUE
+JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum
+JOIN pg_attribute fa ON fa.attrelid = con.confrelid AND fa.attnum = k.fattnum
+WHERE con.contype = 'f' AND n.nspname = %(schema)s
+ORDER BY c.relname, con.conname, k.ord
+"""
+
+_INTROSPECT_CHECK_SQL = """
+SELECT c.relname AS table_name, pg_get_constraintdef(con.oid) AS definition
+FROM pg_constraint con
+JOIN pg_class c ON c.oid = con.conrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+WHERE con.contype = 'c' AND n.nspname = %(schema)s
+ORDER BY c.relname, con.conname
+"""
+
+_INTROSPECT_INDEX_SQL = """
+SELECT c.relname AS table_name, ic.relname AS index_name,
+       idx.indisunique AS is_unique, a.attname AS column_name, k.ord
+FROM pg_index idx
+JOIN pg_class c ON c.oid = idx.indrelid
+JOIN pg_class ic ON ic.oid = idx.indexrelid
+JOIN pg_namespace n ON n.oid = c.relnamespace
+JOIN LATERAL unnest(idx.indkey) WITH ORDINALITY AS k(attnum, ord) ON TRUE
+JOIN pg_attribute a ON a.attrelid = idx.indrelid AND a.attnum = k.attnum
+WHERE n.nspname = %(schema)s
+  AND NOT idx.indisprimary
+  AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = idx.indexrelid)
+ORDER BY c.relname, ic.relname, k.ord
+"""
+
+
+def postgres_conninfo() -> str:
+    return " ".join(
+        [
+            f"host={os.getenv('POSTGRES_HOST', 'postgres')}",
+            f"port={os.getenv('POSTGRES_PORT', '5432')}",
+            f"dbname={os.getenv('POSTGRES_DB', 'campaign_db')}",
+            f"user={os.getenv('POSTGRES_USER', 'postgres')}",
+            f"password={os.getenv('POSTGRES_PASSWORD', '1234')}",
+        ]
+    )
+
+
+def normalize_db_type(formatted: str) -> str:
+    text = formatted.strip()
+    match = re.match(r"^([a-z ]+?)(\([^)]*\))?$", text, re.IGNORECASE)
+    if not match:
+        return text.upper()
+    base = match.group(1).strip().lower()
+    params = match.group(2) or ""
+    return TYPE_BASE_MAP.get(base, base.upper()) + params.upper()
+
+
+def introspect_schema(conninfo: str | None = None, schema_name: str = "public") -> dict[str, Any]:
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+    except ImportError as exc:  # pragma: no cover - depends on runtime env
+        raise RuntimeError("psycopg가 필요합니다. requirements.txt의 psycopg[binary]를 설치하세요.") from exc
+
+    params = {"schema": schema_name}
+    with psycopg.connect(conninfo or postgres_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
+        with conn.cursor() as cursor:
+            cursor.execute(_INTROSPECT_COLUMNS_SQL, params)
+            column_rows = cursor.fetchall()
+            cursor.execute(_INTROSPECT_PK_SQL, params)
+            pk_rows = cursor.fetchall()
+            cursor.execute(_INTROSPECT_FK_SQL, params)
+            fk_rows = cursor.fetchall()
+            cursor.execute(_INTROSPECT_CHECK_SQL, params)
+            check_rows = cursor.fetchall()
+            cursor.execute(_INTROSPECT_INDEX_SQL, params)
+            index_rows = cursor.fetchall()
+
+    return _build_catalog_from_rows(schema_name, column_rows, pk_rows, fk_rows, check_rows, index_rows)
+
+
+def _build_catalog_from_rows(
+    schema_name: str,
+    column_rows: list[dict[str, Any]],
+    pk_rows: list[dict[str, Any]],
+    fk_rows: list[dict[str, Any]],
+    check_rows: list[dict[str, Any]],
+    index_rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    primary_keys: dict[str, list[str]] = {}
+    for row in pk_rows:
+        primary_keys.setdefault(row["table_name"], []).append(row["column_name"])
+
+    foreign_keys: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in fk_rows:
+        table_fks = foreign_keys.setdefault(row["table_name"], {})
+        entry = table_fks.setdefault(
+            row["conname"],
+            {"columns": [], "references": {"table": row["ref_table"], "columns": []}},
+        )
+        entry["columns"].append(row["column_name"])
+        entry["references"]["columns"].append(row["ref_column"])
+
+    checks: dict[str, list[str]] = {}
+    for row in check_rows:
+        checks.setdefault(row["table_name"], []).append(row["definition"])
+
+    indexes: dict[str, dict[str, dict[str, Any]]] = {}
+    for row in index_rows:
+        table_indexes = indexes.setdefault(row["table_name"], {})
+        entry = table_indexes.setdefault(
+            row["index_name"],
+            {"name": row["index_name"], "unique": bool(row["is_unique"]), "columns": []},
+        )
+        entry["columns"].append(row["column_name"])
+
+    tables: dict[str, Any] = {}
+    for row in column_rows:
+        table_name = row["table_name"]
+        table = tables.get(table_name)
+        if table is None:
+            is_view = bool(row["is_view"])
+            table = tables[table_name] = {
+                "object_type": "view" if is_view else "table",
+                "description_llm": DEFAULT_OBJECT_DESCRIPTIONS.get(table_name, ""),
+                "description_source": "introspected_from_db",
+                "columns": [],
+                "primary_key": primary_keys.get(table_name, []),
+                "checks": checks.get(table_name, []),
+                "foreign_keys": list(foreign_keys.get(table_name, {}).values()),
+                "indexes": list(indexes.get(table_name, {}).values()),
+            }
+
+        column_name = row["column_name"]
+        single_column_ref = _single_column_reference(column_name, foreign_keys.get(table_name, {}))
+        column_type = normalize_db_type(row["data_type"])
+        default_expr = (row.get("default_expr") or "").lower()
+        if "nextval(" in default_expr:
+            column_type = SERIAL_TYPE_MAP.get(column_type, column_type)
+        table["columns"].append(
+            {
+                "name": column_name,
+                "type": column_type,
+                "nullable": not row["not_null"],
+                "primary_key": column_name in primary_keys.get(table_name, []),
+                "references": single_column_ref,
+                "important": column_name in IMPORTANT_COLUMN_NAMES,
+                "human_note": "",
+            }
+        )
+
+    return {
+        "source": f"postgresql://{schema_name} (information_schema/pg_catalog)",
+        "policy": {
+            "schema": "introspected_from_live_db",
+            "llm": "table_descriptions_only",
+            "human_edit": "important_columns_only",
+            "sql_examples_limit": "10_to_30",
+            "ops_feedback": "add_missing_dictionary_terms_and_examples_from_logs",
+        },
+        "tables": tables,
+    }
+
+
+def _single_column_reference(column_name: str, table_fks: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    for foreign_key in table_fks.values():
+        if len(foreign_key["columns"]) == 1 and foreign_key["columns"][0] == column_name:
+            return {
+                "table": foreign_key["references"]["table"],
+                "column": foreign_key["references"]["columns"][0],
+            }
+    return None
+
+
+def reorder_tables_like(schema: dict[str, Any], existing_schema: dict[str, Any] | None) -> dict[str, Any]:
+    if not existing_schema:
+        return schema
+
+    existing_order = list(existing_schema.get("tables", {}).keys())
+    current_tables = schema["tables"]
+    ordered: dict[str, Any] = {}
+    for table_name in existing_order:
+        if table_name in current_tables:
+            ordered[table_name] = current_tables[table_name]
+    for table_name in current_tables:
+        if table_name not in ordered:
+            ordered[table_name] = current_tables[table_name]
+    schema["tables"] = ordered
     return schema
 
 
@@ -324,8 +581,17 @@ def _view_column(item: str) -> dict[str, Any] | None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Extract a schema catalog from PostgreSQL DDL.")
-    parser.add_argument("ddl", type=Path)
+    parser = argparse.ArgumentParser(
+        description="Build a schema catalog from a live PostgreSQL database (default) or a DDL file."
+    )
+    parser.add_argument("ddl", type=Path, nargs="?", help="DDL 파일 경로. --from-db 없이 쓸 때 필요.")
+    parser.add_argument(
+        "--from-db",
+        action="store_true",
+        help="라이브 DB(information_schema/pg_catalog)에서 스키마를 읽는다. DDL 파싱 대신 사용.",
+    )
+    parser.add_argument("--conninfo", default=None, help="psycopg conninfo 문자열. 미지정 시 POSTGRES_* 환경변수 사용.")
+    parser.add_argument("--schema-name", default="public", help="대상 스키마 이름. 기본 public.")
     parser.add_argument("--output", "-o", type=Path, default=Path("docs/data/schema_catalog.json"))
     args = parser.parse_args()
 
@@ -333,11 +599,27 @@ def main() -> None:
     if args.output.exists():
         existing_schema = json.loads(args.output.read_text(encoding="utf-8"))
 
-    schema = extract_schema(args.ddl.read_text(encoding="utf-8"))
+    if args.from_db:
+        schema = introspect_schema(conninfo=args.conninfo, schema_name=args.schema_name)
+        schema = reorder_tables_like(schema, existing_schema)
+    elif args.ddl is not None:
+        schema = extract_schema(args.ddl.read_text(encoding="utf-8"))
+    else:
+        parser.error("DDL 파일 경로를 주거나 --from-db 를 지정하세요.")
+
     schema = merge_existing_annotations(schema, existing_schema)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(schema, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"wrote {args.output} ({len(schema['tables'])} tables)")
+    print(
+        json.dumps(
+            {
+                "mode": "from_db" if args.from_db else "from_ddl",
+                "output": str(args.output),
+                "table_count": len(schema["tables"]),
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 if __name__ == "__main__":
