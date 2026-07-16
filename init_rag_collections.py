@@ -31,6 +31,7 @@ def rebuild_knowledge_base(
     metric_lexicon_path: Path,
     sql_examples_path: Path,
     output_path: Path,
+    campaign_user_path: Path | None = None,
 ) -> dict[str, Any]:
     payload = build_payload(
         schema_catalog=load_json(schema_path),
@@ -38,6 +39,9 @@ def rebuild_knowledge_base(
         policy_payload=load_json(business_policies_path) if business_policies_path.exists() else None,
         metric_lexicon_payload=load_json(metric_lexicon_path) if metric_lexicon_path.exists() else None,
         sql_text=sql_examples_path.read_text(encoding="utf-8"),
+        campaign_user_payload=(
+            load_json(campaign_user_path) if campaign_user_path and campaign_user_path.exists() else None
+        ),
     )
     save_json(output_path, payload)
     return payload["node_counts"]
@@ -125,6 +129,7 @@ def main() -> None:
             metric_lexicon_path=args.metric_lexicon,
             sql_examples_path=args.sql_examples,
             output_path=args.knowledge_data,
+            campaign_user_path=args.user_data,
         )
 
     client = None if args.dry_run or args.validate_only else QdrantClient(url=args.url, api_key=args.api_key)
