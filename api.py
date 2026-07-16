@@ -653,6 +653,7 @@ def cleanup_target_audiences(limit: Annotated[int, Query(ge=1, le=1000)] = 100) 
     }
 
 
+@app.get("/api/prompts")
 @app.get("/prompts")
 def list_prompt_templates() -> dict[str, Any]:
     import prompt_store
@@ -664,6 +665,7 @@ def list_prompt_templates() -> dict[str, Any]:
     return {"prompts": [_jsonable_record(item) for item in templates], "count": len(templates)}
 
 
+@app.get("/api/prompts/{name}")
 @app.get("/prompts/{name}")
 def get_prompt_template(name: str) -> dict[str, Any]:
     import prompt_store
@@ -677,6 +679,7 @@ def get_prompt_template(name: str) -> dict[str, Any]:
     return _jsonable_record(template)
 
 
+@app.put("/api/prompts/{name}")
 @app.put("/prompts/{name}")
 def upsert_prompt_template(name: str, request: PromptTemplateUpsertRequest) -> dict[str, Any]:
     import prompt_store
@@ -688,6 +691,7 @@ def upsert_prompt_template(name: str, request: PromptTemplateUpsertRequest) -> d
     return {"is_success": True, "prompt": _jsonable_record(template)}
 
 
+@app.delete("/api/prompts/{name}")
 @app.delete("/prompts/{name}")
 def delete_prompt_template(name: str) -> dict[str, Any]:
     import prompt_store
@@ -701,6 +705,7 @@ def delete_prompt_template(name: str) -> dict[str, Any]:
     return {"is_success": True, "deleted_prompt": name}
 
 
+@app.post("/api/prompts/reload")
 @app.post("/prompts/reload")
 def reload_prompt_templates() -> dict[str, Any]:
     import prompt_store
@@ -712,6 +717,7 @@ def reload_prompt_templates() -> dict[str, Any]:
     return {"is_success": True, "loaded": loaded}
 
 
+@app.post("/api/prompts/seed")
 @app.post("/prompts/seed")
 def seed_prompt_templates() -> dict[str, Any]:
     import prompt_store
@@ -724,6 +730,7 @@ def seed_prompt_templates() -> dict[str, Any]:
     return {"is_success": True, "seeded": [_jsonable_record(item) for item in seeded], "count": len(seeded)}
 
 
+@app.get("/api/policies")
 @app.get("/policies")
 def list_policies() -> dict[str, Any]:
     import policy_store
@@ -735,6 +742,7 @@ def list_policies() -> dict[str, Any]:
     return {"policies": [_jsonable_record(item) for item in policies], "count": len(policies)}
 
 
+@app.get("/api/policies/{name}")
 @app.get("/policies/{name}")
 def get_policy(name: str) -> dict[str, Any]:
     import policy_store
@@ -748,6 +756,7 @@ def get_policy(name: str) -> dict[str, Any]:
     return _jsonable_record(policy)
 
 
+@app.put("/api/policies/{name}")
 @app.put("/policies/{name}")
 def upsert_policy(name: str, request: PolicyUpsertRequest) -> dict[str, Any]:
     import policy_store
@@ -759,6 +768,7 @@ def upsert_policy(name: str, request: PolicyUpsertRequest) -> dict[str, Any]:
     return {"is_success": True, "policy": _jsonable_record(policy)}
 
 
+@app.delete("/api/policies/{name}")
 @app.delete("/policies/{name}")
 def delete_policy(name: str) -> dict[str, Any]:
     import policy_store
@@ -772,6 +782,7 @@ def delete_policy(name: str) -> dict[str, Any]:
     return {"is_success": True, "deleted_policy": name}
 
 
+@app.post("/api/policies/reload")
 @app.post("/policies/reload")
 def reload_policies() -> dict[str, Any]:
     import policy_store
@@ -783,6 +794,7 @@ def reload_policies() -> dict[str, Any]:
     return {"is_success": True, "loaded": loaded}
 
 
+@app.post("/api/policies/seed")
 @app.post("/policies/seed")
 def seed_policies() -> dict[str, Any]:
     import policy_store
