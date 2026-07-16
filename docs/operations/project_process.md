@@ -317,7 +317,7 @@ docker compose run --rm python python init_rag_collections.py --recreate
 
 - 이 명령은 기본적으로 `docs/data/rag_knowledge_base.json`을 다시 만든 뒤 두 컬렉션을 색인한다.
 - `campaign_user_rag_nodes`에는 캠페인/사용자 샘플 노드와 추천 edge payload가 들어간다.
-- `campaign_knowledge_rag`에는 스키마, 정규화 사전, 비즈니스 용어, 업무 정책, 계산 지표 별칭, SQL 예시 노드가 들어간다.
+- `campaign_knowledge_rag`에는 스키마, 정규화 사전, 비즈니스 용어, 업무 정책, 계산 지표 별칭, SQL 예시 노드와 함께 `campaign_user_rag_sample_50_with_edges.json`의 캠페인/사용자 노드 및 추천 edge가 들어간다.
 - `--recreate`는 컬렉션을 삭제 후 재생성하므로, 샘플 데이터나 지식 베이스가 크게 바뀐 뒤 일관된 상태로 맞출 때 적합하다.
 
 ### 2.12 Qdrant 컬렉션 상태 점검

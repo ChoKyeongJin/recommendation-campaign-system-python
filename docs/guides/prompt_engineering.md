@@ -2,9 +2,41 @@
 
 이 프로젝트에서 프롬프트 엔지니어링이 필요한 부분은 LLM이 직접 SQL을 자유 생성하는 단계가 아니라, 자연어 질문을 검증 가능한 Query Plan으로 바꾸고 검증된 SQL 결과만 답변에 쓰도록 제한하는 단계다.
 
+## 프롬프트 저장소 (DB 우선)
+
+프롬프트는 이제 DB(`campaign_prompt_templates` 테이블)에서 관리한다. `graph_rag.py`의 `_read_prompt_template`은 다음 우선순위로 프롬프트를 조회한다.
+
+1. **DB** — `prompt_store` 모듈이 `campaign_prompt_templates`를 조회한다(프로세스 인메모리 캐시로 서빙, `name`은 프롬프트 파일명과 동일).
+2. **파일** — DB에 없거나 DB 연결이 실패하면 `docs/prompts` 아래 파일을 읽는다.
+3. **하드코딩 fallback** — 위 둘 다 없으면 `graph_rag.py` 내부의 fallback 문자열을 쓴다.
+
+이 fallback 체인 덕분에 DB가 비어 있거나 일시적으로 접속이 안 돼도 서비스는 파일/코드 기본값으로 계속 동작한다.
+
+### 초기 시딩과 관리
+
+- 기존 `docs/prompts/*.txt`를 DB로 넣으려면 시딩 스크립트를 한 번 실행한다.
+
+  ```bash
+  docker compose exec api python seed_prompts.py
+  # 또는 API로: curl -X POST http://localhost:8000/prompts/seed
+  ```
+
+- 이후 프롬프트는 관리 REST API로 조회/수정/삭제한다. 수정·삭제·시딩·리로드는 실행 중인 API 프로세스의 캐시를 즉시 갱신한다.
+
+  | 메서드/경로               | 설명                                          |
+  | ------------------------- | --------------------------------------------- |
+  | `GET /prompts`            | 전체 프롬프트 목록                            |
+  | `GET /prompts/{name}`     | 단일 프롬프트 조회 (name = 파일명)            |
+  | `PUT /prompts/{name}`     | 프롬프트 추가/수정 (`content`, `description`) |
+  | `DELETE /prompts/{name}`  | 프롬프트 삭제                                 |
+  | `POST /prompts/reload`    | 캐시를 DB에서 다시 로딩                        |
+  | `POST /prompts/seed`      | `docs/prompts` 파일을 DB로 upsert             |
+
+- 테스트/오프라인 등에서 DB를 건너뛰고 파일 기반으로만 동작시키려면 `GRAPH_RAG_PROMPT_SOURCE=file`로 설정한다.
+
 ## 수정 위치
 
-`graph_rag.py`는 기본적으로 `docs/prompts` 아래의 프롬프트 파일을 읽는다. 프롬프트를 바꾼 뒤 같은 명령을 다시 실행하면 변경 사항이 바로 반영된다.
+아래 표의 `docs/prompts` 파일은 DB `name`(=파일명)과 1:1로 대응한다. 파일을 편집한 뒤 `POST /prompts/seed`로 DB에 반영하거나, `PUT /prompts/{name}`로 DB를 직접 수정한다. `GRAPH_RAG_PROMPT_SOURCE=file`이면 파일을 바로 읽으므로 같은 명령을 다시 실행하면 변경 사항이 반영된다.
 
 | 파일                                               | 반영 위치                        | 목적                                                           |
 | -------------------------------------------------- | -------------------------------- | -------------------------------------------------------------- |
