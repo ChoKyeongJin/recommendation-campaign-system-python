@@ -1,7 +1,7 @@
 {
-  "source": "postgresql://public (information_schema/pg_catalog)",
+  "source": "docs/data/ddl.sql",
   "policy": {
-    "schema": "introspected_from_live_db",
+    "schema": "auto_extracted_from_ddl",
     "llm": "table_descriptions_only",
     "human_edit": "important_columns_only",
     "sql_examples_limit": "10_to_30",
@@ -11,7 +11,7 @@
     "campaigns": {
       "object_type": "table",
       "description_llm": "캠페인의 기본 속성, 목적, 카테고리, 예산, 기간, 예상 성과와 임베딩용 텍스트를 저장하는 중심 테이블이다.",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "campaign_id",
@@ -117,8 +117,7 @@
         "campaign_id"
       ],
       "checks": [
-        "CHECK ((budget_krw >= 0))",
-        "CHECK ((end_date >= start_date))"
+        "CHECK (end_date >= start_date)"
       ],
       "foreign_keys": [],
       "indexes": [
@@ -141,7 +140,7 @@
     "campaign_channels": {
       "object_type": "table",
       "description_llm": "각 캠페인이 노출되거나 발송되는 채널을 캠페인별 다중 값으로 저장하는 연결 테이블이다.",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "campaign_id",
@@ -170,25 +169,13 @@
         "channel"
       ],
       "checks": [],
-      "foreign_keys": [
-        {
-          "columns": [
-            "campaign_id"
-          ],
-          "references": {
-            "table": "campaigns",
-            "columns": [
-              "campaign_id"
-            ]
-          }
-        }
-      ],
+      "foreign_keys": [],
       "indexes": []
     },
     "campaign_target_segments": {
       "object_type": "table",
       "description_llm": "캠페인이 겨냥하는 고객 세그먼트를 캠페인별 다중 값으로 저장하는 연결 테이블이다.",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "campaign_id",
@@ -217,25 +204,13 @@
         "target_segment"
       ],
       "checks": [],
-      "foreign_keys": [
-        {
-          "columns": [
-            "campaign_id"
-          ],
-          "references": {
-            "table": "campaigns",
-            "columns": [
-              "campaign_id"
-            ]
-          }
-        }
-      ],
+      "foreign_keys": [],
       "indexes": []
     },
     "campaign_keywords": {
       "object_type": "table",
       "description_llm": "캠페인 검색과 의미 매칭에 사용할 키워드를 캠페인별로 저장하는 연결 테이블이다.",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "campaign_id",
@@ -264,25 +239,13 @@
         "keyword"
       ],
       "checks": [],
-      "foreign_keys": [
-        {
-          "columns": [
-            "campaign_id"
-          ],
-          "references": {
-            "table": "campaigns",
-            "columns": [
-              "campaign_id"
-            ]
-          }
-        }
-      ],
+      "foreign_keys": [],
       "indexes": []
     },
     "campaign_message_examples": {
       "object_type": "table",
       "description_llm": "",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "example_id",
@@ -355,19 +318,7 @@
         "example_id"
       ],
       "checks": [],
-      "foreign_keys": [
-        {
-          "columns": [
-            "campaign_id"
-          ],
-          "references": {
-            "table": "campaigns",
-            "columns": [
-              "campaign_id"
-            ]
-          }
-        }
-      ],
+      "foreign_keys": [],
       "indexes": [
         {
           "name": "idx_campaign_message_examples_campaign",
@@ -388,7 +339,7 @@
     "users": {
       "object_type": "table",
       "description_llm": "사용자의 인구통계, 지역, 라이프사이클, 구매 지표, 가격 민감도, LTV 세그먼트와 임베딩용 텍스트를 저장하는 중심 테이블이다.",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "user_id",
@@ -488,43 +439,14 @@
           "references": null,
           "important": false,
           "human_note": ""
-        },
-        {
-          "name": "last_login_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "고객의 마지막 로그인/접속 일시. 6개월 이상 미접속 조건은 CURRENT_TIMESTAMP - INTERVAL '6 months'와 비교한다."
         }
       ],
       "primary_key": [
         "user_id"
       ],
-      "checks": [
-        "CHECK ((age >= 0))",
-        "CHECK ((avg_order_value_krw >= 0))",
-        "CHECK ((last_active_days >= 0))",
-        "CHECK ((purchase_count_90d >= 0))"
-      ],
+      "checks": [],
       "foreign_keys": [],
       "indexes": [
-        {
-          "name": "idx_users_dormant_reactivation",
-          "unique": false,
-          "columns": [
-            "last_login_at",
-            "lifecycle"
-          ]
-        },
-        {
-          "name": "idx_users_last_login_at",
-          "unique": false,
-          "columns": [
-            "last_login_at"
-          ]
-        },
         {
           "name": "idx_users_lifecycle",
           "unique": false,
@@ -544,7 +466,7 @@
     "user_interests": {
       "object_type": "table",
       "description_llm": "사용자의 관심사를 사용자별 다중 값으로 저장해 캠페인 카테고리와 세그먼트 매칭에 활용하는 연결 테이블이다.",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "user_id",
@@ -573,25 +495,13 @@
         "interest"
       ],
       "checks": [],
-      "foreign_keys": [
-        {
-          "columns": [
-            "user_id"
-          ],
-          "references": {
-            "table": "users",
-            "columns": [
-              "user_id"
-            ]
-          }
-        }
-      ],
+      "foreign_keys": [],
       "indexes": []
     },
     "user_preferred_channels": {
       "object_type": "table",
       "description_llm": "사용자가 선호하는 커뮤니케이션 채널을 사용자별 다중 값으로 저장하는 연결 테이블이다.",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "user_id",
@@ -620,25 +530,13 @@
         "preferred_channel"
       ],
       "checks": [],
-      "foreign_keys": [
-        {
-          "columns": [
-            "user_id"
-          ],
-          "references": {
-            "table": "users",
-            "columns": [
-              "user_id"
-            ]
-          }
-        }
-      ],
+      "foreign_keys": [],
       "indexes": []
     },
     "user_recent_behaviors": {
       "object_type": "table",
       "description_llm": "최근 조회, 구매, 이탈, 인증 등 추천 판단에 필요한 사용자 행동 신호를 사용자별 다중 값으로 저장하는 연결 테이블이다.",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "user_id",
@@ -667,25 +565,13 @@
         "behavior"
       ],
       "checks": [],
-      "foreign_keys": [
-        {
-          "columns": [
-            "user_id"
-          ],
-          "references": {
-            "table": "users",
-            "columns": [
-              "user_id"
-            ]
-          }
-        }
-      ],
+      "foreign_keys": [],
       "indexes": []
     },
     "recommendation_edges": {
       "object_type": "table",
       "description_llm": "사용자와 캠페인 사이의 추천 관계, 추천 사유, 추천 강도 라벨을 저장하는 edge 테이블이다.",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "user_id",
@@ -735,30 +621,7 @@
         "campaign_id"
       ],
       "checks": [],
-      "foreign_keys": [
-        {
-          "columns": [
-            "campaign_id"
-          ],
-          "references": {
-            "table": "campaigns",
-            "columns": [
-              "campaign_id"
-            ]
-          }
-        },
-        {
-          "columns": [
-            "user_id"
-          ],
-          "references": {
-            "table": "users",
-            "columns": [
-              "user_id"
-            ]
-          }
-        }
-      ],
+      "foreign_keys": [],
       "indexes": [
         {
           "name": "idx_recommendation_edges_campaign",
@@ -772,7 +635,7 @@
     "campaign_target_audiences": {
       "object_type": "table",
       "description_llm": "",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "audience_id",
@@ -922,23 +785,9 @@
       "primary_key": [
         "audience_id"
       ],
-      "checks": [
-        "CHECK ((member_count >= 0))",
-        "CHECK (((status)::text = ANY ((ARRAY['running'::character varying, 'completed'::character varying, 'failed'::character varying, 'expired'::character varying])::text[])))",
-        "CHECK ((target_campaign_count >= 0))",
-        "CHECK ((target_customer_count >= 0))",
-        "CHECK (((completed_at IS NULL) OR (completed_at >= created_at)))",
-        "CHECK (((expires_at IS NULL) OR (expires_at >= created_at)))"
-      ],
+      "checks": [],
       "foreign_keys": [],
       "indexes": [
-        {
-          "name": "idx_campaign_target_audiences_expires_at",
-          "unique": false,
-          "columns": [
-            "expires_at"
-          ]
-        },
         {
           "name": "idx_campaign_target_audiences_status_created",
           "unique": false,
@@ -952,7 +801,7 @@
     "campaign_target_audience_members": {
       "object_type": "table",
       "description_llm": "",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "audience_id",
@@ -1008,28 +857,8 @@
         "member_id"
       ],
       "checks": [],
-      "foreign_keys": [
-        {
-          "columns": [
-            "audience_id"
-          ],
-          "references": {
-            "table": "campaign_target_audiences",
-            "columns": [
-              "audience_id"
-            ]
-          }
-        }
-      ],
+      "foreign_keys": [],
       "indexes": [
-        {
-          "name": "idx_campaign_target_audience_members_campaign",
-          "unique": false,
-          "columns": [
-            "audience_id",
-            "campaign_id"
-          ]
-        },
         {
           "name": "idx_campaign_target_audience_members_user",
           "unique": false,
@@ -1043,7 +872,7 @@
     "campaign_query_failure_logs": {
       "object_type": "table",
       "description_llm": "GraphRAG/API 실행 실패를 운영 분석과 사전 보강에 활용하기 위해 누적 저장하는 로그 테이블이다.",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "failure_log_id",
@@ -1236,7 +1065,7 @@
           "name": "idx_campaign_query_failure_logs_created",
           "unique": false,
           "columns": [
-            "created_at"
+            "created_at DESC"
           ]
         },
         {
@@ -1245,7 +1074,7 @@
           "columns": [
             "failure_stage",
             "failure_reason",
-            "created_at"
+            "created_at DESC"
           ]
         },
         {
@@ -1253,15 +1082,113 @@
           "unique": false,
           "columns": [
             "api_status",
-            "created_at"
+            "created_at DESC"
           ]
         }
       ]
     },
+    "campaign_prompt_templates": {
+      "object_type": "table",
+      "description_llm": "",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "name",
+          "type": "VARCHAR(120)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "content",
+          "type": "TEXT",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "name"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "campaign_policies": {
+      "object_type": "table",
+      "description_llm": "",
+      "description_source": "llm_table_only",
+      "columns": [
+        {
+          "name": "name",
+          "type": "VARCHAR(120)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": ""
+        },
+        {
+          "name": "content",
+          "type": "JSONB",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "description",
+          "type": "TEXT",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        },
+        {
+          "name": "updated_at",
+          "type": "TIMESTAMPTZ",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": ""
+        }
+      ],
+      "primary_key": [
+        "name"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
     "campaign_channel_messages": {
       "object_type": "table",
       "description_llm": "",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "message_id",
@@ -1348,10 +1275,7 @@
       "primary_key": [
         "message_id"
       ],
-      "checks": [
-        "CHECK (((send_status)::text = ANY ((ARRAY['pending'::character varying, 'sent'::character varying, 'failed'::character varying, 'cancelled'::character varying])::text[])))",
-        "CHECK (((send_type)::text = ANY ((ARRAY['LMS'::character varying, 'RCS'::character varying])::text[])))"
-      ],
+      "checks": [],
       "foreign_keys": [
         {
           "columns": [
@@ -1387,7 +1311,7 @@
     "campaign_experiments": {
       "object_type": "table",
       "description_llm": "",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "experiment_id",
@@ -1495,24 +1419,8 @@
       "primary_key": [
         "experiment_id"
       ],
-      "checks": [
-        "CHECK (((assignment_method)::text = ANY ((ARRAY['random'::character varying, 'weighted_random'::character varying, 'manual'::character varying, 'model'::character varying])::text[])))",
-        "CHECK (((primary_metric)::text = ANY ((ARRAY['delivery_rate'::character varying, 'impression_rate'::character varying, 'open_rate'::character varying, 'ctr'::character varying, 'cvr'::character varying, 'revenue'::character varying])::text[])))",
-        "CHECK (((status)::text = ANY ((ARRAY['draft'::character varying, 'running'::character varying, 'paused'::character varying, 'completed'::character varying, 'cancelled'::character varying])::text[])))",
-        "CHECK (((ended_at IS NULL) OR (started_at IS NULL) OR (ended_at >= started_at)))"
-      ],
+      "checks": [],
       "foreign_keys": [
-        {
-          "columns": [
-            "campaign_id"
-          ],
-          "references": {
-            "table": "campaigns",
-            "columns": [
-              "campaign_id"
-            ]
-          }
-        },
         {
           "columns": [
             "campaign_id",
@@ -1541,7 +1449,7 @@
     "campaign_message_variants": {
       "object_type": "table",
       "description_llm": "",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "variant_id",
@@ -1640,22 +1548,8 @@
       "primary_key": [
         "variant_id"
       ],
-      "checks": [
-        "CHECK ((allocation_weight > (0)::numeric))"
-      ],
-      "foreign_keys": [
-        {
-          "columns": [
-            "experiment_id"
-          ],
-          "references": {
-            "table": "campaign_experiments",
-            "columns": [
-              "experiment_id"
-            ]
-          }
-        }
-      ],
+      "checks": [],
+      "foreign_keys": [],
       "indexes": [
         {
           "name": "idx_campaign_message_variants_experiment",
@@ -1669,7 +1563,7 @@
     "campaign_message_deliveries": {
       "object_type": "table",
       "description_llm": "",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "delivery_id",
@@ -1831,56 +1725,8 @@
       "primary_key": [
         "delivery_id"
       ],
-      "checks": [
-        "CHECK (((assignment_source)::text = ANY ((ARRAY['random'::character varying, 'weighted_random'::character varying, 'manual'::character varying, 'model'::character varying])::text[])))",
-        "CHECK (((final_status)::text = ANY ((ARRAY['assigned'::character varying, 'requested'::character varying, 'sent'::character varying, 'delivered'::character varying, 'bounced'::character varying, 'failed'::character varying, 'cancelled'::character varying])::text[])))",
-        "CHECK (((predicted_click_probability IS NULL) OR ((predicted_click_probability >= (0)::numeric) AND (predicted_click_probability <= (1)::numeric))))"
-      ],
+      "checks": [],
       "foreign_keys": [
-        {
-          "columns": [
-            "campaign_id"
-          ],
-          "references": {
-            "table": "campaigns",
-            "columns": [
-              "campaign_id"
-            ]
-          }
-        },
-        {
-          "columns": [
-            "experiment_id"
-          ],
-          "references": {
-            "table": "campaign_experiments",
-            "columns": [
-              "experiment_id"
-            ]
-          }
-        },
-        {
-          "columns": [
-            "user_id"
-          ],
-          "references": {
-            "table": "users",
-            "columns": [
-              "user_id"
-            ]
-          }
-        },
-        {
-          "columns": [
-            "variant_id"
-          ],
-          "references": {
-            "table": "campaign_message_variants",
-            "columns": [
-              "variant_id"
-            ]
-          }
-        },
         {
           "columns": [
             "campaign_id",
@@ -1912,17 +1758,17 @@
           ]
         },
         {
-          "name": "idx_campaign_message_deliveries_sent_at",
-          "unique": false,
-          "columns": [
-            "sent_at"
-          ]
-        },
-        {
           "name": "idx_campaign_message_deliveries_user",
           "unique": false,
           "columns": [
             "user_id"
+          ]
+        },
+        {
+          "name": "idx_campaign_message_deliveries_sent_at",
+          "unique": false,
+          "columns": [
+            "sent_at"
           ]
         }
       ]
@@ -1930,7 +1776,7 @@
     "campaign_message_events": {
       "object_type": "table",
       "description_llm": "",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "event_id",
@@ -2083,23 +1929,8 @@
       "primary_key": [
         "event_id"
       ],
-      "checks": [
-        "CHECK (((conversion_value_krw IS NULL) OR (conversion_value_krw >= (0)::numeric)))",
-        "CHECK (((event_type)::text = ANY ((ARRAY['send_requested'::character varying, 'sent'::character varying, 'delivered'::character varying, 'impression'::character varying, 'open'::character varying, 'click'::character varying, 'conversion'::character varying, 'bounce'::character varying, 'failed'::character varying, 'unsubscribe'::character varying])::text[])))"
-      ],
-      "foreign_keys": [
-        {
-          "columns": [
-            "delivery_id"
-          ],
-          "references": {
-            "table": "campaign_message_deliveries",
-            "columns": [
-              "delivery_id"
-            ]
-          }
-        }
-      ],
+      "checks": [],
+      "foreign_keys": [],
       "indexes": [
         {
           "name": "idx_campaign_message_events_delivery_type_time",
@@ -2108,20 +1939,6 @@
             "delivery_id",
             "event_type",
             "event_at"
-          ]
-        },
-        {
-          "name": "idx_campaign_message_events_event_at_brin",
-          "unique": false,
-          "columns": [
-            "event_at"
-          ]
-        },
-        {
-          "name": "idx_campaign_message_events_properties_gin",
-          "unique": false,
-          "columns": [
-            "event_properties"
           ]
         },
         {
@@ -2137,7 +1954,7 @@
     "shopping_carts": {
       "object_type": "table",
       "description_llm": "",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "cart_id",
@@ -2299,49 +2116,9 @@
       "primary_key": [
         "cart_id"
       ],
-      "checks": [
-        "CHECK ((((cart_status)::text <> 'abandoned'::text) OR (abandoned_at IS NOT NULL)))",
-        "CHECK ((total_amount_krw = (GREATEST((original_amount_krw - discount_amount_krw), 0) + shipping_fee_krw)))",
-        "CHECK ((((purchase_completed = false) AND (purchased_at IS NULL)) OR ((purchase_completed = true) AND (purchased_at IS NOT NULL) AND ((cart_status)::text = 'purchased'::text))))",
-        "CHECK (((last_activity_at >= created_at) AND ((abandoned_at IS NULL) OR (abandoned_at >= created_at)) AND ((purchased_at IS NULL) OR (purchased_at >= created_at)) AND ((expires_at IS NULL) OR (expires_at >= created_at))))",
-        "CHECK (((abandonment_reason IS NULL) OR ((abandonment_reason)::text = ANY ((ARRAY['unknown'::character varying, 'price'::character varying, 'shipping_fee'::character varying, 'payment_failure'::character varying, 'comparison_shopping'::character varying, 'coupon_search'::character varying, 'out_of_stock'::character varying, 'delayed_decision'::character varying])::text[]))))",
-        "CHECK (((cart_status)::text = ANY ((ARRAY['active'::character varying, 'abandoned'::character varying, 'purchased'::character varying, 'expired'::character varying])::text[])))",
-        "CHECK ((discount_amount_krw >= 0))",
-        "CHECK ((original_amount_krw >= 0))",
-        "CHECK ((shipping_fee_krw >= 0))",
-        "CHECK (((source_channel)::text = ANY ((ARRAY['web'::character varying, 'mobile_web'::character varying, 'android_app'::character varying, 'ios_app'::character varying])::text[])))",
-        "CHECK ((total_amount_krw >= 0))",
-        "CHECK ((total_quantity >= 0))"
-      ],
-      "foreign_keys": [
-        {
-          "columns": [
-            "user_id"
-          ],
-          "references": {
-            "table": "users",
-            "columns": [
-              "user_id"
-            ]
-          }
-        }
-      ],
+      "checks": [],
+      "foreign_keys": [],
       "indexes": [
-        {
-          "name": "idx_shopping_carts_abandoned_target",
-          "unique": false,
-          "columns": [
-            "abandoned_at",
-            "total_amount_krw"
-          ]
-        },
-        {
-          "name": "idx_shopping_carts_last_activity",
-          "unique": false,
-          "columns": [
-            "last_activity_at"
-          ]
-        },
         {
           "name": "idx_shopping_carts_user_status",
           "unique": false,
@@ -2349,13 +2126,20 @@
             "user_id",
             "cart_status"
           ]
+        },
+        {
+          "name": "idx_shopping_carts_last_activity",
+          "unique": false,
+          "columns": [
+            "last_activity_at DESC"
+          ]
         }
       ]
     },
     "shopping_cart_items": {
       "object_type": "table",
       "description_llm": "",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "cart_item_id",
@@ -2553,31 +2337,8 @@
       "primary_key": [
         "cart_item_id"
       ],
-      "checks": [
-        "CHECK (((coupon_available = true) OR (coupon_code IS NULL)))",
-        "CHECK ((final_unit_price_krw <= unit_price_krw))",
-        "CHECK ((((last_viewed_at IS NULL) OR (last_viewed_at >= added_at)) AND ((removed_at IS NULL) OR (removed_at >= added_at)) AND ((coupon_expire_at IS NULL) OR (coupon_expire_at >= added_at))))",
-        "CHECK (((discount_price_krw IS NULL) OR (discount_price_krw >= 0)))",
-        "CHECK ((final_unit_price_krw >= 0))",
-        "CHECK (((inventory_quantity IS NULL) OR (inventory_quantity >= 0)))",
-        "CHECK (((inventory_status)::text = ANY ((ARRAY['in_stock'::character varying, 'low_stock'::character varying, 'out_of_stock'::character varying, 'discontinued'::character varying])::text[])))",
-        "CHECK ((quantity > 0))",
-        "CHECK ((unit_price_krw >= 0))",
-        "CHECK ((viewed_count >= 0))"
-      ],
-      "foreign_keys": [
-        {
-          "columns": [
-            "cart_id"
-          ],
-          "references": {
-            "table": "shopping_carts",
-            "columns": [
-              "cart_id"
-            ]
-          }
-        }
-      ],
+      "checks": [],
+      "foreign_keys": [],
       "indexes": [
         {
           "name": "idx_shopping_cart_items_cart",
@@ -2606,7 +2367,7 @@
     "cart_reminder_history": {
       "object_type": "table",
       "description_llm": "",
-      "description_source": "introspected_from_db",
+      "description_source": "llm_table_only",
       "columns": [
         {
           "name": "reminder_id",
@@ -2756,62 +2517,15 @@
       "primary_key": [
         "reminder_id"
       ],
-      "checks": [
-        "CHECK (((channel)::text = ANY ((ARRAY['app_push'::character varying, 'kakao'::character varying, 'sms'::character varying, 'lms'::character varying, 'rcs'::character varying, 'email'::character varying])::text[])))",
-        "CHECK (((conversion_value_krw IS NULL) OR (conversion_value_krw >= 0)))",
-        "CHECK (((reminder_sequence >= 1) AND (reminder_sequence <= 10)))",
-        "CHECK (((reminder_type)::text = ANY ((ARRAY['benefit'::character varying, 'urgency'::character varying, 'stock'::character varying, 'social_proof'::character varying, 'simple_reminder'::character varying])::text[])))",
-        "CHECK ((((delivered_at IS NULL) OR (delivered_at >= sent_at)) AND ((clicked_at IS NULL) OR (clicked_at >= sent_at)) AND ((converted_at IS NULL) OR (converted_at >= sent_at))))"
-      ],
-      "foreign_keys": [
-        {
-          "columns": [
-            "campaign_id"
-          ],
-          "references": {
-            "table": "campaigns",
-            "columns": [
-              "campaign_id"
-            ]
-          }
-        },
-        {
-          "columns": [
-            "cart_id"
-          ],
-          "references": {
-            "table": "shopping_carts",
-            "columns": [
-              "cart_id"
-            ]
-          }
-        },
-        {
-          "columns": [
-            "delivery_id"
-          ],
-          "references": {
-            "table": "campaign_message_deliveries",
-            "columns": [
-              "delivery_id"
-            ]
-          }
-        }
-      ],
+      "checks": [],
+      "foreign_keys": [],
       "indexes": [
-        {
-          "name": "idx_cart_reminder_history_campaign",
-          "unique": false,
-          "columns": [
-            "campaign_id"
-          ]
-        },
         {
           "name": "idx_cart_reminder_history_cart_sent",
           "unique": false,
           "columns": [
             "cart_id",
-            "sent_at"
+            "sent_at DESC"
           ]
         }
       ]
@@ -2819,11 +2533,11 @@
     "v_campaign_variant_metrics": {
       "object_type": "view",
       "description_llm": "메시지 variant별 발송, 도달, 노출, 클릭, 전환, CTR/CVR, 매출 지표를 집계하는 분석 view다.",
-      "description_source": "introspected_from_db",
+      "description_source": "ddl_view",
       "columns": [
         {
           "name": "campaign_id",
-          "type": "VARCHAR(20)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2832,7 +2546,7 @@
         },
         {
           "name": "campaign_name",
-          "type": "TEXT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2841,7 +2555,7 @@
         },
         {
           "name": "experiment_id",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2850,7 +2564,7 @@
         },
         {
           "name": "experiment_name",
-          "type": "VARCHAR(200)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2859,7 +2573,7 @@
         },
         {
           "name": "variant_id",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2868,7 +2582,7 @@
         },
         {
           "name": "variant_code",
-          "type": "VARCHAR(20)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2877,7 +2591,7 @@
         },
         {
           "name": "message_name",
-          "type": "VARCHAR(100)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2886,7 +2600,7 @@
         },
         {
           "name": "channel",
-          "type": "VARCHAR(50)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2895,7 +2609,7 @@
         },
         {
           "name": "assigned_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2904,7 +2618,7 @@
         },
         {
           "name": "sent_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2913,7 +2627,7 @@
         },
         {
           "name": "delivered_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2922,7 +2636,7 @@
         },
         {
           "name": "impression_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2931,7 +2645,7 @@
         },
         {
           "name": "open_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2940,7 +2654,7 @@
         },
         {
           "name": "click_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2949,7 +2663,7 @@
         },
         {
           "name": "conversion_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2958,7 +2672,7 @@
         },
         {
           "name": "delivery_rate_pct",
-          "type": "NUMERIC",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2967,7 +2681,7 @@
         },
         {
           "name": "impression_rate_pct",
-          "type": "NUMERIC",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2976,7 +2690,7 @@
         },
         {
           "name": "open_rate_pct",
-          "type": "NUMERIC",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2985,7 +2699,7 @@
         },
         {
           "name": "ctr_pct",
-          "type": "NUMERIC",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -2994,7 +2708,7 @@
         },
         {
           "name": "delivered_ctr_pct",
-          "type": "NUMERIC",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3003,7 +2717,7 @@
         },
         {
           "name": "click_to_conversion_rate_pct",
-          "type": "NUMERIC",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3012,7 +2726,7 @@
         },
         {
           "name": "cvr_pct",
-          "type": "NUMERIC",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3021,7 +2735,7 @@
         },
         {
           "name": "revenue_krw",
-          "type": "NUMERIC",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3037,11 +2751,11 @@
     "v_campaign_segment_metrics": {
       "object_type": "view",
       "description_llm": "성별, 연령대, 지역, 라이프사이클별 메시지 성과와 CTR/CVR을 집계하는 분석 view다.",
-      "description_source": "introspected_from_db",
+      "description_source": "ddl_view",
       "columns": [
         {
           "name": "experiment_id",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3050,7 +2764,7 @@
         },
         {
           "name": "experiment_name",
-          "type": "VARCHAR(200)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3059,7 +2773,7 @@
         },
         {
           "name": "variant_id",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3068,7 +2782,7 @@
         },
         {
           "name": "variant_code",
-          "type": "VARCHAR(20)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3077,7 +2791,7 @@
         },
         {
           "name": "gender",
-          "type": "VARCHAR(20)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3086,7 +2800,7 @@
         },
         {
           "name": "age_group",
-          "type": "TEXT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3095,7 +2809,7 @@
         },
         {
           "name": "region",
-          "type": "VARCHAR(50)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3104,7 +2818,7 @@
         },
         {
           "name": "lifecycle",
-          "type": "VARCHAR(50)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3113,7 +2827,7 @@
         },
         {
           "name": "assigned_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3122,7 +2836,7 @@
         },
         {
           "name": "delivered_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3131,7 +2845,7 @@
         },
         {
           "name": "impression_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3140,7 +2854,7 @@
         },
         {
           "name": "click_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3149,7 +2863,7 @@
         },
         {
           "name": "conversion_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3158,7 +2872,7 @@
         },
         {
           "name": "ctr_pct",
-          "type": "NUMERIC",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3167,7 +2881,7 @@
         },
         {
           "name": "click_to_conversion_rate_pct",
-          "type": "NUMERIC",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3183,11 +2897,11 @@
     "v_campaign_daily_metrics": {
       "object_type": "view",
       "description_llm": "KST 날짜별 메시지 이벤트 퍼널과 매출 추이를 집계하는 분석 view다.",
-      "description_source": "introspected_from_db",
+      "description_source": "ddl_view",
       "columns": [
         {
           "name": "campaign_id",
-          "type": "VARCHAR(20)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3196,7 +2910,7 @@
         },
         {
           "name": "experiment_id",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3205,7 +2919,7 @@
         },
         {
           "name": "variant_id",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3214,7 +2928,7 @@
         },
         {
           "name": "channel",
-          "type": "VARCHAR(50)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3223,7 +2937,7 @@
         },
         {
           "name": "event_date_kst",
-          "type": "DATE",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3232,7 +2946,7 @@
         },
         {
           "name": "sent_event_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3241,7 +2955,7 @@
         },
         {
           "name": "delivered_event_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3250,7 +2964,7 @@
         },
         {
           "name": "impression_event_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3259,7 +2973,7 @@
         },
         {
           "name": "open_event_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3268,7 +2982,7 @@
         },
         {
           "name": "click_event_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3277,7 +2991,7 @@
         },
         {
           "name": "conversion_event_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3286,7 +3000,7 @@
         },
         {
           "name": "revenue_krw",
-          "type": "NUMERIC",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3302,11 +3016,11 @@
     "v_abandoned_cart_targets": {
       "object_type": "view",
       "description_llm": "",
-      "description_source": "introspected_from_db",
+      "description_source": "ddl_view",
       "columns": [
         {
           "name": "cart_id",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3315,7 +3029,7 @@
         },
         {
           "name": "user_id",
-          "type": "VARCHAR(20)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3324,7 +3038,7 @@
         },
         {
           "name": "age",
-          "type": "INTEGER",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3333,7 +3047,7 @@
         },
         {
           "name": "gender",
-          "type": "VARCHAR(20)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3342,7 +3056,7 @@
         },
         {
           "name": "region",
-          "type": "VARCHAR(50)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3351,7 +3065,7 @@
         },
         {
           "name": "price_sensitivity",
-          "type": "VARCHAR(20)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3360,7 +3074,7 @@
         },
         {
           "name": "predicted_ltv_segment",
-          "type": "VARCHAR(20)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3369,7 +3083,7 @@
         },
         {
           "name": "source_channel",
-          "type": "VARCHAR(30)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3378,7 +3092,7 @@
         },
         {
           "name": "total_quantity",
-          "type": "INTEGER",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3387,7 +3101,7 @@
         },
         {
           "name": "original_amount_krw",
-          "type": "INTEGER",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3396,7 +3110,7 @@
         },
         {
           "name": "discount_amount_krw",
-          "type": "INTEGER",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3405,7 +3119,7 @@
         },
         {
           "name": "shipping_fee_krw",
-          "type": "INTEGER",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3414,7 +3128,7 @@
         },
         {
           "name": "total_amount_krw",
-          "type": "INTEGER",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3423,7 +3137,7 @@
         },
         {
           "name": "abandonment_reason",
-          "type": "VARCHAR(40)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3432,7 +3146,7 @@
         },
         {
           "name": "abandoned_at",
-          "type": "TIMESTAMPTZ",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3441,7 +3155,7 @@
         },
         {
           "name": "abandoned_hours",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3450,7 +3164,7 @@
         },
         {
           "name": "item_line_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3459,7 +3173,7 @@
         },
         {
           "name": "product_names",
-          "type": "TEXT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3468,7 +3182,7 @@
         },
         {
           "name": "categories",
-          "type": "TEXT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3477,7 +3191,7 @@
         },
         {
           "name": "has_available_coupon",
-          "type": "BOOLEAN",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3486,7 +3200,7 @@
         },
         {
           "name": "has_low_stock_item",
-          "type": "BOOLEAN",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3495,7 +3209,7 @@
         },
         {
           "name": "all_items_orderable",
-          "type": "BOOLEAN",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3504,7 +3218,7 @@
         },
         {
           "name": "reminder_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3513,7 +3227,7 @@
         },
         {
           "name": "last_reminder_sent_at",
-          "type": "TIMESTAMPTZ",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3522,7 +3236,7 @@
         },
         {
           "name": "reminder_converted",
-          "type": "BOOLEAN",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3538,11 +3252,11 @@
     "v_cart_repurchase_targets": {
       "object_type": "view",
       "description_llm": "",
-      "description_source": "introspected_from_db",
+      "description_source": "ddl_view",
       "columns": [
         {
           "name": "cart_id",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3551,7 +3265,7 @@
         },
         {
           "name": "user_id",
-          "type": "VARCHAR(20)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3560,7 +3274,7 @@
         },
         {
           "name": "age",
-          "type": "INTEGER",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3569,7 +3283,7 @@
         },
         {
           "name": "gender",
-          "type": "VARCHAR(20)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3578,7 +3292,7 @@
         },
         {
           "name": "region",
-          "type": "VARCHAR(50)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3587,7 +3301,7 @@
         },
         {
           "name": "price_sensitivity",
-          "type": "VARCHAR(20)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3596,7 +3310,7 @@
         },
         {
           "name": "predicted_ltv_segment",
-          "type": "VARCHAR(20)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3605,7 +3319,7 @@
         },
         {
           "name": "source_channel",
-          "type": "VARCHAR(30)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3614,7 +3328,7 @@
         },
         {
           "name": "total_quantity",
-          "type": "INTEGER",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3623,7 +3337,7 @@
         },
         {
           "name": "total_amount_krw",
-          "type": "INTEGER",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3632,7 +3346,7 @@
         },
         {
           "name": "abandonment_reason",
-          "type": "VARCHAR(40)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3641,7 +3355,7 @@
         },
         {
           "name": "abandoned_at",
-          "type": "TIMESTAMPTZ",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3650,7 +3364,7 @@
         },
         {
           "name": "abandoned_hours",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3659,7 +3373,7 @@
         },
         {
           "name": "categories",
-          "type": "TEXT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3668,7 +3382,7 @@
         },
         {
           "name": "product_names",
-          "type": "TEXT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3677,7 +3391,7 @@
         },
         {
           "name": "has_available_coupon",
-          "type": "BOOLEAN",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3686,7 +3400,7 @@
         },
         {
           "name": "has_low_stock_item",
-          "type": "BOOLEAN",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3695,7 +3409,7 @@
         },
         {
           "name": "all_items_orderable",
-          "type": "BOOLEAN",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3704,7 +3418,7 @@
         },
         {
           "name": "reminder_count",
-          "type": "BIGINT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3713,7 +3427,7 @@
         },
         {
           "name": "last_reminder_sent_at",
-          "type": "TIMESTAMPTZ",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3722,7 +3436,7 @@
         },
         {
           "name": "target_segment",
-          "type": "TEXT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3731,7 +3445,7 @@
         },
         {
           "name": "targeting_intent",
-          "type": "TEXT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3740,7 +3454,7 @@
         },
         {
           "name": "recommended_campaign_id",
-          "type": "VARCHAR(20)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3749,7 +3463,7 @@
         },
         {
           "name": "recommended_campaign_name",
-          "type": "TEXT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3758,7 +3472,7 @@
         },
         {
           "name": "campaign_objective",
-          "type": "VARCHAR(50)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3767,7 +3481,7 @@
         },
         {
           "name": "campaign_category",
-          "type": "VARCHAR(50)",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3776,7 +3490,7 @@
         },
         {
           "name": "campaign_offer",
-          "type": "TEXT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
@@ -3785,162 +3499,7 @@
         },
         {
           "name": "recommendation_reason",
-          "type": "TEXT",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": []
-    },
-    "v_dormant_6m_reactivation_targets": {
-      "object_type": "view",
-      "description_llm": "",
-      "description_source": "introspected_from_db",
-      "columns": [
-        {
-          "name": "user_id",
-          "type": "VARCHAR(20)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "age",
-          "type": "INTEGER",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "gender",
-          "type": "VARCHAR(20)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "region",
-          "type": "VARCHAR(50)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "lifecycle",
-          "type": "VARCHAR(50)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "last_login_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "inactive_days",
-          "type": "INTEGER",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "avg_order_value_krw",
-          "type": "INTEGER",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "price_sensitivity",
-          "type": "VARCHAR(20)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "predicted_ltv_segment",
-          "type": "VARCHAR(20)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "campaign_id",
-          "type": "VARCHAR(20)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "campaign_name",
-          "type": "TEXT",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "offer",
-          "type": "TEXT",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "preferred_channels",
-          "type": "CHARACTER VARYING[]",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "recommendation_label",
-          "type": "VARCHAR(20)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "recommendation_reason",
-          "type": "TEXT",
+          "type": "VIEW_COLUMN",
           "nullable": true,
           "primary_key": false,
           "references": null,
