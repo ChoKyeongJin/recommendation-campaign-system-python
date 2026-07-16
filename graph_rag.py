@@ -32,7 +32,8 @@ DEFAULT_PROMPT_DIR = Path(os.getenv("GRAPH_RAG_PROMPT_DIR", "docs/prompts"))
 DEFAULT_MESSAGE_POLICY_PATH = Path(os.getenv("GRAPH_RAG_MESSAGE_POLICY", "docs/policies/message-policy.json"))
 
 GENDER_TERMS = {"male", "female"}
-LIFECYCLE_TERMS = {"new_user", "inactive_90d", "vip", "app_user"}
+LIFECYCLE_TERMS = {"new_user", "inactive_90d", "inactive_180d", "dormant", "vip", "app_user"}
+CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "subscription"}
 BEHAVIOR_TERMS = {
     "no_purchase",
     "first_purchase",
@@ -87,6 +88,8 @@ NORMALIZATION_COLUMN_HINTS = {
     "first_purchase": ["campaigns.objective", "campaign_target_segments.target_segment"],
     "cart_abandoner": ["users.lifecycle", "campaign_target_segments.target_segment", "user_recent_behaviors.behavior"],
     "inactive_90d": ["users.lifecycle", "campaign_target_segments.target_segment", "user_recent_behaviors.behavior"],
+    "inactive_180d": ["users.lifecycle", "users.last_login_at", "campaign_target_segments.target_segment", "user_recent_behaviors.behavior"],
+    "dormant": ["users.lifecycle", "users.last_login_at", "campaign_target_segments.target_segment", "user_recent_behaviors.behavior"],
     "vip": ["users.lifecycle", "users.predicted_ltv_segment", "campaign_target_segments.target_segment"],
     "price_sensitive": ["users.price_sensitivity", "campaign_target_segments.target_segment"],
     "premium_buyer": ["campaign_target_segments.target_segment", "users.predicted_ltv_segment"],
@@ -238,6 +241,7 @@ def _build_rule_query_plan(
             "behaviors": [],
             "purchase_object": None,
             "price_sensitivity": None,
+            "inactivity_period": None,
         },
         "exclude": {"gender": [], "interests": [], "lifecycle": []},
         "campaign_constraints": {
@@ -285,6 +289,7 @@ def _build_rule_query_plan(
             _apply_query_term(plan, canonical)
 
     _apply_cart_repurchase_context(query, plan)
+    _apply_inactivity_period_filter(query, plan)
     _apply_policy_constraints(query, plan, business_policies)
     plan["computed_metrics"] = parse_computed_metrics_from_query(query, schema_path=sql_schema, metric_lexicon_path=metric_lexicon)
     policy_terms = [
@@ -316,6 +321,7 @@ def _build_rule_query_plan(
         + semantic_terms
         + computed_metric_terms
         + set_expression_terms
+        + _inactivity_retrieval_terms(plan["target_user"].get("inactivity_period"))
         + _query_tokens(normalized_query)
     )
     return plan
@@ -404,7 +410,7 @@ def _query_plan_user_prompt(
         "interests": sorted(INTEREST_TERMS),
         "channels": sorted(CHANNEL_TERMS),
         "offer_type": sorted(OFFER_TERMS),
-        "objective": ["purchase", "retention", "subscription"],
+        "objective": sorted(CAMPAIGN_OBJECTIVES),
     }
     fallback = "\n".join(
         [
@@ -454,7 +460,7 @@ def _coerce_llm_query_plan(candidate: Any, fallback_plan: dict[str, Any], sql_sc
 
     campaign_constraints = candidate.get("campaign_constraints") if isinstance(candidate.get("campaign_constraints"), dict) else {}
     _merge_list(plan["campaign_constraints"], campaign_constraints, "category", CATEGORY_TERMS)
-    _merge_scalar(plan["campaign_constraints"], campaign_constraints, "objective", {"purchase", "repurchase", "retention", "subscription"})
+    _merge_scalar(plan["campaign_constraints"], campaign_constraints, "objective", CAMPAIGN_OBJECTIVES)
     _merge_scalar(plan["campaign_constraints"], campaign_constraints, "offer_type", OFFER_TERMS)
     _merge_list(plan["campaign_constraints"], campaign_constraints, "channels", CHANNEL_TERMS)
 
@@ -546,6 +552,8 @@ def _merge_list(target: dict[str, Any], source: dict[str, Any], key: str, allowe
 
 def _infer_intent(query: str) -> str:
     compact_query = query.replace(" ", "").casefold()
+    if _is_reactivation_goal_context(query):
+        return "recommend_campaign"
     if _is_cart_abandonment_query(query) and _is_repurchase_goal_context(query):
         return "recommend_campaign"
     if any(keyword in compact_query for keyword in ("캠페인", "추천", "recommend", "campaign")):
@@ -559,13 +567,33 @@ def _infer_objective(query: str) -> str | None:
     compact_query = query.replace(" ", "").casefold()
     if _is_repurchase_goal_context(query):
         return "repurchase"
+    if _is_reactivation_goal_context(query):
+        return "reactivation"
     if any(keyword in compact_query for keyword in ("구매", "전환", "매출", "purchase", "conversion")):
         return "purchase"
     if any(keyword in compact_query for keyword in ("구독", "subscription")):
         return "subscription"
-    if any(keyword in compact_query for keyword in ("휴면", "복귀", "재방문", "retention")):
+    if any(keyword in compact_query for keyword in ("휴면", "복귀", "재방문", "reactivation")):
+        return "reactivation"
+    if "retention" in compact_query:
         return "retention"
     return None
+
+
+def _is_reactivation_goal_context(query: str) -> bool:
+    compact_query = query.replace(" ", "").casefold()
+    return any(
+        keyword in compact_query
+        for keyword in (
+            "재활성",
+            "다시활성",
+            "활성화",
+            "휴면복귀",
+            "복귀캠페인",
+            "reactivation",
+            "reactivate",
+        )
+    )
 
 
 def _apply_age_filters(query: str, target_user: dict[str, Any]) -> None:
@@ -617,6 +645,71 @@ def _apply_cart_repurchase_context(query: str, plan: dict[str, Any]) -> None:
         plan["target_user"]["behaviors"] = [
             behavior for behavior in plan["target_user"].get("behaviors", []) if behavior != "repeat_buyer"
         ]
+
+
+def _apply_inactivity_period_filter(query: str, plan: dict[str, Any]) -> None:
+    period = _parse_inactivity_period(query)
+    if period is None:
+        return
+    plan["target_user"]["inactivity_period"] = period
+    if period["min_days"] >= 180:
+        plan["target_user"]["lifecycle"] = [
+            lifecycle
+            for lifecycle in plan["target_user"].get("lifecycle", [])
+            if lifecycle not in {"inactive_90d", "inactive_180d", "dormant"}
+        ]
+
+
+def _parse_inactivity_period(query: str) -> dict[str, Any] | None:
+    compact_query = query.replace(" ", "").casefold()
+    if not any(
+        keyword in compact_query
+        for keyword in (
+            "미접속",
+            "접속하지않",
+            "접속안",
+            "로그인하지않",
+            "로그인안",
+            "휴면",
+            "비활성",
+            "inactive",
+            "dormant",
+        )
+    ):
+        return None
+
+    month_match = re.search(r"(?P<value>\d{1,2})\s*(?:개월|달)\s*(?:이상|넘|초과|째|간)?", query)
+    if month_match:
+        months = int(month_match.group("value"))
+        if months > 0:
+            return {
+                "value": months,
+                "unit": "months",
+                "min_days": months * 30,
+                "sql_interval": f"{months} months",
+            }
+
+    day_match = re.search(r"(?P<value>\d{1,4})\s*일\s*(?:이상|넘|초과|째|간)?", query)
+    if day_match:
+        days = int(day_match.group("value"))
+        if days > 0:
+            return {
+                "value": days,
+                "unit": "days",
+                "min_days": days,
+                "sql_interval": f"{days} days",
+            }
+
+    return None
+
+
+def _inactivity_retrieval_terms(period: Any) -> list[str]:
+    if not isinstance(period, dict):
+        return []
+    terms = ["last_login_at", "last_active_days", "inactive", "dormant"]
+    if period.get("min_days", 0) >= 180:
+        terms.extend(["inactive_180d", "reactivation", "6개월", "미접속", "휴면"])
+    return terms
 
 
 def _is_cart_abandonment_query(query: str) -> bool:
@@ -2614,8 +2707,12 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
     if isinstance(age_max, int):
         _add_token(tokens, "target_user.age_max", "age", "<=", age_max, [f"u.age <= {age_max}"], [])
 
+    inactivity_period = target_user.get("inactivity_period")
+    if isinstance(inactivity_period, dict) and isinstance(inactivity_period.get("sql_interval"), str):
+        _add_inactivity_period_token(tokens, inactivity_period)
+
     for lifecycle in target_user.get("lifecycle", []):
-        if lifecycle in LIFECYCLE_TERMS:
+        if lifecycle in LIFECYCLE_TERMS and not _has_explicit_long_inactivity_period(inactivity_period):
             _add_token(tokens, "target_user.lifecycle", "lifecycle", "=", lifecycle, ["u.lifecycle = " + _sql_quote(lifecycle)], [])
             if intent == "recommend_campaign":
                 _add_token(tokens, "campaign_constraints.target_segment", "target_segment", "=", lifecycle, ["ts.target_segment = " + _sql_quote(lifecycle)], ["target_segments"])
@@ -2664,7 +2761,7 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
             _add_token(tokens, "campaign_constraints.category", "campaign_category", "=", category, ["c.category = " + _sql_quote(category)], [])
 
     objective = campaign_constraints.get("objective")
-    if intent == "recommend_campaign" and objective in {"purchase", "repurchase", "retention", "subscription"}:
+    if intent == "recommend_campaign" and objective in CAMPAIGN_OBJECTIVES:
         _add_token(tokens, "campaign_constraints.objective", "campaign_objective", "=", objective, ["c.objective = " + _sql_quote(objective)], [])
 
     offer_type = campaign_constraints.get("offer_type")
@@ -2710,6 +2807,35 @@ def _add_set_expression_token(tokens: list[dict[str, Any]], expression: dict[str
         [compiled["expression_sql"]],
         [],
     )
+
+
+def _add_inactivity_period_token(tokens: list[dict[str, Any]], period: dict[str, Any]) -> None:
+    interval = period["sql_interval"]
+    clauses = [
+        "u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL " + _sql_quote(interval),
+    ]
+    if period.get("min_days", 0) >= 180:
+        clauses.extend(
+            [
+                "u.purchase_count_90d = 0",
+                "u.lifecycle IN ('inactive_90d', 'inactive_180d', 'dormant')",
+            ]
+        )
+    _add_token(
+        tokens,
+        "target_user.inactivity_period",
+        "inactivity_period",
+        ">=",
+        interval,
+        clauses,
+        [],
+        order_by=["inactive_days DESC", "u.user_id ASC"],
+        select_columns=["u.last_login_at", "CURRENT_DATE - u.last_login_at::date AS inactive_days", "u.lifecycle"],
+    )
+
+
+def _has_explicit_long_inactivity_period(period: Any) -> bool:
+    return isinstance(period, dict) and isinstance(period.get("min_days"), int) and period["min_days"] >= 180
 
 
 def _set_expression_issue(expression: dict[str, Any]) -> str | None:
@@ -3300,6 +3426,8 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
 
     for field_name in ("lifecycle", "interests", "preferred_channels", "behaviors"):
         for value in target_user.get(field_name, []):
+            if field_name == "lifecycle" and _has_explicit_long_inactivity_period(target_user.get("inactivity_period")):
+                continue
             conditions.append(_condition(f"target_user.{field_name}", value, _condition_terms(value, field_name)))
             if field_name == "behaviors":
                 conditions.append(
@@ -3319,6 +3447,17 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
                 purchase_object,
                 [purchase_object, "purchased:%"],
                 all_terms=["behavior"],
+            )
+        )
+
+    inactivity_period = target_user.get("inactivity_period")
+    if isinstance(inactivity_period, dict) and isinstance(inactivity_period.get("sql_interval"), str):
+        conditions.append(
+            _condition(
+                "target_user.inactivity_period",
+                inactivity_period["sql_interval"],
+                [inactivity_period["sql_interval"], str(inactivity_period.get("min_days", ""))],
+                all_terms=["last_login_at"],
             )
         )
 
