@@ -1650,7 +1650,11 @@ def _existing_assignments_by_user(cursor: Any, experiment_id: int, user_ids: lis
             "epsilon": snapshot.get("epsilon"),
             "selectedBy": snapshot.get("selected_by"),
             "candidateScores": snapshot.get("candidate_scores") or {},
+            "candidateScoreBreakdowns": snapshot.get("candidate_score_breakdowns") or {},
         }
+        selected_breakdown = assignment["decision"]["candidateScoreBreakdowns"].get(str(assignment.get("variant_code")))
+        if selected_breakdown is not None:
+            assignment["decision"]["selectedScoreBreakdown"] = selected_breakdown
         assignments[str(assignment["user_id"])] = assignment
     return assignments
 
@@ -1868,9 +1872,11 @@ def _assignment_decision(
     epsilon: float,
 ) -> dict[str, Any]:
     candidate_scores: dict[str, float] = {}
+    candidate_score_breakdowns: dict[str, dict[str, Any]] = {}
     selected_by = assignment_method
     if assignment_method == "model":
         candidate_scores = _score_variants(user, variants, experiment, model_version)
+        candidate_score_breakdowns = _score_variant_breakdowns(user, variants, experiment, model_version)
         explore = _stable_unit_interval(experiment["experiment_id"], user["user_id"], "epsilon") < epsilon
         if explore:
             variant = _weighted_variant(variants, experiment["experiment_id"], user["user_id"], "explore")
@@ -1895,6 +1901,8 @@ def _assignment_decision(
         "epsilon": epsilon if assignment_method == "model" else None,
         "selectedBy": selected_by,
         "candidateScores": candidate_scores,
+        "candidateScoreBreakdowns": candidate_score_breakdowns,
+        "selectedScoreBreakdown": candidate_score_breakdowns.get(str(variant.get("variant_code"))) if candidate_score_breakdowns else None,
     }
     return {
         "variant": variant,
@@ -1902,6 +1910,7 @@ def _assignment_decision(
         "model_version": model_version if assignment_method == "model" else None,
         "predicted_click_probability": predicted_probability,
         "candidate_scores": candidate_scores,
+        "candidate_score_breakdowns": candidate_score_breakdowns,
         "public_decision": public_decision,
     }
 
@@ -1951,6 +1960,7 @@ def _targeting_snapshot(user: dict[str, Any], experiment: dict[str, Any], decisi
         "epsilon": decision["public_decision"].get("epsilon"),
         "selected_by": decision["public_decision"].get("selectedBy"),
         "candidate_scores": decision.get("candidate_scores", {}),
+        "candidate_score_breakdowns": decision.get("candidate_score_breakdowns", {}),
     }
 
 
