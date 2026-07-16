@@ -53,6 +53,10 @@ DEFAULT_CTR_MODEL_POLICY_PATH = POLICY_DIR / "ctr-model-policy.json"
 # campaign_policies 테이블의 조회 키(= 정책 파일명에서 확장자를 뺀 이름).
 CTR_MODEL_POLICY_NAME = "ctr-model-policy"
 HEURISTIC_CTR_RULES_NAME = "heuristic-ctr-rules"
+# 메시지 생성 옵션(temperature 등) 기본값을 DB에서 관리하기 위한 정책 이름.
+MESSAGE_GENERATION_POLICY_NAME = "message-generation-policy"
+# message-generation-policy에 담길 수 있는 생성 옵션 키(요청 파라미터와 동일).
+MESSAGE_GENERATION_OPTION_KEYS = ("temperature", "top_p", "max_tokens", "timeout_seconds", "max_attempts")
 DEFAULT_HEURISTIC_CTR_RULES: dict[str, Any] = {
     "base_probability": 0.025,
     "min_probability": 0.001,
@@ -340,7 +344,7 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
                 generate_answer=request.generate_answer,
                 generate_messages=request.generate_messages,
                 message_channel=request.message_channel,
-                message_generation_options=_message_generation_options_payload(request.message_generation_options),
+                message_generation_options=_resolve_message_generation_options(request.message_generation_options),
                 message_policy=Path(os.getenv("GRAPH_RAG_MESSAGE_POLICY", DEFAULT_MESSAGE_POLICY_PATH)),
                 prompt_dir=Path(os.getenv("GRAPH_RAG_PROMPT_DIR", DEFAULT_PROMPT_DIR)),
             )
@@ -2898,6 +2902,34 @@ def _message_generation_options_payload(options: MessageGenerationOptions | None
     return {key: value for key, value in options.dict().items() if value is not None}
 
 
+def _message_generation_policy_defaults() -> dict[str, Any]:
+    """DB(campaign_policies)의 message-generation-policy에서 생성 옵션 기본값을 읽는다.
+
+    DB 미사용/미존재/오류 시 빈 dict를 반환해 환경변수/코드 기본값 fallback을
+    그대로 유지한다(policy_store는 조회 실패 시 None을 돌려주도록 설계됨).
+    """
+    import policy_store
+
+    try:
+        policy = policy_store.get_policy(MESSAGE_GENERATION_POLICY_NAME, _postgres_conninfo())
+    except Exception:  # noqa: BLE001 - fallback 유지가 목적
+        return {}
+    if not isinstance(policy, dict):
+        return {}
+    return {key: policy[key] for key in MESSAGE_GENERATION_OPTION_KEYS if policy.get(key) is not None}
+
+
+def _resolve_message_generation_options(options: MessageGenerationOptions | None) -> dict[str, Any]:
+    """요청 옵션과 DB 정책 기본값을 병합한다(요청 값이 항상 우선).
+
+    우선순위: 요청 파라미터 > DB(message-generation-policy) > 환경변수 > 코드 기본값.
+    앞의 둘은 여기서, 뒤의 둘은 graph_rag의 각 옵션 리졸버에서 처리한다.
+    """
+    resolved = _message_generation_policy_defaults()
+    resolved.update(_message_generation_options_payload(options))
+    return resolved
+
+
 def _save_target_sql_failure_log(
     request: TargetSqlRequest,
     result: dict[str, Any],
@@ -3295,7 +3327,7 @@ def refresh_message_generation_from_database(request: TargetSqlRequest, result: 
         llm_model=os.getenv("OPENAI_MODEL", DEFAULT_LLM_MODEL),
         generate_messages=request.generate_messages,
         prompt_dir=prompt_dir,
-        message_generation_options=_message_generation_options_payload(request.message_generation_options),
+        message_generation_options=_resolve_message_generation_options(request.message_generation_options),
     )
     timings_ms["database_message_refresh.message_generation"] = _elapsed_ms(started_at)
     message_generation_timing = _message_generation_timing_summary(result["message_generation"])
