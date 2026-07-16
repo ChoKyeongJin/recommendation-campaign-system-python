@@ -1,2 +1,6 @@
-.env.env.*!.env.example!.env.sample
+.env
+.env.*
+!.env.example
+!.env.sample
 *.env
+logs/

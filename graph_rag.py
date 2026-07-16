@@ -9,6 +9,7 @@ import re
 import time
 from collections import Counter
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 from string import Template
 from typing import Any
@@ -30,6 +31,7 @@ DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 DEFAULT_PROMPT_DIR = Path(os.getenv("GRAPH_RAG_PROMPT_DIR", "docs/prompts"))
 DEFAULT_MESSAGE_POLICY_PATH = Path(os.getenv("GRAPH_RAG_MESSAGE_POLICY", "docs/policies/message-policy.json"))
+DEFAULT_RAG_LLM_LOG_DIR = Path(os.getenv("RAG_LLM_LOG_DIR", "logs/rag_llm"))
 
 GENDER_TERMS = {"male", "female"}
 LIFECYCLE_TERMS = {"new_user", "inactive_90d", "inactive_180d", "dormant", "vip", "app_user"}
@@ -131,6 +133,55 @@ class SearchHit:
     node_id: str
     score: float
     payload: dict[str, Any]
+
+
+def _rag_llm_log_enabled() -> bool:
+    value = os.getenv("RAG_LLM_LOG_ENABLED", "true").strip().casefold()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _rag_llm_log_dir() -> Path:
+    configured_dir = os.getenv("RAG_LLM_LOG_DIR")
+    return Path(configured_dir) if configured_dir else DEFAULT_RAG_LLM_LOG_DIR
+
+
+def _write_rag_llm_log(event: str, payload: dict[str, Any]) -> None:
+    if not _rag_llm_log_enabled():
+        return
+    try:
+        now = datetime.now().astimezone()
+        log_dir = _rag_llm_log_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"{now.date().isoformat()}.jsonl"
+        record = {
+            "timestamp": now.isoformat(timespec="milliseconds"),
+            "event": event,
+            **payload,
+        }
+        with log_path.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(record, ensure_ascii=False, default=_json_log_default) + "\n")
+    except Exception as exc:
+        print(f"rag_llm_log_failed:{exc.__class__.__name__}", flush=True)
+
+
+def _json_log_default(value: Any) -> Any:
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, set):
+        return sorted(str(item) for item in value)
+    return str(value)
+
+
+def _message_summary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "role": message.get("role"),
+            "content_length": len(str(message.get("content") or "")),
+        }
+        for message in messages
+    ]
 
 
 def load_payload(data_path: Path) -> dict[str, Any]:
@@ -344,26 +395,70 @@ def _try_llm_query_plan(
 
     try:
         client = OpenAI()
+        messages = [
+            {
+                "role": "system",
+                "content": _query_plan_system_prompt(prompt_dir),
+            },
+            {
+                "role": "user",
+                "content": _query_plan_user_prompt(query, fallback_plan, prompt_dir),
+            },
+        ]
+        _write_rag_llm_log(
+            "llm_query_plan_request",
+            {
+                "mode": "openai_chat_completion",
+                "model": llm_model,
+                "temperature": 0,
+                "response_format": {"type": "json_object"},
+                "query": query,
+                "fallback_plan": fallback_plan,
+                "messages": messages,
+                "message_summary": _message_summary(messages),
+            },
+        )
         response = client.chat.completions.create(
             model=llm_model,
             temperature=0,
             response_format={"type": "json_object"},
-            messages=[
-                {
-                    "role": "system",
-                    "content": _query_plan_system_prompt(prompt_dir),
-                },
-                {
-                    "role": "user",
-                    "content": _query_plan_user_prompt(query, fallback_plan, prompt_dir),
-                },
-            ],
+            messages=messages,
         )
         content = response.choices[0].message.content or "{}"
-        return _coerce_llm_query_plan(json.loads(content), fallback_plan, sql_schema), None
+        query_plan = _coerce_llm_query_plan(json.loads(content), fallback_plan, sql_schema)
+        _write_rag_llm_log(
+            "llm_query_plan_response",
+            {
+                "mode": "openai_chat_completion",
+                "model": llm_model,
+                "query": query,
+                "content": content,
+                "query_plan": query_plan,
+            },
+        )
+        return query_plan, None
     except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        _write_rag_llm_log(
+            "llm_query_plan_failure",
+            {
+                "mode": "openai_chat_completion",
+                "model": llm_model,
+                "query": query,
+                "failure_reason": f"llm_query_parser_invalid_response:{exc.__class__.__name__}",
+                "content": locals().get("content"),
+            },
+        )
         return None, f"llm_query_parser_invalid_response:{exc.__class__.__name__}"
     except Exception as exc:
+        _write_rag_llm_log(
+            "llm_query_plan_failure",
+            {
+                "mode": "openai_chat_completion",
+                "model": llm_model,
+                "query": query,
+                "failure_reason": f"llm_query_parser_failed:{exc.__class__.__name__}",
+            },
+        )
         return None, f"llm_query_parser_failed:{exc.__class__.__name__}"
 
 
@@ -928,6 +1023,25 @@ def retrieve(
 ) -> dict[str, Any]:
     timings_ms: dict[str, float] = {}
     retrieve_started_at = time.perf_counter()
+    _write_rag_llm_log(
+        "rag_retrieve_request",
+        {
+            "query": query,
+            "collection": collection,
+            "url": url,
+            "embedding_model": embedding_model_name,
+            "vector_top_k": vector_top_k,
+            "keyword_top_k": keyword_top_k,
+            "graph_top_k": graph_top_k,
+            "hops": hops,
+            "sql_limit": sql_limit,
+            "query_parser": query_parser,
+            "llm_model": llm_model,
+            "generate_answer": generate_answer,
+            "generate_messages": generate_messages,
+            "message_channel": message_channel,
+        },
+    )
 
     stage_started_at = time.perf_counter()
     query_plan = build_query_plan(
@@ -966,6 +1080,20 @@ def retrieve(
     hits = merge_hits([*vector_hits, *keyword_hits])
     context_nodes = expand_context(graph=graph, hits=hits, hops=hops, limit=graph_top_k)
     context_assembly = assemble_context(context_nodes)
+    _write_rag_llm_log(
+        "rag_context_assembly",
+        {
+            "query": query,
+            "retrieval_query": retrieval_query,
+            "keyword_query": keyword_query,
+            "query_plan": query_plan,
+            "vector_hits": [_hit_result(hit) for hit in vector_hits],
+            "keyword_hits": [_hit_result(hit) for hit in keyword_hits],
+            "merged_hits": [_hit_result(hit) for hit in hits],
+            "context_nodes": context_nodes,
+            "prompt_context": context_assembly.get("prompt"),
+        },
+    )
     timings_ms["context_assembly"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
@@ -1368,22 +1496,51 @@ def build_answer_response(
     )
     try:
         client = OpenAI()
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": answer_prompt},
+        ]
+        _write_rag_llm_log(
+            "llm_answer_request",
+            {
+                "mode": "openai_chat_completion",
+                "model": llm_model,
+                "temperature": 0,
+                "sql_result": sql_result,
+                "messages": messages,
+                "message_summary": _message_summary(messages),
+            },
+        )
         response = client.chat.completions.create(
             model=llm_model,
             temperature=0,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": answer_prompt},
-            ],
+            messages=messages,
+        )
+        content = response.choices[0].message.content
+        _write_rag_llm_log(
+            "llm_answer_response",
+            {
+                "mode": "openai_chat_completion",
+                "model": llm_model,
+                "content": content,
+            },
         )
         return {
             "is_success": True,
             "mode": "openai_chat_completion",
             "model": llm_model,
-            "content": response.choices[0].message.content,
+            "content": content,
             "failure_reason": None,
         }
     except Exception as exc:
+        _write_rag_llm_log(
+            "llm_answer_failure",
+            {
+                "mode": "openai_chat_completion",
+                "model": llm_model,
+                "failure_reason": f"answer_generation_failed:{exc.__class__.__name__}",
+            },
+        )
         return {
             "is_success": False,
             "mode": "openai_chat_completion",
@@ -1827,6 +1984,17 @@ def build_message_response(
     last_content = None
     last_validation = None
     last_failure_reason = None
+    _write_rag_llm_log(
+        "llm_message_base_prompt",
+        {
+            "mode": "openai_chat_completion_parallel_variants",
+            "model": llm_model,
+            "options": effective_options,
+            "message_context": message_context,
+            "system_prompt": system_prompt,
+            "base_prompt": message_prompt,
+        },
+    )
 
     for attempt_number in range(1, max_attempts + 1):
         attempt_started_at = time.perf_counter()
@@ -1992,19 +2160,44 @@ def _generate_single_message_variant(
         }
         if "top_p" in message_generation_options:
             completion_options["top_p"] = message_generation_options["top_p"]
+        user_prompt = render_message_variant_prompt(base_prompt, variant, message_context, prompt_dir)
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        _write_rag_llm_log(
+            "llm_message_variant_request",
+            {
+                "mode": "openai_chat_completion_parallel_variants",
+                "model": llm_model,
+                "variant": variant,
+                "options": completion_options,
+                "messages": messages,
+                "message_summary": _message_summary(messages),
+            },
+        )
         response = client.chat.completions.create(
             model=llm_model,
             response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": render_message_variant_prompt(base_prompt, variant, message_context, prompt_dir)},
-            ],
+            messages=messages,
             **completion_options,
         )
         content = response.choices[0].message.content or "{}"
         payload = json.loads(content)
         message = _single_variant_message(payload, variant)
         if message is None:
+            _write_rag_llm_log(
+                "llm_message_variant_response",
+                {
+                    "mode": "openai_chat_completion_parallel_variants",
+                    "model": llm_model,
+                    "variant": variant,
+                    "is_success": False,
+                    "failure_reason": "message_variant_missing",
+                    "content": content,
+                    "duration_ms": _elapsed_ms(started_at),
+                },
+            )
             return {
                 "variant": variant,
                 "is_success": False,
@@ -2014,6 +2207,18 @@ def _generate_single_message_variant(
                 "duration_ms": _elapsed_ms(started_at),
             }
         message["variant"] = variant
+        _write_rag_llm_log(
+            "llm_message_variant_response",
+            {
+                "mode": "openai_chat_completion_parallel_variants",
+                "model": llm_model,
+                "variant": variant,
+                "is_success": True,
+                "content": content,
+                "message": message,
+                "duration_ms": _elapsed_ms(started_at),
+            },
+        )
         return {
             "variant": variant,
             "is_success": True,
@@ -2023,6 +2228,17 @@ def _generate_single_message_variant(
             "duration_ms": _elapsed_ms(started_at),
         }
     except json.JSONDecodeError as exc:
+        _write_rag_llm_log(
+            "llm_message_variant_failure",
+            {
+                "mode": "openai_chat_completion_parallel_variants",
+                "model": llm_model,
+                "variant": variant,
+                "failure_reason": f"message_generation_invalid_json:{exc.__class__.__name__}",
+                "content": locals().get("content"),
+                "duration_ms": _elapsed_ms(started_at),
+            },
+        )
         return {
             "variant": variant,
             "is_success": False,
@@ -2032,6 +2248,16 @@ def _generate_single_message_variant(
             "duration_ms": _elapsed_ms(started_at),
         }
     except Exception as exc:
+        _write_rag_llm_log(
+            "llm_message_variant_failure",
+            {
+                "mode": "openai_chat_completion_parallel_variants",
+                "model": llm_model,
+                "variant": variant,
+                "failure_reason": f"message_generation_failed:{exc.__class__.__name__}",
+                "duration_ms": _elapsed_ms(started_at),
+            },
+        )
         return {
             "variant": variant,
             "is_success": False,
