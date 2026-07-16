@@ -1259,6 +1259,254 @@ def _get_experiment(cursor: Any, experiment_id: int) -> dict[str, Any] | None:
     return _jsonable_record(row) if row is not None else None
 
 
+def _get_campaign_score_context(cursor: Any, campaign_id: str, experiment_id: int, channel: str | None) -> dict[str, Any] | None:
+    cursor.execute(
+        """
+         SELECT c.campaign_id, c.name AS campaign_name, c.objective, c.category,
+             c.offer, c.budget_krw, c.expected_ctr, c.expected_cvr,
+               COALESCE(ARRAY_AGG(DISTINCT cts.target_segment) FILTER (WHERE cts.target_segment IS NOT NULL), '{}') AS target_segments,
+               COALESCE(ARRAY_AGG(DISTINCT ck.keyword) FILTER (WHERE ck.keyword IS NOT NULL), '{}') AS keywords,
+               COALESCE(ARRAY_AGG(DISTINCT cc.channel) FILTER (WHERE cc.channel IS NOT NULL), '{}') AS channels
+        FROM campaigns c
+        LEFT JOIN campaign_target_segments cts ON cts.campaign_id = c.campaign_id
+        LEFT JOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id
+        LEFT JOIN campaign_channels cc ON cc.campaign_id = c.campaign_id
+        WHERE c.campaign_id = %s
+        GROUP BY c.campaign_id
+        """,
+        (campaign_id,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    campaign = _jsonable_record(row)
+    channels = campaign.pop("channels", []) or []
+    return {
+        **campaign,
+        "experiment_id": experiment_id,
+        "experiment_name": f"inline_score:{campaign_id}",
+        "channel": channel or (channels[0] if channels else None),
+        "status": "draft",
+        "assignment_method": "model",
+        "primary_metric": "ctr",
+        "started_at": None,
+        "ended_at": None,
+        "created_at": None,
+        "updated_at": None,
+    }
+
+
+def _inline_ctr_variants(variants: list[CampaignMessageVariantRequest] | None, experiment_id: int) -> list[dict[str, Any]]:
+    if not variants:
+        return []
+    return [
+        {
+            "variant_id": f"inline:{experiment_id}:{variant.code}",
+            "experiment_id": experiment_id,
+            "variant_code": variant.code,
+            "message_name": variant.name,
+            "message_body": variant.message_body,
+            "landing_url": variant.landing_url,
+            "allocation_weight": variant.allocation_weight,
+            "is_control": variant.is_control,
+            "ai_features": _message_ai_features_from_request(variant.message_body, variant.ai_features),
+            "created_at": None,
+        }
+        for variant in variants
+    ]
+
+
+def _message_ai_features_from_request(message_body: str, request_features: dict[str, Any] | None) -> dict[str, Any]:
+    extracted_features = _extract_message_ai_features(message_body)
+    if not isinstance(request_features, dict):
+        return extracted_features
+    return {**request_features, **extracted_features}
+
+
+def _ctr_score_user_ids(cursor: Any, request: CtrScoreRequest, experiment: dict[str, Any]) -> list[str]:
+    if request.user_ids:
+        return _dedupe_limited_user_ids(request.user_ids, request.limit)
+    if request.audience_id is not None:
+        assignment_request = AssignmentCreateRequest(audience_id=request.audience_id, limit=request.limit)
+        return _assignment_user_ids(cursor, assignment_request, experiment)
+
+    campaign_id = request.campaign_id or experiment.get("campaign_id")
+    if request.variants and campaign_id:
+        user_ids = _campaign_recommendation_user_ids(cursor, str(campaign_id), request.limit)
+        if user_ids:
+            return user_ids
+
+    user_ids = _experiment_delivery_user_ids(cursor, request.experiment_id, request.limit)
+    if user_ids:
+        return user_ids
+    if campaign_id:
+        return _campaign_recommendation_user_ids(cursor, str(campaign_id), request.limit)
+    return []
+
+
+def _dedupe_limited_user_ids(user_ids: list[str], limit: int) -> list[str]:
+    seen = set()
+    deduped = []
+    for user_id in user_ids:
+        normalized_user_id = str(user_id)
+        if normalized_user_id in seen:
+            continue
+        deduped.append(normalized_user_id)
+        seen.add(normalized_user_id)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def _experiment_delivery_user_ids(cursor: Any, experiment_id: int, limit: int) -> list[str]:
+    cursor.execute(
+        """
+        SELECT DISTINCT user_id
+        FROM campaign_message_deliveries
+        WHERE experiment_id = %s
+        ORDER BY user_id
+        LIMIT %s
+        """,
+        (experiment_id, limit),
+    )
+    return [str(row["user_id"]) for row in cursor.fetchall()]
+
+
+def _campaign_recommendation_user_ids(cursor: Any, campaign_id: str, limit: int) -> list[str]:
+    cursor.execute(
+        """
+        SELECT DISTINCT user_id
+        FROM recommendation_edges
+        WHERE campaign_id = %s
+        ORDER BY user_id
+        LIMIT %s
+        """,
+        (campaign_id, limit),
+    )
+    return [str(row["user_id"]) for row in cursor.fetchall()]
+
+
+def _ctr_score_selected_result(results: list[dict[str, Any]], variants: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not results:
+        return None
+    if len(results) == 1:
+        return results[0]
+
+    score_totals: dict[str, float] = {}
+    score_counts: dict[str, int] = {}
+    for result in results:
+        for code, score in (result.get("scores") or {}).items():
+            score_totals[code] = score_totals.get(code, 0.0) + float(score)
+            score_counts[code] = score_counts.get(code, 0) + 1
+    average_scores = {
+        code: round(total / score_counts[code], 7)
+        for code, total in score_totals.items()
+        if score_counts.get(code)
+    }
+    selected_code, selected_probability = _best_score(average_scores)
+    selected_breakdown = None
+    score_breakdowns = {}
+    for result in results:
+        score_breakdowns = result.get("scoreBreakdowns") or {}
+        selected_breakdown = score_breakdowns.get(str(selected_code)) if selected_code is not None else None
+        if selected_breakdown is not None:
+            break
+    score_breakdowns = _ctr_score_aligned_breakdowns(score_breakdowns, average_scores)
+    selected_breakdown = score_breakdowns.get(str(selected_code)) if selected_code is not None else None
+    return {
+        "selectedVariantCode": selected_code,
+        "predictedClickProbability": selected_probability,
+        "predictedClickProbabilityDisplay": _ctr_score_probability_display(selected_probability),
+        "scores": average_scores,
+        "scoreBreakdowns": score_breakdowns,
+        "variantScores": _ctr_score_variant_summaries(average_scores, score_breakdowns, variants, selected_code),
+        "selectedScoreBreakdown": selected_breakdown,
+    }
+
+
+def _ctr_score_variant_summaries(
+    scores: dict[str, float],
+    score_breakdowns: dict[str, dict[str, Any]],
+    variants: list[dict[str, Any]],
+    selected_code: str | None,
+) -> list[dict[str, Any]]:
+    summaries = []
+    ranked_codes = [
+        code
+        for code, _score in sorted(scores.items(), key=lambda item: float(item[1]), reverse=True)
+    ]
+    selected_probability = scores.get(str(selected_code)) if selected_code is not None else None
+    best_probability = scores.get(ranked_codes[0]) if ranked_codes else None
+    for variant in variants:
+        code = str(variant.get("variant_code"))
+        probability = scores.get(code)
+        predicted_ctr = _ctr_score_value("예측 CTR", probability) if probability is not None else None
+        breakdown = _ctr_score_aligned_breakdown(score_breakdowns.get(code), probability)
+        summaries.append(
+            {
+                "variantCode": code,
+                "code": code,
+                "rank": ranked_codes.index(code) + 1 if code in ranked_codes else None,
+                "name": variant.get("message_name"),
+                "messageBody": variant.get("message_body"),
+                "isControl": bool(variant.get("is_control")),
+                "predictedClickProbability": probability,
+                "predictedClickProbabilityDisplay": _ctr_score_probability_display(probability),
+                "predictedCtr": predicted_ctr,
+                "deltaVsSelected": _ctr_score_delta("선택 시안 대비", probability, selected_probability),
+                "deltaVsBest": _ctr_score_delta("최고 시안 대비", probability, best_probability),
+                "scoreBreakdown": breakdown,
+                "scoreSummary": breakdown.get("summary") if breakdown else None,
+                "display": breakdown.get("display") if breakdown else None,
+                "isSelected": code == str(selected_code) if selected_code is not None else False,
+            }
+        )
+    return sorted(
+        summaries,
+        key=lambda summary: (
+            summary.get("rank") is None,
+            int(summary.get("rank") or 999999),
+            str(summary.get("variantCode") or ""),
+        ),
+    )
+
+
+def _ctr_score_selected_variant_score(selected_result: dict[str, Any] | None) -> dict[str, Any] | None:
+    if selected_result is None:
+        return None
+    selected_code = selected_result.get("selectedVariantCode")
+    if selected_code is None:
+        return None
+    for variant_score in selected_result.get("variantScores") or []:
+        if str(variant_score.get("variantCode")) == str(selected_code):
+            return variant_score
+    return None
+
+
+def _ctr_score_aligned_breakdowns(score_breakdowns: dict[str, dict[str, Any]], scores: dict[str, float]) -> dict[str, dict[str, Any]]:
+    return {
+        str(code): _ctr_score_aligned_breakdown(breakdown, scores.get(str(code)))
+        for code, breakdown in score_breakdowns.items()
+    }
+
+
+def _ctr_score_aligned_breakdown(breakdown: dict[str, Any] | None, probability: float | None) -> dict[str, Any] | None:
+    if breakdown is None or probability is None:
+        return breakdown
+    predicted_ctr = _ctr_score_value("예측 CTR", probability)
+    aligned = {**breakdown, "predictedCtr": predicted_ctr}
+    summary = aligned.get("summary")
+    if isinstance(summary, dict):
+        aligned["summary"] = {**summary, "predictedCtr": predicted_ctr}
+    display = aligned.get("display")
+    if isinstance(display, dict):
+        aligned_display = {**display, "predictedCtr": predicted_ctr}
+        if isinstance(aligned.get("summary"), dict):
+            aligned_display["summary"] = aligned["summary"]
+        aligned["display"] = aligned_display
+    return aligned
+
+
 def _get_experiment_variants(cursor: Any, experiment_id: int) -> list[dict[str, Any]]:
     cursor.execute(
         """
