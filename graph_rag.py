@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import contextlib
+import contextvars
 import json
 import math
 import os
 import re
 import time
+import uuid
 from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -115,6 +118,7 @@ NORMALIZATION_COLUMN_HINTS = {
     "health_food": ["campaigns.category", "user_interests.interest", "campaign_keywords.keyword"],
     "digital_content": ["campaigns.category", "user_interests.interest", "campaign_keywords.keyword"],
     "global_shopping": ["campaigns.category", "user_interests.interest", "campaign_keywords.keyword"],
+    "awareness": ["campaigns.objective", "campaign_keywords.keyword"],
     "app_push": ["campaign_channels.channel", "user_preferred_channels.preferred_channel"],
     "kakao": ["campaign_channels.channel", "user_preferred_channels.preferred_channel"],
     "email": ["campaign_channels.channel", "user_preferred_channels.preferred_channel"],
@@ -145,14 +149,39 @@ def _rag_llm_log_dir() -> Path:
     return Path(configured_dir) if configured_dir else DEFAULT_RAG_LLM_LOG_DIR
 
 
+# 캠페인 생성(프롬프트 1건 = retrieve() 1회) 단위로 로그 파일을 분리하기 위한 실행 스코프.
+# 값이 설정돼 있으면 해당 실행의 모든 이벤트가 같은 파일(<날짜>/<시각-해시>.jsonl)에 기록된다.
+_rag_llm_run_path: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
+    "_rag_llm_run_path", default=None
+)
+
+
+@contextlib.contextmanager
+def rag_llm_run_scope():
+    """retrieve() 한 번을 하나의 캠페인 로그 파일로 묶는 컨텍스트."""
+    if not _rag_llm_log_enabled():
+        yield None
+        return
+    now = datetime.now().astimezone()
+    run_key = f"{now.strftime('%H%M%S')}-{uuid.uuid4().hex[:6]}"
+    log_path = _rag_llm_log_dir() / now.date().isoformat() / f"{run_key}.jsonl"
+    token = _rag_llm_run_path.set(log_path)
+    try:
+        yield log_path
+    finally:
+        _rag_llm_run_path.reset(token)
+
+
 def _write_rag_llm_log(event: str, payload: dict[str, Any]) -> None:
     if not _rag_llm_log_enabled():
         return
     try:
         now = datetime.now().astimezone()
-        log_dir = _rag_llm_log_dir()
-        log_dir.mkdir(parents=True, exist_ok=True)
-        log_path = log_dir / f"{now.date().isoformat()}.jsonl"
+        log_path = _rag_llm_run_path.get()
+        if log_path is None:
+            # 실행 스코프 밖에서 호출된 경우 기존과 동일하게 날짜별 파일로 남긴다.
+            log_path = _rag_llm_log_dir() / f"{now.date().isoformat()}.jsonl"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         record = {
             "timestamp": now.isoformat(timespec="milliseconds"),
             "event": event,
@@ -215,8 +244,36 @@ def build_graph(payload: dict[str, Any]) -> nx.Graph:
             _add_normalization_edges(graph, node)
         elif node["type"] == "sql_example":
             _add_sql_example_edges(graph, node)
+        elif node["type"] == "campaign":
+            _add_campaign_edges(graph, node)
+        elif node["type"] == "user":
+            _add_user_edges(graph, node)
+
+    _add_recommendation_edges(graph, payload.get("recommendation_edges", []))
 
     return graph
+
+
+def _add_recommendation_edges(graph: nx.Graph, recommendation_edges: Any) -> None:
+    if not isinstance(recommendation_edges, list):
+        return
+
+    for edge in recommendation_edges:
+        if not isinstance(edge, dict):
+            continue
+        user_id = edge.get("user_id")
+        campaign_id = edge.get("campaign_id")
+        if not (isinstance(user_id, str) and user_id in graph):
+            continue
+        if not (isinstance(campaign_id, str) and campaign_id in graph):
+            continue
+        graph.add_edge(
+            user_id,
+            campaign_id,
+            relation="recommended_campaign",
+            reason=edge.get("reason"),
+            label=edge.get("label"),
+        )
 
 
 def build_query_plan(
@@ -463,13 +520,29 @@ def _try_llm_query_plan(
 
 
 def _read_prompt_template(prompt_dir: Path | None, filename: str, fallback: str) -> str:
-    if prompt_dir is None:
-        return fallback
+    # 1) DB(prompt_store 캐시) 우선
+    db_template = _read_prompt_from_db(filename)
+    if db_template:
+        return db_template
+    # 2) 파일(prompt_dir)
+    if prompt_dir is not None:
+        try:
+            template = (prompt_dir / filename).read_text(encoding="utf-8").strip()
+        except OSError:
+            template = ""
+        if template:
+            return template
+    # 3) 코드 내 하드코딩 fallback
+    return fallback
+
+
+def _read_prompt_from_db(filename: str) -> str | None:
     try:
-        template = (prompt_dir / filename).read_text(encoding="utf-8").strip()
-    except OSError:
-        return fallback
-    return template or fallback
+        import prompt_store
+
+        return prompt_store.get_template(filename)
+    except Exception:  # noqa: BLE001 - DB 미가용 시 파일/하드코딩 fallback으로 진행
+        return None
 
 
 def _render_prompt_template(template: str, **values: str) -> str:
@@ -672,6 +745,8 @@ def _infer_objective(query: str) -> str | None:
         return "reactivation"
     if "retention" in compact_query:
         return "retention"
+    if any(keyword in compact_query for keyword in ("신제품", "신상품", "출시", "런칭", "awareness", "launch")):
+        return "awareness"
     return None
 
 
@@ -4067,6 +4142,80 @@ def _add_sql_example_edges(graph: nx.Graph, node: dict[str, Any]) -> None:
             graph.add_edge(node["id"], table_node_id, relation="sql_uses_table")
 
 
+# 캠페인/사용자 속성값을 대응하는 스키마 컬럼(및 테이블)에 연결해 그래프 확장이
+# 정규화 사전/업무 용어 경로와 동일한 스키마 허브로 이어지도록 한다.
+CAMPAIGN_VALUE_COLUMNS = {
+    "objective": ("campaigns.objective", "campaign_objective"),
+    "category": ("campaigns.category", "campaign_category"),
+    "channel": ("campaign_channels.channel", "campaign_channel"),
+    "target_segments": ("campaign_target_segments.target_segment", "campaign_target_segment"),
+    "keywords": ("campaign_keywords.keyword", "campaign_keyword"),
+}
+USER_VALUE_COLUMNS = {
+    "gender": ("users.gender", "user_gender"),
+    "region": ("users.region", "user_region"),
+    "lifecycle": ("users.lifecycle", "user_lifecycle"),
+    "price_sensitivity": ("users.price_sensitivity", "user_price_sensitivity"),
+    "predicted_ltv_segment": ("users.predicted_ltv_segment", "user_ltv_segment"),
+    "interests": ("user_interests.interest", "user_interest"),
+    "preferred_channels": ("user_preferred_channels.preferred_channel", "user_preferred_channel"),
+    "recent_behaviors": ("user_recent_behaviors.behavior", "user_recent_behavior"),
+}
+
+
+def _add_campaign_edges(graph: nx.Graph, node: dict[str, Any]) -> None:
+    _add_attribute_column_edges(graph, node, "schema_table:campaigns", "campaign_of_table", CAMPAIGN_VALUE_COLUMNS)
+
+
+def _add_user_edges(graph: nx.Graph, node: dict[str, Any]) -> None:
+    _add_attribute_column_edges(graph, node, "schema_table:users", "user_of_table", USER_VALUE_COLUMNS)
+
+
+def _add_attribute_column_edges(
+    graph: nx.Graph,
+    node: dict[str, Any],
+    table_node_id: str,
+    table_relation: str,
+    value_columns: dict[str, tuple[str, str]],
+) -> None:
+    source_node_id = node["id"]
+    if table_node_id in graph:
+        graph.add_edge(source_node_id, table_node_id, relation=table_relation)
+
+    for field_name, (table_column, relation) in value_columns.items():
+        values = [value for value in _as_value_list(node.get(field_name)) if _is_present_value(value)]
+        if not values:
+            continue
+
+        # 스키마 허브 연결: 속성 -> 컬럼 (모든 인스턴스가 공유하는 넓은 연결)
+        column_node_id = f"schema_column:{table_column}"
+        if column_node_id in graph:
+            graph.add_edge(source_node_id, column_node_id, relation=relation)
+
+        # 선택적 의미 연결: 값이 정규화 canonical과 일치하면 해당 규칙 노드로 직접 연결한다.
+        # 컬럼 허브와 달리 이 엣지는 그 값을 가진 인스턴스에만 붙어 검색 선택성을 높인다.
+        for value in values:
+            if not isinstance(value, str):
+                continue
+            rule_node_id = f"normalization_rule:{value}"
+            if rule_node_id in graph:
+                graph.add_edge(source_node_id, rule_node_id, relation=f"{relation}_term")
+
+
+def _as_value_list(value: Any) -> list[Any]:
+    if isinstance(value, list):
+        return value
+    if value is None:
+        return []
+    return [value]
+
+
+def _is_present_value(value: Any) -> bool:
+    if isinstance(value, str):
+        return bool(value.strip())
+    return value is not None
+
+
 def _node_title(node: dict[str, Any]) -> str:
     if node["type"] == "schema_table":
         return node.get("table_name", node["id"])
@@ -4080,6 +4229,10 @@ def _node_title(node: dict[str, Any]) -> str:
         return node.get("ko_label", node.get("canonical", node["id"]))
     if node["type"] == "sql_example":
         return node.get("title", node["id"])
+    if node["type"] == "campaign":
+        return node.get("name", node["id"])
+    if node["type"] == "user":
+        return node.get("id", node["id"])
     return node["id"]
 
 
@@ -4198,30 +4351,31 @@ def main() -> None:
     if not args.query:
         raise SystemExit("query is required unless --stats is used.")
 
-    result = retrieve(
-        query=args.query,
-        graph=graph,
-        collection=args.collection,
-        url=args.url,
-        api_key=args.api_key,
-        embedding_model_name=args.embedding_model,
-        vector_top_k=args.vector_top_k,
-        keyword_top_k=args.keyword_top_k,
-        graph_top_k=args.graph_top_k,
-        hops=args.hops,
-        normalization_rules=args.normalization_rules,
-        business_policies=args.business_policies,
-        metric_lexicon=args.metric_lexicon,
-        sql_schema=args.sql_schema,
-        sql_limit=args.sql_limit,
-        query_parser=args.query_parser,
-        llm_model=args.llm_model,
-        generate_answer=args.generate_answer,
-        generate_messages=args.generate_messages,
-        message_channel=args.message_channel,
-        message_policy=args.message_policy,
-        prompt_dir=args.prompt_dir,
-    )
+    with rag_llm_run_scope():
+        result = retrieve(
+            query=args.query,
+            graph=graph,
+            collection=args.collection,
+            url=args.url,
+            api_key=args.api_key,
+            embedding_model_name=args.embedding_model,
+            vector_top_k=args.vector_top_k,
+            keyword_top_k=args.keyword_top_k,
+            graph_top_k=args.graph_top_k,
+            hops=args.hops,
+            normalization_rules=args.normalization_rules,
+            business_policies=args.business_policies,
+            metric_lexicon=args.metric_lexicon,
+            sql_schema=args.sql_schema,
+            sql_limit=args.sql_limit,
+            query_parser=args.query_parser,
+            llm_model=args.llm_model,
+            generate_answer=args.generate_answer,
+            generate_messages=args.generate_messages,
+            message_channel=args.message_channel,
+            message_policy=args.message_policy,
+            prompt_dir=args.prompt_dir,
+        )
     if args.format == "json":
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
