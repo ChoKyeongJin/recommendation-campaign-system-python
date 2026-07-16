@@ -179,8 +179,14 @@ class CampaignExperimentRunRequest(ApiBaseModel):
 
 class CtrScoreRequest(ApiBaseModel):
     experiment_id: int = Field(..., alias="experimentId", ge=1)
-    user_ids: list[str] = Field(..., alias="userIds", min_length=1)
+    campaign_id: str | None = Field(default=None, alias="campaignId", min_length=1, max_length=20)
+    prompt: str | None = Field(default=None, min_length=1)
+    channel: str | None = Field(default=None, min_length=1, max_length=50)
+    variants: list[CampaignMessageVariantRequest] | None = Field(default=None, min_length=1, max_length=10)
+    user_ids: list[str] | None = Field(default=None, alias="userIds", min_length=1)
+    audience_id: int | None = Field(default=None, alias="audienceId", ge=1)
     model_version: str | None = Field(default=None, alias="modelVersion", min_length=1, max_length=100)
+    limit: int = Field(default=1000, ge=1, le=10000)
 
 
 class AssignmentCreateRequest(ApiBaseModel):
@@ -906,12 +912,21 @@ def score_ctr_variants(request: CtrScoreRequest) -> dict[str, Any]:
         with psycopg.connect(_postgres_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
             with conn.cursor() as cursor:
                 experiment = _get_experiment(cursor, request.experiment_id)
+                if experiment is None and request.campaign_id:
+                    experiment = _get_campaign_score_context(cursor, request.campaign_id, request.experiment_id, request.channel)
                 if experiment is None:
                     raise HTTPException(status_code=404, detail="campaign_experiment_not_found")
-                variants = _get_experiment_variants(cursor, request.experiment_id)
+                if request.channel:
+                    experiment["channel"] = request.channel
+                if request.campaign_id and experiment.get("campaign_id") != request.campaign_id:
+                    raise HTTPException(status_code=409, detail="campaign_id_does_not_match_experiment")
+                variants = _inline_ctr_variants(request.variants, request.experiment_id) if request.variants else _get_experiment_variants(cursor, request.experiment_id)
                 if not variants:
                     raise HTTPException(status_code=400, detail="campaign_experiment_has_no_variants")
-                users = _get_users(cursor, request.user_ids)
+                user_ids = _ctr_score_user_ids(cursor, request, experiment)
+                if not user_ids:
+                    raise HTTPException(status_code=400, detail="ctr_score_user_ids_empty")
+                users = _get_users(cursor, user_ids)
     except HTTPException:
         raise
     except Exception as exc:
@@ -920,26 +935,46 @@ def score_ctr_variants(request: CtrScoreRequest) -> dict[str, Any]:
     results = []
     missing_user_ids = []
     model_version = _ctr_model_version(request.model_version)
-    for user_id in request.user_ids:
+    for user_id in user_ids:
         user = users.get(user_id)
         if user is None:
             missing_user_ids.append(user_id)
             continue
         scores = _score_variants(user, variants, experiment, model_version)
+        score_breakdowns = _score_variant_breakdowns(user, variants, experiment, model_version)
         selected_code, selected_probability = _best_score(scores)
+        variant_scores = _ctr_score_variant_summaries(scores, score_breakdowns, variants, selected_code)
         results.append(
             {
                 "userId": user_id,
                 "selectedVariantCode": selected_code,
                 "predictedClickProbability": selected_probability,
+                "predictedClickProbabilityDisplay": _ctr_score_probability_display(selected_probability),
                 "scores": scores,
+                "scoreBreakdowns": score_breakdowns,
+                "variantScores": variant_scores,
+                "selectedScoreBreakdown": score_breakdowns.get(str(selected_code)) if selected_code is not None else None,
             }
         )
 
+    selected_result = _ctr_score_selected_result(results, variants)
+    selected_variant_score = _ctr_score_selected_variant_score(selected_result)
     return {
         "is_success": True,
         "modelVersion": model_version,
         "experimentId": request.experiment_id,
+        "campaignId": experiment.get("campaign_id"),
+        "scoreMode": "inline_variants" if request.variants else "stored_experiment_variants",
+        "userIds": user_ids,
+        "selectedVariantCode": selected_result.get("selectedVariantCode") if selected_result else None,
+        "predictedClickProbability": selected_result.get("predictedClickProbability") if selected_result else None,
+        "predictedClickProbabilityDisplay": _ctr_score_probability_display(selected_result.get("predictedClickProbability") if selected_result else None),
+        "scores": selected_result.get("scores") if selected_result else {},
+        "scoreBreakdowns": selected_result.get("scoreBreakdowns") if selected_result else {},
+        "variantScores": selected_result.get("variantScores") if selected_result else [],
+        "bestVariantCode": selected_result.get("selectedVariantCode") if selected_result else None,
+        "selectedVariantScore": selected_variant_score,
+        "selectedScoreBreakdown": selected_result.get("selectedScoreBreakdown") if selected_result else None,
         "results": results,
         "missingUserIds": missing_user_ids,
     }
