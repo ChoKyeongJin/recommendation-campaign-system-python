@@ -337,6 +337,32 @@ def sql_example_nodes(sql_text: str) -> list[dict[str, Any]]:
     return nodes
 
 
+def campaign_user_nodes(campaign_user_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not campaign_user_payload:
+        return []
+
+    nodes = []
+    for raw_node in campaign_user_payload.get("nodes", []):
+        if not isinstance(raw_node, dict):
+            continue
+        node_type = raw_node.get("type")
+        if node_type not in {"campaign", "user"}:
+            continue
+        text = raw_node.get("text_for_embedding")
+        if not (isinstance(text, str) and text.strip()):
+            continue
+        nodes.append(dict(raw_node))
+    return nodes
+
+
+def campaign_user_edges(campaign_user_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not campaign_user_payload:
+        return []
+
+    edges = campaign_user_payload.get("recommendation_edges") or []
+    return [dict(edge) for edge in edges if isinstance(edge, dict)]
+
+
 def policy_nodes(policy_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
     if not policy_payload:
         return []
@@ -413,6 +439,7 @@ def build_payload(
     sql_text: str,
     policy_payload: dict[str, Any] | None = None,
     metric_lexicon_payload: dict[str, Any] | None = None,
+    campaign_user_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     nodes = [
         *schema_nodes(schema_catalog),
@@ -421,10 +448,12 @@ def build_payload(
         *policy_nodes(policy_payload),
         *metric_alias_nodes(metric_lexicon_payload),
         *sql_example_nodes(sql_text),
+        *campaign_user_nodes(campaign_user_payload),
     ]
+    recommendation_edges = campaign_user_edges(campaign_user_payload)
     return {
         "version": "1.0",
-        "description": "NL2SQL/RAG 검색용 지식 노드. 테이블 스키마, 정규화 사전, 비즈니스 용어, 업무 정책, SQL 예시를 포함한다.",
+        "description": "NL2SQL/RAG 검색용 지식 노드. 테이블 스키마, 정규화 사전, 비즈니스 용어, 업무 정책, SQL 예시, 캠페인/사용자 샘플을 포함한다.",
         "source_files": {
             "table_schema": "docs/data/schema_catalog.json",
             "normalization_dictionary": "docs/data/normalization_rules.sample.json",
@@ -432,6 +461,7 @@ def build_payload(
             "metric_lexicon": "docs/data/metric_lexicon.sample.json",
             "sql_examples": "docs/data/sql_examples.sample.sql",
             "business_terms": "build_rag_knowledge.py",
+            "campaign_user_nodes": "docs/data/campaign_user_rag_sample_50_with_edges.json",
         },
         "node_counts": {
             "schema_table": len([node for node in nodes if node["type"] == "schema_table"]),
@@ -440,9 +470,12 @@ def build_payload(
             "business_policy": len([node for node in nodes if node["type"] == "business_policy"]),
             "metric_alias": len([node for node in nodes if node["type"] == "metric_alias"]),
             "sql_example": len([node for node in nodes if node["type"] == "sql_example"]),
+            "campaign": len([node for node in nodes if node["type"] == "campaign"]),
+            "user": len([node for node in nodes if node["type"] == "user"]),
             "total": len(nodes),
         },
         "nodes": nodes,
+        "recommendation_edges": recommendation_edges,
     }
 
 
@@ -453,6 +486,7 @@ def main() -> None:
     parser.add_argument("--business-policies", type=Path, default=Path("docs/data/business_policies.sample.json"))
     parser.add_argument("--metric-lexicon", type=Path, default=Path("docs/data/metric_lexicon.sample.json"))
     parser.add_argument("--sql-examples", type=Path, default=Path("docs/data/sql_examples.sample.sql"))
+    parser.add_argument("--campaign-user", type=Path, default=Path("docs/data/campaign_user_rag_sample_50_with_edges.json"))
     parser.add_argument("--output", "-o", type=Path, default=Path("docs/data/rag_knowledge_base.json"))
     args = parser.parse_args()
 
@@ -462,6 +496,7 @@ def main() -> None:
         sql_text=args.sql_examples.read_text(encoding="utf-8"),
         policy_payload=load_json(args.business_policies) if args.business_policies.exists() else None,
         metric_lexicon_payload=load_json(args.metric_lexicon) if args.metric_lexicon.exists() else None,
+        campaign_user_payload=load_json(args.campaign_user) if args.campaign_user.exists() else None,
     )
     save_json(args.output, payload)
     print(json.dumps(payload["node_counts"], ensure_ascii=False, indent=2))

@@ -575,6 +575,26 @@
         "subscription",
         "recurring delivery"
       ]
+    },
+    {
+      "rule_id": "awareness",
+      "canonical": "awareness",
+      "ko_label": "신제품 출시/인지",
+      "synonyms": [
+        "신제품",
+        "신상품",
+        "출시",
+        "런칭",
+        "신규 출시",
+        "신제품 출시",
+        "신상품 출시",
+        "출시 소식",
+        "런칭 소식",
+        "new arrival",
+        "product launch",
+        "launch",
+        "awareness"
+      ]
     }
   ],
   "example_queries": [

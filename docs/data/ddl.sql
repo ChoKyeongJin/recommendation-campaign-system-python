@@ -17,6 +17,8 @@ DROP TABLE IF EXISTS campaign_channel_messages CASCADE;
 DROP TABLE IF EXISTS campaign_target_audience_members CASCADE;
 DROP TABLE IF EXISTS campaign_target_audiences CASCADE;
 DROP TABLE IF EXISTS campaign_query_failure_logs CASCADE;
+DROP TABLE IF EXISTS campaign_prompt_templates CASCADE;
+DROP TABLE IF EXISTS campaign_policies CASCADE;
 
 -- PostgreSQL DDL + sample data
 -- Source: campaign_user_rag_sample_50_with_edges(1).json
@@ -179,6 +181,28 @@ CREATE TABLE campaign_query_failure_logs (
     database_execution JSONB NOT NULL DEFAULT '{}'::JSONB,
     message_generation JSONB NOT NULL DEFAULT '{}'::JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- LLM 프롬프트 템플릿을 파일 대신 DB에서 관리합니다.
+-- name은 프롬프트 파일명(예: query_plan_system.txt)을 그대로 사용하며,
+-- graph_rag가 이 테이블을 최우선으로 조회합니다(없으면 파일 -> 코드 fallback).
+-- 초기 데이터는 seed_prompts.py로 docs/prompts에서 시딩합니다.
+CREATE TABLE campaign_prompt_templates (
+    name        VARCHAR(120) PRIMARY KEY,
+    content     TEXT NOT NULL,
+    description TEXT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 정책(JSON) 파일을 파일 대신 DB에서 관리합니다.
+-- name은 정책 파일명에서 확장자를 뺀 이름(예: ctr-model-policy, heuristic-ctr-rules)이며,
+-- api._load_ctr_model_policy / _load_heuristic_ctr_rules가 이 테이블을 최우선으로 조회합니다
+-- (없으면 파일 -> 코드 fallback). 초기 데이터는 seed_policies.py로 docs/policies에서 시딩합니다.
+CREATE TABLE campaign_policies (
+    name        VARCHAR(120) PRIMARY KEY,
+    content     JSONB NOT NULL,
+    description TEXT,
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE INDEX idx_campaigns_category ON campaigns(category);
