@@ -427,6 +427,7 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
             "audience": database_execution.get("audience", {}),
             "targeting_result": database_execution.get("targeting_result", {}),
             "segment_composition": database_execution.get("segment_composition", {}),
+            "segment_presentation": database_execution.get("segment_presentation", _empty_segment_presentation()),
         }
     )
     failure_log = _save_target_sql_failure_log(request, result, api_response, database_execution)
@@ -483,6 +484,7 @@ def channel_messages(request: ChannelMessagesRequest) -> dict[str, Any]:
         "sql": target_response.get("sql"),
         "targeting_result": target_response.get("targeting_result", {}),
         "segment_composition": target_response.get("segment_composition", {}),
+        "segment_presentation": target_response.get("segment_presentation", _empty_segment_presentation()),
     }
     if request.include_debug:
         response["debug"] = target_response.get("debug")
@@ -3202,6 +3204,7 @@ def execute_target_sql(
         "audience": audience,
         "targeting_result": targeting_result,
         "segment_composition": segment_composition,
+        "segment_presentation": _segment_presentation(segment_composition, query_plan or {}),
         "campaign_context_nodes": campaign_context_nodes,
     }
 
@@ -3430,6 +3433,121 @@ def _segment_composition(cursor: Any, sql: str, columns: list[str]) -> dict[str,
     return composition
 
 
+# 세그먼트 집계 그룹의 화면 표기명. segment_composition 의 키와 1:1 로 대응한다.
+SEGMENT_GROUP_TITLES = {
+    "lifecycle": "라이프사이클",
+    "behaviors": "고객 행동",
+    "price_sensitivity": "가격 민감도",
+    "preferred_channels": "선호 채널",
+    "predicted_ltv_segment": "예측 LTV 세그먼트",
+    "interests": "관심사",
+    "gender": "성별",
+    "age_band": "연령대",
+    "region": "지역",
+    "campaigns": "캠페인",
+    "campaign_categories": "캠페인 카테고리",
+    "campaign_channels": "캠페인 채널",
+    "campaign_target_segments": "타겟 세그먼트",
+}
+
+# 기본 노출 그룹의 우선순위. 1 = 질문이 직접 지정한 핵심 조건, 2 = 목적/발송을 위한 보조 조건.
+SEGMENT_PRIORITY_PRIMARY = 1
+SEGMENT_PRIORITY_AUXILIARY = 2
+# 가격 민감도를 보조 조건으로 노출하는 캠페인 목적 (할인·쿠폰 반응 가능성이 높은 경우).
+_PRICE_SENSITIVE_OBJECTIVES = {"purchase", "repurchase", "reactivation", "conversion", "retention"}
+
+
+def _segment_relevance(query_plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """질문(query_plan)이 실제로 참조한 세그먼트 그룹만 우선순위/사유와 함께 반환한다.
+
+    질문과 무관한 프로필 축(성별·연령·지역·관심사 등)은 여기에 포함되지 않으므로
+    기본 노출에서 자동으로 제외되고, 사용자가 추가로 요청할 때만 여는 hidden 그룹이 된다.
+    """
+    plan = query_plan or {}
+    target_user = plan.get("target_user") or {}
+    campaign_constraints = plan.get("campaign_constraints") or {}
+    exclude = plan.get("exclude") or {}
+    set_expressions = plan.get("set_expressions") or []
+    objective = campaign_constraints.get("objective")
+
+    relevance: dict[str, dict[str, Any]] = {}
+
+    def promote(key: str, priority: int, reason: str) -> None:
+        current = relevance.get(key)
+        if current is None or priority < current["priority"]:
+            relevance[key] = {"priority": priority, "reason": reason}
+
+    # 1) 질문이 직접 지정한 타겟 조건 (핵심 조건)
+    if target_user.get("lifecycle"):
+        promote("lifecycle", SEGMENT_PRIORITY_PRIMARY, "질문에서 지정한 라이프사이클 조건")
+    if target_user.get("behaviors"):
+        promote("behaviors", SEGMENT_PRIORITY_PRIMARY, "질문에서 지정한 고객 행동 조건")
+    if target_user.get("price_sensitivity"):
+        promote("price_sensitivity", SEGMENT_PRIORITY_PRIMARY, "질문에서 지정한 가격 민감도 조건")
+    if target_user.get("preferred_channels"):
+        promote("preferred_channels", SEGMENT_PRIORITY_PRIMARY, "질문에서 지정한 선호 채널 조건")
+    if target_user.get("interests") or exclude.get("interests"):
+        promote("interests", SEGMENT_PRIORITY_PRIMARY, "질문에서 지정한 관심사 조건")
+    if target_user.get("gender") or exclude.get("gender"):
+        promote("gender", SEGMENT_PRIORITY_PRIMARY, "질문에서 지정한 성별 조건")
+    if target_user.get("age_min") is not None or target_user.get("age_max") is not None:
+        promote("age_band", SEGMENT_PRIORITY_PRIMARY, "질문에서 지정한 연령 조건")
+
+    # 캠페인 측 직접 조건
+    if campaign_constraints.get("category"):
+        promote("campaign_categories", SEGMENT_PRIORITY_PRIMARY, "질문에서 지정한 캠페인 카테고리 조건")
+    if campaign_constraints.get("channels"):
+        promote("campaign_channels", SEGMENT_PRIORITY_PRIMARY, "질문에서 지정한 캠페인 채널 조건")
+
+    # 세그먼트 집합식과 라이프사이클·행동 조건은 target_segment 필터로 이어진다.
+    if set_expressions or target_user.get("behaviors") or target_user.get("lifecycle"):
+        promote("campaign_target_segments", SEGMENT_PRIORITY_PRIMARY, "질문의 핵심 세그먼트 조건")
+
+    # 2) 목적/발송을 위한 보조 조건
+    if objective in _PRICE_SENSITIVE_OBJECTIVES:
+        promote("price_sensitivity", SEGMENT_PRIORITY_AUXILIARY, "할인·쿠폰 반응 가능성이 높은 보조 조건")
+    # 메시지 발송 시 도달률을 위해 선호 채널은 항상 참고한다.
+    promote("preferred_channels", SEGMENT_PRIORITY_AUXILIARY, "메시지 도달률을 높이기 위한 발송 조건")
+
+    return relevance
+
+
+def _segment_presentation(composition: dict[str, Any], query_plan: dict[str, Any]) -> dict[str, Any]:
+    """segment_composition 을 '질문과 관련된 그룹'과 '기본 숨김 그룹'으로 분리한다.
+
+    실제 대상 고객 수/카운트는 SQL 이 계산한 composition 값을 그대로 사용하고,
+    여기서는 어떤 그룹을 우선 노출할지(relevant_groups)와 접어둘지(hidden_group_keys)만 결정한다.
+    """
+    if not composition:
+        return {"relevant_groups": [], "hidden_group_keys": []}
+
+    relevance = _segment_relevance(query_plan)
+    relevant_groups: list[dict[str, Any]] = []
+    hidden_group_keys: list[dict[str, Any]] = []
+
+    for key, segments in composition.items():
+        title = SEGMENT_GROUP_TITLES.get(key, key)
+        record = relevance.get(key)
+        if record is None:
+            hidden_group_keys.append({"key": key, "title": title})
+            continue
+        relevant_groups.append(
+            {
+                "key": key,
+                "title": title,
+                "priority": record["priority"],
+                "reason": record["reason"],
+                "segments": [
+                    {"label": segment.get("value"), "count": segment.get("count")}
+                    for segment in (segments or [])
+                ],
+            }
+        )
+
+    relevant_groups.sort(key=lambda group: (group["priority"], group["key"]))
+    return {"relevant_groups": relevant_groups, "hidden_group_keys": hidden_group_keys}
+
+
 def _value_counts(cursor: Any, sql: str, source: str, expression: str) -> list[dict[str, Any]]:
     joins = {
         "users": "JOIN users u ON u.user_id = target_users.user_id",
@@ -3589,8 +3707,13 @@ def _database_execution_skipped(reason: str) -> dict[str, Any]:
         "audience": _audience_skipped(reason),
         "targeting_result": {},
         "segment_composition": {},
+        "segment_presentation": _empty_segment_presentation(),
         "campaign_context_nodes": [],
     }
+
+
+def _empty_segment_presentation() -> dict[str, Any]:
+    return {"relevant_groups": [], "hidden_group_keys": []}
 
 
 def _database_execution_error(reason: str, exc: Exception) -> dict[str, Any]:
@@ -3605,6 +3728,7 @@ def _database_execution_error(reason: str, exc: Exception) -> dict[str, Any]:
         "audience": _audience_error(reason, exc),
         "targeting_result": {},
         "segment_composition": {},
+        "segment_presentation": _empty_segment_presentation(),
         "campaign_context_nodes": [],
     }
 
