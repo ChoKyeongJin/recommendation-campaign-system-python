@@ -38,7 +38,7 @@ DEFAULT_RAG_LLM_LOG_DIR = Path(os.getenv("RAG_LLM_LOG_DIR", "logs/rag_llm"))
 
 GENDER_TERMS = {"male", "female"}
 LIFECYCLE_TERMS = {"new_user", "inactive_90d", "inactive_180d", "dormant", "vip", "app_user"}
-CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "subscription"}
+CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "subscription", "awareness"}
 BEHAVIOR_TERMS = {
     "no_purchase",
     "first_purchase",
@@ -3771,7 +3771,10 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
             conditions.append(_condition(f"campaign_constraints.{field_name}", value, _condition_terms(value, field_name)))
 
     objective = campaign_constraints.get("objective")
-    if query_plan.get("intent") == "recommend_campaign" and objective:
+    # 생성부(build_verified_condition_tokens)와 동일하게 CAMPAIGN_OBJECTIVES로 게이트한다.
+    # 생성부는 지원 objective만 SQL 절로 내보내는데 검증부가 임의 objective를 요구하면
+    # 커버리지 검증이 실패해 sql=None이 되고 "검증된 SQL 없음"으로 빠진다.
+    if query_plan.get("intent") == "recommend_campaign" and objective in CAMPAIGN_OBJECTIVES:
         conditions.append(_condition("campaign_constraints.objective", objective, [objective], all_terms=["objective"]))
 
     offer_type = campaign_constraints.get("offer_type")
