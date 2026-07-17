@@ -687,6 +687,30 @@ INSERT INTO recommendation_edges (user_id, campaign_id, reason, label) VALUES
   ('user_024', 'camp_003', 'beauty high_ltv premium interest', 'high'),
   ('user_025', 'camp_023', 'app user deal seeker', 'high');
 
+-- VIP 대상 신제품(awareness) 캠페인 시드.
+-- "VIP 등급 고객에게 신제품 출시 소식" 프롬프트가 실제 타겟팅 결과를 반환하도록,
+-- VIP 라이프사이클 유저(user_011/user_020)를 awareness 캠페인에 연결한다.
+INSERT INTO campaigns (campaign_id, name, objective, category, offer, budget_krw, start_date, end_date, expected_ctr, expected_cvr, text_for_embedding) VALUES
+  ('camp_026', 'VIP 신제품 프리뷰', 'awareness', 'all', 'VIP 전용 선공개 프리뷰', 3600000, '2026-07-20', '2026-08-10', 4.2, 5.1, 'VIP 신제품 프리뷰 캠페인. 목적은 awareness이고 카테고리는 all입니다. 타겟 세그먼트는 vip, premium_buyer이며 채널은 rcs, kakao입니다. 혜택은 VIP 전용 선공개 프리뷰입니다. 키워드: 신제품, 출시, VIP, 프리뷰.');
+
+INSERT INTO campaign_channels (campaign_id, channel) VALUES
+  ('camp_026', 'rcs'),
+  ('camp_026', 'kakao');
+
+INSERT INTO campaign_target_segments (campaign_id, target_segment) VALUES
+  ('camp_026', 'vip'),
+  ('camp_026', 'premium_buyer');
+
+INSERT INTO campaign_keywords (campaign_id, keyword) VALUES
+  ('camp_026', '신제품'),
+  ('camp_026', '출시'),
+  ('camp_026', 'VIP'),
+  ('camp_026', '프리뷰');
+
+INSERT INTO recommendation_edges (user_id, campaign_id, reason, label) VALUES
+  ('user_011', 'camp_026', 'vip new product preview', 'high'),
+  ('user_020', 'camp_026', 'vip premium buyer new launch', 'high');
+
 -- Basic validation queries
 -- SELECT COUNT(*) AS campaign_count FROM campaigns;
 -- SELECT COUNT(*) AS user_count FROM users;
