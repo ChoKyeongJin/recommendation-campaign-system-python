@@ -728,6 +728,11 @@ def _infer_intent(query: str) -> str:
         return "recommend_campaign"
     if _is_cart_abandonment_query(query) and _is_repurchase_goal_context(query):
         return "recommend_campaign"
+    # "…에게 신제품 출시 소식을 알리고 싶어요" 같은 (신제품)알림/홍보 아웃리치는 캠페인 목적이다.
+    # "고객"이 있어도 단순 세그먼트 조회가 아니라 캠페인 발송이 목적이므로 아래 find_user_segment
+    # 분기보다 먼저 recommend_campaign 으로 잡아야 메시지 생성(build_message_context)까지 이어진다.
+    if _is_awareness_announcement_context(query):
+        return "recommend_campaign"
     if any(keyword in compact_query for keyword in ("캠페인", "추천", "recommend", "campaign")):
         return "recommend_campaign"
     if any(keyword in compact_query for keyword in ("사용자", "고객", "사람", "지역", "세그먼트", "user", "segment", "region")):
@@ -752,6 +757,15 @@ def _infer_objective(query: str) -> str | None:
     if any(keyword in compact_query for keyword in ("신제품", "신상품", "출시", "런칭", "awareness", "launch")):
         return "awareness"
     return None
+
+
+def _is_awareness_announcement_context(query: str) -> bool:
+    # 신제품/출시/런칭 등 인지(awareness) 키워드 + 알림/홍보 아웃리치 동사가 함께 있으면 캠페인 발송 의도.
+    # "신제품 관심 고객 찾아줘"(조회)처럼 아웃리치 동사가 없으면 걸리지 않도록 둘 다 요구한다.
+    compact_query = query.replace(" ", "").casefold()
+    has_launch = any(keyword in compact_query for keyword in ("신제품", "신상품", "출시", "런칭", "launch", "awareness"))
+    has_announce = any(keyword in compact_query for keyword in ("알리", "알림", "소식", "안내", "홍보"))
+    return has_launch and has_announce
 
 
 def _is_reactivation_goal_context(query: str) -> bool:
