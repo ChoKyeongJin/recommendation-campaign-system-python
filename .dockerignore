@@ -6,7 +6,12 @@ __pycache__
 **/__pycache__
 *.pyc
 logs
+
+# 문서 폴더는 제외하되, 런타임/초기화에 필요한 데이터 하위 폴더는 예외로 다시 포함
 docs
+!docs/data
+!docs/policies
+!docs/prompts
 
 # 민감 파일: 루트 및 하위 디렉터리의 .env 계열 모두 제외
 .env
