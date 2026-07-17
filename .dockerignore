@@ -1,0 +1,18 @@
+.git
+.github
+.vscode
+.claude
+__pycache__
+**/__pycache__
+*.pyc
+logs
+docs
+
+# 민감 파일: 루트 및 하위 디렉터리의 .env 계열 모두 제외
+.env
+.env.*
+*.env
+**/.env
+**/.env.*
+
+# 주의: artifacts/(CTR 모델), training/(런타임 패키지)는 런타임에 필요하므로 제외하지 않음
