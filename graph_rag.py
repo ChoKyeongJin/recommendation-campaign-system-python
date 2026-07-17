@@ -393,6 +393,10 @@ def _build_rule_query_plan(
             _apply_exclusion(plan, inverse_canonical)
         elif _is_exclusion_context(query, match["matched_text"], match["match_type"]):
             _apply_exclusion(plan, canonical)
+        elif canonical in CHANNEL_TERMS and _is_delivery_channel_context(query, match["matched_text"]):
+            # 발송 채널 표기("발송 채널: RCS")는 SQL에 전혀 반영하지 않는다. 오디언스 필터도,
+            # 캠페인 채널 필터도 만들지 않고 그냥 버린다 — SQL은 캠페인 목표(objective)만 신경 쓴다.
+            continue
         else:
             _apply_query_term(plan, canonical)
 
@@ -929,6 +933,22 @@ def _is_exclusion_context(query: str, matched_text: str, match_type: str) -> boo
     after_window = lowered_query[match_end : match_end + 12]
     return any(marker in after_window for marker in ("제외", "빼고", "말고", "아닌", "아니고")) or any(
         marker in before_window for marker in ("not ", "except ", "exclude ")
+    )
+
+
+def _is_delivery_channel_context(query: str, matched_text: str) -> bool:
+    # "발송 채널: RCS (리치 메시지 ...)" 처럼 발송/전송 채널을 표기한 문맥이면 True.
+    # 이 경우 채널은 타겟팅 조건이 아니라 발송 채널일 뿐이므로 SQL 생성에서 제외한다.
+    lowered_query = query.casefold()
+    match_index = lowered_query.find(matched_text.casefold())
+    if match_index < 0:
+        return False
+    line_start = lowered_query.rfind("\n", 0, match_index) + 1
+    line_end = lowered_query.find("\n", match_index)
+    line = lowered_query[line_start : line_end if line_end != -1 else len(lowered_query)]
+    return any(
+        marker in line
+        for marker in ("발송 채널", "발송채널", "전송 채널", "전송채널", "발신 채널", "발신채널", "보낼 채널")
     )
 
 
@@ -3075,9 +3095,13 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
             clauses = ["(ck.keyword = " + _sql_quote(offer_type) + " OR c.offer LIKE " + _sql_quote("%" + offer_type + "%") + ")"]
         _add_token(tokens, "campaign_constraints.offer_type", "offer_type", "=", offer_type, clauses, ["campaign_keywords"])
 
-    for channel in campaign_constraints.get("channels", []):
-        if channel in CHANNEL_TERMS:
-            _add_token(tokens, "campaign_constraints.channels", "campaign_channel", "=", channel, ["cc.channel = " + _sql_quote(channel)], ["campaign_channels"])
+    # objective/target_segment 와 동일하게 recommend_campaign 에서만 캠페인 채널 절을 낸다.
+    # find_user_segment 프롬프트에 "발송 채널: RCS" 같은 표기가 섞여 들어오면 campaign_channels
+    # JOIN 이 생겨 intent_scope 검증에 걸리고 sql=None("검증 SQL 없음")으로 빠지기 때문이다.
+    if intent == "recommend_campaign":
+        for channel in campaign_constraints.get("channels", []):
+            if channel in CHANNEL_TERMS:
+                _add_token(tokens, "campaign_constraints.channels", "campaign_channel", "=", channel, ["cc.channel = " + _sql_quote(channel)], ["campaign_channels"])
 
     for policy in query_plan.get("policy_constraints", []):
         _add_policy_token(tokens, policy)
@@ -3766,9 +3790,15 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     if price_sensitivity:
         conditions.append(_condition("target_user.price_sensitivity", price_sensitivity, ["price_sensitive", "price_sensitivity", price_sensitivity]))
 
-    for field_name in ("category", "channels"):
-        for value in campaign_constraints.get(field_name, []):
-            conditions.append(_condition(f"campaign_constraints.{field_name}", value, _condition_terms(value, field_name)))
+    for value in campaign_constraints.get("category", []):
+        conditions.append(_condition("campaign_constraints.category", value, _condition_terms(value, "category")))
+
+    # 채널도 생성부(build_verified_condition_tokens)와 동일하게 recommend_campaign 에서만 요구한다.
+    # "발송 채널: RCS" 표기로 채널이 잡혀도 find_user_segment 에선 캠페인 채널 절을 만들지 않으므로,
+    # 검증부가 이를 요구하면 커버리지가 깨져 sql=None("검증 SQL 없음")이 된다.
+    if query_plan.get("intent") == "recommend_campaign":
+        for value in campaign_constraints.get("channels", []):
+            conditions.append(_condition("campaign_constraints.channels", value, _condition_terms(value, "channels")))
 
     objective = campaign_constraints.get("objective")
     # 생성부(build_verified_condition_tokens)와 동일하게 CAMPAIGN_OBJECTIVES로 게이트한다.
