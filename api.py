@@ -1580,14 +1580,7 @@ def _ctr_score_selected_result(results: list[dict[str, Any]], variants: list[dic
         if score_counts.get(code)
     }
     selected_code, selected_probability = _best_score(average_scores)
-    selected_breakdown = None
-    score_breakdowns = {}
-    for result in results:
-        score_breakdowns = result.get("scoreBreakdowns") or {}
-        selected_breakdown = score_breakdowns.get(str(selected_code)) if selected_code is not None else None
-        if selected_breakdown is not None:
-            break
-    score_breakdowns = _ctr_score_aligned_breakdowns(score_breakdowns, average_scores)
+    score_breakdowns = _ctr_score_aggregate_breakdowns(results, average_scores)
     selected_breakdown = score_breakdowns.get(str(selected_code)) if selected_code is not None else None
     return {
         "selectedVariantCode": selected_code,
@@ -1659,11 +1652,191 @@ def _ctr_score_selected_variant_score(selected_result: dict[str, Any] | None) ->
     return None
 
 
-def _ctr_score_aligned_breakdowns(score_breakdowns: dict[str, dict[str, Any]], scores: dict[str, float]) -> dict[str, dict[str, Any]]:
-    return {
-        str(code): _ctr_score_aligned_breakdown(breakdown, scores.get(str(code)))
-        for code, breakdown in score_breakdowns.items()
+def _ctr_score_aggregate_breakdowns(
+    results: list[dict[str, Any]],
+    average_scores: dict[str, float],
+) -> dict[str, dict[str, Any]]:
+    """표본 사용자 전체의 시안별 브레이크다운을 평균 내어 집계 근거로 재구성한다.
+
+    뱃지(예측 CTR)는 표본 평균값인데 산출 근거 텍스트는 특정 1명의 값이라
+    두 수치(예: 3.74% vs 5.37%)가 어긋나던 문제를 바로잡는다. base/규칙/보정/
+    최종을 모두 표본 평균으로 다시 계산해 뱃지와 근거를 일치시킨다.
+    """
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for result in results:
+        for code, breakdown in (result.get("scoreBreakdowns") or {}).items():
+            if breakdown is None:
+                continue
+            grouped.setdefault(str(code), []).append(breakdown)
+    aggregated: dict[str, dict[str, Any]] = {}
+    for code, final_probability in average_scores.items():
+        breakdowns = grouped.get(str(code))
+        if not breakdowns:
+            continue
+        aggregated[str(code)] = _ctr_score_aggregate_breakdown(breakdowns, float(final_probability))
+    return aggregated
+
+
+def _ctr_score_aggregate_breakdown(breakdowns: list[dict[str, Any]], final_probability: float) -> dict[str, Any]:
+    template = breakdowns[0]
+    count = len(breakdowns)
+
+    def _mean(values: list[float]) -> float:
+        return sum(values) / len(values) if values else 0.0
+
+    base_probability = _mean([
+        float((bd.get("baseScore") or {}).get("probability") or 0.0) for bd in breakdowns
+    ])
+    applied_total = _mean([
+        float(((bd.get("summary") or {}).get("appliedAdjustmentTotal") or {}).get("probabilityDelta") or 0.0)
+        for bd in breakdowns
+    ])
+    calibration_total = _mean([
+        float(((bd.get("summary") or {}).get("calibrationAdjustmentTotal") or {}).get("probabilityDelta") or 0.0)
+        for bd in breakdowns
+    ])
+    applied_rule_count = round(_mean([
+        float((bd.get("summary") or {}).get("appliedRuleCount") or 0) for bd in breakdowns
+    ]))
+
+    # 규칙별 적용률과 표본 평균 기여도를 계산한다.
+    rule_order: list[str] = []
+    rule_meta: dict[str, dict[str, Any]] = {}
+    rule_applied_counts: dict[str, int] = {}
+    rule_configured: dict[str, float] = {}
+    total_rule_count = 0
+    for bd in breakdowns:
+        evaluations = bd.get("ruleEvaluations") or []
+        total_rule_count = max(total_rule_count, len(evaluations))
+        for evaluation in evaluations:
+            key = str(evaluation.get("key"))
+            if key not in rule_meta:
+                rule_order.append(key)
+                rule_meta[key] = evaluation
+                rule_applied_counts[key] = 0
+                rule_configured[key] = float((evaluation.get("configuredDelta") or {}).get("probabilityDelta") or 0.0)
+            if evaluation.get("applied"):
+                rule_applied_counts[key] += 1
+
+    aggregated_adjustments: list[dict[str, Any]] = []
+    aggregated_rule_evaluations: list[dict[str, Any]] = []
+    for key in rule_order:
+        meta = rule_meta[key]
+        label = str(meta.get("label"))
+        rate = rule_applied_counts[key] / count if count else 0.0
+        avg_delta = rule_configured[key] * rate
+        rate_text = f"표본의 {rate * 100:.0f}%에게 적용"
+        aggregated_rule_evaluations.append({
+            "key": key,
+            "label": label,
+            "applied": rule_applied_counts[key] > 0,
+            "applicationRate": round(rate, 4),
+            "condition": meta.get("condition"),
+            "reason": f"{rate_text}된 규칙입니다.",
+            "evidence": meta.get("evidence"),
+            "configuredDelta": _ctr_score_delta_value("설정 가중치", rule_configured[key]),
+            "appliedDelta": _ctr_score_delta_value("평균 적용 가중치", avg_delta),
+        })
+        if round(avg_delta, 7):
+            adjustment = _ctr_score_adjustment(key, label, avg_delta, f"{rate_text}되어 평균 기여한 값입니다.")
+            adjustment["applicationRate"] = round(rate, 4)
+            aggregated_adjustments.append(adjustment)
+    aggregated_adjustments.sort(key=lambda item: abs(float(item.get("probabilityDelta") or 0.0)), reverse=True)
+
+    aggregated_calibration: list[dict[str, Any]] = []
+    if round(calibration_total, 7):
+        aggregated_calibration.append(
+            _ctr_score_adjustment("stable_noise", "안정화 보정", calibration_total, "동점 방지를 위한 결정적 보정값의 표본 평균입니다.")
+        )
+
+    not_applied_rule_count = max(total_rule_count - applied_rule_count, 0)
+    raw_probability = base_probability + applied_total + calibration_total
+    reconciliation = final_probability - raw_probability
+    is_clamped = bool(round(reconciliation, 7))
+    base_score = _ctr_score_value("Base Score", base_probability)
+    predicted_ctr = _ctr_score_value("예측 CTR", final_probability)
+
+    summary = {
+        "appliedRuleCount": applied_rule_count,
+        "notAppliedRuleCount": not_applied_rule_count,
+        "appliedAdjustmentTotal": _ctr_score_delta_value("규칙 가산/감산 합계", applied_total),
+        "calibrationAdjustmentTotal": _ctr_score_delta_value("보정 합계", calibration_total),
+        "totalDeltaFromBase": _ctr_score_delta_value("Base 대비 총 변화", final_probability - base_probability),
+        "rawBeforeClamp": _ctr_score_value("클램프 전 CTR", raw_probability),
+        "predictedCtr": predicted_ctr,
+        "sampleUserCount": count,
     }
+    formula = {
+        "expression": "mean(baseProbability + appliedAdjustments + calibrationAdjustments) over sampled users",
+        "baseProbability": round(base_probability, 7),
+        "appliedAdjustmentProbability": round(applied_total, 7),
+        "calibrationAdjustmentProbability": round(calibration_total, 7),
+        "rawProbability": round(raw_probability, 7),
+        "finalProbability": round(final_probability, 7),
+        "sampleUserCount": count,
+    }
+    explanation_bullets = _ctr_score_aggregate_explanation_bullets(
+        base_score, applied_total, calibration_total, reconciliation, predicted_ctr, applied_rule_count, count
+    )
+
+    aggregated = {
+        **template,
+        "isAggregate": True,
+        "sampleUserCount": count,
+        "baseScore": base_score,
+        "adjustments": aggregated_adjustments,
+        "calibrationAdjustments": aggregated_calibration,
+        "ruleEvaluations": aggregated_rule_evaluations,
+        "formula": formula,
+        "summary": summary,
+        "explanationBullets": explanation_bullets,
+        "rawProbability": round(raw_probability, 7),
+        "rawPercentage": round(raw_probability * 100, 2),
+        "isClamped": is_clamped,
+        "predictedCtr": predicted_ctr,
+        "display": {
+            "title": "클릭률 분석 근거",
+            "baseScore": base_score,
+            "adjustments": aggregated_adjustments,
+            "calibrationAdjustments": aggregated_calibration,
+            "summary": summary,
+            "formula": formula,
+            "ruleEvaluations": aggregated_rule_evaluations,
+            "inputSignals": template.get("inputSignals"),
+            "explanationBullets": explanation_bullets,
+            "predictedCtr": predicted_ctr,
+            "sampleUserCount": count,
+        },
+    }
+    return aggregated
+
+
+def _ctr_score_aggregate_explanation_bullets(
+    base_score: dict[str, Any],
+    applied_total: float,
+    calibration_total: float,
+    reconciliation: float,
+    predicted_ctr: dict[str, Any],
+    applied_rule_count: int,
+    sample_user_count: int,
+) -> list[str]:
+    bullets = [
+        f"표본 사용자 {sample_user_count}명의 평균 예측값입니다.",
+        f"기본 점수 {base_score['displayValue']}에서 시작합니다.",
+    ]
+    if round(applied_total, 7):
+        bullets.append(
+            f"규칙 조정으로 평균 {_format_probability_percent(applied_total, signed=True)}가 반영됐습니다."
+            f" (평균 적용 규칙 {applied_rule_count}개)"
+        )
+    else:
+        bullets.append("평균적으로 적용된 가산/감산 규칙이 없어 기본 점수를 주로 사용했습니다.")
+    if round(calibration_total, 7):
+        bullets.append(f"결정적 보정값 평균 {_format_probability_percent(calibration_total, signed=True)}를 더했습니다.")
+    if round(reconciliation, 7):
+        bullets.append(f"정책상 최소/최대 CTR 범위 보정으로 {_format_probability_percent(reconciliation, signed=True)}를 반영했습니다.")
+    bullets.append(f"최종 평균 예측 CTR은 {predicted_ctr['displayValue']}입니다.")
+    return bullets
 
 
 def _ctr_score_aligned_breakdown(breakdown: dict[str, Any] | None, probability: float | None) -> dict[str, Any] | None:
