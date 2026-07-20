@@ -1,0 +1,2129 @@
+{
+  "version": "2.0",
+  "description": "프롬프트 키워드(디멘션) 정의 스냅샷. 값(코드/이름)은 저장하지 않고 런타임에 DS_SQL 로 동적 해석한다. t_xlig_dimension_list(ML_DS_DIV_CD='DS', DEL_F='N') + t_xlig_query_prompt(label/operator)에서 생성.",
+  "source": {
+    "dimension_table": "quadmax_sdz.t_xlig_dimension_list",
+    "query_prompt_table": "quadmax_sdz.t_xlig_query_prompt",
+    "filter": "ML_DS_DIV_CD='DS' AND DEL_F='N'"
+  },
+  "value_resolution": "dynamic",
+  "value_column_convention": "DS_SQL 결과의 첫 컬럼=코드, 둘째 컬럼=이름",
+  "dbms_connection_map": {
+    "CRMDW": "CRMDW",
+    "CRMAN": "CRMAN",
+    "QUADMAX_SDZ": "quadmax_sdz"
+  },
+  "dimension_count": 141,
+  "dimensions": [
+    {
+      "dimension_id": "moon_test",
+      "prompt_label": "moon_test",
+      "prmp_kwd": "@@moon_test@@",
+      "prmp_kwd_nm": "moon_test",
+      "dbms_id": "CRMAN",
+      "connection": "CRMAN",
+      "operator": "IN",
+      "synonyms": [],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT MODEL AS CODE, MODEL AS NAME FROM Smart_QuadMax_Mart.dbo.CAR_INFO GROUP BY MODEL ORDER BY 1"
+    },
+    {
+      "dimension_id": "TEST3",
+      "prompt_label": "Dimension_Test",
+      "prmp_kwd": "TEST3",
+      "prmp_kwd_nm": "Dimension_Test",
+      "dbms_id": "CRMAN",
+      "connection": "CRMAN",
+      "operator": "IN",
+      "synonyms": [],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "select * from test"
+    },
+    {
+      "dimension_id": "SMS수신동의여부",
+      "prompt_label": "SMS수신동의여부",
+      "prmp_kwd": "@@SMS수신동의여부@@",
+      "prmp_kwd_nm": "SMS수신동의여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "SMS수신동의여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'CHANNEL_AGREE_YN' order by cd desc"
+    },
+    {
+      "dimension_id": "SNS채널",
+      "prompt_label": "SNS채널",
+      "prmp_kwd": "@@SNS채널@@",
+      "prmp_kwd_nm": "SNS채널",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "SNS채널"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'SNS_CHANNEL_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "TEST",
+      "prompt_label": "@@테스트@@",
+      "prmp_kwd": "@@TEST@@",
+      "prmp_kwd_nm": "@@테스트@@",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "=",
+      "synonyms": [],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT *\r\n  FROM T_LOOKUP_VALUE\r\n WHERE LOOKUP_TYPE_ID = 'DIMENSION_LIST'\r\n   AND VAL2 = 'DS'"
+    },
+    {
+      "dimension_id": "가입경로",
+      "prompt_label": "가입경로",
+      "prmp_kwd": "@@가입경로@@",
+      "prmp_kwd_nm": "가입경로",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "가입경로"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'DEVICE_TYPE_CD'"
+    },
+    {
+      "dimension_id": "가입유형",
+      "prompt_label": "가입 유형",
+      "prmp_kwd": "@@가입유형@@",
+      "prmp_kwd_nm": "가입유형",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "가입 유형",
+        "가입유형"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT '01' CD, 'Only 온라인 가입' CD_NAME UNION ALL\r\nSELECT '02' CD, 'Only 오프라인 가입' CD_NAME UNION ALL\r\nSELECT '03' CD, '온오프 동시 가입' CD_NAME UNION ALL\r\nSELECT '04' CD, '제휴 가입' CD_NAME"
+    },
+    {
+      "dimension_id": "거래브랜드",
+      "prompt_label": "상품브랜드",
+      "prmp_kwd": "@@거래브랜드@@",
+      "prmp_kwd_nm": "거래브랜드",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "상품브랜드",
+        "거래브랜드"
+      ],
+      "target_table": "CRM_CM_PRODUCT",
+      "target_column": "CRM_CM_PRODUCT.BRAND_ID",
+      "ds_sql": "select ERP_BRAND_ID  브랜드코드, min(BRAND_NAME) 브랜드명  from  CRM_CM_BRAND where ERP_BRAND_ID in ('Y', 'M', 'Z', 'G', 'T','A','F','S','CO0508') GROUP BY ERP_BRAND_ID"
+    },
+    {
+      "dimension_id": "거래채널유형",
+      "prompt_label": "거래채널유형",
+      "prmp_kwd": "@@거래채널유형@@",
+      "prmp_kwd_nm": "거래채널유형",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "거래채널유형"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT '01' AS CD, 'Only 온라인' AS CD_NAME UNION ALL\r\nSELECT '02' AS CD, 'Only 오프라인' AS CD_NAME UNION ALL\r\nSELECT '03' AS CD, '온오프라인' AS CD_NAME"
+    },
+    {
+      "dimension_id": "결제사",
+      "prompt_label": "결제사",
+      "prmp_kwd": "@@결제사@@",
+      "prmp_kwd_nm": "결제사",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "결제사"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT REPLACE(CD,'PAYMENT_BUSINESS_CD.','') CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'PAYMENT_BUSINESS_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "결제상태",
+      "prompt_label": "결제상태",
+      "prmp_kwd": "@@결제상태@@",
+      "prmp_kwd_nm": "결제상태",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "결제상태"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'PAYMENT_STATE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "결제수단",
+      "prompt_label": "결제수단",
+      "prmp_kwd": "@@결제수단@@",
+      "prmp_kwd_nm": "결제수단",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "결제수단"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'PAYMENT_METHOD_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "결제유형",
+      "prompt_label": "결제유형",
+      "prmp_kwd": "@@결제유형@@",
+      "prmp_kwd_nm": "결제유형",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "결제유형"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'PAYMENT_TYPE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "관심브랜드",
+      "prompt_label": "관심브랜드",
+      "prmp_kwd": "@@관심브랜드@@",
+      "prmp_kwd_nm": "관심브랜드",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "관심브랜드"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT '01' CD, '아르마니' CD_NAME UNION ALL\r\nSELECT '02' CD, '메종 마르지엘라' CD_NAME UNION ALL\r\nSELECT '03' CD, '에르메스 뷰티' CD_NAME UNION ALL\r\nSELECT '04' CD, '맨온더분' CD_NAME UNION ALL\r\nSELECT '05' CD, '라르디니' CD_NAME UNION ALL\r\nSELECT '06' CD, '스튜디오톰보이' CD_NAME UNION ALL\r\nSELECT '07' CD, '지컷' CD_NAME UNION ALL\r\nSELECT '08' CD, '보브' CD_NAME UNION ALL\r\nSELECT '09' CD, '딥티크' CD_NAME UNION ALL\r\nSELECT '10' CD, '바이레도' CD_NAME UNION ALL\r\nSELECT '11' CD, '연작' CD_NAME UNION ALL\r\nSELECT '12' CD, '비디비치' CD_NAME UNION ALL\r\nSELECT '13' CD, '에르메스' CD_NAME"
+    },
+    {
+      "dimension_id": "구매반응여부",
+      "prompt_label": "구매반응여부",
+      "prmp_kwd": "@@구매반응여부@@",
+      "prmp_kwd_nm": "구매반응여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "=",
+      "synonyms": [
+        "구매반응여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "구매채널",
+      "prompt_label": "구매채널",
+      "prmp_kwd": "@@구매채널@@",
+      "prmp_kwd_nm": "구매채널",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "구매채널"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'ORDER_CHANNEL_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "구매카테고리",
+      "prompt_label": "구매카테고리",
+      "prmp_kwd": "@@구매카테고리@@",
+      "prmp_kwd_nm": "구매카테고리",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "구매카테고리"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT SELLER_DIV + ' > ' + CATEGORY AS CODE, SELLER_DIV + ' > ' + CATEGORY AS NAME FROM CRM_CM_PRODUCT GROUP BY SELLER_DIV + ' > ' + CATEGORY, SELLER_DIV, CATEGORY ORDER BY SELLER_DIV DESC, CATEGORY"
+    },
+    {
+      "dimension_id": "기획전",
+      "prompt_label": "기획전",
+      "prmp_kwd": "@@기획전@@",
+      "prmp_kwd_nm": "기획전",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "기획전"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT 'EX0001' AS CD, '건강식품 대전' AS CD_NAME UNION ALL SELECT 'EX0002' AS CD, '뷰티상품전' AS CD_NAME UNION ALL SELECT 'EX0003' AS CD, '리빙상품전' AS CD_NAME UNION ALL SELECT 'EX0004' AS CD, '화보 속 바로 그 상품' AS CD_NAME UNION ALL SELECT 'EX0005' AS CD, '여름 상품 모음전' AS CD_NAME"
+    },
+    {
+      "dimension_id": "다자녀카드유형",
+      "prompt_label": "다자녀카드유형",
+      "prmp_kwd": "@@다자녀카드유형@@",
+      "prmp_kwd_nm": "다자녀카드유형",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "다자녀카드유형"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'CHILDRENCARD_TYPE_CD'"
+    },
+    {
+      "dimension_id": "다자녀카드인증여부",
+      "prompt_label": "다자녀카드인증여부",
+      "prmp_kwd": "@@다자녀카드인증여부@@",
+      "prmp_kwd_nm": "다자녀카드인증여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "다자녀카드인증여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "당첨여부",
+      "prompt_label": "당첨여부",
+      "prmp_kwd": "@@당첨여부@@",
+      "prmp_kwd_nm": "당첨여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "당첨여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "대량구매고객여부",
+      "prompt_label": "대량구매고객여부",
+      "prmp_kwd": "@@대량구매고객여부@@",
+      "prmp_kwd_nm": "대량구매고객여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "=",
+      "synonyms": [
+        "대량구매고객여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "대표매장여부",
+      "prompt_label": "대표매장여부",
+      "prmp_kwd": "@@대표매장여부@@",
+      "prmp_kwd_nm": "대표매장여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "대표매장여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "데이트팝업",
+      "prompt_label": "데이트팝업",
+      "prmp_kwd": "@@데이트팝업@@",
+      "prmp_kwd_nm": "데이트팝업",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'DEVICE_TYPE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "등급성장유형",
+      "prompt_label": "등급성장유형",
+      "prmp_kwd": "@@등급성장유형@@",
+      "prmp_kwd_nm": "등급성장유형",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "등급성장유형",
+        "이메일수신동의여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM Smart_QuadMax_Mart.dbo.CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'GRADE_GROW_TYPE' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "등급성장유형명",
+      "prompt_label": "등급성장유형명",
+      "prmp_kwd": "@@등급성장유형명@@",
+      "prmp_kwd_nm": "등급성장유형명",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "등급성장유형명"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD_NAME, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'GRADE_GROW_TYPE' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "디바이스유형",
+      "prompt_label": "디바이스유형",
+      "prmp_kwd": "@@디바이스유형@@",
+      "prmp_kwd_nm": "디바이스유형",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "디바이스유형"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'DEVICE_TYPE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "딜유형",
+      "prompt_label": "딜유형",
+      "prmp_kwd": "@@딜유형@@",
+      "prmp_kwd_nm": "딜유형",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "딜유형"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'DEAL_TYPE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "매장_AK",
+      "prompt_label": "매장_AK",
+      "prmp_kwd": "@@매장_AK@@",
+      "prmp_kwd_nm": "매장_AK",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "매장_AK"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT '0001' AS CD, 'AK TOWN' AS CD_NAME UNION ALL\r\nSELECT '0002' AS CD, '분당' AS CD_NAME UNION ALL\r\nSELECT '0003' AS CD, '평택' AS CD_NAME UNION ALL\r\nSELECT '0004' AS CD, '원주' AS CD_NAME UNION ALL\r\nSELECT '0005' AS CD, '인천공항점' AS CD_NAME"
+    },
+    {
+      "dimension_id": "모델",
+      "prompt_label": "모델",
+      "prmp_kwd": "@@모델@@",
+      "prmp_kwd_nm": "모델",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "모델"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT MODEL AS CODE, MODEL AS NAME FROM Smart_QuadMax_Mart.dbo.CAR_INFO GROUP BY MODEL ORDER BY 1"
+    },
+    {
+      "dimension_id": "모바일OS유형",
+      "prompt_label": "모바일OS유형",
+      "prmp_kwd": "@@모바일OS유형@@",
+      "prmp_kwd_nm": "ZTS모바일OS유형",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "모바일OS유형",
+        "ZTS모바일OS유형"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT MOBILE_OS_TYPE_CD CD, MOBILE_OS_TYPE_CD CD_NAME FROM ODS_MALL_MMS_LOGINHISTORY WHERE 1=1 AND MOBILE_OS_TYPE_CD IS NOT NULL GROUP BY MOBILE_OS_TYPE_CD ORDER BY MOBILE_OS_TYPE_CD"
+    },
+    {
+      "dimension_id": "모바일방문여부",
+      "prompt_label": "모바일방문여부",
+      "prmp_kwd": "@@모바일방문여부@@",
+      "prmp_kwd_nm": "모바일방문여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "모바일방문여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "방문매장",
+      "prompt_label": "방문매장",
+      "prmp_kwd": "@@방문매장@@",
+      "prmp_kwd_nm": "방문매장",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "방문매장"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT MT_SHOP AS CODE, MT_SHOP AS NAME FROM Smart_QuadMax_Mart.dbo.MT_HIST GROUP BY MT_SHOP ORDER BY 1"
+    },
+    {
+      "dimension_id": "보유보험연체여부",
+      "prompt_label": "보유보험연체여부",
+      "prmp_kwd": "@@보유보험연체여부@@",
+      "prmp_kwd_nm": "보유보험연체여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "보유보험연체여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "보험상품",
+      "prompt_label": "보험상품",
+      "prmp_kwd": "@@보험상품@@",
+      "prmp_kwd_nm": "보험상품",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "보험상품"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT 'CSB0' AS CD, '한아름보장가득종합보험tm' AS CD_NAME UNION ALL\r\nSELECT 'CAB4' AS CD, 'LIFEPLUS한아름종합보험' AS CD_NAME UNION ALL\r\nSELECT 'CSB2' AS CD, '마이라이프굿밸런스종합보험' AS CD_NAME UNION ALL\r\nSELECT 'CAD6' AS CD, '하얀미소플러스치아보험 II' AS CD_NAME UNION ALL\r\nSELECT 'CAB5' AS CD, 'LIFEPLUS처음부터지켜주는암보험' AS CD_NAME UNION ALL\r\nSELECT 'CAD5' AS CD, '333WELL100실속간편건강보험[HOT]' AS CD_NAME UNION ALL\r\nSELECT 'CSB1' AS CD, '335WELL100간편건강보험[HOT]' AS CD_NAME UNION ALL\r\nSELECT 'CSD1' AS CD, 'LIFEPLUS더건강더실속종합보험' AS CD_NAME UNION ALL\r\nSELECT 'CAB3' AS CD, '한화실손의료보험(갱신형)' AS CD_NAME UNION ALL\r\nSELECT 'CAD7' AS CD, 'LIFEPLUS소득안심건강보험' AS CD_NAME"
+    },
+    {
+      "dimension_id": "보험완납경험여부",
+      "prompt_label": "보험완납경험여부",
+      "prmp_kwd": "@@보험완납경험여부@@",
+      "prmp_kwd_nm": "보험완납경험여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "보험완납경험여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "보험직업",
+      "prompt_label": "보험직업",
+      "prmp_kwd": "@@보험직업@@",
+      "prmp_kwd_nm": "보험직업",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "보험직업"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT 'JOB001' AS JOB_CD, '관리자(사무직)' AS JOB_NM UNION ALL\r\nSELECT 'JOB002' AS JOB_CD, '전문가 및 관련 종사자' AS JOB_NM UNION ALL\r\nSELECT 'JOB003' AS JOB_CD, '사무 종사자' AS JOB_NM UNION ALL\r\nSELECT 'JOB004' AS JOB_CD, '서비스 종사자' AS JOB_NM UNION ALL\r\nSELECT 'JOB005' AS JOB_CD, '판매 종사자' AS JOB_NM UNION ALL\r\nSELECT 'JOB006' AS JOB_CD, '농림어업 숙련 종사자' AS JOB_NM UNION ALL\r\nSELECT 'JOB007' AS JOB_CD, '기능원 및 관련 기능 종사자' AS JOB_NM UNION ALL\r\nSELECT 'JOB008' AS JOB_CD, '장치기계조작 및 조립 종사자' AS JOB_NM UNION ALL\r\nSELECT 'JOB009' AS JOB_CD, '단순노무 종사자' AS JOB_NM UNION ALL\r\nSELECT 'JOB010' AS JOB_CD, '군인' AS JOB_NM UNION ALL\r\nSELECT 'JOB011' AS JOB_CD, '비경제활동 인구' AS JOB_NM"
+    },
+    {
+      "dimension_id": "브랜드",
+      "prompt_label": "브랜드",
+      "prmp_kwd": "@@브랜드@@",
+      "prmp_kwd_nm": "브랜드",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "브랜드"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT 'BR0001' AS CD, 'Izzat BABA' AS CD_NAME UNION ALL SELECT 'BR0002' AS CD, 'JIGOTT' AS CD_NAME UNION ALL SELECT 'BR0003' AS CD, 'BYWOOL' AS CD_NAME UNION ALL SELECT 'BR0004' AS CD, 'THE TILBURY' AS CD_NAME"
+    },
+    {
+      "dimension_id": "블랙리스트상태",
+      "prompt_label": "블랙리스트상태",
+      "prmp_kwd": "@@블랙리스트상태@@",
+      "prmp_kwd_nm": "블랙리스트상태",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "블랙리스트상태"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'BLACKLIST_STATE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "블랙리스트유형",
+      "prompt_label": "블랙리스트유형",
+      "prmp_kwd": "@@블랙리스트유형@@",
+      "prmp_kwd_nm": "블랙리스트유형",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "블랙리스트유형"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'BLACKLIST_TYPE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "사용쿠폰",
+      "prompt_label": "사용쿠폰",
+      "prmp_kwd": "@@사용쿠폰@@",
+      "prmp_kwd_nm": "사용쿠폰",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "사용쿠폰"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT 'CPN0001' AS CD, '릴레이_1차쿠폰' AS CD_NAME UNION ALL\r\nSELECT 'CPN0002' AS CD, '릴레이_2차쿠폰' AS CD_NAME UNION ALL\r\nSELECT 'CPN0003' AS CD, '릴레이_3차쿠폰' AS CD_NAME"
+    },
+    {
+      "dimension_id": "상권차수",
+      "prompt_label": "상권차수",
+      "prmp_kwd": "@@상권차수@@",
+      "prmp_kwd_nm": "상권차수",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "상권차수"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT '01' AS CD, '1차상권' AS CD_NAME UNION ALL\r\nSELECT '02' AS CD, '2차상권' AS CD_NAME UNION ALL\r\nSELECT '03' AS CD, '3차상권' AS CD_NAME"
+    },
+    {
+      "dimension_id": "상태등급",
+      "prompt_label": "상태등급",
+      "prmp_kwd": "@@상태등급@@",
+      "prmp_kwd_nm": "상태등급",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "상태등급"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'STATE_GRADE' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "상태등급명",
+      "prompt_label": "상태등급명",
+      "prmp_kwd": "@@상태등급명@@",
+      "prmp_kwd_nm": "상태등급명",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "상태등급명"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD_NAME, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'STATE_GRADE' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "상품",
+      "prompt_label": "상품",
+      "prmp_kwd": "@@상품@@",
+      "prmp_kwd_nm": "상품",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "상품"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT 'G0001' AS CD, '건강식품-OO홍삼' AS CD_NAME UNION ALL SELECT 'G0002' AS CD, '건강식품-OO비타민' AS CD_NAME UNION ALL SELECT 'G0003' AS CD, '리빙-OO세제' AS CD_NAME UNION ALL SELECT 'G0004' AS CD, '뷰티-OO선크림' AS CD_NAME UNION ALL SELECT 'G0005' AS CD, '뷰티-OO영양크림' AS CD_NAME UNION ALL SELECT 'G0006' AS CD, '패션-OO레깅스' AS CD_NAME UNION ALL SELECT 'G0007' AS CD, '뷰티-OO기초세트' AS CD_NAME"
+    },
+    {
+      "dimension_id": "서비스구분",
+      "prompt_label": "서비스구분",
+      "prmp_kwd": "@@서비스구분@@",
+      "prmp_kwd_nm": "서비스구분",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "서비스구분"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT SV_CL AS CODE, SV_CL AS NAME FROM Smart_QuadMax_Mart.dbo.EMRG_SVC_HIST GROUP BY SV_CL ORDER BY 1"
+    },
+    {
+      "dimension_id": "선물구매형여부",
+      "prompt_label": "선물구매형여부",
+      "prmp_kwd": "@@선물구매형여부@@",
+      "prmp_kwd_nm": "선물구매형여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "선물구매형여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "성별",
+      "prompt_label": "성별",
+      "prmp_kwd": "@@성별@@",
+      "prmp_kwd_nm": "성별",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "성별"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD \"성별코드\", CD_NAME \"성별명\" FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'GENDER_CD' order by cd desc"
+    },
+    {
+      "dimension_id": "스코어구분",
+      "prompt_label": "스코어구분",
+      "prmp_kwd": "@@스코어구분@@",
+      "prmp_kwd_nm": "스코어구분",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "스코어구분"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT '01' AS CD, '상위 1% ~ 20%' AS CD_NAME UNION ALL SELECT '02' AS CD, '상위 21% ~ 40%' AS CD_NAME UNION ALL SELECT '03' AS CD, '상위 41% ~ 60%' AS CD_NAME UNION ALL SELECT '04' AS CD, '상위 61% ~ 80%' AS CD_NAME UNION ALL SELECT '05' AS CD, '상위 81% ~ 100%' AS CD_NAME"
+    },
+    {
+      "dimension_id": "시간대",
+      "prompt_label": "시간대",
+      "prmp_kwd": "@@시간대@@",
+      "prmp_kwd_nm": "시간대",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "시간대"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'ORDER_TIME_HOUR' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "시간대분류",
+      "prompt_label": "시간대분류",
+      "prmp_kwd": "@@시간대분류@@",
+      "prmp_kwd_nm": "시간대분류",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "시간대분류"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'ORDER_TIME_KIND' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "시도",
+      "prompt_label": "시도",
+      "prmp_kwd": "@@시도@@",
+      "prmp_kwd_nm": "시도",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "시도"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT SIDO\r\n  FROM DBO.CRM_CM_ADDRESS\r\n WHERE CRM_CM_ADDRESS.ZIP_CODE IS NOT NULL\r\n GROUP BY SIDO"
+    },
+    {
+      "dimension_id": "신상품선호형여부",
+      "prompt_label": "신상품선호형여부",
+      "prmp_kwd": "@@신상품선호형여부@@",
+      "prmp_kwd_nm": "신상품선호형여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "신상품선호형여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "실효여부",
+      "prompt_label": "실효여부",
+      "prmp_kwd": "@@실효여부@@",
+      "prmp_kwd_nm": "실효여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "실효여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "앱버전",
+      "prompt_label": "앱버전",
+      "prmp_kwd": "@@앱버전@@",
+      "prmp_kwd_nm": "앱버전",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "앱버전"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT APP_VERSION CD, APP_VERSION CD_NAME FROM ODS_MALL_MMS_LOGINHISTORY WHERE INS_DT BETWEEN GETDATE()-365 AND GETDATE() AND APP_VERSION IS NOT NULL GROUP BY APP_VERSION ORDER BY APP_VERSION"
+    },
+    {
+      "dimension_id": "연령대_5세단위",
+      "prompt_label": "연령대_5세단위",
+      "prmp_kwd": "@@연령대_5세단위@@",
+      "prmp_kwd_nm": "연령대_5세단위",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "연령대_5세단위",
+        "연령대 5세 단위"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'AGE_DIV1' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "연령대명",
+      "prompt_label": "연령대명",
+      "prmp_kwd": "@@연령대명@@",
+      "prmp_kwd_nm": "연령대명",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "연령대명",
+        "연령대"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME \r\nFROM CRM_CM_CODE \r\nWHERE CD_GROUP_TYPE = 'CAMP'\r\n AND CD_GROUP_CD = 'AGE_DIV2' \r\nORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "연식",
+      "prompt_label": "연식",
+      "prmp_kwd": "@@연식@@",
+      "prmp_kwd_nm": "연식",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "연식"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT YEAR AS CODE, YEAR AS NAME FROM Smart_QuadMax_Mart.dbo.CAR_INFO GROUP BY YEAR ORDER BY 1"
+    },
+    {
+      "dimension_id": "연체여부",
+      "prompt_label": "연체여부",
+      "prmp_kwd": "@@연체여부@@",
+      "prmp_kwd_nm": "연체여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "연체여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "예치금유형",
+      "prompt_label": "예치금유형",
+      "prmp_kwd": "@@예치금유형@@",
+      "prmp_kwd_nm": "예치금유형",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "예치금유형"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'DEPOSIT_TYPE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "오퍼반응여부",
+      "prompt_label": "오퍼반응여부",
+      "prmp_kwd": "@@오퍼반응여부@@",
+      "prmp_kwd_nm": "오퍼반응여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "=",
+      "synonyms": [
+        "오퍼반응여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "오프라인쿠폰명",
+      "prompt_label": "오프라인쿠폰명",
+      "prmp_kwd": "@@오프라인쿠폰명@@",
+      "prmp_kwd_nm": "오프라인쿠폰명",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "오프라인쿠폰명"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT TOP 100 COUPONGROUPID, DESCRIPTION FROM ODS_ERP_UT_COUPONGROUPTABLE WHERE FROMDATE >= '2016-01-01 00:00:00. 000' AND ACTIVE = 1 ORDER BY FROMDATE DESC"
+    },
+    {
+      "dimension_id": "외국인여부",
+      "prompt_label": "외국인여부",
+      "prmp_kwd": "@@외국인여부@@",
+      "prmp_kwd_nm": "외국인여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "=",
+      "synonyms": [
+        "외국인여부",
+        "외국인 여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "요일",
+      "prompt_label": "요일",
+      "prmp_kwd": "@@요일@@",
+      "prmp_kwd_nm": "요일",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "요일"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'DAYS_WEEK' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "운전용도",
+      "prompt_label": "운전용도",
+      "prmp_kwd": "@@운전용도@@",
+      "prmp_kwd_nm": "운전용도",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "운전용도"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT '01' AS DRIVE_DIV_CD, '자가용' AS DRIVE_DIV_NM UNION ALL\r\nSELECT '02' AS DRIVE_DIV_CD, '영업용' AS DRIVE_DIV_NM"
+    },
+    {
+      "dimension_id": "유입시간대",
+      "prompt_label": "유입시간대",
+      "prmp_kwd": "@@유입시간대@@",
+      "prmp_kwd_nm": "유입시간대",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "유입시간대"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'ORDER_TIME_HOUR' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "유입채널",
+      "prompt_label": "유입채널",
+      "prmp_kwd": "@@유입채널@@",
+      "prmp_kwd_nm": "유입채널",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "유입채널"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT '01' AS CD, 'Organic Search' AS CD_NAME UNION ALL \r\nSELECT '02' AS CD, 'Social' AS CD_NAME UNION ALL \r\nSELECT '03' AS CD, 'Direct' AS CD_NAME\r\nUNION ALL \r\nSELECT '04' AS CD, 'Referral' AS CD_NAME"
+    },
+    {
+      "dimension_id": "이마트거래유형",
+      "prompt_label": "거래유형",
+      "prmp_kwd": "@@이마트거래유형@@",
+      "prmp_kwd_nm": "거래유형",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "거래유형"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM  Smart_QuadMax_Mart.dbo.CRM_CM_CODE   WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'EMART_ORDER_CHANNEL_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "이마트거래점",
+      "prompt_label": "이마트거래점",
+      "prmp_kwd": "@@이마트거래점@@",
+      "prmp_kwd_nm": "이마트거래점",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "이마트거래점"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT OFFSHOP_ID ,  OFFSHOP_NAME  FROM Smart_QuadMax_Mart.dbo.CRM_CM_OFFSHOP where comp = 'EMART'"
+    },
+    {
+      "dimension_id": "이메일수신동의여부",
+      "prompt_label": "이메일수신동의여부",
+      "prmp_kwd": "@@이메일수신동의여부@@",
+      "prmp_kwd_nm": "이메일수신동의여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "=",
+      "synonyms": [
+        "이메일수신동의여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'CHANNEL_AGREE_YN' order by cd"
+    },
+    {
+      "dimension_id": "이벤트",
+      "prompt_label": "이벤트",
+      "prmp_kwd": "@@이벤트@@",
+      "prmp_kwd_nm": "이벤트",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "이벤트"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT '01' CD, 'V픽 VTV 시청 후기 이벤트' CD_NAME UNION ALL\r\nSELECT '02' CD, 'LUSH 7월 댓글 이벤트' CD_NAME UNION ALL\r\nSELECT '03' CD, '7월 시마을 리얼 리뷰어' CD_NAME UNION ALL\r\nSELECT '04' CD, 'V픽 런칭 기념 이벤트' CD_NAME UNION ALL\r\nSELECT '05' CD, '시마을 원더위크' CD_NAME"
+    },
+    {
+      "dimension_id": "이벤트명",
+      "prompt_label": "이벤트명",
+      "prmp_kwd": "@@이벤트명@@",
+      "prmp_kwd_nm": "이벤트명",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "이벤트명"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT EVENT_ID, NAME FROM ODS_MALL_SPS_EVENT ORDER BY CAST(EVENT_ID AS INT) DESC"
+    },
+    {
+      "dimension_id": "인터넷보험상품",
+      "prompt_label": "보험상품",
+      "prmp_kwd": "@@인터넷보험상품@@",
+      "prmp_kwd_nm": "보험상품",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "보험상품"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT 'P0001' AS PRDT_CD, 'OK2500 플러스 운전자보험' AS PRDT_NM UNION ALL\r\nSELECT 'P0002' AS PRDT_CD, '한화 119 화재보험' AS PRDT_NM UNION ALL\r\nSELECT 'P0003' AS PRDT_CD, '한화 백돌이 홀인원보험' AS PRDT_NM UNION ALL\r\nSELECT 'P0004' AS PRDT_CD, '한화다이렉트 포켓암보험' AS PRDT_NM UNION ALL\r\nSELECT 'P0005' AS PRDT_CD, '한화다이렉트 저축보험' AS PRDT_NM UNION ALL\r\nSELECT 'P0006' AS PRDT_CD, '한화 내돈내산PAY100건강보험' AS PRDT_NM UNION ALL\r\nSELECT 'P0007' AS PRDT_CD, 'LIFEPLUS맘더한어린이보험' AS PRDT_NM"
+    },
+    {
+      "dimension_id": "임직원여부",
+      "prompt_label": "임직원여부",
+      "prmp_kwd": "@@임직원여부@@",
+      "prmp_kwd_nm": "임직원여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "=",
+      "synonyms": [
+        "임직원여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "자녀여부",
+      "prompt_label": "자녀여부",
+      "prmp_kwd": "@@자녀여부@@",
+      "prmp_kwd_nm": "자녀여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "자녀여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM Smart_QuadMax_Mart.dbo.CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "장바구니유형",
+      "prompt_label": "장바구니유형",
+      "prmp_kwd": "@@장바구니유형@@",
+      "prmp_kwd_nm": "장바구니유형",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "장바구니유형"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'CART_TYPE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "전시카테고리",
+      "prompt_label": "전시카테고리",
+      "prmp_kwd": "@@전시카테고리@@",
+      "prmp_kwd_nm": "전시카테고리",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "전시카테고리"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT PROD_SUB_CATEGORY_NM AS CD, PROD_SUB_CATEGORY_NM AS CD_NAME FROM Customer_Analytics.dbo.CRM_CM_PRODUCT_SSG WHERE PROD_SUB_CATEGORY_CD = 'P001' AND PROD_SUB_CATEGORY_NM LIKE '%여성패션%' GROUP BY PROD_SUB_CATEGORY_NM"
+    },
+    {
+      "dimension_id": "점검항목",
+      "prompt_label": "점검항목",
+      "prmp_kwd": "@@점검항목@@",
+      "prmp_kwd_nm": "점검항목",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "점검항목"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT MT_ITEM AS CODE, MT_ITEM AS NAME FROM Smart_QuadMax_Mart.dbo.MT_HIST GROUP BY MT_ITEM ORDER BY 1"
+    },
+    {
+      "dimension_id": "점수",
+      "prompt_label": "점수",
+      "prmp_kwd": "@@점수@@",
+      "prmp_kwd_nm": "점수",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "점수"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT '01' CD, '별 1개' CD_NAME UNION ALL\r\nSELECT '02' CD, '별 2개' CD_NAME UNION ALL\r\nSELECT '03' CD, '별 3개' CD_NAME UNION ALL\r\nSELECT '04' CD, '별 4개' CD_NAME UNION ALL\r\nSELECT '05' CD, '별 5개' CD_NAME"
+    },
+    {
+      "dimension_id": "접속매체",
+      "prompt_label": "접속매체",
+      "prmp_kwd": "@@접속매체@@",
+      "prmp_kwd_nm": "접속매체",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "접속매체"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "select '01' as CD, 'PC' as CD_NAME union all select '02' as CD, 'Mobile Web' as CD_NAME union all select '03' as CD, 'Mobile App' as CD_NAME"
+    },
+    {
+      "dimension_id": "접촉성공여부",
+      "prompt_label": "접촉성공여부",
+      "prmp_kwd": "@@접촉성공여부@@",
+      "prmp_kwd_nm": "접촉성공여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "=",
+      "synonyms": [
+        "접촉성공여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "제조사",
+      "prompt_label": "제조사",
+      "prmp_kwd": "@@제조사@@",
+      "prmp_kwd_nm": "제조사",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "제조사"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT COMPANY AS CODE, COMPANY AS NAME FROM Smart_QuadMax_Mart.dbo.CAR_INFO GROUP BY COMPANY ORDER BY 1"
+    },
+    {
+      "dimension_id": "조합기준",
+      "prompt_label": "조합기준",
+      "prmp_kwd": "@@조합기준@@",
+      "prmp_kwd_nm": "조합기준",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "=",
+      "synonyms": [
+        "조합기준"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT '1' CD, '회원' NM UNION ALL SELECT '2' CD, '영수증' NM"
+    },
+    {
+      "dimension_id": "주거래지점",
+      "prompt_label": "주거래지점",
+      "prmp_kwd": "@@주거래지점@@",
+      "prmp_kwd_nm": "주거래지점",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "주거래지점",
+        "SELECT"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT offshop_id 'CODE_CD' , offshop_name 'CODE_NAME' FROM CRM_CM_OFFSHOP WHERE comp = 'MIRAE'"
+    },
+    {
+      "dimension_id": "주결제수단",
+      "prompt_label": "주결제수단",
+      "prmp_kwd": "@@주결제수단@@",
+      "prmp_kwd_nm": "주결제수단",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "주결제수단"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'PAYMENT_METHOD_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "주구매브랜드명",
+      "prompt_label": "주구매브랜드명",
+      "prmp_kwd": "@@주구매브랜드명@@",
+      "prmp_kwd_nm": "주구매브랜드명",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "주구매브랜드명"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT BRAND_NAME, BRAND_NAME AS BRAND_NAME2 FROM CRM_CM_PRODUCT WHERE BRAND_ID NOT IN ('~','Z','500000') GROUP BY BRAND_NAME ORDER BY BRAND_NAME"
+    },
+    {
+      "dimension_id": "주구매시간대",
+      "prompt_label": "주구매시간대",
+      "prmp_kwd": "@@주구매시간대@@",
+      "prmp_kwd_nm": "주구매시간대",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "주구매시간대"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'ORDER_TIME_HOUR' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "주구매시간대분류",
+      "prompt_label": "주구매시간대분류",
+      "prmp_kwd": "@@주구매시간대분류@@",
+      "prmp_kwd_nm": "주구매시간대분류",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "주구매시간대분류"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'ORDER_TIME_KIND' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "주구매요일",
+      "prompt_label": "주구매요일",
+      "prmp_kwd": "@@주구매요일@@",
+      "prmp_kwd_nm": "주구매요일",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "주구매요일"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'DAYS_WEEK' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "주구매채널",
+      "prompt_label": "주구매채널",
+      "prmp_kwd": "@@주구매채널@@",
+      "prmp_kwd_nm": "주구매채널",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "주구매채널"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'ORDER_CHANNEL_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "주구매채널명",
+      "prompt_label": "주구매채널명",
+      "prmp_kwd": "@@주구매채널명@@",
+      "prmp_kwd_nm": "주구매채널명",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "주구매채널명"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD_NAME, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'ORDER_CHANNEL_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "주구매카테고리명",
+      "prompt_label": "주구매카테고리명",
+      "prmp_kwd": "@@주구매카테고리명@@",
+      "prmp_kwd_nm": "주구매카테고리명",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "주구매카테고리명"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CATEGORY AS CODE, CATEGORY AS NAME FROM CRM_CM_PRODUCT WHERE CATEGORY IS NOT NULL GROUP BY CATEGORY"
+    },
+    {
+      "dimension_id": "주문디바이스",
+      "prompt_label": "주문디바이스",
+      "prmp_kwd": "@@주문디바이스@@",
+      "prmp_kwd_nm": "주문디바이스",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "주문디바이스"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'DEVICE_TYPE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "주문유형",
+      "prompt_label": "주문유형",
+      "prmp_kwd": "@@주문유형@@",
+      "prmp_kwd_nm": "주문유형",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "주문유형"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'ORDER_TYPE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "주이용노선",
+      "prompt_label": "주이용노선",
+      "prmp_kwd": "@@주이용노선@@",
+      "prmp_kwd_nm": "주이용노선",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "주이용노선"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'JEJUAIR_01' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "주주문시간대",
+      "prompt_label": "주주문시간대",
+      "prmp_kwd": "@@주주문시간대@@",
+      "prmp_kwd_nm": "주주문시간대",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "주주문시간대"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'ORDER_TIME_HOUR' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "주주문시간대분류",
+      "prompt_label": "주주문시간대분류",
+      "prmp_kwd": "@@주주문시간대분류@@",
+      "prmp_kwd_nm": "주주문시간대분류",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "주주문시간대분류"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'ORDER_TIME_KIND' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "체류지점",
+      "prompt_label": "체류지점",
+      "prmp_kwd": "@@체류지점@@",
+      "prmp_kwd_nm": "체류지점",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "체류지점"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "select '0001' as CD, '수원' as CD_NAME union all select '0002' as CD, '분당' as CD_NAME union all select '0003' as CD, '원주' as CD_NAME union all select '0004' as CD, '평택' as CD_NAME union all select '0005' as CD, '서현' as CD_NAME"
+    },
+    {
+      "dimension_id": "최종구매채널",
+      "prompt_label": "최종구매채널",
+      "prmp_kwd": "@@최종구매채널@@",
+      "prmp_kwd_nm": "최종구매채널",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "최종구매채널"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'ORDER_CHANNEL_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "최종로그인채널",
+      "prompt_label": "최종로그인채널",
+      "prmp_kwd": "@@최종로그인채널@@",
+      "prmp_kwd_nm": "최종로그인채널",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "최종로그인채널"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'DEVICE_TYPE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "최초로그인채널",
+      "prompt_label": "최초로그인채널",
+      "prmp_kwd": "@@최초로그인채널@@",
+      "prmp_kwd_nm": "최초로그인채널",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "최초로그인채널"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'DEVICE_TYPE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "쿠폰발행상태",
+      "prompt_label": "쿠폰발행상태",
+      "prmp_kwd": "@@쿠폰발행상태@@",
+      "prmp_kwd_nm": "쿠폰발행상태",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "쿠폰발행상태"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'COUPON_ISSUE_STATE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "쿠폰사용여부",
+      "prompt_label": "쿠폰사용여부",
+      "prmp_kwd": "@@쿠폰사용여부@@",
+      "prmp_kwd_nm": "쿠폰사용여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "쿠폰사용여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "쿠폰사용점",
+      "prompt_label": "쿠폰사용점",
+      "prmp_kwd": "@@쿠폰사용점@@",
+      "prmp_kwd_nm": "쿠폰사용점",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "쿠폰사용점"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT MT_SHOP AS CODE, MT_SHOP AS NAME FROM Smart_QuadMax_Mart.dbo.MT_HIST GROUP BY MT_SHOP ORDER BY 1"
+    },
+    {
+      "dimension_id": "쿠폰유형",
+      "prompt_label": "쿠폰유형",
+      "prmp_kwd": "@@쿠폰유형@@",
+      "prmp_kwd_nm": "쿠폰유형",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "쿠폰유형"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT 'CPNTYPE0001' AS CD, '정액할인' AS CD_NAME UNION ALL\r\nSELECT 'CPNTYPE0002' AS CD, '정률할인' AS CD_NAME UNION ALL\r\nSELECT 'CPNTYPE0003' AS CD, '포인트' AS CD_NAME UNION ALL\r\nSELECT 'CPNTYPE0003' AS CD, '사은품' AS CD_NAME"
+    },
+    {
+      "dimension_id": "타사B2E여부",
+      "prompt_label": "타사B2E여부",
+      "prmp_kwd": "@@타사B2E여부@@",
+      "prmp_kwd_nm": "타사B2E여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "=",
+      "synonyms": [
+        "타사B2E여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "통합회원여부",
+      "prompt_label": "이마트통합회원여부",
+      "prmp_kwd": "@@통합회원여부@@",
+      "prmp_kwd_nm": "이마트통합회원여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "이마트통합회원여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM Smart_QuadMax_Mart.dbo.CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "해지여부",
+      "prompt_label": "해지여부",
+      "prmp_kwd": "@@해지여부@@",
+      "prmp_kwd_nm": "해지여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "해지여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "혼인_여부",
+      "prompt_label": "혼인여부",
+      "prmp_kwd": "@@혼인_여부@@",
+      "prmp_kwd_nm": "혼인여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "=",
+      "synonyms": [
+        "혼인여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "혼인여부",
+      "prompt_label": "혼인여부",
+      "prmp_kwd": "@@혼인여부@@",
+      "prmp_kwd_nm": "혼인여부",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "=",
+      "synonyms": [
+        "혼인여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD, CD_NAME FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'CAMP' AND CD_GROUP_CD = 'YN' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "회원등급_T",
+      "prompt_label": "회원등급테스트",
+      "prmp_kwd": "@@회원등급_T@@",
+      "prmp_kwd_nm": "회원등급테스트",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT\r\n\tCD_NAME AS CD,\r\n\tCD_NAME AS CD_NM\r\nFROM\r\n\tCRM_CM_CODE\r\nWHERE\r\n\tCD_GROUP_TYPE = 'EN_MALL'\r\n\tAND CD_GROUP_CD = 'MEM_GRADE_CD'"
+    },
+    {
+      "dimension_id": "회원등급",
+      "prompt_label": "회원등급",
+      "prmp_kwd": "@@회원등급@@",
+      "prmp_kwd_nm": "회원등급",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "회원등급",
+        "RADIO"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD \"등급코드\" , CD_NAME \"등급명\" FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'EN_MALL' AND CD_GROUP_CD = 'MEM_GRADE_CD'"
+    },
+    {
+      "dimension_id": "회원등급명",
+      "prompt_label": "회원등급명",
+      "prmp_kwd": "@@회원등급명@@",
+      "prmp_kwd_nm": "회원등급명",
+      "dbms_id": "CRMDW",
+      "connection": "CRMDW",
+      "operator": "IN",
+      "synonyms": [
+        "회원등급명"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CD_NAME \"등급코드\" , CD_NAME \".등급명\" FROM CRM_CM_CODE WHERE CD_GROUP_TYPE = 'MALL' AND CD_GROUP_CD = 'MEM_GRADE_CD' ORDER BY SORT_NO"
+    },
+    {
+      "dimension_id": "ABC!@#123",
+      "prompt_label": "프롬프트테스트",
+      "prmp_kwd": "@@ABC!@#123@@",
+      "prmp_kwd_nm": "프롬프트테스트",
+      "dbms_id": "QUADMAX",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT LOOKUP_CODE \"CODE\", LOOKUP_DESC \"CODE_NM\", VAL1 \"FORMAT\",LOOKUP_NM \"FORMULA\" FROM T_LOOKUP_VALUE WHERE LOOKUP_TYPE_ID LIKE '%I_CMS_DATE_TIME%' AND DEL_F = 'N'"
+    },
+    {
+      "dimension_id": "결혼여부",
+      "prompt_label": "결혼여부",
+      "prmp_kwd": "@@결혼여부@@",
+      "prmp_kwd_nm": "결혼여부",
+      "dbms_id": "QUADMAX",
+      "connection": null,
+      "operator": "=",
+      "synonyms": [
+        "결혼여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT 1 AS CD\r\n              , '기혼' AS CD_NAME\r\n       FROM DUAL\r\n   UNION \r\nSELECT 2 AS CD\r\n             , '미혼' AS CD_NAME"
+    },
+    {
+      "dimension_id": "고객등급",
+      "prompt_label": "고객등급",
+      "prmp_kwd": "@@고객등급@@",
+      "prmp_kwd_nm": "고객등급",
+      "dbms_id": "QUADMAX",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [
+        "고객등급"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT 'G' AS CD\r\n              , '우수' AS CD_NAME\r\n       FROM DUAL\r\n   UNION \r\nSELECT 'N' AS CD\r\n             , '일반' AS CD_NAME\r\n   UNION \r\nSELECT 'R' AS CD\r\n             , '휴면' AS CD_NAME\r\n   UNION \r\nSELECT 'X' AS CD\r\n             , '최우수' AS CD_NAME"
+    },
+    {
+      "dimension_id": "구매경험여부",
+      "prompt_label": "구매경험여부",
+      "prmp_kwd": "@@구매경험여부@@",
+      "prmp_kwd_nm": "구매경험여부",
+      "dbms_id": "QUADMAX",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [
+        "구매경험여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "select 'N' as CD, '미반응' as NM\r\n    union all \r\n    select 'Y' as CD, '반응' as NM"
+    },
+    {
+      "dimension_id": "날짜변수",
+      "prompt_label": "날짜변수",
+      "prmp_kwd": "@@날짜변수@@",
+      "prmp_kwd_nm": "날짜변수",
+      "dbms_id": "QUADMAX",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [
+        "날짜변수"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT LOOKUP_CODE \"CODE\", LOOKUP_DESC \"CODE_NM\", VAL1 \"format\" FROM T_LOOKUP_VALUE WHERE LOOKUP_TYPE_ID = 'I_CMS_DATE_TIME' AND DEL_F = 'N' ORDER BY SORT_SEQ ASC"
+    },
+    {
+      "dimension_id": "날짜변수123",
+      "prompt_label": "날짜변수",
+      "prmp_kwd": "@@날짜변수123@@",
+      "prmp_kwd_nm": "날짜변수",
+      "dbms_id": "QUADMAX",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [
+        "날짜변수"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT LOOKUP_CODE \"CODE\", LOOKUP_DESC \"CODE_NM\", VAL1 \"FORMAT\",LOOKUP_NM \"FORMULA\" FROM T_LOOKUP_VALUE WHERE LOOKUP_TYPE_ID LIKE '%I_CMS_DATE_TIME%' AND DEL_F = 'N'"
+    },
+    {
+      "dimension_id": "설문참여채널",
+      "prompt_label": "설문참여채널",
+      "prmp_kwd": "@@설문참여채널@@",
+      "prmp_kwd_nm": "설문참여채널",
+      "dbms_id": "QUADMAX",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [
+        "설문참여채널"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT MAIN_BUY_CHANNEL_NM AS CD \r\n     , MAIN_BUY_CHANNEL_NM AS CD_NAME\r\n  FROM quadmax.z_cust_info \r\n WHERE 1=1 \r\n GROUP BY MAIN_BUY_CHANNEL_NM"
+    },
+    {
+      "dimension_id": "연령대",
+      "prompt_label": "연령대",
+      "prmp_kwd": "@@연령대@@",
+      "prmp_kwd_nm": "연령대",
+      "dbms_id": "QUADMAX",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [
+        "연령대"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT '01' AS CD\r\n              , '10세미만' AS CD_NAME\r\n       FROM DUAL\r\n   UNION \r\nSELECT '02' AS CD\r\n             , '10대전반' AS CD_NAME\r\n   UNION \r\nSELECT '03' AS CD\r\n             , '10대후반' AS CD_NAME\r\n   UNION \r\nSELECT '04' AS CD\r\n             , '20대전반' AS CD_NAME\r\n   UNION \r\nSELECT '05' AS CD\r\n             , '20대후반' AS CD_NAME\r\n   UNION \r\nSELECT '06' AS CD\r\n             , '30대전반' AS CD_NAME\r\n   UNION \r\nSELECT '07' AS CD\r\n             , '30대후반' AS CD_NAME\r\n   UNION \r\nSELECT '08' AS CD\r\n             , '40대전반' AS CD_NAME\r\n   UNION \r\nSELECT '09' AS CD\r\n             , '40대후반' AS CD_NAME\r\n   UNION \r\nSELECT '10' AS CD\r\n             , '50대전반' AS CD_NAME\r\n   UNION \r\nSELECT '11' AS CD\r\n             , '50대후반' AS CD_NAME\r\n   UNION \r\nSELECT '12' AS CD\r\n             , '60대전반' AS CD_NAME\r\n   UNION \r\nSELECT '13' AS CD\r\n             , '60대후반' AS CD_NAME\r\n   UNION \r\nSELECT '14' AS CD\r\n             , '70대이상' AS CD_NAME\r\n   UNION \r\nSELECT '99' AS CD\r\n             , '미정의' AS CD_NAME"
+    },
+    {
+      "dimension_id": "이미지URL",
+      "prompt_label": "이미지URL",
+      "prmp_kwd": "@@이미지URL@@",
+      "prmp_kwd_nm": "이미지URL",
+      "dbms_id": "QUADMAX",
+      "connection": null,
+      "operator": "=",
+      "synonyms": [
+        "이미지URL"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT 'HTTPS://QuadMax/temp/IMAGE/202309/202308020003/' AS CD \r\n     , '세탁기23년형' AS CD_NAME \r\n  FROM DUAL \r\nUNION ALL \r\nSELECT 'HTTPS://QuadMax/temp/IMAGE/202309/202307260004/' AS CD \r\n     , '세탁기24년형' AS CD_NAME \r\n  FROM DUAL  ;"
+    },
+    {
+      "dimension_id": "이미지파일명",
+      "prompt_label": "이미지파일명",
+      "prmp_kwd": "@@이미지파일명@@",
+      "prmp_kwd_nm": "이미지파일명",
+      "dbms_id": "QUADMAX",
+      "connection": null,
+      "operator": "=",
+      "synonyms": [
+        "이미지파일명"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT 'FILE202300000124' AS CD \r\n     , '세탁기23년형' AS CD_NAME \r\n  FROM DUAL \r\nUNION ALL \r\nSELECT 'FILE202300000126' AS CD \r\n     , '세탁기24년형' AS CD_NAME \r\n  FROM DUAL  ;"
+    },
+    {
+      "dimension_id": "캠페인구매반응정보",
+      "prompt_label": "캠페인구매반응정보",
+      "prmp_kwd": "@@캠페인구매반응정보@@",
+      "prmp_kwd_nm": "캠페인구매반응정보",
+      "dbms_id": "QUADMAX",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [
+        "캠페인구매반응정보"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "select '1' as CD, '미반응' as NM\r\n    union all \r\n    select '2' as CD, '반응' as NM"
+    },
+    {
+      "dimension_id": "CAMPLIST1",
+      "prompt_label": "CAMPLIST",
+      "prmp_kwd": "@@CAMPLIST1@@",
+      "prmp_kwd_nm": "CAMPLIST1",
+      "dbms_id": "QUADMAX_76",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [
+        "CAMPLIST",
+        "CAMPLIST1"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT A2.CAMP_ID   AS CD\r\n     , A2.CAMP_NAME AS CD_NAME\r\n  FROM Z_CAMP_CELL_CUST A1\r\n       INNER JOIN t_campaign A2\r\n    ON A1.CAMP_ID = A2.CAMP_ID \r\n WHERE 1=1\r\n   AND A1.CAMP_ID LIKE '2023%'\r\n GROUP BY A2.CAMP_ID   \r\n     , A2.CAMP_NAME"
+    },
+    {
+      "dimension_id": "SSBINDEX",
+      "prompt_label": "SSBINDEX",
+      "prmp_kwd": "@@SSBINDEX@@",
+      "prmp_kwd_nm": "SSBINDEX",
+      "dbms_id": "QUADMAX_76",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [
+        "SSBINDEX"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT 1 AS CD\r\n              , 'CODE' AS CD_NAME\r\n     FROM DUAL"
+    },
+    {
+      "dimension_id": "SSBI프로젝트",
+      "prompt_label": "SSBI프로젝트",
+      "prmp_kwd": "@@SSBI프로젝트@@",
+      "prmp_kwd_nm": "SSBI프로젝트",
+      "dbms_id": "QUADMAX_76",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [
+        "SSBI프로젝트"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT PROJECTID AS CD\r\n      , PROJECTNAME AS CD_NAME\r\n    FROM t_ssbi_containers_index \r\n  GROUP BY PROJECTID \r\n      , PROJECTNAME\r\n ORDER BY 2"
+    },
+    {
+      "dimension_id": "test_moon",
+      "prompt_label": "@@test_moon@@",
+      "prmp_kwd": "@@test_moon@@",
+      "prmp_kwd_nm": "@@test_moon@@",
+      "dbms_id": "QUADMAX_76",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "select category1,input_keyword from naver_api.lg_keywords_list group by category1"
+    },
+    {
+      "dimension_id": "프로젝트",
+      "prompt_label": "프로젝트",
+      "prmp_kwd": "@@프로젝트@@",
+      "prmp_kwd_nm": "프로젝트",
+      "dbms_id": "QUADMAX_76",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [
+        "프로젝트"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "select PROJECTID AS CD\r\n        , PROJECTNAME AS CD_NAME\r\n     from quadmax.T_SSBI_CONTAINERS_INDEX\r\n   group by PROJECTID\r\n        , PROJECTNAME\r\n   order by 2"
+    },
+    {
+      "dimension_id": "CAMP_ID_MOON",
+      "prompt_label": "CAMP_ID_MOON",
+      "prmp_kwd": "@@CAMP_ID_MOON@@",
+      "prmp_kwd_nm": "CAMP_ID_MOON",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "operator": "IN",
+      "synonyms": [
+        "CAMP_ID_MOON"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "select CAMP_ID,CAMP_NM from quadmax_sdz.t_campaign where CAMP_GRP_ID ='CPGP202400000006'"
+    },
+    {
+      "dimension_id": "jwkim",
+      "prompt_label": "테스트",
+      "prmp_kwd": "@@jwkim@@",
+      "prmp_kwd_nm": "테스트",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "operator": "IN",
+      "synonyms": [],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "select naming from dual"
+    },
+    {
+      "dimension_id": "마이데이터사업자기관코드",
+      "prompt_label": "마이데이터사업자기관코드",
+      "prmp_kwd": "@@마이데이터사업자기관코드@@",
+      "prmp_kwd_nm": "마이데이터사업자기관코드",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "operator": "IN",
+      "synonyms": [
+        "마이데이터사업자기관코드"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT MYD_BIZPE_IST_CD AS CD\r\n     , MYD_BIZPE_IST_CD AS CD_NAME\r\n   FROM QUADMAX_SDZ.NDMRT206TH\r\n GROUP BY MYD_BIZPE_IST_CD \r\n     , MYD_BIZPE_IST_CD"
+    },
+    {
+      "dimension_id": "마이데이터정보제공자코드",
+      "prompt_label": "마이데이터정보제공자코드",
+      "prmp_kwd": "@@마이데이터정보제공자코드@@",
+      "prmp_kwd_nm": "마이데이터정보제공자코드",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "operator": "IN",
+      "synonyms": [
+        "마이데이터정보제공자코드"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT MYD_INF_OFR_CD AS CD\r\n     , MYD_INF_OFR_CD AS CD_NAME\r\n   FROM QUADMAX_SDZ.NDMRT206TH\r\n GROUP BY MYD_INF_OFR_CD \r\n     , MYD_INF_OFR_CD"
+    },
+    {
+      "dimension_id": "마케팅수신동의여부",
+      "prompt_label": "마케팅수신동의여부",
+      "prmp_kwd": "@@마케팅수신동의여부@@",
+      "prmp_kwd_nm": "마케팅수신동의여부",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "operator": "=",
+      "synonyms": [
+        "마케팅수신동의여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT 'Y' AS CD\n      , 'Y' AS CD_NAME \n  UNION ALL\n SELECT 'N' AS CD\n      , 'N' AS CD_NAME"
+    },
+    {
+      "dimension_id": "문캠페인2",
+      "prompt_label": "문캠페인2",
+      "prmp_kwd": "@@문캠페인2@@",
+      "prmp_kwd_nm": "문캠페인2",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "operator": "IN",
+      "synonyms": [
+        "문캠페인2"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "select A.CAMP_ID\r\n     , A.CAMP_NM \r\n  from quadmax_sdz.z_campaign A\r\n       inner join quadmax_sdz.z_chnl_send_req_cust B\r\n    on A.CAMP_ID = B.CAMP_ID      \r\nwhere 1 = 1\r\nand A.CAMP_END_DT <= date_format(NOW(), '%Y%m%d') /* 이미 종료된 캠페인만 조회*/\r\ngroup by CAMP_ID,CAMP_NM\r\nlimit 10"
+    },
+    {
+      "dimension_id": "정보",
+      "prompt_label": "@@정보@@",
+      "prmp_kwd": "@@정보@@",
+      "prmp_kwd_nm": "@@정보@@",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "operator": "IN",
+      "synonyms": [
+        "@@정보@@"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT * \r\n   FROM TEST A\r\nWHERE A.TEST_ID != NULL"
+    },
+    {
+      "dimension_id": "조건단일",
+      "prompt_label": "조건단일",
+      "prmp_kwd": "@@조건단일@@",
+      "prmp_kwd_nm": "조건단일",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "operator": "IN",
+      "synonyms": [
+        "조건단일"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT\r\n    t1.number,\r\n    CASE\r\n        -- 숫자 0-9 (10개)\r\n        WHEN (t1.number % 76) <= 9 THEN CAST((t1.number % 76) + 1 AS CHAR)\r\n        WHEN (t1.number % 76) = 10 THEN '0'\r\n\r\n        -- 영문 대문자 A-Z (26개)\r\n        WHEN (t1.number % 76) <= 35\r\n            THEN CHAR(ASCII('A') + ((t1.number % 76) - 11))\r\n\r\n        -- 영문 소문자 a-z (26개)\r\n        WHEN (t1.number % 76) <= 61\r\n            THEN CHAR(ASCII('a') + ((t1.number % 76) - 37))\r\n\r\n        -- 한글 가-하 (14개)\r\n        WHEN (t1.number % 76) = 63 THEN '가'\r\n        WHEN (t1.number % 76) = 64 THEN '나'\r\n        WHEN (t1.number % 76) = 65 THEN '다'\r\n        WHEN (t1.number % 76) = 66 THEN '라'\r\n        WHEN (t1.number % 76) = 67 THEN '마'\r\n        WHEN (t1.number % 76) = 68 THEN '바'\r\n        WHEN (t1.number % 76) = 69 THEN '사'\r\n        WHEN (t1.number % 76) = 70 THEN '아'\r\n        WHEN (t1.number % 76) = 71 THEN '자'\r\n        WHEN (t1.number % 76) = 72 THEN '차'\r\n        WHEN (t1.number % 76) = 73 THEN '카'\r\n        WHEN (t1.number % 76) = 74 THEN '타'\r\n        WHEN (t1.number % 76) = 75 THEN '파'\r\n        ELSE '하'\r\n        END as number2\r\nFROM (\r\n         SELECT (@row := @row + 1) as number\r\n         FROM information_schema.tables A\r\n                  CROSS JOIN information_schema.tables B,\r\n              (SELECT @row := 0) AS r\r\n         LIMIT 300000\r\n     ) t1;"
+    },
+    {
+      "dimension_id": "타겟리스트",
+      "prompt_label": "타겟리스트",
+      "prmp_kwd": "@@타겟리스트@@",
+      "prmp_kwd_nm": "타겟리스트",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "operator": "IN",
+      "synonyms": [
+        "타겟리스트"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT TL_ID AS CD , TL_NM AS CD_NAME FROM quadmax_sdz.T_TARGETLIST WHERE TL_ID like 'SV%' ORDER BY TL_ID DESC"
+    },
+    {
+      "dimension_id": "통화코드",
+      "prompt_label": "통화코드",
+      "prmp_kwd": "@@통화코드@@",
+      "prmp_kwd_nm": "통화코드",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "operator": "IN",
+      "synonyms": [
+        "통화코드"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT CUR_CD AS CD\r\n     , CUR_CD AS CD_NAME\r\n   FROM QUADMAX_SDZ.NDMRT206TH\r\n GROUP BY CUR_CD \r\n     , CUR_CD"
+    },
+    {
+      "dimension_id": "신규고객여부SN",
+      "prompt_label": "신규고객여부SN",
+      "prmp_kwd": "@@신규고객여부SN@@",
+      "prmp_kwd_nm": "신규고객여부",
+      "dbms_id": "QUADMAX_SDZ_MART",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [
+        "신규고객여부SN",
+        "신규고객여부"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT A.STATE_GRADE_CD AS CD\r\n     , A.STATE_GRADE_NM AS CD_NAME\r\n  FROM QUADMAX_SDZ_MART.Z_CUST_INFO A\r\n GROUP BY A.STATE_GRADE_CD\r\n        , A.STATE_GRADE_NM"
+    },
+    {
+      "dimension_id": "연령대SN",
+      "prompt_label": "연령대SN",
+      "prmp_kwd": "@@연령대SN@@",
+      "prmp_kwd_nm": "연령대SN",
+      "dbms_id": "QUADMAX_SDZ_MART",
+      "connection": null,
+      "operator": "IN",
+      "synonyms": [
+        "연령대SN"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT A.AGE_DIV1_CD AS CD\r\n     , A.AGE_DIV1_NM AS CD_NAME\r\n  FROM QUADMAX_SDZ_MART.Z_CUST_INFO A\r\n GROUP BY A.AGE_DIV1_CD\r\n        , A.AGE_DIV1_NM"
+    }
+  ]
+}

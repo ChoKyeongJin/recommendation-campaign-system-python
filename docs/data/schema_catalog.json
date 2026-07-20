@@ -1,2746 +1,924 @@
 {
-  "source": "docs/data/local_bootstrap.sql",
+  "source": "live_db_information_schema",
+  "databases": {
+    "quadmax_sdz": "MariaDB (읽기 전용) — 타겟리스트",
+    "CRMDW": "SQL Server smart_quadmax_mart (읽기 전용) — 회원/캠페인/장바구니",
+    "CRMAN": "SQL Server Customer_Analytics (읽기 전용) — 주문. 3-part 이름 Customer_Analytics.dbo.<TABLE>"
+  },
   "policy": {
-    "schema": "auto_extracted_from_ddl",
+    "schema": "extracted_from_live_information_schema",
     "llm": "table_descriptions_only",
-    "human_edit": "important_columns_only",
-    "sql_examples_limit": "10_to_30",
-    "ops_feedback": "add_missing_dictionary_terms_and_examples_from_logs"
+    "human_edit": "important_columns_and_join_hints",
+    "note": "승인된 실DB 사용 테이블만 포함. CRM_CM_PRODUCT 는 CRMDW/CRMAN 동명이표(컬럼 다름)로, 여기서는 CRMDW 버전을 기재하고 CRMAN 버전 컬럼은 설명에 명시."
   },
   "tables": {
-    "campaigns": {
+    "T_TARGETLIST_CUST": {
       "object_type": "table",
-      "description_llm": "캠페인의 기본 속성, 목적, 카테고리, 예산, 기간, 예상 성과와 임베딩용 텍스트를 저장하는 중심 테이블이다.",
-      "description_source": "llm_table_only",
+      "database": "quadmax_sdz",
+      "description_llm": "[quadmax_sdz/MariaDB] 타겟리스트(TL_ID, 'SV%' 패턴)에 속한 대상 고객(CUST_ID) 매핑 테이블. 타겟팅 결과 원본.",
+      "description_source": "live_db_information_schema",
+      "join_hints": [],
       "columns": [
         {
-          "name": "campaign_id",
-          "type": "VARCHAR(20)",
+          "name": "TL_ID",
+          "type": "varchar(16)",
           "nullable": false,
           "primary_key": true,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "타겟리스트 식별자('SV%' 패턴, 예: SV0001). CUST_ID와 함께 PK"
         },
         {
-          "name": "name",
-          "type": "TEXT",
+          "name": "CUST_ID",
+          "type": "varchar(16)",
           "nullable": false,
-          "primary_key": false,
+          "primary_key": true,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "대상 고객 ID(회원번호). CRM 회원키와 매핑"
         },
         {
-          "name": "objective",
-          "type": "VARCHAR(50)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "category",
-          "type": "VARCHAR(50)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "offer",
-          "type": "TEXT",
+          "name": "ETC1",
+          "type": "varchar(512)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "타겟 생성 시 저장하는 부가 속성1(용도 가변, varchar512). 현재 테이블 데이터 0건이라 실제 용도 미확인"
         },
         {
-          "name": "budget_krw",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "start_date",
-          "type": "DATE",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "end_date",
-          "type": "DATE",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "expected_ctr",
-          "type": "NUMERIC(5,2)",
+          "name": "ETC2",
+          "type": "varchar(512)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "부가 속성2(용도 가변)"
         },
         {
-          "name": "expected_cvr",
-          "type": "NUMERIC(5,2)",
+          "name": "ETC3",
+          "type": "varchar(512)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "부가 속성3(용도 가변)"
         },
         {
-          "name": "text_for_embedding",
-          "type": "TEXT",
+          "name": "ETC4",
+          "type": "varchar(512)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "부가 속성4(용도 가변)"
+        },
+        {
+          "name": "ETC5",
+          "type": "varchar(512)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "부가 속성5(용도 가변)"
+        },
+        {
+          "name": "ETC6",
+          "type": "varchar(512)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "부가 속성6(용도 가변)"
+        },
+        {
+          "name": "ETC7",
+          "type": "varchar(512)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "부가 속성7(용도 가변)"
+        },
+        {
+          "name": "ETC8",
+          "type": "varchar(512)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "부가 속성8(용도 가변)"
+        },
+        {
+          "name": "ETC9",
+          "type": "varchar(512)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "부가 속성9(용도 가변)"
         }
       ],
       "primary_key": [
-        "campaign_id"
-      ],
-      "checks": [
-        "CHECK (end_date >= start_date)"
-      ],
-      "foreign_keys": [],
-      "indexes": [
-        {
-          "name": "idx_campaigns_category",
-          "unique": false,
-          "columns": [
-            "category"
-          ]
-        },
-        {
-          "name": "idx_campaigns_objective",
-          "unique": false,
-          "columns": [
-            "objective"
-          ]
-        }
-      ]
-    },
-    "campaign_channels": {
-      "object_type": "table",
-      "description_llm": "각 캠페인이 노출되거나 발송되는 채널을 캠페인별 다중 값으로 저장하는 연결 테이블이다.",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "campaign_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": true,
-          "references": {
-            "table": "campaigns",
-            "column": "campaign_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "channel",
-          "type": "VARCHAR(50)",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "campaign_id",
-        "channel"
+        "TL_ID",
+        "CUST_ID"
       ],
       "checks": [],
       "foreign_keys": [],
       "indexes": []
     },
-    "campaign_target_segments": {
+    "CRM_MB_BASEINFO": {
       "object_type": "table",
-      "description_llm": "캠페인이 겨냥하는 고객 세그먼트를 캠페인별 다중 값으로 저장하는 연결 테이블이다.",
-      "description_source": "llm_table_only",
+      "database": "CRMDW",
+      "description_llm": "[CRMDW/smart_quadmax_mart] 회원 기본정보. 회원상태/성별/연령/주소/수신동의/등급/로그인 등. 회원키 MEMBER_NO(bigint), 문자열 회원번호는 MBR_NO 계열과 매핑.",
+      "description_source": "live_db_information_schema",
+      "join_hints": [
+        "ZIP_CD -> CRM_CM_ADDRESS.ZIP_CODE",
+        "REG_OFFSHOP_ID -> CRM_CM_OFFSHOP.OFFSHOP_ID",
+        "CART_ID(ODS_MALL_OMS_CART) = MEMBER_ID"
+      ],
       "columns": [
         {
-          "name": "campaign_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": true,
-          "references": {
-            "table": "campaigns",
-            "column": "campaign_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "target_segment",
-          "type": "VARCHAR(100)",
+          "name": "MEMBER_NO",
+          "type": "bigint",
           "nullable": false,
           "primary_key": true,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "회원번호(bigint) PK. 온라인몰 회원키. MCS/Z_CAMP의 MBR_NO(varchar)와는 TRY_CAST로 매칭"
+        },
+        {
+          "name": "MEMBER_ID",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "로그인 아이디(예: ssang5478). ODS_MALL_OMS_CART.CART_ID와 동일 값"
+        },
+        {
+          "name": "CUSTOMER_NO",
+          "type": "nchar(13)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "통합 고객번호(nchar13)"
+        },
+        {
+          "name": "MEMBER_STATE_CD",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "회원상태 코드. MEMBER_STATE_CD.NORMAL(정상)/WITHDRAW(탈퇴)/SLEEP(휴면)"
+        },
+        {
+          "name": "REG_TYPE_CD",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "가입유형 코드(예: REG_TYPE_CD.NEW)"
+        },
+        {
+          "name": "BIRTHDAY",
+          "type": "nvarchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "생년월일(YYYYMMDD)"
+        },
+        {
+          "name": "LUNAR_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "음력 생일 여부 Y/N"
+        },
+        {
+          "name": "GENDER_CD",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "성별 코드. GENDER_CD.FEMALE / GENDER_CD.MALE"
+        },
+        {
+          "name": "AGE",
+          "type": "int",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "만 나이(정수)"
+        },
+        {
+          "name": "AGE_DIV1",
+          "type": "nvarchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "연령대 구분1 코드(세분 구간, 예: '07','08')"
+        },
+        {
+          "name": "AGE_DIV2",
+          "type": "nvarchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "연령대 구분2 코드(광의 구간, 예: '04')"
+        },
+        {
+          "name": "FOREIGNER_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "외국인 여부 Y/N"
+        },
+        {
+          "name": "MARRIAGE_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "결혼 여부 Y/N"
+        },
+        {
+          "name": "SPOUSE_BIRTHDAY",
+          "type": "nvarchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "배우자 생일(YYYYMMDD)"
+        },
+        {
+          "name": "WEDDING_DAY",
+          "type": "nvarchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "결혼기념일(YYYYMMDD)"
+        },
+        {
+          "name": "ZIP_CD",
+          "type": "nvarchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "우편번호. CRM_CM_ADDRESS.ZIP_CODE와 조인"
+        },
+        {
+          "name": "SIDO",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "거주 시도(예: 서울, 대구, 경남)"
+        },
+        {
+          "name": "SIGUNGU",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "거주 시군구(예: 성동구, 양산시)"
+        },
+        {
+          "name": "DONG",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "거주 읍면동"
+        },
+        {
+          "name": "ROAD_NAME_ADDRESS",
+          "type": "nvarchar(200)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "도로명 주소"
+        },
+        {
+          "name": "REG_CHANNEL_CD",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "가입 채널(디바이스) 코드. DEVICE_TYPE_CD.PC/POS/MW(모바일웹)/APP"
+        },
+        {
+          "name": "REG_DT",
+          "type": "nvarchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "가입일자(YYYYMMDD)"
+        },
+        {
+          "name": "REG_OFFSHOP_ID",
+          "type": "nvarchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "가입 매장 ID. CRM_CM_OFFSHOP.OFFSHOP_ID와 조인. 온라인 가입은 'O'"
+        },
+        {
+          "name": "OFFSHOP_MEMBER_NO",
+          "type": "nvarchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "오프라인 매장 회원번호"
+        },
+        {
+          "name": "OFFSHOP_CARD_NO",
+          "type": "nvarchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "오프라인 멤버십 카드번호"
+        },
+        {
+          "name": "OFFSHOP_POINT_SWITCH_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "오프라인 포인트 전환 동의 여부 Y/N"
+        },
+        {
+          "name": "MEMBERSHIP_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "멤버십 가입 여부 Y/N"
+        },
+        {
+          "name": "MEMBERSHIP_REG_DT",
+          "type": "nvarchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "멤버십 가입일(YYYYMMDD)"
+        },
+        {
+          "name": "B2E_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "임직원몰(B2E) 회원 여부 Y/N"
+        },
+        {
+          "name": "CHILDREN_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "자녀정보 보유 여부 Y/N"
+        },
+        {
+          "name": "CHILDREN_REG_DT",
+          "type": "nvarchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "자녀정보 등록일(YYYYMMDD)"
+        },
+        {
+          "name": "CHILDRENCARD_TYPE_CD",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "자녀카드 유형 코드"
+        },
+        {
+          "name": "SNS_REG_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "SNS 연동 가입 여부 Y/N"
+        },
+        {
+          "name": "SNS_CHANNEL_CD",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "SNS 채널 코드(카카오/네이버 등)"
+        },
+        {
+          "name": "EMPLOYEE_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "임직원 여부 Y/N"
+        },
+        {
+          "name": "PREMIUM_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "프리미엄 회원 여부 Y/N"
+        },
+        {
+          "name": "BLACKLIST_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "블랙리스트 여부 Y/N. 발송 대상에서 제외(관례상 ISNULL(,'N')='N')"
+        },
+        {
+          "name": "DEPOSIT_BALANCE_AMT",
+          "type": "bigint",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "예치금 잔액(원, bigint)"
+        },
+        {
+          "name": "CARROT_BALANCE_AMT",
+          "type": "bigint",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "당근(적립금) 잔액(원, bigint)"
+        },
+        {
+          "name": "AGREE_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "정보활용/마케팅 동의 여부 Y/N"
+        },
+        {
+          "name": "EMAIL_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "이메일 수신동의 여부 Y/N"
+        },
+        {
+          "name": "SMS_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "SMS 수신동의 여부 Y/N"
+        },
+        {
+          "name": "APP_PUSH_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "앱푸시 수신동의 여부 Y/N"
+        },
+        {
+          "name": "BABY_YN_CD",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "영유아 자녀 여부 코드"
+        },
+        {
+          "name": "FIRST_LOGIN_DATE",
+          "type": "nvarchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "최초 로그인 일자(YYYYMMDD)"
+        },
+        {
+          "name": "FIRST_LOGIN_CHANNEL",
+          "type": "nvarchar(200)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "최초 로그인 채널"
+        },
+        {
+          "name": "LAST_LOGIN_DATE",
+          "type": "nvarchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "최종 로그인 일자(YYYYMMDD). 휴면 판정 기준"
+        },
+        {
+          "name": "LAST_LOGIN_CHANNEL",
+          "type": "nvarchar(200)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "최종 로그인 채널"
+        },
+        {
+          "name": "TOTAL_LOGIN_DAYS",
+          "type": "int",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "누적 로그인 일수"
+        },
+        {
+          "name": "TOTAL_LOGIN_CNT",
+          "type": "int",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "누적 로그인 횟수"
+        },
+        {
+          "name": "ACTIVITY_MEMBER_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "활동 회원 여부 Y/N"
+        },
+        {
+          "name": "SLEEP_MEMBER_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "휴면 회원 여부 Y/N"
+        },
+        {
+          "name": "BULK_SALE_MEMBER_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "대량구매(도매) 회원 여부 Y/N"
+        },
+        {
+          "name": "SITE_MEMBER_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "쇼핑몰(사이트) 전용 회원 여부 Y/N. 발송 제외 조건에 사용"
+        },
+        {
+          "name": "LOAD_DATE",
+          "type": "nvarchar(8)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "데이터 적재 일자(YYYYMMDD, 문자열)"
+        },
+        {
+          "name": "LOAD_TIME",
+          "type": "nvarchar(8)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "데이터 적재 시각(HHMMSS, 문자열)"
+        },
+        {
+          "name": "AGREE_DT",
+          "type": "nvarchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "정보활용 동의일(YYYYMMDD)"
+        },
+        {
+          "name": "AGREE_WITHDRAW_DT",
+          "type": "nvarchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "동의 철회일(YYYYMMDD)"
+        },
+        {
+          "name": "COOPCO_TYPE_CD",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "제휴사 유형 코드"
+        },
+        {
+          "name": "COOPCO_CD",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "제휴사 코드"
+        },
+        {
+          "name": "JOINDT",
+          "type": "nvarchar(9)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "가입일(YYYYMMDD, 9자리 여유)"
+        },
+        {
+          "name": "TRX_CHANNEL_CD",
+          "type": "varchar(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "주거래 채널 코드(예: ELECTRO=가전)"
+        },
+        {
+          "name": "ON_OFF_CD",
+          "type": "varchar(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "온/오프라인 주거래 구분(예: 'O'=온라인)"
+        },
+        {
+          "name": "EMART_GRADE_CD",
+          "type": "varchar(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "회원 등급 코드. MEM_GRADE_CD.WELCOME/FAMILY/SILVER/GOLD/VIP"
+        },
+        {
+          "name": "TRY_BRAND_CD",
+          "type": "varchar(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "관심/체험 브랜드 코드"
+        },
+        {
+          "name": "MIRAE_SHOP",
+          "type": "varchar(50)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "미래(제휴) 매장 코드(예: M4)"
+        },
+        {
+          "name": "NEPA_GRADE_CD",
+          "type": "varchar(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "네파(제휴 브랜드) 등급 코드"
+        },
+        {
+          "name": "NEPA_CHANNEL_CD",
+          "type": "varchar(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "네파 채널 코드"
+        },
+        {
+          "name": "MAIN_USE_STR_CD",
+          "type": "varchar(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "주 이용 매장 코드"
+        },
+        {
+          "name": "K_SHOP",
+          "type": "varchar(30)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "K샵(제휴) 구분값(예: 대치)"
+        },
+        {
+          "name": "DISTANCE_DRIVEN",
+          "type": "bigint",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "주행거리(제휴 차량, bigint)"
+        },
+        {
+          "name": "DISTANCE_DRIVEN2",
+          "type": "bigint",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "주행거리2(bigint)"
+        },
+        {
+          "name": "SCORE_CD",
+          "type": "varchar(2)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "스코어/등급 구간 코드(예: 01,02,05)"
+        },
+        {
+          "name": "RSRV_MTHD_CD",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "예약(적립) 방식 코드"
         }
       ],
       "primary_key": [
-        "campaign_id",
-        "target_segment"
+        "MEMBER_NO"
       ],
       "checks": [],
       "foreign_keys": [],
       "indexes": []
     },
-    "campaign_keywords": {
+    "CRM_CM_ADDRESS": {
       "object_type": "table",
-      "description_llm": "캠페인 검색과 의미 매칭에 사용할 키워드를 캠페인별로 저장하는 연결 테이블이다.",
-      "description_source": "llm_table_only",
+      "database": "CRMDW",
+      "description_llm": "[CRMDW/smart_quadmax_mart] 우편번호 기준 주소 마스터(시도/시군구/동). CRM_MB_BASEINFO.ZIP_CD = ZIP_CODE 로 조인.",
+      "description_source": "live_db_information_schema",
+      "join_hints": [
+        "ZIP_CODE = CRM_MB_BASEINFO.ZIP_CD"
+      ],
       "columns": [
         {
-          "name": "campaign_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": true,
-          "references": {
-            "table": "campaigns",
-            "column": "campaign_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "keyword",
-          "type": "VARCHAR(100)",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "campaign_id",
-        "keyword"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": []
-    },
-    "campaign_message_examples": {
-      "object_type": "table",
-      "description_llm": "",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "example_id",
-          "type": "VARCHAR(30)",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "campaign_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": {
-            "table": "campaigns",
-            "column": "campaign_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "channel",
-          "type": "VARCHAR(50)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "emphasis_type",
-          "type": "VARCHAR(50)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "message_text",
-          "type": "TEXT",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "brand_tone",
-          "type": "VARCHAR(100)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "created_at",
-          "type": "TIMESTAMP",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "example_id"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": [
-        {
-          "name": "idx_campaign_message_examples_campaign",
-          "unique": false,
-          "columns": [
-            "campaign_id"
-          ]
-        },
-        {
-          "name": "idx_campaign_message_examples_channel",
-          "unique": false,
-          "columns": [
-            "channel"
-          ]
-        }
-      ]
-    },
-    "users": {
-      "object_type": "table",
-      "description_llm": "사용자의 인구통계, 지역, 라이프사이클, 구매 지표, 가격 민감도, LTV 세그먼트와 임베딩용 텍스트를 저장하는 중심 테이블이다.",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "user_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "age",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "gender",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "region",
-          "type": "VARCHAR(50)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "lifecycle",
-          "type": "VARCHAR(50)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "avg_order_value_krw",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "purchase_count_90d",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "last_active_days",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "price_sensitivity",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "predicted_ltv_segment",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "text_for_embedding",
-          "type": "TEXT",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "user_id"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": [
-        {
-          "name": "idx_users_lifecycle",
-          "unique": false,
-          "columns": [
-            "lifecycle"
-          ]
-        },
-        {
-          "name": "idx_users_region",
-          "unique": false,
-          "columns": [
-            "region"
-          ]
-        }
-      ]
-    },
-    "user_interests": {
-      "object_type": "table",
-      "description_llm": "사용자의 관심사를 사용자별 다중 값으로 저장해 캠페인 카테고리와 세그먼트 매칭에 활용하는 연결 테이블이다.",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "user_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": true,
-          "references": {
-            "table": "users",
-            "column": "user_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "interest",
-          "type": "VARCHAR(100)",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "user_id",
-        "interest"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": []
-    },
-    "user_preferred_channels": {
-      "object_type": "table",
-      "description_llm": "사용자가 선호하는 커뮤니케이션 채널을 사용자별 다중 값으로 저장하는 연결 테이블이다.",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "user_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": true,
-          "references": {
-            "table": "users",
-            "column": "user_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "preferred_channel",
-          "type": "VARCHAR(50)",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "user_id",
-        "preferred_channel"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": []
-    },
-    "user_recent_behaviors": {
-      "object_type": "table",
-      "description_llm": "최근 조회, 구매, 이탈, 인증 등 추천 판단에 필요한 사용자 행동 신호를 사용자별 다중 값으로 저장하는 연결 테이블이다.",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "user_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": true,
-          "references": {
-            "table": "users",
-            "column": "user_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "behavior",
-          "type": "VARCHAR(100)",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "user_id",
-        "behavior"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": []
-    },
-    "recommendation_edges": {
-      "object_type": "table",
-      "description_llm": "사용자와 캠페인 사이의 추천 관계, 추천 사유, 추천 강도 라벨을 저장하는 edge 테이블이다.",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "user_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": true,
-          "references": {
-            "table": "users",
-            "column": "user_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "campaign_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": true,
-          "references": {
-            "table": "campaigns",
-            "column": "campaign_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "reason",
-          "type": "TEXT",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "label",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "user_id",
-        "campaign_id"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": [
-        {
-          "name": "idx_recommendation_edges_campaign",
-          "unique": false,
-          "columns": [
-            "campaign_id"
-          ]
-        }
-      ]
-    },
-    "campaign_target_audiences": {
-      "object_type": "table",
-      "description_llm": "",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "audience_id",
-          "type": "BIGSERIAL",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "audience_key",
-          "type": "VARCHAR(64)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "prompt",
-          "type": "TEXT",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "query_parser",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "request_options",
-          "type": "JSONB",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "generated_sql",
-          "type": "TEXT",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "sql_hash",
-          "type": "CHAR(64)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "query_plan",
-          "type": "JSONB",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "status",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "member_count",
-          "type": "BIGINT",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "target_customer_count",
-          "type": "BIGINT",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "target_campaign_count",
-          "type": "BIGINT",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "failure_reason",
-          "type": "TEXT",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "created_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "completed_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "expires_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "audience_id"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": [
-        {
-          "name": "idx_campaign_target_audiences_status_created",
-          "unique": false,
-          "columns": [
-            "status",
-            "created_at"
-          ]
-        }
-      ]
-    },
-    "campaign_target_audience_members": {
-      "object_type": "table",
-      "description_llm": "",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "audience_id",
-          "type": "BIGINT",
-          "nullable": false,
-          "primary_key": true,
-          "references": {
-            "table": "campaign_target_audiences",
-            "column": "audience_id"
-          },
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "member_id",
-          "type": "BIGSERIAL",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "user_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "campaign_id",
-          "type": "VARCHAR(20)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "created_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "audience_id",
-        "member_id"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": [
-        {
-          "name": "idx_campaign_target_audience_members_user",
-          "unique": false,
-          "columns": [
-            "audience_id",
-            "user_id"
-          ]
-        }
-      ]
-    },
-    "campaign_query_failure_logs": {
-      "object_type": "table",
-      "description_llm": "GraphRAG/API 실행 실패를 운영 분석과 사전 보강에 활용하기 위해 누적 저장하는 로그 테이블이다.",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "failure_log_id",
-          "type": "BIGSERIAL",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": false,
-          "human_note": "실패 로그 식별자다."
-        },
-        {
-          "name": "endpoint",
-          "type": "VARCHAR(100)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "실패가 발생한 API 엔드포인트 이름이다."
-        },
-        {
-          "name": "prompt",
-          "type": "TEXT",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "사용자가 입력한 원본 자연어 프롬프트다."
-        },
-        {
-          "name": "query_parser",
-          "type": "VARCHAR(20)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "rules, auto, llm 등 Query Plan 생성 모드다."
-        },
-        {
-          "name": "api_status",
-          "type": "VARCHAR(40)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "success, needs_clarification, no_verified_sql 등 API 응답 상태다."
-        },
-        {
-          "name": "failure_stage",
-          "type": "VARCHAR(60)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "startup, retrieval, sql_generation, database_execution, message_generation 등 실패 단계다."
-        },
-        {
-          "name": "failure_reason",
-          "type": "TEXT",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "실패 원인 코드 또는 요약이다."
-        },
-        {
-          "name": "error_detail",
-          "type": "TEXT",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "예외 메시지나 DB 실행 오류 상세다."
-        },
-        {
-          "name": "generated_sql",
-          "type": "TEXT",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "SQL이 생성된 뒤 실패한 경우 해당 SQL 본문이다."
-        },
-        {
-          "name": "sql_hash",
-          "type": "CHAR(64)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "generated_sql의 SHA-256 해시다."
-        },
-        {
-          "name": "request_options",
-          "type": "JSONB",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "검색 top-k, 메시지 채널, SQL 실행 여부 등 요청 옵션 snapshot이다."
-        },
-        {
-          "name": "query_plan",
-          "type": "JSONB",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "실패 당시 Query Plan snapshot이다."
-        },
-        {
-          "name": "missing_input_conditions",
-          "type": "JSONB",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "필수 조건 부족 또는 모호성으로 SQL 생성을 멈춘 조건 목록이다."
-        },
-        {
-          "name": "clarification_questions",
-          "type": "JSONB",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "사용자에게 되물을 질문 목록이다."
-        },
-        {
-          "name": "selected_candidate",
-          "type": "JSONB",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "선택되었거나 가장 가까웠던 SQL 후보와 검증 결과다."
-        },
-        {
-          "name": "stage_log",
-          "type": "JSONB",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "Query Planning부터 SQL Guard까지 단계별 로그다."
-        },
-        {
-          "name": "context_metadata",
-          "type": "JSONB",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "검색 context 조립 결과의 메타데이터다."
-        },
-        {
-          "name": "database_execution",
-          "type": "JSONB",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "PostgreSQL 실행 또는 타겟 오디언스 저장 실패 요약이다."
-        },
-        {
-          "name": "message_generation",
-          "type": "JSONB",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "LMS/RCS 메시지 생성 실패와 검증 요약이다."
-        },
-        {
-          "name": "created_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": "실패 로그가 저장된 시각이다."
-        }
-      ],
-      "primary_key": [
-        "failure_log_id"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": [
-        {
-          "name": "idx_campaign_query_failure_logs_created",
-          "unique": false,
-          "columns": [
-            "created_at DESC"
-          ]
-        },
-        {
-          "name": "idx_campaign_query_failure_logs_reason",
-          "unique": false,
-          "columns": [
-            "failure_stage",
-            "failure_reason",
-            "created_at DESC"
-          ]
-        },
-        {
-          "name": "idx_campaign_query_failure_logs_status",
-          "unique": false,
-          "columns": [
-            "api_status",
-            "created_at DESC"
-          ]
-        }
-      ]
-    },
-    "campaign_prompt_templates": {
-      "object_type": "table",
-      "description_llm": "",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "name",
-          "type": "VARCHAR(120)",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "content",
-          "type": "TEXT",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "description",
-          "type": "TEXT",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "updated_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "name"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": []
-    },
-    "campaign_policies": {
-      "object_type": "table",
-      "description_llm": "",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "name",
-          "type": "VARCHAR(120)",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "content",
-          "type": "JSONB",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "description",
-          "type": "TEXT",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "updated_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "name"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": []
-    },
-    "campaign_channel_messages": {
-      "object_type": "table",
-      "description_llm": "",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "message_id",
-          "type": "BIGSERIAL",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "campaign_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "channel",
-          "type": "VARCHAR(50)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "send_type",
-          "type": "VARCHAR(10)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "message_body",
-          "type": "TEXT",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "sent_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "send_status",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "provider_message_id",
-          "type": "VARCHAR(100)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "created_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "message_id"
-      ],
-      "checks": [],
-      "foreign_keys": [
-        {
-          "columns": [
-            "campaign_id",
-            "channel"
-          ],
-          "references": {
-            "table": "campaign_channels",
-            "columns": [
-              "campaign_id",
-              "channel"
-            ]
-          }
-        }
-      ],
-      "indexes": [
-        {
-          "name": "idx_campaign_channel_messages_campaign",
-          "unique": false,
-          "columns": [
-            "campaign_id"
-          ]
-        },
-        {
-          "name": "idx_campaign_channel_messages_sent_at",
-          "unique": false,
-          "columns": [
-            "sent_at"
-          ]
-        }
-      ]
-    },
-    "campaign_experiments": {
-      "object_type": "table",
-      "description_llm": "",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "experiment_id",
-          "type": "BIGSERIAL",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "campaign_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": {
-            "table": "campaigns",
-            "column": "campaign_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "experiment_name",
-          "type": "VARCHAR(200)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "channel",
-          "type": "VARCHAR(50)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "status",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "assignment_method",
-          "type": "VARCHAR(30)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "primary_metric",
-          "type": "VARCHAR(30)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "started_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "ended_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "created_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "updated_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "experiment_id"
-      ],
-      "checks": [],
-      "foreign_keys": [
-        {
-          "columns": [
-            "campaign_id",
-            "channel"
-          ],
-          "references": {
-            "table": "campaign_channels",
-            "columns": [
-              "campaign_id",
-              "channel"
-            ]
-          }
-        }
-      ],
-      "indexes": [
-        {
-          "name": "idx_campaign_experiments_campaign_status",
-          "unique": false,
-          "columns": [
-            "campaign_id",
-            "status"
-          ]
-        }
-      ]
-    },
-    "campaign_message_variants": {
-      "object_type": "table",
-      "description_llm": "",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "variant_id",
-          "type": "BIGSERIAL",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "experiment_id",
-          "type": "BIGINT",
-          "nullable": false,
-          "primary_key": false,
-          "references": {
-            "table": "campaign_experiments",
-            "column": "experiment_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "variant_code",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "message_name",
-          "type": "VARCHAR(100)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "message_body",
-          "type": "TEXT",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "landing_url",
-          "type": "TEXT",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "allocation_weight",
-          "type": "NUMERIC(7,4)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "is_control",
-          "type": "BOOLEAN",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "ai_features",
-          "type": "JSONB",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "created_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "variant_id"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": [
-        {
-          "name": "idx_campaign_message_variants_experiment",
-          "unique": false,
-          "columns": [
-            "experiment_id"
-          ]
-        }
-      ]
-    },
-    "campaign_message_deliveries": {
-      "object_type": "table",
-      "description_llm": "",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "delivery_id",
-          "type": "BIGSERIAL",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "experiment_id",
-          "type": "BIGINT",
-          "nullable": false,
-          "primary_key": false,
-          "references": {
-            "table": "campaign_experiments",
-            "column": "experiment_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "variant_id",
-          "type": "BIGINT",
-          "nullable": false,
-          "primary_key": false,
-          "references": {
-            "table": "campaign_message_variants",
-            "column": "variant_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "campaign_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": {
-            "table": "campaigns",
-            "column": "campaign_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "user_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": {
-            "table": "users",
-            "column": "user_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "channel",
-          "type": "VARCHAR(50)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "assignment_source",
-          "type": "VARCHAR(30)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "model_version",
-          "type": "VARCHAR(100)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "predicted_click_probability",
-          "type": "NUMERIC(8,7)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "provider_message_id",
-          "type": "VARCHAR(100)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "assigned_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "requested_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "sent_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "final_status",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "targeting_snapshot",
-          "type": "JSONB",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "created_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "delivery_id"
-      ],
-      "checks": [],
-      "foreign_keys": [
-        {
-          "columns": [
-            "campaign_id",
-            "channel"
-          ],
-          "references": {
-            "table": "campaign_channels",
-            "columns": [
-              "campaign_id",
-              "channel"
-            ]
-          }
-        }
-      ],
-      "indexes": [
-        {
-          "name": "idx_campaign_message_deliveries_campaign",
-          "unique": false,
-          "columns": [
-            "campaign_id"
-          ]
-        },
-        {
-          "name": "idx_campaign_message_deliveries_experiment_variant",
-          "unique": false,
-          "columns": [
-            "experiment_id",
-            "variant_id"
-          ]
-        },
-        {
-          "name": "idx_campaign_message_deliveries_user",
-          "unique": false,
-          "columns": [
-            "user_id"
-          ]
-        },
-        {
-          "name": "idx_campaign_message_deliveries_sent_at",
-          "unique": false,
-          "columns": [
-            "sent_at"
-          ]
-        }
-      ]
-    },
-    "campaign_message_events": {
-      "object_type": "table",
-      "description_llm": "",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "event_id",
-          "type": "BIGSERIAL",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "delivery_id",
-          "type": "BIGINT",
-          "nullable": false,
-          "primary_key": false,
-          "references": {
-            "table": "campaign_message_deliveries",
-            "column": "delivery_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "event_type",
-          "type": "VARCHAR(30)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "event_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "event_key",
-          "type": "VARCHAR(200)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "provider_event_id",
-          "type": "VARCHAR(150)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "click_url",
-          "type": "TEXT",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "conversion_type",
-          "type": "VARCHAR(50)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "conversion_value_krw",
-          "type": "NUMERIC(14,2)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "device_type",
-          "type": "VARCHAR(30)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "os_name",
-          "type": "VARCHAR(50)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "browser_name",
-          "type": "VARCHAR(50)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "ip_hash",
-          "type": "VARCHAR(128)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "user_agent",
-          "type": "TEXT",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "event_properties",
-          "type": "JSONB",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "received_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "event_id"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": [
-        {
-          "name": "idx_campaign_message_events_delivery_type_time",
-          "unique": false,
-          "columns": [
-            "delivery_id",
-            "event_type",
-            "event_at"
-          ]
-        },
-        {
-          "name": "idx_campaign_message_events_type_time",
-          "unique": false,
-          "columns": [
-            "event_type",
-            "event_at"
-          ]
-        }
-      ]
-    },
-    "shopping_carts": {
-      "object_type": "table",
-      "description_llm": "",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "cart_id",
-          "type": "BIGSERIAL",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "user_id",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": {
-            "table": "users",
-            "column": "user_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "cart_status",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "source_channel",
-          "type": "VARCHAR(30)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "total_quantity",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "original_amount_krw",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "discount_amount_krw",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "shipping_fee_krw",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "total_amount_krw",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "purchase_completed",
-          "type": "BOOLEAN",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "abandonment_reason",
-          "type": "VARCHAR(40)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "created_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "last_activity_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "abandoned_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "purchased_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "expires_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "updated_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "cart_id"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": [
-        {
-          "name": "idx_shopping_carts_user_status",
-          "unique": false,
-          "columns": [
-            "user_id",
-            "cart_status"
-          ]
-        },
-        {
-          "name": "idx_shopping_carts_last_activity",
-          "unique": false,
-          "columns": [
-            "last_activity_at DESC"
-          ]
-        }
-      ]
-    },
-    "shopping_cart_items": {
-      "object_type": "table",
-      "description_llm": "",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "cart_item_id",
-          "type": "BIGSERIAL",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "cart_id",
-          "type": "BIGINT",
-          "nullable": false,
-          "primary_key": false,
-          "references": {
-            "table": "shopping_carts",
-            "column": "cart_id"
-          },
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "product_id",
-          "type": "VARCHAR(30)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "product_name",
-          "type": "VARCHAR(200)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "category",
-          "type": "VARCHAR(100)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "brand",
-          "type": "VARCHAR(100)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "quantity",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "unit_price_krw",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "discount_price_krw",
-          "type": "INTEGER",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "final_unit_price_krw",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "inventory_quantity",
-          "type": "INTEGER",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "inventory_status",
-          "type": "VARCHAR(20)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "coupon_available",
-          "type": "BOOLEAN",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "coupon_code",
-          "type": "VARCHAR(50)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "coupon_expire_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "wishlist_flag",
-          "type": "BOOLEAN",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "viewed_count",
-          "type": "INTEGER",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "added_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "last_viewed_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "removed_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "created_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "cart_item_id"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": [
-        {
-          "name": "idx_shopping_cart_items_cart",
-          "unique": false,
-          "columns": [
-            "cart_id"
-          ]
-        },
-        {
-          "name": "idx_shopping_cart_items_category",
-          "unique": false,
-          "columns": [
-            "category"
-          ]
-        },
-        {
-          "name": "idx_shopping_cart_items_inventory",
-          "unique": false,
-          "columns": [
-            "inventory_status",
-            "coupon_available"
-          ]
-        }
-      ]
-    },
-    "cart_reminder_history": {
-      "object_type": "table",
-      "description_llm": "",
-      "description_source": "llm_table_only",
-      "columns": [
-        {
-          "name": "reminder_id",
-          "type": "BIGSERIAL",
-          "nullable": false,
-          "primary_key": true,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "cart_id",
-          "type": "BIGINT",
-          "nullable": false,
-          "primary_key": false,
-          "references": {
-            "table": "shopping_carts",
-            "column": "cart_id"
-          },
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "campaign_id",
-          "type": "VARCHAR(20)",
-          "nullable": true,
-          "primary_key": false,
-          "references": {
-            "table": "campaigns",
-            "column": "campaign_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "delivery_id",
-          "type": "BIGINT",
-          "nullable": true,
-          "primary_key": false,
-          "references": {
-            "table": "campaign_message_deliveries",
-            "column": "delivery_id"
-          },
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "channel",
-          "type": "VARCHAR(30)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "reminder_sequence",
-          "type": "SMALLINT",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "reminder_type",
-          "type": "VARCHAR(30)",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "coupon_code",
-          "type": "VARCHAR(50)",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "sent_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "delivered_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "clicked_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "converted_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "conversion_order_id",
-          "type": "VARCHAR(50)",
+          "name": "DIV",
+          "type": "nvarchar(10)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "주소 세트 구분 코드(예: NEW). 조인 시 DIV_ID 조건으로 사용되기도 함"
         },
         {
-          "name": "conversion_value_krw",
-          "type": "INTEGER",
+          "name": "ZIP_CODE",
+          "type": "nvarchar(10)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "우편번호. CRM_MB_BASEINFO.ZIP_CD와 조인 키"
         },
         {
-          "name": "created_at",
-          "type": "TIMESTAMPTZ",
-          "nullable": false,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        }
-      ],
-      "primary_key": [
-        "reminder_id"
-      ],
-      "checks": [],
-      "foreign_keys": [],
-      "indexes": [
-        {
-          "name": "idx_cart_reminder_history_cart_sent",
-          "unique": false,
-          "columns": [
-            "cart_id",
-            "sent_at DESC"
-          ]
-        }
-      ]
-    },
-    "v_campaign_variant_metrics": {
-      "object_type": "view",
-      "description_llm": "메시지 variant별 발송, 도달, 노출, 클릭, 전환, CTR/CVR, 매출 지표를 집계하는 분석 view다.",
-      "description_source": "ddl_view",
-      "columns": [
-        {
-          "name": "campaign_id",
-          "type": "VIEW_COLUMN",
+          "name": "SIDO",
+          "type": "nvarchar(50)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "시도명(한글)"
         },
         {
-          "name": "campaign_name",
-          "type": "VIEW_COLUMN",
+          "name": "SIDO_ENG",
+          "type": "nvarchar(50)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "experiment_id",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "experiment_name",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "variant_id",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "variant_code",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "message_name",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
+          "human_note": "시도명(영문)"
         },
         {
-          "name": "channel",
-          "type": "VIEW_COLUMN",
+          "name": "SIGUNGU",
+          "type": "nvarchar(50)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "assigned_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "sent_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "delivered_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "impression_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "open_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "click_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
+          "human_note": "시군구명(한글)"
         },
         {
-          "name": "conversion_count",
-          "type": "VIEW_COLUMN",
+          "name": "SIGUNGU_ENG",
+          "type": "nvarchar(50)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "시군구명(영문)"
         },
         {
-          "name": "delivery_rate_pct",
-          "type": "VIEW_COLUMN",
+          "name": "DONG",
+          "type": "nvarchar(50)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "읍면동명"
         },
         {
-          "name": "impression_rate_pct",
-          "type": "VIEW_COLUMN",
+          "name": "ROAD_ADDR",
+          "type": "nvarchar(50)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "도로명 주소"
         },
         {
-          "name": "open_rate_pct",
-          "type": "VIEW_COLUMN",
+          "name": "ROAD_ADDR_ENG",
+          "type": "nvarchar(50)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "ctr_pct",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
+          "human_note": "도로명 주소(영문)"
         },
         {
-          "name": "delivered_ctr_pct",
-          "type": "VIEW_COLUMN",
+          "name": "LOAD_DATE",
+          "type": "nvarchar(8)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "데이터 적재 일자(YYYYMMDD, 문자열)"
         },
         {
-          "name": "click_to_conversion_rate_pct",
-          "type": "VIEW_COLUMN",
+          "name": "LOAD_TIME",
+          "type": "nvarchar(8)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "cvr_pct",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "revenue_krw",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
+          "human_note": "데이터 적재 시각(HHMMSS, 문자열)"
         }
       ],
       "primary_key": [],
@@ -2748,145 +926,932 @@
       "foreign_keys": [],
       "indexes": []
     },
-    "v_campaign_segment_metrics": {
-      "object_type": "view",
-      "description_llm": "성별, 연령대, 지역, 라이프사이클별 메시지 성과와 CTR/CVR을 집계하는 분석 view다.",
-      "description_source": "ddl_view",
+    "CRM_CM_OFFSHOP": {
+      "object_type": "table",
+      "database": "CRMDW",
+      "description_llm": "[CRMDW/smart_quadmax_mart] 오프라인 매장(가입/거래 매장) 마스터. CRM_MB_BASEINFO.REG_OFFSHOP_ID = OFFSHOP_ID 로 조인.",
+      "description_source": "live_db_information_schema",
+      "join_hints": [
+        "OFFSHOP_ID = CRM_MB_BASEINFO.REG_OFFSHOP_ID"
+      ],
       "columns": [
         {
-          "name": "experiment_id",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
+          "name": "OFFSHOP_ID",
+          "type": "nvarchar(20)",
+          "nullable": false,
+          "primary_key": true,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "매장 ID PK(예: CAA1). CRM_MB_BASEINFO.REG_OFFSHOP_ID와 조인"
         },
         {
-          "name": "experiment_name",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "variant_id",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "variant_code",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "gender",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "age_group",
-          "type": "VIEW_COLUMN",
+          "name": "OFFSHOP_TYPE_CD",
+          "type": "nvarchar(100)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "매장 유형 코드"
         },
         {
-          "name": "region",
-          "type": "VIEW_COLUMN",
+          "name": "OFFSHOP_TYPE_NAME",
+          "type": "nvarchar(300)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "매장 유형명(예: 직영점, 가맹점)"
+        },
+        {
+          "name": "OFFSHOP_NAME",
+          "type": "nvarchar(200)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "매장명(예: 본점, 잠실점)"
         },
         {
-          "name": "lifecycle",
-          "type": "VIEW_COLUMN",
+          "name": "OFFSHOP_AFFILIATION",
+          "type": "nvarchar(200)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "매장 소속(예: 직영점, 가맹점)"
+        },
+        {
+          "name": "ZIP_CD",
+          "type": "nvarchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "매장 우편번호"
+        },
+        {
+          "name": "SIDO",
+          "type": "nvarchar(250)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "매장 소재 시도"
         },
         {
-          "name": "assigned_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "delivered_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "impression_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "click_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "conversion_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "ctr_pct",
-          "type": "VIEW_COLUMN",
+          "name": "SIGUNGU",
+          "type": "nvarchar(250)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "매장 소재 시군구"
         },
         {
-          "name": "click_to_conversion_rate_pct",
-          "type": "VIEW_COLUMN",
+          "name": "DONG",
+          "type": "nvarchar(250)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "매장 소재 읍면동"
+        },
+        {
+          "name": "ADDRESS",
+          "type": "nvarchar(250)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "매장 지번 주소"
+        },
+        {
+          "name": "ROAD_NAME_ADDRESS",
+          "type": "nvarchar(200)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "매장 도로명 주소"
+        },
+        {
+          "name": "OFFSHOP_PICKUP_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "픽업 가능 매장 여부 Y/N"
+        },
+        {
+          "name": "LATITUDE",
+          "type": "decimal(14,8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "위도(decimal14,8)"
+        },
+        {
+          "name": "LONGITUDE",
+          "type": "decimal(14,8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "경도(decimal14,8)"
+        },
+        {
+          "name": "OFFSHOP_STATE_CD",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "매장 상태 코드"
+        },
+        {
+          "name": "OFFSHOP_STATE_NAME",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "매장 상태명(예: 운영)"
+        },
+        {
+          "name": "ERP_BRAND_ID",
+          "type": "nvarchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "ERP 브랜드 ID(예: A)"
+        },
+        {
+          "name": "POS_USER_REG_YN",
+          "type": "nchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "POS 사용자 등록 여부 Y/N"
+        },
+        {
+          "name": "CLOSE_DATE",
+          "type": "nvarchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "폐점일(YYYYMMDD)"
+        },
+        {
+          "name": "TRANSFER_OFFSHOP_ID",
+          "type": "nvarchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "이관(양수) 매장 ID"
+        },
+        {
+          "name": "TRANSFER_OFFSHOP_NAME",
+          "type": "nvarchar(200)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "이관 매장명"
+        },
+        {
+          "name": "LOAD_DATE",
+          "type": "nvarchar(8)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "데이터 적재 일자(YYYYMMDD, 문자열)"
+        },
+        {
+          "name": "LOAD_TIME",
+          "type": "nvarchar(8)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "데이터 적재 시각(HHMMSS, 문자열)"
+        },
+        {
+          "name": "COMP",
+          "type": "varchar(10)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "회사/법인 구분값"
+        }
+      ],
+      "primary_key": [
+        "OFFSHOP_ID"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "Z_CAMPAIGN": {
+      "object_type": "table",
+      "database": "CRMDW",
+      "description_llm": "[CRMDW/smart_quadmax_mart] 캠페인 마스터(실행회차 단위). 캠페인명/유형/목적/기간/취소여부. 키 (CAMP_ID, CAMP_EXEC_NO).",
+      "description_source": "live_db_information_schema",
+      "join_hints": [
+        "(CAMP_ID, CAMP_EXEC_NO) = Z_CAMP_CELL / Z_CAMP_MBR / MCS_CAMP_MBR_RSPN_FT"
+      ],
+      "columns": [
+        {
+          "name": "CAMP_ID",
+          "type": "varchar(16)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": "캠페인 ID PK(예: C17001J)"
+        },
+        {
+          "name": "CAMP_EXEC_NO",
+          "type": "int",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": "캠페인 실행회차 PK(1부터). 같은 CAMP_ID의 재실행 구분"
+        },
+        {
+          "name": "CAMP_NAME",
+          "type": "varchar(250)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "캠페인명(예: 장바구니 주문유도 캠페인)"
+        },
+        {
+          "name": "CAMP_GP_ID",
+          "type": "varchar(16)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "캠페인 그룹 ID"
+        },
+        {
+          "name": "CAMP_GP_NAME",
+          "type": "varchar(250)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "캠페인 그룹명"
+        },
+        {
+          "name": "CAMP_TYPE_CD",
+          "type": "varchar(10)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "캠페인 유형 코드(예: PC=판촉, OC=오퍼)"
+        },
+        {
+          "name": "CAMP_CATE_DIR_ID",
+          "type": "int",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "캠페인 분류(디렉토리) ID"
+        },
+        {
+          "name": "CAMP_TMPLT_ID",
+          "type": "varchar(16)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "캠페인 템플릿 ID"
+        },
+        {
+          "name": "CAMP_EXEC_MAIN_GRP_CD",
+          "type": "varchar(4)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "실행 메인 그룹 코드"
+        },
+        {
+          "name": "CAMP_EXEC_MAIN_CD",
+          "type": "varchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "실행 메인 코드"
+        },
+        {
+          "name": "CAMP_SDATE",
+          "type": "varchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "캠페인 시작일(YYYYMMDD)"
+        },
+        {
+          "name": "CAMP_EDATE",
+          "type": "varchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "캠페인 종료일(YYYYMMDD)"
+        },
+        {
+          "name": "ANAL_CAMP_SDATE",
+          "type": "varchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "분석용 캠페인 시작일(YYYYMMDD)"
+        },
+        {
+          "name": "ANAL_CAMP_EDATE",
+          "type": "varchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "분석용 캠페인 종료일(YYYYMMDD)"
+        },
+        {
+          "name": "CAMP_EXEC_DTTM",
+          "type": "varchar(14)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "캠페인 실행 일시(14자리)"
+        },
+        {
+          "name": "PARTI_STRNUM",
+          "type": "decimal(9,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "참여 매장 수"
+        },
+        {
+          "name": "OFFR_YN",
+          "type": "varchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "오퍼 제공 여부 Y/N"
+        },
+        {
+          "name": "MBR_INFO_STAND_YYYYMM",
+          "type": "varchar(6)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "회원정보 기준월(YYYYMM)"
+        },
+        {
+          "name": "CAMP_REG_EMP_ID",
+          "type": "varchar(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "등록 사원 ID"
+        },
+        {
+          "name": "CAMP_REG_DEPT_ID",
+          "type": "varchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "등록 부서 ID"
+        },
+        {
+          "name": "CAMP_REG_DATE",
+          "type": "varchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "등록일(YYYYMMDD)"
+        },
+        {
+          "name": "LOAD_DTTM",
+          "type": "varchar(14)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "데이터 적재 일시(YYYYMMDDHHMMSS 14자리, 문자열)"
+        },
+        {
+          "name": "CAMP_PURPOSE_CD",
+          "type": "varchar(3)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "캠페인 목적 코드(예: R=재구매/재방문 유도). NULL 가능"
+        },
+        {
+          "name": "LANG",
+          "type": "varchar(30)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "언어(예: ko_KR)"
+        },
+        {
+          "name": "CANCEL_YN",
+          "type": "varchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "취소/중지 여부 Y/N. 유효 캠페인은 ISNULL(,'N')='N'"
+        },
+        {
+          "name": "CANCEL_DTTM",
+          "type": "varchar(14)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "취소 일시(14자리)"
+        },
+        {
+          "name": "UPD_DEPT_ID",
+          "type": "varchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "수정 부서 ID"
+        },
+        {
+          "name": "UPD_EMP_ID",
+          "type": "varchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "수정 사원 ID"
+        },
+        {
+          "name": "UPD_DATE",
+          "type": "varchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "수정일(YYYYMMDD)"
+        },
+        {
+          "name": "CAMP_EXEC_MAIN_NAME",
+          "type": "varchar(128)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "실행 메인명"
+        },
+        {
+          "name": "CAMP_KIND_CD",
+          "type": "varchar(3)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "캠페인 종류 코드(예: TG=타겟)"
+        },
+        {
+          "name": "CAMP_CATE_DIR_NAME",
+          "type": "varchar(128)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "캠페인 분류명(예: 판매촉진)"
+        },
+        {
+          "name": "CAMP_TMPLT_NAME",
+          "type": "varchar(250)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "캠페인 템플릿명"
+        }
+      ],
+      "primary_key": [
+        "CAMP_ID",
+        "CAMP_EXEC_NO"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "Z_CAMP_CELL": {
+      "object_type": "table",
+      "database": "CRMDW",
+      "description_llm": "[CRMDW/smart_quadmax_mart] 캠페인 셀(반응노드) 마스터. 셀별 대상 인원/예상 성과/ROI. 키 (CAMP_ID, CAMP_EXEC_NO, CELL_NODE_ID).",
+      "description_source": "live_db_information_schema",
+      "join_hints": [
+        "(CAMP_ID, CAMP_EXEC_NO) = Z_CAMPAIGN"
+      ],
+      "columns": [
+        {
+          "name": "CAMP_ID",
+          "type": "varchar(16)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": "캠페인 ID PK. Z_CAMPAIGN과 조인"
+        },
+        {
+          "name": "CAMP_EXEC_NO",
+          "type": "int",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": "실행회차 PK"
+        },
+        {
+          "name": "CELL_NODE_ID",
+          "type": "varchar(16)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": "셀(반응노드) ID PK(예: N160215204355438)"
+        },
+        {
+          "name": "CELL_NAME",
+          "type": "varchar(250)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "셀명(예: 인근 지역 거주 고객군)"
+        },
+        {
+          "name": "CHNL_GP_NAME",
+          "type": "varchar(250)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "발송 채널 그룹명(예: LMS, SMS, TM)"
+        },
+        {
+          "name": "OFFR_GP_NAME",
+          "type": "varchar(250)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "오퍼 그룹명(예: 할인/상품/자동)"
+        },
+        {
+          "name": "SBJ_GP_MBRNUM",
+          "type": "decimal(9,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "대상군 인원수"
+        },
+        {
+          "name": "COMPA_GP_MBRNUM",
+          "type": "decimal(9,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "비교군 인원수"
+        },
+        {
+          "name": "COMPA_GP_SP_CD",
+          "type": "varchar(2)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "비교군 추출 방식 코드"
+        },
+        {
+          "name": "SYS_EXP_SBJ_PURCH_MBRNUM",
+          "type": "decimal(9,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "[시스템예측] 대상군 구매 인원"
+        },
+        {
+          "name": "SYS_EXP_COMPA_PURCH_MBRNUM",
+          "type": "decimal(9,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "[시스템예측] 비교군 구매 인원"
+        },
+        {
+          "name": "SYS_EXP_SBJ_PURCH_AMT",
+          "type": "decimal(13,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "[시스템예측] 대상군 구매 금액"
+        },
+        {
+          "name": "SYS_EXP_COMPA_PURCH_AMT",
+          "type": "decimal(13,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "[시스템예측] 비교군 구매 금액"
+        },
+        {
+          "name": "SYS_EXP_OFFR_RSPN_MBRNUM",
+          "type": "decimal(9,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "[시스템예측] 오퍼 반응 인원"
+        },
+        {
+          "name": "SYS_EXP_OFFR_EXPNS",
+          "type": "decimal(13,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "[시스템예측] 오퍼 비용"
+        },
+        {
+          "name": "STR_EXP_SBJ_PURCH_MBRNUM",
+          "type": "decimal(9,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "[담당자예측] 대상군 구매 인원"
+        },
+        {
+          "name": "STR_EXP_COMPA_PURCH_MBRNUM",
+          "type": "decimal(9,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "[담당자예측] 비교군 구매 인원"
+        },
+        {
+          "name": "STR_EXP_SBJ_PURCH_AMT",
+          "type": "decimal(13,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "[담당자예측] 대상군 구매 금액"
+        },
+        {
+          "name": "STR_EXP_COMPA_PURCH_AMT",
+          "type": "decimal(13,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "[담당자예측] 비교군 구매 금액"
+        },
+        {
+          "name": "STR_EXP_OFFR_RSPN_MBRNUM",
+          "type": "decimal(9,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "[담당자예측] 오퍼 반응 인원"
+        },
+        {
+          "name": "STR_EXP_OFFR_EXPNS",
+          "type": "decimal(13,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "[담당자예측] 오퍼 비용"
+        },
+        {
+          "name": "EXP_CHNL_MK_EXPNS",
+          "type": "decimal(13,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "예상 채널 제작비"
+        },
+        {
+          "name": "EXP_CHNL_SEND_EXPNS",
+          "type": "decimal(13,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "예상 채널 발송비"
+        },
+        {
+          "name": "EXP_SALES_ADDED_AMT",
+          "type": "decimal(13,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "예상 추가 매출액"
+        },
+        {
+          "name": "PRF_VLM_RATE_YYYYMM",
+          "type": "varchar(6)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "수익률 기준월(YYYYMM)"
+        },
+        {
+          "name": "PRF_VLM_RATE",
+          "type": "decimal(9,5)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "공헌이익률(decimal9,5)"
+        },
+        {
+          "name": "PRF_VLM",
+          "type": "decimal(13,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "공헌이익 금액"
+        },
+        {
+          "name": "EXP_EXPNS",
+          "type": "decimal(13,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "예상 총비용"
+        },
+        {
+          "name": "PRF_FNL",
+          "type": "decimal(13,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "최종 예상 이익"
+        },
+        {
+          "name": "EXP_ROI",
+          "type": "decimal(17,5)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "예상 ROI(decimal17,5, 예: 1.23)"
+        },
+        {
+          "name": "LOAD_DTTM",
+          "type": "varchar(14)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "데이터 적재 일시(YYYYMMDDHHMMSS 14자리, 문자열)"
+        }
+      ],
+      "primary_key": [
+        "CAMP_ID",
+        "CAMP_EXEC_NO",
+        "CELL_NODE_ID"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "Z_CAMP_MBR": {
+      "object_type": "table",
+      "database": "CRMDW",
+      "description_llm": "[CRMDW/smart_quadmax_mart] 캠페인 셀별 대상 회원 목록. 대상군은 CELL_TYPE_CD='T'. 자연키 (CAMP_ID, CAMP_EXEC_NO, CELL_NODE_ID, MBR_NO).",
+      "description_source": "live_db_information_schema",
+      "join_hints": [
+        "(CAMP_ID, CAMP_EXEC_NO, CELL_NODE_ID) = Z_CAMP_CELL"
+      ],
+      "columns": [
+        {
+          "name": "CAMP_ID",
+          "type": "varchar(16)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "캠페인 ID(자연키). Z_CAMPAIGN/Z_CAMP_CELL과 조인"
+        },
+        {
+          "name": "CAMP_EXEC_NO",
+          "type": "int",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "실행회차(자연키)"
+        },
+        {
+          "name": "CELL_NODE_ID",
+          "type": "varchar(16)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "셀 ID(자연키). Z_CAMP_CELL과 조인"
+        },
+        {
+          "name": "MBR_NO",
+          "type": "varchar(10)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "대상 회원번호(varchar). CRM_MB_BASEINFO.MEMBER_NO와 매핑"
+        },
+        {
+          "name": "CELL_TYPE_CD",
+          "type": "varchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "셀 구분. T=대상군(Target), C=비교군(Control)"
+        },
+        {
+          "name": "CONTAC_SUCC_YN",
+          "type": "varchar(1)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "접촉(발송) 성공 여부 Y/N"
+        },
+        {
+          "name": "LAST_CONTAC_SUCC_DTTM",
+          "type": "varchar(14)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "최종 접촉성공 일시(14자리)"
+        },
+        {
+          "name": "LOAD_DTTM",
+          "type": "varchar(14)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "데이터 적재 일시(YYYYMMDDHHMMSS 14자리, 문자열)"
         }
       ],
       "primary_key": [],
@@ -2894,118 +1859,186 @@
       "foreign_keys": [],
       "indexes": []
     },
-    "v_campaign_daily_metrics": {
-      "object_type": "view",
-      "description_llm": "KST 날짜별 메시지 이벤트 퍼널과 매출 추이를 집계하는 분석 view다.",
-      "description_source": "ddl_view",
+    "MCS_CAMP_MBR_RSPN_FT": {
+      "object_type": "table",
+      "database": "CRMDW",
+      "description_llm": "[CRMDW/smart_quadmax_mart] 캠페인 회원 반응 팩트. 접촉성공/오퍼반응/구매반응 여부와 구매금액. 대상군은 CGRP_TYPE_CD='T'. 자연키 (CAMP_ID, CAMP_EXEC_NO, CELL_NODE_ID, MBR_NO).",
+      "description_source": "live_db_information_schema",
+      "join_hints": [
+        "(CAMP_ID, CAMP_EXEC_NO, CELL_NODE_ID) = Z_CAMP_CELL",
+        "MBR_NO = TRY_CAST 후 CRM_MB_BASEINFO.MEMBER_NO"
+      ],
       "columns": [
         {
-          "name": "campaign_id",
-          "type": "VIEW_COLUMN",
+          "name": "CAMP_ID",
+          "type": "nvarchar(16)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "캠페인 ID(자연키)"
+        },
+        {
+          "name": "CAMP_EXEC_NO",
+          "type": "int",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "실행회차(자연키)"
+        },
+        {
+          "name": "CELL_NODE_ID",
+          "type": "nvarchar(16)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "셀 ID(자연키). 반응노드=ALL 집계 시 미사용"
+        },
+        {
+          "name": "MBR_NO",
+          "type": "nvarchar(10)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "회원번호(nvarchar). CRM_MB_BASEINFO.MEMBER_NO(bigint)와 TRY_CAST로 조인"
+        },
+        {
+          "name": "CGRP_TYPE_CD",
+          "type": "nvarchar(1)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "캠페인군 구분. T=대상군, C=비교군"
         },
         {
-          "name": "experiment_id",
-          "type": "VIEW_COLUMN",
+          "name": "CNCT_SCS_YN",
+          "type": "nvarchar(1)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "접촉(채널 발송) 성공 여부 Y/N"
         },
         {
-          "name": "variant_id",
-          "type": "VIEW_COLUMN",
+          "name": "LAST_CNCT_SCS_DTTM",
+          "type": "nvarchar(14)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "최종 접촉성공 일시(14자리)"
+        },
+        {
+          "name": "OFFR_RSPN_YN",
+          "type": "nvarchar(1)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "오퍼 반응 여부 Y/N"
         },
         {
-          "name": "channel",
-          "type": "VIEW_COLUMN",
+          "name": "BUY_RSPN_YN",
+          "type": "nvarchar(1)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "구매 반응 여부 Y/N"
         },
         {
-          "name": "event_date_kst",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "sent_event_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "delivered_event_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "impression_event_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "open_event_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "click_event_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "conversion_event_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "revenue_krw",
-          "type": "VIEW_COLUMN",
+          "name": "BUY_AMT",
+          "type": "decimal(17,0)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "구매금액(원)"
+        },
+        {
+          "name": "BUY_CNT",
+          "type": "decimal(10,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "구매 건수"
+        },
+        {
+          "name": "BUY_QTY",
+          "type": "decimal(10,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "구매 수량"
+        },
+        {
+          "name": "BUY_ITEM_CNT",
+          "type": "decimal(10,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "구매 상품종류 수"
+        },
+        {
+          "name": "OFFR_BUY_AMT",
+          "type": "decimal(17,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "오퍼 사용 구매금액"
+        },
+        {
+          "name": "OFFR_BUY_CNT",
+          "type": "decimal(10,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "오퍼 사용 구매건수"
+        },
+        {
+          "name": "OFFR_APL_AMT",
+          "type": "decimal(17,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "오퍼 할인 적용금액"
+        },
+        {
+          "name": "ISU_CPN_CNT",
+          "type": "decimal(10,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "발행 쿠폰 수"
+        },
+        {
+          "name": "USE_CPN_CNT",
+          "type": "decimal(10,0)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "사용 쿠폰 수"
+        },
+        {
+          "name": "LOAD_DTTM",
+          "type": "nvarchar(14)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "데이터 적재 일시(YYYYMMDDHHMMSS 14자리, 문자열)"
         }
       ],
       "primary_key": [],
@@ -3013,501 +2046,713 @@
       "foreign_keys": [],
       "indexes": []
     },
-    "v_abandoned_cart_targets": {
-      "object_type": "view",
-      "description_llm": "",
-      "description_source": "ddl_view",
+    "ODS_MALL_OMS_CART": {
+      "object_type": "table",
+      "database": "CRMDW",
+      "description_llm": "[CRMDW/smart_quadmax_mart] 온라인몰 장바구니 상품 라인. 보관중은 KEEP_YN='Y'. CART_ID = 회원의 MEMBER_ID, PRODUCT_ID = CRM_CM_PRODUCT.PRODUCT_ID. 키 (STORE_ID, CART_PRODUCT_NO).",
+      "description_source": "live_db_information_schema",
+      "join_hints": [
+        "PRODUCT_ID = CRM_CM_PRODUCT.PRODUCT_ID",
+        "CART_ID = CRM_MB_BASEINFO.MEMBER_ID"
+      ],
       "columns": [
         {
-          "name": "cart_id",
-          "type": "VIEW_COLUMN",
+          "name": "STORE_ID",
+          "type": "nvarchar(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": "몰(스토어) ID PK(예: 1001)"
+        },
+        {
+          "name": "CART_PRODUCT_NO",
+          "type": "bigint",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": false,
+          "human_note": "장바구니 상품 라인 번호 PK(bigint)"
+        },
+        {
+          "name": "UPPER_CART_PRODUCT_NO",
+          "type": "bigint",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "상위 장바구니 라인 번호(세트/구성품)"
         },
         {
-          "name": "user_id",
-          "type": "VIEW_COLUMN",
+          "name": "SET_QTY",
+          "type": "bigint",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "세트 수량"
+        },
+        {
+          "name": "CART_TYPE_CD",
+          "type": "nvarchar(100)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "장바구니 유형. CART_TYPE_CD.GENERAL/REGULARDELIVERY(정기배송)/B2E(임직원)/PICKUP"
+        },
+        {
+          "name": "CART_PRODUCT_TYPE_CD",
+          "type": "nvarchar(100)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "장바구니 상품 유형(예: CART_PRODUCT_TYPE_CD.GENERAL)"
+        },
+        {
+          "name": "CART_ID",
+          "type": "nvarchar(100)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "장바구니 ID = 회원 MEMBER_ID(예: 001124). CRM_MB_BASEINFO.MEMBER_ID와 조인"
+        },
+        {
+          "name": "OFFSHOP_ID",
+          "type": "nvarchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "픽업/오프라인 매장 ID"
+        },
+        {
+          "name": "CHANNEL_ID",
+          "type": "nvarchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "담은 채널 ID"
+        },
+        {
+          "name": "PRODUCT_ID",
+          "type": "nvarchar(20)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "상품 ID. CRM_CM_PRODUCT.PRODUCT_ID와 조인"
+        },
+        {
+          "name": "SALEPRODUCT_ID",
+          "type": "nvarchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "판매상품 ID(옵션 단위)"
+        },
+        {
+          "name": "DEAL_ID",
+          "type": "nvarchar(20)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "딜/기획전 ID"
+        },
+        {
+          "name": "SALE_PRICE",
+          "type": "numeric(22,2)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "판매가(단가, 원)"
+        },
+        {
+          "name": "ADD_SALE_PRICE",
+          "type": "numeric(22,2)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "추가 판매가(옵션가 등)"
+        },
+        {
+          "name": "TOTAL_SALE_PRICE",
+          "type": "numeric(22,2)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "라인 합계금액(원)"
+        },
+        {
+          "name": "REGULAR_DELIVERY_PRICE",
+          "type": "numeric(22,2)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "정기배송가"
+        },
+        {
+          "name": "QTY",
+          "type": "bigint",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "담은 수량"
+        },
+        {
+          "name": "KEEP_YN",
+          "type": "nvarchar(1)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "보관(유지) 여부. Y=장바구니 유지, N=삭제/구매완료"
+        },
+        {
+          "name": "CART_STATE_CD",
+          "type": "nvarchar(100)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "장바구니 상태. CART_STATE_CD.REG(등록)/DEL(삭제)"
+        },
+        {
+          "name": "END_DT",
+          "type": "datetime2",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "보관 종료 일시(datetime2)"
+        },
+        {
+          "name": "INS_DT",
+          "type": "datetime2",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "담은(등록) 일시(datetime2). 기간 필터 기준"
         },
         {
-          "name": "age",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "gender",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "region",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "price_sensitivity",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "predicted_ltv_segment",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "source_channel",
-          "type": "VIEW_COLUMN",
+          "name": "INS_ID",
+          "type": "nvarchar(20)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "등록자 ID"
         },
         {
-          "name": "total_quantity",
-          "type": "VIEW_COLUMN",
+          "name": "UPD_DT",
+          "type": "datetime2",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "수정 일시(datetime2)"
         },
         {
-          "name": "original_amount_krw",
-          "type": "VIEW_COLUMN",
+          "name": "UPD_ID",
+          "type": "nvarchar(20)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "수정자 ID"
         },
         {
-          "name": "discount_amount_krw",
-          "type": "VIEW_COLUMN",
+          "name": "COUPON_ID",
+          "type": "nvarchar(20)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "적용 쿠폰 ID"
         },
         {
-          "name": "shipping_fee_krw",
-          "type": "VIEW_COLUMN",
+          "name": "DELIVERY_CNT",
+          "type": "bigint",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "배송 횟수(정기배송)"
         },
         {
-          "name": "total_amount_krw",
-          "type": "VIEW_COLUMN",
+          "name": "DELIVERY_PERIOD_CD",
+          "type": "nvarchar(100)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "배송 주기 코드"
         },
         {
-          "name": "abandonment_reason",
-          "type": "VIEW_COLUMN",
+          "name": "DELIVERY_PERIOD_VALUE",
+          "type": "bigint",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "배송 주기 값"
         },
         {
-          "name": "abandoned_at",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
+          "name": "LOAD_DATE",
+          "type": "nvarchar(8)",
+          "nullable": false,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "데이터 적재 일자(YYYYMMDD, 문자열)"
         },
         {
-          "name": "abandoned_hours",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
+          "name": "LOAD_TIME",
+          "type": "nvarchar(8)",
+          "nullable": false,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "item_line_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "product_names",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "categories",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "has_available_coupon",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "has_low_stock_item",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "all_items_orderable",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "reminder_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "last_reminder_sent_at",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "reminder_converted",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
+          "human_note": "데이터 적재 시각(HHMMSS, 문자열)"
         }
       ],
-      "primary_key": [],
+      "primary_key": [
+        "STORE_ID",
+        "CART_PRODUCT_NO"
+      ],
       "checks": [],
       "foreign_keys": [],
       "indexes": []
     },
-    "v_cart_repurchase_targets": {
-      "object_type": "view",
-      "description_llm": "",
-      "description_source": "ddl_view",
+    "CRM_CM_PRODUCT": {
+      "object_type": "table",
+      "database": "CRMDW",
+      "description_llm": "[CRMDW/smart_quadmax_mart] 온라인몰 상품 마스터(PRODUCT_ID 기준, 대/중/소 카테고리·브랜드·판매기간). 주의: CRMAN(Customer_Analytics)에도 같은 이름의 '주문 상품 마스터'가 별도로 있으며 컬럼이 다르다(PROD_CD, PROD_NM, BRAND_CD, PROD_CATEGORY_CD/NM, PROD_SUB_CATEGORY_CD/NM). 주문(CRM_SL_ORDER_DETAIL) 조인 시에는 CRMAN 버전을 PROD_CD 로 조인한다.",
+      "description_source": "live_db_information_schema",
+      "join_hints": [
+        "PRODUCT_ID = ODS_MALL_OMS_CART.PRODUCT_ID"
+      ],
       "columns": [
         {
-          "name": "cart_id",
-          "type": "VIEW_COLUMN",
+          "name": "PRODUCT_ID",
+          "type": "nvarchar(20)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": "상품 ID PK. ODS_MALL_OMS_CART.PRODUCT_ID와 조인. (CRMAN 버전은 PROD_CD 키)"
+        },
+        {
+          "name": "ERP_PRODUCT_ID",
+          "type": "nvarchar(20)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "ERP 상품 ID"
         },
         {
-          "name": "user_id",
-          "type": "VIEW_COLUMN",
+          "name": "SELLER_DIV",
+          "type": "nvarchar(10)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "판매 구분(예: 위탁, 직매입)"
+        },
+        {
+          "name": "CATEGORY",
+          "type": "nvarchar(200)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "카테고리 원본 문자열"
+        },
+        {
+          "name": "BRAND_ID",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "브랜드 ID"
+        },
+        {
+          "name": "BRAND_NAME",
+          "type": "nvarchar(200)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "브랜드명"
         },
         {
-          "name": "age",
-          "type": "VIEW_COLUMN",
+          "name": "CATEGORYL_ID",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "대분류 ID"
+        },
+        {
+          "name": "CATEGORYL_NAME",
+          "type": "nvarchar(200)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "대분류명(예: 식품/분유)"
         },
         {
-          "name": "gender",
-          "type": "VIEW_COLUMN",
+          "name": "CATEGORYM_ID",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "중분류 ID"
+        },
+        {
+          "name": "CATEGORYM_NAME",
+          "type": "nvarchar(200)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "중분류명(예: 건강식품)"
         },
         {
-          "name": "region",
-          "type": "VIEW_COLUMN",
+          "name": "CATEGORYS_ID",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "소분류 ID"
+        },
+        {
+          "name": "CATEGORYS_NAME",
+          "type": "nvarchar(2000)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "소분류명(예: 유산균)"
+        },
+        {
+          "name": "PRODUCT_NAME",
+          "type": "nvarchar(4000)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "상품명"
         },
         {
-          "name": "price_sensitivity",
-          "type": "VIEW_COLUMN",
+          "name": "PRODUCT_TYPE_CD",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "상품 유형 코드(예: PRODUCT_TYPE_CD.GENERAL)"
+        },
+        {
+          "name": "SALE_STATE_CD",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "판매상태 코드(예: SALE_STATE_CD.END=판매종료)"
+        },
+        {
+          "name": "SALE_START_DT",
+          "type": "nvarchar(8)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "판매 시작일(YYYYMMDD)"
         },
         {
-          "name": "predicted_ltv_segment",
-          "type": "VIEW_COLUMN",
+          "name": "SALE_END_DT",
+          "type": "nvarchar(8)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": true,
-          "human_note": ""
+          "human_note": "판매 종료일(YYYYMMDD). 판매중은 먼 미래값(예: 30000101)"
         },
         {
-          "name": "source_channel",
-          "type": "VIEW_COLUMN",
+          "name": "LOAD_DATE",
+          "type": "nvarchar(8)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "데이터 적재 일자(YYYYMMDD, 문자열)"
+        },
+        {
+          "name": "LOAD_TIME",
+          "type": "nvarchar(8)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "데이터 적재 시각(HHMMSS, 문자열)"
+        },
+        {
+          "name": "JEJUAIR",
+          "type": "nvarchar(200)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "제휴(제주항공) 관련 값"
         },
         {
-          "name": "total_quantity",
-          "type": "VIEW_COLUMN",
+          "name": "COMP",
+          "type": "varchar(10)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "회사/법인 구분값"
         },
         {
-          "name": "total_amount_krw",
-          "type": "VIEW_COLUMN",
+          "name": "BRAND_01",
+          "type": "nvarchar(200)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "브랜드 보조값"
         },
         {
-          "name": "abandonment_reason",
-          "type": "VIEW_COLUMN",
+          "name": "CATE_H",
+          "type": "nvarchar(200)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
+          "human_note": "카테고리 보조(계층) 값"
         },
         {
-          "name": "abandoned_at",
-          "type": "VIEW_COLUMN",
+          "name": "MIRAE_PRODUCT",
+          "type": "varchar(50)",
           "nullable": true,
           "primary_key": false,
           "references": null,
           "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "abandoned_hours",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "categories",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "product_names",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "has_available_coupon",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "has_low_stock_item",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "all_items_orderable",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "reminder_count",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "last_reminder_sent_at",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "target_segment",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": true,
-          "human_note": ""
-        },
-        {
-          "name": "targeting_intent",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "recommended_campaign_id",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "recommended_campaign_name",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "campaign_objective",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "campaign_category",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "campaign_offer",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
-        },
-        {
-          "name": "recommendation_reason",
-          "type": "VIEW_COLUMN",
-          "nullable": true,
-          "primary_key": false,
-          "references": null,
-          "important": false,
-          "human_note": ""
+          "human_note": "미래(제휴) 상품 구분값"
         }
       ],
-      "primary_key": [],
+      "primary_key": [
+        "PRODUCT_ID"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "CRM_SL_ORDER_HEADER": {
+      "object_type": "table",
+      "database": "CRMAN",
+      "description_llm": "[CRMAN/Customer_Analytics] 주문 헤더(주문 단위). 주문일자/매장/채널/회원/결제금액. 3-part 이름 Customer_Analytics.dbo.CRM_SL_ORDER_HEADER 로 참조. 키 ORDER_ID.",
+      "description_source": "live_db_information_schema",
+      "join_hints": [
+        "ORDER_ID = CRM_SL_ORDER_DETAIL.ORDER_ID"
+      ],
+      "columns": [
+        {
+          "name": "ORDER_ID",
+          "type": "nvarchar(50)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": "주문 ID PK. CRM_SL_ORDER_DETAIL.ORDER_ID와 조인"
+        },
+        {
+          "name": "ORDER_DATE",
+          "type": "nvarchar(8)",
+          "nullable": false,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "주문일자(YYYYMMDD)"
+        },
+        {
+          "name": "ORDER_TIME",
+          "type": "nvarchar(6)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "주문시각(HHMMSS)"
+        },
+        {
+          "name": "SHOP_CD",
+          "type": "nvarchar(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "매장 코드(온라인 주문은 'O')"
+        },
+        {
+          "name": "ORDER_CHANNEL_CD",
+          "type": "nvarchar(12)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "주문 채널. OFFSHOP(오프라인)/APP/PC/MW(모바일웹)"
+        },
+        {
+          "name": "MBR_NO",
+          "type": "nvarchar(16)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "회원번호(nvarchar). CRMDW 회원키와 도메인이 달라 교차 조인 주의"
+        },
+        {
+          "name": "PAYMENT_AMT",
+          "type": "bigint",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "결제금액(원, bigint)"
+        },
+        {
+          "name": "LOAD_DTTM",
+          "type": "nvarchar(14)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "데이터 적재 일시(YYYYMMDDHHMMSS 14자리, 문자열)"
+        },
+        {
+          "name": "JOIN_DT",
+          "type": "nvarchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "가입일(YYYYMMDD)"
+        },
+        {
+          "name": "BIRTH_DT",
+          "type": "nvarchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "생년월일(YYYYMMDD). 대체로 NULL"
+        },
+        {
+          "name": "COUPON_DT",
+          "type": "nvarchar(8)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "쿠폰(사용) 일자(YYYYMMDD). 대체로 NULL"
+        }
+      ],
+      "primary_key": [
+        "ORDER_ID"
+      ],
+      "checks": [],
+      "foreign_keys": [],
+      "indexes": []
+    },
+    "CRM_SL_ORDER_DETAIL": {
+      "object_type": "table",
+      "database": "CRMAN",
+      "description_llm": "[CRMAN/Customer_Analytics] 주문 상세(주문 상품 라인). 주문수량/판매금액/상품코드. 3-part 이름 Customer_Analytics.dbo.CRM_SL_ORDER_DETAIL 로 참조. 키 (ORDER_ID, SEQ).",
+      "description_source": "live_db_information_schema",
+      "join_hints": [
+        "ORDER_ID = CRM_SL_ORDER_HEADER.ORDER_ID",
+        "PROD_CD = Customer_Analytics.dbo.CRM_CM_PRODUCT.PROD_CD"
+      ],
+      "columns": [
+        {
+          "name": "ORDER_ID",
+          "type": "nvarchar(50)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": "주문 ID PK. CRM_SL_ORDER_HEADER와 조인"
+        },
+        {
+          "name": "SEQ",
+          "type": "nvarchar(10)",
+          "nullable": false,
+          "primary_key": true,
+          "references": null,
+          "important": true,
+          "human_note": "주문 상세 순번 PK"
+        },
+        {
+          "name": "PROD_CD",
+          "type": "nvarchar(50)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "상품코드. CRMAN Customer_Analytics.dbo.CRM_CM_PRODUCT.PROD_CD와 조인"
+        },
+        {
+          "name": "ORDER_QTY",
+          "type": "int",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "주문 수량"
+        },
+        {
+          "name": "SALES_AMT",
+          "type": "bigint",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "판매금액(원, bigint)"
+        },
+        {
+          "name": "LOAD_DTTM",
+          "type": "nvarchar(14)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "데이터 적재 일시(YYYYMMDDHHMMSS 14자리, 문자열)"
+        }
+      ],
+      "primary_key": [
+        "ORDER_ID",
+        "SEQ"
+      ],
       "checks": [],
       "foreign_keys": [],
       "indexes": []

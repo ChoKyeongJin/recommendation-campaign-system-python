@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import contextvars
+import functools
 import json
 import math
 import os
@@ -29,6 +30,7 @@ from sql_guard import DEFAULT_LIMIT, DEFAULT_SCHEMA_PATH, load_allowed_tables, v
 DEFAULT_DATA_PATH = Path("docs/data/rag_knowledge_base.json")
 DEFAULT_NORMALIZATION_PATH = Path("docs/data/normalization_rules.sample.json")
 DEFAULT_POLICY_PATH = Path("docs/data/business_policies.sample.json")
+DEFAULT_DIMENSION_CATALOG_PATH = Path("docs/data/dimension_catalog.sample.json")
 DEFAULT_COLLECTION = "campaign_knowledge_rag"
 DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
@@ -242,6 +244,10 @@ def build_graph(payload: dict[str, Any]) -> nx.Graph:
             _add_metric_alias_edges(graph, node)
         elif node["type"] == "normalization_rule":
             _add_normalization_edges(graph, node)
+        elif node["type"] == "dimension":
+            _add_dimension_edges(graph, node)
+        elif node["type"] == "dimension_value":
+            _add_dimension_value_edges(graph, node)
         elif node["type"] == "sql_example":
             _add_sql_example_edges(graph, node)
         elif node["type"] == "campaign":
@@ -317,6 +323,11 @@ def build_query_plan(
         "fallback_used": False,
         "model": llm_model,
     }
+    # 디멘션 값(브랜드명)→코드 해석과 판매 상품 추출은 프롬프트 텍스트에서 결정론적으로 뽑으므로,
+    # LLM 플랜에도 동일하게 적용해 rules/llm 어느 경로든 동일한 타겟팅/메시지 컨텍스트를 보장한다.
+    llm_plan.setdefault("campaign_constraints", {}).setdefault("sell_object", None)
+    _apply_sell_object(query, llm_plan)
+    _apply_dimension_filters(query, llm_plan)
     return llm_plan
 
 
@@ -357,6 +368,7 @@ def _build_rule_query_plan(
             "objective": _infer_objective(query),
             "offer_type": None,
             "channels": [],
+            "sell_object": None,
         },
         "retrieval": {
             "query": normalized_query,
@@ -366,10 +378,14 @@ def _build_rule_query_plan(
         "policy_constraints": [],
         "semantic_resolutions": [],
         "computed_metrics": [],
+        "dimension_filters": [],
+        "cart_context": False,
         "set_expressions": parse_set_expressions_from_query(query, normalization_path=normalization_rules) if normalization_rules else [],
     }
     _apply_age_filters(query, plan["target_user"])
     _apply_purchase_object_filter(query, plan["target_user"])
+    _apply_sell_object(query, plan)
+    _apply_dimension_filters(query, plan)
     set_expression_terms = _set_expression_canonical_values(plan["set_expressions"])
     if any(term.startswith("age_") for term in set_expression_terms):
         plan["target_user"]["age_min"] = None
@@ -733,6 +749,11 @@ def _infer_intent(query: str) -> str:
     # 분기보다 먼저 recommend_campaign 으로 잡아야 메시지 생성(build_message_context)까지 이어진다.
     if _is_awareness_announcement_context(query):
         return "recommend_campaign"
+    # "…고객에게 …을 팔고 싶어요 / 판매하고 싶어요" 같은 판매 아웃리치는 캠페인(발송) 목적이다.
+    # "고객"이 있어도 단순 세그먼트 조회가 아니라 특정 상품을 파는 캠페인이므로 아래 find_user_segment
+    # 분기보다 먼저 recommend_campaign 으로 잡아 메시지 생성(build_message_context)까지 이어지게 한다.
+    if _is_sales_outreach_context(query):
+        return "recommend_campaign"
     if any(keyword in compact_query for keyword in ("캠페인", "추천", "recommend", "campaign")):
         return "recommend_campaign"
     if any(keyword in compact_query for keyword in ("사용자", "고객", "사람", "지역", "세그먼트", "user", "segment", "region")):
@@ -746,7 +767,7 @@ def _infer_objective(query: str) -> str | None:
         return "repurchase"
     if _is_reactivation_goal_context(query):
         return "reactivation"
-    if any(keyword in compact_query for keyword in ("구매", "전환", "매출", "purchase", "conversion")):
+    if any(keyword in compact_query for keyword in ("구매", "전환", "매출", "purchase", "conversion", "판매", "팔고", "팔려", "sell")):
         return "purchase"
     if any(keyword in compact_query for keyword in ("구독", "subscription")):
         return "subscription"
@@ -766,6 +787,16 @@ def _is_awareness_announcement_context(query: str) -> bool:
     has_launch = any(keyword in compact_query for keyword in ("신제품", "신상품", "출시", "런칭", "launch", "awareness"))
     has_announce = any(keyword in compact_query for keyword in ("알리", "알림", "소식", "안내", "홍보"))
     return has_launch and has_announce
+
+
+def _is_sales_outreach_context(query: str) -> bool:
+    # 판매 동사(팔다/판매/sell) + 대상 지향(에게/한테/고객/대상/타겟)이 함께 있으면 특정 상품을
+    # 파는 캠페인 발송 의도. "고객 찾아줘"(조회)처럼 판매 동사가 없으면 걸리지 않도록 둘 다 요구한다.
+    # "팔레트/팔로우" 등 오탐을 피하려고 "팔" 단독이 아닌 "팔고/팔려/판매"만 판매 동사로 본다.
+    compact_query = query.replace(" ", "").casefold()
+    has_sell = any(keyword in compact_query for keyword in ("팔고", "팔려", "팔것", "판매", "sell"))
+    has_audience = any(keyword in compact_query for keyword in ("에게", "한테", "고객", "대상", "타겟", "타깃"))
+    return has_sell and has_audience
 
 
 def _is_reactivation_goal_context(query: str) -> bool:
@@ -823,6 +854,121 @@ def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> No
     purchase_object = _sanitize_purchase_object(match.group("object"))
     if purchase_object:
         target_user["purchase_object"] = purchase_object
+
+
+def _apply_sell_object(query: str, plan: dict[str, Any]) -> None:
+    # "…(신상 컴퓨터)를 팔고 싶어요 / 판매하고 싶어요" 에서 파는 상품을 뽑아 캠페인 목표로 쓴다.
+    # 타겟 필터가 아니라 채널메시지 카피의 소재(캠페인 컨텍스트)로만 사용한다.
+    match = re.search(r"(?P<object>.+?)\s*(?:을|를)\s*(?:팔|판매)", query)
+    if not match:
+        return
+    fragment = match.group("object")
+    # "…에게/…한테/…께/…대상으로" 같은 대상 지향 표현 뒤의 상품만 취해 대상 문구를 삼키지 않는다.
+    fragment = re.split(r".*(?:에게|한테|께|대상으로)\s*", fragment)[-1]
+    sell_object = _sanitize_purchase_object(fragment)
+    if sell_object:
+        plan["campaign_constraints"]["sell_object"] = sell_object
+
+
+@functools.lru_cache(maxsize=8)
+def _load_dimension_catalog(path: Path) -> tuple[dict[str, Any], ...]:
+    if not path or not path.exists():
+        return ()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    dimensions = payload.get("dimensions", [])
+    return tuple(dimension for dimension in dimensions if isinstance(dimension, dict) and dimension.get("dimension_id"))
+
+
+@functools.lru_cache(maxsize=256)
+def _resolve_dimension_values_cached(connection: str, ds_sql: str) -> tuple[tuple[str, str], ...]:
+    # DS_SQL 을 실제 DB에 실행해 (코드, 이름) 쌍을 얻는다. 규약: 결과 첫 컬럼=코드, 둘째 컬럼=이름.
+    # 값은 매우 많을 수 있어 정적 저장하지 않고 런타임에 조회한다(디멘션당 lru 캐시).
+    from db_connections import run_read_query
+    from sql_guard import validate_sql
+
+    # SELECT 전용만 실행(직접 검증). enforce_select=False 로 원본을 그대로 실행해 dialect 별
+    # 자동 LIMIT/TOP 부착(예: MSSQL 에서 'LIMIT' 구문 오류)과 값 목록 truncation 을 피한다.
+    guard = validate_sql(ds_sql, allowed_tables=None)
+    if any(issue["severity"] == "error" for issue in guard["issues"]):
+        return ()
+    rows = run_read_query(connection, ds_sql, enforce_select=False)
+    pairs: list[tuple[str, str]] = []
+    for row in rows:
+        values = list(row.values()) if isinstance(row, dict) else list(row)
+        if not values or values[0] is None:
+            continue
+        code = str(values[0]).strip()
+        name = str(values[1]).strip() if len(values) > 1 and values[1] is not None else code
+        if code:
+            pairs.append((code, name))
+    return tuple(pairs)
+
+
+def _resolve_dimension_values(dimension: dict[str, Any]) -> tuple[tuple[str, str], ...]:
+    connection = dimension.get("connection")
+    ds_sql = dimension.get("ds_sql")
+    if not connection or not isinstance(ds_sql, str) or not ds_sql.strip():
+        return ()
+    try:
+        return _resolve_dimension_values_cached(connection, ds_sql.strip())
+    except Exception:
+        # DB 드라이버 미설치/연결 실패/DS_SQL 오류 등은 조용히 건너뛴다(타겟팅만 비고 나머지는 정상).
+        return ()
+
+
+def _apply_dimension_filters(query: str, plan: dict[str, Any], dimension_catalog: Path | None = DEFAULT_DIMENSION_CATALOG_PATH) -> None:
+    # 프롬프트에 디멘션 라벨(예: "상품브랜드")이 언급되면 그 디멘션의 DS_SQL 을 런타임에 실행해
+    # 값 이름(예: "포멜카멜리")을 코드(예: 'A')로 동적 해석하고, 큐레이션된 타겟 컬럼이 있으면
+    # 타겟팅 조건으로 넘긴다. 타겟 필터이지 캠페인 목표가 아니다.
+    if dimension_catalog is None:
+        return
+    dimensions = _load_dimension_catalog(dimension_catalog)
+    if not dimensions:
+        return
+    compact_query = query.replace(" ", "").casefold()
+    filters = []
+    for dimension in dimensions:
+        synonyms = [synonym for synonym in dimension.get("synonyms", []) if isinstance(synonym, str) and synonym]
+        # 프롬프트에 디멘션 라벨/동의어가 언급된 경우에만 값 해석(불필요한 DS_SQL 실행 방지).
+        if not any(synonym.replace(" ", "").casefold() in compact_query for synonym in synonyms):
+            continue
+        codes: list[str] = []
+        names: list[str] = []
+        for code, name in _resolve_dimension_values(dimension):
+            if name and name.replace(" ", "").casefold() in compact_query and code not in codes:
+                codes.append(code)
+                names.append(name)
+        if codes:
+            filters.append(
+                {
+                    "dimension_id": dimension.get("dimension_id"),
+                    "prompt_label": dimension.get("prompt_label"),
+                    "column": dimension.get("target_column"),
+                    "table": dimension.get("target_table"),
+                    "operator": dimension.get("operator", "IN"),
+                    "codes": codes,
+                    "names": names,
+                }
+            )
+    if filters:
+        plan["dimension_filters"] = filters
+        plan["cart_context"] = "장바구니" in compact_query
+
+
+def _cart_dimension_brand_filter(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    # 큐레이션된 타겟 매핑(상품브랜드 -> CRM_CM_PRODUCT.BRAND_ID)이 잡히고 장바구니 맥락일 때만
+    # 실제 테이블 cart 타겟팅 템플릿으로 라우팅한다.
+    if not query_plan.get("cart_context"):
+        return None
+    for dimension_filter in query_plan.get("dimension_filters", []):
+        column = dimension_filter.get("column") or ""
+        if dimension_filter.get("codes") and dimension_filter.get("table") == "CRM_CM_PRODUCT" and column.endswith("BRAND_ID"):
+            return dimension_filter
+    return None
+
+
+def _is_cart_dimension_targeting(query_plan: dict[str, Any]) -> bool:
+    return _cart_dimension_brand_filter(query_plan) is not None
 
 
 def _apply_cart_repurchase_context(query: str, plan: dict[str, Any]) -> None:
@@ -1862,7 +2008,40 @@ def _campaign_message_contexts(context_nodes: list[dict[str, Any]], query_plan: 
         }
         if isinstance(campaign["campaign_id"], str) and campaign["campaign_id"].strip() and _campaign_matches_message_plan(campaign, query_plan, channel):
             campaigns.append(campaign)
+
+    # 실제 캠페인 노드가 하나도 매칭되지 않으면(현재 KB에는 campaign 노드가 없음)
+    # 프롬프트에 담긴 판매 목표를 합성 캠페인 컨텍스트로 대체해 채널메시지 소재로 쓴다.
+    if not campaigns:
+        synthesized = _prompt_goal_campaign_context(query_plan)
+        if synthesized is not None and _campaign_matches_message_plan(synthesized, query_plan, channel):
+            campaigns.append(synthesized)
     return campaigns
+
+
+def _prompt_goal_campaign_context(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    constraints = query_plan.get("campaign_constraints", {})
+    objective = constraints.get("objective")
+    sell_object = constraints.get("sell_object")
+    offer_type = constraints.get("offer_type")
+    if not objective and not sell_object:
+        return None
+    name = f"{sell_object} 판매" if sell_object else "프롬프트 목표 캠페인"
+    keywords = [keyword for keyword in (sell_object, objective) if keyword]
+    return {
+        "campaign_id": "prompt_goal",
+        "name": name,
+        "objective": objective,
+        "category": None,
+        "channels": [],
+        "target_segments": [],
+        "offer": offer_type,
+        "start_date": None,
+        "end_date": None,
+        "keywords": keywords,
+        "text_for_embedding": f"프롬프트 목표 기반 합성 캠페인. 판매 상품: {sell_object or '미지정'}. 목표: {objective or '미지정'}.",
+        "score": None,
+        "is_synthesized": True,
+    }
 
 
 def _campaign_matches_message_plan(campaign: dict[str, Any], query_plan: dict[str, Any], channel: str) -> bool:
@@ -3117,6 +3296,26 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
             if channel in CHANNEL_TERMS:
                 _add_token(tokens, "campaign_constraints.channels", "campaign_channel", "=", channel, ["cc.channel = " + _sql_quote(channel)], ["campaign_channels"])
 
+    # 디멘션 값 필터(예: 상품브랜드 포멜카멜리 -> C.BRAND_ID IN ('A')). 실제 CRMDW 테이블 대상
+    # 전용 cart 템플릿(build_sql_template_candidate)이 이 절을 그대로 생성하므로 별칭 C 로 맞춘다.
+    # cart 디멘션 타겟팅 모드에서만 토큰을 낸다(다른 템플릿에 잘못 섞이지 않도록).
+    brand_filter = _cart_dimension_brand_filter(query_plan)
+    if brand_filter is not None:
+        column_short = brand_filter.get("column", "").split(".")[-1]
+        codes = [code for code in brand_filter.get("codes", []) if isinstance(code, str) and code]
+        if column_short and codes:
+            in_list = ", ".join(_sql_quote(code) for code in codes)
+            clause = f"C.{column_short} {brand_filter.get('operator', 'IN')} ({in_list})"
+            _add_token(
+                tokens,
+                "dimension_filters." + str(brand_filter.get("dimension_id", "dimension")),
+                "dimension_filter",
+                "in",
+                ",".join(codes),
+                [clause],
+                [],
+            )
+
     for policy in query_plan.get("policy_constraints", []):
         _add_policy_token(tokens, policy)
 
@@ -3456,6 +3655,24 @@ def _add_token(
 def build_sql_template_candidate(query_plan: dict[str, Any], condition_tokens: list[dict[str, Any]]) -> dict[str, Any] | None:
     intent = query_plan.get("intent")
     if intent == "recommend_campaign":
+        brand_filter = _cart_dimension_brand_filter(query_plan)
+        if brand_filter is not None:
+            # 장바구니에 특정 상품브랜드(BRAND_ID) 상품을 담은 회원 추출(실제 CRMDW 테이블).
+            # 브랜드명은 dimension_catalog 스냅샷으로 이미 코드(예: 'A')로 해석돼 넘어온다.
+            column_short = brand_filter.get("column", "CRM_CM_PRODUCT.BRAND_ID").split(".")[-1]
+            operator = brand_filter.get("operator", "IN")
+            in_list = ", ".join(_sql_quote(code) for code in brand_filter["codes"])
+            sql = "\n".join(
+                [
+                    "SELECT DISTINCT B.MEMBER_NO AS CUST_ID",
+                    "FROM ODS_MALL_OMS_CART A",
+                    "     INNER JOIN CRM_MB_BASEINFO B ON A.CART_ID = B.MEMBER_ID",
+                    "     INNER JOIN CRM_CM_PRODUCT C ON A.PRODUCT_ID = C.PRODUCT_ID",
+                    "WHERE A.KEEP_YN = 'Y'",
+                    f"  AND C.{column_short} {operator} ({in_list})",
+                ]
+            )
+            return _sql_candidate("sql_template:cart_dimension_targets", "장바구니 상품브랜드 타겟팅 SQL 템플릿", 1.0, sql, _template_tables(sql), "sql_template")
         if _should_use_cart_repurchase_template(query_plan):
             objective = query_plan.get("campaign_constraints", {}).get("objective")
             objective_clause = "t.campaign_objective = " + _sql_quote(objective) if objective else "t.campaign_objective IN ('purchase', 'repurchase', 'retention')"
@@ -3810,7 +4027,7 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     # 채널도 생성부(build_verified_condition_tokens)와 동일하게 recommend_campaign 에서만 요구한다.
     # "발송 채널: RCS" 표기로 채널이 잡혀도 find_user_segment 에선 캠페인 채널 절을 만들지 않으므로,
     # 검증부가 이를 요구하면 커버리지가 깨져 sql=None("검증 SQL 없음")이 된다.
-    if query_plan.get("intent") == "recommend_campaign":
+    if query_plan.get("intent") == "recommend_campaign" and not _is_cart_dimension_targeting(query_plan):
         for value in campaign_constraints.get("channels", []):
             conditions.append(_condition("campaign_constraints.channels", value, _condition_terms(value, "channels")))
 
@@ -3818,8 +4035,24 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     # 생성부(build_verified_condition_tokens)와 동일하게 CAMPAIGN_OBJECTIVES로 게이트한다.
     # 생성부는 지원 objective만 SQL 절로 내보내는데 검증부가 임의 objective를 요구하면
     # 커버리지 검증이 실패해 sql=None이 되고 "검증된 SQL 없음"으로 빠진다.
-    if query_plan.get("intent") == "recommend_campaign" and objective in CAMPAIGN_OBJECTIVES:
+    # 장바구니 디멘션(브랜드) 타겟팅은 순수 오디언스 추출 SQL이라 캠페인 objective/채널 컬럼이 없다.
+    # 이 모드에선 objective/채널 커버리지를 요구하지 않고 브랜드 코드 조건만 요구한다.
+    if query_plan.get("intent") == "recommend_campaign" and objective in CAMPAIGN_OBJECTIVES and not _is_cart_dimension_targeting(query_plan):
         conditions.append(_condition("campaign_constraints.objective", objective, [objective], all_terms=["objective"]))
+
+    brand_filter = _cart_dimension_brand_filter(query_plan)
+    if brand_filter is not None:
+        column_short = brand_filter.get("column", "").split(".")[-1]
+        for code in brand_filter.get("codes", []):
+            if column_short and code:
+                conditions.append(
+                    _condition(
+                        "dimension_filters." + str(brand_filter.get("dimension_id", "dimension")),
+                        code,
+                        [_sql_quote(code)],
+                        all_terms=[column_short],
+                    )
+                )
 
     offer_type = campaign_constraints.get("offer_type")
     if offer_type:
@@ -4182,6 +4415,28 @@ def _add_normalization_edges(graph: nx.Graph, node: dict[str, Any]) -> None:
         graph.add_edge(node["id"], business_term_node_id, relation="normalizes_business_term")
 
 
+def _add_dimension_edges(graph: nx.Graph, node: dict[str, Any]) -> None:
+    # 디멘션(예: 상품브랜드)을 실제 필터 대상 스키마 테이블/컬럼에 연결해
+    # 브랜드명 -> 코드 -> BRAND_ID IN (...) 경로가 스키마 허브로 이어지게 한다.
+    table_name = node.get("target_table")
+    if table_name:
+        table_node_id = f"schema_table:{table_name}"
+        if table_node_id in graph:
+            graph.add_edge(node["id"], table_node_id, relation="dimension_filters_table")
+
+    column_name = node.get("target_column")
+    if column_name:
+        column_node_id = f"schema_column:{column_name}"
+        if column_node_id in graph:
+            graph.add_edge(node["id"], column_node_id, relation="dimension_filters_column")
+
+
+def _add_dimension_value_edges(graph: nx.Graph, node: dict[str, Any]) -> None:
+    dimension_node_id = f"dimension:{node.get('dimension_id')}"
+    if dimension_node_id in graph:
+        graph.add_edge(node["id"], dimension_node_id, relation="value_of_dimension")
+
+
 def _add_sql_example_edges(graph: nx.Graph, node: dict[str, Any]) -> None:
     for table_name in node.get("tables", []):
         table_node_id = f"schema_table:{table_name}"
@@ -4276,6 +4531,10 @@ def _node_title(node: dict[str, Any]) -> str:
         return node.get("ko_label", node.get("canonical", node["id"]))
     if node["type"] == "sql_example":
         return node.get("title", node["id"])
+    if node["type"] == "dimension":
+        return node.get("prompt_label", node["id"])
+    if node["type"] == "dimension_value":
+        return node.get("name", node["id"])
     if node["type"] == "campaign":
         return node.get("name", node["id"])
     if node["type"] == "user":

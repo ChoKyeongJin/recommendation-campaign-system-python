@@ -10,9 +10,6 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      # 최초 기동(빈 데이터 볼륨) 시 로컬 스키마 + 데모 시드를 자동 생성한다.
-      # 재적용하려면 볼륨을 비운다: docker compose down -v (기존 데이터 삭제 주의).
-      - ./docs/data/local_bootstrap.sql:/docker-entrypoint-initdb.d/01_local_bootstrap.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d campaign_db"]
       interval: 5s

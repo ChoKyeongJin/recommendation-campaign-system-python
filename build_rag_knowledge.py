@@ -322,7 +322,14 @@ def sql_example_nodes(sql_text: str) -> list[dict[str, Any]]:
         number = int(match.group("number"))
         title = match.group("title").strip()
         sql = match.group("sql").strip()
-        tables = sorted(set(re.findall(r"\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_]*)", sql, re.IGNORECASE)))
+        # 테이블 추출은 주석(-- ...) 줄을 제외하고, db.schema.table 3-part 이름은 마지막 세그먼트만 취한다.
+        sql_no_comments = re.sub(r"--[^\n]*", "", sql)
+        tables = sorted(
+            {
+                name.split(".")[-1]
+                for name in re.findall(r"\b(?:FROM|JOIN)\s+([a-z_][a-z0-9_.]*)", sql_no_comments, re.IGNORECASE)
+            }
+        )
         text = f"SQL 예시 {number}. {title}. 관련 테이블: {', '.join(tables)}. 쿼리: {sql}"
         nodes.append(
             {
@@ -433,6 +440,45 @@ def metric_alias_nodes(metric_lexicon_payload: dict[str, Any] | None) -> list[di
     return nodes
 
 
+def dimension_nodes(dimension_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not dimension_payload:
+        return []
+
+    nodes = []
+    for dimension in dimension_payload.get("dimensions", []):
+        if not isinstance(dimension, dict):
+            continue
+        dimension_id = dimension.get("dimension_id")
+        prompt_label = dimension.get("prompt_label")
+        if not dimension_id or not prompt_label:
+            continue
+
+        # 값(코드/이름)은 런타임에 DS_SQL 로 동적 해석하므로 노드에 담지 않는다. 정의만 임베딩한다.
+        synonyms = dimension.get("synonyms", [])
+        target_column = dimension.get("target_column")
+        operator = dimension.get("operator", "IN")
+        if target_column:
+            targeting_text = f"타겟 컬럼 {target_column}, 연산자 {operator}. 값 이름을 코드로 변환해 {target_column} {operator} (코드목록) 으로 건다."
+        else:
+            targeting_text = "타겟 컬럼 매핑은 아직 없어 값 해석/참조용으로만 등록한다."
+        dimension_text = (
+            f"디멘션 {prompt_label}(프롬프트 키워드 {dimension.get('prmp_kwd_nm', dimension.get('prmp_kwd', ''))}). "
+            f"프롬프트에 등장하는 {prompt_label} 값으로 고객을 필터링한다. "
+            f"값(코드/이름)은 {dimension.get('dbms_id', '')} 의 DS_SQL 로 런타임에 조회한다. "
+            f"{targeting_text} "
+            f"동의어: {', '.join(synonyms)}."
+        )
+        nodes.append(
+            {
+                "id": f"dimension:{dimension_id}",
+                "type": "dimension",
+                **{key: value for key, value in dimension.items() if key != "ds_sql"},
+                "text_for_embedding": dimension_text,
+            }
+        )
+    return nodes
+
+
 def build_payload(
     schema_catalog: dict[str, Any],
     normalization_payload: dict[str, Any],
@@ -440,6 +486,7 @@ def build_payload(
     policy_payload: dict[str, Any] | None = None,
     metric_lexicon_payload: dict[str, Any] | None = None,
     campaign_user_payload: dict[str, Any] | None = None,
+    dimension_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     nodes = [
         *schema_nodes(schema_catalog),
@@ -447,6 +494,7 @@ def build_payload(
         *business_term_nodes(DEFAULT_BUSINESS_TERMS),
         *policy_nodes(policy_payload),
         *metric_alias_nodes(metric_lexicon_payload),
+        *dimension_nodes(dimension_payload),
         *sql_example_nodes(sql_text),
         *campaign_user_nodes(campaign_user_payload),
     ]
@@ -461,6 +509,7 @@ def build_payload(
             "metric_lexicon": "docs/data/metric_lexicon.sample.json",
             "sql_examples": "docs/data/sql_examples.sample.sql",
             "business_terms": "build_rag_knowledge.py",
+            "dimension_catalog": "docs/data/dimension_catalog.sample.json",
             "campaign_user_nodes": "docs/data/campaign_user_rag_sample_50_with_edges.json",
         },
         "node_counts": {
@@ -469,6 +518,8 @@ def build_payload(
             "business_term": len([node for node in nodes if node["type"] == "business_term"]),
             "business_policy": len([node for node in nodes if node["type"] == "business_policy"]),
             "metric_alias": len([node for node in nodes if node["type"] == "metric_alias"]),
+            "dimension": len([node for node in nodes if node["type"] == "dimension"]),
+            "dimension_value": len([node for node in nodes if node["type"] == "dimension_value"]),
             "sql_example": len([node for node in nodes if node["type"] == "sql_example"]),
             "campaign": len([node for node in nodes if node["type"] == "campaign"]),
             "user": len([node for node in nodes if node["type"] == "user"]),
@@ -485,6 +536,7 @@ def main() -> None:
     parser.add_argument("--normalization", type=Path, default=Path("docs/data/normalization_rules.sample.json"))
     parser.add_argument("--business-policies", type=Path, default=Path("docs/data/business_policies.sample.json"))
     parser.add_argument("--metric-lexicon", type=Path, default=Path("docs/data/metric_lexicon.sample.json"))
+    parser.add_argument("--dimension-catalog", type=Path, default=Path("docs/data/dimension_catalog.sample.json"))
     parser.add_argument("--sql-examples", type=Path, default=Path("docs/data/sql_examples.sample.sql"))
     parser.add_argument("--campaign-user", type=Path, default=Path("docs/data/campaign_user_rag_sample_50_with_edges.json"))
     parser.add_argument("--output", "-o", type=Path, default=Path("docs/data/rag_knowledge_base.json"))
@@ -497,6 +549,7 @@ def main() -> None:
         policy_payload=load_json(args.business_policies) if args.business_policies.exists() else None,
         metric_lexicon_payload=load_json(args.metric_lexicon) if args.metric_lexicon.exists() else None,
         campaign_user_payload=load_json(args.campaign_user) if args.campaign_user.exists() else None,
+        dimension_payload=load_json(args.dimension_catalog) if args.dimension_catalog.exists() else None,
     )
     save_json(args.output, payload)
     print(json.dumps(payload["node_counts"], ensure_ascii=False, indent=2))
