@@ -6,3 +6,6 @@
 logs/
 __pycache__
 __pycache__
+
+# MCP 서버 설정(DB 자격증명 포함) — 커밋 금지. 공유는 .mcp.json.example 사용.
+.mcp.json

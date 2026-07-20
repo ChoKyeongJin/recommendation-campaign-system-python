@@ -10,6 +10,9 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      # 최초 기동(빈 데이터 볼륨) 시 로컬 스키마 + 데모 시드를 자동 생성한다.
+      # 재적용하려면 볼륨을 비운다: docker compose down -v (기존 데이터 삭제 주의).
+      - ./docs/data/local_bootstrap.sql:/docker-entrypoint-initdb.d/01_local_bootstrap.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d campaign_db"]
       interval: 5s
@@ -40,6 +43,8 @@ services:
       POSTGRES_DB: campaign_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: "1234"
+      # 실제 business DB(SELECT 전용)와 전용 메타데이터 DB는 .env 의 BUSINESS_DB_* /
+      # METADATA_DB_* 로 지정한다(env_file 로 자동 주입, 미지정 시 POSTGRES_* 폴백).
     volumes:
       - .:/app
     depends_on:
@@ -64,6 +69,8 @@ services:
       POSTGRES_DB: campaign_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: "1234"
+      # 실제 business DB(SELECT 전용)와 전용 메타데이터 DB는 .env 의 BUSINESS_DB_* /
+      # METADATA_DB_* 로 지정한다(env_file 로 자동 주입, 미지정 시 POSTGRES_* 폴백).
     volumes:
       - .:/app
     depends_on:

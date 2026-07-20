@@ -1,270 +1,236 @@
--- NL2SQL/RAG retrieval examples for the campaign recommendation schema.
--- Keep this file between 10 and 30 examples.
+-- NL2SQL/RAG retrieval examples — 실DB(CRMAN / CRMDW) 기준. SQL Server(T-SQL) 방언.
+-- CRMAN = Customer_Analytics DB, CRMDW = smart_quadmax_mart DB. 둘 다 읽기 전용(SELECT/WITH만).
+-- 라우팅: 제목의 [CRMAN]/[CRMDW] 태그가 어느 연결(crman_connection/crmdw_connection)에서 실행할지를 뜻한다.
+--   - CRMAN 테이블은 Customer_Analytics.dbo.<TABLE> 3-part 이름으로 참조한다.
+--   - CRMDW 테이블은 기본 DB(smart_quadmax_mart)의 dbo 이름을 그대로 쓴다.
+-- 날짜형 다수는 nvarchar(8) 'YYYYMMDD' 문자열이라 사전식 비교, 또는 CONVERT(varchar(8), DATEADD(...), 112) 를 쓴다.
+-- 회원번호 도메인이 소스별로 다르다: CRMDW=MEMBER_NO(bigint)/MBR_NO(varchar), CRMAN=MBR_NO(nvarchar).
+--   CRMDW↔CRMAN 교차 조인은 별도 매핑 확인이 필요하므로 여기서는 각 예시를 단일 DB로 유지한다.
+-- 참고: 요청 목록의 T_TARGETLIST_CUST 는 CRMAN/CRMDW 어디에도 없다(quadmax_sdz(MariaDB)에만 존재) → 본 파일에서 제외.
+-- 파일당 예시 10~30개 유지. 각 예시는 세미콜론으로 끝나는 단일 문장이어야 한다.
 
--- 1. 활성 사용자 조회
-SELECT user_id, age, gender, region, lifecycle
-FROM users
-WHERE lifecycle = 'active';
+-- 1. [CRMDW] 최근 30일 로그인한 회원 조회
+SELECT DISTINCT MEMBER_NO
+FROM ODS_MALL_MMS_LOGINHISTORY
+WHERE LOGIN_DT >= DATEADD(DAY, -30, GETDATE());
 
--- 2. 휴면 고객 조회
--- 2. 6개월 이상 접속하지 않은 휴면 고객 조회
-SELECT
-    user_id,
-    region,
-    lifecycle,
-    last_login_at,
-    last_active_days,
-    price_sensitivity
-FROM users
-WHERE last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
-ORDER BY last_login_at ASC;
+-- 2. [CRMDW] 휴면 회원 조회
+SELECT MEMBER_NO, MEMBER_ID, GENDER_CD, AGE, LAST_LOGIN_DATE
+FROM CRM_MB_BASEINFO
+WHERE SLEEP_MEMBER_YN = 'Y';
 
--- 3. 패션 카테고리 캠페인 조회
-SELECT campaign_id, name, objective, offer
-FROM campaigns
-WHERE category = 'fashion';
+-- 3. [CRMDW] 앱푸시 수신 동의한 활동 회원(블랙리스트 제외)
+SELECT MEMBER_NO, GENDER_CD, AGE, SIDO, SIGUNGU
+FROM CRM_MB_BASEINFO
+WHERE ACTIVITY_MEMBER_YN = 'Y'
+  AND APP_PUSH_YN = 'Y'
+  AND ISNULL(BLACKLIST_YN, 'N') = 'N';
 
--- 4. 구매 목적 캠페인 중 예산이 큰 순서
-SELECT campaign_id, name, category, budget_krw
-FROM campaigns
-WHERE objective = 'purchase'
-ORDER BY budget_krw DESC;
+-- 4. [CRMDW] 최신 기준월의 VIP/VVIP 가치등급 회원
+SELECT MEMBER_NO, WORTH_GRADE, TOTAL_BUY_AMT, LAST_BUY_DATE
+FROM CRM_MB_MONTHCRMINFO
+WHERE YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)
+  AND WORTH_GRADE IN ('VIP', 'VVIP');
 
--- 5. app_push 채널 캠페인 조회
-SELECT c.campaign_id, c.name, c.category
-FROM campaigns c
-JOIN campaign_channels cc ON cc.campaign_id = c.campaign_id
-WHERE cc.channel = 'app_push';
+-- 5. [CRMDW] 구매주기가 도래한(재구매 유도 대상) 회원
+SELECT MEMBER_NO, WORTH_GRADE, BUY_CYCLE, BUY_DUE_PASSDAY, LAST_BUY_DATE
+FROM CRM_MB_MONTHCRMINFO
+WHERE YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)
+  AND BUY_DUE_PASSDAY > 0
+ORDER BY BUY_DUE_PASSDAY DESC;
 
--- 6. 가격 민감 타겟 캠페인 조회
-SELECT c.campaign_id, c.name, c.offer
-FROM campaigns c
-JOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id
-WHERE ts.target_segment = 'price_sensitive';
+-- 6. [CRMDW] 신제품 선호 회원(신제품 알림 아웃리치 대상)
+SELECT MEMBER_NO, WORTH_GRADE, MAIN_BUY_CATEGORY, LAST_BUY_DATE
+FROM CRM_MB_MONTHCRMINFO
+WHERE YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)
+  AND NEWPRODUCT_FAVOR_YN = 'Y';
 
--- 7. 뷰티 관심 사용자 조회
-SELECT u.user_id, u.age, u.gender, u.lifecycle
-FROM users u
-JOIN user_interests ui ON ui.user_id = u.user_id
-WHERE ui.interest = 'beauty';
+-- 7. [CRMDW] 현재 판매중인 상품 조회(판매기간 기준)
+SELECT PRODUCT_ID, PRODUCT_NAME, BRAND_NAME, CATEGORYL_NAME, CATEGORYM_NAME
+FROM CRM_CM_PRODUCT
+WHERE SALE_START_DT <= CONVERT(varchar(8), GETDATE(), 112)
+  AND (SALE_END_DT IS NULL OR SALE_END_DT >= CONVERT(varchar(8), GETDATE(), 112));
 
--- 8. 카카오 선호 사용자 조회
-SELECT u.user_id, u.region, u.price_sensitivity
-FROM users u
-JOIN user_preferred_channels upc ON upc.user_id = u.user_id
-WHERE upc.preferred_channel = 'kakao';
+-- 8. [CRMDW] 장바구니에 담겨있는(유지) 인기 상품 TOP 20
+SELECT TOP 20 PRODUCT_ID, SUM(QTY) AS total_qty, COUNT(*) AS cart_line_cnt
+FROM ODS_MALL_OMS_CART
+WHERE KEEP_YN = 'Y'
+GROUP BY PRODUCT_ID
+ORDER BY total_qty DESC;
 
--- 9. 장바구니 이탈 행동 사용자 조회
-SELECT u.user_id, u.gender, u.lifecycle, urb.behavior
-FROM users u
-JOIN user_recent_behaviors urb ON urb.user_id = u.user_id
-WHERE urb.behavior = 'cart_abandoned:fashion';
+-- 9. [CRMDW] 장바구니 상품에 상품 마스터를 조인해 상품명까지 조회
+SELECT TOP 50 c.CART_ID, c.PRODUCT_ID, p.PRODUCT_NAME, p.BRAND_NAME, c.QTY, c.TOTAL_SALE_PRICE
+FROM ODS_MALL_OMS_CART c
+JOIN CRM_CM_PRODUCT p ON p.PRODUCT_ID = c.PRODUCT_ID
+WHERE c.KEEP_YN = 'Y'
+ORDER BY c.INS_DT DESC;
 
--- 10. 특정 사용자에게 추천된 캠페인 조회
-SELECT re.user_id, c.campaign_id, c.name, re.reason, re.label
-FROM recommendation_edges re
-JOIN campaigns c ON c.campaign_id = re.campaign_id
-WHERE re.user_id = 'user_001';
+-- 10. [CRMAN] 최신 기준월의 최상위 등급(1등급) 회원
+SELECT MBR_NO, SEX_CD, AGE, GRD_CD, MAIN_BUY_CATEGORY_CD, MAIN_BUY_CHANNEL_CD
+FROM Customer_Analytics.dbo.CRM_MB_CRM_INFO
+WHERE YYYYMM = (SELECT MAX(YYYYMM) FROM Customer_Analytics.dbo.CRM_MB_CRM_INFO)
+  AND GRD_CD = '1';
 
--- 11. 추천 강도가 높은 추천 edge 조회
-SELECT re.user_id, re.campaign_id, c.name, re.reason
-FROM recommendation_edges re
-JOIN campaigns c ON c.campaign_id = re.campaign_id
-WHERE re.label = 'high';
+-- 11. [CRMAN] SMS 마케팅 수신 동의 회원(블랙리스트 제외)
+SELECT MBR_NO, GENDER_CD, AGE, ZIP_CD, POINT
+FROM Customer_Analytics.dbo.CRM_MB_BASE_INFO
+WHERE SMS_YN = 'Y'
+  AND AGREE_YN = 'Y'
+  AND ISNULL(BLACKLIST_YN, 'N') = 'N';
 
--- 12. 캠페인별 추천 사용자 수 집계
-SELECT c.campaign_id, c.name, COUNT(re.user_id) AS recommended_user_count
-FROM campaigns c
-LEFT JOIN recommendation_edges re ON re.campaign_id = c.campaign_id
-GROUP BY c.campaign_id, c.name
-ORDER BY recommended_user_count DESC;
+-- 12. [CRMAN] 최근 90일 주문 회원별 주문 건수/결제금액 합계
+SELECT MBR_NO, COUNT(*) AS order_cnt, SUM(PAYMENT_AMT) AS total_payment
+FROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER
+WHERE ORDER_DATE >= CONVERT(varchar(8), DATEADD(DAY, -90, GETDATE()), 112)
+GROUP BY MBR_NO
+ORDER BY total_payment DESC;
 
--- 13. 지역별 사용자 수 집계
-SELECT region, COUNT(*) AS user_count
-FROM users
-GROUP BY region
-ORDER BY user_count DESC;
+-- 13. [CRMAN] 최근 30일 판매 상위 상품(주문상세 + 상품 조인)
+SELECT TOP 20 d.PROD_CD, p.PROD_NM, SUM(d.ORDER_QTY) AS order_qty, SUM(d.SALES_AMT) AS sales_amt
+FROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER h
+JOIN Customer_Analytics.dbo.CRM_SL_ORDER_DETAIL d ON d.ORDER_ID = h.ORDER_ID
+JOIN Customer_Analytics.dbo.CRM_CM_PRODUCT p ON p.PROD_CD = d.PROD_CD
+WHERE h.ORDER_DATE >= CONVERT(varchar(8), DATEADD(DAY, -30, GETDATE()), 112)
+GROUP BY d.PROD_CD, p.PROD_NM
+ORDER BY sales_amt DESC;
 
--- 14. 관심사와 채널이 동시에 맞는 사용자 조회
-SELECT DISTINCT u.user_id, u.gender, u.region
-FROM users u
-JOIN user_interests ui ON ui.user_id = u.user_id
-JOIN user_preferred_channels upc ON upc.user_id = u.user_id
-WHERE ui.interest = 'food'
-  AND upc.preferred_channel = 'app_push';
+-- 14. [CRMAN] 특정 상품 대분류(P01)를 최근 6개월 구매한 회원 목록
+SELECT DISTINCT h.MBR_NO
+FROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER h
+JOIN Customer_Analytics.dbo.CRM_SL_ORDER_DETAIL d ON d.ORDER_ID = h.ORDER_ID
+JOIN Customer_Analytics.dbo.CRM_CM_PRODUCT p ON p.PROD_CD = d.PROD_CD
+WHERE p.PROD_CATEGORY_CD = 'P01'
+  AND h.ORDER_DATE >= CONVERT(varchar(8), DATEADD(MONTH, -6, GETDATE()), 112);
 
--- 15. 키워드가 쿠폰인 캠페인과 타겟 세그먼트 조회
-SELECT c.campaign_id, c.name, ts.target_segment
-FROM campaigns c
-JOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id
-JOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id
-WHERE ck.keyword = '쿠폰'
-ORDER BY c.campaign_id, ts.target_segment;
+-- 15. [CRMAN] 최근 30일 매장별 주문 건수/매출(매장정보 조인)
+SELECT s.SHOP_CD, s.SHOP_NAME, s.BRAND_NM, COUNT(*) AS order_cnt, SUM(h.PAYMENT_AMT) AS payment_amt
+FROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER h
+JOIN Customer_Analytics.dbo.CRM_CM_SHOP_INFO s ON s.SHOP_CD = h.SHOP_CD
+WHERE h.ORDER_DATE >= CONVERT(varchar(8), DATEADD(DAY, -30, GETDATE()), 112)
+GROUP BY s.SHOP_CD, s.SHOP_NAME, s.BRAND_NM
+ORDER BY payment_amt DESC;
 
--- 16. 20대 여성 장바구니 이탈 쿠폰 캠페인 추천
-SELECT DISTINCT u.user_id, u.age, u.gender, c.campaign_id, c.category, c.offer, urb.behavior
-FROM users u
-JOIN user_recent_behaviors urb ON urb.user_id = u.user_id
-JOIN recommendation_edges re ON re.user_id = u.user_id
-JOIN campaigns c ON c.campaign_id = re.campaign_id
-JOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id
-JOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id
-WHERE u.gender = 'female'
-  AND u.age BETWEEN 20 AND 29
-  AND urb.behavior LIKE 'cart_abandoned:%'
-  AND ck.keyword = '쿠폰'
-  AND ts.target_segment = 'cart_abandoner';
+-- 16. [CRMAN] 지역(시도)별 회원 수(CRM정보 + 주소 조인: DIV_ID, ZIP_CD)
+SELECT a.SIDO, COUNT(DISTINCT m.MBR_NO) AS member_cnt
+FROM Customer_Analytics.dbo.CRM_MB_CRM_INFO m
+JOIN Customer_Analytics.dbo.CRM_CM_ADDRESS a
+  ON a.DIV_ID = m.DIV_ID AND a.ZIP_CD = m.ZIP_CD
+WHERE m.YYYYMM = (SELECT MAX(YYYYMM) FROM Customer_Analytics.dbo.CRM_MB_CRM_INFO)
+GROUP BY a.SIDO
+ORDER BY member_cnt DESC;
 
--- 17. 20~30대 남성이 아닌 장바구니 이탈 쿠폰 캠페인 추천
-SELECT DISTINCT u.user_id, u.age, u.gender, c.campaign_id, c.category, c.offer, urb.behavior
-FROM users u
-JOIN user_recent_behaviors urb ON urb.user_id = u.user_id
-JOIN recommendation_edges re ON re.user_id = u.user_id
-JOIN campaigns c ON c.campaign_id = re.campaign_id
-JOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id
-JOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id
-WHERE u.gender <> 'male'
-  AND u.age BETWEEN 20 AND 39
-  AND urb.behavior LIKE 'cart_abandoned:%'
-  AND ck.keyword = '쿠폰'
-  AND ts.target_segment = 'cart_abandoner';
+-- 17. [CRMAN] 가치(WORTH) 등급 기준정보 구간 조회
+SELECT DIV_ID, GRADE_TYPE, GRADE_CODE, GRADE_NAME, BUY_AMT_FROM, BUY_AMT_TO
+FROM Customer_Analytics.dbo.CRM_CM_STANDARD
+WHERE GRADE_TYPE = 'WORTH'
+ORDER BY GRADE_SEQ;
 
--- 18. 쿠폰 관심 고객 맞춤 쿠폰 캠페인 추천
-SELECT DISTINCT u.user_id, u.price_sensitivity, c.campaign_id, c.name, c.offer, ts.target_segment
-FROM users u
-JOIN recommendation_edges re ON re.user_id = u.user_id
-JOIN campaigns c ON c.campaign_id = re.campaign_id
-JOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id
-JOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id
-WHERE u.price_sensitivity = 'high'
-  AND ts.target_segment = 'price_sensitive'
-  AND ck.keyword = '쿠폰';
+-- 18. [CRMAN] 공통코드 그룹 목록과 코드 개수
+SELECT CD_GROUP_CD, CD_GROUP_NAME, COUNT(*) AS code_cnt
+FROM Customer_Analytics.dbo.CRM_CM_CODE
+GROUP BY CD_GROUP_CD, CD_GROUP_NAME
+ORDER BY CD_GROUP_CD;
 
--- 19. A/B/C 메시지 variant별 CTR 성과 조회
-SELECT variant_code, message_name, assigned_count, delivered_count,
-       impression_count, click_count, conversion_count,
-       ctr_pct, delivered_ctr_pct, cvr_pct, revenue_krw
-FROM v_campaign_variant_metrics
-WHERE experiment_id = 1
-ORDER BY delivered_ctr_pct DESC NULLS LAST;
+-- 19. [CRMDW] 최근 3개월 실행된 캠페인 목록(취소/중지 제외)
+SELECT CAMP_ID, CAMP_EXEC_NO, CAMP_NAME, CAMP_TYPE_CD, CAMP_PURPOSE_CD, CAMP_SDATE, CAMP_EDATE
+FROM Z_CAMPAIGN
+WHERE ISNULL(CANCEL_YN, 'N') = 'N'
+  AND CAMP_SDATE >= CONVERT(varchar(8), DATEADD(MONTH, -3, GETDATE()), 112)
+ORDER BY CAMP_SDATE DESC;
 
--- 20. 세그먼트별 A/B/C 클릭 성과 조회
-SELECT variant_code, gender, age_group, region, lifecycle,
-       delivered_count, impression_count, click_count, conversion_count,
-       ctr_pct, click_to_conversion_rate_pct
-FROM v_campaign_segment_metrics
-WHERE experiment_id = 1
-ORDER BY click_count DESC, delivered_count DESC;
+-- 20. [CRMDW] 캠페인 실행별 발송/오퍼반응/구매반응 집계(타겟군 기준)
+SELECT CAMP_ID, CAMP_EXEC_NO,
+       COUNT(*) AS sent_cnt,
+       SUM(CASE WHEN CNCT_SCS_YN = 'Y' THEN 1 ELSE 0 END) AS contact_cnt,
+       SUM(CASE WHEN OFFR_RSPN_YN = 'Y' THEN 1 ELSE 0 END) AS offer_rspn_cnt,
+       SUM(CASE WHEN BUY_RSPN_YN = 'Y' THEN 1 ELSE 0 END) AS buy_rspn_cnt,
+       SUM(BUY_AMT) AS buy_amt
+FROM MCS_CAMP_MBR_RSPN_FT
+WHERE CGRP_TYPE_CD = 'T'
+GROUP BY CAMP_ID, CAMP_EXEC_NO
+ORDER BY buy_amt DESC;
 
--- 21. 모델 학습용 delivery 단위 클릭 label 생성
-SELECT d.delivery_id, d.user_id, d.campaign_id, d.channel, v.variant_code,
-       d.assignment_source, d.predicted_click_probability,
-       CASE WHEN COUNT(e.event_id) FILTER (WHERE e.event_type = 'click') > 0 THEN 1 ELSE 0 END AS clicked
-FROM campaign_message_deliveries d
-JOIN campaign_message_variants v ON v.variant_id = d.variant_id
-LEFT JOIN campaign_message_events e ON e.delivery_id = d.delivery_id
-WHERE d.experiment_id = 1
-GROUP BY d.delivery_id, v.variant_code;
+-- 21. [CRMDW] 특정 캠페인의 타겟 회원 목록
+SELECT CAMP_ID, CAMP_EXEC_NO, CELL_NODE_ID, MBR_NO, CONTAC_SUCC_YN
+FROM Z_CAMP_MBR
+WHERE CAMP_ID = 'CAMP0001'
+  AND CELL_TYPE_CD = 'T';
 
--- 22. 날짜별 메시지 이벤트 추이 조회
-SELECT event_date_kst, variant_id, channel,
-       sent_event_count, delivered_event_count, impression_event_count,
-       click_event_count, conversion_event_count, revenue_krw
-FROM v_campaign_daily_metrics
-WHERE experiment_id = 1
-ORDER BY event_date_kst, variant_id;
+-- 22. [CRMDW] 캠페인 셀별 ROI 상위(셀 + 캠페인 조인)
+SELECT c.CAMP_ID, g.CAMP_NAME, c.CELL_NODE_ID, c.CELL_NAME, c.SBJ_GP_MBRNUM, c.EXP_ROI
+FROM Z_CAMP_CELL c
+JOIN Z_CAMPAIGN g ON g.CAMP_ID = c.CAMP_ID AND g.CAMP_EXEC_NO = c.CAMP_EXEC_NO
+WHERE c.EXP_ROI IS NOT NULL
+ORDER BY c.EXP_ROI DESC;
 
--- 23. 장바구니에 상품을 담고 24시간 이상 결제하지 않은 고객 조회
-SELECT
-    c.cart_id,
-    c.user_id,
-    c.total_amount_krw
-FROM shopping_carts c
-WHERE c.cart_status = 'abandoned'
-AND c.purchase_completed = FALSE
-AND c.abandoned_at <= NOW() - INTERVAL '24 hours';
+-- 23. [CRMDW] 캠페인에서 구매 반응한 회원 프로파일(반응팩트 + 회원기본정보, 동일 CRMDW 회원키)
+-- 주: MBR_NO(varchar) 와 MEMBER_NO(bigint) 는 형이 달라 TRY_CAST 로 맞춘다. 비숫자 값은 매칭에서 제외된다.
+SELECT f.CAMP_ID, f.CAMP_EXEC_NO, f.MBR_NO, b.GENDER_CD, b.AGE, b.SIDO, f.BUY_AMT
+FROM MCS_CAMP_MBR_RSPN_FT f
+JOIN CRM_MB_BASEINFO b ON b.MEMBER_NO = TRY_CAST(f.MBR_NO AS bigint)
+WHERE f.CGRP_TYPE_CD = 'T'
+  AND f.BUY_RSPN_YN = 'Y';
 
--- 24. 장바구니 금액이 5만원 이상인 미결제 고객
-SELECT
-    user_id,
-    total_amount_krw
-FROM shopping_carts
-WHERE cart_status='abandoned'
-AND purchase_completed=FALSE
-AND total_amount_krw>=50000;
+-- 24. [CRMDW] 로그인 이력 기준 최근 3개월 로그인 5회 이상 활동 회원
+-- 주: 로그인기간(필수) BETWEEN + HAVING COUNT(0)로 로그인횟수 조건을 건 형태. 디바이스유형/모바일OS유형/앱버전 IN 필터는 선택.
+SELECT A.MEMBER_NO AS CUST_ID
+FROM ODS_MALL_MMS_LOGINHISTORY A WITH(NOLOCK)
+WHERE CONVERT(CHAR(8), A.LOGIN_DT, 112)
+      BETWEEN CONVERT(varchar(8), DATEADD(MONTH, -3, GETDATE()), 112)
+          AND CONVERT(varchar(8), GETDATE(), 112)
+GROUP BY A.MEMBER_NO
+HAVING COUNT(0) >= 5;
 
--- 25. 쿠폰 발급 가능한 장바구니 이탈 고객
-SELECT DISTINCT
-    c.user_id
-FROM shopping_carts c
-JOIN shopping_cart_items i
-ON c.cart_id=i.cart_id
-WHERE c.cart_status='abandoned'
-AND i.coupon_available=TRUE;
+-- 참고: 회원기본정보(CRM_MB_BASEINFO)/회원등급(CRM_MB_MONTHCRMINFO) 파라미터 템플릿 예시는 sql_examples.member.sample.sql 로 분리했다.
 
--- 26. 패션 상품을 장바구니에 담고 구매하지 않은 고객
-SELECT DISTINCT
-    c.user_id
-FROM shopping_carts c
-JOIN shopping_cart_items i
-ON c.cart_id=i.cart_id
-WHERE c.cart_status='abandoned'
-AND i.category='fashion';
+-- 25. [CRMDW] 최근 30일 장바구니 담은 회원 중 장바구니 합계금액 5만~50만원
+-- 주: 회원기본정보(B)에 CART_ID=MEMBER_ID로 조인, 상품마스터(C)는 상품분류 필터용 LEFT JOIN. 모든 WHERE 필터는 선택.
+--     선택 필터: 보관시작일(INS_DT)/보관종료일(END_DT) 기간, 장바구니유형(CART_TYPE_CD), 상품분류(카테고리/브랜드/대·중·소분류/상품), HAVING 장바구니금액(SUM(SALE_PRICE)).
+SELECT B.MEMBER_NO AS CUST_ID
+FROM ODS_MALL_OMS_CART A WITH(NOLOCK)
+     INNER JOIN CRM_MB_BASEINFO B WITH(NOLOCK)
+       ON A.CART_ID = B.MEMBER_ID
+     LEFT OUTER JOIN CRM_CM_PRODUCT C WITH(NOLOCK)
+       ON A.PRODUCT_ID = C.PRODUCT_ID
+WHERE CONVERT(CHAR(8), A.INS_DT, 112)
+      BETWEEN CONVERT(varchar(8), DATEADD(DAY, -30, GETDATE()), 112)
+          AND CONVERT(varchar(8), GETDATE(), 112)
+GROUP BY B.MEMBER_NO
+HAVING SUM(A.SALE_PRICE) BETWEEN 50000 AND 500000;
 
--- 27. 장바구니 리마인드 문자를 아직 보내지 않은 고객
-SELECT
-    c.user_id
-FROM shopping_carts c
-LEFT JOIN cart_reminder_history r
-ON c.cart_id=r.cart_id
-WHERE c.cart_status='abandoned'
-AND r.reminder_id IS NULL;
+-- 26. [CRMDW] 특정 캠페인(CAMP0001) 대상군 중 구매반응 발생(구매금액 1만~100만원) 회원
+-- 주: 캠페인명(A.CAMP_ID IN)은 필수, C.CELL_TYPE_CD='T'는 대상군만 추출하는 고정 조건. 반응실적(D)은 LEFT JOIN.
+--     선택 필터: 접촉성공여부(CONTAC_SUCC_YN)/구매반응여부(BUY_RSPN_YN)/오퍼반응여부(OFFR_RSPN_YN)=Y·N, 구매금액/오퍼사용구매금액/오퍼할인금액/발행·사용쿠폰수 BETWEEN.
+SELECT C.MBR_NO
+FROM Z_CAMPAIGN A WITH(NOLOCK)
+     INNER JOIN Z_CAMP_CELL B WITH(NOLOCK)
+       ON A.CAMP_ID = B.CAMP_ID AND A.CAMP_EXEC_NO = B.CAMP_EXEC_NO
+     INNER JOIN Z_CAMP_MBR C WITH(NOLOCK)
+       ON A.CAMP_ID = C.CAMP_ID AND A.CAMP_EXEC_NO = C.CAMP_EXEC_NO AND B.CELL_NODE_ID = C.CELL_NODE_ID
+     LEFT OUTER JOIN MCS_CAMP_MBR_RSPN_FT D WITH(NOLOCK)
+       ON A.CAMP_ID = D.CAMP_ID AND A.CAMP_EXEC_NO = D.CAMP_EXEC_NO AND B.CELL_NODE_ID = D.CELL_NODE_ID AND C.MBR_NO = D.MBR_NO
+WHERE A.CAMP_ID IN ('CAMP0001')
+  AND C.CELL_TYPE_CD = 'T'
+  AND D.BUY_RSPN_YN = 'Y'
+  AND D.BUY_AMT BETWEEN 10000 AND 1000000;
 
--- 28. 6개월 이상 미접속한 휴면 고객에게 복귀 캠페인 추천
-SELECT DISTINCT
-    u.user_id,
-    u.region,
-    u.lifecycle,
-    u.last_login_at,
-    u.last_active_days,
-    c.campaign_id,
-    c.name AS campaign_name,
-    c.offer
-FROM users u
-JOIN recommendation_edges re
-    ON re.user_id = u.user_id
-JOIN campaigns c
-    ON c.campaign_id = re.campaign_id
-WHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
-  AND c.objective = 'reactivation'
-ORDER BY u.last_login_at ASC;
+-- 27. [CRMDW] 특정 캠페인 실행회차/반응노드(셀)의 채널·오퍼·구매 반응 고객 추출(대상군)
+-- 주: 반응 실행 쿼리의 '특정 셀' 분기. RES_CHNL=CNCT_SCS_YN / RES_OFFER=OFFR_RSPN_YN / RES_BUY=BUY_RSPN_YN, 모두 Y·N.
+--     각 반응필터가 'ALL'이면 해당 조건은 무시(전체)되고, 값이 지정되면 그 값으로 필터.
+SELECT DISTINCT MBR_NO
+FROM MCS_CAMP_MBR_RSPN_FT
+WHERE CAMP_ID = 'C17003G'
+  AND CAMP_EXEC_NO = '1'
+  AND CELL_NODE_ID = 'N170216095828506'
+  AND CGRP_TYPE_CD = 'T'
+  AND CNCT_SCS_YN = 'Y'
+  AND OFFR_RSPN_YN = 'Y'
+  AND BUY_RSPN_YN = 'Y';
 
-
--- 29. 6개월 이상 미접속하고 최근 90일 구매가 없는 고객 조회
-SELECT
-    user_id,
-    region,
-    lifecycle,
-    last_login_at,
-    last_active_days,
-    purchase_count_90d,
-    price_sensitivity
-FROM users
-WHERE last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
-  AND purchase_count_90d = 0
-ORDER BY last_active_days DESC;
-
-
--- 30. 6개월 이상 휴면 고객 중 문자 또는 카카오 수신 선호 고객 조회
-SELECT DISTINCT
-    u.user_id,
-    u.region,
-    u.last_login_at,
-    u.last_active_days,
-    upc.preferred_channel
-FROM users u
-JOIN user_preferred_channels upc
-    ON upc.user_id = u.user_id
-WHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
-  AND upc.preferred_channel IN ('sms', 'kakao', 'lms', 'rcs')
-ORDER BY u.last_login_at ASC;
+-- 28. [CRMDW] 특정 캠페인 전체의 구매 반응 고객 추출(반응노드=ALL 분기, 대상군)
+-- 주: 반응 실행 쿼리의 'ALL' 분기 — CELL_NODE_ID/CAMP_EXEC_NO 없이 캠페인 전체에서 추출.
+SELECT DISTINCT MBR_NO
+FROM MCS_CAMP_MBR_RSPN_FT
+WHERE CAMP_ID = 'C17003G'
+  AND CGRP_TYPE_CD = 'T'
+  AND BUY_RSPN_YN = 'Y';

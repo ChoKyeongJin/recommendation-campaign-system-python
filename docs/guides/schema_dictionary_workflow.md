@@ -4,7 +4,7 @@
 
 이 프로젝트의 스키마 사전은 DDL에서 자동 추출한 구조 정보를 기준으로 관리한다.
 
-1. 스키마 구조는 `docs/data/ddl.sql`에서 자동 추출한다.
+1. 스키마 구조는 `docs/data/local_bootstrap.sql`에서 자동 추출한다.
 2. LLM은 테이블별 설명만 생성한다.
 3. 사람이 직접 수정하는 영역은 중요한 컬럼의 `human_note`로 제한한다.
 4. SQL 예시는 10~30개만 유지한다.
@@ -13,7 +13,7 @@
 ## 자동 추출
 
 ```bash
-docker compose run --rm python python schema_extract.py docs/data/ddl.sql --output docs/data/schema_catalog.json
+docker compose run --rm python python schema_extract.py docs/data/local_bootstrap.sql --output docs/data/schema_catalog.json
 ```
 
 생성 파일:

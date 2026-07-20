@@ -118,7 +118,13 @@
         "복귀 대상",
         "inactive",
         "inactive_90d",
-        "dormant"
+        "dormant",
+        "휴면회원",
+        "슬립 회원",
+        "슬립",
+        "잠자는 고객",
+        "sleep member",
+        "SLEEP"
       ]
     },
     {
@@ -133,7 +139,12 @@
         "상위 고객",
         "high value",
         "high_ltv",
-        "vip"
+        "vip",
+        "최우수 고객",
+        "top tier",
+        "프리미엄 등급",
+        "VVIP",
+        "VIP PREMIUM"
       ]
     },
     {
@@ -153,7 +164,12 @@
         "가성비",
         "deal seeker",
         "discount responsive",
-        "price sensitive"
+        "price sensitive",
+        "할인 민감",
+        "할인 민감도 높은",
+        "가격 민감도",
+        "캠페인 민감",
+        "할인 반응 고객"
       ]
     },
     {
@@ -237,7 +253,9 @@
         "앱 활성",
         "app user",
         "app_user",
-        "uses_app_daily"
+        "uses_app_daily",
+        "App",
+        "APP"
       ]
     },
     {
@@ -278,7 +296,14 @@
         "육아",
         "아이 있는 고객",
         "parent",
-        "baby buyer"
+        "baby buyer",
+        "자녀 있는",
+        "자녀",
+        "아기 있는",
+        "유아",
+        "키즈",
+        "baby",
+        "children"
       ]
     },
     {
@@ -502,7 +527,14 @@
       "rule_id": "kakao",
       "canonical": "kakao",
       "ko_label": "카카오",
-      "synonyms": ["카카오", "카톡", "알림톡", "친구톡", "kakao", "kakaotalk"]
+      "synonyms": [
+        "카카오",
+        "카톡",
+        "알림톡",
+        "친구톡",
+        "kakao",
+        "kakaotalk"
+      ]
     },
     {
       "rule_id": "email",
@@ -521,7 +553,13 @@
       "rule_id": "sms",
       "canonical": "sms",
       "ko_label": "문자",
-      "synonyms": ["문자", "SMS", "문자메시지", "단문", "text message"]
+      "synonyms": [
+        "문자",
+        "SMS",
+        "문자메시지",
+        "단문",
+        "text message"
+      ]
     },
     {
       "rule_id": "instagram",
@@ -547,7 +585,6 @@
         "바우처",
         "프로모션 코드",
         "coupon",
-        "voucher",
         "promo code"
       ]
     },
@@ -595,21 +632,1934 @@
         "launch",
         "awareness"
       ]
+    },
+    {
+      "rule_id": "online_buyer",
+      "canonical": "online_buyer",
+      "ko_label": "온라인 구매 고객",
+      "synonyms": [
+        "온라인 구매",
+        "온라인 고객",
+        "온라인",
+        "온라인몰",
+        "앱 구매",
+        "웹 구매",
+        "모바일 구매",
+        "온라인 주문",
+        "online buyer",
+        "online",
+        "on",
+        "ON",
+        "온/오프라인",
+        "ONOFF",
+        "PC",
+        "Mobile Web",
+        "MW",
+        "모바일웹",
+        "앱"
+      ]
+    },
+    {
+      "rule_id": "offline_buyer",
+      "canonical": "offline_buyer",
+      "ko_label": "오프라인·매장 구매 고객",
+      "synonyms": [
+        "오프라인",
+        "오프라인 구매",
+        "매장 구매",
+        "매장 방문",
+        "오프라인 고객",
+        "점포 구매",
+        "매장 고객",
+        "offline buyer",
+        "offline",
+        "offshop",
+        "in-store",
+        "off",
+        "OFF",
+        "TV쇼핑",
+        "OFFSHOP",
+        "티비쇼핑"
+      ]
+    },
+    {
+      "rule_id": "membership_member",
+      "canonical": "membership_member",
+      "ko_label": "멤버십 회원",
+      "synonyms": [
+        "멤버십",
+        "멤버십 회원",
+        "멤버십 가입자",
+        "멤버십 고객",
+        "멤버십 가입",
+        "membership",
+        "membership member"
+      ]
+    },
+    {
+      "rule_id": "employee",
+      "canonical": "employee",
+      "ko_label": "임직원 고객",
+      "synonyms": [
+        "임직원",
+        "직원",
+        "사내 임직원",
+        "사원",
+        "내부 직원",
+        "임직원 고객",
+        "employee",
+        "staff",
+        "b2e",
+        "EMPLOYEE",
+        "협력사직원",
+        "PARTNER",
+        "파트너"
+      ]
+    },
+    {
+      "rule_id": "blacklist",
+      "canonical": "blacklist",
+      "ko_label": "블랙리스트(발송 제외) 고객",
+      "synonyms": [
+        "블랙리스트",
+        "블랙",
+        "발송 제외",
+        "제외 대상",
+        "수신 차단",
+        "발송 금지",
+        "blacklist",
+        "blocked",
+        "excluded"
+      ]
+    },
+    {
+      "rule_id": "married",
+      "canonical": "married",
+      "ko_label": "기혼 고객",
+      "synonyms": [
+        "기혼",
+        "결혼",
+        "결혼한",
+        "기혼 고객",
+        "부부",
+        "married"
+      ],
+      "negative_synonyms": [
+        "미혼",
+        "결혼 안 한 사람",
+        "not married",
+        "single"
+      ]
+    },
+    {
+      "rule_id": "foreigner",
+      "canonical": "foreigner",
+      "ko_label": "외국인 고객",
+      "synonyms": [
+        "외국인",
+        "외국인 고객",
+        "외국 국적",
+        "foreigner",
+        "foreign"
+      ]
+    },
+    {
+      "rule_id": "marketing_consent",
+      "canonical": "marketing_consent",
+      "ko_label": "마케팅 수신동의 고객",
+      "synonyms": [
+        "마케팅 수신동의",
+        "수신 동의",
+        "광고 수신 동의",
+        "수신동의 고객",
+        "마케팅 동의",
+        "정보 수신 동의",
+        "수신 허용",
+        "opt-in",
+        "marketing consent",
+        "consent",
+        "agreed"
+      ],
+      "negative_synonyms": [
+        "수신 거부",
+        "수신 미동의",
+        "동의 안 한 사람",
+        "opt-out",
+        "not consented"
+      ]
+    },
+    {
+      "rule_id": "active_member",
+      "canonical": "active_member",
+      "ko_label": "활성 회원",
+      "synonyms": [
+        "활성 고객",
+        "활동 고객",
+        "액티브 고객",
+        "활발한 고객",
+        "활성 회원",
+        "활동적인 고객",
+        "active member",
+        "active",
+        "NORMAL"
+      ],
+      "negative_synonyms": [
+        "휴면이 아닌",
+        "비활성이 아닌",
+        "not dormant"
+      ]
+    },
+    {
+      "rule_id": "point_holder",
+      "canonical": "point_holder",
+      "ko_label": "포인트·적립금 보유 고객",
+      "synonyms": [
+        "포인트 보유",
+        "포인트 많은",
+        "적립금",
+        "캐럿",
+        "포인트 고객",
+        "적립금 보유",
+        "point holder",
+        "has points",
+        "loyalty points"
+      ]
+    },
+    {
+      "rule_id": "birthday_target",
+      "canonical": "birthday_target",
+      "ko_label": "생일 고객",
+      "synonyms": [
+        "생일",
+        "생일자",
+        "생일 고객",
+        "이달 생일",
+        "생일 이벤트",
+        "생일 축하",
+        "생일 대상",
+        "birthday",
+        "birthday customer"
+      ]
+    },
+    {
+      "rule_id": "wedding_anniversary",
+      "canonical": "wedding_anniversary",
+      "ko_label": "결혼기념일 고객",
+      "synonyms": [
+        "결혼기념일",
+        "기념일",
+        "웨딩 기념일",
+        "결혼 기념",
+        "wedding anniversary",
+        "anniversary"
+      ]
+    },
+    {
+      "rule_id": "campaign_responder",
+      "canonical": "campaign_responder",
+      "ko_label": "캠페인 반응 고객",
+      "synonyms": [
+        "캠페인 반응",
+        "반응 고객",
+        "오퍼 반응",
+        "반응한 고객",
+        "구매 전환",
+        "전환 고객",
+        "응답 고객",
+        "반응",
+        "responder",
+        "responded",
+        "converter"
+      ],
+      "negative_synonyms": [
+        "반응 없는 사람"
+      ]
+    },
+    {
+      "rule_id": "campaign_nonresponder",
+      "canonical": "campaign_nonresponder",
+      "ko_label": "캠페인 미반응 고객",
+      "synonyms": [
+        "미반응",
+        "무반응",
+        "반응 없음",
+        "응답 없음",
+        "미전환",
+        "반응 안 한 고객",
+        "non responder",
+        "no response"
+      ]
+    },
+    {
+      "rule_id": "control_group",
+      "canonical": "control_group",
+      "ko_label": "대조군",
+      "synonyms": [
+        "대조군",
+        "컨트롤군",
+        "비교군",
+        "통제군",
+        "홀드아웃",
+        "control group",
+        "control",
+        "holdout"
+      ]
+    },
+    {
+      "rule_id": "test_group",
+      "canonical": "test_group",
+      "ko_label": "실험군(타겟군)",
+      "synonyms": [
+        "실험군",
+        "타겟군",
+        "테스트군",
+        "실험 대상",
+        "처리군",
+        "test group",
+        "target group",
+        "treatment"
+      ]
+    },
+    {
+      "rule_id": "coupon_redeemer",
+      "canonical": "coupon_redeemer",
+      "ko_label": "쿠폰 사용 고객",
+      "synonyms": [
+        "쿠폰 사용",
+        "쿠폰 쓴 고객",
+        "쿠폰 사용자",
+        "쿠폰 소진",
+        "쿠폰 사용 고객",
+        "coupon redeemer",
+        "coupon used",
+        "redeemed coupon"
+      ]
+    },
+    {
+      "rule_id": "recent_visitor",
+      "canonical": "recent_visitor",
+      "ko_label": "최근 접속·로그인 고객",
+      "synonyms": [
+        "최근 접속",
+        "최근 로그인",
+        "최근 방문",
+        "최근 활동",
+        "최근 접속 고객",
+        "최근 접속자",
+        "recent login",
+        "recently active",
+        "recent visit"
+      ]
+    },
+    {
+      "rule_id": "member_grade",
+      "canonical": "member_grade",
+      "ko_label": "회원 등급",
+      "synonyms": [
+        "회원 등급",
+        "고객 등급",
+        "등급",
+        "멤버 등급",
+        "등급별",
+        "우수 등급",
+        "등급 고객",
+        "grade",
+        "tier",
+        "membership grade"
+      ]
+    },
+    {
+      "rule_id": "withdrawn_member",
+      "canonical": "withdrawn_member",
+      "ko_label": "탈퇴 회원",
+      "synonyms": [
+        "탈퇴",
+        "WITHDRAW",
+        "해지",
+        "탈퇴 회원",
+        "withdrawn",
+        "left"
+      ]
+    },
+    {
+      "rule_id": "customer_worth_grade",
+      "canonical": "customer_worth_grade",
+      "ko_label": "고객가치 등급",
+      "synonyms": [
+        "일반",
+        "고객가치등급",
+        "우량 고객",
+        "가치 등급",
+        "worth grade"
+      ]
+    },
+    {
+      "rule_id": "grade_grow_type",
+      "canonical": "grade_grow_type",
+      "ko_label": "등급 성장 유형",
+      "synonyms": [
+        "지속성장형",
+        "A",
+        "성장유지형",
+        "B",
+        "유지형",
+        "C",
+        "하락유지형",
+        "D",
+        "지속하락형",
+        "E",
+        "등급 성장",
+        "성장 고객",
+        "하락 고객",
+        "grade growth"
+      ]
+    },
+    {
+      "rule_id": "customer_status_grade",
+      "canonical": "customer_status_grade",
+      "ko_label": "고객 상태 등급",
+      "synonyms": [
+        "당월신규고객(무실적)",
+        "당월신규고객(유실적)",
+        "기존고객(최근1년 유실적)",
+        "기존고객(최근1년 무실적)",
+        "기존고객(휴면)",
+        "신규고객",
+        "기존고객",
+        "실적 고객",
+        "무실적 고객"
+      ]
+    },
+    {
+      "rule_id": "payment_method",
+      "canonical": "payment_method",
+      "ko_label": "결제수단",
+      "synonyms": [
+        "신용카드",
+        "CARD",
+        "가상계좌",
+        "VIRTUAL",
+        "계좌이체",
+        "TRANSFER",
+        "휴대폰결제",
+        "MOBILE",
+        "카카오페이",
+        "외상매출금",
+        "CREDITSALE",
+        "포인트",
+        "POINT",
+        "예치금",
+        "DEPOSIT",
+        "상품권",
+        "VOUCHER",
+        "현금",
+        "CASH",
+        "결제수단",
+        "결제 방법",
+        "카드",
+        "간편결제",
+        "payment method"
+      ]
+    },
+    {
+      "rule_id": "day_of_week",
+      "canonical": "day_of_week",
+      "ko_label": "요일",
+      "synonyms": [
+        "일요일",
+        "월요일",
+        "화요일",
+        "수요일",
+        "목요일",
+        "금요일",
+        "토요일",
+        "요일",
+        "주말",
+        "평일",
+        "주중"
+      ]
+    },
+    {
+      "rule_id": "time_of_day",
+      "canonical": "time_of_day",
+      "ko_label": "구매 시간대",
+      "synonyms": [
+        "오전1(07:00~09:00 미만)",
+        "오전2(09:00~12:00 미만)",
+        "오후1(12:00~16:00 미만)",
+        "오후2(16:00~18:00 미만)",
+        "저녁(18:00~21:00 미만)",
+        "마감(21:00~24:00 미만)",
+        "새벽1(00:00-03:00 미만)",
+        "새벽2(03:00-07:00 미만)",
+        "오전",
+        "오후",
+        "저녁",
+        "새벽",
+        "시간대",
+        "구매 시간대"
+      ]
+    },
+    {
+      "rule_id": "age_band",
+      "canonical": "age_band",
+      "ko_label": "연령대",
+      "synonyms": [
+        "10대",
+        "20대",
+        "30대",
+        "40대",
+        "50대",
+        "60대 이상",
+        "이십대",
+        "삼십대",
+        "사십대",
+        "오십대",
+        "청년",
+        "중년",
+        "20s",
+        "30s",
+        "40s",
+        "50s",
+        "age band"
+      ]
+    },
+    {
+      "rule_id": "kw_EMAIL수신여부",
+      "canonical": "EMAIL수신여부",
+      "ko_label": "EMAIL수신여부",
+      "synonyms": [
+        "EMAIL수신여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_F등급",
+      "canonical": "F등급",
+      "ko_label": "F등급",
+      "synonyms": [
+        "F등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_M등급",
+      "canonical": "M등급",
+      "ko_label": "M등급",
+      "synonyms": [
+        "M등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_R등급",
+      "canonical": "R등급",
+      "ko_label": "R등급",
+      "synonyms": [
+        "R등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_SMS동의여부",
+      "canonical": "SMS동의여부",
+      "ko_label": "SMS동의여부",
+      "synonyms": [
+        "SMS동의여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_SMS수신동의여부",
+      "canonical": "SMS수신동의여부",
+      "ko_label": "SMS수신동의여부",
+      "synonyms": [
+        "SMS수신동의여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_SMS수신여부",
+      "canonical": "SMS수신여부",
+      "ko_label": "SMS수신여부",
+      "synonyms": [
+        "SMS수신여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_SNS등록여부",
+      "canonical": "SNS등록여부",
+      "ko_label": "SNS등록여부",
+      "synonyms": [
+        "SNS등록여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_SNS채널",
+      "canonical": "SNS채널",
+      "ko_label": "SNS채널",
+      "synonyms": [
+        "SNS채널"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_VIP등급",
+      "canonical": "VIP등급",
+      "ko_label": "VIP등급",
+      "synonyms": [
+        "VIP등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_가입경로",
+      "canonical": "가입경로",
+      "ko_label": "가입경로",
+      "synonyms": [
+        "가입경로"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_가입기간",
+      "canonical": "가입기간",
+      "ko_label": "가입기간",
+      "synonyms": [
+        "가입기간"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_가입매장",
+      "canonical": "가입매장",
+      "ko_label": "가입매장",
+      "synonyms": [
+        "가입매장"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_가입매장_브랜드",
+      "canonical": "가입매장_브랜드",
+      "ko_label": "가입매장_브랜드",
+      "synonyms": [
+        "가입매장_브랜드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_가입매장_지역",
+      "canonical": "가입매장_지역",
+      "ko_label": "가입매장_지역",
+      "synonyms": [
+        "가입매장_지역"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_가입연도",
+      "canonical": "가입연도",
+      "ko_label": "가입연도",
+      "synonyms": [
+        "가입연도"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_가입유형",
+      "canonical": "가입유형",
+      "ko_label": "가입유형",
+      "synonyms": [
+        "가입유형"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_가입일",
+      "canonical": "가입일",
+      "ko_label": "가입일",
+      "synonyms": [
+        "가입일"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_가입일자",
+      "canonical": "가입일자",
+      "ko_label": "가입일자",
+      "synonyms": [
+        "가입일자"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_객단가",
+      "canonical": "객단가",
+      "ko_label": "객단가",
+      "synonyms": [
+        "객단가"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_거래브랜드",
+      "canonical": "거래브랜드",
+      "ko_label": "거래브랜드",
+      "synonyms": [
+        "거래브랜드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_거래채널유형",
+      "canonical": "거래채널유형",
+      "ko_label": "거래채널유형",
+      "synonyms": [
+        "거래채널유형"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_거래채널조합",
+      "canonical": "거래채널조합",
+      "ko_label": "거래채널조합",
+      "synonyms": [
+        "거래채널조합"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_결혼기념일4자리_월일",
+      "canonical": "결혼기념일4자리_월일",
+      "ko_label": "결혼기념일4자리_월일",
+      "synonyms": [
+        "결혼기념일4자리_월일"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_결혼여부",
+      "canonical": "결혼여부",
+      "ko_label": "결혼여부",
+      "synonyms": [
+        "결혼여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_과거구매기간",
+      "canonical": "과거구매기간",
+      "ko_label": "과거구매기간",
+      "synonyms": [
+        "과거구매기간"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_관점구분",
+      "canonical": "관점구분",
+      "ko_label": "관점구분",
+      "synonyms": [
+        "관점구분"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_구매구분",
+      "canonical": "구매구분",
+      "ko_label": "구매구분",
+      "synonyms": [
+        "구매구분"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_구매금액",
+      "canonical": "구매금액",
+      "ko_label": "구매금액",
+      "synonyms": [
+        "구매금액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_구매기간",
+      "canonical": "구매기간",
+      "ko_label": "구매기간",
+      "synonyms": [
+        "구매기간"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_구매반응여부",
+      "canonical": "구매반응여부",
+      "ko_label": "구매반응여부",
+      "synonyms": [
+        "구매반응여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_구매선호채널",
+      "canonical": "구매선호채널",
+      "ko_label": "구매선호채널",
+      "synonyms": [
+        "구매선호채널"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_구매수량",
+      "canonical": "구매수량",
+      "ko_label": "구매수량",
+      "synonyms": [
+        "구매수량"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_구매일자",
+      "canonical": "구매일자",
+      "ko_label": "구매일자",
+      "synonyms": [
+        "구매일자"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_구매횟수",
+      "canonical": "구매횟수",
+      "ko_label": "구매횟수",
+      "synonyms": [
+        "구매횟수"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_기본배송지주소",
+      "canonical": "기본배송지주소",
+      "ko_label": "기본배송지주소",
+      "synonyms": [
+        "기본배송지주소"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_나이대",
+      "canonical": "나이대",
+      "ko_label": "나이대",
+      "synonyms": [
+        "나이대"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_뉴베스트SMS동의여부",
+      "canonical": "뉴베스트SMS동의여부",
+      "ko_label": "뉴베스트SMS동의여부",
+      "synonyms": [
+        "뉴베스트SMS동의여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_당근잔액",
+      "canonical": "당근잔액",
+      "ko_label": "당근잔액",
+      "synonyms": [
+        "당근잔액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_대량구매고객여부",
+      "canonical": "대량구매고객여부",
+      "ko_label": "대량구매고객여부",
+      "synonyms": [
+        "대량구매고객여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_디바이스유형",
+      "canonical": "디바이스유형",
+      "ko_label": "디바이스유형",
+      "synonyms": [
+        "디바이스유형"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_랜딩페이지",
+      "canonical": "랜딩페이지",
+      "ko_label": "랜딩페이지",
+      "synonyms": [
+        "랜딩페이지"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_로그인기간",
+      "canonical": "로그인기간",
+      "ko_label": "로그인기간",
+      "synonyms": [
+        "로그인기간"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_로그인일수",
+      "canonical": "로그인일수",
+      "ko_label": "로그인일수",
+      "synonyms": [
+        "로그인일수"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_로그인일자",
+      "canonical": "로그인일자",
+      "ko_label": "로그인일자",
+      "synonyms": [
+        "로그인일자"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_로그인횟수",
+      "canonical": "로그인횟수",
+      "ko_label": "로그인횟수",
+      "synonyms": [
+        "로그인횟수"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_마이데이터ISO국가기호내용",
+      "canonical": "마이데이터ISO국가기호내용",
+      "ko_label": "마이데이터ISO국가기호내용",
+      "synonyms": [
+        "마이데이터ISO국가기호내용"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_마이데이터사업자기관코드",
+      "canonical": "마이데이터사업자기관코드",
+      "ko_label": "마이데이터사업자기관코드",
+      "synonyms": [
+        "마이데이터사업자기관코드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_마이데이터승인일시",
+      "canonical": "마이데이터승인일시",
+      "ko_label": "마이데이터승인일시",
+      "synonyms": [
+        "마이데이터승인일시"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_마이데이터정보제공자코드",
+      "canonical": "마이데이터정보제공자코드",
+      "ko_label": "마이데이터정보제공자코드",
+      "synonyms": [
+        "마이데이터정보제공자코드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_마지막로그인일자",
+      "canonical": "마지막로그인일자",
+      "ko_label": "마지막로그인일자",
+      "synonyms": [
+        "마지막로그인일자"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_마케팅수신동의여부",
+      "canonical": "마케팅수신동의여부",
+      "ko_label": "마케팅수신동의여부",
+      "synonyms": [
+        "마케팅수신동의여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_모바일OS유형",
+      "canonical": "모바일OS유형",
+      "ko_label": "모바일OS유형",
+      "synonyms": [
+        "모바일OS유형"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_문캠페인3",
+      "canonical": "문캠페인3",
+      "ko_label": "문캠페인3",
+      "synonyms": [
+        "문캠페인3"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_발행쿠폰수",
+      "canonical": "발행쿠폰수",
+      "ko_label": "발행쿠폰수",
+      "synonyms": [
+        "발행쿠폰수"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_분석기준",
+      "canonical": "분석기준",
+      "ko_label": "분석기준",
+      "synonyms": [
+        "분석기준"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_브랜드",
+      "canonical": "브랜드",
+      "ko_label": "브랜드",
+      "synonyms": [
+        "브랜드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_사용자정의연령대",
+      "canonical": "사용자정의연령대",
+      "ko_label": "사용자정의연령대",
+      "synonyms": [
+        "사용자정의연령대"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_사용쿠폰수",
+      "canonical": "사용쿠폰수",
+      "ko_label": "사용쿠폰수",
+      "synonyms": [
+        "사용쿠폰수"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_상태등급",
+      "canonical": "상태등급",
+      "ko_label": "상태등급",
+      "synonyms": [
+        "상태등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_상품별구매금액",
+      "canonical": "상품별구매금액",
+      "ko_label": "상품별구매금액",
+      "synonyms": [
+        "상품별구매금액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_상품분류_상품",
+      "canonical": "상품분류_상품",
+      "ko_label": "상품분류_상품",
+      "synonyms": [
+        "상품분류_상품"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_상품분류_상품대분류",
+      "canonical": "상품분류_상품대분류",
+      "ko_label": "상품분류_상품대분류",
+      "synonyms": [
+        "상품분류_상품대분류"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_상품분류_상품소분류",
+      "canonical": "상품분류_상품소분류",
+      "ko_label": "상품분류_상품소분류",
+      "synonyms": [
+        "상품분류_상품소분류"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_상품분류_상품중분류",
+      "canonical": "상품분류_상품중분류",
+      "ko_label": "상품분류_상품중분류",
+      "synonyms": [
+        "상품분류_상품중분류"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_상품분류_카테고리",
+      "canonical": "상품분류_카테고리",
+      "ko_label": "상품분류_카테고리",
+      "synonyms": [
+        "상품분류_카테고리"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_상품카테고리G",
+      "canonical": "상품카테고리G",
+      "ko_label": "상품카테고리G",
+      "synonyms": [
+        "상품카테고리G"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_생년월일",
+      "canonical": "생년월일",
+      "ko_label": "생년월일",
+      "synonyms": [
+        "생년월일"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_생일4자리_월일",
+      "canonical": "생일4자리_월일",
+      "ko_label": "생일4자리_월일",
+      "synonyms": [
+        "생일4자리_월일"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_선호상품군",
+      "canonical": "선호상품군",
+      "ko_label": "선호상품군",
+      "synonyms": [
+        "선호상품군"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_설문참여여부",
+      "canonical": "설문참여여부",
+      "ko_label": "설문참여여부",
+      "synonyms": [
+        "설문참여여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_설문참여채널",
+      "canonical": "설문참여채널",
+      "ko_label": "설문참여채널",
+      "synonyms": [
+        "설문참여채널"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_성별",
+      "canonical": "성별",
+      "ko_label": "성별",
+      "synonyms": [
+        "성별"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_성별명",
+      "canonical": "성별명",
+      "ko_label": "성별명",
+      "synonyms": [
+        "성별명"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_소속부서",
+      "canonical": "소속부서",
+      "ko_label": "소속부서",
+      "synonyms": [
+        "소속부서"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_수신동의여부",
+      "canonical": "수신동의여부",
+      "ko_label": "수신동의여부",
+      "synonyms": [
+        "수신동의여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_시도",
+      "canonical": "시도",
+      "ko_label": "시도",
+      "synonyms": [
+        "시도"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_시도_검색",
+      "canonical": "시도_검색",
+      "ko_label": "시도_검색",
+      "synonyms": [
+        "시도_검색"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_시도명",
+      "canonical": "시도명",
+      "ko_label": "시도명",
+      "synonyms": [
+        "시도명"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_신규고객여부SN",
+      "canonical": "신규고객여부SN",
+      "ko_label": "신규고객여부SN",
+      "synonyms": [
+        "신규고객여부SN"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_앱버전",
+      "canonical": "앱버전",
+      "ko_label": "앱버전",
+      "synonyms": [
+        "앱버전"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_연령",
+      "canonical": "연령",
+      "ko_label": "연령",
+      "synonyms": [
+        "연령"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_연령대_5세단위",
+      "canonical": "연령대_5세단위",
+      "ko_label": "연령대_5세단위",
+      "synonyms": [
+        "연령대_5세단위"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_연령대명",
+      "canonical": "연령대명",
+      "ko_label": "연령대명",
+      "synonyms": [
+        "연령대명"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_연령대체크",
+      "canonical": "연령대체크",
+      "ko_label": "연령대체크",
+      "synonyms": [
+        "연령대체크"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_연령대코드",
+      "canonical": "연령대코드",
+      "ko_label": "연령대코드",
+      "synonyms": [
+        "연령대코드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_예치금잔액",
+      "canonical": "예치금잔액",
+      "ko_label": "예치금잔액",
+      "synonyms": [
+        "예치금잔액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_오퍼반응여부",
+      "canonical": "오퍼반응여부",
+      "ko_label": "오퍼반응여부",
+      "synonyms": [
+        "오퍼반응여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_오퍼사용구매금액",
+      "canonical": "오퍼사용구매금액",
+      "ko_label": "오퍼사용구매금액",
+      "synonyms": [
+        "오퍼사용구매금액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_오퍼할인금액",
+      "canonical": "오퍼할인금액",
+      "ko_label": "오퍼할인금액",
+      "synonyms": [
+        "오퍼할인금액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_오프GL등급",
+      "canonical": "오프GL등급",
+      "ko_label": "오프GL등급",
+      "synonyms": [
+        "오프GL등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_온오프GL등급",
+      "canonical": "온오프GL등급",
+      "ko_label": "온오프GL등급",
+      "synonyms": [
+        "온오프GL등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_외국인여부",
+      "canonical": "외국인여부",
+      "ko_label": "외국인여부",
+      "synonyms": [
+        "외국인여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_원화환산금액",
+      "canonical": "원화환산금액",
+      "ko_label": "원화환산금액",
+      "synonyms": [
+        "원화환산금액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_이메일수신동의여부",
+      "canonical": "이메일수신동의여부",
+      "ko_label": "이메일수신동의여부",
+      "synonyms": [
+        "이메일수신동의여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_이미지URL",
+      "canonical": "이미지URL",
+      "ko_label": "이미지URL",
+      "synonyms": [
+        "이미지URL"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_이미지파일명",
+      "canonical": "이미지파일명",
+      "ko_label": "이미지파일명",
+      "synonyms": [
+        "이미지파일명"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_임직원여부",
+      "canonical": "임직원여부",
+      "ko_label": "임직원여부",
+      "synonyms": [
+        "임직원여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_자녀여부",
+      "canonical": "자녀여부",
+      "ko_label": "자녀여부",
+      "synonyms": [
+        "자녀여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_잔여포인트",
+      "canonical": "잔여포인트",
+      "ko_label": "잔여포인트",
+      "synonyms": [
+        "잔여포인트"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_잔여포인트구간",
+      "canonical": "잔여포인트구간",
+      "ko_label": "잔여포인트구간",
+      "synonyms": [
+        "잔여포인트구간"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_장바구니금액",
+      "canonical": "장바구니금액",
+      "ko_label": "장바구니금액",
+      "synonyms": [
+        "장바구니금액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_장바구니보관시작일",
+      "canonical": "장바구니보관시작일",
+      "ko_label": "장바구니보관시작일",
+      "synonyms": [
+        "장바구니보관시작일"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_장바구니보관종료일",
+      "canonical": "장바구니보관종료일",
+      "ko_label": "장바구니보관종료일",
+      "synonyms": [
+        "장바구니보관종료일"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_장바구니유형",
+      "canonical": "장바구니유형",
+      "ko_label": "장바구니유형",
+      "synonyms": [
+        "장바구니유형"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_전월가치등급",
+      "canonical": "전월가치등급",
+      "ko_label": "전월가치등급",
+      "synonyms": [
+        "전월가치등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_전월회원등급",
+      "canonical": "전월회원등급",
+      "ko_label": "전월회원등급",
+      "synonyms": [
+        "전월회원등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_접촉경과일수",
+      "canonical": "접촉경과일수",
+      "ko_label": "접촉경과일수",
+      "synonyms": [
+        "접촉경과일수"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_접촉성공여부",
+      "canonical": "접촉성공여부",
+      "ko_label": "접촉성공여부",
+      "synonyms": [
+        "접촉성공여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_접촉일자",
+      "canonical": "접촉일자",
+      "ko_label": "접촉일자",
+      "synonyms": [
+        "접촉일자"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_조합기준",
+      "canonical": "조합기준",
+      "ko_label": "조합기준",
+      "synonyms": [
+        "조합기준"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_조합수",
+      "canonical": "조합수",
+      "ko_label": "조합수",
+      "synonyms": [
+        "조합수"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_주거래지점",
+      "canonical": "주거래지점",
+      "ko_label": "주거래지점",
+      "synonyms": [
+        "주거래지점"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_주구매브랜드",
+      "canonical": "주구매브랜드",
+      "ko_label": "주구매브랜드",
+      "synonyms": [
+        "주구매브랜드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_주구매채널",
+      "canonical": "주구매채널",
+      "ko_label": "주구매채널",
+      "synonyms": [
+        "주구매채널"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_지역",
+      "canonical": "지역",
+      "ko_label": "지역",
+      "synonyms": [
+        "지역"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_최종구매일자",
+      "canonical": "최종구매일자",
+      "ko_label": "최종구매일자",
+      "synonyms": [
+        "최종구매일자"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_최종로그인일자",
+      "canonical": "최종로그인일자",
+      "ko_label": "최종로그인일자",
+      "synonyms": [
+        "최종로그인일자"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_최종로그인채널",
+      "canonical": "최종로그인채널",
+      "ko_label": "최종로그인채널",
+      "synonyms": [
+        "최종로그인채널"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_최초로그인채널",
+      "canonical": "최초로그인채널",
+      "ko_label": "최초로그인채널",
+      "synonyms": [
+        "최초로그인채널"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_추천모델",
+      "canonical": "추천모델",
+      "ko_label": "추천모델",
+      "synonyms": [
+        "추천모델"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_추천순위",
+      "canonical": "추천순위",
+      "ko_label": "추천순위",
+      "synonyms": [
+        "추천순위"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_추천타입",
+      "canonical": "추천타입",
+      "ko_label": "추천타입",
+      "synonyms": [
+        "추천타입"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_추천타입_전체포함",
+      "canonical": "추천타입_전체포함",
+      "ko_label": "추천타입_전체포함",
+      "synonyms": [
+        "추천타입_전체포함"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_카드이용금액",
+      "canonical": "카드이용금액",
+      "ko_label": "카드이용금액",
+      "synonyms": [
+        "카드이용금액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_카테고리_분류",
+      "canonical": "카테고리_분류",
+      "ko_label": "카테고리_분류",
+      "synonyms": [
+        "카테고리_분류"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_캠페인",
+      "canonical": "캠페인",
+      "ko_label": "캠페인",
+      "synonyms": [
+        "캠페인"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_캠페인그룹",
+      "canonical": "캠페인그룹",
+      "ko_label": "캠페인그룹",
+      "synonyms": [
+        "캠페인그룹"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_캠페인명",
+      "canonical": "캠페인명",
+      "ko_label": "캠페인명",
+      "synonyms": [
+        "캠페인명"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_타겟리스트",
+      "canonical": "타겟리스트",
+      "ko_label": "타겟리스트",
+      "synonyms": [
+        "타겟리스트"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_타사B2E여부",
+      "canonical": "타사B2E여부",
+      "ko_label": "타사B2E여부",
+      "synonyms": [
+        "타사B2E여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_통화코드",
+      "canonical": "통화코드",
+      "ko_label": "통화코드",
+      "synonyms": [
+        "통화코드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_퍼널고객등급",
+      "canonical": "퍼널고객등급",
+      "ko_label": "퍼널고객등급",
+      "synonyms": [
+        "퍼널고객등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_퍼널성별",
+      "canonical": "퍼널성별",
+      "ko_label": "퍼널성별",
+      "synonyms": [
+        "퍼널성별"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_퍼널식별",
+      "canonical": "퍼널식별",
+      "ko_label": "퍼널식별",
+      "synonyms": [
+        "퍼널식별"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_퍼널연령대",
+      "canonical": "퍼널연령대",
+      "ko_label": "퍼널연령대",
+      "synonyms": [
+        "퍼널연령대"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_행사민감도",
+      "canonical": "행사민감도",
+      "ko_label": "행사민감도",
+      "synonyms": [
+        "행사민감도"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric"
+    },
+    {
+      "rule_id": "kw_현재구매기간",
+      "canonical": "현재구매기간",
+      "ko_label": "현재구매기간",
+      "synonyms": [
+        "현재구매기간"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_혼인_여부",
+      "canonical": "혼인_여부",
+      "ko_label": "혼인_여부",
+      "synonyms": [
+        "혼인_여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_혼인여부",
+      "canonical": "혼인여부",
+      "ko_label": "혼인여부",
+      "synonyms": [
+        "혼인여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
+    },
+    {
+      "rule_id": "kw_회원상태",
+      "canonical": "회원상태",
+      "ko_label": "회원상태",
+      "synonyms": [
+        "회원상태"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text"
     }
   ],
   "example_queries": [
     {
       "raw_query": "여자가 아닌 사람한테 남성 그루밍 캠페인 추천",
-      "normalized_terms": ["male", "beauty", "male_20s_30s"],
+      "normalized_terms": [
+        "male",
+        "beauty",
+        "male_20s_30s"
+      ],
       "recommended_filter": {
         "gender": "male",
-        "interests_any": ["beauty"],
-        "exclude_gender": ["female"]
+        "interests_any": [
+          "beauty"
+        ],
+        "exclude_gender": [
+          "female"
+        ]
       }
     },
     {
       "raw_query": "장바구니 담고 안 산 사람에게 쿠폰 캠페인",
-      "normalized_terms": ["cart_abandoner", "coupon", "price_sensitive"],
+      "normalized_terms": [
+        "cart_abandoner",
+        "coupon",
+        "price_sensitive"
+      ],
       "recommended_filter": {
         "lifecycle_or_behavior": "cart_abandoner",
         "offer_type": "coupon"
@@ -617,10 +2567,51 @@
     },
     {
       "raw_query": "앱 쓰는 특가 반응 고객",
-      "normalized_terms": ["app_user", "price_sensitive", "app_push"],
+      "normalized_terms": [
+        "app_user",
+        "price_sensitive",
+        "app_push"
+      ],
       "recommended_filter": {
-        "preferred_channels_any": ["app_push"],
+        "preferred_channels_any": [
+          "app_push"
+        ],
         "price_sensitivity": "high"
+      }
+    },
+    {
+      "raw_query": "생일인 VIP 고객에게 쿠폰 캠페인",
+      "normalized_terms": [
+        "birthday_target",
+        "vip",
+        "coupon"
+      ],
+      "recommended_filter": {
+        "segment": "vip",
+        "birthday": true,
+        "offer_type": "coupon"
+      }
+    },
+    {
+      "raw_query": "온라인 구매 회원 중 캠페인에 반응한 사람",
+      "normalized_terms": [
+        "online_buyer",
+        "campaign_responder"
+      ],
+      "recommended_filter": {
+        "buy_channel": "online",
+        "campaign_response": true
+      }
+    },
+    {
+      "raw_query": "휴면 멤버십 회원에게 복귀 혜택",
+      "normalized_terms": [
+        "inactive_90d",
+        "membership_member"
+      ],
+      "recommended_filter": {
+        "membership": true,
+        "lifecycle_or_behavior": "inactive_90d"
       }
     }
   ]

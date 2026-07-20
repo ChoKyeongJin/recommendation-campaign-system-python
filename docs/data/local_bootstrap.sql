@@ -1,8 +1,15 @@
 -- ============================================================
--- Full PostgreSQL schema for campaign targeting + CTR analytics
--- Includes original schema, experiment variants, deliveries,
--- append-only event logs, metric views, and deterministic test data.
+-- 로컬 PostgreSQL 부트스트랩 (스키마 + 데모 시드)
+-- docker compose 최초 기동 시 /docker-entrypoint-initdb.d 로 자동 실행되어
+-- 로컬 campaign_db 를 생성한다(실제 business DB 가 아니라 로컬 개발/데모용).
+--
+-- 구성: business 스키마(campaigns/users/장바구니 등) + 앱 메타데이터
+--   (오디언스/실패로그/프롬프트/정책) + A/B·CTR 서브시스템 + 분석 뷰,
+--   그리고 로컬 타겟팅/CTR 데모가 결과를 반환하도록 하는 결정론적 시드.
 -- PostgreSQL 14+
+--
+-- 주의: 실제 business DB 는 SELECT 전용으로만 연결하며 이 파일을 실행하지 않는다.
+--       메타데이터만 별도 DB 로 분리할 때는 docs/data/metadata_ddl.sql 을 쓴다.
 -- ============================================================
 
 DROP VIEW IF EXISTS v_campaign_daily_metrics CASCADE;
@@ -710,12 +717,6 @@ INSERT INTO campaign_keywords (campaign_id, keyword) VALUES
 INSERT INTO recommendation_edges (user_id, campaign_id, reason, label) VALUES
   ('user_011', 'camp_026', 'vip new product preview', 'high'),
   ('user_020', 'camp_026', 'vip premium buyer new launch', 'high');
-
--- Basic validation queries
--- SELECT COUNT(*) AS campaign_count FROM campaigns;
--- SELECT COUNT(*) AS user_count FROM users;
--- SELECT COUNT(*) AS recommendation_edge_count FROM recommendation_edges;
-
 
 -- ============================================================
 -- Campaign Message History
@@ -1452,81 +1453,6 @@ WHERE e.event_type = 'click'
 
 
 -- ============================================================
--- Optional larger test-data generator
--- Creates 30 synthetic event days by copying existing deliveries.
--- Disabled by default. Remove the surrounding comment to execute.
--- ============================================================
-
-/*
-INSERT INTO campaign_message_events (
-    delivery_id,
-    event_type,
-    event_at,
-    event_key,
-    provider_event_id,
-    click_url,
-    conversion_type,
-    conversion_value_krw,
-    event_properties
-)
-SELECT
-    e.delivery_id,
-    e.event_type,
-    e.event_at + (g.day_no * INTERVAL '1 day'),
-    e.event_key || ':day:' || g.day_no,
-    COALESCE(e.provider_event_id, 'generated') || ':day:' || g.day_no,
-    e.click_url,
-    e.conversion_type,
-    e.conversion_value_krw,
-    e.event_properties || JSONB_BUILD_OBJECT('generated_day', g.day_no)
-FROM campaign_message_events e
-CROSS JOIN GENERATE_SERIES(1, 29) AS g(day_no)
-WHERE e.event_key LIKE 'test:delivery:%';
-*/
-
-
--- ============================================================
--- Validation / Example Queries
--- ============================================================
-
--- 테이블별 건수
-SELECT 'campaigns' AS object_name, COUNT(*) AS row_count FROM campaigns
-UNION ALL
-SELECT 'users', COUNT(*) FROM users
-UNION ALL
-SELECT 'campaign_experiments', COUNT(*) FROM campaign_experiments
-UNION ALL
-SELECT 'campaign_message_variants', COUNT(*) FROM campaign_message_variants
-UNION ALL
-SELECT 'campaign_message_deliveries', COUNT(*) FROM campaign_message_deliveries
-UNION ALL
-SELECT 'campaign_message_events', COUNT(*) FROM campaign_message_events
-ORDER BY object_name;
-
--- A/B/C 버전별 CTR 및 CVR
-SELECT *
-FROM v_campaign_variant_metrics
-ORDER BY experiment_id, ctr_pct DESC NULLS LAST;
-
--- 타겟 세그먼트별 CTR
-SELECT *
-FROM v_campaign_segment_metrics
-WHERE impression_count > 0
-ORDER BY experiment_id, variant_code, ctr_pct DESC NULLS LAST;
-
--- 날짜별 이벤트 추이
-SELECT *
-FROM v_campaign_daily_metrics
-ORDER BY event_date_kst, variant_id;
-
--- 이벤트 중복 방지 확인 예시:
--- 아래 INSERT는 동일 event_key가 이미 있으므로 unique violation이 발생해야 정상입니다.
--- INSERT INTO campaign_message_events
--- (delivery_id, event_type, event_at, event_key)
--- VALUES (1, 'click', CURRENT_TIMESTAMP, 'test:delivery:1:click');
-
-
--- ============================================================
 -- Shopping Cart / Abandoned Cart Extension
 -- 장바구니 미결제 고객 타겟팅 및 재구매 유도 분석용
 -- PostgreSQL 14+
@@ -1893,48 +1819,6 @@ SELECT setval(pg_get_serial_sequence('shopping_cart_items', 'cart_item_id'),
               COALESCE((SELECT MAX(cart_item_id) FROM shopping_cart_items), 1), TRUE);
 SELECT setval(pg_get_serial_sequence('cart_reminder_history', 'reminder_id'),
               COALESCE((SELECT MAX(reminder_id) FROM cart_reminder_history), 1), TRUE);
-
--- ============================================================
--- Abandoned cart validation / targeting examples
--- ============================================================
-
--- 생성 데이터 검증
-SELECT 'shopping_carts' AS object_name, COUNT(*) AS row_count FROM shopping_carts
-UNION ALL
-SELECT 'shopping_cart_items', COUNT(*) FROM shopping_cart_items
-UNION ALL
-SELECT 'cart_reminder_history', COUNT(*) FROM cart_reminder_history
-ORDER BY object_name;
-
--- 24시간 이상 방치되고 주문 가능한 상품이 남아 있는 고객
-SELECT *
-FROM v_abandoned_cart_targets
-WHERE abandoned_hours >= 24
-  AND all_items_orderable = TRUE
-  AND reminder_converted = FALSE
-ORDER BY total_amount_krw DESC, abandoned_hours DESC;
-
--- 할인 쿠폰이 있고 아직 리마인드를 발송하지 않은 고가치 타겟
-SELECT *
-FROM v_abandoned_cart_targets
-WHERE has_available_coupon = TRUE
-  AND reminder_count = 0
-  AND total_amount_krw >= 50000
-ORDER BY predicted_ltv_segment DESC, total_amount_krw DESC;
-
--- 장바구니 미결제 고객별 재구매/구매 전환 캠페인 후보
-SELECT
-        user_id,
-        cart_id,
-        target_segment,
-        recommended_campaign_id,
-        recommended_campaign_name,
-        campaign_objective,
-        campaign_category,
-        recommendation_reason
-FROM v_cart_repurchase_targets
-WHERE abandoned_hours >= 24
-ORDER BY total_amount_krw DESC, abandoned_hours DESC, recommended_campaign_id;
 
 COMMENT ON TABLE campaigns IS '캠페인 기본 정보를 저장하는 테이블';
 COMMENT ON COLUMN campaigns.campaign_id IS '캠페인 ID';
@@ -2340,47 +2224,6 @@ COMMENT ON VIEW v_dormant_6m_reactivation_targets IS
 COMMIT;
 
 -- ============================================================
--- 검증 SQL: 최소 8행이 나와야 정상입니다.
--- ============================================================
-SELECT COUNT(*) AS dormant_6m_customer_count
-FROM v_dormant_6m_reactivation_targets;
-
-SELECT
-    user_id,
-    lifecycle,
-    last_login_at,
-    inactive_days,
-    campaign_id,
-    campaign_name,
-    offer,
-    preferred_channels,
-    recommendation_label
-FROM v_dormant_6m_reactivation_targets
-ORDER BY inactive_days DESC, user_id;
-
--- Query Plan에서 뷰를 쓰지 않고 직접 생성할 경우 사용할 검증된 SQL
-SELECT
-    u.user_id,
-    u.age,
-    u.gender,
-    u.region,
-    u.last_login_at,
-    CURRENT_DATE - u.last_login_at::date AS inactive_days,
-    u.predicted_ltv_segment,
-    c.campaign_id,
-    c.name AS campaign_name,
-    c.offer
-FROM users u
-CROSS JOIN campaigns c
-WHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
-  AND u.purchase_count_90d = 0
-  AND u.lifecycle IN ('inactive_90d', 'inactive_180d', 'dormant')
-  AND c.objective = 'reactivation'
-  AND c.start_date <= CURRENT_DATE
-  AND c.end_date >= CURRENT_DATE
-ORDER BY inactive_days DESC, u.user_id;
-
--- ============================================================
 -- Seed data for 6+ month dormant LMS reactivation targeting
 -- Target query conditions satisfied:
 --   last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
@@ -2507,39 +2350,3 @@ DO UPDATE SET
     label = EXCLUDED.label;
 
 COMMIT;
-
--- ============================================================
--- Validation: should return at least 5 users.
--- ============================================================
-SELECT DISTINCT
-    u.user_id,
-    u.age,
-    u.gender,
-    u.price_sensitivity,
-    c.campaign_id,
-    NULL AS name_masked,
-    c.objective,
-    c.category,
-    c.offer,
-    c.start_date,
-    c.end_date,
-    u.last_login_at,
-    CURRENT_DATE - u.last_login_at::date AS inactive_days,
-    u.lifecycle
-FROM users u
-JOIN recommendation_edges re
-    ON re.user_id = u.user_id
-JOIN campaigns c
-    ON c.campaign_id = re.campaign_id
-JOIN user_preferred_channels upc
-    ON upc.user_id = u.user_id
-JOIN campaign_channels cc
-    ON cc.campaign_id = c.campaign_id
-WHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'
-  AND u.purchase_count_90d = 0
-  AND u.lifecycle IN ('inactive_90d', 'inactive_180d', 'dormant')
-  AND upc.preferred_channel = 'lms'
-  AND c.objective = 'reactivation'
-  AND cc.channel = 'lms'
-ORDER BY inactive_days DESC, u.user_id ASC
-LIMIT 100;

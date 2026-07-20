@@ -1,5 +1,5 @@
 {
-  "source": "docs/data/ddl.sql",
+  "source": "docs/data/local_bootstrap.sql",
   "policy": {
     "schema": "auto_extracted_from_ddl",
     "llm": "table_descriptions_only",

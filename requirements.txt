@@ -3,6 +3,8 @@ openai
 fastapi
 uvicorn[standard]
 psycopg[binary]
+pymysql
+pymssql
 langchain
 langchain-community
 langchain-openai

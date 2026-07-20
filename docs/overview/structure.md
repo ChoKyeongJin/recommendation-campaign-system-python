@@ -27,7 +27,7 @@
 | 캠페인/사용자 RAG 인덱싱 | `rag_index.py`                                                                             | 샘플 노드 전처리, 임베딩 생성, Qdrant 적재                                                                               |
 | DDL 스키마 추출          | `schema_extract.py`                                                                        | PostgreSQL DDL에서 테이블/컬럼/키/인덱스 추출                                                                            |
 | 업무 정책 정의           | `docs/data/business_policies.sample.json`                                                  | 매출 상위, 고매출, 고예산 같은 업무 기준과 SQL 반영 방식을 외부 파일로 정의                                              |
-| 채널 메시지 정책/예시    | `docs/guides/channel.md`, `docs/policies/message-policy.json`, `docs/data/ddl.sql`         | LMS/RCS 메시지 생성 규칙과 기존 메시지 참고 테이블 정의                                                                  |
+| 채널 메시지 정책/예시    | `docs/guides/channel.md`, `docs/policies/message-policy.json`, `docs/data/local_bootstrap.sql`         | LMS/RCS 메시지 생성 규칙과 기존 메시지 참고 테이블 정의                                                                  |
 | 계산 지표 별칭           | `docs/data/metric_lexicon.sample.json`                                                     | 자연어 계산식의 지표명을 숫자형 스키마 컬럼으로 연결                                                                     |
 | 계산식 엔진              | `formula_engine.py`                                                                        | 자연어/AST 계산식을 검증하고 안전한 SQL expression으로 컴파일                                                            |
 | 집합식 엔진              | `set_expression_engine.py`                                                                 | 합집합/교집합/차집합 세그먼트 표현을 `set_ast`로 파싱                                                                    |
@@ -97,7 +97,7 @@ flowchart TD
 
 ### 4.3 스키마/정책/SQL 지식 베이스
 
-- 입력: `docs/data/ddl.sql`, `docs/data/schema_catalog.json`, `docs/data/business_policies.sample.json`, `docs/data/metric_lexicon.sample.json`, `docs/data/sql_examples.sample.sql`
+- 입력: `docs/data/local_bootstrap.sql`, `docs/data/schema_catalog.json`, `docs/data/business_policies.sample.json`, `docs/data/metric_lexicon.sample.json`, `docs/data/sql_examples.sample.sql`
 - 처리: `schema_extract.py`, `build_rag_knowledge.py`
 - 출력: `docs/data/rag_knowledge_base.json`
 - 출력 컬렉션: `campaign_knowledge_rag`
@@ -106,7 +106,7 @@ flowchart TD
 
 같은 파일에는 `channel_message_generation` 정책도 포함한다. 이 정책은 메시지 생성 기본 채널을 `lms`로 두고, 허용 채널을 `lms`, `rcs`로 제한하며, 채널별 글자 수와 필수 variant(`benefit_emphasis`, `urgency_emphasis`, `emotion_emphasis`)를 정의한다. 메시지 생성은 `campaigns.offer`와 기존 메시지 예시를 벗어나는 혜택을 만들지 않는 것을 기본 정책으로 삼는다.
 
-`docs/data/ddl.sql`에는 메시지 생성과 성과 분석을 위한 `campaign_message_examples`, `campaign_channel_messages`, `campaign_experiments`, `campaign_message_variants`, `campaign_message_deliveries`, `campaign_message_events` 테이블이 있다. 기존 문안과 브랜드 톤은 `campaign_message_examples`에서 가져오고, 실제 발송 이력과 A/B/C 실험 결과는 delivery/event 로그와 `v_campaign_variant_metrics`, `v_campaign_segment_metrics`, `v_campaign_daily_metrics` view에서 집계한다.
+`docs/data/local_bootstrap.sql`에는 메시지 생성과 성과 분석을 위한 `campaign_message_examples`, `campaign_channel_messages`, `campaign_experiments`, `campaign_message_variants`, `campaign_message_deliveries`, `campaign_message_events` 테이블이 있다. 기존 문안과 브랜드 톤은 `campaign_message_examples`에서 가져오고, 실제 발송 이력과 A/B/C 실험 결과는 delivery/event 로그와 `v_campaign_variant_metrics`, `v_campaign_segment_metrics`, `v_campaign_daily_metrics` view에서 집계한다.
 
 `api.py`는 이 스키마 위에 `/campaign-experiments`, `/ai/ctr/score`, `/campaign-experiments/{experiment_id}/assignments`, `/webhooks/message-events/{provider}`, `/ai/ctr/analyze`를 제공한다. `/api/...` prefix 경로도 함께 열려 있어 외부 연동 문서의 경로와 기존 로컬 테스트 경로를 모두 사용할 수 있다. 현재 CTR scoring은 실제 ML 모델이 아니라 `heuristic-ctr-v1` baseline이며, 분석 리포트는 LLM 없이 SQL view 집계값으로 생성한다.
 
@@ -460,7 +460,7 @@ Python 컨테이너는 계속 실행 상태로 유지되므로 이후 명령은 
 ### 11.2 스키마 카탈로그 재생성
 
 ```bash
-docker compose exec python python schema_extract.py docs/data/ddl.sql --output docs/data/schema_catalog.json
+docker compose exec python python schema_extract.py docs/data/local_bootstrap.sql --output docs/data/schema_catalog.json
 ```
 
 ### 11.3 지식 베이스 재생성

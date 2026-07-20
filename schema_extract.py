@@ -124,7 +124,7 @@ def merge_existing_annotations(schema: dict[str, Any], existing_schema: dict[str
 # ---------------------------------------------------------------------------
 # 라이브 DB 인트로스펙션 (source of truth = PostgreSQL)
 #
-# 손으로 유지하는 ddl.sql 미러 대신 실제 DB의 information_schema/pg_catalog를 읽어
+# 손으로 유지하는 local_bootstrap.sql 미러 대신 실제 DB의 information_schema/pg_catalog를 읽어
 # extract_schema()와 동일한 구조의 catalog를 만든다. description_llm/human_note 같은
 # 사람이 쓴 주석은 merge_existing_annotations()로 기존 catalog에서 그대로 보존한다.
 # ---------------------------------------------------------------------------
@@ -515,7 +515,7 @@ def extract_schema(sql: str) -> dict[str, Any]:
         )
 
     return {
-        "source": "docs/data/ddl.sql",
+        "source": "docs/data/local_bootstrap.sql",
         "policy": {
             "schema": "auto_extracted_from_ddl",
             "llm": "table_descriptions_only",

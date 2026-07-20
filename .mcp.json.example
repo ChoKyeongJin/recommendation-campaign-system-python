@@ -1,0 +1,45 @@
+{
+  "_comment": "MCP 서버 설정 예시. 실제 값을 채워 .mcp.json 으로 복사해 사용(.mcp.json 은 gitignore). 모두 읽기 전용 서버.",
+  "mcpServers": {
+    "quadmax_sdz": {
+      "command": "npx",
+      "args": ["-y", "@benborla29/mcp-server-mysql"],
+      "env": {
+        "MYSQL_HOST": "<host>",
+        "MYSQL_PORT": "3306",
+        "MYSQL_USER": "<user>",
+        "MYSQL_PASS": "<password>",
+        "MYSQL_DB": "<database>",
+        "ALLOW_INSERT_OPERATION": "false",
+        "ALLOW_UPDATE_OPERATION": "false",
+        "ALLOW_DELETE_OPERATION": "false"
+      }
+    },
+    "CRMAN": {
+      "command": "npx",
+      "args": ["-y", "@bilims/mcp-sqlserver"],
+      "env": {
+        "SQLSERVER_HOST": "<host>",
+        "SQLSERVER_PORT": "1433",
+        "SQLSERVER_DATABASE": "Customer_Analytics",
+        "SQLSERVER_USER": "<user>",
+        "SQLSERVER_PASSWORD": "<password>",
+        "SQLSERVER_ENCRYPT": "false",
+        "SQLSERVER_TRUST_CERT": "true"
+      }
+    },
+    "CRMDW": {
+      "command": "npx",
+      "args": ["-y", "@bilims/mcp-sqlserver"],
+      "env": {
+        "SQLSERVER_HOST": "<host>",
+        "SQLSERVER_PORT": "1433",
+        "SQLSERVER_DATABASE": "smart_quadmax_mart",
+        "SQLSERVER_USER": "<user>",
+        "SQLSERVER_PASSWORD": "<password>",
+        "SQLSERVER_ENCRYPT": "false",
+        "SQLSERVER_TRUST_CERT": "true"
+      }
+    }
+  }
+}

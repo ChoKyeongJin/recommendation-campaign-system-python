@@ -510,7 +510,7 @@ def target_audience(audience_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"psycopg_import_failed:{exc.__class__.__name__}") from exc
 
     try:
-        with psycopg.connect(_postgres_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
+        with psycopg.connect(_metadata_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
@@ -544,7 +544,7 @@ def target_audience_members(
         raise HTTPException(status_code=500, detail=f"psycopg_import_failed:{exc.__class__.__name__}") from exc
 
     try:
-        with psycopg.connect(_postgres_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
+        with psycopg.connect(_metadata_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT 1 FROM campaign_target_audiences WHERE audience_id = %s", (audience_id,))
                 if cursor.fetchone() is None:
@@ -594,7 +594,7 @@ def delete_target_audience(audience_id: int) -> dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"psycopg_import_failed:{exc.__class__.__name__}") from exc
 
     try:
-        with psycopg.connect(_postgres_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
+        with psycopg.connect(_metadata_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
@@ -623,7 +623,7 @@ def cleanup_target_audiences(limit: Annotated[int, Query(ge=1, le=1000)] = 100) 
         raise HTTPException(status_code=500, detail=f"psycopg_import_failed:{exc.__class__.__name__}") from exc
 
     try:
-        with psycopg.connect(_postgres_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
+        with psycopg.connect(_metadata_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
             with conn.cursor() as cursor:
                 cursor.execute(
                     """
@@ -661,7 +661,7 @@ def list_prompt_templates() -> dict[str, Any]:
     import prompt_store
 
     try:
-        templates = prompt_store.list_templates(_postgres_conninfo())
+        templates = prompt_store.list_templates(_metadata_conninfo())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"prompt_templates_lookup_failed:{exc.__class__.__name__}") from exc
     return {"prompts": [_jsonable_record(item) for item in templates], "count": len(templates)}
@@ -673,7 +673,7 @@ def get_prompt_template(name: str) -> dict[str, Any]:
     import prompt_store
 
     try:
-        template = prompt_store.get_one(name, _postgres_conninfo())
+        template = prompt_store.get_one(name, _metadata_conninfo())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"prompt_template_lookup_failed:{exc.__class__.__name__}") from exc
     if template is None:
@@ -687,7 +687,7 @@ def upsert_prompt_template(name: str, request: PromptTemplateUpsertRequest) -> d
     import prompt_store
 
     try:
-        template = prompt_store.upsert(name, request.content, request.description, _postgres_conninfo())
+        template = prompt_store.upsert(name, request.content, request.description, _metadata_conninfo())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"prompt_template_upsert_failed:{exc.__class__.__name__}") from exc
     return {"is_success": True, "prompt": _jsonable_record(template)}
@@ -699,7 +699,7 @@ def delete_prompt_template(name: str) -> dict[str, Any]:
     import prompt_store
 
     try:
-        deleted = prompt_store.delete(name, _postgres_conninfo())
+        deleted = prompt_store.delete(name, _metadata_conninfo())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"prompt_template_delete_failed:{exc.__class__.__name__}") from exc
     if not deleted:
@@ -713,7 +713,7 @@ def reload_prompt_templates() -> dict[str, Any]:
     import prompt_store
 
     try:
-        loaded = prompt_store.reload(_postgres_conninfo())
+        loaded = prompt_store.reload(_metadata_conninfo())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"prompt_templates_reload_failed:{exc.__class__.__name__}") from exc
     return {"is_success": True, "loaded": loaded}
@@ -726,7 +726,7 @@ def seed_prompt_templates() -> dict[str, Any]:
 
     prompt_dir = Path(os.getenv("GRAPH_RAG_PROMPT_DIR", str(DEFAULT_PROMPT_DIR)))
     try:
-        seeded = prompt_store.seed_from_dir(prompt_dir, _postgres_conninfo())
+        seeded = prompt_store.seed_from_dir(prompt_dir, _metadata_conninfo())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"prompt_templates_seed_failed:{exc.__class__.__name__}") from exc
     return {"is_success": True, "seeded": [_jsonable_record(item) for item in seeded], "count": len(seeded)}
@@ -738,7 +738,7 @@ def list_policies() -> dict[str, Any]:
     import policy_store
 
     try:
-        policies = policy_store.list_policies(_postgres_conninfo())
+        policies = policy_store.list_policies(_metadata_conninfo())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"policies_lookup_failed:{exc.__class__.__name__}") from exc
     return {"policies": [_jsonable_record(item) for item in policies], "count": len(policies)}
@@ -750,7 +750,7 @@ def get_policy(name: str) -> dict[str, Any]:
     import policy_store
 
     try:
-        policy = policy_store.get_one(name, _postgres_conninfo())
+        policy = policy_store.get_one(name, _metadata_conninfo())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"policy_lookup_failed:{exc.__class__.__name__}") from exc
     if policy is None:
@@ -764,7 +764,7 @@ def upsert_policy(name: str, request: PolicyUpsertRequest) -> dict[str, Any]:
     import policy_store
 
     try:
-        policy = policy_store.upsert(name, request.content, request.description, _postgres_conninfo())
+        policy = policy_store.upsert(name, request.content, request.description, _metadata_conninfo())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"policy_upsert_failed:{exc.__class__.__name__}") from exc
     return {"is_success": True, "policy": _jsonable_record(policy)}
@@ -776,7 +776,7 @@ def delete_policy(name: str) -> dict[str, Any]:
     import policy_store
 
     try:
-        deleted = policy_store.delete(name, _postgres_conninfo())
+        deleted = policy_store.delete(name, _metadata_conninfo())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"policy_delete_failed:{exc.__class__.__name__}") from exc
     if not deleted:
@@ -790,7 +790,7 @@ def reload_policies() -> dict[str, Any]:
     import policy_store
 
     try:
-        loaded = policy_store.reload(_postgres_conninfo())
+        loaded = policy_store.reload(_metadata_conninfo())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"policies_reload_failed:{exc.__class__.__name__}") from exc
     return {"is_success": True, "loaded": loaded}
@@ -803,7 +803,7 @@ def seed_policies() -> dict[str, Any]:
 
     policy_dir = Path(os.getenv("CAMPAIGN_POLICY_DIR", str(POLICY_DIR)))
     try:
-        seeded = policy_store.seed_from_dir(policy_dir, _postgres_conninfo())
+        seeded = policy_store.seed_from_dir(policy_dir, _metadata_conninfo())
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"policies_seed_failed:{exc.__class__.__name__}") from exc
     return {"is_success": True, "seeded": [_jsonable_record(item) for item in seeded], "count": len(seeded)}
@@ -2072,7 +2072,7 @@ def _load_ctr_model_policy_from_db() -> dict[str, Any] | None:
     try:
         import policy_store
 
-        policy = policy_store.get_policy(CTR_MODEL_POLICY_NAME, _postgres_conninfo())
+        policy = policy_store.get_policy(CTR_MODEL_POLICY_NAME, _metadata_conninfo())
     except Exception as exc:  # noqa: BLE001 - 파일 fallback 유지가 목적
         api_logger.warning(
             "ctr_model_policy_db_load_failed reason=%s:%s",
@@ -2512,7 +2512,7 @@ def _load_heuristic_ctr_rules_from_db() -> dict[str, Any] | None:
     try:
         import policy_store
 
-        rules = policy_store.get_policy(HEURISTIC_CTR_RULES_NAME, _postgres_conninfo())
+        rules = policy_store.get_policy(HEURISTIC_CTR_RULES_NAME, _metadata_conninfo())
     except Exception as exc:  # noqa: BLE001 - 파일 fallback 유지가 목적
         api_logger.warning(
             "heuristic_ctr_rules_db_load_failed reason=%s:%s",
@@ -3098,7 +3098,7 @@ def _message_generation_policy_defaults() -> dict[str, Any]:
     import policy_store
 
     try:
-        policy = policy_store.get_policy(MESSAGE_GENERATION_POLICY_NAME, _postgres_conninfo())
+        policy = policy_store.get_policy(MESSAGE_GENERATION_POLICY_NAME, _metadata_conninfo())
     except Exception:  # noqa: BLE001 - fallback 유지가 목적
         return {}
     if not isinstance(policy, dict):
@@ -3203,7 +3203,7 @@ def _save_query_failure_log(payload: dict[str, Any]) -> dict[str, Any] | None:
         return None
 
     try:
-        with psycopg.connect(_postgres_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
+        with psycopg.connect(_metadata_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
             with conn.cursor() as cursor:
                 _ensure_query_failure_log_table(cursor)
                 sql = payload.get("generated_sql")
@@ -3343,28 +3343,37 @@ def execute_target_sql(
         return _database_execution_error("psycopg_import_failed", exc)
 
     target_sql = _strip_sql_for_subquery(sql)
+    # 1) 실제 business DB에서 읽기 전용으로 조회한다.
+    #    default_transaction_read_only=on(conninfo) + conn.read_only=True 로 이중 강제.
     try:
-        with psycopg.connect(_postgres_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
+        with psycopg.connect(_business_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
+            conn.read_only = True
             with conn.cursor() as cursor:
                 cursor.execute("SET LOCAL statement_timeout = '5s'")
                 columns = _target_result_columns(cursor, target_sql)
-                audience = _save_target_audience(
-                    cursor,
-                    target_sql,
-                    columns,
-                    persist_targeting=persist_targeting,
-                    audience_ttl_days=audience_ttl_days,
-                    prompt=prompt or "",
-                    query_parser=query_parser or "rules",
-                    request_options=request_options or {},
-                    query_plan=query_plan or {},
-                )
                 rows = _target_result_rows(cursor, target_sql, result_row_limit)
                 targeting_result = _targeting_result(cursor, target_sql, columns, rows)
                 segment_composition = _segment_composition(cursor, target_sql, columns)
                 campaign_context_nodes = _campaign_context_nodes(cursor, target_sql, columns)
+                if persist_targeting and "user_id" in columns:
+                    member_rows = _target_audience_member_rows(cursor, target_sql, columns)
+                else:
+                    member_rows = []
     except Exception as exc:
         return _database_execution_error("postgres_execution_failed", exc)
+
+    # 2) 조회 결과(멤버 목록)를 로컬 메타데이터 DB에 저장한다(쓰기).
+    audience = _save_target_audience(
+        target_sql,
+        columns,
+        member_rows,
+        persist_targeting=persist_targeting,
+        audience_ttl_days=audience_ttl_days,
+        prompt=prompt or "",
+        query_parser=query_parser or "rules",
+        request_options=request_options or {},
+        query_plan=query_plan or {},
+    )
 
     return {
         "is_success": True,
@@ -3382,10 +3391,25 @@ def execute_target_sql(
     }
 
 
+def _target_audience_member_rows(cursor: Any, sql: str, columns: list[str]) -> list[tuple[str, str | None]]:
+    # read-only business DB에서 타겟 오디언스 멤버(중복 제거된 user_id/campaign_id)를 읽어온다.
+    # 파라미터 바인딩 없이 실행하므로 생성 SQL 안의 리터럴 '%' 를 escape 할 필요가 없다.
+    campaign_projection = "campaign_id::VARCHAR(20)" if "campaign_id" in columns else "NULL::VARCHAR(20)"
+    cursor.execute(
+        f"""
+        WITH target_result AS MATERIALIZED ({sql})
+        SELECT DISTINCT user_id::VARCHAR(20) AS user_id, {campaign_projection} AS campaign_id
+        FROM target_result
+        WHERE user_id IS NOT NULL
+        """
+    )
+    return [(row["user_id"], row["campaign_id"]) for row in cursor.fetchall()]
+
+
 def _save_target_audience(
-    cursor: Any,
     sql: str,
     columns: list[str],
+    member_rows: list[tuple[str, str | None]],
     *,
     persist_targeting: bool,
     audience_ttl_days: int,
@@ -3394,90 +3418,74 @@ def _save_target_audience(
     request_options: dict[str, Any],
     query_plan: dict[str, Any],
 ) -> dict[str, Any]:
+    # 실제 business DB는 SELECT 전용이므로, 타겟 오디언스는 별도 로컬 메타데이터 DB에 저장한다.
+    # 멤버 목록(member_rows)은 이미 read-only business DB에서 조회해 둔 결과다.
     if not persist_targeting:
         return _audience_skipped("disabled_by_request")
     if "user_id" not in columns:
         return _audience_skipped("user_id_column_missing")
 
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+    except ImportError as exc:
+        return _audience_error("psycopg_import_failed", exc)
+
     audience_key = _audience_key(prompt, sql)
     sql_hash = hashlib.sha256(sql.encode("utf-8")).hexdigest()
-    sql_for_parameterized_query = sql.replace("%", "%%")
-    campaign_projection = "campaign_id::VARCHAR(20)" if "campaign_id" in columns else "NULL::VARCHAR(20)"
+    member_count = len(member_rows)
+    target_customer_count = len({user_id for user_id, _ in member_rows})
+    target_campaign_count = len({campaign_id for _, campaign_id in member_rows if campaign_id is not None})
 
     try:
-        cursor.execute("SAVEPOINT target_audience_save")
-        cursor.execute(
-            """
-            INSERT INTO campaign_target_audiences (
-                audience_key, prompt, query_parser, request_options, generated_sql,
-                sql_hash, query_plan, status, expires_at
-            )
-            VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, 'running', CURRENT_TIMESTAMP + (%s * INTERVAL '1 day'))
-            RETURNING audience_id, audience_key, status, created_at, expires_at
-            """,
-            (
-                audience_key,
-                prompt,
-                query_parser,
-                json.dumps(request_options, ensure_ascii=False),
-                sql,
-                sql_hash,
-                json.dumps(query_plan, ensure_ascii=False),
-                int(audience_ttl_days),
-            ),
-        )
-        audience = _jsonable_record(cursor.fetchone())
-        audience_id = audience["audience_id"]
-        cursor.execute(
-            f"""
-            WITH target_result AS MATERIALIZED ({sql_for_parameterized_query}),
-            distinct_members AS (
-                SELECT DISTINCT user_id::VARCHAR(20) AS user_id, {campaign_projection} AS campaign_id
-                FROM target_result
-                WHERE user_id IS NOT NULL
-            )
-            INSERT INTO campaign_target_audience_members (audience_id, user_id, campaign_id)
-            SELECT %s, user_id, campaign_id
-            FROM distinct_members
-            """,
-            (audience_id,),
-        )
-        cursor.execute(
-            """
-            SELECT COUNT(*) AS member_count,
-                   COUNT(DISTINCT user_id) AS target_customer_count,
-                   COUNT(DISTINCT campaign_id) FILTER (WHERE campaign_id IS NOT NULL) AS target_campaign_count
-            FROM campaign_target_audience_members
-            WHERE audience_id = %s
-            """,
-            (audience_id,),
-        )
-        counts = _jsonable_record(cursor.fetchone() or {})
-        cursor.execute(
-            """
-            UPDATE campaign_target_audiences
-            SET status = 'completed',
-                member_count = %s,
-                target_customer_count = %s,
-                target_campaign_count = %s,
-                completed_at = CURRENT_TIMESTAMP
-            WHERE audience_id = %s
-            RETURNING audience_id, audience_key, status, member_count, target_customer_count,
-                      target_campaign_count, created_at, completed_at, expires_at
-            """,
-            (
-                counts.get("member_count", 0),
-                counts.get("target_customer_count", 0),
-                counts.get("target_campaign_count", 0),
-                audience_id,
-            ),
-        )
-        saved = _jsonable_record(cursor.fetchone())
-        cursor.execute("RELEASE SAVEPOINT target_audience_save")
+        with psycopg.connect(_metadata_conninfo(), row_factory=dict_row, connect_timeout=5) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SET LOCAL statement_timeout = '10s'")
+                cursor.execute(
+                    """
+                    INSERT INTO campaign_target_audiences (
+                        audience_key, prompt, query_parser, request_options, generated_sql,
+                        sql_hash, query_plan, status, expires_at
+                    )
+                    VALUES (%s, %s, %s, %s::jsonb, %s, %s, %s::jsonb, 'running', CURRENT_TIMESTAMP + (%s * INTERVAL '1 day'))
+                    RETURNING audience_id, audience_key, status, created_at, expires_at
+                    """,
+                    (
+                        audience_key,
+                        prompt,
+                        query_parser,
+                        json.dumps(request_options, ensure_ascii=False),
+                        sql,
+                        sql_hash,
+                        json.dumps(query_plan, ensure_ascii=False),
+                        int(audience_ttl_days),
+                    ),
+                )
+                audience = _jsonable_record(cursor.fetchone())
+                audience_id = audience["audience_id"]
+                if member_rows:
+                    with cursor.copy(
+                        "COPY campaign_target_audience_members (audience_id, user_id, campaign_id) FROM STDIN"
+                    ) as copy:
+                        for user_id, campaign_id in member_rows:
+                            copy.write_row((audience_id, user_id, campaign_id))
+                cursor.execute(
+                    """
+                    UPDATE campaign_target_audiences
+                    SET status = 'completed',
+                        member_count = %s,
+                        target_customer_count = %s,
+                        target_campaign_count = %s,
+                        completed_at = CURRENT_TIMESTAMP
+                    WHERE audience_id = %s
+                    RETURNING audience_id, audience_key, status, member_count, target_customer_count,
+                              target_campaign_count, created_at, completed_at, expires_at
+                    """,
+                    (member_count, target_customer_count, target_campaign_count, audience_id),
+                )
+                saved = _jsonable_record(cursor.fetchone())
         return {"is_success": True, "failure_reason": None, **saved}
     except Exception as exc:
-        cursor.execute("ROLLBACK TO SAVEPOINT target_audience_save")
-        cursor.execute("RELEASE SAVEPOINT target_audience_save")
         return _audience_error("target_audience_save_failed", exc)
 
 
@@ -3530,14 +3538,61 @@ def refresh_message_generation_from_database(request: TargetSqlRequest, result: 
     }
 
 
+def _env(*names_then_default: str) -> str:
+    # 여러 환경변수 이름을 순서대로 확인해 처음으로 "비어있지 않은" 값을 반환한다.
+    # 마지막 인자는 기본값. 값이 빈 문자열("")이면 미설정으로 간주해 다음 후보로 넘어간다
+    # (docker-compose 의 ${VAR:-} 처럼 빈 값이 주입돼도 폴백이 정상 동작하도록).
+    *names, default = names_then_default
+    for name in names:
+        value = os.getenv(name)
+        if value:
+            return value
+    return default
+
+
 def _postgres_conninfo() -> str:
+    # 로컬 쓰기 DB. 앱이 직접 쓰는 메타데이터(오디언스/실패로그/프롬프트/정책)와
+    # business 테이블에 FK로 묶인 운영 A/B 서브시스템(실험/발송/이벤트)이 여기에 있다.
+    # 실제(business) 소스 DB가 아니라 로컬 postgres 를 가리킨다.
     return " ".join(
         [
-            f"host={os.getenv('POSTGRES_HOST', 'postgres')}",
-            f"port={os.getenv('POSTGRES_PORT', '5432')}",
-            f"dbname={os.getenv('POSTGRES_DB', 'campaign_db')}",
-            f"user={os.getenv('POSTGRES_USER', 'postgres')}",
-            f"password={os.getenv('POSTGRES_PASSWORD', '1234')}",
+            f"host={_env('POSTGRES_HOST', 'postgres')}",
+            f"port={_env('POSTGRES_PORT', '5432')}",
+            f"dbname={_env('POSTGRES_DB', 'campaign_db')}",
+            f"user={_env('POSTGRES_USER', 'postgres')}",
+            f"password={_env('POSTGRES_PASSWORD', '1234')}",
+        ]
+    )
+
+
+def _metadata_conninfo() -> str:
+    # 앱 메타데이터(타겟 오디언스/멤버/실패로그/프롬프트/정책)를 저장하는 로컬 쓰기 DB.
+    # 기본값은 _postgres_conninfo() 와 동일(로컬 postgres)하며, 전용 메타데이터 DB를
+    # 쓰고 싶으면 METADATA_DB_* 환경변수로 오버라이드한다(docs/data/metadata_ddl.sql 참고).
+    return " ".join(
+        [
+            f"host={_env('METADATA_DB_HOST', 'POSTGRES_HOST', 'postgres')}",
+            f"port={_env('METADATA_DB_PORT', 'POSTGRES_PORT', '5432')}",
+            f"dbname={_env('METADATA_DB_NAME', 'POSTGRES_DB', 'campaign_db')}",
+            f"user={_env('METADATA_DB_USER', 'POSTGRES_USER', 'postgres')}",
+            f"password={_env('METADATA_DB_PASSWORD', 'POSTGRES_PASSWORD', '1234')}",
+        ]
+    )
+
+
+def _business_conninfo() -> str:
+    # 실제(business) 소스 DB. NL2SQL 타겟팅 조회는 이 DB에서만 읽는다.
+    # options=default_transaction_read_only=on 으로 서버 레벨에서 모든 트랜잭션을
+    # 읽기 전용으로 강제하므로, 앱이 실수로라도 실제 데이터를 변경할 수 없다.
+    # BUSINESS_DB_* 를 지정하지 않으면 로컬 POSTGRES_* 로 폴백한다.
+    return " ".join(
+        [
+            f"host={_env('BUSINESS_DB_HOST', 'POSTGRES_HOST', 'postgres')}",
+            f"port={_env('BUSINESS_DB_PORT', 'POSTGRES_PORT', '5432')}",
+            f"dbname={_env('BUSINESS_DB_NAME', 'POSTGRES_DB', 'campaign_db')}",
+            f"user={_env('BUSINESS_DB_USER', 'POSTGRES_USER', 'postgres')}",
+            f"password={_env('BUSINESS_DB_PASSWORD', 'POSTGRES_PASSWORD', '1234')}",
+            "options='-c default_transaction_read_only=on'",
         ]
     )
 

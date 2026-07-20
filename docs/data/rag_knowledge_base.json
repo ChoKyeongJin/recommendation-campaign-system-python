@@ -12,14 +12,14 @@
   },
   "node_counts": {
     "schema_table": 28,
-    "normalization_rule": 41,
+    "normalization_rule": 209,
     "business_term": 20,
     "business_policy": 5,
     "metric_alias": 6,
-    "sql_example": 30,
+    "sql_example": 28,
     "campaign": 25,
     "user": 25,
-    "total": 180
+    "total": 346
   },
   "nodes": [
     {
@@ -3718,9 +3718,15 @@
         "복귀 대상",
         "inactive",
         "inactive_90d",
-        "dormant"
+        "dormant",
+        "휴면회원",
+        "슬립 회원",
+        "슬립",
+        "잠자는 고객",
+        "sleep member",
+        "SLEEP"
       ],
-      "text_for_embedding": "정규화 사전 inactive_90d는 90일 이상 휴면 고객을 의미한다. 동의어: 휴면, 휴면 고객, 비활성, 장기 미접속, 90일 미접속, 복귀 대상, inactive, inactive_90d, dormant. 부정 동의어: 없음."
+      "text_for_embedding": "정규화 사전 inactive_90d는 90일 이상 휴면 고객을 의미한다. 동의어: 휴면, 휴면 고객, 비활성, 장기 미접속, 90일 미접속, 복귀 대상, inactive, inactive_90d, dormant, 휴면회원, 슬립 회원, 슬립, 잠자는 고객, sleep member, SLEEP. 부정 동의어: 없음."
     },
     {
       "id": "normalization_rule:vip",
@@ -3736,9 +3742,14 @@
         "상위 고객",
         "high value",
         "high_ltv",
-        "vip"
+        "vip",
+        "최우수 고객",
+        "top tier",
+        "프리미엄 등급",
+        "VVIP",
+        "VIP PREMIUM"
       ],
-      "text_for_embedding": "정규화 사전 vip는 VIP 고객을 의미한다. 동의어: VIP, 우수 고객, 충성 고객, 고가치 고객, 상위 고객, high value, high_ltv, vip. 부정 동의어: 없음."
+      "text_for_embedding": "정규화 사전 vip는 VIP 고객을 의미한다. 동의어: VIP, 우수 고객, 충성 고객, 고가치 고객, 상위 고객, high value, high_ltv, vip, 최우수 고객, top tier, 프리미엄 등급, VVIP, VIP PREMIUM. 부정 동의어: 없음."
     },
     {
       "id": "normalization_rule:price_sensitive",
@@ -3759,9 +3770,14 @@
         "가성비",
         "deal seeker",
         "discount responsive",
-        "price sensitive"
+        "price sensitive",
+        "할인 민감",
+        "할인 민감도 높은",
+        "가격 민감도",
+        "캠페인 민감",
+        "할인 반응 고객"
       ],
-      "text_for_embedding": "정규화 사전 price_sensitive는 가격 민감 고객을 의미한다. 동의어: 가격 민감, 할인 선호, 쿠폰 관심, 쿠폰 관심 고객, 쿠폰 반응, 쿠폰 선호, 쿠폰 좋아함, 특가 반응, 저가 선호, 가성비, deal seeker, discount responsive, price sensitive. 부정 동의어: 없음."
+      "text_for_embedding": "정규화 사전 price_sensitive는 가격 민감 고객을 의미한다. 동의어: 가격 민감, 할인 선호, 쿠폰 관심, 쿠폰 관심 고객, 쿠폰 반응, 쿠폰 선호, 쿠폰 좋아함, 특가 반응, 저가 선호, 가성비, deal seeker, discount responsive, price sensitive, 할인 민감, 할인 민감도 높은, 가격 민감도, 캠페인 민감, 할인 반응 고객. 부정 동의어: 없음."
     },
     {
       "id": "normalization_rule:premium_buyer",
@@ -3861,9 +3877,11 @@
         "앱 활성",
         "app user",
         "app_user",
-        "uses_app_daily"
+        "uses_app_daily",
+        "App",
+        "APP"
       ],
-      "text_for_embedding": "정규화 사전 app_user는 앱 사용자을 의미한다. 동의어: 앱 사용자, 앱 유저, 모바일앱 사용자, 앱 활성, app user, app_user, uses_app_daily. 부정 동의어: 없음."
+      "text_for_embedding": "정규화 사전 app_user는 앱 사용자을 의미한다. 동의어: 앱 사용자, 앱 유저, 모바일앱 사용자, 앱 활성, app user, app_user, uses_app_daily, App, APP. 부정 동의어: 없음."
     },
     {
       "id": "normalization_rule:office_worker",
@@ -3911,9 +3929,16 @@
         "육아",
         "아이 있는 고객",
         "parent",
-        "baby buyer"
+        "baby buyer",
+        "자녀 있는",
+        "자녀",
+        "아기 있는",
+        "유아",
+        "키즈",
+        "baby",
+        "children"
       ],
-      "text_for_embedding": "정규화 사전 parent는 부모/육아 고객을 의미한다. 동의어: 부모, 엄마, 아빠, 육아, 아이 있는 고객, parent, baby buyer. 부정 동의어: 없음."
+      "text_for_embedding": "정규화 사전 parent는 부모/육아 고객을 의미한다. 동의어: 부모, 엄마, 아빠, 육아, 아이 있는 고객, parent, baby buyer, 자녀 있는, 자녀, 아기 있는, 유아, 키즈, baby, children. 부정 동의어: 없음."
     },
     {
       "id": "normalization_rule:pet_owner",
@@ -4253,10 +4278,9 @@
         "바우처",
         "프로모션 코드",
         "coupon",
-        "voucher",
         "promo code"
       ],
-      "text_for_embedding": "정규화 사전 coupon는 쿠폰을 의미한다. 동의어: 쿠폰, 할인권, 바우처, 프로모션 코드, coupon, voucher, promo code. 부정 동의어: 없음."
+      "text_for_embedding": "정규화 사전 coupon는 쿠폰을 의미한다. 동의어: 쿠폰, 할인권, 바우처, 프로모션 코드, coupon, promo code. 부정 동의어: 없음."
     },
     {
       "id": "normalization_rule:free_shipping",
@@ -4311,6 +4335,2411 @@
         "awareness"
       ],
       "text_for_embedding": "정규화 사전 awareness는 신제품 출시/인지을 의미한다. 동의어: 신제품, 신상품, 출시, 런칭, 신규 출시, 신제품 출시, 신상품 출시, 출시 소식, 런칭 소식, new arrival, product launch, launch, awareness. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:online_buyer",
+      "type": "normalization_rule",
+      "rule_id": "online_buyer",
+      "canonical": "online_buyer",
+      "ko_label": "온라인 구매 고객",
+      "synonyms": [
+        "온라인 구매",
+        "온라인 고객",
+        "온라인",
+        "온라인몰",
+        "앱 구매",
+        "웹 구매",
+        "모바일 구매",
+        "온라인 주문",
+        "online buyer",
+        "online",
+        "on",
+        "ON",
+        "온/오프라인",
+        "ONOFF",
+        "PC",
+        "Mobile Web",
+        "MW",
+        "모바일웹",
+        "앱"
+      ],
+      "text_for_embedding": "정규화 사전 online_buyer는 온라인 구매 고객을 의미한다. 동의어: 온라인 구매, 온라인 고객, 온라인, 온라인몰, 앱 구매, 웹 구매, 모바일 구매, 온라인 주문, online buyer, online, on, ON, 온/오프라인, ONOFF, PC, Mobile Web, MW, 모바일웹, 앱. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:offline_buyer",
+      "type": "normalization_rule",
+      "rule_id": "offline_buyer",
+      "canonical": "offline_buyer",
+      "ko_label": "오프라인·매장 구매 고객",
+      "synonyms": [
+        "오프라인",
+        "오프라인 구매",
+        "매장 구매",
+        "매장 방문",
+        "오프라인 고객",
+        "점포 구매",
+        "매장 고객",
+        "offline buyer",
+        "offline",
+        "offshop",
+        "in-store",
+        "off",
+        "OFF",
+        "TV쇼핑",
+        "OFFSHOP",
+        "티비쇼핑"
+      ],
+      "text_for_embedding": "정규화 사전 offline_buyer는 오프라인·매장 구매 고객을 의미한다. 동의어: 오프라인, 오프라인 구매, 매장 구매, 매장 방문, 오프라인 고객, 점포 구매, 매장 고객, offline buyer, offline, offshop, in-store, off, OFF, TV쇼핑, OFFSHOP, 티비쇼핑. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:membership_member",
+      "type": "normalization_rule",
+      "rule_id": "membership_member",
+      "canonical": "membership_member",
+      "ko_label": "멤버십 회원",
+      "synonyms": [
+        "멤버십",
+        "멤버십 회원",
+        "멤버십 가입자",
+        "멤버십 고객",
+        "멤버십 가입",
+        "membership",
+        "membership member"
+      ],
+      "text_for_embedding": "정규화 사전 membership_member는 멤버십 회원을 의미한다. 동의어: 멤버십, 멤버십 회원, 멤버십 가입자, 멤버십 고객, 멤버십 가입, membership, membership member. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:employee",
+      "type": "normalization_rule",
+      "rule_id": "employee",
+      "canonical": "employee",
+      "ko_label": "임직원 고객",
+      "synonyms": [
+        "임직원",
+        "직원",
+        "사내 임직원",
+        "사원",
+        "내부 직원",
+        "임직원 고객",
+        "employee",
+        "staff",
+        "b2e",
+        "EMPLOYEE",
+        "협력사직원",
+        "PARTNER",
+        "파트너"
+      ],
+      "text_for_embedding": "정규화 사전 employee는 임직원 고객을 의미한다. 동의어: 임직원, 직원, 사내 임직원, 사원, 내부 직원, 임직원 고객, employee, staff, b2e, EMPLOYEE, 협력사직원, PARTNER, 파트너. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:blacklist",
+      "type": "normalization_rule",
+      "rule_id": "blacklist",
+      "canonical": "blacklist",
+      "ko_label": "블랙리스트(발송 제외) 고객",
+      "synonyms": [
+        "블랙리스트",
+        "블랙",
+        "발송 제외",
+        "제외 대상",
+        "수신 차단",
+        "발송 금지",
+        "blacklist",
+        "blocked",
+        "excluded"
+      ],
+      "text_for_embedding": "정규화 사전 blacklist는 블랙리스트(발송 제외) 고객을 의미한다. 동의어: 블랙리스트, 블랙, 발송 제외, 제외 대상, 수신 차단, 발송 금지, blacklist, blocked, excluded. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:married",
+      "type": "normalization_rule",
+      "rule_id": "married",
+      "canonical": "married",
+      "ko_label": "기혼 고객",
+      "synonyms": [
+        "기혼",
+        "결혼",
+        "결혼한",
+        "기혼 고객",
+        "부부",
+        "married"
+      ],
+      "negative_synonyms": [
+        "미혼",
+        "결혼 안 한 사람",
+        "not married",
+        "single"
+      ],
+      "text_for_embedding": "정규화 사전 married는 기혼 고객을 의미한다. 동의어: 기혼, 결혼, 결혼한, 기혼 고객, 부부, married. 부정 동의어: 미혼, 결혼 안 한 사람, not married, single."
+    },
+    {
+      "id": "normalization_rule:foreigner",
+      "type": "normalization_rule",
+      "rule_id": "foreigner",
+      "canonical": "foreigner",
+      "ko_label": "외국인 고객",
+      "synonyms": [
+        "외국인",
+        "외국인 고객",
+        "외국 국적",
+        "foreigner",
+        "foreign"
+      ],
+      "text_for_embedding": "정규화 사전 foreigner는 외국인 고객을 의미한다. 동의어: 외국인, 외국인 고객, 외국 국적, foreigner, foreign. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:marketing_consent",
+      "type": "normalization_rule",
+      "rule_id": "marketing_consent",
+      "canonical": "marketing_consent",
+      "ko_label": "마케팅 수신동의 고객",
+      "synonyms": [
+        "마케팅 수신동의",
+        "수신 동의",
+        "광고 수신 동의",
+        "수신동의 고객",
+        "마케팅 동의",
+        "정보 수신 동의",
+        "수신 허용",
+        "opt-in",
+        "marketing consent",
+        "consent",
+        "agreed"
+      ],
+      "negative_synonyms": [
+        "수신 거부",
+        "수신 미동의",
+        "동의 안 한 사람",
+        "opt-out",
+        "not consented"
+      ],
+      "text_for_embedding": "정규화 사전 marketing_consent는 마케팅 수신동의 고객을 의미한다. 동의어: 마케팅 수신동의, 수신 동의, 광고 수신 동의, 수신동의 고객, 마케팅 동의, 정보 수신 동의, 수신 허용, opt-in, marketing consent, consent, agreed. 부정 동의어: 수신 거부, 수신 미동의, 동의 안 한 사람, opt-out, not consented."
+    },
+    {
+      "id": "normalization_rule:active_member",
+      "type": "normalization_rule",
+      "rule_id": "active_member",
+      "canonical": "active_member",
+      "ko_label": "활성 회원",
+      "synonyms": [
+        "활성 고객",
+        "활동 고객",
+        "액티브 고객",
+        "활발한 고객",
+        "활성 회원",
+        "활동적인 고객",
+        "active member",
+        "active",
+        "NORMAL"
+      ],
+      "negative_synonyms": [
+        "휴면이 아닌",
+        "비활성이 아닌",
+        "not dormant"
+      ],
+      "text_for_embedding": "정규화 사전 active_member는 활성 회원을 의미한다. 동의어: 활성 고객, 활동 고객, 액티브 고객, 활발한 고객, 활성 회원, 활동적인 고객, active member, active, NORMAL. 부정 동의어: 휴면이 아닌, 비활성이 아닌, not dormant."
+    },
+    {
+      "id": "normalization_rule:point_holder",
+      "type": "normalization_rule",
+      "rule_id": "point_holder",
+      "canonical": "point_holder",
+      "ko_label": "포인트·적립금 보유 고객",
+      "synonyms": [
+        "포인트 보유",
+        "포인트 많은",
+        "적립금",
+        "캐럿",
+        "포인트 고객",
+        "적립금 보유",
+        "point holder",
+        "has points",
+        "loyalty points"
+      ],
+      "text_for_embedding": "정규화 사전 point_holder는 포인트·적립금 보유 고객을 의미한다. 동의어: 포인트 보유, 포인트 많은, 적립금, 캐럿, 포인트 고객, 적립금 보유, point holder, has points, loyalty points. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:birthday_target",
+      "type": "normalization_rule",
+      "rule_id": "birthday_target",
+      "canonical": "birthday_target",
+      "ko_label": "생일 고객",
+      "synonyms": [
+        "생일",
+        "생일자",
+        "생일 고객",
+        "이달 생일",
+        "생일 이벤트",
+        "생일 축하",
+        "생일 대상",
+        "birthday",
+        "birthday customer"
+      ],
+      "text_for_embedding": "정규화 사전 birthday_target는 생일 고객을 의미한다. 동의어: 생일, 생일자, 생일 고객, 이달 생일, 생일 이벤트, 생일 축하, 생일 대상, birthday, birthday customer. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:wedding_anniversary",
+      "type": "normalization_rule",
+      "rule_id": "wedding_anniversary",
+      "canonical": "wedding_anniversary",
+      "ko_label": "결혼기념일 고객",
+      "synonyms": [
+        "결혼기념일",
+        "기념일",
+        "웨딩 기념일",
+        "결혼 기념",
+        "wedding anniversary",
+        "anniversary"
+      ],
+      "text_for_embedding": "정규화 사전 wedding_anniversary는 결혼기념일 고객을 의미한다. 동의어: 결혼기념일, 기념일, 웨딩 기념일, 결혼 기념, wedding anniversary, anniversary. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:campaign_responder",
+      "type": "normalization_rule",
+      "rule_id": "campaign_responder",
+      "canonical": "campaign_responder",
+      "ko_label": "캠페인 반응 고객",
+      "synonyms": [
+        "캠페인 반응",
+        "반응 고객",
+        "오퍼 반응",
+        "반응한 고객",
+        "구매 전환",
+        "전환 고객",
+        "응답 고객",
+        "반응",
+        "responder",
+        "responded",
+        "converter"
+      ],
+      "negative_synonyms": [
+        "반응 없는 사람"
+      ],
+      "text_for_embedding": "정규화 사전 campaign_responder는 캠페인 반응 고객을 의미한다. 동의어: 캠페인 반응, 반응 고객, 오퍼 반응, 반응한 고객, 구매 전환, 전환 고객, 응답 고객, 반응, responder, responded, converter. 부정 동의어: 반응 없는 사람."
+    },
+    {
+      "id": "normalization_rule:campaign_nonresponder",
+      "type": "normalization_rule",
+      "rule_id": "campaign_nonresponder",
+      "canonical": "campaign_nonresponder",
+      "ko_label": "캠페인 미반응 고객",
+      "synonyms": [
+        "미반응",
+        "무반응",
+        "반응 없음",
+        "응답 없음",
+        "미전환",
+        "반응 안 한 고객",
+        "non responder",
+        "no response"
+      ],
+      "text_for_embedding": "정규화 사전 campaign_nonresponder는 캠페인 미반응 고객을 의미한다. 동의어: 미반응, 무반응, 반응 없음, 응답 없음, 미전환, 반응 안 한 고객, non responder, no response. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:control_group",
+      "type": "normalization_rule",
+      "rule_id": "control_group",
+      "canonical": "control_group",
+      "ko_label": "대조군",
+      "synonyms": [
+        "대조군",
+        "컨트롤군",
+        "비교군",
+        "통제군",
+        "홀드아웃",
+        "control group",
+        "control",
+        "holdout"
+      ],
+      "text_for_embedding": "정규화 사전 control_group는 대조군을 의미한다. 동의어: 대조군, 컨트롤군, 비교군, 통제군, 홀드아웃, control group, control, holdout. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:test_group",
+      "type": "normalization_rule",
+      "rule_id": "test_group",
+      "canonical": "test_group",
+      "ko_label": "실험군(타겟군)",
+      "synonyms": [
+        "실험군",
+        "타겟군",
+        "테스트군",
+        "실험 대상",
+        "처리군",
+        "test group",
+        "target group",
+        "treatment"
+      ],
+      "text_for_embedding": "정규화 사전 test_group는 실험군(타겟군)을 의미한다. 동의어: 실험군, 타겟군, 테스트군, 실험 대상, 처리군, test group, target group, treatment. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:coupon_redeemer",
+      "type": "normalization_rule",
+      "rule_id": "coupon_redeemer",
+      "canonical": "coupon_redeemer",
+      "ko_label": "쿠폰 사용 고객",
+      "synonyms": [
+        "쿠폰 사용",
+        "쿠폰 쓴 고객",
+        "쿠폰 사용자",
+        "쿠폰 소진",
+        "쿠폰 사용 고객",
+        "coupon redeemer",
+        "coupon used",
+        "redeemed coupon"
+      ],
+      "text_for_embedding": "정규화 사전 coupon_redeemer는 쿠폰 사용 고객을 의미한다. 동의어: 쿠폰 사용, 쿠폰 쓴 고객, 쿠폰 사용자, 쿠폰 소진, 쿠폰 사용 고객, coupon redeemer, coupon used, redeemed coupon. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:recent_visitor",
+      "type": "normalization_rule",
+      "rule_id": "recent_visitor",
+      "canonical": "recent_visitor",
+      "ko_label": "최근 접속·로그인 고객",
+      "synonyms": [
+        "최근 접속",
+        "최근 로그인",
+        "최근 방문",
+        "최근 활동",
+        "최근 접속 고객",
+        "최근 접속자",
+        "recent login",
+        "recently active",
+        "recent visit"
+      ],
+      "text_for_embedding": "정규화 사전 recent_visitor는 최근 접속·로그인 고객을 의미한다. 동의어: 최근 접속, 최근 로그인, 최근 방문, 최근 활동, 최근 접속 고객, 최근 접속자, recent login, recently active, recent visit. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:member_grade",
+      "type": "normalization_rule",
+      "rule_id": "member_grade",
+      "canonical": "member_grade",
+      "ko_label": "회원 등급",
+      "synonyms": [
+        "회원 등급",
+        "고객 등급",
+        "등급",
+        "멤버 등급",
+        "등급별",
+        "우수 등급",
+        "등급 고객",
+        "grade",
+        "tier",
+        "membership grade"
+      ],
+      "text_for_embedding": "정규화 사전 member_grade는 회원 등급을 의미한다. 동의어: 회원 등급, 고객 등급, 등급, 멤버 등급, 등급별, 우수 등급, 등급 고객, grade, tier, membership grade. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:withdrawn_member",
+      "type": "normalization_rule",
+      "rule_id": "withdrawn_member",
+      "canonical": "withdrawn_member",
+      "ko_label": "탈퇴 회원",
+      "synonyms": [
+        "탈퇴",
+        "WITHDRAW",
+        "해지",
+        "탈퇴 회원",
+        "withdrawn",
+        "left"
+      ],
+      "text_for_embedding": "정규화 사전 withdrawn_member는 탈퇴 회원을 의미한다. 동의어: 탈퇴, WITHDRAW, 해지, 탈퇴 회원, withdrawn, left. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:customer_worth_grade",
+      "type": "normalization_rule",
+      "rule_id": "customer_worth_grade",
+      "canonical": "customer_worth_grade",
+      "ko_label": "고객가치 등급",
+      "synonyms": [
+        "일반",
+        "고객가치등급",
+        "우량 고객",
+        "가치 등급",
+        "worth grade"
+      ],
+      "text_for_embedding": "정규화 사전 customer_worth_grade는 고객가치 등급을 의미한다. 동의어: 일반, 고객가치등급, 우량 고객, 가치 등급, worth grade. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:grade_grow_type",
+      "type": "normalization_rule",
+      "rule_id": "grade_grow_type",
+      "canonical": "grade_grow_type",
+      "ko_label": "등급 성장 유형",
+      "synonyms": [
+        "지속성장형",
+        "A",
+        "성장유지형",
+        "B",
+        "유지형",
+        "C",
+        "하락유지형",
+        "D",
+        "지속하락형",
+        "E",
+        "등급 성장",
+        "성장 고객",
+        "하락 고객",
+        "grade growth"
+      ],
+      "text_for_embedding": "정규화 사전 grade_grow_type는 등급 성장 유형을 의미한다. 동의어: 지속성장형, A, 성장유지형, B, 유지형, C, 하락유지형, D, 지속하락형, E, 등급 성장, 성장 고객, 하락 고객, grade growth. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:customer_status_grade",
+      "type": "normalization_rule",
+      "rule_id": "customer_status_grade",
+      "canonical": "customer_status_grade",
+      "ko_label": "고객 상태 등급",
+      "synonyms": [
+        "당월신규고객(무실적)",
+        "당월신규고객(유실적)",
+        "기존고객(최근1년 유실적)",
+        "기존고객(최근1년 무실적)",
+        "기존고객(휴면)",
+        "신규고객",
+        "기존고객",
+        "실적 고객",
+        "무실적 고객"
+      ],
+      "text_for_embedding": "정규화 사전 customer_status_grade는 고객 상태 등급을 의미한다. 동의어: 당월신규고객(무실적), 당월신규고객(유실적), 기존고객(최근1년 유실적), 기존고객(최근1년 무실적), 기존고객(휴면), 신규고객, 기존고객, 실적 고객, 무실적 고객. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:payment_method",
+      "type": "normalization_rule",
+      "rule_id": "payment_method",
+      "canonical": "payment_method",
+      "ko_label": "결제수단",
+      "synonyms": [
+        "신용카드",
+        "CARD",
+        "가상계좌",
+        "VIRTUAL",
+        "계좌이체",
+        "TRANSFER",
+        "휴대폰결제",
+        "MOBILE",
+        "카카오페이",
+        "외상매출금",
+        "CREDITSALE",
+        "포인트",
+        "POINT",
+        "예치금",
+        "DEPOSIT",
+        "상품권",
+        "VOUCHER",
+        "현금",
+        "CASH",
+        "결제수단",
+        "결제 방법",
+        "카드",
+        "간편결제",
+        "payment method"
+      ],
+      "text_for_embedding": "정규화 사전 payment_method는 결제수단을 의미한다. 동의어: 신용카드, CARD, 가상계좌, VIRTUAL, 계좌이체, TRANSFER, 휴대폰결제, MOBILE, 카카오페이, 외상매출금, CREDITSALE, 포인트, POINT, 예치금, DEPOSIT, 상품권, VOUCHER, 현금, CASH, 결제수단, 결제 방법, 카드, 간편결제, payment method. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:day_of_week",
+      "type": "normalization_rule",
+      "rule_id": "day_of_week",
+      "canonical": "day_of_week",
+      "ko_label": "요일",
+      "synonyms": [
+        "일요일",
+        "월요일",
+        "화요일",
+        "수요일",
+        "목요일",
+        "금요일",
+        "토요일",
+        "요일",
+        "주말",
+        "평일",
+        "주중"
+      ],
+      "text_for_embedding": "정규화 사전 day_of_week는 요일을 의미한다. 동의어: 일요일, 월요일, 화요일, 수요일, 목요일, 금요일, 토요일, 요일, 주말, 평일, 주중. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:time_of_day",
+      "type": "normalization_rule",
+      "rule_id": "time_of_day",
+      "canonical": "time_of_day",
+      "ko_label": "구매 시간대",
+      "synonyms": [
+        "오전1(07:00~09:00 미만)",
+        "오전2(09:00~12:00 미만)",
+        "오후1(12:00~16:00 미만)",
+        "오후2(16:00~18:00 미만)",
+        "저녁(18:00~21:00 미만)",
+        "마감(21:00~24:00 미만)",
+        "새벽1(00:00-03:00 미만)",
+        "새벽2(03:00-07:00 미만)",
+        "오전",
+        "오후",
+        "저녁",
+        "새벽",
+        "시간대",
+        "구매 시간대"
+      ],
+      "text_for_embedding": "정규화 사전 time_of_day는 구매 시간대을 의미한다. 동의어: 오전1(07:00~09:00 미만), 오전2(09:00~12:00 미만), 오후1(12:00~16:00 미만), 오후2(16:00~18:00 미만), 저녁(18:00~21:00 미만), 마감(21:00~24:00 미만), 새벽1(00:00-03:00 미만), 새벽2(03:00-07:00 미만), 오전, 오후, 저녁, 새벽, 시간대, 구매 시간대. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:age_band",
+      "type": "normalization_rule",
+      "rule_id": "age_band",
+      "canonical": "age_band",
+      "ko_label": "연령대",
+      "synonyms": [
+        "10대",
+        "20대",
+        "30대",
+        "40대",
+        "50대",
+        "60대 이상",
+        "이십대",
+        "삼십대",
+        "사십대",
+        "오십대",
+        "청년",
+        "중년",
+        "20s",
+        "30s",
+        "40s",
+        "50s",
+        "age band"
+      ],
+      "text_for_embedding": "정규화 사전 age_band는 연령대을 의미한다. 동의어: 10대, 20대, 30대, 40대, 50대, 60대 이상, 이십대, 삼십대, 사십대, 오십대, 청년, 중년, 20s, 30s, 40s, 50s, age band. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_EMAIL수신여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_EMAIL수신여부",
+      "canonical": "EMAIL수신여부",
+      "ko_label": "EMAIL수신여부",
+      "synonyms": [
+        "EMAIL수신여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 EMAIL수신여부는 EMAIL수신여부을 의미한다. 동의어: EMAIL수신여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_F등급",
+      "type": "normalization_rule",
+      "rule_id": "kw_F등급",
+      "canonical": "F등급",
+      "ko_label": "F등급",
+      "synonyms": [
+        "F등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 F등급는 F등급을 의미한다. 동의어: F등급. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_M등급",
+      "type": "normalization_rule",
+      "rule_id": "kw_M등급",
+      "canonical": "M등급",
+      "ko_label": "M등급",
+      "synonyms": [
+        "M등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 M등급는 M등급을 의미한다. 동의어: M등급. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_R등급",
+      "type": "normalization_rule",
+      "rule_id": "kw_R등급",
+      "canonical": "R등급",
+      "ko_label": "R등급",
+      "synonyms": [
+        "R등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 R등급는 R등급을 의미한다. 동의어: R등급. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_SMS동의여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_SMS동의여부",
+      "canonical": "SMS동의여부",
+      "ko_label": "SMS동의여부",
+      "synonyms": [
+        "SMS동의여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 SMS동의여부는 SMS동의여부을 의미한다. 동의어: SMS동의여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_SMS수신동의여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_SMS수신동의여부",
+      "canonical": "SMS수신동의여부",
+      "ko_label": "SMS수신동의여부",
+      "synonyms": [
+        "SMS수신동의여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 SMS수신동의여부는 SMS수신동의여부을 의미한다. 동의어: SMS수신동의여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_SMS수신여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_SMS수신여부",
+      "canonical": "SMS수신여부",
+      "ko_label": "SMS수신여부",
+      "synonyms": [
+        "SMS수신여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 SMS수신여부는 SMS수신여부을 의미한다. 동의어: SMS수신여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_SNS등록여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_SNS등록여부",
+      "canonical": "SNS등록여부",
+      "ko_label": "SNS등록여부",
+      "synonyms": [
+        "SNS등록여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 SNS등록여부는 SNS등록여부을 의미한다. 동의어: SNS등록여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_SNS채널",
+      "type": "normalization_rule",
+      "rule_id": "kw_SNS채널",
+      "canonical": "SNS채널",
+      "ko_label": "SNS채널",
+      "synonyms": [
+        "SNS채널"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 SNS채널는 SNS채널을 의미한다. 동의어: SNS채널. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_VIP등급",
+      "type": "normalization_rule",
+      "rule_id": "kw_VIP등급",
+      "canonical": "VIP등급",
+      "ko_label": "VIP등급",
+      "synonyms": [
+        "VIP등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 VIP등급는 VIP등급을 의미한다. 동의어: VIP등급. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_가입경로",
+      "type": "normalization_rule",
+      "rule_id": "kw_가입경로",
+      "canonical": "가입경로",
+      "ko_label": "가입경로",
+      "synonyms": [
+        "가입경로"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 가입경로는 가입경로을 의미한다. 동의어: 가입경로. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_가입기간",
+      "type": "normalization_rule",
+      "rule_id": "kw_가입기간",
+      "canonical": "가입기간",
+      "ko_label": "가입기간",
+      "synonyms": [
+        "가입기간"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 가입기간는 가입기간을 의미한다. 동의어: 가입기간. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_가입매장",
+      "type": "normalization_rule",
+      "rule_id": "kw_가입매장",
+      "canonical": "가입매장",
+      "ko_label": "가입매장",
+      "synonyms": [
+        "가입매장"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 가입매장는 가입매장을 의미한다. 동의어: 가입매장. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_가입매장_브랜드",
+      "type": "normalization_rule",
+      "rule_id": "kw_가입매장_브랜드",
+      "canonical": "가입매장_브랜드",
+      "ko_label": "가입매장_브랜드",
+      "synonyms": [
+        "가입매장_브랜드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 가입매장_브랜드는 가입매장_브랜드을 의미한다. 동의어: 가입매장_브랜드. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_가입매장_지역",
+      "type": "normalization_rule",
+      "rule_id": "kw_가입매장_지역",
+      "canonical": "가입매장_지역",
+      "ko_label": "가입매장_지역",
+      "synonyms": [
+        "가입매장_지역"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 가입매장_지역는 가입매장_지역을 의미한다. 동의어: 가입매장_지역. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_가입연도",
+      "type": "normalization_rule",
+      "rule_id": "kw_가입연도",
+      "canonical": "가입연도",
+      "ko_label": "가입연도",
+      "synonyms": [
+        "가입연도"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 가입연도는 가입연도을 의미한다. 동의어: 가입연도. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_가입유형",
+      "type": "normalization_rule",
+      "rule_id": "kw_가입유형",
+      "canonical": "가입유형",
+      "ko_label": "가입유형",
+      "synonyms": [
+        "가입유형"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 가입유형는 가입유형을 의미한다. 동의어: 가입유형. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_가입일",
+      "type": "normalization_rule",
+      "rule_id": "kw_가입일",
+      "canonical": "가입일",
+      "ko_label": "가입일",
+      "synonyms": [
+        "가입일"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 가입일는 가입일을 의미한다. 동의어: 가입일. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_가입일자",
+      "type": "normalization_rule",
+      "rule_id": "kw_가입일자",
+      "canonical": "가입일자",
+      "ko_label": "가입일자",
+      "synonyms": [
+        "가입일자"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 가입일자는 가입일자을 의미한다. 동의어: 가입일자. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_객단가",
+      "type": "normalization_rule",
+      "rule_id": "kw_객단가",
+      "canonical": "객단가",
+      "ko_label": "객단가",
+      "synonyms": [
+        "객단가"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 객단가는 객단가을 의미한다. 동의어: 객단가. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_거래브랜드",
+      "type": "normalization_rule",
+      "rule_id": "kw_거래브랜드",
+      "canonical": "거래브랜드",
+      "ko_label": "거래브랜드",
+      "synonyms": [
+        "거래브랜드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 거래브랜드는 거래브랜드을 의미한다. 동의어: 거래브랜드. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_거래채널유형",
+      "type": "normalization_rule",
+      "rule_id": "kw_거래채널유형",
+      "canonical": "거래채널유형",
+      "ko_label": "거래채널유형",
+      "synonyms": [
+        "거래채널유형"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 거래채널유형는 거래채널유형을 의미한다. 동의어: 거래채널유형. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_거래채널조합",
+      "type": "normalization_rule",
+      "rule_id": "kw_거래채널조합",
+      "canonical": "거래채널조합",
+      "ko_label": "거래채널조합",
+      "synonyms": [
+        "거래채널조합"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 거래채널조합는 거래채널조합을 의미한다. 동의어: 거래채널조합. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_결혼기념일4자리_월일",
+      "type": "normalization_rule",
+      "rule_id": "kw_결혼기념일4자리_월일",
+      "canonical": "결혼기념일4자리_월일",
+      "ko_label": "결혼기념일4자리_월일",
+      "synonyms": [
+        "결혼기념일4자리_월일"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 결혼기념일4자리_월일는 결혼기념일4자리_월일을 의미한다. 동의어: 결혼기념일4자리_월일. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_결혼여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_결혼여부",
+      "canonical": "결혼여부",
+      "ko_label": "결혼여부",
+      "synonyms": [
+        "결혼여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 결혼여부는 결혼여부을 의미한다. 동의어: 결혼여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_과거구매기간",
+      "type": "normalization_rule",
+      "rule_id": "kw_과거구매기간",
+      "canonical": "과거구매기간",
+      "ko_label": "과거구매기간",
+      "synonyms": [
+        "과거구매기간"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 과거구매기간는 과거구매기간을 의미한다. 동의어: 과거구매기간. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_관점구분",
+      "type": "normalization_rule",
+      "rule_id": "kw_관점구분",
+      "canonical": "관점구분",
+      "ko_label": "관점구분",
+      "synonyms": [
+        "관점구분"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 관점구분는 관점구분을 의미한다. 동의어: 관점구분. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_구매구분",
+      "type": "normalization_rule",
+      "rule_id": "kw_구매구분",
+      "canonical": "구매구분",
+      "ko_label": "구매구분",
+      "synonyms": [
+        "구매구분"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 구매구분는 구매구분을 의미한다. 동의어: 구매구분. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_구매금액",
+      "type": "normalization_rule",
+      "rule_id": "kw_구매금액",
+      "canonical": "구매금액",
+      "ko_label": "구매금액",
+      "synonyms": [
+        "구매금액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 구매금액는 구매금액을 의미한다. 동의어: 구매금액. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_구매기간",
+      "type": "normalization_rule",
+      "rule_id": "kw_구매기간",
+      "canonical": "구매기간",
+      "ko_label": "구매기간",
+      "synonyms": [
+        "구매기간"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 구매기간는 구매기간을 의미한다. 동의어: 구매기간. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_구매반응여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_구매반응여부",
+      "canonical": "구매반응여부",
+      "ko_label": "구매반응여부",
+      "synonyms": [
+        "구매반응여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 구매반응여부는 구매반응여부을 의미한다. 동의어: 구매반응여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_구매선호채널",
+      "type": "normalization_rule",
+      "rule_id": "kw_구매선호채널",
+      "canonical": "구매선호채널",
+      "ko_label": "구매선호채널",
+      "synonyms": [
+        "구매선호채널"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 구매선호채널는 구매선호채널을 의미한다. 동의어: 구매선호채널. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_구매수량",
+      "type": "normalization_rule",
+      "rule_id": "kw_구매수량",
+      "canonical": "구매수량",
+      "ko_label": "구매수량",
+      "synonyms": [
+        "구매수량"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 구매수량는 구매수량을 의미한다. 동의어: 구매수량. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_구매일자",
+      "type": "normalization_rule",
+      "rule_id": "kw_구매일자",
+      "canonical": "구매일자",
+      "ko_label": "구매일자",
+      "synonyms": [
+        "구매일자"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 구매일자는 구매일자을 의미한다. 동의어: 구매일자. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_구매횟수",
+      "type": "normalization_rule",
+      "rule_id": "kw_구매횟수",
+      "canonical": "구매횟수",
+      "ko_label": "구매횟수",
+      "synonyms": [
+        "구매횟수"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 구매횟수는 구매횟수을 의미한다. 동의어: 구매횟수. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_기본배송지주소",
+      "type": "normalization_rule",
+      "rule_id": "kw_기본배송지주소",
+      "canonical": "기본배송지주소",
+      "ko_label": "기본배송지주소",
+      "synonyms": [
+        "기본배송지주소"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 기본배송지주소는 기본배송지주소을 의미한다. 동의어: 기본배송지주소. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_나이대",
+      "type": "normalization_rule",
+      "rule_id": "kw_나이대",
+      "canonical": "나이대",
+      "ko_label": "나이대",
+      "synonyms": [
+        "나이대"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 나이대는 나이대을 의미한다. 동의어: 나이대. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_뉴베스트SMS동의여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_뉴베스트SMS동의여부",
+      "canonical": "뉴베스트SMS동의여부",
+      "ko_label": "뉴베스트SMS동의여부",
+      "synonyms": [
+        "뉴베스트SMS동의여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 뉴베스트SMS동의여부는 뉴베스트SMS동의여부을 의미한다. 동의어: 뉴베스트SMS동의여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_당근잔액",
+      "type": "normalization_rule",
+      "rule_id": "kw_당근잔액",
+      "canonical": "당근잔액",
+      "ko_label": "당근잔액",
+      "synonyms": [
+        "당근잔액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 당근잔액는 당근잔액을 의미한다. 동의어: 당근잔액. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_대량구매고객여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_대량구매고객여부",
+      "canonical": "대량구매고객여부",
+      "ko_label": "대량구매고객여부",
+      "synonyms": [
+        "대량구매고객여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 대량구매고객여부는 대량구매고객여부을 의미한다. 동의어: 대량구매고객여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_디바이스유형",
+      "type": "normalization_rule",
+      "rule_id": "kw_디바이스유형",
+      "canonical": "디바이스유형",
+      "ko_label": "디바이스유형",
+      "synonyms": [
+        "디바이스유형"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 디바이스유형는 디바이스유형을 의미한다. 동의어: 디바이스유형. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_랜딩페이지",
+      "type": "normalization_rule",
+      "rule_id": "kw_랜딩페이지",
+      "canonical": "랜딩페이지",
+      "ko_label": "랜딩페이지",
+      "synonyms": [
+        "랜딩페이지"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 랜딩페이지는 랜딩페이지을 의미한다. 동의어: 랜딩페이지. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_로그인기간",
+      "type": "normalization_rule",
+      "rule_id": "kw_로그인기간",
+      "canonical": "로그인기간",
+      "ko_label": "로그인기간",
+      "synonyms": [
+        "로그인기간"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 로그인기간는 로그인기간을 의미한다. 동의어: 로그인기간. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_로그인일수",
+      "type": "normalization_rule",
+      "rule_id": "kw_로그인일수",
+      "canonical": "로그인일수",
+      "ko_label": "로그인일수",
+      "synonyms": [
+        "로그인일수"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 로그인일수는 로그인일수을 의미한다. 동의어: 로그인일수. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_로그인일자",
+      "type": "normalization_rule",
+      "rule_id": "kw_로그인일자",
+      "canonical": "로그인일자",
+      "ko_label": "로그인일자",
+      "synonyms": [
+        "로그인일자"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 로그인일자는 로그인일자을 의미한다. 동의어: 로그인일자. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_로그인횟수",
+      "type": "normalization_rule",
+      "rule_id": "kw_로그인횟수",
+      "canonical": "로그인횟수",
+      "ko_label": "로그인횟수",
+      "synonyms": [
+        "로그인횟수"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 로그인횟수는 로그인횟수을 의미한다. 동의어: 로그인횟수. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_마이데이터ISO국가기호내용",
+      "type": "normalization_rule",
+      "rule_id": "kw_마이데이터ISO국가기호내용",
+      "canonical": "마이데이터ISO국가기호내용",
+      "ko_label": "마이데이터ISO국가기호내용",
+      "synonyms": [
+        "마이데이터ISO국가기호내용"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 마이데이터ISO국가기호내용는 마이데이터ISO국가기호내용을 의미한다. 동의어: 마이데이터ISO국가기호내용. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_마이데이터사업자기관코드",
+      "type": "normalization_rule",
+      "rule_id": "kw_마이데이터사업자기관코드",
+      "canonical": "마이데이터사업자기관코드",
+      "ko_label": "마이데이터사업자기관코드",
+      "synonyms": [
+        "마이데이터사업자기관코드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 마이데이터사업자기관코드는 마이데이터사업자기관코드을 의미한다. 동의어: 마이데이터사업자기관코드. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_마이데이터승인일시",
+      "type": "normalization_rule",
+      "rule_id": "kw_마이데이터승인일시",
+      "canonical": "마이데이터승인일시",
+      "ko_label": "마이데이터승인일시",
+      "synonyms": [
+        "마이데이터승인일시"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 마이데이터승인일시는 마이데이터승인일시을 의미한다. 동의어: 마이데이터승인일시. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_마이데이터정보제공자코드",
+      "type": "normalization_rule",
+      "rule_id": "kw_마이데이터정보제공자코드",
+      "canonical": "마이데이터정보제공자코드",
+      "ko_label": "마이데이터정보제공자코드",
+      "synonyms": [
+        "마이데이터정보제공자코드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 마이데이터정보제공자코드는 마이데이터정보제공자코드을 의미한다. 동의어: 마이데이터정보제공자코드. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_마지막로그인일자",
+      "type": "normalization_rule",
+      "rule_id": "kw_마지막로그인일자",
+      "canonical": "마지막로그인일자",
+      "ko_label": "마지막로그인일자",
+      "synonyms": [
+        "마지막로그인일자"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 마지막로그인일자는 마지막로그인일자을 의미한다. 동의어: 마지막로그인일자. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_마케팅수신동의여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_마케팅수신동의여부",
+      "canonical": "마케팅수신동의여부",
+      "ko_label": "마케팅수신동의여부",
+      "synonyms": [
+        "마케팅수신동의여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 마케팅수신동의여부는 마케팅수신동의여부을 의미한다. 동의어: 마케팅수신동의여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_모바일OS유형",
+      "type": "normalization_rule",
+      "rule_id": "kw_모바일OS유형",
+      "canonical": "모바일OS유형",
+      "ko_label": "모바일OS유형",
+      "synonyms": [
+        "모바일OS유형"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 모바일OS유형는 모바일OS유형을 의미한다. 동의어: 모바일OS유형. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_문캠페인3",
+      "type": "normalization_rule",
+      "rule_id": "kw_문캠페인3",
+      "canonical": "문캠페인3",
+      "ko_label": "문캠페인3",
+      "synonyms": [
+        "문캠페인3"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 문캠페인3는 문캠페인3을 의미한다. 동의어: 문캠페인3. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_발행쿠폰수",
+      "type": "normalization_rule",
+      "rule_id": "kw_발행쿠폰수",
+      "canonical": "발행쿠폰수",
+      "ko_label": "발행쿠폰수",
+      "synonyms": [
+        "발행쿠폰수"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 발행쿠폰수는 발행쿠폰수을 의미한다. 동의어: 발행쿠폰수. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_분석기준",
+      "type": "normalization_rule",
+      "rule_id": "kw_분석기준",
+      "canonical": "분석기준",
+      "ko_label": "분석기준",
+      "synonyms": [
+        "분석기준"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 분석기준는 분석기준을 의미한다. 동의어: 분석기준. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_브랜드",
+      "type": "normalization_rule",
+      "rule_id": "kw_브랜드",
+      "canonical": "브랜드",
+      "ko_label": "브랜드",
+      "synonyms": [
+        "브랜드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 브랜드는 브랜드을 의미한다. 동의어: 브랜드. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_사용자정의연령대",
+      "type": "normalization_rule",
+      "rule_id": "kw_사용자정의연령대",
+      "canonical": "사용자정의연령대",
+      "ko_label": "사용자정의연령대",
+      "synonyms": [
+        "사용자정의연령대"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 사용자정의연령대는 사용자정의연령대을 의미한다. 동의어: 사용자정의연령대. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_사용쿠폰수",
+      "type": "normalization_rule",
+      "rule_id": "kw_사용쿠폰수",
+      "canonical": "사용쿠폰수",
+      "ko_label": "사용쿠폰수",
+      "synonyms": [
+        "사용쿠폰수"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 사용쿠폰수는 사용쿠폰수을 의미한다. 동의어: 사용쿠폰수. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_상태등급",
+      "type": "normalization_rule",
+      "rule_id": "kw_상태등급",
+      "canonical": "상태등급",
+      "ko_label": "상태등급",
+      "synonyms": [
+        "상태등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 상태등급는 상태등급을 의미한다. 동의어: 상태등급. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_상품별구매금액",
+      "type": "normalization_rule",
+      "rule_id": "kw_상품별구매금액",
+      "canonical": "상품별구매금액",
+      "ko_label": "상품별구매금액",
+      "synonyms": [
+        "상품별구매금액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 상품별구매금액는 상품별구매금액을 의미한다. 동의어: 상품별구매금액. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_상품분류_상품",
+      "type": "normalization_rule",
+      "rule_id": "kw_상품분류_상품",
+      "canonical": "상품분류_상품",
+      "ko_label": "상품분류_상품",
+      "synonyms": [
+        "상품분류_상품"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 상품분류_상품는 상품분류_상품을 의미한다. 동의어: 상품분류_상품. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_상품분류_상품대분류",
+      "type": "normalization_rule",
+      "rule_id": "kw_상품분류_상품대분류",
+      "canonical": "상품분류_상품대분류",
+      "ko_label": "상품분류_상품대분류",
+      "synonyms": [
+        "상품분류_상품대분류"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 상품분류_상품대분류는 상품분류_상품대분류을 의미한다. 동의어: 상품분류_상품대분류. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_상품분류_상품소분류",
+      "type": "normalization_rule",
+      "rule_id": "kw_상품분류_상품소분류",
+      "canonical": "상품분류_상품소분류",
+      "ko_label": "상품분류_상품소분류",
+      "synonyms": [
+        "상품분류_상품소분류"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 상품분류_상품소분류는 상품분류_상품소분류을 의미한다. 동의어: 상품분류_상품소분류. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_상품분류_상품중분류",
+      "type": "normalization_rule",
+      "rule_id": "kw_상품분류_상품중분류",
+      "canonical": "상품분류_상품중분류",
+      "ko_label": "상품분류_상품중분류",
+      "synonyms": [
+        "상품분류_상품중분류"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 상품분류_상품중분류는 상품분류_상품중분류을 의미한다. 동의어: 상품분류_상품중분류. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_상품분류_카테고리",
+      "type": "normalization_rule",
+      "rule_id": "kw_상품분류_카테고리",
+      "canonical": "상품분류_카테고리",
+      "ko_label": "상품분류_카테고리",
+      "synonyms": [
+        "상품분류_카테고리"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 상품분류_카테고리는 상품분류_카테고리을 의미한다. 동의어: 상품분류_카테고리. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_상품카테고리G",
+      "type": "normalization_rule",
+      "rule_id": "kw_상품카테고리G",
+      "canonical": "상품카테고리G",
+      "ko_label": "상품카테고리G",
+      "synonyms": [
+        "상품카테고리G"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 상품카테고리G는 상품카테고리G을 의미한다. 동의어: 상품카테고리G. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_생년월일",
+      "type": "normalization_rule",
+      "rule_id": "kw_생년월일",
+      "canonical": "생년월일",
+      "ko_label": "생년월일",
+      "synonyms": [
+        "생년월일"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 생년월일는 생년월일을 의미한다. 동의어: 생년월일. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_생일4자리_월일",
+      "type": "normalization_rule",
+      "rule_id": "kw_생일4자리_월일",
+      "canonical": "생일4자리_월일",
+      "ko_label": "생일4자리_월일",
+      "synonyms": [
+        "생일4자리_월일"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 생일4자리_월일는 생일4자리_월일을 의미한다. 동의어: 생일4자리_월일. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_선호상품군",
+      "type": "normalization_rule",
+      "rule_id": "kw_선호상품군",
+      "canonical": "선호상품군",
+      "ko_label": "선호상품군",
+      "synonyms": [
+        "선호상품군"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 선호상품군는 선호상품군을 의미한다. 동의어: 선호상품군. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_설문참여여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_설문참여여부",
+      "canonical": "설문참여여부",
+      "ko_label": "설문참여여부",
+      "synonyms": [
+        "설문참여여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 설문참여여부는 설문참여여부을 의미한다. 동의어: 설문참여여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_설문참여채널",
+      "type": "normalization_rule",
+      "rule_id": "kw_설문참여채널",
+      "canonical": "설문참여채널",
+      "ko_label": "설문참여채널",
+      "synonyms": [
+        "설문참여채널"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 설문참여채널는 설문참여채널을 의미한다. 동의어: 설문참여채널. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_성별",
+      "type": "normalization_rule",
+      "rule_id": "kw_성별",
+      "canonical": "성별",
+      "ko_label": "성별",
+      "synonyms": [
+        "성별"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 성별는 성별을 의미한다. 동의어: 성별. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_성별명",
+      "type": "normalization_rule",
+      "rule_id": "kw_성별명",
+      "canonical": "성별명",
+      "ko_label": "성별명",
+      "synonyms": [
+        "성별명"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 성별명는 성별명을 의미한다. 동의어: 성별명. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_소속부서",
+      "type": "normalization_rule",
+      "rule_id": "kw_소속부서",
+      "canonical": "소속부서",
+      "ko_label": "소속부서",
+      "synonyms": [
+        "소속부서"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 소속부서는 소속부서을 의미한다. 동의어: 소속부서. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_수신동의여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_수신동의여부",
+      "canonical": "수신동의여부",
+      "ko_label": "수신동의여부",
+      "synonyms": [
+        "수신동의여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 수신동의여부는 수신동의여부을 의미한다. 동의어: 수신동의여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_시도",
+      "type": "normalization_rule",
+      "rule_id": "kw_시도",
+      "canonical": "시도",
+      "ko_label": "시도",
+      "synonyms": [
+        "시도"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 시도는 시도을 의미한다. 동의어: 시도. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_시도_검색",
+      "type": "normalization_rule",
+      "rule_id": "kw_시도_검색",
+      "canonical": "시도_검색",
+      "ko_label": "시도_검색",
+      "synonyms": [
+        "시도_검색"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 시도_검색는 시도_검색을 의미한다. 동의어: 시도_검색. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_시도명",
+      "type": "normalization_rule",
+      "rule_id": "kw_시도명",
+      "canonical": "시도명",
+      "ko_label": "시도명",
+      "synonyms": [
+        "시도명"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 시도명는 시도명을 의미한다. 동의어: 시도명. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_신규고객여부SN",
+      "type": "normalization_rule",
+      "rule_id": "kw_신규고객여부SN",
+      "canonical": "신규고객여부SN",
+      "ko_label": "신규고객여부SN",
+      "synonyms": [
+        "신규고객여부SN"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 신규고객여부SN는 신규고객여부SN을 의미한다. 동의어: 신규고객여부SN. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_앱버전",
+      "type": "normalization_rule",
+      "rule_id": "kw_앱버전",
+      "canonical": "앱버전",
+      "ko_label": "앱버전",
+      "synonyms": [
+        "앱버전"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 앱버전는 앱버전을 의미한다. 동의어: 앱버전. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_연령",
+      "type": "normalization_rule",
+      "rule_id": "kw_연령",
+      "canonical": "연령",
+      "ko_label": "연령",
+      "synonyms": [
+        "연령"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 연령는 연령을 의미한다. 동의어: 연령. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_연령대_5세단위",
+      "type": "normalization_rule",
+      "rule_id": "kw_연령대_5세단위",
+      "canonical": "연령대_5세단위",
+      "ko_label": "연령대_5세단위",
+      "synonyms": [
+        "연령대_5세단위"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 연령대_5세단위는 연령대_5세단위을 의미한다. 동의어: 연령대_5세단위. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_연령대명",
+      "type": "normalization_rule",
+      "rule_id": "kw_연령대명",
+      "canonical": "연령대명",
+      "ko_label": "연령대명",
+      "synonyms": [
+        "연령대명"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 연령대명는 연령대명을 의미한다. 동의어: 연령대명. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_연령대체크",
+      "type": "normalization_rule",
+      "rule_id": "kw_연령대체크",
+      "canonical": "연령대체크",
+      "ko_label": "연령대체크",
+      "synonyms": [
+        "연령대체크"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 연령대체크는 연령대체크을 의미한다. 동의어: 연령대체크. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_연령대코드",
+      "type": "normalization_rule",
+      "rule_id": "kw_연령대코드",
+      "canonical": "연령대코드",
+      "ko_label": "연령대코드",
+      "synonyms": [
+        "연령대코드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 연령대코드는 연령대코드을 의미한다. 동의어: 연령대코드. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_예치금잔액",
+      "type": "normalization_rule",
+      "rule_id": "kw_예치금잔액",
+      "canonical": "예치금잔액",
+      "ko_label": "예치금잔액",
+      "synonyms": [
+        "예치금잔액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 예치금잔액는 예치금잔액을 의미한다. 동의어: 예치금잔액. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_오퍼반응여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_오퍼반응여부",
+      "canonical": "오퍼반응여부",
+      "ko_label": "오퍼반응여부",
+      "synonyms": [
+        "오퍼반응여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 오퍼반응여부는 오퍼반응여부을 의미한다. 동의어: 오퍼반응여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_오퍼사용구매금액",
+      "type": "normalization_rule",
+      "rule_id": "kw_오퍼사용구매금액",
+      "canonical": "오퍼사용구매금액",
+      "ko_label": "오퍼사용구매금액",
+      "synonyms": [
+        "오퍼사용구매금액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 오퍼사용구매금액는 오퍼사용구매금액을 의미한다. 동의어: 오퍼사용구매금액. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_오퍼할인금액",
+      "type": "normalization_rule",
+      "rule_id": "kw_오퍼할인금액",
+      "canonical": "오퍼할인금액",
+      "ko_label": "오퍼할인금액",
+      "synonyms": [
+        "오퍼할인금액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 오퍼할인금액는 오퍼할인금액을 의미한다. 동의어: 오퍼할인금액. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_오프GL등급",
+      "type": "normalization_rule",
+      "rule_id": "kw_오프GL등급",
+      "canonical": "오프GL등급",
+      "ko_label": "오프GL등급",
+      "synonyms": [
+        "오프GL등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 오프GL등급는 오프GL등급을 의미한다. 동의어: 오프GL등급. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_온오프GL등급",
+      "type": "normalization_rule",
+      "rule_id": "kw_온오프GL등급",
+      "canonical": "온오프GL등급",
+      "ko_label": "온오프GL등급",
+      "synonyms": [
+        "온오프GL등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 온오프GL등급는 온오프GL등급을 의미한다. 동의어: 온오프GL등급. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_외국인여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_외국인여부",
+      "canonical": "외국인여부",
+      "ko_label": "외국인여부",
+      "synonyms": [
+        "외국인여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 외국인여부는 외국인여부을 의미한다. 동의어: 외국인여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_원화환산금액",
+      "type": "normalization_rule",
+      "rule_id": "kw_원화환산금액",
+      "canonical": "원화환산금액",
+      "ko_label": "원화환산금액",
+      "synonyms": [
+        "원화환산금액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 원화환산금액는 원화환산금액을 의미한다. 동의어: 원화환산금액. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_이메일수신동의여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_이메일수신동의여부",
+      "canonical": "이메일수신동의여부",
+      "ko_label": "이메일수신동의여부",
+      "synonyms": [
+        "이메일수신동의여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 이메일수신동의여부는 이메일수신동의여부을 의미한다. 동의어: 이메일수신동의여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_이미지URL",
+      "type": "normalization_rule",
+      "rule_id": "kw_이미지URL",
+      "canonical": "이미지URL",
+      "ko_label": "이미지URL",
+      "synonyms": [
+        "이미지URL"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 이미지URL는 이미지URL을 의미한다. 동의어: 이미지URL. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_이미지파일명",
+      "type": "normalization_rule",
+      "rule_id": "kw_이미지파일명",
+      "canonical": "이미지파일명",
+      "ko_label": "이미지파일명",
+      "synonyms": [
+        "이미지파일명"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 이미지파일명는 이미지파일명을 의미한다. 동의어: 이미지파일명. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_임직원여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_임직원여부",
+      "canonical": "임직원여부",
+      "ko_label": "임직원여부",
+      "synonyms": [
+        "임직원여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 임직원여부는 임직원여부을 의미한다. 동의어: 임직원여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_자녀여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_자녀여부",
+      "canonical": "자녀여부",
+      "ko_label": "자녀여부",
+      "synonyms": [
+        "자녀여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 자녀여부는 자녀여부을 의미한다. 동의어: 자녀여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_잔여포인트",
+      "type": "normalization_rule",
+      "rule_id": "kw_잔여포인트",
+      "canonical": "잔여포인트",
+      "ko_label": "잔여포인트",
+      "synonyms": [
+        "잔여포인트"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 잔여포인트는 잔여포인트을 의미한다. 동의어: 잔여포인트. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_잔여포인트구간",
+      "type": "normalization_rule",
+      "rule_id": "kw_잔여포인트구간",
+      "canonical": "잔여포인트구간",
+      "ko_label": "잔여포인트구간",
+      "synonyms": [
+        "잔여포인트구간"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 잔여포인트구간는 잔여포인트구간을 의미한다. 동의어: 잔여포인트구간. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_장바구니금액",
+      "type": "normalization_rule",
+      "rule_id": "kw_장바구니금액",
+      "canonical": "장바구니금액",
+      "ko_label": "장바구니금액",
+      "synonyms": [
+        "장바구니금액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 장바구니금액는 장바구니금액을 의미한다. 동의어: 장바구니금액. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_장바구니보관시작일",
+      "type": "normalization_rule",
+      "rule_id": "kw_장바구니보관시작일",
+      "canonical": "장바구니보관시작일",
+      "ko_label": "장바구니보관시작일",
+      "synonyms": [
+        "장바구니보관시작일"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 장바구니보관시작일는 장바구니보관시작일을 의미한다. 동의어: 장바구니보관시작일. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_장바구니보관종료일",
+      "type": "normalization_rule",
+      "rule_id": "kw_장바구니보관종료일",
+      "canonical": "장바구니보관종료일",
+      "ko_label": "장바구니보관종료일",
+      "synonyms": [
+        "장바구니보관종료일"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 장바구니보관종료일는 장바구니보관종료일을 의미한다. 동의어: 장바구니보관종료일. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_장바구니유형",
+      "type": "normalization_rule",
+      "rule_id": "kw_장바구니유형",
+      "canonical": "장바구니유형",
+      "ko_label": "장바구니유형",
+      "synonyms": [
+        "장바구니유형"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 장바구니유형는 장바구니유형을 의미한다. 동의어: 장바구니유형. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_전월가치등급",
+      "type": "normalization_rule",
+      "rule_id": "kw_전월가치등급",
+      "canonical": "전월가치등급",
+      "ko_label": "전월가치등급",
+      "synonyms": [
+        "전월가치등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 전월가치등급는 전월가치등급을 의미한다. 동의어: 전월가치등급. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_전월회원등급",
+      "type": "normalization_rule",
+      "rule_id": "kw_전월회원등급",
+      "canonical": "전월회원등급",
+      "ko_label": "전월회원등급",
+      "synonyms": [
+        "전월회원등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 전월회원등급는 전월회원등급을 의미한다. 동의어: 전월회원등급. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_접촉경과일수",
+      "type": "normalization_rule",
+      "rule_id": "kw_접촉경과일수",
+      "canonical": "접촉경과일수",
+      "ko_label": "접촉경과일수",
+      "synonyms": [
+        "접촉경과일수"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 접촉경과일수는 접촉경과일수을 의미한다. 동의어: 접촉경과일수. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_접촉성공여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_접촉성공여부",
+      "canonical": "접촉성공여부",
+      "ko_label": "접촉성공여부",
+      "synonyms": [
+        "접촉성공여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 접촉성공여부는 접촉성공여부을 의미한다. 동의어: 접촉성공여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_접촉일자",
+      "type": "normalization_rule",
+      "rule_id": "kw_접촉일자",
+      "canonical": "접촉일자",
+      "ko_label": "접촉일자",
+      "synonyms": [
+        "접촉일자"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 접촉일자는 접촉일자을 의미한다. 동의어: 접촉일자. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_조합기준",
+      "type": "normalization_rule",
+      "rule_id": "kw_조합기준",
+      "canonical": "조합기준",
+      "ko_label": "조합기준",
+      "synonyms": [
+        "조합기준"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 조합기준는 조합기준을 의미한다. 동의어: 조합기준. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_조합수",
+      "type": "normalization_rule",
+      "rule_id": "kw_조합수",
+      "canonical": "조합수",
+      "ko_label": "조합수",
+      "synonyms": [
+        "조합수"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 조합수는 조합수을 의미한다. 동의어: 조합수. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_주거래지점",
+      "type": "normalization_rule",
+      "rule_id": "kw_주거래지점",
+      "canonical": "주거래지점",
+      "ko_label": "주거래지점",
+      "synonyms": [
+        "주거래지점"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 주거래지점는 주거래지점을 의미한다. 동의어: 주거래지점. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_주구매브랜드",
+      "type": "normalization_rule",
+      "rule_id": "kw_주구매브랜드",
+      "canonical": "주구매브랜드",
+      "ko_label": "주구매브랜드",
+      "synonyms": [
+        "주구매브랜드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 주구매브랜드는 주구매브랜드을 의미한다. 동의어: 주구매브랜드. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_주구매채널",
+      "type": "normalization_rule",
+      "rule_id": "kw_주구매채널",
+      "canonical": "주구매채널",
+      "ko_label": "주구매채널",
+      "synonyms": [
+        "주구매채널"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 주구매채널는 주구매채널을 의미한다. 동의어: 주구매채널. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_지역",
+      "type": "normalization_rule",
+      "rule_id": "kw_지역",
+      "canonical": "지역",
+      "ko_label": "지역",
+      "synonyms": [
+        "지역"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 지역는 지역을 의미한다. 동의어: 지역. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_최종구매일자",
+      "type": "normalization_rule",
+      "rule_id": "kw_최종구매일자",
+      "canonical": "최종구매일자",
+      "ko_label": "최종구매일자",
+      "synonyms": [
+        "최종구매일자"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 최종구매일자는 최종구매일자을 의미한다. 동의어: 최종구매일자. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_최종로그인일자",
+      "type": "normalization_rule",
+      "rule_id": "kw_최종로그인일자",
+      "canonical": "최종로그인일자",
+      "ko_label": "최종로그인일자",
+      "synonyms": [
+        "최종로그인일자"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 최종로그인일자는 최종로그인일자을 의미한다. 동의어: 최종로그인일자. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_최종로그인채널",
+      "type": "normalization_rule",
+      "rule_id": "kw_최종로그인채널",
+      "canonical": "최종로그인채널",
+      "ko_label": "최종로그인채널",
+      "synonyms": [
+        "최종로그인채널"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 최종로그인채널는 최종로그인채널을 의미한다. 동의어: 최종로그인채널. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_최초로그인채널",
+      "type": "normalization_rule",
+      "rule_id": "kw_최초로그인채널",
+      "canonical": "최초로그인채널",
+      "ko_label": "최초로그인채널",
+      "synonyms": [
+        "최초로그인채널"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 최초로그인채널는 최초로그인채널을 의미한다. 동의어: 최초로그인채널. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_추천모델",
+      "type": "normalization_rule",
+      "rule_id": "kw_추천모델",
+      "canonical": "추천모델",
+      "ko_label": "추천모델",
+      "synonyms": [
+        "추천모델"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 추천모델는 추천모델을 의미한다. 동의어: 추천모델. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_추천순위",
+      "type": "normalization_rule",
+      "rule_id": "kw_추천순위",
+      "canonical": "추천순위",
+      "ko_label": "추천순위",
+      "synonyms": [
+        "추천순위"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 추천순위는 추천순위을 의미한다. 동의어: 추천순위. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_추천타입",
+      "type": "normalization_rule",
+      "rule_id": "kw_추천타입",
+      "canonical": "추천타입",
+      "ko_label": "추천타입",
+      "synonyms": [
+        "추천타입"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 추천타입는 추천타입을 의미한다. 동의어: 추천타입. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_추천타입_전체포함",
+      "type": "normalization_rule",
+      "rule_id": "kw_추천타입_전체포함",
+      "canonical": "추천타입_전체포함",
+      "ko_label": "추천타입_전체포함",
+      "synonyms": [
+        "추천타입_전체포함"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 추천타입_전체포함는 추천타입_전체포함을 의미한다. 동의어: 추천타입_전체포함. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_카드이용금액",
+      "type": "normalization_rule",
+      "rule_id": "kw_카드이용금액",
+      "canonical": "카드이용금액",
+      "ko_label": "카드이용금액",
+      "synonyms": [
+        "카드이용금액"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 카드이용금액는 카드이용금액을 의미한다. 동의어: 카드이용금액. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_카테고리_분류",
+      "type": "normalization_rule",
+      "rule_id": "kw_카테고리_분류",
+      "canonical": "카테고리_분류",
+      "ko_label": "카테고리_분류",
+      "synonyms": [
+        "카테고리_분류"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 카테고리_분류는 카테고리_분류을 의미한다. 동의어: 카테고리_분류. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_캠페인",
+      "type": "normalization_rule",
+      "rule_id": "kw_캠페인",
+      "canonical": "캠페인",
+      "ko_label": "캠페인",
+      "synonyms": [
+        "캠페인"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 캠페인는 캠페인을 의미한다. 동의어: 캠페인. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_캠페인그룹",
+      "type": "normalization_rule",
+      "rule_id": "kw_캠페인그룹",
+      "canonical": "캠페인그룹",
+      "ko_label": "캠페인그룹",
+      "synonyms": [
+        "캠페인그룹"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 캠페인그룹는 캠페인그룹을 의미한다. 동의어: 캠페인그룹. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_캠페인명",
+      "type": "normalization_rule",
+      "rule_id": "kw_캠페인명",
+      "canonical": "캠페인명",
+      "ko_label": "캠페인명",
+      "synonyms": [
+        "캠페인명"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 캠페인명는 캠페인명을 의미한다. 동의어: 캠페인명. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_타겟리스트",
+      "type": "normalization_rule",
+      "rule_id": "kw_타겟리스트",
+      "canonical": "타겟리스트",
+      "ko_label": "타겟리스트",
+      "synonyms": [
+        "타겟리스트"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 타겟리스트는 타겟리스트을 의미한다. 동의어: 타겟리스트. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_타사B2E여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_타사B2E여부",
+      "canonical": "타사B2E여부",
+      "ko_label": "타사B2E여부",
+      "synonyms": [
+        "타사B2E여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 타사B2E여부는 타사B2E여부을 의미한다. 동의어: 타사B2E여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_통화코드",
+      "type": "normalization_rule",
+      "rule_id": "kw_통화코드",
+      "canonical": "통화코드",
+      "ko_label": "통화코드",
+      "synonyms": [
+        "통화코드"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 통화코드는 통화코드을 의미한다. 동의어: 통화코드. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_퍼널고객등급",
+      "type": "normalization_rule",
+      "rule_id": "kw_퍼널고객등급",
+      "canonical": "퍼널고객등급",
+      "ko_label": "퍼널고객등급",
+      "synonyms": [
+        "퍼널고객등급"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 퍼널고객등급는 퍼널고객등급을 의미한다. 동의어: 퍼널고객등급. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_퍼널성별",
+      "type": "normalization_rule",
+      "rule_id": "kw_퍼널성별",
+      "canonical": "퍼널성별",
+      "ko_label": "퍼널성별",
+      "synonyms": [
+        "퍼널성별"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 퍼널성별는 퍼널성별을 의미한다. 동의어: 퍼널성별. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_퍼널식별",
+      "type": "normalization_rule",
+      "rule_id": "kw_퍼널식별",
+      "canonical": "퍼널식별",
+      "ko_label": "퍼널식별",
+      "synonyms": [
+        "퍼널식별"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 퍼널식별는 퍼널식별을 의미한다. 동의어: 퍼널식별. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_퍼널연령대",
+      "type": "normalization_rule",
+      "rule_id": "kw_퍼널연령대",
+      "canonical": "퍼널연령대",
+      "ko_label": "퍼널연령대",
+      "synonyms": [
+        "퍼널연령대"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 퍼널연령대는 퍼널연령대을 의미한다. 동의어: 퍼널연령대. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_행사민감도",
+      "type": "normalization_rule",
+      "rule_id": "kw_행사민감도",
+      "canonical": "행사민감도",
+      "ko_label": "행사민감도",
+      "synonyms": [
+        "행사민감도"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "numeric",
+      "text_for_embedding": "정규화 사전 행사민감도는 행사민감도을 의미한다. 동의어: 행사민감도. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_현재구매기간",
+      "type": "normalization_rule",
+      "rule_id": "kw_현재구매기간",
+      "canonical": "현재구매기간",
+      "ko_label": "현재구매기간",
+      "synonyms": [
+        "현재구매기간"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 현재구매기간는 현재구매기간을 의미한다. 동의어: 현재구매기간. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_혼인_여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_혼인_여부",
+      "canonical": "혼인_여부",
+      "ko_label": "혼인_여부",
+      "synonyms": [
+        "혼인_여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 혼인_여부는 혼인_여부을 의미한다. 동의어: 혼인_여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_혼인여부",
+      "type": "normalization_rule",
+      "rule_id": "kw_혼인여부",
+      "canonical": "혼인여부",
+      "ko_label": "혼인여부",
+      "synonyms": [
+        "혼인여부"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 혼인여부는 혼인여부을 의미한다. 동의어: 혼인여부. 부정 동의어: 없음."
+    },
+    {
+      "id": "normalization_rule:kw_회원상태",
+      "type": "normalization_rule",
+      "rule_id": "kw_회원상태",
+      "canonical": "회원상태",
+      "ko_label": "회원상태",
+      "synonyms": [
+        "회원상태"
+      ],
+      "source": "prmp_kwd",
+      "value_type": "text",
+      "text_for_embedding": "정규화 사전 회원상태는 회원상태을 의미한다. 동의어: 회원상태. 부정 동의어: 없음."
     },
     {
       "id": "business_term:campaign",
@@ -5131,336 +7560,290 @@
     {
       "id": "sql_example:01",
       "type": "sql_example",
-      "title": "활성 사용자 조회",
-      "sql": "SELECT user_id, age, gender, region, lifecycle\nFROM users\nWHERE lifecycle = 'active';",
+      "title": "[CRMDW] 최근 30일 로그인한 회원 조회",
+      "sql": "SELECT DISTINCT MEMBER_NO\nFROM ODS_MALL_MMS_LOGINHISTORY\nWHERE LOGIN_DT >= DATEADD(DAY, -30, GETDATE());",
       "tables": [
-        "users"
+        "ODS_MALL_MMS_LOGINHISTORY"
       ],
-      "text_for_embedding": "SQL 예시 1. 활성 사용자 조회. 관련 테이블: users. 쿼리: SELECT user_id, age, gender, region, lifecycle\nFROM users\nWHERE lifecycle = 'active';"
+      "text_for_embedding": "SQL 예시 1. [CRMDW] 최근 30일 로그인한 회원 조회. 관련 테이블: ODS_MALL_MMS_LOGINHISTORY. 쿼리: SELECT DISTINCT MEMBER_NO\nFROM ODS_MALL_MMS_LOGINHISTORY\nWHERE LOGIN_DT >= DATEADD(DAY, -30, GETDATE());"
     },
     {
       "id": "sql_example:02",
       "type": "sql_example",
-      "title": "휴면 고객 조회",
-      "sql": "-- 2. 6개월 이상 접속하지 않은 휴면 고객 조회\nSELECT\n    user_id,\n    region,\n    lifecycle,\n    last_login_at,\n    last_active_days,\n    price_sensitivity\nFROM users\nWHERE last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\nORDER BY last_login_at ASC;",
+      "title": "[CRMDW] 휴면 회원 조회",
+      "sql": "SELECT MEMBER_NO, MEMBER_ID, GENDER_CD, AGE, LAST_LOGIN_DATE\nFROM CRM_MB_BASEINFO\nWHERE SLEEP_MEMBER_YN = 'Y';",
       "tables": [
-        "users"
+        "CRM_MB_BASEINFO"
       ],
-      "text_for_embedding": "SQL 예시 2. 휴면 고객 조회. 관련 테이블: users. 쿼리: -- 2. 6개월 이상 접속하지 않은 휴면 고객 조회\nSELECT\n    user_id,\n    region,\n    lifecycle,\n    last_login_at,\n    last_active_days,\n    price_sensitivity\nFROM users\nWHERE last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\nORDER BY last_login_at ASC;"
+      "text_for_embedding": "SQL 예시 2. [CRMDW] 휴면 회원 조회. 관련 테이블: CRM_MB_BASEINFO. 쿼리: SELECT MEMBER_NO, MEMBER_ID, GENDER_CD, AGE, LAST_LOGIN_DATE\nFROM CRM_MB_BASEINFO\nWHERE SLEEP_MEMBER_YN = 'Y';"
     },
     {
       "id": "sql_example:03",
       "type": "sql_example",
-      "title": "패션 카테고리 캠페인 조회",
-      "sql": "SELECT campaign_id, name, objective, offer\nFROM campaigns\nWHERE category = 'fashion';",
+      "title": "[CRMDW] 앱푸시 수신 동의한 활동 회원(블랙리스트 제외)",
+      "sql": "SELECT MEMBER_NO, GENDER_CD, AGE, SIDO, SIGUNGU\nFROM CRM_MB_BASEINFO\nWHERE ACTIVITY_MEMBER_YN = 'Y'\n  AND APP_PUSH_YN = 'Y'\n  AND ISNULL(BLACKLIST_YN, 'N') = 'N';",
       "tables": [
-        "campaigns"
+        "CRM_MB_BASEINFO"
       ],
-      "text_for_embedding": "SQL 예시 3. 패션 카테고리 캠페인 조회. 관련 테이블: campaigns. 쿼리: SELECT campaign_id, name, objective, offer\nFROM campaigns\nWHERE category = 'fashion';"
+      "text_for_embedding": "SQL 예시 3. [CRMDW] 앱푸시 수신 동의한 활동 회원(블랙리스트 제외). 관련 테이블: CRM_MB_BASEINFO. 쿼리: SELECT MEMBER_NO, GENDER_CD, AGE, SIDO, SIGUNGU\nFROM CRM_MB_BASEINFO\nWHERE ACTIVITY_MEMBER_YN = 'Y'\n  AND APP_PUSH_YN = 'Y'\n  AND ISNULL(BLACKLIST_YN, 'N') = 'N';"
     },
     {
       "id": "sql_example:04",
       "type": "sql_example",
-      "title": "구매 목적 캠페인 중 예산이 큰 순서",
-      "sql": "SELECT campaign_id, name, category, budget_krw\nFROM campaigns\nWHERE objective = 'purchase'\nORDER BY budget_krw DESC;",
+      "title": "[CRMDW] 최신 기준월의 VIP/VVIP 가치등급 회원",
+      "sql": "SELECT MEMBER_NO, WORTH_GRADE, TOTAL_BUY_AMT, LAST_BUY_DATE\nFROM CRM_MB_MONTHCRMINFO\nWHERE YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)\n  AND WORTH_GRADE IN ('VIP', 'VVIP');",
       "tables": [
-        "campaigns"
+        "CRM_MB_MONTHCRMINFO"
       ],
-      "text_for_embedding": "SQL 예시 4. 구매 목적 캠페인 중 예산이 큰 순서. 관련 테이블: campaigns. 쿼리: SELECT campaign_id, name, category, budget_krw\nFROM campaigns\nWHERE objective = 'purchase'\nORDER BY budget_krw DESC;"
+      "text_for_embedding": "SQL 예시 4. [CRMDW] 최신 기준월의 VIP/VVIP 가치등급 회원. 관련 테이블: CRM_MB_MONTHCRMINFO. 쿼리: SELECT MEMBER_NO, WORTH_GRADE, TOTAL_BUY_AMT, LAST_BUY_DATE\nFROM CRM_MB_MONTHCRMINFO\nWHERE YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)\n  AND WORTH_GRADE IN ('VIP', 'VVIP');"
     },
     {
       "id": "sql_example:05",
       "type": "sql_example",
-      "title": "app_push 채널 캠페인 조회",
-      "sql": "SELECT c.campaign_id, c.name, c.category\nFROM campaigns c\nJOIN campaign_channels cc ON cc.campaign_id = c.campaign_id\nWHERE cc.channel = 'app_push';",
+      "title": "[CRMDW] 구매주기가 도래한(재구매 유도 대상) 회원",
+      "sql": "SELECT MEMBER_NO, WORTH_GRADE, BUY_CYCLE, BUY_DUE_PASSDAY, LAST_BUY_DATE\nFROM CRM_MB_MONTHCRMINFO\nWHERE YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)\n  AND BUY_DUE_PASSDAY > 0\nORDER BY BUY_DUE_PASSDAY DESC;",
       "tables": [
-        "campaign_channels",
-        "campaigns"
+        "CRM_MB_MONTHCRMINFO"
       ],
-      "text_for_embedding": "SQL 예시 5. app_push 채널 캠페인 조회. 관련 테이블: campaign_channels, campaigns. 쿼리: SELECT c.campaign_id, c.name, c.category\nFROM campaigns c\nJOIN campaign_channels cc ON cc.campaign_id = c.campaign_id\nWHERE cc.channel = 'app_push';"
+      "text_for_embedding": "SQL 예시 5. [CRMDW] 구매주기가 도래한(재구매 유도 대상) 회원. 관련 테이블: CRM_MB_MONTHCRMINFO. 쿼리: SELECT MEMBER_NO, WORTH_GRADE, BUY_CYCLE, BUY_DUE_PASSDAY, LAST_BUY_DATE\nFROM CRM_MB_MONTHCRMINFO\nWHERE YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)\n  AND BUY_DUE_PASSDAY > 0\nORDER BY BUY_DUE_PASSDAY DESC;"
     },
     {
       "id": "sql_example:06",
       "type": "sql_example",
-      "title": "가격 민감 타겟 캠페인 조회",
-      "sql": "SELECT c.campaign_id, c.name, c.offer\nFROM campaigns c\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE ts.target_segment = 'price_sensitive';",
+      "title": "[CRMDW] 신제품 선호 회원(신제품 알림 아웃리치 대상)",
+      "sql": "SELECT MEMBER_NO, WORTH_GRADE, MAIN_BUY_CATEGORY, LAST_BUY_DATE\nFROM CRM_MB_MONTHCRMINFO\nWHERE YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)\n  AND NEWPRODUCT_FAVOR_YN = 'Y';",
       "tables": [
-        "campaign_target_segments",
-        "campaigns"
+        "CRM_MB_MONTHCRMINFO"
       ],
-      "text_for_embedding": "SQL 예시 6. 가격 민감 타겟 캠페인 조회. 관련 테이블: campaign_target_segments, campaigns. 쿼리: SELECT c.campaign_id, c.name, c.offer\nFROM campaigns c\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE ts.target_segment = 'price_sensitive';"
+      "text_for_embedding": "SQL 예시 6. [CRMDW] 신제품 선호 회원(신제품 알림 아웃리치 대상). 관련 테이블: CRM_MB_MONTHCRMINFO. 쿼리: SELECT MEMBER_NO, WORTH_GRADE, MAIN_BUY_CATEGORY, LAST_BUY_DATE\nFROM CRM_MB_MONTHCRMINFO\nWHERE YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)\n  AND NEWPRODUCT_FAVOR_YN = 'Y';"
     },
     {
       "id": "sql_example:07",
       "type": "sql_example",
-      "title": "뷰티 관심 사용자 조회",
-      "sql": "SELECT u.user_id, u.age, u.gender, u.lifecycle\nFROM users u\nJOIN user_interests ui ON ui.user_id = u.user_id\nWHERE ui.interest = 'beauty';",
+      "title": "[CRMDW] 현재 판매중인 상품 조회(판매기간 기준)",
+      "sql": "SELECT PRODUCT_ID, PRODUCT_NAME, BRAND_NAME, CATEGORYL_NAME, CATEGORYM_NAME\nFROM CRM_CM_PRODUCT\nWHERE SALE_START_DT <= CONVERT(varchar(8), GETDATE(), 112)\n  AND (SALE_END_DT IS NULL OR SALE_END_DT >= CONVERT(varchar(8), GETDATE(), 112));",
       "tables": [
-        "user_interests",
-        "users"
+        "CRM_CM_PRODUCT"
       ],
-      "text_for_embedding": "SQL 예시 7. 뷰티 관심 사용자 조회. 관련 테이블: user_interests, users. 쿼리: SELECT u.user_id, u.age, u.gender, u.lifecycle\nFROM users u\nJOIN user_interests ui ON ui.user_id = u.user_id\nWHERE ui.interest = 'beauty';"
+      "text_for_embedding": "SQL 예시 7. [CRMDW] 현재 판매중인 상품 조회(판매기간 기준). 관련 테이블: CRM_CM_PRODUCT. 쿼리: SELECT PRODUCT_ID, PRODUCT_NAME, BRAND_NAME, CATEGORYL_NAME, CATEGORYM_NAME\nFROM CRM_CM_PRODUCT\nWHERE SALE_START_DT <= CONVERT(varchar(8), GETDATE(), 112)\n  AND (SALE_END_DT IS NULL OR SALE_END_DT >= CONVERT(varchar(8), GETDATE(), 112));"
     },
     {
       "id": "sql_example:08",
       "type": "sql_example",
-      "title": "카카오 선호 사용자 조회",
-      "sql": "SELECT u.user_id, u.region, u.price_sensitivity\nFROM users u\nJOIN user_preferred_channels upc ON upc.user_id = u.user_id\nWHERE upc.preferred_channel = 'kakao';",
+      "title": "[CRMDW] 장바구니에 담겨있는(유지) 인기 상품 TOP 20",
+      "sql": "SELECT TOP 20 PRODUCT_ID, SUM(QTY) AS total_qty, COUNT(*) AS cart_line_cnt\nFROM ODS_MALL_OMS_CART\nWHERE KEEP_YN = 'Y'\nGROUP BY PRODUCT_ID\nORDER BY total_qty DESC;",
       "tables": [
-        "user_preferred_channels",
-        "users"
+        "ODS_MALL_OMS_CART"
       ],
-      "text_for_embedding": "SQL 예시 8. 카카오 선호 사용자 조회. 관련 테이블: user_preferred_channels, users. 쿼리: SELECT u.user_id, u.region, u.price_sensitivity\nFROM users u\nJOIN user_preferred_channels upc ON upc.user_id = u.user_id\nWHERE upc.preferred_channel = 'kakao';"
+      "text_for_embedding": "SQL 예시 8. [CRMDW] 장바구니에 담겨있는(유지) 인기 상품 TOP 20. 관련 테이블: ODS_MALL_OMS_CART. 쿼리: SELECT TOP 20 PRODUCT_ID, SUM(QTY) AS total_qty, COUNT(*) AS cart_line_cnt\nFROM ODS_MALL_OMS_CART\nWHERE KEEP_YN = 'Y'\nGROUP BY PRODUCT_ID\nORDER BY total_qty DESC;"
     },
     {
       "id": "sql_example:09",
       "type": "sql_example",
-      "title": "장바구니 이탈 행동 사용자 조회",
-      "sql": "SELECT u.user_id, u.gender, u.lifecycle, urb.behavior\nFROM users u\nJOIN user_recent_behaviors urb ON urb.user_id = u.user_id\nWHERE urb.behavior = 'cart_abandoned:fashion';",
+      "title": "[CRMDW] 장바구니 상품에 상품 마스터를 조인해 상품명까지 조회",
+      "sql": "SELECT TOP 50 c.CART_ID, c.PRODUCT_ID, p.PRODUCT_NAME, p.BRAND_NAME, c.QTY, c.TOTAL_SALE_PRICE\nFROM ODS_MALL_OMS_CART c\nJOIN CRM_CM_PRODUCT p ON p.PRODUCT_ID = c.PRODUCT_ID\nWHERE c.KEEP_YN = 'Y'\nORDER BY c.INS_DT DESC;",
       "tables": [
-        "user_recent_behaviors",
-        "users"
+        "CRM_CM_PRODUCT",
+        "ODS_MALL_OMS_CART"
       ],
-      "text_for_embedding": "SQL 예시 9. 장바구니 이탈 행동 사용자 조회. 관련 테이블: user_recent_behaviors, users. 쿼리: SELECT u.user_id, u.gender, u.lifecycle, urb.behavior\nFROM users u\nJOIN user_recent_behaviors urb ON urb.user_id = u.user_id\nWHERE urb.behavior = 'cart_abandoned:fashion';"
+      "text_for_embedding": "SQL 예시 9. [CRMDW] 장바구니 상품에 상품 마스터를 조인해 상품명까지 조회. 관련 테이블: CRM_CM_PRODUCT, ODS_MALL_OMS_CART. 쿼리: SELECT TOP 50 c.CART_ID, c.PRODUCT_ID, p.PRODUCT_NAME, p.BRAND_NAME, c.QTY, c.TOTAL_SALE_PRICE\nFROM ODS_MALL_OMS_CART c\nJOIN CRM_CM_PRODUCT p ON p.PRODUCT_ID = c.PRODUCT_ID\nWHERE c.KEEP_YN = 'Y'\nORDER BY c.INS_DT DESC;"
     },
     {
       "id": "sql_example:10",
       "type": "sql_example",
-      "title": "특정 사용자에게 추천된 캠페인 조회",
-      "sql": "SELECT re.user_id, c.campaign_id, c.name, re.reason, re.label\nFROM recommendation_edges re\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nWHERE re.user_id = 'user_001';",
+      "title": "[CRMAN] 최신 기준월의 최상위 등급(1등급) 회원",
+      "sql": "SELECT MBR_NO, SEX_CD, AGE, GRD_CD, MAIN_BUY_CATEGORY_CD, MAIN_BUY_CHANNEL_CD\nFROM Customer_Analytics.dbo.CRM_MB_CRM_INFO\nWHERE YYYYMM = (SELECT MAX(YYYYMM) FROM Customer_Analytics.dbo.CRM_MB_CRM_INFO)\n  AND GRD_CD = '1';",
       "tables": [
-        "campaigns",
-        "recommendation_edges"
+        "Customer_Analytics"
       ],
-      "text_for_embedding": "SQL 예시 10. 특정 사용자에게 추천된 캠페인 조회. 관련 테이블: campaigns, recommendation_edges. 쿼리: SELECT re.user_id, c.campaign_id, c.name, re.reason, re.label\nFROM recommendation_edges re\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nWHERE re.user_id = 'user_001';"
+      "text_for_embedding": "SQL 예시 10. [CRMAN] 최신 기준월의 최상위 등급(1등급) 회원. 관련 테이블: Customer_Analytics. 쿼리: SELECT MBR_NO, SEX_CD, AGE, GRD_CD, MAIN_BUY_CATEGORY_CD, MAIN_BUY_CHANNEL_CD\nFROM Customer_Analytics.dbo.CRM_MB_CRM_INFO\nWHERE YYYYMM = (SELECT MAX(YYYYMM) FROM Customer_Analytics.dbo.CRM_MB_CRM_INFO)\n  AND GRD_CD = '1';"
     },
     {
       "id": "sql_example:11",
       "type": "sql_example",
-      "title": "추천 강도가 높은 추천 edge 조회",
-      "sql": "SELECT re.user_id, re.campaign_id, c.name, re.reason\nFROM recommendation_edges re\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nWHERE re.label = 'high';",
+      "title": "[CRMAN] SMS 마케팅 수신 동의 회원(블랙리스트 제외)",
+      "sql": "SELECT MBR_NO, GENDER_CD, AGE, ZIP_CD, POINT\nFROM Customer_Analytics.dbo.CRM_MB_BASE_INFO\nWHERE SMS_YN = 'Y'\n  AND AGREE_YN = 'Y'\n  AND ISNULL(BLACKLIST_YN, 'N') = 'N';",
       "tables": [
-        "campaigns",
-        "recommendation_edges"
+        "Customer_Analytics"
       ],
-      "text_for_embedding": "SQL 예시 11. 추천 강도가 높은 추천 edge 조회. 관련 테이블: campaigns, recommendation_edges. 쿼리: SELECT re.user_id, re.campaign_id, c.name, re.reason\nFROM recommendation_edges re\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nWHERE re.label = 'high';"
+      "text_for_embedding": "SQL 예시 11. [CRMAN] SMS 마케팅 수신 동의 회원(블랙리스트 제외). 관련 테이블: Customer_Analytics. 쿼리: SELECT MBR_NO, GENDER_CD, AGE, ZIP_CD, POINT\nFROM Customer_Analytics.dbo.CRM_MB_BASE_INFO\nWHERE SMS_YN = 'Y'\n  AND AGREE_YN = 'Y'\n  AND ISNULL(BLACKLIST_YN, 'N') = 'N';"
     },
     {
       "id": "sql_example:12",
       "type": "sql_example",
-      "title": "캠페인별 추천 사용자 수 집계",
-      "sql": "SELECT c.campaign_id, c.name, COUNT(re.user_id) AS recommended_user_count\nFROM campaigns c\nLEFT JOIN recommendation_edges re ON re.campaign_id = c.campaign_id\nGROUP BY c.campaign_id, c.name\nORDER BY recommended_user_count DESC;",
+      "title": "[CRMAN] 최근 90일 주문 회원별 주문 건수/결제금액 합계",
+      "sql": "SELECT MBR_NO, COUNT(*) AS order_cnt, SUM(PAYMENT_AMT) AS total_payment\nFROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER\nWHERE ORDER_DATE >= CONVERT(varchar(8), DATEADD(DAY, -90, GETDATE()), 112)\nGROUP BY MBR_NO\nORDER BY total_payment DESC;",
       "tables": [
-        "campaigns",
-        "recommendation_edges"
+        "Customer_Analytics"
       ],
-      "text_for_embedding": "SQL 예시 12. 캠페인별 추천 사용자 수 집계. 관련 테이블: campaigns, recommendation_edges. 쿼리: SELECT c.campaign_id, c.name, COUNT(re.user_id) AS recommended_user_count\nFROM campaigns c\nLEFT JOIN recommendation_edges re ON re.campaign_id = c.campaign_id\nGROUP BY c.campaign_id, c.name\nORDER BY recommended_user_count DESC;"
+      "text_for_embedding": "SQL 예시 12. [CRMAN] 최근 90일 주문 회원별 주문 건수/결제금액 합계. 관련 테이블: Customer_Analytics. 쿼리: SELECT MBR_NO, COUNT(*) AS order_cnt, SUM(PAYMENT_AMT) AS total_payment\nFROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER\nWHERE ORDER_DATE >= CONVERT(varchar(8), DATEADD(DAY, -90, GETDATE()), 112)\nGROUP BY MBR_NO\nORDER BY total_payment DESC;"
     },
     {
       "id": "sql_example:13",
       "type": "sql_example",
-      "title": "지역별 사용자 수 집계",
-      "sql": "SELECT region, COUNT(*) AS user_count\nFROM users\nGROUP BY region\nORDER BY user_count DESC;",
+      "title": "[CRMAN] 최근 30일 판매 상위 상품(주문상세 + 상품 조인)",
+      "sql": "SELECT TOP 20 d.PROD_CD, p.PROD_NM, SUM(d.ORDER_QTY) AS order_qty, SUM(d.SALES_AMT) AS sales_amt\nFROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER h\nJOIN Customer_Analytics.dbo.CRM_SL_ORDER_DETAIL d ON d.ORDER_ID = h.ORDER_ID\nJOIN Customer_Analytics.dbo.CRM_CM_PRODUCT p ON p.PROD_CD = d.PROD_CD\nWHERE h.ORDER_DATE >= CONVERT(varchar(8), DATEADD(DAY, -30, GETDATE()), 112)\nGROUP BY d.PROD_CD, p.PROD_NM\nORDER BY sales_amt DESC;",
       "tables": [
-        "users"
+        "Customer_Analytics"
       ],
-      "text_for_embedding": "SQL 예시 13. 지역별 사용자 수 집계. 관련 테이블: users. 쿼리: SELECT region, COUNT(*) AS user_count\nFROM users\nGROUP BY region\nORDER BY user_count DESC;"
+      "text_for_embedding": "SQL 예시 13. [CRMAN] 최근 30일 판매 상위 상품(주문상세 + 상품 조인). 관련 테이블: Customer_Analytics. 쿼리: SELECT TOP 20 d.PROD_CD, p.PROD_NM, SUM(d.ORDER_QTY) AS order_qty, SUM(d.SALES_AMT) AS sales_amt\nFROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER h\nJOIN Customer_Analytics.dbo.CRM_SL_ORDER_DETAIL d ON d.ORDER_ID = h.ORDER_ID\nJOIN Customer_Analytics.dbo.CRM_CM_PRODUCT p ON p.PROD_CD = d.PROD_CD\nWHERE h.ORDER_DATE >= CONVERT(varchar(8), DATEADD(DAY, -30, GETDATE()), 112)\nGROUP BY d.PROD_CD, p.PROD_NM\nORDER BY sales_amt DESC;"
     },
     {
       "id": "sql_example:14",
       "type": "sql_example",
-      "title": "관심사와 채널이 동시에 맞는 사용자 조회",
-      "sql": "SELECT DISTINCT u.user_id, u.gender, u.region\nFROM users u\nJOIN user_interests ui ON ui.user_id = u.user_id\nJOIN user_preferred_channels upc ON upc.user_id = u.user_id\nWHERE ui.interest = 'food'\n  AND upc.preferred_channel = 'app_push';",
+      "title": "[CRMAN] 특정 상품 대분류(P01)를 최근 6개월 구매한 회원 목록",
+      "sql": "SELECT DISTINCT h.MBR_NO\nFROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER h\nJOIN Customer_Analytics.dbo.CRM_SL_ORDER_DETAIL d ON d.ORDER_ID = h.ORDER_ID\nJOIN Customer_Analytics.dbo.CRM_CM_PRODUCT p ON p.PROD_CD = d.PROD_CD\nWHERE p.PROD_CATEGORY_CD = 'P01'\n  AND h.ORDER_DATE >= CONVERT(varchar(8), DATEADD(MONTH, -6, GETDATE()), 112);",
       "tables": [
-        "user_interests",
-        "user_preferred_channels",
-        "users"
+        "Customer_Analytics"
       ],
-      "text_for_embedding": "SQL 예시 14. 관심사와 채널이 동시에 맞는 사용자 조회. 관련 테이블: user_interests, user_preferred_channels, users. 쿼리: SELECT DISTINCT u.user_id, u.gender, u.region\nFROM users u\nJOIN user_interests ui ON ui.user_id = u.user_id\nJOIN user_preferred_channels upc ON upc.user_id = u.user_id\nWHERE ui.interest = 'food'\n  AND upc.preferred_channel = 'app_push';"
+      "text_for_embedding": "SQL 예시 14. [CRMAN] 특정 상품 대분류(P01)를 최근 6개월 구매한 회원 목록. 관련 테이블: Customer_Analytics. 쿼리: SELECT DISTINCT h.MBR_NO\nFROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER h\nJOIN Customer_Analytics.dbo.CRM_SL_ORDER_DETAIL d ON d.ORDER_ID = h.ORDER_ID\nJOIN Customer_Analytics.dbo.CRM_CM_PRODUCT p ON p.PROD_CD = d.PROD_CD\nWHERE p.PROD_CATEGORY_CD = 'P01'\n  AND h.ORDER_DATE >= CONVERT(varchar(8), DATEADD(MONTH, -6, GETDATE()), 112);"
     },
     {
       "id": "sql_example:15",
       "type": "sql_example",
-      "title": "키워드가 쿠폰인 캠페인과 타겟 세그먼트 조회",
-      "sql": "SELECT c.campaign_id, c.name, ts.target_segment\nFROM campaigns c\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE ck.keyword = '쿠폰'\nORDER BY c.campaign_id, ts.target_segment;",
+      "title": "[CRMAN] 최근 30일 매장별 주문 건수/매출(매장정보 조인)",
+      "sql": "SELECT s.SHOP_CD, s.SHOP_NAME, s.BRAND_NM, COUNT(*) AS order_cnt, SUM(h.PAYMENT_AMT) AS payment_amt\nFROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER h\nJOIN Customer_Analytics.dbo.CRM_CM_SHOP_INFO s ON s.SHOP_CD = h.SHOP_CD\nWHERE h.ORDER_DATE >= CONVERT(varchar(8), DATEADD(DAY, -30, GETDATE()), 112)\nGROUP BY s.SHOP_CD, s.SHOP_NAME, s.BRAND_NM\nORDER BY payment_amt DESC;",
       "tables": [
-        "campaign_keywords",
-        "campaign_target_segments",
-        "campaigns"
+        "Customer_Analytics"
       ],
-      "text_for_embedding": "SQL 예시 15. 키워드가 쿠폰인 캠페인과 타겟 세그먼트 조회. 관련 테이블: campaign_keywords, campaign_target_segments, campaigns. 쿼리: SELECT c.campaign_id, c.name, ts.target_segment\nFROM campaigns c\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE ck.keyword = '쿠폰'\nORDER BY c.campaign_id, ts.target_segment;"
+      "text_for_embedding": "SQL 예시 15. [CRMAN] 최근 30일 매장별 주문 건수/매출(매장정보 조인). 관련 테이블: Customer_Analytics. 쿼리: SELECT s.SHOP_CD, s.SHOP_NAME, s.BRAND_NM, COUNT(*) AS order_cnt, SUM(h.PAYMENT_AMT) AS payment_amt\nFROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER h\nJOIN Customer_Analytics.dbo.CRM_CM_SHOP_INFO s ON s.SHOP_CD = h.SHOP_CD\nWHERE h.ORDER_DATE >= CONVERT(varchar(8), DATEADD(DAY, -30, GETDATE()), 112)\nGROUP BY s.SHOP_CD, s.SHOP_NAME, s.BRAND_NM\nORDER BY payment_amt DESC;"
     },
     {
       "id": "sql_example:16",
       "type": "sql_example",
-      "title": "20대 여성 장바구니 이탈 쿠폰 캠페인 추천",
-      "sql": "SELECT DISTINCT u.user_id, u.age, u.gender, c.campaign_id, c.category, c.offer, urb.behavior\nFROM users u\nJOIN user_recent_behaviors urb ON urb.user_id = u.user_id\nJOIN recommendation_edges re ON re.user_id = u.user_id\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE u.gender = 'female'\n  AND u.age BETWEEN 20 AND 29\n  AND urb.behavior LIKE 'cart_abandoned:%'\n  AND ck.keyword = '쿠폰'\n  AND ts.target_segment = 'cart_abandoner';",
+      "title": "[CRMAN] 지역(시도)별 회원 수(CRM정보 + 주소 조인: DIV_ID, ZIP_CD)",
+      "sql": "SELECT a.SIDO, COUNT(DISTINCT m.MBR_NO) AS member_cnt\nFROM Customer_Analytics.dbo.CRM_MB_CRM_INFO m\nJOIN Customer_Analytics.dbo.CRM_CM_ADDRESS a\n  ON a.DIV_ID = m.DIV_ID AND a.ZIP_CD = m.ZIP_CD\nWHERE m.YYYYMM = (SELECT MAX(YYYYMM) FROM Customer_Analytics.dbo.CRM_MB_CRM_INFO)\nGROUP BY a.SIDO\nORDER BY member_cnt DESC;",
       "tables": [
-        "campaign_keywords",
-        "campaign_target_segments",
-        "campaigns",
-        "recommendation_edges",
-        "user_recent_behaviors",
-        "users"
+        "Customer_Analytics"
       ],
-      "text_for_embedding": "SQL 예시 16. 20대 여성 장바구니 이탈 쿠폰 캠페인 추천. 관련 테이블: campaign_keywords, campaign_target_segments, campaigns, recommendation_edges, user_recent_behaviors, users. 쿼리: SELECT DISTINCT u.user_id, u.age, u.gender, c.campaign_id, c.category, c.offer, urb.behavior\nFROM users u\nJOIN user_recent_behaviors urb ON urb.user_id = u.user_id\nJOIN recommendation_edges re ON re.user_id = u.user_id\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE u.gender = 'female'\n  AND u.age BETWEEN 20 AND 29\n  AND urb.behavior LIKE 'cart_abandoned:%'\n  AND ck.keyword = '쿠폰'\n  AND ts.target_segment = 'cart_abandoner';"
+      "text_for_embedding": "SQL 예시 16. [CRMAN] 지역(시도)별 회원 수(CRM정보 + 주소 조인: DIV_ID, ZIP_CD). 관련 테이블: Customer_Analytics. 쿼리: SELECT a.SIDO, COUNT(DISTINCT m.MBR_NO) AS member_cnt\nFROM Customer_Analytics.dbo.CRM_MB_CRM_INFO m\nJOIN Customer_Analytics.dbo.CRM_CM_ADDRESS a\n  ON a.DIV_ID = m.DIV_ID AND a.ZIP_CD = m.ZIP_CD\nWHERE m.YYYYMM = (SELECT MAX(YYYYMM) FROM Customer_Analytics.dbo.CRM_MB_CRM_INFO)\nGROUP BY a.SIDO\nORDER BY member_cnt DESC;"
     },
     {
       "id": "sql_example:17",
       "type": "sql_example",
-      "title": "20~30대 남성이 아닌 장바구니 이탈 쿠폰 캠페인 추천",
-      "sql": "SELECT DISTINCT u.user_id, u.age, u.gender, c.campaign_id, c.category, c.offer, urb.behavior\nFROM users u\nJOIN user_recent_behaviors urb ON urb.user_id = u.user_id\nJOIN recommendation_edges re ON re.user_id = u.user_id\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE u.gender <> 'male'\n  AND u.age BETWEEN 20 AND 39\n  AND urb.behavior LIKE 'cart_abandoned:%'\n  AND ck.keyword = '쿠폰'\n  AND ts.target_segment = 'cart_abandoner';",
+      "title": "[CRMAN] 가치(WORTH) 등급 기준정보 구간 조회",
+      "sql": "SELECT DIV_ID, GRADE_TYPE, GRADE_CODE, GRADE_NAME, BUY_AMT_FROM, BUY_AMT_TO\nFROM Customer_Analytics.dbo.CRM_CM_STANDARD\nWHERE GRADE_TYPE = 'WORTH'\nORDER BY GRADE_SEQ;",
       "tables": [
-        "campaign_keywords",
-        "campaign_target_segments",
-        "campaigns",
-        "recommendation_edges",
-        "user_recent_behaviors",
-        "users"
+        "Customer_Analytics"
       ],
-      "text_for_embedding": "SQL 예시 17. 20~30대 남성이 아닌 장바구니 이탈 쿠폰 캠페인 추천. 관련 테이블: campaign_keywords, campaign_target_segments, campaigns, recommendation_edges, user_recent_behaviors, users. 쿼리: SELECT DISTINCT u.user_id, u.age, u.gender, c.campaign_id, c.category, c.offer, urb.behavior\nFROM users u\nJOIN user_recent_behaviors urb ON urb.user_id = u.user_id\nJOIN recommendation_edges re ON re.user_id = u.user_id\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE u.gender <> 'male'\n  AND u.age BETWEEN 20 AND 39\n  AND urb.behavior LIKE 'cart_abandoned:%'\n  AND ck.keyword = '쿠폰'\n  AND ts.target_segment = 'cart_abandoner';"
+      "text_for_embedding": "SQL 예시 17. [CRMAN] 가치(WORTH) 등급 기준정보 구간 조회. 관련 테이블: Customer_Analytics. 쿼리: SELECT DIV_ID, GRADE_TYPE, GRADE_CODE, GRADE_NAME, BUY_AMT_FROM, BUY_AMT_TO\nFROM Customer_Analytics.dbo.CRM_CM_STANDARD\nWHERE GRADE_TYPE = 'WORTH'\nORDER BY GRADE_SEQ;"
     },
     {
       "id": "sql_example:18",
       "type": "sql_example",
-      "title": "쿠폰 관심 고객 맞춤 쿠폰 캠페인 추천",
-      "sql": "SELECT DISTINCT u.user_id, u.price_sensitivity, c.campaign_id, c.name, c.offer, ts.target_segment\nFROM users u\nJOIN recommendation_edges re ON re.user_id = u.user_id\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE u.price_sensitivity = 'high'\n  AND ts.target_segment = 'price_sensitive'\n  AND ck.keyword = '쿠폰';",
+      "title": "[CRMAN] 공통코드 그룹 목록과 코드 개수",
+      "sql": "SELECT CD_GROUP_CD, CD_GROUP_NAME, COUNT(*) AS code_cnt\nFROM Customer_Analytics.dbo.CRM_CM_CODE\nGROUP BY CD_GROUP_CD, CD_GROUP_NAME\nORDER BY CD_GROUP_CD;",
       "tables": [
-        "campaign_keywords",
-        "campaign_target_segments",
-        "campaigns",
-        "recommendation_edges",
-        "users"
+        "Customer_Analytics"
       ],
-      "text_for_embedding": "SQL 예시 18. 쿠폰 관심 고객 맞춤 쿠폰 캠페인 추천. 관련 테이블: campaign_keywords, campaign_target_segments, campaigns, recommendation_edges, users. 쿼리: SELECT DISTINCT u.user_id, u.price_sensitivity, c.campaign_id, c.name, c.offer, ts.target_segment\nFROM users u\nJOIN recommendation_edges re ON re.user_id = u.user_id\nJOIN campaigns c ON c.campaign_id = re.campaign_id\nJOIN campaign_keywords ck ON ck.campaign_id = c.campaign_id\nJOIN campaign_target_segments ts ON ts.campaign_id = c.campaign_id\nWHERE u.price_sensitivity = 'high'\n  AND ts.target_segment = 'price_sensitive'\n  AND ck.keyword = '쿠폰';"
+      "text_for_embedding": "SQL 예시 18. [CRMAN] 공통코드 그룹 목록과 코드 개수. 관련 테이블: Customer_Analytics. 쿼리: SELECT CD_GROUP_CD, CD_GROUP_NAME, COUNT(*) AS code_cnt\nFROM Customer_Analytics.dbo.CRM_CM_CODE\nGROUP BY CD_GROUP_CD, CD_GROUP_NAME\nORDER BY CD_GROUP_CD;"
     },
     {
       "id": "sql_example:19",
       "type": "sql_example",
-      "title": "A/B/C 메시지 variant별 CTR 성과 조회",
-      "sql": "SELECT variant_code, message_name, assigned_count, delivered_count,\n       impression_count, click_count, conversion_count,\n       ctr_pct, delivered_ctr_pct, cvr_pct, revenue_krw\nFROM v_campaign_variant_metrics\nWHERE experiment_id = 1\nORDER BY delivered_ctr_pct DESC NULLS LAST;",
+      "title": "[CRMDW] 최근 3개월 실행된 캠페인 목록(취소/중지 제외)",
+      "sql": "SELECT CAMP_ID, CAMP_EXEC_NO, CAMP_NAME, CAMP_TYPE_CD, CAMP_PURPOSE_CD, CAMP_SDATE, CAMP_EDATE\nFROM Z_CAMPAIGN\nWHERE ISNULL(CANCEL_YN, 'N') = 'N'\n  AND CAMP_SDATE >= CONVERT(varchar(8), DATEADD(MONTH, -3, GETDATE()), 112)\nORDER BY CAMP_SDATE DESC;",
       "tables": [
-        "v_campaign_variant_metrics"
+        "Z_CAMPAIGN"
       ],
-      "text_for_embedding": "SQL 예시 19. A/B/C 메시지 variant별 CTR 성과 조회. 관련 테이블: v_campaign_variant_metrics. 쿼리: SELECT variant_code, message_name, assigned_count, delivered_count,\n       impression_count, click_count, conversion_count,\n       ctr_pct, delivered_ctr_pct, cvr_pct, revenue_krw\nFROM v_campaign_variant_metrics\nWHERE experiment_id = 1\nORDER BY delivered_ctr_pct DESC NULLS LAST;"
+      "text_for_embedding": "SQL 예시 19. [CRMDW] 최근 3개월 실행된 캠페인 목록(취소/중지 제외). 관련 테이블: Z_CAMPAIGN. 쿼리: SELECT CAMP_ID, CAMP_EXEC_NO, CAMP_NAME, CAMP_TYPE_CD, CAMP_PURPOSE_CD, CAMP_SDATE, CAMP_EDATE\nFROM Z_CAMPAIGN\nWHERE ISNULL(CANCEL_YN, 'N') = 'N'\n  AND CAMP_SDATE >= CONVERT(varchar(8), DATEADD(MONTH, -3, GETDATE()), 112)\nORDER BY CAMP_SDATE DESC;"
     },
     {
       "id": "sql_example:20",
       "type": "sql_example",
-      "title": "세그먼트별 A/B/C 클릭 성과 조회",
-      "sql": "SELECT variant_code, gender, age_group, region, lifecycle,\n       delivered_count, impression_count, click_count, conversion_count,\n       ctr_pct, click_to_conversion_rate_pct\nFROM v_campaign_segment_metrics\nWHERE experiment_id = 1\nORDER BY click_count DESC, delivered_count DESC;",
+      "title": "[CRMDW] 캠페인 실행별 발송/오퍼반응/구매반응 집계(타겟군 기준)",
+      "sql": "SELECT CAMP_ID, CAMP_EXEC_NO,\n       COUNT(*) AS sent_cnt,\n       SUM(CASE WHEN CNCT_SCS_YN = 'Y' THEN 1 ELSE 0 END) AS contact_cnt,\n       SUM(CASE WHEN OFFR_RSPN_YN = 'Y' THEN 1 ELSE 0 END) AS offer_rspn_cnt,\n       SUM(CASE WHEN BUY_RSPN_YN = 'Y' THEN 1 ELSE 0 END) AS buy_rspn_cnt,\n       SUM(BUY_AMT) AS buy_amt\nFROM MCS_CAMP_MBR_RSPN_FT\nWHERE CGRP_TYPE_CD = 'T'\nGROUP BY CAMP_ID, CAMP_EXEC_NO\nORDER BY buy_amt DESC;",
       "tables": [
-        "v_campaign_segment_metrics"
+        "MCS_CAMP_MBR_RSPN_FT"
       ],
-      "text_for_embedding": "SQL 예시 20. 세그먼트별 A/B/C 클릭 성과 조회. 관련 테이블: v_campaign_segment_metrics. 쿼리: SELECT variant_code, gender, age_group, region, lifecycle,\n       delivered_count, impression_count, click_count, conversion_count,\n       ctr_pct, click_to_conversion_rate_pct\nFROM v_campaign_segment_metrics\nWHERE experiment_id = 1\nORDER BY click_count DESC, delivered_count DESC;"
+      "text_for_embedding": "SQL 예시 20. [CRMDW] 캠페인 실행별 발송/오퍼반응/구매반응 집계(타겟군 기준). 관련 테이블: MCS_CAMP_MBR_RSPN_FT. 쿼리: SELECT CAMP_ID, CAMP_EXEC_NO,\n       COUNT(*) AS sent_cnt,\n       SUM(CASE WHEN CNCT_SCS_YN = 'Y' THEN 1 ELSE 0 END) AS contact_cnt,\n       SUM(CASE WHEN OFFR_RSPN_YN = 'Y' THEN 1 ELSE 0 END) AS offer_rspn_cnt,\n       SUM(CASE WHEN BUY_RSPN_YN = 'Y' THEN 1 ELSE 0 END) AS buy_rspn_cnt,\n       SUM(BUY_AMT) AS buy_amt\nFROM MCS_CAMP_MBR_RSPN_FT\nWHERE CGRP_TYPE_CD = 'T'\nGROUP BY CAMP_ID, CAMP_EXEC_NO\nORDER BY buy_amt DESC;"
     },
     {
       "id": "sql_example:21",
       "type": "sql_example",
-      "title": "모델 학습용 delivery 단위 클릭 label 생성",
-      "sql": "SELECT d.delivery_id, d.user_id, d.campaign_id, d.channel, v.variant_code,\n       d.assignment_source, d.predicted_click_probability,\n       CASE WHEN COUNT(e.event_id) FILTER (WHERE e.event_type = 'click') > 0 THEN 1 ELSE 0 END AS clicked\nFROM campaign_message_deliveries d\nJOIN campaign_message_variants v ON v.variant_id = d.variant_id\nLEFT JOIN campaign_message_events e ON e.delivery_id = d.delivery_id\nWHERE d.experiment_id = 1\nGROUP BY d.delivery_id, v.variant_code;",
+      "title": "[CRMDW] 특정 캠페인의 타겟 회원 목록",
+      "sql": "SELECT CAMP_ID, CAMP_EXEC_NO, CELL_NODE_ID, MBR_NO, CONTAC_SUCC_YN\nFROM Z_CAMP_MBR\nWHERE CAMP_ID = 'CAMP0001'\n  AND CELL_TYPE_CD = 'T';",
       "tables": [
-        "campaign_message_deliveries",
-        "campaign_message_events",
-        "campaign_message_variants"
+        "Z_CAMP_MBR"
       ],
-      "text_for_embedding": "SQL 예시 21. 모델 학습용 delivery 단위 클릭 label 생성. 관련 테이블: campaign_message_deliveries, campaign_message_events, campaign_message_variants. 쿼리: SELECT d.delivery_id, d.user_id, d.campaign_id, d.channel, v.variant_code,\n       d.assignment_source, d.predicted_click_probability,\n       CASE WHEN COUNT(e.event_id) FILTER (WHERE e.event_type = 'click') > 0 THEN 1 ELSE 0 END AS clicked\nFROM campaign_message_deliveries d\nJOIN campaign_message_variants v ON v.variant_id = d.variant_id\nLEFT JOIN campaign_message_events e ON e.delivery_id = d.delivery_id\nWHERE d.experiment_id = 1\nGROUP BY d.delivery_id, v.variant_code;"
+      "text_for_embedding": "SQL 예시 21. [CRMDW] 특정 캠페인의 타겟 회원 목록. 관련 테이블: Z_CAMP_MBR. 쿼리: SELECT CAMP_ID, CAMP_EXEC_NO, CELL_NODE_ID, MBR_NO, CONTAC_SUCC_YN\nFROM Z_CAMP_MBR\nWHERE CAMP_ID = 'CAMP0001'\n  AND CELL_TYPE_CD = 'T';"
     },
     {
       "id": "sql_example:22",
       "type": "sql_example",
-      "title": "날짜별 메시지 이벤트 추이 조회",
-      "sql": "SELECT event_date_kst, variant_id, channel,\n       sent_event_count, delivered_event_count, impression_event_count,\n       click_event_count, conversion_event_count, revenue_krw\nFROM v_campaign_daily_metrics\nWHERE experiment_id = 1\nORDER BY event_date_kst, variant_id;",
+      "title": "[CRMDW] 캠페인 셀별 ROI 상위(셀 + 캠페인 조인)",
+      "sql": "SELECT c.CAMP_ID, g.CAMP_NAME, c.CELL_NODE_ID, c.CELL_NAME, c.SBJ_GP_MBRNUM, c.EXP_ROI\nFROM Z_CAMP_CELL c\nJOIN Z_CAMPAIGN g ON g.CAMP_ID = c.CAMP_ID AND g.CAMP_EXEC_NO = c.CAMP_EXEC_NO\nWHERE c.EXP_ROI IS NOT NULL\nORDER BY c.EXP_ROI DESC;",
       "tables": [
-        "v_campaign_daily_metrics"
+        "Z_CAMPAIGN",
+        "Z_CAMP_CELL"
       ],
-      "text_for_embedding": "SQL 예시 22. 날짜별 메시지 이벤트 추이 조회. 관련 테이블: v_campaign_daily_metrics. 쿼리: SELECT event_date_kst, variant_id, channel,\n       sent_event_count, delivered_event_count, impression_event_count,\n       click_event_count, conversion_event_count, revenue_krw\nFROM v_campaign_daily_metrics\nWHERE experiment_id = 1\nORDER BY event_date_kst, variant_id;"
+      "text_for_embedding": "SQL 예시 22. [CRMDW] 캠페인 셀별 ROI 상위(셀 + 캠페인 조인). 관련 테이블: Z_CAMPAIGN, Z_CAMP_CELL. 쿼리: SELECT c.CAMP_ID, g.CAMP_NAME, c.CELL_NODE_ID, c.CELL_NAME, c.SBJ_GP_MBRNUM, c.EXP_ROI\nFROM Z_CAMP_CELL c\nJOIN Z_CAMPAIGN g ON g.CAMP_ID = c.CAMP_ID AND g.CAMP_EXEC_NO = c.CAMP_EXEC_NO\nWHERE c.EXP_ROI IS NOT NULL\nORDER BY c.EXP_ROI DESC;"
     },
     {
       "id": "sql_example:23",
       "type": "sql_example",
-      "title": "장바구니에 상품을 담고 24시간 이상 결제하지 않은 고객 조회",
-      "sql": "SELECT\n    c.cart_id,\n    c.user_id,\n    c.total_amount_krw\nFROM shopping_carts c\nWHERE c.cart_status = 'abandoned'\nAND c.purchase_completed = FALSE\nAND c.abandoned_at <= NOW() - INTERVAL '24 hours';",
+      "title": "[CRMDW] 캠페인에서 구매 반응한 회원 프로파일(반응팩트 + 회원기본정보, 동일 CRMDW 회원키)",
+      "sql": "-- 주: MBR_NO(varchar) 와 MEMBER_NO(bigint) 는 형이 달라 TRY_CAST 로 맞춘다. 비숫자 값은 매칭에서 제외된다.\nSELECT f.CAMP_ID, f.CAMP_EXEC_NO, f.MBR_NO, b.GENDER_CD, b.AGE, b.SIDO, f.BUY_AMT\nFROM MCS_CAMP_MBR_RSPN_FT f\nJOIN CRM_MB_BASEINFO b ON b.MEMBER_NO = TRY_CAST(f.MBR_NO AS bigint)\nWHERE f.CGRP_TYPE_CD = 'T'\n  AND f.BUY_RSPN_YN = 'Y';",
       "tables": [
-        "shopping_carts"
+        "CRM_MB_BASEINFO",
+        "MCS_CAMP_MBR_RSPN_FT"
       ],
-      "text_for_embedding": "SQL 예시 23. 장바구니에 상품을 담고 24시간 이상 결제하지 않은 고객 조회. 관련 테이블: shopping_carts. 쿼리: SELECT\n    c.cart_id,\n    c.user_id,\n    c.total_amount_krw\nFROM shopping_carts c\nWHERE c.cart_status = 'abandoned'\nAND c.purchase_completed = FALSE\nAND c.abandoned_at <= NOW() - INTERVAL '24 hours';"
+      "text_for_embedding": "SQL 예시 23. [CRMDW] 캠페인에서 구매 반응한 회원 프로파일(반응팩트 + 회원기본정보, 동일 CRMDW 회원키). 관련 테이블: CRM_MB_BASEINFO, MCS_CAMP_MBR_RSPN_FT. 쿼리: -- 주: MBR_NO(varchar) 와 MEMBER_NO(bigint) 는 형이 달라 TRY_CAST 로 맞춘다. 비숫자 값은 매칭에서 제외된다.\nSELECT f.CAMP_ID, f.CAMP_EXEC_NO, f.MBR_NO, b.GENDER_CD, b.AGE, b.SIDO, f.BUY_AMT\nFROM MCS_CAMP_MBR_RSPN_FT f\nJOIN CRM_MB_BASEINFO b ON b.MEMBER_NO = TRY_CAST(f.MBR_NO AS bigint)\nWHERE f.CGRP_TYPE_CD = 'T'\n  AND f.BUY_RSPN_YN = 'Y';"
     },
     {
       "id": "sql_example:24",
       "type": "sql_example",
-      "title": "장바구니 금액이 5만원 이상인 미결제 고객",
-      "sql": "SELECT\n    user_id,\n    total_amount_krw\nFROM shopping_carts\nWHERE cart_status='abandoned'\nAND purchase_completed=FALSE\nAND total_amount_krw>=50000;",
+      "title": "[CRMDW] 로그인 이력 기준 최근 3개월 로그인 5회 이상 활동 회원",
+      "sql": "-- 주: 로그인기간(필수) BETWEEN + HAVING COUNT(0)로 로그인횟수 조건을 건 형태. 디바이스유형/모바일OS유형/앱버전 IN 필터는 선택.\nSELECT A.MEMBER_NO AS CUST_ID\nFROM ODS_MALL_MMS_LOGINHISTORY A WITH(NOLOCK)\nWHERE CONVERT(CHAR(8), A.LOGIN_DT, 112)\n      BETWEEN CONVERT(varchar(8), DATEADD(MONTH, -3, GETDATE()), 112)\n          AND CONVERT(varchar(8), GETDATE(), 112)\nGROUP BY A.MEMBER_NO\nHAVING COUNT(0) >= 5;",
       "tables": [
-        "shopping_carts"
+        "ODS_MALL_MMS_LOGINHISTORY"
       ],
-      "text_for_embedding": "SQL 예시 24. 장바구니 금액이 5만원 이상인 미결제 고객. 관련 테이블: shopping_carts. 쿼리: SELECT\n    user_id,\n    total_amount_krw\nFROM shopping_carts\nWHERE cart_status='abandoned'\nAND purchase_completed=FALSE\nAND total_amount_krw>=50000;"
+      "text_for_embedding": "SQL 예시 24. [CRMDW] 로그인 이력 기준 최근 3개월 로그인 5회 이상 활동 회원. 관련 테이블: ODS_MALL_MMS_LOGINHISTORY. 쿼리: -- 주: 로그인기간(필수) BETWEEN + HAVING COUNT(0)로 로그인횟수 조건을 건 형태. 디바이스유형/모바일OS유형/앱버전 IN 필터는 선택.\nSELECT A.MEMBER_NO AS CUST_ID\nFROM ODS_MALL_MMS_LOGINHISTORY A WITH(NOLOCK)\nWHERE CONVERT(CHAR(8), A.LOGIN_DT, 112)\n      BETWEEN CONVERT(varchar(8), DATEADD(MONTH, -3, GETDATE()), 112)\n          AND CONVERT(varchar(8), GETDATE(), 112)\nGROUP BY A.MEMBER_NO\nHAVING COUNT(0) >= 5;"
     },
     {
       "id": "sql_example:25",
       "type": "sql_example",
-      "title": "쿠폰 발급 가능한 장바구니 이탈 고객",
-      "sql": "SELECT DISTINCT\n    c.user_id\nFROM shopping_carts c\nJOIN shopping_cart_items i\nON c.cart_id=i.cart_id\nWHERE c.cart_status='abandoned'\nAND i.coupon_available=TRUE;",
+      "title": "[CRMDW] 최근 30일 장바구니 담은 회원 중 장바구니 합계금액 5만~50만원",
+      "sql": "-- 주: 회원기본정보(B)에 CART_ID=MEMBER_ID로 조인, 상품마스터(C)는 상품분류 필터용 LEFT JOIN. 모든 WHERE 필터는 선택.\n--     선택 필터: 보관시작일(INS_DT)/보관종료일(END_DT) 기간, 장바구니유형(CART_TYPE_CD), 상품분류(카테고리/브랜드/대·중·소분류/상품), HAVING 장바구니금액(SUM(SALE_PRICE)).\nSELECT B.MEMBER_NO AS CUST_ID\nFROM ODS_MALL_OMS_CART A WITH(NOLOCK)\n     INNER JOIN CRM_MB_BASEINFO B WITH(NOLOCK)\n       ON A.CART_ID = B.MEMBER_ID\n     LEFT OUTER JOIN CRM_CM_PRODUCT C WITH(NOLOCK)\n       ON A.PRODUCT_ID = C.PRODUCT_ID\nWHERE CONVERT(CHAR(8), A.INS_DT, 112)\n      BETWEEN CONVERT(varchar(8), DATEADD(DAY, -30, GETDATE()), 112)\n          AND CONVERT(varchar(8), GETDATE(), 112)\nGROUP BY B.MEMBER_NO\nHAVING SUM(A.SALE_PRICE) BETWEEN 50000 AND 500000;",
       "tables": [
-        "shopping_cart_items",
-        "shopping_carts"
+        "CRM_CM_PRODUCT",
+        "CRM_MB_BASEINFO",
+        "ODS_MALL_OMS_CART"
       ],
-      "text_for_embedding": "SQL 예시 25. 쿠폰 발급 가능한 장바구니 이탈 고객. 관련 테이블: shopping_cart_items, shopping_carts. 쿼리: SELECT DISTINCT\n    c.user_id\nFROM shopping_carts c\nJOIN shopping_cart_items i\nON c.cart_id=i.cart_id\nWHERE c.cart_status='abandoned'\nAND i.coupon_available=TRUE;"
+      "text_for_embedding": "SQL 예시 25. [CRMDW] 최근 30일 장바구니 담은 회원 중 장바구니 합계금액 5만~50만원. 관련 테이블: CRM_CM_PRODUCT, CRM_MB_BASEINFO, ODS_MALL_OMS_CART. 쿼리: -- 주: 회원기본정보(B)에 CART_ID=MEMBER_ID로 조인, 상품마스터(C)는 상품분류 필터용 LEFT JOIN. 모든 WHERE 필터는 선택.\n--     선택 필터: 보관시작일(INS_DT)/보관종료일(END_DT) 기간, 장바구니유형(CART_TYPE_CD), 상품분류(카테고리/브랜드/대·중·소분류/상품), HAVING 장바구니금액(SUM(SALE_PRICE)).\nSELECT B.MEMBER_NO AS CUST_ID\nFROM ODS_MALL_OMS_CART A WITH(NOLOCK)\n     INNER JOIN CRM_MB_BASEINFO B WITH(NOLOCK)\n       ON A.CART_ID = B.MEMBER_ID\n     LEFT OUTER JOIN CRM_CM_PRODUCT C WITH(NOLOCK)\n       ON A.PRODUCT_ID = C.PRODUCT_ID\nWHERE CONVERT(CHAR(8), A.INS_DT, 112)\n      BETWEEN CONVERT(varchar(8), DATEADD(DAY, -30, GETDATE()), 112)\n          AND CONVERT(varchar(8), GETDATE(), 112)\nGROUP BY B.MEMBER_NO\nHAVING SUM(A.SALE_PRICE) BETWEEN 50000 AND 500000;"
     },
     {
       "id": "sql_example:26",
       "type": "sql_example",
-      "title": "패션 상품을 장바구니에 담고 구매하지 않은 고객",
-      "sql": "SELECT DISTINCT\n    c.user_id\nFROM shopping_carts c\nJOIN shopping_cart_items i\nON c.cart_id=i.cart_id\nWHERE c.cart_status='abandoned'\nAND i.category='fashion';",
+      "title": "[CRMDW] 특정 캠페인(CAMP0001) 대상군 중 구매반응 발생(구매금액 1만~100만원) 회원",
+      "sql": "-- 주: 캠페인명(A.CAMP_ID IN)은 필수, C.CELL_TYPE_CD='T'는 대상군만 추출하는 고정 조건. 반응실적(D)은 LEFT JOIN.\n--     선택 필터: 접촉성공여부(CONTAC_SUCC_YN)/구매반응여부(BUY_RSPN_YN)/오퍼반응여부(OFFR_RSPN_YN)=Y·N, 구매금액/오퍼사용구매금액/오퍼할인금액/발행·사용쿠폰수 BETWEEN.\nSELECT C.MBR_NO\nFROM Z_CAMPAIGN A WITH(NOLOCK)\n     INNER JOIN Z_CAMP_CELL B WITH(NOLOCK)\n       ON A.CAMP_ID = B.CAMP_ID AND A.CAMP_EXEC_NO = B.CAMP_EXEC_NO\n     INNER JOIN Z_CAMP_MBR C WITH(NOLOCK)\n       ON A.CAMP_ID = C.CAMP_ID AND A.CAMP_EXEC_NO = C.CAMP_EXEC_NO AND B.CELL_NODE_ID = C.CELL_NODE_ID\n     LEFT OUTER JOIN MCS_CAMP_MBR_RSPN_FT D WITH(NOLOCK)\n       ON A.CAMP_ID = D.CAMP_ID AND A.CAMP_EXEC_NO = D.CAMP_EXEC_NO AND B.CELL_NODE_ID = D.CELL_NODE_ID AND C.MBR_NO = D.MBR_NO\nWHERE A.CAMP_ID IN ('CAMP0001')\n  AND C.CELL_TYPE_CD = 'T'\n  AND D.BUY_RSPN_YN = 'Y'\n  AND D.BUY_AMT BETWEEN 10000 AND 1000000;",
       "tables": [
-        "shopping_cart_items",
-        "shopping_carts"
+        "MCS_CAMP_MBR_RSPN_FT",
+        "Z_CAMPAIGN",
+        "Z_CAMP_CELL",
+        "Z_CAMP_MBR"
       ],
-      "text_for_embedding": "SQL 예시 26. 패션 상품을 장바구니에 담고 구매하지 않은 고객. 관련 테이블: shopping_cart_items, shopping_carts. 쿼리: SELECT DISTINCT\n    c.user_id\nFROM shopping_carts c\nJOIN shopping_cart_items i\nON c.cart_id=i.cart_id\nWHERE c.cart_status='abandoned'\nAND i.category='fashion';"
+      "text_for_embedding": "SQL 예시 26. [CRMDW] 특정 캠페인(CAMP0001) 대상군 중 구매반응 발생(구매금액 1만~100만원) 회원. 관련 테이블: MCS_CAMP_MBR_RSPN_FT, Z_CAMPAIGN, Z_CAMP_CELL, Z_CAMP_MBR. 쿼리: -- 주: 캠페인명(A.CAMP_ID IN)은 필수, C.CELL_TYPE_CD='T'는 대상군만 추출하는 고정 조건. 반응실적(D)은 LEFT JOIN.\n--     선택 필터: 접촉성공여부(CONTAC_SUCC_YN)/구매반응여부(BUY_RSPN_YN)/오퍼반응여부(OFFR_RSPN_YN)=Y·N, 구매금액/오퍼사용구매금액/오퍼할인금액/발행·사용쿠폰수 BETWEEN.\nSELECT C.MBR_NO\nFROM Z_CAMPAIGN A WITH(NOLOCK)\n     INNER JOIN Z_CAMP_CELL B WITH(NOLOCK)\n       ON A.CAMP_ID = B.CAMP_ID AND A.CAMP_EXEC_NO = B.CAMP_EXEC_NO\n     INNER JOIN Z_CAMP_MBR C WITH(NOLOCK)\n       ON A.CAMP_ID = C.CAMP_ID AND A.CAMP_EXEC_NO = C.CAMP_EXEC_NO AND B.CELL_NODE_ID = C.CELL_NODE_ID\n     LEFT OUTER JOIN MCS_CAMP_MBR_RSPN_FT D WITH(NOLOCK)\n       ON A.CAMP_ID = D.CAMP_ID AND A.CAMP_EXEC_NO = D.CAMP_EXEC_NO AND B.CELL_NODE_ID = D.CELL_NODE_ID AND C.MBR_NO = D.MBR_NO\nWHERE A.CAMP_ID IN ('CAMP0001')\n  AND C.CELL_TYPE_CD = 'T'\n  AND D.BUY_RSPN_YN = 'Y'\n  AND D.BUY_AMT BETWEEN 10000 AND 1000000;"
     },
     {
       "id": "sql_example:27",
       "type": "sql_example",
-      "title": "장바구니 리마인드 문자를 아직 보내지 않은 고객",
-      "sql": "SELECT\n    c.user_id\nFROM shopping_carts c\nLEFT JOIN cart_reminder_history r\nON c.cart_id=r.cart_id\nWHERE c.cart_status='abandoned'\nAND r.reminder_id IS NULL;",
+      "title": "[CRMDW] 특정 캠페인 실행회차/반응노드(셀)의 채널·오퍼·구매 반응 고객 추출(대상군)",
+      "sql": "-- 주: 반응 실행 쿼리의 '특정 셀' 분기. RES_CHNL=CNCT_SCS_YN / RES_OFFER=OFFR_RSPN_YN / RES_BUY=BUY_RSPN_YN, 모두 Y·N.\n--     각 반응필터가 'ALL'이면 해당 조건은 무시(전체)되고, 값이 지정되면 그 값으로 필터.\nSELECT DISTINCT MBR_NO\nFROM MCS_CAMP_MBR_RSPN_FT\nWHERE CAMP_ID = 'C17003G'\n  AND CAMP_EXEC_NO = '1'\n  AND CELL_NODE_ID = 'N170216095828506'\n  AND CGRP_TYPE_CD = 'T'\n  AND CNCT_SCS_YN = 'Y'\n  AND OFFR_RSPN_YN = 'Y'\n  AND BUY_RSPN_YN = 'Y';",
       "tables": [
-        "cart_reminder_history",
-        "shopping_carts"
+        "MCS_CAMP_MBR_RSPN_FT"
       ],
-      "text_for_embedding": "SQL 예시 27. 장바구니 리마인드 문자를 아직 보내지 않은 고객. 관련 테이블: cart_reminder_history, shopping_carts. 쿼리: SELECT\n    c.user_id\nFROM shopping_carts c\nLEFT JOIN cart_reminder_history r\nON c.cart_id=r.cart_id\nWHERE c.cart_status='abandoned'\nAND r.reminder_id IS NULL;"
+      "text_for_embedding": "SQL 예시 27. [CRMDW] 특정 캠페인 실행회차/반응노드(셀)의 채널·오퍼·구매 반응 고객 추출(대상군). 관련 테이블: MCS_CAMP_MBR_RSPN_FT. 쿼리: -- 주: 반응 실행 쿼리의 '특정 셀' 분기. RES_CHNL=CNCT_SCS_YN / RES_OFFER=OFFR_RSPN_YN / RES_BUY=BUY_RSPN_YN, 모두 Y·N.\n--     각 반응필터가 'ALL'이면 해당 조건은 무시(전체)되고, 값이 지정되면 그 값으로 필터.\nSELECT DISTINCT MBR_NO\nFROM MCS_CAMP_MBR_RSPN_FT\nWHERE CAMP_ID = 'C17003G'\n  AND CAMP_EXEC_NO = '1'\n  AND CELL_NODE_ID = 'N170216095828506'\n  AND CGRP_TYPE_CD = 'T'\n  AND CNCT_SCS_YN = 'Y'\n  AND OFFR_RSPN_YN = 'Y'\n  AND BUY_RSPN_YN = 'Y';"
     },
     {
       "id": "sql_example:28",
       "type": "sql_example",
-      "title": "6개월 이상 미접속한 휴면 고객에게 복귀 캠페인 추천",
-      "sql": "SELECT DISTINCT\n    u.user_id,\n    u.region,\n    u.lifecycle,\n    u.last_login_at,\n    u.last_active_days,\n    c.campaign_id,\n    c.name AS campaign_name,\n    c.offer\nFROM users u\nJOIN recommendation_edges re\n    ON re.user_id = u.user_id\nJOIN campaigns c\n    ON c.campaign_id = re.campaign_id\nWHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\n  AND c.objective = 'reactivation'\nORDER BY u.last_login_at ASC;",
+      "title": "[CRMDW] 특정 캠페인 전체의 구매 반응 고객 추출(반응노드=ALL 분기, 대상군)",
+      "sql": "-- 주: 반응 실행 쿼리의 'ALL' 분기 — CELL_NODE_ID/CAMP_EXEC_NO 없이 캠페인 전체에서 추출.\nSELECT DISTINCT MBR_NO\nFROM MCS_CAMP_MBR_RSPN_FT\nWHERE CAMP_ID = 'C17003G'\n  AND CGRP_TYPE_CD = 'T'\n  AND BUY_RSPN_YN = 'Y';",
       "tables": [
-        "campaigns",
-        "recommendation_edges",
-        "users"
+        "MCS_CAMP_MBR_RSPN_FT"
       ],
-      "text_for_embedding": "SQL 예시 28. 6개월 이상 미접속한 휴면 고객에게 복귀 캠페인 추천. 관련 테이블: campaigns, recommendation_edges, users. 쿼리: SELECT DISTINCT\n    u.user_id,\n    u.region,\n    u.lifecycle,\n    u.last_login_at,\n    u.last_active_days,\n    c.campaign_id,\n    c.name AS campaign_name,\n    c.offer\nFROM users u\nJOIN recommendation_edges re\n    ON re.user_id = u.user_id\nJOIN campaigns c\n    ON c.campaign_id = re.campaign_id\nWHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\n  AND c.objective = 'reactivation'\nORDER BY u.last_login_at ASC;"
-    },
-    {
-      "id": "sql_example:29",
-      "type": "sql_example",
-      "title": "6개월 이상 미접속하고 최근 90일 구매가 없는 고객 조회",
-      "sql": "SELECT\n    user_id,\n    region,\n    lifecycle,\n    last_login_at,\n    last_active_days,\n    purchase_count_90d,\n    price_sensitivity\nFROM users\nWHERE last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\n  AND purchase_count_90d = 0\nORDER BY last_active_days DESC;",
-      "tables": [
-        "users"
-      ],
-      "text_for_embedding": "SQL 예시 29. 6개월 이상 미접속하고 최근 90일 구매가 없는 고객 조회. 관련 테이블: users. 쿼리: SELECT\n    user_id,\n    region,\n    lifecycle,\n    last_login_at,\n    last_active_days,\n    purchase_count_90d,\n    price_sensitivity\nFROM users\nWHERE last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\n  AND purchase_count_90d = 0\nORDER BY last_active_days DESC;"
-    },
-    {
-      "id": "sql_example:30",
-      "type": "sql_example",
-      "title": "6개월 이상 휴면 고객 중 문자 또는 카카오 수신 선호 고객 조회",
-      "sql": "SELECT DISTINCT\n    u.user_id,\n    u.region,\n    u.last_login_at,\n    u.last_active_days,\n    upc.preferred_channel\nFROM users u\nJOIN user_preferred_channels upc\n    ON upc.user_id = u.user_id\nWHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\n  AND upc.preferred_channel IN ('sms', 'kakao', 'lms', 'rcs')\nORDER BY u.last_login_at ASC;",
-      "tables": [
-        "user_preferred_channels",
-        "users"
-      ],
-      "text_for_embedding": "SQL 예시 30. 6개월 이상 휴면 고객 중 문자 또는 카카오 수신 선호 고객 조회. 관련 테이블: user_preferred_channels, users. 쿼리: SELECT DISTINCT\n    u.user_id,\n    u.region,\n    u.last_login_at,\n    u.last_active_days,\n    upc.preferred_channel\nFROM users u\nJOIN user_preferred_channels upc\n    ON upc.user_id = u.user_id\nWHERE u.last_login_at <= CURRENT_TIMESTAMP - INTERVAL '6 months'\n  AND upc.preferred_channel IN ('sms', 'kakao', 'lms', 'rcs')\nORDER BY u.last_login_at ASC;"
+      "text_for_embedding": "SQL 예시 28. [CRMDW] 특정 캠페인 전체의 구매 반응 고객 추출(반응노드=ALL 분기, 대상군). 관련 테이블: MCS_CAMP_MBR_RSPN_FT. 쿼리: -- 주: 반응 실행 쿼리의 'ALL' 분기 — CELL_NODE_ID/CAMP_EXEC_NO 없이 캠페인 전체에서 추출.\nSELECT DISTINCT MBR_NO\nFROM MCS_CAMP_MBR_RSPN_FT\nWHERE CAMP_ID = 'C17003G'\n  AND CGRP_TYPE_CD = 'T'\n  AND BUY_RSPN_YN = 'Y';"
     },
     {
       "id": "camp_001",
