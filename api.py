@@ -384,6 +384,7 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
         api_response.get("sql"),
         request.execute_sql,
         request.result_row_limit,
+        target_connection=api_response.get("target_connection"),
         persist_targeting=request.persist_targeting,
         audience_ttl_days=request.audience_ttl_days,
         prompt=request.prompt,
@@ -3319,11 +3320,74 @@ def _json_default(value: Any) -> Any:
     return converted
 
 
+# 외부 읽기전용 실DB. 이 커넥션들로 라우팅되는 타겟 SQL 은 psycopg(로컬 postgres)가 아니라
+# db_connections.run_read_query 로 실행한다.
+_EXTERNAL_TARGET_DBS = {"CRMAN", "CRMDW", "quadmax_sdz"}
+# 고객 수 집계에 쓸 식별자 컬럼 후보(대소문자 무시).
+_CUSTOMER_ID_COLUMNS = ("cust_id", "user_id", "customer_id", "member_no", "member_id")
+
+
+def _customer_id_column(columns: list[str]) -> str | None:
+    for column in columns:
+        if column.casefold() in _CUSTOMER_ID_COLUMNS:
+            return column
+    return columns[0] if columns else None
+
+
+def _execute_external_target_sql(sql: str, connection: str, result_row_limit: int) -> dict[str, Any]:
+    """외부 실DB(CRMDW/CRMAN/quadmax_sdz)에서 타겟 SQL 을 실행해 카운트/샘플을 채운다.
+
+    사용자 선택 범위(카운트/샘플만): 세그먼트 구성·오디언스 저장 등 로컬 postgres 스키마에
+    의존하는 기능은 외부 DB 대상일 때 건너뛴다. 행수는 생성 SQL 에 이미 부여된 방언별
+    제한(MSSQL=TOP n)으로 bounded 된다.
+    """
+    from db_connections import run_read_query
+
+    try:
+        rows = run_read_query(connection, sql)  # enforce_select=True → 방언별 행수제한 자동 부착
+    except Exception as exc:
+        return _database_execution_error(f"{connection.lower()}_execution_failed", exc)
+
+    jsonable_rows = [_jsonable_record(row) for row in rows]
+    columns = list(jsonable_rows[0].keys()) if jsonable_rows else []
+    sample_rows = jsonable_rows[: max(1, int(result_row_limit))]
+
+    customer_column = _customer_id_column(columns)
+    if customer_column is not None:
+        target_customer_count = len(
+            {row.get(customer_column) for row in jsonable_rows if row.get(customer_column) is not None}
+        )
+    else:
+        target_customer_count = 0
+
+    targeting_result = {
+        "result_row_count": len(jsonable_rows),
+        "target_customer_count": target_customer_count,
+        "target_campaign_count": 0,
+        "sample_rows": sample_rows,
+    }
+    return {
+        "is_success": True,
+        "mode": f"{connection}_read_only",
+        "failure_reason": None,
+        "executed_sql": sql,
+        "result_columns": columns,
+        "rows": sample_rows,
+        "row_limit": result_row_limit,
+        "audience": _audience_skipped("external_db_persist_not_supported"),
+        "targeting_result": targeting_result,
+        "segment_composition": {},
+        "segment_presentation": _empty_segment_presentation(),
+        "campaign_context_nodes": [],
+    }
+
+
 def execute_target_sql(
     sql: str | None,
     execute_sql: bool,
     result_row_limit: int,
     *,
+    target_connection: str | None = None,
     persist_targeting: bool = False,
     audience_ttl_days: int = 90,
     prompt: str | None = None,
@@ -3335,6 +3399,10 @@ def execute_target_sql(
         return _database_execution_skipped("disabled_by_request")
     if not sql:
         return _database_execution_skipped("sql_result_missing")
+
+    # 외부 실DB(CRMDW/CRMAN/quadmax_sdz) 대상이면 해당 DB에서 실행한다(카운트/샘플만).
+    if target_connection in _EXTERNAL_TARGET_DBS:
+        return _execute_external_target_sql(sql, target_connection, result_row_limit)
 
     try:
         import psycopg

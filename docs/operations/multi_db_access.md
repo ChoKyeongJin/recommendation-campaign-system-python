@@ -6,12 +6,36 @@
 |------|------|------|--------------|
 | `postgres` | PostgreSQL(로컬) | 읽기/쓰기 | (RW) |
 | `quadmax_sdz` | MariaDB | 읽기 전용 | 서버 `SET SESSION TRANSACTION READ ONLY` |
-| `CRMAN` | SQL Server (Customer_Analytics) | 읽기 전용 | 앱 레벨 SELECT 전용 가드(`sql_guard`) |
-| `CRMDW` | SQL Server (smart_quadmax_mart) | 읽기 전용 | 앱 레벨 SELECT 전용 가드(`sql_guard`) |
+| `CRMDW` | SQL Server (Smart_QuadMax_Mart) | 읽기 전용 | 앱 레벨 SELECT 전용 가드(`sql_guard`) |
 
 > SQL Server 는 PostgreSQL/MySQL 과 달리 서버 레벨 read-only 트랜잭션이 없다. 따라서
 > `sql_guard.validate_sql` 로 **SELECT 계열(SELECT/WITH)만** 통과시키는 애플리케이션 가드로
 > 강제한다. INSERT/UPDATE/DELETE/DROP 등은 실행 전에 거부된다.
+
+## 서버별 상세 (실측: 2026-07-21)
+
+각 커넥션이 실제로 어떤 서버·DB를 가리키는지, SQL 방언(dialect)과 함께 정리한다.
+**쿼리 생성 시 대상 커넥션의 방언에 맞춰야 한다** — 특히 행수 제한.
+
+| 커넥션 | 엔진 | 호스트:포트 | 서버명 | DB(카탈로그) | 기본 스키마 | 행수 제한 방언 |
+|--------|------|------------|--------|--------------|------------|----------------|
+| `quadmax_sdz` | MariaDB/MySQL | 58.226.35.74:3306 | — | `quadmax_sdz` (+`quadmax_sdz_mart` 등 다수 스키마) | (DB=스키마) | `... LIMIT n` |
+| `CRMDW` | SQL Server 2012 (SP4) | 58.226.35.75:1433 | `EASYCORE-75` | `Smart_QuadMax_Mart` | `dbo` | `SELECT TOP n ...` |
+
+- `quadmax_sdz` (MariaDB): 분석 마트/원천이 스키마별로 나뉘어 있다. SDZ 계열은 `quadmax_sdz`,
+  마트는 `quadmax_sdz_mart`. 회원 기준정보 복제본 `crm_mb_baseinfo`, 코드 `crm_cm_code` 등을 보유.
+  MySQL 방언이므로 **`LIMIT n`** 사용.
+- `CRMDW` (SQL Server `Smart_QuadMax_Mart`): **본사 원천/마트(DWH)**. 몰/장바구니 ODS와 CRM 원천이
+  여기에 모여 있다 — 예: `dbo.ODS_MALL_OMS_CART`, `dbo.CRM_MB_BASEINFO`, `dbo.CRM_CM_PRODUCT`.
+  본사 데이터 기반 타겟팅 SQL(장바구니·상품·회원 조인)은 **이 커넥션**에서 실행한다.
+  MSSQL 방언이므로 **`SELECT TOP n`**(❌ `LIMIT` 미지원).
+
+> ⚠️ 방언 주의: 행수 제한을 **붙일 경우** MySQL은 `... LIMIT n`, MSSQL은 `SELECT [DISTINCT] TOP n ...`
+> 이어야 한다. `sql_guard.validate_sql(dialect=|table_dialects=)` 가 대상 방언에 맞춰 자동 처리한다.
+>
+> 단, **타겟 오디언스는 전체 결과가 나와야 하므로 행수 제한을 붙이지 않는다**(`validate_sql(default_limit=None)`).
+> 적용: `build_sql_result` 후보 검증과 `_assert_select_only` 모두 `default_limit=None`(SELECT 강제만 수행).
+> 따라서 생성/실행 SQL 에는 LIMIT/TOP 이 없고 `result_row_count` 는 전체 인원을 반영한다.
 
 ## 사용법
 
@@ -27,9 +51,9 @@ rows = db.run_read_query(
     ("VIP",),
 )
 
-# SQL Server (CRMAN / CRMDW)
+# SQL Server (CRMDW)
 rows = db.run_read_query(
-    "CRMAN",
+    "CRMDW",
     "SELECT TOP 100 customer_id, ltv FROM dbo.customer_summary WHERE region = %s",
     ("Seoul",),
 )
@@ -47,7 +71,7 @@ with db.quadmax_connection() as conn:      # 세션이 READ ONLY 로 시작됨
         cur.execute("SELECT ...")
         rows = cur.fetchall()
 
-with db.crman_connection() as conn:        # SQL Server
+with db.crmdw_connection() as conn:        # SQL Server
     cur = conn.cursor()
     cur.execute("SELECT ...")
     rows = cur.fetchall()
@@ -68,8 +92,8 @@ ID 집합을 **합집합/교집합/차집합**으로 결합한다. `run_set_targ
 import db_connections as db
 
 result = db.run_set_targeting([
-    # 1) 기저 집합: CRMAN 에서 VIP 고객
-    {"db": "CRMAN", "sql": "SELECT customer_id FROM dbo.vip WHERE grade='A'", "key": "customer_id"},
+    # 1) 기저 집합: CRMDW 에서 VIP 고객
+    {"db": "CRMDW", "sql": "SELECT customer_id FROM dbo.vip WHERE grade='A'", "key": "customer_id"},
     # 2) 교집합: quadmax_sdz 에서 최근 구매자
     {"db": "quadmax_sdz", "op": "intersect",
      "sql": "SELECT user_id FROM orders WHERE ordered_at >= %s", "params": ("2026-01-01",), "key": "user_id"},
@@ -105,12 +129,11 @@ QUADMAX_DB_NAME=quadmax_sdz
 QUADMAX_DB_USER=quadmax
 QUADMAX_DB_PASSWORD=...
 
-# SQL Server 공용(CRMAN/CRMDW 는 DB명만 다름, 읽기 전용)
+# SQL Server (CRMDW, 읽기 전용)
 MSSQL_HOST=58.226.35.75
 MSSQL_PORT=1433
 MSSQL_USER=sa
 MSSQL_PASSWORD=...
-CRMAN_DB_NAME=Customer_Analytics
 CRMDW_DB_NAME=smart_quadmax_mart
 ```
 
@@ -125,9 +148,17 @@ docker compose build python api
 docker compose up -d
 ```
 
-## 현재 상태 (2026-07-20)
+## 현재 상태 (2026-07-21)
 
 - `quadmax_sdz`: 조회 + 읽기전용 강제(앱/서버) 검증 완료.
-- `CRMAN` / `CRMDW`: 드라이버·전송(`encrypt=false`)은 정상이나 `sa` 로그인이 서버에서 거부됨
-  (`18456 Login failed`). 올바른 `MSSQL_PASSWORD` 로 교체하면 동작한다.
-- NL2SQL 타겟팅 파이프라인에는 아직 연결하지 않았다(직접 `run_read_query` 호출로 사용).
+- `CRMDW`: `MSSQL_PASSWORD` 교체 후 **로그인/조회 정상**(이전 `18456 Login failed` 해소).
+  MCP 설정(`.mcp.json`) 변경 후에는 `/mcp reconnect` 로 서버를 재연결해야 반영된다.
+- 본사 타겟팅 SQL의 3개 테이블(`ODS_MALL_OMS_CART`/`CRM_MB_BASEINFO`/`CRM_CM_PRODUCT`)은 모두
+  `CRMDW`(`Smart_QuadMax_Mart`)의 `dbo` 스키마에 존재함을 실측 확인.
+- **앱 실행 라우팅(카운트/샘플)**: `/target-sql` 이 생성한 타겟 SQL 은 `build_sql_result` 가
+  `schema_catalog.json` 의 `database` 로 `target_connection` 을 판별해 api_response 로 넘기고,
+  `execute_target_sql(target_connection=)` 가 외부 RO DB(CRMDW 등)면 `run_read_query` 로 실행해
+  `result_row_count`/`target_customer_count`/샘플을 채운다. 로컬 테이블이면 기존 postgres 경로.
+  세그먼트 구성·오디언스 저장은 로컬 postgres 스키마 전용이라 외부 DB 대상일 때는 생략된다.
+- 배포: 코드 변경 후 `docker compose restart api` 로 반영 안 될 때가 있어
+  `docker compose up -d --force-recreate --no-deps api` 로 재생성해야 확실히 로드된다.

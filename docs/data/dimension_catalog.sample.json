@@ -10,37 +10,10 @@
   "value_column_convention": "DS_SQL 결과의 첫 컬럼=코드, 둘째 컬럼=이름",
   "dbms_connection_map": {
     "CRMDW": "CRMDW",
-    "CRMAN": "CRMAN",
     "QUADMAX_SDZ": "quadmax_sdz"
   },
-  "dimension_count": 141,
+  "dimension_count": 139,
   "dimensions": [
-    {
-      "dimension_id": "moon_test",
-      "prompt_label": "moon_test",
-      "prmp_kwd": "@@moon_test@@",
-      "prmp_kwd_nm": "moon_test",
-      "dbms_id": "CRMAN",
-      "connection": "CRMAN",
-      "operator": "IN",
-      "synonyms": [],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": "SELECT MODEL AS CODE, MODEL AS NAME FROM Smart_QuadMax_Mart.dbo.CAR_INFO GROUP BY MODEL ORDER BY 1"
-    },
-    {
-      "dimension_id": "TEST3",
-      "prompt_label": "Dimension_Test",
-      "prmp_kwd": "TEST3",
-      "prmp_kwd_nm": "Dimension_Test",
-      "dbms_id": "CRMAN",
-      "connection": "CRMAN",
-      "operator": "IN",
-      "synonyms": [],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": "select * from test"
-    },
     {
       "dimension_id": "SMS수신동의여부",
       "prompt_label": "SMS수신동의여부",

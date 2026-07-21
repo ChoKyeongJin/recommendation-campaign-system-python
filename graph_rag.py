@@ -24,7 +24,15 @@ from qdrant_client import QdrantClient
 
 from formula_engine import DEFAULT_METRIC_LEXICON_PATH, compile_formula_ast, parse_computed_metrics_from_query, validate_formula_ast
 from set_expression_engine import parse_set_expressions_from_query
-from sql_guard import DEFAULT_LIMIT, DEFAULT_SCHEMA_PATH, load_allowed_tables, validate_sql
+from sql_guard import (
+    DEFAULT_LIMIT,
+    DEFAULT_SCHEMA_PATH,
+    infer_target_connection,
+    load_allowed_tables,
+    load_table_databases,
+    load_table_dialects,
+    validate_sql,
+)
 
 
 DEFAULT_DATA_PATH = Path("docs/data/rag_knowledge_base.json")
@@ -3085,6 +3093,8 @@ def build_recommendation_api_response(
         "query": query,
         "intent": query_plan.get("intent"),
         "sql": sql_result.get("sql"),
+        "target_connection": sql_result.get("target_connection"),
+        "target_dialect": sql_result.get("target_dialect"),
         "message": message,
         "missing_input_conditions": sql_result.get("missing_input_conditions", []),
         "clarification_questions": sql_result.get("clarification_questions", []),
@@ -3140,12 +3150,20 @@ def build_sql_result(
         }
 
     allowed_tables = load_allowed_tables(schema_path)
+    table_dialects = load_table_dialects(schema_path)
+    table_databases = load_table_databases(schema_path)
     template_candidate = build_sql_template_candidate(query_plan, condition_tokens)
     candidates = [template_candidate] if template_candidate is not None else []
 
     validated_candidates = []
     for candidate in candidates:
-        validation = validate_sql(candidate["sql"], allowed_tables=allowed_tables, default_limit=default_limit)
+        # 타겟 오디언스는 전체가 나와야 하므로 행수 제한(LIMIT/TOP)을 붙이지 않는다.
+        validation = validate_sql(
+            candidate["sql"],
+            allowed_tables=allowed_tables,
+            default_limit=None,
+            table_dialects=table_dialects,
+        )
         coverage = validate_sql_condition_coverage(candidate["sql"], required_conditions)
         intent_scope = validate_sql_intent_scope(candidate, query_plan)
         unmentioned_conditions = validate_unmentioned_sql_conditions(candidate["sql"], query_plan)
@@ -3166,9 +3184,14 @@ def build_sql_result(
         selected = validated_candidates[0]
 
     selected_sql = None
+    target_connection = None
+    target_dialect = None
     if selected is not None and selected["is_eligible"]:
         validation = selected["validation"]
         selected_sql = validation["masked_sql"] if validation["sensitive_columns"] else validation["safe_sql"]
+        # 이 SQL 을 실제 어느 DB에서 실행해야 하는지(외부 실DB면 커넥션명, 로컬이면 None) 판별.
+        target_connection = infer_target_connection(selected.get("tables", []), table_databases)
+        target_dialect = validation.get("dialect")
 
     failure_reason = None
     if selected is None:
@@ -3185,6 +3208,8 @@ def build_sql_result(
 
     return {
         "sql": selected_sql,
+        "target_connection": target_connection,
+        "target_dialect": target_dialect,
         "selected": selected,
         "candidates": validated_candidates,
         "candidate_count": len(validated_candidates),

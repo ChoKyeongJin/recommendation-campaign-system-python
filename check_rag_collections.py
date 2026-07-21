@@ -89,22 +89,28 @@ def collection_status(
 def check_collections(args: argparse.Namespace) -> dict[str, Any]:
     client = QdrantClient(url=args.url, api_key=args.api_key)
     clean_text = not args.no_clean_text
-    collections = [
-        collection_status(
-            client=client,
-            collection_name=args.user_collection,
-            data_path=args.user_data,
-            clean_text=clean_text,
-            sample_limit=args.sample_limit,
-        ),
+    collections = []
+    # 독립 campaign_user_rag_nodes 컬렉션은 은퇴 상태다(런타임은 knowledge 컬렉션만 조회하고
+    # campaign/user 노드는 거기 병합됨). 소스 데이터 파일이 없으면 조용히 건너뛴다.
+    if args.user_data.exists():
+        collections.append(
+            collection_status(
+                client=client,
+                collection_name=args.user_collection,
+                data_path=args.user_data,
+                clean_text=clean_text,
+                sample_limit=args.sample_limit,
+            )
+        )
+    collections.append(
         collection_status(
             client=client,
             collection_name=args.knowledge_collection,
             data_path=args.knowledge_data,
             clean_text=clean_text,
             sample_limit=args.sample_limit,
-        ),
-    ]
+        )
+    )
     return {
         "qdrant_url": args.url,
         "is_healthy": all(collection["is_healthy"] for collection in collections),

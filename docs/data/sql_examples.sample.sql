@@ -2,7 +2,6 @@
 -- 라우팅: 제목의 [DB] 태그가 어느 연결에서 실행할지를 뜻한다.
 --   - [quadmax_sdz] = MariaDB(quadmax_sdz). MySQL 방언. 타겟리스트 원본.
 --   - [CRMDW]       = SQL Server smart_quadmax_mart. 기본 DB의 dbo 이름을 그대로 쓴다. T-SQL 방언.
---   - [CRMAN]       = SQL Server Customer_Analytics. 테이블은 Customer_Analytics.dbo.<TABLE> 3-part 이름으로 참조. T-SQL 방언.
 -- 모든 실DB 는 읽기 전용(SELECT/WITH 만). 각 예시는 세미콜론으로 끝나는 단일 문장이어야 한다.
 --
 -- 승인된 사용 테이블 목록:
@@ -10,11 +9,11 @@
 --   [CRMDW]       CRM_MB_BASEINFO, CRM_CM_ADDRESS, CRM_CM_OFFSHOP
 --   [CRMDW]       Z_CAMPAIGN, Z_CAMP_CELL, Z_CAMP_MBR, MCS_CAMP_MBR_RSPN_FT
 --   [CRMDW]       ODS_MALL_OMS_CART, CRM_CM_PRODUCT
---   [CRMAN]       Customer_Analytics.dbo.CRM_SL_ORDER_HEADER, CRM_SL_ORDER_DETAIL, CRM_CM_PRODUCT
+--   [CRMDW]       CRM_SL_ORDERHEADERMALL, CRM_SL_ORDERDETAILMALL (몰 주문/구매), CRM_SL_ORDERHEADERALL/DETAILALL (통합)
 --
 -- 날짜형 다수는 nvarchar(8) 'YYYYMMDD' 문자열이라 사전식 비교, 또는 CONVERT(varchar(8), DATEADD(...), 112) 를 쓴다.
--- 회원번호 도메인이 소스별로 다르다: CRMDW=MEMBER_NO(bigint)/MBR_NO(varchar), CRMAN=MBR_NO(nvarchar).
---   교차 DB 조인은 별도 매핑이 필요하므로 각 예시는 단일 DB로 유지한다.
+-- 회원키는 CRMDW MEMBER_NO(bigint)로 통일한다: 장바구니 CART_ID→CRM_MB_BASEINFO.MEMBER_ID→MEMBER_NO,
+--   주문 CRM_SL_ORDERHEADERMALL.MEMBER_NO(bigint)와 동일 도메인이라 단일 DB(CRMDW) 조인/anti-join 가능.
 
 -- ============================================================
 -- 그룹 1. 타겟리스트 (quadmax_sdz / MariaDB)
@@ -204,34 +203,6 @@ WHERE CONVERT(CHAR(8), A.INS_DT, 112)
 GROUP BY B.MEMBER_NO
 HAVING SUM(A.SALE_PRICE) BETWEEN 50000 AND 500000;
 
--- ============================================================
--- 그룹 5. 주문 (CRMAN / Customer_Analytics)
--- ============================================================
-
--- 19. [CRMAN] 최근 90일 주문 회원별 주문 건수/결제금액 합계
-SELECT MBR_NO, COUNT(*) AS order_cnt, SUM(PAYMENT_AMT) AS total_payment
-FROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER
-WHERE ORDER_DATE >= CONVERT(varchar(8), DATEADD(DAY, -90, GETDATE()), 112)
-GROUP BY MBR_NO
-ORDER BY total_payment DESC;
-
--- 20. [CRMAN] 최근 30일 판매 상위 상품(주문상세 + 상품 조인)
-SELECT TOP 20 d.PROD_CD, p.PROD_NM, SUM(d.ORDER_QTY) AS order_qty, SUM(d.SALES_AMT) AS sales_amt
-FROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER h
-JOIN Customer_Analytics.dbo.CRM_SL_ORDER_DETAIL d ON d.ORDER_ID = h.ORDER_ID
-JOIN Customer_Analytics.dbo.CRM_CM_PRODUCT p ON p.PROD_CD = d.PROD_CD
-WHERE h.ORDER_DATE >= CONVERT(varchar(8), DATEADD(DAY, -30, GETDATE()), 112)
-GROUP BY d.PROD_CD, p.PROD_NM
-ORDER BY sales_amt DESC;
-
--- 21. [CRMAN] 특정 상품 대분류(P01)를 최근 6개월 구매한 회원 목록
-SELECT DISTINCT h.MBR_NO
-FROM Customer_Analytics.dbo.CRM_SL_ORDER_HEADER h
-JOIN Customer_Analytics.dbo.CRM_SL_ORDER_DETAIL d ON d.ORDER_ID = h.ORDER_ID
-JOIN Customer_Analytics.dbo.CRM_CM_PRODUCT p ON p.PROD_CD = d.PROD_CD
-WHERE p.PROD_CATEGORY_CD = 'P01'
-  AND h.ORDER_DATE >= CONVERT(varchar(8), DATEADD(MONTH, -6, GETDATE()), 112);
-
 -- 22. [CRMDW] 장바구니에 특정 상품브랜드(BRAND_ID)를 담은 회원 추출(대상군)
 -- 주: 상품브랜드는 '상품브랜드' 디멘션(거래브랜드)으로 브랜드명 -> BRAND_ID 코드로 변환해 필터한다. 예: 포멜카멜리 = 'A'.
 --     장바구니(A)에 회원기본정보(B)를 CART_ID=MEMBER_ID로, 상품마스터(C)를 PRODUCT_ID로 조인하고 C.BRAND_ID로 브랜드를 건다.
@@ -243,3 +214,52 @@ FROM ODS_MALL_OMS_CART A WITH(NOLOCK)
        ON A.PRODUCT_ID = C.PRODUCT_ID
 WHERE A.KEEP_YN = 'Y'
   AND C.BRAND_ID IN ('A');
+
+-- ============================================================
+-- 그룹 6. 장바구니 이탈 / 미결제 (재구매·구매전환 유도) - CRMDW
+-- ============================================================
+
+-- 23. [CRMDW] 장바구니 보관 중이나 최근 90일 몰 주문이 없는 회원(장바구니 이탈=담고 결제 안 함, 구매전환/재구매 유도 대상)
+-- 주: 장바구니(A, KEEP_YN='Y')에 회원기본정보(B)를 CART_ID=MEMBER_ID로 조인해 MEMBER_NO를 얻고,
+--     몰 주문헤더 CRM_SL_ORDERHEADERMALL 에 같은 MEMBER_NO 주문이 없으면(NOT EXISTS) 미결제 이탈로 본다. 모두 CRMDW라 단일 쿼리 anti-join.
+--     기간(-90일)은 선택. 몰 구매여부는 CRM_SL_ORDERHEADERMALL(적재됨) 기준이며 ODS_MALL_OMS_ORDER(0행)는 쓰지 않는다.
+SELECT DISTINCT B.MEMBER_NO AS CUST_ID
+FROM ODS_MALL_OMS_CART A WITH(NOLOCK)
+     INNER JOIN CRM_MB_BASEINFO B WITH(NOLOCK)
+       ON A.CART_ID = B.MEMBER_ID
+WHERE A.KEEP_YN = 'Y'
+  AND NOT EXISTS (
+        SELECT 1
+        FROM CRM_SL_ORDERHEADERMALL O WITH(NOLOCK)
+        WHERE O.MEMBER_NO = B.MEMBER_NO
+          AND O.ORDER_DATE >= CONVERT(varchar(8), DATEADD(DAY, -90, GETDATE()), 112)
+      );
+
+-- 24. [CRMDW] 장바구니 보관 중이나 몰 주문 이력이 전혀 없는 회원(순수 미구매자)
+-- 주: 예시 23에서 기간 조건을 뺀 형태. 몰에서 한 번도 결제한 적 없는 장바구니 보관 회원. 주문 데이터가 과거까지만 있을 때 안전한 정의.
+SELECT DISTINCT B.MEMBER_NO AS CUST_ID
+FROM ODS_MALL_OMS_CART A WITH(NOLOCK)
+     INNER JOIN CRM_MB_BASEINFO B WITH(NOLOCK)
+       ON A.CART_ID = B.MEMBER_ID
+WHERE A.KEEP_YN = 'Y'
+  AND NOT EXISTS (
+        SELECT 1
+        FROM CRM_SL_ORDERHEADERMALL O WITH(NOLOCK)
+        WHERE O.MEMBER_NO = B.MEMBER_NO
+      );
+
+-- 25. [CRMDW] 특정 상품을 장바구니에 담았으나 아직 그 상품을 사지 않은 회원(상품 단위 재구매·구매 유도)
+-- 주: 장바구니 라인(A)의 PRODUCT_ID 기준으로, 같은 회원이 같은 상품을 몰에서 산 적 없으면(CRM_SL_ORDERDETAILMALL NOT EXISTS) 대상.
+--     대상 상품은 CRM_CM_PRODUCT.PRODUCT_ID 로 지정(브랜드로 걸려면 CRM_CM_BRAND.BRAND_ID 사용). 아래는 특정 PRODUCT_ID 예시.
+SELECT DISTINCT B.MEMBER_NO AS CUST_ID
+FROM ODS_MALL_OMS_CART A WITH(NOLOCK)
+     INNER JOIN CRM_MB_BASEINFO B WITH(NOLOCK)
+       ON A.CART_ID = B.MEMBER_ID
+WHERE A.KEEP_YN = 'Y'
+  AND A.PRODUCT_ID = 'P0001'
+  AND NOT EXISTS (
+        SELECT 1
+        FROM CRM_SL_ORDERDETAILMALL D WITH(NOLOCK)
+        WHERE D.MEMBER_NO = B.MEMBER_NO
+          AND D.PRODUCT_ID = A.PRODUCT_ID
+      );
