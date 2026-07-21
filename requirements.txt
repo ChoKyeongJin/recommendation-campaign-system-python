@@ -15,6 +15,7 @@ tiktoken
 
 graphrag
 networkx
+pytest
 python-dotenv
 pandas
 numpy
