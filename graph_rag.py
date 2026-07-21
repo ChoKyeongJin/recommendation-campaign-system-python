@@ -4626,14 +4626,9 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
 
     purchase_object = target_user.get("purchase_object")
     if purchase_object:
-        conditions.append(
-            _condition(
-                "target_user.purchase_object",
-                purchase_object,
-                [purchase_object, "purchased:%"],
-                all_terms=["behavior"],
-            )
-        )
+        # 상품 구매 이력 타겟(purchase_history_targets)은 상품값을 SQL 리터럴(LIKE N'%값%')로 직접 담으므로
+        # 값 문자열이 SQL 에 존재하면 커버된 것으로 본다(데모 fallback 의 behavior LIKE '%값%' 도 동일 충족).
+        conditions.append(_condition("target_user.purchase_object", purchase_object, [purchase_object]))
 
     inactivity_period = target_user.get("inactivity_period")
     if isinstance(inactivity_period, dict) and isinstance(inactivity_period.get("sql_interval"), str):
