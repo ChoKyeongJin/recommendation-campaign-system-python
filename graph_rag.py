@@ -3409,8 +3409,12 @@ def build_recommendation_api_response(
     prompt_normalization: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     unsupported_labels = sql_result.get("unsupported_condition_labels", [])
+    dropped_labels = sql_result.get("dropped_condition_labels", [])
     if answer_response.get("content"):
         message = answer_response["content"]
+    elif sql_result.get("is_success") and dropped_labels:
+        # 부분 추출: 되는 조건으로 뽑되 실DB 미지원이라 뺀 조건을 함께 고지한다.
+        message = "검증 SQL이 준비되었습니다. 단, 다음 조건은 실DB 타겟 추출로 지원되지 않아 제외했습니다: " + ", ".join(dropped_labels) + "."
     elif sql_result.get("is_success"):
         message = "Query Plan 조건을 만족하는 검증 SQL이 준비되었습니다."
     elif sql_result.get("failure_reason") == "query_plan_required_conditions_missing":
@@ -3428,6 +3432,11 @@ def build_recommendation_api_response(
         "prompt_summary": normalization.get("summary", ""),
         "prompt_corrections": normalization.get("corrections", []),
         "prompt_normalization_mode": normalization.get("mode"),
+        "prompt_scopes": {
+            "mode": query_plan.get("retrieval", {}).get("scope_mode"),
+            "targeting": query_plan.get("retrieval", {}).get("targeting_query"),
+            "channel": query_plan.get("retrieval", {}).get("channel_query"),
+        },
         "intent": query_plan.get("intent"),
         "sql": sql_result.get("sql"),
         "target_connection": sql_result.get("target_connection"),
@@ -3437,6 +3446,8 @@ def build_recommendation_api_response(
         "clarification_questions": sql_result.get("clarification_questions", []),
         "unsupported_conditions": sql_result.get("unsupported_conditions", []),
         "unsupported_condition_labels": unsupported_labels,
+        "dropped_conditions": sql_result.get("dropped_conditions", []),
+        "dropped_condition_labels": dropped_labels,
         "answer_mode": answer_response.get("mode"),
         "answer_failure_reason": answer_response.get("failure_reason"),
         "failure_reason": sql_result.get("failure_reason"),
@@ -3503,7 +3514,10 @@ def build_sql_result(
             default_limit=None,
             table_dialects=table_dialects,
         )
-        coverage = validate_sql_condition_coverage(candidate["sql"], required_conditions)
+        # 부분 추출 candidate 가 실DB 미지원이라 뺀 조건은 커버리지 요구에서 제외한다(대신 응답에 고지).
+        dropped_paths = {path.split(":")[0] for path in candidate.get("dropped_conditions", [])}
+        effective_required = [condition for condition in required_conditions if condition["path"] not in dropped_paths]
+        coverage = validate_sql_condition_coverage(candidate["sql"], effective_required)
         intent_scope = validate_sql_intent_scope(candidate, query_plan)
         unmentioned_conditions = validate_unmentioned_sql_conditions(candidate["sql"], query_plan)
         validated_candidates.append(
@@ -3555,6 +3569,10 @@ def build_sql_result(
         if failure_reason == "sql_guard_failed" and unsupported_conditions:
             failure_reason = "real_db_unsupported_conditions"
 
+    # 부분 추출로 SQL 이 나온 경우, 실DB 미지원이라 뺀 조건을 고지한다(성공이지만 일부 조건 제외).
+    dropped_conditions = selected.get("dropped_conditions", []) if selected else []
+    dropped_condition_labels = selected.get("dropped_condition_labels", []) if selected else []
+
     return {
         "sql": selected_sql,
         "target_connection": target_connection,
@@ -3569,6 +3587,8 @@ def build_sql_result(
         "clarification_questions": [],
         "unsupported_conditions": unsupported_conditions,
         "unsupported_condition_labels": unsupported_condition_labels,
+        "dropped_conditions": dropped_conditions,
+        "dropped_condition_labels": dropped_condition_labels,
         "is_success": selected_sql is not None,
         "failure_reason": failure_reason,
     }
