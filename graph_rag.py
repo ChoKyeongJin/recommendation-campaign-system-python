@@ -4930,6 +4930,13 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
     api_response = result.get("api_response", {})
     target_user = query_plan.get("target_user", {})
     retrieval = query_plan.get("retrieval", {})
+    prompt_normalization = result.get("prompt_normalization", {})
+    # 정규화 프롬프트를 타겟팅/채널 절로 나눈 결과(검색·그래프 스코프의 근거).
+    prompt_scopes = {
+        "mode": retrieval.get("scope_mode"),
+        "targeting": retrieval.get("targeting_query"),
+        "channel": retrieval.get("channel_query"),
+    }
 
     def _hit_rows(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
         return [
@@ -4953,6 +4960,7 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
             "seed_score": node.get("seed_score"),
             "is_seed": node.get("seed_score") is not None,
             "reached_via": node.get("reasons", []),
+            "path": node.get("path", []),
         }
         for index, node in enumerate(result.get("graph_context", []))
     ]
@@ -4979,6 +4987,8 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
     return {
         "query": result.get("query"),
         "collection": result.get("collection"),
+        "retrieval_scope": result.get("retrieval_scope"),
+        "prompt_scopes": prompt_scopes,
         "stages": [
             {
                 "step": 1,
@@ -4986,6 +4996,13 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
                 "description": "고객이 입력한 문장을 시스템이 쓰는 표준 용어·검색어·타겟 조건으로 바꾸는 단계입니다.",
                 "tech_name": "의미 추론 (Query Planning / Normalization)",
                 "intent": query_plan.get("intent"),
+                "original_prompt": prompt_normalization.get("original", result.get("query")),
+                "normalized_prompt": prompt_normalization.get("normalized", result.get("query")),
+                # 정규화 프롬프트를 타겟팅(오디언스)/채널(발송·메시지) 절로 분리한 결과.
+                "prompt_scopes": prompt_scopes,
+                "applied_scope": result.get("retrieval_scope"),
+                "targeting_terms": retrieval.get("targeting_terms", []),
+                "channel_terms": retrieval.get("channel_terms", []),
                 "matched_terms": query_plan.get("matched_terms", []),
                 "semantic_resolutions": query_plan.get("semantic_resolutions", []),
                 "target_user": {key: value for key, value in target_user.items() if value not in (None, [], {})},
