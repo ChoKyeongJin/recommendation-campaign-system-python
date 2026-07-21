@@ -4087,6 +4087,11 @@ def build_sql_template_candidate(query_plan: dict[str, Any], condition_tokens: l
                 ]
             )
             return _sql_candidate("sql_template:cart_repurchase_targets", "장바구니 미결제 재구매 유도 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template")
+        purchase_candidate = build_purchase_history_targets_sql_candidate(query_plan)
+        if purchase_candidate is not None:
+            # "…를 구매/구입한 고객" 은 실주문(CRM_SL_ORDERDETAILMALL) 조인으로 상품 구매 이력 회원을 뽑는다.
+            # 회원 속성(성별/연령/등급 등)이 함께 있으면 CRM_MB_BASEINFO 술어로 같은 SQL 에 결합한다.
+            return purchase_candidate
         member_candidate = build_member_targets_sql_candidate(query_plan)
         if member_candidate is not None:
             # 성별/연령/등급/휴면/장기미접속/앱 등 회원 속성 타겟은 실회원 테이블(CRMDW CRM_MB_BASEINFO)로 뽑는다.
@@ -4112,6 +4117,11 @@ def build_sql_template_candidate(query_plan: dict[str, Any], condition_tokens: l
         )
         return _sql_candidate("sql_template:recommend_campaign", "의도별 캠페인 추천 SQL 템플릿", 1.0, sql, _template_tables(sql), "sql_template")
     if intent == "find_user_segment":
+        # "…를 구매/구입한 고객 찾아줘" 처럼 캠페인 발송이 아니라 세그먼트 조회여도 상품 구매 이력은
+        # 동일한 실주문 조인으로 실회원 오디언스를 추출한다(recommend_campaign 과 같은 템플릿).
+        purchase_candidate = build_purchase_history_targets_sql_candidate(query_plan)
+        if purchase_candidate is not None:
+            return purchase_candidate
         sql = assemble_sql_from_template(
             select_columns=["u.user_id", "u.age", "u.gender", "u.region", "u.lifecycle", "u.price_sensitivity"],
             base_from="FROM users u",
@@ -4276,7 +4286,78 @@ def build_member_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, 
             "WHERE " + "\n  AND ".join(where_clauses),
         ]
     )
-    return _sql_candidate("sql_template:member_targets", "회원 속성 타겟 추출 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template")
+    candidate = _sql_candidate("sql_template:member_targets", "회원 속성 타겟 추출 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template")
+    # 실DB 미지원이라 SQL 에서 뺀 조건(부분 추출). 커버리지 검증에서 제외하고 응답에 고지한다.
+    candidate["dropped_conditions"] = compiled["unsupported"]
+    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in compiled["unsupported"]]
+    return candidate
+
+
+# 상품 구매 이력 매칭 대상 컬럼(CRM_CM_PRODUCT). 카테고리 계층~상품명~브랜드명까지 넓게 LIKE 매칭해
+# "기저귀"(카테고리), "하기스"(브랜드), 특정 상품명 등 어떤 표현으로 말해도 재현율을 확보한다.
+_PURCHASE_PRODUCT_MATCH_COLUMNS = (
+    "CATEGORY",
+    "CATEGORYL_NAME",
+    "CATEGORYM_NAME",
+    "CATEGORYS_NAME",
+    "BRAND_NAME",
+    "PRODUCT_NAME",
+)
+
+
+def _sql_nlike_contains(column: str, term: str) -> str:
+    """유니코드 부분일치 LIKE 술어(N'%term%'). term 은 _sanitize_purchase_object 로 정제돼 홑따옴표가 없으나
+    방어적으로 이스케이프한다. N 접두어는 tsql/mysql 모두 유효해 한글 리터럴을 안전하게 비교한다."""
+    return f"{column} LIKE N'%{term.replace(chr(39), chr(39) * 2)}%'"
+
+
+def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """실주문 상세(CRM_SL_ORDERDETAILMALL) → 상품(CRM_CM_PRODUCT) → 회원(CRM_MB_BASEINFO) 조인으로
+    특정 상품/카테고리를 구매한 회원을 추출한다.
+
+    CRM_MB_BASEINFO 단독으로는 표현 못 하는 "상품 구매 이력"을 실주문 테이블 조인으로 해결한다.
+    성별/연령/등급/휴면 등 회원 속성은 compile_member_target_conditions 로 그대로 재사용해 같은 SQL 에
+    AND 결합하므로, "40대 여성 중 기저귀 구매자" 같은 조합도 하나의 추출 SQL 이 된다.
+    """
+    purchase_object = query_plan.get("target_user", {}).get("purchase_object")
+    if not isinstance(purchase_object, str) or not purchase_object:
+        return None
+
+    compiled = compile_member_target_conditions(query_plan)
+    product_match = "(" + " OR ".join(
+        _sql_nlike_contains("P." + column, purchase_object) for column in _PURCHASE_PRODUCT_MATCH_COLUMNS
+    ) + ")"
+    where_clauses = [product_match, *compiled["predicates"]]
+    # 회원상태를 직접 지정한 타겟(휴면 등)이 아니면 정상 회원으로 한정한다(탈퇴/휴면 제외).
+    if not compiled["forces_state"]:
+        where_clauses.append("B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'")
+    where_clauses = _unique_strings(where_clauses)
+
+    select_columns = ["DISTINCT B.MEMBER_NO AS CUST_ID", "B.EMART_GRADE_CD AS member_grade"]
+    if compiled["labels"]:
+        select_columns.append(_sql_quote(",".join(compiled["labels"])) + " AS segment_label")
+    objective = query_plan.get("campaign_constraints", {}).get("objective")
+    if objective:
+        select_columns.append(_sql_quote(objective) + " AS objective")
+
+    sql = "\n".join(
+        [
+            "SELECT " + ", ".join(select_columns),
+            "FROM CRM_SL_ORDERDETAILMALL D",
+            "     INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID",
+            "     INNER JOIN CRM_MB_BASEINFO B ON D.MEMBER_NO = B.MEMBER_NO",
+            "WHERE " + "\n  AND ".join(where_clauses),
+        ]
+    )
+    candidate = _sql_candidate(
+        "sql_template:purchase_history_targets", "상품 구매 이력 타겟 추출 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template"
+    )
+    # purchase_object 는 이 템플릿(상품 LIKE)이 실제로 커버하므로 dropped(미고지)에서 제외한다.
+    # 회원 속성 외 다른 미지원 조건(관심사 등)이 있으면 그것만 부분추출 고지 대상으로 남긴다.
+    dropped = [path for path in compiled["unsupported"] if path != "target_user.purchase_object"]
+    candidate["dropped_conditions"] = dropped
+    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]
+    return candidate
 
 
 def _should_use_cart_repurchase_template(query_plan: dict[str, Any]) -> bool:
