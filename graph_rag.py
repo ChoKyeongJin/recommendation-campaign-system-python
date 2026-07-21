@@ -24,7 +24,15 @@ from qdrant_client import QdrantClient
 
 from formula_engine import DEFAULT_METRIC_LEXICON_PATH, compile_formula_ast, parse_computed_metrics_from_query, validate_formula_ast
 from set_expression_engine import parse_set_expressions_from_query
-from sql_guard import DEFAULT_LIMIT, DEFAULT_SCHEMA_PATH, load_allowed_tables, validate_sql
+from sql_guard import (
+    DEFAULT_LIMIT,
+    DEFAULT_SCHEMA_PATH,
+    infer_target_connection,
+    load_allowed_tables,
+    load_table_databases,
+    load_table_dialects,
+    validate_sql,
+)
 
 
 DEFAULT_DATA_PATH = Path("docs/data/rag_knowledge_base.json")
@@ -39,8 +47,45 @@ DEFAULT_MESSAGE_POLICY_PATH = Path(os.getenv("GRAPH_RAG_MESSAGE_POLICY", "docs/p
 DEFAULT_RAG_LLM_LOG_DIR = Path(os.getenv("RAG_LLM_LOG_DIR", "logs/rag_llm"))
 
 GENDER_TERMS = {"male", "female"}
-LIFECYCLE_TERMS = {"new_user", "inactive_90d", "inactive_180d", "dormant", "vip", "app_user"}
+LIFECYCLE_TERMS = {"new_user", "inactive_90d", "inactive_180d", "dormant", "vip", "app_user", "welcome_grade", "family_grade", "silver_grade", "gold_grade"}
 CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "subscription", "awareness"}
+# ── 실회원(CRM_MB_BASEINFO) 타겟 속성 레지스트리 ──────────────────────────────
+# recommend_campaign 의 타겟을 데모 스키마(users/campaigns) 대신 실회원 테이블로 추출하기 위한
+# "조건 -> 실컬럼 술어" 매핑의 단일 출처. 새 속성/값 지원은 코드 분기가 아니라 여기에 항목만 추가하면
+# 되고, 조합은 compile_member_target_conditions 가 자동 처리한다(포함/제외/연령 등 임의 조합).
+#
+# MEMBER_EQ_FILTERS: canonical 값 -> (범주, 실컬럼, 저장값). 포함은 `=`, 제외는 `<>` 로 자동 생성.
+#   저장값은 코드도메인 접두어를 포함한다(실DB 조회로 확인: GENDER_CD.FEMALE / MEM_GRADE_CD.VIP /
+#   MEMBER_STATE_CD.SLEEP / DEVICE_TYPE_CD.APP). 범주 state 는 회원상태 직접 지정(기본 NORMAL 한정 해제).
+# MEMBER_ACTIVITY_FILTERS: canonical -> 미접속 일수. LAST_LOGIN_DATE(YYYYMMDD 문자열) 사전식 비교.
+#   범위 조건이라 제외(부정)는 의미가 모호해 미지원(→ fallback).
+# new_user 는 REG_TYPE_CD.NEW 가 전체의 96%라 무의미하고 기간 기준이 미정의라 미매핑(→ fallback).
+MEMBER_EQ_FILTERS: dict[str, tuple[str, str, str]] = {
+    "female": ("gender", "B.GENDER_CD", "GENDER_CD.FEMALE"),
+    "male": ("gender", "B.GENDER_CD", "GENDER_CD.MALE"),
+    # 회원 등급 EMART_GRADE_CD (실DB 실측 정상회원: SILVER>FAMILY>WELCOME>GOLD>VIP 순 규모).
+    # 같은 컬럼(grade)에 값이 여러 개면 compile_member_target_conditions 가 IN 으로 묶는다(OR).
+    "welcome_grade": ("grade", "B.EMART_GRADE_CD", "MEM_GRADE_CD.WELCOME"),
+    "family_grade": ("grade", "B.EMART_GRADE_CD", "MEM_GRADE_CD.FAMILY"),
+    "silver_grade": ("grade", "B.EMART_GRADE_CD", "MEM_GRADE_CD.SILVER"),
+    "gold_grade": ("grade", "B.EMART_GRADE_CD", "MEM_GRADE_CD.GOLD"),
+    "vip": ("grade", "B.EMART_GRADE_CD", "MEM_GRADE_CD.VIP"),
+    "dormant": ("state", "B.MEMBER_STATE_CD", "MEMBER_STATE_CD.SLEEP"),
+    "app_user": ("channel", "B.LAST_LOGIN_CHANNEL", "DEVICE_TYPE_CD.APP"),
+}
+MEMBER_ACTIVITY_FILTERS: dict[str, int] = {"inactive_90d": 90, "inactive_180d": 180}
+
+
+def _member_eq_predicate(canonical: str, negate: bool = False) -> str | None:
+    entry = MEMBER_EQ_FILTERS.get(canonical)
+    if entry is None:
+        return None
+    _, column, value = entry
+    return column + (" <> " if negate else " = ") + _sql_quote(value)
+
+
+def _member_activity_predicate(days: int) -> str:
+    return f"(B.LAST_LOGIN_DATE IS NOT NULL AND B.LAST_LOGIN_DATE <= CONVERT(CHAR(8), DATEADD(DAY, -{days}, GETDATE()), 112))"
 BEHAVIOR_TERMS = {
     "no_purchase",
     "first_purchase",
@@ -282,6 +327,223 @@ def _add_recommendation_edges(graph: nx.Graph, recommendation_edges: Any) -> Non
         )
 
 
+def _prompt_normalize_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
+    fallback = "\n".join(
+        [
+            "너는 캠페인 타겟팅 프롬프트 전처리기다.",
+            "사용자 입력의 오타/띄어쓰기/맞춤법만 보수적으로 교정한다.",
+            "의미·의도·타겟 조건을 절대 추가/삭제/변경하지 않는다(없는 조건을 지어내지 말 것).",
+            "확실하지 않으면 원문을 그대로 둔다.",
+            '다음 JSON object 만 출력한다: {"normalized_prompt": "교정된 문장", "summary": "한 줄 요약", "corrections": ["교정 항목", ...]}.',
+        ]
+    )
+    return _read_prompt_template(prompt_dir, "prompt_normalize_system.txt", fallback)
+
+
+def normalize_prompt(
+    query: str,
+    parser: str = "rules",
+    llm_model: str = DEFAULT_LLM_MODEL,
+    prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
+) -> dict[str, Any]:
+    """다운스트림 파싱 전에 사용자 프롬프트를 보수적으로 정리한다(오타/띄어쓰기 교정 + 한 줄 요약).
+
+    의도·타겟 조건은 바꾸지 않는다(세그먼트 추가/삭제/재해석 금지). LLM 사용 불가/실패 시 공백만
+    정리하는 규칙 fallback 을 쓴다. 원문(original)은 항상 보존해 감사·표시에 사용한다.
+    반환: {original, normalized, summary, corrections, mode}.
+    """
+    original = query if isinstance(query, str) else ""
+    rule_cleaned = re.sub(r"\s+", " ", original).strip()
+    fallback = {
+        "original": original,
+        "normalized": rule_cleaned or original,
+        "summary": "",
+        "corrections": [],
+        "mode": "rules",
+    }
+    # 규칙 전용 모드거나 LLM 사용 불가하면 공백 정리만 한다(원문 의미는 그대로).
+    if parser.casefold() == "rules" or not os.getenv("OPENAI_API_KEY") or not rule_cleaned:
+        return fallback
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return fallback
+    try:
+        client = OpenAI()
+        messages = [
+            {"role": "system", "content": _prompt_normalize_system_prompt(prompt_dir)},
+            {"role": "user", "content": original},
+        ]
+        response = client.chat.completions.create(
+            model=llm_model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=messages,
+        )
+        data = json.loads(response.choices[0].message.content or "{}")
+        normalized = data.get("normalized_prompt")
+        if not isinstance(normalized, str) or not normalized.strip():
+            return fallback
+        corrections = (
+            [item for item in data.get("corrections", []) if isinstance(item, str) and item.strip()]
+            if isinstance(data.get("corrections"), list)
+            else []
+        )
+        summary = data.get("summary").strip() if isinstance(data.get("summary"), str) else ""
+        result = {
+            "original": original,
+            "normalized": normalized.strip(),
+            "summary": summary,
+            "corrections": corrections,
+            "mode": "llm",
+        }
+        _write_rag_llm_log("prompt_normalization", result)
+        return result
+    except Exception as exc:
+        # 정리 실패는 치명적이지 않다(원문/규칙 정리본으로 계속 진행).
+        return {**fallback, "mode": "rules_fallback", "error": exc.__class__.__name__}
+
+
+# 대상 지향 표지: 이 뒤부터는 "누구에게 무엇을 한다"의 캠페인/채널·메시지 절로 본다.
+_AUDIENCE_DIRECTION_MARKERS = ("에게", "한테", "께", "대상으로", "타겟으로", "타깃으로")
+# 채널/메시지 의도 신호. 규칙 분리 실패(표지 없음) 판정과 LLM 폴백 트리거에 쓴다.
+_CHANNEL_SIGNAL_WORDS = (
+    "홍보", "광고", "알림", "알리", "안내", "소식", "공지", "캠페인",
+    "메시지", "발송", "보내", "판매", "팔", "프로모션", "쿠폰", "이벤트",
+)
+
+
+def _prompt_scope_split_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
+    fallback = "\n".join(
+        [
+            "너는 캠페인 프롬프트를 '타겟팅(오디언스 조건)'과 '채널(발송·메시지 의도)'로 분리하는 분류기다.",
+            "타겟팅: 누구를 뽑을지(속성/구매이력/세그먼트 등 오디언스 정의)만.",
+            "채널: 그들에게 무엇을 어떻게 알릴지(홍보/판매/알림/채널/메시지/혜택).",
+            "원문 표현을 그대로 나눠 담고 의미를 새로 지어내지 않는다. 한쪽이 없으면 빈 문자열로 둔다.",
+            '다음 JSON object 만 출력한다: {"targeting": "…", "channel": "…"}.',
+        ]
+    )
+    return _read_prompt_template(prompt_dir, "prompt_scope_split_system.txt", fallback)
+
+
+def _rule_split_prompt_scopes(text: str) -> tuple[str, str] | None:
+    """대상 지향 표지(에게/한테/…) 첫 등장 지점 기준으로 앞=타겟팅, 뒤=채널 로 나눈다.
+
+    "[오디언스]에게 [채널/메시지 액션]" 구조를 이용한다. 표지가 없거나 타겟팅 절이 비면 None(규칙 실패).
+    """
+    pattern = r"(?P<targeting>.*?(?:%s))\s*(?P<channel>.*)$" % "|".join(_AUDIENCE_DIRECTION_MARKERS)
+    match = re.search(pattern, text, re.DOTALL)
+    if not match:
+        return None
+    targeting = match.group("targeting").strip()
+    channel = match.group("channel").strip()
+    if len(targeting) < 2:
+        return None
+    return targeting, channel
+
+
+def _has_channel_signal(text: str) -> bool:
+    compact = text.replace(" ", "").casefold()
+    return any(word in compact for word in _CHANNEL_SIGNAL_WORDS)
+
+
+def _llm_split_prompt_scopes(
+    text: str, parser: str, llm_model: str, prompt_dir: Path | None
+) -> dict[str, str] | None:
+    """LLM 으로 프롬프트를 타겟팅/채널 두 절로 의미 분리한다. 사용 불가/실패 시 None."""
+    if parser.casefold() == "rules" or not os.getenv("OPENAI_API_KEY") or not text.strip():
+        return None
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return None
+    try:
+        client = OpenAI()
+        response = client.chat.completions.create(
+            model=llm_model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _prompt_scope_split_system_prompt(prompt_dir)},
+                {"role": "user", "content": text},
+            ],
+        )
+        data = json.loads(response.choices[0].message.content or "{}")
+        targeting = data.get("targeting")
+        channel = data.get("channel")
+        if not isinstance(targeting, str) or not targeting.strip():
+            return None
+        result = {"targeting": targeting.strip(), "channel": channel.strip() if isinstance(channel, str) else ""}
+        _write_rag_llm_log("prompt_scope_split", {"text": text, **result})
+        return result
+    except Exception:
+        return None
+
+
+def split_prompt_scopes(
+    text: str,
+    parser: str = "rules",
+    llm_model: str = DEFAULT_LLM_MODEL,
+    prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
+) -> dict[str, Any]:
+    """프롬프트를 타겟팅(오디언스) 절과 채널(발송·메시지) 절로 분리한다.
+
+    규칙 분리(대상 지향 표지)를 먼저 쓰고, 표지가 없어 못 나눴는데 채널 신호가 있으면 LLM 의미 분리로
+    보완한다. 검색·그래프 컨텍스트를 스코프별로 좁히는 용도이며 SQL/Query Plan 에는 영향을 주지 않는다.
+    반환: {targeting, channel, mode}.
+    """
+    original = text if isinstance(text, str) else ""
+    rule = _rule_split_prompt_scopes(original)
+    # 규칙으로 채널 절을 얻었거나, 애초에 채널 신호가 없어 전부 타겟팅이면 규칙 결과를 그대로 쓴다.
+    if rule is not None and (rule[1] or not _has_channel_signal(original)):
+        return {"targeting": rule[0], "channel": rule[1], "mode": "rules"}
+    # 규칙이 제대로 못 나눴고(표지 없음/채널 절 공백) 채널 신호가 있으면 LLM 의미 분리 시도.
+    llm = _llm_split_prompt_scopes(original, parser, llm_model, prompt_dir)
+    if llm is not None:
+        return {**llm, "mode": "llm"}
+    if rule is not None:
+        return {"targeting": rule[0], "channel": rule[1], "mode": "rules"}
+    # 최종 폴백: 전부 타겟팅(채널 비움). 검색이 좁아질 순 있어도 채널 노드 오염은 생기지 않는다.
+    return {"targeting": original, "channel": "", "mode": "rules_fallback"}
+
+
+def _attach_retrieval_scopes(plan: dict[str, Any], scopes: dict[str, str]) -> None:
+    """분리된 타겟팅/채널 절을 기준으로 retrieval 을 스코프별(query·terms)로 분해해 plan 에 부착한다.
+
+    canonical 값(female/vip/purchase 등)은 한글 원문에 안 나타나므로 범주로 분류하고(채널=채널/혜택/목적),
+    그 외 원문 토큰은 어느 절에 등장하는지로 나눈다. build_query_plan(전체 문장) 결과는 그대로 두고
+    검색 단계에서만 골라 쓴다.
+    """
+    targeting_text = scopes.get("targeting") or ""
+    channel_text = scopes.get("channel") or ""
+    retrieval = plan.setdefault("retrieval", {})
+    retrieval.setdefault("query", targeting_text)
+    retrieval.setdefault("terms", [])
+    channel_canonicals = CHANNEL_TERMS | OFFER_TERMS | CAMPAIGN_OBJECTIVES
+    # 한글 토큰은 조사가 붙어 정확일치가 안 되므로, 공백 제거한 각 절 텍스트에 대한 '부분문자열' 포함으로 판정한다.
+    targeting_compact = targeting_text.replace(" ", "").casefold()
+    channel_compact = channel_text.replace(" ", "").casefold()
+
+    targeting_terms: list[str] = []
+    channel_terms: list[str] = []
+    for term in retrieval["terms"]:
+        lowered = term.casefold()
+        if term in channel_canonicals:
+            channel_terms.append(term)
+        elif lowered in channel_compact and lowered not in targeting_compact:
+            # 채널 절에만 등장하는 표현(홍보/캠페인/신상 등)은 채널로. 양쪽에 있으면 타겟팅 우선.
+            channel_terms.append(term)
+        else:
+            # 타겟팅 절에 있거나(기저귀/구매 등), 원문에 안 드러나는 타겟 canonical(female/vip 등)은 타겟팅.
+            targeting_terms.append(term)
+
+    plan["retrieval"]["scope_mode"] = scopes.get("mode", "rules")
+    plan["retrieval"]["targeting_query"] = targeting_text or plan["retrieval"]["query"]
+    plan["retrieval"]["channel_query"] = channel_text
+    plan["retrieval"]["targeting_terms"] = _unique_strings(targeting_terms)
+    plan["retrieval"]["channel_terms"] = _unique_strings(channel_terms)
+
+
 def build_query_plan(
     query: str,
     normalization_rules: Path | None = DEFAULT_NORMALIZATION_PATH,
@@ -296,6 +558,9 @@ def build_query_plan(
     if parser not in {"rules", "auto", "llm"}:
         raise ValueError("query parser must be one of: rules, auto, llm.")
 
+    # 검색·그래프 컨텍스트 스코핑용 타겟팅/채널 절 분리(전체 문장 파싱·SQL 에는 영향 없음).
+    scopes = split_prompt_scopes(query, parser=parser, llm_model=llm_model, prompt_dir=prompt_dir)
+
     rules_plan = _build_rule_query_plan(
         query,
         normalization_rules=normalization_rules,
@@ -305,6 +570,7 @@ def build_query_plan(
     )
     if parser == "rules":
         rules_plan["parser"] = {"type": "rules", "fallback_used": False}
+        _attach_retrieval_scopes(rules_plan, scopes)
         return rules_plan
 
     llm_plan, failure_reason = _try_llm_query_plan(query, rules_plan, llm_model, prompt_dir, sql_schema)
@@ -315,6 +581,7 @@ def build_query_plan(
             "fallback_used": True,
             "fallback_reason": failure_reason or "llm_query_parser_unavailable",
         }
+        _attach_retrieval_scopes(rules_plan, scopes)
         return rules_plan
 
     llm_plan["parser"] = {
@@ -328,6 +595,10 @@ def build_query_plan(
     llm_plan.setdefault("campaign_constraints", {}).setdefault("sell_object", None)
     _apply_sell_object(query, llm_plan)
     _apply_dimension_filters(query, llm_plan)
+    # 구매 상품(purchase_object)도 프롬프트 텍스트에서 결정론적으로 뽑아, rules/llm 어느 경로든 동일하게
+    # 상품 구매 이력 타겟팅(build_purchase_history_targets_sql_candidate)으로 이어지게 한다.
+    _apply_purchase_object_filter(query, llm_plan.setdefault("target_user", {}))
+    _attach_retrieval_scopes(llm_plan, scopes)
     return llm_plan
 
 
@@ -767,7 +1038,7 @@ def _infer_objective(query: str) -> str | None:
         return "repurchase"
     if _is_reactivation_goal_context(query):
         return "reactivation"
-    if any(keyword in compact_query for keyword in ("구매", "전환", "매출", "purchase", "conversion", "판매", "팔고", "팔려", "sell")):
+    if any(keyword in compact_query for keyword in ("구매", "구입", "전환", "매출", "purchase", "conversion", "판매", "팔고", "팔려", "sell")):
         return "purchase"
     if any(keyword in compact_query for keyword in ("구독", "subscription")):
         return "subscription"
@@ -848,7 +1119,10 @@ def _valid_age(value: str) -> int | None:
 
 
 def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> None:
-    match = re.search(r"(?P<object>[0-9A-Za-z가-힣_+\- ]{1,40})\s*(?:을|를)?\s*구매한", query, re.IGNORECASE)
+    # "…을/를 구매한/구입한/구매했던/구입하신 …" — 구매·구입은 동의어이므로 둘 다 상품 구매 이력으로 본다.
+    # object 클래스에 공백을 넣지 않아 "를/을" 직전 상품 명사만 잡는다. (공백 허용 시 "40대 여성 중
+    # 기저귀를 구매한" 처럼 앞 절 조건까지 삼켜 LIKE 가 무의미해지므로) 상품 카테고리 단어면 재현율에 충분하다.
+    match = re.search(r"(?P<object>[0-9A-Za-z가-힣_+\-]{1,40})\s*(?:을|를)?\s*(?:구매|구입)(?:한|했던|하신)", query, re.IGNORECASE)
     if not match:
         return
     purchase_object = _sanitize_purchase_object(match.group("object"))
@@ -1275,6 +1549,7 @@ def retrieve(
     message_policy: Path | None = DEFAULT_MESSAGE_POLICY_PATH,
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
     message_generation_options: dict[str, Any] | None = None,
+    retrieval_scope: str = "all",
 ) -> dict[str, Any]:
     timings_ms: dict[str, float] = {}
     retrieve_started_at = time.perf_counter()
@@ -1298,9 +1573,15 @@ def retrieve(
         },
     )
 
+    # 파싱 전에 사용자 프롬프트를 보수적으로 정리(오타/띄어쓰기)한다. 정리본으로 파싱하되 원문은 보존한다.
+    stage_started_at = time.perf_counter()
+    prompt_normalization = normalize_prompt(query, parser=query_parser, llm_model=llm_model, prompt_dir=prompt_dir)
+    effective_query = prompt_normalization["normalized"]
+    timings_ms["prompt_normalization"] = _elapsed_ms(stage_started_at)
+
     stage_started_at = time.perf_counter()
     query_plan = build_query_plan(
-        query,
+        effective_query,
         normalization_rules=normalization_rules,
         business_policies=business_policies,
         metric_lexicon=metric_lexicon,
@@ -1312,13 +1593,26 @@ def retrieve(
     timings_ms["query_plan"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
-    retrieval_query = query_plan["retrieval"]["query"]
-    keyword_query = " ".join(_unique_strings([retrieval_query, *query_plan["retrieval"]["terms"]]))
+    retrieval = query_plan["retrieval"]
+    # SQL 은 항상 전체 문장 기준(스코프 무관). 검색·그래프 컨텍스트만 스코프별 절/용어로 좁힌다.
+    full_retrieval_query = retrieval["query"]
+    keyword_query = " ".join(_unique_strings([full_retrieval_query, *retrieval["terms"]]))
+    scope = (retrieval_scope or "all").casefold()
+    if scope == "targeting":
+        scoped_query = retrieval.get("targeting_query") or full_retrieval_query
+        scoped_terms = retrieval.get("targeting_terms", retrieval["terms"])
+    elif scope == "channel":
+        scoped_query = retrieval.get("channel_query") or full_retrieval_query
+        scoped_terms = retrieval.get("channel_terms", retrieval["terms"])
+    else:
+        scoped_query = full_retrieval_query
+        scoped_terms = retrieval["terms"]
+    scoped_keyword_query = " ".join(_unique_strings([scoped_query, *scoped_terms]))
     timings_ms["retrieval_query"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
     vector_hits = vector_search(
-        query=retrieval_query,
+        query=scoped_query,
         collection=collection,
         url=url,
         api_key=api_key,
@@ -1328,7 +1622,7 @@ def retrieve(
     timings_ms["vector_search"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
-    keyword_hits = keyword_search(graph=graph, query=keyword_query, limit=keyword_top_k)
+    keyword_hits = keyword_search(graph=graph, query=scoped_keyword_query, limit=keyword_top_k)
     timings_ms["keyword_search"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
@@ -1339,8 +1633,10 @@ def retrieve(
         "rag_context_assembly",
         {
             "query": query,
-            "retrieval_query": retrieval_query,
-            "keyword_query": keyword_query,
+            "retrieval_scope": scope,
+            "retrieval_query": scoped_query,
+            "keyword_query": scoped_keyword_query,
+            "full_keyword_query": keyword_query,
             "query_plan": query_plan,
             "vector_hits": [_hit_result(hit) for hit in vector_hits],
             "keyword_hits": [_hit_result(hit) for hit in keyword_hits],
@@ -1406,9 +1702,16 @@ def retrieve(
     timings_ms["message_generation"] = _elapsed_ms(stage_started_at)
     timings_ms["total_retrieve"] = _elapsed_ms(retrieve_started_at)
 
-    api_response = build_recommendation_api_response(query, query_plan, sql_result, answer_response, message_generation)
+    api_response = build_recommendation_api_response(query, query_plan, sql_result, answer_response, message_generation, prompt_normalization)
     return {
         "query": query,
+        "prompt_normalization": prompt_normalization,
+        "retrieval_scope": scope,
+        "prompt_scopes": {
+            "mode": query_plan["retrieval"].get("scope_mode"),
+            "targeting": query_plan["retrieval"].get("targeting_query"),
+            "channel": query_plan["retrieval"].get("channel_query"),
+        },
         "query_plan": query_plan,
         "collection": collection,
         "stage_log": stage_log,
@@ -1574,16 +1877,22 @@ def merge_hits(hits: list[SearchHit]) -> list[SearchHit]:
 def expand_context(graph: nx.Graph, hits: list[SearchHit], hops: int, limit: int) -> list[dict[str, Any]]:
     scores: dict[str, float] = {}
     reasons: dict[str, list[str]] = {}
+    # 각 노드까지의 '대표 경로'(점수 최고 seed에서 최단 경로)를 함께 보관해,
+    # UI가 어떤 출발점에서 어떤 관계를 타고 확장됐는지 그대로 보여줄 수 있게 한다.
+    best_paths: dict[str, list[str]] = {}
     seed_scores = {hit.node_id: hit.score for hit in hits}
 
     for hit in hits:
         if hit.node_id not in graph:
             continue
-        lengths = nx.single_source_shortest_path_length(graph, hit.node_id, cutoff=hops)
-        for node_id, distance in lengths.items():
+        # _length 대신 실제 경로를 받아, distance(=len(path)-1)와 확장 경로를 동시에 얻는다.
+        paths = nx.single_source_shortest_path(graph, hit.node_id, cutoff=hops)
+        for node_id, path in paths.items():
+            distance = len(path) - 1
             graph_score = hit.score / (1 + distance * 0.35)
             if graph_score > scores.get(node_id, 0.0):
                 scores[node_id] = graph_score
+                best_paths[node_id] = path
             reasons.setdefault(node_id, []).append(f"seed={hit.node_id}, distance={distance}")
 
     ordered_node_ids = sorted(scores, key=lambda node_id: scores[node_id], reverse=True)[:limit]
@@ -1598,11 +1907,38 @@ def expand_context(graph: nx.Graph, hits: list[SearchHit], hops: int, limit: int
                 "score": round(scores[node_id], 6),
                 "seed_score": round(seed_scores.get(node_id, 0.0), 6) if node_id in seed_scores else None,
                 "reasons": reasons[node_id][:3],
+                "path": _describe_path(graph, best_paths.get(node_id, [node_id])),
                 "neighbors": _neighbor_summary(graph, node_id),
                 "payload": _compact_payload(node_data["payload"]),
             }
         )
     return context
+
+
+def _describe_path(graph: nx.Graph, path_ids: list[str]) -> list[dict[str, Any]]:
+    """출발점(seed)→목표 노드까지의 경로를 관계명과 함께 사람이 읽을 수 있는 형태로 만든다.
+
+    각 원소는 {id, title, type, relation}이며 relation 은 '직전 노드에서 이 노드로 온 엣지'의
+    관계명(첫 노드=seed 는 None)이다. UI 브레드크럼(A ─relation→ B ─relation→ C)에 그대로 쓴다.
+    """
+    described: list[dict[str, Any]] = []
+    previous_id: str | None = None
+    for node_id in path_ids:
+        node_data = graph.nodes[node_id]
+        relation = None
+        if previous_id is not None:
+            edge_data = graph.get_edge_data(previous_id, node_id) or {}
+            relation = edge_data.get("relation", "related")
+        described.append(
+            {
+                "id": node_id,
+                "title": node_data.get("title", node_id),
+                "type": node_data.get("node_type", "unknown"),
+                "relation": relation,
+            }
+        )
+        previous_id = node_id
+    return described
 
 
 def render_prompt_context(context_nodes: list[dict[str, Any]]) -> str:
@@ -3070,24 +3406,48 @@ def build_recommendation_api_response(
     sql_result: dict[str, Any],
     answer_response: dict[str, Any],
     message_generation: dict[str, Any] | None = None,
+    prompt_normalization: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    unsupported_labels = sql_result.get("unsupported_condition_labels", [])
+    dropped_labels = sql_result.get("dropped_condition_labels", [])
     if answer_response.get("content"):
         message = answer_response["content"]
+    elif sql_result.get("is_success") and dropped_labels:
+        # 부분 추출: 되는 조건으로 뽑되 실DB 미지원이라 뺀 조건을 함께 고지한다.
+        message = "검증 SQL이 준비되었습니다. 단, 다음 조건은 실DB 타겟 추출로 지원되지 않아 제외했습니다: " + ", ".join(dropped_labels) + "."
     elif sql_result.get("is_success"):
         message = "Query Plan 조건을 만족하는 검증 SQL이 준비되었습니다."
     elif sql_result.get("failure_reason") == "query_plan_required_conditions_missing":
         message = "SQL 생성을 위해 필요한 조건이 부족합니다. 추가 조건을 확인해 주세요."
+    elif sql_result.get("failure_reason") == "real_db_unsupported_conditions" and unsupported_labels:
+        message = "다음 조건은 아직 실DB 타겟 추출로 지원되지 않습니다: " + ", ".join(unsupported_labels) + "."
     else:
         message = "현재 Query Plan 조건을 완전히 만족하는 검증된 SQL이 없습니다."
 
+    normalization = prompt_normalization or {"original": query, "normalized": query, "summary": "", "corrections": [], "mode": "noop"}
     response = {
         "status": _api_status(sql_result),
         "query": query,
+        "normalized_query": normalization.get("normalized", query),
+        "prompt_summary": normalization.get("summary", ""),
+        "prompt_corrections": normalization.get("corrections", []),
+        "prompt_normalization_mode": normalization.get("mode"),
+        "prompt_scopes": {
+            "mode": query_plan.get("retrieval", {}).get("scope_mode"),
+            "targeting": query_plan.get("retrieval", {}).get("targeting_query"),
+            "channel": query_plan.get("retrieval", {}).get("channel_query"),
+        },
         "intent": query_plan.get("intent"),
         "sql": sql_result.get("sql"),
+        "target_connection": sql_result.get("target_connection"),
+        "target_dialect": sql_result.get("target_dialect"),
         "message": message,
         "missing_input_conditions": sql_result.get("missing_input_conditions", []),
         "clarification_questions": sql_result.get("clarification_questions", []),
+        "unsupported_conditions": sql_result.get("unsupported_conditions", []),
+        "unsupported_condition_labels": unsupported_labels,
+        "dropped_conditions": sql_result.get("dropped_conditions", []),
+        "dropped_condition_labels": dropped_labels,
         "answer_mode": answer_response.get("mode"),
         "answer_failure_reason": answer_response.get("failure_reason"),
         "failure_reason": sql_result.get("failure_reason"),
@@ -3140,13 +3500,24 @@ def build_sql_result(
         }
 
     allowed_tables = load_allowed_tables(schema_path)
+    table_dialects = load_table_dialects(schema_path)
+    table_databases = load_table_databases(schema_path)
     template_candidate = build_sql_template_candidate(query_plan, condition_tokens)
     candidates = [template_candidate] if template_candidate is not None else []
 
     validated_candidates = []
     for candidate in candidates:
-        validation = validate_sql(candidate["sql"], allowed_tables=allowed_tables, default_limit=default_limit)
-        coverage = validate_sql_condition_coverage(candidate["sql"], required_conditions)
+        # 타겟 오디언스는 전체가 나와야 하므로 행수 제한(LIMIT/TOP)을 붙이지 않는다.
+        validation = validate_sql(
+            candidate["sql"],
+            allowed_tables=allowed_tables,
+            default_limit=None,
+            table_dialects=table_dialects,
+        )
+        # 부분 추출 candidate 가 실DB 미지원이라 뺀 조건은 커버리지 요구에서 제외한다(대신 응답에 고지).
+        dropped_paths = {path.split(":")[0] for path in candidate.get("dropped_conditions", [])}
+        effective_required = [condition for condition in required_conditions if condition["path"] not in dropped_paths]
+        coverage = validate_sql_condition_coverage(candidate["sql"], effective_required)
         intent_scope = validate_sql_intent_scope(candidate, query_plan)
         unmentioned_conditions = validate_unmentioned_sql_conditions(candidate["sql"], query_plan)
         validated_candidates.append(
@@ -3166,9 +3537,14 @@ def build_sql_result(
         selected = validated_candidates[0]
 
     selected_sql = None
+    target_connection = None
+    target_dialect = None
     if selected is not None and selected["is_eligible"]:
         validation = selected["validation"]
         selected_sql = validation["masked_sql"] if validation["sensitive_columns"] else validation["safe_sql"]
+        # 이 SQL 을 실제 어느 DB에서 실행해야 하는지(외부 실DB면 커넥션명, 로컬이면 None) 판별.
+        target_connection = infer_target_connection(selected.get("tables", []), table_databases)
+        target_dialect = validation.get("dialect")
 
     failure_reason = None
     if selected is None:
@@ -3183,8 +3559,24 @@ def build_sql_result(
         elif not selected["unmentioned_conditions"]["is_satisfied"]:
             failure_reason = "query_plan_unmentioned_conditions_added"
 
+    # 실회원(CRM_MB_BASEINFO) 경로가 미지원 조건 때문에 데모 스키마로 fallback→guard 탈락한 경우,
+    # 제네릭 sql_guard_failed 대신 "어떤 조건이 실DB 추출 미지원인지"를 구체적으로 알린다.
+    unsupported_conditions: list[str] = []
+    unsupported_condition_labels: list[str] = []
+    if not (selected_sql is not None) and query_plan.get("intent") == "recommend_campaign":
+        unsupported_conditions = compile_member_target_conditions(query_plan)["unsupported"]
+        unsupported_condition_labels = [_unsupported_condition_label(path) for path in unsupported_conditions]
+        if failure_reason == "sql_guard_failed" and unsupported_conditions:
+            failure_reason = "real_db_unsupported_conditions"
+
+    # 부분 추출로 SQL 이 나온 경우, 실DB 미지원이라 뺀 조건을 고지한다(성공이지만 일부 조건 제외).
+    dropped_conditions = selected.get("dropped_conditions", []) if selected else []
+    dropped_condition_labels = selected.get("dropped_condition_labels", []) if selected else []
+
     return {
         "sql": selected_sql,
+        "target_connection": target_connection,
+        "target_dialect": target_dialect,
         "selected": selected,
         "candidates": validated_candidates,
         "candidate_count": len(validated_candidates),
@@ -3193,6 +3585,10 @@ def build_sql_result(
         "input_validation": input_validation,
         "missing_input_conditions": [],
         "clarification_questions": [],
+        "unsupported_conditions": unsupported_conditions,
+        "unsupported_condition_labels": unsupported_condition_labels,
+        "dropped_conditions": dropped_conditions,
+        "dropped_condition_labels": dropped_condition_labels,
         "is_success": selected_sql is not None,
         "failure_reason": failure_reason,
     }
@@ -3674,36 +4070,34 @@ def build_sql_template_candidate(query_plan: dict[str, Any], condition_tokens: l
             )
             return _sql_candidate("sql_template:cart_dimension_targets", "장바구니 상품브랜드 타겟팅 SQL 템플릿", 1.0, sql, _template_tables(sql), "sql_template")
         if _should_use_cart_repurchase_template(query_plan):
+            # 타겟은 "장바구니에 담고 아직 결제 안 함"(카트 이탈)뿐 — KEEP_YN='Y'가 미결제 보관 상태를 표현한다.
+            # 재구매(objective)는 메시지 목적 라벨일 뿐 타겟 필터가 아니므로, 회원 단위 주문 anti-join은 걸지 않는다.
+            #   (NOT EXISTS(모든 주문)은 "평생 무주문 회원"을 뜻해 재구매 대상과 자기모순이라 제거했다.)
+            # 라벨 컬럼(target_segment/objective)은 세그먼트·목적 태그이자 조건 커버리지 충족용(값은 query_plan 기준).
             objective = query_plan.get("campaign_constraints", {}).get("objective")
-            objective_clause = "t.campaign_objective = " + _sql_quote(objective) if objective else "t.campaign_objective IN ('purchase', 'repurchase', 'retention')"
-            channels = [
-                channel
-                for channel in query_plan.get("campaign_constraints", {}).get("channels", [])
-                if channel in CHANNEL_TERMS
-            ]
-            channel_select = ["       cc.channel AS campaign_channel,"] if channels else []
-            channel_join = ["JOIN campaign_channels cc ON cc.campaign_id = t.recommended_campaign_id"] if channels else []
-            channel_clause = ["  AND cc.channel IN (" + ", ".join(_sql_quote(channel) for channel in channels) + ")"] if channels else []
+            select_columns = ["B.MEMBER_NO AS CUST_ID", "'cart_abandoner' AS target_segment"]
+            if objective:
+                select_columns.append(_sql_quote(objective) + " AS objective")
             sql = "\n".join(
                 [
-                    "SELECT DISTINCT t.user_id, t.age, t.gender, t.region, t.price_sensitivity,",
-                    "       t.cart_id, t.total_amount_krw, t.abandoned_hours, t.target_segment,",
-                    *channel_select,
-                    "       t.recommended_campaign_id AS campaign_id,",
-                    "       t.recommended_campaign_name AS name,",
-                    "       t.campaign_objective AS objective,",
-                    "       t.campaign_category AS category,",
-                    "       t.campaign_offer AS offer,",
-                    "       t.recommendation_reason",
-                    "FROM v_cart_repurchase_targets t",
-                    *channel_join,
-                    "WHERE t.target_segment = 'cart_abandoner'",
-                    "  AND " + objective_clause,
-                    *channel_clause,
-                    "ORDER BY t.total_amount_krw DESC, t.abandoned_hours DESC",
+                    "SELECT DISTINCT " + ", ".join(select_columns),
+                    "FROM ODS_MALL_OMS_CART A",
+                    "     INNER JOIN CRM_MB_BASEINFO B ON A.CART_ID = B.MEMBER_ID",
+                    "WHERE A.KEEP_YN = 'Y'",
                 ]
             )
-            return _sql_candidate("sql_template:cart_repurchase_targets", "장바구니 미결제 재구매 유도 SQL 템플릿", 1.0, sql, _template_tables(sql), "sql_template")
+            return _sql_candidate("sql_template:cart_repurchase_targets", "장바구니 미결제 재구매 유도 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template")
+        purchase_candidate = build_purchase_history_targets_sql_candidate(query_plan)
+        if purchase_candidate is not None:
+            # "…를 구매/구입한 고객" 은 실주문(CRM_SL_ORDERDETAILMALL) 조인으로 상품 구매 이력 회원을 뽑는다.
+            # 회원 속성(성별/연령/등급 등)이 함께 있으면 CRM_MB_BASEINFO 술어로 같은 SQL 에 결합한다.
+            return purchase_candidate
+        member_candidate = build_member_targets_sql_candidate(query_plan)
+        if member_candidate is not None:
+            # 성별/연령/등급/휴면/장기미접속/앱 등 회원 속성 타겟은 실회원 테이블(CRMDW CRM_MB_BASEINFO)로 뽑는다.
+            # 데모 스키마(users/recommendation_edges/campaigns) fallback 은 실DB 미이관 테이블이라
+            # sql_guard 의 table_not_allowed 로 폐기되므로, 매핑 가능한 조건만이면 이 경로를 쓴다.
+            return member_candidate
         sql = assemble_sql_from_template(
             select_columns=[
                 "u.user_id",
@@ -3723,6 +4117,11 @@ def build_sql_template_candidate(query_plan: dict[str, Any], condition_tokens: l
         )
         return _sql_candidate("sql_template:recommend_campaign", "의도별 캠페인 추천 SQL 템플릿", 1.0, sql, _template_tables(sql), "sql_template")
     if intent == "find_user_segment":
+        # "…를 구매/구입한 고객 찾아줘" 처럼 캠페인 발송이 아니라 세그먼트 조회여도 상품 구매 이력은
+        # 동일한 실주문 조인으로 실회원 오디언스를 추출한다(recommend_campaign 과 같은 템플릿).
+        purchase_candidate = build_purchase_history_targets_sql_candidate(query_plan)
+        if purchase_candidate is not None:
+            return purchase_candidate
         sql = assemble_sql_from_template(
             select_columns=["u.user_id", "u.age", "u.gender", "u.region", "u.lifecycle", "u.price_sensitivity"],
             base_from="FROM users u",
@@ -3730,6 +4129,236 @@ def build_sql_template_candidate(query_plan: dict[str, Any], condition_tokens: l
         )
         return _sql_candidate("sql_template:find_user_segment", "의도별 사용자 세그먼트 SQL 템플릿", 1.0, sql, _template_tables(sql), "sql_template")
     return None
+
+
+_UNSUPPORTED_CONDITION_LABELS = {
+    "target_user.gender": "성별 조건",
+    "target_user.interests": "관심사 조건",
+    "target_user.preferred_channels": "선호 채널 조건",
+    "target_user.behaviors": "행동 조건",
+    "target_user.purchase_object": "구매 상품 조건",
+    "target_user.price_sensitivity": "가격 민감도 조건",
+    "target_user.inactivity_period": "미접속 기간 조건",
+    "target_user.lifecycle": "생애주기 조건",
+    "exclude.gender": "성별 제외 조건",
+    "exclude.interests": "관심사 제외 조건",
+    "exclude.lifecycle": "생애주기 제외 조건",
+    "set_expressions": "세그먼트 집합식",
+    "computed_metrics": "계산 지표 조건",
+    "policy_constraints": "업무 정책 조건",
+    "semantic_resolutions": "의미 해석 조건",
+    "campaign_constraints.category": "캠페인 카테고리 조건",
+    "campaign_constraints.offer_type": "혜택 유형 조건",
+    "campaign_constraints.channels": "발송 채널 조건",
+}
+
+
+def _unsupported_condition_label(path: str) -> str:
+    """미지원 조건 path 를 사람이 읽을 라벨로 바꾼다(예: 'exclude.lifecycle:new_user' -> '생애주기 제외 조건: new_user')."""
+    base, _, value = path.partition(":")
+    label = _UNSUPPORTED_CONDITION_LABELS.get(base, base)
+    return f"{label}: {value}" if value else label
+
+
+def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, Any]:
+    """query_plan 의 타겟 조건을 실회원 테이블(CRM_MB_BASEINFO) 술어로 컴파일한다.
+
+    조건 -> 실컬럼 매핑을 한곳(MEMBER_EQ_FILTERS/MEMBER_ACTIVITY_FILTERS)에서 조회하므로 지원 속성의
+    어떤 조합(포함/제외/연령 …)도 자동으로 술어 목록이 된다. CRM_MB_BASEINFO 단독으로 표현할 수 없는
+    조건은 그 경로(path)를 unsupported 에 모은다. 호출부는 unsupported 가 비어있을 때만 실DB SQL 을 쓴다.
+
+    반환 dict: predicates(WHERE 술어), labels(세그먼트 라벨 canonical 값), forces_state(회원상태 직접
+    지정 여부), has_signal(회원 대상 신호 존재), unsupported(미지원 조건 path 목록).
+    """
+    target_user = query_plan.get("target_user", {})
+    exclude = query_plan.get("exclude", {})
+    campaign = query_plan.get("campaign_constraints", {})
+    eq_includes: dict[str, list[str]] = {}  # 실컬럼 -> 포함 저장값들(같은 컬럼은 IN 으로 OR)
+    include_categories: set[str] = set()
+    other_predicates: list[str] = []  # 제외(<>)/연령/활동 등은 그대로 AND
+    labels: list[str] = []
+    unsupported: list[str] = []
+    has_signal = False
+
+    def _add_include(canonical: str) -> None:
+        category, column, value = MEMBER_EQ_FILTERS[canonical]
+        eq_includes.setdefault(column, [])
+        if value not in eq_includes[column]:
+            eq_includes[column].append(value)
+        include_categories.add(category)
+
+    # 성별(포함/제외)
+    gender = target_user.get("gender")
+    if gender in GENDER_TERMS:
+        _add_include(gender); labels.append(gender); has_signal = True
+    elif gender:
+        unsupported.append("target_user.gender")
+    for value in exclude.get("gender", []):
+        if value in GENDER_TERMS:
+            other_predicates.append(_member_eq_predicate(value, negate=True)); labels.append("non_" + value); has_signal = True
+        else:
+            unsupported.append("exclude.gender")
+
+    # 연령
+    age_min = target_user.get("age_min")
+    if isinstance(age_min, int):
+        other_predicates.append(f"B.AGE >= {age_min}"); has_signal = True
+    age_max = target_user.get("age_max")
+    if isinstance(age_max, int):
+        other_predicates.append(f"B.AGE <= {age_max}"); has_signal = True
+
+    # lifecycle 포함(등가/활동)
+    for lifecycle in target_user.get("lifecycle", []):
+        if lifecycle in MEMBER_EQ_FILTERS:
+            _add_include(lifecycle); labels.append(lifecycle); has_signal = True
+        elif lifecycle in MEMBER_ACTIVITY_FILTERS:
+            other_predicates.append(_member_activity_predicate(MEMBER_ACTIVITY_FILTERS[lifecycle])); labels.append(lifecycle); has_signal = True
+        else:
+            unsupported.append("target_user.lifecycle:" + lifecycle)
+
+    # lifecycle 제외(등가만 부정 가능; 활동 범위 부정은 모호해 미지원)
+    for lifecycle in exclude.get("lifecycle", []):
+        if lifecycle in MEMBER_EQ_FILTERS:
+            other_predicates.append(_member_eq_predicate(lifecycle, negate=True)); labels.append("non_" + lifecycle); has_signal = True
+        else:
+            unsupported.append("exclude.lifecycle:" + lifecycle)
+
+    # CRM_MB_BASEINFO 단독으로 표현할 수 없는 조건(→ unsupported 로 모아 fallback 유도)
+    for field in ("interests", "preferred_channels", "behaviors", "purchase_object", "price_sensitivity", "inactivity_period"):
+        if target_user.get(field):
+            unsupported.append("target_user." + field)
+    if exclude.get("interests"):
+        unsupported.append("exclude.interests")
+    for field in ("set_expressions", "computed_metrics", "policy_constraints", "semantic_resolutions"):
+        if query_plan.get(field):
+            unsupported.append(field)
+    for field in ("category", "offer_type", "channels"):
+        if campaign.get(field):
+            unsupported.append("campaign_constraints." + field)
+
+    # 같은 컬럼 포함값은 1개면 `=`, 2개 이상이면 `IN (...)` 으로 묶는다(예: 실버 OR 골드 등급).
+    include_predicates: list[str] = []
+    for column, values in eq_includes.items():
+        if len(values) == 1:
+            include_predicates.append(column + " = " + _sql_quote(values[0]))
+        else:
+            include_predicates.append(column + " IN (" + ", ".join(_sql_quote(value) for value in values) + ")")
+
+    return {
+        "predicates": _unique_strings([*include_predicates, *other_predicates]),
+        "labels": _unique_strings(labels),
+        "forces_state": "state" in include_categories,
+        "has_signal": has_signal,
+        "unsupported": unsupported,
+    }
+
+
+def build_member_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """실회원 테이블 CRM_MB_BASEINFO 로 타겟 대상 추출 SQL 을 생성한다(compile_member_target_conditions 기반).
+
+    부분 추출 + 고지 정책: 실DB로 해석 가능한 회원 신호(성별·연령·등급/생애주기)가 하나라도 있으면
+    그 조건들로 SQL 을 만들고, 실컬럼이 없어 뺀 조건(예: 관심사)은 candidate 의 dropped_conditions 에
+    담아 함께 고지한다(조용한 누락 방지). 회원 신호가 전혀 없으면(objective/관심사만) None 을 돌려
+    기존 템플릿 경로로 넘긴다.
+    """
+    compiled = compile_member_target_conditions(query_plan)
+    if not compiled["has_signal"]:
+        return None
+
+    where_clauses = list(compiled["predicates"])
+    # 회원상태(dormant 등)를 직접 지정한 타겟이 아니면 정상 회원으로 한정한다(탈퇴/휴면 제외).
+    if not compiled["forces_state"]:
+        where_clauses.append("B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'")
+    where_clauses = _unique_strings(where_clauses)
+
+    select_columns = ["DISTINCT B.MEMBER_NO AS CUST_ID", "B.EMART_GRADE_CD AS member_grade"]
+    # 세그먼트 라벨 — 다운스트림 태그이자 조건 커버리지(값 문자열 매칭) 충족용. 제외는 'non_<canonical>'.
+    if compiled["labels"]:
+        select_columns.append(_sql_quote(",".join(compiled["labels"])) + " AS segment_label")
+    objective = query_plan.get("campaign_constraints", {}).get("objective")
+    if objective:
+        # 캠페인 목적은 타겟 필터가 아니라 메시지 목적 라벨(조건 커버리지 충족 겸용).
+        select_columns.append(_sql_quote(objective) + " AS objective")
+
+    sql = "\n".join(
+        [
+            "SELECT " + ", ".join(select_columns),
+            "FROM CRM_MB_BASEINFO B",
+            "WHERE " + "\n  AND ".join(where_clauses),
+        ]
+    )
+    candidate = _sql_candidate("sql_template:member_targets", "회원 속성 타겟 추출 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template")
+    # 실DB 미지원이라 SQL 에서 뺀 조건(부분 추출). 커버리지 검증에서 제외하고 응답에 고지한다.
+    candidate["dropped_conditions"] = compiled["unsupported"]
+    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in compiled["unsupported"]]
+    return candidate
+
+
+# 상품 구매 이력 매칭 대상 컬럼(CRM_CM_PRODUCT). 카테고리 계층~상품명~브랜드명까지 넓게 LIKE 매칭해
+# "기저귀"(카테고리), "하기스"(브랜드), 특정 상품명 등 어떤 표현으로 말해도 재현율을 확보한다.
+_PURCHASE_PRODUCT_MATCH_COLUMNS = (
+    "CATEGORY",
+    "CATEGORYL_NAME",
+    "CATEGORYM_NAME",
+    "CATEGORYS_NAME",
+    "BRAND_NAME",
+    "PRODUCT_NAME",
+)
+
+
+def _sql_nlike_contains(column: str, term: str) -> str:
+    """유니코드 부분일치 LIKE 술어(N'%term%'). term 은 _sanitize_purchase_object 로 정제돼 홑따옴표가 없으나
+    방어적으로 이스케이프한다. N 접두어는 tsql/mysql 모두 유효해 한글 리터럴을 안전하게 비교한다."""
+    return f"{column} LIKE N'%{term.replace(chr(39), chr(39) * 2)}%'"
+
+
+def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """실주문 상세(CRM_SL_ORDERDETAILMALL) → 상품(CRM_CM_PRODUCT) → 회원(CRM_MB_BASEINFO) 조인으로
+    특정 상품/카테고리를 구매한 회원을 추출한다.
+
+    CRM_MB_BASEINFO 단독으로는 표현 못 하는 "상품 구매 이력"을 실주문 테이블 조인으로 해결한다.
+    성별/연령/등급/휴면 등 회원 속성은 compile_member_target_conditions 로 그대로 재사용해 같은 SQL 에
+    AND 결합하므로, "40대 여성 중 기저귀 구매자" 같은 조합도 하나의 추출 SQL 이 된다.
+    """
+    purchase_object = query_plan.get("target_user", {}).get("purchase_object")
+    if not isinstance(purchase_object, str) or not purchase_object:
+        return None
+
+    compiled = compile_member_target_conditions(query_plan)
+    product_match = "(" + " OR ".join(
+        _sql_nlike_contains("P." + column, purchase_object) for column in _PURCHASE_PRODUCT_MATCH_COLUMNS
+    ) + ")"
+    where_clauses = [product_match, *compiled["predicates"]]
+    # 회원상태를 직접 지정한 타겟(휴면 등)이 아니면 정상 회원으로 한정한다(탈퇴/휴면 제외).
+    if not compiled["forces_state"]:
+        where_clauses.append("B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'")
+    where_clauses = _unique_strings(where_clauses)
+
+    select_columns = ["DISTINCT B.MEMBER_NO AS CUST_ID", "B.EMART_GRADE_CD AS member_grade"]
+    if compiled["labels"]:
+        select_columns.append(_sql_quote(",".join(compiled["labels"])) + " AS segment_label")
+    objective = query_plan.get("campaign_constraints", {}).get("objective")
+    if objective:
+        select_columns.append(_sql_quote(objective) + " AS objective")
+
+    sql = "\n".join(
+        [
+            "SELECT " + ", ".join(select_columns),
+            "FROM CRM_SL_ORDERDETAILMALL D",
+            "     INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID",
+            "     INNER JOIN CRM_MB_BASEINFO B ON D.MEMBER_NO = B.MEMBER_NO",
+            "WHERE " + "\n  AND ".join(where_clauses),
+        ]
+    )
+    candidate = _sql_candidate(
+        "sql_template:purchase_history_targets", "상품 구매 이력 타겟 추출 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template"
+    )
+    # purchase_object 는 이 템플릿(상품 LIKE)이 실제로 커버하므로 dropped(미고지)에서 제외한다.
+    # 회원 속성 외 다른 미지원 조건(관심사 등)이 있으면 그것만 부분추출 고지 대상으로 남긴다.
+    dropped = [path for path in compiled["unsupported"] if path != "target_user.purchase_object"]
+    candidate["dropped_conditions"] = dropped
+    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]
+    return candidate
 
 
 def _should_use_cart_repurchase_template(query_plan: dict[str, Any]) -> bool:
@@ -3997,14 +4626,9 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
 
     purchase_object = target_user.get("purchase_object")
     if purchase_object:
-        conditions.append(
-            _condition(
-                "target_user.purchase_object",
-                purchase_object,
-                [purchase_object, "purchased:%"],
-                all_terms=["behavior"],
-            )
-        )
+        # 상품 구매 이력 타겟(purchase_history_targets)은 상품값을 SQL 리터럴(LIKE N'%값%')로 직접 담으므로
+        # 값 문자열이 SQL 에 존재하면 커버된 것으로 본다(데모 fallback 의 behavior LIKE '%값%' 도 동일 충족).
+        conditions.append(_condition("target_user.purchase_object", purchase_object, [purchase_object]))
 
     inactivity_period = target_user.get("inactivity_period")
     if isinstance(inactivity_period, dict) and isinstance(inactivity_period.get("sql_interval"), str):
@@ -4296,6 +4920,146 @@ def render_stage_log(stage_log: list[dict[str, Any]]) -> str:
         metrics = ", ".join(f"{key}={value}" for key, value in entry["metrics"].items())
         lines.append(f"- {entry['stage']}: {entry['summary']} ({metrics})")
     return "\n".join(lines)
+
+
+def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
+    """retrieve() 결과를 '의미추론 → 벡터검색 → 키워드검색 → Graph확장 → SQL생성/검증'
+    단계별 트레이스로 재구성한다(시연/디버깅용). LLM 호출 없이 결정론적으로 동작."""
+    query_plan = result.get("query_plan", {})
+    sql_result = result.get("sql_result", {})
+    api_response = result.get("api_response", {})
+    target_user = query_plan.get("target_user", {})
+    retrieval = query_plan.get("retrieval", {})
+    prompt_normalization = result.get("prompt_normalization", {})
+    # 정규화 프롬프트를 타겟팅/채널 절로 나눈 결과(검색·그래프 스코프의 근거).
+    prompt_scopes = {
+        "mode": retrieval.get("scope_mode"),
+        "targeting": retrieval.get("targeting_query"),
+        "channel": retrieval.get("channel_query"),
+    }
+
+    def _hit_rows(hits: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [
+            {
+                "rank": index + 1,
+                "id": hit.get("id"),
+                "type": hit.get("type"),
+                "score": hit.get("score"),
+                "snippet": (hit.get("text") or "")[:160],
+            }
+            for index, hit in enumerate(hits)
+        ]
+
+    graph_rows = [
+        {
+            "rank": index + 1,
+            "id": node.get("id"),
+            "type": node.get("type"),
+            "title": node.get("title"),
+            "score": node.get("score"),
+            "seed_score": node.get("seed_score"),
+            "is_seed": node.get("seed_score") is not None,
+            "reached_via": node.get("reasons", []),
+            "path": node.get("path", []),
+        }
+        for index, node in enumerate(result.get("graph_context", []))
+    ]
+
+    candidate_rows = [
+        {
+            "id": candidate.get("id"),
+            "source": candidate.get("source"),
+            "tables": candidate.get("tables", []),
+            "is_eligible": candidate.get("is_eligible"),
+            "guard_valid": candidate.get("validation", {}).get("is_valid"),
+            "coverage_ok": candidate.get("coverage", {}).get("is_satisfied"),
+            "coverage_missing": [
+                condition.get("path")
+                for condition in candidate.get("coverage", {}).get("missing_conditions", [])
+            ],
+            "intent_scope_ok": candidate.get("intent_scope", {}).get("is_satisfied"),
+            "unmentioned_ok": candidate.get("unmentioned_conditions", {}).get("is_satisfied"),
+            "sql": candidate.get("sql"),
+        }
+        for candidate in sql_result.get("candidates", [])
+    ]
+
+    return {
+        "query": result.get("query"),
+        "collection": result.get("collection"),
+        "retrieval_scope": result.get("retrieval_scope"),
+        "prompt_scopes": prompt_scopes,
+        "stages": [
+            {
+                "step": 1,
+                "name": "요청 이해 — 고객 문장을 조건으로 해석",
+                "description": "고객이 입력한 문장을 시스템이 쓰는 표준 용어·검색어·타겟 조건으로 바꾸는 단계입니다.",
+                "tech_name": "의미 추론 (Query Planning / Normalization)",
+                "intent": query_plan.get("intent"),
+                "original_prompt": prompt_normalization.get("original", result.get("query")),
+                "normalized_prompt": prompt_normalization.get("normalized", result.get("query")),
+                # 정규화 프롬프트를 타겟팅(오디언스)/채널(발송·메시지) 절로 분리한 결과.
+                "prompt_scopes": prompt_scopes,
+                "applied_scope": result.get("retrieval_scope"),
+                "targeting_terms": retrieval.get("targeting_terms", []),
+                "channel_terms": retrieval.get("channel_terms", []),
+                "matched_terms": query_plan.get("matched_terms", []),
+                "semantic_resolutions": query_plan.get("semantic_resolutions", []),
+                "target_user": {key: value for key, value in target_user.items() if value not in (None, [], {})},
+                "dimension_filters": query_plan.get("dimension_filters", []),
+                "cart_context": query_plan.get("cart_context"),
+                "retrieval_query": retrieval.get("query"),
+                "retrieval_terms": retrieval.get("terms", []),
+            },
+            {
+                "step": 2,
+                "name": "비슷한 의미의 지식 찾기 — AI 유사도 검색",
+                "description": "뜻이 가까운 용어·규칙·예시를 AI가 의미 기반으로 찾아옵니다. 단어가 달라도 뜻이 비슷하면 잡힙니다.",
+                "tech_name": "벡터 검색 (Dense / Qdrant)",
+                "count": len(result.get("vector_matches", [])),
+                "hits": _hit_rows(result.get("vector_matches", [])),
+            },
+            {
+                "step": 3,
+                "name": "같은 단어의 지식 찾기 — 키워드 검색",
+                "description": "입력한 단어와 글자가 실제로 일치하는 용어·예시를 찾습니다. 2단계(의미)와 서로 보완합니다.",
+                "tech_name": "키워드 검색 (Lexical over graph)",
+                "count": len(result.get("keyword_matches", [])),
+                "hits": _hit_rows(result.get("keyword_matches", [])),
+            },
+            {
+                "step": 4,
+                "name": "찾은 지식 연결·확장 — 관계 그래프",
+                "description": "2·3단계에서 찾은 항목을 출발점으로, 연결된 테이블·컬럼까지 관계를 타고 넓혀 필요한 재료를 모읍니다.",
+                "tech_name": "병합 + Graph 확장 (GraphRAG)",
+                "seed_count": len(result.get("seed_matches", [])),
+                "context_count": len(graph_rows),
+                "context_nodes": graph_rows,
+            },
+            {
+                "step": 5,
+                "name": "대상 추출 쿼리 만들기·검증 — 최종 SQL",
+                "description": "모은 조건으로 고객을 뽑아내는 조회문(SQL)을 만들고, 요청과 어긋나지 않는지 자동 점검한 뒤 확정합니다.",
+                "tech_name": "SQL 생성 / 검증 (Template + sql_guard)",
+                "condition_tokens": [token.get("path") for token in sql_result.get("condition_tokens", [])],
+                "required_conditions": [condition.get("path") for condition in sql_result.get("required_conditions", [])],
+                "candidates": candidate_rows,
+                "selected_sql": sql_result.get("sql"),
+                "target_connection": sql_result.get("target_connection"),
+                "target_dialect": sql_result.get("target_dialect"),
+                "is_success": sql_result.get("is_success"),
+                "failure_reason": sql_result.get("failure_reason"),
+            },
+        ],
+        "stage_log": result.get("stage_log", []),
+        "result": {
+            "status": api_response.get("status"),
+            "sql": api_response.get("sql"),
+            "target_connection": api_response.get("target_connection"),
+            "message": api_response.get("message"),
+        },
+        "timings_ms": result.get("timings_ms", {}),
+    }
 
 
 def graph_stats(graph: nx.Graph) -> dict[str, Any]:

@@ -29,6 +29,7 @@ from graph_rag import (
     build_message_context,
     build_message_response,
     build_graph,
+    build_retrieve_trace,
     graph_stats,
     load_payload,
     rag_llm_run_scope,
@@ -122,6 +123,9 @@ class PolicyUpsertRequest(BaseModel):
 class TargetSqlRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="Natural language prompt used to generate targeting SQL.")
     query_parser: Literal["rules", "auto", "llm"] = Field(default=os.getenv("QUERY_PARSER", "rules"))
+    # 검색·그래프 컨텍스트 스코프. 타겟팅 탭은 오디언스 절만으로 지식을 찾도록 기본 targeting.
+    # (SQL 타겟 추출은 스코프와 무관하게 전체 문장 기준으로 동일하게 생성된다.)
+    retrieval_scope: Literal["targeting", "channel", "all"] = Field(default="targeting")
     generate_answer: bool = False
     generate_messages: bool = False
     message_generation_options: MessageGenerationOptions | None = None
@@ -137,6 +141,22 @@ class TargetSqlRequest(BaseModel):
     persist_targeting: bool = True
     audience_ttl_days: int = Field(default=_env_int("TARGET_SQL_AUDIENCE_TTL_DAYS", 90), ge=1)
     include_debug: bool = False
+
+
+class RetrieveTraceRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, description="추론 과정을 추적할 자연어 프롬프트.")
+    query_parser: Literal["rules", "auto", "llm"] = Field(default=os.getenv("QUERY_PARSER", "rules"))
+    # 타겟팅 탭의 관계그래프 추적이므로 검색·그래프 컨텍스트는 기본 targeting 스코프.
+    retrieval_scope: Literal["targeting", "channel", "all"] = Field(default="targeting")
+    collection: str = Field(default=os.getenv("QDRANT_GRAPH_COLLECTION", DEFAULT_COLLECTION))
+    # 트레이스는 벡터 단계를 보여주려는 목적이라 기본 top_k를 켜둔다(/target-sql 은 벡터 0 기본).
+    vector_top_k: int = Field(default=_env_int("GRAPH_RAG_TRACE_VECTOR_TOP_K", 8), ge=0)
+    keyword_top_k: int = Field(default=_env_int("GRAPH_RAG_TRACE_KEYWORD_TOP_K", 8), ge=0)
+    graph_top_k: int = Field(default=_env_int("GRAPH_RAG_GRAPH_TOP_K", 15), ge=1)
+    hops: int = Field(default=_env_int("GRAPH_RAG_HOPS", 2), ge=0)
+    sql_limit: int = Field(default=_env_int("GRAPH_RAG_SQL_LIMIT", DEFAULT_LIMIT), ge=1)
+    execute: bool = Field(default=False, description="true면 검증 SQL을 실제 DB에서 실행해 카운트/샘플까지 포함.")
+    result_row_limit: int = Field(default=_env_int("TARGET_SQL_RESULT_ROW_LIMIT", 100), ge=1)
 
 
 class ChannelMessagesRequest(BaseModel):
@@ -347,6 +367,7 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
                 message_generation_options=_resolve_message_generation_options(request.message_generation_options),
                 message_policy=Path(os.getenv("GRAPH_RAG_MESSAGE_POLICY", DEFAULT_MESSAGE_POLICY_PATH)),
                 prompt_dir=Path(os.getenv("GRAPH_RAG_PROMPT_DIR", DEFAULT_PROMPT_DIR)),
+                retrieval_scope=request.retrieval_scope,
             )
         retrieve_elapsed_ms = _elapsed_ms(retrieve_started_at)
     except ValueError as exc:
@@ -384,6 +405,7 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
         api_response.get("sql"),
         request.execute_sql,
         request.result_row_limit,
+        target_connection=api_response.get("target_connection"),
         persist_targeting=request.persist_targeting,
         audience_ttl_days=request.audience_ttl_days,
         prompt=request.prompt,
@@ -444,6 +466,61 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
         }
 
     return api_response
+
+
+@app.post("/api/target-sql/trace")
+@app.post("/target-sql/trace")
+def target_sql_trace(request: RetrieveTraceRequest) -> dict[str, Any]:
+    """프롬프트의 의미 추론(정규화/Query Plan) → 벡터검색 → 키워드검색 → Graph 확장 →
+    SQL 생성/검증 을 단계별로 반환한다(시연/디버깅용). generate_answer/messages 는 호출하지 않는다."""
+    graph = getattr(app.state, "graph", None)
+    if graph is None:
+        raise HTTPException(status_code=503, detail=getattr(app.state, "startup_error", "graph_not_loaded"))
+
+    try:
+        with rag_llm_run_scope():
+            result = retrieve(
+                query=request.prompt,
+                graph=graph,
+                collection=request.collection,
+                url=os.getenv("QDRANT_URL", "http://localhost:6333"),
+                api_key=os.getenv("QDRANT_API_KEY"),
+                embedding_model_name=os.getenv("QDRANT_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL),
+                vector_top_k=request.vector_top_k,
+                keyword_top_k=request.keyword_top_k,
+                graph_top_k=request.graph_top_k,
+                hops=request.hops,
+                sql_limit=request.sql_limit,
+                query_parser=request.query_parser,
+                llm_model=os.getenv("OPENAI_MODEL", DEFAULT_LLM_MODEL),
+                generate_answer=False,
+                generate_messages=False,
+                retrieval_scope=request.retrieval_scope,
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"target_sql_trace_failed:{exc.__class__.__name__}") from exc
+
+    trace = build_retrieve_trace(result)
+    if request.execute:
+        api_response = result["api_response"]
+        execution = execute_target_sql(
+            api_response.get("sql"),
+            True,
+            request.result_row_limit,
+            target_connection=api_response.get("target_connection"),
+            persist_targeting=False,
+            prompt=request.prompt,
+            query_parser=request.query_parser,
+            request_options={},
+            query_plan=result.get("query_plan", {}),
+        )
+        trace["execution"] = {
+            "is_success": execution.get("is_success"),
+            "targeting_result": execution.get("targeting_result", {}),
+        }
+    return trace
 
 
 @app.post("/channel-messages")
@@ -3319,11 +3396,244 @@ def _json_default(value: Any) -> Any:
     return converted
 
 
+# 외부 읽기전용 실DB. 이 커넥션들로 라우팅되는 타겟 SQL 은 psycopg(로컬 postgres)가 아니라
+# db_connections.run_read_query 로 실행한다.
+_EXTERNAL_TARGET_DBS = {"CRMAN", "CRMDW", "quadmax_sdz"}
+# 고객 수 집계에 쓸 식별자 컬럼 후보(대소문자 무시).
+_CUSTOMER_ID_COLUMNS = ("cust_id", "user_id", "customer_id", "member_no", "member_id")
+
+
+def _customer_id_column(columns: list[str]) -> str | None:
+    for column in columns:
+        if column.casefold() in _CUSTOMER_ID_COLUMNS:
+            return column
+    return columns[0] if columns else None
+
+
+# 외부 실DB 세그먼트 집계에 쓸 회원 기준 테이블/속성 컬럼. 회원기본정보가 있는 커넥션만 등록한다.
+# (CRMAN 에는 CRM_MB_BASEINFO 가 없어 제외 — 등록되지 않은 커넥션은 빈 세그먼트를 반환한다.)
+_EXTERNAL_MEMBER_SCHEMA = {
+    "CRMDW": {
+        "table": "CRM_MB_BASEINFO",
+        "member_no_column": "MEMBER_NO",  # 숫자형 회원식별자(대상 SQL 의 CUST_ID 관례가 이 값)
+        "member_id_column": "MEMBER_ID",  # 문자형 회원식별자
+        "gender_column": "GENDER_CD",
+        "age_column": "AGE",
+        "region_column": "SIDO",
+    },
+}
+
+
+def _execute_external_target_sql(
+    sql: str,
+    connection: str,
+    result_row_limit: int,
+    *,
+    query_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """외부 실DB(CRMDW/CRMAN/quadmax_sdz)에서 타겟 SQL 을 실행해 카운트/샘플을 채운다.
+
+    세그먼트 구성은 로컬 데모 스키마가 아니라 실DB 회원 테이블(CRM_MB_BASEINFO) 기준으로
+    집계하므로, 회원 테이블이 등록된 커넥션(CRMDW)에서만 채워지고 그 외에는 비어 있다.
+    오디언스 저장 등 로컬 postgres 스키마에 의존하는 기능은 외부 DB 대상일 때 건너뛴다.
+    행수는 생성 SQL 에 이미 부여된 방언별 제한(MSSQL=TOP n)으로 bounded 된다.
+    """
+    from db_connections import run_read_query
+
+    try:
+        rows = run_read_query(connection, sql)  # enforce_select=True → 방언별 행수제한 자동 부착
+    except Exception as exc:
+        return _database_execution_error(f"{connection.lower()}_execution_failed", exc)
+
+    jsonable_rows = [_jsonable_record(row) for row in rows]
+    columns = list(jsonable_rows[0].keys()) if jsonable_rows else []
+    sample_rows = jsonable_rows[: max(1, int(result_row_limit))]
+
+    customer_column = _customer_id_column(columns)
+    if customer_column is not None:
+        target_customer_count = len(
+            {row.get(customer_column) for row in jsonable_rows if row.get(customer_column) is not None}
+        )
+    else:
+        target_customer_count = 0
+
+    targeting_result = {
+        "result_row_count": len(jsonable_rows),
+        "target_customer_count": target_customer_count,
+        "target_campaign_count": 0,
+        "sample_rows": sample_rows,
+    }
+    segment_composition = _external_segment_composition(connection, sql, columns)
+    return {
+        "is_success": True,
+        "mode": f"{connection}_read_only",
+        "failure_reason": None,
+        "executed_sql": sql,
+        "result_columns": columns,
+        "rows": sample_rows,
+        "row_limit": result_row_limit,
+        "audience": _audience_skipped("external_db_persist_not_supported"),
+        "targeting_result": targeting_result,
+        "segment_composition": segment_composition,
+        "segment_presentation": _external_segment_presentation(segment_composition, query_plan or {}),
+        "campaign_context_nodes": [],
+    }
+
+
+def _external_segment_composition(connection: str, sql: str, columns: list[str]) -> dict[str, Any]:
+    """외부 실DB 대상 회원을 회원기본정보에 조인해 성별·연령대·지역 구성을 집계한다.
+
+    대상 SQL 을 한 번만 감싸 회원별 속성(성별코드/나이/시도)을 조회하고, 집계는 파이썬에서
+    수행한다(방언 독립). 회원 테이블이 등록되지 않은 커넥션이나 조인 실패 시 빈 구성을 반환하며,
+    이는 타겟 카운트/샘플 결과에는 영향을 주지 않는다.
+    """
+    schema = _EXTERNAL_MEMBER_SCHEMA.get(connection)
+    if schema is None:
+        return {}
+    id_column = _customer_id_column(columns)
+    if not id_column:
+        return {}
+    # 대상 결과의 식별자 컬럼이 문자형 MEMBER_ID 관례면 MEMBER_ID 로, 그 외(CUST_ID/MEMBER_NO 등)는 MEMBER_NO 로 조인한다.
+    join_column = (
+        schema["member_id_column"] if id_column.casefold() == "member_id" else schema["member_no_column"]
+    )
+    target_sql = _strip_sql_for_subquery(sql)
+    attribute_sql = f"""
+        WITH target_result AS (
+            {target_sql}
+        ),
+        target_members AS (
+            SELECT DISTINCT {id_column} AS member_key FROM target_result
+        )
+        SELECT
+            b.{schema['member_no_column']} AS member_no,
+            b.{schema['gender_column']} AS gender_cd,
+            b.{schema['age_column']} AS age,
+            b.{schema['region_column']} AS sido
+        FROM target_members t
+        JOIN {schema['table']} b WITH(NOLOCK) ON b.{join_column} = t.member_key
+    """
+
+    from db_connections import run_read_query
+
+    try:
+        rows = run_read_query(connection, attribute_sql)
+    except Exception:
+        return {}
+
+    seen: set[Any] = set()
+    gender: dict[str, int] = {}
+    age_band: dict[str, int] = {}
+    region: dict[str, int] = {}
+    for row in rows:
+        member_no = row.get("member_no")
+        if member_no in seen:
+            continue
+        seen.add(member_no)
+        _bump_counter(gender, _gender_label(row.get("gender_cd")))
+        _bump_counter(age_band, _age_band_label(row.get("age")))
+        _bump_counter(region, _region_label(row.get("sido")))
+
+    composition: dict[str, Any] = {}
+    if gender:
+        composition["gender"] = _counts_to_segments(gender)
+    if age_band:
+        composition["age_band"] = _counts_to_segments(age_band, sort_key=_age_band_sort_key)
+    if region:
+        composition["region"] = _counts_to_segments(region)
+    return composition
+
+
+def _external_segment_presentation(composition: dict[str, Any], query_plan: dict[str, Any]) -> dict[str, Any]:
+    """외부 실DB 세그먼트 구성을 화면 노출용으로 변환한다.
+
+    로컬 스키마 기반 _segment_relevance 는 실DB 축(지역 등)을 다루지 않으므로, 실DB 에서
+    계산 가능한 축은 모두 노출하되 질문이 직접 지정한 축(성별·연령 등)을 우선 정렬한다.
+    """
+    if not composition:
+        return _empty_segment_presentation()
+    relevance = _segment_relevance(query_plan or {})
+    groups: list[dict[str, Any]] = []
+    for key, segments in composition.items():
+        record = relevance.get(key)
+        priority = record["priority"] if record else SEGMENT_PRIORITY_AUXILIARY
+        reason = record["reason"] if record else "추출된 타겟 고객의 실제 구성"
+        groups.append(
+            {
+                "key": key,
+                "title": SEGMENT_GROUP_TITLES.get(key, key),
+                "priority": priority,
+                "reason": reason,
+                "segments": [
+                    {"label": segment.get("value"), "count": segment.get("count")}
+                    for segment in (segments or [])
+                ],
+            }
+        )
+    groups.sort(key=lambda group: (group["priority"], group["key"]))
+    return {"relevant_groups": groups, "hidden_group_keys": []}
+
+
+def _bump_counter(counter: dict[str, int], key: str) -> None:
+    counter[key] = counter.get(key, 0) + 1
+
+
+def _gender_label(code: Any) -> str:
+    if code is None:
+        return "미상"
+    text = str(code).strip()
+    if not text:
+        return "미상"
+    mapping = {"GENDER_CD.FEMALE": "여성", "GENDER_CD.MALE": "남성"}
+    if text in mapping:
+        return mapping[text]
+    return text.rsplit(".", 1)[-1] if text.startswith("GENDER_CD.") else text
+
+
+def _age_band_label(age: Any) -> str:
+    if age is None:
+        return "미상"
+    try:
+        value = int(age)
+    except (TypeError, ValueError):
+        return "미상"
+    if value < 0 or value > 120:
+        return "미상"
+    return f"{(value // 10) * 10}대"
+
+
+def _age_band_sort_key(value: str) -> tuple[int, int]:
+    digits = "".join(ch for ch in value if ch.isdigit())
+    # 숫자 연령대 먼저(오름차순), '미상' 같은 비숫자 라벨은 뒤로.
+    return (0, int(digits)) if digits else (1, 0)
+
+
+def _region_label(sido: Any) -> str:
+    if sido is None:
+        return "미상"
+    text = str(sido).strip()
+    return text or "미상"
+
+
+def _counts_to_segments(
+    counter: dict[str, int],
+    *,
+    sort_key: Any = None,
+) -> list[dict[str, Any]]:
+    items = list(counter.items())
+    if sort_key is None:
+        items.sort(key=lambda kv: (-kv[1], kv[0]))
+    else:
+        items.sort(key=lambda kv: sort_key(kv[0]))
+    return [{"value": value, "count": count} for value, count in items]
+
+
 def execute_target_sql(
     sql: str | None,
     execute_sql: bool,
     result_row_limit: int,
     *,
+    target_connection: str | None = None,
     persist_targeting: bool = False,
     audience_ttl_days: int = 90,
     prompt: str | None = None,
@@ -3335,6 +3645,12 @@ def execute_target_sql(
         return _database_execution_skipped("disabled_by_request")
     if not sql:
         return _database_execution_skipped("sql_result_missing")
+
+    # 외부 실DB(CRMDW/CRMAN/quadmax_sdz) 대상이면 해당 DB에서 실행한다(카운트/샘플만).
+    if target_connection in _EXTERNAL_TARGET_DBS:
+        return _execute_external_target_sql(
+            sql, target_connection, result_row_limit, query_plan=query_plan
+        )
 
     try:
         import psycopg

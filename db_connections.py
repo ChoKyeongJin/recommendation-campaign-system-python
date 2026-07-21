@@ -25,7 +25,7 @@ import os
 from contextlib import contextmanager
 from typing import Any, Iterator
 
-from sql_guard import DEFAULT_LIMIT, load_allowed_tables, validate_sql
+from sql_guard import load_allowed_tables, validate_sql
 
 READ_ONLY_DBS = ("quadmax_sdz", "CRMAN", "CRMDW")
 ALL_DBS = ("postgres",) + READ_ONLY_DBS
@@ -172,9 +172,14 @@ def crmdw_connection():
 # ---------------------------------------------------------------------------
 # 통합 읽기 쿼리 — read-only DB 공통 진입점
 # ---------------------------------------------------------------------------
-def _assert_select_only(sql: str) -> str:
+# DB 별 SQL 방언: MSSQL(CRMAN/CRMDW)은 tsql(TOP), 나머지는 mysql/ansi(LIMIT).
+_DB_DIALECTS = {"CRMAN": "tsql", "CRMDW": "tsql"}
+
+
+def _assert_select_only(sql: str, dialect: str | None = None) -> str:
     # 모든 read-only DB 에 대한 애플리케이션 레벨 방어선(특히 서버 레벨 강제가 없는 MSSQL).
-    result = validate_sql(sql, allowed_tables=None, default_limit=DEFAULT_LIMIT)
+    # default_limit=None → 행수 제한(LIMIT/TOP)을 붙이지 않는다(전체 결과 반환). SELECT 강제만 수행.
+    result = validate_sql(sql, allowed_tables=None, default_limit=None, dialect=dialect)
     blocking = [issue for issue in result["issues"] if issue["severity"] == "error"]
     if blocking:
         reasons = "; ".join(issue["message"] for issue in blocking)
@@ -188,7 +193,7 @@ def run_read_query(db: str, sql: str, params: Any = None, *, enforce_select: boo
     db: 'quadmax_sdz' | 'CRMAN' | 'CRMDW' | 'postgres'
     """
     if enforce_select and db in READ_ONLY_DBS:
-        sql = _assert_select_only(sql)
+        sql = _assert_select_only(sql, dialect=_DB_DIALECTS.get(db))
 
     if db == "quadmax_sdz":
         with quadmax_connection() as conn:

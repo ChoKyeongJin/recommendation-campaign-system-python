@@ -43,10 +43,84 @@ def load_allowed_tables(schema_path: Path = DEFAULT_SCHEMA_PATH) -> set[str]:
     return set(tables)
 
 
+def _database_dialect(description: str) -> str:
+    """DB 설명 문자열에서 SQL 방언을 판별한다. SQL Server 계열이면 tsql, 그 외는 mysql."""
+    lowered = description.casefold()
+    if "sql server" in lowered or "mssql" in lowered or "sqlserver" in lowered:
+        return "tsql"
+    return "mysql"
+
+
+def load_table_dialects(schema_path: Path = DEFAULT_SCHEMA_PATH) -> dict[str, str]:
+    """스키마 카탈로그에서 테이블명 -> SQL 방언('tsql'|'mysql') 매핑을 만든다.
+
+    각 테이블의 `database` 필드를 최상위 `databases` 설명에 매핑해 방언을 결정한다.
+    (예: CRMDW/CRMAN=SQL Server→tsql, quadmax_sdz=MariaDB→mysql)
+    """
+    if not schema_path.exists():
+        return {}
+    payload = json.loads(schema_path.read_text(encoding="utf-8"))
+    databases = payload.get("databases", {})
+    db_dialect = (
+        {name: _database_dialect(str(desc)) for name, desc in databases.items()}
+        if isinstance(databases, dict)
+        else {}
+    )
+    tables = payload.get("tables", {})
+    if not isinstance(tables, dict):
+        return {}
+    result: dict[str, str] = {}
+    for name, meta in tables.items():
+        if isinstance(meta, dict):
+            dialect = db_dialect.get(meta.get("database"))
+            if dialect:
+                result[name] = dialect
+    return result
+
+
+def infer_sql_dialect(tables: list[str], table_dialects: dict[str, str], default: str = "mysql") -> str:
+    """참조 테이블 중 하나라도 tsql 이면 tsql. (교차 DB 조인은 실행 불가하므로 단일 방언 가정)"""
+    for table in tables:
+        dialect = table_dialects.get(table) or table_dialects.get(table.split(".")[-1])
+        if dialect == "tsql":
+            return "tsql"
+    return default
+
+
+def load_table_databases(schema_path: Path = DEFAULT_SCHEMA_PATH) -> dict[str, str]:
+    """스키마 카탈로그에서 테이블명 -> 소속 DB/커넥션명(CRMDW|CRMAN|quadmax_sdz) 매핑."""
+    if not schema_path.exists():
+        return {}
+    payload = json.loads(schema_path.read_text(encoding="utf-8"))
+    tables = payload.get("tables", {})
+    if not isinstance(tables, dict):
+        return {}
+    return {
+        name: meta["database"]
+        for name, meta in tables.items()
+        if isinstance(meta, dict) and meta.get("database")
+    }
+
+
+def infer_target_connection(tables: list[str], table_databases: dict[str, str]) -> str | None:
+    """참조 테이블 중 카탈로그에 등록된 외부 DB가 있으면 그 커넥션명을 반환한다(없으면 None=로컬).
+
+    카탈로그에는 외부 실DB(CRMDW/CRMAN/quadmax_sdz) 테이블만 등록돼 있고, 로컬 postgres
+    데모 테이블(users/campaigns 등)은 없다. 따라서 매칭되는 테이블의 database 가 곧 실행 대상.
+    """
+    for table in tables:
+        connection = table_databases.get(table) or table_databases.get(table.split(".")[-1])
+        if connection:
+            return connection
+    return None
+
+
 def validate_sql(
     sql: str,
     allowed_tables: set[str] | None = None,
-    default_limit: int = DEFAULT_LIMIT,
+    default_limit: int | None = DEFAULT_LIMIT,
+    dialect: str | None = None,
+    table_dialects: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     cleaned_sql = _strip_sql_comments(sql).strip()
     statements = _sql_statements(cleaned_sql)
@@ -86,16 +160,30 @@ def validate_sql(
             )
         )
 
-    safe_sql = _ensure_limit(statement, default_limit) if is_select else statement
-    if is_select and safe_sql != statement:
-        issues.append(_issue("limit_added", "warning", f"Default LIMIT {default_limit} was added."))
+    resolved_dialect = dialect or infer_sql_dialect(tables, table_dialects or {})
 
-    if is_select and not re.search(r"\bwhere\b", lowered_statement) and not re.search(r"\blimit\b", lowered_statement):
-        issues.append(_issue("unbounded_scan", "warning", "Query has no WHERE clause; default LIMIT is required."))
+    # default_limit is None → 행수 제한을 붙이지 않는다(전체 결과 반환).
+    if is_select and default_limit is not None:
+        safe_sql = _apply_row_limit(statement, default_limit, resolved_dialect)
+    else:
+        safe_sql = statement
+    if is_select and safe_sql != statement:
+        clause = "TOP" if resolved_dialect == "tsql" else "LIMIT"
+        issues.append(_issue("limit_added", "warning", f"Default {clause} {default_limit} was added."))
+
+    if (
+        is_select
+        and default_limit is not None
+        and not re.search(r"\bwhere\b", lowered_statement)
+        and not re.search(r"\b(?:limit|top)\b", lowered_statement)
+    ):
+        issues.append(_issue("unbounded_scan", "warning", "Query has no WHERE clause; default row limit is required."))
 
     masked_sql = _mask_sensitive_select_columns(safe_sql)
     is_valid = not any(issue["severity"] == "error" for issue in issues)
-    return _result(is_valid, statement, safe_sql, tables, sensitive_columns, issues, masked_sql=masked_sql)
+    return _result(
+        is_valid, statement, safe_sql, tables, sensitive_columns, issues, masked_sql=masked_sql, dialect=resolved_dialect
+    )
 
 
 def _strip_sql_comments(sql: str) -> str:
@@ -222,10 +310,52 @@ def _column_name(select_item: str) -> str:
     return token.split(".")[-1].strip('"')
 
 
+def _apply_row_limit(sql: str, default_limit: int, dialect: str) -> str:
+    if dialect == "tsql":
+        return _ensure_top(sql, default_limit)
+    return _ensure_limit(sql, default_limit)
+
+
 def _ensure_limit(sql: str, default_limit: int) -> str:
     if re.search(r"\blimit\s+\d+\b", sql, re.IGNORECASE):
         return sql
     return sql.rstrip().rstrip(";") + f" LIMIT {default_limit}"
+
+
+def _ensure_top(sql: str, default_limit: int) -> str:
+    """SQL Server(T-SQL)용 행수 제한: 외곽 SELECT 뒤에 TOP n 을 주입한다.
+
+    이미 TOP 또는 OFFSET/FETCH 로 제한돼 있으면 그대로 둔다. LIMIT 은 T-SQL 에서 무효라 붙이지 않는다.
+    """
+    if re.search(r"\btop\s*\(?\s*\d+", sql, re.IGNORECASE):
+        return sql
+    if re.search(r"\boffset\b\s+\d+\s+rows?\b", sql, re.IGNORECASE):
+        return sql
+    span = _outer_select_span(sql)
+    if span is None:
+        return sql
+    end = span[1]
+    return sql[:end] + f" TOP {default_limit}" + sql[end:]
+
+
+def _outer_select_span(sql: str) -> tuple[int, int] | None:
+    """최외곽(파렌 깊이 0) 쿼리의 'SELECT [DISTINCT]' 구간 (start, end) 을 반환한다.
+
+    서브쿼리/CTE 내부 SELECT(깊이>0)는 건너뛴다. WITH ... SELECT 는 CTE 정의가 괄호 안이므로
+    본 SELECT 가 마지막 깊이 0 SELECT 로 잡힌다.
+    """
+    depth = 0
+    span: tuple[int, int] | None = None
+    for match in re.finditer(r"[()]|\bselect\b(?:\s+distinct\b)?", sql, re.IGNORECASE):
+        token = match.group(0)
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            if depth > 0:
+                depth -= 1
+        elif depth == 0:
+            span = (match.start(), match.end())
+    return span
 
 
 def _issue(code: str, severity: str, message: str) -> dict[str, str]:
@@ -240,6 +370,7 @@ def _result(
     sensitive_columns: list[str],
     issues: list[dict[str, str]],
     masked_sql: str | None = None,
+    dialect: str = "mysql",
 ) -> dict[str, Any]:
     return {
         "is_valid": is_valid,
@@ -248,6 +379,7 @@ def _result(
         "masked_sql": masked_sql or safe_sql,
         "tables": tables,
         "sensitive_columns": sensitive_columns,
+        "dialect": dialect,
         "issues": issues,
     }
 
@@ -256,13 +388,25 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Validate generated SQL for NL2SQL safety rules.")
     parser.add_argument("sql", help="SQL statement to validate.")
     parser.add_argument("--schema", type=Path, default=DEFAULT_SCHEMA_PATH, help="Schema catalog JSON for allowed tables.")
-    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="Default LIMIT to add when missing.")
+    parser.add_argument("--limit", type=int, default=DEFAULT_LIMIT, help="Default row limit to add when missing.")
+    parser.add_argument(
+        "--dialect",
+        choices=["mysql", "tsql"],
+        default=None,
+        help="Force SQL dialect for row limiting (default: inferred from schema catalog per table).",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    result = validate_sql(args.sql, allowed_tables=load_allowed_tables(args.schema), default_limit=args.limit)
+    result = validate_sql(
+        args.sql,
+        allowed_tables=load_allowed_tables(args.schema),
+        default_limit=args.limit,
+        dialect=args.dialect,
+        table_dialects=load_table_dialects(args.schema),
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

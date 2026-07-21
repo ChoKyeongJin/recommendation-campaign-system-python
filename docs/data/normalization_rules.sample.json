@@ -148,6 +148,54 @@
       ]
     },
     {
+      "rule_id": "gold_grade",
+      "canonical": "gold_grade",
+      "ko_label": "골드 등급",
+      "synonyms": [
+        "골드 등급",
+        "골드등급",
+        "골드 회원",
+        "gold grade",
+        "gold_grade"
+      ]
+    },
+    {
+      "rule_id": "silver_grade",
+      "canonical": "silver_grade",
+      "ko_label": "실버 등급",
+      "synonyms": [
+        "실버 등급",
+        "실버등급",
+        "실버 회원",
+        "silver grade",
+        "silver_grade"
+      ]
+    },
+    {
+      "rule_id": "family_grade",
+      "canonical": "family_grade",
+      "ko_label": "패밀리 등급",
+      "synonyms": [
+        "패밀리 등급",
+        "패밀리등급",
+        "패밀리 회원",
+        "family grade",
+        "family_grade"
+      ]
+    },
+    {
+      "rule_id": "welcome_grade",
+      "canonical": "welcome_grade",
+      "ko_label": "웰컴 등급",
+      "synonyms": [
+        "웰컴 등급",
+        "웰컴등급",
+        "웰컴 회원",
+        "welcome grade",
+        "welcome_grade"
+      ]
+    },
+    {
       "rule_id": "price_sensitive",
       "canonical": "price_sensitive",
       "ko_label": "가격 민감 고객",
