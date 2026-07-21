@@ -1706,6 +1706,12 @@ def retrieve(
     return {
         "query": query,
         "prompt_normalization": prompt_normalization,
+        "retrieval_scope": scope,
+        "prompt_scopes": {
+            "mode": query_plan["retrieval"].get("scope_mode"),
+            "targeting": query_plan["retrieval"].get("targeting_query"),
+            "channel": query_plan["retrieval"].get("channel_query"),
+        },
         "query_plan": query_plan,
         "collection": collection,
         "stage_log": stage_log,
