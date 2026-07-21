@@ -1038,7 +1038,7 @@ def _infer_objective(query: str) -> str | None:
         return "repurchase"
     if _is_reactivation_goal_context(query):
         return "reactivation"
-    if any(keyword in compact_query for keyword in ("구매", "전환", "매출", "purchase", "conversion", "판매", "팔고", "팔려", "sell")):
+    if any(keyword in compact_query for keyword in ("구매", "구입", "전환", "매출", "purchase", "conversion", "판매", "팔고", "팔려", "sell")):
         return "purchase"
     if any(keyword in compact_query for keyword in ("구독", "subscription")):
         return "subscription"
@@ -1119,7 +1119,10 @@ def _valid_age(value: str) -> int | None:
 
 
 def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> None:
-    match = re.search(r"(?P<object>[0-9A-Za-z가-힣_+\- ]{1,40})\s*(?:을|를)?\s*구매한", query, re.IGNORECASE)
+    # "…을/를 구매한/구입한/구매했던/구입하신 …" — 구매·구입은 동의어이므로 둘 다 상품 구매 이력으로 본다.
+    # object 클래스에 공백을 넣지 않아 "를/을" 직전 상품 명사만 잡는다. (공백 허용 시 "40대 여성 중
+    # 기저귀를 구매한" 처럼 앞 절 조건까지 삼켜 LIKE 가 무의미해지므로) 상품 카테고리 단어면 재현율에 충분하다.
+    match = re.search(r"(?P<object>[0-9A-Za-z가-힣_+\-]{1,40})\s*(?:을|를)?\s*(?:구매|구입)(?:한|했던|하신)", query, re.IGNORECASE)
     if not match:
         return
     purchase_object = _sanitize_purchase_object(match.group("object"))
