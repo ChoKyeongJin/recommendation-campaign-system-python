@@ -1877,16 +1877,22 @@ def merge_hits(hits: list[SearchHit]) -> list[SearchHit]:
 def expand_context(graph: nx.Graph, hits: list[SearchHit], hops: int, limit: int) -> list[dict[str, Any]]:
     scores: dict[str, float] = {}
     reasons: dict[str, list[str]] = {}
+    # 각 노드까지의 '대표 경로'(점수 최고 seed에서 최단 경로)를 함께 보관해,
+    # UI가 어떤 출발점에서 어떤 관계를 타고 확장됐는지 그대로 보여줄 수 있게 한다.
+    best_paths: dict[str, list[str]] = {}
     seed_scores = {hit.node_id: hit.score for hit in hits}
 
     for hit in hits:
         if hit.node_id not in graph:
             continue
-        lengths = nx.single_source_shortest_path_length(graph, hit.node_id, cutoff=hops)
-        for node_id, distance in lengths.items():
+        # _length 대신 실제 경로를 받아, distance(=len(path)-1)와 확장 경로를 동시에 얻는다.
+        paths = nx.single_source_shortest_path(graph, hit.node_id, cutoff=hops)
+        for node_id, path in paths.items():
+            distance = len(path) - 1
             graph_score = hit.score / (1 + distance * 0.35)
             if graph_score > scores.get(node_id, 0.0):
                 scores[node_id] = graph_score
+                best_paths[node_id] = path
             reasons.setdefault(node_id, []).append(f"seed={hit.node_id}, distance={distance}")
 
     ordered_node_ids = sorted(scores, key=lambda node_id: scores[node_id], reverse=True)[:limit]
@@ -1901,11 +1907,38 @@ def expand_context(graph: nx.Graph, hits: list[SearchHit], hops: int, limit: int
                 "score": round(scores[node_id], 6),
                 "seed_score": round(seed_scores.get(node_id, 0.0), 6) if node_id in seed_scores else None,
                 "reasons": reasons[node_id][:3],
+                "path": _describe_path(graph, best_paths.get(node_id, [node_id])),
                 "neighbors": _neighbor_summary(graph, node_id),
                 "payload": _compact_payload(node_data["payload"]),
             }
         )
     return context
+
+
+def _describe_path(graph: nx.Graph, path_ids: list[str]) -> list[dict[str, Any]]:
+    """출발점(seed)→목표 노드까지의 경로를 관계명과 함께 사람이 읽을 수 있는 형태로 만든다.
+
+    각 원소는 {id, title, type, relation}이며 relation 은 '직전 노드에서 이 노드로 온 엣지'의
+    관계명(첫 노드=seed 는 None)이다. UI 브레드크럼(A ─relation→ B ─relation→ C)에 그대로 쓴다.
+    """
+    described: list[dict[str, Any]] = []
+    previous_id: str | None = None
+    for node_id in path_ids:
+        node_data = graph.nodes[node_id]
+        relation = None
+        if previous_id is not None:
+            edge_data = graph.get_edge_data(previous_id, node_id) or {}
+            relation = edge_data.get("relation", "related")
+        described.append(
+            {
+                "id": node_id,
+                "title": node_data.get("title", node_id),
+                "type": node_data.get("node_type", "unknown"),
+                "relation": relation,
+            }
+        )
+        previous_id = node_id
+    return described
 
 
 def render_prompt_context(context_nodes: list[dict[str, Any]]) -> str:
