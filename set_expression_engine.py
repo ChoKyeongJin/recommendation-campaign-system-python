@@ -108,7 +108,12 @@ def _set_expression_result(query: str, ast: dict[str, Any]) -> dict[str, Any]:
 def _parse_korean_natural_set_expression(query: str, term_catalog: list[dict[str, str]]) -> dict[str, Any] | None:
     working_query = _strip_query_tail(query)
     include_text, exclude_text = _split_exclusion_clause(working_query)
-    has_natural_structure = exclude_text is not None or re.search(r"대상으로|포함|남기고|그중|중에서", include_text)
+    # "대상으로"만 있는 문장("20대 여성 고객을 대상으로 …")은 집합 연산이 아니라 그냥 "누구를 타겟한다"는
+    # 뜻이므로 집합식으로 보지 않는다. 실제 집합 연산은 포함/남기고(대상으로 하되 X만 포함)나 제외/그중/
+    # 중에서 같은 정제 표지가 있을 때만 성립한다. (포함/남기고가 있으면 _split_required_include_clauses 가
+    # "대상으로"를 기준으로 base/required 를 나눈다.) 이 표지 없이 "대상으로"만으로 집합식을 만들면
+    # "20대 여성"이 age_20s * female 교집합(실DB 미지원)이 돼 연령·성별이 통째로 사라지고 SQL 이 막혔다.
+    has_natural_structure = exclude_text is not None or re.search(r"포함|남기고|그중|중에서", include_text)
     if not has_natural_structure:
         return None
 
