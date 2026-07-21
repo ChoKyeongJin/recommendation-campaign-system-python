@@ -123,6 +123,9 @@ class PolicyUpsertRequest(BaseModel):
 class TargetSqlRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="Natural language prompt used to generate targeting SQL.")
     query_parser: Literal["rules", "auto", "llm"] = Field(default=os.getenv("QUERY_PARSER", "rules"))
+    # 검색·그래프 컨텍스트 스코프. 타겟팅 탭은 오디언스 절만으로 지식을 찾도록 기본 targeting.
+    # (SQL 타겟 추출은 스코프와 무관하게 전체 문장 기준으로 동일하게 생성된다.)
+    retrieval_scope: Literal["targeting", "channel", "all"] = Field(default="targeting")
     generate_answer: bool = False
     generate_messages: bool = False
     message_generation_options: MessageGenerationOptions | None = None
@@ -143,6 +146,8 @@ class TargetSqlRequest(BaseModel):
 class RetrieveTraceRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="추론 과정을 추적할 자연어 프롬프트.")
     query_parser: Literal["rules", "auto", "llm"] = Field(default=os.getenv("QUERY_PARSER", "rules"))
+    # 타겟팅 탭의 관계그래프 추적이므로 검색·그래프 컨텍스트는 기본 targeting 스코프.
+    retrieval_scope: Literal["targeting", "channel", "all"] = Field(default="targeting")
     collection: str = Field(default=os.getenv("QDRANT_GRAPH_COLLECTION", DEFAULT_COLLECTION))
     # 트레이스는 벡터 단계를 보여주려는 목적이라 기본 top_k를 켜둔다(/target-sql 은 벡터 0 기본).
     vector_top_k: int = Field(default=_env_int("GRAPH_RAG_TRACE_VECTOR_TOP_K", 8), ge=0)
@@ -362,6 +367,7 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
                 message_generation_options=_resolve_message_generation_options(request.message_generation_options),
                 message_policy=Path(os.getenv("GRAPH_RAG_MESSAGE_POLICY", DEFAULT_MESSAGE_POLICY_PATH)),
                 prompt_dir=Path(os.getenv("GRAPH_RAG_PROMPT_DIR", DEFAULT_PROMPT_DIR)),
+                retrieval_scope=request.retrieval_scope,
             )
         retrieve_elapsed_ms = _elapsed_ms(retrieve_started_at)
     except ValueError as exc:
@@ -489,6 +495,7 @@ def target_sql_trace(request: RetrieveTraceRequest) -> dict[str, Any]:
                 llm_model=os.getenv("OPENAI_MODEL", DEFAULT_LLM_MODEL),
                 generate_answer=False,
                 generate_messages=False,
+                retrieval_scope=request.retrieval_scope,
             )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
