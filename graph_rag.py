@@ -4256,12 +4256,13 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
 def build_member_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     """실회원 테이블 CRM_MB_BASEINFO 로 타겟 대상 추출 SQL 을 생성한다(compile_member_target_conditions 기반).
 
-    지원 속성(성별·연령·등급/생애주기 포함·제외)만으로 대상이 정해지면 실DB SQL 을 낸다. 미지원 조건이
-    하나라도 섞이거나 회원 대상 신호가 전혀 없으면(objective 만) None 을 돌려 기존 템플릿 경로로 넘긴다
-    (조건을 조용히 누락하지 않기 위함).
+    부분 추출 + 고지 정책: 실DB로 해석 가능한 회원 신호(성별·연령·등급/생애주기)가 하나라도 있으면
+    그 조건들로 SQL 을 만들고, 실컬럼이 없어 뺀 조건(예: 관심사)은 candidate 의 dropped_conditions 에
+    담아 함께 고지한다(조용한 누락 방지). 회원 신호가 전혀 없으면(objective/관심사만) None 을 돌려
+    기존 템플릿 경로로 넘긴다.
     """
     compiled = compile_member_target_conditions(query_plan)
-    if compiled["unsupported"] or not compiled["has_signal"]:
+    if not compiled["has_signal"]:
         return None
 
     where_clauses = list(compiled["predicates"])
