@@ -4,7 +4,9 @@
   "source": {
     "dimension_table": "quadmax_sdz.t_xlig_dimension_list",
     "query_prompt_table": "quadmax_sdz.t_xlig_query_prompt",
-    "filter": "ML_DS_DIV_CD='DS' AND DEL_F='N'"
+    "filter": "ML_DS_DIV_CD='DS' AND DEL_F='N'",
+    "ml_hierarchy_table": "quadmax_sdz.t_xlig_hierarchy_list",
+    "ml_filter": "ML_DS_DIV_CD='ML' 디멘션을 t_xlig_dimension_list.DBMS_ID = t_xlig_hierarchy_list.ML_ID 로 연결하고 ML_DBMS_ID='QUADMAX_SDZ' 인 계층(ml_qry_nm/ml_qry)만 ml_hierarchy 로 부착"
   },
   "value_resolution": "dynamic",
   "value_column_convention": "DS_SQL 결과의 첫 컬럼=코드, 둘째 컬럼=이름",
@@ -12,7 +14,7 @@
     "CRMDW": "CRMDW",
     "QUADMAX_SDZ": "quadmax_sdz"
   },
-  "dimension_count": 139,
+  "dimension_count": 154,
   "dimensions": [
     {
       "dimension_id": "SMS수신동의여부",
@@ -2097,6 +2099,537 @@
       "target_table": null,
       "target_column": null,
       "ds_sql": "SELECT A.AGE_DIV1_CD AS CD\r\n     , A.AGE_DIV1_NM AS CD_NAME\r\n  FROM QUADMAX_SDZ_MART.Z_CUST_INFO A\r\n GROUP BY A.AGE_DIV1_CD\r\n        , A.AGE_DIV1_NM"
+    },
+    {
+      "dimension_id": "TEST_J",
+      "prompt_label": "TEST_J",
+      "prmp_kwd": "@@TEST_J@@",
+      "prmp_kwd_nm": "TEST_J",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20240520130757",
+      "operator": "=",
+      "synonyms": [
+        "TEST_J"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "대분류",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT A.CATE_NO AS CD  \r\n     , A.CATE_NM AS CD_NM \r\n  FROM QUADMAX_SDZ.T_CATE_TEMP A\r\n WHERE A.DEPT_LVL = '1'\r\n ORDER BY A.CATE_NO"
+        },
+        {
+          "seq": 2,
+          "level_name": "중분류",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NO ELSE B.CATE_NO END CD   \r\n              ,  CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NM ELSE B.CATE_NM END CD_NM\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP A\r\n       LEFT OUTER JOIN QUADMAX_SDZ.T_CATE_TEMP B\r\n    ON A.CATE_NO = B.PRNT_NO\r\n WHERE 1=1\r\n [AND A.CATE_NO IN @@대분류@@]"
+        },
+        {
+          "seq": 3,
+          "level_name": "소분류",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NO ELSE B.CATE_NO END CD\r\n     , CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NM ELSE B.CATE_NM END CD_NM\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP A\r\n       LEFT OUTER JOIN QUADMAX_SDZ.T_CATE_TEMP B\r\n    ON A.CATE_NO = B.PRNT_NO\r\n WHERE 1=1\r\n [AND A.CATE_NO IN @@중분류@@]"
+        },
+        {
+          "seq": 4,
+          "level_name": "상세",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NO ELSE B.CATE_NO END CD\r\n     , CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NM ELSE B.CATE_NM END CD_NM\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP A\r\n       LEFT OUTER JOIN QUADMAX_SDZ.T_CATE_TEMP B\r\n    ON A.CATE_NO = B.PRNT_NO\r\n WHERE 1=1\r\n [AND A.CATE_NO IN @@소분류@@]"
+        }
+      ]
+    },
+    {
+      "dimension_id": "계층쿼리테스트",
+      "prompt_label": "계층쿼리테스트",
+      "prmp_kwd": "@@계층쿼리테스트@@",
+      "prmp_kwd_nm": "계층쿼리테스트",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20240521101829",
+      "operator": "=",
+      "synonyms": [
+        "계층쿼리테스트"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "대분류",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT A.CATE_NO, A.CATE_NM FROM T_CATE_TEMP A\r\nLEFT OUTER JOIN T_CATE_TEMP B \r\nON A.CATE_NO = B.PRNT_NO\r\nWHERE 1=1\r\nAND A.DEPT_LVL = 1\r\nGROUP BY A.CATE_NO, A.CATE_NM\r\nORDER BY A.CATE_NO"
+        },
+        {
+          "seq": 2,
+          "level_name": "중분류",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NO ELSE B.CATE_NO END CATE_NO,\r\nCASE WHEN B.CATE_NM IS NULL THEN A.CATE_NM ELSE B.CATE_NM END CATE_NM\r\nFROM T_CATE_TEMP A\r\nLEFT OUTER JOIN T_CATE_TEMP B \r\nON A.CATE_NO = B.PRNT_NO\r\nWHERE 1=1\r\nAND A.DEPT_LVL = 1\r\n [AND A.CATE_NO = @@대분류@@]\r\nGROUP BY B.CATE_NO, B.CATE_NM\r\nORDER BY B.CATE_NO\r\n36308"
+        },
+        {
+          "seq": 3,
+          "level_name": "소분류",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NO ELSE B.CATE_NO END CATE_NO,\r\nCASE WHEN B.CATE_NM IS NULL THEN A.CATE_NM ELSE B.CATE_NM END CATE_NM\r\nFROM T_CATE_TEMP A\r\nLEFT OUTER JOIN T_CATE_TEMP B \r\nON A.CATE_NO = B.PRNT_NO\r\nWHERE 1=1\r\nAND A.DEPT_LVL IN (1,2)\r\n [AND A.CATE_NO = @@중분류@@]\r\nGROUP BY B.CATE_NO, B.CATE_NM\r\nORDER BY B.CATE_NO"
+        },
+        {
+          "seq": 4,
+          "level_name": "상세",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NO ELSE B.CATE_NO END CATE_NO,\r\nCASE WHEN B.CATE_NM IS NULL THEN A.CATE_NM ELSE B.CATE_NM END CATE_NM\r\nFROM T_CATE_TEMP A\r\nLEFT OUTER JOIN T_CATE_TEMP B \r\nON A.CATE_NO = B.PRNT_NO\r\nWHERE 1=1\r\nAND A.DEPT_LVL IN (1,2,3)\r\n [AND A.CATE_NO = @@소분류@@]\r\n [AND A.CATE_NO  IN @@SEARCH_CODE@@]\r\n [AND A.CATE_NM ::op:: @@SEARCH_WORD@@]\r\nGROUP BY B.CATE_NO, B.CATE_NM\r\nORDER BY B.CATE_NO"
+        }
+      ]
+    },
+    {
+      "dimension_id": "그룹",
+      "prompt_label": "그룹",
+      "prmp_kwd": "@@그룹@@",
+      "prmp_kwd_nm": "그룹",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20241115140635",
+      "operator": "=",
+      "synonyms": [
+        "그룹"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "그룹",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "select CAMP_GRP_ID\r\n     , CAMP_GRP_NM\r\n  from quadmax_sdz.t_camp_group  \r\nwhere DEL_F = 'N'\r\n     and CAMP_GRP_END_DT >= sysdate()\r\n\r\n"
+        },
+        {
+          "seq": 2,
+          "level_name": "캠페인",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "select CAMP_ID\r\n     , CAMP_NM \r\n  from quadmax_sdz.t_campaign\r\nwhere 1 = 1\r\nand CAMP_GRP_ID = @@그룹@@\r\nand DEL_F = 'N' /* 삭제플래그 처리 */\r\nand CAMP_END_DT >= date_format(NOW(), '%Y%m%d') /* 조회일자보다 종료일이 나중인 캠페인 리스트만 조회*/"
+        }
+      ]
+    },
+    {
+      "dimension_id": "문그룹",
+      "prompt_label": "문그룹",
+      "prmp_kwd": "@@문그룹@@",
+      "prmp_kwd_nm": "문그룹",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20241119102751",
+      "operator": "=",
+      "synonyms": [
+        "문그룹"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "그룹",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "select CAMP_GRP_ID\r\n     , CAMP_GRP_NM\r\n  from quadmax_sdz.t_camp_group  \r\n where DEL_F = 'N' /* 삭제플래그 처리 */\r\n   and CAMP_GRP_END_DT >= date_format(NOW(), '%Y%m%d') /* 조회일자보다 종료일이 나중인 캠페인 리스트만 조회*/"
+        }
+      ]
+    },
+    {
+      "dimension_id": "문캠페인",
+      "prompt_label": "문캠페인",
+      "prmp_kwd": "@@문캠페인@@",
+      "prmp_kwd_nm": "문캠페인",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20241119103329",
+      "operator": "=",
+      "synonyms": [
+        "문캠페인"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "캠페인",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "select A.CAMP_ID\r\n     , A.CAMP_NM \r\n  from quadmax_sdz.z_campaign A\r\n       inner join quadmax_sdz.z_chnl_send_req_cust B\r\n    on A.CAMP_ID = B.CAMP_ID      \r\nwhere 1 = 1\r\nand A.CAMP_END_DT <= date_format(NOW(), '%Y%m%d') /* 이미 종료된 캠페인만 조회*/\r\ngroup by CAMP_ID,CAMP_NM\r\nlimit 10  "
+        }
+      ]
+    },
+    {
+      "dimension_id": "문캠페인3",
+      "prompt_label": "문캠페인3",
+      "prmp_kwd": "@@문캠페인3@@",
+      "prmp_kwd_nm": "문캠페인3",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20241119133701",
+      "operator": "=",
+      "synonyms": [
+        "문캠페인3"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "기간",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT \r\n    SUBSTR(CAMP_START_DT, 1, 4) AS CD, \r\n    CONCAT(SUBSTR(CAMP_START_DT, 1, 4), '년') AS nm\r\nFROM \r\n    quadmax_sdz.z_campaign \r\nWHERE \r\n    CAMP_START_DT < SYSDATE()\r\nGROUP BY  \r\n    SUBSTR(CAMP_START_DT, 1, 4), \r\n    CONCAT(SUBSTR(CAMP_START_DT, 1, 4), '년')\r\nORDER BY \r\n    CD DESC "
+        },
+        {
+          "seq": 2,
+          "level_name": "캠페인",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "select A.CAMP_ID\r\n     , A.CAMP_NM \r\n  from quadmax_sdz.z_campaign A\r\n       inner join quadmax_sdz.z_chnl_send_req_cust B \r\n    on A.CAMP_ID = B.CAMP_ID\r\n where 1 = 1 \r\n [and substr( A.CAMP_START_DT ,1,4)= @@기간@@] \r\n   \r\ngroup by A.CAMP_ID, A.CAMP_NM"
+        },
+        {
+          "seq": 3,
+          "level_name": "회차",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "select CAMP_EXEC_NO as cd , CAMP_EXEC_NO as nm\r\n   from quadmax_sdz.z_campaign \r\nwhere  1=1\r\n[AND CAMP_ID =@@캠페인@@]"
+        }
+      ]
+    },
+    {
+      "dimension_id": "사고신고종류",
+      "prompt_label": "사고신고종류",
+      "prmp_kwd": "@@사고신고종류@@",
+      "prmp_kwd_nm": "사고신고종류",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20250725125938",
+      "operator": "IN",
+      "synonyms": [
+        "사고신고종류"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "테스트",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT '1' AS CODE\r\n              , '사고신고종류' AS CODE_NAME\r\n       FROM DUAL"
+        },
+        {
+          "seq": 2,
+          "level_name": "사고신고종류",
+          "operator": "IN",
+          "multi": null,
+          "ml_qry": "SELECT A.CODE AS CD\r\n             , A.CODE_NAME AS CD_NAME\r\n     FROM (SELECT 1 AS CODE\r\n              , '인사사고' AS CODE_NAME\r\n  UNION \r\nSELECT 2 AS CODE\r\n              , '교통사고' AS CODE_NAME\r\n   UNION\r\nSELECT 3 AS CODE\r\n              , '접촉사고' AS CODE_NAME\r\n               ) A\r\nWHERE 1=1\r\n     [AND A.CODE_NAME ::op:: @@SEARCH_WORD@@]\r\n"
+        }
+      ]
+    },
+    {
+      "dimension_id": "설문조사 ID",
+      "prompt_label": "설문조사 ID",
+      "prmp_kwd": "@@설문ID@@",
+      "prmp_kwd_nm": "설문조사 ID",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20241212145456",
+      "operator": "IN",
+      "synonyms": [
+        "설문조사 ID"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "설문 ID",
+          "operator": "IN",
+          "multi": null,
+          "ml_qry": "  select projectname, projectID from t_ssbi_survey_index "
+        }
+      ]
+    },
+    {
+      "dimension_id": "설문조사 캠페인 ID",
+      "prompt_label": "설문조사 캠페인 ID",
+      "prmp_kwd": "@@설문캠페인ID@@",
+      "prmp_kwd_nm": "설문조사 캠페인 ID",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20241212145639",
+      "operator": "IN",
+      "synonyms": [
+        "설문조사 캠페인 ID"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "설문ID",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": " select projectid\r\n           , projectname\r\n  from t_ssbi_survey_index "
+        },
+        {
+          "seq": 2,
+          "level_name": "캠페인ID",
+          "operator": "IN",
+          "multi": null,
+          "ml_qry": "/* aaa = @@설문ID@@ */\r\n   select b.CAMP_NM, c.CAMP_ID\r\n     from t_ssbi_survey_index a\r\n          inner join z_camp_survey b\r\n       on a.projectID = b.SURVEY_ID \r\n          left outer join z_campaign c\r\n       on b.CAMP_ID = c.CAMP_ID\r\nwhere 1=1\r\n[a.projectid ::op:: @@설문ID@@]\r\n    "
+        }
+      ]
+    },
+    {
+      "dimension_id": "조건멀티팝업",
+      "prompt_label": "조건멀티팝업",
+      "prmp_kwd": "@@조건멀티팝업@@",
+      "prmp_kwd_nm": "조건멀티팝업",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20231010132539",
+      "operator": "IN",
+      "synonyms": [
+        "조건멀티팝업"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "ml팝업30만",
+          "operator": "IN",
+          "multi": null,
+          "ml_qry": "SELECT \r\n    t1.number,\r\n    CASE \r\n        -- 숫자 0-9 (10개)\r\n        WHEN (t1.number % 76) <= 9 THEN CAST((t1.number % 76) + 1 AS CHAR)\r\n        WHEN (t1.number % 76) = 10 THEN '0'\r\n        \r\n        -- 영문 대문자 A-Z (26개)\r\n        WHEN (t1.number % 76) <= 35 \r\n        THEN CHAR(ASCII('A') + ((t1.number % 76) - 11))\r\n        \r\n        -- 영문 소문자 a-z (26개)\r\n        WHEN (t1.number % 76) <= 61 \r\n        THEN CHAR(ASCII('a') + ((t1.number % 76) - 37))\r\n        \r\n        -- 한글 가-하 (14개)\r\n        WHEN (t1.number % 76) = 63 THEN '가'\r\n        WHEN (t1.number % 76) = 64 THEN '나'\r\n        WHEN (t1.number % 76) = 65 THEN '다'\r\n        WHEN (t1.number % 76) = 66 THEN '라'\r\n        WHEN (t1.number % 76) = 67 THEN '마'\r\n        WHEN (t1.number % 76) = 68 THEN '바'\r\n        WHEN (t1.number % 76) = 69 THEN '사'\r\n        WHEN (t1.number % 76) = 70 THEN '아'\r\n        WHEN (t1.number % 76) = 71 THEN '자'\r\n        WHEN (t1.number % 76) = 72 THEN '차'\r\n        WHEN (t1.number % 76) = 73 THEN '카'\r\n        WHEN (t1.number % 76) = 74 THEN '타'\r\n        WHEN (t1.number % 76) = 75 THEN '파'\r\n        ELSE '하'\r\n    END as number2\r\nFROM (\r\n    SELECT (@row := @row + 1) as number\r\n    FROM information_schema.tables A \r\n    CROSS JOIN information_schema.tables B,\r\n    (SELECT @row := 0) AS r \r\n    LIMIT 300000\r\n) t1;"
+        }
+      ]
+    },
+    {
+      "dimension_id": "주구매매장",
+      "prompt_label": "주구매매장",
+      "prmp_kwd": "@@주구매매장@@",
+      "prmp_kwd_nm": "주구매매장",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20231010132539",
+      "operator": "IN",
+      "synonyms": [
+        "주구매매장"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "ml팝업30만",
+          "operator": "IN",
+          "multi": null,
+          "ml_qry": "SELECT \r\n    t1.number,\r\n    CASE \r\n        -- 숫자 0-9 (10개)\r\n        WHEN (t1.number % 76) <= 9 THEN CAST((t1.number % 76) + 1 AS CHAR)\r\n        WHEN (t1.number % 76) = 10 THEN '0'\r\n        \r\n        -- 영문 대문자 A-Z (26개)\r\n        WHEN (t1.number % 76) <= 35 \r\n        THEN CHAR(ASCII('A') + ((t1.number % 76) - 11))\r\n        \r\n        -- 영문 소문자 a-z (26개)\r\n        WHEN (t1.number % 76) <= 61 \r\n        THEN CHAR(ASCII('a') + ((t1.number % 76) - 37))\r\n        \r\n        -- 한글 가-하 (14개)\r\n        WHEN (t1.number % 76) = 63 THEN '가'\r\n        WHEN (t1.number % 76) = 64 THEN '나'\r\n        WHEN (t1.number % 76) = 65 THEN '다'\r\n        WHEN (t1.number % 76) = 66 THEN '라'\r\n        WHEN (t1.number % 76) = 67 THEN '마'\r\n        WHEN (t1.number % 76) = 68 THEN '바'\r\n        WHEN (t1.number % 76) = 69 THEN '사'\r\n        WHEN (t1.number % 76) = 70 THEN '아'\r\n        WHEN (t1.number % 76) = 71 THEN '자'\r\n        WHEN (t1.number % 76) = 72 THEN '차'\r\n        WHEN (t1.number % 76) = 73 THEN '카'\r\n        WHEN (t1.number % 76) = 74 THEN '타'\r\n        WHEN (t1.number % 76) = 75 THEN '파'\r\n        ELSE '하'\r\n    END as number2\r\nFROM (\r\n    SELECT (@row := @row + 1) as number\r\n    FROM information_schema.tables A \r\n    CROSS JOIN information_schema.tables B,\r\n    (SELECT @row := 0) AS r \r\n    LIMIT 300000\r\n) t1;"
+        }
+      ]
+    },
+    {
+      "dimension_id": "카테고리_분류",
+      "prompt_label": "카테고리_분류",
+      "prmp_kwd": "@@카테고리_분류@@",
+      "prmp_kwd_nm": "카테고리_분류",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20240520144326",
+      "operator": "=",
+      "synonyms": [
+        "카테고리_분류"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "대분류",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT CATE_NO AS CD\r\n              , CATE_NM AS NM\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP\r\n WHERE DEPT_LVL = '1'"
+        },
+        {
+          "seq": 2,
+          "level_name": "중분류",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": " SELECT CASE WHEN B.CATE_NO IS NULL\r\n             THEN A.CATE_NO\r\n             ELSE B.CATE_NO\r\n        END CATE_NO\r\n      , CASE WHEN B.CATE_NO IS NULL\r\n             THEN A.CATE_NM\r\n             ELSE B.CATE_NM\r\n        END CATE_NM\r\n      , CASE WHEN B.CATE_NO IS NULL\r\n             THEN A.DEPT_LVL\r\n             ELSE B.DEPT_LVL\r\n        END DEPT_LVL\r\n   FROM QUADMAX_SDZ.T_CATE_TEMP A\r\n        LEFT OUTER JOIN QUADMAX_SDZ.T_CATE_TEMP B\r\n     ON A.CATE_NO = B.PRNT_NO\r\n  WHERE 1=1\r\n [ AND A.CATE_NO = @@대분류@@]"
+        },
+        {
+          "seq": 3,
+          "level_name": "소분류",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT A.CATE_NO\r\n     , A.CATE_NM\r\n     , A.DEPT_LVL\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP A\r\n       LEFT OUTER JOIN QUADMAX_SDZ.T_CATE_TEMP B\r\n    ON A.CATE_NO = B.PRNT_NO\r\n WHERE 1=1\r\n          AND 1= (SELECT CASE WHEN COUNT(CATE_NO) = 0 THEN 0\r\n                      ELSE 1\r\n                  END GB\r\n            FROM QUADMAX_SDZ.T_CATE_TEMP\r\n           WHERE 1=1\r\n             AND DEPT_LVL = 3\r\n            [AND PRNT_NO = @@중분류@@]\r\n           ) \r\n  [AND A.PRNT_NO = @@중분류@@] \r\nGROUP BY A.CATE_NO\r\n     , A.CATE_NM\r\n     , A.DEPT_LVL"
+        }
+      ]
+    },
+    {
+      "dimension_id": "카테고리_분류_테스트",
+      "prompt_label": "카테고리_분류_테스트",
+      "prmp_kwd": "@@카테고리_분류_테스트@@",
+      "prmp_kwd_nm": "카테고리_분류_테스트",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20240520130901",
+      "operator": "=",
+      "synonyms": [
+        "카테고리_분류_테스트"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "대분류",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT CATE.CATE_NO AS CODE\r\n               , CATE.CATE_NM AS NAME\r\n   FROM QUADMAX_SDZ.T_CATE_TEMP CATE\r\n WHERE CATE.DEPT_LVL = 1\r\n ORDER BY CATE.CATE_NO"
+        },
+        {
+          "seq": 2,
+          "level_name": "중분류",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT CHLD_CATE.CATE_NO AS CODE \r\n     , CHLD_CATE.CATE_NM AS NAME\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n WHERE 1 = 1\r\n     [AND PRNT_CATE.CATE_NO = @@대분류@@]\r\n \r\n UNION ALL\r\n \r\nSELECT '-'       AS CODE\r\n     , '분류 없음' AS NAME\r\n  FROM DUAL\r\n WHERE NOT EXISTS \r\n       (SELECT 1\r\n          FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n\t\t       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n\t\t    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n\t\t WHERE 1 = 1\r\n\t\t     [AND PRNT_CATE.CATE_NO = @@대분류@@]\r\n       )"
+        },
+        {
+          "seq": 3,
+          "level_name": "소분류",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT CHLD_CATE.CATE_NO AS CODE \r\n     , CHLD_CATE.CATE_NM AS NAME\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n WHERE 1 = 1\r\n     [AND PRNT_CATE.CATE_NO = @@중분류@@]\r\n \r\n UNION ALL\r\n \r\nSELECT '-'       AS CODE\r\n     , '분류 없음' AS NAME\r\n  FROM DUAL\r\n WHERE NOT EXISTS \r\n       (SELECT 1\r\n          FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n\t\t       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n\t\t    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n\t\t WHERE 1 = 1\r\n\t\t     [AND PRNT_CATE.CATE_NO = @@중분류@@]\r\n       )"
+        },
+        {
+          "seq": 4,
+          "level_name": "상세분류",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "SELECT CHLD_CATE.CATE_NO AS CODE \r\n     , CHLD_CATE.CATE_NM AS NAME\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n WHERE 1 = 1\r\n     [AND PRNT_CATE.CATE_NO = @@소분류@@]\r\n\r\n UNION ALL\r\n \r\nSELECT CATE.CATE_NO AS CODE \r\n     , CATE.CATE_NM AS NAME\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP CATE\r\n WHERE NOT EXISTS \r\n       (SELECT 1\r\n          FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n\t\t       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n\t\t    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n\t\t WHERE 1 = 1\r\n\t\t     [AND PRNT_CATE.CATE_NO =  @@소분류@@]\r\n       )\r\n  [AND CATE.CATE_NO = @@소분류@@]\r\n\r\n UNION ALL\r\n \r\nSELECT CATE.CATE_NO AS CODE \r\n     , CATE.CATE_NM AS NAME\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP CATE\r\n WHERE NOT EXISTS \r\n       (SELECT 1\r\n          FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n\t\t       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n\t\t    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n\t\t WHERE 1 = 1\r\n\t\t     [AND PRNT_CATE.CATE_NO =  @@중분류@@]\r\n       )\r\n  [AND CATE.CATE_NO = @@중분류@@]\r\n\r\n UNION ALL\r\n \r\nSELECT CATE.CATE_NO AS CODE \r\n     , CATE.CATE_NM AS NAME\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP CATE\r\n WHERE NOT EXISTS \r\n       (SELECT 1\r\n          FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n\t\t       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n\t\t    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n\t\t WHERE 1 = 1\r\n\t\t     [AND PRNT_CATE.CATE_NO =  @@대분류@@]\r\n       )\r\n  [AND CATE.CATE_NO = @@대분류@@]"
+        }
+      ]
+    },
+    {
+      "dimension_id": "캠페인그룹",
+      "prompt_label": "캠페인그룹",
+      "prmp_kwd": "@@캠페인그룹@@",
+      "prmp_kwd_nm": "캠페인그룹",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20241021095909",
+      "operator": "=",
+      "synonyms": [
+        "캠페인그룹"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "그룹",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "select CAMP_GRP_ID\r\n     , CAMP_GRP_NM\r\n  from quadmax_sdz.t_camp_group  \r\n where DEL_F = 'N' /* 삭제플래그 처리 */\r\n   and CAMP_GRP_END_DT >= date_format(NOW(), '%Y%m%d') /* 조회일자보다 종료일이 나중인 캠페인 리스트만 조회*/"
+        },
+        {
+          "seq": 2,
+          "level_name": "캠페인명",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": "/* 그룹 == @@그룹@@ */\r\n\r\nselect CAMP_ID\r\n     , CAMP_NM \r\n  from quadmax_sdz.t_campaign  \r\n where CAMP_GRP_ID =  @@그룹@@ /* 'CPGP202400000006' */\r\n   and DEL_F = 'N' /* 삭제플래그 처리 */\r\n   and CAMP_END_DT >= date_format(NOW(), '%Y%m%d') /* 조회일자보다 종료일이 나중인 캠페인 리스트만 조회*/"
+        }
+      ]
+    },
+    {
+      "dimension_id": "퍼널전환",
+      "prompt_label": "퍼널전환",
+      "prmp_kwd": "@@퍼널전환@@",
+      "prmp_kwd_nm": "퍼널전환",
+      "dbms_id": "QUADMAX_SDZ",
+      "connection": "quadmax_sdz",
+      "ml_ds_div_cd": "ML",
+      "ml_id": "ML20250425130311",
+      "operator": "IN",
+      "synonyms": [
+        "퍼널전환"
+      ],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": null,
+      "resolution": "ml_hierarchy",
+      "ml_hierarchy": [
+        {
+          "seq": 1,
+          "level_name": "퍼널ID선택",
+          "operator": "=",
+          "multi": null,
+          "ml_qry": " SELECT A.FNNL_ID as CD\r\n     , A.FNNL_NM as CD_NAME\r\n  FROM quadmax_sdz.t_funnel A\r\n       inner  join  ( \r\n       \t\t\t\t\t/*t_funnel_node_out_list테이블에 존재하는 값만 필터링*/\r\n\t\t\t\t       SELECT FNNL_ID\r\n\t\t\t\t           FROM quadmax_sdz.t_funnel_node_out_list\r\n\t\t\t\t          WHERE 1=1\t\t\t\t\r\n\t\t\t\t          GROUP BY FNNL_ID\r\n       \t\t\t\t) B\r\n\t    ON A.FNNL_ID = B.FNNL_ID\r\nwhere A.del_f = 'N'\r\nAND A.FNNL_STS_ID <> '010'\r\n GROUP BY A.FNNL_ID\r\n     , A.FNNL_NM\r\n ORDER BY A.FNNL_ID desc"
+        },
+        {
+          "seq": 2,
+          "level_name": "퍼널노드선택",
+          "operator": "IN",
+          "multi": null,
+          "ml_qry": "SELECT CONCAT(A.FNNL_ID,'_',A.NODE_ID) AS CD\r\n     , C.NODE_NM AS CD_NAME\r\n  FROM quadmax_sdz.t_funnel_node_out_list A\r\n       INNER JOIN\r\n       ( SELECT FNNL_ID\r\n              , NODE_ID\r\n              , MAX(SEQ) AS SEQ\r\n           FROM quadmax_sdz.t_funnel_node_out_list\r\n          WHERE 1=1\r\n           [AND FNNL_ID = @@퍼널ID선택@@]\r\n\r\n          GROUP BY FNNL_ID\r\n              , NODE_ID\r\n       ) B\r\n    ON A.FNNL_ID = B.FNNL_ID\r\n   AND A.NODE_ID = B.NODE_ID\r\n   AND A.SEQ = B.SEQ\r\n       LEFT OUTER JOIN quadmax_sdz.t_funnel_rulescript C\r\n    ON A.FNNL_ID = C.FNNL_ID\r\n  AND A.NODE_ID = C.NODE_ID\r\n WHERE A.OUT_YN = 'Y'\r\n\r\n/* 표준 쿼리\r\nSELECT CONCAT(A.FNNL_ID,'_',A.NODE_ID) AS CD\r\n     , C.NODE_NM AS CD_NAME\r\n  FROM t_funnel_node_out_list A\r\n       INNER JOIN\r\n       ( SELECT FNNL_ID\r\n              , NODE_ID\r\n              , MAX(SEQ) AS SEQ\r\n           FROM t_funnel_node_out_list\r\n          WHERE 1=1\r\n           [AND FNNL_ID = @@퍼널ID선택@@]\r\n          GROUP BY FNNL_ID\r\n              , NODE_ID\r\n       ) B\r\n    ON A.FNNL_ID = B.FNNL_ID\r\n   AND A.NODE_ID = B.NODE_ID\r\n   AND A.SEQ = B.SEQ\r\n       LEFT OUTER JOIN t_funnel_rulescript C\r\n    ON A.FNNL_ID = C.FNNL_ID\r\n  AND A.NODE_ID = C.NODE_ID\r\n WHERE A.OUT_YN = 'Y'\r\n*/"
+        }
+      ]
     }
   ]
 }
