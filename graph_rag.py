@@ -558,6 +558,9 @@ def build_query_plan(
     if parser not in {"rules", "auto", "llm"}:
         raise ValueError("query parser must be one of: rules, auto, llm.")
 
+    # 검색·그래프 컨텍스트 스코핑용 타겟팅/채널 절 분리(전체 문장 파싱·SQL 에는 영향 없음).
+    scopes = split_prompt_scopes(query, parser=parser, llm_model=llm_model, prompt_dir=prompt_dir)
+
     rules_plan = _build_rule_query_plan(
         query,
         normalization_rules=normalization_rules,
@@ -567,6 +570,7 @@ def build_query_plan(
     )
     if parser == "rules":
         rules_plan["parser"] = {"type": "rules", "fallback_used": False}
+        _attach_retrieval_scopes(rules_plan, scopes)
         return rules_plan
 
     llm_plan, failure_reason = _try_llm_query_plan(query, rules_plan, llm_model, prompt_dir, sql_schema)
@@ -577,6 +581,7 @@ def build_query_plan(
             "fallback_used": True,
             "fallback_reason": failure_reason or "llm_query_parser_unavailable",
         }
+        _attach_retrieval_scopes(rules_plan, scopes)
         return rules_plan
 
     llm_plan["parser"] = {
@@ -590,6 +595,10 @@ def build_query_plan(
     llm_plan.setdefault("campaign_constraints", {}).setdefault("sell_object", None)
     _apply_sell_object(query, llm_plan)
     _apply_dimension_filters(query, llm_plan)
+    # 구매 상품(purchase_object)도 프롬프트 텍스트에서 결정론적으로 뽑아, rules/llm 어느 경로든 동일하게
+    # 상품 구매 이력 타겟팅(build_purchase_history_targets_sql_candidate)으로 이어지게 한다.
+    _apply_purchase_object_filter(query, llm_plan.setdefault("target_user", {}))
+    _attach_retrieval_scopes(llm_plan, scopes)
     return llm_plan
 
 
