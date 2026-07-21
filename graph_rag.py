@@ -404,6 +404,146 @@ def normalize_prompt(
         return {**fallback, "mode": "rules_fallback", "error": exc.__class__.__name__}
 
 
+# 대상 지향 표지: 이 뒤부터는 "누구에게 무엇을 한다"의 캠페인/채널·메시지 절로 본다.
+_AUDIENCE_DIRECTION_MARKERS = ("에게", "한테", "께", "대상으로", "타겟으로", "타깃으로")
+# 채널/메시지 의도 신호. 규칙 분리 실패(표지 없음) 판정과 LLM 폴백 트리거에 쓴다.
+_CHANNEL_SIGNAL_WORDS = (
+    "홍보", "광고", "알림", "알리", "안내", "소식", "공지", "캠페인",
+    "메시지", "발송", "보내", "판매", "팔", "프로모션", "쿠폰", "이벤트",
+)
+
+
+def _prompt_scope_split_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
+    fallback = "\n".join(
+        [
+            "너는 캠페인 프롬프트를 '타겟팅(오디언스 조건)'과 '채널(발송·메시지 의도)'로 분리하는 분류기다.",
+            "타겟팅: 누구를 뽑을지(속성/구매이력/세그먼트 등 오디언스 정의)만.",
+            "채널: 그들에게 무엇을 어떻게 알릴지(홍보/판매/알림/채널/메시지/혜택).",
+            "원문 표현을 그대로 나눠 담고 의미를 새로 지어내지 않는다. 한쪽이 없으면 빈 문자열로 둔다.",
+            '다음 JSON object 만 출력한다: {"targeting": "…", "channel": "…"}.',
+        ]
+    )
+    return _read_prompt_template(prompt_dir, "prompt_scope_split_system.txt", fallback)
+
+
+def _rule_split_prompt_scopes(text: str) -> tuple[str, str] | None:
+    """대상 지향 표지(에게/한테/…) 첫 등장 지점 기준으로 앞=타겟팅, 뒤=채널 로 나눈다.
+
+    "[오디언스]에게 [채널/메시지 액션]" 구조를 이용한다. 표지가 없거나 타겟팅 절이 비면 None(규칙 실패).
+    """
+    pattern = r"(?P<targeting>.*?(?:%s))\s*(?P<channel>.*)$" % "|".join(_AUDIENCE_DIRECTION_MARKERS)
+    match = re.search(pattern, text, re.DOTALL)
+    if not match:
+        return None
+    targeting = match.group("targeting").strip()
+    channel = match.group("channel").strip()
+    if len(targeting) < 2:
+        return None
+    return targeting, channel
+
+
+def _has_channel_signal(text: str) -> bool:
+    compact = text.replace(" ", "").casefold()
+    return any(word in compact for word in _CHANNEL_SIGNAL_WORDS)
+
+
+def _llm_split_prompt_scopes(
+    text: str, parser: str, llm_model: str, prompt_dir: Path | None
+) -> dict[str, str] | None:
+    """LLM 으로 프롬프트를 타겟팅/채널 두 절로 의미 분리한다. 사용 불가/실패 시 None."""
+    if parser.casefold() == "rules" or not os.getenv("OPENAI_API_KEY") or not text.strip():
+        return None
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return None
+    try:
+        client = OpenAI()
+        response = client.chat.completions.create(
+            model=llm_model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _prompt_scope_split_system_prompt(prompt_dir)},
+                {"role": "user", "content": text},
+            ],
+        )
+        data = json.loads(response.choices[0].message.content or "{}")
+        targeting = data.get("targeting")
+        channel = data.get("channel")
+        if not isinstance(targeting, str) or not targeting.strip():
+            return None
+        result = {"targeting": targeting.strip(), "channel": channel.strip() if isinstance(channel, str) else ""}
+        _write_rag_llm_log("prompt_scope_split", {"text": text, **result})
+        return result
+    except Exception:
+        return None
+
+
+def split_prompt_scopes(
+    text: str,
+    parser: str = "rules",
+    llm_model: str = DEFAULT_LLM_MODEL,
+    prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
+) -> dict[str, Any]:
+    """프롬프트를 타겟팅(오디언스) 절과 채널(발송·메시지) 절로 분리한다.
+
+    규칙 분리(대상 지향 표지)를 먼저 쓰고, 표지가 없어 못 나눴는데 채널 신호가 있으면 LLM 의미 분리로
+    보완한다. 검색·그래프 컨텍스트를 스코프별로 좁히는 용도이며 SQL/Query Plan 에는 영향을 주지 않는다.
+    반환: {targeting, channel, mode}.
+    """
+    original = text if isinstance(text, str) else ""
+    rule = _rule_split_prompt_scopes(original)
+    # 규칙으로 채널 절을 얻었거나, 애초에 채널 신호가 없어 전부 타겟팅이면 규칙 결과를 그대로 쓴다.
+    if rule is not None and (rule[1] or not _has_channel_signal(original)):
+        return {"targeting": rule[0], "channel": rule[1], "mode": "rules"}
+    # 규칙이 제대로 못 나눴고(표지 없음/채널 절 공백) 채널 신호가 있으면 LLM 의미 분리 시도.
+    llm = _llm_split_prompt_scopes(original, parser, llm_model, prompt_dir)
+    if llm is not None:
+        return {**llm, "mode": "llm"}
+    if rule is not None:
+        return {"targeting": rule[0], "channel": rule[1], "mode": "rules"}
+    # 최종 폴백: 전부 타겟팅(채널 비움). 검색이 좁아질 순 있어도 채널 노드 오염은 생기지 않는다.
+    return {"targeting": original, "channel": "", "mode": "rules_fallback"}
+
+
+def _attach_retrieval_scopes(plan: dict[str, Any], scopes: dict[str, str]) -> None:
+    """분리된 타겟팅/채널 절을 기준으로 retrieval 을 스코프별(query·terms)로 분해해 plan 에 부착한다.
+
+    canonical 값(female/vip/purchase 등)은 한글 원문에 안 나타나므로 범주로 분류하고(채널=채널/혜택/목적),
+    그 외 원문 토큰은 어느 절에 등장하는지로 나눈다. build_query_plan(전체 문장) 결과는 그대로 두고
+    검색 단계에서만 골라 쓴다.
+    """
+    targeting_text = scopes.get("targeting") or ""
+    channel_text = scopes.get("channel") or ""
+    retrieval = plan.setdefault("retrieval", {})
+    retrieval.setdefault("query", targeting_text)
+    retrieval.setdefault("terms", [])
+    channel_canonicals = CHANNEL_TERMS | OFFER_TERMS | CAMPAIGN_OBJECTIVES
+    # 한글 토큰은 조사가 붙어 정확일치가 안 되므로, 공백 제거한 각 절 텍스트에 대한 '부분문자열' 포함으로 판정한다.
+    targeting_compact = targeting_text.replace(" ", "").casefold()
+    channel_compact = channel_text.replace(" ", "").casefold()
+
+    targeting_terms: list[str] = []
+    channel_terms: list[str] = []
+    for term in retrieval["terms"]:
+        lowered = term.casefold()
+        if term in channel_canonicals:
+            channel_terms.append(term)
+        elif lowered in channel_compact and lowered not in targeting_compact:
+            # 채널 절에만 등장하는 표현(홍보/캠페인/신상 등)은 채널로. 양쪽에 있으면 타겟팅 우선.
+            channel_terms.append(term)
+        else:
+            # 타겟팅 절에 있거나(기저귀/구매 등), 원문에 안 드러나는 타겟 canonical(female/vip 등)은 타겟팅.
+            targeting_terms.append(term)
+
+    plan["retrieval"]["scope_mode"] = scopes.get("mode", "rules")
+    plan["retrieval"]["targeting_query"] = targeting_text or plan["retrieval"]["query"]
+    plan["retrieval"]["channel_query"] = channel_text
+    plan["retrieval"]["targeting_terms"] = _unique_strings(targeting_terms)
+    plan["retrieval"]["channel_terms"] = _unique_strings(channel_terms)
+
+
 def build_query_plan(
     query: str,
     normalization_rules: Path | None = DEFAULT_NORMALIZATION_PATH,
