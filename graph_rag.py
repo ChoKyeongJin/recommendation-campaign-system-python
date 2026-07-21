@@ -1549,6 +1549,7 @@ def retrieve(
     message_policy: Path | None = DEFAULT_MESSAGE_POLICY_PATH,
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
     message_generation_options: dict[str, Any] | None = None,
+    retrieval_scope: str = "all",
 ) -> dict[str, Any]:
     timings_ms: dict[str, float] = {}
     retrieve_started_at = time.perf_counter()
@@ -1592,13 +1593,26 @@ def retrieve(
     timings_ms["query_plan"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
-    retrieval_query = query_plan["retrieval"]["query"]
-    keyword_query = " ".join(_unique_strings([retrieval_query, *query_plan["retrieval"]["terms"]]))
+    retrieval = query_plan["retrieval"]
+    # SQL 은 항상 전체 문장 기준(스코프 무관). 검색·그래프 컨텍스트만 스코프별 절/용어로 좁힌다.
+    full_retrieval_query = retrieval["query"]
+    keyword_query = " ".join(_unique_strings([full_retrieval_query, *retrieval["terms"]]))
+    scope = (retrieval_scope or "all").casefold()
+    if scope == "targeting":
+        scoped_query = retrieval.get("targeting_query") or full_retrieval_query
+        scoped_terms = retrieval.get("targeting_terms", retrieval["terms"])
+    elif scope == "channel":
+        scoped_query = retrieval.get("channel_query") or full_retrieval_query
+        scoped_terms = retrieval.get("channel_terms", retrieval["terms"])
+    else:
+        scoped_query = full_retrieval_query
+        scoped_terms = retrieval["terms"]
+    scoped_keyword_query = " ".join(_unique_strings([scoped_query, *scoped_terms]))
     timings_ms["retrieval_query"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
     vector_hits = vector_search(
-        query=retrieval_query,
+        query=scoped_query,
         collection=collection,
         url=url,
         api_key=api_key,
@@ -1608,7 +1622,7 @@ def retrieve(
     timings_ms["vector_search"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
-    keyword_hits = keyword_search(graph=graph, query=keyword_query, limit=keyword_top_k)
+    keyword_hits = keyword_search(graph=graph, query=scoped_keyword_query, limit=keyword_top_k)
     timings_ms["keyword_search"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
@@ -1619,8 +1633,10 @@ def retrieve(
         "rag_context_assembly",
         {
             "query": query,
-            "retrieval_query": retrieval_query,
-            "keyword_query": keyword_query,
+            "retrieval_scope": scope,
+            "retrieval_query": scoped_query,
+            "keyword_query": scoped_keyword_query,
+            "full_keyword_query": keyword_query,
             "query_plan": query_plan,
             "vector_hits": [_hit_result(hit) for hit in vector_hits],
             "keyword_hits": [_hit_result(hit) for hit in keyword_hits],
