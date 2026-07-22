@@ -12,6 +12,8 @@ OPERATOR_WORDS = {
     "합집합": "+",
     "또는": "+",
     "혹은": "+",
+    "이거나": "+",
+    "거나": "+",
     "or": "+",
     "union": "+",
     "교집합": "*",
@@ -296,16 +298,27 @@ def _text_to_operand_ast(text: str, term_catalog: list[dict[str, str]]) -> dict[
         return None
     compact_text = _compact(stripped)
     operands: list[dict[str, Any]] = []
-    for age_operand in _age_operands(stripped):
-        operands.append(age_operand)
+    # 이미 다른 피연산자가 소비한 문자 구간(compact 좌표). 구간이 겹치는 후보는 중복으로 보고 버린다.
+    # 카탈로그가 긴 표현부터 오도록 정렬돼 있어(load_set_term_catalog) greedy-longest 로 구간을 선점한다.
+    # 예) "VIP 등급 고객"("vip등급고객")에서 VIP등급이 "vip등급"[0,5)을 먹으면, member_grade 의 "등급 고객"
+    # ("등급고객"[3,7))은 "등급"에서 겹쳐 스킵된다 — 예전 substring 가드는 이 부분겹침을 못 걸러 member_grade
+    # 가 헛매칭돼 (VIP등급 * member_grade) 교집합이 만들어졌고, 값 없는 member_grade 때문에 SQL 이 막혔다.
+    claimed_spans: list[tuple[int, int]] = []
+    seen_canonicals: set[str] = set()
 
-    seen_canonicals = {operand.get("canonical") for operand in operands}
-    selected_terms = [_compact(str(operand.get("matched_text", ""))) for operand in operands]
+    for age_operand in _age_operands(stripped):
+        span = _find_unclaimed_span(compact_text, _compact(str(age_operand.get("matched_text", ""))), claimed_spans)
+        if span is not None:
+            claimed_spans.append(span)
+        operands.append(age_operand)
+        seen_canonicals.add(age_operand.get("canonical"))
+
     for term in term_catalog:
         compact_term = term["compact_term"]
-        if not compact_term or compact_term not in compact_text or term["canonical"] in seen_canonicals:
+        if not compact_term or term["canonical"] in seen_canonicals:
             continue
-        if any(selected_term and compact_term in selected_term for selected_term in selected_terms):
+        span = _find_unclaimed_span(compact_text, compact_term, claimed_spans)
+        if span is None:
             continue
         operands.append(
             {
@@ -316,7 +329,7 @@ def _text_to_operand_ast(text: str, term_catalog: list[dict[str, str]]) -> dict[
             }
         )
         seen_canonicals.add(term["canonical"])
-        selected_terms.append(compact_term)
+        claimed_spans.append(span)
 
     if not operands:
         if _is_noise_operand_text(compact_text):
@@ -328,6 +341,19 @@ def _text_to_operand_ast(text: str, term_catalog: list[dict[str, str]]) -> dict[
     for operand in operands[1:]:
         ast = {"type": "set_op", "op": "*", "left": ast, "right": operand}
     return ast
+
+
+def _find_unclaimed_span(haystack: str, needle: str, claimed_spans: list[tuple[int, int]]) -> tuple[int, int] | None:
+    """needle 이 claimed_spans 어디와도 겹치지 않게 등장하는 첫 위치의 (start, end) 를 준다(없으면 None)."""
+    if not needle:
+        return None
+    start = haystack.find(needle)
+    while start != -1:
+        end = start + len(needle)
+        if not any(start < claimed_end and claimed_start < end for claimed_start, claimed_end in claimed_spans):
+            return (start, end)
+        start = haystack.find(needle, start + 1)
+    return None
 
 
 def _age_operands(text: str) -> list[dict[str, Any]]:

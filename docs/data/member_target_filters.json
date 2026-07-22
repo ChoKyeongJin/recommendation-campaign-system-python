@@ -31,6 +31,26 @@
       "no_purchase": {"anti_join": true}
     }
   },
+  "aggregate_targets": {
+    "table": "CRM_SL_ORDERHEADERMALL",
+    "join_column": "MEMBER_NO",
+    "date_column": "ORDER_DATE",
+    "metrics": {
+      "purchase_amount": {
+        "agg": "SUM",
+        "column": "PAYMENT_AMT",
+        "ko_label": "누적 구매 금액",
+        "synonyms": ["누적 구매 금액", "누적구매금액", "구매 금액", "구매금액", "결제 금액", "결제금액", "구매액", "구매 총액", "구매총액", "구매 총금액"]
+      },
+      "order_count": {
+        "agg": "COUNT",
+        "column": "ORDER_ID",
+        "distinct": true,
+        "ko_label": "구매 횟수",
+        "synonyms": ["구매 횟수", "구매횟수", "주문 횟수", "주문횟수", "구매 건수", "구매건수", "주문 건수", "주문건수"]
+      }
+    }
+  },
   "purchase_product_match_columns": [
     "CATEGORY",
     "CATEGORYL_NAME",

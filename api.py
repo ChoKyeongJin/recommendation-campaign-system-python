@@ -816,6 +816,38 @@ def seed_prompt_templates() -> dict[str, Any]:
     return {"is_success": True, "seeded": [_jsonable_record(item) for item in seeded], "count": len(seeded)}
 
 
+# --------------------------------------------------------------------------- #
+# 참조 파일(docs/data · docs/prompts) — 읽기 전용 노출. 타겟팅 엔진이 읽는 지식/사전/프롬프트
+# 파일을 프론트에서 열람만 할 수 있게 한다. 편집 엔드포인트는 두지 않는다(GET 전용).
+# 경로는 reference_docs 가 화이트리스트 디렉터리로 제한한다. FastAPI 기본 Swagger 가 /docs 를
+# 쓰므로 경로 접두사는 /reference-files 로 둔다.
+# --------------------------------------------------------------------------- #
+@app.get("/api/reference-files")
+@app.get("/reference-files")
+def list_reference_files() -> dict[str, Any]:
+    import reference_docs
+
+    try:
+        files = reference_docs.list_reference_files()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"reference_files_lookup_failed:{exc.__class__.__name__}") from exc
+    return {"files": files, "count": len(files)}
+
+
+@app.get("/api/reference-files/{category}/{name}")
+@app.get("/reference-files/{category}/{name}")
+def get_reference_file(category: str, name: str) -> dict[str, Any]:
+    import reference_docs
+
+    try:
+        payload = reference_docs.read_reference_file(category, name)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"reference_file_read_failed:{exc.__class__.__name__}") from exc
+    if payload is None:
+        raise HTTPException(status_code=404, detail="reference_file_not_found")
+    return payload
+
+
 @app.get("/api/policies")
 @app.get("/policies")
 def list_policies() -> dict[str, Any]:
