@@ -14,3 +14,6 @@ ${context}
 
 [SQL Result]
 ${sql_result}
+
+[신뢰도]
+${confidence}

@@ -46,5 +46,10 @@
     "default_column": "SIGUNGU",
     "default_top_n": 5,
     "max_top_n": 30
+  },
+  "member_metric_ranking": {
+    "granularity_tokens": ["고객님", "구매자", "사용자", "고객", "회원", "유저", "손님"],
+    "default_top_n": 100,
+    "max_top_n": 10000
   }
 }

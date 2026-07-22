@@ -33,6 +33,7 @@ from sql_guard import (
     load_table_dialects,
     validate_sql,
 )
+from confidence import render_confidence_markdown, render_confidence_report, score_targeting_confidence
 
 
 DEFAULT_DATA_PATH = Path("docs/data/rag_knowledge_base.json")
@@ -111,6 +112,11 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
         "default_column": "SIGUNGU",
         "default_top_n": 5,
         "max_top_n": 30,
+    },
+    "member_metric_ranking": {
+        "granularity_tokens": ["고객님", "구매자", "사용자", "고객", "회원", "유저", "손님"],
+        "default_top_n": 100,
+        "max_top_n": 10000,
     },
 }
 
@@ -916,6 +922,8 @@ def _merge_targeting_conditions(base: dict[str, Any], other: dict[str, Any]) -> 
 
     if not isinstance(base.get("region_density_target"), dict) and isinstance(other.get("region_density_target"), dict):
         base["region_density_target"] = other["region_density_target"]
+    if not isinstance(base.get("member_metric_ranking"), dict) and isinstance(other.get("member_metric_ranking"), dict):
+        base["member_metric_ranking"] = other["member_metric_ranking"]
     if not base.get("cart_context") and other.get("cart_context"):
         base["cart_context"] = True
 
@@ -1034,6 +1042,7 @@ def _build_single_query_plan(
     _apply_member_value_filters(parse_query, llm_plan)
     # LLM 이 semantic_resolutions 를 자체 추가했을 수 있으므로 밀집 지역 소비를 여기서도 보장한다.
     _apply_region_density_target(parse_query, llm_plan)
+    _apply_member_metric_ranking_target(parse_query, llm_plan)
     # 구매 상품(purchase_object)도 프롬프트 텍스트에서 결정론적으로 뽑아, rules/llm 어느 경로든 동일하게
     # 상품 구매 이력 타겟팅(build_purchase_history_targets_sql_candidate)으로 이어지게 한다.
     _apply_purchase_object_filter(parse_query, llm_plan.setdefault("target_user", {}))
@@ -1147,6 +1156,7 @@ def _build_rule_query_plan(
     _apply_policy_constraints(query, plan, business_policies)
     # 지역 모호성 정책(semantic_resolutions)이 채워진 뒤에 실행해야 밀집 지역 해석이 이를 소비한다.
     _apply_region_density_target(query, plan)
+    _apply_member_metric_ranking_target(query, plan)
     plan["computed_metrics"] = parse_computed_metrics_from_query(query, schema_path=sql_schema, metric_lexicon_path=metric_lexicon)
     policy_terms = [
         term
@@ -1502,6 +1512,7 @@ def _promote_unknown_intent_for_target_signal(query_plan: dict[str, Any]) -> Non
     has_member_signal = compile_member_target_conditions(query_plan)["has_signal"]
     purchase_object = query_plan.get("target_user", {}).get("purchase_object")
     has_density_target = isinstance(query_plan.get("region_density_target"), dict)
+    has_metric_ranking = isinstance(query_plan.get("member_metric_ranking"), dict)
     # 주문 횟수 행동(첫 구매/재구매/무구매)·구매 미발생 기간(최근 N일 미구매)도 주문 집계로 실추출 가능한 신호다.
     target_user = query_plan.get("target_user", {})
     behaviors = target_user.get("behaviors", [])
@@ -1511,6 +1522,7 @@ def _promote_unknown_intent_for_target_signal(query_plan: dict[str, Any]) -> Non
     if (
         has_member_signal
         or has_density_target
+        or has_metric_ranking
         or has_order_count_signal
         or has_purchase_inactivity
         or has_birthday_target
@@ -2096,6 +2108,87 @@ def _member_metric_by_synonym(path_text: str, matched_synonym: str) -> dict[str,
     return None
 
 
+def _member_metric_ranking_config() -> dict[str, Any]:
+    config = _MEMBER_TARGET_FILTERS.get("member_metric_ranking")
+    return config if isinstance(config, dict) else _DEFAULT_MEMBER_TARGET_FILTERS["member_metric_ranking"]
+
+
+def _member_ranking_granularity_alternation() -> str:
+    tokens = [t for t in _member_metric_ranking_config().get("granularity_tokens", []) if isinstance(t, str) and t]
+    if not tokens:
+        tokens = list(_DEFAULT_MEMBER_TARGET_FILTERS["member_metric_ranking"]["granularity_tokens"])
+    tokens.sort(key=len, reverse=True)  # '구매자'가 '자'보다, '고객님'이 '고객'보다 먼저 매칭되게 긴 토큰 우선
+    return "|".join(re.escape(token) for token in tokens)
+
+
+@functools.lru_cache(maxsize=4)
+def _member_metric_customer_pattern(path_text: str) -> "re.Pattern[str] | None":
+    """지표 레지스트리(member_metrics.json)의 동의어로 '<지표>가 높은 고객' 패턴을 동적 생성한다.
+
+    지역 랭킹(_member_metric_region_pattern)의 회원 단위 짝이다 — granularity 만 지역 토큰 대신
+    고객/회원 토큰이다. '누적 구매금액이 높은 고객'처럼 회원 단위로 지표를 정렬해 상위 N 명을 뽑는
+    표현을 결정론 빌더(build_member_metric_ranking_sql_candidate)로 라우팅해, LLM 폴백이 없는 컬럼을
+    지어내는 것을 막는다. 동의어는 긴 것부터 매칭한다('평균 구매금액'이 '구매금액'보다 먼저)."""
+    registry = _load_member_metrics(path_text)
+    if not registry:
+        return None
+    synonyms: list[tuple[str, str]] = []
+    for metric in registry.get("metrics", []):
+        for synonym in metric.get("synonyms", []):
+            if isinstance(synonym, str) and synonym:
+                synonyms.append((synonym, metric["metric_id"]))
+    if not synonyms:
+        return None
+    synonyms.sort(key=lambda pair: len(pair[0]), reverse=True)
+    alternation = "|".join(re.escape(synonym) for synonym, _ in synonyms)
+    return re.compile(
+        rf"({alternation})(?:이|가|을|를)?\s*(?:가장\s*|제일\s*)?(?:높은|많은|큰|상위)\s*"
+        rf"(?:\d+\s*명?\s*)?({_member_ranking_granularity_alternation()})"
+    )
+
+
+def _apply_member_metric_ranking_target(query: str, plan: dict[str, Any]) -> None:
+    """'<지표>가 높은 고객'을 회원 단위 지표 랭킹 타겟(member_metric_ranking)으로 해석한다.
+
+    지역 랭킹(_apply_region_density_target)의 회원 단위 짝이다. build_member_metric_ranking_sql_candidate
+    가 이 플래그를 보고 지표 테이블(CRM_MB_MONTHCRMINFO)을 회원키로 조인해 지표값 내림차순 상위 N
+    명을 뽑는 SQL 을 생성한다(월 스냅샷 중복은 레지스트리 grain_filter 로 방지). 데모 스키마(users
+    테이블) 참조라 실DB 에 못 쓰는 매출 순위/고매출 정책(top_revenue_user/high_revenue_user)이 같은
+    어구에 얻어걸려 남으면 threshold clarification 등으로 파이프라인이 막히므로, 지표어가 라벨/동의어에
+    포함된 target_user 정책을 소비한다."""
+    if isinstance(plan.get("region_density_target"), dict):
+        # 지역 랭킹으로 이미 해석됐으면(예: '매출 높은 지역') 회원 랭킹으로 중복 해석하지 않는다.
+        return
+    pattern = _member_metric_customer_pattern(str(DEFAULT_MEMBER_METRICS_PATH))
+    match = pattern.search(query) if pattern else None
+    if not match:
+        return
+    matched_metric_text = match.group(1)
+    metric_info = _member_metric_by_synonym(str(DEFAULT_MEMBER_METRICS_PATH), matched_metric_text)
+    if metric_info is None:
+        return
+    config = _member_metric_ranking_config()
+    top_n = int(config.get("default_top_n") or 100)
+    top_match = _REGION_DENSITY_TOP_N_PATTERN.search(query) or re.search(r"(\d+)\s*명", query)
+    if top_match:
+        max_top_n = int(config.get("max_top_n") or 10000)
+        top_n = max(1, min(int(next(group for group in top_match.groups() if group)), max_top_n))
+    plan["member_metric_ranking"] = {
+        "metric_id": metric_info["metric_id"],
+        "metric_label": metric_info.get("ko_label", metric_info["metric_id"]),
+        "top_n": top_n,
+    }
+    # 같은 지표어에 얻어걸린 데모 스키마(users) 회원 정책을 소비한다(실DB 미지원 → clarification 차단).
+    plan["policy_constraints"] = [
+        policy
+        for policy in plan.get("policy_constraints", [])
+        if not (
+            policy.get("scope") == "target_user"
+            and matched_metric_text in str(policy.get("ko_label", "")) + str(policy.get("canonical", ""))
+        )
+    ]
+
+
 # "최근 N일/개월 동안 구매하지 않은" 같은 구매 미발생 기간(구매 리센시) 신호. 구매 부정어 + 시간 창이
 # 함께 있을 때만 잡는다. 시간 창이 없으면(예: '미구매 고객') '전혀 구매 안 함(no_purchase)'과 구분이
 # 없으므로 여기서 잡지 않고 기존 no_purchase 경로로 둔다.
@@ -2629,6 +2722,7 @@ def retrieve(
     # 프롬프트 재작성기가 '많이 거주하는' 같은 집계 표현을 지울 수 있으므로(비결정적 LLM 재작성),
     # 파싱 문장 기준으로도 밀집 지역 타겟을 감지한다(이미 감지됐으면 동일 값으로 덮어써 무해).
     _apply_region_density_target(plan_query, query_plan)
+    _apply_member_metric_ranking_target(plan_query, query_plan)
     # 캠페인/조회 동사 없이 회원 속성만 나열한 프롬프트는 파서가 intent=unknown 을 주는데, 그러면
     # 회원 타겟 SQL 빌더가 호출되지 않는다. 실DB 매핑 가능한 타겟 신호가 있으면 세그먼트 조회로 승격.
     _promote_unknown_intent_for_target_signal(query_plan)
@@ -3068,6 +3162,15 @@ def render_answer_prompt(
         else:
             sql_policy.append("사용자에게 현재 Query Plan 조건을 완전히 만족하는 검증된 SQL이 없다고 답변하라.")
 
+    # 신뢰도 리포트(전체/조건별 점수·근거·경고). 결과 화면에 그대로 노출할 수 있게 사람이 읽는
+    # 텍스트로 미리 렌더해 프롬프트에 주입한다(LLM 이 점수를 임의로 만들지 않도록 값은 여기서 확정).
+    confidence = sql_result.get("confidence")
+    confidence_block = (
+        render_confidence_report(confidence)
+        if confidence
+        else "신뢰도 정보 없음(검증된 SQL 이 없어 신뢰도를 산정하지 않았습니다)."
+    )
+
     fallback = "\n".join(
         [
             "너는 캠페인 추천/NL2SQL 보조 답변 생성기다.",
@@ -3083,6 +3186,9 @@ def render_answer_prompt(
             "",
             "[SQL Result]",
             "${sql_result}",
+            "",
+            "[신뢰도]",
+            "${confidence}",
         ]
     )
     template = _read_prompt_template(prompt_dir, "answer_user.txt", fallback)
@@ -3093,6 +3199,7 @@ def render_answer_prompt(
         context=context_assembly["prompt"],
         sql_result=json.dumps(sql_result, ensure_ascii=False, indent=2),
         sql_policy="\n".join(sql_policy),
+        confidence=confidence_block,
     )
 
 
@@ -4568,6 +4675,10 @@ def build_recommendation_api_response(
         "target_dialect": sql_result.get("target_dialect"),
         # 0명 결과일 때 실행부에서 어느 술어가 오디언스를 죽였는지 귀속하기 위한 술어별 probe.
         "cardinality_probe": sql_result.get("cardinality_probe"),
+        # 생성 SQL 신뢰도(전체/조건별 점수·근거·경고) + 사람이 읽는 리포트 텍스트 + 프론트 노출용 마크다운.
+        "confidence": sql_result.get("confidence"),
+        "confidence_report": render_confidence_report(sql_result["confidence"]) if sql_result.get("confidence") else None,
+        "confidence_markdown": render_confidence_markdown(sql_result["confidence"]) if sql_result.get("confidence") else None,
         "message": message,
         "missing_input_conditions": sql_result.get("missing_input_conditions", []),
         "clarification_questions": sql_result.get("clarification_questions", []),
@@ -4869,6 +4980,14 @@ def build_sql_result(
     dropped_conditions = selected.get("dropped_conditions", []) if selected else []
     dropped_condition_labels = selected.get("dropped_condition_labels", []) if selected else []
 
+    # 생성된 SQL 에 대한 결정론 신뢰도 산정(0~100, 조건별 근거 포함). 실패해도 SQL 생성엔 영향 없음.
+    confidence = None
+    if selected_sql is not None and selected is not None:
+        try:
+            confidence = score_targeting_confidence(query_plan, selected, context_nodes, schema_path=schema_path)
+        except Exception:
+            confidence = None
+
     return {
         "sql": selected_sql,
         "target_connection": target_connection,
@@ -4890,6 +5009,8 @@ def build_sql_result(
         "generation_source": (selected or {}).get("source"),
         # 실행부(0명 결과)에서 술어별 카디널리티 진단을 돌릴 수 있게 선택된 후보의 probe 를 노출.
         "cardinality_probe": (selected or {}).get("cardinality_probe") if selected_sql is not None else None,
+        # 생성 SQL 의 결정론 신뢰도(전체/조건별 점수·근거·경고).
+        "confidence": confidence,
         "is_success": selected_sql is not None,
         "failure_reason": failure_reason,
     }
@@ -5433,6 +5554,11 @@ def build_sql_template_candidate(query_plan: dict[str, Any]) -> dict[str, Any] |
         if order_count_candidate is not None:
             # "첫 구매/재구매/무구매 고객" 은 주문 헤더(CRM_SL_ORDERHEADERMALL)를 회원별로 집계해 뽑는다.
             return order_count_candidate
+        metric_ranking_candidate = build_member_metric_ranking_sql_candidate(query_plan)
+        if metric_ranking_candidate is not None:
+            # "매출/누적 구매금액이 높은 고객 상위 N명" 은 지표 테이블(CRM_MB_MONTHCRMINFO)을 회원키로
+            # 조인해 지표값 내림차순 상위 N 명을 뽑는다(회원 속성이 있으면 같은 SQL 에 AND 결합).
+            return metric_ranking_candidate
         member_candidate = build_member_targets_sql_candidate(query_plan)
         if member_candidate is not None:
             # 성별/연령/등급/휴면/장기미접속/앱 등 회원 속성 타겟은 실회원 테이블(CRMDW CRM_MB_BASEINFO)로 뽑는다.
@@ -5449,6 +5575,10 @@ def build_sql_template_candidate(query_plan: dict[str, Any]) -> dict[str, Any] |
         if order_count_candidate is not None:
             # "첫 구매/재구매/무구매 고객 찾아줘" 세그먼트 조회도 주문 집계로 실회원을 추출한다.
             return order_count_candidate
+        metric_ranking_candidate = build_member_metric_ranking_sql_candidate(query_plan)
+        if metric_ranking_candidate is not None:
+            # "매출/누적 구매금액이 높은 고객" 세그먼트 조회도 지표 테이블 조인 상위 N 랭킹으로 추출한다.
+            return metric_ranking_candidate
         member_candidate = build_member_targets_sql_candidate(query_plan)
         if member_candidate is not None:
             # 성별/연령/등급/휴면·장기 미접속 등 회원 속성 세그먼트 조회도 실회원 테이블(CRMDW
@@ -5807,6 +5937,70 @@ def _build_dense_region_targets_candidate(
     candidate = _sql_candidate(
         "sql_template:dense_region_targets",
         "거주 밀집 지역(상위 N) 타겟 추출 SQL 템플릿(CRMDW)",
+        1.0,
+        sql,
+        _template_tables(sql),
+        "sql_template",
+    )
+    candidate["dropped_conditions"] = compiled["unsupported"]
+    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in compiled["unsupported"]]
+    return candidate
+
+
+def build_member_metric_ranking_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """'<지표>가 높은 고객'을 회원 단위 지표 랭킹 SQL 로 생성한다(지표값 내림차순 상위 N 명).
+
+    지역 랭킹(_build_dense_region_targets_candidate)의 회원 단위 짝이다. 지표 테이블
+    (CRM_MB_MONTHCRMINFO)을 회원키로 조인해 지표값(예: TOTAL_BUY_AMT)으로 정렬한다 — 월 스냅샷
+    테이블의 회원당 중복 행은 레지스트리 grain_filter(최신 월 한정)로 막아 회원당 1 행을 보장한다.
+    성별/연령/등급/휴면 등 회원 속성이 함께 있으면 compile_member_target_conditions 술어로 같은 SQL 에
+    AND 결합한다("30대 여성 중 매출 높은 고객 상위 100명"). LLM 이 없는 컬럼(CUMULATIVE_PURCHASE_AMOUNT
+    등)을 지어내던 폴백을 대체한다."""
+    ranking = query_plan.get("member_metric_ranking")
+    if not isinstance(ranking, dict):
+        return None
+    registry = _load_member_metrics(str(DEFAULT_MEMBER_METRICS_PATH)) or {}
+    metric = next((m for m in registry.get("metrics", []) if m.get("metric_id") == ranking.get("metric_id")), None)
+    if not metric:
+        return None
+    value_table = registry.get("value_table", "CRM_MB_MONTHCRMINFO")
+    join_column = registry.get("join_column", "MEMBER_NO")
+    metric_expr = f"C.{metric['column']}"
+    top_n = int(ranking.get("top_n", 100))
+
+    compiled = compile_member_target_conditions(query_plan)
+    where_clauses = list(compiled["predicates"])
+    if not compiled["forces_state"]:
+        where_clauses.append(_member_active_state_predicate())
+    grain_filter = registry.get("grain_filter")
+    if grain_filter:
+        where_clauses.append(grain_filter)
+    where_clauses.append(f"{metric_expr} IS NOT NULL")
+    where_clauses = _unique_strings(where_clauses)
+
+    select_columns = [
+        f"DISTINCT TOP {top_n} B.MEMBER_NO AS CUST_ID",
+        "B.EMART_GRADE_CD AS member_grade",
+        f"{metric_expr} AS {metric['metric_id']}",
+    ]
+    segment_parts = [ranking["metric_id"], *compiled["labels"]]
+    select_columns.append(_sql_quote("metric_rank:" + ",".join(segment_parts)) + " AS segment_label")
+    objective = query_plan.get("campaign_constraints", {}).get("objective")
+    if objective:
+        select_columns.append(_sql_quote(objective) + " AS objective")
+
+    sql = "\n".join(
+        [
+            "SELECT " + ", ".join(select_columns),
+            "FROM CRM_MB_BASEINFO B",
+            f"     INNER JOIN {value_table} C ON B.{join_column} = C.{join_column}",
+            "WHERE " + "\n  AND ".join(where_clauses),
+            f"ORDER BY {metric_expr} DESC",
+        ]
+    )
+    candidate = _sql_candidate(
+        "sql_template:member_metric_ranking",
+        f"회원 단위 지표 랭킹(상위 N, {ranking.get('metric_label', ranking['metric_id'])}) 타겟 추출 SQL 템플릿(CRMDW)",
         1.0,
         sql,
         _template_tables(sql),
@@ -6320,6 +6514,22 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
                 all_terms=density_terms,
             )
         )
+
+    # 회원 단위 지표 랭킹(member_metric_ranking)은 지표 컬럼(TOTAL_BUY_AMT)과 정렬(ORDER BY)이 SQL 에
+    # 실제로 있어야 커버된 것으로 본다 — 생성부(build_member_metric_ranking_sql_candidate)-검증부 일치.
+    ranking = query_plan.get("member_metric_ranking")
+    if isinstance(ranking, dict):
+        registry = _load_member_metrics(str(DEFAULT_MEMBER_METRICS_PATH)) or {}
+        metric = next((m for m in registry.get("metrics", []) if m.get("metric_id") == ranking.get("metric_id")), None)
+        if metric:
+            conditions.append(
+                _condition(
+                    "member_metric_ranking",
+                    metric["column"],
+                    [f"top {ranking.get('top_n', 100)}"],
+                    all_terms=[metric["column"], "order by"],
+                )
+            )
 
     # 회원 테이블 디멘션 필터(예: 시도/SIDO)는 회원/구매 타겟 SQL 에 그대로 컴파일되므로
     # (compile_member_target_conditions) 커버리지도 요구한다 — 생성부-검증부 일치.
