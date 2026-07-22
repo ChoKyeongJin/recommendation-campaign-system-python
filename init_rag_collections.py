@@ -19,6 +19,7 @@ DEFAULT_NORMALIZATION = Path("docs/data/normalization_rules.sample.json")
 DEFAULT_BUSINESS_POLICIES = Path("docs/data/business_policies.sample.json")
 DEFAULT_METRIC_LEXICON = Path("docs/data/metric_lexicon.sample.json")
 DEFAULT_DIMENSION_CATALOG = Path("docs/data/dimension_catalog.sample.json")
+DEFAULT_MEMBER_VALUE_INDEX = Path("docs/data/member_value_index.json")
 DEFAULT_SQL_EXAMPLES = Path("docs/data/sql_examples.sample.sql")
 DEFAULT_KNOWLEDGE_DATA = Path("docs/data/rag_knowledge_base.json")
 DEFAULT_USER_COLLECTION = "campaign_user_rag_nodes"
@@ -34,6 +35,7 @@ def rebuild_knowledge_base(
     output_path: Path,
     campaign_user_path: Path | None = None,
     dimension_catalog_path: Path | None = None,
+    member_value_index_path: Path | None = None,
 ) -> dict[str, Any]:
     payload = build_payload(
         schema_catalog=load_json(schema_path),
@@ -46,6 +48,11 @@ def rebuild_knowledge_base(
         ),
         dimension_payload=(
             load_json(dimension_catalog_path) if dimension_catalog_path and dimension_catalog_path.exists() else None
+        ),
+        member_value_payload=(
+            load_json(member_value_index_path)
+            if member_value_index_path and member_value_index_path.exists()
+            else None
         ),
     )
     save_json(output_path, payload)
@@ -113,6 +120,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--business-policies", type=Path, default=DEFAULT_BUSINESS_POLICIES, help="Business policy JSON path.")
     parser.add_argument("--metric-lexicon", type=Path, default=DEFAULT_METRIC_LEXICON, help="Metric alias JSON path for computed formula parsing.")
     parser.add_argument("--dimension-catalog", type=Path, default=DEFAULT_DIMENSION_CATALOG, help="Dimension catalog JSON path (prompt keyword -> column + code/name snapshot).")
+    parser.add_argument("--member-value-index", type=Path, default=DEFAULT_MEMBER_VALUE_INDEX, help="Member column value index JSON path (auto-built from the live member table).")
     parser.add_argument("--sql-examples", type=Path, default=DEFAULT_SQL_EXAMPLES, help="SQL examples file path.")
     parser.add_argument("--user-collection", default=os.getenv("QDRANT_RAG_COLLECTION", DEFAULT_USER_COLLECTION), help="Campaign/user collection name.")
     parser.add_argument("--knowledge-collection", default=os.getenv("QDRANT_GRAPH_COLLECTION", DEFAULT_KNOWLEDGE_COLLECTION), help="Knowledge graph collection name.")
@@ -146,6 +154,7 @@ def main() -> None:
             output_path=args.knowledge_data,
             campaign_user_path=args.user_data,
             dimension_catalog_path=args.dimension_catalog,
+            member_value_index_path=args.member_value_index,
         )
 
     client = None if args.dry_run or args.validate_only else QdrantClient(url=args.url, api_key=args.api_key)

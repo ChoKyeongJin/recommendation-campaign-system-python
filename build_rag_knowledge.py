@@ -479,6 +479,51 @@ def dimension_nodes(dimension_payload: dict[str, Any] | None) -> list[dict[str, 
     return nodes
 
 
+def member_value_nodes(member_value_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """회원 값 인덱스(build_member_value_index.py 자동 생성) -> dimension_value 노드.
+
+    값(예: '서울', 'VIP')이 어느 실컬럼에 어떤 저장값으로 존재하는지를 검색/그래프에 노출해,
+    타겟팅 답변 컨텍스트가 값→컬럼→테이블 경로를 설명할 수 있게 한다. 수동 큐레이션 없음 —
+    인덱스 재생성만으로 값 노드가 갱신된다.
+    """
+    if not member_value_payload:
+        return []
+
+    default_table = member_value_payload.get("table", "CRM_MB_BASEINFO")
+    nodes = []
+    for column_entry in member_value_payload.get("columns", []):
+        column = column_entry.get("column")
+        if not column:
+            continue
+        # 보조 속성 테이블 컬럼(예: JOB_CD)은 실제 저장 테이블로 연결한다.
+        table = column_entry.get("source_table") or default_table
+        for entry in column_entry.get("values", []):
+            value = entry.get("value")
+            name = entry.get("name") or value
+            if not value:
+                continue
+            count = entry.get("count")
+            count_text = f"(회원 {count:,}명)" if isinstance(count, int) else ""
+            text = (
+                f"회원 속성 값 {name}. 실회원 테이블 {table}.{column} 에 '{value}' 로 저장된 값{count_text}. "
+                f"타겟팅 조건 {column} = '{value}' 로 사용한다."
+            )
+            nodes.append(
+                {
+                    "id": f"dimension_value:{table}.{column}.{value}",
+                    "type": "dimension_value",
+                    "dimension_id": f"member_value:{column}",
+                    "name": name,
+                    "code": value,
+                    "count": count,
+                    "target_table": table,
+                    "target_column": f"{table}.{column}",
+                    "text_for_embedding": text,
+                }
+            )
+    return nodes
+
+
 def build_payload(
     schema_catalog: dict[str, Any],
     normalization_payload: dict[str, Any],
@@ -487,6 +532,7 @@ def build_payload(
     metric_lexicon_payload: dict[str, Any] | None = None,
     campaign_user_payload: dict[str, Any] | None = None,
     dimension_payload: dict[str, Any] | None = None,
+    member_value_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     nodes = [
         *schema_nodes(schema_catalog),
@@ -495,6 +541,7 @@ def build_payload(
         *policy_nodes(policy_payload),
         *metric_alias_nodes(metric_lexicon_payload),
         *dimension_nodes(dimension_payload),
+        *member_value_nodes(member_value_payload),
         *sql_example_nodes(sql_text),
         *campaign_user_nodes(campaign_user_payload),
     ]
@@ -510,6 +557,7 @@ def build_payload(
             "sql_examples": "docs/data/sql_examples.sample.sql",
             "business_terms": "build_rag_knowledge.py",
             "dimension_catalog": "docs/data/dimension_catalog.sample.json",
+            "member_value_index": "docs/data/member_value_index.json",
             "campaign_user_nodes": "docs/data/campaign_user_rag_sample_50_with_edges.json",
         },
         "node_counts": {
@@ -539,6 +587,7 @@ def main() -> None:
     parser.add_argument("--dimension-catalog", type=Path, default=Path("docs/data/dimension_catalog.sample.json"))
     parser.add_argument("--sql-examples", type=Path, default=Path("docs/data/sql_examples.sample.sql"))
     parser.add_argument("--campaign-user", type=Path, default=Path("docs/data/campaign_user_rag_sample_50_with_edges.json"))
+    parser.add_argument("--member-value-index", type=Path, default=Path("docs/data/member_value_index.json"))
     parser.add_argument("--output", "-o", type=Path, default=Path("docs/data/rag_knowledge_base.json"))
     args = parser.parse_args()
 
@@ -550,6 +599,7 @@ def main() -> None:
         metric_lexicon_payload=load_json(args.metric_lexicon) if args.metric_lexicon.exists() else None,
         campaign_user_payload=load_json(args.campaign_user) if args.campaign_user.exists() else None,
         dimension_payload=load_json(args.dimension_catalog) if args.dimension_catalog.exists() else None,
+        member_value_payload=load_json(args.member_value_index) if args.member_value_index.exists() else None,
     )
     save_json(args.output, payload)
     print(json.dumps(payload["node_counts"], ensure_ascii=False, indent=2))

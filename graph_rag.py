@@ -46,34 +46,132 @@ DEFAULT_PROMPT_DIR = Path(os.getenv("GRAPH_RAG_PROMPT_DIR", "docs/prompts"))
 DEFAULT_MESSAGE_POLICY_PATH = Path(os.getenv("GRAPH_RAG_MESSAGE_POLICY", "docs/policies/message-policy.json"))
 DEFAULT_RAG_LLM_LOG_DIR = Path(os.getenv("RAG_LLM_LOG_DIR", "logs/rag_llm"))
 
-GENDER_TERMS = {"male", "female"}
-LIFECYCLE_TERMS = {"new_user", "inactive_90d", "inactive_180d", "dormant", "vip", "app_user", "welcome_grade", "family_grade", "silver_grade", "gold_grade"}
 CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "subscription", "awareness"}
 # ── 실회원(CRM_MB_BASEINFO) 타겟 속성 레지스트리 ──────────────────────────────
 # recommend_campaign 의 타겟을 데모 스키마(users/campaigns) 대신 실회원 테이블로 추출하기 위한
-# "조건 -> 실컬럼 술어" 매핑의 단일 출처. 새 속성/값 지원은 코드 분기가 아니라 여기에 항목만 추가하면
-# 되고, 조합은 compile_member_target_conditions 가 자동 처리한다(포함/제외/연령 등 임의 조합).
+# "조건 -> 실컬럼 술어" 매핑의 단일 출처는 docs/data/member_target_filters.json 이다. 새 속성/값
+# 지원(등급 추가, 상태 추가 등)은 코드 수정이 아니라 그 파일에 항목만 추가하면 되고, 조합은
+# compile_member_target_conditions 가 자동 처리한다(포함/제외/연령 등 임의 조합). 아래
+# _DEFAULT_MEMBER_TARGET_FILTERS 는 파일 부재/파손 시 폴백이자 스키마 예시다.
 #
-# MEMBER_EQ_FILTERS: canonical 값 -> (범주, 실컬럼, 저장값). 포함은 `=`, 제외는 `<>` 로 자동 생성.
+# eq_filters: canonical 값 -> (범주, 실컬럼, 저장값). 포함은 `=`, 제외는 `<>` 로 자동 생성.
 #   저장값은 코드도메인 접두어를 포함한다(실DB 조회로 확인: GENDER_CD.FEMALE / MEM_GRADE_CD.VIP /
 #   MEMBER_STATE_CD.SLEEP / DEVICE_TYPE_CD.APP). 범주 state 는 회원상태 직접 지정(기본 NORMAL 한정 해제).
-# MEMBER_ACTIVITY_FILTERS: canonical -> 미접속 일수. LAST_LOGIN_DATE(YYYYMMDD 문자열) 사전식 비교.
+#   같은 컬럼(grade)에 값이 여러 개면 compile_member_target_conditions 가 IN 으로 묶는다(OR).
+# activity_filters: canonical -> 미접속 일수. LAST_LOGIN_DATE(YYYYMMDD 문자열) 사전식 비교.
 #   범위 조건이라 제외(부정)는 의미가 모호해 미지원(→ fallback).
-# new_user 는 REG_TYPE_CD.NEW 가 전체의 96%라 무의미하고 기간 기준이 미정의라 미매핑(→ fallback).
-MEMBER_EQ_FILTERS: dict[str, tuple[str, str, str]] = {
-    "female": ("gender", "B.GENDER_CD", "GENDER_CD.FEMALE"),
-    "male": ("gender", "B.GENDER_CD", "GENDER_CD.MALE"),
-    # 회원 등급 EMART_GRADE_CD (실DB 실측 정상회원: SILVER>FAMILY>WELCOME>GOLD>VIP 순 규모).
-    # 같은 컬럼(grade)에 값이 여러 개면 compile_member_target_conditions 가 IN 으로 묶는다(OR).
-    "welcome_grade": ("grade", "B.EMART_GRADE_CD", "MEM_GRADE_CD.WELCOME"),
-    "family_grade": ("grade", "B.EMART_GRADE_CD", "MEM_GRADE_CD.FAMILY"),
-    "silver_grade": ("grade", "B.EMART_GRADE_CD", "MEM_GRADE_CD.SILVER"),
-    "gold_grade": ("grade", "B.EMART_GRADE_CD", "MEM_GRADE_CD.GOLD"),
-    "vip": ("grade", "B.EMART_GRADE_CD", "MEM_GRADE_CD.VIP"),
-    "dormant": ("state", "B.MEMBER_STATE_CD", "MEMBER_STATE_CD.SLEEP"),
-    "app_user": ("channel", "B.LAST_LOGIN_CHANNEL", "DEVICE_TYPE_CD.APP"),
+# lifecycle_extra_terms: 어휘로는 존재하나 등가/활동 필터로는 표현 못 하는 lifecycle canonical.
+#   new_user 는 여기 남겨 LLM 파서 어휘(LIFECYCLE_TERMS)로 인식시키되, 실컬럼 매핑은 signup_target
+#   (REG_DT 최근 N일 창)이 담당해 compile_member_target_conditions 가 술어로 만든다(→ fallback 아님).
+# signup_target: 신규 가입 타겟(REG_DT, YYYYMMDD). REG_TYPE_CD.NEW 는 96%라 무의미해 가입일 창으로 정의한다.
+#   anchor="data_max" 는 실적재 데이터 최신일(MAX(REG_DT)) 기준 최근 default_days 일 — 데모 데이터가
+#   과거(2022~2023)라 GETDATE 기준이면 0명이 되는 문제를 피한다. 운영 전환 시 anchor="getdate" 로 바꾼다.
+DEFAULT_MEMBER_TARGET_FILTERS_PATH = Path(
+    os.getenv("GRAPH_RAG_MEMBER_TARGET_FILTERS", "docs/data/member_target_filters.json")
+)
+
+_DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
+    "eq_filters": [
+        {"canonical": "female", "category": "gender", "column": "B.GENDER_CD", "value": "GENDER_CD.FEMALE"},
+        {"canonical": "male", "category": "gender", "column": "B.GENDER_CD", "value": "GENDER_CD.MALE"},
+        {"canonical": "welcome_grade", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.WELCOME"},
+        {"canonical": "family_grade", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.FAMILY"},
+        {"canonical": "silver_grade", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.SILVER"},
+        {"canonical": "gold_grade", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.GOLD"},
+        {"canonical": "vip", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.VIP"},
+        {"canonical": "dormant", "category": "state", "column": "B.MEMBER_STATE_CD", "value": "MEMBER_STATE_CD.SLEEP"},
+        {"canonical": "app_user", "category": "channel", "column": "B.LAST_LOGIN_CHANNEL", "value": "DEVICE_TYPE_CD.APP"},
+    ],
+    "activity_filters": [
+        {"canonical": "inactive_90d", "days": 90},
+        {"canonical": "inactive_180d", "days": 180},
+    ],
+    "lifecycle_extra_terms": ["new_user"],
+    "active_state": {"column": "MEMBER_STATE_CD", "value": "MEMBER_STATE_CD.NORMAL"},
+    "birthday_target": {"column": "BIRTHDAY"},
+    "signup_target": {"column": "REG_DT", "table": "CRM_MB_BASEINFO", "default_days": 90, "anchor": "data_max"},
+    "order_count_targets": {
+        "table": "CRM_SL_ORDERHEADERMALL",
+        "join_column": "MEMBER_NO",
+        "order_id_column": "ORDER_ID",
+        "order_date_column": "ORDER_DATE",
+        "behaviors": {
+            "first_purchase": {"operator": "=", "count": 1},
+            "repeat_buyer": {"operator": ">=", "count": 2},
+            "no_purchase": {"anti_join": True},
+        },
+    },
+    "purchase_product_match_columns": [
+        "CATEGORY", "CATEGORYL_NAME", "CATEGORYM_NAME", "CATEGORYS_NAME", "BRAND_NAME", "PRODUCT_NAME",
+    ],
+    "supported_condition_hint": "성별·연령·회원등급·휴면/미접속 기간·상품 구매 이력",
+    "region_density": {
+        "granularity_tokens": ["동네", "지역", "시군구", "시도", "구"],
+        "granularity_columns": {"시도": "SIDO"},
+        "default_column": "SIGUNGU",
+        "default_top_n": 5,
+        "max_top_n": 30,
+    },
 }
-MEMBER_ACTIVITY_FILTERS: dict[str, int] = {"inactive_90d": 90, "inactive_180d": 180}
+
+
+def _load_member_target_filters(path: Path = DEFAULT_MEMBER_TARGET_FILTERS_PATH) -> dict[str, Any]:
+    """레지스트리 JSON 을 읽어 코드 기본값 위에 키 단위로 덮는다. 파일 부재/파손 시 기본값 그대로."""
+    merged = dict(_DEFAULT_MEMBER_TARGET_FILTERS)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return merged
+    if isinstance(payload, dict):
+        for key in _DEFAULT_MEMBER_TARGET_FILTERS:
+            if key in payload:
+                merged[key] = payload[key]
+    return merged
+
+
+def _parse_eq_filters(entries: Any) -> dict[str, tuple[str, str, str]]:
+    if not isinstance(entries, list):
+        return {}
+    return {
+        entry["canonical"]: (entry["category"], entry["column"], entry["value"])
+        for entry in entries
+        if isinstance(entry, dict)
+        and all(isinstance(entry.get(key), str) and entry.get(key) for key in ("canonical", "category", "column", "value"))
+    }
+
+
+def _parse_activity_filters(entries: Any) -> dict[str, int]:
+    if not isinstance(entries, list):
+        return {}
+    return {
+        entry["canonical"]: entry["days"]
+        for entry in entries
+        if isinstance(entry, dict)
+        and isinstance(entry.get("canonical"), str)
+        and entry.get("canonical")
+        and isinstance(entry.get("days"), int)
+        and entry["days"] > 0
+    }
+
+
+_MEMBER_TARGET_FILTERS = _load_member_target_filters()
+# 파일 항목이 전부 비정형이어도 규칙 엔진이 죽지 않게 빈 결과는 코드 기본값으로 복원한다.
+MEMBER_EQ_FILTERS: dict[str, tuple[str, str, str]] = (
+    _parse_eq_filters(_MEMBER_TARGET_FILTERS.get("eq_filters"))
+    or _parse_eq_filters(_DEFAULT_MEMBER_TARGET_FILTERS["eq_filters"])
+)
+MEMBER_ACTIVITY_FILTERS: dict[str, int] = (
+    _parse_activity_filters(_MEMBER_TARGET_FILTERS.get("activity_filters"))
+    or _parse_activity_filters(_DEFAULT_MEMBER_TARGET_FILTERS["activity_filters"])
+)
+# 파서 어휘(성별/생애주기)는 레지스트리에서 파생한다 — 레지스트리에 항목을 추가하면 별도의
+# 어휘 셋 수정 없이 plan 병합(_merge_scalar/_merge_list)과 술어 컴파일이 함께 열린다.
+GENDER_TERMS = {canonical for canonical, (category, _, _) in MEMBER_EQ_FILTERS.items() if category == "gender"}
+LIFECYCLE_TERMS = (
+    {canonical for canonical, (category, _, _) in MEMBER_EQ_FILTERS.items() if category != "gender"}
+    | set(MEMBER_ACTIVITY_FILTERS)
+    | {term for term in _MEMBER_TARGET_FILTERS.get("lifecycle_extra_terms", []) if isinstance(term, str) and term}
+)
 
 
 def _member_eq_predicate(canonical: str, negate: bool = False) -> str | None:
@@ -86,6 +184,145 @@ def _member_eq_predicate(canonical: str, negate: bool = False) -> str | None:
 
 def _member_activity_predicate(days: int) -> str:
     return f"(B.LAST_LOGIN_DATE IS NOT NULL AND B.LAST_LOGIN_DATE <= CONVERT(CHAR(8), DATEADD(DAY, -{days}, GETDATE()), 112))"
+
+
+def _member_active_state_predicate(alias: str = "B") -> str:
+    """정상 회원 한정(탈퇴/휴면 제외) 술어. 기준 컬럼/값은 member_target_filters.json 의 active_state."""
+    state = _MEMBER_TARGET_FILTERS.get("active_state")
+    if not isinstance(state, dict):
+        state = _DEFAULT_MEMBER_TARGET_FILTERS["active_state"]
+    column = state.get("column") or "MEMBER_STATE_CD"
+    value = state.get("value") or "MEMBER_STATE_CD.NORMAL"
+    return f"{alias}.{column} = " + _sql_quote(value)
+
+
+def _member_birthday_predicate(granularity: str = "day", alias: str = "B") -> str:
+    """생일 타겟 술어. BIRTHDAY 는 nvarchar(8) 'YYYYMMDD' 문자열이라 년도까지 비교하면 안 되고,
+    월일(MMDD)만 오늘과 비교한다(day). '이달 생일'은 월(MM)만 비교(month). 컬럼은 birthday_target 설정."""
+    config = _MEMBER_TARGET_FILTERS.get("birthday_target")
+    if not isinstance(config, dict):
+        config = _DEFAULT_MEMBER_TARGET_FILTERS["birthday_target"]
+    column = config.get("column") or "BIRTHDAY"
+    length = 2 if granularity == "month" else 4  # month: MM(2자리), day: MMDD(4자리)
+    col = f"{alias}.{column}"
+    today = "CONVERT(CHAR(8), GETDATE(), 112)"  # 'YYYYMMDD'
+    # LEN 가드로 8자리 정상값만 비교(널/이상치 제외).
+    return (
+        f"({col} IS NOT NULL AND LEN({col}) = 8 "
+        f"AND SUBSTRING({col}, 5, {length}) = SUBSTRING({today}, 5, {length}))"
+    )
+
+
+def _member_signup_predicate(days: int | None = None, alias: str = "B") -> str:
+    """신규 가입 타겟 술어. REG_DT(nvarchar(8) 'YYYYMMDD') 가 기준일로부터 최근 N일 이내인 회원.
+
+    기준일(anchor)은 signup_target.anchor 설정: 'getdate' 는 실제 오늘(운영 정합), 'data_max' 는
+    적재 데이터 최신일 MAX(REG_DT)(데모 데이터가 과거라 GETDATE 기준이면 0명이 되는 문제 회피).
+    REG_DT 는 문자열이라 날짜연산 전 CONVERT(DATE, ., 112)로 파싱하고, 경계값은 다시 CHAR(8) 로 바꿔
+    사전식(문자열) 비교한다(포맷이 고정 8자리라 문자열 대소 = 날짜 대소). LEN 가드로 이상치를 제외한다."""
+    config = _MEMBER_TARGET_FILTERS.get("signup_target")
+    if not isinstance(config, dict):
+        config = _DEFAULT_MEMBER_TARGET_FILTERS["signup_target"]
+    column = config.get("column") or "REG_DT"
+    table = config.get("table") or "CRM_MB_BASEINFO"
+    if not isinstance(days, int) or days <= 0:
+        default_days = config.get("default_days")
+        days = default_days if isinstance(default_days, int) and default_days > 0 else 90
+    col = f"{alias}.{column}"
+    if config.get("anchor") == "getdate":
+        anchor = "GETDATE()"
+    else:
+        # 적재 데이터 최신 가입일 기준(서브쿼리). MAX 는 널/공백을 무시하고, 포맷 고정이라 문자열 MAX = 최신일.
+        anchor = f"CONVERT(DATE, (SELECT MAX({column}) FROM {table} WHERE LEN({column}) = 8), 112)"
+    boundary = f"CONVERT(CHAR(8), DATEADD(DAY, -{days}, {anchor}), 112)"
+    return f"({col} IS NOT NULL AND LEN({col}) = 8 AND {col} >= {boundary})"
+
+
+# ── 타겟팅 신호어 사전(intent/objective/문맥) ─────────────────────────────────
+# 의도·목적 분류와 문맥 판정(판매 아웃리치/신제품 알림/재활성/장바구니 이탈 등)에 쓰는 표현형의
+# 단일 출처는 docs/data/targeting_lexicon.json 이다. 새 표현("리텐션 캠페인", 새 판매 동사 등)은
+# 코드 수정 없이 그 파일에 추가한다. 아래 기본값은 파일 부재/파손 시 폴백이자 스키마 예시다.
+# objective_rules 는 순서가 의미(먼저 걸린 목적 승리)라 리스트로 유지한다.
+DEFAULT_TARGETING_LEXICON_PATH = Path(
+    os.getenv("GRAPH_RAG_TARGETING_LEXICON", "docs/data/targeting_lexicon.json")
+)
+
+_DEFAULT_TARGETING_LEXICON: dict[str, Any] = {
+    # 대상 지향 표지: 이 뒤부터는 "누구에게 무엇을 한다"의 캠페인/채널·메시지 절로 본다.
+    "audience_direction_markers": ["에게", "한테", "께", "대상으로", "타겟으로", "타깃으로"],
+    # 채널/메시지 의도 신호. 규칙 분리 실패(표지 없음) 판정과 LLM 폴백 트리거에 쓴다.
+    "channel_signal_words": [
+        "홍보", "광고", "알림", "알리", "안내", "소식", "공지", "캠페인",
+        "메시지", "발송", "보내", "판매", "팔", "프로모션", "쿠폰", "이벤트",
+    ],
+    "intent_recommend_campaign": ["캠페인", "추천", "recommend", "campaign"],
+    "intent_find_user_segment": ["사용자", "고객", "사람", "지역", "세그먼트", "user", "segment", "region"],
+    "objective_rules": [
+        {"objective": "purchase", "keywords": ["구매", "구입", "전환", "매출", "purchase", "conversion", "판매", "팔고", "팔려", "sell"]},
+        {"objective": "subscription", "keywords": ["구독", "subscription"]},
+        {"objective": "reactivation", "keywords": ["휴면", "복귀", "재방문", "reactivation"]},
+        {"objective": "retention", "keywords": ["retention"]},
+        {"objective": "awareness", "keywords": ["신제품", "신상품", "출시", "런칭", "awareness", "launch"]},
+    ],
+    "awareness_launch_terms": ["신제품", "신상품", "출시", "런칭", "launch", "awareness"],
+    "awareness_announce_terms": ["알리", "알림", "소식", "안내", "홍보"],
+    # "팔레트/팔로우" 등 오탐을 피하려고 "팔" 단독이 아닌 "팔고/팔려/판매"만 판매 동사로 본다.
+    "sell_outreach_verbs": ["팔고", "팔려", "팔것", "판매", "sell"],
+    "sell_outreach_audience": ["에게", "한테", "고객", "대상", "타겟", "타깃"],
+    "reactivation_goal_terms": ["재활성", "다시활성", "활성화", "휴면복귀", "복귀캠페인", "reactivation", "reactivate"],
+    "cart_terms": ["장바구니"],
+    "cart_abandonment_terms": ["결제하지않", "결제안", "미결제", "구매하지않", "구매안", "안산", "방치", "이탈", "cartabandon"],
+    "repurchase_terms": ["재구매", "repurchase"],
+    "repurchase_outreach_terms": ["유도", "촉진", "리마인드", "캠페인", "메시지", "발송", "추천"],
+    "purchase_history_signals": ["구매", "구입", "샀", "purchased", "bought"],
+}
+
+
+@functools.lru_cache(maxsize=4)
+def _load_targeting_lexicon(path_text: str) -> dict[str, Any] | None:
+    path = Path(path_text)
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _lexicon_terms(group: str) -> tuple[str, ...]:
+    """사전 파일의 그룹 표현형 목록. 그룹이 없거나 비정형이면 코드 기본값으로 폴백한다."""
+    lexicon = _load_targeting_lexicon(str(DEFAULT_TARGETING_LEXICON_PATH)) or {}
+    values = lexicon.get(group)
+    if isinstance(values, list):
+        terms = tuple(value for value in values if isinstance(value, str) and value)
+        if terms:
+            return terms
+    return tuple(_DEFAULT_TARGETING_LEXICON[group])
+
+
+def _lexicon_objective_rules() -> list[tuple[str, tuple[str, ...]]]:
+    """(objective, keywords) 목록을 파일 순서대로 반환한다. objective 는 허용 목록만 통과시킨다."""
+    lexicon = _load_targeting_lexicon(str(DEFAULT_TARGETING_LEXICON_PATH)) or {}
+    raw_rules = lexicon.get("objective_rules")
+    if not isinstance(raw_rules, list):
+        raw_rules = _DEFAULT_TARGETING_LEXICON["objective_rules"]
+    rules: list[tuple[str, tuple[str, ...]]] = []
+    for rule in raw_rules:
+        if not isinstance(rule, dict):
+            continue
+        objective = rule.get("objective")
+        keywords = tuple(k for k in rule.get("keywords", []) if isinstance(k, str) and k)
+        if objective in CAMPAIGN_OBJECTIVES and keywords:
+            rules.append((objective, keywords))
+    if not rules:
+        rules = [
+            (rule["objective"], tuple(rule["keywords"]))
+            for rule in _DEFAULT_TARGETING_LEXICON["objective_rules"]
+        ]
+    return rules
+
+
 BEHAVIOR_TERMS = {
     "no_purchase",
     "first_purchase",
@@ -400,15 +637,6 @@ def normalize_prompt(
         return {**fallback, "mode": "rules_fallback", "error": exc.__class__.__name__}
 
 
-# 대상 지향 표지: 이 뒤부터는 "누구에게 무엇을 한다"의 캠페인/채널·메시지 절로 본다.
-_AUDIENCE_DIRECTION_MARKERS = ("에게", "한테", "께", "대상으로", "타겟으로", "타깃으로")
-# 채널/메시지 의도 신호. 규칙 분리 실패(표지 없음) 판정과 LLM 폴백 트리거에 쓴다.
-_CHANNEL_SIGNAL_WORDS = (
-    "홍보", "광고", "알림", "알리", "안내", "소식", "공지", "캠페인",
-    "메시지", "발송", "보내", "판매", "팔", "프로모션", "쿠폰", "이벤트",
-)
-
-
 def _prompt_scope_split_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
     fallback = "\n".join(
         [
@@ -427,7 +655,9 @@ def _rule_split_prompt_scopes(text: str) -> tuple[str, str] | None:
 
     "[오디언스]에게 [채널/메시지 액션]" 구조를 이용한다. 표지가 없거나 타겟팅 절이 비면 None(규칙 실패).
     """
-    pattern = r"(?P<targeting>.*?(?:%s))\s*(?P<channel>.*)$" % "|".join(_AUDIENCE_DIRECTION_MARKERS)
+    pattern = r"(?P<targeting>.*?(?:%s))\s*(?P<channel>.*)$" % "|".join(
+        re.escape(marker) for marker in _lexicon_terms("audience_direction_markers")
+    )
     match = re.search(pattern, text, re.DOTALL)
     if not match:
         return None
@@ -440,7 +670,7 @@ def _rule_split_prompt_scopes(text: str) -> tuple[str, str] | None:
 
 def _has_channel_signal(text: str) -> bool:
     compact = text.replace(" ", "").casefold()
-    return any(word in compact for word in _CHANNEL_SIGNAL_WORDS)
+    return any(word in compact for word in _lexicon_terms("channel_signal_words"))
 
 
 def _llm_split_prompt_scopes(
@@ -579,7 +809,168 @@ def _attach_retrieval_scopes(plan: dict[str, Any], scopes: dict[str, str]) -> No
     plan["retrieval"]["channel_terms"] = _unique_strings(channel_terms)
 
 
+def _prompt_reformulation_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
+    fallback = "\n".join(
+        [
+            "너는 캠페인 타겟팅 프롬프트를 의미를 100% 보존한 채 표현만 바꾼 재구성 문장들을 만드는 도구다.",
+            "규칙: 대상 조건(성별/연령/지역/회원등급/구매이력/행동/제외/캠페인 목적/혜택/채널)을 절대",
+            "추가·삭제·변경하지 않는다. 같은 뜻을 다른 어순·어휘·조사로 바꾼 한국어 문장만 만든다",
+            "(동의어, 명사형↔동사형 전환, 띄어쓰기 변형 허용). 새로운 대상이나 조건을 지어내지 마라.",
+            '다음 JSON object 만 출력한다: {"variants": ["재구성1", "재구성2", ...]}.',
+        ]
+    )
+    return _read_prompt_template(prompt_dir, "prompt_reformulation_system.txt", fallback)
+
+
+def _generate_prompt_reformulations(
+    query: str, count: int, parser: str, llm_model: str, prompt_dir: Path | None
+) -> list[str]:
+    """의미를 보존한 프롬프트 재구성 문장 목록을 LLM 으로 생성한다. 사용 불가/실패 시 빈 목록.
+
+    표현만 바꾼 문장들이라 결정론 파서가 각기 다른 규칙 패턴에 걸려 조건 재현율을 높인다. 원문과
+    같거나 중복인 재구성은 제거한다."""
+    if count <= 0 or parser.casefold() == "rules" or not os.getenv("OPENAI_API_KEY") or not query.strip():
+        return []
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return []
+    try:
+        client = OpenAI()
+        response = client.chat.completions.create(
+            model=llm_model,
+            temperature=0.4,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _prompt_reformulation_system_prompt(prompt_dir)},
+                {"role": "user", "content": f"원문: {query}\n서로 다른 표현의 재구성 {count}개를 만들어라."},
+            ],
+        )
+        data = json.loads(response.choices[0].message.content or "{}")
+        variants = data.get("variants")
+        if not isinstance(variants, list):
+            return []
+        seen = {query.replace(" ", "").casefold()}
+        result: list[str] = []
+        for variant in variants:
+            if not isinstance(variant, str) or not variant.strip():
+                continue
+            key = variant.replace(" ", "").casefold()
+            if key and key not in seen:
+                seen.add(key)
+                result.append(variant.strip())
+        _write_rag_llm_log("prompt_reformulation", {"query": query, "variants": result})
+        return result[:count]
+    except Exception:
+        return []
+
+
+def _merge_targeting_conditions(base: dict[str, Any], other: dict[str, Any]) -> None:
+    """변이 파싱 결과(other)의 타겟 조건을 base 에 합집합으로 병합한다.
+
+    스칼라(성별/연령/구매상품 등)는 base 가 비어 있을 때만 채워 모순을 막고(원문 우선), 리스트
+    (생애주기/관심사/행동/제외/디멘션 필터)는 합집합한다. 집합식·계산지표·정책·의미해석은 병합하지
+    않는다(고급 조건이라 표현 변이 병합 시 모순 위험). 즉 병합은 조건을 '늘리기만' 한다."""
+    base_tu = base.setdefault("target_user", {})
+    other_tu = other.get("target_user", {})
+    # 성별/가격민감도는 닫힌 값집합이라 병합이 안전하다. 구매상품(purchase_object)/판매상품(sell_object)은
+    # 자유 텍스트라 변이 오인식(예: '최초로'를 상품으로 추출)이 섞이면 엉뚱한 상품 LIKE 로 라우팅되므로
+    # 병합하지 않는다(원문 base 기준만 사용, 상품 표현형은 이미 _apply_llm_object_fallback 이 보완).
+    for field in ("gender", "price_sensitivity"):
+        if not base_tu.get(field) and other_tu.get(field):
+            base_tu[field] = other_tu[field]
+    for field in ("age_min", "age_max"):
+        if base_tu.get(field) is None and other_tu.get(field) is not None:
+            base_tu[field] = other_tu[field]
+    if not base_tu.get("inactivity_period") and other_tu.get("inactivity_period"):
+        base_tu["inactivity_period"] = other_tu["inactivity_period"]
+    for field in ("lifecycle", "interests", "preferred_channels", "behaviors"):
+        merged = _unique_strings([*base_tu.get(field, []), *other_tu.get(field, [])])
+        if merged:
+            base_tu[field] = merged
+
+    base_exclude = base.setdefault("exclude", {})
+    other_exclude = other.get("exclude", {})
+    for field in ("gender", "interests", "lifecycle"):
+        merged = _unique_strings([*base_exclude.get(field, []), *other_exclude.get(field, [])])
+        if merged:
+            base_exclude[field] = merged
+
+    base_campaign = base.setdefault("campaign_constraints", {})
+    other_campaign = other.get("campaign_constraints", {})
+    for field in ("objective", "offer_type"):  # sell_object 는 자유 텍스트라 병합 제외(위 purchase_object 와 동일 이유)
+        if not base_campaign.get(field) and other_campaign.get(field):
+            base_campaign[field] = other_campaign[field]
+    for field in ("category", "channels"):
+        merged = _unique_strings([*base_campaign.get(field, []), *other_campaign.get(field, [])])
+        if merged:
+            base_campaign[field] = merged
+
+    # 디멘션 필터(지역/브랜드 등): (컬럼, 코드집합) 기준 중복 제거 합집합.
+    existing = {(f.get("column"), tuple(f.get("codes", []))) for f in base.get("dimension_filters", [])}
+    for dimension_filter in other.get("dimension_filters", []):
+        key = (dimension_filter.get("column"), tuple(dimension_filter.get("codes", [])))
+        if key not in existing:
+            existing.add(key)
+            base.setdefault("dimension_filters", []).append(dimension_filter)
+
+    if not isinstance(base.get("region_density_target"), dict) and isinstance(other.get("region_density_target"), dict):
+        base["region_density_target"] = other["region_density_target"]
+    if not base.get("cart_context") and other.get("cart_context"):
+        base["cart_context"] = True
+
+
 def build_query_plan(
+    query: str,
+    normalization_rules: Path | None = DEFAULT_NORMALIZATION_PATH,
+    business_policies: Path | None = DEFAULT_POLICY_PATH,
+    metric_lexicon: Path = DEFAULT_METRIC_LEXICON_PATH,
+    sql_schema: Path = DEFAULT_SCHEMA_PATH,
+    parser: str = "rules",
+    llm_model: str = DEFAULT_LLM_MODEL,
+    prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
+    multi_query_variants: int = 0,
+) -> dict[str, Any]:
+    """단일 파싱으로 query_plan 을 만든다. multi_query_variants>0 이고 LLM 사용 가능하면 프롬프트를
+    의미보존 재구성한 변이들도 파싱해 '성공적으로 잡힌 타겟 조건'을 base 에 합집합으로 병합한다.
+
+    한 표현형이 조건을 놓쳐(파서 미스) 후보가 아예 안 생기던 케이스를, 다른 표현형의 파싱으로 살린다.
+    변이는 값이 아니라 표현만 바꾸므로(결정론 파서가 실제 조건 추출) 없는 조건을 지어내지 않는다.
+    변이 파싱은 rules(결정론)로 하여 비용을 낮춘다 — 다양한 표현형이 서로 다른 규칙 패턴에 걸리는 것이 핵심.
+    """
+    base = _build_single_query_plan(
+        query, normalization_rules, business_policies, metric_lexicon, sql_schema, parser, llm_model, prompt_dir
+    )
+    if multi_query_variants and multi_query_variants > 0 and parser.casefold() != "rules":
+        variant_intents: list[str] = []
+        for variant in _generate_prompt_reformulations(query, multi_query_variants, parser, llm_model, prompt_dir):
+            variant_plan = _build_single_query_plan(
+                variant, normalization_rules, business_policies, metric_lexicon, sql_schema, "rules", llm_model, prompt_dir
+            )
+            _merge_targeting_conditions(base, variant_plan)
+            variant_intents.append(variant_plan.get("intent"))
+        _upgrade_intent_from_variants(base, variant_intents)
+        base.setdefault("parser", {})["multi_query_variants"] = multi_query_variants
+    return base
+
+
+def _upgrade_intent_from_variants(base: dict[str, Any], variant_intents: list[str]) -> None:
+    """base intent 가 unknown 일 때만, 변이가 잡은 더 강한 intent 로 승격한다(안나옴 방지).
+
+    recommend_campaign(발송/메시지 목적) > find_user_segment(조회) 순. 원래 조회/캠페인으로 잡힌
+    intent 는 변이 표현으로 뒤집지 않는다(원문 의도 우선)."""
+    if base.get("intent") != "unknown":
+        return
+    rank = {"recommend_campaign": 2, "find_user_segment": 1}
+    best_intent, best_rank = None, 0
+    for intent in variant_intents:
+        if rank.get(intent, 0) > best_rank:
+            best_intent, best_rank = intent, rank[intent]
+    if best_intent:
+        base["intent"] = best_intent
+
+
+def _build_single_query_plan(
     query: str,
     normalization_rules: Path | None = DEFAULT_NORMALIZATION_PATH,
     business_policies: Path | None = DEFAULT_POLICY_PATH,
@@ -640,9 +1031,21 @@ def build_query_plan(
     llm_plan.setdefault("campaign_constraints", {}).setdefault("sell_object", None)
     _apply_sell_object(parse_query, llm_plan)
     _apply_dimension_filters(parse_query, llm_plan)
+    _apply_member_value_filters(parse_query, llm_plan)
+    # LLM 이 semantic_resolutions 를 자체 추가했을 수 있으므로 밀집 지역 소비를 여기서도 보장한다.
+    _apply_region_density_target(parse_query, llm_plan)
     # 구매 상품(purchase_object)도 프롬프트 텍스트에서 결정론적으로 뽑아, rules/llm 어느 경로든 동일하게
     # 상품 구매 이력 타겟팅(build_purchase_history_targets_sql_candidate)으로 이어지게 한다.
     _apply_purchase_object_filter(parse_query, llm_plan.setdefault("target_user", {}))
+    # '최근 N일 구매 안 함'은 결정론 파싱으로 확정한다(LLM 이 no_purchase 로 오분류하는 것 방지).
+    llm_plan["target_user"].setdefault("purchase_inactivity", None)
+    _apply_purchase_inactivity_filter(parse_query, llm_plan)
+    # 생일 타겟도 결정론 파싱으로 확정한다(LLM 이 BIRTHDAY 를 날짜로 캐스팅해 년도까지 비교하는 오류 방지).
+    llm_plan["target_user"].setdefault("birthday_target", None)
+    _apply_birthday_target_filter(parse_query, llm_plan)
+    # 신규 가입 타겟도 결정론 파싱으로 확정한다(창 길이 파싱 담당; LLM 의 new_user 라벨과 이중화).
+    llm_plan["target_user"].setdefault("signup_target", None)
+    _apply_signup_target_filter(parse_query, llm_plan)
     _attach_retrieval_scopes(llm_plan, scopes)
     return llm_plan
 
@@ -677,6 +1080,9 @@ def _build_rule_query_plan(
             "purchase_object": None,
             "price_sensitivity": None,
             "inactivity_period": None,
+            "purchase_inactivity": None,
+            "birthday_target": None,
+            "signup_target": None,
         },
         "exclude": {"gender": [], "interests": [], "lifecycle": []},
         "campaign_constraints": {
@@ -700,8 +1106,12 @@ def _build_rule_query_plan(
     }
     _apply_age_filters(query, plan["target_user"])
     _apply_purchase_object_filter(query, plan["target_user"])
+    _apply_purchase_inactivity_filter(query, plan)
+    _apply_birthday_target_filter(query, plan)
+    _apply_signup_target_filter(query, plan)
     _apply_sell_object(query, plan)
     _apply_dimension_filters(query, plan)
+    _apply_member_value_filters(query, plan)
     set_expression_terms = _set_expression_canonical_values(plan["set_expressions"])
     if any(term.startswith("age_") for term in set_expression_terms):
         plan["target_user"]["age_min"] = None
@@ -735,6 +1145,8 @@ def _build_rule_query_plan(
     _apply_cart_repurchase_context(query, plan)
     _apply_inactivity_period_filter(query, plan)
     _apply_policy_constraints(query, plan, business_policies)
+    # 지역 모호성 정책(semantic_resolutions)이 채워진 뒤에 실행해야 밀집 지역 해석이 이를 소비한다.
+    _apply_region_density_target(query, plan)
     plan["computed_metrics"] = parse_computed_metrics_from_query(query, schema_path=sql_schema, metric_lexicon_path=metric_lexicon)
     policy_terms = [
         term
@@ -1070,11 +1482,41 @@ def _infer_intent(query: str) -> str:
     # 분기보다 먼저 recommend_campaign 으로 잡아 메시지 생성(build_message_context)까지 이어지게 한다.
     if _is_sales_outreach_context(query):
         return "recommend_campaign"
-    if any(keyword in compact_query for keyword in ("캠페인", "추천", "recommend", "campaign")):
+    if any(keyword in compact_query for keyword in _lexicon_terms("intent_recommend_campaign")):
         return "recommend_campaign"
-    if any(keyword in compact_query for keyword in ("사용자", "고객", "사람", "지역", "세그먼트", "user", "segment", "region")):
+    if any(keyword in compact_query for keyword in _lexicon_terms("intent_find_user_segment")):
         return "find_user_segment"
     return "unknown"
+
+
+def _promote_unknown_intent_for_target_signal(query_plan: dict[str, Any]) -> None:
+    """intent=unknown 이라도 실DB로 추출 가능한 타겟 신호가 있으면 find_user_segment 로 승격한다.
+
+    '서울 거주 20대 여성'처럼 캠페인/조회 동사 없이 회원 속성만 나열한 프롬프트는 파서(룰/LLM)가
+    intent=unknown 을 주는데, 그러면 build_sql_template_candidate 가 회원 타겟 빌더를 아예 호출하지
+    않아(no_sql_candidates) 성별·연령을 정상 파싱하고도 SQL 을 못 만든다. 실DB 매핑 가능한 회원
+    신호(성별/연령/등급/휴면 등)나 상품 구매 이력이 있으면 세그먼트 조회로 보고 승격한다(발송/메시지
+    목적은 없으므로 recommend_campaign 이 아니라 find_user_segment)."""
+    if query_plan.get("intent") != "unknown":
+        return
+    has_member_signal = compile_member_target_conditions(query_plan)["has_signal"]
+    purchase_object = query_plan.get("target_user", {}).get("purchase_object")
+    has_density_target = isinstance(query_plan.get("region_density_target"), dict)
+    # 주문 횟수 행동(첫 구매/재구매/무구매)·구매 미발생 기간(최근 N일 미구매)도 주문 집계로 실추출 가능한 신호다.
+    target_user = query_plan.get("target_user", {})
+    behaviors = target_user.get("behaviors", [])
+    has_order_count_signal = any(behavior in _order_count_targets_config()["behaviors"] for behavior in behaviors)
+    has_purchase_inactivity = isinstance(target_user.get("purchase_inactivity"), dict)
+    has_birthday_target = isinstance(target_user.get("birthday_target"), dict)
+    if (
+        has_member_signal
+        or has_density_target
+        or has_order_count_signal
+        or has_purchase_inactivity
+        or has_birthday_target
+        or (isinstance(purchase_object, str) and bool(purchase_object))
+    ):
+        query_plan["intent"] = "find_user_segment"
 
 
 def _infer_objective(query: str) -> str | None:
@@ -1083,16 +1525,9 @@ def _infer_objective(query: str) -> str | None:
         return "repurchase"
     if _is_reactivation_goal_context(query):
         return "reactivation"
-    if any(keyword in compact_query for keyword in ("구매", "구입", "전환", "매출", "purchase", "conversion", "판매", "팔고", "팔려", "sell")):
-        return "purchase"
-    if any(keyword in compact_query for keyword in ("구독", "subscription")):
-        return "subscription"
-    if any(keyword in compact_query for keyword in ("휴면", "복귀", "재방문", "reactivation")):
-        return "reactivation"
-    if "retention" in compact_query:
-        return "retention"
-    if any(keyword in compact_query for keyword in ("신제품", "신상품", "출시", "런칭", "awareness", "launch")):
-        return "awareness"
+    for objective, keywords in _lexicon_objective_rules():
+        if any(keyword in compact_query for keyword in keywords):
+            return objective
     return None
 
 
@@ -1100,8 +1535,8 @@ def _is_awareness_announcement_context(query: str) -> bool:
     # 신제품/출시/런칭 등 인지(awareness) 키워드 + 알림/홍보 아웃리치 동사가 함께 있으면 캠페인 발송 의도.
     # "신제품 관심 고객 찾아줘"(조회)처럼 아웃리치 동사가 없으면 걸리지 않도록 둘 다 요구한다.
     compact_query = query.replace(" ", "").casefold()
-    has_launch = any(keyword in compact_query for keyword in ("신제품", "신상품", "출시", "런칭", "launch", "awareness"))
-    has_announce = any(keyword in compact_query for keyword in ("알리", "알림", "소식", "안내", "홍보"))
+    has_launch = any(keyword in compact_query for keyword in _lexicon_terms("awareness_launch_terms"))
+    has_announce = any(keyword in compact_query for keyword in _lexicon_terms("awareness_announce_terms"))
     return has_launch and has_announce
 
 
@@ -1110,25 +1545,14 @@ def _is_sales_outreach_context(query: str) -> bool:
     # 파는 캠페인 발송 의도. "고객 찾아줘"(조회)처럼 판매 동사가 없으면 걸리지 않도록 둘 다 요구한다.
     # "팔레트/팔로우" 등 오탐을 피하려고 "팔" 단독이 아닌 "팔고/팔려/판매"만 판매 동사로 본다.
     compact_query = query.replace(" ", "").casefold()
-    has_sell = any(keyword in compact_query for keyword in ("팔고", "팔려", "팔것", "판매", "sell"))
-    has_audience = any(keyword in compact_query for keyword in ("에게", "한테", "고객", "대상", "타겟", "타깃"))
+    has_sell = any(keyword in compact_query for keyword in _lexicon_terms("sell_outreach_verbs"))
+    has_audience = any(keyword in compact_query for keyword in _lexicon_terms("sell_outreach_audience"))
     return has_sell and has_audience
 
 
 def _is_reactivation_goal_context(query: str) -> bool:
     compact_query = query.replace(" ", "").casefold()
-    return any(
-        keyword in compact_query
-        for keyword in (
-            "재활성",
-            "다시활성",
-            "활성화",
-            "휴면복귀",
-            "복귀캠페인",
-            "reactivation",
-            "reactivate",
-        )
-    )
+    return any(keyword in compact_query for keyword in _lexicon_terms("reactivation_goal_terms"))
 
 
 def _apply_age_filters(query: str, target_user: dict[str, Any]) -> None:
@@ -1202,18 +1626,14 @@ def _apply_sell_object(query: str, plan: dict[str, Any]) -> None:
 # 사라져 규칙(정규식)에 패턴을 계속 덧붙여야 했다. 폴백은 그 두더지잡기를 끊는다:
 #   재현율(표현형 유연성)은 LLM 이, 정밀도(없는 상품을 지어내지 않음)는 원문 존재 검증이 담당한다.
 # 정규식이 이미 뽑았거나 구매/판매 신호 자체가 없으면 LLM 을 호출하지 않아 비용/지연을 최소화한다.
-_PURCHASE_HISTORY_SIGNALS = ("구매", "구입", "샀", "purchased", "bought")
-_SELL_SIGNALS = ("팔고", "팔려", "팔것", "판매", "sell")
-
-
 def _has_purchase_history_signal(query: str) -> bool:
     compact = query.replace(" ", "").casefold()
-    return any(signal in compact for signal in _PURCHASE_HISTORY_SIGNALS)
+    return any(signal in compact for signal in _lexicon_terms("purchase_history_signals"))
 
 
 def _has_sell_signal(query: str) -> bool:
     compact = query.replace(" ", "").casefold()
-    return any(signal in compact for signal in _SELL_SIGNALS)
+    return any(signal in compact for signal in _lexicon_terms("sell_outreach_verbs"))
 
 
 def _object_present_in_text(obj: str, text: str) -> bool:
@@ -1370,6 +1790,52 @@ def _resolve_dimension_values(dimension: dict[str, Any]) -> tuple[tuple[str, str
         return ()
 
 
+_HANGUL_SYLLABLE = re.compile(r"[가-힣]")
+_ASCII_ALNUM = re.compile(r"[0-9A-Za-z]")
+# 값(예: 지역명) 뒤에 한글이 바로 이어져도 값 언급으로 인정할 조사/행정접미(예: '서울에', '경기도').
+_VALUE_TAIL_TOKENS = (
+    "특별자치시", "특별자치도", "특별시", "광역시", "도", "시", "권", "지역", "지방", "쪽",
+    "거주", "사는", "살", "에서", "에게", "에", "은", "는", "이", "가", "을", "를", "의",
+    "만", "과", "와", "랑", "보다", "까지", "부터",
+)
+
+
+def _value_token_mentioned(value: str, query: str) -> bool:
+    """값(예: '서울', 'VIP')이 프롬프트에 '토큰 경계'로 나타나는지 검사한다(ASCII 는 대소문자 무시).
+
+    값만으로 조건을 활성화하는 경로(회원 값 인덱스)는 순수 부분문자열 매칭이면 짧은 값이 무관한
+    단어에 얻어걸린다(예: '경기'가 '경기침체'에, 'APP'이 'HAPPY'에). 앞경계: 한글 금지, ASCII 값이면
+    영숫자도 금지. 뒤경계: 끝/비한글·비영숫자면 통과, 한글 값+한글 연속은 조사·행정접미만 허용,
+    ASCII 값 뒤 영숫자는 거절(단어 내부), ASCII 값 뒤 한글은 자연 경계('VIP고객')로 허용.
+    """
+    if not value:
+        return False
+    haystack = query.casefold()
+    needle = value.casefold()
+    first_ascii = bool(_ASCII_ALNUM.match(needle[0]))
+    last_ascii = bool(_ASCII_ALNUM.match(needle[-1]))
+    start = 0
+    while True:
+        idx = haystack.find(needle, start)
+        if idx < 0:
+            return False
+        start = idx + 1
+        before = haystack[idx - 1] if idx > 0 else ""
+        after = haystack[idx + len(needle):]
+        if before and (_HANGUL_SYLLABLE.match(before) or (first_ascii and _ASCII_ALNUM.match(before))):
+            continue  # 앞이 같은 종류 문자면 다른 단어의 일부
+        if not after:
+            return True
+        next_char = after[0]
+        if _HANGUL_SYLLABLE.match(next_char):
+            if not _HANGUL_SYLLABLE.match(needle[-1]) or any(after.startswith(token) for token in _VALUE_TAIL_TOKENS):
+                return True
+            continue
+        if last_ascii and _ASCII_ALNUM.match(next_char):
+            continue  # ASCII 단어 내부(예: 'APP'이 'APPLE'에)
+        return True
+
+
 def _apply_dimension_filters(query: str, plan: dict[str, Any], dimension_catalog: Path | None = DEFAULT_DIMENSION_CATALOG_PATH) -> None:
     # 프롬프트에 디멘션 라벨(예: "상품브랜드")이 언급되면 그 디멘션의 DS_SQL 을 런타임에 실행해
     # 값 이름(예: "포멜카멜리")을 코드(예: 'A')로 동적 해석하고, 큐레이션된 타겟 컬럼이 있으면
@@ -1384,6 +1850,7 @@ def _apply_dimension_filters(query: str, plan: dict[str, Any], dimension_catalog
     for dimension in dimensions:
         synonyms = [synonym for synonym in dimension.get("synonyms", []) if isinstance(synonym, str) and synonym]
         # 프롬프트에 디멘션 라벨/동의어가 언급된 경우에만 값 해석(불필요한 DS_SQL 실행 방지).
+        # 라벨 없이 값만 언급되는 회원 속성은 member_value_index(_apply_member_value_filters)가 담당한다.
         if not any(synonym.replace(" ", "").casefold() in compact_query for synonym in synonyms):
             continue
         codes: list[str] = []
@@ -1406,7 +1873,381 @@ def _apply_dimension_filters(query: str, plan: dict[str, Any], dimension_catalog
             )
     if filters:
         plan["dimension_filters"] = filters
-        plan["cart_context"] = "장바구니" in compact_query
+        plan["cart_context"] = any(term in compact_query for term in _lexicon_terms("cart_terms"))
+
+
+DEFAULT_MEMBER_VALUE_INDEX_PATH = Path("docs/data/member_value_index.json")
+_PLAIN_NUMERIC_VALUE = re.compile(r"^[\d.\-/:%\s]+$")
+
+
+@functools.lru_cache(maxsize=4)
+def _load_member_value_index(path_text: str) -> dict[str, Any] | None:
+    path = Path(path_text)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _matchable_value_name(name: str) -> bool:
+    """프롬프트 토큰 매칭에 쓸 수 있는 값 이름인지(짧거나 숫자뿐인 값은 오탐 위험이라 제외)."""
+    if not name or _PLAIN_NUMERIC_VALUE.match(name):
+        return False
+    if _HANGUL_SYLLABLE.search(name):
+        return len(name) >= 2
+    return len(name) >= 3
+
+
+def _region_columns() -> set[str]:
+    """지역(행정구역) 컬럼명 집합. member_target_filters.json 의 region 설정에서 파생한다."""
+    config = _region_density_config()
+    columns: set[str] = set()
+    default_column = config.get("default_column")
+    if isinstance(default_column, str) and default_column:
+        columns.add(default_column.upper())
+    granularity_columns = config.get("granularity_columns")
+    if isinstance(granularity_columns, dict):
+        columns.update(str(value).upper() for value in granularity_columns.values() if value)
+    return columns or {"SIGUNGU", "SIDO"}
+
+
+_REGION_CITY_SUFFIX = re.compile(r"(?:특별자치시|특별자치도|특별시|광역시|시|군)$")
+
+
+def _region_city_alias_map(values: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """시군구 값 목록에서 '시 단위 별칭 -> 그 시에 속한 (구 단위) 저장값들' 매핑을 만든다.
+
+    실DB SIGUNGU 는 구를 둔 시를 '안양시 동안구'처럼 구 단위로 저장한다. 사용자가 '안양'(시 단위)만
+    입력하면 저장값 전체 매칭('안양시 동안구' ∈ 프롬프트?)이 실패해 지역 조건이 조용히 사라진다.
+    그래서 시 성분('안양시'→'안양')을 별칭으로 뽑아 같은 시의 구 단위 값 전체를 IN 으로 확장한다.
+    별칭이 저장값과 같으면(광역시 자치구 '남구' 등) 기존 정확 매칭이 이미 처리하므로 제외한다.
+    인덱스 값에서 파생하므로 새 도시는 인덱스 재생성만으로 자동 반영된다(코드 수정 없음)."""
+    alias_map: dict[str, list[str]] = {}
+    for entry in values:
+        name = entry.get("name") or ""
+        if not name:
+            continue
+        city_token = name.split(" ", 1)[0]
+        bare = _REGION_CITY_SUFFIX.sub("", city_token)
+        # 별칭이 저장값 자체와 같으면 확장 대상이 아니다(정확 매칭이 담당). 너무 짧으면 오탐 위험.
+        if len(bare) < 2 or bare == name:
+            continue
+        alias_map.setdefault(bare, [])
+        if name not in alias_map[bare]:
+            alias_map[bare].append(name)
+    return alias_map
+
+
+def _apply_member_value_filters(
+    query: str, plan: dict[str, Any], index_path: Path | None = DEFAULT_MEMBER_VALUE_INDEX_PATH
+) -> None:
+    """회원 값 인덱스(member_value_index.json)로 프롬프트의 값 토큰을 실컬럼 조건으로 해석한다.
+
+    build_member_value_index.py 가 실DB에서 자동 생성한 인덱스가 소스이므로 컬럼별 수동 큐레이션이
+    필요 없다 — 새 컬럼/값은 인덱스 재생성만으로 타겟팅에 반영된다. 값 이름은 _value_token_mentioned
+    경계 검사로 매칭해 부분문자열 오탐('경기'≠'경기침체')을 막고, 결과는 dimension_filters 와 같은
+    형태로 추가돼 기존 컴파일러(compile_member_target_conditions)·커버리지 검증이 그대로 소비한다.
+    """
+    index = _load_member_value_index(str(index_path)) if index_path else None
+    if not index:
+        return
+    table = index.get("table", "CRM_MB_BASEINFO")
+    # 이미 다른 경로(디멘션 카탈로그 등)가 조건을 만든 컬럼은 건너뛴다(이중 술어 방지).
+    existing_columns = {
+        (dimension_filter.get("column") or "").split(".")[-1].upper()
+        for dimension_filter in plan.get("dimension_filters", [])
+    }
+    matches_by_column: dict[str, list[tuple[str, str]]] = {}
+    columns_by_name: dict[str, set[str]] = {}
+    column_sources: dict[str, dict[str, Any]] = {}
+    region_columns = _region_columns()
+
+    def _record_match(column: str, code: str, name: str) -> None:
+        matches_by_column.setdefault(column, [])
+        if code not in [existing_code for existing_code, _ in matches_by_column[column]]:
+            matches_by_column[column].append((code, name))
+        columns_by_name.setdefault(name.casefold(), set()).add(column)
+
+    for column_entry in index.get("columns", []):
+        column = column_entry.get("column")
+        if not column or column.upper() in existing_columns:
+            continue
+        column_sources[column] = column_entry
+        values = column_entry.get("values", [])
+        for entry in values:
+            code = entry.get("value") or ""
+            name = entry.get("name") or ""
+            if not code or not _matchable_value_name(name):
+                continue
+            if _value_token_mentioned(name, query):
+                _record_match(column, code, name)
+        # 지역 컬럼은 시 단위 입력('안양')을 같은 시의 구 단위 저장값('안양시 동안구/만안구')으로 확장한다.
+        if column.upper() in region_columns:
+            name_to_code = {(entry.get("name") or ""): (entry.get("value") or "") for entry in values}
+            exact_names = {name for _, name in matches_by_column.get(column, [])}
+            for city_alias, member_names in _region_city_alias_map(values).items():
+                # 사용자가 특정 구('안양시 동안구')를 명시했으면 그 시를 전체로 넓히지 않는다(정확도 우선).
+                if any(name in exact_names for name in member_names):
+                    continue
+                if not _value_token_mentioned(city_alias, query):
+                    continue
+                for name in member_names:
+                    code = name_to_code.get(name)
+                    if code:
+                        _record_match(column, code, name)
+
+    # 같은 이름이 여러 컬럼에 존재하면(예: 'App' 이 가입채널·로그인채널 양쪽) 어느 컬럼 조건인지
+    # 추측할 수 없으므로 그 이름은 매칭에서 제외한다(조용한 오필터 방지).
+    ambiguous_names = {name for name, columns in columns_by_name.items() if len(columns) > 1}
+
+    filters = []
+    for column, matched in matches_by_column.items():
+        matched = [(code, name) for code, name in matched if name.casefold() not in ambiguous_names]
+        if not matched:
+            continue
+        # 보조 속성 테이블 컬럼(예: JOB_CD)은 저장 테이블/조인키를 실어 회원키 서브쿼리로 컴파일되게 한다.
+        source_table = column_sources[column].get("source_table") or table
+        filter_entry = {
+            "dimension_id": "member_value:" + column,
+            "prompt_label": column,
+            "column": source_table + "." + column,
+            "table": source_table,
+            "operator": "IN",
+            "codes": [code for code, _ in matched],
+            "names": [name for _, name in matched],
+            "source": "member_value_index",
+        }
+        if column_sources[column].get("join_column"):
+            filter_entry["join_column"] = column_sources[column]["join_column"]
+        filters.append(filter_entry)
+    if filters:
+        plan.setdefault("dimension_filters", [])
+        plan["dimension_filters"].extend(filters)
+
+
+# "X가 많이 거주하는 동네/지역" 같은 밀집 지역(집계 랭킹) 표현 감지. 지역 단위 어휘와 단위→컬럼
+# 매핑(예: 시도 → SIDO, 그 외 → SIGUNGU)은 member_target_filters.json 의 region_density 가 소유한다.
+def _region_density_config() -> dict[str, Any]:
+    config = _MEMBER_TARGET_FILTERS.get("region_density")
+    return config if isinstance(config, dict) else _DEFAULT_MEMBER_TARGET_FILTERS["region_density"]
+
+
+def _region_granularity_alternation() -> str:
+    tokens = [t for t in _region_density_config().get("granularity_tokens", []) if isinstance(t, str) and t]
+    if not tokens:
+        tokens = list(_DEFAULT_MEMBER_TARGET_FILTERS["region_density"]["granularity_tokens"])
+    tokens.sort(key=len, reverse=True)  # '시군구'가 '구'보다 먼저 매칭되게 긴 토큰 우선
+    return "|".join(re.escape(token) for token in tokens)
+
+
+_REGION_DENSITY_PATTERN = re.compile(
+    rf"(?:가장\s*|제일\s*)?많이\s*(?:거주하|사|살고\s*있)는\s*({_region_granularity_alternation()})"
+)
+_REGION_DENSITY_ALT_PATTERN = re.compile(rf"밀집\s*({_region_granularity_alternation()})")
+_REGION_DENSITY_TOP_N_PATTERN = re.compile(r"상위\s*(\d+)|(?:top|톱)\s*(\d+)", re.IGNORECASE)
+
+DEFAULT_MEMBER_METRICS_PATH = Path("docs/data/member_metrics.json")
+
+
+@functools.lru_cache(maxsize=4)
+def _load_member_metrics(path_text: str) -> dict[str, Any] | None:
+    path = Path(path_text)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+@functools.lru_cache(maxsize=4)
+def _member_metric_region_pattern(path_text: str) -> "re.Pattern[str] | None":
+    """지표 레지스트리(member_metrics.json)의 동의어로 '<지표>가 높은 지역' 패턴을 동적 생성한다.
+
+    새 지표는 레지스트리에 항목 추가만으로 패턴에 반영된다(코드 수정 없음). 동의어는 긴 것부터
+    매칭해 '평균 구매금액'이 '구매금액'보다 먼저 잡히게 한다.
+    """
+    registry = _load_member_metrics(path_text)
+    if not registry:
+        return None
+    synonyms: list[tuple[str, str]] = []  # (synonym, metric_id)
+    for metric in registry.get("metrics", []):
+        for synonym in metric.get("synonyms", []):
+            if isinstance(synonym, str) and synonym:
+                synonyms.append((synonym, metric["metric_id"]))
+    if not synonyms:
+        return None
+    synonyms.sort(key=lambda pair: len(pair[0]), reverse=True)
+    alternation = "|".join(re.escape(synonym) for synonym, _ in synonyms)
+    return re.compile(
+        rf"({alternation})(?:이|가|을|를)?\s*(?:가장\s*|제일\s*)?(?:높은|많은|큰|상위)\s*({_region_granularity_alternation()})"
+    )
+
+
+def _member_metric_by_synonym(path_text: str, matched_synonym: str) -> dict[str, Any] | None:
+    registry = _load_member_metrics(path_text)
+    if not registry:
+        return None
+    for metric in registry.get("metrics", []):
+        if matched_synonym in metric.get("synonyms", []):
+            return metric
+    return None
+
+
+# "최근 N일/개월 동안 구매하지 않은" 같은 구매 미발생 기간(구매 리센시) 신호. 구매 부정어 + 시간 창이
+# 함께 있을 때만 잡는다. 시간 창이 없으면(예: '미구매 고객') '전혀 구매 안 함(no_purchase)'과 구분이
+# 없으므로 여기서 잡지 않고 기존 no_purchase 경로로 둔다.
+_PURCHASE_NEG_SIGNALS = (
+    "구매안", "구매하지않", "구매않", "구매없", "구입안", "구입하지않", "구입없", "주문안", "주문하지않", "미구매",
+)
+
+
+def _parse_purchase_inactivity_period(query: str) -> dict[str, Any] | None:
+    compact_query = query.replace(" ", "").casefold()
+    if not any(signal in compact_query for signal in _PURCHASE_NEG_SIGNALS):
+        return None
+    month_match = re.search(r"(?P<value>\d{1,2})\s*(?:개월|달)", query)
+    if month_match:
+        months = int(month_match.group("value"))
+        if months > 0:
+            return {"value": months, "unit": "months", "min_days": months * 30}
+    day_match = re.search(r"(?P<value>\d{1,4})\s*일", query)
+    if day_match:
+        days = int(day_match.group("value"))
+        if days > 0:
+            return {"value": days, "unit": "days", "min_days": days}
+    return None
+
+
+def _apply_purchase_inactivity_filter(query: str, plan: dict[str, Any]) -> None:
+    """'최근 N일 동안 구매하지 않은 고객'을 구매 미발생 기간 타겟(purchase_inactivity)으로 해석한다.
+
+    '전혀 구매 안 함(no_purchase, 평생 무주문)'과 다르다 — 과거엔 샀어도 최근 N일 내 주문이 없으면
+    대상이다(이탈/재참여 세그먼트). LLM 파서가 '구매하지 않은'을 no_purchase 로 오분류하는 경우가
+    있어, 기간 창이 잡히면 no_purchase 를 제거해 오분류를 바로잡는다(윈도우 anti-join 빌더가 처리)."""
+    period = _parse_purchase_inactivity_period(query)
+    if period is None:
+        return
+    plan.setdefault("target_user", {})["purchase_inactivity"] = period
+    plan["target_user"]["behaviors"] = [
+        behavior for behavior in plan["target_user"].get("behaviors", []) if behavior != "no_purchase"
+    ]
+
+
+# 생일 타겟: BIRTHDAY(YYYYMMDD)의 월일만 오늘과 비교한다(년도 무시). '이달/이번 달'이면 월만 비교.
+_BIRTHDAY_SIGNALS = ("생일", "생신", "birthday")
+_BIRTHDAY_MONTH_SIGNALS = ("이달", "이번달", "이번 달", "당월", "금월", "이달의")
+
+
+def _apply_birthday_target_filter(query: str, plan: dict[str, Any]) -> None:
+    """'오늘 생일인 고객' / '이달 생일 고객'을 생일 타겟(birthday_target)으로 해석한다.
+
+    생일은 BIRTHDAY(YYYYMMDD)의 월일(MMDD)만 오늘과 비교해야 한다(년도까지 비교하면 아무도 안 걸림).
+    '이달/이번 달 생일'은 월(MM)만 비교한다. compile_member_target_conditions 가 실컬럼 술어로 만들어
+    성별/연령 등과 자동 결합한다. '생년월일'(원본 DOB 컬럼 언급)은 생일 타겟이 아니므로 잡지 않는다."""
+    compact = query.replace(" ", "").casefold()
+    # '생년월일/출생' 등 원본 DOB 필드 언급은 생일 이벤트 타겟이 아니다.
+    if "생일" not in compact and "생신" not in compact and "birthday" not in compact:
+        return
+    granularity = "month" if any(sig in compact for sig in ("이달", "이번달", "당월", "금월")) else "day"
+    plan.setdefault("target_user", {})["birthday_target"] = {"granularity": granularity}
+
+
+# 신규 가입 타겟: '신규 가입/신규 회원/새 가입자/new user' 등 가입 신호로 잡는다. 기본 창은
+# signup_target.default_days 이고, '최근 N일/N개월 (이내) 가입' 이 있으면 그 창으로 덮는다.
+_SIGNUP_SIGNALS = ("신규가입", "신규회원", "신규유저", "신규고객", "새가입", "새로가입", "새가입자", "가입한지",
+                   "newuser", "newmember", "newlyregistered", "newsignup", "signedup")
+# '가입/등록/신규' 뒤나 앞에 붙는 기간 창(예: '최근 30일 이내 가입', '가입 30일차').
+_SIGNUP_PERIOD_PATTERN = re.compile(r"(\d{1,4})\s*(일|개월|달)")
+
+
+def _apply_signup_target_filter(query: str, plan: dict[str, Any]) -> None:
+    """'신규 가입 고객'을 신규 가입 타겟(signup_target, REG_DT 최근 N일 창)으로 해석한다.
+
+    REG_TYPE_CD.NEW 는 전체의 96%라 무의미하므로 '신규'는 가입일(REG_DT) 기준 최근 N일로 정의한다.
+    compile_member_target_conditions 가 signup_target 또는 lifecycle 'new_user' 를 실컬럼 술어로 만들어
+    성별/연령 등과 자동 결합한다(LLM 파서가 이미 new_user 를 내보내는 경로와 이중화 — 창 파싱은 이쪽 담당).
+    """
+    compact = query.replace(" ", "").casefold()
+    match = _SIGNUP_PERIOD_PATTERN.search(query)
+    has_signup_signal = any(signal in compact for signal in _SIGNUP_SIGNALS)
+    # '가입/등록' + 기간 창(예: '30일 이내 가입한 고객')도 신규 가입 타겟으로 본다. 단 '미가입/재가입/
+    # 탈퇴' 등 반대·무관 맥락은 제외한다('가입' 부분문자열 오탐 방지).
+    join_window = (
+        match is not None
+        and ("가입" in compact or "등록" in compact)
+        and not any(neg in compact for neg in ("미가입", "재가입", "비가입", "가입안", "가입하지", "탈퇴"))
+    )
+    if not has_signup_signal and not join_window:
+        return
+    days: int | None = None
+    if match:
+        value = int(match.group(1))
+        if value > 0:
+            days = value * 30 if match.group(2) in ("개월", "달") else value
+    # days 가 None 이면 compile 이 signup_target.default_days 를 쓴다.
+    plan.setdefault("target_user", {})["signup_target"] = {"days": days}
+
+
+def _apply_region_density_target(query: str, plan: dict[str, Any]) -> None:
+    """'X가 많이 거주하는 동네' 표현을 밀집 지역 랭킹 타겟(region_density_target)으로 해석한다.
+
+    X(코호트 조건: 성별/연령/등급/값인덱스 …)는 별도 필드로 이미 파싱돼 있으므로 여기서는 집계
+    구조만 표시한다. build_member_targets_sql_candidate 가 이 플래그를 보고 2단계 SQL(지역별 X 수
+    집계 상위 N → 그 지역 정상 회원 추출)을 생성한다. '지역/동네' 언급으로 잡힌 지역 모호성 정책
+    (region_context_default)은 여기서 '거주 밀집 지역'으로 구체 해석됐으므로 소비한다(미소비 시
+    semantic_resolutions 가 실DB 미지원 조건으로 남아 SQL 생성이 막힌다).
+    """
+    metric_info: dict[str, Any] | None = None
+    matched_metric_text: str | None = None
+    match = _REGION_DENSITY_PATTERN.search(query) or _REGION_DENSITY_ALT_PATTERN.search(query)
+    if not match:
+        # "<지표>가 높은/많은 지역" — 지표 레지스트리 기반 그룹 랭킹(예: 매출이 높은 지역).
+        metric_pattern = _member_metric_region_pattern(str(DEFAULT_MEMBER_METRICS_PATH))
+        metric_match = metric_pattern.search(query) if metric_pattern else None
+        if not metric_match:
+            return
+        matched_metric_text = metric_match.group(1)
+        metric_info = _member_metric_by_synonym(str(DEFAULT_MEMBER_METRICS_PATH), matched_metric_text)
+        if metric_info is None:
+            return
+        match = metric_match
+        granularity = metric_match.group(2)
+    else:
+        granularity = match.group(1)
+    density_config = _region_density_config()
+    granularity_columns = density_config.get("granularity_columns")
+    granularity_columns = granularity_columns if isinstance(granularity_columns, dict) else {}
+    column = granularity_columns.get(granularity) or density_config.get("default_column") or "SIGUNGU"
+    top_n = int(density_config.get("default_top_n") or 5)
+    top_match = _REGION_DENSITY_TOP_N_PATTERN.search(query)
+    if top_match:
+        max_top_n = int(density_config.get("max_top_n") or 30)
+        top_n = max(1, min(int(next(group for group in top_match.groups() if group)), max_top_n))
+    target = {"column": column, "granularity": granularity, "top_n": top_n}
+    if metric_info is not None:
+        target["metric_id"] = metric_info["metric_id"]
+        target["metric_label"] = metric_info.get("ko_label", metric_info["metric_id"])
+    plan["region_density_target"] = target
+    plan["semantic_resolutions"] = [
+        resolution
+        for resolution in plan.get("semantic_resolutions", [])
+        if resolution.get("policy_id") != "region_context_default"
+    ]
+    # '<지표> 높은 지역' 은 지역 랭킹이지 고객 단위 조건이 아니다. 같은 어구('매출이 높은')에
+    # 얻어걸린 고객 단위 매출 정책(고매출 고객 threshold, 매출 상위 rank)이 남으면 threshold
+    # clarification 으로 파이프라인이 막히므로, 지표어가 라벨에 포함된 target_user 정책을 소비한다.
+    if matched_metric_text:
+        plan["policy_constraints"] = [
+            policy
+            for policy in plan.get("policy_constraints", [])
+            if not (
+                policy.get("scope") == "target_user"
+                and matched_metric_text in str(policy.get("ko_label", "")) + str(policy.get("canonical", ""))
+            )
+        ]
 
 
 def _cart_dimension_brand_filter(query_plan: dict[str, Any]) -> dict[str, Any] | None:
@@ -1426,13 +2267,18 @@ def _is_cart_dimension_targeting(query_plan: dict[str, Any]) -> bool:
 
 
 def _apply_cart_repurchase_context(query: str, plan: dict[str, Any]) -> None:
-    if _is_cart_abandonment_query(query):
+    is_cart = _is_cart_abandonment_query(query)
+    if is_cart:
         _append_unique(plan["target_user"]["behaviors"], "cart_abandoner")
     if _is_repurchase_goal_context(query):
         plan["campaign_constraints"]["objective"] = "repurchase"
-        plan["target_user"]["behaviors"] = [
-            behavior for behavior in plan["target_user"].get("behaviors", []) if behavior != "repeat_buyer"
-        ]
+        # 장바구니 이탈 재구매 유도 흐름에서는 실제 타겟이 cart_abandoner 이고 repeat_buyer 는 목적
+        # 라벨과 중복/모순이라 제거한다. 장바구니 맥락이 아니면 '재구매 고객'을 오디언스로 보고 주문
+        # 집계 빌더(build_order_count_targets_sql_candidate: 주문 2건 이상)가 실추출하도록 남긴다.
+        if is_cart:
+            plan["target_user"]["behaviors"] = [
+                behavior for behavior in plan["target_user"].get("behaviors", []) if behavior != "repeat_buyer"
+            ]
 
 
 def _apply_inactivity_period_filter(query: str, plan: dict[str, Any]) -> None:
@@ -1502,27 +2348,16 @@ def _inactivity_retrieval_terms(period: Any) -> list[str]:
 
 def _is_cart_abandonment_query(query: str) -> bool:
     compact_query = query.replace(" ", "").casefold()
-    return "장바구니" in compact_query and any(
-        keyword in compact_query
-        for keyword in (
-            "결제하지않",
-            "결제안",
-            "미결제",
-            "구매하지않",
-            "구매안",
-            "안산",
-            "방치",
-            "이탈",
-            "cartabandon",
-        )
+    return any(keyword in compact_query for keyword in _lexicon_terms("cart_terms")) and any(
+        keyword in compact_query for keyword in _lexicon_terms("cart_abandonment_terms")
     )
 
 
 def _is_repurchase_goal_context(query: str) -> bool:
     compact_query = query.replace(" ", "").casefold()
-    if not any(keyword in compact_query for keyword in ("재구매", "repurchase")):
+    if not any(keyword in compact_query for keyword in _lexicon_terms("repurchase_terms")):
         return False
-    return any(keyword in compact_query for keyword in ("유도", "촉진", "리마인드", "캠페인", "메시지", "발송", "추천"))
+    return any(keyword in compact_query for keyword in _lexicon_terms("repurchase_outreach_terms"))
 
 
 def _sanitize_purchase_object(value: str) -> str | None:
@@ -1530,7 +2365,7 @@ def _sanitize_purchase_object(value: str) -> str | None:
     for token in re.findall(r"[0-9A-Za-z가-힣_+\-]+", value.casefold()):
         stripped_token = re.sub(r"(?:을|를)$", "", token)
         # 상품이 아닌 구매행동 수식어(첫/재/최근 구매 등)는 명사형 매칭에서 엉뚱한 LIKE 를 만들 수 있어 제외한다.
-        if stripped_token and stripped_token not in {"사람", "고객", "사용자", "첫", "재", "최근", "반복", "자주", "처음"}:
+        if stripped_token and stripped_token not in {"사람", "고객", "사용자", "첫", "재", "최근", "최초", "최초로", "반복", "자주", "처음", "처음으로", "미"}:
             tokens.append(stripped_token)
     if not tokens:
         return None
@@ -1731,9 +2566,16 @@ def retrieve(
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
     message_generation_options: dict[str, Any] | None = None,
     retrieval_scope: str = "all",
+    multi_query_variants: int | None = None,
 ) -> dict[str, Any]:
     timings_ms: dict[str, float] = {}
     retrieve_started_at = time.perf_counter()
+    # 다중 재구성 파싱 변이 수. 명시값이 없으면 환경변수로 전역 설정(기본 0=끔). LLM(파서 auto/llm) 필요.
+    if multi_query_variants is None:
+        try:
+            multi_query_variants = int(os.getenv("GRAPH_RAG_MULTI_QUERY_VARIANTS", "0"))
+        except ValueError:
+            multi_query_variants = 0
     _write_rag_llm_log(
         "rag_retrieve_request",
         {
@@ -1760,9 +2602,19 @@ def retrieve(
     effective_query = prompt_normalization["normalized"]
     timings_ms["prompt_normalization"] = _elapsed_ms(stage_started_at)
 
+    # 타겟팅 스코프면 SQL·추론(Query Plan)을 오디언스(타겟팅) 절로만 수행한다. 채널·발송·혜택 문구는
+    # 파싱에서 제외해 타겟 조건만 SQL/트레이스에 반영한다(검색 스코프 원칙을 파싱까지 확장). 채널 절은
+    # 검색 스코프·메시지 생성에서만 쓰인다. 타겟팅 절이 비면 전체 재작성본으로 폴백한다.
+    scope = (retrieval_scope or "all").casefold()
+    if scope == "targeting":
+        plan_scopes = split_prompt_scopes(effective_query, parser=query_parser, llm_model=llm_model, prompt_dir=prompt_dir)
+        plan_query = (plan_scopes.get("targeting") or "").strip() or effective_query
+    else:
+        plan_query = effective_query
+
     stage_started_at = time.perf_counter()
     query_plan = build_query_plan(
-        effective_query,
+        plan_query,
         normalization_rules=normalization_rules,
         business_policies=business_policies,
         metric_lexicon=metric_lexicon,
@@ -1770,15 +2622,24 @@ def retrieve(
         parser=query_parser,
         llm_model=llm_model,
         prompt_dir=prompt_dir,
+        multi_query_variants=multi_query_variants,
     )
+    # 파싱에 실제 사용한 문장(타겟팅 절 또는 전체 재작성본)을 트레이스/응답에 노출한다.
+    query_plan["planning_query"] = plan_query
+    # 프롬프트 재작성기가 '많이 거주하는' 같은 집계 표현을 지울 수 있으므로(비결정적 LLM 재작성),
+    # 파싱 문장 기준으로도 밀집 지역 타겟을 감지한다(이미 감지됐으면 동일 값으로 덮어써 무해).
+    _apply_region_density_target(plan_query, query_plan)
+    # 캠페인/조회 동사 없이 회원 속성만 나열한 프롬프트는 파서가 intent=unknown 을 주는데, 그러면
+    # 회원 타겟 SQL 빌더가 호출되지 않는다. 실DB 매핑 가능한 타겟 신호가 있으면 세그먼트 조회로 승격.
+    _promote_unknown_intent_for_target_signal(query_plan)
     timings_ms["query_plan"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
     retrieval = query_plan["retrieval"]
-    # SQL 은 항상 전체 문장 기준(스코프 무관). 검색·그래프 컨텍스트만 스코프별 절/용어로 좁힌다.
+    # 타겟팅 스코프면 Query Plan 자체가 타겟팅 절 기준이라 아래 검색어도 자연히 타겟팅 절이 된다.
+    # (all/channel 스코프는 전체 문장 기준 Query Plan + 스코프별 검색어 분리 — 기존 동작 유지.)
     full_retrieval_query = retrieval["query"]
     keyword_query = " ".join(_unique_strings([full_retrieval_query, *retrieval["terms"]]))
-    scope = (retrieval_scope or "all").casefold()
     if scope == "targeting":
         scoped_query = retrieval.get("targeting_query") or full_retrieval_query
         scoped_terms = retrieval.get("targeting_terms", retrieval["terms"])
@@ -1836,6 +2697,9 @@ def retrieve(
         context_nodes=context_nodes,
         schema_path=sql_schema,
         default_limit=sql_limit,
+        # 템플릿/조합 빌더가 못 만드는 형태는 LLM 폴백이 GraphRAG 컨텍스트를 근거로 SQL 초안을
+        # 만들고 동일 가드 스택(guard/coverage/미언급)으로 검증한다. rules 파서 모드면 비활성.
+        llm_model=llm_model if query_parser in ("auto", "llm") else None,
     )
     timings_ms["sql_generation"] = _elapsed_ms(stage_started_at)
 
@@ -2015,13 +2879,25 @@ def _node_haystack(node_id: str, node_data: dict[str, Any]) -> str:
 
 
 def _keyword_tokens(text: str) -> list[str]:
+    """BM25 색인/질의용 토큰. 단어 토큰(정확 일치)에 더해, 한글은 교착어라 조사·어미가 붙어 정확
+    토큰 일치가 깨지므로('결제수단으로'≠'결제수단') 인접 한글 문자 bigram 을 함께 색인해 변형을
+    흡수한다. 질의·문서를 같은 방식으로 토큰화하므로, 정확 단어는 단어+bigram 양쪽으로 걸려 최상위
+    점수를 유지하고, 조사/활용 변형은 공유 bigram 으로 부분 점수를 받는다(재현율↑, 정밀도는 idf 로 보정)."""
     tokens: list[str] = []
-    for token in re.findall(r"[0-9A-Za-z가-힣_]+", text.casefold()):
-        if len(token) < 2:
-            continue
-        tokens.append(token)
-        if "_" in token:
-            tokens.extend(part for part in token.split("_") if len(part) >= 2)
+    for raw_token in re.findall(r"[0-9A-Za-z가-힣_]+", text.casefold()):
+        parts = [raw_token, *raw_token.split("_")] if "_" in raw_token else [raw_token]
+        for part in parts:
+            if len(part) < 2:
+                continue
+            tokens.append(part)
+            # 한글 인접쌍 bigram(3자 이상; 2자 토큰은 그 자체가 bigram 이라 중복 색인하지 않는다).
+            # 혼합 토큰('sms수신동의여부')도 한글 구간만 bigram 처리한다.
+            if len(part) >= 3:
+                tokens.extend(
+                    part[i:i + 2]
+                    for i in range(len(part) - 1)
+                    if _HANGUL_SYLLABLE.match(part[i]) and _HANGUL_SYLLABLE.match(part[i + 1])
+                )
     return tokens
 
 
@@ -3587,7 +4463,11 @@ def _condition_labels(conditions: list[dict[str, Any]]) -> list[str]:
     return _unique_strings([label for label in labels if label])
 
 
-_SUPPORTED_CONDITION_HINT = "성별·연령·회원등급·휴면/미접속 기간·상품 구매 이력"
+# 사용자 안내용 "지원 조건" 힌트. 지원 속성이 늘면 member_target_filters.json 에서 함께 갱신한다.
+_SUPPORTED_CONDITION_HINT = str(
+    _MEMBER_TARGET_FILTERS.get("supported_condition_hint")
+    or _DEFAULT_MEMBER_TARGET_FILTERS["supported_condition_hint"]
+)
 # 실DB 미이관 데모 스키마 테이블. 이 테이블 참조로 가드 탈락하면 "조건이 실DB로 매핑 안 됨"을 뜻한다.
 _DEMO_SCHEMA_TABLES = {
     "users", "recommendation_edges", "campaigns", "campaign_target_segments",
@@ -3686,6 +4566,8 @@ def build_recommendation_api_response(
         "sql": sql_result.get("sql"),
         "target_connection": sql_result.get("target_connection"),
         "target_dialect": sql_result.get("target_dialect"),
+        # 0명 결과일 때 실행부에서 어느 술어가 오디언스를 죽였는지 귀속하기 위한 술어별 probe.
+        "cardinality_probe": sql_result.get("cardinality_probe"),
         "message": message,
         "missing_input_conditions": sql_result.get("missing_input_conditions", []),
         "clarification_questions": sql_result.get("clarification_questions", []),
@@ -3717,6 +4599,156 @@ def _api_status(sql_result: dict[str, Any]) -> str:
     return "no_verified_sql"
 
 
+@functools.lru_cache(maxsize=4)
+def _schema_table_summaries(schema_path_text: str) -> tuple[str, ...]:
+    """허용 테이블 전체의 한 줄 요약(빈 테이블 ⚠️ 경고 포함). LLM 폴백의 테이블 선택 근거.
+
+    검색 히트만 주면 LLM 이 문서화된 함정(예: ODS_MALL_OMS_ORDER 0행 — anti-join 시 전원 매칭)을
+    모른 채 그럴듯한 테이블을 고르므로, 카탈로그의 description_llm 을 전부 제공한다.
+    """
+    try:
+        catalog = json.loads(Path(schema_path_text).read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return ()
+    tables = catalog.get("tables", catalog) if isinstance(catalog, dict) else {}
+    summaries = []
+    for table_name, table_info in tables.items():
+        if not isinstance(table_info, dict):
+            continue
+        description = str(table_info.get("description_llm") or "")[:220]
+        join_hints = "; ".join(table_info.get("join_hints", [])[:2])
+        line = f"[{table_name}] {description}"
+        if join_hints:
+            line += f" (조인: {join_hints})"
+        summaries.append(line)
+    return tuple(summaries)
+
+
+def _inject_segment_label(sql: str, query_plan: dict[str, Any]) -> str:
+    """LLM 생성 SQL 의 최상위 SELECT 에 조건 canonical 라벨 컬럼을 결정론적으로 주입한다.
+
+    커버리지 검증은 조건 값 문자열이 SQL 에 존재하는지로 판정하므로(템플릿은 segment_label 로 충족),
+    LLM 의 지시 순응에 기대지 않고 코드가 직접 주입한다. 이미 segment_label 이 있으면 건드리지 않는다.
+    """
+    target_user = query_plan.get("target_user", {})
+    behaviors = _unique_strings([b for b in (target_user.get("behaviors") or []) if isinstance(b, str) and b])
+    others = _unique_strings(
+        [
+            label
+            for label in [*(target_user.get("lifecycle") or []), *(target_user.get("interests") or [])]
+            if isinstance(label, str) and label
+        ]
+    )
+    columns = []
+    # behaviors 는 검증부가 target_segment 토큰까지 요구한다(cart 템플릿과 동일 규약의 별칭 사용).
+    if behaviors and "target_segment" not in sql.casefold():
+        columns.append(_sql_quote(",".join(behaviors)) + " AS target_segment")
+    if others and "segment_label" not in sql.casefold():
+        columns.append(_sql_quote(",".join(others)) + " AS segment_label")
+    if not columns:
+        return sql
+    match = re.search(r"\bFROM\b", sql, re.IGNORECASE)
+    if not match:
+        return sql
+    return sql[: match.start()].rstrip() + ", " + ", ".join(columns) + " " + sql[match.start():]
+
+
+def _build_llm_sql_fallback_candidate(
+    query: str,
+    query_plan: dict[str, Any],
+    context_nodes: list[dict[str, Any]],
+    allowed_tables: Any,
+    llm_model: str,
+    schema_path: Path | None = None,
+) -> dict[str, Any] | None:
+    """템플릿/조합 빌더가 표현 못 하는 질의 형태의 SQL 초안을 LLM 으로 생성한다(2티어 폴백).
+
+    근거는 GraphRAG 검색 컨텍스트(실스키마/조인힌트/값 노드/SQL 예시)로 한정하고, 결과는 호출부에서
+    템플릿과 동일한 가드 스택(sql_guard 테이블 허용목록·SELECT 전용, 조건 커버리지, 미언급 조건
+    차단)을 전부 통과해야만 채택된다 — 가드는 허용 위반은 잡지만 '그럴듯하게 틀린 로직'(조인 중복
+    집계 등)은 못 잡으므로, 생성 SQL 은 source=llm_generated 로 명시 라벨링해 응답에 노출하고
+    로그를 남겨 반복 성공 형태의 템플릿 승격 근거로 쓴다.
+    """
+    if not os.getenv("OPENAI_API_KEY"):
+        return None
+    try:
+        from openai import OpenAI
+
+        context_lines = []
+        for node in context_nodes[:12]:
+            text = node.get("text") or node.get("text_for_embedding") or ""
+            if text:
+                context_lines.append(f"[{node.get('type', 'node')}] {text[:600]}")
+        table_summaries = list(_schema_table_summaries(str(schema_path))) if schema_path else []
+        allowed_list = ", ".join(sorted(str(table) for table in allowed_tables))
+        plan_slim = {
+            key: query_plan.get(key)
+            for key in ("intent", "target_user", "exclude", "campaign_constraints", "dimension_filters", "region_density_target")
+            if query_plan.get(key)
+        }
+        system_prompt = "\n".join(
+            [
+                "너는 CRM 타겟팅 SQL 생성기다. 반드시 JSON {\"sql\": \"...\", \"explanation\": \"...\"} 형식으로만 답한다.",
+                "규칙:",
+                f"- MSSQL(T-SQL) SELECT 단일문만 생성한다. DML/DDL/임시테이블 금지, LIMIT 대신 TOP 사용.",
+                f"- 허용 테이블만 사용한다: {allowed_list}",
+                "- 첫 컬럼은 반드시 회원키다: SELECT DISTINCT B.MEMBER_NO AS CUST_ID (CRM_MB_BASEINFO 별칭 B).",
+                "- 발송 대상이므로 기본으로 B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL' 조건을 넣는다(사용자가 휴면/탈퇴를 명시하면 예외).",
+                "- CRMDW 코드 컬럼 저장값은 도메인 접두어를 포함한다(예: GENDER_CD.FEMALE, MEM_GRADE_CD.VIP, MEMBER_STATE_CD.NORMAL).",
+                "- 사용자가 명시한 조건은 모두 WHERE 에 반영하고, 명시하지 않은 조건(성별/연령/지역 등)은 절대 추가하지 않는다.",
+                "- SELECT 에 반영한 조건의 canonical 요약 라벨을 포함한다(조건 커버리지 검증용): 예) 'no_purchase' AS segment_label.",
+                "- 컨텍스트에 없는 테이블/컬럼을 지어내지 않는다. 확실한 SQL 을 만들 수 없으면 {\"sql\": null, \"explanation\": \"이유\"} 를 반환한다.",
+                "- 테이블 요약의 ⚠️(0행/미적재) 경고가 있는 테이블은 조건 판정 기준으로 쓰지 않는다(빈 테이블 anti-join 은 전원 매칭 오류).",
+            ]
+        )
+        user_prompt = json.dumps(
+            {
+                "user_query": query,
+                "query_plan": plan_slim,
+                "table_catalog": table_summaries,
+                "retrieval_context": context_lines,
+            },
+            ensure_ascii=False,
+        )
+        _write_rag_llm_log(
+            "llm_sql_fallback_request",
+            {"model": llm_model, "query": query, "query_plan": plan_slim, "context_line_count": len(context_lines)},
+        )
+        client = OpenAI()
+        response = client.chat.completions.create(
+            model=llm_model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        content = response.choices[0].message.content or "{}"
+        payload = json.loads(content)
+        _write_rag_llm_log("llm_sql_fallback_response", {"model": llm_model, "query": query, "content": content})
+        sql = payload.get("sql")
+        if not isinstance(sql, str) or not sql.strip():
+            return None
+        # 조건 커버리지 검증용 라벨을 결정론적으로 주입(LLM 지시 순응에 기대지 않는다).
+        sql = _inject_segment_label(sql.strip(), query_plan)
+        candidate = _sql_candidate(
+            "llm_sql:fallback",
+            "LLM 생성 SQL(템플릿 미지원 형태 — 가드 검증 통과 시에만 채택)",
+            0.5,
+            sql,
+            _template_tables(sql),
+            "llm_generated",
+        )
+        candidate["explanation"] = payload.get("explanation")
+        candidate["dropped_conditions"] = []
+        candidate["dropped_condition_labels"] = []
+        return candidate
+    except Exception as exc:  # LLM 폴백 실패는 기존 실패 흐름(정직한 거절)으로 되돌아간다.
+        _write_rag_llm_log("llm_sql_fallback_error", {"model": llm_model, "query": query, "error": str(exc)})
+        return None
+
+
 def build_sql_result(
     graph: nx.Graph,
     query: str,
@@ -3725,6 +4757,7 @@ def build_sql_result(
     schema_path: Path,
     default_limit: int,
     candidate_limit: int = 20,
+    llm_model: str | None = None,
 ) -> dict[str, Any]:
     condition_tokens = build_verified_condition_tokens(query_plan)
     input_validation = validate_required_input_conditions(query_plan, condition_tokens)
@@ -3740,6 +4773,8 @@ def build_sql_result(
             "input_validation": input_validation,
             "missing_input_conditions": input_validation["missing_conditions"],
             "clarification_questions": input_validation["clarification_questions"],
+            "llm_fallback_used": False,
+            "generation_source": None,
             "is_success": False,
             "failure_reason": "query_plan_required_conditions_missing",
         }
@@ -3749,6 +4784,17 @@ def build_sql_result(
     table_databases = load_table_databases(schema_path)
     template_candidate = build_sql_template_candidate(query_plan)
     candidates = [template_candidate] if template_candidate is not None else []
+
+    # 2티어 폴백: 결정론 템플릿/조합 빌더가 후보를 못 만든 타겟팅 질의만 LLM 생성으로 시도한다.
+    # 생성 SQL 도 아래 루프에서 템플릿과 동일한 가드 스택으로 검증되며, 실패하면 기존 거절 흐름 유지.
+    llm_fallback_used = False
+    if not candidates and llm_model and query_plan.get("intent") in ("recommend_campaign", "find_user_segment"):
+        llm_candidate = _build_llm_sql_fallback_candidate(
+            query, query_plan, context_nodes, allowed_tables, llm_model, schema_path=schema_path
+        )
+        if llm_candidate is not None:
+            candidates = [llm_candidate]
+            llm_fallback_used = True
 
     validated_candidates = []
     for candidate in candidates:
@@ -3812,7 +4858,11 @@ def build_sql_result(
         unsupported_conditions = compile_member_target_conditions(query_plan)["unsupported"]
         unsupported_condition_labels = [_unsupported_condition_label(path) for path in unsupported_conditions]
         # 데모 폴백 제거 후, 매핑 불가 조건은 후보 자체가 없어(no_sql_candidates) 되기도 한다. 둘 다 승격.
-        if failure_reason in ("sql_guard_failed", "no_sql_candidates") and unsupported_conditions:
+        # LLM 폴백 후보가 검증(커버리지 등)에서 탈락한 경우도 미지원 조건이 원인이면 같은 안내로 승격.
+        promotable_reasons = ("sql_guard_failed", "no_sql_candidates")
+        if llm_fallback_used:
+            promotable_reasons += ("query_plan_conditions_missing", "query_plan_unmentioned_conditions_added")
+        if failure_reason in promotable_reasons and unsupported_conditions:
             failure_reason = "real_db_unsupported_conditions"
 
     # 부분 추출로 SQL 이 나온 경우, 실DB 미지원이라 뺀 조건을 고지한다(성공이지만 일부 조건 제외).
@@ -3835,6 +4885,11 @@ def build_sql_result(
         "unsupported_condition_labels": unsupported_condition_labels,
         "dropped_conditions": dropped_conditions,
         "dropped_condition_labels": dropped_condition_labels,
+        # LLM 폴백으로 생성·검증된 SQL 인지 명시 라벨(응답/UI 에서 결정론 템플릿과 구분).
+        "llm_fallback_used": llm_fallback_used,
+        "generation_source": (selected or {}).get("source"),
+        # 실행부(0명 결과)에서 술어별 카디널리티 진단을 돌릴 수 있게 선택된 후보의 probe 를 노출.
+        "cardinality_probe": (selected or {}).get("cardinality_probe") if selected_sql is not None else None,
         "is_success": selected_sql is not None,
         "failure_reason": failure_reason,
     }
@@ -4294,6 +5349,21 @@ def _add_token(
         tokens.append(token)
 
 
+def _attach_cart_dropped_conditions(
+    candidate: dict[str, Any], query_plan: dict[str, Any], compiled: dict[str, Any]
+) -> None:
+    """cart 템플릿용 부분 추출 고지(형제 빌더와 동일 규칙). 장바구니 행동(cart_abandoner)은 템플릿
+    자체가 커버하므로 behaviors 가 그것뿐이면 dropped 에서 제외한다(purchase_object 처리와 같은 방식)."""
+    behaviors = set(query_plan.get("target_user", {}).get("behaviors", []))
+    dropped = [
+        path
+        for path in compiled["unsupported"]
+        if not (path == "target_user.behaviors" and behaviors <= {"cart_abandoner"})
+    ]
+    candidate["dropped_conditions"] = dropped
+    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]
+
+
 def build_sql_template_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     intent = query_plan.get("intent")
     if intent == "recommend_campaign":
@@ -4301,48 +5371,73 @@ def build_sql_template_candidate(query_plan: dict[str, Any]) -> dict[str, Any] |
         if brand_filter is not None:
             # 장바구니에 특정 상품브랜드(BRAND_ID) 상품을 담은 회원 추출(실제 CRMDW 테이블).
             # 브랜드명은 dimension_catalog 스냅샷으로 이미 코드(예: 'A')로 해석돼 넘어온다.
+            # 회원 속성(성별/연령/등급 등)이 함께 오면 형제 빌더와 동일하게 B 술어로 AND 결합하고,
+            # 실DB 미지원 조건은 dropped 로 고지한다 — 장바구니 경로만 조건을 조용히 버리지 않게.
+            compiled = compile_member_target_conditions(query_plan)
             column_short = brand_filter.get("column", "CRM_CM_PRODUCT.BRAND_ID").split(".")[-1]
             operator = brand_filter.get("operator", "IN")
             in_list = ", ".join(_sql_quote(code) for code in brand_filter["codes"])
+            where_clauses = ["A.KEEP_YN = 'Y'", f"C.{column_short} {operator} ({in_list})", *compiled["predicates"]]
+            # 회원상태 직접 지정(dormant 등)이 아니면 발송 대상 기본 정책대로 정상 회원으로 한정한다.
+            if not compiled["forces_state"]:
+                where_clauses.append(_member_active_state_predicate())
+            select_columns = ["DISTINCT B.MEMBER_NO AS CUST_ID"]
+            if "cart_abandoner" in query_plan.get("target_user", {}).get("behaviors", []):
+                select_columns.append("'cart_abandoner' AS target_segment")
+            objective = query_plan.get("campaign_constraints", {}).get("objective")
+            if objective:
+                select_columns.append(_sql_quote(objective) + " AS objective")
             sql = "\n".join(
                 [
-                    "SELECT DISTINCT B.MEMBER_NO AS CUST_ID",
+                    "SELECT " + ", ".join(select_columns),
                     "FROM ODS_MALL_OMS_CART A",
                     "     INNER JOIN CRM_MB_BASEINFO B ON A.CART_ID = B.MEMBER_ID",
                     "     INNER JOIN CRM_CM_PRODUCT C ON A.PRODUCT_ID = C.PRODUCT_ID",
-                    "WHERE A.KEEP_YN = 'Y'",
-                    f"  AND C.{column_short} {operator} ({in_list})",
+                    "WHERE " + "\n  AND ".join(_unique_strings(where_clauses)),
                 ]
             )
-            return _sql_candidate("sql_template:cart_dimension_targets", "장바구니 상품브랜드 타겟팅 SQL 템플릿", 1.0, sql, _template_tables(sql), "sql_template")
+            candidate = _sql_candidate("sql_template:cart_dimension_targets", "장바구니 상품브랜드 타겟팅 SQL 템플릿", 1.0, sql, _template_tables(sql), "sql_template")
+            _attach_cart_dropped_conditions(candidate, query_plan, compiled)
+            return candidate
         if _should_use_cart_repurchase_template(query_plan):
             # 타겟은 "장바구니에 담고 아직 결제 안 함"(카트 이탈)뿐 — KEEP_YN='Y'가 미결제 보관 상태를 표현한다.
             # 재구매(objective)는 메시지 목적 라벨일 뿐 타겟 필터가 아니므로, 회원 단위 주문 anti-join은 걸지 않는다.
             #   (NOT EXISTS(모든 주문)은 "평생 무주문 회원"을 뜻해 재구매 대상과 자기모순이라 제거했다.)
             # 라벨 컬럼(target_segment/objective)은 세그먼트·목적 태그이자 조건 커버리지 충족용(값은 query_plan 기준).
+            # 회원 속성이 함께 오면 형제 빌더와 동일하게 B 술어로 AND 결합한다(조용한 누락 방지).
+            compiled = compile_member_target_conditions(query_plan)
             objective = query_plan.get("campaign_constraints", {}).get("objective")
             select_columns = ["B.MEMBER_NO AS CUST_ID", "'cart_abandoner' AS target_segment"]
             if objective:
                 select_columns.append(_sql_quote(objective) + " AS objective")
+            where_clauses = ["A.KEEP_YN = 'Y'", *compiled["predicates"]]
+            if not compiled["forces_state"]:
+                where_clauses.append(_member_active_state_predicate())
             sql = "\n".join(
                 [
                     "SELECT DISTINCT " + ", ".join(select_columns),
                     "FROM ODS_MALL_OMS_CART A",
                     "     INNER JOIN CRM_MB_BASEINFO B ON A.CART_ID = B.MEMBER_ID",
-                    "WHERE A.KEEP_YN = 'Y'",
+                    "WHERE " + "\n  AND ".join(_unique_strings(where_clauses)),
                 ]
             )
-            return _sql_candidate("sql_template:cart_repurchase_targets", "장바구니 미결제 재구매 유도 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template")
+            candidate = _sql_candidate("sql_template:cart_repurchase_targets", "장바구니 미결제 재구매 유도 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template")
+            _attach_cart_dropped_conditions(candidate, query_plan, compiled)
+            return candidate
         purchase_candidate = build_purchase_history_targets_sql_candidate(query_plan)
         if purchase_candidate is not None:
             # "…를 구매/구입한 고객" 은 실주문(CRM_SL_ORDERDETAILMALL) 조인으로 상품 구매 이력 회원을 뽑는다.
             # 회원 속성(성별/연령/등급 등)이 함께 있으면 CRM_MB_BASEINFO 술어로 같은 SQL 에 결합한다.
             return purchase_candidate
+        order_count_candidate = build_order_count_targets_sql_candidate(query_plan)
+        if order_count_candidate is not None:
+            # "첫 구매/재구매/무구매 고객" 은 주문 헤더(CRM_SL_ORDERHEADERMALL)를 회원별로 집계해 뽑는다.
+            return order_count_candidate
         member_candidate = build_member_targets_sql_candidate(query_plan)
         if member_candidate is not None:
             # 성별/연령/등급/휴면/장기미접속/앱 등 회원 속성 타겟은 실회원 테이블(CRMDW CRM_MB_BASEINFO)로 뽑는다.
             return member_candidate
-        # 실DB(cart/purchase/member) 로 매핑 가능한 조건이 없으면 후보를 만들지 않는다(None → 미지원 안내).
+        # 실DB(cart/purchase/order/member) 로 매핑 가능한 조건이 없으면 후보를 만들지 않는다(None → 미지원 안내).
         return None
     if intent == "find_user_segment":
         # "…를 구매/구입한 고객 찾아줘" 처럼 캠페인 발송이 아니라 세그먼트 조회여도 상품 구매 이력은
@@ -4350,6 +5445,10 @@ def build_sql_template_candidate(query_plan: dict[str, Any]) -> dict[str, Any] |
         purchase_candidate = build_purchase_history_targets_sql_candidate(query_plan)
         if purchase_candidate is not None:
             return purchase_candidate
+        order_count_candidate = build_order_count_targets_sql_candidate(query_plan)
+        if order_count_candidate is not None:
+            # "첫 구매/재구매/무구매 고객 찾아줘" 세그먼트 조회도 주문 집계로 실회원을 추출한다.
+            return order_count_candidate
         member_candidate = build_member_targets_sql_candidate(query_plan)
         if member_candidate is not None:
             # 성별/연령/등급/휴면·장기 미접속 등 회원 속성 세그먼트 조회도 실회원 테이블(CRMDW
@@ -4391,6 +5490,37 @@ def _unsupported_condition_label(path: str) -> str:
     base, _, value = path.partition(":")
     label = _UNSUPPORTED_CONDITION_LABELS.get(base, base)
     return f"{label}: {value}" if value else label
+
+
+def _member_region_predicates(region_codes: dict[str, list[str]]) -> list[str]:
+    """지역 컬럼(SIDO/SIGUNGU) 조건의 결합 방식을 행정 계층 데이터로 판별해 술어 목록을 만든다.
+
+    두 컬럼이 함께 잡혔을 때: 언급된 모든 시군구가 언급된 시도 소속이면 '인천 서구' 같은 수식
+    관계로 보고 AND(각각 별도 술어), 하나라도 소속이 아니면 '금천구랑 인천' 같은 지역 나열로 보고
+    OR(단일 괄호 술어)로 묶는다 — 나열을 AND 로 붙이면 존재하지 않는 조합(인천의 금천구)이 되어
+    조용히 0명이 추출되는 오류를 막는다. 소속 판별 근거는 member_value_index 의 region_hierarchy
+    (주소 마스터 스냅샷)이며, 계층 정보가 없으면 기존 동작(AND)을 유지한다.
+    """
+    if not region_codes:
+        return []
+
+    def _in_predicate(column: str) -> str:
+        return "B." + column + " IN (" + ", ".join(_sql_quote(code) for code in region_codes[column]) + ")"
+
+    sido_codes = region_codes.get("SIDO")
+    sigungu_codes = region_codes.get("SIGUNGU")
+    if not sido_codes or not sigungu_codes:
+        return [_in_predicate(column) for column in region_codes]
+
+    index = _load_member_value_index(str(DEFAULT_MEMBER_VALUE_INDEX_PATH)) or {}
+    sigungu_to_sido = index.get("region_hierarchy", {}).get("sigungu_to_sido", {})
+    hierarchical = bool(sigungu_to_sido) and all(
+        any(sido in sido_codes for sido in sigungu_to_sido.get(sigungu, []))
+        for sigungu in sigungu_codes
+    )
+    if hierarchical or not sigungu_to_sido:
+        return [_in_predicate("SIDO"), _in_predicate("SIGUNGU")]
+    return ["(" + _in_predicate("SIDO") + " OR " + _in_predicate("SIGUNGU") + ")"]
 
 
 def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, Any]:
@@ -4442,6 +5572,8 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
 
     # lifecycle 포함(등가/활동)
     for lifecycle in target_user.get("lifecycle", []):
+        if lifecycle == "new_user":
+            continue  # 신규 가입은 아래 signup_target 분기가 REG_DT 창 술어로 처리(미지원 아님)
         if lifecycle in MEMBER_EQ_FILTERS:
             _add_include(lifecycle); labels.append(lifecycle); has_signal = True
         elif lifecycle in MEMBER_ACTIVITY_FILTERS:
@@ -4462,6 +5594,54 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     inactivity_period = target_user.get("inactivity_period")
     if isinstance(inactivity_period, dict) and isinstance(inactivity_period.get("min_days"), int):
         other_predicates.append(_member_activity_predicate(inactivity_period["min_days"])); has_signal = True
+
+    # 생일 타겟(BIRTHDAY 월일 비교; '이달 생일'은 월 비교). 년도는 비교하지 않는다.
+    birthday_target = target_user.get("birthday_target")
+    if isinstance(birthday_target, dict):
+        granularity = "month" if birthday_target.get("granularity") == "month" else "day"
+        other_predicates.append(_member_birthday_predicate(granularity)); labels.append("birthday_" + granularity); has_signal = True
+
+    # 신규 가입 타겟(REG_DT 최근 N일 창). signup_target(창 파싱) 또는 lifecycle 'new_user'(LLM 라벨)
+    # 어느 쪽이든 트리거하고 하나의 술어로 합친다. 창은 signup_target.days > default_days 순으로 결정.
+    signup_target = target_user.get("signup_target")
+    if isinstance(signup_target, dict) or "new_user" in (target_user.get("lifecycle") or []):
+        days = signup_target.get("days") if isinstance(signup_target, dict) else None
+        other_predicates.append(_member_signup_predicate(days if isinstance(days, int) else None))
+        labels.append("new_user"); has_signal = True
+
+    # 회원 테이블 디멘션 필터(예: 시도 → CRM_MB_BASEINFO.SIDO IN ('서울')). dimension_catalog 로 값이
+    # 이미 코드로 해석돼 넘어오고, 회원 기본정보 단독 컬럼이라 조인 없이 술어로 AND 결합한다.
+    # 지역 컬럼(SIDO/SIGUNGU)은 같은 '거주 지역' 도메인이라 별도 수집 후 나열(OR)/수식(AND)을 판별한다.
+    # 보조 속성 테이블 필터(join_column 지정, 예: ODS_MALL_MMS_MEMBER_ZTS.JOB_CD)는 회원키 서브쿼리
+    # (B.<join> IN (SELECT <join> FROM <표> WHERE <컬럼> IN ...))로 결합한다 — 값 인덱스가 채워지면
+    # 코드 수정 없이 자동으로 이 경로를 탄다. (dimension_id 별 필터는 각각 술어가 되어 자동 조합.)
+    member_region_codes: dict[str, list[str]] = {}
+    for dimension_filter in query_plan.get("dimension_filters", []):
+        table_name = dimension_filter.get("table")
+        join_column = dimension_filter.get("join_column")
+        if table_name != "CRM_MB_BASEINFO" and not join_column:
+            continue
+        column_short = (dimension_filter.get("column") or "").split(".")[-1]
+        codes = [code for code in dimension_filter.get("codes", []) if isinstance(code, str) and code]
+        if not column_short or not codes:
+            continue
+        if table_name == "CRM_MB_BASEINFO" and column_short in ("SIDO", "SIGUNGU"):
+            member_region_codes.setdefault(column_short, [])
+            member_region_codes[column_short].extend(code for code in codes if code not in member_region_codes[column_short])
+        else:
+            in_list = ", ".join(_sql_quote(code) for code in codes)
+            if table_name == "CRM_MB_BASEINFO":
+                if len(codes) == 1 and (dimension_filter.get("operator") or "IN").upper() == "=":
+                    other_predicates.append("B." + column_short + " = " + _sql_quote(codes[0]))
+                else:
+                    other_predicates.append("B." + column_short + " IN (" + in_list + ")")
+            else:
+                other_predicates.append(
+                    f"B.{join_column} IN (SELECT S.{join_column} FROM {table_name} S WHERE S.{column_short} IN ({in_list}))"
+                )
+        labels.extend(dimension_filter.get("names") or codes)
+        has_signal = True
+    other_predicates.extend(_member_region_predicates(member_region_codes))
 
     # CRM_MB_BASEINFO 단독으로 표현할 수 없는 조건(→ unsupported 로 모아 fallback 유도)
     for field in ("interests", "preferred_channels", "behaviors", "purchase_object", "price_sensitivity"):
@@ -4502,13 +5682,26 @@ def build_member_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, 
     기존 템플릿 경로로 넘긴다.
     """
     compiled = compile_member_target_conditions(query_plan)
-    if not compiled["has_signal"]:
+    density = query_plan.get("region_density_target")
+    # 밀집/지표 지역 랭킹은 코호트 조건이 없어도 성립한다("매출이 높은 지역" = 전체 회원 기준 랭킹).
+    if not compiled["has_signal"] and not isinstance(density, dict):
         return None
 
-    where_clauses = list(compiled["predicates"])
+    # "X가 많이 거주하는 동네" — 코호트(X) 조건으로 지역을 랭킹하고 그 지역 거주 회원을 타겟한다.
+    if isinstance(density, dict):
+        # 코호트 조건이 있었는데 전부 미지원이면(예: 직장인) 전체 인구 랭킹으로 조용히 대체하지
+        # 않는다 — 의미가 달라지므로 기존 미지원 안내 흐름으로 거절한다.
+        if not compiled["has_signal"] and compiled["unsupported"] and not density.get("metric_id"):
+            return None
+        return _build_dense_region_targets_candidate(query_plan, compiled, density)
+
     # 회원상태(dormant 등)를 직접 지정한 타겟이 아니면 정상 회원으로 한정한다(탈퇴/휴면 제외).
-    if not compiled["forces_state"]:
-        where_clauses.append("B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'")
+    # 이 술어는 사용자가 말하지 않았는데 주입되는 기본 게이트라, 카디널리티 진단에서 과잉 조건
+    # 후보로 따로 표시하기 위해 참조를 보관한다.
+    state_predicate = None if compiled["forces_state"] else _member_active_state_predicate()
+    where_clauses = list(compiled["predicates"])
+    if state_predicate is not None:
+        where_clauses.append(state_predicate)
     where_clauses = _unique_strings(where_clauses)
 
     select_columns = ["DISTINCT B.MEMBER_NO AS CUST_ID", "B.EMART_GRADE_CD AS member_grade"]
@@ -4531,19 +5724,107 @@ def build_member_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, 
     # 실DB 미지원이라 SQL 에서 뺀 조건(부분 추출). 커버리지 검증에서 제외하고 응답에 고지한다.
     candidate["dropped_conditions"] = compiled["unsupported"]
     candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in compiled["unsupported"]]
+    # 술어별 카디널리티 진단용 메타. 실행 결과가 0명일 때, from_clause + 각 술어를 독립 COUNT 로
+    # 돌려 어느 AND 술어가 오디언스를 죽였는지 귀속한다(과잉 조건 탐지). injected_default 는
+    # 사용자가 명시하지 않았지만 주입된 기본 게이트(정상회원 한정)를 가리킨다.
+    candidate["cardinality_probe"] = {
+        "from_clause": "CRM_MB_BASEINFO B",
+        "predicates": [
+            {"sql": clause, "injected_default": clause == state_predicate}
+            for clause in where_clauses
+        ],
+    }
+    return candidate
+
+
+def _build_dense_region_targets_candidate(
+    query_plan: dict[str, Any], compiled: dict[str, Any], density: dict[str, Any]
+) -> dict[str, Any]:
+    """밀집 지역 타겟 SQL: 코호트(X) 조건으로 지역별 회원 수를 집계해 상위 N개 지역을 뽑고(내부),
+    그 지역에 거주하는 정상 회원 전체를 타겟한다(외부). "X가 많이 거주하는 동네에 판촉" 은 지역
+    단위 캠페인이므로 외부는 코호트로 다시 좁히지 않는다(지역 선정 기준 ≠ 발송 대상 조건)."""
+    column = density.get("column", "SIGUNGU")
+    top_n = int(density.get("top_n", 5))
+
+    # 랭킹 기준: 기본은 거주 회원 수(COUNT). metric_id 가 있으면 지표 레지스트리(member_metrics.json)
+    # 의 집계식(예: SUM(TOTAL_BUY_AMT))으로 랭킹한다 — 지표 테이블은 회원키로 조인, 월 스냅샷
+    # 테이블의 중복 집계는 레지스트리의 grain_filter(최신 월 한정)로 막는다.
+    inner_from = ["    FROM CRM_MB_BASEINFO B"]
+    order_by = "COUNT(*)"
+    metric_where: list[str] = []
+    metric_id = density.get("metric_id")
+    if metric_id:
+        registry = _load_member_metrics(str(DEFAULT_MEMBER_METRICS_PATH)) or {}
+        metric = next((m for m in registry.get("metrics", []) if m.get("metric_id") == metric_id), None)
+        if metric:
+            value_table = registry.get("value_table", "CRM_MB_MONTHCRMINFO")
+            join_column = registry.get("join_column", "MEMBER_NO")
+            inner_from.append(f"         INNER JOIN {value_table} C ON B.{join_column} = C.{join_column}")
+            order_by = f"{metric.get('agg', 'SUM')}(C.{metric['column']})"
+            grain_filter = registry.get("grain_filter")
+            if grain_filter:
+                metric_where.append(grain_filter)
+
+    inner_where = list(compiled["predicates"])
+    if not compiled["forces_state"]:
+        inner_where.append(_member_active_state_predicate())
+    inner_where.extend(metric_where)
+    inner_where.extend([f"B.{column} IS NOT NULL", f"B.{column} <> ''"])
+    inner_where = _unique_strings(inner_where)
+    inner_sql = "\n".join(
+        [
+            f"    SELECT TOP {top_n} B.{column}",
+            *inner_from,
+            "    WHERE " + "\n      AND ".join(inner_where),
+            f"    GROUP BY B.{column}",
+            f"    ORDER BY {order_by} DESC",
+        ]
+    )
+
+    select_columns = [
+        "DISTINCT M.MEMBER_NO AS CUST_ID",
+        "M.EMART_GRADE_CD AS member_grade",
+        f"M.{column} AS target_region",
+    ]
+    segment_parts = [metric_id] if metric_id else []
+    segment_parts.extend(compiled["labels"])
+    segment = "dense_region" + (":" + ",".join(segment_parts) if segment_parts else "")
+    select_columns.append(_sql_quote(segment) + " AS segment_label")
+    objective = query_plan.get("campaign_constraints", {}).get("objective")
+    if objective:
+        select_columns.append(_sql_quote(objective) + " AS objective")
+
+    sql = "\n".join(
+        [
+            "SELECT " + ", ".join(select_columns),
+            "FROM CRM_MB_BASEINFO M",
+            f"WHERE M.{column} IN (",
+            inner_sql,
+            ")",
+            "  AND " + _member_active_state_predicate("M"),
+        ]
+    )
+    candidate = _sql_candidate(
+        "sql_template:dense_region_targets",
+        "거주 밀집 지역(상위 N) 타겟 추출 SQL 템플릿(CRMDW)",
+        1.0,
+        sql,
+        _template_tables(sql),
+        "sql_template",
+    )
+    candidate["dropped_conditions"] = compiled["unsupported"]
+    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in compiled["unsupported"]]
     return candidate
 
 
 # 상품 구매 이력 매칭 대상 컬럼(CRM_CM_PRODUCT). 카테고리 계층~상품명~브랜드명까지 넓게 LIKE 매칭해
 # "기저귀"(카테고리), "하기스"(브랜드), 특정 상품명 등 어떤 표현으로 말해도 재현율을 확보한다.
-_PURCHASE_PRODUCT_MATCH_COLUMNS = (
-    "CATEGORY",
-    "CATEGORYL_NAME",
-    "CATEGORYM_NAME",
-    "CATEGORYS_NAME",
-    "BRAND_NAME",
-    "PRODUCT_NAME",
-)
+# 컬럼 목록은 member_target_filters.json 의 purchase_product_match_columns 가 소유한다.
+_PURCHASE_PRODUCT_MATCH_COLUMNS = tuple(
+    column
+    for column in _MEMBER_TARGET_FILTERS.get("purchase_product_match_columns", [])
+    if isinstance(column, str) and column
+) or tuple(_DEFAULT_MEMBER_TARGET_FILTERS["purchase_product_match_columns"])
 
 
 def _sql_nlike_contains(column: str, term: str) -> str:
@@ -4571,7 +5852,7 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
     where_clauses = [product_match, *compiled["predicates"]]
     # 회원상태를 직접 지정한 타겟(휴면 등)이 아니면 정상 회원으로 한정한다(탈퇴/휴면 제외).
     if not compiled["forces_state"]:
-        where_clauses.append("B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'")
+        where_clauses.append(_member_active_state_predicate())
     where_clauses = _unique_strings(where_clauses)
 
     select_columns = ["DISTINCT B.MEMBER_NO AS CUST_ID", "B.EMART_GRADE_CD AS member_grade"]
@@ -4596,6 +5877,141 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
     # purchase_object 는 이 템플릿(상품 LIKE)이 실제로 커버하므로 dropped(미고지)에서 제외한다.
     # 회원 속성 외 다른 미지원 조건(관심사 등)이 있으면 그것만 부분추출 고지 대상으로 남긴다.
     dropped = [path for path in compiled["unsupported"] if path != "target_user.purchase_object"]
+    candidate["dropped_conditions"] = dropped
+    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]
+    return candidate
+
+
+def _order_count_targets_config() -> dict[str, Any]:
+    config = _MEMBER_TARGET_FILTERS.get("order_count_targets")
+    if not isinstance(config, dict):
+        config = _DEFAULT_MEMBER_TARGET_FILTERS["order_count_targets"]
+    behaviors = config.get("behaviors")
+    return config if isinstance(behaviors, dict) else _DEFAULT_MEMBER_TARGET_FILTERS["order_count_targets"]
+
+
+def build_order_count_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """실주문 헤더(CRM_SL_ORDERHEADERMALL)를 회원별로 집계해 '주문 횟수' 행동 세그먼트를 추출한다.
+
+    첫 구매(주문 1건)/재구매(2건 이상)는 회원별 주문 수 서브쿼리(INNER JOIN)로, 무구매는 주문이
+    없는 정상 회원(NOT EXISTS anti-join)으로 뽑는다. 이 세 세그먼트는 CRM_MB_BASEINFO 단독 컬럼으로는
+    표현할 수 없어(주문 이력 집계 필요) 기존 회원 빌더가 처리하지 못하던 조건이다. 성별/연령/등급/지역
+    등 회원 속성은 compile_member_target_conditions 로 그대로 AND 결합한다("첫 구매 30대 여성" 등 조합).
+    지원 행동/집계 기준은 member_target_filters.json 의 order_count_targets 가 소유한다.
+    """
+    target_user = query_plan.get("target_user", {})
+    behaviors = target_user.get("behaviors", [])
+    purchase_inactivity = target_user.get("purchase_inactivity")
+    config = _order_count_targets_config()
+    behavior_rules = config["behaviors"]
+    table = config.get("table", "CRM_SL_ORDERHEADERMALL")
+    join_column = config.get("join_column", "MEMBER_NO")
+    order_id_column = config.get("order_id_column", "ORDER_ID")
+    order_date_column = config.get("order_date_column", "ORDER_DATE")
+
+    # 구매 미발생 기간('최근 N일 구매 안 함')이 우선한다 — no_purchase(평생 무주문)와 달리 기간 창
+    # anti-join 으로 뽑는다(과거 구매 여부 무관, 최근 N일 내 주문 없음).
+    if isinstance(purchase_inactivity, dict) and isinstance(purchase_inactivity.get("min_days"), int):
+        min_days = purchase_inactivity["min_days"]
+        compiled = compile_member_target_conditions(query_plan)
+        where_clauses = list(compiled["predicates"])
+        if not compiled["forces_state"]:
+            where_clauses.append(_member_active_state_predicate())
+        cutoff = f"CONVERT(CHAR(8), DATEADD(DAY, -{min_days}, GETDATE()), 112)"
+        where_clauses.append(
+            f"NOT EXISTS (SELECT 1 FROM {table} O WHERE O.{join_column} = B.{join_column} "
+            f"AND O.{order_date_column} >= {cutoff})"
+        )
+        segment = f"purchase_inactive_{min_days}d"
+        select_columns = [
+            "DISTINCT B.MEMBER_NO AS CUST_ID",
+            "B.EMART_GRADE_CD AS member_grade",
+            _sql_quote(segment) + " AS target_segment",
+        ]
+        if compiled["labels"]:
+            select_columns.append(_sql_quote(",".join(compiled["labels"])) + " AS segment_label")
+        objective = query_plan.get("campaign_constraints", {}).get("objective")
+        if objective:
+            select_columns.append(_sql_quote(objective) + " AS objective")
+        sql = "\n".join(
+            [
+                "SELECT " + ", ".join(select_columns),
+                "FROM CRM_MB_BASEINFO B",
+                "WHERE " + "\n  AND ".join(_unique_strings(where_clauses)),
+            ]
+        )
+        candidate = _sql_candidate(
+            "sql_template:order_count_targets", "구매 미발생 기간(최근 N일 미구매) 타겟 추출 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template"
+        )
+        candidate["dropped_conditions"] = compiled["unsupported"]
+        candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in compiled["unsupported"]]
+        return candidate
+
+    # 프롬프트에 잡힌 행동 중 지원되는 주문 집계 행동을 고른다(정의 순서 우선; 보통 1개).
+    selected = next((behavior for behavior in behavior_rules if behavior in behaviors), None)
+    if selected is None:
+        return None
+
+    rule = behavior_rules[selected]
+    compiled = compile_member_target_conditions(query_plan)
+    where_clauses = list(compiled["predicates"])
+    if not compiled["forces_state"]:
+        where_clauses.append(_member_active_state_predicate())
+
+    if rule.get("anti_join"):
+        # 무구매: 주문 이력이 전혀 없는 회원(anti-join).
+        where_clauses.append(
+            f"NOT EXISTS (SELECT 1 FROM {table} O WHERE O.{join_column} = B.{join_column})"
+        )
+        from_clause = ["FROM CRM_MB_BASEINFO B"]
+    else:
+        # 첫 구매/재구매: 회원별 주문 수를 집계한 서브쿼리와 조인(중복 주문행 방지 위해 DISTINCT ORDER_ID).
+        operator = rule.get("operator", "=")
+        count = int(rule.get("count", 1))
+        order_subquery = "\n".join(
+            [
+                "(",
+                f"    SELECT {join_column}",
+                f"    FROM {table}",
+                f"    WHERE {join_column} IS NOT NULL",
+                f"    GROUP BY {join_column}",
+                f"    HAVING COUNT(DISTINCT {order_id_column}) {operator} {count}",
+                ") O",
+            ]
+        )
+        from_clause = ["FROM CRM_MB_BASEINFO B", f"     INNER JOIN {order_subquery} ON B.{join_column} = O.{join_column}"]
+
+    where_clauses = _unique_strings(where_clauses)
+    select_columns = [
+        "DISTINCT B.MEMBER_NO AS CUST_ID",
+        "B.EMART_GRADE_CD AS member_grade",
+        # 행동 세그먼트 라벨(조건 커버리지: behaviors/target_segment 충족 겸용).
+        _sql_quote(selected) + " AS target_segment",
+    ]
+    if compiled["labels"]:
+        select_columns.append(_sql_quote(",".join(compiled["labels"])) + " AS segment_label")
+    objective = query_plan.get("campaign_constraints", {}).get("objective")
+    if objective:
+        select_columns.append(_sql_quote(objective) + " AS objective")
+
+    sql = "\n".join(
+        [
+            "SELECT " + ", ".join(select_columns),
+            *from_clause,
+            "WHERE " + "\n  AND ".join(where_clauses),
+        ]
+    )
+    candidate = _sql_candidate(
+        "sql_template:order_count_targets", "주문 횟수 행동(첫 구매/재구매/무구매) 타겟 추출 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template"
+    )
+    # 선택된 행동은 이 템플릿이 커버하므로 dropped 에서 뺀다. 단 지원 목록 밖의 다른 behavior 가 섞여
+    # 있으면(예: office_worker) target_user.behaviors 드롭을 남겨 부분추출로 고지한다(조용한 누락 방지).
+    remaining_behaviors = [behavior for behavior in behaviors if behavior not in behavior_rules]
+    dropped = [
+        path
+        for path in compiled["unsupported"]
+        if not (path == "target_user.behaviors" and not remaining_behaviors)
+    ]
     candidate["dropped_conditions"] = dropped
     candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]
     return candidate
@@ -4882,6 +6298,48 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
                         all_terms=[column_short],
                     )
                 )
+
+    # 밀집 지역 타겟(region_density_target)은 상위 N 집계 구조(TOP n / GROUP BY 지역컬럼)가 SQL 에
+    # 실제로 있어야 커버된 것으로 본다 — 생성부(_build_dense_region_targets_candidate)-검증부 일치.
+    density = query_plan.get("region_density_target")
+    if isinstance(density, dict) and not _is_cart_dimension_targeting(query_plan):
+        density_column = density.get("column", "SIGUNGU")
+        density_terms = [density_column, "group by"]
+        # 지표 랭킹(예: 매출)이면 지표 컬럼(TOTAL_BUY_AMT)이 SQL 에 실제로 있어야 커버된 것으로 본다.
+        density_metric_id = density.get("metric_id")
+        if density_metric_id:
+            registry = _load_member_metrics(str(DEFAULT_MEMBER_METRICS_PATH)) or {}
+            metric = next((m for m in registry.get("metrics", []) if m.get("metric_id") == density_metric_id), None)
+            if metric:
+                density_terms.append(metric["column"])
+        conditions.append(
+            _condition(
+                "region_density_target",
+                density_column,
+                [f"top {density.get('top_n', 5)}"],
+                all_terms=density_terms,
+            )
+        )
+
+    # 회원 테이블 디멘션 필터(예: 시도/SIDO)는 회원/구매 타겟 SQL 에 그대로 컴파일되므로
+    # (compile_member_target_conditions) 커버리지도 요구한다 — 생성부-검증부 일치.
+    # 보조 속성 테이블 필터(join_column, 예: JOB_CD)도 동일하게 서브쿼리로 컴파일되므로 요구한다.
+    # cart 디멘션 타겟팅 모드는 별도 cart SQL 이라 회원 컬럼 조건을 만들지 않으므로 요구하지 않는다.
+    if not _is_cart_dimension_targeting(query_plan):
+        for dimension_filter in query_plan.get("dimension_filters", []):
+            if dimension_filter.get("table") != "CRM_MB_BASEINFO" and not dimension_filter.get("join_column"):
+                continue
+            column_short = (dimension_filter.get("column") or "").split(".")[-1]
+            for code in dimension_filter.get("codes", []):
+                if column_short and isinstance(code, str) and code:
+                    conditions.append(
+                        _condition(
+                            "dimension_filters." + str(dimension_filter.get("dimension_id", "dimension")),
+                            code,
+                            [_sql_quote(code)],
+                            all_terms=[column_short],
+                        )
+                    )
 
     offer_type = campaign_constraints.get("offer_type")
     if offer_type:
@@ -5217,6 +6675,8 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
                 "intent": query_plan.get("intent"),
                 "original_prompt": prompt_normalization.get("original", result.get("query")),
                 "normalized_prompt": prompt_normalization.get("normalized", result.get("query")),
+                # 실제 파싱(Query Plan/SQL)에 사용한 문장. 타겟팅 스코프면 오디언스(타겟팅) 절만 쓴다.
+                "planning_prompt": query_plan.get("planning_query", prompt_normalization.get("normalized", result.get("query"))),
                 # 정규화 프롬프트를 타겟팅(오디언스)/채널(발송·메시지) 절로 분리한 결과.
                 "prompt_scopes": prompt_scopes,
                 "applied_scope": result.get("retrieval_scope"),
@@ -5415,6 +6875,13 @@ def _add_dimension_value_edges(graph: nx.Graph, node: dict[str, Any]) -> None:
     dimension_node_id = f"dimension:{node.get('dimension_id')}"
     if dimension_node_id in graph:
         graph.add_edge(node["id"], dimension_node_id, relation="value_of_dimension")
+    # 회원 값 인덱스 노드는 저장 컬럼/테이블로 연결해 값→컬럼→테이블 그래프 확장이 이어지게 한다.
+    column_name = node.get("target_column")
+    if column_name and f"schema_column:{column_name}" in graph:
+        graph.add_edge(node["id"], f"schema_column:{column_name}", relation="value_of_column")
+    table_name = node.get("target_table")
+    if table_name and f"schema_table:{table_name}" in graph:
+        graph.add_edge(node["id"], f"schema_table:{table_name}", relation="value_in_table")
 
 
 def _add_sql_example_edges(graph: nx.Graph, node: dict[str, Any]) -> None:

@@ -31,6 +31,9 @@ DBMS_CONNECTION_MAP = {
 
 # 타겟팅 SQL 로 걸 수 있는 '큐레이션된' 컬럼 매핑. key = PRMP_KWD(@@ 포함).
 # query_prompt.field 는 쿼리별 별칭이라 자동으로 테이블을 특정할 수 없어 수동 확정분만 넣는다.
+# 회원 테이블(CRM_MB_BASEINFO) 단독 컬럼(시도 등)은 여기 넣지 않는다 — build_member_value_index.py 가
+# 실DB에서 값 인덱스를 자동 생성해 큐레이션 없이 타겟팅한다. 이 오버라이드는 조인이 필요한
+# 크로스테이블 매핑(예: 상품브랜드)만 수동 확정한다.
 TARGETABLE_OVERRIDES = {
     "@@거래브랜드@@": {"target_table": "CRM_CM_PRODUCT", "target_column": "CRM_CM_PRODUCT.BRAND_ID"},
 }

@@ -83,9 +83,15 @@
       "synonyms": [
         "첫구매",
         "첫 구매",
+        "첫 구매한",
+        "첫 구매를 한",
+        "첫구매한",
         "최초 구매",
+        "최초 구매한",
         "첫 결제",
+        "첫 결제한",
         "웰컴 구매",
+        "처음 구매한",
         "first purchase",
         "first_purchase"
       ]
@@ -241,8 +247,11 @@
       "ko_label": "반복 구매 고객",
       "synonyms": [
         "재구매",
+        "재구매한",
         "반복 구매",
+        "반복 구매한",
         "자주 사는 고객",
+        "여러 번 구매한",
         "정기 구매",
         "repeat buyer",
         "repurchase",
@@ -1217,7 +1226,9 @@
       "canonical": "SMS동의여부",
       "ko_label": "SMS동의여부",
       "synonyms": [
-        "SMS동의여부"
+        "SMS동의여부",
+        "SMS 동의",
+        "문자 동의"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1227,7 +1238,10 @@
       "canonical": "SMS수신동의여부",
       "ko_label": "SMS수신동의여부",
       "synonyms": [
-        "SMS수신동의여부"
+        "SMS수신동의여부",
+        "문자 수신동의",
+        "SMS 수신동의",
+        "문자 수신 동의 여부"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1237,7 +1251,9 @@
       "canonical": "SMS수신여부",
       "ko_label": "SMS수신여부",
       "synonyms": [
-        "SMS수신여부"
+        "SMS수신여부",
+        "문자 수신 여부",
+        "SMS 수신"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1277,7 +1293,10 @@
       "canonical": "가입경로",
       "ko_label": "가입경로",
       "synonyms": [
-        "가입경로"
+        "가입경로",
+        "가입 루트",
+        "회원가입 경로",
+        "가입 방법"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1287,7 +1306,9 @@
       "canonical": "가입기간",
       "ko_label": "가입기간",
       "synonyms": [
-        "가입기간"
+        "가입기간",
+        "가입한 지",
+        "회원가입 기간"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1297,7 +1318,9 @@
       "canonical": "가입매장",
       "ko_label": "가입매장",
       "synonyms": [
-        "가입매장"
+        "가입매장",
+        "가입 점포",
+        "가입한 매장"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1327,7 +1350,9 @@
       "canonical": "가입연도",
       "ko_label": "가입연도",
       "synonyms": [
-        "가입연도"
+        "가입연도",
+        "가입 년도",
+        "가입한 해"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1337,7 +1362,10 @@
       "canonical": "가입유형",
       "ko_label": "가입유형",
       "synonyms": [
-        "가입유형"
+        "가입유형",
+        "가입 형태",
+        "회원가입 유형",
+        "가입 종류"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1347,7 +1375,10 @@
       "canonical": "가입일",
       "ko_label": "가입일",
       "synonyms": [
-        "가입일"
+        "가입일",
+        "가입 날짜",
+        "가입한 날",
+        "회원가입일"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1357,7 +1388,9 @@
       "canonical": "가입일자",
       "ko_label": "가입일자",
       "synonyms": [
-        "가입일자"
+        "가입일자",
+        "회원 가입일자",
+        "가입한 날짜"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1367,7 +1400,11 @@
       "canonical": "객단가",
       "ko_label": "객단가",
       "synonyms": [
-        "객단가"
+        "객단가",
+        "평균 구매액",
+        "평균 결제액",
+        "인당 구매액",
+        "평균 객단가"
       ],
       "source": "prmp_kwd",
       "value_type": "numeric"
@@ -1377,7 +1414,9 @@
       "canonical": "거래브랜드",
       "ko_label": "거래브랜드",
       "synonyms": [
-        "거래브랜드"
+        "거래브랜드",
+        "취급 브랜드",
+        "구매 브랜드"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1417,7 +1456,9 @@
       "canonical": "결혼여부",
       "ko_label": "결혼여부",
       "synonyms": [
-        "결혼여부"
+        "결혼여부",
+        "결혼 상태",
+        "결혼 유무"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1457,7 +1498,11 @@
       "canonical": "구매금액",
       "ko_label": "구매금액",
       "synonyms": [
-        "구매금액"
+        "구매금액",
+        "구매액",
+        "결제금액",
+        "주문금액",
+        "구입금액"
       ],
       "source": "prmp_kwd",
       "value_type": "numeric"
@@ -1467,7 +1512,9 @@
       "canonical": "구매기간",
       "ko_label": "구매기간",
       "synonyms": [
-        "구매기간"
+        "구매기간",
+        "구매한 기간",
+        "구입 기간"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1477,7 +1524,9 @@
       "canonical": "구매반응여부",
       "ko_label": "구매반응여부",
       "synonyms": [
-        "구매반응여부"
+        "구매반응여부",
+        "구매 반응",
+        "구매 응답 여부"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1487,7 +1536,8 @@
       "canonical": "구매선호채널",
       "ko_label": "구매선호채널",
       "synonyms": [
-        "구매선호채널"
+        "구매선호채널",
+        "선호 구매 채널"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1497,7 +1547,10 @@
       "canonical": "구매수량",
       "ko_label": "구매수량",
       "synonyms": [
-        "구매수량"
+        "구매수량",
+        "구매 개수",
+        "구입 수량",
+        "주문 수량"
       ],
       "source": "prmp_kwd",
       "value_type": "numeric"
@@ -1507,7 +1560,11 @@
       "canonical": "구매일자",
       "ko_label": "구매일자",
       "synonyms": [
-        "구매일자"
+        "구매일자",
+        "구매 날짜",
+        "구매한 날",
+        "결제일",
+        "구입일자"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1517,7 +1574,11 @@
       "canonical": "구매횟수",
       "ko_label": "구매횟수",
       "synonyms": [
-        "구매횟수"
+        "구매횟수",
+        "구매 건수",
+        "주문 횟수",
+        "구매 빈도",
+        "구입 횟수"
       ],
       "source": "prmp_kwd",
       "value_type": "numeric"
@@ -1537,7 +1598,10 @@
       "canonical": "나이대",
       "ko_label": "나이대",
       "synonyms": [
-        "나이대"
+        "나이대",
+        "나이 구간",
+        "연령 구간",
+        "연령층"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1567,7 +1631,10 @@
       "canonical": "대량구매고객여부",
       "ko_label": "대량구매고객여부",
       "synonyms": [
-        "대량구매고객여부"
+        "대량구매고객여부",
+        "대량구매 여부",
+        "대량 구매",
+        "대량 구입"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1577,7 +1644,10 @@
       "canonical": "디바이스유형",
       "ko_label": "디바이스유형",
       "synonyms": [
-        "디바이스유형"
+        "디바이스유형",
+        "기기 유형",
+        "단말 유형",
+        "디바이스 종류"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1597,7 +1667,8 @@
       "canonical": "로그인기간",
       "ko_label": "로그인기간",
       "synonyms": [
-        "로그인기간"
+        "로그인기간",
+        "접속 기간"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1607,7 +1678,8 @@
       "canonical": "로그인일수",
       "ko_label": "로그인일수",
       "synonyms": [
-        "로그인일수"
+        "로그인일수",
+        "접속 일수"
       ],
       "source": "prmp_kwd",
       "value_type": "numeric"
@@ -1617,7 +1689,10 @@
       "canonical": "로그인일자",
       "ko_label": "로그인일자",
       "synonyms": [
-        "로그인일자"
+        "로그인일자",
+        "로그인 날짜",
+        "접속일",
+        "로그인 일"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1627,7 +1702,9 @@
       "canonical": "로그인횟수",
       "ko_label": "로그인횟수",
       "synonyms": [
-        "로그인횟수"
+        "로그인횟수",
+        "접속 횟수",
+        "로그인 수"
       ],
       "source": "prmp_kwd",
       "value_type": "numeric"
@@ -1677,7 +1754,8 @@
       "canonical": "마지막로그인일자",
       "ko_label": "마지막로그인일자",
       "synonyms": [
-        "마지막로그인일자"
+        "마지막로그인일자",
+        "마지막 로그인"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1697,7 +1775,10 @@
       "canonical": "모바일OS유형",
       "ko_label": "모바일OS유형",
       "synonyms": [
-        "모바일OS유형"
+        "모바일OS유형",
+        "모바일 OS",
+        "스마트폰 OS",
+        "OS 유형"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1737,7 +1818,9 @@
       "canonical": "브랜드",
       "ko_label": "브랜드",
       "synonyms": [
-        "브랜드"
+        "브랜드",
+        "브랜드명",
+        "상표"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1767,7 +1850,8 @@
       "canonical": "상태등급",
       "ko_label": "상태등급",
       "synonyms": [
-        "상태등급"
+        "상태등급",
+        "활동 등급"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1797,7 +1881,9 @@
       "canonical": "상품분류_상품대분류",
       "ko_label": "상품분류_상품대분류",
       "synonyms": [
-        "상품분류_상품대분류"
+        "상품분류_상품대분류",
+        "상품 대분류",
+        "대분류"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1807,7 +1893,9 @@
       "canonical": "상품분류_상품소분류",
       "ko_label": "상품분류_상품소분류",
       "synonyms": [
-        "상품분류_상품소분류"
+        "상품분류_상품소분류",
+        "상품 소분류",
+        "소분류"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1817,7 +1905,9 @@
       "canonical": "상품분류_상품중분류",
       "ko_label": "상품분류_상품중분류",
       "synonyms": [
-        "상품분류_상품중분류"
+        "상품분류_상품중분류",
+        "상품 중분류",
+        "중분류"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1827,7 +1917,9 @@
       "canonical": "상품분류_카테고리",
       "ko_label": "상품분류_카테고리",
       "synonyms": [
-        "상품분류_카테고리"
+        "상품분류_카테고리",
+        "상품 카테고리",
+        "카테고리 분류"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1847,7 +1939,13 @@
       "canonical": "생년월일",
       "ko_label": "생년월일",
       "synonyms": [
-        "생년월일"
+        "생년월일",
+        "출생일",
+        "태어난 날",
+        "생년",
+        "출생년월일",
+        "date of birth",
+        "dob"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1857,7 +1955,9 @@
       "canonical": "생일4자리_월일",
       "ko_label": "생일4자리_월일",
       "synonyms": [
-        "생일4자리_월일"
+        "생일4자리_월일",
+        "생일 월일",
+        "생월일"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1867,7 +1967,9 @@
       "canonical": "선호상품군",
       "ko_label": "선호상품군",
       "synonyms": [
-        "선호상품군"
+        "선호상품군",
+        "선호 상품",
+        "관심 상품군"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1877,7 +1979,8 @@
       "canonical": "설문참여여부",
       "ko_label": "설문참여여부",
       "synonyms": [
-        "설문참여여부"
+        "설문참여여부",
+        "설문 응답 여부"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1887,7 +1990,8 @@
       "canonical": "설문참여채널",
       "ko_label": "설문참여채널",
       "synonyms": [
-        "설문참여채널"
+        "설문참여채널",
+        "설문 채널"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1897,7 +2001,11 @@
       "canonical": "성별",
       "ko_label": "성별",
       "synonyms": [
-        "성별"
+        "성별",
+        "남녀",
+        "남녀구분",
+        "성별구분",
+        "sex"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1907,7 +2015,9 @@
       "canonical": "성별명",
       "ko_label": "성별명",
       "synonyms": [
-        "성별명"
+        "성별명",
+        "성별 이름",
+        "성별명칭"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1927,7 +2037,8 @@
       "canonical": "수신동의여부",
       "ko_label": "수신동의여부",
       "synonyms": [
-        "수신동의여부"
+        "수신동의여부",
+        "수신 허용 여부"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1937,7 +2048,11 @@
       "canonical": "시도",
       "ko_label": "시도",
       "synonyms": [
-        "시도"
+        "시도",
+        "광역시도",
+        "시·도",
+        "거주시도",
+        "시도지역"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1957,7 +2072,9 @@
       "canonical": "시도명",
       "ko_label": "시도명",
       "synonyms": [
-        "시도명"
+        "시도명",
+        "시도 이름",
+        "시도 명칭"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1977,7 +2094,9 @@
       "canonical": "앱버전",
       "ko_label": "앱버전",
       "synonyms": [
-        "앱버전"
+        "앱버전",
+        "어플 버전",
+        "애플리케이션 버전"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -1987,7 +2106,10 @@
       "canonical": "연령",
       "ko_label": "연령",
       "synonyms": [
-        "연령"
+        "연령",
+        "나이",
+        "만나이",
+        "age"
       ],
       "source": "prmp_kwd",
       "value_type": "numeric"
@@ -1997,7 +2119,10 @@
       "canonical": "연령대_5세단위",
       "ko_label": "연령대_5세단위",
       "synonyms": [
-        "연령대_5세단위"
+        "연령대_5세단위",
+        "5세단위 연령대",
+        "5세 구간",
+        "5세단위"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2007,7 +2132,9 @@
       "canonical": "연령대명",
       "ko_label": "연령대명",
       "synonyms": [
-        "연령대명"
+        "연령대명",
+        "연령대 이름",
+        "연령구간명"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2047,7 +2174,8 @@
       "canonical": "오퍼반응여부",
       "ko_label": "오퍼반응여부",
       "synonyms": [
-        "오퍼반응여부"
+        "오퍼반응여부",
+        "제안 반응 여부"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2097,7 +2225,9 @@
       "canonical": "외국인여부",
       "ko_label": "외국인여부",
       "synonyms": [
-        "외국인여부"
+        "외국인여부",
+        "내외국인 여부",
+        "외국 국적 여부"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2117,7 +2247,10 @@
       "canonical": "이메일수신동의여부",
       "ko_label": "이메일수신동의여부",
       "synonyms": [
-        "이메일수신동의여부"
+        "이메일수신동의여부",
+        "이메일 수신동의",
+        "메일 수신동의",
+        "이메일 동의 여부"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2147,7 +2280,10 @@
       "canonical": "임직원여부",
       "ko_label": "임직원여부",
       "synonyms": [
-        "임직원여부"
+        "임직원여부",
+        "직원 여부",
+        "사원 여부",
+        "임직원 유무"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2157,7 +2293,10 @@
       "canonical": "자녀여부",
       "ko_label": "자녀여부",
       "synonyms": [
-        "자녀여부"
+        "자녀여부",
+        "아이 여부",
+        "자녀 유무",
+        "자녀 보유 여부"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2167,7 +2306,9 @@
       "canonical": "잔여포인트",
       "ko_label": "잔여포인트",
       "synonyms": [
-        "잔여포인트"
+        "잔여포인트",
+        "남은 포인트",
+        "포인트 잔액"
       ],
       "source": "prmp_kwd",
       "value_type": "numeric"
@@ -2177,7 +2318,9 @@
       "canonical": "잔여포인트구간",
       "ko_label": "잔여포인트구간",
       "synonyms": [
-        "잔여포인트구간"
+        "잔여포인트구간",
+        "포인트 구간",
+        "포인트 잔액 구간"
       ],
       "source": "prmp_kwd",
       "value_type": "numeric"
@@ -2187,7 +2330,8 @@
       "canonical": "장바구니금액",
       "ko_label": "장바구니금액",
       "synonyms": [
-        "장바구니금액"
+        "장바구니금액",
+        "카트 금액"
       ],
       "source": "prmp_kwd",
       "value_type": "numeric"
@@ -2217,7 +2361,9 @@
       "canonical": "장바구니유형",
       "ko_label": "장바구니유형",
       "synonyms": [
-        "장바구니유형"
+        "장바구니유형",
+        "카트 유형",
+        "장바구니 종류"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2227,7 +2373,8 @@
       "canonical": "전월가치등급",
       "ko_label": "전월가치등급",
       "synonyms": [
-        "전월가치등급"
+        "전월가치등급",
+        "지난달 가치등급"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2237,7 +2384,10 @@
       "canonical": "전월회원등급",
       "ko_label": "전월회원등급",
       "synonyms": [
-        "전월회원등급"
+        "전월회원등급",
+        "전월 등급",
+        "지난달 회원등급",
+        "지난달 등급"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2247,7 +2397,8 @@
       "canonical": "접촉경과일수",
       "ko_label": "접촉경과일수",
       "synonyms": [
-        "접촉경과일수"
+        "접촉경과일수",
+        "접촉 후 경과일"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2257,7 +2408,9 @@
       "canonical": "접촉성공여부",
       "ko_label": "접촉성공여부",
       "synonyms": [
-        "접촉성공여부"
+        "접촉성공여부",
+        "접촉 성공",
+        "컨택 성공 여부"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2297,7 +2450,9 @@
       "canonical": "주거래지점",
       "ko_label": "주거래지점",
       "synonyms": [
-        "주거래지점"
+        "주거래지점",
+        "주거래점",
+        "메인 지점"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2307,7 +2462,9 @@
       "canonical": "주구매브랜드",
       "ko_label": "주구매브랜드",
       "synonyms": [
-        "주구매브랜드"
+        "주구매브랜드",
+        "주로 구매 브랜드",
+        "주요 브랜드"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2317,7 +2474,8 @@
       "canonical": "주구매채널",
       "ko_label": "주구매채널",
       "synonyms": [
-        "주구매채널"
+        "주구매채널",
+        "주로 구매 채널"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2327,7 +2485,13 @@
       "canonical": "지역",
       "ko_label": "지역",
       "synonyms": [
-        "지역"
+        "지역",
+        "거주지역",
+        "사는 지역",
+        "거주지",
+        "사는 곳",
+        "region",
+        "area"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2337,7 +2501,11 @@
       "canonical": "최종구매일자",
       "ko_label": "최종구매일자",
       "synonyms": [
-        "최종구매일자"
+        "최종구매일자",
+        "최종 구매일",
+        "마지막 구매일",
+        "최근 구매일",
+        "최종 구매 날짜"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2347,7 +2515,10 @@
       "canonical": "최종로그인일자",
       "ko_label": "최종로그인일자",
       "synonyms": [
-        "최종로그인일자"
+        "최종로그인일자",
+        "최종 로그인일",
+        "마지막 로그인일",
+        "최종 로그인 날짜"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2357,7 +2528,8 @@
       "canonical": "최종로그인채널",
       "ko_label": "최종로그인채널",
       "synonyms": [
-        "최종로그인채널"
+        "최종로그인채널",
+        "마지막 로그인 채널"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2367,7 +2539,9 @@
       "canonical": "최초로그인채널",
       "ko_label": "최초로그인채널",
       "synonyms": [
-        "최초로그인채널"
+        "최초로그인채널",
+        "첫 로그인 채널",
+        "처음 로그인 채널"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2417,7 +2591,10 @@
       "canonical": "카드이용금액",
       "ko_label": "카드이용금액",
       "synonyms": [
-        "카드이용금액"
+        "카드이용금액",
+        "카드 사용액",
+        "카드 결제액",
+        "카드 이용액"
       ],
       "source": "prmp_kwd",
       "value_type": "numeric"
@@ -2487,7 +2664,10 @@
       "canonical": "통화코드",
       "ko_label": "통화코드",
       "synonyms": [
-        "통화코드"
+        "통화코드",
+        "화폐 코드",
+        "통화 코드값",
+        "currency"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2537,7 +2717,9 @@
       "canonical": "행사민감도",
       "ko_label": "행사민감도",
       "synonyms": [
-        "행사민감도"
+        "행사민감도",
+        "이벤트 민감도",
+        "프로모션 민감도"
       ],
       "source": "prmp_kwd",
       "value_type": "numeric"
@@ -2567,7 +2749,9 @@
       "canonical": "혼인여부",
       "ko_label": "혼인여부",
       "synonyms": [
-        "혼인여부"
+        "혼인여부",
+        "혼인 상태",
+        "혼인 유무"
       ],
       "source": "prmp_kwd",
       "value_type": "text"
@@ -2577,7 +2761,10 @@
       "canonical": "회원상태",
       "ko_label": "회원상태",
       "synonyms": [
-        "회원상태"
+        "회원상태",
+        "계정 상태",
+        "회원 상태 코드",
+        "멤버 상태"
       ],
       "source": "prmp_kwd",
       "value_type": "text"

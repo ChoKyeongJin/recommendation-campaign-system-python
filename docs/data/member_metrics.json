@@ -1,0 +1,44 @@
+{
+  "version": "1.0",
+  "description": "회원 단위 수치 지표 레지스트리(실DB CRM_MB_MONTHCRMINFO 기준). '<지표>가 높은 지역' 같은 그룹 랭킹 타겟팅에서 랭킹 기준으로 쓴다. 새 지표는 여기 한 항목 추가로 끝난다 — 템플릿 코드 추가 없음. grain_filter 는 월 스냅샷 테이블의 중복 집계를 막는 필수 절(최신 월만 사용).",
+  "value_table": "CRM_MB_MONTHCRMINFO",
+  "join_column": "MEMBER_NO",
+  "grain_filter": "C.YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)",
+  "metrics": [
+    {
+      "metric_id": "total_buy_amt",
+      "ko_label": "매출",
+      "agg": "SUM",
+      "column": "TOTAL_BUY_AMT",
+      "synonyms": ["매출", "매출액", "구매금액", "구매 금액", "누적 구매금액", "총 구매금액", "revenue"]
+    },
+    {
+      "metric_id": "total_buy_cnt",
+      "ko_label": "구매횟수",
+      "agg": "SUM",
+      "column": "TOTAL_BUY_CNT",
+      "synonyms": ["구매횟수", "구매 횟수", "구매건수", "구매 건수", "주문건수", "주문 건수"]
+    },
+    {
+      "metric_id": "mean_buy_amt",
+      "ko_label": "객단가",
+      "agg": "AVG",
+      "column": "MEAN_BUY_AMT",
+      "synonyms": ["객단가", "평균 구매금액", "평균구매금액", "평균 구매 금액", "평균 주문금액", "aov"]
+    },
+    {
+      "metric_id": "max_buy_amt",
+      "ko_label": "최대 구매금액",
+      "agg": "MAX",
+      "column": "MAX_BUY_AMT",
+      "synonyms": ["최대 구매금액", "최대 구매 금액", "최고 구매금액"]
+    },
+    {
+      "metric_id": "total_buy_qty",
+      "ko_label": "구매수량",
+      "agg": "SUM",
+      "column": "TOTAL_BUY_QTY",
+      "synonyms": ["구매수량", "구매 수량", "구매 개수"]
+    }
+  ]
+}

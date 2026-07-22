@@ -140,6 +140,9 @@ class TargetSqlRequest(BaseModel):
     result_row_limit: int = Field(default=_env_int("TARGET_SQL_RESULT_ROW_LIMIT", 100), ge=1)
     persist_targeting: bool = True
     audience_ttl_days: int = Field(default=_env_int("TARGET_SQL_AUDIENCE_TTL_DAYS", 90), ge=1)
+    # 프롬프트 재구성 다중파싱 변이 수(0=끔). LLM(query_parser auto/llm) + OPENAI_API_KEY 필요.
+    # 한 표현형이 조건을 놓쳐 후보가 안 생기던 케이스를 다른 표현형 파싱으로 살린다.
+    multi_query_variants: int = Field(default=_env_int("GRAPH_RAG_MULTI_QUERY_VARIANTS", 0), ge=0, le=5)
     include_debug: bool = False
 
 
@@ -368,6 +371,7 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
                 message_policy=Path(os.getenv("GRAPH_RAG_MESSAGE_POLICY", DEFAULT_MESSAGE_POLICY_PATH)),
                 prompt_dir=Path(os.getenv("GRAPH_RAG_PROMPT_DIR", DEFAULT_PROMPT_DIR)),
                 retrieval_scope=request.retrieval_scope,
+                multi_query_variants=request.multi_query_variants,
             )
         retrieve_elapsed_ms = _elapsed_ms(retrieve_started_at)
     except ValueError as exc:
@@ -412,6 +416,7 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
         query_parser=request.query_parser,
         request_options=_target_sql_request_options(request),
         query_plan=result.get("query_plan", {}),
+        cardinality_probe=api_response.get("cardinality_probe"),
     )
     database_elapsed_ms = _elapsed_ms(database_started_at)
     refresh_started_at = time.perf_counter()
@@ -515,10 +520,12 @@ def target_sql_trace(request: RetrieveTraceRequest) -> dict[str, Any]:
             query_parser=request.query_parser,
             request_options={},
             query_plan=result.get("query_plan", {}),
+            cardinality_probe=api_response.get("cardinality_probe"),
         )
         trace["execution"] = {
             "is_success": execution.get("is_success"),
             "targeting_result": execution.get("targeting_result", {}),
+            "cardinality_diagnostic": execution.get("cardinality_diagnostic"),
         }
     return trace
 
@@ -3430,6 +3437,7 @@ def _execute_external_target_sql(
     result_row_limit: int,
     *,
     query_plan: dict[str, Any] | None = None,
+    cardinality_probe: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """외부 실DB(CRMDW/CRMAN/quadmax_sdz)에서 타겟 SQL 을 실행해 카운트/샘플을 채운다.
 
@@ -3464,6 +3472,14 @@ def _execute_external_target_sql(
         "sample_rows": sample_rows,
     }
     segment_composition = _external_segment_composition(connection, sql, columns)
+    # 결과가 0명이면(과잉 조건 신호) 술어별 카디널리티 진단을 돌려 어느 AND 가 오디언스를 죽였는지 귀속한다.
+    # read-only COUNT 만 수행하고, 실패해도 본 응답에는 영향이 없다(진단은 부가 메타).
+    cardinality_diagnostic = None
+    if targeting_result["result_row_count"] == 0 and cardinality_probe and connection == "CRMDW":
+        try:
+            cardinality_diagnostic = _run_cardinality_diagnostic(connection, cardinality_probe)
+        except Exception:
+            cardinality_diagnostic = None
     return {
         "is_success": True,
         "mode": f"{connection}_read_only",
@@ -3477,6 +3493,67 @@ def _execute_external_target_sql(
         "segment_composition": segment_composition,
         "segment_presentation": _external_segment_presentation(segment_composition, query_plan or {}),
         "campaign_context_nodes": [],
+        "cardinality_diagnostic": cardinality_diagnostic,
+    }
+
+
+def _run_cardinality_diagnostic(connection: str, probe: dict[str, Any]) -> dict[str, Any] | None:
+    """결정론 타겟 SQL 이 0명일 때, 어느 AND 술어가 오디언스를 죽였는지 술어별 COUNT 로 귀속한다.
+
+    from_clause(회원 기준 테이블) + 각 술어를 독립 COUNT 로 실행한다. 단독으로도 0명인 술어는
+    확정 원인(값 오류/과잉 정의)이고, 개별은 모두 매칭되는데 결합이 0 이면 조건 간 상호배타(교차
+    효과)로 본다. 회원 전체 수(member_total)도 함께 재 결과 규모를 가늠한다.
+
+    read-only COUNT 만 수행하며 결과가 0명일 때(저빈도)만 호출된다. injected_default 술어(사용자가
+    말하지 않았는데 주입된 정상회원 게이트)가 원인이면 injected_default_is_culprit 로 표시한다.
+    """
+    from db_connections import run_read_query
+
+    from_clause = probe.get("from_clause")
+    predicates = probe.get("predicates") or []
+    if not from_clause or not predicates:
+        return None
+
+    def _count(where: str | None) -> int | None:
+        clause = f" WHERE {where}" if where else ""
+        count_sql = f"SELECT COUNT(*) AS cardinality FROM {from_clause} WITH(NOLOCK){clause}"
+        try:
+            rows = run_read_query(connection, count_sql)
+            if not rows:
+                return None
+            value = next(iter(rows[0].values()))
+            return int(value) if value is not None else None
+        except Exception:
+            return None
+
+    member_total = _count(None)
+    per_predicate: list[dict[str, Any]] = []
+    for predicate in predicates:
+        match_count = _count(predicate.get("sql"))
+        per_predicate.append(
+            {
+                "predicate": predicate.get("sql"),
+                "injected_default": bool(predicate.get("injected_default")),
+                "match_count": match_count,
+                "eliminates_all": match_count == 0,
+            }
+        )
+
+    culprits = [item for item in per_predicate if item["eliminates_all"]]
+    if culprits:
+        cause = "predicate_empty"  # 단독으로도 0명 — 값 오류 또는 과잉 정의된 조건
+    elif any(item["match_count"] is None for item in per_predicate):
+        cause = "probe_incomplete"  # 일부 COUNT 실패 — 결론 보류
+    else:
+        cause = "predicate_interaction"  # 개별은 매칭되나 결합이 0 — 조건 상호배타
+
+    return {
+        "trigger": "empty_result",
+        "member_total": member_total,
+        "cause": cause,
+        "per_predicate": per_predicate,
+        "culprit_predicates": [item["predicate"] for item in culprits],
+        "injected_default_is_culprit": any(item["injected_default"] for item in culprits),
     }
 
 
@@ -3640,6 +3717,7 @@ def execute_target_sql(
     query_parser: str | None = None,
     request_options: dict[str, Any] | None = None,
     query_plan: dict[str, Any] | None = None,
+    cardinality_probe: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not execute_sql:
         return _database_execution_skipped("disabled_by_request")
@@ -3649,7 +3727,7 @@ def execute_target_sql(
     # 외부 실DB(CRMDW/CRMAN/quadmax_sdz) 대상이면 해당 DB에서 실행한다(카운트/샘플만).
     if target_connection in _EXTERNAL_TARGET_DBS:
         return _execute_external_target_sql(
-            sql, target_connection, result_row_limit, query_plan=query_plan
+            sql, target_connection, result_row_limit, query_plan=query_plan, cardinality_probe=cardinality_probe
         )
 
     try:

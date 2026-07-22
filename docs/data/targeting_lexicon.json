@@ -1,0 +1,28 @@
+{
+  "version": "1.0",
+  "description": "타겟팅 파이프라인의 의도(intent)/목적(objective)/문맥 신호어 사전. 새 표현형은 코드 수정 없이 이 파일에 추가한다. 파일이 없거나 파손되면 graph_rag 내 코드 기본값으로 폴백한다. objective_rules 는 위에서부터 순서대로 평가한다.",
+  "audience_direction_markers": ["에게", "한테", "께", "대상으로", "타겟으로", "타깃으로"],
+  "channel_signal_words": [
+    "홍보", "광고", "알림", "알리", "안내", "소식", "공지", "캠페인",
+    "메시지", "발송", "보내", "판매", "팔", "프로모션", "쿠폰", "이벤트"
+  ],
+  "intent_recommend_campaign": ["캠페인", "추천", "recommend", "campaign"],
+  "intent_find_user_segment": ["사용자", "고객", "사람", "지역", "세그먼트", "user", "segment", "region"],
+  "objective_rules": [
+    {"objective": "purchase", "keywords": ["구매", "구입", "전환", "매출", "purchase", "conversion", "판매", "팔고", "팔려", "sell"]},
+    {"objective": "subscription", "keywords": ["구독", "subscription"]},
+    {"objective": "reactivation", "keywords": ["휴면", "복귀", "재방문", "reactivation"]},
+    {"objective": "retention", "keywords": ["retention"]},
+    {"objective": "awareness", "keywords": ["신제품", "신상품", "출시", "런칭", "awareness", "launch"]}
+  ],
+  "awareness_launch_terms": ["신제품", "신상품", "출시", "런칭", "launch", "awareness"],
+  "awareness_announce_terms": ["알리", "알림", "소식", "안내", "홍보"],
+  "sell_outreach_verbs": ["팔고", "팔려", "팔것", "판매", "sell"],
+  "sell_outreach_audience": ["에게", "한테", "고객", "대상", "타겟", "타깃"],
+  "reactivation_goal_terms": ["재활성", "다시활성", "활성화", "휴면복귀", "복귀캠페인", "reactivation", "reactivate"],
+  "cart_terms": ["장바구니"],
+  "cart_abandonment_terms": ["결제하지않", "결제안", "미결제", "구매하지않", "구매안", "안산", "방치", "이탈", "cartabandon"],
+  "repurchase_terms": ["재구매", "repurchase"],
+  "repurchase_outreach_terms": ["유도", "촉진", "리마인드", "캠페인", "메시지", "발송", "추천"],
+  "purchase_history_signals": ["구매", "구입", "샀", "purchased", "bought"]
+}

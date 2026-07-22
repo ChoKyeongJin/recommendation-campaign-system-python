@@ -1,0 +1,50 @@
+{
+  "version": "1.0",
+  "description": "회원(CRM_MB_BASEINFO) 타겟 규칙 엔진 레지스트리. 새 속성/값/문구는 코드 수정 없이 이 파일에 항목을 추가하면 graph_rag 가 프로세스 기동 시 로딩한다. 파일이 없거나 파손되면 graph_rag 내 코드 기본값으로 폴백한다.",
+  "eq_filters": [
+    {"canonical": "female", "category": "gender", "column": "B.GENDER_CD", "value": "GENDER_CD.FEMALE"},
+    {"canonical": "male", "category": "gender", "column": "B.GENDER_CD", "value": "GENDER_CD.MALE"},
+    {"canonical": "welcome_grade", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.WELCOME"},
+    {"canonical": "family_grade", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.FAMILY"},
+    {"canonical": "silver_grade", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.SILVER"},
+    {"canonical": "gold_grade", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.GOLD"},
+    {"canonical": "vip", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.VIP"},
+    {"canonical": "dormant", "category": "state", "column": "B.MEMBER_STATE_CD", "value": "MEMBER_STATE_CD.SLEEP"},
+    {"canonical": "app_user", "category": "channel", "column": "B.LAST_LOGIN_CHANNEL", "value": "DEVICE_TYPE_CD.APP"}
+  ],
+  "activity_filters": [
+    {"canonical": "inactive_90d", "days": 90},
+    {"canonical": "inactive_180d", "days": 180}
+  ],
+  "lifecycle_extra_terms": ["new_user"],
+  "active_state": {"column": "MEMBER_STATE_CD", "value": "MEMBER_STATE_CD.NORMAL"},
+  "birthday_target": {"column": "BIRTHDAY"},
+  "signup_target": {"column": "REG_DT", "table": "CRM_MB_BASEINFO", "default_days": 90, "anchor": "data_max"},
+  "order_count_targets": {
+    "table": "CRM_SL_ORDERHEADERMALL",
+    "join_column": "MEMBER_NO",
+    "order_id_column": "ORDER_ID",
+    "order_date_column": "ORDER_DATE",
+    "behaviors": {
+      "first_purchase": {"operator": "=", "count": 1},
+      "repeat_buyer": {"operator": ">=", "count": 2},
+      "no_purchase": {"anti_join": true}
+    }
+  },
+  "purchase_product_match_columns": [
+    "CATEGORY",
+    "CATEGORYL_NAME",
+    "CATEGORYM_NAME",
+    "CATEGORYS_NAME",
+    "BRAND_NAME",
+    "PRODUCT_NAME"
+  ],
+  "supported_condition_hint": "성별·연령·회원등급·휴면/미접속 기간·신규 가입(가입일)·상품 구매 이력",
+  "region_density": {
+    "granularity_tokens": ["동네", "지역", "시군구", "시도", "구"],
+    "granularity_columns": {"시도": "SIDO"},
+    "default_column": "SIGUNGU",
+    "default_top_n": 5,
+    "max_top_n": 30
+  }
+}

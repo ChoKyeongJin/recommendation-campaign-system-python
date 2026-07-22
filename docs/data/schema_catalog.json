@@ -808,7 +808,34 @@
         "MEMBER_NO"
       ],
       "checks": [],
-      "foreign_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "ZIP_CD"
+          ],
+          "references": {
+            "table": "CRM_CM_ADDRESS",
+            "columns": [
+              "ZIP_CODE"
+            ]
+          },
+          "confidence": "human_hint",
+          "source": "join_hint"
+        },
+        {
+          "columns": [
+            "REG_OFFSHOP_ID"
+          ],
+          "references": {
+            "table": "CRM_CM_OFFSHOP",
+            "columns": [
+              "OFFSHOP_ID"
+            ]
+          },
+          "confidence": "human_hint",
+          "source": "join_hint"
+        }
+      ],
       "indexes": []
     },
     "CRM_CM_ADDRESS": {
@@ -1768,7 +1795,21 @@
         "CELL_NODE_ID"
       ],
       "checks": [],
-      "foreign_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "CAMP_ID"
+          ],
+          "references": {
+            "table": "Z_CAMPAIGN",
+            "columns": [
+              "CAMP_ID"
+            ]
+          },
+          "confidence": "inferred",
+          "source": "shared_key_live:CAMP_ID"
+        }
+      ],
       "indexes": []
     },
     "Z_CAMP_MBR": {
@@ -1855,7 +1896,21 @@
       ],
       "primary_key": [],
       "checks": [],
-      "foreign_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "CAMP_ID"
+          ],
+          "references": {
+            "table": "Z_CAMPAIGN",
+            "columns": [
+              "CAMP_ID"
+            ]
+          },
+          "confidence": "inferred",
+          "source": "shared_key_live:CAMP_ID"
+        }
+      ],
       "indexes": []
     },
     "MCS_CAMP_MBR_RSPN_FT": {
@@ -2042,7 +2097,21 @@
       ],
       "primary_key": [],
       "checks": [],
-      "foreign_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "CAMP_ID"
+          ],
+          "references": {
+            "table": "Z_CAMPAIGN",
+            "columns": [
+              "CAMP_ID"
+            ]
+          },
+          "confidence": "inferred",
+          "source": "shared_key_live:CAMP_ID"
+        }
+      ],
       "indexes": []
     },
     "ODS_MALL_OMS_CART": {
@@ -2331,7 +2400,34 @@
         "CART_PRODUCT_NO"
       ],
       "checks": [],
-      "foreign_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "CART_ID"
+          ],
+          "references": {
+            "table": "CRM_MB_BASEINFO",
+            "columns": [
+              "MEMBER_ID"
+            ]
+          },
+          "confidence": "verified",
+          "source": "sql_builder:cart_targets"
+        },
+        {
+          "columns": [
+            "PRODUCT_ID"
+          ],
+          "references": {
+            "table": "CRM_CM_PRODUCT",
+            "columns": [
+              "PRODUCT_ID"
+            ]
+          },
+          "confidence": "verified",
+          "source": "sql_builder:cart_dimension_targets"
+        }
+      ],
       "indexes": []
     },
     "CRM_CM_PRODUCT": {
@@ -2564,7 +2660,21 @@
         "PRODUCT_ID"
       ],
       "checks": [],
-      "foreign_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "BRAND_ID"
+          ],
+          "references": {
+            "table": "CRM_CM_BRAND",
+            "columns": [
+              "BRAND_ID"
+            ]
+          },
+          "confidence": "verified",
+          "source": "live_join_check"
+        }
+      ],
       "indexes": []
     },
     "CRM_CM_BRAND": {
@@ -3286,6 +3396,58 @@
       "foreign_keys": [],
       "indexes": []
     },
+    "ODS_MALL_MMS_MEMBER_ZTS": {
+      "object_type": "table",
+      "database": "CRMDW",
+      "description_llm": "[CRMDW/smart_quadmax_mart] 몰 회원 부가정보(직업/결혼/자녀/계좌/기기 등). 직업(JOB_CD) 타겟팅용 보조 속성 테이블. MEMBER_NO 로 CRM_MB_BASEINFO 와 조인. ⚠️ 현재 0행(미적재) — 적재되면 build_member_value_index.py 재실행으로 값 타겟팅 자동 활성화.",
+      "description_source": "live_db_information_schema",
+      "join_hints": [
+        "MEMBER_NO = CRM_MB_BASEINFO.MEMBER_NO"
+      ],
+      "columns": [
+        {
+          "name": "MEMBER_NO",
+          "type": "bigint",
+          "nullable": true,
+          "primary_key": false,
+          "references": {
+            "table": "CRM_MB_BASEINFO",
+            "column": "MEMBER_NO"
+          },
+          "important": true,
+          "human_note": "회원번호(bigint). CRM_MB_BASEINFO.MEMBER_NO 조인키"
+        },
+        {
+          "name": "JOB_CD",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": true,
+          "human_note": "직업 코드. '직장인/회사원' 등 직업 타겟팅 근거 컬럼(현재 미적재)"
+        },
+        {
+          "name": "MARRIAGE_YN",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "결혼 여부"
+        },
+        {
+          "name": "BABY_YN_CD",
+          "type": "nvarchar(100)",
+          "nullable": true,
+          "primary_key": false,
+          "references": null,
+          "important": false,
+          "human_note": "자녀 유무 코드"
+        }
+      ],
+      "foreign_keys": [],
+      "indexes": []
+    },
     "CRM_MB_BABY": {
       "object_type": "table",
       "database": "CRMDW",
@@ -3443,7 +3605,21 @@
           "human_note": "ETL 적재시각"
         }
       ],
-      "foreign_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "MEMBER_NO"
+          ],
+          "references": {
+            "table": "CRM_MB_BASEINFO",
+            "columns": [
+              "MEMBER_NO"
+            ]
+          },
+          "confidence": "inferred",
+          "source": "shared_key:MEMBER_NO"
+        }
+      ],
       "indexes": []
     },
     "CRM_MB_MEMBERBUYPROPERTY": {
@@ -3675,7 +3851,21 @@
           "human_note": "ETL 적재시각"
         }
       ],
-      "foreign_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "MEMBER_NO"
+          ],
+          "references": {
+            "table": "CRM_MB_BASEINFO",
+            "columns": [
+              "MEMBER_NO"
+            ]
+          },
+          "confidence": "inferred",
+          "source": "shared_key:MEMBER_NO"
+        }
+      ],
       "indexes": []
     },
     "CRM_MB_MONTHCRMINFO": {
@@ -4411,7 +4601,21 @@
           "human_note": "등급"
         }
       ],
-      "foreign_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "MEMBER_NO"
+          ],
+          "references": {
+            "table": "CRM_MB_BASEINFO",
+            "columns": [
+              "MEMBER_NO"
+            ]
+          },
+          "confidence": "verified",
+          "source": "sql_builder:dense_region_targets"
+        }
+      ],
       "indexes": []
     },
     "CRM_SL_ORDERHEADERMALL": {
@@ -4572,7 +4776,21 @@
           "human_note": "ETL 적재시각"
         }
       ],
-      "foreign_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "MEMBER_NO"
+          ],
+          "references": {
+            "table": "CRM_MB_BASEINFO",
+            "columns": [
+              "MEMBER_NO"
+            ]
+          },
+          "confidence": "verified",
+          "source": "sql_builder:order_count_targets"
+        }
+      ],
       "indexes": []
     },
     "CRM_SL_ORDERDETAILMALL": {
@@ -4830,7 +5048,47 @@
           "human_note": "ETL 적재시각"
         }
       ],
-      "foreign_keys": [],
+      "foreign_keys": [
+        {
+          "columns": [
+            "MEMBER_NO"
+          ],
+          "references": {
+            "table": "CRM_MB_BASEINFO",
+            "columns": [
+              "MEMBER_NO"
+            ]
+          },
+          "confidence": "verified",
+          "source": "sql_builder:purchase_history_targets"
+        },
+        {
+          "columns": [
+            "ORDER_ID"
+          ],
+          "references": {
+            "table": "CRM_SL_ORDERHEADERMALL",
+            "columns": [
+              "ORDER_ID"
+            ]
+          },
+          "confidence": "verified",
+          "source": "live_join_check:200of200"
+        },
+        {
+          "columns": [
+            "PRODUCT_ID"
+          ],
+          "references": {
+            "table": "CRM_CM_PRODUCT",
+            "columns": [
+              "PRODUCT_ID"
+            ]
+          },
+          "confidence": "verified",
+          "source": "sql_builder:purchase_history_targets"
+        }
+      ],
       "indexes": []
     },
     "CRM_SL_ORDERHEADERALL": {
