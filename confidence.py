@@ -153,6 +153,12 @@ def _extract_conditions(query_plan: dict[str, Any], candidate: dict[str, Any]) -
         add(key="purchase_object", value=purchase_object, ko=f"상품 구매 이력: '{purchase_object}'",
             kind="free_text", category="purchase")
 
+    purchase_date = tu.get("purchase_date")
+    if isinstance(purchase_date, dict) and purchase_date.get("from") and purchase_date.get("to"):
+        add(key="purchase_date", value=f"{purchase_date['from']}~{purchase_date['to']}",
+            ko=purchase_date.get("label") or f"구매 날짜 {purchase_date['from']}~{purchase_date['to']}",
+            kind="order_window", category="date")
+
     for dimension_filter in query_plan.get("dimension_filters", []):
         names = dimension_filter.get("names") or dimension_filter.get("codes") or []
         column = (dimension_filter.get("column") or "").split(".")[-1]

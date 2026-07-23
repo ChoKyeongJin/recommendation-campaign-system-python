@@ -214,8 +214,14 @@ def save_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def render_columns(columns: list[dict[str, Any]]) -> str:
+    # 임베딩 모델(예: mpnet 계열)은 입력이 길면 꼬리를 절단하므로, 의미가 큰 컬럼(PK/FK/important)을
+    # 앞에 배치해 넓은 테이블에서도 핵심 컬럼의 업무 용어가 벡터에 남게 한다(원래 순서는 그 안에서 유지).
+    ordered = sorted(
+        columns,
+        key=lambda column: not (column.get("primary_key") or column.get("references") or column.get("important")),
+    )
     rendered = []
-    for column in columns:
+    for column in ordered:
         flags = []
         if column.get("primary_key"):
             flags.append("PK")
@@ -225,7 +231,11 @@ def render_columns(columns: list[dict[str, Any]]) -> str:
         if column.get("important"):
             flags.append("important")
         flag_text = f" ({', '.join(flags)})" if flags else ""
-        rendered.append(f"{column['name']} {column['type']}{flag_text}")
+        # 컬럼 한글 설명(human_note)을 함께 임베딩해 '구매일/주문일' 같은 업무 용어로도 스키마가
+        # 검색되게 한다(제안 #4·#5 — 컬럼 단독이 아니라 테이블+컬럼+업무 용어를 한 문서로).
+        note = " ".join(str(column.get("human_note") or "").split())
+        note_text = f" — {note}" if note else ""
+        rendered.append(f"{column['name']} {column['type']}{flag_text}{note_text}")
     return "; ".join(rendered)
 
 

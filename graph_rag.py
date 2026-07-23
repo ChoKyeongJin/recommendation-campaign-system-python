@@ -1167,9 +1167,17 @@ def _build_single_query_plan(
     # LLM 이 semantic_resolutions 를 자체 추가했을 수 있으므로 밀집 지역 소비를 여기서도 보장한다.
     _apply_region_density_target(parse_query, llm_plan)
     _apply_member_metric_ranking_target(parse_query, llm_plan)
+    # '(기간 내) 많이 구입한 사람 상위 N명' 부사형 구매 랭킹도 결정론 파싱으로 확정한다(rules/llm 동일 컨텍스트).
+    _apply_purchase_count_ranking_target(parse_query, llm_plan)
     # 구매 상품(purchase_object)도 프롬프트 텍스트에서 결정론적으로 뽑아, rules/llm 어느 경로든 동일하게
     # 상품 구매 이력 타겟팅(build_purchase_history_targets_sql_candidate)으로 이어지게 한다.
     _apply_purchase_object_filter(parse_query, llm_plan.setdefault("target_user", {}))
+    # 구매 날짜(절대 기간)도 결정론 파싱으로 확정한다 — LLM 이 날짜를 purchase_object 로 섞어 넣는 것 방지.
+    llm_plan["target_user"].setdefault("purchase_date", None)
+    _apply_purchase_date_filter(parse_query, llm_plan)
+    # 명시적 결과 개수 제한('N명만' 등)도 결정론 파싱으로 확정한다(개수를 조건/수치에 섞지 않게).
+    llm_plan.setdefault("result_limit", None)
+    _apply_result_limit_filter(parse_query, llm_plan)
     # '최근 N일 구매 안 함'은 결정론 파싱으로 확정한다(LLM 이 no_purchase 로 오분류하는 것 방지).
     llm_plan["target_user"].setdefault("purchase_inactivity", None)
     _apply_purchase_inactivity_filter(parse_query, llm_plan)
@@ -1217,6 +1225,7 @@ def _build_rule_query_plan(
             "preferred_channels": [],
             "behaviors": [],
             "purchase_object": None,
+            "purchase_date": None,
             "price_sensitivity": None,
             "inactivity_period": None,
             "purchase_inactivity": None,
@@ -1242,10 +1251,13 @@ def _build_rule_query_plan(
         "computed_metrics": [],
         "dimension_filters": [],
         "cart_context": False,
+        "result_limit": None,
         "set_expressions": parse_set_expressions_from_query(query, normalization_path=normalization_rules) if normalization_rules else [],
     }
     _apply_age_filters(query, plan["target_user"])
     _apply_purchase_object_filter(query, plan["target_user"])
+    _apply_purchase_date_filter(query, plan)
+    _apply_result_limit_filter(query, plan)
     _apply_purchase_inactivity_filter(query, plan)
     _apply_birthday_target_filter(query, plan)
     _apply_signup_target_filter(query, plan)
@@ -1293,6 +1305,7 @@ def _build_rule_query_plan(
     # 지역 모호성 정책(semantic_resolutions)이 채워진 뒤에 실행해야 밀집 지역 해석이 이를 소비한다.
     _apply_region_density_target(query, plan)
     _apply_member_metric_ranking_target(query, plan)
+    _apply_purchase_count_ranking_target(query, plan)
     plan["computed_metrics"] = parse_computed_metrics_from_query(query, schema_path=sql_schema, metric_lexicon_path=metric_lexicon)
     policy_terms = [
         term
@@ -1457,7 +1470,23 @@ def _query_plan_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> s
             "반드시 JSON object만 출력한다.",
         ]
     )
-    return _read_prompt_template(prompt_dir, "query_plan_system.txt", fallback)
+    base = _read_prompt_template(prompt_dir, "query_plan_system.txt", fallback)
+    examples = _query_plan_fewshot_examples(prompt_dir)
+    if examples:
+        base = f"{base}\n\n{examples}"
+    return base
+
+
+def _query_plan_fewshot_examples(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
+    """입력 패턴별 few-shot 가이드(query_plan_examples.txt)를 읽어 시스템 프롬프트에 덧붙일 본문을 만든다.
+
+    "이런 구조의 입력이면 query_plan 을 이렇게 채워라" 예시를 운영자가 파일/DB 로 관리하는 지점이다.
+    '#' 로 시작하는 줄은 편집자용 주석이라 LLM 에 보내지 않고, 실제 예시 줄이 하나도 없으면
+    빈 문자열을 반환해 시스템 프롬프트에 아무 것도 덧붙이지 않는다(기본 무동작 → 예시 채우면 활성).
+    """
+    raw = _read_prompt_template(prompt_dir, "query_plan_examples.txt", "")
+    body = "\n".join(line for line in raw.splitlines() if not line.lstrip().startswith("#"))
+    return body.strip()
 
 
 def _query_plan_user_prompt(
@@ -1667,10 +1696,13 @@ def _has_member_target_signal(query_plan: dict[str, Any]) -> bool:
     purchase_object = target_user.get("purchase_object")
     has_density_target = isinstance(query_plan.get("region_density_target"), dict)
     has_metric_ranking = isinstance(query_plan.get("member_metric_ranking"), dict)
+    # '(기간 내) 많이 산 사람 상위 N명'도 주문 집계 랭킹으로 실추출 가능한 신호다.
+    has_purchase_count_ranking = isinstance(query_plan.get("purchase_count_ranking"), dict)
     # 주문 횟수 행동(첫 구매/재구매/무구매)·구매 미발생 기간(최근 N일 미구매)도 주문 집계로 실추출 가능한 신호다.
     behaviors = target_user.get("behaviors", [])
     has_order_count_signal = any(behavior in _order_count_targets_config()["behaviors"] for behavior in behaviors)
     has_purchase_inactivity = isinstance(target_user.get("purchase_inactivity"), dict)
+    has_purchase_date = isinstance(target_user.get("purchase_date"), dict)
     has_birthday_target = isinstance(target_user.get("birthday_target"), dict)
     # 집계 조건(누적 구매 금액/횟수 임계값)도 주문 집계로 실추출 가능한 세그먼트 신호다.
     has_aggregate_condition = bool(target_user.get("aggregate_conditions"))
@@ -1678,8 +1710,10 @@ def _has_member_target_signal(query_plan: dict[str, Any]) -> bool:
         has_member_signal
         or has_density_target
         or has_metric_ranking
+        or has_purchase_count_ranking
         or has_order_count_signal
         or has_purchase_inactivity
+        or has_purchase_date
         or has_birthday_target
         or has_aggregate_condition
         or (isinstance(purchase_object, str) and bool(purchase_object))
@@ -2353,6 +2387,54 @@ def _apply_member_metric_ranking_target(query: str, plan: dict[str, Any]) -> Non
     ]
 
 
+# "많이/자주 구입한 사람" 처럼 수량·빈도 부사가 구매 동사 앞에 오는 '구매 많은 순 상위 N' 랭킹 신호.
+# member_metric_ranking('구매횟수가 많은 고객' — 지표 명사 랭킹)의 부사형 짝이다. 지표 명사 랭킹은 월
+# 스냅샷(CRM_MB_MONTHCRMINFO) 전 기간 누적 기준이라 '2019년 2월에 많이 산 사람' 같은 절대 기간 랭킹을
+# 표현 못 하므로, 이쪽은 실주문 집계를 기간 창으로 정렬해 상위 N 명을 뽑는다. '산(?!책)' 으로 산책 등
+# 오탐을 막고, 사용/사은 등과 겹치는 맨 '사'는 제외해 구매 의미만 잡는다.
+_PURCHASE_QUANTITY_RANK_PATTERN = re.compile(
+    r"(?P<sup>가장\s*|제일\s*)?(?:많이|자주|최다)\s*(?:구매|구입|주문|샀|산(?!책))"
+)
+# 랭킹 대상이 '사람/회원'임을 확인한다(밀집 '지역' 랭킹과 구분 — 지역이면 region_density 가 이미 소비).
+_PURCHASE_RANK_TARGET_PATTERN = re.compile(r"고객님|고객|회원|유저|사람|구매자|소비자")
+
+
+def _apply_purchase_count_ranking_target(query: str, plan: dict[str, Any]) -> None:
+    """'(기간 내) 많이/자주 구입한 사람 상위 N 명'을 구매 건수 랭킹 타겟(purchase_count_ranking)으로 해석한다.
+
+    build_purchase_count_ranking_sql_candidate 가 주문 상세(CRM_SL_ORDERDETAILMALL)를 회원별로 집계해
+    구매 건수 내림차순 상위 N 명을 뽑는다. 구매 날짜 창(purchase_date)이 함께 잡혀 있으면 그 기간 주문만
+    센다. 정밀도 가드: 명시적 개수(N명/상위 N)나 최상급(가장/제일 많이)이 있을 때만 랭킹으로 확정하고,
+    그 외 모호한 '많이 구매한 고객'은 일반 세그먼트 경로에 맡긴다."""
+    # 지역 랭킹('많이 거주하는 동네')·지표 명사 랭킹('구매횟수가 많은 고객')으로 이미 해석됐으면 중복 해석 안 함.
+    if isinstance(plan.get("region_density_target"), dict) or isinstance(plan.get("member_metric_ranking"), dict):
+        return
+    rank_match = _PURCHASE_QUANTITY_RANK_PATTERN.search(query)
+    if not rank_match:
+        return
+    # 부정 맥락('많이 구매하지 않은/못 한')은 랭킹이 아니다.
+    tail = query[rank_match.end(): rank_match.end() + 8]
+    if any(neg in tail for neg in ("안", "않", "못")):
+        return
+    config = _member_metric_ranking_config()
+    top_match = _REGION_DENSITY_TOP_N_PATTERN.search(query) or re.search(r"(\d+)\s*명", query)
+    top_n: int | None = None
+    if top_match:
+        max_top_n = int(config.get("max_top_n") or 10000)
+        top_n = max(1, min(int(next(group for group in top_match.groups() if group)), max_top_n))
+    superlative = bool(rank_match.group("sup"))
+    # 개수도 최상급도 없으면(모호) 랭킹 확정 안 함.
+    if top_n is None and not superlative:
+        return
+    # 대상이 '사람'임이 드러나야 한다 — 명시적 개수('N명', 곧 N 명의 사람) 또는 사람 토큰(고객/회원/사람 등).
+    # (밀집 '지역' 랭킹은 위 region_density 가드가 이미 걸러 여기 오지 않는다.)
+    if not (top_match or _PURCHASE_RANK_TARGET_PATTERN.search(query)):
+        return
+    if top_n is None:
+        top_n = int(config.get("default_top_n") or 100)
+    plan["purchase_count_ranking"] = {"top_n": top_n}
+
+
 # "최근 N일/개월 동안 구매하지 않은" 같은 구매 미발생 기간(구매 리센시) 신호. 구매 부정어 + 시간 창이
 # 함께 있을 때만 잡는다. 시간 창이 없으면(예: '미구매 고객') '전혀 구매 안 함(no_purchase)'과 구분이
 # 없으므로 여기서 잡지 않고 기존 no_purchase 경로로 둔다.
@@ -2493,6 +2575,110 @@ def _apply_birthday_target_filter(query: str, plan: dict[str, Any]) -> None:
     plan.setdefault("target_user", {})["birthday_target"] = {"granularity": granularity}
 
 
+# 구매 날짜 타겟: '2024년 3월에 구매한 고객'처럼 구매가 일어난 절대 날짜/기간을 ORDER_DATE 창으로
+# 해석한다. 상대 창('최근 N일 미구매')은 purchase_inactivity 가 담당하므로 여기선 연도가 명시된
+# 절대 날짜만 잡는다(연도 없는 'M월'은 어느 해인지 모호해 잡지 않는다 → 오탐 방지).
+_PURCHASE_DATE_SIGNALS = ("구매", "구입", "주문")
+
+
+def _month_last_day(year: int, month: int) -> int:
+    if month == 2:
+        leap = (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)
+        return 29 if leap else 28
+    return 30 if month in (4, 6, 9, 11) else 31
+
+
+def _ymd(year: int, month: int, day: int) -> str:
+    return f"{year:04d}{month:02d}{day:02d}"
+
+
+def _parse_purchase_date_period(query: str) -> dict[str, Any] | None:
+    """구매가 일어난 절대 날짜/기간을 ORDER_DATE(YYYYMMDD CHAR8) 창 {from,to}로 파싱한다.
+
+    지원: 'YYYY년 M월 D일'(하루), 'YYYY년 M월'(그 달 전체), 'YYYY년'(그 해 전체),
+          'YYYY-MM-DD'/'YYYY.MM.DD'/'YYYY/MM/DD'(하루), 'YYYY-MM'(그 달 전체),
+          'YYYY년 상반기/하반기'(6개월), 'YYYY년 N분기(=N사분기)'(3개월).
+    구매/구입/주문 신호가 있어야 발동한다(생일·캠페인 기간 등 무관한 날짜를 잡지 않기 위함)."""
+    if not any(signal in query for signal in _PURCHASE_DATE_SIGNALS):
+        return None
+
+    # YYYY년 M월 D일 (하루)
+    m = re.search(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", query)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= mo <= 12 and 1 <= d <= _month_last_day(y, mo):
+            return {"from": _ymd(y, mo, d), "to": _ymd(y, mo, d), "label": f"{y}년 {mo}월 {d}일 구매"}
+    # YYYY-MM-DD / YYYY.MM.DD / YYYY/MM/DD (하루)
+    m = re.search(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", query)
+    if m:
+        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if 1 <= mo <= 12 and 1 <= d <= _month_last_day(y, mo):
+            return {"from": _ymd(y, mo, d), "to": _ymd(y, mo, d), "label": f"{y}-{mo:02d}-{d:02d} 구매"}
+    # YYYY년 M월 (그 달 전체)
+    m = re.search(r"(\d{4})\s*년\s*(\d{1,2})\s*월", query)
+    if m:
+        y, mo = int(m.group(1)), int(m.group(2))
+        if 1 <= mo <= 12:
+            return {"from": _ymd(y, mo, 1), "to": _ymd(y, mo, _month_last_day(y, mo)), "label": f"{y}년 {mo}월 구매"}
+    # YYYY-MM (그 달 전체; 뒤에 일자 구분자가 없을 때만)
+    m = re.search(r"(\d{4})[-./](\d{1,2})(?![-./]?\d)", query)
+    if m:
+        y, mo = int(m.group(1)), int(m.group(2))
+        if 1 <= mo <= 12:
+            return {"from": _ymd(y, mo, 1), "to": _ymd(y, mo, _month_last_day(y, mo)), "label": f"{y}-{mo:02d} 구매"}
+    # YYYY년 상반기/하반기·N분기(반기/분기 기간). '그 해 전체' 폴백보다 먼저 봐야 한 해로 뭉개지지 않는다.
+    half_quarter = _parse_half_or_quarter_period(query)
+    if half_quarter is not None:
+        return half_quarter
+    # YYYY년 (그 해 전체; 뒤에 '월'이 없을 때)
+    m = re.search(r"(\d{4})\s*년(?!\s*\d{1,2}\s*월)", query)
+    if m:
+        y = int(m.group(1))
+        return {"from": _ymd(y, 1, 1), "to": _ymd(y, 12, 31), "label": f"{y}년 구매"}
+    return None
+
+
+# 반기/분기 → 월 범위. 상반기=1~6월, 하반기=7~12월, N분기=(N-1)*3+1 부터 3개월.
+_QUARTER_MONTH_RANGES = {1: (1, 3), 2: (4, 6), 3: (7, 9), 4: (10, 12)}
+
+
+def _parse_half_or_quarter_period(query: str) -> dict[str, Any] | None:
+    """'YYYY년 상반기/하반기', 'YYYY년 N분기(=N사분기)'를 ORDER_DATE 창 {from,to}로 파싱한다.
+
+    연도가 명시돼야 발동한다(연도 없는 '상반기'는 어느 해인지 모호 → 미해석, 오탐 방지). 그냥 '반기'
+    (상/하 없이)나 숫자 없는 '분기'도 어느 반/분기인지 모호하므로 잡지 않는다."""
+    year_match = re.search(r"(\d{4})\s*년", query)
+    if year_match is None:
+        return None
+    y = int(year_match.group(1))
+    if "상반기" in query:
+        return {"from": _ymd(y, 1, 1), "to": _ymd(y, 6, 30), "label": f"{y}년 상반기 구매"}
+    if "하반기" in query:
+        return {"from": _ymd(y, 7, 1), "to": _ymd(y, 12, 31), "label": f"{y}년 하반기 구매"}
+    quarter_match = re.search(r"([1-4])\s*(?:사)?분기", query)
+    if quarter_match is not None:
+        q = int(quarter_match.group(1))
+        start_month, end_month = _QUARTER_MONTH_RANGES[q]
+        return {
+            "from": _ymd(y, start_month, 1),
+            "to": _ymd(y, end_month, _month_last_day(y, end_month)),
+            "label": f"{y}년 {q}분기 구매",
+        }
+    return None
+
+
+def _apply_purchase_date_filter(query: str, plan: dict[str, Any]) -> None:
+    """'YYYY년 M월에 구매한 고객' 등 절대 구매 날짜/기간을 구매 날짜 타겟(purchase_date)으로 해석한다.
+
+    build_purchase_history_targets_sql_candidate 가 주문 상세(CRM_SL_ORDERDETAILMALL) ORDER_DATE 를
+    BETWEEN 으로 걸어 상품/회원 속성과 같은 SQL 에 AND 결합한다. 상품명 없이 날짜만 있어도 구매 이력
+    창 타겟으로 추출된다(상품 LIKE 없이 날짜 창 + 회원 속성)."""
+    period = _parse_purchase_date_period(query)
+    if period is None:
+        return
+    plan.setdefault("target_user", {})["purchase_date"] = period
+
+
 # 신규 가입 타겟: '신규 가입/신규 회원/새 가입자/new user' 등 가입 신호로 잡는다. 기본 창은
 # signup_target.default_days 이고, '최근 N일/N개월 (이내) 가입' 이 있으면 그 창으로 덮는다.
 _SIGNUP_SIGNALS = ("신규가입", "신규회원", "신규유저", "신규고객", "새가입", "새로가입", "새가입자", "가입한지",
@@ -2527,6 +2713,44 @@ def _apply_signup_target_filter(query: str, plan: dict[str, Any]) -> None:
             days = value * 30 if match.group(2) in ("개월", "달") else value
     # days 가 None 이면 compile 이 signup_target.default_days 를 쓴다.
     plan.setdefault("target_user", {})["signup_target"] = {"days": days}
+
+
+# 결과 행수 제한: "N명만 / N건만 / 상위 N명 / 최대 N명 / N명으로 제한" 처럼 명시적으로 개수를 못박은
+# 경우에만 결과 행수를 제한한다(그 외 타겟 오디언스는 '전체가 나와야 한다'는 방침대로 무제한 유지).
+# 실제 TOP(MSSQL: CRMDW/CRMAN)/LIMIT(MariaDB: quadmax_sdz) 부착은 sql_guard 가 대상 DBMS 방언에 맞춰
+# 처리하고, 이미 TOP 인 지표 랭킹(member_metric_ranking)은 sql_guard 가 중복 없이 보존한다.
+_RESULT_LIMIT_MAX_ROWS = 1_000_000
+_RESULT_LIMIT_UNITS = r"(?:명|건|개|곳|개사|행|건수|개수|row|rows)"
+_RESULT_LIMIT_PATTERNS = (
+    re.compile(rf"(\d[\d,]*)\s*{_RESULT_LIMIT_UNITS}\s*(?:만|까지만)(?!\s*원)"),  # 'N명만'
+    re.compile(rf"상위\s*(\d[\d,]*)\s*{_RESULT_LIMIT_UNITS}"),                     # '상위 N명'
+    re.compile(rf"(?:최대|최고|상한)\s*(\d[\d,]*)\s*{_RESULT_LIMIT_UNITS}"),        # '최대 N명'
+    re.compile(rf"(\d[\d,]*)\s*{_RESULT_LIMIT_UNITS}\s*(?:으로|로)?\s*(?:제한|이내로)"),  # 'N명으로 제한'
+)
+
+
+def _parse_result_limit(query: str) -> int | None:
+    for pattern in _RESULT_LIMIT_PATTERNS:
+        match = pattern.search(query)
+        if not match:
+            continue
+        try:
+            value = int(match.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if value > 0:
+            return min(value, _RESULT_LIMIT_MAX_ROWS)
+    return None
+
+
+def _apply_result_limit_filter(query: str, plan: dict[str, Any]) -> None:
+    """'N명만' 등 명시적 개수 제한을 plan.result_limit 로 잡는다(그 외엔 미설정 = 전체 반환).
+
+    타겟 조건(성별/등급 등)이 아니라 결과 행수 제한이므로 target_user 가 아니라 plan 최상위에 둔다.
+    build_sql_template_response 가 이 값을 sql_guard 의 default_limit 로 넘겨 방언별 TOP/LIMIT 로 반영한다."""
+    limit = _parse_result_limit(query)
+    if limit is not None:
+        plan["result_limit"] = limit
 
 
 def _apply_region_density_target(query: str, plan: dict[str, Any]) -> None:
@@ -2698,13 +2922,70 @@ def _is_repurchase_goal_context(query: str) -> bool:
     return any(keyword in compact_query for keyword in _lexicon_terms("repurchase_outreach_terms"))
 
 
+def _is_date_like_token(token: str) -> bool:
+    """'2024년'·'3월'·'15일'·'2024-03'·'20240301' 처럼 날짜/기간을 뜻하는 토큰이면 True.
+
+    구매 이력 상품명 추출('… 구매한 고객')에서 '구매' 앞이 날짜뿐이면(예: '3월에 구매한 고객')
+    날짜가 상품명(purchase_object)으로 새어 상품 LIKE 를 무의미하게 만든다. 날짜는 구매 상품이 아니라
+    구매 날짜 조건(purchase_date)이므로 상품 후보에서 제외한다."""
+    # 숫자+년/월/일/분기/주 (뒤에 '에/의/부터/까지' 같은 조사가 붙어도 접두가 날짜면 날짜로 본다).
+    if re.match(r"^\d{1,4}(?:년|년도|월|일|분기|주|주차)", token):
+        return True
+    # 순수 숫자/구분자(YYYYMMDD, 2024-03, 2024.03.01, 2024/03).
+    if re.match(r"^\d[\d\-/.]*$", token):
+        return True
+    return False
+
+
+# 스키마 검색어에서 뺄 '값' 토큰의 수량/기간/금액 단위. 날짜(_is_date_like_token)에 더해 숫자+단위
+# (10명·100만원·3개월·5건 등)를 값으로 본다. 이들은 이미 결정론 추출기가 구조화 필터(purchase_date/
+# result_limit/aggregate_conditions 등)로 뽑아 SQL 조건이 되므로, RAG 스키마(테이블·컬럼 의미) 검색어에는
+# 노이즈일 뿐이다(제안 #2 — 검색어는 스키마 의미만).
+_SCHEMA_QUERY_VALUE_UNIT = (
+    "개월", "주차", "주간", "년도", "분기", "시간", "달", "주", "년", "월", "일",
+    "조", "억", "만원", "천원", "만", "천", "원", "명", "건", "개", "회", "번", "차례", "퍼센트", "포인트", "점", "%",
+)
+# 숫자 + 단위 0개 이상(+조사/연산어). 단위를 반복 허용해 복합 금액('3천만원'=천·만·원)도 값으로 본다.
+# 조사(에/의/부터/까지/동안/이내/간/째)나 임계 연산어(이상/이하/미만/초과)가 붙어도 접두가 숫자면 값으로
+# 본다(예: '90일간', '100만원이상'). 단위는 반드시 접두 숫자 뒤에서만 매칭돼 일반 단어('일요일')엔 영향 없다.
+_SCHEMA_QUERY_VALUE_RE = re.compile(
+    r"^\d[\d,\.]*\s*(?:" + "|".join(re.escape(unit) for unit in _SCHEMA_QUERY_VALUE_UNIT) + r")*"
+    r"(?:이상|이하|미만|초과|부터|까지|동안|이내|간|째|에|의|로|으로)?$"
+)
+
+
+def _is_schema_query_value_token(token: str) -> bool:
+    """RAG 스키마 검색에서 제외할 '값'(날짜/숫자/수량/기간/금액) 토큰이면 True."""
+    stripped = token.strip().strip(",.")
+    if not stripped:
+        return False
+    return _is_date_like_token(stripped) or bool(_SCHEMA_QUERY_VALUE_RE.match(stripped))
+
+
+def _schema_retrieval_query(text: str) -> str:
+    """자연어 검색 문장에서 값 토큰(날짜/숫자/수량)을 제거해 '스키마 의미'만 남긴 검색어를 만든다.
+
+    벡터/키워드 검색이 스키마(테이블·컬럼 의미)를 찾는 데 집중하도록, 이미 구조화 필터로 추출된
+    날짜/숫자/기간/개수 리터럴을 검색어에서 뺀다(예: '2019년 2월 구매한 고객 조회' → '구매한 고객 조회').
+    모든 토큰이 값이면(값만 있는 질의) 원문을 그대로 둔다(빈 검색어 방지)."""
+    if not isinstance(text, str) or not text.strip():
+        return text
+    kept = [token for token in text.split() if not _is_schema_query_value_token(token)]
+    return " ".join(kept) if kept else text
+
+
 def _sanitize_purchase_object(value: str) -> str | None:
     tokens = []
     for token in re.findall(r"[0-9A-Za-z가-힣_+\-]+", value.casefold()):
         stripped_token = re.sub(r"(?:을|를)$", "", token)
-        # 상품이 아닌 구매행동 수식어(첫/재/최근 구매 등)는 명사형 매칭에서 엉뚱한 LIKE 를 만들 수 있어 제외한다.
-        if stripped_token and stripped_token not in {"사람", "고객", "사용자", "첫", "재", "최근", "최초", "최초로", "반복", "자주", "처음", "처음으로", "미"}:
-            tokens.append(stripped_token)
+        # 상품이 아닌 구매행동 수식어(첫/재/최근 구매, 많이/자주 등 수량·빈도 부사)는 명사형 매칭에서
+        # 엉뚱한 LIKE(예: '많이 구입한' → PRODUCT_NAME LIKE N'%많이%')를 만들 수 있어 제외한다.
+        if not stripped_token or stripped_token in {"사람", "고객", "사용자", "첫", "재", "최근", "최초", "최초로", "반복", "자주", "많이", "많은", "다수", "대량", "처음", "처음으로", "미"}:
+            continue
+        # 날짜/기간 토큰은 상품이 아니라 구매 날짜 조건이므로 상품명 후보에서 뺀다(→ purchase_date 가 담당).
+        if _is_date_like_token(stripped_token):
+            continue
+        tokens.append(stripped_token)
     if not tokens:
         return None
     return " ".join(tokens[-3:])[:40]
@@ -2971,6 +3252,13 @@ def retrieve(
     # 파싱 문장 기준으로도 밀집 지역 타겟을 감지한다(이미 감지됐으면 동일 값으로 덮어써 무해).
     _apply_region_density_target(plan_query, query_plan)
     _apply_member_metric_ranking_target(plan_query, query_plan)
+    # 부사형 구매 랭킹('많이 산 사람 상위 N명')도 재작성이 '많이'를 지울 수 있어 원문 기준으로 재감지한다
+    # (이미 잡혔으면 동일 값으로 덮어써 무해).
+    _apply_purchase_count_ranking_target(plan_query, query_plan)
+    # 개수 지시('N명만')는 재작성기가 조사 '만'을 떼어 'N명'으로 만들면 파서가 못 잡아 개수 제한이 소실된다.
+    # (재작성은 비결정적 LLM 이라 표현이 흔들림) 원문 프롬프트에서 다시 감지해 결과 행수 제한을 확정한다
+    # (이미 잡혔으면 동일 값으로 덮어써 무해). union/밀집지역을 원문에서 재감지하는 것과 같은 이유.
+    _apply_result_limit_filter(query, query_plan)
     # 타겟팅 스코프면 plan_query 가 오디언스 절뿐이라 '재구매를 유도' 같은 캠페인 목적 절이 잘려
     # intent 가 recommend_campaign→find_user_segment 로 약화된다(장바구니 이탈 재구매 유도 등).
     # 목적 절이 살아있는 전체 재작성본으로 intent 를 재추론해 더 강한 캠페인 의도로만 승격한다.
@@ -2996,12 +3284,16 @@ def retrieve(
     else:
         scoped_query = full_retrieval_query
         scoped_terms = retrieval["terms"]
-    scoped_keyword_query = " ".join(_unique_strings([scoped_query, *scoped_terms]))
+    # 스키마 검색 입력에서만 값 토큰(날짜/숫자/기간/개수)을 제거한다(제안 #2). SQL 생성용 keyword_query
+    # (아래 build_sql_result 입력)에는 손대지 않는다 — 날짜 토큰이 커버리지 검증/LLM 폴백 컨텍스트에 필요하다.
+    schema_query = _schema_retrieval_query(scoped_query)
+    schema_terms = [term for term in scoped_terms if not _is_schema_query_value_token(term)] or scoped_terms
+    scoped_keyword_query = " ".join(_unique_strings([schema_query, *schema_terms]))
     timings_ms["retrieval_query"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
     vector_hits = vector_search(
-        query=scoped_query,
+        query=schema_query,
         collection=collection,
         url=url,
         api_key=api_key,
@@ -3023,7 +3315,7 @@ def retrieve(
         {
             "query": query,
             "retrieval_scope": scope,
-            "retrieval_query": scoped_query,
+            "retrieval_query": schema_query,
             "keyword_query": scoped_keyword_query,
             "full_keyword_query": keyword_query,
             "query_plan": query_plan,
@@ -4924,6 +5216,8 @@ def build_recommendation_api_response(
         },
         "intent": query_plan.get("intent"),
         "sql": sql_result.get("sql"),
+        # 프롬프트가 명시한 결과 행수 제한(없으면 None = 전체). SQL 에는 방언별 TOP/LIMIT 로 이미 반영됨.
+        "result_limit": sql_result.get("result_limit"),
         "target_connection": sql_result.get("target_connection"),
         "target_dialect": sql_result.get("target_dialect"),
         # 0명 결과일 때 실행부에서 어느 술어가 오디언스를 죽였는지 귀속하기 위한 술어별 probe.
@@ -5160,13 +5454,17 @@ def build_sql_result(
             candidates = [llm_candidate]
             llm_fallback_used = True
 
+    # 타겟 오디언스는 기본적으로 전체가 나와야 하므로 행수 제한(TOP/LIMIT)을 붙이지 않는다(default_limit=None).
+    # 단 프롬프트가 'N명만' 등으로 개수를 명시했을 때만 그 값을 sql_guard 에 넘겨 대상 DBMS 방언에 맞는
+    # TOP(MSSQL)/LIMIT(MariaDB)을 부착한다(지표 랭킹의 기존 TOP 은 sql_guard 가 중복 없이 보존).
+    result_limit = query_plan.get("result_limit")
+    result_limit = result_limit if isinstance(result_limit, int) and result_limit > 0 else None
     validated_candidates = []
     for candidate in candidates:
-        # 타겟 오디언스는 전체가 나와야 하므로 행수 제한(LIMIT/TOP)을 붙이지 않는다.
         validation = validate_sql(
             candidate["sql"],
             allowed_tables=allowed_tables,
-            default_limit=None,
+            default_limit=result_limit,
             table_dialects=table_dialects,
         )
         # 부분 추출 candidate 가 실DB 미지원이라 뺀 조건은 커버리지 요구에서 제외한다(대신 응답에 고지).
@@ -5257,6 +5555,8 @@ def build_sql_result(
         "unsupported_condition_labels": unsupported_condition_labels,
         "dropped_conditions": dropped_conditions,
         "dropped_condition_labels": dropped_condition_labels,
+        # 프롬프트가 명시한 결과 행수 제한(없으면 None = 전체). sql_guard 가 방언별 TOP/LIMIT 로 반영한다.
+        "result_limit": result_limit,
         # LLM 폴백으로 생성·검증된 SQL 인지 명시 라벨(응답/UI 에서 결정론 템플릿과 구분).
         "llm_fallback_used": llm_fallback_used,
         "generation_source": (selected or {}).get("source"),
@@ -5960,6 +6260,11 @@ def build_sql_template_candidate(query_plan: dict[str, Any]) -> dict[str, Any] |
             candidate = _sql_candidate("sql_template:cart_repurchase_targets", "장바구니 미결제 재구매 유도 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template")
             _attach_cart_dropped_conditions(candidate, query_plan, compiled)
             return candidate
+        count_ranking_candidate = build_purchase_count_ranking_sql_candidate(query_plan)
+        if count_ranking_candidate is not None:
+            # "(기간 내) 많이/자주 구입한 사람 상위 N명" 은 주문 집계 내림차순 랭킹으로 뽑는다. 구매 날짜 창을
+            # 세는 랭킹이라 상품 구매 이력(purchase_history)보다 먼저 시도해 날짜만으로 그쪽에 뺏기지 않게 한다.
+            return count_ranking_candidate
         purchase_candidate = build_purchase_history_targets_sql_candidate(query_plan)
         if purchase_candidate is not None:
             # "…를 구매/구입한 고객" 은 실주문(CRM_SL_ORDERDETAILMALL) 조인으로 상품 구매 이력 회원을 뽑는다.
@@ -5989,6 +6294,10 @@ def build_sql_template_candidate(query_plan: dict[str, Any]) -> dict[str, Any] |
         if union_candidate is not None:
             # "A 이거나 B 또는 C" 합집합(OR) 조건 세그먼트 조회도 실CRM 한 쿼리에서 OR 로 묶어 추출한다.
             return union_candidate
+        count_ranking_candidate = build_purchase_count_ranking_sql_candidate(query_plan)
+        if count_ranking_candidate is not None:
+            # "(기간 내) 많이 구입한 사람 상위 N명 찾아줘" 세그먼트 조회도 주문 집계 내림차순 랭킹으로 뽑는다.
+            return count_ranking_candidate
         # "…를 구매/구입한 고객 찾아줘" 처럼 캠페인 발송이 아니라 세그먼트 조회여도 상품 구매 이력은
         # 동일한 실주문 조인으로 실회원 오디언스를 추출한다(recommend_campaign 과 같은 템플릿).
         purchase_candidate = build_purchase_history_targets_sql_candidate(query_plan)
@@ -6459,6 +6768,21 @@ def _sql_nlike_contains(column: str, term: str) -> str:
     return f"{column} LIKE N'%{term.replace(chr(39), chr(39) * 2)}%'"
 
 
+def _purchase_date_predicate(purchase_date: Any, alias: str = "D", column: str = "ORDER_DATE") -> str | None:
+    """구매 날짜 창 {from,to}(YYYYMMDD CHAR8)를 ORDER_DATE BETWEEN 술어로 만든다.
+
+    ORDER_DATE 는 CHAR(8) 'YYYYMMDD' 로 저장되므로 문자열 BETWEEN 이 곧 날짜 범위다(집계 빌더의
+    CONVERT(CHAR(8), …, 112) 비교와 같은 표현계). 값이 없거나 형식이 어긋나면 None."""
+    if not isinstance(purchase_date, dict):
+        return None
+    start, end = purchase_date.get("from"), purchase_date.get("to")
+    if not (isinstance(start, str) and isinstance(end, str) and re.fullmatch(r"\d{8}", start) and re.fullmatch(r"\d{8}", end)):
+        return None
+    if start > end:
+        start, end = end, start
+    return f"{alias}.{column} BETWEEN {_sql_quote(start)} AND {_sql_quote(end)}"
+
+
 def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     """실주문 상세(CRM_SL_ORDERDETAILMALL) → 상품(CRM_CM_PRODUCT) → 회원(CRM_MB_BASEINFO) 조인으로
     특정 상품/카테고리를 구매한 회원을 추출한다.
@@ -6467,15 +6791,25 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
     성별/연령/등급/휴면 등 회원 속성은 compile_member_target_conditions 로 그대로 재사용해 같은 SQL 에
     AND 결합하므로, "40대 여성 중 기저귀 구매자" 같은 조합도 하나의 추출 SQL 이 된다.
     """
-    purchase_object = query_plan.get("target_user", {}).get("purchase_object")
-    if not isinstance(purchase_object, str) or not purchase_object:
+    target_user = query_plan.get("target_user", {})
+    purchase_object = target_user.get("purchase_object")
+    has_object = isinstance(purchase_object, str) and bool(purchase_object)
+    purchase_date = target_user.get("purchase_date")
+    date_predicate = _purchase_date_predicate(purchase_date)
+    # 상품 구매 이력 조건(상품 LIKE)도, 구매 날짜 창 조건(ORDER_DATE BETWEEN)도 없으면 이 빌더 대상이 아니다.
+    if not has_object and date_predicate is None:
         return None
 
     compiled = compile_member_target_conditions(query_plan)
-    product_match = "(" + " OR ".join(
-        _sql_nlike_contains("P." + column, purchase_object) for column in _PURCHASE_PRODUCT_MATCH_COLUMNS
-    ) + ")"
-    where_clauses = [product_match, *compiled["predicates"]]
+    where_clauses: list[str] = []
+    if has_object:
+        product_match = "(" + " OR ".join(
+            _sql_nlike_contains("P." + column, purchase_object) for column in _PURCHASE_PRODUCT_MATCH_COLUMNS
+        ) + ")"
+        where_clauses.append(product_match)
+    if date_predicate is not None:
+        where_clauses.append(date_predicate)
+    where_clauses.extend(compiled["predicates"])
     # 회원상태를 직접 지정한 타겟(휴면 등)이 아니면 정상 회원으로 한정한다(탈퇴/휴면 제외).
     if not compiled["forces_state"]:
         where_clauses.append(_member_active_state_predicate())
@@ -6500,9 +6834,85 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
     candidate = _sql_candidate(
         "sql_template:purchase_history_targets", "상품 구매 이력 타겟 추출 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template"
     )
-    # purchase_object 는 이 템플릿(상품 LIKE)이 실제로 커버하므로 dropped(미고지)에서 제외한다.
-    # 회원 속성 외 다른 미지원 조건(관심사 등)이 있으면 그것만 부분추출 고지 대상으로 남긴다.
-    dropped = [path for path in compiled["unsupported"] if path != "target_user.purchase_object"]
+    # purchase_object(상품 LIKE)·purchase_date(ORDER_DATE 창)는 이 템플릿이 실제로 커버하므로 dropped(미고지)에서
+    # 제외한다. 회원 속성 외 다른 미지원 조건(관심사 등)이 있으면 그것만 부분추출 고지 대상으로 남긴다.
+    _covered = {"target_user.purchase_object", "target_user.purchase_date"}
+    dropped = [path for path in compiled["unsupported"] if path not in _covered]
+    candidate["dropped_conditions"] = dropped
+    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]
+    return candidate
+
+
+def build_purchase_count_ranking_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """'(기간 내) 많이/자주 구입한 사람 상위 N 명'을 실주문 집계 랭킹 SQL 로 생성한다(구매 건수 내림차순 상위 N).
+
+    member_metric_ranking(월 스냅샷 CRM_MB_MONTHCRMINFO 지표 랭킹)은 '전 기간 누적' 기준이라 '2019년
+    2월에 많이 산 사람' 같은 절대 기간 랭킹을 표현 못 하는 간극을 메운다. 상품 구매 이력 빌더
+    (build_purchase_history_targets_sql_candidate)와 같은 주문 상세(CRM_SL_ORDERDETAILMALL)→회원
+    (CRM_MB_BASEINFO) 조인을 쓰되, 회원별로 GROUP BY 해 COUNT(*) 내림차순 상위 N 명을 뽑는다. 구매 날짜
+    창(purchase_date)이 있으면 그 기간 주문만, 특정 상품(purchase_object)이 있으면 그 상품 주문만 센다.
+    성별/연령/등급/지역 등 회원 속성은 compile_member_target_conditions 로 같은 SQL 에 AND 결합한다."""
+    ranking = query_plan.get("purchase_count_ranking")
+    if not isinstance(ranking, dict):
+        return None
+    top_n = int(ranking.get("top_n") or 100)
+    target_user = query_plan.get("target_user", {})
+    purchase_object = target_user.get("purchase_object")
+    has_object = isinstance(purchase_object, str) and bool(purchase_object)
+    date_predicate = _purchase_date_predicate(target_user.get("purchase_date"))
+
+    compiled = compile_member_target_conditions(query_plan)
+    where_clauses: list[str] = []
+    if has_object:
+        where_clauses.append(
+            "(" + " OR ".join(
+                _sql_nlike_contains("P." + column, purchase_object) for column in _PURCHASE_PRODUCT_MATCH_COLUMNS
+            ) + ")"
+        )
+    if date_predicate is not None:
+        where_clauses.append(date_predicate)
+    where_clauses.extend(compiled["predicates"])
+    # 회원상태를 직접 지정한 타겟(휴면 등)이 아니면 정상 회원으로 한정한다(탈퇴/휴면 제외).
+    if not compiled["forces_state"]:
+        where_clauses.append(_member_active_state_predicate())
+    where_clauses = _unique_strings(where_clauses)
+
+    select_columns = [
+        f"TOP {top_n} B.MEMBER_NO AS CUST_ID",
+        "B.EMART_GRADE_CD AS member_grade",
+        "COUNT(*) AS purchase_count",
+    ]
+    segment_label = "purchase_count_rank"
+    if compiled["labels"]:
+        segment_label += ":" + ",".join(compiled["labels"])
+    select_columns.append(_sql_quote(segment_label) + " AS segment_label")
+    objective = query_plan.get("campaign_constraints", {}).get("objective")
+    if objective:
+        select_columns.append(_sql_quote(objective) + " AS objective")
+
+    from_lines = ["FROM CRM_SL_ORDERDETAILMALL D"]
+    if has_object:
+        from_lines.append("     INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID")
+    from_lines.append("     INNER JOIN CRM_MB_BASEINFO B ON D.MEMBER_NO = B.MEMBER_NO")
+
+    sql_lines = ["SELECT " + ", ".join(select_columns), *from_lines]
+    if where_clauses:
+        sql_lines.append("WHERE " + "\n  AND ".join(where_clauses))
+    sql_lines.append("GROUP BY B.MEMBER_NO, B.EMART_GRADE_CD")
+    sql_lines.append("ORDER BY COUNT(*) DESC")
+    sql = "\n".join(sql_lines)
+
+    candidate = _sql_candidate(
+        "sql_template:purchase_count_ranking",
+        f"구매 건수 상위 N({top_n}) 회원 랭킹 타겟 추출 SQL 템플릿(CRMDW)",
+        1.0,
+        sql,
+        _template_tables(sql),
+        "sql_template",
+    )
+    # 구매 건수 랭킹(랭킹 신호)·구매 날짜 창·상품 조건은 이 템플릿이 커버하므로 dropped 에서 뺀다.
+    _covered = {"target_user.purchase_object", "target_user.purchase_date"}
+    dropped = [path for path in compiled["unsupported"] if path not in _covered]
     candidate["dropped_conditions"] = dropped
     candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]
     return candidate
@@ -7263,6 +7673,19 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
                     all_terms=[metric["column"], "order by"],
                 )
             )
+
+    # 구매 건수 랭킹(purchase_count_ranking)은 상위 N(TOP)과 정렬(ORDER BY)이 SQL 에 실제로 있어야 커버된
+    # 것으로 본다 — 생성부(build_purchase_count_ranking_sql_candidate)-검증부 일치.
+    count_ranking = query_plan.get("purchase_count_ranking")
+    if isinstance(count_ranking, dict):
+        conditions.append(
+            _condition(
+                "purchase_count_ranking",
+                "purchase_count",
+                [f"top {count_ranking.get('top_n', 100)}"],
+                all_terms=["order by"],
+            )
+        )
 
     # 회원 테이블 디멘션 필터(예: 시도/SIDO)는 회원/구매 타겟 SQL 에 그대로 컴파일되므로
     # (compile_member_target_conditions) 커버리지도 요구한다 — 생성부-검증부 일치.

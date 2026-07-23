@@ -1,0 +1,125 @@
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 1234
+      POSTGRES_DB: campaign_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d campaign_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_storage:/qdrant/storage
+
+  python:
+    image: chokyeongjin/recommendation-campaign-system:latest
+    restart: unless-stopped
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: campaign_normalization_terms
+      QDRANT_RAG_COLLECTION: campaign_user_rag_nodes
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: campaign_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "1234"
+      # fastembed 임베딩 모델(BAAI/bge-small-en-v1.5) 캐시를 공용 볼륨에 고정한다.
+      # 적재 시 한 번 받아두면 api 도 같은 볼륨에서 재사용해 재다운로드가 없다.
+      FASTEMBED_CACHE_PATH: /fastembed_cache
+    volumes:
+      - fastembed_cache:/fastembed_cache
+    depends_on:
+      - qdrant
+    tty: true
+    stdin_open: true
+    command: python -c "import time; time.sleep(10**9)"
+
+  api:
+    image: chokyeongjin/recommendation-campaign-system:latest
+    restart: unless-stopped
+    working_dir: /app
+    env_file:
+      - .env
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      QDRANT_URL: http://qdrant:6333
+      QDRANT_COLLECTION: campaign_normalization_terms
+      QDRANT_RAG_COLLECTION: campaign_user_rag_nodes
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: campaign_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "1234"
+      # fastembed 모델 캐시 공용 볼륨(python 적재 때 받은 모델을 재사용).
+      FASTEMBED_CACHE_PATH: /fastembed_cache
+    volumes:
+      - fastembed_cache:/fastembed_cache
+    depends_on:
+      qdrant:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    ports:
+      - "0.0.0.0:8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  frontend:
+    image: chokyeongjin/recommendation-campaign-system-frontend:latest
+    container_name: rcs-frontend
+    restart: unless-stopped
+    ports:
+      - "80:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: "0.0.0.0"
+      NEXT_TELEMETRY_DISABLED: "1"
+      # 같은 compose 네트워크이므로 서비스명 api 로 직접 통신한다.
+      PYTHON_PROMPT_API_BASE: "http://api:8000"
+      PYTHON_TARGET_SQL_URL: "http://api:8000/target-sql"
+      PYTHON_CHANNEL_MESSAGES_URL: "http://api:8000/channel-messages"
+      PYTHON_CAMPAIGN_EXPERIMENTS_RUN_URL: "http://api:8000/campaign-experiments/run"
+      PYTHON_CTR_SCORE_URL: "http://api:8000/ai/ctr/score"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  postgres_data:
+  qdrant_storage:
+  fastembed_cache:
