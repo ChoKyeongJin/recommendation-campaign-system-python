@@ -4,18 +4,43 @@
   "source": {
     "dimension_table": "quadmax_sdz.t_xlig_dimension_list",
     "query_prompt_table": "quadmax_sdz.t_xlig_query_prompt",
-    "filter": "ML_DS_DIV_CD='DS' AND DEL_F='N'",
-    "ml_hierarchy_table": "quadmax_sdz.t_xlig_hierarchy_list",
-    "ml_filter": "ML_DS_DIV_CD='ML' 디멘션을 t_xlig_dimension_list.DBMS_ID = t_xlig_hierarchy_list.ML_ID 로 연결하고 ML_DBMS_ID='QUADMAX_SDZ' 인 계층(ml_qry_nm/ml_qry)만 ml_hierarchy 로 부착"
+    "filter": "ML_DS_DIV_CD='DS' AND DEL_F='N'"
   },
   "value_resolution": "dynamic",
   "value_column_convention": "DS_SQL 결과의 첫 컬럼=코드, 둘째 컬럼=이름",
   "dbms_connection_map": {
     "CRMDW": "CRMDW",
+    "CRMAN": "CRMAN",
     "QUADMAX_SDZ": "quadmax_sdz"
   },
-  "dimension_count": 154,
+  "dimension_count": 141,
   "dimensions": [
+    {
+      "dimension_id": "moon_test",
+      "prompt_label": "moon_test",
+      "prmp_kwd": "@@moon_test@@",
+      "prmp_kwd_nm": "moon_test",
+      "dbms_id": "CRMAN",
+      "connection": "CRMAN",
+      "operator": "IN",
+      "synonyms": [],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "SELECT MODEL AS CODE, MODEL AS NAME FROM Smart_QuadMax_Mart.dbo.CAR_INFO GROUP BY MODEL ORDER BY 1"
+    },
+    {
+      "dimension_id": "TEST3",
+      "prompt_label": "Dimension_Test",
+      "prmp_kwd": "TEST3",
+      "prmp_kwd_nm": "Dimension_Test",
+      "dbms_id": "CRMAN",
+      "connection": "CRMAN",
+      "operator": "IN",
+      "synonyms": [],
+      "target_table": null,
+      "target_column": null,
+      "ds_sql": "select * from test"
+    },
     {
       "dimension_id": "SMS수신동의여부",
       "prompt_label": "SMS수신동의여부",
@@ -25,12 +50,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "SMS수신동의여부",
-        "SMS수신동의",
-        "문자수신동의여부",
-        "문자수신동의",
-        "SMS 수신 동의",
-        "문자메시지수신동의여부"
+        "SMS수신동의여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -45,11 +65,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "SNS채널",
-        "소셜채널",
-        "소셜미디어채널",
-        "소셜네트워크채널",
-        "SNS 채널"
+        "SNS채널"
       ],
       "target_table": null,
       "target_column": null,
@@ -77,12 +93,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "가입경로",
-        "회원가입경로",
-        "가입루트",
-        "가입방법",
-        "가입 경로",
-        "회원가입 경로"
+        "가입경로"
       ],
       "target_table": null,
       "target_column": null,
@@ -98,11 +109,7 @@
       "operator": "IN",
       "synonyms": [
         "가입 유형",
-        "가입유형",
-        "가입형태",
-        "회원가입유형",
-        "가입종류",
-        "가입구분"
+        "가입유형"
       ],
       "target_table": null,
       "target_column": null,
@@ -118,12 +125,7 @@
       "operator": "IN",
       "synonyms": [
         "상품브랜드",
-        "거래브랜드",
-        "취급브랜드",
-        "구매브랜드",
-        "상품 브랜드",
-        "거래 브랜드",
-        "판매브랜드"
+        "거래브랜드"
       ],
       "target_table": "CRM_CM_PRODUCT",
       "target_column": "CRM_CM_PRODUCT.BRAND_ID",
@@ -138,11 +140,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "거래채널유형",
-        "거래채널",
-        "거래채널구분",
-        "거래 채널 유형",
-        "거래채널종류"
+        "거래채널유형"
       ],
       "target_table": null,
       "target_column": null,
@@ -157,12 +155,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "결제사",
-        "결제업체",
-        "결제회사",
-        "페이먼트사",
-        "PG사",
-        "결제대행사"
+        "결제사"
       ],
       "target_table": null,
       "target_column": null,
@@ -177,12 +170,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "결제상태",
-        "지불상태",
-        "페이먼트상태",
-        "결제진행상태",
-        "결제 상태",
-        "결제상태값"
+        "결제상태"
       ],
       "target_table": null,
       "target_column": null,
@@ -197,12 +185,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "결제수단",
-        "지불수단",
-        "결제방법",
-        "지불방법",
-        "페이수단",
-        "결제 수단"
+        "결제수단"
       ],
       "target_table": null,
       "target_column": null,
@@ -217,12 +200,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "결제유형",
-        "지불유형",
-        "결제형태",
-        "결제종류",
-        "결제 유형",
-        "결제구분"
+        "결제유형"
       ],
       "target_table": null,
       "target_column": null,
@@ -237,11 +215,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "관심브랜드",
-        "선호브랜드",
-        "좋아하는브랜드",
-        "관심있는브랜드",
-        "관심 브랜드"
+        "관심브랜드"
       ],
       "target_table": null,
       "target_column": null,
@@ -256,11 +230,7 @@
       "connection": "CRMDW",
       "operator": "=",
       "synonyms": [
-        "구매반응여부",
-        "구매반응",
-        "구매응답여부",
-        "구매 반응 여부",
-        "구매반응유무"
+        "구매반응여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -275,11 +245,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "구매채널",
-        "구입채널",
-        "주문채널",
-        "구매경로",
-        "구매 채널"
+        "구매채널"
       ],
       "target_table": null,
       "target_column": null,
@@ -294,12 +260,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "구매카테고리",
-        "구입카테고리",
-        "구매분류",
-        "구매품목분류",
-        "구매카테고리명",
-        "구매 카테고리"
+        "구매카테고리"
       ],
       "target_table": null,
       "target_column": null,
@@ -314,12 +275,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "기획전",
-        "기획행사",
-        "프로모션전",
-        "기획전시",
-        "기획 전",
-        "기획특가전"
+        "기획전"
       ],
       "target_table": null,
       "target_column": null,
@@ -334,11 +290,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "다자녀카드유형",
-        "다자녀카드종류",
-        "다둥이카드유형",
-        "다자녀 카드 유형",
-        "다자녀카드구분"
+        "다자녀카드유형"
       ],
       "target_table": null,
       "target_column": null,
@@ -353,10 +305,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "다자녀카드인증여부",
-        "다자녀카드인증",
-        "다둥이카드인증여부",
-        "다자녀 카드 인증 여부"
+        "다자녀카드인증여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -371,11 +320,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "당첨여부",
-        "당첨유무",
-        "당첨결과",
-        "당첨 여부",
-        "경품당첨여부"
+        "당첨여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -390,12 +335,7 @@
       "connection": "CRMDW",
       "operator": "=",
       "synonyms": [
-        "대량구매고객여부",
-        "대량구매여부",
-        "대량구매고객",
-        "대량구입고객여부",
-        "대량 구매 고객 여부",
-        "대량구매자여부"
+        "대량구매고객여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -410,11 +350,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "대표매장여부",
-        "대표매장",
-        "대표점포여부",
-        "대표 매장 여부",
-        "대표점여부"
+        "대표매장여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -443,10 +379,7 @@
       "operator": "IN",
       "synonyms": [
         "등급성장유형",
-        "등급성장",
-        "등급성장타입",
-        "등급 성장 유형",
-        "등급성장구분"
+        "이메일수신동의여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -461,10 +394,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "등급성장유형명",
-        "등급성장타입명",
-        "등급성장유형 명",
-        "등급성장명"
+        "등급성장유형명"
       ],
       "target_table": null,
       "target_column": null,
@@ -479,12 +409,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "디바이스유형",
-        "기기유형",
-        "단말유형",
-        "디바이스종류",
-        "접속기기유형",
-        "디바이스 유형"
+        "디바이스유형"
       ],
       "target_table": null,
       "target_column": null,
@@ -499,11 +424,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "딜유형",
-        "딜종류",
-        "상품딜유형",
-        "딜 유형",
-        "딜구분"
+        "딜유형"
       ],
       "target_table": null,
       "target_column": null,
@@ -518,11 +439,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "매장_AK",
-        "AK매장",
-        "AK플라자",
-        "AK점포",
-        "AK플라자매장"
+        "매장_AK"
       ],
       "target_table": null,
       "target_column": null,
@@ -537,11 +454,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "모델",
-        "차량모델",
-        "자동차모델",
-        "모델명",
-        "차종모델"
+        "모델"
       ],
       "target_table": null,
       "target_column": null,
@@ -557,12 +470,7 @@
       "operator": "IN",
       "synonyms": [
         "모바일OS유형",
-        "ZTS모바일OS유형",
-        "모바일OS",
-        "스마트폰OS유형",
-        "OS유형",
-        "모바일운영체제",
-        "모바일 OS 유형"
+        "ZTS모바일OS유형"
       ],
       "target_table": null,
       "target_column": null,
@@ -577,11 +485,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "모바일방문여부",
-        "모바일방문",
-        "모바일접속여부",
-        "모바일 방문 여부",
-        "모바일방문유무"
+        "모바일방문여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -596,11 +500,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "방문매장",
-        "방문점포",
-        "내점매장",
-        "방문 매장",
-        "방문점"
+        "방문매장"
       ],
       "target_table": null,
       "target_column": null,
@@ -615,11 +515,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "보유보험연체여부",
-        "보험연체여부",
-        "보유보험연체",
-        "보험연체",
-        "보유 보험 연체 여부"
+        "보유보험연체여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -634,11 +530,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "보험상품",
-        "가입보험상품",
-        "보험상품명",
-        "보험종류",
-        "보험 상품"
+        "보험상품"
       ],
       "target_table": null,
       "target_column": null,
@@ -653,11 +545,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "보험완납경험여부",
-        "보험완납경험",
-        "보험완납여부",
-        "보험 완납 경험 여부",
-        "완납경험여부"
+        "보험완납경험여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -672,10 +560,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "보험직업",
-        "보험직군",
-        "보험가입직업",
-        "보험 직업"
+        "보험직업"
       ],
       "target_table": null,
       "target_column": null,
@@ -690,10 +575,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "브랜드",
-        "브랜드명",
-        "상표",
-        "메이커브랜드"
+        "브랜드"
       ],
       "target_table": null,
       "target_column": null,
@@ -708,10 +590,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "블랙리스트상태",
-        "블랙리스트 상태",
-        "블랙리스트상태값",
-        "블랙리스트상태구분"
+        "블랙리스트상태"
       ],
       "target_table": null,
       "target_column": null,
@@ -726,10 +605,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "블랙리스트유형",
-        "블랙리스트종류",
-        "블랙리스트 유형",
-        "블랙리스트구분"
+        "블랙리스트유형"
       ],
       "target_table": null,
       "target_column": null,
@@ -744,11 +620,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "사용쿠폰",
-        "사용한쿠폰",
-        "이용쿠폰",
-        "사용 쿠폰",
-        "사용쿠폰명"
+        "사용쿠폰"
       ],
       "target_table": null,
       "target_column": null,
@@ -763,10 +635,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "상권차수",
-        "상권단계",
-        "상권 차수",
-        "상권등급"
+        "상권차수"
       ],
       "target_table": null,
       "target_column": null,
@@ -781,10 +650,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "상태등급",
-        "상태 등급",
-        "상태등급값",
-        "상태등급구분"
+        "상태등급"
       ],
       "target_table": null,
       "target_column": null,
@@ -799,9 +665,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "상태등급명",
-        "상태등급 명",
-        "상태등급이름"
+        "상태등급명"
       ],
       "target_table": null,
       "target_column": null,
@@ -816,11 +680,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "상품",
-        "상품명",
-        "제품명",
-        "구매상품",
-        "판매상품"
+        "상품"
       ],
       "target_table": null,
       "target_column": null,
@@ -835,11 +695,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "서비스구분",
-        "서비스유형",
-        "서비스분류",
-        "서비스 구분",
-        "서비스종류"
+        "서비스구분"
       ],
       "target_table": null,
       "target_column": null,
@@ -854,11 +710,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "선물구매형여부",
-        "선물구매여부",
-        "선물구매형",
-        "기프트구매여부",
-        "선물 구매형 여부"
+        "선물구매형여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -873,11 +725,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "성별",
-        "성별구분",
-        "남녀",
-        "젠더",
-        "성별코드"
+        "성별"
       ],
       "target_table": null,
       "target_column": null,
@@ -892,12 +740,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "스코어구분",
-        "점수구간",
-        "스코어구간",
-        "등급구간",
-        "스코어 구분",
-        "점수등급구간"
+        "스코어구분"
       ],
       "target_table": null,
       "target_column": null,
@@ -912,10 +755,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "시간대",
-        "시간구간",
-        "시간 대",
-        "이용시간대"
+        "시간대"
       ],
       "target_table": null,
       "target_column": null,
@@ -930,10 +770,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "시간대분류",
-        "시간대구분",
-        "시간대 분류",
-        "시간구간분류"
+        "시간대분류"
       ],
       "target_table": null,
       "target_column": null,
@@ -948,11 +785,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "시도",
-        "광역시도",
-        "시·도",
-        "시도지역",
-        "거주시도"
+        "시도"
       ],
       "target_table": null,
       "target_column": null,
@@ -967,11 +800,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "신상품선호형여부",
-        "신상품선호여부",
-        "신상품선호",
-        "신제품선호여부",
-        "신상품 선호형 여부"
+        "신상품선호형여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -986,10 +815,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "실효여부",
-        "실효유무",
-        "실효 여부",
-        "실효상태여부"
+        "실효여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -1004,12 +830,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "앱버전",
-        "어플버전",
-        "애플리케이션버전",
-        "앱버전정보",
-        "앱 버전",
-        "어플리케이션버전"
+        "앱버전"
       ],
       "target_table": null,
       "target_column": null,
@@ -1025,11 +846,7 @@
       "operator": "IN",
       "synonyms": [
         "연령대_5세단위",
-        "연령대 5세 단위",
-        "5세단위연령대",
-        "연령대5세",
-        "5세연령구간",
-        "연령대 5세단위"
+        "연령대 5세 단위"
       ],
       "target_table": null,
       "target_column": null,
@@ -1045,11 +862,7 @@
       "operator": "IN",
       "synonyms": [
         "연령대명",
-        "연령대",
-        "연령구간명",
-        "나이대명",
-        "연령대 명",
-        "연령층명"
+        "연령대"
       ],
       "target_table": null,
       "target_column": null,
@@ -1064,10 +877,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "연식",
-        "차량연식",
-        "자동차연식",
-        "차량 연식"
+        "연식"
       ],
       "target_table": null,
       "target_column": null,
@@ -1082,11 +892,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "연체여부",
-        "연체유무",
-        "미납여부",
-        "연체 여부",
-        "연체상태여부"
+        "연체여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -1101,11 +907,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "예치금유형",
-        "예치금종류",
-        "적립금유형",
-        "예치금 유형",
-        "예치금구분"
+        "예치금유형"
       ],
       "target_table": null,
       "target_column": null,
@@ -1120,11 +922,7 @@
       "connection": "CRMDW",
       "operator": "=",
       "synonyms": [
-        "오퍼반응여부",
-        "오퍼반응",
-        "제안반응여부",
-        "오퍼응답여부",
-        "오퍼 반응 여부"
+        "오퍼반응여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -1139,11 +937,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "오프라인쿠폰명",
-        "오프라인쿠폰",
-        "매장쿠폰명",
-        "오프라인 쿠폰명",
-        "오프라인쿠폰이름"
+        "오프라인쿠폰명"
       ],
       "target_table": null,
       "target_column": null,
@@ -1159,10 +953,7 @@
       "operator": "=",
       "synonyms": [
         "외국인여부",
-        "외국인 여부",
-        "내외국인여부",
-        "외국인유무",
-        "외국인구분"
+        "외국인 여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -1177,9 +968,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "요일",
-        "요일구분",
-        "구매요일구분"
+        "요일"
       ],
       "target_table": null,
       "target_column": null,
@@ -1194,11 +983,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "운전용도",
-        "차량용도",
-        "운행용도",
-        "운전 용도",
-        "차량이용용도"
+        "운전용도"
       ],
       "target_table": null,
       "target_column": null,
@@ -1213,11 +998,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "유입시간대",
-        "접속시간대",
-        "방문시간대",
-        "유입 시간대",
-        "인입시간대"
+        "유입시간대"
       ],
       "target_table": null,
       "target_column": null,
@@ -1232,12 +1013,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "유입채널",
-        "방문채널",
-        "접속채널",
-        "인입채널",
-        "유입 채널",
-        "유입경로"
+        "유입채널"
       ],
       "target_table": null,
       "target_column": null,
@@ -1252,12 +1028,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "거래유형",
-        "이마트거래유형",
-        "거래종류",
-        "거래형태",
-        "거래 유형",
-        "거래구분"
+        "거래유형"
       ],
       "target_table": null,
       "target_column": null,
@@ -1272,12 +1043,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "이마트거래점",
-        "이마트매장",
-        "이마트점포",
-        "거래점",
-        "이마트 거래점",
-        "이마트거래매장"
+        "이마트거래점"
       ],
       "target_table": null,
       "target_column": null,
@@ -1292,12 +1058,7 @@
       "connection": "CRMDW",
       "operator": "=",
       "synonyms": [
-        "이메일수신동의여부",
-        "이메일수신동의",
-        "메일수신동의여부",
-        "이메일마케팅수신동의",
-        "이메일 수신 동의",
-        "이메일수신동의유무"
+        "이메일수신동의여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -1312,9 +1073,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "이벤트",
-        "행사",
-        "이벤트행사"
+        "이벤트"
       ],
       "target_table": null,
       "target_column": null,
@@ -1329,10 +1088,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "이벤트명",
-        "행사명",
-        "이벤트 명",
-        "이벤트이름"
+        "이벤트명"
       ],
       "target_table": null,
       "target_column": null,
@@ -1347,11 +1103,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "보험상품",
-        "인터넷보험",
-        "온라인보험상품",
-        "인터넷보험상품명",
-        "온라인보험"
+        "보험상품"
       ],
       "target_table": null,
       "target_column": null,
@@ -1366,11 +1118,7 @@
       "connection": "CRMDW",
       "operator": "=",
       "synonyms": [
-        "임직원여부",
-        "직원여부",
-        "사원여부",
-        "임직원유무",
-        "임직원 여부"
+        "임직원여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -1385,12 +1133,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "자녀여부",
-        "아이여부",
-        "자녀유무",
-        "자녀존재여부",
-        "자녀 여부",
-        "자녀보유여부"
+        "자녀여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -1405,11 +1148,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "장바구니유형",
-        "카트유형",
-        "장바구니종류",
-        "장바구니 유형",
-        "장바구니구분"
+        "장바구니유형"
       ],
       "target_table": null,
       "target_column": null,
@@ -1424,11 +1163,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "전시카테고리",
-        "전시분류",
-        "진열카테고리",
-        "전시 카테고리",
-        "전시품목분류"
+        "전시카테고리"
       ],
       "target_table": null,
       "target_column": null,
@@ -1443,10 +1178,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "점검항목",
-        "체크항목",
-        "점검 항목",
-        "점검리스트"
+        "점검항목"
       ],
       "target_table": null,
       "target_column": null,
@@ -1476,12 +1208,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "접속매체",
-        "접속기기",
-        "접속수단",
-        "접속디바이스",
-        "접속 매체",
-        "접속매체유형"
+        "접속매체"
       ],
       "target_table": null,
       "target_column": null,
@@ -1496,11 +1223,7 @@
       "connection": "CRMDW",
       "operator": "=",
       "synonyms": [
-        "접촉성공여부",
-        "접촉성공",
-        "컨택성공여부",
-        "접촉 성공 여부",
-        "접촉성공유무"
+        "접촉성공여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -1515,12 +1238,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "제조사",
-        "제조회사",
-        "제조업체",
-        "메이커",
-        "생산사",
-        "제조 회사"
+        "제조사"
       ],
       "target_table": null,
       "target_column": null,
@@ -1535,10 +1253,7 @@
       "connection": "CRMDW",
       "operator": "=",
       "synonyms": [
-        "조합기준",
-        "결합기준",
-        "조합 기준",
-        "조합조건기준"
+        "조합기준"
       ],
       "target_table": null,
       "target_column": null,
@@ -1554,10 +1269,7 @@
       "operator": "IN",
       "synonyms": [
         "주거래지점",
-        "주거래점",
-        "메인지점",
-        "주이용지점",
-        "주거래 지점"
+        "SELECT"
       ],
       "target_table": null,
       "target_column": null,
@@ -1572,11 +1284,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "주결제수단",
-        "주요결제수단",
-        "메인결제수단",
-        "주로쓰는결제수단",
-        "주 결제수단"
+        "주결제수단"
       ],
       "target_table": null,
       "target_column": null,
@@ -1591,11 +1299,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "주구매브랜드명",
-        "주구매브랜드",
-        "주로구매브랜드",
-        "주 구매 브랜드명",
-        "주요구매브랜드"
+        "주구매브랜드명"
       ],
       "target_table": null,
       "target_column": null,
@@ -1610,10 +1314,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "주구매시간대",
-        "주로구매시간대",
-        "주요구매시간대",
-        "주 구매 시간대"
+        "주구매시간대"
       ],
       "target_table": null,
       "target_column": null,
@@ -1628,9 +1329,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "주구매시간대분류",
-        "주구매시간대구분",
-        "주구매시간대 분류"
+        "주구매시간대분류"
       ],
       "target_table": null,
       "target_column": null,
@@ -1645,10 +1344,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "주구매요일",
-        "주로구매요일",
-        "주요구매요일",
-        "주 구매 요일"
+        "주구매요일"
       ],
       "target_table": null,
       "target_column": null,
@@ -1663,11 +1359,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "주구매채널",
-        "주로구매채널",
-        "주요구매채널",
-        "주구매경로",
-        "주 구매 채널"
+        "주구매채널"
       ],
       "target_table": null,
       "target_column": null,
@@ -1682,9 +1374,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "주구매채널명",
-        "주구매채널 명",
-        "주구매채널이름"
+        "주구매채널명"
       ],
       "target_table": null,
       "target_column": null,
@@ -1699,11 +1389,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "주구매카테고리명",
-        "주구매카테고리",
-        "주로구매카테고리",
-        "주요구매카테고리",
-        "주 구매 카테고리명"
+        "주구매카테고리명"
       ],
       "target_table": null,
       "target_column": null,
@@ -1718,11 +1404,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "주문디바이스",
-        "주문기기",
-        "주문단말",
-        "주문 디바이스",
-        "주문접속기기"
+        "주문디바이스"
       ],
       "target_table": null,
       "target_column": null,
@@ -1737,11 +1419,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "주문유형",
-        "주문종류",
-        "주문형태",
-        "주문 유형",
-        "주문구분"
+        "주문유형"
       ],
       "target_table": null,
       "target_column": null,
@@ -1756,10 +1434,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "주이용노선",
-        "주로이용노선",
-        "주요노선",
-        "주 이용 노선"
+        "주이용노선"
       ],
       "target_table": null,
       "target_column": null,
@@ -1774,10 +1449,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "주주문시간대",
-        "주로주문시간대",
-        "주요주문시간대",
-        "주 주문 시간대"
+        "주주문시간대"
       ],
       "target_table": null,
       "target_column": null,
@@ -1792,9 +1464,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "주주문시간대분류",
-        "주주문시간대구분",
-        "주주문시간대 분류"
+        "주주문시간대분류"
       ],
       "target_table": null,
       "target_column": null,
@@ -1809,11 +1479,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "체류지점",
-        "머문지점",
-        "체류점",
-        "체류 지점",
-        "체류매장"
+        "체류지점"
       ],
       "target_table": null,
       "target_column": null,
@@ -1828,11 +1494,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "최종구매채널",
-        "마지막구매채널",
-        "최근구매채널",
-        "최종 구매 채널",
-        "최종구매경로"
+        "최종구매채널"
       ],
       "target_table": null,
       "target_column": null,
@@ -1847,11 +1509,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "최종로그인채널",
-        "마지막로그인채널",
-        "최근로그인채널",
-        "최종접속채널",
-        "최종 로그인 채널"
+        "최종로그인채널"
       ],
       "target_table": null,
       "target_column": null,
@@ -1866,11 +1524,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "최초로그인채널",
-        "첫로그인채널",
-        "처음로그인채널",
-        "최초접속채널",
-        "최초 로그인 채널"
+        "최초로그인채널"
       ],
       "target_table": null,
       "target_column": null,
@@ -1885,10 +1539,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "쿠폰발행상태",
-        "쿠폰발급상태",
-        "쿠폰 발행 상태",
-        "쿠폰발행상태값"
+        "쿠폰발행상태"
       ],
       "target_table": null,
       "target_column": null,
@@ -1903,11 +1554,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "쿠폰사용여부",
-        "쿠폰이용여부",
-        "쿠폰사용유무",
-        "쿠폰 사용 여부",
-        "쿠폰사용내역여부"
+        "쿠폰사용여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -1922,11 +1569,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "쿠폰사용점",
-        "쿠폰사용매장",
-        "쿠폰사용점포",
-        "쿠폰 사용점",
-        "쿠폰사용지점"
+        "쿠폰사용점"
       ],
       "target_table": null,
       "target_column": null,
@@ -1941,11 +1584,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "쿠폰유형",
-        "쿠폰종류",
-        "쿠폰타입",
-        "쿠폰 유형",
-        "쿠폰구분"
+        "쿠폰유형"
       ],
       "target_table": null,
       "target_column": null,
@@ -1960,10 +1599,7 @@
       "connection": "CRMDW",
       "operator": "=",
       "synonyms": [
-        "타사B2E여부",
-        "타사B2E",
-        "B2E여부",
-        "타사 B2E 여부"
+        "타사B2E여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -1978,11 +1614,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "이마트통합회원여부",
-        "통합회원여부",
-        "이마트통합회원",
-        "통합회원",
-        "통합멤버십여부"
+        "이마트통합회원여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -1997,11 +1629,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "해지여부",
-        "해지유무",
-        "탈퇴여부",
-        "해지 여부",
-        "해지상태여부"
+        "해지여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -2016,11 +1644,7 @@
       "connection": "CRMDW",
       "operator": "=",
       "synonyms": [
-        "혼인여부",
-        "혼인상태",
-        "기혼미혼여부",
-        "혼인 여부",
-        "혼인유무"
+        "혼인여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -2035,11 +1659,7 @@
       "connection": "CRMDW",
       "operator": "=",
       "synonyms": [
-        "혼인여부",
-        "혼인상태",
-        "기혼미혼여부",
-        "혼인 여부",
-        "혼인유무"
+        "혼인여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -2068,10 +1688,7 @@
       "operator": "IN",
       "synonyms": [
         "회원등급",
-        "멤버등급",
-        "멤버십등급",
-        "회원 등급",
-        "회원레벨"
+        "RADIO"
       ],
       "target_table": null,
       "target_column": null,
@@ -2086,10 +1703,7 @@
       "connection": "CRMDW",
       "operator": "IN",
       "synonyms": [
-        "회원등급명",
-        "멤버등급명",
-        "회원등급 명",
-        "회원등급이름"
+        "회원등급명"
       ],
       "target_table": null,
       "target_column": null,
@@ -2117,12 +1731,7 @@
       "connection": null,
       "operator": "=",
       "synonyms": [
-        "결혼여부",
-        "결혼유무",
-        "기혼여부",
-        "미혼여부",
-        "결혼 여부",
-        "결혼상태여부"
+        "결혼여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -2137,11 +1746,7 @@
       "connection": null,
       "operator": "IN",
       "synonyms": [
-        "고객등급",
-        "고객레벨",
-        "고객등급명",
-        "고객 등급",
-        "고객등급구분"
+        "고객등급"
       ],
       "target_table": null,
       "target_column": null,
@@ -2156,12 +1761,7 @@
       "connection": null,
       "operator": "IN",
       "synonyms": [
-        "구매경험여부",
-        "구매경험",
-        "구매이력여부",
-        "구매유무",
-        "구매 경험 여부",
-        "구매경험유무"
+        "구매경험여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -2206,11 +1806,7 @@
       "connection": null,
       "operator": "IN",
       "synonyms": [
-        "설문참여채널",
-        "설문채널",
-        "설문조사채널",
-        "설문 참여 채널",
-        "설문참여경로"
+        "설문참여채널"
       ],
       "target_table": null,
       "target_column": null,
@@ -2225,11 +1821,7 @@
       "connection": null,
       "operator": "IN",
       "synonyms": [
-        "연령대",
-        "나이대",
-        "연령층",
-        "연령구간",
-        "연령대별"
+        "연령대"
       ],
       "target_table": null,
       "target_column": null,
@@ -2274,10 +1866,7 @@
       "connection": null,
       "operator": "IN",
       "synonyms": [
-        "캠페인구매반응정보",
-        "캠페인구매반응",
-        "캠페인 구매 반응 정보",
-        "캠페인구매응답정보"
+        "캠페인구매반응정보"
       ],
       "target_table": null,
       "target_column": null,
@@ -2394,10 +1983,7 @@
       "connection": "quadmax_sdz",
       "operator": "IN",
       "synonyms": [
-        "마이데이터사업자기관코드",
-        "마이데이터사업자",
-        "마이데이터기관코드",
-        "마이데이터 사업자 기관코드"
+        "마이데이터사업자기관코드"
       ],
       "target_table": null,
       "target_column": null,
@@ -2412,10 +1998,7 @@
       "connection": "quadmax_sdz",
       "operator": "IN",
       "synonyms": [
-        "마이데이터정보제공자코드",
-        "마이데이터정보제공자",
-        "마이데이터제공자코드",
-        "마이데이터 정보제공자 코드"
+        "마이데이터정보제공자코드"
       ],
       "target_table": null,
       "target_column": null,
@@ -2430,12 +2013,7 @@
       "connection": "quadmax_sdz",
       "operator": "=",
       "synonyms": [
-        "마케팅수신동의여부",
-        "마케팅수신동의",
-        "마케팅동의여부",
-        "광고수신동의여부",
-        "마케팅 수신 동의",
-        "마케팅정보수신동의여부"
+        "마케팅수신동의여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -2510,10 +2088,7 @@
       "connection": "quadmax_sdz",
       "operator": "IN",
       "synonyms": [
-        "통화코드",
-        "화폐코드",
-        "통화 코드",
-        "커런시코드"
+        "통화코드"
       ],
       "target_table": null,
       "target_column": null,
@@ -2529,12 +2104,7 @@
       "operator": "IN",
       "synonyms": [
         "신규고객여부SN",
-        "신규고객여부",
-        "신규고객",
-        "신규회원여부",
-        "신규가입여부",
-        "신규 고객 여부",
-        "신규고객유무"
+        "신규고객여부"
       ],
       "target_table": null,
       "target_column": null,
@@ -2554,553 +2124,6 @@
       "target_table": null,
       "target_column": null,
       "ds_sql": "SELECT A.AGE_DIV1_CD AS CD\r\n     , A.AGE_DIV1_NM AS CD_NAME\r\n  FROM QUADMAX_SDZ_MART.Z_CUST_INFO A\r\n GROUP BY A.AGE_DIV1_CD\r\n        , A.AGE_DIV1_NM"
-    },
-    {
-      "dimension_id": "TEST_J",
-      "prompt_label": "TEST_J",
-      "prmp_kwd": "@@TEST_J@@",
-      "prmp_kwd_nm": "TEST_J",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20240520130757",
-      "operator": "=",
-      "synonyms": [
-        "TEST_J"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "대분류",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT A.CATE_NO AS CD  \r\n     , A.CATE_NM AS CD_NM \r\n  FROM QUADMAX_SDZ.T_CATE_TEMP A\r\n WHERE A.DEPT_LVL = '1'\r\n ORDER BY A.CATE_NO"
-        },
-        {
-          "seq": 2,
-          "level_name": "중분류",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NO ELSE B.CATE_NO END CD   \r\n              ,  CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NM ELSE B.CATE_NM END CD_NM\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP A\r\n       LEFT OUTER JOIN QUADMAX_SDZ.T_CATE_TEMP B\r\n    ON A.CATE_NO = B.PRNT_NO\r\n WHERE 1=1\r\n [AND A.CATE_NO IN @@대분류@@]"
-        },
-        {
-          "seq": 3,
-          "level_name": "소분류",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NO ELSE B.CATE_NO END CD\r\n     , CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NM ELSE B.CATE_NM END CD_NM\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP A\r\n       LEFT OUTER JOIN QUADMAX_SDZ.T_CATE_TEMP B\r\n    ON A.CATE_NO = B.PRNT_NO\r\n WHERE 1=1\r\n [AND A.CATE_NO IN @@중분류@@]"
-        },
-        {
-          "seq": 4,
-          "level_name": "상세",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NO ELSE B.CATE_NO END CD\r\n     , CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NM ELSE B.CATE_NM END CD_NM\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP A\r\n       LEFT OUTER JOIN QUADMAX_SDZ.T_CATE_TEMP B\r\n    ON A.CATE_NO = B.PRNT_NO\r\n WHERE 1=1\r\n [AND A.CATE_NO IN @@소분류@@]"
-        }
-      ]
-    },
-    {
-      "dimension_id": "계층쿼리테스트",
-      "prompt_label": "계층쿼리테스트",
-      "prmp_kwd": "@@계층쿼리테스트@@",
-      "prmp_kwd_nm": "계층쿼리테스트",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20240521101829",
-      "operator": "=",
-      "synonyms": [
-        "계층쿼리테스트"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "대분류",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT A.CATE_NO, A.CATE_NM FROM T_CATE_TEMP A\r\nLEFT OUTER JOIN T_CATE_TEMP B \r\nON A.CATE_NO = B.PRNT_NO\r\nWHERE 1=1\r\nAND A.DEPT_LVL = 1\r\nGROUP BY A.CATE_NO, A.CATE_NM\r\nORDER BY A.CATE_NO"
-        },
-        {
-          "seq": 2,
-          "level_name": "중분류",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NO ELSE B.CATE_NO END CATE_NO,\r\nCASE WHEN B.CATE_NM IS NULL THEN A.CATE_NM ELSE B.CATE_NM END CATE_NM\r\nFROM T_CATE_TEMP A\r\nLEFT OUTER JOIN T_CATE_TEMP B \r\nON A.CATE_NO = B.PRNT_NO\r\nWHERE 1=1\r\nAND A.DEPT_LVL = 1\r\n [AND A.CATE_NO = @@대분류@@]\r\nGROUP BY B.CATE_NO, B.CATE_NM\r\nORDER BY B.CATE_NO\r\n36308"
-        },
-        {
-          "seq": 3,
-          "level_name": "소분류",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NO ELSE B.CATE_NO END CATE_NO,\r\nCASE WHEN B.CATE_NM IS NULL THEN A.CATE_NM ELSE B.CATE_NM END CATE_NM\r\nFROM T_CATE_TEMP A\r\nLEFT OUTER JOIN T_CATE_TEMP B \r\nON A.CATE_NO = B.PRNT_NO\r\nWHERE 1=1\r\nAND A.DEPT_LVL IN (1,2)\r\n [AND A.CATE_NO = @@중분류@@]\r\nGROUP BY B.CATE_NO, B.CATE_NM\r\nORDER BY B.CATE_NO"
-        },
-        {
-          "seq": 4,
-          "level_name": "상세",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT CASE WHEN B.CATE_NO IS NULL THEN A.CATE_NO ELSE B.CATE_NO END CATE_NO,\r\nCASE WHEN B.CATE_NM IS NULL THEN A.CATE_NM ELSE B.CATE_NM END CATE_NM\r\nFROM T_CATE_TEMP A\r\nLEFT OUTER JOIN T_CATE_TEMP B \r\nON A.CATE_NO = B.PRNT_NO\r\nWHERE 1=1\r\nAND A.DEPT_LVL IN (1,2,3)\r\n [AND A.CATE_NO = @@소분류@@]\r\n [AND A.CATE_NO  IN @@SEARCH_CODE@@]\r\n [AND A.CATE_NM ::op:: @@SEARCH_WORD@@]\r\nGROUP BY B.CATE_NO, B.CATE_NM\r\nORDER BY B.CATE_NO"
-        }
-      ]
-    },
-    {
-      "dimension_id": "그룹",
-      "prompt_label": "그룹",
-      "prmp_kwd": "@@그룹@@",
-      "prmp_kwd_nm": "그룹",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20241115140635",
-      "operator": "=",
-      "synonyms": [
-        "그룹"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "그룹",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "select CAMP_GRP_ID\r\n     , CAMP_GRP_NM\r\n  from quadmax_sdz.t_camp_group  \r\nwhere DEL_F = 'N'\r\n     and CAMP_GRP_END_DT >= sysdate()\r\n\r\n"
-        },
-        {
-          "seq": 2,
-          "level_name": "캠페인",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "select CAMP_ID\r\n     , CAMP_NM \r\n  from quadmax_sdz.t_campaign\r\nwhere 1 = 1\r\nand CAMP_GRP_ID = @@그룹@@\r\nand DEL_F = 'N' /* 삭제플래그 처리 */\r\nand CAMP_END_DT >= date_format(NOW(), '%Y%m%d') /* 조회일자보다 종료일이 나중인 캠페인 리스트만 조회*/"
-        }
-      ]
-    },
-    {
-      "dimension_id": "문그룹",
-      "prompt_label": "문그룹",
-      "prmp_kwd": "@@문그룹@@",
-      "prmp_kwd_nm": "문그룹",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20241119102751",
-      "operator": "=",
-      "synonyms": [
-        "문그룹"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "그룹",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "select CAMP_GRP_ID\r\n     , CAMP_GRP_NM\r\n  from quadmax_sdz.t_camp_group  \r\n where DEL_F = 'N' /* 삭제플래그 처리 */\r\n   and CAMP_GRP_END_DT >= date_format(NOW(), '%Y%m%d') /* 조회일자보다 종료일이 나중인 캠페인 리스트만 조회*/"
-        }
-      ]
-    },
-    {
-      "dimension_id": "문캠페인",
-      "prompt_label": "문캠페인",
-      "prmp_kwd": "@@문캠페인@@",
-      "prmp_kwd_nm": "문캠페인",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20241119103329",
-      "operator": "=",
-      "synonyms": [
-        "문캠페인"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "캠페인",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "select A.CAMP_ID\r\n     , A.CAMP_NM \r\n  from quadmax_sdz.z_campaign A\r\n       inner join quadmax_sdz.z_chnl_send_req_cust B\r\n    on A.CAMP_ID = B.CAMP_ID      \r\nwhere 1 = 1\r\nand A.CAMP_END_DT <= date_format(NOW(), '%Y%m%d') /* 이미 종료된 캠페인만 조회*/\r\ngroup by CAMP_ID,CAMP_NM\r\nlimit 10  "
-        }
-      ]
-    },
-    {
-      "dimension_id": "문캠페인3",
-      "prompt_label": "문캠페인3",
-      "prmp_kwd": "@@문캠페인3@@",
-      "prmp_kwd_nm": "문캠페인3",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20241119133701",
-      "operator": "=",
-      "synonyms": [
-        "문캠페인3"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "기간",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT \r\n    SUBSTR(CAMP_START_DT, 1, 4) AS CD, \r\n    CONCAT(SUBSTR(CAMP_START_DT, 1, 4), '년') AS nm\r\nFROM \r\n    quadmax_sdz.z_campaign \r\nWHERE \r\n    CAMP_START_DT < SYSDATE()\r\nGROUP BY  \r\n    SUBSTR(CAMP_START_DT, 1, 4), \r\n    CONCAT(SUBSTR(CAMP_START_DT, 1, 4), '년')\r\nORDER BY \r\n    CD DESC "
-        },
-        {
-          "seq": 2,
-          "level_name": "캠페인",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "select A.CAMP_ID\r\n     , A.CAMP_NM \r\n  from quadmax_sdz.z_campaign A\r\n       inner join quadmax_sdz.z_chnl_send_req_cust B \r\n    on A.CAMP_ID = B.CAMP_ID\r\n where 1 = 1 \r\n [and substr( A.CAMP_START_DT ,1,4)= @@기간@@] \r\n   \r\ngroup by A.CAMP_ID, A.CAMP_NM"
-        },
-        {
-          "seq": 3,
-          "level_name": "회차",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "select CAMP_EXEC_NO as cd , CAMP_EXEC_NO as nm\r\n   from quadmax_sdz.z_campaign \r\nwhere  1=1\r\n[AND CAMP_ID =@@캠페인@@]"
-        }
-      ]
-    },
-    {
-      "dimension_id": "사고신고종류",
-      "prompt_label": "사고신고종류",
-      "prmp_kwd": "@@사고신고종류@@",
-      "prmp_kwd_nm": "사고신고종류",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20250725125938",
-      "operator": "IN",
-      "synonyms": [
-        "사고신고종류",
-        "사고신고유형",
-        "사고접수종류",
-        "사고 신고 종류",
-        "사고신고구분"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "테스트",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT '1' AS CODE\r\n              , '사고신고종류' AS CODE_NAME\r\n       FROM DUAL"
-        },
-        {
-          "seq": 2,
-          "level_name": "사고신고종류",
-          "operator": "IN",
-          "multi": null,
-          "ml_qry": "SELECT A.CODE AS CD\r\n             , A.CODE_NAME AS CD_NAME\r\n     FROM (SELECT 1 AS CODE\r\n              , '인사사고' AS CODE_NAME\r\n  UNION \r\nSELECT 2 AS CODE\r\n              , '교통사고' AS CODE_NAME\r\n   UNION\r\nSELECT 3 AS CODE\r\n              , '접촉사고' AS CODE_NAME\r\n               ) A\r\nWHERE 1=1\r\n     [AND A.CODE_NAME ::op:: @@SEARCH_WORD@@]\r\n"
-        }
-      ]
-    },
-    {
-      "dimension_id": "설문조사 ID",
-      "prompt_label": "설문조사 ID",
-      "prmp_kwd": "@@설문ID@@",
-      "prmp_kwd_nm": "설문조사 ID",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20241212145456",
-      "operator": "IN",
-      "synonyms": [
-        "설문조사 ID"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "설문 ID",
-          "operator": "IN",
-          "multi": null,
-          "ml_qry": "  select projectname, projectID from t_ssbi_survey_index "
-        }
-      ]
-    },
-    {
-      "dimension_id": "설문조사 캠페인 ID",
-      "prompt_label": "설문조사 캠페인 ID",
-      "prmp_kwd": "@@설문캠페인ID@@",
-      "prmp_kwd_nm": "설문조사 캠페인 ID",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20241212145639",
-      "operator": "IN",
-      "synonyms": [
-        "설문조사 캠페인 ID"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "설문ID",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": " select projectid\r\n           , projectname\r\n  from t_ssbi_survey_index "
-        },
-        {
-          "seq": 2,
-          "level_name": "캠페인ID",
-          "operator": "IN",
-          "multi": null,
-          "ml_qry": "/* aaa = @@설문ID@@ */\r\n   select b.CAMP_NM, c.CAMP_ID\r\n     from t_ssbi_survey_index a\r\n          inner join z_camp_survey b\r\n       on a.projectID = b.SURVEY_ID \r\n          left outer join z_campaign c\r\n       on b.CAMP_ID = c.CAMP_ID\r\nwhere 1=1\r\n[a.projectid ::op:: @@설문ID@@]\r\n    "
-        }
-      ]
-    },
-    {
-      "dimension_id": "조건멀티팝업",
-      "prompt_label": "조건멀티팝업",
-      "prmp_kwd": "@@조건멀티팝업@@",
-      "prmp_kwd_nm": "조건멀티팝업",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20231010132539",
-      "operator": "IN",
-      "synonyms": [
-        "조건멀티팝업"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "ml팝업30만",
-          "operator": "IN",
-          "multi": null,
-          "ml_qry": "SELECT \r\n    t1.number,\r\n    CASE \r\n        -- 숫자 0-9 (10개)\r\n        WHEN (t1.number % 76) <= 9 THEN CAST((t1.number % 76) + 1 AS CHAR)\r\n        WHEN (t1.number % 76) = 10 THEN '0'\r\n        \r\n        -- 영문 대문자 A-Z (26개)\r\n        WHEN (t1.number % 76) <= 35 \r\n        THEN CHAR(ASCII('A') + ((t1.number % 76) - 11))\r\n        \r\n        -- 영문 소문자 a-z (26개)\r\n        WHEN (t1.number % 76) <= 61 \r\n        THEN CHAR(ASCII('a') + ((t1.number % 76) - 37))\r\n        \r\n        -- 한글 가-하 (14개)\r\n        WHEN (t1.number % 76) = 63 THEN '가'\r\n        WHEN (t1.number % 76) = 64 THEN '나'\r\n        WHEN (t1.number % 76) = 65 THEN '다'\r\n        WHEN (t1.number % 76) = 66 THEN '라'\r\n        WHEN (t1.number % 76) = 67 THEN '마'\r\n        WHEN (t1.number % 76) = 68 THEN '바'\r\n        WHEN (t1.number % 76) = 69 THEN '사'\r\n        WHEN (t1.number % 76) = 70 THEN '아'\r\n        WHEN (t1.number % 76) = 71 THEN '자'\r\n        WHEN (t1.number % 76) = 72 THEN '차'\r\n        WHEN (t1.number % 76) = 73 THEN '카'\r\n        WHEN (t1.number % 76) = 74 THEN '타'\r\n        WHEN (t1.number % 76) = 75 THEN '파'\r\n        ELSE '하'\r\n    END as number2\r\nFROM (\r\n    SELECT (@row := @row + 1) as number\r\n    FROM information_schema.tables A \r\n    CROSS JOIN information_schema.tables B,\r\n    (SELECT @row := 0) AS r \r\n    LIMIT 300000\r\n) t1;"
-        }
-      ]
-    },
-    {
-      "dimension_id": "주구매매장",
-      "prompt_label": "주구매매장",
-      "prmp_kwd": "@@주구매매장@@",
-      "prmp_kwd_nm": "주구매매장",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20231010132539",
-      "operator": "IN",
-      "synonyms": [
-        "주구매매장",
-        "주로구매매장",
-        "주요구매매장",
-        "주구매점포",
-        "주 구매 매장"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "ml팝업30만",
-          "operator": "IN",
-          "multi": null,
-          "ml_qry": "SELECT \r\n    t1.number,\r\n    CASE \r\n        -- 숫자 0-9 (10개)\r\n        WHEN (t1.number % 76) <= 9 THEN CAST((t1.number % 76) + 1 AS CHAR)\r\n        WHEN (t1.number % 76) = 10 THEN '0'\r\n        \r\n        -- 영문 대문자 A-Z (26개)\r\n        WHEN (t1.number % 76) <= 35 \r\n        THEN CHAR(ASCII('A') + ((t1.number % 76) - 11))\r\n        \r\n        -- 영문 소문자 a-z (26개)\r\n        WHEN (t1.number % 76) <= 61 \r\n        THEN CHAR(ASCII('a') + ((t1.number % 76) - 37))\r\n        \r\n        -- 한글 가-하 (14개)\r\n        WHEN (t1.number % 76) = 63 THEN '가'\r\n        WHEN (t1.number % 76) = 64 THEN '나'\r\n        WHEN (t1.number % 76) = 65 THEN '다'\r\n        WHEN (t1.number % 76) = 66 THEN '라'\r\n        WHEN (t1.number % 76) = 67 THEN '마'\r\n        WHEN (t1.number % 76) = 68 THEN '바'\r\n        WHEN (t1.number % 76) = 69 THEN '사'\r\n        WHEN (t1.number % 76) = 70 THEN '아'\r\n        WHEN (t1.number % 76) = 71 THEN '자'\r\n        WHEN (t1.number % 76) = 72 THEN '차'\r\n        WHEN (t1.number % 76) = 73 THEN '카'\r\n        WHEN (t1.number % 76) = 74 THEN '타'\r\n        WHEN (t1.number % 76) = 75 THEN '파'\r\n        ELSE '하'\r\n    END as number2\r\nFROM (\r\n    SELECT (@row := @row + 1) as number\r\n    FROM information_schema.tables A \r\n    CROSS JOIN information_schema.tables B,\r\n    (SELECT @row := 0) AS r \r\n    LIMIT 300000\r\n) t1;"
-        }
-      ]
-    },
-    {
-      "dimension_id": "카테고리_분류",
-      "prompt_label": "카테고리_분류",
-      "prmp_kwd": "@@카테고리_분류@@",
-      "prmp_kwd_nm": "카테고리_분류",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20240520144326",
-      "operator": "=",
-      "synonyms": [
-        "카테고리_분류",
-        "카테고리분류",
-        "품목분류",
-        "카테고리 분류",
-        "상품카테고리분류"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "대분류",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT CATE_NO AS CD\r\n              , CATE_NM AS NM\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP\r\n WHERE DEPT_LVL = '1'"
-        },
-        {
-          "seq": 2,
-          "level_name": "중분류",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": " SELECT CASE WHEN B.CATE_NO IS NULL\r\n             THEN A.CATE_NO\r\n             ELSE B.CATE_NO\r\n        END CATE_NO\r\n      , CASE WHEN B.CATE_NO IS NULL\r\n             THEN A.CATE_NM\r\n             ELSE B.CATE_NM\r\n        END CATE_NM\r\n      , CASE WHEN B.CATE_NO IS NULL\r\n             THEN A.DEPT_LVL\r\n             ELSE B.DEPT_LVL\r\n        END DEPT_LVL\r\n   FROM QUADMAX_SDZ.T_CATE_TEMP A\r\n        LEFT OUTER JOIN QUADMAX_SDZ.T_CATE_TEMP B\r\n     ON A.CATE_NO = B.PRNT_NO\r\n  WHERE 1=1\r\n [ AND A.CATE_NO = @@대분류@@]"
-        },
-        {
-          "seq": 3,
-          "level_name": "소분류",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT A.CATE_NO\r\n     , A.CATE_NM\r\n     , A.DEPT_LVL\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP A\r\n       LEFT OUTER JOIN QUADMAX_SDZ.T_CATE_TEMP B\r\n    ON A.CATE_NO = B.PRNT_NO\r\n WHERE 1=1\r\n          AND 1= (SELECT CASE WHEN COUNT(CATE_NO) = 0 THEN 0\r\n                      ELSE 1\r\n                  END GB\r\n            FROM QUADMAX_SDZ.T_CATE_TEMP\r\n           WHERE 1=1\r\n             AND DEPT_LVL = 3\r\n            [AND PRNT_NO = @@중분류@@]\r\n           ) \r\n  [AND A.PRNT_NO = @@중분류@@] \r\nGROUP BY A.CATE_NO\r\n     , A.CATE_NM\r\n     , A.DEPT_LVL"
-        }
-      ]
-    },
-    {
-      "dimension_id": "카테고리_분류_테스트",
-      "prompt_label": "카테고리_분류_테스트",
-      "prmp_kwd": "@@카테고리_분류_테스트@@",
-      "prmp_kwd_nm": "카테고리_분류_테스트",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20240520130901",
-      "operator": "=",
-      "synonyms": [
-        "카테고리_분류_테스트"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "대분류",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT CATE.CATE_NO AS CODE\r\n               , CATE.CATE_NM AS NAME\r\n   FROM QUADMAX_SDZ.T_CATE_TEMP CATE\r\n WHERE CATE.DEPT_LVL = 1\r\n ORDER BY CATE.CATE_NO"
-        },
-        {
-          "seq": 2,
-          "level_name": "중분류",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT CHLD_CATE.CATE_NO AS CODE \r\n     , CHLD_CATE.CATE_NM AS NAME\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n WHERE 1 = 1\r\n     [AND PRNT_CATE.CATE_NO = @@대분류@@]\r\n \r\n UNION ALL\r\n \r\nSELECT '-'       AS CODE\r\n     , '분류 없음' AS NAME\r\n  FROM DUAL\r\n WHERE NOT EXISTS \r\n       (SELECT 1\r\n          FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n\t\t       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n\t\t    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n\t\t WHERE 1 = 1\r\n\t\t     [AND PRNT_CATE.CATE_NO = @@대분류@@]\r\n       )"
-        },
-        {
-          "seq": 3,
-          "level_name": "소분류",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT CHLD_CATE.CATE_NO AS CODE \r\n     , CHLD_CATE.CATE_NM AS NAME\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n WHERE 1 = 1\r\n     [AND PRNT_CATE.CATE_NO = @@중분류@@]\r\n \r\n UNION ALL\r\n \r\nSELECT '-'       AS CODE\r\n     , '분류 없음' AS NAME\r\n  FROM DUAL\r\n WHERE NOT EXISTS \r\n       (SELECT 1\r\n          FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n\t\t       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n\t\t    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n\t\t WHERE 1 = 1\r\n\t\t     [AND PRNT_CATE.CATE_NO = @@중분류@@]\r\n       )"
-        },
-        {
-          "seq": 4,
-          "level_name": "상세분류",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "SELECT CHLD_CATE.CATE_NO AS CODE \r\n     , CHLD_CATE.CATE_NM AS NAME\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n WHERE 1 = 1\r\n     [AND PRNT_CATE.CATE_NO = @@소분류@@]\r\n\r\n UNION ALL\r\n \r\nSELECT CATE.CATE_NO AS CODE \r\n     , CATE.CATE_NM AS NAME\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP CATE\r\n WHERE NOT EXISTS \r\n       (SELECT 1\r\n          FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n\t\t       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n\t\t    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n\t\t WHERE 1 = 1\r\n\t\t     [AND PRNT_CATE.CATE_NO =  @@소분류@@]\r\n       )\r\n  [AND CATE.CATE_NO = @@소분류@@]\r\n\r\n UNION ALL\r\n \r\nSELECT CATE.CATE_NO AS CODE \r\n     , CATE.CATE_NM AS NAME\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP CATE\r\n WHERE NOT EXISTS \r\n       (SELECT 1\r\n          FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n\t\t       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n\t\t    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n\t\t WHERE 1 = 1\r\n\t\t     [AND PRNT_CATE.CATE_NO =  @@중분류@@]\r\n       )\r\n  [AND CATE.CATE_NO = @@중분류@@]\r\n\r\n UNION ALL\r\n \r\nSELECT CATE.CATE_NO AS CODE \r\n     , CATE.CATE_NM AS NAME\r\n  FROM QUADMAX_SDZ.T_CATE_TEMP CATE\r\n WHERE NOT EXISTS \r\n       (SELECT 1\r\n          FROM QUADMAX_SDZ.T_CATE_TEMP PRNT_CATE\r\n\t\t       INNER JOIN QUADMAX_SDZ.T_CATE_TEMP CHLD_CATE\r\n\t\t    ON PRNT_CATE.CATE_NO = CHLD_CATE.PRNT_NO\r\n\t\t WHERE 1 = 1\r\n\t\t     [AND PRNT_CATE.CATE_NO =  @@대분류@@]\r\n       )\r\n  [AND CATE.CATE_NO = @@대분류@@]"
-        }
-      ]
-    },
-    {
-      "dimension_id": "캠페인그룹",
-      "prompt_label": "캠페인그룹",
-      "prmp_kwd": "@@캠페인그룹@@",
-      "prmp_kwd_nm": "캠페인그룹",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20241021095909",
-      "operator": "=",
-      "synonyms": [
-        "캠페인그룹"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "그룹",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "select CAMP_GRP_ID\r\n     , CAMP_GRP_NM\r\n  from quadmax_sdz.t_camp_group  \r\n where DEL_F = 'N' /* 삭제플래그 처리 */\r\n   and CAMP_GRP_END_DT >= date_format(NOW(), '%Y%m%d') /* 조회일자보다 종료일이 나중인 캠페인 리스트만 조회*/"
-        },
-        {
-          "seq": 2,
-          "level_name": "캠페인명",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": "/* 그룹 == @@그룹@@ */\r\n\r\nselect CAMP_ID\r\n     , CAMP_NM \r\n  from quadmax_sdz.t_campaign  \r\n where CAMP_GRP_ID =  @@그룹@@ /* 'CPGP202400000006' */\r\n   and DEL_F = 'N' /* 삭제플래그 처리 */\r\n   and CAMP_END_DT >= date_format(NOW(), '%Y%m%d') /* 조회일자보다 종료일이 나중인 캠페인 리스트만 조회*/"
-        }
-      ]
-    },
-    {
-      "dimension_id": "퍼널전환",
-      "prompt_label": "퍼널전환",
-      "prmp_kwd": "@@퍼널전환@@",
-      "prmp_kwd_nm": "퍼널전환",
-      "dbms_id": "QUADMAX_SDZ",
-      "connection": "quadmax_sdz",
-      "ml_ds_div_cd": "ML",
-      "ml_id": "ML20250425130311",
-      "operator": "IN",
-      "synonyms": [
-        "퍼널전환",
-        "퍼널전환율",
-        "전환퍼널",
-        "퍼널 전환",
-        "퍼널단계전환"
-      ],
-      "target_table": null,
-      "target_column": null,
-      "ds_sql": null,
-      "resolution": "ml_hierarchy",
-      "ml_hierarchy": [
-        {
-          "seq": 1,
-          "level_name": "퍼널ID선택",
-          "operator": "=",
-          "multi": null,
-          "ml_qry": " SELECT A.FNNL_ID as CD\r\n     , A.FNNL_NM as CD_NAME\r\n  FROM quadmax_sdz.t_funnel A\r\n       inner  join  ( \r\n       \t\t\t\t\t/*t_funnel_node_out_list테이블에 존재하는 값만 필터링*/\r\n\t\t\t\t       SELECT FNNL_ID\r\n\t\t\t\t           FROM quadmax_sdz.t_funnel_node_out_list\r\n\t\t\t\t          WHERE 1=1\t\t\t\t\r\n\t\t\t\t          GROUP BY FNNL_ID\r\n       \t\t\t\t) B\r\n\t    ON A.FNNL_ID = B.FNNL_ID\r\nwhere A.del_f = 'N'\r\nAND A.FNNL_STS_ID <> '010'\r\n GROUP BY A.FNNL_ID\r\n     , A.FNNL_NM\r\n ORDER BY A.FNNL_ID desc"
-        },
-        {
-          "seq": 2,
-          "level_name": "퍼널노드선택",
-          "operator": "IN",
-          "multi": null,
-          "ml_qry": "SELECT CONCAT(A.FNNL_ID,'_',A.NODE_ID) AS CD\r\n     , C.NODE_NM AS CD_NAME\r\n  FROM quadmax_sdz.t_funnel_node_out_list A\r\n       INNER JOIN\r\n       ( SELECT FNNL_ID\r\n              , NODE_ID\r\n              , MAX(SEQ) AS SEQ\r\n           FROM quadmax_sdz.t_funnel_node_out_list\r\n          WHERE 1=1\r\n           [AND FNNL_ID = @@퍼널ID선택@@]\r\n\r\n          GROUP BY FNNL_ID\r\n              , NODE_ID\r\n       ) B\r\n    ON A.FNNL_ID = B.FNNL_ID\r\n   AND A.NODE_ID = B.NODE_ID\r\n   AND A.SEQ = B.SEQ\r\n       LEFT OUTER JOIN quadmax_sdz.t_funnel_rulescript C\r\n    ON A.FNNL_ID = C.FNNL_ID\r\n  AND A.NODE_ID = C.NODE_ID\r\n WHERE A.OUT_YN = 'Y'\r\n\r\n/* 표준 쿼리\r\nSELECT CONCAT(A.FNNL_ID,'_',A.NODE_ID) AS CD\r\n     , C.NODE_NM AS CD_NAME\r\n  FROM t_funnel_node_out_list A\r\n       INNER JOIN\r\n       ( SELECT FNNL_ID\r\n              , NODE_ID\r\n              , MAX(SEQ) AS SEQ\r\n           FROM t_funnel_node_out_list\r\n          WHERE 1=1\r\n           [AND FNNL_ID = @@퍼널ID선택@@]\r\n          GROUP BY FNNL_ID\r\n              , NODE_ID\r\n       ) B\r\n    ON A.FNNL_ID = B.FNNL_ID\r\n   AND A.NODE_ID = B.NODE_ID\r\n   AND A.SEQ = B.SEQ\r\n       LEFT OUTER JOIN t_funnel_rulescript C\r\n    ON A.FNNL_ID = C.FNNL_ID\r\n  AND A.NODE_ID = C.NODE_ID\r\n WHERE A.OUT_YN = 'Y'\r\n*/"
-        }
-      ]
     }
   ]
 }

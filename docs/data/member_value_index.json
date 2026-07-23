@@ -3,7 +3,7 @@
   "description": "실회원 테이블 저카디널리티 컬럼 값 스냅샷. 프롬프트 토큰 -> 실컬럼/저장값 해석의 단일 소스. build_member_value_index.py 로 실DB에서 자동 생성(수동 큐레이션 없음).",
   "table": "CRM_MB_BASEINFO",
   "connection": "CRMDW",
-  "generated_at": "2026-07-22T01:56:39.910829+00:00",
+  "generated_at": "2026-07-23T03:26:09.434760+00:00",
   "max_distinct": 300,
   "column_count": 13,
   "region_hierarchy": {

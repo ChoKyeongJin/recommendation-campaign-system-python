@@ -1655,6 +1655,37 @@ def _infer_intent(query: str) -> str:
     return "unknown"
 
 
+def _has_member_target_signal(query_plan: dict[str, Any]) -> bool:
+    """실DB 로 실제 추출 SQL 을 만드는 회원/주문 타겟 신호가 하나라도 있는지 판정한다.
+
+    build_verified_condition_tokens 가 토큰을 만들지 않는 결정론 빌더 신호(생일/신규가입/밀집지역/
+    지표랭킹/주문횟수/미구매창/집계조건/구매이력)도 '타겟 조건 있음'으로 인정하기 위한 공통 판정.
+    intent 승격(_promote_unknown_intent_for_target_signal)과 recommend_campaign 필수조건 검증
+    (validate_required_input_conditions)이 같은 신호 집합을 공유하게 한다."""
+    has_member_signal = compile_member_target_conditions(query_plan)["has_signal"]
+    target_user = query_plan.get("target_user", {})
+    purchase_object = target_user.get("purchase_object")
+    has_density_target = isinstance(query_plan.get("region_density_target"), dict)
+    has_metric_ranking = isinstance(query_plan.get("member_metric_ranking"), dict)
+    # 주문 횟수 행동(첫 구매/재구매/무구매)·구매 미발생 기간(최근 N일 미구매)도 주문 집계로 실추출 가능한 신호다.
+    behaviors = target_user.get("behaviors", [])
+    has_order_count_signal = any(behavior in _order_count_targets_config()["behaviors"] for behavior in behaviors)
+    has_purchase_inactivity = isinstance(target_user.get("purchase_inactivity"), dict)
+    has_birthday_target = isinstance(target_user.get("birthday_target"), dict)
+    # 집계 조건(누적 구매 금액/횟수 임계값)도 주문 집계로 실추출 가능한 세그먼트 신호다.
+    has_aggregate_condition = bool(target_user.get("aggregate_conditions"))
+    return bool(
+        has_member_signal
+        or has_density_target
+        or has_metric_ranking
+        or has_order_count_signal
+        or has_purchase_inactivity
+        or has_birthday_target
+        or has_aggregate_condition
+        or (isinstance(purchase_object, str) and bool(purchase_object))
+    )
+
+
 def _promote_unknown_intent_for_target_signal(query_plan: dict[str, Any]) -> None:
     """intent=unknown 이라도 실DB로 추출 가능한 타겟 신호가 있으면 find_user_segment 로 승격한다.
 
@@ -1665,28 +1696,7 @@ def _promote_unknown_intent_for_target_signal(query_plan: dict[str, Any]) -> Non
     목적은 없으므로 recommend_campaign 이 아니라 find_user_segment)."""
     if query_plan.get("intent") != "unknown":
         return
-    has_member_signal = compile_member_target_conditions(query_plan)["has_signal"]
-    purchase_object = query_plan.get("target_user", {}).get("purchase_object")
-    has_density_target = isinstance(query_plan.get("region_density_target"), dict)
-    has_metric_ranking = isinstance(query_plan.get("member_metric_ranking"), dict)
-    # 주문 횟수 행동(첫 구매/재구매/무구매)·구매 미발생 기간(최근 N일 미구매)도 주문 집계로 실추출 가능한 신호다.
-    target_user = query_plan.get("target_user", {})
-    behaviors = target_user.get("behaviors", [])
-    has_order_count_signal = any(behavior in _order_count_targets_config()["behaviors"] for behavior in behaviors)
-    has_purchase_inactivity = isinstance(target_user.get("purchase_inactivity"), dict)
-    has_birthday_target = isinstance(target_user.get("birthday_target"), dict)
-    # 집계 조건(누적 구매 금액/횟수 임계값)도 주문 집계로 실추출 가능한 세그먼트 신호다.
-    has_aggregate_condition = bool(target_user.get("aggregate_conditions"))
-    if (
-        has_member_signal
-        or has_density_target
-        or has_metric_ranking
-        or has_order_count_signal
-        or has_purchase_inactivity
-        or has_birthday_target
-        or has_aggregate_condition
-        or (isinstance(purchase_object, str) and bool(purchase_object))
-    ):
+    if _has_member_target_signal(query_plan):
         query_plan["intent"] = "find_user_segment"
 
 
@@ -7012,6 +7022,13 @@ def validate_required_input_conditions(query_plan: dict[str, Any], condition_tok
         return {"is_satisfied": True, "missing_conditions": [], "clarification_questions": []}
 
     if condition_tokens:
+        return {"is_satisfied": True, "missing_conditions": [], "clarification_questions": []}
+
+    # 결정론 회원/주문 타겟 신호(생일·신규가입·밀집지역·지표랭킹·주문횟수·미구매창·집계·구매이력)는
+    # build_verified_condition_tokens 가 토큰을 만들지 않지만 전용 빌더가 실제 추출 SQL 을 만든다.
+    # recommend_campaign 이어도 이런 신호가 있으면 '추천 조건 있음'으로 인정한다 — 타겟팅 스코프 분리로
+    # 캠페인 절('쿠폰 발송 캠페인')이 잘려도 오디언스 절('생일 고객')만으로 타겟팅되는 경우를 통과시킨다.
+    if _has_member_target_signal(query_plan):
         return {"is_satisfied": True, "missing_conditions": [], "clarification_questions": []}
 
     missing_conditions = []
