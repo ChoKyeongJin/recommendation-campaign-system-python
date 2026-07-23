@@ -48,6 +48,10 @@ BEHAVIOR_KO = {
     "no_purchase": "구매 이력 없음(무구매)", "first_purchase": "첫 구매",
     "repeat_buyer": "재구매(2회 이상)", "cart_abandoner": "장바구니 이탈",
 }
+CONSENT_KO = {
+    "app_push_optin": "앱푸시 수신동의", "sms_optin": "SMS 수신동의",
+    "email_optin": "이메일 수신동의", "marketing_optin": "마케팅(정보활용) 동의",
+}
 
 
 @lru_cache(maxsize=4)
@@ -121,6 +125,8 @@ def _extract_conditions(query_plan: dict[str, Any], candidate: dict[str, Any]) -
             add(key=lifecycle, value=lifecycle, ko=f"회원등급: {GRADE_KO[lifecycle]}", kind="eq_filter", category="grade")
         elif lifecycle == "dormant":
             add(key="dormant", value="dormant", ko="휴면 회원", kind="eq_filter", category="state")
+        elif lifecycle in CONSENT_KO:
+            add(key=lifecycle, value=lifecycle, ko=CONSENT_KO[lifecycle], kind="eq_filter", category="consent")
         elif lifecycle.startswith("inactive_"):
             add(key=lifecycle, value=lifecycle, ko=f"{lifecycle.replace('inactive_', '').replace('d', '')}일 이상 미접속",
                 kind="activity", category="activity")
@@ -137,6 +143,11 @@ def _extract_conditions(query_plan: dict[str, Any], candidate: dict[str, Any]) -
         gran = "이달" if birthday.get("granularity") == "month" else "오늘"
         add(key="birthday_target", value=gran, ko=f"생일 {gran}", kind="birthday", category="date")
 
+    recent_login = tu.get("recent_login")
+    if isinstance(recent_login, dict) and isinstance(recent_login.get("min_days"), int):
+        add(key="recent_login", value=recent_login["min_days"], ko=f"최근 {recent_login['min_days']}일 이내 로그인",
+            kind="recent_login", category="date")
+
     inactivity = tu.get("purchase_inactivity")
     if isinstance(inactivity, dict) and isinstance(inactivity.get("min_days"), int):
         add(key="purchase_inactivity", value=inactivity["min_days"], ko=f"최근 {inactivity['min_days']}일 미구매",
@@ -150,7 +161,9 @@ def _extract_conditions(query_plan: dict[str, Any], candidate: dict[str, Any]) -
 
     purchase_object = tu.get("purchase_object")
     if purchase_object:
-        add(key="purchase_object", value=purchase_object, ko=f"상품 구매 이력: '{purchase_object}'",
+        # 브랜드 확정(purchase_object_kind=brand)이면 BRAND_NAME 단독 매칭이므로 라벨도 브랜드로 표기.
+        object_label = "브랜드 구매 이력" if tu.get("purchase_object_kind") == "brand" else "상품 구매 이력"
+        add(key="purchase_object", value=purchase_object, ko=f"{object_label}: '{purchase_object}'",
             kind="free_text", category="purchase")
 
     purchase_date = tu.get("purchase_date")
@@ -214,6 +227,14 @@ def _score_condition(
         if col_ok:
             evidence.append(_ev("schema", f"schema_catalog.json: {base_table}.LAST_LOGIN_DATE", "컬럼 실재 확인", "confirmed"))
         schema_ok = col_ok
+    elif kind == "recent_login":
+        cfg = filters.get("recent_login_target", {})
+        column = cfg.get("column", "LAST_LOGIN_DATE")
+        schema_ok = _column_in_schema(schema_cols, base_table, column)
+        evidence.append(_ev("filter_registry", "member_target_filters.json: recent_login_target",
+                             f"{column} >= 최근 {cond['value']}일 하한 (anchor={cfg.get('anchor', 'getdate')})", "confirmed"))
+        if schema_ok:
+            evidence.append(_ev("schema", f"schema_catalog.json: {base_table}.{column}", "최근 접속일 컬럼 실재 확인", "confirmed"))
     elif kind == "signup":
         cfg = filters.get("signup_target", {})
         column = cfg.get("column", "REG_DT")
@@ -308,6 +329,9 @@ def _score_condition(
             check_tokens = [entry["value"].casefold()]
     elif kind == "signup":
         check_tokens = [filters.get("signup_target", {}).get("column", "reg_dt").casefold()]
+    elif kind == "recent_login":
+        # 데모(users.last_login_at)·실DB(CRM_MB_BASEINFO.LAST_LOGIN_DATE) 양쪽 공통 부분문자열.
+        check_tokens = ["last_login"]
     elif kind == "birthday":
         check_tokens = [filters.get("birthday_target", {}).get("column", "birthday").casefold()]
     elif kind in ("order_count", "order_window"):

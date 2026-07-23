@@ -127,7 +127,9 @@ def build_points(
         return [], 0
 
     embedding_model = TextEmbedding(model_name=embedding_model_name)
-    vectors = [_as_float_list(vector) for vector in embedding_model.embed(texts)]
+    # 기본 batch(256)는 다국어 mpnet(768차원)에서 512토큰 패딩과 겹쳐 메모리 스파이크로 컨테이너가
+    # OOM(137) 죽을 수 있어, 색인은 소배치로 나눠 임베딩한다(속도보다 안정성 우선 — 색인은 배치 작업).
+    vectors = [_as_float_list(vector) for vector in embedding_model.embed(texts, batch_size=32)]
     if not vectors:
         return [], 0
 

@@ -59,6 +59,8 @@ CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "s
 #   저장값은 코드도메인 접두어를 포함한다(실DB 조회로 확인: GENDER_CD.FEMALE / MEM_GRADE_CD.VIP /
 #   MEMBER_STATE_CD.SLEEP / DEVICE_TYPE_CD.APP). 범주 state 는 회원상태 직접 지정(기본 NORMAL 한정 해제).
 #   같은 컬럼(grade)에 값이 여러 개면 compile_member_target_conditions 가 IN 으로 묶는다(OR).
+#   범주 consent 는 수신동의 Y/N 컬럼 — 이들 값은 코드도메인 접두어 없이 순수 'Y'/'N' 이다(CRMDW 실값
+#   GROUP BY 로 확인). '<채널> 수신 동의' 문맥 승격은 _apply_channel_consent_filter 가 담당한다.
 # activity_filters: canonical -> 미접속 일수. LAST_LOGIN_DATE(YYYYMMDD 문자열) 사전식 비교.
 #   범위 조건이라 제외(부정)는 의미가 모호해 미지원(→ fallback).
 # lifecycle_extra_terms: 어휘로는 존재하나 등가/활동 필터로는 표현 못 하는 lifecycle canonical.
@@ -67,6 +69,10 @@ CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "s
 # signup_target: 신규 가입 타겟(REG_DT, YYYYMMDD). REG_TYPE_CD.NEW 는 96%라 무의미해 가입일 창으로 정의한다.
 #   anchor="data_max" 는 실적재 데이터 최신일(MAX(REG_DT)) 기준 최근 default_days 일 — 데모 데이터가
 #   과거(2022~2023)라 GETDATE 기준이면 0명이 되는 문제를 피한다. 운영 전환 시 anchor="getdate" 로 바꾼다.
+# recent_login_target: 최근 로그인(긍정형 접속) 창. '최근 N일/개월 로그인·접속한'을 LAST_LOGIN_DATE >=
+#   (기준일-N일) 술어로 컴파일한다(미접속 activity_filters 의 대칭, 창은 프롬프트 명시 필수). anchor 는
+#   기본 'getdate' — 적재 데이터가 과거라 0명이 나올 수 있어도, 조건 표현이 가능하면 요청 기간을
+#   왜곡하지 않고 무조건 그대로 건다는 방침이다('data_max' 는 데모 시연용 옵션).
 DEFAULT_MEMBER_TARGET_FILTERS_PATH = Path(
     os.getenv("GRAPH_RAG_MEMBER_TARGET_FILTERS", "docs/data/member_target_filters.json")
 )
@@ -82,6 +88,10 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
         {"canonical": "vip", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.VIP"},
         {"canonical": "dormant", "category": "state", "column": "B.MEMBER_STATE_CD", "value": "MEMBER_STATE_CD.SLEEP"},
         {"canonical": "app_user", "category": "channel", "column": "B.LAST_LOGIN_CHANNEL", "value": "DEVICE_TYPE_CD.APP"},
+        {"canonical": "app_push_optin", "category": "consent", "column": "B.APP_PUSH_YN", "value": "Y"},
+        {"canonical": "sms_optin", "category": "consent", "column": "B.SMS_YN", "value": "Y"},
+        {"canonical": "email_optin", "category": "consent", "column": "B.EMAIL_YN", "value": "Y"},
+        {"canonical": "marketing_optin", "category": "consent", "column": "B.AGREE_YN", "value": "Y"},
     ],
     "activity_filters": [
         {"canonical": "inactive_90d", "days": 90},
@@ -91,6 +101,7 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
     "active_state": {"column": "MEMBER_STATE_CD", "value": "MEMBER_STATE_CD.NORMAL"},
     "birthday_target": {"column": "BIRTHDAY"},
     "signup_target": {"column": "REG_DT", "table": "CRM_MB_BASEINFO", "default_days": 90, "anchor": "data_max"},
+    "recent_login_target": {"column": "LAST_LOGIN_DATE", "table": "CRM_MB_BASEINFO", "anchor": "getdate"},
     "order_count_targets": {
         "table": "CRM_SL_ORDERHEADERMALL",
         "join_column": "MEMBER_NO",
@@ -127,7 +138,7 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
     "purchase_product_match_columns": [
         "CATEGORY", "CATEGORYL_NAME", "CATEGORYM_NAME", "CATEGORYS_NAME", "BRAND_NAME", "PRODUCT_NAME",
     ],
-    "supported_condition_hint": "성별·연령·회원등급·휴면/미접속 기간·상품 구매 이력",
+    "supported_condition_hint": "성별·연령·회원등급·휴면/미접속·최근 로그인 기간·수신동의(앱푸시/SMS/이메일)·상품 구매 이력",
     "region_density": {
         "granularity_tokens": ["동네", "지역", "시군구", "시도", "구"],
         "granularity_columns": {"시도": "SIDO"},
@@ -266,6 +277,28 @@ def _member_signup_predicate(days: int | None = None, alias: str = "B") -> str:
     return f"({col} IS NOT NULL AND LEN({col}) = 8 AND {col} >= {boundary})"
 
 
+def _member_recent_login_predicate(days: int, alias: str = "B") -> str:
+    """최근 로그인 타겟 술어(긍정형). LAST_LOGIN_DATE(nvarchar(8) 'YYYYMMDD') 가 기준일로부터
+    최근 N일 이내인 회원 — 미접속(_member_activity_predicate, `<=`)의 대칭(`>=`)이다.
+
+    기준일(anchor)은 recent_login_target.anchor 설정: 기본 'getdate'(실제 오늘) — 적재 데이터가
+    과거라 0명이 나올 수 있어도 조건 표현이 가능하면 요청 기간을 왜곡하지 않고 그대로 건다.
+    'data_max' 는 적재 데이터 최신 접속일(MAX(LAST_LOGIN_DATE)) 기준(데모 시연용 옵션).
+    포맷 고정 8자리라 문자열 대소 = 날짜 대소이고, LEN 가드로 이상치를 제외한다."""
+    config = _MEMBER_TARGET_FILTERS.get("recent_login_target")
+    if not isinstance(config, dict):
+        config = _DEFAULT_MEMBER_TARGET_FILTERS["recent_login_target"]
+    column = config.get("column") or "LAST_LOGIN_DATE"
+    table = config.get("table") or "CRM_MB_BASEINFO"
+    col = f"{alias}.{column}"
+    if config.get("anchor") == "data_max":
+        anchor = f"CONVERT(DATE, (SELECT MAX({column}) FROM {table} WHERE LEN({column}) = 8), 112)"
+    else:
+        anchor = "GETDATE()"
+    boundary = f"CONVERT(CHAR(8), DATEADD(DAY, -{days}, {anchor}), 112)"
+    return f"({col} IS NOT NULL AND LEN({col}) = 8 AND {col} >= {boundary})"
+
+
 # ── 타겟팅 신호어 사전(intent/objective/문맥) ─────────────────────────────────
 # 의도·목적 분류와 문맥 판정(판매 아웃리치/신제품 알림/재활성/장바구니 이탈 등)에 쓰는 표현형의
 # 단일 출처는 docs/data/targeting_lexicon.json 이다. 새 표현("리텐션 캠페인", 새 판매 동사 등)은
@@ -277,7 +310,8 @@ DEFAULT_TARGETING_LEXICON_PATH = Path(
 
 _DEFAULT_TARGETING_LEXICON: dict[str, Any] = {
     # 대상 지향 표지: 이 뒤부터는 "누구에게 무엇을 한다"의 캠페인/채널·메시지 절로 본다.
-    "audience_direction_markers": ["에게", "한테", "께", "대상으로", "타겟으로", "타깃으로"],
+    # '곳에': "브랜드가 X인 곳에 쿠폰을 …" 같은 장소형 오디언스 표현('에게'가 아니라 '에'만 붙음).
+    "audience_direction_markers": ["에게", "한테", "께", "대상으로", "타겟으로", "타깃으로", "곳에"],
     # 채널/메시지 의도 신호. 규칙 분리 실패(표지 없음) 판정과 LLM 폴백 트리거에 쓴다.
     "channel_signal_words": [
         "홍보", "광고", "알림", "알리", "안내", "소식", "공지", "캠페인",
@@ -538,6 +572,7 @@ def _prompt_rewrite_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) 
             "targeting_label: 화면 표시용으로, 오디언스(누구를 타겟하는가)만 담은 아주 간결한 라벨.",
             "원문에 있는 조건만 사용한다(없는 조건·수치·세그먼트·혜택을 추가/삭제/재해석하지 말 것).",
             "구어체·오타·모호한 표현만 표준 타겟 용어로 정리한다(예: 2030 -> 20~30대).",
+            "브랜드 언급은 브랜드 조건 그대로 유지한다('브랜드가 X인 곳'의 X는 브랜드명 — 지역/거주 조건으로 바꾸지 않는다).",
             "targeting_label 에서는 이 캠페인이 보내거나 파는 상품·혜택(쿠폰/할인 등), 행동 표현(보내다/뿌리다/판매/만들다), 단어 '캠페인', 발송 채널을 뺀다.",
             "단, 상품 '구매/구입 이력'은 오디언스 조건이므로 targeting_label 에 유지한다(예: '기저귀 구매 고객').",
             "오디언스 조건이 없으면 targeting_label 은 빈 문자열로 둔다.",
@@ -584,6 +619,26 @@ _PURCHASE_OBJECT_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# 상품이 아닌 일반 명사(예: "알로루 브랜드 '상품' 구매한")가 구매 동사 바로 앞에 오면, 위 단일 토큰
+# 캡처가 그 일반명사를 상품명으로 오인해 LIKE '%상품%' 같은 무의미하게 넓은 매칭을 만든다.
+_GENERIC_PRODUCT_NOUNS = {"상품", "제품", "물건", "품목", "굿즈", "아이템", "브랜드"}
+# 일반명사 앞의 실제 브랜드/상품명 재시도 캡처("알로루 브랜드 상품 구매한" → '알로루').
+_PURCHASE_OBJECT_BRAND_PATTERN = re.compile(
+    r"(?P<object>[0-9A-Za-z가-힣_+\-]{1,40})\s+"
+    r"(?:브랜드|상품|제품|물건|품목|굿즈|아이템)(?:\s*(?:브랜드|상품|제품|물건|품목|굿즈|아이템))*\s*(?:을|를)?\s*(?:구매|구입)",
+    re.IGNORECASE,
+)
+
+# "브랜드가 알로루인 곳/고객" 같은 계사(copula) 형 브랜드 언급. 구매 동사가 없어도 '그 브랜드(상품)
+# 구매 고객' 타겟으로 본다 — 브랜드에 쿠폰을 뿌린다 = 그 브랜드 구매 이력 고객에게 뿌린다.
+# 연결형("브랜드가 알로루면서/이면서/이고 …")도 같은 계사 표현이다. object 는 lazy 로 최소 매칭해
+# 어미 알로루+'이면서'를 '알로루이'+'면서'로 쪼개 잡지 않게 한다(어미 대안은 긴 것 우선).
+_BRAND_COPULA_PATTERN = re.compile(
+    r"브랜드(?:가|는|명이|명은)\s*(?P<object>[0-9A-Za-z가-힣_+\-]{1,40}?)"
+    r"(?:이면서|이거나|인데|이고|이며|면서|인)(?![0-9A-Za-z가-힣])",
+    re.IGNORECASE,
+)
+
 
 # 구매 '횟수/조건' 수식어는 상품명이 아니다(예: '2회 이상 구매' 의 '이상'). 게이트가 상품 조건으로 오인해
 # 재작성을 헛되이 폐기하지 않도록 제외한다.
@@ -597,6 +652,27 @@ def _purchase_object_signals(text: str) -> set[str]:
         purchase_object = _sanitize_purchase_object(match.group("object"))
         if purchase_object and purchase_object not in _PURCHASE_SIGNAL_STOPWORDS and not purchase_object.isdigit():
             objects.add(purchase_object.casefold())
+    return objects
+
+
+# 브랜드 언급 신호(게이트 비교용) 추출 패턴. 계사형("브랜드가 X인")에 더해 "X 브랜드"/"브랜드 X"
+# 인접형까지 본다 — 재작성이 표현형을 바꿔도(예: "알로루 브랜드 구매 고객") 브랜드 언급이면 보존으로 인정.
+_BRAND_ADJACENT_BEFORE = re.compile(r"(?P<object>[0-9A-Za-z가-힣_+\-]{1,40})\s*브랜드", re.IGNORECASE)
+_BRAND_ADJACENT_AFTER = re.compile(r"브랜드\s+(?P<object>[0-9A-Za-z가-힣_+\-]{1,40})", re.IGNORECASE)
+
+
+def _brand_object_signals(text: str) -> set[str]:
+    """텍스트에서 '브랜드 조건'으로 파싱되는 브랜드명 집합을 뽑는다(재작성 게이트 비교용).
+
+    구매 상품(_purchase_object_signals)의 '문자열 존재' 검사와 달리 브랜드는 의미 검사가 필요하다:
+    재작성이 "브랜드가 알로루인 곳" → "알로루에 거주하는 고객"으로 바꾸면 '알로루' 문자열은 남지만
+    브랜드 조건은 거주지 조건으로 변질된다. 브랜드명이 다시 브랜드 언급으로 파싱될 때만 보존으로 본다."""
+    objects: set[str] = set()
+    for pattern in (_BRAND_COPULA_PATTERN, _BRAND_ADJACENT_BEFORE, _BRAND_ADJACENT_AFTER):
+        for match in pattern.finditer(text or ""):
+            brand = _sanitize_purchase_object(match.group("object"))
+            if brand and brand not in _GENERIC_PRODUCT_NOUNS and brand not in _PURCHASE_SIGNAL_STOPWORDS and not brand.isdigit():
+                objects.add(brand.casefold())
     return objects
 
 
@@ -618,7 +694,12 @@ def _prompt_signal_signature(text: str) -> dict[str, set[str]]:
     digits_only = re.sub(r"(?<=\d),(?=\d)", "", compact)
     numbers = set(re.findall(r"\d+", digits_only))
     genders = {canonical for surface, canonical in _GENDER_SURFACE_TO_CANONICAL.items() if surface in compact}
-    return {"numbers": numbers, "genders": genders, "purchases": _purchase_object_signals(compact)}
+    return {
+        "numbers": numbers,
+        "genders": genders,
+        "purchases": _purchase_object_signals(compact),
+        "brands": _brand_object_signals(compact),
+    }
 
 
 def _rewrite_dropped_signals(original: str, rewritten: str) -> list[str]:
@@ -640,6 +721,13 @@ def _rewrite_dropped_signals(original: str, rewritten: str) -> list[str]:
     for purchase in sorted(before["purchases"]):
         if purchase not in after_compact:
             dropped.append(f"구매 상품 '{purchase}'")
+    # 브랜드 조건은 문자열 존재가 아니라 '의미'로 판정한다: 재작성본에서 그 이름이 다시 브랜드 언급
+    # (또는 구매 상품 조건)으로 파싱돼야 보존이다. "브랜드가 알로루인 곳"→"알로루에 거주하는 고객"처럼
+    # 이름은 남지만 브랜드→거주지로 변질되는 환각을 잡는다.
+    preserved_after = after["brands"] | after["purchases"]
+    for brand in sorted(before["brands"]):
+        if brand not in preserved_after:
+            dropped.append(f"브랜드 조건 '{brand}'")
     return dropped
 
 
@@ -770,7 +858,9 @@ def _rule_split_prompt_scopes(text: str) -> tuple[str, str] | None:
 
     "[오디언스]에게 [채널/메시지 액션]" 구조를 이용한다. 표지가 없거나 타겟팅 절이 비면 None(규칙 실패).
     """
-    pattern = r"(?P<targeting>.*?(?:%s))\s*(?P<channel>.*)$" % "|".join(
+    # (?!서): '곳에서/에게서/께서'처럼 '서'가 이어지면 대상 지향("~에게")이 아니라 장소·출처·존칭 주격
+    # 표현이므로 표지로 보지 않는다(예: "브랜드가 X인 곳에서 구매한 고객"은 통째로 타겟팅 절).
+    pattern = r"(?P<targeting>.*?(?:%s))(?!서)\s*(?P<channel>.*)$" % "|".join(
         re.escape(marker) for marker in _lexicon_terms("audience_direction_markers")
     )
     match = re.search(pattern, text, re.DOTALL)
@@ -999,6 +1089,8 @@ def _merge_targeting_conditions(base: dict[str, Any], other: dict[str, Any]) -> 
             base_tu[field] = other_tu[field]
     if not base_tu.get("inactivity_period") and other_tu.get("inactivity_period"):
         base_tu["inactivity_period"] = other_tu["inactivity_period"]
+    if not base_tu.get("recent_login") and other_tu.get("recent_login"):
+        base_tu["recent_login"] = other_tu["recent_login"]
     for field in ("lifecycle", "interests", "preferred_channels", "behaviors"):
         merged = _unique_strings([*base_tu.get(field, []), *other_tu.get(field, [])])
         if merged:
@@ -1181,6 +1273,12 @@ def _build_single_query_plan(
     # '최근 N일 구매 안 함'은 결정론 파싱으로 확정한다(LLM 이 no_purchase 로 오분류하는 것 방지).
     llm_plan["target_user"].setdefault("purchase_inactivity", None)
     _apply_purchase_inactivity_filter(parse_query, llm_plan)
+    # '최근 N일/개월 로그인'(긍정형 접속 창)도 결정론 파싱으로 확정한다(부정형 미접속과 파서 분리 —
+    # LLM 이 긍정형을 inactive 로 뒤집거나 조건을 통째로 떨어뜨리는 것 방지).
+    llm_plan["target_user"].setdefault("recent_login", None)
+    _apply_recent_login_filter(parse_query, llm_plan)
+    # '<채널> 수신 동의'도 결정론 파싱으로 확정한다(LLM 이 채널로 분류해 수신동의 조건이 새는 것 방지).
+    _apply_channel_consent_filter(parse_query, llm_plan)
     # 범용 집계 조건(누적 구매 금액/횟수 임계값)도 결정론 파싱으로 확정한다(rules/llm 동일 컨텍스트).
     llm_plan["target_user"].setdefault("aggregate_conditions", [])
     _apply_aggregate_condition_filter(parse_query, llm_plan)
@@ -1228,6 +1326,7 @@ def _build_rule_query_plan(
             "purchase_date": None,
             "price_sensitivity": None,
             "inactivity_period": None,
+            "recent_login": None,
             "purchase_inactivity": None,
             "birthday_target": None,
             "signup_target": None,
@@ -1301,6 +1400,9 @@ def _build_rule_query_plan(
 
     _apply_cart_repurchase_context(query, plan)
     _apply_inactivity_period_filter(query, plan)
+    _apply_recent_login_filter(query, plan)
+    # 채널어가 preferred_channels 로 채워진 뒤(위 matched_terms 루프) 실행해야 동의 문맥 제거가 먹는다.
+    _apply_channel_consent_filter(query, plan)
     _apply_policy_constraints(query, plan, business_policies)
     # 지역 모호성 정책(semantic_resolutions)이 채워진 뒤에 실행해야 밀집 지역 해석이 이를 소비한다.
     _apply_region_density_target(query, plan)
@@ -1337,6 +1439,7 @@ def _build_rule_query_plan(
         + computed_metric_terms
         + set_expression_terms
         + _inactivity_retrieval_terms(plan["target_user"].get("inactivity_period"))
+        + _recent_login_retrieval_terms(plan["target_user"].get("recent_login"))
         + _query_tokens(normalized_query)
     )
     return plan
@@ -1809,11 +1912,31 @@ def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> No
     # object 클래스에 공백을 넣지 않아 "를/을" 또는 구매/구입 직전 상품 명사만 잡는다. (공백 허용 시 "40대
     # 여성 중 기저귀를 구매한" 처럼 앞 절 조건까지 삼켜 LIKE 가 무의미해지므로) 상품 카테고리 단어면 재현율에 충분하다.
     match = _PURCHASE_OBJECT_PATTERN.search(query)
-    if not match:
-        return
-    purchase_object = _sanitize_purchase_object(match.group("object"))
+    purchase_object = _sanitize_purchase_object(match.group("object")) if match else None
+    # 사용자가 '브랜드'라고 명시했으면 매칭 컬럼을 BRAND_NAME 으로 좁힐 근거가 된다(아래 kind 마킹).
+    is_brand_mention = False
+    if purchase_object in _GENERIC_PRODUCT_NOUNS:
+        # 일반명사("상품/브랜드")가 잡혔으면 그 앞의 실제 브랜드/상품명으로 재시도한다
+        # ("알로루 브랜드 상품 구매한" → '상품'이 아니라 '알로루'). 재시도가 실패하면 기존 동작 유지.
+        retry = _PURCHASE_OBJECT_BRAND_PATTERN.search(query)
+        retried = _sanitize_purchase_object(retry.group("object")) if retry else None
+        if retried and retried not in _GENERIC_PRODUCT_NOUNS:
+            purchase_object = retried
+            is_brand_mention = "브랜드" in retry.group(0)
+    if not purchase_object:
+        # 구매 동사 없이 브랜드만 언급한 계사형("브랜드가 알로루인 곳")도 구매 이력 타겟으로 승격한다.
+        brand_match = _BRAND_COPULA_PATTERN.search(query)
+        candidate = _sanitize_purchase_object(brand_match.group("object")) if brand_match else None
+        if candidate and candidate not in _GENERIC_PRODUCT_NOUNS:
+            purchase_object = candidate
+            is_brand_mention = True
     if purchase_object:
-        target_user["purchase_object"] = purchase_object
+        canonical = _canonicalize_product_term(purchase_object)
+        target_user["purchase_object"] = canonical
+        # '브랜드' 명시 또는 값 자체가 실DB 브랜드명과 일치하면 브랜드로 확정한다.
+        # → purchase_history 템플릿이 6컬럼 광역 LIKE 대신 BRAND_NAME 만 매칭(정밀도↑).
+        if is_brand_mention or _is_known_brand_term(canonical):
+            target_user["purchase_object_kind"] = "brand"
 
 
 def _apply_sell_object(query: str, plan: dict[str, Any]) -> None:
@@ -1947,7 +2070,10 @@ def _apply_llm_object_fallback(
     if need_purchase:
         purchase_object = _validated_object(extracted.get("purchase_object"), query)
         if purchase_object:
-            target_user["purchase_object"] = purchase_object
+            canonical = _canonicalize_product_term(purchase_object)
+            target_user["purchase_object"] = canonical
+            if _is_known_brand_term(canonical):
+                target_user["purchase_object_kind"] = "brand"
     if need_sell:
         sell_object = _validated_object(extracted.get("sell_object"), query)
         if sell_object:
@@ -2908,6 +3034,103 @@ def _inactivity_retrieval_terms(period: Any) -> list[str]:
     return terms
 
 
+# 최근 로그인(긍정형 접속) 타겟: '최근 N개월/N일 (이내·동안) 로그인·접속한'. 부정형(미접속/로그인하지
+# 않은/휴면)은 _parse_inactivity_period 소관이라 여기서는 배제한다. 기간 창이 명시된 경우에만 잡는다 —
+# '앱으로 로그인한 사용자'처럼 창 없는 로그인 언급은 최근성 조건이 아니다(app_user 등 다른 트랙 소관).
+_RECENT_LOGIN_SIGNALS = (
+    "로그인한", "로그인했", "로그인이력", "로그인기록",
+    "접속한", "접속했", "접속이력", "접속기록", "loggedin",
+)
+_RECENT_LOGIN_NEG_SIGNALS = (
+    "미접속", "미로그인", "접속하지", "접속안", "로그인하지", "로그인안", "휴면", "비활성", "inactive", "dormant",
+)
+
+
+def _parse_recent_login_period(query: str) -> dict[str, Any] | None:
+    compact_query = query.replace(" ", "").casefold()
+    if not any(signal in compact_query for signal in _RECENT_LOGIN_SIGNALS):
+        return None
+    if any(signal in compact_query for signal in _RECENT_LOGIN_NEG_SIGNALS):
+        return None
+    # 'N개월 전에 로그인한'(과거 시점 언급)은 최근 창이 아니다 → '전' 후행 시 미매칭.
+    month_match = re.search(r"(?P<value>\d{1,2})\s*(?:개월|달)(?!\s*전)", query)
+    if month_match:
+        months = int(month_match.group("value"))
+        if months > 0:
+            return {"value": months, "unit": "months", "min_days": months * 30, "sql_interval": f"{months} months"}
+    day_match = re.search(r"(?P<value>\d{1,4})\s*일(?!\s*전)", query)
+    if day_match:
+        days = int(day_match.group("value"))
+        if days > 0:
+            return {"value": days, "unit": "days", "min_days": days, "sql_interval": f"{days} days"}
+    return None
+
+
+def _apply_recent_login_filter(query: str, plan: dict[str, Any]) -> None:
+    """'최근 N개월/N일 (이내) 로그인·접속한 고객'을 최근 로그인 타겟(recent_login)으로 해석한다.
+
+    compile_member_target_conditions 가 LAST_LOGIN_DATE >= (기준일-N일) 술어로 컴파일해 성별/연령 등과
+    자동 AND 결합한다(미접속 inactivity_period 의 대칭). 적재 데이터가 과거라 0명이 나올 수 있어도,
+    조건 표현이 가능하면 요청 기간을 왜곡하지 않고 무조건 그대로 건다."""
+    period = _parse_recent_login_period(query)
+    if period is None:
+        return
+    plan.setdefault("target_user", {})["recent_login"] = period
+
+
+def _recent_login_retrieval_terms(period: Any) -> list[str]:
+    if not isinstance(period, dict):
+        return []
+    return ["last_login_at", "recent_login", "로그인", "접속"]
+
+
+# 채널 수신동의 타겟: '<채널> 수신(에) 동의한' 은 발송 채널이 아니라 회원 속성(수신동의 Y/N 컬럼)
+# 조건이다. 실컬럼 매핑은 member_target_filters.json eq_filters 의 consent 카테고리가 소유하고
+# (CRMDW 실값 확인: APP_PUSH_YN/SMS_YN/EMAIL_YN/AGREE_YN 모두 순수 'Y'/'N'), 여기서는 문맥 판정만
+# 담당한다. 동의 문맥이면 채널 어휘 매칭(preferred_channels/campaign channels)에서 해당 채널을 빼서
+# '선호 채널 미지원' dropped 경고로 조건이 새는 것을 막는다. 거부/미동의는 제외 조건(<> 'Y')이 된다.
+_CHANNEL_CONSENT_TARGETS: tuple[tuple[str, str | None, tuple[str, ...]], ...] = (
+    ("app_push_optin", "app_push", ("앱푸시", "푸시", "apppush")),
+    ("sms_optin", "sms", ("sms", "문자")),
+    ("email_optin", "email", ("이메일", "email", "메일")),
+    ("marketing_optin", None, ("마케팅", "정보활용")),
+)
+# 부정(거부)을 먼저 판정한다 — '동의하지 않'/'동의 안' 은 긍정 패턴('동의')의 부분문자열을 포함한다.
+_CONSENT_NEG_SUFFIX = r"(?:수신)?(?:에|을|를)?(?:거부|미동의|동의안|동의하지|비동의)"
+_CONSENT_POS_SUFFIX = r"(?:수신)?(?:에|을|를)?동의"
+
+
+def _apply_channel_consent_filter(query: str, plan: dict[str, Any]) -> None:
+    """'앱푸시/SMS/이메일 수신 동의·거부' 문맥을 수신동의 회원 속성 조건으로 승격한다.
+
+    동의는 target_user.lifecycle 에 consent canonical 을 넣어 eq_filters 규칙 엔진이 `= 'Y'` 로,
+    거부/미동의는 exclude.lifecycle 로 `<> 'Y'` 로 컴파일한다. 채널어가 동의 문맥으로 쓰였으면
+    선호 채널(preferred_channels)·캠페인 채널에서 제거해 미지원 조건 탈락(dropped)을 방지한다."""
+    compact = query.replace(" ", "").casefold()
+    target_user = plan.setdefault("target_user", {})
+    exclude = plan.setdefault("exclude", {})
+    removed_channels: set[str] = set()
+    for canonical, channel, terms in _CHANNEL_CONSENT_TARGETS:
+        if canonical not in MEMBER_EQ_FILTERS:
+            continue  # 레지스트리 파일 커스텀으로 빠졌다면 문맥 승격도 하지 않는다(컴파일 불가 방지)
+        term_alt = "(?:" + "|".join(re.escape(term) for term in terms) + ")"
+        if re.search(term_alt + _CONSENT_NEG_SUFFIX, compact):
+            _append_unique(exclude.setdefault("lifecycle", []), canonical)
+        elif re.search(term_alt + _CONSENT_POS_SUFFIX, compact):
+            _append_unique(target_user.setdefault("lifecycle", []), canonical)
+        else:
+            continue
+        if channel:
+            removed_channels.add(channel)
+    if not removed_channels:
+        return
+    target_user["preferred_channels"] = [
+        value for value in target_user.get("preferred_channels", []) if value not in removed_channels
+    ]
+    campaign = plan.setdefault("campaign_constraints", {})
+    campaign["channels"] = [value for value in campaign.get("channels", []) if value not in removed_channels]
+
+
 def _is_cart_abandonment_query(query: str) -> bool:
     compact_query = query.replace(" ", "").casefold()
     return any(keyword in compact_query for keyword in _lexicon_terms("cart_terms")) and any(
@@ -2980,7 +3203,12 @@ def _sanitize_purchase_object(value: str) -> str | None:
         stripped_token = re.sub(r"(?:을|를)$", "", token)
         # 상품이 아닌 구매행동 수식어(첫/재/최근 구매, 많이/자주 등 수량·빈도 부사)는 명사형 매칭에서
         # 엉뚱한 LIKE(예: '많이 구입한' → PRODUCT_NAME LIKE N'%많이%')를 만들 수 있어 제외한다.
-        if not stripped_token or stripped_token in {"사람", "고객", "사용자", "첫", "재", "최근", "최초", "최초로", "반복", "자주", "많이", "많은", "다수", "대량", "처음", "처음으로", "미"}:
+        # 장소·대상 지시어("이곳에서 구매한" — 앞 절의 브랜드/장소를 가리키는 조응 표현)도 상품명이 아니다
+        # — 지시어를 걸러야 브랜드 계사절("브랜드가 X면서 … 이곳에서 구매한")이 브랜드 추출로 이어진다.
+        if not stripped_token or stripped_token in {
+            "사람", "고객", "사용자", "첫", "재", "최근", "최초", "최초로", "반복", "자주", "많이", "많은", "다수", "대량", "처음", "처음으로", "미",
+            "이곳", "이곳에서", "그곳", "그곳에서", "저곳", "여기", "여기서", "여기에서", "거기", "거기서", "거기에서", "저기", "저기서", "해당", "동일", "같은",
+        }:
             continue
         # 날짜/기간 토큰은 상품이 아니라 구매 날짜 조건이므로 상품명 후보에서 뺀다(→ purchase_date 가 담당).
         if _is_date_like_token(stripped_token):
@@ -2989,6 +3217,55 @@ def _sanitize_purchase_object(value: str) -> str | None:
     if not tokens:
         return None
     return " ".join(tokens[-3:])[:40]
+
+
+@functools.lru_cache(maxsize=1)
+def _purchase_brand_names() -> tuple[str, ...]:
+    """CRM_CM_PRODUCT 의 실제 브랜드명 스냅샷(프로세스당 1회 조회). DB 미연결/실패 시 빈 튜플.
+
+    사용자가 특수문자를 생략한 브랜드 표기('알로루')를 DB 표기('알로&루')로 보정하는 데 쓴다."""
+    try:
+        from db_connections import run_read_query
+
+        rows = run_read_query(
+            "CRMDW",
+            "SELECT DISTINCT BRAND_NAME FROM CRM_CM_PRODUCT WHERE BRAND_NAME IS NOT NULL AND BRAND_NAME <> ''",
+        )
+    except Exception:
+        return ()
+    names = []
+    for row in rows:
+        value = next(iter(row.values()), None) if isinstance(row, dict) else (row[0] if row else None)
+        if isinstance(value, str) and value.strip():
+            names.append(value.strip())
+    return tuple(names)
+
+
+def _normalize_product_term(value: str) -> str:
+    """브랜드/상품명 비교용 정규화: 영숫자·한글만 남긴다('알로&루'→'알로루', 'A-BC '→'abc')."""
+    return re.sub(r"[^0-9a-z가-힣]", "", value.casefold())
+
+
+def _canonicalize_product_term(term: str) -> str:
+    """구매 상품어 토큰을 DB 브랜드 표기로 보정한다(정규화 완전 일치만 — 부분일치 오탐 방지).
+
+    '알로루 티셔츠' 같은 다중 토큰은 토큰별로 보정한다. 브랜드 스냅샷을 못 얻으면 원문 그대로."""
+    names = _purchase_brand_names()
+    if not names or not isinstance(term, str) or not term:
+        return term
+    by_normalized = {_normalize_product_term(name): name for name in names if _normalize_product_term(name)}
+    tokens = [by_normalized.get(_normalize_product_term(token), token) for token in term.split()]
+    return " ".join(tokens)[:40]
+
+
+def _is_known_brand_term(term: str) -> bool:
+    """상품어 '전체'가 실DB 브랜드명과 정규화 일치하면 True(브랜드 확정 → BRAND_NAME 단독 매칭 근거).
+
+    '알로루 티셔츠' 같은 혼합 표현은 브랜드 단독이 아니므로 False(광역 컬럼 매칭 유지)."""
+    if not isinstance(term, str) or not term:
+        return False
+    normalized = _normalize_product_term(term)
+    return bool(normalized) and any(_normalize_product_term(name) == normalized for name in _purchase_brand_names())
 
 
 def _is_exclusion_context(query: str, matched_text: str, match_type: str) -> bool:
@@ -3264,6 +3541,11 @@ def retrieve(
     # 목적 절이 살아있는 전체 재작성본으로 intent 를 재추론해 더 강한 캠페인 의도로만 승격한다.
     if scope == "targeting":
         _upgrade_intent_from_effective_query(query_plan, effective_query)
+        # Query Plan 은 타겟팅 절만으로 빌드돼 내부 재분리에선 채널 절이 빈 문자열이 된다
+        # (이미 분리된 텍스트를 다시 분리하므로). 응답 prompt_scopes 가 '실제 분리 결과'(타겟팅+채널)를
+        # 보여주도록 파이프라인 레벨 분리(plan_scopes)로 스코프 필드를 되살린다 — BFF 는 채널 절이
+        # 있어야 분리 성공으로 보고 타겟팅 절을 "타겟팅 프롬프트"로 표시한다.
+        _attach_retrieval_scopes(query_plan, plan_scopes)
     # 캠페인/조회 동사 없이 회원 속성만 나열한 프롬프트는 파서가 intent=unknown 을 주는데, 그러면
     # 회원 타겟 SQL 빌더가 호출되지 않는다. 실DB 매핑 가능한 타겟 신호가 있으면 세그먼트 조회로 승격.
     _promote_unknown_intent_for_target_signal(query_plan)
@@ -5596,6 +5878,19 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
     if isinstance(inactivity_period, dict) and isinstance(inactivity_period.get("sql_interval"), str):
         _add_inactivity_period_token(tokens, inactivity_period)
 
+    recent_login = target_user.get("recent_login")
+    if isinstance(recent_login, dict) and isinstance(recent_login.get("sql_interval"), str):
+        _add_token(
+            tokens,
+            "target_user.recent_login",
+            "recent_login",
+            ">=",
+            recent_login["sql_interval"],
+            ["u.last_login_at >= CURRENT_TIMESTAMP - INTERVAL " + _sql_quote(recent_login["sql_interval"])],
+            [],
+            select_columns=["u.last_login_at"],
+        )
+
     for lifecycle in target_user.get("lifecycle", []):
         if lifecycle in LIFECYCLE_TERMS and not _has_explicit_long_inactivity_period(inactivity_period):
             _add_token(tokens, "target_user.lifecycle", "lifecycle", "=", lifecycle, ["u.lifecycle = " + _sql_quote(lifecycle)], [])
@@ -6334,6 +6629,7 @@ _UNSUPPORTED_CONDITION_LABELS = {
     "target_user.aggregate_conditions": "집계 조건(구매 금액/횟수 임계값)",
     "target_user.price_sensitivity": "가격 민감도 조건",
     "target_user.inactivity_period": "미접속 기간 조건",
+    "target_user.recent_login": "최근 로그인 기간 조건",
     "target_user.lifecycle": "생애주기 조건",
     "exclude.gender": "성별 제외 조건",
     "exclude.interests": "관심사 제외 조건",
@@ -6461,6 +6757,12 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     inactivity_period = target_user.get("inactivity_period")
     if isinstance(inactivity_period, dict) and isinstance(inactivity_period.get("min_days"), int):
         other_predicates.append(_member_activity_predicate(inactivity_period["min_days"])); has_signal = True
+
+    # 최근 로그인 창(긍정형 접속): LAST_LOGIN_DATE >= (기준일-N일) 술어. 적재 데이터가 과거라 0명이
+    # 나올 수 있어도, 조건 표현이 가능하면 요청 기간을 왜곡하지 않고 무조건 그대로 건다.
+    recent_login = target_user.get("recent_login")
+    if isinstance(recent_login, dict) and isinstance(recent_login.get("min_days"), int):
+        other_predicates.append(_member_recent_login_predicate(recent_login["min_days"])); labels.append("recent_login"); has_signal = True
 
     # 생일 타겟(BIRTHDAY 월일 비교; '이달 생일'은 월 비교). 년도는 비교하지 않는다.
     birthday_target = target_user.get("birthday_target")
@@ -6803,8 +7105,16 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
     compiled = compile_member_target_conditions(query_plan)
     where_clauses: list[str] = []
     if has_object:
+        # 사용자가 '브랜드'를 명시했거나 값이 실DB 브랜드명으로 확정된 경우, 광역 6컬럼 LIKE 대신
+        # BRAND_NAME 만 매칭한다 — 카테고리/상품명에 같은 문자열이 우연히 들어간 상품이 섞이는 것 방지.
+        if target_user.get("purchase_object_kind") == "brand":
+            match_columns = tuple(
+                column for column in _PURCHASE_PRODUCT_MATCH_COLUMNS if column.rsplit(".", 1)[-1] == "BRAND_NAME"
+            ) or _PURCHASE_PRODUCT_MATCH_COLUMNS
+        else:
+            match_columns = _PURCHASE_PRODUCT_MATCH_COLUMNS
         product_match = "(" + " OR ".join(
-            _sql_nlike_contains("P." + column, purchase_object) for column in _PURCHASE_PRODUCT_MATCH_COLUMNS
+            _sql_nlike_contains("P." + column, purchase_object) for column in match_columns
         ) + ")"
         where_clauses.append(product_match)
     if date_predicate is not None:
@@ -7594,6 +7904,18 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
                 "target_user.inactivity_period",
                 inactivity_period["sql_interval"],
                 [inactivity_period["sql_interval"], str(inactivity_period.get("min_days", ""))],
+                # 데모(users.last_login_at)·실DB(CRM_MB_BASEINFO.LAST_LOGIN_DATE) 양쪽 공통 부분문자열.
+                all_terms=["last_login"],
+            )
+        )
+
+    recent_login = target_user.get("recent_login")
+    if isinstance(recent_login, dict) and isinstance(recent_login.get("sql_interval"), str):
+        conditions.append(
+            _condition(
+                "target_user.recent_login",
+                recent_login["sql_interval"],
+                [recent_login["sql_interval"], str(recent_login.get("min_days", ""))],
                 # 데모(users.last_login_at)·실DB(CRM_MB_BASEINFO.LAST_LOGIN_DATE) 양쪽 공통 부분문자열.
                 all_terms=["last_login"],
             )

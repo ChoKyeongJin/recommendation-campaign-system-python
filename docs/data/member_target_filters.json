@@ -1,56 +1,650 @@
 {
-  "version": "1.0",
-  "description": "회원(CRM_MB_BASEINFO) 타겟 규칙 엔진 레지스트리. 새 속성/값/문구는 코드 수정 없이 이 파일에 항목을 추가하면 graph_rag 가 프로세스 기동 시 로딩한다. 파일이 없거나 파손되면 graph_rag 내 코드 기본값으로 폴백한다.",
-  "eq_filters": [
-    {"canonical": "female", "category": "gender", "column": "B.GENDER_CD", "value": "GENDER_CD.FEMALE"},
-    {"canonical": "male", "category": "gender", "column": "B.GENDER_CD", "value": "GENDER_CD.MALE"},
-    {"canonical": "welcome_grade", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.WELCOME"},
-    {"canonical": "family_grade", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.FAMILY"},
-    {"canonical": "silver_grade", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.SILVER"},
-    {"canonical": "gold_grade", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.GOLD"},
-    {"canonical": "vip", "category": "grade", "column": "B.EMART_GRADE_CD", "value": "MEM_GRADE_CD.VIP"},
-    {"canonical": "dormant", "category": "state", "column": "B.MEMBER_STATE_CD", "value": "MEMBER_STATE_CD.SLEEP"},
-    {"canonical": "app_user", "category": "channel", "column": "B.LAST_LOGIN_CHANNEL", "value": "DEVICE_TYPE_CD.APP"}
-  ],
-  "activity_filters": [
-    {"canonical": "inactive_90d", "days": 90},
-    {"canonical": "inactive_180d", "days": 180}
-  ],
-  "lifecycle_extra_terms": ["new_user"],
-  "active_state": {"column": "MEMBER_STATE_CD", "value": "MEMBER_STATE_CD.NORMAL"},
-  "birthday_target": {"column": "BIRTHDAY"},
-  "signup_target": {"column": "REG_DT", "table": "CRM_MB_BASEINFO", "default_days": 90, "anchor": "data_max"},
-  "order_count_targets": {
-    "table": "CRM_SL_ORDERHEADERMALL",
-    "join_column": "MEMBER_NO",
-    "order_id_column": "ORDER_ID",
-    "order_date_column": "ORDER_DATE",
-    "behaviors": {
-      "first_purchase": {"operator": "=", "count": 1},
-      "repeat_buyer": {"operator": ">=", "count": 2},
-      "no_purchase": {"anti_join": true}
+  "version": "1.1",
+  "description": "회원 타겟 규칙 엔진 레지스트리. 회원 속성, 활동성, 동의, 지역, 가입, 로그인, 구매, 장바구니, 캠페인 반응 조건을 선언형으로 관리한다.",
+
+  "base_entity": {
+    "table": "CRM_MB_BASEINFO",
+    "alias": "B",
+    "member_key": "MEMBER_NO",
+    "login_id_key": "MEMBER_ID",
+    "date_format": "yyyyMMdd"
+  },
+
+  "default_policy": {
+    "apply_active_member": true,
+    "exclude_withdrawn": true,
+    "exclude_blacklist": true,
+    "exclude_site_only_member": false,
+    "require_marketing_agreement": false,
+    "null_boolean_as": "N",
+    "distinct_member": true
+  },
+
+  "operator_registry": {
+    "eq": {
+      "sql": "=",
+      "synonyms": ["인", "인 사람", "해당하는", "같은", "동일한"]
+    },
+    "neq": {
+      "sql": "<>",
+      "synonyms": ["아닌", "제외한", "빼고", "해당하지 않는"]
+    },
+    "gte": {
+      "sql": ">=",
+      "synonyms": ["이상", "최소", "넘는 또는 같은"]
+    },
+    "gt": {
+      "sql": ">",
+      "synonyms": ["초과", "넘는", "보다 큰"]
+    },
+    "lte": {
+      "sql": "<=",
+      "synonyms": ["이하", "최대", "넘지 않는"]
+    },
+    "lt": {
+      "sql": "<",
+      "synonyms": ["미만", "보다 적은", "안 되는"]
+    },
+    "between": {
+      "sql": "BETWEEN",
+      "synonyms": ["사이", "부터", "에서", "구간"]
+    },
+    "in": {
+      "sql": "IN",
+      "synonyms": ["중", "또는", "포함하는"]
+    },
+    "not_in": {
+      "sql": "NOT IN",
+      "synonyms": ["제외", "포함하지 않는"]
     }
   },
+
+  "eq_filters": [
+    {
+      "canonical": "female",
+      "category": "gender",
+      "column": "B.GENDER_CD",
+      "value": "GENDER_CD.FEMALE",
+      "synonyms": ["여성", "여자", "여성 회원", "여자 고객"]
+    },
+    {
+      "canonical": "male",
+      "category": "gender",
+      "column": "B.GENDER_CD",
+      "value": "GENDER_CD.MALE",
+      "synonyms": ["남성", "남자", "남성 회원", "남자 고객"]
+    },
+
+    {
+      "canonical": "welcome_grade",
+      "category": "grade",
+      "column": "B.EMART_GRADE_CD",
+      "value": "MEM_GRADE_CD.WELCOME",
+      "rank": 1,
+      "synonyms": ["웰컴", "웰컴 등급", "신규 등급"]
+    },
+    {
+      "canonical": "family_grade",
+      "category": "grade",
+      "column": "B.EMART_GRADE_CD",
+      "value": "MEM_GRADE_CD.FAMILY",
+      "rank": 2,
+      "synonyms": ["패밀리", "패밀리 등급"]
+    },
+    {
+      "canonical": "silver_grade",
+      "category": "grade",
+      "column": "B.EMART_GRADE_CD",
+      "value": "MEM_GRADE_CD.SILVER",
+      "rank": 3,
+      "synonyms": ["실버", "실버 등급"]
+    },
+    {
+      "canonical": "gold_grade",
+      "category": "grade",
+      "column": "B.EMART_GRADE_CD",
+      "value": "MEM_GRADE_CD.GOLD",
+      "rank": 4,
+      "synonyms": ["골드", "골드 등급"]
+    },
+    {
+      "canonical": "vip",
+      "category": "grade",
+      "column": "B.EMART_GRADE_CD",
+      "value": "MEM_GRADE_CD.VIP",
+      "rank": 5,
+      "synonyms": ["VIP", "브이아이피", "최우수 회원", "VIP 회원"]
+    },
+
+    {
+      "canonical": "normal_member",
+      "category": "state",
+      "column": "B.MEMBER_STATE_CD",
+      "value": "MEMBER_STATE_CD.NORMAL",
+      "synonyms": ["정상 회원", "정상 상태", "활성 상태 회원"]
+    },
+    {
+      "canonical": "dormant",
+      "category": "state",
+      "column": "B.MEMBER_STATE_CD",
+      "value": "MEMBER_STATE_CD.SLEEP",
+      "synonyms": ["휴면", "휴면 회원", "잠자는 회원"]
+    },
+    {
+      "canonical": "withdrawn",
+      "category": "state",
+      "column": "B.MEMBER_STATE_CD",
+      "value": "MEMBER_STATE_CD.WITHDRAW",
+      "synonyms": ["탈퇴", "탈퇴 회원"]
+    },
+
+    {
+      "canonical": "app_user",
+      "category": "login_channel",
+      "column": "B.LAST_LOGIN_CHANNEL",
+      "value": "DEVICE_TYPE_CD.APP",
+      "synonyms": ["앱 사용자", "앱 로그인 회원", "최근 앱으로 접속한 회원"]
+    },
+    {
+      "canonical": "app_signup",
+      "category": "signup_channel",
+      "column": "B.REG_CHANNEL_CD",
+      "value": "DEVICE_TYPE_CD.APP",
+      "synonyms": ["앱 가입", "앱에서 가입한 회원"]
+    },
+    {
+      "canonical": "mobile_web_signup",
+      "category": "signup_channel",
+      "column": "B.REG_CHANNEL_CD",
+      "value": "DEVICE_TYPE_CD.MW",
+      "synonyms": ["모바일웹 가입", "모바일 웹 가입"]
+    },
+    {
+      "canonical": "pc_signup",
+      "category": "signup_channel",
+      "column": "B.REG_CHANNEL_CD",
+      "value": "DEVICE_TYPE_CD.PC",
+      "synonyms": ["PC 가입", "웹 가입", "컴퓨터로 가입"]
+    },
+    {
+      "canonical": "online_signup",
+      "category": "signup_store",
+      "column": "B.REG_OFFSHOP_ID",
+      "value": "O",
+      "synonyms": ["온라인 가입", "온라인에서 가입한 회원", "몰 가입 회원"]
+    }
+  ],
+
+  "boolean_filters": [
+    {
+      "canonical": "marketing_agreed",
+      "category": "consent",
+      "column": "B.AGREE_YN",
+      "true_value": "Y",
+      "false_value": "N",
+      "synonyms": ["마케팅 동의", "정보 활용 동의", "광고 수신 동의"]
+    },
+    {
+      "canonical": "email_agreed",
+      "category": "consent",
+      "column": "B.EMAIL_YN",
+      "true_value": "Y",
+      "false_value": "N",
+      "synonyms": ["이메일 수신 동의", "메일 수신 동의", "이메일 동의"]
+    },
+    {
+      "canonical": "sms_agreed",
+      "category": "consent",
+      "column": "B.SMS_YN",
+      "true_value": "Y",
+      "false_value": "N",
+      "synonyms": ["SMS 수신 동의", "문자 수신 동의", "문자 동의"]
+    },
+    {
+      "canonical": "push_agreed",
+      "category": "consent",
+      "column": "B.APP_PUSH_YN",
+      "true_value": "Y",
+      "false_value": "N",
+      "synonyms": ["앱푸시 동의", "푸시 수신 동의", "알림 수신 동의"]
+    },
+    {
+      "canonical": "active_member",
+      "category": "activity",
+      "column": "B.ACTIVITY_MEMBER_YN",
+      "true_value": "Y",
+      "false_value": "N",
+      "synonyms": ["활동 회원", "활성 회원"]
+    },
+    {
+      "canonical": "sleep_member",
+      "category": "activity",
+      "column": "B.SLEEP_MEMBER_YN",
+      "true_value": "Y",
+      "false_value": "N",
+      "synonyms": ["휴면 회원", "휴면 상태"]
+    },
+    {
+      "canonical": "blacklisted",
+      "category": "exclusion",
+      "column": "B.BLACKLIST_YN",
+      "true_value": "Y",
+      "false_value": "N",
+      "null_as": "N",
+      "synonyms": ["블랙리스트", "발송 제외 고객", "차단 회원"]
+    },
+    {
+      "canonical": "children_registered",
+      "category": "family",
+      "column": "B.CHILDREN_YN",
+      "true_value": "Y",
+      "false_value": "N",
+      "synonyms": ["자녀 정보 보유", "자녀 등록 회원", "아이 정보가 있는 회원"]
+    },
+    {
+      "canonical": "employee",
+      "category": "member_type",
+      "column": "B.EMPLOYEE_YN",
+      "true_value": "Y",
+      "false_value": "N",
+      "synonyms": ["임직원", "직원 회원"]
+    },
+    {
+      "canonical": "premium_member",
+      "category": "member_type",
+      "column": "B.PREMIUM_YN",
+      "true_value": "Y",
+      "false_value": "N",
+      "synonyms": ["프리미엄 회원", "프리미엄 고객"]
+    },
+    {
+      "canonical": "membership_member",
+      "category": "member_type",
+      "column": "B.MEMBERSHIP_YN",
+      "true_value": "Y",
+      "false_value": "N",
+      "synonyms": ["멤버십 회원", "멤버십 가입 고객"]
+    },
+    {
+      "canonical": "sns_registered",
+      "category": "signup",
+      "column": "B.SNS_REG_YN",
+      "true_value": "Y",
+      "false_value": "N",
+      "synonyms": ["SNS 가입", "소셜 가입", "간편 가입"]
+    }
+  ],
+
+  "numeric_filters": [
+    {
+      "canonical": "age",
+      "category": "demographic",
+      "column": "B.AGE",
+      "type": "integer",
+      "min": 0,
+      "max": 120,
+      "synonyms": ["나이", "연령", "만 나이"]
+    },
+    {
+      "canonical": "total_login_count",
+      "category": "activity",
+      "column": "B.TOTAL_LOGIN_CNT",
+      "type": "integer",
+      "min": 0,
+      "synonyms": ["로그인 횟수", "누적 로그인 횟수", "접속 횟수"]
+    },
+    {
+      "canonical": "total_login_days",
+      "category": "activity",
+      "column": "B.TOTAL_LOGIN_DAYS",
+      "type": "integer",
+      "min": 0,
+      "synonyms": ["로그인 일수", "누적 로그인 일수", "접속 일수"]
+    },
+    {
+      "canonical": "deposit_balance",
+      "category": "balance",
+      "column": "B.DEPOSIT_BALANCE_AMT",
+      "type": "money",
+      "min": 0,
+      "synonyms": ["예치금", "예치금 잔액"]
+    },
+    {
+      "canonical": "carrot_balance",
+      "category": "balance",
+      "column": "B.CARROT_BALANCE_AMT",
+      "type": "money",
+      "min": 0,
+      "synonyms": ["적립금", "당근 잔액", "포인트 잔액"]
+    }
+  ],
+
+  "range_aliases": {
+    "age_groups": [
+      {
+        "canonical": "teens",
+        "min": 10,
+        "max": 19,
+        "synonyms": ["10대", "십대"]
+      },
+      {
+        "canonical": "twenties",
+        "min": 20,
+        "max": 29,
+        "synonyms": ["20대", "이십대"]
+      },
+      {
+        "canonical": "thirties",
+        "min": 30,
+        "max": 39,
+        "synonyms": ["30대", "삼십대"]
+      },
+      {
+        "canonical": "forties",
+        "min": 40,
+        "max": 49,
+        "synonyms": ["40대", "사십대"]
+      },
+      {
+        "canonical": "fifties",
+        "min": 50,
+        "max": 59,
+        "synonyms": ["50대", "오십대"]
+      },
+      {
+        "canonical": "seniors",
+        "min": 60,
+        "max": null,
+        "synonyms": ["60대 이상", "시니어", "고령 회원"]
+      }
+    ],
+    "grade_groups": [
+      {
+        "canonical": "gold_or_higher",
+        "values": ["MEM_GRADE_CD.GOLD", "MEM_GRADE_CD.VIP"],
+        "synonyms": ["골드 이상", "GOLD 이상", "골드 또는 VIP"]
+      },
+      {
+        "canonical": "silver_or_higher",
+        "values": [
+          "MEM_GRADE_CD.SILVER",
+          "MEM_GRADE_CD.GOLD",
+          "MEM_GRADE_CD.VIP"
+        ],
+        "synonyms": ["실버 이상", "SILVER 이상"]
+      }
+    ],
+    "region_groups": [
+      {
+        "canonical": "capital_area",
+        "column": "B.SIDO",
+        "values": ["서울", "경기", "인천"],
+        "synonyms": ["수도권", "서울 경기 인천", "서울·경기·인천"]
+      }
+    ]
+  },
+
+  "activity_filters": [
+    {
+      "canonical": "inactive_30d",
+      "days": 30,
+      "column": "B.LAST_LOGIN_DATE",
+      "anchor": "getdate",
+      "operator": "<",
+      "include_null": true,
+      "synonyms": ["30일 이상 미접속", "한 달 동안 접속하지 않은"]
+    },
+    {
+      "canonical": "inactive_90d",
+      "days": 90,
+      "column": "B.LAST_LOGIN_DATE",
+      "anchor": "getdate",
+      "operator": "<",
+      "include_null": true,
+      "synonyms": [
+        "90일 이상 미접속",
+        "3개월 미접속",
+        "최근 3개월 로그인하지 않은"
+      ]
+    },
+    {
+      "canonical": "inactive_180d",
+      "days": 180,
+      "column": "B.LAST_LOGIN_DATE",
+      "anchor": "getdate",
+      "operator": "<",
+      "include_null": true,
+      "synonyms": [
+        "180일 이상 미접속",
+        "6개월 미접속",
+        "반년 동안 로그인하지 않은"
+      ]
+    },
+    {
+      "canonical": "recent_login",
+      "column": "B.LAST_LOGIN_DATE",
+      "anchor": "getdate",
+      "operator": ">=",
+      "parameter": "days",
+      "default_days": 30,
+      "synonyms": ["최근 로그인", "최근 접속", "요즘 접속한"]
+    }
+  ],
+
+  "lifecycle_extra_terms": [
+    "new_user",
+    "active_user",
+    "inactive_user",
+    "dormant_user",
+    "withdrawn_user",
+    "first_buyer",
+    "repeat_buyer",
+    "non_buyer",
+    "cart_abandoner"
+  ],
+
+  "active_state": {
+    "column": "B.MEMBER_STATE_CD",
+    "value": "MEMBER_STATE_CD.NORMAL"
+  },
+
+  "birthday_target": {
+    "column": "B.BIRTHDAY",
+    "date_format": "yyyyMMdd",
+    "match_modes": ["exact_date", "month", "month_day", "upcoming_days"],
+    "default_upcoming_days": 7,
+    "synonyms": ["생일", "생일자", "생일이 다가오는", "이번 달 생일"]
+  },
+
+  "signup_target": {
+    "column": "B.REG_DT",
+    "table": "CRM_MB_BASEINFO",
+    "alias": "B",
+    "default_days": 90,
+    "anchor": "data_max",
+    "synonyms": [
+      "신규 가입",
+      "최근 가입",
+      "새로 가입한",
+      "가입한 지 얼마 안 된"
+    ]
+  },
+
+  "recent_login_target": {
+    "column": "B.LAST_LOGIN_DATE",
+    "table": "CRM_MB_BASEINFO",
+    "alias": "B",
+    "anchor": "getdate",
+    "default_days": 30,
+    "synonyms": ["최근 로그인", "최근 접속", "마지막 로그인"]
+  },
+
+  "region_target": {
+    "table": "CRM_MB_BASEINFO",
+    "alias": "B",
+    "columns": {
+      "sido": "B.SIDO",
+      "sigungu": "B.SIGUNGU",
+      "dong": "B.DONG",
+      "zip_code": "B.ZIP_CD",
+      "road_address": "B.ROAD_NAME_ADDRESS"
+    },
+    "synonyms": {
+      "sido": ["시도", "광역시", "도", "거주 지역"],
+      "sigungu": ["시군구", "시", "군", "구"],
+      "dong": ["동", "읍", "면", "동네"]
+    }
+  },
+
+  "signup_store_target": {
+    "table": "CRM_CM_OFFSHOP",
+    "alias": "S",
+    "join": {
+      "type": "LEFT",
+      "left": "B.REG_OFFSHOP_ID",
+      "right": "S.OFFSHOP_ID"
+    },
+    "match_columns": [
+      "S.OFFSHOP_ID",
+      "S.OFFSHOP_NAME",
+      "S.SIDO",
+      "S.SIGUNGU",
+      "S.DONG"
+    ],
+    "synonyms": ["가입 매장", "등록 매장", "가입 지점", "가입 점포"]
+  },
+
+  "order_count_targets": {
+    "table": "CRM_SL_ORDERHEADERMALL",
+    "alias": "OH",
+    "join_column": "MEMBER_NO",
+    "base_join_column": "B.MEMBER_NO",
+    "order_id_column": "ORDER_ID",
+    "order_date_column": "ORDER_DATE",
+    "date_format": "yyyyMMdd",
+    "default_period_days": null,
+    "behaviors": {
+      "first_purchase": {
+        "operator": "=",
+        "count": 1,
+        "synonyms": ["첫 구매", "최초 구매", "한 번 구매"]
+      },
+      "repeat_buyer": {
+        "operator": ">=",
+        "count": 2,
+        "synonyms": ["재구매", "반복 구매", "두 번 이상 구매"]
+      },
+      "no_purchase": {
+        "anti_join": true,
+        "synonyms": ["미구매", "구매 이력 없음", "한 번도 구매하지 않은"]
+      },
+      "lapsed_buyer": {
+        "exists_before_period": true,
+        "not_exists_in_period": true,
+        "default_days": 90,
+        "synonyms": ["이탈 구매자", "예전에는 구매했지만 최근 구매하지 않은"]
+      }
+    }
+  },
+
   "aggregate_targets": {
     "table": "CRM_SL_ORDERHEADERMALL",
+    "alias": "OH",
     "join_column": "MEMBER_NO",
+    "base_join_column": "B.MEMBER_NO",
     "date_column": "ORDER_DATE",
+    "date_format": "yyyyMMdd",
     "metrics": {
       "purchase_amount": {
         "agg": "SUM",
         "column": "PAYMENT_AMT",
+        "null_as": 0,
         "ko_label": "누적 구매 금액",
-        "synonyms": ["누적 구매 금액", "누적구매금액", "구매 금액", "구매금액", "결제 금액", "결제금액", "구매액", "구매 총액", "구매총액", "구매 총금액"]
+        "synonyms": [
+          "누적 구매 금액",
+          "누적구매금액",
+          "구매 금액",
+          "구매금액",
+          "결제 금액",
+          "결제금액",
+          "구매액",
+          "구매 총액",
+          "구매총액",
+          "구매 총금액",
+          "총 결제액"
+        ]
       },
       "order_count": {
         "agg": "COUNT",
         "column": "ORDER_ID",
         "distinct": true,
+        "null_as": 0,
         "ko_label": "구매 횟수",
-        "synonyms": ["구매 횟수", "구매횟수", "주문 횟수", "주문횟수", "구매 건수", "구매건수", "주문 건수", "주문건수"]
+        "synonyms": [
+          "구매 횟수",
+          "구매횟수",
+          "주문 횟수",
+          "주문횟수",
+          "구매 건수",
+          "구매건수",
+          "주문 건수",
+          "주문건수"
+        ]
+      },
+      "average_order_amount": {
+        "expression": "SUM(OH.PAYMENT_AMT) / NULLIF(COUNT(DISTINCT OH.ORDER_ID), 0)",
+        "ko_label": "평균 주문 금액",
+        "synonyms": ["평균 주문 금액", "객단가", "평균 결제 금액"]
+      },
+      "last_purchase_date": {
+        "agg": "MAX",
+        "column": "ORDER_DATE",
+        "ko_label": "최근 구매일",
+        "synonyms": ["최근 구매일", "마지막 구매일", "최종 주문일"]
+      },
+      "first_purchase_date": {
+        "agg": "MIN",
+        "column": "ORDER_DATE",
+        "ko_label": "최초 구매일",
+        "synonyms": ["최초 구매일", "첫 구매일", "처음 주문한 날짜"]
       }
     }
   },
+
+  "purchase_product_target": {
+    "order_header": {
+      "table": "CRM_SL_ORDERHEADERMALL",
+      "alias": "OH",
+      "member_join": "OH.MEMBER_NO = B.MEMBER_NO"
+    },
+    "order_detail": {
+      "table": "CRM_SL_ORDERDETAILMALL",
+      "alias": "OD",
+      "join": "OD.ORDER_ID = OH.ORDER_ID"
+    },
+    "product": {
+      "table": "CRM_CM_PRODUCT",
+      "alias": "P",
+      "join": "P.PRODUCT_ID = OD.PRODUCT_ID"
+    },
+    "match_columns": [
+      "P.CATEGORY",
+      "P.CATEGORYL_NAME",
+      "P.CATEGORYM_NAME",
+      "P.CATEGORYS_NAME",
+      "P.BRAND_NAME",
+      "P.PRODUCT_NAME"
+    ],
+    "match_mode": "contains",
+    "default_case_insensitive": true,
+    "synonyms": [
+      "구매한 상품",
+      "구매 카테고리",
+      "구매 브랜드",
+      "상품 구매 이력"
+    ]
+  },
+
   "purchase_product_match_columns": [
     "CATEGORY",
     "CATEGORYL_NAME",
@@ -59,17 +653,261 @@
     "BRAND_NAME",
     "PRODUCT_NAME"
   ],
-  "supported_condition_hint": "성별·연령·회원등급·휴면/미접속 기간·신규 가입(가입일)·상품 구매 이력",
-  "region_density": {
-    "granularity_tokens": ["동네", "지역", "시군구", "시도", "구"],
-    "granularity_columns": {"시도": "SIDO"},
-    "default_column": "SIGUNGU",
-    "default_top_n": 5,
-    "max_top_n": 30
+
+  "cart_targets": {
+    "table": "ODS_MALL_OMS_CART",
+    "alias": "C",
+    "join": {
+      "type": "EXISTS",
+      "left": "C.CART_ID",
+      "right": "B.MEMBER_ID"
+    },
+    "product_join": {
+      "table": "CRM_CM_PRODUCT",
+      "alias": "CP",
+      "left": "C.PRODUCT_ID",
+      "right": "CP.PRODUCT_ID"
+    },
+    "active_condition": {
+      "column": "C.KEEP_YN",
+      "value": "Y"
+    },
+    "cart_type_column": "C.CART_TYPE_CD",
+    "product_id_column": "C.PRODUCT_ID",
+    "quantity_column": "C.SET_QTY",
+    "line_id_column": "C.CART_PRODUCT_NO",
+    "behaviors": {
+      "has_cart": {
+        "exists": true,
+        "synonyms": ["장바구니 보유", "장바구니에 상품이 있는", "카트에 담은"]
+      },
+      "no_cart": {
+        "anti_join": true,
+        "synonyms": ["장바구니가 없는", "카트가 비어 있는"]
+      },
+      "cart_abandoner": {
+        "exists": true,
+        "order_anti_join": true,
+        "order_table": "CRM_SL_ORDERHEADERMALL",
+        "order_member_column": "MEMBER_NO",
+        "synonyms": [
+          "장바구니 이탈",
+          "장바구니에 담고 구매하지 않은",
+          "카트 미결제",
+          "장바구니 미구매"
+        ]
+      }
+    },
+    "cart_types": [
+      {
+        "canonical": "general_cart",
+        "value": "CART_TYPE_CD.GENERAL",
+        "synonyms": ["일반 장바구니", "일반 상품"]
+      },
+      {
+        "canonical": "regular_delivery_cart",
+        "value": "CART_TYPE_CD.REGULARDELIVERY",
+        "synonyms": ["정기배송 장바구니", "정기배송 상품"]
+      },
+      {
+        "canonical": "b2e_cart",
+        "value": "CART_TYPE_CD.B2E",
+        "synonyms": ["임직원 장바구니", "B2E 상품"]
+      },
+      {
+        "canonical": "pickup_cart",
+        "value": "CART_TYPE_CD.PICKUP",
+        "synonyms": ["픽업 장바구니", "매장 픽업 상품"]
+      }
+    ],
+    "aggregate_metrics": {
+      "cart_line_count": {
+        "agg": "COUNT",
+        "column": "C.CART_PRODUCT_NO",
+        "distinct": true,
+        "synonyms": ["장바구니 상품 종류", "장바구니 라인 수"]
+      },
+      "cart_quantity": {
+        "agg": "SUM",
+        "column": "C.SET_QTY",
+        "synonyms": ["장바구니 수량", "담은 상품 개수"]
+      }
+    }
   },
+
+  "campaign_response_targets": {
+    "table": "MCS_CAMP_MBR_RSPN_FT",
+    "alias": "R",
+    "member_join": {
+      "left": "TRY_CAST(R.MBR_NO AS BIGINT)",
+      "right": "B.MEMBER_NO"
+    },
+    "campaign_join": {
+      "table": "Z_CAMPAIGN",
+      "alias": "ZC",
+      "conditions": [
+        "ZC.CAMP_ID = R.CAMP_ID",
+        "ZC.CAMP_EXEC_NO = R.CAMP_EXEC_NO"
+      ]
+    },
+    "target_group_condition": {
+      "column": "R.CGRP_TYPE_CD",
+      "value": "T"
+    },
+    "valid_campaign_condition": {
+      "expression": "ISNULL(ZC.CANCEL_YN, 'N') = 'N'"
+    },
+    "boolean_metrics": {
+      "contact_success": {
+        "column": "R.CNCT_SCS_YN",
+        "value": "Y",
+        "synonyms": ["발송 성공", "접촉 성공", "메시지를 받은"]
+      },
+      "offer_response": {
+        "column": "R.OFFR_RSPN_YN",
+        "value": "Y",
+        "synonyms": ["오퍼 반응", "혜택 반응", "쿠폰 반응"]
+      },
+      "purchase_response": {
+        "column": "R.BUY_RSPN_YN",
+        "value": "Y",
+        "synonyms": ["캠페인 구매", "구매 반응", "캠페인 후 구매"]
+      }
+    },
+    "aggregate_metrics": {
+      "campaign_purchase_amount": {
+        "agg": "SUM",
+        "column": "R.BUY_AMT",
+        "synonyms": ["캠페인 구매금액", "반응 구매금액"]
+      },
+      "campaign_purchase_count": {
+        "agg": "SUM",
+        "column": "R.BUY_CNT",
+        "synonyms": ["캠페인 구매건수", "반응 구매 횟수"]
+      },
+      "campaign_response_count": {
+        "agg": "COUNT",
+        "column": "R.CAMP_ID",
+        "distinct_expression": "CONCAT(R.CAMP_ID, ':', R.CAMP_EXEC_NO)",
+        "synonyms": ["캠페인 반응 횟수", "반응한 캠페인 수"]
+      },
+      "used_coupon_count": {
+        "agg": "SUM",
+        "column": "R.USE_CPN_CNT",
+        "synonyms": ["사용 쿠폰 수", "쿠폰 사용 횟수"]
+      }
+    }
+  },
+
+  "date_expression_registry": {
+    "anchors": {
+      "today": "CONVERT(char(8), GETDATE(), 112)",
+      "getdate": "GETDATE()",
+      "data_max": "MAX_AVAILABLE_DATE"
+    },
+    "relative_units": {
+      "day": ["일", "하루"],
+      "week": ["주", "주일"],
+      "month": ["개월", "달"],
+      "year": ["년"]
+    },
+    "relative_terms": {
+      "today": ["오늘", "금일"],
+      "yesterday": ["어제", "전일"],
+      "this_month": ["이번 달", "금월"],
+      "last_month": ["지난달", "전월"],
+      "recently": {
+        "default_days": 30,
+        "synonyms": ["최근", "요즘", "근래"]
+      }
+    }
+  },
+
+  "negative_expression_registry": [
+    {
+      "tokens": ["아닌", "제외", "빼고", "없고", "하지 않은"],
+      "effect": "negate_condition"
+    },
+    {
+      "tokens": ["한 번도", "전혀"],
+      "effect": "prefer_anti_join"
+    },
+    {
+      "tokens": ["아직"],
+      "effect": "prefer_current_non_occurrence"
+    }
+  ],
+
+  "logical_expression_registry": {
+    "and_tokens": ["그리고", "이면서", "동시에", "모두", "이며"],
+    "or_tokens": ["또는", "혹은", "중 하나", "이거나"],
+    "except_tokens": ["단", "제외하고", "빼고"],
+    "precedence": ["NOT", "AND", "OR"],
+    "require_parentheses_for_mixed_and_or": true
+  },
+
+  "supported_condition_hint": "성별·연령·회원등급·회원상태·수신동의·활동/휴면·블랙리스트·가입채널·가입매장·지역·최근 로그인·신규 가입·생일·구매 여부·구매 횟수·구매 금액·구매 상품·장바구니·캠페인 접촉/오퍼/구매 반응",
+
+  "region_density": {
+    "granularity_tokens": [
+      "동네",
+      "지역",
+      "시군구",
+      "시도",
+      "구",
+      "동",
+      "읍",
+      "면"
+    ],
+    "granularity_columns": {
+      "시도": "B.SIDO",
+      "시군구": "B.SIGUNGU",
+      "구": "B.SIGUNGU",
+      "동": "B.DONG",
+      "읍": "B.DONG",
+      "면": "B.DONG"
+    },
+    "default_column": "B.SIGUNGU",
+    "default_top_n": 5,
+    "max_top_n": 30,
+    "exclude_null_or_empty": true
+  },
+
   "member_metric_ranking": {
-    "granularity_tokens": ["고객님", "구매자", "사용자", "고객", "회원", "유저", "손님"],
+    "granularity_tokens": [
+      "고객님",
+      "구매자",
+      "사용자",
+      "고객",
+      "회원",
+      "유저",
+      "손님"
+    ],
+    "supported_metrics": [
+      "purchase_amount",
+      "order_count",
+      "average_order_amount",
+      "last_purchase_date",
+      "total_login_count",
+      "carrot_balance",
+      "campaign_purchase_amount"
+    ],
+    "direction_tokens": {
+      "desc": ["가장 많은", "높은", "큰", "상위", "우수한"],
+      "asc": ["가장 적은", "낮은", "작은", "하위"]
+    },
     "default_top_n": 100,
     "max_top_n": 10000
+  },
+
+  "validation": {
+    "unknown_canonical_policy": "reject",
+    "unknown_column_policy": "reject",
+    "allow_raw_sql": false,
+    "allowed_table_aliases": ["B", "OH", "OD", "P", "C", "CP", "R", "ZC", "S"],
+    "max_conditions": 30,
+    "max_or_branches": 10,
+    "max_lookback_days": 3650,
+    "require_parameter_binding": true
   }
 }
