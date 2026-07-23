@@ -172,6 +172,85 @@
       "column": "B.REG_OFFSHOP_ID",
       "value": "O",
       "synonyms": ["온라인 가입", "온라인에서 가입한 회원", "몰 가입 회원"]
+    },
+
+    {
+      "canonical": "app_push_optin",
+      "category": "consent",
+      "column": "B.APP_PUSH_YN",
+      "value": "Y",
+      "synonyms": ["앱푸시 수신 동의", "앱푸시 동의", "푸시 수신 동의", "알림 수신 동의"]
+    },
+    {
+      "canonical": "sms_optin",
+      "category": "consent",
+      "column": "B.SMS_YN",
+      "value": "Y",
+      "synonyms": ["SMS 수신 동의", "문자 수신 동의", "문자 동의"]
+    },
+    {
+      "canonical": "email_optin",
+      "category": "consent",
+      "column": "B.EMAIL_YN",
+      "value": "Y",
+      "synonyms": ["이메일 수신 동의", "메일 수신 동의", "이메일 동의"]
+    },
+    {
+      "canonical": "marketing_optin",
+      "category": "consent",
+      "column": "B.AGREE_YN",
+      "value": "Y",
+      "synonyms": ["마케팅 수신 동의", "정보 활용 동의", "광고 수신 동의"]
+    },
+
+    {
+      "canonical": "children_registered",
+      "category": "family",
+      "column": "B.CHILDREN_YN",
+      "value": "Y",
+      "synonyms": ["자녀 정보 등록", "자녀 정보 보유", "자녀 등록 회원", "아이 정보가 있는 회원"]
+    },
+    {
+      "canonical": "active_member",
+      "category": "activity",
+      "column": "B.ACTIVITY_MEMBER_YN",
+      "value": "Y",
+      "synonyms": ["활동 회원", "활성 회원", "액티브 회원"]
+    },
+    {
+      "canonical": "blacklisted",
+      "category": "exclusion",
+      "column": "B.BLACKLIST_YN",
+      "value": "Y",
+      "synonyms": ["블랙리스트", "발송 제외 고객", "차단 회원"]
+    },
+    {
+      "canonical": "employee",
+      "category": "member_type",
+      "column": "B.EMPLOYEE_YN",
+      "value": "Y",
+      "synonyms": ["임직원", "직원 회원"]
+    },
+    {
+      "canonical": "premium_member",
+      "category": "member_type",
+      "column": "B.PREMIUM_YN",
+      "value": "Y",
+      "synonyms": ["프리미엄 회원", "프리미엄 고객"]
+    },
+    {
+      "canonical": "membership_member",
+      "category": "member_type",
+      "column": "B.MEMBERSHIP_YN",
+      "value": "Y",
+      "synonyms": ["멤버십 회원", "멤버십 가입 고객"]
+    },
+    {
+      "canonical": "sns_registered",
+      "category": "signup",
+      "column": "B.SNS_REG_YN",
+      "value": "Y",
+      "synonyms": ["SNS 가입", "소셜 가입", "간편 가입"]
     }
   ],
 
@@ -444,12 +523,12 @@
   ],
 
   "active_state": {
-    "column": "B.MEMBER_STATE_CD",
+    "column": "MEMBER_STATE_CD",
     "value": "MEMBER_STATE_CD.NORMAL"
   },
 
   "birthday_target": {
-    "column": "B.BIRTHDAY",
+    "column": "BIRTHDAY",
     "date_format": "yyyyMMdd",
     "match_modes": ["exact_date", "month", "month_day", "upcoming_days"],
     "default_upcoming_days": 7,
@@ -457,7 +536,7 @@
   },
 
   "signup_target": {
-    "column": "B.REG_DT",
+    "column": "REG_DT",
     "table": "CRM_MB_BASEINFO",
     "alias": "B",
     "default_days": 90,
@@ -471,7 +550,7 @@
   },
 
   "recent_login_target": {
-    "column": "B.LAST_LOGIN_DATE",
+    "column": "LAST_LOGIN_DATE",
     "table": "CRM_MB_BASEINFO",
     "alias": "B",
     "anchor": "getdate",
@@ -873,6 +952,17 @@
     "exclude_null_or_empty": true
   },
 
+  "macro_regions": {
+    "column": "SIDO",
+    "groups": {
+      "수도권": ["서울", "경기", "인천"],
+      "충청권": ["대전", "세종", "충북", "충남"],
+      "호남권": ["광주", "전북", "전남"],
+      "영남권": ["부산", "대구", "울산", "경북", "경남"],
+      "강원권": ["강원"]
+    }
+  },
+
   "member_metric_ranking": {
     "granularity_tokens": [
       "고객님",
@@ -904,7 +994,7 @@
     "unknown_canonical_policy": "reject",
     "unknown_column_policy": "reject",
     "allow_raw_sql": false,
-    "allowed_table_aliases": ["B", "OH", "OD", "P", "C", "CP", "R", "ZC", "S"],
+    "allowed_table_aliases": ["A", "B", "C", "CP", "D", "M", "O", "OD", "OH", "P", "R", "S", "ZC"],
     "max_conditions": 30,
     "max_or_branches": 10,
     "max_lookback_days": 3650,

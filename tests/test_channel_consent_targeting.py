@@ -81,3 +81,42 @@ def test_consent_combines_with_recent_login():
     predicates = " AND ".join(compiled["predicates"])
     assert "B.APP_PUSH_YN = 'Y'" in predicates
     assert "B.LAST_LOGIN_DATE >=" in predicates
+
+
+def _yn_preds(query: str) -> list[str]:
+    return [p for p in g.compile_member_target_conditions(_plan(query))["predicates"] if "_YN" in p]
+
+
+def test_grouped_consent_shared_verb():
+    # 여러 채널이 하나의 '수신 동의'를 공유하는 나열형("SMS와 앱푸시 모두 수신동의") — 둘 다 조건이 돼야 한다.
+    preds = _yn_preds("20대 여성 중 SMS와 앱푸시 모두 수신동의한 회원만 찾아줘.")
+    assert "B.SMS_YN = 'Y'" in preds
+    assert "B.APP_PUSH_YN = 'Y'" in preds
+    triple = _yn_preds("SMS, 이메일, 앱푸시 수신동의 고객")
+    assert {"B.SMS_YN = 'Y'", "B.EMAIL_YN = 'Y'", "B.APP_PUSH_YN = 'Y'"} <= set(triple)
+
+
+def test_grouped_consent_interpunct_separator():
+    # 가운뎃점(·/ㆍ) 나열도 같은 그룹으로 본다(재작성 라벨·운영자 입력 모두 흔한 구분자).
+    assert g._consent_context_signals("SMS·앱푸시 수신 동의") == {"sms_optin": "+", "app_push_optin": "+"}
+    assert g._consent_context_signals("SMSㆍ앱푸시 수신동의") == {"sms_optin": "+", "app_push_optin": "+"}
+
+
+def test_grouped_consent_refusal():
+    preds = _yn_preds("SMS와 앱푸시 모두 수신 거부한 회원")
+    assert "B.SMS_YN <> 'Y'" in preds
+    assert "B.APP_PUSH_YN <> 'Y'" in preds
+
+
+def test_grouped_consent_does_not_overfire_send_channel():
+    # 발송 채널 문맥('앱푸시로 보내')은 나열 간격을 끊어 consent 로 승격되면 안 된다.
+    preds = _yn_preds("SMS 수신동의한 고객에게 앱푸시로 보내줘")
+    assert "B.SMS_YN = 'Y'" in preds
+    assert "B.APP_PUSH_YN = 'Y'" not in preds
+
+
+def test_rewrite_guard_flags_dropped_grouped_consent():
+    # 재작성이 채널을 뭉뚱그려 일부를 흘리면(SMS 누락) 게이트가 소실로 잡아야 한다.
+    original = "SMS와 앱푸시 모두 수신동의한 20대 여성"
+    assert any("SMS" in d for d in g._rewrite_dropped_signals(original, "앱푸시 수신 동의 20대 여성"))
+    assert g._rewrite_dropped_signals(original, "SMS·앱푸시 수신 동의 20대 여성") == []

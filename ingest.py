@@ -36,6 +36,12 @@ KOREAN_PARTICLES = (
     "의",
 )
 
+# 계사(서술격 조사) '-인'. '여성인 회원'='여성인'='여성'+'인'처럼 명사 뒤에 붙어 '~인'을 만든다.
+# 일반 격조사(KOREAN_PARTICLES)와 달리 1글자 term 에 붙이면 '여(女)'+'인'='여인', '남'+'인' 같은
+# 오분해 위험이 있어, 텍스트 패턴에서는 2글자 이상 한글 term 에만 허용한다(_term_regex). 매칭된
+# 표면형의 조사 분리(_lookup_with_particle)에서는 KOREAN_PARTICLES 뒤에 이어서 시도한다.
+_COPULA_PARTICLE = "인"
+
 
 @dataclass(frozen=True)
 class NormalizationRule:
@@ -166,7 +172,7 @@ class NormalizationIngester:
         if lookup_value is not None:
             return lookup_value, ""
 
-        for particle in KOREAN_PARTICLES:
+        for particle in (*KOREAN_PARTICLES, _COPULA_PARTICLE):
             if matched_text.endswith(particle):
                 stem = matched_text[: -len(particle)]
                 lookup_value = self._lookup.get(_normalize_key(stem))
@@ -236,8 +242,18 @@ def _term_regex(term: str) -> str:
     normalized_parts = [re.escape(part) for part in re.split(r"\s+", term.strip())]
     escaped_term = r"\s+".join(normalized_parts)
     boundary_chars = r"가-힣A-Za-z0-9_"
-    if re.search(r"[가-힣]$", term):
-        particles = "|".join(re.escape(particle) for particle in KOREAN_PARTICLES)
+    compact_length = len(re.sub(r"\s+", "", term))
+    ends_korean = bool(re.search(r"[가-힣]$", term))
+    # 영문/숫자 종결 term('VIP인'·'GOLD로'·'RCS는')도 뒤 한글 조사를 허용하되, 단일 문자 term
+    # ('A'~'E'→등급, 'f'/'m'→성별)은 '가/는' 등에 오탐하므로 2글자 이상일 때만 연다. 한글 종결 term 은
+    # 기존대로 길이 무관 허용.
+    ends_alnum_multichar = bool(re.search(r"[A-Za-z0-9]$", term)) and compact_length >= 2
+    if ends_korean or ends_alnum_multichar:
+        suffixes = list(KOREAN_PARTICLES)
+        # 계사 '-인'은 2글자 이상 term 에만 허용(1글자 한글 term '여'+'인'='여인' 오분해 방지).
+        if compact_length >= 2:
+            suffixes.append(_COPULA_PARTICLE)
+        particles = "|".join(re.escape(particle) for particle in suffixes)
         return fr"(?<![{boundary_chars}]){escaped_term}(?:{particles})?(?![{boundary_chars}])"
     return fr"(?<![{boundary_chars}]){escaped_term}(?![{boundary_chars}])"
 
