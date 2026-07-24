@@ -95,3 +95,60 @@ def test_builder_count_metric_uses_count_distinct_and_no_date_when_no_window():
 def test_builder_returns_none_without_conditions():
     plan = g.build_query_plan("20대 여성 고객")
     assert g.build_aggregate_targets_sql_candidate(plan) is None
+
+
+# --- 지표명 없는 개수 임계값('2개/3번/2회 이상 구매') → 주문 건수(order_count) 집계 ---
+# 배경: '2019년 1월에 2개 이상 상품 구입한 사람'은 (1) '이상'/'2개'/'상품'이 상품명 LIKE 로 새고,
+# (2) 개수 임계값이 통째로 드롭됐다. 이제 상품명은 추출에서 빠지고, 개수 임계값은 order_count HAVING 으로
+# 컴파일되며, 절대 구매창(2019년 1월)이 있으면 그 기간 주문만 센다.
+
+def test_bare_count_threshold_maps_to_order_count():
+    conditions = _conditions("2019년 1월에 2개 이상 상품 구입한 사람")
+    assert len(conditions) == 1
+    c = conditions[0]
+    assert c["metric_id"] == "order_count" and c["operator"] == ">=" and c["threshold"] == 2
+
+
+def test_bare_count_threshold_operator_and_unit_variants():
+    assert _conditions("3번 이상 구매한 고객")[0]["threshold"] == 3
+    assert _conditions("2회 이상 구입한 회원")[0]["operator"] == ">="
+    assert _conditions("주문 5건 이하인 고객")[0]["operator"] == "<="
+
+
+def test_bare_count_threshold_not_double_counted_with_metric_noun():
+    # '구매 횟수 5건 이상'(지표명 명시형)은 order_count 하나만 — 개수 임계값 파서가 중복 추가하면 안 된다.
+    conditions = _conditions("구매 횟수 5건 이상 고객")
+    assert [c["metric_id"] for c in conditions] == ["order_count"]
+
+
+def test_bare_count_threshold_yields_to_cart_and_response_tracks():
+    # 장바구니/반응 개수 임계값은 각 전용 트랙 소유 — 주문 건수(order_count)로 새면 안 된다.
+    assert _conditions("장바구니에 3개 이상 담은 고객") == []
+    assert _conditions("최근 3개월 캠페인 중 2번 이상 반응한 고객") == []
+
+
+def test_bare_count_threshold_ignores_non_purchase_counts():
+    # 구매 동사가 없으면 개수 임계값을 구매 건수로 확정하지 않는다(오탐 방지).
+    assert _conditions("2회 이상 방문한 고객") == []
+    assert _conditions("자녀가 2명 이상인 고객") == []
+
+
+def test_builder_count_threshold_with_absolute_date_window():
+    # 절대 구매창(2019년 1월)이 함께 잡히면 그 기간 주문만 세어 HAVING COUNT(DISTINCT ORDER_ID) 로 건다.
+    plan = g.build_query_plan("2019년 1월에 2개 이상 상품 구입한 사람")
+    candidate = g.build_sql_template_candidate(plan)
+    assert candidate is not None and candidate["id"] == "sql_template:aggregate_targets"
+    sql = candidate["sql"]
+    assert "HAVING COUNT(DISTINCT ORDER_ID) >= 2" in sql
+    assert "ORDER_DATE BETWEEN '20190101' AND '20190131'" in sql
+    # 오추출 재발 방지: '이상'/'상품'이 상품명 LIKE 로 새지 않는다.
+    assert "N'%이상%'" not in sql and "N'%상품%'" not in sql
+
+
+def test_builder_count_threshold_combines_member_attributes():
+    plan = g.build_query_plan("2019년 1월에 2건 이상 구매한 30대 여성 고객")
+    sql = g.build_aggregate_targets_sql_candidate(plan)["sql"]
+    assert "HAVING COUNT(DISTINCT ORDER_ID) >= 2" in sql
+    assert "ORDER_DATE BETWEEN '20190101' AND '20190131'" in sql
+    assert "B.AGE >= 30" in sql and "B.AGE <= 39" in sql
+    assert "B.GENDER_CD = 'GENDER_CD.FEMALE'" in sql

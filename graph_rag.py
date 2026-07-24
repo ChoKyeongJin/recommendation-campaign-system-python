@@ -731,6 +731,9 @@ _BRAND_COPULA_PATTERN = re.compile(
 # 구매 '횟수/조건' 수식어는 상품명이 아니다(예: '2회 이상 구매' 의 '이상'). 게이트가 상품 조건으로 오인해
 # 재작성을 헛되이 폐기하지 않도록 제외한다.
 _PURCHASE_SIGNAL_STOPWORDS = {"이상", "이하", "미만", "초과", "회", "번", "건", "원", "개", "명", "이력", "내역", "경험", "동안", "번째"}
+# 수량/횟수 토큰('2개', '3회', '5건', 맨숫자 '2')도 상품명이 아니라 개수 조건이다. 상품명 추출
+# (_sanitize_purchase_object)에서 걸러 '2개 이상 상품 구입' 의 '2개'/'이상' 이 LIKE 로 새지 않게 한다.
+_QUANTITY_COUNT_TOKEN = re.compile(r"^\d+(?:개|회|번|건|원|명|장|종|가지|종류|품목|매|권)?$")
 
 
 def _purchase_object_signals(text: str) -> set[str]:
@@ -1525,6 +1528,9 @@ def _build_single_query_plan(
     # 범용 집계 조건(누적 구매 금액/횟수 임계값)도 결정론 파싱으로 확정한다(rules/llm 동일 컨텍스트).
     llm_plan["target_user"].setdefault("aggregate_conditions", [])
     _apply_aggregate_condition_filter(parse_query, llm_plan)
+    # 지표명 없이 구매 동사에 붙는 개수 임계값('2개 이상 상품 구입')도 주문 건수(order_count) 집계로
+    # 확정한다 — 지표명 명시형 파싱 뒤에 실행해 이미 잡힌 order_count 는 중복 추가하지 않는다.
+    _apply_purchase_count_threshold_filter(parse_query, llm_plan)
     # '캠페인 구매금액 N원 이상'(캠페인 귀속 금액)은 누적 금액 파싱 뒤에 실행해, 같은 어구를 이중
     # 파싱한 누적 구매 금액 조건을 걷어낸다(캠페인 문맥 금액은 반응 팩트 BUY_AMT 집계 소유).
     llm_plan["target_user"].setdefault("campaign_buy_amount", None)
@@ -1638,6 +1644,9 @@ def _build_rule_query_plan(
     # 광역 권역어(수도권 등)를 구성 시도(SIDO IN)로 확장한다 — 값 인덱스 뒤에 실행해 명시 시도와 병합.
     _apply_macro_region_filter(query, plan)
     _apply_aggregate_condition_filter(query, plan)
+    # 지표명 없는 개수 임계값('2개 이상 상품 구입')도 주문 건수(order_count) 집계로 확정한다(위 지표명
+    # 명시형 파싱 뒤에 실행해 이미 잡힌 order_count 는 중복 추가하지 않는다).
+    _apply_purchase_count_threshold_filter(query, plan)
     _apply_cart_aggregate_condition_filter(query, plan)
     _apply_cart_retention_filter(query, plan)
     _apply_cart_type_filter(query, plan)
@@ -2362,6 +2371,11 @@ def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> No
         if candidate and candidate not in _GENERIC_PRODUCT_NOUNS:
             purchase_object = candidate
             is_brand_mention = True
+    # 재시도까지 실패해 일반명사('상품/제품')만 남으면 상품 필터로 쓰지 않는다 — LIKE '%상품%' 는
+    # 사실상 모든 상품을 뜻해 무의미하고, '2개 이상 상품 구입' 처럼 실제 상품명이 없는 개수 조건을
+    # 억지 LIKE 로 만들기 때문이다(개수 조건은 별도 트랙이 담당).
+    if purchase_object in _GENERIC_PRODUCT_NOUNS:
+        purchase_object = None
     if purchase_object:
         canonical = _canonicalize_product_term(purchase_object)
         target_user["purchase_object"] = canonical
@@ -3150,6 +3164,55 @@ def _apply_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
             break  # 한 지표당 하나의 조건만
     if conditions:
         plan.setdefault("target_user", {})["aggregate_conditions"] = conditions
+
+
+# 지표 명사('구매 횟수') 없이 구매 동사에 바로 붙는 개수 임계값("2개/3번/2회/2건 이상 구매/구입").
+# 지표 동의어가 없어 _apply_aggregate_condition_filter(지표명이 있어야 발동)가 못 잡는 간극을 메운다 —
+# 주문 건수(order_count) 지표로 컴파일해 회원별 COUNT(DISTINCT ORDER_ID) 임계값이 된다. 개수 단위
+# (개/번/회/건)만 봐서 금액(원)·연령(세)·기간(개월)과 갈린다('3개월'은 '개' 뒤가 '월'이라 매칭 안 됨).
+_PURCHASE_COUNT_THRESHOLD_PATTERN = re.compile(r"(?P<num>\d+)\s*(?:개|번|회|건)\s*(?P<op>이상|이하|초과|미만)")
+# 개수 임계값을 구매 조건으로 확정할 구매 동사 표지. 장바구니/반응 문맥은 각 전용 트랙에 양보한다.
+_PURCHASE_COUNT_VERB_SIGNS = ("구매", "구입", "주문", "샀")
+_PURCHASE_COUNT_CONTEXT_YIELDS = ("장바구니", "카트", "반응")
+
+
+def _apply_purchase_count_threshold_filter(query: str, plan: dict[str, Any]) -> None:
+    """'N개/번/회/건 이상 구매/구입'을 주문 건수(order_count) 집계 임계값으로 해석한다.
+
+    _apply_aggregate_condition_filter 뒤에 실행해, 지표명 명시형('구매 횟수 2회 이상')이 이미 order_count
+    를 잡았으면 중복 추가하지 않는다. 장바구니/반응 개수 임계값은 각 전용 트랙(cart_aggregate/
+    campaign_response_frequency)이 소유하므로 그 문맥이면 양보한다. 절대 구매창(purchase_date)이 있으면
+    build_aggregate_targets_sql_candidate 가 그 기간 주문만 세어 HAVING COUNT(DISTINCT ORDER_ID) 로 건다."""
+    target_user = plan.setdefault("target_user", {})
+    conditions = target_user.get("aggregate_conditions")
+    if not isinstance(conditions, list):
+        conditions = []
+        target_user["aggregate_conditions"] = conditions
+    if any(isinstance(c, dict) and c.get("metric_id") == "order_count" for c in conditions):
+        return
+    compact = (query or "").replace(" ", "")
+    if not any(verb in compact for verb in _PURCHASE_COUNT_VERB_SIGNS):
+        return
+    if any(word in compact for word in _PURCHASE_COUNT_CONTEXT_YIELDS):
+        return
+    metrics = _aggregate_targets_config().get("metrics", {})
+    if "order_count" not in metrics:
+        return
+    match = _PURCHASE_COUNT_THRESHOLD_PATTERN.search(compact)
+    if match is None:
+        return
+    threshold = int(match.group("num"))
+    if threshold <= 0:
+        return
+    conditions.append(
+        {
+            "metric_id": "order_count",
+            "operator": _AGG_OPERATOR_WORDS[match.group("op")],
+            "threshold": threshold,
+            "window_days": None,
+            "label": metrics["order_count"].get("ko_label", "구매 횟수"),
+        }
+    )
 
 
 # 장바구니 개수/수량 임계값: "장바구니에 N개 이상 담은". 돈(원)·연령(대)로 오탐하지 않게 개수 단위만 본다.
@@ -4663,6 +4726,10 @@ def _sanitize_purchase_object(value: str) -> str | None:
             continue
         # 날짜/기간 토큰은 상품이 아니라 구매 날짜 조건이므로 상품명 후보에서 뺀다(→ purchase_date 가 담당).
         if _is_date_like_token(stripped_token):
+            continue
+        # 수량/횟수·비교 수식어('2개 이상', '3회', '5건 이상')는 상품이 아니라 개수 조건이므로 뺀다
+        # (→ '2개 이상 상품 구입' 의 '이상'/'2개' 가 PRODUCT_NAME LIKE 로 새는 것을 막는다).
+        if stripped_token in _PURCHASE_SIGNAL_STOPWORDS or _QUANTITY_COUNT_TOKEN.match(stripped_token):
             continue
         tokens.append(stripped_token)
     if not tokens:
@@ -8763,11 +8830,12 @@ def _sql_nlike_contains(column: str, term: str) -> str:
     return f"{column} LIKE N'%{term.replace(chr(39), chr(39) * 2)}%'"
 
 
-def _purchase_date_predicate(purchase_date: Any, alias: str = "D", column: str = "ORDER_DATE") -> str | None:
+def _purchase_date_predicate(purchase_date: Any, alias: str | None = "D", column: str = "ORDER_DATE") -> str | None:
     """구매 날짜 창 {from,to}(YYYYMMDD CHAR8)를 ORDER_DATE BETWEEN 술어로 만든다.
 
     ORDER_DATE 는 CHAR(8) 'YYYYMMDD' 로 저장되므로 문자열 BETWEEN 이 곧 날짜 범위다(집계 빌더의
-    CONVERT(CHAR(8), …, 112) 비교와 같은 표현계). 값이 없거나 형식이 어긋나면 None."""
+    CONVERT(CHAR(8), …, 112) 비교와 같은 표현계). alias=None 이면 컬럼을 별칭 없이 쓴다(집계 서브쿼리처럼
+    단일 테이블 스캔이라 별칭이 없는 문맥용). 값이 없거나 형식이 어긋나면 None."""
     if not isinstance(purchase_date, dict):
         return None
     start, end = purchase_date.get("from"), purchase_date.get("to")
@@ -8775,7 +8843,8 @@ def _purchase_date_predicate(purchase_date: Any, alias: str = "D", column: str =
         return None
     if start > end:
         start, end = end, start
-    return f"{alias}.{column} BETWEEN {_sql_quote(start)} AND {_sql_quote(end)}"
+    prefix = f"{alias}." if alias else ""
+    return f"{prefix}{column} BETWEEN {_sql_quote(start)} AND {_sql_quote(end)}"
 
 
 def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
@@ -8793,6 +8862,16 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
     date_predicate = _purchase_date_predicate(purchase_date)
     # 상품 구매 이력 조건(상품 LIKE)도, 구매 날짜 창 조건(ORDER_DATE BETWEEN)도 없으면 이 빌더 대상이 아니다.
     if not has_object and date_predicate is None:
+        return None
+    # 상품명 없이 개수/금액 임계값(aggregate_conditions)만 있으면 집계 빌더가 소유한다 — 이 빌더는 날짜창만
+    # 걸 수 있어 '2019년 1월에 2개 이상 구매'의 개수 임계값(HAVING)이 조용히 새기 때문이다. 집계 빌더는
+    # 절대 구매창까지 서브쿼리 안에서 함께 걸므로(build_aggregate_targets_sql_candidate) 여기서 양보한다.
+    if not has_object and any(
+        isinstance(condition, dict)
+        and condition.get("operator") in {"=", ">", ">=", "<", "<="}
+        and isinstance(condition.get("threshold"), (int, float))
+        for condition in target_user.get("aggregate_conditions") or []
+    ):
         return None
 
     compiled = compile_member_target_conditions(query_plan)
@@ -8942,13 +9021,13 @@ def _format_threshold(threshold: int | float) -> str:
 
 def _aggregate_member_subquery(
     config: dict[str, Any], metric: dict[str, Any], operator: str, threshold: int | float,
-    window_days: Any, alias: str,
+    window_days: Any, alias: str, purchase_date: Any = None,
 ) -> str:
     """회원별 집계 조건 서브쿼리(GROUP BY <회원키> HAVING <집계식> <연산자> <임계값>)를 만든다.
 
     이것이 '범용 집계 조건 빌더'의 핵심이다 — agg/column/distinct/기간창은 전부 인자·config 로 주어지고,
-    주문 횟수든 누적 금액이든 같은 서브쿼리 골격을 쓴다. 기간창이 있으면 주문일자(YYYYMMDD 문자열)를
-    사전식 비교로 최근 N일로 한정한다."""
+    주문 횟수든 누적 금액이든 같은 서브쿼리 골격을 쓴다. 상대 기간창(window_days)이 있으면 최근 N일로,
+    절대 구매창(purchase_date, 예 '2019년 1월')이 있으면 ORDER_DATE BETWEEN 으로 그 기간 주문만 집계한다."""
     table = config.get("table", "CRM_SL_ORDERHEADERMALL")
     join_column = config.get("join_column", "MEMBER_NO")
     date_column = config.get("date_column", "ORDER_DATE")
@@ -8959,6 +9038,9 @@ def _aggregate_member_subquery(
     if isinstance(window_days, int) and window_days > 0 and date_column:
         cutoff = f"CONVERT(CHAR(8), DATEADD(DAY, -{window_days}, GETDATE()), 112)"
         where.append(f"{date_column} >= {cutoff}")
+    date_between = _purchase_date_predicate(purchase_date, alias=None, column=date_column) if date_column else None
+    if date_between is not None:
+        where.append(date_between)
     return "\n".join(
         [
             "(",
@@ -8998,13 +9080,17 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
         return None
 
     compiled = compile_member_target_conditions(query_plan)
+    # 절대 구매창('2019년 1월')이 함께 잡혔으면 집계를 그 기간 주문으로 한정한다(그래야 '2019년 1월에
+    # 2개 이상 구매'의 개수 임계값이 기간 안에서 세어진다). 상대창(최근 N일)은 조건별 window_days 소유.
+    purchase_date = target_user.get("purchase_date")
     from_clause = ["FROM CRM_MB_BASEINFO B"]
     labels = list(compiled["labels"])
     for position, condition in enumerate(valid):
         metric = metrics[condition["metric_id"]]
         alias = f"AGG{position}"
         subquery = _aggregate_member_subquery(
-            config, metric, condition["operator"], condition["threshold"], condition.get("window_days"), alias
+            config, metric, condition["operator"], condition["threshold"], condition.get("window_days"), alias,
+            purchase_date=purchase_date,
         )
         from_clause.append(f"     INNER JOIN {subquery} ON B.{join_column} = {alias}.{join_column}")
         labels.append(condition.get("label") or condition["metric_id"])

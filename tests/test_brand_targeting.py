@@ -125,11 +125,13 @@ def test_brand_before_generic_noun_is_captured(brand_snapshot):
     assert plan["target_user"]["purchase_object"] == "알로&루"
 
 
-def test_generic_only_purchase_keeps_legacy_behavior(brand_snapshot):
-    # 앞에 실제 이름이 없으면 기존 동작('상품' LIKE) 유지 — 동작 변화 없음을 고정.
+def test_generic_only_purchase_is_not_product_filter(brand_snapshot):
+    # 앞에 실제 상품/브랜드명이 없이 일반명사('상품')만 있으면 상품 필터로 쓰지 않는다.
+    # LIKE '%상품%' 는 사실상 모든 상품을 뜻해 무의미하고, 계사형('브랜드가 상품인')이 이미
+    # 일반명사를 제외하는 것과도 일관된다. ('2개 이상 상품 구입' 처럼 실상품 없는 개수 조건 보호)
     target_user: dict = {}
     g._apply_purchase_object_filter("상품 구매한 고객", target_user)
-    assert target_user["purchase_object"] == "상품"
+    assert target_user.get("purchase_object") is None
 
 
 def test_plain_product_extraction_unchanged(brand_snapshot):
