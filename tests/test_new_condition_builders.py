@@ -81,7 +81,6 @@ def test_no_purchase_does_not_contaminate_cart():
 
 # ── B그룹: 캠페인 반응(MCS_CAMP_MBR_RSPN_FT) ──────────────────────────
 @pytest.mark.parametrize("query,predicate", [
-    ("최근 캠페인 문자를 받은 회원", "R.CNCT_SCS_YN = 'Y'"),
     ("오퍼에 반응한 회원", "R.OFFR_RSPN_YN = 'Y'"),
     ("캠페인 보고 구매한 회원", "R.BUY_RSPN_YN = 'Y'"),
     ("쿠폰을 사용한 회원", "R.USE_CPN_CNT > 0"),
@@ -92,6 +91,15 @@ def test_campaign_response(query, predicate):
     # MBR_NO(문자열)↔MEMBER_NO(숫자) 타입 불일치 가드를 통과하려면 캐스트 조인이어야 한다.
     assert "TRY_CAST(R.MBR_NO AS BIGINT) = B.MEMBER_NO" in sql
     assert predicate in sql
+
+
+def test_campaign_contact_sources_member_list():
+    # 접촉(발송) 성공의 소스는 반응 팩트가 아니라 셀 발송 대상 명단(Z_CAMP_MBR)이다 — 반응 팩트는
+    # 반응자 중심 적재라(데모는 구매반응자뿐) '발송 성공 & 구매반응 없음'이 구조적으로 공집합이 됐다.
+    sql = _sql("최근 캠페인 문자를 받은 회원")
+    assert "Z_CAMP_MBR M" in sql
+    assert "TRY_CAST(M.MBR_NO AS BIGINT) = B.MEMBER_NO" in sql
+    assert "M.CONTAC_SUCC_YN = 'Y'" in sql
 
 
 def test_campaign_response_combines_with_member_attribute():
@@ -112,12 +120,12 @@ def test_campaign_builder_registered():
     "캠페인에서 발송은 성공했지만 구매하지 않은 회원만 보여줘.",
 ])
 def test_send_success_maps_to_contact_success(query):
-    # '발송 성공/전송 성공'(조사 포함)은 접촉 성공(CNCT_SCS_YN='Y')으로 컴파일돼야 한다 —
+    # '발송 성공/전송 성공'(조사 포함)은 접촉 성공(발송 명단 CONTAC_SUCC_YN='Y')으로 컴파일돼야 한다 —
     # 리터럴 표면어만 나열하던 파서가 이 표현을 놓쳐 조건이 통째로 새던 버그 방지.
     plan = _plan(query)
     responses = plan["target_user"].get("campaign_responses") or []
     assert any(r["canonical"] == "campaign_contact" for r in responses), query
-    assert "R.CNCT_SCS_YN = 'Y'" in _sql(query)
+    assert "M.CONTAC_SUCC_YN = 'Y'" in _sql(query)
 
 
 def test_campaign_send_success_combines_with_no_purchase():

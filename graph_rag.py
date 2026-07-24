@@ -39,6 +39,7 @@ from sql_guard import (
     validate_sql,
 )
 from confidence import render_confidence_markdown, render_confidence_report, score_targeting_confidence
+import targeting_ir
 from targeting_ir import extract_target_conditions, fact_join_kinds
 
 
@@ -167,12 +168,37 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
         "campaign_date_column": "CAMP_SDATE",
         "campaign_key_expression": "CONCAT(R.CAMP_ID, ':', R.CAMP_EXEC_NO)",
         "response_predicate": "(R.OFFR_RSPN_YN = 'Y' OR R.BUY_RSPN_YN = 'Y')",
+        # 접촉(발송) 성공의 소스는 반응 팩트가 아니라 셀 발송 대상 명단이다 — 반응 팩트는 반응자
+        # 중심 적재라(데모는 구매반응자뿐) '발송 성공 & 구매반응 없음'이 구조적으로 공집합이 된다.
+        "contact_member_list": {
+            "table": "Z_CAMP_MBR",
+            "alias": "M",
+            "member_join": {"left": "TRY_CAST(M.MBR_NO AS BIGINT)", "right": "B.MEMBER_NO"},
+        },
+    },
+    # 셀 단위 비율 타겟: "발송 성공률 높고 구매율 낮은 셀의 회원". 분모는 셀 발송 대상 명단
+    # Z_CAMP_MBR(회원별 접촉성공 CONTAC_SUCC_YN 포함)이고, 구매율 분자는 반응 팩트의 구매반응 행이다 —
+    # 반응 팩트 단독으로는 불가(전 행이 구매반응자라 분모가 없어 구매율이 항상 100%). '높은/낮은' 같은
+    # 막연한 표현은 여기 기본 임계로 컴파일한다(명시 % 는 그대로).
+    "cell_rate_targets": {
+        "member_table": "Z_CAMP_MBR",
+        "alias": "M",
+        "member_column": "MBR_NO",
+        "member_join": {"left": "TRY_CAST(M.MBR_NO AS BIGINT)", "right": "B.MEMBER_NO"},
+        "cell_alias": "M2",
+        "cell_subquery_alias": "CELL",
+        "cell_keys": ["CAMP_ID", "CAMP_EXEC_NO", "CELL_NODE_ID"],
+        "contact_success_column": "CONTAC_SUCC_YN",
+        "response_join": {"table": "MCS_CAMP_MBR_RSPN_FT", "alias": "R", "buy_predicate": "R.BUY_RSPN_YN = 'Y'"},
+        "vague_high_default": 80,
+        "vague_low_default": 10,
     },
     # AST 검증(validate_select_ast) 설정. 기본값에 키가 있어야 파일의 validation 섹션이 머지된다.
     # 별칭 허용 목록은 실제 빌더가 쓰는 별칭 전체(B 회원, A 카트, C/CP 상품, R 캠페인반응, O/OH/OD 주문,
-    # M 지표, S 보조속성, ZC 등)를 담는다 — 목록에 없는 별칭이 SQL 에 나타나면 후보를 거부한다.
+    # M 지표/캠페인멤버, M2/CELL 셀 집계, S 보조속성, ZC 등)를 담는다 — 목록에 없는 별칭이 SQL 에
+    # 나타나면 후보를 거부한다.
     "validation": {
-        "allowed_table_aliases": ["A", "B", "C", "CP", "D", "M", "O", "OD", "OH", "P", "R", "S", "ZC"],
+        "allowed_table_aliases": ["A", "B", "C", "CELL", "CP", "D", "M", "M2", "O", "OD", "OH", "P", "R", "S", "ZC"],
         "max_conditions": 30,
         "max_or_branches": 10,
         "allow_raw_sql": False,
@@ -1356,6 +1382,9 @@ def classify_query_complexity(query_plan: dict[str, Any]) -> str:
         target_user.get("cart_retention"),            # 장바구니 보관 기간(카트 담은 시점 비교)
         target_user.get("cart_type"),                 # 장바구니 유형(정기배송/픽업 등 CART_TYPE_CD)
         target_user.get("campaign_responses"),        # 캠페인 반응(팩트 EXISTS)
+        target_user.get("campaign_response_frequency"),  # 캠페인 반응 횟수(팩트 집계)
+        target_user.get("campaign_buy_amount"),       # 캠페인 귀속 구매금액(팩트 BUY_AMT 집계)
+        target_user.get("cell_rate_target"),          # 셀 단위 성공률/구매율 비율(셀 집계)
         query_plan.get("union_condition"),            # 합집합(OR) 컴파일
         query_plan.get("set_expressions"),            # 집합식
         query_plan.get("region_density_target"),      # 밀집 지역 랭킹(집계)
@@ -1477,6 +1506,10 @@ def _build_single_query_plan(
     _apply_balance_condition_filter(parse_query, llm_plan)
     # '캠페인 접촉/오퍼·구매 반응/쿠폰 사용'도 결정론 파싱으로 확정한다(캠페인 반응 팩트 테이블).
     _apply_campaign_response_filter(parse_query, llm_plan)
+    # 장바구니 '존재' 표현도 결정론으로 승격한다(LLM 이 카트 조건을 떨어뜨리는 것 방지).
+    _apply_cart_presence_filter(parse_query, llm_plan)
+    # 장바구니 '부재'('장바구니 없는')는 존재 파싱 뒤에 실행해 오파싱된 cart_abandoner 를 걷어낸다.
+    _apply_cart_absence_filter(parse_query, llm_plan)
     # '최근 N개월 캠페인 중 K번 이상 반응'(반응 횟수 임계값)도 결정론 파싱으로 확정한다(반응 EXISTS 와 별개로
     # 회원별 반응 캠페인 수를 세어 임계값 비교). '구매 2회 이상'(주문 집계)과 갈리게 '반응' 문맥에서만 발동.
     llm_plan["target_user"].setdefault("campaign_response_frequency", None)
@@ -1492,6 +1525,14 @@ def _build_single_query_plan(
     # 범용 집계 조건(누적 구매 금액/횟수 임계값)도 결정론 파싱으로 확정한다(rules/llm 동일 컨텍스트).
     llm_plan["target_user"].setdefault("aggregate_conditions", [])
     _apply_aggregate_condition_filter(parse_query, llm_plan)
+    # '캠페인 구매금액 N원 이상'(캠페인 귀속 금액)은 누적 금액 파싱 뒤에 실행해, 같은 어구를 이중
+    # 파싱한 누적 구매 금액 조건을 걷어낸다(캠페인 문맥 금액은 반응 팩트 BUY_AMT 집계 소유).
+    llm_plan["target_user"].setdefault("campaign_buy_amount", None)
+    _apply_campaign_buy_amount_filter(parse_query, llm_plan)
+    # '성공률/구매율'(셀 단위 비율)은 캠페인 반응 파싱 뒤에 실행해, '발송 성공률'에서 오배정된 접촉성공
+    # EXISTS 와 LLM 이 극단화한 no_purchase 를 걷어낸다.
+    llm_plan["target_user"].setdefault("cell_rate_target", None)
+    _apply_cell_rate_target_filter(parse_query, llm_plan)
     # 장바구니 개수/수량 임계값("장바구니에 N개 이상 담은")도 결정론 파싱으로 확정한다.
     _apply_cart_aggregate_condition_filter(parse_query, llm_plan)
     # 장바구니 보관 기간("일주일 이상 담아둔")도 결정론 파싱으로 확정한다 — LLM/재작성이 기간을 떼고
@@ -1508,6 +1549,10 @@ def _build_single_query_plan(
     # 신규 가입 타겟도 결정론 파싱으로 확정한다(창 길이 파싱 담당; LLM 의 new_user 라벨과 이중화).
     llm_plan["target_user"].setdefault("signup_target", None)
     _apply_signup_target_filter(parse_query, llm_plan)
+    # 결정론 정규식이 다 돈 뒤, LLM 이 채운 구조화 슬롯을 fill-if-empty 로 병합한다(덧셈형 — 정규식이
+    # 발동한 슬롯은 불가침, LLM 은 정규식이 못 잡은 표현 변형만 메운다). 재실행 정규식이 LLM 값을 덮는
+    # 순서 문제를 원천 차단하려고 여기(모든 _apply_* 이후)서 적용한다.
+    _apply_llm_structured_slots(llm_plan)
     # 값 보강까지 끝난 뒤, 컴파일되지 않는 리던던트 집합식(잘못 감싼 AND 나열, 지표/디멘션 canonical 오매칭
     # 등)은 버린다 — 결정론 필터가 조건을 커버하므로 SQL 을 막지 않는다(미정규화 값 clarification 은 유지).
     _drop_uncompilable_set_expressions(llm_plan)
@@ -1601,7 +1646,9 @@ def _build_rule_query_plan(
     # 재작성문이 지표/디멘션 canonical(구매금액 등)을 집합식 operand 로 매칭해 컴파일 불가가 되면 SQL 이
     # 막힌다. 결정론 필터가 커버하는 리던던트 집합식은 버린다(age 소유 판정 전에 실행해 age-clear 오작동 방지).
     _drop_uncompilable_set_expressions(plan)
-    set_expression_terms = _set_expression_canonical_values(plan["set_expressions"])
+    # 집합식 term 소유권은 '컴파일 가능한' 집합식에만 준다 — clarification 으로만 남는 집합식이
+    # 회원속성 term(성별 등)의 일반 적용까지 막아 조건이 증발하는 것 방지.
+    set_expression_terms = _compilable_set_expression_canonical_values(plan["set_expressions"])
     if any(term.startswith("age_") for term in set_expression_terms):
         plan["target_user"]["age_min"] = None
         plan["target_user"]["age_max"] = None
@@ -1632,6 +1679,10 @@ def _build_rule_query_plan(
             _apply_query_term(plan, canonical)
 
     _apply_cart_repurchase_context(query, plan)
+    # 장바구니 '존재' 표현("장바구니에 상품이 있는")은 이탈어 없이도 카트 오디언스로 승격한다.
+    _apply_cart_presence_filter(query, plan)
+    # 장바구니 '부재'("장바구니 없는")는 존재/이탈 승격 뒤에 실행해 오파싱된 cart_abandoner 를 걷어낸다.
+    _apply_cart_absence_filter(query, plan)
     _apply_inactivity_period_filter(query, plan)
     _apply_recent_login_filter(query, plan)
     # '온라인/오프라인 매장 가입'은 정규화가 buyer 채널로 오분류하므로 결정론으로 online_signup 승격.
@@ -1640,6 +1691,11 @@ def _build_rule_query_plan(
     _apply_balance_condition_filter(query, plan)
     _apply_campaign_response_filter(query, plan)
     _apply_campaign_response_frequency_filter(query, plan)
+    # '캠페인 구매금액 N원'(귀속 금액)은 누적 금액 파싱(_apply_aggregate_condition_filter, 위)과
+    # 캠페인 반응 파싱 뒤에 실행해 이중 파싱된 누적 조건·리던던트 구매반응 EXISTS 를 걷어낸다.
+    _apply_campaign_buy_amount_filter(query, plan)
+    # '성공률/구매율'(셀 단위 비율)도 캠페인 반응 파싱 뒤에 실행해 오배정된 접촉성공 EXISTS 를 걷어낸다.
+    _apply_cell_rate_target_filter(query, plan)
     # '자녀정보 등록'은 정규화가 parent 페르소나로 삼키므로 결정론으로 children_registered 승격.
     _apply_children_registered_filter(query, plan)
     # '<등급> 이상/이하'는 정규화 등가 매칭(경계 등급만) 뒤에 실행해 서열 집합(IN)으로 교체한다.
@@ -1690,9 +1746,33 @@ def _build_rule_query_plan(
     return plan
 
 
+def _build_target_user_tool_schema() -> dict[str, Any]:
+    """LLM tool 의 target_user properties 를 IR 레지스트리 슬롯 + coarse 어휘에서 생성한다.
+
+    예전엔 target_user 가 불투명 {"type":"object"} 라 LLM 이 어떤 구조화 슬롯(가입창/로그인창/카트/캠페인
+    등)이 있는지 몰랐고, 그래서 그 조건들을 채우지 못했다. targeting_ir.structured_slot_shapes() 의 각
+    SlotShape.schema 조각과 coarse enum(gender/lifecycle/behaviors/…)을 합쳐 슬롯을 명시적으로 노출한다.
+    상세 검증·정규화는 _coerce_llm_structured_conditions 가 닫힌 어휘로 수행하므로 여기 스키마는 느슨해도
+    안전하다."""
+    properties: dict[str, Any] = {
+        "gender": {"type": "string", "enum": sorted(GENDER_TERMS)},
+        "age_min": {"type": "integer"},
+        "age_max": {"type": "integer"},
+        "lifecycle": {"type": "array", "items": {"type": "string", "enum": sorted(LIFECYCLE_TERMS)}},
+        "interests": {"type": "array", "items": {"type": "string", "enum": sorted(INTEREST_TERMS)}},
+        "preferred_channels": {"type": "array", "items": {"type": "string", "enum": sorted(CHANNEL_TERMS)}},
+        "behaviors": {"type": "array", "items": {"type": "string", "enum": sorted(BEHAVIOR_TERMS)}},
+        "price_sensitivity": {"type": "string", "enum": ["high", "low"]},
+    }
+    for shape in targeting_ir.structured_slot_shapes():
+        if shape.container == "target_user":
+            properties[shape.name] = shape.schema
+    return {"type": "object", "description": "오디언스 조건", "properties": properties}
+
+
 # Tool Calling(구조화 출력) 스키마: LLM 파서가 자유 텍스트 대신 이 함수 인자(JSON)로만 응답하게 강제한다.
-# 파이프라인의 "Tool Calling으로 구조화된 출력" 단계. 필드 상세 검증은 _coerce_llm_query_plan 이
-# 담당하므로(누락 키는 fallback_plan 으로 보충) 스키마는 최상위 구조만 고정하고 유연하게 둔다.
+# target_user 는 IR 레지스트리에서 파생한 슬롯 스키마를 노출하고(_build_target_user_tool_schema), plan-level
+# 랭킹 슬롯도 함께 광고한다. 필드 상세 검증/정규화는 coerce 계층이 닫힌 어휘로 담당한다.
 _QUERY_PLAN_TOOL = {
     "type": "function",
     "function": {
@@ -1705,9 +1785,14 @@ _QUERY_PLAN_TOOL = {
                     "type": "string",
                     "description": "recommend_campaign(발송/캠페인) | find_user_segment(조회) | unknown",
                 },
-                "target_user": {"type": "object", "description": "오디언스 조건(gender/age/lifecycle/behaviors 등)"},
-                "exclude": {"type": "object", "description": "제외 조건"},
+                "target_user": _build_target_user_tool_schema(),
+                "exclude": {"type": "object", "description": "제외 조건(gender/interests/lifecycle)"},
                 "campaign_constraints": {"type": "object", "description": "캠페인 목적/채널/혜택"},
+                **{
+                    shape.name: shape.schema
+                    for shape in targeting_ir.structured_slot_shapes()
+                    if shape.container == "plan"
+                },
             },
             "required": ["intent", "target_user"],
         },
@@ -1876,6 +1961,7 @@ def _query_plan_user_prompt(
     fallback_plan: dict[str, Any],
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
 ) -> str:
+    allowed = _llm_slot_allowed()
     allowed_values = {
         "gender": sorted(GENDER_TERMS),
         "lifecycle": sorted(LIFECYCLE_TERMS),
@@ -1884,6 +1970,13 @@ def _query_plan_user_prompt(
         "channels": sorted(CHANNEL_TERMS),
         "offer_type": sorted(OFFER_TERMS),
         "objective": sorted(CAMPAIGN_OBJECTIVES),
+        # 구조화 슬롯 닫힌 어휘(LLM 이 canonical 만 고르게) — 슬롯 스키마와 이중으로 명시한다.
+        "duration_unit": sorted(targeting_ir.UNIT_DAYS),
+        "operator": sorted(targeting_ir.OPERATORS),
+        "campaign_response_canonical": sorted(allowed["campaign_responses"]),
+        "cart_type_canonical": sorted({s["canonical"] for s in allowed["cart_types"].values()}),
+        "aggregate_metric_id": sorted(allowed["aggregate_metrics"]),
+        "cart_aggregate_metric": sorted(allowed["cart_aggregate_metrics"]),
     }
     fallback = "\n".join(
         [
@@ -1905,6 +1998,76 @@ def _query_plan_user_prompt(
         allowed_values=json.dumps(allowed_values, ensure_ascii=False, indent=2),
         fallback_plan=json.dumps(fallback_plan, ensure_ascii=False, indent=2),
     )
+
+
+def _llm_slot_allowed() -> dict[str, Any]:
+    """SlotShape.allowed_key → 런타임 렉시콘 어휘 맵. LLM 은 canonical 만 고르고 SQL 술어/전체 shape 는
+    여기서 채워 임의 SQL 주입·비존재 값을 막는다. (참조 테이블은 이 함수 호출 시점엔 모두 정의돼 있다.)"""
+    campaign_map: dict[str, dict[str, Any]] = {}
+    for canonical, predicate, _terms in _CAMPAIGN_RESPONSE_TARGETS:
+        entry: dict[str, Any] = {"predicate": predicate}
+        if canonical == "campaign_contact":
+            entry["source"] = "camp_member_list"
+        campaign_map[canonical] = entry
+    # 구매반응 부정(NOT EXISTS)은 negated=True 로 요청. 술어는 긍정형과 같고 부정은 컴파일러가 감싼다.
+    campaign_map.setdefault("no_buy_response", {"predicate": "R.BUY_RSPN_YN = 'Y'"})
+    cart_type_map: dict[str, dict[str, Any]] = {}
+    for entry in _cart_type_entries():
+        shape = {
+            "canonical": entry["canonical"],
+            "value": entry["value"],
+            "label": entry.get("ko_label") or entry["canonical"],
+            "unpaid_only": False,  # LLM 은 미결제 문맥을 신뢰성 있게 못 정하므로 안전 기본(비한정).
+        }
+        cart_type_map[entry["canonical"]] = shape
+        cart_type_map[entry["value"]] = shape
+    return {
+        "campaign_responses": campaign_map,
+        "cart_types": cart_type_map,
+        "cart_aggregate_metrics": set(_CART_AGGREGATE_METRIC_EXPRESSIONS),
+        "aggregate_metrics": set(_aggregate_targets_config().get("metrics", {}) or {}),
+    }
+
+
+def _coerce_llm_structured_conditions(candidate: Any) -> dict[str, Any]:
+    """LLM 후보의 구조화 슬롯을 IR SlotShape 의 닫힌 어휘로 검증·정규화해 {slot: value} 로 돌려준다.
+
+    유효한 슬롯만 담고 어휘 이탈/형식 오류는 drop(환각 차단). 실제 플랜 병합은 _apply_llm_structured_slots
+    가 재실행 _apply_* 이후 fill-if-empty(덧셈형)로 수행한다."""
+    if not isinstance(candidate, dict):
+        return {}
+    allowed = _llm_slot_allowed()
+    target_user = candidate.get("target_user") if isinstance(candidate.get("target_user"), dict) else {}
+    out: dict[str, Any] = {}
+    for shape in targeting_ir.slot_coercers():
+        container = target_user if shape.container == "target_user" else candidate
+        if shape.name not in container:
+            continue
+        allowed_vocab = allowed.get(shape.allowed_key) if shape.allowed_key else None
+        coerced = shape.coerce(container[shape.name], allowed=allowed_vocab)
+        if coerced is not None:
+            out[shape.name] = coerced
+    return out
+
+
+def _is_empty_slot(current: Any) -> bool:
+    return current is None or current == [] or current == {}
+
+
+def _apply_llm_structured_slots(plan: dict[str, Any]) -> None:
+    """coerce 완료된 LLM 구조화 슬롯을 fill-if-empty(덧셈형)로 병합하고 stash 를 제거한다.
+
+    정규식이 이미 값을 채운 슬롯은 건드리지 않는다 — LLM 은 정규식이 비운(표현 변형으로 못 잡은) 슬롯만
+    메운다. 신뢰 모델: 정규식 우선."""
+    slots = plan.pop("_llm_structured_slots", None)
+    if not isinstance(slots, dict):
+        return
+    target_user = plan.setdefault("target_user", {})
+    for name, value in slots.items():
+        shape = targeting_ir.SLOT_SHAPES.get(name)
+        container = target_user if (shape is None or shape.container == "target_user") else plan
+        if _is_empty_slot(container.get(name)):
+            container[name] = value
 
 
 def _coerce_llm_query_plan(candidate: Any, fallback_plan: dict[str, Any], sql_schema: Path = DEFAULT_SCHEMA_PATH) -> dict[str, Any]:
@@ -1956,6 +2119,9 @@ def _coerce_llm_query_plan(candidate: Any, fallback_plan: dict[str, Any], sql_sc
         coerced_set_expressions = [expression for expression in coerced_set_expressions if expression is not None]
         if coerced_set_expressions:
             plan["set_expressions"] = coerced_set_expressions
+    # 구조화 슬롯(가입창/로그인창/카트/캠페인/집계 등)을 IR 레지스트리 닫힌 어휘로 검증해 stash 에 담는다.
+    # 실제 병합은 _build_llm_query_plan 이 재실행 _apply_* 이후 fill-if-empty 로 수행(덧셈형).
+    plan["_llm_structured_slots"] = _coerce_llm_structured_conditions(candidate)
     return plan
 
 
@@ -2885,17 +3051,9 @@ def _parse_purchase_inactivity_period(query: str) -> dict[str, Any] | None:
     compact_query = query.replace(" ", "").casefold()
     if not any(signal in compact_query for signal in _PURCHASE_NEG_SIGNALS):
         return None
-    month_match = re.search(r"(?P<value>\d{1,2})\s*(?:개월|달)", query)
-    if month_match:
-        months = int(month_match.group("value"))
-        if months > 0:
-            return {"value": months, "unit": "months", "min_days": months * 30}
-    day_match = re.search(r"(?P<value>\d{1,4})\s*일", query)
-    if day_match:
-        days = int(day_match.group("value"))
-        if days > 0:
-            return {"value": days, "unit": "days", "min_days": days}
-    return None
+    # 통합 창 파서 — 년/주/단어형(반년 등)까지 커버. sql_interval 은 이 슬롯 계약에 없다. 구매 키워드
+    # 근처의 창만 본다(다른 조건의 창을 훔쳐가지 않게).
+    return _parse_duration_window(query, anchor_terms=("구매", "구입", "주문"))
 
 
 def _apply_purchase_inactivity_filter(query: str, plan: dict[str, Any]) -> None:
@@ -3140,6 +3298,80 @@ def _duration_matches(compact: str) -> list[tuple[int, int, int]]:
         for match in _WORD_DURATION_PATTERN.finditer(compact)
     ]
     return sorted(found)
+
+
+# 한글 기간 단위 → 캐노니컬 영문 단위(슬롯 정규화용). 일수 환산은 targeting_ir.UNIT_DAYS 가 소유한다.
+_KO_UNIT_TO_CANON = {"일": "days", "주": "weeks", "주일": "weeks", "개월": "months", "달": "months", "년": "years"}
+# 최근성 표지(기간 숫자 없는 '최근 로그인'류에 기본 창을 줄지 판정). 레지스트리 recently.synonyms 미러.
+_RECENCY_MARKERS = ("최근", "요즘", "근래", "최근에")
+
+
+def _recently_default_days() -> int:
+    """숫자 없는 '최근' 창의 기본 일수(date_expression_registry.recently.default_days, 기본 30)."""
+    registry = _MEMBER_TARGET_FILTERS.get("date_expression_registry", {})
+    recently = registry.get("relative_terms", {}).get("recently", {}) if isinstance(registry, dict) else {}
+    days = recently.get("default_days") if isinstance(recently, dict) else None
+    return days if isinstance(days, int) and days > 0 else 30
+
+
+def _duration_window_candidates(compact: str) -> list[tuple[int, int, int, str]]:
+    """공백 제거 텍스트의 기간 표현을 (시작, 끝, value, canonical_unit) 목록으로(등장 순). 단어형은 unit=days."""
+    out: list[tuple[int, int, int, str]] = []
+    for match in _NUMERIC_DURATION_PATTERN.finditer(compact):
+        value = int(match.group("num"))
+        if value > 0:
+            out.append((match.start(), match.end(), value, _KO_UNIT_TO_CANON.get(match.group("unit"), "days")))
+    for match in _WORD_DURATION_PATTERN.finditer(compact):
+        out.append((match.start(), match.end(), _WORD_DURATION_DAYS[match.group(0)], "days"))
+    return sorted(out)
+
+
+# 앵커어와 기간 표현 사이 허용 간격(공백 제거 기준). '6개월동안로그인'(동안=2), '1년이내가입'(이내=2)은
+# 붙은 것으로 보고, 프롬프트 반대편의 다른 조건 창은 배제한다.
+_DURATION_ANCHOR_GAP = 8
+
+
+def _parse_duration_window(
+    query: str,
+    *,
+    require_number: bool = True,
+    default_days: int | None = None,
+    exclude_past: bool = False,
+    anchor_terms: tuple[str, ...] | None = None,
+) -> dict[str, Any] | None:
+    """통합 기간 창 파서 — 숫자형(3개월/2주/1년)·단어형(일주일/반년/한달)을 모두 잡아 정규 shape로 돌려준다.
+
+    반환 {value, unit(∈days/weeks/months/years), min_days}. 파편화된 슬롯별 창 파서(가입/로그인/미구매/
+    미접속)가 각자 다른 단위 부분집합만 지원해 '1년 이내 가입'·'반년 미구매' 같은 표현을 놓치던 것을
+    한 곳으로 모은다. 문맥 게이트(가입 신호/로그인 신호/부정어)는 호출자가 유지한다.
+
+    anchor_terms 를 주면 그 앵커어 근처(±_DURATION_ANCHOR_GAP)의 기간만 본다 — 여러 조건이 각자 창을
+    가진 프롬프트('최근 1년 이내 가입 … 최근 로그인')에서 로그인 창이 가입의 '1년'을 훔쳐가는 조건 간
+    창 충돌을 막는다(앵커가 하나도 없으면 전체에서 첫 창으로 폴백). exclude_past=True 면 'N개월 전'을 건너뛴다."""
+    compact = query.replace(" ", "").casefold()
+    candidates = _duration_window_candidates(compact)
+    if exclude_past:
+        candidates = [c for c in candidates if compact[c[1]:c[1] + 1] != "전"]
+    if anchor_terms:
+        anchor_spans = [
+            (match.start(), match.end())
+            for term in anchor_terms
+            for match in re.finditer(re.escape(term), compact)
+        ]
+        if anchor_spans:
+            def _near(cand: tuple[int, int, int, str]) -> bool:
+                start, end = cand[0], cand[1]
+                return any(
+                    max(start, a_start) - min(end, a_end) <= _DURATION_ANCHOR_GAP
+                    for a_start, a_end in anchor_spans
+                )
+            candidates = [c for c in candidates if _near(c)]
+    if candidates:
+        _s, _e, value, unit = candidates[0]
+        return {"value": value, "unit": unit, "min_days": value * targeting_ir.UNIT_DAYS[unit]}
+    if not require_number and default_days:
+        return {"value": default_days, "unit": "days", "min_days": default_days}
+    return None
 
 
 # 장바구니 보관 기간: "장바구니에 담아둔 지 일주일 이상", "일주일 이상 유지/담고 있는". 담은 시점
@@ -3403,8 +3635,8 @@ def _apply_purchase_date_filter(query: str, plan: dict[str, Any]) -> None:
 # signup_target.default_days 이고, '최근 N일/N개월 (이내) 가입' 이 있으면 그 창으로 덮는다.
 _SIGNUP_SIGNALS = ("신규가입", "신규회원", "신규유저", "신규고객", "새가입", "새로가입", "새가입자", "가입한지",
                    "newuser", "newmember", "newlyregistered", "newsignup", "signedup")
-# '가입/등록/신규' 뒤나 앞에 붙는 기간 창(예: '최근 30일 이내 가입', '가입 30일차').
-_SIGNUP_PERIOD_PATTERN = re.compile(r"(\d{1,4})\s*(일|개월|달)")
+# 가입 창은 통합 파서 _parse_duration_window 가 담당한다(예전 _SIGNUP_PERIOD_PATTERN 제거 — 일/개월/달만
+# 알아 '1년 이내 가입'을 놓쳤다).
 
 
 def _apply_signup_target_filter(query: str, plan: dict[str, Any]) -> None:
@@ -3415,23 +3647,21 @@ def _apply_signup_target_filter(query: str, plan: dict[str, Any]) -> None:
     성별/연령 등과 자동 결합한다(LLM 파서가 이미 new_user 를 내보내는 경로와 이중화 — 창 파싱은 이쪽 담당).
     """
     compact = query.replace(" ", "").casefold()
-    match = _SIGNUP_PERIOD_PATTERN.search(query)
+    # 통합 창 파서 — 일/주/개월/년·단어형(한달 등)까지 커버(예전 _SIGNUP_PERIOD_PATTERN 은 일/개월/달만
+    # 알아 '1년 이내 가입'을 놓쳤다). 가입 키워드 근처의 창만 본다(다른 조건 창 훔치기 방지).
+    window = _parse_duration_window(query, anchor_terms=("가입", "등록"))
     has_signup_signal = any(signal in compact for signal in _SIGNUP_SIGNALS)
     # '가입/등록' + 기간 창(예: '30일 이내 가입한 고객')도 신규 가입 타겟으로 본다. 단 '미가입/재가입/
     # 탈퇴' 등 반대·무관 맥락은 제외한다('가입' 부분문자열 오탐 방지).
     join_window = (
-        match is not None
+        window is not None
         and ("가입" in compact or "등록" in compact)
         and not any(neg in compact for neg in ("미가입", "재가입", "비가입", "가입안", "가입하지", "탈퇴"))
     )
     if not has_signup_signal and not join_window:
         return
-    days: int | None = None
-    if match:
-        value = int(match.group(1))
-        if value > 0:
-            days = value * 30 if match.group(2) in ("개월", "달") else value
     # days 가 None 이면 compile 이 signup_target.default_days 를 쓴다.
+    days = window["min_days"] if window else None
     plan.setdefault("target_user", {})["signup_target"] = {"days": days}
 
 
@@ -3563,6 +3793,69 @@ def _apply_cart_repurchase_context(query: str, plan: dict[str, Any]) -> None:
             ]
 
 
+# 장바구니 '존재' 표현: "장바구니에 상품이 있는/담아둔/담은". 렉시콘 경로(_is_cart_abandonment_query)는
+# 이탈어(미결제/방치 등)가 필수라 존재 표현만으로는 카트 조건이 통째로 소실됐다. 담긴 상태는 그 자체가
+# KEEP_YN='Y' 보관 오디언스다. 부정형('담지 않은'/'있지 않은')은 lookahead 로 배제한다.
+_CART_PRESENCE_PATTERN = re.compile(
+    r"장바구니에(?:상품|물건|제품|아이템)?(?:이|가|을|를)?(?:들어)?(?:있(?!지)|담(?!지))"
+)
+
+# 장바구니 '부재' 표현: "장바구니(생성)가 없는", "장바구니 생성이나 구매 이력 없는"(분배 부정). '장바구니'
+# 뒤에 (생성/담긴 등 명사)·(이나/또는 나열)·(구매이력 등 다른 부재 명사)?가 오고 부정어(없/않)로 끝나는
+# 좁은 패턴만 잡는다 — '장바구니에 담은 고객은 쿠폰이 없는'(카트 존재+다른 부재)에 오탐하지 않게 명사군을
+# 열거로 제한한다(임의 텍스트 사이끼움 금지).
+_CART_ABSENCE_PATTERN = re.compile(
+    r"장바구니(?:생성|생성한|담긴|담은|상품|물건|제품|아이템|이력)?"
+    r"(?:이나|나|또는|랑|이랑)?(?:구매이력|주문이력|구매내역|구매|주문|상품)?"
+    r"(?:이|가|을|를|은|는|도)?(?:없|않)"
+)
+
+
+def _cart_absence_predicate() -> str:
+    """보관(KEEP_YN='Y') 카트 라인이 없는 회원의 NOT EXISTS 술어. cart_targets 레지스트리 소유값 사용."""
+    config = _MEMBER_TARGET_FILTERS.get("cart_targets", {}) if isinstance(_MEMBER_TARGET_FILTERS.get("cart_targets"), dict) else {}
+    table = config.get("table", "ODS_MALL_OMS_CART")
+    active = config.get("active_condition", {}) if isinstance(config.get("active_condition"), dict) else {}
+    keep_column = (active.get("column") or "A.KEEP_YN").split(".")[-1]
+    keep_value = active.get("value", "Y")
+    return (
+        f"NOT EXISTS (SELECT 1 FROM {table} A "
+        f"WHERE A.CART_ID = B.MEMBER_ID AND A.{keep_column} = {_sql_quote(str(keep_value))})"
+    )
+
+
+def _apply_cart_absence_filter(query: str, plan: dict[str, Any]) -> None:
+    """'장바구니(생성)가 없는'을 장바구니 부재(cart_absence) 조건으로 승격한다.
+
+    '장바구니 없는'을 cart_abandoner(장바구니에 상품이 '있는')로 뒤집던 오파싱을 막고, 회원키 NOT EXISTS
+    로 컴파일한다. '장바구니 없음'은 '카트 있음' 조건들(cart_abandoner/cart_retention/cart_type)과 모순이라
+    같은 절에서 오파싱된 그것들을 걷어낸다 — 안 그러면 카트 보관(KEEP_YN='Y') 빌더가 이겨 NOT EXISTS 와
+    자기모순 SQL 이 나온다. 절 안에서 상품으로 오추출된 purchase_object 조각('생성이나' 등)도 제거한다.
+    '장바구니 생성이나 구매 이력 없는'처럼 구매 부재가 함께 오면 그건 기존 no_purchase 트랙이 잡는다."""
+    compact = query.replace(" ", "").casefold()
+    match = _CART_ABSENCE_PATTERN.search(compact)
+    if match is None:
+        return
+    target_user = plan.setdefault("target_user", {})
+    target_user["cart_absence"] = True
+    # '카트 있음' 조건들은 부재와 모순 → 걷어낸다.
+    target_user["behaviors"] = [b for b in target_user.get("behaviors", []) if b != "cart_abandoner"]
+    target_user["cart_retention"] = None
+    target_user["cart_type"] = None
+    # 부재 절('장바구니 생성이나 …') 안에서 상품으로 오추출된 조각 제거(purchase_history 빌더 오발동 방지).
+    obj = target_user.get("purchase_object")
+    if isinstance(obj, str) and obj and obj.replace(" ", "").casefold() in compact[match.start():match.end()]:
+        target_user["purchase_object"] = None
+        target_user["purchase_object_kind"] = None
+
+
+def _apply_cart_presence_filter(query: str, plan: dict[str, Any]) -> None:
+    """'장바구니에 (상품이) 있는/담아둔' 존재 표현을 cart_abandoner(보관 상태 KEEP_YN='Y')로 승격한다."""
+    compact = query.replace(" ", "").casefold()
+    if _CART_PRESENCE_PATTERN.search(compact):
+        _append_unique(plan.setdefault("target_user", {}).setdefault("behaviors", []), "cart_abandoner")
+
+
 def _apply_inactivity_period_filter(query: str, plan: dict[str, Any]) -> None:
     period = _parse_inactivity_period(query)
     if period is None:
@@ -3594,29 +3887,12 @@ def _parse_inactivity_period(query: str) -> dict[str, Any] | None:
     ):
         return None
 
-    month_match = re.search(r"(?P<value>\d{1,2})\s*(?:개월|달)\s*(?:이상|넘|초과|째|간)?", query)
-    if month_match:
-        months = int(month_match.group("value"))
-        if months > 0:
-            return {
-                "value": months,
-                "unit": "months",
-                "min_days": months * 30,
-                "sql_interval": f"{months} months",
-            }
-
-    day_match = re.search(r"(?P<value>\d{1,4})\s*일\s*(?:이상|넘|초과|째|간)?", query)
-    if day_match:
-        days = int(day_match.group("value"))
-        if days > 0:
-            return {
-                "value": days,
-                "unit": "days",
-                "min_days": days,
-                "sql_interval": f"{days} days",
-            }
-
-    return None
+    # 통합 창 파서 — 년/주/단어형(반년 등)까지 커버. inactivity 는 sql_interval 을 포함한다(빌더 계약).
+    # 접속/휴면 키워드 근처의 창만 본다(다른 조건 창 훔치기 방지).
+    window = _parse_duration_window(query, anchor_terms=("접속", "로그인", "휴면", "비활성"))
+    if window is None:
+        return None
+    return {**window, "sql_interval": f"{window['value']} {window['unit']}"}
 
 
 def _inactivity_retrieval_terms(period: Any) -> list[str]:
@@ -3646,17 +3922,17 @@ def _parse_recent_login_period(query: str) -> dict[str, Any] | None:
         return None
     if any(signal in compact_query for signal in _RECENT_LOGIN_NEG_SIGNALS):
         return None
-    # 'N개월 전에 로그인한'(과거 시점 언급)은 최근 창이 아니다 → '전' 후행 시 미매칭.
-    month_match = re.search(r"(?P<value>\d{1,2})\s*(?:개월|달)(?!\s*전)", query)
-    if month_match:
-        months = int(month_match.group("value"))
-        if months > 0:
-            return {"value": months, "unit": "months", "min_days": months * 30, "sql_interval": f"{months} months"}
-    day_match = re.search(r"(?P<value>\d{1,4})\s*일(?!\s*전)", query)
-    if day_match:
-        days = int(day_match.group("value"))
-        if days > 0:
-            return {"value": days, "unit": "days", "min_days": days, "sql_interval": f"{days} days"}
+    # 통합 창 파서 — 년/주/단어형까지 커버. 'N개월 전'(과거 시점)은 exclude_past 로 건너뛴다. 로그인/접속
+    # 키워드 근처의 창만 본다 — '최근 1년 이내 가입 … 최근 로그인'에서 가입의 '1년'을 훔쳐가지 않게.
+    window = _parse_duration_window(query, exclude_past=True, anchor_terms=("로그인", "접속"))
+    if window is None:
+        # 숫자/기간 없는 '최근 로그인' — 최근성 표지가 있으면 기본 창(recently.default_days)을 준다.
+        # '앱으로 로그인한' 처럼 최근성 표지 없는 로그인 언급은 최근성 조건이 아니므로 잡지 않는다.
+        if not any(marker in compact_query for marker in _RECENCY_MARKERS):
+            return None
+        default_days = _recently_default_days()
+        window = {"value": default_days, "unit": "days", "min_days": default_days}
+    return {**window, "sql_interval": f"{window['value']} {window['unit']}"}
     return None
 
 
@@ -3901,7 +4177,10 @@ def _apply_balance_condition_filter(query: str, plan: dict[str, Any]) -> None:
 # 끼는 표현까지 리터럴로 나열하면 조합이 폭발하고, 실제로 '캠페인에서 발송은 성공했지만'이 어느 항목에도
 # 걸리지 않아 접촉 성공(CNCT_SCS_YN='Y') 조건이 통째로 누락됐다.
 _CAMPAIGN_RESPONSE_TARGETS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
-    ("campaign_contact", "R.CNCT_SCS_YN = 'Y'",
+    # 접촉(발송) 성공은 반응 팩트가 아니라 셀 발송 대상 명단(Z_CAMP_MBR, source=camp_member_list)이
+    # 소스다 — 반응 팩트는 반응자 중심 적재라(데모는 구매반응자뿐) 접촉성공 EXISTS 를 팩트에 걸면
+    # '발송 성공했지만 구매반응 없음' 조합이 구조적으로 공집합이 된다.
+    ("campaign_contact", "M.CONTAC_SUCC_YN = 'Y'",
      ("캠페인접촉", "캠페인을받은", "캠페인메시지를받은", "캠페인문자를받은", "캠페인을수신", "캠페인발송받은", "캠페인대상", "캠페인수신",
       # 발송/전송/접촉 + (조사) + 성공 = 접촉 성공. '발송 실패'는 걸리지 않는다.
       r"(?:발송|전송|접촉|도달)(?:은|는|이|가|에|에는|도|을|를)?성공")),
@@ -3917,18 +4196,66 @@ _CAMPAIGN_RESPONSE_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = tupl
     for canonical, predicate, terms in _CAMPAIGN_RESPONSE_TARGETS
 )
 
+# 캠페인 구매반응 '부정': "캠페인에서(는) 구매하지 않은/구매 안 한/구매 반응이 없는". 반응 팩트에
+# 구매반응 행이 없음(NOT EXISTS)으로 컴파일한다 — 전체 주문 기준 미구매(purchase_inactivity/no_purchase)와
+# 의미가 다르다(캠페인 밖 구매는 허용). 긍정 리터럴('캠페인구매')이 부정문의 부분문자열에 오탐하므로
+# 부정을 먼저 판정하고 긍정 buy_response 를 눌러야 한다.
+_CAMPAIGN_BUY_NEG_PATTERN = re.compile(
+    r"캠페인(?:에서|에|을|를)?(?:는|은|도)?(?:보고|통해|후)?"
+    r"(?:구매(?:를|은|는|도)?(?:반응)?(?:이|가|은|는)?(?:하지않|안하|안한|없)|미구매)"
+)
+# 캠페인 어순 무관 '구매반응' 부정: "구매 반응이 없는". '구매반응'은 반응 팩트(BUY_RSPN_YN) 어휘라
+# 캠페인 단어와 인접하지 않아도 캠페인 구매반응 부정으로 확정한다 — "캠페인 발송에 성공했지만 구매
+# 반응이 없는"처럼 발송 절이 캠페인과 구매 사이에 끼는 어순에서, 긍정 리터럴('구매반응')이 부정문의
+# 부분문자열에 매칭돼 정반대(EXISTS 구매반응 있음)로 컴파일되던 사고 방지.
+_BUY_RSPN_NEG_PATTERN = re.compile(r"구매반응(?:이|가|은|는|도)?(?:없|하지않|안하|안한)")
+# 문장 전체의 일반형 구매 부정(캠페인 문맥 여부 무관) — 캠페인 부정 매치 스팬과 겹침을 비교해, 모든
+# 구매 부정이 캠페인 문맥이면 오배정된 전체 주문 미구매(purchase_inactivity/no_purchase)를 걷어낸다.
+_GENERIC_BUY_NEG_PATTERN = re.compile(
+    r"구매(?:를|은|는|도)?(?:반응)?(?:이|가|은|는)?(?:하지않|안하|안한|없)|미구매"
+)
+
 
 def _apply_campaign_response_filter(query: str, plan: dict[str, Any]) -> None:
     """'캠페인 접촉/오퍼·구매 반응/쿠폰 사용'을 캠페인 반응 조건(campaign_responses)으로 해석한다.
 
     compile_member_target_conditions 가 MCS_CAMP_MBR_RSPN_FT(회원키 MBR_NO) EXISTS 서브쿼리로 컴파일하므로
     어느 빌더를 타든 다른 조건과 AND 결합된다. 여러 반응이 잡히면 각각 EXISTS 로 AND 결합한다(서로 다른
-    캠페인이어도 됨)."""
+    캠페인이어도 됨). 부정형 '캠페인에서 구매하지 않은'은 negated 플래그로 NOT EXISTS 컴파일되고,
+    그 부정이 문장의 유일한 구매 부정이면 오배정된 전체 주문 미구매(purchase_inactivity/no_purchase —
+    '최근 N개월' 창을 로그인 절 등에서 훔쳐온다)를 걷어낸다."""
     compact = query.replace(" ", "").casefold()
-    responses: list[dict[str, str]] = []
+    negation_spans = [
+        match.span()
+        for pattern in (_CAMPAIGN_BUY_NEG_PATTERN, _BUY_RSPN_NEG_PATTERN)
+        for match in pattern.finditer(compact)
+    ]
+    buy_negated = bool(negation_spans)
+    responses: list[dict[str, Any]] = []
     for canonical, predicate, pattern in _CAMPAIGN_RESPONSE_PATTERNS:
+        # 부정문의 부분문자열('구매 반응이 없는'의 '구매반응', '캠페인 구매 안 한'의 '캠페인구매')로
+        # 긍정 구매반응이 오탐하는 것 방지.
+        if buy_negated and canonical == "buy_response":
+            continue
         if pattern.search(compact):
-            responses.append({"canonical": canonical, "predicate": predicate})
+            response: dict[str, Any] = {"canonical": canonical, "predicate": predicate}
+            if canonical == "campaign_contact":
+                response["source"] = "camp_member_list"
+            responses.append(response)
+    if buy_negated:
+        responses.append({"canonical": "no_buy_response", "predicate": "R.BUY_RSPN_YN = 'Y'", "negated": True})
+        # 문장의 모든 일반형 구매 부정이 캠페인 부정 매치와 겹치면(=캠페인 문맥뿐이면) 오배정된 전체
+        # 주문 미구매를 걷어낸다. 별개의 전체 미구매("최근 90일 구매 안 했고 캠페인 반응도 없는")가
+        # 있으면 스팬이 안 겹쳐 주문 트랙이 유지된다.
+        generic_matches = list(_GENERIC_BUY_NEG_PATTERN.finditer(compact))
+        all_campaign_scoped = generic_matches and all(
+            any(match.start() < end and start < match.end() for start, end in negation_spans)
+            for match in generic_matches
+        )
+        if all_campaign_scoped:
+            target_user = plan.setdefault("target_user", {})
+            target_user["purchase_inactivity"] = None
+            target_user["behaviors"] = [b for b in target_user.get("behaviors", []) if b != "no_purchase"]
     if responses:
         plan.setdefault("target_user", {})["campaign_responses"] = responses
 
@@ -3977,6 +4304,154 @@ def _apply_campaign_response_frequency_filter(query: str, plan: dict[str, Any]) 
     }
 
 
+# 캠페인 '귀속 구매금액' 임계값: "캠페인 구매금액 20만원 이상"/"캠페인을 통해 20만원 이상 구매한".
+# 반응 팩트(MCS_CAMP_MBR_RSPN_FT)에는 반응 Y/N 외에 캠페인 귀속 집계 측정값(BUY_AMT)이 있어, 캠페인
+# 문맥이 붙은 구매금액은 전 생애 주문 합(aggregate_conditions purchase_amount, ORDERHEADERMALL)이 아니라
+# 이 컬럼의 회원별 합계(HAVING SUM(BUY_AMT))로 걸어야 의미가 맞다. 금액 단위(원/배수어)만 보고 횟수
+# 단위(번/회/건)는 보지 않아 반응 '횟수'(campaign_response_frequency)와 갈린다. '누적 구매금액'처럼
+# 캠페인과 지표 사이에 다른 수식어가 끼면 캠페인 문맥으로 보지 않는다(연결 조사/통해/보고/반응만 허용).
+_CAMPAIGN_BUY_AMOUNT_METRIC_PATTERN = re.compile(
+    r"캠페인(?:을|를|에서|으로|에|의)?(?:통해|통한|보고|반응|후)?(?:한)?(?:구매|결제)한?금액"
+)
+_CAMPAIGN_AMOUNT_THRESHOLD_PATTERN = re.compile(
+    r"(?P<num>[\d,]+(?:\.\d+)?)(?:(?P<mag>억|천만|백만|만|천)원?|원)(?P<op>이상|초과|이하|미만)"
+)
+_CAMPAIGN_BUY_VERB_PATTERN = re.compile(
+    r"캠페인(?:을|를|에서|으로|에)?(?:통해|통한|보고|후)"
+    r"(?P<num>[\d,]+(?:\.\d+)?)(?:(?P<mag>억|천만|백만|만|천)원?|원)(?P<op>이상|초과|이하|미만)"
+    r"(?:어치)?(?:을|를)?(?:구매|구입|결제|산|샀)"
+)
+
+
+def _apply_campaign_buy_amount_filter(query: str, plan: dict[str, Any]) -> None:
+    """'캠페인 (귀속) 구매금액 N원 이상/이하'를 campaign_buy_amount 조건으로 해석한다.
+
+    build_campaign_response_frequency_targets_sql_candidate(캠페인 팩트 집계 빌더)가 반응 팩트를
+    회원별로 집계(GROUP BY MBR_NO HAVING SUM(BUY_AMT) op N)해 실추출한다. 같은 어구를 이중 파싱한
+    누적 구매 금액 조건(임계값·연산자 동일)은 걷어낸다 — 전 생애 주문 합으로 걸면 캠페인과 금액이
+    연결되지 않아 의미가 달라진다. 구매반응 EXISTS(buy_response)도 리던던트라 걷어낸다(집계 그룹
+    존재 자체가 구매반응 1회 이상을 함의한다)."""
+    compact = query.replace(" ", "").casefold()
+    metric = _CAMPAIGN_BUY_AMOUNT_METRIC_PATTERN.search(compact)
+    if metric is not None:
+        threshold_match = _CAMPAIGN_AMOUNT_THRESHOLD_PATTERN.search(compact, metric.end(), metric.end() + 24)
+    else:
+        threshold_match = _CAMPAIGN_BUY_VERB_PATTERN.search(compact)
+    if threshold_match is None:
+        return
+    amount = _parse_korean_amount(threshold_match.group("num"), threshold_match.group("mag") or "")
+    if amount is None or amount <= 0:
+        return
+    if float(amount).is_integer():
+        amount = int(amount)
+    operator_word = threshold_match.group("op")
+    operator = _AGG_OPERATOR_WORDS[operator_word]
+    target_user = plan.setdefault("target_user", {})
+    target_user["campaign_buy_amount"] = {
+        "operator": operator,
+        "amount": amount,
+        "window_days": _parse_recent_window_days(query),
+        "label": f"캠페인 구매금액 {_format_threshold(amount)}원 {operator_word}",
+    }
+    aggregates = target_user.get("aggregate_conditions")
+    if isinstance(aggregates, list):
+        target_user["aggregate_conditions"] = [
+            condition for condition in aggregates
+            if not (
+                isinstance(condition, dict)
+                and condition.get("metric_id") == "purchase_amount"
+                and condition.get("operator") == operator
+                and isinstance(condition.get("threshold"), (int, float))
+                and float(condition["threshold"]) == float(amount)
+            )
+        ]
+    responses = target_user.get("campaign_responses")
+    if isinstance(responses, list):
+        target_user["campaign_responses"] = [
+            response for response in responses
+            if not (isinstance(response, dict) and response.get("canonical") == "buy_response")
+        ]
+
+
+# 셀 단위 비율 타겟: "발송 성공률은 높지만 구매율이 낮은 셀의 회원". '성공률/구매율'은 회원 플래그가
+# 아니라 캠페인 셀 단위 비율 지표다 — 접촉성공 정규식('발송성공')이 '발송 성공률'의 부분문자열에 걸려
+# 회원 EXISTS 로 강등되고, LLM 재작성은 '구매율 낮음'을 '미구매'(평생 무주문)로 극단화하는 오배정을
+# 여기서 바로잡는다. 명시 %("성공률 90% 이상")는 그대로, '높은/낮은' 막연어는 설정 기본 임계
+# (vague_high_default/vague_low_default)로 컴파일한다.
+_CELL_RATE_EXPLICIT_SUFFIX = r"(?:이|가|은|는|도)?(?P<num>\d+(?:\.\d+)?)(?:%|퍼센트|프로)?(?P<op>이상|초과|이하|미만)"
+_CELL_SUCCESS_RATE_TERM = r"(?:발송|전송|접촉|도달)?성공률"
+_CELL_BUY_RATE_TERM = r"구매(?:전환)?율"
+_CELL_RATE_PATTERNS: dict[str, tuple[re.Pattern[str], re.Pattern[str], re.Pattern[str]]] = {
+    "success_rate": (
+        re.compile(_CELL_SUCCESS_RATE_TERM + _CELL_RATE_EXPLICIT_SUFFIX),
+        re.compile(_CELL_SUCCESS_RATE_TERM + r"(?:이|가|은|는|도)?높"),
+        re.compile(_CELL_SUCCESS_RATE_TERM + r"(?:이|가|은|는|도)?낮"),
+    ),
+    "buy_rate": (
+        re.compile(_CELL_BUY_RATE_TERM + _CELL_RATE_EXPLICIT_SUFFIX),
+        re.compile(_CELL_BUY_RATE_TERM + r"(?:이|가|은|는|도)?높"),
+        re.compile(_CELL_BUY_RATE_TERM + r"(?:이|가|은|는|도)?낮"),
+    ),
+}
+_CELL_RATE_KO = {"success_rate": "발송 성공률", "buy_rate": "구매율"}
+
+
+def _parse_cell_rate(compact: str, metric: str, high_default: float, low_default: float) -> dict[str, Any] | None:
+    """공백 제거 텍스트에서 셀 비율 조건 하나를 찾는다(명시 % 우선, 없으면 높/낮 막연어 → 기본 임계)."""
+    explicit_pattern, high_pattern, low_pattern = _CELL_RATE_PATTERNS[metric]
+    match = explicit_pattern.search(compact)
+    if match is not None:
+        value = float(match.group("num"))
+        if 0 < value <= 100:
+            return {"operator": _AGG_OPERATOR_WORDS[match.group("op")], "value": value, "inferred": False}
+    if high_pattern.search(compact):
+        return {"operator": ">=", "value": float(high_default), "inferred": True}
+    if low_pattern.search(compact):
+        return {"operator": "<=", "value": float(low_default), "inferred": True}
+    return None
+
+
+def _apply_cell_rate_target_filter(query: str, plan: dict[str, Any]) -> None:
+    """'발송 성공률/구매율 임계(높은·낮은 포함)'를 셀 단위 비율 타겟(cell_rate_target)으로 해석한다.
+
+    build_cell_rate_targets_sql_candidate 가 Z_CAMP_MBR 를 셀(CAMP_ID, CAMP_EXEC_NO, CELL_NODE_ID)로
+    집계해 성공률(CONTAC_SUCC_YN 비중)·구매율(구매반응 회원 비중) HAVING 으로 셀을 고르고, 그 셀의
+    발송 대상 회원을 타겟한다. 발동 시 오배정 산물을 걷어낸다 — '발송 성공률'의 부분문자열로 잡힌
+    접촉성공 EXISTS(campaign_contact), '구매율 낮음'이 극단화된 no_purchase(평생 무주문)."""
+    compact = query.replace(" ", "").casefold()
+    config = _MEMBER_TARGET_FILTERS.get("cell_rate_targets", {})
+    high_default = config.get("vague_high_default", 80)
+    low_default = config.get("vague_low_default", 10)
+    success = _parse_cell_rate(compact, "success_rate", high_default, low_default)
+    buy = _parse_cell_rate(compact, "buy_rate", high_default, low_default)
+    if success is None and buy is None:
+        return
+    label_parts = []
+    for metric, condition in (("success_rate", success), ("buy_rate", buy)):
+        if condition is None:
+            continue
+        operator_ko = {">=": "이상", ">": "초과", "<=": "이하", "<": "미만"}[condition["operator"]]
+        suffix = "(기본 임계)" if condition["inferred"] else ""
+        label_parts.append(f"{_CELL_RATE_KO[metric]} {_format_threshold(condition['value'])}% {operator_ko}{suffix}")
+    target_user = plan.setdefault("target_user", {})
+    target_user["cell_rate_target"] = {
+        "success_rate": success,
+        "buy_rate": buy,
+        "label": "셀 " + " · ".join(label_parts),
+    }
+    if success is not None:
+        responses = target_user.get("campaign_responses")
+        if isinstance(responses, list):
+            target_user["campaign_responses"] = [
+                response for response in responses
+                if not (isinstance(response, dict) and response.get("canonical") == "campaign_contact")
+            ]
+    if buy is not None:
+        behaviors = target_user.get("behaviors")
+        if isinstance(behaviors, list):
+            target_user["behaviors"] = [behavior for behavior in behaviors if behavior != "no_purchase"]
+
+
 # 자녀정보 등록 여부(CHILDREN_YN) 타겟: '자녀(정보) 등록/보유/있음'은 육아 관심(parent 페르소나)이
 # 아니라 회원 속성(CHILDREN_YN Y/N)이다. 실컬럼은 children_registered eq_filter 가 소유한다. 정규화가
 # '자녀'→parent(관심/페르소나, 회원 컬럼 미표현)로 삼켜 조건이 새므로, '등록/보유/있음' 문맥이 붙은
@@ -4009,8 +4484,11 @@ _CHANNEL_CONSENT_TARGETS: tuple[tuple[str, str | None, tuple[str, ...]], ...] = 
     ("marketing_optin", None, ("마케팅", "정보활용")),
 )
 # 부정(거부)을 먼저 판정한다 — '동의하지 않'/'동의 안' 은 긍정 패턴('동의')의 부분문자열을 포함한다.
-_CONSENT_NEG_SUFFIX = r"(?:수신)?(?:에|을|를)?(?:거부|미동의|동의안|동의하지|비동의)"
-_CONSENT_POS_SUFFIX = r"(?:수신)?(?:에|을|를)?동의"
+# 조사 뒤 수량 부사('수신에 모두 동의')를 허용한다 — 이전엔 '모두'가 조사와 '동의' 사이에 끼면
+# 접미어가 깨져 동의 승격이 통째로 실패했고, 채널어가 선호/발송 채널로 남아 SQL 생성이 거부됐다.
+_CONSENT_ADVERB = r"(?:는|도)?(?:모두|둘다|전부|다|각각)?"
+_CONSENT_NEG_SUFFIX = r"(?:수신)?(?:에|을|를)?" + _CONSENT_ADVERB + r"(?:거부|미동의|동의안|동의하지|비동의)"
+_CONSENT_POS_SUFFIX = r"(?:수신)?(?:에|을|를)?" + _CONSENT_ADVERB + r"동의"
 # 여러 채널이 하나의 '수신 동의/거부'를 공유하는 나열형("SMS와 앱푸시 모두 수신동의")도 잡기 위한 간격.
 # 채널어와 동의/거부 접미어 사이에 나열 연결어·수량 부사(모두/둘다)·다른 채널어만 있으면 허용한다.
 # '로/으로 보내'(발송 채널) 같은 다른 문맥이 끼면 이 간격이 끊겨 매칭되지 않아 오탐을 막는다.
@@ -4516,6 +4994,17 @@ def retrieve(
     # '최근 N개월 캠페인 K번 이상 반응'(반응 횟수)도 원문 기준으로 재감지한다 — 재작성/스코프 분리가 횟수·기간
     # 어구를 흔들 수 있어 결정론 조건을 복원한다(campaign_responses 재감지와 같은 이유).
     _apply_campaign_response_frequency_filter(_split_channel_suffix(query)[0] or query, query_plan)
+    # '캠페인 구매금액 N원'(귀속 금액)도 원문 기준으로 재감지한다 — 재작성이 캠페인 문맥을 지우면
+    # 전 생애 누적 금액으로 격하되므로 결정론 조건을 복원한다(횟수 재감지와 같은 이유).
+    _apply_campaign_buy_amount_filter(_split_channel_suffix(query)[0] or query, query_plan)
+    # '성공률/구매율'(셀 비율)도 원문 기준으로 재감지한다 — 재작성이 '성공률 높음→발송 성공',
+    # '구매율 낮음→미구매'로 극단화한 오배정을 걷어내고 셀 비율 조건을 복원한다. 위의
+    # campaign_responses 재감지가 원문 '발송성공률'에서 접촉성공을 다시 세우므로 반드시 그 뒤에 실행.
+    _apply_cell_rate_target_filter(_split_channel_suffix(query)[0] or query, query_plan)
+    # 장바구니 '존재' 표현도 원문 기준으로 재감지한다(재작성/스코프 분리가 카트 절을 지우는 것 방지, 멱등).
+    _apply_cart_presence_filter(_split_channel_suffix(query)[0] or query, query_plan)
+    # 장바구니 '부재'도 원문 기준으로 재감지한다(멱등; 오파싱된 cart_abandoner 걷어내기).
+    _apply_cart_absence_filter(_split_channel_suffix(query)[0] or query, query_plan)
     # 타겟팅 스코프면 plan_query 가 오디언스 절뿐이라 '재구매를 유도' 같은 캠페인 목적 절이 잘려
     # intent 가 recommend_campaign→find_user_segment 로 약화된다(장바구니 이탈 재구매 유도 등).
     # 목적 절이 살아있는 전체 재작성본으로 intent 를 재추론해 더 강한 캠페인 의도로만 승격한다.
@@ -7330,6 +7819,24 @@ def _set_expression_canonical_values(expressions: list[dict[str, Any]]) -> set[s
     return values
 
 
+def _compilable_set_expression_canonical_values(expressions: list[dict[str, Any]]) -> set[str]:
+    """컴파일 가능한 집합식의 canonical 만 — matched-term 스킵(집합식 소유권) 판단용.
+
+    unknown operand 가 남았거나 컴파일 불가한 집합식은 SQL 이 되지 못하므로 term 소유권을 주지 않는다.
+    이전엔 '서울 또는 경기' 지역 나열이 문장 전체를 집합식으로 감싸며 female 같은 회원속성을 operand 로
+    삼켰고, 집합식 자체는 clarification 으로만 남는데 term 의 일반 적용(gender 등)도 스킵돼 조건이
+    통째로 증발했다. (validate_unmentioned_sql_conditions 의 관대한 검사는 기존 전체 수집을 유지한다.)"""
+    values: set[str] = set()
+    for expression in expressions:
+        ast = expression.get("set_ast")
+        if not isinstance(ast, dict) or _set_ast_has_unknown_operand(ast):
+            continue
+        if not _compile_set_expression_ast(ast)["is_valid"]:
+            continue
+        values.update(_set_ast_canonical_values(ast))
+    return values
+
+
 def _set_ast_canonical_values(ast: Any) -> set[str]:
     if not isinstance(ast, dict):
         return set()
@@ -7732,8 +8239,10 @@ def _sql_target_builder_registry() -> tuple[tuple[Any, frozenset[str]], ...]:
         # 장바구니 담김/이탈 + 보관 기간 + 유형(CART_TYPE_CD).
         (_build_cart_targets_candidate, frozenset({"cart_abandoner", "cart_retention", "cart_type"})),
         (build_cart_aggregate_targets_sql_candidate, frozenset({"cart_aggregate"})),
-        # 캠페인 반응 '횟수' 임계값('최근 N개월 K번 이상 반응') — 반응 팩트 회원별 집계(HAVING COUNT DISTINCT).
-        (build_campaign_response_frequency_targets_sql_candidate, frozenset({"campaign_response_frequency"})),
+        # 셀 단위 비율 타겟('성공률 높고 구매율 낮은 셀') — Z_CAMP_MBR 셀 집계 HAVING → 셀 회원 조인.
+        (build_cell_rate_targets_sql_candidate, frozenset({"cell_rate_target"})),
+        # 캠페인 팩트 회원별 집계 — 반응 '횟수'(HAVING COUNT DISTINCT)와 '귀속 구매금액'(HAVING SUM(BUY_AMT)).
+        (build_campaign_response_frequency_targets_sql_candidate, frozenset({"campaign_response_frequency", "campaign_buy_amount"})),
         # 캠페인 반응 EXISTS(≥1회) — 회원키 EXISTS 술어라 어느 빌더에나 compile_member_target_conditions 로
         # AND 결합된다(fact_join 아님). 이 빌더는 반응이 '주 신호'일 때만 잡고 fact_join 조건에는 양보한다.
         (build_campaign_response_targets_sql_candidate, frozenset({"campaign_responses"})),
@@ -7943,8 +8452,21 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
         predicate = response.get("predicate") if isinstance(response, dict) else None
         if not predicate:
             continue
-        other_predicates.append(_campaign_response_exists_predicate(str(predicate)))
+        other_predicates.append(
+            _campaign_response_exists_predicate(
+                str(predicate),
+                negated=bool(response.get("negated")),
+                source=response.get("source"),
+            )
+        )
         labels.append(str(response.get("canonical") or "campaign_response")); has_signal = True
+
+    # 장바구니 부재('장바구니 없는/생성 안 한'): 보관(KEEP_YN='Y') 카트 라인이 없는 회원. 회원키
+    # NOT EXISTS 라 캠페인 반응과 같이 어느 빌더에나 AND 결합된다. 구매 부재(no_purchase)와 함께 오면
+    # ("장바구니나 구매 이력 없는") 각각 NOT EXISTS/anti-join 으로 둘 다 남는다.
+    if target_user.get("cart_absence"):
+        other_predicates.append(_cart_absence_predicate())
+        labels.append("cart_absence"); has_signal = True
 
     # 신규 가입 타겟(REG_DT 최근 N일 창). signup_target(창 파싱) 또는 lifecycle 'new_user'(LLM 라벨)
     # 어느 쪽이든 트리거하고 하나의 술어로 합친다. 창은 signup_target.days > default_days 순으로 결정.
@@ -8559,7 +9081,14 @@ def build_cart_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> di
     where_clauses = [f"B.MEMBER_ID IN ({inner})", *compiled["predicates"]]
     if not compiled["forces_state"]:
         where_clauses.append(_member_active_state_predicate())
-    select_columns = ["B.MEMBER_NO AS CUST_ID", _sql_quote(label) + " AS segment_label"]
+    # 라벨 컬럼은 세그먼트 태그이자 조건 커버리지(문자열 매칭) 충족용 — 형제 cart 빌더와 동일하게
+    # target_segment 를 싣고, segment_label 에는 회원 조건 canonical 라벨(compiled.labels)을 함께 담아
+    # 수신동의·캠페인 반응 같은 결합 조건이 커버리지에서 미반영으로 오판되지 않게 한다.
+    select_columns = [
+        "B.MEMBER_NO AS CUST_ID",
+        _sql_quote(_cart_segment_label(query_plan)) + " AS target_segment",
+        _sql_quote(",".join(_unique_strings([label, *compiled["labels"]]))) + " AS segment_label",
+    ]
     objective = query_plan.get("campaign_constraints", {}).get("objective")
     if objective:
         select_columns.append(_sql_quote(objective) + " AS objective")
@@ -8572,20 +9101,32 @@ def build_cart_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> di
     return candidate
 
 
-def _campaign_response_exists_predicate(predicate: str) -> str:
-    """캠페인 반응 술어를 회원키 EXISTS 서브쿼리로 감싼다.
+def _campaign_response_exists_predicate(predicate: str, negated: bool = False, source: str | None = None) -> str:
+    """캠페인 반응 술어를 회원키 EXISTS(부정이면 NOT EXISTS) 서브쿼리로 감싼다.
 
     조인키는 MBR_NO(문자열)↔MEMBER_NO(숫자)로 타입군이 달라 raw 등호(R.MBR_NO = B.MEMBER_NO)는
     validate_join_keys 의 타입 불일치 가드에 걸려 후보가 통째로 탈락한다(실행 시에도 실패). 그래서
     member_target_filters.json 의 campaign_response_targets.member_join 이 지정한 캐스트 조인
-    (TRY_CAST(R.MBR_NO AS BIGINT) = B.MEMBER_NO)을 사용한다."""
+    (TRY_CAST(R.MBR_NO AS BIGINT) = B.MEMBER_NO)을 사용한다.
+
+    source='camp_member_list' 면 반응 팩트 대신 셀 발송 대상 명단(contact_member_list, Z_CAMP_MBR)에
+    건다 — 접촉(발송) 성공은 반응자 중심 팩트가 아니라 발송 명단이 분모/소스다. source 없는 예전
+    predicate(플랜에 저장된 R.* 형태)는 기존 팩트 EXISTS 그대로 동작한다."""
     config = _MEMBER_TARGET_FILTERS.get("campaign_response_targets", {})
-    table = config.get("table", "MCS_CAMP_MBR_RSPN_FT")
-    alias = config.get("alias", "R")
-    join = config.get("member_join", {}) if isinstance(config.get("member_join"), dict) else {}
-    left = join.get("left", "TRY_CAST(R.MBR_NO AS BIGINT)")
+    if source == "camp_member_list":
+        member_list = config.get("contact_member_list", {}) if isinstance(config.get("contact_member_list"), dict) else {}
+        table = member_list.get("table", "Z_CAMP_MBR")
+        alias = member_list.get("alias", "M")
+        join = member_list.get("member_join", {}) if isinstance(member_list.get("member_join"), dict) else {}
+        left = join.get("left", f"TRY_CAST({alias}.MBR_NO AS BIGINT)")
+    else:
+        table = config.get("table", "MCS_CAMP_MBR_RSPN_FT")
+        alias = config.get("alias", "R")
+        join = config.get("member_join", {}) if isinstance(config.get("member_join"), dict) else {}
+        left = join.get("left", "TRY_CAST(R.MBR_NO AS BIGINT)")
     right = join.get("right", "B.MEMBER_NO")
-    return f"EXISTS (SELECT 1 FROM {table} {alias} WHERE {left} = {right} AND {predicate})"
+    prefix = "NOT " if negated else ""
+    return f"{prefix}EXISTS (SELECT 1 FROM {table} {alias} WHERE {left} = {right} AND {predicate})"
 
 
 def build_campaign_response_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
@@ -8636,23 +9177,157 @@ def build_campaign_response_targets_sql_candidate(query_plan: dict[str, Any]) ->
     return candidate
 
 
-def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
-    """'최근 N개월 캠페인 중 K번 이상 반응한' 회원을 반응 팩트 회원별 집계로 추출한다.
+def build_cell_rate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """'발송 성공률 높고 구매율 낮은 셀'의 발송 대상 회원을 셀 단위 비율 집계로 추출한다.
 
-    캠페인 반응 EXISTS(≥1회, build_campaign_response_targets_sql_candidate)와 달리 반응한 서로 다른 캠페인
-    수를 세어 임계값과 비교한다: MCS_CAMP_MBR_RSPN_FT 를 Z_CAMPAIGN 과 조인해 대상군(CGRP_TYPE_CD='T')·
-    유효 캠페인(취소 제외)·최근 N개월 캠페인(Z_CAMPAIGN.CAMP_SDATE 창)으로 좁힌 뒤, 회원별로
-    HAVING COUNT(DISTINCT 캠페인) op K 로 거른다. 반응 팩트엔 범용 반응일자 컬럼이 없어 '최근 N개월'은 캠페인
-    마스터 시작일로만 걸 수 있다. 성별/연령/등급/지역 등 회원 속성은 compile_member_target_conditions 로
-    같은 SQL 에 AND 결합한다("최근 3개월 두 번 이상 반응한 VIP" 등 조합). 조인키 MBR_NO(nvarchar)↔
-    MEMBER_NO(bigint) 는 캐스트 조인(TRY_CAST)으로 타입 불일치 가드를 통과한다."""
+    회원 조건이 아니라 셀 선별이다: Z_CAMP_MBR(셀별 발송 대상 명단 = 분모, 회원별 접촉성공
+    CONTAC_SUCC_YN)를 셀(CAMP_ID, CAMP_EXEC_NO, CELL_NODE_ID)로 집계해 성공률(접촉성공 비중)과
+    구매율(구매반응 회원 비중, 분자는 반응 팩트 LEFT JOIN) HAVING 으로 셀을 고른 뒤, 그 셀의 발송
+    대상 회원을 회원 테이블에 조인한다. 반응 팩트 단독으로는 불가 — 전 행이 구매반응자라 분모가 없어
+    구매율이 항상 100%다. 성별/등급 등 회원 속성은 compile_member_target_conditions 로 AND 결합.
+    조인키 MBR_NO(varchar)↔MEMBER_NO(bigint) 는 캐스트 조인으로 타입 불일치 가드를 통과한다."""
+    cell_rate = query_plan.get("target_user", {}).get("cell_rate_target")
+    if not isinstance(cell_rate, dict):
+        return None
+
+    def _valid_rate(condition: Any) -> dict[str, Any] | None:
+        if not isinstance(condition, dict):
+            return None
+        value = condition.get("value")
+        operator = condition.get("operator")
+        if not isinstance(value, (int, float)) or not 0 < value <= 100:
+            return None
+        if operator not in _AGG_OPERATOR_WORDS.values():
+            return None
+        return condition
+
+    success = _valid_rate(cell_rate.get("success_rate"))
+    buy = _valid_rate(cell_rate.get("buy_rate"))
+    if success is None and buy is None:
+        return None
+
+    config = _MEMBER_TARGET_FILTERS.get("cell_rate_targets", {})
+    member_table = config.get("member_table", "Z_CAMP_MBR")
+    alias = config.get("alias", "M")
+    member_col = config.get("member_column", "MBR_NO")
+    join = config.get("member_join", {}) if isinstance(config.get("member_join"), dict) else {}
+    join_left = str(join.get("left", f"TRY_CAST({alias}.{member_col} AS BIGINT)"))
+    join_right = str(join.get("right", "B.MEMBER_NO"))
+    cell_alias = config.get("cell_alias", "M2")
+    cell_subquery_alias = config.get("cell_subquery_alias", "CELL")
+    cell_keys = [key for key in config.get("cell_keys", []) if isinstance(key, str)] or [
+        "CAMP_ID", "CAMP_EXEC_NO", "CELL_NODE_ID",
+    ]
+    success_col = config.get("contact_success_column", "CONTAC_SUCC_YN")
+    response_join = config.get("response_join", {}) if isinstance(config.get("response_join"), dict) else {}
+    response_table = response_join.get("table", "MCS_CAMP_MBR_RSPN_FT")
+    response_alias = response_join.get("alias", "R")
+    buy_predicate = response_join.get("buy_predicate", f"{response_alias}.BUY_RSPN_YN = 'Y'")
+
+    having_clauses: list[str] = []
+    if success is not None:
+        success_expr = (
+            f"SUM(CASE WHEN {cell_alias}.{success_col} = 'Y' THEN 1 ELSE 0 END) * 100.0 / COUNT(*)"
+        )
+        having_clauses.append(f"{success_expr} {success['operator']} {_format_threshold(success['value'])}")
+    if buy is not None:
+        buy_expr = (
+            f"COUNT(DISTINCT {response_alias}.{member_col}) * 100.0 / COUNT(DISTINCT {cell_alias}.{member_col})"
+        )
+        having_clauses.append(f"{buy_expr} {buy['operator']} {_format_threshold(buy['value'])}")
+
+    response_join_conditions = " AND ".join(
+        [f"{response_alias}.{key} = {cell_alias}.{key}" for key in cell_keys]
+        + [f"{response_alias}.{member_col} = {cell_alias}.{member_col}", buy_predicate]
+    )
+    cell_key_list = ", ".join(f"{cell_alias}.{key}" for key in cell_keys)
+    cell_subquery = "\n".join(
+        [
+            "(",
+            f"    SELECT {cell_key_list}",
+            f"    FROM {member_table} {cell_alias}",
+            f"    LEFT JOIN {response_table} {response_alias} ON {response_join_conditions}",
+            f"    GROUP BY {cell_key_list}",
+            "    HAVING " + "\n       AND ".join(having_clauses),
+            f") {cell_subquery_alias}",
+        ]
+    )
+    cell_member_join = " AND ".join(
+        f"{cell_subquery_alias}.{key} = {alias}.{key}" for key in cell_keys
+    )
+
+    compiled = compile_member_target_conditions(query_plan)
+    where_clauses = list(compiled["predicates"])
+    if not compiled["forces_state"]:
+        where_clauses.append(_member_active_state_predicate())
+
+    segment = "low_conversion_cell" if buy is not None else "high_success_cell"
+    select_columns = [
+        "DISTINCT B.MEMBER_NO AS CUST_ID",
+        "B.EMART_GRADE_CD AS member_grade",
+        _sql_quote(segment) + " AS target_segment",
+    ]
+    label = cell_rate.get("label")
+    segment_labels = [str(label)] if label else []
+    segment_labels.extend(compiled["labels"])
+    if segment_labels:
+        select_columns.append(_sql_quote(",".join(segment_labels)) + " AS segment_label")
+    objective = query_plan.get("campaign_constraints", {}).get("objective")
+    if objective:
+        select_columns.append(_sql_quote(objective) + " AS objective")
+
+    sql = "\n".join(
+        [
+            "SELECT " + ", ".join(select_columns),
+            "FROM CRM_MB_BASEINFO B",
+            f"     INNER JOIN {member_table} {alias} ON {join_left} = {join_right}",
+            f"     INNER JOIN {cell_subquery} ON {cell_member_join}",
+            "WHERE " + "\n  AND ".join(_unique_strings(where_clauses)),
+        ]
+    )
+    candidate = _sql_candidate(
+        "sql_template:cell_rate_targets",
+        "캠페인 셀 성공률/구매율 비율 타겟 추출 SQL 템플릿(CRMDW)",
+        1.0,
+        sql,
+        _template_tables(sql),
+        "sql_template",
+    )
+    candidate["dropped_conditions"] = compiled["unsupported"]
+    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in compiled["unsupported"]]
+    return candidate
+
+
+def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """캠페인 반응 팩트 회원별 집계 타겟: 반응 '횟수'와 캠페인 '귀속 구매금액' 임계값을 추출한다.
+
+    캠페인 반응 EXISTS(≥1회, build_campaign_response_targets_sql_candidate)와 달리 회원별 집계로 거른다:
+    MCS_CAMP_MBR_RSPN_FT 를 Z_CAMPAIGN 과 조인해 대상군(CGRP_TYPE_CD='T')·유효 캠페인(취소 제외)·
+    최근 N개월 캠페인(Z_CAMPAIGN.CAMP_SDATE 창)으로 좁힌 뒤 GROUP BY 회원으로 HAVING 을 건다 —
+    반응 횟수(campaign_response_frequency)는 COUNT(DISTINCT 캠페인) op K, 캠페인 귀속 구매금액
+    (campaign_buy_amount)은 SUM(BUY_AMT) op N. 두 조건이 함께 오면 하나의 서브쿼리에서 HAVING AND 로
+    결합한다(귀속 금액은 전 생애 주문 합과 다른 지표 — 팩트의 BUY_AMT 가 캠페인 단위 귀속 금액이다).
+    반응 팩트엔 범용 반응일자 컬럼이 없어 '최근 N개월'은 캠페인 마스터 시작일로만 걸 수 있다.
+    성별/연령/등급/지역 등 회원 속성은 compile_member_target_conditions 로 같은 SQL 에 AND 결합한다.
+    조인키 MBR_NO(nvarchar)↔MEMBER_NO(bigint) 는 캐스트 조인(TRY_CAST)으로 타입 불일치 가드를 통과한다."""
     target_user = query_plan.get("target_user", {})
     freq = target_user.get("campaign_response_frequency")
-    if not isinstance(freq, dict):
-        return None
-    count = freq.get("count")
-    operator = freq.get("operator")
-    if not isinstance(count, int) or count <= 0 or operator not in _AGG_OPERATOR_WORDS.values():
+    if isinstance(freq, dict):
+        count = freq.get("count")
+        operator = freq.get("operator")
+        if not isinstance(count, int) or count <= 0 or operator not in _AGG_OPERATOR_WORDS.values():
+            freq = None
+    else:
+        freq = None
+    buy = target_user.get("campaign_buy_amount")
+    if isinstance(buy, dict):
+        amount = buy.get("amount")
+        buy_operator = buy.get("operator")
+        if not isinstance(amount, (int, float)) or amount <= 0 or buy_operator not in _AGG_OPERATOR_WORDS.values():
+            buy = None
+    else:
+        buy = None
+    if freq is None and buy is None:
         return None
 
     config = _MEMBER_TARGET_FILTERS.get("campaign_response_targets", {})
@@ -8669,6 +9344,14 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
     ]
     key_expr = config.get("campaign_key_expression", f"CONCAT({alias}.CAMP_ID, ':', {alias}.CAMP_EXEC_NO)")
     response_predicate = config.get("response_predicate", f"({alias}.OFFR_RSPN_YN = 'Y' OR {alias}.BUY_RSPN_YN = 'Y')")
+    # 귀속 구매금액 지표(BUY_AMT 합계)와 구매반응 플래그는 설정(aggregate_metrics/boolean_metrics)이 소유.
+    aggregate_metrics = config.get("aggregate_metrics", {}) if isinstance(config.get("aggregate_metrics"), dict) else {}
+    buy_metric = aggregate_metrics.get("campaign_purchase_amount", {}) if isinstance(aggregate_metrics.get("campaign_purchase_amount"), dict) else {}
+    buy_amount_column = buy_metric.get("column", f"{alias}.BUY_AMT")
+    buy_amount_agg = buy_metric.get("agg", "SUM")
+    boolean_metrics = config.get("boolean_metrics", {}) if isinstance(config.get("boolean_metrics"), dict) else {}
+    buy_flag = boolean_metrics.get("purchase_response", {}) if isinstance(boolean_metrics.get("purchase_response"), dict) else {}
+    buy_response_predicate = f"{buy_flag.get('column', alias + '.BUY_RSPN_YN')} = {_sql_quote(str(buy_flag.get('value', 'Y')))}"
     target_group = config.get("target_group_condition", {}) if isinstance(config.get("target_group_condition"), dict) else {}
     valid_campaign = config.get("valid_campaign_condition", {}) if isinstance(config.get("valid_campaign_condition"), dict) else {}
     date_column = config.get("campaign_date_column", "CAMP_SDATE")
@@ -8678,11 +9361,23 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
         inner_where.append(f"{target_group['column']} = {_sql_quote(str(target_group['value']))}")
     if valid_campaign.get("expression"):
         inner_where.append(str(valid_campaign["expression"]))
-    window_days = freq.get("window_days")
-    if isinstance(window_days, int) and window_days > 0:
+    window_days = None
+    for condition in (freq, buy):
+        days = condition.get("window_days") if condition else None
+        if isinstance(days, int) and days > 0:
+            window_days = days if window_days is None else min(window_days, days)
+    if window_days is not None:
         cutoff = f"CONVERT(CHAR(8), DATEADD(DAY, -{window_days}, GETDATE()), 112)"
         inner_where.append(f"{camp_alias}.{date_column} >= {cutoff}")
-    inner_where.append(response_predicate)
+    # 행 스코프: 횟수 조건이 있으면 일반형 '반응'(오퍼/구매) 정의를 쓰고, 귀속 금액 단독이면 구매반응
+    # 행으로 좁힌다(BUY_AMT 는 구매반응 행에만 실린다 — 합계엔 영향 없지만 그룹 존재 조건이 달라진다).
+    inner_where.append(response_predicate if freq is not None else buy_response_predicate)
+
+    having_clauses: list[str] = []
+    if freq is not None:
+        having_clauses.append(f"COUNT(DISTINCT {key_expr}) {freq['operator']} {freq['count']}")
+    if buy is not None:
+        having_clauses.append(f"{buy_amount_agg}({buy_amount_column}) {buy['operator']} {_format_threshold(buy['amount'])}")
 
     subquery = "\n".join(
         [
@@ -8692,7 +9387,7 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
             f"    INNER JOIN {camp_table} {camp_alias} ON " + " AND ".join(camp_conditions),
             "    WHERE " + "\n      AND ".join(inner_where),
             f"    GROUP BY {alias}.{member_col}",
-            f"    HAVING COUNT(DISTINCT {key_expr}) {operator} {count}",
+            "    HAVING " + "\n       AND ".join(having_clauses),
             ") O",
         ]
     )
@@ -8705,7 +9400,12 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
     if not compiled["forces_state"]:
         where_clauses.append(_member_active_state_predicate())
 
-    segment = f"campaign_responder_{count}x"
+    segment_parts: list[str] = []
+    if freq is not None:
+        segment_parts.append(f"campaign_responder_{freq['count']}x")
+    if buy is not None:
+        segment_parts.append(f"campaign_buyer_{_format_threshold(buy['amount'])}")
+    segment = "_".join(segment_parts)
     select_columns = [
         "DISTINCT B.MEMBER_NO AS CUST_ID",
         "B.EMART_GRADE_CD AS member_grade",
@@ -8725,9 +9425,17 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
             "WHERE " + "\n  AND ".join(_unique_strings(where_clauses)),
         ]
     )
+    if freq is not None:
+        template_id = "sql_template:campaign_response_frequency_targets"
+        title = "최근 N개월 캠페인 K회 이상 반응 타겟 추출 SQL 템플릿(CRMDW)"
+        if buy is not None:
+            title = "캠페인 반응 횟수 + 귀속 구매금액 타겟 추출 SQL 템플릿(CRMDW)"
+    else:
+        template_id = "sql_template:campaign_buy_amount_targets"
+        title = "캠페인 귀속 구매금액 임계 타겟 추출 SQL 템플릿(CRMDW)"
     candidate = _sql_candidate(
-        "sql_template:campaign_response_frequency_targets",
-        "최근 N개월 캠페인 K회 이상 반응 타겟 추출 SQL 템플릿(CRMDW)",
+        template_id,
+        title,
         1.0,
         sql,
         _template_tables(sql),
@@ -9591,7 +10299,9 @@ def _condition_terms(value: str, field_name: str) -> list[str]:
     aliases = {
         "female": ["female", "여성", "여자"],
         "male": ["male", "남성", "남자"],
-        "cart_abandoner": ["cart_abandoned", "cart_abandoner", "장바구니"],
+        # 'oms_cart': 장바구니 테이블(ODS_MALL_OMS_CART)을 조회하는 SQL 은 라벨 문자열 없이도
+        # 장바구니 행동을 실제로 커버한다(카트 빌더는 canonical 라벨을 싣지 않는 경우가 있다).
+        "cart_abandoner": ["cart_abandoned", "cart_abandoner", "장바구니", "oms_cart"],
         "coupon": ["coupon", "쿠폰", "할인"],
         "app_push": ["app_push", "앱푸시"],
         "kakao": ["kakao", "카카오", "카톡"],
@@ -9599,6 +10309,12 @@ def _condition_terms(value: str, field_name: str) -> list[str]:
     }
     if value in aliases:
         return aliases[value]
+    if field_name == "lifecycle" and value in MEMBER_EQ_FILTERS:
+        # eq_filters 소유 lifecycle(수신동의/플래그 등)은 canonical 문자열 외에 실컬럼명(B.APP_PUSH_YN 의
+        # APP_PUSH_YN)으로도 커버를 인정한다 — 라벨 컬럼을 싣지 않는 빌더(카트류)의 SQL 이 실제로는
+        # 조건을 컴파일했는데 문자열 매칭 커버리지에서 탈락하던 문제 방지.
+        column = MEMBER_EQ_FILTERS[value][1].split(".")[-1]
+        return [value, column]
     if field_name in {"interests", "category"}:
         return [value]
     if field_name in {"preferred_channels", "channels"}:

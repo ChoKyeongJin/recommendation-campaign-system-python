@@ -847,6 +847,14 @@
     "campaign_date_column": "CAMP_SDATE",
     "campaign_key_expression": "CONCAT(R.CAMP_ID, ':', R.CAMP_EXEC_NO)",
     "response_predicate": "(R.OFFR_RSPN_YN = 'Y' OR R.BUY_RSPN_YN = 'Y')",
+    "contact_member_list": {
+      "table": "Z_CAMP_MBR",
+      "alias": "M",
+      "member_join": {
+        "left": "TRY_CAST(M.MBR_NO AS BIGINT)",
+        "right": "B.MEMBER_NO"
+      }
+    },
     "boolean_metrics": {
       "contact_success": {
         "column": "R.CNCT_SCS_YN",
@@ -1001,11 +1009,32 @@
     "max_top_n": 10000
   },
 
+  "cell_rate_targets": {
+    "member_table": "Z_CAMP_MBR",
+    "alias": "M",
+    "member_column": "MBR_NO",
+    "member_join": {
+      "left": "TRY_CAST(M.MBR_NO AS BIGINT)",
+      "right": "B.MEMBER_NO"
+    },
+    "cell_alias": "M2",
+    "cell_subquery_alias": "CELL",
+    "cell_keys": ["CAMP_ID", "CAMP_EXEC_NO", "CELL_NODE_ID"],
+    "contact_success_column": "CONTAC_SUCC_YN",
+    "response_join": {
+      "table": "MCS_CAMP_MBR_RSPN_FT",
+      "alias": "R",
+      "buy_predicate": "R.BUY_RSPN_YN = 'Y'"
+    },
+    "vague_high_default": 80,
+    "vague_low_default": 10
+  },
+
   "validation": {
     "unknown_canonical_policy": "reject",
     "unknown_column_policy": "reject",
     "allow_raw_sql": false,
-    "allowed_table_aliases": ["A", "B", "C", "CP", "D", "M", "O", "OD", "OH", "P", "R", "S", "ZC"],
+    "allowed_table_aliases": ["A", "B", "C", "CELL", "CP", "D", "M", "M2", "O", "OD", "OH", "P", "R", "S", "ZC"],
     "max_conditions": 30,
     "max_or_branches": 10,
     "max_lookback_days": 3650,

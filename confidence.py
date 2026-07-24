@@ -256,14 +256,24 @@ def _score_condition(
         if schema_ok:
             evidence.append(_ev("schema", f"schema_catalog.json: {table}", "장바구니 테이블 실재 확인", "confirmed"))
     elif kind == "campaign_response":
-        # 캠페인 반응 횟수: 반응 팩트(MCS_CAMP_MBR_RSPN_FT)를 캠페인 마스터(Z_CAMPAIGN)와 조인해 회원별
-        # 반응 캠페인 수를 집계(HAVING COUNT DISTINCT)한다. 실컬럼·실테이블 근거로 확정 조건이다.
+        # 캠페인 팩트 집계: 반응 팩트(MCS_CAMP_MBR_RSPN_FT)를 캠페인 마스터(Z_CAMPAIGN)와 조인해 회원별로
+        # 반응 캠페인 수(HAVING COUNT DISTINCT) 또는 귀속 구매금액(HAVING SUM(BUY_AMT))을 집계한다.
+        # 실컬럼·실테이블 근거로 확정 조건이다.
         cfg = filters.get("campaign_response_targets", {})
         table = cfg.get("table", "MCS_CAMP_MBR_RSPN_FT")
         camp_table = (cfg.get("campaign_join", {}) or {}).get("table", "Z_CAMPAIGN")
         schema_ok = table in schema_cols and camp_table in schema_cols
+        if cond["key"] == "campaign_buy_amount":
+            detail = f"{table}⨝{camp_table} 회원별 캠페인 귀속 구매금액 집계 (HAVING SUM(BUY_AMT), 임계 {cond['value']})"
+        elif cond["key"] == "cell_rate_target":
+            cell_cfg = filters.get("cell_rate_targets", {})
+            member_table = cell_cfg.get("member_table", "Z_CAMP_MBR")
+            schema_ok = member_table in schema_cols and table in schema_cols
+            detail = f"{member_table} 셀 단위 집계(발송 대상 분모, 접촉성공/구매반응 비율 HAVING) — {cond['value']}"
+        else:
+            detail = f"{table}⨝{camp_table} 회원별 반응 캠페인 수 집계 (HAVING COUNT DISTINCT >= {cond['value']})"
         evidence.append(_ev("filter_registry", "member_target_filters.json: campaign_response_targets",
-                             f"{table}⨝{camp_table} 회원별 반응 캠페인 수 집계 (HAVING COUNT DISTINCT >= {cond['value']})", "confirmed"))
+                             detail, "confirmed"))
         if schema_ok:
             evidence.append(_ev("schema", f"schema_catalog.json: {table}, {camp_table}", "캠페인 반응 팩트/마스터 테이블 실재 확인", "confirmed"))
     elif kind == "free_text":

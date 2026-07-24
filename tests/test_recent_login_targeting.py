@@ -82,3 +82,20 @@ def test_llm_plan_postprocess_sets_recent_login():
     plan = {"target_user": {}}
     g._apply_recent_login_filter("최근 3개월간 로그인한 고객", plan)
     assert plan["target_user"]["recent_login"]["min_days"] == 90
+
+
+# ── Stage C(통합 창 파서) 회귀: 숫자 없는 최근 로그인 기본창 + 주 단위 ──────────────────
+def test_bare_recent_login_uses_default_window():
+    # 숫자 없는 '최근 로그인'(최근성 표지 O)은 기본 창(recently.default_days=30)으로 잡힌다.
+    tu = _plan("최근 로그인 했지만 구매 안 한 회원")["target_user"]
+    assert tu.get("recent_login") == {"value": 30, "unit": "days", "min_days": 30, "sql_interval": "30 days"}
+
+
+def test_recent_login_week_unit():
+    tu = _plan("최근 2주 로그인한 회원")["target_user"]
+    assert tu.get("recent_login") == {"value": 2, "unit": "weeks", "min_days": 14, "sql_interval": "2 weeks"}
+
+
+def test_bare_login_without_recency_marker_still_none():
+    # 최근성 표지 없는 로그인 언급은 기본창을 주지 않는다(기존 동작 보존).
+    assert _plan("앱으로 로그인한 사용자")["target_user"].get("recent_login") is None

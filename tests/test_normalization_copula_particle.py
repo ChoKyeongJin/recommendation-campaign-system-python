@@ -50,6 +50,13 @@ def test_copula_does_not_break_unrelated_words():
         assert not any(c in ("female", "male") for _t, c in _matches(query)), query
 
 
+def test_connective_endings_match():
+    # 연결어미 '이고/이며/이면서' — 조건 나열 프롬프트("여성이고 서울 거주")에서 term 매칭이 깨지지 않는다.
+    assert ("여성이고", "female") in _matches("30~49세 여성이고 서울 거주인 회원")
+    assert ("여성이며", "female") in _matches("여성이며 VIP 등급인 고객")
+    assert ("남성이면서", "male") in _matches("남성이면서 앱푸시 동의한 회원")
+
+
 def test_english_term_accepts_korean_particles():
     # 영문 종결 term(2글자 이상)도 뒤 한글 조사를 허용한다('VIP인'·'VIP를'·'RCS로').
     assert ("VIP인", "vip") in _matches("VIP인 회원만 추출")
