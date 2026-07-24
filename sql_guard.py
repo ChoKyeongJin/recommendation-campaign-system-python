@@ -32,6 +32,269 @@ SENSITIVE_COLUMN_PATTERNS = (
 )
 
 
+# 조인키 타입군. 서로 다른 군끼리 등호 조인하면 실행 자체가 안 되거나(암묵 변환 실패) 조용히 0건이 된다.
+# 예: LLM 폴백이 만든 ODS_MALL_OMS_CART.CART_ID(nvarchar) = CRM_MB_BASEINFO.MEMBER_NO(bigint) 는
+# "Error converting data type nvarchar to bigint" 로 실행 실패한다(올바른 짝은 MEMBER_ID).
+_TYPE_FAMILIES = {
+    "numeric": ("bigint", "int", "smallint", "tinyint", "decimal", "numeric", "float", "real", "money", "bit"),
+    "string": ("nvarchar", "varchar", "nchar", "char", "ntext", "text"),
+    "datetime": ("datetime2", "datetime", "smalldatetime", "date", "time", "timestamp"),
+    "binary": ("varbinary", "binary", "image"),
+}
+# FROM/JOIN 뒤 별칭 자리에 올 수 있는 예약어(별칭 없는 테이블을 별칭으로 오인하지 않도록 제외).
+_ALIAS_STOPWORDS = {
+    "where", "on", "inner", "left", "right", "full", "cross", "outer", "join", "group",
+    "order", "having", "union", "select", "as", "and", "or", "not", "exists", "with",
+}
+# 별칭 자리에 예약어가 오면 아예 매칭하지 않는다(부정 전방탐색). 그냥 잡아서 나중에 거르면
+# "FROM T1 JOIN T2 ON ..." 에서 'JOIN' 을 T1 의 별칭으로 소비해 버려 T2 를 못 찾는다.
+_TABLE_ALIAS_PATTERN = re.compile(
+    r"\b(?:FROM|JOIN)\s+([A-Za-z_][\w]*)"
+    r"(?:\s+(?:AS\s+)?(?!(?:" + "|".join(sorted(_ALIAS_STOPWORDS)) + r")\b)([A-Za-z_][\w]*))?",
+    re.IGNORECASE,
+)
+_EQUI_JOIN_PATTERN = re.compile(r"\b([A-Za-z_][\w]*)\.([A-Za-z_][\w]*)\s*=\s*([A-Za-z_][\w]*)\.([A-Za-z_][\w]*)")
+
+
+def _type_family(raw_type: str) -> str | None:
+    """'nvarchar(100)' -> 'string', 'bigint' -> 'numeric'. 모르는 타입은 None(판정 보류)."""
+    base = re.split(r"[\s(]", (raw_type or "").strip().casefold(), maxsplit=1)[0]
+    for family, types in _TYPE_FAMILIES.items():
+        if base in types:
+            return family
+    return None
+
+
+def load_column_types(schema_path: Path = DEFAULT_SCHEMA_PATH) -> dict[str, dict[str, str]]:
+    """스키마 카탈로그에서 {테이블: {컬럼: 타입군}} 을 만든다(타입군 판별 실패 컬럼은 제외)."""
+    if not schema_path.exists():
+        return {}
+    try:
+        payload = json.loads(schema_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    tables = payload.get("tables", {})
+    if not isinstance(tables, dict):
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for table, meta in tables.items():
+        if not isinstance(meta, dict):
+            continue
+        columns = {}
+        for column in meta.get("columns", []):
+            if not isinstance(column, dict) or not column.get("name"):
+                continue
+            family = _type_family(str(column.get("type", "")))
+            if family:
+                columns[str(column["name"]).casefold()] = family
+        result[str(table).casefold()] = columns
+    return result
+
+
+def _alias_map(sql: str, column_types: dict[str, dict[str, str]]) -> dict[str, str]:
+    """SQL 의 별칭/테이블명 -> 실테이블명(소문자). 스키마에 있는 테이블만 담는다."""
+    aliases: dict[str, str] = {}
+    for match in _TABLE_ALIAS_PATTERN.finditer(sql):
+        table = match.group(1).casefold()
+        if table not in column_types:
+            continue
+        aliases[table] = table
+        alias = match.group(2)
+        if alias and alias.casefold() not in _ALIAS_STOPWORDS:
+            aliases[alias.casefold()] = table
+    return aliases
+
+
+def load_join_key_registry(schema_path: Path = DEFAULT_SCHEMA_PATH) -> dict[tuple[str, str, str], set[str]]:
+    """검증된(verified) 조인 관계를 {(출발테이블, 출발컬럼, 상대테이블): {허용 상대컬럼}} 으로 만든다.
+
+    schema_catalog.foreign_keys 는 build_table_relationships.py 가 큐레이션한 관계다(CRMDW 는 선언 FK 가
+    없어 사람이 확인한 것만 verified 로 들어간다). 양방향으로 등록해 조인을 어느 쪽으로 쓰든 잡는다.
+    confidence=verified 만 강제한다 — inferred/human_hint 까지 강제하면 추정이 틀렸을 때 정상 SQL 을 막는다."""
+    if not schema_path.exists():
+        return {}
+    try:
+        payload = json.loads(schema_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    tables = payload.get("tables", {})
+    if not isinstance(tables, dict):
+        return {}
+    registry: dict[tuple[str, str, str], set[str]] = {}
+
+    def register(from_table: str, from_column: str, to_table: str, to_column: str) -> None:
+        registry.setdefault((from_table, from_column, to_table), set()).add(to_column)
+
+    for table, meta in tables.items():
+        if not isinstance(meta, dict):
+            continue
+        for fk in meta.get("foreign_keys", []) or []:
+            if not isinstance(fk, dict) or fk.get("confidence") != "verified":
+                continue
+            reference = fk.get("references") or {}
+            target_table = str(reference.get("table", "")).casefold()
+            columns, target_columns = fk.get("columns") or [], reference.get("columns") or []
+            if not target_table or len(columns) != 1 or len(target_columns) != 1:
+                continue  # 복합키는 컬럼 단위 등호 비교로 판정할 수 없으므로 보류한다.
+            source_table = str(table).casefold()
+            source_column, target_column = str(columns[0]).casefold(), str(target_columns[0]).casefold()
+            register(source_table, source_column, target_table, target_column)
+            register(target_table, target_column, source_table, source_column)
+    return registry
+
+
+def validate_join_keys(
+    sql: str,
+    column_types: dict[str, dict[str, str]],
+    join_registry: dict[tuple[str, str, str], set[str]] | None = None,
+) -> dict[str, Any]:
+    """등호 조인이 (1) 타입군이 맞는지 (2) 검증된 조인키를 쓰는지 검사한다(위반은 error).
+
+    기존 sql_guard 는 테이블 허용목록·SELECT 전용만 봐서 '문법은 맞고 의미가 틀린' 조인을 통과시켰다.
+    실제로 LLM 폴백이 ODS_MALL_OMS_CART.CART_ID(nvarchar) = CRM_MB_BASEINFO.MEMBER_NO(bigint) 를 만들어
+    실행 실패(nvarchar→bigint 변환 오류)하는 SQL 이 success 로 나갔다.
+
+    (1) 타입군 검사는 nvarchar↔bigint 처럼 실행조차 안 되는 조인을 잡고, (2) 조인키 검사는 타입은 같지만
+    엉뚱한 컬럼에 붙인 조인(CART_ID = 다른 문자열 컬럼)을 잡는다 — CART_ID 의 상대는 MEMBER_ID 뿐이다.
+    스키마에 타입/관계 정보가 없는 컬럼은 둘 다 판정을 보류한다(오탐으로 정상 SQL 을 막지 않기 위해)."""
+    issues: list[dict[str, str]] = []
+    aliases = _alias_map(sql, column_types)
+    registry = join_registry or {}
+    for match in _EQUI_JOIN_PATTERN.finditer(sql):
+        left_alias, left_column, right_alias, right_column = (part.casefold() for part in match.groups())
+        left_table, right_table = aliases.get(left_alias), aliases.get(right_alias)
+        if not left_table or not right_table:
+            continue
+        left_family = column_types.get(left_table, {}).get(left_column)
+        right_family = column_types.get(right_table, {}).get(right_column)
+        if left_family and right_family and left_family != right_family:
+            issues.append(
+                {
+                    "code": "join_key_type_mismatch",
+                    "severity": "error",
+                    "message": (
+                        f"조인키 타입 불일치: {left_table.upper()}.{left_column.upper()}({left_family}) = "
+                        f"{right_table.upper()}.{right_column.upper()}({right_family})"
+                    ),
+                }
+            )
+            continue
+        # 한쪽이라도 상대 테이블에 대한 검증된 조인키를 갖고 있으면 그 컬럼으로만 조인해야 한다.
+        for table, column, other_table, other_column in (
+            (left_table, left_column, right_table, right_column),
+            (right_table, right_column, left_table, left_column),
+        ):
+            expected = registry.get((table, column, other_table))
+            if expected and other_column not in expected:
+                issues.append(
+                    {
+                        "code": "join_key_not_verified",
+                        "severity": "error",
+                        "message": (
+                            f"검증되지 않은 조인키: {table.upper()}.{column.upper()} 는 "
+                            f"{other_table.upper()}.{'/'.join(sorted(name.upper() for name in expected))} 와 조인해야 한다"
+                            f"({other_table.upper()}.{other_column.upper()} 아님)"
+                        ),
+                    }
+                )
+                break
+    return {"is_valid": not issues, "issues": issues}
+
+
+# 집계 함수(윈도 함수 OVER 절 없이 쓰이면 grain 을 접는다). 괄호 내용을 blank 처리한 뒤에는
+# 'COUNT()' 형태로 남으므로 이름 뒤 빈 괄호로 탐지한다.
+_AGG_FUNCS = ("count", "sum", "avg", "min", "max")
+_AGG_CALL_PATTERN = re.compile(r"\b(" + "|".join(_AGG_FUNCS) + r")\s*\(\)", re.IGNORECASE)
+_BARE_COLUMN_PATTERN = re.compile(r"\b[A-Za-z_]\w*\.[A-Za-z_]\w*")
+
+
+def _blank_parens(sql: str) -> str:
+    """모든 최상위 괄호의 내용을 지워 빈 괄호만 남긴다(중첩 포함).
+
+    서브쿼리(EXISTS (…)/IN (…))와 함수 인자(COUNT(…)/TRY_CAST(…))의 내부를 제거해, 바깥(outer)
+    질의의 구조만 정규식으로 안전하게 분석하기 위한 전처리다. 예: 'COUNT(DISTINCT ORDER_ID)' -> 'COUNT()',
+    'EXISTS (SELECT 1 …)' -> 'EXISTS ()'. 이렇게 하면 서브쿼리 안의 집계를 바깥 집계로 오인하지 않는다."""
+    out: list[str] = []
+    depth = 0
+    for ch in sql:
+        if ch == "(":
+            if depth == 0:
+                out.append("()")  # 최상위 괄호 쌍은 빈 괄호로 보존(함수/서브쿼리 존재 표시)
+            depth += 1
+        elif ch == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            out.append(ch)
+    return "".join(out)
+
+
+def validate_analytics_shape(sql: str) -> dict[str, Any]:
+    """바깥(outer) 질의의 집계·grain 구조가 흔한 정합성 오류를 범하지 않는지 정적으로 검사한다.
+
+    허용목록·조인키 가드가 못 잡는 '문법은 그럴듯하나 집계/grain 이 틀린' SQL(특히 LLM 폴백)을 겨냥한다.
+    괄호 내용을 지운 outer 스켈레톤만 보므로 서브쿼리(EXISTS/IN)와 함수 인자는 오탐 없이 제외된다.
+    확실한 오류만 error(후보 탈락), 의심스러운 형태는 warning(고지만)으로 둔다 — 정적 분석의 한계상
+    의미적 항목(기준집합 동일성·재집계·연산 grain)은 여기서 판정하지 않고 생성 프롬프트 지침으로 남긴다.
+
+    검사 항목:
+      - agg_in_where(error): WHERE 절에 집계 함수 — SQL 문법상 불가(집계 후 필터는 HAVING). [집계 전/후 필터 구분]
+      - agg_without_group_by(error): SELECT 에 집계 컬럼과 비집계 컬럼이 GROUP BY 없이 혼용. [집계/비집계 혼용]
+      - distinct_with_aggregate(warning): SELECT DISTINCT 와 집계 혼용 — DISTINCT 가 중복/그레인 문제를 가릴 수 있음. [DISTINCT 은폐]
+      - join_without_grain_control(warning): outer 조인이 있는데 DISTINCT/GROUP BY 가 없음 — 1:N 조인이 결과 행을 부풀릴 수 있음. [1:N 중복/그레인]
+    """
+    issues: list[dict[str, str]] = []
+    if not isinstance(sql, str) or not sql.strip():
+        return {"is_valid": True, "issues": issues}
+    outer = _blank_parens(sql)
+
+    select_match = re.search(r"\bSELECT\b(.*?)\bFROM\b", outer, re.IGNORECASE | re.DOTALL)
+    select_list = select_match.group(1) if select_match else ""
+    has_distinct = re.search(r"\bSELECT\s+DISTINCT\b", outer, re.IGNORECASE) is not None
+    has_group_by = re.search(r"\bGROUP\s+BY\b", outer, re.IGNORECASE) is not None
+    has_join = re.search(r"\bJOIN\b", outer, re.IGNORECASE) is not None
+    select_has_agg = _AGG_CALL_PATTERN.search(select_list) is not None
+    # DISTINCT 키워드는 비집계 컬럼 판정에서 제외한다(SELECT DISTINCT 의 DISTINCT 는 컬럼이 아님).
+    select_wo_agg = _AGG_CALL_PATTERN.sub("", select_list)
+    select_has_bare_column = _BARE_COLUMN_PATTERN.search(select_wo_agg) is not None
+
+    where_match = re.search(
+        r"\bWHERE\b(.*?)(?:\bGROUP\s+BY\b|\bHAVING\b|\bORDER\s+BY\b|$)", outer, re.IGNORECASE | re.DOTALL
+    )
+    if where_match and _AGG_CALL_PATTERN.search(where_match.group(1)):
+        issues.append(
+            {
+                "code": "agg_in_where",
+                "severity": "error",
+                "message": "WHERE 절에 집계 함수가 있다 — 집계 후 조건은 HAVING 으로 분리해야 한다(집계 전/후 필터 구분).",
+            }
+        )
+    if select_has_agg and select_has_bare_column and not has_group_by:
+        issues.append(
+            {
+                "code": "agg_without_group_by",
+                "severity": "error",
+                "message": "SELECT 에 집계 컬럼과 비집계 컬럼이 GROUP BY 없이 혼용됐다 — 비집계 컬럼을 GROUP BY 에 넣거나 집계를 서브쿼리로 분리해야 한다.",
+            }
+        )
+    if has_distinct and select_has_agg:
+        issues.append(
+            {
+                "code": "distinct_with_aggregate",
+                "severity": "warning",
+                "message": "SELECT DISTINCT 와 집계 함수가 함께 쓰였다 — DISTINCT 가 잘못된 조인의 행 중복을 가리고 있는지 확인하라.",
+            }
+        )
+    if has_join and not has_distinct and not has_group_by:
+        issues.append(
+            {
+                "code": "join_without_grain_control",
+                "severity": "warning",
+                "message": "outer 조인이 있는데 DISTINCT/GROUP BY 로 grain 을 통제하지 않는다 — 1:N 조인이 결과 행(회원)을 중복시킬 수 있다.",
+            }
+        )
+    return {"is_valid": not any(issue["severity"] == "error" for issue in issues), "issues": issues}
+
+
 def load_allowed_tables(schema_path: Path = DEFAULT_SCHEMA_PATH) -> set[str]:
     if not schema_path.exists():
         return set()

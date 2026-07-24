@@ -751,9 +751,11 @@
       "column": "C.KEEP_YN",
       "value": "Y"
     },
+    "registered_date_column": "C.UPD_DT",
+    "recent_default_days": 30,
     "cart_type_column": "C.CART_TYPE_CD",
     "product_id_column": "C.PRODUCT_ID",
-    "quantity_column": "C.SET_QTY",
+    "quantity_column": "C.QTY",
     "line_id_column": "C.CART_PRODUCT_NO",
     "behaviors": {
       "has_cart": {
@@ -777,26 +779,31 @@
         ]
       }
     },
+    "_comment_cart_types": "장바구니 유형(CART_TYPE_CD) 값. 상품의 속성이 아니라 카트 라인의 유형이다 — CRM_CM_PRODUCT 에는 정기배송/픽업 구분 컬럼이 없고(PRODUCT_TYPE_CD 는 GENERAL 단일값) '정기배송 상품을 담았다'를 표현하는 실컬럼은 여기뿐이다. synonyms 는 장바구니 어휘(cart_terms)가 같은 문장에 있을 때만 매칭된다.",
     "cart_types": [
       {
         "canonical": "general_cart",
+        "ko_label": "일반 장바구니",
         "value": "CART_TYPE_CD.GENERAL",
         "synonyms": ["일반 장바구니", "일반 상품"]
       },
       {
         "canonical": "regular_delivery_cart",
+        "ko_label": "정기배송 장바구니",
         "value": "CART_TYPE_CD.REGULARDELIVERY",
-        "synonyms": ["정기배송 장바구니", "정기배송 상품"]
+        "synonyms": ["정기배송 장바구니", "정기배송 상품", "정기배송", "정기 배송", "정기구독", "구독 상품"]
       },
       {
         "canonical": "b2e_cart",
+        "ko_label": "임직원(B2E) 장바구니",
         "value": "CART_TYPE_CD.B2E",
-        "synonyms": ["임직원 장바구니", "B2E 상품"]
+        "synonyms": ["임직원 장바구니", "B2E 상품", "임직원 상품"]
       },
       {
         "canonical": "pickup_cart",
+        "ko_label": "매장 픽업 장바구니",
         "value": "CART_TYPE_CD.PICKUP",
-        "synonyms": ["픽업 장바구니", "매장 픽업 상품"]
+        "synonyms": ["픽업 장바구니", "매장 픽업 상품", "매장 픽업", "픽업 상품"]
       }
     ],
     "aggregate_metrics": {
@@ -808,7 +815,7 @@
       },
       "cart_quantity": {
         "agg": "SUM",
-        "column": "C.SET_QTY",
+        "column": "C.QTY",
         "synonyms": ["장바구니 수량", "담은 상품 개수"]
       }
     }
@@ -817,6 +824,7 @@
   "campaign_response_targets": {
     "table": "MCS_CAMP_MBR_RSPN_FT",
     "alias": "R",
+    "member_column": "MBR_NO",
     "member_join": {
       "left": "TRY_CAST(R.MBR_NO AS BIGINT)",
       "right": "B.MEMBER_NO"
@@ -836,6 +844,9 @@
     "valid_campaign_condition": {
       "expression": "ISNULL(ZC.CANCEL_YN, 'N') = 'N'"
     },
+    "campaign_date_column": "CAMP_SDATE",
+    "campaign_key_expression": "CONCAT(R.CAMP_ID, ':', R.CAMP_EXEC_NO)",
+    "response_predicate": "(R.OFFR_RSPN_YN = 'Y' OR R.BUY_RSPN_YN = 'Y')",
     "boolean_metrics": {
       "contact_success": {
         "column": "R.CNCT_SCS_YN",

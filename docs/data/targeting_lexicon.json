@@ -1,28 +1,275 @@
 {
-  "version": "1.0",
+  "version": "1.1",
   "description": "타겟팅 파이프라인의 의도(intent)/목적(objective)/문맥 신호어 사전. 새 표현형은 코드 수정 없이 이 파일에 추가한다. 파일이 없거나 파손되면 graph_rag 내 코드 기본값으로 폴백한다. objective_rules 는 위에서부터 순서대로 평가한다.",
-  "audience_direction_markers": ["에게", "한테", "께", "대상으로", "타겟으로", "타깃으로", "곳에"],
+
+  "audience_direction_markers": [
+    "에게",
+    "한테",
+    "께",
+    "대상으로",
+    "타겟으로",
+    "타깃으로",
+    "곳에"
+  ],
+
   "channel_signal_words": [
-    "홍보", "광고", "알림", "알리", "안내", "소식", "공지", "캠페인",
-    "메시지", "발송", "보내", "판매", "팔", "프로모션", "쿠폰", "이벤트"
+    "홍보",
+    "광고",
+    "알림",
+    "알리",
+    "안내",
+    "소식",
+    "공지",
+    "캠페인",
+    "메시지",
+    "발송",
+    "보내",
+    "판매",
+    "팔",
+    "프로모션",
+    "쿠폰",
+    "이벤트",
+    "SMS",
+    "문자",
+    "이메일",
+    "앱푸시",
+    "푸시",
+    "알림톡"
   ],
+
   "intent_recommend_campaign": ["캠페인", "추천", "recommend", "campaign"],
-  "intent_find_user_segment": ["사용자", "고객", "사람", "지역", "세그먼트", "user", "segment", "region"],
-  "objective_rules": [
-    {"objective": "purchase", "keywords": ["구매", "구입", "전환", "매출", "purchase", "conversion", "판매", "팔고", "팔려", "sell"]},
-    {"objective": "subscription", "keywords": ["구독", "subscription"]},
-    {"objective": "reactivation", "keywords": ["휴면", "복귀", "재방문", "reactivation"]},
-    {"objective": "retention", "keywords": ["retention"]},
-    {"objective": "awareness", "keywords": ["신제품", "신상품", "출시", "런칭", "awareness", "launch"]}
+
+  "intent_find_user_segment": [
+    "사용자",
+    "회원",
+    "고객",
+    "사람",
+    "지역",
+    "세그먼트",
+    "segment",
+    "user",
+    "region",
+    "조회",
+    "검색",
+    "추출",
+    "찾아",
+    "보여",
+    "대상"
   ],
-  "awareness_launch_terms": ["신제품", "신상품", "출시", "런칭", "launch", "awareness"],
+
+  "objective_rules": [
+    {
+      "objective": "purchase",
+      "keywords": [
+        "구매",
+        "구입",
+        "전환",
+        "매출",
+        "purchase",
+        "conversion",
+        "판매",
+        "팔고",
+        "팔려",
+        "sell",
+        "주문",
+        "결제"
+      ]
+    },
+    {
+      "objective": "subscription",
+      "keywords": ["구독", "subscription", "정기배송"]
+    },
+    {
+      "objective": "reactivation",
+      "keywords": ["휴면", "복귀", "재방문", "reactivation", "재활성", "활성화"]
+    },
+    {
+      "objective": "retention",
+      "keywords": ["retention", "유지", "충성"]
+    },
+    {
+      "objective": "awareness",
+      "keywords": ["신제품", "신상품", "출시", "런칭", "awareness", "launch"]
+    }
+  ],
+
+  "awareness_launch_terms": [
+    "신제품",
+    "신상품",
+    "출시",
+    "런칭",
+    "launch",
+    "awareness"
+  ],
+
   "awareness_announce_terms": ["알리", "알림", "소식", "안내", "홍보"],
+
   "sell_outreach_verbs": ["팔고", "팔려", "팔것", "판매", "sell"],
-  "sell_outreach_audience": ["에게", "한테", "고객", "대상", "타겟", "타깃"],
-  "reactivation_goal_terms": ["재활성", "다시활성", "활성화", "휴면복귀", "복귀캠페인", "reactivation", "reactivate"],
-  "cart_terms": ["장바구니"],
-  "cart_abandonment_terms": ["결제하지않", "결제안", "미결제", "구매하지않", "구매안", "안산", "방치", "이탈", "cartabandon"],
+
+  "sell_outreach_audience": [
+    "에게",
+    "한테",
+    "고객",
+    "회원",
+    "대상",
+    "타겟",
+    "타깃"
+  ],
+
+  "reactivation_goal_terms": [
+    "재활성",
+    "다시활성",
+    "활성화",
+    "휴면복귀",
+    "복귀캠페인",
+    "reactivation",
+    "reactivate"
+  ],
+
+  "_comment_cart_terms": "장바구니 파서(집계·보관기간·도메인 인식)의 게이트다. 여기 있는 말이 문장에 있으면 'N개/N원 이상'을 장바구니 집계로 해석하므로 장바구니 밖에서도 흔한 일반어는 넣지 않는다. 넣으면 안 되는 예: '보유'(포인트/쿠폰/등급 보유가 장바구니로 오인됨), '정기배송'·'픽업'·'일반상품'(이건 문맥 표지가 아니라 cart_type 값이고 member_target_filters.json 의 cart_types 가 소유한다).",
+  "cart_terms": [
+    "장바구니",
+    "담은",
+    "담아둔",
+    "담아놓은",
+    "담고",
+    "예상금액"
+  ],
+
+  "cart_abandonment_terms": [
+    "결제하지않",
+    "결제안",
+    "미결제",
+    "구매하지않",
+    "구매안",
+    "안산",
+    "방치",
+    "이탈",
+    "cartabandon",
+    "주문으로이어지지않",
+    "주문으로 이어지지 않은"
+  ],
+
   "repurchase_terms": ["재구매", "repurchase"],
-  "repurchase_outreach_terms": ["유도", "촉진", "리마인드", "캠페인", "메시지", "발송", "추천"],
-  "purchase_history_signals": ["구매", "구입", "샀", "purchased", "bought"]
+
+  "repurchase_outreach_terms": [
+    "유도",
+    "촉진",
+    "리마인드",
+    "캠페인",
+    "메시지",
+    "발송",
+    "추천"
+  ],
+
+  "purchase_history_signals": [
+    "구매",
+    "구입",
+    "샀",
+    "purchased",
+    "bought",
+    "주문",
+    "결제",
+    "구매이력",
+    "주문이력"
+  ],
+
+  "member_attribute_terms": [
+    "회원",
+    "VIP",
+    "GOLD",
+    "SILVER",
+    "BRONZE",
+    "등급",
+    "활동회원",
+    "휴면회원",
+    "블랙리스트",
+    "온라인가입",
+    "오프라인가입",
+    "가입회원",
+    "가입경로",
+    "자녀정보",
+    "남성",
+    "여성"
+  ],
+
+  "login_terms": [
+    "로그인",
+    "최근로그인",
+    "마지막로그인",
+    "접속",
+    "로그인한",
+    "로그인한지"
+  ],
+
+  "location_terms": [
+    "서울",
+    "경기",
+    "인천",
+    "수도권",
+    "강남",
+    "강남구",
+    "거주"
+  ],
+
+  "consent_terms": [
+    "수신동의",
+    "마케팅수신동의",
+    "앱푸시",
+    "푸시",
+    "SMS",
+    "문자",
+    "이메일",
+    "동의",
+    "미동의"
+  ],
+
+  "campaign_terms": [
+    "캠페인",
+    "발송",
+    "발송성공",
+    "발송 성공",
+    "반응",
+    "구매반응",
+    "오퍼",
+    "쿠폰",
+    "타겟군",
+    "대상군",
+    "비교군",
+    "셀",
+    "구매금액"
+  ],
+
+  "date_range_terms": [
+    "최근",
+    "이내",
+    "동안",
+    "이상",
+    "초과",
+    "미만",
+    "6개월",
+    "3개월",
+    "90일",
+    "30일",
+    "1년",
+    "일주일"
+  ],
+
+  "comparison_terms": [
+    "이상",
+    "이하",
+    "초과",
+    "미만",
+    "같은",
+    "동일",
+    "최소",
+    "최대",
+    "이내"
+  ],
+
+  "logical_operator_terms": {
+    "and": ["그리고", "이며", "면서", "이고", "및", "또한"],
+    "or": ["또는", "혹은"],
+    "not": ["아닌", "아니고", "제외", "없", "않", "미"]
+  }
 }

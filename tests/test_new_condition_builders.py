@@ -89,7 +89,8 @@ def test_no_purchase_does_not_contaminate_cart():
 def test_campaign_response(query, predicate):
     sql = _sql(query)
     assert "MCS_CAMP_MBR_RSPN_FT R" in sql
-    assert "R.MBR_NO = B.MEMBER_NO" in sql
+    # MBR_NO(문자열)↔MEMBER_NO(숫자) 타입 불일치 가드를 통과하려면 캐스트 조인이어야 한다.
+    assert "TRY_CAST(R.MBR_NO AS BIGINT) = B.MEMBER_NO" in sql
     assert predicate in sql
 
 
@@ -101,3 +102,38 @@ def test_campaign_response_combines_with_member_attribute():
 
 def test_campaign_builder_registered():
     assert g.build_campaign_response_targets_sql_candidate in g._sql_target_builders()
+
+
+# ── 발송 성공(접촉 성공) 표면어 + 조합 회귀 ─────────────────────────────
+@pytest.mark.parametrize("query", [
+    "발송에 성공한 회원",
+    "발송은 성공했지만 반응 없는 회원",
+    "전송 성공한 회원",
+    "캠페인에서 발송은 성공했지만 구매하지 않은 회원만 보여줘.",
+])
+def test_send_success_maps_to_contact_success(query):
+    # '발송 성공/전송 성공'(조사 포함)은 접촉 성공(CNCT_SCS_YN='Y')으로 컴파일돼야 한다 —
+    # 리터럴 표면어만 나열하던 파서가 이 표현을 놓쳐 조건이 통째로 새던 버그 방지.
+    plan = _plan(query)
+    responses = plan["target_user"].get("campaign_responses") or []
+    assert any(r["canonical"] == "campaign_contact" for r in responses), query
+    assert "R.CNCT_SCS_YN = 'Y'" in _sql(query)
+
+
+def test_campaign_send_success_combines_with_no_purchase():
+    # '발송 성공 + 무구매' 조합: 캠페인 접촉 성공 EXISTS 와 무구매 anti-join 이 둘 다 남아야 한다.
+    # 전용 캠페인 빌더가 no_purchase 를 조용히 버리던(또는 그 반대) 버그 회귀 방지.
+    plan = {
+        "intent": "recommend_campaign",
+        "target_user": {
+            "behaviors": ["no_purchase"],
+            "campaign_responses": [{"canonical": "campaign_contact", "predicate": "R.CNCT_SCS_YN = 'Y'"}],
+        },
+        "campaign_constraints": {"objective": "purchase"},
+    }
+    cand = g.build_sql_template_candidate(plan)
+    assert cand is not None
+    sql = cand["sql"]
+    assert "EXISTS (SELECT 1 FROM MCS_CAMP_MBR_RSPN_FT R" in sql
+    assert "R.CNCT_SCS_YN = 'Y'" in sql
+    assert "NOT EXISTS (SELECT 1 FROM CRM_SL_ORDERHEADERMALL O" in sql

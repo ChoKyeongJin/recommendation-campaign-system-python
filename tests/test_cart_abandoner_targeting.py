@@ -81,7 +81,8 @@ def test_cart_quantity_threshold_uses_sum_and_combines_member_attr():
     assert plan["target_user"]["cart_aggregate"]["metric"] == "cart_quantity"
     cand = g.build_sql_template_candidate(plan)
     assert cand is not None
-    assert "SUM(SET_QTY) >= 5" in cand["sql"]
+    # 수량은 QTY('담은 수량')다. SET_QTY 는 '세트 수량'이라 담은 개수와 무관하다(schema_catalog human_note).
+    assert "SUM(QTY) >= 5" in cand["sql"]
     assert "B.GENDER_CD = 'GENDER_CD.FEMALE'" in cand["sql"]
 
 

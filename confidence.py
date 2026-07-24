@@ -24,6 +24,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+from targeting_ir import BEHAVIOR_KO, extract_target_conditions
+
 DEFAULT_SCHEMA_PATH = Path("docs/data/schema_catalog.json")
 DEFAULT_MEMBER_FILTERS_PATH = Path("docs/data/member_target_filters.json")
 DEFAULT_NORMALIZATION_DOC = "normalization_rules.sample.json"
@@ -43,10 +45,6 @@ GENDER_KO = {"female": "여성", "male": "남성"}
 GRADE_KO = {
     "welcome_grade": "웰컴 등급", "family_grade": "패밀리 등급", "silver_grade": "실버 등급",
     "gold_grade": "골드 등급", "vip": "VIP 등급",
-}
-BEHAVIOR_KO = {
-    "no_purchase": "구매 이력 없음(무구매)", "first_purchase": "첫 구매",
-    "repeat_buyer": "재구매(2회 이상)", "cart_abandoner": "장바구니 이탈",
 }
 CONSENT_KO = {
     "app_push_optin": "앱푸시 수신동의", "sms_optin": "SMS 수신동의",
@@ -133,44 +131,16 @@ def _extract_conditions(query_plan: dict[str, Any], candidate: dict[str, Any]) -
         else:
             add(key=lifecycle, value=lifecycle, ko=f"생애주기: {lifecycle}", kind="unknown", category="lifecycle")
 
-    signup = tu.get("signup_target")
-    if isinstance(signup, dict) or "new_user" in (tu.get("lifecycle") or []):
-        days = signup.get("days") if isinstance(signup, dict) else None
-        add(key="signup_target", value=days, ko=f"최근 {days or 90}일 이내 가입", kind="signup", category="date")
-
-    birthday = tu.get("birthday_target")
-    if isinstance(birthday, dict):
-        gran = "이달" if birthday.get("granularity") == "month" else "오늘"
-        add(key="birthday_target", value=gran, ko=f"생일 {gran}", kind="birthday", category="date")
-
-    recent_login = tu.get("recent_login")
-    if isinstance(recent_login, dict) and isinstance(recent_login.get("min_days"), int):
-        add(key="recent_login", value=recent_login["min_days"], ko=f"최근 {recent_login['min_days']}일 이내 로그인",
-            kind="recent_login", category="date")
-
-    inactivity = tu.get("purchase_inactivity")
-    if isinstance(inactivity, dict) and isinstance(inactivity.get("min_days"), int):
-        add(key="purchase_inactivity", value=inactivity["min_days"], ko=f"최근 {inactivity['min_days']}일 미구매",
-            kind="order_window", category="date")
-
-    for behavior in tu.get("behaviors", []):
-        if behavior in ("no_purchase", "first_purchase", "repeat_buyer"):
-            add(key=behavior, value=behavior, ko=BEHAVIOR_KO.get(behavior, behavior), kind="order_count", category="behavior")
-        elif behavior == "cart_abandoner":
-            add(key=behavior, value=behavior, ko=BEHAVIOR_KO[behavior], kind="cart", category="behavior")
-
-    purchase_object = tu.get("purchase_object")
-    if purchase_object:
-        # 브랜드 확정(purchase_object_kind=brand)이면 BRAND_NAME 단독 매칭이므로 라벨도 브랜드로 표기.
-        object_label = "브랜드 구매 이력" if tu.get("purchase_object_kind") == "brand" else "상품 구매 이력"
-        add(key="purchase_object", value=purchase_object, ko=f"{object_label}: '{purchase_object}'",
-            kind="free_text", category="purchase")
-
-    purchase_date = tu.get("purchase_date")
-    if isinstance(purchase_date, dict) and purchase_date.get("from") and purchase_date.get("to"):
-        add(key="purchase_date", value=f"{purchase_date['from']}~{purchase_date['to']}",
-            ko=purchase_date.get("label") or f"구매 날짜 {purchase_date['from']}~{purchase_date['to']}",
-            kind="order_window", category="date")
+    # 결정론 빌더 조건(가입/생일/최근로그인/미구매창/캠페인반응횟수/카트/행동/구매이력 등)은 조건 IR
+    # 레지스트리(targeting_ir.CONDITION_SPECS)의 confidence 메타에서 파생한다 — 예전처럼 조건 유형마다
+    # 이 함수에 수집 분기를 복붙하면 하나만 빠져도 조용히 '확인되지 않음' 감점으로 새던 것을 구조적으로
+    # 차단한다(수집 키/값/한글 라벨의 단일 소스는 레지스트리).
+    for condition in extract_target_conditions(query_plan):
+        meta = condition.spec.confidence
+        if meta is None or not meta.applies(condition.params):
+            continue
+        add(key=meta.key(condition.params), value=meta.value(condition.params),
+            ko=meta.ko(condition.params), kind=meta.kind, category=meta.category)
 
     for dimension_filter in query_plan.get("dimension_filters", []):
         names = dimension_filter.get("names") or dimension_filter.get("codes") or []
@@ -262,6 +232,40 @@ def _score_condition(
                              f"{table} 회원별 주문 집계 ({rule})", "confirmed"))
         if schema_ok:
             evidence.append(_ev("schema", f"schema_catalog.json: {table}", "주문 테이블 실재 확인", "confirmed"))
+    elif kind == "cart":
+        # 장바구니 조건(보관 상태 / 보관 기간)은 cart_targets 레지스트리 + 실제 CRMDW 카트 테이블 근거다.
+        # (예전엔 cart kind 분기가 없어 '확인되지 않음' 폴백으로 떨어져 근거 없이 감점됐다.)
+        cfg = filters.get("cart_targets", {})
+        table = cfg.get("table", "ODS_MALL_OMS_CART")
+        if cond["key"] == "cart_retention":
+            column = (cfg.get("registered_date_column") or "C.UPD_DT").split(".")[-1]
+            schema_ok = _column_in_schema(schema_cols, table, column)
+            evidence.append(_ev("filter_registry", "member_target_filters.json: cart_targets",
+                                 f"{table}.{column}(담은 시점)와 기준일 차이로 보관 기간 비교", "confirmed"))
+        elif cond["key"] == "cart_type":
+            # 장바구니 유형은 카트 라인의 속성이다 — 상품 마스터에는 정기배송/픽업 구분 컬럼이 없다.
+            column = (cfg.get("cart_type_column") or "C.CART_TYPE_CD").split(".")[-1]
+            schema_ok = _column_in_schema(schema_cols, table, column)
+            evidence.append(_ev("filter_registry", "member_target_filters.json: cart_targets.cart_types",
+                                 f"{table}.{column} = {cond['value']} (코드값 확정)", "confirmed"))
+        else:
+            keep = cfg.get("active_condition", {})
+            schema_ok = table in schema_cols
+            evidence.append(_ev("filter_registry", "member_target_filters.json: cart_targets",
+                                 f"{keep.get('column', 'C.KEEP_YN')} = '{keep.get('value', 'Y')}' (미결제 보관 상태)", "confirmed"))
+        if schema_ok:
+            evidence.append(_ev("schema", f"schema_catalog.json: {table}", "장바구니 테이블 실재 확인", "confirmed"))
+    elif kind == "campaign_response":
+        # 캠페인 반응 횟수: 반응 팩트(MCS_CAMP_MBR_RSPN_FT)를 캠페인 마스터(Z_CAMPAIGN)와 조인해 회원별
+        # 반응 캠페인 수를 집계(HAVING COUNT DISTINCT)한다. 실컬럼·실테이블 근거로 확정 조건이다.
+        cfg = filters.get("campaign_response_targets", {})
+        table = cfg.get("table", "MCS_CAMP_MBR_RSPN_FT")
+        camp_table = (cfg.get("campaign_join", {}) or {}).get("table", "Z_CAMPAIGN")
+        schema_ok = table in schema_cols and camp_table in schema_cols
+        evidence.append(_ev("filter_registry", "member_target_filters.json: campaign_response_targets",
+                             f"{table}⨝{camp_table} 회원별 반응 캠페인 수 집계 (HAVING COUNT DISTINCT >= {cond['value']})", "confirmed"))
+        if schema_ok:
+            evidence.append(_ev("schema", f"schema_catalog.json: {table}, {camp_table}", "캠페인 반응 팩트/마스터 테이블 실재 확인", "confirmed"))
     elif kind == "free_text":
         cols = filters.get("purchase_product_match_columns", [])
         evidence.append(_ev("filter_registry", "member_target_filters.json: purchase_product_match_columns",
@@ -336,6 +340,8 @@ def _score_condition(
         check_tokens = [filters.get("birthday_target", {}).get("column", "birthday").casefold()]
     elif kind in ("order_count", "order_window"):
         check_tokens = [filters.get("order_count_targets", {}).get("table", "crm_sl_orderheadermall").casefold()]
+    elif kind == "campaign_response":
+        check_tokens = [filters.get("campaign_response_targets", {}).get("table", "mcs_camp_mbr_rspn_ft").casefold()]
     elif kind == "free_text" and isinstance(cond["value"], str):
         check_tokens = [cond["value"].casefold()]
     elif kind == "injected_state":
