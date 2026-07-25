@@ -40,6 +40,7 @@ from sql_guard import (
     validate_sql,
 )
 from confidence import render_confidence_markdown, render_confidence_report, score_targeting_confidence
+from sql_dialect import SqlDialect, get_dialect
 import targeting_ir
 from targeting_ir import extract_target_conditions, fact_join_kinds
 
@@ -349,8 +350,98 @@ def _member_eq_predicate(canonical: str, negate: bool = False) -> str | None:
     return column + (" <> " if negate else " = ") + _sql_quote(value)
 
 
+_MEMBER_DIALECT: SqlDialect | None = None
+
+
+def _member_dialect() -> SqlDialect:
+    """회원 타겟 결정론 빌더가 쓸 SQL 방언 어댑터(sql_dialect.py). 소스에 엔진 문법을 박지 않기
+    위한 이식성 계층(docs/operations/db_portability_audit.md §4-A). 판별 우선순위:
+    1) member_target_filters.json base_entity.dialect (설정이 자기 엔진을 명시)
+    2) schema_catalog 의 회원 기준 테이블 방언(load_table_dialects — 카탈로그 도출)
+    3) 'tsql' (현행 기본 — 실CRM 이 MSSQL이라 기존 출력과 문자열 동일 보장)
+    """
+    global _MEMBER_DIALECT
+    if _MEMBER_DIALECT is None:
+        base = _MEMBER_TARGET_FILTERS.get("base_entity")
+        base = base if isinstance(base, dict) else {}
+        name = base.get("dialect") if isinstance(base.get("dialect"), str) else None
+        if not name:
+            table = base.get("table")
+            if isinstance(table, str) and table:
+                try:
+                    name = load_table_dialects().get(table)
+                except Exception:
+                    name = None
+        _MEMBER_DIALECT = get_dialect(name or "tsql")
+    return _MEMBER_DIALECT
+
+
+# ── 회원 기준 테이블(base_entity) 접근자 ─────────────────────────────────────
+# 회원 테이블명/별칭/회원키는 member_target_filters.json base_entity 가 소유한다(스키마 사실).
+# 빌더는 반드시 이 헬퍼로 읽는다 — 소스에 'CRM_MB_BASEINFO'/'B.MEMBER_NO' 를 직접 박으면
+# DB 스왑 시 소스를 고쳐야 한다(docs/operations/db_portability_audit.md §4-B).
+
+
+def _member_base_entity() -> dict[str, Any]:
+    base = _MEMBER_TARGET_FILTERS.get("base_entity")
+    if isinstance(base, dict):
+        return base
+    default = _DEFAULT_MEMBER_TARGET_FILTERS.get("base_entity")
+    return default if isinstance(default, dict) else {}
+
+
+def _member_table() -> str:
+    return str(_member_base_entity().get("table") or "CRM_MB_BASEINFO")
+
+
+def _member_alias() -> str:
+    return str(_member_base_entity().get("alias") or "B")
+
+
+def _member_key_column() -> str:
+    return str(_member_base_entity().get("member_key") or "MEMBER_NO")
+
+
+def _member_login_id_column() -> str:
+    return str(_member_base_entity().get("login_id_key") or "MEMBER_ID")
+
+
+def _member_from_clause(alias: str | None = None) -> str:
+    """'FROM CRM_MB_BASEINFO B' 형태의 회원 기준 FROM 절(별칭 오버라이드 가능)."""
+    return f"FROM {_member_table()} {alias or _member_alias()}"
+
+
+def _member_key_select(alias: str | None = None) -> str:
+    """'B.MEMBER_NO AS CUST_ID' — 회원키 SELECT 관례. CUST_ID 는 앱 결과 계약(스키마 무관)이라 고정."""
+    return f"{alias or _member_alias()}.{_member_key_column()} AS CUST_ID"
+
+
+def _member_grade_column() -> str:
+    """'B.EMART_GRADE_CD' — 등급 컬럼은 eq_filters(grade 범주)가 소유(별칭 접두 포함)."""
+    for _canonical, (category, column, _value) in MEMBER_EQ_FILTERS.items():
+        if category == "grade":
+            return column
+    return f"{_member_alias()}.EMART_GRADE_CD"
+
+
+def _member_grade_select() -> str:
+    """'B.EMART_GRADE_CD AS member_grade' — 등급 SELECT 관례(member_grade 는 앱 결과 계약)."""
+    return f"{_member_grade_column()} AS member_grade"
+
+
+def _member_region_short_columns() -> tuple[str, str]:
+    """(시도, 시군구) 짧은 컬럼명 — region_target.columns 레지스트리 소유."""
+    config = _MEMBER_TARGET_FILTERS.get("region_target")
+    columns = (config or {}).get("columns") if isinstance(config, dict) else None
+    columns = columns if isinstance(columns, dict) else {}
+    sido = str(columns.get("sido") or "B.SIDO").split(".")[-1]
+    sigungu = str(columns.get("sigungu") or "B.SIGUNGU").split(".")[-1]
+    return sido, sigungu
+
+
 def _member_activity_predicate(days: int) -> str:
-    return f"(B.LAST_LOGIN_DATE IS NOT NULL AND B.LAST_LOGIN_DATE <= CONVERT(CHAR(8), DATEADD(DAY, -{days}, GETDATE()), 112))"
+    d = _member_dialect()
+    return f"(B.LAST_LOGIN_DATE IS NOT NULL AND B.LAST_LOGIN_DATE <= {d.char8_cutoff(days)})"
 
 
 def _member_active_state_predicate(alias: str = "B") -> str:
@@ -372,10 +463,11 @@ def _member_birthday_predicate(granularity: str = "day", alias: str = "B") -> st
     column = config.get("column") or "BIRTHDAY"
     length = 2 if granularity == "month" else 4  # month: MM(2자리), day: MMDD(4자리)
     col = f"{alias}.{column}"
-    today = "CONVERT(CHAR(8), GETDATE(), 112)"  # 'YYYYMMDD'
-    # LEN 가드로 8자리 정상값만 비교(널/이상치 제외).
+    d = _member_dialect()
+    today = d.char8_today()  # 'YYYYMMDD'
+    # char8 가드로 8자리 정상값만 비교(널/이상치 제외).
     return (
-        f"({col} IS NOT NULL AND LEN({col}) = 8 "
+        f"({d.char8_valid(col)} "
         f"AND SUBSTRING({col}, 5, {length}) = SUBSTRING({today}, 5, {length}))"
     )
 
@@ -396,13 +488,14 @@ def _member_signup_predicate(days: int | None = None, alias: str = "B") -> str:
         default_days = config.get("default_days")
         days = default_days if isinstance(default_days, int) and default_days > 0 else 90
     col = f"{alias}.{column}"
+    d = _member_dialect()
     if config.get("anchor") == "getdate":
-        anchor = "GETDATE()"
+        anchor = d.now()
     else:
         # 적재 데이터 최신 가입일 기준(서브쿼리). MAX 는 널/공백을 무시하고, 포맷 고정이라 문자열 MAX = 최신일.
-        anchor = f"CONVERT(DATE, (SELECT MAX({column}) FROM {table} WHERE LEN({column}) = 8), 112)"
-    boundary = f"CONVERT(CHAR(8), DATEADD(DAY, -{days}, {anchor}), 112)"
-    return f"({col} IS NOT NULL AND LEN({col}) = 8 AND {col} >= {boundary})"
+        anchor = d.parse_char8(f"(SELECT MAX({column}) FROM {table} WHERE {d.str_len(column)} = 8)")
+    boundary = d.char8_cutoff(days, anchor)
+    return f"({d.char8_valid(col)} AND {col} >= {boundary})"
 
 
 def _member_recent_login_predicate(days: int, alias: str = "B") -> str:
@@ -419,12 +512,13 @@ def _member_recent_login_predicate(days: int, alias: str = "B") -> str:
     column = config.get("column") or "LAST_LOGIN_DATE"
     table = config.get("table") or "CRM_MB_BASEINFO"
     col = f"{alias}.{column}"
+    d = _member_dialect()
     if config.get("anchor") == "data_max":
-        anchor = f"CONVERT(DATE, (SELECT MAX({column}) FROM {table} WHERE LEN({column}) = 8), 112)"
+        anchor = d.parse_char8(f"(SELECT MAX({column}) FROM {table} WHERE {d.str_len(column)} = 8)")
     else:
-        anchor = "GETDATE()"
-    boundary = f"CONVERT(CHAR(8), DATEADD(DAY, -{days}, {anchor}), 112)"
-    return f"({col} IS NOT NULL AND LEN({col}) = 8 AND {col} >= {boundary})"
+        anchor = d.now()
+    boundary = d.char8_cutoff(days, anchor)
+    return f"({d.char8_valid(col)} AND {col} >= {boundary})"
 
 
 # ── 타겟팅 신호어 사전(intent/objective/문맥) ─────────────────────────────────
@@ -2848,7 +2942,7 @@ def _apply_member_value_filters(
     index = _load_member_value_index(str(index_path)) if index_path else None
     if not index:
         return
-    table = index.get("table", "CRM_MB_BASEINFO")
+    table = index.get("table", _member_table())
     # 이미 다른 경로(디멘션 카탈로그 등)가 조건을 만든 컬럼은 건너뛴다(이중 술어 방지).
     existing_columns = {
         (dimension_filter.get("column") or "").split(".")[-1].upper()
@@ -2955,7 +3049,7 @@ def _apply_macro_region_filter(query: str, plan: dict[str, Any]) -> None:
                     if name not in existing:
                         existing.append(name)
             return
-    table = "CRM_MB_BASEINFO"
+    table = _member_table()
     plan.setdefault("dimension_filters", []).append({
         "dimension_id": "macro_region:" + column,
         "prompt_label": column,
@@ -3994,16 +4088,48 @@ _CART_ABSENCE_PATTERN = re.compile(
 )
 
 
+def _cart_targets_registry() -> dict[str, Any]:
+    config = _MEMBER_TARGET_FILTERS.get("cart_targets")
+    return config if isinstance(config, dict) else {}
+
+
+def _cart_member_join_on(alias: str = "A") -> str:
+    """카트→회원 조인식('A.CART_ID = B.MEMBER_ID'). 조인키는 cart_targets.join 레지스트리 소유."""
+    join = _cart_targets_registry().get("join")
+    join = join if isinstance(join, dict) else {}
+    left_column = str(join.get("left") or "C.CART_ID").split(".")[-1]
+    right = str(join.get("right") or "B.MEMBER_ID")
+    return f"{alias}.{left_column} = {right}"
+
+
+def _cart_from_join_lines(alias: str = "A", product_alias: str | None = None) -> list[str]:
+    """카트(→회원[→상품]) FROM/JOIN 절 — 테이블명·조인키는 레지스트리 소유, 별칭만 호출자 관례."""
+    config = _cart_targets_registry()
+    table = config.get("table", "ODS_MALL_OMS_CART")
+    lines = [
+        f"FROM {table} {alias}",
+        f"     INNER JOIN {_member_table()} {_member_alias()} ON {_cart_member_join_on(alias)}",
+    ]
+    if product_alias:
+        product_join = config.get("product_join")
+        product_join = product_join if isinstance(product_join, dict) else {}
+        product_table = product_join.get("table", "CRM_CM_PRODUCT")
+        left_column = str(product_join.get("left") or "C.PRODUCT_ID").split(".")[-1]
+        right_column = str(product_join.get("right") or "CP.PRODUCT_ID").split(".")[-1]
+        lines.append(f"     INNER JOIN {product_table} {product_alias} ON {alias}.{left_column} = {product_alias}.{right_column}")
+    return lines
+
+
 def _cart_absence_predicate() -> str:
     """보관(KEEP_YN='Y') 카트 라인이 없는 회원의 NOT EXISTS 술어. cart_targets 레지스트리 소유값 사용."""
-    config = _MEMBER_TARGET_FILTERS.get("cart_targets", {}) if isinstance(_MEMBER_TARGET_FILTERS.get("cart_targets"), dict) else {}
+    config = _cart_targets_registry()
     table = config.get("table", "ODS_MALL_OMS_CART")
     active = config.get("active_condition", {}) if isinstance(config.get("active_condition"), dict) else {}
     keep_column = (active.get("column") or "A.KEEP_YN").split(".")[-1]
     keep_value = active.get("value", "Y")
     return (
         f"NOT EXISTS (SELECT 1 FROM {table} A "
-        f"WHERE A.CART_ID = B.MEMBER_ID AND A.{keep_column} = {_sql_quote(str(keep_value))})"
+        f"WHERE {_cart_member_join_on('A')} AND A.{keep_column} = {_sql_quote(str(keep_value))})"
     )
 
 
@@ -4018,7 +4144,7 @@ def _purchase_inactivity_predicate(min_days: int) -> str:
     table = config.get("table", "CRM_SL_ORDERHEADERMALL")
     join_column = config.get("join_column", "MEMBER_NO")
     order_date_column = config.get("order_date_column", "ORDER_DATE")
-    cutoff = f"CONVERT(CHAR(8), DATEADD(DAY, -{min_days}, GETDATE()), 112)"
+    cutoff = _member_dialect().char8_cutoff(min_days)
     return (
         f"NOT EXISTS (SELECT 1 FROM {table} O WHERE O.{join_column} = B.{join_column} "
         f"AND O.{order_date_column} >= {cutoff})"
@@ -7566,15 +7692,35 @@ def _build_llm_sql_fallback_candidate(
             for key in ("intent", "target_user", "exclude", "campaign_constraints", "dimension_filters", "region_density_target")
             if query_plan.get(key)
         }
+        # 스키마 사실(회원 테이블/키/상태 술어/코드값 예시)과 방언은 레지스트리·어댑터에서 렌더한다 —
+        # 프롬프트에 직접 박으면 DB 스왑 시 프롬프트도 고쳐야 한다(docs/operations/db_portability_audit.md §4-C).
+        dialect = _member_dialect()
+        dialect_title = {"tsql": "MSSQL(T-SQL)", "mysql": "MySQL/MariaDB", "postgres": "PostgreSQL"}.get(dialect.name, "ANSI SQL")
+        row_limit_rule = "LIMIT 대신 TOP 사용" if dialect.name == "tsql" else "TOP 대신 LIMIT 사용"
+        member_alias = _member_alias()
+        code_examples = [
+            str(value)
+            for category in ("gender", "grade", "state")
+            for value in [
+                next(
+                    (value for _c, (cat, _col, value) in MEMBER_EQ_FILTERS.items() if cat == category and "." in str(value)),
+                    None,
+                )
+            ]
+            if value
+        ]
+        date_format_label = str(_member_base_entity().get("date_format") or "yyyyMMdd").upper()
         system_prompt = "\n".join(
             [
                 "너는 CRM 타겟팅 SQL 생성기다. 반드시 JSON {\"sql\": \"...\", \"explanation\": \"...\"} 형식으로만 답한다.",
                 "규칙:",
-                f"- MSSQL(T-SQL) SELECT 단일문만 생성한다. DML/DDL/임시테이블 금지, LIMIT 대신 TOP 사용.",
+                f"- {dialect_title} SELECT 단일문만 생성한다. DML/DDL/임시테이블 금지, {row_limit_rule}.",
                 f"- 허용 테이블만 사용한다: {allowed_list}",
-                "- 첫 컬럼은 반드시 회원키다: SELECT DISTINCT B.MEMBER_NO AS CUST_ID (CRM_MB_BASEINFO 별칭 B).",
-                "- 발송 대상이므로 기본으로 B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL' 조건을 넣는다(사용자가 휴면/탈퇴를 명시하면 예외).",
-                "- CRMDW 코드 컬럼 저장값은 도메인 접두어를 포함한다(예: GENDER_CD.FEMALE, MEM_GRADE_CD.VIP, MEMBER_STATE_CD.NORMAL).",
+                f"- 첫 컬럼은 반드시 회원키다: SELECT DISTINCT {member_alias}.{_member_key_column()} AS CUST_ID ({_member_table()} 별칭 {member_alias}).",
+                f"- 발송 대상이므로 기본으로 {_member_active_state_predicate()} 조건을 넣는다(사용자가 휴면/탈퇴를 명시하면 예외).",
+                "- 코드 컬럼 저장값은 도메인 접두어를 포함한다(예: " + ", ".join(code_examples) + ")."
+                if code_examples
+                else "- 코드 컬럼 저장값은 카탈로그(값 인덱스)의 실값 표기를 그대로 따른다.",
                 "- 사용자가 명시한 조건은 모두 WHERE 에 반영하고, 명시하지 않은 조건(성별/연령/지역 등)은 절대 추가하지 않는다.",
                 "- SELECT 에 반영한 조건의 canonical 요약 라벨을 포함한다(조건 커버리지 검증용): 예) 'no_purchase' AS segment_label.",
                 "- 컨텍스트에 없는 테이블/컬럼을 지어내지 않는다. 확실한 SQL 을 만들 수 없으면 {\"sql\": null, \"explanation\": \"이유\"} 를 반환한다.",
@@ -7585,8 +7731,8 @@ def _build_llm_sql_fallback_candidate(
                 "- 회원별 지표 임계값(누적 구매금액/횟수 등)은 회원키로 GROUP BY 한 서브쿼리에서 HAVING 으로 거른 뒤 회원키로 조인/IN 한다 — 바깥에서 재집계하지 않는다(이중 집계 방지).",
                 "- 최근 N건/순위/누적값은 회원 단위로 접어야 하면 GROUP BY, 회원 내 순번이 필요하면 윈도 함수(ROW_NUMBER/RANK/SUM() OVER)를 쓴다 — 단순 TOP+ORDER BY 는 회원별 최근 N건을 주지 못한다.",
                 "- 기간 A/B 를 비교할 때 두 기간의 기준 집합(모수)이 동일해야 한다 — 한 기간에만 존재하는 회원이 빠지지 않도록 회원 집합을 먼저 고정하고 각 기간 지표를 LEFT JOIN 한다.",
-                "- 날짜는 경계를 반열림 구간([시작, 끝))으로 잡고(BETWEEN 의 종료일 포함 주의), 저장 형식(YYYYMMDD 문자열 등)에 맞춰 비교한다. 기준시각은 GETDATE() 앵커를 쓴다.",
-                "- LEFT JOIN 후 미매칭(NULL)을 의도대로 처리했는지 본다 — anti-join 은 NOT EXISTS/IS NULL, 합산은 ISNULL(x,0). WHERE 에서 우변 테이블 컬럼을 조건에 쓰면 LEFT JOIN 이 INNER 로 바뀐다.",
+                f"- 날짜는 경계를 반열림 구간([시작, 끝))으로 잡고(BETWEEN 의 종료일 포함 주의), 저장 형식({date_format_label} 문자열 등)에 맞춰 비교한다. 기준시각은 {dialect.now()} 앵커를 쓴다.",
+                f"- LEFT JOIN 후 미매칭(NULL)을 의도대로 처리했는지 본다 — anti-join 은 NOT EXISTS/IS NULL, 합산은 {dialect.coalesce('x', '0')}. WHERE 에서 우변 테이블 컬럼을 조건에 쓰면 LEFT JOIN 이 INNER 로 바뀐다.",
             ]
         )
         user_prompt = json.dumps(
@@ -7649,31 +7795,60 @@ _SEMANTIC_ISSUE_LABELS = {
 
 
 def _sql_semantic_verify_system_prompt() -> str:
-    """의미 검증 게이트 시스템 프롬프트. 오탐(정상 SQL 차단)을 줄이려 '확신할 때만 불일치' 원칙을 강조한다."""
+    """의미 검증 게이트 시스템 프롬프트. 오탐(정상 SQL 차단)을 줄이려 '확신할 때만 불일치' 원칙을 강조한다.
+
+    스키마 사실(성별 코드값·등급/지역/로그인/가입/생일 컬럼·카트/캠페인 팩트 테이블·날짜 포맷)은
+    member_target_filters.json 레지스트리에서 렌더한다 — 프롬프트에 직접 박으면 DB 스왑 시
+    이 함수도 고쳐야 한다(docs/operations/db_portability_audit.md §4-C). 검증 원칙 문구는 스키마
+    무관이라 리터럴로 둔다."""
+
+    def _short_column(config_key: str, fallback: str) -> str:
+        config = _MEMBER_TARGET_FILTERS.get(config_key)
+        column = (config or {}).get("column") if isinstance(config, dict) else None
+        return str(column or fallback).split(".")[-1]
+
+    gender_example = next(
+        (str(value) for _c, (cat, _col, value) in MEMBER_EQ_FILTERS.items() if cat == "gender"), "GENDER_CD.FEMALE"
+    )
+    grade_column = _member_grade_column().split(".")[-1]
+    sido_column, _sigungu = _member_region_short_columns()
+    login_column = _short_column("recent_login_target", "LAST_LOGIN_DATE")
+    signup_column = _short_column("signup_target", "REG_DT")
+    birthday_column = _short_column("birthday_target", "BIRTHDAY")
+    cart_config = _cart_targets_registry()
+    cart_table = cart_config.get("table", "ODS_MALL_OMS_CART")
+    cart_active = cart_config.get("active_condition") if isinstance(cart_config.get("active_condition"), dict) else {}
+    keep_column = str((cart_active or {}).get("column") or "C.KEEP_YN").split(".")[-1]
+    keep_value = str((cart_active or {}).get("value") or "Y")
+    keep_predicate = f"{keep_column} = '{keep_value}'"
+    campaign_config = _MEMBER_TARGET_FILTERS.get("campaign_response_targets")
+    campaign_table = (campaign_config or {}).get("table") if isinstance(campaign_config, dict) else None
+    campaign_table = campaign_table or "MCS_CAMP_MBR_RSPN_FT"
+    date_format_label = str(_member_base_entity().get("date_format") or "yyyyMMdd").upper()
     return (
         "당신은 타겟팅 SQL 검증기다. 사용자 원문과 그 원문으로 생성된 SQL 을 받는다. "
         "SQL 이 원문의 **오디언스(타겟 회원) 조건**을 빠짐없이·왜곡 없이 반영했는지만 판정하라.\n"
         "다음은 무시한다(불일치로 보지 말 것): 발송 채널(문자/앱푸시/RCS 등)·메시지 카피·캠페인 목적/목표"
         "(objective, 예: 재구매 유도)·결과 개수 제한. SQL 은 오디언스 필터만 담고 이들은 담지 않는 게 정상이다.\n"
         "**값 변환·확장의 '완전성'은 절대 판정하지 말라**: 자연어 값은 시스템이 코드/등급 체계/권역 매핑으로 "
-        "변환·확장해 SQL 에 넣는다(여성→GENDER_CD.FEMALE, 30대→AGE 30~39, 'GOLD 이상'→등급 IN 목록, 수도권→SIDO IN 목록). "
+        f"변환·확장해 SQL 에 넣는다(여성→{gender_example}, 30대→AGE 30~39, 'GOLD 이상'→등급 IN 목록, 수도권→{sido_column} IN 목록). "
         "너는 등급 서열·권역 구성을 알지 못하므로, 어떤 값이 IN 목록/범위에 들어갔는지의 정확성·완전성을 "
         "**추측해서 판정하면 안 된다**. 원문의 각 조건이 SQL 에 **대응하는 컬럼 필터로 존재하기만 하면** 반영된 "
-        "것으로 보라(예: 'GOLD 이상' → EMART_GRADE_CD IN(...) 이 있으면 OK, 목록에 무엇이 들었든 faithful). "
+        f"것으로 보라(예: 'GOLD 이상' → {grade_column} IN(...) 이 있으면 OK, 목록에 무엇이 들었든 faithful). "
         "IN 목록·코드값·범위 확장을 dropped 나 wrong_value 로 보지 말라.\n"
-        "**날짜 창(window) 비교의 방향을 정확히 읽어라**: 날짜는 YYYYMMDD 문자열이라 사전식 비교로 기간을 표현한다. "
-        "`LAST_LOGIN_DATE <= (기준일 - N일)` 은 마지막 접속이 N일보다 **이전** = '**N일 이상 미접속/장기 미접속/휴면**'(부정형 접속)이고, "
-        "`LAST_LOGIN_DATE >= (기준일 - N일)` 은 '**최근 N일 내 접속**'(긍정형)이다. `REG_DT >= (기준일 - N일)` 은 '최근 N일 내 가입(신규)'이다. "
+        f"**날짜 창(window) 비교의 방향을 정확히 읽어라**: 날짜는 {date_format_label} 문자열이라 사전식 비교로 기간을 표현한다. "
+        f"`{login_column} <= (기준일 - N일)` 은 마지막 접속이 N일보다 **이전** = '**N일 이상 미접속/장기 미접속/휴면**'(부정형 접속)이고, "
+        f"`{login_column} >= (기준일 - N일)` 은 '**최근 N일 내 접속**'(긍정형)이다. `{signup_column} >= (기준일 - N일)` 은 '최근 N일 내 가입(신규)'이다. "
         "여기서 `IS NOT NULL` 은 널·이상치를 거르는 **가드일 뿐 '접속함(긍정)'을 뜻하지 않는다** — 미접속(휴면) 조건에 이 가드가 붙어 있어도 "
         "정상이며 inverted 로 보지 말라(원문 '접속하지 않은/휴면'과 `<= 과거기준일`은 방향이 일치한다). 방향(부등호)과 원문 극성만 맞으면 faithful 이다.\n"
         "**도메인 인코딩 사전(원문 개념 → SQL 표현)**: 원문의 개념은 컬럼/테이블 이름이 원문 단어와 다르게 인코딩된다. "
         "아래 대응이 SQL 에 있으면 원문 조건이 **반영된 것(faithful)**으로 보고 dropped 로 판정하지 말라.\n"
-        "  · '장바구니에 담고 결제/구매 안 함(장바구니 이탈/방치)' → 카트 테이블(ODS_MALL_OMS_CART 등) 조인 + 보관중 카트 `KEEP_YN = 'Y'` "
-        "(보관 중인 카트 라인 = 담아두고 미결제). 별도의 '결제 안 함' 부정 술어가 없어도 KEEP_YN='Y' 자체가 '담고 미결제'를 뜻하므로 정상이다.\n"
+        f"  · '장바구니에 담고 결제/구매 안 함(장바구니 이탈/방치)' → 카트 테이블({cart_table} 등) 조인 + 보관중 카트 `{keep_predicate}` "
+        f"(보관 중인 카트 라인 = 담아두고 미결제). 별도의 '결제 안 함' 부정 술어가 없어도 {keep_predicate} 자체가 '담고 미결제'를 뜻하므로 정상이다.\n"
         "  · '구매/주문 이력 없는·미구매·재구매 안 한' → 주문 팩트 테이블에 `NOT EXISTS`(anti-join). '구매한/재구매' → `EXISTS`.\n"
         "  · '최근 N일 미구매' → 주문 테이블 `NOT EXISTS`(최근 N일 창).  · '장바구니 없는' → 카트 `NOT EXISTS`.\n"
-        "  · '캠페인 발송/접촉·오퍼 반응·쿠폰 사용' → 캠페인 반응 팩트(MCS_CAMP_MBR_RSPN_FT 등) `EXISTS`, 부정형은 `NOT EXISTS`.\n"
-        "  · '신규 가입/가입한 지 N일' → `REG_DT` 최근 창.  · '생일' → `BIRTHDAY` 월일 비교.  · 등급/성별/지역 → 코드 컬럼 = / IN.\n"
+        f"  · '캠페인 발송/접촉·오퍼 반응·쿠폰 사용' → 캠페인 반응 팩트({campaign_table} 등) `EXISTS`, 부정형은 `NOT EXISTS`.\n"
+        f"  · '신규 가입/가입한 지 N일' → `{signup_column}` 최근 창.  · '생일' → `{birthday_column}` 월일 비교.  · 등급/성별/지역 → 코드 컬럼 = / IN.\n"
         "  · SELECT 절의 라벨 컬럼(예: `'cart_abandoner' AS target_segment`, `'repurchase' AS objective`)은 **필터가 아니라 세그먼트 표식**이니 판정 대상이 아니다.\n"
         "핵심: 원문 개념이 위처럼 **대응 테이블/컬럼 필터로 존재하기만 하면** 반영된 것이다. 리터럴 단어 일치를 요구하지 말라.\n"
         "불일치 유형: dropped(원문 조건이 SQL 에 없음), inverted(긍정↔부정 또는 이상↔이하 등 의미가 반대로 "
@@ -8753,10 +8928,10 @@ def _cart_retention_predicates(query_plan: dict[str, Any], alias: str = "A") -> 
     column = (alias + "." if alias else "") + _cart_retention_column()
     min_days = retention.get("min_days")
     if isinstance(min_days, int) and min_days > 0:
-        return [f"{column} <= DATEADD(DAY, -{min_days}, GETDATE())"]
+        return [f"{column} <= {_member_dialect().datetime_cutoff(min_days)}"]
     max_days = retention.get("max_days")
     if isinstance(max_days, int) and max_days > 0:
-        return [f"{column} >= DATEADD(DAY, -{max_days}, GETDATE())"]
+        return [f"{column} >= {_member_dialect().datetime_cutoff(max_days)}"]
     return []
 
 
@@ -8834,7 +9009,7 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
         # 회원상태 직접 지정(dormant 등)이 아니면 발송 대상 기본 정책대로 정상 회원으로 한정한다.
         if not compiled["forces_state"]:
             where_clauses.append(_member_active_state_predicate())
-        select_columns = ["B.MEMBER_NO AS CUST_ID"]
+        select_columns = [_member_key_select()]
         if "cart_abandoner" in query_plan.get("target_user", {}).get("behaviors", []):
             select_columns.append("'cart_abandoner' AS target_segment")
         objective = query_plan.get("campaign_constraints", {}).get("objective")
@@ -8843,11 +9018,7 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
         ast = SelectAst(
             distinct=True,
             columns=select_columns,
-            from_lines=[
-                "FROM ODS_MALL_OMS_CART A",
-                "     INNER JOIN CRM_MB_BASEINFO B ON A.CART_ID = B.MEMBER_ID",
-                "     INNER JOIN CRM_CM_PRODUCT C ON A.PRODUCT_ID = C.PRODUCT_ID",
-            ],
+            from_lines=_cart_from_join_lines("A", product_alias="C"),
             where=_unique_strings(where_clauses),
         )
         candidate = _select_ast_candidate("sql_template:cart_dimension_targets", "장바구니 상품브랜드 타겟팅 SQL 템플릿", 1.0, ast, "sql_template")
@@ -8861,7 +9032,7 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
         # 회원 속성이 함께 오면 형제 빌더와 동일하게 B 술어로 AND 결합한다(조용한 누락 방지).
         compiled = compile_member_target_conditions(query_plan)
         objective = query_plan.get("campaign_constraints", {}).get("objective")
-        select_columns = ["B.MEMBER_NO AS CUST_ID", _sql_quote(_cart_segment_label(query_plan)) + " AS target_segment"]
+        select_columns = [_member_key_select(), _sql_quote(_cart_segment_label(query_plan)) + " AS target_segment"]
         if objective:
             select_columns.append(_sql_quote(objective) + " AS objective")
         where_clauses = [
@@ -8875,10 +9046,7 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
         ast = SelectAst(
             distinct=True,
             columns=select_columns,
-            from_lines=[
-                "FROM ODS_MALL_OMS_CART A",
-                "     INNER JOIN CRM_MB_BASEINFO B ON A.CART_ID = B.MEMBER_ID",
-            ],
+            from_lines=_cart_from_join_lines("A"),
             where=_unique_strings(where_clauses),
         )
         # 제목은 실제로 건 조건을 따른다 — 유형만 물은 오디언스에 '미결제'라고 적으면 걸지도 않은
@@ -9177,18 +9345,18 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     for dimension_filter in query_plan.get("dimension_filters", []):
         table_name = dimension_filter.get("table")
         join_column = dimension_filter.get("join_column")
-        if table_name != "CRM_MB_BASEINFO" and not join_column:
+        if table_name != _member_table() and not join_column:
             continue
         column_short = (dimension_filter.get("column") or "").split(".")[-1]
         codes = [code for code in dimension_filter.get("codes", []) if isinstance(code, str) and code]
         if not column_short or not codes:
             continue
-        if table_name == "CRM_MB_BASEINFO" and column_short in ("SIDO", "SIGUNGU"):
+        if table_name == _member_table() and column_short in _member_region_short_columns():
             member_region_codes.setdefault(column_short, [])
             member_region_codes[column_short].extend(code for code in codes if code not in member_region_codes[column_short])
         else:
             in_list = ", ".join(_sql_quote(code) for code in codes)
-            if table_name == "CRM_MB_BASEINFO":
+            if table_name == _member_table():
                 if len(codes) == 1 and (dimension_filter.get("operator") or "IN").upper() == "=":
                     other_predicates.append("B." + column_short + " = " + _sql_quote(codes[0]))
                 else:
@@ -9266,7 +9434,7 @@ def build_member_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, 
         where_clauses.append(state_predicate)
     where_clauses = _unique_strings(where_clauses)
 
-    select_columns = ["B.MEMBER_NO AS CUST_ID", "B.EMART_GRADE_CD AS member_grade"]
+    select_columns = [_member_key_select(), _member_grade_select()]
     # 세그먼트 라벨 — 다운스트림 태그이자 조건 커버리지(값 문자열 매칭) 충족용. 제외는 'non_<canonical>'.
     if compiled["labels"]:
         select_columns.append(_sql_quote(",".join(compiled["labels"])) + " AS segment_label")
@@ -9276,7 +9444,7 @@ def build_member_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, 
         select_columns.append(_sql_quote(objective) + " AS objective")
 
     # 파이프라인: 조건 → SelectAst(AST) → Validation → SQL 렌더. 단순 질의의 직행 경로.
-    ast = SelectAst(distinct=True, columns=select_columns, from_lines=["FROM CRM_MB_BASEINFO B"], where=list(where_clauses))
+    ast = SelectAst(distinct=True, columns=select_columns, from_lines=[_member_from_clause()], where=list(where_clauses))
     candidate = _select_ast_candidate("sql_template:member_targets", "회원 속성 타겟 추출 SQL 템플릿(CRMDW)", 1.0, ast, "sql_template")
     # 실DB 미지원이라 SQL 에서 뺀 조건(부분 추출). 커버리지 검증에서 제외하고 응답에 고지한다.
     candidate["dropped_conditions"] = compiled["unsupported"]
@@ -9285,7 +9453,7 @@ def build_member_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, 
     # 돌려 어느 AND 술어가 오디언스를 죽였는지 귀속한다(과잉 조건 탐지). injected_default 는
     # 사용자가 명시하지 않았지만 주입된 기본 게이트(정상회원 한정)를 가리킨다.
     candidate["cardinality_probe"] = {
-        "from_clause": "CRM_MB_BASEINFO B",
+        "from_clause": f"{_member_table()} {_member_alias()}",
         "predicates": [
             {"sql": clause, "injected_default": clause == state_predicate}
             for clause in where_clauses
@@ -9306,7 +9474,7 @@ def _build_dense_region_targets_candidate(
     # 랭킹 기준: 기본은 거주 회원 수(COUNT). metric_id 가 있으면 지표 레지스트리(member_metrics.json)
     # 의 집계식(예: SUM(TOTAL_BUY_AMT))으로 랭킹한다 — 지표 테이블은 회원키로 조인, 월 스냅샷
     # 테이블의 중복 집계는 레지스트리의 grain_filter(최신 월 한정)로 막는다.
-    inner_from = ["    FROM CRM_MB_BASEINFO B"]
+    inner_from = ["    " + _member_from_clause()]
     order_by = "COUNT(*)"
     metric_where: list[str] = []
     metric_id = density.get("metric_id")
@@ -9339,7 +9507,7 @@ def _build_dense_region_targets_candidate(
     )
 
     select_columns = [
-        "DISTINCT M.MEMBER_NO AS CUST_ID",
+        "DISTINCT " + _member_key_select("M"),
         "M.EMART_GRADE_CD AS member_grade",
         f"M.{column} AS target_region",
     ]
@@ -9354,7 +9522,7 @@ def _build_dense_region_targets_candidate(
     sql = "\n".join(
         [
             "SELECT " + ", ".join(select_columns),
-            "FROM CRM_MB_BASEINFO M",
+            _member_from_clause("M"),
             f"WHERE M.{column} IN (",
             inner_sql,
             ")",
@@ -9406,8 +9574,8 @@ def build_member_metric_ranking_sql_candidate(query_plan: dict[str, Any]) -> dic
     where_clauses = _unique_strings(where_clauses)
 
     select_columns = [
-        f"DISTINCT TOP {top_n} B.MEMBER_NO AS CUST_ID",
-        "B.EMART_GRADE_CD AS member_grade",
+        f"DISTINCT TOP {top_n} " + _member_key_select(),
+        _member_grade_select(),
         f"{metric_expr} AS {metric['metric_id']}",
     ]
     segment_parts = [ranking["metric_id"], *compiled["labels"]]
@@ -9419,7 +9587,7 @@ def build_member_metric_ranking_sql_candidate(query_plan: dict[str, Any]) -> dic
     sql = "\n".join(
         [
             "SELECT " + ", ".join(select_columns),
-            "FROM CRM_MB_BASEINFO B",
+            _member_from_clause(),
             f"     INNER JOIN {value_table} C ON B.{join_column} = C.{join_column}",
             "WHERE " + "\n  AND ".join(where_clauses),
             f"ORDER BY {metric_expr} DESC",
@@ -9446,6 +9614,30 @@ _PURCHASE_PRODUCT_MATCH_COLUMNS = tuple(
     for column in _MEMBER_TARGET_FILTERS.get("purchase_product_match_columns", [])
     if isinstance(column, str) and column
 ) or tuple(_DEFAULT_MEMBER_TARGET_FILTERS["purchase_product_match_columns"])
+
+
+def _purchase_product_registry() -> dict[str, Any]:
+    config = _MEMBER_TARGET_FILTERS.get("purchase_product_target")
+    return config if isinstance(config, dict) else {}
+
+
+def _order_detail_member_join_lines(alias: str = "D", product_alias: str | None = None) -> list[str]:
+    """주문상세(→상품)→회원 FROM/JOIN 절 — 테이블·조인키는 purchase_product_target 레지스트리 소유,
+    별칭만 호출자 관례. 회원 조인은 주문상세의 회원키 = 회원 기준 테이블 회원키(base_entity)."""
+    config = _purchase_product_registry()
+    detail = config.get("order_detail") if isinstance(config.get("order_detail"), dict) else {}
+    product = config.get("product") if isinstance(config.get("product"), dict) else {}
+    detail_table = detail.get("table", "CRM_SL_ORDERDETAILMALL")
+    product_table = product.get("table", "CRM_CM_PRODUCT")
+    # 상품 조인키: 'P.PRODUCT_ID = OD.PRODUCT_ID' 선언에서 짧은 컬럼명만 취한다(별칭은 호출자 소유).
+    product_join = str(product.get("join") or "P.PRODUCT_ID = OD.PRODUCT_ID")
+    product_key = product_join.split("=")[0].strip().split(".")[-1] or "PRODUCT_ID"
+    lines = [f"FROM {detail_table} {alias}"]
+    if product_alias:
+        lines.append(f"     INNER JOIN {product_table} {product_alias} ON {alias}.{product_key} = {product_alias}.{product_key}")
+    member_key = _member_key_column()
+    lines.append(f"     INNER JOIN {_member_table()} {_member_alias()} ON {alias}.{member_key} = {_member_alias()}.{member_key}")
+    return lines
 
 
 def _sql_nlike_contains(column: str, term: str) -> str:
@@ -9523,7 +9715,7 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
         where_clauses.append(_member_active_state_predicate())
     where_clauses = _unique_strings(where_clauses)
 
-    select_columns = ["DISTINCT B.MEMBER_NO AS CUST_ID", "B.EMART_GRADE_CD AS member_grade"]
+    select_columns = ["DISTINCT " + _member_key_select(), _member_grade_select()]
     if compiled["labels"]:
         select_columns.append(_sql_quote(",".join(compiled["labels"])) + " AS segment_label")
     objective = query_plan.get("campaign_constraints", {}).get("objective")
@@ -9533,9 +9725,7 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
     sql = "\n".join(
         [
             "SELECT " + ", ".join(select_columns),
-            "FROM CRM_SL_ORDERDETAILMALL D",
-            "     INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID",
-            "     INNER JOIN CRM_MB_BASEINFO B ON D.MEMBER_NO = B.MEMBER_NO",
+            *_order_detail_member_join_lines("D", product_alias="P"),
             "WHERE " + "\n  AND ".join(where_clauses),
         ]
     )
@@ -9586,8 +9776,8 @@ def build_purchase_count_ranking_sql_candidate(query_plan: dict[str, Any]) -> di
     where_clauses = _unique_strings(where_clauses)
 
     select_columns = [
-        f"TOP {top_n} B.MEMBER_NO AS CUST_ID",
-        "B.EMART_GRADE_CD AS member_grade",
+        f"TOP {top_n} " + _member_key_select(),
+        _member_grade_select(),
         "COUNT(*) AS purchase_count",
     ]
     segment_label = "purchase_count_rank"
@@ -9598,15 +9788,12 @@ def build_purchase_count_ranking_sql_candidate(query_plan: dict[str, Any]) -> di
     if objective:
         select_columns.append(_sql_quote(objective) + " AS objective")
 
-    from_lines = ["FROM CRM_SL_ORDERDETAILMALL D"]
-    if has_object:
-        from_lines.append("     INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID")
-    from_lines.append("     INNER JOIN CRM_MB_BASEINFO B ON D.MEMBER_NO = B.MEMBER_NO")
+    from_lines = _order_detail_member_join_lines("D", product_alias="P" if has_object else None)
 
     sql_lines = ["SELECT " + ", ".join(select_columns), *from_lines]
     if where_clauses:
         sql_lines.append("WHERE " + "\n  AND ".join(where_clauses))
-    sql_lines.append("GROUP BY B.MEMBER_NO, B.EMART_GRADE_CD")
+    sql_lines.append(f"GROUP BY {_member_alias()}.{_member_key_column()}, {_member_grade_column()}")
     sql_lines.append("ORDER BY COUNT(*) DESC")
     sql = "\n".join(sql_lines)
 
@@ -9662,7 +9849,7 @@ def _aggregate_member_subquery(
     agg_expr = f"COUNT(DISTINCT {column})" if metric.get("distinct") else f"{agg}({column})"
     where = [f"{join_column} IS NOT NULL"]
     if isinstance(window_days, int) and window_days > 0 and date_column:
-        cutoff = f"CONVERT(CHAR(8), DATEADD(DAY, -{window_days}, GETDATE()), 112)"
+        cutoff = _member_dialect().char8_cutoff(window_days)
         where.append(f"{date_column} >= {cutoff}")
     date_between = _purchase_date_predicate(purchase_date, alias=None, column=date_column) if date_column else None
     if date_between is not None:
@@ -9709,7 +9896,7 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
     # 절대 구매창('2019년 1월')이 함께 잡혔으면 집계를 그 기간 주문으로 한정한다(그래야 '2019년 1월에
     # 2개 이상 구매'의 개수 임계값이 기간 안에서 세어진다). 상대창(최근 N일)은 조건별 window_days 소유.
     purchase_date = target_user.get("purchase_date")
-    from_clause = ["FROM CRM_MB_BASEINFO B"]
+    from_clause = [_member_from_clause()]
     labels = list(compiled["labels"])
     for position, condition in enumerate(valid):
         metric = metrics[condition["metric_id"]]
@@ -9726,7 +9913,7 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
         where_clauses.append(_member_active_state_predicate())
     where_clauses = _unique_strings(where_clauses)
 
-    select_columns = ["DISTINCT B.MEMBER_NO AS CUST_ID", "B.EMART_GRADE_CD AS member_grade"]
+    select_columns = ["DISTINCT " + _member_key_select(), _member_grade_select()]
     if labels:
         select_columns.append(_sql_quote(",".join(_unique_strings(labels))) + " AS segment_label")
     objective = query_plan.get("campaign_constraints", {}).get("objective")
@@ -9784,27 +9971,32 @@ def build_cart_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> di
         " AND " + predicate
         for predicate in (*_cart_keep_predicates(query_plan, alias=""), *_cart_type_predicates(query_plan, alias=""))
     )
+    cart_config = _cart_targets_registry()
+    cart_table = cart_config.get("table", "ODS_MALL_OMS_CART")
+    cart_join = cart_config.get("join") if isinstance(cart_config.get("join"), dict) else {}
+    cart_key = str((cart_join or {}).get("left") or "C.CART_ID").split(".")[-1]
+    member_side = str((cart_join or {}).get("right") or "B.MEMBER_ID")
     inner = (
-        "SELECT CART_ID FROM ODS_MALL_OMS_CART "
-        f"WHERE CART_ID IS NOT NULL{line_filters}{retention_filter} "
-        f"GROUP BY CART_ID HAVING {agg_expr} {operator} {_format_threshold(threshold)}"
+        f"SELECT {cart_key} FROM {cart_table} "
+        f"WHERE {cart_key} IS NOT NULL{line_filters}{retention_filter} "
+        f"GROUP BY {cart_key} HAVING {agg_expr} {operator} {_format_threshold(threshold)}"
     )
     compiled = compile_member_target_conditions(query_plan)
-    where_clauses = [f"B.MEMBER_ID IN ({inner})", *compiled["predicates"]]
+    where_clauses = [f"{member_side} IN ({inner})", *compiled["predicates"]]
     if not compiled["forces_state"]:
         where_clauses.append(_member_active_state_predicate())
     # 라벨 컬럼은 세그먼트 태그이자 조건 커버리지(문자열 매칭) 충족용 — 형제 cart 빌더와 동일하게
     # target_segment 를 싣고, segment_label 에는 회원 조건 canonical 라벨(compiled.labels)을 함께 담아
     # 수신동의·캠페인 반응 같은 결합 조건이 커버리지에서 미반영으로 오판되지 않게 한다.
     select_columns = [
-        "B.MEMBER_NO AS CUST_ID",
+        _member_key_select(),
         _sql_quote(_cart_segment_label(query_plan)) + " AS target_segment",
         _sql_quote(",".join(_unique_strings([label, *compiled["labels"]]))) + " AS segment_label",
     ]
     objective = query_plan.get("campaign_constraints", {}).get("objective")
     if objective:
         select_columns.append(_sql_quote(objective) + " AS objective")
-    ast = SelectAst(distinct=True, columns=select_columns, from_lines=["FROM CRM_MB_BASEINFO B"], where=_unique_strings(where_clauses))
+    ast = SelectAst(distinct=True, columns=select_columns, from_lines=[_member_from_clause()], where=_unique_strings(where_clauses))
     candidate = _select_ast_candidate(
         "sql_template:cart_aggregate_targets", "장바구니 상품 개수/수량 임계값 타겟 SQL 템플릿(CRMDW)", 1.0, ast, "sql_template"
     )
@@ -9830,12 +10022,12 @@ def _campaign_response_exists_predicate(predicate: str, negated: bool = False, s
         table = member_list.get("table", "Z_CAMP_MBR")
         alias = member_list.get("alias", "M")
         join = member_list.get("member_join", {}) if isinstance(member_list.get("member_join"), dict) else {}
-        left = join.get("left", f"TRY_CAST({alias}.MBR_NO AS BIGINT)")
+        left = join.get("left", _member_dialect().cast_bigint(f"{alias}.MBR_NO"))
     else:
         table = config.get("table", "MCS_CAMP_MBR_RSPN_FT")
         alias = config.get("alias", "R")
         join = config.get("member_join", {}) if isinstance(config.get("member_join"), dict) else {}
-        left = join.get("left", "TRY_CAST(R.MBR_NO AS BIGINT)")
+        left = join.get("left", _member_dialect().cast_bigint("R.MBR_NO"))
     right = join.get("right", "B.MEMBER_NO")
     prefix = "NOT " if negated else ""
     return f"{prefix}EXISTS (SELECT 1 FROM {table} {alias} WHERE {left} = {right} AND {predicate})"
@@ -9876,11 +10068,11 @@ def build_campaign_response_targets_sql_candidate(query_plan: dict[str, Any]) ->
     where_clauses = list(compiled["predicates"])  # 캠페인 반응 EXISTS 포함
     if not compiled["forces_state"]:
         where_clauses.append(_member_active_state_predicate())
-    select_columns = ["B.MEMBER_NO AS CUST_ID", _sql_quote(",".join(_unique_strings(labels))) + " AS segment_label"]
+    select_columns = [_member_key_select(), _sql_quote(",".join(_unique_strings(labels))) + " AS segment_label"]
     objective = query_plan.get("campaign_constraints", {}).get("objective")
     if objective:
         select_columns.append(_sql_quote(objective) + " AS objective")
-    ast = SelectAst(distinct=True, columns=select_columns, from_lines=["FROM CRM_MB_BASEINFO B"], where=_unique_strings(where_clauses))
+    ast = SelectAst(distinct=True, columns=select_columns, from_lines=[_member_from_clause()], where=_unique_strings(where_clauses))
     candidate = _select_ast_candidate(
         "sql_template:campaign_response_targets", "캠페인 접촉/오퍼·구매 반응/쿠폰 사용 타겟 SQL 템플릿(CRMDW)", 1.0, ast, "sql_template"
     )
@@ -9923,7 +10115,7 @@ def build_cell_rate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
     alias = config.get("alias", "M")
     member_col = config.get("member_column", "MBR_NO")
     join = config.get("member_join", {}) if isinstance(config.get("member_join"), dict) else {}
-    join_left = str(join.get("left", f"TRY_CAST({alias}.{member_col} AS BIGINT)"))
+    join_left = str(join.get("left", _member_dialect().cast_bigint(f"{alias}.{member_col}")))
     join_right = str(join.get("right", "B.MEMBER_NO"))
     cell_alias = config.get("cell_alias", "M2")
     cell_subquery_alias = config.get("cell_subquery_alias", "CELL")
@@ -9975,8 +10167,8 @@ def build_cell_rate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
 
     segment = "low_conversion_cell" if buy is not None else "high_success_cell"
     select_columns = [
-        "DISTINCT B.MEMBER_NO AS CUST_ID",
-        "B.EMART_GRADE_CD AS member_grade",
+        "DISTINCT " + _member_key_select(),
+        _member_grade_select(),
         _sql_quote(segment) + " AS target_segment",
     ]
     label = cell_rate.get("label")
@@ -9991,7 +10183,7 @@ def build_cell_rate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
     sql = "\n".join(
         [
             "SELECT " + ", ".join(select_columns),
-            "FROM CRM_MB_BASEINFO B",
+            _member_from_clause(),
             f"     INNER JOIN {member_table} {alias} ON {join_left} = {join_right}",
             f"     INNER JOIN {cell_subquery} ON {cell_member_join}",
             "WHERE " + "\n  AND ".join(_unique_strings(where_clauses)),
@@ -10054,7 +10246,7 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
         f"{camp_alias}.CAMP_ID = {alias}.CAMP_ID",
         f"{camp_alias}.CAMP_EXEC_NO = {alias}.CAMP_EXEC_NO",
     ]
-    key_expr = config.get("campaign_key_expression", f"CONCAT({alias}.CAMP_ID, ':', {alias}.CAMP_EXEC_NO)")
+    key_expr = config.get("campaign_key_expression", _member_dialect().concat(f"{alias}.CAMP_ID", "':'", f"{alias}.CAMP_EXEC_NO"))
     response_predicate = config.get("response_predicate", f"({alias}.OFFR_RSPN_YN = 'Y' OR {alias}.BUY_RSPN_YN = 'Y')")
     # 귀속 구매금액 지표(BUY_AMT 합계)와 구매반응 플래그는 설정(aggregate_metrics/boolean_metrics)이 소유.
     aggregate_metrics = config.get("aggregate_metrics", {}) if isinstance(config.get("aggregate_metrics"), dict) else {}
@@ -10079,7 +10271,7 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
         if isinstance(days, int) and days > 0:
             window_days = days if window_days is None else min(window_days, days)
     if window_days is not None:
-        cutoff = f"CONVERT(CHAR(8), DATEADD(DAY, -{window_days}, GETDATE()), 112)"
+        cutoff = _member_dialect().char8_cutoff(window_days)
         inner_where.append(f"{camp_alias}.{date_column} >= {cutoff}")
     # 행 스코프: 횟수 조건이 있으면 일반형 '반응'(오퍼/구매) 정의를 쓰고, 귀속 금액 단독이면 구매반응
     # 행으로 좁힌다(BUY_AMT 는 구매반응 행에만 실린다 — 합계엔 영향 없지만 그룹 존재 조건이 달라진다).
@@ -10104,7 +10296,7 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
         ]
     )
     # 서브쿼리 밖에선 반응 팩트 별칭(R)이 O 로 바뀌므로 조인식의 alias 접두어를 O 로 치환한다.
-    left = str(join.get("left", f"TRY_CAST({alias}.{member_col} AS BIGINT)")).replace(f"{alias}.", "O.")
+    left = str(join.get("left", _member_dialect().cast_bigint(f"{alias}.{member_col}"))).replace(f"{alias}.", "O.")
     right = str(join.get("right", "B.MEMBER_NO"))
 
     compiled = compile_member_target_conditions(query_plan)
@@ -10119,8 +10311,8 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
         segment_parts.append(f"campaign_buyer_{_format_threshold(buy['amount'])}")
     segment = "_".join(segment_parts)
     select_columns = [
-        "DISTINCT B.MEMBER_NO AS CUST_ID",
-        "B.EMART_GRADE_CD AS member_grade",
+        "DISTINCT " + _member_key_select(),
+        _member_grade_select(),
         _sql_quote(segment) + " AS target_segment",
     ]
     if compiled["labels"]:
@@ -10132,7 +10324,7 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
     sql = "\n".join(
         [
             "SELECT " + ", ".join(select_columns),
-            "FROM CRM_MB_BASEINFO B",
+            _member_from_clause(),
             f"     INNER JOIN {subquery} ON {left} = {right}",
             "WHERE " + "\n  AND ".join(_unique_strings(where_clauses)),
         ]
@@ -10167,10 +10359,10 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
 def _region_predicate_from_plan(query_plan: dict[str, Any]) -> str | None:
     codes_by_column: dict[str, list[str]] = {}
     for dimension_filter in query_plan.get("dimension_filters", []):
-        if dimension_filter.get("table") != "CRM_MB_BASEINFO":
+        if dimension_filter.get("table") != _member_table():
             continue
         column = (dimension_filter.get("column") or "").split(".")[-1].upper()
-        if column not in ("SIDO", "SIGUNGU"):
+        if column not in _member_region_short_columns():
             continue
         codes = [code for code in dimension_filter.get("codes", []) if isinstance(code, str) and code]
         if codes:
@@ -10218,7 +10410,7 @@ def _aggregate_in_predicate_from_plan(metric_id: str, query_plan: dict[str, Any]
     where = [f"{join_column} IS NOT NULL"]
     window_days = condition.get("window_days")
     if isinstance(window_days, int) and window_days > 0 and date_column:
-        where.append(f"{date_column} >= CONVERT(CHAR(8), DATEADD(DAY, -{window_days}, GETDATE()), 112)")
+        where.append(f"{date_column} >= {_member_dialect().char8_cutoff(window_days)}")
     inner = (
         f"SELECT {join_column} FROM {table} WHERE {' AND '.join(where)} "
         f"GROUP BY {join_column} HAVING {agg_expr} {condition['operator']} {_format_threshold(condition['threshold'])}"
@@ -10296,7 +10488,7 @@ def build_union_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, A
     if not predicate:
         return None
     where_clauses = _unique_strings([predicate, _member_active_state_predicate()])
-    select_columns = ["DISTINCT B.MEMBER_NO AS CUST_ID", "B.EMART_GRADE_CD AS member_grade"]
+    select_columns = ["DISTINCT " + _member_key_select(), _member_grade_select()]
     labels = _union_condition_labels(query_plan)
     if labels:
         select_columns.append(_sql_quote(",".join(labels)) + " AS segment_label")
@@ -10306,7 +10498,7 @@ def build_union_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, A
     sql = "\n".join(
         [
             "SELECT " + ", ".join(select_columns),
-            "FROM CRM_MB_BASEINFO B",
+            _member_from_clause(),
             "WHERE " + "\n  AND ".join(where_clauses),
         ]
     )
@@ -10376,8 +10568,8 @@ def build_order_count_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[
         where_clauses.append(_purchase_inactivity_predicate(min_days))
         segment = f"purchase_inactive_{min_days}d"
         select_columns = [
-            "DISTINCT B.MEMBER_NO AS CUST_ID",
-            "B.EMART_GRADE_CD AS member_grade",
+            "DISTINCT " + _member_key_select(),
+            _member_grade_select(),
             _sql_quote(segment) + " AS target_segment",
         ]
         if compiled["labels"]:
@@ -10388,7 +10580,7 @@ def build_order_count_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[
         sql = "\n".join(
             [
                 "SELECT " + ", ".join(select_columns),
-                "FROM CRM_MB_BASEINFO B",
+                _member_from_clause(),
                 "WHERE " + "\n  AND ".join(_unique_strings(where_clauses)),
             ]
         )
@@ -10415,7 +10607,7 @@ def build_order_count_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[
         where_clauses.append(
             f"NOT EXISTS (SELECT 1 FROM {table} O WHERE O.{join_column} = B.{join_column})"
         )
-        from_clause = ["FROM CRM_MB_BASEINFO B"]
+        from_clause = [_member_from_clause()]
     else:
         # 첫 구매/재구매: 회원별 주문 수를 집계한 서브쿼리와 조인(중복 주문행 방지 위해 DISTINCT ORDER_ID).
         operator = rule.get("operator", "=")
@@ -10431,12 +10623,12 @@ def build_order_count_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[
                 ") O",
             ]
         )
-        from_clause = ["FROM CRM_MB_BASEINFO B", f"     INNER JOIN {order_subquery} ON B.{join_column} = O.{join_column}"]
+        from_clause = [_member_from_clause(), f"     INNER JOIN {order_subquery} ON B.{join_column} = O.{join_column}"]
 
     where_clauses = _unique_strings(where_clauses)
     select_columns = [
-        "DISTINCT B.MEMBER_NO AS CUST_ID",
-        "B.EMART_GRADE_CD AS member_grade",
+        "DISTINCT " + _member_key_select(),
+        _member_grade_select(),
         # 행동 세그먼트 라벨(조건 커버리지: behaviors/target_segment 충족 겸용).
         _sql_quote(selected) + " AS target_segment",
     ]
@@ -10838,7 +11030,7 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     # cart 디멘션 타겟팅 모드는 별도 cart SQL 이라 회원 컬럼 조건을 만들지 않으므로 요구하지 않는다.
     if not _is_cart_dimension_targeting(query_plan):
         for dimension_filter in query_plan.get("dimension_filters", []):
-            if dimension_filter.get("table") != "CRM_MB_BASEINFO" and not dimension_filter.get("join_column"):
+            if dimension_filter.get("table") != _member_table() and not dimension_filter.get("join_column"):
                 continue
             column_short = (dimension_filter.get("column") or "").split(".")[-1]
             for code in dimension_filter.get("codes", []):
