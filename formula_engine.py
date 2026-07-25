@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from common_utils import compact as _compact
+
 
 DEFAULT_SCHEMA_PATH = Path("docs/data/schema_catalog.json")
 DEFAULT_METRIC_LEXICON_PATH = Path("docs/data/metric_lexicon.sample.json")
@@ -344,10 +346,6 @@ def _infer_formula_behavior(query: str) -> tuple[str, str | None]:
     if any(term in compact_query for term in RANK_DESC_TERMS):
         return "rank", "desc"
     return "select", None
-
-
-def _compact(value: str) -> str:
-    return re.sub(r"\s+", "", value.casefold())
 
 
 def _unique(values: list[str]) -> list[str]:

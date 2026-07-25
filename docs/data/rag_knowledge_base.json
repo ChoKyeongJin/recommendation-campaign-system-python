@@ -17,13 +17,13 @@
     "normalization_rule": 213,
     "business_term": 20,
     "business_policy": 5,
-    "metric_alias": 6,
+    "metric_alias": 0,
     "dimension": 141,
     "dimension_value": 334,
     "sql_example": 22,
     "campaign": 0,
     "user": 0,
-    "total": 780
+    "total": 774
   },
   "nodes": [
     {
@@ -13699,7 +13699,7 @@
       "policy_id": "top_revenue_user",
       "canonical": "top_revenue_user",
       "ko_label": "매출이 가장 높은 고객",
-      "description": "고객의 최근 90일 추정 매출을 기준으로 높은 순서로 정렬한다. 기준 금액을 고정하지 않는 순위형 정책이다.",
+      "description": "회원의 누적 구매금액(월 지표 스냅샷 CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT)을 높은 순으로 정렬한다. 기준 금액을 고정하지 않는 순위형 정책이다. 실DB 타겟팅에서 이 순위는 member_metrics.json 의 total_buy_amt 지표 + member_metric_ranking 빌더가 실제로 생성한다.",
       "synonyms": [
         "매출이 가장 높은",
         "매출 가장 높은",
@@ -13709,23 +13709,24 @@
         "highest revenue"
       ],
       "scope": "target_user",
-      "metric": "estimated_revenue_90d",
-      "table": "users",
-      "column": "avg_order_value_krw",
-      "expression": "u.avg_order_value_krw * u.purchase_count_90d",
+      "metric": "total_buy_amt",
+      "table": "CRM_MB_MONTHCRMINFO",
+      "column": "TOTAL_BUY_AMT",
+      "expression": "CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT",
       "operator": null,
       "threshold_krw": null,
       "requires_threshold": false,
       "sql_behavior": "rank",
       "order_by": "desc",
       "related_tables": [
-        "users"
+        "CRM_MB_MONTHCRMINFO"
       ],
       "related_columns": [
-        "users.avg_order_value_krw",
-        "users.purchase_count_90d"
+        "CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT",
+        "CRM_MB_MONTHCRMINFO.MEMBER_NO",
+        "CRM_MB_MONTHCRMINFO.YYYYMM"
       ],
-      "text_for_embedding": "업무 정책 매출이 가장 높은 고객 canonical top_revenue_user. 고객의 최근 90일 추정 매출을 기준으로 높은 순서로 정렬한다. 기준 금액을 고정하지 않는 순위형 정책이다. SQL 동작: rank. metric: estimated_revenue_90d. 표현식: u.avg_order_value_krw * u.purchase_count_90d. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: users. 관련 컬럼: users.avg_order_value_krw, users.purchase_count_90d. 동의어: 매출이 가장 높은, 매출 가장 높은, 매출 상위, 상위 매출, top revenue, highest revenue."
+      "text_for_embedding": "업무 정책 매출이 가장 높은 고객 canonical top_revenue_user. 회원의 누적 구매금액(월 지표 스냅샷 CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT)을 높은 순으로 정렬한다. 기준 금액을 고정하지 않는 순위형 정책이다. 실DB 타겟팅에서 이 순위는 member_metrics.json 의 total_buy_amt 지표 + member_metric_ranking 빌더가 실제로 생성한다. SQL 동작: rank. metric: total_buy_amt. 표현식: CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: CRM_MB_MONTHCRMINFO. 관련 컬럼: CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT, CRM_MB_MONTHCRMINFO.MEMBER_NO, CRM_MB_MONTHCRMINFO.YYYYMM. 동의어: 매출이 가장 높은, 매출 가장 높은, 매출 상위, 상위 매출, top revenue, highest revenue."
     },
     {
       "id": "business_policy:high_revenue_user",
@@ -13733,7 +13734,7 @@
       "policy_id": "high_revenue_user",
       "canonical": "high_revenue_user",
       "ko_label": "고매출 고객",
-      "description": "고객의 최근 90일 추정 매출이 운영에서 정한 기준 금액 이상인지 판단한다. 기준 금액은 이 파일의 threshold_krw에만 정의한다.",
+      "description": "회원의 누적 구매금액(CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT)이 운영에서 정한 기준 금액 이상인지 판단한다. 기준 금액은 이 파일의 threshold_krw에만 정의한다. 실DB에서 임계값 필터는 aggregate_targets(주문 집계) 또는 member_metrics 랭킹으로 처리된다.",
       "synonyms": [
         "고매출",
         "매출 높은",
@@ -13742,23 +13743,24 @@
         "high revenue"
       ],
       "scope": "target_user",
-      "metric": "estimated_revenue_90d",
-      "table": "users",
-      "column": "avg_order_value_krw",
-      "expression": "u.avg_order_value_krw * u.purchase_count_90d",
+      "metric": "total_buy_amt",
+      "table": "CRM_MB_MONTHCRMINFO",
+      "column": "TOTAL_BUY_AMT",
+      "expression": "CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT",
       "operator": ">=",
       "threshold_krw": null,
       "requires_threshold": true,
       "sql_behavior": "filter",
       "order_by": null,
       "related_tables": [
-        "users"
+        "CRM_MB_MONTHCRMINFO"
       ],
       "related_columns": [
-        "users.avg_order_value_krw",
-        "users.purchase_count_90d"
+        "CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT",
+        "CRM_MB_MONTHCRMINFO.MEMBER_NO",
+        "CRM_MB_MONTHCRMINFO.YYYYMM"
       ],
-      "text_for_embedding": "업무 정책 고매출 고객 canonical high_revenue_user. 고객의 최근 90일 추정 매출이 운영에서 정한 기준 금액 이상인지 판단한다. 기준 금액은 이 파일의 threshold_krw에만 정의한다. SQL 동작: filter. metric: estimated_revenue_90d. 표현식: u.avg_order_value_krw * u.purchase_count_90d. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: users. 관련 컬럼: users.avg_order_value_krw, users.purchase_count_90d. 동의어: 고매출, 매출 높은, 매출이 높은, 매출 우수, high revenue."
+      "text_for_embedding": "업무 정책 고매출 고객 canonical high_revenue_user. 회원의 누적 구매금액(CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT)이 운영에서 정한 기준 금액 이상인지 판단한다. 기준 금액은 이 파일의 threshold_krw에만 정의한다. 실DB에서 임계값 필터는 aggregate_targets(주문 집계) 또는 member_metrics 랭킹으로 처리된다. SQL 동작: filter. metric: total_buy_amt. 표현식: CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: CRM_MB_MONTHCRMINFO. 관련 컬럼: CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT, CRM_MB_MONTHCRMINFO.MEMBER_NO, CRM_MB_MONTHCRMINFO.YYYYMM. 동의어: 고매출, 매출 높은, 매출이 높은, 매출 우수, high revenue."
     },
     {
       "id": "business_policy:high_budget_campaign",
@@ -13766,7 +13768,7 @@
       "policy_id": "high_budget_campaign",
       "canonical": "high_budget_campaign",
       "ko_label": "예산이 큰 캠페인",
-      "description": "캠페인 예산이 운영에서 정한 기준 금액 이상인지 판단한다. 기준 금액은 이 파일의 threshold_krw에만 정의한다.",
+      "description": "캠페인 예산이 기준 금액 이상인지 판단하려는 정책이나, 연결된 실 CRM DB에는 캠페인 예산 금액 컬럼이 존재하지 않는다(Z_CAMPAIGN 에 BUDGET/예산 컬럼 없음). 따라서 실DB에서는 대응 컬럼이 없어 적용 불가하며, 예산 기준 타겟팅이 필요하면 예산 정보를 가진 별도 소스/컬럼을 먼저 확보해야 한다.",
       "synonyms": [
         "예산이 큰",
         "예산 높은",
@@ -13774,22 +13776,20 @@
         "high budget campaign"
       ],
       "scope": "campaign_constraints",
-      "metric": "campaign_budget_krw",
-      "table": "campaigns",
-      "column": "budget_krw",
-      "expression": "c.budget_krw",
+      "metric": "campaign_budget",
+      "table": null,
+      "column": null,
+      "expression": null,
       "operator": ">=",
       "threshold_krw": null,
       "requires_threshold": true,
       "sql_behavior": "filter",
       "order_by": null,
       "related_tables": [
-        "campaigns"
+        "Z_CAMPAIGN"
       ],
-      "related_columns": [
-        "campaigns.budget_krw"
-      ],
-      "text_for_embedding": "업무 정책 예산이 큰 캠페인 canonical high_budget_campaign. 캠페인 예산이 운영에서 정한 기준 금액 이상인지 판단한다. 기준 금액은 이 파일의 threshold_krw에만 정의한다. SQL 동작: filter. metric: campaign_budget_krw. 표현식: c.budget_krw. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: campaigns. 관련 컬럼: campaigns.budget_krw. 동의어: 예산이 큰, 예산 높은, 고예산 캠페인, high budget campaign."
+      "related_columns": [],
+      "text_for_embedding": "업무 정책 예산이 큰 캠페인 canonical high_budget_campaign. 캠페인 예산이 기준 금액 이상인지 판단하려는 정책이나, 연결된 실 CRM DB에는 캠페인 예산 금액 컬럼이 존재하지 않는다(Z_CAMPAIGN 에 BUDGET/예산 컬럼 없음). 따라서 실DB에서는 대응 컬럼이 없어 적용 불가하며, 예산 기준 타겟팅이 필요하면 예산 정보를 가진 별도 소스/컬럼을 먼저 확보해야 한다. SQL 동작: filter. metric: campaign_budget. 표현식: None. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: Z_CAMPAIGN. 관련 컬럼: . 동의어: 예산이 큰, 예산 높은, 고예산 캠페인, high budget campaign."
     },
     {
       "id": "business_policy:region_context_default",
@@ -13797,7 +13797,7 @@
       "policy_id": "region_context_default",
       "canonical": "region_context_default",
       "ko_label": "지역 표현 기본 해석",
-      "description": "사용자가 '구매한 사람의 지역', '고객 지역'처럼 지역을 모호하게 말하면 기본적으로 고객 거주 지역 users.region으로 해석한다. 구매 장소, 매장 지역, 배송지처럼 구매 발생 위치를 명시하면 현재 스키마에 대응 컬럼이 없으므로 추가 확인을 요청한다.",
+      "description": "사용자가 '구매한 사람의 지역', '고객 지역'처럼 지역을 모호하게 말하면 기본적으로 회원 거주 지역 CRM_MB_BASEINFO.SIDO(시도)로 해석한다. 구매 장소·매장 지역·배송지처럼 구매 발생 위치를 명시하면 회원 기본정보만으로는 해석할 수 없어(주문/매장 테이블 조인 필요) 추가 확인을 요청한다. 실DB에서 거주 지역 필터는 member_target_filters.json 의 region_target(B.SIDO/B.SIGUNGU)이 실제로 처리한다.",
       "synonyms": [
         "지역",
         "고객 지역",
@@ -13811,8 +13811,8 @@
       "scope": "semantic_resolution",
       "ambiguous_term": "지역",
       "default_resolution": "customer_residence_region",
-      "default_column": "users.region",
-      "default_select": "u.region",
+      "default_column": "CRM_MB_BASEINFO.SIDO",
+      "default_select": "B.SIDO",
       "sql_behavior": "disambiguation",
       "clarification_terms": [
         "구매한 곳",
@@ -13824,11 +13824,11 @@
         "배송 지역",
         "결제 지역"
       ],
-      "clarification_question": "지역이 고객 거주 지역(users.region)을 의미하나요, 아니면 구매 장소/매장/배송지 지역을 의미하나요? 현재 스키마에는 구매 발생 지역 컬럼이 없습니다.",
+      "clarification_question": "지역이 회원 거주 지역(CRM_MB_BASEINFO.SIDO)을 의미하나요, 아니면 구매 장소/매장/배송지 지역을 의미하나요? 회원 기본정보에는 거주 지역만 있고 구매 발생 지역은 주문/매장 테이블 조인이 필요합니다.",
       "alternatives": [
         {
           "meaning": "customer_residence_region",
-          "column": "users.region",
+          "column": "CRM_MB_BASEINFO.SIDO",
           "available": true
         },
         {
@@ -13839,12 +13839,13 @@
         }
       ],
       "related_tables": [
-        "users"
+        "CRM_MB_BASEINFO"
       ],
       "related_columns": [
-        "users.region"
+        "CRM_MB_BASEINFO.SIDO",
+        "CRM_MB_BASEINFO.SIGUNGU"
       ],
-      "text_for_embedding": "업무 정책 지역 표현 기본 해석 canonical region_context_default. 사용자가 '구매한 사람의 지역', '고객 지역'처럼 지역을 모호하게 말하면 기본적으로 고객 거주 지역 users.region으로 해석한다. 구매 장소, 매장 지역, 배송지처럼 구매 발생 위치를 명시하면 현재 스키마에 대응 컬럼이 없으므로 추가 확인을 요청한다. SQL 동작: disambiguation. metric: None. 표현식: None. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: users. 관련 컬럼: users.region. 동의어: 지역, 고객 지역, 고객의 지역, 사람의 지역, 거주 지역, 사는 지역, 거주지, 구매한 사람의 지역."
+      "text_for_embedding": "업무 정책 지역 표현 기본 해석 canonical region_context_default. 사용자가 '구매한 사람의 지역', '고객 지역'처럼 지역을 모호하게 말하면 기본적으로 회원 거주 지역 CRM_MB_BASEINFO.SIDO(시도)로 해석한다. 구매 장소·매장 지역·배송지처럼 구매 발생 위치를 명시하면 회원 기본정보만으로는 해석할 수 없어(주문/매장 테이블 조인 필요) 추가 확인을 요청한다. 실DB에서 거주 지역 필터는 member_target_filters.json 의 region_target(B.SIDO/B.SIGUNGU)이 실제로 처리한다. SQL 동작: disambiguation. metric: None. 표현식: None. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: CRM_MB_BASEINFO. 관련 컬럼: CRM_MB_BASEINFO.SIDO, CRM_MB_BASEINFO.SIGUNGU. 동의어: 지역, 고객 지역, 고객의 지역, 사람의 지역, 거주 지역, 사는 지역, 거주지, 구매한 사람의 지역."
     },
     {
       "id": "business_policy:channel_message_generation",
@@ -13852,7 +13853,7 @@
       "policy_id": "channel_message_generation",
       "canonical": "channel_message_generation",
       "ko_label": "채널 메시지 생성 정책",
-      "description": "타겟팅 SQL이 성공한 이후 LMS 또는 RCS 발송 문안을 생성할 때 적용하는 기본 정책이다. 프롬프트에 채널이 없으면 LMS를 기본 채널로 사용하고, 캠페인 offer와 기존 메시지 예시 밖의 혜택을 만들지 않는다.",
+      "description": "타겟팅 SQL이 성공한 이후 LMS 또는 RCS 발송 문안을 생성할 때 적용하는 기본 정책이다. 프롬프트에 채널이 없으면 LMS를 기본 채널로 사용하고, 캠페인 offer와 기존 메시지 예시 밖의 혜택을 만들지 않는다. 이 정책은 회원 타겟팅용 실 CRM DB가 아니라 캠페인/메시지 메타데이터를 대상으로 하므로, business 타겟팅 DB 교체와는 무관하다(별개 저장소).",
       "synonyms": [
         "메시지 생성",
         "발송 문안",
@@ -13883,12 +13884,6 @@
         "emotion_emphasis"
       ],
       "anti_hallucination": {
-        "benefit_source_fields": [
-          "campaigns.offer",
-          "campaign_message_examples.message_text",
-          "campaign_channel_messages.message_body",
-          "campaign_message_variants.message_body"
-        ],
         "deny_unverified_benefits": true
       },
       "sql_behavior": "context",
@@ -13917,138 +13912,7 @@
         "campaign_message_deliveries.final_status",
         "campaign_message_events.event_type"
       ],
-      "text_for_embedding": "업무 정책 채널 메시지 생성 정책 canonical channel_message_generation. 타겟팅 SQL이 성공한 이후 LMS 또는 RCS 발송 문안을 생성할 때 적용하는 기본 정책이다. 프롬프트에 채널이 없으면 LMS를 기본 채널로 사용하고, 캠페인 offer와 기존 메시지 예시 밖의 혜택을 만들지 않는다. SQL 동작: context. metric: None. 표현식: None. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: campaigns, campaign_channels, campaign_message_examples, campaign_channel_messages, campaign_experiments, campaign_message_variants, campaign_message_deliveries, campaign_message_events. 관련 컬럼: campaigns.offer, campaign_channels.channel, campaign_message_examples.channel, campaign_message_examples.emphasis_type, campaign_message_examples.message_text, campaign_message_examples.brand_tone, campaign_channel_messages.message_body, campaign_channel_messages.send_status, campaign_experiments.primary_metric, campaign_message_variants.variant_code, campaign_message_variants.message_body, campaign_message_deliveries.final_status, campaign_message_events.event_type. 동의어: 메시지 생성, 발송 문안, 채널 메시지, LMS 메시지, RCS 메시지, message generation."
-    },
-    {
-      "id": "metric_alias:avg_order_value_krw",
-      "type": "metric_alias",
-      "metric_id": "avg_order_value_krw",
-      "canonical": "avg_order_value_krw",
-      "ko_label": "평균주문금액",
-      "table": "users",
-      "column": "avg_order_value_krw",
-      "synonyms": [
-        "객단가",
-        "평균 주문 금액",
-        "평균 구매 금액",
-        "평균 결제 금액",
-        "aov"
-      ],
-      "related_tables": [
-        "users"
-      ],
-      "related_columns": [
-        "users.avg_order_value_krw"
-      ],
-      "text_for_embedding": "계산 지표 별칭 평균주문금액 canonical avg_order_value_krw. 자연어 계산식에서 users.avg_order_value_krw 숫자형 컬럼으로 해석한다. 관련 테이블: users. 관련 컬럼: users.avg_order_value_krw. 동의어: 객단가, 평균 주문 금액, 평균 구매 금액, 평균 결제 금액, aov."
-    },
-    {
-      "id": "metric_alias:purchase_count_90d",
-      "type": "metric_alias",
-      "metric_id": "purchase_count_90d",
-      "canonical": "purchase_count_90d",
-      "ko_label": "구매횟수",
-      "table": "users",
-      "column": "purchase_count_90d",
-      "synonyms": [
-        "구매 횟수",
-        "90일 구매 횟수",
-        "최근 구매 횟수",
-        "구매수"
-      ],
-      "related_tables": [
-        "users"
-      ],
-      "related_columns": [
-        "users.purchase_count_90d"
-      ],
-      "text_for_embedding": "계산 지표 별칭 구매횟수 canonical purchase_count_90d. 자연어 계산식에서 users.purchase_count_90d 숫자형 컬럼으로 해석한다. 관련 테이블: users. 관련 컬럼: users.purchase_count_90d. 동의어: 구매 횟수, 90일 구매 횟수, 최근 구매 횟수, 구매수."
-    },
-    {
-      "id": "metric_alias:last_active_days",
-      "type": "metric_alias",
-      "metric_id": "last_active_days",
-      "canonical": "last_active_days",
-      "ko_label": "최근활동일",
-      "table": "users",
-      "column": "last_active_days",
-      "synonyms": [
-        "최근 활동일",
-        "마지막 활동일",
-        "비활성 일수",
-        "휴면 일수"
-      ],
-      "related_tables": [
-        "users"
-      ],
-      "related_columns": [
-        "users.last_active_days"
-      ],
-      "text_for_embedding": "계산 지표 별칭 최근활동일 canonical last_active_days. 자연어 계산식에서 users.last_active_days 숫자형 컬럼으로 해석한다. 관련 테이블: users. 관련 컬럼: users.last_active_days. 동의어: 최근 활동일, 마지막 활동일, 비활성 일수, 휴면 일수."
-    },
-    {
-      "id": "metric_alias:campaign_budget_krw",
-      "type": "metric_alias",
-      "metric_id": "campaign_budget_krw",
-      "canonical": "campaign_budget_krw",
-      "ko_label": "캠페인예산",
-      "table": "campaigns",
-      "column": "budget_krw",
-      "synonyms": [
-        "예산",
-        "캠페인 예산",
-        "budget",
-        "budget_krw"
-      ],
-      "related_tables": [
-        "campaigns"
-      ],
-      "related_columns": [
-        "campaigns.budget_krw"
-      ],
-      "text_for_embedding": "계산 지표 별칭 캠페인예산 canonical campaign_budget_krw. 자연어 계산식에서 campaigns.budget_krw 숫자형 컬럼으로 해석한다. 관련 테이블: campaigns. 관련 컬럼: campaigns.budget_krw. 동의어: 예산, 캠페인 예산, budget, budget_krw."
-    },
-    {
-      "id": "metric_alias:expected_ctr",
-      "type": "metric_alias",
-      "metric_id": "expected_ctr",
-      "canonical": "expected_ctr",
-      "ko_label": "예상클릭률",
-      "table": "campaigns",
-      "column": "expected_ctr",
-      "synonyms": [
-        "예상 클릭률",
-        "클릭률",
-        "ctr"
-      ],
-      "related_tables": [
-        "campaigns"
-      ],
-      "related_columns": [
-        "campaigns.expected_ctr"
-      ],
-      "text_for_embedding": "계산 지표 별칭 예상클릭률 canonical expected_ctr. 자연어 계산식에서 campaigns.expected_ctr 숫자형 컬럼으로 해석한다. 관련 테이블: campaigns. 관련 컬럼: campaigns.expected_ctr. 동의어: 예상 클릭률, 클릭률, ctr."
-    },
-    {
-      "id": "metric_alias:expected_cvr",
-      "type": "metric_alias",
-      "metric_id": "expected_cvr",
-      "canonical": "expected_cvr",
-      "ko_label": "예상전환율",
-      "table": "campaigns",
-      "column": "expected_cvr",
-      "synonyms": [
-        "예상 전환율",
-        "전환율",
-        "cvr"
-      ],
-      "related_tables": [
-        "campaigns"
-      ],
-      "related_columns": [
-        "campaigns.expected_cvr"
-      ],
-      "text_for_embedding": "계산 지표 별칭 예상전환율 canonical expected_cvr. 자연어 계산식에서 campaigns.expected_cvr 숫자형 컬럼으로 해석한다. 관련 테이블: campaigns. 관련 컬럼: campaigns.expected_cvr. 동의어: 예상 전환율, 전환율, cvr."
+      "text_for_embedding": "업무 정책 채널 메시지 생성 정책 canonical channel_message_generation. 타겟팅 SQL이 성공한 이후 LMS 또는 RCS 발송 문안을 생성할 때 적용하는 기본 정책이다. 프롬프트에 채널이 없으면 LMS를 기본 채널로 사용하고, 캠페인 offer와 기존 메시지 예시 밖의 혜택을 만들지 않는다. 이 정책은 회원 타겟팅용 실 CRM DB가 아니라 캠페인/메시지 메타데이터를 대상으로 하므로, business 타겟팅 DB 교체와는 무관하다(별개 저장소). SQL 동작: context. metric: None. 표현식: None. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: campaigns, campaign_channels, campaign_message_examples, campaign_channel_messages, campaign_experiments, campaign_message_variants, campaign_message_deliveries, campaign_message_events. 관련 컬럼: campaigns.offer, campaign_channels.channel, campaign_message_examples.channel, campaign_message_examples.emphasis_type, campaign_message_examples.message_text, campaign_message_examples.brand_tone, campaign_channel_messages.message_body, campaign_channel_messages.send_status, campaign_experiments.primary_metric, campaign_message_variants.variant_code, campaign_message_variants.message_body, campaign_message_deliveries.final_status, campaign_message_events.event_type. 동의어: 메시지 생성, 발송 문안, 채널 메시지, LMS 메시지, RCS 메시지, message generation."
     },
     {
       "id": "dimension:moon_test",

@@ -72,10 +72,12 @@ _UNIT_ALIASES: dict[str, str] = {
     "년": "years", "해": "years", "year": "years", "years": "years",
 }
 OPERATORS: frozenset[str] = frozenset({">=", ">", "<=", "<"})
-_OPERATOR_ALIASES: dict[str, str] = {
-    "이상": ">=", "초과": ">", "이하": "<=", "미만": "<",
-    ">=": ">=", ">": ">", "<=": "<=", "<": "<",
-}
+# 비교어 → 부등호 매핑의 단일 소스(순수 모듈이 소유). graph_rag 의 표면 정규식 추출도 이 표를 재수출해 쓴다
+# (graph_rag._COMPARISON_OPERATORS). 새 비교어는 여기 한 줄만 추가하면 IR 정규화와 표면 파싱이 함께 얻는다.
+# 순서(이상/초과/이하/미만)는 graph_rag 의 _OP_ALT_BASIC="|".join(...) 정규식 열거가 의존하므로 보존한다.
+COMPARISON_WORD_OPERATORS: dict[str, str] = {"이상": ">=", "초과": ">", "이하": "<=", "미만": "<"}
+# LLM/구조화 입력이 낼 수 있는 부등호 기호 자기사상까지 포함(단어 매핑 + 기호 항등). 단어 표는 위 단일 소스에서 파생.
+_OPERATOR_ALIASES: dict[str, str] = {**COMPARISON_WORD_OPERATORS, ">=": ">=", ">": ">", "<=": "<=", "<": "<"}
 
 
 def _pos_int(raw: Any) -> int | None:
@@ -701,6 +703,12 @@ CONDITION_SPECS: tuple[ConditionSpec, ...] = (
     ConditionSpec(
         kind="member_metric_ranking", fact="order", fact_join=True, signals_target=True,
         extract=_plan_dict("member_metric_ranking"),
+    ),
+    ConditionSpec(
+        # 회원 기준 테이블 컬럼(잔액 등)의 선택 전략: 상위 N 명/상위 N%/평균 대비. WHERE 임계가 아니라
+        # 정렬·TOP·서브쿼리로 뽑으므로 전용 빌더가 소유한다(단일 테이블이라 조인 없음).
+        kind="member_metric_selection", fact="member", fact_join=True, signals_target=True,
+        extract=_plan_dict("member_metric_selection"),
     ),
     ConditionSpec(
         kind="region_density_target", fact="region", fact_join=True, signals_target=True,

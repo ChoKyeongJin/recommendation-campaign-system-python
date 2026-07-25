@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from common_utils import compact as _compact
+
 
 DEFAULT_NORMALIZATION_PATH = Path("docs/data/normalization_rules.sample.json")
 OPERATOR_WORDS = {
@@ -435,10 +437,6 @@ def _clarification_question(unknown_terms: list[str]) -> str | None:
     if not unknown_terms:
         return None
     return "집합식의 다음 항목을 정규화 사전에서 찾지 못했습니다: " + ", ".join(unknown_terms)
-
-
-def _compact(value: str) -> str:
-    return re.sub(r"\s+", "", value.casefold())
 
 
 def main() -> None:

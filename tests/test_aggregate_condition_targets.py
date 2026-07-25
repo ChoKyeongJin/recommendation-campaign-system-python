@@ -66,6 +66,29 @@ def test_ranking_phrasing_does_not_trigger_aggregate():
     assert _conditions("누적 구매금액이 높은 고객 상위 100명") == []
 
 
+def test_exact_equals_marker_sets_equality_operator():
+    # 연산자어 없는 '정확히/딱 N'은 등호로 확정한다(모호한 맨숫자는 제외).
+    金 = _conditions("구매 금액이 정확히 10만원인 고객")
+    assert 金 and 金[0]["metric_id"] == "purchase_amount" and 金[0]["operator"] == "=" and 金[0]["threshold"] == 100_000
+    회 = _conditions("정확히 3회 구매한 고객")
+    assert 회 and 회[0]["metric_id"] == "order_count" and 회[0]["operator"] == "=" and 회[0]["threshold"] == 3
+    assert _conditions("구매 횟수 딱 5번인 고객")[0]["operator"] == "="
+    # 마커 없는 맨숫자는 모호하므로 등호로 넘겨짚지 않는다.
+    assert _conditions("3회 구매한 고객") == []
+
+
+def test_aggregate_shares_comparison_grammar():
+    # 공용 비교 문법 이관으로 aggregate/count 도 '보다 많은'·동사형·범위를 얻는다.
+    assert _conditions("구매 금액이 5만원보다 많은 고객")[0]["operator"] == ">"
+    assert _conditions("구매금액이 10만원을 초과하는 고객")[0]["operator"] == ">"
+    assert _conditions("3회보다 많이 구매한 고객")[0] == {
+        "metric_id": "order_count", "operator": ">", "threshold": 3, "window_days": None, "label": "구매 횟수"
+    }
+    # 범위 → 같은 지표 두 조건(>=lo, <=hi).
+    rng = _conditions("구매 금액 10만원에서 50만원 사이인 고객")
+    assert [(c["operator"], c["threshold"]) for c in rng] == [(">=", 100_000), ("<=", 500_000)]
+
+
 # --- 빌더 SQL ---
 
 def test_builder_compiles_aggregate_subquery_and_combines_member_conditions():

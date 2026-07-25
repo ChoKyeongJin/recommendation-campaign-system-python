@@ -38,6 +38,8 @@ from graph_rag import (
     render_message_prompt,
     retrieve,
 )
+from common_utils import elapsed_ms as _elapsed_ms
+from sql_dialect import dialect_for_connection
 from sql_guard import DEFAULT_LIMIT, DEFAULT_SCHEMA_PATH
 
 
@@ -331,18 +333,13 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
     graph = getattr(app.state, "graph", None)
     if graph is None:
         startup_error = getattr(app.state, "startup_error", "graph_not_loaded")
-        _save_query_failure_log(
-            {
-                "endpoint": "target_sql",
-                "prompt": request.prompt,
-                "query_parser": request.query_parser,
-                "api_status": "service_unavailable",
-                "failure_stage": "startup",
-                "failure_reason": "graph_not_loaded",
-                "error_detail": startup_error,
-                "request_options": _target_sql_request_options(request),
-            }
-        )
+        _save_query_failure_log(_query_failure_payload(
+            request,
+            api_status="service_unavailable",
+            failure_stage="startup",
+            failure_reason="graph_not_loaded",
+            error_detail=startup_error,
+        ))
         raise HTTPException(status_code=503, detail=startup_error)
 
     try:
@@ -377,32 +374,22 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
             )
         retrieve_elapsed_ms = _elapsed_ms(retrieve_started_at)
     except ValueError as exc:
-        _save_query_failure_log(
-            {
-                "endpoint": "target_sql",
-                "prompt": request.prompt,
-                "query_parser": request.query_parser,
-                "api_status": "bad_request",
-                "failure_stage": "retrieval",
-                "failure_reason": "invalid_request",
-                "error_detail": str(exc),
-                "request_options": _target_sql_request_options(request),
-            }
-        )
+        _save_query_failure_log(_query_failure_payload(
+            request,
+            api_status="bad_request",
+            failure_stage="retrieval",
+            failure_reason="invalid_request",
+            error_detail=str(exc),
+        ))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        _save_query_failure_log(
-            {
-                "endpoint": "target_sql",
-                "prompt": request.prompt,
-                "query_parser": request.query_parser,
-                "api_status": "internal_error",
-                "failure_stage": "retrieval",
-                "failure_reason": f"target_sql_failed:{exc.__class__.__name__}",
-                "error_detail": str(exc),
-                "request_options": _target_sql_request_options(request),
-            }
-        )
+        _save_query_failure_log(_query_failure_payload(
+            request,
+            api_status="internal_error",
+            failure_stage="retrieval",
+            failure_reason=f"target_sql_failed:{exc.__class__.__name__}",
+            error_detail=str(exc),
+        ))
         raise HTTPException(status_code=500, detail=f"target_sql_failed:{exc.__class__.__name__}") from exc
 
     api_response = result["api_response"]
@@ -3139,10 +3126,6 @@ def _response_message_channel(messages: list[Any], requested_channel: str) -> st
     return "rcs" if requested_channel == "rcsSms" else requested_channel
 
 
-def _elapsed_ms(started_at: float) -> float:
-    return round((time.perf_counter() - started_at) * 1000, 2)
-
-
 def _log_timing_summary(endpoint: str, timings_ms: dict[str, Any], extra: dict[str, Any] | None = None) -> None:
     payload = {
         "endpoint": endpoint,
@@ -3205,6 +3188,29 @@ def _target_sql_request_options(request: TargetSqlRequest) -> dict[str, Any]:
         "generate_answer": request.generate_answer,
         "generate_messages": request.generate_messages,
         "message_generation_options": _message_generation_options_payload(request.message_generation_options),
+    }
+
+
+def _query_failure_payload(
+    request: TargetSqlRequest,
+    *,
+    api_status: str,
+    failure_stage: str,
+    failure_reason: str,
+    error_detail: Any = None,
+) -> dict[str, Any]:
+    """target_sql 실패 로그의 공통 헤더 — startup/bad_request/internal 예외 갈래가 상태·단계·사유·에러만
+    바꿔 재사용한다. 상수부(엔드포인트·프롬프트·파서·요청옵션)는 request 에서 파생한다. 풍부한 진단이
+    필요한 성공 경로 실패는 _target_sql_failure_payload 가 이 헤더 키에 추가 필드를 얹는다."""
+    return {
+        "endpoint": "target_sql",
+        "prompt": request.prompt,
+        "query_parser": request.query_parser,
+        "api_status": api_status,
+        "failure_stage": failure_stage,
+        "failure_reason": failure_reason,
+        "error_detail": error_detail,
+        "request_options": _target_sql_request_options(request),
     }
 
 
@@ -3458,19 +3464,55 @@ def _customer_id_column(columns: list[str]) -> str | None:
     return columns[0] if columns else None
 
 
-# 외부 실DB 세그먼트 집계에 쓸 회원 기준 테이블/속성 컬럼. 회원기본정보가 있는 커넥션만 등록한다.
-# (CRMAN 에는 CRM_MB_BASEINFO 가 없어 제외 — 등록되지 않은 커넥션은 빈 세그먼트를 반환한다.)
-_EXTERNAL_MEMBER_SCHEMA = {
-    "CRMDW": {
-        "table": "CRM_MB_BASEINFO",
-        "member_no_column": "MEMBER_NO",  # 숫자형 회원식별자(대상 SQL 의 CUST_ID 관례가 이 값)
-        "member_id_column": "MEMBER_ID",  # 문자형 회원식별자
-        "gender_column": "GENDER_CD",
-        "age_column": "AGE",
-        "region_column": "SIDO",
-        "grade_column": "EMART_GRADE_CD",
-    },
-}
+# 외부 실DB 세그먼트 집계에 쓸 회원 기준 테이블/속성 컬럼. 회원기본정보가 있는 커넥션만 등록된다
+# (등록되지 않은 커넥션은 빈 세그먼트를 반환한다). 테이블/컬럼은 member_target_filters.json
+# (base_entity/eq_filters/numeric_filters/region_target)에서, 테이블→커넥션은 schema_catalog 에서
+# 파생한다 — DB 스왑 시 설정만 고치면 이 맵이 따라온다(docs/operations/db_portability_audit.md §4-B).
+
+
+def _build_external_member_schema() -> dict[str, dict[str, str]]:
+    try:
+        import graph_rag
+        from sql_guard import load_table_databases
+
+        table = graph_rag._member_table()
+        connection = load_table_databases().get(table)
+        if not connection:
+            return {}
+
+        def _short(column: Any) -> str:
+            return str(column).split(".")[-1]
+
+        filters = graph_rag._MEMBER_TARGET_FILTERS
+        gender_column = next(
+            (column for _c, (category, column, _v) in graph_rag.MEMBER_EQ_FILTERS.items() if category == "gender"),
+            "B.GENDER_CD",
+        )
+        age_column = next(
+            (
+                entry.get("column")
+                for entry in (filters.get("numeric_filters") or [])
+                if isinstance(entry, dict) and entry.get("canonical") == "age"
+            ),
+            "B.AGE",
+        )
+        sido_column, _sigungu = graph_rag._member_region_short_columns()
+        return {
+            connection: {
+                "table": table,
+                "member_no_column": graph_rag._member_key_column(),  # 숫자형 회원식별자(CUST_ID 관례)
+                "member_id_column": graph_rag._member_login_id_column(),  # 문자형 회원식별자
+                "gender_column": _short(gender_column),
+                "age_column": _short(age_column),
+                "region_column": sido_column,
+                "grade_column": _short(graph_rag._member_grade_column()),
+            }
+        }
+    except Exception:
+        return {}
+
+
+_EXTERNAL_MEMBER_SCHEMA = _build_external_member_schema()
 
 
 def _execute_external_target_sql(
@@ -3517,7 +3559,8 @@ def _execute_external_target_sql(
     # 결과가 0명이면(과잉 조건 신호) 술어별 카디널리티 진단을 돌려 어느 AND 가 오디언스를 죽였는지 귀속한다.
     # read-only COUNT 만 수행하고, 실패해도 본 응답에는 영향이 없다(진단은 부가 메타).
     cardinality_diagnostic = None
-    if targeting_result["result_row_count"] == 0 and cardinality_probe and connection == "CRMDW":
+    # 카디널리티 진단은 회원 기준 테이블이 있는 커넥션에서만 의미가 있다(from_clause 가 그 테이블).
+    if targeting_result["result_row_count"] == 0 and cardinality_probe and connection in _EXTERNAL_MEMBER_SCHEMA:
         try:
             cardinality_diagnostic = _run_cardinality_diagnostic(connection, cardinality_probe)
         except Exception:
@@ -3556,9 +3599,11 @@ def _run_cardinality_diagnostic(connection: str, probe: dict[str, Any]) -> dict[
     if not from_clause or not predicates:
         return None
 
+    nolock = dialect_for_connection(connection).nolock_hint()  # 진단 COUNT 는 더티리드 허용(지원 방언만)
+
     def _count(where: str | None) -> int | None:
         clause = f" WHERE {where}" if where else ""
-        count_sql = f"SELECT COUNT(*) AS cardinality FROM {from_clause} WITH(NOLOCK){clause}"
+        count_sql = f"SELECT COUNT(*) AS cardinality FROM {from_clause}{nolock}{clause}"
         try:
             rows = run_read_query(connection, count_sql)
             if not rows:
@@ -3631,7 +3676,7 @@ def _external_segment_composition(connection: str, sql: str, columns: list[str])
             b.{schema['region_column']} AS sido,
             b.{schema['grade_column']} AS grade_cd
         FROM target_members t
-        JOIN {schema['table']} b WITH(NOLOCK) ON b.{join_column} = t.member_key
+        JOIN {schema['table']} b{dialect_for_connection(connection).nolock_hint()} ON b.{join_column} = t.member_key
     """
 
     from db_connections import run_read_query
@@ -3708,16 +3753,41 @@ def _bump_counter(counter: dict[str, int], key: str) -> None:
     counter[key] = counter.get(key, 0) + 1
 
 
+def _build_gender_code_labels() -> dict[str, str]:
+    """성별 저장 코드값 → 한글 라벨. member_target_filters.json eq_filters(gender 범주)의
+    value/synonyms[0] 에서 파생한다 — 코드값·라벨을 여기 다시 박으면 DB 스왑 시 이중 수정."""
+    try:
+        import graph_rag
+
+        mapping: dict[str, str] = {}
+        for entry in graph_rag._MEMBER_TARGET_FILTERS.get("eq_filters") or []:
+            if not (isinstance(entry, dict) and entry.get("category") == "gender"):
+                continue
+            value = entry.get("value")
+            synonyms = entry.get("synonyms") or []
+            if isinstance(value, str) and value and synonyms:
+                mapping[value] = str(synonyms[0])
+        if mapping:
+            return mapping
+    except Exception:
+        pass
+    return {"GENDER_CD.FEMALE": "여성", "GENDER_CD.MALE": "남성"}
+
+
+_GENDER_CODE_LABELS = _build_gender_code_labels()
+# 코드 도메인 접두어(예: 'GENDER_CD') — 미등록 코드값도 접두어가 같으면 접미어로 표시한다.
+_GENDER_CODE_PREFIXES = {key.rsplit(".", 1)[0] for key in _GENDER_CODE_LABELS if "." in key}
+
+
 def _gender_label(code: Any) -> str:
     if code is None:
         return "미상"
     text = str(code).strip()
     if not text:
         return "미상"
-    mapping = {"GENDER_CD.FEMALE": "여성", "GENDER_CD.MALE": "남성"}
-    if text in mapping:
-        return mapping[text]
-    return text.rsplit(".", 1)[-1] if text.startswith("GENDER_CD.") else text
+    if text in _GENDER_CODE_LABELS:
+        return _GENDER_CODE_LABELS[text]
+    return text.rsplit(".", 1)[-1] if "." in text and text.rsplit(".", 1)[0] in _GENDER_CODE_PREFIXES else text
 
 
 def _age_band_label(age: Any) -> str:
@@ -3745,10 +3815,42 @@ def _region_label(sido: Any) -> str:
     return text or "미상"
 
 
-# 회원 등급 코드(EMART_GRADE_CD=MEM_GRADE_CD.*) → 사람이 읽는 라벨 + 서열(낮음→높음). member_target_filters.json
-# eq_filters 의 grade 카테고리와 대응한다. 서열은 세그먼트 구성 표시를 낮은 등급→높은 등급 순으로 정렬하는 데 쓴다.
-_GRADE_LABELS = {"WELCOME": "웰컴", "FAMILY": "패밀리", "SILVER": "실버", "GOLD": "골드", "VIP": "VIP"}
-_GRADE_RANK = {"웰컴": 0, "패밀리": 1, "실버": 2, "골드": 3, "VIP": 4}
+# 회원 등급 코드 → 사람이 읽는 라벨 + 서열(낮음→높음). member_target_filters.json eq_filters(grade
+# 범주)의 value/synonyms[0]/rank 에서 파생한다 — 서열은 세그먼트 구성 표시를 낮은→높은 순으로 정렬하는 데 쓴다.
+
+
+def _build_grade_labels_and_rank() -> tuple[dict[str, str], dict[str, int], set[str]]:
+    try:
+        import graph_rag
+
+        entries = [
+            entry
+            for entry in graph_rag._MEMBER_TARGET_FILTERS.get("eq_filters") or []
+            if isinstance(entry, dict) and entry.get("category") == "grade" and entry.get("value")
+        ]
+        entries.sort(key=lambda entry: (entry.get("rank") is None, entry.get("rank") or 0))
+        labels: dict[str, str] = {}
+        rank: dict[str, int] = {}
+        for order, entry in enumerate(entries):
+            value = str(entry.get("value"))
+            key = value.rsplit(".", 1)[-1].upper()
+            synonyms = entry.get("synonyms") or []
+            label = str(synonyms[0]) if synonyms else key
+            labels[key] = label
+            rank[label] = order
+        prefixes = {str(entry.get("value")).rsplit(".", 1)[0] for entry in entries if "." in str(entry.get("value"))}
+        if labels:
+            return labels, rank, prefixes
+    except Exception:
+        pass
+    return (
+        {"WELCOME": "웰컴", "FAMILY": "패밀리", "SILVER": "실버", "GOLD": "골드", "VIP": "VIP"},
+        {"웰컴": 0, "패밀리": 1, "실버": 2, "골드": 3, "VIP": 4},
+        {"MEM_GRADE_CD"},
+    )
+
+
+_GRADE_LABELS, _GRADE_RANK, _GRADE_CODE_PREFIXES = _build_grade_labels_and_rank()
 
 
 def _load_grade_lifecycle_canonicals() -> set[str]:
@@ -3773,7 +3875,8 @@ def _grade_label(code: Any) -> str:
     text = str(code).strip()
     if not text:
         return "미상"
-    key = text.rsplit(".", 1)[-1].upper() if text.upper().startswith("MEM_GRADE_CD.") else text.upper()
+    has_known_prefix = "." in text and text.rsplit(".", 1)[0].upper() in {prefix.upper() for prefix in _GRADE_CODE_PREFIXES}
+    key = text.rsplit(".", 1)[-1].upper() if has_known_prefix else text.upper()
     return _GRADE_LABELS.get(key, text.rsplit(".", 1)[-1] if "." in text else text)
 
 
@@ -4419,20 +4522,38 @@ def _jsonable_value(value: Any) -> Any:
     return value
 
 
-def _database_execution_skipped(reason: str) -> dict[str, Any]:
-    return {
+def _empty_database_execution(
+    *,
+    mode: str,
+    failure_reason: str,
+    audience: dict[str, Any],
+    error: str | None = None,
+) -> dict[str, Any]:
+    """SQL 을 실행하지 않은/실패한 DB 실행 결과의 빈 스캐폴드 — skipped·error 두 변형이 mode·audience·(error)만
+    바꿔 공유한다. error 키는 원래 error 변형에만 있던 위치(failure_reason 뒤)를 그대로 보존한다.
+    성공 변형은 row_limit/cardinality 등 위치가 다른 옵션 키가 있어 별도(명시 dict)로 둔다."""
+    payload: dict[str, Any] = {
         "is_success": False,
-        "mode": "skipped",
-        "failure_reason": reason,
+        "mode": mode,
+        "failure_reason": failure_reason,
+    }
+    if error is not None:
+        payload["error"] = error
+    payload.update({
         "executed_sql": None,
         "result_columns": [],
         "rows": [],
-        "audience": _audience_skipped(reason),
+        "audience": audience,
         "targeting_result": {},
         "segment_composition": {},
         "segment_presentation": _empty_segment_presentation(),
         "campaign_context_nodes": [],
-    }
+    })
+    return payload
+
+
+def _database_execution_skipped(reason: str) -> dict[str, Any]:
+    return _empty_database_execution(mode="skipped", failure_reason=reason, audience=_audience_skipped(reason))
 
 
 def _empty_segment_presentation() -> dict[str, Any]:
@@ -4440,20 +4561,12 @@ def _empty_segment_presentation() -> dict[str, Any]:
 
 
 def _database_execution_error(reason: str, exc: Exception) -> dict[str, Any]:
-    return {
-        "is_success": False,
-        "mode": "postgres_read_only",
-        "failure_reason": reason,
-        "error": f"{exc.__class__.__name__}: {exc}",
-        "executed_sql": None,
-        "result_columns": [],
-        "rows": [],
-        "audience": _audience_error(reason, exc),
-        "targeting_result": {},
-        "segment_composition": {},
-        "segment_presentation": _empty_segment_presentation(),
-        "campaign_context_nodes": [],
-    }
+    return _empty_database_execution(
+        mode="postgres_read_only",
+        failure_reason=reason,
+        audience=_audience_error(reason, exc),
+        error=f"{exc.__class__.__name__}: {exc}",
+    )
 
 
 def _audience_skipped(reason: str) -> dict[str, Any]:

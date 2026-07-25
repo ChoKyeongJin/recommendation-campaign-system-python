@@ -30,7 +30,11 @@ PostgreSQL(campaign_db)
                                                                           · campaign_user_rag_nodes (캠페인/사용자 벡터)
 ```
 
-### 스키마가 바뀐 뒤 (기본 흐름)
+> **타겟팅 대상 실DB(business DB)를 통째로 다른 DB로 교체**하는 경우는 아래 기본 흐름이 아니라
+> **[operations/db_swap_runbook.md](operations/db_swap_runbook.md)** 를 따른다(레지스트리 재매핑 +
+> `schema_extract.py --refresh-external` + `db_swap_preflight.py` 게이트, 소스 무수정).
+
+### 스키마가 바뀐 뒤 (기본 흐름 — 로컬 postgres 데모)
 
 ```bash
 # 1) 라이브 DB에서 schema_catalog.json 갱신 (손으로 쓴 description_llm/human_note는 자동 보존)
