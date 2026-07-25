@@ -140,6 +140,49 @@ def test_plain_product_extraction_unchanged(brand_snapshot):
     assert target_user["purchase_object"] == "기저귀"
 
 
+# --- 상품명 명시 → PRODUCT_NAME 단독 매칭 ---
+
+def test_product_name_copula_marks_product_kind(brand_snapshot):
+    # "상품명이 X인" 계사형은 상품명으로 확정한다(브랜드 아님).
+    plan = g.build_query_plan("상품명이 촉촉수분크림인 고객에게 쿠폰을 뿌리고 싶어")
+    assert plan["target_user"]["purchase_object"] == "촉촉수분크림"
+    assert plan["target_user"]["purchase_object_kind"] == "product"
+
+
+def test_product_name_builds_product_only_sql(brand_snapshot):
+    # 상품명으로 확정된 타겟은 광역 6컬럼 LIKE 가 아니라 PRODUCT_NAME 만 매칭한다(정밀도).
+    plan = g.build_query_plan("상품명이 촉촉수분크림인 고객에게 쿠폰을 뿌리고 싶어")
+    candidate = g.build_purchase_history_targets_sql_candidate(plan)
+    assert candidate is not None
+    assert "P.PRODUCT_NAME LIKE N'%촉촉수분크림%'" in candidate["sql"]
+    assert "CATEGORY" not in candidate["sql"]
+    assert "BRAND_NAME" not in candidate["sql"]
+    assert "CRM_SL_ORDERDETAILMALL" in candidate["sql"]
+
+
+def test_product_adjacent_noun_marks_product_kind(brand_snapshot):
+    # "X 상품 구매한" 인접형도 상품명으로 확정한다("상품/제품"이 수식어일 때만).
+    target_user: dict = {}
+    g._apply_purchase_object_filter("촉촉수분크림 상품 구매한 고객", target_user)
+    assert target_user["purchase_object"] == "촉촉수분크림"
+    assert target_user["purchase_object_kind"] == "product"
+
+
+def test_brand_wins_over_product_when_both_signals(brand_snapshot):
+    # 값이 실DB 브랜드명이면 상품명 인접어가 있어도 브랜드가 우선한다.
+    target_user: dict = {}
+    g._apply_purchase_object_filter("포멜카멜리 상품 구매한 고객", target_user)
+    assert target_user["purchase_object"] == "포멜카멜리"
+    assert target_user["purchase_object_kind"] == "brand"
+
+
+def test_other_generic_noun_stays_wide(brand_snapshot):
+    # '물건/품목' 등 상품명이 아닌 일반명사 수식어는 광역 매칭 유지(kind 미설정).
+    target_user: dict = {}
+    g._apply_purchase_object_filter("촉촉수분크림 물건 구매한 고객", target_user)
+    assert target_user.get("purchase_object_kind") is None
+
+
 # --- 타겟팅/채널 절 분리: '곳에' 표지 ---
 
 def test_scope_split_on_brand_place_marker():

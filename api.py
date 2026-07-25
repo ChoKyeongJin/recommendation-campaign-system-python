@@ -26,9 +26,11 @@ from graph_rag import (
     DEFAULT_NORMALIZATION_PATH,
     DEFAULT_POLICY_PATH,
     DEFAULT_PROMPT_DIR,
+    apply_execution_to_trace,
     build_message_context,
     build_message_response,
     build_graph,
+    build_partial_retrieve_trace,
     build_retrieve_trace,
     graph_stats,
     load_payload,
@@ -482,6 +484,9 @@ def target_sql_trace(request: RetrieveTraceRequest) -> dict[str, Any]:
     if graph is None:
         raise HTTPException(status_code=503, detail=getattr(app.state, "startup_error", "graph_not_loaded"))
 
+    # 계측 dict 을 여기서 소유해 retrieve() 에 넘긴다. 중간 단계에서 예외로 죽어도 그때까지 채워진
+    # 단계별 시간을 읽어 "오류 전까지"의 부분 트레이스를 만든다(HTTP 500 대신 부분 결과를 그대로 노출).
+    timings_ms: dict[str, float] = {}
     try:
         with rag_llm_run_scope():
             result = retrieve(
@@ -501,11 +506,13 @@ def target_sql_trace(request: RetrieveTraceRequest) -> dict[str, Any]:
                 generate_answer=False,
                 generate_messages=False,
                 retrieval_scope=request.retrieval_scope,
+                timings_ms=timings_ms,
             )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=500, detail=f"target_sql_trace_failed:{exc.__class__.__name__}") from exc
+        # 어느 단계에서 막혔는지 timings_ms 로 좁혀 부분 트레이스를 반환한다(예외를 삼키지 않고 로깅).
+        detail = str(exc) if isinstance(exc, ValueError) else f"target_sql_trace_failed:{exc.__class__.__name__}"
+        api_logger.warning("target_sql_trace_partial prompt=%r error=%s", request.prompt, detail)
+        return build_partial_retrieve_trace(request.prompt, timings_ms, detail)
 
     trace = build_retrieve_trace(result)
     if request.execute:
@@ -527,6 +534,8 @@ def target_sql_trace(request: RetrieveTraceRequest) -> dict[str, Any]:
             "targeting_result": execution.get("targeting_result", {}),
             "cardinality_diagnostic": execution.get("cardinality_diagnostic"),
         }
+        # 10단계(실행·결과)에 실행 성공/대상 수 등을 반영.
+        apply_execution_to_trace(trace, execution)
     return trace
 
 
@@ -3459,6 +3468,7 @@ _EXTERNAL_MEMBER_SCHEMA = {
         "gender_column": "GENDER_CD",
         "age_column": "AGE",
         "region_column": "SIDO",
+        "grade_column": "EMART_GRADE_CD",
     },
 }
 
@@ -3618,7 +3628,8 @@ def _external_segment_composition(connection: str, sql: str, columns: list[str])
             b.{schema['member_no_column']} AS member_no,
             b.{schema['gender_column']} AS gender_cd,
             b.{schema['age_column']} AS age,
-            b.{schema['region_column']} AS sido
+            b.{schema['region_column']} AS sido,
+            b.{schema['grade_column']} AS grade_cd
         FROM target_members t
         JOIN {schema['table']} b WITH(NOLOCK) ON b.{join_column} = t.member_key
     """
@@ -3634,6 +3645,7 @@ def _external_segment_composition(connection: str, sql: str, columns: list[str])
     gender: dict[str, int] = {}
     age_band: dict[str, int] = {}
     region: dict[str, int] = {}
+    grade: dict[str, int] = {}
     for row in rows:
         member_no = row.get("member_no")
         if member_no in seen:
@@ -3642,6 +3654,7 @@ def _external_segment_composition(connection: str, sql: str, columns: list[str])
         _bump_counter(gender, _gender_label(row.get("gender_cd")))
         _bump_counter(age_band, _age_band_label(row.get("age")))
         _bump_counter(region, _region_label(row.get("sido")))
+        _bump_counter(grade, _grade_label(row.get("grade_cd")))
 
     composition: dict[str, Any] = {}
     if gender:
@@ -3650,37 +3663,45 @@ def _external_segment_composition(connection: str, sql: str, columns: list[str])
         composition["age_band"] = _counts_to_segments(age_band, sort_key=_age_band_sort_key)
     if region:
         composition["region"] = _counts_to_segments(region)
+    if grade:
+        composition["grade"] = _counts_to_segments(grade, sort_key=_grade_sort_key)
     return composition
 
 
 def _external_segment_presentation(composition: dict[str, Any], query_plan: dict[str, Any]) -> dict[str, Any]:
     """외부 실DB 세그먼트 구성을 화면 노출용으로 변환한다.
 
-    로컬 스키마 기반 _segment_relevance 는 실DB 축(지역 등)을 다루지 않으므로, 실DB 에서
-    계산 가능한 축은 모두 노출하되 질문이 직접 지정한 축(성별·연령 등)을 우선 정렬한다.
+    질문이 직접 지정한 축(성별·연령·지역·등급 등 _segment_relevance 가 인정한 축)만 relevant_groups 로
+    노출하고, 질문과 무관한 축은 hidden_group_keys 로 접는다(프론트가 '그 외 프로필 통계'로 접이식 렌더).
+    _segment_relevance 가 실DB 4축(성별/연령/지역/등급)을 모두 감지하므로 로컬 _segment_presentation 과
+    동일한 관련성 기준으로 나눈다. 실제 카운트는 composition 값을 그대로 쓴다.
     """
     if not composition:
         return _empty_segment_presentation()
     relevance = _segment_relevance(query_plan or {})
-    groups: list[dict[str, Any]] = []
+    relevant_groups: list[dict[str, Any]] = []
+    hidden_group_keys: list[dict[str, Any]] = []
     for key, segments in composition.items():
+        title = SEGMENT_GROUP_TITLES.get(key, key)
         record = relevance.get(key)
-        priority = record["priority"] if record else SEGMENT_PRIORITY_AUXILIARY
-        reason = record["reason"] if record else "추출된 타겟 고객의 실제 구성"
-        groups.append(
+        if record is None:
+            # 질문이 지정하지 않은 축은 접는다(참고용 프로필로만 펼쳐볼 수 있게).
+            hidden_group_keys.append({"key": key, "title": title})
+            continue
+        relevant_groups.append(
             {
                 "key": key,
-                "title": SEGMENT_GROUP_TITLES.get(key, key),
-                "priority": priority,
-                "reason": reason,
+                "title": title,
+                "priority": record["priority"],
+                "reason": record["reason"],
                 "segments": [
                     {"label": segment.get("value"), "count": segment.get("count")}
                     for segment in (segments or [])
                 ],
             }
         )
-    groups.sort(key=lambda group: (group["priority"], group["key"]))
-    return {"relevant_groups": groups, "hidden_group_keys": []}
+    relevant_groups.sort(key=lambda group: (group["priority"], group["key"]))
+    return {"relevant_groups": relevant_groups, "hidden_group_keys": hidden_group_keys}
 
 
 def _bump_counter(counter: dict[str, int], key: str) -> None:
@@ -3722,6 +3743,43 @@ def _region_label(sido: Any) -> str:
         return "미상"
     text = str(sido).strip()
     return text or "미상"
+
+
+# 회원 등급 코드(EMART_GRADE_CD=MEM_GRADE_CD.*) → 사람이 읽는 라벨 + 서열(낮음→높음). member_target_filters.json
+# eq_filters 의 grade 카테고리와 대응한다. 서열은 세그먼트 구성 표시를 낮은 등급→높은 등급 순으로 정렬하는 데 쓴다.
+_GRADE_LABELS = {"WELCOME": "웰컴", "FAMILY": "패밀리", "SILVER": "실버", "GOLD": "골드", "VIP": "VIP"}
+_GRADE_RANK = {"웰컴": 0, "패밀리": 1, "실버": 2, "골드": 3, "VIP": 4}
+
+
+def _load_grade_lifecycle_canonicals() -> set[str]:
+    """등급 조건이 query_plan.lifecycle 에 담기는 canonical 집합. graph_rag 의 등급 레지스트리에서
+    파생해 drift 를 막고, 접근 불가 시 알려진 5등급으로 폴백한다(member_target_filters.json grade)."""
+    try:
+        import graph_rag
+        canonicals = {str(entry.get("canonical")) for entry in graph_rag._grade_threshold_registry() if entry.get("canonical")}
+        if canonicals:
+            return canonicals
+    except Exception:
+        pass
+    return {"welcome_grade", "family_grade", "silver_grade", "gold_grade", "vip"}
+
+
+_GRADE_LIFECYCLE_CANONICALS = _load_grade_lifecycle_canonicals()
+
+
+def _grade_label(code: Any) -> str:
+    if code is None:
+        return "미상"
+    text = str(code).strip()
+    if not text:
+        return "미상"
+    key = text.rsplit(".", 1)[-1].upper() if text.upper().startswith("MEM_GRADE_CD.") else text.upper()
+    return _GRADE_LABELS.get(key, text.rsplit(".", 1)[-1] if "." in text else text)
+
+
+def _grade_sort_key(value: str) -> tuple[int, int]:
+    # 알려진 등급은 서열 오름차순, '미상' 등 미지의 라벨은 뒤로.
+    return (0, _GRADE_RANK[value]) if value in _GRADE_RANK else (1, 0)
 
 
 def _counts_to_segments(
@@ -4098,6 +4156,7 @@ SEGMENT_GROUP_TITLES = {
     "gender": "성별",
     "age_band": "연령대",
     "region": "지역",
+    "grade": "등급",
     "campaigns": "캠페인",
     "campaign_categories": "캠페인 카테고리",
     "campaign_channels": "캠페인 채널",
@@ -4146,6 +4205,16 @@ def _segment_relevance(query_plan: dict[str, Any]) -> dict[str, dict[str, Any]]:
         promote("gender", SEGMENT_PRIORITY_PRIMARY, "질문에서 지정한 성별 조건")
     if target_user.get("age_min") is not None or target_user.get("age_max") is not None:
         promote("age_band", SEGMENT_PRIORITY_PRIMARY, "질문에서 지정한 연령 조건")
+    # 회원 등급 조건은 lifecycle 슬롯에 등급 canonical(gold_grade/vip 등)로 담긴다 — 그 값이 있으면
+    # 등급 구성을 핵심 축으로 우선 노출한다('GOLD 이상' 같은 질문에 성별·지역만 뜨던 문제 해결).
+    if set(target_user.get("lifecycle") or []) & _GRADE_LIFECYCLE_CANONICALS:
+        promote("grade", SEGMENT_PRIORITY_PRIMARY, "질문에서 지정한 회원 등급 조건")
+    # 거주 지역 조건(시도/시군구 dimension_filter)이 있으면 지역 구성을 핵심 축으로 우선 노출한다.
+    if any(
+        str((flt or {}).get("column", "")).rsplit(".", 1)[-1].upper() in {"SIDO", "SIGUNGU"}
+        for flt in (plan.get("dimension_filters") or [])
+    ):
+        promote("region", SEGMENT_PRIORITY_PRIMARY, "질문에서 지정한 거주 지역 조건")
 
     # 캠페인 측 직접 조건
     if campaign_constraints.get("category"):

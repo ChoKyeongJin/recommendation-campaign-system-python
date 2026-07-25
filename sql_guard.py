@@ -295,6 +295,172 @@ def validate_analytics_shape(sql: str) -> dict[str, Any]:
     return {"is_valid": not any(issue["severity"] == "error" for issue in issues), "issues": issues}
 
 
+# ── 쿼리 성능 튜닝(정적 분석) ────────────────────────────────────────────────────────────
+# 생성된 타겟팅 SQL 이 실 CRM DB(대용량 회원/주문/캠페인 팩트)에서 어떤 실행 성능 함정을 갖는지 정적으로
+# 진단한다. SQL 을 바꾸지 않는 '비차단 자문'이다(confidence/analytics_warnings 와 같은 위상) — 의미를
+# 왜곡할 위험이 있는 자동 재작성 대신, 함정을 고지하고 권장 인덱스를 제안한다.
+_PERF_LEADING_WILDCARD_RE = re.compile(r"(\w+(?:\.\w+)?)\s+LIKE\s+N?'%", re.IGNORECASE)
+_PERF_CAST_JOIN_RE = re.compile(
+    r"(?:TRY_CAST|CAST|CONVERT)\s*\(\s*(\w+\.\w+)\b[^)]*\)\s*=|=\s*(?:TRY_CAST|CAST|CONVERT)\s*\(\s*(\w+\.\w+)",
+    re.IGNORECASE,
+)
+# WHERE 에서 컬럼을 함수로 감싸 인덱스를 못 타게 하는(non-sargable) 형태. CONVERT/CAST 로 '상수 쪽'을
+# 감싸는 건(예: CONVERT(CHAR(8), DATEADD(...GETDATE()))) 컬럼 인자가 없어 여기 안 걸린다.
+_PERF_FUNC_ON_COLUMN_RE = re.compile(
+    r"\b(LEN|SUBSTRING|LEFT|RIGHT|UPPER|LOWER|YEAR|MONTH|DAY|DATEPART|ISNULL|LTRIM|RTRIM)\s*\(\s*(\w+\.\w+)",
+    re.IGNORECASE,
+)
+
+
+def _iter_exists_subqueries(sql: str):
+    """SQL 에서 (NOT) EXISTS ( … ) 서브쿼리 본문을 (negated, body) 로 순회한다(괄호 균형 스캔)."""
+    for match in re.finditer(r"(NOT\s+)?EXISTS\s*\(", sql, re.IGNORECASE):
+        negated = match.group(1) is not None
+        depth, start = 1, match.end()
+        i = start
+        while i < len(sql) and depth > 0:
+            if sql[i] == "(":
+                depth += 1
+            elif sql[i] == ")":
+                depth -= 1
+            i += 1
+        yield negated, sql[start : i - 1]
+
+
+def _recommended_index_from_subquery(body: str) -> dict[str, Any] | None:
+    """서브쿼리 본문에서 (상관 조인 컬럼 + 로컬 동등 필터 컬럼)으로 권장 인덱스를 도출한다."""
+    from_match = re.search(r"\bFROM\s+(\w+)\s+(\w+)", body, re.IGNORECASE)
+    if not from_match:
+        return None
+    table, alias = from_match.group(1), from_match.group(2)
+    columns: list[str] = []
+    # 상관 조인 컬럼: <alias>.<col> = <outer>.<col> (또는 TRY_CAST(<alias>.MBR_NO ...) = ...).
+    corr = re.search(rf"(?:TRY_CAST\s*\(\s*)?{alias}\.(\w+)\b[^=]*=\s*\w+\.\w+", body, re.IGNORECASE)
+    if corr:
+        columns.append(corr.group(1).upper())
+    # 로컬 동등/범위 필터 컬럼(상관 컬럼 제외) — 인덱스 선행열 후보.
+    for m in re.finditer(rf"{alias}\.(\w+)\s*(?:=|>|>=|<|<=)", body, re.IGNORECASE):
+        col = m.group(1).upper()
+        if col not in columns:
+            columns.append(col)
+    if not columns:
+        return None
+    return {"table": table.upper(), "columns": columns}
+
+
+def analyze_query_performance(sql: str) -> dict[str, Any]:
+    """생성 SQL 의 실행 성능 함정을 정적 진단하고 권장 인덱스를 제안한다(비차단 자문).
+
+    반환 {findings:[{code,severity,message}], recommended_indexes:[{table,columns,ddl,reason}]}.
+    severity 는 warning(성능 저하 가능)·info(참고). SQL 을 바꾸지 않는다 — 후보 탈락/차단 없음."""
+    findings: list[dict[str, str]] = []
+    indexes: list[dict[str, Any]] = []
+    if not isinstance(sql, str) or not sql.strip():
+        return {"findings": findings, "recommended_indexes": indexes}
+
+    # 1) 선행 와일드카드 LIKE — 인덱스 불가(풀스캔). 상품 부분문자열 매칭의 본질적 비용.
+    wildcard_cols = _unique_upper(match.group(1) for match in _PERF_LEADING_WILDCARD_RE.finditer(sql))
+    if wildcard_cols:
+        findings.append({
+            "code": "leading_wildcard_like",
+            "severity": "warning",
+            "message": ("선행 와일드카드 LIKE N'%…%' 는 인덱스를 타지 못해 풀스캔한다(" + ", ".join(wildcard_cols)
+                        + "). 상품 카테고리/브랜드는 코드 정확매칭(=/IN)이나 전문검색 인덱스로 바꾸면 빨라진다."),
+        })
+
+    # 2) 조인/비교 컬럼 캐스팅 — non-sargable 조인(예: TRY_CAST(R.MBR_NO AS BIGINT) = B.MEMBER_NO).
+    cast_cols = _unique_upper(
+        (match.group(1) or match.group(2)) for match in _PERF_CAST_JOIN_RE.finditer(sql)
+    )
+    if cast_cols:
+        findings.append({
+            "code": "cast_in_join_predicate",
+            "severity": "warning",
+            "message": ("조인/비교 컬럼을 캐스팅해 인덱스를 못 탄다(" + ", ".join(cast_cols)
+                        + "). 원인은 회원키 타입 불일치(MBR_NO 문자열 ↔ MEMBER_NO 숫자) — 계산된 지속 컬럼"
+                        "(persisted computed column)에 인덱스를 걸거나 적재 시 타입을 맞추면 조인이 인덱스를 탄다."),
+        })
+
+    # 3) WHERE 컬럼 함수 래핑 — non-sargable(예: LEN(B.LAST_LOGIN_DATE)=8).
+    func_cols = _unique_upper(match.group(2) for match in _PERF_FUNC_ON_COLUMN_RE.finditer(sql))
+    if func_cols:
+        findings.append({
+            "code": "function_on_filter_column",
+            "severity": "info",
+            "message": ("WHERE 에서 컬럼을 함수로 감싸 인덱스를 못 타는 조건이 있다(" + ", ".join(func_cols)
+                        + "). 검증용 가드라면 무해하나, 선택도가 높은 조건이면 함수 없는 sargable 형태로 바꾸는 게 좋다."),
+        })
+
+    # 4) (NOT) EXISTS 상관 서브쿼리 — 안티조인/세미조인. 상관 컬럼 인덱스가 없으면 팩트 풀스캔.
+    anti, semi = 0, 0
+    for negated, body in _iter_exists_subqueries(sql):
+        if negated:
+            anti += 1
+        else:
+            semi += 1
+        rec = _recommended_index_from_subquery(body)
+        if rec:
+            rec["reason"] = ("안티조인(NOT EXISTS) 상관 서브쿼리" if negated else "세미조인(EXISTS) 상관 서브쿼리")
+            indexes.append(rec)
+    if anti:
+        findings.append({
+            "code": "anti_join_subquery",
+            "severity": "warning",
+            "message": (f"NOT EXISTS 안티조인 {anti}개 — 대용량 팩트 테이블(주문/캠페인)에서 상관 컬럼 인덱스가 없으면"
+                        " 회원마다 팩트를 스캔한다. 아래 권장 인덱스를 확인하라."),
+        })
+    if semi:
+        findings.append({
+            "code": "semi_join_subquery",
+            "severity": "info",
+            "message": f"EXISTS 세미조인 {semi}개 — 상관 컬럼 인덱스가 있으면 빠르다(권장 인덱스 참고).",
+        })
+
+    # 5) 바깥 질의 sargable 필터 → 테이블별 복합 인덱스 제안(동등/IN 선행, 범위 후행). 조인 쿼리에서도
+    #    필터가 가장 많이 걸린 '구동 테이블'(보통 회원 기본정보)을 별칭→테이블 매핑으로 정확히 찾는다.
+    outer = _blank_parens(sql)
+    alias_table = {m.group(2): m.group(1) for m in re.finditer(r"\b(?:FROM|JOIN)\s+(\w+)\s+(\w+)", outer, re.IGNORECASE)}
+    best: dict[str, Any] | None = None
+    for alias, table in alias_table.items():
+        eq_cols = _unique_upper(m.group(1) for m in re.finditer(rf"\b{alias}\.(\w+)\s*(?:=|\bIN\b)", outer, re.IGNORECASE))
+        range_cols = _unique_upper(m.group(1) for m in re.finditer(rf"\b{alias}\.(\w+)\s*(?:>=|<=|>|<)", outer, re.IGNORECASE))
+        # 함수로 감싼 컬럼은 인덱스를 못 타므로 선행 후보에서 뺀다. 동등/IN 이 선행, 범위가 후행.
+        ordered = [c for c in eq_cols + [c for c in range_cols if c not in eq_cols] if c not in func_cols]
+        if len(ordered) >= 2 and (best is None or len(eq_cols) > best["_eq"]):
+            best = {"table": table.upper(), "columns": ordered, "reason": "바깥 필터 복합 인덱스(동등·IN 선행, 범위 후행)", "_eq": len(eq_cols)}
+    if best is not None:
+        best.pop("_eq", None)
+        indexes.append(best)
+
+    # 권장 인덱스 dedup + DDL 문자열 부착.
+    indexes = _dedup_indexes(indexes)
+    for idx in indexes:
+        idx["ddl"] = f"CREATE INDEX IX_{idx['table']}_{'_'.join(idx['columns'])} ON {idx['table']} ({', '.join(idx['columns'])});"
+    return {"findings": findings, "recommended_indexes": indexes}
+
+
+def _unique_upper(values) -> list[str]:
+    seen: list[str] = []
+    for value in values:
+        if not value:
+            continue
+        upper = value.upper()
+        if upper not in seen:
+            seen.append(upper)
+    return seen
+
+
+def _dedup_indexes(indexes: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """table+columns 동일 인덱스를 합치고, 같은 table 에서 한 컬럼집합이 다른 것의 접두면 더 긴 것만 남긴다."""
+    unique: list[dict[str, Any]] = []
+    for idx in indexes:
+        key = (idx["table"], tuple(idx["columns"]))
+        if any((u["table"], tuple(u["columns"])) == key for u in unique):
+            continue
+        unique.append(idx)
+    return unique
+
+
 def load_allowed_tables(schema_path: Path = DEFAULT_SCHEMA_PATH) -> set[str]:
     if not schema_path.exists():
         return set()

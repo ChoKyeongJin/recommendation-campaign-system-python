@@ -79,6 +79,35 @@ def test_no_purchase_does_not_contaminate_cart():
     assert _plan("장바구니에 담고 구매 안 한 회원")["target_user"]["behaviors"] == ["cart_abandoner"]
 
 
+# ── '쿠폰 사용 후 추가 구매 없는' = 쿠폰 EXISTS + 실주문 자체가 없음(anti-join) ────────
+@pytest.mark.parametrize("query", [
+    "추가 구매 없는 회원",
+    "추가로 구매하지 않은 회원",
+    "더 이상 구매 안 한 고객",
+])
+def test_additional_purchase_absence_maps_to_no_purchase(query):
+    assert "no_purchase" in _plan(query)["target_user"]["behaviors"], query
+
+
+def test_coupon_then_no_additional_purchase_combines():
+    # '쿠폰 사용 후 추가 구매 없는': 쿠폰 사용 EXISTS(캠페인 반응)와 실주문 없음(anti-join)이 한 SQL 에
+    # AND 결합돼야 한다 — 예전엔 '추가 구매 없는'이 통째로 드롭돼 쿠폰 EXISTS 만 남던 버그 회귀 방지.
+    q = "쿠폰 사용 후 추가 구매 없는 회원"
+    tu = _plan(q)["target_user"]
+    assert "no_purchase" in tu["behaviors"]
+    assert any(r["canonical"] == "coupon_used" for r in tu.get("campaign_responses") or [])
+    sql = _sql(q)
+    assert "EXISTS (SELECT 1 FROM MCS_CAMP_MBR_RSPN_FT R" in sql
+    assert "R.USE_CPN_CNT > 0" in sql
+    assert "NOT EXISTS (SELECT 1 FROM CRM_SL_ORDERHEADERMALL O" in sql
+
+
+def test_repurchase_negation_is_not_no_purchase():
+    # '재구매하지 않은'(과거 구매는 있고 재구매만 없음)은 '실주문 자체가 없음'과 어의가 달라 no_purchase 로
+    # 승격하지 않는다 — 실주문 전무 anti-join 으로 오분류되면 과거 구매자를 통째로 배제하는 오류.
+    assert "no_purchase" not in (_plan("재구매하지 않은 고객")["target_user"].get("behaviors") or [])
+
+
 # ── B그룹: 캠페인 반응(MCS_CAMP_MBR_RSPN_FT) ──────────────────────────
 @pytest.mark.parametrize("query,predicate", [
     ("오퍼에 반응한 회원", "R.OFFR_RSPN_YN = 'Y'"),

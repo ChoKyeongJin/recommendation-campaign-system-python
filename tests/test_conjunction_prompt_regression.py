@@ -74,6 +74,56 @@ def test_campaign_no_buy_compiles_to_not_exists():
     )
 
 
+# ── 부정 직교 패스: 개념별 긍정/부정 상호배타(반전 구조적 차단) ─────────────────────────
+def _responses(query: str) -> dict:
+    plan: dict = {}
+    g._apply_campaign_response_filter(query, plan)
+    return {r["canonical"]: r for r in plan.get("target_user", {}).get("campaign_responses", [])}
+
+
+@pytest.mark.parametrize("query,positive_canonical", [
+    ("쿠폰을 사용한 회원", "coupon_used"),
+    ("오퍼에 반응한 회원", "offer_response"),
+    ("발송에 성공한 회원", "campaign_contact"),
+    ("구매 반응이 있는 회원", "buy_response"),
+])
+def test_positive_concepts_stay_positive(query, positive_canonical):
+    by = _responses(query)
+    assert positive_canonical in by and not by[positive_canonical].get("negated")
+
+
+@pytest.mark.parametrize("query,neg_canonical,predicate", [
+    ("쿠폰을 사용하지 않은 회원", "no_coupon_used", "R.USE_CPN_CNT > 0"),
+    ("오퍼에 반응하지 않은 회원", "no_offer_response", "R.OFFR_RSPN_YN = 'Y'"),
+    ("발송에 성공하지 못한 회원", "no_campaign_contact", "M.CONTAC_SUCC_YN = 'Y'"),
+])
+def test_negated_concepts_suppress_positive_and_emit_not_exists(query, neg_canonical, predicate):
+    by = _responses(query)
+    # 부정 트랙만 나오고 같은 개념의 긍정은 억제된다(반전 불가).
+    assert neg_canonical in by and by[neg_canonical]["negated"] is True
+    assert by[neg_canonical]["predicate"] == predicate
+    positive = neg_canonical[len("no_"):]
+    assert positive not in by
+    # NOT EXISTS 로 컴파일된다.
+    compiled = g.compile_member_target_conditions({"target_user": {"campaign_responses": list(by.values())}})
+    assert any(p.startswith("NOT EXISTS") for p in compiled["predicates"])
+
+
+def test_negation_does_not_steal_across_concepts():
+    # '쿠폰 사용하고 구매하지 않은': 쿠폰은 긍정 유지(옆 개념 '구매'의 부정을 훔쳐오지 않는다).
+    by = _responses("쿠폰을 사용하고 구매하지 않은 회원")
+    assert "coupon_used" in by and not by["coupon_used"].get("negated")
+    assert "no_coupon_used" not in by
+
+
+def test_mixed_clause_positive_and_negated():
+    # '쿠폰 사용했지만 오퍼에 반응하지 않은': 쿠폰 긍정 + 오퍼 부정이 각각 정확히 잡힌다.
+    by = _responses("쿠폰을 사용했지만 오퍼에 반응하지 않은 회원")
+    assert "coupon_used" in by and not by["coupon_used"].get("negated")
+    assert "no_offer_response" in by and by["no_offer_response"]["negated"] is True
+    assert "offer_response" not in by
+
+
 def test_generic_no_purchase_untouched():
     # 캠페인 문맥 없는 전체 미구매는 기존 트랙 유지(회귀 방지).
     tu = _plan("구매 이력이 없는 고객")["target_user"]
@@ -190,4 +240,41 @@ def test_full_prompt_builds_sql_with_all_conditions():
     assert "B.SMS_YN = 'Y'" in sql
     assert "NOT EXISTS (SELECT 1 FROM MCS_CAMP_MBR_RSPN_FT R" in sql
     # 전체 주문 미구매 anti-join 으로 새지 않는다.
+    assert "CRM_SL_ORDERHEADERMALL" not in sql
+
+
+# ── '캠페인 구매 이력이 없는'(이력/내역이 구매↔부정 사이에 낌) + '로그인은 했지만'(조사 낌) 회귀 ──
+# 배경: "서울 30대 여성 중 최근 로그인은 했지만 최근 캠페인 구매 이력이 없는 회원"이 세 겹으로 깨졌다.
+#   (a) '로그인은 했' 의 조사 '은' 때문에 최근 로그인 신호 소실 → recent_login 드롭.
+#   (b) '캠페인 구매 이력이 없는' 의 '이력이' 가 구매↔없 사이에 껴 부정 미탐 → 긍정 리터럴 '캠페인구매'가
+#       매칭돼 정반대(EXISTS 구매)로 뒤집힘.
+#   (c) '캠페인' 이 상품명(purchase_object)으로 오추출 → PRODUCT_NAME LIKE N'%캠페인%' 무의미 매칭.
+def test_recent_login_survives_particle_before_verb():
+    tu = _plan("최근 로그인은 했지만 캠페인 구매 이력이 없는 회원")["target_user"]
+    assert isinstance(tu.get("recent_login"), dict) and tu["recent_login"].get("min_days")
+
+
+def test_campaign_no_buy_with_history_noun_between():
+    tu = _plan("최근 캠페인 구매 이력이 없는 회원")["target_user"]
+    canonicals = {r["canonical"]: r for r in tu.get("campaign_responses", [])}
+    assert canonicals.get("no_buy_response", {}).get("negated") is True
+    # 긍정 buy_response 로 뒤집히지 않는다('캠페인구매' 부분문자열 오탐 방지).
+    assert "buy_response" not in canonicals
+    # '캠페인' 이 상품으로 새지 않는다.
+    assert not tu.get("purchase_object")
+    assert "no_purchase" not in tu.get("behaviors", [])
+
+
+def test_seoul_female_recent_login_no_campaign_buy_full_sql():
+    q = "서울에 거주하는 30대 여성 중 최근 로그인은 했지만 최근 캠페인 구매 이력이 없는 회원을 찾아줘."
+    cand = g.build_sql_template_candidate(_plan(q))
+    assert cand is not None, "SQL 미생성"
+    sql = cand["sql"]
+    assert "B.GENDER_CD = 'GENDER_CD.FEMALE'" in sql
+    assert "B.AGE >= 30" in sql and "B.AGE <= 39" in sql
+    assert "B.SIDO IN ('서울')" in sql
+    assert "B.LAST_LOGIN_DATE >=" in sql
+    assert "NOT EXISTS (SELECT 1 FROM MCS_CAMP_MBR_RSPN_FT R" in sql and "AND R.BUY_RSPN_YN = 'Y')" in sql
+    # 엉뚱한 상품 LIKE(캠페인)·전체 주문 미구매 anti-join 으로 새지 않는다.
+    assert "LIKE N'%캠페인%'" not in sql
     assert "CRM_SL_ORDERHEADERMALL" not in sql

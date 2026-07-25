@@ -34,6 +34,7 @@ from sql_guard import (
     load_join_key_registry,
     load_table_databases,
     load_table_dialects,
+    analyze_query_performance,
     validate_analytics_shape,
     validate_join_keys,
     validate_sql,
@@ -53,6 +54,47 @@ DEFAULT_LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 DEFAULT_PROMPT_DIR = Path(os.getenv("GRAPH_RAG_PROMPT_DIR", "docs/prompts"))
 DEFAULT_MESSAGE_POLICY_PATH = Path(os.getenv("GRAPH_RAG_MESSAGE_POLICY", "docs/policies/message-policy.json"))
 DEFAULT_RAG_LLM_LOG_DIR = Path(os.getenv("RAG_LLM_LOG_DIR", "logs/rag_llm"))
+
+
+def _model_restricts_sampling(model: str | None) -> bool:
+    """gpt-5·o-series 추론 모델은 Chat Completions 에서 temperature 기본값(1)만 허용한다.
+    이런 모델에 temperature=0 등을 보내면 400(invalid_request)로 실패한다."""
+    lowered = (model or "").lower()
+    return lowered.startswith(("gpt-5", "o1", "o3", "o4"))
+
+
+def _openai_chat_create(client: Any, *, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> Any:
+    """모델 호환 OpenAI Chat 호출 래퍼. 모든 chat.completions 호출은 이걸 거친다.
+
+    - gpt-5/o-series 는 temperature!=1 미지원 → 제약 모델이면 temperature 를 떼고 기본값(1)을 쓴다.
+    - 신모델은 max_tokens 대신 max_completion_tokens 를 요구 → 있으면 이관(구모델도 허용).
+    이렇게 안 하면 이런 모델에서 전 LLM 단계가 400 으로 실패하고 규칙으로 조용히 폴백한다.
+    """
+    params = dict(kwargs)
+    if "max_tokens" in params:
+        params.setdefault("max_completion_tokens", params.pop("max_tokens"))
+    if _model_restricts_sampling(model):
+        params.pop("temperature", None)
+        # 추론 모델은 기본 추론 깊이가 커서 느리다(재작성 1회 ~18s > 12s 타임아웃 → 규칙 폴백).
+        # 이 파이프라인은 구조화 추출이 대부분이라 최소 추론으로 충분하고 빠르다(~4s). env 로 조절 가능.
+        params.setdefault("reasoning_effort", os.getenv("OPENAI_REASONING_EFFORT", "minimal"))
+    return client.chat.completions.create(model=model, messages=messages, **params)
+
+
+def _fast_llm_model(current: str | None) -> str | None:
+    """지연에 민감하거나 정확도가 중요한 경량 단계(재작성·타겟/채널 분리·상품추출·의미검증)용 모델.
+
+    메인 OPENAI_MODEL 이 느린 추론모델(gpt-5 등)이면 이 단계들은 12s 타임아웃에 걸리거나(폴백) 최소
+    추론에서 조건을 드롭해 가드에 반려된다. 그래서 이들만 빠르고 정확한 모델(기본 gpt-4o-mini)로 고정한다.
+    current=None(규칙 모드)이면 그대로 None 을 돌려줘 LLM 을 건너뛴다. OPENAI_FAST_MODEL 로 조절 가능.
+    """
+    if current is None:
+        return None
+    return os.getenv("OPENAI_FAST_MODEL") or "gpt-4o-mini"
+
+
+# 위 경량 단계에 해당하는 트레이스 step 번호(배지 모델명을 메인이 아니라 fast 모델로 표기).
+_TRACE_FAST_MODEL_STEPS = {1, 2, 4, 9}
 
 CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "subscription", "awareness"}
 # ── 실회원(CRM_MB_BASEINFO) 타겟 속성 레지스트리 ──────────────────────────────
@@ -727,6 +769,14 @@ _BRAND_COPULA_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# "상품명이/제품명이 X인" 같은 계사형 상품명 언급. 브랜드 계사와 대칭이며 반드시 '명'(name)을 요구해
+# "상품이 좋은" 처럼 상품명이 아닌 표현을 배제한다. 매칭되면 PRODUCT_NAME 컬럼만 좁혀 매칭한다.
+_PRODUCT_NAME_COPULA_PATTERN = re.compile(
+    r"(?:상품|제품)명(?:이|은)\s*(?P<object>[0-9A-Za-z가-힣_+\-]{1,40}?)"
+    r"(?:이면서|이거나|인데|이고|이며|면서|인)(?![0-9A-Za-z가-힣])",
+    re.IGNORECASE,
+)
+
 
 # 구매 '횟수/조건' 수식어는 상품명이 아니다(예: '2회 이상 구매' 의 '이상'). 게이트가 상품 조건으로 오인해
 # 재작성을 헛되이 폐기하지 않도록 제외한다.
@@ -770,6 +820,15 @@ def _brand_object_signals(text: str) -> set[str]:
 def _rewrite_guard_enabled() -> bool:
     """재작성 검증 게이트 on/off(환경변수 PROMPT_REWRITE_GUARD, 기본 on)."""
     return os.getenv("PROMPT_REWRITE_GUARD", "true").casefold() not in {"0", "false", "off", "no"}
+
+
+def _sql_semantic_verify_enabled() -> bool:
+    """최종 SQL↔원문 의미 검증 게이트 on/off(환경변수 SQL_SEMANTIC_VERIFY, 기본 on).
+
+    정규식 파서의 조용한 드롭·의미 반전(예: '구매 이력이 없는'을 EXISTS 구매로 뒤집음)은 SQL 을 plan 과
+    대조하는 결정론 검증(coverage/intent_scope)으로는 못 잡는다 — plan 자체가 틀렸기 때문. 이 게이트만
+    유일하게 **원문 NL 과 최종 SQL 을 직접 대조**해(어느 계층이 원인이든) 틀린 SQL 의 조용한 출고를 막는다."""
+    return os.getenv("SQL_SEMANTIC_VERIFY", "true").casefold() not in {"0", "false", "off", "no"}
 
 
 # 수신동의 신호(게이트 비교용) 사람이 읽는 라벨. canonical:극성(+동의/-거부) → 라벨.
@@ -923,6 +982,7 @@ def normalize_prompt(
     재작성은 query_parser 와 무관하게 OPENAI_API_KEY 유무로 동작한다(전처리 단계이므로 분리).
     반환: {original, normalized, summary, corrections, mode}.
     """
+    llm_model = _fast_llm_model(llm_model)  # 재작성은 빠르고 정확한 모델 고정(느린 추론모델 분리)
     original = query if isinstance(query, str) else ""
     rule_cleaned = re.sub(r"\s+", " ", original).strip()
     fallback = {
@@ -959,7 +1019,7 @@ def normalize_prompt(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": llm_input},
         ]
-        response = client.chat.completions.create(
+        response = _openai_chat_create(client, 
             model=llm_model,
             temperature=0,
             response_format={"type": "json_object"},
@@ -1064,7 +1124,7 @@ def _llm_split_prompt_scopes(
         return None
     try:
         client = OpenAI()
-        response = client.chat.completions.create(
+        response = _openai_chat_create(client, 
             model=llm_model,
             temperature=0,
             response_format={"type": "json_object"},
@@ -1097,6 +1157,7 @@ def split_prompt_scopes(
     보완한다. 검색·그래프 컨텍스트를 스코프별로 좁히는 용도이며 SQL/Query Plan 에는 영향을 주지 않는다.
     반환: {targeting, channel, mode}.
     """
+    llm_model = _fast_llm_model(llm_model)  # 분리도 빠르고 정확한 모델 고정
     original = text if isinstance(text, str) else ""
     # BFF 가 붙이는 구조적 "발송 채널: <채널> (설명)" 절은 오디언스 표지·파서와 무관하게 항상 채널
     # 스코프로 떼어낸다. 이 절은 발송 채널일 뿐 타겟 조건이 아니므로 타겟팅 RAG 검색에서 제외해야 한다.
@@ -1216,7 +1277,7 @@ def _generate_prompt_reformulations(
         return []
     try:
         client = OpenAI()
-        response = client.chat.completions.create(
+        response = _openai_chat_create(client, 
             model=llm_model,
             temperature=0.4,
             response_format={"type": "json_object"},
@@ -1509,6 +1570,9 @@ def _build_single_query_plan(
     _apply_balance_condition_filter(parse_query, llm_plan)
     # '캠페인 접촉/오퍼·구매 반응/쿠폰 사용'도 결정론 파싱으로 확정한다(캠페인 반응 팩트 테이블).
     _apply_campaign_response_filter(parse_query, llm_plan)
+    # '추가 구매 없는'(무구매, 주문 anti-join)은 캠페인 반응·미구매창 파싱 뒤에 실행해, '쿠폰 사용 후
+    # 추가 구매 없는'을 쿠폰 EXISTS + 주문 NOT EXISTS 결합으로 잡는다(창/캠페인구매반응 트랙과 배타).
+    _apply_no_additional_purchase_filter(parse_query, llm_plan)
     # 장바구니 '존재' 표현도 결정론으로 승격한다(LLM 이 카트 조건을 떨어뜨리는 것 방지).
     _apply_cart_presence_filter(parse_query, llm_plan)
     # 장바구니 '부재'('장바구니 없는')는 존재 파싱 뒤에 실행해 오파싱된 cart_abandoner 를 걷어낸다.
@@ -1699,6 +1763,9 @@ def _build_rule_query_plan(
     _apply_signup_device_filter(query, plan)
     _apply_balance_condition_filter(query, plan)
     _apply_campaign_response_filter(query, plan)
+    # '추가 구매 없는'(무구매 anti-join)은 캠페인 반응 파싱 뒤에 실행 — '쿠폰 사용 후 추가 구매 없는'을
+    # 쿠폰 EXISTS + 주문 NOT EXISTS 결합으로 잡는다(창/캠페인구매반응 트랙과 배타).
+    _apply_no_additional_purchase_filter(query, plan)
     _apply_campaign_response_frequency_filter(query, plan)
     # '캠페인 구매금액 N원'(귀속 금액)은 누적 금액 파싱(_apply_aggregate_condition_filter, 위)과
     # 캠페인 반응 파싱 뒤에 실행해 이중 파싱된 누적 조건·리던던트 구매반응 EXISTS 를 걷어낸다.
@@ -1851,7 +1918,7 @@ def _try_llm_query_plan(
         )
         # Tool Calling 구조화 출력: tool_choice 로 함수 호출을 강제해 JSON 스키마 안의 인자만 받는다.
         # (기존 json_object 방식보다 최상위 구조 이탈·자유 텍스트 혼입이 원천 차단된다.)
-        response = client.chat.completions.create(
+        response = _openai_chat_create(client, 
             model=llm_model,
             temperature=0,
             tools=[_QUERY_PLAN_TOOL],
@@ -2354,8 +2421,10 @@ def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> No
     # 여성 중 기저귀를 구매한" 처럼 앞 절 조건까지 삼켜 LIKE 가 무의미해지므로) 상품 카테고리 단어면 재현율에 충분하다.
     match = _PURCHASE_OBJECT_PATTERN.search(query)
     purchase_object = _sanitize_purchase_object(match.group("object")) if match else None
-    # 사용자가 '브랜드'라고 명시했으면 매칭 컬럼을 BRAND_NAME 으로 좁힐 근거가 된다(아래 kind 마킹).
+    # 사용자가 '브랜드'/'상품(제품)명'을 명시했으면 매칭 컬럼을 BRAND_NAME/PRODUCT_NAME 으로 좁힐
+    # 근거가 된다(아래 kind 마킹). 애매하게 상품어만 말하면 kind 없이 광역 6컬럼 LIKE 를 유지한다.
     is_brand_mention = False
+    is_product_mention = False
     if purchase_object in _GENERIC_PRODUCT_NOUNS:
         # 일반명사("상품/브랜드")가 잡혔으면 그 앞의 실제 브랜드/상품명으로 재시도한다
         # ("알로루 브랜드 상품 구매한" → '상품'이 아니라 '알로루'). 재시도가 실패하면 기존 동작 유지.
@@ -2363,7 +2432,11 @@ def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> No
         retried = _sanitize_purchase_object(retry.group("object")) if retry else None
         if retried and retried not in _GENERIC_PRODUCT_NOUNS:
             purchase_object = retried
-            is_brand_mention = "브랜드" in retry.group(0)
+            qualifier = retry.group(0)
+            # 인접 수식어가 '브랜드'면 브랜드, '상품/제품'이면 상품명으로 좁힌다.
+            # (물건/품목/굿즈/아이템 등 그 외 일반명사는 상품명 신호로 보지 않아 광역 매칭 유지.)
+            is_brand_mention = "브랜드" in qualifier
+            is_product_mention = not is_brand_mention and ("상품" in qualifier or "제품" in qualifier)
     if not purchase_object:
         # 구매 동사 없이 브랜드만 언급한 계사형("브랜드가 알로루인 곳")도 구매 이력 타겟으로 승격한다.
         brand_match = _BRAND_COPULA_PATTERN.search(query)
@@ -2371,6 +2444,13 @@ def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> No
         if candidate and candidate not in _GENERIC_PRODUCT_NOUNS:
             purchase_object = candidate
             is_brand_mention = True
+    if not purchase_object:
+        # "상품명이/제품명이 X인" 계사형 상품명 언급도 구매 이력 타겟으로 승격한다.
+        product_match = _PRODUCT_NAME_COPULA_PATTERN.search(query)
+        candidate = _sanitize_purchase_object(product_match.group("object")) if product_match else None
+        if candidate and candidate not in _GENERIC_PRODUCT_NOUNS:
+            purchase_object = candidate
+            is_product_mention = True
     # 재시도까지 실패해 일반명사('상품/제품')만 남으면 상품 필터로 쓰지 않는다 — LIKE '%상품%' 는
     # 사실상 모든 상품을 뜻해 무의미하고, '2개 이상 상품 구입' 처럼 실제 상품명이 없는 개수 조건을
     # 억지 LIKE 로 만들기 때문이다(개수 조건은 별도 트랙이 담당).
@@ -2383,6 +2463,9 @@ def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> No
         # → purchase_history 템플릿이 6컬럼 광역 LIKE 대신 BRAND_NAME 만 매칭(정밀도↑).
         if is_brand_mention or _is_known_brand_term(canonical):
             target_user["purchase_object_kind"] = "brand"
+        # '상품명/제품명' 명시면 PRODUCT_NAME 만 매칭한다(브랜드 확정이 우선).
+        elif is_product_mention:
+            target_user["purchase_object_kind"] = "product"
 
 
 def _apply_sell_object(query: str, plan: dict[str, Any]) -> None:
@@ -2453,6 +2536,7 @@ def _llm_extract_target_objects(
     query: str, llm_model: str, prompt_dir: Path | None
 ) -> dict[str, Any] | None:
     """LLM 으로 문장에서 purchase_object/sell_object 후보를 추출한다. 사용 불가/실패 시 None."""
+    llm_model = _fast_llm_model(llm_model)  # 상품추출도 빠르고 정확한 모델 고정(12s 타임아웃 방지)
     if not os.getenv("OPENAI_API_KEY") or not query.strip():
         return None
     try:
@@ -2461,7 +2545,7 @@ def _llm_extract_target_objects(
         return None
     try:
         client = OpenAI()
-        response = client.chat.completions.create(
+        response = _openai_chat_create(client, 
             model=llm_model,
             temperature=0,
             response_format={"type": "json_object"},
@@ -3056,14 +3140,18 @@ def _apply_purchase_count_ranking_target(query: str, plan: dict[str, Any]) -> No
 # "최근 N일/개월 동안 구매하지 않은" 같은 구매 미발생 기간(구매 리센시) 신호. 구매 부정어 + 시간 창이
 # 함께 있을 때만 잡는다. 시간 창이 없으면(예: '미구매 고객') '전혀 구매 안 함(no_purchase)'과 구분이
 # 없으므로 여기서 잡지 않고 기존 no_purchase 경로로 둔다.
-_PURCHASE_NEG_SIGNALS = (
-    "구매안", "구매하지않", "구매않", "구매없", "구입안", "구입하지않", "구입없", "주문안", "주문하지않", "미구매",
+# 구매/구입/주문 + (이력/내역)? + (조사)* + 부정어. 조사('구매가 없는'의 '가')·명사('구매 이력이 없는')가
+# 사이에 껴도 잡는다 — '구매없'만 리터럴로 보면 '구매가없'을 놓쳐 '최근 90일 구매가 없는'이 통째로 샜다.
+# 부정어는 '안내'(안 아님) 오탐을 피해 없/않/하지않/안함·안한·안했·안하 로 한정. 접두형 '미구매'도 본다.
+_PURCHASE_NEG_RE = re.compile(
+    r"(?:구매|구입|주문)(?:이력|내역)?(?:을|를|은|는|이|가|도)*(?:없|않|하지않|안함|안한|안했|안하)"
+    r"|미(?:구매|구입|주문)"
 )
 
 
 def _parse_purchase_inactivity_period(query: str) -> dict[str, Any] | None:
     compact_query = query.replace(" ", "").casefold()
-    if not any(signal in compact_query for signal in _PURCHASE_NEG_SIGNALS):
+    if not _PURCHASE_NEG_RE.search(compact_query):
         return None
     # 통합 창 파서 — 년/주/단어형(반년 등)까지 커버. sql_interval 은 이 슬롯 계약에 없다. 구매 키워드
     # 근처의 창만 본다(다른 조건의 창을 훔쳐가지 않게).
@@ -3860,7 +3948,10 @@ def _apply_cart_repurchase_context(query: str, plan: dict[str, Any]) -> None:
 # 이탈어(미결제/방치 등)가 필수라 존재 표현만으로는 카트 조건이 통째로 소실됐다. 담긴 상태는 그 자체가
 # KEEP_YN='Y' 보관 오디언스다. 부정형('담지 않은'/'있지 않은')은 lookahead 로 배제한다.
 _CART_PRESENCE_PATTERN = re.compile(
-    r"장바구니에(?:상품|물건|제품|아이템)?(?:이|가|을|를)?(?:들어)?(?:있(?!지)|담(?!지))"
+    # '장바구니에 담긴' 뿐 아니라 '장바구니를 보유하고/가지고 있는' 같은 소유 표현도 카트 존재로 본다.
+    # 조사(에/를/을/가/이)는 자유롭게 받고, 부정형('보유하지 않은', '있지 않은')은 뒤 lookahead 로 배제한다.
+    r"장바구니(?:에|에는|를|을|가|이)?(?:상품|물건|제품|아이템)?(?:이|가|을|를)?(?:들어)?"
+    r"(?:있(?!지)|담(?!지)|보유(?!하지)|보관(?!하지)|가지(?!지))"
 )
 
 # 장바구니 '부재' 표현: "장바구니(생성)가 없는", "장바구니 생성이나 구매 이력 없는"(분배 부정). '장바구니'
@@ -3884,6 +3975,24 @@ def _cart_absence_predicate() -> str:
     return (
         f"NOT EXISTS (SELECT 1 FROM {table} A "
         f"WHERE A.CART_ID = B.MEMBER_ID AND A.{keep_column} = {_sql_quote(str(keep_value))})"
+    )
+
+
+def _purchase_inactivity_predicate(min_days: int) -> str:
+    """'최근 N일 내 주문 없음'(구매 미발생 기간) 회원키 anti-join 술어.
+
+    cart_absence/campaign_responses 처럼 회원키 상관 NOT EXISTS 라 어느 빌더에나 AND 결합된다 —
+    compile_member_target_conditions 와 order_count 빌더가 이 헬퍼를 공유해 동일 문자열을 내므로,
+    두 곳이 함께 방출해도 _unique_strings 로 중복 없이 합쳐진다('장바구니 보유 + 최근 90일 미구매'처럼
+    카트 빌더가 이겨도 미구매 조건이 조용히 누락되지 않는다)."""
+    config = _order_count_targets_config()
+    table = config.get("table", "CRM_SL_ORDERHEADERMALL")
+    join_column = config.get("join_column", "MEMBER_NO")
+    order_date_column = config.get("order_date_column", "ORDER_DATE")
+    cutoff = f"CONVERT(CHAR(8), DATEADD(DAY, -{min_days}, GETDATE()), 112)"
+    return (
+        f"NOT EXISTS (SELECT 1 FROM {table} O WHERE O.{join_column} = B.{join_column} "
+        f"AND O.{order_date_column} >= {cutoff})"
     )
 
 
@@ -3970,9 +4079,11 @@ def _inactivity_retrieval_terms(period: Any) -> list[str]:
 # 최근 로그인(긍정형 접속) 타겟: '최근 N개월/N일 (이내·동안) 로그인·접속한'. 부정형(미접속/로그인하지
 # 않은/휴면)은 _parse_inactivity_period 소관이라 여기서는 배제한다. 기간 창이 명시된 경우에만 잡는다 —
 # '앱으로 로그인한 사용자'처럼 창 없는 로그인 언급은 최근성 조건이 아니다(app_user 등 다른 트랙 소관).
-_RECENT_LOGIN_SIGNALS = (
-    "로그인한", "로그인했", "로그인이력", "로그인기록",
-    "접속한", "접속했", "접속이력", "접속기록", "loggedin",
+# 로그인/접속 + (선택 조사) + 활동형(한/했/하신/함) 또는 이력/기록. '로그인은 했지만'처럼 조사(은/는/을/…)가
+# 끼는 표현까지 잡는다 — 리터럴 '로그인했'만 나열하면 조사가 낀 '로그인은했'을 놓쳐 최근 로그인 조건이
+# 통째로 사라졌다(공백 지운 프롬프트에 맞춘다).
+_RECENT_LOGIN_SIGNAL_RE = re.compile(
+    r"(?:로그인|접속)(?:은|는|을|를|이|도)?(?:한|했|하신|하였|함|이력|기록)|loggedin"
 )
 _RECENT_LOGIN_NEG_SIGNALS = (
     "미접속", "미로그인", "접속하지", "접속안", "로그인하지", "로그인안", "휴면", "비활성", "inactive", "dormant",
@@ -3981,7 +4092,7 @@ _RECENT_LOGIN_NEG_SIGNALS = (
 
 def _parse_recent_login_period(query: str) -> dict[str, Any] | None:
     compact_query = query.replace(" ", "").casefold()
-    if not any(signal in compact_query for signal in _RECENT_LOGIN_SIGNALS):
+    if not _RECENT_LOGIN_SIGNAL_RE.search(compact_query):
         return None
     if any(signal in compact_query for signal in _RECENT_LOGIN_NEG_SIGNALS):
         return None
@@ -4265,7 +4376,9 @@ _CAMPAIGN_RESPONSE_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = tupl
 # 부정을 먼저 판정하고 긍정 buy_response 를 눌러야 한다.
 _CAMPAIGN_BUY_NEG_PATTERN = re.compile(
     r"캠페인(?:에서|에|을|를)?(?:는|은|도)?(?:보고|통해|후)?"
-    r"(?:구매(?:를|은|는|도)?(?:반응)?(?:이|가|은|는)?(?:하지않|안하|안한|없)|미구매)"
+    # 구매와 부정어 사이에 '이력/내역'(+조사)이 끼는 '캠페인 구매 이력이 없는'도 잡는다 — 안 그러면
+    # 부정이 안 잡히고(buy_negated=False) 긍정 리터럴 '캠페인구매'가 매칭돼 정반대(EXISTS 구매)로 뒤집혔다.
+    r"(?:구매(?:이력|내역)?(?:를|은|는|도|이|가)*(?:반응)?(?:이|가|은|는)?(?:하지않|안하|안한|없)|미구매)"
 )
 # 캠페인 어순 무관 '구매반응' 부정: "구매 반응이 없는". '구매반응'은 반응 팩트(BUY_RSPN_YN) 어휘라
 # 캠페인 단어와 인접하지 않아도 캠페인 구매반응 부정으로 확정한다 — "캠페인 발송에 성공했지만 구매
@@ -4275,8 +4388,43 @@ _BUY_RSPN_NEG_PATTERN = re.compile(r"구매반응(?:이|가|은|는|도)?(?:없|
 # 문장 전체의 일반형 구매 부정(캠페인 문맥 여부 무관) — 캠페인 부정 매치 스팬과 겹침을 비교해, 모든
 # 구매 부정이 캠페인 문맥이면 오배정된 전체 주문 미구매(purchase_inactivity/no_purchase)를 걷어낸다.
 _GENERIC_BUY_NEG_PATTERN = re.compile(
-    r"구매(?:를|은|는|도)?(?:반응)?(?:이|가|은|는)?(?:하지않|안하|안한|없)|미구매"
+    r"구매(?:이력|내역)?(?:를|은|는|도|이|가)*(?:반응)?(?:이|가|은|는)?(?:하지않|안하|안한|없)|미구매"
 )
+
+# ── 부정 직교 패스 ──────────────────────────────────────────────────────────────────────
+# 긍정 리터럴('쿠폰을사용')이 부정문('쿠폰을 사용하지 않은')의 부분문자열에 매칭돼 정반대(EXISTS)로
+# 뒤집히던 반전 사고를, 개념별 부정을 '독립 감지'해 그 개념의 긍정을 '구조적으로 억제'하는 방식으로 막는다.
+# buy 는 어순 무관·'이력' 삽입까지 커버하는 전용 패턴(_CAMPAIGN_BUY_NEG_PATTERN)이 담당하고, 나머지
+# 개념(offer/coupon/contact)은 '개념어 바로 뒤 tail'에서 부정 표지를 본다 — 단, 다음 개념어/절 경계
+# 전까지만 봐서('쿠폰 사용하고 구매하지 않은'처럼) 옆 개념의 부정을 훔쳐오지 않는다.
+_CAMPAIGN_TAIL_NEG_RE = re.compile(r"없|않|못[한했하받]|안[한함했하]")
+# 다음 '개념' 시작(부정 탐색을 여기서 멈춤 — 옆 개념 부정 오귀속 방지).
+_CAMPAIGN_CONCEPT_ANCHOR_RE = re.compile(r"구매|구입|쿠폰|오퍼|혜택|제안|발송|전송|접촉|도달")
+# 절 경계(부정 탐색 상한). 조사/어미 하나로 절이 갈리는 지점만(공백 제거 텍스트라 '고객'의 '고' 같은
+# 단음절 오탐을 피해 2음절 이상 연결어미만 나열).
+_CAMPAIGN_CLAUSE_BOUNDARY_RE = re.compile(r"지만|면서|이며|이고|이거나|거나|또는|그리고|반면|다만|,")
+_CAMPAIGN_TAIL_NEG_WINDOW = 10
+# 개념어(부정 탐색의 기준점) + 그 개념의 canonical. buy 는 전용 패턴이 담당하므로 제외.
+_CAMPAIGN_CONCEPT_NEG_SPECS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("offer_response", re.compile(r"(?:오퍼|혜택|제안)(?:에|에는|을|를|이|가|은|는|도)?(?:반응|응답)")),
+    ("coupon_used", re.compile(r"쿠폰(?:을|를|이|은|는|도)?(?:사용|이용|쓰|쓴)")),
+    ("campaign_contact", re.compile(r"(?:발송|전송|접촉|도달)(?:은|는|이|가|에|에는|도|을|를)?성공")),
+)
+
+
+def _campaign_concept_tail_negated(compact: str, start: int, anchors: list[int], boundaries: list[int]) -> bool:
+    """개념어가 끝난 위치(start) 뒤 tail 에 부정 표지가 있으면 True. 탐색 상한은 '다음 개념어 시작·절
+    경계·윈도우' 중 가장 가까운 곳 — 옆 개념('구매하지 않은')의 부정을 이 개념 것으로 훔쳐오지 않는다."""
+    limit = start + _CAMPAIGN_TAIL_NEG_WINDOW
+    for pos in boundaries:
+        if pos >= start:
+            limit = min(limit, pos)
+            break
+    for pos in anchors:
+        if pos > start:  # 다음 개념 시작 전까지만
+            limit = min(limit, pos)
+            break
+    return _CAMPAIGN_TAIL_NEG_RE.search(compact, start, limit) is not None
 
 
 def _apply_campaign_response_filter(query: str, plan: dict[str, Any]) -> None:
@@ -4288,31 +4436,45 @@ def _apply_campaign_response_filter(query: str, plan: dict[str, Any]) -> None:
     그 부정이 문장의 유일한 구매 부정이면 오배정된 전체 주문 미구매(purchase_inactivity/no_purchase —
     '최근 N개월' 창을 로그인 절 등에서 훔쳐온다)를 걷어낸다."""
     compact = query.replace(" ", "").casefold()
-    negation_spans = [
+    anchors = [match.start() for match in _CAMPAIGN_CONCEPT_ANCHOR_RE.finditer(compact)]
+    boundaries = [match.start() for match in _CAMPAIGN_CLAUSE_BOUNDARY_RE.finditer(compact)]
+    # 부정 직교 패스: 개념별로 '부정됨'을 독립 감지한다. buy 는 전용 패턴(어순 무관·'이력' 삽입 커버),
+    # offer/coupon/contact 는 개념어 뒤 tail 부정으로. negated_for 에 든 개념은 아래 루프에서 긍정을
+    # 절대 내지 않고 부정 트랙(NOT EXISTS)만 낸다 — 긍정↔부정이 상호배타라 반전이 구조적으로 불가능하다.
+    buy_negation_spans = [
         match.span()
         for pattern in (_CAMPAIGN_BUY_NEG_PATTERN, _BUY_RSPN_NEG_PATTERN)
         for match in pattern.finditer(compact)
     ]
-    buy_negated = bool(negation_spans)
+    negated_for: set[str] = set()
+    if buy_negation_spans:
+        negated_for.add("buy_response")
+    for canonical, concept_pattern in _CAMPAIGN_CONCEPT_NEG_SPECS:
+        for match in concept_pattern.finditer(compact):
+            if _campaign_concept_tail_negated(compact, match.end(), anchors, boundaries):
+                negated_for.add(canonical)
+                break
     responses: list[dict[str, Any]] = []
     for canonical, predicate, pattern in _CAMPAIGN_RESPONSE_PATTERNS:
-        # 부정문의 부분문자열('구매 반응이 없는'의 '구매반응', '캠페인 구매 안 한'의 '캠페인구매')로
-        # 긍정 구매반응이 오탐하는 것 방지.
-        if buy_negated and canonical == "buy_response":
-            continue
-        if pattern.search(compact):
-            response: dict[str, Any] = {"canonical": canonical, "predicate": predicate}
+        if canonical in negated_for:
+            # 부정 확정 개념: 긍정 리터럴 매칭 여부와 무관하게 부정 트랙만 낸다(긍정 억제 = 반전 차단).
+            neg_canonical = "no_buy_response" if canonical == "buy_response" else "no_" + canonical
+            response: dict[str, Any] = {"canonical": neg_canonical, "predicate": predicate, "negated": True}
             if canonical == "campaign_contact":
                 response["source"] = "camp_member_list"
             responses.append(response)
-    if buy_negated:
-        responses.append({"canonical": "no_buy_response", "predicate": "R.BUY_RSPN_YN = 'Y'", "negated": True})
+        elif pattern.search(compact):
+            response = {"canonical": canonical, "predicate": predicate}
+            if canonical == "campaign_contact":
+                response["source"] = "camp_member_list"
+            responses.append(response)
+    if buy_negation_spans:
         # 문장의 모든 일반형 구매 부정이 캠페인 부정 매치와 겹치면(=캠페인 문맥뿐이면) 오배정된 전체
         # 주문 미구매를 걷어낸다. 별개의 전체 미구매("최근 90일 구매 안 했고 캠페인 반응도 없는")가
         # 있으면 스팬이 안 겹쳐 주문 트랙이 유지된다.
         generic_matches = list(_GENERIC_BUY_NEG_PATTERN.finditer(compact))
         all_campaign_scoped = generic_matches and all(
-            any(match.start() < end and start < match.end() for start, end in negation_spans)
+            any(match.start() < end and start < match.end() for start, end in buy_negation_spans)
             for match in generic_matches
         )
         if all_campaign_scoped:
@@ -4321,6 +4483,37 @@ def _apply_campaign_response_filter(query: str, plan: dict[str, Any]) -> None:
             target_user["behaviors"] = [b for b in target_user.get("behaviors", []) if b != "no_purchase"]
     if responses:
         plan.setdefault("target_user", {})["campaign_responses"] = responses
+
+
+# "쿠폰 사용 후 추가(로) 구매(구입/주문) 없는/하지 않은" 처럼 '추가 구매가 일어나지 않음'을 뜻하는 표현.
+# 이를 '실주문 자체가 전혀 없음'(no_purchase, CRM_SL_ORDERHEADERMALL anti-join)으로 확정한다 — 캠페인
+# 반응(쿠폰 사용 등)과 함께 오면 campaign_response 빌더가 fact_join(order_count_behavior)에 양보하고,
+# order_count 빌더가 쿠폰 EXISTS + 주문 NOT EXISTS 를 하나의 SQL 로 AND 결합한다. 공백을 지운 프롬프트에
+# 맞춘다. '재구매/다시 구매하지 않은'(과거 구매는 있고 재구매만 없음)과는 어의가 달라 포함하지 않는다.
+_ADDITIONAL_PURCHASE_ABSENCE_PATTERN = re.compile(
+    r"(?:추가로|추가|더이상|더)(?:의)?(?:구매|구입|주문)"
+    r"(?:를|은|는|가|도|한)?(?:없|안했|안한|않았|않은|않는|하지않|안함|못했|못한)"
+)
+
+
+def _apply_no_additional_purchase_filter(query: str, plan: dict[str, Any]) -> None:
+    """'추가 구매 없는'을 '실주문 자체가 전혀 없음'(no_purchase, 주문 anti-join) 행동으로 승격한다.
+
+    시간 창이 붙은 미구매(purchase_inactivity, '최근 N일 구매 안 함')나 '캠페인 구매반응 없음'(no_buy_response,
+    캠페인 밖 구매는 허용)은 각기 다른 트랙이 소유하므로, 그 둘이 이미 잡혔으면 여기서 승격하지 않는다
+    (이중 조건 방지). no_purchase 는 order_count 빌더(anti-join)가 소유하고, 그 빌더가 캠페인 반응 EXISTS 를
+    compile_member_target_conditions 로 함께 결합하므로 '쿠폰 사용 후 추가 구매 없는'이 한 SQL 로 남는다."""
+    target_user = plan.setdefault("target_user", {})
+    if isinstance(target_user.get("purchase_inactivity"), dict):
+        return
+    if any(
+        isinstance(response, dict) and response.get("canonical") == "no_buy_response"
+        for response in target_user.get("campaign_responses") or []
+    ):
+        return
+    compact = query.replace(" ", "").casefold()
+    if _ADDITIONAL_PURCHASE_ABSENCE_PATTERN.search(compact):
+        _append_unique(target_user.setdefault("behaviors", []), "no_purchase")
 
 
 # 캠페인 반응 '횟수' 임계값: "(최근 N개월 캠페인 중) 두 번/2회 이상 반응한". 캠페인 반응 EXISTS(≥1회)와
@@ -4722,6 +4915,9 @@ def _sanitize_purchase_object(value: str) -> str | None:
         if not stripped_token or stripped_token in {
             "사람", "고객", "사용자", "첫", "재", "최근", "최초", "최초로", "반복", "자주", "많이", "많은", "다수", "대량", "처음", "처음으로", "미",
             "이곳", "이곳에서", "그곳", "그곳에서", "저곳", "여기", "여기서", "여기에서", "거기", "거기서", "거기에서", "저기", "저기서", "해당", "동일", "같은",
+            # '캠페인 구매 이력'의 '캠페인'은 상품명이 아니라 캠페인 반응(구매 반응) 문맥어다. 상품 LIKE
+            # 로 새면 PRODUCT_NAME LIKE N'%캠페인%' 같은 무의미 매칭이 되므로 상품 후보에서 제외한다.
+            "캠페인",
         }:
             continue
         # 날짜/기간 토큰은 상품이 아니라 구매 날짜 조건이므로 상품명 후보에서 뺀다(→ purchase_date 가 담당).
@@ -4981,8 +5177,11 @@ def retrieve(
     message_generation_options: dict[str, Any] | None = None,
     retrieval_scope: str = "all",
     multi_query_variants: int | None = None,
+    timings_ms: dict[str, float] | None = None,
 ) -> dict[str, Any]:
-    timings_ms: dict[str, float] = {}
+    # 계측 dict 을 호출자가 넘길 수 있게 한다. 트레이스 엔드포인트는 이 dict 을 소유해, retrieve() 가
+    # 중간 단계에서 예외로 죽어도 그때까지 채워진 단계별 시간을 읽어 "오류 전까지" 부분 트레이스를 만든다.
+    timings_ms = timings_ms if timings_ms is not None else {}
     retrieve_started_at = time.perf_counter()
     # 다중 재구성 파싱 변이 수. 명시값이 없으면 환경변수로 전역 설정(기본 0=끔). LLM(파서 auto/llm) 필요.
     if multi_query_variants is None:
@@ -5020,11 +5219,15 @@ def retrieve(
     # 파싱에서 제외해 타겟 조건만 SQL/트레이스에 반영한다(검색 스코프 원칙을 파싱까지 확장). 채널 절은
     # 검색 스코프·메시지 생성에서만 쓰인다. 타겟팅 절이 비면 전체 재작성본으로 폴백한다.
     scope = (retrieval_scope or "all").casefold()
+    stage_started_at = time.perf_counter()
     if scope == "targeting":
         plan_scopes = split_prompt_scopes(effective_query, parser=query_parser, llm_model=llm_model, prompt_dir=prompt_dir)
         plan_query = (plan_scopes.get("targeting") or "").strip() or effective_query
     else:
         plan_query = effective_query
+    # 타겟/채널 분리(2단계) 계측을 Query Plan 과 분리해 둔다 — 부분 트레이스에서 분리 단계와 계획 단계의
+    # 실패를 구분해 귀속하기 위함(이 키가 있으면 2단계 완료, query_plan 키가 있으면 3~6단계 완료).
+    timings_ms["prompt_scopes"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
     query_plan = build_query_plan(
@@ -5157,6 +5360,9 @@ def retrieve(
         # 템플릿/조합 빌더가 못 만드는 형태는 LLM 폴백이 GraphRAG 컨텍스트를 근거로 SQL 초안을
         # 만들고 동일 가드 스택(guard/coverage/미언급)으로 검증한다. rules 파서 모드면 비활성.
         llm_model=llm_model if query_parser in ("auto", "llm") else None,
+        # 의미 검증 게이트는 가공된 keyword_query 가 아니라 사용자 원문과 SQL 을 직접 대조해야 한다.
+        original_query=query,
+        prompt_dir=prompt_dir,
     )
     timings_ms["sql_generation"] = _elapsed_ms(stage_started_at)
 
@@ -5629,7 +5835,7 @@ def build_answer_response(
                 "message_summary": _message_summary(messages),
             },
         )
-        response = client.chat.completions.create(
+        response = _openai_chat_create(client, 
             model=llm_model,
             temperature=0,
             messages=messages,
@@ -6327,7 +6533,7 @@ def _generate_single_message_variant(
                 "message_summary": _message_summary(messages),
             },
         )
-        response = client.chat.completions.create(
+        response = _openai_chat_create(client, 
             model=llm_model,
             response_format={"type": "json_object"},
             messages=messages,
@@ -6986,10 +7192,22 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
     unsupported_labels = sql_result.get("unsupported_condition_labels", [])
 
     if reason == "query_plan_required_conditions_missing":
+        # 집합식/계산식/의미해석 중 무엇이 확정 안 됐는지 짚어 "어디서" 막혔는지 문구에도 반영한다.
+        kind = _missing_condition_kind(sql_result)
         questions = sql_result.get("clarification_questions") or []
         if questions:
-            return "SQL 생성을 위해 조건 확인이 필요합니다: " + " / ".join(str(q) for q in questions)
+            lead = f"{kind[1]} 해석을 위해 " if kind else "SQL 생성을 위해 "
+            return lead + "조건 확인이 필요합니다: " + " / ".join(str(q) for q in questions)
         return f"SQL 생성을 위해 필요한 조건이 부족합니다. {_SUPPORTED_CONDITION_HINT} 같은 타겟 조건을 추가해 주세요."
+
+    if reason == "semantic_verification_failed":
+        # 의미 검증 게이트가 원문↔SQL 불일치(드롭/반전 등)를 확신 → 틀린 SQL 출고 대신 확인 요청.
+        questions = sql_result.get("clarification_questions") or _semantic_verification_clarifications(
+            (sql_result.get("semantic_verification") or {}).get("issues", [])
+        )
+        if questions:
+            return "생성된 SQL이 원문 의도와 다르게 반영된 부분이 있어 확인이 필요합니다: " + " / ".join(str(q) for q in questions)
+        return "생성된 SQL이 원문 의도를 충실히 반영하지 못한 것으로 판단돼 확인이 필요합니다. 조건을 더 명확히 입력해 주세요."
 
     if unsupported_labels:
         # 요청 조건 중 실DB 타겟 추출로 아직 매핑되지 않은 것(관심사·행동·가격민감도 등)이 원인.
@@ -7035,6 +7253,102 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
         return "생성된 SQL에 요청하지 않은 조건이 포함돼 제외했습니다."
 
     return "현재 Query Plan 조건을 완전히 만족하는 검증된 SQL이 없습니다."
+
+
+# 타겟 SQL 실패가 발생할 수 있는 파이프라인 단계(실행 순서대로). failure_reason 은 "왜"(=message)를
+# 설명하지만, 사용자는 "어디서" 막혔는지도 한 눈에 알아야 한다(집합식/조건 인식에서 막혔나, SQL 안전
+# 검증에서 막혔나). failure_reason 을 아래 단계로 승격해 프론트가 단계 배지·스텝퍼로 그대로 노출한다.
+_FAILURE_STAGE_SEQUENCE: tuple[dict[str, str], ...] = (
+    {"code": "condition_recognition", "label": "타겟 조건 인식"},
+    {"code": "real_db_mapping", "label": "실DB 조건 매핑"},
+    {"code": "sql_safety_validation", "label": "SQL 안전 검증"},
+    {"code": "condition_coverage", "label": "조건 반영 검증"},
+    {"code": "intent_scope", "label": "요청 의도 검증"},
+    {"code": "semantic_verification", "label": "의미 검증"},
+)
+
+# failure_reason → 단계 code. 새 failure_reason 을 추가하면 여기에도 매핑을 넣어야 프론트에 단계가 뜬다.
+_FAILURE_REASON_TO_STAGE: dict[str, str] = {
+    # 집합식/계산식/의미해석이 확정 안 되면 required_conditions_missing 으로, 그 외 조건 미인식은
+    # no_sql_candidates 로 떨어진다 — 둘 다 '조건 인식' 단계다(세부 라벨은 _refine_stage_label 로 가른다).
+    "no_sql_candidates": "condition_recognition",
+    "recognized_domain_unsupported": "condition_recognition",
+    "query_plan_required_conditions_missing": "condition_recognition",
+    "real_db_unsupported_conditions": "real_db_mapping",
+    "sql_guard_failed": "sql_safety_validation",
+    "query_plan_conditions_missing": "condition_coverage",
+    "query_plan_unmentioned_conditions_added": "condition_coverage",
+    "intent_scope_mismatch": "intent_scope",
+    "semantic_verification_failed": "semantic_verification",
+}
+
+# 미확정 required 조건(query_plan_required_conditions_missing)의 종류별 세부 라벨.
+# (missing_input_conditions[].path prefix, 단계 세부 라벨, 안내문에 쓸 종류 라벨).
+# 같은 '조건 인식' 단계라도 집합식 파싱에서 막혔는지, 계산식/의미 해석에서 막혔는지 구분해 보여준다.
+_MISSING_CONDITION_KINDS: tuple[tuple[str, str, str], ...] = (
+    ("set_expressions.", "집합식 파싱", "집합식"),
+    ("computed_metrics.", "계산식 해석", "계산식"),
+    ("semantic_resolutions.", "의미 해석 확정", "의미 해석"),
+)
+
+
+def _missing_condition_kind(sql_result: dict[str, Any]) -> tuple[str, str] | None:
+    """미확정 required 조건의 종류를 (단계 세부 라벨, 안내 종류 라벨)로 돌려준다(해당 없으면 None).
+
+    집합식/계산식/의미해석이 확정되지 못해 SQL 이 막힌 경우, 어느 것이 원인인지 path prefix 로 판별한다.
+    """
+    paths = [str(condition.get("path", "")) for condition in sql_result.get("missing_input_conditions", [])]
+    for prefix, stage_label, kind_label in _MISSING_CONDITION_KINDS:
+        if any(path.startswith(prefix) for path in paths):
+            return stage_label, kind_label
+    return None
+
+
+def _refine_stage_label(failure_reason: str, sql_result: dict[str, Any]) -> str | None:
+    """같은 단계 안에서 실패 원인을 더 구체적으로 짚는 세부 라벨(없으면 None=기본 라벨).
+
+    현재는 조건 확정 실패(required_conditions_missing)를 집합식/계산식/의미해석으로 세분한다.
+    """
+    if failure_reason != "query_plan_required_conditions_missing":
+        return None
+    kind = _missing_condition_kind(sql_result)
+    return kind[0] if kind else None
+
+
+def _classify_failure_stage(
+    failure_reason: str | None,
+    sql_result: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """실패 사유(failure_reason)를 파이프라인 단계로 승격한다(어디서 막혔는지 UI 노출용).
+
+    반환: {"code", "label", "order"(1-base), "total", "reason"(원 코드),
+           "pipeline"[전체 단계 목록]} — 프론트가 단계 배지·스텝퍼를 데이터 기반으로 그린다.
+    sql_result 로 같은 단계 안의 세부 원인(집합식 파싱 등)을 라벨에 반영한다. 매핑이 없으면 None.
+    """
+    if not failure_reason:
+        return None
+    stage_code = _FAILURE_REASON_TO_STAGE.get(failure_reason)
+    if stage_code is None:
+        return None
+    # 세부 라벨: 같은 순번(단계) 안에서 무엇이 막혔는지 더 구체적으로 짚어준다(예: '타겟 조건 인식' → '집합식 파싱').
+    label_override = _refine_stage_label(failure_reason, sql_result or {})
+    pipeline: list[dict[str, Any]] = []
+    matched: dict[str, Any] | None = None
+    for index, stage in enumerate(_FAILURE_STAGE_SEQUENCE):
+        label = label_override if (stage["code"] == stage_code and label_override) else stage["label"]
+        entry = {"order": index + 1, "code": stage["code"], "label": label}
+        pipeline.append(entry)
+        if stage["code"] == stage_code:
+            matched = entry
+    assert matched is not None  # stage_code 는 항상 시퀀스에 존재
+    return {
+        "code": matched["code"],
+        "label": matched["label"],
+        "order": matched["order"],
+        "total": len(pipeline),
+        "reason": failure_reason,
+        "pipeline": pipeline,
+    }
 
 
 def build_recommendation_api_response(
@@ -7094,6 +7408,15 @@ def build_recommendation_api_response(
         "answer_mode": answer_response.get("mode"),
         "answer_failure_reason": answer_response.get("failure_reason"),
         "failure_reason": sql_result.get("failure_reason"),
+        # 실패가 발생한 파이프라인 단계(어디서 막혔는지). {code,label,order,total,reason,pipeline}.
+        # 성공이면 None — 프론트는 이 값이 있을 때만 "실패 단계" 배지·스텝퍼를 노출한다.
+        "failure_stage": _classify_failure_stage(sql_result.get("failure_reason"), sql_result),
+        # 의미 검증 게이트 판정(원문↔최종 SQL 직접 대조). {ran, faithful, issues} — 오탐 튜닝·디버깅용.
+        "semantic_verification": sql_result.get("semantic_verification", {"ran": False}),
+        # 쿼리 성능 튜닝 자문: 실행 함정 findings + 권장 인덱스(비차단, SQL 은 그대로).
+        "query_tuning": sql_result.get("query_tuning", {"findings": [], "recommended_indexes": []}),
+        # ③ 결정론 드롭 경고: 원문 신호가 plan 에 안 잡힌 조건(비차단 자문 — 조용한 드롭을 시끄럽게).
+        "dropped_signal_warnings": sql_result.get("dropped_signal_warnings", []),
     }
     if message_generation is not None:
         response.update(
@@ -7110,7 +7433,8 @@ def build_recommendation_api_response(
 def _api_status(sql_result: dict[str, Any]) -> str:
     if sql_result.get("is_success"):
         return "success"
-    if sql_result.get("failure_reason") == "query_plan_required_conditions_missing":
+    # 의미 검증 게이트 차단은 '틀린 SQL' 이 아니라 '확인 필요' 다 — 재작성/입력 보완으로 풀 수 있다.
+    if sql_result.get("failure_reason") in ("query_plan_required_conditions_missing", "semantic_verification_failed"):
         return "needs_clarification"
     return "no_verified_sql"
 
@@ -7239,7 +7563,7 @@ def _build_llm_sql_fallback_candidate(
             {"model": llm_model, "query": query, "query_plan": plan_slim, "context_line_count": len(context_lines)},
         )
         client = OpenAI()
-        response = client.chat.completions.create(
+        response = _openai_chat_create(client, 
             model=llm_model,
             temperature=0,
             response_format={"type": "json_object"},
@@ -7273,6 +7597,180 @@ def _build_llm_sql_fallback_candidate(
         return None
 
 
+# 의미 검증 게이트가 분류하는 불일치 유형 → 사람이 읽는 라벨.
+_SEMANTIC_ISSUE_LABELS = {
+    "dropped": "누락(원문 조건이 SQL에 없음)",
+    "inverted": "의미 반전(긍정↔부정/이상↔이하 등이 뒤집힘)",
+    "wrong_value": "값 불일치(연령·지역·등급 등 값이 다름)",
+    "spurious": "미요청 추가(원문에 없는 조건이 SQL에 있음)",
+}
+
+
+def _sql_semantic_verify_system_prompt() -> str:
+    """의미 검증 게이트 시스템 프롬프트. 오탐(정상 SQL 차단)을 줄이려 '확신할 때만 불일치' 원칙을 강조한다."""
+    return (
+        "당신은 타겟팅 SQL 검증기다. 사용자 원문과 그 원문으로 생성된 SQL 을 받는다. "
+        "SQL 이 원문의 **오디언스(타겟 회원) 조건**을 빠짐없이·왜곡 없이 반영했는지만 판정하라.\n"
+        "다음은 무시한다(불일치로 보지 말 것): 발송 채널(문자/앱푸시/RCS 등)·메시지 카피·캠페인 목적/목표"
+        "(objective, 예: 재구매 유도)·결과 개수 제한. SQL 은 오디언스 필터만 담고 이들은 담지 않는 게 정상이다.\n"
+        "**값 변환·확장의 '완전성'은 절대 판정하지 말라**: 자연어 값은 시스템이 코드/등급 체계/권역 매핑으로 "
+        "변환·확장해 SQL 에 넣는다(여성→GENDER_CD.FEMALE, 30대→AGE 30~39, 'GOLD 이상'→등급 IN 목록, 수도권→SIDO IN 목록). "
+        "너는 등급 서열·권역 구성을 알지 못하므로, 어떤 값이 IN 목록/범위에 들어갔는지의 정확성·완전성을 "
+        "**추측해서 판정하면 안 된다**. 원문의 각 조건이 SQL 에 **대응하는 컬럼 필터로 존재하기만 하면** 반영된 "
+        "것으로 보라(예: 'GOLD 이상' → EMART_GRADE_CD IN(...) 이 있으면 OK, 목록에 무엇이 들었든 faithful). "
+        "IN 목록·코드값·범위 확장을 dropped 나 wrong_value 로 보지 말라.\n"
+        "불일치 유형: dropped(원문 조건이 SQL 에 없음), inverted(긍정↔부정 또는 이상↔이하 등 의미가 반대로 "
+        "반영됨. 예: '구매 이력이 없는'인데 SQL 은 구매함(EXISTS)으로 반영), wrong_value(연령대·지역·등급 등 값이 "
+        "다름), spurious(원문에 없는 조건이 SQL 에 있음. 예: 엉뚱한 상품 LIKE).\n"
+        "중요: **확실한 의미 불일치만** 보고하라. 표현만 다르고 의미가 같으면 faithful=true. 판단이 애매하면 "
+        "faithful=true 로 둔다(정상 SQL 을 막는 오탐이 놓치는 것보다 나쁘다). NOT EXISTS=조건 없음/부정, "
+        "EXISTS=조건 있음/긍정임에 유의하라.\n"
+        'JSON 으로만 답하라: {"faithful": true|false, "issues": [{"type": "dropped|inverted|wrong_value|spurious", '
+        '"condition": "원문의 해당 표현", "detail": "무엇이 어떻게 틀렸는지 한 문장"}]}. faithful=true 면 issues 는 빈 배열.'
+    )
+
+
+def _verify_sql_semantics(
+    original_query: str,
+    sql: str,
+    llm_model: str | None,
+    prompt_dir: Path | None,
+) -> dict[str, Any]:
+    """최종 SQL 이 원문 의도를 충실히 반영했는지 LLM 으로 검증한다(원문↔SQL 직접 대조).
+
+    반환 {ran, faithful, issues}. 게이트 비활성/LLM 불가/호출 실패면 ran=False 로 **통과(fail-open)** —
+    검증기 자체 문제로 정상 SQL 을 막지 않는다. ran=True 이고 faithful=False 일 때만 호출자가 출고를 막는다.
+    비결정적 LLM 이라 temperature=0 + '확신할 때만 불일치' 프롬프트로 오탐을 억제한다."""
+    llm_model = _fast_llm_model(llm_model)  # 의미검증도 빠르고 정확한 모델 고정(12s 타임아웃 방지)
+    if not _sql_semantic_verify_enabled() or not llm_model or not os.getenv("OPENAI_API_KEY"):
+        return {"ran": False}
+    if not (isinstance(original_query, str) and original_query.strip() and isinstance(sql, str) and sql.strip()):
+        return {"ran": False}
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return {"ran": False}
+    try:
+        client = OpenAI()
+        response = _openai_chat_create(client, 
+            model=llm_model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _sql_semantic_verify_system_prompt()},
+                {"role": "user", "content": f"[원문]\n{original_query.strip()}\n\n[생성된 SQL]\n{sql.strip()}"},
+            ],
+            timeout=_prompt_rewrite_timeout_seconds(),
+        )
+        data = json.loads(response.choices[0].message.content or "{}")
+        if not isinstance(data, dict) or not isinstance(data.get("faithful"), bool):
+            return {"ran": False}  # 형식 불명 → 통과(fail-open)
+        raw_issues = data.get("issues") if isinstance(data.get("issues"), list) else []
+        issues = [
+            {
+                "type": issue.get("type") if issue.get("type") in _SEMANTIC_ISSUE_LABELS else "dropped",
+                "condition": str(issue.get("condition") or "").strip(),
+                "detail": str(issue.get("detail") or "").strip(),
+            }
+            for issue in raw_issues
+            if isinstance(issue, dict)
+        ]
+        # issues 가 하나도 없으면 faithful 로 간주(불일치라면서 근거 없음 = 오탐 억제).
+        faithful = bool(data.get("faithful")) or not issues
+        verdict = {"ran": True, "faithful": faithful, "issues": [] if faithful else issues}
+        _write_rag_llm_log("sql_semantic_verify", {"query": original_query, "sql": sql, **verdict})
+        return verdict
+    except Exception as exc:  # noqa: BLE001 - 게이트 실패는 치명적이지 않다(정상 SQL 통과 유지).
+        _write_rag_llm_log("sql_semantic_verify_error", {"query": original_query, "error": str(exc)})
+        return {"ran": False}
+
+
+def _semantic_verification_clarifications(issues: list[dict[str, Any]]) -> list[str]:
+    """의미 불일치 issue 목록 → 사용자 확인용 clarification 문구."""
+    questions: list[str] = []
+    for issue in issues:
+        label = _SEMANTIC_ISSUE_LABELS.get(issue.get("type"), "불일치")
+        condition = issue.get("condition") or "일부 조건"
+        detail = issue.get("detail") or ""
+        questions.append(
+            f"'{condition}' 조건이 생성 SQL에서 {label} 문제로 원문과 다르게 반영된 것으로 보입니다"
+            + (f": {detail}" if detail else "")
+            + ". 의도가 맞는지 확인해 주세요."
+        )
+    return questions
+
+
+def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str, Any]) -> list[str]:
+    """③ 놓침을 시끄럽게: 원문에 정밀 추출된 신호가 최종 plan 슬롯에 하나도 안 잡혔으면(조용한 드롭)
+    사람이 읽는 경고로 돌려준다. 결정론이라 rules/auto 양쪽에서 항상 돈다(LLM 의미검증 게이트의 보완재).
+
+    오탐을 낮추려 '재작성 가드가 이미 신뢰하는 정밀 추출기(_prompt_signal_signature)'를 재사용하고, plan
+    매핑이 명확한 family(성별·수신동의·캠페인 반응·최근 로그인)만 본다. 숫자/기간/상품처럼 여러 슬롯에
+    흩어지거나 애매한 family 는 오탐이 커서 제외한다. 비차단 자문 — SQL 출고를 막지 않는다."""
+    warnings: list[str] = []
+    text = original_query or ""
+    if not text.strip():
+        return warnings
+    signature = _prompt_signal_signature(text)
+    target_user = query_plan.get("target_user", {})
+    exclude = query_plan.get("exclude", {})
+
+    if signature["genders"] and not (target_user.get("gender") or exclude.get("gender")):
+        for gender in sorted(signature["genders"]):
+            warnings.append(f"성별 '{_GENDER_CANONICAL_KO.get(gender, gender)}'")
+
+    optin_slots = set(target_user.get("lifecycle") or []) | set(exclude.get("lifecycle") or [])
+    for consent in sorted(signature["consents"]):
+        if consent.split(":")[0] not in optin_slots:
+            warnings.append(f"수신동의 조건 '{_CONSENT_SIGNAL_LABELS.get(consent, consent)}'")
+
+    # 캠페인 반응: plan 이 긍정/부정 어느 트랙이든 잡았으면 보존(canonical 의 no_ 접두어 제거 후 비교).
+    plan_responses = {
+        str(response.get("canonical", "")).replace("no_", "", 1)
+        for response in target_user.get("campaign_responses") or []
+        if isinstance(response, dict)
+    }
+    for response in sorted(signature["campaign_responses"]):
+        if response not in plan_responses:
+            warnings.append(f"캠페인 반응 조건 '{_CAMPAIGN_RESPONSE_SIGNAL_LABELS.get(response, response)}'")
+
+    # 최근 로그인/접속(긍정): 부정형(미접속/휴면)이 아닌데 recent_login·미접속 슬롯 둘 다 비었으면 드롭.
+    compact = text.replace(" ", "").casefold()
+    if (
+        _RECENT_LOGIN_SIGNAL_RE.search(compact)
+        and not any(neg in compact for neg in _RECENT_LOGIN_NEG_SIGNALS)
+        and any(marker in compact for marker in _RECENCY_MARKERS)
+        and not isinstance(target_user.get("recent_login"), dict)
+        and not isinstance(target_user.get("inactivity_period"), dict)
+    ):
+        warnings.append("최근 로그인/접속 조건")
+
+    # 구매 미발생(미구매/최근 N일 미구매): 원문에 구매 부정이 있는데 어떤 미구매 슬롯도 안 잡혔으면 드롭.
+    behaviors = set(target_user.get("behaviors") or [])
+    campaign_canonicals = {
+        str(response.get("canonical", "")) for response in target_user.get("campaign_responses") or [] if isinstance(response, dict)
+    }
+    if _PURCHASE_NEG_RE.search(compact) and not (
+        isinstance(target_user.get("purchase_inactivity"), dict)
+        or isinstance(target_user.get("inactivity_period"), dict)
+        or "no_purchase" in behaviors
+        or "no_buy_response" in campaign_canonicals
+        or target_user.get("cart_absence")
+    ):
+        warnings.append("구매 미발생(미구매/최근 N일 미구매) 조건")
+
+    # 장바구니: 원문에 '장바구니'가 있는데 어떤 카트 슬롯도 안 잡혔으면 드롭(존재/부재/보관/유형/개수 전부).
+    if "장바구니" in compact and not (
+        "cart_abandoner" in behaviors
+        or isinstance(target_user.get("cart_retention"), dict)
+        or target_user.get("cart_type")
+        or target_user.get("cart_absence")
+        or target_user.get("cart_aggregate")
+    ):
+        warnings.append("장바구니 조건")
+    return warnings
+
+
 def build_sql_result(
     graph: nx.Graph,
     query: str,
@@ -7282,6 +7780,8 @@ def build_sql_result(
     default_limit: int,
     candidate_limit: int = 20,
     llm_model: str | None = None,
+    original_query: str | None = None,
+    prompt_dir: Path | None = None,
 ) -> dict[str, Any]:
     condition_tokens = build_verified_condition_tokens(query_plan)
     input_validation = validate_required_input_conditions(query_plan, condition_tokens)
@@ -7415,6 +7915,30 @@ def build_sql_result(
             # 원인을 구분해 둬야 안내 문구도, 다음에 무엇을 구현해야 하는지도 정확해진다.
             failure_reason = "recognized_domain_unsupported"
 
+    # 최종 SQL↔원문 의미 검증 게이트: plan 을 신뢰하는 결정론 검증(coverage/intent_scope)과 달리, 원문 NL 과
+    # SQL 을 직접 대조해 정규식 파서의 조용한 드롭·의미 반전(예: '구매 이력이 없는'을 EXISTS 구매로 뒤집음)을
+    # 잡는다. 불일치를 확신하면(ran & not faithful) 틀린 SQL 을 조용히 출고하는 대신 clarification 으로 전환한다.
+    # LLM 불가/게이트 비활성이면 ran=False 라 통과(fail-open) — rules 모드는 llm_model=None 이라 자연히 skip.
+    semantic_verification: dict[str, Any] = {"ran": False}
+    clarification_questions: list[str] = []
+    if selected_sql is not None:
+        semantic_verification = _verify_sql_semantics(original_query or query, selected_sql, llm_model, prompt_dir)
+        if semantic_verification.get("ran") and not semantic_verification.get("faithful"):
+            # 차단은 존재(dropped)·극성(inverted) 오류에만 한다 — 판정 모델이 신뢰할 수 있는 축.
+            # 값 수준(wrong_value/spurious)은 판정 모델이 등급 서열·권역 구성 같은 도메인 위계를 몰라
+            # 정상 확장('GOLD 이상'→GOLD,VIP IN 목록)을 오판하므로 차단하지 않고 자문으로만 남긴다
+            # (값 정확성은 결정론 컴파일러·커버리지 검증이 이미 소유). issues 는 응답에 그대로 노출된다.
+            blocking_issues = [
+                issue for issue in semantic_verification.get("issues", [])
+                if issue.get("type") in ("dropped", "inverted")
+            ]
+            if blocking_issues:
+                failure_reason = "semantic_verification_failed"
+                clarification_questions = _semantic_verification_clarifications(blocking_issues)
+                selected_sql = None
+                target_connection = None
+                target_dialect = None
+
     # 부분 추출로 SQL 이 나온 경우, 실DB 미지원이라 뺀 조건을 고지한다(성공이지만 일부 조건 제외).
     dropped_conditions = selected.get("dropped_conditions", []) if selected else []
     dropped_condition_labels = selected.get("dropped_condition_labels", []) if selected else []
@@ -7427,6 +7951,21 @@ def build_sql_result(
         except Exception:
             confidence = None
 
+    # 쿼리 성능 튜닝(정적 자문): 출고되는 SQL 의 실행 함정(선행 와일드카드/캐스트 조인/안티조인 등)을 진단하고
+    # 권장 인덱스를 제안한다. SQL 을 바꾸지 않는 비차단 자문이라 실패해도 SQL 출고엔 영향 없음.
+    query_tuning = {"findings": [], "recommended_indexes": []}
+    if selected_sql is not None:
+        try:
+            query_tuning = analyze_query_performance(selected_sql)
+        except Exception:
+            query_tuning = {"findings": [], "recommended_indexes": []}
+
+    # ③ 놓침을 시끄럽게(결정론): 원문 신호가 plan 에 조용히 드롭됐으면 경고(rules/auto 항상, 비차단).
+    try:
+        dropped_signal_warnings = _deterministic_dropped_conditions(original_query or query, query_plan)
+    except Exception:
+        dropped_signal_warnings = []
+
     return {
         "sql": selected_sql,
         "target_connection": target_connection,
@@ -7438,7 +7977,13 @@ def build_sql_result(
         "required_conditions": required_conditions,
         "input_validation": input_validation,
         "missing_input_conditions": [],
-        "clarification_questions": [],
+        "clarification_questions": clarification_questions,
+        # 의미 검증 게이트 판정(트레이스/디버깅용): {ran, faithful, issues}. ran=False 면 게이트 미실행.
+        "semantic_verification": semantic_verification,
+        # 쿼리 성능 튜닝 자문(비차단): {findings, recommended_indexes}. 출고 SQL 이 없으면 빈 결과.
+        "query_tuning": query_tuning,
+        # ③ 결정론 드롭 경고: 원문 신호가 plan 에 안 잡힌 조건 목록(비차단 자문).
+        "dropped_signal_warnings": dropped_signal_warnings,
         "unsupported_conditions": unsupported_conditions,
         "unsupported_condition_labels": unsupported_condition_labels,
         "dropped_conditions": dropped_conditions,
@@ -8535,6 +9080,14 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
         other_predicates.append(_cart_absence_predicate())
         labels.append("cart_absence"); has_signal = True
 
+    # 구매 미발생 기간('최근 N일 미구매'): 회원키 NOT EXISTS anti-join 이라 cart_absence/캠페인 반응처럼
+    # 어느 빌더에나 AND 결합된다. 여기서 방출해야 '장바구니 보유 + 최근 90일 미구매'처럼 다른 팩트 빌더
+    # (카트)가 이기는 조합에서도 미구매 조건이 살아남는다. order_count 빌더와 동일 문자열이라 dedup 됨.
+    purchase_inactivity = target_user.get("purchase_inactivity")
+    if isinstance(purchase_inactivity, dict) and isinstance(purchase_inactivity.get("min_days"), int):
+        other_predicates.append(_purchase_inactivity_predicate(purchase_inactivity["min_days"]))
+        labels.append(f"purchase_inactive_{purchase_inactivity['min_days']}d"); has_signal = True
+
     # 신규 가입 타겟(REG_DT 최근 N일 창). signup_target(창 파싱) 또는 lifecycle 'new_user'(LLM 라벨)
     # 어느 쪽이든 트리거하고 하나의 술어로 합친다. 창은 signup_target.days > default_days 순으로 결정.
     signup_target = target_user.get("signup_target")
@@ -8877,11 +9430,13 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
     compiled = compile_member_target_conditions(query_plan)
     where_clauses: list[str] = []
     if has_object:
-        # 사용자가 '브랜드'를 명시했거나 값이 실DB 브랜드명으로 확정된 경우, 광역 6컬럼 LIKE 대신
-        # BRAND_NAME 만 매칭한다 — 카테고리/상품명에 같은 문자열이 우연히 들어간 상품이 섞이는 것 방지.
-        if target_user.get("purchase_object_kind") == "brand":
+        # 사용자가 '브랜드'/'상품명'을 명시했거나 값이 실DB 브랜드명으로 확정된 경우, 광역 6컬럼 LIKE
+        # 대신 해당 컬럼(BRAND_NAME / PRODUCT_NAME)만 매칭한다 — 카테고리 등 다른 컬럼에 같은 문자열이
+        # 우연히 들어간 상품이 섞이는 것 방지. 애매하게 상품어만 말하면 광역 6컬럼 LIKE 를 유지한다.
+        _kind_column = {"brand": "BRAND_NAME", "product": "PRODUCT_NAME"}.get(target_user.get("purchase_object_kind"))
+        if _kind_column:
             match_columns = tuple(
-                column for column in _PURCHASE_PRODUCT_MATCH_COLUMNS if column.rsplit(".", 1)[-1] == "BRAND_NAME"
+                column for column in _PURCHASE_PRODUCT_MATCH_COLUMNS if column.rsplit(".", 1)[-1] == _kind_column
             ) or _PURCHASE_PRODUCT_MATCH_COLUMNS
         else:
             match_columns = _PURCHASE_PRODUCT_MATCH_COLUMNS
@@ -9747,11 +10302,7 @@ def build_order_count_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[
         where_clauses = list(compiled["predicates"])
         if not compiled["forces_state"]:
             where_clauses.append(_member_active_state_predicate())
-        cutoff = f"CONVERT(CHAR(8), DATEADD(DAY, -{min_days}, GETDATE()), 112)"
-        where_clauses.append(
-            f"NOT EXISTS (SELECT 1 FROM {table} O WHERE O.{join_column} = B.{join_column} "
-            f"AND O.{order_date_column} >= {cutoff})"
-        )
+        where_clauses.append(_purchase_inactivity_predicate(min_days))
         segment = f"purchase_inactive_{min_days}d"
         select_columns = [
             "DISTINCT B.MEMBER_NO AS CUST_ID",
@@ -10514,9 +11065,162 @@ def render_stage_log(stage_log: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+# 트레이스 화면 10단계 메타. (step, 한글 단계명, 기술명, method['혼합'=LLM 사용 / '규칙'=결정론]).
+# retrieve() 내부에서 실제로 따로 실행·계측되는 단계들을 사용자용 10단계로 노출한다.
+_TRACE_STAGES_META: tuple[tuple[int, str, str, str], ...] = (
+    (1, "프롬프트 재작성", "정규화·재작성 (normalize_prompt)", "혼합"),
+    (2, "타겟/채널 분리", "스코프 분리 (split_prompt_scopes)", "혼합"),
+    (3, "질의 계획 수립", "Query Plan (build_query_plan)", "혼합"),
+    (4, "상품·구매이력 추출", "타겟 오브젝트 추출 (정규식+LLM)", "혼합"),
+    (5, "값 해석(브랜드→코드)", "디멘션 값 해석 (DS_SQL)", "규칙"),
+    (6, "집합식 파싱", "집합식 (parse_set_expressions)", "규칙"),
+    (7, "지식그래프 검색", "벡터+키워드+Graph 확장 (GraphRAG)", "혼합"),
+    (8, "타겟팅 SQL 생성", "SQL 생성 (Template+LLM)", "혼합"),
+    (9, "SQL 안전 검증", "sql_guard + 의미 검증", "혼합"),
+    (10, "실행·결과", "DB 실행", "규칙"),
+)
+
+# timings_ms 키 → 그 키가 있으면 '완료된' 단계 번호들. 부분 트레이스에서 어디까지 갔는지 판정한다.
+# (2·4·5·6 은 build_query_plan 안에서 함께 수행되므로 query_plan 계측 하나로 묶어 완료 판정한다.)
+_TRACE_TIMING_TO_STEPS: tuple[tuple[str, tuple[int, ...]], ...] = (
+    ("prompt_normalization", (1,)),
+    ("prompt_scopes", (2,)),
+    # 2·4·5·6 중 3~6 은 build_query_plan 안에서 함께 수행되므로 query_plan 계측 하나로 완료 판정한다.
+    ("query_plan", (3, 4, 5, 6)),
+    ("vector_search", (7,)),
+    ("keyword_search", (7,)),
+    ("context_assembly", (7,)),
+    ("sql_generation", (8, 9)),
+)
+
+
+# target_user 중 '상품·구매이력' 단계(4)로 보낼 키. 나머지는 '질의 계획'(3)의 프로필 조건으로 본다.
+_PURCHASE_PLAN_KEYS = {
+    "aggregate_conditions", "cart_aggregate", "purchase_objects", "sales_objects",
+    "target_objects", "purchase_history", "purchase_object", "sales_object",
+}
+
+
+def _trace_line(value: Any) -> str:
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+# 단계별 참조 자산(프롬프트/데이터/모델). 화면 "참조" 배지로 노출한다 — 어느 프롬프트·docs/data 를
+# 근거로 그 단계가 동작하는지 사용자가 바로 알 수 있게. (정적 매핑 — 실제 로딩 경로는 코드 주석 참고.)
+_TRACE_STAGE_REFS: dict[int, tuple[dict[str, str], ...]] = {
+    1: (
+        {"kind": "프롬프트", "name": "prompt_normalize_system.txt"},
+        {"kind": "프롬프트", "name": "prompt_rewrite_system.txt"},
+        {"kind": "데이터", "name": "normalization_rules.sample.json"},
+        {"kind": "모델", "name": "{model}"},
+    ),
+    2: (
+        {"kind": "프롬프트", "name": "prompt_scope_split_system.txt"},
+        {"kind": "모델", "name": "{model}"},
+    ),
+    3: (
+        {"kind": "프롬프트", "name": "query_plan_system.txt"},
+        {"kind": "프롬프트", "name": "query_plan_examples.txt"},
+        {"kind": "프롬프트", "name": "query_plan_user.txt"},
+        {"kind": "데이터", "name": "targeting_lexicon.json"},
+        {"kind": "데이터", "name": "metric_lexicon.sample.json"},
+        {"kind": "데이터", "name": "schema_catalog.json"},
+        {"kind": "모델", "name": "{model} (tool calling)"},
+    ),
+    4: (
+        {"kind": "프롬프트", "name": "target_object_extract_system.txt"},
+        {"kind": "데이터", "name": "schema_catalog.json"},
+        {"kind": "데이터", "name": "member_metrics.json"},
+        {"kind": "모델", "name": "{model} (폴백)"},
+    ),
+    5: (
+        {"kind": "데이터", "name": "dimension_catalog.sample.json"},
+        {"kind": "데이터", "name": "member_value_index.json"},
+        {"kind": "데이터", "name": "member_target_filters.json"},
+    ),
+    6: (
+        {"kind": "데이터", "name": "normalization_rules.sample.json"},
+    ),
+    7: (
+        {"kind": "데이터", "name": "rag_knowledge_base.json"},
+        {"kind": "데이터", "name": "sql_examples.sample.sql"},
+        {"kind": "모델", "name": "{embed_model}"},
+        {"kind": "인프라", "name": "Qdrant"},
+    ),
+    8: (
+        {"kind": "데이터", "name": "schema_catalog.json"},
+        {"kind": "데이터", "name": "member_target_filters.json"},
+        {"kind": "프롬프트", "name": "(LLM 폴백 인라인)"},
+        {"kind": "모델", "name": "{model} (폴백)"},
+    ),
+    9: (
+        {"kind": "데이터", "name": "schema_catalog.json"},
+        {"kind": "프롬프트", "name": "(의미검증 인라인)"},
+        {"kind": "모델", "name": "{model} (의미검증)"},
+    ),
+    10: (
+        {"kind": "데이터", "name": "schema_catalog.json (커넥션 판별)"},
+    ),
+}
+
+
+def _trace_stage_shell(step: int, name: str, tech_name: str, method: str, status: str) -> dict[str, Any]:
+    shell: dict[str, Any] = {"step": step, "name": name, "tech_name": tech_name, "method": method, "status": status}
+    refs = _TRACE_STAGE_REFS.get(step)
+    if refs:
+        # 모델명은 하드코딩하지 않고 실제 설정을 읽는다(OPENAI_MODEL / QDRANT_EMBEDDING_MODEL).
+        # 경량 단계(1·2·4·9)는 fast 모델(gpt-4o-mini)로, 나머지 LLM 단계는 메인 모델로 표기 —
+        # 실제 호출 라우팅(_fast_llm_model)과 배지를 일치시킨다.
+        main_model = os.getenv("OPENAI_MODEL") or DEFAULT_LLM_MODEL
+        model = (os.getenv("OPENAI_FAST_MODEL") or "gpt-4o-mini") if step in _TRACE_FAST_MODEL_STEPS else main_model
+        embed_model = os.getenv("QDRANT_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL
+        shell["refs"] = [
+            {**ref, "name": ref["name"].replace("{model}", model).replace("{embed_model}", embed_model)}
+            for ref in refs
+        ]
+    return shell
+
+
+def build_partial_retrieve_trace(query: str, timings_ms: dict[str, Any], error_message: str) -> dict[str, Any]:
+    """retrieve() 가 중간에 예외로 죽었을 때, 그때까지 채워진 timings_ms 로 '오류 전까지'의 부분 트레이스를 만든다.
+
+    완료된 단계는 status=ok, 처음으로 도달하지 못한 단계는 status=fail(여기서 막힘), 그 이후는 skipped.
+    실제 예외 지점을 timings_ms 계측 단위(정규화/Query Plan/검색/SQL 생성)로만 좁힐 수 있어, 그 묶음의 첫
+    단계에 오류를 귀속한다(예: Query Plan LLM 파싱 실패 → '질의 계획 수립'에 표시)."""
+    completed: set[int] = set()
+    for key, steps in _TRACE_TIMING_TO_STEPS:
+        if timings_ms.get(key) is not None:
+            completed.update(steps)
+
+    stages: list[dict[str, Any]] = []
+    error_marked = False
+    for step, name, tech_name, method in _TRACE_STAGES_META:
+        if step in completed:
+            status = "ok"
+        elif not error_marked and step != 10:
+            status, error_marked = "fail", True
+        else:
+            status = "skipped"  # 오류 이후 단계이거나(도달 못함), 실행 전 중단된 10단계
+        shell = _trace_stage_shell(step, name, tech_name, method, status)
+        if status == "fail":
+            shell["summary"] = "이 단계에서 처리가 중단되었습니다"
+            shell["details"] = [f"오류: {error_message}"]
+        elif status == "skipped" and step != 10:
+            shell["summary"] = "앞 단계 오류로 실행되지 않음"
+        stages.append(shell)
+
+    return {
+        "query": query,
+        "partial": True,
+        "stages": stages,
+        "timings_ms": timings_ms,
+        "result": {"status": "error", "message": f"처리 중 오류가 발생했습니다: {error_message}"},
+    }
+
+
 def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
-    """retrieve() 결과를 '의미추론 → 벡터검색 → 키워드검색 → Graph확장 → SQL생성/검증'
-    단계별 트레이스로 재구성한다(시연/디버깅용). LLM 호출 없이 결정론적으로 동작."""
+    """retrieve() 결과를 사용자용 10단계 트레이스(프롬프트 재작성 → … → 실행·결과)로 재구성한다.
+    각 단계에 method(혼합/규칙)·status(ok/info/fail/skipped)를 붙인다. LLM 호출 없이 결정론적으로 동작."""
     query_plan = result.get("query_plan", {})
     sql_result = result.get("sql_result", {})
     api_response = result.get("api_response", {})
@@ -10592,77 +11296,143 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
         match for match in query_plan.get("matched_terms", []) if _is_targeting_match(match)
     ]
 
+    # ── 단계별 페이로드 준비 ─────────────────────────────────────────────────────
+    tu = {key: value for key, value in target_user.items() if value not in (None, [], {})}
+    tu_purchase = {k: v for k, v in tu.items() if k in _PURCHASE_PLAN_KEYS}
+    tu_profile = {k: v for k, v in tu.items() if k not in _PURCHASE_PLAN_KEYS}
+    set_expressions = query_plan.get("set_expressions", []) or []
+    dimension_filters = query_plan.get("dimension_filters", []) or []
+    semantic_resolutions = query_plan.get("semantic_resolutions", []) or []
+    semantic_verification = sql_result.get("semantic_verification", {"ran": False}) or {"ran": False}
+    failure_stage = _classify_failure_stage(sql_result.get("failure_reason"), sql_result)
+    cart_context = query_plan.get("cart_context")
+    corrections = prompt_normalization.get("corrections", []) or []
+    vcount = len(result.get("vector_matches", []))
+    kcount = len(result.get("keyword_matches", []))
+    gcount = len(graph_rows)
+    selected_sql = sql_result.get("sql")
+    is_success = sql_result.get("is_success")
+
+    def _stage(step: int, status: str, **payload: Any) -> dict[str, Any]:
+        _, name, tech_name, method = _TRACE_STAGES_META[step - 1]
+        stage = _trace_stage_shell(step, name, tech_name, method, status)
+        # 빈 값(None/[]/{}/"")은 화면에 노이즈라 떨어뜨린다. 0/False 는 의미가 있어 남긴다.
+        stage.update({k: v for k, v in payload.items() if v not in (None, [], {}, "")})
+        return stage
+
+    # 후보별 검증 플래그(9단계) 한 줄 요약.
+    candidate_flag_lines = []
+    for candidate in candidate_rows:
+        parts = []
+        for label, key in (("guard", "guard_valid"), ("coverage", "coverage_ok"), ("scope", "intent_scope_ok"), ("unmentioned", "unmentioned_ok"), ("eligible", "is_eligible")):
+            val = candidate.get(key)
+            if val is not None:
+                parts.append(f"{label}={'✓' if val else '✗'}")
+        candidate_flag_lines.append(f"candidate {candidate.get('id')}: {' '.join(parts)}".rstrip())
+
+    stages = [
+        _stage(
+            1, "info",
+            description="고객 문장의 오타·표현을 시스템이 이해할 표준 문장으로 다시 씁니다(LLM 재작성).",
+            summary=prompt_normalization.get("summary") or None,
+            plain=[line for line in [
+                f"입력: {prompt_normalization.get('original', result.get('query'))}",
+                f"재작성: {prompt_normalization.get('normalized', result.get('query'))}",
+            ] if line],
+            details=[f"교정: {_trace_line(c)}" for c in corrections],
+        ),
+        _stage(
+            2, "info",
+            description="재작성 문장을 '누구를(타겟)' 절과 '무엇을 보낼지(채널·혜택)' 절로 나눕니다.",
+            plain=[line for line in [
+                f"타겟 절: {prompt_scopes.get('targeting')}" if prompt_scopes.get("targeting") else None,
+                f"채널 절: {prompt_scopes.get('channel')}" if prompt_scopes.get("channel") else None,
+                None if (prompt_scopes.get("targeting") or prompt_scopes.get("channel")) else "분리 없음 — 전체 문장을 타겟 절로 사용",
+            ] if line],
+            details=[f"scope_mode={prompt_scopes.get('mode')}"] if prompt_scopes.get("mode") else [],
+        ),
+        _stage(
+            3, "info",
+            summary=f"intent={query_plan.get('intent')}" if query_plan.get("intent") else None,
+            description="타겟 절을 성별·연령·등급·지역·생애주기 같은 조건(Query Plan)으로 구조화합니다.",
+            plain=[f"‘{m.get('matched_text')}’ → {m.get('canonical')}" for m in targeting_matched_terms if m.get("matched_text") and m.get("canonical")],
+            details=[f"{k}: {_trace_line(v)}" for k, v in tu_profile.items()],
+        ),
+        _stage(
+            4, "info" if (tu_purchase or cart_context) else "skipped",
+            description="상품 구매·판매 이력, 장바구니 같은 행동 조건을 추출합니다(정규식 우선, LLM 폴백).",
+            plain=None if (tu_purchase or cart_context) else ["구매·상품 관련 조건 없음"],
+            details=[f"{k}: {_trace_line(v)}" for k, v in tu_purchase.items()]
+                    + ([f"cart_context: {_trace_line(cart_context)}"] if cart_context else []),
+        ),
+        _stage(
+            5, "info" if (dimension_filters or semantic_resolutions) else "skipped",
+            description="브랜드·지역 같은 표기를 실DB 코드(DS_SQL)로 변환합니다(결정론).",
+            plain=[
+                f"{d.get('prompt_label') or d.get('dimension_id')} → {', '.join(map(str, d.get('codes', []))) or _trace_line(d.get('names', []))}"
+                for d in dimension_filters
+            ] or (None if not semantic_resolutions else ["의미 해석 규칙 적용"]),
+            details=[f"dimension: {_trace_line(d)}" for d in dimension_filters]
+                    + [f"semantic: {_trace_line(s)}" for s in semantic_resolutions],
+        ),
+        _stage(
+            6, "info" if set_expressions else "skipped",
+            description="‘A 또는 B’·‘A이면서 B’ 같은 집합 연산을 파싱해 SQL 술어로 만듭니다(결정론).",
+            plain=None if set_expressions else ["집합식 없음"],
+            details=[f"{e.get('ko_label') or e.get('expression_id')}: {_trace_line(e.get('set_ast'))}" for e in set_expressions],
+        ),
+        _stage(
+            7, "info",
+            summary=f"벡터 {vcount} · 키워드 {kcount} → 확장 {gcount}",
+            description="벡터(의미)·키워드(글자) 검색으로 지식을 찾고 관계 그래프로 확장합니다.",
+            plain=[f"AI 유사도 검색 {vcount}건, 키워드 검색 {kcount}건에서 출발해 관계 그래프로 {gcount}건까지 넓혔습니다."],
+            hits=graph_rows,
+            count=gcount,
+            seed_count=len(result.get("seed_matches", [])),
+            details=[f"vector: {_trace_line(h.get('id'))} ({h.get('score')})" for h in result.get("vector_matches", [])[:5]]
+                    + [f"keyword: {_trace_line(h.get('id'))} ({h.get('score')})" for h in result.get("keyword_matches", [])[:5]],
+        ),
+        _stage(
+            8, "ok" if selected_sql else "info",
+            summary=f"후보 {len(candidate_rows)}개" + (" · 선택됨" if selected_sql else " · 미선택"),
+            description="모은 조건으로 대상 고객을 뽑는 조회문(SQL)을 만듭니다(템플릿, 실패 시 LLM 폴백).",
+            plain=[line for line in [
+                f"조건 토큰 {len(sql_result.get('condition_tokens', []))}개로 SQL 후보 {len(candidate_rows)}개를 만들었습니다.",
+                "검증 통과 SQL이 선택되었습니다." if selected_sql else "선택된 SQL이 아직 없습니다(다음 단계에서 사유 표시).",
+            ] if line],
+            details=[line for line in [
+                "condition_tokens: " + ", ".join(t.get("path") for t in sql_result.get("condition_tokens", []) if t.get("path")),
+                "required_conditions: " + ", ".join(c.get("path") for c in sql_result.get("required_conditions", []) if c.get("path")),
+            ] if line.split(": ", 1)[-1]]
+                    + [f"candidate {c.get('id')}: tables={','.join(c.get('tables', []))}" for c in candidate_rows],
+        ),
+        _stage(
+            9, "ok" if is_success else "fail",
+            summary="검증 통과" if is_success else ("검증 실패 · " + (failure_stage.get("label") if failure_stage else str(sql_result.get("failure_reason")))),
+            description="생성된 SQL이 허용 테이블·컬럼만 쓰는지, 요청 의도와 어긋나지 않는지 자동 점검합니다.",
+            plain=[line for line in [
+                "안전 검증을 통과했습니다." if is_success else (f"‘{failure_stage.get('label')}’ 단계에서 막혔습니다." if failure_stage else "검증에서 막혔습니다."),
+                (f"의미 검증: {'원문과 일치' if semantic_verification.get('faithful') else '불일치(확인 필요)'}") if semantic_verification.get("ran") else None,
+            ] if line],
+            details=candidate_flag_lines
+                    + ([f"semantic_verification: ran={semantic_verification.get('ran')} faithful={semantic_verification.get('faithful')} issues={_trace_line(semantic_verification.get('issues', []))}"] if semantic_verification.get("ran") else [])
+                    + ([f"failure_reason: {sql_result.get('failure_reason')}"] if sql_result.get("failure_reason") else []),
+            failure_stage=failure_stage,
+        ),
+        # 10단계(실행·결과)는 엔드포인트가 execute 후 채운다. 여기선 대기 상태로 둔다.
+        _stage(
+            10, "skipped",
+            summary="실행 대기",
+            description="확정된 SQL을 실DB에서 실행해 대상 고객 수를 집계합니다.",
+        ),
+    ]
+
     return {
         "query": result.get("query"),
         "collection": result.get("collection"),
         "retrieval_scope": result.get("retrieval_scope"),
         "prompt_scopes": prompt_scopes,
-        "stages": [
-            {
-                "step": 1,
-                "name": "요청 이해 — 고객 문장을 조건으로 해석",
-                "description": "고객이 입력한 문장을 시스템이 쓰는 표준 용어·검색어·타겟 조건으로 바꾸는 단계입니다.",
-                "tech_name": "의미 추론 (Query Planning / Normalization)",
-                "intent": query_plan.get("intent"),
-                "original_prompt": prompt_normalization.get("original", result.get("query")),
-                "normalized_prompt": prompt_normalization.get("normalized", result.get("query")),
-                # 실제 파싱(Query Plan/SQL)에 사용한 문장. 타겟팅 스코프면 오디언스(타겟팅) 절만 쓴다.
-                "planning_prompt": query_plan.get("planning_query", prompt_normalization.get("normalized", result.get("query"))),
-                # 정규화 프롬프트를 타겟팅(오디언스)/채널(발송·메시지) 절로 분리한 결과.
-                "prompt_scopes": prompt_scopes,
-                "applied_scope": result.get("retrieval_scope"),
-                "targeting_terms": retrieval.get("targeting_terms", []),
-                "channel_terms": retrieval.get("channel_terms", []),
-                # 타겟팅 절에서 나온 매칭만 표시(캠페인 목표·채널 절 매칭은 제외).
-                "matched_terms": targeting_matched_terms,
-                "semantic_resolutions": query_plan.get("semantic_resolutions", []),
-                "target_user": {key: value for key, value in target_user.items() if value not in (None, [], {})},
-                "dimension_filters": query_plan.get("dimension_filters", []),
-                "cart_context": query_plan.get("cart_context"),
-                "retrieval_query": retrieval.get("query"),
-                # 검색어도 타겟팅 스코프 기준으로 표시(전체 문장 토큰이 아니라 오디언스 검색어).
-                "retrieval_terms": retrieval.get("targeting_terms", retrieval.get("terms", [])),
-            },
-            {
-                "step": 2,
-                "name": "비슷한 의미의 지식 찾기 — AI 유사도 검색",
-                "description": "뜻이 가까운 용어·규칙·예시를 AI가 의미 기반으로 찾아옵니다. 단어가 달라도 뜻이 비슷하면 잡힙니다.",
-                "tech_name": "벡터 검색 (Dense / Qdrant)",
-                "count": len(result.get("vector_matches", [])),
-                "hits": _hit_rows(result.get("vector_matches", [])),
-            },
-            {
-                "step": 3,
-                "name": "같은 단어의 지식 찾기 — 키워드 검색",
-                "description": "입력한 단어와 글자가 실제로 일치하는 용어·예시를 찾습니다. 2단계(의미)와 서로 보완합니다.",
-                "tech_name": "키워드 검색 (Lexical over graph)",
-                "count": len(result.get("keyword_matches", [])),
-                "hits": _hit_rows(result.get("keyword_matches", [])),
-            },
-            {
-                "step": 4,
-                "name": "찾은 지식 연결·확장 — 관계 그래프",
-                "description": "2·3단계에서 찾은 항목을 출발점으로, 연결된 테이블·컬럼까지 관계를 타고 넓혀 필요한 재료를 모읍니다.",
-                "tech_name": "병합 + Graph 확장 (GraphRAG)",
-                "seed_count": len(result.get("seed_matches", [])),
-                "context_count": len(graph_rows),
-                "context_nodes": graph_rows,
-            },
-            {
-                "step": 5,
-                "name": "대상 추출 쿼리 만들기·검증 — 최종 SQL",
-                "description": "모은 조건으로 고객을 뽑아내는 조회문(SQL)을 만들고, 요청과 어긋나지 않는지 자동 점검한 뒤 확정합니다.",
-                "tech_name": "SQL 생성 / 검증 (Template + sql_guard)",
-                "condition_tokens": [token.get("path") for token in sql_result.get("condition_tokens", [])],
-                "required_conditions": [condition.get("path") for condition in sql_result.get("required_conditions", [])],
-                "candidates": candidate_rows,
-                "selected_sql": sql_result.get("sql"),
-                "target_connection": sql_result.get("target_connection"),
-                "target_dialect": sql_result.get("target_dialect"),
-                "is_success": sql_result.get("is_success"),
-                "failure_reason": sql_result.get("failure_reason"),
-            },
-        ],
+        "stages": stages,
         "stage_log": result.get("stage_log", []),
         "result": {
             "status": api_response.get("status"),
@@ -10672,6 +11442,33 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
         },
         "timings_ms": result.get("timings_ms", {}),
     }
+
+
+def apply_execution_to_trace(trace: dict[str, Any], execution: dict[str, Any]) -> None:
+    """execute_target_sql 결과를 트레이스 10단계(실행·결과)에 반영한다(엔드포인트에서 호출)."""
+    targeting_result = execution.get("targeting_result", {}) or {}
+    count = targeting_result.get("target_customer_count")
+    ok = execution.get("is_success")
+    for stage in trace.get("stages", []):
+        if stage.get("step") != 10:
+            continue
+        stage["status"] = "ok" if ok else "fail"
+        stage["summary"] = (
+            f"대상 {count:,}명" if isinstance(count, int)
+            else ("실행 성공" if ok else "실행 실패")
+        )
+        details = []
+        if targeting_result.get("result_row_count") is not None:
+            details.append(f"result_row_count={targeting_result.get('result_row_count')}")
+        if targeting_result.get("target_campaign_count") is not None:
+            details.append(f"target_campaign_count={targeting_result.get('target_campaign_count')}")
+        if execution.get("cardinality_diagnostic"):
+            details.append(f"cardinality={_trace_line(execution.get('cardinality_diagnostic'))}")
+        if execution.get("error"):
+            details.append(f"error={_trace_line(execution.get('error'))}")
+        if details:
+            stage["details"] = details
+        break
 
 
 def graph_stats(graph: nx.Graph) -> dict[str, Any]:

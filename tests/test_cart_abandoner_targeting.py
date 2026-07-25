@@ -66,6 +66,31 @@ def test_cart_abandoner_with_member_attribute_combines():
     assert "B.GENDER_CD = 'GENDER_CD.FEMALE'" in cand["sql"]
 
 
+# ── '장바구니 보유' 표현 + '최근 N일 미구매'가 카트 SQL 에 함께 결합된다 ────────────────────
+def test_cart_hold_phrasing_detected():
+    # '장바구니를 보유하고'(조사 '를' + '보유' 동사)도 카트 존재로 잡힌다 — '장바구니에 담긴'만 알던 버그.
+    assert "cart_abandoner" in _plan("장바구니를 보유한 회원")["target_user"]["behaviors"]
+
+
+def test_recent_inactivity_particle_between_purchase_and_negation():
+    # '구매가 없는'(조사 '가' 삽입)도 최근 N일 미구매로 잡힌다 — '구매없'만 알던 버그.
+    tu = _plan("최근 90일 이내 구매가 없는 회원")["target_user"]
+    assert isinstance(tu.get("purchase_inactivity"), dict) and tu["purchase_inactivity"]["min_days"] == 90
+
+
+def test_cart_hold_and_recent_inactivity_combine_in_one_sql():
+    # 이번 사례: 'GOLD 이상 + 장바구니 보유 + 최근 90일 미구매'가 한 SQL 에 전부 결합돼야 한다.
+    # 카트 빌더가 이기더라도 미구매 NOT EXISTS 가 조용히 누락되면 안 된다.
+    plan = _plan("GOLD 이상 회원 중 장바구니를 보유하고 최근 90일 이내 구매가 없는 회원을 추출해줘.")
+    cand = g.build_sql_template_candidate(plan)
+    assert cand is not None
+    sql = cand["sql"]
+    assert "FROM ODS_MALL_OMS_CART A" in sql and "A.KEEP_YN = 'Y'" in sql
+    assert "B.EMART_GRADE_CD IN ('MEM_GRADE_CD.GOLD', 'MEM_GRADE_CD.VIP')" in sql
+    assert "NOT EXISTS (SELECT 1 FROM CRM_SL_ORDERHEADERMALL O" in sql and "DATEADD(DAY, -90, GETDATE())" in sql
+    assert not cand.get("dropped_condition_labels")
+
+
 # ── 장바구니 개수/수량 임계값("N개 이상 담은") ──────────────────────────────────────────
 def test_cart_line_count_threshold_builds_sql():
     plan = _plan("장바구니에 3개 이상 상품을 담은 회원만 조회해줘.")
