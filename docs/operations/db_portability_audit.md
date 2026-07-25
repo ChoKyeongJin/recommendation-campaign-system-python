@@ -141,10 +141,10 @@ python init_rag_collections.py --recreate     # Qdrant 재색인
 
 모범 참조: `sql_guard.py`(카탈로그 로드 방식), `targeting_ir.py`(논리 개념만), `sql_ast.py`.
 
-### DB 스왑 절차(현재 기준)
+### DB 스왑 절차
 
-1. `.env` 접속정보 교체 + `.mcp.json`/schema_catalog `databases`·`database` 필드 갱신
-2. `member_target_filters.json` 재매핑(테이블/컬럼/코드값/조인 — base_entity.dialect 로 방언 명시 가능)
-   + `member_metrics.json`, `sql_examples.sample.sql`
-3. §2 재생성 시퀀스 실행(카탈로그 5종) — 단 §2 캐비앗의 빌더 내부 하드코딩 손질 포함
-4. 소스는 원칙적으로 무수정 — A/B/C 이후 남은 결합은 §5-2 '잔여' 항목뿐
+차례대로 된 실행 런북은 **[db_swap_runbook.md](db_swap_runbook.md)** 에 있다(양 레포 + preflight 게이트).
+요약: ① 접속정보 → ② 카탈로그 테이블 집합/`database` → ③ `schema_extract.py --refresh-external`
+→ ④ `member_target_filters.json` 재매핑 → ⑤ `db_swap_preflight.py --check-db`(게이트, 통과까지 ④↔⑤)
+→ ⑥ 빌더 체인 + `init_rag_collections.py --recreate` → ⑦ 재기동·스모크 → ⑧ 프론트 무수정.
+소스는 원칙적으로 무수정 — 남은 결합은 §5-2 '잔여' 항목뿐.
