@@ -91,6 +91,24 @@ docker compose exec -w /app python python schema_extract.py --refresh-external
 > (`_member_table`/`_member_from_clause`/`_cart_from_join_lines` 등). 새 설정 섹션은 JSON에만
 > 추가하면 로더가 전부 싣는다(죽은설정 함정 수정됨).
 
+**`docs/data` 전체 분류 — 무엇을 손대고 무엇은 안 건드리나** (위 3개 외 나머지가 "빠진" 게 아니라
+손댈 필요가 없거나 데모 잔재이기 때문):
+
+| 파일 | 결합 대상 | 스왑 시 |
+|---|---|---|
+| `member_target_filters.json` · `member_metrics.json` · `sql_examples.sample.sql` | 실 CRM 테이블/컬럼/코드값 | **수동 ④ 필수** |
+| `schema_catalog.json` | 실DB 테이블 목록·구조 | 수동 ② + 자동 ③ |
+| `business_policies.sample.json` · `metric_lexicon.sample.json` | **데모 스키마(users/campaigns)** | 데모 잔재 — 아래 ※ |
+| `normalization_rules.sample.json` · `targeting_lexicon.json` | 스키마 중립(언어) | 손댈 것 없음 |
+| `rag_knowledge_base.json` · `member_value_index.json` · `dimension_catalog.sample.json` · `table_relationships.md` | 파생물 | 자동 ⑥/③ |
+| `metadata_ddl.sql` | 로컬 메타DB(실DB 아님) | 무관 |
+
+> ※ **데모 잔재**: `business_policies.sample.json`/`metric_lexicon.sample.json` 은 아직 `users`/`campaigns`
+> 데모 스키마만 참조한다(실 CRM 테이블 0). `_apply_policy_constraints`/`parse_computed_metrics_from_query`
+> 로 매 질의에 로드되지만, 그 결과(policy_constraints/computed_metrics)는 실회원 SQL 경로에서
+> `unsupported` 로 처리돼 **실제 타겟 결과엔 영향이 없다**(지금도 실DB와 안 맞은 채 정상 동작). 즉 DB
+> 스왑이 만드는 작업이 아니라, 정책·공식 기능을 실DB로 쓰려 할 때만 별도로 재작성하는 분리된 과제다.
+
 ## 5. 프리플라이트 게이트 (④↔⑤ 반복)
 
 레지스트리가 참조하는 테이블/컬럼이 카탈로그(그리고 실DB)에 실재하는지 배포 전에 검증한다.
