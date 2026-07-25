@@ -38,6 +38,7 @@ from graph_rag import (
     render_message_prompt,
     retrieve,
 )
+from common_utils import elapsed_ms as _elapsed_ms
 from sql_dialect import dialect_for_connection
 from sql_guard import DEFAULT_LIMIT, DEFAULT_SCHEMA_PATH
 
@@ -332,18 +333,13 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
     graph = getattr(app.state, "graph", None)
     if graph is None:
         startup_error = getattr(app.state, "startup_error", "graph_not_loaded")
-        _save_query_failure_log(
-            {
-                "endpoint": "target_sql",
-                "prompt": request.prompt,
-                "query_parser": request.query_parser,
-                "api_status": "service_unavailable",
-                "failure_stage": "startup",
-                "failure_reason": "graph_not_loaded",
-                "error_detail": startup_error,
-                "request_options": _target_sql_request_options(request),
-            }
-        )
+        _save_query_failure_log(_query_failure_payload(
+            request,
+            api_status="service_unavailable",
+            failure_stage="startup",
+            failure_reason="graph_not_loaded",
+            error_detail=startup_error,
+        ))
         raise HTTPException(status_code=503, detail=startup_error)
 
     try:
@@ -378,32 +374,22 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
             )
         retrieve_elapsed_ms = _elapsed_ms(retrieve_started_at)
     except ValueError as exc:
-        _save_query_failure_log(
-            {
-                "endpoint": "target_sql",
-                "prompt": request.prompt,
-                "query_parser": request.query_parser,
-                "api_status": "bad_request",
-                "failure_stage": "retrieval",
-                "failure_reason": "invalid_request",
-                "error_detail": str(exc),
-                "request_options": _target_sql_request_options(request),
-            }
-        )
+        _save_query_failure_log(_query_failure_payload(
+            request,
+            api_status="bad_request",
+            failure_stage="retrieval",
+            failure_reason="invalid_request",
+            error_detail=str(exc),
+        ))
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
-        _save_query_failure_log(
-            {
-                "endpoint": "target_sql",
-                "prompt": request.prompt,
-                "query_parser": request.query_parser,
-                "api_status": "internal_error",
-                "failure_stage": "retrieval",
-                "failure_reason": f"target_sql_failed:{exc.__class__.__name__}",
-                "error_detail": str(exc),
-                "request_options": _target_sql_request_options(request),
-            }
-        )
+        _save_query_failure_log(_query_failure_payload(
+            request,
+            api_status="internal_error",
+            failure_stage="retrieval",
+            failure_reason=f"target_sql_failed:{exc.__class__.__name__}",
+            error_detail=str(exc),
+        ))
         raise HTTPException(status_code=500, detail=f"target_sql_failed:{exc.__class__.__name__}") from exc
 
     api_response = result["api_response"]
@@ -3140,10 +3126,6 @@ def _response_message_channel(messages: list[Any], requested_channel: str) -> st
     return "rcs" if requested_channel == "rcsSms" else requested_channel
 
 
-def _elapsed_ms(started_at: float) -> float:
-    return round((time.perf_counter() - started_at) * 1000, 2)
-
-
 def _log_timing_summary(endpoint: str, timings_ms: dict[str, Any], extra: dict[str, Any] | None = None) -> None:
     payload = {
         "endpoint": endpoint,
@@ -3206,6 +3188,29 @@ def _target_sql_request_options(request: TargetSqlRequest) -> dict[str, Any]:
         "generate_answer": request.generate_answer,
         "generate_messages": request.generate_messages,
         "message_generation_options": _message_generation_options_payload(request.message_generation_options),
+    }
+
+
+def _query_failure_payload(
+    request: TargetSqlRequest,
+    *,
+    api_status: str,
+    failure_stage: str,
+    failure_reason: str,
+    error_detail: Any = None,
+) -> dict[str, Any]:
+    """target_sql 실패 로그의 공통 헤더 — startup/bad_request/internal 예외 갈래가 상태·단계·사유·에러만
+    바꿔 재사용한다. 상수부(엔드포인트·프롬프트·파서·요청옵션)는 request 에서 파생한다. 풍부한 진단이
+    필요한 성공 경로 실패는 _target_sql_failure_payload 가 이 헤더 키에 추가 필드를 얹는다."""
+    return {
+        "endpoint": "target_sql",
+        "prompt": request.prompt,
+        "query_parser": request.query_parser,
+        "api_status": api_status,
+        "failure_stage": failure_stage,
+        "failure_reason": failure_reason,
+        "error_detail": error_detail,
+        "request_options": _target_sql_request_options(request),
     }
 
 
@@ -4517,20 +4522,38 @@ def _jsonable_value(value: Any) -> Any:
     return value
 
 
-def _database_execution_skipped(reason: str) -> dict[str, Any]:
-    return {
+def _empty_database_execution(
+    *,
+    mode: str,
+    failure_reason: str,
+    audience: dict[str, Any],
+    error: str | None = None,
+) -> dict[str, Any]:
+    """SQL 을 실행하지 않은/실패한 DB 실행 결과의 빈 스캐폴드 — skipped·error 두 변형이 mode·audience·(error)만
+    바꿔 공유한다. error 키는 원래 error 변형에만 있던 위치(failure_reason 뒤)를 그대로 보존한다.
+    성공 변형은 row_limit/cardinality 등 위치가 다른 옵션 키가 있어 별도(명시 dict)로 둔다."""
+    payload: dict[str, Any] = {
         "is_success": False,
-        "mode": "skipped",
-        "failure_reason": reason,
+        "mode": mode,
+        "failure_reason": failure_reason,
+    }
+    if error is not None:
+        payload["error"] = error
+    payload.update({
         "executed_sql": None,
         "result_columns": [],
         "rows": [],
-        "audience": _audience_skipped(reason),
+        "audience": audience,
         "targeting_result": {},
         "segment_composition": {},
         "segment_presentation": _empty_segment_presentation(),
         "campaign_context_nodes": [],
-    }
+    })
+    return payload
+
+
+def _database_execution_skipped(reason: str) -> dict[str, Any]:
+    return _empty_database_execution(mode="skipped", failure_reason=reason, audience=_audience_skipped(reason))
 
 
 def _empty_segment_presentation() -> dict[str, Any]:
@@ -4538,20 +4561,12 @@ def _empty_segment_presentation() -> dict[str, Any]:
 
 
 def _database_execution_error(reason: str, exc: Exception) -> dict[str, Any]:
-    return {
-        "is_success": False,
-        "mode": "postgres_read_only",
-        "failure_reason": reason,
-        "error": f"{exc.__class__.__name__}: {exc}",
-        "executed_sql": None,
-        "result_columns": [],
-        "rows": [],
-        "audience": _audience_error(reason, exc),
-        "targeting_result": {},
-        "segment_composition": {},
-        "segment_presentation": _empty_segment_presentation(),
-        "campaign_context_nodes": [],
-    }
+    return _empty_database_execution(
+        mode="postgres_read_only",
+        failure_reason=reason,
+        audience=_audience_error(reason, exc),
+        error=f"{exc.__class__.__name__}: {exc}",
+    )
 
 
 def _audience_skipped(reason: str) -> dict[str, Any]:

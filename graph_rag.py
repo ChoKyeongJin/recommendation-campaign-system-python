@@ -22,6 +22,7 @@ import networkx as nx
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 
+from common_utils import elapsed_ms as _elapsed_ms
 from formula_engine import DEFAULT_METRIC_LEXICON_PATH, compile_formula_ast, parse_computed_metrics_from_query, validate_formula_ast
 from set_expression_engine import parse_set_expressions_from_query
 from sql_ast import SelectAst, render_select_ast, validate_select_ast
@@ -2264,10 +2265,6 @@ def _read_prompt_from_db(filename: str) -> str | None:
 
 def _render_prompt_template(template: str, **values: str) -> str:
     return Template(template).safe_substitute(values)
-
-
-def _elapsed_ms(started_at: float) -> float:
-    return round((time.perf_counter() - started_at) * 1000, 2)
 
 
 def _query_plan_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
