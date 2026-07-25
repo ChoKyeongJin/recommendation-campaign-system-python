@@ -25,6 +25,7 @@ import os
 from contextlib import contextmanager
 from typing import Any, Iterator
 
+from sql_dialect import CONNECTION_DIALECTS
 from sql_guard import load_allowed_tables, validate_sql
 
 READ_ONLY_DBS = ("quadmax_sdz", "CRMAN", "CRMDW")
@@ -172,8 +173,10 @@ def crmdw_connection():
 # ---------------------------------------------------------------------------
 # 통합 읽기 쿼리 — read-only DB 공통 진입점
 # ---------------------------------------------------------------------------
-# DB 별 SQL 방언: MSSQL(CRMAN/CRMDW)은 tsql(TOP), 나머지는 mysql/ansi(LIMIT).
-_DB_DIALECTS = {"CRMAN": "tsql", "CRMDW": "tsql"}
+# DB 별 SQL 방언: 커넥션→방언 지식의 단일 소스는 sql_dialect.CONNECTION_DIALECTS 다
+# (docs/operations/db_portability_audit.md §4-B 통합). validate_sql 은 tsql/mysql 만
+# 구분하므로 그 두 값만 넘긴다(그 외/미등록은 None → 기존 추론 동작 유지).
+_DB_DIALECTS = {db: name for db, name in CONNECTION_DIALECTS.items() if name in ("tsql", "mysql")}
 
 
 def _assert_select_only(sql: str, dialect: str | None = None) -> str:

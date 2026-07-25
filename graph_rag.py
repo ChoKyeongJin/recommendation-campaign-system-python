@@ -284,16 +284,19 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
 
 
 def _load_member_target_filters(path: Path = DEFAULT_MEMBER_TARGET_FILTERS_PATH) -> dict[str, Any]:
-    """레지스트리 JSON 을 읽어 코드 기본값 위에 키 단위로 덮는다. 파일 부재/파손 시 기본값 그대로."""
+    """레지스트리 JSON 을 읽어 코드 기본값 위에 키 단위로 덮는다. 파일 부재/파손 시 기본값 그대로.
+
+    JSON 의 **모든** 최상위 키를 머지한다 — 예전엔 코드 기본값에 선언된 키만 골라 담아서,
+    base_entity/region_target/purchase_product_target 처럼 기본값 dict 에 없는 섹션이 파일에
+    있어도 조용히 버려지는 '죽은 설정' 함정이 있었다(boolean_filters 사례와 동일 원인).
+    단일 진실 소스는 JSON 이므로 전부 싣고, 소비 여부는 각 독자가 결정한다."""
     merged = dict(_DEFAULT_MEMBER_TARGET_FILTERS)
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return merged
     if isinstance(payload, dict):
-        for key in _DEFAULT_MEMBER_TARGET_FILTERS:
-            if key in payload:
-                merged[key] = payload[key]
+        merged.update(payload)
     return merged
 
 

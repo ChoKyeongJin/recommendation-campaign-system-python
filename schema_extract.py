@@ -360,6 +360,176 @@ def _single_column_reference(column_name: str, table_fks: dict[str, dict[str, An
     return None
 
 
+# ---------------------------------------------------------------------------
+# 외부 실DB(MSSQL/MariaDB) 카탈로그 리프레시 — DB 이식성 D단계
+# (docs/operations/db_portability_audit.md §4-D)
+#
+# 실DB 카탈로그는 '승인 테이블만 큐레이션'된 파일이라 전체 덤프가 아니라 **리프레시**가 맞다:
+# 기존 schema_catalog.json 의 테이블 집합을 각 테이블의 `database`(커넥션) 실DB에서
+# INFORMATION_SCHEMA 로 재인트로스펙션해 구조(컬럼/타입/널러블/PK/객체유형)만 갱신하고,
+# 사람이 쓴 지식(description_llm/join_hints/human_note/important/references/FK)은 보존한다.
+# 신규/삭제 컬럼과 실DB에 없는 테이블은 요약으로 보고한다. DB 스왑 시에는 테이블 집합과
+# `database` 필드를 새 DB 기준으로 고친 뒤 이 모드를 돌리면 구조가 채워진다.
+# ---------------------------------------------------------------------------
+
+
+def _external_type_label(row: dict[str, Any], dialect: str) -> str:
+    """카탈로그 표기 타입(예: 'nvarchar(100)', 'bigint'). MySQL 은 COLUMN_TYPE 이 완성형이라 그대로 쓴다."""
+    if dialect == "mysql" and row.get("full_type"):
+        return str(row["full_type"]).lower()
+    data_type = str(row.get("data_type") or "").lower()
+    char_len = row.get("char_len")
+    if data_type in ("varchar", "nvarchar", "char", "nchar", "binary", "varbinary") and char_len is not None:
+        return f"{data_type}(max)" if int(char_len) == -1 else f"{data_type}({int(char_len)})"
+    num_prec, num_scale = row.get("num_prec"), row.get("num_scale")
+    if data_type in ("decimal", "numeric") and num_prec is not None:
+        return f"{data_type}({int(num_prec)},{int(num_scale or 0)})"
+    return data_type
+
+
+def _in_placeholders(count: int) -> str:
+    return ", ".join(["%s"] * count)
+
+
+def _introspect_external_tables(connection: str, table_names: list[str], dialect: str) -> dict[str, dict[str, Any]]:
+    """커넥션 실DB에서 요청 테이블들의 컬럼/PK/객체유형을 읽는다(INFORMATION_SCHEMA — MSSQL/MySQL 공통).
+
+    반환: {table_name: {"columns": [...], "primary_key": [...], "object_type": "table"|"view"}}
+    MySQL 은 같은 서버에 스키마가 여럿이라 TABLE_SCHEMA = DATABASE() 로 현재 DB 로 한정한다.
+    """
+    import db_connections as db
+
+    placeholders = _in_placeholders(len(table_names))
+    schema_filter = " AND TABLE_SCHEMA = DATABASE()" if dialect == "mysql" else ""
+    extra_type_column = ", COLUMN_TYPE AS full_type" if dialect == "mysql" else ""
+    params = tuple(table_names)
+
+    column_rows = db.run_read_query(
+        connection,
+        "SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, ORDINAL_POSITION AS ordinal, "
+        "DATA_TYPE AS data_type, CHARACTER_MAXIMUM_LENGTH AS char_len, "
+        "NUMERIC_PRECISION AS num_prec, NUMERIC_SCALE AS num_scale, IS_NULLABLE AS is_nullable"
+        f"{extra_type_column} "
+        f"FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME IN ({placeholders}){schema_filter} "
+        "ORDER BY TABLE_NAME, ORDINAL_POSITION",
+        params,
+    )
+    pk_rows = db.run_read_query(
+        connection,
+        "SELECT ku.TABLE_NAME AS table_name, ku.COLUMN_NAME AS column_name, ku.ORDINAL_POSITION AS ordinal "
+        "FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc "
+        "JOIN INFORMATION_SCHEMA.KEY_COLUMN_USAGE ku "
+        "  ON ku.CONSTRAINT_NAME = tc.CONSTRAINT_NAME AND ku.TABLE_SCHEMA = tc.TABLE_SCHEMA AND ku.TABLE_NAME = tc.TABLE_NAME "
+        f"WHERE tc.CONSTRAINT_TYPE = 'PRIMARY KEY' AND ku.TABLE_NAME IN ({placeholders})"
+        f"{schema_filter.replace('TABLE_SCHEMA', 'ku.TABLE_SCHEMA')} "
+        "ORDER BY ku.TABLE_NAME, ku.ORDINAL_POSITION",
+        params,
+    )
+    type_rows = db.run_read_query(
+        connection,
+        "SELECT TABLE_NAME AS table_name, TABLE_TYPE AS table_type "
+        f"FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME IN ({placeholders}){schema_filter}",
+        params,
+    )
+
+    result: dict[str, dict[str, Any]] = {}
+    for row in type_rows:
+        table_type = str(row.get("table_type") or "").upper()
+        result[row["table_name"]] = {
+            "columns": [],
+            "primary_key": [],
+            "object_type": "view" if "VIEW" in table_type else "table",
+        }
+    for row in pk_rows:
+        if row["table_name"] in result:
+            result[row["table_name"]]["primary_key"].append(row["column_name"])
+    for row in column_rows:
+        if row["table_name"] not in result:
+            continue
+        result[row["table_name"]]["columns"].append(
+            {
+                "name": row["column_name"],
+                "type": _external_type_label(row, dialect),
+                "nullable": str(row.get("is_nullable") or "").upper() == "YES",
+            }
+        )
+    return result
+
+
+def _merge_live_structure(meta: dict[str, Any], live: dict[str, Any]) -> dict[str, list[str]]:
+    """실DB 구조를 카탈로그 테이블 항목에 반영한다. 사람 지식(human_note/important/references)은
+    컬럼명 기준으로 보존하고, 신규 컬럼은 빈 주석으로 추가·사라진 컬럼은 제거해 보고한다."""
+    old_by_name = {column.get("name"): column for column in meta.get("columns", []) if isinstance(column, dict)}
+    live_pk = live.get("primary_key") or []
+    new_columns: list[dict[str, Any]] = []
+    for column in live["columns"]:
+        old = old_by_name.get(column["name"], {})
+        new_columns.append(
+            {
+                "name": column["name"],
+                "type": column["type"],
+                "nullable": column["nullable"],
+                "primary_key": (column["name"] in live_pk) if live_pk else bool(old.get("primary_key")),
+                "references": old.get("references"),
+                "important": bool(old.get("important", False)),
+                "human_note": old.get("human_note", ""),
+            }
+        )
+    live_names = {column["name"] for column in live["columns"]}
+    added = [name for name in live_names if name not in old_by_name]
+    removed = [name for name in old_by_name if name not in live_names]
+    meta["columns"] = new_columns
+    if live_pk:
+        meta["primary_key"] = live_pk
+    if live.get("object_type"):
+        meta["object_type"] = live["object_type"]
+    meta["description_source"] = "live_db_information_schema"
+    return {"added": sorted(added), "removed": sorted(removed)}
+
+
+def refresh_external_catalog(
+    existing_schema: dict[str, Any],
+    connection_filter: str | None = None,
+    table_filter: set[str] | None = None,
+) -> dict[str, Any]:
+    """카탈로그의 외부 실DB 테이블들을 재인트로스펙션해 구조를 갱신하고 변경 요약을 반환한다."""
+    from sql_dialect import CONNECTION_DIALECTS
+
+    tables = existing_schema.get("tables", {})
+    by_connection: dict[str, list[str]] = {}
+    for name, meta in tables.items():
+        if not isinstance(meta, dict):
+            continue
+        database = meta.get("database")
+        if not database:
+            continue  # 로컬(postgres) 테이블은 --from-db 경로 소관
+        if connection_filter and database != connection_filter:
+            continue
+        if table_filter and name not in table_filter:
+            continue
+        by_connection.setdefault(database, []).append(name)
+
+    summary: dict[str, Any] = {"connections": {}, "changed_tables": {}, "missing_in_db": []}
+    for connection, names in sorted(by_connection.items()):
+        dialect = CONNECTION_DIALECTS.get(connection)
+        if dialect not in ("tsql", "mysql"):
+            summary["connections"][connection] = f"skipped(unknown dialect: {dialect})"
+            continue
+        live_by_table = _introspect_external_tables(connection, names, dialect)
+        refreshed = 0
+        for name in names:
+            live = live_by_table.get(name)
+            if not live or not live["columns"]:
+                summary["missing_in_db"].append(f"{connection}:{name}")
+                continue  # 실DB에 없거나 컬럼을 못 읽은 테이블은 기존 항목을 보존한다
+            diff = _merge_live_structure(tables[name], live)
+            refreshed += 1
+            if diff["added"] or diff["removed"]:
+                summary["changed_tables"][name] = diff
+        summary["connections"][connection] = f"refreshed {refreshed}/{len(names)}"
+    return summary
+
+
 def reorder_tables_like(schema: dict[str, Any], existing_schema: dict[str, Any] | None) -> dict[str, Any]:
     if not existing_schema:
         return schema
@@ -590,6 +760,15 @@ def main() -> None:
         action="store_true",
         help="라이브 DB(information_schema/pg_catalog)에서 스키마를 읽는다. DDL 파싱 대신 사용.",
     )
+    parser.add_argument(
+        "--refresh-external",
+        action="store_true",
+        help="기존 카탈로그의 외부 실DB(MSSQL/MariaDB) 테이블 구조를 INFORMATION_SCHEMA 로 재인트로스펙션한다"
+        "(승인 테이블 집합·사람 주석은 보존 — DB 스왑/스키마 변경 반영용).",
+    )
+    parser.add_argument("--connection", default=None, help="--refresh-external 대상 커넥션 필터(CRMDW 등). 기본 전체.")
+    parser.add_argument("--tables", default=None, help="--refresh-external 대상 테이블 필터(쉼표 구분). 기본 전체.")
+    parser.add_argument("--dry-run", action="store_true", help="--refresh-external 결과를 쓰지 않고 변경 요약만 출력한다.")
     parser.add_argument("--conninfo", default=None, help="psycopg conninfo 문자열. 미지정 시 POSTGRES_* 환경변수 사용.")
     parser.add_argument("--schema-name", default="public", help="대상 스키마 이름. 기본 public.")
     parser.add_argument("--output", "-o", type=Path, default=Path("docs/data/schema_catalog.json"))
@@ -599,13 +778,28 @@ def main() -> None:
     if args.output.exists():
         existing_schema = json.loads(args.output.read_text(encoding="utf-8"))
 
+    if args.refresh_external:
+        if not existing_schema:
+            parser.error(f"--refresh-external 은 기존 카탈로그({args.output})가 있어야 합니다(승인 테이블 집합 기준).")
+        table_filter = {name.strip() for name in args.tables.split(",") if name.strip()} if args.tables else None
+        summary = refresh_external_catalog(existing_schema, connection_filter=args.connection, table_filter=table_filter)
+        if not args.dry_run:
+            args.output.write_text(json.dumps(existing_schema, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        print(
+            json.dumps(
+                {"mode": "refresh_external", "dry_run": args.dry_run, "output": str(args.output), **summary},
+                ensure_ascii=False,
+            )
+        )
+        return
+
     if args.from_db:
         schema = introspect_schema(conninfo=args.conninfo, schema_name=args.schema_name)
         schema = reorder_tables_like(schema, existing_schema)
     elif args.ddl is not None:
         schema = extract_schema(args.ddl.read_text(encoding="utf-8"))
     else:
-        parser.error("DDL 파일 경로를 주거나 --from-db 를 지정하세요.")
+        parser.error("DDL 파일 경로를 주거나 --from-db / --refresh-external 을 지정하세요.")
 
     schema = merge_existing_annotations(schema, existing_schema)
     args.output.parent.mkdir(parents=True, exist_ok=True)

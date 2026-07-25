@@ -121,13 +121,23 @@ python init_rag_collections.py --recreate     # Qdrant 재색인
      — 조인키·테이블은 cart_targets/purchase_product_target 레지스트리 소유.
    - api.py `_EXTERNAL_MEMBER_SCHEMA` 를 레지스트리+schema_catalog(테이블→커넥션)에서 빌드,
      성별/등급 코드→라벨·서열 맵을 eq_filters(synonyms/rank)에서 파생.
-   - 잔여(후속): `_DEFAULT_MEMBER_TARGET_FILTERS` 폴백 미러 축소, confidence.py 폴백 정리,
-     `db_connections._DB_DIALECTS` ↔ `sql_dialect.CONNECTION_DIALECTS` 통합.
+   - ✅ 로더 죽은설정 함정 수정: `_load_member_target_filters` 가 JSON 의 **모든** 최상위 키를
+     머지한다(과거엔 기본값 선언 키만 → base_entity/region_target/purchase_product_target 이
+     조용히 버려짐). drift 가드: `tests/test_registry_single_source.py`(전키 머지 + 폴백 고아키
+     금지 + 접근자 JSON 배선 검증).
+   - ✅ `db_connections._DB_DIALECTS` 를 `sql_dialect.CONNECTION_DIALECTS` 에서 파생(중복 소거).
+   - 잔여(후속): `_DEFAULT_MEMBER_TARGET_FILTERS`/confidence.py 폴백 리터럴 자체의 축소(현재는
+     파일 부재 시 복원력 역할로 유지 — drift 는 위 가드가 감시).
 3. **C. 프롬프트 렌더링** — ✅ 완료. 인라인 프롬프트 2곳(SQL 폴백 생성기·의미검증 게이트)의
    스키마 사실(회원키/상태 술어/코드값 예시/카트·캠페인 테이블/날짜 포맷/방언 함수)을
    레지스트리·어댑터에서 렌더. 검증 원칙 문구(스키마 무관)는 리터럴 유지.
-4. **D. 빌더 실DB 지원** — ⬜ 미착수. `schema_extract.py` 에 MSSQL/MariaDB 인트로스펙션 경로
-   추가해야 "재생성만으로 끝"이 성립(§2 캐비앗).
+4. **D. 빌더 실DB 지원** — ✅ 완료. `schema_extract.py --refresh-external [--connection C]
+   [--tables A,B] [--dry-run]`: 카탈로그의 승인 테이블 집합을 각 테이블의 `database` 커넥션
+   실DB에서 INFORMATION_SCHEMA(MSSQL/MySQL 공통)로 재인트로스펙션 — 구조(컬럼/타입/널러블/PK/
+   객체유형)만 갱신, 사람 지식(description_llm/join_hints/human_note/important/references/FK)
+   보존, 신규·삭제 컬럼과 실DB 부재 테이블은 요약 보고. 실측: CRMDW 38/38 리프레시,
+   `ODS_MALL_MMS_MEMBER_ZTS` 의 카탈로그 누락 39컬럼 검출. 회귀: `tests/test_schema_refresh.py`.
+   DB 스왑 시엔 테이블 집합과 `database` 필드를 새 DB 기준으로 고친 뒤 이 모드를 돌린다.
 
 모범 참조: `sql_guard.py`(카탈로그 로드 방식), `targeting_ir.py`(논리 개념만), `sql_ast.py`.
 
