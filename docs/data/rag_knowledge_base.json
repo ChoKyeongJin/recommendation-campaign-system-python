@@ -17,13 +17,13 @@
     "normalization_rule": 213,
     "business_term": 20,
     "business_policy": 5,
-    "metric_alias": 6,
+    "metric_alias": 0,
     "dimension": 141,
     "dimension_value": 334,
     "sql_example": 22,
     "campaign": 0,
     "user": 0,
-    "total": 780
+    "total": 774
   },
   "nodes": [
     {
@@ -13913,137 +13913,6 @@
         "campaign_message_events.event_type"
       ],
       "text_for_embedding": "업무 정책 채널 메시지 생성 정책 canonical channel_message_generation. 타겟팅 SQL이 성공한 이후 LMS 또는 RCS 발송 문안을 생성할 때 적용하는 기본 정책이다. 프롬프트에 채널이 없으면 LMS를 기본 채널로 사용하고, 캠페인 offer와 기존 메시지 예시 밖의 혜택을 만들지 않는다. 이 정책은 회원 타겟팅용 실 CRM DB가 아니라 캠페인/메시지 메타데이터를 대상으로 하므로, business 타겟팅 DB 교체와는 무관하다(별개 저장소). SQL 동작: context. metric: None. 표현식: None. 기준값: 정책 파일에서 아직 확정하지 않음. 관련 테이블: campaigns, campaign_channels, campaign_message_examples, campaign_channel_messages, campaign_experiments, campaign_message_variants, campaign_message_deliveries, campaign_message_events. 관련 컬럼: campaigns.offer, campaign_channels.channel, campaign_message_examples.channel, campaign_message_examples.emphasis_type, campaign_message_examples.message_text, campaign_message_examples.brand_tone, campaign_channel_messages.message_body, campaign_channel_messages.send_status, campaign_experiments.primary_metric, campaign_message_variants.variant_code, campaign_message_variants.message_body, campaign_message_deliveries.final_status, campaign_message_events.event_type. 동의어: 메시지 생성, 발송 문안, 채널 메시지, LMS 메시지, RCS 메시지, message generation."
-    },
-    {
-      "id": "metric_alias:avg_order_value_krw",
-      "type": "metric_alias",
-      "metric_id": "avg_order_value_krw",
-      "canonical": "avg_order_value_krw",
-      "ko_label": "평균주문금액",
-      "table": "users",
-      "column": "avg_order_value_krw",
-      "synonyms": [
-        "객단가",
-        "평균 주문 금액",
-        "평균 구매 금액",
-        "평균 결제 금액",
-        "aov"
-      ],
-      "related_tables": [
-        "users"
-      ],
-      "related_columns": [
-        "users.avg_order_value_krw"
-      ],
-      "text_for_embedding": "계산 지표 별칭 평균주문금액 canonical avg_order_value_krw. 자연어 계산식에서 users.avg_order_value_krw 숫자형 컬럼으로 해석한다. 관련 테이블: users. 관련 컬럼: users.avg_order_value_krw. 동의어: 객단가, 평균 주문 금액, 평균 구매 금액, 평균 결제 금액, aov."
-    },
-    {
-      "id": "metric_alias:purchase_count_90d",
-      "type": "metric_alias",
-      "metric_id": "purchase_count_90d",
-      "canonical": "purchase_count_90d",
-      "ko_label": "구매횟수",
-      "table": "users",
-      "column": "purchase_count_90d",
-      "synonyms": [
-        "구매 횟수",
-        "90일 구매 횟수",
-        "최근 구매 횟수",
-        "구매수"
-      ],
-      "related_tables": [
-        "users"
-      ],
-      "related_columns": [
-        "users.purchase_count_90d"
-      ],
-      "text_for_embedding": "계산 지표 별칭 구매횟수 canonical purchase_count_90d. 자연어 계산식에서 users.purchase_count_90d 숫자형 컬럼으로 해석한다. 관련 테이블: users. 관련 컬럼: users.purchase_count_90d. 동의어: 구매 횟수, 90일 구매 횟수, 최근 구매 횟수, 구매수."
-    },
-    {
-      "id": "metric_alias:last_active_days",
-      "type": "metric_alias",
-      "metric_id": "last_active_days",
-      "canonical": "last_active_days",
-      "ko_label": "최근활동일",
-      "table": "users",
-      "column": "last_active_days",
-      "synonyms": [
-        "최근 활동일",
-        "마지막 활동일",
-        "비활성 일수",
-        "휴면 일수"
-      ],
-      "related_tables": [
-        "users"
-      ],
-      "related_columns": [
-        "users.last_active_days"
-      ],
-      "text_for_embedding": "계산 지표 별칭 최근활동일 canonical last_active_days. 자연어 계산식에서 users.last_active_days 숫자형 컬럼으로 해석한다. 관련 테이블: users. 관련 컬럼: users.last_active_days. 동의어: 최근 활동일, 마지막 활동일, 비활성 일수, 휴면 일수."
-    },
-    {
-      "id": "metric_alias:campaign_budget_krw",
-      "type": "metric_alias",
-      "metric_id": "campaign_budget_krw",
-      "canonical": "campaign_budget_krw",
-      "ko_label": "캠페인예산",
-      "table": "campaigns",
-      "column": "budget_krw",
-      "synonyms": [
-        "예산",
-        "캠페인 예산",
-        "budget",
-        "budget_krw"
-      ],
-      "related_tables": [
-        "campaigns"
-      ],
-      "related_columns": [
-        "campaigns.budget_krw"
-      ],
-      "text_for_embedding": "계산 지표 별칭 캠페인예산 canonical campaign_budget_krw. 자연어 계산식에서 campaigns.budget_krw 숫자형 컬럼으로 해석한다. 관련 테이블: campaigns. 관련 컬럼: campaigns.budget_krw. 동의어: 예산, 캠페인 예산, budget, budget_krw."
-    },
-    {
-      "id": "metric_alias:expected_ctr",
-      "type": "metric_alias",
-      "metric_id": "expected_ctr",
-      "canonical": "expected_ctr",
-      "ko_label": "예상클릭률",
-      "table": "campaigns",
-      "column": "expected_ctr",
-      "synonyms": [
-        "예상 클릭률",
-        "클릭률",
-        "ctr"
-      ],
-      "related_tables": [
-        "campaigns"
-      ],
-      "related_columns": [
-        "campaigns.expected_ctr"
-      ],
-      "text_for_embedding": "계산 지표 별칭 예상클릭률 canonical expected_ctr. 자연어 계산식에서 campaigns.expected_ctr 숫자형 컬럼으로 해석한다. 관련 테이블: campaigns. 관련 컬럼: campaigns.expected_ctr. 동의어: 예상 클릭률, 클릭률, ctr."
-    },
-    {
-      "id": "metric_alias:expected_cvr",
-      "type": "metric_alias",
-      "metric_id": "expected_cvr",
-      "canonical": "expected_cvr",
-      "ko_label": "예상전환율",
-      "table": "campaigns",
-      "column": "expected_cvr",
-      "synonyms": [
-        "예상 전환율",
-        "전환율",
-        "cvr"
-      ],
-      "related_tables": [
-        "campaigns"
-      ],
-      "related_columns": [
-        "campaigns.expected_cvr"
-      ],
-      "text_for_embedding": "계산 지표 별칭 예상전환율 canonical expected_cvr. 자연어 계산식에서 campaigns.expected_cvr 숫자형 컬럼으로 해석한다. 관련 테이블: campaigns. 관련 컬럼: campaigns.expected_cvr. 동의어: 예상 전환율, 전환율, cvr."
     },
     {
       "id": "dimension:moon_test",
