@@ -99,3 +99,25 @@ def test_recent_login_week_unit():
 def test_bare_login_without_recency_marker_still_none():
     # 최근성 표지 없는 로그인 언급은 기본창을 주지 않는다(기존 동작 보존).
     assert _plan("앱으로 로그인한 사용자")["target_user"].get("recent_login") is None
+
+
+# ── 미접속(휴면 재활성화) 시 기본 상태필터(NORMAL 한정) 해제 회귀 ─────────────────────
+# 배경: "6개월 이상 접속하지 않은 휴면 고객"에 기본 MEMBER_STATE_CD='NORMAL' 이 붙으면 SLEEP/WITHDRAW 를
+# 배제해 원문("휴면")과 모순되고, 의미검증기가 반전으로 오탐했다. 미접속 신호가 있으면 forces_state 로
+# 기본 상태필터를 해제해 오디언스를 LAST_LOGIN_DATE 창만으로 정의한다.
+def test_inactivity_suppresses_default_state_filter():
+    plan = {"target_user": {"inactivity_period": {"min_days": 180}}, "exclude": {}, "campaign_constraints": {}}
+    compiled = g.compile_member_target_conditions(plan)
+    assert compiled["forces_state"] is True
+    sql = g.build_member_targets_sql_candidate(plan)["sql"]
+    assert "MEMBER_STATE_CD" not in sql
+    assert "B.LAST_LOGIN_DATE <=" in sql
+
+
+def test_plain_query_still_keeps_default_state_filter():
+    # 미접속 신호가 없는 일반 타겟은 기존대로 NORMAL 한정(탈퇴/휴면 제외)을 유지한다.
+    plan = {"target_user": {"gender": "female"}, "exclude": {}, "campaign_constraints": {}}
+    compiled = g.compile_member_target_conditions(plan)
+    assert compiled["forces_state"] is False
+    sql = g.build_member_targets_sql_candidate(plan)["sql"]
+    assert "B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'" in sql

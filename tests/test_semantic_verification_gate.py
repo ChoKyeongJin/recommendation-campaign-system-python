@@ -62,6 +62,39 @@ def _api_status(res: dict) -> str:
     return g._api_status(res)
 
 
+def test_blocked_sql_preserved_for_display():
+    # 차단되면(inverted) 출고(sql)는 None 이지만, 무엇이 생성됐는지 표시용으로 blocked_sql 에 원본 SQL 을 보존한다.
+    verdict = {"ran": True, "faithful": False, "issues": [
+        {"type": "inverted", "condition": "미접속", "detail": "극성 뒤집힘"}]}
+    res = _result(SUPPORTED, verdict)
+    assert res["sql"] is None  # 출고/실행은 막힘
+    assert res["blocked_sql"] and "SELECT" in res["blocked_sql"]  # 표시용 보존
+    # api_response 로도 노출된다(프론트가 sql 없을 때 blocked_sql 로 폴백).
+    api = g.build_recommendation_api_response(SUPPORTED, _plan(SUPPORTED), res, {"content": None, "mode": None, "failure_reason": None})
+    assert api["sql"] is None
+    assert api["blocked_sql"] == res["blocked_sql"]
+
+
+def test_blocked_sql_none_on_success():
+    # 정상 출고면 blocked_sql 은 None(막힌 게 없음).
+    res = _result(SUPPORTED, {"ran": True, "faithful": True, "issues": []})
+    assert res["sql"] is not None
+    assert res["blocked_sql"] is None
+
+
+def test_gate_does_not_block_on_dropped_issue():
+    # dropped(누락)는 비차단 자문이다 — 판정 모델이 도메인 인코딩(장바구니=KEEP_YN='Y', 미접속=
+    # LAST_LOGIN_DATE<=과거 등)을 못 알아봐 정상 SQL 을 '누락'으로 오판하는 오탐이 잦기 때문.
+    # 진짜 누락은 결정론 감지기·커버리지 검증이 소유한다. inverted 만 차단한다.
+    verdict = {"ran": True, "faithful": False, "issues": [
+        {"type": "dropped", "condition": "결제하지 않은", "detail": "SQL에 결제 조건 없음"}]}
+    res = _result(SUPPORTED, verdict)
+    assert res["is_success"] is True and res["sql"] is not None
+    assert res["failure_reason"] is None
+    # 판정은 응답에 자문으로 남는다(디버깅·튜닝용).
+    assert res["semantic_verification"]["issues"]
+
+
 def test_gate_does_not_block_on_value_level_issue():
     # 값 수준(wrong_value)만 있으면 차단하지 않는다 — 판정 모델이 등급 서열·권역 구성을 몰라 정상 확장
     # ('GOLD 이상'→GOLD,VIP)을 오판하는 오탐이라, 값 정확성은 결정론 컴파일러·커버리지가 소유한다.

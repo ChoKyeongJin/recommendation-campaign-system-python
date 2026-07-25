@@ -21,6 +21,7 @@ def _result(**overrides):
         "cart_context": False,
         "planning_query": "서울 VIP",
         "target_user": {"lifecycle": ["vip"], "aggregate_conditions": [{"metric_id": "purchase_amount"}]},
+        "parser": {"type": "llm"},  # LLM 질의계획 경로(모델·프롬프트 배지 노출)
     }
     sql_result = {
         "candidates": [{"id": "tpl", "tables": ["CRM_MB_BASEINFO"], "guard_valid": True, "coverage_ok": True, "is_eligible": True, "validation": {}, "coverage": {}, "intent_scope": {}, "unmentioned_conditions": {}}],
@@ -45,6 +46,8 @@ def _result(**overrides):
         "seed_matches": [{"id": "v1"}],
         "stage_log": [],
         "timings_ms": {},
+        # 실제 전송된 LLM 질의계획 프롬프트(캡처). retrieve 가 result 상단에 담아 준다.
+        "llm_query_plan_prompt": {"system": "SYS_PROMPT", "user": "[User Query]\n서울 VIP", "response": '{"intent":"find_user_segment"}'},
     }
     base.update(overrides)
     return base
@@ -79,6 +82,50 @@ def test_partial_trace_stages_keep_refs():
     trace = g.build_partial_retrieve_trace("x", {"prompt_normalization": 10.0}, "boom")
     # 부분 트레이스의 각 단계도 참조 자산을 유지한다(오류 화면에서도 근거를 보여줌).
     assert trace["stages"][2]["refs"]
+
+
+def test_stage3_shows_prompt_to_query_plan_json():
+    # 3단계는 원문 → 계획 문장 → Query Plan JSON 변환을 그대로 보여준다.
+    trace = g.build_retrieve_trace(_result())
+    joined = "\n".join(trace["stages"][2].get("details", []))
+    assert "계획 문장" in joined
+    assert "Query Plan JSON" in joined
+    assert '"intent"' in joined and "find_user_segment" in joined
+    assert '"lifecycle"' in joined  # target_user 슬롯이 JSON 으로 노출
+
+
+def test_stage3_shows_actual_llm_prompt_when_llm_used():
+    trace = g.build_retrieve_trace(_result())
+    joined = "\n".join(trace["stages"][2].get("details", []))
+    assert "실제 LLM 프롬프트" in joined
+    assert "user 프롬프트" in joined and "[User Query]" in joined
+    assert "LLM 응답" in joined
+
+
+def test_stage3_honest_badge_when_rules_parser():
+    # 규칙 파싱이면 모델/프롬프트 배지를 떼고 method=규칙, 'LLM 미사용' 을 명시한다.
+    res = _result()
+    res["query_plan"]["parser"] = {"type": "rules"}
+    res["llm_query_plan_prompt"] = None
+    s3 = g.build_retrieve_trace(res)["stages"][2]
+    assert s3["method"] == "규칙"
+    assert all(r["kind"] not in ("모델", "프롬프트") for r in s3["refs"])
+    assert any("LLM 미사용" in line for line in s3["details"])
+
+
+def test_stage8_shows_ast_and_generation_mechanism():
+    res = _result()
+    res["sql_result"]["generation_source"] = "sql_template"
+    trace = g.build_retrieve_trace(res)
+    s8 = trace["stages"][7]
+    assert "SelectAst" in s8["tech_name"]                      # AST 사용 명시
+    assert "결정론 조건빌더" in (s8.get("summary") or "")       # 빌더 방식 표기
+    assert any(r["kind"] == "코드" for r in s8["refs"])         # sql_ast.py 참조
+
+    res2 = _result()
+    res2["sql_result"]["generation_source"] = "llm_generated"
+    s8b = g.build_retrieve_trace(res2)["stages"][7]
+    assert "LLM 폴백" in (s8b.get("summary") or "")             # LLM 폴백 방식 구분
 
 
 def test_set_expression_surfaced_at_stage_6():

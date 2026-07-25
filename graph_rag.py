@@ -1623,6 +1623,11 @@ def _build_single_query_plan(
     # 발동한 슬롯은 불가침, LLM 은 정규식이 못 잡은 표현 변형만 메운다). 재실행 정규식이 LLM 값을 덮는
     # 순서 문제를 원천 차단하려고 여기(모든 _apply_* 이후)서 적용한다.
     _apply_llm_structured_slots(llm_plan)
+    # behaviors 가 이미 소유한 canonical(예: cart_abandoner)이 lifecycle 에도 중복 분류되면 lifecycle 쪽을 뺀다.
+    # lifecycle_extra_terms 에 behavior 겸용 어휘가 있어 LLM 이 같은 값을 lifecycle 로도 넣으면, compile 이 그
+    # lifecycle 항목을 '미지원 제외 조건'으로 처리해 신뢰도 저점수 카드('생애주기: cart_abandoner')·경고가 뜬다
+    # (behaviors 는 전용 빌더가 처리하므로 lifecycle 중복은 순전히 잡음). _apply_* 로 behaviors 가 다 채워진 뒤 실행.
+    _dedupe_lifecycle_against_behaviors(llm_plan)
     # 값 보강까지 끝난 뒤, 컴파일되지 않는 리던던트 집합식(잘못 감싼 AND 나열, 지표/디멘션 canonical 오매칭
     # 등)은 버린다 — 결정론 필터가 조건을 커버하므로 SQL 을 막지 않는다(미정규화 값 clarification 은 유지).
     _drop_uncompilable_set_expressions(llm_plan)
@@ -1633,6 +1638,24 @@ def _build_single_query_plan(
     llm_plan["complexity"] = classify_query_complexity(llm_plan)
     _attach_retrieval_scopes(llm_plan, scopes)
     return llm_plan
+
+
+def _dedupe_lifecycle_against_behaviors(plan: dict[str, Any]) -> None:
+    """lifecycle 슬롯에 새어 들어온 behavior 용어(BEHAVIOR_TERMS)를 제거한다.
+
+    cart_abandoner/repeat_buyer 처럼 BEHAVIOR_TERMS 이자 lifecycle_extra_terms 인 겸용 어휘는 LLM 이 같은
+    값을 behaviors·lifecycle 양쪽에(또는 lifecycle 에만) 넣을 수 있다. behaviors 는 전용 빌더(카트 등)나 목적
+    (objective) 문맥이 소유하지만, 같은 값이 lifecycle 에 남으면 compile_member_target_conditions 가 이를
+    등가/활동 필터로 매핑하지 못해 '미지원 제외 조건'으로 처리하고, 신뢰도 리포트가 '생애주기: <값>'
+    (unknown, 저점수) 카드와 '레지스트리/스키마 미확인' 경고를 낸다. behavior 용어는 lifecycle 에서 어떤
+    필터 predicate 도 만들지 못하므로(신호는 behaviors/objective 가 소유) lifecycle 쪽만 걷어낸다."""
+    target_user = plan.get("target_user")
+    if not isinstance(target_user, dict):
+        return
+    lifecycle = target_user.get("lifecycle")
+    if not isinstance(lifecycle, list) or not lifecycle:
+        return
+    target_user["lifecycle"] = [value for value in lifecycle if value not in BEHAVIOR_TERMS]
 
 
 def _build_rule_query_plan(
@@ -1933,6 +1956,12 @@ def _try_llm_query_plan(
             # 일부 모델/프록시가 tool_choice 를 무시할 수 있어 content JSON 폴백을 허용한다.
             content = message.content or "{}"
         query_plan = _coerce_llm_query_plan(json.loads(content), fallback_plan, sql_schema)
+        # 실제 전송된 프롬프트/응답을 트레이스 표시용으로 담아 둔다(retrieve 가 result 로 옮기고 plan 에선 제거).
+        query_plan["_llm_trace"] = {
+            "system": messages[0]["content"],
+            "user": messages[1]["content"],
+            "response": content,
+        }
         _write_rag_llm_log(
             "llm_query_plan_response",
             {
@@ -5410,9 +5439,17 @@ def retrieve(
     timings_ms["message_generation"] = _elapsed_ms(stage_started_at)
     timings_ms["total_retrieve"] = _elapsed_ms(retrieve_started_at)
 
+    # 실제 LLM 프롬프트 캡처를 노출 구조(query_plan/sql_result)에서 빼 result 상단으로 옮긴다 —
+    # 메인 API 응답 비대화·프롬프트 유출을 막고, 트레이스 엔드포인트만 result 에서 읽어 표시한다.
+    llm_query_plan_prompt = query_plan.pop("_llm_trace", None)
+    _selected_candidate = sql_result.get("selected")
+    llm_sql_prompt = _selected_candidate.pop("_llm_prompt", None) if isinstance(_selected_candidate, dict) else None
+
     api_response = build_recommendation_api_response(query, query_plan, sql_result, answer_response, message_generation, prompt_normalization)
     return {
         "query": query,
+        "llm_query_plan_prompt": llm_query_plan_prompt,
+        "llm_sql_prompt": llm_sql_prompt,
         "prompt_normalization": prompt_normalization,
         "retrieval_scope": scope,
         "prompt_scopes": {
@@ -7388,6 +7425,9 @@ def build_recommendation_api_response(
         },
         "intent": query_plan.get("intent"),
         "sql": sql_result.get("sql"),
+        # 의미 검증 등으로 출고가 막혔지만 생성은 된 SQL(표시 전용, 실행 안 함). 정상 출고 시엔 None.
+        # 프론트는 sql 이 없고 blocked_sql 이 있으면 "생성된 SQL(검증 실패)"로 노출한다.
+        "blocked_sql": sql_result.get("blocked_sql"),
         # 프롬프트가 명시한 결과 행수 제한(없으면 None = 전체). SQL 에는 방언별 TOP/LIMIT 로 이미 반영됨.
         "result_limit": sql_result.get("result_limit"),
         "target_connection": sql_result.get("target_connection"),
@@ -7591,6 +7631,8 @@ def _build_llm_sql_fallback_candidate(
         candidate["explanation"] = payload.get("explanation")
         candidate["dropped_conditions"] = []
         candidate["dropped_condition_labels"] = []
+        # 실제 전송된 SQL 폴백 프롬프트/응답(트레이스 표시용; retrieve 가 result 로 옮기고 후보에선 제거).
+        candidate["_llm_prompt"] = {"system": system_prompt, "user": user_prompt, "response": content}
         return candidate
     except Exception as exc:  # LLM 폴백 실패는 기존 실패 흐름(정직한 거절)으로 되돌아간다.
         _write_rag_llm_log("llm_sql_fallback_error", {"model": llm_model, "query": query, "error": str(exc)})
@@ -7619,6 +7661,21 @@ def _sql_semantic_verify_system_prompt() -> str:
         "**추측해서 판정하면 안 된다**. 원문의 각 조건이 SQL 에 **대응하는 컬럼 필터로 존재하기만 하면** 반영된 "
         "것으로 보라(예: 'GOLD 이상' → EMART_GRADE_CD IN(...) 이 있으면 OK, 목록에 무엇이 들었든 faithful). "
         "IN 목록·코드값·범위 확장을 dropped 나 wrong_value 로 보지 말라.\n"
+        "**날짜 창(window) 비교의 방향을 정확히 읽어라**: 날짜는 YYYYMMDD 문자열이라 사전식 비교로 기간을 표현한다. "
+        "`LAST_LOGIN_DATE <= (기준일 - N일)` 은 마지막 접속이 N일보다 **이전** = '**N일 이상 미접속/장기 미접속/휴면**'(부정형 접속)이고, "
+        "`LAST_LOGIN_DATE >= (기준일 - N일)` 은 '**최근 N일 내 접속**'(긍정형)이다. `REG_DT >= (기준일 - N일)` 은 '최근 N일 내 가입(신규)'이다. "
+        "여기서 `IS NOT NULL` 은 널·이상치를 거르는 **가드일 뿐 '접속함(긍정)'을 뜻하지 않는다** — 미접속(휴면) 조건에 이 가드가 붙어 있어도 "
+        "정상이며 inverted 로 보지 말라(원문 '접속하지 않은/휴면'과 `<= 과거기준일`은 방향이 일치한다). 방향(부등호)과 원문 극성만 맞으면 faithful 이다.\n"
+        "**도메인 인코딩 사전(원문 개념 → SQL 표현)**: 원문의 개념은 컬럼/테이블 이름이 원문 단어와 다르게 인코딩된다. "
+        "아래 대응이 SQL 에 있으면 원문 조건이 **반영된 것(faithful)**으로 보고 dropped 로 판정하지 말라.\n"
+        "  · '장바구니에 담고 결제/구매 안 함(장바구니 이탈/방치)' → 카트 테이블(ODS_MALL_OMS_CART 등) 조인 + 보관중 카트 `KEEP_YN = 'Y'` "
+        "(보관 중인 카트 라인 = 담아두고 미결제). 별도의 '결제 안 함' 부정 술어가 없어도 KEEP_YN='Y' 자체가 '담고 미결제'를 뜻하므로 정상이다.\n"
+        "  · '구매/주문 이력 없는·미구매·재구매 안 한' → 주문 팩트 테이블에 `NOT EXISTS`(anti-join). '구매한/재구매' → `EXISTS`.\n"
+        "  · '최근 N일 미구매' → 주문 테이블 `NOT EXISTS`(최근 N일 창).  · '장바구니 없는' → 카트 `NOT EXISTS`.\n"
+        "  · '캠페인 발송/접촉·오퍼 반응·쿠폰 사용' → 캠페인 반응 팩트(MCS_CAMP_MBR_RSPN_FT 등) `EXISTS`, 부정형은 `NOT EXISTS`.\n"
+        "  · '신규 가입/가입한 지 N일' → `REG_DT` 최근 창.  · '생일' → `BIRTHDAY` 월일 비교.  · 등급/성별/지역 → 코드 컬럼 = / IN.\n"
+        "  · SELECT 절의 라벨 컬럼(예: `'cart_abandoner' AS target_segment`, `'repurchase' AS objective`)은 **필터가 아니라 세그먼트 표식**이니 판정 대상이 아니다.\n"
+        "핵심: 원문 개념이 위처럼 **대응 테이블/컬럼 필터로 존재하기만 하면** 반영된 것이다. 리터럴 단어 일치를 요구하지 말라.\n"
         "불일치 유형: dropped(원문 조건이 SQL 에 없음), inverted(긍정↔부정 또는 이상↔이하 등 의미가 반대로 "
         "반영됨. 예: '구매 이력이 없는'인데 SQL 은 구매함(EXISTS)으로 반영), wrong_value(연령대·지역·등급 등 값이 "
         "다름), spurious(원문에 없는 조건이 SQL 에 있음. 예: 엉뚱한 상품 LIKE).\n"
@@ -7921,20 +7978,26 @@ def build_sql_result(
     # LLM 불가/게이트 비활성이면 ran=False 라 통과(fail-open) — rules 모드는 llm_model=None 이라 자연히 skip.
     semantic_verification: dict[str, Any] = {"ran": False}
     clarification_questions: list[str] = []
+    # 의미 검증에서 차단돼 출고(sql=None)되지 않더라도, "무엇이 생성됐는지" 확인용으로 원본 SQL 을 보존한다.
+    # 실행은 sql(=None)로만 하므로 blocked_sql 은 화면 표시 전용 — 차단된 SQL 이 자동 실행되는 일은 없다.
+    blocked_sql: str | None = None
     if selected_sql is not None:
         semantic_verification = _verify_sql_semantics(original_query or query, selected_sql, llm_model, prompt_dir)
         if semantic_verification.get("ran") and not semantic_verification.get("faithful"):
-            # 차단은 존재(dropped)·극성(inverted) 오류에만 한다 — 판정 모델이 신뢰할 수 있는 축.
-            # 값 수준(wrong_value/spurious)은 판정 모델이 등급 서열·권역 구성 같은 도메인 위계를 몰라
-            # 정상 확장('GOLD 이상'→GOLD,VIP IN 목록)을 오판하므로 차단하지 않고 자문으로만 남긴다
-            # (값 정확성은 결정론 컴파일러·커버리지 검증이 이미 소유). issues 는 응답에 그대로 노출된다.
+            # 차단은 극성(inverted) 오류에만 한다 — 긍정↔부정 뒤집힘은 판정 모델이 비교적 신뢰할 수 있는 축.
+            # dropped(누락)는 차단하지 않는다: 판정 모델이 도메인 인코딩(장바구니 이탈=KEEP_YN='Y', 미접속=
+            # LAST_LOGIN_DATE<=과거, 미구매=NOT EXISTS 등)을 원문 단어와 대응시키지 못해 정상 SQL 을 '누락'으로
+            # 오판하는 오탐이 잦기 때문. 진짜 누락은 결정론 감지기(_deterministic_dropped_conditions)와 커버리지
+            # 검증이 이미 소유한다. wrong_value/spurious 도 마찬가지로 비차단(값 정확성=결정론 컴파일러 소유).
+            # → LLM 게이트는 inverted 만 차단하고, 나머지 유형은 자문으로만 응답(semantic_verification.issues)에 남긴다.
             blocking_issues = [
                 issue for issue in semantic_verification.get("issues", [])
-                if issue.get("type") in ("dropped", "inverted")
+                if issue.get("type") == "inverted"
             ]
             if blocking_issues:
                 failure_reason = "semantic_verification_failed"
                 clarification_questions = _semantic_verification_clarifications(blocking_issues)
+                blocked_sql = selected_sql  # 표시용 보존(출고는 막되 무엇이 생성됐는지 노출)
                 selected_sql = None
                 target_connection = None
                 target_dialect = None
@@ -7968,6 +8031,8 @@ def build_sql_result(
 
     return {
         "sql": selected_sql,
+        # 의미 검증 등으로 출고가 막혔지만 생성은 된 SQL(표시 전용, 실행 안 함). 정상 출고 시엔 None.
+        "blocked_sql": blocked_sql,
         "target_connection": target_connection,
         "target_dialect": target_dialect,
         "selected": selected,
@@ -8966,8 +9031,9 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     어떤 조합(포함/제외/연령 …)도 자동으로 술어 목록이 된다. CRM_MB_BASEINFO 단독으로 표현할 수 없는
     조건은 그 경로(path)를 unsupported 에 모은다. 호출부는 unsupported 가 비어있을 때만 실DB SQL 을 쓴다.
 
-    반환 dict: predicates(WHERE 술어), labels(세그먼트 라벨 canonical 값), forces_state(회원상태 직접
-    지정 여부), has_signal(회원 대상 신호 존재), unsupported(미지원 조건 path 목록).
+    반환 dict: predicates(WHERE 술어), labels(세그먼트 라벨 canonical 값), forces_state(기본 상태필터
+    (NORMAL 한정) 해제 여부 — 회원상태 직접 지정 또는 미접속 재활성화 신호), has_signal(회원 대상 신호
+    존재), unsupported(미지원 조건 path 목록).
     """
     target_user = query_plan.get("target_user", {})
     exclude = query_plan.get("exclude", {})
@@ -8978,6 +9044,10 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     labels: list[str] = []
     unsupported: list[str] = []
     has_signal = False
+    # 장기 미접속(휴면 재활성화) 신호가 있으면 기본 상태필터(NORMAL 한정)를 해제한다 — "6개월 이상
+    # 접속하지 않은 휴면 고객"처럼 미접속=휴면으로 읽는 요청에서 NORMAL 이 붙으면 SLEEP/WITHDRAW 를
+    # 배제해 원문("휴면 고객")과 모순되고, 의미검증기가 이를 반전으로 오탐한다. forces_state 로 흡수한다.
+    suppresses_default_state = False
 
     def _add_include(canonical: str) -> None:
         category, column, value = MEMBER_EQ_FILTERS[canonical]
@@ -9013,7 +9083,7 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
         if lifecycle in MEMBER_EQ_FILTERS:
             _add_include(lifecycle); labels.append(lifecycle); has_signal = True
         elif lifecycle in MEMBER_ACTIVITY_FILTERS:
-            other_predicates.append(_member_activity_predicate(MEMBER_ACTIVITY_FILTERS[lifecycle])); labels.append(lifecycle); has_signal = True
+            other_predicates.append(_member_activity_predicate(MEMBER_ACTIVITY_FILTERS[lifecycle])); labels.append(lifecycle); has_signal = True; suppresses_default_state = True
         else:
             unsupported.append("target_user.lifecycle:" + lifecycle)
 
@@ -9025,11 +9095,12 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
             unsupported.append("exclude.lifecycle:" + lifecycle)
 
     # 미접속 기간(휴면/장기 미접속): LAST_LOGIN_DATE(YYYYMMDD 문자열) 사전식 비교 술어로 컴파일한다.
-    # 회원상태는 기본값(정상 회원 한정)을 유지한다 — 법적 휴면(SLEEP)·탈퇴(WITHDRAW) 계정은 발송 대상에서
-    # 빼고, "장기 미접속 정상 회원"을 재활성화 오디언스로 본다.
+    # 미접속=휴면 재활성화 신호이므로 기본 상태필터(NORMAL 한정)를 해제한다(suppresses_default_state) —
+    # "6개월 이상 접속하지 않은 휴면 고객"에 NORMAL 을 붙이면 SLEEP/WITHDRAW 를 배제해 원문과 모순되고
+    # 의미검증기가 반전으로 오탐하기 때문. 오디언스는 LAST_LOGIN_DATE 창만으로 정의한다.
     inactivity_period = target_user.get("inactivity_period")
     if isinstance(inactivity_period, dict) and isinstance(inactivity_period.get("min_days"), int):
-        other_predicates.append(_member_activity_predicate(inactivity_period["min_days"])); has_signal = True
+        other_predicates.append(_member_activity_predicate(inactivity_period["min_days"])); has_signal = True; suppresses_default_state = True
 
     # 최근 로그인 창(긍정형 접속): LAST_LOGIN_DATE >= (기준일-N일) 술어. 적재 데이터가 과거라 0명이
     # 나올 수 있어도, 조건 표현이 가능하면 요청 기간을 왜곡하지 않고 무조건 그대로 건다.
@@ -9158,7 +9229,7 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     return {
         "predicates": _unique_strings([*include_predicates, *other_predicates]),
         "labels": _unique_strings(labels),
-        "forces_state": "state" in include_categories,
+        "forces_state": ("state" in include_categories) or suppresses_default_state,
         "has_signal": has_signal,
         "unsupported": unsupported,
     }
@@ -11075,7 +11146,7 @@ _TRACE_STAGES_META: tuple[tuple[int, str, str, str], ...] = (
     (5, "값 해석(브랜드→코드)", "디멘션 값 해석 (DS_SQL)", "규칙"),
     (6, "집합식 파싱", "집합식 (parse_set_expressions)", "규칙"),
     (7, "지식그래프 검색", "벡터+키워드+Graph 확장 (GraphRAG)", "혼합"),
-    (8, "타겟팅 SQL 생성", "SQL 생성 (Template+LLM)", "혼합"),
+    (8, "타겟팅 SQL 생성", "SelectAst 조립·렌더 (sql_ast.py) + 조건빌더/LLM", "혼합"),
     (9, "SQL 안전 검증", "sql_guard + 의미 검증", "혼합"),
     (10, "실행·결과", "DB 실행", "규칙"),
 )
@@ -11103,6 +11174,26 @@ _PURCHASE_PLAN_KEYS = {
 
 def _trace_line(value: Any) -> str:
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+
+
+def _format_captured_prompt(captured: Any, cap: int = 2500) -> list[str]:
+    """캡처한 실제 LLM 프롬프트(system/user/response)를 트레이스 details 줄로 만든다.
+    system 은 정적·장문이라 길면 자르고(전체는 logs/rag_llm), 값이 치환된 user·응답이 핵심이다."""
+    if not isinstance(captured, dict):
+        return []
+
+    def _cap(text: str, limit: int) -> str:
+        text = text or ""
+        return text if len(text) <= limit else text[:limit] + f"\n…(생략 {len(text) - limit}자, 전체는 logs/rag_llm 로그)"
+
+    lines: list[str] = []
+    if captured.get("system"):
+        lines.append("[system 프롬프트]\n" + _cap(captured["system"], 1500))
+    if captured.get("user"):
+        lines.append("[user 프롬프트 — 값 치환 완료]\n" + _cap(captured["user"], cap))
+    if captured.get("response"):
+        lines.append("[LLM 응답]\n" + _cap(captured["response"], 1500))
+    return lines
 
 
 # 단계별 참조 자산(프롬프트/데이터/모델). 화면 "참조" 배지로 노출한다 — 어느 프롬프트·docs/data 를
@@ -11148,6 +11239,8 @@ _TRACE_STAGE_REFS: dict[int, tuple[dict[str, str], ...]] = {
         {"kind": "인프라", "name": "Qdrant"},
     ),
     8: (
+        {"kind": "코드", "name": "sql_ast.py (SelectAst)"},
+        {"kind": "코드", "name": "조건빌더 build_*_sql_candidate"},
         {"kind": "데이터", "name": "schema_catalog.json"},
         {"kind": "데이터", "name": "member_target_filters.json"},
         {"kind": "프롬프트", "name": "(LLM 폴백 인라인)"},
@@ -11313,6 +11406,31 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
     selected_sql = sql_result.get("sql")
     is_success = sql_result.get("is_success")
 
+    # ── 3단계용: 원문 → 계획 문장 → Query Plan JSON (실제 예문이 잘려 JSON 이 되는 모습) ──
+    planning_query = query_plan.get("planning_query") or prompt_normalization.get("normalized")
+    campaign_constraints = {k: v for k, v in query_plan.get("campaign_constraints", {}).items() if v not in (None, [], {})}
+    plan_json_slots = {k: v for k, v in {
+        "intent": query_plan.get("intent"),
+        "target_user": tu,
+        "dimension_filters": dimension_filters,
+        "set_expressions": [e.get("ko_label") or e.get("expression_id") for e in set_expressions],
+        "campaign_constraints": campaign_constraints,
+    }.items() if v not in (None, [], {}, "")}
+    plan_json = json.dumps(plan_json_slots, ensure_ascii=False, indent=2)
+
+    # 실제 전송된 LLM 프롬프트(질의 계획 tool calling / SQL 폴백). retrieve 가 result 상단에 담아 준다.
+    llm_query_plan_prompt = result.get("llm_query_plan_prompt")
+    llm_sql_prompt = result.get("llm_sql_prompt")
+
+    # ── 8단계용: 선택된 SQL 을 어떤 방식으로 만들었나(결정론 조건빌더 vs LLM 폴백; 둘 다 SelectAst 로 렌더) ──
+    generation_source = sql_result.get("generation_source")
+    if not generation_source:
+        generation_label = None
+    elif str(generation_source).startswith("llm"):
+        generation_label = f"LLM 폴백 생성 ({generation_source})"
+    else:
+        generation_label = f"결정론 조건빌더 ({generation_source})"
+
     def _stage(step: int, status: str, **payload: Any) -> dict[str, Any]:
         _, name, tech_name, method = _TRACE_STAGES_META[step - 1]
         stage = _trace_stage_shell(step, name, tech_name, method, status)
@@ -11354,9 +11472,19 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
         _stage(
             3, "info",
             summary=f"intent={query_plan.get('intent')}" if query_plan.get("intent") else None,
-            description="타겟 절을 성별·연령·등급·지역·생애주기 같은 조건(Query Plan)으로 구조화합니다.",
-            plain=[f"‘{m.get('matched_text')}’ → {m.get('canonical')}" for m in targeting_matched_terms if m.get("matched_text") and m.get("canonical")],
-            details=[f"{k}: {_trace_line(v)}" for k, v in tu_profile.items()],
+            description="타겟 절을 규칙 파싱 + LLM tool calling 으로 구조화된 Query Plan JSON(슬롯)으로 바꿉니다. 이 JSON 이 다음 SQL 조립의 입력입니다.",
+            plain=[line for line in (
+                [f"계획 문장(파싱 대상): {planning_query}" if planning_query else None]
+                + [f"‘{m.get('matched_text')}’ → {m.get('canonical')}" for m in targeting_matched_terms if m.get("matched_text") and m.get("canonical")]
+            ) if line],
+            # 원문이 어떻게 잘려 어떤 JSON 값이 되는지 그대로 노출한다.
+            details=[
+                f"① 입력 원문: {result.get('query')}",
+                f"② 계획 문장(타겟 절만): {planning_query}",
+                "③ Query Plan JSON:\n" + plan_json,
+            ] + ([f"④ 이 JSON 으로 만들 SQL 생성 방식: {generation_label}"] if generation_label else [])
+            + (["── 실제 LLM 프롬프트(질의 계획, tool calling) ──"] + _format_captured_prompt(llm_query_plan_prompt)
+               if llm_query_plan_prompt else ["LLM 미사용 — 규칙 파싱으로 계획 수립(parser=" + str((query_plan.get("parser") or {}).get("type") or "rules") + ")"]),
         ),
         _stage(
             4, "info" if (tu_purchase or cart_context) else "skipped",
@@ -11394,17 +11522,20 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
         ),
         _stage(
             8, "ok" if selected_sql else "info",
-            summary=f"후보 {len(candidate_rows)}개" + (" · 선택됨" if selected_sql else " · 미선택"),
-            description="모은 조건으로 대상 고객을 뽑는 조회문(SQL)을 만듭니다(템플릿, 실패 시 LLM 폴백).",
+            summary=(f"{generation_label} · " if generation_label else "") + f"후보 {len(candidate_rows)}개" + (" · 선택됨" if selected_sql else " · 미선택"),
+            description="Query Plan JSON 을 조건빌더가 SelectAst(sql_ast.py)로 조립해 SQL 로 렌더합니다. 결정론 빌더가 표현 못 하면 LLM 폴백으로 초안을 만들고 같은 가드를 태웁니다.",
             plain=[line for line in [
-                f"조건 토큰 {len(sql_result.get('condition_tokens', []))}개로 SQL 후보 {len(candidate_rows)}개를 만들었습니다.",
+                f"생성 방식: {generation_label}" if generation_label else None,
+                f"조건 토큰 {len(sql_result.get('condition_tokens', []))}개로 SQL 후보 {len(candidate_rows)}개를 SelectAst 로 조립했습니다.",
                 "검증 통과 SQL이 선택되었습니다." if selected_sql else "선택된 SQL이 아직 없습니다(다음 단계에서 사유 표시).",
             ] if line],
             details=[line for line in [
                 "condition_tokens: " + ", ".join(t.get("path") for t in sql_result.get("condition_tokens", []) if t.get("path")),
                 "required_conditions: " + ", ".join(c.get("path") for c in sql_result.get("required_conditions", []) if c.get("path")),
             ] if line.split(": ", 1)[-1]]
-                    + [f"candidate {c.get('id')}: tables={','.join(c.get('tables', []))}" for c in candidate_rows],
+                    + [f"candidate {c.get('id')}: tables={','.join(c.get('tables', []))}" for c in candidate_rows]
+                    + (["── 실제 LLM 프롬프트(SQL 폴백) ──"] + _format_captured_prompt(llm_sql_prompt)
+                       if llm_sql_prompt else ["결정론 조건빌더가 SelectAst 로 직접 조립 — LLM 프롬프트 없음(생성 SQL 은 아래 '실행된 SQL' 참조)"]),
         ),
         _stage(
             9, "ok" if is_success else "fail",
@@ -11427,6 +11558,13 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
         ),
     ]
 
+    # 3단계 배지를 실제 parser 에 맞춰 정직하게: 규칙 파싱이면 혼합/모델/프롬프트 배지를 규칙으로 정정한다
+    # (query_parser=rules 기본이면 LLM 질의계획이 호출되지 않아 모델·프롬프트가 실제로 안 쓰인다).
+    if (query_plan.get("parser") or {}).get("type") != "llm":
+        stage3 = stages[2]
+        stage3["method"] = "규칙"
+        stage3["refs"] = [ref for ref in stage3.get("refs", []) if ref["kind"] not in ("모델", "프롬프트")]
+
     return {
         "query": result.get("query"),
         "collection": result.get("collection"),
@@ -11437,6 +11575,7 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
         "result": {
             "status": api_response.get("status"),
             "sql": api_response.get("sql"),
+            "blocked_sql": api_response.get("blocked_sql"),
             "target_connection": api_response.get("target_connection"),
             "message": api_response.get("message"),
         },

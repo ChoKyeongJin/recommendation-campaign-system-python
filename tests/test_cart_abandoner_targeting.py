@@ -121,3 +121,20 @@ def test_count_threshold_without_cart_context_not_cart_aggregate():
     # 장바구니 어휘가 없으면 일반 개수 표현('3개 이상 구매')을 카트 집계로 오인하지 않는다.
     plan = _plan("3개 이상 구매한 고객")
     assert "cart_aggregate" not in plan["target_user"]
+
+
+def test_behavior_terms_removed_from_lifecycle():
+    # LLM(auto)이 cart_abandoner/repeat_buyer 를 lifecycle 로도 분류하면(lifecycle_extra_terms 겸용 어휘),
+    # compile 이 lifecycle 항목을 '미지원 제외 조건'으로 처리해 신뢰도 리포트에 '생애주기: cart_abandoner'
+    # (저점수)·'레지스트리/스키마 미확인' 경고가 뜬다. behavior 용어는 lifecycle 에서 걷어내야 한다(신호는
+    # behaviors/objective 가 소유). _dedupe_lifecycle_against_behaviors 가 이를 결정론으로 보정한다.
+    plan = {"target_user": {"lifecycle": ["repeat_buyer", "cart_abandoner", "vip"], "behaviors": ["cart_abandoner"]}}
+    g._dedupe_lifecycle_against_behaviors(plan)
+    assert plan["target_user"]["lifecycle"] == ["vip"]  # behavior 용어만 제거, 실제 lifecycle(vip)은 보존
+    assert plan["target_user"]["behaviors"] == ["cart_abandoner"]  # 신호 보존
+
+
+def test_lifecycle_without_behavior_terms_untouched():
+    plan = {"target_user": {"lifecycle": ["dormant", "vip"], "behaviors": []}}
+    g._dedupe_lifecycle_against_behaviors(plan)
+    assert plan["target_user"]["lifecycle"] == ["dormant", "vip"]

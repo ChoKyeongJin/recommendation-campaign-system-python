@@ -768,9 +768,7 @@
       },
       "cart_abandoner": {
         "exists": true,
-        "order_anti_join": true,
-        "order_table": "CRM_SL_ORDERHEADERMALL",
-        "order_member_column": "MEMBER_NO",
+        "_comment": "장바구니 이탈=보관 카트 라인 존재(active_condition KEEP_YN='Y')로만 정의한다. KEEP_YN='Y' 자체가 '담아두고 아직 결제 안 함'을 뜻하므로 별도 주문 anti-join(NOT EXISTS 주문)은 걸지 않는다 — 그건 '평생 무주문 회원'을 뜻해 재구매 유도 대상과 자기모순이다(_build_cart_targets_candidate 참고).",
         "synonyms": [
           "장바구니 이탈",
           "장바구니에 담고 구매하지 않은",
