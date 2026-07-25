@@ -74,5 +74,5 @@ def test_recovers_limit_from_original_when_rewrite_drops_particle():
     rewritten_plan = g.build_query_plan("2024년 하반기 기저귀 구매 고객 100명", parser="rules")
     assert rewritten_plan.get("result_limit") is None
     # retrieve 처럼 원문으로 재적용하면 개수 제한이 복구된다.
-    g._apply_result_limit_filter("2024년 하반기에 기저귀 구매한 고객 100명만", rewritten_plan)
+    g._apply_named_filter("result_limit", "2024년 하반기에 기저귀 구매한 고객 100명만", rewritten_plan)
     assert rewritten_plan.get("result_limit") == 100

@@ -49,6 +49,25 @@ def test_window_parsed_to_days():
 
 
 @pytest.mark.parametrize("query", [
+    "캠페인 구매금액이 0원인 회원을 찾아줘",
+    "캠페인 구매금액이 없는 회원",
+])
+def test_campaign_buy_amount_zero_is_no_buy_response(query):
+    # '캠페인 구매금액 0원/없는' = 캠페인 구매 안 함. '캠페인구매' 리터럴이 긍정 buy_response(EXISTS)로
+    # 오탐해 정반대로 뒤집히던 것을 no_buy_response(NOT EXISTS) 부정 트랙으로 바로잡는다.
+    responses = _plan(query)["target_user"].get("campaign_responses", [])
+    assert responses and all(r.get("negated") for r in responses)
+    assert responses[0]["canonical"] == "no_buy_response"
+    assert "NOT EXISTS" in _sql(query)
+
+
+def test_campaign_buy_amount_zero_not_confused_by_nonzero():
+    # '100원인'의 부분문자열 '0원'을 0으로 오탐하지 않는다(부정 트랙으로 안 넘어감).
+    responses = _plan("캠페인 구매금액이 100원인 회원")["target_user"].get("campaign_responses", [])
+    assert not any(r.get("negated") for r in responses)
+
+
+@pytest.mark.parametrize("query", [
     # 캠페인 문맥 없는 누적 금액은 주문 집계(aggregate_conditions) 소유다.
     "누적 구매 금액이 20만원 이상인 회원",
     "구매금액 20만원 이상 회원",

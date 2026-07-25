@@ -54,6 +54,103 @@ def test_gender_survives_connective_ending():
     assert tu.get("age_min") == 30 and tu.get("age_max") == 49
 
 
+# ── 연령 배타 경계: '미만/초과'가 소실되던 회귀 ──────────────────────────────────────
+def _age(query: str) -> tuple:
+    tu: dict = {}
+    g._apply_age_filters(query, tu)
+    return tu.get("age_min"), tu.get("age_max")
+
+
+def test_age_exclusive_upper_bound_not_dropped():
+    # "50세 미만"이 '이하|까지'에만 걸려 통째로 드롭되던 버그. AGE < 50 = AGE <= 49.
+    assert _age("나이가 30세 이상이고 50세 미만인 회원") == (30, 49)
+
+
+def test_age_exclusive_lower_bound():
+    # "40세 초과" = AGE > 40 = AGE >= 41.
+    assert _age("40세 초과 60세 이하") == (41, 60)
+
+
+def test_age_exclusion_flips_to_complement():
+    # "18세 미만 회원은 제외" = 여집합 AGE >= 18. 포함 조건으로 AGE <= 17 이 나오던 반전 버그.
+    assert _age("18세 미만 회원은 제외해줘") == (18, None)
+    assert _age("18세 미만 제외") == (18, None)
+    assert _age("18세 미만인 회원은 제외") == (18, None)
+    # 상한(이상) 절 제외도 대칭: "65세 이상 제외" = AGE < 65 = AGE <= 64.
+    assert _age("65세 이상 회원은 제외") == (None, 64)
+
+
+def test_age_exclusion_does_not_leak_to_other_clause():
+    # 연결어미 뒤 다른 절의 제외는 연령을 뒤집으면 안 된다(오탐 가드).
+    assert _age("18세 이상이고 블랙리스트는 제외") == (18, None)
+
+
+# ── 닫힌 구간 부정: "20대가 아닌"이 20대 그 자체(정반대)로 나오던 회귀 ──────────────────
+def _age_ex(query: str) -> list:
+    tu: dict = {"age_min": None, "age_max": None, "age_exclude_ranges": []}
+    g._apply_age_filters(query, tu)
+    return tu["age_min"], tu["age_max"], tu["age_exclude_ranges"]
+
+
+def test_decade_negation_becomes_not_between():
+    # "20대가 아닌"/"20대 제외" = 여집합(AGE<20 OR AGE>29) → NOT BETWEEN. 이전엔 20대 범위(정반대)를 냄.
+    assert _age_ex("20대가 아닌 회원을 추출해줘") == (None, None, [[20, 29]])
+    assert _age_ex("20대 제외 회원") == (None, None, [[20, 29]])
+    # 명시 범위 부정도 동일.
+    assert _age_ex("20~29세 아닌 회원") == (None, None, [[20, 29]])
+    # 제외 없는 연대는 그대로 포함 범위.
+    assert _age_ex("30대 회원") == (30, 39, [])
+
+
+def test_decade_negation_compiles_to_not_between_sql():
+    plan = g.build_query_plan("20대가 아닌 회원을 추출해줘", parser="rules")
+    compiled = g.compile_member_target_conditions(plan)
+    assert compiled["has_signal"] and not compiled["unsupported"]
+    assert any("NOT (B.AGE BETWEEN 20 AND 29)" in p for p in compiled["predicates"])
+    # 정반대(20대만)가 아님을 명시적으로 확인.
+    assert not any(p.strip() == "B.AGE >= 20" for p in compiled["predicates"])
+
+
+def test_age_shares_comparison_vocabulary():
+    # age 도 공용 비교 문법의 연산자 어휘를 쓴다 → '보다 많은/적은'·'넘는' 동사형을 자동으로 얻는다.
+    assert _age("40세보다 많은 회원") == (41, None)   # > 40 = >= 41(정수)
+    assert _age("40세를 넘는 고객") == (41, None)
+    assert _age("40세보다 적은 회원") == (None, 39)   # < 40 = <= 39
+    # 기존 부사형/부터·까지도 그대로.
+    assert _age("40세 이상") == (40, None)
+    assert _age("30세부터 50세까지") == (30, 50)
+
+
+def test_decade_with_boundary_operator_opens_range():
+    # "40대 이상"은 AGE>=40(상한 없음)이어야 한다. 연대 패스가 [40,49]로 닫고 '이상'을 떨구던 버그.
+    assert _age("40대 이상 고객을 보여줘") == (40, None)
+    assert _age("40대 이하 고객") == (None, 49)
+    assert _age("40대 미만 고객") == (None, 39)   # 40대 시작 미만 = 39 이하
+    assert _age("40대 초과 고객") == (50, None)    # 40대 끝 초과 = 50 이상
+    # 경계어 없는 순수 연대는 여전히 닫힌 범위.
+    assert _age("40대 고객") == (40, 49)
+
+
+def test_exact_age_compiles_to_equals():
+    # "나이가 30세인" = AGE=30. rules 가 못 잡아 LLM 이 min=max=30 → '>=30 AND <=30' 로 나오고
+    # 게이트가 '=30 과 다르다'고 오탐하던 사례. 결정론 정확연령 + '= N' 방출로 해소.
+    assert _age("나이가 30세인 회원을 찾아줘") == (30, 30)
+    assert _age("30세 회원") == (30, 30)
+    # 경계어가 붙으면 정확연령이 아니다(오발동 가드).
+    assert _age("30세 이상 회원") == (30, None)
+    plan = g.build_query_plan("나이가 30세인 회원을 찾아줘", parser="rules")
+    compiled = g.compile_member_target_conditions(plan)
+    assert any(p.strip() == "B.AGE = 30" for p in compiled["predicates"]), compiled["predicates"]
+
+
+def test_decade_negation_not_flagged_as_unmentioned():
+    # age_exclude_ranges 로 나온 NOT BETWEEN 을 미요청 검증기가 '연령대 조건'으로 오판하면 안 된다(4/6 단계).
+    plan = g.build_query_plan("20대가 아닌 회원을 추출해줘", parser="rules")
+    sql = "SELECT B.MEMBER_NO FROM CRM_MB_BASEINFO B WHERE NOT (B.AGE BETWEEN 20 AND 29)"
+    result = g.validate_unmentioned_sql_conditions(sql, plan)
+    assert result["is_satisfied"], result["unexpected_conditions"]
+
+
 # ── (3) 캠페인 구매반응 부정: NOT EXISTS + 오배정 정리 ──────────────────────────────
 def test_campaign_no_buy_parsed_as_negated_response():
     tu = _plan("최근 캠페인에서는 구매하지 않은 회원")["target_user"]

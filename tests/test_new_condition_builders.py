@@ -69,6 +69,72 @@ def test_balance_combines_with_member_attribute():
     assert "B.GENDER_CD = 'GENDER_CD.FEMALE'" in sql
 
 
+def test_balance_exact_equals():
+    # "예치금 잔액이 0원인" = 등호. 연산자어(이상/이하)가 없어 임계값 패턴이 못 잡고 조건이 통째로
+    # 드롭돼 '타겟 조건 인식(1/6)'에서 막히던 사례. 등호 폴백으로 '= N' 방출.
+    assert "B.DEPOSIT_BALANCE_AMT = 0" in _sql("예치금 잔액이 0원인 회원을 찾아줘")
+    assert "B.DEPOSIT_BALANCE_AMT = 0" in _sql("예치금 잔액 0원 회원")  # 재작성형(조사 탈락)
+    assert "B.CARROT_BALANCE_AMT = 5000" in _sql("적립금 5000원인 회원")
+
+
+def test_balance_presence_and_absence():
+    # 숫자 없는 존재/부재형. "보유/있는" → > 0, "없는/미보유" → = 0. 숫자만 보던 파서가 못 잡아
+    # 1/6 에서 막히던 사례.
+    assert "B.DEPOSIT_BALANCE_AMT > 0" in _sql("예치금을 보유한 회원을 추출해줘")
+    assert "B.DEPOSIT_BALANCE_AMT > 0" in _sql("예치금이 있는 회원")
+    assert "B.DEPOSIT_BALANCE_AMT = 0" in _sql("예치금 없는 회원")
+    # '미보유'가 '보유'를 포함하지만 부재로 정확히 갈린다.
+    assert "B.DEPOSIT_BALANCE_AMT = 0" in _sql("예치금 미보유 회원")
+
+
+def test_balance_verb_form_operator_not_misread_as_equals():
+    # '50,000원을 초과하는' 동사형 부등호. 부사형만 보던 파서가 등호로 오분류(= 50000)하던 회귀.
+    assert "B.DEPOSIT_BALANCE_AMT > 50000" in _sql("예치금 잔액이 50,000원을 초과하는 회원을 찾아줘")
+    assert "B.DEPOSIT_BALANCE_AMT = 50000" not in _sql("예치금 잔액이 50,000원을 초과하는 회원을 찾아줘")
+    assert "B.DEPOSIT_BALANCE_AMT < 50000" in _sql("예치금이 50,000원 미만인 회원")
+
+
+def test_balance_range_becomes_between():
+    # 'A원에서 B원 사이' 범위. 등호 폴백이 첫 숫자만 '= A'로 잡던 회귀 → >=A AND <=B.
+    sql = _sql("예치금이 10,000원에서 50,000원 사이인 회원을 보여줘")
+    assert "B.DEPOSIT_BALANCE_AMT >= 10000" in sql and "B.DEPOSIT_BALANCE_AMT <= 50000" in sql
+
+
+def test_balance_comparison_phrase_and_negation():
+    # 공용 비교 문법: 'N원보다 많은/적은' 비교형과 '보유하지 않은' 부정형이 등호/존재로 오폴백되던 회귀.
+    assert "B.CARROT_BALANCE_AMT > 0" in _sql("적립금이 0원보다 많은 회원을 찾아줘")
+    assert "B.CARROT_BALANCE_AMT = 0" in _sql("적립금을 보유하지 않은 고객을 찾아줘")
+    assert "B.CARROT_BALANCE_AMT > 10000" in _sql("적립금이 10,000원을 초과한 회원을 보여줘")  # 동사형
+
+
+def test_balance_column_to_column_comparison():
+    # '적립금이 예치금보다 많은' = 두 잔액 컬럼 직접 비교(숫자 임계 아님).
+    sql = _sql("적립금이 예치금보다 많은 회원을 보여줘")
+    assert "B.CARROT_BALANCE_AMT > B.DEPOSIT_BALANCE_AMT" in sql
+
+
+def test_shared_comparison_grammar_is_unit_agnostic():
+    # 공용 문법은 단위만 바꿔 재사용된다(원/세/회 …) — 도메인별 재구현 없이.
+    assert g._parse_amount_comparison("50,000원을 초과하는", "원") == [(">", 50000.0)]
+    assert g._parse_amount_comparison("0원보다 많은", "원") == [(">", 0.0)]
+    assert g._parse_amount_comparison("3천원에서 2만원 사이", "원") == [(">=", 3000.0), ("<=", 20000.0)]
+    assert g._parse_amount_comparison("40세 이상", "세") == [(">=", 40.0)]
+    assert g._parse_amount_comparison("5회 이하", "회|건|개|번") == [("<=", 5.0)]
+    # bare_equals=False 면 연산자 없는 맨 숫자는 등호로 넘겨짚지 않는다(모호형 보호).
+    assert g._parse_amount_comparison("3회", "회|건|개|번") is None
+    assert g._parse_amount_comparison("0원", "원", bare_equals=True) == [("=", 0.0)]
+
+
+def test_balance_ranking_and_stat_forms_defer_not_misfire():
+    # 랭킹/퍼센타일/평균은 WHERE 임계로 표현 못 하므로 잔액 파서가 소유하지 않는다 —
+    # 틀린 조건(> 0, = N)을 내지 말고 balance_conditions 를 비운다('보유액'의 '보유' 오탐 포함).
+    for q in ["예치금이 가장 많은 회원 100명을 추출해줘",
+              "예치금 보유액 기준 상위 5% 회원을 찾아줘",
+              "예치금 잔액이 평균보다 높은 고객을 보여줘"]:
+        plan = g.build_query_plan(q, parser="rules")
+        assert not plan["target_user"].get("balance_conditions"), q
+
+
 # ── A그룹: 무구매 ─────────────────────────────────────────────────────
 def test_no_purchase_never_bought_phrasing():
     assert "no_purchase" in _plan("한 번도 구매하지 않은 회원")["target_user"]["behaviors"]

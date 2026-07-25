@@ -147,6 +147,7 @@
     },
     {
       "canonical": "app_signup",
+      "surface_terms": ["앱", "어플", "app", "어플리케이션"],
       "category": "signup_channel",
       "column": "B.REG_CHANNEL_CD",
       "value": "DEVICE_TYPE_CD.APP",
@@ -154,6 +155,7 @@
     },
     {
       "canonical": "mobile_web_signup",
+      "surface_terms": ["모바일웹", "엠웹", "모바일브라우저"],
       "category": "signup_channel",
       "column": "B.REG_CHANNEL_CD",
       "value": "DEVICE_TYPE_CD.MW",
@@ -161,6 +163,7 @@
     },
     {
       "canonical": "pc_signup",
+      "surface_terms": ["pc", "컴퓨터", "웹", "데스크탑", "데스크톱"],
       "category": "signup_channel",
       "column": "B.REG_CHANNEL_CD",
       "value": "DEVICE_TYPE_CD.PC",
@@ -205,6 +208,7 @@
 
     {
       "canonical": "children_registered",
+      "surface_terms": ["자녀", "아이", "키즈"],
       "category": "family",
       "column": "B.CHILDREN_YN",
       "value": "Y",
@@ -212,6 +216,7 @@
     },
     {
       "canonical": "active_member",
+      "surface_terms": ["활동회원", "활성회원", "액티브회원", "활동중인회원"],
       "category": "activity",
       "column": "B.ACTIVITY_MEMBER_YN",
       "value": "Y",
@@ -219,6 +224,7 @@
     },
     {
       "canonical": "blacklisted",
+      "surface_terms": ["블랙리스트", "발송제외고객", "차단회원"],
       "category": "exclusion",
       "column": "B.BLACKLIST_YN",
       "value": "Y",
@@ -226,6 +232,7 @@
     },
     {
       "canonical": "employee",
+      "surface_terms": ["임직원", "직원회원"],
       "category": "member_type",
       "column": "B.EMPLOYEE_YN",
       "value": "Y",
@@ -233,6 +240,7 @@
     },
     {
       "canonical": "premium_member",
+      "surface_terms": ["프리미엄회원", "프리미엄고객", "프리미엄"],
       "category": "member_type",
       "column": "B.PREMIUM_YN",
       "value": "Y",
@@ -240,6 +248,7 @@
     },
     {
       "canonical": "membership_member",
+      "surface_terms": ["멤버십회원", "멤버십가입고객", "멤버십가입"],
       "category": "member_type",
       "column": "B.MEMBERSHIP_YN",
       "value": "Y",
@@ -247,6 +256,7 @@
     },
     {
       "canonical": "sns_registered",
+      "surface_terms": ["sns가입", "소셜가입", "간편가입", "sns회원"],
       "category": "signup",
       "column": "B.SNS_REG_YN",
       "value": "Y",

@@ -80,7 +80,7 @@ def test_compile_combines_with_gender_and_age():
 def test_llm_plan_postprocess_sets_recent_login():
     # LLM 경로도 결정론 파서가 recent_login 을 확정한다(플랜 구조만 흉내낸 후처리 직접 호출).
     plan = {"target_user": {}}
-    g._apply_recent_login_filter("최근 3개월간 로그인한 고객", plan)
+    g._apply_named_filter("recent_login", "최근 3개월간 로그인한 고객", plan)
     assert plan["target_user"]["recent_login"]["min_days"] == 90
 
 

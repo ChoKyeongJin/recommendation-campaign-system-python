@@ -703,6 +703,12 @@ CONDITION_SPECS: tuple[ConditionSpec, ...] = (
         extract=_plan_dict("member_metric_ranking"),
     ),
     ConditionSpec(
+        # 회원 기준 테이블 컬럼(잔액 등)의 선택 전략: 상위 N 명/상위 N%/평균 대비. WHERE 임계가 아니라
+        # 정렬·TOP·서브쿼리로 뽑으므로 전용 빌더가 소유한다(단일 테이블이라 조인 없음).
+        kind="member_metric_selection", fact="member", fact_join=True, signals_target=True,
+        extract=_plan_dict("member_metric_selection"),
+    ),
+    ConditionSpec(
         kind="region_density_target", fact="region", fact_join=True, signals_target=True,
         extract=_plan_dict("region_density_target"),
     ),
