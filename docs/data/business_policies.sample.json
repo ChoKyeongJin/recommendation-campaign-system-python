@@ -25,7 +25,6 @@
       "requires_threshold": false,
       "sql_behavior": "rank",
       "order_by": "desc",
-      "grain_note": "월 스냅샷 테이블이므로 실제 집계 시 최신 월(YYYYMM=MAX)만 사용한다(member_metrics.grain_filter 참고).",
       "related_tables": ["CRM_MB_MONTHCRMINFO"],
       "related_columns": [
         "CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT",
@@ -55,7 +54,6 @@
       "requires_threshold": true,
       "sql_behavior": "filter",
       "order_by": null,
-      "grain_note": "월 스냅샷 테이블이므로 최신 월(YYYYMM=MAX)만 사용한다.",
       "related_tables": ["CRM_MB_MONTHCRMINFO"],
       "related_columns": [
         "CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT",
@@ -84,8 +82,6 @@
       "requires_threshold": true,
       "sql_behavior": "filter",
       "order_by": null,
-      "available_in_db": false,
-      "unavailable_reason": "연결된 실 CRM DB(Z_CAMPAIGN 등)에 캠페인 예산 컬럼 없음",
       "related_tables": ["Z_CAMPAIGN"],
       "related_columns": []
     },
@@ -131,8 +127,7 @@
           "meaning": "purchase_location_region",
           "column": null,
           "available": false,
-          "requires_schema": true,
-          "note": "매장(CRM_CM_OFFSHOP)·주문 조인이 필요하며 회원 기본정보 단독으로는 불가"
+          "requires_schema": true
         }
       ],
       "related_tables": ["CRM_MB_BASEINFO"],
@@ -152,7 +147,6 @@
         "message generation"
       ],
       "scope": "message_generation",
-      "applies_to": "campaign_message_metadata",
       "default_channel": "lms",
       "allowed_channels": ["lms", "rcs"],
       "channel_limits": {
@@ -171,12 +165,6 @@
         "emotion_emphasis"
       ],
       "anti_hallucination": {
-        "benefit_source_fields": [
-          "campaigns.offer",
-          "campaign_message_examples.message_text",
-          "campaign_channel_messages.message_body",
-          "campaign_message_variants.message_body"
-        ],
         "deny_unverified_benefits": true
       },
       "sql_behavior": "context",
