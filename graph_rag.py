@@ -127,6 +127,11 @@ CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "s
 DEFAULT_MEMBER_TARGET_FILTERS_PATH = Path(
     os.getenv("GRAPH_RAG_MEMBER_TARGET_FILTERS", "docs/data/member_target_filters.json")
 )
+# 속성 토큰 그룹 선언(회원속성 표면어→lifecycle/exclude 승격 문법)의 단일 소스. 파일 부재/파손 시
+# _default_attribute_token_groups_raw() 코드 폴백을 쓴다(동작 불변).
+DEFAULT_ATTRIBUTE_TOKEN_GROUPS_PATH = Path(
+    os.getenv("GRAPH_RAG_ATTRIBUTE_TOKEN_GROUPS", "docs/data/attribute_token_groups.json")
+)
 
 _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
     "eq_filters": [
@@ -956,15 +961,19 @@ _MEMBER_FLAG_SIGNAL_LABELS = {
 def _member_flag_signals(text: str) -> set[str]:
     """텍스트에서 '활동회원'·'블랙리스트' 신호를 'canonical:극성'(+포함/-제외) 문자열로 뽑는다.
 
-    attribute_token 그룹 "member_flag"와 같은 표면어·부정 문법(_attribute_terms·_MEMBER_FLAG_NEG)을 써서,
-    재작성이 '블랙리스트가 아니면서' 같은 조건을 조용히 지우거나 극성을 뒤집으면 게이트가 소실로 잡게 한다."""
+    attribute_token 그룹 "member_flag"의 선언형 스펙(표면어·부정 문법)을 그대로 재사용한다 — 그룹 선언을
+    JSON(attribute_token_groups.json)에서 고치면 이 신호 감지도 함께 따라가 단일 소스가 유지된다. 재작성이
+    '블랙리스트가 아니면서' 같은 조건을 조용히 지우거나 극성을 뒤집으면 게이트가 소실로 잡게 한다."""
+    group = _attribute_token_groups().get("member_flag")
+    if group is None:
+        return set()
     compact = (text or "").replace(" ", "").casefold()
     signals: set[str] = set()
-    for canonical, terms in _MEMBER_FLAG_TARGETS:
+    for canonical, terms in group.canonicals:
         term_alt = "(?:" + "|".join(re.escape(term) for term in _attribute_terms(canonical, terms)) + ")"
-        if re.search(term_alt + _MEMBER_FLAG_NEG, compact):
+        if group.neg and re.search(term_alt + group.neg, compact):
             signals.add(f"{canonical}:-")
-        elif re.search(term_alt, compact):
+        elif re.search(term_alt + group.pos, compact):
             signals.add(f"{canonical}:+")
     return signals
 
@@ -1585,12 +1594,23 @@ class _FilterSpec:
     mode: str = "set"  # "set" | "append"
     # impl="attribute_token": _attribute_token_groups() 의 그룹 이름(표면어→lifecycle/exclude 승격 문법).
     group: str | None = None
+    # impl="threshold": 타입 스펙(_ThresholdSpec)으로 생성한 matcher. '<숫자><단위><연산자>'를 slot 에
+    # {operator, threshold} dict 로 세팅한다 — 전용 파서 함수 없이 스펙 등록만으로 임계 필터가 열린다.
+    # gate: 이 문자열이 있어야 발동(오탐 방지, None=무조건). 창/라벨/교차정리 등 오케스트레이션이 필요하면
+    # 그건 스펙으로 표현 못 하므로 custom 필터로 남긴다.
+    threshold: "_ThresholdMatcher | None" = None
+    gate: str | None = None
     # auto 경로 슬롯 선초기화(LLM 플랜은 희소해 키가 없을 수 있음; 규칙 경로는 플랜을 리터럴로 선초기화하므로
     # init=False 로 건너뛴다 — 현행 동작 그대로다). init_on: "target_user"|"plan", init_list: 기본값 [] 여부.
     init_key: str | None = None
     init_on: str = "target_user"
     init_list: bool = False
     needs_policies: bool = False  # apply(query, plan, business_policies)
+    # family: 이 필터가 속한 선언형 클러스터(예: "attribute_token"). impl 이 선언형이면 impl 이 곧 family 지만,
+    # 공통화 불가 예외를 커스텀(impl="custom")으로 남길 때 family 로 '원래 이 클러스터 소속'임을 표시하고
+    # exception_reason 에 사유를 적는다 — 테스트가 '클러스터 소속은 선언형이거나 사유 있는 예외' 불변식을 강제한다.
+    family: str | None = None
+    exception_reason: str | None = None
     paths: frozenset[str] = frozenset({"rules", "auto"})
 
 
@@ -1618,7 +1638,10 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
         "result_limit": _FilterSpec(impl="slot_setter", detect=_parse_result_limit, slot="result_limit", slot_on="plan", init_key="result_limit", init_on="plan"),
         "purchase_inactivity": _FilterSpec(_apply_purchase_inactivity_filter, init_key="purchase_inactivity"),
         "recent_login": _FilterSpec(impl="slot_setter", detect=_parse_recent_login_period, slot="recent_login", init_key="recent_login"),
-        "signup_channel": _FilterSpec(_apply_signup_channel_filter),
+        # 예외(attribute_token 클러스터지만 커스텀): 온/오프라인 가입은 online=NOT offline 상호정의 + 이중부정
+        # 진리표라 단순 neg/pos 문법으로 표현 불가 → 커스텀 유지.
+        "signup_channel": _FilterSpec(_apply_signup_channel_filter, family="attribute_token",
+                                      exception_reason="online/offline 상호정의 + 이중부정 진리표(단순 문법 불가)"),
         # 선언형(attribute_token): 표면어→회원속성 canonical 을 lifecycle/exclude 로 승격(문법은 그룹이 소유).
         "signup_device": _FilterSpec(impl="attribute_token", group="signup_device"),
         "balance_condition": _FilterSpec(_apply_balance_condition_filter),
@@ -1632,8 +1655,14 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
         "cart_absence": _FilterSpec(_apply_cart_absence_filter),
         "campaign_response_frequency": _FilterSpec(_apply_campaign_response_frequency_filter, init_key="campaign_response_frequency"),
         "children_registered": _FilterSpec(impl="attribute_token", group="children"),
-        "grade_threshold": _FilterSpec(_apply_grade_threshold_filter),
-        "channel_consent": _FilterSpec(_apply_channel_consent_filter),
+        # 예외(attribute_token 클러스터지만 커스텀): '<등급> 이상/이하'는 서열 랭크 집합 확장 + 기존 등급
+        # lifecycle 소유권 override 라 단순 표면어 매칭이 아님 → 커스텀 유지.
+        "grade_threshold": _FilterSpec(_apply_grade_threshold_filter, family="attribute_token",
+                                       exception_reason="서열 랭크 집합 확장 + 등급 lifecycle 소유권 override"),
+        # 예외(attribute_token 클러스터지만 커스텀): 채널 수신동의는 group-gap 나열 매칭 + 매칭 채널어를
+        # preferred_channels/캠페인 채널에서 강등하는 부수효과가 있어 단순 문법으로 표현 불가 → 커스텀 유지.
+        "channel_consent": _FilterSpec(_apply_channel_consent_filter, family="attribute_token",
+                                       exception_reason="group-gap 나열 매칭 + 채널어 강등 부수효과"),
         "member_flag": _FilterSpec(impl="attribute_token", group="member_flag"),
         "aggregate": _FilterSpec(_apply_aggregate_condition_filter, init_key="aggregate_conditions", init_list=True),
         # 지표명 없는 개수 임계('2개 이상 구입')는 지표명 명시형 파싱 뒤에 실행(order_count 중복 추가 방지).
@@ -1671,22 +1700,85 @@ def _detect_cart_presence(query: str) -> str | None:
     return "cart_abandoner" if _CART_PRESENCE_PATTERN.search(query.replace(" ", "").casefold()) else None
 
 
-def _attribute_token_groups() -> dict[str, dict[str, Any]]:
-    """회원속성 토큰 승격 그룹의 파싱 문법(단일 소스). 런타임 호출이라 아래 상수가 나중에 정의돼도 된다.
+@dataclass(frozen=True)
+class _AttributeTokenGroup:
+    """회원속성 토큰 승격 문법(선언형 스펙). 표면어(canonical)를 lifecycle(포함)/exclude.lifecycle(제외)로
+    올리는 '단순 속성형' 필터의 전체 동작을 데이터로 선언한다 — 새 필터는 이 스펙 한 줄 + 레지스트리
+    attribute_token 엔트리 등록만으로 열린다(전용 _apply_* 함수 불필요). 복합 파싱(서열 랭크 확장·이중부정·
+    채널어 강등 등)은 이 문법으로 표현 못 하므로 커스텀 필터(impl="custom", family="attribute_token",
+    exception_reason=...)로 남긴다 — test_deterministic_filter_registry 가 그 분류를 강제한다."""
 
-    각 그룹: neg(부정 접미어 정규식→exclude.lifecycle, None이면 부정 없음), pos(긍정 접미어 정규식, ''=표면어
-    단독), gate(이 문자열이 있어야 발동, None이면 무조건), first_only(첫 매치 하나만=구체성 우선), canonicals
-    ((canonical, 기본_표면어)목록 — 표면어는 eq_filters JSON surface_terms 가 있으면 그걸로 덮는다)."""
+    canonicals: tuple[tuple[str, tuple[str, ...]], ...]  # (canonical, 기본 표면어); surface_terms JSON 있으면 덮음
+    neg: str | None = None   # 부정 접미어 정규식 → exclude.lifecycle (None=부정 없음)
+    pos: str = ""            # 긍정 접미어 정규식 ('' = 표면어 단독)
+    gate: str | None = None  # 이 문자열이 있어야 발동 (None = 무조건)
+    first_only: bool = False  # 첫 매치 하나만(구체성 우선)
+
+
+def _default_attribute_token_groups_raw() -> dict[str, dict[str, Any]]:
+    """속성 토큰 그룹의 코드 폴백(JSON 파일 부재/파손 시). JSON 스키마와 동일 형태로 반환한다.
+    런타임 호출이라 아래 상수(_MEMBER_FLAG_TARGETS 등)가 나중에 정의돼도 된다."""
     return {
         # 활동회원/블랙리스트 등 Y/N 플래그: 부정→제외, 표면어 단독→포함. 여러 플래그 동시 매치 가능.
         "member_flag": {"neg": _MEMBER_FLAG_NEG, "pos": "", "gate": None, "first_only": False,
-                        "canonicals": _MEMBER_FLAG_TARGETS},
+                        "canonicals": [[c, list(t)] for c, t in _MEMBER_FLAG_TARGETS]},
         # 자녀정보 등록: '등록/보유/있음' 문맥이 붙어야 긍정, '없/미등록' 부정→제외('자녀 선물' 등 비속성 분리).
         "children": {"neg": _CHILDREN_NEG, "pos": _CHILDREN_POS, "gate": None, "first_only": False,
-                     "canonicals": (("children_registered", _CHILDREN_TERMS),)},
+                     "canonicals": [["children_registered", list(_CHILDREN_TERMS)]]},
         # 가입 디바이스(앱/PC/모바일웹): '가입' 문맥 필수, 구체성 순서로 첫 매치 하나만, 부정 없음.
         "signup_device": {"neg": None, "pos": _SIGNUP_DEVICE_SUFFIX, "gate": "가입", "first_only": True,
-                          "canonicals": _SIGNUP_DEVICE_TARGETS},
+                          "canonicals": [[c, list(t)] for c, t in _SIGNUP_DEVICE_TARGETS]},
+    }
+
+
+def _load_attribute_token_groups_raw(path: Path = DEFAULT_ATTRIBUTE_TOKEN_GROUPS_PATH) -> dict[str, dict[str, Any]]:
+    """attribute_token_groups.json 의 "groups" 를 읽는다. 파일 부재/파손/빈 groups 면 코드 폴백."""
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return _default_attribute_token_groups_raw()
+    groups = payload.get("groups") if isinstance(payload, dict) else None
+    if isinstance(groups, dict) and groups:
+        return groups
+    return _default_attribute_token_groups_raw()
+
+
+def _coerce_attribute_token_group(raw: Any) -> _AttributeTokenGroup | None:
+    """JSON 그룹 dict → _AttributeTokenGroup 스펙. canonicals 는 [[canonical, [표면어]]] 형태여야 한다."""
+    if not isinstance(raw, dict):
+        return None
+    canonicals: list[tuple[str, tuple[str, ...]]] = []
+    for item in raw.get("canonicals", []):
+        if isinstance(item, (list, tuple)) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], (list, tuple)):
+            terms = tuple(t for t in item[1] if isinstance(t, str) and t)
+            if item[0] and terms:
+                canonicals.append((item[0], terms))
+    if not canonicals:
+        return None
+    neg = raw.get("neg")
+    gate = raw.get("gate")
+    return _AttributeTokenGroup(
+        canonicals=tuple(canonicals),
+        neg=neg if isinstance(neg, str) and neg else None,
+        pos=raw.get("pos") if isinstance(raw.get("pos"), str) else "",
+        gate=gate if isinstance(gate, str) and gate else None,
+        first_only=bool(raw.get("first_only", False)),
+    )
+
+
+def _attribute_token_groups() -> dict[str, _AttributeTokenGroup]:
+    """회원속성 토큰 승격 그룹의 선언형 문법 스펙(단일 소스 = attribute_token_groups.json, 코드 폴백).
+
+    새 단순 속성형 필터는 이 JSON 에 그룹/카노니컬 한 줄 추가 + graph_rag 레지스트리에 attribute_token
+    엔트리 등록만으로 열린다(전용 _apply_* 함수 불필요)."""
+    out: dict[str, _AttributeTokenGroup] = {}
+    for name, raw in _load_attribute_token_groups_raw().items():
+        group = _coerce_attribute_token_group(raw)
+        if group is not None:
+            out[name] = group
+    return out or {
+        name: _coerce_attribute_token_group(raw)
+        for name, raw in _default_attribute_token_groups_raw().items()
     }
 
 
@@ -1714,36 +1806,58 @@ def _member_surface_terms() -> dict[str, list[str]]:
 _MEMBER_SURFACE_TERMS = _member_surface_terms()
 
 
-def _attribute_terms(canonical: str, default: tuple[str, ...]) -> tuple[str, ...] | list[str]:
-    """canonical 의 표면어 — eq_filters JSON surface_terms 가 있으면 그것을, 없으면 코드 기본값을 쓴다."""
-    return _MEMBER_SURFACE_TERMS.get(canonical, default)
+def _attribute_terms(canonical: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    """canonical 의 표면어 — 그룹 선언(attribute_token_groups.json)의 표면어와 eq_filters surface_terms 의
+    합집합. 어느 파일에 추가해도 매칭되게 한다(한쪽이 다른 쪽을 가리지 않음). 둘 다 같은 값이면 합집합=그대로."""
+    override = _MEMBER_SURFACE_TERMS.get(canonical)
+    if not override:
+        return tuple(default)
+    merged = list(default)
+    for term in override:
+        if term not in merged:
+            merged.append(term)
+    return tuple(merged)
 
 
-def _run_attribute_token(group: str, query: str, plan: dict[str, Any]) -> None:
-    """회원속성 표면어를 lifecycle(포함)/exclude.lifecycle(제외) canonical 로 승격하는 범용 실행기.
-
-    member_flag/children/signup_device 를 대체한다 — 새 Y/N 회원속성은 _attribute_token_groups 의 그룹에
-    (canonical, 표면어) 한 줄(또는 eq_filters JSON surface_terms)만 추가하면 된다. canonical 이 MEMBER_EQ_FILTERS
-    에 없으면(컴파일 불가) 승격도 하지 않는다."""
-    grammar = _attribute_token_groups()[group]
+def _run_attribute_token(group: _AttributeTokenGroup, query: str, plan: dict[str, Any]) -> None:
+    """선언형 문법 스펙(_AttributeTokenGroup) 하나로 회원속성 표면어를 lifecycle(포함)/exclude.lifecycle
+    (제외) canonical 로 승격하는 범용 실행기. member_flag/children/signup_device 가 이 하나를 공유한다 —
+    새 단순 속성형 필터는 스펙만 추가하면 전용 함수 없이 동작한다. canonical 이 MEMBER_EQ_FILTERS 에 없으면
+    (컴파일 불가) 승격도 하지 않는다. 스펙 객체를 받으므로 테스트가 합성 스펙으로 직접 구동해 데이터-구동을
+    검증할 수 있다(이름 조회는 _dispatch_filter 가 한다)."""
     compact = query.replace(" ", "").casefold()
-    if grammar["gate"] and grammar["gate"] not in compact:
+    if group.gate and group.gate not in compact:
         return
-    neg = grammar["neg"]
-    for canonical, default_terms in grammar["canonicals"]:
+    for canonical, default_terms in group.canonicals:
         if canonical not in MEMBER_EQ_FILTERS:
             continue  # 레지스트리에서 빠졌다면 문맥 승격도 하지 않는다(컴파일 불가 방지)
         term_alt = "(?:" + "|".join(re.escape(term) for term in _attribute_terms(canonical, default_terms)) + ")"
-        if neg and re.search(term_alt + neg, compact):
+        if group.neg and re.search(term_alt + group.neg, compact):
             _append_unique(plan.setdefault("exclude", {}).setdefault("lifecycle", []), canonical)
-        elif re.search(term_alt + grammar["pos"], compact):
+        elif re.search(term_alt + group.pos, compact):
             _append_unique(plan.setdefault("target_user", {}).setdefault("lifecycle", []), canonical)
-            if grammar["first_only"]:
+            if group.first_only:
                 return  # 가장 구체적인 매치 하나만(예: 모바일웹 > 웹/PC)
 
 
+def _run_threshold_filter(spec: "_FilterSpec", query: str, plan: dict[str, Any]) -> None:
+    """타입 스펙(_ThresholdMatcher)만으로 '<숫자><단위><연산자>'를 slot 에 {operator, threshold} 로 세팅한다.
+    전용 파서 함수 없이 스펙 등록만으로 동작하는 임계 필터 실행기 — 창/라벨/교차정리가 필요한 도메인은 custom."""
+    if spec.gate and spec.gate not in query.replace(" ", "").casefold():
+        return
+    match = spec.threshold.pattern.search(query)
+    if match is None:
+        return
+    parsed = spec.threshold.parse(match)
+    if parsed is None:
+        return
+    operator, value = parsed
+    container = plan if spec.slot_on == "plan" else plan.setdefault("target_user", {})
+    container[spec.slot] = {"operator": operator, "threshold": value}
+
+
 def _dispatch_filter(spec: "_FilterSpec", query: str, plan: dict[str, Any], business_policies: Path | None) -> None:
-    """단일 필터를 impl 에 따라 실행한다(custom=전용 함수 / slot_setter / attribute_token)."""
+    """단일 필터를 impl 에 따라 실행한다(custom=전용 함수 / slot_setter / attribute_token / threshold)."""
     if spec.impl == "slot_setter":
         value = spec.detect(query)
         if value is None:
@@ -1754,7 +1868,9 @@ def _dispatch_filter(spec: "_FilterSpec", query: str, plan: dict[str, Any], busi
         else:
             container[spec.slot] = value
     elif spec.impl == "attribute_token":
-        _run_attribute_token(spec.group, query, plan)
+        _run_attribute_token(_attribute_token_groups()[spec.group], query, plan)
+    elif spec.impl == "threshold":
+        _run_threshold_filter(spec, query, plan)
     elif spec.arg == "target_user":
         spec.apply(query, plan.setdefault("target_user", {}))
     elif spec.needs_policies:
@@ -3560,13 +3676,127 @@ def _apply_purchase_inactivity_filter(query: str, plan: dict[str, Any]) -> None:
 # 의 aggregate_targets 가 소유하고(코드-프리 레지스트리), 여기서는 프롬프트 텍스트에서 조건만 뽑는다.
 # 배수 단위는 긴 것부터(천만/백만이 만/천보다 먼저) 매칭한다.
 _AMOUNT_MAGNITUDES = (("억", 100_000_000), ("천만", 10_000_000), ("백만", 1_000_000), ("만", 10_000), ("천", 1_000))
-_AGG_OPERATOR_WORDS = {"이상": ">=", "초과": ">", "이하": "<=", "미만": "<"}
+# ── 비교 연산자 어휘의 단일 소스 ────────────────────────────────────────────────────
+# 이상/초과/이하/미만 → 부등호. 정규식 열거(_OP_ALT_BASIC)·매핑(_AGG_OPERATOR_WORDS)·rich 문법
+# (_COMPARISON_OP_ALT)이 전부 여기서 파생한다 — 새 비교어는 여기 한 곳에만 추가하면 모든 도메인이 얻는다.
+# (도메인 정규식들이 예전엔 '이상|초과|이하|미만'을 각자 인라인으로 재하드코딩했다.)
+# 비교어→부등호 매핑은 targeting_ir(순수 모듈)이 단일 소스로 소유한다 — IR 정규화와 표면 파싱이 같은 표를
+# 공유해, 새 비교어 추가 시 두 곳을 따로 고치지 않는다. 순서(이상/초과/이하/미만)는 아래 _OP_ALT_BASIC 열거가
+# 의존하므로 targeting_ir 쪽 리터럴 순서로 보존된다.
+_COMPARISON_OPERATORS = targeting_ir.COMPARISON_WORD_OPERATORS
+_OP_ALT_BASIC = "|".join(_COMPARISON_OPERATORS)  # "이상|초과|이하|미만"
+_AGG_OPERATOR_WORDS = _COMPARISON_OPERATORS  # 별칭(op→부등호 매핑; 기존 참조 다수가 이 이름을 쓴다)
 # 집계 지표 임계값의 측정 단위 — 공용 비교 문법(_parse_amount_comparison)에 넘긴다.
 _AGG_UNIT = r"원|건|회|명|개|장|번|건수|회수"
 # ── 공용 비교 문법(도메인 공통) ─────────────────────────────────────────────────────
 # age/balance/aggregate/count 마다 재구현하던 '이상/이하/초과/미만/넘는/보다 많은/정확히/범위'를 단위(unit)만
 # 바꿔 한 곳에서 파싱한다. 새 표현형은 여기 한 번만 추가하면 모든 도메인이 함께 얻는다(도메인별 함수 추가 불필요).
-_COMPARISON_OP_ALT = r"이상|이하|초과|미만|넘|미달|보다\s*(?:많|큰|높|적|작|낮|이상|이하|초과|미만)"
+# rich 형(부사·'보다 많은/적은')도 기본 4어(_OP_ALT_BASIC)를 단일 소스에서 포함한다.
+_COMPARISON_OP_ALT = rf"{_OP_ALT_BASIC}|넘|미달|보다\s*(?:많|큰|높|적|작|낮|{_OP_ALT_BASIC})"
+
+
+def _threshold_measure(num: str, unit: str, *, mag: bool = False, sep: str = r"\s*", unit_optional: bool = False) -> str:
+    """<숫자>[<배수어>]<단위> 정규식 조각(연산자 앞까지). num 은 (?P<num>) 로, 배수어는 (?P<mag>) 로 캡처.
+    배수어가 단위와 융합되는 특수형(캠페인 구매금액 '10만'·'10만원'·'10원')은 number 타입이 measure 를 직접 소유한다."""
+    mag_part = rf"{sep}(?P<mag>억|천만|백만|만|천)?" if mag else ""
+    u = rf"(?:{unit})?" if unit_optional else rf"(?:{unit})"
+    return rf"(?P<num>{num}){mag_part}{sep}{u}"
+
+
+def _threshold_regex(num: str, unit: str, *, mag: bool = False, sep: str = r"\s*", prefix: str = "", unit_optional: bool = False) -> str:
+    """<숫자>[<배수어>]<단위><연산자> 정규식 '문자열'. 연산자 열거는 단일 소스(_OP_ALT_BASIC)에서 온다.
+    문자열이라 다른 정규식에 임베드할 수 있다(예: 셀 비율 = 지표어 + 이 조각)."""
+    measure = _threshold_measure(num, unit, mag=mag, sep=sep, unit_optional=unit_optional)
+    return rf"{prefix}{measure}{sep}(?P<op>{_OP_ALT_BASIC})"
+
+
+def _threshold_pattern(num: str, unit: str, *, mag: bool = False, sep: str = r"\s*", prefix: str = "", unit_optional: bool = False) -> "re.Pattern[str]":
+    """_threshold_regex 컴파일본(단독 search 용). 스펙 기반 도메인 생성은 _compile_threshold 를 쓴다."""
+    return re.compile(_threshold_regex(num, unit, mag=mag, sep=sep, prefix=prefix, unit_optional=unit_optional))
+
+
+# 숫자 고유어 수사(한~열) → 값. 순수 카운트('세 번 이상')용 — 금액/배수어와 구분한다.
+_NATIVE_COUNT_WORDS = {
+    "한": 1, "두": 2, "세": 3, "네": 4, "다섯": 5,
+    "여섯": 6, "일곱": 7, "여덟": 8, "아홉": 9, "열": 10,
+}
+
+
+def _percent_value(match: "re.Match[str]") -> float | None:
+    value = float(match.group("num"))
+    return value if 0 < value <= 100 else None
+
+
+def _native_count_value(match: "re.Match[str]") -> int | None:
+    text = match.group("num")
+    count = _NATIVE_COUNT_WORDS.get(text)
+    if count is None:
+        try:
+            count = int(text)
+        except ValueError:
+            return None
+    return count if count > 0 else None
+
+
+def _korean_amount_value(match: "re.Match[str]") -> float | None:
+    return _parse_korean_amount(match.group("num"), match.group("mag") or "")
+
+
+# 숫자 해석 '타입' — 정규식 조각(또는 measure 통짜)·배수어 여부·기본 값 추출기를 함께 선언한다(표면 파싱 +
+# 값 해석 결합). 새 타입은 여기 한 줄. 값 검증 실패(범위 밖 %·0 이하 등)면 None 을 돌려 도메인이 폴백하게 한다.
+# 대부분 pattern(숫자 조각) + 도메인 unit 으로 measure 를 조립하지만, 배수어가 단위와 융합되는 특수형은
+# measure(num+mag+unit 통짜)를 타입이 직접 소유한다(unit/mag/sep 조립 규칙 밖).
+_THRESHOLD_NUMBER_KINDS: dict[str, dict[str, Any]] = {
+    "integer": {"pattern": r"\d+", "mag": False, "value": lambda m: int(m.group("num"))},
+    "korean_amount": {"pattern": r"[\d,]+(?:\.\d+)?", "mag": True, "value": _korean_amount_value},
+    "percent": {"pattern": r"\d+(?:\.\d+)?", "mag": False, "value": _percent_value},
+    "native_count": {"pattern": r"\d+|" + "|".join(_NATIVE_COUNT_WORDS), "mag": False, "value": _native_count_value},
+    # 캠페인 귀속 구매금액: '10만'(원 없이)·'10만원'·'10원' — 배수어가 단위(원) 안에 융합되고 원이 optional.
+    "korean_amount_bare": {"measure": r"(?P<num>[\d,]+(?:\.\d+)?)(?:(?P<mag>억|천만|백만|만|천)원?|원)", "value": _korean_amount_value},
+}
+
+
+@dataclass(frozen=True)
+class _ThresholdSpec:
+    """타입 있는 임계 조건 선언 — 도메인별 regex + 값 파서를 함께 생성하는 입력. number 로 숫자 해석
+    타입(정규식 조각 + 기본 파서)을 고르고, unit/prefix/sep/unit_optional 로 표면형을 맞춘다. 값 해석이
+    특수한 경우에만 parse 커스텀 훅(match -> (operator, value)|None)을 준다(없으면 number 기본 파서)."""
+
+    number: str  # _THRESHOLD_NUMBER_KINDS 키
+    unit: str
+    sep: str = r"\s*"
+    prefix: str = ""
+    unit_optional: bool = False
+    parse: "Callable[[re.Match[str]], tuple[str, float] | None] | None" = None
+
+
+@dataclass(frozen=True)
+class _ThresholdMatcher:
+    """_ThresholdSpec 로 생성된 도메인 전용 정규식 + 값 파서. regex(임베드용 문자열)·pattern(단독 search)·
+    parse(match -> (operator, value)|None; op 부등호 정규화 + 타입별 값 추출·검증)."""
+
+    regex: str
+    pattern: "re.Pattern[str]"
+    parse: "Callable[[re.Match[str]], tuple[str, float] | None]"
+
+
+def _compile_threshold(spec: _ThresholdSpec) -> _ThresholdMatcher:
+    """타입 스펙 → 도메인 전용 regex + 파서(거대 범용 정규식 하나가 아니라 스펙별 전용본)."""
+    kind = _THRESHOLD_NUMBER_KINDS[spec.number]
+    # 대부분 pattern+unit 으로 measure 를 조립하지만, 타입이 measure 를 직접 소유하면(융합 단위) 그걸 쓴다.
+    measure = kind.get("measure") or _threshold_measure(
+        kind["pattern"], spec.unit, mag=kind.get("mag", False), sep=spec.sep, unit_optional=spec.unit_optional
+    )
+    regex = rf"{spec.prefix}{measure}{spec.sep}(?P<op>{_OP_ALT_BASIC})"
+
+    def default_parse(match: "re.Match[str]") -> "tuple[str, float] | None":
+        value = kind["value"](match)
+        if value is None:
+            return None
+        operator = _comparison_operator(match.group("op"))
+        return (operator, value) if operator else None
+
+    return _ThresholdMatcher(regex=regex, pattern=re.compile(regex), parse=spec.parse or default_parse)
 
 
 def _comparison_operator(op_text: str) -> str | None:
@@ -3868,12 +4098,12 @@ def _apply_purchase_count_threshold_filter(query: str, plan: dict[str, Any]) -> 
 
 
 # 장바구니 개수/수량 임계값: "장바구니에 N개 이상 담은". 돈(원)·연령(대)로 오탐하지 않게 개수 단위만 본다.
-_CART_COUNT_PATTERN = re.compile(r"(?P<num>\d+)\s*(?P<unit>개|종류|가지|건|품목)\s*(?P<op>이상|초과|이하|미만)")
+_CART_COUNT = _compile_threshold(_ThresholdSpec("integer", r"개|종류|가지|건|품목"))
+_CART_COUNT_PATTERN = _CART_COUNT.pattern
 # 장바구니 금액 임계값: "장바구니에 10만원 이상". 단위(원)로 개수 패턴과 갈리고, 배수어(만/천만)는
 # 누적 구매 금액과 같은 파서(_parse_korean_amount)를 쓴다.
-_CART_AMOUNT_PATTERN = re.compile(
-    r"(?P<num>[\d,]+(?:\.\d+)?)\s*(?P<mag>억|천만|백만|만|천)?\s*원\s*(?P<op>이상|초과|이하|미만)"
-)
+_CART_AMOUNT = _compile_threshold(_ThresholdSpec("korean_amount", r"원"))
+_CART_AMOUNT_PATTERN = _CART_AMOUNT.pattern
 # 금액 표현 앞쪽에서 장바구니 어휘를 찾는 창(공백 제거 기준). 창을 두는 이유는 "장바구니에 담은 고객 중
 # 구매 금액 10만원 이상"처럼 한 문장에 장바구니와 '누적 구매 금액'이 같이 오는 경우 때문이다 — 금액이
 # 장바구니에 붙어 있을 때만 카트 금액으로 본다.
@@ -3899,11 +4129,10 @@ def _cart_same_product_condition(query: str, compact: str) -> dict[str, Any] | N
         return None
     match = _CART_COUNT_PATTERN.search(query)
     if match is not None:
-        return {
-            "metric": "cart_same_product_quantity",
-            "operator": _AGG_OPERATOR_WORDS[match.group("op")],
-            "threshold": int(match.group("num")),
-        }
+        parsed = _CART_COUNT.parse(match)
+        if parsed is not None:
+            operator, threshold = parsed
+            return {"metric": "cart_same_product_quantity", "operator": operator, "threshold": int(threshold)}
     if any(word in compact for word in _CART_MULTIPLE_WORDS):
         return {
             "metric": "cart_same_product_quantity",
@@ -3933,14 +4162,11 @@ def _cart_amount_condition(compact: str) -> dict[str, Any] | None:
         preceding = compact[max(0, start - 6): start]
         if any(word in preceding for word in _CART_AMOUNT_PURCHASE_WORDS):
             continue
-        threshold = _parse_korean_amount(match.group("num"), match.group("mag") or "")
-        if threshold is None:
+        parsed = _CART_AMOUNT.parse(match)
+        if parsed is None:
             continue
-        return {
-            "metric": "cart_amount",
-            "operator": _AGG_OPERATOR_WORDS[match.group("op")],
-            "threshold": threshold,
-        }
+        operator, threshold = parsed
+        return {"metric": "cart_amount", "operator": operator, "threshold": threshold}
     return None
 
 
@@ -3966,17 +4192,25 @@ def _apply_cart_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> 
     match = _CART_COUNT_PATTERN.search(query)
     if match is None:
         return
+    parsed = _CART_COUNT.parse(match)
+    if parsed is None:
+        return
+    operator, threshold = parsed
     metric = "cart_quantity" if re.search(r"수량|총\s*개수", query) else "cart_line_count"
     plan.setdefault("target_user", {})["cart_aggregate"] = {
         "metric": metric,
-        "operator": _AGG_OPERATOR_WORDS[match.group("op")],
-        "threshold": int(match.group("num")),
+        "operator": operator,
+        "threshold": int(threshold),
     }
 
 
+# 한글 기간 단위 → 캐노니컬 영문 단위(슬롯 정규화용). 일수 환산은 targeting_ir.UNIT_DAYS 가 소유한다.
+_KO_UNIT_TO_CANON = {"일": "days", "주": "weeks", "주일": "weeks", "개월": "months", "달": "months", "년": "years"}
 # 기간 표현 → 일수. 숫자형('7일', '2주')과 숫자 없는 한글 단어형('일주일', '보름', '한 달')을 모두 본다.
 # 단어형은 숫자가 없어서 재작성 가드의 숫자 서명에도, 기존 '최근 N일' 파서에도 안 잡혔다.
-_DURATION_UNIT_DAYS = {"일": 1, "주": 7, "주일": 7, "개월": 30, "달": 30, "년": 365}
+# 한글토큰→일수는 토큰→canonical(_KO_UNIT_TO_CANON)과 canonical→일수(targeting_ir.UNIT_DAYS)의 합성으로
+# 파생한다 — 별도 한글 일수표를 두지 않아, 새 단위는 _KO_UNIT_TO_CANON(+targeting_ir.UNIT_DAYS)만 고치면 된다.
+_DURATION_UNIT_DAYS = {ko: targeting_ir.UNIT_DAYS[canon] for ko, canon in _KO_UNIT_TO_CANON.items()}
 _NUMERIC_DURATION_PATTERN = re.compile(r"(?P<num>\d+)\s*(?P<unit>주일|개월|일|주|달|년)")
 _WORD_DURATION_DAYS = {
     "일주일": 7, "한주일": 7, "한주": 7, "일주": 7,
@@ -4015,8 +4249,6 @@ def _duration_matches(compact: str) -> list[tuple[int, int, int]]:
     return sorted(found)
 
 
-# 한글 기간 단위 → 캐노니컬 영문 단위(슬롯 정규화용). 일수 환산은 targeting_ir.UNIT_DAYS 가 소유한다.
-_KO_UNIT_TO_CANON = {"일": "days", "주": "weeks", "주일": "weeks", "개월": "months", "달": "months", "년": "years"}
 # 최근성 표지(기간 숫자 없는 '최근 로그인'류에 기본 창을 줄지 판정). 레지스트리 recently.synonyms 미러.
 _RECENCY_MARKERS = ("최근", "요즘", "근래", "최근에")
 
@@ -5066,14 +5298,10 @@ def _apply_no_additional_purchase_filter(query: str, plan: dict[str, Any]) -> No
 # 달리 반응한 서로 다른 캠페인 수를 세어(HAVING COUNT(DISTINCT 캠페인)) 임계값과 비교한다. '최근 N개월'
 # 창은 반응 팩트에 범용 반응일자 컬럼이 없어 캠페인 마스터(Z_CAMPAIGN) 시작일로 건다. '캠페인'+'반응'이 함께
 # 있고 횟수 임계어가 있을 때만 발동해 '구매 2회 이상'(주문 집계 order_count) 과 갈린다.
-_NATIVE_COUNT_WORDS = {
-    "한": 1, "두": 2, "세": 3, "네": 4, "다섯": 5,
-    "여섯": 6, "일곱": 7, "여덟": 8, "아홉": 9, "열": 10,
-}
 # 숫자 또는 고유어 수사(한~열) + 횟수 단위(번/회/차례/건) + 비교어. 배수어/금액과 달리 순수 횟수만 본다.
-_CAMPAIGN_FREQ_COUNT_PATTERN = re.compile(
-    r"(?P<num>\d+|한|두|세|네|다섯|여섯|일곱|여덟|아홉|열)\s*(?:번|회|차례|건)\s*(?P<op>이상|초과|이하|미만)"
-)
+# 고유어 수사→값·정규식은 native_count 타입(_THRESHOLD_NUMBER_KINDS)이 소유한다.
+_CAMPAIGN_FREQ = _compile_threshold(_ThresholdSpec("native_count", r"번|회|차례|건"))
+_CAMPAIGN_FREQ_COUNT_PATTERN = _CAMPAIGN_FREQ.pattern
 
 
 def _apply_campaign_response_frequency_filter(query: str, plan: dict[str, Any]) -> None:
@@ -5088,21 +5316,16 @@ def _apply_campaign_response_frequency_filter(query: str, plan: dict[str, Any]) 
     match = _CAMPAIGN_FREQ_COUNT_PATTERN.search(query) or _CAMPAIGN_FREQ_COUNT_PATTERN.search(compact)
     if match is None:
         return
-    num_text = match.group("num")
-    count = _NATIVE_COUNT_WORDS.get(num_text)
-    if count is None:
-        try:
-            count = int(num_text)
-        except ValueError:
-            return
-    if count <= 0:
+    parsed = _CAMPAIGN_FREQ.parse(match)
+    if parsed is None:
         return
-    operator_word = match.group("op")
+    operator, count = parsed
+    operator_word = match.group("op")  # 라벨은 한글 어구('이상')를 그대로 쓴다
     plan.setdefault("target_user", {})["campaign_response_frequency"] = {
-        "operator": _AGG_OPERATOR_WORDS[operator_word],
-        "count": count,
+        "operator": operator,
+        "count": int(count),
         "window_days": _parse_recent_window_days(query),
-        "label": f"캠페인 {count}회 {operator_word} 반응",
+        "label": f"캠페인 {int(count)}회 {operator_word} 반응",
     }
 
 
@@ -5115,13 +5338,15 @@ def _apply_campaign_response_frequency_filter(query: str, plan: dict[str, Any]) 
 _CAMPAIGN_BUY_AMOUNT_METRIC_PATTERN = re.compile(
     r"캠페인(?:을|를|에서|으로|에|의)?(?:통해|통한|보고|반응|후)?(?:한)?(?:구매|결제)한?금액"
 )
-_CAMPAIGN_AMOUNT_THRESHOLD_PATTERN = re.compile(
-    r"(?P<num>[\d,]+(?:\.\d+)?)(?:(?P<mag>억|천만|백만|만|천)원?|원)(?P<op>이상|초과|이하|미만)"
-)
+# 캠페인 귀속 구매금액 임계: korean_amount_bare 타입('10만'·'10만원'·'10원')으로 regex 조각 + 값 파서를
+# 함께 생성한다. 단독 임계(_CAMPAIGN_AMOUNT_THRESHOLD_PATTERN)는 metric 뒤 창에서 search, 동사형 패턴은
+# 문맥(통해/보고 … 구매) 사이에 같은 조각(_CAMPAIGN_BUY_AMOUNT.regex)을 임베드한다.
+_CAMPAIGN_BUY_AMOUNT = _compile_threshold(_ThresholdSpec("korean_amount_bare", r"원", sep=""))
+_CAMPAIGN_AMOUNT_THRESHOLD_PATTERN = _CAMPAIGN_BUY_AMOUNT.pattern
 _CAMPAIGN_BUY_VERB_PATTERN = re.compile(
     r"캠페인(?:을|를|에서|으로|에)?(?:통해|통한|보고|후)"
-    r"(?P<num>[\d,]+(?:\.\d+)?)(?:(?P<mag>억|천만|백만|만|천)원?|원)(?P<op>이상|초과|이하|미만)"
-    r"(?:어치)?(?:을|를)?(?:구매|구입|결제|산|샀)"
+    + _CAMPAIGN_BUY_AMOUNT.regex
+    + r"(?:어치)?(?:을|를)?(?:구매|구입|결제|산|샀)"
 )
 
 
@@ -5141,13 +5366,15 @@ def _apply_campaign_buy_amount_filter(query: str, plan: dict[str, Any]) -> None:
         threshold_match = _CAMPAIGN_BUY_VERB_PATTERN.search(compact)
     if threshold_match is None:
         return
-    amount = _parse_korean_amount(threshold_match.group("num"), threshold_match.group("mag") or "")
-    if amount is None or amount <= 0:
+    parsed = _CAMPAIGN_BUY_AMOUNT.parse(threshold_match)  # korean_amount_bare 타입: (op, 금액)
+    if parsed is None:
         return
-    if float(amount).is_integer():
+    operator, amount = parsed
+    if amount <= 0:
+        return
+    if float(amount).is_integer():  # 캠페인 금액은 정수로 저장(도메인 관례)
         amount = int(amount)
-    operator_word = threshold_match.group("op")
-    operator = _AGG_OPERATOR_WORDS[operator_word]
+    operator_word = threshold_match.group("op")  # 라벨은 한글 어구('이상')를 그대로 쓴다
     target_user = plan.setdefault("target_user", {})
     target_user["campaign_buy_amount"] = {
         "operator": operator,
@@ -5180,7 +5407,10 @@ def _apply_campaign_buy_amount_filter(query: str, plan: dict[str, Any]) -> None:
 # 회원 EXISTS 로 강등되고, LLM 재작성은 '구매율 낮음'을 '미구매'(평생 무주문)로 극단화하는 오배정을
 # 여기서 바로잡는다. 명시 %("성공률 90% 이상")는 그대로, '높은/낮은' 막연어는 설정 기본 임계
 # (vague_high_default/vague_low_default)로 컴파일한다.
-_CELL_RATE_EXPLICIT_SUFFIX = r"(?:이|가|은|는|도)?(?P<num>\d+(?:\.\d+)?)(?:%|퍼센트|프로)?(?P<op>이상|초과|이하|미만)"
+# 명시 % 접미(지표어 뒤에 임베드): percent 타입 스펙으로 regex 조각 + 값 파서(0<v<=100 검증)를 함께 생성한다.
+# 단위(%)는 optional, 앞에 조사(이/가/은/는/도)가 올 수 있고 공백 없이 붙는다(sep="").
+_CELL_RATE = _compile_threshold(_ThresholdSpec("percent", r"%|퍼센트|프로", prefix=r"(?:이|가|은|는|도)?", sep="", unit_optional=True))
+_CELL_RATE_EXPLICIT_SUFFIX = _CELL_RATE.regex
 _CELL_SUCCESS_RATE_TERM = r"(?:발송|전송|접촉|도달)?성공률"
 _CELL_BUY_RATE_TERM = r"구매(?:전환)?율"
 _CELL_RATE_PATTERNS: dict[str, tuple[re.Pattern[str], re.Pattern[str], re.Pattern[str]]] = {
@@ -5203,9 +5433,10 @@ def _parse_cell_rate(compact: str, metric: str, high_default: float, low_default
     explicit_pattern, high_pattern, low_pattern = _CELL_RATE_PATTERNS[metric]
     match = explicit_pattern.search(compact)
     if match is not None:
-        value = float(match.group("num"))
-        if 0 < value <= 100:
-            return {"operator": _AGG_OPERATOR_WORDS[match.group("op")], "value": value, "inferred": False}
+        parsed = _CELL_RATE.parse(match)  # percent 타입: 0<v<=100 검증 포함, 벗어나면 None → 막연어로 폴백
+        if parsed is not None:
+            operator, value = parsed
+            return {"operator": operator, "value": value, "inferred": False}
     if high_pattern.search(compact):
         return {"operator": ">=", "value": float(high_default), "inferred": True}
     if low_pattern.search(compact):

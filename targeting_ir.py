@@ -72,10 +72,12 @@ _UNIT_ALIASES: dict[str, str] = {
     "년": "years", "해": "years", "year": "years", "years": "years",
 }
 OPERATORS: frozenset[str] = frozenset({">=", ">", "<=", "<"})
-_OPERATOR_ALIASES: dict[str, str] = {
-    "이상": ">=", "초과": ">", "이하": "<=", "미만": "<",
-    ">=": ">=", ">": ">", "<=": "<=", "<": "<",
-}
+# 비교어 → 부등호 매핑의 단일 소스(순수 모듈이 소유). graph_rag 의 표면 정규식 추출도 이 표를 재수출해 쓴다
+# (graph_rag._COMPARISON_OPERATORS). 새 비교어는 여기 한 줄만 추가하면 IR 정규화와 표면 파싱이 함께 얻는다.
+# 순서(이상/초과/이하/미만)는 graph_rag 의 _OP_ALT_BASIC="|".join(...) 정규식 열거가 의존하므로 보존한다.
+COMPARISON_WORD_OPERATORS: dict[str, str] = {"이상": ">=", "초과": ">", "이하": "<=", "미만": "<"}
+# LLM/구조화 입력이 낼 수 있는 부등호 기호 자기사상까지 포함(단어 매핑 + 기호 항등). 단어 표는 위 단일 소스에서 파생.
+_OPERATOR_ALIASES: dict[str, str] = {**COMPARISON_WORD_OPERATORS, ">=": ">=", ">": ">", "<=": "<=", "<": "<"}
 
 
 def _pos_int(raw: Any) -> int | None:

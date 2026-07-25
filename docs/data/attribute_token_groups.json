@@ -1,0 +1,114 @@
+{
+  "version": "1.0",
+  "description": "회원속성 토큰 승격 필터의 선언형 그룹 스펙. 표면어(canonical)를 lifecycle(포함)/exclude.lifecycle(제외)로 올리는 '단순 속성형' 필터를 코드 없이 선언한다. 새 그룹/카노니컬은 여기에 한 줄 추가 + graph_rag 레지스트리에 attribute_token 엔트리 등록만으로 동작한다(전용 _apply_* 함수 불필요). 필드: neg(부정 접미어 정규식→exclude, null=부정없음), pos(긍정 접미어 정규식, ''=표면어단독), gate(이 문자열 있어야 발동, null=무조건), first_only(첫 매치 하나만=구체성우선), canonicals([[canonical, [기본 표면어]]] — eq_filters surface_terms 가 있으면 그걸로 덮음). 복합 파싱(서열 랭크 확장·이중부정 등)은 이 문법으로 표현 못 하므로 커스텀 필터로 남긴다.",
+  "groups": {
+    "member_flag": {
+      "neg": "(?:인|한|중인|상태)?(?:회원|고객|사람)?(?:가|이|은|는|를|을|도|이면)?(?:아니|아닌|제외|빼|말고|배제)",
+      "pos": "",
+      "gate": null,
+      "first_only": false,
+      "canonicals": [
+        [
+          "active_member",
+          [
+            "활동회원",
+            "활성회원",
+            "액티브회원",
+            "활동중인회원"
+          ]
+        ],
+        [
+          "blacklisted",
+          [
+            "블랙리스트",
+            "발송제외고객",
+            "차단회원"
+          ]
+        ],
+        [
+          "employee",
+          [
+            "임직원",
+            "직원회원"
+          ]
+        ],
+        [
+          "premium_member",
+          [
+            "프리미엄회원",
+            "프리미엄고객",
+            "프리미엄"
+          ]
+        ],
+        [
+          "membership_member",
+          [
+            "멤버십회원",
+            "멤버십가입고객",
+            "멤버십가입"
+          ]
+        ],
+        [
+          "sns_registered",
+          [
+            "sns가입",
+            "소셜가입",
+            "간편가입",
+            "sns회원"
+          ]
+        ]
+      ]
+    },
+    "children": {
+      "neg": "(?:정보)?(?:가|이|를|을|은|는)?(?:없|미등록|미보유|등록안|등록하지\\s*않|보유하지\\s*않)",
+      "pos": "(?:정보)?(?:가|이|를|을|은|는)?(?:등록|보유|있|존재)",
+      "gate": null,
+      "first_only": false,
+      "canonicals": [
+        [
+          "children_registered",
+          [
+            "자녀",
+            "아이",
+            "키즈"
+          ]
+        ]
+      ]
+    },
+    "signup_device": {
+      "neg": null,
+      "pos": "(?:으로|로|에서|을통해|를통해|앱)?가입",
+      "gate": "가입",
+      "first_only": true,
+      "canonicals": [
+        [
+          "app_signup",
+          [
+            "앱",
+            "어플",
+            "app",
+            "어플리케이션"
+          ]
+        ],
+        [
+          "mobile_web_signup",
+          [
+            "모바일웹",
+            "엠웹",
+            "모바일브라우저"
+          ]
+        ],
+        [
+          "pc_signup",
+          [
+            "pc",
+            "컴퓨터",
+            "웹",
+            "데스크탑",
+            "데스크톱"
+          ]
+        ]
+      ]
+    }
+  }
+}
