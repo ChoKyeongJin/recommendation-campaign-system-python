@@ -26,16 +26,16 @@ _RULES_PRE_SNAPSHOT = (
 )
 _RULES_POST_SNAPSHOT = (
     "cart_repurchase", "cart_presence", "cart_absence", "inactivity_period", "recent_login",
-    "signup_channel", "signup_device", "balance_condition", "balance_selection", "campaign_response",
-    "no_additional_purchase", "campaign_response_frequency", "campaign_buy_amount", "cell_rate",
-    "children_registered", "grade_threshold", "channel_consent", "member_flag", "policy",
+    "signup_channel", "signup_device", "ratio_metric", "balance_condition", "balance_selection", "action_metric",
+    "campaign_response", "no_additional_purchase", "campaign_response_frequency", "campaign_buy_amount",
+    "cell_rate", "children_registered", "grade_threshold", "channel_consent", "member_flag", "policy",
     "region_density", "member_metric_ranking", "purchase_count_ranking",
 )
 _AUTO_SNAPSHOT = (
     "sell_object", "dimension", "member_value", "macro_region", "region_density",
     "member_metric_ranking", "purchase_count_ranking", "purchase_object", "purchase_date",
     "result_limit", "purchase_inactivity", "recent_login", "signup_channel", "signup_device",
-    "balance_condition", "balance_selection", "campaign_response", "no_additional_purchase",
+    "ratio_metric", "balance_condition", "balance_selection", "action_metric", "campaign_response", "no_additional_purchase",
     "cart_presence", "cart_absence", "campaign_response_frequency", "children_registered",
     "grade_threshold", "channel_consent", "member_flag", "aggregate", "purchase_count_threshold",
     "campaign_buy_amount", "cell_rate", "cart_aggregate", "cart_retention", "cart_type",
@@ -69,6 +69,8 @@ _ORDER_DEPENDENCIES = (
     ("campaign_response", "campaign_buy_amount"),
     # '성공률/구매율'(셀 비율)도 캠페인 반응 뒤(오배정 접촉성공 EXISTS 제거).
     ("campaign_response", "cell_rate"),
+    # 파생 비율('하루 평균 로그인 횟수')은 원 임계(balance_condition) 앞에 실행해 CNT/DAYS 비로 먼저 확정.
+    ("ratio_metric", "balance_condition"),
     # 광역 권역어(수도권 등)는 값 인덱스(member_value/dimension) 뒤에 실행해 명시 시도와 병합.
     ("member_value", "macro_region"),
     ("dimension", "macro_region"),

@@ -1,0 +1,40 @@
+{
+  "metric_id": "total_login_count",
+  "name": "누적 로그인 횟수",
+  "semantic_type": "scalar",
+  "data_type": "integer",
+  "source": {
+    "table": "CRM_MB_BASEINFO",
+    "alias": "B",
+    "column": "TOTAL_LOGIN_CNT"
+  },
+  "aliases": {
+    "nouns": ["누적 로그인 횟수", "로그인 횟수", "로그인 수", "접속 횟수", "접속 수"],
+    "actions": ["로그인하다", "로그인을 하다", "접속하다", "접속을 하다"]
+  },
+  "units": {
+    "canonical": "count",
+    "expressions": ["회", "번", "차례", "건", "회수"]
+  },
+  "operators": {
+    "allowed": ["EQ", "NE", "GT", "GTE", "LT", "LTE", "BETWEEN"]
+  },
+  "zero_semantics": {
+    "missing_as_zero": true,
+    "comparison_strategy": "coalesce"
+  },
+  "null_semantics": {
+    "average": "exclude",
+    "comparison": "coalesce_to_zero"
+  },
+  "time_semantics": {
+    "supports_recent_period": false
+  },
+  "priority_hints": {
+    "prefer_when_terms": ["횟수", "번", "회", "몇 번"]
+  },
+  "aggregation": {
+    "default": "none",
+    "supported": ["AVG", "SUM", "MAX", "MIN"]
+  }
+}

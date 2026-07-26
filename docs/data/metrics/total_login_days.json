@@ -1,0 +1,41 @@
+{
+  "metric_id": "total_login_days",
+  "name": "누적 로그인 일수",
+  "semantic_type": "scalar",
+  "data_type": "integer",
+  "source": {
+    "table": "CRM_MB_BASEINFO",
+    "alias": "B",
+    "column": "TOTAL_LOGIN_DAYS"
+  },
+  "aliases": {
+    "nouns": ["누적 로그인 일수", "누적 접속 일수", "로그인 일수", "접속 일수", "로그인한 날", "접속한 날", "로그인 날", "접속 날"],
+    "actions": ["로그인하다", "로그인을 하다", "접속하다", "접속을 하다"]
+  },
+  "units": {
+    "canonical": "day",
+    "expressions": ["일"]
+  },
+  "operators": {
+    "allowed": ["EQ", "NE", "GT", "GTE", "LT", "LTE", "BETWEEN"]
+  },
+  "zero_semantics": {
+    "missing_as_zero": true,
+    "comparison_strategy": "coalesce"
+  },
+  "null_semantics": {
+    "average": "exclude",
+    "comparison": "coalesce_to_zero"
+  },
+  "time_semantics": {
+    "supports_recent_period": false
+  },
+  "priority_hints": {
+    "prefer_when_terms": ["일수", "누적", "일", "며칠"],
+    "conflicts_with": ["last_login_at"]
+  },
+  "aggregation": {
+    "default": "none",
+    "supported": ["AVG", "SUM", "MAX", "MIN"]
+  }
+}

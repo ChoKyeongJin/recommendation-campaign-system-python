@@ -380,7 +380,9 @@
       "column": "B.TOTAL_LOGIN_CNT",
       "type": "integer",
       "min": 0,
-      "synonyms": ["로그인 횟수", "누적 로그인 횟수", "접속 횟수"]
+      "synonyms": ["로그인 횟수", "누적 로그인 횟수", "접속 횟수"],
+      "action_aliases": ["로그인", "접속"],
+      "zero_semantics": {"missing_as_zero": true}
     },
     {
       "canonical": "total_login_days",
@@ -388,7 +390,9 @@
       "column": "B.TOTAL_LOGIN_DAYS",
       "type": "integer",
       "min": 0,
-      "synonyms": ["로그인 일수", "누적 로그인 일수", "접속 일수"]
+      "synonyms": ["누적 로그인 일수", "누적 접속 일수", "로그인 일수", "접속 일수", "로그인한 날", "접속한 날", "로그인 날", "접속 날"],
+      "action_aliases": ["로그인", "접속"],
+      "zero_semantics": {"missing_as_zero": true}
     },
     {
       "canonical": "deposit_balance",
@@ -405,6 +409,16 @@
       "type": "money",
       "min": 0,
       "synonyms": ["적립금", "당근 잔액", "포인트 잔액"]
+    }
+  ],
+
+  "ratio_filters": [
+    {
+      "canonical": "daily_avg_login_count",
+      "numerator_column": "B.TOTAL_LOGIN_CNT",
+      "denominator_column": "B.TOTAL_LOGIN_DAYS",
+      "unit": "회",
+      "synonyms": ["하루 평균 로그인 횟수", "일 평균 로그인 횟수", "하루 평균 접속 횟수", "일 평균 접속 횟수", "하루평균 로그인 횟수", "일평균 로그인 횟수"]
     }
   ],
 

@@ -44,6 +44,7 @@ from confidence import render_confidence_markdown, render_confidence_report, sco
 from sql_dialect import SqlDialect, get_dialect
 import targeting_ir
 from targeting_ir import extract_target_conditions, fact_join_kinds
+import metric_registry
 
 
 DEFAULT_DATA_PATH = Path("docs/data/rag_knowledge_base.json")
@@ -332,6 +333,22 @@ def _parse_activity_filters(entries: Any) -> dict[str, int]:
 
 
 _MEMBER_TARGET_FILTERS = _load_member_target_filters()
+
+
+def _load_metric_registry() -> "metric_registry.MetricRegistry":
+    """통합 지표 스펙 레지스트리(docs/data/metrics/*.json)를 읽는다. 스펙 파손/부재로 import 가
+    통째로 죽지 않게 실패 시 빈 레지스트리로 강등한다 — 그러면 각 지표는 semantic_type/type 기반
+    기본 단위로 폴백하므로(회귀 테스트가 '일' 단위 소실을 즉시 잡음) 조용한 크래시 대신 가시적 실패가 된다.
+
+    신규 지표 추가 구조 개선안 P1(단위): _metric_window_grammar 가 numeric_filters 의 unit 대신 이
+    레지스트리의 units 를 우선 읽는다. 이후 단계(zero/최근성/비율)에서 소비 범위를 넓힌다."""
+    try:
+        return metric_registry.MetricRegistry.load()
+    except metric_registry.MetricSpecError:
+        return metric_registry.MetricRegistry(specs=())
+
+
+_METRIC_REGISTRY = _load_metric_registry()
 # 파일 항목이 전부 비정형이어도 규칙 엔진이 죽지 않게 빈 결과는 코드 기본값으로 복원한다.
 MEMBER_EQ_FILTERS: dict[str, tuple[str, str, str]] = (
     _parse_eq_filters(_MEMBER_TARGET_FILTERS.get("eq_filters"))
@@ -1644,8 +1661,14 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
                                       exception_reason="online/offline 상호정의 + 이중부정 진리표(단순 문법 불가)"),
         # 선언형(attribute_token): 표면어→회원속성 canonical 을 lifecycle/exclude 로 승격(문법은 그룹이 소유).
         "signup_device": _FilterSpec(impl="attribute_token", group="signup_device"),
+        # 파생 비율('하루 평균 로그인 횟수')은 원 임계(balance_condition) 앞에 실행해 CNT/DAYS 비로 먼저
+        # 확정한다 — 뒤 balance_condition 이 '로그인 횟수'를 원 횟수 임계로 오탐하는 걸 접두어 게이트로 막는다.
+        "ratio_metric": _FilterSpec(_apply_ratio_metric_filter),
         "balance_condition": _FilterSpec(_apply_balance_condition_filter),
         "balance_selection": _FilterSpec(_apply_balance_selection_filter),
+        # 행위 동사형 지표('한 번도 로그인하지 않은/정확히 20번 로그인한/평균보다 많이 로그인') → 명사형(balance_*)
+        # 뒤에 실행해 이미 잡힌 슬롯은 덮지 않는다. action_aliases 를 선언한 numeric_filters 항목만 대상.
+        "action_metric": _FilterSpec(_apply_action_metric_filter),
         "campaign_response": _FilterSpec(_apply_campaign_response_filter),
         # '추가 구매 없는'(무구매 anti-join)은 캠페인 반응·미구매창 파싱 뒤에 실행(리스트 순서가 보장).
         "no_additional_purchase": _FilterSpec(_apply_no_additional_purchase_filter),
@@ -1918,16 +1941,16 @@ _RULES_PRE_FILTERS: tuple[str, ...] = (
 )
 _RULES_POST_FILTERS: tuple[str, ...] = (
     "cart_repurchase", "cart_presence", "cart_absence", "inactivity_period", "recent_login",
-    "signup_channel", "signup_device", "balance_condition", "balance_selection", "campaign_response",
-    "no_additional_purchase", "campaign_response_frequency", "campaign_buy_amount", "cell_rate",
-    "children_registered", "grade_threshold", "channel_consent", "member_flag", "policy",
+    "signup_channel", "signup_device", "ratio_metric", "balance_condition", "balance_selection", "action_metric",
+    "campaign_response", "no_additional_purchase", "campaign_response_frequency", "campaign_buy_amount",
+    "cell_rate", "children_registered", "grade_threshold", "channel_consent", "member_flag", "policy",
     "region_density", "member_metric_ranking", "purchase_count_ranking",
 )
 _AUTO_FILTERS: tuple[str, ...] = (
     "sell_object", "dimension", "member_value", "macro_region", "region_density",
     "member_metric_ranking", "purchase_count_ranking", "purchase_object", "purchase_date",
     "result_limit", "purchase_inactivity", "recent_login", "signup_channel", "signup_device",
-    "balance_condition", "balance_selection", "campaign_response", "no_additional_purchase",
+    "ratio_metric", "balance_condition", "balance_selection", "action_metric", "campaign_response", "no_additional_purchase",
     "cart_presence", "cart_absence", "campaign_response_frequency", "children_registered",
     "grade_threshold", "channel_consent", "member_flag", "aggregate", "purchase_count_threshold",
     "campaign_buy_amount", "cell_rate", "cart_aggregate", "cart_retention", "cart_type",
@@ -3832,11 +3855,20 @@ def _parse_amount_comparison(window: str, unit: str, *, bare_equals: bool = Fals
         lo = _parse_korean_amount(rng.group("lo"), rng.group("lomag") or "")
         hi = _parse_korean_amount(rng.group("hi"), rng.group("himag") or "")
         return [(">=", lo), ("<=", hi)] if lo is not None and hi is not None and lo <= hi else None
-    op = op_p.search(window)
-    if op is not None:
+    parsed_ops: list[tuple[str, float]] = []
+    for op in op_p.finditer(window):
         operator = _comparison_operator(op.group("op"))
         value = _parse_korean_amount(op.group("num"), op.group("mag") or "")
-        return [(operator, value)] if operator and value is not None else None
+        if operator and value is not None:
+            parsed_ops.append((operator, value))
+    if parsed_ops:
+        # 이중 경계('30 이상이지만 100 미만'처럼 하한+상한이 한 window 에 함께)면 둘 다 반환(BETWEEN 유사).
+        # 하나뿐이면 그대로. '사이/에서~까지' 범위형은 위 range_p 가 이미 처리한다.
+        lower = next((p for p in parsed_ops if p[0] in (">=", ">")), None)
+        upper = next((p for p in parsed_ops if p[0] in ("<=", "<")), None)
+        if lower is not None and upper is not None:
+            return [lower, upper]
+        return [parsed_ops[0]]
     marker = _EXACT_EQUALS_MARKER.search(window)
     if marker is not None:
         amt = _EXACT_AMOUNT_PATTERN.search(window, marker.end())
@@ -3914,7 +3946,7 @@ def _apply_balance_selection_filter(query: str, plan: dict[str, Any]) -> None:
         return
     if isinstance(plan.get("target_user", {}).get("balance_conditions"), list):
         return  # 이미 WHERE 임계로 잡힘
-    for entry in _balance_numeric_filters():
+    for entry in _numeric_metric_filters():
         column = entry["column"].split(".")[-1]
         label = entry.get("canonical", column)
         synonyms = sorted([s for s in entry.get("synonyms", []) if isinstance(s, str) and s], key=len, reverse=True)
@@ -3928,13 +3960,13 @@ def _apply_balance_selection_filter(query: str, plan: dict[str, Any]) -> None:
                 return
 
 
-def _classify_balance_window(window: str) -> list[tuple[str, float]] | None:
-    """잔액 지표어 뒤 window 를 [(operator, threshold), ...] 로 분류. 숫자 비교(부등호/범위/등호/'보다 많은')는
-    공용 문법(_parse_amount_comparison)에 위임하고, 존재/부재만 여기서 본다. 랭킹/%/평균이면 None(선택 전략
-    파서가 소유)."""
+def _classify_balance_window(window: str, unit: str = "원", bare_equals: bool = True) -> list[tuple[str, float]] | None:
+    """수치 지표어 뒤 window 를 [(operator, threshold), ...] 로 분류. 숫자 비교(부등호/범위/등호/'보다 많은')는
+    공용 문법(_parse_amount_comparison)에 단위(unit)만 바꿔 위임하고, 존재/부재만 여기서 본다. 랭킹/%/평균이면
+    None(선택 전략 파서가 소유). money=원·bare_equals=True(잔액), integer=횟수·bare_equals=False(호출자가 지정)."""
     if _BALANCE_DEFER_PATTERN.search(window):
         return None  # 랭킹/%/평균 → 집계·윈도우 필요, WHERE 임계 아님
-    comparison = _parse_amount_comparison(window, "원", bare_equals=True)
+    comparison = _parse_amount_comparison(window, unit, bare_equals=bare_equals)
     if comparison is not None:
         return comparison
     if _BALANCE_ABSENCE_PATTERN.search(window):
@@ -4881,6 +4913,9 @@ _RECENT_LOGIN_SIGNAL_RE = re.compile(
 _RECENT_LOGIN_NEG_SIGNALS = (
     "미접속", "미로그인", "접속하지", "접속안", "로그인하지", "로그인안", "휴면", "비활성", "inactive", "dormant",
 )
+# 'N일 (조사) 비교연산자' = 누적 일수 임계(total_login_days) 신호. 최근성 창(이내/최근/이후)과 배타적이라
+# 이게 보이면 최근 로그인 감지를 양보한다(공백 지운 compact 프롬프트에 맞춘다).
+_CUMULATIVE_DAYS_THRESHOLD_RE = re.compile(r"\d+일(?:을|를|이|가)?(?:이상|이하|초과|미만|미달)")
 
 
 def _parse_recent_login_period(query: str) -> dict[str, Any] | None:
@@ -4888,6 +4923,11 @@ def _parse_recent_login_period(query: str) -> dict[str, Any] | None:
     if not _RECENT_LOGIN_SIGNAL_RE.search(compact_query):
         return None
     if any(signal in compact_query for signal in _RECENT_LOGIN_NEG_SIGNALS):
+        return None
+    # 누적 로그인 '일수' 임계('접속한 날이 10일 미만')는 최근성 창이 아니라 total_login_days 지표다 —
+    # 최근성은 이내/이후/최근 등 창 표지를 쓰지, 이상/이하/초과/미만 비교를 쓰지 않는다. 'N일+비교연산자'가
+    # 보이면 최근 로그인으로 잡지 않는다(안 그러면 '10일 미만'이 '최근 10일 이내 로그인'으로 뒤집힌다).
+    if _CUMULATIVE_DAYS_THRESHOLD_RE.search(compact_query):
         return None
     # 통합 창 파서 — 년/주/단어형까지 커버. 'N개월 전'(과거 시점)은 exclude_past 로 건너뛴다. 로그인/접속
     # 키워드 근처의 창만 본다 — '최근 1년 이내 가입 … 최근 로그인'에서 가입의 '1년'을 훔쳐가지 않게.
@@ -5064,10 +5104,10 @@ _SIGNUP_DEVICE_SUFFIX = r"(?:으로|로|에서|을통해|를통해|앱)?가입"
 
 
 def _balance_numeric_filters() -> list[dict[str, Any]]:
-    """numeric_filters 중 잔액(balance) 카테고리 항목(적립금/예치금)을 반환한다.
+    """numeric_filters 중 잔액(balance) 카테고리 항목(적립금/예치금)을 반환한다(컬럼 대 컬럼 비교 전용).
 
-    member_target_filters.json numeric_filters 의 category=="balance" 만 골라 회원 잔액 컬럼 임계값
-    조건에 쓴다. 파일이 비정형이면 코드 기본값으로 폴백한다(적립금/예치금 컬럼 보존)."""
+    member_target_filters.json numeric_filters 의 category=="balance" 만 골라, '적립금이 예치금보다 많은'
+    같은 동종(금액) 컬럼 비교에 쓴다. 일반 비교/선택은 _numeric_metric_filters(type 구동)가 담당한다."""
     raw = _MEMBER_TARGET_FILTERS.get("numeric_filters")
     if not isinstance(raw, list):
         raw = _DEFAULT_MEMBER_TARGET_FILTERS.get("numeric_filters", [])
@@ -5078,17 +5118,143 @@ def _balance_numeric_filters() -> list[dict[str, Any]]:
     return out
 
 
+# 회원 수치 지표를 balance 한정이 아니라 numeric_filters 의 type 구동으로 일반화한다 — 새 수치 컬럼(로그인 횟수·
+# 로그인 일수 등)은 JSON numeric_filters 에 {canonical, category, column, type, synonyms} 한 줄만 추가하면 비교
+# (이상/이하/초과/미만/범위/정확값)와 선택(랭킹/상위%/평균대비)이 전부 열린다 — 전용 파서/코드 추가 불필요.
+# age 는 전용 파서(_apply_age_filters, 연대·배타경계 등 값 의미론 고유)가 담당하므로 제외한다.
+_COUNT_METRIC_UNIT = "회|번|차례|건|회수"  # integer 지표 임계값 측정 단위(횟수/건수). money 지표는 '원'.
+
+
+def _numeric_metric_filters() -> list[dict[str, Any]]:
+    """일반 비교/선택 머신러리가 다루는 회원 수치 지표(numeric_filters, type∈{money,integer}, age 제외)."""
+    raw = _MEMBER_TARGET_FILTERS.get("numeric_filters")
+    if not isinstance(raw, list):
+        raw = _DEFAULT_MEMBER_TARGET_FILTERS.get("numeric_filters", [])
+    out: list[dict[str, Any]] = []
+    for entry in raw:
+        if (isinstance(entry, dict) and isinstance(entry.get("column"), str)
+                and entry.get("type") in {"money", "integer"} and entry.get("canonical") != "age"):
+            out.append(entry)
+    return out
+
+
+def _default_metric_grammar(data_type: str | None) -> tuple[str, bool]:
+    """레지스트리 units 가 없을 때의 semantic_type/data_type 기반 기본 단위. money=원·맨숫자는 정확값
+    (잔액 맥락), 그 외 정수/횟수=회 계열·맨숫자는 모호(연산자 필요)."""
+    if data_type == "money":
+        return "원", True
+    return _COUNT_METRIC_UNIT, False
+
+
+def _metric_window_grammar(entry: dict[str, Any]) -> tuple[str, bool]:
+    """지표 → (_parse_amount_comparison 단위, bare_equals).
+
+    P1(단위): 측정 단위는 코드가 아니라 **통합 지표 레지스트리(docs/data/metrics/*.json)의 units** 가
+    소유한다 — 단위가 숫자와 연산자 사이에 끼는 '30일 이상'에서 '일'을 못 흡수하면 숫자와 '이상'을 잇지
+    못해 조건이 통째로 누락되고 옆 절의 '100회'를 훔쳐와 오염된다. 레지스트리 스펙(canonical/컬럼으로 매칭)의
+    units.expressions 를 alternation 으로 우선 쓰고, **units 가 없을 때만** semantic_type/type 기반 기본 단위로
+    폴백한다(레지스트리에 없는 잔액 지표 등은 기존 동작 유지). money 는 맨숫자를 정확값으로 본다(bare_equals)."""
+    spec = _registry_spec_for_numeric_entry(entry)
+    if spec is not None:
+        if spec.units is not None and spec.units.expressions:
+            return "|".join(spec.units.expressions), (spec.data_type == "money")
+        return _default_metric_grammar(spec.data_type)  # 스펙은 있으나 units 미선언 → semantic 기본
+    return _default_metric_grammar(entry.get("type"))  # 레지스트리 미등록 지표 → 기존 type 기본
+
+
+def _registry_spec_for_numeric_entry(entry: dict[str, Any]) -> "metric_registry.MetricSpec | None":
+    """numeric_filters 항목(canonical/column)을 통합 레지스트리의 MetricSpec 에 매칭한다. canonical==metric_id
+    우선, 없으면 컬럼('B.TOTAL_LOGIN_CNT')이 spec.source 와 일치하는지로 본다. 미등록이면 None."""
+    canonical = entry.get("canonical")
+    column = entry.get("column")
+    for spec in _METRIC_REGISTRY.all():
+        if canonical and spec.metric_id == canonical:
+            return spec
+        if isinstance(column, str) and spec.source is not None and spec.source.qualified == column:
+            return spec
+    return None
+
+
+# 동사형 지표 표현('로그인하지 않은 / 정확히 20번 로그인한 / 평균보다 많이 로그인')을 지표에 연결한다. 명사
+# 동의어(로그인 횟수)로는 안 잡히는 행위 표현을, numeric_filters 의 action_aliases 로 잡되 '로그인한 지 30일'
+# 같은 날짜/최근성 조건과의 충돌은 게이트로 막는다 — action 어 주변에 '숫자+기간단위'(날짜 조건 신호)가 있으면
+# 지표가 아니라 날짜 조건으로 보고 건너뛴다. 부재(=0)·비교·선택은 기존 분류기를 그대로 재사용한다.
+_ACTION_METRIC_DATE_GATE = re.compile(r"\d+\s*(?:일|주|주일|개월|달|년|시간|분)")
+# 부재(=0) 표지: '한 번도/전혀 … (안)한', '기록/이력/한 적이 없는'. zero_semantics 로 NULL 을 0 으로 본다.
+_ACTION_ZERO_PATTERN = re.compile(r"한\s*번도|전혀|이력이?\s*없|기록이?\s*없|한\s*적이?\s*없|없")
+
+
+def _numeric_metric_action_entries() -> list[dict[str, Any]]:
+    """action_aliases(동사형 표면어)를 선언한 수치 지표. 없으면 빈 리스트(행위→지표 연결을 안 씀)."""
+    return [
+        e for e in _numeric_metric_filters()
+        if isinstance(e.get("action_aliases"), list) and any(isinstance(a, str) and a for a in e["action_aliases"])
+    ]
+
+
+def _apply_action_metric_filter(query: str, plan: dict[str, Any]) -> None:
+    """행위 동사형 지표 표현을 조건으로 연결한다(명사 동의어 필터 뒤 실행, 이미 잡힌 슬롯은 덮지 않음).
+
+    '한 번도 로그인하지 않은'→=0(COALESCE), '정확히 20번 로그인한'→=20, '평균보다 많이 로그인한'→평균대비.
+    action 어 주변에 날짜 신호(숫자+기간단위)가 있으면 날짜/최근성 조건이므로 건너뛴다(오탐 게이트)."""
+    tu = plan.setdefault("target_user", {})
+    for entry in _numeric_metric_action_entries():
+        if isinstance(tu.get("balance_conditions"), list) or plan.get("member_metric_selection") is not None:
+            return  # 이미 (명사형 등으로) 수치 조건이 잡혔으면 행위형은 관여하지 않는다
+        column = entry["column"].split(".")[-1]
+        label = entry.get("canonical", column)
+        unit, bare_equals = _metric_window_grammar(entry)
+        zero = entry.get("zero_semantics")
+        coalesce_zero = bool(isinstance(zero, dict) and zero.get("missing_as_zero"))
+        actions = sorted(
+            [a for a in entry["action_aliases"] if isinstance(a, str) and a], key=len, reverse=True
+        )
+        for action in actions:
+            index = query.find(action)
+            if index < 0:
+                continue
+            after = query[index + len(action): index + len(action) + 50]
+            around = query[max(0, index - 30): index + len(action) + 50]
+            if _ACTION_METRIC_DATE_GATE.search(around):
+                continue  # 날짜/최근성 조건(예: '로그인한 지 30일') → 지표 아님
+            # 부재(=0): NULL 회원 포함(COALESCE). 선택/비교보다 먼저 본다('한 번도 … 않은'은 임계가 아님).
+            if _ACTION_ZERO_PATTERN.search(around):
+                cond = {"column": column, "operator": "=", "threshold": 0, "label": label}
+                if coalesce_zero:
+                    cond["coalesce_zero"] = True
+                tu["balance_conditions"] = [cond]
+                return
+            # 선택(랭킹/상위%/평균대비): 수식어가 지표어 앞에 올 수 있어 앞뒤(around)를 본다.
+            selection = _classify_balance_selection(around, column, label)
+            if selection is not None:
+                plan["member_metric_selection"] = selection
+                return
+            # 비교/정확값: 동사 뒤(after)를 count 단위로 분류('정확히 20번'→=20).
+            classified = _classify_balance_window(after, unit, bare_equals)
+            if classified:
+                tu["balance_conditions"] = [
+                    {"column": column, "operator": op, "threshold": th, "label": label}
+                    for op, th in classified
+                ]
+                return
+
+
 def _apply_balance_condition_filter(query: str, plan: dict[str, Any]) -> None:
     """'적립금/예치금 N원 이상/이하/초과/범위/정확값/보유·미보유'를 회원 잔액 컬럼 조건(balance_conditions)으로
     해석한다. 지표 동의어 뒤 어구를 _classify_balance_window 로 **우선순위 분류**(랭킹/%/평균은 소유 포기 →
     오답 대신 미지원, 범위는 BETWEEN, 부등호는 부사형+동사형, 그다음 등호, 마지막 존재/부재)한다.
-    compile_member_target_conditions 가 B.<컬럼> <op> <임계값> 술어로 컴파일해 다른 조건과 AND 결합한다."""
-    entries = _balance_numeric_filters()
+    compile_member_target_conditions 가 B.<컬럼> <op> <임계값> 술어로 컴파일해 다른 조건과 AND 결합한다.
+    잔액(money)뿐 아니라 로그인 횟수 같은 integer 지표도 numeric_filters 등록만으로 동일 문법을 공유한다."""
+    entries = _numeric_metric_filters()
     if not entries:
         return
+    money_entries = [e for e in entries if e.get("type") == "money"]  # 컬럼 대 컬럼 비교는 동종(금액)끼리만
     conditions: list[dict[str, Any]] = []
     for entry in entries:
         column = entry["column"].split(".")[-1]  # 'B.' 접두어 제거(빌더가 alias 부착)
+        unit, bare_equals = _metric_window_grammar(entry)
+        zero = entry.get("zero_semantics")
+        coalesce_zero = bool(isinstance(zero, dict) and zero.get("missing_as_zero"))
         synonyms = sorted(
             [s for s in entry.get("synonyms", []) if isinstance(s, str) and s], key=len, reverse=True
         )
@@ -5096,16 +5262,25 @@ def _apply_balance_condition_filter(query: str, plan: dict[str, Any]) -> None:
             index = query.find(synonym)
             if index < 0:
                 continue
+            # 하루 평균 <지표>(비율)는 이 지표의 원 임계가 아니라 파생 비율이다(_apply_ratio_metric_filter 소유).
+            # '하루 평균 로그인 횟수 3회 이상'에서 '로그인 횟수'를 원 횟수 임계(=3)로 오탐하지 않게 앞을 본다.
+            if _RATIO_METRIC_PREFIX_RE.search(query[max(0, index - 10): index]):
+                continue
             window = query[index + len(synonym): index + len(synonym) + 50]
-            classified = _classify_balance_window(window)
+            classified = _classify_balance_window(window, unit, bare_equals)
             if classified:
                 for operator, threshold in classified:
-                    conditions.append(
-                        {"column": column, "operator": operator, "threshold": threshold, "label": entry.get("canonical", column)}
-                    )
+                    cond = {"column": column, "operator": operator, "threshold": threshold, "label": entry.get("canonical", column)}
+                    # nullable 지표의 '없는/0'(=,0)은 NULL 회원까지 포함해야 한다(COALESCE) — '로그인한 날이
+                    # 하루도 없는'을 B.<컬럼>=0(NULL 배제)이 아니라 COALESCE(B.<컬럼>,0)=0 으로 컴파일.
+                    if coalesce_zero and operator == "=" and threshold == 0:
+                        cond["coalesce_zero"] = True
+                    conditions.append(cond)
                 break  # 한 지표당 하나(범위는 위에서 두 술어로 확장)
-            # 컬럼 대 컬럼 비교('적립금이 예치금보다 많은') — 숫자 임계가 없을 때만.
-            column_cmp = _classify_balance_column_comparison(window, column, entries)
+            # 컬럼 대 컬럼 비교('적립금이 예치금보다 많은') — 금액 지표끼리, 숫자 임계가 없을 때만.
+            if entry.get("type") != "money":
+                continue
+            column_cmp = _classify_balance_column_comparison(window, column, money_entries)
             if column_cmp is not None:
                 operator, threshold_expr = column_cmp
                 conditions.append(
@@ -5114,6 +5289,62 @@ def _apply_balance_condition_filter(query: str, plan: dict[str, Any]) -> None:
                 break
     if conditions:
         plan.setdefault("target_user", {})["balance_conditions"] = conditions
+
+
+# 파생(비율) 지표: '하루 평균 로그인 횟수'처럼 두 수치 컬럼의 비(numerator/denominator)를 임계와 비교한다.
+# 원 컬럼 임계('로그인 횟수 3회 이상' → CNT>=3)와 의미가 달라(하루 평균은 CNT/DAYS>=3) 별도 파생으로 다룬다.
+# '하루/일/매일 + 평균' 접두어가 붙은 지표어만 비율로 보고, 그 접두어를 balance_condition 이 원 임계로 오탐하지
+# 않도록 억제한다(_apply_balance_condition_filter 에서 이 접두어가 앞에 오면 해당 동의어를 건너뛴다).
+_RATIO_METRIC_PREFIX_RE = re.compile(r"(?:하루|1일|매일|일)\s*평균\s*$")
+
+
+def _ratio_metric_filters() -> list[dict[str, Any]]:
+    """파생 비율 지표(ratio_filters, {canonical, numerator_column, denominator_column, unit, synonyms})."""
+    raw = _MEMBER_TARGET_FILTERS.get("ratio_filters")
+    if not isinstance(raw, list):
+        raw = _DEFAULT_MEMBER_TARGET_FILTERS.get("ratio_filters", [])
+    out: list[dict[str, Any]] = []
+    for entry in raw:
+        if (isinstance(entry, dict) and isinstance(entry.get("numerator_column"), str)
+                and isinstance(entry.get("denominator_column"), str) and entry.get("synonyms")):
+            out.append(entry)
+    return out
+
+
+def _apply_ratio_metric_filter(query: str, plan: dict[str, Any]) -> None:
+    """'하루 평균 로그인 횟수 N회 이상' → CAST(numerator AS FLOAT)/NULLIF(denominator,0) <op> N.
+
+    balance_condition 앞에 실행해 파생 비율을 먼저 확정한다 — 분모 0(로그인 일수 0)은 NULLIF 로 NULL 화해
+    나눗셈 예외를 막고, 그 회원은 조건에서 자연 제외된다. 이미 balance_conditions 가 있으면 추가로 AND 결합."""
+    for entry in _ratio_metric_filters():
+        num_col = entry["numerator_column"].split(".")[-1]
+        den_col = entry["denominator_column"].split(".")[-1]
+        unit = entry.get("unit")
+        unit = unit.strip() if isinstance(unit, str) and unit.strip() else _COUNT_METRIC_UNIT
+        synonyms = sorted(
+            [s for s in entry.get("synonyms", []) if isinstance(s, str) and s], key=len, reverse=True
+        )
+        for synonym in synonyms:
+            index = query.find(synonym)
+            if index < 0:
+                continue
+            window = query[index + len(synonym): index + len(synonym) + 50]
+            classified = _classify_balance_window(window, unit, bare_equals=False)
+            if not classified:
+                continue
+            expr = f"CAST(B.{num_col} AS FLOAT) / NULLIF(B.{den_col}, 0)"
+            conds = [
+                {"column": num_col, "column_expr": expr, "operator": op, "threshold": th,
+                 "label": entry.get("canonical", num_col)}
+                for op, th in classified
+            ]
+            tu = plan.setdefault("target_user", {})
+            existing = tu.get("balance_conditions")
+            if isinstance(existing, list):
+                existing.extend(conds)
+            else:
+                tu["balance_conditions"] = conds
+            return
 
 
 # 캠페인 접촉/오퍼·구매 반응/쿠폰 사용: 캠페인 회원 반응 팩트(MCS_CAMP_MBR_RSPN_FT, 회원키 MBR_NO)로
@@ -9923,7 +10154,14 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
             right = _format_threshold(threshold)
         else:
             continue
-        other_predicates.append(f"B.{column} {operator} {right}")
+        # 파생 비율 지표(하루 평균 = CNT/DAYS)는 좌변을 이미 조립된 식(column_expr)으로 쓴다.
+        column_expr = condition.get("column_expr")
+        if isinstance(column_expr, str) and column_expr:
+            left = column_expr
+        else:
+            # zero_semantics(missing_as_zero): NULL 을 0 으로 봐야 '한 번도 …' 조건이 NULL 회원까지 포함한다.
+            left = f"COALESCE(B.{column}, 0)" if condition.get("coalesce_zero") else f"B.{column}"
+        other_predicates.append(f"{left} {operator} {right}")
         labels.append(str(condition.get("label") or column)); has_signal = True
 
     # 캠페인 반응(접촉 성공/오퍼·구매 반응/쿠폰 사용): 회원키 EXISTS 서브쿼리라 회원 컬럼 술어와 똑같이

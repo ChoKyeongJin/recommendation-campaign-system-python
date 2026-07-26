@@ -1,0 +1,43 @@
+{
+  "metric_id": "last_login_at",
+  "name": "최근 로그인",
+  "semantic_type": "date",
+  "data_type": "date_string",
+  "source": {
+    "table": "CRM_MB_BASEINFO",
+    "alias": "B",
+    "column": "LAST_LOGIN_DATE",
+    "date_format": "yyyyMMdd"
+  },
+  "aliases": {
+    "nouns": ["최근 로그인", "최근 접속", "마지막 로그인", "마지막 접속"],
+    "actions": ["로그인하다", "접속하다"]
+  },
+  "operators": {
+    "allowed": ["WITHIN", "BEFORE"]
+  },
+  "null_semantics": {
+    "comparison": "treat_null_as_inactive"
+  },
+  "time_semantics": {
+    "supports_recent_period": true,
+    "anchor": "getdate",
+    "default_days": 30,
+    "windows": {
+      "recent": {
+        "operator": ">=",
+        "include_null": false,
+        "note": "최근 N일 이내 로그인(긍정형 최근성)"
+      },
+      "inactive": {
+        "operator": "<",
+        "include_null": true,
+        "note": "N일 이상 미접속(휴면). NULL(로그인 이력 없음)도 미접속으로 포함"
+      }
+    }
+  },
+  "priority_hints": {
+    "prefer_when_terms": ["최근", "이내", "최근에", "미접속", "휴면"],
+    "yields_to_cumulative_days": true
+  }
+}
