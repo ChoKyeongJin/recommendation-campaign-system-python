@@ -206,6 +206,13 @@ def validate_join_keys(
 _AGG_FUNCS = ("count", "sum", "avg", "min", "max")
 _AGG_CALL_PATTERN = re.compile(r"\b(" + "|".join(_AGG_FUNCS) + r")\s*\(\)", re.IGNORECASE)
 _BARE_COLUMN_PATTERN = re.compile(r"\b[A-Za-z_]\w*\.[A-Za-z_]\w*")
+# 무효 집계 인자: 집계함수 인자가 비었거나(SUM()) 리터럴 None(SUM(None)/COUNT(DISTINCT None)). COUNT(*)·
+# SUM(COL) 등 정상 형태는 매칭되지 않는다(인자 자리에 * 또는 식별자가 있으므로).
+_INVALID_AGG_ARG_PATTERN = re.compile(
+    r"\b(?:" + "|".join(_AGG_FUNCS) + r")\s*\(\s*(?:DISTINCT\s+)?(?:None\s*)?\)", re.IGNORECASE
+)
+# 리터럴 None(파이썬 None 누수) — 대소문자 구분(값/식별자의 'none'/'NONE' 오탐 방지).
+_NONE_LITERAL_PATTERN = re.compile(r"\bNone\b")
 
 
 def _blank_parens(sql: str) -> str:
@@ -245,6 +252,27 @@ def validate_analytics_shape(sql: str) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
     if not isinstance(sql, str) or not sql.strip():
         return {"is_valid": True, "issues": issues}
+
+    # 무효 집계 인자 차단(서브쿼리 포함 전체 SQL 스캔): SUM(None)/AVG(None)/COUNT(None)·빈 인자 SUM()·리터럴
+    # None(파이썬 None 이 컬럼/식 미해석으로 문자열화된 것). 이건 outer 스켈레톤이 아니라 전체를 봐야 잡힌다
+    # (집계 서브쿼리 HAVING 안에서 새는 SUM(None) 이 대표 사례). 확실한 오류이므로 error(후보 탈락).
+    if _INVALID_AGG_ARG_PATTERN.search(sql):
+        issues.append(
+            {
+                "code": "invalid_aggregate_argument",
+                "severity": "error",
+                "message": "집계 함수의 인자가 비었거나 미해석(None)이다 — 지표 컬럼/식이 해석되지 않은 채 SQL 로 새어나왔다.",
+            }
+        )
+    elif _NONE_LITERAL_PATTERN.search(sql):
+        issues.append(
+            {
+                "code": "unresolved_identifier_none",
+                "severity": "error",
+                "message": "SQL 에 리터럴 None 이 있다 — 컬럼/별칭이 해석되지 않은 채 문자열화됐다(무효 SQL).",
+            }
+        )
+
     outer = _blank_parens(sql)
 
     select_match = re.search(r"\bSELECT\b(.*?)\bFROM\b", outer, re.IGNORECASE | re.DOTALL)

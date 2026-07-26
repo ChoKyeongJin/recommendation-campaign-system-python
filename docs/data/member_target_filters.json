@@ -691,13 +691,25 @@
           "구매 건수",
           "구매건수",
           "주문 건수",
-          "주문건수"
+          "주문건수",
+          "주문 수",
+          "주문수"
         ]
       },
       "average_order_amount": {
-        "expression": "SUM(OH.PAYMENT_AMT) / NULLIF(COUNT(DISTINCT OH.ORDER_ID), 0)",
         "ko_label": "평균 주문 금액",
-        "synonyms": ["평균 주문 금액", "객단가", "평균 결제 금액"]
+        "synonyms": ["평균 주문 금액", "객단가", "평균 결제 금액"],
+        "source": {
+          "preferred": "member_summary_column",
+          "fallback": "aggregate_expression"
+        },
+        "summary": {
+          "table": "CRM_MB_MONTHCRMINFO",
+          "column": "MEAN_BUY_AMT",
+          "join_column": "MEMBER_NO",
+          "grain_filter": "YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)"
+        },
+        "expression": "SUM({t}PAYMENT_AMT) / NULLIF(COUNT(DISTINCT {t}ORDER_ID), 0)"
       },
       "last_purchase_date": {
         "agg": "MAX",
@@ -1029,6 +1041,10 @@
     },
     "default_top_n": 100,
     "max_top_n": 10000
+  },
+
+  "zero_amount_semantics": {
+    "maps_to_no_purchase": false
   },
 
   "cell_rate_targets": {

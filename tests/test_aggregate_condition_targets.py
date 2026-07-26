@@ -175,3 +175,116 @@ def test_builder_count_threshold_combines_member_attributes():
     assert "ORDER_DATE BETWEEN '20190101' AND '20190131'" in sql
     assert "B.AGE >= 30" in sql and "B.AGE <= 39" in sql
     assert "B.GENDER_CD = 'GENDER_CD.FEMALE'" in sql
+
+
+# --- 롤링 윈도우(최근 N일) 보존: '최근 90일 3회'가 '전체 기간 3회'로 조용히 왜곡되던 회귀 고정 ---
+# 배경: 지표명 없는 개수 임계값 경로(_apply_purchase_count_threshold_filter)가 window_days=None 을
+# 하드코딩해, 롤링 윈도우가 통째로 소실됐다(의미 왜곡). 이제 그 경로도 _parse_recent_window_days 를
+# 호출해 window_days 를 보존하고, 빌더가 ORDER_DATE 창을 HAVING 앞 WHERE 로 건다.
+
+def test_recent_window_preserved_on_bare_count_condition():
+    # query plan 층: window_days 가 90 으로 보존돼야 한다(None 아님).
+    conditions = _conditions("최근 90일 동안 3회 이상 구매한 회원")
+    assert len(conditions) == 1
+    c = conditions[0]
+    assert c["metric_id"] == "order_count" and c["operator"] == ">=" and c["threshold"] == 3
+    assert c["window_days"] == 90
+
+
+def test_recent_window_reaches_sql_on_bare_count_condition():
+    # SQL 층: 롤링 윈도우가 ORDER_DATE 하한으로 실제 반영돼야 한다(전체 기간 집계 방지).
+    plan = g.build_query_plan("최근 90일 동안 3회 이상 구매한 회원")
+    sql = g.build_aggregate_targets_sql_candidate(plan)["sql"]
+    assert "HAVING COUNT(DISTINCT ORDER_ID) >= 3" in sql
+    assert "ORDER_DATE >=" in sql and "DATEADD(DAY, -90, GETDATE())" in sql
+
+
+def test_recent_window_preserved_on_metric_noun_condition():
+    # 지표명 명시형('구매 횟수') 경로도 롤링 윈도우를 보존한다.
+    c = _conditions("최근 30일 구매 횟수 5회 이상 고객")[0]
+    assert c["metric_id"] == "order_count" and c["window_days"] == 30
+
+
+# --- 달력 기간(올해/지난달)은 롤링 윈도우와 별도 타입: 조용히 드롭하지 않고 표식+명시 경고 ---
+# 배경: '올해'·'지난달'은 '지금으로부터 N일'(롤링)과 성격이 다른 고정 달력 구간이다. 집계 SQL 반영은
+# 별도 작업으로 미뤄져 있으나, 그렇다고 전체 기간으로 조용히 계산하면 '올해 10회'가 '평생 10회'로
+# 왜곡된다. 그래서 조건에 calendar_period 표식을 남기고 _deterministic_dropped_conditions 가 명시 경고한다.
+
+def _warnings(query):
+    plan = g.build_query_plan(query)
+    g._promote_unknown_intent_for_target_signal(plan)
+    return g._deterministic_dropped_conditions(query, plan)
+
+
+def test_calendar_period_tagged_not_silently_dropped():
+    c = _conditions("올해 주문 횟수가 10회 이상인 고객")[0]
+    assert c["metric_id"] == "order_count" and c["operator"] == ">=" and c["threshold"] == 10
+    # 롤링 윈도우가 아니므로 window_days 는 없고, 달력 기간 표식이 남는다.
+    assert c["window_days"] is None
+    assert c["calendar_period"] == "current_year"
+
+
+def test_calendar_period_variants_map_to_tokens():
+    assert _conditions("지난달 구매 횟수 3회 이상 고객")[0]["calendar_period"] == "previous_month"
+    assert _conditions("작년 구매 금액 100만원 이상 고객")[0]["calendar_period"] == "last_year"
+
+
+def test_calendar_period_emits_explicit_warning():
+    # 전체 기간 폴백을 조용히 하지 않는다 — 사람이 읽는 경고로 명시한다.
+    warnings = _warnings("올해 주문 횟수가 10회 이상인 고객")
+    assert any("올해" in w and "미반영" in w for w in warnings), warnings
+
+
+def test_recent_window_not_flagged_as_calendar_period():
+    # 롤링 윈도우는 달력 기간 표식을 달지 않고, 경고도 없다(정상 반영).
+    c = _conditions("최근 90일 동안 3회 이상 구매한 회원")[0]
+    assert "calendar_period" not in c
+    assert _warnings("최근 90일 동안 3회 이상 구매한 회원") == []
+
+
+def test_plain_count_condition_has_no_calendar_key():
+    # 기간 표현이 전혀 없으면 calendar_period 키를 붙이지 않는다(조건 형태 불변 — 회귀 안전).
+    c = _conditions("주문 5회 이상 한 회원")[0]
+    assert "calendar_period" not in c and c["window_days"] is None
+
+
+# --- 한글 수사('두 번'=2) 정규화: 숫자 임계값 파서에 걸리도록 표면 정규화 ---
+# 배경: '두 번 이상 구매'·'정확히 두 번'은 숫자형(2회) 파서만 있어 통째로 드롭됐다. 개수 임계값 추출
+# 경로에서 한글 수사+개수 단위(번/회/건/개)를 숫자로 로컬 정규화해 order_count 임계값으로 컴파일한다.
+
+def test_korean_numeral_helper_maps_native_numbers():
+    assert g._normalize_korean_count_numerals("두 번") == "2번"
+    assert g._normalize_korean_count_numerals("세 개") == "3개"
+    assert g._normalize_korean_count_numerals("다섯 번") == "5번"
+    assert g._normalize_korean_count_numerals("열 회") == "10회"
+    # 앞 음절이 한글이면(단어 일부) 치환하지 않는다.
+    assert g._normalize_korean_count_numerals("가세 번호") == "가세 번호"
+
+
+def test_native_numeral_count_threshold_extracted():
+    c = _conditions("두 번 이상 구매한 고객")[0]
+    assert c["metric_id"] == "order_count" and c["operator"] == ">=" and c["threshold"] == 2
+    assert _conditions("세 번 이상 주문한 회원")[0]["threshold"] == 3
+
+
+def test_native_numeral_exact_count_threshold():
+    c = _conditions("정확히 두 번 구매한 회원")[0]
+    assert c["metric_id"] == "order_count" and c["operator"] == "=" and c["threshold"] == 2
+
+
+def test_native_numeral_metric_noun_path():
+    c = _conditions("구매 횟수 다섯 번 이상 고객")[0]
+    assert c["metric_id"] == "order_count" and c["operator"] == ">=" and c["threshold"] == 5
+
+
+def test_native_numeral_does_not_break_no_purchase():
+    # '한 번도 주문하지 않은'은 수사 정규화가 로컬이라 no_purchase 매칭을 깨지 않는다(가장 중요한 회귀).
+    plan = g.build_query_plan("한 번도 주문하지 않은 회원")
+    g._promote_unknown_intent_for_target_signal(plan)
+    assert "no_purchase" in plan["target_user"].get("behaviors", [])
+    assert _conditions("한 번도 주문하지 않은 회원") == []
+
+
+def test_bare_native_numeral_without_operator_is_ambiguous():
+    # '한 번 구매한 고객'(연산자/정확히 마커 없음)은 맨숫자처럼 모호 — 등호로 넘겨짚지 않는다.
+    assert _conditions("한 번 구매한 고객") == []

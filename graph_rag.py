@@ -287,6 +287,12 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
         "default_top_n": 100,
         "max_top_n": 10000,
     },
+    # '구매 금액 0원'의 의미 정책. 0원을 무구매(no_purchase, 주문 anti-join)와 동일하게 볼지 여부는
+    # 도메인 결정 사항이라 코드가 단정하지 않고 이 플래그로 관리한다. 기본값은 '동일시하지 않음' —
+    # 0원 결제(주문은 있으나 금액 0)와 평생 무주문은 다를 수 있으므로 기본은 clarification 으로 되묻는다.
+    "zero_amount_semantics": {
+        "maps_to_no_purchase": False,
+    },
 }
 
 
@@ -2220,6 +2226,9 @@ def _build_rule_query_plan(
         + _recent_login_retrieval_terms(plan["target_user"].get("recent_login"))
         + _query_tokens(normalized_query)
     )
+    # 모든 결정론 필터가 끝난 뒤 미지원 표현을 명시 표시한다(조용한 오답/빈결과 방지). member_metric_selection
+    # 등 필터 결과를 봐야 하므로 반드시 필터 실행 후에 둔다.
+    _apply_unsupported_intent_gate(query, plan)
     return plan
 
 
@@ -3569,46 +3578,116 @@ def _member_metric_customer_pattern(path_text: str) -> "re.Pattern[str] | None":
     )
 
 
+# 공용 랭킹 지시 문법: '<지표>가 높은 고객'(관용 어순)뿐 아니라 지표어와 떨어진 '기준 상위 N명 / 상위
+# N명 / 높은 순 N명 / 낮은 순 N명 / 하위 N명 / TOP N' 도 랭킹으로 인식한다. 방향(고/저)과 개수(N)만
+# 뽑고, 지표 결합은 호출부가 한다. '높은 순/낮은 순'은 순위 방향 표현이라 관용 어순 패턴이 못 잡는다.
+_RANKING_HIGH_DIRECTIVE = re.compile(r"상위\s*\d*\s*명?|높은\s*순|top\s*\d+", re.IGNORECASE)
+_RANKING_LOW_DIRECTIVE = re.compile(r"하위\s*\d*\s*명?|낮은\s*순")
+_RANKING_DIRECTIVE_TOP_N = re.compile(r"(?:상위|하위|top)\s*(\d+)", re.IGNORECASE)
+
+
+def _detect_ranking_directive(query: str) -> dict[str, Any] | None:
+    """'상위/하위 N명·높은/낮은 순·TOP N' 순위 지시를 {direction, top_n} 로. 표지 없으면 None.
+
+    direction: high(상위/높은 순/top) | low(하위/낮은 순). top_n: 방향어 뒤 숫자 우선, 없으면 'N명', 둘 다
+    없으면 None(호출부가 기본값). 지표 결합·오탐 판정(부사형 구매 랭킹 등)은 호출부가 한다."""
+    high = _RANKING_HIGH_DIRECTIVE.search(query)
+    low = _RANKING_LOW_DIRECTIVE.search(query)
+    if not (high or low):
+        return None
+    direction = "low" if (low and not high) else "high"
+    top_n = None
+    directive_n = _RANKING_DIRECTIVE_TOP_N.search(query)
+    if directive_n:
+        top_n = int(directive_n.group(1))
+    else:
+        count = re.search(r"(\d+)\s*명", query)
+        if count:
+            top_n = int(count.group(1))
+    return {"direction": direction, "top_n": top_n}
+
+
+def _resolve_member_metric_in_query(query: str) -> dict[str, Any] | None:
+    """질의 어디에든 나타난 회원 지표(member_metrics) 동의어를 찾아 지표 정의를 돌려준다(긴 동의어 우선).
+
+    '누적 구매 금액 기준 상위 100명'처럼 지표어와 순위 지시가 떨어져 있어도 결합하기 위한 것이다."""
+    registry = _load_member_metrics(str(DEFAULT_MEMBER_METRICS_PATH))
+    if not registry:
+        return None
+    pairs: list[tuple[str, dict[str, Any]]] = []
+    for metric in registry.get("metrics", []):
+        for synonym in metric.get("synonyms", []):
+            if isinstance(synonym, str) and synonym:
+                pairs.append((synonym, metric))
+    pairs.sort(key=lambda pair: len(pair[0]), reverse=True)
+    for synonym, metric in pairs:
+        if synonym in query:
+            return metric
+    return None
+
+
 def _apply_member_metric_ranking_target(query: str, plan: dict[str, Any]) -> None:
-    """'<지표>가 높은 고객'을 회원 단위 지표 랭킹 타겟(member_metric_ranking)으로 해석한다.
+    """'<지표>가 높은 고객' 및 '<지표> 기준 상위/하위 N명'을 회원 단위 지표 랭킹(member_metric_ranking)으로 해석한다.
 
     지역 랭킹(_apply_region_density_target)의 회원 단위 짝이다. build_member_metric_ranking_sql_candidate
-    가 이 플래그를 보고 지표 테이블(CRM_MB_MONTHCRMINFO)을 회원키로 조인해 지표값 내림차순 상위 N
-    명을 뽑는 SQL 을 생성한다(월 스냅샷 중복은 레지스트리 grain_filter 로 방지). 데모 스키마(users
-    테이블) 참조라 실DB 에 못 쓰는 매출 순위/고매출 정책(top_revenue_user/high_revenue_user)이 같은
-    어구에 얻어걸려 남으면 threshold clarification 등으로 파이프라인이 막히므로, 지표어가 라벨/동의어에
-    포함된 target_user 정책을 소비한다."""
+    가 이 플래그를 보고 지표 테이블(CRM_MB_MONTHCRMINFO)을 회원키로 조인해 지표값 순(방향별 DESC/ASC)
+    상위 N 명을 뽑는 SQL 을 생성한다(월 스냅샷 중복은 레지스트리 grain_filter 로 방지). 데모 스키마(users
+    테이블) 참조라 실DB 에 못 쓰는 매출 순위/고매출 정책이 같은 어구에 얻어걸려 남으면 파이프라인이
+    막히므로, 지표어가 라벨/동의어에 포함된 target_user 정책을 소비한다.
+
+    지표 없는 순수 순위 지시('상위 100명')는 여기서 확정하지 않는다 — 부사형 구매 랭킹(purchase_count_ranking)
+    등 다른 트랙에 먼저 양보하고, 끝까지 미해석이면 후단 게이트(_apply_unsupported_intent_gate)가
+    '무엇 기준인지' clarification 으로 돌려준다."""
     if isinstance(plan.get("region_density_target"), dict):
         # 지역 랭킹으로 이미 해석됐으면(예: '매출 높은 지역') 회원 랭킹으로 중복 해석하지 않는다.
         return
+    config = _member_metric_ranking_config()
+    max_top_n = int(config.get("max_top_n") or 10000)
+    default_top_n = int(config.get("default_top_n") or 100)
+
+    # ① 관용 어순('구매금액이 높은 고객 100명') — 방향은 항상 high(내림차순).
     pattern = _member_metric_customer_pattern(str(DEFAULT_MEMBER_METRICS_PATH))
     match = pattern.search(query) if pattern else None
-    if not match:
-        return
-    matched_metric_text = match.group(1)
-    metric_info = _member_metric_by_synonym(str(DEFAULT_MEMBER_METRICS_PATH), matched_metric_text)
+    matched_metric_text: str | None = None
+    metric_info: dict[str, Any] | None = None
+    direction = "high"
+    top_n = default_top_n
+    if match:
+        matched_metric_text = match.group(1)
+        metric_info = _member_metric_by_synonym(str(DEFAULT_MEMBER_METRICS_PATH), matched_metric_text)
+        top_match = _REGION_DENSITY_TOP_N_PATTERN.search(query) or re.search(r"(\d+)\s*명", query)
+        if top_match:
+            top_n = max(1, min(int(next(group for group in top_match.groups() if group)), max_top_n))
+    else:
+        # ② 공용 순위 지시('<지표> 기준 상위/하위 N명', '상위 N명', '높은/낮은 순 N명', 'TOP N').
+        directive = _detect_ranking_directive(query)
+        if directive is None:
+            return
+        metric_info = _resolve_member_metric_in_query(query)
+        if metric_info is None:
+            return  # 지표 미해석 — 후단 게이트가 clarification 처리(부사형 구매 랭킹 등에 먼저 양보).
+        matched_metric_text = metric_info.get("ko_label")
+        direction = directive["direction"]
+        top_n = max(1, min(directive["top_n"] or default_top_n, max_top_n))
+
     if metric_info is None:
         return
-    config = _member_metric_ranking_config()
-    top_n = int(config.get("default_top_n") or 100)
-    top_match = _REGION_DENSITY_TOP_N_PATTERN.search(query) or re.search(r"(\d+)\s*명", query)
-    if top_match:
-        max_top_n = int(config.get("max_top_n") or 10000)
-        top_n = max(1, min(int(next(group for group in top_match.groups() if group)), max_top_n))
     plan["member_metric_ranking"] = {
         "metric_id": metric_info["metric_id"],
         "metric_label": metric_info.get("ko_label", metric_info["metric_id"]),
         "top_n": top_n,
+        "direction": direction,
     }
     # 같은 지표어에 얻어걸린 데모 스키마(users) 회원 정책을 소비한다(실DB 미지원 → clarification 차단).
-    plan["policy_constraints"] = [
-        policy
-        for policy in plan.get("policy_constraints", [])
-        if not (
-            policy.get("scope") == "target_user"
-            and matched_metric_text in str(policy.get("ko_label", "")) + str(policy.get("canonical", ""))
-        )
-    ]
+    if matched_metric_text:
+        plan["policy_constraints"] = [
+            policy
+            for policy in plan.get("policy_constraints", [])
+            if not (
+                policy.get("scope") == "target_user"
+                and matched_metric_text in str(policy.get("ko_label", "")) + str(policy.get("canonical", ""))
+            )
+        ]
 
 
 # "많이/자주 구입한 사람" 처럼 수량·빈도 부사가 구매 동사 앞에 오는 '구매 많은 순 상위 N' 랭킹 신호.
@@ -3960,6 +4039,200 @@ def _apply_balance_selection_filter(query: str, plan: dict[str, Any]) -> None:
                 return
 
 
+# '평균 대비' 비교 표지: '평균보다/평균 대비/평균 이상/이하/초과/미만'. 지표 명사('평균 주문 금액')나
+# 파생 비율('하루 평균 …')과 달리, 평균 직후에 비교어가 오는 형태만 잡는다('평균 구매' 는 매칭 안 됨).
+_AVERAGE_COMPARISON_MARKER = re.compile(r"평균\s*(?:보다|대비|이상|이하|초과|미만)")
+
+# 구매 금액 0원 표지: 정확히 0원(10원/100원의 끝 0 은 제외) + 구매/결제 문맥. '0원 결제/구매 금액 0원' 등.
+_ZERO_AMOUNT_MARKER = re.compile(r"(?<!\d)0\s*원")
+_ZERO_AMOUNT_CONTEXT = ("구매", "결제", "구매액", "구매금액", "구매 금액", "주문 금액", "주문금액")
+
+
+def _zero_amount_semantics() -> dict[str, Any]:
+    config = _MEMBER_TARGET_FILTERS.get("zero_amount_semantics")
+    if not isinstance(config, dict):
+        config = _DEFAULT_MEMBER_TARGET_FILTERS["zero_amount_semantics"]
+    return config
+
+
+def _has_zero_amount_purchase_condition(query: str) -> bool:
+    """'구매 금액이 0원인' 처럼 정확히 0원인 구매/결제 금액 조건인지. 10원/100원 등은 제외한다."""
+    return bool(_ZERO_AMOUNT_MARKER.search(query)) and any(sign in query for sign in _ZERO_AMOUNT_CONTEXT)
+
+
+# 기간 대 기간 비교 감지용 달력 구간 토큰(전주=지역명 등 오탐 소지 있는 표현은 제외). 두 개 이상의 서로
+# 다른 구간이 '보다/대비' 비교와 함께 오면 기간 대 기간 비교로 본다('지난달 결제 금액이 이번 달보다 많은').
+_PERIOD_TOKENS = ("지난달", "저번달", "전월", "이번달", "금월", "당월", "지난주", "이번주", "올해", "금년", "작년", "지난해")
+# 롤링 기간 대 기간: '최근 N일 vs 이전/직전 N일'. 달력어가 아니라 상대 창 두 개를 비교한다.
+_ROLLING_PRIOR_PERIOD_RE = re.compile(r"이전|직전")
+_PERIOD_COMPARE_MARKER_RE = re.compile(r"보다|대비|증가|감소|늘|줄")
+
+
+def _has_period_over_period_comparison(query: str) -> bool:
+    """두 기간의 집계를 비교하는지. ①달력 구간 2개+'보다/대비'('지난달 결제액이 이번 달보다 많은'), 또는
+    ②롤링 창 2개('최근 90일 객단가가 이전 90일보다 증가')를 잡는다. 단일 구간 임계('지난달 … 10만원보다',
+    '최근 90일 … 20만원 이상')는 구간이 하나뿐이라 제외된다."""
+    compact = (query or "").replace(" ", "")
+    calendar_found = {token for token in _PERIOD_TOKENS if token in compact}
+    if len(calendar_found) >= 2 and _PERIOD_COMPARE_MARKER_RE.search(compact):
+        return True
+    # 롤링: '최근'(현재 창)과 '이전/직전'(직전 창)이 함께, 비교 표지와 같이 오면 기간 대 기간.
+    if "최근" in compact and _ROLLING_PRIOR_PERIOD_RE.search(compact) and _PERIOD_COMPARE_MARKER_RE.search(compact):
+        return True
+    return False
+
+
+# 회원 내 시점 비교(E-2): 회원별 '첫 구매'값과 '최근 구매'값을 비교. '첫 구매'=order_count=1 로,
+# '구매 금액 큰'=랭킹으로 분해하면 안 되는(시점 기준 두 값 비교) 표현이다.
+_FIRST_PURCHASE_REF_RE = re.compile(r"첫\s*구매|첫구매|최초\s*구매|첫\s*주문|최초\s*주문|첫\s*결제")
+_LATEST_PURCHASE_REF_RE = re.compile(r"최근\s*구매|마지막\s*구매|최종\s*구매|최근\s*주문|마지막\s*주문|최종\s*주문|최근\s*결제")
+_INTRA_TEMPORAL_COMPARE_RE = re.compile(r"보다|대비|큰|작은|많은|적은|높은|낮은|증가|감소|커진|늘|줄")
+
+
+def _has_intra_member_temporal_comparison(query: str) -> bool:
+    """'첫 구매 금액보다 최근 구매 금액이 큰' 처럼 회원별 시점(첫/최근) 값 비교인지. 첫·최근 구매 지시가
+    모두 있고 비교 표지가 함께 와야 한다(단독 '첫 구매 고객'·'최근 구매 고객'은 아님)."""
+    return bool(
+        _FIRST_PURCHASE_REF_RE.search(query)
+        and _LATEST_PURCHASE_REF_RE.search(query)
+        and _INTRA_TEMPORAL_COMPARE_RE.search(query)
+    )
+
+
+def _find_aggregate_metric_id_in(text: str) -> str | None:
+    """텍스트 조각에 나타난 집계 지표(aggregate_targets) 동의어를 찾아 metric_id 반환(긴 동의어 우선)."""
+    metrics = _aggregate_targets_config().get("metrics", {})
+    pairs: list[tuple[str, str]] = []
+    for metric_id, metric in metrics.items():
+        for synonym in metric.get("synonyms", []):
+            if isinstance(synonym, str) and synonym:
+                pairs.append((synonym, metric_id))
+    pairs.sort(key=lambda pair: len(pair[0]), reverse=True)
+    for synonym, metric_id in pairs:
+        if synonym in text:
+            return metric_id
+    return None
+
+
+def _detect_ratio_comparison(query: str) -> dict[str, str] | None:
+    """'A 대비 B'(비율) 표현에서 양쪽 지표를 뽑는다 → {numerator: B, denominator: A}. '평균 대비'(단일
+    지표 평균 비교)나 기간 '대비'(달력/롤링)는 양쪽이 지표가 아니라 여기서 잡히지 않는다."""
+    index = query.find("대비")
+    if index < 0:
+        return None
+    denominator = _find_aggregate_metric_id_in(query[max(0, index - 25):index])
+    numerator = _find_aggregate_metric_id_in(query[index + 2: index + 27])
+    if denominator and numerator and denominator != numerator:
+        return {"numerator": numerator, "denominator": denominator}
+    return None
+
+
+def _apply_unsupported_intent_gate(query: str, plan: dict[str, Any]) -> None:
+    """해석은 되지만 실DB SQL 로 컴파일할 수 없는 표현을 조용한 오답/빈결과 대신 '명시적 미지원'으로 표시한다.
+
+    이런 표현은 지금까지 엉뚱한 트랙(상품 텍스트 검색 등)으로 폴백해 그럴듯하지만 틀린 SQL 을 냈다.
+    plan['unsupported']={reason,message,clarification} 를 남기면 build_sql_template_candidate 가 후보
+    생성을 중단하고 build_sql_result 가 unsupported_reason/clarification 으로 명시 응답한다."""
+    if plan.get("unsupported"):
+        return
+    target_user = plan.get("target_user", {})
+
+    # 기간 대 기간 비교(달력 '지난달 대비 이번 달' / 롤링 '최근 90일 vs 이전 90일')는 아직 미지원. 두 기간
+    # 집계를 비교하는 구조라 단일 서브쿼리로 표현 불가 — 조용한 None/전체기간 폴백 대신 명시 미지원으로 중단.
+    if _has_period_over_period_comparison(query):
+        plan["unsupported"] = {
+            "reason": "period_over_period_comparison_not_supported",
+            "message": "'지난달 대비 이번 달'·'최근 90일 대비 이전 90일'처럼 두 기간의 집계를 비교하는 조건은 아직 지원되지 않습니다.",
+            "clarification": "기간 비교 대신 단일 기간 조건(예: '지난달 결제 금액 10만원 이상', '최근 90일 객단가 20만원 이상')으로 지정해 주시겠어요?",
+        }
+        return
+
+    # 회원 내 시점 비교(E-2): '첫 구매 금액보다 최근 구매 금액이 큰'. '첫 구매'=order_count=1, '금액 큰'=랭킹으로
+    # 분해하면 안 되는 시점 기준 값 비교라 아직 미지원. 조용히 엉뚱한 트랙(무구매/랭킹)으로 분해하지 않는다.
+    if _has_intra_member_temporal_comparison(query):
+        plan["unsupported"] = {
+            "reason": "intra_member_temporal_metric_comparison_not_supported",
+            "message": "'첫 구매 금액보다 최근 구매 금액이 큰'처럼 회원별 시점(첫/최근) 값을 비교하는 조건은 아직 지원되지 않습니다.",
+            "clarification": "시점 비교 대신 단일 시점 조건(예: '최근 구매 금액 10만원 이상')으로 지정해 주시겠어요?",
+        }
+        return
+
+    # 비율 표현(D): 'A 대비 B'(구매 횟수 대비 구매 금액). 등록된 파생 비율 지표가 있으면 그걸 쓰고, 없으면
+    # 한쪽 지표('구매 금액 높은')만 남겨 매출 랭킹으로 폴백하지 말고 미지원으로 명시한다.
+    ratio = _detect_ratio_comparison(query)
+    if ratio is not None:
+        plan["unsupported"] = {
+            "reason": "unregistered_ratio_metric",
+            "message": f"'{ratio['denominator']} 대비 {ratio['numerator']}' 같은 비율 지표는 등록돼 있지 않아 아직 지원되지 않습니다.",
+            "clarification": "비율(예: 객단가=구매 금액/구매 횟수)이 필요하면 등록된 지표로 바꾸거나, 단일 지표 임계값으로 지정해 주시겠어요?",
+            "numerator": ratio["numerator"],
+            "denominator": ratio["denominator"],
+        }
+        return
+
+    # '구매 금액 0원'은 도메인 정책 사안이라 코드가 무구매로 단정하지 않는다(zero_amount_semantics 플래그).
+    # maps_to_no_purchase=true 면 무구매(no_purchase, 주문 anti-join)로 컴파일하고, 기본(false)이면 0원 결제와
+    # 평생 무주문이 다를 수 있으므로 조용히 넘기지 않고 clarification 으로 되묻는다.
+    # 캠페인 문맥('캠페인 구매금액 0원')은 캠페인 반응 트랙(no_buy_response, NOT EXISTS)이 이미 소유하므로 양보한다.
+    if (
+        _has_zero_amount_purchase_condition(query)
+        and not target_user.get("aggregate_conditions")
+        and not target_user.get("campaign_responses")
+        and "캠페인" not in query
+    ):
+        if _zero_amount_semantics().get("maps_to_no_purchase"):
+            _append_unique(target_user.setdefault("behaviors", []), "no_purchase")
+        else:
+            plan["unsupported"] = {
+                "reason": "zero_amount_semantics_requires_policy",
+                "message": (
+                    "'구매 금액 0원'을 무구매(주문 없음)와 같은 의미로 볼지 정책이 정해지지 않았습니다"
+                    "(zero_amount_semantics.maps_to_no_purchase=false)."
+                ),
+                "clarification": (
+                    "'구매 금액 0원'이 '한 번도 구매하지 않은 회원'(무구매)을 뜻하나요? "
+                    "그렇다면 '구매 이력이 없는 회원'으로 지정하거나 정책에서 무구매 동일시를 켜 주세요."
+                ),
+            }
+        return
+
+    # '평균 대비' 비교('구매 금액이 평균보다 높은')인데 지원 지표(회원 컬럼)로 해석되지 않은 경우 → 미지원.
+    # 예치금/적립금 등 회원 컬럼은 member_metric_selection(vs_average)으로 이미 해석되므로 여기 안 걸린다.
+    # 주문 집계 지표(구매 금액/횟수)의 평균 대비는 회원 단일 테이블 서브쿼리로 표현 불가라 미지원으로 명시한다.
+    if (
+        _AVERAGE_COMPARISON_MARKER.search(query)
+        and plan.get("member_metric_selection") is None
+        and not target_user.get("balance_conditions")
+    ):
+        plan["unsupported"] = {
+            "reason": "average_comparison_metric_unsupported",
+            "message": (
+                "'평균 대비' 비교는 예치금·적립금 등 회원 지표에서만 지원됩니다. "
+                "구매 금액 등 주문 집계 지표의 평균 대비 추출은 아직 지원되지 않습니다."
+            ),
+            "clarification": (
+                "'평균보다 높은' 비교를 예치금/적립금 같은 회원 지표로 바꾸거나, "
+                "구체적 금액 임계값(예: 구매 금액 10만원 이상)으로 지정해 주시겠어요?"
+            ),
+        }
+        return
+
+    # 순위 지시('상위/하위 N명·높은/낮은 순·TOP N')는 있는데 기준 지표가 지정되지 않았고, 어떤 랭킹 트랙도
+    # 이를 해석하지 못한 경우 → result_limit 만 조용히 적용(그럴듯한 임의 N명)하지 말고 '무엇 기준인지' 되묻는다.
+    if (
+        _detect_ranking_directive(query) is not None
+        and plan.get("member_metric_ranking") is None
+        and plan.get("purchase_count_ranking") is None
+        and plan.get("member_metric_selection") is None
+        and not isinstance(plan.get("region_density_target"), dict)
+    ):
+        plan["unsupported"] = {
+            "reason": "ranking_metric_unspecified",
+            "message": "'상위/하위 N명' 순위의 기준 지표가 지정되지 않았습니다.",
+            "clarification": "어떤 지표 기준으로 순위를 매길까요? (예: 누적 구매 금액, 구매 횟수, 예치금 등)",
+        }
+
+
 def _classify_balance_window(window: str, unit: str = "원", bare_equals: bool = True) -> list[tuple[str, float]] | None:
     """수치 지표어 뒤 window 를 [(operator, threshold), ...] 로 분류. 숫자 비교(부등호/범위/등호/'보다 많은')는
     공용 문법(_parse_amount_comparison)에 단위(unit)만 바꿔 위임하고, 존재/부재만 여기서 본다. 랭킹/%/평균이면
@@ -4012,7 +4285,10 @@ def _parse_korean_amount(number_text: str, magnitude_text: str) -> float | None:
 
 
 def _parse_recent_window_days(query: str) -> int | None:
-    """'최근 90일' -> 90, '최근 3개월' -> 90, '최근 2주' -> 14 (없으면 None = 전체 기간)."""
+    """'최근 90일' -> 90, '최근 3개월' -> 90, '최근 2주' -> 14 (없으면 None = 롤링 윈도우 아님).
+
+    이건 '지금으로부터 N일 전까지'의 롤링 윈도우다. '올해'·'지난달' 같은 고정 달력 구간은 성격이
+    다르므로(_parse_calendar_period 소유) 여기서 잡지 않는다."""
     match = _RECENT_WINDOW_PATTERN.search(query)
     if not match:
         return None
@@ -4022,49 +4298,186 @@ def _parse_recent_window_days(query: str) -> int | None:
     return count * _WINDOW_UNIT_DAYS[match.group(2)]
 
 
+# 달력 기간(올해/지난달 등): '지금으로부터 N일'의 롤링 윈도우(_parse_recent_window_days)와 구분되는
+# 별개 타입이다 — 경계가 달력(연/월/주)에 고정된다. 아직 집계 SQL 에는 반영하지 않는다(별도 작업);
+# 여기서는 조건에 표식만 남겨, 기간을 조용히 무시(전체 기간 폴백)하는 대신 명시 경고로 돌려주기 위한
+# 감지만 한다. 지역명(전주 등)·연동어(전년대비)와의 오탐을 피하려 경계 명확한 표현만 본다.
+_CALENDAR_PERIOD_SIGNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("current_year", ("올해", "금년")),
+    ("last_year", ("작년", "지난해")),
+    ("previous_month", ("지난달", "저번달")),
+    ("current_month", ("이번달",)),
+    ("previous_week", ("지난주",)),
+    ("current_week", ("이번주",)),
+)
+_CALENDAR_PERIOD_LABELS = {
+    "current_year": "올해",
+    "last_year": "작년",
+    "previous_month": "지난달",
+    "current_month": "이번 달",
+    "previous_week": "지난주",
+    "current_week": "이번 주",
+}
+
+
+def _parse_calendar_period(query: str) -> str | None:
+    """'올해' -> current_year, '지난달' -> previous_month 등 고정 달력 구간을 표준 토큰으로.
+
+    롤링 윈도우(최근 N일)와 다른 별도 타입. 현재는 집계 SQL 에 미반영이라, 감지되면 조건에 표식만
+    남겨 명시 경고(_deterministic_dropped_conditions)로 돌려준다 — 전체 기간으로 조용히 폴백하지 않는다."""
+    compact = (query or "").replace(" ", "")
+    for token, signs in _CALENDAR_PERIOD_SIGNS:
+        if any(sign in compact for sign in signs):
+            return token
+    return None
+
+
+# 한글 수사(한/두/세…) → 숫자: '두 번 이상'·'정확히 두 번' 같은 표현이 개수 임계값(숫자형) 파서에
+# 걸리도록 표면 정규화한다. 개수 단위(번/회/건/개) 바로 앞의 수사만 치환해 금액·연령 등과 갈린다.
+# 앞 음절이 한글이면(가세/치열 등 단어 일부) 치환하지 않는다(오탐 방지). 전역이 아니라 개수 임계값
+# 추출 경로에서만 로컬 적용한다 — '한 번도 주문하지 않은'(no_purchase 동의어)이 '1번도…'로 바뀌어
+# 미구매 매칭이 깨지는 것을 피하기 위해서다.
+_KOREAN_COUNT_NUMERALS = {
+    "하나": 1, "한": 1, "둘": 2, "두": 2, "셋": 3, "세": 3, "넷": 4, "네": 4,
+    "다섯": 5, "여섯": 6, "일곱": 7, "여덟": 8, "아홉": 9, "열": 10,
+}
+_KOREAN_COUNT_NUMERAL_RE = re.compile(
+    r"(?<![가-힣])(" + "|".join(sorted(_KOREAN_COUNT_NUMERALS, key=len, reverse=True)) + r")\s*(번|회|건|개)"
+)
+
+
+def _normalize_korean_count_numerals(text: str) -> str:
+    """'두 번' -> '2번', '세 개' -> '3개' 등 한글 수사+개수 단위를 숫자로 치환한다(개수 임계값 파서 공용).
+
+    개수 임계값 추출 경로에서만 로컬로 쓴다(전역 아님). 앞 음절이 한글인 경우(예: '가세 번')는 단어
+    일부일 수 있어 치환하지 않는다."""
+    if not text:
+        return text
+    return _KOREAN_COUNT_NUMERAL_RE.sub(
+        lambda match: f"{_KOREAN_COUNT_NUMERALS[match.group(1)]}{match.group(2)}", text
+    )
+
+
+# 절 경계 접속어(대조): '하지만/반면'은 앞뒤가 다른 절이라 파싱 범위를 여기서 끊는다. '이지만/그리고/
+# 이면서' 등 가법·범위 접속어는 단일 지표 범위('30만 이상이지만 100만 미만')를 끊어버리므로 경계로 쓰지
+# 않는다 — 다음 지표 시작점이 진짜 절 경계다(그 사이 조건만 이 지표 것으로 본다).
+_AGG_CLAUSE_CONNECTIVE_RE = re.compile(r"하지만|반면")
+
+
+def _aggregate_parse_window_end(query: str, start: int, metric_starts: list[int], max_len: int = 40) -> int:
+    """지표 동의어 뒤 임계값 파싱 범위의 끝 위치(C). 다음 지표 시작점·대조 접속어(하지만/반면) 중 가장
+    가까운 곳에서 끊어 다음 절 조건이 이 지표로 새는 것을 막고, 없으면 기존 40자 fallback."""
+    bounds = [min(len(query), start + max_len)]
+    for next_start in metric_starts:
+        if next_start > start:
+            bounds.append(next_start)
+            break  # metric_starts 는 정렬됨 → 첫 번째가 가장 가까운 다음 지표
+    connective = _AGG_CLAUSE_CONNECTIVE_RE.search(query, start)
+    if connective is not None:
+        bounds.append(connective.start())
+    return min(bounds)
+
+
+def _aggregate_condition_conflict(conditions: list[dict[str, Any]]) -> str | None:
+    """같은 지표에 불가능한 범위(하한>상한)가 생성됐으면 그 지표 라벨을 반환(절 과포획 의심). 정상 범위
+    (>=lo, <=hi, lo<=hi)는 상충이 아니다. 없으면 None."""
+    by_metric: dict[str, list[dict[str, Any]]] = {}
+    for condition in conditions:
+        by_metric.setdefault(condition["metric_id"], []).append(condition)
+    for group in by_metric.values():
+        lowers = [c["threshold"] for c in group if c["operator"] in (">", ">=")]
+        uppers = [c["threshold"] for c in group if c["operator"] in ("<", "<=")]
+        if lowers and uppers and max(lowers) > min(uppers):
+            return group[0].get("label", group[0]["metric_id"])
+    return None
+
+
 def _apply_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
     """'[최근 N일] <지표> <임계값> 이상/이하'를 범용 집계 조건(aggregate_conditions)으로 해석한다.
 
     지표 동의어(구매 금액/구매 횟수 등) 바로 뒤의 임계값 어구를 잡아 {metric_id, operator, threshold,
     window_days} 로 만든다. build_aggregate_targets_sql_candidate 가 주문 테이블 회원별 집계 서브쿼리
     (GROUP BY MEMBER_NO HAVING agg(col) op threshold)로 컴파일하고, 성별/연령/등급/지역 등 회원 속성은
-    compile_member_target_conditions 로 같은 SQL 에 AND 결합한다."""
+    compile_member_target_conditions 로 같은 SQL 에 AND 결합한다.
+
+    B(지표 간 최장 일치): 모든 지표 후보의 매칭 span 을 모아 겹치면 더 긴 span 을 남긴다('평균 결제 금액'은
+    average_order_amount 로 확정하고 그 안에 포함된 purchase_amount 의 '결제 금액'은 버린다). 서로 다른
+    절(비겹침)이면 둘 다 유지한다. C(절 경계 파싱): 각 지표의 임계값 파싱 범위를 다음 지표/대조 접속어에서
+    끊어, 뒤 절 조건('평균 주문 금액 30,000원 미만')이 앞 지표(purchase_amount)로 새지 않게 한다."""
     config = _aggregate_targets_config()
     metrics = config.get("metrics", {})
     if not isinstance(metrics, dict) or not metrics:
         return
+    # 한글 수사('구매 횟수 두 번 이상')를 숫자로 정규화해 개수 임계값이 걸리게 한다(로컬 — 원문 불변).
+    query = _normalize_korean_count_numerals(query)
     window_days = _parse_recent_window_days(query)
-    conditions: list[dict[str, Any]] = []
-    # 긴 동의어를 가진 지표부터 본다('구매 금액'이 '구매 횟수'와 겹치지 않도록 지표 단위로 독립 매칭).
+    # 롤링 윈도우가 아니면 달력 기간('올해'·'지난달')인지 본다 — 둘은 상호배타 타입이다.
+    calendar_period = _parse_calendar_period(query) if window_days is None else None
+
+    # 1) 지표별 최장 동의어 매칭 span 수집(지표당 최장 동의어의 최초 위치).
+    hits: list[dict[str, Any]] = []
     for metric_id, metric in metrics.items():
-        synonyms = sorted(
-            [synonym for synonym in metric.get("synonyms", []) if isinstance(synonym, str) and synonym],
-            key=len,
-            reverse=True,
-        )
-        for synonym in synonyms:
+        best: dict[str, Any] | None = None
+        for synonym in metric.get("synonyms", []):
+            if not (isinstance(synonym, str) and synonym):
+                continue
             index = query.find(synonym)
             if index < 0:
                 continue
-            tail = query[index + len(synonym): index + len(synonym) + 40]
-            # 공용 비교 문법으로 위임 → 부등호(부사형/동사형)·'보다 많은'·범위·'정확히 N'을 함께 얻는다.
-            # bare_equals=False: 지표 뒤 맨 숫자('구매금액 10만원')는 모호하므로 등호로 넘겨짚지 않는다.
-            comparisons = _parse_amount_comparison(tail, _AGG_UNIT, bare_equals=False)
-            if not comparisons:
-                continue
-            for operator, threshold in comparisons:
-                conditions.append(
-                    {
-                        "metric_id": metric_id,
-                        "operator": operator,
-                        "threshold": threshold,
-                        "window_days": window_days,
-                        "label": metric.get("ko_label", metric_id),
-                    }
-                )
-            break  # 한 지표당 하나(범위는 두 술어로 확장)
-    if conditions:
-        plan.setdefault("target_user", {})["aggregate_conditions"] = conditions
+            if best is None or len(synonym) > (best["end"] - best["start"]):
+                best = {"start": index, "end": index + len(synonym), "metric_id": metric_id, "metric": metric}
+        if best is not None:
+            hits.append(best)
+    if not hits:
+        return
+
+    # 2) span 겹침 해소(B): 더 긴 span 우선으로 남기고, 이미 남긴 더 긴 span 과 겹치는 짧은 후보는 버린다.
+    hits.sort(key=lambda h: (h["end"] - h["start"]), reverse=True)
+    kept: list[dict[str, Any]] = []
+    for hit in hits:
+        if any(hit["start"] < k["end"] and k["start"] < hit["end"] for k in kept):
+            continue
+        kept.append(hit)
+    kept.sort(key=lambda h: h["start"])
+
+    # 3) 절 경계 기반 파싱(C): 각 지표 파싱 범위를 다음 지표/대조 접속어에서 끊는다.
+    metric_starts = sorted(h["start"] for h in kept)
+    conditions: list[dict[str, Any]] = []
+    for hit in kept:
+        window_end = _aggregate_parse_window_end(query, hit["end"], metric_starts)
+        tail = query[hit["end"]: window_end]
+        # 공용 비교 문법으로 위임 → 부등호(부사형/동사형)·'보다 많은'·범위·'정확히 N'을 함께 얻는다.
+        # bare_equals=False: 지표 뒤 맨 숫자('구매금액 10만원')는 모호하므로 등호로 넘겨짚지 않는다.
+        comparisons = _parse_amount_comparison(tail, _AGG_UNIT, bare_equals=False)
+        if not comparisons:
+            continue
+        for operator, threshold in comparisons:
+            condition = {
+                "metric_id": hit["metric_id"],
+                "operator": operator,
+                "threshold": threshold,
+                "window_days": window_days,
+                "label": hit["metric"].get("ko_label", hit["metric_id"]),
+            }
+            # 달력 기간은 감지됐을 때만 표식으로 붙인다(미감지 시 조건 형태를 바꾸지 않음 — 회귀 안전).
+            if calendar_period:
+                condition["calendar_period"] = calendar_period
+            conditions.append(condition)
+    if not conditions:
+        return
+
+    # 4) 상충 검사(C 안전장치): 같은 지표에 하한>상한(불가능 범위)이면 절 과포획 의심 — 조용히 출고하지
+    #    않고 clarification 으로 되묻는다(정상 범위 lo<=hi 는 통과).
+    conflict_label = _aggregate_condition_conflict(conditions)
+    if conflict_label is not None:
+        plan["unsupported"] = {
+            "reason": "conflicting_aggregate_conditions",
+            "message": f"'{conflict_label}' 지표에 서로 모순되는 임계값(하한>상한)이 생성됐습니다 — 절 경계 과포획 의심.",
+            "clarification": "한 지표에 상충하는 임계값이 감지됐습니다. 조건을 절별로 명확히 나눠 다시 입력해 주시겠어요?",
+        }
+        return
+
+    plan.setdefault("target_user", {})["aggregate_conditions"] = conditions
 
 
 # 지표 명사('구매 횟수') 없이 구매 동사에 바로 붙는 개수 임계값("2개/3번/2회/2건 이상 구매/구입").
@@ -4093,7 +4506,10 @@ def _apply_purchase_count_threshold_filter(query: str, plan: dict[str, Any]) -> 
         target_user["aggregate_conditions"] = conditions
     if any(isinstance(c, dict) and c.get("metric_id") == "order_count" for c in conditions):
         return
-    compact = (query or "").replace(" ", "")
+    # 한글 수사('두 번 이상 구매', '정확히 두 번')를 숫자로 정규화(로컬 — 원문/타 파서 불변). 이후 기간
+    # 파싱도 정규화본을 쓰지만 수사+개수 단위만 바뀌어 '최근/올해/지난달' 감지에는 영향 없다.
+    query = _normalize_korean_count_numerals(query or "")
+    compact = query.replace(" ", "")
     if not any(verb in compact for verb in _PURCHASE_COUNT_VERB_SIGNS):
         return
     if any(word in compact for word in _PURCHASE_COUNT_CONTEXT_YIELDS):
@@ -4118,15 +4534,22 @@ def _apply_purchase_count_threshold_filter(query: str, plan: dict[str, Any]) -> 
         return
     if threshold <= 0:
         return
-    conditions.append(
-        {
-            "metric_id": "order_count",
-            "operator": operator,
-            "threshold": threshold,
-            "window_days": None,
-            "label": metrics["order_count"].get("ko_label", "구매 횟수"),
-        }
-    )
+    # 롤링 윈도우('최근 N일')를 반드시 보존한다 — 예전엔 None 하드코딩이라 '최근 90일 3회'가 '전체
+    # 기간 3회'로 조용히 왜곡됐다. 빌더(_aggregate_member_subquery)가 window_days 로 ORDER_DATE 창을 건다.
+    window_days = _parse_recent_window_days(query)
+    condition = {
+        "metric_id": "order_count",
+        "operator": operator,
+        "threshold": threshold,
+        "window_days": window_days,
+        "label": metrics["order_count"].get("ko_label", "구매 횟수"),
+    }
+    # 롤링 윈도우가 아니면서 달력 기간('올해'·'지난달')이 있으면 표식만 남긴다(SQL 미반영 → 명시 경고).
+    if window_days is None:
+        calendar_period = _parse_calendar_period(query)
+        if calendar_period:
+            condition["calendar_period"] = calendar_period
+    conditions.append(condition)
 
 
 # 장바구니 개수/수량 임계값: "장바구니에 N개 이상 담은". 돈(원)·연령(대)로 오탐하지 않게 개수 단위만 본다.
@@ -5901,6 +6324,9 @@ def _sanitize_purchase_object(value: str) -> str | None:
             # '캠페인 구매 이력'의 '캠페인'은 상품명이 아니라 캠페인 반응(구매 반응) 문맥어다. 상품 LIKE
             # 로 새면 PRODUCT_NAME LIKE N'%캠페인%' 같은 무의미 매칭이 되므로 상품 후보에서 제외한다.
             "캠페인",
+            # 전체/전부/모든/모두/평균 같은 전칭·집계 수식어는 상품명이 아니다. '전체 구매 회원 평균보다 높은'
+            # 의 '전체'가 PRODUCT_NAME LIKE N'%전체%' 로 새어 그럴듯한 오답 SQL 이 나오던 것을 막는다.
+            "전체", "전부", "모든", "모두", "평균", "평균값",
         }:
             continue
         # 날짜/기간 토큰은 상품이 아니라 구매 날짜 조건이므로 상품명 후보에서 뺀다(→ purchase_date 가 담당).
@@ -8827,6 +9253,17 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
     ):
         warnings.append("구매 미발생(미구매/최근 N일 미구매) 조건")
 
+    # 달력 기간(올해/지난달 등)은 집계 조건에 표식으로 보존되지만 아직 집계 SQL 에 반영되지 않는다(별도 작업).
+    # 전체 기간으로 조용히 계산되면 '올해 10회'가 '평생 10회'로 왜곡되므로, 명시 경고로 사용자에게 알린다.
+    calendar_periods = {
+        str(condition.get("calendar_period"))
+        for condition in target_user.get("aggregate_conditions") or []
+        if isinstance(condition, dict) and condition.get("calendar_period")
+    }
+    for period in sorted(calendar_periods):
+        label = _CALENDAR_PERIOD_LABELS.get(period, period)
+        warnings.append(f"기간 '{label}' 조건(달력 기간은 집계에 아직 미반영 — 전체 기간으로 계산됨)")
+
     # 장바구니: 원문에 '장바구니'가 있는데 어떤 카트 슬롯도 안 잡혔으면 드롭(존재/부재/보관/유형/개수 전부).
     if "장바구니" in compact and not (
         "cart_abandoner" in behaviors
@@ -9013,6 +9450,18 @@ def build_sql_result(
                 target_connection = None
                 target_dialect = None
 
+    # 명시적 미지원 표현(예: 주문 집계 지표의 '평균 대비' 비교): 조용한 빈결과/오답 대신 unsupported_reason 과
+    # clarification 을 명시 응답한다. 결정론 게이트(_apply_unsupported_intent_gate)가 plan 에 표시해 둔다.
+    unsupported_intent = query_plan.get("unsupported") if isinstance(query_plan.get("unsupported"), dict) else None
+    unsupported_reason = None
+    if selected_sql is None and unsupported_intent:
+        unsupported_reason = unsupported_intent.get("reason")
+        if unsupported_reason:
+            failure_reason = unsupported_reason
+        clarification = unsupported_intent.get("clarification")
+        if clarification and not clarification_questions:
+            clarification_questions = [clarification]
+
     # 부분 추출로 SQL 이 나온 경우, 실DB 미지원이라 뺀 조건을 고지한다(성공이지만 일부 조건 제외).
     dropped_conditions = selected.get("dropped_conditions", []) if selected else []
     dropped_condition_labels = selected.get("dropped_condition_labels", []) if selected else []
@@ -9062,6 +9511,8 @@ def build_sql_result(
         "dropped_signal_warnings": dropped_signal_warnings,
         "unsupported_conditions": unsupported_conditions,
         "unsupported_condition_labels": unsupported_condition_labels,
+        # 명시적 미지원 표현의 사유 코드(예: average_comparison_metric_unsupported). 지원 표현이면 None.
+        "unsupported_reason": unsupported_reason,
         "dropped_conditions": dropped_conditions,
         "dropped_condition_labels": dropped_condition_labels,
         # 프롬프트가 명시한 결과 행수 제한(없으면 None = 전체). sql_guard 가 방언별 TOP/LIMIT 로 반영한다.
@@ -9959,8 +10410,14 @@ def _sql_target_builders() -> tuple[Any, ...]:
 def build_sql_template_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     if query_plan.get("intent") not in _SQL_TARGET_INTENTS:
         return None
+    # 미지원으로 명시된 질의는 어떤 빌더로도 폴백하지 않는다 — 그럴듯한 오답/빈결과 대신 명시 미지원 응답.
+    if isinstance(query_plan.get("unsupported"), dict):
+        return None
     for builder in _sql_target_builders():
         candidate = builder(query_plan)
+        # 빌더가 무효 지표 등으로 plan 을 미지원 표시했으면 즉시 중단한다 — 다른 트랙으로 조용히 폴백 금지.
+        if isinstance(query_plan.get("unsupported"), dict):
+            return None
         if candidate is None:
             continue
         # Validation 게이트(파이프라인: 빌더 → AST → Validation → SQL): 별칭 허용 목록·raw SQL 토큰·
@@ -10453,13 +10910,15 @@ def build_member_metric_ranking_sql_candidate(query_plan: dict[str, Any]) -> dic
     if objective:
         select_columns.append(_sql_quote(objective) + " AS objective")
 
+    # 방향: 상위/높은 순 → DESC, 하위/낮은 순 → ASC. 표식 없으면 기존 동작(내림차순) 유지.
+    order_direction = "ASC" if ranking.get("direction") == "low" else "DESC"
     sql = "\n".join(
         [
             "SELECT " + ", ".join(select_columns),
             _member_from_clause(),
             f"     INNER JOIN {value_table} C ON B.{join_column} = C.{join_column}",
             "WHERE " + "\n  AND ".join(where_clauses),
-            f"ORDER BY {metric_expr} DESC",
+            f"ORDER BY {metric_expr} {order_direction}",
         ]
     )
     candidate = _sql_candidate(
@@ -10782,21 +11241,94 @@ def _format_threshold(threshold: int | float) -> str:
     return str(int(threshold)) if float(threshold).is_integer() else repr(float(threshold))
 
 
+def _render_aggregate_expression(expression: str, alias_prefix: str) -> str | None:
+    """집계식 템플릿의 alias 자리표시자 `{t}` 를 서브쿼리 실제 접두어(예: '' 또는 'OH.')로 치환한다.
+
+    임의 문자열 치환이 아니라 정의된 자리표시자만 채우는 '허용 템플릿' 방식이다. 치환 후 집계식이 안전한
+    토큰(대문자 식별자·숫자·산술·괄호·허용 집계함수)만 담는지 검증하고, 아니면 None(무효)을 돌려 SUM(None)
+    류가 빌드로 새는 것을 원천 차단한다."""
+    if not isinstance(expression, str) or not expression.strip():
+        return None
+    rendered = expression.replace("{t}", alias_prefix)
+    # 허용 토큰만: 식별자(대소문자/숫자/_)·점(별칭)·숫자·산술/비교·콤마·괄호·공백. 리터럴 None/미치환 자리표시자 배제.
+    if "{" in rendered or "}" in rendered or re.search(r"\bNone\b", rendered):
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_.,()\s*/+\-]+", rendered):
+        return None
+    # alias-less 서브쿼리(alias_prefix='')인데 렌더 결과에 'alias.column' 한정자가 남아 있으면, {t} 로 접두어를
+    # 맞추지 않고 리터럴 별칭을 박은 설정 오류다 — 서브쿼리에 없는 별칭이라 실행 시 실패한다(존재하지 않는 별칭 차단).
+    if alias_prefix == "" and re.search(r"[A-Za-z_]\w*\.[A-Za-z_]\w*", rendered):
+        return None
+    return rendered
+
+
+def _member_summary_threshold_subquery(
+    summary: dict[str, Any], operator: str, threshold: int | float, alias: str,
+) -> str | None:
+    """회원 요약(사전 계산) 컬럼 임계 서브쿼리 — 예: CRM_MB_MONTHCRMINFO.MEAN_BUY_AMT >= N.
+
+    스냅샷 컬럼이라 회원당 1행(grain_filter 로 최신 월 한정)이며 GROUP BY/HAVING 없이 WHERE 임계로 뽑는다.
+    기간창을 반영할 수 없으므로 호출부가 window/purchase_date 가 없을 때만 이 경로를 쓴다."""
+    table = summary.get("table")
+    column = summary.get("column")
+    join_column = summary.get("join_column", "MEMBER_NO")
+    if not (isinstance(table, str) and table and isinstance(column, str) and column):
+        return None
+    where = [f"{join_column} IS NOT NULL"]
+    grain_filter = summary.get("grain_filter")
+    if isinstance(grain_filter, str) and grain_filter.strip():
+        where.append(grain_filter)
+    where.append(f"{column} IS NOT NULL")
+    where.append(f"{column} {operator} {_format_threshold(threshold)}")
+    return "\n".join(
+        [
+            "(",
+            f"    SELECT {join_column}",
+            f"    FROM {table}",
+            f"    WHERE {' AND '.join(where)}",
+            f") {alias}",
+        ]
+    )
+
+
 def _aggregate_member_subquery(
     config: dict[str, Any], metric: dict[str, Any], operator: str, threshold: int | float,
     window_days: Any, alias: str, purchase_date: Any = None,
-) -> str:
+) -> str | None:
     """회원별 집계 조건 서브쿼리(GROUP BY <회원키> HAVING <집계식> <연산자> <임계값>)를 만든다.
 
-    이것이 '범용 집계 조건 빌더'의 핵심이다 — agg/column/distinct/기간창은 전부 인자·config 로 주어지고,
-    주문 횟수든 누적 금액이든 같은 서브쿼리 골격을 쓴다. 상대 기간창(window_days)이 있으면 최근 N일로,
-    절대 구매창(purchase_date, 예 '2019년 1월')이 있으면 ORDER_DATE BETWEEN 으로 그 기간 주문만 집계한다."""
+    지표 소스는 세 가지로 명확히 분리된다: ①회원 요약 컬럼(source.preferred=member_summary_column, 사전
+    계산 스냅샷 — 기간창 없을 때 우선), ②집계식(expression 템플릿, 기간창·날짜창 반영 가능), ③agg+column.
+    셋 다 해석 불가면 None 을 돌려 SUM(None) 같은 무효 SQL 을 만들지 않는다(호출부가 후보를 무효 처리).
+    상대 기간창(window_days)이 있으면 최근 N일로, 절대 구매창(purchase_date)이 있으면 ORDER_DATE BETWEEN 으로
+    그 기간 주문만 집계한다."""
     table = config.get("table", "CRM_SL_ORDERHEADERMALL")
     join_column = config.get("join_column", "MEMBER_NO")
     date_column = config.get("date_column", "ORDER_DATE")
-    column = metric.get("column")
-    agg = str(metric.get("agg", "SUM")).upper()
-    agg_expr = f"COUNT(DISTINCT {column})" if metric.get("distinct") else f"{agg}({column})"
+    has_window = (isinstance(window_days, int) and window_days > 0) or purchase_date is not None
+
+    # ① 회원 요약 컬럼 소스: 기간창이 없을 때만(스냅샷은 window 반영 불가). 랭킹(#6)과 같은 사전계산 컬럼을 써
+    #    임계·랭킹의 '객단가' 정의를 일치시킨다.
+    source = metric.get("source") if isinstance(metric.get("source"), dict) else {}
+    summary = metric.get("summary") if isinstance(metric.get("summary"), dict) else None
+    if summary and source.get("preferred") == "member_summary_column" and not has_window:
+        summary_sql = _member_summary_threshold_subquery(summary, operator, threshold, alias)
+        if summary_sql is not None:
+            return summary_sql
+
+    # ②/③ 주문 집계식(기간 창 반영). expression 이 있으면 템플릿을 렌더, 없으면 agg+column.
+    expression = metric.get("expression")
+    if isinstance(expression, str) and expression.strip():
+        agg_expr = _render_aggregate_expression(expression, alias_prefix="")
+        if agg_expr is None:
+            return None  # 무효 템플릿 — SUM(None) 류를 빌드로 흘리지 않는다.
+    else:
+        column = metric.get("column")
+        if not (isinstance(column, str) and column):
+            return None  # 컬럼도 expression 도 없음 — 무효 지표(SUM(None) 방지).
+        agg = str(metric.get("agg", "SUM")).upper()
+        agg_expr = f"COUNT(DISTINCT {column})" if metric.get("distinct") else f"{agg}({column})"
+
     where = [f"{join_column} IS NOT NULL"]
     if isinstance(window_days, int) and window_days > 0 and date_column:
         cutoff = _member_dialect().char8_cutoff(window_days)
@@ -10855,6 +11387,16 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
             config, metric, condition["operator"], condition["threshold"], condition.get("window_days"), alias,
             purchase_date=purchase_date,
         )
+        if subquery is None:
+            # 지표가 컬럼/식/요약 어느 소스로도 해석되지 않음 → 무효 SQL(SUM(None) 등)을 만들지 않는다.
+            # plan 을 미지원으로 표시하고 None 반환 — 디스패처가 다른 트랙으로 조용히 폴백하지 않는다(원인 명시).
+            query_plan["unsupported"] = {
+                "reason": "unresolved_aggregate_column",
+                "message": f"집계 지표 '{condition['metric_id']}' 를 유효한 컬럼/식/요약 컬럼으로 해석할 수 없습니다.",
+                "clarification": "해당 지표의 집계 정의(컬럼/식/요약 컬럼)가 없어 SQL 을 만들 수 없습니다. 지표 설정을 확인해 주세요.",
+                "metric_id": condition["metric_id"],
+            }
+            return None
         from_clause.append(f"     INNER JOIN {subquery} ON B.{join_column} = {alias}.{join_column}")
         labels.append(condition.get("label") or condition["metric_id"])
 
