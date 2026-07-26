@@ -89,10 +89,13 @@ def test_genuine_cart_retention_still_parsed():
 
 
 # ── #15 / #12: 미모델 의미 → 미지원 게이트 ────────────────────────────────────
-def test_coupon_usage_count_is_unsupported():
+def test_coupon_usage_count_threshold_now_compiles():
+    # 쿠폰 사용 '건수' 임계는 이제 회원별 SUM(USE_CPN_CNT) HAVING 집계로 지원된다(캠페인 구매금액·성별·
+    # 연령과 AND 결합). segment_semantics 의 JSON capability(filter supported) 로 제어 — tests/test_coupon_semantics.py 참조.
     plan = _plan("쿠폰을 3개 이상 사용하고 캠페인 구매금액이 200,000원 이상인 30대 여성 회원을 보여줘.")
-    assert (plan.get("unsupported") or {}).get("reason") == "coupon_usage_count_unsupported"
-    assert g.build_sql_template_candidate(plan) is None
+    assert plan.get("unsupported") is None
+    sql = g.build_sql_template_candidate(plan)["sql"]
+    assert "SUM(COALESCE(R.USE_CPN_CNT, 0)) >= 3" in sql
 
 
 def test_coupon_usage_existence_still_supported():

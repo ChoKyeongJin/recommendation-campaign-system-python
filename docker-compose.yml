@@ -66,6 +66,12 @@ services:
       POSTGRES_DB: campaign_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: "1234"
+      # 임계값·서로 다른 지표가 섞인 OR-of-conjunctions('로그인 100회 이상 이거나 구매 10회 이상이면서
+      # 마케팅 동의')를 괄호·AND>OR 우선순위를 보존한 단일 SQL 로 컴파일한다(logical_expression 컴파일러).
+      # off(기본)면 mixed_and_or_precedence_unsupported 로 fail-close. 실패/검증불일치도 여전히 fail-close.
+      LOGICAL_OR_COMPILER: "1"
+      # 최종 SQL↔원문 의미검증(9단계) 전용 모델. 재작성·타겟분리·상품추출(OPENAI_FAST_MODEL)과 분리.
+      OPENAI_SEMANTIC_VERIFY_MODEL: "gpt-5-mini"
       # 실제 business DB(SELECT 전용)와 전용 메타데이터 DB는 .env 의 BUSINESS_DB_* /
       # METADATA_DB_* 로 지정한다(env_file 로 자동 주입, 미지정 시 POSTGRES_* 폴백).
     volumes:

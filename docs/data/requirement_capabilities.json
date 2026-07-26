@@ -1,0 +1,45 @@
+{
+  "_comment": "공통 semantic requirement 계층의 base×qualifier capability 레지스트리. 모든 자연어 조건을 source requirement 로 기록한 뒤, base(behavior/metric/dimension/set)에 붙은 qualifier(entity/dimension/time_scope/attribute)가 그 base 에서 지원되는지 여기서 판정한다. supported=true 는 실제 실행 자산(compiler_strategy=compiler_strategies 등록됨 + join_path=join_paths 등록됨 + filter_field=schema_catalog 존재)이 있을 때만 capability_registry 정적 검증을 통과한다. supported=false 면 message 로 명시 안내(clarification/unsupported). policy.disabled=true 는 기술적으로 가능해도 정책상 막은 조합(disabled_by_policy)으로 '기술 미구현'과 구분한다. base 에 없는 조합은 _default 로 폴백한다. 상세: capability_registry.py / compiler_strategies.py / join_paths.py.",
+  "capabilities": {
+    "cart_retention": {
+      "label": "장바구니 조건",
+      "qualifiers": {
+        "brand":    { "supported": true, "compiler_strategy": "join_product_dimension", "join_path": "cart_to_product", "filter_field": "BRAND_NAME", "code_field": "BRAND_ID", "value_type": "string", "supports_multiple": true },
+        "product":  { "supported": false, "message": "현재 장바구니 조건에는 특정 상품 필터를 함께 적용할 수 없습니다." },
+        "category": { "supported": false, "message": "현재 장바구니 조건에는 카테고리 필터를 함께 적용할 수 없습니다." }
+      }
+    },
+    "purchase": {
+      "label": "구매 조건",
+      "qualifiers": {
+        "brand":    { "supported": true, "compiler_strategy": "join_product_dimension", "join_path": "purchase_to_product", "filter_field": "BRAND_NAME", "value_type": "string", "supports_multiple": true },
+        "product":  { "supported": true, "compiler_strategy": "join_product_dimension", "join_path": "purchase_to_product", "filter_field": "PRODUCT_NAME", "value_type": "string", "supports_multiple": true },
+        "category": { "supported": true, "compiler_strategy": "join_product_dimension", "join_path": "purchase_to_product", "filter_field": "CATEGORYL_NAME", "value_type": "string", "supports_multiple": true }
+      }
+    },
+    "coupon": {
+      "label": "쿠폰 사용 조건",
+      "qualifiers": {
+        "brand":    { "supported": false, "message": "현재 쿠폰 사용 조건에는 브랜드 필터를 함께 적용할 수 없습니다." },
+        "product":  { "supported": false, "message": "현재 쿠폰 사용 조건에는 특정 상품 필터를 함께 적용할 수 없습니다." },
+        "category": { "supported": false, "message": "현재 쿠폰 사용 조건에는 카테고리 필터를 함께 적용할 수 없습니다." }
+      }
+    },
+    "login": {
+      "label": "로그인/접속 조건",
+      "qualifiers": {
+        "brand":    { "supported": false, "message": "현재 로그인/접속 조건에는 브랜드 필터를 함께 적용할 수 없습니다." },
+        "product":  { "supported": false, "message": "현재 로그인/접속 조건에는 특정 상품 필터를 함께 적용할 수 없습니다." },
+        "category": { "supported": false, "message": "현재 로그인/접속 조건에는 카테고리 필터를 함께 적용할 수 없습니다." }
+      }
+    },
+    "_default": {
+      "label": "이 조건",
+      "qualifiers": {
+        "brand":    { "supported": false, "message": "현재 이 조건에는 브랜드 필터를 함께 적용할 수 없습니다. 브랜드는 '구매' 조건으로 지정해 주세요." },
+        "product":  { "supported": false, "message": "현재 이 조건에는 특정 상품 필터를 함께 적용할 수 없습니다." },
+        "category": { "supported": false, "message": "현재 이 조건에는 카테고리 필터를 함께 적용할 수 없습니다." }
+      }
+    }
+  }
+}

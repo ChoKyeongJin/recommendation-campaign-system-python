@@ -152,6 +152,20 @@ def test_representative_case_compiles(flag_on):
     assert sorted(params.values()) == [10.0, 100.0]
 
 
+def test_channel_suffix_with_parens_does_not_break_parse(flag_on):
+    # BFF 가 붙이는 "발송 채널: RCS (리치 메시지, …)" 접미어의 괄호가 논리식 파서에 들어가면 괄호 불균형으로
+    # logical_expression_parse_failed 가 났다. 채널 절을 먼저 떼어 정상 컴파일돼야 한다.
+    q = ("로그인 횟수가 100회 이상이거나 구매 횟수가 10회 이상이면서 마케팅에 동의한 회원을 보여줘.\n"
+         "발송 채널: RCS (리치 메시지, 버튼 및 이미지 지원)")
+    plan, sql = _compile(q)
+    assert plan.get("unsupported") is None, plan.get("unsupported")
+    assert sql is not None
+    w = _where(sql)
+    assert "B.TOTAL_LOGIN_CNT >= 100" in w and "COUNT(DISTINCT ORDER_ID) >= 10" in w and "B.AGREE_YN = 'Y'" in w
+    # 채널 접미어(RCS/리치 메시지)가 SQL 에 새어들지 않는다.
+    assert "RCS" not in sql and "리치" not in sql
+
+
 def test_parenthesized_equals_unparenthesized(flag_on):
     _, sql_a = _compile("로그인 횟수가 100회 이상이거나 구매 횟수가 10회 이상이고 마케팅에 동의한 회원을 보여줘.")
     _, sql_b = _compile("(로그인 횟수가 100회 이상) 또는 (구매 횟수가 10회 이상이고 마케팅에 동의한) 회원")

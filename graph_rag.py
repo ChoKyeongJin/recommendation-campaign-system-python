@@ -46,6 +46,9 @@ from sql_dialect import SqlDialect, get_dialect
 import targeting_ir
 from targeting_ir import extract_target_conditions, fact_join_kinds
 import metric_registry
+import segment_semantics
+import semantic_requirements
+import compiler_strategies
 
 
 DEFAULT_DATA_PATH = Path("docs/data/rag_knowledge_base.json")
@@ -97,8 +100,18 @@ def _fast_llm_model(current: str | None) -> str | None:
     return os.getenv("OPENAI_FAST_MODEL") or "gpt-4o-mini"
 
 
+def _semantic_verify_model(current: str | None) -> str | None:
+    """의미검증(최종 SQL↔원문 직접 대조) 전용 모델. 재작성·타겟분리·상품추출과 분리해 따로 지정할 수 있게
+    한다(OPENAI_SEMANTIC_VERIFY_MODEL). 미지정이면 fast 모델을 그대로 쓴다. 규칙 모드(current=None)면 None."""
+    if current is None:
+        return None
+    return os.getenv("OPENAI_SEMANTIC_VERIFY_MODEL") or _fast_llm_model(current)
+
+
 # 위 경량 단계에 해당하는 트레이스 step 번호(배지 모델명을 메인이 아니라 fast 모델로 표기).
 _TRACE_FAST_MODEL_STEPS = {1, 2, 4, 9}
+# 9단계(SQL 안전 검증 → 의미검증)는 전용 모델(OPENAI_SEMANTIC_VERIFY_MODEL) override 대상.
+_TRACE_SEMANTIC_VERIFY_STEP = 9
 
 CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "subscription", "awareness"}
 # ── 실회원(CRM_MB_BASEINFO) 타겟 속성 레지스트리 ──────────────────────────────
@@ -356,6 +369,34 @@ def _load_metric_registry() -> "metric_registry.MetricRegistry":
 
 
 _METRIC_REGISTRY = _load_metric_registry()
+
+
+def _load_segment_semantics() -> "segment_semantics.SegmentSemanticsRegistry | None":
+    """쿠폰 도메인 의미 스펙(docs/data/segment_metrics.json + segment_operators.json)을 읽는다.
+
+    스펙 파손/부재로 import 가 죽지 않게 실패 시 None 으로 강등한다 — 그러면 _apply_coupon_semantics 가
+    무동작(no-op)이 되어 기존 경로가 유지된다(가시적 실패는 tests/test_coupon_semantics.py 가 잡는다)."""
+    try:
+        return segment_semantics.SegmentSemanticsRegistry.load()
+    except segment_semantics.SegmentSemanticsError:
+        return None
+
+
+_SEGMENT_SEMANTICS = _load_segment_semantics()
+
+
+def _load_requirement_registry() -> "semantic_requirements.RequirementRegistry | None":
+    """공통 semantic requirement capability 레지스트리(docs/data/requirement_capabilities.json)를 읽는다.
+    파손/부재 시 None 으로 강등(회계 계층이 무동작 → 기존 동작 유지). 가시적 실패는 테스트가 잡는다."""
+    try:
+        return semantic_requirements.RequirementRegistry.load()
+    except semantic_requirements.RequirementCapabilityError:
+        return None
+
+
+_REQUIREMENT_REGISTRY = _load_requirement_registry()
+# 쿠폰 미지원 판정이 더 구체적으로 대체할 수 있는 '일반 폴백' 미지원 사유(조용한/무관한 안내 교정).
+_COUPON_OVERRIDABLE_REASONS = frozenset({"metric_not_resolved", "ranking_metric_unspecified"})
 # 파일 항목이 전부 비정형이어도 규칙 엔진이 죽지 않게 빈 결과는 코드 기본값으로 복원한다.
 MEMBER_EQ_FILTERS: dict[str, tuple[str, str, str]] = (
     _parse_eq_filters(_MEMBER_TARGET_FILTERS.get("eq_filters"))
@@ -2250,6 +2291,10 @@ def _build_rule_query_plan(
         + _recent_login_retrieval_terms(plan["target_user"].get("recent_login"))
         + _query_tokens(normalized_query)
     )
+    # 쿠폰 도메인 의미(사용 여부/건수 임계/순위/지표 비교/파생)를 JSON 스펙 기반으로 확정한다. 미지원
+    # 판정을 게이트보다 먼저 남겨(게이트는 unsupported 가 있으면 양보) 어순 무관하게 일관되게 처리하고,
+    # 논리식 리프(_compile_logical_leaf → _build_rule_query_plan)에서도 동일하게 동작하게 한다.
+    _apply_coupon_semantics(query, plan)
     # 모든 결정론 필터가 끝난 뒤 미지원 표현을 명시 표시한다(조용한 오답/빈결과 방지). member_metric_selection
     # 등 필터 결과를 봐야 하므로 반드시 필터 실행 후에 둔다.
     _apply_unsupported_intent_gate(query, plan)
@@ -4537,13 +4582,9 @@ def _detect_ratio_comparison(query: str) -> dict[str, str] | None:
     return None
 
 
-# 쿠폰 '사용 건수' 임계('쿠폰 3개 이상 사용'): 반응 팩트에 쿠폰 사용 여부(USE_CPN_CNT>0, coupon_used EXISTS)는
-# 있지만 '몇 개 사용했는가'의 건수 임계는 아직 모델링되지 않았다 — 조용히 구매 금액/개수 등으로 새지 않게 게이트.
-_COUPON_USAGE_VERB_RE = re.compile(r"사용|이용|썼|쓴")
-_COUPON_USAGE_COUNT_RE = re.compile(
-    r"쿠폰(?:을|를|이|은|는)?\s*\d+\s*(?:개|건|장|회|번)|"
-    r"\d+\s*(?:개|건|장|회|번)\s*(?:이상|이하|초과|미만)?\s*(?:사용|이용)"
-)
+# 쿠폰 '사용 건수' 임계('쿠폰 3개 이상 사용')·순위·지표 비교·파생(쿠폰당 구매금액)의 미지원 판정은 이제
+# 문장별 정규식이 아니라 JSON 스펙(segment_metrics.json) + segment_semantics 의미 노드 + capability 게이트로
+# 처리한다(_apply_coupon_semantics). 어순에 따라 임계값이 조용히 USE_CPN_CNT>0 으로 축소되던 결함을 없앤다.
 # 캠페인 메시지 '받은/수신 횟수' 임계('메시지 3회 이상 받은'): 접촉(EXISTS)·반응 횟수(campaign_response_frequency)
 # 는 있으나 '발송/수신 건수' 임계는 모델링되지 않았다(반응 팩트는 반응자 중심 적재라 수신 횟수 분모가 없다).
 _MESSAGE_RECEIVED_COUNT_RE = re.compile(
@@ -4574,6 +4615,84 @@ def _has_metric_or_branch(compact: str) -> bool:
     return False
 
 
+def _remove_coupon_campaign_responses(target_user: dict[str, Any]) -> None:
+    """campaign_responses 에서 쿠폰 항목(coupon_used/no_coupon_used)만 제거한다(offer/buy/contact 은 보존).
+
+    _apply_campaign_response_filter 의 어순 취약한 리터럴 매칭이 남긴 쿠폰 항목(예: '쿠폰 사용 횟수가 5회
+    초과'의 부분문자열 '쿠폰사용' 오탐으로 붙은 coupon_used)을 걷어내고, segment_semantics 의 JSON 기반
+    판정으로 다시 세운다(멱등)."""
+    responses = target_user.get("campaign_responses")
+    if not responses:
+        return
+    kept = [r for r in responses if r.get("canonical") not in ("coupon_used", "no_coupon_used")]
+    if kept:
+        target_user["campaign_responses"] = kept
+    else:
+        target_user.pop("campaign_responses", None)
+
+
+def _apply_coupon_semantics(query: str, plan: dict[str, Any]) -> None:
+    """쿠폰 도메인 조건을 JSON 스펙(segment_metrics/operators) 기반 의미 노드 + capability 게이트로 해석한다.
+
+    문장별 정규식·어순 의존 대신 segment_semantics.interpret() 가 지표/연산자/값/범위/부정/비교대상/파생식을
+    '완성'한 뒤 capability 로 지원/미지원을 판정한다. 이 어댑터는 그 결과를 plan 에 반영한다:
+      * 지원(사용 여부 존재/부재) → campaign_responses 에 coupon_used/no_coupon_used(멱등 재구성).
+      * 미지원(사용 건수 임계/순위/지표 비교/파생 비율) → plan['unsupported'] 로 명시(임계값 조용한 축소 금지).
+
+    미지원 사유는 무관한 일반 폴백(metric_not_resolved 등)만 대체하고, 더 구체적인 상위 게이트(논리식/기간
+    비교 등)는 건드리지 않는다. 모든 결정 근거(의미 노드)는 plan['_coupon_ir'] 에 남겨 SQL 생성 전 의미
+    보존 검증(_guard_coupon_semantic_preservation)이 조용한 의미 소실을 fail-close 로 막게 한다."""
+    if _SEGMENT_SEMANTICS is None or "쿠폰" not in query:
+        return
+    interp = segment_semantics.interpret(query, _SEGMENT_SEMANTICS)
+    if interp is None:
+        return
+    target_user = plan.setdefault("target_user", {})
+    _remove_coupon_campaign_responses(target_user)
+    target_user.pop("coupon_usage_thresholds", None)  # 멱등 재구성(재감지 대비)
+    cond = interp.condition
+    plan.setdefault("_coupon_ir", []).append({**cond.to_dict(), "_gated": not interp.capability.supported})
+
+    if not interp.capability.supported:
+        cap = interp.capability
+        existing = plan.get("unsupported")
+        if not existing or existing.get("reason") in _COUPON_OVERRIDABLE_REASONS:
+            plan["unsupported"] = {
+                "reason": cap.code,
+                "message": cap.message,
+                "clarification": cap.clarification or cap.message,
+            }
+        # 지표 비교/순위가 순위 트랙으로 오배정돼 있으면(예: '쿠폰 수보다 구매건수가 많은' → member_metric_ranking)
+        # 걷어낸다 — 미지원이 build 단계에서 이기지만, 조용한 오배정 흔적을 남기지 않는다.
+        if cond.type in ("metric_comparison", "ranking"):
+            plan.pop("member_metric_ranking", None)
+            plan.pop("purchase_count_ranking", None)
+            plan.pop("group_ranking_target", None)
+        return
+
+    # 지원되는 사용 여부(존재/부재) → campaign_responses 로 컴파일(기존 EXISTS/NOT EXISTS 빌더가 소비).
+    if cond.type == "existence_filter" and interp.existence_predicate:
+        entry: dict[str, Any] = {
+            "canonical": "coupon_used" if cond.exists else "no_coupon_used",
+            "predicate": interp.existence_predicate,
+        }
+        if not cond.exists:
+            entry["negated"] = True
+        target_user.setdefault("campaign_responses", []).append(entry)
+        return
+
+    # 지원되는 사용 '건수' 임계(≥2·>5·범위 등) → 회원별 SUM(USE_CPN_CNT) HAVING 집계 조건으로 컴파일한다
+    # (compile_member_target_conditions 가 회원키 IN 서브쿼리 술어로 만들어 다른 조건과 AND 결합).
+    if cond.type == "metric_filter":
+        threshold: dict[str, Any] = {"operator": cond.operator}
+        if cond.operator == "between":
+            threshold["min_value"] = cond.min_value
+            threshold["max_value"] = cond.max_value
+        else:
+            threshold["value"] = cond.value
+        target_user.setdefault("coupon_usage_thresholds", []).append(threshold)
+
+
 def _apply_unsupported_intent_gate(query: str, plan: dict[str, Any]) -> None:
     """해석은 되지만 실DB SQL 로 컴파일할 수 없는 표현을 조용한 오답/빈결과 대신 '명시적 미지원'으로 표시한다.
 
@@ -4584,15 +4703,6 @@ def _apply_unsupported_intent_gate(query: str, plan: dict[str, Any]) -> None:
         return
     target_user = plan.get("target_user", {})
     compact = query.replace(" ", "")
-
-    # 쿠폰 '사용 건수' 임계('쿠폰 3개 이상 사용')는 아직 미모델 — 구매 금액/개수로 조용히 새지 않게 명시 미지원.
-    if "쿠폰" in compact and _COUPON_USAGE_VERB_RE.search(compact) and _COUPON_USAGE_COUNT_RE.search(compact):
-        plan["unsupported"] = {
-            "reason": "coupon_usage_count_unsupported",
-            "message": "'쿠폰을 N개 이상 사용'처럼 쿠폰 사용 '건수' 임계 조건은 아직 지원되지 않습니다(쿠폰 사용 여부만 지원).",
-            "clarification": "쿠폰 사용 '여부'(예: '쿠폰을 사용한 회원')로 지정하시겠어요? 사용 건수 임계는 추후 지원 예정입니다.",
-        }
-        return
 
     # 캠페인 메시지 '받은/수신 횟수' 임계('메시지 3회 이상 받은')는 아직 미모델 — 반응 횟수로 오매핑하지 않게 명시 미지원.
     if _MESSAGE_RECEIVED_COUNT_RE.search(compact):
@@ -5816,6 +5926,25 @@ def _cart_dimension_brand_filter(query_plan: dict[str, Any]) -> dict[str, Any] |
 
 def _is_cart_dimension_targeting(query_plan: dict[str, Any]) -> bool:
     return _cart_dimension_brand_filter(query_plan) is not None
+
+
+def _cart_brand_name_qualifier(query_plan: dict[str, Any]) -> list[str] | None:
+    """장바구니 오디언스에서 dimension 코드로 해석되지 '못한' 브랜드명 qualifier 를 반환한다(없으면 None).
+
+    하이브리드(사용자 결정) 폴백: curated dimension_catalog 에 브랜드가 없어 BRAND_ID 코드가 안 잡히면,
+    구매 경로와 동일하게 CRM_CM_PRODUCT.BRAND_NAME LIKE 로 거른다. 코드 경로(_cart_dimension_brand_filter)
+    가 이미 잡혔으면 그쪽이 우선이므로 여기선 None. 값은 브랜드 계사/명시로 확정된 purchase_object(canonical).
+
+    호출부(_build_cart_targets_candidate 의 repurchase 분기)가 이미 장바구니 오디언스(이탈/보관/유형)를
+    보장하므로 여기선 cart_context 를 따로 요구하지 않는다(cart_context 는 dimension 해석이 돌아야 켜져
+    rules/무DB 경로에선 꺼져 있음 — 그걸 게이트로 쓰면 브랜드명 폴백이 조용히 사라진다)."""
+    if _cart_dimension_brand_filter(query_plan) is not None:
+        return None  # 코드 경로 우선
+    target_user = query_plan.get("target_user", {}) if isinstance(query_plan.get("target_user"), dict) else {}
+    if target_user.get("purchase_object_kind") != "brand":
+        return None
+    brand = target_user.get("purchase_object")
+    return [brand] if isinstance(brand, str) and brand else None
 
 
 def _apply_cart_repurchase_context(query: str, plan: dict[str, Any]) -> None:
@@ -7608,6 +7737,14 @@ def retrieve(
     # '발송' 단어를 발송 채널로 오해해 타겟팅 절에서 떨어뜨릴 수 있다(예: '발송은 성공했지만' 소실).
     # 원문(발송 채널 접미어 제외) 기준으로 재감지해 복원한다 — union/result_limit 재감지와 같은 이유.
     _apply_campaign_response_filter(_split_channel_suffix(query)[0] or query, query_plan)
+    # 쿠폰 의미(사용 여부/건수 임계/순위/비교/파생)도 원문 기준으로 재확정한다 — 위 재감지가 다시 붙인
+    # coupon_used 를, JSON 기반 판정으로 재조정(임계/순위/비교/파생이면 미지원으로 교체)한다(멱등).
+    _apply_coupon_semantics(_split_channel_suffix(query)[0] or query, query_plan)
+    # 상품/브랜드 구매 이력(purchase_object)도 원문 기준으로 재감지한다 — 비결정적 LLM 질의계획이 브랜드
+    # 값을 손상('알로루'→'알로&루')시키거나 통째로 드롭하는 사례가 잦아, 결정론 추출로 덮어써 복원한다
+    # (campaign_response 재감지와 같은 이유). _apply_purchase_object_filter 는 매칭이 있을 때만 값을 쓰므로
+    # (없으면 무동작) 유효한 값을 지우지 않고, 구매 동사 없는 장바구니 문맥('담은')엔 걸리지 않아 안전하다.
+    _apply_purchase_object_filter(_split_channel_suffix(query)[0] or query, query_plan.setdefault("target_user", {}))
     # '최근 N개월 캠페인 K번 이상 반응'(반응 횟수)도 원문 기준으로 재감지한다 — 재작성/스코프 분리가 횟수·기간
     # 어구를 흔들 수 있어 결정론 조건을 복원한다(campaign_responses 재감지와 같은 이유).
     _apply_campaign_response_frequency_filter(_split_channel_suffix(query)[0] or query, query_plan)
@@ -9540,11 +9677,34 @@ _DEMO_SCHEMA_TABLES = {
 }
 
 
+# 명시적 미지원(unsupported-intent) 사유 — 조건은 인식했으나 실DB SQL 로 컴파일할 수 없는 경우. 이들은
+# SQL 안전 검증/의미 검증이 아니라 '실DB 조건 매핑' 단계에서 막힌 것이고, plan['unsupported'] 에 구체적
+# 안내(message/clarification)를 이미 담고 있다. 사용자가 재입력(예: 쿠폰 '사용 여부')으로 풀 수 있어
+# needs_clarification 으로 다루고, 무관한 일반 조건 라벨('혜택 유형 조건' 등)이 아니라 그 안내를 노출한다.
+_UNSUPPORTED_INTENT_REASONS = frozenset({
+    "coupon_usage_count_filter_unsupported",
+    "coupon_usage_count_ranking_unsupported",
+    "coupon_usage_count_metric_comparison_unsupported",
+    "derived_metric_filter_unsupported",
+    "coupon_semantic_preservation_failed",
+})
+
+
 def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]) -> str:
     """검증 SQL 실패를 실패 유형별로 구체적으로 설명한다(어디서 왜 막혔는지 사용자가 알 수 있게)."""
     reason = sql_result.get("failure_reason")
     selected = sql_result.get("selected") or {}
     unsupported_labels = sql_result.get("unsupported_condition_labels", [])
+
+    # 명시적 미지원(쿠폰 건수/순위/비교/파생 등): 게이트가 만든 구체적 안내를 그대로 노출한다 — 무관한
+    # 일반 조건 라벨('혜택 유형 조건')로 덮어쓰지 않는다(_UNSUPPORTED_INTENT_REASONS).
+    if reason in _UNSUPPORTED_INTENT_REASONS:
+        unsupported = query_plan.get("unsupported") if isinstance(query_plan.get("unsupported"), dict) else {}
+        message = (unsupported.get("message") or "").strip()
+        clarification = (unsupported.get("clarification") or "").strip()
+        if message and clarification and clarification != message:
+            return f"{message} {clarification}"
+        return message or clarification or "요청하신 조건은 아직 실DB 타겟 추출로 지원되지 않습니다."
 
     if reason == "query_plan_required_conditions_missing":
         # 집합식/계산식/의미해석 중 무엇이 확정 안 됐는지 짚어 "어디서" 막혔는지 문구에도 반영한다.
@@ -9630,6 +9790,13 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
     "recognized_domain_unsupported": "condition_recognition",
     "query_plan_required_conditions_missing": "condition_recognition",
     "real_db_unsupported_conditions": "real_db_mapping",
+    # 명시적 미지원(쿠폰 건수/순위/비교/파생·의미보존 실패): 조건은 인식했으나 실DB 로 매핑 불가 —
+    # SQL 안전 검증/의미 검증이 아니라 '실DB 조건 매핑' 단계에서 막힌 것으로 스텝퍼에 정직하게 표시한다.
+    "coupon_usage_count_filter_unsupported": "real_db_mapping",
+    "coupon_usage_count_ranking_unsupported": "real_db_mapping",
+    "coupon_usage_count_metric_comparison_unsupported": "real_db_mapping",
+    "derived_metric_filter_unsupported": "real_db_mapping",
+    "coupon_semantic_preservation_failed": "real_db_mapping",
     "sql_guard_failed": "sql_safety_validation",
     "query_plan_conditions_missing": "condition_coverage",
     "query_plan_unmentioned_conditions_added": "condition_coverage",
@@ -9791,8 +9958,11 @@ def build_recommendation_api_response(
 def _api_status(sql_result: dict[str, Any]) -> str:
     if sql_result.get("is_success"):
         return "success"
-    # 의미 검증 게이트 차단은 '틀린 SQL' 이 아니라 '확인 필요' 다 — 재작성/입력 보완으로 풀 수 있다.
-    if sql_result.get("failure_reason") in ("query_plan_required_conditions_missing", "semantic_verification_failed"):
+    # 의미 검증 게이트 차단·명시적 미지원(쿠폰 건수/순위/비교/파생 등)은 '틀린 SQL' 이 아니라 '확인 필요' 다
+    # — 재작성/입력 보완(예: 쿠폰 '사용 여부')으로 풀 수 있어 needs_clarification 으로 안내한다.
+    if sql_result.get("failure_reason") in (
+        "query_plan_required_conditions_missing", "semantic_verification_failed",
+    ) or sql_result.get("failure_reason") in _UNSUPPORTED_INTENT_REASONS:
         return "needs_clarification"
     return "no_verified_sql"
 
@@ -10041,6 +10211,9 @@ def _sql_semantic_verify_system_prompt() -> str:
         "(또는 `AGE < N OR AGE > N+9`)로 나오는 게 정답이다 — 이걸 '20대만 뽑음'의 반대라 해서 inverted 로 보지 말라(오히려 `AGE BETWEEN 20 AND 29` 만 있으면 그게 반전이다). "
         "제외가 없는 순수 '~이상/이하/N대'는 그대로 방향/구간을 비교한다. "
         "**정확 연령**: '나이가 N세인'은 `AGE = N` 이고 `AGE >= N AND AGE <= N` 은 이와 **완전히 동일**하다(하·상한이 같은 점 범위) — 둘을 다르다고 inverted 로 보지 말라.\n"
+        "**연대 OR(합집합)**: '20대 또는 30대'처럼 여러 연대를 '또는/이거나'로 묶으면 인접 구간이 이어져 하나의 "
+        "범위가 된다 — '20대 또는 30대' → `AGE >= 20 AND AGE <= 39`(= BETWEEN 20 AND 39)가 **정답**이다. 이를 두고 "
+        "'20대·30대를 포함하지 않고 20~39로 잘못 반영됐다'거나 범위가 틀렸다며 inverted/wrong_value 로 보지 말라(동일 의미다).\n"
         "**도메인 인코딩 사전(원문 개념 → SQL 표현)**: 원문의 개념은 컬럼/테이블 이름이 원문 단어와 다르게 인코딩된다. "
         "아래 대응이 SQL 에 있으면 원문 조건이 **반영된 것(faithful)**으로 보고 dropped 로 판정하지 말라.\n"
         f"  · '장바구니에 담고 결제/구매 안 함(장바구니 이탈/방치)' → 카트 테이블({cart_table} 등) 조인 + 보관중 카트 `{keep_predicate}` "
@@ -10073,7 +10246,7 @@ def _verify_sql_semantics(
     반환 {ran, faithful, issues}. 게이트 비활성/LLM 불가/호출 실패면 ran=False 로 **통과(fail-open)** —
     검증기 자체 문제로 정상 SQL 을 막지 않는다. ran=True 이고 faithful=False 일 때만 호출자가 출고를 막는다.
     비결정적 LLM 이라 temperature=0 + '확신할 때만 불일치' 프롬프트로 오탐을 억제한다."""
-    llm_model = _fast_llm_model(llm_model)  # 의미검증도 빠르고 정확한 모델 고정(12s 타임아웃 방지)
+    llm_model = _semantic_verify_model(llm_model)  # 의미검증 전용 모델(OPENAI_SEMANTIC_VERIFY_MODEL, 미지정 시 fast)
     if not _sql_semantic_verify_enabled() or not llm_model or not os.getenv("OPENAI_API_KEY"):
         return {"ran": False}
     if not (isinstance(original_query, str) and original_query.strip() and isinstance(sql, str) and sql.strip()):
@@ -10115,6 +10288,85 @@ def _verify_sql_semantics(
     except Exception as exc:  # noqa: BLE001 - 게이트 실패는 치명적이지 않다(정상 SQL 통과 유지).
         _write_rag_llm_log("sql_semantic_verify_error", {"query": original_query, "error": str(exc)})
         return {"ran": False}
+
+
+# 극성(긍정↔부정) 반전을 뜻하는 부정/제외 표지. inverted 판정이 '진짜 극성 반전'인지, 아니면 정상적인
+# 결정론 변환(연령대→범위·수치 임계·값 확장)에 대한 오판인지 가르는 신호다. 부정 표지가 전혀 없는
+# '양의 조건'(예: '20대 또는 30대', '구매 횟수 5회 이상')은 뒤집을 극성 자체가 없어 inverted 가 성립하지 않는다.
+_NEGATION_CUE_RE = re.compile(
+    r"없|않|못[한했하받]|아닌|아니|제외|미사용|미구매|미접속|미반응|미결제|미가입|미방문|비동의|취소|해지|중단|"
+    r"안\s*[한함했하샀]|\bNOT\b",
+    re.IGNORECASE,
+)
+
+
+def _is_noncredible_inverted_verdict(issue: dict[str, Any]) -> bool:
+    """LLM 의미검증의 inverted 판정이 '극성이 없는 양의 조건'을 가리키면 True(→ 차단 면제, 자문만).
+
+    inverted(의미 반전)는 긍정↔부정 극성이 뒤집힌 경우('구매 이력이 없는'인데 EXISTS 로 반영)에만 성립한다.
+    그런데 판정 모델(경량 LLM)이 값 산술·구조를 자주 틀려, 결정론적으로 '옳게' 컴파일된 양의 조건까지
+    inverted 로 오판한다: 연령대→AGE 범위('20대 또는 30대'→20~39), 수치 임계('5회 이상'→HAVING >=5),
+    등급/권역 값 확장 등. 이들은 뒤집을 부정 극성 자체가 없으므로 inverted 가 논리적으로 성립하지 않는다.
+    그래서 원문 표현에 부정/제외 표지(_NEGATION_CUE_RE)가 있을 때만 inverted 를 차단 사유로 인정하고,
+    없으면 비차단 자문으로 강등한다(값/구조 정확성은 결정론 컴파일러·커버리지 검증이 소유 — dropped/
+    wrong_value/spurious 를 비차단으로 두는 원칙의 연장). 진짜 반전('없는'→EXISTS)은 표지가 있어 계속 차단된다."""
+    condition = str(issue.get("condition") or "")
+    detail = str(issue.get("detail") or "")
+    # 원문 조건 표현에 부정/제외 표지가 있으면 진짜 극성 반전일 수 있어 차단 유지(신뢰). detail 은 판정
+    # 모델이 쓴 설명이라 '부정형으로 해석' 같은 표현이 섞여 오탐하므로, 원문 표현(condition)만 신뢰한다.
+    if _NEGATION_CUE_RE.search(condition):
+        return False
+    # condition 이 비었으면 detail 로라도 극성 단서를 본다(단, 여기 걸리면 보수적으로 차단 유지).
+    if not condition.strip() and _NEGATION_CUE_RE.search(detail):
+        return False
+    return True
+
+
+def _infer_requirement_base(query_plan: dict[str, Any], sql: str | None) -> tuple[str, str]:
+    """qualifier(브랜드/상품/카테고리 등)가 붙는 '주 조건(base)'을 plan/SQL 에서 추론한다 → (base_name, base_type).
+
+    공통 requirement 회계에서 base×qualifier capability 를 조회할 키다. 장바구니는 브랜드/상품 qualifier 를
+    지원 못 하고(unsupported) 구매는 지원(join_product_brand)하는 식으로 도메인 차이가 갈린다. SQL 이 카트
+    테이블(KEEP_YN)을 쓰면 카트 문맥으로 확정(LLM plan 이 슬롯을 안 채워도 안전)하고, 아니면 plan 슬롯으로 본다."""
+    cart_config = _cart_targets_registry()
+    cart_table = str(cart_config.get("table") or "ODS_MALL_OMS_CART")
+    if sql and cart_table in sql:
+        return ("cart_retention", "behavior")
+    target_user = query_plan.get("target_user", {}) if isinstance(query_plan.get("target_user"), dict) else {}
+    domains = query_plan.get("recognized_domains") or []
+    dom_names = {(d.get("name") if isinstance(d, dict) else d) for d in domains}
+    behaviors = set(target_user.get("behaviors") or [])
+    if ("cart" in dom_names or target_user.get("cart_retention") or target_user.get("cart_aggregate")
+            or target_user.get("cart_type") or target_user.get("cart_absence") or "cart_abandoner" in behaviors):
+        return ("cart_retention", "behavior")
+    if target_user.get("coupon_usage_thresholds") or any(
+        isinstance(r, dict) and "coupon" in str(r.get("canonical", ""))
+        for r in (target_user.get("campaign_responses") or [])
+    ):
+        return ("coupon", "behavior")
+    if isinstance(target_user.get("recent_login"), dict) or isinstance(target_user.get("inactivity_period"), dict):
+        return ("login", "behavior")
+    # 그 외(구매/집계/속성)는 구매 문맥이 브랜드/상품 qualifier 의 자연스러운 소유처다.
+    return ("purchase", "behavior")
+
+
+def _account_source_requirements(
+    original_query: str, query_plan: dict[str, Any], sql: str | None,
+    selected: dict[str, Any] | None = None,
+) -> "semantic_requirements.RequirementAccounting | None":
+    """원문의 조건을 source requirement 로 기록하고 base×qualifier capability + 반영 evidence 로 귀결시킨다.
+
+    브랜드 전용 감지기 대신 공통 계층: 모든 qualifier requirement 가 compiled/unsupported/clarification 로
+    귀결됐는지 회계한다. 미지원 조합(장바구니+상품 등)은 unsupported(+안내), 지원인데 반영 근거 없으면
+    clarification(사일런트 드롭). 반영 확인은 선택 후보의 구조화 evidence(applied_requirements) 우선, SQL
+    문자열 폴백 — 코드 치환·canonical 보정에도 정상 컴파일을 누락으로 오탐하지 않는다. 레지스트리 부재 시 None."""
+    if _REQUIREMENT_REGISTRY is None or not sql:
+        return None
+    base_name, base_type = _infer_requirement_base(query_plan, sql)
+    applied = selected.get("applied_requirements") if isinstance(selected, dict) else None
+    return semantic_requirements.account_requirements(
+        original_query, base_name, base_type, sql, _REQUIREMENT_REGISTRY, applied_requirements=applied
+    )
 
 
 def _semantic_verification_clarifications(issues: list[dict[str, Any]]) -> list[str]:
@@ -10308,8 +10560,16 @@ def build_sql_result(
 
     # 2티어 폴백: 결정론 템플릿/조합 빌더가 후보를 못 만든 타겟팅 질의만 LLM 생성으로 시도한다.
     # 생성 SQL 도 아래 루프에서 템플릿과 동일한 가드 스택으로 검증되며, 실패하면 기존 거절 흐름 유지.
+    # 단, 명시적 미지원(plan['unsupported'])으로 후보가 없어진 경우엔 LLM 폴백을 시도하지 않는다 — 그러면
+    # LLM 이 '그럴듯하지만 틀린' SQL(예: 쿠폰 건수 임계를 USE_CPN_CNT>0 존재로 축소)을 지어내 의미 검증에서
+    # inverted/불일치로 떨어지는 '혼합/실패' 잡음이 생긴다. 미지원은 깔끔한 unsupported 응답으로 끝낸다.
     llm_fallback_used = False
-    if not candidates and llm_model and query_plan.get("intent") in ("recommend_campaign", "find_user_segment"):
+    if (
+        not candidates
+        and not query_plan.get("unsupported")
+        and llm_model
+        and query_plan.get("intent") in ("recommend_campaign", "find_user_segment")
+    ):
         llm_candidate = _build_llm_sql_fallback_candidate(
             query, query_plan, context_nodes, allowed_tables, llm_model, schema_path=schema_path
         )
@@ -10419,26 +10679,39 @@ def build_sql_result(
     # 의미 검증에서 차단돼 출고(sql=None)되지 않더라도, "무엇이 생성됐는지" 확인용으로 원본 SQL 을 보존한다.
     # 실행은 sql(=None)로만 하므로 blocked_sql 은 화면 표시 전용 — 차단된 SQL 이 자동 실행되는 일은 없다.
     blocked_sql: str | None = None
+    sql_result_requirements: list[dict[str, Any]] = []  # 공통 requirement 회계 결과(트레이스·디버깅 노출)
     if selected_sql is not None:
         semantic_verification = _verify_sql_semantics(original_query or query, selected_sql, llm_model, prompt_dir)
+        # 차단은 극성(inverted) 오류에만 한다 — 긍정↔부정 뒤집힘은 판정 모델이 비교적 신뢰할 수 있는 축.
+        # dropped(누락)는 LLM 판정으로는 차단하지 않는다: 판정 모델이 도메인 인코딩(장바구니 이탈=KEEP_YN='Y',
+        # 미접속=LAST_LOGIN_DATE<=과거, 미구매=NOT EXISTS 등)을 원문 단어와 대응시키지 못해 정상 SQL 을 '누락'으로
+        # 오판하는 오탐이 잦고, 반대로 진짜 누락을 실행마다 놓치기도 하기 때문(비결정). wrong_value/spurious 도
+        # 비차단(값 정확성=결정론 컴파일러 소유). → LLM 게이트는 inverted 만 차단, 나머지는 자문으로만 남긴다.
+        blocking_issues = []
         if semantic_verification.get("ran") and not semantic_verification.get("faithful"):
-            # 차단은 극성(inverted) 오류에만 한다 — 긍정↔부정 뒤집힘은 판정 모델이 비교적 신뢰할 수 있는 축.
-            # dropped(누락)는 차단하지 않는다: 판정 모델이 도메인 인코딩(장바구니 이탈=KEEP_YN='Y', 미접속=
-            # LAST_LOGIN_DATE<=과거, 미구매=NOT EXISTS 등)을 원문 단어와 대응시키지 못해 정상 SQL 을 '누락'으로
-            # 오판하는 오탐이 잦기 때문. 진짜 누락은 결정론 감지기(_deterministic_dropped_conditions)와 커버리지
-            # 검증이 이미 소유한다. wrong_value/spurious 도 마찬가지로 비차단(값 정확성=결정론 컴파일러 소유).
-            # → LLM 게이트는 inverted 만 차단하고, 나머지 유형은 자문으로만 응답(semantic_verification.issues)에 남긴다.
             blocking_issues = [
                 issue for issue in semantic_verification.get("issues", [])
                 if issue.get("type") == "inverted"
+                and not _is_noncredible_inverted_verdict(issue)
             ]
-            if blocking_issues:
-                failure_reason = "semantic_verification_failed"
-                clarification_questions = _semantic_verification_clarifications(blocking_issues)
-                blocked_sql = selected_sql  # 표시용 보존(출고는 막되 무엇이 생성됐는지 노출)
-                selected_sql = None
-                target_connection = None
-                target_dialect = None
+        # 공통 semantic requirement 회계(브랜드 전용 감지기 대체): 원문 조건을 source requirement 로 기록하고
+        # base×qualifier capability + SQL 반영 여부로 귀결한다. 미지원 조합(장바구니+브랜드 등)은 unsupported,
+        # 지원인데 SQL 에 없으면 clarification(사일런트 드롭). 하나라도 terminal 로 귀결 못 하거나 차단 상태면
+        # needs_clarification 로 승격 — 명시 조건이 조용히 빠진 채 '성공'으로 나가는 부분추출을 막는다. 결정론
+        # 이라 LLM 판정에 의존하지 않는다.
+        requirement_accounting = _account_source_requirements(original_query or query, query_plan, selected_sql, selected)
+        requirement_blocking = requirement_accounting.blocking() if requirement_accounting else []
+        if requirement_accounting is not None:
+            sql_result_requirements = requirement_accounting.to_list()
+        if blocking_issues or requirement_blocking:
+            failure_reason = "semantic_verification_failed"
+            clarification_questions = _semantic_verification_clarifications(blocking_issues) + _unique_strings(
+                [req.message for req in requirement_blocking if req.message]
+            )
+            blocked_sql = selected_sql  # 표시용 보존(출고는 막되 무엇이 생성됐는지 노출)
+            selected_sql = None
+            target_connection = None
+            target_dialect = None
 
     # 명시적 미지원 표현(예: 주문 집계 지표의 '평균 대비' 비교): 조용한 빈결과/오답 대신 unsupported_reason 과
     # clarification 을 명시 응답한다. 결정론 게이트(_apply_unsupported_intent_gate)가 plan 에 표시해 둔다.
@@ -10505,6 +10778,8 @@ def build_sql_result(
         "clarification_questions": clarification_questions,
         # 의미 검증 게이트 판정(트레이스/디버깅용): {ran, faithful, issues}. ran=False 면 게이트 미실행.
         "semantic_verification": semantic_verification,
+        # 공통 semantic requirement 회계(트레이스/디버깅용): 원문 조건별 귀결(compiled/unsupported/clarification).
+        "source_requirements": sql_result_requirements,
         # 결정론 의미 보존 불변식(SQL 생성 시 항상 실행): {ran, ok, issues}. LLM 게이트와 독립.
         "semantic_invariants": semantic_invariants,
         # 쿼리 성능 튜닝 자문(비차단): {findings, recommended_indexes}. 출고 SQL 이 없으면 빈 결과.
@@ -11406,6 +11681,15 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
         )
         candidate = _select_ast_candidate("sql_template:cart_dimension_targets", "장바구니 상품브랜드 타겟팅 SQL 템플릿", 1.0, ast, "sql_template")
         _attach_cart_dropped_conditions(candidate, query_plan, compiled)
+        # 구조화 evidence: 검증기가 SQL 문자열(코드 'A')이 아니라 이 evidence 로 브랜드 반영을 확인한다
+        # (dimension 코드 치환으로 원문 값 'CJ제일제당'은 SQL 에 없으므로 문자열 검사로는 오탐).
+        candidate["applied_requirements"] = [{
+            "base": "cart_retention", "qualifier": "brand", "values": list(brand_filter["codes"]),
+            "strategy": "join_product_dimension", "join_path": "cart_to_product",
+            "filter_field": column_short, "filter_expression": f"C.{column_short} {operator} ({in_list})",
+            "resolved_via": "code",
+            "source_values": [str(brand_filter.get("name") or n) for n in brand_filter.get("names", [])] or None,
+        }]
         return candidate
     if _should_use_cart_repurchase_template(query_plan):
         # 타겟은 "장바구니에 담고 아직 결제 안 함"(카트 이탈)뿐 — KEEP_YN='Y'가 미결제 보관 상태를 표현한다.
@@ -11415,6 +11699,13 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
         # 회원 속성이 함께 오면 형제 빌더와 동일하게 B 술어로 AND 결합한다(조용한 누락 방지).
         compiled = compile_member_target_conditions(query_plan)
         objective = query_plan.get("campaign_constraints", {}).get("objective")
+        # 하이브리드 폴백: dimension 코드로 못 잡힌 브랜드명은 CART→CRM_CM_PRODUCT 조인 + BRAND_NAME LIKE
+        # (구매 경로와 동일 표현)로 거른다. 없으면 상품 조인을 붙이지 않아 기존 출력과 바이트 동일.
+        brand_names = _cart_brand_name_qualifier(query_plan)
+        brand_cf = compiler_strategies.compile_product_dimension_filter(
+            base="cart_retention", qualifier="brand", product_alias="C",
+            name_field="BRAND_NAME", name_values=brand_names, join_path="cart_to_product",
+        ) if brand_names else None
         select_columns = [_member_key_select(), _sql_quote(_cart_segment_label(query_plan)) + " AS target_segment"]
         if objective:
             select_columns.append(_sql_quote(objective) + " AS objective")
@@ -11422,6 +11713,7 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
             *_cart_keep_predicates(query_plan),
             *_cart_retention_predicates(query_plan),
             *_cart_type_predicates(query_plan),
+            *([brand_cf.filter_expression] if brand_cf else []),
             *compiled["predicates"],
         ]
         if not compiled["forces_state"]:
@@ -11429,18 +11721,22 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
         ast = SelectAst(
             distinct=True,
             columns=select_columns,
-            from_lines=_cart_from_join_lines("A"),
+            from_lines=_cart_from_join_lines("A", product_alias="C" if brand_cf else None),
             where=_unique_strings(where_clauses),
         )
         # 제목은 실제로 건 조건을 따른다 — 유형만 물은 오디언스에 '미결제'라고 적으면 걸지도 않은
         # KEEP_YN 조건을 건 것처럼 읽힌다.
         title = (
-            "장바구니 미결제 재구매 유도 SQL 템플릿(CRMDW)"
+            "장바구니 상품브랜드 타겟팅 SQL 템플릿"
+            if brand_cf
+            else "장바구니 미결제 재구매 유도 SQL 템플릿(CRMDW)"
             if _cart_is_unpaid_only(query_plan)
             else "장바구니 유형(정기배송 등) 타겟 SQL 템플릿(CRMDW)"
         )
         candidate = _select_ast_candidate("sql_template:cart_repurchase_targets", title, 1.0, ast, "sql_template")
         _attach_cart_dropped_conditions(candidate, query_plan, compiled)
+        if brand_cf:
+            candidate["applied_requirements"] = [brand_cf.to_evidence()]
         return candidate
     return None
 
@@ -11504,9 +11800,29 @@ def _sql_target_builders() -> tuple[Any, ...]:
     return tuple(builder for builder, _owned in _sql_target_builder_registry())
 
 
+def _guard_coupon_semantic_preservation(query_plan: dict[str, Any]) -> None:
+    """추출된 쿠폰 의미 노드가 SQL 생성 전까지 보존됐는지 검증한다(silent semantic degradation 방지).
+
+    미지원(_gated)으로 판정된 노드가 있는데 plan 이 미지원으로 표시돼 있지 않으면, 임계값/분모/비교대상 등
+    필수 의미가 조용히 사라진 상태다 — fail-close 로 plan 을 미지원 처리해 그럴듯한 오답 SQL 출고를 막는다.
+    지원되는 노드(사용 여부·컴파일 가능한 건수 임계)는 정상 컴파일되므로 검증 대상이 아니다."""
+    if query_plan.get("unsupported"):
+        return
+    for node in query_plan.get("_coupon_ir", []):
+        if node.get("_gated"):
+            query_plan["unsupported"] = {
+                "reason": "coupon_semantic_preservation_failed",
+                "message": "쿠폰 조건의 필수 의미(임계값/범위/비교대상/파생식)가 SQL 생성 전에 소실됐습니다.",
+                "clarification": "쿠폰 사용 '여부'(사용/미사용)로 지정하시거나 조건을 나눠 다시 입력해 주시겠어요?",
+            }
+            return
+
+
 def build_sql_template_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     if query_plan.get("intent") not in _SQL_TARGET_INTENTS:
         return None
+    # 쿠폰 의미 보존 검증: 미지원 쿠폰 의미가 조용히 SQL 로 축소되지 않게 마지막 방어선(fail-close).
+    _guard_coupon_semantic_preservation(query_plan)
     # 미지원으로 명시된 질의는 어떤 빌더로도 폴백하지 않는다 — 그럴듯한 오답/빈결과 대신 명시 미지원 응답.
     if isinstance(query_plan.get("unsupported"), dict):
         return None
@@ -11744,6 +12060,14 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
             )
         )
         labels.append(str(response.get("canonical") or "campaign_response")); has_signal = True
+
+    # 쿠폰 사용 '건수' 임계(≥2·>5·범위 등): 회원별 SUM(USE_CPN_CNT) HAVING 집계를 회원키 IN 서브쿼리로
+    # 컴파일한다(사용 '여부'는 위 campaign_responses EXISTS 가 담당). 다른 회원 조건과 AND 결합된다.
+    for threshold in target_user.get("coupon_usage_thresholds", []) or []:
+        predicate = _coupon_usage_threshold_predicate(threshold) if isinstance(threshold, dict) else None
+        if predicate:
+            other_predicates.append(predicate)
+            labels.append("coupon_usage_count"); has_signal = True
 
     # 장바구니 부재('장바구니 없는/생성 안 한'): 보관(KEEP_YN='Y') 카트 라인이 없는 회원. 회원키
     # NOT EXISTS 라 캠페인 반응과 같이 어느 빌더에나 AND 결합된다. 구매 부재(no_purchase)와 함께 오면
@@ -12904,6 +13228,46 @@ def _campaign_response_exists_predicate(predicate: str, negated: bool = False, s
     return f"{prefix}EXISTS (SELECT 1 FROM {table} {alias} WHERE {left} = {right} AND {predicate})"
 
 
+_COUPON_THRESHOLD_OP_SQL = {"eq": "=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+
+
+def _fmt_threshold_number(value: Any) -> str:
+    """임계값을 SQL 리터럴로. 정수면 소수점 없이(3.0→3), 아니면 그대로."""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _coupon_usage_threshold_predicate(threshold: dict[str, Any]) -> str | None:
+    """쿠폰 사용 '건수' 임계를 회원별 SUM(USE_CPN_CNT) HAVING 집계의 회원키 IN 서브쿼리로 컴파일한다.
+
+    USE_CPN_CNT 는 반응 팩트(MCS_CAMP_MBR_RSPN_FT)에 회원×캠페인 행 단위로 있어, 회원별 '총 사용 건수'는
+    MBR_NO 로 묶어 SUM 해야 한다. 조인키 MBR_NO(varchar)↔MEMBER_NO(bigint)는 캐스트(TRY_CAST)로 타입
+    불일치 가드를 통과한다. IN 서브쿼리라 다른 회원 조건과 그대로 AND 결합된다."""
+    config = _MEMBER_TARGET_FILTERS.get("campaign_response_targets", {})
+    table = config.get("table", "MCS_CAMP_MBR_RSPN_FT")
+    alias = config.get("alias", "R")
+    member_col = config.get("member_column", "MBR_NO")
+    join = config.get("member_join", {}) if isinstance(config.get("member_join"), dict) else {}
+    left = join.get("left", _member_dialect().cast_bigint(f"{alias}.{member_col}"))
+    right = join.get("right", "B.MEMBER_NO")
+    agg = f"SUM(COALESCE({alias}.USE_CPN_CNT, 0))"
+    operator = threshold.get("operator")
+    if operator == "between":
+        lo, hi = threshold.get("min_value"), threshold.get("max_value")
+        if lo is None or hi is None:
+            return None
+        having = f"{agg} >= {_fmt_threshold_number(lo)} AND {agg} <= {_fmt_threshold_number(hi)}"
+    else:
+        sql_op = _COUPON_THRESHOLD_OP_SQL.get(str(operator))
+        value = threshold.get("value")
+        if sql_op is None or value is None:
+            return None
+        having = f"{agg} {sql_op} {_fmt_threshold_number(value)}"
+    return (f"{right} IN (SELECT {left} FROM {table} {alias} "
+            f"WHERE {alias}.{member_col} IS NOT NULL GROUP BY {alias}.{member_col} HAVING {having})")
+
+
 def build_campaign_response_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     """'캠페인 접촉/오퍼·구매 반응/쿠폰 사용' 회원을 캠페인 반응 팩트(MCS_CAMP_MBR_RSPN_FT)로 추출한다.
 
@@ -12915,7 +13279,10 @@ def build_campaign_response_targets_sql_candidate(query_plan: dict[str, Any]) ->
     남던 버그 방지). 그런 팩트 신호가 없을 때만 여기서 잡아 세그먼트 라벨을 캠페인 반응 기준으로 붙인다."""
     target_user = query_plan.get("target_user", {})
     responses = target_user.get("campaign_responses")
-    if not isinstance(responses, list) or not responses:
+    thresholds = target_user.get("coupon_usage_thresholds")
+    has_responses = isinstance(responses, list) and bool(responses)
+    has_thresholds = isinstance(thresholds, list) and bool(thresholds)
+    if not has_responses and not has_thresholds:
         return None
     # 전용 팩트조인 빌더 소유 조건(spec.fact_join — 주문횟수/집계/랭킹/카트/반응횟수 등)이 있으면
     # 그 빌더에 양보한다(defer 목록을 조건 IR 레지스트리에서 파생 — 수작업 나열 제거).
@@ -12930,9 +13297,11 @@ def build_campaign_response_targets_sql_candidate(query_plan: dict[str, Any]) ->
         return None
     labels = [
         str(response.get("canonical") or "campaign_response")
-        for response in responses
+        for response in (responses or [])
         if isinstance(response, dict) and response.get("predicate")
     ]
+    if has_thresholds:
+        labels.append("coupon_usage_count")  # 쿠폰 사용 건수 임계(회원키 IN 서브쿼리로 compiled 에 포함)
     if not labels:
         return None
     compiled = compile_member_target_conditions(query_plan)
@@ -13635,7 +14004,10 @@ def _apply_logical_expression(original_query: str, query_plan: dict[str, Any], n
     기존 경로에 맡긴다. 파싱/컴파일/검증 실패는 plan['unsupported'] 로 **fail-close** — AND-only 폴백 금지."""
     if not _logical_or_compiler_enabled() or query_plan.get("union_condition"):
         return
-    audience_text = re.split(r"(?:을|를)?\s*대상으로", original_query, maxsplit=1)[0].strip() or original_query
+    # BFF 가 붙인 "발송 채널: RCS (리치 메시지, …)" 접미어를 먼저 뗀다 — 그 괄호가 논리식 파서에 들어가면
+    # 괄호 불균형으로 logical_expression_parse_failed 가 난다(채널 절은 오디언스 조건이 아니다).
+    audience_text = _split_channel_suffix(original_query)[0] or original_query
+    audience_text = re.split(r"(?:을|를)?\s*대상으로", audience_text, maxsplit=1)[0].strip() or audience_text
     audience_text = _LOGIC_TAIL_RE.sub("", audience_text).strip() or audience_text
     if _LOGIC_OR_RE.search(audience_text) is None:
         return  # OR 없음 → 논리식 컴파일 대상 아님(순수 AND 은 기존 경로)
@@ -14618,59 +14990,77 @@ def _format_captured_prompt(captured: Any, cap: int = 2500) -> list[str]:
 # 근거로 그 단계가 동작하는지 사용자가 바로 알 수 있게. (정적 매핑 — 실제 로딩 경로는 코드 주석 참고.)
 _TRACE_STAGE_REFS: dict[int, tuple[dict[str, str], ...]] = {
     1: (
-        {"kind": "프롬프트", "name": "prompt_normalize_system.txt"},
+        # 기본 style="targeting" 은 재작성 프롬프트를, conservative 모드만 정규화 프롬프트를 쓴다(normalize_prompt).
         {"kind": "프롬프트", "name": "prompt_rewrite_system.txt"},
-        {"kind": "데이터", "name": "normalization_rules.sample.json"},
+        {"kind": "프롬프트", "name": "prompt_normalize_system.txt (보수 모드)"},
         {"kind": "모델", "name": "{model}"},
     ),
     2: (
         {"kind": "프롬프트", "name": "prompt_scope_split_system.txt"},
+        # 대상 방향 표지·채널 신호어를 어휘 사전에서 읽어 절을 나눈다(split_prompt_scopes).
+        {"kind": "데이터", "name": "targeting_lexicon.json"},
         {"kind": "모델", "name": "{model}"},
     ),
     3: (
         {"kind": "프롬프트", "name": "query_plan_system.txt"},
         {"kind": "프롬프트", "name": "query_plan_examples.txt"},
         {"kind": "프롬프트", "name": "query_plan_user.txt"},
+        # 규칙 계획(_build_rule_query_plan)이 항상 로딩: 정규화 사전·업무정책·어휘/속성 사전·지표 사전·스키마.
+        {"kind": "데이터", "name": "normalization_rules.sample.json"},
+        {"kind": "데이터", "name": "business_policies.sample.json"},
         {"kind": "데이터", "name": "targeting_lexicon.json"},
+        {"kind": "데이터", "name": "attribute_token_groups.json"},
+        {"kind": "데이터", "name": "member_metrics.json"},
         {"kind": "데이터", "name": "metric_lexicon.sample.json"},
         {"kind": "데이터", "name": "schema_catalog.json"},
         {"kind": "모델", "name": "{model} (tool calling)"},
     ),
     4: (
         {"kind": "프롬프트", "name": "target_object_extract_system.txt"},
-        {"kind": "데이터", "name": "schema_catalog.json"},
-        {"kind": "데이터", "name": "member_metrics.json"},
+        # 구매이력·판매 동사 신호로 LLM 추출을 게이팅한다(정규식이 놓친 경우만 폴백).
+        {"kind": "데이터", "name": "targeting_lexicon.json"},
         {"kind": "모델", "name": "{model} (폴백)"},
     ),
     5: (
         {"kind": "데이터", "name": "dimension_catalog.sample.json"},
         {"kind": "데이터", "name": "member_value_index.json"},
         {"kind": "데이터", "name": "member_target_filters.json"},
+        # 디멘션 DS_SQL 을 실DB 에서 실행해 이름→코드로 값을 해석한다(런타임 조회).
+        {"kind": "인프라", "name": "실DB (DS_SQL 값 조회)"},
     ),
     6: (
         {"kind": "데이터", "name": "normalization_rules.sample.json"},
+        {"kind": "코드", "name": "set_expression_engine.py"},
+        {"kind": "코드", "name": "logical_expression.py"},
     ),
     7: (
-        {"kind": "데이터", "name": "rag_knowledge_base.json"},
-        {"kind": "데이터", "name": "sql_examples.sample.sql"},
+        # rag_knowledge_base·sql_examples 는 적재(빌드) 시 Qdrant/그래프로 들어간다 — 검색 단계는 그 인덱스를 조회.
+        {"kind": "데이터", "name": "rag_knowledge_base.json (적재시)"},
+        {"kind": "데이터", "name": "sql_examples.sample.sql (적재시)"},
         {"kind": "모델", "name": "{embed_model}"},
-        {"kind": "인프라", "name": "Qdrant"},
+        {"kind": "인프라", "name": "Qdrant + 인메모리 그래프"},
     ),
     8: (
         {"kind": "코드", "name": "sql_ast.py (SelectAst)"},
         {"kind": "코드", "name": "조건빌더 build_*_sql_candidate"},
         {"kind": "데이터", "name": "schema_catalog.json"},
         {"kind": "데이터", "name": "member_target_filters.json"},
+        {"kind": "데이터", "name": "member_metrics.json"},
+        # 수치 지표 측정단위는 지표 레지스트리(docs/data/metrics/*.json)에서 읽는다(metric_registry).
+        {"kind": "데이터", "name": "docs/data/metrics/*.json"},
         {"kind": "프롬프트", "name": "(LLM 폴백 인라인)"},
         {"kind": "모델", "name": "{model} (폴백)"},
     ),
     9: (
         {"kind": "데이터", "name": "schema_catalog.json"},
+        # 의미검증 시스템 프롬프트는 member_target_filters.json(컬럼·코드·팩트테이블)에서 렌더된다.
+        {"kind": "데이터", "name": "member_target_filters.json"},
         {"kind": "프롬프트", "name": "(의미검증 인라인)"},
         {"kind": "모델", "name": "{model} (의미검증)"},
     ),
     10: (
-        {"kind": "데이터", "name": "schema_catalog.json (커넥션 판별)"},
+        # 커넥션은 8단계(infer_target_connection)에서 이미 확정 — 실행은 커넥션 어댑터로 실DB 를 읽는다.
+        {"kind": "코드", "name": "db_connections.py (run_read_query / psycopg)"},
     ),
 }
 
@@ -14683,7 +15073,13 @@ def _trace_stage_shell(step: int, name: str, tech_name: str, method: str, status
         # 경량 단계(1·2·4·9)는 fast 모델(gpt-4o-mini)로, 나머지 LLM 단계는 메인 모델로 표기 —
         # 실제 호출 라우팅(_fast_llm_model)과 배지를 일치시킨다.
         main_model = os.getenv("OPENAI_MODEL") or DEFAULT_LLM_MODEL
-        model = (os.getenv("OPENAI_FAST_MODEL") or "gpt-4o-mini") if step in _TRACE_FAST_MODEL_STEPS else main_model
+        if step == _TRACE_SEMANTIC_VERIFY_STEP:
+            # 9단계 의미검증은 전용 override(OPENAI_SEMANTIC_VERIFY_MODEL) 가 있으면 그걸, 없으면 fast 모델.
+            model = os.getenv("OPENAI_SEMANTIC_VERIFY_MODEL") or os.getenv("OPENAI_FAST_MODEL") or "gpt-4o-mini"
+        elif step in _TRACE_FAST_MODEL_STEPS:
+            model = os.getenv("OPENAI_FAST_MODEL") or "gpt-4o-mini"
+        else:
+            model = main_model
         embed_model = os.getenv("QDRANT_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL
         shell["refs"] = [
             {**ref, "name": ref["name"].replace("{model}", model).replace("{embed_model}", embed_model)}
@@ -15006,13 +15402,17 @@ def apply_execution_to_trace(trace: dict[str, Any], execution: dict[str, Any]) -
     targeting_result = execution.get("targeting_result", {}) or {}
     count = targeting_result.get("target_customer_count")
     ok = execution.get("is_success")
+    # 실행할 SQL 이 없어(미지원/needs_clarification 로 sql=None) 또는 요청이 실행을 끈 경우는 '실패' 가
+    # 아니라 '생략(skipped)' 이다 — 앞 단계에서 이미 막혀 실행에 도달하지 않은 것을 빨간 '실행 실패' 로
+    # 표시하면 오해를 준다(mode='skipped').
+    skipped = execution.get("mode") == "skipped"
     for stage in trace.get("stages", []):
         if stage.get("step") != 10:
             continue
-        stage["status"] = "ok" if ok else "fail"
+        stage["status"] = "ok" if ok else ("skipped" if skipped else "fail")
         stage["summary"] = (
             f"대상 {count:,}명" if isinstance(count, int)
-            else ("실행 성공" if ok else "실행 실패")
+            else ("실행 성공" if ok else ("실행 생략(생성된 SQL 없음)" if skipped else "실행 실패"))
         )
         details = []
         if targeting_result.get("result_row_count") is not None:

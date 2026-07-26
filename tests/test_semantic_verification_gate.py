@@ -118,6 +118,78 @@ def test_gate_blocks_on_inverted_even_with_value_issue():
     assert not any("GOLD" in q for q in res["clarification_questions"])
 
 
+# ── 연령대 결정론 변환은 LLM inverted 판정으로 차단하지 않는다(값 산술 오판 면제) ──────────
+AGE_OR_QUERY = "20대 또는 30대이면서 구매 횟수가 5회 이상인 회원을 찾아줘."
+
+
+def test_gate_does_not_block_deterministic_age_range_inversion():
+    # '20대 또는 30대'→AGE 20~39 는 파서가 결정론적으로 옳게 변환한다. 판정 모델이 이를 inverted 로
+    # 오판해도(값 산술 실수) 차단하지 않는다 — 정상 SQL 을 막는 오탐 방지. (사용자 보고 사례 회귀.)
+    verdict = {"ran": True, "faithful": False, "issues": [
+        {"type": "inverted", "condition": "20대 또는 30대",
+         "detail": "SQL에서 20세 이상 39세 이하로 잘못 반영됨"}]}
+    res = _result(AGE_OR_QUERY, verdict)
+    assert res["is_success"] is True, res.get("failure_reason")
+    assert res["sql"] and "AGE >= 20" in res["sql"] and "AGE <= 39" in res["sql"]
+    assert res["failure_reason"] is None
+    # 판정은 자문으로 남는다(디버깅·튜닝용) — 출고만 막지 않는다.
+    assert res["semantic_verification"]["issues"]
+
+
+def test_gate_does_not_block_positive_threshold_inversion():
+    # '구매 횟수가 5회 이상'(양의 임계 → HAVING >=5)을 판정 모델이 '부정형으로 해석'이라며 inverted 로
+    # 오판해도 차단하지 않는다 — 뒤집을 부정 극성이 없는 양의 조건이라 inverted 가 성립하지 않는다.
+    verdict = {"ran": True, "faithful": False, "issues": [
+        {"type": "inverted", "condition": "구매 횟수가 5회 이상",
+         "detail": "서브쿼리로 잘못 반영되어 부정형으로 해석됨"}]}
+    res = _result(AGE_OR_QUERY, verdict)
+    assert res["is_success"] is True, res.get("failure_reason")
+    assert res["failure_reason"] is None
+
+
+def test_gate_still_blocks_real_polarity_inversion():
+    # 회귀: 부정/제외 표지가 있는 진짜 극성 반전은 여전히 차단한다(면제는 '양의 조건' 한정).
+    for cond in ["구매하지 않은", "구매 이력이 없는", "미접속", "블랙리스트가 아닌"]:
+        verdict = {"ran": True, "faithful": False, "issues": [
+            {"type": "inverted", "condition": cond, "detail": "극성 뒤집힘"}]}
+        res = _result(AGE_OR_QUERY, verdict)
+        assert res["is_success"] is False, cond
+        assert res["failure_reason"] == "semantic_verification_failed", cond
+
+
+# ── 공통 requirement 회계로 사일런트 드롭 승격(브랜드 전용 감지기 대체) ──────────────────────
+def test_gate_escalates_when_requirement_unresolved(monkeypatch):
+    # 공통 requirement 계층이 차단 requirement(unsupported/clarification)를 돌려주면 게이트가
+    # needs_clarification 로 승격하는지 배선 검증(회계 로직 자체는 tests/test_semantic_requirements.py).
+    import semantic_requirements as sr
+    blocking = sr.SourceRequirement(
+        id="req_1", type="qualified_condition", base={"type": "behavior", "name": "cart_retention"},
+        qualifiers=[sr.Qualifier(type="entity", domain="brand", raw_value="CJ제일제당")],
+        status="unsupported", message="현재 장바구니 조건에는 브랜드 필터를 함께 적용할 수 없습니다.")
+    monkeypatch.setattr(g, "_account_source_requirements",
+                        lambda *a, **k: sr.RequirementAccounting(requirements=[blocking]))
+    res = _result(SUPPORTED, {"ran": True, "faithful": True, "issues": []})
+    assert res["is_success"] is False
+    assert res["sql"] is None and res["blocked_sql"]
+    assert res["failure_reason"] == "semantic_verification_failed"
+    assert any("브랜드" in q for q in res["clarification_questions"])
+    assert g._api_status(res) == "needs_clarification"
+    # 회계 결과는 응답에 노출된다(트레이스/디버깅).
+    assert res["source_requirements"] and res["source_requirements"][0]["status"] == "unsupported"
+
+
+def test_gate_success_when_all_requirements_resolved(monkeypatch):
+    # 모든 requirement 가 compiled 로 귀결되면 정상 성공(차단 없음).
+    import semantic_requirements as sr
+    ok = sr.SourceRequirement(
+        id="req_1", type="qualified_condition", base={"type": "behavior", "name": "purchase"},
+        qualifiers=[sr.Qualifier(type="entity", domain="brand", raw_value="알로루")], status="compiled")
+    monkeypatch.setattr(g, "_account_source_requirements",
+                        lambda *a, **k: sr.RequirementAccounting(requirements=[ok]))
+    res = _result(SUPPORTED, {"ran": True, "faithful": True, "issues": []})
+    assert res["is_success"] is True and res["sql"] is not None
+
+
 # ── 통과: faithful 이면 SQL 그대로 성공 ────────────────────────────────────────────────
 def test_gate_passes_when_faithful():
     res = _result(SUPPORTED, {"ran": True, "faithful": True, "issues": []})
