@@ -11240,12 +11240,28 @@ def _set_operand_text_dimension_consumed(text: str, plan: dict[str, Any]) -> boo
     return bool(region and _plan_dimension_filter_has_value(plan, region))
 
 
+def _set_operand_text_attribute_consumed(text: str, plan: dict[str, Any]) -> bool:
+    """미해결 집합 operand 표면어가 이미 결정론 등급(lifecycle) 필터로 소비된 값인지 판정한다.
+
+    '골드 또는 VIP'처럼 등급 OR 이 lifecycle(→EMART_GRADE_CD IN)로 처리됐는데, auto 재작성이 만든 콤마
+    나열형("골드 또는 VIP 회원, 로그인 200회 이상, …")에서 operator-scan 이 같은 등급 '골드'를
+    unknown_operand 로 다시 물어 SQL 을 막던 중복을 걸러낸다(지역 소비 판정 _set_operand_text_dimension_
+    consumed 의 등급 판). 반드시 lifecycle 이 채워진 뒤 호출돼야 소비로 인정된다(미포착이면 clarification 유지)."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    folded = text.strip().casefold()
+    lifecycle = plan.get("target_user", {}).get("lifecycle") or []
+    return any(surface in folded and value in lifecycle for surface, value in _GRADE_SURFACE_TO_VALUE)
+
+
 def _operator_scan_expression_fully_owned(expression: dict[str, Any], plan: dict[str, Any]) -> bool:
     """operator-scan 집합식이 결정론 dimension/속성/집계 필터로 '완전히 소유'된 리던던시인지 판정한다.
 
     True 조건: (1) 진짜 세그먼트류(_set_level_segment_canonicals) 피연산자가 하나도 없고, (2) 미해결
-    operand 는 전부 dimension 필터가 이미 소비한 값이다. 이때 집합식은 결정론 필터가 커버하는 평범한
-    dimension OR/AND 나열이므로 버려도 조건이 사라지지 않는다(오히려 데모 스키마 오컴파일·중복 clarification 방지)."""
+    operand 는 전부 dimension(지역) 또는 lifecycle(등급) 필터가 이미 소비한 값이다. 이때 집합식은 결정론
+    필터가 커버하는 평범한 dimension/등급 OR/AND 나열이므로 버려도 조건이 사라지지 않는다(오히려 데모
+    스키마 오컴파일·중복 clarification 방지). 지표(로그인횟수/구매금액 등) operand 는 세그먼트류가 아니라
+    balance/aggregate 필터 소유이므로 drop 을 막지 않는다."""
     ast = expression.get("set_ast")
     operands = list(_iter_all_set_operands(ast))
     if not operands:
@@ -11253,7 +11269,8 @@ def _operator_scan_expression_fully_owned(expression: dict[str, Any], plan: dict
     segment_canonicals = _set_level_segment_canonicals()
     for operand in operands:
         if operand.get("type") == "unknown_operand":
-            if not _set_operand_text_dimension_consumed(operand.get("text", ""), plan):
+            text = operand.get("text", "")
+            if not (_set_operand_text_dimension_consumed(text, plan) or _set_operand_text_attribute_consumed(text, plan)):
                 return False  # 미소비 unknown = 진짜 세그먼트/clarification 대상 → 유지
         elif operand.get("canonical") in segment_canonicals:
             return False  # 진짜 세그먼트 피연산자 → 집합식 유지

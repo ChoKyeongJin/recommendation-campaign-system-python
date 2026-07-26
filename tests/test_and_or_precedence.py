@@ -86,6 +86,32 @@ def test_single_grade_not_affected():
     assert plan["target_user"]["lifecycle"] == ["vip"]
 
 
+def test_grade_metric_comma_list_drops_overfired_set_expression():
+    # auto 재작성이 만드는 콤마 나열형("골드 또는 VIP 회원, 로그인 200회 이상, …")이 집합식 엔진을 오발동시켜
+    # 등급('골드' unknown)+지표(로그인횟수/구매금액/구매횟수) 피연산자로 fail-close 하던 걸,
+    # 결정론 lifecycle/balance/aggregate 가 소유한 operator-scan 집합식으로 보고 버려 정상 SQL 이 나와야 한다.
+    tq = ("골드 또는 VIP 회원, 누적 로그인 횟수가 200회 이상, 최근 90일 동안 로그인하지 않은, "
+          "과거 누적 구매금액이 1,000,000원 이상, 최근 180일 동안 구매건수가 0건인 회원")
+    plan = _plan(tq)
+    assert plan.get("set_expressions") == []  # 오발동 집합식이 드롭됨
+    assert plan.get("unsupported") is None
+    sql = _sql(plan)
+    assert "B.EMART_GRADE_CD IN ('MEM_GRADE_CD.GOLD', 'MEM_GRADE_CD.VIP')" in sql
+    assert "B.TOTAL_LOGIN_CNT >= 200" in sql
+    assert "SUM(PAYMENT_AMT) >= 1000000" in sql
+    assert "NOT EXISTS" in sql  # 최근 180일 무구매
+    assert "DATEADD(DAY, -90" in sql  # 미접속 90일
+
+
+def test_grade_or_still_clarifies_when_grade_not_captured():
+    # 안전판: lifecycle 이 등급을 못 잡았으면(소비 안 됨) 등급 unknown 은 그대로 유지(과도 드롭 방지).
+    # '골드 또는 VIP' 단독은 등급 OR 로 lifecycle 에 잡히므로, 여기선 소비 판정이 lifecycle 존재에 묶인다는
+    # 계약만 확인한다(잡히면 drop, 못 잡으면 유지).
+    import graph_rag as g
+    assert g._set_operand_text_attribute_consumed("골드", {"target_user": {"lifecycle": ["gold_grade"]}}) is True
+    assert g._set_operand_text_attribute_consumed("골드", {"target_user": {"lifecycle": []}}) is False
+
+
 def test_pure_and_metrics_not_gated():
     # OR 없는 순수 AND 다중 임계는 게이트되지 않는다(오탐 방지).
     plan = _plan("30대 여성 중 구매 횟수가 5회 이상이고 구매금액이 500,000원 이상인 회원")
