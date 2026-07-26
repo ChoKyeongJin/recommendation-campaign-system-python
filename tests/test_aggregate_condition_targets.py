@@ -125,11 +125,13 @@ def test_builder_returns_none_without_conditions():
 # (2) 개수 임계값이 통째로 드롭됐다. 이제 상품명은 추출에서 빠지고, 개수 임계값은 order_count HAVING 으로
 # 컴파일되며, 절대 구매창(2019년 1월)이 있으면 그 기간 주문만 센다.
 
-def test_bare_count_threshold_maps_to_order_count():
+def test_bare_item_count_maps_to_item_quantity():
+    # '2개 이상 상품 구입'의 '개'는 품목 수량이다 → total_item_quantity(SUM(ORDER_QTY)). 예전엔 order_count
+    # (주문 건수)로 오해석했으나, 스펙 기반 리졸버가 단위 '개'를 상품 수량으로 라우팅한다.
     conditions = _conditions("2019년 1월에 2개 이상 상품 구입한 사람")
     assert len(conditions) == 1
     c = conditions[0]
-    assert c["metric_id"] == "order_count" and c["operator"] == ">=" and c["threshold"] == 2
+    assert c["metric_id"] == "total_item_quantity" and c["operator"] == ">=" and c["threshold"] == 2
 
 
 def test_bare_count_threshold_operator_and_unit_variants():
@@ -156,13 +158,13 @@ def test_bare_count_threshold_ignores_non_purchase_counts():
     assert _conditions("자녀가 2명 이상인 고객") == []
 
 
-def test_builder_count_threshold_with_absolute_date_window():
-    # 절대 구매창(2019년 1월)이 함께 잡히면 그 기간 주문만 세어 HAVING COUNT(DISTINCT ORDER_ID) 로 건다.
+def test_builder_item_quantity_with_absolute_date_window():
+    # 절대 구매창(2019년 1월)이 함께 잡히면 그 기간 상품 수량만 SUM(ORDER_QTY) 로 집계한다('개'=수량).
     plan = g.build_query_plan("2019년 1월에 2개 이상 상품 구입한 사람")
     candidate = g.build_sql_template_candidate(plan)
     assert candidate is not None and candidate["id"] == "sql_template:aggregate_targets"
     sql = candidate["sql"]
-    assert "HAVING COUNT(DISTINCT ORDER_ID) >= 2" in sql
+    assert "HAVING SUM(ORDER_QTY) >= 2" in sql
     assert "ORDER_DATE BETWEEN '20190101' AND '20190131'" in sql
     # 오추출 재발 방지: '이상'/'상품'이 상품명 LIKE 로 새지 않는다.
     assert "N'%이상%'" not in sql and "N'%상품%'" not in sql

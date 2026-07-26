@@ -3788,8 +3788,9 @@ _AMOUNT_MAGNITUDES = (("억", 100_000_000), ("천만", 10_000_000), ("백만", 1
 _COMPARISON_OPERATORS = targeting_ir.COMPARISON_WORD_OPERATORS
 _OP_ALT_BASIC = "|".join(_COMPARISON_OPERATORS)  # "이상|초과|이하|미만"
 _AGG_OPERATOR_WORDS = _COMPARISON_OPERATORS  # 별칭(op→부등호 매핑; 기존 참조 다수가 이 이름을 쓴다)
-# 집계 지표 임계값의 측정 단위 — 공용 비교 문법(_parse_amount_comparison)에 넘긴다.
-_AGG_UNIT = r"원|건|회|명|개|장|번|건수|회수"
+# 집계 지표 임계값의 측정 단위 — 공용 비교 문법(_parse_amount_comparison)에 넘긴다. 상품 수량/종류
+# 단위(개·수량·점·종·종류·가지·품목)도 포함해 '10종 이상'·'상품 5개'가 임계값으로 파싱되게 한다.
+_AGG_UNIT = r"원|건수|회수|종류|종수|품목|가지|건|회|명|개|장|번|종|점|수량"
 # ── 공용 비교 문법(도메인 공통) ─────────────────────────────────────────────────────
 # age/balance/aggregate/count 마다 재구현하던 '이상/이하/초과/미만/넘는/보다 많은/정확히/범위'를 단위(unit)만
 # 바꿔 한 곳에서 파싱한다. 새 표현형은 여기 한 번만 추가하면 모든 도메인이 함께 얻는다(도메인별 함수 추가 불필요).
@@ -3915,20 +3916,25 @@ def _comparison_operator(op_text: str) -> str | None:
     return None
 
 
-@functools.lru_cache(maxsize=16)
-def _comparison_patterns(unit: str) -> tuple["re.Pattern[str]", "re.Pattern[str]", "re.Pattern[str]"]:
-    num, mag, u = r"[\d,]+(?:\.\d+)?", r"억|천만|백만|만|천", rf"(?:{unit})?"
+@functools.lru_cache(maxsize=32)
+def _comparison_patterns(unit: str, unit_required: bool = False) -> tuple["re.Pattern[str]", "re.Pattern[str]", "re.Pattern[str]"]:
+    # unit_required=True 면 단위를 필수로 요구한다 — 지표 명사(잔액 등)가 숫자 앞에 오는 도메인은 단위가
+    # 선택이라 '30에서 49'(단위 없는 나이 범위)까지 잡지만, 장바구니 개수처럼 단위(개/종…)가 신호 그 자체인
+    # 도메인은 단위 없는 숫자·범위를 흡수하면 안 된다(카트 질의에 섞인 '30~49세'·'6개월'을 배제).
+    num, mag = r"[\d,]+(?:\.\d+)?", r"억|천만|백만|만|천"
+    u = rf"(?:{unit})" if unit_required else rf"(?:{unit})?"
     range_p = re.compile(rf"(?P<lo>{num})\s*(?P<lomag>{mag})?\s*{u}\s*(?:에서|부터|~|-)\s*(?P<hi>{num})\s*(?P<himag>{mag})?\s*{u}\s*(?:사이|까지)?")
     op_p = re.compile(rf"(?P<num>{num})\s*(?P<mag>{mag})?\s*{u}\s*(?:을|를|이|가)?\s*(?P<op>{_COMPARISON_OP_ALT})")
     eq_p = re.compile(rf"(?P<num>{num})\s*(?P<mag>{mag})?\s*(?:{unit})")
     return range_p, op_p, eq_p
 
 
-def _parse_amount_comparison(window: str, unit: str, *, bare_equals: bool = False) -> list[tuple[str, float]] | None:
+def _parse_amount_comparison(window: str, unit: str, *, bare_equals: bool = False, unit_required: bool = False) -> list[tuple[str, float]] | None:
     """단위(unit) 뒤 비교 어구를 [(operator, value), ...] 로 정규화한다(범위=두 술어 >=lo,<=hi). 부등호
     (부사형·동사형·'보다 많은/적은')·정확값('정확히 N')·범위를 공통 처리한다. bare_equals=True 면 연산자 없는
-    맨 'N<unit>'을 등호로 본다(잔액처럼 맥락상 정확값이 자연스러운 도메인용; 횟수처럼 모호하면 False)."""
-    range_p, op_p, eq_p = _comparison_patterns(unit)
+    맨 'N<unit>'을 등호로 본다(잔액처럼 맥락상 정확값이 자연스러운 도메인용; 횟수처럼 모호하면 False).
+    unit_required=True 면 단위를 필수로 요구해 단위 없는 숫자·범위를 흡수하지 않는다(장바구니 개수 등)."""
+    range_p, op_p, eq_p = _comparison_patterns(unit, unit_required)
     rng = range_p.search(window)
     if rng is not None:
         lo = _parse_korean_amount(rng.group("lo"), rng.group("lomag") or "")
@@ -3950,7 +3956,9 @@ def _parse_amount_comparison(window: str, unit: str, *, bare_equals: bool = Fals
         return [parsed_ops[0]]
     marker = _EXACT_EQUALS_MARKER.search(window)
     if marker is not None:
-        amt = _EXACT_AMOUNT_PATTERN.search(window, marker.end())
+        # 단위 필수 도메인은 정확값도 단위 있는 숫자만 본다(eq_p 는 단위 필수) — '정확히 30'(나이) 오탐 방지.
+        exact_p = eq_p if unit_required else _EXACT_AMOUNT_PATTERN
+        amt = exact_p.search(window, marker.end())
         if amt is not None and amt.group("num"):
             value = _parse_korean_amount(amt.group("num"), amt.group("mag") or "")
             if value is not None:
@@ -4358,33 +4366,123 @@ def _normalize_korean_count_numerals(text: str) -> str:
     )
 
 
-# 절 경계 접속어(대조): '하지만/반면'은 앞뒤가 다른 절이라 파싱 범위를 여기서 끊는다. '이지만/그리고/
-# 이면서' 등 가법·범위 접속어는 단일 지표 범위('30만 이상이지만 100만 미만')를 끊어버리므로 경계로 쓰지
-# 않는다 — 다음 지표 시작점이 진짜 절 경계다(그 사이 조건만 이 지표 것으로 본다).
-_AGG_CLAUSE_CONNECTIVE_RE = re.compile(r"하지만|반면")
+# ── 상품/주문 집계 조건 리졸버(스펙 기반·점수화) ─────────────────────────────────
+# 지표는 aggregate_targets.metrics 스펙(semantic_type/agg/column/distinct/table/units/hint_terms/
+# anti_hint_terms/synonyms)으로만 등록한다 — 문장별 파이썬 분기 없이 스펙만으로 신규 지표를 추가한다.
+# 절 경계 접속어: 서로 다른 조건을 가르는 접속어. 단일 지표 범위('10만 이상이지만 50만 미만')는 뒷 절에
+# 지표가 없어 '고아 bound'로 앞 지표에 병합되므로, 접속어로 끊어도 범위가 안 깨진다.
+# 쉼표는 숫자 천단위 구분(100,000) 안에서는 절 경계로 쓰지 않는다(숫자 사이가 아닌 쉼표만 분리).
+# 가법 접속어(이고/이며/그리고)도 절을 가른다 — 단일 지표 범위('10만 이상이고 50만 이하')는 뒷 절에 지표가
+# 없어 고아 bound 로 앞 지표에 병합되므로 범위가 안 깨진다.
+_AGG_CLAUSE_SPLIT_RE = re.compile(r"이지만|하지만|지만|반면에|반면|그리고|이면서|면서|동시에|이고|이며|또는|(?<!\d),|,(?!\d)")
+# 도메인 문맥: 구매/상품/결제/할인 등이 있어야 집계 지표 후보로 본다('2회 방문'·'자녀 2명'은 제외).
+_AGG_DOMAIN_CONTEXT_RE = re.compile(r"구매|구입|주문|샀|상품|제품|품목|결제|할인|수량|종류|객단가|매출|구매액|금액|건수|종수")
+# 임계값 단위 추출(숫자 뒤 단위, 긴 단위 우선). 상품 수량/종류 단위 포함.
+_AGG_UNIT_TOKEN_RE = re.compile(r"\d[\d,]*\s*(?:억|천만|백만|만|천)?\s*(종류|종수|품목|가지|건수|회수|종|개|건|회|번|원|점|장)")
+# 집계 범위(grain): 한 주문 내 / 동일 상품별 / 회원 누적.
+_AGG_SCOPE_PER_ORDER_RE = re.compile(r"한\s*주문|한\s*번에|한번에|주문당|주문\s*당|주문별|주문\s*별|1회\s*주문")
+_AGG_SCOPE_PER_PRODUCT_RE = re.compile(r"동일\s*상품|같은\s*상품|동일한\s*상품|상품별|상품\s*별|동일\s*제품|같은\s*제품")
+# 범위(scope) 필터: 브랜드/카테고리. '특정/어떤/모든' 등은 값 미지정 자리표시자다.
+_BRAND_SCOPE_RE = re.compile(r"(?P<val>[가-힣A-Za-z0-9]+)\s*브랜드")
+_CATEGORY_SCOPE_RE = re.compile(r"(?P<val>[가-힣A-Za-z0-9]+)\s*카테고리")
+_SCOPE_PLACEHOLDER_VALUES = {"특정", "어떤", "모든", "해당", "일부", "각", "그", "이", "저", "무슨", "어느", "임의"}
 
 
-def _aggregate_parse_window_end(query: str, start: int, metric_starts: list[int], max_len: int = 40) -> int:
-    """지표 동의어 뒤 임계값 파싱 범위의 끝 위치(C). 다음 지표 시작점·대조 접속어(하지만/반면) 중 가장
-    가까운 곳에서 끊어 다음 절 조건이 이 지표로 새는 것을 막고, 없으면 기존 40자 fallback."""
-    bounds = [min(len(query), start + max_len)]
-    for next_start in metric_starts:
-        if next_start > start:
-            bounds.append(next_start)
-            break  # metric_starts 는 정렬됨 → 첫 번째가 가장 가까운 다음 지표
-    connective = _AGG_CLAUSE_CONNECTIVE_RE.search(query, start)
-    if connective is not None:
-        bounds.append(connective.start())
-    return min(bounds)
+def _clause_primary_unit(clause: str) -> str | None:
+    match = _AGG_UNIT_TOKEN_RE.search(clause)
+    return match.group(1) if match else None
+
+
+def _extract_aggregation_scope(clause: str) -> tuple[str, str]:
+    """절의 집계 grain(per_member/per_order/per_product)을 판정하고, grain 표지 어구를 절에서 제거한 사본을
+    함께 돌려준다. 표지 제거는 '한 번에'가 한글 수사 정규화로 '1번'이 돼 개수 단위로 오인되는 것을 막는다.
+    반드시 한글 수사 정규화 전(원문)에 호출한다('한 번에'/'한 주문'을 그대로 봐야 하므로)."""
+    for scope_name, pattern in (("per_product", _AGG_SCOPE_PER_PRODUCT_RE), ("per_order", _AGG_SCOPE_PER_ORDER_RE)):
+        match = pattern.search(clause)
+        if match is not None:
+            cleaned = clause[: match.start()] + " " + clause[match.end():]
+            return scope_name, cleaned
+    return "per_member", clause
+
+
+def _clause_scope(clause: str) -> dict[str, str]:
+    """브랜드/카테고리 범위 필터를 뽑는다(값이 자리표시자 '특정'이면 값 미지정으로 표시)."""
+    scope: dict[str, str] = {}
+    brand = _BRAND_SCOPE_RE.search(clause)
+    if brand is not None:
+        scope["brand"] = brand.group("val")
+    category = _CATEGORY_SCOPE_RE.search(clause)
+    if category is not None:
+        scope["category"] = category.group("val")
+    return scope
+
+
+def _score_metric_for_clause(clause: str, metric: dict[str, Any], unit: str | None) -> int:
+    """절에 대한 지표 적합도 점수. 정확·긴 별칭(+), 의미 힌트(+), 단위 일치(+)/불일치(-), 의미 충돌(-).
+    문장별 하드코딩 대신 스펙(units/hint_terms/anti_hint_terms)만으로 후보를 가른다."""
+    score = 0
+    alias = None
+    for synonym in metric.get("synonyms", []):
+        if isinstance(synonym, str) and synonym and synonym in clause and (alias is None or len(synonym) > len(alias)):
+            alias = synonym
+    if alias is not None:
+        score += 80 + len(alias) * 15  # 긴 별칭일수록 우세(포함 관계 최장 일치 구현)
+    units = [u for u in metric.get("units", []) if isinstance(u, str)]
+    if unit and units:
+        score += 40 if unit in units else -80
+    if any(isinstance(h, str) and h in clause for h in metric.get("hint_terms", [])):
+        score += 55
+    if any(isinstance(a, str) and a in clause for a in metric.get("anti_hint_terms", [])):
+        score -= 100
+    return score
+
+
+def _resolve_clause_metric(clause: str, metrics: dict[str, Any], unit: str | None) -> tuple[str | None, str]:
+    """절의 지표를 점수로 확정한다. 반환: (metric_id, status) — status ∈ ok/ambiguous/unresolved/none.
+    도메인 문맥이 없으면 none(우리 집계 대상 아님), 문맥은 있으나 후보 없음/동점이면 unresolved/ambiguous
+    (조용한 폴백 금지 — 호출부가 clarification)."""
+    if not _AGG_DOMAIN_CONTEXT_RE.search(clause):
+        return None, "none"
+    scored = [(mid, _score_metric_for_clause(clause, metric, unit)) for mid, metric in metrics.items()]
+    positive = sorted([(mid, s) for mid, s in scored if s > 0], key=lambda x: x[1], reverse=True)
+    if not positive:
+        return None, "unresolved"
+    if len(positive) > 1 and positive[1][1] >= positive[0][1] - 15:
+        return None, "ambiguous"
+    return positive[0][0], "ok"
+
+
+def _make_aggregate_condition(
+    context: dict[str, Any], operator: str, threshold: float, window_days: Any,
+    calendar_period: str | None, metrics: dict[str, Any],
+) -> dict[str, Any]:
+    metric = metrics.get(context["metric_id"], {})
+    condition: dict[str, Any] = {
+        "metric_id": context["metric_id"],
+        "operator": operator,
+        "threshold": threshold,
+        "window_days": window_days,
+        "label": metric.get("ko_label", context["metric_id"]),
+    }
+    # per_member 가 아니면(주문별/상품별)만 표식으로 붙인다(기본값이면 조건 dict 형태 불변 — 회귀 안전).
+    scope_grain = context.get("aggregation_scope", "per_member")
+    if scope_grain != "per_member":
+        condition["aggregation_scope"] = scope_grain
+    if context.get("scope"):
+        condition["scope"] = dict(context["scope"])
+    if calendar_period:
+        condition["calendar_period"] = calendar_period
+    return condition
 
 
 def _aggregate_condition_conflict(conditions: list[dict[str, Any]]) -> str | None:
-    """같은 지표에 불가능한 범위(하한>상한)가 생성됐으면 그 지표 라벨을 반환(절 과포획 의심). 정상 범위
+    """같은 지표(+grain)에 불가능한 범위(하한>상한)가 생성됐으면 그 라벨 반환(절 과포획 의심). 정상 범위
     (>=lo, <=hi, lo<=hi)는 상충이 아니다. 없으면 None."""
-    by_metric: dict[str, list[dict[str, Any]]] = {}
+    by_key: dict[tuple, list[dict[str, Any]]] = {}
     for condition in conditions:
-        by_metric.setdefault(condition["metric_id"], []).append(condition)
-    for group in by_metric.values():
+        key = (condition["metric_id"], condition.get("aggregation_scope", "per_member"))
+        by_key.setdefault(key, []).append(condition)
+    for group in by_key.values():
         lowers = [c["threshold"] for c in group if c["operator"] in (">", ">=")]
         uppers = [c["threshold"] for c in group if c["operator"] in ("<", "<=")]
         if lowers and uppers and max(lowers) > min(uppers):
@@ -4393,81 +4491,70 @@ def _aggregate_condition_conflict(conditions: list[dict[str, Any]]) -> str | Non
 
 
 def _apply_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
-    """'[최근 N일] <지표> <임계값> 이상/이하'를 범용 집계 조건(aggregate_conditions)으로 해석한다.
+    """상품/주문 집계 조건을 스펙 기반 점수화로 해석한다(주문 건수·상품 수량·서로 다른 상품 수·구매/할인
+    금액·평균 주문 금액을 지표 스펙과 단위/의미 힌트로 구분).
 
-    지표 동의어(구매 금액/구매 횟수 등) 바로 뒤의 임계값 어구를 잡아 {metric_id, operator, threshold,
-    window_days} 로 만든다. build_aggregate_targets_sql_candidate 가 주문 테이블 회원별 집계 서브쿼리
-    (GROUP BY MEMBER_NO HAVING agg(col) op threshold)로 컴파일하고, 성별/연령/등급/지역 등 회원 속성은
-    compile_member_target_conditions 로 같은 SQL 에 AND 결합한다.
-
-    B(지표 간 최장 일치): 모든 지표 후보의 매칭 span 을 모아 겹치면 더 긴 span 을 남긴다('평균 결제 금액'은
-    average_order_amount 로 확정하고 그 안에 포함된 purchase_amount 의 '결제 금액'은 버린다). 서로 다른
-    절(비겹침)이면 둘 다 유지한다. C(절 경계 파싱): 각 지표의 임계값 파싱 범위를 다음 지표/대조 접속어에서
-    끊어, 뒤 절 조건('평균 주문 금액 30,000원 미만')이 앞 지표(purchase_amount)로 새지 않게 한다."""
+    절 단위로 나눠(고아 bound 는 앞 지표 범위로 병합) 각 절에서 {metric, operator, value, aggregation_scope,
+    scope} 를 뽑는다. '개'는 상품 수량, '종/종류'는 서로 다른 상품 수로 라우팅되며 order_count 로 조용히
+    폴백하지 않는다. 도메인 문맥이 있으나 지표를 확정 못 하면 clarification(metric_not_resolved) 을 반환한다.
+    브랜드/카테고리는 metric 이 아니라 scope 로 분리하며, 값이 '특정'(자리표시자)이면 clarification 한다."""
     config = _aggregate_targets_config()
     metrics = config.get("metrics", {})
     if not isinstance(metrics, dict) or not metrics:
         return
-    # 한글 수사('구매 횟수 두 번 이상')를 숫자로 정규화해 개수 임계값이 걸리게 한다(로컬 — 원문 불변).
-    query = _normalize_korean_count_numerals(query)
     window_days = _parse_recent_window_days(query)
-    # 롤링 윈도우가 아니면 달력 기간('올해'·'지난달')인지 본다 — 둘은 상호배타 타입이다.
     calendar_period = _parse_calendar_period(query) if window_days is None else None
 
-    # 1) 지표별 최장 동의어 매칭 span 수집(지표당 최장 동의어의 최초 위치).
-    hits: list[dict[str, Any]] = []
-    for metric_id, metric in metrics.items():
-        best: dict[str, Any] | None = None
-        for synonym in metric.get("synonyms", []):
-            if not (isinstance(synonym, str) and synonym):
-                continue
-            index = query.find(synonym)
-            if index < 0:
-                continue
-            if best is None or len(synonym) > (best["end"] - best["start"]):
-                best = {"start": index, "end": index + len(synonym), "metric_id": metric_id, "metric": metric}
-        if best is not None:
-            hits.append(best)
-    if not hits:
-        return
-
-    # 2) span 겹침 해소(B): 더 긴 span 우선으로 남기고, 이미 남긴 더 긴 span 과 겹치는 짧은 후보는 버린다.
-    hits.sort(key=lambda h: (h["end"] - h["start"]), reverse=True)
-    kept: list[dict[str, Any]] = []
-    for hit in hits:
-        if any(hit["start"] < k["end"] and k["start"] < hit["end"] for k in kept):
-            continue
-        kept.append(hit)
-    kept.sort(key=lambda h: h["start"])
-
-    # 3) 절 경계 기반 파싱(C): 각 지표 파싱 범위를 다음 지표/대조 접속어에서 끊는다.
-    metric_starts = sorted(h["start"] for h in kept)
     conditions: list[dict[str, Any]] = []
-    for hit in kept:
-        window_end = _aggregate_parse_window_end(query, hit["end"], metric_starts)
-        tail = query[hit["end"]: window_end]
-        # 공용 비교 문법으로 위임 → 부등호(부사형/동사형)·'보다 많은'·범위·'정확히 N'을 함께 얻는다.
-        # bare_equals=False: 지표 뒤 맨 숫자('구매금액 10만원')는 모호하므로 등호로 넘겨짚지 않는다.
-        comparisons = _parse_amount_comparison(tail, _AGG_UNIT, bare_equals=False)
+    last_context: dict[str, Any] | None = None
+    scope_clarify_key: str | None = None
+    # 원문(정규화 전)으로 절 분리·grain/scope 판정 — '한 번에'가 '1번'으로 바뀌기 전에 봐야 한다.
+    for raw_clause in _AGG_CLAUSE_SPLIT_RE.split(query):
+        aggregation_scope, scoped_clause = _extract_aggregation_scope(raw_clause)
+        scope = _clause_scope(raw_clause)
+        # grain 표지를 뗀 뒤 한글 수사 정규화('두 번'→'2번') → 임계값/단위/지표 해석.
+        clause = _normalize_korean_count_numerals(scoped_clause)
+        comparisons = _parse_amount_comparison(clause, _AGG_UNIT, bare_equals=False)
         if not comparisons:
             continue
+        unit = _clause_primary_unit(clause)
+        metric_id, status = _resolve_clause_metric(clause, metrics, unit)
+        if metric_id is None:
+            # 지표어 없는 뒷 절(범위 연속) → 앞 지표에 병합(고아 bound). 앞 지표가 없으면:
+            #  - none(도메인 아님): 무시. - unresolved/ambiguous(도메인 문맥 있음): clarification.
+            if last_context is not None:
+                for operator, threshold in comparisons:
+                    conditions.append(_make_aggregate_condition(last_context, operator, threshold, window_days, calendar_period, metrics))
+                continue
+            if status in ("unresolved", "ambiguous"):
+                plan["unsupported"] = {
+                    "reason": "metric_not_resolved",
+                    "message": "상품/주문 조건의 지표를 확정할 수 없습니다(수량/종류/횟수/금액 등).",
+                    "clarification": "상품 개수는 총수량을 의미하나요, 서로 다른 상품 종류 수를 의미하나요? 또는 주문 건수/금액 중 무엇인가요?",
+                }
+                return
+            continue
+        for key, value in list(scope.items()):
+            if value in _SCOPE_PLACEHOLDER_VALUES:
+                scope_clarify_key = key  # 값 미지정('특정 브랜드')이라 필터로 못 씀 → 뒤에서 clarification
+                scope.pop(key)
+        context = {"metric_id": metric_id, "aggregation_scope": aggregation_scope, "scope": scope}
+        last_context = context
         for operator, threshold in comparisons:
-            condition = {
-                "metric_id": hit["metric_id"],
-                "operator": operator,
-                "threshold": threshold,
-                "window_days": window_days,
-                "label": hit["metric"].get("ko_label", hit["metric_id"]),
-            }
-            # 달력 기간은 감지됐을 때만 표식으로 붙인다(미감지 시 조건 형태를 바꾸지 않음 — 회귀 안전).
-            if calendar_period:
-                condition["calendar_period"] = calendar_period
-            conditions.append(condition)
+            conditions.append(_make_aggregate_condition(context, operator, threshold, window_days, calendar_period, metrics))
+
     if not conditions:
         return
-
-    # 4) 상충 검사(C 안전장치): 같은 지표에 하한>상한(불가능 범위)이면 절 과포획 의심 — 조용히 출고하지
-    #    않고 clarification 으로 되묻는다(정상 범위 lo<=hi 는 통과).
+    # 범위 값 미지정('특정 브랜드/카테고리') → 조용히 전체 집계로 폴백하지 않고 명시 clarification.
+    if scope_clarify_key is not None:
+        label = {"brand": "브랜드", "category": "카테고리"}.get(scope_clarify_key, scope_clarify_key)
+        plan["unsupported"] = {
+            "reason": "scope_value_unspecified",
+            "message": f"'특정 {label}'의 구체적인 {label} 값이 지정되지 않았습니다.",
+            "clarification": f"어느 {label}를 기준으로 할까요? (예: 특정 브랜드명/카테고리명 지정)",
+            "scope": scope_clarify_key,
+        }
+        return
     conflict_label = _aggregate_condition_conflict(conditions)
     if conflict_label is not None:
         plan["unsupported"] = {
@@ -4493,68 +4580,18 @@ _PURCHASE_COUNT_CONTEXT_YIELDS = ("장바구니", "카트", "반응")
 
 
 def _apply_purchase_count_threshold_filter(query: str, plan: dict[str, Any]) -> None:
-    """'N개/번/회/건 이상 구매/구입'을 주문 건수(order_count) 집계 임계값으로 해석한다.
-
-    _apply_aggregate_condition_filter 뒤에 실행해, 지표명 명시형('구매 횟수 2회 이상')이 이미 order_count
-    를 잡았으면 중복 추가하지 않는다. 장바구니/반응 개수 임계값은 각 전용 트랙(cart_aggregate/
-    campaign_response_frequency)이 소유하므로 그 문맥이면 양보한다. 절대 구매창(purchase_date)이 있으면
-    build_aggregate_targets_sql_candidate 가 그 기간 주문만 세어 HAVING COUNT(DISTINCT ORDER_ID) 로 건다."""
-    target_user = plan.setdefault("target_user", {})
-    conditions = target_user.get("aggregate_conditions")
-    if not isinstance(conditions, list):
-        conditions = []
-        target_user["aggregate_conditions"] = conditions
-    if any(isinstance(c, dict) and c.get("metric_id") == "order_count" for c in conditions):
-        return
-    # 한글 수사('두 번 이상 구매', '정확히 두 번')를 숫자로 정규화(로컬 — 원문/타 파서 불변). 이후 기간
-    # 파싱도 정규화본을 쓰지만 수사+개수 단위만 바뀌어 '최근/올해/지난달' 감지에는 영향 없다.
-    query = _normalize_korean_count_numerals(query or "")
-    compact = query.replace(" ", "")
-    if not any(verb in compact for verb in _PURCHASE_COUNT_VERB_SIGNS):
-        return
-    if any(word in compact for word in _PURCHASE_COUNT_CONTEXT_YIELDS):
-        return
-    metrics = _aggregate_targets_config().get("metrics", {})
-    if "order_count" not in metrics:
-        return
-    match = _PURCHASE_COUNT_THRESHOLD_PATTERN.search(compact)
-    if match is not None:
-        operator = _comparison_operator(match.group("op"))
-        threshold = int(match.group("num"))
-        if operator is None:
-            return
-    elif _EXACT_EQUALS_MARKER.search(compact):
-        # '정확히 3회 구매' → COUNT(...) = 3. ('정확히 0회'는 무구매라 HAVING 으로 못 세니 no_purchase 파서에 양보.)
-        count = _EXACT_COUNT_PATTERN.search(compact)
-        if count is None:
-            return
-        operator = "="
-        threshold = int(count.group("num"))
-    else:
-        return
-    if threshold <= 0:
-        return
-    # 롤링 윈도우('최근 N일')를 반드시 보존한다 — 예전엔 None 하드코딩이라 '최근 90일 3회'가 '전체
-    # 기간 3회'로 조용히 왜곡됐다. 빌더(_aggregate_member_subquery)가 window_days 로 ORDER_DATE 창을 건다.
-    window_days = _parse_recent_window_days(query)
-    condition = {
-        "metric_id": "order_count",
-        "operator": operator,
-        "threshold": threshold,
-        "window_days": window_days,
-        "label": metrics["order_count"].get("ko_label", "구매 횟수"),
-    }
-    # 롤링 윈도우가 아니면서 달력 기간('올해'·'지난달')이 있으면 표식만 남긴다(SQL 미반영 → 명시 경고).
-    if window_days is None:
-        calendar_period = _parse_calendar_period(query)
-        if calendar_period:
-            condition["calendar_period"] = calendar_period
-    conditions.append(condition)
+    """(비활성) 지표명 없는 개수 임계값('N개/번/회/건 이상 구매')은 이제 통합 리졸버
+    _apply_aggregate_condition_filter 가 단위/의미 힌트 점수로 처리한다 — '개'는 상품 수량,
+    '회/번/건'은 주문 건수로 갈린다. 예전엔 여기서 전부 order_count 로 뭉쳐 '상품 5개'가 주문 5건으로
+    오해석됐다. 레지스트리 배선 호환을 위해 함수는 남기되 no-op 로 둔다(이중 추가 방지)."""
+    return
 
 
-# 장바구니 개수/수량 임계값: "장바구니에 N개 이상 담은". 돈(원)·연령(대)로 오탐하지 않게 개수 단위만 본다.
-_CART_COUNT = _compile_threshold(_ThresholdSpec("integer", r"개|종류|가지|건|품목"))
-_CART_COUNT_PATTERN = _CART_COUNT.pattern
+# 장바구니 개수/수량 임계값 단위: "N개 이상", "종류 3종 이상", "정확히 3개", "2개에서 5개 사이". 비교 자체
+# (이상/초과/미만/정확값/범위)는 공용 _parse_amount_comparison 에 위임한다([[shared-comparison-grammar]]) —
+# 개수 단위만 넘겨 돈(원)·연령(세)·기간(개월)과 갈린다. '건'은 주문 건수와 겹쳐 빼고, '종/종수'를 넣어
+# '3종 이상'(상품 종류 수)을 카트 종류 수로 잡는다.
+_CART_COUNT_UNIT = r"개|종류|종수|종|가지|품목|점"
 # 장바구니 금액 임계값: "장바구니에 10만원 이상". 단위(원)로 개수 패턴과 갈리고, 배수어(만/천만)는
 # 누적 구매 금액과 같은 파서(_parse_korean_amount)를 쓴다.
 _CART_AMOUNT = _compile_threshold(_ThresholdSpec("korean_amount", r"원"))
@@ -4574,6 +4611,23 @@ _CART_MULTIPLE_WORDS = ("여러", "복수", "중복", "2개이상", "두개이�
 _CART_MULTIPLE_DEFAULT_THRESHOLD = 2
 
 
+def _cart_comparison_condition(metric: str, query: str) -> dict[str, Any] | None:
+    """개수 단위 뒤 수치 비교(이상/초과/미만/정확값/범위)를 공용 문법으로 파싱해 cart_aggregate 조건으로
+    만든다(없으면 None). 단일 비교는 기존 형태 {metric, operator, threshold} 그대로 두고, 범위/이중경계
+    ('2개에서 5개 사이')일 때만 comparisons=[[op,val],...] 를 추가로 실어 빌더가 HAVING 을 AND 로 잇게 한다.
+    개수라 값은 정수로 정규화한다(3.0→3). 단위(개/종…)는 필수다 — 카트 질의에 섞인 '30~49세'·'6개월'
+    같은 단위 없는 숫자·범위를 흡수하지 않게 한다."""
+    comparisons = _parse_amount_comparison(query, _CART_COUNT_UNIT, bare_equals=False, unit_required=True)
+    if not comparisons:
+        return None
+    normalized = [(op, int(val) if float(val).is_integer() else val) for op, val in comparisons]
+    op0, th0 = normalized[0]
+    condition: dict[str, Any] = {"metric": metric, "operator": op0, "threshold": th0}
+    if len(normalized) > 1:
+        condition["comparisons"] = [[op, val] for op, val in normalized]
+    return condition
+
+
 def _cart_same_product_condition(query: str, compact: str) -> dict[str, Any] | None:
     """'장바구니에 동일 상품을 여러 개 담은'을 라인 수량 임계값으로 해석한다(없으면 None).
 
@@ -4582,12 +4636,9 @@ def _cart_same_product_condition(query: str, compact: str) -> dict[str, Any] | N
     때만 라인 수량(MAX QTY) 지표로 돌린다."""
     if _CART_SAME_PRODUCT_PATTERN.search(compact) is None:
         return None
-    match = _CART_COUNT_PATTERN.search(query)
-    if match is not None:
-        parsed = _CART_COUNT.parse(match)
-        if parsed is not None:
-            operator, threshold = parsed
-            return {"metric": "cart_same_product_quantity", "operator": operator, "threshold": int(threshold)}
+    condition = _cart_comparison_condition("cart_same_product_quantity", query)
+    if condition is not None:
+        return condition
     if any(word in compact for word in _CART_MULTIPLE_WORDS):
         return {
             "metric": "cart_same_product_quantity",
@@ -4630,9 +4681,10 @@ def _apply_cart_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> 
 
     build_cart_aggregate_targets_sql_candidate 가 ODS_MALL_OMS_CART 를 회원별로 집계한 서브쿼리
     (GROUP BY CART_ID HAVING COUNT(DISTINCT CART_PRODUCT_NO) op N)로 컴파일한다. '수량/총 개수' 문맥이면
-    담은 총 수량(SUM SET_QTY), 금액(원)이면 담은 금액 합(SUM TOTAL_SALE_PRICE), 아니면 담은 상품 종류 수
-    (COUNT DISTINCT 라인)로 본다. 장바구니 어휘가 있을 때만 발동해 일반 개수 표현('3개 이상 구매' 등)과
-    섞이지 않게 한다."""
+    담은 총 수량(SUM QTY — QTY 가 '담은 수량', SET_QTY 는 '세트 수량'이라 다르다), 금액(원)이면 담은 금액 합
+    (SUM TOTAL_SALE_PRICE), 아니면 담은 상품 종류 수(COUNT DISTINCT 라인)로 본다. 비교는 공용 문법에 위임해
+    이상/초과/미만/정확값/범위를 모두 처리한다. 장바구니 어휘가 있을 때만 발동해 일반 개수 표현('3개 이상
+    구매' 등)과 섞이지 않게 한다 — 파싱에 실패해도 여기서 멈춰, 카트 질의가 조용히 주문 집계로 새지 않게 한다."""
     compact = query.replace(" ", "")
     if not any(term in compact for term in _lexicon_terms("cart_terms")):
         return
@@ -4644,19 +4696,11 @@ def _apply_cart_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> 
     if amount is not None:
         plan.setdefault("target_user", {})["cart_aggregate"] = amount
         return
-    match = _CART_COUNT_PATTERN.search(query)
-    if match is None:
-        return
-    parsed = _CART_COUNT.parse(match)
-    if parsed is None:
-        return
-    operator, threshold = parsed
     metric = "cart_quantity" if re.search(r"수량|총\s*개수", query) else "cart_line_count"
-    plan.setdefault("target_user", {})["cart_aggregate"] = {
-        "metric": metric,
-        "operator": operator,
-        "threshold": int(threshold),
-    }
+    condition = _cart_comparison_condition(metric, query)
+    if condition is None:
+        return
+    plan.setdefault("target_user", {})["cart_aggregate"] = condition
 
 
 # 한글 기간 단위 → 캐노니컬 영문 단위(슬롯 정규화용). 일수 환산은 targeting_ir.UNIT_DAYS 가 소유한다.
@@ -11291,62 +11335,120 @@ def _member_summary_threshold_subquery(
     )
 
 
+_PRODUCT_SCOPE_TABLE = "CRM_SL_ORDERDETAILMALL"  # 상품 단위 컬럼(PRODUCT_ID/ORDER_QTY/PAYMENT_AMT/DC_AMT) 보유
+_AGG_GRAIN_COLUMN = {"per_order": "ORDER_ID", "per_product": "PRODUCT_ID"}
+
+
+def _scope_predicates(scope: dict[str, Any], alias: str) -> list[str] | None:
+    """브랜드/카테고리 scope 를 상품 마스터(P.*) 술어로. 지원 안 하는 scope 키면 None(범위 결합 불가)."""
+    predicates: list[str] = []
+    for key, value in scope.items():
+        if not (isinstance(value, str) and value):
+            return None
+        if key == "brand":
+            predicates.append(f"{alias}.BRAND_NAME = {_sql_quote(value)}")
+        elif key == "category":
+            predicates.append(
+                "("
+                + " OR ".join(
+                    f"{alias}.{column} = {_sql_quote(value)}"
+                    for column in ("CATEGORYL_NAME", "CATEGORYM_NAME", "CATEGORYS_NAME", "CATEGORY")
+                )
+                + ")"
+            )
+        else:
+            return None  # 미지원 scope 키
+    return predicates
+
+
 def _aggregate_member_subquery(
     config: dict[str, Any], metric: dict[str, Any], operator: str, threshold: int | float,
     window_days: Any, alias: str, purchase_date: Any = None,
+    aggregation_scope: str = "per_member", scope: dict[str, Any] | None = None,
 ) -> str | None:
-    """회원별 집계 조건 서브쿼리(GROUP BY <회원키> HAVING <집계식> <연산자> <임계값>)를 만든다.
+    """회원별 집계 조건 서브쿼리(GROUP BY <회원키>[, grain] HAVING <집계식> <연산자> <임계값>)를 만든다.
 
-    지표 소스는 세 가지로 명확히 분리된다: ①회원 요약 컬럼(source.preferred=member_summary_column, 사전
-    계산 스냅샷 — 기간창 없을 때 우선), ②집계식(expression 템플릿, 기간창·날짜창 반영 가능), ③agg+column.
-    셋 다 해석 불가면 None 을 돌려 SUM(None) 같은 무효 SQL 을 만들지 않는다(호출부가 후보를 무효 처리).
-    상대 기간창(window_days)이 있으면 최근 N일로, 절대 구매창(purchase_date)이 있으면 ORDER_DATE BETWEEN 으로
-    그 기간 주문만 집계한다."""
-    table = config.get("table", "CRM_SL_ORDERHEADERMALL")
+    지표 소스: ①회원 요약 컬럼(스냅샷, 기간창·grain·scope 없을 때만), ②집계식(expression 템플릿),
+    ③agg+column. **aggregation_scope**: per_member(회원 누적)·per_order(주문별)·per_product(상품별) — grain
+    컬럼을 GROUP BY 에 추가한다. **scope**: 브랜드/카테고리면 상품 마스터를 조인(CRM_SL_ORDERDETAILMALL D
+    JOIN CRM_CM_PRODUCT P)해 그 범위 안에서만 집계한다. 셋 다 해석 불가/미지원이면 None(무효 SQL 방지)."""
+    scope = scope or {}
     join_column = config.get("join_column", "MEMBER_NO")
     date_column = config.get("date_column", "ORDER_DATE")
     has_window = (isinstance(window_days, int) and window_days > 0) or purchase_date is not None
+    needs_grain = aggregation_scope in _AGG_GRAIN_COLUMN
+    needs_scope = bool(scope)
 
-    # ① 회원 요약 컬럼 소스: 기간창이 없을 때만(스냅샷은 window 반영 불가). 랭킹(#6)과 같은 사전계산 컬럼을 써
-    #    임계·랭킹의 '객단가' 정의를 일치시킨다.
+    # ① 회원 요약 컬럼: 기간창·grain·scope 가 없을 때만(스냅샷은 그 어느 것도 반영 불가).
     source = metric.get("source") if isinstance(metric.get("source"), dict) else {}
     summary = metric.get("summary") if isinstance(metric.get("summary"), dict) else None
-    if summary and source.get("preferred") == "member_summary_column" and not has_window:
+    if summary and source.get("preferred") == "member_summary_column" and not (has_window or needs_grain or needs_scope):
         summary_sql = _member_summary_threshold_subquery(summary, operator, threshold, alias)
         if summary_sql is not None:
             return summary_sql
 
-    # ②/③ 주문 집계식(기간 창 반영). expression 이 있으면 템플릿을 렌더, 없으면 agg+column.
+    # scope/grain 이 있으면 상품 단위 테이블(D)로 계산한다(PRODUCT_ID/ORDER_QTY 등 보유). 별칭 접두어 결정.
+    table = _PRODUCT_SCOPE_TABLE if (needs_scope or aggregation_scope == "per_product") else (metric.get("table") or config.get("table", "CRM_SL_ORDERHEADERMALL"))
+    use_alias = needs_scope
+    tp = "D." if use_alias else ""
+
+    # ②/③ 집계식/agg+column.
     expression = metric.get("expression")
     if isinstance(expression, str) and expression.strip():
-        agg_expr = _render_aggregate_expression(expression, alias_prefix="")
+        agg_expr = _render_aggregate_expression(expression, alias_prefix=tp)
         if agg_expr is None:
-            return None  # 무효 템플릿 — SUM(None) 류를 빌드로 흘리지 않는다.
+            return None
     else:
         column = metric.get("column")
         if not (isinstance(column, str) and column):
-            return None  # 컬럼도 expression 도 없음 — 무효 지표(SUM(None) 방지).
+            return None
         agg = str(metric.get("agg", "SUM")).upper()
-        agg_expr = f"COUNT(DISTINCT {column})" if metric.get("distinct") else f"{agg}({column})"
+        agg_expr = f"COUNT(DISTINCT {tp}{column})" if metric.get("distinct") else f"{agg}({tp}{column})"
 
-    where = [f"{join_column} IS NOT NULL"]
+    from_lines = [f"    FROM {table}" + (" D" if use_alias else "")]
+    if needs_scope:
+        scope_predicates = _scope_predicates(scope, "P")
+        if scope_predicates is None:
+            return None  # 미지원 scope → 무효(호출부가 처리)
+        from_lines.append(f"         INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID")
+    else:
+        scope_predicates = []
+
+    where = [f"{tp}{join_column} IS NOT NULL"]
     if isinstance(window_days, int) and window_days > 0 and date_column:
-        cutoff = _member_dialect().char8_cutoff(window_days)
-        where.append(f"{date_column} >= {cutoff}")
-    date_between = _purchase_date_predicate(purchase_date, alias=None, column=date_column) if date_column else None
+        where.append(f"{tp}{date_column} >= {_member_dialect().char8_cutoff(window_days)}")
+    date_between = _purchase_date_predicate(purchase_date, alias=("D" if use_alias else None), column=date_column) if date_column else None
     if date_between is not None:
         where.append(date_between)
+    where.extend(scope_predicates)
+
+    group_columns = [f"{tp}{join_column}"]
+    grain_column = _AGG_GRAIN_COLUMN.get(aggregation_scope)
+    if grain_column:
+        group_columns.append(f"{tp}{grain_column}")
+
     return "\n".join(
         [
             "(",
-            f"    SELECT {join_column}",
-            f"    FROM {table}",
+            f"    SELECT {tp}{join_column}",
+            *from_lines,
             f"    WHERE {' AND '.join(where)}",
-            f"    GROUP BY {join_column}",
+            f"    GROUP BY {', '.join(group_columns)}",
             f"    HAVING {agg_expr} {operator} {_format_threshold(threshold)}",
             f") {alias}",
         ]
     )
+
+
+def _aggregate_subquery_matches_metric(metric: dict[str, Any], subquery: str) -> bool:
+    """생성된 집계 서브쿼리가 지표 스펙과 일치하는지(집계 컬럼 존재) 검증한다. 식(expression)·요약(summary)
+    소스는 렌더/소스 선택에서 이미 검증되므로 통과시키고, agg+column 지표만 컬럼 존재를 확인한다."""
+    if metric.get("expression") or metric.get("summary"):
+        return True
+    column = metric.get("column")
+    if not (isinstance(column, str) and column):
+        return True
+    return column in subquery
 
 
 def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
@@ -11386,6 +11488,8 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
         subquery = _aggregate_member_subquery(
             config, metric, condition["operator"], condition["threshold"], condition.get("window_days"), alias,
             purchase_date=purchase_date,
+            aggregation_scope=condition.get("aggregation_scope", "per_member"),
+            scope=condition.get("scope"),
         )
         if subquery is None:
             # 지표가 컬럼/식/요약 어느 소스로도 해석되지 않음 → 무효 SQL(SUM(None) 등)을 만들지 않는다.
@@ -11394,6 +11498,16 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
                 "reason": "unresolved_aggregate_column",
                 "message": f"집계 지표 '{condition['metric_id']}' 를 유효한 컬럼/식/요약 컬럼으로 해석할 수 없습니다.",
                 "clarification": "해당 지표의 집계 정의(컬럼/식/요약 컬럼)가 없어 SQL 을 만들 수 없습니다. 지표 설정을 확인해 주세요.",
+                "metric_id": condition["metric_id"],
+            }
+            return None
+        # metric_id ↔ SQL 집계식 일치 검증(설정/빌더 드리프트 방지): 예) distinct_product_count 가 PRODUCT_ID
+        # 아닌 ORDER_ID 로 컴파일되면 실패 처리(그럴듯한 오답 SQL 출고 금지).
+        if not _aggregate_subquery_matches_metric(metric, subquery):
+            query_plan["unsupported"] = {
+                "reason": "metric_aggregation_mismatch",
+                "message": f"집계 지표 '{condition['metric_id']}' 가 기대한 집계 컬럼으로 컴파일되지 않았습니다.",
+                "clarification": "지표 정의와 생성된 집계식이 일치하지 않습니다. 지표 설정을 확인해 주세요.",
                 "metric_id": condition["metric_id"],
             }
             return None
@@ -11448,13 +11562,19 @@ def build_cart_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> di
     condition = query_plan.get("target_user", {}).get("cart_aggregate")
     if not isinstance(condition, dict):
         return None
-    operator = condition.get("operator")
-    threshold = condition.get("threshold")
-    if operator not in {"=", ">", ">=", "<", "<="} or not isinstance(threshold, (int, float)):
+    # 단일 비교는 (operator, threshold), 범위/이중경계는 comparisons=[[op,val],...]. 후자를 우선 읽고
+    # 없으면 단일을 리스트로 감싼다 — HAVING 을 여러 술어의 AND 로 잇는다('2개~5개 사이' 등).
+    raw_comparisons = condition.get("comparisons") or [[condition.get("operator"), condition.get("threshold")]]
+    comparisons = [
+        (op, th) for op, th in raw_comparisons
+        if op in {"=", ">", ">=", "<", "<="} and isinstance(th, (int, float))
+    ]
+    if not comparisons:
         return None
     metric = condition.get("metric") if condition.get("metric") in _CART_AGGREGATE_METRIC_EXPRESSIONS else "cart_line_count"
     agg_expr = _CART_AGGREGATE_METRIC_EXPRESSIONS[metric]
-    label = metric + operator + _format_threshold(threshold)
+    having_expr = " AND ".join(f"{agg_expr} {op} {_format_threshold(th)}" for op, th in comparisons)
+    label = metric + "".join(op + _format_threshold(th) for op, th in comparisons)
     # 보관 기간('일주일 이상 담아둔')이 함께 오면 집계 대상 라인도 담은 시점으로 좁힌다.
     retention_filter = "".join(" AND " + predicate for predicate in _cart_retention_predicates(query_plan, alias=""))
     # 유형('정기배송 상품 3개 이상 담은')이 함께 오면 집계 대상 라인도 그 유형으로 좁힌다. 보관 상태
@@ -11471,7 +11591,7 @@ def build_cart_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> di
     inner = (
         f"SELECT {cart_key} FROM {cart_table} "
         f"WHERE {cart_key} IS NOT NULL{line_filters}{retention_filter} "
-        f"GROUP BY {cart_key} HAVING {agg_expr} {operator} {_format_threshold(threshold)}"
+        f"GROUP BY {cart_key} HAVING {having_expr}"
     )
     compiled = compile_member_target_conditions(query_plan)
     where_clauses = [f"{member_side} IN ({inner})", *compiled["predicates"]]

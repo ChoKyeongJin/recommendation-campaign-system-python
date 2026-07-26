@@ -659,6 +659,7 @@
     "date_format": "yyyyMMdd",
     "metrics": {
       "purchase_amount": {
+        "semantic_type": "sum",
         "agg": "SUM",
         "column": "PAYMENT_AMT",
         "null_as": 0,
@@ -675,9 +676,13 @@
           "구매총액",
           "구매 총금액",
           "총 결제액"
-        ]
+        ],
+        "units": ["원"],
+        "hint_terms": ["금액", "결제", "구매액"],
+        "anti_hint_terms": ["수량", "종류", "서로 다른", "개수", "할인", "종수"]
       },
       "order_count": {
+        "semantic_type": "count_distinct",
         "agg": "COUNT",
         "column": "ORDER_ID",
         "distinct": true,
@@ -694,11 +699,76 @@
           "주문건수",
           "주문 수",
           "주문수"
-        ]
+        ],
+        "units": ["회", "번", "건", "건수", "회수"],
+        "hint_terms": ["주문", "구매 횟수", "주문 횟수", "구매 건수"],
+        "anti_hint_terms": ["수량", "종류", "서로 다른", "개수", "할인", "금액", "종수"]
+      },
+      "total_item_quantity": {
+        "semantic_type": "sum",
+        "agg": "SUM",
+        "column": "ORDER_QTY",
+        "table": "CRM_SL_ORDERDETAILMALL",
+        "null_as": 0,
+        "ko_label": "상품 수량",
+        "synonyms": [
+          "누적 상품 구매 수량",
+          "상품 구매 수량",
+          "누적 구매 수량",
+          "상품 수량",
+          "구매 수량",
+          "상품 개수",
+          "구매한 개수",
+          "구매 개수"
+        ],
+        "units": ["개", "수량", "점"],
+        "hint_terms": ["수량", "개수"],
+        "anti_hint_terms": ["종류", "서로 다른", "금액", "할인", "횟수", "종수", "건수"]
+      },
+      "distinct_product_count": {
+        "semantic_type": "count_distinct",
+        "agg": "COUNT",
+        "distinct": true,
+        "column": "PRODUCT_ID",
+        "table": "CRM_SL_ORDERDETAILMALL",
+        "ko_label": "서로 다른 상품 수",
+        "synonyms": [
+          "구매 상품 종류",
+          "서로 다른 상품 수",
+          "상품 종류",
+          "상품 종수",
+          "상품 가짓수",
+          "품목 수",
+          "품목수"
+        ],
+        "units": ["종", "종류", "가지", "품목"],
+        "hint_terms": ["종류", "서로 다른", "종", "품목", "가지", "종수"],
+        "anti_hint_terms": ["수량", "금액", "할인", "횟수"]
+      },
+      "discount_amount": {
+        "semantic_type": "sum",
+        "agg": "SUM",
+        "column": "DC_AMT",
+        "null_as": 0,
+        "ko_label": "할인 금액",
+        "synonyms": [
+          "할인 금액",
+          "할인금액",
+          "할인액",
+          "쿠폰 할인 금액",
+          "적용된 할인"
+        ],
+        "units": ["원"],
+        "hint_terms": ["할인"],
+        "anti_hint_terms": ["종류", "수량", "횟수", "종수"]
       },
       "average_order_amount": {
+        "semantic_type": "ratio",
         "ko_label": "평균 주문 금액",
         "synonyms": ["평균 주문 금액", "객단가", "평균 결제 금액"],
+        "units": ["원"],
+        "hint_terms": ["객단가", "평균 주문", "평균 결제"],
+        "anti_hint_terms": ["수량", "종류", "할인", "횟수", "종수"],
         "source": {
           "preferred": "member_summary_column",
           "fallback": "aggregate_expression"

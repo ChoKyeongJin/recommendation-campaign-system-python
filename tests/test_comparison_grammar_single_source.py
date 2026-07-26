@@ -34,8 +34,9 @@ def test_operator_map_single_source_across_module_boundary():
 
 def test_domain_patterns_reference_shared_operator_alternation():
     # 도메인 임계 정규식들은 공용 열거(_OP_ALT_BASIC)를 참조해야 한다(인라인 '이상|초과|이하|미만' 금지).
+    # (cart_count 는 이제 전용 정규식 없이 공용 _parse_amount_comparison 문법에 직접 위임 —
+    #  test_cart_count_uses_shared_comparison_grammar 참조.)
     for name, pattern in (
-        ("cart_count", g._CART_COUNT_PATTERN),
         ("cart_amount", g._CART_AMOUNT_PATTERN),
         ("campaign_freq", g._CAMPAIGN_FREQ_COUNT_PATTERN),
         ("campaign_amount", g._CAMPAIGN_AMOUNT_THRESHOLD_PATTERN),
@@ -57,15 +58,16 @@ def test_threshold_factory_builds_from_shared_vocabulary():
     assert m2 and m2.group("num") == "10" and m2.group("mag") == "만" and m2.group("op") == "미만"
 
 
-def test_factory_migration_is_behavior_neutral_for_cart_count():
-    # cart_count 는 예전 인라인 정규식과 동일 매칭(명명 unit 그룹만 non-capturing 으로 바뀜).
-    import re
-    old = re.compile(r"(?P<num>\d+)\s*(?:개|종류|가지|건|품목)\s*(?P<op>이상|초과|이하|미만)")
-    for s in ("3개 이상", "5종류 초과", "10 품목 이하", "2가지미만", "매칭없음"):
-        mo, mn = old.search(s), g._CART_COUNT_PATTERN.search(s)
-        assert (mo is None) == (mn is None)
-        if mo:
-            assert mo.group("num") == mn.group("num") and mo.group("op") == mn.group("op")
+def test_cart_count_uses_shared_comparison_grammar():
+    # cart_count 는 전용 임계 정규식(_CART_COUNT)을 버리고 공용 _parse_amount_comparison 에 개수 단위만
+    # 넘겨 위임한다 — 그래서 주문/상품 집계 경로와 동일하게 이상/초과/미만/정확값/범위를 모두 처리한다.
+    parse = lambda s: g._parse_amount_comparison(s, g._CART_COUNT_UNIT, bare_equals=False)
+    assert parse("3개 이상") == [(">=", 3)]
+    assert parse("10개를 초과") == [(">", 10)]          # 단위-연산자 사이 조사(를) + '초과'
+    assert parse("상품 종류가 3종 이상") == [(">=", 3)]   # '종' 단위
+    assert parse("정확히 3개") == [("=", 3)]             # 정확값
+    assert parse("2개에서 5개 사이") == [(">=", 2), ("<=", 5)]  # 범위 → 두 술어
+    assert parse("매칭 없음") is None
 
 
 # ── 타입 스펙 기반 생성기(_ThresholdSpec → regex + 파서) ──────────────────────────────
@@ -105,8 +107,9 @@ def test_threshold_custom_parse_hook_overrides_default():
 
 
 def test_migrated_domains_use_threshold_matchers():
-    # cart/count/cell/campaign_buy 는 스펙 기반 matcher 로 이전됐다(전용 파서 없이 스펙이 regex+값해석 소유).
-    for name in ("_CART_COUNT", "_CART_AMOUNT", "_CAMPAIGN_FREQ", "_CELL_RATE", "_CAMPAIGN_BUY_AMOUNT"):
+    # cart_amount/count/cell/campaign_buy 는 스펙 기반 matcher 로 이전됐다(전용 파서 없이 스펙이 regex+값해석
+    # 소유). cart_count(개수)는 여기서 한 발 더 나아가 공용 _parse_amount_comparison 에 직접 위임한다.
+    for name in ("_CART_AMOUNT", "_CAMPAIGN_FREQ", "_CELL_RATE", "_CAMPAIGN_BUY_AMOUNT"):
         matcher = getattr(g, name)
         assert isinstance(matcher, g._ThresholdMatcher), f"{name} 이 _ThresholdMatcher 가 아님"
         assert g._OP_ALT_BASIC in matcher.regex
