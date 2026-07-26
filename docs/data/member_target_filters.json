@@ -1075,6 +1075,37 @@
     "exclude_null_or_empty": true
   },
 
+  "group_ranking_axes": {
+    "_doc": "그룹별 회원 Top-N(그룹마다 상위 N명씩)의 그룹 축 정의(단일 소스). 공통 윈도 랭킹 빌더가 여기서 그룹 SQL 식·표시 컬럼·NULL 정책만 주입받는다. 새 축은 여기 한 항목 추가로 열린다(빌더 코드 복제 없음). region 축은 region_density 의 granularity_columns 를 재사용한다.",
+    "gender": {
+      "group_expr": "B.GENDER_CD",
+      "select_alias": "gender",
+      "coverage_token": "GENDER_CD",
+      "include_null": false,
+      "label": "성별",
+      "markers": ["성별로", "성별 로", "성별마다", "성별 마다", "성별별", "남녀별", "남녀 별"]
+    },
+    "age_group": {
+      "group_expr": "__age_band__",
+      "select_alias": "age_group",
+      "coverage_token": "AGE",
+      "include_null": false,
+      "label": "연령대",
+      "markers": ["연령대별", "연령대 별", "나이대별", "나이대 별", "연령별", "나이별", "세대별", "연령대마다", "나이대마다"],
+      "age_band": {
+        "column": "B.AGE",
+        "bands": [
+          [20, "10대 이하"],
+          [30, "20대"],
+          [40, "30대"],
+          [50, "40대"],
+          [60, "50대"]
+        ],
+        "else_label": "60대 이상"
+      }
+    }
+  },
+
   "macro_regions": {
     "column": "SIDO",
     "groups": {

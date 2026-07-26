@@ -28,18 +28,20 @@ _RULES_POST_SNAPSHOT = (
     "cart_repurchase", "cart_presence", "cart_absence", "inactivity_period", "recent_login",
     "signup_channel", "signup_device", "ratio_metric", "balance_condition", "balance_selection", "action_metric",
     "campaign_response", "no_additional_purchase", "campaign_response_frequency", "campaign_buy_amount",
-    "cell_rate", "children_registered", "grade_threshold", "channel_consent", "member_flag", "policy",
-    "region_density", "member_metric_ranking", "purchase_count_ranking",
+    "campaign_buy_count", "cell_rate", "children_registered", "grade_threshold", "channel_consent", "member_flag", "policy",
+    "group_ranking", "region_member_count", "region_density", "member_metric_ranking", "purchase_count_ranking",
+    "zero_amount_purchase", "zero_purchase_count",
 )
 _AUTO_SNAPSHOT = (
-    "sell_object", "dimension", "member_value", "macro_region", "region_density",
+    "sell_object", "dimension", "member_value", "macro_region",
+    "group_ranking", "region_member_count", "region_density",
     "member_metric_ranking", "purchase_count_ranking", "purchase_object", "purchase_date",
     "result_limit", "purchase_inactivity", "recent_login", "signup_channel", "signup_device",
     "ratio_metric", "balance_condition", "balance_selection", "action_metric", "campaign_response", "no_additional_purchase",
     "cart_presence", "cart_absence", "campaign_response_frequency", "children_registered",
     "grade_threshold", "channel_consent", "member_flag", "aggregate", "purchase_count_threshold",
-    "campaign_buy_amount", "cell_rate", "cart_aggregate", "cart_retention", "cart_type",
-    "birthday", "signup_target",
+    "campaign_buy_amount", "campaign_buy_count", "cell_rate", "cart_aggregate", "cart_retention", "cart_type",
+    "birthday", "signup_target", "zero_amount_purchase", "zero_purchase_count",
 )
 
 
@@ -67,6 +69,8 @@ _ORDER_DEPENDENCIES = (
     ("aggregate", "purchase_count_threshold"),
     # '캠페인 구매금액'은 누적 금액·반응 파싱 뒤(이중 파싱 제거).
     ("campaign_response", "campaign_buy_amount"),
+    # '캠페인 구매건수'는 집계(aggregate) 뒤에 실행해 order_count 로 이중 파싱된 걸 걷어낸다.
+    ("aggregate", "campaign_buy_count"),
     # '성공률/구매율'(셀 비율)도 캠페인 반응 뒤(오배정 접촉성공 EXISTS 제거).
     ("campaign_response", "cell_rate"),
     # 파생 비율('하루 평균 로그인 횟수')은 원 임계(balance_condition) 앞에 실행해 CNT/DAYS 비로 먼저 확정.
@@ -74,6 +78,16 @@ _ORDER_DEPENDENCIES = (
     # 광역 권역어(수도권 등)는 값 인덱스(member_value/dimension) 뒤에 실행해 명시 시도와 병합.
     ("member_value", "macro_region"),
     ("dimension", "macro_region"),
+    # '구매 횟수 0회 → no_purchase' 승격은 집계(aggregate) 뒤에 실행해 order_count '='0(공집합) 조건을 걷어낸다.
+    ("aggregate", "zero_purchase_count"),
+    # '구매 있지만 결제 0원 → 결제금액 집계 =0' 주입도 집계 뒤(중복 결제금액 임계 방지, 0원 게이트 앞).
+    ("aggregate", "zero_amount_purchase"),
+    # 그룹별 회원 Top-N('지역별 … N명씩')은 전역 회원 랭킹/지역밀집 랭킹보다 먼저 실행해 그룹 의도를
+    # 먼저 확정한다(전역 랭킹이 '매출 높은 회원'을 가로채 그룹을 버리던 문제 방지 — 라우팅 우선순위).
+    ("group_ranking", "member_metric_ranking"),
+    ("group_ranking", "region_density"),
+    # 지역 회원 수 랭킹도 지역밀집(거주 회원 추출)보다 먼저 실행해 지역-집계 의도를 먼저 확정한다.
+    ("region_member_count", "region_density"),
 )
 
 

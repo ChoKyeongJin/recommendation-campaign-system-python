@@ -395,6 +395,9 @@ SLOT_SHAPES: dict[str, SlotShape] = {
     "campaign_buy_amount": SlotShape("campaign_buy_amount", "target_user",
         _obj_schema(f"캠페인 귀속 구매금액 임계. {{operator, amount, window_days?}}. {_OP_HINT}"),
         _coerce_buy_amount),
+    "campaign_buy_count": SlotShape("campaign_buy_count", "target_user",
+        _obj_schema(f"캠페인 귀속 구매 건수 임계. {{operator, count, window_days?}}. {_OP_HINT}"),
+        _coerce_freq),
     "cell_rate_target": SlotShape("cell_rate_target", "target_user",
         _obj_schema(f"셀 성공률/구매율. {{success_rate:{{operator,value}}, buy_rate:{{operator,value}}}} (value 0~100). {_OP_HINT}"),
         _coerce_cell_rate),
@@ -605,6 +608,18 @@ CONDITION_SPECS: tuple[ConditionSpec, ...] = (
             applies=lambda p: isinstance(p.get("amount"), (int, float)),
         ),
     ),
+    # 캠페인 '귀속 구매 건수'(반응 팩트에서 구매반응 캠페인 수) — 전 생애 주문 건수(order_count)와 다른
+    # 지표라 별도 kind. 귀속 금액과 같은 캠페인 팩트 집계 빌더가 소유(같은 서브쿼리에서 HAVING AND).
+    ConditionSpec(
+        kind="campaign_buy_count", fact="campaign", fact_join=True, signals_target=True,
+        extract=_tu_dict("campaign_buy_count"),
+        confidence=ConfidenceMeta(
+            kind="campaign_response", category="purchase",
+            key=lambda p: "campaign_buy_count", value=lambda p: p.get("count"),
+            ko=lambda p: p.get("label") or f"캠페인 구매건수 {p.get('count')} 조건",
+            applies=lambda p: isinstance(p.get("count"), int),
+        ),
+    ),
     # 캠페인 반응(EXISTS ≥1회)은 회원키 EXISTS 술어로 어느 빌더에나 AND 결합 가능 → fact_join 아님.
     ConditionSpec(
         kind="campaign_responses", fact="campaign", fact_join=False, signals_target=True,
@@ -713,6 +728,17 @@ CONDITION_SPECS: tuple[ConditionSpec, ...] = (
     ConditionSpec(
         kind="region_density_target", fact="region", fact_join=True, signals_target=True,
         extract=_plan_dict("region_density_target"),
+    ),
+    ConditionSpec(
+        # 그룹별 회원 Top-N('지역별로 매출 높은 회원 N명씩'): PARTITION BY(그룹) 윈도로 그룹당 상위 N 명.
+        # 전용 윈도 함수 빌더(build_group_ranking_sql_candidate)가 소유한다(회원 지표 조인 + 파생 테이블).
+        kind="group_ranking_target", fact="order", fact_join=True, signals_target=True,
+        extract=_plan_dict("group_ranking_target"),
+    ),
+    ConditionSpec(
+        # 지역 단위 회원 수 집계 랭킹('회원 수 많은 시군구 상위 N개'): 지역+회원수 반환(지역 그룹 집계).
+        kind="region_member_count_target", fact="region", fact_join=True, signals_target=True,
+        extract=_plan_dict("region_member_count_target"),
     ),
 )
 

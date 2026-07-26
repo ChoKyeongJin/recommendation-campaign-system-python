@@ -28,7 +28,9 @@ def _ranking(query: str):
 
 def test_metric_criterion_top_n_phrasing():
     r = _ranking("누적 구매 금액 기준 상위 100명의 회원을 보여줘.")
-    assert r == {"metric_id": "total_buy_amt", "metric_label": "매출", "top_n": 100, "direction": "high"}
+    # limit_type 필드가 추가됨(count vs percent) — 핵심 필드만 확인한다.
+    assert r["metric_id"] == "total_buy_amt" and r["metric_label"] == "매출"
+    assert r["top_n"] == 100 and r["direction"] == "high" and r["limit_type"] == "count"
 
 
 def test_bare_top_n_with_metric_in_sentence():

@@ -70,13 +70,17 @@ def load_set_term_catalog(normalization_path: Path = DEFAULT_NORMALIZATION_PATH)
 
 
 def _parse_set_expression(query: str, term_catalog: list[dict[str, str]]) -> dict[str, Any] | None:
+    # detection: 어느 파싱 전략이 집합식을 만들었나. natural/postfix 는 명시적 집합-구조 표지(포함·남기고·
+    # 그중·중에서·교집합·합집합·차집합·에서…제외)를 요구하는 '진짜 집합연산'이고, operator_scan 은 접속어
+    # (또는/그리고/and/or)만으로 발동하는 일반 폴백이다. 후자는 '서울 또는 경기' 같은 평범한 dimension OR 을
+    # 집합식으로 오탐할 수 있어, 상위(graph_rag)가 dimension-소유 여부로 리던던시를 판정할 때 이 태그로 구분한다.
     natural_ast = _parse_korean_natural_set_expression(query, term_catalog)
     if natural_ast is not None:
-        return _set_expression_result(query, natural_ast)
+        return _set_expression_result(query, natural_ast, "natural")
 
     postfix_ast = _parse_korean_postfix_set_expression(query, term_catalog)
     if postfix_ast is not None:
-        return _set_expression_result(query, postfix_ast)
+        return _set_expression_result(query, postfix_ast, "postfix")
 
     tokens = _scan_set_tokens(query, term_catalog)
     if not any(token["kind"] == "op" for token in tokens):
@@ -91,12 +95,13 @@ def _parse_set_expression(query: str, term_catalog: list[dict[str, str]]) -> dic
             "requires_clarification": True,
             "clarification_question": "집합식의 괄호나 연산자 위치를 해석할 수 없습니다.",
             "source": "rules_set_expression",
+            "detection": "operator_scan",
         }
 
-    return _set_expression_result(query, ast)
+    return _set_expression_result(query, ast, "operator_scan")
 
 
-def _set_expression_result(query: str, ast: dict[str, Any]) -> dict[str, Any]:
+def _set_expression_result(query: str, ast: dict[str, Any], detection: str) -> dict[str, Any]:
     unknown_terms = _unknown_terms(ast)
     return {
         "expression_id": "segment_set_expression",
@@ -106,6 +111,7 @@ def _set_expression_result(query: str, ast: dict[str, Any]) -> dict[str, Any]:
         "requires_clarification": bool(unknown_terms),
         "clarification_question": _clarification_question(unknown_terms),
         "source": "rules_set_expression",
+        "detection": detection,
     }
 
 
