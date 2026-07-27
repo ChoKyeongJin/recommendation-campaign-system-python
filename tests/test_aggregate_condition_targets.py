@@ -231,6 +231,66 @@ def test_generic_product_word_not_used_as_scope():
     assert "GROUP BY MEMBER_NO, PRODUCT_ID" in sql
 
 
+# --- 나열형 다중 상품('기저귀와 건강식품을 2번 이상') → 상품별 집계 서브쿼리 AND(각 상품 각각 N번 이상) ---
+# 배경: 상품 슬롯이 단일 문자열이라 'A와 B를 2번 이상 구매'가 (1) A만 걸거나 (2) 'A B'로 뭉쳐(LIKE '%A B%')
+# 아무도 안 걸리는 두 소실이 있었다. 이제 목적격 조사 앵커로 상품 나열을 상품별 리스트로 뽑고, 집계 빌더가
+# 상품마다 별도 HAVING 서브쿼리를 만들어 INNER JOIN(AND)한다 — '각 상품 각각 2번 이상'.
+
+def test_multi_product_conjunction_splits_into_list():
+    plan = g.build_query_plan("기저귀와 건강식품을 2회 이상 구매한 고객")
+    objects = plan["target_user"].get("purchase_objects")
+    assert [o["value"] for o in objects] == ["기저귀", "건강식품"]
+
+
+def test_multi_product_order_count_fans_out_per_product():
+    plan = g.build_query_plan("2019년 상반기에 기저귀와 건강식품을 2회 이상 구매한 고객")
+    sql = g.build_aggregate_targets_sql_candidate(plan)["sql"]
+    # 상품별 별도 서브쿼리 2개(AGG0/AGG1) 각각 HAVING COUNT >= 2 로 AND(INNER JOIN) 결합된다.
+    assert sql.count("HAVING COUNT(DISTINCT D.ORDER_ID) >= 2") == 2
+    assert "P.PRODUCT_NAME LIKE N'%기저귀%'" in sql
+    assert "P.PRODUCT_NAME LIKE N'%건강식품%'" in sql
+    # '기저귀 건강식품' 로 뭉치는 소실이 없다.
+    assert "N'%기저귀 건강식품%'" not in sql
+    # 절대 구매창도 각 상품 서브쿼리 안에서 함께 걸린다.
+    assert sql.count("D.ORDER_DATE BETWEEN '20190101' AND '20190630'") == 2
+
+
+def test_multi_product_no_count_ands_per_member_presence():
+    # 개수 조건 없는 나열형('A와 B를 구매')은 '두 상품 모두 구매' — 한 상세행은 상품 하나라 회원 단위로
+    # 상품별 존재 서브쿼리를 INNER JOIN(AND)한다(같은 행 두 LIKE AND = 공집합 방지).
+    plan = g.build_query_plan("기저귀와 건강식품을 구매한 고객")
+    cand = g.build_purchase_history_targets_sql_candidate(plan)
+    sql = cand["sql"]
+    assert "OBJ0" in sql and "OBJ1" in sql
+    assert "P.PRODUCT_NAME LIKE N'%기저귀%'" in sql
+    assert "P.PRODUCT_NAME LIKE N'%건강식품%'" in sql
+
+
+def test_product_internal_conjunction_char_not_split():
+    # 명사 내부의 과/와(과자·사과)는 접속조사가 아니므로 쪼개지 않는다(뒤에 공백+다음 명사가 없음).
+    plan = g.build_query_plan("과자를 구매한 고객")
+    assert plan["target_user"].get("purchase_objects") is None
+    assert plan["target_user"].get("purchase_object") == "과자"
+
+
+def test_conjunction_before_unrelated_object_not_hijacked():
+    # '남성과 여성을 대상으로 기저귀를 구매' — 데모그래픽 나열('남성과 여성을')이 상품으로 새면 안 되고,
+    # 실제 상품('기저귀')은 단일 경로가 잡는다(목적격 조사 앵커가 구매 동사 직결을 요구해 오검출 차단).
+    assert g._extract_purchase_object_list("남성과 여성을 대상으로 기저귀를 구매한 고객") == []
+    plan = g.build_query_plan("남성과 여성을 대상으로 기저귀를 구매한 고객")
+    assert plan["target_user"].get("purchase_objects") is None
+    assert plan["target_user"].get("purchase_object") == "기저귀"
+
+
+def test_three_product_mixed_connectors_split():
+    # 쉼표 + 과 혼합 나열('우유, 빵과 계란')도 상품 3개로 분리된다.
+    assert [o["value"] for o in g._extract_purchase_object_list("우유, 빵과 계란을 구매한 고객")] == [
+        "우유",
+        "빵",
+        "계란",
+    ]
+
+
 # --- 롤링 윈도우(최근 N일) 보존: '최근 90일 3회'가 '전체 기간 3회'로 조용히 왜곡되던 회귀 고정 ---
 # 배경: 지표명 없는 개수 임계값 경로(_apply_purchase_count_threshold_filter)가 window_days=None 을
 # 하드코딩해, 롤링 윈도우가 통째로 소실됐다(의미 왜곡). 이제 그 경로도 _parse_recent_window_days 를

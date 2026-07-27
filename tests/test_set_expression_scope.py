@@ -40,3 +40,21 @@ def test_genuine_refinement_is_still_a_set_expression():
 def test_genuine_difference_is_still_a_set_expression():
     plan = _plan("VIP 고객에서 휴면 고객을 제외")
     assert len(plan["set_expressions"]) == 1
+
+
+def test_aggregate_cohort_with_gender_exclusion_is_not_blocked_by_set_parser():
+    # 집계 타겟을 base set operand 로 억지 컴파일하지 않는다. 구매금액은 aggregate_conditions가,
+    # 남성 제외는 exclude.gender가 각각 소유해야 한다.
+    plan = _plan("2019년에 20만원 이상 구매한 고객 중 남성을 제외한 고객")
+    assert plan["set_expressions"] == []
+    assert plan["exclude"]["gender"] == ["male"]
+    amount = next(c for c in plan["target_user"]["aggregate_conditions"] if c.get("metric_id") == "purchase_amount")
+    assert amount["threshold"] == 200000
+    assert amount["window_days"] is None  # 2019년은 절대 연도이며 2019년짜리 rolling window가 아님
+
+
+def test_rewritten_exclusion_ending_is_parsed_without_unknown_operand():
+    plan = _plan("2019년에 이십만원 이상을 구매한 고객에서 남자는 제외해.")
+    assert plan["set_expressions"] == []
+    assert plan["exclude"]["gender"] == ["male"]
+    assert plan["target_user"]["aggregate_conditions"][0]["threshold"] == 200000

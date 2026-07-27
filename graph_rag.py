@@ -999,6 +999,68 @@ _PURCHASE_SIGNAL_STOPWORDS = {"이상", "이하", "미만", "초과", "회", "�
 # (_sanitize_purchase_object)에서 걸러 '2개 이상 상품 구입' 의 '2개'/'이상' 이 LIKE 로 새지 않게 한다.
 _QUANTITY_COUNT_TOKEN = re.compile(r"^\d+(?:개|회|번|건|원|명|장|종|가지|종류|품목|매|권)?$")
 
+# 상품 나열 연결어("기저귀와 건강식품", "우유, 빵과 계란"). 와/과/랑/이랑 은 앞 명사에 붙는 접속조사라
+# 명사 내부의 과/와(과자·사과·와플)와 구분하려 '앞이 한글 + 뒤가 공백'일 때만 연결어로 본다(lookbehind +
+# 뒤 \s+). 및/그리고/쉼표는 독립형이라 앞뒤 공백만 본다. 이 규칙이 있어야 단일 상품('아기 기저귀')은 공백이
+# 있어도 쪼개지지 않고, 진짜 나열('기저귀와 건강식품')만 상품별로 분리된다.
+_PRODUCT_CONJUNCTION_RE = re.compile(
+    r"(?:(?<=[가-힣])(?:와|과|랑|이랑)\s+|\s*(?:및|그리고)\s+|\s*[,、]\s*)"
+)
+# '상품 나열' 사슬(연결어로 이어진 2~5개 상품)이 목적격 조사(을/를)로 끝나는 형태를 통째로 잡는다. 연결어를
+# 최소 1개 요구해 단일 상품은 여기 안 걸리고(기존 _PURCHASE_OBJECT_PATTERN 담당), 목적격 조사로 끝나야
+# 나열 대상이 '구매 목적어'임을 보장한다. 구매 동사가 사슬 바로 뒤가 아니라 개수어를 사이에 두고 떨어져
+# 있어도('기저귀와 건강식품을 2회 이상 구매') 목적격 조사 앵커로 잡히므로, 호출부는 구매 신호가 있을 때만
+# 이 패턴을 쓴다(비구매 나열 '서울과 부산을 대상으로'의 오검출을 구매 신호 게이트로 차단).
+_PURCHASE_OBJECT_CHAIN_PATTERN = re.compile(
+    r"(?P<chain>[0-9A-Za-z가-힣_+\-]{1,40}"
+    r"(?:(?:(?<=[가-힣])(?:와|과|랑|이랑)\s+|\s*(?:및|그리고)\s+|\s*[,、]\s*)"
+    r"[0-9A-Za-z가-힣_+\-]{1,40}){1,4})"
+    r"\s*(?:을|를)(?![0-9A-Za-z가-힣])"
+    # 이 목적격 조사가 '구매'의 목적어임을 보장 — 뒤로 짧은 필러(개수·비교어·부사, 다른 목적격 조사 을/를은
+    # 불허)를 지나 구매 동사가 나와야 한다. 이 앵커가 없으면 '남성과 여성을 대상으로 기저귀를 구매'에서
+    # 데모그래픽 나열('남성과 여성을')을 상품으로 오검출한다(그 경우 뒤의 '기저귀를'의 를이 필러를 막아 거부).
+    r"(?=[^을를]{0,15}?(?:구매|구입|주문|샀|산(?=\s)))",
+    re.IGNORECASE,
+)
+
+
+def _split_product_terms(value: str) -> list[str]:
+    """상품 나열 문자열을 개별 상품 표면어 리스트로 나눈다('기저귀와 건강식품'→['기저귀','건강식품']).
+
+    연결어(_PRODUCT_CONJUNCTION_RE)가 없으면 정제값 1개만 반환한다 — 공백 포함 단일 상품명('아기 기저귀')을
+    억지로 쪼개지 않기 위함이다. 각 조각은 _sanitize_purchase_object 로 조사/수량어를 털고, 일반명사(상품/제품)와
+    중복은 제외한다."""
+    if not isinstance(value, str) or not value.strip():
+        return []
+    terms: list[str] = []
+    for part in _PRODUCT_CONJUNCTION_RE.split(value):
+        cleaned = _sanitize_purchase_object(part)
+        if cleaned and cleaned not in _GENERIC_PRODUCT_NOUNS and cleaned not in terms:
+            terms.append(cleaned)
+    return terms
+
+
+def _extract_purchase_object_list(query: str) -> list[dict[str, Any]]:
+    """'A와 B를 (… 구매)' 나열형에서 상품별 {value, kind} 리스트를 뽑는다(연결어 사슬이 없으면 빈 리스트).
+
+    값은 _canonicalize_product_term 으로 DB 표기 보정하고, 실DB 브랜드명과 일치하면 kind='brand' 로 표시해
+    빌더가 컬럼을 좁힐 수 있게 한다. 단일 상품은 여기서 잡지 않는다(_apply_purchase_object_filter 단일 경로 소유).
+    사슬 패턴이 목적격 조사만 앵커로 쓰므로, 비구매 나열('서울과 부산을')을 배제하려 구매 신호가 있을 때만 쓴다."""
+    if not _has_purchase_history_signal(query):
+        return []
+    match = _PURCHASE_OBJECT_CHAIN_PATTERN.search(query)
+    if not match:
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for term in _split_product_terms(match.group("chain")):
+        canonical = _canonicalize_product_term(term)
+        if not canonical or canonical in _GENERIC_PRODUCT_NOUNS or canonical in seen:
+            continue
+        seen.add(canonical)
+        result.append({"value": canonical, "kind": "brand" if _is_known_brand_term(canonical) else None})
+    return result
+
 
 def _purchase_object_signals(text: str) -> set[str]:
     """텍스트에서 상품 구매 이력 조건의 상품명(canonical 소문자) 집합을 뽑는다(게이트 비교용)."""
@@ -1007,6 +1069,13 @@ def _purchase_object_signals(text: str) -> set[str]:
         purchase_object = _sanitize_purchase_object(match.group("object"))
         if purchase_object and purchase_object not in _PURCHASE_SIGNAL_STOPWORDS and not purchase_object.isdigit():
             objects.add(purchase_object.casefold())
+    # 나열형('A와 B를 구매한')은 단일 패턴이 마지막 상품만 잡으므로 사슬 상품도 함께 넣는다(게이트 누락 방지).
+    # 목적격 조사만 앵커라 비구매 나열 오검출을 막으려 구매 신호가 있을 때만 본다(_extract_purchase_object_list 와 동일).
+    if _has_purchase_history_signal(text or ""):
+        chain = _PURCHASE_OBJECT_CHAIN_PATTERN.search(text or "")
+        if chain:
+            for term in _split_product_terms(chain.group("chain")):
+                objects.add(term.casefold())
     return objects
 
 
@@ -3211,6 +3280,14 @@ def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> No
     # 이 "…를 산 고객"을 "… 구매 고객" 명사형으로 정규화하므로, 명사형을 놓치면 조건이 통째로 사라진다.
     # object 클래스에 공백을 넣지 않아 "를/을" 또는 구매/구입 직전 상품 명사만 잡는다. (공백 허용 시 "40대
     # 여성 중 기저귀를 구매한" 처럼 앞 절 조건까지 삼켜 LIKE 가 무의미해지므로) 상품 카테고리 단어면 재현율에 충분하다.
+    # 나열형 다중 상품('기저귀와 건강식품을 … 구매')은 개수어가 상품과 구매 동사 사이에 끼어도 목적격 조사
+    # 앵커로 먼저 잡는다 — 단일 정규식이 마지막 상품만/개수어를 잡거나 LLM 이 상품을 뭉치는 소실을 막는다.
+    multi_objects = _extract_purchase_object_list(query)
+    if len(multi_objects) > 1:
+        target_user["purchase_objects"] = multi_objects
+        target_user["purchase_object"] = multi_objects[0]["value"]
+        target_user["purchase_object_kind"] = multi_objects[0]["kind"]
+        return
     match = _PURCHASE_OBJECT_PATTERN.search(query)
     purchase_object = _sanitize_purchase_object(match.group("object")) if match else None
     # 사용자가 '브랜드'/'상품(제품)명'을 명시했으면 매칭 컬럼을 BRAND_NAME/PRODUCT_NAME 으로 좁힐
@@ -3314,11 +3391,13 @@ def _target_object_extract_system_prompt(prompt_dir: Path | None = DEFAULT_PROMP
     fallback = "\n".join(
         [
             "너는 캠페인 타겟팅 문장에서 '상품명'만 뽑아내는 추출기다.",
-            "purchase_object: 타겟 오디언스가 '구매/구입한' 상품(구매 이력 조건)의 상품명.",
-            "sell_object: 이 캠페인이 '팔려는/판매하려는' 상품명.",
+            "purchase_objects: 타겟 오디언스가 '구매/구입한' 상품(구매 이력 조건)의 상품명 배열. 여러 상품이",
+            "  나열되면('기저귀와 건강식품') 각 상품을 배열 원소로 분리한다. 하나면 원소 1개, 없으면 빈 배열 [].",
+            "  하나의 상품명을 여러 문자열로 쪼개지 말고, 여러 상품을 한 문자열로 합치지도 마라.",
+            "sell_object: 이 캠페인이 '팔려는/판매하려는' 상품명(하나, 없으면 null).",
             "반드시 입력 문장에 그대로 등장하는 명사만 사용한다(번역·유추·추가 금지).",
-            "해당 조건이 없으면 null 로 둔다. 조사·수식어(첫/재/최근 등)는 빼고 핵심 상품 명사만 남긴다.",
-            '다음 JSON object 만 출력한다: {"purchase_object": "상품명 또는 null", "sell_object": "상품명 또는 null"}.',
+            "조사·수식어(첫/재/최근 등)와 수량어(2개/3번 등)는 빼고 핵심 상품 명사만 남긴다.",
+            '다음 JSON object 만 출력한다: {"purchase_objects": ["상품명", ...], "sell_object": "상품명 또는 null"}.',
         ]
     )
     return _read_prompt_template(prompt_dir, "target_object_extract_system.txt", fallback)
@@ -3350,8 +3429,16 @@ def _llm_extract_target_objects(
         data = json.loads(response.choices[0].message.content or "{}")
         if not isinstance(data, dict):
             return None
+        # 신 계약(purchase_objects 배열) 우선, 구 계약(purchase_object 문자열)도 호환한다.
+        raw_objects = data.get("purchase_objects")
+        if isinstance(raw_objects, list):
+            purchase_objects = [o for o in raw_objects if isinstance(o, str) and o.strip()]
+        elif isinstance(data.get("purchase_object"), str) and data["purchase_object"].strip():
+            purchase_objects = [data["purchase_object"]]
+        else:
+            purchase_objects = []
         result = {
-            "purchase_object": data.get("purchase_object") if isinstance(data.get("purchase_object"), str) else None,
+            "purchase_objects": purchase_objects,
             "sell_object": data.get("sell_object") if isinstance(data.get("sell_object"), str) else None,
         }
         _write_rag_llm_log("target_object_extraction", {"query": query, **result})
@@ -3391,12 +3478,26 @@ def _apply_llm_object_fallback(
     if not extracted:
         return
     if need_purchase:
-        purchase_object = _validated_object(extracted.get("purchase_object"), query)
-        if purchase_object:
-            canonical = _canonicalize_product_term(purchase_object)
-            target_user["purchase_object"] = canonical
-            if _is_known_brand_term(canonical):
-                target_user["purchase_object_kind"] = "brand"
+        # LLM 이 준 상품 배열의 각 원소를 원문 존재 검증 → 나열형 분리 → DB 표기 보정한다. 나열형 다중 상품이면
+        # purchase_objects 리스트로, 하나면 단일 필드만 채운다(빌더가 상품별로 각각 결합).
+        objects: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for raw in extracted.get("purchase_objects") or []:
+            validated = _validated_object(raw, query)
+            if not validated:
+                continue
+            for term in (_split_product_terms(validated) or [validated]):
+                canonical = _canonicalize_product_term(term)
+                if not canonical or canonical in _GENERIC_PRODUCT_NOUNS or canonical in seen:
+                    continue
+                seen.add(canonical)
+                objects.append({"value": canonical, "kind": "brand" if _is_known_brand_term(canonical) else None})
+        if objects:
+            target_user["purchase_object"] = objects[0]["value"]
+            if objects[0]["kind"]:
+                target_user["purchase_object_kind"] = objects[0]["kind"]
+            if len(objects) > 1:
+                target_user["purchase_objects"] = objects
     if need_sell:
         sell_object = _validated_object(extracted.get("sell_object"), query)
         if sell_object:
@@ -5351,6 +5452,43 @@ def _normalize_korean_count_numerals(text: str) -> str:
     )
 
 
+_SINO_KOREAN_DIGITS = {"영": 0, "공": 0, "일": 1, "이": 2, "삼": 3, "사": 4, "오": 5,
+                       "육": 6, "칠": 7, "팔": 8, "구": 9}
+_SINO_KOREAN_SMALL_UNITS = {"십": 10, "백": 100, "천": 1000}
+_SINO_KOREAN_AMOUNT_RE = re.compile(
+    r"(?P<num>[영공일이삼사오육칠팔구십백천]+)(?P<mag>억|천만|백만|만)?원"
+)
+
+
+def _parse_sino_korean_integer(text: str) -> int | None:
+    """일~구/십/백/천 조합을 양의 정수로 바꾼다('이십'→20, '삼백오'→305)."""
+    if not text:
+        return None
+    total, pending = 0, 0
+    for char in text:
+        if char in _SINO_KOREAN_DIGITS:
+            pending = _SINO_KOREAN_DIGITS[char]
+        elif char in _SINO_KOREAN_SMALL_UNITS:
+            total += (pending or 1) * _SINO_KOREAN_SMALL_UNITS[char]
+            pending = 0
+        else:
+            return None
+    value = total + pending
+    return value if value > 0 else None
+
+
+def _normalize_sino_korean_amounts(text: str) -> str:
+    """금액 위치의 한자어 수사를 기존 숫자 금액 문법으로 낮춘다('이십만원'→'20만원').
+
+    반드시 `원`으로 끝나는 금액만 변환하므로 이십대/삼십일 같은 연령·날짜 표현에는 관여하지 않는다.
+    """
+    def replace(match: "re.Match[str]") -> str:
+        value = _parse_sino_korean_integer(match.group("num"))
+        return match.group(0) if value is None else f"{value}{match.group('mag') or ''}원"
+
+    return _SINO_KOREAN_AMOUNT_RE.sub(replace, text)
+
+
 # ── 상품/주문 집계 조건 리졸버(스펙 기반·점수화) ─────────────────────────────────
 # 지표는 aggregate_targets.metrics 스펙(semantic_type/agg/column/distinct/table/units/hint_terms/
 # anti_hint_terms/synonyms)으로만 등록한다 — 문장별 파이썬 분기 없이 스펙만으로 신규 지표를 추가한다.
@@ -5437,6 +5575,12 @@ def _score_metric_for_clause(clause: str, metric: dict[str, Any], unit: str | No
     units = [u for u in metric.get("units", []) if isinstance(u, str)]
     if unit and units:
         score += 40 if unit in units else -80
+    # 서비스 기본 해석 정책: 명시 지표어 없이 단위만 있는 표현('20만원 이상 구매')은 메타데이터에서
+    # 그 단위의 기본 지표로 선언된 항목을 우선한다. 코드가 SUM/AVG 등을 임의 선택하지 않으며 배포별로
+    # default_for_units 만 바꿔 정책을 교체할 수 있다.
+    default_units = [u for u in metric.get("default_for_units", []) if isinstance(u, str)]
+    if unit and unit in default_units:
+        score += 20
     if any(isinstance(h, str) and h in clause for h in metric.get("hint_terms", [])):
         score += 55
     if any(isinstance(a, str) and a in clause for a in metric.get("anti_hint_terms", [])):
@@ -5559,7 +5703,7 @@ def _apply_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
         aggregation_scope, scoped_clause = _extract_aggregation_scope(raw_clause)
         scope = _clause_scope(raw_clause)
         # grain 표지를 뗀 뒤 한글 수사 정규화('두 번'→'2번') → 임계값/단위/지표 해석.
-        clause = _normalize_korean_count_numerals(scoped_clause)
+        clause = _normalize_sino_korean_amounts(_normalize_korean_count_numerals(scoped_clause))
         # 시간 창은 이 절 텍스트에서만 귀속한다(전역 first-match 금지) — 옆 절(로그인/미접속)의 창 누수·
         # 누적 절의 롤링 창 오상속을 원천 차단한다([[numeric-metric-unit-and-ratio]] 창 게이트와 동일 원칙).
         clause_window, clause_calendar, clause_lifetime = _aggregate_clause_time_scope(raw_clause, inactivity_days_set)
@@ -5843,6 +5987,7 @@ def _duration_matches(compact: str) -> list[tuple[int, int, int]]:
         (match.start(), match.end(), int(match.group("num")) * _DURATION_UNIT_DAYS[match.group("unit")])
         for match in _NUMERIC_DURATION_PATTERN.finditer(compact)
         if int(match.group("num")) > 0
+        and not (match.group("unit") == "년" and 1900 <= int(match.group("num")) <= 2199)
     ]
     found += [
         (match.start(), match.end(), _WORD_DURATION_DAYS[match.group(0)])
@@ -5868,7 +6013,9 @@ def _duration_window_candidates(compact: str) -> list[tuple[int, int, int, str]]
     out: list[tuple[int, int, int, str]] = []
     for match in _NUMERIC_DURATION_PATTERN.finditer(compact):
         value = int(match.group("num"))
-        if value > 0:
+        # 2019년/2026년은 달력 연도이지 2019년 길이의 롤링 창이 아니다. 이를 기간으로 잡으면
+        # DATEADD(DAY, -736935, ...) 같은 비정상 조건이 절대 날짜 범위와 함께 생성된다.
+        if value > 0 and not (match.group("unit") == "년" and 1900 <= value <= 2199):
             out.append((match.start(), match.end(), value, _KO_UNIT_TO_CANON.get(match.group("unit"), "days")))
     for match in _WORD_DURATION_PATTERN.finditer(compact):
         out.append((match.start(), match.end(), _WORD_DURATION_DAYS[match.group(0)], "days"))
@@ -11623,6 +11770,26 @@ def _set_ast_has_unknown_operand(ast: Any) -> bool:
     return _set_ast_has_unknown_operand(ast.get("left")) or _set_ast_has_unknown_operand(ast.get("right"))
 
 
+def _is_owned_aggregate_base_exclusion(ast: Any, plan: dict[str, Any]) -> bool:
+    """`집계 대상 고객 중 X 제외`에서 집계 base를 set unknown으로 중복 보유한 AST인지 판정한다.
+
+    구매금액/횟수 같은 base는 set operand가 아니라 aggregate_conditions가 이미 정확히 소유한다. 우변 제외
+    대상은 뒤의 정규화 matched-term 루프가 exclude 슬롯에 넣으므로, 이 중복 set AST를 유지하면 unknown
+    clarification만 발생하고 정상 집계 SQL이 차단된다. 진짜 미정 집합식은 aggregate 조건이 없으므로 보존한다.
+    """
+    if not isinstance(ast, dict) or ast.get("type") != "set_op" or ast.get("op") != "-":
+        return False
+    left, right = ast.get("left"), ast.get("right")
+    aggregates = plan.get("target_user", {}).get("aggregate_conditions") or []
+    return bool(
+        aggregates
+        and isinstance(left, dict)
+        and left.get("type") == "unknown_operand"
+        and isinstance(right, dict)
+        and _compile_set_expression_ast(right)["is_valid"]
+    )
+
+
 def _drop_uncompilable_set_expressions(plan: dict[str, Any]) -> None:
     """(값 보강 후에도) 컴파일되지 않는 '리던던트' 집합식을 버린다 — source 무관.
 
@@ -11638,6 +11805,8 @@ def _drop_uncompilable_set_expressions(plan: dict[str, Any]) -> None:
     kept: list[dict[str, Any]] = []
     for expression in expressions:
         ast = expression.get("set_ast")
+        if _is_owned_aggregate_base_exclusion(ast, plan):
+            continue
         if not isinstance(ast, dict) or _set_ast_has_unknown_operand(ast) or _compile_set_expression_ast(ast)["is_valid"]:
             kept.append(expression)  # 파서 clarification / 미정규화 값 / 컴파일 가능 → 유지
     plan["set_expressions"] = kept
@@ -13143,6 +13312,36 @@ def _purchase_date_predicate(purchase_date: Any, alias: str | None = "D", column
 _GENERIC_PRODUCT_OBJECT_WORDS = frozenset({"상품", "제품", "물건", "물품", "품목", "것", "상품들", "제품들"})
 
 
+def _target_purchase_objects(target_user: dict[str, Any]) -> list[dict[str, Any]]:
+    """구매 상품 조건을 상품별 [{value, kind}] 리스트로 정규화한다(빌더 공용 단일 소스).
+
+    나열형 다중 상품은 target_user['purchase_objects'] 에, 단일 상품은 target_user['purchase_object'] 에 담기므로
+    둘 중 있는 쪽을 리스트로 통일한다. 일반 지시어('상품/제품')는 스코프로 쓸 수 없어 제외한다."""
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    objects = target_user.get("purchase_objects")
+    if isinstance(objects, list) and objects:
+        source = [
+            {"value": o["value"], "kind": o.get("kind")}
+            for o in objects
+            if isinstance(o, dict) and isinstance(o.get("value"), str) and o["value"].strip()
+        ]
+    else:
+        value = target_user.get("purchase_object")
+        source = (
+            [{"value": value, "kind": target_user.get("purchase_object_kind")}]
+            if isinstance(value, str) and value.strip()
+            else []
+        )
+    for item in source:
+        value = item["value"].strip()
+        if value in _GENERIC_PRODUCT_OBJECT_WORDS or value in seen:
+            continue
+        seen.add(value)
+        result.append({"value": value, "kind": item.get("kind")})
+    return result
+
+
 def _purchase_object_match_predicate(purchase_object: str, object_kind: Any = None, alias: str = "P") -> str:
     """상품 자유텍스트를 상품 마스터(<alias>.*) 부분일치(OR)로 컴파일한다. object_kind 가 brand/product 면
     해당 컬럼(BRAND_NAME/PRODUCT_NAME)만 좁혀 매칭해 카테고리 등 다른 컬럼의 우연 일치를 막고, 애매하면
@@ -13172,6 +13371,26 @@ def _valid_aggregate_conditions(target_user: dict[str, Any]) -> list[dict[str, A
     ]
 
 
+def _product_presence_member_subquery(product: dict[str, Any], purchase_date: Any, alias: str) -> str:
+    """특정 상품을 (기간 내) 구매한 회원 id 집합 서브쿼리. 나열형 다중 상품을 상품별로 나눠 INNER JOIN(AND)
+    하려는 용도 — 한 주문상세행은 상품 하나라 두 상품 LIKE 를 같은 행에 AND 하면 공집합이 되기 때문이다."""
+    where = ["D.MEMBER_NO IS NOT NULL", _purchase_object_match_predicate(product["value"], product.get("kind"), "P")]
+    date_between = _purchase_date_predicate(purchase_date, alias="D")
+    if date_between is not None:
+        where.append(date_between)
+    return "\n".join(
+        [
+            "(",
+            "    SELECT D.MEMBER_NO",
+            f"    FROM {_PRODUCT_SCOPE_TABLE} D",
+            "         INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID",
+            f"    WHERE {' AND '.join(where)}",
+            "    GROUP BY D.MEMBER_NO",
+            f") {alias}",
+        ]
+    )
+
+
 def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     """실주문 상세(CRM_SL_ORDERDETAILMALL) → 상품(CRM_CM_PRODUCT) → 회원(CRM_MB_BASEINFO) 조인으로
     특정 상품/카테고리를 구매한 회원을 추출한다.
@@ -13181,8 +13400,8 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
     AND 결합하므로, "40대 여성 중 기저귀 구매자" 같은 조합도 하나의 추출 SQL 이 된다.
     """
     target_user = query_plan.get("target_user", {})
-    purchase_object = target_user.get("purchase_object")
-    has_object = isinstance(purchase_object, str) and bool(purchase_object)
+    product_objects = _target_purchase_objects(target_user)
+    has_object = bool(product_objects)
     purchase_date = target_user.get("purchase_date")
     date_predicate = _purchase_date_predicate(purchase_date)
     # 상품 구매 이력 조건(상품 LIKE)도, 구매 날짜 창 조건(ORDER_DATE BETWEEN)도 없으면 이 빌더 대상이 아니다.
@@ -13197,20 +13416,6 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
         return None
 
     compiled = compile_member_target_conditions(query_plan)
-    where_clauses: list[str] = []
-    if has_object:
-        # 사용자가 '브랜드'/'상품명'을 명시했거나 값이 실DB 브랜드명으로 확정된 경우, 광역 6컬럼 LIKE 대신
-        # 해당 컬럼(BRAND_NAME/PRODUCT_NAME)만 매칭한다(다른 컬럼 우연 일치 방지). 애매하면 광역 6컬럼 LIKE.
-        where_clauses.append(
-            _purchase_object_match_predicate(purchase_object, target_user.get("purchase_object_kind"), "P")
-        )
-    if date_predicate is not None:
-        where_clauses.append(date_predicate)
-    where_clauses.extend(compiled["predicates"])
-    # 회원상태를 직접 지정한 타겟(휴면 등)이 아니면 정상 회원으로 한정한다(탈퇴/휴면 제외).
-    if not compiled["forces_state"]:
-        where_clauses.append(_member_active_state_predicate())
-    where_clauses = _unique_strings(where_clauses)
 
     select_columns = ["DISTINCT " + _member_key_select(), _member_grade_select()]
     if compiled["labels"]:
@@ -13219,19 +13424,50 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
     if objective:
         select_columns.append(_sql_quote(objective) + " AS objective")
 
-    sql = "\n".join(
-        [
-            "SELECT " + ", ".join(select_columns),
-            *_order_detail_member_join_lines("D", product_alias="P"),
-            "WHERE " + "\n  AND ".join(where_clauses),
-        ]
-    )
+    member_where = list(compiled["predicates"])
+    # 회원상태를 직접 지정한 타겟(휴면 등)이 아니면 정상 회원으로 한정한다(탈퇴/휴면 제외).
+    if not compiled["forces_state"]:
+        member_where.append(_member_active_state_predicate())
+
+    if len(product_objects) >= 2:
+        # 나열형 다중 상품('기저귀와 건강식품 구매') → 상품별 회원 집합 서브쿼리를 회원 기준(B)에 INNER JOIN(AND).
+        # 한 상세행은 상품 하나라 두 상품 LIKE 를 같은 행에 AND 하면 공집합이 되므로 회원 단위로 나눠 결합한다.
+        from_lines = [_member_from_clause()]
+        member_key = _member_key_column()
+        for idx, product in enumerate(product_objects):
+            alias = f"OBJ{idx}"
+            subquery = _product_presence_member_subquery(product, purchase_date, alias)
+            from_lines.append(f"     INNER JOIN {subquery} ON B.{member_key} = {alias}.{member_key}")
+        where_clauses = _unique_strings(member_where)
+        sql_lines = ["SELECT " + ", ".join(select_columns), *from_lines]
+        if where_clauses:
+            sql_lines.append("WHERE " + "\n  AND ".join(where_clauses))
+        sql = "\n".join(sql_lines)
+    else:
+        where_clauses: list[str] = []
+        if has_object:
+            # 사용자가 '브랜드'/'상품명'을 명시했거나 값이 실DB 브랜드명으로 확정된 경우, 광역 6컬럼 LIKE 대신
+            # 해당 컬럼(BRAND_NAME/PRODUCT_NAME)만 매칭한다(다른 컬럼 우연 일치 방지). 애매하면 광역 6컬럼 LIKE.
+            where_clauses.append(
+                _purchase_object_match_predicate(product_objects[0]["value"], product_objects[0].get("kind"), "P")
+            )
+        if date_predicate is not None:
+            where_clauses.append(date_predicate)
+        where_clauses.extend(member_where)
+        where_clauses = _unique_strings(where_clauses)
+        sql = "\n".join(
+            [
+                "SELECT " + ", ".join(select_columns),
+                *_order_detail_member_join_lines("D", product_alias="P"),
+                "WHERE " + "\n  AND ".join(where_clauses),
+            ]
+        )
     candidate = _sql_candidate(
         "sql_template:purchase_history_targets", "상품 구매 이력 타겟 추출 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template"
     )
     # purchase_object(상품 LIKE)·purchase_date(ORDER_DATE 창)는 이 템플릿이 실제로 커버하므로 dropped(미고지)에서
     # 제외한다. 회원 속성 외 다른 미지원 조건(관심사 등)이 있으면 그것만 부분추출 고지 대상으로 남긴다.
-    _covered = {"target_user.purchase_object", "target_user.purchase_date"}
+    _covered = {"target_user.purchase_object", "target_user.purchase_objects", "target_user.purchase_date"}
     dropped = [path for path in compiled["unsupported"] if path not in _covered]
     candidate["dropped_conditions"] = dropped
     candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]
@@ -13303,7 +13539,7 @@ def build_purchase_count_ranking_sql_candidate(query_plan: dict[str, Any]) -> di
         "sql_template",
     )
     # 구매 건수 랭킹(랭킹 신호)·구매 날짜 창·상품 조건은 이 템플릿이 커버하므로 dropped 에서 뺀다.
-    _covered = {"target_user.purchase_object", "target_user.purchase_date"}
+    _covered = {"target_user.purchase_object", "target_user.purchase_objects", "target_user.purchase_date"}
     dropped = [path for path in compiled["unsupported"] if path not in _covered]
     candidate["dropped_conditions"] = dropped
     candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]
@@ -13536,52 +13772,54 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
     # 는 조건별 scope 가 소유하므로 그와 별개로 얹는다(둘 다 있으면 AND 결합). 단 (1) '상품/제품' 같은 일반
     # 지시어와 (2) per_product/per_order grain(‘동일 상품’·‘한 주문에’) 조건은 상품 스코프로 쓰지 않는다 —
     # 전자는 '%상품%' 오필터, 후자는 grain 이 이미 상품 범위를 표현하므로 LIKE 가 그 의미와 충돌한다.
-    purchase_object = target_user.get("purchase_object")
-    product_scope = (
-        {"value": purchase_object, "kind": target_user.get("purchase_object_kind")}
-        if isinstance(purchase_object, str) and purchase_object
-        and purchase_object.strip() not in _GENERIC_PRODUCT_OBJECT_WORDS
-        else None
-    )
+    # 나열형 다중 상품('기저귀와 건강식품을 2번 이상')은 상품별 스코프 리스트로 편다 — 각 상품마다 별도
+    # 집계 서브쿼리(HAVING)를 만들어 INNER JOIN(AND)하면 '각 상품 각각 N번 이상' 의미가 된다. 한 서브쿼리에
+    # 두 상품을 OR 로 얹으면 '합쳐서 N번'이 되어 의미가 달라지므로 상품별로 나눈다. 단일 상품이면 리스트 길이 1.
+    product_scopes = _target_purchase_objects(target_user)
     product_scope_applied = False
     from_clause = [_member_from_clause()]
     labels = list(compiled["labels"])
-    for position, condition in enumerate(valid):
+    alias_index = 0
+    for condition in valid:
         metric = metrics[condition["metric_id"]]
-        alias = f"AGG{position}"
         condition_scope = condition.get("aggregation_scope", "per_member")
-        cond_product_scope = product_scope if condition_scope == "per_member" else None
-        if cond_product_scope:
-            product_scope_applied = True
-        subquery = _aggregate_member_subquery(
-            config, metric, condition["operator"], condition["threshold"], condition.get("window_days"), alias,
-            purchase_date=purchase_date,
-            aggregation_scope=condition_scope,
-            scope=condition.get("scope"),
-            product_scope=cond_product_scope,
-        )
-        if subquery is None:
-            # 지표가 컬럼/식/요약 어느 소스로도 해석되지 않음 → 무효 SQL(SUM(None) 등)을 만들지 않는다.
-            # plan 을 미지원으로 표시하고 None 반환 — 디스패처가 다른 트랙으로 조용히 폴백하지 않는다(원인 명시).
-            query_plan["unsupported"] = {
-                "reason": "unresolved_aggregate_column",
-                "message": f"집계 지표 '{condition['metric_id']}' 를 유효한 컬럼/식/요약 컬럼으로 해석할 수 없습니다.",
-                "clarification": "해당 지표의 집계 정의(컬럼/식/요약 컬럼)가 없어 SQL 을 만들 수 없습니다. 지표 설정을 확인해 주세요.",
-                "metric_id": condition["metric_id"],
-            }
-            return None
-        # metric_id ↔ SQL 집계식 일치 검증(설정/빌더 드리프트 방지): 예) distinct_product_count 가 PRODUCT_ID
-        # 아닌 ORDER_ID 로 컴파일되면 실패 처리(그럴듯한 오답 SQL 출고 금지).
-        if not _aggregate_subquery_matches_metric(metric, subquery):
-            query_plan["unsupported"] = {
-                "reason": "metric_aggregation_mismatch",
-                "message": f"집계 지표 '{condition['metric_id']}' 가 기대한 집계 컬럼으로 컴파일되지 않았습니다.",
-                "clarification": "지표 정의와 생성된 집계식이 일치하지 않습니다. 지표 설정을 확인해 주세요.",
-                "metric_id": condition["metric_id"],
-            }
-            return None
-        from_clause.append(f"     INNER JOIN {subquery} ON B.{join_column} = {alias}.{join_column}")
-        labels.append(condition.get("label") or condition["metric_id"])
+        # per_product/per_order grain('동일 상품'·'한 주문에')은 grain 이 이미 상품 범위를 표현하므로 상품
+        # 스코프 LIKE 를 얹지 않는다(충돌). per_member 조건만 상품별로 편다; 상품이 없으면 스코프 1개(None).
+        cond_scopes = product_scopes if (condition_scope == "per_member" and product_scopes) else [None]
+        for cond_product_scope in cond_scopes:
+            alias = f"AGG{alias_index}"
+            alias_index += 1
+            if cond_product_scope:
+                product_scope_applied = True
+            subquery = _aggregate_member_subquery(
+                config, metric, condition["operator"], condition["threshold"], condition.get("window_days"), alias,
+                purchase_date=purchase_date,
+                aggregation_scope=condition_scope,
+                scope=condition.get("scope"),
+                product_scope=cond_product_scope,
+            )
+            if subquery is None:
+                # 지표가 컬럼/식/요약 어느 소스로도 해석되지 않음 → 무효 SQL(SUM(None) 등)을 만들지 않는다.
+                # plan 을 미지원으로 표시하고 None 반환 — 디스패처가 다른 트랙으로 조용히 폴백하지 않는다(원인 명시).
+                query_plan["unsupported"] = {
+                    "reason": "unresolved_aggregate_column",
+                    "message": f"집계 지표 '{condition['metric_id']}' 를 유효한 컬럼/식/요약 컬럼으로 해석할 수 없습니다.",
+                    "clarification": "해당 지표의 집계 정의(컬럼/식/요약 컬럼)가 없어 SQL 을 만들 수 없습니다. 지표 설정을 확인해 주세요.",
+                    "metric_id": condition["metric_id"],
+                }
+                return None
+            # metric_id ↔ SQL 집계식 일치 검증(설정/빌더 드리프트 방지): 예) distinct_product_count 가 PRODUCT_ID
+            # 아닌 ORDER_ID 로 컴파일되면 실패 처리(그럴듯한 오답 SQL 출고 금지).
+            if not _aggregate_subquery_matches_metric(metric, subquery):
+                query_plan["unsupported"] = {
+                    "reason": "metric_aggregation_mismatch",
+                    "message": f"집계 지표 '{condition['metric_id']}' 가 기대한 집계 컬럼으로 컴파일되지 않았습니다.",
+                    "clarification": "지표 정의와 생성된 집계식이 일치하지 않습니다. 지표 설정을 확인해 주세요.",
+                    "metric_id": condition["metric_id"],
+                }
+                return None
+            from_clause.append(f"     INNER JOIN {subquery} ON B.{join_column} = {alias}.{join_column}")
+            labels.append(condition.get("label") or condition["metric_id"])
 
     where_clauses = list(compiled["predicates"])
     if not compiled["forces_state"]:
@@ -13607,6 +13845,7 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
     covered = {"target_user.aggregate_conditions"}
     if product_scope_applied:
         covered.add("target_user.purchase_object")
+        covered.add("target_user.purchase_objects")
     dropped = [path for path in compiled["unsupported"] if path not in covered]
     candidate["dropped_conditions"] = dropped
     candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]

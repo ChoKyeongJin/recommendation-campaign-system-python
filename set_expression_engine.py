@@ -78,6 +78,15 @@ def _parse_set_expression(query: str, term_catalog: list[dict[str, str]]) -> dic
     if natural_ast is not None:
         return _set_expression_result(query, natural_ast, "natural")
 
+    # "남성을 제외한 고객"은 독립적인 성별 제외 필터이지 두 세그먼트의 차집합 표현이 아니다.
+    # operator_scan 으로 넘기면 '제외'만 '-'로 치환되고 활용 어미인 '한 고객'이 unknown operand 로 남아
+    # 전체 SQL 출고를 막는다. 'A에서/B 중 C 제외' 같은 실제 집합 범위는 위 natural parser가 먼저 소비한다.
+    if re.search(
+        r"(?:제외(?:한|하고|하여|해서|해(?:줘|주세요)?|하세요|한다)|빼고)\s*(?:고객|회원|사용자)?\s*[.!?。]*$",
+        query.strip(),
+    ):
+        return None
+
     postfix_ast = _parse_korean_postfix_set_expression(query, term_catalog)
     if postfix_ast is not None:
         return _set_expression_result(query, postfix_ast, "postfix")
@@ -139,7 +148,12 @@ def _parse_korean_natural_set_expression(query: str, term_catalog: list[dict[str
 
 
 def _split_exclusion_clause(query: str) -> tuple[str, str | None]:
-    matches = list(re.finditer(r"\b(?:빼고|제외(?:하고)?)\b", query))
+    # 한국어 활용형은 \b 경계로 자를 수 없다('제외한'에서 외/한 모두 word 문자). 지원 활용형 전체를
+    # 소비해야 operator_scan 에 '한 고객'/'해' 같은 가짜 피연산자가 남지 않는다.
+    matches = list(re.finditer(
+        r"(?:빼고|제외(?:하고|한|하여|해서|해(?:줘|주세요)?|하세요|한다)?)(?=\s|[,\.!?。]|$)",
+        query,
+    ))
     if not matches:
         return query, None
     marker = matches[-1]
@@ -149,7 +163,7 @@ def _split_exclusion_clause(query: str) -> tuple[str, str | None]:
     if comma_index >= 0:
         return before_marker[:comma_index].strip(" ,"), _strip_operand_suffix(before_marker[comma_index + 1 :])
 
-    split_match = re.search(r"(?P<left>.+?)(?:에서|중에서)\s*(?P<right>.+)$", before_marker)
+    split_match = re.search(r"(?P<left>.+?)(?:중에서|에서|중)\s*(?P<right>.+)$", before_marker)
     if split_match:
         return split_match.group("left").strip(" ,"), _strip_operand_suffix(split_match.group("right"))
     return query, None
