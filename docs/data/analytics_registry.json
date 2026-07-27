@@ -3,8 +3,8 @@
     "SUM": ["합계", "총액", "총합", "전체 금액", "전체 구매 금액", "총 구매금액", "합산", "얼마"],
     "COUNT": ["건수", "개수", "몇 건"],
     "AVG": ["평균"],
-    "MAX": ["최대", "최고"],
-    "MIN": ["최소", "최저"]
+    "MAX": ["최대", "최고", "가장 최근", "최근"],
+    "MIN": ["최소", "최저", "가장 오래된", "오래된"]
   },
   "unsupportedMetricQualifiers": ["미래 예상", "미래예상", "예측 구매", "예상 구매"],
   "metrics": [
@@ -48,11 +48,98 @@
       }]
     },
     {
+      "id": "purchase_date",
+      "priority": 190,
+      "terms": ["구매일", "구매 일자", "구매일자", "주문일", "주문 일자"],
+      "defaultFunction": "MAX",
+      "allowedFunctions": ["MAX", "MIN"],
+      "sources": [{
+        "id": "purchase_date_header",
+        "table": "CRM_SL_ORDERHEADERMALL",
+        "alias": "O",
+        "supportedDimensions": [],
+        "measure": {"entity": "order", "field": "orderDate", "table": "CRM_SL_ORDERHEADERMALL", "column": "ORDER_DATE", "expression": "O.ORDER_DATE", "alias": "PURCHASE_DATE"}
+      }]
+    },
+    {
+      "id": "login_count",
+      "priority": 180,
+      "terms": ["로그인 횟수", "로그인횟수", "로그인 수", "로그인수"],
+      "defaultFunction": "MAX",
+      "allowedFunctions": ["MAX", "MIN", "AVG", "SUM"],
+      "rankingSource": {
+        "id": "member_login_count",
+        "table": "CRM_MB_BASEINFO",
+        "alias": "B",
+        "member": {"entity": "member", "field": "memberNumber", "table": "CRM_MB_BASEINFO", "column": "MEMBER_NO", "expression": "B.MEMBER_NO", "outputAlias": "CUST_ID"},
+        "measure": {"entity": "member", "field": "totalLoginCount", "table": "CRM_MB_BASEINFO", "column": "TOTAL_LOGIN_CNT", "expression": "B.TOTAL_LOGIN_CNT", "alias": "LOGIN_COUNT"},
+        "aggregationFunction": "MAX",
+        "fixedFilters": [{"id": "active_member", "entity": "member", "field": "memberStateCode", "table": "CRM_MB_BASEINFO", "column": "MEMBER_STATE_CD", "expression": "B.MEMBER_STATE_CD", "operator": "eq", "value": "MEMBER_STATE_CD.NORMAL"}]
+      }
+    },
+    {
+      "id": "carrot_balance",
+      "priority": 180,
+      "terms": ["적립금", "적립금 잔액", "당근", "당근 잔액"],
+      "defaultFunction": "MAX",
+      "allowedFunctions": ["MAX", "MIN", "AVG", "SUM"],
+      "rankingSource": {
+        "id": "member_carrot_balance",
+        "table": "CRM_MB_BASEINFO",
+        "alias": "B",
+        "member": {"entity": "member", "field": "memberNumber", "table": "CRM_MB_BASEINFO", "column": "MEMBER_NO", "expression": "B.MEMBER_NO", "outputAlias": "CUST_ID"},
+        "measure": {"entity": "member", "field": "carrotBalanceAmount", "table": "CRM_MB_BASEINFO", "column": "CARROT_BALANCE_AMT", "expression": "B.CARROT_BALANCE_AMT", "alias": "CARROT_BALANCE_AMOUNT"},
+        "aggregationFunction": "MAX",
+        "fixedFilters": [{"id": "active_member", "entity": "member", "field": "memberStateCode", "table": "CRM_MB_BASEINFO", "column": "MEMBER_STATE_CD", "expression": "B.MEMBER_STATE_CD", "operator": "eq", "value": "MEMBER_STATE_CD.NORMAL"}]
+      }
+    },
+    {
+      "id": "deposit_balance",
+      "priority": 180,
+      "terms": ["예치금", "예치금 잔액"],
+      "defaultFunction": "MAX",
+      "allowedFunctions": ["MAX", "MIN", "AVG", "SUM"],
+      "rankingSource": {
+        "id": "member_deposit_balance",
+        "table": "CRM_MB_BASEINFO",
+        "alias": "B",
+        "member": {"entity": "member", "field": "memberNumber", "table": "CRM_MB_BASEINFO", "column": "MEMBER_NO", "expression": "B.MEMBER_NO", "outputAlias": "CUST_ID"},
+        "measure": {"entity": "member", "field": "depositBalanceAmount", "table": "CRM_MB_BASEINFO", "column": "DEPOSIT_BALANCE_AMT", "expression": "B.DEPOSIT_BALANCE_AMT", "alias": "DEPOSIT_BALANCE_AMOUNT"},
+        "aggregationFunction": "MAX",
+        "fixedFilters": [{"id": "active_member", "entity": "member", "field": "memberStateCode", "table": "CRM_MB_BASEINFO", "column": "MEMBER_STATE_CD", "expression": "B.MEMBER_STATE_CD", "operator": "eq", "value": "MEMBER_STATE_CD.NORMAL"}]
+      }
+    },
+    {
+      "id": "cart_product_quantity",
+      "priority": 180,
+      "terms": ["장바구니 상품", "장바구니상품", "장바구니 수량", "카트 상품"],
+      "defaultFunction": "SUM",
+      "allowedFunctions": ["SUM", "MAX", "MIN", "AVG"],
+      "rankingSource": {
+        "id": "active_cart_quantity_by_member",
+        "table": "ODS_MALL_OMS_CART",
+        "alias": "C",
+        "member": {"entity": "member", "field": "memberId", "table": "ODS_MALL_OMS_CART", "column": "CART_ID", "expression": "C.CART_ID", "outputAlias": "CUST_ID"},
+        "measure": {"entity": "cart", "field": "quantity", "table": "ODS_MALL_OMS_CART", "column": "QTY", "expression": "C.QTY", "alias": "CART_PRODUCT_QUANTITY"},
+        "aggregationFunction": "SUM",
+        "fixedFilters": [{"id": "active_cart", "entity": "cart", "field": "keepYn", "table": "ODS_MALL_OMS_CART", "column": "KEEP_YN", "expression": "C.KEEP_YN", "operator": "eq", "value": "Y"}],
+        "assumptions": ["ODS_MALL_OMS_CART.CART_ID is the member login identifier mapped to CRM_MB_BASEINFO.MEMBER_ID."]
+      }
+    },
+    {
       "id": "purchase_amount",
       "priority": 100,
       "terms": ["구매금액", "구매 금액", "구매액", "구매 총액", "구매총액", "결제금액", "결제 금액", "주문금액", "주문 금액"],
       "defaultFunction": "SUM",
       "allowedFunctions": ["SUM", "AVG", "MAX", "MIN"],
+      "rankingSource": {
+        "id": "purchase_amount_by_member",
+        "table": "CRM_SL_ORDERHEADERMALL",
+        "alias": "O",
+        "member": {"entity": "member", "field": "memberNumber", "table": "CRM_SL_ORDERHEADERMALL", "column": "MEMBER_NO", "expression": "O.MEMBER_NO", "outputAlias": "CUST_ID"},
+        "measure": {"entity": "order", "field": "paymentAmount", "table": "CRM_SL_ORDERHEADERMALL", "column": "PAYMENT_AMT", "expression": "O.PAYMENT_AMT", "alias": "TOTAL_PURCHASE_AMOUNT"},
+        "aggregationFunction": "SUM"
+      },
       "sources": [
         {
           "id": "purchase_detail",

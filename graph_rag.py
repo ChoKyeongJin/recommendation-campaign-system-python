@@ -32,9 +32,12 @@ from aggregation_requirements import (
     validate_aggregation_sql,
 )
 from analytical_intent import (
+    SUPPORTED_QUERY_TYPES,
+    SUPPORTED_RESULT_SHAPES,
     analyze_analytical_intent,
     build_aggregation_request as build_deterministic_aggregation_request,
     compile_aggregation_ast,
+    validate_intent_sql_contract,
 )
 from formula_engine import DEFAULT_METRIC_LEXICON_PATH, compile_formula_ast, parse_computed_metrics_from_query, validate_formula_ast
 import logical_expression as _logic
@@ -46,6 +49,7 @@ from sql_guard import (
     infer_target_connection,
     load_allowed_tables,
     load_column_types,
+    load_schema_columns,
     load_join_key_registry,
     load_table_databases,
     load_table_dialects,
@@ -1834,10 +1838,28 @@ def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path
     intent = analyze_analytical_intent(query)
     if not isinstance(intent, dict):
         return
-    public_keys = ("query_type", "aggregate_function", "metric", "dimensions", "filters")
+    public_keys = (
+        "query_type", "aggregate_function", "metric", "dimensions", "filters",
+        "comparison", "result_shape", "target_entity",
+    )
     plan["detected_intent"] = {key: intent.get(key) for key in public_keys}
     plan["analytical_intent"] = intent
     plan["intent"] = "analyze_aggregation"
+    plan["selected_route"] = (
+        "analytical_ranking_sql" if intent.get("query_type") == "ranking" else "analytical_aggregate_sql"
+    )
+    capability_passed = (
+        intent.get("query_type") in SUPPORTED_QUERY_TYPES
+        and intent.get("result_shape") in SUPPORTED_RESULT_SHAPES
+        and not bool(intent.get("unsupported_reason"))
+    )
+    plan["capability_check"] = {
+        "endpoint": "/target-sql",
+        "query_type": intent.get("query_type"),
+        "result_shape": intent.get("result_shape"),
+        "passed": capability_passed,
+        "reason": intent.get("unsupported_reason") or (None if capability_passed else "unsupported_result_shape"),
+    }
 
     if intent.get("unsupported_reason"):
         plan["unsupported"] = {
@@ -1866,6 +1888,18 @@ def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path
         target_user["lifecycle"] = [value for value in target_user.get("lifecycle", []) if value != "vip"]
     if intent.get("metric") in {"campaign_purchase_amount", "coupon_purchase_amount"}:
         target_user["campaign_responses"] = []
+    if intent.get("query_type") == "ranking":
+        # The analytical ranking contract owns the member metric and TOP 1 semantics.  Remove
+        # legacy audience-ranking slots (whose default is TOP 100) so they cannot compete with it.
+        for key in (
+            "member_metric_selection", "member_column_selection_filter", "cart_aggregate",
+            "group_ranking_target", "region_member_count_target", "region_density_target",
+            "purchase_count_ranking",
+        ):
+            plan.pop(key, None)
+        for key in ("behaviors", "purchase_object", "interests", "category"):
+            if key in target_user:
+                target_user[key] = [] if isinstance(target_user.get(key), list) else None
     plan["semantic_conditions"] = []
     campaign = plan.get("campaign_constraints")
     if isinstance(campaign, dict):
@@ -3325,8 +3359,13 @@ def _attach_query_output_contract(query: str, plan: dict[str, Any]) -> None:
     if isinstance(plan.get("aggregation_request"), dict) or plan.get("intent") == "analyze_aggregation":
         if isinstance(plan.get("aggregation_request"), dict):
             plan["intent"] = "analyze_aggregation"
-        expected_grain = "analytical"
-        requires_member_id = False
+        analytical = plan.get("analytical_intent") if isinstance(plan.get("analytical_intent"), dict) else {}
+        if analytical.get("result_shape") == "single_member":
+            expected_grain = "member"
+            requires_member_id = True
+        else:
+            expected_grain = "analytical"
+            requires_member_id = False
     elif isinstance(plan.get("region_member_count_target"), dict):
         expected_grain = "region"
         requires_member_id = False
@@ -3345,11 +3384,20 @@ def _attach_query_output_contract(query: str, plan: dict[str, Any]) -> None:
         # 구조화됐으므로 여기에 오지 않는다.
         whole_target = True
     plan["output_contract"] = {
-        "target_entity": "member",
+        "target_entity": (plan.get("analytical_intent") or {}).get("target_entity") or "member",
         "expected_grain": expected_grain,
         "requires_member_id": requires_member_id,
         "whole_target": whole_target,
     }
+    if not isinstance(plan.get("capability_check"), dict):
+        plan["capability_check"] = {
+            "endpoint": "/target-sql",
+            "query_type": "member_selection",
+            "result_shape": "member_rows",
+            "passed": True,
+            "reason": None,
+        }
+        plan.setdefault("selected_route", "member_target_sql")
     if whole_target:
         plan["member_scope"] = "all"
     # 명시적인 지역 그룹/랭킹 슬롯이 결과 축을 소유하면 일반 "지역=시도" 의미정책은 더 이상 필터
@@ -10820,6 +10868,14 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
         )
         return "생성된 SQL이 구조화된 집계 요구사항을 충족하지 않아 실행을 차단했습니다" + (f": {detail}" if detail else "") + "."
 
+    if reason == "intent_sql_contract_failed":
+        issues = selected.get("intent_sql_contract", {}).get("issues", [])
+        detail = "; ".join(
+            str(issue.get("message")) for issue in issues
+            if isinstance(issue, dict) and issue.get("message")
+        )
+        return "생성된 SQL의 결과 shape나 집계·랭킹 의미가 QueryIntent와 달라 실행을 차단했습니다" + (f": {detail}" if detail else "") + "."
+
     if reason == "sql_guard_failed":
         issues = [issue for issue in selected.get("validation", {}).get("issues", []) if issue.get("severity") == "error"]
         disallowed = [issue.get("message", "").split(":")[-1].strip() for issue in issues if issue.get("code") == "table_not_allowed"]
@@ -10902,6 +10958,7 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
     "coupon_semantic_preservation_failed": "real_db_mapping",
     "sql_guard_failed": "sql_safety_validation",
     "aggregation_validation_failed": "aggregation_validation",
+    "intent_sql_contract_failed": "intent_scope",
     "query_plan_conditions_missing": "condition_coverage",
     "semantic_conditions_not_covered": "condition_coverage",
     "semantic_condition_polarity_mismatch": "semantic_verification",
@@ -11020,6 +11077,9 @@ def build_recommendation_api_response(
             "channel": query_plan.get("retrieval", {}).get("channel_query"),
         },
         "intent": query_plan.get("intent"),
+        "detected_intent": query_plan.get("detected_intent"),
+        "capability_check": query_plan.get("capability_check"),
+        "selected_route": query_plan.get("selected_route"),
         "sql": sql_result.get("sql"),
         # 의미 검증 등으로 출고가 막혔지만 생성은 된 SQL(표시 전용, 실행 안 함). 정상 출고 시엔 None.
         # 프론트는 sql 이 없고 blocked_sql 이 있으면 "생성된 SQL(검증 실패)"로 노출한다.
@@ -11052,6 +11112,7 @@ def build_recommendation_api_response(
         "delivery_validation": sql_result.get("delivery_validation", {"is_satisfied": False}),
         "aggregation_request": sql_result.get("aggregation_request"),
         "aggregation_validation": sql_result.get("aggregation_validation", {"ran": False}),
+        "intent_sql_contract": sql_result.get("intent_sql_contract", {"ran": False}),
         # 쿼리 성능 튜닝 자문: 실행 함정 findings + 권장 인덱스(비차단, SQL 은 그대로).
         "query_tuning": sql_result.get("query_tuning", {"findings": [], "recommended_indexes": []}),
         # ③ 결정론 드롭 경고: 원문 신호가 plan 에 안 잡힌 조건(비차단 자문 — 조용한 드롭을 시끄럽게).
@@ -11943,7 +12004,10 @@ def _actual_sql_grain(sql: str, dialect: str | None = None) -> dict[str, Any]:
 
     selected = [value.casefold() for value in semantics.selected_columns]
     grouped = [value.casefold() for value in semantics.group_by]
-    member_columns = {"cust_id", "user_id", "customer_id", "member_no", "member_id"}
+    # ODS_MALL_OMS_CART.CART_ID is the mall login member identifier and is catalog-mapped to
+    # CRM_MB_BASEINFO.MEMBER_ID.  A cart aggregation can therefore return it without a potentially
+    # duplicating join to the member table.
+    member_columns = {"cust_id", "user_id", "customer_id", "member_no", "member_id", "cart_id"}
     has_member_id = any(any(column == item.rsplit(".", 1)[-1] for column in member_columns) for item in selected)
     group_text = " ".join(grouped)
     if grouped and any(token in group_text for token in ("sigungu", "sido", "region", "city", "district")):
@@ -12152,6 +12216,7 @@ def build_sql_result(
             "clarification_questions": input_validation["clarification_questions"],
             "llm_fallback_used": False,
             "generation_source": None,
+            "confidence": _failed_sql_confidence("query_plan_required_conditions_missing"),
             "is_success": False,
             "failure_reason": "query_plan_required_conditions_missing",
         }
@@ -12185,6 +12250,7 @@ def build_sql_result(
                 "failure_reason": "semantic_conditions_not_extracted",
             },
             "llm_fallback_used": False, "generation_source": None,
+            "confidence": _failed_sql_confidence("semantic_conditions_not_extracted"),
             "is_success": False, "failure_reason": "semantic_conditions_not_extracted",
         }
 
@@ -12192,6 +12258,7 @@ def build_sql_result(
     table_dialects = load_table_dialects(schema_path)
     table_databases = load_table_databases(schema_path)
     column_types = load_column_types(schema_path)
+    schema_columns = load_schema_columns(schema_path)
     join_key_registry = load_join_key_registry(schema_path)
     template_candidate = build_sql_template_candidate(query_plan)
     candidates = [template_candidate] if template_candidate is not None else []
@@ -12233,6 +12300,8 @@ def build_sql_result(
             allowed_tables=allowed_tables,
             default_limit=result_limit,
             table_dialects=table_dialects,
+            column_types=column_types,
+            schema_columns=schema_columns,
         )
         # 필수조건을 부분 추출 대상으로 빼고 성공시키지 않는다. 지원하지 못한 조건은 최종적으로 SQL 없이
         # 실패/확인요청으로 귀결돼야 하며, "되는 조건만"의 SQL은 출고하지 않는다.
@@ -12299,6 +12368,24 @@ def build_sql_result(
                     for error in aggregation_validation.get("errors", [])
                 ]
                 validation = {**validation, "issues": [*validation["issues"], *aggregation_issues], "is_valid": False}
+        intent_sql_contract: dict[str, Any] = {"ran": False}
+        analytical_intent = query_plan.get("analytical_intent")
+        if isinstance(analytical_intent, dict):
+            intent_sql_contract = validate_intent_sql_contract(
+                analytical_intent,
+                candidate["sql"],
+                dialect=validation.get("dialect") or _member_dialect().name,
+            )
+            if not intent_sql_contract.get("valid"):
+                contract_issues = [
+                    {
+                        "code": issue.get("code", "intent_sql_contract_failed"),
+                        "severity": "error",
+                        "message": issue.get("message", "SQL does not satisfy the detected intent contract."),
+                    }
+                    for issue in intent_sql_contract.get("issues", [])
+                ]
+                validation = {**validation, "issues": [*validation["issues"], *contract_issues], "is_valid": False}
         validated_candidates.append(
             {
                 **candidate,
@@ -12308,6 +12395,7 @@ def build_sql_result(
                 "unmentioned_conditions": unmentioned_conditions,
                 "join_keys": join_keys,
                 "aggregation_validation": aggregation_validation,
+                "intent_sql_contract": intent_sql_contract,
                 "analytics_warnings": analytics_warnings,
                 "delivery_validation": delivery_validation,
                 "is_eligible": (
@@ -12337,7 +12425,9 @@ def build_sql_result(
     if selected is None:
         failure_reason = "no_sql_candidates"
     elif not selected["is_eligible"]:
-        if selected.get("aggregation_validation", {}).get("ran") is not False and not selected.get("aggregation_validation", {}).get("valid", True):
+        if selected.get("intent_sql_contract", {}).get("ran") and not selected.get("intent_sql_contract", {}).get("valid", True):
+            failure_reason = "intent_sql_contract_failed"
+        elif selected.get("aggregation_validation", {}).get("ran") is not False and not selected.get("aggregation_validation", {}).get("valid", True):
             failure_reason = "aggregation_validation_failed"
         elif not selected["validation"]["is_valid"]:
             failure_reason = "sql_guard_failed"
@@ -12553,6 +12643,8 @@ def build_sql_result(
         # 일반 집계 요구사항 IR과 SQL AST의 강제 검증 결과. valid=false면 SQL은 출고·실행되지 않는다.
         "aggregation_request": query_plan.get("aggregation_request"),
         "aggregation_validation": (selected or {}).get("aggregation_validation", {"ran": False}),
+        # QueryIntent의 기대 결과 shape·집계 함수·지표 컬럼·랭킹 방향/TOP 1 계약 검증.
+        "intent_sql_contract": (selected or {}).get("intent_sql_contract", {"ran": False}),
         # 쿼리 성능 튜닝 자문(비차단): {findings, recommended_indexes}. 출고 SQL 이 없으면 빈 결과.
         "query_tuning": query_tuning,
         # ③ 결정론 드롭 경고: 원문 신호가 plan 에 안 잡힌 조건 목록(비차단 자문).

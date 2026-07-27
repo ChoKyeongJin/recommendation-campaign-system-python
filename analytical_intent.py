@@ -14,6 +14,9 @@ import re
 from pathlib import Path
 from typing import Any
 
+import sqlglot
+from sqlglot import exp
+
 from sql_ast import SelectAst
 
 
@@ -25,6 +28,12 @@ _TARGETING_COMPARISON_RE = re.compile(
     r"상위|하위|높은|낮은|많은|적은)"
 )
 _RECENT_DAYS_RE = re.compile(r"최근\s*(\d+)\s*일(?:간|동안|이내)?")
+_MEMBER_TARGET_RE = re.compile(r"회원|고객|사용자")
+_RANKING_HIGH_RE = re.compile(r"가장\s*(?:많이|많은)|최다|최고")
+_RANKING_LOW_RE = re.compile(r"가장\s*(?:적게|적은)|최소|최저")
+
+SUPPORTED_QUERY_TYPES = frozenset({"aggregate", "grouped_aggregate", "ranking", "member_selection"})
+SUPPORTED_RESULT_SHAPES = frozenset({"scalar", "grouped_rows", "single_member", "member_rows"})
 
 
 def _compact(value: str) -> str:
@@ -108,6 +117,17 @@ def _select_source(metric: dict[str, Any], dimensions: list[str]) -> dict[str, A
     return None
 
 
+def _ranking_direction(query: str) -> str | None:
+    """Return the requested member ranking direction, if this is an arg-extreme request."""
+    if not _MEMBER_TARGET_RE.search(query):
+        return None
+    if _RANKING_LOW_RE.search(query):
+        return "ASC"
+    if _RANKING_HIGH_RE.search(query):
+        return "DESC"
+    return None
+
+
 def analyze_analytical_intent(
     query: str,
     registry_path: Path = DEFAULT_ANALYTICS_REGISTRY_PATH,
@@ -125,6 +145,7 @@ def analyze_analytical_intent(
     metric = _match_metric(compact, registry)
     function = _match_aggregate_function(compact, registry)
     dimensions = _match_dimensions(compact, registry)
+    ranking_direction = _ranking_direction(query)
 
     aggregate_signal = bool(function or dimensions or _OUTPUT_ACTION_RE.search(query))
     if metric is None:
@@ -139,6 +160,40 @@ def analyze_analytical_intent(
                 "unsupported_message": "요청한 집계 지표를 스키마의 수치 지표와 연결할 수 없습니다.",
             }
         return None
+    if ranking_direction:
+        ranking_source = metric.get("rankingSource")
+        if not isinstance(ranking_source, dict):
+            return {
+                "query_type": "ranking",
+                "aggregate_function": None,
+                "metric": metric.get("id"),
+                "dimensions": ["member"],
+                "filters": [],
+                "comparison": {
+                    "operator": "argmin" if ranking_direction == "ASC" else "argmax",
+                    "direction": ranking_direction, "limit": 1,
+                },
+                "result_shape": "single_member",
+                "target_entity": "member",
+                "unsupported_reason": "unsupported_ranking_metric",
+                "unsupported_message": "요청한 지표로 회원 순위를 안전하게 계산할 스키마 매핑이 없습니다.",
+            }
+        ranking_function = str(ranking_source.get("aggregationFunction") or "MAX").upper()
+        return {
+            "query_type": "ranking",
+            "aggregate_function": ranking_function,
+            "metric": metric.get("id"),
+            "dimensions": ["member"],
+            "filters": [],
+            "comparison": {
+                "operator": "argmin" if ranking_direction == "ASC" else "argmax",
+                "direction": ranking_direction, "limit": 1,
+            },
+            "result_shape": "single_member",
+            "target_entity": "member",
+            "source_id": ranking_source.get("id"),
+            "ranking_direction": ranking_direction,
+        }
     # Amount thresholds and ranking phrases are audience conditions, not scalar/grouped analytics.
     if _TARGETING_COMPARISON_RE.search(query) and not function and not dimensions:
         return None
@@ -169,18 +224,27 @@ def analyze_analytical_intent(
             "unsupported_reason": "unsupported_aggregate_contract",
             "unsupported_message": "요청한 지표·집계 함수·그룹 기준 조합을 안전하게 생성할 수 없습니다.",
         }
+    query_type = "grouped_aggregate" if dimensions else "aggregate"
     return {
-        "query_type": "aggregate",
+        "query_type": query_type,
         "aggregate_function": function,
         "metric": metric.get("id"),
         "dimensions": dimensions,
         "filters": filters,
+        "comparison": None,
+        "result_shape": "grouped_rows" if dimensions else "scalar",
+        "target_entity": None,
         "source_id": source.get("id"),
     }
 
 
 def _source_for_intent(intent: dict[str, Any], registry: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     metric = next(item for item in registry.get("metrics", []) if item.get("id") == intent.get("metric"))
+    if intent.get("query_type") == "ranking":
+        source = metric.get("rankingSource")
+        if not isinstance(source, dict) or source.get("id") != intent.get("source_id"):
+            raise KeyError("registered ranking source was not found")
+        return metric, source
     source = next(item for item in metric.get("sources", []) if item.get("id") == intent.get("source_id"))
     return metric, source
 
@@ -199,6 +263,50 @@ def build_aggregation_request(
 ) -> dict[str, Any]:
     registry = load_analytics_registry(str(registry_path))
     _metric, source = _source_for_intent(intent, registry)
+    if intent.get("query_type") == "ranking":
+        member = source["member"]
+        measure = source["measure"]
+        metric_id = str(intent["metric"])
+        member_ref = _field_ref(member)
+        filters = [
+            {**_field_ref(raw), "id": raw["id"], "operator": raw["operator"], "value": raw.get("value")}
+            for raw in source.get("fixedFilters", [])
+        ]
+        ranking_type = "bottom" if intent.get("ranking_direction") == "ASC" else "top"
+        return {
+            "targetEntity": "member",
+            "outputColumns": [member_ref],
+            "filters": filters,
+            "groupings": [member_ref],
+            "aggregations": [{
+                "id": metric_id,
+                "function": str(intent["aggregate_function"]).casefold(),
+                "entity": measure["entity"], "field": measure["field"],
+                "table": measure["table"], "column": measure["column"],
+                "alias": measure.get("alias", "METRIC_VALUE"),
+                "distinct": bool(measure.get("distinct", False)),
+            }],
+            "derivedMetrics": [],
+            "sorting": [{"metricId": metric_id, "direction": intent["ranking_direction"].casefold()}],
+            "ranking": {
+                "enabled": True, "type": ranking_type, "limit": 1,
+                "partitionBy": [], "orderByMetricId": metric_id, "tiePolicy": "first",
+            },
+            "postAggregationFilters": [], "relationConditions": [],
+            "dateGrain": None,
+            "comparison": intent.get("comparison"),
+            "businessRules": {
+                "sourceId": source["id"],
+                "intentContract": {
+                    key: intent.get(key) for key in (
+                        "query_type", "aggregate_function", "metric", "dimensions", "filters",
+                        "comparison", "result_shape", "target_entity",
+                    )
+                },
+            },
+            "assumptions": source.get("assumptions", []),
+            "unresolvedFields": [],
+        }
     dimensions: list[dict[str, Any]] = []
     for dimension_id in intent.get("dimensions", []):
         mapping = registry["dimensions"][dimension_id]["mappings"][source["id"]]
@@ -246,7 +354,10 @@ def build_aggregation_request(
         "businessRules": {
             "sourceId": source["id"],
             "intentContract": {
-                key: intent.get(key) for key in ("query_type", "aggregate_function", "metric", "dimensions", "filters")
+                key: intent.get(key) for key in (
+                    "query_type", "aggregate_function", "metric", "dimensions", "filters",
+                    "comparison", "result_shape", "target_entity",
+                )
             },
         },
         "assumptions": source.get("assumptions", []),
@@ -282,6 +393,31 @@ def compile_aggregation_ast(
     """Compile a registered aggregation contract to the project SelectAst."""
     registry = load_analytics_registry(str(registry_path))
     _metric, source = _source_for_intent(intent, registry)
+    if intent.get("query_type") == "ranking":
+        member = source["member"]
+        measure = source["measure"]
+        member_expression = member["expression"]
+        measure_expression = measure["expression"]
+        function = str(intent["aggregate_function"]).upper()
+        distinct = "DISTINCT " if measure.get("distinct") else ""
+        metric_expression = f"{function}({distinct}{measure_expression})"
+        where = [
+            _filter_sql(item, next(
+                raw["expression"] for raw in source.get("fixedFilters", []) if raw.get("id") == item.get("id")
+            ))
+            for item in request.get("filters", [])
+        ]
+        joins = [f"     INNER JOIN {join['table']} {join['alias']} ON {join['on']}" for join in source.get("joins", [])]
+        return SelectAst(
+            columns=[
+                f"TOP 1 {member_expression} AS {member.get('outputAlias', 'CUST_ID')}",
+                f"{metric_expression} AS {measure.get('alias', 'METRIC_VALUE')}",
+            ],
+            from_lines=[f"FROM {source['table']} {source['alias']}", *joins],
+            where=where,
+            group_by=[member_expression],
+            order_by=[f"{metric_expression} {intent['ranking_direction']}", f"{member_expression} ASC"],
+        )
     dependencies: set[str] = set()
     columns: list[str] = []
     groups: list[str] = []
@@ -330,3 +466,93 @@ def compile_aggregation_ast(
         group_by=groups,
     )
 
+
+def validate_intent_sql_contract(
+    intent: dict[str, Any],
+    sql: str,
+    registry_path: Path = DEFAULT_ANALYTICS_REGISTRY_PATH,
+    dialect: str = "tsql",
+) -> dict[str, Any]:
+    """Check output shape and core metric/ranking semantics independently of generation."""
+    issues: list[dict[str, str]] = []
+    try:
+        statements = [node for node in sqlglot.parse(sql, read=dialect) if node is not None]
+    except Exception as exc:
+        return {
+            "ran": True, "valid": False, "expected_shape": intent.get("result_shape"),
+            "actual_shape": "invalid_sql",
+            "issues": [{"code": "sql_parse_error", "message": str(exc)}],
+        }
+    if len(statements) != 1:
+        return {
+            "ran": True, "valid": False, "expected_shape": intent.get("result_shape"),
+            "actual_shape": "invalid_sql",
+            "issues": [{"code": "multiple_statements", "message": "Exactly one SQL statement is required."}],
+        }
+    root = statements[0]
+    select = root if isinstance(root, exp.Select) else root.find(exp.Select)
+    aggregates = list(root.find_all(exp.AggFunc))
+    groups = list(root.find_all(exp.Group))
+    orders = list(root.find_all(exp.Ordered))
+    limits = [node for node in root.find_all(exp.Limit) if isinstance(node.expression, exp.Literal)]
+    limit_one = any(str(node.expression.name) == "1" for node in limits)
+    if limit_one and orders:
+        actual_shape = "single_member"
+    elif aggregates and groups:
+        actual_shape = "grouped_rows"
+    elif aggregates and not groups and select is not None and len(select.expressions) == 1:
+        actual_shape = "scalar"
+    else:
+        actual_shape = "member_rows"
+
+    expected_shape = intent.get("result_shape")
+    if actual_shape != expected_shape:
+        issues.append({
+            "code": "result_shape_mismatch",
+            "message": f"Expected {expected_shape}, but SQL produces {actual_shape}.",
+        })
+    expected_function = str(intent.get("aggregate_function") or "").casefold()
+    if expected_function and not any(node.key.casefold() == expected_function for node in aggregates):
+        issues.append({
+            "code": "aggregate_function_mismatch",
+            "message": f"Expected aggregate function {expected_function.upper()} is absent.",
+        })
+
+    registry = load_analytics_registry(str(registry_path))
+    try:
+        _metric, source = _source_for_intent(intent, registry)
+        expected_measure = str(source["measure"]["column"]).casefold()
+        aggregate_columns = {
+            column.name.casefold()
+            for aggregate in aggregates
+            for column in aggregate.find_all(exp.Column)
+        }
+        if expected_measure not in aggregate_columns:
+            issues.append({
+                "code": "metric_column_mismatch",
+                "message": f"Registered metric column {expected_measure} is not aggregated.",
+            })
+        if intent.get("query_type") == "ranking":
+            member_column = str(source["member"]["column"]).casefold()
+            selected_columns = {
+                column.name.casefold()
+                for projection in (select.expressions if select is not None else [])
+                for column in projection.find_all(exp.Column)
+            }
+            if member_column not in selected_columns:
+                issues.append({"code": "ranking_member_missing", "message": "Ranking SQL does not return a member id."})
+            expected_desc = intent.get("ranking_direction") == "DESC"
+            if not orders or not any(bool(order.args.get("desc")) == expected_desc for order in orders):
+                issues.append({"code": "ranking_direction_mismatch", "message": "Ranking direction differs from intent."})
+            if not limit_one:
+                issues.append({"code": "ranking_limit_mismatch", "message": "Single-member ranking requires TOP/LIMIT 1."})
+    except (KeyError, StopIteration, TypeError):
+        issues.append({"code": "intent_registry_mapping_missing", "message": "Intent has no registered physical mapping."})
+
+    return {
+        "ran": True,
+        "valid": not issues,
+        "expected_shape": expected_shape,
+        "actual_shape": actual_shape,
+        "issues": issues,
+    }

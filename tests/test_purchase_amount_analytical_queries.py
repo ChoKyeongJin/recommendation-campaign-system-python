@@ -30,11 +30,14 @@ def test_registered_purchase_amount_analytics(query, metric, dimensions, sql_fra
 
     assert plan["intent"] == "analyze_aggregation"
     assert plan["detected_intent"] == {
-        "query_type": "aggregate",
+        "query_type": "grouped_aggregate" if dimensions else "aggregate",
         "aggregate_function": "SUM",
         "metric": metric,
         "dimensions": dimensions,
         "filters": plan["detected_intent"]["filters"],
+        "comparison": None,
+        "result_shape": "grouped_rows" if dimensions else "scalar",
+        "target_entity": None,
     }
     assert result["is_success"] is True, (query, result.get("failure_reason"))
     assert result["aggregation_validation"]["valid"] is True

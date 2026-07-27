@@ -6,6 +6,9 @@ import re
 from pathlib import Path
 from typing import Any
 
+import sqlglot
+from sqlglot import exp
+
 
 DEFAULT_SCHEMA_PATH = Path("docs/data/schema_catalog.json")
 DEFAULT_LIMIT = 100
@@ -89,6 +92,28 @@ def load_column_types(schema_path: Path = DEFAULT_SCHEMA_PATH) -> dict[str, dict
                 columns[str(column["name"]).casefold()] = family
         result[str(table).casefold()] = columns
     return result
+
+
+def load_schema_columns(schema_path: Path = DEFAULT_SCHEMA_PATH) -> dict[str, set[str]]:
+    """Load the complete table/column allowlist, including types unknown to join-family checks."""
+    if not schema_path.exists():
+        return {}
+    try:
+        payload = json.loads(schema_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    tables = payload.get("tables", {})
+    if not isinstance(tables, dict):
+        return {}
+    return {
+        str(table).casefold(): {
+            str(column["name"]).casefold()
+            for column in meta.get("columns", [])
+            if isinstance(column, dict) and column.get("name")
+        }
+        for table, meta in tables.items()
+        if isinstance(meta, dict)
+    }
 
 
 def _alias_map(sql: str, column_types: dict[str, dict[str, str]]) -> dict[str, str]:
@@ -580,6 +605,8 @@ def validate_sql(
     default_limit: int | None = DEFAULT_LIMIT,
     dialect: str | None = None,
     table_dialects: dict[str, str] | None = None,
+    column_types: dict[str, dict[str, str]] | None = None,
+    schema_columns: dict[str, set[str]] | None = None,
 ) -> dict[str, Any]:
     cleaned_sql = _strip_sql_comments(sql).strip()
     statements = _sql_statements(cleaned_sql)
@@ -621,6 +648,27 @@ def validate_sql(
 
     resolved_dialect = dialect or infer_sql_dialect(tables, table_dialects or {})
 
+    # Regex checks remain useful for policy diagnostics, but they are not a parser.  Parse the
+    # complete input as exactly one statement so malformed clause order (for example WHERE before
+    # JOIN), trailing tokens, and dialect-invalid SQL fail closed before routing or confidence.
+    parsed_root: exp.Expression | None = None
+    try:
+        parsed = [node for node in sqlglot.parse(cleaned_sql, read=resolved_dialect) if node is not None]
+        if len(parsed) != 1:
+            issues.append(_issue("multiple_statements", "error", "SQL must parse as exactly one statement."))
+        elif not isinstance(parsed[0], (exp.Select, exp.Union)) and parsed[0].find(exp.Select) is None:
+            issues.append(_issue("non_select_statement", "error", "Parsed SQL is not a SELECT statement."))
+        else:
+            parsed_root = parsed[0]
+    except Exception as exc:  # sqlglot exposes dialect-specific ParseError subclasses.
+        issues.append(_issue("sql_parse_error", "error", f"SQL AST parsing failed: {exc}"))
+
+    effective_columns = schema_columns or (
+        {table: set(columns) for table, columns in column_types.items()} if column_types else {}
+    )
+    if parsed_root is not None and effective_columns:
+        issues.extend(_validate_schema_columns(parsed_root, effective_columns))
+
     # default_limit is None → 행수 제한을 붙이지 않는다(전체 결과 반환).
     if is_select and default_limit is not None:
         safe_sql = _apply_row_limit(statement, default_limit, resolved_dialect)
@@ -643,6 +691,60 @@ def validate_sql(
     return _result(
         is_valid, statement, safe_sql, tables, sensitive_columns, issues, masked_sql=masked_sql, dialect=resolved_dialect
     )
+
+
+def _validate_schema_columns(
+    root: exp.Expression,
+    schema_columns: dict[str, set[str]],
+) -> list[dict[str, str]]:
+    """Validate physical column references against the catalog using the parsed AST."""
+    catalog = {
+        str(table).casefold(): {str(column).casefold() for column in columns}
+        for table, columns in schema_columns.items()
+    }
+    cte_names = {node.alias_or_name.casefold() for node in root.find_all(exp.CTE) if node.alias_or_name}
+    aliases: dict[str, str] = {}
+    physical_tables: set[str] = set()
+    for table in root.find_all(exp.Table):
+        table_name = table.name.casefold()
+        if table_name in cte_names or table_name not in catalog:
+            continue
+        physical_tables.add(table_name)
+        aliases[table_name] = table_name
+        if table.alias:
+            aliases[table.alias.casefold()] = table_name
+    output_aliases = {
+        projection.alias.casefold()
+        for select in root.find_all(exp.Select)
+        for projection in select.expressions
+        if projection.alias
+    }
+    issues: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for column in root.find_all(exp.Column):
+        name = column.name.casefold()
+        if not name or name == "*":
+            continue
+        if not column.table and name in output_aliases:
+            continue
+        if column.table:
+            table_name = aliases.get(column.table.casefold())
+            if table_name and name not in catalog.get(table_name, set()):
+                key = (table_name, name)
+                if key not in seen:
+                    issues.append(_issue(
+                        "column_not_allowed", "error",
+                        f"Column is not present in schema catalog: {table_name}.{name}",
+                    ))
+                    seen.add(key)
+            continue
+        matches = [table for table in physical_tables if name in catalog.get(table, set())]
+        if not matches:
+            key = ("", name)
+            if key not in seen:
+                issues.append(_issue("column_not_allowed", "error", f"Column is not present in referenced tables: {name}"))
+                seen.add(key)
+    return issues
 
 
 def _strip_sql_comments(sql: str) -> str:
