@@ -31,6 +31,11 @@ from aggregation_requirements import (
     parse_aggregation_request,
     validate_aggregation_sql,
 )
+from analytical_intent import (
+    analyze_analytical_intent,
+    build_aggregation_request as build_deterministic_aggregation_request,
+    compile_aggregation_ast,
+)
 from formula_engine import DEFAULT_METRIC_LEXICON_PATH, compile_formula_ast, parse_computed_metrics_from_query, validate_formula_ast
 import logical_expression as _logic
 from set_expression_engine import parse_set_expressions_from_query
@@ -1811,6 +1816,10 @@ def build_query_plan(
         base.setdefault("parser", {})["multi_query_variants"] = multi_query_variants
     if structured_query is not None:
         base["structured_query"] = structured_query.to_dict()
+    # 집계 출력은 회원 목록보다 우선한다. 규칙/LLM 파서가 VIP·여성·캠페인·쿠폰 같은 수식어를
+    # 오디언스 조건으로 먼저 잡았더라도, 등록된 수치 지표와 집계 함수/그룹 축이 확인되면 별도의
+    # 분석 계약으로 승격한다. 지표·차원·필터 물리 매핑은 analytics_registry.json이 단일 소스다.
+    _apply_analytical_intent(query, base, sql_schema)
     # LLM/규칙 어느 파서를 탔든 최종 플랜에 공통 행동 의미와 출력 계약을 확정한다. 이 단계는
     # SQL 생성 전 마지막 결정론 보강이라, 파서가 단순 완료형 행동("구매한 회원")을 놓쳐도
     # 그 조건이 조용히 사라진 채 전체 회원 SQL로 나가는 것을 막는다.
@@ -1818,6 +1827,55 @@ def build_query_plan(
     _attach_query_output_contract(query, base)
     base["complexity"] = classify_query_complexity(base)
     return base
+
+
+def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path) -> None:
+    """Attach the deterministic aggregate contract and consume audience-only misclassification."""
+    intent = analyze_analytical_intent(query)
+    if not isinstance(intent, dict):
+        return
+    public_keys = ("query_type", "aggregate_function", "metric", "dimensions", "filters")
+    plan["detected_intent"] = {key: intent.get(key) for key in public_keys}
+    plan["analytical_intent"] = intent
+    plan["intent"] = "analyze_aggregation"
+
+    if intent.get("unsupported_reason"):
+        plan["unsupported"] = {
+            "reason": intent["unsupported_reason"],
+            "message": intent.get("unsupported_message") or "요청한 집계를 안전하게 생성할 수 없습니다.",
+            "clarification": "계산할 지표와 집계 함수, 그룹 기준을 스키마에 있는 항목으로 지정해 주세요.",
+        }
+        return
+    try:
+        plan["aggregation_request"] = build_deterministic_aggregation_request(intent)
+    except (KeyError, TypeError, ValueError) as exc:
+        plan["unsupported"] = {
+            "reason": "unsupported_aggregate_contract",
+            "message": f"집계 의도를 물리 스키마 계약으로 확정하지 못했습니다: {exc}",
+            "clarification": "계산할 지표와 그룹 기준을 더 명확히 지정해 주세요.",
+        }
+        return
+
+    # 분석 IR이 소유한 필터를 기존 회원목록 슬롯에서 제거한다. 그렇지 않으면 required_sql_conditions가
+    # SELECT DISTINCT 회원번호/EXISTS 형태를 추가로 요구해 올바른 집계 SQL을 목록 SQL로 되돌린다.
+    target_user = plan.get("target_user") if isinstance(plan.get("target_user"), dict) else {}
+    filter_ids = {item.get("id") for item in intent.get("filters", []) if isinstance(item, dict)}
+    if "female" in filter_ids:
+        target_user["gender"] = None
+    if "vip" in filter_ids:
+        target_user["lifecycle"] = [value for value in target_user.get("lifecycle", []) if value != "vip"]
+    if intent.get("metric") in {"campaign_purchase_amount", "coupon_purchase_amount"}:
+        target_user["campaign_responses"] = []
+    plan["semantic_conditions"] = []
+    campaign = plan.get("campaign_constraints")
+    if isinstance(campaign, dict):
+        campaign["objective"] = None
+        campaign["offer_type"] = None
+        campaign["channels"] = []
+        campaign["sell_object"] = None
+    # 오디언스 파서가 같은 문구에 붙인 미지원 판정은 분석 계약이 완전히 대체한다.
+    plan.pop("unsupported", None)
+    _refresh_aggregation_request_validation(plan, schema_path)
 
 
 def _upgrade_intent_from_variants(base: dict[str, Any], variant_intents: list[str]) -> None:
@@ -8771,6 +8829,9 @@ def retrieve(
     _apply_named_filter("cart_presence", _split_channel_suffix(query)[0] or query, query_plan)
     # 장바구니 '부재'도 원문 기준으로 재감지한다(멱등; 오파싱된 cart_abandoner 걷어내기).
     _apply_cart_absence_filter(_split_channel_suffix(query)[0] or query, query_plan)
+    # 위 원문 복원 단계가 캠페인/쿠폰 표현을 다시 회원 오디언스 슬롯에 넣을 수 있다. 최종 출력이
+    # 등록형 집계라면 분석 계약을 다시 적용해 그 슬롯을 소비하고 목록 SQL로의 회귀를 막는다.
+    _apply_analytical_intent(query, query_plan, sql_schema)
     # 타겟팅 스코프면 plan_query 가 오디언스 절뿐이라 '재구매를 유도' 같은 캠페인 목적 절이 잘려
     # intent 가 recommend_campaign→find_user_segment 로 약화된다(장바구니 이탈 재구매 유도 등).
     # 목적 절이 살아있는 전체 재작성본으로 intent 를 재추론해 더 강한 캠페인 의도로만 승격한다.
@@ -11522,8 +11583,15 @@ def _verify_sql_semantics(
             for issue in raw_issues
             if isinstance(issue, dict)
         ]
-        # issues 가 하나도 없으면 faithful 로 간주(불일치라면서 근거 없음 = 오탐 억제).
-        faithful = bool(data.get("faithful")) or not issues
+        # 모델이 faithful=false를 명시했다면 issue 배열이 비었어도 출고 게이트가 반드시 막는다.
+        # 근거가 비어 있는 경우에는 구조화된 일반 issue를 보강해 사용자에게 확인 이유를 남긴다.
+        faithful = bool(data.get("faithful"))
+        if not faithful and not issues:
+            issues = [{
+                "type": "dropped",
+                "condition": "요청한 핵심 의도",
+                "detail": "의미 검증기가 SQL과 원문의 불일치를 감지했지만 세부 항목을 반환하지 않았습니다.",
+            }]
         verdict = {"ran": True, "faithful": faithful, "issues": [] if faithful else issues}
         _write_rag_llm_log("sql_semantic_verify", {"query": original_query, "sql": sql, **verdict})
         return verdict
@@ -11901,12 +11969,26 @@ def _actual_sql_grain(sql: str, dialect: str | None = None) -> dict[str, Any]:
 
 
 def _semantic_issue_is_critical(issue: dict[str, Any], query: str, sql: str) -> bool:
-    """LLM dropped 판정을 결과집합 영향과 SQL 근거로 보수적으로 분류한다."""
+    """Classify result-shaping dropped/spurious issues as fail-closed."""
     if issue.get("severity") == "critical" or issue.get("affects_result_set") is True or issue.get("is_primary_condition") is True:
         return True
     if issue.get("type") == "inverted" and not _is_noncredible_inverted_verdict(issue):
         return True
-    if issue.get("type") != "dropped":
+    issue_type = str(issue.get("type") or "").casefold()
+    structural_text = " ".join(
+        str(issue.get(key) or "") for key in ("condition", "detail", "expected", "actual")
+    ).casefold()
+    structural_terms = (
+        "sum", "count", "avg", "max", "min", "aggregate", "metric", "measure", "group by", "join",
+        "time range", "filter", "grain", "column", "table", "회원번호", "회원 번호", "주문번호", "거래번호",
+        "집계", "합계", "총액", "지표", "그룹", "차원", "조인", "기간", "필터", "컬럼", "테이블",
+    )
+    if issue_type in {"dropped", "spurious"} and any(term in structural_text for term in structural_terms):
+        return True
+    if issue_type == "spurious":
+        # 요청하지 않은 GROUP BY/식별자/필터는 결과 grain이나 행 수를 바꾸므로 항상 차단한다.
+        return True
+    if issue_type != "dropped":
         return False
     condition_text = str(issue.get("condition") or "").replace(" ", "").casefold()
     compact_query = query.replace(" ", "").casefold()
@@ -11963,8 +12045,16 @@ def _validate_sql_delivery_contract(
         if not isinstance(raw_issue, dict):
             continue
         critical = _semantic_issue_is_critical(raw_issue, query, sql)
+        issue_type = str(raw_issue.get("type") or "dropped").casefold()
+        reason_code = {
+            "dropped": "DROPPED_SEMANTIC_REQUIREMENT",
+            "spurious": "SPURIOUS_RESULT_SHAPING_CLAUSE",
+            "inverted": "INVERTED_SEMANTIC_REQUIREMENT",
+            "wrong_value": "WRONG_FILTER_VALUE",
+        }.get(issue_type, "SEMANTIC_MISMATCH")
         issue = {
             **raw_issue,
+            "reason_code": raw_issue.get("reason_code") or reason_code,
             "severity": "critical" if critical else raw_issue.get("severity", "warning"),
             "affects_result_set": critical,
             "is_primary_condition": critical,
@@ -11984,7 +12074,9 @@ def _validate_sql_delivery_contract(
         reasons.append("targeting_result_member_id_missing")
     if dropped_conditions:
         reasons.append("critical_conditions_dropped")
-    if verification.get("ran") and not verification.get("faithful") and critical_issues:
+    # faithful=false 자체가 최종 출고 불가 조건이다. issue 분류는 reason code와 안내 품질을 위한
+    # 부가 정보이며, 빈/오분류 issue 때문에 불일치 SQL이 success로 빠져나가면 안 된다.
+    if verification.get("ran") and verification.get("faithful") is False:
         reasons.append("critical_semantic_issue")
     return {
         "is_satisfied": not reasons,
@@ -12002,6 +12094,25 @@ def _validate_sql_delivery_contract(
         "failure_reasons": _unique_strings(reasons),
         "failure_reason": reasons[0] if reasons else None,
         "sql_contract": actual,
+    }
+
+
+def _failed_sql_confidence(reason: str | None, *, execution_error: bool = False) -> dict[str, Any]:
+    """Return a renderer-compatible low confidence payload after final validation."""
+    score = 0 if execution_error else 20
+    return {
+        "overall_score": score,
+        "level": "낮음",
+        "dimensions": {
+            "request_sql_match": 0,
+            "schema_match": 0 if execution_error else 20,
+            "policy_similarity": 0,
+            "clarity": 20,
+            "static_validation": 0,
+        },
+        "dimension_weights": {},
+        "conditions": [],
+        "warnings": [f"최종 SQL 검증에 실패했습니다: {reason or 'unknown_validation_failure'}"],
     }
 
 
@@ -12288,11 +12399,8 @@ def build_sql_result(
                 **semantic_verification,
                 "issues": delivery_validation.get("semantic_issues", []),
             }
-        # 차단은 극성(inverted) 오류에만 한다 — 긍정↔부정 뒤집힘은 판정 모델이 비교적 신뢰할 수 있는 축.
-        # dropped(누락)는 LLM 판정으로는 차단하지 않는다: 판정 모델이 도메인 인코딩(장바구니 이탈=KEEP_YN='Y',
-        # 미접속=LAST_LOGIN_DATE<=과거, 미구매=NOT EXISTS 등)을 원문 단어와 대응시키지 못해 정상 SQL 을 '누락'으로
-        # 오판하는 오탐이 잦고, 반대로 진짜 누락을 실행마다 놓치기도 하기 때문(비결정). wrong_value/spurious 도
-        # 비차단(값 정확성=결정론 컴파일러 소유). → LLM 게이트는 inverted 만 차단, 나머지는 자문으로만 남긴다.
+        # faithful=false는 issue 세부 분류와 무관하게 차단한다. 결정론 AST/스키마 계약이 정상이어도
+        # 원문↔SQL 직접 검증에서 불일치가 확인된 SQL을 success로 출고하지 않는다.
         blocking_issues = []
         if semantic_verification.get("ran") and not semantic_verification.get("faithful"):
             blocking_issues = [
@@ -12313,6 +12421,10 @@ def build_sql_result(
             clarification_questions = _semantic_verification_clarifications(blocking_issues) + _unique_strings(
                 [req.message for req in requirement_blocking if req.message]
             )
+            if not clarification_questions and semantic_verification.get("faithful") is False:
+                clarification_questions = [
+                    "생성 SQL이 원문의 핵심 집계·필터·그룹 의도와 일치하지 않습니다. 요청 의도를 확인해 주세요."
+                ]
             blocked_sql = selected_sql  # 표시용 보존(출고는 막되 무엇이 생성됐는지 노출)
             selected_sql = None
             target_connection = None
@@ -12408,6 +12520,11 @@ def build_sql_result(
                 selected_sql = None
                 target_connection = None
                 target_dialect = None
+
+    # 신뢰도는 모든 의미/스키마/집계 검증이 끝난 뒤 최종 상태로 보정한다. 중간 후보 점수가 높았어도
+    # SQL이 차단됐으면 높음으로 노출하지 않는다.
+    if selected_sql is None:
+        confidence = _failed_sql_confidence(failure_reason)
 
     return {
         "sql": selected_sql,
@@ -13532,8 +13649,8 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
     return None
 
 
-# 실CRM 타겟 SQL 을 만드는 의도. 이 둘만 실추출 빌더를 태운다(그 외 intent → 후보 없음).
-_SQL_TARGET_INTENTS = frozenset({"recommend_campaign", "find_user_segment"})
+# 실CRM 타겟 및 분석 SQL을 만드는 의도. 분석은 회원 ID 목록 계약과 분리된 집계 빌더만 사용한다.
+_SQL_TARGET_INTENTS = frozenset({"recommend_campaign", "find_user_segment", "analyze_aggregation"})
 
 
 def _sql_target_builder_registry() -> tuple[tuple[Any, frozenset[str]], ...]:
@@ -13549,6 +13666,9 @@ def _sql_target_builder_registry() -> tuple[tuple[Any, frozenset[str]], ...]:
     먼저(EXISTS 빌더는 fact_join 신호에 양보). 빌더는 비해당이면 None 을 반환하고 다음으로 넘어간다.
     (런타임 호출이라 아래 빌더가 이 함수 정의보다 파일에서 나중에 나와도 된다.)"""
     return (
+        # 등록형 일반 집계: metric/dimension/filter IR을 결정론 SelectAst로 컴파일한다. 분석 의도에서
+        # 회원 목록 빌더로 폴백하면 안 되므로 가장 먼저 두고, 비분석 플랜에서는 즉시 None을 반환한다.
+        (build_analytical_aggregation_sql_candidate, frozenset()),
         # 논리식(OR-of-conjunctions) 컴파일러 — AND/OR/괄호를 보존한 복합 빌더. logical_expression 슬롯이
         # 있을 때만(검증 통과) 발동하고 단일 조건 kind 를 소유하지 않는다. union 보다 우선(더 일반적).
         (build_logical_expression_sql_candidate, frozenset()),
@@ -13631,6 +13751,35 @@ def build_sql_template_candidate(query_plan: dict[str, Any]) -> dict[str, Any] |
         return candidate
     # 실DB(union/cart/purchase/order/aggregate/metric/member)로 매핑 가능한 조건이 없으면 후보 없음(→ 미지원 안내).
     return None
+
+
+def build_analytical_aggregation_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """Compile a registry-backed analytical intent without an LLM fallback."""
+    if query_plan.get("intent") != "analyze_aggregation":
+        return None
+    intent = query_plan.get("analytical_intent")
+    request = query_plan.get("aggregation_request")
+    if not isinstance(intent, dict) or not isinstance(request, dict):
+        return None
+    try:
+        ast = compile_aggregation_ast(intent, request)
+    except (KeyError, TypeError, ValueError) as exc:
+        query_plan["unsupported"] = {
+            "reason": "analytical_sql_compilation_failed",
+            "message": f"확정된 집계 계약을 SQL AST로 컴파일하지 못했습니다: {exc}",
+            "clarification": "지표·그룹 기준·필터 조합을 확인해 주세요.",
+        }
+        return None
+    candidate = _select_ast_candidate(
+        "sql_template:analytical_aggregation",
+        "등록형 분석 집계 SQL 템플릿",
+        1.0,
+        ast,
+        "sql_template",
+    )
+    candidate["structured_aggregation_request"] = request
+    candidate["detected_intent"] = query_plan.get("detected_intent")
+    return candidate
 
 
 _UNSUPPORTED_CONDITION_LABELS = {

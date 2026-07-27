@@ -1,0 +1,137 @@
+{
+  "aggregateFunctions": {
+    "SUM": ["합계", "총액", "총합", "전체 금액", "전체 구매 금액", "총 구매금액", "합산", "얼마"],
+    "COUNT": ["건수", "개수", "몇 건"],
+    "AVG": ["평균"],
+    "MAX": ["최대", "최고"],
+    "MIN": ["최소", "최저"]
+  },
+  "unsupportedMetricQualifiers": ["미래 예상", "미래예상", "예측 구매", "예상 구매"],
+  "metrics": [
+    {
+      "id": "coupon_purchase_amount",
+      "priority": 300,
+      "terms": ["구매금액", "구매 금액", "구매액", "결제금액", "결제 금액"],
+      "requiredTerms": [["쿠폰"], ["사용"]],
+      "defaultFunction": "SUM",
+      "allowedFunctions": ["SUM", "AVG", "MAX", "MIN"],
+      "sources": [{
+        "id": "campaign_coupon_fact",
+        "table": "MCS_CAMP_MBR_RSPN_FT",
+        "alias": "R",
+        "supportedDimensions": [],
+        "measure": {"entity": "coupon_response", "field": "offerPurchaseAmount", "table": "MCS_CAMP_MBR_RSPN_FT", "column": "OFFR_BUY_AMT", "expression": "R.OFFR_BUY_AMT", "alias": "TOTAL_PURCHASE_AMOUNT"},
+        "fixedFilters": [
+          {"id": "target_campaign_group", "entity": "campaign_response", "field": "campaignGroupType", "table": "MCS_CAMP_MBR_RSPN_FT", "column": "CGRP_TYPE_CD", "expression": "R.CGRP_TYPE_CD", "operator": "eq", "value": "T"},
+          {"id": "coupon_used", "entity": "coupon_response", "field": "usedCouponCount", "table": "MCS_CAMP_MBR_RSPN_FT", "column": "USE_CPN_CNT", "expression": "R.USE_CPN_CNT", "operator": "gt", "value": 0}
+        ],
+        "assumptions": ["쿠폰 사용으로 발생한 구매금액은 캠페인 반응 팩트의 OFFR_BUY_AMT로 계산합니다."]
+      }]
+    },
+    {
+      "id": "campaign_purchase_amount",
+      "priority": 200,
+      "terms": ["구매금액", "구매 금액", "구매액", "결제금액", "결제 금액"],
+      "requiredTerms": [["캠페인"]],
+      "defaultFunction": "SUM",
+      "allowedFunctions": ["SUM", "AVG", "MAX", "MIN"],
+      "sources": [{
+        "id": "campaign_purchase_fact",
+        "table": "MCS_CAMP_MBR_RSPN_FT",
+        "alias": "R",
+        "supportedDimensions": [],
+        "measure": {"entity": "campaign_response", "field": "purchaseAmount", "table": "MCS_CAMP_MBR_RSPN_FT", "column": "BUY_AMT", "expression": "R.BUY_AMT", "alias": "TOTAL_PURCHASE_AMOUNT"},
+        "fixedFilters": [
+          {"id": "target_campaign_group", "entity": "campaign_response", "field": "campaignGroupType", "table": "MCS_CAMP_MBR_RSPN_FT", "column": "CGRP_TYPE_CD", "expression": "R.CGRP_TYPE_CD", "operator": "eq", "value": "T"},
+          {"id": "campaign_purchase_response", "entity": "campaign_response", "field": "purchaseResponse", "table": "MCS_CAMP_MBR_RSPN_FT", "column": "BUY_RSPN_YN", "expression": "R.BUY_RSPN_YN", "operator": "eq", "value": "Y"}
+        ]
+      }]
+    },
+    {
+      "id": "purchase_amount",
+      "priority": 100,
+      "terms": ["구매금액", "구매 금액", "구매액", "구매 총액", "구매총액", "결제금액", "결제 금액", "주문금액", "주문 금액"],
+      "defaultFunction": "SUM",
+      "allowedFunctions": ["SUM", "AVG", "MAX", "MIN"],
+      "sources": [
+        {
+          "id": "purchase_detail",
+          "table": "CRM_SL_ORDERDETAILMALL",
+          "alias": "D",
+          "whenAnyDimensions": ["brand", "category"],
+          "supportedDimensions": ["brand", "category", "sido", "member_grade", "member"],
+          "measure": {"entity": "order_item", "field": "paymentAmount", "table": "CRM_SL_ORDERDETAILMALL", "column": "PAYMENT_AMT", "expression": "D.PAYMENT_AMT", "alias": "TOTAL_PURCHASE_AMOUNT"},
+          "dateField": {"entity": "order_item", "field": "orderDate", "table": "CRM_SL_ORDERDETAILMALL", "column": "ORDER_DATE", "expression": "D.ORDER_DATE"},
+          "joins": [
+            {"id": "product", "table": "CRM_CM_PRODUCT", "alias": "P", "on": "P.PRODUCT_ID = D.PRODUCT_ID"},
+            {"id": "member", "table": "CRM_MB_BASEINFO", "alias": "B", "on": "B.MEMBER_NO = D.MEMBER_NO"}
+          ]
+        },
+        {
+          "id": "purchase_header",
+          "table": "CRM_SL_ORDERHEADERMALL",
+          "alias": "O",
+          "supportedDimensions": ["sido", "member_grade", "member"],
+          "measure": {"entity": "order", "field": "paymentAmount", "table": "CRM_SL_ORDERHEADERMALL", "column": "PAYMENT_AMT", "expression": "O.PAYMENT_AMT", "alias": "TOTAL_PURCHASE_AMOUNT"},
+          "dateField": {"entity": "order", "field": "orderDate", "table": "CRM_SL_ORDERHEADERMALL", "column": "ORDER_DATE", "expression": "O.ORDER_DATE"},
+          "joins": [
+            {"id": "member", "table": "CRM_MB_BASEINFO", "alias": "B", "on": "B.MEMBER_NO = O.MEMBER_NO"}
+          ]
+        }
+      ]
+    }
+  ],
+  "dimensions": {
+    "brand": {
+      "terms": ["브랜드별", "브랜드 별"],
+      "mappings": {
+        "purchase_detail": {"entity": "brand", "field": "brandId", "table": "CRM_SL_ORDERDETAILMALL", "column": "BRAND_ID", "expression": "D.BRAND_ID", "outputAlias": "BRAND_ID"}
+      }
+    },
+    "category": {
+      "terms": ["카테고리별", "카테고리 별"],
+      "mappings": {
+        "purchase_detail": {"entity": "category", "field": "category", "table": "CRM_CM_PRODUCT", "column": "CATEGORY", "expression": "P.CATEGORY", "outputAlias": "CATEGORY", "dependencies": ["product"]}
+      }
+    },
+    "sido": {
+      "terms": ["시도별", "시도 별"],
+      "mappings": {
+        "purchase_header": {"entity": "member", "field": "sido", "table": "CRM_MB_BASEINFO", "column": "SIDO", "expression": "B.SIDO", "outputAlias": "SIDO", "dependencies": ["member"]},
+        "purchase_detail": {"entity": "member", "field": "sido", "table": "CRM_MB_BASEINFO", "column": "SIDO", "expression": "B.SIDO", "outputAlias": "SIDO", "dependencies": ["member"]}
+      }
+    },
+    "member_grade": {
+      "terms": ["회원등급별", "회원 등급별", "등급별", "등급 별"],
+      "mappings": {
+        "purchase_header": {"entity": "member", "field": "emartGradeCode", "table": "CRM_MB_BASEINFO", "column": "EMART_GRADE_CD", "expression": "B.EMART_GRADE_CD", "outputAlias": "EMART_GRADE_CD", "dependencies": ["member"]},
+        "purchase_detail": {"entity": "member", "field": "emartGradeCode", "table": "CRM_MB_BASEINFO", "column": "EMART_GRADE_CD", "expression": "B.EMART_GRADE_CD", "outputAlias": "EMART_GRADE_CD", "dependencies": ["member"]}
+      }
+    },
+    "member": {
+      "terms": ["회원별", "회원 별", "고객별", "고객 별"],
+      "mappings": {
+        "purchase_header": {"entity": "member", "field": "memberNo", "table": "CRM_SL_ORDERHEADERMALL", "column": "MEMBER_NO", "expression": "O.MEMBER_NO", "outputAlias": "MEMBER_NO"},
+        "purchase_detail": {"entity": "member", "field": "memberNo", "table": "CRM_SL_ORDERDETAILMALL", "column": "MEMBER_NO", "expression": "D.MEMBER_NO", "outputAlias": "MEMBER_NO"}
+      }
+    }
+  },
+  "filters": {
+    "female": {
+      "label": "여성 회원",
+      "terms": ["여성", "여자"],
+      "mappings": {
+        "purchase_header": {"entity": "member", "field": "genderCode", "table": "CRM_MB_BASEINFO", "column": "GENDER_CD", "expression": "B.GENDER_CD", "operator": "eq", "value": "GENDER_CD.FEMALE", "dependencies": ["member"]},
+        "purchase_detail": {"entity": "member", "field": "genderCode", "table": "CRM_MB_BASEINFO", "column": "GENDER_CD", "expression": "B.GENDER_CD", "operator": "eq", "value": "GENDER_CD.FEMALE", "dependencies": ["member"]}
+      }
+    },
+    "vip": {
+      "label": "VIP 회원",
+      "terms": ["VIP", "브이아이피"],
+      "mappings": {
+        "purchase_header": {"entity": "member", "field": "emartGradeCode", "table": "CRM_MB_BASEINFO", "column": "EMART_GRADE_CD", "expression": "B.EMART_GRADE_CD", "operator": "eq", "value": "MEM_GRADE_CD.VIP", "dependencies": ["member"]},
+        "purchase_detail": {"entity": "member", "field": "emartGradeCode", "table": "CRM_MB_BASEINFO", "column": "EMART_GRADE_CD", "expression": "B.EMART_GRADE_CD", "operator": "eq", "value": "MEM_GRADE_CD.VIP", "dependencies": ["member"]}
+      }
+    }
+  }
+}

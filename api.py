@@ -39,6 +39,7 @@ from graph_rag import (
     retrieve,
 )
 from common_utils import elapsed_ms as _elapsed_ms
+from confidence import render_confidence_markdown, render_confidence_report
 from sql_dialect import dialect_for_connection
 from sql_guard import DEFAULT_LIMIT, DEFAULT_SCHEMA_PATH
 
@@ -447,6 +448,27 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
             "segment_presentation": database_execution.get("segment_presentation", _empty_segment_presentation()),
         }
     )
+    # SQL 생성이 성공했더라도 실제 컴파일/실행이 실패하면 API 최종 상태를 success로 유지하지 않는다.
+    # execute_sql=False의 의도적 skipped는 제외하고, 실행 요청이 있었던 경우에만 강제 실패 보정한다.
+    if request.execute_sql and api_response.get("status") == "success" and not database_execution.get("is_success"):
+        execution_reason = database_execution.get("failure_reason") or "database_execution_failed"
+        low_confidence = {
+            "overall_score": 0,
+            "level": "낮음",
+            "dimensions": {
+                "request_sql_match": 0, "schema_match": 0, "policy_similarity": 0,
+                "clarity": 0, "static_validation": 0,
+            },
+            "dimension_weights": {}, "conditions": [],
+            "warnings": [f"SQL 실행에 실패했습니다: {execution_reason}"],
+        }
+        api_response.update({
+            "status": "sql_validation_failed",
+            "failure_reason": execution_reason,
+            "confidence": low_confidence,
+            "confidence_report": render_confidence_report(low_confidence),
+            "confidence_markdown": render_confidence_markdown(low_confidence),
+        })
     failure_log = _save_target_sql_failure_log(request, result, api_response, database_execution)
     if failure_log:
         api_response["failure_log"] = failure_log
@@ -3275,13 +3297,13 @@ def _target_sql_failure_payload(
     failure_reason = None
     error_detail = None
 
-    if api_status != "success":
-        failure_stage = "sql_generation"
-        failure_reason = api_response.get("failure_reason") or sql_result.get("failure_reason") or "target_sql_failed"
-    elif request.execute_sql and not database_execution.get("is_success"):
+    if request.execute_sql and sql_result.get("is_success") and not database_execution.get("is_success"):
         failure_stage = "database_execution"
         failure_reason = database_execution.get("failure_reason") or "database_execution_failed"
         error_detail = database_execution.get("error")
+    elif api_status != "success":
+        failure_stage = "sql_generation"
+        failure_reason = api_response.get("failure_reason") or sql_result.get("failure_reason") or "target_sql_failed"
     elif request.generate_messages and message_generation.get("failure_reason"):
         failure_stage = "message_generation"
         failure_reason = message_generation.get("failure_reason")

@@ -82,28 +82,21 @@ def test_blocked_sql_none_on_success():
     assert res["blocked_sql"] is None
 
 
-def test_gate_does_not_block_on_dropped_issue():
-    # dropped(누락)는 비차단 자문이다 — 판정 모델이 도메인 인코딩(장바구니=KEEP_YN='Y', 미접속=
-    # LAST_LOGIN_DATE<=과거 등)을 못 알아봐 정상 SQL 을 '누락'으로 오판하는 오탐이 잦기 때문.
-    # 진짜 누락은 결정론 감지기·커버리지 검증이 소유한다. inverted 만 차단한다.
+def test_gate_blocks_on_dropped_issue_when_unfaithful():
     verdict = {"ran": True, "faithful": False, "issues": [
         {"type": "dropped", "condition": "결제하지 않은", "detail": "SQL에 결제 조건 없음"}]}
     res = _result(SUPPORTED, verdict)
-    assert res["is_success"] is True and res["sql"] is not None
-    assert res["failure_reason"] is None
-    # 판정은 응답에 자문으로 남는다(디버깅·튜닝용).
+    assert res["is_success"] is False and res["sql"] is None
+    assert res["failure_reason"] == "semantic_verification_failed"
     assert res["semantic_verification"]["issues"]
 
 
-def test_gate_does_not_block_on_value_level_issue():
-    # 값 수준(wrong_value)만 있으면 차단하지 않는다 — 판정 모델이 등급 서열·권역 구성을 몰라 정상 확장
-    # ('GOLD 이상'→GOLD,VIP)을 오판하는 오탐이라, 값 정확성은 결정론 컴파일러·커버리지가 소유한다.
+def test_gate_blocks_on_value_level_issue_when_unfaithful():
     verdict = {"ran": True, "faithful": False, "issues": [
         {"type": "wrong_value", "condition": "GOLD 이상", "detail": "GOLD, VIP 로 확장됨"}]}
     res = _result(SUPPORTED, verdict)
-    assert res["is_success"] is True and res["sql"] is not None
-    assert res["failure_reason"] is None
-    # 판정 결과 자체는 응답에 자문으로 남는다(디버깅·튜닝용).
+    assert res["is_success"] is False and res["sql"] is None
+    assert res["failure_reason"] == "semantic_verification_failed"
     assert res["semantic_verification"]["issues"]
 
 
@@ -122,29 +115,24 @@ def test_gate_blocks_on_inverted_even_with_value_issue():
 AGE_OR_QUERY = "20대 또는 30대이면서 구매 횟수가 5회 이상인 회원을 찾아줘."
 
 
-def test_gate_does_not_block_deterministic_age_range_inversion():
-    # '20대 또는 30대'→AGE 20~39 는 파서가 결정론적으로 옳게 변환한다. 판정 모델이 이를 inverted 로
-    # 오판해도(값 산술 실수) 차단하지 않는다 — 정상 SQL 을 막는 오탐 방지. (사용자 보고 사례 회귀.)
+def test_gate_blocks_any_unfaithful_age_range_verdict():
     verdict = {"ran": True, "faithful": False, "issues": [
         {"type": "inverted", "condition": "20대 또는 30대",
          "detail": "SQL에서 20세 이상 39세 이하로 잘못 반영됨"}]}
     res = _result(AGE_OR_QUERY, verdict)
-    assert res["is_success"] is True, res.get("failure_reason")
-    assert res["sql"] and "AGE >= 20" in res["sql"] and "AGE <= 39" in res["sql"]
-    assert res["failure_reason"] is None
-    # 판정은 자문으로 남는다(디버깅·튜닝용) — 출고만 막지 않는다.
+    assert res["is_success"] is False
+    assert res["sql"] is None and res["blocked_sql"]
+    assert res["failure_reason"] == "semantic_verification_failed"
     assert res["semantic_verification"]["issues"]
 
 
-def test_gate_does_not_block_positive_threshold_inversion():
-    # '구매 횟수가 5회 이상'(양의 임계 → HAVING >=5)을 판정 모델이 '부정형으로 해석'이라며 inverted 로
-    # 오판해도 차단하지 않는다 — 뒤집을 부정 극성이 없는 양의 조건이라 inverted 가 성립하지 않는다.
+def test_gate_blocks_any_unfaithful_positive_threshold_verdict():
     verdict = {"ran": True, "faithful": False, "issues": [
         {"type": "inverted", "condition": "구매 횟수가 5회 이상",
          "detail": "서브쿼리로 잘못 반영되어 부정형으로 해석됨"}]}
     res = _result(AGE_OR_QUERY, verdict)
-    assert res["is_success"] is True, res.get("failure_reason")
-    assert res["failure_reason"] is None
+    assert res["is_success"] is False
+    assert res["failure_reason"] == "semantic_verification_failed"
 
 
 def test_gate_still_blocks_real_polarity_inversion():
