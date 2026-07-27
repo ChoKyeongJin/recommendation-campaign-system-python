@@ -179,6 +179,49 @@ def test_builder_count_threshold_combines_member_attributes():
     assert "B.GENDER_CD = 'GENDER_CD.FEMALE'" in sql
 
 
+def test_same_scope_aggregate_owns_purchase_membership_without_redundant_exists():
+    # "구매한 고객"이 purchase_membership으로도 인식되더라도 기간 내 구매금액 집계 JOIN이 구매 존재를
+    # 이미 보장한다. 의미 조건은 추적용으로 남기고 SQL EXISTS/라벨/커버리지 요구만 중복 생성하지 않는다.
+    plan = g.build_query_plan("2019년에 이십만원 이상을 구매한 고객에서 남자는 제외해.")
+    membership = plan["target_user"]["purchase_membership"]
+    assert membership["satisfied_by"] == "aggregate_conditions"
+
+    sql = g.build_aggregate_targets_sql_candidate(plan)["sql"]
+    assert "INNER JOIN (" in sql and "HAVING SUM(PAYMENT_AMT) >= 200000" in sql
+    assert "EXISTS (SELECT 1 FROM CRM_SL_ORDERHEADERMALL" not in sql
+    assert "purchase_exists" not in sql
+    assert not any(
+        condition["path"] == "target_user.purchase_membership"
+        for condition in g.required_sql_conditions(plan)
+    )
+
+
+def test_different_scope_recent_purchase_membership_is_preserved():
+    # 평생 누적 구매금액과 최근 30일 구매 존재는 서로 다른 조건이다. 평생 집계 JOIN이 최근 구매를
+    # 보장하지 않으므로 이 경우에는 기간 EXISTS를 제거하면 안 된다.
+    plan = g.build_query_plan("누적 구매금액 20만원 이상이고 최근 30일 구매한 고객")
+    membership = plan["target_user"]["purchase_membership"]
+    assert membership["window_days"] == 30
+    assert "satisfied_by" not in membership
+
+    sql = g.build_aggregate_targets_sql_candidate(plan)["sql"]
+    assert "EXISTS (SELECT 1 FROM CRM_SL_ORDERHEADERMALL O" in sql
+    assert "DATEADD(DAY, -30" in sql
+
+
+def test_targeting_plan_records_default_member_policy_provenance():
+    plan = g.build_query_plan("2019년에 이십만원 이상을 구매한 고객에서 남자는 제외해.")
+    policy = plan["member_policy"]
+    assert policy["source"] == "service_policy" and policy["mode"] == "default"
+    assert policy["appliedPolicyFilters"] == [{
+        "id": "policy_active_member",
+        "column": "MEMBER_STATE_CD",
+        "operator": "eq",
+        "value": "MEMBER_STATE_CD.NORMAL",
+        "mode": "default",
+    }]
+
+
 # --- 특정 상품 + 개수 임계값('기저귀를 2개 이상 구매') → 상품 범위 안에서 HAVING 집계 ---
 # 배경: '기저귀'(purchase_object, 상품 LIKE)와 '2개 이상'(aggregate_conditions, 수량 임계)이 서로 다른
 # 트랙으로 갈려, 상품 이력 빌더가 이겨 상품·날짜만 걸고 개수 임계값을 통째로 드롭했다('2개 이상 조건이

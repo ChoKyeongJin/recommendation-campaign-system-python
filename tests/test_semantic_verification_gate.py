@@ -8,6 +8,8 @@ LLM 이 하지만(여기선 monkeypatch 로 판정을 주입), 통합/차단 로
 실행(컨테이너): docker compose exec -w /app -e PYTHONPATH=/app api pytest tests/test_semantic_verification_gate.py -q
 """
 
+from types import SimpleNamespace
+
 import networkx as nx
 import pytest
 
@@ -217,6 +219,31 @@ def test_verify_disabled_by_env(monkeypatch):
     monkeypatch.setenv("SQL_SEMANTIC_VERIFY", "off")
     assert g._sql_semantic_verify_enabled() is False
     assert g._verify_sql_semantics("q", "SELECT 1", "test-model", None) == {"ran": False}
+
+
+def test_verify_receives_targeting_member_policy_context(monkeypatch):
+    captured = {}
+
+    def fake_chat_create(_client, **kwargs):
+        captured.update(kwargs)
+        content = '{"faithful":true,"issues":[]}'
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("SQL_SEMANTIC_VERIFY", "on")
+    monkeypatch.setattr(g, "_openai_chat_create", fake_chat_create)
+    monkeypatch.setattr(g, "_write_rag_llm_log", lambda *_args, **_kwargs: None)
+
+    query = "2019년에 이십만원 이상을 구매한 고객에서 남자는 제외해."
+    plan = _plan(query)
+    sql = g.build_aggregate_targets_sql_candidate(plan)["sql"]
+    verdict = g._verify_sql_semantics(query, sql, "test-model", g.DEFAULT_PROMPT_DIR, plan)
+
+    assert verdict["faithful"] is True
+    user_content = captured["messages"][-1]["content"]
+    assert "[적용된 서비스 정책]" in user_content
+    assert '"id": "policy_active_member"' in user_content
+    assert '"value": "MEMBER_STATE_CD.NORMAL"' in user_content
 
 
 # ── clarification 문구 포맷 ────────────────────────────────────────────────────────────

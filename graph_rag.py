@@ -93,7 +93,12 @@ from query_structurer import (
 from query_structurer.prompt import PLANNER_STRUCTURED_QUERY_RULES
 from query_semantics import classify_query_tokens, extract_extreme_semantics, is_non_entity_candidate
 from data_quality import validate_metric_profile
-from member_policy import active_member_predicate, member_condition_canonicals
+from member_policy import (
+    active_member_filter,
+    active_member_predicate,
+    member_condition_canonicals,
+    resolve_member_scope,
+)
 
 
 DEFAULT_DATA_PATH = Path("docs/data/rag_knowledge_base.json")
@@ -604,6 +609,35 @@ def _member_activity_predicate(days: int) -> str:
 def _member_active_state_predicate(alias: str = "B") -> str:
     """정상 회원 한정(탈퇴/휴면 제외) 술어. 기준 컬럼/값은 member_target_filters.json 의 active_state."""
     return active_member_predicate(alias, DEFAULT_MEMBER_TARGET_FILTERS_PATH)
+
+
+def _member_policy_predicates(query_plan: dict[str, Any], alias: str = "B") -> list[str]:
+    """Query Plan에 명시된 회원 정책 필터를 SQL 술어로 렌더한다.
+
+    오래된 수동 plan처럼 계약이 없는 호출자는 기존 정상회원 기본값을 유지한다. 계약이 있으면 빌더가
+    자체 판단으로 조건을 더하지 않고 ``appliedPolicyFilters``만 따른다.
+    """
+    contract = query_plan.get("member_policy")
+    if not isinstance(contract, dict):
+        return [_member_active_state_predicate(alias)]
+    filters = contract.get("appliedPolicyFilters")
+    if not isinstance(filters, list):
+        return []
+    predicates: list[str] = []
+    for item in filters:
+        if not isinstance(item, dict) or item.get("id") != "policy_active_member":
+            continue
+        column = str(item.get("column") or "").split(".")[-1]
+        operator = item.get("operator")
+        value = item.get("value")
+        if not column:
+            continue
+        if operator == "eq" and isinstance(value, str):
+            predicates.append(f"{alias}.{column} = '{value.replace(chr(39), chr(39) * 2)}'")
+        elif operator == "in" and isinstance(value, list) and value:
+            quoted = ", ".join("'" + str(v).replace("'", "''") + "'" for v in value)
+            predicates.append(f"{alias}.{column} IN ({quoted})")
+    return predicates
 
 
 def _member_birthday_predicate(granularity: str = "day", alias: str = "B") -> str:
@@ -3532,6 +3566,46 @@ _CONDITION_LANGUAGE_RE = re.compile(
 )
 
 
+def _aggregate_conditions_imply_purchase_membership(
+    target_user: dict[str, Any], membership: dict[str, Any]
+) -> bool:
+    """주문 집계가 같은 범위의 구매 존재를 이미 보장하는지 판정한다.
+
+    회원별 주문 집계 서브쿼리에 행이 생기려면 주문이 적어도 하나 있어야 하므로, 기간 없는 구매 존재는
+    어떤 유효한 주문 집계로도 충족된다. 기간이 있는 구매 존재는 같은 rolling window를 가진 집계만
+    충족한다. 예를 들어 ``누적 20만원 이상이고 최근 30일 구매``의 최근 구매 조건은 평생 집계로
+    대체할 수 없으므로 별도 EXISTS로 남긴다.
+    """
+    conditions = [
+        condition
+        for condition in target_user.get("aggregate_conditions") or []
+        if isinstance(condition, dict)
+        and condition.get("metric_id")
+        and condition.get("operator") in {"=", ">", ">=", "<", "<="}
+        and isinstance(condition.get("threshold"), (int, float))
+    ]
+    if not conditions:
+        return False
+    membership_window = membership.get("window_days")
+    if not isinstance(membership_window, int):
+        return True
+    # 절대 구매기간(purchase_date)은 실행시점 기준 rolling window와 같은 범위라고 볼 수 없다.
+    if isinstance(target_user.get("purchase_date"), dict):
+        return False
+    return any(condition.get("window_days") == membership_window for condition in conditions)
+
+
+def _mark_purchase_membership_ownership(target_user: dict[str, Any]) -> None:
+    """중복 구매 존재 조건의 SQL 소유자를 기록한다(의미 조건 자체는 보존)."""
+    membership = target_user.get("purchase_membership")
+    if not isinstance(membership, dict) or membership.get("operator") != "exists":
+        return
+    if _aggregate_conditions_imply_purchase_membership(target_user, membership):
+        membership["satisfied_by"] = "aggregate_conditions"
+    else:
+        membership.pop("satisfied_by", None)
+
+
 def _apply_core_membership_semantics(query: str, plan: dict[str, Any]) -> None:
     """핵심 행동의 존재/부재 방향을 구조화한다.
 
@@ -3563,6 +3637,10 @@ def _apply_core_membership_semantics(query: str, plan: dict[str, Any]) -> None:
         if target_user.get("purchase_object") in {"이내", "동안", "최근", "기간", "내"}:
             target_user["purchase_object"] = None
             target_user.pop("purchase_object_kind", None)
+
+    # 구매금액/횟수 집계가 같은 범위의 구매 존재를 이미 증명하면 의미 조건은 남기되 SQL 소유권을 집계로
+    # 넘긴다. 컴파일러·커버리지 계층은 이 표식을 보고 중복 EXISTS를 요구하거나 방출하지 않는다.
+    _mark_purchase_membership_ownership(target_user)
 
     # "캠페인에 반응한 회원"의 일반 반응은 오퍼 또는 구매 반응 중 하나가 있는 회원으로 정의한다.
     # 구체 반응(오퍼/구매/쿠폰/접촉)이 이미 추출됐으면 그 정의를 우선한다.
@@ -3612,6 +3690,62 @@ def _apply_core_membership_semantics(query: str, plan: dict[str, Any]) -> None:
             "days": inactivity_period.get("min_days"), "is_primary_condition": True,
         })
     plan["semantic_conditions"] = semantic_conditions
+
+
+def _attach_member_policy_contract(query: str, plan: dict[str, Any]) -> None:
+    """최종 SQL에 적용할 회원상태 정책과 출처를 Query Plan에 명시한다.
+
+    예전 타겟팅 경로는 SQL 빌더가 NORMAL 술어를 암묵적으로 붙여 의미 검증기가 서비스 정책인지 알 수
+    없었다. 분석 계약과 같은 ``appliedPolicyFilters`` 형태로 기록해 생성·검증이 하나의 유효 조건 계약을
+    공유하게 한다. 사용자가 상태를 직접 지정했거나 전체 회원을 요청한 경우에는 정책 필터를 비운다.
+    """
+    aggregation = plan.get("aggregation_request")
+    if isinstance(aggregation, dict):
+        rules = aggregation.get("businessRules") if isinstance(aggregation.get("businessRules"), dict) else {}
+        applied = rules.get("appliedPolicyFilters") if isinstance(rules.get("appliedPolicyFilters"), list) else []
+        plan["member_policy"] = {
+            "policy_id": "active_member",
+            "mode": rules.get("memberScope") or "default",
+            "source": "service_policy",
+            "appliedPolicyFilters": applied,
+        }
+        return
+
+    scope = resolve_member_scope(query, DEFAULT_MEMBER_TARGET_FILTERS_PATH)
+    if plan.get("member_scope") == "all":
+        scope = {**scope, "mode": "all", "states": []}
+
+    compiled = compile_member_target_conditions(plan)
+    applied_policy_filters: list[dict[str, Any]] = []
+    source = "service_policy"
+    mode = str(scope.get("mode") or "default")
+    if compiled["forces_state"]:
+        # 상태/미접속 조건은 사용자 조건 컴파일러가 소유한다. 기본 NORMAL 정책은 적용하지 않는다.
+        source = "user"
+        mode = "explicit"
+    elif mode != "all":
+        policy = active_member_filter(
+            query,
+            table=_member_table(),
+            alias=_member_alias(),
+            path=DEFAULT_MEMBER_TARGET_FILTERS_PATH,
+        )
+        if isinstance(policy, dict):
+            applied_policy_filters.append({
+                "id": policy.get("id") or "policy_active_member",
+                "column": policy.get("column"),
+                "operator": policy.get("operator"),
+                "value": policy.get("value"),
+                "mode": policy.get("policyMode") or mode,
+            })
+
+    plan["member_policy"] = {
+        "policy_id": str(scope.get("policy_id") or "active_member"),
+        "mode": mode,
+        "states": list(scope.get("states") or []),
+        "source": source,
+        "appliedPolicyFilters": applied_policy_filters,
+    }
 
 
 def _attach_query_output_contract(query: str, plan: dict[str, Any]) -> None:
@@ -3665,6 +3799,7 @@ def _attach_query_output_contract(query: str, plan: dict[str, Any]) -> None:
         plan.setdefault("selected_route", "member_target_sql")
     if whole_target:
         plan["member_scope"] = "all"
+    _attach_member_policy_contract(query, plan)
     # 명시적인 지역 그룹/랭킹 슬롯이 결과 축을 소유하면 일반 "지역=시도" 의미정책은 더 이상 필터
     # requirement가 아니다. 남겨두면 시군구 PARTITION SQL에 B.SIDO를 추가 요구해 정상 SQL을 차단한다.
     if any(isinstance(plan.get(key), dict) for key in (
@@ -12022,7 +12157,8 @@ def _sql_semantic_verify_system_prompt() -> str:
         "다름), spurious(원문에 없는 조건이 SQL 에 있음. 예: 엉뚱한 상품 LIKE).\n"
         "집계 질의에서는 원문 또는 함께 제공된 구조화 집계 계약에 있는 filters만 필수로 검사하라. "
         "원문과 계약 모두에 없는 기간·주문상태 조건이 SQL에도 없는 것은 dropped가 아니라 정상이다. "
-        "계약의 businessRules.appliedPolicyFilters에 기록된 조건은 서비스 정책이므로 원문에 없어도 spurious가 아니다. "
+        "구조화 집계 계약의 businessRules.appliedPolicyFilters 또는 별도로 제공된 [적용된 서비스 정책]의 "
+        "appliedPolicyFilters에 기록된 조건은 서비스 정책이므로 원문에 없어도 spurious가 아니다. "
         "반대로 dimensions의 컬럼은 SELECT와 GROUP BY에 모두 있어야 하며, 다른 의미의 컬럼으로 바꾸면 dropped로 판정하라.\n"
         "중요: **확실한 의미 불일치만** 보고하라. 표현만 다르고 의미가 같으면 faithful=true. 판단이 애매하면 "
         "faithful=true 로 둔다(정상 SQL 을 막는 오탐이 놓치는 것보다 나쁘다). NOT EXISTS=조건 없음/부정, "
@@ -12058,9 +12194,18 @@ def _verify_sql_semantics(
         aggregation_context = None
         if isinstance(query_plan, dict) and isinstance(query_plan.get("aggregation_request"), dict):
             aggregation_context = query_plan["aggregation_request"]
+        member_policy_context = None
+        if isinstance(query_plan, dict) and isinstance(query_plan.get("member_policy"), dict):
+            policy = query_plan["member_policy"]
+            if isinstance(policy.get("appliedPolicyFilters"), list) and policy["appliedPolicyFilters"]:
+                member_policy_context = policy
         user_content = f"[원문]\n{original_query.strip()}"
         if aggregation_context is not None:
             user_content += "\n\n[구조화 집계 계약]\n" + json.dumps(aggregation_context, ensure_ascii=False, indent=2)
+        if member_policy_context is not None:
+            user_content += "\n\n[적용된 서비스 정책]\n" + json.dumps(
+                member_policy_context, ensure_ascii=False, indent=2
+            )
         user_content += f"\n\n[생성된 SQL]\n{sql.strip()}"
         response = _openai_chat_create(client,
             model=llm_model,
@@ -13306,6 +13451,7 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
         not isinstance(query_plan.get("aggregation_request"), dict)
         and isinstance(purchase_membership, dict)
         and purchase_membership.get("operator") == "exists"
+        and purchase_membership.get("satisfied_by") != "aggregate_conditions"
     ):
         _add_token(
             tokens, "target_user.purchase_membership", "purchase", "exists",
@@ -14732,7 +14878,11 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     # 구매 이력 존재(선택적으로 최근 N일 창). 단순 "구매한 회원"도 주문 근거 없이 회원 테이블 전체로
     # 축약되지 않도록 반드시 주문 헤더 EXISTS로 컴파일한다.
     purchase_membership = target_user.get("purchase_membership")
-    if isinstance(purchase_membership, dict) and purchase_membership.get("operator") == "exists":
+    if (
+        isinstance(purchase_membership, dict)
+        and purchase_membership.get("operator") == "exists"
+        and purchase_membership.get("satisfied_by") != "aggregate_conditions"
+    ):
         other_predicates.append(_purchase_membership_predicate(purchase_membership.get("window_days")))
         labels.append("purchase_exists"); has_signal = True
 
@@ -15848,7 +15998,7 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
 
     where_clauses = list(compiled["predicates"])
     if not compiled["forces_state"]:
-        where_clauses.append(_member_active_state_predicate())
+        where_clauses.extend(_member_policy_predicates(query_plan))
     where_clauses = _unique_strings(where_clauses)
 
     select_columns = ["DISTINCT " + _member_key_select(), _member_grade_select()]
@@ -17323,6 +17473,7 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
         not isinstance(query_plan.get("aggregation_request"), dict)
         and isinstance(purchase_membership, dict)
         and purchase_membership.get("operator") == "exists"
+        and purchase_membership.get("satisfied_by") != "aggregate_conditions"
     ):
         order_table = _order_count_targets_config().get("table", "CRM_SL_ORDERHEADERMALL")
         terms = [str(order_table), "exists"]
