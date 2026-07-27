@@ -41,6 +41,7 @@ def test_known_condition_type_builds_sql_for_both_intents(condition_type, prompt
     cand = g.build_sql_template_candidate(_plan(prompt, intent))
     assert cand is not None, f"{condition_type} ({intent})에서 SQL 미생성 — 빌더가 레지스트리에 연결됐는지 확인"
     assert cand["sql"].strip()
+    assert g._has_target_member_projection(cand["sql"]), cand["sql"]
 
 
 def test_cart_builder_is_registered():

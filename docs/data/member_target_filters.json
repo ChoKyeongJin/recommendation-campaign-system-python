@@ -1249,6 +1249,69 @@
     "vague_low_default": 10
   },
 
+  "_entity_set_targets_comment": [
+    "파생 엔터티 집합 조건('가장 많이 팔린 상품 10개를 구매한 고객')의 물리 매핑.",
+    "엔터티 × 지표 × 방향 × 개수 × 기간 × 관계의 조합으로 정의되므로, 새 표현이 나와도 여기에",
+    "엔터티/지표/관계를 한 줄 추가하면 되고 컴파일러(entity_set.py)는 그대로다.",
+    "표현식의 {alias}/{product_alias}/{member} 는 컴파일러가 별칭으로 치환한다.",
+    "별칭은 validation.allowed_table_aliases 안에서만 쓴다(바깥/안쪽 서브쿼리가 서로 달라야 한다)."
+  ],
+  "entity_set_targets": {
+    "defaultMeasure": "sales_quantity",
+    "defaultRankRelation": "purchase",
+    "directions": {
+      "top": ["가장 많이", "제일 많이", "최다", "가장 잘", "제일 잘", "상위", "인기", "베스트"],
+      "bottom": ["가장 적게", "제일 적게", "가장 안", "최저", "하위"]
+    },
+    "measures": {
+      "sales_quantity": {"label": "판매수량", "terms": ["팔린", "팔리는", "판매량", "판매 수량", "판매수량", "인기", "베스트", "많이 나간"]},
+      "sales_amount": {"label": "매출액", "terms": ["매출", "판매 금액", "판매금액", "구매금액", "구매 금액", "결제금액"]},
+      "order_count": {"label": "주문건수", "terms": ["주문 건수", "주문건수", "구매 건수", "구매건수", "많이 주문된"]},
+      "buyer_count": {"label": "구매고객수", "terms": ["구매 고객 수", "구매고객수", "구매자 수", "구매자수", "많은 고객이 산"]}
+    },
+    "entities": {
+      "product": {"label": "상품", "terms": ["상품", "제품", "품목"], "column": "{alias}.PRODUCT_ID"},
+      "brand": {"label": "브랜드", "terms": ["브랜드"], "column": "{alias}.BRAND_ID"},
+      "category": {"label": "카테고리", "terms": ["카테고리", "품목군"], "column": "{product_alias}.CATEGORY", "requiresProductJoin": true}
+    },
+    "relations": {
+      "purchase": {
+        "label": "구매",
+        "terms": ["구매", "구입", "주문", "결제", "산 ", "구매한", "구입한"],
+        "negationTerms": ["구매하지 않은", "구매 안 한", "구입하지 않은", "사지 않은", "구매하지않은"],
+        "table": "CRM_SL_ORDERDETAILMALL",
+        "outerAlias": "OD",
+        "innerAlias": "D",
+        "memberJoin": "{alias}.MEMBER_NO = {member}",
+        "dateColumn": "{alias}.ORDER_DATE",
+        "entities": ["product", "brand", "category"],
+        "measures": {
+          "sales_quantity": "SUM({alias}.ORDER_QTY)",
+          "sales_amount": "SUM({alias}.PAYMENT_AMT)",
+          "order_count": "COUNT(DISTINCT {alias}.ORDER_ID)",
+          "buyer_count": "COUNT(DISTINCT {alias}.MEMBER_NO)"
+        },
+        "productJoin": {"table": "CRM_CM_PRODUCT", "outerAlias": "P", "innerAlias": "CP", "on": "{product_alias}.PRODUCT_ID = {alias}.PRODUCT_ID"}
+      },
+      "cart": {
+        "label": "장바구니 담기",
+        "terms": ["장바구니에 담은", "장바구니에담은", "카트에 담은", "장바구니 보유"],
+        "negationTerms": ["장바구니에 담지 않은", "장바구니에담지않은"],
+        "table": "ODS_MALL_OMS_CART",
+        "outerAlias": "C",
+        "innerAlias": "S",
+        "memberJoin": "{alias}.CART_ID = B.MEMBER_ID",
+        "conditions": ["{alias}.KEEP_YN = 'Y'"],
+        "entities": ["product", "category"],
+        "measures": {
+          "sales_quantity": "SUM({alias}.QTY)",
+          "buyer_count": "COUNT(DISTINCT {alias}.CART_ID)"
+        },
+        "productJoin": {"table": "CRM_CM_PRODUCT", "outerAlias": "CP", "innerAlias": "CP", "on": "{product_alias}.PRODUCT_ID = {alias}.PRODUCT_ID"}
+      }
+    }
+  },
+
   "validation": {
     "unknown_canonical_policy": "reject",
     "unknown_column_policy": "reject",

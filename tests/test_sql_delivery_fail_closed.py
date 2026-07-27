@@ -271,6 +271,38 @@ def test_targeting_contract_requires_member_id_projection():
     assert "targeting_result_member_id_missing" in validation["failure_reasons"]
 
 
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT B.MEMBER_ID AS CUST_ID FROM CRM_MB_BASEINFO B",
+        "SELECT B.MEMBER_NO AS MEMBER_NO FROM CRM_MB_BASEINFO B",
+    ],
+)
+def test_targeting_contract_requires_member_no_as_cust_id(sql: str):
+    plan = _member_contract()
+    plan["intent"] = "find_user_segment"
+
+    validation = g._validate_sql_delivery_contract("target customer extraction", plan, sql)
+
+    assert validation["is_satisfied"] is False
+    assert validation["member_projection_match"] is False
+    assert "targeting_result_member_projection_missing" in validation["failure_reasons"]
+
+
+def test_targeting_contract_accepts_member_no_as_cust_id():
+    plan = _member_contract()
+    plan["intent"] = "recommend_campaign"
+
+    validation = g._validate_sql_delivery_contract(
+        "target customer extraction",
+        plan,
+        "SELECT B.MEMBER_NO AS CUST_ID FROM CRM_MB_BASEINFO B",
+    )
+
+    assert validation["is_satisfied"] is True
+    assert validation["member_projection_match"] is True
+
+
 def test_api_does_not_treat_first_aggregate_column_as_customer_id():
     import api
 

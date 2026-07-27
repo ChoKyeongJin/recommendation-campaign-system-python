@@ -662,6 +662,18 @@ CONDITION_SPECS: tuple[ConditionSpec, ...] = (
         kind="cart_aggregate", fact="cart", fact_join=True, signals_target=True,
         extract=_tu_dict("cart_aggregate"),
     ),
+    # 파생 엔터티 집합('가장 많이 팔린 상품 10개를 구매한 회원'). 피연산자가 리터럴이 아니라 다른
+    # 질의의 결과이므로 전용 팩트조인 빌더가 소유한다(entity_set.py 가 술어를 컴파일).
+    ConditionSpec(
+        kind="entity_set_condition", fact="order", fact_join=True, signals_target=True,
+        extract=_tu_dict("entity_set_condition"),
+        confidence=ConfidenceMeta(
+            kind="entity_set", category="behavior",
+            key=lambda p: "entity_set_condition",
+            value=lambda p: f"{p.get('direction')}:{p.get('entity')}:{p.get('limit')}",
+            ko=lambda p: p.get("ko_label") or "파생 엔터티 집합 조건",
+        ),
+    ),
     # ── 행동(behaviors 리스트에서 분류) ──
     ConditionSpec(
         kind="order_count_behavior", fact="order", fact_join=True, signals_target=True,
