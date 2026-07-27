@@ -47,6 +47,13 @@ from entity_set import (
     parse_entity_set_condition,
 )
 from formula_engine import DEFAULT_METRIC_LEXICON_PATH, compile_formula_ast, parse_computed_metrics_from_query, validate_formula_ast
+from targeting_expression import (
+    TargetingExpressionError,
+    compile_targeting_expression,
+    describe_targeting_expression,
+    targeting_expression_json_schema,
+    validate_targeting_expression,
+)
 import logical_expression as _logic
 from set_expression_engine import parse_set_expressions_from_query
 from sql_ast import SelectAst, render_select_ast, validate_select_ast
@@ -86,7 +93,7 @@ from query_structurer import (
 from query_structurer.prompt import PLANNER_STRUCTURED_QUERY_RULES
 from query_semantics import classify_query_tokens, extract_extreme_semantics, is_non_entity_candidate
 from data_quality import validate_metric_profile
-from member_policy import active_member_predicate
+from member_policy import active_member_predicate, member_condition_canonicals
 
 
 DEFAULT_DATA_PATH = Path("docs/data/rag_knowledge_base.json")
@@ -11536,6 +11543,133 @@ def _llm_aggregation_response_errors(payload: dict[str, Any]) -> list[dict[str, 
     return errors
 
 
+def _member_condition_predicate(canonical: str) -> str | None:
+    """회원 조건 canonical → 실컬럼 술어. 슬롯 경로와 같은 렌더러를 써서 두 경로가 같은 SQL 을 낸다."""
+    if canonical in MEMBER_EQ_FILTERS:
+        return _member_eq_predicate(canonical)
+    days = MEMBER_ACTIVITY_FILTERS.get(canonical)
+    return _member_activity_predicate(days) if isinstance(days, int) else None
+
+
+def _targeting_expression_tool_schema() -> dict[str, Any]:
+    return targeting_expression_json_schema(_entity_set_config(), member_condition_canonicals())
+
+
+def _build_llm_targeting_ir_candidate(
+    query: str,
+    query_plan: dict[str, Any],
+    llm_model: str,
+) -> dict[str, Any] | None:
+    """LLM 에게 SQL 이 아니라 타겟팅 IR 을 받아 결정론 컴파일한다(1.5티어 폴백).
+
+    자유 SQL 폴백보다 먼저 시도한다. 출력 공간이 닫힌 문법이라 (i) 회원 투영 누락, (ii) 없는 컬럼·값
+    생성, (iii) 1:N 조인으로 인한 행 증폭이 표현 자체로 불가능하다 — 사후 의미검증에 기대지 않고
+    생성 단계에서 형태를 보장한다. 검증에 실패하면 조용히 고치지 않고 후보를 포기한다(fail-close).
+    """
+    if not os.getenv("OPENAI_API_KEY"):
+        return None
+    config = _entity_set_config()
+    canonicals = member_condition_canonicals()
+    if not config or not canonicals:
+        return None
+    schema = _targeting_expression_tool_schema()
+    vocabulary = {
+        "member_filter": {name: meta.get("terms", [])[:4] for name, meta in canonicals.items()},
+        "relations": sorted(str(name) for name in (config.get("relations") or {})),
+        "entities": sorted(str(name) for name in (config.get("entities") or {})),
+        "measures": sorted(str(name) for name in (config.get("measures") or {})),
+    }
+    system_prompt = "\n".join([
+        "너는 자연어 타겟팅 요청을 아래 JSON 스키마의 '회원 집합 표현식'으로 변환한다. SQL 은 쓰지 않는다.",
+        "규칙:",
+        "- 스키마에 열거된 어휘(member_filter/relations/entities/measures)만 사용한다. 없는 값은 만들지 않는다.",
+        "- 원문에 있는 조건만 넣는다. 성별·연령·지역 등을 임의로 추가하지 않는다.",
+        "- '가장 많이 팔린 상품 N개' 같은 순위 집합은 relation.entitySet 으로 표현한다.",
+        "- 회원 상태(정상/휴면) 기본 정책과 결과 컬럼은 시스템이 붙이므로 표현식에 넣지 않는다.",
+        "- 이 문법으로 표현할 수 없으면 expression 없이 unsupported 에 사유만 적는다(억지로 근사하지 않는다).",
+        "JSON 스키마:",
+        json.dumps(schema, ensure_ascii=False),
+        "사용 가능한 어휘:",
+        json.dumps(vocabulary, ensure_ascii=False),
+    ])
+    messages: list[dict[str, Any]] = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": json.dumps({"user_query": query}, ensure_ascii=False)},
+    ]
+    # 문법 위반은 결정론으로 판정되므로 그 사유를 되돌려 한 번만 교정 기회를 준다 — 모델 출력 흔들림이
+    # 곧바로 '조건 미반영' 실패로 굳는 것을 막는다. 그래도 실패하면 조용히 고치지 않고 포기한다.
+    for attempt in range(2):
+        try:
+            from openai import OpenAI
+
+            _write_rag_llm_log("llm_targeting_ir_request", {"model": llm_model, "query": query, "attempt": attempt})
+            response = OpenAI().chat.completions.create(
+                model=llm_model, messages=messages, response_format={"type": "json_object"},
+            )
+            content = response.choices[0].message.content or "{}"
+            payload = json.loads(content)
+        except Exception as exc:  # noqa: BLE001 - 폴백 경로는 실패 시 다음 티어로 넘어간다
+            _write_rag_llm_log("llm_targeting_ir_error", {"model": llm_model, "error": f"{type(exc).__name__}: {exc}"})
+            return None
+
+        expression = payload.get("expression")
+        if isinstance(expression, dict):
+            try:
+                validate_targeting_expression(expression, config, canonicals)
+            except TargetingExpressionError as exc:
+                _write_rag_llm_log("llm_targeting_ir_invalid", {"query": query, "error": str(exc), "attempt": attempt})
+                messages += [
+                    {"role": "assistant", "content": content},
+                    {"role": "user", "content": f"표현식이 규칙을 위반했습니다: {exc}. 스키마와 어휘를 지켜 다시 작성하세요."},
+                ]
+                continue
+            return _compile_targeting_ir_candidate(expression)
+        _write_rag_llm_log("llm_targeting_ir_unsupported", {"query": query, "reason": payload.get("unsupported")})
+        return None
+    return None
+
+
+def _compile_targeting_ir_candidate(expression: dict[str, Any]) -> dict[str, Any] | None:
+    """검증된 타겟팅 IR → SQL 후보. 회원 투영·상태 정책은 여기(컴파일러)가 소유한다.
+
+    생성 주체(LLM/규칙/테스트)와 무관하게 같은 계약을 강제하려고 분리했다 — 표현식이 무엇이든
+    결과는 회원 집합이다.
+    """
+    config = _entity_set_config()
+    canonicals = member_condition_canonicals()
+    try:
+        validate_targeting_expression(expression, config, canonicals)
+        predicate = compile_targeting_expression(
+            expression, config,
+            member_predicate=_member_condition_predicate,
+            member_alias=_member_alias(),
+            member_key=_member_key_column(),
+            relative_date=_member_dialect().char8_cutoff,
+        )
+    except TargetingExpressionError:
+        return None
+
+    labels = describe_targeting_expression(expression)
+    select_columns = ["DISTINCT " + _member_key_select(), _member_grade_select()]
+    if labels:
+        select_columns.append(_sql_quote(",".join(_unique_strings(labels))) + " AS segment_label")
+    where = [predicate]
+    # 회원 상태 기본 정책은 표현식이 상태를 직접 지정하지 않은 경우에만 붙인다(슬롯 경로와 동일 규칙).
+    state_canonicals = {name for name, meta in canonicals.items() if meta.get("category") in {"state", "activity"}}
+    if not any(label in state_canonicals for label in labels):
+        where.append(_member_active_state_predicate())
+    ast = SelectAst(columns=select_columns, from_lines=[_member_from_clause()], where=_unique_strings(where))
+    candidate = _select_ast_candidate(
+        "sql_template:llm_targeting_ir",
+        "LLM 타겟팅 IR 컴파일 SQL(결정론 컴파일러)",
+        0.9,
+        ast,
+        "llm_targeting_ir",
+    )
+    candidate["targeting_expression"] = expression
+    return candidate
+
+
 def _build_llm_sql_fallback_candidate(
     query: str,
     query_plan: dict[str, Any],
@@ -12541,6 +12675,9 @@ def build_sql_result(
     prompt_dir: Path | None = None,
 ) -> dict[str, Any]:
     # 호출자가 수동 plan을 넘기는 단위/통합 경로도 동일한 의미 추출·출력 계약을 거친다.
+    # 파생 엔터티 집합이 소유한 슬롯은 여기서 마지막으로 회수한다 — 계획 이후 단계(변이 병합·조건
+    # 재확정)가 순위 절의 어구를 오디언스 조건으로 되살리면 같은 어구가 두 번 컴파일된다.
+    _apply_entity_set_condition(original_query or query, query_plan)
     _normalize_aggregation_axis_filters(query_plan)
     _normalize_purchase_aggregation_request(query_plan)
     _refresh_aggregation_request_validation(query_plan, schema_path)
@@ -12551,7 +12688,22 @@ def build_sql_result(
     condition_tokens = build_verified_condition_tokens(query_plan)
     input_validation = validate_required_input_conditions(query_plan, condition_tokens)
     required_conditions = required_sql_conditions(query_plan)
-    if not input_validation["is_satisfied"]:
+    # 슬롯 파서가 조건을 구조화하지 못한 것과 '표현할 수 없는 요청'은 다르다. 닫힌 IR 로 요청 전체를
+    # 표현할 수 있으면 그것이 더 정확한 근거이므로 확인 요청 대신 그 후보로 진행한다. IR 은 어휘가
+    # 레지스트리로 검증되고 회원 투영이 컴파일러 소유라, 슬롯 없이도 임의 SQL 이 나올 수 없다.
+    # 빈 표현식(전체 회원)은 조건 소실과 구분되지 않으므로 채택하지 않는다.
+    structured_ir_candidate = None
+    if (
+        not input_validation["is_satisfied"]
+        and llm_model
+        and not query_plan.get("unsupported")
+        and query_plan.get("intent") in ("recommend_campaign", "find_user_segment")
+    ):
+        candidate = _build_llm_targeting_ir_candidate(original_query or query, query_plan, llm_model)
+        if candidate is not None and describe_targeting_expression(candidate["targeting_expression"]):
+            structured_ir_candidate = candidate
+
+    if not input_validation["is_satisfied"] and structured_ir_candidate is None:
         return {
             "sql": None,
             "selected": None,
@@ -12610,22 +12762,43 @@ def build_sql_result(
     join_key_registry = load_join_key_registry(schema_path)
     template_candidate = build_sql_template_candidate(query_plan)
     candidates = [template_candidate] if template_candidate is not None else []
+    if structured_ir_candidate is not None:
+        candidates.append(structured_ir_candidate)
 
     # 2티어 폴백: 결정론 템플릿/조합 빌더가 후보를 못 만든 타겟팅 질의만 LLM 생성으로 시도한다.
     # 생성 SQL 도 아래 루프에서 템플릿과 동일한 가드 스택으로 검증되며, 실패하면 기존 거절 흐름 유지.
     # 단, 명시적 미지원(plan['unsupported'])으로 후보가 없어진 경우엔 LLM 폴백을 시도하지 않는다 — 그러면
     # LLM 이 '그럴듯하지만 틀린' SQL(예: 쿠폰 건수 임계를 USE_CPN_CNT>0 존재로 축소)을 지어내 의미 검증에서
     # inverted/불일치로 떨어지는 '혼합/실패' 잡음이 생긴다. 미지원은 깔끔한 unsupported 응답으로 끝낸다.
-    llm_fallback_used = False
+    llm_fallback_used = structured_ir_candidate is not None
+    targeting_intent = query_plan.get("intent") in ("recommend_campaign", "find_user_segment")
+    # 결정론 경로가 후보를 냈더라도 실DB 로 매핑하지 못한 조건이 남아 있으면 그 후보는 검증에서
+    # 탈락한다. 그 경우에도 IR 후보를 함께 세워 경쟁시킨다 — 적격 후보가 있으면 선택 로직이
+    # 결정론 후보를 먼저 고르므로 기존 동작은 바뀌지 않고, 탈락할 때만 IR 이 대안이 된다.
+    member_unsupported = bool(
+        targeting_intent
+        and candidates
+        and not query_plan.get("unsupported")
+        and compile_member_target_conditions(query_plan)["unsupported"]
+    )
     if (
-        (not candidates or isinstance(query_plan.get("aggregation_request"), dict))
+        (not candidates or member_unsupported or isinstance(query_plan.get("aggregation_request"), dict))
         and not query_plan.get("unsupported")
         and llm_model
         and query_plan.get("intent") in ("recommend_campaign", "find_user_segment", "analyze_aggregation")
     ):
-        llm_candidate = _build_llm_sql_fallback_candidate(
-            query, query_plan, context_nodes, allowed_tables, llm_model, schema_path=schema_path
-        )
+        # 1.5티어: 회원 집합 요청은 자유 SQL 대신 닫힌 IR 로 먼저 시도한다. 컴파일러가 회원 투영과
+        # 물리 매핑을 보장하므로, 성공하면 '그럴듯하게 틀린 SQL' 자체가 생성되지 않는다.
+        llm_candidate = None
+        if targeting_intent and structured_ir_candidate is None:
+            # 원문 문장을 넘긴다 — 이 시점의 query 는 검색용으로 canonical 토큰이 덧붙은 확장 질의라
+            # 그대로 주면 모델이 사람 문장이 아닌 토큰 나열을 해석하게 된다(간헐 실패의 원인).
+            llm_candidate = _build_llm_targeting_ir_candidate(original_query or query, query_plan, llm_model)
+        if llm_candidate is None and not member_unsupported:
+            # 자유 SQL 폴백은 종전대로 '후보 없음/집계' 경로에서만 쓴다.
+            llm_candidate = _build_llm_sql_fallback_candidate(
+                query, query_plan, context_nodes, allowed_tables, llm_model, schema_path=schema_path
+            )
         if llm_candidate is not None:
             candidates.append(llm_candidate)
             llm_fallback_used = True

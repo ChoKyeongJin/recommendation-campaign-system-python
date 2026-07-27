@@ -1307,7 +1307,7 @@
           "sales_quantity": "SUM({alias}.QTY)",
           "buyer_count": "COUNT(DISTINCT {alias}.CART_ID)"
         },
-        "productJoin": {"table": "CRM_CM_PRODUCT", "outerAlias": "CP", "innerAlias": "CP", "on": "{product_alias}.PRODUCT_ID = {alias}.PRODUCT_ID"}
+        "productJoin": {"table": "CRM_CM_PRODUCT", "outerAlias": "P", "innerAlias": "CP", "on": "{product_alias}.PRODUCT_ID = {alias}.PRODUCT_ID"}
       }
     }
   },

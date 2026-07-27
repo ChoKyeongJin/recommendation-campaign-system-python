@@ -208,7 +208,8 @@ def entity_set_capability(node: dict[str, Any], config: dict[str, Any]) -> str |
     rank_relation = relations.get(_rank_relation_id(node))
     if not isinstance(member_relation, dict) or not isinstance(rank_relation, dict):
         return "unsupported_entity_set_relation"
-    if not isinstance((config.get("entities") or {}).get(node.get("entity")), dict):
+    entity = (config.get("entities") or {}).get(node.get("entity"))
+    if not isinstance(entity, dict):
         return "unsupported_entity_set_entity"
     entity_id = str(node.get("entity"))
     for relation in (member_relation, rank_relation):
@@ -218,6 +219,15 @@ def entity_set_capability(node: dict[str, Any], config: dict[str, Any]) -> str |
         return "unsupported_entity_set_measure"
     if node.get("window") and not rank_relation.get("dateColumn"):
         return "unsupported_entity_set_period"
+    # 바깥(회원 연결)과 안쪽(순위) 스코프가 같은 별칭을 쓰면 안쪽이 바깥을 가려 조건이 조용히
+    # 무의미해진다(SQL 은 유효하다). 설정 실수를 SQL 로 내보내지 않고 여기서 막는다.
+    outer_aliases = {str(member_relation.get("outerAlias") or "")}
+    inner_aliases = {str(rank_relation.get("innerAlias") or "")}
+    if entity.get("requiresProductJoin"):
+        outer_aliases.add(str((member_relation.get("productJoin") or {}).get("outerAlias") or ""))
+        inner_aliases.add(str((rank_relation.get("productJoin") or {}).get("innerAlias") or ""))
+    if outer_aliases & inner_aliases:
+        return "unsupported_entity_set_alias_conflict"
     return None
 
 

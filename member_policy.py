@@ -108,6 +108,32 @@ def member_activity_filter(canonical: str, path: Path = DEFAULT_MEMBER_POLICY_PA
     return None
 
 
+def member_condition_canonicals(path: Path = DEFAULT_MEMBER_POLICY_PATH) -> dict[str, dict[str, Any]]:
+    """모든 회원 조건 canonical 의 (범주, 설명 표면어). 닫힌 어휘가 필요한 소비자용.
+
+    LLM 에게 자유 서술 대신 이 어휘만 고르게 하면, 존재하지 않는 컬럼·값을 지어낼 여지가 사라진다.
+    """
+    config = load_member_policy(str(path))
+    catalog: dict[str, dict[str, Any]] = {}
+    for item in config.get("eq_filters", []) or []:
+        if not isinstance(item, dict) or not item.get("canonical"):
+            continue
+        catalog[str(item["canonical"])] = {
+            "category": str(item.get("category") or ""),
+            "terms": [str(term) for term in (item.get("synonyms") or []) + (item.get("surface_terms") or [])],
+        }
+    for item in config.get("activity_filters", []) or []:
+        if not isinstance(item, dict) or not item.get("canonical"):
+            continue
+        if not isinstance(item.get("days"), int):
+            continue  # 파라미터형(recent_login)은 기간 인자가 필요해 닫힌 어휘로 노출하지 않는다.
+        catalog[str(item["canonical"])] = {
+            "category": "activity",
+            "terms": [str(term) for term in item.get("synonyms") or []],
+        }
+    return catalog
+
+
 def resolve_member_scope(query: str, path: Path = DEFAULT_MEMBER_POLICY_PATH) -> dict[str, Any]:
     """Resolve the default active-member policy and explicit user overrides.
 
