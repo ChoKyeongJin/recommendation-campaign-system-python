@@ -3484,30 +3484,38 @@ def _build_external_member_schema() -> dict[str, dict[str, str]]:
             return str(column).split(".")[-1]
 
         filters = graph_rag._MEMBER_TARGET_FILTERS
-        gender_column = next(
-            (column for _c, (category, column, _v) in graph_rag.MEMBER_EQ_FILTERS.items() if category == "gender"),
-            "B.GENDER_CD",
-        )
+        def _eq_column(category: str) -> str | None:
+            return next(
+                (column for _canonical, (filter_category, column, _value) in graph_rag.MEMBER_EQ_FILTERS.items()
+                 if filter_category == category),
+                None,
+            )
+
         age_column = next(
             (
                 entry.get("column")
                 for entry in (filters.get("numeric_filters") or [])
                 if isinstance(entry, dict) and entry.get("canonical") == "age"
             ),
-            "B.AGE",
+            None,
         )
-        sido_column, _sigungu = graph_rag._member_region_short_columns()
-        return {
-            connection: {
-                "table": table,
-                "member_no_column": graph_rag._member_key_column(),  # 숫자형 회원식별자(CUST_ID 관례)
-                "member_id_column": graph_rag._member_login_id_column(),  # 문자형 회원식별자
-                "gender_column": _short(gender_column),
-                "age_column": _short(age_column),
-                "region_column": sido_column,
-                "grade_column": _short(graph_rag._member_grade_column()),
-            }
+        region = filters.get("region_target") if isinstance(filters.get("region_target"), dict) else {}
+        region_columns = region.get("columns") if isinstance(region.get("columns"), dict) else {}
+
+        schema = {
+            "table": table,
+            "member_no_column": graph_rag._member_key_column(),  # 숫자형 회원식별자(CUST_ID 관례)
+            "member_id_column": graph_rag._member_login_id_column(),  # 문자형 회원식별자
         }
+        for key, column in (
+            ("gender_column", _eq_column("gender")),
+            ("age_column", age_column),
+            ("region_column", region_columns.get("sido")),
+            ("grade_column", _eq_column("grade")),
+        ):
+            if isinstance(column, str) and column:
+                schema[key] = _short(column)
+        return {connection: schema}
     except Exception:
         return {}
 
@@ -3661,6 +3669,19 @@ def _external_segment_composition(connection: str, sql: str, columns: list[str])
     join_column = (
         schema["member_id_column"] if id_column.casefold() == "member_id" else schema["member_no_column"]
     )
+    attribute_columns = [
+        ("gender_column", "gender_cd"),
+        ("age_column", "age"),
+        ("region_column", "sido"),
+        ("grade_column", "grade_cd"),
+    ]
+    selected_attributes = [
+        f"b.{schema[column_key]} AS {result_key}"
+        for column_key, result_key in attribute_columns
+        if schema.get(column_key)
+    ]
+    if not selected_attributes:
+        return {}
     target_sql = _strip_sql_for_subquery(sql)
     attribute_sql = f"""
         WITH target_result AS (
@@ -3671,10 +3692,7 @@ def _external_segment_composition(connection: str, sql: str, columns: list[str])
         )
         SELECT
             b.{schema['member_no_column']} AS member_no,
-            b.{schema['gender_column']} AS gender_cd,
-            b.{schema['age_column']} AS age,
-            b.{schema['region_column']} AS sido,
-            b.{schema['grade_column']} AS grade_cd
+            {',\n            '.join(selected_attributes)}
         FROM target_members t
         JOIN {schema['table']} b{dialect_for_connection(connection).nolock_hint()} ON b.{join_column} = t.member_key
     """
@@ -3696,10 +3714,14 @@ def _external_segment_composition(connection: str, sql: str, columns: list[str])
         if member_no in seen:
             continue
         seen.add(member_no)
-        _bump_counter(gender, _gender_label(row.get("gender_cd")))
-        _bump_counter(age_band, _age_band_label(row.get("age")))
-        _bump_counter(region, _region_label(row.get("sido")))
-        _bump_counter(grade, _grade_label(row.get("grade_cd")))
+        if schema.get("gender_column"):
+            _bump_counter(gender, _gender_label(row.get("gender_cd")))
+        if schema.get("age_column"):
+            _bump_counter(age_band, _age_band_label(row.get("age")))
+        if schema.get("region_column"):
+            _bump_counter(region, _region_label(row.get("sido")))
+        if schema.get("grade_column"):
+            _bump_counter(grade, _grade_label(row.get("grade_cd")))
 
     composition: dict[str, Any] = {}
     if gender:

@@ -13137,6 +13137,41 @@ def _purchase_date_predicate(purchase_date: Any, alias: str | None = "D", column
     return f"{prefix}{column} BETWEEN {_sql_quote(start)} AND {_sql_quote(end)}"
 
 
+# 상품 스코프로 쓰기엔 너무 일반적인 상품 지시어(구체적 상품/브랜드가 아님). 이런 값이 상품 스코프
+# LIKE 로 새면 '%상품%' 처럼 상품명에 그 글자가 든 상품만 걸려 집계가 왜곡된다 — 집계 상품 스코프에서 뺀다.
+# ('동일 상품' grain 이 이 단어를 purchase_object 로 흘리는 비결정 추출과 무관하게 방어.)
+_GENERIC_PRODUCT_OBJECT_WORDS = frozenset({"상품", "제품", "물건", "물품", "품목", "것", "상품들", "제품들"})
+
+
+def _purchase_object_match_predicate(purchase_object: str, object_kind: Any = None, alias: str = "P") -> str:
+    """상품 자유텍스트를 상품 마스터(<alias>.*) 부분일치(OR)로 컴파일한다. object_kind 가 brand/product 면
+    해당 컬럼(BRAND_NAME/PRODUCT_NAME)만 좁혀 매칭해 카테고리 등 다른 컬럼의 우연 일치를 막고, 애매하면
+    광역 6컬럼 LIKE 를 유지한다. purchase_history 빌더와 집계 빌더의 상품 스코프가 같은 술어를 쓰게 한다."""
+    kind_column = {"brand": "BRAND_NAME", "product": "PRODUCT_NAME"}.get(object_kind)
+    if kind_column:
+        columns = tuple(
+            column for column in _PURCHASE_PRODUCT_MATCH_COLUMNS if column.rsplit(".", 1)[-1] == kind_column
+        ) or _PURCHASE_PRODUCT_MATCH_COLUMNS
+    else:
+        columns = _PURCHASE_PRODUCT_MATCH_COLUMNS
+    return "(" + " OR ".join(_sql_nlike_contains(f"{alias}.{column}", purchase_object) for column in columns) + ")"
+
+
+def _valid_aggregate_conditions(target_user: dict[str, Any]) -> list[dict[str, Any]]:
+    """aggregate_targets 레지스트리가 실제로 컴파일할 수 있는(지표 등록 + 연산자 + 임계값) 집계 조건만
+    추린다. purchase_history 빌더의 '집계 빌더에 양보' 판정과 집계 빌더의 valid 판정이 같은 규칙을 쓰게
+    단일화한다 — 그래야 양보한 조건을 집계 빌더가 반드시 소유한다(누구도 안 잡는 간극 방지)."""
+    metrics = _aggregate_targets_config().get("metrics", {})
+    return [
+        condition
+        for condition in (target_user.get("aggregate_conditions") or [])
+        if isinstance(condition, dict)
+        and isinstance(metrics.get(condition.get("metric_id")), dict)
+        and condition.get("operator") in {"=", ">", ">=", "<", "<="}
+        and isinstance(condition.get("threshold"), (int, float))
+    ]
+
+
 def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     """실주문 상세(CRM_SL_ORDERDETAILMALL) → 상품(CRM_CM_PRODUCT) → 회원(CRM_MB_BASEINFO) 조인으로
     특정 상품/카테고리를 구매한 회원을 추출한다.
@@ -13153,34 +13188,22 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
     # 상품 구매 이력 조건(상품 LIKE)도, 구매 날짜 창 조건(ORDER_DATE BETWEEN)도 없으면 이 빌더 대상이 아니다.
     if not has_object and date_predicate is None:
         return None
-    # 상품명 없이 개수/금액 임계값(aggregate_conditions)만 있으면 집계 빌더가 소유한다 — 이 빌더는 날짜창만
-    # 걸 수 있어 '2019년 1월에 2개 이상 구매'의 개수 임계값(HAVING)이 조용히 새기 때문이다. 집계 빌더는
-    # 절대 구매창까지 서브쿼리 안에서 함께 걸므로(build_aggregate_targets_sql_candidate) 여기서 양보한다.
-    if not has_object and any(
-        isinstance(condition, dict)
-        and condition.get("operator") in {"=", ">", ">=", "<", "<="}
-        and isinstance(condition.get("threshold"), (int, float))
-        for condition in target_user.get("aggregate_conditions") or []
-    ):
+    # 개수/금액 임계값(aggregate_conditions)이 함께 잡혔으면 집계 빌더에 양보한다 — 이 빌더는 상품·날짜창만
+    # 걸 수 있어 '기저귀를 2개 이상 구매'의 개수 임계값(HAVING)이 조용히 새기 때문이다. 집계 빌더는 상품
+    # (purchase_object)을 상품 스코프 LIKE 로, 절대 구매창을 서브쿼리 안에서 함께 걸어 개수 임계값까지 상품
+    # 범위로 컴파일한다(build_aggregate_targets_sql_candidate). 지표/연산자/임계값이 유효한 조건이 있을
+    # 때만 양보한다 — 집계 빌더가 반드시 소유하도록(양보 후 누구도 안 잡는 간극 방지).
+    if _valid_aggregate_conditions(target_user):
         return None
 
     compiled = compile_member_target_conditions(query_plan)
     where_clauses: list[str] = []
     if has_object:
-        # 사용자가 '브랜드'/'상품명'을 명시했거나 값이 실DB 브랜드명으로 확정된 경우, 광역 6컬럼 LIKE
-        # 대신 해당 컬럼(BRAND_NAME / PRODUCT_NAME)만 매칭한다 — 카테고리 등 다른 컬럼에 같은 문자열이
-        # 우연히 들어간 상품이 섞이는 것 방지. 애매하게 상품어만 말하면 광역 6컬럼 LIKE 를 유지한다.
-        _kind_column = {"brand": "BRAND_NAME", "product": "PRODUCT_NAME"}.get(target_user.get("purchase_object_kind"))
-        if _kind_column:
-            match_columns = tuple(
-                column for column in _PURCHASE_PRODUCT_MATCH_COLUMNS if column.rsplit(".", 1)[-1] == _kind_column
-            ) or _PURCHASE_PRODUCT_MATCH_COLUMNS
-        else:
-            match_columns = _PURCHASE_PRODUCT_MATCH_COLUMNS
-        product_match = "(" + " OR ".join(
-            _sql_nlike_contains("P." + column, purchase_object) for column in match_columns
-        ) + ")"
-        where_clauses.append(product_match)
+        # 사용자가 '브랜드'/'상품명'을 명시했거나 값이 실DB 브랜드명으로 확정된 경우, 광역 6컬럼 LIKE 대신
+        # 해당 컬럼(BRAND_NAME/PRODUCT_NAME)만 매칭한다(다른 컬럼 우연 일치 방지). 애매하면 광역 6컬럼 LIKE.
+        where_clauses.append(
+            _purchase_object_match_predicate(purchase_object, target_user.get("purchase_object_kind"), "P")
+        )
     if date_predicate is not None:
         where_clauses.append(date_predicate)
     where_clauses.extend(compiled["predicates"])
@@ -13386,19 +13409,22 @@ def _aggregate_member_subquery(
     config: dict[str, Any], metric: dict[str, Any], operator: str, threshold: int | float,
     window_days: Any, alias: str, purchase_date: Any = None,
     aggregation_scope: str = "per_member", scope: dict[str, Any] | None = None,
+    product_scope: dict[str, Any] | None = None,
 ) -> str | None:
     """회원별 집계 조건 서브쿼리(GROUP BY <회원키>[, grain] HAVING <집계식> <연산자> <임계값>)를 만든다.
 
     지표 소스: ①회원 요약 컬럼(스냅샷, 기간창·grain·scope 없을 때만), ②집계식(expression 템플릿),
     ③agg+column. **aggregation_scope**: per_member(회원 누적)·per_order(주문별)·per_product(상품별) — grain
     컬럼을 GROUP BY 에 추가한다. **scope**: 브랜드/카테고리면 상품 마스터를 조인(CRM_SL_ORDERDETAILMALL D
-    JOIN CRM_CM_PRODUCT P)해 그 범위 안에서만 집계한다. 셋 다 해석 불가/미지원이면 None(무효 SQL 방지)."""
+    JOIN CRM_CM_PRODUCT P)해 그 범위 안에서만 집계한다. **product_scope**({value,kind}): 상품 자유텍스트
+    ('기저귀')를 6컬럼 LIKE 로 같은 상품 마스터 조인 위에 얹어 그 상품 범위 안에서만 집계한다('기저귀를
+    2개 이상'). 셋 다 해석 불가/미지원이면 None(무효 SQL 방지)."""
     scope = scope or {}
     join_column = config.get("join_column", "MEMBER_NO")
     date_column = config.get("date_column", "ORDER_DATE")
     has_window = (isinstance(window_days, int) and window_days > 0) or purchase_date is not None
     needs_grain = aggregation_scope in _AGG_GRAIN_COLUMN
-    needs_scope = bool(scope)
+    needs_scope = bool(scope) or bool(product_scope)
 
     # ① 회원 요약 컬럼: 기간창·grain·scope 가 없을 때만(스냅샷은 그 어느 것도 반영 불가).
     source = metric.get("source") if isinstance(metric.get("source"), dict) else {}
@@ -13431,6 +13457,10 @@ def _aggregate_member_subquery(
         scope_predicates = _scope_predicates(scope, "P")
         if scope_predicates is None:
             return None  # 미지원 scope → 무효(호출부가 처리)
+        if product_scope and isinstance(product_scope.get("value"), str) and product_scope["value"]:
+            scope_predicates.append(
+                _purchase_object_match_predicate(product_scope["value"], product_scope.get("kind"), "P")
+            )
         from_lines.append(f"         INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID")
     else:
         scope_predicates = []
@@ -13501,16 +13531,34 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
     # 절대 구매창('2019년 1월')이 함께 잡혔으면 집계를 그 기간 주문으로 한정한다(그래야 '2019년 1월에
     # 2개 이상 구매'의 개수 임계값이 기간 안에서 세어진다). 상대창(최근 N일)은 조건별 window_days 소유.
     purchase_date = target_user.get("purchase_date")
+    # 상품 자유텍스트('기저귀')가 함께 잡혔으면 집계를 그 상품 범위로 한정한다 — '기저귀를 2개 이상 구매'의
+    # 개수 임계값이 상품 스코프 안에서 세어진다(purchase_history 빌더가 여기로 양보). 브랜드/카테고리 scope
+    # 는 조건별 scope 가 소유하므로 그와 별개로 얹는다(둘 다 있으면 AND 결합). 단 (1) '상품/제품' 같은 일반
+    # 지시어와 (2) per_product/per_order grain(‘동일 상품’·‘한 주문에’) 조건은 상품 스코프로 쓰지 않는다 —
+    # 전자는 '%상품%' 오필터, 후자는 grain 이 이미 상품 범위를 표현하므로 LIKE 가 그 의미와 충돌한다.
+    purchase_object = target_user.get("purchase_object")
+    product_scope = (
+        {"value": purchase_object, "kind": target_user.get("purchase_object_kind")}
+        if isinstance(purchase_object, str) and purchase_object
+        and purchase_object.strip() not in _GENERIC_PRODUCT_OBJECT_WORDS
+        else None
+    )
+    product_scope_applied = False
     from_clause = [_member_from_clause()]
     labels = list(compiled["labels"])
     for position, condition in enumerate(valid):
         metric = metrics[condition["metric_id"]]
         alias = f"AGG{position}"
+        condition_scope = condition.get("aggregation_scope", "per_member")
+        cond_product_scope = product_scope if condition_scope == "per_member" else None
+        if cond_product_scope:
+            product_scope_applied = True
         subquery = _aggregate_member_subquery(
             config, metric, condition["operator"], condition["threshold"], condition.get("window_days"), alias,
             purchase_date=purchase_date,
-            aggregation_scope=condition.get("aggregation_scope", "per_member"),
+            aggregation_scope=condition_scope,
             scope=condition.get("scope"),
+            product_scope=cond_product_scope,
         )
         if subquery is None:
             # 지표가 컬럼/식/요약 어느 소스로도 해석되지 않음 → 무효 SQL(SUM(None) 등)을 만들지 않는다.
@@ -13554,8 +13602,12 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
     candidate = _sql_candidate(
         "sql_template:aggregate_targets", "집계 조건(구매 금액/횟수 임계값) 타겟 추출 SQL 템플릿(CRMDW)", 1.0, sql, _template_tables(sql), "sql_template"
     )
-    # 집계 조건은 이 템플릿이 커버하므로 dropped 에서 뺀다. 그 외 미지원 회원 조건만 부분추출로 고지한다.
-    dropped = [path for path in compiled["unsupported"] if path != "target_user.aggregate_conditions"]
+    # 집계 조건은 이 템플릿이 커버하므로 dropped 에서 뺀다. 상품 스코프를 얹었으면 purchase_object 도 커버된
+    # 것이므로 함께 뺀다(purchase_history 가 여기로 양보한 케이스). 그 외 미지원 회원 조건만 부분추출로 고지.
+    covered = {"target_user.aggregate_conditions"}
+    if product_scope_applied:
+        covered.add("target_user.purchase_object")
+    dropped = [path for path in compiled["unsupported"] if path not in covered]
     candidate["dropped_conditions"] = dropped
     candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]
     return candidate

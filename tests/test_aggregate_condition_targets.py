@@ -179,6 +179,58 @@ def test_builder_count_threshold_combines_member_attributes():
     assert "B.GENDER_CD = 'GENDER_CD.FEMALE'" in sql
 
 
+# --- 특정 상품 + 개수 임계값('기저귀를 2개 이상 구매') → 상품 범위 안에서 HAVING 집계 ---
+# 배경: '기저귀'(purchase_object, 상품 LIKE)와 '2개 이상'(aggregate_conditions, 수량 임계)이 서로 다른
+# 트랙으로 갈려, 상품 이력 빌더가 이겨 상품·날짜만 걸고 개수 임계값을 통째로 드롭했다('2개 이상 조건이
+# 빠졌어'). 이제 상품 이력 빌더가 집계 빌더에 양보하고, 집계 빌더가 상품 스코프(6컬럼 LIKE)를 서브쿼리에
+# 얹어 그 상품 범위 안에서 HAVING 을 건다.
+
+def test_product_scoped_item_quantity_threshold():
+    plan = g.build_query_plan("2019년 상반기 기저귀를 2개 이상 구매한 고객")
+    candidate = g.build_sql_template_candidate(plan)
+    assert candidate is not None and candidate["id"] == "sql_template:aggregate_targets"
+    sql = candidate["sql"]
+    # 개수 임계값이 상품 범위 안에서 세어진다(더 이상 드롭되지 않는다).
+    assert "HAVING SUM(D.ORDER_QTY) >= 2" in sql
+    # 상품 스코프: 상품 마스터 조인 + 6컬럼 LIKE.
+    assert "INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID" in sql
+    assert "P.PRODUCT_NAME LIKE N'%기저귀%'" in sql
+    # 절대 구매창도 같은 서브쿼리 안에서 함께 걸린다.
+    assert "D.ORDER_DATE BETWEEN '20190101' AND '20190630'" in sql
+    # 상품 조건도 집계 조건도 미고지(dropped) 대상이 아니다.
+    assert "target_user.purchase_object" not in candidate["dropped_conditions"]
+    assert "target_user.aggregate_conditions" not in candidate["dropped_conditions"]
+
+
+def test_product_scoped_order_count_threshold_combines_member_attributes():
+    # 상품 + '번/건' 개수는 order_count(COUNT DISTINCT ORDER_ID)로, 상품 범위 주문만 센다. 회원 속성도 결합.
+    plan = g.build_query_plan("기저귀를 3번 이상 구매한 40대 여성 고객")
+    sql = g.build_aggregate_targets_sql_candidate(plan)["sql"]
+    assert "HAVING COUNT(DISTINCT D.ORDER_ID) >= 3" in sql
+    assert "INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID" in sql
+    assert "P.PRODUCT_NAME LIKE N'%기저귀%'" in sql
+    assert "B.AGE >= 40" in sql and "B.GENDER_CD = 'GENDER_CD.FEMALE'" in sql
+
+
+def test_purchase_history_builder_yields_to_aggregate_when_count_present():
+    # 상품 이력 빌더는 개수 임계값이 함께 오면 집계 빌더에 양보한다(개수 조건의 조용한 소실 방지).
+    plan = g.build_query_plan("2019년 상반기 기저귀를 2개 이상 구매한 고객")
+    assert g.build_purchase_history_targets_sql_candidate(plan) is None
+    # 개수 임계값이 없으면(상품만) 여전히 상품 이력 빌더가 소유한다(양보 회귀 방지).
+    plan_no_count = g.build_query_plan("기저귀 구매한 고객")
+    hist = g.build_purchase_history_targets_sql_candidate(plan_no_count)
+    assert hist is not None and hist["id"] == "sql_template:purchase_history_targets"
+
+
+def test_generic_product_word_not_used_as_scope():
+    # '상품/제품' 같은 일반 지시어는 상품 스코프 LIKE 로 새지 않는다('%상품%' 오필터 방지).
+    plan = g.build_query_plan("동일 상품을 3개 이상 구매한 회원")
+    sql = g.build_sql_template_candidate(plan)["sql"]
+    assert "N'%상품%'" not in sql
+    # per_product grain 은 그대로 유지된다.
+    assert "GROUP BY MEMBER_NO, PRODUCT_ID" in sql
+
+
 # --- 롤링 윈도우(최근 N일) 보존: '최근 90일 3회'가 '전체 기간 3회'로 조용히 왜곡되던 회귀 고정 ---
 # 배경: 지표명 없는 개수 임계값 경로(_apply_purchase_count_threshold_filter)가 window_days=None 을
 # 하드코딩해, 롤링 윈도우가 통째로 소실됐다(의미 왜곡). 이제 그 경로도 _parse_recent_window_days 를

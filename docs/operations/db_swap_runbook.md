@@ -72,13 +72,16 @@ docker compose exec -w /app python python schema_extract.py --refresh-external
 이 단계가 실질 작업량의 대부분이다. 새 스키마의 테이블/컬럼/코드값/조인에 맞춰 아래를 고친다.
 
 **[member_target_filters.json](../data/member_target_filters.json)** (규칙 엔진 전체):
+
 - `base_entity`: 회원 기준 테이블/별칭/회원키/로그인ID키/날짜포맷. **`dialect`를 여기 명시**하면
   (`"tsql"`/`"mysql"`/`"postgres"`) 결정론 빌더가 그 방언으로 렌더한다(미지정 시 카탈로그 방언→tsql).
 - `eq_filters`/`numeric_filters`/`activity_filters`: 컬럼(`B.<COL>`)과 코드 저장값(예: 성별/등급/상태의
   도메인 접두어 값). **성별/등급의 `synonyms[0]`**은 결과 화면 라벨로도 쓰이니 사람이 읽는 한글로.
 - `active_state`/`birthday_target`/`signup_target`/`recent_login_target`/`region_target`: 컬럼명.
 - 팩트 조인 섹션: `order_count_targets`/`aggregate_targets`/`purchase_product_target`/`cart_targets`/
-  `campaign_response_targets`/`cell_rate_targets` — 테이블·조인키·집계 컬럼. 회원키 타입이 다르면
+  `campaign_response_targets`/`cell_rate_targets` — 테이블·조인키·집계 컬럼. 한 설정 블록 안에서
+  컬럼의 실제 소유 테이블이 기본 `table`과 다르면 `<이름>_column`과 `<이름>_table`을 함께 선언한다.
+  회원키 타입이 다르면
   `member_join.left`에 캐스트 조인(빌더 기본은 방언 어댑터의 `cast_bigint`).
 - `validation.allowed_table_aliases`: 새 별칭을 쓰면 추가.
 
@@ -94,14 +97,14 @@ docker compose exec -w /app python python schema_extract.py --refresh-external
 **`docs/data` 전체 분류 — 무엇을 손대고 무엇은 안 건드리나** (위 3개 외 나머지가 "빠진" 게 아니라
 손댈 필요가 없거나 데모 잔재이기 때문):
 
-| 파일 | 결합 대상 | 스왑 시 |
-|---|---|---|
-| `member_target_filters.json` · `member_metrics.json` · `sql_examples.sample.sql` | 실 CRM 테이블/컬럼/코드값 | **수동 ④ 필수** |
-| `schema_catalog.json` | 실DB 테이블 목록·구조 | 수동 ② + 자동 ③ |
-| `business_policies.sample.json` · `metric_lexicon.sample.json` | **데모 스키마(users/campaigns)** | 데모 잔재 — 아래 ※ |
-| `normalization_rules.sample.json` · `targeting_lexicon.json` | 스키마 중립(언어) | 손댈 것 없음 |
-| `rag_knowledge_base.json` · `member_value_index.json` · `dimension_catalog.sample.json` · `table_relationships.md` | 파생물 | 자동 ⑥/③ |
-| `metadata_ddl.sql` | 로컬 메타DB(실DB 아님) | 무관 |
+| 파일                                                                                                               | 결합 대상                        | 스왑 시            |
+| ------------------------------------------------------------------------------------------------------------------ | -------------------------------- | ------------------ |
+| `member_target_filters.json` · `member_metrics.json` · `sql_examples.sample.sql`                                   | 실 CRM 테이블/컬럼/코드값        | **수동 ④ 필수**    |
+| `schema_catalog.json`                                                                                              | 실DB 테이블 목록·구조            | 수동 ② + 자동 ③    |
+| `business_policies.sample.json` · `metric_lexicon.sample.json`                                                     | **데모 스키마(users/campaigns)** | 데모 잔재 — 아래 ※ |
+| `normalization_rules.sample.json` · `targeting_lexicon.json`                                                       | 스키마 중립(언어)                | 손댈 것 없음       |
+| `rag_knowledge_base.json` · `member_value_index.json` · `dimension_catalog.sample.json` · `table_relationships.md` | 파생물                           | 자동 ⑥/③           |
+| `metadata_ddl.sql`                                                                                                 | 로컬 메타DB(실DB 아님)           | 무관               |
 
 > ※ **데모 잔재**: `business_policies.sample.json`/`metric_lexicon.sample.json` 은 아직 `users`/`campaigns`
 > 데모 스키마만 참조한다(실 CRM 테이블 0). `_apply_policy_constraints`/`parse_computed_metrics_from_query`
@@ -143,6 +146,7 @@ docker compose exec -w /app python python init_rag_collections.py --recreate
 ```
 
 > **빌더 내부 하드코딩(재생성해도 자동 반영 안 됨 — 스크립트를 고쳐야 함):**
+>
 > - `build_member_value_index.py`: `TABLE = "CRM_MB_BASEINFO"`, `CONNECTION = "CRMDW"`,
 >   `AUX_ATTRIBUTE_TABLES` — 회원 테이블/커넥션이 바뀌면 여기를 고친다.
 > - `build_dimension_catalog.py`: `DBMS_CONNECTION_MAP`, `TARGETABLE_OVERRIDES`, `t_xlig_*` 원천.
@@ -174,6 +178,7 @@ docker compose exec -w /app -e PYTHONPATH=/app python python -m pytest tests/ -q
 결합돼 있어, DB만 바뀌고 백엔드 API 계약이 유지되면 손댈 게 없다.
 
 굳이 "백엔드 계약/어휘가 바뀔 때만" 볼 후보(모두 방어적 폴백이라 틀려도 라벨만 원문 노출, 앱은 안 깨짐):
+
 - `app/api/targeting/route.ts` `normalizeValue`(토큰→한글 라벨) / `groupTitles`(segment_composition 그룹키→제목)
 - `app/api/targeting/route.ts` SQL 별칭 정규식(백엔드 SQL 표시용 값 추출)
 - `lib/targeting-hints.ts` 백엔드 설정 파일명 안내 텍스트(`member_target_filters.json` 등) — DB가 아니라
@@ -185,16 +190,16 @@ docker compose exec -w /app -e PYTHONPATH=/app python python -m pytest tests/ -q
 
 ## 부록: 무엇이 어디에 사는가 (빠른 참조)
 
-| 바뀌는 것 | 사는 곳 | 스왑 시 |
-|---|---|---|
-| 회원 테이블/키/방언 | `member_target_filters.json` `base_entity` | ④ 손수정 |
-| 컬럼·코드값·조인 | `member_target_filters.json` 각 섹션 | ④ 손수정 |
-| 지표(매출/횟수) 컬럼 | `member_metrics.json` | ④ 손수정 |
-| 테이블 구조(컬럼/타입/PK) | `schema_catalog.json` | ③ 자동(refresh) |
-| 커넥션→방언 | `sql_dialect.CONNECTION_DIALECTS` | ① (새 엔진일 때만) |
-| SQL 문법(TOP/LIMIT/날짜함수) | `sql_dialect.py` 어댑터 | 수정 불필요(방언 선택만) |
-| 값 인덱스/디멘션/관계/RAG | 빌더 산출물 | ⑥ 재생성(+빌더 내부 하드코딩 주의) |
-| 프론트 표시 | frontend repo | ⑧ 원칙 무수정 |
+| 바뀌는 것                    | 사는 곳                                    | 스왑 시                            |
+| ---------------------------- | ------------------------------------------ | ---------------------------------- |
+| 회원 테이블/키/방언          | `member_target_filters.json` `base_entity` | ④ 손수정                           |
+| 컬럼·코드값·조인             | `member_target_filters.json` 각 섹션       | ④ 손수정                           |
+| 지표(매출/횟수) 컬럼         | `member_metrics.json`                      | ④ 손수정                           |
+| 테이블 구조(컬럼/타입/PK)    | `schema_catalog.json`                      | ③ 자동(refresh)                    |
+| 커넥션→방언                  | `sql_dialect.CONNECTION_DIALECTS`          | ① (새 엔진일 때만)                 |
+| SQL 문법(TOP/LIMIT/날짜함수) | `sql_dialect.py` 어댑터                    | 수정 불필요(방언 선택만)           |
+| 값 인덱스/디멘션/관계/RAG    | 빌더 산출물                                | ⑥ 재생성(+빌더 내부 하드코딩 주의) |
+| 프론트 표시                  | frontend repo                              | ⑧ 원칙 무수정                      |
 
 관련 문서: [db_portability_audit.md](db_portability_audit.md)(결합 감사·리팩터 상세),
 [multi_db_access.md](multi_db_access.md), [real_db_connection.md](real_db_connection.md),

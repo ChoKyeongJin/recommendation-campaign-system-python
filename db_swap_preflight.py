@@ -7,9 +7,9 @@ schema_catalog.json 이 소유한다. DB 스왑의 1순위 실패모드는 **레
 0명이 나온다. 이 도구는 그 불일치를 배포 전에 드러낸다.
 
 검사 항목:
-  1. registry↔catalog: 레지스트리가 참조하는 테이블이 schema_catalog 에 있는가
-  2. base_entity 컬럼: 회원 기준 테이블 컬럼(성별/등급/상태/나이/지역/로그인/가입/생일 등)이
-     카탈로그의 그 테이블에 실재하는가
+    1. registry↔catalog: 레지스트리가 참조하는 테이블이 schema_catalog 에 있는가
+    2. registry 컬럼: 회원 기준 테이블과 table 이 명시된 팩트/지표 설정의 컬럼이 카탈로그에
+         실재하는가
   3. catalog↔live DB(선택 --check-db): 카탈로그 테이블이 각 커넥션 실DB에 실재하는가
      (schema_extract.refresh_external_catalog --dry-run 재사용)
   4. 커넥션 방언 등록: 카탈로그의 각 database 가 sql_dialect 에 방언이 등록돼 있는가
@@ -39,6 +39,7 @@ SCHEMA_CATALOG_PATH = Path("docs/data/schema_catalog.json")
 _TABLE_KEYS = {"table", "member_table", "value_table"}
 # alias.COLUMN 또는 bare COLUMN 형태(대문자+언더스코어). 스키마 컬럼 후보.
 _COLUMN_RE = re.compile(r"^(?:([A-Za-z]\w*)\.)?([A-Z][A-Z0-9_]{1,})$")
+_DIRECT_COLUMN_KEYS = {"column", "member_key", "login_id_key"}
 
 
 def _load_json(path: Path) -> Any:
@@ -119,6 +120,55 @@ def _base_entity_columns(registry: dict[str, Any]) -> tuple[str | None, str, set
     return (base_table, base_alias, columns)
 
 
+def _configured_table_columns(registry: dict[str, Any]) -> set[tuple[str, str]]:
+    """`table`이 선언된 레지스트리 블록의 직접 컬럼 참조를 (테이블, 컬럼)으로 모은다.
+
+    팩트 테이블의 집계 컬럼, 조인키, 날짜 컬럼처럼 SQL 생성에 직접 쓰이는 선언형 필드만
+    검증한다. join 조건이나 자유 형식 predicate를 억지로 파싱하지 않아 설정식의 표현 자유는
+    유지한다.
+    """
+    result: set[tuple[str, str]] = set()
+
+    def add_columns(table: str | None, value: Any) -> None:
+        if not table:
+            return
+        values = value.values() if isinstance(value, dict) else value if isinstance(value, list) else (value,)
+        for candidate in values:
+            if not isinstance(candidate, str):
+                continue
+            match = _COLUMN_RE.match(candidate.strip())
+            if match:
+                result.add((table.split(".")[-1], match.group(2).upper()))
+
+    def walk(node: Any, inherited_table: str | None = None) -> None:
+        if isinstance(node, dict):
+            table_value = next(
+                (
+                    value
+                    for key, value in node.items()
+                    if key in _TABLE_KEYS and isinstance(value, str) and value
+                ),
+                inherited_table,
+            )
+            table = table_value.split(".")[-1] if isinstance(table_value, str) else None
+            for key, value in node.items():
+                if (
+                    key in _DIRECT_COLUMN_KEYS
+                    or key.endswith("_column")
+                    or key.endswith("_columns")
+                    or key in {"columns", "match_columns", "cell_keys"}
+                ):
+                    owner_table = node.get(f"{key[:-len('_column')]}_table") if key.endswith("_column") else None
+                    add_columns(owner_table if isinstance(owner_table, str) else table, value)
+                walk(value, table)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, inherited_table)
+
+    walk(registry)
+    return result
+
+
 def run_preflight(check_db: bool = False) -> dict[str, Any]:
     problems: list[str] = []
     warnings: list[str] = []
@@ -146,8 +196,9 @@ def run_preflight(check_db: bool = False) -> dict[str, Any]:
             if table not in catalog_tables:
                 problems.append(f"[{name}] 참조 테이블 '{table}' 이 schema_catalog 에 없음")
 
-    # 2) base_entity 컬럼 ↔ catalog
+    # 2) base_entity 및 table 소유 선언형 컬럼 ↔ catalog
     mtf = registries.get("member_target_filters.json")
+    configured_columns: set[tuple[str, str]] = set()
     if mtf:
         base_table, base_alias, base_columns = _base_entity_columns(mtf)
         if not base_table:
@@ -155,10 +206,17 @@ def run_preflight(check_db: bool = False) -> dict[str, Any]:
         elif base_table not in catalog_tables:
             problems.append(f"[base_entity] 회원 기준 테이블 '{base_table}' 이 schema_catalog 에 없음")
         else:
-            present = columns_by_table[base_table]
-            for column in sorted(base_columns):
-                if column not in present:
-                    problems.append(f"[base_entity] 컬럼 '{base_table}.{column}' 이 카탈로그 테이블에 없음")
+            configured_columns |= {(base_table, column) for column in base_columns}
+
+    for registry in registries.values():
+        configured_columns |= _configured_table_columns(registry)
+
+    for table, column in sorted(configured_columns):
+        present = columns_by_table.get(table)
+        if present is None:
+            continue  # 테이블 참조 검사가 위에서 더 정확한 원인을 이미 보고한다.
+        if column not in present:
+            problems.append(f"[registry] 컬럼 '{table}.{column}' 이 카탈로그 테이블에 없음")
 
     # 4) 커넥션 방언 등록
     try:
@@ -189,6 +247,7 @@ def run_preflight(check_db: bool = False) -> dict[str, Any]:
         "stats": {
             "catalog_tables": len(catalog_tables),
             "referenced_tables": len(referenced_tables),
+            "checked_columns": len(configured_columns),
             "checked_db": check_db,
         },
         "db_summary": db_summary,

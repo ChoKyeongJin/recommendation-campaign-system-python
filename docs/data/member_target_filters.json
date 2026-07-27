@@ -182,7 +182,12 @@
       "category": "consent",
       "column": "B.APP_PUSH_YN",
       "value": "Y",
-      "synonyms": ["앱푸시 수신 동의", "앱푸시 동의", "푸시 수신 동의", "알림 수신 동의"]
+      "synonyms": [
+        "앱푸시 수신 동의",
+        "앱푸시 동의",
+        "푸시 수신 동의",
+        "알림 수신 동의"
+      ]
     },
     {
       "canonical": "sms_optin",
@@ -212,7 +217,12 @@
       "category": "family",
       "column": "B.CHILDREN_YN",
       "value": "Y",
-      "synonyms": ["자녀 정보 등록", "자녀 정보 보유", "자녀 등록 회원", "아이 정보가 있는 회원"]
+      "synonyms": [
+        "자녀 정보 등록",
+        "자녀 정보 보유",
+        "자녀 등록 회원",
+        "아이 정보가 있는 회원"
+      ]
     },
     {
       "canonical": "active_member",
@@ -382,7 +392,7 @@
       "min": 0,
       "synonyms": ["로그인 횟수", "누적 로그인 횟수", "접속 횟수"],
       "action_aliases": ["로그인", "접속"],
-      "zero_semantics": {"missing_as_zero": true}
+      "zero_semantics": { "missing_as_zero": true }
     },
     {
       "canonical": "total_login_days",
@@ -390,9 +400,18 @@
       "column": "B.TOTAL_LOGIN_DAYS",
       "type": "integer",
       "min": 0,
-      "synonyms": ["누적 로그인 일수", "누적 접속 일수", "로그인 일수", "접속 일수", "로그인한 날", "접속한 날", "로그인 날", "접속 날"],
+      "synonyms": [
+        "누적 로그인 일수",
+        "누적 접속 일수",
+        "로그인 일수",
+        "접속 일수",
+        "로그인한 날",
+        "접속한 날",
+        "로그인 날",
+        "접속 날"
+      ],
       "action_aliases": ["로그인", "접속"],
-      "zero_semantics": {"missing_as_zero": true}
+      "zero_semantics": { "missing_as_zero": true }
     },
     {
       "canonical": "deposit_balance",
@@ -418,7 +437,14 @@
       "numerator_column": "B.TOTAL_LOGIN_CNT",
       "denominator_column": "B.TOTAL_LOGIN_DAYS",
       "unit": "회",
-      "synonyms": ["하루 평균 로그인 횟수", "일 평균 로그인 횟수", "하루 평균 접속 횟수", "일 평균 접속 횟수", "하루평균 로그인 횟수", "일평균 로그인 횟수"]
+      "synonyms": [
+        "하루 평균 로그인 횟수",
+        "일 평균 로그인 횟수",
+        "하루 평균 접속 횟수",
+        "일 평균 접속 횟수",
+        "하루평균 로그인 횟수",
+        "일평균 로그인 횟수"
+      ]
     }
   ],
 
@@ -702,7 +728,15 @@
         ],
         "units": ["회", "번", "건", "건수", "회수"],
         "hint_terms": ["주문", "구매 횟수", "주문 횟수", "구매 건수"],
-        "anti_hint_terms": ["수량", "종류", "서로 다른", "개수", "할인", "금액", "종수"]
+        "anti_hint_terms": [
+          "수량",
+          "종류",
+          "서로 다른",
+          "개수",
+          "할인",
+          "금액",
+          "종수"
+        ]
       },
       "total_item_quantity": {
         "semantic_type": "sum",
@@ -723,7 +757,15 @@
         ],
         "units": ["개", "수량", "점"],
         "hint_terms": ["수량", "개수"],
-        "anti_hint_terms": ["종류", "서로 다른", "금액", "할인", "횟수", "종수", "건수"]
+        "anti_hint_terms": [
+          "종류",
+          "서로 다른",
+          "금액",
+          "할인",
+          "횟수",
+          "종수",
+          "건수"
+        ]
       },
       "distinct_product_count": {
         "semantic_type": "count_distinct",
@@ -895,7 +937,14 @@
         "canonical": "regular_delivery_cart",
         "ko_label": "정기배송 장바구니",
         "value": "CART_TYPE_CD.REGULARDELIVERY",
-        "synonyms": ["정기배송 장바구니", "정기배송 상품", "정기배송", "정기 배송", "정기구독", "구독 상품"]
+        "synonyms": [
+          "정기배송 장바구니",
+          "정기배송 상품",
+          "정기배송",
+          "정기 배송",
+          "정기구독",
+          "구독 상품"
+        ]
       },
       {
         "canonical": "b2e_cart",
@@ -907,7 +956,12 @@
         "canonical": "pickup_cart",
         "ko_label": "매장 픽업 장바구니",
         "value": "CART_TYPE_CD.PICKUP",
-        "synonyms": ["픽업 장바구니", "매장 픽업 상품", "매장 픽업", "픽업 상품"]
+        "synonyms": [
+          "픽업 장바구니",
+          "매장 픽업 상품",
+          "매장 픽업",
+          "픽업 상품"
+        ]
       }
     ],
     "aggregate_metrics": {
@@ -948,6 +1002,7 @@
     "valid_campaign_condition": {
       "expression": "ISNULL(ZC.CANCEL_YN, 'N') = 'N'"
     },
+    "campaign_date_table": "Z_CAMPAIGN",
     "campaign_date_column": "CAMP_SDATE",
     "campaign_key_expression": "CONCAT(R.CAMP_ID, ':', R.CAMP_EXEC_NO)",
     "response_predicate": "(R.OFFR_RSPN_YN = 'Y' OR R.BUY_RSPN_YN = 'Y')",
@@ -1083,7 +1138,15 @@
       "coverage_token": "GENDER_CD",
       "include_null": false,
       "label": "성별",
-      "markers": ["성별로", "성별 로", "성별마다", "성별 마다", "성별별", "남녀별", "남녀 별"]
+      "markers": [
+        "성별로",
+        "성별 로",
+        "성별마다",
+        "성별 마다",
+        "성별별",
+        "남녀별",
+        "남녀 별"
+      ]
     },
     "age_group": {
       "group_expr": "__age_band__",
@@ -1091,7 +1154,17 @@
       "coverage_token": "AGE",
       "include_null": false,
       "label": "연령대",
-      "markers": ["연령대별", "연령대 별", "나이대별", "나이대 별", "연령별", "나이별", "세대별", "연령대마다", "나이대마다"],
+      "markers": [
+        "연령대별",
+        "연령대 별",
+        "나이대별",
+        "나이대 별",
+        "연령별",
+        "나이별",
+        "세대별",
+        "연령대마다",
+        "나이대마다"
+      ],
       "age_band": {
         "column": "B.AGE",
         "bands": [
@@ -1173,7 +1246,23 @@
     "unknown_canonical_policy": "reject",
     "unknown_column_policy": "reject",
     "allow_raw_sql": false,
-    "allowed_table_aliases": ["A", "B", "C", "CELL", "CP", "D", "M", "M2", "O", "OD", "OH", "P", "R", "S", "ZC"],
+    "allowed_table_aliases": [
+      "A",
+      "B",
+      "C",
+      "CELL",
+      "CP",
+      "D",
+      "M",
+      "M2",
+      "O",
+      "OD",
+      "OH",
+      "P",
+      "R",
+      "S",
+      "ZC"
+    ],
     "max_conditions": 30,
     "max_or_branches": 10,
     "max_lookback_days": 3650,

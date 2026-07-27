@@ -9,6 +9,7 @@
 
 import api
 import graph_rag as g
+import sql_guard
 
 
 def _plan(query: str) -> dict:
@@ -89,3 +90,30 @@ def test_empty_composition_is_safe():
     pres = api._external_segment_presentation({}, _plan("GOLD 이상 회원"))
     assert pres["relevant_groups"] == []
     assert pres["hidden_group_keys"] == []
+
+
+def test_external_member_schema_omits_unmapped_optional_attributes(monkeypatch):
+    monkeypatch.setattr(g, "_MEMBER_TARGET_FILTERS", {"numeric_filters": []})
+    monkeypatch.setattr(g, "MEMBER_EQ_FILTERS", {})
+    monkeypatch.setattr(g, "_member_table", lambda: "MEMBER")
+    monkeypatch.setattr(g, "_member_key_column", lambda: "MEMBER_KEY")
+    monkeypatch.setattr(g, "_member_login_id_column", lambda: "MEMBER_LOGIN")
+    monkeypatch.setattr(sql_guard, "load_table_databases", lambda: {"MEMBER": "NEW_DB"})
+
+    schema = api._build_external_member_schema()["NEW_DB"]
+
+    assert schema == {
+        "table": "MEMBER",
+        "member_no_column": "MEMBER_KEY",
+        "member_id_column": "MEMBER_LOGIN",
+    }
+
+
+def test_external_segment_composition_skips_query_without_configured_attributes(monkeypatch):
+    monkeypatch.setattr(
+        api,
+        "_EXTERNAL_MEMBER_SCHEMA",
+        {"NEW_DB": {"table": "MEMBER", "member_no_column": "MEMBER_KEY", "member_id_column": "MEMBER_LOGIN"}},
+    )
+
+    assert api._external_segment_composition("NEW_DB", "SELECT 1 AS CUST_ID", ["CUST_ID"]) == {}

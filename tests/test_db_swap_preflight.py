@@ -33,7 +33,11 @@ def _catalog() -> dict:
                 "database": "CRMDW",
                 "columns": [{"name": "MID"}, {"name": "GENDER"}, {"name": "GRADE"}, {"name": "STATE"}],
             },
-            "ORDERS": {"database": "CRMDW", "columns": [{"name": "MID"}, {"name": "AMT"}]},
+            "ORDERS": {
+                "database": "CRMDW",
+                "columns": [{"name": "MID"}, {"name": "ORDER_ID"}, {"name": "AMT"}],
+            },
+            "CAMPAIGN": {"database": "CRMDW", "columns": [{"name": "START_DATE"}]},
         },
     }
 
@@ -46,7 +50,7 @@ def _good_registry() -> dict:
             {"canonical": "female", "category": "gender", "column": "B.GENDER", "value": "F"},
             {"canonical": "vip", "category": "grade", "column": "B.GRADE", "value": "VIP"},
         ],
-        "order_count_targets": {"table": "ORDERS", "join_column": "MID"},
+        "order_count_targets": {"table": "ORDERS", "join_column": "MID", "order_id_column": "ORDER_ID"},
     }
 
 
@@ -81,6 +85,32 @@ def test_catches_missing_base_column(tmp_path, monkeypatch):
     assert any("MEMBER.SEX" in problem for problem in result["problems"])
 
 
+def test_catches_missing_fact_table_column(tmp_path, monkeypatch):
+    registry = _good_registry()
+    registry["order_count_targets"]["order_id_column"] = "ORDER_REFERENCE"
+    catalog_path, reg_paths = _write(tmp_path, _catalog(), registry)
+    monkeypatch.setattr(pf, "SCHEMA_CATALOG_PATH", catalog_path)
+    monkeypatch.setattr(pf, "REGISTRY_PATHS", reg_paths)
+    result = pf.run_preflight()
+    assert result["ok"] is False
+    assert any("ORDERS.ORDER_REFERENCE" in problem for problem in result["problems"])
+
+
+def test_uses_explicit_owner_table_for_cross_table_column(tmp_path, monkeypatch):
+    registry = _good_registry()
+    registry["campaign_response_targets"] = {
+        "table": "ORDERS",
+        "campaign_date_table": "CAMPAIGN",
+        "campaign_date_column": "MISSING_START_DATE",
+    }
+    catalog_path, reg_paths = _write(tmp_path, _catalog(), registry)
+    monkeypatch.setattr(pf, "SCHEMA_CATALOG_PATH", catalog_path)
+    monkeypatch.setattr(pf, "REGISTRY_PATHS", reg_paths)
+    result = pf.run_preflight()
+    assert result["ok"] is False
+    assert any("CAMPAIGN.MISSING_START_DATE" in problem for problem in result["problems"])
+
+
 def test_catches_missing_base_table(tmp_path, monkeypatch):
     registry = _good_registry()
     registry["base_entity"]["table"] = "MEMBER_V2"
@@ -100,3 +130,17 @@ def test_metrics_registry_table_checked(tmp_path, monkeypatch):
     result = pf.run_preflight()
     assert result["ok"] is False
     assert any("CRM_MB_MONTHCRMINFO" in problem for problem in result["problems"])
+
+
+def test_catches_missing_metric_column(tmp_path, monkeypatch):
+    metrics = {
+        "value_table": "ORDERS",
+        "join_column": "MID",
+        "metrics": [{"metric_id": "revenue", "column": "MISSING_AMOUNT"}],
+    }
+    catalog_path, reg_paths = _write(tmp_path, _catalog(), _good_registry(), metrics=metrics)
+    monkeypatch.setattr(pf, "SCHEMA_CATALOG_PATH", catalog_path)
+    monkeypatch.setattr(pf, "REGISTRY_PATHS", reg_paths)
+    result = pf.run_preflight()
+    assert result["ok"] is False
+    assert any("ORDERS.MISSING_AMOUNT" in problem for problem in result["problems"])
