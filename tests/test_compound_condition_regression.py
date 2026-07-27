@@ -75,13 +75,23 @@ def test_base_metric_and_ratio_coexist():
     assert "CAST(B.TOTAL_LOGIN_CNT AS FLOAT) / NULLIF(B.TOTAL_LOGIN_DAYS, 0) >= 3" in sql
 
 
-def test_balance_column_sum_is_unsupported_not_split():
+def test_balance_column_sum_compiles_as_real_sum_not_split():
     # 회귀(#4): '예치금과 적립금의 합이 50,000원 이상'을 각 컬럼 >=50000 두 조건으로 분해하면 훨씬 좁은
-    # 오답. 조용한 분해 대신 명시 미지원.
+    # 오답. 이제 미지원으로 막지 않고 두 컬럼의 실제 합 식으로 컴파일한다(개별 임계 분해 금지).
     plan = _plan("최근 30일 안에 로그인한 회원 중 예치금과 적립금의 합이 50,000원 이상인 고객을 찾아줘.")
-    assert (plan.get("unsupported") or {}).get("reason") == "column_sum_unsupported"
-    assert plan["target_user"].get("balance_conditions") is None
-    assert g.build_sql_template_candidate(plan) is None
+    assert plan.get("unsupported") is None
+    conditions = plan["target_user"].get("balance_conditions") or []
+    sum_conditions = [c for c in conditions if c.get("column_expr")]
+    assert len(sum_conditions) == 1  # 합은 단일 조건(개별 임계 두 개로 분해되지 않음)
+    cond = sum_conditions[0]
+    assert cond["operator"] == ">=" and cond["threshold"] == 50000.0
+    # 두 잔액 컬럼이 COALESCE 합으로 결합됐는지(NULL=0), 개별 >=50000 이 아닌지 확인.
+    assert "COALESCE" in cond["column_expr"]
+    assert "DEPOSIT_BALANCE_AMT" in cond["column_expr"] and "CARROT_BALANCE_AMT" in cond["column_expr"]
+    assert not any(c.get("column") == "DEPOSIT_BALANCE_AMT" and not c.get("column_expr") for c in conditions)
+    # 실제 SQL 로 컴파일되는지(합 식이 술어로 방출).
+    sql = g.build_sql_template_candidate(plan)["sql"]
+    assert "COALESCE" in sql and ">= 50000" in sql
 
 
 def test_single_balance_still_parses():

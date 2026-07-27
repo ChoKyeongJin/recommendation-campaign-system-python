@@ -78,6 +78,35 @@ def test_stages_carry_tech_name_and_refs():
     assert all(r["kind"] != "모델" for r in trace["stages"][4]["refs"])
 
 
+def test_trace_marks_only_input_used_refs_without_removing_refs():
+    result = _result()
+    result["prompt_normalization"]["mode"] = "llm_rewrite"
+
+    trace = g.build_retrieve_trace(result)
+    stage1_refs = {ref["name"]: ref for ref in trace["stages"][0]["refs"]}
+    stage3_refs = {ref["name"]: ref for ref in trace["stages"][2]["refs"]}
+    stage5_refs = {ref["name"]: ref for ref in trace["stages"][4]["refs"]}
+    stage6_refs = {ref["name"]: ref for ref in trace["stages"][5]["refs"]}
+
+    # 전체 참조는 보존하고, 이번 입력에 사용된 재작성 프롬프트만 강조 대상으로 표시한다.
+    assert set(stage1_refs) == {
+        "prompt_rewrite_system.txt",
+        "prompt_normalize_system.txt (보수 모드)",
+        "gpt-4o-mini",
+    }
+    assert stage1_refs["prompt_rewrite_system.txt"]["used"] is True
+    assert stage1_refs["prompt_normalize_system.txt (보수 모드)"]["used"] is False
+
+    # LLM Query Plan·정규화 매칭·디멘션·집합식으로 실제 기여한 참조를 구분한다.
+    assert stage3_refs["query_plan_system.txt"]["used"] is True
+    assert stage3_refs["query_plan_user.txt"]["used"] is True
+    assert stage3_refs["normalization_rules.sample.json"]["used"] is True
+    assert stage3_refs["business_policies.sample.json"]["used"] is False
+    assert stage5_refs["dimension_catalog.sample.json"]["used"] is True
+    assert stage5_refs["member_target_filters.json"]["used"] is True
+    assert all(ref["used"] is True for ref in stage6_refs.values())
+
+
 def test_partial_trace_stages_keep_refs():
     trace = g.build_partial_retrieve_trace("x", {"prompt_normalization": 10.0}, "boom")
     # 부분 트레이스의 각 단계도 참조 자산을 유지한다(오류 화면에서도 근거를 보여줌).
@@ -147,6 +176,7 @@ def test_stage_10_pending_until_execution_applied():
     g.apply_execution_to_trace(trace, {"is_success": True, "targeting_result": {"target_customer_count": 718}})
     stage10 = trace["stages"][9]
     assert stage10["status"] == "ok" and "718" in stage10["summary"]
+    assert all(ref["used"] is True for ref in stage10["refs"])
 
 
 def test_failure_reflected_at_stage_9():
@@ -157,6 +187,59 @@ def test_failure_reflected_at_stage_9():
     stage9 = trace["stages"][8]
     assert stage9["status"] == "fail"
     assert "SQL 안전 검증" in stage9["summary"]  # failure_stage 라벨 반영
+
+
+def test_trace_diagnoses_reference_mapping_gap_from_sql_result():
+    res = _result()
+    res["sql_result"].update(
+        {
+            "sql": None,
+            "is_success": False,
+            "failure_reason": "real_db_unsupported_conditions",
+            "unsupported_condition_labels": ["관심 브랜드"],
+        }
+    )
+    trace = g.build_retrieve_trace(res)
+
+    diagnosis = trace["failure_diagnosis"]
+    assert diagnosis["category"] == "reference_data_gap"
+    assert diagnosis["confidence"] == "high"
+    assert "관심 브랜드" in "\n".join(diagnosis["evidence"])
+
+
+def test_trace_diagnoses_guard_failure_as_implementation_review():
+    res = _result()
+    res["sql_result"].update(
+        {"sql": None, "is_success": False, "failure_reason": "sql_guard_failed"}
+    )
+    trace = g.build_retrieve_trace(res)
+
+    diagnosis = trace["failure_diagnosis"]
+    assert diagnosis["category"] == "implementation_or_policy_review"
+    assert diagnosis["confidence"] == "high"
+
+
+def test_partial_trace_diagnoses_invalid_reference_json():
+    trace = g.build_partial_retrieve_trace("x", {}, "target_sql_trace_failed:JSONDecodeError")
+
+    diagnosis = trace["failure_diagnosis"]
+    assert diagnosis["category"] == "reference_data_error"
+    assert diagnosis["label"] == "참조 JSON 형식 오류"
+
+
+def test_execution_failure_diagnosis_overrides_successful_sql_trace():
+    trace = g.build_retrieve_trace(_result())
+    g.apply_execution_to_trace(
+        trace,
+        {
+            "is_success": False,
+            "mode": "postgres_read_only",
+            "failure_reason": "postgres_execution_failed",
+            "error": "ConnectionError: database unavailable",
+        },
+    )
+
+    assert trace["failure_diagnosis"]["category"] == "infrastructure_or_configuration"
 
 
 def test_partial_trace_marks_failing_stage_and_skips_rest():

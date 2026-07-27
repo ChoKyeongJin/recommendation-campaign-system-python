@@ -143,6 +143,76 @@ def test_period_scoped_ranking_not_routed_to_snapshot():
         assert res.get("unsupported_reason") == "period_scoped_ranking_unsupported", f"{query!r} -> {res.get('unsupported_reason')}"
 
 
+# ── period_scoped_ranking 게이트: 구조 기반(정렬키 지표) 판정 회귀 ───────────────────────────
+# 원칙: 게이트는 원문 키워드 공존(기간어+지표어+상위N)이 아니라, 파싱 구조(정렬키 지표 결합 여부)로 판단한다.
+# 진짜 기간 스코프 랭킹 = 기간 스코프 + 기간에 결합된 지표 정렬키(ORDER BY) 존재. 임계값으로만 소비된 지표는
+# 정렬키가 아니고, '상위 N'은 단순 result_limit 캡이다.
+
+# 게이트를 발동하지 않아야 하는 케이스(정렬키 없음 → SQL 생성) — (query, 기대 aggregate metric_id 집합)
+_THRESHOLD_CAP_PASS_CASES = [
+    ("최근 6개월 동안 캠페인에 반응했고, 구매 횟수 10회 이상, 평균 주문 금액 50,000원 이상인 고객 상위 100명",
+     {"order_count", "average_order_amount"}),
+    ("최근 6개월 동안 캠페인에 반응했고, 구매 횟수 10회 이상인 고객 100명만",
+     {"order_count"}),
+    ("구매 횟수 10회 이상, 평균 주문 금액 50,000원 이상인 고객 상위 100명",
+     {"order_count", "average_order_amount"}),
+]
+
+
+def test_threshold_capped_audience_produces_sql_not_ranking_gate():
+    for query, expected_metrics in _THRESHOLD_CAP_PASS_CASES:
+        plan, res = _sql(query)
+        aggs = plan.get("target_user", {}).get("aggregate_conditions") or []
+        assert {a["metric_id"] for a in aggs} >= expected_metrics, f"{query!r}: 임계 지표 소실 {aggs}"
+        # 정렬키가 결합되지 않았다 → member_metric_ranking 과결합 없음, ORDER BY 없음, 게이트 미발동.
+        assert g._resolve_ranking_sort_metric_id(query) is None, f"{query!r}: 정렬키 오검출"
+        assert plan.get("member_metric_ranking") is None, f"{query!r}: 랭킹 과결합"
+        assert plan.get("unsupported") is None, f"{query!r}: 오탐 {plan.get('unsupported')}"
+        assert res.get("unsupported_reason") is None
+        assert res["sql"] is not None, f"{query!r}: SQL 미생성"
+        assert plan.get("result_limit") == 100
+        assert "ORDER BY" not in (res["sql"] or ""), f"{query!r}: 정렬키 없는데 ORDER BY 생성"
+        assert "HAVING" in (res["sql"] or ""), f"{query!r}: HAVING 임계 소실"
+
+
+# 게이트를 발동해야 하는 진짜 기간 스코프 지표 랭킹(정렬키가 기간에 결합됨).
+_PERIOD_RANKING_BLOCK_CASES = [
+    "최근 6개월 동안 구매 횟수가 가장 많은 고객 상위 100명",
+    "최근 6개월 평균 주문 금액 기준 상위 100명",
+    "최근 6개월 구매 금액 순으로 고객 100명",
+]
+
+
+def test_actual_period_scoped_ranking_still_blocked():
+    for query in _PERIOD_RANKING_BLOCK_CASES:
+        plan, res = _sql(query)
+        assert g._resolve_ranking_sort_metric_id(query) is not None, f"{query!r}: 정렬키 미검출"
+        assert plan.get("member_metric_ranking") is None
+        assert res["sql"] is None, f"{query!r}: 차단돼야 하는데 SQL 생성"
+        assert res.get("unsupported_reason") == "period_scoped_ranking_unsupported", f"{query!r} -> {res.get('unsupported_reason')}"
+
+
+def test_mixed_threshold_and_ranking_metric_blocked():
+    # 절대 임계 조건과 실제 지표 랭킹이 함께 존재 → aggregate_conditions 가 있어도 평균 주문 금액이 정렬키이므로 차단.
+    query = "최근 6개월 구매 횟수 10회 이상인 고객 중 평균 주문 금액이 높은 상위 100명"
+    plan, res = _sql(query)
+    # member_metrics 레지스트리 기준 '평균 주문 금액' 지표 id 는 mean_buy_amt(aggregate_targets 의
+    # average_order_amount 와 별개 레지스트리)다 — 정렬키가 이 지표로 결합돼야 한다.
+    assert g._resolve_ranking_sort_metric_id(query) == "mean_buy_amt", "정렬키는 평균 주문 금액이어야 한다"
+    assert plan.get("target_user", {}).get("aggregate_conditions"), "임계 조건도 존재해야 한다"
+    assert res.get("unsupported_reason") == "period_scoped_ranking_unsupported"
+
+
+def test_ranking_sort_metric_detector_boundaries():
+    # 랭킹 어구('기준/순/많은/높은/상위')에 결합된 지표만 정렬키다.
+    assert g._resolve_ranking_sort_metric_id("구매 횟수가 가장 많은 고객 상위 100명") == "total_buy_cnt"
+    assert g._resolve_ranking_sort_metric_id("평균 주문 금액 기준 상위 100명") == "mean_buy_amt"
+    assert g._resolve_ranking_sort_metric_id("구매 금액 순으로 고객 100명") is not None
+    # 임계값('N 이상')에만 결합된 지표는 정렬키가 아니다 → None(단순 캡).
+    assert g._resolve_ranking_sort_metric_id("구매 횟수 10회 이상, 평균 주문 금액 5만원 이상인 상위 100명") is None
+    assert g._resolve_ranking_sort_metric_id("구매 횟수 10회 이상인 고객 100명만") is None
+
+
 # ── rules / auto 경로 동등성 + LLM 오라벨 교정 가드 ──────────────────────────────────────
 # 주의: 실제 OpenAI API 통합은 미실행(키 없음). auto 는 키 없으면 결정론 필터로 degrade 한다.
 

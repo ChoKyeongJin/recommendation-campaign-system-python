@@ -50,6 +50,17 @@ import metric_registry
 import segment_semantics
 import semantic_requirements
 import compiler_strategies
+from query_structurer import (
+    LLMQueryStructurer,
+    QueryPlannerInput,
+    QueryStructurer,
+    QueryStructuringInput,
+    StructuredQuery,
+    StructuringContext,
+    build_fallback,
+    call_query_planner,
+)
+from query_structurer.prompt import PLANNER_STRUCTURED_QUERY_RULES
 
 
 DEFAULT_DATA_PATH = Path("docs/data/rag_knowledge_base.json")
@@ -87,6 +98,40 @@ def _openai_chat_create(client: Any, *, model: str, messages: list[dict[str, Any
         # 이 파이프라인은 구조화 추출이 대부분이라 최소 추론으로 충분하고 빠르다(~4s). env 로 조절 가능.
         params.setdefault("reasoning_effort", os.getenv("OPENAI_REASONING_EFFORT", "minimal"))
     return client.chat.completions.create(model=model, messages=messages, **params)
+
+
+def _structure_query(
+    query: str,
+    context: StructuringContext,
+    llm_model: str,
+    query_structurer: QueryStructurer | None = None,
+) -> StructuredQuery:
+    input = QueryStructuringInput(query=query, context=context)
+    if query_structurer is not None:
+        try:
+            return query_structurer.structure(input)
+        except Exception:  # noqa: BLE001 - structuring must never block the existing planner.
+            return build_fallback(query)
+
+    if not os.getenv("OPENAI_API_KEY"):
+        return build_fallback(query)
+    try:
+        from openai import OpenAI
+
+        client = OpenAI()
+
+        def complete(messages: list[dict[str, str]]) -> str:
+            response = _openai_chat_create(
+                client,
+                model=_fast_llm_model(llm_model) or llm_model,
+                temperature=0,
+                messages=messages,
+            )
+            return response.choices[0].message.content or ""
+
+        return LLMQueryStructurer(complete).structure(input)
+    except Exception:  # noqa: BLE001 - unavailable LLM uses the same safe fallback as invalid output.
+        return build_fallback(query)
 
 
 def _fast_llm_model(current: str | None) -> str | None:
@@ -1646,6 +1691,7 @@ def build_query_plan(
     llm_model: str = DEFAULT_LLM_MODEL,
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
     multi_query_variants: int = 0,
+    structured_query: StructuredQuery | None = None,
 ) -> dict[str, Any]:
     """단일 파싱으로 query_plan 을 만든다. multi_query_variants>0 이고 LLM 사용 가능하면 프롬프트를
     의미보존 재구성한 변이들도 파싱해 '성공적으로 잡힌 타겟 조건'을 base 에 합집합으로 병합한다.
@@ -1655,18 +1701,36 @@ def build_query_plan(
     변이 파싱은 rules(결정론)로 하여 비용을 낮춘다 — 다양한 표현형이 서로 다른 규칙 패턴에 걸리는 것이 핵심.
     """
     base = _build_single_query_plan(
-        query, normalization_rules, business_policies, metric_lexicon, sql_schema, parser, llm_model, prompt_dir
+        query,
+        normalization_rules,
+        business_policies,
+        metric_lexicon,
+        sql_schema,
+        parser,
+        llm_model,
+        prompt_dir,
+        structured_query,
     )
     if multi_query_variants and multi_query_variants > 0 and parser.casefold() != "rules":
         variant_intents: list[str] = []
         for variant in _generate_prompt_reformulations(query, multi_query_variants, parser, llm_model, prompt_dir):
             variant_plan = _build_single_query_plan(
-                variant, normalization_rules, business_policies, metric_lexicon, sql_schema, "rules", llm_model, prompt_dir
+                variant,
+                normalization_rules,
+                business_policies,
+                metric_lexicon,
+                sql_schema,
+                "rules",
+                llm_model,
+                prompt_dir,
+                structured_query,
             )
             _merge_targeting_conditions(base, variant_plan)
             variant_intents.append(variant_plan.get("intent"))
         _upgrade_intent_from_variants(base, variant_intents)
         base.setdefault("parser", {})["multi_query_variants"] = multi_query_variants
+    if structured_query is not None:
+        base["structured_query"] = structured_query.to_dict()
     return base
 
 
@@ -2133,6 +2197,7 @@ def _build_single_query_plan(
     parser: str = "rules",
     llm_model: str = DEFAULT_LLM_MODEL,
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
+    structured_query: StructuredQuery | None = None,
 ) -> dict[str, Any]:
     parser = parser.casefold()
     if parser not in {"rules", "auto", "llm"}:
@@ -2179,7 +2244,14 @@ def _build_single_query_plan(
         _attach_retrieval_scopes(rules_plan, scopes)
         return rules_plan
 
-    llm_plan, failure_reason = _try_llm_query_plan(parse_query, rules_plan, llm_model, prompt_dir, sql_schema)
+    llm_plan, failure_reason = _try_llm_query_plan(
+        parse_query,
+        rules_plan,
+        llm_model,
+        prompt_dir,
+        sql_schema,
+        structured_query,
+    )
     if llm_plan is None:
         rules_plan["parser"] = {
             "type": "rules",
@@ -2461,6 +2533,7 @@ def _try_llm_query_plan(
     llm_model: str,
     prompt_dir: Path | None,
     sql_schema: Path,
+    structured_query: StructuredQuery | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     if not os.getenv("OPENAI_API_KEY"):
         return None, "missing_openai_api_key"
@@ -2479,7 +2552,7 @@ def _try_llm_query_plan(
             },
             {
                 "role": "user",
-                "content": _query_plan_user_prompt(query, fallback_plan, prompt_dir),
+                "content": _query_plan_user_prompt(query, fallback_plan, prompt_dir, structured_query),
             },
         ]
         _write_rag_llm_log(
@@ -2617,6 +2690,7 @@ def _query_plan_user_prompt(
     query: str,
     fallback_plan: dict[str, Any],
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
+    structured_query: StructuredQuery | None = None,
 ) -> str:
     allowed = _llm_slot_allowed()
     allowed_values = {
@@ -2645,16 +2719,34 @@ def _query_plan_user_prompt(
             "[Fallback Rules Plan]",
             "${fallback_plan}",
             "",
+            "[Structured Query]",
+            "${structured_query}",
+            "",
             "Fallback Rules Plan과 같은 JSON 구조로 보완된 Query Plan을 반환하라.",
+            PLANNER_STRUCTURED_QUERY_RULES,
         ]
     )
     template = _read_prompt_template(prompt_dir, "query_plan_user.txt", fallback)
-    return _render_prompt_template(
+    rendered = _render_prompt_template(
         template,
         query=query,
         allowed_values=json.dumps(allowed_values, ensure_ascii=False, indent=2),
         fallback_plan=json.dumps(fallback_plan, ensure_ascii=False, indent=2),
+        structured_query=json.dumps(
+            structured_query.to_dict() if structured_query is not None else None,
+            ensure_ascii=False,
+            indent=2,
+        ),
     )
+    if "[Structured Query]" not in rendered:
+        rendered += "\n\n[Structured Query]\n" + json.dumps(
+            structured_query.to_dict() if structured_query is not None else None,
+            ensure_ascii=False,
+            indent=2,
+        )
+    if PLANNER_STRUCTURED_QUERY_RULES not in rendered:
+        rendered += "\n\n" + PLANNER_STRUCTURED_QUERY_RULES
+    return rendered
 
 
 def _llm_slot_allowed() -> dict[str, Any]:
@@ -3294,6 +3386,7 @@ def _apply_llm_object_fallback(
     need_sell = not constraints.get("sell_object") and _has_sell_signal(query)
     if not (need_purchase or need_sell):
         return
+    plan["_trace_target_object_llm_used"] = True
     extracted = _llm_extract_target_objects(query, llm_model, prompt_dir)
     if not extracted:
         return
@@ -3881,13 +3974,16 @@ def _apply_member_metric_ranking_target(query: str, plan: dict[str, Any]) -> Non
             if top_match:
                 top_n = max(1, min(_parse_count(next(group for group in top_match.groups() if group)) or default_top_n, max_top_n))
     else:
-        # ② 공용 순위 지시('<지표> 기준 상위/하위 N명', '상위 N명/N%', '높은/낮은 순 N명', 'TOP N').
+        # ② 공용 순위 지시('<지표> 기준 상위/하위 N명', '높은/낮은 순 N명', 'TOP N').
         directive = _detect_ranking_directive(query)
         if directive is None:
             return
-        metric_info = _resolve_member_metric_in_query(query)
+        # 정렬키는 '랭킹 어구에 결합된 지표'만 인정한다 — 질의 아무 데나 있는 지표(_resolve_member_metric_in_query)를
+        # 상위 N 에 묶으면 '구매 횟수 10회 이상 … 상위 100명'의 임계 지표를 정렬키로 오결합해(가짜 랭킹) 임계
+        # HAVING 이 소실됐다. 결합된 정렬키가 없으면(순수 '상위 N') 확정하지 않고 result_limit/게이트에 양보한다.
+        metric_info = _resolve_ranking_sort_metric_info(query)
         if metric_info is None:
-            return  # 지표 미해석 — 후단 게이트가 clarification 처리(부사형 구매 랭킹 등에 먼저 양보).
+            return  # 정렬키 미결합 — 후단 게이트/‌result_limit 이 처리(부사형 구매 랭킹 등에 먼저 양보).
         matched_metric_text = metric_info.get("ko_label")
         direction = directive["direction"]
         if directive.get("limit_type") == "percent":
@@ -4793,6 +4889,149 @@ def _apply_coupon_semantics(query: str, plan: dict[str, Any]) -> None:
         target_user.setdefault("coupon_usage_thresholds", []).append(threshold)
 
 
+# ── 랭킹 정렬키 지표(ORDER BY 대상)의 구조적 판정 ─────────────────────────────────────
+# 게이트/랭킹 라우팅의 핵심 질문은 "'상위 N'이 지표 정렬 랭킹인가, 아니면 임계로 정의된 오디언스의 단순
+# result_limit 캡인가"이다. 예전엔 원문 키워드 공존(기간어+지표어+상위N)만으로 랭킹이라 단정해 오탐했다.
+# 대신 '지표가 실제로 랭킹 어구에 결합됐는가'를 구조적으로 판정한다 — 임계값('N 이상')에 결합된 지표는
+# 정렬키가 아니고(HAVING 필터), '기준/순/많은/높은/큰/적은/낮은/상위/하위'에 결합된 지표만 정렬키다.
+@functools.lru_cache(maxsize=4)
+def _ranking_sort_binding_pattern(path_text: str) -> "re.Pattern[str] | None":
+    """member_metrics 동의어가 '랭킹 어구'(기준/순/최상급/많은·높은·큰·적은·낮은/상위·하위·top)에 결합된
+    형태만 잡는 패턴. 숫자+이상/이하(임계값 결합)엔 매칭되지 않아, 정렬키로 쓰인 지표만 식별한다. 지표어와
+    떨어진 '<지표> 기준 상위 N'(관용 어순 아님)도 포함한다. 긴 동의어 우선(짧은 동의어가 앞을 삼키지 않게)."""
+    registry = _load_member_metrics(path_text)
+    if not registry:
+        return None
+    synonyms = [
+        syn
+        for metric in registry.get("metrics", [])
+        for syn in metric.get("synonyms", [])
+        if isinstance(syn, str) and syn
+    ]
+    if not synonyms:
+        return None
+    synonyms.sort(key=len, reverse=True)
+    alternation = "|".join(re.escape(syn) for syn in synonyms)
+    return re.compile(
+        rf"(?P<metric>{alternation})\s*(?:이|가|은|는|을|를|의)?\s*"
+        rf"(?:기준(?:으로)?"          # '<지표> 기준(으로) [상위…]'
+        rf"|순(?:으로|서)?(?=\s|$|[0-9])"   # '<지표> 순으로/순서/순 N'
+        rf"|(?:가장|제일)\s*(?:많|높|큰|적|낮)"  # 최상급('가장 많은')
+        rf"|많은|높은|큰|적은|낮은"    # 비교 상위/하위형
+        rf"|상위|하위|top)",            # 지표어 바로 뒤 '상위/하위/top'
+        re.IGNORECASE,
+    )
+
+
+@functools.lru_cache(maxsize=4)
+def _member_metric_synonym_pattern(path_text: str) -> "re.Pattern[str] | None":
+    """member_metrics 동의어를 잡는 단순 패턴(랭킹 어구 결합 없이 지표어 위치만). 긴 동의어 우선."""
+    registry = _load_member_metrics(path_text)
+    if not registry:
+        return None
+    synonyms = sorted(
+        {syn for metric in registry.get("metrics", []) for syn in metric.get("synonyms", []) if isinstance(syn, str) and syn},
+        key=len, reverse=True,
+    )
+    if not synonyms:
+        return None
+    return re.compile(rf"(?P<metric>{'|'.join(re.escape(syn) for syn in synonyms)})")
+
+
+# 지표어 바로 뒤가 '숫자[배수]단위 비교연산자'(예: '10회 이상', '5만원 이상')면 그 지표는 임계값에 결합된
+# HAVING 필터이지 정렬키가 아니다. _AGG_UNIT/_OP_ALT_BASIC 는 집계 임계 파서와 동일 어휘를 재사용한다.
+_METRIC_THRESHOLD_TAIL_RE = re.compile(
+    rf"^\s*(?:이|가|은|는|을|를|의)?\s*[\d,]+\s*(?:억|천만|백만|만|천)?\s*(?:{_AGG_UNIT})?\s*(?:{_OP_ALT_BASIC})"
+)
+
+
+def _resolve_free_ranking_metric_info(query: str) -> dict[str, Any] | None:
+    """순위 지시가 지표 앞에 오는 형태('TOP 20 매출 고객')를 위해, 임계값에 결합되지 않은(자유) 회원 지표를
+    정렬키 후보로 찾는다. 지표어 바로 뒤가 임계값('N 이상')이면 정렬키가 아니므로 건너뛴다. 순위 지시가
+    있을 때만 호출한다(단독 지표 언급을 랭킹으로 오인하지 않게)."""
+    path = str(DEFAULT_MEMBER_METRICS_PATH)
+    pattern = _member_metric_synonym_pattern(path)
+    if pattern is None:
+        return None
+    for match in pattern.finditer(query):
+        if _METRIC_THRESHOLD_TAIL_RE.match(query[match.end():]):
+            continue  # 임계 결합 지표 → 정렬키 아님
+        info = _member_metric_by_synonym(path, match.group("metric"))
+        if info:
+            return info
+    return None
+
+
+def _resolve_ranking_sort_metric_info(query: str) -> dict[str, Any] | None:
+    """'상위 N'이 정렬하는 회원 지표(ORDER BY 대상)를 구조적으로 판정한다. 관용 어순('<지표> 높은 고객'),
+    랭킹 어구 결합('<지표> 기준/순/많은/상위'), 또는 순위 지시 존재 시 임계값에 결합되지 않은 자유 지표
+    ('TOP 20 매출')만 정렬키로 인정하고, 임계값('N 이상')에만 결합된 지표는 정렬키가 아니므로 반환하지
+    않는다. 정렬키가 없으면 None → '상위 N'은 단순 result_limit 캡이다."""
+    path = str(DEFAULT_MEMBER_METRICS_PATH)
+    customer = _member_metric_customer_pattern(path)  # ① 관용 어순: '<지표> 높은/많은/큰/상위 고객/회원'
+    match = customer.search(query) if customer else None
+    if match:
+        info = _member_metric_by_synonym(path, match.group(1))
+        if info:
+            return info
+    binding = _ranking_sort_binding_pattern(path)  # ② 랭킹 어구 결합: '<지표> 기준/순/많은/상위 …'
+    bmatch = binding.search(query) if binding else None
+    if bmatch:
+        info = _member_metric_by_synonym(path, bmatch.group("metric"))
+        if info:
+            return info
+    if _detect_ranking_directive(query) is not None:  # ③ 순위 지시 + 자유 지표('TOP 20 매출 고객')
+        return _resolve_free_ranking_metric_info(query)
+    return None
+
+
+def _resolve_ranking_sort_metric_id(query: str) -> str | None:
+    info = _resolve_ranking_sort_metric_info(query)
+    return info.get("metric_id") if info else None
+
+
+def _metric_scoping_period_targets_metric(query: str, plan: dict[str, Any], sort_metric_id: str | None) -> bool:
+    """기간 스코프가 '랭킹 정렬 지표'에 적용되는지(구조 기반). 정렬 지표가 자체 기간 창(aggregate_condition
+    .window_days)을 가지면 명백히 기간 스코프 대상(True). 반대로 기간이 캠페인 반응 조건에만 귀속되고
+    (campaign_response_frequency 등 창 보유) 정렬 지표엔 창이 없으면, 기간은 정렬 지표를 스코프하지 않으므로
+    False(전 기간 스냅샷 랭킹으로 표현 가능 → 기간 스코프 랭킹 아님). 구조적으로 분리를 확신 못 하면 보수적
+    으로 True(기존 차단 유지)."""
+    conditions = plan.get("target_user", {}).get("aggregate_conditions") or []
+    sort_metric_has_window = any(
+        cond.get("metric_id") == sort_metric_id and cond.get("window_days") for cond in conditions
+    )
+    if sort_metric_has_window:
+        return True
+    if _period_is_campaign_scoped(plan):
+        return False
+    return True
+
+
+def _period_is_campaign_scoped(plan: dict[str, Any]) -> bool:
+    """기간 창이 캠페인 반응 조건에 귀속됐는지 — campaign_response_frequency 나 창을 가진 campaign_responses.
+    이 경우 '최근 N개월'은 캠페인 반응 여부를 스코프하는 것이지 회원 지표 집계를 스코프하지 않는다."""
+    target_user = plan.get("target_user", {})
+    frequency = target_user.get("campaign_response_frequency")
+    if isinstance(frequency, dict) and frequency.get("window_days"):
+        return True
+    responses = target_user.get("campaign_responses")
+    if isinstance(responses, list):
+        return any(isinstance(r, dict) and r.get("window_days") for r in responses)
+    return False
+
+
+def _is_threshold_limited_audience(query: str, plan: dict[str, Any]) -> bool:
+    """지표가 임계(aggregate_conditions/HAVING)로 정의됐고 '상위 N'이 정렬키 없는 단순 행수 캡(result_limit)인
+    구조인지. 판정은 원문 키워드가 아니라 파싱된 aggregate_conditions·result_limit 과 구조적 정렬키
+    (_resolve_ranking_sort_metric_id)로만 한다. 이때 기간 스코프 랭킹/랭킹 기준 미지정 게이트를 발동하지
+    않고 result_limit 로 통과시킨다(HAVING 절대 임계 + LIMIT)."""
+    if not (plan.get("target_user", {}).get("aggregate_conditions") or []):
+        return False
+    if plan.get("result_limit") is None:
+        return False
+    return _resolve_ranking_sort_metric_id(query) is None
+
+
 def _apply_unsupported_intent_gate(query: str, plan: dict[str, Any]) -> None:
     """해석은 되지만 실DB SQL 로 컴파일할 수 없는 표현을 조용한 오답/빈결과 대신 '명시적 미지원'으로 표시한다.
 
@@ -4908,16 +5147,23 @@ def _apply_unsupported_intent_gate(query: str, plan: dict[str, Any]) -> None:
 
     # 기간 스코프 랭킹('최근 3개월/2025년/지난달 <지표> 높은 회원 N명') — 회원 지표 랭킹은 최신 월 스냅샷
     # (전 기간 누적) 기준이라 임의 기간을 표현하지 못한다. 스냅샷 랭킹으로 조용히 보내지 않고(오답 방지)
-    # 명시 미지원으로 돌린다. 기간 표현 + 회원 지표 + 순위 지시(또는 관용 어순 랭킹)가 함께일 때만 잡는다.
-    customer_pattern = _member_metric_customer_pattern(str(DEFAULT_MEMBER_METRICS_PATH))
+    # 명시 미지원으로 돌린다.
+    #
+    # 판정은 원문 키워드 공존(기간어+지표어+상위N)이 아니라 파싱 구조로 한다. 진짜 기간 스코프 랭킹은
+    #   ① 기간 스코프가 존재하고(_has_metric_scoping_period)
+    #   ② 실제 지표 정렬키(ORDER BY 대상)가 결합돼 있고(_resolve_ranking_sort_metric_id — 임계값 결합 지표는
+    #      정렬키가 아니므로 제외; '순수 상위 N'도 정렬키 None)
+    #   ③ 그 기간이 정렬 지표에 적용되며(_metric_scoping_period_targets_metric — 캠페인 반응 등 다른 조건에만
+    #      귀속된 창이면 정렬 지표를 스코프하지 않는다)
+    #   ④ 어떤 랭킹 트랙도 이를 실제로 컴파일하지 못한 경우
+    # 일 때만 성립한다. '…구매 횟수 10회 이상, 평균 주문 금액 5만원 이상인 상위 100명'은 정렬키가 없어(② 탈락)
+    # 단순 result_limit 캡으로 통과하고, '최근 3개월 구매 횟수가 가장 많은 상위 100명'은 정렬키(구매 횟수)가
+    # 기간에 결합돼 계속 차단된다.
+    ranking_sort_metric = _resolve_ranking_sort_metric_id(query)
     if (
         _has_metric_scoping_period(query, plan)
-        and _resolve_member_metric_in_query(query) is not None
-        and (
-            _detect_ranking_directive(query) is not None
-            or _PER_GROUP_SUFFIX_RE.search(query)
-            or (customer_pattern is not None and customer_pattern.search(query) is not None)
-        )
+        and ranking_sort_metric is not None
+        and _metric_scoping_period_targets_metric(query, plan, ranking_sort_metric)
         and plan.get("member_metric_ranking") is None
         and plan.get("group_ranking_target") is None
         and plan.get("purchase_count_ranking") is None
@@ -4951,6 +5197,9 @@ def _apply_unsupported_intent_gate(query: str, plan: dict[str, Any]) -> None:
 
     # 순위 지시('상위/하위 N명·높은/낮은 순·TOP N')는 있는데 기준 지표가 지정되지 않았고, 어떤 랭킹 트랙도
     # 이를 해석하지 못한 경우 → result_limit 만 조용히 적용(그럴듯한 임의 N명)하지 말고 '무엇 기준인지' 되묻는다.
+    # 단, 지표가 전부 임계(HAVING)로 정의된 오디언스의 '상위 N'은 정렬키 없는 단순 행수 캡이 사용자 의도이므로
+    # (_is_threshold_limited_audience: aggregate_conditions + result_limit + 정렬키 None) 되묻지 않고
+    # result_limit 로 통과시킨다.
     if (
         _detect_ranking_directive(query) is not None
         and plan.get("member_metric_ranking") is None
@@ -4959,6 +5208,7 @@ def _apply_unsupported_intent_gate(query: str, plan: dict[str, Any]) -> None:
         and not isinstance(plan.get("region_density_target"), dict)
         and not isinstance(plan.get("group_ranking_target"), dict)
         and not isinstance(plan.get("region_member_count_target"), dict)
+        and not _is_threshold_limited_audience(query, plan)
     ):
         plan["unsupported"] = {
             "reason": "ranking_metric_unspecified",
@@ -5422,13 +5672,13 @@ _CART_MULTIPLE_WORDS = ("여러", "복수", "중복", "2개이상", "두개이�
 _CART_MULTIPLE_DEFAULT_THRESHOLD = 2
 
 
-def _cart_comparison_condition(metric: str, query: str) -> dict[str, Any] | None:
+def _cart_comparison_condition(metric: str, query: str, unit: str = _CART_COUNT_UNIT) -> dict[str, Any] | None:
     """개수 단위 뒤 수치 비교(이상/초과/미만/정확값/범위)를 공용 문법으로 파싱해 cart_aggregate 조건으로
     만든다(없으면 None). 단일 비교는 기존 형태 {metric, operator, threshold} 그대로 두고, 범위/이중경계
     ('2개에서 5개 사이')일 때만 comparisons=[[op,val],...] 를 추가로 실어 빌더가 HAVING 을 AND 로 잇게 한다.
     개수라 값은 정수로 정규화한다(3.0→3). 단위(개/종…)는 필수다 — 카트 질의에 섞인 '30~49세'·'6개월'
-    같은 단위 없는 숫자·범위를 흡수하지 않게 한다."""
-    comparisons = _parse_amount_comparison(query, _CART_COUNT_UNIT, bare_equals=False, unit_required=True)
+    같은 단위 없는 숫자·범위를 흡수하지 않게 한다. unit 을 좁히면 특정 지표('종'→종류 수, '개'→총 수량)만 딴다."""
+    comparisons = _parse_amount_comparison(query, unit, bare_equals=False, unit_required=True)
     if not comparisons:
         return None
     normalized = [(op, int(val) if float(val).is_integer() else val) for op, val in comparisons]
@@ -5487,6 +5737,36 @@ def _cart_amount_condition(compact: str) -> dict[str, Any] | None:
     return None
 
 
+# 종류 수(distinct) 단위와 총 수량 단위 구분: '종/종류/종수/가지/품목'=상품 종류 수(COUNT DISTINCT),
+# '개/점'=낱개. '총 N개'·'수량' 신호가 붙은 낱개만 총 수량(SUM QTY)으로 본다(맨 '개'는 종류 수 기본 유지).
+_CART_KIND_UNIT = r"종류|종수|종|가지|품목"
+_CART_QTY_UNIT = r"개|점"
+_CART_TOTAL_QTY_SIGNAL = re.compile(r"수량|총\s*개수|총\s*\d+\s*개|총\s*\d")
+
+
+def _cart_count_quantity_conditions(clause: str) -> list[dict[str, Any]]:
+    """한 절에서 상품 '종류 수'(cart_line_count)와 '총 수량'(cart_quantity) 조건을 각각 뽑는다.
+
+    - '종/종류/가지/품목' 단위 → cart_line_count(COUNT DISTINCT CART_PRODUCT_NO).
+    - '총 N개'·'수량' 신호가 있는 '개/점' → cart_quantity(SUM QTY).
+    - 그 외 맨 '개/점'(총/수량 신호 없음) → cart_line_count(기존 기본: '3개 이상 담은'=담은 상품 종류 수).
+    둘 다 있으면('3종 이상 총 5개 이상') 두 조건을 함께 돌려 빌더가 HAVING 을 AND 로 합성한다."""
+    conditions: list[dict[str, Any]] = []
+    kind = _cart_comparison_condition("cart_line_count", clause, unit=_CART_KIND_UNIT)
+    if kind is not None:
+        conditions.append(kind)
+    if _CART_TOTAL_QTY_SIGNAL.search(clause):
+        quantity = _cart_comparison_condition("cart_quantity", clause, unit=_CART_QTY_UNIT)
+        if quantity is not None:
+            conditions.append(quantity)
+    if not conditions:
+        # 총/수량/종류 신호 없는 맨 개수('3개 이상 담은') → 담은 상품 종류 수(기존 기본 동작 유지).
+        plain = _cart_comparison_condition("cart_line_count", clause)
+        if plain is not None:
+            conditions.append(plain)
+    return conditions
+
+
 def _apply_cart_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
     """'장바구니에 N개 이상 담은'을 장바구니 집계 조건(cart_aggregate)으로 해석한다.
 
@@ -5519,10 +5799,7 @@ def _apply_cart_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> 
     for clause in _AGG_CLAUSE_SPLIT_RE.split(query):
         if not any(term in clause.replace(" ", "") for term in cart_terms):
             continue
-        metric = "cart_quantity" if re.search(r"수량|총\s*개수", clause) else "cart_line_count"
-        condition = _cart_comparison_condition(metric, clause)
-        if condition is not None:
-            conditions.append(condition)
+        conditions.extend(_cart_count_quantity_conditions(clause))
     if not conditions:
         return
     # 단일 조건은 dict 그대로(기존 형태 유지), 여럿이면 list 로 싣는다(빌더가 HAVING 을 AND 로 합성).
@@ -6630,23 +6907,45 @@ def _apply_action_metric_filter(query: str, plan: dict[str, Any]) -> None:
 _BALANCE_SUM_RE = re.compile(r"합계|합산|합쳐|합친|합한|더한|더하면|더해|의\s*합\b|합이\b|합은\b|합으로")
 
 
-def _balance_sum_unsupported(query: str, entries: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """서로 다른 잔액(money) 지표 둘 이상이 '합' 문맥에 함께 오면 미지원 사유를 돌린다(없으면 None)."""
-    if _BALANCE_SUM_RE.search(query) is None:
+def _balance_sum_condition(query: str, entries: list[dict[str, Any]]) -> list[dict[str, Any]] | None:
+    """서로 다른 잔액(money) 지표 둘 이상이 '합' 문맥에 함께 오면 **두 컬럼의 실제 합** 임계 조건을 만든다.
+
+    '적립금과 예치금의 합이 50,000원 이상' → (COALESCE(B.CARROT,0) + COALESCE(B.DEPOSIT,0)) >= 50000.
+    예전엔 미지원(column_sum_unsupported)으로 막았지만, 컴파일러가 column_expr(좌변 임의 식)을 지원하므로
+    조용한 개별-임계 분해(둘 다 >= N, 훨씬 좁은 오답) 없이 정확한 합으로 컴파일한다([[always-apply-expressible-conditions]]).
+    NULL 잔액은 0 으로 본다(한쪽만 값이 있어도 합에 반영). 임계를 못 읽으면 None(합 미구성, 일반 흐름에 양보)."""
+    sum_match = _BALANCE_SUM_RE.search(query)
+    if sum_match is None:
         return None
-    columns = {
-        e["column"] for e in entries
-        if e.get("type") == "money" and any(
-            isinstance(s, str) and s in query for s in e.get("synonyms", [])
-        )
-    }
-    if len(columns) < 2:
+    money_columns: list[str] = []  # entries 순서 보존(결정론)
+    for e in entries:
+        if e.get("type") != "money":
+            continue
+        if any(isinstance(s, str) and s in query for s in e.get("synonyms", [])):
+            col = e["column"] if e["column"].startswith("B.") else f"B.{e['column'].split('.')[-1]}"
+            if col not in money_columns:
+                money_columns.append(col)
+    if len(money_columns) < 2:
         return None
-    return {
-        "reason": "column_sum_unsupported",
-        "message": "두 잔액 지표의 '합계' 임계 조건은 아직 지원하지 않습니다(각 잔액을 개별 임계로만 비교).",
-        "clarification": "각 잔액을 따로 지정해 주세요. 예: '예치금이 30,000원 이상이고 적립금이 20,000원 이상' 처럼 개별 임계로 입력하시겠어요?",
-    }
+    # 임계값은 '합' 표지 뒤에서 읽는다('…의 합이 50,000원 이상' → 50000 >=). money 라 원 단위·맨숫자=정확값.
+    window = query[sum_match.end(): sum_match.end() + 50]
+    classified = _classify_balance_window(window, "원", bare_equals=True)
+    if not classified:
+        return None
+    column_expr = "(" + " + ".join(f"COALESCE({col}, 0)" for col in money_columns) + ")"
+    label = "balance_sum(" + "+".join(col.split(".")[-1] for col in money_columns) + ")"
+    conditions: list[dict[str, Any]] = []
+    for operator, threshold in classified:
+        if operator not in ("=", ">", ">=", "<", "<="):
+            continue  # 존재/부재·NULL 센티넬은 '합' 임계에 의미 없음 → 건너뜀
+        conditions.append({
+            "column": money_columns[0].split(".")[-1],  # 대표 컬럼(빌더 유효성 검사용)
+            "column_expr": column_expr,
+            "operator": operator,
+            "threshold": threshold,
+            "label": label,
+        })
+    return conditions or None
 
 
 def _apply_balance_condition_filter(query: str, plan: dict[str, Any]) -> None:
@@ -6658,11 +6957,16 @@ def _apply_balance_condition_filter(query: str, plan: dict[str, Any]) -> None:
     entries = _numeric_metric_filters()
     if not entries:
         return
-    # 두 잔액의 '합'(예치금+적립금 >= N)은 아직 미모델 — 조용히 각 컬럼 개별 임계(둘 다 >= N)로 분해하면
-    # 훨씬 좁은 오답이 된다. 명시 미지원으로 돌려 사용자가 재입력하게 한다([[unsupported-intent-gate]]).
-    sum_unsupported = _balance_sum_unsupported(query, entries)
-    if sum_unsupported is not None:
-        plan["unsupported"] = sum_unsupported
+    # 두 잔액의 '합'(예치금+적립금 >= N)은 두 컬럼의 실제 합 식으로 컴파일한다. 개별 임계로 조용히 분해하면
+    # (둘 다 >= N) 훨씬 좁은 오답이 되므로, 합 문맥이 잡히면 여기서 합 조건만 세우고 개별 파싱은 건너뛴다.
+    sum_conditions = _balance_sum_condition(query, entries)
+    if sum_conditions:
+        tu = plan.setdefault("target_user", {})
+        existing = tu.get("balance_conditions")
+        if isinstance(existing, list):
+            existing.extend(sum_conditions)
+        else:
+            tu["balance_conditions"] = sum_conditions
         return
     money_entries = [e for e in entries if e.get("type") == "money"]  # 컬럼 대 컬럼 비교는 동종(금액)끼리만
     conditions: list[dict[str, Any]] = []
@@ -7751,6 +8055,8 @@ def retrieve(
     retrieval_scope: str = "all",
     multi_query_variants: int | None = None,
     timings_ms: dict[str, float] | None = None,
+    structuring_context: StructuringContext | None = None,
+    query_structurer: QueryStructurer | None = None,
 ) -> dict[str, Any]:
     # 계측 dict 을 호출자가 넘길 수 있게 한다. 트레이스 엔드포인트는 이 dict 을 소유해, retrieve() 가
     # 중간 단계에서 예외로 죽어도 그때까지 채워진 단계별 시간을 읽어 "오류 전까지" 부분 트레이스를 만든다.
@@ -7782,6 +8088,14 @@ def retrieve(
         },
     )
 
+    stage_started_at = time.perf_counter()
+    context = structuring_context or StructuringContext(
+        current_date=date.today().isoformat(),
+        timezone=os.getenv("GRAPH_RAG_TIMEZONE"),
+    )
+    structured_query = _structure_query(query, context, llm_model, query_structurer)
+    timings_ms["query_structuring"] = _elapsed_ms(stage_started_at)
+
     # 파싱 전에 사용자 프롬프트를 타겟 조건 중심으로 재작성(룰/LLM)한다. 재작성본으로 파싱하되 원문은 보존한다.
     stage_started_at = time.perf_counter()
     prompt_normalization = normalize_prompt(query, parser=query_parser, llm_model=llm_model, prompt_dir=prompt_dir)
@@ -7803,8 +8117,10 @@ def retrieve(
     timings_ms["prompt_scopes"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
-    query_plan = build_query_plan(
-        plan_query,
+    planner_input = QueryPlannerInput(query=plan_query, structured_query=structured_query)
+    query_plan = call_query_planner(
+        build_query_plan,
+        planner_input,
         normalization_rules=normalization_rules,
         business_policies=business_policies,
         metric_lexicon=metric_lexicon,
@@ -8003,6 +8319,7 @@ def retrieve(
     api_response = build_recommendation_api_response(query, query_plan, sql_result, answer_response, message_generation, prompt_normalization)
     return {
         "query": query,
+        "structured_query": structured_query.to_dict(),
         "llm_query_plan_prompt": llm_query_plan_prompt,
         "llm_sql_prompt": llm_sql_prompt,
         "prompt_normalization": prompt_normalization,
@@ -15229,10 +15546,349 @@ def _trace_stage_shell(step: int, name: str, tech_name: str, method: str, status
             model = main_model
         embed_model = os.getenv("QDRANT_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL
         shell["refs"] = [
-            {**ref, "name": ref["name"].replace("{model}", model).replace("{embed_model}", embed_model)}
+            {
+                **ref,
+                "name": ref["name"].replace("{model}", model).replace("{embed_model}", embed_model),
+                "used": False,
+            }
             for ref in refs
         ]
     return shell
+
+
+def _mark_trace_refs_used(stages: list[dict[str, Any]], result: dict[str, Any]) -> None:
+    """이번 요청의 Query Plan·검색·SQL 결과에 실제 기여한 참조만 ``used``로 표시한다.
+
+    ``refs`` 전체 목록은 처리 단계에서 사용할 수 있는 자산을 보여주기 위해 유지한다. 이 함수는
+    입력이 특정 분기·조건·검색 결과를 만들었을 때만 해당 자산을 강조하도록 응답 메타데이터를 보강한다.
+    """
+    stages_by_step = {stage.get("step"): stage for stage in stages}
+
+    def mark(step: int, *names: str, kind: str | None = None) -> None:
+        wanted_names = set(names)
+        for ref in stages_by_step.get(step, {}).get("refs", []):
+            if ref.get("name") in wanted_names or (kind is not None and ref.get("kind") == kind):
+                ref["used"] = True
+
+    query_plan = result.get("query_plan") or {}
+    sql_result = result.get("sql_result") or {}
+    prompt_normalization = result.get("prompt_normalization") or {}
+    target_user = query_plan.get("target_user") or {}
+    exclude = query_plan.get("exclude") or {}
+    retrieval = query_plan.get("retrieval") or {}
+    parser = query_plan.get("parser") or {}
+    matched_terms = query_plan.get("matched_terms") or []
+    dimension_filters = query_plan.get("dimension_filters") or []
+    semantic_resolutions = query_plan.get("semantic_resolutions") or []
+    set_expressions = query_plan.get("set_expressions") or []
+    computed_metrics = query_plan.get("computed_metrics") or []
+    policy_constraints = query_plan.get("policy_constraints") or []
+    condition_tokens = sql_result.get("condition_tokens") or []
+    generation_source = str(sql_result.get("generation_source") or "")
+    llm_query_plan_prompt = result.get("llm_query_plan_prompt")
+    llm_sql_prompt = result.get("llm_sql_prompt")
+    semantic_verification = sql_result.get("semantic_verification") or {}
+    timings_ms = result.get("timings_ms") or {}
+
+    normalization_mode = str(prompt_normalization.get("mode") or "")
+    if normalization_mode == "llm_rewrite":
+        mark(1, "prompt_rewrite_system.txt", kind="모델")
+    elif normalization_mode == "llm":
+        mark(1, "prompt_normalize_system.txt (보수 모드)", kind="모델")
+
+    # 스코프 분리는 규칙 우선이며, LLM 분리가 실제로 선택됐을 때만 프롬프트/모델을 강조한다.
+    mark(2, "targeting_lexicon.json")
+    if retrieval.get("scope_mode") == "llm":
+        mark(2, "prompt_scope_split_system.txt", kind="모델")
+
+    parser_used_llm = parser.get("type") == "llm" and isinstance(llm_query_plan_prompt, dict)
+    if parser_used_llm:
+        mark(3, "query_plan_system.txt", "query_plan_user.txt", kind="모델")
+        examples = _query_plan_fewshot_examples()
+        if examples and examples in str(llm_query_plan_prompt.get("system") or ""):
+            mark(3, "query_plan_examples.txt")
+    if matched_terms:
+        mark(3, "normalization_rules.sample.json")
+    if policy_constraints or any(
+        item.get("source") == "business_policies"
+        for item in semantic_resolutions
+        if isinstance(item, dict)
+    ):
+        mark(3, "business_policies.sample.json")
+    mark(3, "targeting_lexicon.json")
+
+    attribute_canonicals = {
+        canonical
+        for group in _attribute_token_groups().values()
+        for canonical, _terms in group.canonicals
+    }
+    lifecycle_values = set(target_user.get("lifecycle") or []) | set(exclude.get("lifecycle") or [])
+    if attribute_canonicals & lifecycle_values:
+        mark(3, "attribute_token_groups.json")
+    if query_plan.get("member_metric_selection") is not None or target_user.get("balance_conditions"):
+        mark(3, "member_metrics.json")
+    if computed_metrics:
+        mark(3, "metric_lexicon.sample.json", "schema_catalog.json")
+
+    if query_plan.get("_trace_target_object_llm_used"):
+        mark(4, "target_object_extract_system.txt", kind="모델")
+    if target_user.get("purchase_object") or (query_plan.get("campaign_constraints") or {}).get("sell_object"):
+        mark(4, "targeting_lexicon.json")
+
+    uses_member_value_index = any(
+        item.get("source") == "member_value_index"
+        for item in dimension_filters
+        if isinstance(item, dict)
+    )
+    uses_dimension_catalog = any(
+        item.get("codes") and item.get("source") not in {"member_value_index", "macro_region"}
+        for item in dimension_filters
+        if isinstance(item, dict)
+    )
+    has_member_condition = any(value not in (None, [], {}) for value in target_user.values()) or bool(exclude) or bool(dimension_filters)
+    if uses_dimension_catalog:
+        mark(5, "dimension_catalog.sample.json", "실DB (DS_SQL 값 조회)")
+    if uses_member_value_index:
+        mark(5, "member_value_index.json")
+    if has_member_condition:
+        mark(5, "member_target_filters.json")
+
+    if set_expressions:
+        mark(6, "normalization_rules.sample.json", "set_expression_engine.py", "logical_expression.py")
+
+    search_executed = "vector_search" in timings_ms or "keyword_search" in timings_ms
+    search_hits = [
+        *result.get("vector_matches", []),
+        *result.get("keyword_matches", []),
+        *result.get("graph_context", []),
+    ]
+    if search_executed:
+        mark(7, "rag_knowledge_base.json (적재시)", "Qdrant + 인메모리 그래프")
+    if "vector_search" in timings_ms:
+        mark(7, kind="모델")
+    if any(item.get("type") == "sql_example" for item in search_hits if isinstance(item, dict)):
+        mark(7, "sql_examples.sample.sql (적재시)")
+
+    has_sql_candidate = bool(sql_result.get("candidates"))
+    if has_sql_candidate:
+        mark(8, "sql_ast.py (SelectAst)", "schema_catalog.json")
+    if has_sql_candidate and not generation_source.startswith("llm"):
+        mark(8, "조건빌더 build_*_sql_candidate")
+    if any(
+        str(token.get("path") or "").startswith(("target_user.", "exclude.", "dimension_filters."))
+        for token in condition_tokens
+        if isinstance(token, dict)
+    ):
+        mark(8, "member_target_filters.json")
+    if any(
+        str(token.get("path") or "").startswith(("computed_metrics.", "member_metric_selection", "target_user.aggregate_conditions"))
+        for token in condition_tokens
+        if isinstance(token, dict)
+    ):
+        mark(8, "member_metrics.json", "docs/data/metrics/*.json")
+    if isinstance(llm_sql_prompt, dict):
+        mark(8, "(LLM 폴백 인라인)", kind="모델")
+
+    if has_sql_candidate:
+        mark(9, "schema_catalog.json")
+    if semantic_verification.get("ran"):
+        mark(9, "member_target_filters.json", "(의미검증 인라인)", kind="모델")
+
+
+def _trace_failure_diagnosis(
+    category: str,
+    label: str,
+    confidence: str,
+    summary: str,
+    evidence: list[str],
+    next_action: str,
+) -> dict[str, Any]:
+    return {
+        "category": category,
+        "label": label,
+        "confidence": confidence,
+        "summary": summary,
+        "evidence": evidence,
+        "next_action": next_action,
+    }
+
+
+def _trace_sql_failure_diagnosis(
+    query_plan: dict[str, Any],
+    sql_result: dict[str, Any],
+) -> dict[str, Any] | None:
+    """검증 SQL 미생성 사유를 입력·참조 데이터·개발/정책 점검으로 분류한다.
+
+    참조 JSON이 로드돼도 사용자의 조건을 실DB 컬럼으로 매핑하지 못할 수 있으므로, 근거가 명확한
+    ``unsupported_conditions`` 계열만 데이터/매핑 부족으로 단정한다. 나머지는 입력 부족 또는
+    개발/정책 설정 점검으로 분리하고, 근거가 약하면 낮은 신뢰도로 반환한다.
+    """
+    reason = str(sql_result.get("failure_reason") or "")
+    if not reason:
+        return None
+
+    unsupported_labels = [
+        str(label)
+        for label in sql_result.get("unsupported_condition_labels", [])
+        if str(label)
+    ]
+    missing_paths = [
+        str(condition.get("path"))
+        for condition in sql_result.get("missing_input_conditions", [])
+        if isinstance(condition, dict) and condition.get("path")
+    ]
+    clarification_questions = [
+        str(question)
+        for question in sql_result.get("clarification_questions", [])
+        if str(question)
+    ]
+    recognized_domains = _recognized_domains(query_plan)
+
+    if reason == "query_plan_required_conditions_missing":
+        evidence = [f"미확정 조건: {path}" for path in missing_paths]
+        evidence.extend(f"확인 질문: {question}" for question in clarification_questions)
+        return _trace_failure_diagnosis(
+            "input_incomplete",
+            "입력 조건 추가 필요",
+            "high",
+            "필수 조건이 확정되지 않아 SQL을 만들지 못했습니다. 참조 JSON 부족으로 단정하지 않습니다.",
+            evidence or ["Query Plan 필수 조건이 비어 있습니다."],
+            "실패 단계에 표시된 조건을 더 구체적으로 입력한 뒤 다시 실행하세요.",
+        )
+
+    data_gap_reasons = {
+        "real_db_unsupported_conditions",
+        "recognized_domain_unsupported",
+        *_UNSUPPORTED_INTENT_REASONS,
+    }
+    if reason in data_gap_reasons or (reason == "no_sql_candidates" and recognized_domains):
+        evidence = [f"실DB 미매핑 조건: {label}" for label in unsupported_labels]
+        evidence.extend(
+            f"인식된 도메인: {domain.get('label', domain.get('code', 'unknown'))}"
+            for domain in recognized_domains
+            if isinstance(domain, dict)
+        )
+        return _trace_failure_diagnosis(
+            "reference_data_gap",
+            "참조 데이터/매핑 보강 필요",
+            "high" if unsupported_labels else "medium",
+            "입력 조건은 인식됐지만 현재 참조 JSON 또는 실DB 매핑으로 SQL 조건을 만들 수 없습니다.",
+            evidence or [f"실패 사유: {reason}"],
+            "강조된 member_target_filters.json, dimension_catalog.sample.json, schema_catalog.json의 조건·컬럼·코드 매핑을 확인하세요.",
+        )
+
+    if reason == "no_sql_candidates":
+        return _trace_failure_diagnosis(
+            "input_unrecognized",
+            "타겟 조건 인식 부족",
+            "medium",
+            "명시적인 타겟 조건을 찾지 못해 SQL 후보를 만들지 못했습니다.",
+            ["인식된 실DB 타겟 도메인이 없습니다."],
+            "성별, 연령, 등급, 지역, 구매 이력처럼 지원되는 타겟 조건을 추가해 다시 실행하세요.",
+        )
+
+    implementation_reasons = {
+        "sql_guard_failed",
+        "query_plan_conditions_missing",
+        "query_plan_unmentioned_conditions_added",
+        "intent_scope_mismatch",
+        "semantic_verification_failed",
+    }
+    if reason in implementation_reasons:
+        failure_stage = _classify_failure_stage(reason, sql_result)
+        return _trace_failure_diagnosis(
+            "implementation_or_policy_review",
+            "개발/정책 설정 점검 필요",
+            "high",
+            "입력 데이터 부족으로 판정할 근거보다 생성·검증 규칙에서 막힌 근거가 더 강합니다.",
+            [
+                f"실패 사유: {reason}",
+                f"실패 단계: {failure_stage['label']}" if failure_stage else "실패 단계 미분류",
+            ],
+            "해당 단계의 기술 정보와 SQL 가드·조건 커버리지·의미 검증 결과를 개발자가 확인하세요.",
+        )
+
+    return _trace_failure_diagnosis(
+        "unknown",
+        "원인 추가 확인 필요",
+        "low",
+        "현재 실패 사유만으로는 참조 데이터 부족과 개발 오류를 신뢰성 있게 구분할 수 없습니다.",
+        [f"실패 사유: {reason}"],
+        "실패 단계의 상세 로그와 참조 파일을 함께 확인하세요.",
+    )
+
+
+def _trace_exception_diagnosis(error_message: str) -> dict[str, Any]:
+    """중간 예외를 데이터 파일·인프라·개발 오류로 보수적으로 분류한다."""
+    normalized = error_message.casefold()
+    if "filenotfounderror" in normalized or "no such file" in normalized:
+        return _trace_failure_diagnosis(
+            "reference_data_error",
+            "참조 파일 누락",
+            "high",
+            "처리에 필요한 JSON 또는 프롬프트 파일을 찾지 못했습니다.",
+            [error_message],
+            "docs/data 또는 docs/prompts 경로와 배포된 파일 목록을 확인하세요.",
+        )
+    if "jsondecodeerror" in normalized or "json decode" in normalized:
+        return _trace_failure_diagnosis(
+            "reference_data_error",
+            "참조 JSON 형식 오류",
+            "high",
+            "참조 JSON을 읽는 중 형식 오류가 발생했습니다.",
+            [error_message],
+            "최근 수정한 docs/data JSON의 문법과 필수 필드를 확인하세요.",
+        )
+    if any(token in normalized for token in ("connectionerror", "timeouterror", "operationalerror", "importerror", "modulenotfounderror", "qdrant", "openai", "missing_openai_api_key")):
+        return _trace_failure_diagnosis(
+            "infrastructure_or_configuration",
+            "실행 환경/연결 설정 점검 필요",
+            "high",
+            "참조 데이터나 애플리케이션 코드보다 외부 서비스 또는 환경 설정 문제 가능성이 높습니다.",
+            [error_message],
+            "Qdrant·DB·OpenAI 연결과 관련 환경 변수를 확인하세요.",
+        )
+    if any(token in normalized for token in ("keyerror", "attributeerror", "assertionerror", "nameerror", "typeerror", "unboundlocalerror", "programmingerror", "syntaxerror", "undefinedtable", "undefinedcolumn")):
+        return _trace_failure_diagnosis(
+            "implementation_error",
+            "개발 오류 가능성",
+            "high",
+            "처리 코드의 예외 유형이 감지됐습니다. 참조 JSON 부족으로 보이지 않습니다.",
+            [error_message],
+            "실패 단계의 서버 로그와 스택 트레이스를 개발자가 확인하세요.",
+        )
+    if "valueerror" in normalized:
+        return _trace_failure_diagnosis(
+            "input_or_configuration_error",
+            "입력값 또는 설정값 확인 필요",
+            "medium",
+            "허용되지 않은 입력값 또는 설정값이 처리 단계에서 감지됐습니다.",
+            [error_message],
+            "요청 파라미터와 관련 환경 설정의 허용값을 확인하세요.",
+        )
+    return _trace_failure_diagnosis(
+        "unknown",
+        "원인 추가 확인 필요",
+        "low",
+        "예외 유형만으로 참조 데이터 부족과 개발 오류를 신뢰성 있게 구분할 수 없습니다.",
+        [error_message],
+        "서버 로그와 실패 단계의 기술 정보를 확인하세요.",
+    )
+
+
+def _trace_execution_failure_diagnosis(execution: dict[str, Any]) -> dict[str, Any]:
+    error = str(execution.get("error") or execution.get("failure_reason") or "database_execution_failed")
+    diagnosis = _trace_exception_diagnosis(error)
+    if diagnosis["category"] != "unknown":
+        return diagnosis
+    return _trace_failure_diagnosis(
+        "infrastructure_or_configuration",
+        "DB 실행 설정 점검 필요",
+        "medium",
+        "검증 SQL은 생성됐지만 DB 실행 단계에서 실패했습니다.",
+        [error],
+        "대상 DB 연결, 권한, 방언 설정과 실행된 SQL을 확인하세요.",
+    )
 
 
 def build_partial_retrieve_trace(query: str, timings_ms: dict[str, Any], error_message: str) -> dict[str, Any]:
@@ -15268,6 +15924,7 @@ def build_partial_retrieve_trace(query: str, timings_ms: dict[str, Any], error_m
         "partial": True,
         "stages": stages,
         "timings_ms": timings_ms,
+        "failure_diagnosis": _trace_exception_diagnosis(error_message),
         "result": {"status": "error", "message": f"처리 중 오류가 발생했습니다: {error_message}"},
     }
 
@@ -15526,6 +16183,9 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
         stage3["method"] = "규칙"
         stage3["refs"] = [ref for ref in stage3.get("refs", []) if ref["kind"] not in ("모델", "프롬프트")]
 
+    _mark_trace_refs_used(stages, result)
+
+    failure_diagnosis = _trace_sql_failure_diagnosis(query_plan, sql_result)
     return {
         "query": result.get("query"),
         "collection": result.get("collection"),
@@ -15533,6 +16193,7 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
         "prompt_scopes": prompt_scopes,
         "stages": stages,
         "stage_log": result.get("stage_log", []),
+        "failure_diagnosis": failure_diagnosis,
         "result": {
             "status": api_response.get("status"),
             "sql": api_response.get("sql"),
@@ -15561,6 +16222,11 @@ def apply_execution_to_trace(trace: dict[str, Any], execution: dict[str, Any]) -
             f"대상 {count:,}명" if isinstance(count, int)
             else ("실행 성공" if ok else ("실행 생략(생성된 SQL 없음)" if skipped else "실행 실패"))
         )
+        if not skipped:
+            for ref in stage.get("refs", []):
+                ref["used"] = True
+        if not ok and not skipped:
+            trace["failure_diagnosis"] = _trace_execution_failure_diagnosis(execution)
         details = []
         if targeting_result.get("result_row_count") is not None:
             details.append(f"result_row_count={targeting_result.get('result_row_count')}")
