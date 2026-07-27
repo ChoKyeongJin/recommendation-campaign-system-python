@@ -42,6 +42,7 @@ from common_utils import elapsed_ms as _elapsed_ms
 from confidence import render_confidence_markdown, render_confidence_report
 from sql_dialect import dialect_for_connection
 from sql_guard import DEFAULT_LIMIT, DEFAULT_SCHEMA_PATH
+from data_quality import analyze_execution_result
 
 
 api_logger = logging.getLogger("campaign_api")
@@ -3599,10 +3600,16 @@ def _execute_external_target_sql(
             cardinality_diagnostic = _run_cardinality_diagnostic(connection, cardinality_probe)
         except Exception:
             cardinality_diagnostic = None
+    execution_sanity = analyze_execution_result(
+        jsonable_rows,
+        columns,
+        analytical_intent=(query_plan or {}).get("analytical_intent"),
+        join_quality=(query_plan or {}).get("join_quality"),
+    )
     return {
-        "is_success": True,
+        "is_success": execution_sanity["valid"],
         "mode": f"{connection}_read_only",
-        "failure_reason": None,
+        "failure_reason": None if execution_sanity["valid"] else execution_sanity["issues"][0]["reason_code"],
         "executed_sql": sql,
         "result_columns": columns,
         "rows": sample_rows,
@@ -3613,6 +3620,7 @@ def _execute_external_target_sql(
         "segment_presentation": _external_segment_presentation(segment_composition, query_plan or {}),
         "campaign_context_nodes": [],
         "cardinality_diagnostic": cardinality_diagnostic,
+        "execution_sanity_validation": execution_sanity,
     }
 
 
@@ -4001,23 +4009,33 @@ def execute_target_sql(
     except Exception as exc:
         return _database_execution_error("postgres_execution_failed", exc)
 
-    # 2) 조회 결과(멤버 목록)를 로컬 메타데이터 DB에 저장한다(쓰기).
-    audience = _save_target_audience(
-        target_sql,
-        columns,
-        member_rows,
-        persist_targeting=persist_targeting,
-        audience_ttl_days=audience_ttl_days,
-        prompt=prompt or "",
-        query_parser=query_parser or "rules",
-        request_options=request_options or {},
-        query_plan=query_plan or {},
+    execution_sanity = analyze_execution_result(
+        [dict(row) for row in rows], columns,
+        analytical_intent=(query_plan or {}).get("analytical_intent"),
+        join_quality=(query_plan or {}).get("join_quality"),
+    )
+    # Validation precedes persistence: an executable but semantically invalid
+    # result must never be materialized as a target audience.
+    audience = (
+        _save_target_audience(
+            target_sql,
+            columns,
+            member_rows,
+            persist_targeting=persist_targeting,
+            audience_ttl_days=audience_ttl_days,
+            prompt=prompt or "",
+            query_parser=query_parser or "rules",
+            request_options=request_options or {},
+            query_plan=query_plan or {},
+        )
+        if execution_sanity["valid"]
+        else _audience_skipped("execution_sanity_failed")
     )
 
     return {
-        "is_success": True,
+        "is_success": execution_sanity["valid"],
         "mode": "postgres_read_only",
-        "failure_reason": None,
+        "failure_reason": None if execution_sanity["valid"] else execution_sanity["issues"][0]["reason_code"],
         "executed_sql": target_sql,
         "result_columns": columns,
         "rows": rows,
@@ -4027,6 +4045,7 @@ def execute_target_sql(
         "segment_composition": segment_composition,
         "segment_presentation": _segment_presentation(segment_composition, query_plan or {}),
         "campaign_context_nodes": campaign_context_nodes,
+        "execution_sanity_validation": execution_sanity,
     }
 
 

@@ -130,22 +130,30 @@ def _alias_map(sql: str, column_types: dict[str, dict[str, str]]) -> dict[str, s
     return aliases
 
 
-def load_join_key_registry(schema_path: Path = DEFAULT_SCHEMA_PATH) -> dict[tuple[str, str, str], set[str]]:
+class RelationshipRegistry(dict[tuple[str, str, str], set[str]]):
+    """Verified join pairs plus the small subset with an approved key transform."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cast_pairs: set[tuple[str, str, str, str]] = set()
+
+
+def load_join_key_registry(schema_path: Path = DEFAULT_SCHEMA_PATH) -> RelationshipRegistry:
     """검증된(verified) 조인 관계를 {(출발테이블, 출발컬럼, 상대테이블): {허용 상대컬럼}} 으로 만든다.
 
     schema_catalog.foreign_keys 는 build_table_relationships.py 가 큐레이션한 관계다(CRMDW 는 선언 FK 가
     없어 사람이 확인한 것만 verified 로 들어간다). 양방향으로 등록해 조인을 어느 쪽으로 쓰든 잡는다.
     confidence=verified 만 강제한다 — inferred/human_hint 까지 강제하면 추정이 틀렸을 때 정상 SQL 을 막는다."""
     if not schema_path.exists():
-        return {}
+        return RelationshipRegistry()
     try:
         payload = json.loads(schema_path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
-        return {}
+        return RelationshipRegistry()
     tables = payload.get("tables", {})
     if not isinstance(tables, dict):
-        return {}
-    registry: dict[tuple[str, str, str], set[str]] = {}
+        return RelationshipRegistry()
+    registry = RelationshipRegistry()
 
     def register(from_table: str, from_column: str, to_table: str, to_column: str) -> None:
         registry.setdefault((from_table, from_column, to_table), set()).add(to_column)
@@ -165,6 +173,9 @@ def load_join_key_registry(schema_path: Path = DEFAULT_SCHEMA_PATH) -> dict[tupl
             source_column, target_column = str(columns[0]).casefold(), str(target_columns[0]).casefold()
             register(source_table, source_column, target_table, target_column)
             register(target_table, target_column, source_table, source_column)
+            if isinstance(fk.get("join_cast"), dict):
+                registry.cast_pairs.add((source_table, source_column, target_table, target_column))
+                registry.cast_pairs.add((target_table, target_column, source_table, source_column))
     return registry
 
 
@@ -172,6 +183,8 @@ def validate_join_keys(
     sql: str,
     column_types: dict[str, dict[str, str]],
     join_registry: dict[tuple[str, str, str], set[str]] | None = None,
+    *,
+    strict_relationships: bool = False,
 ) -> dict[str, Any]:
     """등호 조인이 (1) 타입군이 맞는지 (2) 검증된 조인키를 쓰는지 검사한다(위반은 error).
 
@@ -185,44 +198,98 @@ def validate_join_keys(
     issues: list[dict[str, str]] = []
     aliases = _alias_map(sql, column_types)
     registry = join_registry or {}
-    for match in _EQUI_JOIN_PATTERN.finditer(sql):
-        left_alias, left_column, right_alias, right_column = (part.casefold() for part in match.groups())
+    cast_pairs = getattr(join_registry, "cast_pairs", set()) if join_registry is not None else set()
+
+    def add(code: str, reason_code: str, message: str) -> None:
+        key = (code, message)
+        if any((item.get("code"), item.get("message")) == key for item in issues):
+            return
+        issues.append({"code": code, "reason_code": reason_code, "severity": "error", "message": message})
+
+    comparisons: list[tuple[str, str, str, str, bool]] = []
+    try:
+        root = sqlglot.parse_one(sql, read="tsql")
+    except Exception:
+        root = None
+    if root is not None:
+        for equality in root.find_all(exp.EQ):
+            left, right = equality.this, equality.expression
+            left_columns, right_columns = list(left.find_all(exp.Column)), list(right.find_all(exp.Column))
+            if len(left_columns) != 1 or len(right_columns) != 1:
+                continue
+            left_ref, right_ref = left_columns[0], right_columns[0]
+            if not left_ref.table or not right_ref.table:
+                continue
+            left_alias, left_column = left_ref.table.casefold(), left_ref.name.casefold()
+            right_alias, right_column = right_ref.table.casefold(), right_ref.name.casefold()
+            left_table, right_table = aliases.get(left_alias), aliases.get(right_alias)
+            if not left_table or not right_table or left_table == right_table:
+                continue
+            casted = any(
+                node.key.casefold() in {"cast", "trycast", "convert"}
+                for side in (left, right) for node in side.walk()
+            )
+            comparisons.append((left_alias, left_column, right_alias, right_column, casted))
+    else:
+        comparisons.extend((*match.groups(), False) for match in _EQUI_JOIN_PATTERN.finditer(sql))
+
+    for raw_left_alias, raw_left_column, raw_right_alias, raw_right_column, casted in comparisons:
+        left_alias, left_column, right_alias, right_column = (
+            str(part).casefold() for part in (raw_left_alias, raw_left_column, raw_right_alias, raw_right_column)
+        )
         left_table, right_table = aliases.get(left_alias), aliases.get(right_alias)
         if not left_table or not right_table:
             continue
         left_family = column_types.get(left_table, {}).get(left_column)
         right_family = column_types.get(right_table, {}).get(right_column)
-        if left_family and right_family and left_family != right_family:
-            issues.append(
-                {
-                    "code": "join_key_type_mismatch",
-                    "severity": "error",
-                    "message": (
-                        f"조인키 타입 불일치: {left_table.upper()}.{left_column.upper()}({left_family}) = "
-                        f"{right_table.upper()}.{right_column.upper()}({right_family})"
-                    ),
-                }
+        exact_pair = right_column in registry.get((left_table, left_column, right_table), set())
+        approved_cast = casted and (
+            (left_table, left_column, right_table, right_column) in cast_pairs
+            or (right_table, right_column, left_table, left_column) in cast_pairs
+        )
+        if casted and not approved_cast:
+            add(
+                "unverified_join_cast", "UNVERIFIED_JOIN_CAST",
+                f"관계 메타데이터에 없는 CAST 조인: {left_table.upper()}.{left_column.upper()} = "
+                f"{right_table.upper()}.{right_column.upper()}",
             )
-            continue
+        if left_family and right_family and left_family != right_family and not approved_cast:
+            add(
+                "join_key_type_mismatch", "JOIN_TYPE_MISMATCH",
+                f"조인키 타입 불일치: {left_table.upper()}.{left_column.upper()}({left_family}) = "
+                f"{right_table.upper()}.{right_column.upper()}({right_family})",
+            )
         # 한쪽이라도 상대 테이블에 대한 검증된 조인키를 갖고 있으면 그 컬럼으로만 조인해야 한다.
+        found_expected = False
         for table, column, other_table, other_column in (
             (left_table, left_column, right_table, right_column),
             (right_table, right_column, left_table, left_column),
         ):
             expected = registry.get((table, column, other_table))
             if expected and other_column not in expected:
-                issues.append(
-                    {
-                        "code": "join_key_not_verified",
-                        "severity": "error",
-                        "message": (
-                            f"검증되지 않은 조인키: {table.upper()}.{column.upper()} 는 "
-                            f"{other_table.upper()}.{'/'.join(sorted(name.upper() for name in expected))} 와 조인해야 한다"
-                            f"({other_table.upper()}.{other_column.upper()} 아님)"
-                        ),
-                    }
+                add(
+                    "join_key_not_verified", "JOIN_KEY_MISMATCH",
+                    f"검증되지 않은 조인키: {table.upper()}.{column.upper()} 는 "
+                    f"{other_table.upper()}.{'/'.join(sorted(name.upper() for name in expected))} 와 조인해야 한다"
+                    f"({other_table.upper()}.{other_column.upper()} 아님)",
                 )
                 break
+            if expected and other_column in expected:
+                found_expected = True
+        if strict_relationships and not exact_pair and not found_expected:
+            table_pair_registered = any(
+                from_table == left_table and to_table == right_table
+                for from_table, _from_column, to_table in registry
+            ) or any(
+                from_table == right_table and to_table == left_table
+                for from_table, _from_column, to_table in registry
+            )
+            add(
+                "join_key_not_verified" if table_pair_registered else "unregistered_relationship",
+                "JOIN_KEY_MISMATCH" if table_pair_registered else "UNREGISTERED_RELATIONSHIP",
+                f"검증된 관계 그래프에 없는 조인: {left_table.upper()}.{left_column.upper()} = "
+                f"{right_table.upper()}.{right_column.upper()}",
+            )
     return {"is_valid": not issues, "issues": issues}
 
 

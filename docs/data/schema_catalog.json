@@ -1899,6 +1899,23 @@
       "foreign_keys": [
         {
           "columns": [
+            "MBR_NO"
+          ],
+          "references": {
+            "table": "CRM_MB_BASEINFO",
+            "columns": [
+              "MEMBER_NO"
+            ]
+          },
+          "confidence": "verified",
+          "source": "verified_cast:TRY_CAST_BIGINT",
+          "join_cast": {
+            "side": "child",
+            "function": "TRY_CAST_BIGINT"
+          }
+        },
+        {
+          "columns": [
             "CAMP_ID"
           ],
           "references": {
@@ -2098,6 +2115,23 @@
       "primary_key": [],
       "checks": [],
       "foreign_keys": [
+        {
+          "columns": [
+            "MBR_NO"
+          ],
+          "references": {
+            "table": "CRM_MB_BASEINFO",
+            "columns": [
+              "MEMBER_NO"
+            ]
+          },
+          "confidence": "verified",
+          "source": "verified_cast:TRY_CAST_BIGINT",
+          "join_cast": {
+            "side": "child",
+            "function": "TRY_CAST_BIGINT"
+          }
+        },
         {
           "columns": [
             "CAMP_ID"

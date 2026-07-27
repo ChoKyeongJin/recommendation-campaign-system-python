@@ -38,6 +38,10 @@ RELATIONSHIPS: list[tuple[str, list[str], str, list[str], str, str]] = [
     # 장바구니: CART_ID 가 회원 문자열키(MEMBER_ID)에 대응(빌더 조인 관례)
     ("ODS_MALL_OMS_CART", ["CART_ID"], "CRM_MB_BASEINFO", ["MEMBER_ID"], "verified", "sql_builder:cart_targets"),
     ("ODS_MALL_OMS_CART", ["PRODUCT_ID"], "CRM_CM_PRODUCT", ["PRODUCT_ID"], "verified", "sql_builder:cart_dimension_targets"),
+    # 캠페인 회원번호는 문자열이지만 숫자형 회원 PK의 문자 표현이다. 이 두 관계만 메타데이터에
+    # 명시된 TRY_CAST(BIGINT)를 허용한다. 다른 CAST 조인은 관계 우회로 간주해 차단한다.
+    ("MCS_CAMP_MBR_RSPN_FT", ["MBR_NO"], "CRM_MB_BASEINFO", ["MEMBER_NO"], "verified", "verified_cast:TRY_CAST_BIGINT"),
+    ("Z_CAMP_MBR", ["MBR_NO"], "CRM_MB_BASEINFO", ["MEMBER_NO"], "verified", "verified_cast:TRY_CAST_BIGINT"),
     # --- 회원 → 공통 마스터(기존 join_hints) ---
     ("CRM_MB_BASEINFO", ["ZIP_CD"], "CRM_CM_ADDRESS", ["ZIP_CODE"], "human_hint", "join_hint"),
     ("CRM_MB_BASEINFO", ["REG_OFFSHOP_ID"], "CRM_CM_OFFSHOP", ["OFFSHOP_ID"], "human_hint", "join_hint"),
@@ -85,14 +89,18 @@ def apply_relationships(catalog: dict[str, Any]) -> int:
     tables = catalog["tables"]
     grouped: dict[str, list[dict[str, Any]]] = {}
     for child, child_cols, parent, parent_cols, confidence, source in RELATIONSHIPS:
-        grouped.setdefault(child, []).append(
-            {
+        relationship = {
                 "columns": child_cols,
                 "references": {"table": parent, "columns": parent_cols},
                 "confidence": confidence,
                 "source": source,
             }
-        )
+        if source.startswith("verified_cast:"):
+            relationship["join_cast"] = {
+                "side": "child",
+                "function": source.split(":", 1)[1],
+            }
+        grouped.setdefault(child, []).append(relationship)
     for child, foreign_keys in grouped.items():
         tables[child]["foreign_keys"] = foreign_keys
     return len(RELATIONSHIPS)

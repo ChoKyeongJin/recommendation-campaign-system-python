@@ -13,6 +13,8 @@ erDiagram
     CRM_MB_BASEINFO ||--o{ CRM_MB_MEMBERBUYPROPERTY : "MEMBER_NO"
     CRM_MB_BASEINFO ||--o{ ODS_MALL_OMS_CART : "CART_ID"
     CRM_CM_PRODUCT ||--o{ ODS_MALL_OMS_CART : "PRODUCT_ID"
+    CRM_MB_BASEINFO ||--o{ MCS_CAMP_MBR_RSPN_FT : "MBR_NO"
+    CRM_MB_BASEINFO ||--o{ Z_CAMP_MBR : "MBR_NO"
     CRM_CM_ADDRESS ||--o{ CRM_MB_BASEINFO : "ZIP_CD"
     CRM_CM_OFFSHOP ||--o{ CRM_MB_BASEINFO : "REG_OFFSHOP_ID"
     CRM_SL_ORDERHEADERMALL ||--o{ CRM_SL_ORDERDETAILMALL : "ORDER_ID"
@@ -34,6 +36,8 @@ erDiagram
 | `CRM_MB_MEMBERBUYPROPERTY.MEMBER_NO` | → | `CRM_MB_BASEINFO.MEMBER_NO` | inferred | shared_key:MEMBER_NO |
 | `ODS_MALL_OMS_CART.CART_ID` | → | `CRM_MB_BASEINFO.MEMBER_ID` | verified | sql_builder:cart_targets |
 | `ODS_MALL_OMS_CART.PRODUCT_ID` | → | `CRM_CM_PRODUCT.PRODUCT_ID` | verified | sql_builder:cart_dimension_targets |
+| `MCS_CAMP_MBR_RSPN_FT.MBR_NO` | → | `CRM_MB_BASEINFO.MEMBER_NO` | verified | verified_cast:TRY_CAST_BIGINT |
+| `Z_CAMP_MBR.MBR_NO` | → | `CRM_MB_BASEINFO.MEMBER_NO` | verified | verified_cast:TRY_CAST_BIGINT |
 | `CRM_MB_BASEINFO.ZIP_CD` | → | `CRM_CM_ADDRESS.ZIP_CODE` | human_hint | join_hint |
 | `CRM_MB_BASEINFO.REG_OFFSHOP_ID` | → | `CRM_CM_OFFSHOP.OFFSHOP_ID` | human_hint | join_hint |
 | `CRM_SL_ORDERDETAILMALL.ORDER_ID` | → | `CRM_SL_ORDERHEADERMALL.ORDER_ID` | verified | live_join_check:200of200 |

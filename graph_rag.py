@@ -77,6 +77,8 @@ from query_structurer import (
     call_query_planner,
 )
 from query_structurer.prompt import PLANNER_STRUCTURED_QUERY_RULES
+from query_semantics import classify_query_tokens, extract_extreme_semantics, is_non_entity_candidate
+from data_quality import validate_metric_profile
 
 
 DEFAULT_DATA_PATH = Path("docs/data/rag_knowledge_base.json")
@@ -982,6 +984,15 @@ _PURCHASE_OBJECT_PATTERN = re.compile(
     r"(?:구매|구입)\s*(?:한|했|했던|하신|하였|이력|내역|경험|고객|회원|유저|구매자)",
     re.IGNORECASE,
 )
+# Product followed by an explicit quantity/frequency before the purchase verb:
+# ``기저귀를 2개 이상 구매``.  The ordinary immediate-object pattern would
+# otherwise capture ``이상`` as the product and silently lose the real scope.
+_PURCHASE_OBJECT_QUANTIFIED_PATTERN = re.compile(
+    r"(?P<object>[0-9A-Za-z가-힣_+\-]{1,40})\s*(?:을|를)\s*"
+    r"\d+(?:\.\d+)?\s*(?:개|회|번|건|장|종|가지|종류|품목|매|권)?\s*"
+    r"(?:이상|이하|미만|초과|정확히)?\s*(?:구매|구입|주문)",
+    re.IGNORECASE,
+)
 
 # 상품이 아닌 일반 명사(예: "알로루 브랜드 '상품' 구매한")가 구매 동사 바로 앞에 오면, 위 단일 토큰
 # 캡처가 그 일반명사를 상품명으로 오인해 LIKE '%상품%' 같은 무의미하게 넓은 매칭을 만든다.
@@ -1820,6 +1831,13 @@ def build_query_plan(
         base.setdefault("parser", {})["multi_query_variants"] = multi_query_variants
     if structured_query is not None:
         base["structured_query"] = structured_query.to_dict()
+    # Entity extraction and analytical routing consume the same deterministic
+    # token-role view.  Exposing it on the plan also makes silent role drift
+    # observable in traces and tests.
+    base["query_semantics"] = {
+        "tokens": classify_query_tokens(query),
+        "extreme": extract_extreme_semantics(query),
+    }
     # 집계 출력은 회원 목록보다 우선한다. 규칙/LLM 파서가 VIP·여성·캠페인·쿠폰 같은 수식어를
     # 오디언스 조건으로 먼저 잡았더라도, 등록된 수치 지표와 집계 함수/그룹 축이 확인되면 별도의
     # 분석 계약으로 승격한다. 지표·차원·필터 물리 매핑은 analytics_registry.json이 단일 소스다.
@@ -3808,7 +3826,7 @@ def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> No
         target_user["purchase_object"] = multi_objects[0]["value"]
         target_user["purchase_object_kind"] = multi_objects[0]["kind"]
         return
-    match = _PURCHASE_OBJECT_PATTERN.search(query)
+    match = _PURCHASE_OBJECT_QUANTIFIED_PATTERN.search(query) or _PURCHASE_OBJECT_PATTERN.search(query)
     purchase_object = _sanitize_purchase_object(match.group("object")) if match else None
     # 사용자가 '브랜드'/'상품(제품)명'을 명시했으면 매칭 컬럼을 BRAND_NAME/PRODUCT_NAME 으로 좁힐
     # 근거가 된다(아래 kind 마킹). 애매하게 상품어만 말하면 kind 없이 광역 6컬럼 LIKE 를 유지한다.
@@ -8475,6 +8493,8 @@ def _schema_retrieval_query(text: str) -> str:
 
 
 def _sanitize_purchase_object(value: str) -> str | None:
+    if is_non_entity_candidate(value):
+        return None
     tokens = []
     for token in re.findall(r"[0-9A-Za-z가-힣_+\-]+", value.casefold()):
         stripped_token = re.sub(r"(?:을|를)$", "", token)
@@ -8491,6 +8511,9 @@ def _sanitize_purchase_object(value: str) -> str | None:
             # 전체/전부/모든/모두/평균 같은 전칭·집계 수식어는 상품명이 아니다. '전체 구매 회원 평균보다 높은'
             # 의 '전체'가 PRODUCT_NAME LIKE N'%전체%' 로 새어 그럴듯한 오답 SQL 이 나오던 것을 막는다.
             "전체", "전부", "모든", "모두", "평균", "평균값",
+            # 비교·최상급·정렬 표현은 상품/브랜드/카테고리명이 아니라 query semantics가 소유한다.
+            "가장", "제일", "적게", "적은", "높게", "낮게", "높은", "낮은", "큰", "작은",
+            "최대", "최소", "최고", "최저", "상위", "하위", "마지막",
         }:
             continue
         # 날짜/기간 토큰은 상품이 아니라 구매 날짜 조건이므로 상품명 후보에서 뺀다(→ purchase_date 가 담당).
@@ -12163,13 +12186,25 @@ def _validate_sql_delivery_contract(
 
 def _failed_sql_confidence(reason: str | None, *, execution_error: bool = False) -> dict[str, Any]:
     """Return a renderer-compatible low confidence payload after final validation."""
-    score = 0 if execution_error else 20
+    normalized = str(reason or "").upper()
+    zero_score_reasons = {
+        "UNREGISTERED_RELATIONSHIP", "JOIN_KEY_MISMATCH", "JOIN_TYPE_MISMATCH",
+        "UNVERIFIED_JOIN_CAST", "ZERO_JOIN_MATCH_RATE", "UNUSABLE_METRIC_COLUMN",
+        "METRIC_ALL_NULL", "METRIC_UNAVAILABLE_FOR_POPULATION", "METRIC_MISMATCH",
+        "METRIC_UNIT_MISMATCH", "AGGREGATION_MISMATCH", "TOP_N_MISMATCH",
+    }
+    if execution_error or normalized in zero_score_reasons:
+        score = 0
+    elif normalized in {"SEMANTIC_VERIFICATION_FAILED", "SEMANTIC_MISMATCH"}:
+        score = 10
+    else:
+        score = 20
     return {
         "overall_score": score,
         "level": "낮음",
         "dimensions": {
             "request_sql_match": 0,
-            "schema_match": 0 if execution_error else 20,
+            "schema_match": 0 if score == 0 else 20,
             "policy_similarity": 0,
             "clarity": 20,
             "static_validation": 0,
@@ -12318,7 +12353,12 @@ def build_sql_result(
         # 조인키 검증: 타입군이 다른 등호 조인(nvarchar↔bigint)은 실행 자체가 실패하고, 타입이 같아도
         # 검증된 관계(schema_catalog.foreign_keys, confidence=verified)와 다른 컬럼에 붙인 조인은 조용히
         # 0건이 된다. LLM 폴백이 CART_ID=MEMBER_NO 를 지어내도 기존 가드는 통과시켰다(올바른 짝은 MEMBER_ID).
-        join_keys = validate_join_keys(candidate["sql"], column_types, join_key_registry)
+        join_keys = validate_join_keys(
+            candidate["sql"], column_types, join_key_registry,
+            # Deterministic builders render joins in application code. LLM candidates are not
+            # allowed to invent a relationship merely because both columns happen to share a type.
+            strict_relationships=candidate.get("source") == "llm_generated",
+        )
         if join_keys["issues"]:
             validation = {**validation, "issues": [*validation["issues"], *join_keys["issues"]], "is_valid": False}
         # 집계·grain 정합성 검사: 집계 함수를 WHERE 에 쓰거나(집계 전/후 필터 미분리), 집계·비집계
@@ -12386,6 +12426,13 @@ def build_sql_result(
                     for issue in intent_sql_contract.get("issues", [])
                 ]
                 validation = {**validation, "issues": [*validation["issues"], *contract_issues], "is_valid": False}
+        metric_profile_validation = validate_metric_profile(analytical_intent, schema_path)
+        if not metric_profile_validation.get("valid", True):
+            validation = {
+                **validation,
+                "issues": [*validation["issues"], *metric_profile_validation.get("issues", [])],
+                "is_valid": False,
+            }
         validated_candidates.append(
             {
                 **candidate,
@@ -12396,6 +12443,7 @@ def build_sql_result(
                 "join_keys": join_keys,
                 "aggregation_validation": aggregation_validation,
                 "intent_sql_contract": intent_sql_contract,
+                "metric_profile_validation": metric_profile_validation,
                 "analytics_warnings": analytics_warnings,
                 "delivery_validation": delivery_validation,
                 "is_eligible": (
@@ -12429,6 +12477,11 @@ def build_sql_result(
             failure_reason = "intent_sql_contract_failed"
         elif selected.get("aggregation_validation", {}).get("ran") is not False and not selected.get("aggregation_validation", {}).get("valid", True):
             failure_reason = "aggregation_validation_failed"
+        elif not selected.get("metric_profile_validation", {}).get("valid", True):
+            failure_reason = selected["metric_profile_validation"].get("reason_code") or "UNUSABLE_METRIC_COLUMN"
+        elif not selected.get("join_keys", {}).get("is_valid", True):
+            first_join_issue = next(iter(selected["join_keys"].get("issues") or []), {})
+            failure_reason = first_join_issue.get("reason_code") or "join_validation_failed"
         elif not selected["validation"]["is_valid"]:
             failure_reason = "sql_guard_failed"
         elif not selected["coverage"]["is_satisfied"]:
@@ -12645,6 +12698,7 @@ def build_sql_result(
         "aggregation_validation": (selected or {}).get("aggregation_validation", {"ran": False}),
         # QueryIntent의 기대 결과 shape·집계 함수·지표 컬럼·랭킹 방향/TOP 1 계약 검증.
         "intent_sql_contract": (selected or {}).get("intent_sql_contract", {"ran": False}),
+        "metric_profile_validation": (selected or {}).get("metric_profile_validation", {"ran": False, "valid": True}),
         # 쿼리 성능 튜닝 자문(비차단): {findings, recommended_indexes}. 출고 SQL 이 없으면 빈 결과.
         "query_tuning": query_tuning,
         # ③ 결정론 드롭 경고: 원문 신호가 plan 에 안 잡힌 조건 목록(비차단 자문).
@@ -15715,6 +15769,42 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
     left = str(join.get("left", _member_dialect().cast_bigint(f"{alias}.{member_col}"))).replace(f"{alias}.", "O.")
     right = str(join.get("right", "B.MEMBER_NO"))
 
+    # A campaign-frequency predicate and ordinary order aggregates may coexist
+    # (for example campaign response >= K AND purchase count >= N).  They have
+    # different fact grains, so compile each order metric as its own member-key
+    # subquery and join the already-aggregated member sets.  Dropping either
+    # condition would turn an AND request into a broader audience.
+    order_aggregate_joins: list[str] = []
+    aggregate_config = _aggregate_targets_config()
+    aggregate_metrics = aggregate_config.get("metrics", {})
+    aggregate_conditions = [
+        condition for condition in target_user.get("aggregate_conditions") or []
+        if isinstance(condition, dict)
+        and isinstance(aggregate_metrics.get(condition.get("metric_id")), dict)
+        and condition.get("operator") in {"=", ">", ">=", "<", "<="}
+        and isinstance(condition.get("threshold"), (int, float))
+    ]
+    for index, condition in enumerate(aggregate_conditions):
+        aggregate_alias = f"CAGG{index}"
+        aggregate_subquery = _aggregate_member_subquery(
+            aggregate_config,
+            aggregate_metrics[condition["metric_id"]],
+            condition["operator"],
+            condition["threshold"],
+            condition.get("window_days"),
+            aggregate_alias,
+            purchase_date=target_user.get("purchase_date"),
+            aggregation_scope=condition.get("aggregation_scope", "per_member"),
+            scope=condition.get("scope"),
+        )
+        if aggregate_subquery is None:
+            return None
+        aggregate_join_column = aggregate_config.get("join_column", "MEMBER_NO")
+        order_aggregate_joins.append(
+            f"     INNER JOIN {aggregate_subquery} ON B.{aggregate_join_column} = "
+            f"{aggregate_alias}.{aggregate_join_column}"
+        )
+
     compiled = compile_member_target_conditions(query_plan)
     where_clauses = list(compiled["predicates"])
     if not compiled["forces_state"]:
@@ -15744,6 +15834,7 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
             "SELECT " + ", ".join(select_columns),
             _member_from_clause(),
             f"     INNER JOIN {subquery} ON {left} = {right}",
+            *order_aggregate_joins,
             "WHERE " + "\n  AND ".join(_unique_strings(where_clauses)),
         ]
     )
@@ -15763,8 +15854,11 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
         _template_tables(sql),
         "sql_template",
     )
-    candidate["dropped_conditions"] = compiled["unsupported"]
-    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in compiled["unsupported"]]
+    covered_paths = {"target_user.aggregate_conditions"} if aggregate_conditions else set()
+    candidate["dropped_conditions"] = [path for path in compiled["unsupported"] if path not in covered_paths]
+    candidate["dropped_condition_labels"] = [
+        _unsupported_condition_label(path) for path in candidate["dropped_conditions"]
+    ]
     return candidate
 
 

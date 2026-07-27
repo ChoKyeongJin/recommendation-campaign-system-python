@@ -28,9 +28,23 @@ _TARGETING_COMPARISON_RE = re.compile(
     r"상위|하위|높은|낮은|많은|적은)"
 )
 _RECENT_DAYS_RE = re.compile(r"최근\s*(\d+)\s*일(?:간|동안|이내)?")
+_RECENT_WINDOW_RE = re.compile(r"최근\s*\d+\s*(?:일|주|개월|달|년)(?:간|동안|이내)?")
 _MEMBER_TARGET_RE = re.compile(r"회원|고객|사용자")
 _RANKING_HIGH_RE = re.compile(r"가장\s*(?:많이|많은)|최다|최고")
 _RANKING_LOW_RE = re.compile(r"가장\s*(?:적게|적은)|최소|최저")
+# A value followed by a member noun is an audience predicate (``0원인 회원``),
+# not a request for a scalar aggregate merely because the phrase also says
+# ``합계``/``건수``.  The legacy targeting compiler owns these predicates.
+_MEMBER_VALUE_PREDICATE_RE = re.compile(
+    r"\d[\d,]*(?:\.\d+)?\s*(?:원|건|회|번|개|명)?\s*"
+    r"(?:인|인\s*회원|인\s*고객|이거나|거나|없거나)"
+)
+_MEMBER_METRIC_COMPARISON_RE = re.compile(r"보다|초과한|미만인|이상인|이하인|같은")
+_MEMBER_NUMERIC_PREDICATE_RE = re.compile(
+    r"\d[\d,]*(?:\.\d+)?\s*(?:원|건|회|번|개|명)?[^.!?]{0,30}"
+    r"(?:이상|이하|초과|미만|사이|범위|인\s*(?:회원|고객|사용자))"
+)
+_EXPLICIT_MEMBER_LIMIT_RE = re.compile(r"\b(\d[\d,]*)\s*명")
 
 SUPPORTED_QUERY_TYPES = frozenset({"aggregate", "grouped_aggregate", "ranking", "member_selection"})
 SUPPORTED_RESULT_SHAPES = frozenset({"scalar", "grouped_rows", "single_member", "member_rows"})
@@ -146,6 +160,33 @@ def analyze_analytical_intent(
     function = _match_aggregate_function(compact, registry)
     dimensions = _match_dimensions(compact, registry)
     ranking_direction = _ranking_direction(query)
+
+    # Explicit top-N member requests belong to the existing configurable
+    # audience-ranking path.  The analytical path below owns only the default
+    # arg-extreme contract (one row).  This preserves "가장 많은 회원 100명"
+    # while preventing an unrequested TOP 100 for a singular extreme.
+    explicit_member_limit = _EXPLICIT_MEMBER_LIMIT_RE.search(query)
+    if ranking_direction and explicit_member_limit and int(explicit_member_limit.group(1).replace(",", "")) > 1:
+        return None
+
+    # ``최근 30일 구매한 회원`` uses 최근 as a date-window adjective.  It
+    # must not become MAX when no explicit metric is present.  Longer extreme
+    # phrases such as ``가장 최근 구매일`` remain MAX through the registry.
+    if _RECENT_WINDOW_RE.search(query) and function == "MAX":
+        function = None
+    if function == "MAX" and metric is None and "최근" in query and "가장 최근" not in query:
+        function = None
+
+    # Member-valued thresholds are selection predicates.  Ranking is checked
+    # first because ``가장 많은 회원`` is genuinely analytical.
+    if ranking_direction is None and _MEMBER_TARGET_RE.search(query) and _MEMBER_VALUE_PREDICATE_RE.search(query):
+        return None
+    if ranking_direction is None and _MEMBER_TARGET_RE.search(query) and _TARGETING_COMPARISON_RE.search(query):
+        return None
+    if ranking_direction is None and _MEMBER_TARGET_RE.search(query) and _MEMBER_METRIC_COMPARISON_RE.search(query):
+        return None
+    if ranking_direction is None and _MEMBER_TARGET_RE.search(query) and _MEMBER_NUMERIC_PREDICATE_RE.search(query):
+        return None
 
     aggregate_signal = bool(function or dimensions or _OUTPUT_ACTION_RE.search(query))
     if metric is None:
