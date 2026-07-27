@@ -5,6 +5,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import functools
+import hashlib
 import json
 import math
 import os
@@ -997,6 +998,105 @@ def _sql_semantic_verify_enabled() -> bool:
     대조하는 결정론 검증(coverage/intent_scope)으로는 못 잡는다 — plan 자체가 틀렸기 때문. 이 게이트만
     유일하게 **원문 NL 과 최종 SQL 을 직접 대조**해(어느 계층이 원인이든) 틀린 SQL 의 조용한 출고를 막는다."""
     return os.getenv("SQL_SEMANTIC_VERIFY", "true").casefold() not in {"0", "false", "off", "no"}
+
+
+def _semantic_validation_v2_mode() -> str:
+    """의미 검증 v2(AST 기반) 동작 모드(환경변수 SEMANTIC_VALIDATION_V2).
+
+    off(기본): 실행 안 함. shadow: 신규 검증을 병행 실행해 결과/차이를 sql_result 에 싣되(트레이스·로깅)
+    사용자 응답 판정은 기존 게이트를 그대로 쓴다. enforce: 신규 검증이 status='fail' 이면(구체 근거 있는
+    경우에만) 기존 게이트가 통과시킨 SQL 도 clarification 으로 전환한다. review 는 어느 모드에서도 차단하지
+    않는다(비차단 자문). 신규 파이프라인은 정상 SQL 오탐(false-fail) 억제가 목표라 기본은 안전한 shadow 이하다."""
+    mode = os.getenv("SEMANTIC_VALIDATION_V2", "off").strip().casefold()
+    return mode if mode in {"off", "shadow", "enforce"} else "off"
+
+
+def _run_semantic_validation_v2(
+    original_query: str,
+    sql: str,
+    query_plan: dict[str, Any],
+    dialect: str | None,
+    context_nodes: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """의미 검증 v2 를 shadow/enforce 모드로 실행한다(예외는 삼키지 않되 흐름은 깨지 않게 내부 폴백).
+
+    LLM 근거 탐색은 붙이지 않는다(규칙 우선, 결정론) — 신규 게이트의 가치는 규칙 기반 동치 판정이다."""
+    try:
+        import semantic_validation
+    except Exception as exc:  # noqa: BLE001 - 모듈/의존성(sqlglot) 부재 시 조용히 비활성
+        return {"ran": False, "error": f"import_failed:{type(exc).__name__}"}
+    evidence = _retrieved_evidence_fingerprints(context_nodes)
+    return semantic_validation.run_shadow_validation(
+        original_query, sql, query_plan, dialect=dialect, retrieved_evidence=evidence,
+        field_columns=_v2_field_columns(),
+        membership_tables=_v2_membership_tables(),
+        code_filter_values=frozenset(MEMBER_EQ_FILTERS.keys()),
+        lifecycle_columns=_v2_lifecycle_columns())
+
+
+def _v2_lifecycle_columns() -> dict[str, str]:
+    """lifecycle canonical 값 → 실제 코드 컬럼(값마다 다름: 등급/회원상태/수신동의 등). MEMBER_EQ_FILTERS 소유."""
+    out: dict[str, str] = {}
+    for canonical, (_category, column, _value) in MEMBER_EQ_FILTERS.items():
+        if isinstance(canonical, str) and isinstance(column, str):
+            out[canonical] = column
+    return out
+
+
+def _v2_field_columns() -> dict[str, str]:
+    """의미 검증 v2 스펙 빌더에 넘길 논리필드→실제 SQL 컬럼 매핑(범주형 값 확장 정렬용).
+
+    SQL 생성기와 같은 레지스트리(MEMBER_EQ_FILTERS·등급/로그인 컬럼)에서 뽑아 검증기가 생성기와 동일한
+    컬럼을 바라보게 한다(§7 근거 정합의 컬럼판). 'B.' 접두어는 매핑기가 short-field 로 비교하므로 그대로 둔다."""
+    columns: dict[str, str] = {}
+    for _canonical, (category, column, _value) in MEMBER_EQ_FILTERS.items():
+        if category == "gender" and "gender" not in columns:
+            columns["gender"] = column
+    try:
+        columns["lifecycle"] = _member_grade_column()
+    except Exception:  # noqa: BLE001 - 등급 컬럼 조회 실패는 치명적이지 않다(폴백은 값 접두어)
+        pass
+    login_cfg = _MEMBER_TARGET_FILTERS.get("recent_login_target")
+    login_col = (login_cfg or {}).get("column") if isinstance(login_cfg, dict) else None
+    columns["last_login"] = str(login_col or "LAST_LOGIN_DATE")
+    return columns
+
+
+def _v2_membership_tables() -> dict[str, str]:
+    """논리 팩트(orders/cart/campaign)→실제 테이블명. 생성기와 같은 레지스트리에서 뽑아 EXISTS/JOIN
+    매칭을 실제 테이블로 좁힌다(카트 테이블·주문 테이블·캠페인 반응 팩트)."""
+    tables: dict[str, str] = {}
+    try:
+        cart_cfg = _cart_targets_registry()
+        if isinstance(cart_cfg, dict) and cart_cfg.get("table"):
+            tables["cart"] = str(cart_cfg["table"])
+    except Exception:  # noqa: BLE001
+        pass
+    campaign_cfg = _MEMBER_TARGET_FILTERS.get("campaign_response_targets")
+    if isinstance(campaign_cfg, dict) and campaign_cfg.get("table"):
+        tables["campaign"] = str(campaign_cfg["table"])
+    # 주문(구매) 팩트는 몰 구매기준 헤더 테이블을 관례로 쓴다([[crmdw-order-tables]]).
+    tables.setdefault("orders", "CRM_SL_ORDERHEADERMALL")
+    return tables
+
+
+def _retrieved_evidence_fingerprints(context_nodes: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """§7 RAG 근거 고정: 생성에 사용한 context_nodes 를 {id, version, content_hash} 지문으로 남긴다.
+
+    검증기가 동일 근거를 참조할 수 있게 하는 최소 고정. version 이 없으면 '0', content_hash 는 요약 텍스트의
+    안정 해시(hashlib)로 채운다(민감정보는 넣지 않는다 — id/타입/버전/해시만)."""
+    out: list[dict[str, Any]] = []
+    for node in (context_nodes or [])[:50]:
+        if not isinstance(node, dict):
+            continue
+        node_id = node.get("id") or node.get("node_id") or node.get("term_id")
+        if not node_id:
+            continue
+        version = str(node.get("version") or node.get("schema_version") or "0")
+        basis = str(node.get("content") or node.get("text") or node.get("description") or "")
+        content_hash = hashlib.sha1(basis.encode("utf-8")).hexdigest()[:12] if basis else ""
+        out.append({"id": str(node_id), "version": version, "content_hash": content_hash})
+    return out
 
 
 # 수신동의 신호(게이트 비교용) 사람이 읽는 라벨. canonical:극성(+동의/-거부) → 라벨.
@@ -10762,6 +10862,34 @@ def build_sql_result(
     else:
         semantic_invariants = {"ran": False, "ok": True, "issues": []}
 
+    # 의미 검증 v2(AST 기반, shadow/enforce): 규칙 기반 결과 집합 의미 판정. 기본 off. shadow 는 결과만
+    # 싣고(트레이스/로깅) 사용자 판정은 기존 게이트 유지. enforce 는 v2 가 구체 근거로 fail 일 때만 차단.
+    semantic_validation_v2: dict[str, Any] = {"ran": False}
+    v2_mode = _semantic_validation_v2_mode()
+    if v2_mode != "off" and selected_sql is not None:
+        semantic_validation_v2 = _run_semantic_validation_v2(
+            original_query or query, selected_sql, query_plan, target_dialect, context_nodes)
+        _write_rag_llm_log("semantic_validation_v2", {
+            "query": original_query or query, "mode": v2_mode,
+            "legacy_faithful": semantic_verification.get("faithful"),
+            "v2": semantic_validation_v2.get("result", {}).get("status") if semantic_validation_v2.get("ran") else None,
+            "v2_reason_codes": semantic_validation_v2.get("result", {}).get("reason_codes"),
+        })
+        if v2_mode == "enforce" and semantic_validation_v2.get("ran"):
+            v2_result = semantic_validation_v2.get("result", {})
+            if v2_result.get("status") == "fail":
+                failure_reason = "semantic_verification_failed"
+                v2_questions = [
+                    f"[의미검증] 요구 '{cid}' 이 SQL 에 반영되지 않았거나 반대로 반영된 것으로 보입니다. 확인해 주세요."
+                    for cid in (v2_result.get("missing_requirements") or [])
+                ] or ["[의미검증] 생성 SQL 이 원문 요구를 충족하지 못한 것으로 보입니다. 확인해 주세요."]
+                clarification_questions = _unique_strings([*clarification_questions, *v2_questions])
+                if selected_sql is not None:
+                    blocked_sql = selected_sql
+                selected_sql = None
+                target_connection = None
+                target_dialect = None
+
     return {
         "sql": selected_sql,
         # 의미 검증 등으로 출고가 막혔지만 생성은 된 SQL(표시 전용, 실행 안 함). 정상 출고 시엔 None.
@@ -10782,6 +10910,8 @@ def build_sql_result(
         "source_requirements": sql_result_requirements,
         # 결정론 의미 보존 불변식(SQL 생성 시 항상 실행): {ran, ok, issues}. LLM 게이트와 독립.
         "semantic_invariants": semantic_invariants,
+        # 의미 검증 v2(AST 기반, shadow/enforce): {ran, spec, result, legacy}. off 면 ran=False.
+        "semantic_validation_v2": semantic_validation_v2,
         # 쿼리 성능 튜닝 자문(비차단): {findings, recommended_indexes}. 출고 SQL 이 없으면 빈 결과.
         "query_tuning": query_tuning,
         # ③ 결정론 드롭 경고: 원문 신호가 plan 에 안 잡힌 조건 목록(비차단 자문).

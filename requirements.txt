@@ -1,5 +1,6 @@
 qdrant-client
 openai
+sqlglot
 fastapi
 uvicorn[standard]
 psycopg[binary]
