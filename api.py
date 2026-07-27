@@ -406,6 +406,7 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
         request_options=_target_sql_request_options(request),
         query_plan=result.get("query_plan", {}),
         cardinality_probe=api_response.get("cardinality_probe"),
+        aggregation_validation=api_response.get("aggregation_validation"),
     )
     database_elapsed_ms = _elapsed_ms(database_started_at)
     refresh_started_at = time.perf_counter()
@@ -515,6 +516,7 @@ def target_sql_trace(request: RetrieveTraceRequest) -> dict[str, Any]:
             request_options={},
             query_plan=result.get("query_plan", {}),
             cardinality_probe=api_response.get("cardinality_probe"),
+            aggregation_validation=api_response.get("aggregation_validation"),
         )
         trace["execution"] = {
             "is_success": execution.get("is_success"),
@@ -3933,11 +3935,15 @@ def execute_target_sql(
     request_options: dict[str, Any] | None = None,
     query_plan: dict[str, Any] | None = None,
     cardinality_probe: dict[str, Any] | None = None,
+    aggregation_validation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not execute_sql:
         return _database_execution_skipped("disabled_by_request")
     if not sql:
         return _database_execution_skipped("sql_result_missing")
+    if isinstance(aggregation_validation, dict) and aggregation_validation.get("ran") is not False:
+        if aggregation_validation.get("valid") is not True:
+            return _database_execution_skipped("aggregation_validation_failed")
 
     # 외부 실DB(CRMDW/CRMAN/quadmax_sdz) 대상이면 해당 DB에서 실행한다(카운트/샘플만).
     if target_connection in _EXTERNAL_TARGET_DBS:

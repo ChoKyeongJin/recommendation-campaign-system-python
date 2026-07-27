@@ -108,6 +108,12 @@ def merge_existing_annotations(schema: dict[str, Any], existing_schema: dict[str
     for table_name, table in schema["tables"].items():
         existing_table = existing_tables.get(table_name, {})
         table["description_llm"] = existing_table.get("description_llm", table["description_llm"])
+        for key in (
+            "logical_name", "row_grain", "expected_cardinality", "duplication_risk",
+            "history_table", "includes_deleted", "business_rules", "join_hints",
+        ):
+            if key in existing_table:
+                table[key] = existing_table[key]
 
         existing_columns = {
             column.get("name"): column
@@ -117,6 +123,12 @@ def merge_existing_annotations(schema: dict[str, Any], existing_schema: dict[str
         for column in table["columns"]:
             existing_column = existing_columns.get(column["name"], {})
             column["human_note"] = existing_column.get("human_note", column["human_note"])
+            for key in (
+                "logical_name", "unit", "code_column", "value_examples", "aggregatable",
+                "recommended_aggregations", "semantic_roles", "unique",
+            ):
+                if key in existing_column:
+                    column[key] = existing_column[key]
 
     return schema
 
@@ -312,6 +324,13 @@ def _build_catalog_from_rows(
                 "object_type": "view" if is_view else "table",
                 "description_llm": DEFAULT_OBJECT_DESCRIPTIONS.get(table_name, ""),
                 "description_source": "introspected_from_db",
+                "logical_name": None,
+                "row_grain": None,
+                "expected_cardinality": None,
+                "duplication_risk": None,
+                "history_table": None,
+                "includes_deleted": None,
+                "business_rules": {},
                 "columns": [],
                 "primary_key": primary_keys.get(table_name, []),
                 "checks": checks.get(table_name, []),
@@ -325,6 +344,7 @@ def _build_catalog_from_rows(
         default_expr = (row.get("default_expr") or "").lower()
         if "nextval(" in default_expr:
             column_type = SERIAL_TYPE_MAP.get(column_type, column_type)
+        column_metadata = _aggregation_column_metadata(column_name, column_type, column_name in primary_keys.get(table_name, []))
         table["columns"].append(
             {
                 "name": column_name,
@@ -334,6 +354,7 @@ def _build_catalog_from_rows(
                 "references": single_column_ref,
                 "important": column_name in IMPORTANT_COLUMN_NAMES,
                 "human_note": "",
+                **column_metadata,
             }
         )
 
@@ -347,6 +368,53 @@ def _build_catalog_from_rows(
             "ops_feedback": "add_missing_dictionary_terms_and_examples_from_logs",
         },
         "tables": tables,
+    }
+
+
+def _aggregation_column_metadata(column_name: str, column_type: str, primary_key: bool) -> dict[str, Any]:
+    """DB 구조에서 확정 가능한 최소 집계 메타데이터만 만든다.
+
+    업무 정의(매출 공식, 정상 주문 코드 등)는 추론하지 않는다. 이름 기반 semantic_roles는
+    후보 탐색용이며 ``metadata_source``로 명시해 검증된 업무 규칙과 구분한다.
+    """
+    name = column_name.casefold()
+    base_type = re.split(r"[\s(]", column_type.casefold(), maxsplit=1)[0]
+    numeric = base_type in {
+        "tinyint", "smallint", "integer", "int", "bigint", "decimal", "numeric",
+        "real", "float", "double", "money", "smallmoney",
+    }
+    roles: list[str] = []
+    if primary_key or name.endswith(("_id", "_no", "_key")):
+        roles.append("identifier")
+    if any(token in name for token in ("date", "_dt", "_at", "year", "month", "day")):
+        roles.append("date")
+    if any(token in name for token in ("amount", "_amt", "price", "revenue", "sales")):
+        roles.append("amount")
+    if any(token in name for token in ("quantity", "_qty")):
+        roles.append("quantity")
+    if any(token in name for token in ("status", "state")):
+        roles.append("status")
+    if any(token in name for token in ("_cd", "_code")):
+        roles.append("code")
+    aggregatable = numeric and "identifier" not in roles and "code" not in roles
+    if aggregatable:
+        recommended = ["sum", "avg", "min", "max"]
+    elif "identifier" in roles:
+        recommended = ["count_distinct"]
+    elif "date" in roles:
+        recommended = ["min", "max"]
+    else:
+        recommended = []
+    return {
+        "logical_name": None,
+        "unit": None,
+        "code_column": "code" in roles or "status" in roles,
+        "value_examples": [],
+        "aggregatable": aggregatable,
+        "recommended_aggregations": recommended,
+        "semantic_roles": roles,
+        "unique": primary_key,
+        "aggregation_metadata_source": "inferred_from_physical_schema",
     }
 
 

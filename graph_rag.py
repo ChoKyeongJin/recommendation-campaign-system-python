@@ -24,6 +24,13 @@ from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 
 from common_utils import elapsed_ms as _elapsed_ms
+from aggregation_requirements import (
+    SchemaMetadata,
+    aggregation_request_json_schema,
+    aggregation_retry_count,
+    parse_aggregation_request,
+    validate_aggregation_sql,
+)
 from formula_engine import DEFAULT_METRIC_LEXICON_PATH, compile_formula_ast, parse_computed_metrics_from_query, validate_formula_ast
 import logical_expression as _logic
 from set_expression_engine import parse_set_expressions_from_query
@@ -1865,6 +1872,7 @@ def classify_query_complexity(query_plan: dict[str, Any]) -> str:
         query_plan.get("member_metric_selection"),    # 잔액 등 회원 컬럼 선택(상위 N/N%/평균 대비)
         query_plan.get("purchase_count_ranking"),     # 기간 내 구매 랭킹(주문 집계)
         query_plan.get("computed_metrics"),           # 계산 지표
+        query_plan.get("aggregation_request"),        # 일반 집계 요구사항 IR
     )
     return "complex" if any(complex_signals) else "simple"
 
@@ -2579,11 +2587,12 @@ _QUERY_PLAN_TOOL = {
             "properties": {
                 "intent": {
                     "type": "string",
-                    "description": "recommend_campaign(발송/캠페인) | find_user_segment(조회) | unknown",
+                    "description": "recommend_campaign(발송/캠페인) | find_user_segment(고객 목록) | analyze_aggregation(집계 결과) | unknown",
                 },
                 "target_user": _build_target_user_tool_schema(),
                 "exclude": {"type": "object", "description": "제외 조건(gender/interests/lifecycle)"},
                 "campaign_constraints": {"type": "object", "description": "캠페인 목적/채널/혜택"},
+                "aggregation_request": aggregation_request_json_schema(),
                 **{
                     shape.name: shape.schema
                     for shape in targeting_ir.structured_slot_shapes()
@@ -2621,7 +2630,9 @@ def _try_llm_query_plan(
             },
             {
                 "role": "user",
-                "content": _query_plan_user_prompt(query, fallback_plan, prompt_dir, structured_query),
+                "content": _query_plan_user_prompt(
+                    query, fallback_plan, prompt_dir, structured_query, sql_schema=sql_schema
+                ),
             },
         ]
         _write_rag_llm_log(
@@ -2732,6 +2743,7 @@ def _query_plan_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> s
             "너는 캠페인 추천/NL2SQL Query Planner다.",
             "사용자 질문을 지정된 JSON 구조로만 반환한다.",
             "성별, 행동, 관심사, 채널, 혜택은 canonical 값만 사용한다.",
+            "집계 요청은 SQL보다 먼저 aggregation_request 구조로 만들고 스키마에 연결되지 않는 항목은 unresolvedFields에 기록한다.",
             "부정 조건은 target_user에 긍정 조건으로 바꾸지 말고 exclude에 넣는다.",
             "반드시 JSON object만 출력한다.",
         ]
@@ -2760,6 +2772,7 @@ def _query_plan_user_prompt(
     fallback_plan: dict[str, Any],
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
     structured_query: StructuredQuery | None = None,
+    sql_schema: Path = DEFAULT_SCHEMA_PATH,
 ) -> str:
     allowed = _llm_slot_allowed()
     allowed_values = {
@@ -2815,7 +2828,41 @@ def _query_plan_user_prompt(
         )
     if PLANNER_STRUCTURED_QUERY_RULES not in rendered:
         rendered += "\n\n" + PLANNER_STRUCTURED_QUERY_RULES
+    aggregation_schema = _aggregation_schema_prompt_context(query, sql_schema)
+    rendered += "\n\n[Aggregation Schema Metadata]\n" + json.dumps(
+        aggregation_schema, ensure_ascii=False, indent=2
+    )
     return rendered
+
+
+def _aggregation_schema_prompt_context(query: str, schema_path: Path, table_limit: int = 12) -> list[dict[str, Any]]:
+    """집계 플래너에 전달할 관련 테이블/컬럼 메타데이터를 토큰 점수로 제한한다."""
+    context = SchemaMetadata.load(schema_path).prompt_context()
+    terms = [token.casefold() for token in _query_tokens(query) if len(token.strip()) >= 2]
+
+    def score(table: dict[str, Any]) -> tuple[int, int]:
+        searchable = " ".join(
+            str(value or "")
+            for value in [table.get("table"), table.get("logicalName"), table.get("description")]
+        ).casefold()
+        searchable += " " + " ".join(
+            str(value or "")
+            for column in table.get("columns", [])
+            for value in [column.get("column"), column.get("logicalName"), column.get("meaning")]
+        ).casefold()
+        hits = sum(1 for term in terms if term in searchable)
+        important = sum(1 for column in table.get("columns", []) if column.get("important"))
+        return hits, important
+
+    selected = sorted(context, key=score, reverse=True)[:table_limit]
+    for table in selected:
+        columns = table.get("columns", [])
+        preferred = [
+            column for column in columns
+            if column.get("important") or column.get("aggregatable") or column.get("semanticRoles")
+        ]
+        table["columns"] = (preferred or columns)[:40]
+    return selected
 
 
 def _llm_slot_allowed() -> dict[str, Any]:
@@ -2894,7 +2941,7 @@ def _coerce_llm_query_plan(candidate: Any, fallback_plan: dict[str, Any], sql_sc
         return plan
 
     intent = candidate.get("intent")
-    if intent in {"recommend_campaign", "find_user_segment", "unknown"}:
+    if intent in {"recommend_campaign", "find_user_segment", "analyze_aggregation", "unknown"}:
         plan["intent"] = intent
 
     target_user = candidate.get("target_user") if isinstance(candidate.get("target_user"), dict) else {}
@@ -2932,6 +2979,15 @@ def _coerce_llm_query_plan(candidate: Any, fallback_plan: dict[str, Any], sql_sc
         coerced_metrics = [metric for metric in coerced_metrics if metric is not None]
         if coerced_metrics:
             plan["computed_metrics"] = coerced_metrics
+    aggregation_candidate = candidate.get("aggregation_request")
+    if isinstance(aggregation_candidate, dict):
+        aggregation_request, aggregation_errors = parse_aggregation_request(aggregation_candidate, sql_schema)
+        if aggregation_request is not None:
+            plan["aggregation_request"] = aggregation_request.to_dict()
+            plan["aggregation_request_validation"] = {
+                "valid": not aggregation_errors,
+                "errors": [error.to_dict() for error in aggregation_errors],
+            }
     set_expressions = candidate.get("set_expressions")
     if isinstance(set_expressions, list):
         coerced_set_expressions = [_coerce_llm_set_expression(expression) for expression in set_expressions]
@@ -10302,6 +10358,14 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
                     + " / ".join(f"{domain['label']} — {domain['supported']}" for domain in recognized) + ".")
         return f"입력에서 타겟 조건을 찾지 못해 SQL을 만들지 못했습니다. {_SUPPORTED_CONDITION_HINT} 같은 타겟 조건을 넣어 주세요."
 
+    if reason == "aggregation_validation_failed":
+        errors = selected.get("aggregation_validation", {}).get("errors", [])
+        detail = "; ".join(
+            str(error.get("message")) for error in errors
+            if isinstance(error, dict) and error.get("message")
+        )
+        return "생성된 SQL이 구조화된 집계 요구사항을 충족하지 않아 실행을 차단했습니다" + (f": {detail}" if detail else "") + "."
+
     if reason == "sql_guard_failed":
         issues = [issue for issue in selected.get("validation", {}).get("issues", []) if issue.get("severity") == "error"]
         disallowed = [issue.get("message", "").split(":")[-1].strip() for issue in issues if issue.get("code") == "table_not_allowed"]
@@ -10341,6 +10405,7 @@ _FAILURE_STAGE_SEQUENCE: tuple[dict[str, str], ...] = (
     {"code": "condition_recognition", "label": "타겟 조건 인식"},
     {"code": "real_db_mapping", "label": "실DB 조건 매핑"},
     {"code": "sql_safety_validation", "label": "SQL 안전 검증"},
+    {"code": "aggregation_validation", "label": "집계 요구 검증"},
     {"code": "condition_coverage", "label": "조건 반영 검증"},
     {"code": "intent_scope", "label": "요청 의도 검증"},
     {"code": "semantic_verification", "label": "의미 검증"},
@@ -10362,6 +10427,7 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
     "derived_metric_filter_unsupported": "real_db_mapping",
     "coupon_semantic_preservation_failed": "real_db_mapping",
     "sql_guard_failed": "sql_safety_validation",
+    "aggregation_validation_failed": "aggregation_validation",
     "query_plan_conditions_missing": "condition_coverage",
     "query_plan_unmentioned_conditions_added": "condition_coverage",
     "intent_scope_mismatch": "intent_scope",
@@ -10372,6 +10438,7 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
 # (missing_input_conditions[].path prefix, 단계 세부 라벨, 안내문에 쓸 종류 라벨).
 # 같은 '조건 인식' 단계라도 집합식 파싱에서 막혔는지, 계산식/의미 해석에서 막혔는지 구분해 보여준다.
 _MISSING_CONDITION_KINDS: tuple[tuple[str, str, str], ...] = (
+    ("aggregation_request.", "집계 요구사항 확정", "집계 요구사항"),
     ("set_expressions.", "집합식 파싱", "집합식"),
     ("computed_metrics.", "계산식 해석", "계산식"),
     ("semantic_resolutions.", "의미 해석 확정", "의미 해석"),
@@ -10502,6 +10569,8 @@ def build_recommendation_api_response(
         "failure_stage": _classify_failure_stage(sql_result.get("failure_reason"), sql_result),
         # 의미 검증 게이트 판정(원문↔최종 SQL 직접 대조). {ran, faithful, issues} — 오탐 튜닝·디버깅용.
         "semantic_verification": sql_result.get("semantic_verification", {"ran": False}),
+        "aggregation_request": sql_result.get("aggregation_request"),
+        "aggregation_validation": sql_result.get("aggregation_validation", {"ran": False}),
         # 쿼리 성능 튜닝 자문: 실행 함정 findings + 권장 인덱스(비차단, SQL 은 그대로).
         "query_tuning": sql_result.get("query_tuning", {"findings": [], "recommended_indexes": []}),
         # ③ 결정론 드롭 경고: 원문 신호가 plan 에 안 잡힌 조건(비차단 자문 — 조용한 드롭을 시끄럽게).
@@ -10585,6 +10654,51 @@ def _inject_segment_label(sql: str, query_plan: dict[str, Any]) -> str:
     return sql[: match.start()].rstrip() + ", " + ", ".join(columns) + " " + sql[match.start():]
 
 
+def _walk_dict_values(value: Any, key: str) -> list[Any]:
+    """중첩 JSON에서 같은 이름의 필드값을 수집한다(프롬프트용 스키마 범위 축소)."""
+    found: list[Any] = []
+    if isinstance(value, dict):
+        for child_key, child in value.items():
+            if child_key == key:
+                found.append(child)
+            found.extend(_walk_dict_values(child, key))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(_walk_dict_values(child, key))
+    return found
+
+
+def _llm_aggregation_response_errors(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    """LLM의 자기진술을 신뢰하지 않되 구조화 응답 계약 자체는 엄격히 검사한다."""
+    errors: list[dict[str, Any]] = []
+    required_lists = ("requirementMappings", "usedTables", "usedColumns", "assumptions", "unresolvedFields", "warnings")
+    for field_name in required_lists:
+        if not isinstance(payload.get(field_name), list):
+            errors.append({
+                "code": "INVALID_SQL_RESPONSE_SCHEMA",
+                "message": f"SQL 생성 응답의 {field_name} 필드는 배열이어야 합니다.",
+            })
+    confidence = payload.get("confidence")
+    if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0 <= float(confidence) <= 1:
+        errors.append({"code": "INVALID_SQL_RESPONSE_SCHEMA", "message": "confidence는 0~1 숫자여야 합니다."})
+    unresolved = payload.get("unresolvedFields")
+    if isinstance(unresolved, list) and unresolved:
+        errors.append({
+            "code": "UNRESOLVED_BUSINESS_RULE",
+            "message": "SQL 생성 응답에 미해결 필드가 있습니다: " + ", ".join(str(value) for value in unresolved),
+        })
+    try:
+        minimum_confidence = float(os.getenv("AGGREGATION_SQL_MIN_CONFIDENCE", "0.8"))
+    except ValueError:
+        minimum_confidence = 0.8
+    if isinstance(confidence, (int, float)) and not isinstance(confidence, bool) and float(confidence) < minimum_confidence:
+        errors.append({
+            "code": "LOW_CONFIDENCE",
+            "message": f"집계 SQL 신뢰도 {float(confidence):.2f}가 실행 기준 {minimum_confidence:.2f}보다 낮습니다.",
+        })
+    return errors
+
+
 def _build_llm_sql_fallback_candidate(
     query: str,
     query_plan: dict[str, Any],
@@ -10615,15 +10729,37 @@ def _build_llm_sql_fallback_candidate(
         allowed_list = ", ".join(sorted(str(table) for table in allowed_tables))
         plan_slim = {
             key: query_plan.get(key)
-            for key in ("intent", "target_user", "exclude", "campaign_constraints", "dimension_filters", "region_density_target")
+            for key in (
+                "intent", "target_user", "exclude", "campaign_constraints", "dimension_filters",
+                "region_density_target", "aggregation_request",
+            )
             if query_plan.get(key)
         }
+        aggregation_request_payload = query_plan.get("aggregation_request")
+        aggregation_request = None
+        aggregation_request_errors = []
+        aggregation_schema_context: list[dict[str, Any]] = []
+        if isinstance(aggregation_request_payload, dict) and schema_path is not None:
+            aggregation_request, aggregation_request_errors = parse_aggregation_request(
+                aggregation_request_payload, schema_path, dialect=_member_dialect().name
+            )
+            referenced_tables = {
+                str(value)
+                for value in _walk_dict_values(aggregation_request_payload, "table")
+                if isinstance(value, str) and value
+            }
+            aggregation_schema_context = SchemaMetadata.load(schema_path).prompt_context(referenced_tables)
         # 스키마 사실(회원 테이블/키/상태 술어/코드값 예시)과 방언은 레지스트리·어댑터에서 렌더한다 —
         # 프롬프트에 직접 박으면 DB 스왑 시 프롬프트도 고쳐야 한다(docs/operations/db_portability_audit.md §4-C).
         dialect = _member_dialect()
         dialect_title = {"tsql": "MSSQL(T-SQL)", "mysql": "MySQL/MariaDB", "postgres": "PostgreSQL"}.get(dialect.name, "ANSI SQL")
         row_limit_rule = "LIMIT 대신 TOP 사용" if dialect.name == "tsql" else "TOP 대신 LIMIT 사용"
         member_alias = _member_alias()
+        target_entity = (
+            aggregation_request.target_entity.casefold()
+            if aggregation_request is not None and aggregation_request.target_entity
+            else "customer"
+        )
         code_examples = [
             str(value)
             for category in ("gender", "grade", "state")
@@ -10635,30 +10771,71 @@ def _build_llm_sql_fallback_candidate(
             ]
             if value
         ]
-        date_format_label = str(_member_base_entity().get("date_format") or "yyyyMMdd").upper()
         system_prompt = "\n".join(
             [
-                "너는 CRM 타겟팅 SQL 생성기다. 반드시 JSON {\"sql\": \"...\", \"explanation\": \"...\"} 형식으로만 답한다.",
+                "너는 자연어 집계 요구사항을 SQL로 변환하는 전문 SQL 엔지니어다. 반드시 JSON "
+                "{\"extracted_conditions\": {...}, \"sql\": \"...\", \"queryType\": \"aggregation|targeting\", "
+                "\"requirementMappings\": [...], \"condition_verification\": [...], \"usedTables\": [...], "
+                "\"usedColumns\": [...], \"assumptions\": [...], \"unresolvedFields\": [...], "
+                "\"warnings\": [...], \"confidence\": 0.0, \"explanation\": \"...\"} 형식으로만 답한다.",
                 "규칙:",
                 f"- {dialect_title} SELECT 단일문만 생성한다. DML/DDL/임시테이블 금지, {row_limit_rule}.",
                 f"- 허용 테이블만 사용한다: {allowed_list}",
-                f"- 첫 컬럼은 반드시 회원키다: SELECT DISTINCT {member_alias}.{_member_key_column()} AS CUST_ID ({_member_table()} 별칭 {member_alias}).",
-                f"- 발송 대상이므로 기본으로 {_member_active_state_predicate()} 조건을 넣는다(사용자가 휴면/탈퇴를 명시하면 예외).",
+                (
+                    f"- 최종 대상이 customer이면 첫 컬럼은 회원키다: SELECT DISTINCT {member_alias}.{_member_key_column()} AS CUST_ID "
+                    f"({_member_table()} 별칭 {member_alias})."
+                    if target_entity == "customer"
+                    else f"- 최종 대상은 {target_entity}다. aggregation_request.outputColumns와 groupings에 확정된 컬럼만 SELECT한다."
+                ),
+                (
+                    f"- 발송 대상 customer이면 기본으로 {_member_active_state_predicate()} 조건을 넣는다(사용자가 휴면/탈퇴를 명시하면 예외)."
+                    if target_entity == "customer"
+                    else "- 분석 결과 요청에는 고객 발송 상태 조건을 임의로 추가하지 않는다."
+                ),
                 "- 코드 컬럼 저장값은 도메인 접두어를 포함한다(예: " + ", ".join(code_examples) + ")."
                 if code_examples
                 else "- 코드 컬럼 저장값은 카탈로그(값 인덱스)의 실값 표기를 그대로 따른다.",
                 "- 사용자가 명시한 조건은 모두 WHERE 에 반영하고, 명시하지 않은 조건(성별/연령/지역 등)은 절대 추가하지 않는다.",
-                "- SELECT 에 반영한 조건의 canonical 요약 라벨을 포함한다(조건 커버리지 검증용): 예) 'no_purchase' AS segment_label.",
+                (
+                    "- SELECT 에 반영한 조건의 canonical 요약 라벨을 포함한다(조건 커버리지 검증용): 예) 'no_purchase' AS segment_label."
+                    if target_entity == "customer"
+                    else "- 일반 집계 결과에는 요청하지 않은 segment_label이나 회원 컬럼을 추가하지 않는다."
+                ),
                 "- 컨텍스트에 없는 테이블/컬럼을 지어내지 않는다. 확실한 SQL 을 만들 수 없으면 {\"sql\": null, \"explanation\": \"이유\"} 를 반환한다.",
                 "- 테이블 요약의 ⚠️(0행/미적재) 경고가 있는 테이블은 조건 판정 기준으로 쓰지 않는다(빈 테이블 anti-join 은 전원 매칭 오류).",
+                "자연어 조건 추출(SQL 변환 전에 반드시 수행):",
+                "- extracted_conditions 에 다음 8개 항목을 명시적으로 추출한다: "
+                "target_entities(조회 대상 엔티티), period_conditions(기간 조건), "
+                "aggregation(집계 대상과 집계 기준), order_by(정렬 기준), top_n(상위 N 조건), "
+                "relationship_conditions(대상 간 관계 조건), deduplication_basis(중복 제거 기준), "
+                "exclusion_conditions(취소·반품·탈퇴 등 제외 조건).",
+                "- 원문에 없는 조건은 추론해 채우지 말고 해당 항목을 null 또는 빈 배열로 표시한다.",
+                "- aggregation_request가 제공되면 이를 SQL 생성의 단일 진실 소스로 사용한다. unresolvedFields가 하나라도 있으면 sql=null을 반환한다.",
+                "- '수/개수/건수/고객 수/상품 수'는 COUNT 대상과 DISTINCT 여부를 구분하고, '~별'은 GROUP BY로 구현한다.",
+                "- 비율·점유율·전환율·증감률은 분자/분모 또는 비교 기간을 같은 grain으로 집계하고 NULLIF로 0 나눗셈을 처리한다.",
+                "- '가장 많이', '상위 N', '베스트 N' 표현이 있으면 aggregation, order_by, top_n 을 모두 추출하고, "
+                "SQL 에 집계, 내림차순 정렬, 순위 제한(TOP/LIMIT 또는 동등한 순위 조건)을 반드시 함께 포함한다.",
                 "SQL 정합성 자가검증(생성 전 반드시 점검):",
-                "- 결과 grain 은 회원 1행이다. 1:N 조인(주문/장바구니/캠페인반응 등)은 결과 행을 부풀리므로, 그런 조건은 JOIN 대신 EXISTS/IN 서브쿼리로 표현한다(DISTINCT 로 덮지 말 것 — DISTINCT 는 잘못된 조인을 가린다).",
+                (
+                    "- 결과 grain 은 회원 1행이다. 1:N 조인(주문/장바구니/캠페인반응 등)은 결과 행을 부풀리므로, 그런 조건은 JOIN 대신 EXISTS/IN 서브쿼리로 표현한다(DISTINCT 로 덮지 말 것 — DISTINCT 는 잘못된 조인을 가린다)."
+                    if target_entity == "customer"
+                    else "- 결과 grain은 aggregation_request의 targetEntity와 groupings다. 집계 전에 1:N/N:M 조인으로 원본 행이 증폭되지 않게 사전 집계 또는 검증된 유일키 조인을 사용한다."
+                ),
                 "- 집계(COUNT/SUM/AVG/MIN/MAX)와 비집계 컬럼을 함께 SELECT 하면 비집계 컬럼을 모두 GROUP BY 에 넣는다. 집계 후 조건은 HAVING, 집계 전 조건은 WHERE 로 분리한다(집계 함수는 WHERE 에 쓰지 않는다).",
-                "- 회원별 지표 임계값(누적 구매금액/횟수 등)은 회원키로 GROUP BY 한 서브쿼리에서 HAVING 으로 거른 뒤 회원키로 조인/IN 한다 — 바깥에서 재집계하지 않는다(이중 집계 방지).",
+                (
+                    "- 회원별 지표 임계값(누적 구매금액/횟수 등)은 회원키로 GROUP BY 한 서브쿼리에서 HAVING 으로 거른 뒤 회원키로 조인/IN 한다 — 바깥에서 재집계하지 않는다(이중 집계 방지)."
+                    if target_entity == "customer"
+                    else "- 집계 결과 임계값은 HAVING에 두고, 최종 대상과 집계 grain이 다르면 집계 CTE를 만든 뒤 관계키로 다시 연결한다."
+                ),
                 "- 최근 N건/순위/누적값은 회원 단위로 접어야 하면 GROUP BY, 회원 내 순번이 필요하면 윈도 함수(ROW_NUMBER/RANK/SUM() OVER)를 쓴다 — 단순 TOP+ORDER BY 는 회원별 최근 N건을 주지 못한다.",
                 "- 기간 A/B 를 비교할 때 두 기간의 기준 집합(모수)이 동일해야 한다 — 한 기간에만 존재하는 회원이 빠지지 않도록 회원 집합을 먼저 고정하고 각 기간 지표를 LEFT JOIN 한다.",
-                f"- 날짜는 경계를 반열림 구간([시작, 끝))으로 잡고(BETWEEN 의 종료일 포함 주의), 저장 형식({date_format_label} 문자열 등)에 맞춰 비교한다. 기준시각은 {dialect.now()} 앵커를 쓴다.",
+                f"- 날짜는 경계를 반열림 구간([시작, 끝))으로 잡고(BETWEEN 의 종료일 포함 주의), aggregation_schema_metadata의 실제 컬럼 타입/저장 형식에 맞춰 비교한다. 상대 기간 기준시각은 {dialect.now()} 앵커를 쓴다.",
                 f"- LEFT JOIN 후 미매칭(NULL)을 의도대로 처리했는지 본다 — anti-join 은 NOT EXISTS/IS NULL, 합산은 {dialect.coalesce('x', '0')}. WHERE 에서 우변 테이블 컬럼을 조건에 쓰면 LEFT JOIN 이 INNER 로 바뀐다.",
+                "조건 구현 검증(SQL 작성 후 반드시 수행):",
+                "- condition_verification 에 extracted_conditions 의 각 명시 조건, 이를 구현한 SQL 절(SELECT/FROM/JOIN/WHERE/GROUP BY/HAVING/ORDER BY/TOP·LIMIT 등), 통과 여부를 기록한다.",
+                "- requirementMappings에는 aggregation_request의 각 요구사항 id, 실제 SQL 절과 SQL 조각을 기록한다. 이 매핑은 애플리케이션 AST 검증기가 다시 확인한다.",
+                "- 추출한 조건이 SQL 에서 하나라도 구현되지 않았거나 '가장 많이'·'상위 N'·'베스트 N'의 집계/정렬/순위 제한 중 하나라도 빠졌으면 그 SQL 을 출력하지 말고 다시 생성·검증한다.",
+                "- 모든 명시 조건의 검증이 통과한 경우에만 sql 값을 출력한다. 컨텍스트나 스키마 한계로 구현할 수 없으면 sql=null 로 반환하고 explanation 에 미구현 조건과 이유를 적는다.",
             ]
         )
         user_prompt = json.dumps(
@@ -10666,6 +10843,7 @@ def _build_llm_sql_fallback_candidate(
                 "user_query": query,
                 "query_plan": plan_slim,
                 "table_catalog": table_summaries,
+                "aggregation_schema_metadata": aggregation_schema_context,
                 "retrieval_context": context_lines,
             },
             ensure_ascii=False,
@@ -10675,23 +10853,98 @@ def _build_llm_sql_fallback_candidate(
             {"model": llm_model, "query": query, "query_plan": plan_slim, "context_line_count": len(context_lines)},
         )
         client = OpenAI()
-        response = _openai_chat_create(client, 
-            model=llm_model,
-            temperature=0,
-            response_format={"type": "json_object"},
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-        )
-        content = response.choices[0].message.content or "{}"
-        payload = json.loads(content)
-        _write_rag_llm_log("llm_sql_fallback_response", {"model": llm_model, "query": query, "content": content})
-        sql = payload.get("sql")
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ]
+        max_attempts = 1 + (aggregation_retry_count() if aggregation_request is not None else 0)
+        last_content = "{}"
+        last_payload: dict[str, Any] = {}
+        last_validation: dict[str, Any] = {
+            "valid": not aggregation_request_errors,
+            "errors": [error.to_dict() for error in aggregation_request_errors],
+        }
+        for attempt in range(1, max_attempts + 1):
+            response = _openai_chat_create(
+                client,
+                model=llm_model,
+                temperature=0,
+                response_format={"type": "json_object"},
+                messages=messages,
+            )
+            last_content = response.choices[0].message.content or "{}"
+            try:
+                parsed_payload = json.loads(last_content)
+                last_payload = parsed_payload if isinstance(parsed_payload, dict) else {}
+                parse_errors: list[dict[str, Any]] = []
+            except json.JSONDecodeError as exc:
+                last_payload = {}
+                parse_errors = [{
+                    "code": "INVALID_SQL_RESPONSE_JSON",
+                    "message": f"SQL 생성 응답 JSON 파싱 실패: {exc.msg}",
+                }]
+            sql_value = last_payload.get("sql")
+            response_errors = [
+                *parse_errors,
+                *(_llm_aggregation_response_errors(last_payload) if aggregation_request is not None else []),
+            ]
+            if isinstance(sql_value, str) and sql_value.strip() and aggregation_request is not None and schema_path is not None:
+                last_validation = validate_aggregation_sql(
+                    aggregation_request, sql_value.strip(), schema_path, dialect=dialect.name
+                )
+                if response_errors:
+                    last_validation = {
+                        **last_validation,
+                        "valid": False,
+                        "errors": [*last_validation.get("errors", []), *response_errors],
+                    }
+            elif aggregation_request is not None:
+                last_validation = {
+                    "valid": False,
+                    "errors": [*response_errors, {"code": "SQL_MISSING", "message": "생성 응답에 SQL이 없습니다."}],
+                }
+            _write_rag_llm_log(
+                "llm_sql_fallback_response",
+                {"model": llm_model, "query": query, "attempt": attempt, "content": last_content,
+                 "aggregation_validation": last_validation},
+            )
+            if aggregation_request is None or last_validation.get("valid"):
+                break
+            if attempt < max_attempts:
+                repair_prompt = json.dumps(
+                    {
+                        "task": "검증 오류를 모두 수정해 같은 JSON 응답 구조로 SQL을 다시 생성하라.",
+                        "original_user_query": query,
+                        "structured_aggregation_request": aggregation_request.to_dict(),
+                        "previous_sql": sql_value,
+                        "validation_errors": last_validation.get("errors", []),
+                        "missing_requirements": [
+                            mapping for mapping in last_validation.get("requirementMappings", [])
+                            if not mapping.get("implemented")
+                        ],
+                        "available_schema": aggregation_schema_context,
+                        "join_relationships": [item.get("foreignKeys", []) for item in aggregation_schema_context],
+                        "business_rules": aggregation_request.business_rules,
+                        "dbms": dialect_title,
+                        "constraints": [
+                            "단일 read-only SELECT/WITH SELECT만 사용", "스키마에 없는 테이블·컬럼 금지",
+                            "WHERE/HAVING 분리", "집계 전 N:M 조인 금지", "미해결 항목이 있으면 sql=null",
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+                messages = [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                    {"role": "assistant", "content": last_content},
+                    {"role": "user", "content": repair_prompt},
+                ]
+
+        sql = last_payload.get("sql")
         if not isinstance(sql, str) or not sql.strip():
             return None
         # 조건 커버리지 검증용 라벨을 결정론적으로 주입(LLM 지시 순응에 기대지 않는다).
-        sql = _inject_segment_label(sql.strip(), query_plan)
+        sql = _inject_segment_label(sql.strip(), query_plan) if target_entity == "customer" else sql.strip()
         candidate = _sql_candidate(
             "llm_sql:fallback",
             "LLM 생성 SQL(템플릿 미지원 형태 — 가드 검증 통과 시에만 채택)",
@@ -10700,11 +10953,15 @@ def _build_llm_sql_fallback_candidate(
             _template_tables(sql),
             "llm_generated",
         )
-        candidate["explanation"] = payload.get("explanation")
+        candidate["explanation"] = last_payload.get("explanation")
+        candidate["llm_response"] = last_payload
+        candidate["aggregation_validation"] = last_validation if aggregation_request is not None else {"ran": False}
+        candidate["generation_attempt_count"] = attempt
+        candidate["generation_max_attempts"] = max_attempts
         candidate["dropped_conditions"] = []
         candidate["dropped_condition_labels"] = []
         # 실제 전송된 SQL 폴백 프롬프트/응답(트레이스 표시용; retrieve 가 result 로 옮기고 후보에선 제거).
-        candidate["_llm_prompt"] = {"system": system_prompt, "user": user_prompt, "response": content}
+        candidate["_llm_prompt"] = {"system": system_prompt, "user": user_prompt, "response": last_content}
         return candidate
     except Exception as exc:  # LLM 폴백 실패는 기존 실패 흐름(정직한 거절)으로 되돌아간다.
         _write_rag_llm_log("llm_sql_fallback_error", {"model": llm_model, "query": query, "error": str(exc)})
@@ -11129,16 +11386,16 @@ def build_sql_result(
     # inverted/불일치로 떨어지는 '혼합/실패' 잡음이 생긴다. 미지원은 깔끔한 unsupported 응답으로 끝낸다.
     llm_fallback_used = False
     if (
-        not candidates
+        (not candidates or isinstance(query_plan.get("aggregation_request"), dict))
         and not query_plan.get("unsupported")
         and llm_model
-        and query_plan.get("intent") in ("recommend_campaign", "find_user_segment")
+        and query_plan.get("intent") in ("recommend_campaign", "find_user_segment", "analyze_aggregation")
     ):
         llm_candidate = _build_llm_sql_fallback_candidate(
             query, query_plan, context_nodes, allowed_tables, llm_model, schema_path=schema_path
         )
         if llm_candidate is not None:
-            candidates = [llm_candidate]
+            candidates.append(llm_candidate)
             llm_fallback_used = True
 
     # 타겟 오디언스는 기본적으로 전체가 나와야 하므로 행수 제한(TOP/LIMIT)을 붙이지 않는다(default_limit=None).
@@ -11146,6 +11403,12 @@ def build_sql_result(
     # TOP(MSSQL)/LIMIT(MariaDB)을 부착한다(지표 랭킹의 기존 TOP 은 sql_guard 가 중복 없이 보존).
     result_limit = query_plan.get("result_limit")
     result_limit = result_limit if isinstance(result_limit, int) and result_limit > 0 else None
+    structured_aggregation = None
+    structured_aggregation_errors = []
+    if isinstance(query_plan.get("aggregation_request"), dict):
+        structured_aggregation, structured_aggregation_errors = parse_aggregation_request(
+            query_plan["aggregation_request"], schema_path, dialect=_member_dialect().name
+        )
     validated_candidates = []
     for candidate in candidates:
         validation = validate_sql(
@@ -11174,6 +11437,45 @@ def build_sql_result(
         analytics_warnings = [issue for issue in analytics_shape["issues"] if issue["severity"] == "warning"]
         if analytics_errors:
             validation = {**validation, "issues": [*validation["issues"], *analytics_errors], "is_valid": False}
+        aggregation_validation: dict[str, Any] = {"ran": False}
+        if structured_aggregation is not None:
+            aggregation_validation = validate_aggregation_sql(
+                structured_aggregation,
+                candidate["sql"],
+                schema_path,
+                dialect=validation.get("dialect") or _member_dialect().name,
+            )
+            generation_validation = candidate.get("aggregation_validation")
+            if isinstance(generation_validation, dict) and generation_validation.get("ran") is not False:
+                aggregation_validation["generationConfidence"] = (candidate.get("llm_response") or {}).get("confidence")
+                if not generation_validation.get("valid", True):
+                    aggregation_validation = {
+                        **aggregation_validation,
+                        "valid": False,
+                        "errors": [
+                            *aggregation_validation.get("errors", []),
+                            *generation_validation.get("errors", []),
+                        ],
+                    }
+            if structured_aggregation_errors:
+                aggregation_validation = {
+                    **aggregation_validation,
+                    "valid": False,
+                    "errors": [
+                        *aggregation_validation.get("errors", []),
+                        *[error.to_dict() for error in structured_aggregation_errors],
+                    ],
+                }
+            if not aggregation_validation.get("valid"):
+                aggregation_issues = [
+                    {
+                        "code": error.get("code", "aggregation_requirement_failed").casefold(),
+                        "severity": "error",
+                        "message": error.get("message", "집계 요구사항 검증에 실패했습니다."),
+                    }
+                    for error in aggregation_validation.get("errors", [])
+                ]
+                validation = {**validation, "issues": [*validation["issues"], *aggregation_issues], "is_valid": False}
         validated_candidates.append(
             {
                 **candidate,
@@ -11182,6 +11484,7 @@ def build_sql_result(
                 "intent_scope": intent_scope,
                 "unmentioned_conditions": unmentioned_conditions,
                 "join_keys": join_keys,
+                "aggregation_validation": aggregation_validation,
                 "analytics_warnings": analytics_warnings,
                 "is_eligible": validation["is_valid"] and coverage["is_satisfied"] and intent_scope["is_satisfied"],
             }
@@ -11191,6 +11494,7 @@ def build_sql_result(
     selected = next((candidate for candidate in validated_candidates if candidate["is_eligible"]), None)
     if selected is None and validated_candidates:
         selected = validated_candidates[0]
+    llm_fallback_used = bool(selected and selected.get("source") == "llm_generated" and selected.get("is_eligible"))
 
     selected_sql = None
     target_connection = None
@@ -11206,7 +11510,9 @@ def build_sql_result(
     if selected is None:
         failure_reason = "no_sql_candidates"
     elif not selected["is_eligible"]:
-        if not selected["validation"]["is_valid"]:
+        if selected.get("aggregation_validation", {}).get("ran") is not False and not selected.get("aggregation_validation", {}).get("valid", True):
+            failure_reason = "aggregation_validation_failed"
+        elif not selected["validation"]["is_valid"]:
             failure_reason = "sql_guard_failed"
         elif not selected["coverage"]["is_satisfied"]:
             failure_reason = "query_plan_conditions_missing"
@@ -11376,6 +11682,9 @@ def build_sql_result(
         "semantic_invariants": semantic_invariants,
         # 의미 검증 v2(AST 기반, shadow/enforce): {ran, spec, result, legacy}. off 면 ran=False.
         "semantic_validation_v2": semantic_validation_v2,
+        # 일반 집계 요구사항 IR과 SQL AST의 강제 검증 결과. valid=false면 SQL은 출고·실행되지 않는다.
+        "aggregation_request": query_plan.get("aggregation_request"),
+        "aggregation_validation": (selected or {}).get("aggregation_validation", {"ran": False}),
         # 쿼리 성능 튜닝 자문(비차단): {findings, recommended_indexes}. 출고 SQL 이 없으면 빈 결과.
         "query_tuning": query_tuning,
         # ③ 결정론 드롭 경고: 원문 신호가 plan 에 안 잡힌 조건 목록(비차단 자문).
@@ -14998,6 +15307,29 @@ def _sql_quote(value: str) -> str:
 
 
 def validate_required_input_conditions(query_plan: dict[str, Any], condition_tokens: list[dict[str, Any]]) -> dict[str, Any]:
+    aggregation_request = query_plan.get("aggregation_request")
+    aggregation_validation = query_plan.get("aggregation_request_validation") or {}
+    if isinstance(aggregation_request, dict):
+        aggregation_errors = aggregation_validation.get("errors", []) if isinstance(aggregation_validation, dict) else []
+        unresolved = aggregation_request.get("unresolvedFields", [])
+        if aggregation_errors or unresolved:
+            details = [
+                str(error.get("message")) for error in aggregation_errors
+                if isinstance(error, dict) and error.get("message")
+            ] + [str(value) for value in unresolved if str(value).strip()]
+            missing = [
+                _missing_input_condition(
+                    "aggregation_request.unresolvedFields",
+                    "집계 요구사항",
+                    "집계 SQL 생성 전에 다음 항목의 스키마 또는 업무 정의를 확인해 주세요: " + "; ".join(_unique_strings(details)),
+                )
+            ]
+            return {
+                "is_satisfied": False,
+                "missing_conditions": missing,
+                "clarification_questions": [condition["question"] for condition in missing],
+            }
+
     set_expression_missing_conditions = [
         _missing_input_condition(
             f"set_expressions.{expression.get('expression_id', 'segment_set_expression')}",
