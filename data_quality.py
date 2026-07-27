@@ -7,6 +7,7 @@ from datetime import datetime
 import json
 from pathlib import Path
 from typing import Any
+import re
 
 from analytical_intent import DEFAULT_ANALYTICS_REGISTRY_PATH, load_analytics_registry
 
@@ -167,6 +168,37 @@ def analyze_execution_result(
         if measure_columns and all(column in all_null_columns for column in measure_columns):
             status = "INVALID_EMPTY_RESULT"
             issues.append({"reason_code": "METRIC_ALL_NULL", "message": "반환된 지표 값이 모두 NULL입니다."})
+
+        # Optional dimension value profiles catch a semantically wrong column
+        # even when it was aliased to the requested name.  For example, store
+        # ids such as CAB4 must never pass as a registration device channel.
+        registry = load_analytics_registry(str(DEFAULT_ANALYTICS_REGISTRY_PATH))
+        metric = next(
+            (item for item in registry.get("metrics", []) if item.get("id") == intent.get("metric")),
+            None,
+        )
+        source = next(
+            (item for item in (metric or {}).get("sources", []) if item.get("id") == intent.get("source_id")),
+            None,
+        )
+        folded_columns = {str(column).casefold(): str(column) for column in columns}
+        for dimension_id in intent.get("dimensions", []) or []:
+            spec = (registry.get("dimensions") or {}).get(dimension_id) or {}
+            pattern = spec.get("valuePattern")
+            mapping = (spec.get("mappings") or {}).get((source or {}).get("id")) or {}
+            output_name = mapping.get("outputAlias") or mapping.get("column")
+            result_column = folded_columns.get(str(output_name or "").casefold())
+            if not pattern or not result_column:
+                continue
+            values = [row.get(result_column) for row in rows if row.get(result_column) is not None]
+            if values and any(re.fullmatch(str(pattern), str(value), re.IGNORECASE) is None for value in values):
+                status = "INVALID_RESULT_SEMANTICS"
+                issues.append({
+                    "reason_code": "SEMANTIC_DIMENSION_VALUE_MISMATCH",
+                    "message": f"{dimension_id} 결과 값이 등록된 의미 도메인과 일치하지 않습니다.",
+                    "dimension": dimension_id,
+                    "column": result_column,
+                })
 
     return {
         "ran": True, "valid": not issues, "status": status, "row_count": row_count,

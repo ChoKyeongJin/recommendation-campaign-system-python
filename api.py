@@ -443,6 +443,7 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
             "database_message_refresh": refresh_result,
             "timings_ms": timings_ms,
             "database_execution": database_execution,
+            "result_type": database_execution.get("result_type", _result_type(result.get("query_plan"))),
             "audience": database_execution.get("audience", {}),
             "targeting_result": database_execution.get("targeting_result", {}),
             "segment_composition": database_execution.get("segment_composition", {}),
@@ -3491,6 +3492,11 @@ def _customer_id_column(columns: list[str]) -> str | None:
     return None
 
 
+def _result_type(query_plan: dict[str, Any] | None) -> str:
+    plan = query_plan if isinstance(query_plan, dict) else {}
+    return "aggregation" if plan.get("intent") == "analyze_aggregation" or isinstance(plan.get("aggregation_request"), dict) else "targeting"
+
+
 # 외부 실DB 세그먼트 집계에 쓸 회원 기준 테이블/속성 컬럼. 회원기본정보가 있는 커넥션만 등록된다
 # (등록되지 않은 커넥션은 빈 세그먼트를 반환한다). 테이블/컬럼은 member_target_filters.json
 # (base_entity/eq_filters/numeric_filters/region_target)에서, 테이블→커넥션은 schema_catalog 에서
@@ -3586,9 +3592,12 @@ def _execute_external_target_sql(
 
     targeting_result = {
         "result_row_count": len(jsonable_rows),
-        "target_customer_count": target_customer_count,
+        # This key remains for frontend compatibility, but aggregation rows are
+        # not an audience and therefore must not masquerade as a zero-sized one.
+        "target_customer_count": None if _result_type(query_plan) == "aggregation" else target_customer_count,
         "target_campaign_count": 0,
         "sample_rows": sample_rows,
+        "result_type": _result_type(query_plan),
     }
     segment_composition = _external_segment_composition(connection, sql, columns)
     # 결과가 0명이면(과잉 조건 신호) 술어별 카디널리티 진단을 돌려 어느 AND 가 오디언스를 죽였는지 귀속한다.
@@ -3608,6 +3617,7 @@ def _execute_external_target_sql(
     )
     return {
         "is_success": execution_sanity["valid"],
+        "result_type": _result_type(query_plan),
         "mode": f"{connection}_read_only",
         "failure_reason": None if execution_sanity["valid"] else execution_sanity["issues"][0]["reason_code"],
         "executed_sql": sql,
@@ -4000,6 +4010,10 @@ def execute_target_sql(
                 columns = _target_result_columns(cursor, target_sql)
                 rows = _target_result_rows(cursor, target_sql, result_row_limit)
                 targeting_result = _targeting_result(cursor, target_sql, columns, rows)
+                result_type = _result_type(query_plan)
+                targeting_result["result_type"] = result_type
+                if result_type == "aggregation":
+                    targeting_result["target_customer_count"] = None
                 segment_composition = _segment_composition(cursor, target_sql, columns)
                 campaign_context_nodes = _campaign_context_nodes(cursor, target_sql, columns)
                 if persist_targeting and "user_id" in columns:
@@ -4034,6 +4048,7 @@ def execute_target_sql(
 
     return {
         "is_success": execution_sanity["valid"],
+        "result_type": _result_type(query_plan),
         "mode": "postgres_read_only",
         "failure_reason": None if execution_sanity["valid"] else execution_sanity["issues"][0]["reason_code"],
         "executed_sql": target_sql,

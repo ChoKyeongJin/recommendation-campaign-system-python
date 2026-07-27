@@ -79,6 +79,7 @@ from query_structurer import (
 from query_structurer.prompt import PLANNER_STRUCTURED_QUERY_RULES
 from query_semantics import classify_query_tokens, extract_extreme_semantics, is_non_entity_candidate
 from data_quality import validate_metric_profile
+from member_policy import active_member_predicate
 
 
 DEFAULT_DATA_PATH = Path("docs/data/rag_knowledge_base.json")
@@ -588,12 +589,7 @@ def _member_activity_predicate(days: int) -> str:
 
 def _member_active_state_predicate(alias: str = "B") -> str:
     """정상 회원 한정(탈퇴/휴면 제외) 술어. 기준 컬럼/값은 member_target_filters.json 의 active_state."""
-    state = _MEMBER_TARGET_FILTERS.get("active_state")
-    if not isinstance(state, dict):
-        state = _DEFAULT_MEMBER_TARGET_FILTERS["active_state"]
-    column = state.get("column") or "MEMBER_STATE_CD"
-    value = state.get("value") or "MEMBER_STATE_CD.NORMAL"
-    return f"{alias}.{column} = " + _sql_quote(value)
+    return active_member_predicate(alias, DEFAULT_MEMBER_TARGET_FILTERS_PATH)
 
 
 def _member_birthday_predicate(granularity: str = "day", alias: str = "B") -> str:
@@ -1906,6 +1902,17 @@ def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path
         target_user["lifecycle"] = [value for value in target_user.get("lifecycle", []) if value != "vip"]
     if intent.get("metric") in {"campaign_purchase_amount", "coupon_purchase_amount"}:
         target_user["campaign_responses"] = []
+    # Targeting-only group/ranking slots must never impose audience predicates
+    # on a general aggregation.  The aggregation_request owns dimensions,
+    # measures, user filters, and policy filters as separate concepts.
+    for key in ("region_density_target", "region_member_count_target", "group_ranking_target"):
+        plan.pop(key, None)
+    member_policy = intent.get("member_policy") if isinstance(intent.get("member_policy"), dict) else {}
+    if member_policy.get("mode") in {"all", "expanded"}:
+        state_terms = {"dormant", "inactive_90d", "inactive_180d", "withdrawn", "withdrawn_user"}
+        target_user["lifecycle"] = [
+            value for value in target_user.get("lifecycle", []) if value not in state_terms
+        ]
     if intent.get("query_type") == "ranking":
         # The analytical ranking contract owns the member metric and TOP 1 semantics.  Remove
         # legacy audience-ranking slots (whose default is TOP 100) so they cannot compete with it.
@@ -11614,6 +11621,10 @@ def _sql_semantic_verify_system_prompt() -> str:
         "불일치 유형: dropped(원문 조건이 SQL 에 없음), inverted(긍정↔부정 또는 이상↔이하 등 의미가 반대로 "
         "반영됨. 예: '구매 이력이 없는'인데 SQL 은 구매함(EXISTS)으로 반영), wrong_value(연령대·지역·등급 등 값이 "
         "다름), spurious(원문에 없는 조건이 SQL 에 있음. 예: 엉뚱한 상품 LIKE).\n"
+        "집계 질의에서는 원문 또는 함께 제공된 구조화 집계 계약에 있는 filters만 필수로 검사하라. "
+        "원문과 계약 모두에 없는 기간·주문상태 조건이 SQL에도 없는 것은 dropped가 아니라 정상이다. "
+        "계약의 businessRules.appliedPolicyFilters에 기록된 조건은 서비스 정책이므로 원문에 없어도 spurious가 아니다. "
+        "반대로 dimensions의 컬럼은 SELECT와 GROUP BY에 모두 있어야 하며, 다른 의미의 컬럼으로 바꾸면 dropped로 판정하라.\n"
         "중요: **확실한 의미 불일치만** 보고하라. 표현만 다르고 의미가 같으면 faithful=true. 판단이 애매하면 "
         "faithful=true 로 둔다(정상 SQL 을 막는 오탐이 놓치는 것보다 나쁘다). NOT EXISTS=조건 없음/부정, "
         "EXISTS=조건 있음/긍정임에 유의하라.\n"
@@ -11627,6 +11638,7 @@ def _verify_sql_semantics(
     sql: str,
     llm_model: str | None,
     prompt_dir: Path | None,
+    query_plan: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """최종 SQL 이 원문 의도를 충실히 반영했는지 LLM 으로 검증한다(원문↔SQL 직접 대조).
 
@@ -11644,13 +11656,20 @@ def _verify_sql_semantics(
         return {"ran": False}
     try:
         client = OpenAI()
-        response = _openai_chat_create(client, 
+        aggregation_context = None
+        if isinstance(query_plan, dict) and isinstance(query_plan.get("aggregation_request"), dict):
+            aggregation_context = query_plan["aggregation_request"]
+        user_content = f"[원문]\n{original_query.strip()}"
+        if aggregation_context is not None:
+            user_content += "\n\n[구조화 집계 계약]\n" + json.dumps(aggregation_context, ensure_ascii=False, indent=2)
+        user_content += f"\n\n[생성된 SQL]\n{sql.strip()}"
+        response = _openai_chat_create(client,
             model=llm_model,
             temperature=0,
             response_format={"type": "json_object"},
             messages=[
                 {"role": "system", "content": _sql_semantic_verify_system_prompt()},
-                {"role": "user", "content": f"[원문]\n{original_query.strip()}\n\n[생성된 SQL]\n{sql.strip()}"},
+                {"role": "user", "content": user_content},
             ],
             timeout=_prompt_rewrite_timeout_seconds(),
         )
@@ -12526,7 +12545,9 @@ def build_sql_result(
         dict(selected.get("delivery_validation") or {}) if selected else {"is_satisfied": False}
     )
     if selected_sql is not None:
-        semantic_verification = _verify_sql_semantics(original_query or query, selected_sql, llm_model, prompt_dir)
+        semantic_verification = _verify_sql_semantics(
+            original_query or query, selected_sql, llm_model, prompt_dir, query_plan
+        )
         delivery_validation = _validate_sql_delivery_contract(
             original_query or query,
             query_plan,

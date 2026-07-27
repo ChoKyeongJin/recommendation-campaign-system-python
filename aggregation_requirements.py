@@ -187,12 +187,55 @@ class SchemaMetadata:
 
     @classmethod
     def load(cls, schema_path: Path) -> "SchemaMetadata":
-        try:
-            payload = json.loads(schema_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            payload = {}
-        tables = payload.get("tables", {})
-        return cls({str(name).casefold(): meta for name, meta in tables.items() if isinstance(meta, dict)})
+        """Load and merge the aggregation schema with broader catalog sources.
+
+        The planner may receive a compact aggregation-only catalog.  A missing
+        column there is not proof that the physical database lacks it, so the
+        full project catalog (plus optional environment-configured snapshots)
+        is merged before existence checks.  Tables and columns are de-duplicated
+        case-insensitively and the explicitly supplied schema wins on metadata
+        conflicts.
+        """
+        project_catalog = Path("docs/data/schema_catalog.json")
+        configured = [
+            Path(value)
+            for value in os.getenv("AGGREGATION_SCHEMA_FALLBACK_PATHS", "").split(os.pathsep)
+            if value.strip()
+        ]
+        paths = [project_catalog, *configured, Path(schema_path)]
+        tables: dict[str, dict[str, Any]] = {}
+        seen_paths: set[str] = set()
+        for path in paths:
+            try:
+                resolved = str(path.resolve())
+            except OSError:
+                resolved = str(path)
+            if resolved in seen_paths:
+                continue
+            seen_paths.add(resolved)
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            for name, raw_meta in (payload.get("tables", {}) or {}).items():
+                if not isinstance(raw_meta, dict):
+                    continue
+                key = str(name).casefold()
+                previous = tables.get(key, {})
+                merged = {**previous, **raw_meta}
+                by_column = {
+                    str(column.get("name", "")).casefold(): column
+                    for column in previous.get("columns", []) or []
+                    if isinstance(column, dict) and column.get("name")
+                }
+                for column in raw_meta.get("columns", []) or []:
+                    if not isinstance(column, dict) or not column.get("name"):
+                        continue
+                    column_key = str(column["name"]).casefold()
+                    by_column[column_key] = {**by_column.get(column_key, {}), **column}
+                merged["columns"] = list(by_column.values())
+                tables[key] = merged
+        return cls(tables)
 
     def table(self, name: str | None) -> dict[str, Any] | None:
         return self.tables.get((name or "").casefold())
@@ -488,7 +531,7 @@ def validate_aggregation_sql(
     for index, req in enumerate(request.groupings, 1):
         rid = f"grouping-{index}"
         if not _field_matches_set(req, group_columns):
-            errors.append(ValidationError("MISSING_GROUP_BY", f"요청된 그룹 기준이 GROUP BY에 없습니다: {req.field}", rid))
+            errors.append(ValidationError("MISSING_GROUP_BY_DIMENSION", f"요청된 그룹 기준이 GROUP BY에 없습니다: {req.field}", rid))
             mappings.append(_mapping(rid, req.field, False))
         else:
             mappings.append(_mapping(rid, req.field, True, "GROUP BY", req.physical_name or req.field))
@@ -980,14 +1023,21 @@ def _mapping(requirement_id: str, requirement: str, implemented: bool, clause: s
 
 def _validation_result(errors: list[ValidationError], mappings: list[dict[str, Any]], used_tables: list[str],
                        used_columns: list[dict[str, str]], confidence: float) -> dict[str, Any]:
-    return {
+    unique = _unique_errors(errors)
+    result = {
         "valid": not errors,
-        "errors": [e.to_dict() for e in _unique_errors(errors)],
+        "errors": [e.to_dict() for e in unique],
         "requirementMappings": mappings,
         "usedTables": [{"table": t} for t in used_tables],
         "usedColumns": used_columns,
         "confidence": round(confidence, 4),
     }
+    # Keep the detailed errors array for compatibility while exposing the
+    # primary machine-readable failure directly to API clients.
+    if unique:
+        result["error_code"] = unique[0].code
+        result["message"] = unique[0].message
+    return result
 
 
 def _unique_errors(errors: list[ValidationError]) -> list[ValidationError]:

@@ -18,6 +18,7 @@ import sqlglot
 from sqlglot import exp
 
 from sql_ast import SelectAst
+from member_policy import active_member_filter, resolve_member_scope
 
 
 DEFAULT_ANALYTICS_REGISTRY_PATH = Path("docs/data/analytics_registry.json")
@@ -94,13 +95,28 @@ def _match_aggregate_function(compact: str, registry: dict[str, Any]) -> str | N
 
 
 def _match_dimensions(compact: str, registry: dict[str, Any]) -> list[str]:
-    matches: list[str] = []
+    matches: list[tuple[int, int, str, dict[str, Any]]] = []
     for dimension_id, spec in (registry.get("dimensions") or {}).items():
         if not isinstance(spec, dict):
             continue
-        if any(_contains(compact, term) for term in spec.get("terms", [])):
-            matches.append(str(dimension_id))
-    return matches
+        matched_terms = [str(term) for term in spec.get("terms", []) if _contains(compact, str(term))]
+        if matched_terms:
+            matches.append((max(len(_compact(term)) for term in matched_terms), int(spec.get("priority", 0)), str(dimension_id), spec))
+
+    # Closely related dimensions (first/last/generic login channel, signup
+    # channel/shop) declare an exclusive group.  Longest and then highest
+    # priority semantic term wins, so substring overlap cannot produce two
+    # contradictory GROUP BY columns.
+    selected: list[str] = []
+    claimed_groups: set[str] = set()
+    for _length, _priority, dimension_id, spec in sorted(matches, reverse=True):
+        group = str(spec.get("exclusiveGroup") or "")
+        if group and group in claimed_groups:
+            continue
+        selected.append(dimension_id)
+        if group:
+            claimed_groups.add(group)
+    return selected
 
 
 def _match_filters(compact: str, registry: dict[str, Any], query: str) -> list[dict[str, Any]]:
@@ -173,6 +189,8 @@ def analyze_analytical_intent(
     # must not become MAX when no explicit metric is present.  Longer extreme
     # phrases such as ``가장 최근 구매일`` remain MAX through the registry.
     if _RECENT_WINDOW_RE.search(query) and function == "MAX":
+        function = None
+    if function == "MAX" and dimensions and "최근" in query and "가장 최근" not in query:
         function = None
     if function == "MAX" and metric is None and "최근" in query and "가장 최근" not in query:
         function = None
@@ -276,6 +294,7 @@ def analyze_analytical_intent(
         "result_shape": "grouped_rows" if dimensions else "scalar",
         "target_entity": None,
         "source_id": source.get("id"),
+        "member_policy": resolve_member_scope(query),
     }
 
 
@@ -291,11 +310,14 @@ def _source_for_intent(intent: dict[str, Any], registry: dict[str, Any]) -> tupl
 
 
 def _field_ref(mapping: dict[str, Any]) -> dict[str, Any]:
-    return {
+    result = {
         "entity": mapping["entity"], "field": mapping["field"],
         "table": mapping["table"], "column": mapping["column"],
         "alias": mapping.get("alias"),
     }
+    if mapping.get("semanticType"):
+        result["semanticType"] = mapping["semanticType"]
+    return result
 
 
 def build_aggregation_request(
@@ -373,6 +395,30 @@ def build_aggregation_request(
             "operator": mapping.get("operator", "eq"), "value": mapping.get("value"),
         })
 
+    applied_policy_filters: list[dict[str, Any]] = []
+    if "active_member" in (source.get("policyFilters") or []):
+        policy_filter = active_member_filter(
+            str(intent.get("original_query") or ""),
+            table=source.get("table"), alias=source.get("alias"),
+        )
+        # analyze_analytical_intent already resolved the scope; use it here so
+        # callers that build an IR directly retain the same contract.
+        scope = intent.get("member_policy") if isinstance(intent.get("member_policy"), dict) else None
+        if scope and scope.get("mode") == "all":
+            policy_filter = None
+        elif policy_filter is not None and scope and isinstance(scope.get("states"), list):
+            states = scope["states"]
+            policy_filter["operator"] = "eq" if len(states) == 1 else "in"
+            policy_filter["value"] = states[0] if len(states) == 1 else states
+            policy_filter["policyMode"] = scope.get("mode", "default")
+        if policy_filter is not None:
+            filters.append({key: value for key, value in policy_filter.items() if key != "expression"})
+            applied_policy_filters.append({
+                "id": policy_filter["id"], "column": policy_filter["column"],
+                "operator": policy_filter["operator"], "value": policy_filter["value"],
+                "mode": policy_filter.get("policyMode", "default"),
+            })
+
     measure = source["measure"]
     metric_id = str(intent["metric"])
     return {
@@ -394,6 +440,8 @@ def build_aggregation_request(
         "dateGrain": None, "comparison": None,
         "businessRules": {
             "sourceId": source["id"],
+            "appliedPolicyFilters": applied_policy_filters,
+            "memberScope": (intent.get("member_policy") or {}).get("mode"),
             "intentContract": {
                 key: intent.get(key) for key in (
                     "query_type", "aggregate_function", "metric", "dimensions", "filters",
@@ -420,6 +468,11 @@ def _filter_sql(item: dict[str, Any], expression: str) -> str:
     if operator == "gte" and isinstance(value, str) and re.fullmatch(r"P\d+D", value, re.IGNORECASE):
         days = int(value[1:-1])
         return f"{expression} >= CONVERT(CHAR(8), DATEADD(DAY, -{days}, GETDATE()), 112)"
+    if operator in {"in", "not_in"} and isinstance(value, (list, tuple)):
+        keyword = "IN" if operator == "in" else "NOT IN"
+        return f"{expression} {keyword} (" + ", ".join(_sql_literal(item) for item in value) + ")"
+    if operator in {"is_null", "is_not_null"}:
+        return f"{expression} {'IS NULL' if operator == 'is_null' else 'IS NOT NULL'}"
     sql_operator = {"eq": "=", "ne": "<>", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}.get(str(operator))
     if sql_operator is None:
         raise ValueError(f"unsupported analytical filter operator: {operator}")
@@ -490,6 +543,8 @@ def compile_aggregation_ast(
                     (raw for raw in source.get("fixedFilters", []) if raw.get("id") == item.get("id")),
                     None,
                 )
+                if mapping is None and item.get("id") == "policy_active_member":
+                    mapping = active_member_filter("", table=source.get("table"), alias=source.get("alias"))
                 if mapping is None:
                     mapping = registry["filters"][item["id"]]["mappings"][source["id"]]
             expression = mapping["expression"]
@@ -573,6 +628,32 @@ def validate_intent_sql_contract(
                 "code": "metric_column_mismatch",
                 "message": f"Registered metric column {expected_measure} is not aggregated.",
             })
+        expected_dimensions: list[tuple[str, str]] = []
+        # Ranking has its own member projection/group/order contract below;
+        # its synthetic ``member`` dimension is not a grouped-report mapping.
+        if intent.get("query_type") != "ranking":
+            for dimension_id in intent.get("dimensions", []):
+                mapping = registry["dimensions"][dimension_id]["mappings"][source["id"]]
+                expected_dimensions.append((dimension_id, str(mapping["column"]).casefold()))
+        grouped_columns = {column.name.casefold() for group in groups for column in group.find_all(exp.Column)}
+        selected_columns = {
+            column.name.casefold()
+            for projection in (select.expressions if select is not None else [])
+            for column in projection.find_all(exp.Column)
+        }
+        for dimension_id, expected_column in expected_dimensions:
+            if expected_column not in grouped_columns:
+                actual = sorted(grouped_columns)
+                code = "MISSING_GROUP_BY_DIMENSION" if not actual else "SEMANTIC_COLUMN_MISMATCH"
+                issues.append({
+                    "code": code,
+                    "message": f"Dimension {dimension_id} requires {expected_column.upper()} in GROUP BY; actual={actual}.",
+                })
+            elif expected_column not in selected_columns:
+                issues.append({
+                    "code": "MISSING_SELECTED_DIMENSION",
+                    "message": f"Dimension {dimension_id} requires {expected_column.upper()} in SELECT.",
+                })
         if intent.get("query_type") == "ranking":
             member_column = str(source["member"]["column"]).casefold()
             selected_columns = {
