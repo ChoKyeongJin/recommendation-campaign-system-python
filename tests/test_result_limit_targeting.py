@@ -8,7 +8,13 @@ sql_guard 가 대상 DBMS 방언에 맞춰 처리하고, 지표 랭킹의 기존
 """
 
 import graph_rag as g
-from sql_guard import load_allowed_tables, load_table_dialects, validate_sql
+from sql_guard import (
+    infer_sql_dialect,
+    infer_target_connection,
+    load_allowed_tables,
+    load_table_dialects,
+    validate_sql,
+)
 
 
 def _safe_sql(query: str) -> tuple[int | None, str]:
@@ -76,3 +82,22 @@ def test_recovers_limit_from_original_when_rewrite_drops_particle():
     # retrieve 처럼 원문으로 재적용하면 개수 제한이 복구된다.
     g._apply_named_filter("result_limit", "2024년 하반기에 기저귀 구매한 고객 100명만", rewritten_plan)
     assert rewritten_plan.get("result_limit") == 100
+
+
+def test_schema_table_checks_are_case_insensitive():
+    validation = validate_sql(
+        "SELECT COUNT(*) FROM crm_sl_orderdetailall",
+        allowed_tables={"CRM_SL_ORDERDETAILALL"},
+        default_limit=None,
+        table_dialects={"CRM_SL_ORDERDETAILALL": "tsql"},
+    )
+
+    assert validation["is_valid"] is True
+    assert validation["dialect"] == "tsql"
+
+
+def test_connection_and_dialect_lookup_are_case_insensitive():
+    tables = ["crm_sl_orderdetailall"]
+
+    assert infer_sql_dialect(tables, {"CRM_SL_ORDERDETAILALL": "tsql"}) == "tsql"
+    assert infer_target_connection(tables, {"CRM_SL_ORDERDETAILALL": "CRMDW"}) == "CRMDW"

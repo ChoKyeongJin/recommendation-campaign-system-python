@@ -118,6 +118,150 @@ def test_purchase_absence_rejects_positive_exists_polarity():
     assert validation["failure_reason"] == "semantic_condition_polarity_mismatch"
 
 
+def test_analytical_purchase_aggregation_does_not_require_targeting_exists_shape():
+    plan = _plan("구매한 회원 수")
+    plan["aggregation_request"] = {
+        "targetEntity": "purchase_count",
+        "outputColumns": [],
+        "filters": [],
+        "groupings": [],
+        "aggregations": [{
+            "id": "buyer_count",
+            "function": "count_distinct",
+            "table": "CRM_SL_ORDERDETAILALL",
+            "column": "MEMBER_NO",
+        }],
+        "derivedMetrics": [],
+        "sorting": [],
+        "ranking": {"enabled": False, "partitionBy": []},
+        "postAggregationFilters": [],
+        "relationConditions": [],
+        "businessRules": {},
+        "assumptions": [],
+        "unresolvedFields": [],
+    }
+
+    conditions = g.required_sql_conditions(plan)
+
+    assert not any(item["path"] == "target_user.purchase_membership" for item in conditions)
+
+
+def test_analytical_purchase_count_accepts_configured_fact_table_evidence():
+    plan = {
+        "output_contract": {
+            "expected_grain": "analytical",
+            "requires_member_id": False,
+            "whole_target": False,
+        },
+        "semantic_conditions": [{
+            "domain": "purchase",
+            "operator": "exists",
+            "is_primary_condition": True,
+        }],
+    }
+
+    validation = g._validate_sql_delivery_contract(
+        "구매한 회원 수",
+        plan,
+        "SELECT COUNT(DISTINCT MEMBER_NO) AS buyer_count FROM CRM_SL_ORDERDETAILALL",
+    )
+
+    assert validation["is_satisfied"] is True
+    assert validation["actual_grain"] == "member_count"
+
+
+def test_purchase_customer_aggregation_uses_window_and_distinct_member_grain():
+    plan = {
+        "target_user": {"purchase_membership": {"domain": "purchase", "operator": "exists", "window_days": 45}},
+        "aggregation_request": {
+            "targetEntity": "customer_purchase_activity",
+            "filters": [{
+                "id": "recent", "entity": "order", "field": "order_date",
+                "table": "CRM_SL_ORDERDETAILALL", "column": "ORDER_DATE",
+                "operator": "gte", "value": "20200101",
+            }, {
+                "id": "recent_end", "entity": "order", "field": "order_date",
+                "table": "CRM_SL_ORDERDETAILALL", "column": "ORDER_DATE",
+                "operator": "lte", "value": None,
+            }],
+            "groupings": [],
+            "aggregations": [{"id": "customer_count", "function": "count", "field": "*"}],
+            "assumptions": ["현재 날짜 기준으로 최근 45일을 계산함 (오늘을 2020-01-01로 가정)"],
+            "unresolvedFields": [
+                "purchase_date.from/to needs system fill for ORDER_DATE",
+                "cancellation policy requires a business definition",
+            ],
+        },
+    }
+
+    g._normalize_purchase_aggregation_request(plan)
+
+    request = plan["aggregation_request"]
+    assert request["filters"][0]["value"] == "P45D"
+    assert len(request["filters"]) == 1
+    assert request["assumptions"] == [
+        "Relative period P45D is evaluated using the database current date at execution time."
+    ]
+    assert request["unresolvedFields"] == ["cancellation policy requires a business definition"]
+    assert request["aggregations"][0] == {
+        "id": "customer_count",
+        "function": "count_distinct",
+        "entity": "customer_purchase_activity",
+        "field": "MEMBER_NO",
+        "table": "CRM_SL_ORDERDETAILALL",
+        "column": "MEMBER_NO",
+        "distinct": True,
+    }
+
+
+def test_normalized_aggregation_is_revalidated_before_input_gate():
+    plan = {
+        "target_user": {"purchase_membership": {"domain": "purchase", "operator": "exists", "window_days": 30}},
+        "aggregation_request": {
+            "targetEntity": "customer",
+            "outputColumns": [],
+            "filters": [{
+                "id": "recent", "entity": "order", "field": "order_date",
+                "table": "CRM_SL_ORDERDETAILALL", "column": "ORDER_DATE",
+                "operator": "gte", "value": "20200101",
+            }],
+            "groupings": [],
+            "aggregations": [{"id": "customer_count", "function": "count", "field": "*"}],
+            "derivedMetrics": [], "sorting": [],
+            "ranking": {"enabled": False, "partitionBy": []},
+            "postAggregationFilters": [], "relationConditions": [], "businessRules": {}, "assumptions": [],
+            "unresolvedFields": [
+                "filters[0].value (from date for 30 days ago) must be set at query execution time",
+            ],
+        },
+    }
+
+    g._normalize_purchase_aggregation_request(plan)
+    g._refresh_aggregation_request_validation(plan, g.DEFAULT_SCHEMA_PATH)
+
+    assert plan["aggregation_request"]["unresolvedFields"] == []
+    assert plan["aggregation_request_validation"] == {"valid": True, "errors": []}
+    assert plan["intent"] == "analyze_aggregation"
+
+
+def test_relative_purchase_membership_can_be_recovered_from_planning_query():
+    for query in ("최근 60일 이내 구매한 고객", "최근 60일 구매 고객"):
+        plan = {"target_user": {}}
+        g._apply_core_membership_semantics(query, plan)
+        assert plan["target_user"]["purchase_membership"] == {
+            "domain": "purchase", "operator": "exists", "window_days": 60,
+        }
+
+
+def test_scope_split_cannot_drop_count_output_instruction():
+    assert g._preserve_count_output_query(
+        "최근 30일 구매 고객 수를 알려줘", "최근 30일 구매 고객"
+    ) == "최근 30일 구매 고객 수를 알려줘"
+    assert g._preserve_count_output_query(
+        "기저귀 구매 고객에게 SMS 발송", "기저귀 구매 고객"
+    ) == "기저귀 구매 고객"
+
+
 def test_targeting_contract_requires_member_id_projection():
     validation = g._validate_sql_delivery_contract(
         "회원 목록", _member_contract(),

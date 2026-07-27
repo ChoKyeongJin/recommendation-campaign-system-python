@@ -11,6 +11,12 @@ aggregation_request의 모든 논리 필드는 제공된 스키마의 물리 tab
 필드 참조는 entity/field만 쓰지 말고 Aggregation Schema Metadata의 실제 테이블명을 table에, 실제 컬럼명을
 column에 반드시 함께 적는다. entity/field에 물리명을 넣는 것으로 대신하지 않는다.
 스키마나 업무 정의로 확인할 수 없는 항목은 추측하지 말고 unresolvedFields에 기록한다.
+Aggregation Schema Metadata에 실제 table/column이 있으면 존재 여부를 unresolvedFields에 다시 기록하지 않는다.
+집계 결과 별칭은 물리 outputColumns가 아니라 aggregations의 alias이며, ISO-8601 상대기간(P30D, P1M 등)은
+물리 날짜 컬럼에 연결된 filters.value로 표현하고 unresolvedFields에 기록하지 않는다.
+상대기간은 SQL 실행 시점의 DB 현재 날짜 함수로 계산하며, 임의의 현재일·기준일을 가정하거나 날짜 리터럴로 고정하지 않는다.
+사용자가 요청하지 않은 선택 필터(기간·상품·지역 등의 제한)는 제한 없음으로 해석하며, 지정되지 않았다는 이유로
+unresolvedFields에 기록하지 않는다. 지표 정의·DISTINCT 기준·관계·업무 정책처럼 결과 의미를 바꾸는 필수 결정만 기록한다.
 수·개수·건수는 COUNT 대상과 DISTINCT 여부를 구분하고, '~별'은 groupings로, 집계 결과의 임계값은
 postAggregationFilters로 표현한다. 단순 행 수는 function="count"에 field="*"로 두고 table/column을 생략한다.
 sorting·ranking.orderByMetricId·postAggregationFilters는 컬럼명이 아니라 aggregations/derivedMetrics에서

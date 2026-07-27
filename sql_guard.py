@@ -537,8 +537,9 @@ def load_table_dialects(schema_path: Path = DEFAULT_SCHEMA_PATH) -> dict[str, st
 
 def infer_sql_dialect(tables: list[str], table_dialects: dict[str, str], default: str = "mysql") -> str:
     """참조 테이블 중 하나라도 tsql 이면 tsql. (교차 DB 조인은 실행 불가하므로 단일 방언 가정)"""
+    normalized = {str(name).casefold(): value for name, value in table_dialects.items()}
     for table in tables:
-        dialect = table_dialects.get(table) or table_dialects.get(table.split(".")[-1])
+        dialect = normalized.get(table.casefold()) or normalized.get(table.split(".")[-1].casefold())
         if dialect == "tsql":
             return "tsql"
     return default
@@ -565,8 +566,9 @@ def infer_target_connection(tables: list[str], table_databases: dict[str, str]) 
     카탈로그에는 외부 실DB(CRMDW/CRMAN/quadmax_sdz) 테이블만 등록돼 있고, 로컬 postgres
     데모 테이블(users/campaigns 등)은 없다. 따라서 매칭되는 테이블의 database 가 곧 실행 대상.
     """
+    normalized = {str(name).casefold(): value for name, value in table_databases.items()}
     for table in tables:
-        connection = table_databases.get(table) or table_databases.get(table.split(".")[-1])
+        connection = normalized.get(table.casefold()) or normalized.get(table.split(".")[-1].casefold())
         if connection:
             return connection
     return None
@@ -601,10 +603,10 @@ def validate_sql(
         issues.append(_issue("forbidden_keyword", "error", f"Forbidden SQL keyword: {keyword.upper()}"))
 
     tables = _extract_tables(statement)
-    allowed = allowed_tables or set()
+    allowed = {str(table).casefold() for table in (allowed_tables or set())}
     if allowed:
         for table in tables:
-            if table not in allowed:
+            if table.casefold() not in allowed and table.split(".")[-1].casefold() not in allowed:
                 issues.append(_issue("table_not_allowed", "error", f"Table is not allowed: {table}"))
 
     sensitive_columns = _selected_sensitive_columns(statement)

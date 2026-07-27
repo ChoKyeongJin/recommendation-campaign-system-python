@@ -420,6 +420,7 @@ def parse_aggregation_request(
     )
     catalog = SchemaMetadata.load(schema_path)
     _resolve_field_refs(request, catalog)
+    _normalize_aggregation_request(request, catalog)
     _validate_request(request, catalog, dialect, errors)
     return request, errors
 
@@ -538,6 +539,126 @@ def _resolve_field_refs(request: AggregationRequest, catalog: SchemaMetadata) ->
         request.ranking = replace(
             request.ranking, partition_by=tuple(resolve(r) for r in request.ranking.partition_by)
         )
+
+
+def _normalize_aggregation_request(request: AggregationRequest, catalog: SchemaMetadata) -> None:
+    """Normalize redundant LLM output without weakening physical-schema validation.
+
+    ``aggregations`` owns aggregate result columns.  ``outputColumns`` therefore contains only
+    physical grouping columns when an aggregate is present; models often repeat the aggregate
+    source or a virtual ``*_count`` alias there.  Keeping that repetition makes the SQL prompt
+    select an ungrouped physical column or asks the catalog to resolve a virtual result column.
+
+    ``unresolvedFields`` is also advisory LLM text.  Remove only notes that structured IR and the
+    catalog can prove resolved: a dropped virtual output, a catalog-confirmed existence check, an
+    ISO-8601 relative-period filter already represented by a physical filter reference, or an
+    explicitly omitted optional filter (which means no restriction).  Real business ambiguities
+    remain fail-closed.
+    """
+    dropped_outputs: list[FieldRef] = []
+    if request.aggregations:
+        grouping_keys = {_field_identity(ref) for ref in request.groupings}
+        kept_outputs: list[FieldRef] = []
+        for ref in request.output_columns:
+            if _field_identity(ref) in grouping_keys:
+                kept_outputs.append(ref)
+            else:
+                dropped_outputs.append(ref)
+        request.output_columns = kept_outputs
+
+    request.unresolved_fields = [
+        note
+        for note in request.unresolved_fields
+        if not _unresolved_note_is_structurally_resolved(note, request, catalog, dropped_outputs)
+    ]
+
+
+def _field_identity(ref: FieldRef) -> tuple[str, str]:
+    if ref.table and ref.column:
+        return ref.table.casefold(), ref.column.casefold()
+    return ref.entity.casefold(), ref.field.casefold()
+
+
+_PHYSICAL_FIELD_IN_NOTE_RE = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\.([A-Za-z_][A-Za-z0-9_]*)\b")
+_RELATIVE_PERIOD_RE = re.compile(r"^P(?=\d)(?:\d+[YMWD])+$", re.IGNORECASE)
+_SCHEMA_EXISTENCE_NOTE_RE = re.compile(
+    r"(?:exist(?:s|ence)?|present|available|schema|column|field|존재|스키마|컬럼|필드)",
+    re.IGNORECASE,
+)
+_OPTIONAL_FILTER_ABSENCE_NOTE_RE = re.compile(
+    r"(?=.*(?:\bfilter\b|\blimit\b|\brestrict\w*\b|필터|제한|범위))"
+    r"(?=.*(?:\bnot\s+(?:specified|provided|requested)\b|\bunspecified\b|명시되지|지정되지|제공되지|요청되지))",
+    re.IGNORECASE,
+)
+_MISSING_OUTPUT_NOTE_RE = re.compile(
+    r"(?:outputcolumns?|output_columns?).*(?:missing|unspecified|not\s+(?:specified|provided)|미지정|누락|없음)",
+    re.IGNORECASE,
+)
+_RELATIVE_FILTER_NOTE_RE = re.compile(
+    r"(?=.*(?:filters?(?:\[\d+\])?\.value|relative|상대|from\s*/\s*to|system\s+date|past\s+\d+\s+days|requires\s+concrete|today|current\s+date|현재\s*날짜|실행\s*시점))"
+    r"(?=.*(?:date|from|to|today|날짜|기간|변환|실행))",
+    re.IGNORECASE,
+)
+_RELATIVE_WINDOW_PLACEHOLDER_RE = re.compile(
+    r"\bwindow_(?:start|end)_\d+(?:d|w|m|y)\b",
+    re.IGNORECASE,
+)
+
+
+def _unresolved_note_is_structurally_resolved(
+    note: str,
+    request: AggregationRequest,
+    catalog: SchemaMetadata,
+    dropped_outputs: list[FieldRef],
+) -> bool:
+    folded = note.casefold()
+
+    # An omitted filter is not missing information: it means the result is unrestricted on that
+    # dimension.  Keep true business-definition gaps (metric choice, cancellation/return policy,
+    # join semantics, etc.) fail-closed because they do not have filter/limit absence wording.
+    if _OPTIONAL_FILTER_ABSENCE_NOTE_RE.search(note):
+        return True
+
+    # Aggregate result aliases live in aggregations, so an empty physical outputColumns list is
+    # complete for a scalar aggregate.  It is not a missing member/customer output column.
+    if request.aggregations and not request.output_columns and _MISSING_OUTPUT_NOTE_RE.search(note):
+        return True
+
+    # Aggregate aliases are virtual outputs, not physical catalog fields.
+    for ref in dropped_outputs:
+        logical_name = f"{ref.entity}.{ref.field}".casefold()
+        physical_name = ref.physical_name
+        if logical_name in folded or (physical_name and physical_name in folded):
+            return True
+
+    # Relative periods are executable filter values, not missing schema.  SQL generation renders
+    # them with the selected DB dialect and the physical column's date representation.
+    for ref in request.filters:
+        value = str(ref.value).strip() if ref.value is not None else ""
+        if (
+            _RELATIVE_PERIOD_RE.fullmatch(value)
+            and value.casefold() in folded
+            and ref.physical_name
+            and ref.physical_name in folded
+        ):
+            return True
+        if (
+            _RELATIVE_PERIOD_RE.fullmatch(value)
+            and ref.physical_name
+            and (_RELATIVE_FILTER_NOTE_RE.search(note) or _RELATIVE_WINDOW_PLACEHOLDER_RE.search(note))
+        ):
+            return True
+
+    # A model may hedge about a field that is actually present in the supplied catalog.  Only
+    # existence/schema notes are discharged here; relationship or business-definition notes stay.
+    mentioned = _PHYSICAL_FIELD_IN_NOTE_RE.findall(note)
+    if mentioned and _SCHEMA_EXISTENCE_NOTE_RE.search(note):
+        return all(
+            (table_key := catalog.resolve_table_key(table)) is not None
+            and catalog.resolve_column_name(table_key, column) is not None
+            for table, column in mentioned
+        )
+    return False
 
 
 def _resolve_reference(ref: FieldRef, catalog: SchemaMetadata, hint_tables: Iterable[str] = ()) -> FieldRef:
@@ -883,11 +1004,17 @@ def _field_ref(value: Any, path: str, errors: list[ValidationError]) -> FieldRef
     if not isinstance(value, dict):
         errors.append(ValidationError("INVALID_FIELD_REFERENCE", "필드 참조는 객체여야 합니다.", path=path))
         return None
-    entity, name = value.get("entity"), value.get("field")
-    if not isinstance(entity, str) or not entity or not isinstance(name, str) or not name:
+    table = _string(value.get("table"))
+    column = _string(value.get("column"))
+    # Physical table/column is stronger evidence than a repeated logical label.  Tool-calling
+    # models sometimes omit entity/field while still returning a fully valid catalog reference;
+    # derive the labels instead of discarding the whole aggregation/filter/grouping item.
+    entity = _string(value.get("entity")) or table
+    name = _string(value.get("field")) or column
+    if entity is None or name is None:
         errors.append(ValidationError("INVALID_FIELD_REFERENCE", "entity와 field가 필요합니다.", path=path))
         return None
-    return FieldRef(entity, name, _string(value.get("table")), _string(value.get("column")), _string(value.get("alias")))
+    return FieldRef(entity, name, table, column, _string(value.get("alias")))
 
 
 def _filter(value: Any, path: str, errors: list[ValidationError]) -> FilterRequirement | None:

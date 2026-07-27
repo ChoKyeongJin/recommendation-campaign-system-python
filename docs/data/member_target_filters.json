@@ -645,6 +645,12 @@
 
   "order_count_targets": {
     "table": "CRM_SL_ORDERHEADERMALL",
+    "evidence_tables": [
+      "CRM_SL_ORDERHEADERMALL",
+      "CRM_SL_ORDERHEADERALL",
+      "CRM_SL_ORDERDETAILMALL",
+      "CRM_SL_ORDERDETAILALL"
+    ],
     "alias": "OH",
     "join_column": "MEMBER_NO",
     "base_join_column": "B.MEMBER_NO",

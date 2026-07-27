@@ -228,6 +228,10 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
     "recent_login_target": {"column": "LAST_LOGIN_DATE", "table": "CRM_MB_BASEINFO", "anchor": "getdate"},
     "order_count_targets": {
         "table": "CRM_SL_ORDERHEADERMALL",
+        "evidence_tables": [
+            "CRM_SL_ORDERHEADERMALL", "CRM_SL_ORDERHEADERALL",
+            "CRM_SL_ORDERDETAILMALL", "CRM_SL_ORDERDETAILALL",
+        ],
         "join_column": "MEMBER_NO",
         "order_id_column": "ORDER_ID",
         "order_date_column": "ORDER_DATE",
@@ -3138,6 +3142,9 @@ def _infer_intent(query: str) -> str:
 
 
 _MEMBER_OUTPUT_RE = re.compile(r"회원|고객|사용자|가입자|대상|몇\s*명|인원\s*수|회원\s*수|고객\s*수")
+_COUNT_OUTPUT_SIGNAL_RE = re.compile(
+    r"(?:몇\s*(?:명|건|개|곳)|(?:회원|고객|사용자|가입자|구매자|상품|제품|주문|구매|반응)\s*(?:수|인원|개수|건수))"
+)
 _COMPLETED_BEHAVIOR_RE = re.compile(
     r"(?:구매|구입|주문)(?:했|한|했던)|장바구니.{0,10}(?:담|보관|있)|"
     r"캠페인.{0,12}(?:반응|응답)(?:했|한|없는|않)|(?:로그인|방문)(?:했|한|하지않|없는)"
@@ -3158,7 +3165,7 @@ def _is_completed_behavior_segment_lookup(query: str) -> bool:
 
 
 _PURCHASE_POSITIVE_MEMBERSHIP_RE = re.compile(
-    r"(?:구매|구입|주문)(?:이력|내역)?(?:을|를|은|는|이|가|도)?(?:했|한|했던|있는)"
+    r"(?:구매|구입|주문)(?:(?:이력|내역)?(?:을|를|은|는|이|가|도)?(?:했|한|했던|있는)|(?=(?:고객|회원|사용자|유저)))"
 )
 _CAMPAIGN_GENERIC_RESPONSE_RE = re.compile(
     r"캠페인(?:에|에서|을|를|의)?(?:는|은|도)?(?:반응|응답)"
@@ -3256,7 +3263,10 @@ def _apply_core_membership_semantics(query: str, plan: dict[str, Any]) -> None:
 
 def _attach_query_output_contract(query: str, plan: dict[str, Any]) -> None:
     """질문의 기대 결과 단위와 API 결과 계약을 SQL 생성 전에 확정한다."""
+    _normalize_aggregation_axis_filters(plan)
     if isinstance(plan.get("aggregation_request"), dict) or plan.get("intent") == "analyze_aggregation":
+        if isinstance(plan.get("aggregation_request"), dict):
+            plan["intent"] = "analyze_aggregation"
         expected_grain = "analytical"
         requires_member_id = False
     elif isinstance(plan.get("region_member_count_target"), dict):
@@ -3293,6 +3303,183 @@ def _attach_query_output_contract(query: str, plan: dict[str, Any]) -> None:
             item for item in plan.get("semantic_resolutions") or []
             if not (isinstance(item, dict) and item.get("policy_id") == "region_context_default")
         ]
+
+
+def _preserve_count_output_query(effective_query: str, targeting_query: str) -> str:
+    """스코프 분리가 잘라낸 숫자 집계 출력 지시를 Query Planner 입력에 보존한다."""
+    if _COUNT_OUTPUT_SIGNAL_RE.search(effective_query) and not _COUNT_OUTPUT_SIGNAL_RE.search(targeting_query):
+        return effective_query
+    return targeting_query
+
+
+_GROUP_AXIS_OBJECT_RE = re.compile(r"^\s*[0-9A-Za-z가-힣_+\-]+\s*별\s*$", re.IGNORECASE)
+_DATE_WINDOW_UNRESOLVED_RE = re.compile(
+    r"(?:\b(?:date|from|to|today|window|yyyy(?:mmdd)?)\b|order_date|purchase_date|날짜|기간|현재일|실행\s*시점)",
+    re.IGNORECASE,
+)
+
+
+def _normalize_aggregation_axis_filters(plan: dict[str, Any]) -> None:
+    """그룹 축 표현을 구매 상품 필터로 중복 해석한 결과를 제거한다.
+
+    ``<차원>별 구매 고객 수``에서 ``<차원>별``은 GROUP BY 축이지 상품명이 아니다. 특정 차원명에
+    의존하지 않고, 구조화된 그룹 집계가 존재하면서 구매 상품 후보 전체가 ``별`` 축 형태일 때만
+    정리한다. 실제 상품 조건이 함께 있으면 그 조건은 그대로 보존한다.
+    """
+    aggregation = plan.get("aggregation_request")
+    if not isinstance(aggregation, dict) or not aggregation.get("groupings"):
+        return
+    target_user = plan.get("target_user")
+    if not isinstance(target_user, dict):
+        return
+
+    raw_objects = target_user.get("purchase_objects")
+    if isinstance(raw_objects, list):
+        remaining = []
+        for item in raw_objects:
+            value = item.get("value") if isinstance(item, dict) else item
+            if isinstance(value, str) and _GROUP_AXIS_OBJECT_RE.fullmatch(value):
+                continue
+            remaining.append(item)
+        if remaining:
+            target_user["purchase_objects"] = remaining
+        else:
+            target_user.pop("purchase_objects", None)
+
+    purchase_object = target_user.get("purchase_object")
+    if isinstance(purchase_object, str) and _GROUP_AXIS_OBJECT_RE.fullmatch(purchase_object):
+        target_user.pop("purchase_object", None)
+        target_user.pop("purchase_object_kind", None)
+
+
+def _normalize_purchase_aggregation_request(plan: dict[str, Any]) -> None:
+    """결정론적으로 확인된 구매 기간·대상 grain을 집계 IR에 반영한다.
+
+    LLM이 상대 기간을 실행 시점과 무관한 고정 날짜로 바꾸거나, 고객 수를 주문 행 ``COUNT(*)``로
+    표현해도 구매 존재 조건의 ``window_days``와 설정 기반 회원키를 단일 진실 소스로 사용한다.
+    기간이나 고객 집계가 아닌 요청은 건드리지 않는다.
+    """
+    aggregation = plan.get("aggregation_request")
+    target_user = plan.get("target_user")
+    if not isinstance(aggregation, dict) or not isinstance(target_user, dict):
+        return
+    membership = target_user.get("purchase_membership")
+    if not isinstance(membership, dict) or membership.get("operator") != "exists":
+        return
+
+    registry = _order_count_targets_config()
+    member_column = str(registry.get("join_column") or _member_key_column())
+    date_column = str(registry.get("order_date_column") or "ORDER_DATE")
+    evidence_tables = {
+        str(table).casefold(): str(table)
+        for table in registry.get("evidence_tables", [])
+        if isinstance(table, str) and table
+    }
+    configured_table = str(registry.get("table") or "")
+    if configured_table:
+        evidence_tables.setdefault(configured_table.casefold(), configured_table)
+
+    filters = aggregation.get("filters")
+    filters = filters if isinstance(filters, list) else []
+    purchase_table = None
+    window_days = membership.get("window_days")
+    normalized_filters = []
+    relative_filter_resolved = False
+    for item in filters:
+        if not isinstance(item, dict):
+            normalized_filters.append(item)
+            continue
+        table = item.get("table")
+        if isinstance(table, str) and table.casefold() in evidence_tables:
+            purchase_table = table
+        column = str(item.get("column") or item.get("field") or "")
+        is_order_date = column.casefold() == date_column.casefold()
+        if (
+            isinstance(window_days, int)
+            and window_days > 0
+            and is_order_date
+            and item.get("operator") in {"gte", ">="}
+        ):
+            item["value"] = f"P{window_days}D"
+            relative_filter_resolved = True
+        # '최근 N일'의 상한은 현재 시점으로 암묵적이다. 모델이 값 없는 별도 종료 필터를 만든 경우에는
+        # 실행 불가능한 필터를 남기지 않는다. 명시 값이 있는 상한은 보존한다.
+        if (
+            isinstance(window_days, int)
+            and window_days > 0
+            and is_order_date
+            and item.get("operator") in {"lte", "<="}
+            and (item.get("value") is None or item.get("value") == "")
+        ):
+            continue
+        normalized_filters.append(item)
+    aggregation["filters"] = normalized_filters
+    if relative_filter_resolved:
+        unresolved = aggregation.get("unresolvedFields")
+        if isinstance(unresolved, list):
+            aggregation["unresolvedFields"] = [
+                note for note in unresolved
+                if not (isinstance(note, str) and _DATE_WINDOW_UNRESOLVED_RE.search(note))
+            ]
+    if isinstance(window_days, int) and window_days > 0:
+        assumptions = aggregation.get("assumptions")
+        assumptions = assumptions if isinstance(assumptions, list) else []
+        anchor_markers = ("current date", "today", "anchor date", "현재 날짜", "현재일", "오늘", "기준일")
+        aggregation["assumptions"] = [
+            assumption for assumption in assumptions
+            if not (
+                isinstance(assumption, str)
+                and any(marker in assumption.casefold() for marker in anchor_markers)
+            )
+        ]
+        aggregation["assumptions"].append(
+            f"Relative period P{window_days}D is evaluated using the database current date at execution time."
+        )
+
+    target_entity = str(aggregation.get("targetEntity") or "").casefold()
+    member_target = bool(
+        target_entity in {"member", "customer", "user", "회원", "고객"}
+        or re.search(r"(?:^|_)(?:member|customer|user)(?:$|_)", target_entity)
+        or any(term in target_entity for term in ("회원", "고객"))
+    )
+    if not member_target:
+        return
+    metrics = aggregation.get("aggregations")
+    if not isinstance(metrics, list):
+        return
+    for metric in metrics:
+        if not isinstance(metric, dict) or metric.get("function") not in {"count", "count_distinct"}:
+            continue
+        metric_table = metric.get("table")
+        if isinstance(metric_table, str) and metric_table.casefold() in evidence_tables:
+            purchase_table = metric_table
+        table = purchase_table or configured_table
+        if not table:
+            continue
+        metric.update({
+            "function": "count_distinct",
+            "entity": target_entity or "member",
+            "field": member_column,
+            "table": table,
+            "column": member_column,
+            "distinct": True,
+        })
+
+
+def _refresh_aggregation_request_validation(plan: dict[str, Any], schema_path: Path) -> None:
+    """후처리로 바뀐 집계 IR을 입력 게이트 전에 다시 스키마 검증한다."""
+    payload = plan.get("aggregation_request")
+    if not isinstance(payload, dict):
+        return
+    request, errors = parse_aggregation_request(payload, schema_path, dialect=_member_dialect().name)
+    if request is None:
+        return
+    plan["intent"] = "analyze_aggregation"
+    plan["aggregation_request"] = request.to_dict()
+    plan["aggregation_request_validation"] = {
+        "valid": not errors,
+        "errors": [error.to_dict() for error in errors],
+    }
 
 
 def _extract_conditions_ir(query_plan: dict[str, Any]):
@@ -4075,6 +4262,23 @@ def _region_granularity_alternation() -> str:
     return "|".join(re.escape(token) for token in tokens)
 
 
+def _region_granularity_match(query: str) -> re.Match[str] | None:
+    """Return an explicit region-granularity token, excluding substrings such as ``구매``.
+
+    Most configured tokens are self-describing words (시도, 시군구, 지역).  Single-syllable
+    tokens such as ``구`` and ``동`` need a following unit boundary; otherwise ``구매`` or ``동안``
+    is misrouted to the regional member-count builder.
+    """
+    for match in re.finditer(rf"({_region_granularity_alternation()})", query):
+        token = match.group(1)
+        if len(token) > 1:
+            return match
+        suffix = query[match.end():]
+        if not suffix or re.match(r"(?:\s|별|단위|마다|지역)", suffix):
+            return match
+    return None
+
+
 def _region_column_bare(granularity: str) -> str:
     """지역 단위어(지역/시군구/시도/동…)를 실컬럼명(SIGUNGU/SIDO/DONG)으로. 매핑에 없으면 기본 컬럼.
 
@@ -4596,7 +4800,7 @@ def _apply_region_member_count_target(query: str, plan: dict[str, Any]) -> None:
         return
     if not _MEMBER_COUNT_SIGNAL_RE.search(query):
         return
-    granularity_match = re.search(rf"({_region_granularity_alternation()})", query)
+    granularity_match = _region_granularity_match(query)
     if not granularity_match:
         return
     granularity = granularity_match.group(1)
@@ -8496,6 +8700,7 @@ def retrieve(
     if scope == "targeting":
         plan_scopes = split_prompt_scopes(effective_query, parser=query_parser, llm_model=llm_model, prompt_dir=prompt_dir)
         plan_query = (plan_scopes.get("targeting") or "").strip() or effective_query
+        plan_query = _preserve_count_output_query(effective_query, plan_query)
     else:
         plan_query = effective_query
     # 타겟/채널 분리(2단계) 계측을 Query Plan 과 분리해 둔다 — 부분 트레이스에서 분리 단계와 계획 단계의
@@ -8547,6 +8752,11 @@ def retrieve(
     # (campaign_response 재감지와 같은 이유). _apply_purchase_object_filter 는 매칭이 있을 때만 값을 쓰므로
     # (없으면 무동작) 유효한 값을 지우지 않고, 구매 동사 없는 장바구니 문맥('담은')엔 걸리지 않아 안전하다.
     _apply_purchase_object_filter(_split_channel_suffix(query)[0] or query, query_plan.setdefault("target_user", {}))
+    # LLM 병합이 구매 존재/기간 슬롯을 누락해도 실제 파싱 문장으로 실행 직전에 재확정한다. 이 슬롯이
+    # 상대기간 집계 정규화(P{N}D)의 결정론적 근거이므로 집계 후처리보다 먼저 실행한다.
+    _apply_core_membership_semantics(plan_query, query_plan)
+    _normalize_aggregation_axis_filters(query_plan)
+    _normalize_purchase_aggregation_request(query_plan)
     # '최근 N개월 캠페인 K번 이상 반응'(반응 횟수)도 원문 기준으로 재감지한다 — 재작성/스코프 분리가 횟수·기간
     # 어구를 흔들 수 있어 결정론 조건을 복원한다(campaign_responses 재감지와 같은 이유).
     _apply_campaign_response_frequency_filter(_split_channel_suffix(query)[0] or query, query_plan)
@@ -11021,6 +11231,7 @@ def _build_llm_sql_fallback_candidate(
                 "exclusion_conditions(취소·반품·탈퇴 등 제외 조건).",
                 "- 원문에 없는 조건은 추론해 채우지 말고 해당 항목을 null 또는 빈 배열로 표시한다.",
                 "- aggregation_request가 제공되면 이를 SQL 생성의 단일 진실 소스로 사용한다. unresolvedFields가 하나라도 있으면 sql=null을 반환한다.",
+                "- filters.value의 ISO-8601 상대기간(P30D, P1M 등)은 미해결 값이 아니다. 대상 컬럼 타입과 현재 DB 방언에 맞춰 DB 현재 시점 기준 범위식으로 렌더링하고 임의의 기준일이나 날짜 리터럴로 고정하지 않는다.",
                 "- '수/개수/건수/고객 수/상품 수'는 COUNT 대상과 DISTINCT 여부를 구분하고, '~별'은 GROUP BY로 구현한다.",
                 "- 비율·점유율·전환율·증감률은 분자/분모 또는 비교 기간을 같은 grain으로 집계하고 NULLIF로 0 나눗셈을 처리한다.",
                 "- '가장 많이', '상위 N', '베스트 N' 표현이 있으면 aggregation, order_by, top_n 을 모두 추출하고, "
@@ -11555,11 +11766,14 @@ def _semantic_evidence_sources() -> dict[str, tuple[str, ...]]:
     cart_cfg = _cart_targets_registry()
     campaign_cfg = _MEMBER_TARGET_FILTERS.get("campaign_response_targets", {})
     contact_cfg = campaign_cfg.get("contact_member_list", {}) if isinstance(campaign_cfg, dict) else {}
+    configured_purchase_tables = order_cfg.get("evidence_tables")
+    purchase_tables = (
+        [str(value) for value in configured_purchase_tables if isinstance(value, str) and value]
+        if isinstance(configured_purchase_tables, list)
+        else [str(order_cfg.get("table") or "CRM_SL_ORDERHEADERMALL"), "CRM_SL_ORDERDETAILMALL"]
+    )
     return {
-        "purchase": tuple(_unique_strings([
-            str(order_cfg.get("table") or "CRM_SL_ORDERHEADERMALL"),
-            "CRM_SL_ORDERDETAILMALL",
-        ])),
+        "purchase": tuple(_unique_strings(purchase_tables)),
         "cart": (str(cart_cfg.get("table") or "ODS_MALL_OMS_CART"),),
         "campaign_response": tuple(_unique_strings([
             str(campaign_cfg.get("table") or "MCS_CAMP_MBR_RSPN_FT") if isinstance(campaign_cfg, dict) else "MCS_CAMP_MBR_RSPN_FT",
@@ -11804,6 +12018,9 @@ def build_sql_result(
     prompt_dir: Path | None = None,
 ) -> dict[str, Any]:
     # 호출자가 수동 plan을 넘기는 단위/통합 경로도 동일한 의미 추출·출력 계약을 거친다.
+    _normalize_aggregation_axis_filters(query_plan)
+    _normalize_purchase_aggregation_request(query_plan)
+    _refresh_aggregation_request_validation(query_plan, schema_path)
     if not isinstance(query_plan.get("semantic_conditions"), list):
         _apply_core_membership_semantics(original_query or query, query_plan)
     if not isinstance(query_plan.get("output_contract"), dict):
@@ -12330,7 +12547,15 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
         _add_token(tokens, "target_user.purchase_object", "purchase_object", "like", purchase_object, clauses, ["user_recent_behaviors"])
 
     purchase_membership = target_user.get("purchase_membership")
-    if isinstance(purchase_membership, dict) and purchase_membership.get("operator") == "exists":
+    # Analytical aggregation SQL expresses positive membership by reading the fact table directly
+    # (for example COUNT(DISTINCT member_key) FROM orders).  Requiring a targeting-only EXISTS
+    # shape here rejects valid aggregate SQL even though aggregation AST and delivery evidence
+    # already prove the same condition.
+    if (
+        not isinstance(query_plan.get("aggregation_request"), dict)
+        and isinstance(purchase_membership, dict)
+        and purchase_membership.get("operator") == "exists"
+    ):
         _add_token(
             tokens, "target_user.purchase_membership", "purchase", "exists",
             purchase_membership.get("window_days") or "any_time",
@@ -16198,7 +16423,11 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
         conditions.append(_condition("target_user.purchase_object", purchase_object, [purchase_object]))
 
     purchase_membership = target_user.get("purchase_membership")
-    if isinstance(purchase_membership, dict) and purchase_membership.get("operator") == "exists":
+    if (
+        not isinstance(query_plan.get("aggregation_request"), dict)
+        and isinstance(purchase_membership, dict)
+        and purchase_membership.get("operator") == "exists"
+    ):
         order_table = _order_count_targets_config().get("table", "CRM_SL_ORDERHEADERMALL")
         terms = [str(order_table), "exists"]
         if isinstance(purchase_membership.get("window_days"), int):

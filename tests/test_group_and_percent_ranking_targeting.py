@@ -190,6 +190,33 @@ def test_region_member_count_without_ranking_lists_all_groups():
     assert "TOP" not in sql
 
 
+def test_purchase_word_does_not_trigger_single_syllable_region_granularity():
+    for query in ("구매한 고객 수를 알려줘", "최근 30일 동안 구매한 고객 수", "주문한 회원 수"):
+        plan = _plan(query)
+        assert plan.get("region_member_count_target") is None
+        assert plan.get("region_density_target") is None
+
+
+def test_group_axis_suffix_is_not_treated_as_purchase_object():
+    for axis in ("브랜드별", "카테고리별", "등급 별"):
+        plan = {
+            "aggregation_request": {"groupings": [{"field": {"column": "GROUP_KEY"}}]},
+            "target_user": {"purchase_object": axis, "purchase_object_kind": "product"},
+        }
+        g._normalize_aggregation_axis_filters(plan)
+        assert "purchase_object" not in plan["target_user"]
+        assert "purchase_object_kind" not in plan["target_user"]
+
+
+def test_real_purchase_object_survives_group_axis_normalization():
+    plan = {
+        "aggregation_request": {"groupings": [{"field": {"column": "BRAND_ID"}}]},
+        "target_user": {"purchase_object": "기저귀", "purchase_object_kind": "product"},
+    }
+    g._normalize_aggregation_axis_filters(plan)
+    assert plan["target_user"] == {"purchase_object": "기저귀", "purchase_object_kind": "product"}
+
+
 # ── 라우팅 분리: 회원 대상 vs 지역 대상 ─────────────────────────────────────────────────
 
 def test_member_grouped_vs_region_ranking_distinct_routes():

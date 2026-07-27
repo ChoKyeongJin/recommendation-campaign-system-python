@@ -293,3 +293,120 @@ def test_29_tool_schema_declares_metric_and_physical_keys():
     assert "table" in schema["groupings"]["items"]["required"]
     assert schema["aggregations"]["items"]["properties"]["function"]["enum"]
     assert schema["postAggregationFilters"]["items"]["required"] == ["id", "metricId", "operator"]
+
+
+def test_30_physical_reference_backfills_missing_logical_labels(schema_path):
+    payload = request(
+        target="metric",
+        aggs=[{
+            "id": "unique_customers",
+            "function": "count_distinct",
+            "table": "orders",
+            "column": "customer_id",
+            "alias": "customer_count",
+        }],
+    )
+
+    spec = parsed(payload, schema_path)
+
+    assert (spec.aggregations[0].entity, spec.aggregations[0].field) == ("orders", "customer_id")
+    assert (spec.aggregations[0].table, spec.aggregations[0].column) == ("orders", "customer_id")
+
+
+def test_31_aggregate_outputs_are_normalized_to_grouping_columns(schema_path):
+    product = field("product", "productId", "order_items", "product_id")
+    payload = request(
+        target="product",
+        output=[product, field("customer", "customerId", "orders", "customer_id")],
+        groups=[product],
+        aggs=[{
+            "id": "unique_customers",
+            "function": "count_distinct",
+            "table": "orders",
+            "column": "customer_id",
+            "alias": "customer_count",
+        }],
+    )
+
+    spec = parsed(payload, schema_path)
+
+    assert [(ref.table, ref.column) for ref in spec.output_columns] == [("order_items", "product_id")]
+
+
+def test_32_catalog_confirmed_existence_note_is_not_unresolved(schema_path):
+    payload = request(
+        target="metric",
+        aggs=[{
+            "id": "unique_customers",
+            "function": "count_distinct",
+            "table": "orders",
+            "column": "customer_id",
+        }],
+        unresolved=["orders.customer_id column existence must be confirmed"],
+    )
+
+    spec = parsed(payload, schema_path)
+
+    assert spec.unresolved_fields == []
+
+
+def test_33_structured_relative_period_is_resolved_but_business_ambiguity_remains(schema_path):
+    order_date = field("order", "orderDate", "orders", "order_date")
+    payload = request(
+        target="metric",
+        filters=[{**order_date, "id": "recent", "operator": "gte", "value": "P30D"}],
+        aggs=[{
+            "id": "unique_customers",
+            "function": "count_distinct",
+            "table": "orders",
+            "column": "customer_id",
+        }],
+        unresolved=[
+            "orders.order_date requires conversion from relative period P30D at execution time",
+            "best-selling metric requires a business definition",
+        ],
+    )
+
+    spec, errors = parse_aggregation_request(payload, schema_path, dialect="postgres")
+
+    assert spec is not None and not errors
+    assert spec.unresolved_fields == ["best-selling metric requires a business definition"]
+
+
+def test_34_absent_optional_filter_is_unrestricted_but_business_policy_remains(schema_path):
+    payload = request(
+        target="metric",
+        aggs=[agg("unique_customers", "count_distinct", "order", "customer_id", "orders", "customer_id")],
+        unresolved=[
+            "Whether to limit by date range (purchase_date) was not specified",
+            "return inclusion policy requires a business definition",
+        ],
+    )
+
+    spec = parsed(payload, schema_path)
+
+    assert spec.unresolved_fields == ["return inclusion policy requires a business definition"]
+
+
+def test_35_resolved_scalar_output_and_relative_filter_notes_are_removed(schema_path):
+    payload = request(
+        target="customer",
+        filters=[{
+            **field("order", "order_date", "orders", "order_date"),
+            "id": "recent", "operator": "gte", "value": "P30D",
+        }],
+        aggs=[agg("customer_count", "count_distinct", "customer", "customer_id", "orders", "customer_id")],
+        unresolved=[
+            "aggregation_request.outputColumns.table/column 미지정 - customer count is an aggregate",
+            "aggregation_request.filters.value 실제 from/to 날짜 미정 - relative 30일을 물리 날짜로 변환 필요",
+            "purchase_date.from/to values not specified (needs system date to compute past 30 days)",
+            "WINDOW_START_30D; WINDOW_END_30D",
+            "aggregation_request.filters[0].value -> requires concrete from date YYYYMMDD",
+            "aggregation_request.filters[1].value -> requires concrete to date YYYYMMDD",
+            "현재 날짜 값(today)과 today_minus_30은 실행 시점에 결정되어야 함",
+        ],
+    )
+
+    spec = parsed(payload, schema_path)
+
+    assert spec.unresolved_fields == []
