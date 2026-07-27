@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, field
+import re
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -30,6 +31,9 @@ NUMERIC_TYPES = frozenset({
     "tinyint", "smallint", "int", "integer", "bigint", "decimal", "numeric",
     "float", "real", "double", "money", "smallmoney", "number",
 })
+ZERO_DIVISION_POLICIES = frozenset({"null", "zero"})
+SORT_DIRECTIONS = frozenset({"asc", "desc"})
+ROW_COUNT_FIELD = "*"  # COUNT(*) — 필드 참조가 없는 행 수 집계 표기
 
 
 @dataclass(frozen=True)
@@ -71,6 +75,11 @@ class AggregationRequirement(FieldRef):
     function: str = "count"
     distinct: bool = False
     condition: FilterRequirement | None = None
+
+    @property
+    def counts_rows(self) -> bool:
+        """COUNT(*) 처럼 물리 컬럼 없이 행 수만 세는 집계인지."""
+        return self.function == "count" and not self.column and self.field == ROW_COUNT_FIELD
 
 
 @dataclass(frozen=True)
@@ -159,6 +168,23 @@ class AggregationRequest:
 class SchemaMetadata:
     tables: dict[str, dict[str, Any]]
 
+    def __post_init__(self) -> None:
+        # 별칭 색인은 IR 해석 전용이다. table()/column() 의 엄격한 정확 일치는 그대로 둔다.
+        self._table_aliases = _alias_index(
+            (alias, key)
+            for key, meta in self.tables.items()
+            for alias in (key, meta.get("physical_name"), meta.get("logical_name"))
+        )
+        self._column_aliases = {
+            key: _alias_index(
+                (alias, str(column.get("name", "")))
+                for column in meta.get("columns", []) or []
+                if isinstance(column, dict) and column.get("name")
+                for alias in (column.get("name"), column.get("logical_name"))
+            )
+            for key, meta in self.tables.items()
+        }
+
     @classmethod
     def load(cls, schema_path: Path) -> "SchemaMetadata":
         try:
@@ -170,6 +196,15 @@ class SchemaMetadata:
 
     def table(self, name: str | None) -> dict[str, Any] | None:
         return self.tables.get((name or "").casefold())
+
+    def resolve_table_key(self, name: str | None) -> str | None:
+        """물리명/논리명/표기 변형을 카탈로그의 정규 테이블 키로 되돌린다."""
+        return _alias_lookup(self._table_aliases, name)
+
+    def resolve_column_name(self, table: str | None, name: str | None) -> str | None:
+        """해당 테이블 안에서 논리명/표기 변형을 실제 컬럼명으로 되돌린다."""
+        key = self.resolve_table_key(table)
+        return _alias_lookup(self._column_aliases.get(key or "", {}), name)
 
     def column(self, table: str | None, column: str | None) -> dict[str, Any] | None:
         meta = self.table(table)
@@ -227,14 +262,101 @@ class SchemaMetadata:
 
 
 def aggregation_request_json_schema() -> dict[str, Any]:
+    field_ref_properties = {
+        "entity": {"type": "string", "description": "논리 엔터티명(예: order, product, customer)"},
+        "field": {"type": "string", "description": "논리 필드명(예: salesAmount, productId)"},
+        "table": {"type": "string", "description": "Aggregation Schema Metadata의 실제 테이블명. 필수."},
+        "column": {"type": "string", "description": "해당 테이블의 실제 컬럼명. 필수."},
+        "alias": {"type": "string"},
+    }
     field_ref = {
         "type": "object",
+        "description": "논리 필드 참조. entity/field 와 함께 물리 table/column 을 반드시 채운다.",
+        "properties": field_ref_properties,
+        "required": ["entity", "field", "table", "column"],
+    }
+    filter_ref = {
+        "type": "object",
+        "description": "집계 전 WHERE 조건.",
         "properties": {
-            "entity": {"type": "string"}, "field": {"type": "string"},
-            "table": {"type": "string"}, "column": {"type": "string"},
-            "alias": {"type": "string"},
+            **field_ref_properties,
+            "id": {"type": "string"},
+            "operator": {"type": "string", "enum": sorted(FILTER_OPERATORS)},
+            "value": {"description": "비교값. in/not_in 은 배열, is_null/is_not_null 은 생략."},
         },
-        "required": ["entity", "field"],
+        "required": ["id", "entity", "field", "table", "column", "operator"],
+    }
+    aggregation = {
+        "type": "object",
+        "description": "집계 지표 1개. COUNT(*) 행 수 집계는 field를 \"*\"로 두고 table/column 을 생략하며, "
+                       "그 외 함수는 물리 table/column 이 필수다.",
+        "properties": {
+            **field_ref_properties,
+            "id": {"type": "string", "description": "지표 id. sorting/ranking/postAggregationFilters 가 이 id를 참조한다."},
+            "function": {"type": "string", "enum": sorted(AGGREGATION_FUNCTIONS)},
+            "distinct": {"type": "boolean"},
+            "condition": {"type": "object", "description": "조건부 집계 필터. filters 항목과 같은 구조."},
+        },
+        "required": ["id", "function"],
+    }
+    derived_metric = {
+        "type": "object",
+        "description": "집계 지표를 조합한 파생 지표.",
+        "properties": {
+            "id": {"type": "string"},
+            "type": {"type": "string", "enum": sorted(DERIVED_METRIC_TYPES)},
+            "alias": {"type": "string"},
+            "numeratorMetricId": {"type": "string"}, "denominatorMetricId": {"type": "string"},
+            "currentMetricId": {"type": "string"}, "previousMetricId": {"type": "string"},
+            "multiplyBy": {"type": "number", "description": "백분율이면 100"},
+            "zeroDivisionPolicy": {"type": "string", "enum": sorted(ZERO_DIVISION_POLICIES)},
+        },
+        "required": ["id", "type", "alias"],
+    }
+    sorting = {
+        "type": "object",
+        "description": "정렬 기준. 컬럼이 아니라 aggregations/derivedMetrics 의 id 를 참조한다.",
+        "properties": {
+            "metricId": {"type": "string", "description": "정렬 기준 지표 id"},
+            "direction": {"type": "string", "enum": sorted(SORT_DIRECTIONS)},
+            "nulls": {"type": "string"},
+        },
+        "required": ["metricId", "direction"],
+    }
+    ranking = {
+        "type": "object",
+        "description": "상위/하위 N 요청.",
+        "properties": {
+            "enabled": {"type": "boolean"},
+            "type": {"type": "string", "enum": sorted(RANKING_TYPES)},
+            "limit": {"type": "integer", "minimum": 1},
+            "partitionBy": {"type": "array", "items": field_ref, "description": "그룹별 순위 기준"},
+            "orderByMetricId": {"type": "string", "description": "순위 기준 지표 id"},
+            "tiePolicy": {"type": "string"},
+        },
+        "required": ["enabled", "partitionBy"],
+    }
+    post_filter = {
+        "type": "object",
+        "description": "집계 후 HAVING 조건.",
+        "properties": {
+            "id": {"type": "string"},
+            "metricId": {"type": "string", "description": "대상 지표 id"},
+            "operator": {"type": "string", "enum": sorted(FILTER_OPERATORS)},
+            "value": {},
+        },
+        "required": ["id", "metricId", "operator"],
+    }
+    relation = {
+        "type": "object",
+        "description": "집계 결과와 최종 대상의 관계 조건.",
+        "properties": {
+            "id": {"type": "string"},
+            "sourceEntity": {"type": "string"}, "relation": {"type": "string"}, "targetEntity": {"type": "string"},
+            "mode": {"type": "string", "enum": sorted(RELATION_MODES)},
+            "minimumCount": {"type": "integer"},
+        },
+        "required": ["id", "sourceEntity", "relation", "targetEntity", "mode"],
     }
     return {
         "type": "object",
@@ -242,15 +364,15 @@ def aggregation_request_json_schema() -> dict[str, Any]:
         "properties": {
             "targetEntity": {"type": "string"},
             "outputColumns": {"type": "array", "items": field_ref},
-            "filters": {"type": "array", "items": {"type": "object"}},
+            "filters": {"type": "array", "items": filter_ref},
             "groupings": {"type": "array", "items": field_ref},
-            "aggregations": {"type": "array", "items": {"type": "object"}},
-            "derivedMetrics": {"type": "array", "items": {"type": "object"}},
-            "sorting": {"type": "array", "items": {"type": "object"}},
-            "ranking": {"type": "object"},
-            "postAggregationFilters": {"type": "array", "items": {"type": "object"}},
-            "relationConditions": {"type": "array", "items": {"type": "object"}},
-            "dateGrain": {"type": ["string", "null"]},
+            "aggregations": {"type": "array", "items": aggregation},
+            "derivedMetrics": {"type": "array", "items": derived_metric},
+            "sorting": {"type": "array", "items": sorting},
+            "ranking": ranking,
+            "postAggregationFilters": {"type": "array", "items": post_filter},
+            "relationConditions": {"type": "array", "items": relation},
+            "dateGrain": {"type": ["string", "null"], "enum": [*sorted(DATE_GRAINS), None]},
             "comparison": {"type": ["object", "null"]},
             "businessRules": {"type": "object"},
             "assumptions": {"type": "array", "items": {"type": "string"}},
@@ -296,7 +418,9 @@ def parse_aggregation_request(
         assumptions=[str(x) for x in payload.get("assumptions", []) if isinstance(x, str) and x.strip()],
         unresolved_fields=[str(x) for x in payload.get("unresolvedFields", []) if isinstance(x, str) and x.strip()],
     )
-    _validate_request(request, SchemaMetadata.load(schema_path), dialect, errors)
+    catalog = SchemaMetadata.load(schema_path)
+    _resolve_field_refs(request, catalog)
+    _validate_request(request, catalog, dialect, errors)
     return request, errors
 
 
@@ -386,12 +510,71 @@ def aggregation_retry_count() -> int:
         return 2
 
 
+def _resolve_field_refs(request: AggregationRequest, catalog: SchemaMetadata) -> None:
+    """entity/field 논리명을 카탈로그의 물리 table/column 으로 보강한다.
+
+    LLM 이 물리명을 알고도 table/column 키에 옮겨 적지 않으면 요구사항 확정 단계가 통째로 막힌다.
+    카탈로그로 확인 가능한 매핑은 여기서 채우고, 확인 불가한 것만 검증 오류로 남긴다.  1차는 각 참조
+    자체로, 2차는 1차에서 확보한 테이블 힌트로 컬럼만 있는 참조까지 해석한다."""
+    hints: list[str] = [t for t in (r.table for r in _request_refs(request)) if t]
+
+    def resolve(ref: FieldRef) -> FieldRef:
+        out = _resolve_reference(ref, catalog, hints)
+        if out.table and out.table not in hints:
+            hints.append(out.table)
+        return out
+
+    def resolve_aggregation(agg: AggregationRequirement) -> AggregationRequirement:
+        if agg.counts_rows:
+            return agg if agg.condition is None else replace(agg, condition=resolve(agg.condition))
+        out = resolve(agg)
+        return out if out.condition is None else replace(out, condition=resolve(out.condition))
+
+    for _ in range(2):
+        request.output_columns = [resolve(r) for r in request.output_columns]
+        request.filters = [resolve(r) for r in request.filters]
+        request.groupings = [resolve(r) for r in request.groupings]
+        request.aggregations = [resolve_aggregation(r) for r in request.aggregations]
+        request.ranking = replace(
+            request.ranking, partition_by=tuple(resolve(r) for r in request.ranking.partition_by)
+        )
+
+
+def _resolve_reference(ref: FieldRef, catalog: SchemaMetadata, hint_tables: Iterable[str] = ()) -> FieldRef:
+    if ref.field == ROW_COUNT_FIELD:
+        return ref
+    table = catalog.resolve_table_key(ref.table) or catalog.resolve_table_key(ref.entity)
+    name = None
+    if table:
+        name = catalog.resolve_column_name(table, ref.column) or catalog.resolve_column_name(table, ref.field)
+    if name is None:
+        # 테이블을 못 정했거나 그 테이블에 없는 컬럼이면, 같은 요청 안에서 이미 확정된 테이블로만 후보를 찾는다.
+        wanted = ref.column or ref.field
+        candidates: dict[str, str] = {}
+        for hint in hint_tables:
+            key = catalog.resolve_table_key(hint)
+            found = catalog.resolve_column_name(key, wanted) if key else None
+            if key and found:
+                candidates[key] = found
+        if len(candidates) != 1:
+            return ref
+        table, name = next(iter(candidates.items()))
+    return replace(ref, table=table, column=name)
+
+
+def _request_refs(request: AggregationRequest) -> list[FieldRef]:
+    return [
+        *request.output_columns, *request.filters, *request.groupings,
+        *request.aggregations, *request.ranking.partition_by,
+    ]
+
+
 def _validate_request(request: AggregationRequest, catalog: SchemaMetadata, dialect: str, errors: list[ValidationError]) -> None:
     refs: list[tuple[str, FieldRef]] = []
     refs += [(f"outputColumns[{i}]", r) for i, r in enumerate(request.output_columns)]
     refs += [(f"filters[{i}]", r) for i, r in enumerate(request.filters)]
     refs += [(f"groupings[{i}]", r) for i, r in enumerate(request.groupings)]
-    refs += [(f"aggregations[{i}]", r) for i, r in enumerate(request.aggregations)]
+    refs += [(f"aggregations[{i}]", r) for i, r in enumerate(request.aggregations) if not r.counts_rows]
     refs += [(f"ranking.partitionBy[{i}]", r) for i, r in enumerate(request.ranking.partition_by)]
     for path, ref in refs:
         if not ref.table or not ref.column:
@@ -718,13 +901,27 @@ def _filter(value: Any, path: str, errors: list[ValidationError]) -> FilterRequi
 
 
 def _aggregation(value: Any, path: str, errors: list[ValidationError]) -> AggregationRequirement | None:
-    ref = _field_ref(value, path, errors)
-    if ref is None:
+    if not isinstance(value, dict):
+        errors.append(ValidationError("INVALID_FIELD_REFERENCE", "필드 참조는 객체여야 합니다.", path=path))
         return None
     function = str(value.get("function", "")).casefold()
+    if _is_row_count(value, function):
+        # COUNT(*) 는 물리 컬럼 참조가 없다. entity 는 있으면 문맥으로 보존한다.
+        ref = FieldRef(_string(value.get("entity")) or ROW_COUNT_FIELD, ROW_COUNT_FIELD)
+    else:
+        ref = _field_ref(value, path, errors)
+        if ref is None:
+            return None
     condition = _filter(value.get("condition"), path + ".condition", errors) if value.get("condition") is not None else None
     return AggregationRequirement(**asdict(ref), id=_string(value.get("id")) or path, function=function,
                                   distinct=bool(value.get("distinct")), condition=condition)
+
+
+def _is_row_count(value: dict[str, Any], function: str) -> bool:
+    """COUNT(*) 표기인지. 필드가 없거나 '*' 인 count 만 행 수 집계로 본다(DISTINCT 는 컬럼이 필요하다)."""
+    if function != "count" or bool(value.get("distinct")):
+        return False
+    return all(_string(value.get(key)) in (None, ROW_COUNT_FIELD) for key in ("field", "column"))
 
 
 def _derived(value: Any, path: str, errors: list[ValidationError]) -> DerivedMetricRequirement | None:
@@ -743,12 +940,20 @@ def _derived(value: Any, path: str, errors: list[ValidationError]) -> DerivedMet
 
 
 def _sorting(value: Any, path: str, errors: list[ValidationError]) -> SortRequirement | None:
-    if not isinstance(value, dict) or not _string(value.get("metricId")):
+    metric_id = _metric_id(value)
+    if metric_id is None:
         errors.append(ValidationError("INVALID_SORTING", "정렬 기준 metricId가 필요합니다.", path=path)); return None
     direction = str(value.get("direction", "")).casefold()
-    if direction not in {"asc", "desc"}:
+    if direction not in SORT_DIRECTIONS:
         errors.append(ValidationError("INVALID_SORTING", "정렬 방향은 asc 또는 desc여야 합니다.", path=path))
-    return SortRequirement(str(value["metricId"]), direction, _string(value.get("nulls")))
+    return SortRequirement(metric_id, direction, _string(value.get("nulls")))
+
+
+def _metric_id(value: Any) -> str | None:
+    """지표 참조 키. LLM 이 metricId 대신 쓰는 표기 변형까지 받아준다."""
+    if not isinstance(value, dict):
+        return None
+    return next((v for v in (_string(value.get(k)) for k in ("metricId", "metric_id", "metric", "aggregationId")) if v), None)
 
 
 def _ranking(value: Any, errors: list[ValidationError]) -> RankingRequirement:
@@ -761,9 +966,10 @@ def _ranking(value: Any, errors: list[ValidationError]) -> RankingRequirement:
 
 
 def _post_filter(value: Any, path: str, errors: list[ValidationError]) -> PostAggregationFilter | None:
-    if not isinstance(value, dict) or not _string(value.get("metricId")):
+    metric_id = _metric_id(value)
+    if metric_id is None:
         errors.append(ValidationError("INVALID_POST_AGGREGATION_FILTER", "집계 후 필터에는 metricId가 필요합니다.", path=path)); return None
-    return PostAggregationFilter(_string(value.get("id")) or path, str(value["metricId"]), str(value.get("operator", "")), value.get("value"))
+    return PostAggregationFilter(_string(value.get("id")) or path, metric_id, str(value.get("operator", "")), value.get("value"))
 
 
 def _relation(value: Any, path: str, errors: list[ValidationError]) -> RelationCondition | None:
@@ -793,6 +999,37 @@ def _list(payload: dict[str, Any], key: str, errors: list[ValidationError]) -> l
 
 def _string(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _name_forms(value: Any, *, exact: bool) -> list[str]:
+    """이름 비교 형태. exact=True 는 casefold 만, False 는 구분자/대소문자를 지운 형태다."""
+    if not isinstance(value, str) or not value.strip():
+        return []
+    folded = value.strip().casefold()
+    if exact:
+        return [folded]
+    squashed = re.sub(r"[^0-9a-z가-힣]+", "", folded)
+    return [squashed] if squashed and squashed != folded else []
+
+
+def _alias_index(pairs: Iterable[tuple[Any, str]]) -> dict[str, str]:
+    """(별칭, 정규명) 쌍을 색인한다. 정확 일치 별칭이 항상 축약형 별칭을 이긴다."""
+    items = [(alias, value) for alias, value in pairs if value]
+    index: dict[str, str] = {}
+    for exact in (True, False):
+        for alias, value in items:
+            for form in _name_forms(alias, exact=exact):
+                index.setdefault(form, value)
+    return index
+
+
+def _alias_lookup(index: dict[str, str], name: str | None) -> str | None:
+    for exact in (True, False):
+        for form in _name_forms(name, exact=exact):
+            hit = index.get(form)
+            if hit:
+                return hit
+    return None
 
 
 def _operator_sql(operator: str) -> str:

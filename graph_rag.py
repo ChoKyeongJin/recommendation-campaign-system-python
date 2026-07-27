@@ -1807,6 +1807,12 @@ def build_query_plan(
         base.setdefault("parser", {})["multi_query_variants"] = multi_query_variants
     if structured_query is not None:
         base["structured_query"] = structured_query.to_dict()
+    # LLM/규칙 어느 파서를 탔든 최종 플랜에 공통 행동 의미와 출력 계약을 확정한다. 이 단계는
+    # SQL 생성 전 마지막 결정론 보강이라, 파서가 단순 완료형 행동("구매한 회원")을 놓쳐도
+    # 그 조건이 조용히 사라진 채 전체 회원 SQL로 나가는 것을 막는다.
+    _apply_core_membership_semantics(query, base)
+    _attach_query_output_contract(query, base)
+    base["complexity"] = classify_query_complexity(base)
     return base
 
 
@@ -1853,6 +1859,7 @@ def classify_query_complexity(query_plan: dict[str, Any]) -> str:
         target_user.get("purchase_object"),           # 상품 구매 이력(주문 상세 조인)
         target_user.get("purchase_date"),             # 구매 날짜 창(주문 조인)
         target_user.get("purchase_inactivity"),       # 구매 미발생 기간(주문 집계)
+        target_user.get("purchase_membership"),       # 구매 존재(선택적 최근 창, 주문 EXISTS)
         target_user.get("aggregate_conditions"),      # 누적 금액/횟수 임계값(주문 집계)
         target_user.get("cart_aggregate"),            # 장바구니 개수/수량 임계값(카트 집계)
         target_user.get("cart_retention"),            # 장바구니 보관 기간(카트 담은 시점 비교)
@@ -2744,6 +2751,7 @@ def _query_plan_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> s
             "사용자 질문을 지정된 JSON 구조로만 반환한다.",
             "성별, 행동, 관심사, 채널, 혜택은 canonical 값만 사용한다.",
             "집계 요청은 SQL보다 먼저 aggregation_request 구조로 만들고 스키마에 연결되지 않는 항목은 unresolvedFields에 기록한다.",
+            "필드 참조는 entity/field와 함께 실제 물리 table/column을 반드시 채우고, 정렬·순위·HAVING은 집계 지표 id를 metricId로 참조한다.",
             "부정 조건은 target_user에 긍정 조건으로 바꾸지 말고 exclude에 넣는다.",
             "반드시 JSON object만 출력한다.",
         ]
@@ -3103,6 +3111,11 @@ def _merge_list(target: dict[str, Any], source: dict[str, Any], key: str, allowe
 
 def _infer_intent(query: str) -> str:
     compact_query = query.replace(" ", "").casefold()
+    # 과거 행동을 완료형으로 조회하면서 회원 집합/인원수를 요구하면 캠페인 추천이 아니라 세그먼트
+    # 조회다. 특히 "캠페인에 반응한 회원은 몇 명"을 '캠페인' 한 단어 때문에 추천 intent로 보내면
+    # 반응 팩트 조회가 사라지므로, 발송/생성 목적보다 먼저 출력 형태와 완료 행동을 함께 본다.
+    if _is_completed_behavior_segment_lookup(query):
+        return "find_user_segment"
     if _is_reactivation_goal_context(query):
         return "recommend_campaign"
     if _is_cart_abandonment_query(query) and _is_repurchase_goal_context(query):
@@ -3122,6 +3135,164 @@ def _infer_intent(query: str) -> str:
     if any(keyword in compact_query for keyword in _lexicon_terms("intent_find_user_segment")):
         return "find_user_segment"
     return "unknown"
+
+
+_MEMBER_OUTPUT_RE = re.compile(r"회원|고객|사용자|가입자|대상|몇\s*명|인원\s*수|회원\s*수|고객\s*수")
+_COMPLETED_BEHAVIOR_RE = re.compile(
+    r"(?:구매|구입|주문)(?:했|한|했던)|장바구니.{0,10}(?:담|보관|있)|"
+    r"캠페인.{0,12}(?:반응|응답)(?:했|한|없는|않)|(?:로그인|방문)(?:했|한|하지않|없는)"
+)
+_OUTREACH_ACTION_RE = re.compile(
+    r"추천(?:해|하|안)|캠페인(?:을)?\s*(?:생성|만들|기획)|발송(?:해|하|할)|"
+    r"보내(?:줘|고|기)|알리(?:고|기)|홍보|유도|판매하고\s*싶"
+)
+
+
+def _is_completed_behavior_segment_lookup(query: str) -> bool:
+    """완료된 과거 행동 + 회원/인원 출력 요청을 추천 intent보다 우선하는 세그먼트 조회로 판정."""
+    return bool(
+        _MEMBER_OUTPUT_RE.search(query)
+        and _COMPLETED_BEHAVIOR_RE.search(query)
+        and not _OUTREACH_ACTION_RE.search(query)
+    )
+
+
+_PURCHASE_POSITIVE_MEMBERSHIP_RE = re.compile(
+    r"(?:구매|구입|주문)(?:이력|내역)?(?:을|를|은|는|이|가|도)?(?:했|한|했던|있는)"
+)
+_CAMPAIGN_GENERIC_RESPONSE_RE = re.compile(
+    r"캠페인(?:에|에서|을|를|의)?(?:는|은|도)?(?:반응|응답)"
+    r"(?:을|를|이|가|은|는|도)?(?P<negative>하지않|안한|안했|않은|없)?(?:했|한|자|회원|고객)?"
+)
+_WHOLE_MEMBER_RE = re.compile(r"(?:전체|모든|전부|모두의?)\s*(?:회원|고객|사용자|가입자)")
+_ACTIVE_MEMBER_RE = re.compile(r"정상\s*(?:회원|고객|사용자)|활성\s*상태\s*(?:회원|고객|사용자)")
+_CONDITION_LANGUAGE_RE = re.compile(
+    r"구매|구입|주문|재구매|장바구니|카트|캠페인|반응|로그인|접속|방문|쿠폰|찜|"
+    r"거주|지역|등급|성별|남성|여성|나이|연령|휴면|탈퇴|정상|활동|가입|수신|블랙리스트"
+)
+
+
+def _apply_core_membership_semantics(query: str, plan: dict[str, Any]) -> None:
+    """핵심 행동의 존재/부재 방향을 구조화한다.
+
+    특정 문장 전체를 하드코딩하지 않고 행동 도메인과 operator를 분리한다. 기존 상세 파서가 이미
+    더 구체적인 조건(상품, 절대기간, 캠페인 구매반응)을 만든 경우에는 그 소유권을 보존한다.
+    """
+    target_user = plan.setdefault("target_user", {})
+    compact = query.replace(" ", "").casefold()
+
+    # 캠페인 구매반응은 campaign_responses 전용 의미이므로 일반 주문 존재 조건으로 중복 승격하지 않는다.
+    campaign_scoped_purchase = "캠페인" in compact and bool(target_user.get("campaign_responses"))
+    purchase_negative = bool(_PURCHASE_NEG_RE.search(compact))
+    cart_checkout_context = "cart_abandoner" in (target_user.get("behaviors") or []) and any(
+        marker in compact for marker in ("담고구매", "담았지만구매", "장바구니에담고", "장바구니담고")
+    )
+    repurchase_negative = "재구매" in compact and purchase_negative
+    if purchase_negative and not campaign_scoped_purchase and not cart_checkout_context and not repurchase_negative:
+        # 기간이 있으면 기존 purchase_inactivity가 기간 anti-join을 소유한다. 기간이 없으면 평생 무주문.
+        if not isinstance(target_user.get("purchase_inactivity"), dict):
+            _append_unique(target_user.setdefault("behaviors", []), "no_purchase")
+        target_user.pop("purchase_membership", None)
+    elif _PURCHASE_POSITIVE_MEMBERSHIP_RE.search(compact) and not campaign_scoped_purchase:
+        window = _parse_duration_window(query, anchor_terms=("구매", "구입", "주문"))
+        condition: dict[str, Any] = {"domain": "purchase", "operator": "exists"}
+        if isinstance(window, dict) and isinstance(window.get("min_days"), int):
+            condition["window_days"] = window["min_days"]
+        target_user["purchase_membership"] = condition
+        # 기간 수식어가 상품명으로 오인된 경우를 제거한다("최근 30일 이내 구매한 회원" → 상품 '이내').
+        if target_user.get("purchase_object") in {"이내", "동안", "최근", "기간", "내"}:
+            target_user["purchase_object"] = None
+            target_user.pop("purchase_object_kind", None)
+
+    # "캠페인에 반응한 회원"의 일반 반응은 오퍼 또는 구매 반응 중 하나가 있는 회원으로 정의한다.
+    # 구체 반응(오퍼/구매/쿠폰/접촉)이 이미 추출됐으면 그 정의를 우선한다.
+    generic_response = _CAMPAIGN_GENERIC_RESPONSE_RE.search(compact)
+    if generic_response and not target_user.get("campaign_responses"):
+        negative = bool(generic_response.group("negative"))
+        target_user["campaign_responses"] = [{
+            "canonical": "no_campaign_response" if negative else "campaign_response",
+            "predicate": "(R.OFFR_RSPN_YN = 'Y' OR R.BUY_RSPN_YN = 'Y')",
+            "negated": negative,
+        }]
+
+    # 정상 회원은 상태코드 정책을 명시적으로 사용한다. 휴면도 기존 lifecycle 매핑이 있으면 정의 출처를
+    # 아래 semantic_conditions에 기록해 상태기반/행동기반이 묵시적으로 섞이지 않게 한다.
+    if _ACTIVE_MEMBER_RE.search(query) and "normal_member" not in target_user.setdefault("lifecycle", []):
+        target_user["lifecycle"].append("normal_member")
+
+    semantic_conditions: list[dict[str, Any]] = []
+    membership = target_user.get("purchase_membership")
+    if isinstance(membership, dict):
+        semantic_conditions.append({**membership, "is_primary_condition": True})
+    if "no_purchase" in (target_user.get("behaviors") or []):
+        semantic_conditions.append({"domain": "purchase", "operator": "not_exists", "is_primary_condition": True})
+    inactivity = target_user.get("purchase_inactivity")
+    if isinstance(inactivity, dict):
+        semantic_conditions.append({
+            "domain": "purchase", "operator": "not_exists", "window_days": inactivity.get("min_days"),
+            "is_primary_condition": True,
+        })
+    if "cart_abandoner" in (target_user.get("behaviors") or []):
+        semantic_conditions.append({"domain": "cart", "operator": "exists", "is_primary_condition": True})
+    if target_user.get("cart_absence"):
+        semantic_conditions.append({"domain": "cart", "operator": "not_exists", "is_primary_condition": True})
+    for response in target_user.get("campaign_responses") or []:
+        if isinstance(response, dict):
+            semantic_conditions.append({
+                "domain": "campaign_response",
+                "operator": "not_exists" if response.get("negated") else "exists",
+                "canonical": response.get("canonical"), "is_primary_condition": True,
+            })
+    if "dormant" in (target_user.get("lifecycle") or []):
+        semantic_conditions.append({"domain": "dormancy", "definition_type": "status_code", "is_primary_condition": True})
+    inactivity_period = target_user.get("inactivity_period")
+    if isinstance(inactivity_period, dict):
+        semantic_conditions.append({
+            "domain": "dormancy", "definition_type": "inactivity_period",
+            "days": inactivity_period.get("min_days"), "is_primary_condition": True,
+        })
+    plan["semantic_conditions"] = semantic_conditions
+
+
+def _attach_query_output_contract(query: str, plan: dict[str, Any]) -> None:
+    """질문의 기대 결과 단위와 API 결과 계약을 SQL 생성 전에 확정한다."""
+    if isinstance(plan.get("aggregation_request"), dict) or plan.get("intent") == "analyze_aggregation":
+        expected_grain = "analytical"
+        requires_member_id = False
+    elif isinstance(plan.get("region_member_count_target"), dict):
+        expected_grain = "region"
+        requires_member_id = False
+    else:
+        # 타겟 API의 기본 계약은 회원 ID 집합이며 인원수는 실행부가 별도로 계산한다.
+        expected_grain = "member"
+        requires_member_id = True
+    whole_target = bool(_WHOLE_MEMBER_RE.search(query))
+    if (
+        expected_grain == "member"
+        and not _has_member_target_signal(plan)
+        and _MEMBER_OUTPUT_RE.search(query)
+        and not _CONDITION_LANGUAGE_RE.search(query)
+    ):
+        # "회원은 몇 명인가"도 조건 없는 전체 회원 조회로 명시한다. 정상 회원 표현은 위에서 상태 조건으로
+        # 구조화됐으므로 여기에 오지 않는다.
+        whole_target = True
+    plan["output_contract"] = {
+        "target_entity": "member",
+        "expected_grain": expected_grain,
+        "requires_member_id": requires_member_id,
+        "whole_target": whole_target,
+    }
+    if whole_target:
+        plan["member_scope"] = "all"
+    # 명시적인 지역 그룹/랭킹 슬롯이 결과 축을 소유하면 일반 "지역=시도" 의미정책은 더 이상 필터
+    # requirement가 아니다. 남겨두면 시군구 PARTITION SQL에 B.SIDO를 추가 요구해 정상 SQL을 차단한다.
+    if any(isinstance(plan.get(key), dict) for key in (
+        "group_ranking_target", "region_member_count_target", "region_density_target",
+    )):
+        plan["semantic_resolutions"] = [
+            item for item in plan.get("semantic_resolutions") or []
+            if not (isinstance(item, dict) and item.get("policy_id") == "region_context_default")
+        ]
 
 
 def _extract_conditions_ir(query_plan: dict[str, Any]):
@@ -6635,6 +6806,18 @@ def _purchase_inactivity_predicate(min_days: int) -> str:
         f"NOT EXISTS (SELECT 1 FROM {table} O WHERE O.{join_column} = B.{join_column} "
         f"AND O.{order_date_column} >= {cutoff})"
     )
+
+
+def _purchase_membership_predicate(window_days: int | None = None) -> str:
+    """구매 이력 존재를 주문 헤더 EXISTS로 증명한다. 기간이 있으면 그 창 안의 주문으로 한정."""
+    config = _order_count_targets_config()
+    table = config.get("table", "CRM_SL_ORDERHEADERMALL")
+    join_column = config.get("join_column", "MEMBER_NO")
+    order_date_column = config.get("order_date_column", "ORDER_DATE")
+    date_clause = ""
+    if isinstance(window_days, int) and window_days > 0:
+        date_clause = f" AND O.{order_date_column} >= {_member_dialect().char8_cutoff(window_days)}"
+    return f"EXISTS (SELECT 1 FROM {table} O WHERE O.{join_column} = B.{join_column}{date_clause})"
 
 
 def _apply_cart_absence_filter(query: str, plan: dict[str, Any]) -> None:
@@ -10384,6 +10567,25 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
             return "생성된 SQL이 요청 조건 중 다음을 SQL에 반영하지 못했습니다: " + ", ".join(missing) + "."
         return "생성된 SQL이 요청한 조건을 일부 반영하지 못했습니다."
 
+    if reason == "semantic_conditions_not_extracted":
+        return "요청에 필수 조건이 있지만 Query Plan이 SQL 검증 조건으로 추출하지 못해 출고를 차단했습니다. 조건의 대상과 포함·제외 방향을 확인해 주세요."
+
+    if reason in {"semantic_conditions_not_covered", "semantic_condition_polarity_mismatch"}:
+        delivery = sql_result.get("delivery_validation") or selected.get("delivery_validation") or {}
+        missing = delivery.get("missing_conditions") or delivery.get("polarity_mismatches") or []
+        labels = [str(item.get("domain") or item) for item in missing]
+        return "생성된 SQL이 핵심 행동 조건의 근거 또는 포함·제외 방향을 증명하지 못해 출고를 차단했습니다" + (
+            ": " + ", ".join(_unique_strings(labels)) if labels else ""
+        ) + "."
+
+    if reason == "query_result_grain_mismatch":
+        delivery = sql_result.get("delivery_validation") or selected.get("delivery_validation") or {}
+        return ("질문의 기대 결과 단위와 SQL 결과 단위가 일치하지 않아 출고를 차단했습니다: "
+                f"expected={delivery.get('expected_grain')}, actual={delivery.get('actual_grain')}.")
+
+    if reason == "targeting_result_member_id_missing":
+        return "타겟팅 SQL이 회원 ID 집합을 반환하지 않아 대상 인원수와 회원 목록을 안전하게 구성할 수 없습니다."
+
     if reason == "intent_scope_mismatch":
         blocked = selected.get("intent_scope", {}).get("blocked_tables", [])
         suffix = f" (캠페인 추천 전용 테이블 사용: {', '.join(blocked)})" if blocked else ""
@@ -10418,6 +10620,7 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
     "no_sql_candidates": "condition_recognition",
     "recognized_domain_unsupported": "condition_recognition",
     "query_plan_required_conditions_missing": "condition_recognition",
+    "semantic_conditions_not_extracted": "condition_recognition",
     "real_db_unsupported_conditions": "real_db_mapping",
     # 명시적 미지원(쿠폰 건수/순위/비교/파생·의미보존 실패): 조건은 인식했으나 실DB 로 매핑 불가 —
     # SQL 안전 검증/의미 검증이 아니라 '실DB 조건 매핑' 단계에서 막힌 것으로 스텝퍼에 정직하게 표시한다.
@@ -10429,6 +10632,12 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
     "sql_guard_failed": "sql_safety_validation",
     "aggregation_validation_failed": "aggregation_validation",
     "query_plan_conditions_missing": "condition_coverage",
+    "semantic_conditions_not_covered": "condition_coverage",
+    "semantic_condition_polarity_mismatch": "semantic_verification",
+    "critical_conditions_dropped": "semantic_verification",
+    "critical_semantic_issue": "semantic_verification",
+    "query_result_grain_mismatch": "intent_scope",
+    "targeting_result_member_id_missing": "intent_scope",
     "query_plan_unmentioned_conditions_added": "condition_coverage",
     "intent_scope_mismatch": "intent_scope",
     "semantic_verification_failed": "semantic_verification",
@@ -10569,6 +10778,7 @@ def build_recommendation_api_response(
         "failure_stage": _classify_failure_stage(sql_result.get("failure_reason"), sql_result),
         # 의미 검증 게이트 판정(원문↔최종 SQL 직접 대조). {ran, faithful, issues} — 오탐 튜닝·디버깅용.
         "semantic_verification": sql_result.get("semantic_verification", {"ran": False}),
+        "delivery_validation": sql_result.get("delivery_validation", {"is_satisfied": False}),
         "aggregation_request": sql_result.get("aggregation_request"),
         "aggregation_validation": sql_result.get("aggregation_validation", {"ran": False}),
         # 쿼리 성능 튜닝 자문: 실행 함정 findings + 권장 인덱스(비차단, SQL 은 그대로).
@@ -10594,7 +10804,7 @@ def _api_status(sql_result: dict[str, Any]) -> str:
     # 의미 검증 게이트 차단·명시적 미지원(쿠폰 건수/순위/비교/파생 등)은 '틀린 SQL' 이 아니라 '확인 필요' 다
     # — 재작성/입력 보완(예: 쿠폰 '사용 여부')으로 풀 수 있어 needs_clarification 으로 안내한다.
     if sql_result.get("failure_reason") in (
-        "query_plan_required_conditions_missing", "semantic_verification_failed",
+        "query_plan_required_conditions_missing", "semantic_conditions_not_extracted", "semantic_verification_failed",
     ) or sql_result.get("failure_reason") in _UNSUPPORTED_INTENT_REASONS:
         return "needs_clarification"
     return "no_verified_sql"
@@ -11339,6 +11549,248 @@ def _verify_sql_semantic_invariants(
     return {"ran": True, "ok": not issues, "issues": issues}
 
 
+def _semantic_evidence_sources() -> dict[str, tuple[str, ...]]:
+    """행동 도메인별 허용 SQL 근거 소스. 설정을 우선해 DB 스왑 시 검증도 함께 이동한다."""
+    order_cfg = _order_count_targets_config()
+    cart_cfg = _cart_targets_registry()
+    campaign_cfg = _MEMBER_TARGET_FILTERS.get("campaign_response_targets", {})
+    contact_cfg = campaign_cfg.get("contact_member_list", {}) if isinstance(campaign_cfg, dict) else {}
+    return {
+        "purchase": tuple(_unique_strings([
+            str(order_cfg.get("table") or "CRM_SL_ORDERHEADERMALL"),
+            "CRM_SL_ORDERDETAILMALL",
+        ])),
+        "cart": (str(cart_cfg.get("table") or "ODS_MALL_OMS_CART"),),
+        "campaign_response": tuple(_unique_strings([
+            str(campaign_cfg.get("table") or "MCS_CAMP_MBR_RSPN_FT") if isinstance(campaign_cfg, dict) else "MCS_CAMP_MBR_RSPN_FT",
+            str(contact_cfg.get("table") or "Z_CAMP_MBR") if isinstance(contact_cfg, dict) else "Z_CAMP_MBR",
+        ])),
+        "coupon": tuple(_unique_strings([
+            str(campaign_cfg.get("table") or "MCS_CAMP_MBR_RSPN_FT") if isinstance(campaign_cfg, dict) else "MCS_CAMP_MBR_RSPN_FT",
+        ])),
+        "login": (_member_table(),),
+        "dormancy": (_member_table(),),
+        # 아래 도메인은 현재 플랜 슬롯이 열리기 전에도 공통 검증기를 확장 가능한 형태로 테스트할 수 있게
+        # 명시한다. 실제 배포 매핑이 생기면 설정 기반 소스로 교체하면 된다.
+        "visit": ("VISIT", "LOG"),
+        "wishlist": ("WISHLIST",),
+    }
+
+
+def _condition_evidence(condition: dict[str, Any], sql: str) -> dict[str, Any]:
+    """semantic condition 하나의 SQL 소스와 포함/제외 극성을 검증한다."""
+    domain = str(condition.get("domain") or "")
+    operator = str(condition.get("operator") or "exists")
+    normalized = re.sub(r"\s+", " ", sql).casefold()
+    sources = _semantic_evidence_sources().get(domain, ())
+    source_hits = [source for source in sources if source and source.casefold() in normalized]
+    required = [f"{domain}_source_reference"]
+    actual: list[str] = [f"source:{source}" for source in source_hits]
+
+    if domain == "dormancy":
+        definition = condition.get("definition_type")
+        if definition == "status_code":
+            satisfied = bool(source_hits and "member_state_cd" in normalized and "sleep" in normalized)
+            required.append("dormancy_status_filter")
+            if "member_state_cd" in normalized:
+                actual.append("status_code_filter")
+        else:
+            satisfied = bool(source_hits and "last_login" in normalized and any(op in normalized for op in (" <= ", " < ")))
+            required.append("inactivity_date_filter")
+            if "last_login" in normalized:
+                actual.append("last_login_filter")
+        return {"condition": condition, "required_evidence": required, "actual_evidence": actual,
+                "satisfied": satisfied, "polarity_match": satisfied}
+
+    if domain == "login":
+        has_login = "last_login" in normalized
+        if operator == "not_exists":
+            polarity_match = bool(re.search(r"last_login[^;]*(?:is\s+null|<=|<)", normalized))
+            direction = "login_absence_filter"
+        else:
+            polarity_match = bool(re.search(r"last_login[^;]*(?:is\s+not\s+null|>=|>)", normalized))
+            direction = "login_presence_filter"
+        satisfied = bool(source_hits and has_login and polarity_match)
+        return {"condition": condition, "required_evidence": [*required, direction],
+                "actual_evidence": actual + ([direction] if polarity_match else []),
+                "satisfied": satisfied, "polarity_match": polarity_match}
+
+    negative_hits: list[str] = []
+    positive_hits: list[str] = []
+    for source in source_hits:
+        escaped = re.escape(source.casefold())
+        if re.search(rf"not\s+exists\s*\([^;]*?\b{escaped}\b", normalized, re.DOTALL):
+            negative_hits.append(source)
+        if (
+            re.search(rf"(?<!not\s)exists\s*\([^;]*?\b{escaped}\b", normalized, re.DOTALL)
+            or re.search(rf"\b(?:inner\s+|left\s+|right\s+)?join\s+{escaped}\b", normalized)
+            or re.search(rf"\bin\s*\(\s*select\b[^;]*?\bfrom\s+{escaped}\b", normalized, re.DOTALL)
+            or re.search(rf"\bfrom\s+{escaped}\b", normalized)
+        ):
+            positive_hits.append(source)
+
+    if operator == "not_exists":
+        required.append("anti_join_or_not_exists")
+        polarity_match = bool(negative_hits)
+        if negative_hits:
+            actual.append("not_exists")
+    else:
+        required.append("positive_membership")
+        # 동일 소스가 오직 NOT EXISTS 안에만 있으면 긍정 근거로 인정하지 않는다.
+        polarity_match = bool(positive_hits and any(source not in negative_hits for source in positive_hits))
+        if polarity_match:
+            actual.append("exists_or_join")
+    satisfied = bool(source_hits) and polarity_match
+    return {
+        "condition": condition,
+        "required_evidence": required,
+        "actual_evidence": actual,
+        "satisfied": satisfied,
+        "polarity_match": polarity_match,
+    }
+
+
+def _actual_sql_grain(sql: str, dialect: str | None = None) -> dict[str, Any]:
+    """최상위 SELECT AST에서 결과 grain과 회원 ID 계약을 판정한다."""
+    try:
+        from sql_semantics import extract_sql_semantics
+
+        semantics = extract_sql_semantics(sql, dialect=dialect)
+    except Exception as exc:  # SQL 가드는 별도로 돌지만 의미 파서 실패는 출고 계약을 증명하지 못한 것.
+        return {"actual_grain": "unknown", "has_member_id": False, "parser_error": str(exc)}
+
+    selected = [value.casefold() for value in semantics.selected_columns]
+    grouped = [value.casefold() for value in semantics.group_by]
+    member_columns = {"cust_id", "user_id", "customer_id", "member_no", "member_id"}
+    has_member_id = any(any(column == item.rsplit(".", 1)[-1] for column in member_columns) for item in selected)
+    group_text = " ".join(grouped)
+    if grouped and any(token in group_text for token in ("sigungu", "sido", "region", "city", "district")):
+        grain = "region"
+    elif grouped and any(token in group_text for token in ("product", "item", "brand", "sku")):
+        grain = "product"
+    elif grouped and any(token in group_text for token in ("campaign", "camp_id", "camp_id")):
+        grain = "campaign"
+    elif has_member_id:
+        grain = "member"
+    elif semantics.aggregates and not grouped:
+        grain = "member_count"
+    elif grouped:
+        grain = "grouped"
+    else:
+        grain = "unknown"
+    return {
+        "actual_grain": grain,
+        "has_member_id": has_member_id,
+        "selected_columns": semantics.selected_columns,
+        "group_by": semantics.group_by,
+    }
+
+
+def _semantic_issue_is_critical(issue: dict[str, Any], query: str, sql: str) -> bool:
+    """LLM dropped 판정을 결과집합 영향과 SQL 근거로 보수적으로 분류한다."""
+    if issue.get("severity") == "critical" or issue.get("affects_result_set") is True or issue.get("is_primary_condition") is True:
+        return True
+    if issue.get("type") == "inverted" and not _is_noncredible_inverted_verdict(issue):
+        return True
+    if issue.get("type") != "dropped":
+        return False
+    condition_text = str(issue.get("condition") or "").replace(" ", "").casefold()
+    compact_query = query.replace(" ", "").casefold()
+    # 판정기가 원문에 없는 조건을 지어낸 dropped는 차단하지 않는다. 원문 조건 자체이거나 원문과 같은
+    # 행동 도메인을 가리킬 때만 primary 후보가 된다.
+    domain_terms = {
+        "purchase": ("구매", "구입", "주문"), "cart": ("장바구니", "카트"),
+        "campaign": ("캠페인", "반응", "오퍼"), "login": ("로그인", "접속"),
+    }
+    for domain, terms in domain_terms.items():
+        if (
+            (condition_text and condition_text in compact_query)
+            or (any(term in condition_text for term in terms) and any(term in compact_query for term in terms))
+        ) and any(term in condition_text for term in terms):
+            # SQL에 그 도메인 근거가 아예 없을 때만 critical. 동등 인코딩을 LLM이 못 읽은 오탐은 경고로 둔다.
+            evidence_domain = "campaign_response" if domain == "campaign" else domain
+            if not any(source.casefold() in sql.casefold() for source in _semantic_evidence_sources().get(evidence_domain, ())):
+                return True
+    return False
+
+
+def _validate_sql_delivery_contract(
+    query: str,
+    query_plan: dict[str, Any],
+    sql: str,
+    *,
+    dialect: str | None = None,
+    semantic_verification: dict[str, Any] | None = None,
+    dropped_conditions: list[str] | None = None,
+) -> dict[str, Any]:
+    """최종 출고의 단일 fail-closed 불변식: evidence, polarity, grain, 결과 컬럼, critical drop."""
+    output = query_plan.get("output_contract") if isinstance(query_plan.get("output_contract"), dict) else {}
+    expected_grain = str(output.get("expected_grain") or "member")
+    actual = _actual_sql_grain(sql, dialect)
+    actual_grain = actual["actual_grain"]
+    grain_match = (
+        actual_grain == expected_grain
+        or (expected_grain == "analytical" and actual_grain in {"region", "product", "campaign", "grouped", "member_count"})
+    )
+    # 회원 수 단일 집계도 회원 질문의 허용 결과지만, 타겟 API 회원집합 계약(requires_member_id=true)이면
+    # 회원 ID를 반드시 반환해야 별도 target_customer_count를 안전하게 계산할 수 있다.
+    requires_member_id = bool(output.get("requires_member_id", expected_grain == "member"))
+    api_contract_match = (not requires_member_id) or bool(actual.get("has_member_id"))
+
+    extracted_conditions = [c for c in query_plan.get("semantic_conditions") or [] if isinstance(c, dict)]
+    evidence = [_condition_evidence(condition, sql) for condition in extracted_conditions]
+    missing = [item["condition"] for item in evidence if not item["satisfied"]]
+    polarity_mismatches = [item["condition"] for item in evidence if item["actual_evidence"] and not item["polarity_match"]]
+
+    enriched_issues: list[dict[str, Any]] = []
+    critical_issues: list[dict[str, Any]] = []
+    verification = semantic_verification or {"ran": False}
+    for raw_issue in verification.get("issues") or []:
+        if not isinstance(raw_issue, dict):
+            continue
+        critical = _semantic_issue_is_critical(raw_issue, query, sql)
+        issue = {
+            **raw_issue,
+            "severity": "critical" if critical else raw_issue.get("severity", "warning"),
+            "affects_result_set": critical,
+            "is_primary_condition": critical,
+        }
+        enriched_issues.append(issue)
+        if critical:
+            critical_issues.append(issue)
+
+    reasons: list[str] = []
+    if polarity_mismatches:
+        reasons.append("semantic_condition_polarity_mismatch")
+    if missing:
+        reasons.append("semantic_conditions_not_covered")
+    if not grain_match:
+        reasons.append("query_result_grain_mismatch")
+    if not api_contract_match:
+        reasons.append("targeting_result_member_id_missing")
+    if dropped_conditions:
+        reasons.append("critical_conditions_dropped")
+    if verification.get("ran") and not verification.get("faithful") and critical_issues:
+        reasons.append("critical_semantic_issue")
+    return {
+        "is_satisfied": not reasons,
+        "expected_grain": expected_grain,
+        "actual_grain": actual_grain,
+        "grain_match": grain_match,
+        "api_contract_match": api_contract_match,
+        "required_conditions": len(extracted_conditions),
+        "condition_tokens": None,
+        "extracted_conditions": extracted_conditions,
+        "missing_conditions": missing,
+        "polarity_mismatches": polarity_mismatches,
+        "semantic_issues": enriched_issues,
+        "sql_evidence": {str(index): item for index, item in enumerate(evidence, start=1)},
+        "failure_reasons": _unique_strings(reasons),
+        "failure_reason": reasons[0] if reasons else None,
+        "sql_contract": actual,
+    }
+
+
 def build_sql_result(
     graph: nx.Graph,
     query: str,
@@ -11351,6 +11803,11 @@ def build_sql_result(
     original_query: str | None = None,
     prompt_dir: Path | None = None,
 ) -> dict[str, Any]:
+    # 호출자가 수동 plan을 넘기는 단위/통합 경로도 동일한 의미 추출·출력 계약을 거친다.
+    if not isinstance(query_plan.get("semantic_conditions"), list):
+        _apply_core_membership_semantics(original_query or query, query_plan)
+    if not isinstance(query_plan.get("output_contract"), dict):
+        _attach_query_output_contract(original_query or query, query_plan)
     condition_tokens = build_verified_condition_tokens(query_plan)
     input_validation = validate_required_input_conditions(query_plan, condition_tokens)
     required_conditions = required_sql_conditions(query_plan)
@@ -11369,6 +11826,38 @@ def build_sql_result(
             "generation_source": None,
             "is_success": False,
             "failure_reason": "query_plan_required_conditions_missing",
+        }
+
+    # 필수조건이 있는데 검증 토큰이 하나도 없으면 비교 대상이 없어 coverage=0/0으로 통과하던 구멍을
+    # 후보 생성 전에 닫는다. 명시적 전체 대상은 required_conditions 자체가 0이므로 정상 통과한다.
+    if required_conditions and not condition_tokens and not query_plan["output_contract"].get("whole_target"):
+        missing = [
+            _missing_input_condition(
+                str(condition.get("path") or "query_plan.conditions"),
+                str(condition.get("value") or condition.get("path") or "필수 조건"),
+                "요청한 필수 조건을 SQL 조건으로 추출하지 못했습니다. 조건의 대상과 포함/제외 방향을 확인해 주세요.",
+            )
+            for condition in required_conditions
+        ]
+        return {
+            "sql": None, "blocked_sql": None, "target_connection": None, "target_dialect": None,
+            "selected": None, "candidates": [], "candidate_count": 0,
+            "condition_tokens": [], "required_conditions": required_conditions,
+            "input_validation": {"is_satisfied": False, "missing_conditions": missing,
+                                 "clarification_questions": [item["question"] for item in missing]},
+            "missing_input_conditions": missing,
+            "clarification_questions": [item["question"] for item in missing],
+            "semantic_verification": {"ran": False},
+            "delivery_validation": {
+                "is_satisfied": False,
+                "expected_grain": query_plan["output_contract"].get("expected_grain"),
+                "actual_grain": "unknown", "required_conditions": len(required_conditions),
+                "condition_tokens": 0, "extracted_conditions": query_plan.get("semantic_conditions", []),
+                "missing_conditions": required_conditions, "semantic_issues": [], "sql_evidence": {},
+                "failure_reason": "semantic_conditions_not_extracted",
+            },
+            "llm_fallback_used": False, "generation_source": None,
+            "is_success": False, "failure_reason": "semantic_conditions_not_extracted",
         }
 
     allowed_tables = load_allowed_tables(schema_path)
@@ -11417,12 +11906,18 @@ def build_sql_result(
             default_limit=result_limit,
             table_dialects=table_dialects,
         )
-        # 부분 추출 candidate 가 실DB 미지원이라 뺀 조건은 커버리지 요구에서 제외한다(대신 응답에 고지).
-        dropped_paths = {path.split(":")[0] for path in candidate.get("dropped_conditions", [])}
-        effective_required = [condition for condition in required_conditions if condition["path"] not in dropped_paths]
-        coverage = validate_sql_condition_coverage(candidate["sql"], effective_required)
+        # 필수조건을 부분 추출 대상으로 빼고 성공시키지 않는다. 지원하지 못한 조건은 최종적으로 SQL 없이
+        # 실패/확인요청으로 귀결돼야 하며, "되는 조건만"의 SQL은 출고하지 않는다.
+        coverage = validate_sql_condition_coverage(candidate["sql"], required_conditions)
         intent_scope = validate_sql_intent_scope(candidate, query_plan)
         unmentioned_conditions = validate_unmentioned_sql_conditions(candidate["sql"], query_plan)
+        delivery_validation = _validate_sql_delivery_contract(
+            original_query or query,
+            query_plan,
+            candidate["sql"],
+            dialect=validation.get("dialect"),
+            dropped_conditions=candidate.get("dropped_conditions") or [],
+        )
         # 조인키 검증: 타입군이 다른 등호 조인(nvarchar↔bigint)은 실행 자체가 실패하고, 타입이 같아도
         # 검증된 관계(schema_catalog.foreign_keys, confidence=verified)와 다른 컬럼에 붙인 조인은 조용히
         # 0건이 된다. LLM 폴백이 CART_ID=MEMBER_NO 를 지어내도 기존 가드는 통과시켰다(올바른 짝은 MEMBER_ID).
@@ -11486,7 +11981,11 @@ def build_sql_result(
                 "join_keys": join_keys,
                 "aggregation_validation": aggregation_validation,
                 "analytics_warnings": analytics_warnings,
-                "is_eligible": validation["is_valid"] and coverage["is_satisfied"] and intent_scope["is_satisfied"],
+                "delivery_validation": delivery_validation,
+                "is_eligible": (
+                    validation["is_valid"] and coverage["is_satisfied"] and intent_scope["is_satisfied"]
+                    and delivery_validation["is_satisfied"]
+                ),
             }
         )
         validated_candidates[-1]["is_eligible"] = validated_candidates[-1]["is_eligible"] and unmentioned_conditions["is_satisfied"]
@@ -11520,6 +12019,8 @@ def build_sql_result(
             failure_reason = "intent_scope_mismatch"
         elif not selected["unmentioned_conditions"]["is_satisfied"]:
             failure_reason = "query_plan_unmentioned_conditions_added"
+        elif not selected.get("delivery_validation", {}).get("is_satisfied", True):
+            failure_reason = selected["delivery_validation"].get("failure_reason") or "semantic_conditions_not_covered"
 
     # 실회원(CRM_MB_BASEINFO) 경로가 미지원 조건 때문에 데모 스키마로 fallback→guard 탈락한 경우,
     # 제네릭 sql_guard_failed 대신 "어떤 조건이 실DB 추출 미지원인지"를 구체적으로 알린다.
@@ -11550,8 +12051,26 @@ def build_sql_result(
     # 실행은 sql(=None)로만 하므로 blocked_sql 은 화면 표시 전용 — 차단된 SQL 이 자동 실행되는 일은 없다.
     blocked_sql: str | None = None
     sql_result_requirements: list[dict[str, Any]] = []  # 공통 requirement 회계 결과(트레이스·디버깅 노출)
+    delivery_validation: dict[str, Any] = (
+        dict(selected.get("delivery_validation") or {}) if selected else {"is_satisfied": False}
+    )
     if selected_sql is not None:
         semantic_verification = _verify_sql_semantics(original_query or query, selected_sql, llm_model, prompt_dir)
+        delivery_validation = _validate_sql_delivery_contract(
+            original_query or query,
+            query_plan,
+            selected_sql,
+            dialect=target_dialect,
+            semantic_verification=semantic_verification,
+            dropped_conditions=selected.get("dropped_conditions") or [],
+        )
+        delivery_validation["required_conditions"] = len(required_conditions)
+        delivery_validation["condition_tokens"] = len(condition_tokens)
+        if semantic_verification.get("ran"):
+            semantic_verification = {
+                **semantic_verification,
+                "issues": delivery_validation.get("semantic_issues", []),
+            }
         # 차단은 극성(inverted) 오류에만 한다 — 긍정↔부정 뒤집힘은 판정 모델이 비교적 신뢰할 수 있는 축.
         # dropped(누락)는 LLM 판정으로는 차단하지 않는다: 판정 모델이 도메인 인코딩(장바구니 이탈=KEEP_YN='Y',
         # 미접속=LAST_LOGIN_DATE<=과거, 미구매=NOT EXISTS 등)을 원문 단어와 대응시키지 못해 정상 SQL 을 '누락'으로
@@ -11561,8 +12080,7 @@ def build_sql_result(
         if semantic_verification.get("ran") and not semantic_verification.get("faithful"):
             blocking_issues = [
                 issue for issue in semantic_verification.get("issues", [])
-                if issue.get("type") == "inverted"
-                and not _is_noncredible_inverted_verdict(issue)
+                if issue.get("severity") == "critical"
             ]
         # 공통 semantic requirement 회계(브랜드 전용 감지기 대체): 원문 조건을 source requirement 로 기록하고
         # base×qualifier capability + SQL 반영 여부로 귀결한다. 미지원 조합(장바구니+브랜드 등)은 unsupported,
@@ -11573,7 +12091,7 @@ def build_sql_result(
         requirement_blocking = requirement_accounting.blocking() if requirement_accounting else []
         if requirement_accounting is not None:
             sql_result_requirements = requirement_accounting.to_list()
-        if blocking_issues or requirement_blocking:
+        if blocking_issues or requirement_blocking or not delivery_validation.get("is_satisfied", True):
             failure_reason = "semantic_verification_failed"
             clarification_questions = _semantic_verification_clarifications(blocking_issues) + _unique_strings(
                 [req.message for req in requirement_blocking if req.message]
@@ -11629,6 +12147,20 @@ def build_sql_result(
         semantic_invariants = _verify_sql_semantic_invariants(
             original_query or query, query_plan, selected_sql, dropped_signal_warnings
         )
+        if not semantic_invariants.get("ok", True):
+            failure_reason = "semantic_verification_failed"
+            clarification_questions = _unique_strings([
+                *clarification_questions,
+                *[
+                    str(issue.get("detail") or "핵심 조건의 SQL 반영을 확인해 주세요.")
+                    for issue in semantic_invariants.get("issues", [])
+                    if isinstance(issue, dict)
+                ],
+            ])
+            blocked_sql = selected_sql
+            selected_sql = None
+            target_connection = None
+            target_dialect = None
     else:
         semantic_invariants = {"ran": False, "ok": True, "issues": []}
 
@@ -11680,6 +12212,8 @@ def build_sql_result(
         "source_requirements": sql_result_requirements,
         # 결정론 의미 보존 불변식(SQL 생성 시 항상 실행): {ran, ok, issues}. LLM 게이트와 독립.
         "semantic_invariants": semantic_invariants,
+        # 최종 fail-closed 출고 계약: expected/actual grain, 조건별 SQL evidence, polarity, API 컬럼.
+        "delivery_validation": delivery_validation,
         # 의미 검증 v2(AST 기반, shadow/enforce): {ran, spec, result, legacy}. off 면 ran=False.
         "semantic_validation_v2": semantic_validation_v2,
         # 일반 집계 요구사항 IR과 SQL AST의 강제 검증 결과. valid=false면 SQL은 출고·실행되지 않는다.
@@ -11795,6 +12329,40 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
         clauses = ["urb.behavior LIKE 'purchased:%'", "LOWER(urb.behavior) LIKE " + _sql_quote("%" + purchase_object.casefold() + "%")]
         _add_token(tokens, "target_user.purchase_object", "purchase_object", "like", purchase_object, clauses, ["user_recent_behaviors"])
 
+    purchase_membership = target_user.get("purchase_membership")
+    if isinstance(purchase_membership, dict) and purchase_membership.get("operator") == "exists":
+        _add_token(
+            tokens, "target_user.purchase_membership", "purchase", "exists",
+            purchase_membership.get("window_days") or "any_time",
+            [_purchase_membership_predicate(purchase_membership.get("window_days"))],
+            [_order_count_targets_config().get("table", "CRM_SL_ORDERHEADERMALL")],
+        )
+
+    purchase_inactivity = target_user.get("purchase_inactivity")
+    if isinstance(purchase_inactivity, dict) and isinstance(purchase_inactivity.get("min_days"), int):
+        _add_token(
+            tokens, "target_user.purchase_inactivity", "purchase", "not_exists",
+            purchase_inactivity["min_days"], [_purchase_inactivity_predicate(purchase_inactivity["min_days"])],
+            [_order_count_targets_config().get("table", "CRM_SL_ORDERHEADERMALL")],
+        )
+
+    if target_user.get("cart_absence"):
+        _add_token(tokens, "target_user.cart_absence", "cart", "not_exists", True,
+                   [_cart_absence_predicate()], [_cart_targets_registry().get("table", "ODS_MALL_OMS_CART")])
+
+    for index, response in enumerate(target_user.get("campaign_responses") or []):
+        if not isinstance(response, dict) or not response.get("predicate"):
+            continue
+        operator = "not_exists" if response.get("negated") else "exists"
+        _add_token(
+            tokens, f"target_user.campaign_responses[{index}]", "campaign_response", operator,
+            response.get("canonical") or "campaign_response",
+            [_campaign_response_exists_predicate(
+                str(response["predicate"]), negated=bool(response.get("negated")), source=response.get("source")
+            )],
+            [],
+        )
+
     price_sensitivity = target_user.get("price_sensitivity")
     if price_sensitivity in {"high", "low"}:
         _add_token(tokens, "target_user.price_sensitivity", "price_sensitivity", "=", price_sensitivity, ["u.price_sensitivity = " + _sql_quote(price_sensitivity)], [])
@@ -11847,6 +12415,61 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
                 [clause],
                 [],
             )
+
+    # 회원 기준 디멘션(지역/직업 등)도 검증 토큰으로 승격한다. 예전에는 cart 브랜드만 토큰화해
+    # "서울 회원"이 required_conditions=1, condition_tokens=0인 모순 상태였다.
+    if brand_filter is None:
+        for index, dimension_filter in enumerate(query_plan.get("dimension_filters") or []):
+            if not isinstance(dimension_filter, dict):
+                continue
+            column = str(dimension_filter.get("column") or "").split(".")[-1]
+            codes = [str(code) for code in dimension_filter.get("codes") or [] if str(code)]
+            if not column or not codes:
+                continue
+            alias = "B" if dimension_filter.get("table") == _member_table() else "S"
+            clause = f"{alias}.{column} IN ({', '.join(_sql_quote(code) for code in codes)})"
+            _add_token(
+                tokens, "dimension_filters." + str(dimension_filter.get("dimension_id") or index),
+                "dimension_filter", "in", ",".join(codes), [clause], [str(dimension_filter.get("table") or "")],
+            )
+
+    region_count = query_plan.get("region_member_count_target")
+    if isinstance(region_count, dict):
+        column = str(region_count.get("column") or "SIGUNGU")
+        _add_token(tokens, "region_member_count_target", "aggregation", "group_by", column,
+                   [f"GROUP BY B.{column}", "COUNT(DISTINCT"], [_member_table()])
+
+    # 정렬/랭킹 전용 빌더 조건도 검증 토큰으로 명시한다. 이들은 WHERE 술어가 아니라 TOP/ORDER BY/
+    # PARTITION BY 구조라 기존 토큰 생성기가 0개를 반환했고, fail-closed 0-token 게이트에 정상 SQL까지 막혔다.
+    for path, value, clauses in (
+        (
+            "member_metric_ranking",
+            (query_plan.get("member_metric_ranking") or {}).get("metric_id"),
+            ["ORDER BY", "TOP"],
+        ),
+        (
+            "group_ranking_target",
+            (query_plan.get("group_ranking_target") or {}).get("metric_id"),
+            ["ROW_NUMBER", "PARTITION BY"],
+        ),
+        (
+            "region_density_target",
+            (query_plan.get("region_density_target") or {}).get("column"),
+            ["GROUP BY", "TOP"],
+        ),
+        (
+            "purchase_count_ranking",
+            "purchase_count" if isinstance(query_plan.get("purchase_count_ranking"), dict) else None,
+            ["ORDER BY", "TOP"],
+        ),
+        (
+            "member_metric_selection",
+            (query_plan.get("member_metric_selection") or {}).get("metric_id"),
+            ["ORDER BY"],
+        ),
+    ):
+        if value is not None:
+            _add_token(tokens, path, "ranking", "rank", value, clauses, [])
 
     for policy in query_plan.get("policy_constraints", []):
         _add_policy_token(tokens, policy)
@@ -12322,7 +12945,8 @@ def _add_semantic_resolution_token(tokens: list[dict[str, Any]], resolution: dic
 
 
 def _is_safe_select_expression(expression: str) -> bool:
-    return bool(re.fullmatch(r"[uc]\.[a-z_][a-z0-9_]*", expression.strip()))
+    # 단일 식별자 별칭. 기존 데모(u/c)뿐 아니라 실DB 회원 별칭(B)도 허용하되 함수/연산/주석은 금지한다.
+    return bool(re.fullmatch(r"[a-z][a-z0-9_]*\.[a-z_][a-z0-9_]*", expression.strip(), re.IGNORECASE))
 
 
 def _add_computed_metric_token(tokens: list[dict[str, Any]], metric: dict[str, Any], intent: str | None) -> None:
@@ -13024,6 +13648,13 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
         other_predicates.append(_cart_quantity_missing_predicate())
         labels.append("cart_quantity_missing"); has_signal = True
 
+    # 구매 이력 존재(선택적으로 최근 N일 창). 단순 "구매한 회원"도 주문 근거 없이 회원 테이블 전체로
+    # 축약되지 않도록 반드시 주문 헤더 EXISTS로 컴파일한다.
+    purchase_membership = target_user.get("purchase_membership")
+    if isinstance(purchase_membership, dict) and purchase_membership.get("operator") == "exists":
+        other_predicates.append(_purchase_membership_predicate(purchase_membership.get("window_days")))
+        labels.append("purchase_exists"); has_signal = True
+
     # 구매 미발생 기간('최근 N일 미구매'): 회원키 NOT EXISTS anti-join 이라 cart_absence/캠페인 반응처럼
     # 어느 빌더에나 AND 결합된다. 여기서 방출해야 '장바구니 보유 + 최근 90일 미구매'처럼 다른 팩트 빌더
     # (카트)가 이기는 조합에서도 미구매 조건이 살아남는다. order_count 빌더와 동일 문자열이라 dedup 됨.
@@ -13119,7 +13750,7 @@ def build_member_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, 
     compiled = compile_member_target_conditions(query_plan)
     density = query_plan.get("region_density_target")
     # 밀집/지표 지역 랭킹은 코호트 조건이 없어도 성립한다("매출이 높은 지역" = 전체 회원 기준 랭킹).
-    if not compiled["has_signal"] and not isinstance(density, dict):
+    if not compiled["has_signal"] and not isinstance(density, dict) and query_plan.get("member_scope") != "all":
         return None
 
     # "X가 많이 거주하는 동네" — 코호트(X) 조건으로 지역을 랭킹하고 그 지역 거주 회원을 타겟한다.
@@ -13133,7 +13764,11 @@ def build_member_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, 
     # 회원상태(dormant 등)를 직접 지정한 타겟이 아니면 정상 회원으로 한정한다(탈퇴/휴면 제외).
     # 이 술어는 사용자가 말하지 않았는데 주입되는 기본 게이트라, 카디널리티 진단에서 과잉 조건
     # 후보로 따로 표시하기 위해 참조를 보관한다.
-    state_predicate = None if compiled["forces_state"] else _member_active_state_predicate()
+    state_predicate = (
+        None
+        if compiled["forces_state"] or query_plan.get("member_scope") == "all"
+        else _member_active_state_predicate()
+    )
     where_clauses = list(compiled["predicates"])
     if state_predicate is not None:
         where_clauses.append(state_predicate)
@@ -15562,6 +16197,44 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
         # 값 문자열이 SQL 에 존재하면 커버된 것으로 본다(데모 fallback 의 behavior LIKE '%값%' 도 동일 충족).
         conditions.append(_condition("target_user.purchase_object", purchase_object, [purchase_object]))
 
+    purchase_membership = target_user.get("purchase_membership")
+    if isinstance(purchase_membership, dict) and purchase_membership.get("operator") == "exists":
+        order_table = _order_count_targets_config().get("table", "CRM_SL_ORDERHEADERMALL")
+        terms = [str(order_table), "exists"]
+        if isinstance(purchase_membership.get("window_days"), int):
+            terms.append(_order_count_targets_config().get("order_date_column", "ORDER_DATE"))
+        conditions.append(_condition(
+            "target_user.purchase_membership", "purchase_exists", [], all_terms=terms,
+        ))
+
+    purchase_inactivity = target_user.get("purchase_inactivity")
+    if isinstance(purchase_inactivity, dict) and isinstance(purchase_inactivity.get("min_days"), int):
+        conditions.append(_condition(
+            "target_user.purchase_inactivity", str(purchase_inactivity["min_days"]), [],
+            all_terms=["not exists", str(_order_count_targets_config().get("table", "CRM_SL_ORDERHEADERMALL")),
+                       str(_order_count_targets_config().get("order_date_column", "ORDER_DATE"))],
+        ))
+
+    if target_user.get("cart_absence"):
+        conditions.append(_condition(
+            "target_user.cart_absence", "cart_absence", [],
+            all_terms=["not exists", str(_cart_targets_registry().get("table", "ODS_MALL_OMS_CART"))],
+        ))
+
+    for index, response in enumerate(target_user.get("campaign_responses") or []):
+        if not isinstance(response, dict) or not response.get("predicate"):
+            continue
+        config = _MEMBER_TARGET_FILTERS.get("campaign_response_targets", {})
+        source = response.get("source")
+        if source == "camp_member_list":
+            table = (config.get("contact_member_list") or {}).get("table", "Z_CAMP_MBR")
+        else:
+            table = config.get("table", "MCS_CAMP_MBR_RSPN_FT")
+        conditions.append(_condition(
+            f"target_user.campaign_responses[{index}]", str(response.get("canonical") or "campaign_response"), [],
+            all_terms=["not exists" if response.get("negated") else "exists", str(table)],
+        ))
+
     inactivity_period = target_user.get("inactivity_period")
     if isinstance(inactivity_period, dict) and isinstance(inactivity_period.get("sql_interval"), str):
         conditions.append(
@@ -15999,6 +16672,12 @@ def build_stage_log(
                 "selected_sql": bool(sql_result["sql"]),
                 "selected_valid": bool(sql_result["selected"] and sql_result["selected"].get("is_eligible")),
                 "required_conditions": len(sql_result["required_conditions"]),
+                "expected_grain": (sql_result.get("delivery_validation") or {}).get("expected_grain"),
+                "actual_grain": (sql_result.get("delivery_validation") or {}).get("actual_grain"),
+                "extracted_conditions": (sql_result.get("delivery_validation") or {}).get("extracted_conditions", []),
+                "missing_conditions": (sql_result.get("delivery_validation") or {}).get("missing_conditions", []),
+                "semantic_issues": (sql_result.get("delivery_validation") or {}).get("semantic_issues", []),
+                "sql_evidence": (sql_result.get("delivery_validation") or {}).get("sql_evidence", {}),
                 "failure_reason": sql_result["failure_reason"] or "none",
             },
         },

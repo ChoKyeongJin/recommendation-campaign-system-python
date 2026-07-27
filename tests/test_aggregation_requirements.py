@@ -4,7 +4,11 @@ import json
 
 import pytest
 
-from aggregation_requirements import parse_aggregation_request, validate_aggregation_sql
+from aggregation_requirements import (
+    aggregation_request_json_schema,
+    parse_aggregation_request,
+    validate_aggregation_sql,
+)
 
 
 @pytest.fixture()
@@ -15,7 +19,7 @@ def schema_path(tmp_path):
     tables = {
         "customers": {"columns": [col("customer_id", pk=True), col("region"), col("deleted", "int")], "primary_key": ["customer_id"], "indexes": []},
         "orders": {"columns": [col("order_id", pk=True), col("customer_id"), col("store_id"), col("order_date", "date"), col("amount", "numeric"), col("status")], "primary_key": ["order_id"], "indexes": []},
-        "order_items": {"columns": [col("item_id", pk=True), col("order_id"), col("product_id"), col("quantity", "int"), col("sales_amount", "numeric"), col("status")], "primary_key": ["item_id"], "indexes": []},
+        "order_items": {"logical_name": "주문상세", "columns": [col("item_id", pk=True), col("order_id"), col("product_id"), col("quantity", "int"), col("sales_amount", "numeric"), col("status")], "primary_key": ["item_id"], "indexes": []},
         "products": {"columns": [col("product_id", pk=True), col("category_id"), col("product_name")], "primary_key": ["product_id"], "indexes": []},
         "categories": {"columns": [col("category_id", pk=True), col("category_name")], "primary_key": ["category_id"], "indexes": []},
         "stores": {"columns": [col("store_id", pk=True), col("store_name")], "primary_key": ["store_id"], "indexes": []},
@@ -222,3 +226,70 @@ def test_20_unsafe_or_multiple_statements_are_blocked(schema_path, sql):
     validation = validate_aggregation_sql(parsed(payload, schema_path), sql, schema_path, dialect="postgres")
     assert not validation["valid"]
     assert codes(validation) & {"UNSAFE_SQL", "MULTIPLE_SQL_STATEMENTS"}
+
+
+def test_21_physical_names_in_entity_field_are_backfilled(schema_path):
+    """LLM 이 물리명을 entity/field 에만 적어도 카탈로그로 table/column 을 채운다."""
+    product = {"entity": "order_items", "field": "product_id"}
+    payload = request(target="product", output=[product], groups=[product],
+                      aggs=[{"id": "sales_qty", "function": "sum", "entity": "order_items", "field": "quantity"}])
+    spec = parsed(payload, schema_path)
+    assert [(r.table, r.column) for r in spec.groupings] == [("order_items", "product_id")]
+    assert (spec.aggregations[0].table, spec.aggregations[0].column) == ("order_items", "quantity")
+
+
+def test_22_logical_table_name_and_camel_case_field_resolve(schema_path):
+    payload = request(target="metric", aggs=[{"id": "sales", "function": "sum", "entity": "주문상세", "field": "salesAmount"}])
+    spec = parsed(payload, schema_path)
+    assert (spec.aggregations[0].table, spec.aggregations[0].column) == ("order_items", "sales_amount")
+
+
+def test_23_column_only_reference_uses_table_hint_from_request(schema_path):
+    payload = request(target="product", groups=[field("product", "productId", "order_items", "product_id")],
+                      aggs=[{"id": "qty", "function": "sum", "entity": "판매", "field": "quantity"}])
+    spec = parsed(payload, schema_path)
+    assert (spec.aggregations[0].table, spec.aggregations[0].column) == ("order_items", "quantity")
+
+
+def test_24_unresolvable_reference_still_blocks(schema_path):
+    payload = request(target="metric", aggs=[{"id": "x", "function": "sum", "entity": "ghost", "field": "mystery"}])
+    _spec, errors = parse_aggregation_request(payload, schema_path, dialect="postgres")
+    assert "UNRESOLVED_FIELD" in {error.code for error in errors}
+
+
+def test_25_row_count_without_field_reference(schema_path):
+    payload = request(target="metric", aggs=[{"id": "row_count", "function": "count"}])
+    spec = parsed(payload, schema_path)
+    assert spec.aggregations[0].counts_rows
+    assert result(payload, "SELECT COUNT(*) row_count FROM orders o", schema_path)["valid"]
+
+
+def test_26_row_count_with_star_field_is_not_unresolved(schema_path):
+    payload = request(groups=[field("customer", "customerId", "orders", "customer_id")],
+                      aggs=[{"id": "row_count", "function": "count", "entity": "order", "field": "*"}])
+    spec = parsed(payload, schema_path)
+    assert spec.aggregations[0].counts_rows
+    assert result(payload, "SELECT o.customer_id, COUNT(*) row_count FROM orders o GROUP BY o.customer_id", schema_path)["valid"]
+
+
+def test_27_distinct_count_without_column_is_still_rejected(schema_path):
+    payload = request(target="metric", aggs=[{"id": "x", "function": "count", "distinct": True}])
+    _spec, errors = parse_aggregation_request(payload, schema_path, dialect="postgres")
+    assert "INVALID_FIELD_REFERENCE" in {error.code for error in errors}
+
+
+def test_28_sorting_accepts_metric_id_key_variants(schema_path):
+    product = field("product", "productId", "order_items", "product_id")
+    payload = request(target="product", output=[product], groups=[product],
+                      aggs=[agg("sales_qty", "sum", "orderItem", "quantity", "order_items", "quantity")],
+                      sorting=[{"metric_id": "sales_qty", "direction": "desc"}])
+    assert parsed(payload, schema_path).sorting[0].metric_id == "sales_qty"
+
+
+def test_29_tool_schema_declares_metric_and_physical_keys():
+    schema = aggregation_request_json_schema()["properties"]
+    assert schema["sorting"]["items"]["required"] == ["metricId", "direction"]
+    assert "column" in schema["groupings"]["items"]["required"]
+    assert "table" in schema["groupings"]["items"]["required"]
+    assert schema["aggregations"]["items"]["properties"]["function"]["enum"]
+    assert schema["postAggregationFilters"]["items"]["required"] == ["id", "metricId", "operator"]

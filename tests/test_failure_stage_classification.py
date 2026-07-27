@@ -15,7 +15,7 @@ def test_guard_failure_maps_to_sql_safety_stage():
     assert stage["code"] == "sql_safety_validation"
     assert stage["label"] == "SQL 안전 검증"
     assert stage["reason"] == "sql_guard_failed"
-    assert stage["order"] == 3 and stage["total"] == 6
+    assert stage["order"] == 3 and stage["total"] == 7
 
 
 def test_no_candidates_maps_to_condition_recognition_stage():
@@ -28,7 +28,7 @@ def test_no_candidates_maps_to_condition_recognition_stage():
 def test_semantic_verification_maps_to_last_stage():
     stage = g._classify_failure_stage("semantic_verification_failed")
     assert stage["code"] == "semantic_verification"
-    assert stage["order"] == stage["total"] == 6
+    assert stage["order"] == stage["total"] == 7
 
 
 def test_each_reason_has_a_distinct_stage_label():
@@ -36,19 +36,20 @@ def test_each_reason_has_a_distinct_stage_label():
         "no_sql_candidates",
         "real_db_unsupported_conditions",
         "sql_guard_failed",
+        "aggregation_validation_failed",
         "query_plan_conditions_missing",
         "intent_scope_mismatch",
         "semantic_verification_failed",
     ]
     labels = {g._classify_failure_stage(r)["label"] for r in reasons}
-    # 위 6개는 서로 다른 단계 → 라벨이 6개 모두 구분돼야 "늘 같은 메시지" 문제가 풀린다.
-    assert len(labels) == 6
+    # 집계 요구 검증을 포함한 7개가 서로 다른 단계여야 "늘 같은 메시지" 문제가 풀린다.
+    assert len(labels) == 7
 
 
 def test_pipeline_is_ordered_and_marks_the_failed_stage():
     stage = g._classify_failure_stage("intent_scope_mismatch")
     pipeline = stage["pipeline"]
-    assert [p["order"] for p in pipeline] == [1, 2, 3, 4, 5, 6]
+    assert [p["order"] for p in pipeline] == [1, 2, 3, 4, 5, 6, 7]
     # 프론트 스텝퍼가 강조할 실패 단계가 pipeline 안에 order 로 표시돼 있어야 한다.
     failed = next(p for p in pipeline if p["order"] == stage["order"])
     assert failed["code"] == stage["code"] == "intent_scope"

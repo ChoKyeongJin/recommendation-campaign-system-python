@@ -134,6 +134,15 @@ def build_target_specification(
     cart_table = membership_tables.get("cart", "cart")
     campaign_table = membership_tables.get("campaign", "campaign")
 
+    # 단순 구매 존재("구매한 회원")와 선택적 최근 창. 과거에는 상품/건수 없는 순수 구매 존재가
+    # 스펙에 없어 회원 테이블만 조회해도 의미 검증 대상 자체가 생기지 않았다.
+    purchase_membership = tu.get("purchase_membership")
+    if isinstance(purchase_membership, dict) and purchase_membership.get("operator") == "exists":
+        reqs.append(Requirement(
+            counter.next(), "membership", orders_table, "exists", orders_table,
+            window_days=purchase_membership.get("window_days"), source_span="구매 이력 존재",
+        ))
+
     # 최근 N일 미구매(부재 창).
     pi = tu.get("purchase_inactivity")
     if isinstance(pi, dict) and pi.get("min_days"):

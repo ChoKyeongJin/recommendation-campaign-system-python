@@ -3463,7 +3463,9 @@ def _customer_id_column(columns: list[str]) -> str | None:
     for column in columns:
         if column.casefold() in _CUSTOMER_ID_COLUMNS:
             return column
-    return columns[0] if columns else None
+    # 집계 SQL의 첫 컬럼(예: target_region)을 회원 ID로 추정하면 지역 수가 target_customer_count로
+    # 둔갑한다. 계약에 등록된 회원 식별자만 인정하고, 없으면 0/비타겟 결과로 유지한다.
+    return None
 
 
 # 외부 실DB 세그먼트 집계에 쓸 회원 기준 테이블/속성 컬럼. 회원기본정보가 있는 커넥션만 등록된다

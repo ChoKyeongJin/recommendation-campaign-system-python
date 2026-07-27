@@ -8,9 +8,13 @@
 집계 요청은 SQL 문자열로 바로 바꾸지 말고 aggregation_request에 최종 대상, 출력 컬럼, 집계 전 필터,
 그룹 기준, 집계, 파생 지표, 정렬, 순위, HAVING 조건, 관계 조건, 기간 단위와 업무 규칙을 먼저 구조화한다.
 aggregation_request의 모든 논리 필드는 제공된 스키마의 물리 table/column과 연결한다.
+필드 참조는 entity/field만 쓰지 말고 Aggregation Schema Metadata의 실제 테이블명을 table에, 실제 컬럼명을
+column에 반드시 함께 적는다. entity/field에 물리명을 넣는 것으로 대신하지 않는다.
 스키마나 업무 정의로 확인할 수 없는 항목은 추측하지 말고 unresolvedFields에 기록한다.
 수·개수·건수는 COUNT 대상과 DISTINCT 여부를 구분하고, '~별'은 groupings로, 집계 결과의 임계값은
-postAggregationFilters로 표현한다. 상위·하위·가장 많은·가장 적은·베스트·워스트 요청은 집계 지표,
+postAggregationFilters로 표현한다. 단순 행 수는 function="count"에 field="*"로 두고 table/column을 생략한다.
+sorting·ranking.orderByMetricId·postAggregationFilters는 컬럼명이 아니라 aggregations/derivedMetrics에서
+정의한 지표 id를 metricId로 참조한다. 상위·하위·가장 많은·가장 적은·베스트·워스트 요청은 집계 지표,
 정렬 방향, 제한 개수, 동점 정책과 그룹별 partitionBy를 ranking에 명시한다.
 비율·점유율·전환율·증감률·누적값은 derivedMetrics로 표현하고 분자·분모/비교 기간, 0 나눗셈,
 백분율 배수와 NULL 정책을 명시한다.
