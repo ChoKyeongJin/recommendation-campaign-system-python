@@ -34,9 +34,11 @@ from aggregation_requirements import (
 from analytical_intent import (
     SUPPORTED_QUERY_TYPES,
     SUPPORTED_RESULT_SHAPES,
+    UNSUPPORTED_CLARIFICATIONS as ANALYTICAL_UNSUPPORTED_CLARIFICATIONS,
     analyze_analytical_intent,
     build_aggregation_request as build_deterministic_aggregation_request,
     compile_aggregation_ast,
+    member_condition_filter,
     validate_intent_sql_contract,
 )
 from formula_engine import DEFAULT_METRIC_LEXICON_PATH, compile_formula_ast, parse_computed_metrics_from_query, validate_formula_ast
@@ -1837,11 +1839,11 @@ def build_query_plan(
     # 집계 출력은 회원 목록보다 우선한다. 규칙/LLM 파서가 VIP·여성·캠페인·쿠폰 같은 수식어를
     # 오디언스 조건으로 먼저 잡았더라도, 등록된 수치 지표와 집계 함수/그룹 축이 확인되면 별도의
     # 분석 계약으로 승격한다. 지표·차원·필터 물리 매핑은 analytics_registry.json이 단일 소스다.
-    _apply_analytical_intent(query, base, sql_schema)
-    # LLM/규칙 어느 파서를 탔든 최종 플랜에 공통 행동 의미와 출력 계약을 확정한다. 이 단계는
-    # SQL 생성 전 마지막 결정론 보강이라, 파서가 단순 완료형 행동("구매한 회원")을 놓쳐도
-    # 그 조건이 조용히 사라진 채 전체 회원 SQL로 나가는 것을 막는다.
+    # 행동 의미(구매/장바구니/캠페인 반응의 존재·부재)를 먼저 구조화한다. 분석 계약은 이 결과를
+    # 모집단 스코프로 넘겨받아야 "구매한 회원 수"를 전체 회원 수로 계산하는 조용한 오답을 막는다.
+    # 파서가 단순 완료형 행동("구매한 회원")을 놓쳐도 여기서 복원된다.
     _apply_core_membership_semantics(query, base)
+    _apply_analytical_intent(query, base, sql_schema)
     _attach_query_output_contract(query, base)
     base["complexity"] = classify_query_complexity(base)
     return base
@@ -1922,9 +1924,13 @@ def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path
             "purchase_count_ranking",
         ):
             plan.pop(key, None)
-        for key in ("behaviors", "purchase_object", "interests", "category"):
+        # 극값 계약은 지표 소스 위에서 정의된다 — "가장 많이 구매한 회원"의 구매 존재 조건은
+        # 주문 테이블 집계 자체가 보장하므로 별도 오디언스 조건으로 남기지 않는다.
+        for key in ("behaviors", "purchase_object", "interests", "category", "purchase_membership"):
             if key in target_user:
                 target_user[key] = [] if isinstance(target_user.get(key), list) else None
+    _consume_analytical_scope_conditions(plan, intent)
+    _bind_member_condition_filters(plan, intent)
     plan["semantic_conditions"] = []
     campaign = plan.get("campaign_constraints")
     if isinstance(campaign, dict):
@@ -1934,7 +1940,126 @@ def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path
         campaign["sell_object"] = None
     # 오디언스 파서가 같은 문구에 붙인 미지원 판정은 분석 계약이 완전히 대체한다.
     plan.pop("unsupported", None)
+    # 그룹 축("브랜드별")을 상품명으로 이중 해석한 결과는 조건이 아니다 — 남은 조건을 세기 전에 정리한다.
+    _normalize_aggregation_axis_filters(plan)
+    dropped = _analytical_dropped_conditions(plan)
+    if dropped:
+        # 집계 계약이 담지 못한 조건이 남았다 = 그 조건을 무시한 '그럴듯한 숫자'가 나갈 상태다.
+        # 조용한 오답 대신 무엇이 빠졌는지 명시하고 확인을 요청한다(fail-close).
+        plan["unsupported"] = {
+            "reason": "analytical_signal_dropped",
+            "message": "질문의 다음 조건을 집계 SQL에 반영하지 못했습니다: " + ", ".join(dropped),
+            "clarification": ANALYTICAL_UNSUPPORTED_CLARIFICATIONS["analytical_signal_dropped"],
+            "dropped_conditions": dropped,
+        }
+        plan["capability_check"] = {
+            **(plan.get("capability_check") or {}),
+            "passed": False,
+            "reason": "analytical_signal_dropped",
+        }
+        return
     _refresh_aggregation_request_validation(plan, schema_path)
+
+
+# 분석 계약이 소유하는 오디언스 슬롯. 스코프/필터로 컴파일된 조건은 회원 목록 요구사항에서 지워야
+# required_sql_conditions 가 올바른 집계 SQL 을 "조건 누락"으로 되돌리지 않는다.
+_ANALYTICAL_SCOPE_OWNERSHIP: dict[str, tuple[tuple[str, str | None], ...]] = {
+    "purchase": (("purchase_membership", None), ("behaviors", "no_purchase"), ("purchase_inactivity", None)),
+    "cart": (("behaviors", "cart_abandoner"), ("cart_absence", None), ("cart_retention", None)),
+    "campaign_response": (("campaign_responses", None),),
+    "login": (("recent_login", None),),
+}
+_ANALYTICAL_FILTER_OWNERSHIP: dict[str, tuple[tuple[str, str | None], ...]] = {
+    "female": (("gender", None),),
+    "vip": (("lifecycle", "vip"),),
+    "app_login_channel": (("lifecycle", "app_user"), ("preferred_channels", "app")),
+}
+# 오디언스 조건이 아닌 부가 정보 슬롯. 이 목록만 예외이고, 나머지 target_user 값은 전부 검사 대상이다
+# — 새 조건 슬롯이 생겨도 목록에 추가하는 것을 잊어서 조용히 무시되는 일이 없어야 한다.
+_ANALYTICAL_IGNORED_SLOTS = frozenset({"purchase_object_kind", "sell_object"})
+# 회원 상태 정책(member_policy)과 분석 계약이 이미 소유하는 lifecycle canonical.
+_ANALYTICAL_OWNED_LIFECYCLE = frozenset({"normal_member"})
+
+
+def _remove_slot_value(target_user: dict[str, Any], slot: str, value: str | None) -> None:
+    if value is None:
+        target_user[slot] = [] if isinstance(target_user.get(slot), list) else None
+        return
+    current = target_user.get(slot)
+    if isinstance(current, list):
+        target_user[slot] = [item for item in current if item != value]
+
+
+def _consume_analytical_scope_conditions(plan: dict[str, Any], intent: dict[str, Any]) -> None:
+    """Remove the audience slots the analytical contract compiled itself."""
+    target_user = plan.get("target_user") if isinstance(plan.get("target_user"), dict) else {}
+    for scope in intent.get("scopes", []) or []:
+        if not isinstance(scope, dict):
+            continue
+        for slot, value in _ANALYTICAL_SCOPE_OWNERSHIP.get(str(scope.get("id")), ()):
+            _remove_slot_value(target_user, slot, value)
+    for item in intent.get("filters", []) or []:
+        if not isinstance(item, dict):
+            continue
+        for slot, value in _ANALYTICAL_FILTER_OWNERSHIP.get(str(item.get("id")), ()):
+            _remove_slot_value(target_user, slot, value)
+
+
+def _bind_member_condition_filters(plan: dict[str, Any], intent: dict[str, Any]) -> None:
+    """Compile audience canonicals the parser found into the analytical contract.
+
+    ``VIP``/``임직원``/``휴면``/``앱 사용자`` already have one physical definition in
+    ``member_target_filters.json``.  Binding them here means an aggregate over that
+    population reuses the audience definition instead of failing closed — and the
+    count always describes the same rows the member list would return.
+    """
+    target_user = plan.get("target_user") if isinstance(plan.get("target_user"), dict) else {}
+    remaining: list[str] = []
+    for canonical in list(target_user.get("lifecycle", []) or []):
+        spec = member_condition_filter(str(canonical))
+        if spec is None:
+            remaining.append(str(canonical))
+            continue
+        candidate = {
+            **intent,
+            "filters": [*intent.get("filters", []), {
+                "id": f"member_{canonical}", "label": spec.get("label", canonical), "spec": spec,
+            }],
+        }
+        try:
+            request = build_deterministic_aggregation_request(candidate)
+        except (KeyError, TypeError, ValueError):
+            # 이 지표 소스가 해당 회원 조건에 닿지 못한다 — 조용히 무시하지 않고 미반영으로 남긴다.
+            remaining.append(str(canonical))
+            continue
+        intent["filters"] = candidate["filters"]
+        plan["analytical_intent"] = intent
+        plan["aggregation_request"] = request
+        plan["detected_intent"] = {**(plan.get("detected_intent") or {}), "filters": intent["filters"]}
+    target_user["lifecycle"] = remaining
+
+
+def _analytical_dropped_conditions(plan: dict[str, Any]) -> list[str]:
+    """Audience conditions the analytical contract neither compiled nor consumed.
+
+    Enumerating what is *left* rather than what is forbidden keeps the guard honest
+    as the parser grows: a newly extracted condition that no aggregate can express
+    blocks the answer instead of quietly disappearing from the number.
+    """
+    target_user = plan.get("target_user") if isinstance(plan.get("target_user"), dict) else {}
+    dropped: list[str] = []
+    for slot, value in target_user.items():
+        if slot in _ANALYTICAL_IGNORED_SLOTS or value in (None, [], {}, "", False):
+            continue
+        if slot in {"lifecycle", "behaviors"}:
+            dropped.extend(
+                _unsupported_condition_label(f"target_user.{slot}:{item}")
+                for item in value
+                if slot != "lifecycle" or str(item) not in _ANALYTICAL_OWNED_LIFECYCLE
+            )
+            continue
+        dropped.append(_unsupported_condition_label(f"target_user.{slot}"))
+    return dropped
 
 
 def _upgrade_intent_from_variants(base: dict[str, Any], variant_intents: list[str]) -> None:
@@ -3493,6 +3618,11 @@ def _normalize_purchase_aggregation_request(plan: dict[str, Any]) -> None:
     aggregation = plan.get("aggregation_request")
     target_user = plan.get("target_user")
     if not isinstance(aggregation, dict) or not isinstance(target_user, dict):
+        return
+    # 레지스트리 계약은 지표·모집단 스코프·기간을 이미 물리 매핑으로 확정한 상태다. LLM 플래너 출력을
+    # 교정하려는 이 후처리가 그 위에 다시 회원키/테이블을 덮어쓰면, 요구사항만 바뀌고 SQL 은 그대로라
+    # 정상 SQL 이 "요청된 집계가 없다"로 탈락한다(검증 대상이 검증 기준을 바꾸는 순환).
+    if (aggregation.get("businessRules") or {}).get("contractSource") == "analytics_registry":
         return
     membership = target_user.get("purchase_membership")
     if not isinstance(membership, dict) or membership.get("operator") != "exists":
@@ -8521,6 +8651,9 @@ def _sanitize_purchase_object(value: str) -> str | None:
             # 비교·최상급·정렬 표현은 상품/브랜드/카테고리명이 아니라 query semantics가 소유한다.
             "가장", "제일", "적게", "적은", "높게", "낮게", "높은", "낮은", "큰", "작은",
             "최대", "최소", "최고", "최저", "상위", "하위", "마지막",
+            # 중복 제거 지시어는 집계 방식(DISTINCT)이지 상품명이 아니다. '중복 없이 구매 회원 수'의
+            # '없이'가 상품 LIKE 로 새면 정상 집계가 '상품 조건 미충족'으로 탈락한다.
+            "중복", "없이", "고유", "유니크",
         }:
             continue
         # 날짜/기간 토큰은 상품이 아니라 구매 날짜 조건이므로 상품명 후보에서 뺀다(→ purchase_date 가 담당).
@@ -13924,6 +14057,10 @@ def build_analytical_aggregation_sql_candidate(query_plan: dict[str, Any]) -> di
     """Compile a registry-backed analytical intent without an LLM fallback."""
     if query_plan.get("intent") != "analyze_aggregation":
         return None
+    # 미지원(지표 미해석·조건 미반영)으로 판정된 질의는 어떤 SQL 도 내지 않는다 — 호출 순서에
+    # 기대지 않고 여기서도 닫는다(그럴듯한 오답 대신 명시 미지원).
+    if isinstance(query_plan.get("unsupported"), dict):
+        return None
     intent = query_plan.get("analytical_intent")
     request = query_plan.get("aggregation_request")
     if not isinstance(intent, dict) or not isinstance(request, dict):
@@ -13956,6 +14093,16 @@ _UNSUPPORTED_CONDITION_LABELS = {
     "target_user.behaviors": "행동 조건",
     "target_user.purchase_object": "구매 상품 조건",
     "target_user.aggregate_conditions": "집계 조건(구매 금액/횟수 임계값)",
+    "target_user.birthday_target": "생일 조건",
+    "target_user.signup_target": "가입일 조건",
+    "target_user.purchase_date": "구매일 조건",
+    "target_user.cart_type": "장바구니 유형 조건",
+    "target_user.balance_conditions": "잔액 조건",
+    "target_user.campaign_responses": "캠페인 반응 조건",
+    "target_user.purchase_membership": "구매 이력 조건",
+    "target_user.purchase_inactivity": "미구매 기간 조건",
+    "target_user.cart_absence": "장바구니 미보유 조건",
+    "target_user.age_exclude_ranges": "연령 제외 조건",
     "target_user.price_sensitivity": "가격 민감도 조건",
     "target_user.inactivity_period": "미접속 기간 조건",
     "target_user.recent_login": "최근 로그인 기간 조건",

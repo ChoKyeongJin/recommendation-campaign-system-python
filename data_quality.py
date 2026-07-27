@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import Any
 import re
 
-from analytical_intent import DEFAULT_ANALYTICS_REGISTRY_PATH, load_analytics_registry
+from analytical_intent import (
+    DEFAULT_ANALYTICS_REGISTRY_PATH,
+    load_analytics_registry,
+    resolve_dimension_mapping,
+)
 
 
 PROFILE_STATUSES = frozenset({
@@ -185,7 +189,7 @@ def analyze_execution_result(
         for dimension_id in intent.get("dimensions", []) or []:
             spec = (registry.get("dimensions") or {}).get(dimension_id) or {}
             pattern = spec.get("valuePattern")
-            mapping = (spec.get("mappings") or {}).get((source or {}).get("id")) or {}
+            mapping = resolve_dimension_mapping(registry, source, str(dimension_id)) or {}
             output_name = mapping.get("outputAlias") or mapping.get("column")
             result_column = folded_columns.get(str(output_name or "").casefold())
             if not pattern or not result_column:

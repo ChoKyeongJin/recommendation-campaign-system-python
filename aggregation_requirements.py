@@ -128,6 +128,11 @@ class RelationCondition:
     target_entity: str
     mode: str
     minimum_count: int | None = None
+    # 관계가 어떤 물리 증거로 구현돼야 하는지. 모집단 스코프(구매/로그인/캠페인 반응)는
+    # 소스 자체(inherent), EXISTS 서브쿼리(exists), 회원 행의 컬럼 술어(column) 중 하나로 실현된다.
+    target_table: str | None = None
+    binding: str | None = None
+    predicate_columns: tuple[str, ...] = ()
 
 
 @dataclass
@@ -497,6 +502,7 @@ def validate_aggregation_sql(
         errors.append(ValidationError("UNSAFE_SQL", "변경 SQL은 실행할 수 없습니다."))
 
     aliases, ctes = _aliases(root)
+    derived = _derived_sources(root)
     used_tables = sorted({t.name for t in root.find_all(exp.Table) if t.name.casefold() not in ctes})
     for table in used_tables:
         if catalog.table(table) is None:
@@ -504,6 +510,10 @@ def validate_aggregation_sql(
     used_columns: list[dict[str, str]] = []
     for column in root.find_all(exp.Column):
         if column.name == "*" or _column_is_output_alias(column, root):
+            continue
+        # 파생 테이블(서브쿼리) 출력 컬럼은 카탈로그 컬럼이 아니라 안쪽 SELECT 의 결과다.
+        # 물리 존재 검사는 안쪽 컬럼 참조에서 이미 수행된다.
+        if column.table and column.name.casefold() in derived.get(column.table.casefold(), set()):
             continue
         table = aliases.get(column.table.casefold()) if column.table else _resolve_unqualified_table(column.name, used_tables, catalog)
         if column.table and table is not None and table.casefold() in ctes:
@@ -801,6 +811,24 @@ def _aliases(root: exp.Expression) -> tuple[dict[str, str], set[str]]:
     return aliases, ctes
 
 
+def _derived_sources(root: exp.Expression) -> dict[str, set[str]]:
+    """파생 테이블(FROM (SELECT ...) X) 별칭이 노출하는 출력 컬럼 이름.
+
+    2단계 집계(회원별로 묶은 뒤 평균 등)는 바깥 SELECT 가 안쪽 결과 별칭을 참조한다. 이 별칭을
+    물리 컬럼으로 착각하면 정상 SQL 이 '스키마에 없는 컬럼'으로 탈락한다.
+    """
+    exposed: dict[str, set[str]] = {}
+    for subquery in root.find_all(exp.Subquery):
+        alias = subquery.alias_or_name
+        inner = subquery.this
+        if not alias or not isinstance(inner, exp.Select):
+            continue
+        exposed.setdefault(alias.casefold(), set()).update(
+            projection.alias_or_name.casefold() for projection in inner.expressions if projection.alias_or_name
+        )
+    return exposed
+
+
 def _aggregate_matches(req: AggregationRequirement, node: exp.AggFunc, aliases: dict[str, str], catalog: SchemaMetadata, used_tables: list[str]) -> bool:
     name = node.key.casefold()
     distinct = isinstance(node.this, exp.Distinct)
@@ -939,14 +967,37 @@ def _validate_derived_metrics(request: AggregationRequest, root: exp.Expression,
 
 
 def _validate_relations(request: AggregationRequest, root: exp.Expression, errors: list[ValidationError], mappings: list[dict[str, Any]]) -> None:
+    """관계 조건이 실제로 어떤 물리 증거로 구현됐는지 확인한다.
+
+    존재 관계를 "조인이나 EXISTS 가 하나라도 있으면 통과"로 보면, 다른 목적의 조인이 우연히
+    있다는 이유로 누락된 모집단 조건이 통과한다. 관계가 대상 테이블/구현 방식을 선언하면 그
+    증거를 직접 확인하고, 선언이 없는 기존 관계만 종전처럼 완화해 판정한다.
+    """
+    sql_text = root.sql().casefold()
     has_relation = bool(list(root.find_all(exp.Join)) or list(root.find_all(exp.Exists)) or list(root.find_all(exp.In)))
     for req in request.relation_conditions:
-        implemented = has_relation
+        clause = "JOIN / EXISTS / IN"
+        if req.binding == "column" or req.predicate_columns:
+            implemented = any(str(column).casefold() in sql_text for column in req.predicate_columns)
+            clause = "WHERE"
+        elif req.target_table:
+            implemented = str(req.target_table).casefold() in sql_text
+            if implemented and req.binding == "exists":
+                implemented = "exists" in sql_text
+            if implemented and req.mode == "none":
+                implemented = "not exists" in sql_text or "not in" in sql_text
+            clause = "FROM / EXISTS"
+        else:
+            implemented = has_relation
         if req.mode in {"at_least", "exactly"} and req.minimum_count is not None:
             implemented = implemented and any(str(req.minimum_count) in h.sql() for h in root.find_all(exp.Having))
         if not implemented:
-            errors.append(ValidationError("MISSING_RELATION_JOIN", "집계 결과와 최종 대상의 관계 조건이 없습니다.", req.id))
-        mappings.append(_mapping(req.id, req.relation, implemented, "JOIN / EXISTS / IN" if implemented else None))
+            errors.append(ValidationError(
+                "MISSING_RELATION_JOIN",
+                f"집계 결과와 최종 대상의 관계 조건이 없습니다: {req.relation or req.id}",
+                req.id,
+            ))
+        mappings.append(_mapping(req.id, req.relation, implemented, clause if implemented else None))
 
 
 def _validate_join_duplication(root: exp.Expression, request: AggregationRequest, aliases: dict[str, str],
@@ -1156,8 +1207,13 @@ def _relation(value: Any, path: str, errors: list[ValidationError]) -> RelationC
     if mode not in RELATION_MODES:
         errors.append(ValidationError("INVALID_RELATION", f"지원하지 않는 관계 모드입니다: {mode}", path=path))
     minimum = value.get("minimumCount")
-    return RelationCondition(_string(value.get("id")) or path, str(value.get("sourceEntity", "")), str(value.get("relation", "")),
-                             str(value.get("targetEntity", "")), mode, minimum if isinstance(minimum, int) else None)
+    columns = value.get("predicateColumns")
+    return RelationCondition(
+        _string(value.get("id")) or path, str(value.get("sourceEntity", "")), str(value.get("relation", "")),
+        str(value.get("targetEntity", "")), mode, minimum if isinstance(minimum, int) else None,
+        _string(value.get("targetTable")), _string(value.get("binding")),
+        tuple(str(item) for item in columns if isinstance(item, str)) if isinstance(columns, list) else (),
+    )
 
 
 def _required_string(payload: dict[str, Any], key: str, errors: list[ValidationError]) -> str:
@@ -1226,7 +1282,7 @@ def _camelize_nested(value: Any) -> Any:
         "zero_division_policy": "zeroDivisionPolicy", "metric_id": "metricId",
         "partition_by": "partitionBy", "order_by_metric_id": "orderByMetricId",
         "tie_policy": "tiePolicy", "source_entity": "sourceEntity", "target_entity": "targetEntity",
-        "minimum_count": "minimumCount",
+        "minimum_count": "minimumCount", "target_table": "targetTable", "predicate_columns": "predicateColumns",
     }
     if isinstance(value, dict):
         return {key_map.get(k, k): _camelize_nested(v) for k, v in value.items()}

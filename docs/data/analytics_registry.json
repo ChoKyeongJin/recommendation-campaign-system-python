@@ -1,4 +1,5 @@
 {
+  "description": "분석 집계 계약 레지스트리. 지표·차원·필터·모집단 스코프를 논리 선언 1개로 두고, 물리 매핑은 소스의 테이블/조인에서 계산한다(조합 행렬을 손으로 유지하지 않는다).",
   "aggregateFunctions": {
     "SUM": ["합계", "총액", "총합", "전체 금액", "전체 구매 금액", "총 구매금액", "합산", "얼마"],
     "COUNT": ["건수", "개수", "몇 건"],
@@ -7,6 +8,65 @@
     "MIN": ["최소", "최저", "가장 오래된", "오래된"]
   },
   "unsupportedMetricQualifiers": ["미래 예상", "미래예상", "예측 구매", "예상 구매"],
+  "memberScopes": [
+    {
+      "id": "purchase",
+      "domain": "purchase",
+      "label": "구매 이력",
+      "entity": "order",
+      "type": "exists",
+      "terms": ["구매한", "구입한", "주문한", "결제한", "구매 고객", "구매고객", "구매 회원", "구매회원", "구매 이력이 있는", "구매경험"],
+      "negationTerms": ["구매하지 않은", "구매하지않은", "구매한 적 없는", "구매 이력이 없는", "미구매", "주문하지 않은", "구매 안 한", "구매를 안 한"],
+      "table": "CRM_SL_ORDERHEADERMALL",
+      "alias": "OH",
+      "join": "{alias}.MEMBER_NO = {member}",
+      "dateColumn": "ORDER_DATE",
+      "hostTables": ["CRM_MB_BASEINFO"]
+    },
+    {
+      "id": "login",
+      "domain": "login",
+      "label": "로그인 이력",
+      "entity": "member",
+      "type": "column",
+      "terms": ["로그인한", "접속한", "로그인 회원", "로그인회원", "로그인 고객"],
+      "negationTerms": ["로그인하지 않은", "접속하지 않은", "로그인한 적 없는", "미접속"],
+      "existsPredicate": "{host}.LAST_LOGIN_DATE IS NOT NULL",
+      "absencePredicate": "{host}.LAST_LOGIN_DATE IS NULL",
+      "dateColumn": "LAST_LOGIN_DATE",
+      "hostTables": ["CRM_MB_BASEINFO"]
+    },
+    {
+      "id": "campaign_response",
+      "domain": "campaign_response",
+      "label": "캠페인 반응",
+      "entity": "campaign_response",
+      "type": "exists",
+      "terms": ["캠페인에 반응", "캠페인반응", "반응한 회원", "반응 회원", "반응회원", "반응한 고객", "반응 고객"],
+      "negationTerms": ["반응하지 않은", "반응이 없는", "무반응"],
+      "table": "MCS_CAMP_MBR_RSPN_FT",
+      "alias": "R",
+      "join": "TRY_CAST({alias}.MBR_NO AS BIGINT) = {member}",
+      "conditions": ["{alias}.CGRP_TYPE_CD = 'T'", "({alias}.OFFR_RSPN_YN = 'Y' OR {alias}.BUY_RSPN_YN = 'Y')"],
+      "hostTables": ["CRM_MB_BASEINFO"],
+      "assumption": "캠페인 반응은 대상군(CGRP_TYPE_CD='T') 중 오퍼 반응 또는 구매 반응이 있는 회원으로 계산합니다."
+    },
+    {
+      "id": "cart",
+      "domain": "cart",
+      "label": "장바구니 보유",
+      "entity": "cart",
+      "type": "exists",
+      "terms": ["장바구니에 담은", "장바구니를 담은", "장바구니에 상품을 담은", "장바구니 보유", "장바구니가 있는"],
+      "negationTerms": ["장바구니에 담지 않은", "장바구니가 비어", "장바구니가 없는"],
+      "table": "ODS_MALL_OMS_CART",
+      "alias": "C",
+      "join": "{alias}.CART_ID = {host}.MEMBER_ID",
+      "conditions": ["{alias}.KEEP_YN = 'Y'"],
+      "hostTables": ["CRM_MB_BASEINFO"],
+      "assumption": "장바구니 보유는 유지중(KEEP_YN='Y')인 장바구니 행이 있는 회원으로 계산합니다."
+    }
+  ],
   "metrics": [
     {
       "id": "coupon_purchase_amount",
@@ -19,8 +79,8 @@
         "id": "campaign_coupon_fact",
         "table": "MCS_CAMP_MBR_RSPN_FT",
         "alias": "R",
-        "supportedDimensions": [],
         "measure": {"entity": "coupon_response", "field": "offerPurchaseAmount", "table": "MCS_CAMP_MBR_RSPN_FT", "column": "OFFR_BUY_AMT", "expression": "R.OFFR_BUY_AMT", "alias": "TOTAL_PURCHASE_AMOUNT"},
+        "memberField": {"entity": "campaign_response", "field": "memberNumber", "table": "MCS_CAMP_MBR_RSPN_FT", "column": "MBR_NO", "expression": "R.MBR_NO", "outputAlias": "MBR_NO"},
         "fixedFilters": [
           {"id": "target_campaign_group", "entity": "campaign_response", "field": "campaignGroupType", "table": "MCS_CAMP_MBR_RSPN_FT", "column": "CGRP_TYPE_CD", "expression": "R.CGRP_TYPE_CD", "operator": "eq", "value": "T"},
           {"id": "coupon_used", "entity": "coupon_response", "field": "usedCouponCount", "table": "MCS_CAMP_MBR_RSPN_FT", "column": "USE_CPN_CNT", "expression": "R.USE_CPN_CNT", "operator": "gt", "value": 0}
@@ -39,8 +99,8 @@
         "id": "campaign_purchase_fact",
         "table": "MCS_CAMP_MBR_RSPN_FT",
         "alias": "R",
-        "supportedDimensions": ["campaign"],
         "measure": {"entity": "campaign_response", "field": "purchaseAmount", "table": "MCS_CAMP_MBR_RSPN_FT", "column": "BUY_AMT", "expression": "R.BUY_AMT", "alias": "TOTAL_PURCHASE_AMOUNT"},
+        "memberField": {"entity": "campaign_response", "field": "memberNumber", "table": "MCS_CAMP_MBR_RSPN_FT", "column": "MBR_NO", "expression": "R.MBR_NO", "outputAlias": "MBR_NO"},
         "fixedFilters": [
           {"id": "target_campaign_group", "entity": "campaign_response", "field": "campaignGroupType", "table": "MCS_CAMP_MBR_RSPN_FT", "column": "CGRP_TYPE_CD", "expression": "R.CGRP_TYPE_CD", "operator": "eq", "value": "T"},
           {"id": "campaign_purchase_response", "entity": "campaign_response", "field": "purchaseResponse", "table": "MCS_CAMP_MBR_RSPN_FT", "column": "BUY_RSPN_YN", "expression": "R.BUY_RSPN_YN", "operator": "eq", "value": "Y"}
@@ -57,8 +117,11 @@
         "id": "purchase_date_header",
         "table": "CRM_SL_ORDERHEADERMALL",
         "alias": "O",
-        "supportedDimensions": [],
-        "measure": {"entity": "order", "field": "orderDate", "table": "CRM_SL_ORDERHEADERMALL", "column": "ORDER_DATE", "expression": "O.ORDER_DATE", "alias": "PURCHASE_DATE"}
+        "providesScopes": ["purchase"],
+        "measure": {"entity": "order", "field": "orderDate", "table": "CRM_SL_ORDERHEADERMALL", "column": "ORDER_DATE", "expression": "O.ORDER_DATE", "alias": "PURCHASE_DATE"},
+        "memberField": {"entity": "member", "field": "memberNumber", "table": "CRM_SL_ORDERHEADERMALL", "column": "MEMBER_NO", "expression": "O.MEMBER_NO", "outputAlias": "MEMBER_NO"},
+        "dateField": {"entity": "order", "field": "orderDate", "table": "CRM_SL_ORDERHEADERMALL", "column": "ORDER_DATE", "expression": "O.ORDER_DATE"},
+        "joins": [{"id": "member", "table": "CRM_MB_BASEINFO", "alias": "B", "on": "B.MEMBER_NO = O.MEMBER_NO"}]
       }]
     },
     {
@@ -75,7 +138,16 @@
         "measure": {"entity": "member", "field": "totalLoginCount", "table": "CRM_MB_BASEINFO", "column": "TOTAL_LOGIN_CNT", "expression": "B.TOTAL_LOGIN_CNT", "alias": "LOGIN_COUNT"},
         "aggregationFunction": "MAX",
         "fixedFilters": [{"id": "active_member", "entity": "member", "field": "memberStateCode", "table": "CRM_MB_BASEINFO", "column": "MEMBER_STATE_CD", "expression": "B.MEMBER_STATE_CD", "operator": "eq", "value": "MEMBER_STATE_CD.NORMAL"}]
-      }
+      },
+      "sources": [{
+        "id": "member_login_count_base",
+        "table": "CRM_MB_BASEINFO",
+        "alias": "B",
+        "measure": {"entity": "member", "field": "totalLoginCount", "table": "CRM_MB_BASEINFO", "column": "TOTAL_LOGIN_CNT", "expression": "B.TOTAL_LOGIN_CNT", "alias": "LOGIN_COUNT"},
+        "memberField": {"entity": "member", "field": "memberNumber", "table": "CRM_MB_BASEINFO", "column": "MEMBER_NO", "expression": "B.MEMBER_NO", "outputAlias": "MEMBER_NO"},
+        "policyFilters": ["active_member"],
+        "assumptions": ["로그인 횟수는 회원 기본정보의 누적 로그인 횟수(TOTAL_LOGIN_CNT)입니다."]
+      }]
     },
     {
       "id": "carrot_balance",
@@ -91,7 +163,15 @@
         "measure": {"entity": "member", "field": "carrotBalanceAmount", "table": "CRM_MB_BASEINFO", "column": "CARROT_BALANCE_AMT", "expression": "B.CARROT_BALANCE_AMT", "alias": "CARROT_BALANCE_AMOUNT"},
         "aggregationFunction": "MAX",
         "fixedFilters": [{"id": "active_member", "entity": "member", "field": "memberStateCode", "table": "CRM_MB_BASEINFO", "column": "MEMBER_STATE_CD", "expression": "B.MEMBER_STATE_CD", "operator": "eq", "value": "MEMBER_STATE_CD.NORMAL"}]
-      }
+      },
+      "sources": [{
+        "id": "member_carrot_balance_base",
+        "table": "CRM_MB_BASEINFO",
+        "alias": "B",
+        "measure": {"entity": "member", "field": "carrotBalanceAmount", "table": "CRM_MB_BASEINFO", "column": "CARROT_BALANCE_AMT", "expression": "B.CARROT_BALANCE_AMT", "alias": "CARROT_BALANCE_AMOUNT"},
+        "memberField": {"entity": "member", "field": "memberNumber", "table": "CRM_MB_BASEINFO", "column": "MEMBER_NO", "expression": "B.MEMBER_NO", "outputAlias": "MEMBER_NO"},
+        "policyFilters": ["active_member"]
+      }]
     },
     {
       "id": "deposit_balance",
@@ -107,7 +187,15 @@
         "measure": {"entity": "member", "field": "depositBalanceAmount", "table": "CRM_MB_BASEINFO", "column": "DEPOSIT_BALANCE_AMT", "expression": "B.DEPOSIT_BALANCE_AMT", "alias": "DEPOSIT_BALANCE_AMOUNT"},
         "aggregationFunction": "MAX",
         "fixedFilters": [{"id": "active_member", "entity": "member", "field": "memberStateCode", "table": "CRM_MB_BASEINFO", "column": "MEMBER_STATE_CD", "expression": "B.MEMBER_STATE_CD", "operator": "eq", "value": "MEMBER_STATE_CD.NORMAL"}]
-      }
+      },
+      "sources": [{
+        "id": "member_deposit_balance_base",
+        "table": "CRM_MB_BASEINFO",
+        "alias": "B",
+        "measure": {"entity": "member", "field": "depositBalanceAmount", "table": "CRM_MB_BASEINFO", "column": "DEPOSIT_BALANCE_AMT", "expression": "B.DEPOSIT_BALANCE_AMT", "alias": "DEPOSIT_BALANCE_AMOUNT"},
+        "memberField": {"entity": "member", "field": "memberNumber", "table": "CRM_MB_BASEINFO", "column": "MEMBER_NO", "expression": "B.MEMBER_NO", "outputAlias": "MEMBER_NO"},
+        "policyFilters": ["active_member"]
+      }]
     },
     {
       "id": "cart_product_quantity",
@@ -124,7 +212,16 @@
         "aggregationFunction": "SUM",
         "fixedFilters": [{"id": "active_cart", "entity": "cart", "field": "keepYn", "table": "ODS_MALL_OMS_CART", "column": "KEEP_YN", "expression": "C.KEEP_YN", "operator": "eq", "value": "Y"}],
         "assumptions": ["ODS_MALL_OMS_CART.CART_ID is the member login identifier mapped to CRM_MB_BASEINFO.MEMBER_ID."]
-      }
+      },
+      "sources": [{
+        "id": "active_cart_quantity",
+        "table": "ODS_MALL_OMS_CART",
+        "alias": "C",
+        "providesScopes": ["cart"],
+        "measure": {"entity": "cart", "field": "quantity", "table": "ODS_MALL_OMS_CART", "column": "QTY", "expression": "C.QTY", "alias": "CART_PRODUCT_QUANTITY"},
+        "memberField": {"entity": "member", "field": "memberId", "table": "ODS_MALL_OMS_CART", "column": "CART_ID", "expression": "C.CART_ID", "outputAlias": "CART_ID"},
+        "fixedFilters": [{"id": "active_cart", "entity": "cart", "field": "keepYn", "table": "ODS_MALL_OMS_CART", "column": "KEEP_YN", "expression": "C.KEEP_YN", "operator": "eq", "value": "Y"}]
+      }]
     },
     {
       "id": "member_count",
@@ -132,44 +229,124 @@
       "terms": ["회원 수", "회원수", "고객 수", "고객수", "가입자 수", "가입자수"],
       "defaultFunction": "COUNT",
       "allowedFunctions": ["COUNT"],
-      "sources": [{
-        "id": "member_base",
-        "table": "CRM_MB_BASEINFO",
-        "alias": "B",
-        "supportedDimensions": [
-          "gender", "member_grade", "age_band", "sido", "sigungu",
-          "registration_channel", "registration_shop", "first_login_channel", "last_login_channel"
-        ],
-        "measure": {
-          "entity": "member", "field": "memberNumber", "table": "CRM_MB_BASEINFO",
-          "column": "MEMBER_NO", "expression": "B.MEMBER_NO", "alias": "MEMBER_COUNT", "distinct": true
+      "sources": [
+        {
+          "id": "member_base",
+          "table": "CRM_MB_BASEINFO",
+          "alias": "B",
+          "measure": {
+            "entity": "member", "field": "memberNumber", "table": "CRM_MB_BASEINFO",
+            "column": "MEMBER_NO", "expression": "B.MEMBER_NO", "alias": "MEMBER_COUNT", "distinct": true
+          },
+          "memberField": {
+            "entity": "member", "field": "memberNumber", "table": "CRM_MB_BASEINFO",
+            "column": "MEMBER_NO", "expression": "B.MEMBER_NO", "outputAlias": "MEMBER_NO"
+          },
+          "policyFilters": ["active_member"],
+          "assumptions": ["회원 수는 회원 기본정보의 고유 MEMBER_NO로 계산합니다."]
         },
-        "policyFilters": ["active_member"],
-        "assumptions": ["회원 수는 회원 기본정보의 고유 MEMBER_NO로 계산합니다."]
-      }]
+        {
+          "id": "purchasing_member_detail",
+          "table": "CRM_SL_ORDERDETAILMALL",
+          "alias": "D",
+          "whenAnyDimensions": ["brand", "category"],
+          "providesScopes": ["purchase"],
+          "measure": {
+            "entity": "member", "field": "memberNumber", "table": "CRM_SL_ORDERDETAILMALL",
+            "column": "MEMBER_NO", "expression": "D.MEMBER_NO", "alias": "MEMBER_COUNT", "distinct": true
+          },
+          "memberField": {
+            "entity": "member", "field": "memberNumber", "table": "CRM_SL_ORDERDETAILMALL",
+            "column": "MEMBER_NO", "expression": "D.MEMBER_NO", "outputAlias": "MEMBER_NO"
+          },
+          "dateField": {"entity": "order_item", "field": "orderDate", "table": "CRM_SL_ORDERDETAILMALL", "column": "ORDER_DATE", "expression": "D.ORDER_DATE"},
+          "joins": [
+            {"id": "product", "table": "CRM_CM_PRODUCT", "alias": "P", "on": "P.PRODUCT_ID = D.PRODUCT_ID"},
+            {"id": "member", "table": "CRM_MB_BASEINFO", "alias": "B", "on": "B.MEMBER_NO = D.MEMBER_NO"}
+          ],
+          "policyFilters": ["active_member"],
+          "assumptions": ["구매 고객 수는 주문 상세의 고유 MEMBER_NO로 계산합니다."]
+        },
+        {
+          "id": "campaign_response_member",
+          "table": "MCS_CAMP_MBR_RSPN_FT",
+          "alias": "R",
+          "whenAnyDimensions": ["campaign"],
+          "providesScopes": ["campaign_response"],
+          "measure": {
+            "entity": "campaign_response", "field": "memberNumber", "table": "MCS_CAMP_MBR_RSPN_FT",
+            "column": "MBR_NO", "expression": "R.MBR_NO", "alias": "MEMBER_COUNT", "distinct": true
+          },
+          "memberField": {
+            "entity": "campaign_response", "field": "memberNumber", "table": "MCS_CAMP_MBR_RSPN_FT",
+            "column": "MBR_NO", "expression": "R.MBR_NO", "outputAlias": "MBR_NO"
+          },
+          "assumptions": ["캠페인 반응 회원 수는 반응 팩트의 고유 MBR_NO로 계산합니다(회원 상태 정책은 적용되지 않습니다)."]
+        }
+      ]
     },
     {
       "id": "purchase_count",
       "priority": 160,
       "terms": ["구매건수", "구매 건수", "주문건수", "주문 건수", "구매횟수", "구매 횟수"],
       "defaultFunction": "COUNT",
-      "allowedFunctions": ["COUNT"],
-      "sources": [{
-        "id": "purchase_count_detail",
-        "table": "CRM_SL_ORDERDETAILMALL",
-        "alias": "D",
-        "supportedDimensions": ["brand", "category", "member"],
-        "measure": {
-          "entity": "order", "field": "orderId", "table": "CRM_SL_ORDERDETAILMALL",
-          "column": "ORDER_ID", "expression": "D.ORDER_ID", "alias": "PURCHASE_COUNT", "distinct": true
+      "allowedFunctions": ["COUNT", "AVG"],
+      "sources": [
+        {
+          "id": "purchase_count_detail",
+          "table": "CRM_SL_ORDERDETAILMALL",
+          "alias": "D",
+          "whenFunctions": ["COUNT"],
+          "providesScopes": ["purchase"],
+          "measure": {
+            "entity": "order", "field": "orderId", "table": "CRM_SL_ORDERDETAILMALL",
+            "column": "ORDER_ID", "expression": "D.ORDER_ID", "alias": "PURCHASE_COUNT", "distinct": true
+          },
+          "memberField": {
+            "entity": "member", "field": "memberNumber", "table": "CRM_SL_ORDERDETAILMALL",
+            "column": "MEMBER_NO", "expression": "D.MEMBER_NO", "outputAlias": "MEMBER_NO"
+          },
+          "dateField": {
+            "entity": "order_item", "field": "orderDate", "table": "CRM_SL_ORDERDETAILMALL",
+            "column": "ORDER_DATE", "expression": "D.ORDER_DATE"
+          },
+          "joins": [
+            {"id": "product", "table": "CRM_CM_PRODUCT", "alias": "P", "on": "P.PRODUCT_ID = D.PRODUCT_ID"},
+            {"id": "member", "table": "CRM_MB_BASEINFO", "alias": "B", "on": "B.MEMBER_NO = D.MEMBER_NO"}
+          ],
+          "assumptions": ["구매건수는 주문 상세의 중복 없는 ORDER_ID 수로 계산합니다."]
         },
-        "dateField": {
-          "entity": "order_item", "field": "orderDate", "table": "CRM_SL_ORDERDETAILMALL",
-          "column": "ORDER_DATE", "expression": "D.ORDER_DATE"
-        },
-        "joins": [{"id": "product", "table": "CRM_CM_PRODUCT", "alias": "P", "on": "P.PRODUCT_ID = D.PRODUCT_ID"}],
-        "assumptions": ["구매건수는 주문 상세의 중복 없는 ORDER_ID 수로 계산합니다."]
-      }]
+        {
+          "id": "purchase_count_per_member",
+          "table": "CRM_SL_ORDERDETAILMALL",
+          "alias": "D",
+          "whenFunctions": ["AVG"],
+          "grain": "member",
+          "derivedAlias": "M",
+          "providesScopes": ["purchase"],
+          "inner": {
+            "function": "COUNT", "distinct": true, "expression": "D.ORDER_ID", "alias": "PURCHASE_COUNT",
+            "entity": "order", "field": "orderId", "table": "CRM_SL_ORDERDETAILMALL", "column": "ORDER_ID"
+          },
+          "measure": {
+            "entity": "order", "field": "orderId", "table": "CRM_SL_ORDERDETAILMALL",
+            "column": "ORDER_ID", "expression": "M.PURCHASE_COUNT", "alias": "AVG_PURCHASE_COUNT"
+          },
+          "memberField": {
+            "entity": "member", "field": "memberNumber", "table": "CRM_SL_ORDERDETAILMALL",
+            "column": "MEMBER_NO", "expression": "D.MEMBER_NO", "outputAlias": "MEMBER_NO"
+          },
+          "dateField": {
+            "entity": "order_item", "field": "orderDate", "table": "CRM_SL_ORDERDETAILMALL",
+            "column": "ORDER_DATE", "expression": "D.ORDER_DATE"
+          },
+          "joins": [
+            {"id": "product", "table": "CRM_CM_PRODUCT", "alias": "P", "on": "P.PRODUCT_ID = D.PRODUCT_ID"},
+            {"id": "member", "table": "CRM_MB_BASEINFO", "alias": "B", "on": "B.MEMBER_NO = D.MEMBER_NO"}
+          ],
+          "assumptions": ["회원당 평균 구매횟수는 회원별 중복 없는 주문건수의 평균으로 계산합니다(구매 이력이 있는 회원 기준)."]
+        }
+      ]
     },
     {
       "id": "purchase_amount",
@@ -191,8 +368,9 @@
           "table": "CRM_SL_ORDERDETAILMALL",
           "alias": "D",
           "whenAnyDimensions": ["brand", "category"],
-          "supportedDimensions": ["brand", "category", "sido", "member_grade", "member"],
+          "providesScopes": ["purchase"],
           "measure": {"entity": "order_item", "field": "paymentAmount", "table": "CRM_SL_ORDERDETAILMALL", "column": "PAYMENT_AMT", "expression": "D.PAYMENT_AMT", "alias": "TOTAL_PURCHASE_AMOUNT"},
+          "memberField": {"entity": "member", "field": "memberNumber", "table": "CRM_SL_ORDERDETAILMALL", "column": "MEMBER_NO", "expression": "D.MEMBER_NO", "outputAlias": "MEMBER_NO"},
           "dateField": {"entity": "order_item", "field": "orderDate", "table": "CRM_SL_ORDERDETAILMALL", "column": "ORDER_DATE", "expression": "D.ORDER_DATE"},
           "joins": [
             {"id": "product", "table": "CRM_CM_PRODUCT", "alias": "P", "on": "P.PRODUCT_ID = D.PRODUCT_ID"},
@@ -203,8 +381,9 @@
           "id": "purchase_header",
           "table": "CRM_SL_ORDERHEADERMALL",
           "alias": "O",
-          "supportedDimensions": ["sido", "member_grade", "member"],
+          "providesScopes": ["purchase"],
           "measure": {"entity": "order", "field": "paymentAmount", "table": "CRM_SL_ORDERHEADERMALL", "column": "PAYMENT_AMT", "expression": "O.PAYMENT_AMT", "alias": "TOTAL_PURCHASE_AMOUNT"},
+          "memberField": {"entity": "member", "field": "memberNumber", "table": "CRM_SL_ORDERHEADERMALL", "column": "MEMBER_NO", "expression": "O.MEMBER_NO", "outputAlias": "MEMBER_NO"},
           "dateField": {"entity": "order", "field": "orderDate", "table": "CRM_SL_ORDERHEADERMALL", "column": "ORDER_DATE", "expression": "O.ORDER_DATE"},
           "joins": [
             {"id": "member", "table": "CRM_MB_BASEINFO", "alias": "B", "on": "B.MEMBER_NO = O.MEMBER_NO"}
@@ -217,23 +396,17 @@
     "gender": {
       "terms": ["성별", "성별별", "성별 별"],
       "semanticType": "gender",
-      "mappings": {
-        "member_base": {
-          "entity": "member", "field": "genderCode", "table": "CRM_MB_BASEINFO",
-          "column": "GENDER_CD", "expression": "B.GENDER_CD", "outputAlias": "GENDER_CD",
-          "semanticType": "gender"
-        }
+      "field": {
+        "entity": "member", "field": "genderCode", "table": "CRM_MB_BASEINFO",
+        "column": "GENDER_CD", "outputAlias": "GENDER_CD", "semanticType": "gender"
       }
     },
     "age_band": {
       "terms": ["연령대별", "연령대 별", "나이대별", "나이대 별"],
       "semanticType": "age_band",
-      "mappings": {
-        "member_base": {
-          "entity": "member", "field": "ageBandCode", "table": "CRM_MB_BASEINFO",
-          "column": "AGE_DIV1", "expression": "B.AGE_DIV1", "outputAlias": "AGE_DIV1",
-          "semanticType": "age_band"
-        }
+      "field": {
+        "entity": "member", "field": "ageBandCode", "table": "CRM_MB_BASEINFO",
+        "column": "AGE_DIV1", "outputAlias": "AGE_DIV1", "semanticType": "age_band"
       }
     },
     "sigungu": {
@@ -241,12 +414,19 @@
       "semanticType": "residence_sigungu",
       "priority": 20,
       "exclusiveGroup": "residence_region",
-      "mappings": {
-        "member_base": {
-          "entity": "member", "field": "sigungu", "table": "CRM_MB_BASEINFO",
-          "column": "SIGUNGU", "expression": "B.SIGUNGU", "outputAlias": "SIGUNGU",
-          "semanticType": "residence_sigungu"
-        }
+      "field": {
+        "entity": "member", "field": "sigungu", "table": "CRM_MB_BASEINFO",
+        "column": "SIGUNGU", "outputAlias": "SIGUNGU", "semanticType": "residence_sigungu"
+      }
+    },
+    "sido": {
+      "terms": ["시도별", "시도 별", "지역별", "지역 별", "권역별"],
+      "semanticType": "residence_sido",
+      "priority": 10,
+      "exclusiveGroup": "residence_region",
+      "field": {
+        "entity": "member", "field": "sido", "table": "CRM_MB_BASEINFO",
+        "column": "SIDO", "outputAlias": "SIDO", "semanticType": "residence_sido"
       }
     },
     "registration_channel": {
@@ -255,12 +435,9 @@
       "priority": 30,
       "exclusiveGroup": "registration_origin",
       "valuePattern": "^(?:DEVICE_TYPE_CD\\.)?(?:APP|PC|MW|POS)$",
-      "mappings": {
-        "member_base": {
-          "entity": "member", "field": "registrationChannelCode", "table": "CRM_MB_BASEINFO",
-          "column": "REG_CHANNEL_CD", "expression": "B.REG_CHANNEL_CD", "outputAlias": "REG_CHANNEL_CD",
-          "semanticType": "registration_channel"
-        }
+      "field": {
+        "entity": "member", "field": "registrationChannelCode", "table": "CRM_MB_BASEINFO",
+        "column": "REG_CHANNEL_CD", "outputAlias": "REG_CHANNEL_CD", "semanticType": "registration_channel"
       }
     },
     "registration_shop": {
@@ -268,12 +445,9 @@
       "semanticType": "offline_shop",
       "priority": 30,
       "exclusiveGroup": "registration_origin",
-      "mappings": {
-        "member_base": {
-          "entity": "member", "field": "registrationShopId", "table": "CRM_MB_BASEINFO",
-          "column": "REG_OFFSHOP_ID", "expression": "B.REG_OFFSHOP_ID", "outputAlias": "REG_OFFSHOP_ID",
-          "semanticType": "offline_shop"
-        }
+      "field": {
+        "entity": "member", "field": "registrationShopId", "table": "CRM_MB_BASEINFO",
+        "column": "REG_OFFSHOP_ID", "outputAlias": "REG_OFFSHOP_ID", "semanticType": "offline_shop"
       }
     },
     "first_login_channel": {
@@ -282,12 +456,9 @@
       "priority": 50,
       "exclusiveGroup": "login_channel",
       "valuePattern": "^(?:DEVICE_TYPE_CD\\.)?(?:APP|PC|MW|POS)$",
-      "mappings": {
-        "member_base": {
-          "entity": "member", "field": "firstLoginChannel", "table": "CRM_MB_BASEINFO",
-          "column": "FIRST_LOGIN_CHANNEL", "expression": "B.FIRST_LOGIN_CHANNEL", "outputAlias": "FIRST_LOGIN_CHANNEL",
-          "semanticType": "first_login_channel"
-        }
+      "field": {
+        "entity": "member", "field": "firstLoginChannel", "table": "CRM_MB_BASEINFO",
+        "column": "FIRST_LOGIN_CHANNEL", "outputAlias": "FIRST_LOGIN_CHANNEL", "semanticType": "first_login_channel"
       }
     },
     "last_login_channel": {
@@ -299,83 +470,65 @@
       "priority": 40,
       "exclusiveGroup": "login_channel",
       "valuePattern": "^(?:DEVICE_TYPE_CD\\.)?(?:APP|PC|MW|POS)$",
-      "mappings": {
-        "member_base": {
-          "entity": "member", "field": "lastLoginChannel", "table": "CRM_MB_BASEINFO",
-          "column": "LAST_LOGIN_CHANNEL", "expression": "B.LAST_LOGIN_CHANNEL", "outputAlias": "LAST_LOGIN_CHANNEL",
-          "semanticType": "last_login_channel"
-        }
+      "field": {
+        "entity": "member", "field": "lastLoginChannel", "table": "CRM_MB_BASEINFO",
+        "column": "LAST_LOGIN_CHANNEL", "outputAlias": "LAST_LOGIN_CHANNEL", "semanticType": "last_login_channel"
+      }
+    },
+    "member_grade": {
+      "terms": ["회원등급별", "회원 등급별", "등급별", "등급 별"],
+      "semanticType": "member_grade",
+      "field": {
+        "entity": "member", "field": "emartGradeCode", "table": "CRM_MB_BASEINFO",
+        "column": "EMART_GRADE_CD", "outputAlias": "EMART_GRADE_CD", "semanticType": "member_grade"
       }
     },
     "campaign": {
       "terms": ["캠페인별", "캠페인 별"],
       "semanticType": "campaign",
-      "mappings": {
-        "campaign_purchase_fact": {
-          "entity": "campaign", "field": "campaignId", "table": "MCS_CAMP_MBR_RSPN_FT",
-          "column": "CAMP_ID", "expression": "R.CAMP_ID", "outputAlias": "CAMP_ID",
-          "semanticType": "campaign"
-        }
+      "field": {
+        "entity": "campaign", "field": "campaignId", "table": "MCS_CAMP_MBR_RSPN_FT",
+        "column": "CAMP_ID", "outputAlias": "CAMP_ID", "semanticType": "campaign"
       }
     },
     "brand": {
       "terms": ["브랜드별", "브랜드 별"],
-      "mappings": {
-        "purchase_detail": {"entity": "brand", "field": "brandId", "table": "CRM_SL_ORDERDETAILMALL", "column": "BRAND_ID", "expression": "D.BRAND_ID", "outputAlias": "BRAND_ID"},
-        "purchase_count_detail": {"entity": "brand", "field": "brandId", "table": "CRM_SL_ORDERDETAILMALL", "column": "BRAND_ID", "expression": "D.BRAND_ID", "outputAlias": "BRAND_ID"}
+      "field": {
+        "entity": "brand", "field": "brandId", "table": "CRM_SL_ORDERDETAILMALL",
+        "column": "BRAND_ID", "outputAlias": "BRAND_ID"
       }
     },
     "category": {
       "terms": ["카테고리별", "카테고리 별"],
-      "mappings": {
-        "purchase_detail": {"entity": "category", "field": "category", "table": "CRM_CM_PRODUCT", "column": "CATEGORY", "expression": "P.CATEGORY", "outputAlias": "CATEGORY", "dependencies": ["product"]},
-        "purchase_count_detail": {"entity": "category", "field": "category", "table": "CRM_CM_PRODUCT", "column": "CATEGORY", "expression": "P.CATEGORY", "outputAlias": "CATEGORY", "dependencies": ["product"]}
-      }
-    },
-    "sido": {
-      "terms": ["시도별", "시도 별"],
-      "semanticType": "residence_sido",
-      "priority": 10,
-      "exclusiveGroup": "residence_region",
-      "mappings": {
-        "member_base": {"entity": "member", "field": "sido", "table": "CRM_MB_BASEINFO", "column": "SIDO", "expression": "B.SIDO", "outputAlias": "SIDO", "semanticType": "residence_sido"},
-        "purchase_header": {"entity": "member", "field": "sido", "table": "CRM_MB_BASEINFO", "column": "SIDO", "expression": "B.SIDO", "outputAlias": "SIDO", "dependencies": ["member"]},
-        "purchase_detail": {"entity": "member", "field": "sido", "table": "CRM_MB_BASEINFO", "column": "SIDO", "expression": "B.SIDO", "outputAlias": "SIDO", "dependencies": ["member"]}
-      }
-    },
-    "member_grade": {
-      "terms": ["회원등급별", "회원 등급별", "등급별", "등급 별"],
-      "mappings": {
-        "member_base": {"entity": "member", "field": "emartGradeCode", "table": "CRM_MB_BASEINFO", "column": "EMART_GRADE_CD", "expression": "B.EMART_GRADE_CD", "outputAlias": "EMART_GRADE_CD", "semanticType": "member_grade"},
-        "purchase_header": {"entity": "member", "field": "emartGradeCode", "table": "CRM_MB_BASEINFO", "column": "EMART_GRADE_CD", "expression": "B.EMART_GRADE_CD", "outputAlias": "EMART_GRADE_CD", "dependencies": ["member"]},
-        "purchase_detail": {"entity": "member", "field": "emartGradeCode", "table": "CRM_MB_BASEINFO", "column": "EMART_GRADE_CD", "expression": "B.EMART_GRADE_CD", "outputAlias": "EMART_GRADE_CD", "dependencies": ["member"]}
+      "field": {
+        "entity": "category", "field": "category", "table": "CRM_CM_PRODUCT",
+        "column": "CATEGORY", "outputAlias": "CATEGORY"
       }
     },
     "member": {
       "terms": ["회원별", "회원 별", "고객별", "고객 별"],
-      "mappings": {
-        "purchase_header": {"entity": "member", "field": "memberNo", "table": "CRM_SL_ORDERHEADERMALL", "column": "MEMBER_NO", "expression": "O.MEMBER_NO", "outputAlias": "MEMBER_NO"},
-        "purchase_detail": {"entity": "member", "field": "memberNo", "table": "CRM_SL_ORDERDETAILMALL", "column": "MEMBER_NO", "expression": "D.MEMBER_NO", "outputAlias": "MEMBER_NO"},
-        "purchase_count_detail": {"entity": "member", "field": "memberNo", "table": "CRM_SL_ORDERDETAILMALL", "column": "MEMBER_NO", "expression": "D.MEMBER_NO", "outputAlias": "MEMBER_NO"}
-      }
+      "useSourceMember": true
     }
   },
   "filters": {
     "female": {
       "label": "여성 회원",
       "terms": ["여성", "여자"],
-      "mappings": {
-        "purchase_header": {"entity": "member", "field": "genderCode", "table": "CRM_MB_BASEINFO", "column": "GENDER_CD", "expression": "B.GENDER_CD", "operator": "eq", "value": "GENDER_CD.FEMALE", "dependencies": ["member"]},
-        "purchase_detail": {"entity": "member", "field": "genderCode", "table": "CRM_MB_BASEINFO", "column": "GENDER_CD", "expression": "B.GENDER_CD", "operator": "eq", "value": "GENDER_CD.FEMALE", "dependencies": ["member"]}
-      }
+      "memberFilter": "female",
+      "field": {"entity": "member", "field": "genderCode"}
     },
     "vip": {
       "label": "VIP 회원",
       "terms": ["VIP", "브이아이피"],
-      "mappings": {
-        "purchase_header": {"entity": "member", "field": "emartGradeCode", "table": "CRM_MB_BASEINFO", "column": "EMART_GRADE_CD", "expression": "B.EMART_GRADE_CD", "operator": "eq", "value": "MEM_GRADE_CD.VIP", "dependencies": ["member"]},
-        "purchase_detail": {"entity": "member", "field": "emartGradeCode", "table": "CRM_MB_BASEINFO", "column": "EMART_GRADE_CD", "expression": "B.EMART_GRADE_CD", "operator": "eq", "value": "MEM_GRADE_CD.VIP", "dependencies": ["member"]}
-      }
+      "memberFilter": "vip",
+      "field": {"entity": "member", "field": "emartGradeCode"}
+    },
+    "app_login_channel": {
+      "label": "앱 로그인 회원",
+      "terms": ["앱으로", "앱에서", "앱 로그인", "앱로그인", "모바일앱"],
+      "requiredTerms": [["로그인", "접속"]],
+      "memberFilter": "app_user",
+      "field": {"entity": "member", "field": "lastLoginChannel"}
     }
   }
 }

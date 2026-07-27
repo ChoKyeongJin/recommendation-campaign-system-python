@@ -59,6 +59,55 @@ def _state_value(canonical: str, path: Path = DEFAULT_MEMBER_POLICY_PATH) -> str
     return None
 
 
+def member_eq_filter(canonical: str, path: Path = DEFAULT_MEMBER_POLICY_PATH) -> dict[str, str] | None:
+    """Return the physical mapping of one ``eq_filters`` canonical.
+
+    Analytical aggregates and audience builders must agree on which column and
+    which stored value mean ``여성``/``VIP``/``앱 로그인``.  Both read this one
+    registry entry instead of repeating the literal, so a code value change
+    cannot leave the count and the list describing different populations.
+    """
+    config = load_member_policy(str(path))
+    base = config.get("base_entity") if isinstance(config.get("base_entity"), dict) else {}
+    table = str(base.get("table") or "CRM_MB_BASEINFO")
+    for item in config.get("eq_filters", []) or []:
+        if not isinstance(item, dict) or item.get("canonical") != canonical:
+            continue
+        column = str(item.get("column") or "")
+        if not column or item.get("value") is None:
+            return None
+        return {
+            "category": str(item.get("category") or ""),
+            "table": table,
+            "column": column.split(".")[-1],
+            "value": str(item["value"]),
+        }
+    return None
+
+
+def member_activity_filter(canonical: str, path: Path = DEFAULT_MEMBER_POLICY_PATH) -> dict[str, Any] | None:
+    """Return the physical definition of one ``activity_filters`` canonical.
+
+    Inactivity and recency conditions (``휴면``/``최근 접속``) are date predicates
+    with a configured window, comparison direction, and NULL handling.  Analytical
+    counts read the same definition the audience builders use.
+    """
+    config = load_member_policy(str(path))
+    base = config.get("base_entity") if isinstance(config.get("base_entity"), dict) else {}
+    for item in config.get("activity_filters", []) or []:
+        if not isinstance(item, dict) or item.get("canonical") != canonical:
+            continue
+        days = item.get("days") if isinstance(item.get("days"), int) else item.get("default_days")
+        return {
+            "table": str(base.get("table") or "CRM_MB_BASEINFO"),
+            "column": str(item.get("column") or "LAST_LOGIN_DATE").split(".")[-1],
+            "operator": str(item.get("operator") or "<"),
+            "days": days if isinstance(days, int) else None,
+            "include_null": bool(item.get("include_null")),
+        }
+    return None
+
+
 def resolve_member_scope(query: str, path: Path = DEFAULT_MEMBER_POLICY_PATH) -> dict[str, Any]:
     """Resolve the default active-member policy and explicit user overrides.
 

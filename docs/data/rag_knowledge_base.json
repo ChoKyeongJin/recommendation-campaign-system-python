@@ -1899,6 +1899,23 @@
       "foreign_keys": [
         {
           "columns": [
+            "MBR_NO"
+          ],
+          "references": {
+            "table": "CRM_MB_BASEINFO",
+            "columns": [
+              "MEMBER_NO"
+            ]
+          },
+          "confidence": "verified",
+          "source": "verified_cast:TRY_CAST_BIGINT",
+          "join_cast": {
+            "side": "child",
+            "function": "TRY_CAST_BIGINT"
+          }
+        },
+        {
+          "columns": [
             "CAMP_ID"
           ],
           "references": {
@@ -1912,7 +1929,7 @@
         }
       ],
       "indexes": [],
-      "text_for_embedding": "테이블 Z_CAMP_MBR. [CRMDW/smart_quadmax_mart] 캠페인 셀별 대상 회원 목록. 대상군은 CELL_TYPE_CD='T'. 자연키 (CAMP_ID, CAMP_EXEC_NO, CELL_NODE_ID, MBR_NO). 주요 컬럼과 타입: CAMP_ID varchar(16) (important) — 캠페인 ID(자연키). Z_CAMPAIGN/Z_CAMP_CELL과 조인; CAMP_EXEC_NO int (important) — 실행회차(자연키); CELL_NODE_ID varchar(16) (important) — 셀 ID(자연키). Z_CAMP_CELL과 조인; MBR_NO varchar(10) (important) — 대상 회원번호(varchar). CRM_MB_BASEINFO.MEMBER_NO와 매핑; CELL_TYPE_CD varchar(1) (important) — 셀 구분. T=대상군(Target), C=비교군(Control); CONTAC_SUCC_YN varchar(1) (important) — 접촉(발송) 성공 여부 Y/N; LAST_CONTAC_SUCC_DTTM varchar(14) — 최종 접촉성공 일시(14자리); LOAD_DTTM varchar(14) — 데이터 적재 일시(YYYYMMDDHHMMSS 14자리, 문자열). Primary key: 없음. Foreign keys: CAMP_ID -> Z_CAMPAIGN.CAMP_ID. Indexes: 없음."
+      "text_for_embedding": "테이블 Z_CAMP_MBR. [CRMDW/smart_quadmax_mart] 캠페인 셀별 대상 회원 목록. 대상군은 CELL_TYPE_CD='T'. 자연키 (CAMP_ID, CAMP_EXEC_NO, CELL_NODE_ID, MBR_NO). 주요 컬럼과 타입: CAMP_ID varchar(16) (important) — 캠페인 ID(자연키). Z_CAMPAIGN/Z_CAMP_CELL과 조인; CAMP_EXEC_NO int (important) — 실행회차(자연키); CELL_NODE_ID varchar(16) (important) — 셀 ID(자연키). Z_CAMP_CELL과 조인; MBR_NO varchar(10) (important) — 대상 회원번호(varchar). CRM_MB_BASEINFO.MEMBER_NO와 매핑; CELL_TYPE_CD varchar(1) (important) — 셀 구분. T=대상군(Target), C=비교군(Control); CONTAC_SUCC_YN varchar(1) (important) — 접촉(발송) 성공 여부 Y/N; LAST_CONTAC_SUCC_DTTM varchar(14) — 최종 접촉성공 일시(14자리); LOAD_DTTM varchar(14) — 데이터 적재 일시(YYYYMMDDHHMMSS 14자리, 문자열). Primary key: 없음. Foreign keys: MBR_NO -> CRM_MB_BASEINFO.MEMBER_NO, CAMP_ID -> Z_CAMPAIGN.CAMP_ID. Indexes: 없음."
     },
     {
       "id": "schema_table:MCS_CAMP_MBR_RSPN_FT",
@@ -2097,6 +2114,23 @@
       "foreign_keys": [
         {
           "columns": [
+            "MBR_NO"
+          ],
+          "references": {
+            "table": "CRM_MB_BASEINFO",
+            "columns": [
+              "MEMBER_NO"
+            ]
+          },
+          "confidence": "verified",
+          "source": "verified_cast:TRY_CAST_BIGINT",
+          "join_cast": {
+            "side": "child",
+            "function": "TRY_CAST_BIGINT"
+          }
+        },
+        {
+          "columns": [
             "CAMP_ID"
           ],
           "references": {
@@ -2110,7 +2144,7 @@
         }
       ],
       "indexes": [],
-      "text_for_embedding": "테이블 MCS_CAMP_MBR_RSPN_FT. [CRMDW/smart_quadmax_mart] 캠페인 회원 반응 팩트. 접촉성공/오퍼반응/구매반응 여부와 구매금액. 대상군은 CGRP_TYPE_CD='T'. 자연키 (CAMP_ID, CAMP_EXEC_NO, CELL_NODE_ID, MBR_NO). 주요 컬럼과 타입: CAMP_ID nvarchar(16) (important) — 캠페인 ID(자연키); CAMP_EXEC_NO int (important) — 실행회차(자연키); CELL_NODE_ID nvarchar(16) (important) — 셀 ID(자연키). 반응노드=ALL 집계 시 미사용; MBR_NO nvarchar(10) (important) — 회원번호(nvarchar). CRM_MB_BASEINFO.MEMBER_NO(bigint)와 TRY_CAST로 조인; CGRP_TYPE_CD nvarchar(1) (important) — 캠페인군 구분. T=대상군, C=비교군; CNCT_SCS_YN nvarchar(1) (important) — 접촉(채널 발송) 성공 여부 Y/N; OFFR_RSPN_YN nvarchar(1) (important) — 오퍼 반응 여부 Y/N; BUY_RSPN_YN nvarchar(1) (important) — 구매 반응 여부 Y/N; BUY_AMT decimal(17,0) (important) — 구매금액(원); LAST_CNCT_SCS_DTTM nvarchar(14) — 최종 접촉성공 일시(14자리); BUY_CNT decimal(10,0) — 구매 건수; BUY_QTY decimal(10,0) — 구매 수량; BUY_ITEM_CNT decimal(10,0) — 구매 상품종류 수; OFFR_BUY_AMT decimal(17,0) — 오퍼 사용 구매금액; OFFR_BUY_CNT decimal(10,0) — 오퍼 사용 구매건수; OFFR_APL_AMT decimal(17,0) — 오퍼 할인 적용금액; ISU_CPN_CNT decimal(10,0) — 발행 쿠폰 수; USE_CPN_CNT decimal(10,0) — 사용 쿠폰 수; LOAD_DTTM nvarchar(14) — 데이터 적재 일시(YYYYMMDDHHMMSS 14자리, 문자열). Primary key: 없음. Foreign keys: CAMP_ID -> Z_CAMPAIGN.CAMP_ID. Indexes: 없음."
+      "text_for_embedding": "테이블 MCS_CAMP_MBR_RSPN_FT. [CRMDW/smart_quadmax_mart] 캠페인 회원 반응 팩트. 접촉성공/오퍼반응/구매반응 여부와 구매금액. 대상군은 CGRP_TYPE_CD='T'. 자연키 (CAMP_ID, CAMP_EXEC_NO, CELL_NODE_ID, MBR_NO). 주요 컬럼과 타입: CAMP_ID nvarchar(16) (important) — 캠페인 ID(자연키); CAMP_EXEC_NO int (important) — 실행회차(자연키); CELL_NODE_ID nvarchar(16) (important) — 셀 ID(자연키). 반응노드=ALL 집계 시 미사용; MBR_NO nvarchar(10) (important) — 회원번호(nvarchar). CRM_MB_BASEINFO.MEMBER_NO(bigint)와 TRY_CAST로 조인; CGRP_TYPE_CD nvarchar(1) (important) — 캠페인군 구분. T=대상군, C=비교군; CNCT_SCS_YN nvarchar(1) (important) — 접촉(채널 발송) 성공 여부 Y/N; OFFR_RSPN_YN nvarchar(1) (important) — 오퍼 반응 여부 Y/N; BUY_RSPN_YN nvarchar(1) (important) — 구매 반응 여부 Y/N; BUY_AMT decimal(17,0) (important) — 구매금액(원); LAST_CNCT_SCS_DTTM nvarchar(14) — 최종 접촉성공 일시(14자리); BUY_CNT decimal(10,0) — 구매 건수; BUY_QTY decimal(10,0) — 구매 수량; BUY_ITEM_CNT decimal(10,0) — 구매 상품종류 수; OFFR_BUY_AMT decimal(17,0) — 오퍼 사용 구매금액; OFFR_BUY_CNT decimal(10,0) — 오퍼 사용 구매건수; OFFR_APL_AMT decimal(17,0) — 오퍼 할인 적용금액; ISU_CPN_CNT decimal(10,0) — 발행 쿠폰 수; USE_CPN_CNT decimal(10,0) — 사용 쿠폰 수; LOAD_DTTM nvarchar(14) — 데이터 적재 일시(YYYYMMDDHHMMSS 14자리, 문자열). Primary key: 없음. Foreign keys: MBR_NO -> CRM_MB_BASEINFO.MEMBER_NO, CAMP_ID -> Z_CAMPAIGN.CAMP_ID. Indexes: 없음."
     },
     {
       "id": "schema_table:ODS_MALL_OMS_CART",
