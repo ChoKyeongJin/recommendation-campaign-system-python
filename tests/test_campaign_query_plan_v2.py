@@ -3,6 +3,7 @@ import json
 import pytest
 
 import graph_rag as g
+from entity_set import build_derived_set_ast
 from query_structurer import (
     CAMPAIGN_QUERY_PLAN_VERSION,
     CampaignQueryPlanV2,
@@ -56,6 +57,29 @@ def test_campaign_v2_rejects_wrong_version_and_query_identity():
     plan["schema_version"] = CAMPAIGN_QUERY_PLAN_VERSION
     with pytest.raises(CampaignQueryPlanValidationError, match="original_query"):
         validate_campaign_query_plan_v2(plan, query="다른 질문")
+
+
+def test_campaign_v2_rejects_malformed_derived_set_scope_filter():
+    query = "인기 상품 구매 고객"
+    plan = build_campaign_query_plan_v2_fallback(query)
+    ast = build_derived_set_ast(
+        member_relation="purchase",
+        rank_relation="purchase",
+        entity="product",
+        measure="sales_quantity",
+        direction="top",
+        limit=5,
+        filters=[{
+            "type": "dimension_filter",
+            "dimension": "category",
+            "operator": "raw_sql",
+            "value": "어린이건강",
+        }],
+    )
+    plan["target_user"]["entity_set_condition"] = {"derived_set_ast": ast}
+
+    with pytest.raises(CampaignQueryPlanValidationError, match="invalid_derived_set_filter_operator"):
+        validate_campaign_query_plan_v2(plan, query=query)
 
 
 def test_campaign_structurer_retries_and_returns_campaign_v2():

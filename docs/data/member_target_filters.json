@@ -1368,7 +1368,7 @@
     "defaultMeasure": "sales_quantity",
     "defaultRankRelation": "purchase",
     "directions": {
-      "top": ["가장 많이", "제일 많이", "최다", "가장 잘", "제일 잘", "상위", "인기", "베스트"],
+      "top": ["가장 많이", "제일 많이", "많이 팔린", "많이팔린", "최다", "가장 잘", "제일 잘", "상위", "인기", "베스트"],
       "bottom": ["가장 적게", "제일 적게", "가장 안", "최저", "하위"]
     },
     "measures": {
@@ -1381,6 +1381,11 @@
       "product": {"label": "상품", "terms": ["상품", "제품", "품목"], "column": "{alias}.PRODUCT_ID"},
       "brand": {"label": "브랜드", "terms": ["브랜드"], "column": "{alias}.BRAND_ID"},
       "category": {"label": "카테고리", "terms": ["카테고리", "품목군"], "column": "{product_alias}.CATEGORY", "requiresProductJoin": true}
+    },
+    "filters": {
+      "category": {"label": "카테고리", "column": "{product_alias}.CATEGORY", "requiresProductJoin": true, "operators": ["equals", "contains"]},
+      "brand": {"label": "브랜드", "column": "{product_alias}.BRAND_NAME", "requiresProductJoin": true, "operators": ["equals", "contains"]},
+      "product": {"label": "상품명", "column": "{product_alias}.PRODUCT_NAME", "requiresProductJoin": true, "operators": ["equals", "contains"]}
     },
     "relations": {
       "purchase": {

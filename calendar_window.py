@@ -36,6 +36,14 @@ QUARTER_MONTH_RANGES = {1: (1, 3), 2: (4, 6), 3: (7, 9), 4: (10, 12)}
 
 _ANY_YEAR_RE = re.compile(r"(\d{4})\s*년")
 _QUARTER_RE = re.compile(r"([1-4])\s*(?:사)?분기")
+_RELATIVE_YEAR_RE = re.compile(r"(?:올해|금년|작년|지난해|전년)(?:도)?")
+_RELATIVE_YEAR_OFFSETS = {
+    "올해": 0,
+    "금년": 0,
+    "작년": -1,
+    "지난해": -1,
+    "전년": -1,
+}
 
 # 나열/범위 연결어. '2018, 2019년'·'2018년 및 2019년'·'2019년 2월과 3월'처럼 창이 이어져 나올 때
 # 그 사이에 오는 토큰이다. 나열형 베어 연도 문법(_CAL_TOKEN_RE 의 yb)과 '한 나열에 속하는가' 판정
@@ -93,21 +101,51 @@ def _window(start: str, end: str, label: str, suffix: str) -> dict[str, Any]:
     return {"from": start, "to": end, "label": f"{label} {suffix}".strip()}
 
 
-def parse_half_or_quarter_window(text: str, *, label_suffix: str = "") -> dict[str, Any] | None:
-    """'YYYY년 상반기/하반기', 'YYYY년 N분기(=N사분기)'를 절대 창으로 읽는다.
+def _relative_year(token: str, today: date) -> int | None:
+    """'올해/작년/지난해/전년' 표지를 기준일의 절대 연도로 낮춘다."""
+    normalized = token.removesuffix("도")
+    offset = _RELATIVE_YEAR_OFFSETS.get(normalized)
+    return None if offset is None else today.year + offset
 
-    연도가 명시돼야 발동한다(연도 없는 '상반기'는 어느 해인지 모호 → 미해석, 오탐 방지). 그냥 '반기'
-    (상/하 없이)나 숫자 없는 '분기'도 어느 반/분기인지 모호하므로 잡지 않는다."""
+
+def _adjacent_relative_year(text: str, start: int, today: date) -> int | None:
+    """달력 토큰 바로 앞의 상대 연도 표지를 읽는다('작년 상반기', '올해 2분기')."""
+    prefix = text[:start]
+    match = re.search(r"(올해|금년|작년|지난해|전년)(?:도)?\s*$", prefix)
+    return _relative_year(match.group(0).strip(), today) if match is not None else None
+
+
+def _is_quarter_duration(text: str, start: int, end: int) -> bool:
+    """'최근/지난 2분기', '2분기 연속'의 2를 달력상 제2분기로 오인하지 않는다."""
+    prefix = text[:start]
+    suffix = text[end:]
+    return (
+        re.search(r"(?:최근|지난|향후|앞으로)\s*$", prefix) is not None
+        or re.match(r"\s*(?:동안|간|연속)", suffix) is not None
+    )
+
+
+def parse_half_or_quarter_window(
+    text: str, *, label_suffix: str = "", today: date | None = None
+) -> dict[str, Any] | None:
+    """명시/상대/생략 연도의 상·하반기와 N분기를 절대 창으로 읽는다.
+
+    연도가 없으면 현재 연도로 해석한다. '올해/금년'과 '작년/지난해/전년'은 기준일의 연도로
+    확정한다. 그냥 '반기'(상/하 없음)나 숫자 없는 '분기'는 어느 반/분기인지 모호하므로 잡지 않는다."""
+    reference = today or date.today()
     year_match = _ANY_YEAR_RE.search(text or "")
-    if year_match is None:
-        return None
-    y = int(year_match.group(1))
+    relative_match = _RELATIVE_YEAR_RE.search(text or "")
+    y = (
+        int(year_match.group(1))
+        if year_match is not None
+        else (_relative_year(relative_match.group(0), reference) if relative_match is not None else reference.year)
+    )
     if "상반기" in text:
         return _window(ymd(y, 1, 1), ymd(y, 6, 30), f"{y}년 상반기", label_suffix)
     if "하반기" in text:
         return _window(ymd(y, 7, 1), ymd(y, 12, 31), f"{y}년 하반기", label_suffix)
     quarter = _QUARTER_RE.search(text)
-    if quarter is not None:
+    if quarter is not None and not _is_quarter_duration(text, quarter.start(), quarter.end()):
         q = int(quarter.group(1))
         start_month, end_month = QUARTER_MONTH_RANGES[q]
         return _window(
@@ -166,25 +204,44 @@ def _token_window(match: "re.Match[str]", year: int | None, label_suffix: str) -
     return _window(ymd(year, 1, 1), ymd(year, 12, 31), f"{year}년", label_suffix)
 
 
-def _scan_calendar_windows(text: str, label_suffix: str) -> list[tuple[dict[str, Any], int, int, int]]:
+def _scan_calendar_windows(
+    text: str, label_suffix: str, today: date | None = None
+) -> list[tuple[dict[str, Any], int, int, int]]:
     """텍스트의 모든 달력 토큰을 (창, 구체성등급, 시작위치, 끝위치) 로 스캔한다(등장 순).
 
-    연도 생략 토큰('2019년 2월과 3월'의 '3월')은 앞서 나온 명시 연도를 상속한다. 앞에 연도가 없으면
-    문장의 첫 명시 연도로 폴백한다(기존 'YYYY년 … 상반기' 어순 허용 계약 보존). 어디에도 연도가
-    없으면 그 토큰은 창이 되지 않는다 — 연도 미명시는 여전히 미해석(오탐 방지)."""
+    연도 생략 토큰('2019년 2월과 3월'의 '3월')은 앞서 나온 명시 연도를 상속한다. 바로 앞에
+    '올해/작년' 같은 상대 연도 표지가 있으면 그 연도를 쓴다. 반기·분기는 연도가 끝내 없으면 현재
+    연도로 확정한다. 월 단독은 숫자 오탐을 피하기 위해 기존처럼 연도 앵커가 있을 때만 창이 된다."""
     if not isinstance(text, str) or not text:
         return []
     matches = list(_CAL_TOKEN_RE.finditer(text))
     if not matches:
         return []
     fallback_year = next((y for y in (_token_year(m) for m in matches) if y is not None), None)
+    reference = today or date.today()
     out: list[tuple[dict[str, Any], int, int, int]] = []
     running_year: int | None = None
     for match in matches:
         explicit = _token_year(match)
         if explicit is not None:
             running_year = explicit
-        window = _token_window(match, explicit if explicit is not None else (running_year or fallback_year), label_suffix)
+        relative = _adjacent_relative_year(text, match.start(), reference)
+        if relative is not None:
+            running_year = relative
+        quarter_duration = (
+            match.group("q") is not None
+            and _is_quarter_duration(text, match.start(), match.end())
+        )
+        inferred_current = (
+            reference.year
+            if (
+                match.group("h") is not None
+                or (match.group("q") is not None and not quarter_duration)
+            )
+            else None
+        )
+        year = explicit if explicit is not None else (relative or running_year or fallback_year or inferred_current)
+        window = None if quarter_duration else _token_window(match, year, label_suffix)
         if window is not None:
             rank = next(
                 (_GRAIN_RANK[name] for name in _GRAIN_RANK if match.group(name) is not None),
@@ -194,20 +251,29 @@ def _scan_calendar_windows(text: str, label_suffix: str) -> list[tuple[dict[str,
     return out
 
 
-def parse_calendar_window_spans(text: str, *, label_suffix: str = "") -> list[tuple[dict[str, Any], int, int]]:
+def parse_calendar_window_spans(
+    text: str, *, label_suffix: str = "", today: date | None = None
+) -> list[tuple[dict[str, Any], int, int]]:
     """절대 달력 창 + 원문 내 (시작, 끝) 위치를 등장 순서대로 돌려준다.
 
     창 '사이'의 문구를 읽어야 하는 소비자용 — 예컨대 'A 대비 B'·'A보다 B' 의 어순 표지로 두 기간 중
     어느 쪽이 기준인지 판정할 때 쓴다. 위치 계산이 문법(토큰 스캔)에 딸린 정보라 이 모듈이 소유한다."""
-    return [(window, start, end) for window, _rank, start, end in _scan_calendar_windows(text, label_suffix)]
+    return [(window, start, end) for window, _rank, start, end in _scan_calendar_windows(text, label_suffix, today)]
 
 
-def parse_calendar_windows(text: str, *, label_suffix: str = "") -> list[dict[str, Any]]:
+def parse_calendar_windows(
+    text: str, *, label_suffix: str = "", today: date | None = None
+) -> list[dict[str, Any]]:
     """텍스트에 나온 절대 달력 창을 등장 순서대로 전부 돌려준다(없으면 빈 리스트).
 
     '2019년 2월과 3월'(연도 상속), '2019년 1분기 대비 2분기', '2018년 12월과 2019년 1월'처럼 창이 둘
     이상인 표현을 소비하는 쪽(기간 대 기간 증감 비교 등)이 쓴다."""
-    return [window for window, _start, _end in parse_calendar_window_spans(text, label_suffix=label_suffix)]
+    return [
+        window
+        for window, _start, _end in parse_calendar_window_spans(
+            text, label_suffix=label_suffix, today=today
+        )
+    ]
 
 
 def _calendar_group_range(scanned: list[tuple[dict[str, Any], int, int, int]], text: str) -> tuple[int, int]:
@@ -232,28 +298,34 @@ def _calendar_group_range(scanned: list[tuple[dict[str, Any], int, int, int]], t
     return first, last
 
 
-def parse_calendar_window_group_span(text: str, *, label_suffix: str = "") -> tuple[int, int] | None:
+def parse_calendar_window_group_span(
+    text: str, *, label_suffix: str = "", today: date | None = None
+) -> tuple[int, int] | None:
     """``parse_calendar_window_group`` 이 고른 나열 전체가 차지하는 원문 구간 (시작, 끝).
 
     창을 소비한 슬롯의 **출처 구간**을 기록하려는 쪽이 쓴다(slot_ownership) — 소유권 회수가
     '같은 종류'가 아니라 '같은 구간'으로 판정되게 하려면 문법 소유자가 위치도 함께 줘야 한다."""
-    scanned = _scan_calendar_windows(text, label_suffix)
+    scanned = _scan_calendar_windows(text, label_suffix, today)
     if not scanned:
         return None
     first, last = _calendar_group_range(scanned, text)
     return scanned[first][2], scanned[last][3]
 
 
-def parse_calendar_window_span(text: str, *, label_suffix: str = "") -> tuple[int, int] | None:
+def parse_calendar_window_span(
+    text: str, *, label_suffix: str = "", today: date | None = None
+) -> tuple[int, int] | None:
     """``parse_calendar_window`` 가 고르는 창 하나의 원문 구간 (시작, 끝)."""
-    scanned = _scan_calendar_windows(text, label_suffix)
+    scanned = _scan_calendar_windows(text, label_suffix, today)
     if not scanned:
         return None
     chosen = min(scanned, key=lambda item: (item[1], item[2]))
     return chosen[2], chosen[3]
 
 
-def parse_calendar_window_group(text: str, *, label_suffix: str = "") -> list[dict[str, Any]]:
+def parse_calendar_window_group(
+    text: str, *, label_suffix: str = "", today: date | None = None
+) -> list[dict[str, Any]]:
     """'가장 좁은 창' + 그와 **한 나열로 이어진** 같은 구체성의 창들을 등장 순서대로 돌려준다.
 
     ``parse_calendar_window`` 의 일반화다. 단일 창 계약('가장 좁은 표현 하나')을 그대로 유지하되,
@@ -265,25 +337,28 @@ def parse_calendar_window_group(text: str, *, label_suffix: str = "") -> list[di
     조건이 각자 창을 가진 문장('2018년에 구매하고 2019년에 로그인한')은 나열이 아니므로 뭉치지 않는다.
     구체성이 다른 창(연 vs 월)도 섞지 않는다 — '2019년 3월 … 2018년'은 여전히 가장 좁은 3월 하나다.
     """
-    scanned = _scan_calendar_windows(text, label_suffix)
+    scanned = _scan_calendar_windows(text, label_suffix, today)
     if not scanned:
         return []
     first, last = _calendar_group_range(scanned, text)
     return [scanned[index][0] for index in range(first, last + 1)]
 
 
-def parse_calendar_window(text: str, *, label_suffix: str = "") -> dict[str, Any] | None:
+def parse_calendar_window(
+    text: str, *, label_suffix: str = "", today: date | None = None
+) -> dict[str, Any] | None:
     """절대 달력 표현 하나를 YYYYMMDD 창 ``{from, to, label}`` 으로 읽는다(없으면 None).
 
     지원: 'YYYY년 M월 D일'(하루), 'YYYY년 M월'(그 달 전체), 'YYYY년'(그 해 전체),
           'YYYY-MM-DD'/'YYYY.MM.DD'/'YYYY/MM/DD'(하루), 'YYYY-MM'(그 달 전체),
-          'YYYY년 상반기/하반기'(6개월), 'YYYY년 N분기(=N사분기)'(3개월).
+          'YYYY년/올해/작년 상반기·하반기'(6개월), 연도 생략 상·하반기(현재 연도),
+          'YYYY년/올해/작년 N분기'(3개월), 연도 생략 N분기(현재 연도).
 
     창이 여럿이면 가장 좁은 표현을 고른다 — 일 > 월 > 분기 > 반기 > 연(동급이면 먼저 나온 것).
     순서가 뒤집히면 'YYYY년 M월'이 연 전체로 뭉개진다.
     ``label_suffix`` 는 라벨 꼬리말(예: '구매')로, 호출자의 도메인 문맥을 라벨에만 반영한다.
     """
-    scanned = _scan_calendar_windows(text, label_suffix)
+    scanned = _scan_calendar_windows(text, label_suffix, today)
     if not scanned:
         return None
     return min(scanned, key=lambda item: (item[1], item[2]))[0]  # (구체성 등급, 등장 위치)

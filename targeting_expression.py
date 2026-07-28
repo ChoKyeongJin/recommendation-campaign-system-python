@@ -25,7 +25,7 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from calendar_window import calendar_window_from_parts, parse_calendar_window
-from entity_set import compile_entity_set_predicate, entity_set_capability
+from entity_set import build_derived_set_ast, compile_entity_set_predicate, entity_set_capability
 
 
 MAX_DEPTH = 6
@@ -61,6 +61,7 @@ def targeting_expression_json_schema(
     relations = sorted(str(name) for name in (entity_set_config.get("relations") or {}))
     entities = sorted(str(name) for name in (entity_set_config.get("entities") or {}))
     measures = sorted(str(name) for name in (entity_set_config.get("measures") or {}))
+    filter_dimensions = sorted(str(name) for name in (entity_set_config.get("filters") or {}))
     entity_set = {
         "type": "object",
         "description": "순위로 정의되는 엔터티 집합(예: 2019년 판매수량 상위 10개 상품).",
@@ -74,6 +75,19 @@ def targeting_expression_json_schema(
             "year": {"type": ["integer", "null"], "description": "절대 연도(예: 2019). month 와 함께 주면 그 달."},
             "month": {"type": ["integer", "null"], "minimum": 1, "maximum": 12, "description": "절대 월(1~12). year 필요."},
             "period": _PERIOD_FIELD,
+            "filters": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "type": {"const": "dimension_filter"},
+                        "dimension": {"type": "string", "enum": filter_dimensions},
+                        "operator": {"type": "string", "enum": ["equals", "contains"]},
+                        "value": {"type": "string", "minLength": 1},
+                    },
+                    "required": ["type", "dimension", "operator", "value"],
+                },
+            },
         },
         "required": ["entity", "measure", "direction", "limit"],
     }
@@ -201,11 +215,17 @@ def validate_targeting_expression(
         validate_targeting_expression(operand, entity_set_config, canonicals, depth=depth + 1, counter=counter)
 
 
-def _entity_set_node(payload: dict[str, Any], member_relation: str, config: dict[str, Any]) -> dict[str, Any]:
+def _entity_set_node(
+    payload: dict[str, Any],
+    member_relation: str,
+    config: dict[str, Any],
+    *,
+    negated: bool = False,
+) -> dict[str, Any]:
     """LLM 이 준 엔터티 집합 조각을 1단계 노드 형태로 정규화한다(같은 컴파일러를 그대로 쓴다)."""
     if not isinstance(payload, dict):
         return {}
-    return {
+    node = {
         "relation": member_relation,
         "rankRelation": str(payload.get("rankRelation") or config.get("defaultRankRelation") or member_relation),
         "entity": str(payload.get("entity") or ""),
@@ -213,8 +233,20 @@ def _entity_set_node(payload: dict[str, Any], member_relation: str, config: dict
         "direction": "bottom" if str(payload.get("direction")) == "bottom" else "top",
         "limit": int(payload.get("limit") or 10),
         "window": _window(payload),
-        "negated": False,
+        "negated": negated,
     }
+    node["derived_set_ast"] = build_derived_set_ast(
+        member_relation=node["relation"],
+        rank_relation=node["rankRelation"],
+        entity=node["entity"],
+        measure=node["measure"],
+        direction=node["direction"],
+        limit=node["limit"],
+        window=node["window"],
+        filters=payload.get("filters") if isinstance(payload.get("filters"), list) else None,
+        negated=negated,
+    )
+    return node
 
 
 def compile_targeting_expression(
@@ -283,8 +315,7 @@ def _compile_relation(
     exists = bool(relation.get("exists", True))
     entity_set = relation.get("entitySet")
     if isinstance(entity_set, dict) and entity_set:
-        node = _entity_set_node(entity_set, name, config)
-        node["negated"] = not exists
+        node = _entity_set_node(entity_set, name, config, negated=not exists)
         predicate = compile_entity_set_predicate(node, config, member_alias=member_alias, member_key=member_key)
         if predicate is None:
             raise TargetingExpressionError("엔터티 집합 술어를 컴파일하지 못했습니다.")

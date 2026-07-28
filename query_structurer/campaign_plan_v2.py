@@ -5,6 +5,8 @@ import hashlib
 import json
 from typing import Any
 
+from entity_set import derived_set_ast_error
+
 
 CAMPAIGN_QUERY_PLAN_VERSION = "2.0"
 CAMPAIGN_INTENTS = {
@@ -83,6 +85,13 @@ _TARGET_USER_SCHEMA: dict[str, Any] = {
         "cart_type": _nullable({"type": "object"}),
         "cart_aggregate": _nullable({"type": "object"}),
         "cart_absence": _nullable({"type": "boolean"}),
+        "entity_set_condition": _nullable({
+            "type": "object",
+            "description": "집계 → 랭킹 → 회원 집합으로 구성된 파생 집합 조건.",
+            "properties": {
+                "derived_set_ast": {"$ref": "#/$defs/derivedSetMemberNode"},
+            },
+        }),
     },
 }
 
@@ -111,6 +120,54 @@ CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA: dict[str, Any] = {
     "$id": "campaign-query-plan-v2",
     "type": "object",
     "additionalProperties": True,
+    "$defs": {
+        "derivedSetDimensionFilter": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["type", "dimension", "operator", "value"],
+            "properties": {
+                "type": {"const": "dimension_filter"},
+                "dimension": {"type": "string", "minLength": 1},
+                "operator": {"enum": ["equals", "contains"]},
+                "value": {"type": "string", "minLength": 1},
+            },
+        },
+        "derivedSetAggregationNode": {
+            "type": "object",
+            "required": ["type", "relation", "group_by", "measure"],
+            "properties": {
+                "type": {"const": "aggregation"},
+                "relation": {"type": "string", "minLength": 1},
+                "group_by": {"type": "string", "minLength": 1},
+                "measure": {"type": "string", "minLength": 1},
+                "window": {"type": "object"},
+                "filters": {
+                    "type": "array",
+                    "items": {"$ref": "#/$defs/derivedSetDimensionFilter"},
+                },
+            },
+        },
+        "derivedSetRankingNode": {
+            "type": "object",
+            "required": ["type", "direction", "limit", "source"],
+            "properties": {
+                "type": {"const": "ranking"},
+                "direction": {"enum": ["top", "bottom"]},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
+                "source": {"$ref": "#/$defs/derivedSetAggregationNode"},
+            },
+        },
+        "derivedSetMemberNode": {
+            "type": "object",
+            "required": ["type", "relation", "exists", "source"],
+            "properties": {
+                "type": {"const": "member_set"},
+                "relation": {"type": "string", "minLength": 1},
+                "exists": {"type": "boolean"},
+                "source": {"$ref": "#/$defs/derivedSetRankingNode"},
+            },
+        },
+    },
     "required": [
         "schema_version",
         "original_query",
@@ -209,6 +266,13 @@ def validate_campaign_query_plan_v2(
     for key in ("target_user", "exclude", "campaign_constraints"):
         if not isinstance(payload.get(key), dict):
             raise CampaignQueryPlanValidationError(f"{key} must be an object")
+    entity_set = payload["target_user"].get("entity_set_condition")
+    if isinstance(entity_set, dict) and "derived_set_ast" in entity_set:
+        ast_error = derived_set_ast_error(entity_set.get("derived_set_ast"))
+        if ast_error:
+            raise CampaignQueryPlanValidationError(
+                f"target_user.entity_set_condition.derived_set_ast is invalid: {ast_error}"
+            )
     for key in ("set_expressions", "computed_metrics"):
         value = payload.get(key, [])
         if not isinstance(value, list):

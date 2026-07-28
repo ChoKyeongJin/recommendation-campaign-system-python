@@ -77,6 +77,34 @@ def test_purchase_date_span_absent_when_slot_not_claimed():
     assert g._purchase_date_span("3개월 전 가입한 회원에게 구매 유도", {}) is None
 
 
+# ── 스코프 분리 소실 복원 ───────────────────────────────────────────────────
+# 타겟/채널 절 분리(LLM)가 기간 표현을 통째로 지우면 창이 계획 입력에 도달하지 못한다. 계획 문장 기준의
+# 고아 창 귀속으로는 되찾을 수 없어, 원문 재파싱 복원이 유일한 안전망이다.
+SPLIT_LOST_TARGETING = "어린이건강 카테고리에서 구매한 고객"  # 분리기가 '7년전'을 지운 계획 문장
+
+
+def test_purchase_date_restored_from_source_when_scope_split_drops_it():
+    plan = g.build_query_plan(SPLIT_LOST_TARGETING, parser="rules")
+    assert plan["target_user"].get("purchase_date") is None
+    g._restore_purchase_date_from_source('7년전 카테고리가 "어린이건강"을 구매한 고객 추출해줘', plan)
+    slot = plan["target_user"]["purchase_date"]
+    assert (slot["from"], slot["to"]) == (f"{SEVEN_YEARS_AGO}0101", f"{SEVEN_YEARS_AGO}1231")
+
+
+def test_source_restore_declines_when_window_belongs_elsewhere():
+    """원문의 시점이 가입 시점이면 주문일로 뒤바꾸지 않는다."""
+    plan = g.build_query_plan(SPLIT_LOST_TARGETING, parser="rules")
+    g._restore_purchase_date_from_source("3개월 전 가입한 회원 중 구매한 고객", plan)
+    assert plan["target_user"].get("purchase_date") is None
+
+
+def test_source_restore_declines_without_order_fact():
+    """계획이 주문 팩트를 요구하지 않으면 주문일 창을 만들지 않는다."""
+    plan = g.build_query_plan("30대 여성 회원", parser="rules")
+    g._restore_purchase_date_from_source("7년전 구매한 고객", plan)
+    assert plan["target_user"].get("purchase_date") is None
+
+
 # ── 카테고리 값 추출 ────────────────────────────────────────────────────────
 @pytest.mark.parametrize("query", [
     '7년전 카테고리가 "어린이건강"을 구매한 고객 추출해줘',   # 원문(따옴표 + 주격 계사)
