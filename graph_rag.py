@@ -271,6 +271,14 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
         {"canonical": "inactive_180d", "days": 180},
     ],
     "lifecycle_extra_terms": ["new_user"],
+    # LLM 어휘 별칭 → 컴파일 가능한 canonical. 플래너 허용 어휘가 컴파일러 매핑보다 넓어 생기는
+    # '미지원 조건' 차단을 흡수한다(새 별칭은 여기 한 줄 추가로 열린다).
+    "lifecycle_aliases": {
+        "withdrawn_user": "withdrawn",
+        "dormant_user": "dormant",
+        "active_user": "active_member",
+        "inactive_user": "inactive_90d",
+    },
     "active_state": {"column": "MEMBER_STATE_CD", "value": "MEMBER_STATE_CD.NORMAL"},
     "birthday_target": {"column": "BIRTHDAY"},
     "signup_target": {"column": "REG_DT", "table": "CRM_MB_BASEINFO", "default_days": 90, "anchor": "data_max"},
@@ -317,6 +325,24 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
                 "distinct": True,
                 "ko_label": "구매 횟수",
                 "synonyms": ["구매 횟수", "구매횟수", "주문 횟수", "주문횟수", "구매 건수", "구매건수", "주문 건수", "주문건수"],
+            },
+        },
+        # 지표 보정(adjustment): '반품금액 차감/환불 제외'처럼 **집계식의 구성 컬럼을 치환**하는 선언형 수정자.
+        # 트리거 정규식이 프롬프트에 걸리면 그 컬럼을 쓰는 모든 지표(누적 금액·평균 주문 금액·할인 금액 …)에
+        # 일괄 적용된다 — 지표마다 '반품 차감 버전'을 복제하지 않는다. 새 보정은 여기 항목 하나 추가로 열린다.
+        "adjustments": {
+            "net_of_returns": {
+                "ko_label": "반품 차감",
+                # 공백 제거 텍스트 기준. '반품금액이 있는 경우 총결제금액에서 차감'처럼 어구가 떨어져 있어도
+                # 같은 절(마침표/쉼표 이내) 안의 근접 표현이면 잡는다.
+                "trigger_patterns": [
+                    r"(?:반품|환불|취소)[^.。!?\n,]{0,40}?(?:차감|제외|뺀|빼고|제하)",
+                    r"(?:순|실)(?:결제|구매|매출)\s*금액",
+                ],
+                "applies_to_semantic_types": ["sum", "ratio"],
+                "column_expressions": {
+                    "PAYMENT_AMT": "(COALESCE({t}PAYMENT_AMT, 0) - COALESCE({t}RETURN_AMT, 0))",
+                },
             },
         },
     },
@@ -560,6 +586,37 @@ LIFECYCLE_TERMS = (
 )
 
 
+def _lifecycle_aliases() -> dict[str, str]:
+    """LLM 어휘 별칭 → 컴파일 가능한 lifecycle canonical 표(설정 lifecycle_aliases, 코드 폴백).
+
+    플래너에 허용된 lifecycle 어휘(LIFECYCLE_TERMS)는 실컬럼 매핑(MEMBER_EQ_FILTERS/
+    MEMBER_ACTIVITY_FILTERS)보다 넓다. 그 간극에 떨어지는 별칭을 여기서 흡수하지 않으면 '미지원 조건'
+    으로 SQL 이 통째로 막힌다. 매핑 대상이 실제로 컴파일 가능한 canonical 일 때만 유효한 별칭으로 본다."""
+    raw = _MEMBER_TARGET_FILTERS.get("lifecycle_aliases")
+    if not isinstance(raw, dict) or not raw:
+        raw = _DEFAULT_MEMBER_TARGET_FILTERS.get("lifecycle_aliases", {})
+    return {
+        alias: canonical
+        for alias, canonical in (raw or {}).items()
+        if isinstance(alias, str) and isinstance(canonical, str)
+        and (canonical in MEMBER_EQ_FILTERS or canonical in MEMBER_ACTIVITY_FILTERS)
+    }
+
+
+def _resolve_plan_lifecycle_aliases(slots: dict[str, Any]) -> dict[str, Any]:
+    """plan 슬롯(target_user/exclude)의 lifecycle 값을 별칭 해석한 사본으로 돌려준다(원본 불변)."""
+    values = slots.get("lifecycle") if isinstance(slots, dict) else None
+    if not isinstance(values, list) or not values:
+        return slots if isinstance(slots, dict) else {}
+    aliases = _lifecycle_aliases()
+    if not any(isinstance(value, str) and value in aliases for value in values):
+        return slots
+    resolved = _unique_strings([
+        aliases.get(value, value) if isinstance(value, str) else value for value in values
+    ])
+    return {**slots, "lifecycle": resolved}
+
+
 def _member_eq_predicate(canonical: str, negate: bool = False) -> str | None:
     entry = MEMBER_EQ_FILTERS.get(canonical)
     if entry is None:
@@ -776,6 +833,9 @@ _DEFAULT_TARGETING_LEXICON: dict[str, Any] = {
     # 대상 지향 표지: 이 뒤부터는 "누구에게 무엇을 한다"의 캠페인/채널·메시지 절로 본다.
     # '곳에': "브랜드가 X인 곳에 쿠폰을 …" 같은 장소형 오디언스 표현('에게'가 아니라 '에'만 붙음).
     "audience_direction_markers": ["에게", "한테", "께", "대상으로", "타겟으로", "타깃으로", "곳에"],
+    # 표지가 다른 낱말의 꼬리로 들어간 경우(부사 '함께'의 '께' 등)는 대상 지향 표지가 아니다.
+    # 여기 걸린 매치는 분리 지점 후보에서 건너뛴다 — 오디언스 절이 채널 절로 잘려나가는 것을 막는다.
+    "audience_direction_marker_exceptions": ["함께", "다함께", "언제", "이제", "그곳에", "이곳에", "저곳에"],
     # 채널/메시지 의도 신호. 규칙 분리 실패(표지 없음) 판정과 LLM 폴백 트리거에 쓴다.
     "channel_signal_words": [
         "홍보", "광고", "알림", "알리", "안내", "소식", "공지", "캠페인",
@@ -1640,23 +1700,34 @@ def _prompt_scope_split_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_D
 
 
 def _rule_split_prompt_scopes(text: str) -> tuple[str, str] | None:
-    """대상 지향 표지(에게/한테/…) 첫 등장 지점 기준으로 앞=타겟팅, 뒤=채널 로 나눈다.
+    """대상 지향 표지(에게/한테/…) 등장 지점 기준으로 앞=타겟팅, 뒤=채널 로 나눈다.
 
     "[오디언스]에게 [채널/메시지 액션]" 구조를 이용한다. 표지가 없거나 타겟팅 절이 비면 None(규칙 실패).
+
+    분리 지점은 '첫 표지'가 아니라 **첫 유효 표지**다. 오디언스 절이 채널 절로 잘려 나가면 그 조건은
+    (retrieval_scope=targeting 경로에서) Query Plan 자체에서 사라지므로, 두 가지를 확인한다:
+      · 표지가 다른 낱말의 꼬리가 아닐 것 — '함께'의 '께'처럼 부사 안에 든 표지는 건너뛴다(어휘는 lexicon 소유).
+      · 표지 뒤에 채널·메시지 신호가 있을 것 — 없으면 '[오디언스]에게 [발송 액션]' 구조가 아니므로 자르지 않는다.
     """
     # (?!서): '곳에서/에게서/께서'처럼 '서'가 이어지면 대상 지향("~에게")이 아니라 장소·출처·존칭 주격
     # 표현이므로 표지로 보지 않는다(예: "브랜드가 X인 곳에서 구매한 고객"은 통째로 타겟팅 절).
-    pattern = r"(?P<targeting>.*?(?:%s))(?!서)\s*(?P<channel>.*)$" % "|".join(
-        re.escape(marker) for marker in _lexicon_terms("audience_direction_markers")
-    )
-    match = re.search(pattern, text, re.DOTALL)
-    if not match:
+    markers = _lexicon_terms("audience_direction_markers")
+    if not markers:
         return None
-    targeting = match.group("targeting").strip()
-    channel = match.group("channel").strip()
-    if len(targeting) < 2:
-        return None
-    return targeting, channel
+    pattern = re.compile(r"(?:%s)(?!서)" % "|".join(re.escape(marker) for marker in markers), re.DOTALL)
+    exceptions = _lexicon_terms("audience_direction_marker_exceptions")
+    for match in pattern.finditer(text):
+        end = match.end()
+        if any(exception and text[max(0, end - len(exception)):end] == exception for exception in exceptions):
+            continue
+        targeting = text[:end].strip()
+        channel = text[end:].strip()
+        if len(targeting) < 2:
+            continue
+        if channel and not _has_channel_signal(channel):
+            continue
+        return targeting, channel
+    return None
 
 
 def _has_channel_signal(text: str) -> bool:
@@ -2622,6 +2693,18 @@ def _attribute_terms(canonical: str, default: tuple[str, ...]) -> tuple[str, ...
     return tuple(merged)
 
 
+# 나열형 제외("블랙리스트·휴면·탈퇴 상태인 회원은 제외", "프리미엄회원과 임직원은 제외") — 나열 안의
+# **모든** 항목이 제외 대상이다. 인접 부정 접미어(group.neg)는 나열의 마지막 항목만 잡으므로, 나열
+# 구분자로 이어진 뒤 제외 표지가 오면 앞 항목도 함께 뒤집는다. 구분자(·/,/와/및 …)를 반드시 요구해
+# '활동회원 중 최근 미구매 회원은 제외'처럼 다른 절의 제외까지 삼키는 과포획을 막는다.
+_ENUM_EXCLUSION_TAIL_RE = re.compile(
+    r"^(?:(?:[·ㆍ‧・/,]|와|과|및|또는|이나|랑)[가-힣A-Za-z]{1,8}?)+"
+    r"(?:상태|중|인|한|된)*(?:회원|고객|사용자|유저|이용자|대상)?(?:은|는|이|가|을|를|만)?(?:모두|전부|다)?"
+    # 제외 표지는 제외 동사뿐 아니라 부정 서술('~가 아닌 고객')도 포함한다 — 어느 쪽이든 나열 전체가 여집합이다.
+    r"(?:제외|배제|제거|아닌|아니|않은|않는|않았)"
+)
+
+
 def _run_attribute_token(group: _AttributeTokenGroup, query: str, plan: dict[str, Any]) -> None:
     """선언형 문법 스펙(_AttributeTokenGroup) 하나로 회원속성 표면어를 lifecycle(포함)/exclude.lifecycle
     (제외) canonical 로 승격하는 범용 실행기. member_flag/children/signup_device 가 이 하나를 공유한다 —
@@ -2637,10 +2720,17 @@ def _run_attribute_token(group: _AttributeTokenGroup, query: str, plan: dict[str
         term_alt = "(?:" + "|".join(re.escape(term) for term in _attribute_terms(canonical, default_terms)) + ")"
         if group.neg and re.search(term_alt + group.neg, compact):
             _append_unique(plan.setdefault("exclude", {}).setdefault("lifecycle", []), canonical)
-        elif re.search(term_alt + group.pos, compact):
-            _append_unique(plan.setdefault("target_user", {}).setdefault("lifecycle", []), canonical)
-            if group.first_only:
-                return  # 가장 구체적인 매치 하나만(예: 모바일웹 > 웹/PC)
+            continue
+        pos_match = re.search(term_alt + group.pos, compact)
+        if pos_match is None:
+            continue
+        # 나열형 제외("블랙리스트·휴면·탈퇴 … 회원은 제외")면 이 항목도 제외다(인접 부정은 마지막 항목만 잡는다).
+        if _ENUM_EXCLUSION_TAIL_RE.match(compact[pos_match.end():]):
+            _append_unique(plan.setdefault("exclude", {}).setdefault("lifecycle", []), canonical)
+            continue
+        _append_unique(plan.setdefault("target_user", {}).setdefault("lifecycle", []), canonical)
+        if group.first_only:
+            return  # 가장 구체적인 매치 하나만(예: 모바일웹 > 웹/PC)
 
 
 def _run_threshold_filter(spec: "_FilterSpec", query: str, plan: dict[str, Any]) -> None:
@@ -6931,6 +7021,24 @@ def _aggregate_clause_time_scope(
     return None, _parse_calendar_period(raw_clause), False
 
 
+# 선행 창 절이 뒤 지표 절로 창을 흘려보낼 수 있는 조건: 구매 도메인 + 긍정형. 다른 도메인(로그인/캠페인/
+# 장바구니)이나 부정형 창은 그 조건 고유의 창이라 상속하면 도메인 누수가 된다.
+_SHARED_WINDOW_PURCHASE_TERMS = ("구매", "구입", "주문", "결제", "샀")
+_SHARED_WINDOW_FOREIGN_TERMS = (
+    "접속", "로그인", "가입", "캠페인", "반응", "발송", "장바구니", "카트", "쿠폰", "생일", "방문",
+)
+
+
+def _is_shared_purchase_window_clause(raw_clause: str) -> bool:
+    """이 절의 창을 뒤따르는 집계 지표 절에 공유해도 되는가(구매 도메인의 긍정 창인가)."""
+    compact = (raw_clause or "").replace(" ", "")
+    if not any(term in compact for term in _SHARED_WINDOW_PURCHASE_TERMS):
+        return False
+    if any(term in compact for term in _SHARED_WINDOW_FOREIGN_TERMS):
+        return False
+    return _NEGATION_CUE_RE.search(compact) is None
+
+
 def _make_aggregate_condition(
     context: dict[str, Any], operator: str, threshold: float, window_days: Any,
     calendar_period: str | None, metrics: dict[str, Any],
@@ -7005,6 +7113,12 @@ def _apply_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
         clause_window, clause_calendar, clause_lifetime = _aggregate_clause_time_scope(raw_clause, inactivity_days_set)
         comparisons = _parse_amount_comparison(clause, _AGG_UNIT, bare_equals=False)
         if not comparisons:
+            # 임계값 없는 **선행 창 절**("최근 90일간 온라인몰에서 주문한 회원 중 …")은 뒤따르는 지표 절의
+            # 공유 창이 된다 — 그 창은 문장 전체의 집계 기간이라 지표마다 다시 쓰지 않는 게 자연스러운 표현이다.
+            # 구매 도메인의 긍정 창일 때만 흘려보내 로그인/미접속/캠페인 창의 도메인 누수를 막는다
+            # (부정형 '최근 90일간 구매하지 않은'의 창은 무주문 조건 것이므로 상속하지 않는다).
+            if clause_window is not None and _is_shared_purchase_window_clause(raw_clause):
+                last_window, last_calendar = clause_window, clause_calendar
             continue
         unit = _clause_primary_unit(clause)
         # 같은 절에서 값 필터로 쓰인 디멘션(scope)은 가짓수 축이 될 수 없다 — 리졸버에 함께 넘긴다.
@@ -7057,6 +7171,17 @@ def _apply_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
             "scope": scope_clarify_key,
         }
         return
+    # 지표 보정('반품금액 차감' 등)은 절 밖(다른 문장)에서 선언되는 게 보통이라 원문 전체에서 감지해,
+    # 그 보정이 실제로 적용되는 지표의 조건에만 붙인다(주문 건수 같은 비금액 지표는 그대로).
+    detected_adjustments = _detect_aggregate_adjustments(query)
+    if detected_adjustments:
+        for condition in conditions:
+            metric = metrics.get(condition.get("metric_id"), {})
+            adjusted, applied = _adjusted_metric(metric, detected_adjustments)
+            if applied:
+                condition["adjustments"] = applied
+                condition["label"] = adjusted.get("ko_label", condition.get("label"))
+
     conflict_label = _aggregate_condition_conflict(conditions)
     if conflict_label is not None:
         plan["unsupported"] = {
@@ -7737,6 +7862,53 @@ def _metric_trend_signal(query: str) -> dict[str, Any] | None:
     return {"direction": direction, "metric_id": metric_id}
 
 
+_METRIC_TREND_PERCENT_UNIT = r"%|퍼센트|프로"
+
+
+def _parse_metric_trend_relative_change(query: str, direction: str) -> dict[str, Any] | None:
+    """증감 방향 가까이에 명시된 퍼센트 경계를 범용 상대 변화율 IR로 파싱한다.
+
+    공용 비교 문법을 재사용하므로 이상/초과/이하/미만과 이중 경계를 모두 보존한다. 단순 ``상위 10%``
+    같은 랭킹 퍼센트는 비교 연산자가 없고, 다른 도메인의 비율 조건은 증감어 근처가 아니므로 소유하지 않는다.
+    퍼센트 증가는 100%를 넘을 수 있어 값의 상한을 두지 않는다.
+    """
+    _range_pattern, operator_pattern, _exact_pattern = _comparison_patterns(
+        _METRIC_TREND_PERCENT_UNIT, unit_required=True
+    )
+    comparisons: list[dict[str, Any]] = []
+    seen: set[tuple[str, float]] = set()
+    for match in operator_pattern.finditer(query):
+        context = query[max(0, match.start() - 24): min(len(query), match.end() + 24)]
+        if _detect_metric_trend_direction(context.replace(" ", "")) != direction:
+            continue
+        operator = _comparison_operator(match.group("op"))
+        value = _parse_korean_amount(match.group("num"), match.group("mag") or "")
+        if operator is None or value is None or value <= 0:
+            continue
+        key = (operator, float(value))
+        if key in seen:
+            continue
+        seen.add(key)
+        comparisons.append({"operator": operator, "value": value})
+    return {"unit": "percent", "comparisons": comparisons} if comparisons else None
+
+
+def _metric_trend_relative_change_label(relative_change: dict[str, Any] | None) -> str:
+    if not isinstance(relative_change, dict):
+        return ""
+    operator_labels = {operator: word for word, operator in _COMPARISON_OPERATORS.items()}
+    labels = [
+        f"{_format_threshold(comparison['value'])}% {operator_labels.get(comparison['operator'], comparison['operator'])}"
+        for comparison in relative_change.get("comparisons", [])
+        if (
+            isinstance(comparison, dict)
+            and comparison.get("operator") in {">=", ">", "<=", "<"}
+            and isinstance(comparison.get("value"), (int, float))
+        )
+    ]
+    return " ".join(labels)
+
+
 def _parse_metric_trend(query: str) -> dict[str, Any] | None:
     """'<기간A> 대비 <기간B> <지표>가 증가/감소한' 을 기간 대 기간 지표 비교 조건으로 파싱한다.
 
@@ -7759,13 +7931,18 @@ def _parse_metric_trend(query: str) -> dict[str, Any] | None:
     if (baseline["from"], baseline["to"]) == (current["from"], current["to"]):
         return None  # 같은 창끼리 비교는 의미 없음
     arrow = "증가" if signal["direction"] == "increase" else "감소"
-    return {
+    relative_change = _parse_metric_trend_relative_change(query, signal["direction"])
+    threshold_label = _metric_trend_relative_change_label(relative_change)
+    trend = {
         "metric_id": signal["metric_id"],
         "direction": signal["direction"],
         "baseline": baseline,
         "current": current,
-        "label": f"{baseline['label']}→{current['label']} {arrow}",
+        "label": f"{baseline['label']}→{current['label']} {threshold_label + ' ' if threshold_label else ''}{arrow}",
     }
+    if relative_change is not None:
+        trend["relative_change"] = relative_change
+    return trend
 
 
 def _apply_metric_trend_filter(query: str, plan: dict[str, Any]) -> None:
@@ -7781,6 +7958,14 @@ def _apply_metric_trend_filter(query: str, plan: dict[str, Any]) -> None:
     target_user["metric_trend"] = trend
     # 첫 창만 담긴 단일 구매일 조건은 증감 조건이 대표한다(그대로 두면 '2월만 조회'로 축소된다).
     target_user.pop("purchase_date", None)
+
+
+def _restore_metric_trend_from_source(source_query: str, query_plan: dict[str, Any]) -> None:
+    """재작성/스코프 분리로 퍼센트 경계가 사라져도 원문의 기간 증감 조건을 통째로 복원한다."""
+    trend = _parse_metric_trend(source_query)
+    if trend is not None:
+        query_plan.setdefault("target_user", {})["metric_trend"] = trend
+        query_plan["target_user"].pop("purchase_date", None)
 
 
 # 구매 날짜 타겟 감지는 slot_setter(_parse_purchase_date_period)가 담당한다(레지스트리 "purchase_date").
@@ -9407,7 +9592,7 @@ _CHANNEL_CONSENT_TARGETS: tuple[tuple[str, str | None, tuple[str, ...]], ...] = 
     ("app_push_optin", "app_push", ("앱푸시", "푸시", "apppush")),
     ("sms_optin", "sms", ("sms", "문자")),
     ("email_optin", "email", ("이메일", "email", "메일")),
-    ("marketing_optin", None, ("마케팅", "정보활용")),
+    ("marketing_optin", None, ("마케팅", "정보활용", "개인정보")),
 )
 # 부정(거부)을 먼저 판정한다 — '동의하지 않'/'동의 안' 은 긍정 패턴('동의')의 부분문자열을 포함한다.
 # 조사 뒤 수량 부사('수신에 모두 동의')를 허용한다 — 이전엔 '모두'가 조사와 '동의' 사이에 끼면
@@ -9419,10 +9604,19 @@ _CONSENT_POS_SUFFIX = r"(?:수신)?(?:에|을|를)?" + _CONSENT_ADVERB + r"동�
 # 채널어와 동의/거부 접미어 사이에 나열 연결어·수량 부사(모두/둘다)·다른 채널어만 있으면 허용한다.
 # '로/으로 보내'(발송 채널) 같은 다른 문맥이 끼면 이 간격이 끊겨 매칭되지 않아 오탐을 막는다.
 _CONSENT_CHANNEL_TERMS_ALL = tuple(term for _c, _ch, terms in _CHANNEL_CONSENT_TARGETS for term in terms)
+# 채널어와 '동의' 사이에 끼는 동의 도메인 명사('마케팅 **활용**에 동의', '개인정보 수집·이용에 동의',
+# '광고성 정보 수신 동의'). 동의 문구 표현이 늘어나도 채널어↔동의 연결이 끊기지 않게 한다.
+_CONSENT_FILLER_TERMS = ("활용", "이용", "수집", "제공", "처리", "정보", "광고성", "광고", "알림", "혜택", "메시지", "안내")
 _CONSENT_GROUP_GAP = (
     r"(?:와|과|,|、|·|ㆍ|‧|・|및|랑|이랑|그리고|또는|이나|나|/|모두|둘다|둘|전부|각각|다같이|"
-    + "|".join(re.escape(t) for t in _CONSENT_CHANNEL_TERMS_ALL)
+    + "|".join(re.escape(t) for t in (*_CONSENT_CHANNEL_TERMS_ALL, *_CONSENT_FILLER_TERMS))
     + r")*"
+)
+# 이중부정 꼬리: '<동의/거부> … 회원은 **제외**'. 제외는 그 조건의 여집합이라 극성이 한 번 더 뒤집힌다
+# ('동의하지 않은 회원은 제외' = 동의자만 남김). 나열형("동의하지 않았거나 블랙리스트 … 회원은 제외")도
+# 잡도록 같은 절(마침표/쉼표 이내) 안이면 인정하고, '보내지 말고' 같은 발송 문맥은 어휘에서 제외한다.
+_CONSENT_EXCLUSION_TAIL_RE = re.compile(
+    r"^[^.。!?\n,]{0,40}?(?:회원|고객|사용자|유저|이용자|대상)?(?:은|는|을|를|만)?(?:모두|전부|다)?(?:제외|배제|제거)"
 )
 
 
@@ -9430,15 +9624,23 @@ def _consent_context_signals(text: str) -> dict[str, str]:
     """텍스트에서 '<채널> 수신 동의/거부' 신호를 {canonical: 극성('+'동의/'-'거부)} 으로 뽑는다.
 
     인접형("SMS 수신 동의")과 나열 공유형("SMS와 앱푸시 모두 수신 동의") 둘 다 지원한다(_CONSENT_GROUP_GAP).
-    부정(거부)을 먼저 판정한다 — 거부 접미어가 긍정('동의')의 상위 문자열을 포함하기 때문."""
+    부정(거부)을 먼저 판정한다 — 거부 접미어가 긍정('동의')의 상위 문자열을 포함하기 때문.
+    뒤에 제외 꼬리가 붙으면(_CONSENT_EXCLUSION_TAIL_RE) 여집합이므로 극성을 한 번 더 뒤집는다 —
+    '동의하지 않은 회원은 제외'는 동의자(= 'Y'), '동의한 회원은 제외'는 미동의자(<> 'Y')다."""
     compact = (text or "").replace(" ", "").casefold()
     signals: dict[str, str] = {}
     for canonical, _channel, terms in _CHANNEL_CONSENT_TARGETS:
         term_alt = "(?:" + "|".join(re.escape(term) for term in terms) + ")"
-        if re.search(term_alt + _CONSENT_GROUP_GAP + _CONSENT_NEG_SUFFIX, compact):
-            signals[canonical] = "-"
-        elif re.search(term_alt + _CONSENT_GROUP_GAP + _CONSENT_POS_SUFFIX, compact):
-            signals[canonical] = "+"
+        match = re.search(term_alt + _CONSENT_GROUP_GAP + _CONSENT_NEG_SUFFIX, compact)
+        polarity = "-"
+        if match is None:
+            match = re.search(term_alt + _CONSENT_GROUP_GAP + _CONSENT_POS_SUFFIX, compact)
+            polarity = "+"
+        if match is None:
+            continue
+        if _CONSENT_EXCLUSION_TAIL_RE.match(compact[match.end():]):
+            polarity = "+" if polarity == "-" else "-"
+        signals[canonical] = polarity
     return signals
 
 
@@ -9662,9 +9864,13 @@ def _is_exclusion_context(query: str, matched_text: str, match_type: str) -> boo
     match_end = match_index + len(matched_text)
     before_window = lowered_query[max(0, match_index - 8) : match_index]
     after_window = lowered_query[match_end : match_end + 12]
-    return any(marker in after_window for marker in ("제외", "빼고", "말고", "아닌", "아니고")) or any(
+    if any(marker in after_window for marker in ("제외", "빼고", "말고", "아닌", "아니고")) or any(
         marker in before_window for marker in ("not ", "except ", "exclude ")
-    )
+    ):
+        return True
+    # 나열형 제외("휴면·탈퇴 상태인 회원은 제외")는 제외 표지가 고정 창(12자) 밖으로 밀려난다. 나열
+    # 구분자로 이어진 뒤 제외 표지가 오는 경우만 인정해(_ENUM_EXCLUSION_TAIL_RE) 나열 앞 항목도 제외로 본다.
+    return bool(_ENUM_EXCLUSION_TAIL_RE.match(re.sub(r"\s+", "", lowered_query[match_end:])))
 
 
 def _is_delivery_channel_context(query: str, matched_text: str) -> bool:
@@ -9972,6 +10178,13 @@ def retrieve(
     # 집합 조건이 소유한 슬롯을 여기서 다시 회수하지 않으면, 같은 어구가 두 번 컴파일돼 rules 는 되고
     # auto(UI 경로)만 실패한다. 재파싱은 결정론이라 멱등하다.
     _apply_entity_set_condition(plan_query, query_plan)
+    # 집계 임계 조건의 기간 창·지표 보정도 원문 기준으로 복원한다 — 재작성·스코프 분리가 조건을 절 단위로
+    # 흩어 놓으면 지표에 붙어 있던 창('최근 90일')과 보정('반품금액 차감')이 떨어져 나가 같은 임계값이
+    # 전 생애·보정 없는 집계로 격하된다(창/보정 소실). 임계값·지표 자체는 덮어쓰지 않는다.
+    _restore_aggregate_conditions_from_source(targeting_prompt, query_plan)
+    # 기간 증감의 퍼센트 경계도 원문에서 복원한다. 재작성본이 '10% 이상'을 단순 '증가'로 줄이면
+    # 결과 집합이 넓어지므로 기간·지표·방향·상대 변화율을 하나의 원자 조건으로 다시 확정한다.
+    _restore_metric_trend_from_source(targeting_prompt, query_plan)
     _normalize_aggregation_axis_filters(query_plan)
     _normalize_purchase_aggregation_request(query_plan)
     # '최근 N개월 캠페인 K번 이상 반응'(반응 횟수)도 원문 기준으로 재감지한다 — 재작성/스코프 분리가 횟수·기간
@@ -12795,11 +13008,25 @@ def _sql_semantic_verify_system_prompt() -> str:
     campaign_table = (campaign_config or {}).get("table") if isinstance(campaign_config, dict) else None
     campaign_table = campaign_table or "MCS_CAMP_MBR_RSPN_FT"
     date_format_label = str(_member_base_entity().get("date_format") or "yyyyMMdd").upper()
+    # 지표 보정(반품 차감 등)의 인코딩을 설정에서 렌더한다 — 보정은 컬럼 산술로 들어가는데 판정 모델이
+    # 이를 '차감 없음'으로 자주 오독한다. 새 보정을 설정에 추가하면 이 안내도 자동으로 따라온다.
+    adjustment_hints = "".join(
+        f"  · '{spec.get('ko_label')}' → 집계식의 컬럼 산술로 인코딩된다: `{expression.replace('{t}', '')}` "
+        f"(이 산술이 있으면 반영된 것이니 dropped 로 보지 말라).\n"
+        for spec in _aggregate_adjustments_config().values()
+        if isinstance(spec, dict) and spec.get("ko_label")
+        for expression in list((spec.get("column_expressions") or {}).values())[:1]
+        if isinstance(expression, str)
+    )
     return (
         "당신은 타겟팅 SQL 검증기다. 사용자 원문과 그 원문으로 생성된 SQL 을 받는다. "
         "SQL 이 원문의 **오디언스(타겟 회원) 조건**을 빠짐없이·왜곡 없이 반영했는지만 판정하라.\n"
         "다음은 무시한다(불일치로 보지 말 것): 발송 채널(문자/앱푸시/RCS 등)·메시지 카피·캠페인 목적/목표"
         "(objective, 예: 재구매 유도)·결과 개수 제한. SQL 은 오디언스 필터만 담고 이들은 담지 않는 게 정상이다.\n"
+        "**결과에 함께 표시·산출해 달라는 요구도 무시한다**: '총액/평균/최대/최종일자를 함께 산출·표시·보여줘', "
+        "'요약해서 보여줘', 캠페인·타겟리스트 생성 요청 등은 결과 표현/후속 처리이지 오디언스 조건이 아니다. "
+        "이 SQL 은 대상 회원 집합만 뽑으므로 그런 출력 컬럼이 SELECT 에 없어도 dropped 가 아니다"
+        "(단, 같은 지표가 '~이상/이하' 임계 조건으로 쓰였다면 그건 필터이므로 반드시 검사한다).\n"
         "**값 변환·확장의 '완전성'은 절대 판정하지 말라**: 자연어 값은 시스템이 코드/등급 체계/권역 매핑으로 "
         f"변환·확장해 SQL 에 넣는다(여성→{gender_example}, 30대→AGE 30~39, 'GOLD 이상'→등급 IN 목록, 수도권→{sido_column} IN 목록). "
         "너는 등급 서열·권역 구성을 알지 못하므로, 어떤 값이 IN 목록/범위에 들어갔는지의 정확성·완전성을 "
@@ -12830,7 +13057,10 @@ def _sql_semantic_verify_system_prompt() -> str:
         "  · '최근 N일 미구매' → 주문 테이블 `NOT EXISTS`(최근 N일 창).  · '장바구니 없는' → 카트 `NOT EXISTS`.\n"
         f"  · '캠페인 발송/접촉·오퍼 반응·쿠폰 사용' → 캠페인 반응 팩트({campaign_table} 등) `EXISTS`, 부정형은 `NOT EXISTS`.\n"
         f"  · '신규 가입/가입한 지 N일' → `{signup_column}` 최근 창.  · '생일' → `{birthday_column}` 월일 비교.  · 등급/성별/지역 → 코드 컬럼 = / IN.\n"
-        "  · SELECT 절의 라벨 컬럼(예: `'cart_abandoner' AS target_segment`, `'repurchase' AS objective`)은 **필터가 아니라 세그먼트 표식**이니 판정 대상이 아니다.\n"
+        "  · SELECT 절에서 **상수 문자열 리터럴에 별칭을 붙인 컬럼**(`'...' AS 별칭` — 예: `'cart_abandoner' AS target_segment`, "
+        "`'active_member,구매 횟수' AS segment_label`, `'repurchase' AS objective`)은 시스템이 붙인 표식이라 **필터가 아니고 행 수를 바꾸지 않는다**. "
+        "그 안에 어떤 문구가 들어있든 원문에 없다고 spurious 로 보지 말라(별칭 이름·문구는 판정 대상이 아니다).\n"
+        + adjustment_hints +
         "핵심: 원문 개념이 위처럼 **대응 테이블/컬럼 필터로 존재하기만 하면** 반영된 것이다. 리터럴 단어 일치를 요구하지 말라.\n"
         "불일치 유형: dropped(원문 조건이 SQL 에 없음), inverted(긍정↔부정 또는 이상↔이하 등 의미가 반대로 "
         "반영됨. 예: '구매 이력이 없는'인데 SQL 은 구매함(EXISTS)으로 반영), wrong_value(연령대·지역·등급 등 값이 "
@@ -13364,6 +13594,118 @@ def _actual_sql_grain(sql: str, dialect: str | None = None) -> dict[str, Any]:
     }
 
 
+# 결과 '표현' 요구(출력·요약 컬럼)를 가리키는 표지. 오디언스 필터가 아니라 결과에 무엇을 함께 보여줄지의
+# 요구라서 회원 행 집합을 바꾸지 않는다. 이 표지와 함께 임계/부정 표지가 없을 때만 표현 요구로 인정한다.
+_PRESENTATION_REQUEST_CUE_RE = re.compile(r"산출|표시|출력|보여|노출|함께\s*보|요약|정렬해\s*보")
+# 후속 처리 요청(캠페인·타겟리스트·셀 생성/설정)도 오디언스 필터가 아니다 — 이 엔드포인트의 SQL 은 대상
+# 회원 집합만 뽑고 생성은 다음 단계의 일이라, SQL 에 없다고 해서 조건이 빠진 게 아니다.
+_POST_PROCESSING_REQUEST_CUE_RE = re.compile(
+    r"(?:캠페인|타겟리스트|타겟\s*리스트|타깃리스트|세그먼트|셀)[^.\n]{0,24}?(?:생성|만들|설정|등록|저장|발행)"
+)
+# 필터(임계/비교)를 뜻하는 표지 — 하나라도 있으면 '표현 요구'가 아니라 조건이므로 면제하지 않는다.
+_THRESHOLD_CUE_RE = re.compile(r"이상|이하|미만|초과|이내|같은|동일|>=|<=|>|<|=")
+# SELECT 절의 상수 리터럴 프로젝션(`'...' AS 별칭`) — 세그먼트 표식이라 행 수를 바꾸지 않는다.
+_CONSTANT_PROJECTION_RE = re.compile(r"N?'([^']*)'\s+AS\s+([A-Za-z_]\w*)", re.IGNORECASE)
+_SQL_RESERVED_TOKENS = frozenset({
+    "SELECT", "DISTINCT", "FROM", "WHERE", "INNER", "LEFT", "RIGHT", "OUTER", "JOIN", "ON", "AND", "OR", "NOT",
+    "NULL", "IS", "IN", "EXISTS", "BETWEEN", "LIKE", "GROUP", "ORDER", "BY", "HAVING", "AS", "CASE", "WHEN",
+    "THEN", "ELSE", "END", "UNION", "ALL", "ASC", "DESC", "TOP", "LIMIT", "OFFSET", "COUNT", "SUM", "AVG",
+    "MAX", "MIN", "COALESCE", "NULLIF", "ISNULL", "CONVERT", "CAST", "CHAR", "DATEADD", "DATEDIFF", "GETDATE",
+    "DAY", "MONTH", "YEAR", "TRY_CAST", "SUBSTRING", "LEN", "FORMAT",
+})
+
+
+def _sql_filter_identifiers(sql: str) -> set[str]:
+    """FROM 이후(조인/WHERE/HAVING/GROUP BY) 구간에 등장하는 컬럼·테이블 식별자 집합.
+
+    SELECT 프로젝션은 제외한다 — '행 집합을 바꾸는 자리'에 쓰인 식별자만 모아, 판정이 진짜 필터를
+    지목했는지(면제 불가) 표식만 지목했는지(면제 가능) 가르는 데 쓴다."""
+    parts = re.split(r"\bFROM\b", sql or "", maxsplit=1, flags=re.IGNORECASE)
+    if len(parts) < 2:
+        return set()
+    # 문자열 리터럴(코드값 'MEMBER_STATE_CD.NORMAL' 등)은 식별자가 아니다 — 값 토큰이 컬럼으로 새면
+    # 판정 문구와 우연히 겹쳐 면제가 막힌다.
+    body = re.sub(r"'[^']*'", " ", parts[1])
+    return {token for token in re.findall(r"\b[A-Z][A-Z0-9_]{2,}\b", body) if token not in _SQL_RESERVED_TOKENS}
+
+
+def _mentions_identifier(text: str, identifier: str) -> bool:
+    """식별자를 단어 경계로 찾는다 — 'NORMAL' 이 'normal_member' 안에 부분일치하는 오탐을 막는다."""
+    return re.search(rf"(?<![A-Za-z0-9_]){re.escape(identifier)}(?![A-Za-z0-9_])", text, re.IGNORECASE) is not None
+
+
+def _mentions_only_constant_projection(text: str, sql: str) -> bool:
+    """판정 문구가 상수 리터럴 프로젝션(라벨 컬럼)만 지목하고, 필터 식별자는 하나도 지목하지 않는가."""
+    projections = _CONSTANT_PROJECTION_RE.findall(sql or "")
+    if not projections:
+        return False
+    lowered = (text or "").casefold()
+    mentions_label = any(_mentions_identifier(text, alias) for _literal, alias in projections) or any(
+        literal.casefold() in lowered for literal, _alias in projections if literal
+    )
+    if not mentions_label:
+        return False
+    return not any(_mentions_identifier(text, identifier) for identifier in _sql_filter_identifiers(sql))
+
+
+def _adjustment_requirement_present_in_sql(text: str, sql: str) -> bool:
+    """판정이 지목한 '지표 보정'(반품 차감 등)이 SQL 집계식에 실제로 들어가 있는가(결정론 반증).
+
+    보정은 컬럼 산술(`SUM(COALESCE(PAYMENT_AMT,0) - COALESCE(RETURN_AMT,0))`)로 인코딩되는데, 경량
+    판정 모델이 이 산술을 '차감 없음'으로 자주 오독한다. 설정에 선언된 보정의 구성 컬럼이 SQL 에 모두
+    있으면 그 요구는 반영된 것이므로 차단 사유로 인정하지 않는다(설정에 보정을 추가하면 자동 적용)."""
+    compact_text = (text or "").replace(" ", "").casefold()
+    upper_sql = (sql or "").upper()
+    for spec in _aggregate_adjustments_config().values():
+        if not isinstance(spec, dict):
+            continue
+        label = spec.get("ko_label")
+        patterns = [p for p in (spec.get("trigger_patterns") or []) if isinstance(p, str)]
+        mentioned = isinstance(label, str) and label and label.replace(" ", "").casefold() in compact_text
+        for pattern in patterns:
+            if mentioned:
+                break
+            try:
+                mentioned = re.search(pattern, compact_text) is not None
+            except re.error:
+                continue
+        if not mentioned:
+            continue
+        columns: set[str] = set()
+        for replacement in (spec.get("column_expressions") or {}).values():
+            if isinstance(replacement, str):
+                columns.update(re.findall(r"\{t\}([A-Z][A-Z0-9_]+)", replacement))
+        if columns and all(column in upper_sql for column in columns):
+            return True
+    return False
+
+
+def _semantic_issue_exemption(issue: dict[str, Any], sql: str) -> str | None:
+    """LLM 의미검증 판정이 '회원 행 집합과 무관함'을 결정론으로 확인할 수 있으면 면제 사유를, 아니면 None.
+
+    두 부류만 면제한다(둘 다 SQL 구조로 확인 가능하며, 필터를 지목한 판정은 절대 면제되지 않는다):
+      ① 출력·요약 컬럼 요구('총액·평균·최종주문일을 함께 산출/보여줘') — 이 SQL 은 대상 회원 집합만 뽑고
+         값 표시는 응답 계층 몫이라 SELECT 에 없어도 행 집합이 달라지지 않는다. 같은 지표가 임계 조건
+         ('30만원 이상')으로 쓰였다면 임계 표지가 잡혀 면제되지 않는다.
+      ② 상수 리터럴 프로젝션(`'...' AS segment_label` 등)만 지목한 spurious — 시스템 표식이라 행 수 불변.
+    나머지(inverted/wrong_value, 필터를 지목한 dropped/spurious)는 종전대로 차단 대상이다."""
+    issue_type = str(issue.get("type") or "").casefold()
+    if issue_type not in {"dropped", "spurious"}:
+        return None
+    condition = str(issue.get("condition") or "")
+    detail = str(issue.get("detail") or "")
+    non_filter_request = not (_THRESHOLD_CUE_RE.search(condition) or _NEGATION_CUE_RE.search(condition))
+    if non_filter_request and _PRESENTATION_REQUEST_CUE_RE.search(condition):
+        return "presentation_only_requirement"
+    if non_filter_request and _POST_PROCESSING_REQUEST_CUE_RE.search(condition):
+        return "post_processing_request"
+    if issue_type == "spurious" and _mentions_only_constant_projection(f"{condition} {detail}", sql):
+        return "constant_projection_label"
+    if issue_type == "dropped" and _adjustment_requirement_present_in_sql(f"{condition} {detail}", sql):
+        return "adjustment_present_in_sql"
+    return None
+
+
 def _semantic_issue_is_critical(issue: dict[str, Any], query: str, sql: str) -> bool:
     """Classify result-shaping dropped/spurious issues as fail-closed."""
     if issue.get("severity") == "critical" or issue.get("affects_result_set") is True or issue.get("is_primary_condition") is True:
@@ -13448,7 +13790,9 @@ def _validate_sql_delivery_contract(
     for raw_issue in verification.get("issues") or []:
         if not isinstance(raw_issue, dict):
             continue
-        critical = _semantic_issue_is_critical(raw_issue, query, sql)
+        # 결과 집합(행 집합)과 무관함이 결정론으로 확인되는 판정은 차단에서 면제한다(자문으로만 남김).
+        exempt_reason = _semantic_issue_exemption(raw_issue, sql)
+        critical = exempt_reason is None and _semantic_issue_is_critical(raw_issue, query, sql)
         issue_type = str(raw_issue.get("type") or "dropped").casefold()
         reason_code = {
             "dropped": "DROPPED_SEMANTIC_REQUIREMENT",
@@ -13459,10 +13803,12 @@ def _validate_sql_delivery_contract(
         issue = {
             **raw_issue,
             "reason_code": raw_issue.get("reason_code") or reason_code,
-            "severity": "critical" if critical else raw_issue.get("severity", "warning"),
+            "severity": "critical" if critical else ("warning" if exempt_reason else raw_issue.get("severity", "warning")),
             "affects_result_set": critical,
             "is_primary_condition": critical,
         }
+        if exempt_reason:
+            issue["exempt_reason"] = exempt_reason
         enriched_issues.append(issue)
         if critical:
             critical_issues.append(issue)
@@ -13482,8 +13828,12 @@ def _validate_sql_delivery_contract(
         reasons.append("critical_conditions_dropped")
     # faithful=false 자체가 최종 출고 불가 조건이다. issue 분류는 reason code와 안내 품질을 위한
     # 부가 정보이며, 빈/오분류 issue 때문에 불일치 SQL이 success로 빠져나가면 안 된다.
+    # 유일한 예외: 모든 판정이 '결과 집합과 무관함'을 결정론으로 확인한 면제(_semantic_issue_exemption)인
+    # 경우 — 출력 컬럼 요구·상수 라벨 프로젝션처럼 행 집합을 바꿀 수 없는 지적만 남았다면 차단하지 않는다.
+    # 판정이 비었거나 하나라도 면제 불가면 종전대로 차단한다(오분류 통과 방지).
     if verification.get("ran") and verification.get("faithful") is False:
-        reasons.append("critical_semantic_issue")
+        if not enriched_issues or any(not issue.get("exempt_reason") for issue in enriched_issues):
+            reasons.append("critical_semantic_issue")
     return {
         "is_satisfied": not reasons,
         "expected_grain": expected_grain,
@@ -15494,6 +15844,11 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     target_user = query_plan.get("target_user", {})
     exclude = query_plan.get("exclude", {})
     campaign = query_plan.get("campaign_constraints", {})
+    # LLM 어휘 별칭(withdrawn_user 등)을 컴파일 가능한 canonical(withdrawn)로 먼저 해석한다 — 플래너에
+    # 허용된 어휘가 컴파일러 매핑보다 넓어, 별칭이 나오면 '미지원 조건'으로 SQL 이 통째로 막혔다.
+    # 별칭 표는 설정(lifecycle_aliases)이 소유하므로 새 별칭은 한 줄 추가로 열린다.
+    target_user = _resolve_plan_lifecycle_aliases(target_user)
+    exclude = _resolve_plan_lifecycle_aliases(exclude)
     eq_includes: dict[str, list[str]] = {}  # 실컬럼 -> 포함 저장값들(같은 컬럼은 IN 으로 OR)
     include_categories: set[str] = set()
     other_predicates: list[str] = []  # 제외(<>)/연령/활동 등은 그대로 AND
@@ -15561,8 +15916,13 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
             lo, hi = age_range
             other_predicates.append(f"NOT (B.AGE BETWEEN {lo} AND {hi})"); has_signal = True
 
-    # lifecycle 포함(등가/활동)
+    # lifecycle 포함(등가/활동). 같은 canonical 이 제외에도 있으면 제외가 이긴다 — 포함·제외를 둘 다
+    # 컴파일하면 `= 'Y' AND <> 'Y'` 같은 항상-거짓 술어가 되어 결과가 무조건 0명이 된다. 재작성·스코프
+    # 분리로 한 표현이 양쪽 슬롯에 들어가는 경우가 있어(예: '블랙리스트 … 아닌 고객') 결정론으로 정리한다.
+    excluded_lifecycles = {value for value in exclude.get("lifecycle", []) if isinstance(value, str)}
     for lifecycle in target_user.get("lifecycle", []):
+        if lifecycle in excluded_lifecycles:
+            continue
         if lifecycle == "new_user":
             continue  # 신규 가입은 아래 signup_target 분기가 REG_DT 창 술어로 처리(미지원 아님)
         if lifecycle in MEMBER_EQ_FILTERS:
@@ -15572,10 +15932,22 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
         else:
             unsupported.append("target_user.lifecycle:" + lifecycle)
 
-    # lifecycle 제외(등가만 부정 가능; 활동 범위 부정은 모호해 미지원)
+    # lifecycle 제외: 등가 필터는 부정(<>), 미접속 활동 필터는 여집합(최근 N일 내 접속)으로 컴파일한다.
+    # '휴면(=N일 이상 미접속) 회원 제외'의 여집합은 '최근 N일 내 접속'으로 정확히 정의되므로
+    # (_member_recent_login_predicate 는 미접속 술어의 대칭), 등록된 모든 활동 필터에 같은 규칙이 적용된다.
     for lifecycle in exclude.get("lifecycle", []):
         if lifecycle in MEMBER_EQ_FILTERS:
-            other_predicates.append(_member_eq_predicate(lifecycle, negate=True)); labels.append("non_" + lifecycle); has_signal = True
+            _category, column, value = MEMBER_EQ_FILTERS[lifecycle]
+            # 같은 컬럼에 등가 포함이 이미 있고 그 값이 제외 값과 다르면 `<>` 는 그 등가 조건에 이미
+            # 함축된다(상태='NORMAL' 이면 <>'WITHDRAW' 는 자명). 중복 술어는 결과를 바꾸지 않으면서
+            # 의미검증기가 '요청하지 않은 추가 조건'으로 오탐하는 잡음이 되므로 라벨만 남기고 뺀다.
+            included_values = eq_includes.get(column) or []
+            if not (included_values and value not in included_values):
+                other_predicates.append(_member_eq_predicate(lifecycle, negate=True))
+            labels.append("non_" + lifecycle); has_signal = True
+        elif lifecycle in MEMBER_ACTIVITY_FILTERS:
+            other_predicates.append(_member_recent_login_predicate(MEMBER_ACTIVITY_FILTERS[lifecycle]))
+            labels.append("non_" + lifecycle); has_signal = True
         else:
             unsupported.append("exclude.lifecycle:" + lifecycle)
 
@@ -16622,6 +16994,138 @@ def _aggregate_targets_config() -> dict[str, Any]:
     return config
 
 
+def _restore_aggregate_conditions_from_source(source_query: str, query_plan: dict[str, Any]) -> None:
+    """원문을 결정론 파싱해 집계 조건의 **소실된 속성만** 복원한다(기간 창·지표 보정).
+
+    재작성/스코프 분리는 지표 절과 창·보정 문장을 갈라놓아 '최근 90일'·'반품금액 차감'이 조건에서 떨어져
+    나가게 한다(전 생애·보정 없는 집계로 격하). 원문 절 구조를 그대로 읽는 결정론 파서 결과로 그 속성만
+    채우고, 임계값·지표·연산자는 파싱 문장 결과를 그대로 둔다(덮어쓰면 재작성이 더 정확한 경우가 깨진다).
+    조건이 아예 없을 때만 원문 파싱 결과를 그대로 채운다. 원문에서 아무 조건도 못 찾으면 무동작이다."""
+    target_user = query_plan.setdefault("target_user", {})
+    scratch: dict[str, Any] = {"target_user": {}}
+    _apply_named_filter("aggregate", source_query, scratch)
+    source_conditions = [
+        condition
+        for condition in (scratch.get("target_user", {}).get("aggregate_conditions") or [])
+        if isinstance(condition, dict)
+    ]
+    if not source_conditions:
+        return
+    existing = [c for c in (target_user.get("aggregate_conditions") or []) if isinstance(c, dict)]
+    if not existing:
+        target_user["aggregate_conditions"] = source_conditions
+        return
+    by_key = {
+        (condition.get("metric_id"), condition.get("operator"), condition.get("threshold")): condition
+        for condition in source_conditions
+    }
+    for condition in existing:
+        source = by_key.get((condition.get("metric_id"), condition.get("operator"), condition.get("threshold")))
+        if source is None:
+            continue
+        if condition.get("window_days") is None and source.get("window_days") is not None:
+            condition["window_days"] = source["window_days"]
+        if not condition.get("adjustments") and source.get("adjustments"):
+            condition["adjustments"] = source["adjustments"]
+            condition["label"] = source.get("label", condition.get("label"))
+
+
+def _aggregate_adjustments_config() -> dict[str, Any]:
+    """집계 지표 보정(adjustments) 선언 — aggregate_targets.adjustments(파일) → 코드 기본값 순."""
+    adjustments = _aggregate_targets_config().get("adjustments")
+    if isinstance(adjustments, dict) and adjustments:
+        return adjustments
+    default = _DEFAULT_MEMBER_TARGET_FILTERS["aggregate_targets"].get("adjustments")
+    return default if isinstance(default, dict) else {}
+
+
+def _detect_aggregate_adjustments(query: str) -> list[str]:
+    """원문에서 지표 보정 트리거(예: '반품금액 … 차감')를 찾아 보정 id 목록으로. 문법은 설정이 소유한다."""
+    compact = (query or "").replace(" ", "").casefold()
+    if not compact:
+        return []
+    found: list[str] = []
+    for name, spec in _aggregate_adjustments_config().items():
+        patterns = spec.get("trigger_patterns") if isinstance(spec, dict) else None
+        if not isinstance(patterns, list):
+            continue
+        for pattern in patterns:
+            if not (isinstance(pattern, str) and pattern):
+                continue
+            try:
+                matched = re.search(pattern, compact) is not None
+            except re.error:
+                continue  # 설정 정규식 오류로 파싱 전체를 죽이지 않는다
+            if matched:
+                found.append(name)
+                break
+    return found
+
+
+def _metric_accepts_adjustment(metric: dict[str, Any], spec: dict[str, Any]) -> bool:
+    """보정이 이 지표에 적용되는지 — 선언한 semantic_type 범위 안이고, 치환 대상 컬럼을 실제로 집계하는가.
+
+    '반품 차감'은 결제금액을 더하는 지표(누적 금액·평균 주문 금액)에만 의미가 있고 주문 건수·상품 종수엔
+    없다. 그 판정을 지표별 분기 없이 '집계식/집계컬럼이 그 컬럼을 쓰는가'로 데이터에서 끌어낸다."""
+    if not isinstance(metric, dict) or not isinstance(spec, dict):
+        return False
+    allowed = spec.get("applies_to_semantic_types")
+    if isinstance(allowed, list) and allowed:
+        semantic_type = str(metric.get("semantic_type") or "")
+        if semantic_type and semantic_type not in allowed:
+            return False
+    substitutions = spec.get("column_expressions")
+    if not isinstance(substitutions, dict) or not substitutions:
+        return False
+    expression = metric.get("expression")
+    if isinstance(expression, str) and expression.strip():
+        return any(isinstance(column, str) and column in expression for column in substitutions)
+    if metric.get("distinct"):
+        return False  # COUNT(DISTINCT …) 는 금액 구성요소 치환 대상이 아니다
+    column = metric.get("column")
+    return isinstance(column, str) and column in substitutions
+
+
+def _adjusted_metric(metric: dict[str, Any], adjustments: Any) -> tuple[dict[str, Any], list[str]]:
+    """보정을 적용한 지표 스펙 사본과 실제 적용된 보정 id 목록을 돌려준다(적용 없음이면 원본 그대로).
+
+    agg+column 지표는 집계식(`AGG({t}COLUMN)`)으로 승격한 뒤 컬럼을 보정식으로 치환하고, 이미 집계식인
+    지표(평균 주문 금액 등)는 식 안의 컬럼만 치환한다 — 그래서 한 보정 선언이 모든 금액 지표에 통한다.
+    보정은 기간·구성요소를 반영해야 하므로 사전 계산 요약 컬럼(스냅샷) 소스는 떨어뜨리고 실집계로 만든다."""
+    names = [name for name in (adjustments or []) if isinstance(name, str)]
+    if not (names and isinstance(metric, dict)):
+        return metric, []
+    specs = _aggregate_adjustments_config()
+    adjusted = dict(metric)
+    applied: list[str] = []
+    labels: list[str] = []
+    for name in names:
+        spec = specs.get(name)
+        if not isinstance(spec, dict) or not _metric_accepts_adjustment(adjusted, spec):
+            continue
+        expression = adjusted.get("expression")
+        if not (isinstance(expression, str) and expression.strip()):
+            column = adjusted.get("column")
+            if not (isinstance(column, str) and column):
+                continue
+            expression = f"{str(adjusted.get('agg', 'SUM')).upper()}({{t}}{column})"
+        for column, replacement in (spec.get("column_expressions") or {}).items():
+            if isinstance(column, str) and isinstance(replacement, str):
+                expression = expression.replace("{t}" + column, replacement)
+        adjusted["expression"] = expression
+        adjusted.pop("summary", None)
+        adjusted.pop("source", None)
+        applied.append(name)
+        label = spec.get("ko_label")
+        if isinstance(label, str) and label:
+            labels.append(label)
+    if not applied:
+        return metric, []
+    if labels:
+        adjusted["ko_label"] = f"{metric.get('ko_label', metric.get('column', ''))}({'·'.join(labels)})"
+    return adjusted, applied
+
+
 def _format_threshold(threshold: int | float) -> str:
     return str(int(threshold)) if float(threshold).is_integer() else repr(float(threshold))
 
@@ -16857,7 +17361,8 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
     labels = list(compiled["labels"])
     alias_index = 0
     for condition in valid:
-        metric = metrics[condition["metric_id"]]
+        # 지표 보정(반품 차감 등)이 붙은 조건은 보정된 집계식으로 컴파일한다(_adjusted_metric).
+        metric, _applied_adjustments = _adjusted_metric(metrics[condition["metric_id"]], condition.get("adjustments"))
         condition_scope = condition.get("aggregation_scope", "per_member")
         # per_product/per_order grain('동일 상품'·'한 주문에')은 grain 이 이미 상품 범위를 표현하므로 상품
         # 스코프 LIKE 를 얹지 않는다(충돌). per_member 조건만 상품별로 편다; 상품이 없으면 스코프 1개(None).
@@ -17027,6 +17532,25 @@ def build_metric_trend_targets_sql_candidate(query_plan: dict[str, Any]) -> dict
     member_key = _member_key_column()
     cur = f"{_METRIC_TREND_CURRENT_ALIAS}.{_METRIC_TREND_VALUE_COLUMN}"
     base = f"{_METRIC_TREND_BASELINE_ALIAS}.{_METRIC_TREND_VALUE_COLUMN}"
+    relative_change = trend.get("relative_change")
+    relative_comparisons = [
+        comparison
+        for comparison in (relative_change.get("comparisons", []) if isinstance(relative_change, dict) else [])
+        if (
+            isinstance(comparison, dict)
+            and comparison.get("operator") in {">=", ">", "<=", "<"}
+            and isinstance(comparison.get("value"), (int, float))
+            and comparison["value"] > 0
+        )
+    ]
+    if isinstance(relative_change, dict) and not relative_comparisons:
+        query_plan["unsupported"] = {
+            "reason": "metric_trend_relative_change_invalid",
+            "message": "기간 대비 증감의 퍼센트 임계값을 해석할 수 없습니다.",
+            "clarification": "증감률을 '10% 이상/초과/이하/미만'처럼 지정해 주세요.",
+        }
+        return None
+
     if trend.get("direction") == "decrease":
         # 감소: 기준 기간에 값이 있어야 줄어들 수 있다(비교 기간은 무주문=0 도 감소).
         from_lines = [
@@ -17034,15 +17558,30 @@ def build_metric_trend_targets_sql_candidate(query_plan: dict[str, Any]) -> dict
             f"     LEFT JOIN {current_sql} ON B.{member_key} = {_METRIC_TREND_CURRENT_ALIAS}.{join_column}",
         ]
         comparison = f"COALESCE({cur}, 0) < {base}"
+        relative_delta = f"(({base} - COALESCE({cur}, 0)) * 100.0 / NULLIF({base}, 0))"
     else:
         from_lines = [
             f"     INNER JOIN {current_sql} ON B.{member_key} = {_METRIC_TREND_CURRENT_ALIAS}.{join_column}",
-            f"     LEFT JOIN {baseline_sql} ON B.{member_key} = {_METRIC_TREND_BASELINE_ALIAS}.{join_column}",
+            (
+                f"     INNER JOIN {baseline_sql} ON B.{member_key} = {_METRIC_TREND_BASELINE_ALIAS}.{join_column}"
+                if relative_comparisons
+                else f"     LEFT JOIN {baseline_sql} ON B.{member_key} = {_METRIC_TREND_BASELINE_ALIAS}.{join_column}"
+            ),
         ]
         comparison = f"{cur} > COALESCE({base}, 0)"
+        relative_delta = f"(({cur} - {base}) * 100.0 / NULLIF({base}, 0))"
 
     compiled = compile_member_target_conditions(query_plan)
-    where_clauses = [comparison, *compiled["predicates"]]
+    trend_predicates = [comparison]
+    if relative_comparisons:
+        # 상대 변화율의 분모는 양수인 기준값으로 정의한다. 0→양수는 증가이지만 '몇 % 증가'인지는
+        # 정의되지 않으므로 제외한다. NULLIF 는 SQL Server 가 나눗셈을 먼저 평가해도 0 나눗셈을 막는다.
+        trend_predicates.append(f"{base} > 0")
+        trend_predicates.extend(
+            f"{relative_delta} {comparison_item['operator']} {_format_threshold(comparison_item['value'])}"
+            for comparison_item in relative_comparisons
+        )
+    where_clauses = [*trend_predicates, *compiled["predicates"]]
     if not compiled["forces_state"]:
         where_clauses.extend(_member_policy_predicates(query_plan))
 

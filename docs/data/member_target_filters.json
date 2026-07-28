@@ -208,7 +208,7 @@
       "category": "consent",
       "column": "B.AGREE_YN",
       "value": "Y",
-      "synonyms": ["마케팅 수신 동의", "정보 활용 동의", "광고 수신 동의"]
+      "synonyms": ["마케팅 수신 동의", "마케팅 활용 동의", "정보 활용 동의", "개인정보 활용 동의", "광고 수신 동의"]
     },
 
     {
@@ -281,7 +281,7 @@
       "column": "B.AGREE_YN",
       "true_value": "Y",
       "false_value": "N",
-      "synonyms": ["마케팅 동의", "정보 활용 동의", "광고 수신 동의"]
+      "synonyms": ["마케팅 동의", "마케팅 활용 동의", "정보 활용 동의", "개인정보 활용 동의", "광고 수신 동의"]
     },
     {
       "canonical": "email_agreed",
@@ -559,6 +559,13 @@
       "synonyms": ["최근 로그인", "최근 접속", "요즘 접속한"]
     }
   ],
+
+  "lifecycle_aliases": {
+    "withdrawn_user": "withdrawn",
+    "dormant_user": "dormant",
+    "active_user": "active_member",
+    "inactive_user": "inactive_90d"
+  },
 
   "lifecycle_extra_terms": [
     "new_user",
@@ -888,6 +895,19 @@
         "column": "ORDER_DATE",
         "ko_label": "최초 구매일",
         "synonyms": ["최초 구매일", "첫 구매일", "처음 주문한 날짜"]
+      }
+    },
+    "adjustments": {
+      "net_of_returns": {
+        "ko_label": "반품 차감",
+        "trigger_patterns": [
+          "(?:반품|환불|취소)[^.。!?\\n,]{0,40}?(?:차감|제외|뺀|빼고|제하)",
+          "(?:순|실)(?:결제|구매|매출)\\s*금액"
+        ],
+        "applies_to_semantic_types": ["sum", "ratio"],
+        "column_expressions": {
+          "PAYMENT_AMT": "(COALESCE({t}PAYMENT_AMT, 0) - COALESCE({t}RETURN_AMT, 0))"
+        }
       }
     }
   },

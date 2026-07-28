@@ -326,8 +326,39 @@ def _coerce_purchase_date(raw: Any, *, allowed: Any = None) -> dict[str, Any] | 
     return out
 
 
+def _coerce_relative_change(raw: Any) -> dict[str, Any] | None:
+    """기간 증감의 상대 변화율 조건을 canonical ``{unit, comparisons}`` 로 정규화한다.
+
+    퍼센트 변화율은 100%를 넘을 수 있으므로 셀 비율처럼 상한을 100으로 제한하지 않는다. 비교 연산과
+    값은 리스트로 보존해 ``10% 이상 20% 미만`` 같은 이중 경계도 같은 IR/컴파일 경로를 사용한다.
+    """
+    if not isinstance(raw, dict):
+        return None
+    unit = str(raw.get("unit") or "percent").strip().casefold()
+    if unit not in {"percent", "%", "퍼센트", "프로"}:
+        return None
+    candidates = raw.get("comparisons")
+    if not isinstance(candidates, list):
+        candidates = [{"operator": raw.get("operator"), "value": raw.get("value")}]
+    comparisons: list[dict[str, Any]] = []
+    seen: set[tuple[str, float | int]] = set()
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        operator = _canon_operator(candidate.get("operator"))
+        value = _pos_number(candidate.get("value"))
+        if operator is None or value is None:
+            continue
+        key = (operator, value)
+        if key in seen:
+            continue
+        seen.add(key)
+        comparisons.append({"operator": operator, "value": value})
+    return {"unit": "percent", "comparisons": comparisons} if comparisons else None
+
+
 def _coerce_metric_trend(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
-    """metric_trend: {metric_id, direction, baseline{from,to}, current{from,to}, label?}.
+    """metric_trend: {metric_id, direction, baseline{from,to}, current{from,to}, relative_change?, label?}.
 
     두 기간이 모두 절대 창(연도 포함 YYYYMMDD)으로 확정돼야 한다 — 한쪽이라도 비면 증감을 판정할 수
     없으므로 슬롯을 만들지 않는다(단일 기간 조건으로 조용히 축소되는 것보다 미설정이 낫다)."""
@@ -346,6 +377,9 @@ def _coerce_metric_trend(raw: Any, *, allowed: Any = None) -> dict[str, Any] | N
     if (baseline["from"], baseline["to"]) == (current["from"], current["to"]):
         return None
     out: dict[str, Any] = {"metric_id": metric_id, "direction": direction, "baseline": baseline, "current": current}
+    relative_change = _coerce_relative_change(raw.get("relative_change"))
+    if relative_change is not None:
+        out["relative_change"] = relative_change
     if isinstance(raw.get("label"), str) and raw["label"]:
         out["label"] = raw["label"]
     return out
@@ -469,7 +503,8 @@ SLOT_SHAPES: dict[str, SlotShape] = {
         _coerce_purchase_date),
     "metric_trend": SlotShape("metric_trend", "target_user",
         _obj_schema("기간 대 기간 지표 증감. {metric_id, direction:'increase'|'decrease', "
-                    "baseline:{from:'YYYYMMDD',to:'YYYYMMDD'}, current:{from,to}} — baseline 이 기준 기간, "
+                    "baseline:{from:'YYYYMMDD',to:'YYYYMMDD'}, current:{from,to}, "
+                    "relative_change?:{unit:'percent',comparisons:[{operator,value}]}} — baseline 이 기준 기간, "
                     "current 가 비교 기간이다('2월 대비 3월 증가' → baseline=2월, current=3월). 연도 필수."),
         _coerce_metric_trend, allowed_key="aggregate_metrics"),
     "purchase_object": SlotShape("purchase_object", "target_user",
