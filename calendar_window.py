@@ -12,6 +12,10 @@
     절대 창 := {from, to, label}      # 달력상 확정된 구간. YYYYMMDD CHAR(8) 비교용.
     상대 창 := {value, unit, min_days} # 기준일로부터 거슬러 세는 구간.
 
+한 문장에 창이 둘 이상 나오는 표현('2019년 2월과 3월', '2019년 1분기 대비 2분기')도 이 문법이 소유한다 —
+parse_calendar_windows 가 등장 순서대로 전부 돌려주고, parse_calendar_window 는 그중 하나를 고르는
+얇은 래퍼다. 기간 대 기간 비교(증감) 같은 다중 창 소비자는 전자를 쓴다.
+
 순수 모듈 불변식: graph_rag 를 import 하지 않는다. 도메인 게이트(구매 신호 여부 등)와 물리 매핑은
 호출자가 소유한다 — 이 모듈은 '언제'만 읽고 '무엇에 대한 언제'인지는 모른다.
 """
@@ -29,14 +33,29 @@ import targeting_ir
 # 반기/분기 → 월 범위. 상반기=1~6월, 하반기=7~12월, N분기=(N-1)*3+1 부터 3개월.
 QUARTER_MONTH_RANGES = {1: (1, 3), 2: (4, 6), 3: (7, 9), 4: (10, 12)}
 
-_YMD_KO_RE = re.compile(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")
-_YMD_DELIM_RE = re.compile(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})")
-_YM_KO_RE = re.compile(r"(\d{4})\s*년\s*(\d{1,2})\s*월")
-# 뒤에 일자 구분자가 없을 때만 '그 달 전체'다(2019-03-05 를 2019-03 으로 읽지 않기 위함).
-_YM_DELIM_RE = re.compile(r"(\d{4})[-./](\d{1,2})(?![-./]?\d)")
-_YEAR_RE = re.compile(r"(\d{4})\s*년(?!\s*\d{1,2}\s*월)")
 _ANY_YEAR_RE = re.compile(r"(\d{4})\s*년")
 _QUARTER_RE = re.compile(r"([1-4])\s*(?:사)?분기")
+
+# 달력 토큰 스캐너(단일 정규식, 좁은 표현 우선 순서). 파이썬 정규식은 같은 시작 위치에서 앞선 대안을
+# 먼저 채택하므로, 이 열거 순서가 곧 '일 > 월 > 분기 > 반기 > 연' 구체성 우선순위다 — '2019년 3월'이
+# 연 전체로 뭉개지지 않는다. 뒤쪽 세 대안(연도 생략 월/분기/반기)은 '2019년 2월과 3월'의 '3월'처럼
+# 연도가 생략된 두 번째 창을 잡기 위한 것으로, 앞선 명시 연도를 상속할 때만 창이 된다.
+_CAL_TOKEN_RE = re.compile(
+    r"(?P<ymd>(?P<ymd_y>\d{4})\s*년\s*(?P<ymd_m>\d{1,2})\s*월\s*(?P<ymd_d>\d{1,2})\s*일)"
+    r"|(?P<ymdd>(?P<ymdd_y>\d{4})[-./](?P<ymdd_m>\d{1,2})[-./](?P<ymdd_d>\d{1,2}))"
+    r"|(?P<ym>(?P<ym_y>\d{4})\s*년\s*(?P<ym_m>\d{1,2})\s*월)"
+    # 뒤에 일자 구분자가 없을 때만 '그 달 전체'다(2019-03-05 를 2019-03 으로 읽지 않기 위함).
+    r"|(?P<ymd2>(?P<ymd2_y>\d{4})[-./](?P<ymd2_m>\d{1,2})(?![-./]?\d))"
+    r"|(?P<yq>(?P<yq_y>\d{4})\s*년\s*(?P<yq_q>[1-4])\s*(?:사)?분기)"
+    r"|(?P<yh>(?P<yh_y>\d{4})\s*년\s*(?P<yh_h>[상하])반기)"
+    r"|(?P<y>(?P<y_y>\d{4})\s*년)"
+    r"|(?P<m>(?P<m_m>\d{1,2})\s*월)"
+    r"|(?P<q>(?P<q_q>[1-4])\s*(?:사)?분기)"
+    r"|(?P<h>(?P<h_h>[상하])반기)"
+)
+# 창 하나의 구체성 등급(작을수록 좁다). parse_calendar_window 가 '가장 좁은 표현' 하나를 고를 때 쓴다 —
+# 여러 창이 섞인 문장에서 위치가 아니라 구체성으로 뽑던 기존 계약을 그대로 보존한다.
+_GRAIN_RANK = {"ymd": 0, "ymdd": 0, "ym": 1, "ymd2": 1, "m": 1, "yq": 2, "q": 2, "yh": 3, "h": 3, "y": 4}
 
 
 def month_last_day(year: int, month: int) -> int:
@@ -80,48 +99,112 @@ def parse_half_or_quarter_window(text: str, *, label_suffix: str = "") -> dict[s
     return None
 
 
+def _token_year(match: "re.Match[str]") -> int | None:
+    """토큰이 스스로 명시한 연도(연도 생략 토큰이면 None)."""
+    for group in ("ymd_y", "ymdd_y", "ym_y", "ymd2_y", "yq_y", "yh_y", "y_y"):
+        value = match.group(group)
+        if value is not None:
+            return int(value)
+    return None
+
+
+def _token_window(match: "re.Match[str]", year: int | None, label_suffix: str) -> dict[str, Any] | None:
+    """달력 토큰 하나 + 연도(생략 토큰은 상속받은 연도) → 절대 창. 달력상 불가능한 값이면 None."""
+    if year is None:
+        return None  # 연도를 끝내 못 정한 생략 토큰('3월' 단독)은 어느 해인지 모호 → 미해석
+    if match.group("ymd") is not None or match.group("ymdd") is not None:
+        korean = match.group("ymd") is not None
+        mo = int(match.group("ymd_m") if korean else match.group("ymdd_m"))
+        d = int(match.group("ymd_d") if korean else match.group("ymdd_d"))
+        if not (1 <= mo <= 12 and 1 <= d <= month_last_day(year, mo)):
+            return None
+        label = f"{year}년 {mo}월 {d}일" if korean else f"{year}-{mo:02d}-{d:02d}"
+        return _window(ymd(year, mo, d), ymd(year, mo, d), label, label_suffix)
+    for month_group, label_fmt in (("ym_m", "{y}년 {m}월"), ("ymd2_m", "{y}-{m:02d}"), ("m_m", "{y}년 {m}월")):
+        raw = match.group(month_group)
+        if raw is not None:
+            mo = int(raw)
+            if not 1 <= mo <= 12:
+                return None
+            return _window(
+                ymd(year, mo, 1), ymd(year, mo, month_last_day(year, mo)),
+                label_fmt.format(y=year, m=mo), label_suffix,
+            )
+    quarter_raw = match.group("yq_q") or match.group("q_q")
+    if quarter_raw is not None:
+        q = int(quarter_raw)
+        start_month, end_month = QUARTER_MONTH_RANGES[q]
+        return _window(
+            ymd(year, start_month, 1), ymd(year, end_month, month_last_day(year, end_month)),
+            f"{year}년 {q}분기", label_suffix,
+        )
+    half_raw = match.group("yh_h") or match.group("h_h")
+    if half_raw is not None:
+        if half_raw == "상":
+            return _window(ymd(year, 1, 1), ymd(year, 6, 30), f"{year}년 상반기", label_suffix)
+        return _window(ymd(year, 7, 1), ymd(year, 12, 31), f"{year}년 하반기", label_suffix)
+    return _window(ymd(year, 1, 1), ymd(year, 12, 31), f"{year}년", label_suffix)
+
+
+def _scan_calendar_windows(text: str, label_suffix: str) -> list[tuple[dict[str, Any], int, int, int]]:
+    """텍스트의 모든 달력 토큰을 (창, 구체성등급, 시작위치, 끝위치) 로 스캔한다(등장 순).
+
+    연도 생략 토큰('2019년 2월과 3월'의 '3월')은 앞서 나온 명시 연도를 상속한다. 앞에 연도가 없으면
+    문장의 첫 명시 연도로 폴백한다(기존 'YYYY년 … 상반기' 어순 허용 계약 보존). 어디에도 연도가
+    없으면 그 토큰은 창이 되지 않는다 — 연도 미명시는 여전히 미해석(오탐 방지)."""
+    if not isinstance(text, str) or not text:
+        return []
+    matches = list(_CAL_TOKEN_RE.finditer(text))
+    if not matches:
+        return []
+    fallback_year = next((y for y in (_token_year(m) for m in matches) if y is not None), None)
+    out: list[tuple[dict[str, Any], int, int, int]] = []
+    running_year: int | None = None
+    for match in matches:
+        explicit = _token_year(match)
+        if explicit is not None:
+            running_year = explicit
+        window = _token_window(match, explicit if explicit is not None else (running_year or fallback_year), label_suffix)
+        if window is not None:
+            rank = next(
+                (_GRAIN_RANK[name] for name in _GRAIN_RANK if match.group(name) is not None),
+                len(_GRAIN_RANK),
+            )
+            out.append((window, rank, match.start(), match.end()))
+    return out
+
+
+def parse_calendar_window_spans(text: str, *, label_suffix: str = "") -> list[tuple[dict[str, Any], int, int]]:
+    """절대 달력 창 + 원문 내 (시작, 끝) 위치를 등장 순서대로 돌려준다.
+
+    창 '사이'의 문구를 읽어야 하는 소비자용 — 예컨대 'A 대비 B'·'A보다 B' 의 어순 표지로 두 기간 중
+    어느 쪽이 기준인지 판정할 때 쓴다. 위치 계산이 문법(토큰 스캔)에 딸린 정보라 이 모듈이 소유한다."""
+    return [(window, start, end) for window, _rank, start, end in _scan_calendar_windows(text, label_suffix)]
+
+
+def parse_calendar_windows(text: str, *, label_suffix: str = "") -> list[dict[str, Any]]:
+    """텍스트에 나온 절대 달력 창을 등장 순서대로 전부 돌려준다(없으면 빈 리스트).
+
+    '2019년 2월과 3월'(연도 상속), '2019년 1분기 대비 2분기', '2018년 12월과 2019년 1월'처럼 창이 둘
+    이상인 표현을 소비하는 쪽(기간 대 기간 증감 비교 등)이 쓴다."""
+    return [window for window, _start, _end in parse_calendar_window_spans(text, label_suffix=label_suffix)]
+
+
 def parse_calendar_window(text: str, *, label_suffix: str = "") -> dict[str, Any] | None:
-    """절대 달력 표현을 YYYYMMDD 창 ``{from, to, label}`` 으로 읽는다(없으면 None).
+    """절대 달력 표현 하나를 YYYYMMDD 창 ``{from, to, label}`` 으로 읽는다(없으면 None).
 
     지원: 'YYYY년 M월 D일'(하루), 'YYYY년 M월'(그 달 전체), 'YYYY년'(그 해 전체),
           'YYYY-MM-DD'/'YYYY.MM.DD'/'YYYY/MM/DD'(하루), 'YYYY-MM'(그 달 전체),
           'YYYY년 상반기/하반기'(6개월), 'YYYY년 N분기(=N사분기)'(3개월).
 
-    좁은 표현부터 본다 — 일 > 월 > 반기/분기 > 연. 순서가 뒤집히면 'YYYY년 M월'이 연 전체로 뭉개진다.
+    창이 여럿이면 가장 좁은 표현을 고른다 — 일 > 월 > 분기 > 반기 > 연(동급이면 먼저 나온 것).
+    순서가 뒤집히면 'YYYY년 M월'이 연 전체로 뭉개진다.
     ``label_suffix`` 는 라벨 꼬리말(예: '구매')로, 호출자의 도메인 문맥을 라벨에만 반영한다.
     """
-    if not isinstance(text, str) or not text:
+    scanned = _scan_calendar_windows(text, label_suffix)
+    if not scanned:
         return None
-
-    m = _YMD_KO_RE.search(text)
-    if m:
-        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if 1 <= mo <= 12 and 1 <= d <= month_last_day(y, mo):
-            return _window(ymd(y, mo, d), ymd(y, mo, d), f"{y}년 {mo}월 {d}일", label_suffix)
-    m = _YMD_DELIM_RE.search(text)
-    if m:
-        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if 1 <= mo <= 12 and 1 <= d <= month_last_day(y, mo):
-            return _window(ymd(y, mo, d), ymd(y, mo, d), f"{y}-{mo:02d}-{d:02d}", label_suffix)
-    m = _YM_KO_RE.search(text)
-    if m:
-        y, mo = int(m.group(1)), int(m.group(2))
-        if 1 <= mo <= 12:
-            return _window(ymd(y, mo, 1), ymd(y, mo, month_last_day(y, mo)), f"{y}년 {mo}월", label_suffix)
-    m = _YM_DELIM_RE.search(text)
-    if m:
-        y, mo = int(m.group(1)), int(m.group(2))
-        if 1 <= mo <= 12:
-            return _window(ymd(y, mo, 1), ymd(y, mo, month_last_day(y, mo)), f"{y}-{mo:02d}", label_suffix)
-    # 반기/분기는 '그 해 전체' 폴백보다 먼저 봐야 한 해로 뭉개지지 않는다.
-    half_quarter = parse_half_or_quarter_window(text, label_suffix=label_suffix)
-    if half_quarter is not None:
-        return half_quarter
-    m = _YEAR_RE.search(text)
-    if m:
-        y = int(m.group(1))
-        return _window(ymd(y, 1, 1), ymd(y, 12, 31), f"{y}년", label_suffix)
-    return None
+    return min(scanned, key=lambda item: (item[1], item[2]))[0]  # (구체성 등급, 등장 위치)
 
 
 def calendar_window_from_parts(

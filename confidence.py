@@ -232,6 +232,20 @@ def _score_condition(
                              f"{table} 회원별 주문 집계 ({rule})", "confirmed"))
         if schema_ok:
             evidence.append(_ev("schema", f"schema_catalog.json: {table}", "주문 테이블 실재 확인", "confirmed"))
+    elif kind == "metric_trend":
+        # 기간 대 기간 지표 증감: aggregate_targets 레지스트리의 지표를 두 절대 기간으로 각각 집계해
+        # 비교한다. 지표 정의(집계 함수/컬럼)와 주문 테이블 모두 실재 근거라 확정 조건이다.
+        cfg = filters.get("aggregate_targets", {})
+        table = cfg.get("table", "CRM_SL_ORDERHEADERMALL")
+        metric_id = str(cond["value"]).split(":")[0]
+        metric = (cfg.get("metrics") or {}).get(metric_id) or {}
+        schema_ok = table in schema_cols
+        formula = metric.get("expression") or f"{metric.get('agg', 'SUM')}({metric.get('column')})"
+        evidence.append(_ev("filter_registry", "member_target_filters.json: aggregate_targets",
+                             f"{table} 회원별 {formula} 를 두 기간으로 각각 집계 후 대소 비교", "confirmed"))
+        if schema_ok:
+            evidence.append(_ev("schema", f"schema_catalog.json: {table}", "주문 테이블 실재 확인", "confirmed"))
+        value_confirmed = bool(metric)
     elif kind == "cart":
         # 장바구니 조건(보관 상태 / 보관 기간)은 cart_targets 레지스트리 + 실제 CRMDW 카트 테이블 근거다.
         # (예전엔 cart kind 분기가 없어 '확인되지 않음' 폴백으로 떨어져 근거 없이 감점됐다.)
@@ -350,6 +364,8 @@ def _score_condition(
         check_tokens = [filters.get("birthday_target", {}).get("column", "birthday").casefold()]
     elif kind in ("order_count", "order_window"):
         check_tokens = [filters.get("order_count_targets", {}).get("table", "crm_sl_orderheadermall").casefold()]
+    elif kind == "metric_trend":
+        check_tokens = [filters.get("aggregate_targets", {}).get("table", "crm_sl_orderheadermall").casefold()]
     elif kind == "campaign_response":
         check_tokens = [filters.get("campaign_response_targets", {}).get("table", "mcs_camp_mbr_rspn_ft").casefold()]
     elif kind == "free_text" and isinstance(cond["value"], str):

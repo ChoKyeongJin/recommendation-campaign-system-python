@@ -52,6 +52,7 @@ from calendar_window import (
     duration_window_candidates as _duration_window_candidates,
     month_last_day as _month_last_day,
     parse_calendar_window,
+    parse_calendar_window_spans,
     parse_duration_window as _parse_duration_window,
     parse_half_or_quarter_window,
     ymd as _ymd,
@@ -2000,6 +2001,12 @@ def _apply_entity_set_condition(query: str, plan: dict[str, Any]) -> None:
 
 def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path) -> None:
     """Attach the deterministic aggregate contract and consume audience-only misclassification."""
+    # 기간 대 기간 지표 증감(metric_trend)은 두 기간의 회원별 집계를 비교해 '대상 회원 목록'을 내는
+    # 오디언스 조건이다. 등록형 집계 계약에는 두 기간 비교 개념이 없어 이 조건을 담을 수 없으므로,
+    # 분석 라우팅이 문장을 가져가면('주문건수' 같은 지표어가 집계 질문으로 읽혀) 조건이 통째로 남아
+    # analytical_signal_dropped 로 끝난다 — 전용 빌더가 소유하는 조건이 있으면 승격하지 않는다.
+    if isinstance(plan.get("target_user"), dict) and plan["target_user"].get("metric_trend"):
+        return
     intent = analyze_analytical_intent(query)
     if not isinstance(intent, dict):
         return
@@ -2256,6 +2263,7 @@ def classify_query_complexity(query_plan: dict[str, Any]) -> str:
         target_user.get("purchase_inactivity"),       # 구매 미발생 기간(주문 집계)
         target_user.get("purchase_membership"),       # 구매 존재(선택적 최근 창, 주문 EXISTS)
         target_user.get("aggregate_conditions"),      # 누적 금액/횟수 임계값(주문 집계)
+        target_user.get("metric_trend"),              # 기간 대 기간 지표 증감(두 창 집계 비교)
         target_user.get("cart_aggregate"),            # 장바구니 개수/수량 임계값(카트 집계)
         target_user.get("cart_retention"),            # 장바구니 보관 기간(카트 담은 시점 비교)
         target_user.get("cart_type"),                 # 장바구니 유형(정기배송/픽업 등 CART_TYPE_CD)
@@ -2374,6 +2382,9 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
         # '구매 이력은 있지만 결제금액 합계 0원'(주문 있고 SUM=0)은 무주문이 아니라 결제금액 집계 =0 으로
         # 컴파일한다 — 0원 게이트보다 먼저 aggregate_conditions 를 채워 모호 미지원 처리를 피한다.
         "zero_amount_purchase": _FilterSpec(_apply_zero_amount_with_purchase_filter),
+        # 기간 대 기간 지표 증감('2019년 2월과 3월의 구매금액이 증가한')은 구매일(purchase_date)·집계 파싱
+        # 뒤에 실행해, 두 창 중 첫 창만 잡힌 단일 기간 조건을 증감 조건으로 대체한다.
+        "metric_trend": _FilterSpec(_apply_metric_trend_filter, init_key="metric_trend"),
         # '구매 횟수가 0회/없는'(공집합 COUNT=0)도 no_purchase 로 승격 — 집계(order_count '='0) 파싱 뒤에
         # 실행해 그 공집합 조건을 걷어내고 anti-join 으로 대체한다. 캠페인/기간창 문맥은 각 트랙에 양보.
         "zero_purchase_count": _FilterSpec(_apply_zero_purchase_count_filter),
@@ -2652,7 +2663,7 @@ _RULES_POST_FILTERS: tuple[str, ...] = (
     "campaign_response", "no_additional_purchase", "campaign_response_frequency", "campaign_buy_amount",
     "campaign_buy_count", "cell_rate", "children_registered", "grade_threshold", "channel_consent", "member_flag", "policy",
     "group_ranking", "region_member_count", "region_density", "member_metric_ranking", "purchase_count_ranking",
-    "zero_amount_purchase", "zero_purchase_count",
+    "zero_amount_purchase", "zero_purchase_count", "metric_trend",
 )
 _AUTO_FILTERS: tuple[str, ...] = (
     "sell_object", "dimension", "member_value", "macro_region",
@@ -2663,7 +2674,7 @@ _AUTO_FILTERS: tuple[str, ...] = (
     "cart_presence", "cart_absence", "campaign_response_frequency", "children_registered",
     "grade_threshold", "channel_consent", "member_flag", "aggregate", "purchase_count_threshold",
     "campaign_buy_amount", "campaign_buy_count", "cell_rate", "cart_aggregate", "cart_retention", "cart_type",
-    "birthday", "signup_target", "zero_amount_purchase", "zero_purchase_count",
+    "birthday", "signup_target", "zero_amount_purchase", "zero_purchase_count", "metric_trend",
 )
 
 
@@ -6155,9 +6166,10 @@ def _apply_unsupported_intent_gate(query: str, plan: dict[str, Any]) -> None:
         }
         return
 
-    # 기간 대 기간 비교(달력 '지난달 대비 이번 달' / 롤링 '최근 90일 vs 이전 90일')는 아직 미지원. 두 기간
-    # 집계를 비교하는 구조라 단일 서브쿼리로 표현 불가 — 조용한 None/전체기간 폴백 대신 명시 미지원으로 중단.
-    if _has_period_over_period_comparison(query):
+    # 기간 대 기간 비교(달력 '지난달 대비 이번 달' / 롤링 '최근 90일 vs 이전 90일')는 아직 미지원. 상대
+    # 표현은 창을 확정할 앵커가 없어 단일 SQL 로 표현 불가 — 조용한 None/전체기간 폴백 대신 명시 미지원.
+    # (절대 달력 창 두 개는 metric_trend 가 실제로 컴파일하므로 그쪽이 성립하면 이 게이트는 양보한다.)
+    if not target_user.get("metric_trend") and _has_period_over_period_comparison(query):
         plan["unsupported"] = {
             "reason": "period_over_period_comparison_not_supported",
             "message": "'지난달 대비 이번 달'·'최근 90일 대비 이전 90일'처럼 두 기간의 집계를 비교하는 조건은 아직 지원되지 않습니다.",
@@ -6234,6 +6246,27 @@ def _apply_unsupported_intent_gate(query: str, plan: dict[str, Any]) -> None:
             ),
         }
         return
+
+    # 지표 증감을 요구했는데(방향어 + 등록 지표) 비교할 두 기간이 확정되지 않은 경우 → 미지원.
+    # metric_trend 가 컴파일됐으면 이미 위 게이트에서 양보했으므로 여기 오는 건 '기준 기간이 없는 증감'
+    # ('2019년 3월 구매금액이 증가한 고객', '최근 3개월 구매금액이 늘어난 고객')뿐이다. 그대로 두면 단일
+    # 기간 필터/전 기간 집계로 조용히 축소돼 증감이 통째로 사라진 그럴듯한 오답이 나간다.
+    if not target_user.get("metric_trend"):
+        trend_signal = _metric_trend_signal(query)
+        if trend_signal is not None:
+            arrow = "증가" if trend_signal["direction"] == "increase" else "감소"
+            plan["unsupported"] = {
+                "reason": "metric_trend_periods_unresolved",
+                "message": (
+                    f"'{arrow}'를 판정하려면 비교할 두 기간이 필요한데 프롬프트에서 확정되지 않았습니다 "
+                    "— 현재는 연도가 명시된 절대 달력 기간 두 개(예: '2019년 2월과 3월', '2019년 1분기 대비 2분기')만 비교할 수 있습니다."
+                ),
+                "clarification": (
+                    f"비교할 두 기간을 연도까지 명시해 주시겠어요? 예: '2019년 2월 대비 3월 구매금액이 {arrow}한 고객'."
+                ),
+                "metric_id": trend_signal["metric_id"],
+            }
+            return
 
     # 기간 스코프 랭킹('최근 3개월/2025년/지난달 <지표> 높은 회원 N명') — 회원 지표 랭킹은 최신 월 스냅샷
     # (전 기간 누적) 기준이라 임의 기간을 표현하지 못한다. 스냅샷 랭킹으로 조용히 보내지 않고(오답 방지)
@@ -7328,6 +7361,90 @@ def _parse_purchase_date_period(query: str) -> dict[str, Any] | None:
 def _parse_half_or_quarter_period(query: str) -> dict[str, Any] | None:
     """'YYYY년 상반기/하반기', 'YYYY년 N분기(=N사분기)'를 ORDER_DATE 창 {from,to}로 파싱한다."""
     return parse_half_or_quarter_window(query, label_suffix="구매")
+
+
+# ── 기간 대 기간 지표 증감(metric_trend) ────────────────────────────────────────────
+# '2019년 2월과 3월의 구매금액이 증가한 고객'처럼 두 기간의 회원별 집계를 비교하는 조건. 지표는
+# aggregate_targets 레지스트리(구매금액/주문건수/구매수량/객단가/할인금액 …)에서, 기간은 calendar_window
+# 달력 문법에서, 방향은 아래 어휘표에서 온다 — 셋 다 데이터라 새 지표·새 달력 표현·새 증감어는 각자의
+# 단일 소스에 한 줄 추가하면 이 조건이 자동으로 얻는다(케이스별 파서를 늘리지 않는다).
+_METRIC_TREND_DIRECTIONS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # 방향어는 '많은/큰' 같은 단순 비교 형용사를 피해 증감 활용형만 담는다 — 랭킹('구매 금액 높은 고객')을
+    # 증감으로 오인하면 전혀 다른 트랙으로 새기 때문이다.
+    ("increase", ("증가", "증대", "늘어", "늘었", "늘고", "늘려", "상승", "커졌", "커진", "많아졌", "많아진", "올랐", "오른", "성장")),
+    ("decrease", ("감소", "축소", "줄어", "줄었", "줄고", "하락", "작아졌", "작아진", "적어졌", "적어진", "떨어졌", "떨어진")),
+)
+# 두 창 사이에 놓이면 '앞이 기준(baseline), 뒤가 비교 대상(current)'임을 확정하는 표지. 한국어에서
+# 'A 대비 B'·'A보다 B' 는 둘 다 A 가 기준이다. 표지가 창 사이에 없으면 시간 순(이른 창=기준)으로 읽는다
+# ('3월이 2월보다 증가' → 기준 2월).
+_TREND_ORDER_MARKER_RE = re.compile(r"대비|보다|에서|→|->")
+
+
+def _detect_metric_trend_direction(compact: str) -> str | None:
+    """증감 방향어 감지 → 'increase'|'decrease'(없으면 None). 공백 제거 텍스트를 받는다."""
+    for direction, terms in _METRIC_TREND_DIRECTIONS:
+        if any(term in compact for term in terms):
+            return direction
+    return None
+
+
+def _metric_trend_signal(query: str) -> dict[str, Any] | None:
+    """증감 비교의 '요구'(방향 + 지표)만 읽는다 — 기간이 몇 개든 무관. 기간이 모자라 컴파일하지 못할 때
+    조용히 단일 기간 필터로 뭉개지 않고 명시 미지원으로 닫기 위해 게이트가 이 신호를 쓴다."""
+    compact = query.replace(" ", "")
+    direction = _detect_metric_trend_direction(compact)
+    if direction is None:
+        return None
+    metric_id = _find_aggregate_metric_id_in(compact) or _find_aggregate_metric_id_in(query)
+    if metric_id is None:
+        return None
+    return {"direction": direction, "metric_id": metric_id}
+
+
+def _parse_metric_trend(query: str) -> dict[str, Any] | None:
+    """'<기간A> 대비 <기간B> <지표>가 증가/감소한' 을 기간 대 기간 지표 비교 조건으로 파싱한다.
+
+    반환 {metric_id, direction, baseline{from,to,label}, current{from,to,label}, label}. 절대 달력 창이
+    둘 이상 잡히고 지표·방향어가 함께 있을 때만 발동한다(상대 표현 '지난달 대비 이번 달'·'최근 90일 대비
+    이전 90일'은 여전히 미지원 게이트가 소유 — 창을 확정할 앵커가 없다)."""
+    signal = _metric_trend_signal(query)
+    if signal is None:
+        return None
+    spans = parse_calendar_window_spans(query)
+    if len(spans) < 2:
+        return None
+    (first, _first_start, first_end), (second, second_start, _second_end) = spans[0], spans[1]
+    # 두 창 사이에 '대비/보다' 표지가 있으면 어순이 기준·비교를 확정한다('A 대비 B'·'A보다 B' 는 A 가
+    # 기준). 표지가 없으면 시간 순으로 읽는다('3월이 2월보다 증가' → 기준 2월).
+    if _TREND_ORDER_MARKER_RE.search(query[first_end:second_start]):
+        baseline, current = first, second
+    else:
+        baseline, current = sorted((first, second), key=lambda w: w["from"])
+    if (baseline["from"], baseline["to"]) == (current["from"], current["to"]):
+        return None  # 같은 창끼리 비교는 의미 없음
+    arrow = "증가" if signal["direction"] == "increase" else "감소"
+    return {
+        "metric_id": signal["metric_id"],
+        "direction": signal["direction"],
+        "baseline": baseline,
+        "current": current,
+        "label": f"{baseline['label']}→{current['label']} {arrow}",
+    }
+
+
+def _apply_metric_trend_filter(query: str, plan: dict[str, Any]) -> None:
+    """기간 대 기간 지표 증감 조건을 target_user.metric_trend 로 세팅한다.
+
+    purchase_date 파싱 뒤에 실행한다 — 같은 문장의 두 창 중 첫 창만 구매일 조건으로 잡혀 있으므로,
+    증감 조건이 성립하면 그 슬롯을 걷어내 두 기간이 모두 SQL 에 반영되게 한다(형제 필터의 '뒤에 실행해
+    이중/오파싱을 걷어낸다' 관례와 동일). 성립하지 않으면 아무것도 건드리지 않는다."""
+    trend = _parse_metric_trend(query)
+    if trend is None:
+        return
+    target_user = plan.setdefault("target_user", {})
+    target_user["metric_trend"] = trend
+    # 첫 창만 담긴 단일 구매일 조건은 증감 조건이 대표한다(그대로 두면 '2월만 조회'로 축소된다).
+    target_user.pop("purchase_date", None)
 
 
 # 구매 날짜 타겟 감지는 slot_setter(_parse_purchase_date_period)가 담당한다(레지스트리 "purchase_date").
@@ -14614,6 +14731,9 @@ def _sql_target_builder_registry() -> tuple[tuple[Any, frozenset[str]], ...]:
         # AND 결합된다(fact_join 아님). 이 빌더는 반응이 '주 신호'일 때만 잡고 fact_join 조건에는 양보한다.
         (build_campaign_response_targets_sql_candidate, frozenset({"campaign_responses"})),
         (build_purchase_count_ranking_sql_candidate, frozenset({"purchase_count_ranking"})),
+        # 기간 대 기간 지표 증감(두 기간 집계 비교). 구매 이력/집계 빌더보다 먼저 — 같은 문장의 기간·상품
+        # 표현이 단일 기간 필터로 새면 '증감' 자체가 통째로 사라진 그럴듯한 SQL 이 나간다.
+        (build_metric_trend_targets_sql_candidate, frozenset({"metric_trend"})),
         # "○○ 구매/구입한 고객"(상품 LIKE) + 절대 날짜 구매창(ORDER_DATE BETWEEN).
         (build_purchase_history_targets_sql_candidate, frozenset({"purchase_object", "purchase_date"})),
         # 첫 구매/재구매/무구매(주문수 집계) + 구매 미발생 기간(anti-join). 지원 집합 밖 행동
@@ -14725,6 +14845,7 @@ _UNSUPPORTED_CONDITION_LABELS = {
     "target_user.birthday_target": "생일 조건",
     "target_user.signup_target": "가입일 조건",
     "target_user.purchase_date": "구매일 조건",
+    "target_user.metric_trend": "기간 대비 지표 증감 조건",
     "target_user.cart_type": "장바구니 유형 조건",
     "target_user.balance_conditions": "잔액 조건",
     "target_user.campaign_responses": "캠페인 반응 조건",
@@ -16111,6 +16232,151 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
     if product_scope_applied:
         covered.add("target_user.purchase_object")
         covered.add("target_user.purchase_objects")
+    dropped = [path for path in compiled["unsupported"] if path not in covered]
+    candidate["dropped_conditions"] = dropped
+    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]
+    return candidate
+
+
+# 기간 대 기간 증감에 쓸 수 있는 집계 함수. 두 기간 값을 대소 비교하는 조건이라 '크기'가 의미 있는
+# 수치 지표만 허용한다 — MIN/MAX(ORDER_DATE) 같은 날짜 지표는 증감 대상이 아니므로 제외한다.
+_METRIC_TREND_ELIGIBLE_AGGS = frozenset({"SUM", "COUNT", "AVG"})
+_METRIC_TREND_CURRENT_ALIAS = "M"
+_METRIC_TREND_BASELINE_ALIAS = "M2"
+_METRIC_TREND_VALUE_COLUMN = "TREND_VALUE"
+
+
+def _metric_trend_window_subquery(
+    config: dict[str, Any], metric: dict[str, Any], window: dict[str, Any], alias: str,
+    product_scope: dict[str, Any] | None = None,
+) -> str | None:
+    """한 기간의 회원별 지표 값을 내는 파생 테이블. 지표 해석 불가/기간 불량이면 None.
+
+    기간별로 파생 테이블을 하나씩 만들어 조인하는 형태라, 집계식 지표(객단가처럼 SUM/COUNT 비율)도
+    agg+column 지표와 똑같이 다뤄진다 — 집계식 안에 기간 CASE 를 밀어 넣지 않아도 되기 때문이다."""
+    join_column = config.get("join_column", "MEMBER_NO")
+    date_column = config.get("date_column", "ORDER_DATE")
+    use_scope = bool(product_scope)
+    # 상품 스코프가 있으면 상품 단위 테이블(D)+상품 마스터(P) 조인 위에서 집계한다(집계 빌더와 같은 표현).
+    table = _PRODUCT_SCOPE_TABLE if use_scope else (metric.get("table") or config.get("table", "CRM_SL_ORDERHEADERMALL"))
+    tp = "D." if use_scope else ""
+
+    expression = metric.get("expression")
+    if isinstance(expression, str) and expression.strip():
+        agg_expr = _render_aggregate_expression(expression, alias_prefix=tp)
+        if agg_expr is None:
+            return None
+    else:
+        column = metric.get("column")
+        agg = str(metric.get("agg", "SUM")).upper()
+        if not (isinstance(column, str) and column) or agg not in _METRIC_TREND_ELIGIBLE_AGGS:
+            return None
+        agg_expr = f"COUNT(DISTINCT {tp}{column})" if metric.get("distinct") else f"{agg}({tp}{column})"
+
+    date_between = _purchase_date_predicate(window, alias=("D" if use_scope else None), column=date_column)
+    if date_between is None:
+        return None
+    where = [f"{tp}{join_column} IS NOT NULL", date_between]
+    from_lines = [f"    FROM {table}" + (" D" if use_scope else "")]
+    if use_scope:
+        from_lines.append("         INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID")
+        where.append(_purchase_object_match_predicate(product_scope["value"], product_scope.get("kind"), "P"))
+    return "\n".join([
+        "(",
+        f"    SELECT {tp}{join_column}, {agg_expr} AS {_METRIC_TREND_VALUE_COLUMN}",
+        *from_lines,
+        f"    WHERE {' AND '.join(where)}",
+        f"    GROUP BY {tp}{join_column}",
+        f") {alias}",
+    ])
+
+
+def build_metric_trend_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """기간 대 기간 지표 증감('2019년 2월과 3월의 구매금액이 증가한 고객')을 두 기간 집계 비교로 추출한다.
+
+    기준 기간(baseline)과 비교 기간(current)의 회원별 집계를 각각 파생 테이블로 만들어 회원 기준 테이블에
+    조인하고, 방향에 맞춰 두 값을 비교한다. 값이 있어야 하는 쪽(증가면 current, 감소면 baseline)은 INNER
+    JOIN, 반대쪽은 LEFT JOIN + COALESCE(...,0) 이다 — '한쪽 기간엔 주문이 아예 없던' 회원도 증감 판정에
+    포함하기 위해서다(2월 무주문 → 3월 구매는 증가). 지표는 aggregate_targets 레지스트리가 소유하므로
+    구매금액·주문건수·구매수량·객단가 등 등록된 어떤 지표에도 같은 형태가 적용된다."""
+    target_user = query_plan.get("target_user", {})
+    trend = target_user.get("metric_trend")
+    if not isinstance(trend, dict):
+        return None
+    config = _aggregate_targets_config()
+    metric = config.get("metrics", {}).get(trend.get("metric_id"))
+    baseline, current = trend.get("baseline"), trend.get("current")
+    if not (isinstance(metric, dict) and isinstance(baseline, dict) and isinstance(current, dict)):
+        return None
+
+    # 상품 스코프('기저귀 구매금액이 2월 대비 3월 증가')는 집계 대상 주문을 그 상품으로 좁힌다. 상품이 여럿
+    # 나열된 경우 '합산 증감'인지 '상품별 각각 증감'인지 문장만으로 갈리지 않으므로 명시 미지원으로 닫는다.
+    product_scopes = _target_purchase_objects(target_user)
+    if len(product_scopes) > 1:
+        query_plan["unsupported"] = {
+            "reason": "metric_trend_multi_product_scope_unsupported",
+            "message": "여러 상품을 나열한 기간 대비 증감 조건은 아직 지원되지 않습니다(합산 증감인지 상품별 증감인지 모호).",
+            "clarification": "상품을 하나만 지정하거나, 상품별로 조건을 나눠 주시겠어요?",
+        }
+        return None
+    product_scope = product_scopes[0] if product_scopes else None
+
+    current_sql = _metric_trend_window_subquery(config, metric, current, _METRIC_TREND_CURRENT_ALIAS, product_scope)
+    baseline_sql = _metric_trend_window_subquery(config, metric, baseline, _METRIC_TREND_BASELINE_ALIAS, product_scope)
+    if current_sql is None or baseline_sql is None:
+        # 날짜 지표(MIN/MAX ORDER_DATE)·요약 전용 지표처럼 기간 증감으로 표현할 수 없는 지표 → 명시 미지원.
+        query_plan["unsupported"] = {
+            "reason": "metric_trend_metric_unsupported",
+            "message": f"지표 '{trend.get('metric_id')}' 는 기간 대비 증감으로 집계할 수 없습니다(수치 집계 지표만 지원).",
+            "clarification": "구매 금액·주문 건수·구매 수량처럼 수치로 합산되는 지표로 지정해 주시겠어요?",
+            "metric_id": trend.get("metric_id"),
+        }
+        return None
+
+    join_column = config.get("join_column", "MEMBER_NO")
+    member_key = _member_key_column()
+    cur = f"{_METRIC_TREND_CURRENT_ALIAS}.{_METRIC_TREND_VALUE_COLUMN}"
+    base = f"{_METRIC_TREND_BASELINE_ALIAS}.{_METRIC_TREND_VALUE_COLUMN}"
+    if trend.get("direction") == "decrease":
+        # 감소: 기준 기간에 값이 있어야 줄어들 수 있다(비교 기간은 무주문=0 도 감소).
+        from_lines = [
+            f"     INNER JOIN {baseline_sql} ON B.{member_key} = {_METRIC_TREND_BASELINE_ALIAS}.{join_column}",
+            f"     LEFT JOIN {current_sql} ON B.{member_key} = {_METRIC_TREND_CURRENT_ALIAS}.{join_column}",
+        ]
+        comparison = f"COALESCE({cur}, 0) < {base}"
+    else:
+        from_lines = [
+            f"     INNER JOIN {current_sql} ON B.{member_key} = {_METRIC_TREND_CURRENT_ALIAS}.{join_column}",
+            f"     LEFT JOIN {baseline_sql} ON B.{member_key} = {_METRIC_TREND_BASELINE_ALIAS}.{join_column}",
+        ]
+        comparison = f"{cur} > COALESCE({base}, 0)"
+
+    compiled = compile_member_target_conditions(query_plan)
+    where_clauses = [comparison, *compiled["predicates"]]
+    if not compiled["forces_state"]:
+        where_clauses.extend(_member_policy_predicates(query_plan))
+
+    select_columns = ["DISTINCT " + _member_key_select(), _member_grade_select()]
+    labels = [*compiled["labels"], trend.get("label") or str(trend.get("metric_id"))]
+    select_columns.append(_sql_quote(",".join(_unique_strings([label for label in labels if label]))) + " AS segment_label")
+    objective = query_plan.get("campaign_constraints", {}).get("objective")
+    if objective:
+        select_columns.append(_sql_quote(objective) + " AS objective")
+
+    sql = "\n".join([
+        "SELECT " + ", ".join(select_columns),
+        _member_from_clause(),
+        *from_lines,
+        "WHERE " + "\n  AND ".join(_unique_strings(where_clauses)),
+    ])
+    candidate = _sql_candidate(
+        "sql_template:metric_trend_targets", "기간 대비 지표 증감 타겟 추출 SQL 템플릿(CRMDW)", 1.0,
+        sql, _template_tables(sql), "sql_template",
+    )
+    # 이 템플릿이 실제로 커버하는 조건은 dropped(부분추출 고지)에서 뺀다.
+    covered = {"target_user.metric_trend", "target_user.purchase_date"}
+    if product_scope:
+        covered.update({"target_user.purchase_object", "target_user.purchase_objects"})
     dropped = [path for path in compiled["unsupported"] if path not in covered]
     candidate["dropped_conditions"] = dropped
     candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]

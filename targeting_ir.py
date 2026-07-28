@@ -304,6 +304,31 @@ def _coerce_purchase_date(raw: Any, *, allowed: Any = None) -> dict[str, Any] | 
     return out
 
 
+def _coerce_metric_trend(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
+    """metric_trend: {metric_id, direction, baseline{from,to}, current{from,to}, label?}.
+
+    두 기간이 모두 절대 창(연도 포함 YYYYMMDD)으로 확정돼야 한다 — 한쪽이라도 비면 증감을 판정할 수
+    없으므로 슬롯을 만들지 않는다(단일 기간 조건으로 조용히 축소되는 것보다 미설정이 낫다)."""
+    if not isinstance(raw, dict):
+        return None
+    metric_id = raw.get("metric_id")
+    direction = str(raw.get("direction", "")).strip().casefold()
+    if not (isinstance(metric_id, str) and metric_id) or direction not in ("increase", "decrease"):
+        return None
+    if isinstance(allowed, (set, frozenset, dict)) and metric_id not in allowed:
+        return None
+    baseline = _coerce_purchase_date(raw.get("baseline"))
+    current = _coerce_purchase_date(raw.get("current"))
+    if baseline is None or current is None:
+        return None
+    if (baseline["from"], baseline["to"]) == (current["from"], current["to"]):
+        return None
+    out: dict[str, Any] = {"metric_id": metric_id, "direction": direction, "baseline": baseline, "current": current}
+    if isinstance(raw.get("label"), str) and raw["label"]:
+        out["label"] = raw["label"]
+    return out
+
+
 def _coerce_string(raw: Any, *, allowed: Any = None) -> str | None:
     return raw.strip() if isinstance(raw, str) and raw.strip() else None
 
@@ -418,6 +443,11 @@ SLOT_SHAPES: dict[str, SlotShape] = {
     "purchase_date": SlotShape("purchase_date", "target_user",
         _obj_schema("절대 구매 날짜창. {from:'YYYYMMDD', to:'YYYYMMDD'} (연도 필수)."),
         _coerce_purchase_date),
+    "metric_trend": SlotShape("metric_trend", "target_user",
+        _obj_schema("기간 대 기간 지표 증감. {metric_id, direction:'increase'|'decrease', "
+                    "baseline:{from:'YYYYMMDD',to:'YYYYMMDD'}, current:{from,to}} — baseline 이 기준 기간, "
+                    "current 가 비교 기간이다('2월 대비 3월 증가' → baseline=2월, current=3월). 연도 필수."),
+        _coerce_metric_trend, allowed_key="aggregate_metrics"),
     "purchase_object": SlotShape("purchase_object", "target_user",
         {"type": "string", "description": "구매한 상품/브랜드 자유 텍스트(부분일치)."},
         _coerce_string),
@@ -737,6 +767,20 @@ CONDITION_SPECS: tuple[ConditionSpec, ...] = (
     ConditionSpec(
         kind="aggregate_conditions", fact="order", fact_join=True, signals_target=True,
         extract=_extract_aggregate_conditions,
+    ),
+    # 기간 대 기간 지표 증감('2019년 2월과 3월의 구매금액이 증가한'). 임계값 조건(aggregate_conditions)과
+    # 달리 피연산자가 리터럴이 아니라 '다른 기간의 같은 집계'라 두 파생 테이블을 비교해야 한다 → 전용
+    # 팩트조인 빌더 소유. 단일 기간 집계로 분해하면 증감이 통째로 사라지므로 양보하지 않는다.
+    ConditionSpec(
+        kind="metric_trend", fact="order", fact_join=True, signals_target=True,
+        extract=_tu_dict("metric_trend"),
+        confidence=ConfidenceMeta(
+            kind="metric_trend", category="purchase",
+            key=lambda p: "metric_trend",
+            value=lambda p: f"{p.get('metric_id')}:{p.get('direction')}",
+            ko=lambda p: p.get("label") or f"{p.get('metric_id')} 기간 대비 증감",
+            applies=lambda p: bool(p.get("metric_id") and p.get("baseline") and p.get("current")),
+        ),
     ),
     ConditionSpec(
         kind="purchase_count_ranking", fact="order", fact_join=True, signals_target=True,

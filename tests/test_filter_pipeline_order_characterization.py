@@ -30,7 +30,7 @@ _RULES_POST_SNAPSHOT = (
     "campaign_response", "no_additional_purchase", "campaign_response_frequency", "campaign_buy_amount",
     "campaign_buy_count", "cell_rate", "children_registered", "grade_threshold", "channel_consent", "member_flag", "policy",
     "group_ranking", "region_member_count", "region_density", "member_metric_ranking", "purchase_count_ranking",
-    "zero_amount_purchase", "zero_purchase_count",
+    "zero_amount_purchase", "zero_purchase_count", "metric_trend",
 )
 _AUTO_SNAPSHOT = (
     "sell_object", "dimension", "member_value", "macro_region",
@@ -41,7 +41,7 @@ _AUTO_SNAPSHOT = (
     "cart_presence", "cart_absence", "campaign_response_frequency", "children_registered",
     "grade_threshold", "channel_consent", "member_flag", "aggregate", "purchase_count_threshold",
     "campaign_buy_amount", "campaign_buy_count", "cell_rate", "cart_aggregate", "cart_retention", "cart_type",
-    "birthday", "signup_target", "zero_amount_purchase", "zero_purchase_count",
+    "birthday", "signup_target", "zero_amount_purchase", "zero_purchase_count", "metric_trend",
 )
 
 
@@ -82,6 +82,9 @@ _ORDER_DEPENDENCIES = (
     ("aggregate", "zero_purchase_count"),
     # '구매 있지만 결제 0원 → 결제금액 집계 =0' 주입도 집계 뒤(중복 결제금액 임계 방지, 0원 게이트 앞).
     ("aggregate", "zero_amount_purchase"),
+    # 기간 대 기간 증감은 구매일(purchase_date) 파싱 뒤에 실행해, 두 창 중 첫 창만 잡힌 단일 기간
+    # 조건을 증감 조건으로 대체한다(그대로 두면 '2월만 조회'로 축소된다).
+    ("purchase_date", "metric_trend"),
     # 그룹별 회원 Top-N('지역별 … N명씩')은 전역 회원 랭킹/지역밀집 랭킹보다 먼저 실행해 그룹 의도를
     # 먼저 확정한다(전역 랭킹이 '매출 높은 회원'을 가로채 그룹을 버리던 문제 방지 — 라우팅 우선순위).
     ("group_ranking", "member_metric_ranking"),
