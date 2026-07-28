@@ -1103,9 +1103,28 @@ _PURCHASE_OBJECT_QUANTIFIED_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+
+def _declared_distinct_dimension_terms() -> set[str]:
+    """aggregate_targets.metrics[*].distinct_of.terms 로 선언된 디멘션 표면어(브랜드/카테고리/…).
+
+    디멘션어는 '가짓수를 세는 축'이지 상품명이 아니다 — 상품 자유텍스트 추출/스코프에서 빼야
+    '서로 다른 카테고리 2개' 가 LIKE '%카테고리%' 오필터로 새지 않는다. 하드코딩 대신 지표 스펙에서
+    파생하므로 새 디멘션(색상·매장 등)을 metrics 에 추가하면 여기에도 자동 반영된다."""
+    terms: set[str] = set()
+    metrics = (_MEMBER_TARGET_FILTERS.get("aggregate_targets") or {}).get("metrics")
+    if not isinstance(metrics, dict):
+        return terms
+    for metric in metrics.values():
+        spec = metric.get("distinct_of") if isinstance(metric, dict) else None
+        if isinstance(spec, dict) and isinstance(spec.get("terms"), list):
+            terms.update(term for term in spec["terms"] if isinstance(term, str) and term)
+    return terms
+
+
 # 상품이 아닌 일반 명사(예: "알로루 브랜드 '상품' 구매한")가 구매 동사 바로 앞에 오면, 위 단일 토큰
 # 캡처가 그 일반명사를 상품명으로 오인해 LIKE '%상품%' 같은 무의미하게 넓은 매칭을 만든다.
-_GENERIC_PRODUCT_NOUNS = {"상품", "제품", "물건", "품목", "굿즈", "아이템", "브랜드"}
+# 선언된 디멘션어(브랜드/카테고리…)도 같은 이유로 상품명이 아니다.
+_GENERIC_PRODUCT_NOUNS = {"상품", "제품", "물건", "품목", "굿즈", "아이템", "브랜드"} | _declared_distinct_dimension_terms()
 # 일반명사 앞의 실제 브랜드/상품명 재시도 캡처("알로루 브랜드 상품 구매한" → '알로루').
 _PURCHASE_OBJECT_BRAND_PATTERN = re.compile(
     r"(?P<object>[0-9A-Za-z가-힣_+\-]{1,40})\s+"
@@ -6611,7 +6630,17 @@ _AGG_SCOPE_PER_PRODUCT_RE = re.compile(r"동일\s*상품|같은\s*상품|동일�
 # 범위(scope) 필터: 브랜드/카테고리. '특정/어떤/모든' 등은 값 미지정 자리표시자다.
 _BRAND_SCOPE_RE = re.compile(r"(?P<val>[가-힣A-Za-z0-9]+)\s*브랜드")
 _CATEGORY_SCOPE_RE = re.compile(r"(?P<val>[가-힣A-Za-z0-9]+)\s*카테고리")
+_SCOPE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (("brand", _BRAND_SCOPE_RE), ("category", _CATEGORY_SCOPE_RE))
 _SCOPE_PLACEHOLDER_VALUES = {"특정", "어떤", "모든", "해당", "일부", "각", "그", "이", "저", "무슨", "어느", "임의"}
+# '서로 다른/여러/다양한 <디멘션>'의 수식어는 그 디멘션의 **값**이 아니라 '가짓수를 센다'는 표지다. 값
+# 자리에 이 수식어가 잡히면 scope 로 쓰지 않는다('서로 다른 브랜드' → BRAND_NAME='다른' 오필터 방지).
+# 자리표시자('특정 브랜드')와 달리 clarification 대상도 아니다 — 애초에 값을 묻는 표현이 아니기 때문이다.
+_SCOPE_DISTINCT_MODIFIERS = {"다른", "여러", "다양", "다양한", "각기", "각각", "가지각색", "서로"}
+# 디멘션 '가짓수(distinct)' 의도 표지 — 지표 스펙의 distinct_of 게이트에 쓴다.
+_DISTINCT_INTENT_RE = re.compile(r"서로\s*다른|각기\s*다른|각각\s*다른|여러\s*가지|여러|다양한|가짓수|종류별|서로다른")
+# 가짓수를 셀 때 함께 쓰이는 일반 계수 단위. distinct 디멘션 지표는 이 단위들을 단위 불일치로 보지 않는다
+# ('브랜드 3개'의 '개'는 수량 단위가 아니라 가짓수 계수 단위다).
+_GENERIC_COUNT_UNITS = frozenset({"개", "가지", "종", "종류", "품목"})
 
 
 def _clause_primary_unit(clause: str) -> str | None:
@@ -6632,14 +6661,19 @@ def _extract_aggregation_scope(clause: str) -> tuple[str, str]:
 
 
 def _clause_scope(clause: str) -> dict[str, str]:
-    """브랜드/카테고리 범위 필터를 뽑는다(값이 자리표시자 '특정'이면 값 미지정으로 표시)."""
+    """브랜드/카테고리 범위 필터를 뽑는다(값이 자리표시자 '특정'이면 값 미지정으로 표시).
+
+    '서로 다른/여러/다양한 <디멘션>'처럼 값 자리가 가짓수 수식어면 scope 로 쓰지 않는다 — 그 절은 디멘션을
+    필터가 아니라 **세는 축**으로 쓰는 것이므로 distinct 디멘션 지표(distinct_of)가 가져간다."""
     scope: dict[str, str] = {}
-    brand = _BRAND_SCOPE_RE.search(clause)
-    if brand is not None:
-        scope["brand"] = brand.group("val")
-    category = _CATEGORY_SCOPE_RE.search(clause)
-    if category is not None:
-        scope["category"] = category.group("val")
+    for key, pattern in _SCOPE_PATTERNS:
+        match = pattern.search(clause)
+        if match is None:
+            continue
+        value = match.group("val")
+        if value in _SCOPE_DISTINCT_MODIFIERS:
+            continue
+        scope[key] = value
     return scope
 
 
@@ -6655,9 +6689,62 @@ def _metric_match_text(value: str) -> str:
     return "".join(value.split()).casefold()
 
 
-def _score_metric_for_clause(clause: str, metric: dict[str, Any], unit: str | None) -> int:
+def _distinct_dimension_spec(metric: dict[str, Any]) -> dict[str, Any] | None:
+    """지표가 '어떤 디멘션의 가짓수'인지 선언한 스펙(distinct_of)을 반환한다(아니면 None).
+
+    스펙: {"terms": [디멘션 표면어…], "scope_key": 같은 디멘션의 scope 필터 키(선택),
+           "implicit": true 면 '서로 다른' 같은 표지 없이 디멘션어만 나와도 가짓수로 본다}."""
+    spec = metric.get("distinct_of")
+    if isinstance(spec, dict) and isinstance(spec.get("terms"), list) and spec["terms"]:
+        return spec
+    return None
+
+
+def _score_distinct_dimension_metric(
+    clause: str, metric: dict[str, Any], spec: dict[str, Any], unit: str | None, scope_keys: frozenset[str],
+) -> int:
+    """'서로 다른 <디멘션> N개' 형 지표 점수. 다음 게이트를 모두 통과할 때만 후보가 된다:
+
+      ① 디멘션 표면어(terms)가 절에 있고,
+      ② 그 디멘션이 같은 절에서 **값 필터**(scope)로 쓰이지 않았고 — 한 디멘션은 필터이거나 세는 축이지
+         둘 다일 수 없다('나이키 브랜드 2종'의 브랜드는 필터라 브랜드 가짓수 지표가 아니다) —,
+      ③ 가짓수 의도 표지('서로 다른/여러/다양한')가 있거나, 그 디멘션이 본래 수량을 셀 수 없는 속성이라
+         디멘션어만으로 가짓수가 자명(implicit: 브랜드/카테고리는 '3개'가 곧 가짓수)일 것.
+    단위는 일반 계수 단위(개/가지/종…)와 스펙 units 를 허용하고, 그 밖의 단위(원 등)면 후보에서 뺀다.
+    지표별 파이썬 분기 없이 스펙(distinct_of)만으로 새 디멘션(색상·매장 등)을 추가할 수 있다."""
+    compact_clause = _metric_match_text(clause)
+    hit = max(
+        (term for term in spec["terms"] if isinstance(term, str) and term and _metric_match_text(term) in compact_clause),
+        key=len, default=None,
+    )
+    if hit is None:
+        return 0
+    if spec.get("scope_key") in scope_keys:
+        return 0
+    if not (spec.get("implicit") or _DISTINCT_INTENT_RE.search(clause)):
+        return 0
+    allowed_units = {u for u in metric.get("units", []) if isinstance(u, str)} | _GENERIC_COUNT_UNITS
+    if unit is not None and unit not in allowed_units:
+        return 0
+    if any(
+        isinstance(a, str) and a and _metric_match_text(a) in compact_clause
+        for a in metric.get("anti_hint_terms", [])
+    ):
+        return 0
+    # 게이트를 통과한 디멘션 가짓수는 일반 수량/금액 지표보다 항상 우세해야 한다(긴 디멘션어 우선).
+    return 120 + len(hit) * 10
+
+
+def _score_metric_for_clause(
+    clause: str, metric: dict[str, Any], unit: str | None, scope_keys: frozenset[str] = frozenset(),
+) -> int:
     """절에 대한 지표 적합도 점수. 정확·긴 별칭(+), 의미 힌트(+), 단위 일치(+)/불일치(-), 의미 충돌(-).
-    문장별 하드코딩 대신 스펙(units/hint_terms/anti_hint_terms)만으로 후보를 가른다."""
+    문장별 하드코딩 대신 스펙(units/hint_terms/anti_hint_terms)만으로 후보를 가른다.
+    distinct_of 를 선언한 '디멘션 가짓수' 지표는 전용 게이트(_score_distinct_dimension_metric)로 채점한다 —
+    '개' 같은 일반 계수 단위가 수량 지표 단위와 겹쳐 서로를 상쇄하던 문제를 스펙 수준에서 가른다."""
+    dimension_spec = _distinct_dimension_spec(metric)
+    if dimension_spec is not None:
+        return _score_distinct_dimension_metric(clause, metric, dimension_spec, unit, scope_keys)
     score = 0
     compact_clause = _metric_match_text(clause)
     alias = None
@@ -6693,13 +6780,15 @@ def _score_metric_for_clause(clause: str, metric: dict[str, Any], unit: str | No
     return score
 
 
-def _resolve_clause_metric(clause: str, metrics: dict[str, Any], unit: str | None) -> tuple[str | None, str]:
+def _resolve_clause_metric(
+    clause: str, metrics: dict[str, Any], unit: str | None, scope_keys: frozenset[str] = frozenset(),
+) -> tuple[str | None, str]:
     """절의 지표를 점수로 확정한다. 반환: (metric_id, status) — status ∈ ok/ambiguous/unresolved/none.
     도메인 문맥이 없으면 none(우리 집계 대상 아님), 문맥은 있으나 후보 없음/동점이면 unresolved/ambiguous
-    (조용한 폴백 금지 — 호출부가 clarification)."""
+    (조용한 폴백 금지 — 호출부가 clarification). scope_keys 는 같은 절에서 값 필터로 쓰인 디멘션 키다."""
     if not _AGG_DOMAIN_CONTEXT_RE.search(clause):
         return None, "none"
-    scored = [(mid, _score_metric_for_clause(clause, metric, unit)) for mid, metric in metrics.items()]
+    scored = [(mid, _score_metric_for_clause(clause, metric, unit, scope_keys)) for mid, metric in metrics.items()]
     positive = sorted([(mid, s) for mid, s in scored if s > 0], key=lambda x: x[1], reverse=True)
     if not positive:
         return None, "unresolved"
@@ -6716,6 +6805,20 @@ _AGG_WINDOW_ANCHOR_TERMS = (
 )
 
 
+def _agg_window_anchor_terms() -> tuple[str, ...]:
+    """집계 창 앵커 어휘 = 정적 도메인어 + 설정이 선언한 디멘션 표면어(metrics[*].distinct_of.terms).
+
+    앵커는 근접(±8자) 게이트라 '최근 1년 동안 서로 다른 브랜드를 3개 이상 구매한'처럼 기간과 구매 동사
+    사이에 디멘션 구가 끼면 정적 어휘만으로는 창이 앵커에서 멀어져 통째로 버려진다. 디멘션어를 앵커에
+    포함시키면 새 디멘션(색상·매장 등)을 metrics 에 추가하는 것만으로 그 창도 함께 귀속된다."""
+    terms = list(_AGG_WINDOW_ANCHOR_TERMS)
+    for metric in _aggregate_targets_config().get("metrics", {}).values():
+        spec = _distinct_dimension_spec(metric) if isinstance(metric, dict) else None
+        if spec:
+            terms.extend(term for term in spec["terms"] if isinstance(term, str) and term)
+    return tuple(dict.fromkeys(terms))
+
+
 def _aggregate_clause_time_scope(
     raw_clause: str, inactivity_days_set: frozenset[int],
 ) -> tuple[int | None, str | None, bool]:
@@ -6730,7 +6833,7 @@ def _aggregate_clause_time_scope(
     전역 first-match 를 쓰지 않아 옆 절(로그인/미접속)의 창이 이 절로 새지 않는다.
     is_lifetime=True 는 '전 기간(창 없음)'을 확정한 것이라 상위 루프가 앞 절 공유 창을 상속하지 않게 한다."""
     cumulative = _CUMULATIVE_WINDOW_MARKER_RE.search(raw_clause) is not None
-    window = _parse_duration_window(raw_clause, anchor_terms=_AGG_WINDOW_ANCHOR_TERMS)
+    window = _parse_duration_window(raw_clause, anchor_terms=_agg_window_anchor_terms())
     if window is not None:
         if cumulative and window["min_days"] in inactivity_days_set:
             return None, None, True  # 창이 옆 무주문 조건 것 → 누적 지표는 lifetime
@@ -6816,7 +6919,8 @@ def _apply_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
         if not comparisons:
             continue
         unit = _clause_primary_unit(clause)
-        metric_id, status = _resolve_clause_metric(clause, metrics, unit)
+        # 같은 절에서 값 필터로 쓰인 디멘션(scope)은 가짓수 축이 될 수 없다 — 리졸버에 함께 넘긴다.
+        metric_id, status = _resolve_clause_metric(clause, metrics, unit, frozenset(scope))
         # 유효 창: 절 자체 창 > (lifetime 확정이면 창 없음) > 앞 aggregate 지표의 공유 창 상속.
         # 공유 창('최근 90일 동안 A이고 B이며 C')은 같은 문장의 연속 집계 지표에만 흐르고, lifetime(누적)
         # 절이나 로그인 등 비집계 절(last_window 를 세팅하지 않음)에서는 상속되지 않는다(도메인 간 누수 차단).
@@ -16135,7 +16239,9 @@ def _purchase_date_predicate(purchase_date: Any, alias: str | None = "D", column
 # 상품 스코프로 쓰기엔 너무 일반적인 상품 지시어(구체적 상품/브랜드가 아님). 이런 값이 상품 스코프
 # LIKE 로 새면 '%상품%' 처럼 상품명에 그 글자가 든 상품만 걸려 집계가 왜곡된다 — 집계 상품 스코프에서 뺀다.
 # ('동일 상품' grain 이 이 단어를 purchase_object 로 흘리는 비결정 추출과 무관하게 방어.)
-_GENERIC_PRODUCT_OBJECT_WORDS = frozenset({"상품", "제품", "물건", "물품", "품목", "것", "상품들", "제품들"})
+_GENERIC_PRODUCT_OBJECT_WORDS = frozenset(
+    {"상품", "제품", "물건", "물품", "품목", "것", "상품들", "제품들"} | _declared_distinct_dimension_terms()
+)
 
 
 def _target_purchase_objects(target_user: dict[str, Any]) -> list[dict[str, Any]]:
@@ -16442,7 +16548,16 @@ def _member_summary_threshold_subquery(
 
 
 _PRODUCT_SCOPE_TABLE = "CRM_SL_ORDERDETAILMALL"  # 상품 단위 컬럼(PRODUCT_ID/ORDER_QTY/PAYMENT_AMT/DC_AMT) 보유
+_PRODUCT_MASTER_TABLE = "CRM_CM_PRODUCT"         # 상품 속성(BRAND_NAME/CATEGORY*) 보유
 _AGG_GRAIN_COLUMN = {"per_order": "ORDER_ID", "per_product": "PRODUCT_ID"}
+
+
+def _metric_column_on_product(metric: dict[str, Any]) -> bool:
+    """지표의 집계 컬럼이 주문 상세가 아니라 상품 마스터(CRM_CM_PRODUCT)에 있는지 — 스펙 선언으로 판정한다
+    (column_table: "product"). 브랜드명/카테고리명처럼 상품 속성을 집계하는 지표를 파이썬 분기 없이 얹기
+    위한 스위치다. 주문 상세에 이미 있는 컬럼(BRAND_ID 등)은 선언하지 않아 조인 없이 계산된다."""
+    declared = metric.get("column_table")
+    return isinstance(declared, str) and declared.strip().lower() in {"product", _PRODUCT_MASTER_TABLE.lower()}
 
 
 def _scope_predicates(scope: dict[str, Any], alias: str) -> list[str] | None:
@@ -16496,15 +16611,20 @@ def _aggregate_member_subquery(
         if summary_sql is not None:
             return summary_sql
 
+    # 지표 컬럼이 상품 마스터(브랜드명/카테고리명 등)에 있으면 scope 가 없어도 상품 마스터를 조인한다.
+    metric_on_product = _metric_column_on_product(metric)
+    needs_product_join = needs_scope or metric_on_product
     # scope/grain 이 있으면 상품 단위 테이블(D)로 계산한다(PRODUCT_ID/ORDER_QTY 등 보유). 별칭 접두어 결정.
-    table = _PRODUCT_SCOPE_TABLE if (needs_scope or aggregation_scope == "per_product") else (metric.get("table") or config.get("table", "CRM_SL_ORDERHEADERMALL"))
-    use_alias = needs_scope
+    table = _PRODUCT_SCOPE_TABLE if (needs_product_join or aggregation_scope == "per_product") else (metric.get("table") or config.get("table", "CRM_SL_ORDERHEADERMALL"))
+    use_alias = needs_product_join
     tp = "D." if use_alias else ""
+    # 회원키/기간/grain 은 주문 상세(D), 지표 컬럼만 상품 마스터(P) — 접두어를 분리해 소유 테이블을 지킨다.
+    mp = "P." if metric_on_product else tp
 
     # ②/③ 집계식/agg+column.
     expression = metric.get("expression")
     if isinstance(expression, str) and expression.strip():
-        agg_expr = _render_aggregate_expression(expression, alias_prefix=tp)
+        agg_expr = _render_aggregate_expression(expression, alias_prefix=mp)
         if agg_expr is None:
             return None
     else:
@@ -16512,20 +16632,21 @@ def _aggregate_member_subquery(
         if not (isinstance(column, str) and column):
             return None
         agg = str(metric.get("agg", "SUM")).upper()
-        agg_expr = f"COUNT(DISTINCT {tp}{column})" if metric.get("distinct") else f"{agg}({tp}{column})"
+        agg_expr = f"COUNT(DISTINCT {mp}{column})" if metric.get("distinct") else f"{agg}({mp}{column})"
 
     from_lines = [f"    FROM {table}" + (" D" if use_alias else "")]
+    scope_predicates: list[str] = []
     if needs_scope:
-        scope_predicates = _scope_predicates(scope, "P")
-        if scope_predicates is None:
+        resolved = _scope_predicates(scope, "P")
+        if resolved is None:
             return None  # 미지원 scope → 무효(호출부가 처리)
+        scope_predicates = resolved
         if product_scope and isinstance(product_scope.get("value"), str) and product_scope["value"]:
             scope_predicates.append(
                 _purchase_object_match_predicate(product_scope["value"], product_scope.get("kind"), "P")
             )
+    if needs_product_join:
         from_lines.append(f"         INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID")
-    else:
-        scope_predicates = []
 
     where = [f"{tp}{join_column} IS NOT NULL"]
     if isinstance(window_days, int) and window_days > 0 and date_column:
@@ -17486,7 +17607,10 @@ def _aggregate_in_predicate_from_plan(metric_id: str, query_plan: dict[str, Any]
     )
     if condition is None:
         return None
-    table = config.get("table", "CRM_SL_ORDERHEADERMALL")
+    if _metric_column_on_product(metric):
+        return None  # 상품 마스터 조인이 필요한 지표는 이 단일 테이블 서브쿼리로 표현할 수 없다(fail-close).
+    # 지표가 자기 테이블을 선언하면 그것을 쓴다 — 주문 상세 지표(수량/상품 가짓수)를 헤더에서 세지 않게.
+    table = metric.get("table") or config.get("table", "CRM_SL_ORDERHEADERMALL")
     join_column = config.get("join_column", "MEMBER_NO")
     date_column = config.get("date_column", "ORDER_DATE")
     column = metric.get("column")

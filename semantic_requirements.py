@@ -61,6 +61,9 @@ _ENTITY_MARKER_DOMAIN = {
     "카테고리명": "category", "카테고리": "category",
 }
 _JOSA_TAIL_RE = re.compile(r"(을|를|이|가|은|는|인|의|와|과|도|만|에게|에서|에)$")
+# '브랜드가 3개 이상'의 '3개'는 엔티티 **이름**이 아니라 가짓수(임계값)다 — 수량은 qualifier 값에서 뺀다.
+# 숫자 + (한글 계수 단위)만 배제하므로 '3M'·'5th' 같은 실제 영문 브랜드명은 그대로 값으로 남는다.
+_QUANTITY_VALUE_RE = re.compile(r"^\d[\d,]*\s*(?:개|종|종류|가지|품목|건|회|번|명|점|장|원|%|퍼센트)?$")
 
 
 def _unique(seq: list[str]) -> list[str]:
@@ -191,6 +194,8 @@ def extract_entity_qualifier_requirements(query: str, base: dict[str, Any]) -> l
         value = _JOSA_TAIL_RE.sub("", raw)
         if len(value) < 2:
             continue
+        if _QUANTITY_VALUE_RE.match(value):
+            continue  # '브랜드가 3개 이상' = 가짓수 조건(집계 지표 소유)이지 브랜드명 한정자가 아니다
         domain = _ENTITY_MARKER_DOMAIN.get(marker, "entity")
         requirements.append(SourceRequirement(
             id=f"req_{index + 1}",

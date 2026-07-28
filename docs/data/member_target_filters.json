@@ -794,6 +794,53 @@
         "hint_terms": ["종류", "서로 다른", "종", "품목", "가지", "종수"],
         "anti_hint_terms": ["수량", "금액", "할인", "횟수"]
       },
+      "distinct_brand_count": {
+        "semantic_type": "count_distinct",
+        "agg": "COUNT",
+        "distinct": true,
+        "column": "BRAND_ID",
+        "table": "CRM_SL_ORDERDETAILMALL",
+        "ko_label": "구매 브랜드 수",
+        "distinct_of": {
+          "terms": ["브랜드"],
+          "scope_key": "brand",
+          "implicit": true
+        },
+        "synonyms": [
+          "구매 브랜드 수",
+          "브랜드 수",
+          "브랜드 종류",
+          "브랜드 가짓수",
+          "서로 다른 브랜드 수"
+        ],
+        "units": ["종", "종류", "가지", "개"],
+        "hint_terms": [],
+        "anti_hint_terms": ["금액", "할인", "수량", "횟수", "건수"]
+      },
+      "distinct_category_count": {
+        "semantic_type": "count_distinct",
+        "agg": "COUNT",
+        "distinct": true,
+        "column": "CATEGORYL_NAME",
+        "table": "CRM_SL_ORDERDETAILMALL",
+        "column_table": "product",
+        "ko_label": "구매 카테고리 수",
+        "distinct_of": {
+          "terms": ["카테고리", "품목군", "상품군"],
+          "scope_key": "category",
+          "implicit": true
+        },
+        "synonyms": [
+          "구매 카테고리 수",
+          "카테고리 수",
+          "카테고리 종류",
+          "카테고리 가짓수",
+          "서로 다른 카테고리 수"
+        ],
+        "units": ["종", "종류", "가지", "개"],
+        "hint_terms": [],
+        "anti_hint_terms": ["금액", "할인", "수량", "횟수", "건수"]
+      },
       "discount_amount": {
         "semantic_type": "sum",
         "agg": "SUM",
