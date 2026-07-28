@@ -1906,6 +1906,10 @@ def build_query_plan(
     # 분석 계약보다 먼저 확정해야 '상품 10개'가 리터럴 상품 조건으로 새지 않는다.
     _apply_entity_set_condition(query, base)
     _apply_analytical_intent(query, base, sql_schema)
+    # Structured/planner enrichment may attach a generic aggregate twin after
+    # the cart parser already claimed the same threshold. Reconcile ownership
+    # on the completed plan before coverage and delivery validation run.
+    _reconcile_cart_aggregate_ownership(base)
     _attach_query_output_contract(query, base)
     base["complexity"] = classify_query_complexity(base)
     return base
@@ -6966,6 +6970,29 @@ def _set_cart_aggregate(plan: dict[str, Any], conditions: list[dict[str, Any]]) 
     세우는 즉시 일반 집계 쪽 사본을 걷어내 임계값 소유권을 카트로 단일화한다."""
     plan.setdefault("target_user", {})["cart_aggregate"] = conditions[0] if len(conditions) == 1 else conditions
     _release_cart_twin_aggregates(plan, conditions)
+
+
+def _reconcile_cart_aggregate_ownership(plan: dict[str, Any]) -> None:
+    """Remove exact generic-aggregate twins that were attached after cart parsing.
+
+    The cart parser normally claims its metric immediately, but later planning
+    stages (notably structured-query enrichment) can append an equivalent
+    ``aggregate_conditions`` entry afterwards.  Re-run the same strict
+    metric/operator/threshold ownership check once the plan is complete so the
+    duplicate is not reported as a dropped critical condition.
+    """
+    target_user = plan.get("target_user")
+    if not isinstance(target_user, dict):
+        return
+    raw = target_user.get("cart_aggregate")
+    if isinstance(raw, dict):
+        conditions = [raw]
+    elif isinstance(raw, list):
+        conditions = [condition for condition in raw if isinstance(condition, dict)]
+    else:
+        return
+    if conditions:
+        _release_cart_twin_aggregates(plan, conditions)
 
 
 def _apply_cart_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:

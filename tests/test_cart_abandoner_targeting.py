@@ -101,6 +101,37 @@ def test_cart_line_count_threshold_builds_sql():
     assert "FROM ODS_MALL_OMS_CART" in cand["sql"]
 
 
+def test_late_generic_cart_twin_is_reconciled_without_hiding_mismatch():
+    plan = _plan("장바구니에 담긴 상품 종류가 3종 이상인 회원")
+    plan["target_user"]["aggregate_conditions"] = [
+        {
+            "metric_id": "distinct_product_count",
+            "operator": ">=",
+            "threshold": 3.0,
+            "window_days": None,
+            "label": "서로 다른 상품 수",
+        }
+    ]
+
+    g._reconcile_cart_aggregate_ownership(plan)
+
+    assert plan["target_user"]["aggregate_conditions"] == []
+
+    # A genuinely different interpretation must remain fail-closed instead of
+    # being silently consumed by the cart line-count condition.
+    plan["target_user"]["aggregate_conditions"] = [
+        {
+            "metric_id": "total_item_quantity",
+            "operator": ">=",
+            "threshold": 3.0,
+            "window_days": None,
+            "label": "상품 수량",
+        }
+    ]
+    g._reconcile_cart_aggregate_ownership(plan)
+    assert plan["target_user"]["aggregate_conditions"][0]["metric_id"] == "total_item_quantity"
+
+
 def test_cart_quantity_threshold_uses_sum_and_combines_member_attr():
     plan = _plan("장바구니에 담은 상품 수량이 5개 이상인 여성 회원")
     assert plan["target_user"]["cart_aggregate"]["metric"] == "cart_quantity"
