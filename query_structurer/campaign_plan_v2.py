@@ -8,7 +8,8 @@ from typing import Any
 from entity_set import derived_set_ast_error
 
 
-CAMPAIGN_QUERY_PLAN_VERSION = "2.0"
+CAMPAIGN_QUERY_PLAN_VERSION = "2.1"
+QUERY_IDENTITY_DIGEST_KEY = "query_identity_digest"
 CAMPAIGN_INTENTS = {
     "recommend_campaign",
     "find_user_segment",
@@ -38,6 +39,14 @@ class CampaignQueryPlanV2(dict[str, Any]):
         return str(self["original_query"])
 
     @property
+    def raw_query(self) -> str:
+        return str(self["raw_query"])
+
+    @property
+    def planning_query(self) -> str:
+        return str(self["planning_query"])
+
+    @property
     def normalized_query(self) -> str:
         return str(self["normalized_query"])
 
@@ -47,6 +56,26 @@ class CampaignQueryPlanV2(dict[str, Any]):
 
     def to_dict(self) -> dict[str, Any]:
         return copy.deepcopy(dict(self))
+
+
+def campaign_query_identity_digest(payload: dict[str, Any]) -> str:
+    """원문/타겟 원문/실제 파싱문의 결합 무결성 해시."""
+    identity = {
+        "raw_query": payload.get("raw_query"),
+        "original_query": payload.get("original_query"),
+        "planning_query": payload.get("planning_query"),
+    }
+    return hashlib.sha256(
+        json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def verify_campaign_query_identity(payload: dict[str, Any]) -> bool:
+    expected = payload.get(QUERY_IDENTITY_DIGEST_KEY)
+    actual = campaign_query_identity_digest(payload)
+    if not isinstance(expected, str) or expected != actual:
+        raise CampaignQueryPlanValidationError("query identity changed after initial capture")
+    return True
 
 
 def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
@@ -170,7 +199,9 @@ CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA: dict[str, Any] = {
     },
     "required": [
         "schema_version",
+        "raw_query",
         "original_query",
+        "planning_query",
         "normalized_query",
         "intent",
         "target_user",
@@ -179,7 +210,17 @@ CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA: dict[str, Any] = {
     ],
     "properties": {
         "schema_version": {"type": "string", "const": CAMPAIGN_QUERY_PLAN_VERSION},
+        "raw_query": {
+            "type": "string",
+            "minLength": 1,
+            "description": "API에 입력된 사용자 문자열 전체. 정규화하거나 절을 잘라내지 않는다.",
+        },
         "original_query": {"type": "string", "minLength": 1},
+        "planning_query": {
+            "type": "string",
+            "minLength": 1,
+            "description": "정규화와 스코프 분리 후 실제 파서가 해석한 문자열.",
+        },
         "normalized_query": {"type": "string", "minLength": 1},
         "intent": {"type": "string", "enum": sorted(CAMPAIGN_INTENTS)},
         "target_user": _TARGET_USER_SCHEMA,
@@ -209,6 +250,9 @@ CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA: dict[str, Any] = {
         "result_limit": _nullable({"type": "integer", "minimum": 1}),
         "source_requirements": {"type": "array", "items": _SOURCE_REQUIREMENT_SCHEMA},
         "source_requirements_digest": {"type": "string"},
+        QUERY_IDENTITY_DIGEST_KEY: {"type": "string"},
+        "strict_source_coverage": {"type": "boolean"},
+        "unresolved_source_conditions": {"type": "array", "items": {"type": "object"}},
     },
 }
 
@@ -224,9 +268,11 @@ CAMPAIGN_QUERY_PLAN_V2_TOOL: dict[str, Any] = {
 
 
 def build_campaign_query_plan_v2_fallback(query: str) -> CampaignQueryPlanV2:
-    return CampaignQueryPlanV2(
+    plan = CampaignQueryPlanV2(
         schema_version=CAMPAIGN_QUERY_PLAN_VERSION,
+        raw_query=query,
         original_query=query,
+        planning_query=query,
         normalized_query=query,
         intent="unknown",
         target_user={},
@@ -243,12 +289,15 @@ def build_campaign_query_plan_v2_fallback(query: str) -> CampaignQueryPlanV2:
         computed_metrics=[],
         result_limit=None,
     )
+    plan[QUERY_IDENTITY_DIGEST_KEY] = campaign_query_identity_digest(plan)
+    return plan
 
 
 def validate_campaign_query_plan_v2(
     payload: Any,
     *,
     query: str | None = None,
+    raw_query: str | None = None,
 ) -> CampaignQueryPlanV2:
     if not isinstance(payload, dict):
         raise CampaignQueryPlanValidationError("campaign QueryPlan v2 must be an object")
@@ -257,9 +306,15 @@ def validate_campaign_query_plan_v2(
         raise CampaignQueryPlanValidationError(
             f"schema_version must be {CAMPAIGN_QUERY_PLAN_VERSION}"
         )
+    preserved_raw_query = _non_empty_string(payload.get("raw_query"), "raw_query")
+    if raw_query is not None and preserved_raw_query != raw_query:
+        raise CampaignQueryPlanValidationError("raw_query must exactly match the API input query")
     original_query = _non_empty_string(payload.get("original_query"), "original_query")
     if query is not None and original_query != query:
         raise CampaignQueryPlanValidationError("original_query must exactly match the input query")
+    if original_query not in preserved_raw_query:
+        raise CampaignQueryPlanValidationError("original_query must be preserved within raw_query")
+    _non_empty_string(payload.get("planning_query"), "planning_query")
     _non_empty_string(payload.get("normalized_query"), "normalized_query")
     if payload.get("intent") not in CAMPAIGN_INTENTS:
         raise CampaignQueryPlanValidationError("intent is not supported by campaign QueryPlan v2")
@@ -301,20 +356,38 @@ def validate_campaign_query_plan_v2(
             ).hexdigest()
             if not isinstance(digest, str) or digest != actual:
                 raise CampaignQueryPlanValidationError("source_requirements digest mismatch")
-    return CampaignQueryPlanV2(copy.deepcopy(payload))
+    unresolved_source_conditions = payload.get("unresolved_source_conditions", [])
+    if not isinstance(unresolved_source_conditions, list) or not all(
+        isinstance(item, dict) for item in unresolved_source_conditions
+    ):
+        raise CampaignQueryPlanValidationError("unresolved_source_conditions must be an array of objects")
+    strict_source_coverage = payload.get("strict_source_coverage")
+    if strict_source_coverage is not None and not isinstance(strict_source_coverage, bool):
+        raise CampaignQueryPlanValidationError("strict_source_coverage must be a boolean")
+    actual_identity_digest = campaign_query_identity_digest(payload)
+    supplied_identity_digest = payload.get(QUERY_IDENTITY_DIGEST_KEY)
+    if supplied_identity_digest is not None and supplied_identity_digest != actual_identity_digest:
+        raise CampaignQueryPlanValidationError("query identity digest mismatch")
+    validated = CampaignQueryPlanV2(copy.deepcopy(payload))
+    validated[QUERY_IDENTITY_DIGEST_KEY] = actual_identity_digest
+    return validated
 
 
 def as_campaign_query_plan_v2(
     plan: dict[str, Any],
     *,
     original_query: str,
+    raw_query: str | None = None,
+    planning_query: str | None = None,
     normalized_query: str | None = None,
 ) -> CampaignQueryPlanV2:
     """Attach the v2 identity to an existing execution plan without remapping it."""
 
     payload = copy.deepcopy(dict(plan))
     payload["schema_version"] = CAMPAIGN_QUERY_PLAN_VERSION
+    payload["raw_query"] = raw_query or payload.get("raw_query") or original_query
     payload["original_query"] = original_query
+    payload["planning_query"] = planning_query or payload.get("planning_query") or original_query
     payload["normalized_query"] = (
         normalized_query
         or payload.get("normalized_query")
@@ -328,7 +401,13 @@ def as_campaign_query_plan_v2(
     payload.setdefault("set_expressions", [])
     payload.setdefault("computed_metrics", [])
     payload.setdefault("result_limit", None)
-    return validate_campaign_query_plan_v2(payload, query=original_query)
+    payload.setdefault("unresolved_source_conditions", [])
+    payload[QUERY_IDENTITY_DIGEST_KEY] = campaign_query_identity_digest(payload)
+    return validate_campaign_query_plan_v2(
+        payload,
+        query=original_query,
+        raw_query=payload["raw_query"],
+    )
 
 
 def _non_empty_string(value: Any, path: str) -> str:

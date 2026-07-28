@@ -13,10 +13,15 @@ class _RecordingStructurer:
         return build_fallback(input.query)
 
 
-def test_delivery_channel_suffix_never_enters_targeting_pipeline():
+def test_delivery_channel_suffix_never_enters_targeting_pipeline(monkeypatch):
     targeting = "장바구니에 상품을 담고 결제하지 않은 고객에게 재구매를 유도하고 싶어요"
     query = targeting + "\n발송 채널: RCS (리치 메시지, 버튼 및 이미지 지원)"
     structurer = _RecordingStructurer()
+    monkeypatch.setattr(
+        g,
+        "_verify_sql_semantics",
+        lambda *_args, **_kwargs: {"ran": True, "faithful": True, "issues": []},
+    )
 
     result = g.retrieve(
         query=query,
@@ -39,6 +44,8 @@ def test_delivery_channel_suffix_never_enters_targeting_pipeline():
     assert structurer.queries == [targeting]
     assert result["structured_query"]["originalQuery"] == targeting
     assert result["prompt_normalization"]["original"] == targeting
+    assert result["query_plan"]["raw_query"] == query
+    assert result["query_plan"]["original_query"] == targeting
     assert result["query_plan"]["campaign_constraints"]["channels"] == []
     assert result["query_plan"]["target_user"]["preferred_channels"] == []
     assert result["sql_result"]["is_success"] is True

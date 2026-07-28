@@ -53,7 +53,9 @@ ACTIONS = frozenset({SET, UPDATE, CLEAR, CLAIM, KEEP, DROP, SELECT, REJECT, UNSU
 AUDITED_CONTAINERS = ("target_user", "exclude", "campaign_constraints")
 # plan 최상위 중 '조건'이 아닌 항목 — 원문·검색어·계측·스냅샷은 바뀌어도 결정이 아니다.
 NON_CONDITION_PLAN_KEYS = frozenset({
-    "original_query", "normalized_query", "planning_query", "schema_version",
+    "raw_query", "original_query", "normalized_query", "planning_query", "schema_version",
+    "query_identity_digest",
+    "strict_source_coverage",
     "retrieval", "matched_terms", "parser", "complexity", "query_semantics",
     "source_requirements", "source_requirements_digest", "structured_query",
     "plan_resolution",

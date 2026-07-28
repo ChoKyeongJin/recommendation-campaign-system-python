@@ -99,7 +99,8 @@ def build_campaign_query_plan_v2_user_prompt(input: QueryStructuringInput) -> st
             "[Campaign QueryPlan v2 JSON Schema]\n"
             + json.dumps(CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA, ensure_ascii=False, indent=2),
             (
-                "original_query에는 User Query를 그대로 넣고, target_user/exclude/"
+                "raw_query와 original_query에는 User Query를 그대로 넣고, planning_query에는 "
+                "현재 단계에서 해석할 User Query를 그대로 넣어라. target_user/exclude/"
                 "campaign_constraints에 캠페인 조건을 직접 구조화하라."
             ),
         ]

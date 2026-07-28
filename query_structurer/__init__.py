@@ -14,6 +14,7 @@ from .campaign_plan_v2 import (
     CampaignQueryPlanValidationError,
     as_campaign_query_plan_v2,
     build_campaign_query_plan_v2_fallback,
+    verify_campaign_query_identity,
     validate_campaign_query_plan_v2,
 )
 from .structurer import LLMCampaignQueryPlanStructurer, LLMQueryStructurer
@@ -46,4 +47,5 @@ __all__ = [
     "call_query_planner",
     "validate_structured_query",
     "validate_campaign_query_plan_v2",
+    "verify_campaign_query_identity",
 ]

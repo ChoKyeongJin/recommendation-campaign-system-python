@@ -120,6 +120,7 @@ from query_structurer import (
     as_campaign_query_plan_v2,
     build_campaign_query_plan_v2_fallback,
     build_fallback,
+    verify_campaign_query_identity,
     call_query_planner,
 )
 from query_structurer.prompt import PLANNER_STRUCTURED_QUERY_RULES
@@ -2213,6 +2214,7 @@ def build_query_plan(
     multi_query_variants: int = 0,
     structured_query: StructuredQuery | None = None,
     query_plan_v2: CampaignQueryPlanV2 | None = None,
+    raw_query: str | None = None,
 ) -> CampaignQueryPlanV2:
     """단일 파싱으로 query_plan 을 만든다. multi_query_variants>0 이고 LLM 사용 가능하면 프롬프트를
     의미보존 재구성한 변이들도 파싱해 '성공적으로 잡힌 타겟 조건'을 base 에 합집합으로 병합한다.
@@ -2280,10 +2282,33 @@ def build_query_plan(
     _reconcile_cart_aggregate_ownership(base)
     _attach_query_output_contract(query, base)
     base["complexity"] = classify_query_complexity(base)
+    # ``query``는 retrieve 경로에서 정규화/스코프 분리된 planning query일 수 있다. 최초 구조화기가
+    # 보존한 원문 타겟 절과 API 원문 전체를 각각 유지해, 내부 재작성문이 original/raw를 덮지 못하게 한다.
+    source_query = (
+        str(query_plan_v2.get("original_query"))
+        if isinstance(query_plan_v2, dict) and isinstance(query_plan_v2.get("original_query"), str)
+        and str(query_plan_v2.get("original_query")).strip()
+        else query
+    )
+    preserved_raw_query = (
+        raw_query
+        or (
+            str(query_plan_v2.get("raw_query"))
+            if isinstance(query_plan_v2, dict) and isinstance(query_plan_v2.get("raw_query"), str)
+            and str(query_plan_v2.get("raw_query")).strip()
+            else None
+        )
+        or source_query
+    )
+    # 정밀 신호가 원문에는 있는데 어떤 실행 슬롯에도 귀결되지 않은 경우, 경고로 흘리지 않고 IR의
+    # 미해결 요구로 남긴다. build_sql_result가 같은 검사를 다시 수행하므로 이후 보강 단계의 변경도 반영된다.
+    _refresh_unresolved_source_conditions(source_query, base)
     semantic_requirements.verify_source_requirements(base)
     result = as_campaign_query_plan_v2(
         base,
-        original_query=query,
+        raw_query=preserved_raw_query,
+        original_query=source_query,
+        planning_query=query,
         normalized_query=(base.get("retrieval") or {}).get("query"),
     )
     semantic_requirements.verify_source_requirements(result)
@@ -11178,7 +11203,7 @@ def retrieve(
     timings_ms["prompt_scopes"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
-    planner_input = QueryPlannerInput(query=plan_query, query_plan=campaign_query_plan)
+    planner_input = QueryPlannerInput(query=plan_query, query_plan=campaign_query_plan, raw_query=query)
     query_plan = call_query_planner(
         build_query_plan,
         planner_input,
@@ -11215,6 +11240,9 @@ def retrieve(
     _promote_unknown_intent_for_target_signal(query_plan)
     # 위의 원문 복원·소유권 이동은 실행 플랜만 바꿀 수 있고 최초 source requirement는 바꾸면 안 된다.
     semantic_requirements.verify_source_requirements(query_plan)
+    # API 출고 경로는 원문 의미 검증을 선택 기능으로 두지 않는다. 검증기가 실행되지 못한 경우도
+    # '검증되지 않은 SQL'이므로 build_sql_result가 fail-close한다.
+    query_plan["strict_source_coverage"] = True
     timings_ms["query_plan"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
@@ -11287,6 +11315,8 @@ def retrieve(
         # 템플릿/조합 빌더가 못 만드는 형태는 LLM 폴백이 GraphRAG 컨텍스트를 근거로 SQL 초안을
         # 만들고 동일 가드 스택(guard/coverage/미언급)으로 검증한다. rules 파서 모드면 비활성.
         llm_model=llm_model if query_parser in ("auto", "llm") else None,
+        # 원문↔SQL 의미 검증은 SQL 생성과 별개다. rules 모드에서도 반드시 실행해 미등록 표현의 누락을 막는다.
+        semantic_verification_model=llm_model,
         # 의미 검증 게이트는 가공된 keyword_query 가 아니라 사용자 원문과 SQL 을 직접 대조해야 한다.
         original_query=targeting_prompt,
         prompt_dir=prompt_dir,
@@ -13171,6 +13201,12 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
             return "생성된 SQL이 원문 의도와 다르게 반영된 부분이 있어 확인이 필요합니다: " + " / ".join(str(q) for q in questions)
         return "생성된 SQL이 원문 의도를 충실히 반영하지 못한 것으로 판단돼 확인이 필요합니다. 조건을 더 명확히 입력해 주세요."
 
+    if reason == "semantic_verification_unavailable":
+        return (
+            "원문 조건의 누락 여부를 검증하지 못해 SQL 출고를 차단했습니다. "
+            "의미 검증기 설정과 연결 상태를 확인한 뒤 다시 시도해 주세요."
+        )
+
     if unsupported_labels:
         # 요청 조건 중 실DB 타겟 추출로 아직 매핑되지 않은 것(관심사·행동·가격민감도 등)이 원인.
         return ("요청하신 조건 중 다음은 아직 실DB 타겟 추출로 지원되지 않아 검증 SQL을 만들지 못했습니다: "
@@ -13293,6 +13329,7 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
     "semantic_condition_polarity_mismatch": "semantic_verification",
     "critical_conditions_dropped": "semantic_verification",
     "critical_semantic_issue": "semantic_verification",
+    "semantic_verification_unavailable": "semantic_verification",
     "query_result_grain_mismatch": "intent_scope",
     "targeting_result_member_id_missing": "intent_scope",
     "targeting_result_member_projection_missing": "intent_scope",
@@ -13305,6 +13342,7 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
 # (missing_input_conditions[].path prefix, 단계 세부 라벨, 안내문에 쓸 종류 라벨).
 # 같은 '조건 인식' 단계라도 집합식 파싱에서 막혔는지, 계산식/의미 해석에서 막혔는지 구분해 보여준다.
 _MISSING_CONDITION_KINDS: tuple[tuple[str, str, str], ...] = (
+    ("source_coverage.", "원문 조건 해석", "원문 조건"),
     ("aggregation_request.", "집계 요구사항 확정", "집계 요구사항"),
     ("set_expressions.", "집합식 파싱", "집합식"),
     ("computed_metrics.", "계산식 해석", "계산식"),
@@ -14351,7 +14389,8 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
 
     오탐을 낮추려 '재작성 가드가 이미 신뢰하는 정밀 추출기(_prompt_signal_signature)'를 재사용하고, plan
     매핑이 명확한 family(성별·수신동의·캠페인 반응·최근 로그인)만 본다. 숫자/기간/상품처럼 여러 슬롯에
-    흩어지거나 애매한 family 는 오탐이 커서 제외한다. 비차단 자문 — SQL 출고를 막지 않는다."""
+    흩어지거나 애매한 family 는 오탐이 커서 제외한다. 반환된 항목은
+    ``unresolved_source_conditions``로 승격되어 SQL 출고를 막는다."""
     warnings: list[str] = []
     text = original_query or ""
     if not text.strip():
@@ -14441,6 +14480,34 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
     return warnings
 
 
+def _refresh_unresolved_source_conditions(
+    original_query: str,
+    query_plan: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """원문에서 감지했지만 plan 슬롯으로 귀결하지 못한 조건을 실행 IR에 봉인한다.
+
+    원문 자체는 ``raw_query``/``original_query``에 보존하고, 이 목록은 의미 누락을 성공 응답으로
+    바꾸지 않기 위한 fail-close 입력이다. 매 호출마다 최종 plan 기준으로 다시 계산하므로 앞 단계에서
+    미해결이던 조건을 후속 원문 권위 단계가 복원하면 자동으로 해소된다.
+    """
+    labels = _deterministic_dropped_conditions(original_query, query_plan)
+    unresolved = [
+        {
+            "id": "usr_" + hashlib.sha256(
+                f"{original_query}\0{label}".encode("utf-8")
+            ).hexdigest()[:16],
+            "path": f"source_coverage.unresolved[{index}]",
+            "label": label,
+            "source_text": original_query,
+            "reason": "원문 신호가 구조화된 실행 슬롯으로 귀결되지 않았습니다.",
+            "status": "unresolved",
+        }
+        for index, label in enumerate(labels)
+    ]
+    query_plan["unresolved_source_conditions"] = unresolved
+    return unresolved
+
+
 def _verify_sql_semantic_invariants(
     query: str, plan: dict[str, Any], sql: str, dropped_signal_warnings: list[str],
 ) -> dict[str, Any]:
@@ -14448,9 +14515,14 @@ def _verify_sql_semantic_invariants(
 
     LLM 게이트(_verify_sql_semantics)는 OPENAI 없으면 ran=False 로 통과(fail-open)하지만, 이 게이트는
     파서 전파 결함(창 도메인 누수·누적↔롤링 혼입·구매 미발생 silent drop)을 원문↔plan 대조로 결정론
-    점검한다. 위반은 issues 로 남기는 비차단 자문이다 — 진짜 drop 은 dropped_signal_warnings 가 시끄럽게
-    고지하고, 값/컴파일 정확성은 결정론 컴파일러·커버리지 검증이 소유한다."""
-    issues: list[dict[str, Any]] = []
+    점검한다. 위반과 원문 드롭 신호는 모두 차단 issue로 돌려, 일부 조건이 빠진 SQL이 출고되지 않게 한다."""
+    issues: list[dict[str, Any]] = [
+        {
+            "type": "source_condition_dropped",
+            "detail": f"원문의 '{label}'이 구조화된 실행 조건으로 귀결되지 않음",
+        }
+        for label in (dropped_signal_warnings or [])
+    ]
     target_user = plan.get("target_user", {}) if isinstance(plan.get("target_user"), dict) else {}
     compact = query.replace(" ", "").casefold()
     aggregates = [c for c in (target_user.get("aggregate_conditions") or []) if isinstance(c, dict)]
@@ -15086,7 +15158,10 @@ def build_sql_result(
     llm_model: str | None = None,
     original_query: str | None = None,
     prompt_dir: Path | None = None,
+    semantic_verification_model: str | None = None,
 ) -> dict[str, Any]:
+    if isinstance(query_plan, CampaignQueryPlanV2):
+        verify_campaign_query_identity(query_plan)
     # 호출자가 수동 plan을 넘기는 단위/통합 경로도 동일한 의미 추출·출력 계약을 거친다.
     # 파생 엔터티 집합이 소유한 슬롯은 여기서 마지막으로 회수한다 — 계획 이후 단계(변이 병합·조건
     # 재확정)가 순위 절의 어구를 오디언스 조건으로 되살리면 같은 어구가 두 번 컴파일된다.
@@ -15100,6 +15175,7 @@ def build_sql_result(
     if not isinstance(query_plan.get("output_contract"), dict):
         _attach_query_output_contract(original_query or query, query_plan)
     semantic_requirements.verify_source_requirements(query_plan)
+    _refresh_unresolved_source_conditions(original_query or query, query_plan)
     condition_tokens = build_verified_condition_tokens(query_plan)
     input_validation = validate_required_input_conditions(query_plan, condition_tokens)
     required_conditions = required_sql_conditions(query_plan)
@@ -15440,8 +15516,19 @@ def build_sql_result(
     )
     if selected_sql is not None:
         semantic_verification = _verify_sql_semantics(
-            original_query or query, selected_sql, llm_model, prompt_dir, query_plan
+            original_query or query,
+            selected_sql,
+            semantic_verification_model if semantic_verification_model is not None else llm_model,
+            prompt_dir,
+            query_plan,
         )
+        verification_required = bool(query_plan.get("strict_source_coverage"))
+        verification_unavailable = verification_required and not semantic_verification.get("ran")
+        semantic_verification = {
+            **semantic_verification,
+            "required": verification_required,
+            **({"failure_reason": "semantic_verification_unavailable"} if verification_unavailable else {}),
+        }
         delivery_validation = _validate_sql_delivery_contract(
             original_query or query,
             query_plan,
@@ -15474,11 +15561,24 @@ def build_sql_result(
         requirement_blocking = requirement_accounting.blocking() if requirement_accounting else []
         if requirement_accounting is not None:
             sql_result_requirements = requirement_accounting.to_list()
-        if blocking_issues or requirement_blocking or not delivery_validation.get("is_satisfied", True):
-            failure_reason = "semantic_verification_failed"
+        if (
+            verification_unavailable
+            or blocking_issues
+            or requirement_blocking
+            or not delivery_validation.get("is_satisfied", True)
+        ):
+            failure_reason = (
+                "semantic_verification_unavailable" if verification_unavailable
+                else "semantic_verification_failed"
+            )
             clarification_questions = _semantic_verification_clarifications(blocking_issues) + _unique_strings(
                 [req.message for req in requirement_blocking if req.message]
             )
+            if verification_unavailable:
+                clarification_questions = _unique_strings([
+                    *clarification_questions,
+                    "원문 의미 검증기를 실행할 수 없습니다. 검증기 설정과 연결 상태를 확인해 주세요.",
+                ])
             if not clarification_questions and semantic_verification.get("faithful") is False:
                 clarification_questions = [
                     "생성 SQL이 원문의 핵심 집계·필터·그룹 의도와 일치하지 않습니다. 요청 의도를 확인해 주세요."
@@ -15521,7 +15621,7 @@ def build_sql_result(
         except Exception:
             query_tuning = {"findings": [], "recommended_indexes": []}
 
-    # ③ 놓침을 시끄럽게(결정론): 원문 신호가 plan 에 조용히 드롭됐으면 경고(rules/auto 항상, 비차단).
+    # ③ 놓침을 fail-close(결정론): 원문 신호가 plan 에 조용히 드롭됐으면 아래 의미 불변식에서 출고 차단.
     try:
         dropped_signal_warnings = _deterministic_dropped_conditions(original_query or query, query_plan)
     except Exception:
@@ -15529,7 +15629,7 @@ def build_sql_result(
 
     # 결정론 의미 보존 불변식 게이트: LLM 게이트(_verify_sql_semantics)와 달리 SQL 이 생성되면 LLM 유무와
     # 무관하게 항상 실행된다(ran=True). 창 도메인 누수·누적↔롤링 혼입·구매 미발생 silent drop 을 결정론으로
-    # 점검해 '조용한 오답 출고'를 막는다(비차단 자문 — 감지되면 issues 에 남고 dropped 는 경고로도 고지된다).
+    # 점검해 '조용한 오답 출고'를 막는다. 감지된 dropped 신호는 critical issue와 사용자 확인 질문으로 귀결된다.
     if selected_sql is not None:
         semantic_invariants = _verify_sql_semantic_invariants(
             original_query or query, query_plan, selected_sql, dropped_signal_warnings
@@ -15586,6 +15686,8 @@ def build_sql_result(
 
     # SQL 후보 생성·검증 전체 과정에서도 최초 원문 요구 스냅샷이 건드려지지 않았음을 마지막에 확인한다.
     semantic_requirements.verify_source_requirements(query_plan)
+    if isinstance(query_plan, CampaignQueryPlanV2):
+        verify_campaign_query_identity(query_plan)
     return {
         "sql": selected_sql,
         # 의미 검증 등으로 출고가 막혔지만 생성은 된 SQL(표시 전용, 실행 안 함). 정상 출고 시엔 None.
@@ -15618,7 +15720,7 @@ def build_sql_result(
         "metric_profile_validation": (selected or {}).get("metric_profile_validation", {"ran": False, "valid": True}),
         # 쿼리 성능 튜닝 자문(비차단): {findings, recommended_indexes}. 출고 SQL 이 없으면 빈 결과.
         "query_tuning": query_tuning,
-        # ③ 결정론 드롭 경고: 원문 신호가 plan 에 안 잡힌 조건 목록(비차단 자문).
+        # ③ 결정론 드롭 진단: 원문 신호가 plan 에 안 잡힌 조건 목록(존재하면 SQL 출고 차단).
         "dropped_signal_warnings": dropped_signal_warnings,
         "unsupported_conditions": unsupported_conditions,
         "unsupported_condition_labels": unsupported_condition_labels,
@@ -20142,6 +20244,27 @@ def _sql_quote(value: str) -> str:
 
 
 def validate_required_input_conditions(query_plan: dict[str, Any], condition_tokens: list[dict[str, Any]]) -> dict[str, Any]:
+    unresolved_source = [
+        item
+        for item in (query_plan.get("unresolved_source_conditions") or [])
+        if isinstance(item, dict) and item.get("status") == "unresolved"
+    ]
+    if unresolved_source:
+        missing = [
+            _missing_input_condition(
+                str(item.get("path") or f"source_coverage.unresolved[{index}]"),
+                str(item.get("label") or "미해석 원문 조건"),
+                f"원문의 '{item.get('label') or '해석되지 않은 조건'}'을(를) 실DB 조건으로 확정할 수 없습니다. "
+                "조건의 의미 또는 사용할 데이터 필드를 명확히 지정해 주세요.",
+            )
+            for index, item in enumerate(unresolved_source)
+        ]
+        return {
+            "is_satisfied": False,
+            "missing_conditions": missing,
+            "clarification_questions": [condition["question"] for condition in missing],
+        }
+
     aggregation_request = query_plan.get("aggregation_request")
     aggregation_validation = query_plan.get("aggregation_request_validation") or {}
     if isinstance(aggregation_request, dict):

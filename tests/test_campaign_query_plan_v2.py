@@ -12,9 +12,11 @@ from query_structurer import (
     QueryPlannerInput,
     QueryStructuringInput,
     StructuringContext,
+    as_campaign_query_plan_v2,
     build_campaign_query_plan_v2_fallback,
     call_query_planner,
     validate_campaign_query_plan_v2,
+    verify_campaign_query_identity,
 )
 
 
@@ -25,7 +27,9 @@ def test_rules_planner_returns_the_versioned_shared_ir():
 
     assert isinstance(plan, CampaignQueryPlanV2)
     assert plan["schema_version"] == CAMPAIGN_QUERY_PLAN_VERSION
+    assert plan["raw_query"] == query
     assert plan["original_query"] == query
+    assert plan["planning_query"] == query
     assert plan["normalized_query"]
     assert "structured_query" not in plan
     assert plan["target_user"]["gender"] == "female"
@@ -46,6 +50,32 @@ def test_adapter_passes_campaign_v2_without_a_front_ir_conversion():
 
     assert result is plan
     assert received == [plan]
+
+
+def test_ir_keeps_api_raw_query_separate_from_planning_query():
+    raw = "서울 VIP 회원에게 쿠폰 발송, 발송 채널: RCS"
+    targeting = "서울 VIP 회원에게 쿠폰 발송"
+    planning = "서울 VIP 회원"
+
+    plan = as_campaign_query_plan_v2(
+        {"intent": "find_user_segment"},
+        raw_query=raw,
+        original_query=targeting,
+        planning_query=planning,
+    )
+
+    assert plan["raw_query"] == raw
+    assert plan["original_query"] == targeting
+    assert plan["planning_query"] == planning
+    assert verify_campaign_query_identity(plan) is True
+
+
+def test_ir_rejects_query_identity_mutation():
+    plan = build_campaign_query_plan_v2_fallback("서울 회원")
+    plan["raw_query"] = "부산 회원"
+
+    with pytest.raises(CampaignQueryPlanValidationError, match="query identity"):
+        verify_campaign_query_identity(plan)
 
 
 def test_campaign_v2_rejects_wrong_version_and_query_identity():

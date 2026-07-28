@@ -58,6 +58,56 @@ def test_required_conditions_without_tokens_cannot_succeed(monkeypatch):
     assert result["delivery_validation"]["condition_tokens"] == 0
 
 
+def test_unresolved_source_condition_is_part_of_ir_and_blocks_sql(monkeypatch):
+    query = "서울에 거주하는 회원"
+    plan = _plan(query)
+    monkeypatch.setattr(
+        g,
+        "_deterministic_dropped_conditions",
+        lambda _query, _plan: ["해석되지 않은 원문 조건"],
+    )
+
+    result = g.build_sql_result(
+        nx.Graph(), query, plan, [], g.DEFAULT_SCHEMA_PATH, None,
+        llm_model=None, original_query=query, prompt_dir=g.DEFAULT_PROMPT_DIR,
+    )
+
+    assert result["is_success"] is False
+    assert result["sql"] is None
+    assert result["failure_reason"] == "query_plan_required_conditions_missing"
+    assert plan["unresolved_source_conditions"][0]["status"] == "unresolved"
+    assert result["missing_input_conditions"][0]["path"].startswith("source_coverage.")
+
+
+def test_dropped_signal_is_a_blocking_semantic_invariant():
+    verdict = g._verify_sql_semantic_invariants(
+        "서울 회원", {"target_user": {}}, "SELECT 1", ["지역 '서울'"],
+    )
+
+    assert verdict["ok"] is False
+    assert verdict["issues"][0]["type"] == "source_condition_dropped"
+
+
+def test_strict_source_coverage_blocks_when_semantic_verifier_is_unavailable():
+    query = "서울에 거주하는 회원"
+    plan = _plan(query)
+    plan["strict_source_coverage"] = True
+
+    result = g.build_sql_result(
+        nx.Graph(), query, plan, [], g.DEFAULT_SCHEMA_PATH, None,
+        llm_model=None, original_query=query, prompt_dir=g.DEFAULT_PROMPT_DIR,
+    )
+
+    assert result["is_success"] is False
+    assert result["sql"] is None and result["blocked_sql"]
+    assert result["failure_reason"] == "semantic_verification_unavailable"
+    assert result["semantic_verification"] == {
+        "ran": False,
+        "required": True,
+        "failure_reason": "semantic_verification_unavailable",
+    }
+
+
 def test_critical_dropped_semantic_issue_cannot_succeed(monkeypatch):
     verdict = {
         "ran": True,
