@@ -51,15 +51,13 @@ from calendar_window import (
     WORD_DURATION_PATTERN as _WORD_DURATION_PATTERN,
     duration_window_candidates as _duration_window_candidates,
     month_last_day as _month_last_day,
-    parse_calendar_window,
     parse_calendar_window_group,
-    parse_calendar_window_group_span,
     parse_calendar_window_spans,
     parse_calendar_windows,
     parse_duration_window as _parse_duration_window,
     parse_half_or_quarter_window,
-    parse_relative_past_window,
-    parse_relative_past_window_span,
+    parse_time_window_group_span,
+    parse_time_windows,
     ymd as _ymd,
 )
 from entity_set import (
@@ -3054,10 +3052,9 @@ def _purchase_date_span(query: str, _plan: dict[str, Any]) -> tuple[int, int] | 
 
     절대 창이 없으면 과거 시점 표현('7년전')의 구간이 곧 이 슬롯의 출처다 — 단, 슬롯이 실제로 그
     표현을 가져갔을 때만이다(슬롯 판정과 같은 게이트를 그대로 다시 쓴다)."""
-    absolute = parse_calendar_window_group_span(query)
-    if absolute is not None:
-        return absolute
-    return parse_relative_past_window_span(query) if _parse_purchase_date_period(query) else None
+    return parse_time_window_group_span(
+        query, allow_relative_past=_parse_purchase_date_period(query) is not None
+    )
 
 
 def _result_limit_span(query: str, _plan: dict[str, Any]) -> tuple[int, int] | None:
@@ -8744,32 +8741,26 @@ def _calendar_window_slot(windows: list[dict[str, Any]], label_suffix: str = "")
 def _parse_purchase_date_period(query: str) -> dict[str, Any] | None:
     """구매가 일어난 절대 날짜/기간을 ORDER_DATE(YYYYMMDD CHAR8) 창 {from,to[,windows]}로 파싱한다.
 
-    달력 문법 자체는 calendar_window 가 소유한다 — 이 함수는 도메인 게이트(구매/구입/주문 신호가 있어야
-    발동. 생일·캠페인 기간 등 무관한 날짜를 잡지 않기 위함)와 라벨 꼬리말('구매')만 얹는다. 창 선택은
-    parse_calendar_window_group 이 소유한다: 가장 좁은 창 하나가 아니라 그 창이 속한 나열 전체를 받아
+    달력 문법도, 창 종류 간 우선순위(절대 달력 → 과거 시점 → 롤링 기간)도 calendar_window 가
+    소유한다 — 이 함수는 도메인 게이트(구매/구입/주문 신호가 있어야 발동. 생일·캠페인 기간 등 무관한
+    날짜를 잡지 않기 위함)와 라벨 꼬리말('구매')만 얹는다. 창은 하나가 아니라 나열 전체를 받는다:
     '2018, 2019년'·'2019년 2월과 3월' 처럼 한 조건이 여러 구간을 가리키는 표현에서 구간이 조용히
     사라지지 않게 한다.
 
     연도를 명시하지 않은 과거 시점('7년전 구매한')도 같은 슬롯이다 — 기준일(오늘)에서 거슬러 센 달력
     구간이 곧 그 조건의 창이기 때문이다. 절대 창이 없을 때만 보므로 '2019년 … 3년 전' 처럼 둘이
-    같이 오면 명시 연도가 이긴다."""
+    같이 오면 명시 연도가 이긴다. '7년전 상반기'처럼 과거 시점이 달력 한정어의 **앵커**로 쓰인 표현은
+    둘 중 하나를 고르는 문제가 아니라 하나의 절대 창(2019년 상반기)이므로 문법이 합성해 돌려준다."""
     if not any(signal in query for signal in _PURCHASE_DATE_SIGNALS):
         return None
-    absolute = _calendar_window_slot(parse_calendar_window_group(query), "구매")
-    if absolute is not None:
-        return absolute
-    return _relative_past_purchase_window(query)
-
-
-def _relative_past_purchase_window(query: str) -> dict[str, Any] | None:
-    """'N년/개월/주/일 전에 구매한'의 과거 시점 창(절대 창 shape). 구매 창이라 단정할 수 없으면 None.
-
-    다른 도메인의 날짜 앵커(가입·생일·로그인 …)가 문장에 있으면 그 시점이 주문일이라는 보장이 없어
-    잡지 않는다(fail-close) — 표면어 게이트만으로는 '3개월 전 가입한 … 구매 캠페인'의 가입 시점을
-    구매일로 뒤바꾸기 때문이다. 절대 달력 창의 고아 귀속(_calendar_window_claim)과 같은 기준이다."""
-    if any(anchor in query for anchor in _NON_ORDER_DATE_ANCHORS):
-        return None
-    return parse_relative_past_window(query, label_suffix="구매")
+    # 다른 도메인의 날짜 앵커(가입·생일·로그인 …)가 문장에 있으면 그 시점이 주문일이라는 보장이 없어
+    # 과거 시점은 잡지 않는다(fail-close) — 표면어 게이트만으로는 '3개월 전 가입한 … 구매 캠페인'의
+    # 가입 시점을 구매일로 뒤바꾼다. 절대 달력 창의 고아 귀속(_calendar_window_claim)과 같은 기준이다.
+    windows = parse_time_windows(
+        query,
+        allow_relative_past=not any(anchor in query for anchor in _NON_ORDER_DATE_ANCHORS),
+    )
+    return _calendar_window_slot(windows, "구매")
 
 
 # ── 고아 달력 창 귀속(calendar_window_claim) ────────────────────────────────────────

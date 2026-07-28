@@ -36,7 +36,8 @@ QUARTER_MONTH_RANGES = {1: (1, 3), 2: (4, 6), 3: (7, 9), 4: (10, 12)}
 
 _ANY_YEAR_RE = re.compile(r"(\d{4})\s*년")
 _QUARTER_RE = re.compile(r"([1-4])\s*(?:사)?분기")
-_RELATIVE_YEAR_RE = re.compile(r"(?:올해|금년|작년|지난해|전년)(?:도)?")
+# 상대 연도 어휘. 새 표현('재작년' → -2)은 이 표 한 줄이면 되고, 정규식은 표에서 파생한다 —
+# 어휘와 문법이 따로 자라면 한쪽만 고쳐진 상태가 생긴다.
 _RELATIVE_YEAR_OFFSETS = {
     "올해": 0,
     "금년": 0,
@@ -44,6 +45,7 @@ _RELATIVE_YEAR_OFFSETS = {
     "지난해": -1,
     "전년": -1,
 }
+_RELATIVE_YEAR_ALTERNATION = "|".join(sorted(_RELATIVE_YEAR_OFFSETS, key=len, reverse=True))
 
 # 나열/범위 연결어. '2018, 2019년'·'2018년 및 2019년'·'2019년 2월과 3월'처럼 창이 이어져 나올 때
 # 그 사이에 오는 토큰이다. 나열형 베어 연도 문법(_CAL_TOKEN_RE 의 yb)과 '한 나열에 속하는가' 판정
@@ -101,18 +103,44 @@ def _window(start: str, end: str, label: str, suffix: str) -> dict[str, Any]:
     return {"from": start, "to": end, "label": f"{label} {suffix}".strip()}
 
 
-def _relative_year(token: str, today: date) -> int | None:
-    """'올해/작년/지난해/전년' 표지를 기준일의 절대 연도로 낮춘다."""
-    normalized = token.removesuffix("도")
-    offset = _RELATIVE_YEAR_OFFSETS.get(normalized)
-    return None if offset is None else today.year + offset
+# ── 연도 앵커(anchor) ─────────────────────────────────────────────────────────────
+# 창은 '앵커 × 한정자'의 합성이다 — 앵커가 어느 해를 기준으로 삼을지 정하고(명시 4자리·상대 연도 어휘·
+# 'N년 전'·생략=기준일), 한정자가 그 안을 좁힌다(월·분기·반기·일). 예전에는 앵커 종류마다 스캐너가
+# 따로 살아 서로 만날 자리가 없었고('7년 전'은 relative_past 스캐너, '상반기'는 달력 토큰), 그래서
+# '7년전 상반기'가 둘 중 하나만 남고 다른 하나는 조용히 사라졌다. 앵커를 한정자 앞의 공통 요소로
+# 분리하면 조합이 코드가 아니라 합성에서 나온다 — 새 앵커 어휘는 표 한 줄이면 모든 한정자와 붙는다.
+# '전부터/전까지/전 이후'는 시점이 아니라 그 시점을 경계로 삼는 범위다(fail-close). 과거 시점 스캐너와
+# 앵커가 같은 규칙을 쓰도록 한 곳에서 소유한다 — 한쪽만 닫혀 있으면 같은 표현이 경로마다 다르게 읽힌다.
+_PAST_POINT_BOUNDARY = r"(?!\s*(?:부터|까지|이후|이래|이전|보다))"
+_YEAR_ANCHOR_PATTERN = (
+    rf"(?:(?P<rel>{_RELATIVE_YEAR_ALTERNATION})(?:도)?|(?P<past>\d+)\s*년\s*전{_PAST_POINT_BOUNDARY})"
+)
+_YEAR_ANCHOR_RE = re.compile(_YEAR_ANCHOR_PATTERN)
+# 한정자 바로 앞에 붙은 앵커만 본다 — 문장 반대편의 다른 조건 앵커를 끌어오지 않기 위함이다.
+_ADJACENT_YEAR_ANCHOR_RE = re.compile(_YEAR_ANCHOR_PATTERN + r"\s*$")
 
 
-def _adjacent_relative_year(text: str, start: int, today: date) -> int | None:
-    """달력 토큰 바로 앞의 상대 연도 표지를 읽는다('작년 상반기', '올해 2분기')."""
-    prefix = text[:start]
-    match = re.search(r"(올해|금년|작년|지난해|전년)(?:도)?\s*$", prefix)
-    return _relative_year(match.group(0).strip(), today) if match is not None else None
+def _anchor_year(match: "re.Match[str]", today: date) -> int:
+    """앵커 표현 하나 → 절대 연도. 'N년 전'의 거슬러 세기는 _relative_past_target 이 단일 소유한다."""
+    relative = match.group("rel")
+    if relative is not None:
+        return today.year + _RELATIVE_YEAR_OFFSETS[relative]
+    return _relative_past_target(int(match.group("past")), "years", today).year
+
+
+def _adjacent_anchor_year(text: str, start: int, today: date) -> tuple[int, int] | None:
+    """달력 토큰 바로 앞의 연도 앵커를 (연도, 앵커 시작위치)로 읽는다('작년 상반기', '7년전 상반기').
+
+    시작위치를 함께 주는 이유는 창의 원문 구간이 한정자만이 아니라 **앵커까지**여야 하기 때문이다 —
+    구간이 한정자만 덮으면 앞의 '7년전'이 주인 없는 표현으로 남아 다른 슬롯이 다시 주워간다."""
+    match = _ADJACENT_YEAR_ANCHOR_RE.search(text[:start])
+    return (_anchor_year(match, today), match.start()) if match is not None else None
+
+
+def _text_anchor_year(text: str, today: date) -> int | None:
+    """텍스트 어딘가의 연도 앵커(첫 표현). 토큰 위치를 모르는 호출자(반기/분기 단독 파서)용."""
+    match = _YEAR_ANCHOR_RE.search(text or "")
+    return _anchor_year(match, today) if match is not None else None
 
 
 def _is_quarter_duration(text: str, start: int, end: int) -> bool:
@@ -134,11 +162,10 @@ def parse_half_or_quarter_window(
     확정한다. 그냥 '반기'(상/하 없음)나 숫자 없는 '분기'는 어느 반/분기인지 모호하므로 잡지 않는다."""
     reference = today or date.today()
     year_match = _ANY_YEAR_RE.search(text or "")
-    relative_match = _RELATIVE_YEAR_RE.search(text or "")
     y = (
         int(year_match.group(1))
         if year_match is not None
-        else (_relative_year(relative_match.group(0), reference) if relative_match is not None else reference.year)
+        else (_text_anchor_year(text or "", reference) or reference.year)
     )
     if "상반기" in text:
         return _window(ymd(y, 1, 1), ymd(y, 6, 30), f"{y}년 상반기", label_suffix)
@@ -225,7 +252,8 @@ def _scan_calendar_windows(
         explicit = _token_year(match)
         if explicit is not None:
             running_year = explicit
-        relative = _adjacent_relative_year(text, match.start(), reference)
+        anchor = _adjacent_anchor_year(text, match.start(), reference)
+        relative = anchor[0] if anchor is not None else None
         if relative is not None:
             running_year = relative
         quarter_duration = (
@@ -247,7 +275,9 @@ def _scan_calendar_windows(
                 (_GRAIN_RANK[name] for name in _GRAIN_RANK if match.group(name) is not None),
                 len(_GRAIN_RANK),
             )
-            out.append((window, rank, match.start(), match.end()))
+            # 앵커에서 연도를 받은 토큰의 구간은 앵커까지다('7년전 상반기' 전체가 한 창의 출처).
+            start = anchor[1] if (explicit is None and anchor is not None) else match.start()
+            out.append((window, rank, start, match.end()))
     return out
 
 
@@ -491,9 +521,10 @@ def relative_window_label(window: dict[str, Any]) -> str:
 # (월~일), '10일 전'=그 날 하루. 절대 창과 같은 shape({from,to,label})로 돌려주므로 소비자(구매일 술어
 # 등)는 절대 창과 구분 없이 쓴다 — 기준일이 계획 수립 시점에 확정되므로 계획에 날짜가 그대로 드러난다.
 #
-# '전부터/전까지/전 이후'는 시점이 아니라 그 시점을 **경계로 삼는 범위**라 여기서 잡지 않는다(fail-close).
+# '전부터/전까지/전 이후'는 시점이 아니라 그 시점을 **경계로 삼는 범위**라 여기서 잡지 않는다
+# (fail-close — 경계 어휘는 _PAST_POINT_BOUNDARY 가 앵커와 공유한다).
 RELATIVE_PAST_PATTERN = re.compile(
-    r"(?P<num>\d+)\s*(?P<unit>주일|개월|년|달|주|일)\s*전(?!\s*(?:부터|까지|이후|이래|이전|보다))"
+    rf"(?P<num>\d+)\s*(?P<unit>주일|개월|년|달|주|일)\s*전{_PAST_POINT_BOUNDARY}"
 )
 
 
@@ -570,3 +601,86 @@ def parse_relative_past_window_span(text: str) -> tuple[int, int] | None:
     """``parse_relative_past_window`` 가 읽은 표현의 원문 구간 (시작, 끝)."""
     scanned = _scan_relative_past_windows(text, None, "")
     return (scanned[0][1], scanned[0][2]) if scanned else None
+
+
+# ── 창 파싱 단일 진입점 ────────────────────────────────────────────────────────────
+# 창의 **종류 간 우선순위**(절대 달력 → 상대 과거 시점 → 롤링 기간)도 문법의 일부다. 이 순서가
+# 소비자마다 복제돼 있던 동안, 새 창 종류가 생길 때마다 각 체인의 순서를 따로 정해야 했고 실제로
+# 한쪽만 고쳐진 채로 결과가 뒤집혔다('7년전 상반기'가 어느 체인을 타느냐에 따라 2019년 전체 또는
+# 올해 상반기). 순서는 여기 한 곳에 있고, 호출자는 '무엇에 대한 언제인가'라는 도메인 정책만 플래그로
+# 넘긴다 — 순수 모듈 불변식(도메인 게이트는 호출자 소유)은 그대로다.
+
+
+def parse_time_windows(
+    text: str,
+    *,
+    label_suffix: str = "",
+    today: "date | None" = None,
+    allow_relative_past: bool = True,
+    include_duration: bool = False,
+    duration_anchor_terms: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    """텍스트의 기간 표현을 창 목록으로 읽는다(없으면 빈 목록).
+
+    절대 달력 창이 있으면 그 나열 전체를 돌려준다(구간이 조용히 사라지지 않게). 없을 때만 상대 과거
+    시점('7년 전')을, 그것도 없을 때만 롤링 기간('최근 3개월')을 본다.
+
+    ``allow_relative_past`` 는 호출자의 도메인 판단이다 — 문장에 다른 도메인의 날짜 앵커(가입·로그인
+    …)가 있어 그 시점이 이 조건의 것이라고 단정할 수 없으면 False 로 닫는다.
+    ``include_duration=True`` 인 소비자만 롤링 기간을 받는다(반환 shape 이 {days,label} 로 다르다).
+    """
+    group = parse_calendar_window_group(text, label_suffix=label_suffix, today=today)
+    if group:
+        return group
+    if allow_relative_past:
+        past = parse_relative_past_window(text, today=today, label_suffix=label_suffix)
+        if past is not None:
+            return [past]
+    if include_duration:
+        relative = parse_duration_window(text, anchor_terms=duration_anchor_terms)
+        if relative is not None:
+            return [{"days": relative["min_days"], "label": relative_window_label(relative)}]
+    return []
+
+
+def parse_time_window(
+    text: str,
+    *,
+    label_suffix: str = "",
+    today: "date | None" = None,
+    allow_relative_past: bool = True,
+    include_duration: bool = False,
+    duration_anchor_terms: tuple[str, ...] | None = None,
+) -> dict[str, Any] | None:
+    """``parse_time_windows`` 의 단일 창 버전(나열이면 첫 구간)."""
+    windows = parse_time_windows(
+        text,
+        label_suffix=label_suffix,
+        today=today,
+        allow_relative_past=allow_relative_past,
+        include_duration=include_duration,
+        duration_anchor_terms=duration_anchor_terms,
+    )
+    return windows[0] if windows else None
+
+
+def parse_time_window_span(
+    text: str, *, today: "date | None" = None, allow_relative_past: bool = True
+) -> tuple[int, int] | None:
+    """``parse_time_window`` 가 읽은 표현의 원문 구간. 롤링 기간은 위치를 단정하지 않는다(None).
+
+    절대 창의 구간은 앵커까지 포함한다 — '7년전 상반기'는 '상반기'가 아니라 표현 전체가 출처다."""
+    span = parse_calendar_window_span(text, today=today)
+    if span is not None:
+        return span
+    return parse_relative_past_window_span(text) if allow_relative_past else None
+
+
+def parse_time_window_group_span(
+    text: str, *, today: "date | None" = None, allow_relative_past: bool = True
+) -> tuple[int, int] | None:
+    """``parse_time_windows`` 가 읽은 **나열 전체**의 원문 구간(창 목록을 통째로 소비하는 슬롯용)."""
+    span = parse_calendar_window_group_span(text, today=today)
+    if span is not None:
+        return span
+    return parse_relative_past_window_span(text) if allow_relative_past else None

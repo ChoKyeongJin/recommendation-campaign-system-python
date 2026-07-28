@@ -25,14 +25,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from calendar_window import (
-    parse_calendar_window,
-    parse_calendar_window_span,
-    parse_duration_window,
-    parse_relative_past_window,
-    parse_relative_past_window_span,
-    relative_window_label,
-)
+from calendar_window import parse_time_window, parse_time_window_span
 
 
 _MEMBER_NOUN_RE = re.compile(r"회원|고객|사용자|유저")
@@ -278,33 +271,28 @@ def _match_entity_before(
 
 
 def _match_window_span(compact: str) -> list[int] | None:
-    """``_match_window`` 가 고른 창의 compact 좌표 구간. 절대 달력 창만 위치를 안다.
+    """``_match_window`` 가 고른 창의 compact 좌표 구간. 절대 달력 창과 과거 시점만 위치를 안다.
 
-    상대 기간('최근 3개월')은 선택 규칙이 앵커 근접성까지 보므로 위치를 단정하지 않는다 —
+    롤링 기간('최근 3개월')은 선택 규칙이 앵커 근접성까지 보므로 위치를 단정하지 않는다 —
     구간을 모르면 소유권 회수는 기존(종류 기준) 동작으로 남는다(fail-safe)."""
-    span = parse_calendar_window_span(compact) or parse_relative_past_window_span(compact)
+    span = parse_time_window_span(compact)
     return [span[0], span[1]] if span is not None else None
 
 
 def _match_window(compact: str, rank_marker: str = "") -> dict[str, Any] | None:
-    """절 앞머리의 기간 표현. 달력 표현은 절대창, 기간 표현은 상대창.
+    """절 앞머리의 기간 표현. 달력 표현은 절대창, 롤링 기간은 상대창.
 
-    문법은 calendar_window 가 소유한다 — 여기서 별도 정규식을 갖고 있던 동안 '2019년 3월'의 월이
-    통째로 사라져 그 달 순위가 연간 순위로 바뀌었다(연도만 아는 파서였다). 절대창을 먼저 보는 이유는
-    '2019년'이 상대 기간('N년')으로도 읽힐 수 있어서다.
+    문법도 창 종류 간 우선순위도 calendar_window 가 소유한다 — 여기서 별도 정규식을 갖고 있던 동안
+    '2019년 3월'의 월이 통째로 사라져 그 달 순위가 연간 순위로 바뀌었고, 우선순위를 따로 갖고 있던
+    동안 '7년전 상반기'가 순위 창에서 반기를 잃었다.
 
-    상대창은 방향 표지(rank_marker, 예: '가장많이') 근처의 것만 본다 — 앞 절에 자기 기간을 가진 다른
+    롤링 기간은 방향 표지(rank_marker, 예: '가장많이') 근처의 것만 본다 — 앞 절에 자기 기간을 가진 다른
     조건이 있으면('2주 이내 가입한 회원 중 가장 많이 팔린 …') 그 창을 순위 창으로 훔쳐오게 된다."""
-    absolute = parse_calendar_window(compact)
-    if absolute is not None:
-        return absolute
-    relative_past = parse_relative_past_window(compact)
-    if relative_past is not None:
-        return relative_past
-    relative = parse_duration_window(compact, anchor_terms=(rank_marker,) if rank_marker else None)
-    if relative is not None:
-        return {"days": relative["min_days"], "label": relative_window_label(relative)}
-    return None
+    return parse_time_window(
+        compact,
+        include_duration=True,
+        duration_anchor_terms=(rank_marker,) if rank_marker else None,
+    )
 
 
 def parse_entity_set_condition(query: str, config: dict[str, Any] | None) -> dict[str, Any] | None:
