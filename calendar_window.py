@@ -23,6 +23,7 @@ parse_calendar_windows 가 등장 순서대로 전부 돌려주고, parse_calend
 from __future__ import annotations
 
 import re
+from datetime import date, timedelta
 from typing import Any
 
 import targeting_ir
@@ -404,3 +405,93 @@ def relative_window_label(window: dict[str, Any]) -> str:
     """상대 창의 한글 라벨('최근 3개월'). 단어형은 정규화된 일수로 적는다('일주일' → '최근 7일')."""
     unit = CANON_TO_KO_UNIT.get(str(window.get("unit")), "일")
     return f"최근 {window.get('value')}{unit}"
+
+
+# ── 상대 과거 시점 창 ─────────────────────────────────────────────────────────────
+# 'N년/개월/주/일 전'은 기간의 **길이**가 아니라 과거의 한 **시점**이다. 롤링 창 파서
+# (parse_duration_window)는 이 형태를 exclude_past 로 건너뛸 뿐 아무도 읽지 않아, '7년전 구매한 고객'의
+# '7년전'이 조용히 사라졌다(창 없는 전 기간 구매로 컴파일 → 조건 소실).
+#
+# 시점을 가리키는 단위가 곧 창의 구체성이다: '7년 전'=그 해 전체, '3개월 전'=그 달 전체, '2주 전'=그 주
+# (월~일), '10일 전'=그 날 하루. 절대 창과 같은 shape({from,to,label})로 돌려주므로 소비자(구매일 술어
+# 등)는 절대 창과 구분 없이 쓴다 — 기준일이 계획 수립 시점에 확정되므로 계획에 날짜가 그대로 드러난다.
+#
+# '전부터/전까지/전 이후'는 시점이 아니라 그 시점을 **경계로 삼는 범위**라 여기서 잡지 않는다(fail-close).
+RELATIVE_PAST_PATTERN = re.compile(
+    r"(?P<num>\d+)\s*(?P<unit>주일|개월|년|달|주|일)\s*전(?!\s*(?:부터|까지|이후|이래|이전|보다))"
+)
+
+
+def _relative_past_target(value: int, unit: str, today: "date") -> "date":
+    """기준일에서 value 단위만큼 거슬러 올라간 날짜(월/년은 말일 넘침을 그 달 말일로 자른다)."""
+    if unit == "years":
+        year, month = today.year - value, today.month
+    elif unit == "months":
+        total = today.year * 12 + (today.month - 1) - value
+        year, month = total // 12, total % 12 + 1
+    else:
+        return today - timedelta(days=value * (7 if unit == "weeks" else 1))
+    return date(year, month, min(today.day, month_last_day(year, month)))
+
+
+def relative_past_window(
+    value: int, unit: str, *, today: "date | None" = None, label_suffix: str = ""
+) -> dict[str, Any] | None:
+    """'value 단위 전' 시점이 속한 달력 구간을 절대 창 {from,to,label} 으로 만든다.
+
+    구조화된 입력(LLM 슬롯 등)도 텍스트 경로와 같은 규칙을 쓰게 하는 진입점이다
+    (calendar_window_from_parts 가 절대 창에 대해 하는 역할과 같다)."""
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return None
+    if unit not in ("years", "months", "weeks", "days"):
+        return None
+    anchor = today or date.today()
+    target = _relative_past_target(value, unit, anchor)
+    if unit == "years":
+        return _window(ymd(target.year, 1, 1), ymd(target.year, 12, 31), f"{target.year}년", label_suffix)
+    if unit == "months":
+        last = month_last_day(target.year, target.month)
+        return _window(
+            ymd(target.year, target.month, 1), ymd(target.year, target.month, last),
+            f"{target.year}년 {target.month}월", label_suffix,
+        )
+    if unit == "weeks":
+        start = target - timedelta(days=target.weekday())  # 그 주 월요일
+        end = start + timedelta(days=6)
+        return _window(
+            ymd(start.year, start.month, start.day), ymd(end.year, end.month, end.day),
+            f"{start.year}년 {start.month}월 {start.day}일~{end.month}월 {end.day}일", label_suffix,
+        )
+    return _window(
+        ymd(target.year, target.month, target.day), ymd(target.year, target.month, target.day),
+        f"{target.year}년 {target.month}월 {target.day}일", label_suffix,
+    )
+
+
+def _scan_relative_past_windows(
+    text: str, today: "date | None", label_suffix: str
+) -> list[tuple[dict[str, Any], int, int]]:
+    """'N단위 전' 표현을 (창, 시작, 끝) 으로 등장 순서대로 스캔한다."""
+    out: list[tuple[dict[str, Any], int, int]] = []
+    for match in RELATIVE_PAST_PATTERN.finditer(text or ""):
+        unit = KO_UNIT_TO_CANON.get(match.group("unit"))
+        window = relative_past_window(int(match.group("num")), unit or "", today=today, label_suffix=label_suffix)
+        if window is not None:
+            out.append((window, match.start(), match.end()))
+    return out
+
+
+def parse_relative_past_window(
+    text: str, *, today: "date | None" = None, label_suffix: str = ""
+) -> dict[str, Any] | None:
+    """텍스트의 'N단위 전'(첫 표현)을 절대 창으로 읽는다(없으면 None).
+
+    도메인 게이트('무엇에 대한 언제'인가)는 호출자가 소유한다 — 이 모듈은 '언제'만 읽는다."""
+    scanned = _scan_relative_past_windows(text, today, label_suffix)
+    return scanned[0][0] if scanned else None
+
+
+def parse_relative_past_window_span(text: str) -> tuple[int, int] | None:
+    """``parse_relative_past_window`` 가 읽은 표현의 원문 구간 (시작, 끝)."""
+    scanned = _scan_relative_past_windows(text, None, "")
+    return (scanned[0][1], scanned[0][2]) if scanned else None

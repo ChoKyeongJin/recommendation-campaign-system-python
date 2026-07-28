@@ -58,6 +58,8 @@ from calendar_window import (
     parse_calendar_windows,
     parse_duration_window as _parse_duration_window,
     parse_half_or_quarter_window,
+    parse_relative_past_window,
+    parse_relative_past_window_span,
     ymd as _ymd,
 )
 from entity_set import (
@@ -1382,6 +1384,35 @@ _BRAND_COPULA_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+# 카테고리(상품군/품목군) 언급 → 그 카테고리 상품의 구매 이력 타겟. 브랜드 계사/인접형의 대칭이며,
+# 표면어는 선언된 디멘션어에서 파생한다(브랜드는 자기 kind 가 따로 있어 제외) — 새 디멘션이 늘어도
+# 여기 어휘를 손대지 않는다. 값이 따옴표에 싸인 표기('카테고리가 "어린이건강"을')를 허용하는 것이
+# 핵심이다: 상품명 캡처 문자클래스가 따옴표를 모르면 계사절 전체가 매칭에 실패해 값이 통째로 사라진다.
+_CATEGORY_SURFACE_TERMS = tuple(sorted(
+    (_declared_distinct_dimension_terms() | {"카테고리"}) - {"브랜드"}, key=len, reverse=True,
+))
+_CATEGORY_TERM_ALT = "|".join(re.escape(term) for term in _CATEGORY_SURFACE_TERMS)
+_QUOTE_CHARS = "\"'“”‘’「」"
+# "카테고리가 '어린이건강'을/인" — 디멘션어 + 계사/주격 뒤에 오는 값.
+_CATEGORY_COPULA_PATTERN = re.compile(
+    rf"(?:{_CATEGORY_TERM_ALT})\s*(?:가|이|는|은|명이|명은)\s*[{_QUOTE_CHARS}]?\s*"
+    rf"(?P<object>[0-9A-Za-z가-힣_+\-]{{1,40}}?)\s*[{_QUOTE_CHARS}]?\s*"
+    rf"(?:을|를|이면서|이거나|인데|이고|이며|면서|인)(?![0-9A-Za-z가-힣])",
+    re.IGNORECASE,
+)
+# "'어린이건강' 카테고리에서 구매한" — 값이 디멘션어 앞에 붙는 인접형(_BRAND_ADJACENT_BEFORE 의 대칭).
+_CATEGORY_ADJACENT_PATTERN = re.compile(
+    rf"[{_QUOTE_CHARS}]?(?P<object>[0-9A-Za-z가-힣_+\-]{{1,40}})[{_QUOTE_CHARS}]?\s*(?:{_CATEGORY_TERM_ALT})",
+    re.IGNORECASE,
+)
+# 디멘션어 앞뒤에 붙어도 카테고리 '값'이 아닌 말들. 자리표시자('특정 카테고리')·가짓수 수식어('서로 다른
+# 카테고리')는 집계 트랙(_clause_scope/distinct_of)이 소유하고, 구매 동사·일반명사는 값이 아니다.
+_CATEGORY_VALUE_STOPWORDS = frozenset({
+    "구매", "구입", "주문", "판매", "결제", "인기", "동일", "같은", "해당", "다른", "여러", "다양한", "서로",
+    "회원", "고객", "유저", "사람", "이번", "저번", "지난", "최근",
+})
+
+
 # "상품명이/제품명이 X인" 같은 계사형 상품명 언급. 브랜드 계사와 대칭이며 반드시 '명'(name)을 요구해
 # "상품이 좋은" 처럼 상품명이 아닌 표현을 배제한다. 매칭되면 PRODUCT_NAME 컬럼만 좁혀 매칭한다.
 _PRODUCT_NAME_COPULA_PATTERN = re.compile(
@@ -1482,6 +1513,11 @@ def _purchase_object_signals(text: str) -> set[str]:
         if chain:
             for term in _split_product_terms(chain.group("chain")):
                 objects.add(term.casefold())
+    # 카테고리 값("카테고리가 '어린이건강'인")도 구매 상품 조건이다 — 계사/인접형은 위 패턴이 못 잡으므로
+    # 값 추출기를 그대로 쓴다. 재작성이 카테고리 값을 지우면 게이트가 소실로 잡는다.
+    category = _extract_category_object(text or "")
+    if category:
+        objects.add(category.casefold())
     return objects
 
 
@@ -2815,8 +2851,14 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
 
 
 def _purchase_date_span(query: str, _plan: dict[str, Any]) -> tuple[int, int] | None:
-    """구매일 슬롯이 읽은 달력 창 나열 전체의 원문 구간(문법 소유자 calendar_window 가 계산)."""
-    return parse_calendar_window_group_span(query)
+    """구매일 슬롯이 읽은 달력 창 나열 전체의 원문 구간(문법 소유자 calendar_window 가 계산).
+
+    절대 창이 없으면 과거 시점 표현('7년전')의 구간이 곧 이 슬롯의 출처다 — 단, 슬롯이 실제로 그
+    표현을 가져갔을 때만이다(슬롯 판정과 같은 게이트를 그대로 다시 쓴다)."""
+    absolute = parse_calendar_window_group_span(query)
+    if absolute is not None:
+        return absolute
+    return parse_relative_past_window_span(query) if _parse_purchase_date_period(query) else None
 
 
 def _result_limit_span(query: str, _plan: dict[str, Any]) -> tuple[int, int] | None:
@@ -4978,6 +5020,28 @@ def _valid_age(value: str) -> int | None:
     return age if 0 <= age <= 120 else None
 
 
+def _extract_category_object(query: str) -> str | None:
+    """'카테고리가 "어린이건강"을 …' / "'어린이건강' 카테고리에서 …" 의 카테고리 **값**을 뽑는다.
+
+    디멘션어 자체('카테고리')는 상품명이 아니라 축 이름이라 일반명사로 걸러진다 — 걸러진 자리에서
+    사용자가 실제로 말한 값을 되찾지 못하면 조건이 통째로 사라지거나, 더 나쁘게는 축 이름이 상품
+    LIKE 로 새어(N'%카테고리에서%') 0명 SQL 이 된다. 값은 상품 마스터의 카테고리 컬럼으로 매칭한다."""
+    for pattern in (_CATEGORY_COPULA_PATTERN, _CATEGORY_ADJACENT_PATTERN):
+        for match in pattern.finditer(query):
+            candidate = _sanitize_purchase_object(match.group("object"))
+            if (
+                not candidate
+                or candidate in _CATEGORY_VALUE_STOPWORDS
+                or candidate in _GENERIC_PRODUCT_NOUNS
+                or candidate in _SCOPE_PLACEHOLDER_VALUES
+                or candidate in _SCOPE_DISTINCT_MODIFIERS
+                or _is_date_like_token(candidate)
+            ):
+                continue
+            return candidate
+    return None
+
+
 def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> None:
     # "…을/를 구매한/구입한/구매했던/구입하신 …" 같은 동사형뿐 아니라, "기저귀 구매 고객" 같은 명사형
     # (구매/구입 + 고객/회원/이력 등)도 상품 구매 이력 타겟으로 본다. 타겟팅 프롬프트 재작성(normalize_prompt)
@@ -4998,6 +5062,16 @@ def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> No
     # 근거가 된다(아래 kind 마킹). 애매하게 상품어만 말하면 kind 없이 광역 6컬럼 LIKE 를 유지한다.
     is_brand_mention = False
     is_product_mention = False
+    is_category_mention = False
+    if not purchase_object or purchase_object in _GENERIC_PRODUCT_NOUNS:
+        # 디멘션어('카테고리')만 잡혔거나 아무것도 못 잡았으면 사용자가 말한 카테고리 값으로 되찾는다
+        # ("카테고리가 '어린이건강'을 구매한" / "'어린이건강' 카테고리에서 구매한"). 아래 브랜드/상품
+        # 재시도보다 먼저다 — "카테고리가 X인 상품을 구매한"에서 '상품' 인접 재시도가 계사 어미까지
+        # 삼킨 값('X인')을 상품명으로 확정해버리기 때문이다(카테고리 계사가 더 강한 종류 신호다).
+        candidate = _extract_category_object(query)
+        if candidate:
+            purchase_object = candidate
+            is_category_mention = True
     if purchase_object in _GENERIC_PRODUCT_NOUNS:
         # 일반명사("상품/브랜드")가 잡혔으면 그 앞의 실제 브랜드/상품명으로 재시도한다
         # ("알로루 브랜드 상품 구매한" → '상품'이 아니라 '알로루'). 재시도가 실패하면 기존 동작 유지.
@@ -5039,6 +5113,9 @@ def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> No
         # '상품명/제품명' 명시면 PRODUCT_NAME 만 매칭한다(브랜드 확정이 우선).
         elif is_product_mention:
             target_user["purchase_object_kind"] = "product"
+        # '카테고리' 명시면 카테고리 컬럼(대/중/소분류)만 매칭한다 — 상품명의 우연 일치를 배제.
+        elif is_category_mention:
+            target_user["purchase_object_kind"] = "category"
 
 
 def _apply_sell_object(query: str, plan: dict[str, Any]) -> None:
@@ -8230,10 +8307,28 @@ def _parse_purchase_date_period(query: str) -> dict[str, Any] | None:
     발동. 생일·캠페인 기간 등 무관한 날짜를 잡지 않기 위함)와 라벨 꼬리말('구매')만 얹는다. 창 선택은
     parse_calendar_window_group 이 소유한다: 가장 좁은 창 하나가 아니라 그 창이 속한 나열 전체를 받아
     '2018, 2019년'·'2019년 2월과 3월' 처럼 한 조건이 여러 구간을 가리키는 표현에서 구간이 조용히
-    사라지지 않게 한다."""
+    사라지지 않게 한다.
+
+    연도를 명시하지 않은 과거 시점('7년전 구매한')도 같은 슬롯이다 — 기준일(오늘)에서 거슬러 센 달력
+    구간이 곧 그 조건의 창이기 때문이다. 절대 창이 없을 때만 보므로 '2019년 … 3년 전' 처럼 둘이
+    같이 오면 명시 연도가 이긴다."""
     if not any(signal in query for signal in _PURCHASE_DATE_SIGNALS):
         return None
-    return _calendar_window_slot(parse_calendar_window_group(query), "구매")
+    absolute = _calendar_window_slot(parse_calendar_window_group(query), "구매")
+    if absolute is not None:
+        return absolute
+    return _relative_past_purchase_window(query)
+
+
+def _relative_past_purchase_window(query: str) -> dict[str, Any] | None:
+    """'N년/개월/주/일 전에 구매한'의 과거 시점 창(절대 창 shape). 구매 창이라 단정할 수 없으면 None.
+
+    다른 도메인의 날짜 앵커(가입·생일·로그인 …)가 문장에 있으면 그 시점이 주문일이라는 보장이 없어
+    잡지 않는다(fail-close) — 표면어 게이트만으로는 '3개월 전 가입한 … 구매 캠페인'의 가입 시점을
+    구매일로 뒤바꾸기 때문이다. 절대 달력 창의 고아 귀속(_calendar_window_claim)과 같은 기준이다."""
+    if any(anchor in query for anchor in _NON_ORDER_DATE_ANCHORS):
+        return None
+    return parse_relative_past_window(query, label_suffix="구매")
 
 
 # ── 고아 달력 창 귀속(calendar_window_claim) ────────────────────────────────────────
@@ -10263,12 +10358,22 @@ def _schema_retrieval_query(text: str) -> str:
     return " ".join(kept) if kept else text
 
 
+# 부사격 조사(부사격·속격). 상품명의 일부가 아니므로 떼어야 한다 — 안 떼면 (a) 축 이름이 조사를 달고
+# 일반명사 검사('카테고리')를 우회해 상품 LIKE 로 새고(N'%카테고리에서%' → 0명), (b) 실제 상품어도
+# 조사가 붙은 채 LIKE 에 들어가 0건이 된다. 어간이 1글자만 남으면 조사가 아닐 확률이 높아 떼지 않는다
+# ('제로'→'제', '카페'→'카'). 목적격(을/를)은 아래에서 무조건 뗀다(1글자 상품명 '빵을' 보존).
+_PURCHASE_OBJECT_PARTICLE_RE = re.compile(r"(?:으로부터|로부터|에서|에게|부터|으로|에|의|로)$")
+
+
 def _sanitize_purchase_object(value: str) -> str | None:
     if is_non_entity_candidate(value):
         return None
     tokens = []
     for token in re.findall(r"[0-9A-Za-z가-힣_+\-]+", value.casefold()):
         stripped_token = re.sub(r"(?:을|를)$", "", token)
+        departicled = _PURCHASE_OBJECT_PARTICLE_RE.sub("", stripped_token)
+        if len(departicled) >= 2:
+            stripped_token = departicled
         # 상품이 아닌 구매행동 수식어(첫/재/최근 구매, 많이/자주 등 수량·빈도 부사)는 명사형 매칭에서
         # 엉뚱한 LIKE(예: '많이 구입한' → PRODUCT_NAME LIKE N'%많이%')를 만들 수 있어 제외한다.
         # 장소·대상 지시어("이곳에서 구매한" — 앞 절의 브랜드/장소를 가리키는 조응 표현)도 상품명이 아니다
@@ -17323,14 +17428,22 @@ def _target_purchase_objects(target_user: dict[str, Any]) -> list[dict[str, Any]
     return result
 
 
+# 상품어 종류 → 그 종류가 매칭할 상품 마스터 컬럼(접미어). 사용자가 종류를 명시했을 때만 좁힌다.
+_PURCHASE_OBJECT_KIND_COLUMNS = {
+    "brand": ("BRAND_NAME",),
+    "product": ("PRODUCT_NAME",),
+    "category": ("CATEGORY", "CATEGORYL_NAME", "CATEGORYM_NAME", "CATEGORYS_NAME"),
+}
+
+
 def _purchase_object_match_predicate(purchase_object: str, object_kind: Any = None, alias: str = "P") -> str:
-    """상품 자유텍스트를 상품 마스터(<alias>.*) 부분일치(OR)로 컴파일한다. object_kind 가 brand/product 면
-    해당 컬럼(BRAND_NAME/PRODUCT_NAME)만 좁혀 매칭해 카테고리 등 다른 컬럼의 우연 일치를 막고, 애매하면
-    광역 6컬럼 LIKE 를 유지한다. purchase_history 빌더와 집계 빌더의 상품 스코프가 같은 술어를 쓰게 한다."""
-    kind_column = {"brand": "BRAND_NAME", "product": "PRODUCT_NAME"}.get(object_kind)
-    if kind_column:
+    """상품 자유텍스트를 상품 마스터(<alias>.*) 부분일치(OR)로 컴파일한다. object_kind 가 brand/product/
+    category 면 해당 컬럼(BRAND_NAME/PRODUCT_NAME/CATEGORY*)만 좁혀 매칭해 다른 컬럼의 우연 일치를 막고,
+    애매하면 광역 6컬럼 LIKE 를 유지한다. purchase_history 빌더와 집계 빌더가 같은 술어를 쓰게 한다."""
+    kind_columns = _PURCHASE_OBJECT_KIND_COLUMNS.get(object_kind)
+    if kind_columns:
         columns = tuple(
-            column for column in _PURCHASE_PRODUCT_MATCH_COLUMNS if column.rsplit(".", 1)[-1] == kind_column
+            column for column in _PURCHASE_PRODUCT_MATCH_COLUMNS if column.rsplit(".", 1)[-1] in kind_columns
         ) or _PURCHASE_PRODUCT_MATCH_COLUMNS
     else:
         columns = _PURCHASE_PRODUCT_MATCH_COLUMNS
