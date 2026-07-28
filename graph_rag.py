@@ -347,7 +347,41 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
         "contact_member_list": {
             "table": "Z_CAMP_MBR",
             "alias": "M",
+            "member_column": "MBR_NO",
             "member_join": {"left": "TRY_CAST(M.MBR_NO AS BIGINT)", "right": "B.MEMBER_NO"},
+            "campaign_join": {
+                "table": "Z_CAMPAIGN",
+                "alias": "ZC",
+                "conditions": ["ZC.CAMP_ID = M.CAMP_ID", "ZC.CAMP_EXEC_NO = M.CAMP_EXEC_NO"],
+            },
+            "target_group_condition": {"column": "M.CELL_TYPE_CD", "value": "T"},
+            "valid_campaign_condition": {"expression": "ISNULL(ZC.CANCEL_YN, 'N') = 'N'"},
+            "campaign_date_column": "CAMP_SDATE",
+            "campaign_key_expression": "CONCAT(M.CAMP_ID, ':', M.CAMP_EXEC_NO)",
+        },
+        # 횟수 지표는 이벤트와 물리 소스를 분리한다. 새 캠페인 이벤트는 이 레지스트리에 소스·술어·
+        # 동의어를 추가하면 동일한 회원별 COUNT(DISTINCT 캠페인 실행회차) 빌더를 재사용한다.
+        "frequency_events": {
+            "campaign_response": {
+                "source": "response_fact",
+                "predicate": "(R.OFFR_RSPN_YN = 'Y' OR R.BUY_RSPN_YN = 'Y')",
+                "synonyms": ["캠페인 반응", "반응"],
+            },
+            "campaign_contact": {
+                "source": "contact_member_list",
+                "predicate": "M.CONTAC_SUCC_YN = 'Y'",
+                "synonyms": ["발송 성공", "전송 성공", "접촉 성공", "도달 성공", "메시지", "문자", "알림", "수신", "받"],
+            },
+            "offer_response": {
+                "source": "response_fact",
+                "predicate": "R.OFFR_RSPN_YN = 'Y'",
+                "synonyms": ["오퍼 반응", "혜택 반응", "쿠폰 반응"],
+            },
+            "buy_response": {
+                "source": "response_fact",
+                "predicate": "R.BUY_RSPN_YN = 'Y'",
+                "synonyms": ["구매 반응", "구매반응", "구매 전환"],
+            },
         },
     },
     # 셀 단위 비율 타겟: "발송 성공률 높고 구매율 낮은 셀의 회원". 분모는 셀 발송 대상 명단
@@ -3212,6 +3246,7 @@ def _query_plan_user_prompt(
         "duration_unit": sorted(targeting_ir.UNIT_DAYS),
         "operator": sorted(targeting_ir.OPERATORS),
         "campaign_response_canonical": sorted(allowed["campaign_responses"]),
+        "campaign_frequency_event": sorted(allowed["campaign_frequency_events"]),
         "cart_type_canonical": sorted({s["canonical"] for s in allowed["cart_types"].values()}),
         "aggregate_metric_id": sorted(allowed["aggregate_metrics"]),
         "cart_aggregate_metric": sorted(allowed["cart_aggregate_metrics"]),
@@ -3313,6 +3348,9 @@ def _llm_slot_allowed() -> dict[str, Any]:
         cart_type_map[entry["value"]] = shape
     return {
         "campaign_responses": campaign_map,
+        "campaign_frequency_events": set(
+            (_MEMBER_TARGET_FILTERS.get("campaign_response_targets", {}).get("frequency_events") or {}).keys()
+        ),
         "cart_types": cart_type_map,
         "cart_aggregate_metrics": set(_CART_AGGREGATE_METRIC_EXPRESSIONS),
         "aggregate_metrics": set(_aggregate_targets_config().get("metrics", {}) or {}),
@@ -6155,8 +6193,11 @@ def _apply_unsupported_intent_gate(query: str, plan: dict[str, Any]) -> None:
     target_user = plan.get("target_user", {})
     compact = query.replace(" ", "")
 
-    # 캠페인 메시지 '받은/수신 횟수' 임계('메시지 3회 이상 받은')는 아직 미모델 — 반응 횟수로 오매핑하지 않게 명시 미지원.
-    if _MESSAGE_RECEIVED_COUNT_RE.search(compact):
+    # 발송/수신 횟수는 campaign_contact 이벤트로 모델링된 경우 통과한다. 파서가 이벤트를 확정하지 못한
+    # 표현만 기존 fail-close 를 유지해 일반 반응 횟수로 조용히 오매핑하지 않는다.
+    frequency = target_user.get("campaign_response_frequency")
+    contact_frequency = isinstance(frequency, dict) and frequency.get("event") == "campaign_contact"
+    if _MESSAGE_RECEIVED_COUNT_RE.search(compact) and not contact_frequency:
         plan["unsupported"] = {
             "reason": "message_received_count_unsupported",
             "message": "'메시지를 N회 이상 받은'처럼 캠페인 발송/수신 '횟수' 임계 조건은 아직 지원되지 않습니다(접촉 여부·반응 횟수만 지원).",
@@ -8889,17 +8930,58 @@ _CAMPAIGN_FREQ = _compile_threshold(_ThresholdSpec("native_count", r"번|회|차
 _CAMPAIGN_FREQ_COUNT_PATTERN = _CAMPAIGN_FREQ.pattern
 
 
+def _campaign_frequency_event(compact: str, threshold_start: int, threshold_end: int) -> str | None:
+    """임계값과 같은 절에서 가장 가까운 등록 이벤트를 고른다.
+
+    문장 전체에 ``반응``이 하나라도 있다는 이유로 앞 절의 ``발송 성공 3회``를 일반 반응 횟수로
+    바꾸지 않도록 절 경계와 거리를 함께 사용한다. 이벤트 어휘와 우선순위는 레지스트리 소유라 새 이벤트를
+    추가할 때 파서 코드를 수정할 필요가 없다. 동률이면 더 긴 동의어(더 구체적인 개념)를 우선한다.
+    """
+    config = _MEMBER_TARGET_FILTERS.get("campaign_response_targets", {})
+    events = config.get("frequency_events", {}) if isinstance(config, dict) else {}
+    if not isinstance(events, dict):
+        return None
+
+    boundaries = [match.span() for match in _CAMPAIGN_CLAUSE_BOUNDARY_RE.finditer(compact)]
+    clause_start = max((end for start, end in boundaries if end <= threshold_start), default=0)
+    clause_end = min((start for start, end in boundaries if start >= threshold_end), default=len(compact))
+    clause = compact[clause_start:clause_end]
+    local_start = threshold_start - clause_start
+    local_end = threshold_end - clause_start
+
+    matches: list[tuple[int, int, str]] = []
+    for event, raw in events.items():
+        if not isinstance(event, str) or not isinstance(raw, dict):
+            continue
+        for synonym in raw.get("synonyms", []):
+            if not isinstance(synonym, str) or not synonym.strip():
+                continue
+            token = re.sub(r"\s+", "", synonym.casefold())
+            for found in re.finditer(re.escape(token), clause):
+                if found.end() <= local_start:
+                    distance = local_start - found.end()
+                elif found.start() >= local_end:
+                    distance = found.start() - local_end
+                else:
+                    distance = 0
+                matches.append((distance, -len(token), event))
+    return min(matches)[2] if matches else None
+
+
 def _apply_campaign_response_frequency_filter(query: str, plan: dict[str, Any]) -> None:
     """'최근 N개월 캠페인 중 K번 이상 반응한'을 캠페인 반응 횟수 조건(campaign_response_frequency)으로 해석한다.
 
     build_campaign_response_frequency_targets_sql_candidate 가 반응 팩트를 회원별로 집계
     (GROUP BY MBR_NO HAVING COUNT(DISTINCT 캠페인) op K)해 실추출하고, Z_CAMPAIGN 시작일로 '최근 N개월
     캠페인' 창을 건다. 성별/연령/등급 등 회원 속성은 compile_member_target_conditions 로 같은 SQL 에 AND 결합."""
-    compact = query.replace(" ", "").casefold()
-    if "캠페인" not in compact or "반응" not in compact:
+    compact = re.sub(r"\s+", "", query.casefold())
+    if "캠페인" not in compact:
         return
-    match = _CAMPAIGN_FREQ_COUNT_PATTERN.search(query) or _CAMPAIGN_FREQ_COUNT_PATTERN.search(compact)
+    match = _CAMPAIGN_FREQ_COUNT_PATTERN.search(compact)
     if match is None:
+        return
+    event = _campaign_frequency_event(compact, match.start(), match.end())
+    if event is None:
         return
     parsed = _CAMPAIGN_FREQ.parse(match)
     if parsed is None:
@@ -8907,10 +8989,11 @@ def _apply_campaign_response_frequency_filter(query: str, plan: dict[str, Any]) 
     operator, count = parsed
     operator_word = match.group("op")  # 라벨은 한글 어구('이상')를 그대로 쓴다
     plan.setdefault("target_user", {})["campaign_response_frequency"] = {
+        "event": event,
         "operator": operator,
         "count": int(count),
         "window_days": _parse_recent_window_days(query),
-        "label": f"캠페인 {int(count)}회 {operator_word} 반응",
+        "label": f"{event} {int(count)}회 {operator_word}",
     }
 
 
@@ -17126,72 +17209,117 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
         return None
 
     config = _MEMBER_TARGET_FILTERS.get("campaign_response_targets", {})
-    table = config.get("table", "MCS_CAMP_MBR_RSPN_FT")
-    alias = config.get("alias", "R")
-    member_col = config.get("member_column", "MBR_NO")
-    join = config.get("member_join", {}) if isinstance(config.get("member_join"), dict) else {}
-    campaign_join = config.get("campaign_join", {}) if isinstance(config.get("campaign_join"), dict) else {}
-    camp_table = campaign_join.get("table", "Z_CAMPAIGN")
-    camp_alias = campaign_join.get("alias", "ZC")
-    camp_conditions = [c for c in campaign_join.get("conditions", []) if isinstance(c, str)] or [
-        f"{camp_alias}.CAMP_ID = {alias}.CAMP_ID",
-        f"{camp_alias}.CAMP_EXEC_NO = {alias}.CAMP_EXEC_NO",
-    ]
-    key_expr = config.get("campaign_key_expression", _member_dialect().concat(f"{alias}.CAMP_ID", "':'", f"{alias}.CAMP_EXEC_NO"))
-    response_predicate = config.get("response_predicate", f"({alias}.OFFR_RSPN_YN = 'Y' OR {alias}.BUY_RSPN_YN = 'Y')")
+    frequency_events = config.get("frequency_events", {}) if isinstance(config.get("frequency_events"), dict) else {}
+    freq_event = str(freq.get("event") or "campaign_response") if freq is not None else None
+    freq_event_config = frequency_events.get(freq_event, {}) if freq_event else {}
+    if freq is not None and not isinstance(freq_event_config, dict):
+        return None
     # 귀속 구매금액 지표(BUY_AMT 합계)와 구매반응 플래그는 설정(aggregate_metrics/boolean_metrics)이 소유.
     aggregate_metrics = config.get("aggregate_metrics", {}) if isinstance(config.get("aggregate_metrics"), dict) else {}
     buy_metric = aggregate_metrics.get("campaign_purchase_amount", {}) if isinstance(aggregate_metrics.get("campaign_purchase_amount"), dict) else {}
-    buy_amount_column = buy_metric.get("column", f"{alias}.BUY_AMT")
+    response_alias = config.get("alias", "R")
+    buy_amount_column = buy_metric.get("column", f"{response_alias}.BUY_AMT")
     buy_amount_agg = buy_metric.get("agg", "SUM")
     boolean_metrics = config.get("boolean_metrics", {}) if isinstance(config.get("boolean_metrics"), dict) else {}
     buy_flag = boolean_metrics.get("purchase_response", {}) if isinstance(boolean_metrics.get("purchase_response"), dict) else {}
-    buy_response_predicate = f"{buy_flag.get('column', alias + '.BUY_RSPN_YN')} = {_sql_quote(str(buy_flag.get('value', 'Y')))}"
-    target_group = config.get("target_group_condition", {}) if isinstance(config.get("target_group_condition"), dict) else {}
-    valid_campaign = config.get("valid_campaign_condition", {}) if isinstance(config.get("valid_campaign_condition"), dict) else {}
-    date_column = config.get("campaign_date_column", "CAMP_SDATE")
+    buy_response_predicate = f"{buy_flag.get('column', response_alias + '.BUY_RSPN_YN')} = {_sql_quote(str(buy_flag.get('value', 'Y')))}"
 
-    inner_where: list[str] = []
-    if target_group.get("column") and target_group.get("value"):
-        inner_where.append(f"{target_group['column']} = {_sql_quote(str(target_group['value']))}")
-    if valid_campaign.get("expression"):
-        inner_where.append(str(valid_campaign["expression"]))
-    window_days = None
-    for condition in (freq, buy, buy_count):
-        days = condition.get("window_days") if condition else None
-        if isinstance(days, int) and days > 0:
-            window_days = days if window_days is None else min(window_days, days)
-    if window_days is not None:
-        cutoff = _member_dialect().char8_cutoff(window_days)
-        inner_where.append(f"{camp_alias}.{date_column} >= {cutoff}")
-    # 행 스코프: 반응 '횟수' 조건이 있으면 일반형 '반응'(오퍼/구매) 정의를 쓰고, 귀속 금액/건수만 있으면
-    # 구매반응 행으로 좁힌다(BUY_AMT 는 구매반응 행에만 실리고, '구매 건수'도 구매반응 캠페인 수다).
-    inner_where.append(response_predicate if freq is not None else buy_response_predicate)
+    def _source_config(source: str) -> dict[str, Any]:
+        if source == "contact_member_list":
+            value = config.get("contact_member_list", {})
+            return value if isinstance(value, dict) else {}
+        return config
 
-    having_clauses: list[str] = []
-    if freq is not None:
-        having_clauses.append(f"COUNT(DISTINCT {key_expr}) {freq['operator']} {freq['count']}")
-    if buy_count is not None:
-        # 구매반응 캠페인 수(구매 건수). 행 스코프가 구매반응 행이면 이 COUNT 는 구매한 캠페인 수가 된다.
-        having_clauses.append(f"COUNT(DISTINCT {key_expr}) {buy_count['operator']} {buy_count['count']}")
-    if buy is not None:
-        having_clauses.append(f"{buy_amount_agg}({buy_amount_column}) {buy['operator']} {_format_threshold(buy['amount'])}")
-
-    subquery = "\n".join(
-        [
+    def _campaign_aggregate_join(
+        *, source: str, predicate: str, having: list[str], window_days: int | None, subquery_alias: str,
+    ) -> str | None:
+        source_config = _source_config(source)
+        table = source_config.get("table")
+        alias = source_config.get("alias")
+        member_col = source_config.get("member_column", "MBR_NO")
+        if not all(isinstance(value, str) and value for value in (table, alias, member_col)):
+            return None
+        join = source_config.get("member_join", {}) if isinstance(source_config.get("member_join"), dict) else {}
+        campaign_join = source_config.get("campaign_join", {}) if isinstance(source_config.get("campaign_join"), dict) else {}
+        camp_table = campaign_join.get("table", "Z_CAMPAIGN")
+        camp_alias = campaign_join.get("alias", "ZC")
+        camp_conditions = [c for c in campaign_join.get("conditions", []) if isinstance(c, str)] or [
+            f"{camp_alias}.CAMP_ID = {alias}.CAMP_ID",
+            f"{camp_alias}.CAMP_EXEC_NO = {alias}.CAMP_EXEC_NO",
+        ]
+        target_group = source_config.get("target_group_condition", {})
+        target_group = target_group if isinstance(target_group, dict) else {}
+        valid_campaign = source_config.get("valid_campaign_condition", {})
+        valid_campaign = valid_campaign if isinstance(valid_campaign, dict) else {}
+        date_column = source_config.get("campaign_date_column", "CAMP_SDATE")
+        inner_where: list[str] = []
+        if target_group.get("column") and target_group.get("value"):
+            inner_where.append(f"{target_group['column']} = {_sql_quote(str(target_group['value']))}")
+        if valid_campaign.get("expression"):
+            inner_where.append(str(valid_campaign["expression"]))
+        if isinstance(window_days, int) and window_days > 0:
+            inner_where.append(f"{camp_alias}.{date_column} >= {_member_dialect().char8_cutoff(window_days)}")
+        inner_where.append(predicate)
+        subquery = "\n".join([
             "(",
             f"    SELECT {alias}.{member_col}",
             f"    FROM {table} {alias}",
             f"    INNER JOIN {camp_table} {camp_alias} ON " + " AND ".join(camp_conditions),
             "    WHERE " + "\n      AND ".join(inner_where),
             f"    GROUP BY {alias}.{member_col}",
-            "    HAVING " + "\n       AND ".join(having_clauses),
-            ") O",
+            "    HAVING " + "\n       AND ".join(having),
+            f") {subquery_alias}",
+        ])
+        left = str(join.get("left", _member_dialect().cast_bigint(f"{alias}.{member_col}")))
+        left = left.replace(f"{alias}.", f"{subquery_alias}.")
+        right = str(join.get("right", "B.MEMBER_NO"))
+        return f"     INNER JOIN {subquery} ON {left} = {right}"
+
+    campaign_aggregate_joins: list[str] = []
+    if freq is not None:
+        source = str(freq_event_config.get("source") or "response_fact")
+        source_config = _source_config(source)
+        event_alias = str(source_config.get("alias") or response_alias)
+        key_expr = source_config.get(
+            "campaign_key_expression",
+            _member_dialect().concat(f"{event_alias}.CAMP_ID", "':'", f"{event_alias}.CAMP_EXEC_NO"),
+        )
+        predicate = str(freq_event_config.get("predicate") or config.get("response_predicate") or "")
+        freq_join = _campaign_aggregate_join(
+            source=source,
+            predicate=predicate,
+            having=[f"COUNT(DISTINCT {key_expr}) {freq['operator']} {freq['count']}"],
+            window_days=freq.get("window_days"),
+            subquery_alias="OFREQ",
+        )
+        if freq_join is None:
+            return None
+        campaign_aggregate_joins.append(freq_join)
+
+    if buy is not None or buy_count is not None:
+        key_expr = config.get(
+            "campaign_key_expression",
+            _member_dialect().concat(f"{response_alias}.CAMP_ID", "':'", f"{response_alias}.CAMP_EXEC_NO"),
+        )
+        buy_having: list[str] = []
+        if buy_count is not None:
+            buy_having.append(f"COUNT(DISTINCT {key_expr}) {buy_count['operator']} {buy_count['count']}")
+        if buy is not None:
+            buy_having.append(f"{buy_amount_agg}({buy_amount_column}) {buy['operator']} {_format_threshold(buy['amount'])}")
+        buy_days = [
+            condition.get("window_days") for condition in (buy, buy_count)
+            if condition and isinstance(condition.get("window_days"), int) and condition.get("window_days") > 0
         ]
-    )
-    # 서브쿼리 밖에선 반응 팩트 별칭(R)이 O 로 바뀌므로 조인식의 alias 접두어를 O 로 치환한다.
-    left = str(join.get("left", _member_dialect().cast_bigint(f"{alias}.{member_col}"))).replace(f"{alias}.", "O.")
-    right = str(join.get("right", "B.MEMBER_NO"))
+        buy_join = _campaign_aggregate_join(
+            source="response_fact",
+            predicate=buy_response_predicate,
+            having=buy_having,
+            window_days=min(buy_days) if buy_days else None,
+            subquery_alias="OBUY",
+        )
+        if buy_join is None:
+            return None
+        campaign_aggregate_joins.append(buy_join)
 
     # A campaign-frequency predicate and ordinary order aggregates may coexist
     # (for example campaign response >= K AND purchase count >= N).  They have
@@ -17229,14 +17357,32 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
             f"{aggregate_alias}.{aggregate_join_column}"
         )
 
-    compiled = compile_member_target_conditions(query_plan)
+    # 동일한 긍정 이벤트의 EXISTS 는 횟수 집계 조인이 이미 더 강하게 보장한다. 부정 이벤트와 다른 이벤트는
+    # 그대로 남겨 ``발송 성공 3회 이상 AND 구매반응 없음`` 같은 조합을 보존한다.
+    compile_plan = query_plan
+    if freq_event in {"campaign_contact", "offer_response", "buy_response"}:
+        responses = target_user.get("campaign_responses") or []
+        filtered_responses = [
+            response for response in responses
+            if not (
+                isinstance(response, dict)
+                and response.get("canonical") == freq_event
+                and not response.get("negated")
+            )
+        ]
+        if len(filtered_responses) != len(responses):
+            compile_plan = {
+                **query_plan,
+                "target_user": {**target_user, "campaign_responses": filtered_responses},
+            }
+    compiled = compile_member_target_conditions(compile_plan)
     where_clauses = list(compiled["predicates"])
     if not compiled["forces_state"]:
         where_clauses.append(_member_active_state_predicate())
 
     segment_parts: list[str] = []
     if freq is not None:
-        segment_parts.append(f"campaign_responder_{freq['count']}x")
+        segment_parts.append(f"{freq_event}_{freq['count']}x")
     if buy_count is not None:
         segment_parts.append(f"campaign_buyer_{buy_count['count']}cnt")
     if buy is not None:
@@ -17247,8 +17393,11 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
         _member_grade_select(),
         _sql_quote(segment) + " AS target_segment",
     ]
-    if compiled["labels"]:
-        select_columns.append(_sql_quote(",".join(compiled["labels"])) + " AS segment_label")
+    segment_labels = list(compiled["labels"])
+    if freq is not None:
+        segment_labels.insert(0, str(freq.get("label") or freq_event))
+    if segment_labels:
+        select_columns.append(_sql_quote(",".join(_unique_strings(segment_labels))) + " AS segment_label")
     objective = query_plan.get("campaign_constraints", {}).get("objective")
     if objective:
         select_columns.append(_sql_quote(objective) + " AS objective")
@@ -17257,7 +17406,7 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
         [
             "SELECT " + ", ".join(select_columns),
             _member_from_clause(),
-            f"     INNER JOIN {subquery} ON {left} = {right}",
+            *campaign_aggregate_joins,
             *order_aggregate_joins,
             "WHERE " + "\n  AND ".join(_unique_strings(where_clauses)),
         ]

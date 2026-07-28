@@ -223,6 +223,27 @@ def test_send_success_maps_to_contact_success(query):
     assert "M.CONTAC_SUCC_YN = 'Y'" in _sql(query)
 
 
+def test_contact_success_frequency_with_no_buy_response_campaign():
+    query = "최근 캠페인 발송 성공 횟수가 3회 이상이고 구매반응이 없는 회원을 대상으로 재반응 유도 캠페인을 만들어줘."
+    plan = _plan(query)
+    frequency = plan["target_user"]["campaign_response_frequency"]
+    responses = plan["target_user"].get("campaign_responses") or []
+
+    assert frequency["event"] == "campaign_contact"
+    assert frequency["operator"] == ">="
+    assert frequency["count"] == 3
+    assert any(response.get("canonical") == "no_buy_response" for response in responses)
+
+    sql = _sql(query)
+    assert "FROM Z_CAMP_MBR M" in sql
+    assert "M.CONTAC_SUCC_YN = 'Y'" in sql
+    assert "M.CELL_TYPE_CD = 'T'" in sql
+    assert "COUNT(DISTINCT CONCAT(M.CAMP_ID, ':', M.CAMP_EXEC_NO)) >= 3" in sql
+    assert "NOT EXISTS (SELECT 1 FROM MCS_CAMP_MBR_RSPN_FT R" in sql
+    assert "R.BUY_RSPN_YN = 'Y'" in sql
+    assert "(R.OFFR_RSPN_YN = 'Y' OR R.BUY_RSPN_YN = 'Y')" not in sql
+
+
 def test_campaign_send_success_combines_with_no_purchase():
     # '발송 성공 + 무구매' 조합: 캠페인 접촉 성공 EXISTS 와 무구매 anti-join 이 둘 다 남아야 한다.
     # 전용 캠페인 빌더가 no_purchase 를 조용히 버리던(또는 그 반대) 버그 회귀 방지.

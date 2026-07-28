@@ -179,7 +179,7 @@ def _coerce_threshold_list(raw: Any, *, allowed: Any = None) -> list[dict[str, A
 
 
 def _coerce_freq(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
-    """campaign_response_frequency: {operator, count, window_days?, label?}."""
+    """Frequency threshold with an optional registry-backed event discriminator."""
     if not isinstance(raw, dict):
         return None
     operator = _canon_operator(raw.get("operator"))
@@ -187,6 +187,11 @@ def _coerce_freq(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
     if not (operator and count):
         return None
     out: dict[str, Any] = {"operator": operator, "count": count, "window_days": _pos_int(raw.get("window_days"))}
+    event = raw.get("event")
+    if isinstance(event, str) and event:
+        if allowed is not None and event not in allowed:
+            return None
+        out["event"] = event
     if isinstance(raw.get("label"), str) and raw["label"]:
         out["label"] = raw["label"]
     return out
@@ -446,8 +451,8 @@ SLOT_SHAPES: dict[str, SlotShape] = {
         _list_schema("캠페인 반응 리스트. [{canonical:<접촉/오퍼/구매반응/쿠폰 canonical>, negated?:bool}]."),
         _coerce_campaign_responses, allowed_key="campaign_responses"),
     "campaign_response_frequency": SlotShape("campaign_response_frequency", "target_user",
-        _obj_schema(f"캠페인 반응 횟수 임계. {{operator, count, window_days?}}. {_OP_HINT}"),
-        _coerce_freq),
+        _obj_schema(f"캠페인 이벤트 횟수 임계. {{event, operator, count, window_days?}}. {_OP_HINT}"),
+        _coerce_freq, allowed_key="campaign_frequency_events"),
     "campaign_buy_amount": SlotShape("campaign_buy_amount", "target_user",
         _obj_schema(f"캠페인 귀속 구매금액 임계. {{operator, amount, window_days?}}. {_OP_HINT}"),
         _coerce_buy_amount),

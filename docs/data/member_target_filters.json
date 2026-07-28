@@ -1017,9 +1017,49 @@
     "contact_member_list": {
       "table": "Z_CAMP_MBR",
       "alias": "M",
+      "member_column": "MBR_NO",
       "member_join": {
         "left": "TRY_CAST(M.MBR_NO AS BIGINT)",
         "right": "B.MEMBER_NO"
+      },
+      "campaign_join": {
+        "table": "Z_CAMPAIGN",
+        "alias": "ZC",
+        "conditions": [
+          "ZC.CAMP_ID = M.CAMP_ID",
+          "ZC.CAMP_EXEC_NO = M.CAMP_EXEC_NO"
+        ]
+      },
+      "target_group_condition": {
+        "column": "M.CELL_TYPE_CD",
+        "value": "T"
+      },
+      "valid_campaign_condition": {
+        "expression": "ISNULL(ZC.CANCEL_YN, 'N') = 'N'"
+      },
+      "campaign_date_column": "CAMP_SDATE",
+      "campaign_key_expression": "CONCAT(M.CAMP_ID, ':', M.CAMP_EXEC_NO)"
+    },
+    "frequency_events": {
+      "campaign_response": {
+        "source": "response_fact",
+        "predicate": "(R.OFFR_RSPN_YN = 'Y' OR R.BUY_RSPN_YN = 'Y')",
+        "synonyms": ["캠페인 반응", "반응"]
+      },
+      "campaign_contact": {
+        "source": "contact_member_list",
+        "predicate": "M.CONTAC_SUCC_YN = 'Y'",
+        "synonyms": ["발송 성공", "전송 성공", "접촉 성공", "도달 성공", "메시지", "문자", "알림", "수신", "받"]
+      },
+      "offer_response": {
+        "source": "response_fact",
+        "predicate": "R.OFFR_RSPN_YN = 'Y'",
+        "synonyms": ["오퍼 반응", "혜택 반응", "쿠폰 반응"]
+      },
+      "buy_response": {
+        "source": "response_fact",
+        "predicate": "R.BUY_RSPN_YN = 'Y'",
+        "synonyms": ["구매 반응", "구매반응", "구매 전환"]
       }
     },
     "boolean_metrics": {
