@@ -14,7 +14,7 @@ import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from string import Template
 from typing import Any, Callable
@@ -52,7 +52,9 @@ from calendar_window import (
     duration_window_candidates as _duration_window_candidates,
     month_last_day as _month_last_day,
     parse_calendar_window,
+    parse_calendar_window_group,
     parse_calendar_window_spans,
+    parse_calendar_windows,
     parse_duration_window as _parse_duration_window,
     parse_half_or_quarter_window,
     ymd as _ymd,
@@ -2389,6 +2391,9 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
         # 기간 대 기간 지표 증감('2019년 2월과 3월의 구매금액이 증가한')은 구매일(purchase_date)·집계 파싱
         # 뒤에 실행해, 두 창 중 첫 창만 잡힌 단일 기간 조건을 증감 조건으로 대체한다.
         "metric_trend": _FilterSpec(_apply_metric_trend_filter, init_key="metric_trend"),
+        # 주인 없는 절대 달력 창을 plan 이 요구하는 팩트의 날짜창으로 귀속한다. 모든 창 파서(구매일/증감/
+        # 가입/로그인/미구매)보다 뒤에 실행해야 '이미 주인 있는 창'을 덮지 않는다 → 경로 리스트 맨 끝.
+        "calendar_window_claim": _FilterSpec(_apply_calendar_window_claim_filter),
         # '구매 횟수가 0회/없는'(공집합 COUNT=0)도 no_purchase 로 승격 — 집계(order_count '='0) 파싱 뒤에
         # 실행해 그 공집합 조건을 걷어내고 anti-join 으로 대체한다. 캠페인/기간창 문맥은 각 트랙에 양보.
         "zero_purchase_count": _FilterSpec(_apply_zero_purchase_count_filter),
@@ -2667,7 +2672,7 @@ _RULES_POST_FILTERS: tuple[str, ...] = (
     "campaign_response", "no_additional_purchase", "campaign_response_frequency", "campaign_buy_amount",
     "campaign_buy_count", "cell_rate", "children_registered", "grade_threshold", "channel_consent", "member_flag", "policy",
     "group_ranking", "region_member_count", "region_density", "member_metric_ranking", "purchase_count_ranking",
-    "zero_amount_purchase", "zero_purchase_count", "metric_trend",
+    "zero_amount_purchase", "zero_purchase_count", "metric_trend", "calendar_window_claim",
 )
 _AUTO_FILTERS: tuple[str, ...] = (
     "sell_object", "dimension", "member_value", "macro_region",
@@ -2679,6 +2684,7 @@ _AUTO_FILTERS: tuple[str, ...] = (
     "grade_threshold", "channel_consent", "member_flag", "aggregate", "purchase_count_threshold",
     "campaign_buy_amount", "campaign_buy_count", "cell_rate", "cart_aggregate", "cart_retention", "cart_type",
     "birthday", "signup_target", "zero_amount_purchase", "zero_purchase_count", "metric_trend",
+    "calendar_window_claim",
 )
 
 
@@ -7352,15 +7358,107 @@ def _apply_cart_type_filter(query: str, plan: dict[str, Any]) -> None:
 _PURCHASE_DATE_SIGNALS = ("구매", "구입", "주문")
 
 
-def _parse_purchase_date_period(query: str) -> dict[str, Any] | None:
-    """구매가 일어난 절대 날짜/기간을 ORDER_DATE(YYYYMMDD CHAR8) 창 {from,to}로 파싱한다.
+def _calendar_window_slot(windows: list[dict[str, Any]], label_suffix: str = "") -> dict[str, Any] | None:
+    """절대 달력 창 목록 → 날짜창 슬롯 shape {from, to, label, windows?}.
 
-    달력 문법 자체는 calendar_window.parse_calendar_window 가 소유한다 — 이 함수는 도메인 게이트
-    (구매/구입/주문 신호가 있어야 발동. 생일·캠페인 기간 등 무관한 날짜를 잡지 않기 위함)와 라벨
-    꼬리말('구매')만 얹는다."""
+    창이 하나면 지금까지와 같은 {from,to,label} 이다. 둘 이상(나열)이면 **전부** windows 에 보존하고
+    from/to 에는 전체 범위(min~max)를 넣는다 — 이 슬롯을 {from,to} 로만 읽는 기존 소비자(confidence
+    근거·의미 매핑 등)를 깨지 않으면서, SQL 술어를 만드는 단일 소유자(_purchase_date_predicate)만
+    windows 를 보고 구간별로 컴파일하게 하기 위함이다. 라벨 꼬리말은 나열 전체에 한 번만 붙인다."""
+    if not windows:
+        return None
+    ordered = sorted(windows, key=lambda window: (window["from"], window["to"]))
+    label = ", ".join(_unique_strings([str(window.get("label") or "") for window in ordered if window.get("label")]))
+    slot: dict[str, Any] = {"from": ordered[0]["from"], "to": ordered[-1]["to"]}
+    if label or label_suffix:
+        slot["label"] = f"{label} {label_suffix}".strip()
+    if len(ordered) > 1:
+        slot["windows"] = [{"from": window["from"], "to": window["to"]} for window in ordered]
+    return slot
+
+
+def _parse_purchase_date_period(query: str) -> dict[str, Any] | None:
+    """구매가 일어난 절대 날짜/기간을 ORDER_DATE(YYYYMMDD CHAR8) 창 {from,to[,windows]}로 파싱한다.
+
+    달력 문법 자체는 calendar_window 가 소유한다 — 이 함수는 도메인 게이트(구매/구입/주문 신호가 있어야
+    발동. 생일·캠페인 기간 등 무관한 날짜를 잡지 않기 위함)와 라벨 꼬리말('구매')만 얹는다. 창 선택은
+    parse_calendar_window_group 이 소유한다: 가장 좁은 창 하나가 아니라 그 창이 속한 나열 전체를 받아
+    '2018, 2019년'·'2019년 2월과 3월' 처럼 한 조건이 여러 구간을 가리키는 표현에서 구간이 조용히
+    사라지지 않게 한다."""
     if not any(signal in query for signal in _PURCHASE_DATE_SIGNALS):
         return None
-    return parse_calendar_window(query, label_suffix="구매")
+    return _calendar_window_slot(parse_calendar_window_group(query), "구매")
+
+
+# ── 고아 달력 창 귀속(calendar_window_claim) ────────────────────────────────────────
+# 절대 달력 창이 '무엇에 대한 언제'인지는 지금까지 표면어로만 판정했다(_PURCHASE_DATE_SIGNALS). 표면어
+# 게이트는 창과 그 소속어가 같은 문장에 있을 때만 성립하는데, 타겟 절과 채널 절이 분리되면
+# (retrieval_scope="targeting") 소속어가 반대편 절로 잘려나가 창이 통째로 사라진다 — '2018·2019년 총금액
+# 10만원 이상인 회원'(타겟 절) + '구매 촉진 캠페인'(채널 절)에서 '구매'가 채널 절에 있는 것이 그 예다.
+# 창의 소속은 표면어가 아니라 **같은 plan 이 이미 어떤 팩트를 요구하는가**로도 정해진다. 조건→팩트 매핑은
+# targeting_ir.CONDITION_SPECS 가 소유하므로(fact="order"|"cart"|"campaign"…), 새 주문 조건이 늘어도 이
+# 규칙은 자동으로 따라온다 — 케이스마다 표면어를 늘리지 않는다.
+_CALENDAR_CLAIM_FACT_SLOT = {"order": "purchase_date"}  # 팩트 → 그 팩트의 '언제'를 담는 슬롯
+# 다른 도메인의 날짜 앵커. 문장에 이런 앵커가 있으면 창이 주문일이라고 단정할 수 없으므로 귀속하지
+# 않는다(fail-close — 대신 _deterministic_dropped_conditions 가 드롭을 시끄럽게 고지한다).
+_NON_ORDER_DATE_ANCHORS = ("가입", "등록", "생일", "생년", "로그인", "접속", "방문", "발송", "만료", "휴면", "탈퇴")
+
+
+def _plan_calendar_ranges(plan: dict[str, Any]) -> list[tuple[str, str]]:
+    """plan 안에서 **이미 소유된** 절대 달력 구간(YYYYMMDD from/to)을 전부 모은다.
+
+    슬롯 이름 목록이 아니라 구조(from/to 8자리 쌍)로 훑는다 — purchase_date·metric_trend 의
+    baseline/current 처럼 중첩된 창도, 앞으로 생길 새 창 슬롯도 자동으로 포함되기 때문이다."""
+    found: list[tuple[str, str]] = []
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            start, end = node.get("from"), node.get("to")
+            if (isinstance(start, str) and isinstance(end, str)
+                    and re.fullmatch(r"\d{8}", start) and re.fullmatch(r"\d{8}", end)):
+                found.append((start, end) if start <= end else (end, start))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(plan)
+    return found
+
+
+def _unclaimed_calendar_windows(windows: list[dict[str, Any]], plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """주어진 절대 달력 창 중 plan 의 어떤 창 슬롯도 포함하지 못한 것들(= 조용히 드롭될 구간).
+
+    포함 판정은 '구간 커버'다 — 병합된 넓은 구간(2018-01-01~2019-12-31)이 그 안의 창(2019년)을 이미
+    표현하고 있으면 드롭이 아니다."""
+    claimed = _plan_calendar_ranges(plan)
+    return [
+        window for window in windows
+        if not any(start <= window["from"] and window["to"] <= end for start, end in claimed)
+    ]
+
+
+def _apply_calendar_window_claim_filter(query: str, plan: dict[str, Any]) -> None:
+    """어느 슬롯도 소유하지 않은 절대 달력 창을, plan 이 이미 요구하는 팩트의 날짜창으로 귀속한다.
+
+    모든 창 파서(구매일/증감/가입/로그인 …)가 끝난 뒤 마지막에 실행한다 — 주인이 있는 창은 건드리지
+    않고, 주인 없는 창만 팩트로부터 소속을 되찾는다. 소속을 확정할 수 없으면(다른 도메인 날짜 앵커가
+    문장에 있거나, plan 이 그 팩트를 요구하지 않으면) 귀속하지 않는다."""
+    candidates = _unclaimed_calendar_windows(parse_calendar_window_group(query), plan)
+    if not candidates:
+        return
+    compact = query.replace(" ", "")
+    if any(anchor in compact for anchor in _NON_ORDER_DATE_ANCHORS):
+        return  # 창의 소속이 모호 → 귀속하지 않는다(잘못 건 조건은 드롭보다 나쁘다)
+    facts = {condition.spec.fact for condition in _extract_conditions_ir(plan)}
+    for fact, slot in _CALENDAR_CLAIM_FACT_SLOT.items():
+        if fact not in facts:
+            continue
+        window_slot = _calendar_window_slot(candidates, "구매" if slot == "purchase_date" else "")
+        if window_slot is not None:
+            plan.setdefault("target_user", {})[slot] = window_slot
+        return
 
 
 def _parse_half_or_quarter_period(query: str) -> dict[str, Any] | None:
@@ -12724,6 +12822,13 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
         label = _CALENDAR_PERIOD_LABELS.get(period, period)
         warnings.append(f"기간 '{label}' 조건(달력 기간은 집계에 아직 미반영 — 전체 기간으로 계산됨)")
 
+    # 절대 달력 창: 원문에 연도가 명시된 창이 있는데 plan 의 어떤 창 슬롯도 그 구간을 포함하지 않으면
+    # 조용한 드롭이다('2018, 2019년 …'이 기간 필터 없는 전 기간 집계로 나가는 사고). 창 소속을 되찾는
+    # 것은 calendar_window_claim 이 맡고, 되찾지 못한 창(소속 모호·해당 팩트 없음)은 여기서 고지한다 —
+    # 연도 명시 절대 창만 보므로 상대 기간('최근 3개월')·숫자 오탐은 대상이 아니다.
+    for window in _unclaimed_calendar_windows(parse_calendar_windows(text), query_plan):
+        warnings.append(f"기간 '{window['label']}' 조건")
+
     # 장바구니: 원문에 '장바구니'가 있는데 어떤 카트 슬롯도 안 잡혔으면 드롭(존재/부재/보관/유형/개수 전부).
     if "장바구니" in compact and not (
         "cart_abandoner" in behaviors
@@ -15894,21 +15999,54 @@ def _sql_nlike_contains(column: str, term: str) -> str:
     return f"{column} LIKE N'%{term.replace(chr(39), chr(39) * 2)}%'"
 
 
+def _calendar_window_ranges(window_slot: Any) -> list[tuple[str, str]]:
+    """날짜창 슬롯 → 정규화된 (시작, 끝) YYYYMMDD 구간 목록(정렬 + 인접/중첩 병합).
+
+    슬롯이 windows 나열을 들고 있으면 그 구간들을, 없으면 {from,to} 한 구간을 읽는다. 맞닿은 구간
+    ('2018년'+'2019년')은 하나로 합쳐 불필요한 OR 을 만들지 않는다 — 결과 집합은 같고 SQL 은 사람이
+    쓴 것과 같아진다. 형식이 어긋난 값은 버린다(무효 술어 생성 금지)."""
+    if not isinstance(window_slot, dict):
+        return []
+    raw = window_slot.get("windows")
+    candidates = raw if isinstance(raw, list) and raw else [window_slot]
+    parsed: list[tuple[str, str]] = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        start, end = candidate.get("from"), candidate.get("to")
+        if not (isinstance(start, str) and isinstance(end, str)
+                and re.fullmatch(r"\d{8}", start) and re.fullmatch(r"\d{8}", end)):
+            continue
+        parsed.append((start, end) if start <= end else (end, start))
+    merged: list[tuple[str, str]] = []
+    for start, end in sorted(parsed):
+        if merged and start <= _next_day8(merged[-1][1]):
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+    return merged
+
+
+def _next_day8(token: str) -> str:
+    """YYYYMMDD 의 다음 날(구간 인접 판정용). 'YYYY1231' + 1 = 'YYYY+1 0101'."""
+    return (date(int(token[:4]), int(token[4:6]), int(token[6:8])) + timedelta(days=1)).strftime("%Y%m%d")
+
+
 def _purchase_date_predicate(purchase_date: Any, alias: str | None = "D", column: str = "ORDER_DATE") -> str | None:
-    """구매 날짜 창 {from,to}(YYYYMMDD CHAR8)를 ORDER_DATE BETWEEN 술어로 만든다.
+    """구매 날짜 창을 ORDER_DATE BETWEEN 술어로 만든다(날짜창 → SQL 술어의 단일 소유자).
 
     ORDER_DATE 는 CHAR(8) 'YYYYMMDD' 로 저장되므로 문자열 BETWEEN 이 곧 날짜 범위다(집계 빌더의
-    CONVERT(CHAR(8), …, 112) 비교와 같은 표현계). alias=None 이면 컬럼을 별칭 없이 쓴다(집계 서브쿼리처럼
-    단일 테이블 스캔이라 별칭이 없는 문맥용). 값이 없거나 형식이 어긋나면 None."""
-    if not isinstance(purchase_date, dict):
+    CONVERT(CHAR(8), …, 112) 비교와 같은 표현계). 슬롯이 여러 구간(windows)을 들고 있으면 구간마다
+    BETWEEN 을 만들어 OR 로 묶는다 — 나열형 기간('2018, 2019년', '1월과 3월')이 한 구간으로 뭉개지거나
+    사라지지 않게 하는 유일한 지점이라, 모든 빌더가 이 함수를 통과하는 한 자동으로 다구간을 얻는다.
+    alias=None 이면 컬럼을 별칭 없이 쓴다(집계 서브쿼리처럼 단일 테이블 스캔이라 별칭이 없는 문맥용).
+    값이 없거나 형식이 어긋나면 None."""
+    ranges = _calendar_window_ranges(purchase_date)
+    if not ranges:
         return None
-    start, end = purchase_date.get("from"), purchase_date.get("to")
-    if not (isinstance(start, str) and isinstance(end, str) and re.fullmatch(r"\d{8}", start) and re.fullmatch(r"\d{8}", end)):
-        return None
-    if start > end:
-        start, end = end, start
     prefix = f"{alias}." if alias else ""
-    return f"{prefix}{column} BETWEEN {_sql_quote(start)} AND {_sql_quote(end)}"
+    terms = [f"{prefix}{column} BETWEEN {_sql_quote(start)} AND {_sql_quote(end)}" for start, end in ranges]
+    return terms[0] if len(terms) == 1 else "(" + " OR ".join(terms) + ")"
 
 
 # 상품 스코프로 쓰기엔 너무 일반적인 상품 지시어(구체적 상품/브랜드가 아님). 이런 값이 상품 스코프

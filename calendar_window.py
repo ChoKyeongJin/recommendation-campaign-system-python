@@ -36,6 +36,12 @@ QUARTER_MONTH_RANGES = {1: (1, 3), 2: (4, 6), 3: (7, 9), 4: (10, 12)}
 _ANY_YEAR_RE = re.compile(r"(\d{4})\s*년")
 _QUARTER_RE = re.compile(r"([1-4])\s*(?:사)?분기")
 
+# 나열/범위 연결어. '2018, 2019년'·'2018년 및 2019년'·'2019년 2월과 3월'처럼 창이 이어져 나올 때
+# 그 사이에 오는 토큰이다. 나열형 베어 연도 문법(_CAL_TOKEN_RE 의 yb)과 '한 나열에 속하는가' 판정
+# (_ENUM_LINK_RE)이 같은 어휘를 쓰도록 한 곳에서 소유한다.
+_ENUM_CONNECTORS = ("및", "와", "과", "그리고", "또는", "이나", "랑", "하고")
+_YEAR_ENUM_SEP = r"(?:\s*[,·/~∼]\s*|\s*[-–]\s*|\s*(?:" + "|".join(_ENUM_CONNECTORS) + r")\s*)"
+
 # 달력 토큰 스캐너(단일 정규식, 좁은 표현 우선 순서). 파이썬 정규식은 같은 시작 위치에서 앞선 대안을
 # 먼저 채택하므로, 이 열거 순서가 곧 '일 > 월 > 분기 > 반기 > 연' 구체성 우선순위다 — '2019년 3월'이
 # 연 전체로 뭉개지지 않는다. 뒤쪽 세 대안(연도 생략 월/분기/반기)은 '2019년 2월과 3월'의 '3월'처럼
@@ -49,13 +55,26 @@ _CAL_TOKEN_RE = re.compile(
     r"|(?P<yq>(?P<yq_y>\d{4})\s*년\s*(?P<yq_q>[1-4])\s*(?:사)?분기)"
     r"|(?P<yh>(?P<yh_y>\d{4})\s*년\s*(?P<yh_h>[상하])반기)"
     r"|(?P<y>(?P<y_y>\d{4})\s*년)"
+    # 나열형 베어 연도('2018, 2019년'·'2018~2019년'의 앞쪽 '2018'). 뒤따르는 연도가 '년'을 달고 있을
+    # 때만 창이 된다 — 접미어를 나열 뒤쪽에서 상속하는 문법으로, 연도 생략 월('2019년 2월과 3월'의
+    # '3월')이 앞쪽 연도를 상속하는 것의 대칭이다. 앵커('년')가 없는 베어 숫자라 임의의 네 자리 수를
+    # 연도로 오인하지 않도록 19/20/21 세기로 제한한다. 연결어까지 소비하되 다음 연도는 lookahead 로만
+    # 본다(연쇄 나열 '2017, 2018, 2019년'도 각 토큰이 차례로 잡히도록).
+    rf"|(?P<yb>(?P<yb_y>(?:19|20|21)\d{{2}}){_YEAR_ENUM_SEP}(?=(?:\d{{4}}{_YEAR_ENUM_SEP})*\d{{4}}\s*년))"
     r"|(?P<m>(?P<m_m>\d{1,2})\s*월)"
     r"|(?P<q>(?P<q_q>[1-4])\s*(?:사)?분기)"
     r"|(?P<h>(?P<h_h>[상하])반기)"
 )
 # 창 하나의 구체성 등급(작을수록 좁다). parse_calendar_window 가 '가장 좁은 표현' 하나를 고를 때 쓴다 —
 # 여러 창이 섞인 문장에서 위치가 아니라 구체성으로 뽑던 기존 계약을 그대로 보존한다.
-_GRAIN_RANK = {"ymd": 0, "ymdd": 0, "ym": 1, "ymd2": 1, "m": 1, "yq": 2, "q": 2, "yh": 3, "h": 3, "y": 4}
+_GRAIN_RANK = {"ymd": 0, "ymdd": 0, "ym": 1, "ymd2": 1, "m": 1, "yq": 2, "q": 2, "yh": 3, "h": 3, "y": 4, "yb": 4}
+
+# 창 두 개 '사이'의 문구가 나열 연결에 불과한지(= 두 창이 한 나열에 속하는지). 조사/연결어/구분자만
+# 있으면 나열이고, 그 밖의 낱말(용언 등)이 끼면 서로 다른 조건의 창이다 — '2018년 및 2019년'은 나열,
+# '2018년에 구매하고 2019년에 로그인한'은 나열이 아니다.
+_ENUM_LINK_RE = re.compile(
+    r"[\s,·/~∼\-–]*(?:" + "|".join(_ENUM_CONNECTORS) + r")?[\s,·/~∼\-–]*(?:년도|년)?[\s,·/~∼\-–]*"
+)
 
 
 def month_last_day(year: int, month: int) -> int:
@@ -101,7 +120,7 @@ def parse_half_or_quarter_window(text: str, *, label_suffix: str = "") -> dict[s
 
 def _token_year(match: "re.Match[str]") -> int | None:
     """토큰이 스스로 명시한 연도(연도 생략 토큰이면 None)."""
-    for group in ("ymd_y", "ymdd_y", "ym_y", "ymd2_y", "yq_y", "yh_y", "y_y"):
+    for group in ("ymd_y", "ymdd_y", "ym_y", "ymd2_y", "yq_y", "yh_y", "y_y", "yb_y"):
         value = match.group(group)
         if value is not None:
             return int(value)
@@ -188,6 +207,41 @@ def parse_calendar_windows(text: str, *, label_suffix: str = "") -> list[dict[st
     '2019년 2월과 3월'(연도 상속), '2019년 1분기 대비 2분기', '2018년 12월과 2019년 1월'처럼 창이 둘
     이상인 표현을 소비하는 쪽(기간 대 기간 증감 비교 등)이 쓴다."""
     return [window for window, _start, _end in parse_calendar_window_spans(text, label_suffix=label_suffix)]
+
+
+def parse_calendar_window_group(text: str, *, label_suffix: str = "") -> list[dict[str, Any]]:
+    """'가장 좁은 창' + 그와 **한 나열로 이어진** 같은 구체성의 창들을 등장 순서대로 돌려준다.
+
+    ``parse_calendar_window`` 의 일반화다. 단일 창 계약('가장 좁은 표현 하나')을 그대로 유지하되,
+    그 창이 나열의 일원이면 나열 전체를 돌려준다 — '2018년 및 2019년'·'2018, 2019년'·'2019년 2월과
+    3월'은 한 조건의 두 구간이지 두 조건이 아니기 때문이다. 하나만 골라 쓰면 나머지 구간이 조용히
+    사라져 '2018·2019년 합계'가 '2018년 합계'가 된다.
+
+    나열 판정은 위치로 한다 — 창 사이 문구가 연결어/조사/구분자뿐일 때만 같은 나열이다. 서로 다른
+    조건이 각자 창을 가진 문장('2018년에 구매하고 2019년에 로그인한')은 나열이 아니므로 뭉치지 않는다.
+    구체성이 다른 창(연 vs 월)도 섞지 않는다 — '2019년 3월 … 2018년'은 여전히 가장 좁은 3월 하나다.
+    """
+    scanned = _scan_calendar_windows(text, label_suffix)
+    if not scanned:
+        return []
+    pivot = min(range(len(scanned)), key=lambda i: (scanned[i][1], scanned[i][2]))
+    rank = scanned[pivot][1]
+
+    def _linked(left: int, right: int) -> bool:
+        """scanned[left] 와 scanned[right] 가 둘 다 같은 구체성이면서 나열로 이어져 있는지."""
+        return (
+            scanned[left][1] == rank
+            and scanned[right][1] == rank
+            and _ENUM_LINK_RE.fullmatch(text[scanned[left][3]:scanned[right][2]]) is not None
+        )
+
+    first = pivot
+    while first - 1 >= 0 and _linked(first - 1, first):
+        first -= 1
+    last = pivot
+    while last + 1 < len(scanned) and _linked(last, last + 1):
+        last += 1
+    return [scanned[index][0] for index in range(first, last + 1)]
 
 
 def parse_calendar_window(text: str, *, label_suffix: str = "") -> dict[str, Any] | None:

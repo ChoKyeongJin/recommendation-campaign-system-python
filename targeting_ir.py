@@ -281,26 +281,43 @@ def _coerce_birthday(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
     return {"granularity": "month" if granularity == "month" else "today"}
 
 
+def _has_window_year(token: str) -> bool:
+    # 연도 필수: YYYYMM(6)·YYYYMMDD(8), 또는 YYYY(4)는 그럴듯한 연도 범위일 때만(MMDD 오인 방지).
+    if not token.isdigit():
+        return False
+    if len(token) in (6, 8):
+        return True
+    return len(token) == 4 and 1900 <= int(token) <= 2100
+
+
 def _coerce_purchase_date(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
-    """purchase_date: {from, to, label?}. from/to 는 YYYY 이상 날짜 토큰(자릿수 검증)."""
+    """purchase_date: {from, to, label?, windows?}. from/to 는 YYYY 이상 날짜 토큰(자릿수 검증).
+
+    windows 는 한 조건이 여러 구간을 가리키는 표현('2018, 2019년', '1월과 3월')용 나열이다. 규칙 경로가
+    만드는 shape 와 같다 — 구간을 하나로 뭉개면 나열의 나머지가 조용히 사라지고, 사이 기간까지 포함하는
+    넓은 한 구간으로 합치면 없는 기간이 딸려 들어온다. from/to 는 전체 범위(min~max)로 함께 채워
+    이 슬롯을 {from,to} 로만 읽는 소비자와의 호환을 유지한다."""
     if not isinstance(raw, dict):
         return None
+    windows: list[dict[str, str]] = []
+    for item in raw.get("windows") or []:
+        if not isinstance(item, dict):
+            continue
+        start, end = str(item.get("from", "")).strip(), str(item.get("to", "")).strip()
+        if _has_window_year(start) and _has_window_year(end):
+            windows.append({"from": start, "to": end} if start <= end else {"from": end, "to": start})
     frm = str(raw.get("from", "")).strip()
     to = str(raw.get("to", "")).strip()
-
-    def _has_year(token: str) -> bool:
-        # 연도 필수: YYYYMM(6)·YYYYMMDD(8), 또는 YYYY(4)는 그럴듯한 연도 범위일 때만(MMDD 오인 방지).
-        if not token.isdigit():
-            return False
-        if len(token) in (6, 8):
-            return True
-        return len(token) == 4 and 1900 <= int(token) <= 2100
-
-    if not (_has_year(frm) and _has_year(to)):
-        return None
+    if not (_has_window_year(frm) and _has_window_year(to)):
+        if not windows:
+            return None
+        frm = min(window["from"] for window in windows)
+        to = max(window["to"] for window in windows)
     out: dict[str, Any] = {"from": frm, "to": to}
     if isinstance(raw.get("label"), str) and raw["label"]:
         out["label"] = raw["label"]
+    if len(windows) > 1:
+        out["windows"] = sorted(windows, key=lambda window: (window["from"], window["to"]))
     return out
 
 
@@ -441,7 +458,9 @@ SLOT_SHAPES: dict[str, SlotShape] = {
         _obj_schema(f"셀 성공률/구매율. {{success_rate:{{operator,value}}, buy_rate:{{operator,value}}}} (value 0~100). {_OP_HINT}"),
         _coerce_cell_rate),
     "purchase_date": SlotShape("purchase_date", "target_user",
-        _obj_schema("절대 구매 날짜창. {from:'YYYYMMDD', to:'YYYYMMDD'} (연도 필수)."),
+        _obj_schema("절대 구매 날짜창. {from:'YYYYMMDD', to:'YYYYMMDD'} (연도 필수). 기간이 나열이면"
+                    "('2018, 2019년', '1월과 3월') windows:[{from,to},…] 에 구간을 전부 적는다 —"
+                    "하나만 적거나 사이 기간까지 포함하는 한 구간으로 합치지 않는다."),
         _coerce_purchase_date),
     "metric_trend": SlotShape("metric_trend", "target_user",
         _obj_schema("기간 대 기간 지표 증감. {metric_id, direction:'increase'|'decrease', "
