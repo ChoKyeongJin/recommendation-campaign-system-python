@@ -185,3 +185,32 @@ def test_cart_window_amount_and_no_purchase_all_land_in_sql():
     assert "NOT EXISTS" in sql and "CRM_SL_ORDERHEADERMALL" in sql  # 주문하지 않은
     assert candidate["dropped_conditions"] == []
     assert g.validate_sql_condition_coverage(sql, g.required_sql_conditions(plan))["is_satisfied"] is True
+
+
+def test_recent_cart_product_kinds_and_amount_purchase_promotion_campaign():
+    query = "최근 30일 장바구니 상품 종류가 2개 이상이고 총금액이 10만 원 이상인 회원을 대상으로 구매촉진 캠페인을 만들어줘."
+    plan = _plan(query)
+    target_user = plan["target_user"]
+    raw_conditions = target_user["cart_aggregate"]
+    conditions = raw_conditions if isinstance(raw_conditions, list) else [raw_conditions]
+    by_metric = {condition["metric"]: condition for condition in conditions}
+
+    assert by_metric["cart_line_count"] == {
+        "metric": "cart_line_count", "operator": ">=", "threshold": 2,
+    }
+    assert by_metric["cart_amount"] == {
+        "metric": "cart_amount", "operator": ">=", "threshold": 100000.0,
+    }
+    assert target_user["cart_retention"] == {
+        "max_days": 30, "label": "장바구니 보관 30일 이내", "date_basis": "created",
+    }
+    assert target_user["aggregate_conditions"] == []
+
+    candidate = g.build_sql_template_candidate(plan)
+    assert candidate is not None
+    sql = candidate["sql"]
+    assert "COUNT(DISTINCT CART_PRODUCT_NO) >= 2" in sql
+    assert "SUM(TOTAL_SALE_PRICE) >= 100000" in sql
+    assert "INS_DT >= DATEADD(DAY, -30, GETDATE())" in sql
+    assert candidate["dropped_conditions"] == []
+    assert g.validate_sql_condition_coverage(sql, g.required_sql_conditions(plan))["is_satisfied"] is True

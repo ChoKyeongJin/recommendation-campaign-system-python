@@ -6873,22 +6873,24 @@ def _cart_same_product_condition(query: str, compact: str) -> dict[str, Any] | N
     return None  # '동일 상품'만 있고 수량 표현이 없으면 임계값을 지어내지 않는다.
 
 
-def _cart_amount_condition(compact: str) -> dict[str, Any] | None:
-    """공백 제거 텍스트에서 장바구니 금액 임계값('장바구니에 10만원 이상')을 찾는다(없으면 None).
+def _cart_amount_conditions(compact: str, *, require_cart_context: bool = True) -> list[dict[str, Any]]:
+    """공백 제거 텍스트에서 장바구니 금액 임계값들을 찾는다.
 
-    금액이 장바구니 어휘 근처에 있을 때만 인정한다 — 창 없이 잡으면 "장바구니에 담은 고객 중 구매 금액
-    10만원 이상"의 누적 구매 금액까지 카트 금액으로 오인한다. 같은 이유로 금액 바로 앞이 구매/결제면
-    넘긴다(그건 aggregate_conditions 담당이고, 여기서 채가면 지표가 조용히 바뀐다)."""
+    단독 호출은 금액이 장바구니 어휘 근처에 있을 때만 인정한다. 절 단위 누적 파서가 이미 카트 문맥을
+    확정한 경우에는 ``require_cart_context=False`` 로 같은 절의 후속 금액 조건도 받는다. 어느 경로든
+    금액 바로 앞이 구매/결제/주문/누적이면 일반 주문 집계 조건이므로 넘긴다. 여러 하한·상한을 모두
+    반환해 범위와 다른 카트 지표를 하나의 HAVING 절에 합성할 수 있게 한다."""
     cart_positions = [
         match.start()
         for term in _lexicon_terms("cart_terms")
         for match in re.finditer(re.escape(term), compact)
     ]
-    if not cart_positions:
-        return None
+    if require_cart_context and not cart_positions:
+        return []
+    conditions: list[dict[str, Any]] = []
     for match in _CART_AMOUNT_PATTERN.finditer(compact):
         start = match.start()
-        if not any(0 <= start - position <= _CART_AMOUNT_WINDOW for position in cart_positions):
+        if require_cart_context and not any(0 <= start - position <= _CART_AMOUNT_WINDOW for position in cart_positions):
             continue
         preceding = compact[max(0, start - 6): start]
         if any(word in preceding for word in _CART_AMOUNT_PURCHASE_WORDS):
@@ -6897,8 +6899,8 @@ def _cart_amount_condition(compact: str) -> dict[str, Any] | None:
         if parsed is None:
             continue
         operator, threshold = parsed
-        return {"metric": "cart_amount", "operator": operator, "threshold": threshold}
-    return None
+        conditions.append({"metric": "cart_amount", "operator": operator, "threshold": threshold})
+    return conditions
 
 
 # 종류 수(distinct) 단위와 총 수량 단위 구분: '종/종류/종수/가지/품목'=상품 종류 수(COUNT DISTINCT),
@@ -6994,6 +6996,31 @@ def _set_cart_aggregate(plan: dict[str, Any], conditions: list[dict[str, Any]]) 
     _release_cart_twin_aggregates(plan, conditions)
 
 
+_CART_AGGREGATE_DOMAIN_BREAK_RE = re.compile(
+    r"구매(?:금액|액|횟수|건수|수량|상품|제품|품목|이력)|구입|주문|결제|캠페인반응|쿠폰"
+)
+
+
+def _cart_aggregate_condition_key(condition: dict[str, Any]) -> tuple[Any, ...]:
+    """카트 집계 조건의 안정적인 중복 제거 키. 같은 절을 여러 추출기가 보더라도 HAVING을 중복하지 않는다."""
+    return (
+        condition.get("metric"),
+        tuple(_cart_condition_comparisons(condition)),
+    )
+
+
+def _unique_cart_aggregate_conditions(conditions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[Any, ...]] = set()
+    for condition in conditions:
+        key = _cart_aggregate_condition_key(condition)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(condition)
+    return unique
+
+
 def _reconcile_cart_aggregate_ownership(plan: dict[str, Any]) -> None:
     """Remove exact generic-aggregate twins that were attached after cart parsing.
 
@@ -7018,38 +7045,44 @@ def _reconcile_cart_aggregate_ownership(plan: dict[str, Any]) -> None:
 
 
 def _apply_cart_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
-    """'장바구니에 N개 이상 담은'을 장바구니 집계 조건(cart_aggregate)으로 해석한다.
+    """장바구니 금액·종류·수량·동일상품 임계값을 누적해 cart_aggregate로 해석한다.
 
     build_cart_aggregate_targets_sql_candidate 가 ODS_MALL_OMS_CART 를 회원별로 집계한 서브쿼리
-    (GROUP BY CART_ID HAVING COUNT(DISTINCT CART_PRODUCT_NO) op N)로 컴파일한다. '수량/총 개수' 문맥이면
-    담은 총 수량(SUM QTY — QTY 가 '담은 수량', SET_QTY 는 '세트 수량'이라 다르다), 금액(원)이면 담은 금액 합
-    (SUM TOTAL_SALE_PRICE), 아니면 담은 상품 종류 수(COUNT DISTINCT 라인)로 본다. 비교는 공용 문법에 위임해
-    이상/초과/미만/정확값/범위를 모두 처리한다. 장바구니 어휘가 있을 때만 발동해 일반 개수 표현('3개 이상
-    구매' 등)과 섞이지 않게 한다 — 파싱에 실패해도 여기서 멈춰, 카트 질의가 조용히 주문 집계로 새지 않게 한다."""
+    (GROUP BY CART_ID HAVING ...)로 컴파일한다. 절마다 명시된 카트 문맥은 뒤의 병렬 조건으로 이어지되,
+    구매금액/주문/결제처럼 다른 팩트 도메인이 명시되면 끊는다. 각 추출기는 조건을 반환만 하고 마지막에
+    한 번 합치므로 특정 지표를 먼저 발견했다고 다른 지표가 사라지지 않는다. 동일상품 절의 개수는 MAX(QTY)
+    소유이므로 같은 숫자를 종류 수로 중복 청구하지 않는다."""
     compact = query.replace(" ", "")
-    if not any(term in compact for term in _lexicon_terms("cart_terms")):
+    cart_terms = _lexicon_terms("cart_terms")
+    if not any(term in compact for term in cart_terms):
         return
     # '장바구니 수량이 입력되지 않은/미입력'(QTY IS NULL) — 값 자체가 미기입. '수량 0개'(=0, HAVING)와 달리
     # 집계 임계로 표현할 수 없어(EXISTS QTY IS NULL) 전용 플래그로 승격한다. 수량 문맥일 때만 발동한다.
     if _DATA_MISSING_PATTERN.search(compact) and re.search(r"수량|개수", compact):
         plan.setdefault("target_user", {})["cart_quantity_missing"] = True
-        return
-    same_product = _cart_same_product_condition(query, compact)
-    if same_product is not None:
-        _set_cart_aggregate(plan, [same_product])
-        return
-    amount = _cart_amount_condition(compact)
-    if amount is not None:
-        _set_cart_aggregate(plan, [amount])
-        return
-    # 개수/수량 임계 — 절별로 나눠 여러 카트 조건('총수량 10개 이상이고 종류 3종 이상')을 함께 잡는다.
-    # 카트 어휘가 있는 절만 본다(첫 절 이후 일반 개수 표현이 카트로 새지 않게).
-    cart_terms = _lexicon_terms("cart_terms")
+
+    # 절별 누적: 한 번 열린 카트 문맥은 병렬 지표 절까지 이어진다. 명시적인 주문/구매 지표가 나타나면
+    # 문맥을 닫아 일반 주문 집계의 수치가 카트 HAVING으로 새지 않게 한다.
     conditions: list[dict[str, Any]] = []
+    cart_scope_active = False
     for clause in _AGG_CLAUSE_SPLIT_RE.split(query):
-        if not any(term in clause.replace(" ", "") for term in cart_terms):
+        clause_compact = clause.replace(" ", "")
+        explicit_cart = any(term in clause_compact for term in cart_terms)
+        if explicit_cart:
+            cart_scope_active = True
+        elif _CART_AGGREGATE_DOMAIN_BREAK_RE.search(clause_compact):
+            cart_scope_active = False
+        if not cart_scope_active:
+            continue
+
+        conditions.extend(_cart_amount_conditions(clause_compact, require_cart_context=False))
+        same_product = _cart_same_product_condition(clause, clause_compact)
+        if same_product is not None:
+            conditions.append(same_product)
             continue
         conditions.extend(_cart_count_quantity_conditions(clause))
+
+    conditions = _unique_cart_aggregate_conditions(conditions)
     if not conditions:
         return
     _set_cart_aggregate(plan, conditions)
@@ -13177,7 +13210,15 @@ def build_sql_result(
     unsupported_conditions: list[str] = []
     unsupported_condition_labels: list[str] = []
     if selected_sql is None and query_plan.get("intent") in ("recommend_campaign", "find_user_segment"):
-        unsupported_conditions = compile_member_target_conditions(query_plan)["unsupported"]
+        raw_unsupported = compile_member_target_conditions(query_plan)["unsupported"]
+        # 선택 후보는 자신이 처리한 팩트 조건(cart_abandoner 등)을 dropped 에서 이미 제외한다. 실패 응답에서
+        # 회원 단독 컴파일러의 원시 unsupported 를 다시 쓰면 실제로는 반영된 행동까지 '미지원'으로 오진한다.
+        # 후보가 부분추출 회계를 제공하면 그것을 최종 진단의 단일 소스로 사용하고, 후보가 없을 때만 원시
+        # 목록으로 폴백한다.
+        if selected is not None and "dropped_conditions" in selected:
+            unsupported_conditions = list(selected.get("dropped_conditions") or [])
+        else:
+            unsupported_conditions = raw_unsupported
         unsupported_condition_labels = [_unsupported_condition_label(path) for path in unsupported_conditions]
         # 데모 폴백 제거 후, 매핑 불가 조건은 후보 자체가 없어(no_sql_candidates) 되기도 한다. 둘 다 승격.
         # LLM 폴백 후보가 검증(커버리지 등)에서 탈락한 경우도 미지원 조건이 원인이면 같은 안내로 승격.
