@@ -41,6 +41,28 @@ PURCHASE_CASES = [
     ("제품 구입 고객", None),
 ]
 
+# 붙여 쓴 구매 합성어('다구매/총구매/무구매')는 상품명이 아니다. 목적어와 구매 동사 사이에 조사/공백이
+# 전혀 없어도 매칭되던 정규식이 앞 음절('다'/'총'/'무')을 상품명으로 떼어내, 상품명이 없는 '전상품 대상'
+# 조건에 CRM_CM_PRODUCT 조인과 상품 6컬럼 LIKE 가 붙던 버그의 회귀 코퍼스.
+PURCHASE_COMPOUND_PREFIX_CASES = [
+    "다구매 고객",
+    "다구매 고객 캠페인",
+    "총구매 고객",
+    "총구매 횟수가 5회 이상인 고객",
+    "무구매 회원",
+    "무구매 고객 제외",
+]
+
+# 경계(조사/공백)를 요구해도 정상 상품 추출은 그대로여야 한다. '기저귀를구매한'처럼 조사만 있고 공백이
+# 없는 형태도 조사가 경계 역할을 하므로 계속 잡힌다.
+PURCHASE_OBJECT_PRESERVED_CASES = [
+    ("기저귀 구매 고객", "기저귀"),
+    ("기저귀 구매한 고객", "기저귀"),
+    ("기저귀를 구매한 고객", "기저귀"),
+    ("기저귀를구매한 고객", "기저귀"),
+    ("생수 구입한 회원", "생수"),
+]
+
 # (프롬프트, 기대 sell_object)
 SELL_CASES = [
     ("신상 컴퓨터를 팔고 싶어요", "신상 컴퓨터"),
@@ -54,6 +76,36 @@ def test_purchase_object_extraction(prompt, expected):
     target_user = {"purchase_object": None}
     g._apply_purchase_object_filter(prompt, target_user)
     assert target_user["purchase_object"] == expected
+
+
+@pytest.mark.parametrize("prompt", PURCHASE_COMPOUND_PREFIX_CASES)
+def test_purchase_compound_prefix_is_not_product(prompt):
+    target_user = {"purchase_object": None}
+    g._apply_purchase_object_filter(prompt, target_user)
+    assert target_user["purchase_object"] is None
+
+
+@pytest.mark.parametrize("prompt,expected", PURCHASE_OBJECT_PRESERVED_CASES)
+def test_valid_purchase_object_is_preserved(prompt, expected):
+    target_user = {"purchase_object": None}
+    g._apply_purchase_object_filter(prompt, target_user)
+    assert target_user["purchase_object"] == expected
+
+
+def test_boundary_requirement_keeps_generic_noun_match():
+    # 경계 강제가 정상 매칭 자체를 죽이지 않았는지 확인한다. '상품 구매한'은 정규식에는 계속 잡히고
+    # (일반명사라) 상품 필터로 승격되지 않을 뿐이다 — 매칭이 사라지면 '알로루 브랜드 상품 구매한'의
+    # 브랜드 재시도 경로까지 함께 끊긴다.
+    assert g._PURCHASE_OBJECT_PATTERN.search("상품 구매한 고객").group("object") == "상품"
+    assert g._PURCHASE_OBJECT_PATTERN.search("다구매 고객") is None
+
+
+def test_validated_object_rejects_compound_prefix():
+    # LLM 폴백은 '원문에 존재'만 보므로 '다구매'의 '다'는 존재 검증을 통과한다. sanitize 계층이
+    # 정규식 우회 경로(LLM/브랜드/계사/chain)까지 같은 기준으로 막는지 고정한다.
+    assert g._validated_object("다", "다구매 고객 캠페인") is None
+    assert g._validated_object("총", "총구매 고객") is None
+    assert g._validated_object("무", "무구매 회원") is None
 
 
 @pytest.mark.parametrize("prompt,expected", SELL_CASES)

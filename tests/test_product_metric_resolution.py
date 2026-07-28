@@ -8,6 +8,8 @@ SQL 집계식 / silent fallback 여부를 함께 검증한다.
 실행(컨테이너): docker compose exec -w /app -e PYTHONPATH=/app api pytest tests/test_product_metric_resolution.py -q
 """
 
+import pytest
+
 import graph_rag as g
 
 
@@ -149,6 +151,31 @@ def test_ambiguous_metric_requests_clarification():
 
 
 # ── 스펙만으로 신규 지표 등록(파이썬 분기 없이) ──────────────────────────────
+
+# ── 상품명 없는 '전상품 대상' 수량 조건은 상품 마스터를 조인하지 않는다 ──────────────
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        # 실제 실패 프롬프트(/target-sql 호출 재현). 캠페인 이름의 '다구매'가 '다'+'구매'로 쪼개져
+        # 상품 6컬럼 LIKE N'%다%' 가 붙고 결과가 0명이 되던 버그.
+        "최근 90일 구매 상품 수량이 총 5개 이상인 회원을 추출해서 다구매 고객 캠페인을 만들어줘.",
+        "상품을 5개 이상 다구매한 고객 캠페인",
+    ],
+)
+def test_no_product_name_means_no_product_master_join(query):
+    # 주문상세 행 자체가 상품 라인이므로 '전상품 대상' 조건에 상품 마스터 조인은 불필요하다.
+    assert _plan(query)["target_user"].get("purchase_object") is None
+    sql = _sql(query)
+    normalized = " ".join(sql.upper().split())
+    assert "CRM_CM_PRODUCT" not in normalized
+    # 상품명 매칭 컬럼(레지스트리 소유)이 하나도 등장하지 않아야 한다 — 컬럼이 없으면 LIKE 도 없다.
+    for column in g._MEMBER_TARGET_FILTERS["purchase_product_match_columns"]:
+        assert column.upper() not in normalized, f"{column} 이 상품명 없는 SQL 에 붙었다"
+    assert "LIKE" not in normalized
+    # 수량 조건은 그대로 유지된다.
+    assert "HAVING" in normalized and "SUM(ORDER_QTY) >= 5" in normalized
+
 
 def test_new_metric_via_spec_only(monkeypatch):
     # aggregate_targets.metrics 에 스펙만 추가하면 파이썬 분기 없이 새 지표가 해석·컴파일된다.
