@@ -2198,11 +2198,14 @@ def build_query_plan(
     _reconcile_cart_aggregate_ownership(base)
     _attach_query_output_contract(query, base)
     base["complexity"] = classify_query_complexity(base)
-    return as_campaign_query_plan_v2(
+    semantic_requirements.verify_source_requirements(base)
+    result = as_campaign_query_plan_v2(
         base,
         original_query=query,
         normalized_query=(base.get("retrieval") or {}).get("query"),
     )
+    semantic_requirements.verify_source_requirements(result)
+    return result
 
 
 def _apply_entity_set_condition(query: str, plan: dict[str, Any]) -> None:
@@ -3117,9 +3120,41 @@ def _build_single_query_plan(
         metric_lexicon=metric_lexicon,
         sql_schema=sql_schema,
     )
+    # 조건 소유권 조정·분석 라우팅이 슬롯을 pop/이동하기 전에 원문 요구를 별도 불변 스냅샷으로 봉인한다.
+    # rules와 선행 CampaignQueryPlanV2가 충돌해도 둘 중 하나를 덮지 않고 각각의 requirement로 남긴다.
+    source_query = (
+        query_plan_v2.get("original_query")
+        if (
+            isinstance(query_plan_v2, dict)
+            and isinstance(query_plan_v2.get("original_query"), str)
+            and query_plan_v2["original_query"].strip()
+        )
+        else parse_query
+    )
+    rules_source_requirements = semantic_requirements.capture_plan_source_requirements(
+        source_query, rules_plan, source="rules"
+    )
     # 정규식이 못 뽑은 상품 구매이력/판매 상품을 검증된 LLM 추출로 보완한다(표현형 변화 흡수).
-    # rules_plan 에 반영하면 llm 경로도 _coerce_llm_query_plan 의 깊은 복사로 값을 물려받는다.
+    # 규칙 스냅샷 이후 새로 생긴 슬롯만 별도 provenance로 기록해 LLM 결과를 rules로 위장하지 않는다.
     _apply_llm_object_fallback(parse_query, rules_plan, llm_model=llm_model, prompt_dir=prompt_dir)
+    rule_paths = {requirement.path for requirement in rules_source_requirements}
+    llm_object_requirements = tuple(
+        requirement
+        for requirement in semantic_requirements.capture_plan_source_requirements(
+            source_query, rules_plan, source="llm_object_fallback"
+        )
+        if requirement.path not in rule_paths
+    )
+    llm_source_requirements = (
+        semantic_requirements.capture_plan_source_requirements(
+            source_query, query_plan_v2, source="llm_query_structurer"
+        )
+        if isinstance(query_plan_v2, dict) and query_plan_v2.get("intent") != "unknown"
+        else ()
+    )
+    semantic_requirements.attach_source_requirements(
+        rules_plan, rules_source_requirements, llm_object_requirements, llm_source_requirements
+    )
     if query_plan_v2 is not None and query_plan_v2.get("intent") != "unknown":
         rules_plan = _coerce_llm_query_plan(query_plan_v2, rules_plan, sql_schema)
         _apply_llm_structured_slots(rules_plan)
@@ -10485,6 +10520,8 @@ def retrieve(
     # 캠페인/조회 동사 없이 회원 속성만 나열한 프롬프트는 파서가 intent=unknown 을 주는데, 그러면
     # 회원 타겟 SQL 빌더가 호출되지 않는다. 실DB 매핑 가능한 타겟 신호가 있으면 세그먼트 조회로 승격.
     _promote_unknown_intent_for_target_signal(query_plan)
+    # 위의 원문 복원·소유권 이동은 실행 플랜만 바꿀 수 있고 최초 source requirement는 바꾸면 안 된다.
+    semantic_requirements.verify_source_requirements(query_plan)
     timings_ms["query_plan"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
@@ -14178,6 +14215,7 @@ def build_sql_result(
         _apply_core_membership_semantics(original_query or query, query_plan)
     if not isinstance(query_plan.get("output_contract"), dict):
         _attach_query_output_contract(original_query or query, query_plan)
+    semantic_requirements.verify_source_requirements(query_plan)
     condition_tokens = build_verified_condition_tokens(query_plan)
     input_validation = validate_required_input_conditions(query_plan, condition_tokens)
     required_conditions = required_sql_conditions(query_plan)
@@ -14658,6 +14696,8 @@ def build_sql_result(
     if selected_sql is None:
         confidence = _failed_sql_confidence(failure_reason)
 
+    # SQL 후보 생성·검증 전체 과정에서도 최초 원문 요구 스냅샷이 건드려지지 않았음을 마지막에 확인한다.
+    semantic_requirements.verify_source_requirements(query_plan)
     return {
         "sql": selected_sql,
         # 의미 검증 등으로 출고가 막혔지만 생성은 된 SQL(표시 전용, 실행 안 함). 정상 출고 시엔 None.

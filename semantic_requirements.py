@@ -29,8 +29,10 @@ build_sql_result 가 account_requirements(query, plan, sql)로 호출해 귀결�
 from __future__ import annotations
 
 import json
+import hashlib
 import re
-from dataclasses import dataclass, field
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -43,10 +45,37 @@ TERMINAL_STATUSES = frozenset({"parsed", "compiled", "clarification", "unsupport
 BLOCKING_STATUSES = frozenset({"clarification", "unsupported"})
 
 QUALIFIER_TYPES = frozenset({"entity", "dimension", "time_scope", "attribute"})
+SOURCE_REQUIREMENTS_KEY = "source_requirements"
+SOURCE_REQUIREMENTS_DIGEST_KEY = "source_requirements_digest"
+
+# 실행/검색 메타데이터가 아니라 사용자 의미를 담는 plan 최상위 슬롯만 캡처한다. target_user/exclude/
+# campaign_constraints 는 컨테이너 전체가 의미 슬롯이므로 별도 allow-list 없이 비어 있지 않은 값을 기록한다.
+_PLAN_REQUIREMENT_SLOTS = frozenset({
+    "aggregation_request",
+    "computed_metrics",
+    "dimension_filters",
+    "group_ranking_target",
+    "logical_expression",
+    "member_column_selection_filter",
+    "member_metric_ranking",
+    "member_metric_selection",
+    "policy_constraints",
+    "purchase_count_ranking",
+    "region_density_target",
+    "region_member_count_target",
+    "result_limit",
+    "set_expressions",
+    "union_condition",
+})
+_NEGATIVE_TARGET_SLOTS = frozenset({"cart_absence", "purchase_inactivity"})
 
 
 class RequirementCapabilityError(ValueError):
     """capability 레지스트리(JSON)가 스키마를 위반했을 때(로드 시 즉시 실패, 조용한 무시 방지)."""
+
+
+class SourceRequirementIntegrityError(ValueError):
+    """초기 캡처 뒤 source requirement 스냅샷이 변경됐을 때 발생한다."""
 
 
 # entity qualifier 표면 표지(브랜드/상품/카테고리·제품·품목명 + 조사/콜론 + 값). 조사를 '필수'로 둬
@@ -88,23 +117,78 @@ def _normalize_value(text: str) -> str:
 
 
 # ── source requirement 스키마 ─────────────────────────────────────────────────────────────
-@dataclass
+class FrozenDict(Mapping[str, Any]):
+    """JSON 객체의 읽기 호환성을 유지하는 재귀 불변 mapping."""
+
+    __slots__ = ("_items", "_dict")
+
+    def __init__(self, items: Any = ()) -> None:
+        normalized = tuple(items.items()) if isinstance(items, Mapping) else tuple(items)
+        self._items = tuple((str(key), value) for key, value in normalized)
+        self._dict = dict(self._items)
+
+    def __getitem__(self, key: str) -> Any:
+        return self._dict[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._dict)
+
+    def __len__(self) -> int:
+        return len(self._dict)
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, Mapping) and dict(self.items()) == dict(other.items())
+
+    def __repr__(self) -> str:
+        return f"FrozenDict({self._dict!r})"
+
+    def __deepcopy__(self, memo: dict[int, Any]) -> "FrozenDict":
+        return self
+
+
+def _freeze_json(value: Any) -> Any:
+    """JSON 호환 값을 재귀적으로 불변 표현으로 바꾼다."""
+    if isinstance(value, dict):
+        return FrozenDict(sorted((str(key), _freeze_json(item)) for key, item in value.items()))
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def _thaw_json(value: Any) -> Any:
+    """``_freeze_json`` 결과를 API 직렬화 가능한 새 객체로 되돌린다."""
+    if isinstance(value, Mapping):
+        return {key: _thaw_json(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [_thaw_json(item) for item in value]
+    return value
+
+
+@dataclass(frozen=True)
 class Qualifier:
     type: str  # entity | dimension | time_scope | attribute
     domain: str  # brand | product | category | region | ...
     raw_value: str
     resolved_value: Any = None
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "resolved_value", _freeze_json(self.resolved_value))
+
     def to_dict(self) -> dict[str, Any]:
-        return {"type": self.type, "domain": self.domain, "raw_value": self.raw_value, "resolved_value": self.resolved_value}
+        return {
+            "type": self.type,
+            "domain": self.domain,
+            "raw_value": self.raw_value,
+            "resolved_value": _thaw_json(self.resolved_value),
+        }
 
 
-@dataclass
+@dataclass(frozen=True)
 class SourceRequirement:
     id: str
     type: str  # qualified_condition | base_condition | comparison | derived | ...
-    base: dict[str, Any]  # {type: behavior|metric|dimension|set, name: str}
-    qualifiers: list[Qualifier] = field(default_factory=list)
+    base: Any  # frozen {type: behavior|metric|dimension|set, name: str}
+    qualifiers: tuple[Qualifier, ...] = field(default_factory=tuple)
     relation: str = "applies_to"  # applies_to | compared_with | excluded_from | grouped_by
     operator: Any = None
     value: Any = None
@@ -113,25 +197,53 @@ class SourceRequirement:
     comparison_target: Any = None
     derived_formula: Any = None
     source_text: str = ""
-    source_span: dict[str, int] = field(default_factory=lambda: {"start": 0, "end": 0})
+    source_span: Any = field(default_factory=lambda: (0, 0))
+    path: str | None = None
+    polarity: str = "positive"
+    source: str = "rules"
     status: str = "detected"  # detected → (parsed|compiled|clarification|unsupported)
     message: str | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "base", _freeze_json(self.base))
+        object.__setattr__(self, "qualifiers", tuple(self.qualifiers))
+        for name in ("value", "time_scope", "comparison_target", "derived_formula"):
+            object.__setattr__(self, name, _freeze_json(getattr(self, name)))
+        span = self.source_span
+        if isinstance(span, Mapping):
+            span = (span.get("start", 0), span.get("end", 0))
+        if not (
+            isinstance(span, (list, tuple))
+            and len(span) == 2
+            and all(isinstance(item, int) and not isinstance(item, bool) for item in span)
+        ):
+            span = (0, 0)
+        object.__setattr__(
+            self,
+            "source_span",
+            FrozenDict({"start": max(0, span[0]), "end": max(0, span[1])}),
+        )
+        if self.polarity not in {"positive", "negative"}:
+            raise ValueError("source requirement polarity must be positive or negative")
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "id": self.id,
             "type": self.type,
-            "base": self.base,
+            "base": _thaw_json(self.base),
             "qualifiers": [q.to_dict() for q in self.qualifiers],
             "relation": self.relation,
             "operator": self.operator,
-            "value": self.value,
-            "time_scope": self.time_scope,
+            "value": _thaw_json(self.value),
+            "time_scope": _thaw_json(self.time_scope),
             "negation": self.negation,
-            "comparison_target": self.comparison_target,
-            "derived_formula": self.derived_formula,
+            "comparison_target": _thaw_json(self.comparison_target),
+            "derived_formula": _thaw_json(self.derived_formula),
             "source_text": self.source_text,
-            "source_span": self.source_span,
+            "source_span": dict(self.source_span),
+            "path": self.path,
+            "polarity": self.polarity,
+            "source": self.source,
             "status": self.status,
             "message": self.message,
         }
@@ -201,13 +313,235 @@ def extract_entity_qualifier_requirements(query: str, base: dict[str, Any]) -> l
             id=f"req_{index + 1}",
             type="qualified_condition",
             base=dict(base),
-            qualifiers=[Qualifier(type="entity", domain=domain, raw_value=value)],
+            qualifiers=(Qualifier(type="entity", domain=domain, raw_value=value),),
             relation="applies_to",
             source_text=match.group(0),
             source_span={"start": match.start(), "end": match.end()},
             status="detected",
         ))
     return requirements
+
+
+def _non_empty(value: Any) -> bool:
+    # False도 "동의하지 않음" 같은 명시 요구일 수 있으므로 빈 값으로 버리지 않는다.
+    return value not in (None, "", [], {})
+
+
+def _iter_requirement_values(plan: dict[str, Any]):
+    """플랜의 사용자 의미 슬롯을 ``(container, slot, path, value)`` 로 평탄화한다."""
+    for container_name in ("target_user", "exclude", "campaign_constraints"):
+        container = plan.get(container_name)
+        if not isinstance(container, dict):
+            continue
+        for slot, raw in container.items():
+            if not _non_empty(raw):
+                continue
+            if isinstance(raw, list):
+                for index, value in enumerate(raw):
+                    if _non_empty(value):
+                        yield container_name, slot, f"{container_name}.{slot}[{index}]", value
+            else:
+                yield container_name, slot, f"{container_name}.{slot}", raw
+
+    for slot in sorted(_PLAN_REQUIREMENT_SLOTS):
+        raw = plan.get(slot)
+        if not _non_empty(raw):
+            continue
+        if isinstance(raw, list):
+            for index, value in enumerate(raw):
+                if _non_empty(value):
+                    yield "plan", slot, f"{slot}[{index}]", value
+        else:
+            yield "plan", slot, slot, raw
+
+
+def _negative_requirement(container: str, slot: str, value: Any) -> bool:
+    if value is False:
+        return True
+    if container == "exclude" or slot in _NEGATIVE_TARGET_SLOTS or slot == "age_exclude_ranges":
+        return True
+    if isinstance(value, dict) and bool(value.get("negated")):
+        return True
+    if slot == "behaviors" and isinstance(value, str) and value.startswith("no_"):
+        return True
+    return False
+
+
+def _slot_span(plan: dict[str, Any], container: str, slot: str, value: Any) -> dict[str, Any] | None:
+    store = plan.get("_slot_spans")
+    if not isinstance(store, dict):
+        return None
+    candidates = []
+    if isinstance(value, str):
+        candidates.append(f"{container}.{slot}:{value}")
+    candidates.append(f"{container}.{slot}" if container != "plan" else f"plan.{slot}")
+    for key in candidates:
+        entry = store.get(key)
+        if isinstance(entry, dict) and isinstance(entry.get("start"), int) and isinstance(entry.get("end"), int):
+            return entry
+    return None
+
+
+def _matched_term_span(query: str, plan: dict[str, Any], value: Any) -> tuple[int, int] | None:
+    canonical = value if isinstance(value, str) else None
+    if canonical is None and isinstance(value, dict):
+        canonical = next(
+            (value.get(key) for key in ("canonical", "metric_id", "dimension_id") if isinstance(value.get(key), str)),
+            None,
+        )
+    if not canonical:
+        return None
+    for match in plan.get("matched_terms", []) or []:
+        if not isinstance(match, dict) or match.get("canonical") != canonical:
+            continue
+        surface = match.get("matched_text")
+        if isinstance(surface, str) and surface:
+            start = query.casefold().find(surface.casefold())
+            if start >= 0:
+                return start, start + len(surface)
+    return None
+
+
+def _value_text_candidates(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if not isinstance(value, dict):
+        return []
+    candidates: list[str] = []
+    for key in ("source_text", "expression_text", "formula_text", "label", "ko_label", "value"):
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            candidates.append(item.strip())
+    return candidates
+
+
+def _requirement_span(
+    query: str,
+    plan: dict[str, Any],
+    container: str,
+    slot: str,
+    value: Any,
+) -> tuple[int, int, str]:
+    recorded = _slot_span(plan, container, slot, value)
+    if recorded is not None:
+        start, end = recorded["start"], recorded["end"]
+        recorded_source = recorded.get("source")
+        same_coordinates = (
+            not isinstance(recorded_source, str)
+            or recorded_source.startswith(query)
+            or query.startswith(recorded_source)
+        )
+        if same_coordinates and 0 <= start < end <= len(query):
+            return start, end, query[start:end]
+    matched = _matched_term_span(query, plan, value)
+    if matched is not None:
+        return matched[0], matched[1], query[matched[0]:matched[1]]
+    folded = query.casefold()
+    for candidate in _value_text_candidates(value):
+        start = folded.find(candidate.casefold())
+        if start >= 0:
+            return start, start + len(candidate), query[start:start + len(candidate)]
+    # 정밀 구간을 아직 제공하지 않는 필터도 요구사항을 잃지 않는다. 이 경우 원문 전체를 보수적인 근거
+    # 구간으로 둔다. source가 rules/llm인지 별도로 남으므로 소비자는 정밀 span과 구분할 수 있다.
+    return 0, len(query), query
+
+
+def _stable_requirement_id(
+    *, path: str, polarity: str, source: str, span: tuple[int, int], value: Any
+) -> str:
+    payload = json.dumps(
+        {
+            "path": path,
+            "polarity": polarity,
+            "source": source,
+            "span": list(span),
+            "value": _thaw_json(_freeze_json(value)),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return "sr_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def capture_plan_source_requirements(
+    query: str,
+    plan: dict[str, Any],
+    *,
+    source: str = "rules",
+) -> tuple[SourceRequirement, ...]:
+    """파서가 인식한 모든 사용자 의미 슬롯을 불변 SourceRequirement로 캡처한다.
+
+    이 함수는 조건 소유권 조정·분석 라우팅보다 먼저 호출하는 것을 전제로 한다. 이후 plan 슬롯이
+    ``pop``/이동되더라도 반환 객체는 frozen + 재귀 frozen 값이라 바뀌지 않는다.
+    """
+    captured: list[SourceRequirement] = []
+    for container, slot, path, value in _iter_requirement_values(plan):
+        # 조건 객체 안의 source(예: 데이터 원천/테이블명)와 파서 provenance를 섞지 않는다.
+        item_source = source
+        negative = _negative_requirement(container, slot, value)
+        polarity = "negative" if negative else "positive"
+        start, end, source_text = _requirement_span(query, plan, container, slot, value)
+        captured.append(SourceRequirement(
+            id=_stable_requirement_id(
+                path=path, polarity=polarity, source=item_source, span=(start, end), value=value
+            ),
+            type="source_condition",
+            base={"type": container, "name": slot},
+            relation="excluded_from" if negative else "applies_to",
+            value=value,
+            negation=negative,
+            source_text=source_text,
+            source_span=(start, end),
+            path=path,
+            polarity=polarity,
+            source=item_source,
+            status="captured",
+        ))
+    return tuple(captured)
+
+
+def _requirements_payload(requirements: Any) -> list[dict[str, Any]]:
+    payload: list[dict[str, Any]] = []
+    for requirement in requirements or ():
+        if isinstance(requirement, SourceRequirement):
+            payload.append(requirement.to_dict())
+        elif isinstance(requirement, dict):
+            payload.append(json.loads(json.dumps(requirement, ensure_ascii=False, default=str)))
+    return payload
+
+
+def source_requirements_digest(requirements: Any) -> str:
+    canonical = json.dumps(
+        _requirements_payload(requirements), ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def attach_source_requirements(plan: dict[str, Any], *groups: Any) -> None:
+    """불변 요구 스냅샷을 plan에 한 번 부착하고 무결성 해시를 봉인한다."""
+    merged: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for group in groups:
+        for item in _requirements_payload(group):
+            requirement_id = str(item.get("id") or "")
+            if requirement_id and requirement_id not in seen:
+                seen.add(requirement_id)
+                merged.append(item)
+    plan[SOURCE_REQUIREMENTS_KEY] = merged
+    plan[SOURCE_REQUIREMENTS_DIGEST_KEY] = source_requirements_digest(merged)
+
+
+def verify_source_requirements(plan: dict[str, Any]) -> bool:
+    """부착 이후 변경 여부를 검사한다. 스냅샷이 없는 수동 plan은 기존 호환을 위해 통과한다."""
+    expected = plan.get(SOURCE_REQUIREMENTS_DIGEST_KEY)
+    if expected is None:
+        return True
+    actual = source_requirements_digest(plan.get(SOURCE_REQUIREMENTS_KEY))
+    if not isinstance(expected, str) or actual != expected:
+        raise SourceRequirementIntegrityError("source requirements changed after initial capture")
+    return True
 
 
 # ── 회계: 각 requirement 를 parsed/compiled/clarification/unsupported 로 귀결 ────────────────
@@ -270,21 +604,36 @@ def account_requirements(
     base = {"type": base_type, "name": base_name}
     requirements = extract_entity_qualifier_requirements(query, base)
     normalized_sql = _normalize_value(sql or "")
+    resolved_requirements: list[SourceRequirement] = []
     for req in requirements:
+        resolved = req
         for qualifier in req.qualifiers:
             cap = registry.qualifier_capability(base_name, qualifier.domain)
             if cap is not None and not cap.get("supported", False):
-                req.status = "unsupported"
-                req.message = str(cap.get("message") or f"현재 {registry.base_label(base_name)}에는 이 조건을 함께 적용할 수 없습니다.")
+                resolved = replace(
+                    req,
+                    status="unsupported",
+                    message=str(
+                        cap.get("message")
+                        or f"현재 {registry.base_label(base_name)}에는 이 조건을 함께 적용할 수 없습니다."
+                    ),
+                )
                 break
             # 지원됨: 반영 확인 — ① 구조화 evidence 우선, ② SQL 리터럴 부분문자열(canonical 보정 대비 정규화) 폴백.
             if _evidence_marks_compiled(qualifier, applied_requirements) or _normalize_value(qualifier.raw_value) in normalized_sql:
-                req.status = "compiled"
-                qualifier.resolved_value = qualifier.raw_value
-            else:
-                req.status = "clarification"
-                req.message = (
-                    f"'{qualifier.raw_value}' 조건이 생성 SQL 에 반영되지 않았습니다 — 원문에는 있으나 "
-                    f"실DB 타겟 추출로 컴파일되지 못한 것으로 보입니다. 의도가 맞는지 확인해 주세요."
+                resolved_qualifiers = tuple(
+                    replace(item, resolved_value=item.raw_value) if item is qualifier else item
+                    for item in req.qualifiers
                 )
-    return RequirementAccounting(requirements=requirements)
+                resolved = replace(req, status="compiled", qualifiers=resolved_qualifiers)
+            else:
+                resolved = replace(
+                    req,
+                    status="clarification",
+                    message=(
+                        f"'{qualifier.raw_value}' 조건이 생성 SQL 에 반영되지 않았습니다 — 원문에는 있으나 "
+                        f"실DB 타겟 추출로 컴파일되지 못한 것으로 보입니다. 의도가 맞는지 확인해 주세요."
+                    ),
+                )
+        resolved_requirements.append(resolved)
+    return RequirementAccounting(requirements=resolved_requirements)

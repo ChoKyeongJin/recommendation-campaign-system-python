@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 from typing import Any
 
 
@@ -85,6 +87,26 @@ _TARGET_USER_SCHEMA: dict[str, Any] = {
 }
 
 
+_SOURCE_REQUIREMENT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "description": "플래너가 최초 파싱 직후 봉인하는 원문 요구 스냅샷. LLM은 생성하지 않는다.",
+    "required": ["id", "path", "polarity", "source", "source_text", "source_span", "value"],
+    "properties": {
+        "id": {"type": "string"},
+        "path": _nullable({"type": "string"}),
+        "polarity": {"type": "string", "enum": ["positive", "negative"]},
+        "source": {"type": "string"},
+        "source_text": {"type": "string"},
+        "source_span": {
+            "type": "object",
+            "required": ["start", "end"],
+            "properties": {"start": {"type": "integer"}, "end": {"type": "integer"}},
+        },
+        "value": {},
+    },
+}
+
+
 CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA: dict[str, Any] = {
     "$id": "campaign-query-plan-v2",
     "type": "object",
@@ -128,6 +150,8 @@ CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA: dict[str, Any] = {
         "set_expressions": {"type": "array", "items": {"type": "object"}},
         "computed_metrics": {"type": "array", "items": {"type": "object"}},
         "result_limit": _nullable({"type": "integer", "minimum": 1}),
+        "source_requirements": {"type": "array", "items": _SOURCE_REQUIREMENT_SCHEMA},
+        "source_requirements_digest": {"type": "string"},
     },
 }
 
@@ -194,6 +218,25 @@ def validate_campaign_query_plan_v2(
         not isinstance(result_limit, int) or isinstance(result_limit, bool) or result_limit < 1
     ):
         raise CampaignQueryPlanValidationError("result_limit must be a positive integer or null")
+    source_requirements = payload.get("source_requirements")
+    if source_requirements is not None:
+        if not isinstance(source_requirements, list):
+            raise CampaignQueryPlanValidationError("source_requirements must be an array")
+        for index, requirement in enumerate(source_requirements):
+            _validate_source_requirement(requirement, index)
+        digest = payload.get("source_requirements_digest")
+        if digest is not None:
+            actual = hashlib.sha256(
+                json.dumps(
+                    source_requirements,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
+            if not isinstance(digest, str) or digest != actual:
+                raise CampaignQueryPlanValidationError("source_requirements digest mismatch")
     return CampaignQueryPlanV2(copy.deepcopy(payload))
 
 
@@ -228,3 +271,21 @@ def _non_empty_string(value: Any, path: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise CampaignQueryPlanValidationError(f"{path} must be a non-empty string")
     return value
+
+
+def _validate_source_requirement(value: Any, index: int) -> None:
+    path = f"source_requirements[{index}]"
+    if not isinstance(value, dict):
+        raise CampaignQueryPlanValidationError(f"{path} must be an object")
+    for key in ("id", "source", "source_text"):
+        _non_empty_string(value.get(key), f"{path}.{key}")
+    if value.get("polarity") not in {"positive", "negative"}:
+        raise CampaignQueryPlanValidationError(f"{path}.polarity is invalid")
+    span = value.get("source_span")
+    if not isinstance(span, dict):
+        raise CampaignQueryPlanValidationError(f"{path}.source_span must be an object")
+    start, end = span.get("start"), span.get("end")
+    if not all(isinstance(item, int) and not isinstance(item, bool) for item in (start, end)):
+        raise CampaignQueryPlanValidationError(f"{path}.source_span must contain integer start/end")
+    if start < 0 or end < start:
+        raise CampaignQueryPlanValidationError(f"{path}.source_span is out of range")
