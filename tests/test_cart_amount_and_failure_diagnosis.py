@@ -156,7 +156,7 @@ def test_cart_lexicon_has_no_overly_generic_terms():
 #       _CART_AGGREGATE_TWIN_METRICS 대응표로 '카트가 소유자'임을 선언해 사본을 걷어낸다.
 #   (2) '최근 30일'은 담기 동사가 없어 보관 기간으로 안 잡혔고(창이 조용히 소실), 잡더라도 판정 창 안의
 #       '이상'(사실은 금액 비교어)을 읽어 '30일 이상 방치'로 방향이 뒤집혔다.
-_CART_WINDOW_QUERY = "최근 30일 장바구니 총금액이 5만 원 이상이고 주문하지 않은 회원을 대상으로 구매전환 캠페인을 만들어줘."
+_CART_WINDOW_QUERY = "최근 30일 장바구니 총금액 5만 원 이상 주문하지 않은 회원"
 
 
 def test_cart_amount_owns_threshold_against_general_aggregate():
@@ -172,13 +172,16 @@ def test_recent_window_on_cart_is_upper_bound():
     # '최근 30일'은 담은 지 30일 '이내'(상한)다. min_days 로 잡히면 '30일 넘게 방치'로 의미가 반전된다.
     assert _plan(_CART_WINDOW_QUERY)["target_user"]["cart_retention"] == {
         "max_days": 30, "label": "장바구니 보관 30일 이내",
+        "date_basis": "created",
     }
 
 
 def test_cart_window_amount_and_no_purchase_all_land_in_sql():
-    candidate = g.build_sql_template_candidate(_plan(_CART_WINDOW_QUERY))
+    plan = _plan(_CART_WINDOW_QUERY)
+    candidate = g.build_sql_template_candidate(plan)
     sql = candidate["sql"]
     assert "SUM(TOTAL_SALE_PRICE) >= 50000" in sql          # 장바구니 총금액 5만원 이상
-    assert "UPD_DT >= DATEADD(DAY, -30, GETDATE())" in sql  # 최근 30일(담은 시점 상한)
+    assert "INS_DT >= DATEADD(DAY, -30, GETDATE())" in sql  # 최근 30일(담은 시점 상한)
     assert "NOT EXISTS" in sql and "CRM_SL_ORDERHEADERMALL" in sql  # 주문하지 않은
     assert candidate["dropped_conditions"] == []
+    assert g.validate_sql_condition_coverage(sql, g.required_sql_conditions(plan))["is_satisfied"] is True

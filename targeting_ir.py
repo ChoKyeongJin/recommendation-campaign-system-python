@@ -231,7 +231,7 @@ def _coerce_cell_rate(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None
 
 
 def _coerce_cart_retention(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
-    """cart_retention: {min_days}|{max_days} (+label). direction 또는 min/max_days 직접."""
+    """cart_retention: {min_days}|{max_days} (+label/date_basis)."""
     if not isinstance(raw, dict):
         return None
     min_days = _pos_int(raw.get("min_days"))
@@ -252,6 +252,8 @@ def _coerce_cart_retention(raw: Any, *, allowed: Any = None) -> dict[str, Any] |
         out["max_days"] = max_days
     if isinstance(raw.get("label"), str) and raw["label"]:
         out["label"] = raw["label"]
+    if raw.get("date_basis") in {"created", "last_updated"}:
+        out["date_basis"] = raw["date_basis"]
     return out or None
 
 
@@ -386,7 +388,8 @@ SLOT_SHAPES: dict[str, SlotShape] = {
         _obj_schema(f"최근 N기간 미구매(창 anti-join). {{value,unit}} 또는 {{min_days}}. {_UNIT_HINT}"),
         lambda raw, *, allowed=None: _coerce_window(raw, sql_interval=False, allowed=allowed)),
     "cart_retention": SlotShape("cart_retention", "target_user",
-        _obj_schema(f"장바구니 보관 기간. {{min_days}}(이상) 또는 {{max_days}}(이내), 또는 {{value,unit,direction}}."),
+        _obj_schema(f"장바구니 기간. {{min_days}}(이상) 또는 {{max_days}}(이내), 또는 {{value,unit,direction}}. "
+                    "최근 담기/생성 기간은 date_basis='created', 보관/방치 기간은 'last_updated'."),
         _coerce_cart_retention),
     "cart_aggregate": SlotShape("cart_aggregate", "target_user",
         _obj_schema(f"장바구니 개수/수량 임계. {{metric, operator, threshold}}. {_OP_HINT}"),

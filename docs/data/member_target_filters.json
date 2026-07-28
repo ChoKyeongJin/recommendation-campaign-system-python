@@ -906,6 +906,7 @@
       "column": "C.KEEP_YN",
       "value": "Y"
     },
+    "created_date_column": "C.INS_DT",
     "registered_date_column": "C.UPD_DT",
     "recent_default_days": 30,
     "cart_type_column": "C.CART_TYPE_CD",

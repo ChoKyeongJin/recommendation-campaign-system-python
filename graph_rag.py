@@ -272,10 +272,14 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
             "no_purchase": {"anti_join": True},
         },
     },
-    # 장바구니 타겟. registered_date_column 은 '담아둔 지 N일' 비교 기준 시점이다 — INS_DT 는 ETL
-    # 적재 시각이라 전 행이 같은 값이고(필터가 무력화된다) 행마다 실제로 다른 시점은 UPD_DT 뿐이다.
-    # (나머지 조인/코드 값은 아직 빌더가 직접 들고 있어 여기 기본값은 기준 시점만 갖는다.)
-    "cart_targets": {"table": "ODS_MALL_OMS_CART", "registered_date_column": "C.UPD_DT", "recent_default_days": 30},
+    # 장바구니 기간은 의미별로 분리한다. 최근 담기/생성 창은 created_date_column(INS_DT),
+    # N일 이상 보관·방치 창은 registered_date_column(UPD_DT)을 쓴다. 모든 카트 빌더가 이 설정을 공유한다.
+    "cart_targets": {
+        "table": "ODS_MALL_OMS_CART",
+        "created_date_column": "C.INS_DT",
+        "registered_date_column": "C.UPD_DT",
+        "recent_default_days": 30,
+    },
     # 범용 집계 조건 타겟: 주문 테이블을 회원별로 집계해 '<지표> <임계값> 이상/이하' 세그먼트를 뽑는다.
     # 새 지표는 metrics 에 항목 하나 추가로 끝난다(agg/column/동의어만 지정 — 빌더/파서 코드 수정 없음).
     "aggregate_targets": {
@@ -7204,7 +7208,12 @@ def _apply_cart_retention_filter(query: str, plan: dict[str, Any]) -> None:
         window = compact[max(0, start - _CART_RETENTION_WINDOW): end + _CART_RETENTION_WINDOW]
         # '최근 N일 (동안) 구매하지 않은'은 보관 기간이 아니라 구매 미발생 기간(purchase_inactivity)이다 —
         # 문장에 '담다'(개수 '담았지만')가 있어 창에 보관 표지가 섞여도, 이 N일까지 보관 창으로 채가지 않는다.
-        if "최근" in compact[max(0, start - 4): start] and _CART_PURCHASE_ABSENCE_RE.search(compact[end: end + _CART_RETENTION_WINDOW]):
+        recent_prefix = "최근" in compact[max(0, start - 4): start]
+        immediate_tail = compact[end: end + _CART_DURATION_ADJACENCY]
+        cart_owns_window = any(term in immediate_tail for term in _lexicon_terms("cart_terms"))
+        if recent_prefix and not cart_owns_window and _CART_PURCHASE_ABSENCE_RE.search(
+            compact[end: end + _CART_RETENTION_WINDOW]
+        ):
             continue
         if any(word in window for word in _CART_RETENTION_BENEFIT_WORDS):
             continue
@@ -7222,13 +7231,19 @@ def _apply_cart_retention_filter(query: str, plan: dict[str, Any]) -> None:
         if any(word in following for word in _CART_RETENTION_STRONG_MIN_WORDS):
             retention: dict[str, Any] = {"min_days": days, "label": f"장바구니 보관 {days}일 이상"}
         elif any(word in preceding for word in _CART_RECENT_WORDS):
-            retention = {"max_days": days, "label": f"장바구니 보관 {days}일 이내"}
+            retention = {
+                "max_days": days,
+                "label": f"장바구니 보관 {days}일 이내",
+                "date_basis": "created",
+            }
         elif any(word in window for word in _CART_RETENTION_STRONG_MIN_WORDS):
             retention = {"min_days": days, "label": f"장바구니 보관 {days}일 이상"}
         elif any(word in window for word in _CART_RECENT_WORDS) or any(
             word in window for word in _CART_RETENTION_MAX_WORDS
         ):
             retention = {"max_days": days, "label": f"장바구니 보관 {days}일 이내"}
+            if any(word in window for word in _CART_RECENT_WORDS):
+                retention["date_basis"] = "created"
         elif any(word in window for word in _CART_RETENTION_MIN_WORDS):
             retention = {"min_days": days, "label": f"장바구니 보관 {days}일 이상"}
         else:
@@ -7240,7 +7255,11 @@ def _apply_cart_retention_filter(query: str, plan: dict[str, Any]) -> None:
     # 적용됐는지 라벨로 드러낸다.
     if _has_recent_cart_event(compact):
         days = _cart_recent_default_days()
-        _set_cart_retention(plan, {"max_days": days, "label": f"장바구니 담긴 지 {days}일 이내(최근)"})
+        _set_cart_retention(plan, {
+            "max_days": days,
+            "label": f"장바구니 담긴 지 {days}일 이내(최근)",
+            "date_basis": "created",
+        })
 
 
 def _has_recent_cart_event(compact: str) -> bool:
@@ -14407,17 +14426,18 @@ def _attach_cart_dropped_conditions(
     candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]
 
 
-def _cart_retention_column() -> str:
-    """장바구니 보관 기간 비교에 쓸 시점 컬럼명(테이블 접두어 없는 짧은 이름)을 준다.
+def _cart_retention_column(query_plan: dict[str, Any] | None = None) -> str:
+    """장바구니 기간 의미에 맞는 시점 컬럼명(테이블 접두어 없는 짧은 이름)을 준다.
 
-    ODS_MALL_OMS_CART.INS_DT 는 '담은 시점'이 아니라 ETL 적재 시각이다 — 전 행이 단일 값
-    (2020-02-03 14:23:14.850, 38,133행 중 distinct 1개)이라 어떤 임계값을 걸어도 전건 통과 아니면
-    전건 탈락인 계단 함수가 된다(= 기간 조건이 조용히 사라짐). 행마다 실제로 다른 시점을 갖는 컬럼은
-    UPD_DT(distinct 33,446, 2016-12~2017-01)뿐이고, KEEP_YN='Y' 인 미결제 라인에서는 마지막으로
-    그 라인을 건드린 시각 = 방치 시작점이므로 '담아둔 지 N일'의 근사로 맞다."""
-    configured = _MEMBER_TARGET_FILTERS.get("cart_targets", {}).get("registered_date_column")
+    최근 담기/생성 창(date_basis=created)은 INS_DT를 사용한다. N일 이상 보관·방치처럼 마지막 상태
+    변경 이후의 경과 기간을 묻는 조건은 기존 registered_date_column(UPD_DT)을 사용한다. 두 컬럼은
+    레지스트리 소유이므로 다른 장바구니 집계·브랜드·유형 빌더에도 같은 의미 규칙이 적용된다."""
+    retention = (query_plan or {}).get("target_user", {}).get("cart_retention")
+    date_basis = retention.get("date_basis") if isinstance(retention, dict) else None
+    config_key = "created_date_column" if date_basis == "created" else "registered_date_column"
+    configured = _MEMBER_TARGET_FILTERS.get("cart_targets", {}).get(config_key)
     if not isinstance(configured, str) or not configured.strip():
-        configured = "C.UPD_DT"
+        configured = "C.INS_DT" if date_basis == "created" else "C.UPD_DT"
     return configured.split(".")[-1]
 
 
@@ -14432,7 +14452,7 @@ def _cart_retention_predicates(query_plan: dict[str, Any], alias: str = "A") -> 
     retention = query_plan.get("target_user", {}).get("cart_retention")
     if not isinstance(retention, dict):
         return []
-    column = (alias + "." if alias else "") + _cart_retention_column()
+    column = (alias + "." if alias else "") + _cart_retention_column(query_plan)
     min_days = retention.get("min_days")
     if isinstance(min_days, int) and min_days > 0:
         return [f"{column} <= {_member_dialect().datetime_cutoff(min_days)}"]
@@ -17611,6 +17631,19 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     for field_name in ("lifecycle", "interests", "preferred_channels", "behaviors"):
         for value in target_user.get(field_name, []):
             if field_name == "lifecycle" and _has_explicit_long_inactivity_period(target_user.get("inactivity_period")):
+                continue
+            if field_name == "behaviors" and value == "no_purchase":
+                conditions.append(
+                    _condition(
+                        "target_user.behaviors",
+                        value,
+                        [],
+                        all_terms=[
+                            "not exists",
+                            str(_order_count_targets_config().get("table", "CRM_SL_ORDERHEADERMALL")),
+                        ],
+                    )
+                )
                 continue
             conditions.append(_condition(f"target_user.{field_name}", value, _condition_terms(value, field_name)))
             if field_name == "behaviors":
