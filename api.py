@@ -488,6 +488,7 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
             # 플랜 최종 모습이 아니라 결정 궤적으로 답한다.
             "decisions": plan_decisions.decisions(query_plan),
             "decisions_truncated": bool(query_plan.get(plan_decisions.TRUNCATED_KEY)),
+            "plan_resolution": query_plan.get("plan_resolution", {}),
             "superseded_conditions": query_plan.get("superseded_conditions", []),
         }
 

@@ -56,6 +56,7 @@ NON_CONDITION_PLAN_KEYS = frozenset({
     "original_query", "normalized_query", "planning_query", "schema_version",
     "retrieval", "matched_terms", "parser", "complexity", "query_semantics",
     "source_requirements", "source_requirements_digest", "structured_query",
+    "plan_resolution",
     "recognized_domains", "superseded_conditions", "failure_log",
     DECISIONS_KEY, TRUNCATED_KEY, *AUDITED_CONTAINERS,
 })

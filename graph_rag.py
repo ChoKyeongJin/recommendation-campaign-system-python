@@ -98,6 +98,7 @@ from targeting_ir import extract_target_conditions, fact_join_kinds
 import slot_ownership
 from slot_ownership import claim_slots as _claim_slots
 import plan_decisions
+import plan_resolver
 import metric_registry
 import segment_semantics
 import semantic_requirements
@@ -3149,6 +3150,53 @@ def _run_filters(
         _apply_named_filter(name, query, plan, business_policies=business_policies, init=init)
 
 
+def _build_llm_object_candidate(
+    query: str,
+    rules_candidate: dict[str, Any],
+    *,
+    llm_model: str,
+    prompt_dir: Path | None,
+) -> dict[str, Any]:
+    """검증된 상품 추출 결과를 rules 플랜과 분리된 희소 후보로 만든다."""
+    target_user = rules_candidate.get("target_user") if isinstance(rules_candidate.get("target_user"), dict) else {}
+    constraints = (
+        rules_candidate.get("campaign_constraints")
+        if isinstance(rules_candidate.get("campaign_constraints"), dict)
+        else {}
+    )
+    if (
+        (target_user.get("purchase_object") or not _has_purchase_history_signal(query))
+        and (constraints.get("sell_object") or not _has_sell_signal(query))
+    ):
+        return {}
+    candidate: dict[str, Any] = {"target_user": {}, "campaign_constraints": {}}
+    _apply_llm_object_fallback(query, candidate, llm_model=llm_model, prompt_dir=prompt_dir)
+    return candidate
+
+
+def _attach_candidate_source_requirements(
+    plan: dict[str, Any],
+    query: str,
+    candidates: list[plan_resolver.PlanCandidate],
+) -> None:
+    """각 후보의 원문 요구를 출처별로 봉인하고, 해석된 플랜에는 한 번만 부착한다."""
+    snapshots = [
+        semantic_requirements.capture_plan_source_requirements(query, candidate.payload, source=candidate.source)
+        for candidate in candidates
+    ]
+    semantic_requirements.attach_source_requirements(plan, *snapshots)
+
+
+def _resolve_query_plan_candidates(
+    candidates: list[plan_resolver.PlanCandidate],
+    *,
+    source_query: str,
+) -> dict[str, Any]:
+    plan = plan_resolver.resolve_plan_candidates(candidates)
+    _attach_candidate_source_requirements(plan, source_query, candidates)
+    return plan
+
+
 # 결정론 필터 실행 순서(경로별). 순서는 문서화된 파싱 의존성을 보존한다(레지스트리 엔트리 주석 참조).
 # rules 경로는 정규화 matched_terms 루프를 사이에 끼우므로 PRE/POST 두 단계로 나뉜다.
 _RULES_PRE_FILTERS: tuple[str, ...] = (
@@ -3204,7 +3252,7 @@ def _build_single_query_plan(
     # 파싱에서 빼도 발송 채널 선택에 영향이 없다.
     parse_query = _split_channel_suffix(query)[0] or query
 
-    rules_plan = _build_rule_query_plan(
+    rules_candidate = _build_rule_query_plan(
         parse_query,
         normalization_rules=normalization_rules,
         business_policies=business_policies,
@@ -3222,33 +3270,20 @@ def _build_single_query_plan(
         )
         else parse_query
     )
-    rules_source_requirements = semantic_requirements.capture_plan_source_requirements(
-        source_query, rules_plan, source="rules"
+    candidates = [plan_resolver.PlanCandidate("rules", rules_candidate, priority=300)]
+    object_candidate = _build_llm_object_candidate(
+        parse_query, rules_candidate, llm_model=llm_model, prompt_dir=prompt_dir
     )
-    # 정규식이 못 뽑은 상품 구매이력/판매 상품을 검증된 LLM 추출로 보완한다(표현형 변화 흡수).
-    # 규칙 스냅샷 이후 새로 생긴 슬롯만 별도 provenance로 기록해 LLM 결과를 rules로 위장하지 않는다.
-    _apply_llm_object_fallback(parse_query, rules_plan, llm_model=llm_model, prompt_dir=prompt_dir)
-    rule_paths = {requirement.path for requirement in rules_source_requirements}
-    llm_object_requirements = tuple(
-        requirement
-        for requirement in semantic_requirements.capture_plan_source_requirements(
-            source_query, rules_plan, source="llm_object_fallback"
-        )
-        if requirement.path not in rule_paths
-    )
-    llm_source_requirements = (
-        semantic_requirements.capture_plan_source_requirements(
-            source_query, query_plan_v2, source="llm_query_structurer"
-        )
-        if isinstance(query_plan_v2, dict) and query_plan_v2.get("intent") != "unknown"
-        else ()
-    )
-    semantic_requirements.attach_source_requirements(
-        rules_plan, rules_source_requirements, llm_object_requirements, llm_source_requirements
-    )
-    if query_plan_v2 is not None and query_plan_v2.get("intent") != "unknown":
-        rules_plan = _coerce_llm_query_plan(query_plan_v2, rules_plan, sql_schema)
-        _apply_llm_structured_slots(rules_plan)
+    if any(isinstance(value, dict) and value for value in object_candidate.values()):
+        candidates.append(plan_resolver.PlanCandidate("llm_object_fallback", object_candidate, priority=200))
+
+    supplied_llm_candidate: dict[str, Any] | None = None
+    if isinstance(query_plan_v2, dict) and query_plan_v2.get("intent") != "unknown":
+        supplied_llm_candidate = _coerce_llm_query_plan_candidate(query_plan_v2, rules_candidate, sql_schema)
+        candidates.append(plan_resolver.PlanCandidate("llm_query_structurer", supplied_llm_candidate, priority=100))
+
+    # 파서들은 후보만 제출한다. 슬롯 충돌·리스트 결합·미결정 intent 보완은 이 단일 resolver 호출이 소유한다.
+    rules_plan = _resolve_query_plan_candidates(candidates, source_query=source_query)
     # 의도·복잡도 판별(파이프라인 2단계): 이후 라우팅·관측용으로 plan 에 기록한다.
     rules_plan["complexity"] = classify_query_complexity(rules_plan)
     if parser == "rules":
@@ -3270,10 +3305,10 @@ def _build_single_query_plan(
         _attach_retrieval_scopes(rules_plan, scopes)
         return rules_plan
 
-    if query_plan_v2 is not None and query_plan_v2.get("intent") != "unknown":
+    if supplied_llm_candidate is not None:
         llm_plan, failure_reason = rules_plan, None
     else:
-        llm_plan, failure_reason = _try_llm_query_plan(
+        generated_llm_candidate, failure_reason = _try_llm_query_plan(
             parse_query,
             rules_plan,
             llm_model,
@@ -3281,6 +3316,13 @@ def _build_single_query_plan(
             sql_schema,
             structured_query,
         )
+        if generated_llm_candidate is None:
+            llm_plan = None
+        else:
+            candidates.append(
+                plan_resolver.PlanCandidate("llm_query_structurer", generated_llm_candidate, priority=100)
+            )
+            llm_plan = _resolve_query_plan_candidates(candidates, source_query=source_query)
     if llm_plan is None:
         rules_plan["parser"] = {
             "type": "rules",
@@ -3307,10 +3349,7 @@ def _build_single_query_plan(
     # LLM 이 만든 집합식 operand(지역/등급 디멘션)에도 프롬프트에서 복원한 값을 실어 컴파일되게 한다.
     _enrich_set_expression_operand_values(llm_plan, parse_query)
     _run_filters(_AUTO_FILTERS[4:], parse_query, llm_plan, init=True)
-    # 결정론 정규식이 다 돈 뒤, LLM 이 채운 구조화 슬롯을 fill-if-empty 로 병합한다(덧셈형 — 정규식이
-    # 발동한 슬롯은 불가침, LLM 은 정규식이 못 잡은 표현 변형만 메운다). 재실행 정규식이 LLM 값을 덮는
-    # 순서 문제를 원천 차단하려고 여기(모든 _apply_* 이후)서 적용한다.
-    _apply_llm_structured_slots(llm_plan)
+    # 구조화 LLM 슬롯도 이미 희소 후보로 제출되어 resolver에서 rules 슬롯과 함께 판정됐다.
     # behaviors 가 이미 소유한 canonical(예: cart_abandoner)이 lifecycle 에도 중복 분류되면 lifecycle 쪽을 뺀다.
     # lifecycle_extra_terms 에 behavior 겸용 어휘가 있어 LLM 이 같은 값을 lifecycle 로도 넣으면, compile 이 그
     # lifecycle 항목을 '미지원 제외 조건'으로 처리해 신뢰도 저점수 카드('생애주기: cart_abandoner')·경고가 뜬다
@@ -3636,7 +3675,7 @@ def _try_llm_query_plan(
         else:
             # 일부 모델/프록시가 tool_choice 를 무시할 수 있어 content JSON 폴백을 허용한다.
             content = message.content or "{}"
-        query_plan = _coerce_llm_query_plan(json.loads(content), fallback_plan, sql_schema)
+        query_plan = _coerce_llm_query_plan_candidate(json.loads(content), fallback_plan, sql_schema)
         # 실제 전송된 프롬프트/응답을 트레이스 표시용으로 담아 둔다(retrieve 가 result 로 옮기고 plan 에선 제거).
         query_plan["_llm_trace"] = {
             "system": messages[0]["content"],
@@ -3927,10 +3966,21 @@ def _apply_llm_structured_slots(plan: dict[str, Any]) -> None:
         plan.pop("unsupported", None)
 
 
-def _coerce_llm_query_plan(candidate: Any, fallback_plan: dict[str, Any], sql_schema: Path = DEFAULT_SCHEMA_PATH) -> dict[str, Any]:
-    plan = json.loads(json.dumps(fallback_plan, ensure_ascii=False))
+def _coerce_llm_query_plan_candidate(
+    candidate: Any,
+    reference_plan: dict[str, Any],
+    sql_schema: Path = DEFAULT_SCHEMA_PATH,
+) -> dict[str, Any]:
+    """LLM 출력을 검증된 희소 후보로 정규화한다(다른 플랜과 병합하지 않는다)."""
     if not isinstance(candidate, dict):
-        return plan
+        return {}
+
+    plan: dict[str, Any] = {
+        "target_user": {},
+        "exclude": {},
+        "campaign_constraints": {},
+        "retrieval": {"terms": []},
+    }
 
     intent = candidate.get("intent")
     if intent in {"recommend_campaign", "find_user_segment", "analyze_aggregation", "unknown"}:
@@ -3963,7 +4013,7 @@ def _coerce_llm_query_plan(candidate: Any, fallback_plan: dict[str, Any], sql_sc
         plan["retrieval"]["query"] = retrieval["query"].strip()
     if isinstance(retrieval.get("terms"), list):
         plan["retrieval"]["terms"] = _unique_strings(
-            [*plan["retrieval"]["terms"], *[str(term).strip() for term in retrieval["terms"] if str(term).strip()]]
+            [str(term).strip() for term in retrieval["terms"] if str(term).strip()]
         )
     computed_metrics = candidate.get("computed_metrics")
     if isinstance(computed_metrics, list):
@@ -3981,8 +4031,8 @@ def _coerce_llm_query_plan(candidate: Any, fallback_plan: dict[str, Any], sql_sc
             # 빈 집계 객체의 존재만으로 _attach_query_output_contract가 expected_grain=analytical로
             # 승격해 정상 회원 SQL을 query_result_grain_mismatch로 차단하는 것을 막는다.
             deterministic_analytical = (
-                fallback_plan.get("intent") == "analyze_aggregation"
-                or isinstance(fallback_plan.get("aggregation_request"), dict)
+                reference_plan.get("intent") == "analyze_aggregation"
+                or isinstance(reference_plan.get("aggregation_request"), dict)
             )
             if _is_substantive_aggregation_request(aggregation_payload) and deterministic_analytical:
                 plan["aggregation_request"] = aggregation_payload
@@ -3992,17 +4042,40 @@ def _coerce_llm_query_plan(candidate: Any, fallback_plan: dict[str, Any], sql_sc
                 }
             elif intent == "analyze_aggregation" and not deterministic_analytical:
                 # 목록 질의를 LLM이 임의 집계로 바꿔도 출력 grain은 결정론 판정 결과를 따른다.
-                plan["intent"] = fallback_plan.get("intent", "unknown")
+                plan.pop("intent", None)
     set_expressions = candidate.get("set_expressions")
     if isinstance(set_expressions, list):
         coerced_set_expressions = [_coerce_llm_set_expression(expression) for expression in set_expressions]
         coerced_set_expressions = [expression for expression in coerced_set_expressions if expression is not None]
         if coerced_set_expressions:
             plan["set_expressions"] = coerced_set_expressions
-    # 구조화 슬롯(가입창/로그인창/카트/캠페인/집계 등)을 IR 레지스트리 닫힌 어휘로 검증해 stash 에 담는다.
-    # 실제 병합은 _build_llm_query_plan 이 재실행 _apply_* 이후 fill-if-empty 로 수행(덧셈형).
-    plan["_llm_structured_slots"] = _coerce_llm_structured_conditions(candidate)
+    # 구조화 슬롯도 후보의 정식 슬롯으로 제출한다. 적용 여부와 충돌은 resolver 한 곳에서만 정한다.
+    unsupported_resolvers: list[dict[str, str]] = []
+    for name, value in _coerce_llm_structured_conditions(candidate).items():
+        shape = targeting_ir.SLOT_SHAPES.get(name)
+        container = plan["target_user"] if (shape is None or shape.container == "target_user") else plan
+        container[name] = value
+        if shape is not None:
+            path = f"target_user.{name}" if shape.container == "target_user" else name
+            unsupported_resolvers.extend(
+                {"reason": reason, "path": path} for reason in shape.resolves_unsupported
+            )
+    if unsupported_resolvers:
+        plan["_candidate_resolves_unsupported"] = unsupported_resolvers
     return plan
+
+
+def _coerce_llm_query_plan(
+    candidate: Any,
+    fallback_plan: dict[str, Any],
+    sql_schema: Path = DEFAULT_SCHEMA_PATH,
+) -> dict[str, Any]:
+    """구 호출자 호환 래퍼. 실제 병합 정책은 :mod:`plan_resolver`에 위임한다."""
+    llm_candidate = _coerce_llm_query_plan_candidate(candidate, fallback_plan, sql_schema)
+    return plan_resolver.resolve_plan_candidates([
+        plan_resolver.PlanCandidate("rules", fallback_plan, priority=300),
+        plan_resolver.PlanCandidate("llm_query_structurer", llm_candidate, priority=100),
+    ])
 
 
 def _is_substantive_aggregation_request(request: dict[str, Any]) -> bool:
@@ -20957,6 +21030,7 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
         # 조건 결정 감사 로그(필터, 액션, 슬롯, 사유) — 어느 단계가 어떤 조건을 만들고 지웠는지의 원본 기록.
         "decisions": plan_decisions.decisions(query_plan),
         "decisions_truncated": bool(query_plan.get(plan_decisions.TRUNCATED_KEY)),
+        "plan_resolution": query_plan.get("plan_resolution", {}),
         "failure_diagnosis": failure_diagnosis,
         "result": {
             "status": api_response.get("status"),
