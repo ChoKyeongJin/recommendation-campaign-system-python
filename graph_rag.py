@@ -1704,10 +1704,9 @@ def _rule_split_prompt_scopes(text: str) -> tuple[str, str] | None:
 
     "[오디언스]에게 [채널/메시지 액션]" 구조를 이용한다. 표지가 없거나 타겟팅 절이 비면 None(규칙 실패).
 
-    분리 지점은 '첫 표지'가 아니라 **첫 유효 표지**다. 오디언스 절이 채널 절로 잘려 나가면 그 조건은
-    (retrieval_scope=targeting 경로에서) Query Plan 자체에서 사라지므로, 두 가지를 확인한다:
-      · 표지가 다른 낱말의 꼬리가 아닐 것 — '함께'의 '께'처럼 부사 안에 든 표지는 건너뛴다(어휘는 lexicon 소유).
-      · 표지 뒤에 채널·메시지 신호가 있을 것 — 없으면 '[오디언스]에게 [발송 액션]' 구조가 아니므로 자르지 않는다.
+    분리 지점은 '첫 표지'가 아니라 **첫 유효 표지**다 — 표지가 다른 낱말의 꼬리('함께'의 '께')로 들어간
+    경우는 대상 지향이 아니므로 건너뛴다(예외 어휘는 lexicon 소유). 오디언스 절이 채널 절로 잘려 나가면
+    그 조건은 (retrieval_scope=targeting 경로에서) Query Plan 자체에서 사라지기 때문이다.
     """
     # (?!서): '곳에서/에게서/께서'처럼 '서'가 이어지면 대상 지향("~에게")이 아니라 장소·출처·존칭 주격
     # 표현이므로 표지로 보지 않는다(예: "브랜드가 X인 곳에서 구매한 고객"은 통째로 타겟팅 절).
@@ -1723,8 +1722,6 @@ def _rule_split_prompt_scopes(text: str) -> tuple[str, str] | None:
         targeting = text[:end].strip()
         channel = text[end:].strip()
         if len(targeting) < 2:
-            continue
-        if channel and not _has_channel_signal(channel):
             continue
         return targeting, channel
     return None

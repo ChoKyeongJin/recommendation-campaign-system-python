@@ -187,11 +187,13 @@ def test_source_restore_fills_lost_window_and_adjustment_only():
 
 
 def test_scope_split_never_cuts_audience_clause_into_channel_scope():
-    # '함께'의 '께'처럼 낱말 안에 든 표지로는 자르지 않는다(오디언스 조건이 채널 절로 사라지던 회귀).
+    # '함께'의 '께'처럼 낱말 안에 든 표지로는 자르지 않는다 — 여기서 잘리면 뒤따르는 오디언스 조건
+    # (반품 차감·동의·제외)이 채널 절로 빠져 Query Plan 에서 통째로 사라진다.
     assert g._rule_split_prompt_scopes(
         "총결제금액을 함께 산출해줘. 블랙리스트 회원은 제외하고 캠페인을 만들어줘") is None
-    # 표지 뒤에 채널 신호가 없으면 자르지 않는다(분석 요청의 뒷절이 잘려나가지 않게).
-    assert g._rule_split_prompt_scopes("20대 회원을 대상으로 재구매율을 계산해줘") is None
+    # 낱말 안 표지를 건너뛴 뒤 **그 다음** 유효 표지에서는 정상적으로 분리한다.
+    assert g._rule_split_prompt_scopes("총결제금액을 함께 산출한 고객에게 쿠폰을 발송해줘") == (
+        "총결제금액을 함께 산출한 고객에게", "쿠폰을 발송해줘")
     # 정상적인 '[오디언스]에게 [발송 액션]' 구조는 종전대로 분리된다.
     assert g._rule_split_prompt_scopes("서울에 사는 30대 여성 고객에게 쿠폰 메시지를 발송해줘") == (
         "서울에 사는 30대 여성 고객에게", "쿠폰 메시지를 발송해줘")
