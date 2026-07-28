@@ -13,6 +13,7 @@ from .prompt import (
 from .campaign_plan_v2 import (
     CampaignQueryPlanV2,
     CampaignQueryPlanValidationError,
+    attach_campaign_query_plan_v2_identity,
     build_campaign_query_plan_v2_fallback,
     validate_campaign_query_plan_v2,
 )
@@ -119,7 +120,8 @@ class LLMCampaignQueryPlanStructurer:
             response = ""
             try:
                 response = self._complete(messages)
-                result = validate_campaign_query_plan_v2(json.loads(response), query=input.query)
+                payload = attach_campaign_query_plan_v2_identity(json.loads(response), input.query)
+                result = validate_campaign_query_plan_v2(payload, query=input.query)
                 self._emit(
                     "campaign_query_plan_v2_success",
                     {"attempt": attempt + 1, "query_plan": result.to_dict()},

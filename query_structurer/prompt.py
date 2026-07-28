@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 
 from .schema import STRUCTURED_QUERY_JSON_SCHEMA
-from .campaign_plan_v2 import CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA
 from .types import QueryStructuringInput
 
 
@@ -96,12 +95,10 @@ def build_campaign_query_plan_v2_user_prompt(input: QueryStructuringInput) -> st
         [
             "[User Query]\n" + input.query,
             "[Structuring Context]\n" + json.dumps(context, ensure_ascii=False, indent=2),
-            "[Campaign QueryPlan v2 JSON Schema]\n"
-            + json.dumps(CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA, ensure_ascii=False, indent=2),
+            "응답은 제공된 submit_campaign_query_plan_v2 tool schema를 따른다.",
             (
-                "raw_query와 original_query에는 User Query를 그대로 넣고, planning_query에는 "
-                "현재 단계에서 해석할 User Query를 그대로 넣어라. target_user/exclude/"
-                "campaign_constraints에 캠페인 조건을 직접 구조화하라."
+                "질의 identity와 schema_version은 애플리케이션이 주입한다. 모델은 이를 반환하지 말고 "
+                "target_user/exclude/campaign_constraints와 필요한 실행 의미 슬롯만 구조화하라."
             ),
         ]
     )

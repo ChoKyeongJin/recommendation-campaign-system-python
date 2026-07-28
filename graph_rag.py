@@ -4,6 +4,7 @@ import argparse
 import concurrent.futures
 import contextlib
 import contextvars
+import copy
 import functools
 import hashlib
 import json
@@ -2156,6 +2157,23 @@ def _merge_targeting_conditions(base: dict[str, Any], other: dict[str, Any]) -> 
         base["cart_context"] = True
 
 
+def _finalize_deterministic_query_plan(
+    query: str, plan: dict[str, Any], sql_schema: Path
+) -> None:
+    """LLM 필요 여부를 판단하기 전에 모든 결정론 의미 후처리를 완료한다."""
+    plan["query_semantics"] = {
+        "tokens": classify_query_tokens(query),
+        "extreme": extract_extreme_semantics(query),
+    }
+    _apply_core_membership_semantics(query, plan)
+    _apply_entity_set_condition(query, plan)
+    _guard_unparsed_entity_ranking(query, plan)
+    _apply_analytical_intent(query, plan, sql_schema)
+    _reconcile_cart_aggregate_ownership(plan)
+    _attach_query_output_contract(query, plan)
+    plan["complexity"] = classify_query_complexity(plan)
+
+
 def build_query_plan(
     query: str,
     normalization_rules: Path | None = DEFAULT_NORMALIZATION_PATH,
@@ -2169,6 +2187,9 @@ def build_query_plan(
     structured_query: StructuredQuery | None = None,
     query_plan_v2: CampaignQueryPlanV2 | None = None,
     raw_query: str | None = None,
+    original_query: str | None = None,
+    query_plan_v2_factory: Callable[[dict[str, Any]], CampaignQueryPlanV2] | None = None,
+    precomputed_scopes: dict[str, Any] | None = None,
 ) -> CampaignQueryPlanV2:
     """단일 파싱으로 query_plan 을 만든다. multi_query_variants>0 이고 LLM 사용 가능하면 프롬프트를
     의미보존 재구성한 변이들도 파싱해 '성공적으로 잡힌 타겟 조건'을 base 에 합집합으로 병합한다.
@@ -2177,17 +2198,25 @@ def build_query_plan(
     변이는 값이 아니라 표현만 바꾸므로(결정론 파서가 실제 조건 추출) 없는 조건을 지어내지 않는다.
     변이 파싱은 rules(결정론)로 하여 비용을 낮춘다 — 다양한 표현형이 서로 다른 규칙 패턴에 걸리는 것이 핵심.
     """
+    requested_parser = parser.casefold()
+    initial_parser = (
+        "rules"
+        if query_plan_v2_factory is not None and requested_parser in {"auto", "llm"}
+        else parser
+    )
     base = _build_single_query_plan(
         query,
         normalization_rules,
         business_policies,
         metric_lexicon,
         sql_schema,
-        parser,
+        initial_parser,
         llm_model,
         prompt_dir,
         structured_query,
         query_plan_v2,
+        original_query,
+        precomputed_scopes,
     )
     if multi_query_variants and multi_query_variants > 0 and parser.casefold() != "rules":
         variant_intents: list[str] = []
@@ -2203,6 +2232,8 @@ def build_query_plan(
                 prompt_dir,
                 structured_query,
                 None,
+                None,
+                None,
             )
             _merge_targeting_conditions(base, variant_plan)
             variant_intents.append(variant_plan.get("intent"))
@@ -2211,38 +2242,14 @@ def build_query_plan(
     if structured_query is not None:
         # Compatibility for callers that still pass the retired general IR.
         base["structured_query"] = structured_query.to_dict()
-    # Entity extraction and analytical routing consume the same deterministic
-    # token-role view.  Exposing it on the plan also makes silent role drift
-    # observable in traces and tests.
-    base["query_semantics"] = {
-        "tokens": classify_query_tokens(query),
-        "extreme": extract_extreme_semantics(query),
-    }
-    # 집계 출력은 회원 목록보다 우선한다. 규칙/LLM 파서가 VIP·여성·캠페인·쿠폰 같은 수식어를
-    # 오디언스 조건으로 먼저 잡았더라도, 등록된 수치 지표와 집계 함수/그룹 축이 확인되면 별도의
-    # 분석 계약으로 승격한다. 지표·차원·필터 물리 매핑은 analytics_registry.json이 단일 소스다.
-    # 행동 의미(구매/장바구니/캠페인 반응의 존재·부재)를 먼저 구조화한다. 분석 계약은 이 결과를
-    # 모집단 스코프로 넘겨받아야 "구매한 회원 수"를 전체 회원 수로 계산하는 조용한 오답을 막는다.
-    # 파서가 단순 완료형 행동("구매한 회원")을 놓쳐도 여기서 복원된다.
-    _apply_core_membership_semantics(query, base)
-    # 파생 엔터티 집합(순위 서브쿼리를 피연산자로 갖는 조건)은 같은 문장의 상품/기간 표현을 소유한다 —
-    # 분석 계약보다 먼저 확정해야 '상품 10개'가 리터럴 상품 조건으로 새지 않는다.
-    _apply_entity_set_condition(query, base)
-    _guard_unparsed_entity_ranking(query, base)
-    _apply_analytical_intent(query, base, sql_schema)
-    # Structured/planner enrichment may attach a generic aggregate twin after
-    # the cart parser already claimed the same threshold. Reconcile ownership
-    # on the completed plan before coverage and delivery validation run.
-    _reconcile_cart_aggregate_ownership(base)
-    _attach_query_output_contract(query, base)
-    base["complexity"] = classify_query_complexity(base)
+    _finalize_deterministic_query_plan(query, base, sql_schema)
     # ``query``는 retrieve 경로에서 정규화/스코프 분리된 planning query일 수 있다. 최초 구조화기가
     # 보존한 원문 타겟 절과 API 원문 전체를 각각 유지해, 내부 재작성문이 original/raw를 덮지 못하게 한다.
     source_query = (
         str(query_plan_v2.get("original_query"))
         if isinstance(query_plan_v2, dict) and isinstance(query_plan_v2.get("original_query"), str)
         and str(query_plan_v2.get("original_query")).strip()
-        else query
+        else (original_query or query)
     )
     preserved_raw_query = (
         raw_query
@@ -2254,6 +2261,50 @@ def build_query_plan(
         )
         or source_query
     )
+    _refresh_unresolved_source_conditions(source_query, base)
+    if query_plan_v2_factory is not None and requested_parser in {"auto", "llm"}:
+        needs_enrichment = requested_parser == "llm" or _query_plan_needs_llm_enrichment(base)
+        if needs_enrichment:
+            structured_plan = query_plan_v2_factory(base)
+            llm_candidate = None
+            failure_reason = None
+            if isinstance(structured_plan, dict) and structured_plan.get("intent") != "unknown":
+                llm_candidate = _coerce_llm_query_plan_candidate(
+                    structured_plan, base, sql_schema, source_query=source_query
+                )
+            else:
+                llm_candidate, failure_reason = _try_llm_query_plan(
+                    query, base, llm_model, prompt_dir, sql_schema, structured_query
+                )
+            if llm_candidate is not None:
+                base = _resolve_query_plan_candidates(
+                    [
+                        plan_resolver.PlanCandidate("rules", base, priority=300),
+                        plan_resolver.PlanCandidate("llm_query_structurer", llm_candidate, priority=100),
+                    ],
+                    source_query=source_query,
+                )
+                base["parser"] = {
+                    "type": "llm",
+                    "requested": requested_parser,
+                    "fallback_used": False,
+                    "model": llm_model,
+                }
+                _finalize_deterministic_query_plan(query, base, sql_schema)
+            else:
+                base["parser"] = {
+                    "type": "rules",
+                    "requested": requested_parser,
+                    "fallback_used": True,
+                    "fallback_reason": failure_reason or "llm_query_parser_unavailable",
+                }
+        else:
+            base["parser"] = {
+                "type": "rules",
+                "requested": requested_parser,
+                "fallback_used": False,
+                "skip_reason": "deterministic_plan_complete",
+            }
     # 정밀 신호가 원문에는 있는데 어떤 실행 슬롯에도 귀결되지 않은 경우, 경고로 흘리지 않고 IR의
     # 미해결 요구로 남긴다. build_sql_result가 같은 검사를 다시 수행하므로 이후 보강 단계의 변경도 반영된다.
     _refresh_unresolved_source_conditions(source_query, base)
@@ -3692,13 +3743,19 @@ def _build_single_query_plan(
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
     structured_query: StructuredQuery | None = None,
     query_plan_v2: CampaignQueryPlanV2 | None = None,
+    original_query: str | None = None,
+    precomputed_scopes: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     parser = parser.casefold()
     if parser not in {"rules", "auto", "llm"}:
         raise ValueError("query parser must be one of: rules, auto, llm.")
 
     # 검색·그래프 컨텍스트 스코핑용 타겟팅/채널 절 분리(전체 문장 파싱·SQL 에는 영향 없음).
-    scopes = split_prompt_scopes(query, parser=parser, llm_model=llm_model, prompt_dir=prompt_dir)
+    scopes = (
+        precomputed_scopes
+        if isinstance(precomputed_scopes, dict)
+        else split_prompt_scopes(query, parser=parser, llm_model=llm_model, prompt_dir=prompt_dir)
+    )
 
     # "발송 채널: <채널>" 지시는 타겟 조건이 아니라 발송 채널일 뿐이므로, 정규화·검색어 추출 전에 떼어낸다.
     # 남기면 채널 설명("장문 문자" 등)이 정규화 매칭(→lms)과 retrieval terms 로 새어, 타겟팅 키워드 검색이
@@ -3723,7 +3780,7 @@ def _build_single_query_plan(
             and isinstance(query_plan_v2.get("original_query"), str)
             and query_plan_v2["original_query"].strip()
         )
-        else parse_query
+        else (original_query or parse_query)
     )
     candidates = [plan_resolver.PlanCandidate("rules", rules_candidate, priority=300)]
     object_candidate = _build_llm_object_candidate(
@@ -3743,6 +3800,7 @@ def _build_single_query_plan(
     rules_plan = _resolve_query_plan_candidates(candidates, source_query=source_query)
     # 의도·복잡도 판별(파이프라인 2단계): 이후 라우팅·관측용으로 plan 에 기록한다.
     rules_plan["complexity"] = classify_query_complexity(rules_plan)
+
     if parser == "rules":
         rules_plan["parser"] = {"type": "rules", "fallback_used": False}
         _attach_retrieval_scopes(rules_plan, scopes)
@@ -3752,12 +3810,16 @@ def _build_single_query_plan(
     # LLM Query Plan 보강을 건너뛴다 — 결정론 rules 플랜이 조건을 전부 뽑았으므로 LLM 은 비용/지연만
     # 늘리고 조건을 흘릴 위험(재작성 소실류)만 있다. 복잡 질의만 Query Plan(LLM 보강) 경로를 탄다.
     # parser="llm"(명시 강제)은 존중하고 "auto" 에만 적용한다.
-    if parser == "auto" and rules_plan["complexity"] == "simple" and _has_member_target_signal(rules_plan):
+    if (
+        parser == "auto"
+        and supplied_llm_candidate is None
+        and not _query_plan_needs_llm_enrichment(rules_plan)
+    ):
         rules_plan["parser"] = {
             "type": "rules",
             "requested": parser,
             "fallback_used": False,
-            "skip_reason": "simple_query_direct",
+            "skip_reason": "deterministic_plan_complete",
         }
         _attach_retrieval_scopes(rules_plan, scopes)
         return rules_plan
@@ -4300,19 +4362,54 @@ def _query_plan_user_prompt(
         )
     if PLANNER_STRUCTURED_QUERY_RULES not in rendered:
         rendered += "\n\n" + PLANNER_STRUCTURED_QUERY_RULES
-    aggregation_schema = _aggregation_schema_prompt_context(query, sql_schema)
-    rendered += "\n\n[Aggregation Schema Metadata]\n" + json.dumps(
-        aggregation_schema, ensure_ascii=False, indent=2
-    )
+    deterministic_analytical_intent = analyze_analytical_intent(query)
+    if (
+        fallback_plan.get("intent") == "analyze_aggregation"
+        or isinstance(fallback_plan.get("aggregation_request"), dict)
+        or isinstance(deterministic_analytical_intent, dict)
+    ):
+        schema_scope_plan = fallback_plan
+        if (
+            not isinstance(fallback_plan.get("aggregation_request"), dict)
+            and isinstance(deterministic_analytical_intent, dict)
+        ):
+            try:
+                deterministic_request = build_deterministic_aggregation_request(
+                    deterministic_analytical_intent
+                )
+            except (KeyError, TypeError, ValueError):
+                deterministic_request = None
+            if isinstance(deterministic_request, dict):
+                schema_scope_plan = {**fallback_plan, "aggregation_request": deterministic_request}
+        aggregation_schema = _aggregation_schema_prompt_context(
+            query, sql_schema, query_plan=schema_scope_plan
+        )
+        if aggregation_schema:
+            rendered += "\n\n[Aggregation Schema Metadata]\n" + json.dumps(
+                aggregation_schema, ensure_ascii=False, indent=2
+            )
     return rendered
 
 
-def _aggregation_schema_prompt_context(query: str, schema_path: Path, table_limit: int = 12) -> list[dict[str, Any]]:
-    """집계 플래너에 전달할 관련 테이블/컬럼 메타데이터를 토큰 점수로 제한한다."""
+def _aggregation_schema_prompt_context(
+    query: str,
+    schema_path: Path,
+    table_limit: int = 6,
+    *,
+    query_plan: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """집계 플래너에 관련 있는 테이블/컬럼만 제한적으로 전달한다."""
     context = SchemaMetadata.load(schema_path).prompt_context()
     terms = [token.casefold() for token in _query_tokens(query) if len(token.strip()) >= 2]
+    aggregation = query_plan.get("aggregation_request") if isinstance(query_plan, dict) else None
+    referenced_tables = {
+        str(value).casefold()
+        for value in _walk_dict_values(aggregation, "table")
+        if isinstance(value, str) and value
+    }
 
-    def score(table: dict[str, Any]) -> tuple[int, int]:
+    def score(table: dict[str, Any]) -> tuple[int, int, int]:
+        table_name = str(table.get("table") or "").casefold()
         searchable = " ".join(
             str(value or "")
             for value in [table.get("table"), table.get("logicalName"), table.get("description")]
@@ -4324,17 +4421,33 @@ def _aggregation_schema_prompt_context(query: str, schema_path: Path, table_limi
         ).casefold()
         hits = sum(1 for term in terms if term in searchable)
         important = sum(1 for column in table.get("columns", []) if column.get("important"))
-        return hits, important
+        return (1 if table_name in referenced_tables else 0), hits, important
 
-    selected = sorted(context, key=score, reverse=True)[:table_limit]
-    for table in selected:
+    ranked = sorted(context, key=score, reverse=True)
+    if referenced_tables:
+        matched = [table for table in ranked if score(table)[0]]
+    else:
+        matched = [table for table in ranked if score(table)[1]]
+    selected = matched[:table_limit] if matched else ranked[: min(2, table_limit)]
+    scoped: list[dict[str, Any]] = []
+    for source_table in selected:
+        table = copy.deepcopy(source_table)
         columns = table.get("columns", [])
         preferred = [
             column for column in columns
-            if column.get("important") or column.get("aggregatable") or column.get("semanticRoles")
+            if column.get("important")
+            or column.get("aggregatable")
+            or column.get("semanticRoles")
+            or any(
+                term in " ".join(
+                    str(column.get(key) or "") for key in ("column", "logicalName", "meaning")
+                ).casefold()
+                for term in terms
+            )
         ]
-        table["columns"] = (preferred or columns)[:40]
-    return selected
+        table["columns"] = (preferred or columns)[:20]
+        scoped.append(table)
+    return scoped
 
 
 def _llm_slot_allowed() -> dict[str, Any]:
@@ -5265,6 +5378,28 @@ def _has_member_target_signal(query_plan: dict[str, Any]) -> bool:
     if compile_member_target_conditions(query_plan)["has_signal"]:
         return True
     return any(condition.spec.signals_target for condition in _extract_conditions_ir(query_plan))
+
+
+def _query_plan_needs_llm_enrichment(query_plan: dict[str, Any]) -> bool:
+    """결정론 플랜에 LLM이 메울 수 있는 실제 공백이 남았는지 판정한다.
+
+    복잡도 자체는 호출 근거로 쓰지 않는다. 실행 가능한 복잡 플랜도 많기 때문에, 명시적으로
+    미해결/미지원/모호성 상태가 남거나 intent를 확정하지 못한 경우에만 보강한다.
+    """
+    if query_plan.get("intent") in (None, "unknown"):
+        return True
+    if query_plan.get("unsupported") or query_plan.get("unresolved_source_conditions"):
+        return True
+    aggregation = query_plan.get("aggregation_request")
+    if isinstance(aggregation, dict) and aggregation.get("unresolvedFields"):
+        return True
+    for key in ("semantic_resolutions", "set_expressions", "computed_metrics"):
+        values = query_plan.get(key)
+        if isinstance(values, list) and any(
+            isinstance(value, dict) and value.get("requires_clarification") for value in values
+        ):
+            return True
+    return False
 
 
 @_audited_stage
@@ -11139,15 +11274,21 @@ def retrieve(
     # 사용자가 입력한 타겟팅 프롬프트만 사용한다. 원문 query는 감사 로그와 화면 표시용으로 보존한다.
     targeting_prompt = _targeting_prompt(query)
 
-    stage_started_at = time.perf_counter()
     context = structuring_context or StructuringContext(
         current_date=date.today().isoformat(),
         timezone=os.getenv("GRAPH_RAG_TIMEZONE"),
     )
-    campaign_query_plan = _structure_campaign_query_plan_v2(
-        targeting_prompt, context, llm_model, query_structurer
-    )
-    timings_ms["query_structuring"] = _elapsed_ms(stage_started_at)
+    campaign_query_plan = build_campaign_query_plan_v2_fallback(targeting_prompt)
+    timings_ms["query_structuring"] = 0.0
+
+    def lazy_campaign_query_plan(_rules_plan: dict[str, Any]) -> CampaignQueryPlanV2:
+        nonlocal campaign_query_plan
+        structuring_started_at = time.perf_counter()
+        campaign_query_plan = _structure_campaign_query_plan_v2(
+            targeting_prompt, context, llm_model, query_structurer
+        )
+        timings_ms["query_structuring"] = _elapsed_ms(structuring_started_at)
+        return campaign_query_plan
 
     # 파싱 전에 사용자 프롬프트를 타겟 조건 중심으로 재작성(룰/LLM)한다. 재작성본으로 파싱하되 원문은 보존한다.
     stage_started_at = time.perf_counter()
@@ -11165,8 +11306,10 @@ def retrieve(
     # 검색 스코프·메시지 생성에서만 쓰인다. 타겟팅 절이 비면 전체 재작성본으로 폴백한다.
     scope = (retrieval_scope or "all").casefold()
     stage_started_at = time.perf_counter()
+    plan_scopes = split_prompt_scopes(
+        effective_query, parser=query_parser, llm_model=llm_model, prompt_dir=prompt_dir
+    )
     if scope == "targeting":
-        plan_scopes = split_prompt_scopes(effective_query, parser=query_parser, llm_model=llm_model, prompt_dir=prompt_dir)
         plan_query = (plan_scopes.get("targeting") or "").strip() or effective_query
         plan_query = _preserve_count_output_query(effective_query, plan_query)
     else:
@@ -11176,7 +11319,7 @@ def retrieve(
     timings_ms["prompt_scopes"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
-    planner_input = QueryPlannerInput(query=plan_query, query_plan=campaign_query_plan, raw_query=query)
+    planner_input = QueryPlannerInput(query=plan_query, raw_query=query)
     query_plan = call_query_planner(
         build_query_plan,
         planner_input,
@@ -11188,6 +11331,9 @@ def retrieve(
         llm_model=llm_model,
         prompt_dir=prompt_dir,
         multi_query_variants=multi_query_variants,
+        original_query=targeting_prompt,
+        query_plan_v2_factory=lazy_campaign_query_plan,
+        precomputed_scopes=plan_scopes,
     )
     # 파싱에 실제 사용한 문장(타겟팅 절 또는 전체 재작성본)을 트레이스/응답에 노출한다.
     query_plan["planning_query"] = plan_query
@@ -11702,10 +11848,11 @@ def render_answer_prompt(
         ]
     )
     template = _read_prompt_template(prompt_dir, "answer_user.txt", fallback)
+    generation_plan = _query_plan_for_generation(query_plan)
     return _render_prompt_template(
         template,
         query=query,
-        query_plan=json.dumps(query_plan, ensure_ascii=False, indent=2),
+        query_plan=json.dumps(generation_plan, ensure_ascii=False, indent=2),
         context=context_assembly["prompt"],
         sql_result=json.dumps(sql_result, ensure_ascii=False, indent=2),
         sql_policy="\n".join(sql_policy),
@@ -12166,19 +12313,51 @@ def render_message_prompt(
         ]
     )
     template = _read_prompt_template(prompt_dir, "message_generation_user.txt", fallback)
+    generation_plan = _query_plan_for_generation(query_plan)
     return _render_prompt_template(
         template,
         query=query,
         requested_channel=message_context.get("channel", DEFAULT_MESSAGE_CHANNEL),
         channel_policy=json.dumps(message_context.get("channel_policy", {}), ensure_ascii=False, indent=2),
         selected_channel_policy=json.dumps(message_context.get("selected_channel_policy", {}), ensure_ascii=False, indent=2),
-        query_plan=json.dumps(query_plan, ensure_ascii=False, indent=2),
+        query_plan=json.dumps(generation_plan, ensure_ascii=False, indent=2),
         campaign_context=json.dumps(message_context.get("campaigns", []), ensure_ascii=False, indent=2),
         target_context=json.dumps(message_context.get("target_context", {}), ensure_ascii=False, indent=2),
         message_examples=json.dumps(message_context.get("message_examples", []), ensure_ascii=False, indent=2),
         tone_manner_rules=_message_generation_tone_manner_rules(prompt_dir),
         sql_result=json.dumps(sql_result, ensure_ascii=False, indent=2),
     )
+
+
+_GENERATION_QUERY_PLAN_KEYS = (
+    "intent",
+    "target_user",
+    "exclude",
+    "campaign_constraints",
+    "dimension_filters",
+    "region_density_target",
+    "member_metric_selection",
+    "member_metric_ranking",
+    "set_expressions",
+    "computed_metrics",
+    "aggregation_request",
+    "result_limit",
+    "member_policy",
+    "semantic_resolutions",
+    "policy_constraints",
+    "output_contract",
+    "unsupported",
+    "unresolved_source_conditions",
+)
+
+
+def _query_plan_for_generation(query_plan: dict[str, Any]) -> dict[str, Any]:
+    """답변·메시지 생성에 필요한 의미 슬롯만 투영하고 내부 감사 상태는 제외한다."""
+    return {
+        key: query_plan[key]
+        for key in _GENERATION_QUERY_PLAN_KEYS
+        if key in query_plan and query_plan[key] not in (None, "", [], {})
+    }
 
 
 def _message_generation_tone_manner_rules(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:

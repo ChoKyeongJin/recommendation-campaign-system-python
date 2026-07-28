@@ -257,14 +257,63 @@ CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA: dict[str, Any] = {
 }
 
 
+_APPLICATION_OWNED_PLAN_FIELDS = frozenset(
+    {
+        "schema_version",
+        "raw_query",
+        "original_query",
+        "planning_query",
+        "normalized_query",
+        "source_requirements",
+        "source_requirements_digest",
+        QUERY_IDENTITY_DIGEST_KEY,
+        "strict_source_coverage",
+        "unresolved_source_conditions",
+    }
+)
+
+
+def _campaign_query_plan_v2_llm_schema() -> dict[str, Any]:
+    """Tool 호출에서 모델이 결정할 필드만 노출한다."""
+    schema = copy.deepcopy(CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA)
+    schema.pop("$id", None)
+    schema["required"] = [
+        key for key in schema.get("required", []) if key not in _APPLICATION_OWNED_PLAN_FIELDS
+    ]
+    properties = schema.get("properties", {})
+    for key in _APPLICATION_OWNED_PLAN_FIELDS:
+        properties.pop(key, None)
+    return schema
+
+
+CAMPAIGN_QUERY_PLAN_V2_LLM_JSON_SCHEMA = _campaign_query_plan_v2_llm_schema()
+
+
 CAMPAIGN_QUERY_PLAN_V2_TOOL: dict[str, Any] = {
     "type": "function",
     "function": {
         "name": "submit_campaign_query_plan_v2",
         "description": "캠페인 타겟팅 요청을 실행기와 공유하는 QueryPlan v2로 제출한다.",
-        "parameters": CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA,
+        "parameters": CAMPAIGN_QUERY_PLAN_V2_LLM_JSON_SCHEMA,
     },
 }
+
+
+def attach_campaign_query_plan_v2_identity(payload: Any, query: str) -> Any:
+    """모델 출력에 애플리케이션이 소유하는 버전·질의 identity를 결정론적으로 붙인다."""
+    if not isinstance(payload, dict):
+        return payload
+    enriched = copy.deepcopy(payload)
+    enriched.update(
+        {
+            "schema_version": CAMPAIGN_QUERY_PLAN_VERSION,
+            "raw_query": query,
+            "original_query": query,
+            "planning_query": query,
+            "normalized_query": query,
+        }
+    )
+    return enriched
 
 
 def build_campaign_query_plan_v2_fallback(query: str) -> CampaignQueryPlanV2:
