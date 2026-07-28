@@ -508,7 +508,7 @@ SLOT_SHAPES: dict[str, SlotShape] = {
                     "current 가 비교 기간이다('2월 대비 3월 증가' → baseline=2월, current=3월). 연도 필수."),
         _coerce_metric_trend, allowed_key="aggregate_metrics"),
     "purchase_object": SlotShape("purchase_object", "target_user",
-        {"type": "string", "description": "구매한 상품/브랜드 자유 텍스트(부분일치)."},
+        {"type": "string", "description": "구매한 실제 상품/브랜드명 자유 텍스트(부분일치). 실제 이름 없이 '상품/제품/품목' 같은 일반명사만 있으면 null."},
         _coerce_string),
     "cart_absence": SlotShape("cart_absence", "target_user",
         {"type": "boolean", "description": "장바구니(보관 상품)가 없는 회원. true 만 설정('장바구니 없는/생성 안 한')."},

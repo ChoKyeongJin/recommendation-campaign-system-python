@@ -1325,8 +1325,8 @@ def _prompt_rewrite_timeout_seconds(default: float = 12.0) -> float:
 # 오탐해도 결과는 '재작성 미적용(원문 사용)'뿐이라 안전하기 때문이다.
 _GENDER_SURFACE_TO_CANONICAL = {"여성": "female", "여자": "female", "남성": "male", "남자": "male"}
 _GENDER_CANONICAL_KO = {"female": "여성", "male": "남성"}
-# 상품 구매 이력 조건("… 구매/구입한 …")의 상품명 추출 패턴. _apply_purchase_object_filter 와 공유해
-# 재작성 검증 게이트에서도 같은 기준으로 '구매 상품 조건'이 지워졌는지 본다.
+# 재작성 전후에 구매 상품 조건이 사라졌는지만 비교하는 검증 게이트용 패턴.
+# 실행 플랜의 purchase_object 를 추출하지 않는다.
 _PURCHASE_OBJECT_PATTERN = re.compile(
     # 목적어와 구매 동사 사이에 조사(을/를) 또는 공백을 최소 1개 요구한다. 둘 다 옵션이면 폭 0 juncture 가
     # 허용돼 붙여 쓴 구매 합성어('다구매/총구매/무구매 고객')를 '다'+'구매' 로 쪼개 앞 음절을 상품명으로
@@ -1335,17 +1335,6 @@ _PURCHASE_OBJECT_PATTERN = re.compile(
     r"(?:구매|구입)\s*(?:한|했|했던|하신|하였|이력|내역|경험|고객|회원|유저|구매자)",
     re.IGNORECASE,
 )
-# Product followed by an explicit quantity/frequency before the purchase verb:
-# ``기저귀를 2개 이상 구매``.  The ordinary immediate-object pattern would
-# otherwise capture ``이상`` as the product and silently lose the real scope.
-_PURCHASE_OBJECT_QUANTIFIED_PATTERN = re.compile(
-    r"(?P<object>[0-9A-Za-z가-힣_+\-]{1,40})\s*(?:을|를)\s*"
-    r"\d+(?:\.\d+)?\s*(?:개|회|번|건|장|종|가지|종류|품목|매|권)?\s*"
-    r"(?:이상|이하|미만|초과|정확히)?\s*(?:구매|구입|주문)",
-    re.IGNORECASE,
-)
-
-
 def _declared_distinct_dimension_terms() -> set[str]:
     """aggregate_targets.metrics[*].distinct_of.terms 로 선언된 디멘션 표면어(브랜드/카테고리/…).
 
@@ -1363,16 +1352,11 @@ def _declared_distinct_dimension_terms() -> set[str]:
     return terms
 
 
-# 상품이 아닌 일반 명사(예: "알로루 브랜드 '상품' 구매한")가 구매 동사 바로 앞에 오면, 위 단일 토큰
-# 캡처가 그 일반명사를 상품명으로 오인해 LIKE '%상품%' 같은 무의미하게 넓은 매칭을 만든다.
-# 선언된 디멘션어(브랜드/카테고리…)도 같은 이유로 상품명이 아니다.
-_GENERIC_PRODUCT_NOUNS = {"상품", "제품", "물건", "품목", "굿즈", "아이템", "브랜드"} | _declared_distinct_dimension_terms()
-# 일반명사 앞의 실제 브랜드/상품명 재시도 캡처("알로루 브랜드 상품 구매한" → '알로루').
-_PURCHASE_OBJECT_BRAND_PATTERN = re.compile(
-    r"(?P<object>[0-9A-Za-z가-힣_+\-]{1,40})\s+"
-    r"(?:브랜드|상품|제품|물건|품목|굿즈|아이템)(?:\s*(?:브랜드|상품|제품|물건|품목|굿즈|아이템))*\s*(?:을|를)?\s*(?:구매|구입)",
-    re.IGNORECASE,
-)
+# LLM 결과 검증에서 제외할 일반 상품 명사. 선언된 디멘션어(브랜드/카테고리…)도 상품명이 아니다.
+_GENERIC_PRODUCT_NOUNS = {
+    "상품", "상품명", "제품", "제품명", "물건", "품목", "품목명", "굿즈", "아이템",
+    "브랜드", "브랜드명", "카테고리명",
+} | _declared_distinct_dimension_terms()
 
 # "브랜드가 알로루인 곳/고객" 같은 계사(copula) 형 브랜드 언급. 구매 동사가 없어도 '그 브랜드(상품)
 # 구매 고객' 타겟으로 본다 — 브랜드에 쿠폰을 뿌린다 = 그 브랜드 구매 이력 고객에게 뿌린다.
@@ -1411,15 +1395,6 @@ _CATEGORY_VALUE_STOPWORDS = frozenset({
     "구매", "구입", "주문", "판매", "결제", "인기", "동일", "같은", "해당", "다른", "여러", "다양한", "서로",
     "회원", "고객", "유저", "사람", "이번", "저번", "지난", "최근",
 })
-
-
-# "상품명이/제품명이 X인" 같은 계사형 상품명 언급. 브랜드 계사와 대칭이며 반드시 '명'(name)을 요구해
-# "상품이 좋은" 처럼 상품명이 아닌 표현을 배제한다. 매칭되면 PRODUCT_NAME 컬럼만 좁혀 매칭한다.
-_PRODUCT_NAME_COPULA_PATTERN = re.compile(
-    r"(?:상품|제품)명(?:이|은)\s*(?P<object>[0-9A-Za-z가-힣_+\-]{1,40}?)"
-    r"(?:이면서|이거나|인데|이고|이며|면서|인)(?![0-9A-Za-z가-힣])",
-    re.IGNORECASE,
-)
 
 
 # 구매 '횟수/조건' 수식어는 상품명이 아니다(예: '2회 이상 구매' 의 '이상'). 게이트가 상품 조건으로 오인해
@@ -1477,28 +1452,6 @@ def _split_product_terms(value: str) -> list[str]:
     return terms
 
 
-def _extract_purchase_object_list(query: str) -> list[dict[str, Any]]:
-    """'A와 B를 (… 구매)' 나열형에서 상품별 {value, kind} 리스트를 뽑는다(연결어 사슬이 없으면 빈 리스트).
-
-    값은 _canonicalize_product_term 으로 DB 표기 보정하고, 실DB 브랜드명과 일치하면 kind='brand' 로 표시해
-    빌더가 컬럼을 좁힐 수 있게 한다. 단일 상품은 여기서 잡지 않는다(_apply_purchase_object_filter 단일 경로 소유).
-    사슬 패턴이 목적격 조사만 앵커로 쓰므로, 비구매 나열('서울과 부산을')을 배제하려 구매 신호가 있을 때만 쓴다."""
-    if not _has_purchase_history_signal(query):
-        return []
-    match = _PURCHASE_OBJECT_CHAIN_PATTERN.search(query)
-    if not match:
-        return []
-    result: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for term in _split_product_terms(match.group("chain")):
-        canonical = _canonicalize_product_term(term)
-        if not canonical or canonical in _GENERIC_PRODUCT_NOUNS or canonical in seen:
-            continue
-        seen.add(canonical)
-        result.append({"value": canonical, "kind": "brand" if _is_known_brand_term(canonical) else None})
-    return result
-
-
 def _purchase_object_signals(text: str) -> set[str]:
     """텍스트에서 상품 구매 이력 조건의 상품명(canonical 소문자) 집합을 뽑는다(게이트 비교용)."""
     objects: set[str] = set()
@@ -1507,7 +1460,7 @@ def _purchase_object_signals(text: str) -> set[str]:
         if purchase_object and purchase_object not in _PURCHASE_SIGNAL_STOPWORDS and not purchase_object.isdigit():
             objects.add(purchase_object.casefold())
     # 나열형('A와 B를 구매한')은 단일 패턴이 마지막 상품만 잡으므로 사슬 상품도 함께 넣는다(게이트 누락 방지).
-    # 목적격 조사만 앵커라 비구매 나열 오검출을 막으려 구매 신호가 있을 때만 본다(_extract_purchase_object_list 와 동일).
+    # 목적격 조사만 앵커라 비구매 나열 오검출을 막으려 구매 신호가 있을 때만 본다.
     if _has_purchase_history_signal(text or ""):
         chain = _PURCHASE_OBJECT_CHAIN_PATTERN.search(text or "")
         if chain:
@@ -2944,12 +2897,6 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
         ),
         # 연령(정규식) — rules 전용. target_user 를 직접 받는다.
         "age": _FilterSpec(_apply_age_filters, arg="target_user", paths=frozenset({"rules"})),
-        "purchase_object": _FilterSpec(_apply_purchase_object_filter, arg="target_user",
-                                       span=_purchase_object_span,
-                                       # kind 는 값과 같은 어구에서 나온 부속 슬롯이라 같은 구간을 공유한다 —
-                                       # 구간이 없으면 값만 span 판정되고 kind 는 종류 기준으로 지워졌다.
-                                       span_slots=(("target_user", "purchase_object"), ("target_user", "purchase_objects"),
-                                                   ("target_user", "purchase_object_kind"))),
         # 선언형(slot_setter): 감지 파서 → 슬롯. 전용 _apply_* 함수 없이 레지스트리 한 줄.
         "purchase_date": _FilterSpec(impl="slot_setter", detect=_parse_purchase_date_period, slot="purchase_date", init_key="purchase_date",
                                      span=_purchase_date_span),
@@ -3061,30 +3008,6 @@ def _result_limit_span(query: str, _plan: dict[str, Any]) -> tuple[int, int] | N
     """'N명만' 개수 제한 표현의 원문 구간."""
     matched = _match_result_limit(query)
     return matched[1] if matched else None
-
-
-def _purchase_object_span(query: str, plan: dict[str, Any]) -> tuple[int, int] | None:
-    """구매 상품 슬롯이 읽은 상품어(들)의 원문 구간.
-
-    값 자체가 원문에서 잘라낸 부분 문자열이므로 값의 위치가 곧 출처 구간이다(나열형이면 전체를 덮는
-    구간). 조사·수식어를 떼어낸 값이 원문에서 안 보이면 구간을 만들지 않는다 — 잘못된 구간보다
-    '모름'이 안전하다(기존 동작 유지)."""
-    target_user = plan.get("target_user") if isinstance(plan.get("target_user"), dict) else {}
-    values = [
-        item.get("value")
-        for item in (target_user.get("purchase_objects") or [])
-        if isinstance(item, dict)
-    ] or [target_user.get("purchase_object")]
-    positions: list[tuple[int, int]] = []
-    for value in values:
-        if not isinstance(value, str) or not value:
-            continue
-        index = query.find(value)
-        if index >= 0:
-            positions.append((index, index + len(value)))
-    if not positions:
-        return None
-    return min(start for start, _ in positions), max(end for _, end in positions)
 
 
 # ── 범용 위치추적기 팩토리 ────────────────────────────────────────────────────────
@@ -3589,9 +3512,9 @@ def _source_authoritative_stages(
          "절 분리가 '발송'을 발송 채널로 오해해 반응 조건을 타겟 절에서 떨어뜨린다"),
         ("coupon_semantics", _apply_coupon_semantics,
          "위 재감지가 다시 붙인 coupon_used 를 JSON 판정으로 재조정한다(멱등)"),
-        ("purchase_object",
-         lambda query, plan: _apply_purchase_object_filter(query, plan.setdefault("target_user", {})),
-         "LLM 질의계획이 브랜드 값을 손상시키거나 통째로 드롭한다"),
+        ("purchase_object_validation",
+         lambda query, plan: _validate_purchase_objects(query, plan.setdefault("target_user", {})),
+         "LLM 상품명은 원문 존재·일반명사 제외 검증을 통과해야 하며, 확인되지 않으면 null 로 확정한다"),
         ("core_membership", _apply_core_membership_semantics,
          "구매 존재/기간 슬롯은 상대기간 집계 정규화의 근거라 실행 직전에 재확정한다"),
         # 아래 셋은 값 복원보다 **출처 구간을 원문 좌표계로 다시 기록**하는 것이 목적이다. 순위 절이
@@ -3676,7 +3599,7 @@ def _resolve_query_plan_candidates(
 # 결정론 필터 실행 순서(경로별). 순서는 문서화된 파싱 의존성을 보존한다(레지스트리 엔트리 주석 참조).
 # rules 경로는 정규화 matched_terms 루프를 사이에 끼우므로 PRE/POST 두 단계로 나뉜다.
 _RULES_PRE_FILTERS: tuple[str, ...] = (
-    "age", "purchase_object", "purchase_date", "result_limit", "purchase_inactivity",
+    "age", "purchase_date", "result_limit", "purchase_inactivity",
     "birthday", "signup_target", "sell_object", "dimension", "member_value", "macro_region",
     "aggregate", "purchase_count_threshold", "cart_aggregate", "cart_retention", "cart_type",
 )
@@ -3691,7 +3614,7 @@ _RULES_POST_FILTERS: tuple[str, ...] = (
 _AUTO_FILTERS: tuple[str, ...] = (
     "sell_object", "dimension", "member_value", "macro_region",
     "group_ranking", "region_member_count", "region_density",
-    "member_metric_ranking", "purchase_count_ranking", "purchase_object", "purchase_date",
+    "member_metric_ranking", "purchase_count_ranking", "purchase_date",
     "result_limit", "purchase_inactivity", "recent_login", "signup_channel", "signup_device",
     "ratio_metric", "profile_date_condition", "balance_condition", "balance_selection", "action_metric", "campaign_response", "no_additional_purchase",
     "cart_presence", "cart_absence", "campaign_response_frequency", "children_registered",
@@ -3755,7 +3678,9 @@ def _build_single_query_plan(
 
     supplied_llm_candidate: dict[str, Any] | None = None
     if isinstance(query_plan_v2, dict) and query_plan_v2.get("intent") != "unknown":
-        supplied_llm_candidate = _coerce_llm_query_plan_candidate(query_plan_v2, rules_candidate, sql_schema)
+        supplied_llm_candidate = _coerce_llm_query_plan_candidate(
+            query_plan_v2, rules_candidate, sql_schema, source_query=source_query
+        )
         candidates.append(plan_resolver.PlanCandidate("llm_query_structurer", supplied_llm_candidate, priority=100))
 
     # 파서들은 후보만 제출한다. 슬롯 충돌·리스트 결합·미결정 intent 보완은 이 단일 resolver 호출이 소유한다.
@@ -4151,7 +4076,9 @@ def _try_llm_query_plan(
         else:
             # 일부 모델/프록시가 tool_choice 를 무시할 수 있어 content JSON 폴백을 허용한다.
             content = message.content or "{}"
-        query_plan = _coerce_llm_query_plan_candidate(json.loads(content), fallback_plan, sql_schema)
+        query_plan = _coerce_llm_query_plan_candidate(
+            json.loads(content), fallback_plan, sql_schema, source_query=query
+        )
         # 실제 전송된 프롬프트/응답을 트레이스 표시용으로 담아 둔다(retrieve 가 result 로 옮기고 plan 에선 제거).
         query_plan["_llm_trace"] = {
             "system": messages[0]["content"],
@@ -4446,8 +4373,14 @@ def _coerce_llm_query_plan_candidate(
     candidate: Any,
     reference_plan: dict[str, Any],
     sql_schema: Path = DEFAULT_SCHEMA_PATH,
+    *,
+    source_query: str | None = None,
 ) -> dict[str, Any]:
-    """LLM 출력을 검증된 희소 후보로 정규화한다(다른 플랜과 병합하지 않는다)."""
+    """LLM 출력을 검증된 희소 후보로 정규화한다(다른 플랜과 병합하지 않는다).
+
+    ``purchase_object`` 는 자유 문자열이라 닫힌 어휘 coercion 만으로는 환각을 막을 수 없다. 원문이
+    제공된 실행 경로에서는 전용 상품 LLM과 동일한 존재·일반명사 검증을 거쳐, 실패 시 null 로 만든다.
+    """
     if not isinstance(candidate, dict):
         return {}
 
@@ -4536,6 +4469,13 @@ def _coerce_llm_query_plan_candidate(
             unsupported_resolvers.extend(
                 {"reason": reason, "path": path} for reason in shape.resolves_unsupported
             )
+    validation_query = source_query
+    if not isinstance(validation_query, str) or not validation_query.strip():
+        candidate_query = candidate.get("original_query")
+        retrieval = reference_plan.get("retrieval") if isinstance(reference_plan.get("retrieval"), dict) else {}
+        validation_query = candidate_query if isinstance(candidate_query, str) else retrieval.get("query")
+    # 원문 좌표가 전혀 없으면 자유 텍스트 상품명을 검증할 수 없으므로 빈 원문으로 검사해 null 처리한다.
+    _validate_purchase_objects(validation_query if isinstance(validation_query, str) else "", plan["target_user"])
     if unsupported_resolvers:
         plan["_candidate_resolves_unsupported"] = unsupported_resolvers
     return plan
@@ -4545,9 +4485,13 @@ def _coerce_llm_query_plan(
     candidate: Any,
     fallback_plan: dict[str, Any],
     sql_schema: Path = DEFAULT_SCHEMA_PATH,
+    *,
+    source_query: str | None = None,
 ) -> dict[str, Any]:
     """구 호출자 호환 래퍼. 실제 병합 정책은 :mod:`plan_resolver`에 위임한다."""
-    llm_candidate = _coerce_llm_query_plan_candidate(candidate, fallback_plan, sql_schema)
+    llm_candidate = _coerce_llm_query_plan_candidate(
+        candidate, fallback_plan, sql_schema, source_query=source_query
+    )
     return plan_resolver.resolve_plan_candidates([
         plan_resolver.PlanCandidate("rules", fallback_plan, priority=300),
         plan_resolver.PlanCandidate("llm_query_structurer", llm_candidate, priority=100),
@@ -5476,82 +5420,6 @@ def _extract_category_object(query: str) -> str | None:
     return None
 
 
-def _apply_purchase_object_filter(query: str, target_user: dict[str, Any]) -> None:
-    # "…을/를 구매한/구입한/구매했던/구입하신 …" 같은 동사형뿐 아니라, "기저귀 구매 고객" 같은 명사형
-    # (구매/구입 + 고객/회원/이력 등)도 상품 구매 이력 타겟으로 본다. 타겟팅 프롬프트 재작성(normalize_prompt)
-    # 이 "…를 산 고객"을 "… 구매 고객" 명사형으로 정규화하므로, 명사형을 놓치면 조건이 통째로 사라진다.
-    # object 클래스에 공백을 넣지 않아 "를/을" 또는 구매/구입 직전 상품 명사만 잡는다. (공백 허용 시 "40대
-    # 여성 중 기저귀를 구매한" 처럼 앞 절 조건까지 삼켜 LIKE 가 무의미해지므로) 상품 카테고리 단어면 재현율에 충분하다.
-    # 나열형 다중 상품('기저귀와 건강식품을 … 구매')은 개수어가 상품과 구매 동사 사이에 끼어도 목적격 조사
-    # 앵커로 먼저 잡는다 — 단일 정규식이 마지막 상품만/개수어를 잡거나 LLM 이 상품을 뭉치는 소실을 막는다.
-    multi_objects = _extract_purchase_object_list(query)
-    if len(multi_objects) > 1:
-        target_user["purchase_objects"] = multi_objects
-        target_user["purchase_object"] = multi_objects[0]["value"]
-        target_user["purchase_object_kind"] = multi_objects[0]["kind"]
-        return
-    match = _PURCHASE_OBJECT_QUANTIFIED_PATTERN.search(query) or _PURCHASE_OBJECT_PATTERN.search(query)
-    purchase_object = _sanitize_purchase_object(match.group("object")) if match else None
-    # 사용자가 '브랜드'/'상품(제품)명'을 명시했으면 매칭 컬럼을 BRAND_NAME/PRODUCT_NAME 으로 좁힐
-    # 근거가 된다(아래 kind 마킹). 애매하게 상품어만 말하면 kind 없이 광역 6컬럼 LIKE 를 유지한다.
-    is_brand_mention = False
-    is_product_mention = False
-    is_category_mention = False
-    if not purchase_object or purchase_object in _GENERIC_PRODUCT_NOUNS:
-        # 디멘션어('카테고리')만 잡혔거나 아무것도 못 잡았으면 사용자가 말한 카테고리 값으로 되찾는다
-        # ("카테고리가 '어린이건강'을 구매한" / "'어린이건강' 카테고리에서 구매한"). 아래 브랜드/상품
-        # 재시도보다 먼저다 — "카테고리가 X인 상품을 구매한"에서 '상품' 인접 재시도가 계사 어미까지
-        # 삼킨 값('X인')을 상품명으로 확정해버리기 때문이다(카테고리 계사가 더 강한 종류 신호다).
-        candidate = _extract_category_object(query)
-        if candidate:
-            purchase_object = candidate
-            is_category_mention = True
-    if purchase_object in _GENERIC_PRODUCT_NOUNS:
-        # 일반명사("상품/브랜드")가 잡혔으면 그 앞의 실제 브랜드/상품명으로 재시도한다
-        # ("알로루 브랜드 상품 구매한" → '상품'이 아니라 '알로루'). 재시도가 실패하면 기존 동작 유지.
-        retry = _PURCHASE_OBJECT_BRAND_PATTERN.search(query)
-        retried = _sanitize_purchase_object(retry.group("object")) if retry else None
-        if retried and retried not in _GENERIC_PRODUCT_NOUNS:
-            purchase_object = retried
-            qualifier = retry.group(0)
-            # 인접 수식어가 '브랜드'면 브랜드, '상품/제품'이면 상품명으로 좁힌다.
-            # (물건/품목/굿즈/아이템 등 그 외 일반명사는 상품명 신호로 보지 않아 광역 매칭 유지.)
-            is_brand_mention = "브랜드" in qualifier
-            is_product_mention = not is_brand_mention and ("상품" in qualifier or "제품" in qualifier)
-    if not purchase_object:
-        # 구매 동사 없이 브랜드만 언급한 계사형("브랜드가 알로루인 곳")도 구매 이력 타겟으로 승격한다.
-        brand_match = _BRAND_COPULA_PATTERN.search(query)
-        candidate = _sanitize_purchase_object(brand_match.group("object")) if brand_match else None
-        if candidate and candidate not in _GENERIC_PRODUCT_NOUNS:
-            purchase_object = candidate
-            is_brand_mention = True
-    if not purchase_object:
-        # "상품명이/제품명이 X인" 계사형 상품명 언급도 구매 이력 타겟으로 승격한다.
-        product_match = _PRODUCT_NAME_COPULA_PATTERN.search(query)
-        candidate = _sanitize_purchase_object(product_match.group("object")) if product_match else None
-        if candidate and candidate not in _GENERIC_PRODUCT_NOUNS:
-            purchase_object = candidate
-            is_product_mention = True
-    # 재시도까지 실패해 일반명사('상품/제품')만 남으면 상품 필터로 쓰지 않는다 — LIKE '%상품%' 는
-    # 사실상 모든 상품을 뜻해 무의미하고, '2개 이상 상품 구입' 처럼 실제 상품명이 없는 개수 조건을
-    # 억지 LIKE 로 만들기 때문이다(개수 조건은 별도 트랙이 담당).
-    if purchase_object in _GENERIC_PRODUCT_NOUNS:
-        purchase_object = None
-    if purchase_object:
-        canonical = _canonicalize_product_term(purchase_object)
-        target_user["purchase_object"] = canonical
-        # '브랜드' 명시 또는 값 자체가 실DB 브랜드명과 일치하면 브랜드로 확정한다.
-        # → purchase_history 템플릿이 6컬럼 광역 LIKE 대신 BRAND_NAME 만 매칭(정밀도↑).
-        if is_brand_mention or _is_known_brand_term(canonical):
-            target_user["purchase_object_kind"] = "brand"
-        # '상품명/제품명' 명시면 PRODUCT_NAME 만 매칭한다(브랜드 확정이 우선).
-        elif is_product_mention:
-            target_user["purchase_object_kind"] = "product"
-        # '카테고리' 명시면 카테고리 컬럼(대/중/소분류)만 매칭한다 — 상품명의 우연 일치를 배제.
-        elif is_category_mention:
-            target_user["purchase_object_kind"] = "category"
-
-
 def _apply_sell_object(query: str, plan: dict[str, Any]) -> None:
     # "…(신상 컴퓨터)를 팔고 싶어요 / 판매하고 싶어요" 에서 파는 상품을 뽑아 캠페인 목표로 쓴다.
     # 타겟 필터가 아니라 채널메시지 카피의 소재(캠페인 컨텍스트)로만 사용한다.
@@ -5566,12 +5434,9 @@ def _apply_sell_object(query: str, plan: dict[str, Any]) -> None:
         plan["campaign_constraints"]["sell_object"] = sell_object
 
 
-# ── 상품(구매이력/판매) 추출: 정규식 우선 → 검증된 LLM 폴백 ────────────────────────
-# 재작성기(normalize_prompt)는 자유 입력을 다양한 표현형("… 구매 고객 / 구입 이력 / 샀던 …")으로
-# 정규화하지만 정규식 추출기는 고정 패턴만 안다. 이 간극 때문에 표현형이 바뀔 때마다 조건이 조용히
-# 사라져 규칙(정규식)에 패턴을 계속 덧붙여야 했다. 폴백은 그 두더지잡기를 끊는다:
-#   재현율(표현형 유연성)은 LLM 이, 정밀도(없는 상품을 지어내지 않음)는 원문 존재 검증이 담당한다.
-# 정규식이 이미 뽑았거나 구매/판매 신호 자체가 없으면 LLM 을 호출하지 않아 비용/지연을 최소화한다.
+# ── 상품(구매이력/판매) 추출: LLM 단일 추출 → 결정론 원문 검증 ─────────────────────
+# 상품명 표현형의 재현율은 LLM이 담당하고, 정밀도(없는 상품·일반명사를 실행 조건으로 쓰지 않음)는
+# _validate_purchase_objects 의 원문 존재 검증이 담당한다. 구매/판매 신호 자체가 없으면 호출하지 않는다.
 def _has_purchase_history_signal(query: str) -> bool:
     compact = query.replace(" ", "").casefold()
     return any(signal in compact for signal in _lexicon_terms("purchase_history_signals"))
@@ -5602,6 +5467,67 @@ def _validated_object(value: Any, text: str) -> str | None:
     return None
 
 
+def _is_generic_purchase_object(value: str) -> bool:
+    """조사가 붙은 표면형까지 포함해 일반 상품 명사인지 판정한다."""
+    compact = re.sub(r"\s+", "", value.casefold())
+    departicled = re.sub(r"(?:으로부터|로부터|에서|에게|부터|으로|이나|나|이|가|은|는|을|를|의|로)$", "", compact)
+    return compact in _GENERIC_PRODUCT_NOUNS or departicled in _GENERIC_PRODUCT_NOUNS
+
+
+def _validate_purchase_objects(query: str, target_user: dict[str, Any]) -> None:
+    """LLM 상품명을 원문 기준으로 검증하고, 확인되지 않으면 명시적으로 null 처리한다.
+
+    상품명 추출은 전용 LLM/Query Plan 이 담당한다. 이 함수는 값을 새로 추출하지 않고 다음만 보장한다.
+    구매 이력 신호가 원문에 있고, 후보가 원문에 실제로 존재하며, ``상품``/``제품`` 같은 일반명사가
+    아닌 경우에만 실행 슬롯에 남긴다. 단일·다중 상품과 두 LLM 경로가 모두 같은 검증을 사용한다.
+    """
+    raw_entries: list[tuple[Any, Any]] = []
+    raw_objects = target_user.get("purchase_objects")
+    if isinstance(raw_objects, list):
+        for item in raw_objects:
+            if isinstance(item, dict):
+                raw_entries.append((item.get("value"), item.get("kind")))
+            else:
+                raw_entries.append((item, None))
+    raw_entries.append((target_user.get("purchase_object"), target_user.get("purchase_object_kind")))
+
+    validated_entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if _has_purchase_history_signal(query):
+        for raw_value, raw_kind in raw_entries:
+            validated = _validated_object(raw_value, query)
+            if not validated:
+                continue
+            for term in (_split_product_terms(validated) or [validated]):
+                if _is_generic_purchase_object(term):
+                    continue
+                canonical = _canonicalize_product_term(term)
+                if not canonical or _is_generic_purchase_object(canonical) or canonical in seen:
+                    continue
+                seen.add(canonical)
+                kind = raw_kind if raw_kind in _PURCHASE_OBJECT_KIND_COLUMNS else None
+                if _is_known_brand_term(canonical):
+                    kind = "brand"
+                validated_entries.append({"value": canonical, "kind": kind})
+
+    if not validated_entries:
+        target_user["purchase_object"] = None
+        target_user.pop("purchase_objects", None)
+        target_user.pop("purchase_object_kind", None)
+        return
+
+    first = validated_entries[0]
+    target_user["purchase_object"] = first["value"]
+    if first["kind"]:
+        target_user["purchase_object_kind"] = first["kind"]
+    else:
+        target_user.pop("purchase_object_kind", None)
+    if len(validated_entries) > 1:
+        target_user["purchase_objects"] = validated_entries
+    else:
+        target_user.pop("purchase_objects", None)
+
+
 def _target_object_extract_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
     fallback = "\n".join(
         [
@@ -5611,6 +5537,7 @@ def _target_object_extract_system_prompt(prompt_dir: Path | None = DEFAULT_PROMP
             "  하나의 상품명을 여러 문자열로 쪼개지 말고, 여러 상품을 한 문자열로 합치지도 마라.",
             "sell_object: 이 캠페인이 '팔려는/판매하려는' 상품명(하나, 없으면 null).",
             "반드시 입력 문장에 그대로 등장하는 명사만 사용한다(번역·유추·추가 금지).",
+            "'상품', '제품', '품목', '물건', '브랜드' 같은 일반명사만 있고 실제 이름이 없으면 purchase_objects는 빈 배열이다.",
             "조사·수식어(첫/재/최근 등)와 수량어(2개/3번 등)는 빼고 핵심 상품 명사만 남긴다.",
             '다음 JSON object 만 출력한다: {"purchase_objects": ["상품명", ...], "sell_object": "상품명 또는 null"}.',
         ]
@@ -5674,11 +5601,11 @@ def _apply_llm_object_fallback(
     llm_model: str = DEFAULT_LLM_MODEL,
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
 ) -> None:
-    """정규식이 못 뽑은 상품 구매이력/판매 상품을 검증된 LLM 추출로 보완한다.
+    """상품 구매이력/판매 상품을 LLM으로 추출하고 원문 검증을 거쳐 반영한다.
 
     parser 모드와 무관하게 OPENAI_API_KEY 유무로 동작한다(재작성기와 동일한 전제). 프로덕션이
     QUERY_PARSER=rules 여도 재작성이 LLM 으로 도는 환경이라, 이 폴백도 rules 경로에서 함께 동작해야
-    표현형 변화로 사라진 타겟 조건을 복구한다. LLM 값은 반드시 원문 존재 검증을 통과해야 채택된다.
+    표현형 변화와 무관하게 같은 추출기를 사용한다. LLM 값은 반드시 원문 존재 검증을 통과해야 채택된다.
     """
     if not _target_object_llm_fallback_enabled() or not os.getenv("OPENAI_API_KEY"):
         return
@@ -10838,7 +10765,9 @@ def _sanitize_purchase_object(value: str) -> str | None:
         # 장소·대상 지시어("이곳에서 구매한" — 앞 절의 브랜드/장소를 가리키는 조응 표현)도 상품명이 아니다
         # — 지시어를 걸러야 브랜드 계사절("브랜드가 X면서 … 이곳에서 구매한")이 브랜드 추출로 이어진다.
         if not stripped_token or stripped_token in _PURCHASE_VALUE_QUALIFIERS or stripped_token in {
-            "사람", "고객", "사용자", "첫", "재", "최근", "최초", "최초로", "반복", "자주", "많이", "많은", "다수", "대량", "처음", "처음으로", "미",
+            "사람", "고객", "회원", "사용자", "유저", "타겟", "대상", "조건",
+            "특정", "어떤", "일부", "각", "그", "이", "저", "무슨", "어느", "임의", "여러", "다양", "다양한", "각기", "각각", "서로",
+            "첫", "재", "최근", "최초", "최초로", "반복", "자주", "많이", "많은", "다수", "대량", "처음", "처음으로", "미",
             # 구매 합성어의 접두 음절(다구매/총구매/무구매). 정규식(_PURCHASE_OBJECT_PATTERN)이 경계를
             # 요구해 1차로 막지만, 브랜드·계사·chain 패턴과 LLM 폴백도 이 sanitize 를 공유하므로 우회
             # 경로까지 같은 기준으로 막는다(첫/재/미 와 같은 구매행동 수식어 범주).
@@ -21796,7 +21725,7 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
         ),
         _stage(
             4, "info" if (tu_purchase or cart_context) else "skipped",
-            description="상품 구매·판매 이력, 장바구니 같은 행동 조건을 추출합니다(정규식 우선, LLM 폴백).",
+            description="상품 구매·판매 이력은 LLM으로 추출한 뒤 원문 검증하고, 장바구니 같은 행동 조건은 규칙으로 구조화합니다.",
             plain=None if (tu_purchase or cart_context) else ["구매·상품 관련 조건 없음"],
             details=[f"{k}: {_trace_line(v)}" for k, v in tu_purchase.items()]
                     + ([f"cart_context: {_trace_line(cart_context)}"] if cart_context else []),
