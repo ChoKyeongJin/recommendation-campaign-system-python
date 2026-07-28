@@ -3678,7 +3678,9 @@ def _is_completed_behavior_segment_lookup(query: str) -> bool:
 
 
 _PURCHASE_POSITIVE_MEMBERSHIP_RE = re.compile(
-    r"(?:구매|구입|주문)(?:(?:이력|내역)?(?:을|를|은|는|이|가|도)?(?:했|한|했던|있는)|(?=(?:고객|회원|사용자|유저)))"
+    r"(?:구매|구입|주문)(?:이력|내역)?(?:을|를|은|는|이|가|도)*"
+    r"(?:했|한|했던|있는|있었|있던|있음)"
+    r"|(?:구매|구입|주문)(?=(?:고객|회원|사용자|유저))"
 )
 _CAMPAIGN_GENERIC_RESPONSE_RE = re.compile(
     r"캠페인(?:에|에서|을|를|의)?(?:는|은|도)?(?:반응|응답)"
@@ -3732,6 +3734,63 @@ def _mark_purchase_membership_ownership(target_user: dict[str, Any]) -> None:
         membership.pop("satisfied_by", None)
 
 
+def _span_distance(left: tuple[int, int], right: tuple[int, int]) -> int:
+    """겹치지 않는 두 compact-text span 사이 문자 수. 겹치거나 맞닿으면 0."""
+    if left[1] <= right[0]:
+        return right[0] - left[1]
+    if right[1] <= left[0]:
+        return left[0] - right[1]
+    return 0
+
+
+def _duration_window_owned_by_span(
+    query: str,
+    owner_span: tuple[int, int],
+    competing_spans: list[tuple[int, int]],
+) -> dict[str, Any] | None:
+    """행동 표현 하나가 소유하는 상대 기간을 반환한다.
+
+    기간을 문장 첫 도메인어에 붙이지 않고, 모든 행동 span 중 가장 가까운 하나에 먼저 배정한다. 따라서
+    ``최근 3개월 주문 … 최근 30일 구매 없음``처럼 같은 도메인이 한 문장에 여러 번 나와도 각 기간이
+    자기 조건에 남는다. 구매 전용 규칙은 호출자가 소유하고, 이 함수는 다른 행동 도메인에서도 재사용할
+    수 있도록 span과 기간 거리만 다룬다.
+    """
+    compact = query.replace(" ", "").casefold()
+    candidates = _duration_window_candidates(compact)
+    if not candidates:
+        return None
+
+    owners = list(dict.fromkeys(competing_spans))
+    owned: list[tuple[int, int, int, str]] = []
+    for candidate in candidates:
+        candidate_span = (candidate[0], candidate[1])
+        distance = _span_distance(candidate_span, owner_span)
+        if distance > _DURATION_ANCHOR_GAP:
+            continue
+        nearest_owner = min(
+            owners,
+            key=lambda span: (_span_distance(candidate_span, span), span[0]),
+        )
+        if nearest_owner == owner_span:
+            owned.append(candidate)
+
+    if not owned:
+        return None
+    _start, _end, value, unit = min(
+        owned,
+        key=lambda candidate: (_span_distance((candidate[0], candidate[1]), owner_span), candidate[0]),
+    )
+    return {"value": value, "unit": unit, "min_days": value * targeting_ir.UNIT_DAYS[unit]}
+
+
+def _purchase_membership_matches(compact_query: str) -> tuple[list[re.Match[str]], list[re.Match[str]]]:
+    """구매 존재/부재 표현을 독립 span으로 수집한다(한 문장에 둘 다 존재 가능)."""
+    return (
+        list(_PURCHASE_POSITIVE_MEMBERSHIP_RE.finditer(compact_query)),
+        list(_PURCHASE_NEG_RE.finditer(compact_query)),
+    )
+
+
 def _apply_core_membership_semantics(query: str, plan: dict[str, Any]) -> None:
     """핵심 행동의 존재/부재 방향을 구조화한다.
 
@@ -3740,21 +3799,41 @@ def _apply_core_membership_semantics(query: str, plan: dict[str, Any]) -> None:
     """
     target_user = plan.setdefault("target_user", {})
     compact = query.replace(" ", "").casefold()
+    positive_matches, negative_matches = _purchase_membership_matches(compact)
+    all_membership_spans = [match.span() for match in (*positive_matches, *negative_matches)]
 
     # 캠페인 구매반응은 campaign_responses 전용 의미이므로 일반 주문 존재 조건으로 중복 승격하지 않는다.
     campaign_scoped_purchase = "캠페인" in compact and bool(target_user.get("campaign_responses"))
-    purchase_negative = bool(_PURCHASE_NEG_RE.search(compact))
+    purchase_negative = bool(negative_matches)
     cart_checkout_context = "cart_abandoner" in (target_user.get("behaviors") or []) and any(
         marker in compact for marker in ("담고구매", "담았지만구매", "장바구니에담고", "장바구니담고")
     )
     repurchase_negative = "재구매" in compact and purchase_negative
     if purchase_negative and not campaign_scoped_purchase and not cart_checkout_context and not repurchase_negative:
-        # 기간이 있으면 기존 purchase_inactivity가 기간 anti-join을 소유한다. 기간이 없으면 평생 무주문.
-        if not isinstance(target_user.get("purchase_inactivity"), dict):
+        negative_window = next(
+            (
+                window
+                for match in negative_matches
+                if (window := _duration_window_owned_by_span(query, match.span(), all_membership_spans)) is not None
+            ),
+            None,
+        )
+        # 기간이 있으면 해당 부정 행동 span의 창 anti-join이 소유한다. 없으면 평생 무주문이다.
+        if negative_window is not None:
+            target_user["purchase_inactivity"] = negative_window
+            target_user["behaviors"] = [
+                behavior for behavior in target_user.get("behaviors", []) if behavior != "no_purchase"
+            ]
+        else:
+            target_user.pop("purchase_inactivity", None)
             _append_unique(target_user.setdefault("behaviors", []), "no_purchase")
-        target_user.pop("purchase_membership", None)
-    elif _PURCHASE_POSITIVE_MEMBERSHIP_RE.search(compact) and not campaign_scoped_purchase:
-        window = _parse_duration_window(query, anchor_terms=("구매", "구입", "주문"))
+        # 같은 문장의 별도 긍정 span은 보존한다. 부정만 있을 때에만 이전/LLM의 긍정 오분류를 제거한다.
+        if not positive_matches:
+            target_user.pop("purchase_membership", None)
+
+    if positive_matches and not campaign_scoped_purchase:
+        positive_match = positive_matches[0]
+        window = _duration_window_owned_by_span(query, positive_match.span(), all_membership_spans)
         condition: dict[str, Any] = {"domain": "purchase", "operator": "exists"}
         if isinstance(window, dict) and isinstance(window.get("min_days"), int):
             condition["window_days"] = window["min_days"]
@@ -5531,11 +5610,20 @@ _PURCHASE_NEG_RE = re.compile(
 
 def _parse_purchase_inactivity_period(query: str) -> dict[str, Any] | None:
     compact_query = query.replace(" ", "").casefold()
-    if not _PURCHASE_NEG_RE.search(compact_query):
+    positive_matches, negative_matches = _purchase_membership_matches(compact_query)
+    if not negative_matches:
         return None
-    # 통합 창 파서 — 년/주/단어형(반년 등)까지 커버. sql_interval 은 이 슬롯 계약에 없다. 구매 키워드
-    # 근처의 창만 본다(다른 조건의 창을 훔쳐가지 않게).
-    return _parse_duration_window(query, anchor_terms=("구매", "구입", "주문"))
+    # 통합 창 문법(년/주/단어형 포함)을 쓰되, 각 기간을 가장 가까운 구매 존재/부재 span에 먼저 귀속한다.
+    # 이 슬롯에는 부재 span이 실제로 소유한 창만 들어가므로 같은 문장의 긍정 구매 기간을 훔치지 않는다.
+    all_membership_spans = [match.span() for match in (*positive_matches, *negative_matches)]
+    return next(
+        (
+            window
+            for match in negative_matches
+            if (window := _duration_window_owned_by_span(query, match.span(), all_membership_spans)) is not None
+        ),
+        None,
+    )
 
 
 def _apply_purchase_inactivity_filter(query: str, plan: dict[str, Any]) -> None:
@@ -13105,6 +13193,45 @@ def _semantic_evidence_sources() -> dict[str, tuple[str, ...]]:
     }
 
 
+def _partition_not_exists_scope(sql: str) -> tuple[str, list[str]]:
+    """NOT EXISTS 블록을 양의 SQL 스코프에서 분리한다.
+
+    같은 테이블이 양의 EXISTS와 음의 NOT EXISTS에 함께 등장할 수 있으므로 테이블명 집합만으로 극성을
+    판정하면 안 된다. 괄호 깊이와 SQL 문자열 리터럴을 따라 각 NOT EXISTS 블록을 찾아, 양의 근거 검색용
+    SQL에서는 그 블록만 공백으로 마스킹한다. 반환 문자열은 원본과 길이가 같아 후속 span 진단에도 쓸 수 있다.
+    """
+    masked = list(sql)
+    blocks: list[str] = []
+    cursor = 0
+    prefix = re.compile(r"\bnot\s+exists\s*\(", re.IGNORECASE)
+    while match := prefix.search(sql, cursor):
+        open_paren = sql.find("(", match.start(), match.end())
+        depth = 0
+        in_string = False
+        index = open_paren
+        block_end = len(sql)
+        while index < len(sql):
+            char = sql[index]
+            if char == "'":
+                if in_string and index + 1 < len(sql) and sql[index + 1] == "'":
+                    index += 2
+                    continue
+                in_string = not in_string
+            elif not in_string:
+                if char == "(":
+                    depth += 1
+                elif char == ")":
+                    depth -= 1
+                    if depth == 0:
+                        block_end = index + 1
+                        break
+            index += 1
+        blocks.append(sql[match.start():block_end])
+        masked[match.start():block_end] = " " * (block_end - match.start())
+        cursor = block_end
+    return "".join(masked), blocks
+
+
 def _condition_evidence(condition: dict[str, Any], sql: str) -> dict[str, Any]:
     """semantic condition 하나의 SQL 소스와 포함/제외 극성을 검증한다."""
     domain = str(condition.get("domain") or "")
@@ -13143,17 +13270,18 @@ def _condition_evidence(condition: dict[str, Any], sql: str) -> dict[str, Any]:
                 "actual_evidence": actual + ([direction] if polarity_match else []),
                 "satisfied": satisfied, "polarity_match": polarity_match}
 
+    positive_scope, negative_blocks = _partition_not_exists_scope(normalized)
     negative_hits: list[str] = []
     positive_hits: list[str] = []
     for source in source_hits:
         escaped = re.escape(source.casefold())
-        if re.search(rf"not\s+exists\s*\([^;]*?\b{escaped}\b", normalized, re.DOTALL):
+        if any(re.search(rf"\b{escaped}\b", block) for block in negative_blocks):
             negative_hits.append(source)
         if (
-            re.search(rf"(?<!not\s)exists\s*\([^;]*?\b{escaped}\b", normalized, re.DOTALL)
-            or re.search(rf"\b(?:inner\s+|left\s+|right\s+)?join\s+{escaped}\b", normalized)
-            or re.search(rf"\bin\s*\(\s*select\b[^;]*?\bfrom\s+{escaped}\b", normalized, re.DOTALL)
-            or re.search(rf"\bfrom\s+{escaped}\b", normalized)
+            re.search(rf"\bexists\s*\([^;]*?\b{escaped}\b", positive_scope, re.DOTALL)
+            or re.search(rf"\b(?:inner\s+|left\s+|right\s+)?join\s+{escaped}\b", positive_scope)
+            or re.search(rf"\bin\s*\(\s*select\b[^;]*?\bfrom\s+{escaped}\b", positive_scope, re.DOTALL)
+            or re.search(rf"\bfrom\s+{escaped}\b", positive_scope)
         ):
             positive_hits.append(source)
 
@@ -13164,8 +13292,9 @@ def _condition_evidence(condition: dict[str, Any], sql: str) -> dict[str, Any]:
             actual.append("not_exists")
     else:
         required.append("positive_membership")
-        # 동일 소스가 오직 NOT EXISTS 안에만 있으면 긍정 근거로 인정하지 않는다.
-        polarity_match = bool(positive_hits and any(source not in negative_hits for source in positive_hits))
+        # NOT EXISTS 블록을 제거한 스코프에서 별도의 양의 참조가 확인돼야 한다. 같은 소스가 양·음 조건에
+        # 모두 쓰이는 것은 정상이며, 테이블명 중복만으로 양의 근거를 지우지 않는다.
+        polarity_match = bool(positive_hits)
         if polarity_match:
             actual.append("exists_or_join")
     satisfied = bool(source_hits) and polarity_match
