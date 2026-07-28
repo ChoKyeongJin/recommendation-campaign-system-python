@@ -56,6 +56,13 @@ def test_aov_with_window_uses_expression_bare_columns():
     assert "{t}" not in sql and "None" not in sql
 
 
+def test_aov_compact_spacing_campaign_request_keeps_six_month_window():
+    # 캠페인 설명을 scope-split한 뒤 /target-sql 파서에 전달되는 타겟 절과 같은 형태.
+    sql = _sql("최근 6개월 평균 주문금액이 10만 원 이상인 회원을 대상으로")
+    assert "HAVING SUM(PAYMENT_AMT) / NULLIF(COUNT(DISTINCT ORDER_ID), 0) >= 100000" in sql
+    assert "DATEADD(DAY, -180, GETDATE())" in sql
+
+
 # --- 평균 대비 비교(직전 게이트) ---
 
 def test_aov_average_comparison_still_unsupported():

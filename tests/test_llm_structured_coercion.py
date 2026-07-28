@@ -99,6 +99,17 @@ def test_aggregate_conditions_list_gated():
     assert out["aggregate_conditions"][0]["operator"] == ">="
 
 
+def test_aggregate_condition_nested_window_coerced_to_days():
+    out = g._coerce_llm_structured_conditions({"target_user": {"aggregate_conditions": [
+        {"metric_id": "average_order_amount", "operator": ">=", "threshold": 100000,
+         "window": {"value": 6, "unit": "months"}}
+    ]}})
+    assert out["aggregate_conditions"] == [{
+        "metric_id": "average_order_amount", "operator": ">=", "threshold": 100000,
+        "window_days": 180,
+    }]
+
+
 def test_purchase_date_requires_year():
     ok = g._coerce_llm_structured_conditions({"target_user": {"purchase_date": {"from": "20240101", "to": "20240131"}}})
     assert ok["purchase_date"]["from"] == "20240101"
@@ -128,6 +139,43 @@ def test_apply_slots_fill_if_empty():
     g._apply_llm_structured_slots(plan)
     assert plan["target_user"]["signup_target"] == {"days": 365}
     assert "_llm_structured_slots" not in plan
+
+
+def test_applied_slot_clears_only_the_unsupported_reason_it_resolves():
+    condition = {"metric_id": "average_order_amount", "operator": ">=", "threshold": 100000,
+                 "window_days": 180}
+    plan = {
+        "target_user": {"aggregate_conditions": []},
+        "unsupported": {"reason": "metric_not_resolved"},
+        "_llm_structured_slots": {"aggregate_conditions": [condition]},
+    }
+    g._apply_llm_structured_slots(plan)
+    assert plan["target_user"]["aggregate_conditions"] == [condition]
+    assert "unsupported" not in plan
+
+    unrelated = {
+        "target_user": {"aggregate_conditions": []},
+        "unsupported": {"reason": "period_over_period_comparison_not_supported"},
+        "_llm_structured_slots": {"aggregate_conditions": [condition]},
+    }
+    g._apply_llm_structured_slots(unrelated)
+    assert unrelated["unsupported"]["reason"] == "period_over_period_comparison_not_supported"
+
+
+def test_slot_that_was_not_applied_does_not_clear_unsupported():
+    existing = {"metric_id": "purchase_amount", "operator": ">=", "threshold": 200000,
+                "window_days": None}
+    plan = {
+        "target_user": {"aggregate_conditions": [existing]},
+        "unsupported": {"reason": "metric_not_resolved"},
+        "_llm_structured_slots": {"aggregate_conditions": [
+            {"metric_id": "average_order_amount", "operator": ">=", "threshold": 100000,
+             "window_days": 180}
+        ]},
+    }
+    g._apply_llm_structured_slots(plan)
+    assert plan["target_user"]["aggregate_conditions"] == [existing]
+    assert plan["unsupported"]["reason"] == "metric_not_resolved"
 
 
 def test_apply_slots_regex_wins_when_present():

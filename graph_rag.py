@@ -1076,6 +1076,13 @@ _PRODUCT_NAME_COPULA_PATTERN = re.compile(
 # 구매 '횟수/조건' 수식어는 상품명이 아니다(예: '2회 이상 구매' 의 '이상'). 게이트가 상품 조건으로 오인해
 # 재작성을 헛되이 폐기하지 않도록 제외한다.
 _PURCHASE_SIGNAL_STOPWORDS = {"이상", "이하", "미만", "초과", "회", "번", "건", "원", "개", "명", "이력", "내역", "경험", "동안", "번째"}
+# 구매 동사 앞에 붙는 금액/가격 지표·수식어는 상품명이 아니다. 이 어휘는 aggregate/member metric
+# 트랙이 소유하며, 상품 LIKE 로 흘리면 "고액 구매 고객"이 "고액"이라는 상품을 산 고객으로 뒤집힌다.
+# 특정 프롬프트 예외가 아니라 금액 수준/지표 표면형 전체를 같은 비상품 범주로 다룬다.
+_PURCHASE_VALUE_QUALIFIERS = {
+    "고액", "소액", "고가", "저가", "고금액", "저금액",
+    "금액", "구매금액", "주문금액", "결제금액", "평균구매금액", "평균주문금액", "평균결제금액", "객단가",
+}
 # 수량/횟수 토큰('2개', '3회', '5건', 맨숫자 '2')도 상품명이 아니라 개수 조건이다. 상품명 추출
 # (_sanitize_purchase_object)에서 걸러 '2개 이상 상품 구입' 의 '2개'/'이상' 이 LIKE 로 새지 않게 한다.
 _QUANTITY_COUNT_TOKEN = re.compile(r"^\d+(?:개|회|번|건|원|명|장|종|가지|종류|품목|매|권)?$")
@@ -3298,11 +3305,25 @@ def _apply_llm_structured_slots(plan: dict[str, Any]) -> None:
     if not isinstance(slots, dict):
         return
     target_user = plan.setdefault("target_user", {})
+    resolved_unsupported_reasons: set[str] = set()
     for name, value in slots.items():
         shape = targeting_ir.SLOT_SHAPES.get(name)
         container = target_user if (shape is None or shape.container == "target_user") else plan
         if _is_empty_slot(container.get(name)):
             container[name] = value
+            if shape is not None:
+                resolved_unsupported_reasons.update(shape.resolves_unsupported)
+
+    # A deterministic parser can leave a clarification before the LLM fills the
+    # corresponding empty slot.  Keeping that stale state would make the SQL
+    # builder fail closed despite a valid condition.  Clear only reasons that the
+    # applied slot explicitly declares it resolves; unrelated gates stay intact.
+    unsupported = plan.get("unsupported")
+    if (
+        isinstance(unsupported, dict)
+        and unsupported.get("reason") in resolved_unsupported_reasons
+    ):
+        plan.pop("unsupported", None)
 
 
 def _coerce_llm_query_plan(candidate: Any, fallback_plan: dict[str, Any], sql_schema: Path = DEFAULT_SCHEMA_PATH) -> dict[str, Any]:
@@ -6511,16 +6532,34 @@ def _clause_scope(clause: str) -> dict[str, str]:
     return scope
 
 
+def _metric_match_text(value: str) -> str:
+    """Return a stable comparison form for registry-backed metric vocabulary.
+
+    Korean compound nouns commonly vary only by internal spacing (for example,
+    ``평균 주문 금액`` / ``평균 주문금액`` / ``평균주문금액``).  Normalizing only
+    the comparison text avoids duplicating every spacing variant in the registry
+    without changing the original query or any SQL value.  Case-folding also makes
+    Latin aliases such as AOV consistent.
+    """
+    return "".join(value.split()).casefold()
+
+
 def _score_metric_for_clause(clause: str, metric: dict[str, Any], unit: str | None) -> int:
     """절에 대한 지표 적합도 점수. 정확·긴 별칭(+), 의미 힌트(+), 단위 일치(+)/불일치(-), 의미 충돌(-).
     문장별 하드코딩 대신 스펙(units/hint_terms/anti_hint_terms)만으로 후보를 가른다."""
     score = 0
+    compact_clause = _metric_match_text(clause)
     alias = None
     for synonym in metric.get("synonyms", []):
-        if isinstance(synonym, str) and synonym and synonym in clause and (alias is None or len(synonym) > len(alias)):
-            alias = synonym
+        if not isinstance(synonym, str) or not synonym:
+            continue
+        compact_synonym = _metric_match_text(synonym)
+        if compact_synonym in compact_clause and (alias is None or len(compact_synonym) > len(alias)):
+            alias = compact_synonym
     if alias is not None:
-        score += 80 + len(alias) * 15  # 긴 별칭일수록 우세(포함 관계 최장 일치 구현)
+        # A full compound metric name must outrank a contained shorter metric
+        # even when both share generic hints such as "결제" or "금액".
+        score += 80 + len(alias) * 30  # 긴 별칭일수록 우세(포함 관계 최장 일치 구현)
     units = [u for u in metric.get("units", []) if isinstance(u, str)]
     if unit and units:
         score += 40 if unit in units else -80
@@ -6530,9 +6569,15 @@ def _score_metric_for_clause(clause: str, metric: dict[str, Any], unit: str | No
     default_units = [u for u in metric.get("default_for_units", []) if isinstance(u, str)]
     if unit and unit in default_units:
         score += 20
-    if any(isinstance(h, str) and h in clause for h in metric.get("hint_terms", [])):
+    if any(
+        isinstance(h, str) and h and _metric_match_text(h) in compact_clause
+        for h in metric.get("hint_terms", [])
+    ):
         score += 55
-    if any(isinstance(a, str) and a in clause for a in metric.get("anti_hint_terms", [])):
+    if any(
+        isinstance(a, str) and a and _metric_match_text(a) in compact_clause
+        for a in metric.get("anti_hint_terms", [])
+    ):
         score -= 100
     return score
 
@@ -6860,6 +6905,69 @@ def _cart_count_quantity_conditions(clause: str) -> list[dict[str, Any]]:
     return conditions
 
 
+# 카트 집계 지표 ↔ 같은 뜻의 일반 주문/상품 집계 지표(쌍둥이). 카트 문맥의 임계값은 두 파서가 각각
+# 청구한다 — '장바구니 총금액 5만원 이상'을 카트는 cart_amount 로, 일반 집계는 purchase_amount 로 잡는다.
+# 카트 파서는 금액 앞이 구매/결제면 양보하지만(_cart_amount_condition) 반대 방향 가드가 없어, 카트가
+# 소유한 조건의 사본이 aggregate_conditions 에 남는다. 그 사본은 카트 빌더가 컴파일할 수 없어
+# dropped_conditions 로 남고, 커버리지 게이트가 정상 SQL 을 통째로 버린다(query_plan_conditions_missing).
+# 지표 대응표를 선언해 '카트가 소유자'임을 한 곳에서 못 박는다(금액/수량/종류 전 지표 공통).
+_CART_AGGREGATE_TWIN_METRICS: dict[str, frozenset[str]] = {
+    "cart_amount": frozenset({"purchase_amount"}),
+    "cart_quantity": frozenset({"total_item_quantity"}),
+    "cart_line_count": frozenset({"distinct_product_count"}),
+    "cart_same_product_quantity": frozenset({"total_item_quantity"}),
+}
+
+
+def _cart_condition_comparisons(condition: dict[str, Any]) -> list[tuple[str, float]]:
+    """카트 집계 조건의 비교쌍 목록. 범위형은 comparisons, 단일형은 (operator, threshold)."""
+    raw = condition.get("comparisons") or [[condition.get("operator"), condition.get("threshold")]]
+    return [
+        (operator, float(threshold))
+        for operator, threshold in raw
+        if isinstance(operator, str) and isinstance(threshold, (int, float))
+    ]
+
+
+def _release_cart_twin_aggregates(plan: dict[str, Any], conditions: list[dict[str, Any]]) -> None:
+    """카트가 소유한 임계값을 일반 집계가 이중 청구한 사본을 aggregate_conditions 에서 걷어낸다.
+
+    캠페인 귀속 금액/건수 파서(_apply_campaign_buy_amount_filter)가 쓰는 '이중 파싱 정리'와 같은 규칙이고,
+    카트 파서가 일반 집계 파서보다 뒤에 돌기 때문에 여기서 정리할 수 있다.
+
+    지우는 기준은 '같은 뜻의 지표(쌍둥이) + 같은 연산자 + 같은 임계값' 셋을 모두 만족할 때뿐이다 —
+    숫자만 보고 지우면 우연히 같은 숫자를 쓴 다른 조건('3종 담고 3회 구매')까지 조용히 사라진다.
+    쌍둥이가 아니면 그대로 남겨 기존처럼 미반영 조건으로 고지되게 둔다(조용한 드롭보다 실패가 낫다)."""
+    aggregates = plan.get("target_user", {}).get("aggregate_conditions")
+    if not isinstance(aggregates, list) or not aggregates:
+        return
+    claimed = {
+        (twin, operator, threshold)
+        for condition in conditions
+        for twin in _CART_AGGREGATE_TWIN_METRICS.get(condition.get("metric"), frozenset())
+        for operator, threshold in _cart_condition_comparisons(condition)
+    }
+    if not claimed:
+        return
+    plan["target_user"]["aggregate_conditions"] = [
+        condition
+        for condition in aggregates
+        if not (
+            isinstance(condition, dict)
+            and isinstance(condition.get("threshold"), (int, float))
+            and (condition.get("metric_id"), condition.get("operator"), float(condition["threshold"])) in claimed
+        )
+    ]
+
+
+def _set_cart_aggregate(plan: dict[str, Any], conditions: list[dict[str, Any]]) -> None:
+    """카트 집계 조건을 세운다(단일은 dict, 여럿이면 list — 기존 형태 유지).
+
+    세우는 즉시 일반 집계 쪽 사본을 걷어내 임계값 소유권을 카트로 단일화한다."""
+    plan.setdefault("target_user", {})["cart_aggregate"] = conditions[0] if len(conditions) == 1 else conditions
+    _release_cart_twin_aggregates(plan, conditions)
+
+
 def _apply_cart_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
     """'장바구니에 N개 이상 담은'을 장바구니 집계 조건(cart_aggregate)으로 해석한다.
 
@@ -6879,11 +6987,11 @@ def _apply_cart_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> 
         return
     same_product = _cart_same_product_condition(query, compact)
     if same_product is not None:
-        plan.setdefault("target_user", {})["cart_aggregate"] = same_product
+        _set_cart_aggregate(plan, [same_product])
         return
     amount = _cart_amount_condition(compact)
     if amount is not None:
-        plan.setdefault("target_user", {})["cart_aggregate"] = amount
+        _set_cart_aggregate(plan, [amount])
         return
     # 개수/수량 임계 — 절별로 나눠 여러 카트 조건('총수량 10개 이상이고 종류 3종 이상')을 함께 잡는다.
     # 카트 어휘가 있는 절만 본다(첫 절 이후 일반 개수 표현이 카트로 새지 않게).
@@ -6895,8 +7003,7 @@ def _apply_cart_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> 
         conditions.extend(_cart_count_quantity_conditions(clause))
     if not conditions:
         return
-    # 단일 조건은 dict 그대로(기존 형태 유지), 여럿이면 list 로 싣는다(빌더가 HAVING 을 AND 로 합성).
-    plan.setdefault("target_user", {})["cart_aggregate"] = conditions[0] if len(conditions) == 1 else conditions
+    _set_cart_aggregate(plan, conditions)
 
 
 # 한글 기간 단위 → 캐노니컬 영문 단위(슬롯 정규화용). 일수 환산은 targeting_ir.UNIT_DAYS 가 소유한다.
@@ -7040,6 +7147,13 @@ _CART_RECENT_EVENT_MARKERS = ("생성", "담", "등록", "추가", "만들")
 _CART_RECENT_WINDOW = 20
 # 기간 표현 주변에서 보관 표현·방향어를 찾는 창(공백 제거 기준 글자 수).
 _CART_RETENTION_WINDOW = 16
+# 기간이 장바구니 어휘에 '붙어 있는' 것으로 볼 거리. '최근 30일 장바구니 총금액'처럼 담기 동사 없이
+# 기간이 장바구니를 직접 수식하는 표현은 보관 표지(담/유지/방치)가 하나도 없어 창이 통째로 사라졌다.
+# 붙어 있을 때만 인정해, 기간이 옆 조건 것인 경우('최근 30일 구매한 회원 중 장바구니가 있는')는 제외한다.
+_CART_DURATION_ADJACENCY = 6
+# 방향어를 그 기간에 '붙은' 것만 읽을 거리. 창 전체에서 찾으면 다른 숫자의 비교어를 방향어로 오독한다
+# ('최근 30일 장바구니 총금액이 5만원 이상'의 '이상'은 기간이 아니라 금액 것이라 보관 하한이 아니다).
+_CART_RETENTION_DIRECTION_GAP = 4
 # 구매 미발생 표지: '최근 N일' 뒤에 이게 오면 보관 기간이 아니라 구매 미발생 기간(purchase_inactivity)이다.
 _CART_PURCHASE_ABSENCE_RE = re.compile(r"구매하지|구입하지|주문하지|주문이?없|사지않|안\s*샀|미구매")
 
@@ -7049,9 +7163,9 @@ def _apply_cart_retention_filter(query: str, plan: dict[str, Any]) -> None:
 
     KEEP_YN='Y'(보관중)만으로는 "언제 담았든 아직 안 산 회원"이라 기간 조건이 통째로 사라진다.
     담은 시점 컬럼(cart_targets.registered_date_column)과 기준일 차이를 비교해야 '일주일 이상 유지'가
-    실제 필터가 된다. 판정은 기간 표현 주변 창에서 한다 — 보관 표현과 방향어가 그 기간에 실제로 붙어 있어야
-    잡아, '장바구니에 3개 이상 담은'(개수 임계값)이나 '담은 고객에게 7일 유효한 쿠폰'(혜택 기간)과
-    섞이지 않는다. 보관 자체가 미결제 상태이므로 cart_abandoner 행동도 함께 세워 카트 템플릿
+    실제 필터가 된다. 판정은 기간 표현에 붙은 어구를 먼저 보고(방향어·장바구니 어휘의 인접), 없으면 주변
+    창으로 넓힌다 — 보관 표현과 방향어가 그 기간에 실제로 붙어 있어야 잡아, '장바구니에 3개 이상 담은'
+    (개수 임계값)이나 '담은 고객에게 7일 유효한 쿠폰'(혜택 기간)과 섞이지 않는다. 보관 자체가 미결제 상태이므로 cart_abandoner 행동도 함께 세워 카트 템플릿
     (_build_cart_targets_candidate)이 선택되게 한다."""
     compact = query.replace(" ", "")
     if not any(term in compact for term in _lexicon_terms("cart_terms")):
@@ -7064,10 +7178,23 @@ def _apply_cart_retention_filter(query: str, plan: dict[str, Any]) -> None:
             continue
         if any(word in window for word in _CART_RETENTION_BENEFIT_WORDS):
             continue
-        if not any(marker in window for marker in _CART_RETENTION_MARKERS):
+        # 기간이 장바구니 어휘에 바로 붙어 있으면 그 자체가 보관 표지다 — 담기 동사('담/유지')를 요구하면
+        # '최근 30일 장바구니 총금액'처럼 명사로만 수식하는 표현에서 기간이 조용히 사라진다.
+        adjacent = compact[max(0, start - _CART_DURATION_ADJACENCY): start] + compact[end: end + _CART_DURATION_ADJACENCY]
+        if not any(term in adjacent for term in _lexicon_terms("cart_terms")) and not any(
+            marker in window for marker in _CART_RETENTION_MARKERS
+        ):
             continue
-        if any(word in window for word in _CART_RETENTION_STRONG_MIN_WORDS):
+        # 방향은 기간에 붙은 어구로 먼저 판정한다(창 전체 판정은 뒤 폴백) — '일주일 이상'은 하한,
+        # '최근 30일'은 상한이고, 창 어딘가의 '이상'이 옆 금액 비교어일 때 하한으로 뒤집히는 걸 막는다.
+        following = compact[end: end + _CART_RETENTION_DIRECTION_GAP]
+        preceding = compact[max(0, start - _CART_RETENTION_DIRECTION_GAP): start]
+        if any(word in following for word in _CART_RETENTION_STRONG_MIN_WORDS):
             retention: dict[str, Any] = {"min_days": days, "label": f"장바구니 보관 {days}일 이상"}
+        elif any(word in preceding for word in _CART_RECENT_WORDS):
+            retention = {"max_days": days, "label": f"장바구니 보관 {days}일 이내"}
+        elif any(word in window for word in _CART_RETENTION_STRONG_MIN_WORDS):
+            retention = {"min_days": days, "label": f"장바구니 보관 {days}일 이상"}
         elif any(word in window for word in _CART_RECENT_WORDS) or any(
             word in window for word in _CART_RETENTION_MAX_WORDS
         ):
@@ -8896,7 +9023,7 @@ def _sanitize_purchase_object(value: str) -> str | None:
         # 엉뚱한 LIKE(예: '많이 구입한' → PRODUCT_NAME LIKE N'%많이%')를 만들 수 있어 제외한다.
         # 장소·대상 지시어("이곳에서 구매한" — 앞 절의 브랜드/장소를 가리키는 조응 표현)도 상품명이 아니다
         # — 지시어를 걸러야 브랜드 계사절("브랜드가 X면서 … 이곳에서 구매한")이 브랜드 추출로 이어진다.
-        if not stripped_token or stripped_token in {
+        if not stripped_token or stripped_token in _PURCHASE_VALUE_QUALIFIERS or stripped_token in {
             "사람", "고객", "사용자", "첫", "재", "최근", "최초", "최초로", "반복", "자주", "많이", "많은", "다수", "대량", "처음", "처음으로", "미",
             "이곳", "이곳에서", "그곳", "그곳에서", "저곳", "여기", "여기서", "여기에서", "거기", "거기서", "거기에서", "저기", "저기서", "해당", "동일", "같은",
             # '캠페인 구매 이력'의 '캠페인'은 상품명이 아니라 캠페인 반응(구매 반응) 문맥어다. 상품 LIKE

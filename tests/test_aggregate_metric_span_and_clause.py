@@ -41,6 +41,14 @@ def test_average_order_synonyms_not_double_matched():
     assert [m for m, *_ in _pairs("객단가가 100,000원을 초과하는 고객")] == ["average_order_amount"]
 
 
+def test_metric_synonyms_ignore_internal_whitespace_and_case():
+    # 레지스트리에 모든 공백 조합을 중복 등록하지 않아도 같은 복합 명사로 해석한다.
+    for phrase in ("평균 주문금액", "평균주문금액", "평균   주문   금액"):
+        assert _pairs(f"최근 6개월 {phrase}이 10만 원 이상인 회원") == [
+            ("average_order_amount", ">=", 100000.0)
+        ]
+
+
 def test_distinct_clause_metrics_both_kept():
     # 서로 다른 절에 있는 지표는 둘 다 유지된다(겹치지 않으므로).
     pairs = _pairs("주문 횟수는 10회 이상이고 평균 주문 금액은 50,000원 이상인 고객을 찾아줘.")

@@ -81,6 +81,13 @@ def test_purchase_signal_gate():
     assert g._has_purchase_history_signal("40대 여성 고객") is False
 
 
+def test_high_value_campaign_label_is_not_a_purchase_object():
+    prompt = "최근 6개월 평균 주문금액이 10만 원 이상인 회원을 추출해서 고액구매 고객 캠페인을 만들어줘."
+    target_user = {"purchase_object": None}
+    g._apply_purchase_object_filter(prompt, target_user)
+    assert target_user["purchase_object"] is None
+
+
 def test_sell_signal_gate():
     assert g._has_sell_signal("신상 컴퓨터를 팔고 싶어요") is True
     assert g._has_sell_signal("기저귀 구매 고객") is False

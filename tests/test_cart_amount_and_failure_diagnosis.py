@@ -146,3 +146,39 @@ def test_cart_lexicon_has_no_overly_generic_terms():
     # 게이트 어휘에 일반어가 다시 들어오면 위 오탐이 통째로 재발한다 — 사전 쪽에서 못 박는다.
     assert not {"보유", "정기배송", "픽업", "픽업상품", "일반상품"} & set(g._lexicon_terms("cart_terms"))
     assert "장바구니" in g._lexicon_terms("cart_terms")
+
+
+# ── (5) 임계값 소유권 + 기간 방향: "최근 30일 장바구니 총금액 5만원 이상 + 미주문" ───────────
+# 배경: 이 프롬프트가 sql=null(query_plan_conditions_missing)로 실패했다. 두 결함이 겹쳤다.
+#   (1) '5만원 이상'을 카트(cart_amount)와 일반 집계(purchase_amount)가 각각 청구했다. 카트 빌더가
+#       컴파일할 수 없는 사본이 dropped_conditions 에 남아, 커버리지 게이트가 조건을 다 반영한 SQL 을
+#       통째로 버렸다. 금액뿐 아니라 수량·종류 지표에서도 같은 방식으로 재현되던 결함이라,
+#       _CART_AGGREGATE_TWIN_METRICS 대응표로 '카트가 소유자'임을 선언해 사본을 걷어낸다.
+#   (2) '최근 30일'은 담기 동사가 없어 보관 기간으로 안 잡혔고(창이 조용히 소실), 잡더라도 판정 창 안의
+#       '이상'(사실은 금액 비교어)을 읽어 '30일 이상 방치'로 방향이 뒤집혔다.
+_CART_WINDOW_QUERY = "최근 30일 장바구니 총금액이 5만 원 이상이고 주문하지 않은 회원을 대상으로 구매전환 캠페인을 만들어줘."
+
+
+def test_cart_amount_owns_threshold_against_general_aggregate():
+    target_user = _plan(_CART_WINDOW_QUERY)["target_user"]
+    assert target_user["cart_aggregate"] == {
+        "metric": "cart_amount", "operator": ">=", "threshold": 50000.0,
+    }
+    # 같은 임계값의 일반 집계 사본이 남으면 어떤 빌더도 그걸 컴파일하지 못해 SQL 이 버려진다.
+    assert target_user["aggregate_conditions"] == []
+
+
+def test_recent_window_on_cart_is_upper_bound():
+    # '최근 30일'은 담은 지 30일 '이내'(상한)다. min_days 로 잡히면 '30일 넘게 방치'로 의미가 반전된다.
+    assert _plan(_CART_WINDOW_QUERY)["target_user"]["cart_retention"] == {
+        "max_days": 30, "label": "장바구니 보관 30일 이내",
+    }
+
+
+def test_cart_window_amount_and_no_purchase_all_land_in_sql():
+    candidate = g.build_sql_template_candidate(_plan(_CART_WINDOW_QUERY))
+    sql = candidate["sql"]
+    assert "SUM(TOTAL_SALE_PRICE) >= 50000" in sql          # 장바구니 총금액 5만원 이상
+    assert "UPD_DT >= DATEADD(DAY, -30, GETDATE())" in sql  # 최근 30일(담은 시점 상한)
+    assert "NOT EXISTS" in sql and "CRM_SL_ORDERHEADERMALL" in sql  # 주문하지 않은
+    assert candidate["dropped_conditions"] == []

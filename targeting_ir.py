@@ -146,7 +146,12 @@ def _coerce_signup(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
 
 
 def _coerce_threshold_list(raw: Any, *, allowed: Any = None) -> list[dict[str, Any]] | None:
-    """aggregate_conditions: [{metric_id, operator, threshold, window_days?, label?}]. metric_id∈allowed."""
+    """Normalize aggregate thresholds into the canonical targeting IR.
+
+    Accept both canonical ``window_days`` and the common LLM shape
+    ``window:{value,unit}``, but always emit ``window_days``. Metric ids remain
+    restricted to the configured closed vocabulary.
+    """
     if not isinstance(raw, list):
         return None
     metrics = allowed if isinstance(allowed, (set, frozenset, dict)) else None
@@ -163,6 +168,9 @@ def _coerce_threshold_list(raw: Any, *, allowed: Any = None) -> list[dict[str, A
             continue
         cond: dict[str, Any] = {"metric_id": metric_id, "operator": operator, "threshold": threshold}
         window = _pos_int(item.get("window_days"))
+        if window is None and isinstance(item.get("window"), dict):
+            window_parts = _window_days(item["window"])
+            window = window_parts[2] if window_parts is not None else None
         cond["window_days"] = window
         if isinstance(item.get("label"), str) and item["label"]:
             cond["label"] = item["label"]
@@ -350,6 +358,9 @@ class SlotShape:
     schema: dict[str, Any]  # LLM tool 에 노출할 JSON-schema 조각
     coerce: Callable[..., Any]  # (raw, *, allowed=None) -> normalized | None
     allowed_key: str | None = None  # graph_rag 가 주입할 렉시콘 어휘 키(cart_type/campaign_responses/등)
+    # Existing unsupported reasons made stale when this empty slot is filled
+    # with a successfully coerced value.
+    resolves_unsupported: frozenset[str] = frozenset()
 
 
 # JSON-schema 조각 헬퍼(간결 표기 — 세부 검증은 coerce 가 담당하므로 스키마는 느슨하게).
@@ -411,17 +422,18 @@ SLOT_SHAPES: dict[str, SlotShape] = {
         {"type": "boolean", "description": "장바구니(보관 상품)가 없는 회원. true 만 설정('장바구니 없는/생성 안 한')."},
         _coerce_bool_true),
     "aggregate_conditions": SlotShape("aggregate_conditions", "target_user",
-        _list_schema(f"누적 지표 임계 리스트. [{{metric_id, operator, threshold, window_days?}}]. {_OP_HINT}"),
-        _coerce_threshold_list, allowed_key="aggregate_metrics"),
+        _list_schema(f"누적 지표 임계 리스트. [{{metric_id, operator, threshold, window_days? 또는 window:{{value,unit}}}}]. {_OP_HINT}"),
+        _coerce_threshold_list, allowed_key="aggregate_metrics",
+        resolves_unsupported=frozenset({"metric_not_resolved"})),
     "region_density_target": SlotShape("region_density_target", "plan",
         _obj_schema("밀집 지역 랭킹 타겟(코호트 조건으로 지역 랭킹)."),
-        _coerce_ranking_dict),
+        _coerce_ranking_dict, resolves_unsupported=frozenset({"ranking_metric_unspecified"})),
     "member_metric_ranking": SlotShape("member_metric_ranking", "plan",
         _obj_schema("회원 지표 상위 N 랭킹."),
-        _coerce_ranking_dict),
+        _coerce_ranking_dict, resolves_unsupported=frozenset({"ranking_metric_unspecified"})),
     "purchase_count_ranking": SlotShape("purchase_count_ranking", "plan",
         _obj_schema("기간 내 구매 상위 N 랭킹."),
-        _coerce_ranking_dict),
+        _coerce_ranking_dict, resolves_unsupported=frozenset({"ranking_metric_unspecified"})),
 }
 
 
