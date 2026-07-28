@@ -1,0 +1,8 @@
+{
+  "description": "어휘형 정규식 래칫 상한. 이행이 진행되면 내려간다. 올리려면 사유가 필요하다.",
+  "counts": {
+    "lexical": 8,
+    "domain": 147,
+    "grammar": 31
+  }
+}

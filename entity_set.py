@@ -25,10 +25,11 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import lexicon_patterns
 from calendar_window import parse_time_window, parse_time_window_span
 
 
-_MEMBER_NOUN_RE = re.compile(r"회원|고객|사용자|유저")
+_MEMBER_NOUN_RE = lexicon_patterns.pattern("member_noun_basic")
 _COUNT_AFTER_RE = re.compile(r"^(\d{1,4})\s*(?:개|종|가지|건|위)")
 # '상위 5개 카테고리'처럼 개수가 엔터티 앞에 오는 어순.
 _COUNT_BEFORE_RE = re.compile(r"(\d{1,4})\s*(?:개|종|가지|건|위)\s*$")

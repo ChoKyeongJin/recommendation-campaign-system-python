@@ -1,0 +1,15 @@
+{
+  "plan": {
+    "intent": "find_user_segment"
+  },
+  "schema_version": 1,
+  "target_user": {
+    "campaign_response_frequency": {
+      "count": 2,
+      "event": "campaign_response",
+      "label": "campaign_response 2회 이상",
+      "operator": ">=",
+      "window_days": 90
+    }
+  }
+}

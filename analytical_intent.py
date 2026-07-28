@@ -32,6 +32,7 @@ from typing import Any
 import sqlglot
 from sqlglot import exp
 
+import lexicon_patterns
 from sql_ast import SelectAst
 from member_policy import (
     active_member_filter,
@@ -54,7 +55,7 @@ _TARGETING_COMPARISON_RE = re.compile(
 )
 _RECENT_DAYS_RE = re.compile(r"최근\s*(\d+)\s*일(?:간|동안|이내)?")
 _RECENT_WINDOW_RE = re.compile(r"최근\s*\d+\s*(?:일|주|개월|달|년)(?:간|동안|이내)?")
-_MEMBER_TARGET_RE = re.compile(r"회원|고객|사용자")
+_MEMBER_TARGET_RE = lexicon_patterns.pattern("member_noun_core")
 _RANKING_HIGH_RE = re.compile(r"가장\s*(?:많이|많은)|최다|최고")
 _RANKING_LOW_RE = re.compile(r"가장\s*(?:적게|적은)|최소|최저")
 # A value followed by a member noun is an audience predicate (``0원인 회원``),

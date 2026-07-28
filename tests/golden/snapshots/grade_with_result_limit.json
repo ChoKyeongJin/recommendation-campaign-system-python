@@ -1,0 +1,12 @@
+{
+  "plan": {
+    "intent": "find_user_segment",
+    "result_limit": 100
+  },
+  "schema_version": 1,
+  "target_user": {
+    "lifecycle": [
+      "vip"
+    ]
+  }
+}

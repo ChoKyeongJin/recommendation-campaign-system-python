@@ -1,0 +1,33 @@
+{
+  "campaign_constraints": {
+    "objective": "purchase"
+  },
+  "plan": {
+    "intent": "find_user_segment",
+    "semantic_conditions": [
+      {
+        "domain": "purchase",
+        "is_primary_condition": true,
+        "operator": "exists"
+      },
+      {
+        "domain": "purchase",
+        "is_primary_condition": true,
+        "operator": "not_exists",
+        "window_days": 180
+      }
+    ]
+  },
+  "schema_version": 1,
+  "target_user": {
+    "purchase_inactivity": {
+      "min_days": 180,
+      "unit": "days",
+      "value": 180
+    },
+    "purchase_membership": {
+      "domain": "purchase",
+      "operator": "exists"
+    }
+  }
+}

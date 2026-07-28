@@ -1,0 +1,33 @@
+{
+  "campaign_constraints": {
+    "objective": "purchase"
+  },
+  "plan": {
+    "intent": "find_user_segment",
+    "semantic_conditions": [
+      {
+        "domain": "purchase",
+        "is_primary_condition": true,
+        "operator": "exists",
+        "satisfied_by": "aggregate_conditions"
+      }
+    ]
+  },
+  "schema_version": 1,
+  "target_user": {
+    "aggregate_conditions": [
+      {
+        "label": "구매 횟수",
+        "metric_id": "order_count",
+        "operator": ">=",
+        "threshold": 5.0,
+        "window_days": null
+      }
+    ],
+    "purchase_membership": {
+      "domain": "purchase",
+      "operator": "exists",
+      "satisfied_by": "aggregate_conditions"
+    }
+  }
+}

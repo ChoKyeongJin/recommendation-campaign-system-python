@@ -1,0 +1,14 @@
+{
+  "plan": {
+    "intent": "find_user_segment"
+  },
+  "schema_version": 1,
+  "target_user": {
+    "recent_login": {
+      "min_days": 30,
+      "sql_interval": "30 days",
+      "unit": "days",
+      "value": 30
+    }
+  }
+}

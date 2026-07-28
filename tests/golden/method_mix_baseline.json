@@ -1,0 +1,9 @@
+{
+  "description": "코퍼스 전체의 방법별 조건 수. rule 은 래칫 상한으로 쓰인다(늘리려면 사유와 함께 갱신).",
+  "schema_version": 1,
+  "cases": 17,
+  "methods": {
+    "lexicon": 6,
+    "rule": 36
+  }
+}

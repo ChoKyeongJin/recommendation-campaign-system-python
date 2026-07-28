@@ -1,0 +1,9 @@
+{
+  "plan": {
+    "intent": "find_user_segment"
+  },
+  "schema_version": 1,
+  "target_user": {
+    "gender": "female"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "campaign_constraints": {
+    "objective": "purchase"
+  },
+  "plan": {
+    "intent": "find_user_segment",
+    "semantic_conditions": [
+      {
+        "domain": "purchase",
+        "is_primary_condition": true,
+        "operator": "exists"
+      }
+    ]
+  },
+  "schema_version": 1,
+  "target_user": {
+    "purchase_date": {
+      "from": "20190301",
+      "label": "2019년 3월 구매",
+      "to": "20190331"
+    },
+    "purchase_membership": {
+      "domain": "purchase",
+      "operator": "exists"
+    }
+  }
+}

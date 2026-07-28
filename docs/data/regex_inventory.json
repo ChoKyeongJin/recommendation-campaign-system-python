@@ -1,0 +1,1871 @@
+{
+  "description": "코드에 박힌 정규식 상수의 이행 분류 초안. decision 열은 사람이 채운다.",
+  "counts": {
+    "lexical": 8,
+    "domain": 147,
+    "grammar": 31
+  },
+  "total": 186,
+  "rows": [
+    {
+      "file": "build_dimension_catalog.py",
+      "line": 42,
+      "name": "_NOISE_LABEL",
+      "pattern": "팝업|콤보|셀렉트|체크|check|popup|text|combo|multiselect|버전업|테스트|test|::op::",
+      "alternatives": 13,
+      "class": "lexical",
+      "reason": "메타문자 없는 표면어 교대 13개 — 렉시콘으로 옮길 수 있다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6859,
+      "name": "_BALANCE_DEFER_PATTERN",
+      "pattern": "가장|제일|상위|하위|최상위|랭킹|순위|top|톱|퍼센트|프로|%|평균",
+      "alternatives": 13,
+      "class": "lexical",
+      "reason": "메타문자 없는 표면어 교대 13개 — 렉시콘으로 옮길 수 있다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 14690,
+      "name": "_THRESHOLD_CUE_RE",
+      "pattern": "이상|이하|미만|초과|이내|같은|동일|>=|<=|>|<|=",
+      "alternatives": 12,
+      "class": "lexical",
+      "reason": "메타문자 없는 표면어 교대 12개 — 렉시콘으로 옮길 수 있다",
+      "decision": ""
+    },
+    {
+      "file": "analytical_intent.py",
+      "line": 47,
+      "name": "_OUTPUT_ACTION_RE",
+      "pattern": "알려|보여|조회|계산|구해|집계",
+      "alternatives": 6,
+      "class": "lexical",
+      "reason": "메타문자 없는 표면어 교대 6개 — 렉시콘으로 옮길 수 있다",
+      "decision": ""
+    },
+    {
+      "file": "analytical_intent.py",
+      "line": 68,
+      "name": "_MEMBER_METRIC_COMPARISON_RE",
+      "pattern": "보다|초과한|미만인|이상인|이하인|같은",
+      "alternatives": 6,
+      "class": "lexical",
+      "reason": "메타문자 없는 표면어 교대 6개 — 렉시콘으로 옮길 수 있다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6863,
+      "name": "_BALANCE_PRESENCE_PATTERN",
+      "pattern": "보유|가지고|가진|있는|있으신",
+      "alternatives": 5,
+      "class": "lexical",
+      "reason": "메타문자 없는 표면어 교대 5개 — 렉시콘으로 옮길 수 있다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 8781,
+      "name": "_TREND_ORDER_MARKER_RE",
+      "pattern": "대비|보다|에서|→|->",
+      "alternatives": 5,
+      "class": "lexical",
+      "reason": "메타문자 없는 표면어 교대 5개 — 렉시콘으로 옮길 수 있다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6864,
+      "name": "_BALANCE_METRIC_NOUN_PATTERN",
+      "pattern": "보유액|보유금액|보유량",
+      "alternatives": 3,
+      "class": "lexical",
+      "reason": "메타문자 없는 표면어 교대 3개 — 렉시콘으로 옮길 수 있다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 3282,
+      "name": "_ENUM_EXCLUSION_TAIL_RE",
+      "pattern": "^(?:(?:[·ㆍ‧・/,]|와|과|및|또는|이나|랑)[가-힣A-Za-z]{1,8}?)+(?:상태|중|인|한|된)*(?:회원|고객|사용자|유저|이용자|대상)?(?:은|는|이|가|을|를|만)?(?:모두|전부|다)?(?:제외|배제|제거|아닌|아니|않은|않는|않았)",
+      "alternatives": 31,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6440,
+      "name": "_METRIC_SCOPING_PERIOD_RE",
+      "pattern": "최근\\s*\\d+\\s*(?:일|주|주간|개월|달|년|년간|개월간|분기)|지난\\s*(?:달|주|해|분기|주간)|지난달|저번\\s*달|저번달|전월|당월|이번\\s*달|이번달|올해|금년|작년|지난해|재작년|\\d{4}\\s*년(?!령)",
+      "alternatives": 27,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "analytical_intent.py",
+      "line": 48,
+      "name": "_TARGETING_COMPARISON_RE",
+      "pattern": "(?:\\d[\\d,]*(?:\\.\\d+)?\\s*(?:원|건|회|개|명|일|주|주일|개월|달|년)?\\s*(?:이상|이하|초과|미만|이내|이전|이후|같|넘)|상위|하위|높은|낮은|많은|적은)",
+      "alternatives": 25,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 9140,
+      "name": "_CART_ABSENCE_PATTERN",
+      "pattern": "장바구니(?:생성|생성한|담긴|담은|상품|물건|제품|아이템|이력)?(?:이나|나|또는|랑|이랑)?(?:구매이력|주문이력|구매내역|구매|주문|상품)?(?:이|가|을|를|은|는|도)?(?:없|않)",
+      "alternatives": 25,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 19718,
+      "name": "_LOGIC_TAIL_RE",
+      "pattern": "\\s*(?:인|한|하는|이신|된)?\\s*(?:회원|고객|사람|유저|이용자|분|대상|명단)(?:\\s*(?:을|를|들)?\\s*(?:찾아|보여|추출|조회|알려|뽑아|골라|선정|선별|검색|리스트업?)\\S*)?\\s*$",
+      "alternatives": 24,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 4670,
+      "name": "_PURCHASE_POSITIVE_MEMBERSHIP_RE",
+      "pattern": "(?:구매|구입|주문)(?:이력|내역)?(?:을|를|은|는|이|가|도)*(?:했|한|했던|있는|있었|있던|있음)|(?:구매|구입|주문)(?=(?:고객|회원|사용자|유저))",
+      "alternatives": 22,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 4675,
+      "name": "_CAMPAIGN_GENERIC_RESPONSE_RE",
+      "pattern": "캠페인(?:에|에서|을|를|의)?(?:는|은|도)?(?:반응|응답)(?:을|를|이|가|은|는|도)?(?P<negative>하지않|안한|안했|않은|없)?(?:했|한|자|회원|고객)?",
+      "alternatives": 22,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 5336,
+      "name": "_AGE_EXCLUSION_TAIL",
+      "pattern": "^(?:인|한|된)?\\s*(?:회원|고객|사용자|유저|이용자|분|명)?\\s*(?:은|는|을|를|이|가)?\\s*(?:모두|전부|다)?\\s*(?:제외|제거|빼|제하|아닌|아니)",
+      "alternatives": 21,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10008,
+      "name": "_CAMPAIGN_BUY_NEG_PATTERN",
+      "pattern": "캠페인(?:에서|에|을|를)?(?:는|은|도)?(?:보고|통해|후)?(?:구매(?:이력|내역)?(?:를|은|는|도|이|가)*(?:반응)?(?:이|가|은|는)?(?:하지않|안하|안한|없)|미구매)",
+      "alternatives": 21,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10142,
+      "name": "_ADDITIONAL_PURCHASE_ABSENCE_PATTERN",
+      "pattern": "(?:추가로|추가|더이상|더)(?:의)?(?:구매|구입|주문)(?:를|은|는|가|도|한)?(?:없|안했|안한|않았|않은|않는|하지않|안함|못했|못한)",
+      "alternatives": 20,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10174,
+      "name": "_ZERO_PURCHASE_COUNT_PATTERN",
+      "pattern": "(?:구매|구입|주문)\\s*(?:횟수|건수|건|회|번)?(?:가|이|은|는|도)?\\s*(?:(?<![\\d,.])0\\s*(?:회|건|번)(?!\\s*(?:이상|이하|초과|미만|넘|보다))|(?<![\\d,.])0(?![\\d,.회건번])|없)",
+      "alternatives": 20,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6620,
+      "name": "_PURCHASE_NEG_RE",
+      "pattern": "(?:구매|구입|주문)(?:이력|내역)?(?:을|를|은|는|이|가|도)*(?:없|않|하지않|안함|안한|안했|안하)|미(?:구매|구입|주문)",
+      "alternatives": 19,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 14213,
+      "name": "_NEGATION_CUE_RE",
+      "pattern": "없|않|못[한했하받]|아닌|아니|제외|미사용|미구매|미접속|미반응|미결제|미가입|미방문|비동의|취소|해지|중단|안\\s*[한함했하샀]|\\bNOT\\b",
+      "alternatives": 19,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "aggregation_requirements.py",
+      "line": 650,
+      "name": "_RELATIVE_FILTER_NOTE_RE",
+      "pattern": "(?=.*(?:filters?(?:\\[\\d+\\])?\\.value|relative|상대|from\\s*/\\s*to|system\\s+date|past\\s+\\d+\\s+days|requires\\s+concrete|today|current\\s+date|현재\\s*날짜|실행\\s*시점))(?=.*(?:date|from|to|today|날짜|기간|변환|실행))",
+      "alternatives": 18,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 4651,
+      "name": "_COMPLETED_BEHAVIOR_RE",
+      "pattern": "(?:구매|구입|주문)(?:했|한|했던)|장바구니.{0,10}(?:담|보관|있)|캠페인.{0,12}(?:반응|응답)(?:했|한|없는|않)|(?:로그인|방문)(?:했|한|하지않|없는)",
+      "alternatives": 18,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7707,
+      "name": "_AGG_CLAUSE_SPLIT_RE",
+      "pattern": "이지만|하지만|지만|반면에|반면|그리고|이면서|면서|동시에|이고|이며|했고|았고|었고|하고|또는|(?<!\\d),|,(?!\\d)",
+      "alternatives": 18,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7731,
+      "name": "_AGG_UNIT_TOKEN_RE",
+      "pattern": "\\d[\\d,]*\\s*(?:억|천만|백만|만|천)?\\s*(종류|종수|품목|가지|건수|회수|종|개|건|회|번|원|점|장)",
+      "alternatives": 18,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 4648,
+      "name": "_COUNT_OUTPUT_SIGNAL_RE",
+      "pattern": "(?:몇\\s*(?:명|건|개|곳)|(?:회원|고객|사용자|가입자|구매자|상품|제품|주문|구매|반응)\\s*(?:수|인원|개수|건수))",
+      "alternatives": 17,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 4655,
+      "name": "_OUTREACH_ACTION_RE",
+      "pattern": "추천(?:해|하|안)|캠페인(?:을)?\\s*(?:생성|만들|기획)|발송(?:해|하|할)|보내(?:줘|고|기)|알리(?:고|기)|홍보|유도|판매하고\\s*싶",
+      "alternatives": 17,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 9129,
+      "name": "_CART_PRESENCE_PATTERN",
+      "pattern": "장바구니(?:에|에는|를|을|가|이)?(?:상품|물건|제품|아이템)?(?:이|가|을|를)?(?:들어)?(?:있(?!지)|담(?!지)|보유(?!하지)|보관(?!하지)|가지(?!지))",
+      "alternatives": 16,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10024,
+      "name": "_CAMPAIGN_BUY_ZERO_COUNT_PATTERN",
+      "pattern": "캠페인(?:을|를|에서|으로|에|의)?(?:통해|통한|보고|반응|후)?(?:한)?(?:구매|결제)(?:건수|횟수)(?:가|이|은|는)?(?:없|(?<![\\d,.])0\\s*건)",
+      "alternatives": 16,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 1331,
+      "name": "_PURCHASE_OBJECT_PATTERN",
+      "pattern": "(?P<object>[0-9A-Za-z가-힣_+\\-]{1,40})\\s*(?:(?:을|를)\\s*|\\s+)(?:구매|구입)\\s*(?:한|했|했던|하신|하였|이력|내역|경험|고객|회원|유저|구매자)",
+      "alternatives": 15,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7059,
+      "name": "_MESSAGE_RECEIVED_COUNT_RE",
+      "pattern": "(?:메시지|문자|알림|톡|dm)(?:를|을|이|은|는)?\\s*\\d+\\s*(?:회|번|건)\\s*(?:이상|이하|초과|미만)?\\s*(?:받|수신)",
+      "alternatives": 15,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10017,
+      "name": "_CAMPAIGN_BUY_ZERO_AMOUNT_PATTERN",
+      "pattern": "캠페인(?:을|를|에서|으로|에|의)?(?:통해|통한|보고|반응|후)?(?:한)?(?:구매|결제)한?금액(?:이|은|는|가)?(?:(?<!\\d)0원|없)",
+      "alternatives": 15,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "semantic_requirements.py",
+      "line": 92,
+      "name": "_JOSA_TAIL_RE",
+      "pattern": "(을|를|이|가|은|는|인|의|와|과|도|만|에게|에서|에)$",
+      "alternatives": 15,
+      "class": "domain",
+      "reason": "자동 판정 불가 — 사람이 본다",
+      "decision": ""
+    },
+    {
+      "file": "analytical_intent.py",
+      "line": 69,
+      "name": "_MEMBER_NUMERIC_PREDICATE_RE",
+      "pattern": "\\d[\\d,]*(?:\\.\\d+)?\\s*(?:원|건|회|번|개|명)?[^.!?]{0,30}(?:이상|이하|초과|미만|사이|범위|인\\s*(?:회원|고객|사용자))",
+      "alternatives": 14,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7070,
+      "name": "_OR_OPERAND_THRESHOLD_RE",
+      "pattern": "\\d[\\d,]*\\s*(?:회|원|개|건|명|번|종|일|장|점|%)\\s*(?:이상|이하|초과|미만)",
+      "alternatives": 14,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 8328,
+      "name": "_CART_AGGREGATE_DOMAIN_BREAK_RE",
+      "pattern": "구매(?:금액|액|횟수|건수|수량|상품|제품|품목|이력)|구입|주문|결제|캠페인반응|쿠폰",
+      "alternatives": 14,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 9316,
+      "name": "_RECENT_LOGIN_SIGNAL_RE",
+      "pattern": "(?:로그인|접속)(?:은|는|을|를|이|도)?(?:한|했|하신|하였|함|이력|기록)|loggedin",
+      "alternatives": 14,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10035,
+      "name": "_GENERIC_BUY_NEG_PATTERN",
+      "pattern": "구매(?:이력|내역)?(?:를|은|는|도|이|가)*(?:반응)?(?:이|가|은|는)?(?:하지않|안하|안한|없)|미구매",
+      "alternatives": 14,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10598,
+      "name": "_CONSENT_EXCLUSION_TAIL_RE",
+      "pattern": "^[^.。!?\\n,]{0,40}?(?:회원|고객|사용자|유저|이용자|대상)?(?:은|는|을|를|만)?(?:모두|전부|다)?(?:제외|배제|제거)",
+      "alternatives": 14,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "semantic_requirements.py",
+      "line": 95,
+      "name": "_QUANTITY_VALUE_RE",
+      "pattern": "^\\d[\\d,]*\\s*(?:개|종|종류|가지|품목|건|회|번|명|점|장|원|%|퍼센트)?$",
+      "alternatives": 14,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "aggregation_requirements.py",
+      "line": 641,
+      "name": "_OPTIONAL_FILTER_ABSENCE_NOTE_RE",
+      "pattern": "(?=.*(?:\\bfilter\\b|\\blimit\\b|\\brestrict\\w*\\b|필터|제한|범위))(?=.*(?:\\bnot\\s+(?:specified|provided|requested)\\b|\\bunspecified\\b|명시되지|지정되지|제공되지|요청되지))",
+      "alternatives": 13,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 1413,
+      "name": "_QUANTITY_COUNT_TOKEN",
+      "pattern": "^\\d+(?:개|회|번|건|원|명|장|종|가지|종류|품목|매|권)?$",
+      "alternatives": 13,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7570,
+      "name": "_EXACT_AMOUNT_PATTERN",
+      "pattern": "(?P<num>[\\d,]+(?:\\.\\d+)?)\\s*(?P<mag>억|천만|백만|만|천)?\\s*(?:원|건|회|명|개|장|번|건수|회수)?",
+      "alternatives": 13,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10245,
+      "name": "_PURCHASE_EXISTS_ASSERT_RE",
+      "pattern": "(?:구매|구입|주문)(?:이력|내역)?(?:은|는|이|가|를|도)?(?:있|했지만|했으나|했는데|하였)",
+      "alternatives": 13,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 1427,
+      "name": "_PURCHASE_OBJECT_CHAIN_PATTERN",
+      "pattern": "(?P<chain>[0-9A-Za-z가-힣_+\\-]{1,40}(?:(?:(?<=[가-힣])(?:와|과|랑|이랑)\\s+|\\s*(?:및|그리고)\\s+|\\s*[,、]\\s*)[0-9A-Za-z가-힣_+\\-]{1,40}){1,4})\\s*(?:을|를)(?![0-9A-Za-z가-힣])(?=[^을를]{0,15}?(?:구매|구입|주문|샀|산(?=\\s)))",
+      "alternatives": 12,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 5016,
+      "name": "_DATE_WINDOW_UNRESOLVED_RE",
+      "pattern": "(?:\\b(?:date|from|to|today|window|yyyy(?:mmdd)?)\\b|order_date|purchase_date|날짜|기간|현재일|실행\\s*시점)",
+      "alternatives": 12,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 9808,
+      "name": "_BALANCE_SUM_RE",
+      "pattern": "합계|합산|합쳐|합친|합한|더한|더하면|더해|의\\s*합\\b|합이\\b|합은\\b|합으로",
+      "alternatives": 12,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10432,
+      "name": "_CAMPAIGN_BUY_COUNT_METRIC_PATTERN",
+      "pattern": "캠페인(?:을|를|에서|으로|에|의)?(?:통해|통한|보고|반응|후)?(?:한)?(?:구매|결제)(?:건수|횟수)",
+      "alternatives": 12,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "semantic_requirements.py",
+      "line": 83,
+      "name": "_ENTITY_QUALIFIER_RE",
+      "pattern": "(브랜드명|브랜드|상품명|카테고리명|카테고리|제품명|품목명)(?:이|가|은|는|:|=)\\s*([가-힣A-Za-z0-9][가-힣A-Za-z0-9]+)",
+      "alternatives": 12,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "aggregation_requirements.py",
+      "line": 637,
+      "name": "_SCHEMA_EXISTENCE_NOTE_RE",
+      "pattern": "(?:exist(?:s|ence)?|present|available|schema|column|field|존재|스키마|컬럼|필드)",
+      "alternatives": 11,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "analytical_intent.py",
+      "line": 64,
+      "name": "_MEMBER_VALUE_PREDICATE_RE",
+      "pattern": "\\d[\\d,]*(?:\\.\\d+)?\\s*(?:원|건|회|번|개|명)?\\s*(?:인|인\\s*회원|인\\s*고객|이거나|거나|없거나)",
+      "alternatives": 11,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6512,
+      "name": "_MEMBER_COUNT_SIGNAL_RE",
+      "pattern": "(?:회원|고객|가입자)\\s*수|(?:회원|고객|가입자)\\s*(?:이|가|은|는)\\s*(?:가장\\s*|제일\\s*)?(?:많|적)",
+      "alternatives": 11,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10361,
+      "name": "_CAMPAIGN_BUY_AMOUNT_METRIC_PATTERN",
+      "pattern": "캠페인(?:을|를|에서|으로|에|의)?(?:통해|통한|보고|반응|후)?(?:한)?(?:구매|결제)한?금액",
+      "alternatives": 11,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 14686,
+      "name": "_POST_PROCESSING_REQUEST_CUE_RE",
+      "pattern": "(?:캠페인|타겟리스트|타겟\\s*리스트|타깃리스트|세그먼트|셀)[^.\\n]{0,24}?(?:생성|만들|설정|등록|저장|발행)",
+      "alternatives": 11,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 1366,
+      "name": "_BRAND_COPULA_PATTERN",
+      "pattern": "브랜드(?:가|는|명이|명은)\\s*(?P<object>[0-9A-Za-z가-힣_+\\-]{1,40}?)(?:이면서|이거나|인데|이고|이며|면서|인)(?![0-9A-Za-z가-힣])",
+      "alternatives": 10,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6869,
+      "name": "_DATA_MISSING_PATTERN",
+      "pattern": "정보\\S*\\s*없|값\\S*\\s*없|입력\\s*(?:되지|하지)?\\s*(?:않|안|못)|미입력|기재\\S*\\s*않|미기재|누락",
+      "alternatives": 10,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 4647,
+      "name": "_MEMBER_OUTPUT_RE",
+      "pattern": "회원|고객|사용자|가입자|대상|몇\\s*명|인원\\s*수|회원\\s*수|고객\\s*수",
+      "alternatives": 9,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6895,
+      "name": "_BALANCE_HIGH_TERMS",
+      "pattern": "가장\\s*많|제일\\s*많|가장\\s*높|제일\\s*높|많은|높은|큰|상위|최상위",
+      "alternatives": 9,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7745,
+      "name": "_DISTINCT_INTENT_RE",
+      "pattern": "서로\\s*다른|각기\\s*다른|각각\\s*다른|여러\\s*가지|여러|다양한|가짓수|종류별|서로다른",
+      "alternatives": 9,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10749,
+      "name": "_PURCHASE_OBJECT_PARTICLE_RE",
+      "pattern": "(?:으로부터|로부터|에서|에게|부터|으로|에|의|로)$",
+      "alternatives": 9,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "aggregation_requirements.py",
+      "line": 646,
+      "name": "_MISSING_OUTPUT_NOTE_RE",
+      "pattern": "(?:outputcolumns?|output_columns?).*(?:missing|unspecified|not\\s+(?:specified|provided)|미지정|누락|없음)",
+      "alternatives": 8,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6566,
+      "name": "_PURCHASE_QUANTITY_RANK_PATTERN",
+      "pattern": "(?P<sup>가장\\s*|제일\\s*)?(?:많이|자주|최다)\\s*(?:구매|구입|주문|샀|산(?!책))",
+      "alternatives": 8,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6896,
+      "name": "_BALANCE_LOW_TERMS",
+      "pattern": "가장\\s*적|제일\\s*적|가장\\s*낮|제일\\s*낮|적은|낮은|작은|하위",
+      "alternatives": 8,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7733,
+      "name": "_AGG_SCOPE_PER_ORDER_RE",
+      "pattern": "한\\s*주문|한\\s*번에|한번에|주문당|주문\\s*당|주문별|주문\\s*별|1회\\s*주문",
+      "alternatives": 8,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 9324,
+      "name": "_CUMULATIVE_DAYS_THRESHOLD_RE",
+      "pattern": "\\d+일(?:을|를|이|가)?(?:이상|이하|초과|미만|미달)",
+      "alternatives": 8,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 9724,
+      "name": "_ACTION_METRIC_DATE_GATE",
+      "pattern": "\\d+\\s*(?:일|주|주일|개월|달|년|시간|분)",
+      "alternatives": 8,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10032,
+      "name": "_BUY_RSPN_NEG_PATTERN",
+      "pattern": "구매반응(?:이|가|은|는|도)?(?:없|하지않|안하|안한)",
+      "alternatives": 8,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 14683,
+      "name": "_PRESENTATION_REQUEST_CUE_RE",
+      "pattern": "산출|표시|출력|보여|노출|함께\\s*보|요약|정렬해\\s*보",
+      "alternatives": 8,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "analytical_intent.py",
+      "line": 57,
+      "name": "_RECENT_WINDOW_RE",
+      "pattern": "최근\\s*\\d+\\s*(?:일|주|개월|달|년)(?:간|동안|이내)?",
+      "alternatives": 7,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 1419,
+      "name": "_PRODUCT_CONJUNCTION_RE",
+      "pattern": "(?:(?<=[가-힣])(?:와|과|랑|이랑)\\s+|\\s*(?:및|그리고)\\s+|\\s*[,、]\\s*)",
+      "alternatives": 7,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 4679,
+      "name": "_WHOLE_MEMBER_RE",
+      "pattern": "(?:전체|모든|전부|모두의?)\\s*(?:회원|고객|사용자|가입자)",
+      "alternatives": 7,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7012,
+      "name": "_LATEST_PURCHASE_REF_RE",
+      "pattern": "최근\\s*구매|마지막\\s*구매|최종\\s*구매|최근\\s*주문|마지막\\s*주문|최종\\s*주문|최근\\s*결제",
+      "alternatives": 7,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7734,
+      "name": "_AGG_SCOPE_PER_PRODUCT_RE",
+      "pattern": "동일\\s*상품|같은\\s*상품|동일한\\s*상품|상품별|상품\\s*별|동일\\s*제품|같은\\s*제품",
+      "alternatives": 7,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 8491,
+      "name": "_CART_PURCHASE_ABSENCE_RE",
+      "pattern": "구매하지|구입하지|주문하지|주문이?없|사지않|안\\s*샀|미구매",
+      "alternatives": 7,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "query_semantics.py",
+      "line": 43,
+      "name": "_TOKEN_RE",
+      "pattern": "\\d+(?:\\.\\d+)?(?:원|건|회|번|개|명)?|[0-9A-Za-z가-힣_+\\-]+",
+      "alternatives": 7,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "calendar_window.py",
+      "line": 434,
+      "name": "NUMERIC_DURATION_PATTERN",
+      "pattern": "(?P<num>\\d+)\\s*(?P<unit>주일|개월|일|주|달|년)",
+      "alternatives": 6,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 4680,
+      "name": "_ACTIVE_MEMBER_RE",
+      "pattern": "정상\\s*(?:회원|고객|사용자)|활성\\s*상태\\s*(?:회원|고객|사용자)",
+      "alternatives": 6,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 5816,
+      "name": "_REGION_CITY_SUFFIX",
+      "pattern": "(?:특별자치시|특별자치도|특별시|광역시|시|군)$",
+      "alternatives": 6,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6515,
+      "name": "_MEMBER_COUNT_HIGH_RE",
+      "pattern": "많은|높은|상위|가장\\s*많|제일\\s*많|많은\\s*순",
+      "alternatives": 6,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6516,
+      "name": "_MEMBER_COUNT_LOW_RE",
+      "pattern": "적은|낮은|하위|가장\\s*적|제일\\s*적|적은\\s*순",
+      "alternatives": 6,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6874,
+      "name": "_BALANCE_ZERO_MARKER",
+      "pattern": "(?<![\\d,.])0\\s*(?:원|회|건|개|번|명)?(?![\\d,.])",
+      "alternatives": 6,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6968,
+      "name": "_AVERAGE_COMPARISON_MARKER",
+      "pattern": "평균\\s*(?:보다|대비|이상|이하|초과|미만)",
+      "alternatives": 6,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7011,
+      "name": "_FIRST_PURCHASE_REF_RE",
+      "pattern": "첫\\s*구매|첫구매|최초\\s*구매|첫\\s*주문|최초\\s*주문|첫\\s*결제",
+      "alternatives": 6,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7729,
+      "name": "_CUMULATIVE_WINDOW_MARKER_RE",
+      "pattern": "누적|누계|평생|통산|역대|전체\\s*기간",
+      "alternatives": 6,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 8162,
+      "name": "_CART_SAME_PRODUCT_PATTERN",
+      "pattern": "(동일|같은|똑같은)(상품|제품|품목|것)",
+      "alternatives": 6,
+      "class": "domain",
+      "reason": "자동 판정 불가 — 사람이 본다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 9726,
+      "name": "_ACTION_ZERO_PATTERN",
+      "pattern": "한\\s*번도|전혀|이력이?\\s*없|기록이?\\s*없|한\\s*적이?\\s*없|없",
+      "alternatives": 6,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "member_policy.py",
+      "line": 22,
+      "name": "_ALL_MEMBER_RE",
+      "pattern": "(?:전체|모든|전부)\\s*(?:회원|고객|사용자|가입자)",
+      "alternatives": 6,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "query_semantics.py",
+      "line": 44,
+      "name": "_QUANTITY_RE",
+      "pattern": "^\\d+(?:\\.\\d+)?(?:원|건|회|번|개|명)?$",
+      "alternatives": 6,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "entity_set.py",
+      "line": 33,
+      "name": "_COUNT_AFTER_RE",
+      "pattern": "^(\\d{1,4})\\s*(?:개|종|가지|건|위)",
+      "alternatives": 5,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "entity_set.py",
+      "line": 35,
+      "name": "_COUNT_BEFORE_RE",
+      "pattern": "(\\d{1,4})\\s*(?:개|종|가지|건|위)\\s*$",
+      "alternatives": 5,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "entity_set.py",
+      "line": 36,
+      "name": "_COUNT_SEARCH_RE",
+      "pattern": "(\\d{1,4})\\s*(?:개|종|가지|건|위)",
+      "alternatives": 5,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6435,
+      "name": "_UNSUPPORTED_GROUP_AXIS_RE",
+      "pattern": "등급\\s*별|회원등급\\s*별|채널\\s*별|브랜드\\s*별|카테고리\\s*별",
+      "alternatives": 5,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6862,
+      "name": "_BALANCE_ABSENCE_PATTERN",
+      "pattern": "없|미보유|보유하지\\s*않|보유\\s*안|보유하지\\s*못",
+      "alternatives": 5,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7565,
+      "name": "_RECENT_WINDOW_PATTERN",
+      "pattern": "최근\\s*(\\d+)\\s*(일|주|개월|달|년)",
+      "alternatives": 5,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "analytical_intent.py",
+      "line": 59,
+      "name": "_RANKING_HIGH_RE",
+      "pattern": "가장\\s*(?:많이|많은)|최다|최고",
+      "alternatives": 4,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "analytical_intent.py",
+      "line": 60,
+      "name": "_RANKING_LOW_RE",
+      "pattern": "가장\\s*(?:적게|적은)|최소|최저",
+      "alternatives": 4,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6121,
+      "name": "_RANKING_PERCENT_PATTERN",
+      "pattern": "(?P<dir>상위|하위)?\\s*(?P<pct>\\d+(?:\\.\\d+)?)\\s*(?:%|퍼센트|프로)",
+      "alternatives": 4,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6429,
+      "name": "_GROUP_PER_COUNT_RE",
+      "pattern": "([\\d,]+)\\s*명\\s*씩|(?:상위|하위)\\s*([\\d,]+)\\s*명|([\\d,]+)\\s*명",
+      "alternatives": 4,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6432,
+      "name": "_PER_GROUP_SUFFIX_RE",
+      "pattern": "([\\d,]+)\\s*(?:명|개|곳)?\\s*씩|명씩",
+      "alternatives": 4,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6897,
+      "name": "_BALANCE_PERCENT_PATTERN",
+      "pattern": "(?P<dir>상위|하위)?\\s*(?P<pct>\\d+(?:\\.\\d+)?)\\s*(?:%|퍼센트|프로)",
+      "alternatives": 4,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7571,
+      "name": "_EXACT_COUNT_PATTERN",
+      "pattern": "(?P<num>\\d+)\\s*(?:개|번|회|건)",
+      "alternatives": 4,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7663,
+      "name": "_SINO_KOREAN_AMOUNT_RE",
+      "pattern": "(?P<num>[영공일이삼사오육칠팔구십백천]+)(?P<mag>억|천만|백만|만)?원",
+      "alternatives": 4,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 8239,
+      "name": "_CART_TOTAL_QTY_SIGNAL",
+      "pattern": "수량|총\\s*개수|총\\s*\\d+\\s*개|총\\s*\\d",
+      "alternatives": 4,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 9927,
+      "name": "_RATIO_METRIC_PREFIX_RE",
+      "pattern": "(?:하루|1일|매일|일)\\s*평균\\s*$",
+      "alternatives": 4,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10045,
+      "name": "_CAMPAIGN_TAIL_NEG_RE",
+      "pattern": "없|않|못[한했하받]|안[한함했하]",
+      "alternatives": 4,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "analytical_intent.py",
+      "line": 56,
+      "name": "_RECENT_DAYS_RE",
+      "pattern": "최근\\s*(\\d+)\\s*일(?:간|동안|이내)?",
+      "alternatives": 3,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6024,
+      "name": "_REGION_DENSITY_TOP_N_PATTERN",
+      "pattern": "상위\\s*([\\d,]+)|(?:top|톱)\\s*([\\d,]+)",
+      "alternatives": 3,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6117,
+      "name": "_RANKING_HIGH_DIRECTIVE",
+      "pattern": "상위\\s*[\\d,]*\\s*명?|높은\\s*순|top\\s*[\\d,]+",
+      "alternatives": 3,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6119,
+      "name": "_RANKING_DIRECTIVE_TOP_N",
+      "pattern": "(?:상위|하위|top)\\s*([\\d,]+)",
+      "alternatives": 3,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6427,
+      "name": "_PER_GROUP_COUNT_RE",
+      "pattern": "(?:상위\\s*)?([\\d,]+)\\s*(?:명|개|곳)?\\s*씩",
+      "alternatives": 3,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6517,
+      "name": "_REGION_COUNT_TOP_N_RE",
+      "pattern": "([\\d,]+)\\s*(?:개|곳|군데)",
+      "alternatives": 3,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "segment_semantics.py",
+      "line": 49,
+      "name": "_AMOUNT_RE",
+      "pattern": "(\\d[\\d,]*)\\s*(억|만|천)?\\s*원",
+      "alternatives": 3,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6118,
+      "name": "_RANKING_LOW_DIRECTIVE",
+      "pattern": "하위\\s*[\\d,]*\\s*명?|낮은\\s*순",
+      "alternatives": 2,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6898,
+      "name": "_BALANCE_TOPN_PATTERN",
+      "pattern": "상위\\s*(?P<a>[\\d,]+)|(?P<b>[\\d,]+)\\s*명",
+      "alternatives": 2,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "member_policy.py",
+      "line": 23,
+      "name": "_INCLUDE_DORMANT_RE",
+      "pattern": "휴면\\s*(?:회원\\s*)?(?:도\\s*)?(?:포함|포괄)",
+      "alternatives": 2,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "member_policy.py",
+      "line": 24,
+      "name": "_INCLUDE_WITHDRAWN_RE",
+      "pattern": "탈퇴\\s*(?:회원\\s*)?(?:도\\s*)?(?:포함|포괄)",
+      "alternatives": 2,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "analytical_intent.py",
+      "line": 73,
+      "name": "_EXPLICIT_MEMBER_LIMIT_RE",
+      "pattern": "\\b(\\d[\\d,]*)\\s*명",
+      "alternatives": 1,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "build_member_value_index.py",
+      "line": 43,
+      "name": "_CLEAN_NAME",
+      "pattern": "^[\\x20-\\x7E가-힣ㄱ-ㅎㅏ-ㅣ·]+$",
+      "alternatives": 1,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "calendar_window.py",
+      "line": 37,
+      "name": "_ANY_YEAR_RE",
+      "pattern": "(\\d{4})\\s*년",
+      "alternatives": 1,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "calendar_window.py",
+      "line": 38,
+      "name": "_QUARTER_RE",
+      "pattern": "([1-4])\\s*(?:사)?분기",
+      "alternatives": 1,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 1296,
+      "name": "_CHANNEL_SUFFIX_PATTERN",
+      "pattern": "\\n?\\s*발송\\s*채널\\s*:.*$",
+      "alternatives": 1,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 1480,
+      "name": "_BRAND_ADJACENT_BEFORE",
+      "pattern": "(?P<object>[0-9A-Za-z가-힣_+\\-]{1,40})\\s*브랜드",
+      "alternatives": 1,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 1481,
+      "name": "_BRAND_ADJACENT_AFTER",
+      "pattern": "브랜드\\s+(?P<object>[0-9A-Za-z가-힣_+\\-]{1,40})",
+      "alternatives": 1,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 5015,
+      "name": "_GROUP_AXIS_OBJECT_RE",
+      "pattern": "^\\s*[0-9A-Za-z가-힣_+\\-]+\\s*별\\s*$",
+      "alternatives": 1,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 5693,
+      "name": "_HANGUL_SYLLABLE",
+      "pattern": "[가-힣]",
+      "alternatives": 1,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6971,
+      "name": "_ZERO_AMOUNT_MARKER",
+      "pattern": "(?<!\\d)0\\s*원",
+      "alternatives": 1,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7736,
+      "name": "_BRAND_SCOPE_RE",
+      "pattern": "(?P<val>[가-힣A-Za-z0-9]+)\\s*브랜드",
+      "alternatives": 1,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7737,
+      "name": "_CATEGORY_SCOPE_RE",
+      "pattern": "(?P<val>[가-힣A-Za-z0-9]+)\\s*카테고리",
+      "alternatives": 1,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "rag_index.py",
+      "line": 26,
+      "name": "SPECIAL_CHARACTER_PATTERN",
+      "pattern": "[^0-9A-Za-z가-힣ㄱ-ㅎㅏ-ㅣ\\s.!?%+\\-_,:/]",
+      "alternatives": 1,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "calendar_window.py",
+      "line": 60,
+      "name": "_CAL_TOKEN_RE",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "calendar_window.py",
+      "line": 86,
+      "name": "_ENUM_LINK_RE",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "calendar_window.py",
+      "line": 118,
+      "name": "_YEAR_ANCHOR_RE",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "calendar_window.py",
+      "line": 120,
+      "name": "_ADJACENT_YEAR_ANCHOR_RE",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "calendar_window.py",
+      "line": 445,
+      "name": "WORD_DURATION_PATTERN",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "calendar_window.py",
+      "line": 526,
+      "name": "RELATIVE_PAST_PATTERN",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 1382,
+      "name": "_CATEGORY_COPULA_PATTERN",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 1389,
+      "name": "_CATEGORY_ADJACENT_PATTERN",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 1886,
+      "name": "pattern",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6020,
+      "name": "_REGION_DENSITY_PATTERN",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6023,
+      "name": "_REGION_DENSITY_ALT_PATTERN",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6808,
+      "name": "range_p",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6809,
+      "name": "op_p",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6810,
+      "name": "eq_p",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7217,
+      "name": "_METRIC_THRESHOLD_TAIL_RE",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 7643,
+      "name": "_KOREAN_COUNT_NUMERAL_RE",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 8130,
+      "name": "_PURCHASE_COUNT_THRESHOLD_PATTERN",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 9417,
+      "name": "chain",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 9493,
+      "name": "_SIGNUP_ONLINE_RE",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 9494,
+      "name": "_SIGNUP_OFFLINE_RE",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10369,
+      "name": "_CAMPAIGN_BUY_VERB_PATTERN",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 10719,
+      "name": "_SCHEMA_QUERY_VALUE_RE",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "segment_semantics.py",
+      "line": 379,
+      "name": "pattern",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "sql_guard.py",
+      "line": 54,
+      "name": "_TABLE_ALIAS_PATTERN",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "sql_guard.py",
+      "line": 299,
+      "name": "_AGG_CALL_PATTERN",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "sql_guard.py",
+      "line": 303,
+      "name": "_INVALID_AGG_ARG_PATTERN",
+      "pattern": null,
+      "alternatives": 0,
+      "class": "domain",
+      "reason": "동적으로 조립된 패턴 — 소스를 직접 읽어야 한다",
+      "decision": ""
+    },
+    {
+      "file": "sql_guard.py",
+      "line": 429,
+      "name": "_PERF_FUNC_ON_COLUMN_RE",
+      "pattern": "\\b(LEN|SUBSTRING|LEFT|RIGHT|UPPER|LOWER|YEAR|MONTH|DAY|DATEPART|ISNULL|LTRIM|RTRIM)\\s*\\(\\s*(\\w+\\.\\w+)",
+      "alternatives": 13,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 14624,
+      "name": "_TARGET_MEMBER_PROJECTION_RE",
+      "pattern": "(?i)(?:\\b[A-Za-z_][\\w$]*\\s*\\.\\s*)?(?:\\[\\s*MEMBER_NO\\s*\\]|`MEMBER_NO`|\\\"MEMBER_NO\\\"|MEMBER_NO)\\s+AS\\s+(?:\\[\\s*CUST_ID\\s*\\]|`CUST_ID`|\\\"CUST_ID\\\"|CUST_ID)(?![\\w$])",
+      "alternatives": 7,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "sql_ast.py",
+      "line": 24,
+      "name": "_ALIAS_PATTERN",
+      "pattern": "\\b(?:FROM|JOIN)\\s+([A-Za-z_][A-Za-z0-9_\\.]*)\\s+(?!ON\\b|WHERE\\b|GROUP\\b|ORDER\\b|HAVING\\b)([A-Za-z_][A-Za-z0-9_]*)",
+      "alternatives": 6,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "sql_guard.py",
+      "line": 423,
+      "name": "_PERF_CAST_JOIN_RE",
+      "pattern": "(?:TRY_CAST|CAST|CONVERT)\\s*\\(\\s*(\\w+\\.\\w+)\\b[^)]*\\)\\s*=|=\\s*(?:TRY_CAST|CAST|CONVERT)\\s*\\(\\s*(\\w+\\.\\w+)",
+      "alternatives": 6,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "aggregation_requirements.py",
+      "line": 655,
+      "name": "_RELATIVE_WINDOW_PLACEHOLDER_RE",
+      "pattern": "\\bwindow_(?:start|end)_\\d+(?:d|w|m|y)\\b",
+      "alternatives": 5,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "rag_index.py",
+      "line": 23,
+      "name": "HTML_SCRIPT_STYLE_PATTERN",
+      "pattern": "<\\s*(script|style)\\b[^>]*>.*?<\\s*/\\s*\\1\\s*>",
+      "alternatives": 2,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "aggregation_requirements.py",
+      "line": 635,
+      "name": "_PHYSICAL_FIELD_IN_NOTE_RE",
+      "pattern": "\\b([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z_][A-Za-z0-9_]*)\\b",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "aggregation_requirements.py",
+      "line": 636,
+      "name": "_RELATIVE_PERIOD_RE",
+      "pattern": "^P(?=\\d)(?:\\d+[YMWD])+$",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "build_member_value_index.py",
+      "line": 41,
+      "name": "_CODE_VALUE",
+      "pattern": "^[A-Z0-9_]+\\.[^.].*$",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "build_rag_knowledge.py",
+      "line": 329,
+      "name": "pattern",
+      "pattern": "--\\s*(?P<number>\\d+)\\.\\s*(?P<title>.+?)\\n(?P<sql>.*?;)",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "db_swap_preflight.py",
+      "line": 41,
+      "name": "_COLUMN_RE",
+      "pattern": "^(?:([A-Za-z]\\w*)\\.)?([A-Z][A-Z0-9_]{1,})$",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "entity_set.py",
+      "line": 178,
+      "name": "_COMPACT_DROP_RE",
+      "pattern": "[\\s.,!?·_\\-/'\\\"()]",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 5694,
+      "name": "_ASCII_ALNUM",
+      "pattern": "[0-9A-Za-z]",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 5780,
+      "name": "_PLAIN_NUMERIC_VALUE",
+      "pattern": "^[\\d.\\-/:%\\s]+$",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 14520,
+      "name": "prefix",
+      "pattern": "\\bnot\\s+exists\\s*\\(",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 14692,
+      "name": "_CONSTANT_PROJECTION_RE",
+      "pattern": "N?'([^']*)'\\s+AS\\s+([A-Za-z_]\\w*)",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "logical_expression.py",
+      "line": 231,
+      "name": "_PLACEHOLDER_RE",
+      "pattern": "@([A-Za-z0-9_]+)",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "rag_index.py",
+      "line": 22,
+      "name": "HTML_TAG_PATTERN",
+      "pattern": "<[^>]+>",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "rag_index.py",
+      "line": 24,
+      "name": "WHITESPACE_PATTERN",
+      "pattern": "\\s+",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "rag_index.py",
+      "line": 25,
+      "name": "SENTENCE_PATTERN",
+      "pattern": "[^.!?。！？]+[.!?。！？]*",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "schema_extract.py",
+      "line": 9,
+      "name": "CREATE_TABLE_RE",
+      "pattern": "CREATE\\s+TABLE\\s+(?P<table>[\\w.]+)\\s*\\((?P<body>.*?)\\);",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "schema_extract.py",
+      "line": 13,
+      "name": "CREATE_INDEX_RE",
+      "pattern": "CREATE\\s+(?P<unique>UNIQUE\\s+)?INDEX\\s+(?P<name>\\w+)\\s+ON\\s+(?P<table>[\\w.]+)\\s*\\((?P<columns>[^)]+)\\);",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "schema_extract.py",
+      "line": 17,
+      "name": "CREATE_VIEW_RE",
+      "pattern": "CREATE\\s+VIEW\\s+(?P<view>[\\w.]+)\\s+AS\\s+(?P<body>.*?);",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "schema_extract.py",
+      "line": 21,
+      "name": "COLUMN_RE",
+      "pattern": "^(?P<name>\\w+)\\s+(?P<type>[A-Z][A-Z0-9_]*(?:\\([^)]*\\))?)(?P<constraints>.*)$",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "schema_extract.py",
+      "line": 22,
+      "name": "REFERENCES_RE",
+      "pattern": "REFERENCES\\s+(?P<table>[\\w.]+)\\s*\\((?P<column>\\w+)\\)",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "schema_extract.py",
+      "line": 23,
+      "name": "FOREIGN_KEY_RE",
+      "pattern": "FOREIGN\\s+KEY\\s*\\((?P<columns>[^)]+)\\)\\s*REFERENCES\\s+(?P<table>[\\w.]+)\\s*\\((?P<ref_columns>[^)]+)\\)",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "segment_semantics.py",
+      "line": 48,
+      "name": "_NUMBER_RE",
+      "pattern": "\\d[\\d,]*",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "sql_guard.py",
+      "line": 59,
+      "name": "_EQUI_JOIN_PATTERN",
+      "pattern": "\\b([A-Za-z_][\\w]*)\\.([A-Za-z_][\\w]*)\\s*=\\s*([A-Za-z_][\\w]*)\\.([A-Za-z_][\\w]*)",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "sql_guard.py",
+      "line": 300,
+      "name": "_BARE_COLUMN_PATTERN",
+      "pattern": "\\b[A-Za-z_]\\w*\\.[A-Za-z_]\\w*",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "sql_guard.py",
+      "line": 307,
+      "name": "_NONE_LITERAL_PATTERN",
+      "pattern": "\\bNone\\b",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    },
+    {
+      "file": "sql_guard.py",
+      "line": 422,
+      "name": "_PERF_LEADING_WILDCARD_RE",
+      "pattern": "(\\w+(?:\\.\\w+)?)\\s+LIKE\\s+N?'%",
+      "alternatives": 1,
+      "class": "grammar",
+      "reason": "표면어 없이 구조만 — 코드에 남는다",
+      "decision": ""
+    }
+  ]
+}

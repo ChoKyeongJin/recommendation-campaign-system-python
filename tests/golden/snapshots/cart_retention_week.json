@@ -1,0 +1,22 @@
+{
+  "plan": {
+    "intent": "find_user_segment",
+    "semantic_conditions": [
+      {
+        "domain": "cart",
+        "is_primary_condition": true,
+        "operator": "exists"
+      }
+    ]
+  },
+  "schema_version": 1,
+  "target_user": {
+    "behaviors": [
+      "cart_abandoner"
+    ],
+    "cart_retention": {
+      "label": "장바구니 보관 7일 이상",
+      "min_days": 7
+    }
+  }
+}

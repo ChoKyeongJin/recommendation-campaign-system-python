@@ -1,0 +1,14 @@
+{
+  "plan": {
+    "intent": "find_user_segment"
+  },
+  "schema_version": 1,
+  "target_user": {
+    "lifecycle": [
+      "new_user"
+    ],
+    "signup_target": {
+      "days": 90
+    }
+  }
+}

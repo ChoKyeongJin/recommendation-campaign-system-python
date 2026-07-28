@@ -1,0 +1,41 @@
+{
+  "campaign_constraints": {
+    "objective": "purchase"
+  },
+  "plan": {
+    "intent": "find_user_segment",
+    "semantic_conditions": [
+      {
+        "domain": "purchase",
+        "is_primary_condition": true,
+        "operator": "exists",
+        "satisfied_by": "aggregate_conditions"
+      }
+    ]
+  },
+  "schema_version": 1,
+  "target_user": {
+    "age_max": 39,
+    "age_min": 30,
+    "aggregate_conditions": [
+      {
+        "label": "구매 횟수",
+        "metric_id": "order_count",
+        "operator": ">=",
+        "threshold": 3.0,
+        "window_days": null
+      }
+    ],
+    "gender": "female",
+    "purchase_date": {
+      "from": "20190301",
+      "label": "2019년 3월 구매",
+      "to": "20190331"
+    },
+    "purchase_membership": {
+      "domain": "purchase",
+      "operator": "exists",
+      "satisfied_by": "aggregate_conditions"
+    }
+  }
+}

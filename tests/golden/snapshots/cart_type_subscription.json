@@ -1,0 +1,28 @@
+{
+  "campaign_constraints": {
+    "objective": "subscription",
+    "offer_type": "subscription"
+  },
+  "plan": {
+    "intent": "find_user_segment",
+    "semantic_conditions": [
+      {
+        "domain": "cart",
+        "is_primary_condition": true,
+        "operator": "exists"
+      }
+    ]
+  },
+  "schema_version": 1,
+  "target_user": {
+    "behaviors": [
+      "cart_abandoner"
+    ],
+    "cart_type": {
+      "canonical": "regular_delivery_cart",
+      "label": "정기배송 장바구니",
+      "unpaid_only": false,
+      "value": "CART_TYPE_CD.REGULARDELIVERY"
+    }
+  }
+}

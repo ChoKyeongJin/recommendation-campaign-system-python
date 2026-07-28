@@ -1,0 +1,22 @@
+{
+  "campaign_constraints": {
+    "objective": "purchase"
+  },
+  "plan": {
+    "intent": "find_user_segment",
+    "semantic_conditions": [
+      {
+        "domain": "purchase",
+        "is_primary_condition": true,
+        "operator": "exists"
+      }
+    ]
+  },
+  "schema_version": 1,
+  "target_user": {
+    "purchase_membership": {
+      "domain": "purchase",
+      "operator": "exists"
+    }
+  }
+}

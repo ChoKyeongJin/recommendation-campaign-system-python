@@ -23,6 +23,7 @@ import networkx as nx
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 
+import lexicon_patterns
 from common_utils import elapsed_ms as _elapsed_ms
 from aggregation_requirements import (
     SchemaMetadata,
@@ -4677,10 +4678,7 @@ _CAMPAIGN_GENERIC_RESPONSE_RE = re.compile(
 )
 _WHOLE_MEMBER_RE = re.compile(r"(?:전체|모든|전부|모두의?)\s*(?:회원|고객|사용자|가입자)")
 _ACTIVE_MEMBER_RE = re.compile(r"정상\s*(?:회원|고객|사용자)|활성\s*상태\s*(?:회원|고객|사용자)")
-_CONDITION_LANGUAGE_RE = re.compile(
-    r"구매|구입|주문|재구매|장바구니|카트|캠페인|반응|로그인|접속|방문|쿠폰|찜|"
-    r"거주|지역|등급|성별|남성|여성|나이|연령|휴면|탈퇴|정상|활동|가입|수신|블랙리스트"
-)
+_CONDITION_LANGUAGE_RE = lexicon_patterns.pattern("condition_language")
 
 
 def _aggregate_conditions_imply_purchase_membership(
@@ -6429,8 +6427,8 @@ def _detect_group_axis(query: str) -> tuple[str, str | None] | None:
 _PER_GROUP_COUNT_RE = re.compile(r"(?:상위\s*)?([\d,]+)\s*(?:명|개|곳)?\s*씩")
 # 그룹당 회원 수: 'N명씩'(가장 명시) | '상위/하위 N명' | 'N명'. 회원 단위(명)만 — 개/곳(지역 단위)은 제외.
 _GROUP_PER_COUNT_RE = re.compile(r"([\d,]+)\s*명\s*씩|(?:상위|하위)\s*([\d,]+)\s*명|([\d,]+)\s*명")
-_GROUP_HIGH_DIR_RE = re.compile(r"높은|많은|큰|상위")
-_GROUP_LOW_DIR_RE = re.compile(r"낮은|적은|작은|하위")
+_GROUP_HIGH_DIR_RE = lexicon_patterns.pattern("direction_high")
+_GROUP_LOW_DIR_RE = lexicon_patterns.pattern("direction_low")
 _PER_GROUP_SUFFIX_RE = re.compile(r"([\d,]+)\s*(?:명|개|곳)?\s*씩|명씩")
 # 미지원 그룹 축(지역/성별/연령대 외): 등급/채널/브랜드/카테고리별. 지원 축(지역/성별/연령대)은
 # 실제 그룹 SQL 로 컴파일되므로 여기서 제외한다 — 미구현 축만 조용한 전역 붕괴 대신 명시 미지원으로 돌린다.
@@ -6569,7 +6567,7 @@ _PURCHASE_QUANTITY_RANK_PATTERN = re.compile(
     r"(?P<sup>가장\s*|제일\s*)?(?:많이|자주|최다)\s*(?:구매|구입|주문|샀|산(?!책))"
 )
 # 랭킹 대상이 '사람/회원'임을 확인한다(밀집 '지역' 랭킹과 구분 — 지역이면 region_density 가 이미 소비).
-_PURCHASE_RANK_TARGET_PATTERN = re.compile(r"고객님|고객|회원|유저|사람|구매자|소비자")
+_PURCHASE_RANK_TARGET_PATTERN = lexicon_patterns.pattern("purchase_rank_target")
 
 
 @_audited_stage
@@ -6990,8 +6988,8 @@ def _has_zero_amount_purchase_condition(query: str) -> bool:
 # 다른 구간이 '보다/대비' 비교와 함께 오면 기간 대 기간 비교로 본다('지난달 결제 금액이 이번 달보다 많은').
 _PERIOD_TOKENS = ("지난달", "저번달", "전월", "이번달", "금월", "당월", "지난주", "이번주", "올해", "금년", "작년", "지난해")
 # 롤링 기간 대 기간: '최근 N일 vs 이전/직전 N일'. 달력어가 아니라 상대 창 두 개를 비교한다.
-_ROLLING_PRIOR_PERIOD_RE = re.compile(r"이전|직전")
-_PERIOD_COMPARE_MARKER_RE = re.compile(r"보다|대비|증가|감소|늘|줄")
+_ROLLING_PRIOR_PERIOD_RE = lexicon_patterns.pattern("prior_period")
+_PERIOD_COMPARE_MARKER_RE = lexicon_patterns.pattern("period_compare_marker")
 
 
 def _has_period_over_period_comparison(query: str) -> bool:
@@ -7012,7 +7010,7 @@ def _has_period_over_period_comparison(query: str) -> bool:
 # '구매 금액 큰'=랭킹으로 분해하면 안 되는(시점 기준 두 값 비교) 표현이다.
 _FIRST_PURCHASE_REF_RE = re.compile(r"첫\s*구매|첫구매|최초\s*구매|첫\s*주문|최초\s*주문|첫\s*결제")
 _LATEST_PURCHASE_REF_RE = re.compile(r"최근\s*구매|마지막\s*구매|최종\s*구매|최근\s*주문|마지막\s*주문|최종\s*주문|최근\s*결제")
-_INTRA_TEMPORAL_COMPARE_RE = re.compile(r"보다|대비|큰|작은|많은|적은|높은|낮은|증가|감소|커진|늘|줄")
+_INTRA_TEMPORAL_COMPARE_RE = lexicon_patterns.pattern("intra_temporal_compare")
 
 
 def _has_intra_member_temporal_comparison(query: str) -> bool:
@@ -7065,10 +7063,10 @@ _MESSAGE_RECEIVED_COUNT_RE = re.compile(
 # 컴파일러가 OR 를 표현하지 못한다 — union_condition 은 회원 속성 집합식(연령/성별/등급/지역 canonical)만
 # 컴파일하므로, 임계가 낀 OR 은 조용히 AND 로 뭉개지거나(분기 소실) 같은 방향 임계가 첫 값으로 붕괴한다.
 # 지역 OR(→SIDO IN)·연령 OR(→구간)처럼 IN/구간으로 접히는 동종 속성 OR 은 정상이라 게이트하지 않는다.
-_OR_CONNECTIVE_RE = re.compile(r"또는|이거나|거나")
+_OR_CONNECTIVE_RE = lexicon_patterns.pattern("or_connective")
 # OR 피연산자 경계: AND 접속어·다른 OR·'중'(회원 중)·쉼표. 이 경계 안에 수치 임계가 있으면 그 OR 분기가
 # 임계 조건이라는 뜻(AND 로 뒤에 붙은 임계는 경계 밖이라 제외 — '20대 또는 30대이면서 5회'의 5회 등).
-_OR_OPERAND_BOUNDARY_RE = re.compile(r"이면서|면서|이고|이며|그리고|동시에|반면|지만|중|또는|이거나|거나|,")
+_OR_OPERAND_BOUNDARY_RE = lexicon_patterns.pattern("or_operand_boundary")
 _OR_OPERAND_THRESHOLD_RE = re.compile(r"\d[\d,]*\s*(?:회|원|개|건|명|번|종|일|장|점|%)\s*(?:이상|이하|초과|미만)")
 
 
@@ -7568,7 +7566,7 @@ _RECENT_WINDOW_PATTERN = re.compile(r"최근\s*(\d+)\s*(일|주|개월|달|년)"
 _WINDOW_UNIT_DAYS = {"일": 1, "주": 7, "개월": 30, "달": 30, "년": 365}
 # 명시적 등호 마커. 연산자어(이상/이하) 없는 임계값은 보통 모호("3회 구매"=정확히? 최소?)하지만,
 # '정확히/딱 N'은 등호 의도가 분명하므로 이때만 '='로 확정한다(무턱대고 등호 폴백하지 않는다).
-_EXACT_EQUALS_MARKER = re.compile(r"정확히|정확하게|딱")
+_EXACT_EQUALS_MARKER = lexicon_patterns.pattern("exact_equals_marker")
 _EXACT_AMOUNT_PATTERN = re.compile(r"(?P<num>[\d,]+(?:\.\d+)?)\s*(?P<mag>억|천만|백만|만|천)?\s*(?:원|건|회|명|개|장|번|건수|회수)?")
 _EXACT_COUNT_PATTERN = re.compile(r"(?P<num>\d+)\s*(?:개|번|회|건)")
 
@@ -7725,7 +7723,7 @@ def _clause_scoped_window(query: str, start: int, length: int = 50) -> str:
 
 
 # 도메인 문맥: 구매/상품/결제/할인 등이 있어야 집계 지표 후보로 본다('2회 방문'·'자녀 2명'은 제외).
-_AGG_DOMAIN_CONTEXT_RE = re.compile(r"구매|구입|주문|샀|상품|제품|품목|결제|할인|수량|종류|객단가|매출|구매액|금액|건수|종수")
+_AGG_DOMAIN_CONTEXT_RE = lexicon_patterns.pattern("agg_domain_context")
 # 누적/평생 표지: 이 절의 집계는 전 생애(창 없음)로 본다 — 옆 절의 최근성 창('최근 180일 무주문')이 '누적
 # 구매액'에 새어 들어와 '최근 180일 구매 100만↑ AND 최근 180일 무주문'(공집합)이 되는 걸 막는다.
 _CUMULATIVE_WINDOW_MARKER_RE = re.compile(r"누적|누계|평생|통산|역대|전체\s*기간")
@@ -10046,10 +10044,10 @@ _GENERIC_BUY_NEG_PATTERN = re.compile(
 # 전까지만 봐서('쿠폰 사용하고 구매하지 않은'처럼) 옆 개념의 부정을 훔쳐오지 않는다.
 _CAMPAIGN_TAIL_NEG_RE = re.compile(r"없|않|못[한했하받]|안[한함했하]")
 # 다음 '개념' 시작(부정 탐색을 여기서 멈춤 — 옆 개념 부정 오귀속 방지).
-_CAMPAIGN_CONCEPT_ANCHOR_RE = re.compile(r"구매|구입|쿠폰|오퍼|혜택|제안|발송|전송|접촉|도달")
+_CAMPAIGN_CONCEPT_ANCHOR_RE = lexicon_patterns.pattern("campaign_concept_anchor")
 # 절 경계(부정 탐색 상한). 조사/어미 하나로 절이 갈리는 지점만(공백 제거 텍스트라 '고객'의 '고' 같은
 # 단음절 오탐을 피해 2음절 이상 연결어미만 나열).
-_CAMPAIGN_CLAUSE_BOUNDARY_RE = re.compile(r"지만|면서|이며|이고|이거나|거나|또는|그리고|반면|다만|,")
+_CAMPAIGN_CLAUSE_BOUNDARY_RE = lexicon_patterns.pattern("campaign_clause_boundary")
 _CAMPAIGN_TAIL_NEG_WINDOW = 10
 # 개념어(부정 탐색의 기준점) + 그 개념의 canonical. buy 는 전용 패턴이 담당하므로 제외.
 _CAMPAIGN_CONCEPT_NEG_SPECS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -19713,8 +19711,8 @@ def _apply_union_condition(original_query: str, query_plan: dict[str, Any], norm
 # 조건)를 기존 도메인 파서(_build_rule_query_plan)로 슬롯화한 뒤 회원(B) 상관 불리언 fragment 로 컴파일한다.
 # feature flag(LOGICAL_OR_COMPILER) 뒤에 두고, 실패/검증불일치는 fail-close(미지원) — AND-only 폴백 금지.
 # ══════════════════════════════════════════════════════════════════════════════
-_LOGIC_OR_RE = re.compile(r"또는|혹은|이거나|거나")
-_LOGIC_AND_RE = re.compile(r"그리고|이면서|동시에|이며|이고|면서")
+_LOGIC_OR_RE = lexicon_patterns.pattern("logic_or")
+_LOGIC_AND_RE = lexicon_patterns.pattern("logic_and")
 # 오디언스 꼬리말('… 회원을 찾아줘 / 고객을 보여줘 / 회원')을 떼어, 괄호 뒤에 붙은 명사가 논리식 파서의
 # 최상위 여분 토큰이 되지 않게 한다('(A) 또는 (B) 회원'). 조건은 이 명사 앞에서 끝나므로 떼도 안전하다.
 _LOGIC_TAIL_RE = re.compile(

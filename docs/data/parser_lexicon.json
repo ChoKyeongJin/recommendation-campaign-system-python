@@ -1,0 +1,287 @@
+{
+  "version": "1.0",
+  "description": "파서 표면어 사전. 어휘(vocabularies)는 뜻으로 이름한 낱말 목록이고, 패턴(patterns)은 어휘를 합쳐 만드는 교대 정규식이다. 새 표현형은 어휘에 한 줄 추가하면 그 어휘를 쓰는 모든 패턴이 함께 얻는다. 교대 순서는 긴 낱말 우선으로 자동 정렬되고 낱말은 이스케이프되므로 정규식 문법을 쓸 수 없다. 파일이 없거나 파손되면 lexicon_patterns._CODE_FALLBACK 으로 폴백한다.",
+  "how_to_add": "동의어 추가 → vocabularies 의 해당 어휘에 낱말 추가. 새 패턴 → patterns 에 include/extra/exclude 선언. exclude 는 이관 전 동작 보존용이며 note 로 사유를 남긴다.",
+  "vocabularies": {
+    "and_connective": [
+      "이면서",
+      "면서",
+      "이고",
+      "이며",
+      "그리고",
+      "동시에"
+    ],
+    "contrast_connective": [
+      "반면",
+      "지만",
+      "다만"
+    ],
+    "or_connective": [
+      "또는",
+      "혹은",
+      "이거나",
+      "거나"
+    ],
+    "member_noun": [
+      "회원",
+      "고객",
+      "사용자"
+    ],
+    "member_noun_informal": [
+      "유저"
+    ],
+    "member_noun_honorific": [
+      "고객님"
+    ],
+    "member_noun_role": [
+      "사람",
+      "구매자",
+      "소비자"
+    ],
+    "direction_high": [
+      "높은",
+      "많은",
+      "큰",
+      "상위"
+    ],
+    "direction_low": [
+      "낮은",
+      "적은",
+      "작은",
+      "하위"
+    ],
+    "comparison_marker": [
+      "보다",
+      "대비"
+    ],
+    "change_direction": [
+      "증가",
+      "감소",
+      "늘",
+      "줄",
+      "커진"
+    ],
+    "magnitude_adjective": [
+      "큰",
+      "작은",
+      "많은",
+      "적은",
+      "높은",
+      "낮은"
+    ],
+    "prior_period": [
+      "이전",
+      "직전"
+    ],
+    "exact_marker": [
+      "정확히",
+      "정확하게",
+      "딱"
+    ],
+    "purchase_verb": [
+      "구매",
+      "구입",
+      "주문",
+      "샀"
+    ],
+    "product_noun": [
+      "상품",
+      "제품",
+      "품목"
+    ],
+    "money_noun": [
+      "결제",
+      "할인",
+      "객단가",
+      "매출",
+      "구매액",
+      "금액"
+    ],
+    "count_noun": [
+      "수량",
+      "종류",
+      "건수",
+      "종수"
+    ],
+    "campaign_contact_noun": [
+      "쿠폰",
+      "오퍼",
+      "혜택",
+      "제안",
+      "발송",
+      "전송",
+      "접촉",
+      "도달"
+    ],
+    "condition_domain_noun": [
+      "재구매",
+      "장바구니",
+      "카트",
+      "캠페인",
+      "반응",
+      "로그인",
+      "접속",
+      "방문",
+      "쿠폰",
+      "찜",
+      "거주",
+      "지역",
+      "등급",
+      "성별",
+      "남성",
+      "여성",
+      "나이",
+      "연령",
+      "휴면",
+      "탈퇴",
+      "정상",
+      "활동",
+      "가입",
+      "수신",
+      "블랙리스트"
+    ],
+    "clause_separator": [
+      ","
+    ]
+  },
+  "patterns": {
+    "or_operand_boundary": {
+      "include": [
+        "and_connective",
+        "contrast_connective",
+        "or_connective",
+        "clause_separator"
+      ],
+      "extra": [
+        "중"
+      ],
+      "exclude": [
+        "다만",
+        "혹은"
+      ],
+      "note": "OR 피연산자 경계. '중'은 '회원 중'의 경계. 다만/혹은 누락은 이관 전 상태 보존 — 의도 미확인."
+    },
+    "campaign_clause_boundary": {
+      "include": [
+        "and_connective",
+        "contrast_connective",
+        "or_connective",
+        "clause_separator"
+      ],
+      "exclude": [
+        "이면서",
+        "동시에",
+        "혹은"
+      ],
+      "note": "캠페인 절 경계. 이면서/동시에가 빠져 있다 — AND 접속어인데 경계로 안 치는 것이 의도인지 미확인(누락 의심)."
+    },
+    "logic_and": {
+      "include": [
+        "and_connective"
+      ]
+    },
+    "logic_or": {
+      "include": [
+        "or_connective"
+      ]
+    },
+    "or_connective": {
+      "include": [
+        "or_connective"
+      ],
+      "exclude": [
+        "혹은"
+      ],
+      "note": "OR 게이트 판정용. logic_or 와 달리 '혹은'이 빠져 있다 — 이관 전 상태 보존."
+    },
+    "member_noun_core": {
+      "include": [
+        "member_noun"
+      ]
+    },
+    "member_noun_basic": {
+      "include": [
+        "member_noun",
+        "member_noun_informal"
+      ]
+    },
+    "purchase_rank_target": {
+      "include": [
+        "member_noun",
+        "member_noun_informal",
+        "member_noun_honorific",
+        "member_noun_role"
+      ],
+      "exclude": [
+        "사용자"
+      ],
+      "note": "구매 랭킹 대상 명사. '사용자'만 빠져 있다 — 누락 의심(다른 회원 명사 패턴에는 모두 있다)."
+    },
+    "direction_high": {
+      "include": [
+        "direction_high"
+      ]
+    },
+    "direction_low": {
+      "include": [
+        "direction_low"
+      ]
+    },
+    "period_compare_marker": {
+      "include": [
+        "comparison_marker",
+        "change_direction"
+      ],
+      "exclude": [
+        "커진"
+      ],
+      "note": "기간 비교 표지. intra_temporal_compare 와 달리 '커진'이 빠져 있다 — 이관 전 상태 보존."
+    },
+    "intra_temporal_compare": {
+      "include": [
+        "comparison_marker",
+        "magnitude_adjective",
+        "change_direction"
+      ]
+    },
+    "prior_period": {
+      "include": [
+        "prior_period"
+      ]
+    },
+    "exact_equals_marker": {
+      "include": [
+        "exact_marker"
+      ]
+    },
+    "agg_domain_context": {
+      "include": [
+        "purchase_verb",
+        "product_noun",
+        "money_noun",
+        "count_noun"
+      ]
+    },
+    "campaign_concept_anchor": {
+      "include": [
+        "purchase_verb",
+        "campaign_contact_noun"
+      ],
+      "exclude": [
+        "주문",
+        "샀"
+      ],
+      "note": "캠페인 개념 앵커. 구매 동사 중 구매/구입만 쓴다(주문·샀 제외) — 이관 전 상태 보존."
+    },
+    "condition_language": {
+      "include": [
+        "purchase_verb",
+        "condition_domain_noun"
+      ],
+      "exclude": [
+        "샀"
+      ],
+      "note": "조건 언어 판정. 구어체 '샀'만 빠져 있다 — 이관 전 상태 보존."
+    }
+  }
+}
