@@ -18,7 +18,9 @@
      기존 동작대로 회수한다(점진 도입: span 을 선언한 슬롯부터 정밀해진다).
 
 회수된 값은 사라지지 않고 ``plan["superseded_conditions"]`` 에 ``superseded_by`` 와 함께 남는다 —
-"무엇이 왜 빠졌는지"를 SQL 문자열 대조가 아니라 플랜 자체가 답한다.
+"무엇이 왜 빠졌는지"를 SQL 문자열 대조가 아니라 플랜 자체가 답한다. 같은 판정은
+:mod:`plan_decisions` 감사 로그(``plan["decisions"]``)에도 (필터, 액션, 슬롯, 사유)로 적재돼,
+파싱·정리·빌더 결정과 한 줄기로 읽힌다.
 
 순수 모듈 불변식: graph_rag 를 import 하지 않는다. 상태는 전부 plan dict 안에 산다.
 """
@@ -26,6 +28,8 @@
 from __future__ import annotations
 
 from typing import Any
+
+import plan_decisions
 
 
 # 슬롯별 출처 구간 저장소(내부용 — 밑줄 접두어 키는 응답 직렬화에서 제외되는 관례를 따른다).
@@ -136,7 +140,20 @@ def superseded_conditions(plan: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _append_record(plan: dict[str, Any], record: dict[str, Any]) -> None:
-    """같은 판정의 중복 적재를 막고 기록한다(소유권 해소는 파이프라인에서 두 번 실행될 수 있다)."""
+    """같은 판정의 중복 적재를 막고 기록한다(소유권 해소는 파이프라인에서 두 번 실행될 수 있다).
+
+    같은 판정을 감사 로그에도 흘린다 — 소유권 회수만 별도 키에 남으면 "이 조건이 왜 없나"를
+    두 곳(superseded_conditions / decisions)에서 따로 읽어야 한다."""
+    plan_decisions.record(
+        plan,
+        filter_name=record["owner"],
+        action=plan_decisions.CLAIM if record.get("outcome") == "removed" else plan_decisions.KEEP,
+        slot=record["slot"],
+        reason=record.get("reason", ""),
+        value=record.get("value"),
+        evidence=record.get("source_text"),
+        detail=record.get("detail"),
+    )
     entries = plan.get(SUPERSEDED_KEY)
     if not isinstance(entries, list):
         entries = []

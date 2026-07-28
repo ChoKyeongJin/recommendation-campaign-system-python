@@ -40,6 +40,7 @@ from graph_rag import (
 )
 from common_utils import elapsed_ms as _elapsed_ms
 from confidence import render_confidence_markdown, render_confidence_report
+import plan_decisions
 from sql_dialect import dialect_for_connection
 from sql_guard import DEFAULT_LIMIT, DEFAULT_SCHEMA_PATH
 from data_quality import analyze_execution_result
@@ -475,6 +476,7 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
     if failure_log:
         api_response["failure_log"] = failure_log
     if request.include_debug:
+        query_plan = result.get("query_plan") or {}
         api_response["debug"] = {
             "stage_log": result["stage_log"],
             "context_assembly": result["context_assembly"],
@@ -482,6 +484,11 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
             "keyword_matches": result["keyword_matches"],
             "message_generation": result["message_generation"],
             "timings_ms": timings_ms,
+            # 조건 결정 감사 로그: (필터, 액션, 슬롯, 사유). "이 조건이 왜 SQL 에 없나"를
+            # 플랜 최종 모습이 아니라 결정 궤적으로 답한다.
+            "decisions": plan_decisions.decisions(query_plan),
+            "decisions_truncated": bool(query_plan.get(plan_decisions.TRUNCATED_KEY)),
+            "superseded_conditions": query_plan.get("superseded_conditions", []),
         }
 
     return api_response

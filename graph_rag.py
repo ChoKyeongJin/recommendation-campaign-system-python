@@ -97,6 +97,7 @@ import targeting_ir
 from targeting_ir import extract_target_conditions, fact_join_kinds
 import slot_ownership
 from slot_ownership import claim_slots as _claim_slots
+import plan_decisions
 import metric_registry
 import segment_semantics
 import semantic_requirements
@@ -138,6 +139,48 @@ DEFAULT_LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 DEFAULT_PROMPT_DIR = Path(os.getenv("GRAPH_RAG_PROMPT_DIR", "docs/prompts"))
 DEFAULT_MESSAGE_POLICY_PATH = Path(os.getenv("GRAPH_RAG_MESSAGE_POLICY", "docs/policies/message-policy.json"))
 DEFAULT_RAG_LLM_LOG_DIR = Path(os.getenv("RAG_LLM_LOG_DIR", "logs/rag_llm"))
+
+
+def _stage_reason(func: Any) -> str:
+    """스테이지의 사유 문구 = docstring 첫 문장(왜 이 단계가 슬롯을 건드리는지 이미 적혀 있다)."""
+    doc = (getattr(func, "__doc__", "") or "").strip()
+    first_line = doc.splitlines()[0].strip() if doc else ""
+    if len(first_line) > 160:
+        first_line = first_line[:159] + "…"
+    return first_line or f"{getattr(func, '__name__', 'stage')} 적용"
+
+
+def _audited_stage(func: Any) -> Any:
+    """플랜을 바꾸는 스테이지를 감사 로그(plan_decisions)에 묶는다.
+
+    스테이지가 무엇을 건드리는지 따로 선언하지 않아도, 실행 전후 슬롯 스냅샷 차이가 (필터, 액션,
+    슬롯, 사유)로 남는다 — 새 스테이지를 추가하면서 로그 등록을 잊어 조건이 조용히 사라지는 경로가
+    생기지 않게 하는 것이 목적이다. 스테이지 안에서 사유를 명시해 기록한 슬롯(소유권 회수·드롭)은
+    차이 기록에서 건너뛴다(같은 변화를 두 번 남기지 않는다).
+
+    플랜 dict 은 위치 인자 중 조건 컨테이너를 가진 첫 dict 으로 찾는다. 못 찾으면(예: target_user
+    조각만 받는 필터) 원래 함수를 그대로 호출한다 — 감사는 부가 기능이지 실행 경로가 아니다.
+    """
+    @functools.wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        plan = next(
+            (
+                arg for arg in args
+                if isinstance(arg, dict) and ("target_user" in arg or "retrieval" in arg or "intent" in arg)
+            ),
+            None,
+        )
+        if plan is None:
+            return func(*args, **kwargs)
+        before = plan_decisions.snapshot(plan)
+        since = len(plan_decisions.decisions(plan))
+        result = func(*args, **kwargs)
+        plan_decisions.record_changes(
+            plan, before, filter_name=func.__name__.lstrip("_"), reason=_stage_reason(func), since=since
+        )
+        return result
+
+    return wrapper
 
 
 def _model_restricts_sampling(model: str | None) -> bool:
@@ -2208,6 +2251,7 @@ def build_query_plan(
     return result
 
 
+@_audited_stage
 def _apply_entity_set_condition(query: str, plan: dict[str, Any]) -> None:
     """Attach the derived entity-set condition and consume the slots it owns.
 
@@ -2293,6 +2337,7 @@ def _apply_entity_set_condition(query: str, plan: dict[str, Any]) -> None:
         ]
 
 
+@_audited_stage
 def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path) -> None:
     """Attach the deterministic aggregate contract and consume audience-only misclassification."""
     # 기간 대 기간 지표 증감(metric_trend)은 두 기간의 회원별 집계를 비교해 '대상 회원 목록'을 내는
@@ -2349,16 +2394,29 @@ def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path
     target_user = plan.get("target_user") if isinstance(plan.get("target_user"), dict) else {}
     filter_ids = {item.get("id") for item in intent.get("filters", []) if isinstance(item, dict)}
     if "female" in filter_ids:
-        target_user["gender"] = None
+        plan_decisions.drop_slots(
+            plan, (("target_user", "gender"),), owner="analytical_contract", mode="clear",
+            reason="집계 계약의 필터(female)가 같은 조건을 소유 — 회원목록 슬롯에 남기면 집계가 목록 SQL로 회귀",
+        )
     if "vip" in filter_ids:
-        target_user["lifecycle"] = [value for value in target_user.get("lifecycle", []) if value != "vip"]
+        plan_decisions.drop_slots(
+            plan, (("target_user", "lifecycle:vip"),), owner="analytical_contract",
+            reason="집계 계약의 필터(vip)가 같은 조건을 소유",
+        )
     if intent.get("metric") in {"campaign_purchase_amount", "coupon_purchase_amount"}:
-        target_user["campaign_responses"] = []
+        plan_decisions.drop_slots(
+            plan, (("target_user", "campaign_responses"),), owner="analytical_contract", mode="clear",
+            empty=[], reason="지표 자체가 캠페인/쿠폰 귀속 금액이라 반응 조건을 이미 포함",
+        )
     # Targeting-only group/ranking slots must never impose audience predicates
     # on a general aggregation.  The aggregation_request owns dimensions,
     # measures, user filters, and policy filters as separate concepts.
-    for key in ("region_density_target", "region_member_count_target", "group_ranking_target"):
-        plan.pop(key, None)
+    plan_decisions.drop_slots(
+        plan,
+        tuple(("plan", key) for key in ("region_density_target", "region_member_count_target", "group_ranking_target")),
+        owner="analytical_contract",
+        reason="집계 계약이 디멘션·측정값·필터를 별도 개념으로 소유 — 타겟팅 전용 그룹/랭킹 슬롯은 술어를 만들면 안 된다",
+    )
     member_policy = intent.get("member_policy") if isinstance(intent.get("member_policy"), dict) else {}
     if member_policy.get("mode") in {"all", "expanded"}:
         state_terms = {"dormant", "inactive_90d", "inactive_180d", "withdrawn", "withdrawn_user"}
@@ -2368,17 +2426,26 @@ def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path
     if intent.get("query_type") == "ranking":
         # The analytical ranking contract owns the member metric and TOP 1 semantics.  Remove
         # legacy audience-ranking slots (whose default is TOP 100) so they cannot compete with it.
-        for key in (
-            "member_metric_selection", "member_column_selection_filter", "cart_aggregate",
-            "group_ranking_target", "region_member_count_target", "region_density_target",
-            "purchase_count_ranking",
-        ):
-            plan.pop(key, None)
+        plan_decisions.drop_slots(
+            plan,
+            tuple(("plan", key) for key in (
+                "member_metric_selection", "member_column_selection_filter", "cart_aggregate",
+                "group_ranking_target", "region_member_count_target", "region_density_target",
+                "purchase_count_ranking",
+            )),
+            owner="analytical_ranking_contract",
+            reason="분석 랭킹 계약이 지표·TOP N 의미를 소유 — 기본 TOP 100 인 구 오디언스 랭킹 슬롯과 경합 금지",
+        )
         # 극값 계약은 지표 소스 위에서 정의된다 — "가장 많이 구매한 회원"의 구매 존재 조건은
         # 주문 테이블 집계 자체가 보장하므로 별도 오디언스 조건으로 남기지 않는다.
-        for key in ("behaviors", "purchase_object", "interests", "category", "purchase_membership"):
-            if key in target_user:
-                target_user[key] = [] if isinstance(target_user.get(key), list) else None
+        plan_decisions.drop_slots(
+            plan,
+            tuple(("target_user", key) for key in (
+                "behaviors", "purchase_object", "interests", "category", "purchase_membership",
+            ) if key in target_user),
+            owner="analytical_ranking_contract", mode="clear",
+            reason="극값 계약의 지표 소스(주문 집계)가 구매 존재를 이미 보장 — 별도 오디언스 조건은 중복",
+        )
     _consume_analytical_scope_conditions(plan, intent)
     _bind_member_condition_filters(plan, intent)
     plan["semantic_conditions"] = []
@@ -2389,7 +2456,10 @@ def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path
         campaign["channels"] = []
         campaign["sell_object"] = None
     # 오디언스 파서가 같은 문구에 붙인 미지원 판정은 분석 계약이 완전히 대체한다.
-    plan.pop("unsupported", None)
+    plan_decisions.drop_slots(
+        plan, (("plan", "unsupported"),), owner="analytical_contract",
+        reason="같은 문구에 대한 오디언스 파서의 미지원 판정을 분석 계약이 대체",
+    )
     # 그룹 축("브랜드별")을 상품명으로 이중 해석한 결과는 조건이 아니다 — 남은 조건을 세기 전에 정리한다.
     _normalize_aggregation_axis_filters(plan)
     dropped = _analytical_dropped_conditions(plan)
@@ -2431,28 +2501,29 @@ _ANALYTICAL_IGNORED_SLOTS = frozenset({"purchase_object_kind", "sell_object"})
 _ANALYTICAL_OWNED_LIFECYCLE = frozenset({"normal_member"})
 
 
-def _remove_slot_value(target_user: dict[str, Any], slot: str, value: str | None) -> None:
-    if value is None:
-        target_user[slot] = [] if isinstance(target_user.get(slot), list) else None
-        return
-    current = target_user.get(slot)
-    if isinstance(current, list):
-        target_user[slot] = [item for item in current if item != value]
+def _remove_slot_value(plan: dict[str, Any], slot: str, value: str | None, *, reason: str) -> None:
+    """분석 계약이 직접 컴파일한 오디언스 슬롯(또는 리스트의 한 값)을 사유와 함께 회수한다."""
+    plan_decisions.drop_slots(
+        plan, ((("target_user", f"{slot}:{value}" if value is not None else slot),)),
+        owner="analytical_contract", mode="clear", reason=reason,
+    )
 
 
 def _consume_analytical_scope_conditions(plan: dict[str, Any], intent: dict[str, Any]) -> None:
     """Remove the audience slots the analytical contract compiled itself."""
-    target_user = plan.get("target_user") if isinstance(plan.get("target_user"), dict) else {}
+    plan.setdefault("target_user", {})
     for scope in intent.get("scopes", []) or []:
         if not isinstance(scope, dict):
             continue
-        for slot, value in _ANALYTICAL_SCOPE_OWNERSHIP.get(str(scope.get("id")), ()):
-            _remove_slot_value(target_user, slot, value)
+        scope_id = str(scope.get("id"))
+        for slot, value in _ANALYTICAL_SCOPE_OWNERSHIP.get(scope_id, ()):
+            _remove_slot_value(plan, slot, value, reason=f"집계 계약이 모집단 스코프('{scope_id}')로 직접 컴파일")
     for item in intent.get("filters", []) or []:
         if not isinstance(item, dict):
             continue
-        for slot, value in _ANALYTICAL_FILTER_OWNERSHIP.get(str(item.get("id")), ()):
-            _remove_slot_value(target_user, slot, value)
+        filter_id = str(item.get("id"))
+        for slot, value in _ANALYTICAL_FILTER_OWNERSHIP.get(filter_id, ()):
+            _remove_slot_value(plan, slot, value, reason=f"집계 계약이 필터('{filter_id}')로 직접 컴파일")
 
 
 def _bind_member_condition_filters(plan: dict[str, Any], intent: dict[str, Any]) -> None:
@@ -3027,6 +3098,22 @@ def _record_filter_spans(name: str, spec: "_FilterSpec", query: str, plan: dict[
             )
 
 
+def _record_filter_decisions(name: str, plan: dict[str, Any], before: dict[str, str], since: int) -> None:
+    """결정론 필터가 만든 슬롯 변화를 (필터, 액션, 슬롯, 사유)로 남긴다.
+
+    사유는 '이 필터가 발동했다'가 아니라 **원문의 어느 표현을 읽었는지**다 — 출처 구간(span)을 선언한
+    필터는 그 구간의 텍스트가 근거로 붙고, 아직 선언하지 않은 필터는 근거 없이 필터 이름만 남는다."""
+    def evidence(slot_key: str) -> str | None:
+        container, _, slot = slot_key.partition(".")
+        recorded = slot_ownership.slot_span(plan, slot, container=container)
+        return recorded.get("text") if isinstance(recorded, dict) else None
+
+    plan_decisions.record_changes(
+        plan, before, filter_name=f"filter:{name}", reason=f"결정론 필터 '{name}' 매치",
+        since=since, evidence=evidence,
+    )
+
+
 def _apply_named_filter(
     name: str,
     query: str,
@@ -3040,8 +3127,12 @@ def _apply_named_filter(
     if init and spec.init_key is not None:
         container = plan if spec.init_on == "plan" else plan.setdefault("target_user", {})
         container.setdefault(spec.init_key, [] if spec.init_list else None)
+    # 필터가 실제로 바꾼 슬롯만 감사 로그에 남긴다(필터별 선언 없이 차이로 잡으므로 새 필터도 자동 포함).
+    before = plan_decisions.snapshot(plan)
+    since = len(plan_decisions.decisions(plan))
     _dispatch_filter(spec, query, plan, business_policies)
     _record_filter_spans(name, spec, query, plan)
+    _record_filter_decisions(name, plan, before, since)
 
 
 def _run_filters(
@@ -3347,19 +3438,38 @@ def _build_rule_query_plan(
                 "match_type": match["match_type"],
             }
         )
+        # 어휘 정규화가 만든 조건도 감사 로그에 남긴다 — 성별/등급/관심사처럼 '규칙이 해석해서'
+        # 생긴 슬롯은 어떤 필터도 소유하지 않아서, 여기서 안 남기면 출처 없는 조건이 된다.
+        before = plan_decisions.snapshot(plan)
+        since = len(plan_decisions.decisions(plan))
+        origin = f"normalization:{match['rule_id']}"
+        reason = f"'{match['matched_text']}' → '{canonical}' 정규화(match_type={match['match_type']})"
         if canonical in set_expression_terms:
+            plan_decisions.record(
+                plan, filter_name=origin, action=plan_decisions.DROP, slot=f"term.{canonical}",
+                reason="집합식이 이 term 을 이미 소유 — 회원속성으로 이중 적용 금지", evidence=match["matched_text"],
+            )
             continue
         inverse_canonical = _inverse_negative_synonym(canonical, match["match_type"])
         if inverse_canonical is not None:
             _apply_exclusion(plan, inverse_canonical)
+            reason = f"'{match['matched_text']}' → 부정 동의어라 '{inverse_canonical}' 제외 조건으로 해석"
         elif _is_exclusion_context(query, match["matched_text"], match["match_type"]):
             _apply_exclusion(plan, canonical)
+            reason = f"'{match['matched_text']}' → 제외 문맥이라 '{canonical}' 제외 조건으로 해석"
         elif canonical in CHANNEL_TERMS and _is_delivery_channel_context(query, match["matched_text"]):
             # 발송 채널 표기("발송 채널: RCS")는 SQL에 전혀 반영하지 않는다. 오디언스 필터도,
             # 캠페인 채널 필터도 만들지 않고 그냥 버린다 — SQL은 캠페인 목표(objective)만 신경 쓴다.
+            plan_decisions.record(
+                plan, filter_name=origin, action=plan_decisions.DROP, slot=f"term.{canonical}",
+                reason="발송 채널 표기라 오디언스/캠페인 조건을 만들지 않는다", evidence=match["matched_text"],
+            )
             continue
         else:
             _apply_query_term(plan, canonical)
+        plan_decisions.record_changes(
+            plan, before, filter_name=origin, reason=reason, since=since, evidence=match["matched_text"]
+        )
 
     # matched_terms 루프 뒤의 결정론 필터를 레지스트리 순서(_RULES_POST_FILTERS)로 실행한다. 순서 의존성은
     # 레지스트리 엔트리 주석이 문서화한다(예: no_additional_purchase 는 campaign_response 뒤, channel_consent 는
@@ -3786,6 +3896,7 @@ def _is_empty_slot(current: Any) -> bool:
     return current is None or current == [] or current == {}
 
 
+@_audited_stage
 def _apply_llm_structured_slots(plan: dict[str, Any]) -> None:
     """coerce 완료된 LLM 구조화 슬롯을 fill-if-empty(덧셈형)로 병합하고 stash 를 제거한다.
 
@@ -4176,6 +4287,7 @@ def _purchase_membership_matches(compact_query: str) -> tuple[list[re.Match[str]
     )
 
 
+@_audited_stage
 def _apply_core_membership_semantics(query: str, plan: dict[str, Any]) -> None:
     """핵심 행동의 존재/부재 방향을 구조화한다.
 
@@ -4338,6 +4450,7 @@ def _attach_member_policy_contract(query: str, plan: dict[str, Any]) -> None:
     }
 
 
+@_audited_stage
 def _attach_query_output_contract(query: str, plan: dict[str, Any]) -> None:
     """질문의 기대 결과 단위와 API 결과 계약을 SQL 생성 전에 확정한다."""
     _normalize_aggregation_axis_filters(plan)
@@ -4415,6 +4528,7 @@ _DATE_WINDOW_UNRESOLVED_RE = re.compile(
 )
 
 
+@_audited_stage
 def _normalize_aggregation_axis_filters(plan: dict[str, Any]) -> None:
     """그룹 축 표현을 구매 상품 필터로 중복 해석한 결과를 제거한다.
 
@@ -4448,6 +4562,7 @@ def _normalize_aggregation_axis_filters(plan: dict[str, Any]) -> None:
         target_user.pop("purchase_object_kind", None)
 
 
+@_audited_stage
 def _normalize_purchase_aggregation_request(plan: dict[str, Any]) -> None:
     """결정론적으로 확인된 구매 기간·대상 grain을 집계 IR에 반영한다.
 
@@ -4606,6 +4721,7 @@ def _has_member_target_signal(query_plan: dict[str, Any]) -> bool:
     return any(condition.spec.signals_target for condition in _extract_conditions_ir(query_plan))
 
 
+@_audited_stage
 def _promote_unknown_intent_for_target_signal(query_plan: dict[str, Any]) -> None:
     """intent=unknown 이라도 실DB로 추출 가능한 타겟 신호가 있으면 find_user_segment 로 승격한다.
 
@@ -5557,6 +5673,7 @@ def _resolve_member_metric_in_query(query: str) -> dict[str, Any] | None:
     return None
 
 
+@_audited_stage
 def _apply_member_metric_ranking_target(query: str, plan: dict[str, Any]) -> None:
     """'<지표>가 높은 고객' 및 '<지표> 기준 상위/하위 N명'을 회원 단위 지표 랭킹(member_metric_ranking)으로 해석한다.
 
@@ -5941,6 +6058,7 @@ _PURCHASE_QUANTITY_RANK_PATTERN = re.compile(
 _PURCHASE_RANK_TARGET_PATTERN = re.compile(r"고객님|고객|회원|유저|사람|구매자|소비자")
 
 
+@_audited_stage
 def _apply_purchase_count_ranking_target(query: str, plan: dict[str, Any]) -> None:
     """'(기간 내) 많이/자주 구입한 사람 상위 N 명'을 구매 건수 랭킹 타겟(purchase_count_ranking)으로 해석한다.
 
@@ -6469,6 +6587,7 @@ def _remove_coupon_campaign_responses(target_user: dict[str, Any]) -> None:
         target_user.pop("campaign_responses", None)
 
 
+@_audited_stage
 def _apply_coupon_semantics(query: str, plan: dict[str, Any]) -> None:
     """쿠폰 도메인 조건을 JSON 스펙(segment_metrics/operators) 기반 의미 노드 + capability 게이트로 해석한다.
 
@@ -7718,6 +7837,7 @@ def _unique_cart_aggregate_conditions(conditions: list[dict[str, Any]]) -> list[
     return unique
 
 
+@_audited_stage
 def _reconcile_cart_aggregate_ownership(plan: dict[str, Any]) -> None:
     """Remove exact generic-aggregate twins that were attached after cart parsing.
 
@@ -8255,6 +8375,7 @@ def _apply_metric_trend_filter(query: str, plan: dict[str, Any]) -> None:
     target_user.pop("purchase_date", None)
 
 
+@_audited_stage
 def _restore_metric_trend_from_source(source_query: str, query_plan: dict[str, Any]) -> None:
     """재작성/스코프 분리로 퍼센트 경계가 사라져도 원문의 기간 증감 조건을 통째로 복원한다."""
     trend = _parse_metric_trend(source_query)
@@ -8337,6 +8458,7 @@ def _parse_result_limit(query: str) -> int | None:
 # 결과 개수 제한('N명만')은 slot_setter(_parse_result_limit → plan.result_limit)가 담당한다(레지스트리 "result_limit").
 
 
+@_audited_stage
 def _apply_region_density_target(query: str, plan: dict[str, Any]) -> None:
     """'X가 많이 거주하는 동네' 표현을 밀집 지역 랭킹 타겟(region_density_target)으로 해석한다.
 
@@ -8556,6 +8678,7 @@ def _purchase_membership_predicate(window_days: int | None = None) -> str:
     return f"EXISTS (SELECT 1 FROM {table} O WHERE O.{join_column} = B.{join_column}{date_clause})"
 
 
+@_audited_stage
 def _apply_cart_absence_filter(query: str, plan: dict[str, Any]) -> None:
     """'장바구니(생성)가 없는'을 장바구니 부재(cart_absence) 조건으로 승격한다.
 
@@ -9397,6 +9520,7 @@ def _campaign_concept_tail_negated(compact: str, start: int, anchors: list[int],
     return _CAMPAIGN_TAIL_NEG_RE.search(compact, start, limit) is not None
 
 
+@_audited_stage
 def _apply_campaign_response_filter(query: str, plan: dict[str, Any]) -> None:
     """'캠페인 접촉/오퍼·구매 반응/쿠폰 사용'을 캠페인 반응 조건(campaign_responses)으로 해석한다.
 
@@ -9646,6 +9770,7 @@ def _campaign_frequency_event(compact: str, threshold_start: int, threshold_end:
     return min(matches)[2] if matches else None
 
 
+@_audited_stage
 def _apply_campaign_response_frequency_filter(query: str, plan: dict[str, Any]) -> None:
     """'최근 N개월 캠페인 중 K번 이상 반응한'을 캠페인 반응 횟수 조건(campaign_response_frequency)으로 해석한다.
 
@@ -9696,6 +9821,7 @@ _CAMPAIGN_BUY_VERB_PATTERN = re.compile(
 )
 
 
+@_audited_stage
 def _apply_campaign_buy_amount_filter(query: str, plan: dict[str, Any]) -> None:
     """'캠페인 (귀속) 구매금액 N원 이상/이하'를 campaign_buy_amount 조건으로 해석한다.
 
@@ -9834,6 +9960,7 @@ def _parse_cell_rate(compact: str, metric: str, high_default: float, low_default
     return None
 
 
+@_audited_stage
 def _apply_cell_rate_target_filter(query: str, plan: dict[str, Any]) -> None:
     """'발송 성공률/구매율 임계(높은·낮은 포함)'를 셀 단위 비율 타겟(cell_rate_target)으로 해석한다.
 
@@ -15277,6 +15404,7 @@ def _is_owned_aggregate_base_exclusion(ast: Any, plan: dict[str, Any]) -> bool:
     )
 
 
+@_audited_stage
 def _drop_uncompilable_set_expressions(plan: dict[str, Any]) -> None:
     """(값 보강 후에도) 컴파일되지 않는 '리던던트' 집합식을 버린다 — source 무관.
 
@@ -15380,6 +15508,7 @@ def _operator_scan_expression_fully_owned(expression: dict[str, Any], plan: dict
     return True
 
 
+@_audited_stage
 def _drop_dimension_consumed_set_expressions(plan: dict[str, Any]) -> None:
     """dimension/속성 필터가 이미 소유한 operator-scan 집합식(평범한 '서울 또는 경기' 지역 OR 등)을 버린다.
 
@@ -16013,27 +16142,56 @@ def _guard_coupon_semantic_preservation(query_plan: dict[str, Any]) -> None:
 
 
 def build_sql_template_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """등록된 타겟 빌더를 우선순위대로 시도해 첫 유효 후보를 낸다. 어느 빌더가 왜 채택/거부됐는지는
+    감사 로그(decisions)에 남는다 — "왜 이 SQL 이 나왔나"를 SQL 문자열 역추적 없이 답하기 위함."""
     if query_plan.get("intent") not in _SQL_TARGET_INTENTS:
         return None
     # 쿠폰 의미 보존 검증: 미지원 쿠폰 의미가 조용히 SQL 로 축소되지 않게 마지막 방어선(fail-close).
     _guard_coupon_semantic_preservation(query_plan)
     # 미지원으로 명시된 질의는 어떤 빌더로도 폴백하지 않는다 — 그럴듯한 오답/빈결과 대신 명시 미지원 응답.
     if isinstance(query_plan.get("unsupported"), dict):
+        _record_sql_builder_decision(
+            query_plan, "sql_template", plan_decisions.UNSUPPORTED,
+            f"미지원 판정({query_plan['unsupported'].get('reason')}) — 어떤 빌더로도 폴백하지 않는다",
+        )
         return None
     for builder in _sql_target_builders():
+        name = getattr(builder, "__name__", str(builder))
         candidate = builder(query_plan)
         # 빌더가 무효 지표 등으로 plan 을 미지원 표시했으면 즉시 중단한다 — 다른 트랙으로 조용히 폴백 금지.
         if isinstance(query_plan.get("unsupported"), dict):
+            _record_sql_builder_decision(
+                query_plan, name, plan_decisions.UNSUPPORTED,
+                f"빌더가 미지원 판정({query_plan['unsupported'].get('reason')}) — 다른 트랙으로 폴백 금지",
+            )
             return None
         if candidate is None:
             continue
         # Validation 게이트(파이프라인: 빌더 → AST → Validation → SQL): 별칭 허용 목록·raw SQL 토큰·
         # OR 분기 수 위반 후보는 채택하지 않는다(_sql_candidate 가 검증을 수행하고 여기서 거부).
         if candidate.get("validation", {}).get("issues"):
+            _record_sql_builder_decision(
+                query_plan, name, plan_decisions.REJECT,
+                "AST 검증 위반: " + "; ".join(str(issue) for issue in candidate["validation"]["issues"][:3]),
+            )
             continue
+        _record_sql_builder_decision(
+            query_plan, name, plan_decisions.SELECT,
+            f"우선순위 상 처음으로 유효한 후보(id={candidate.get('id')})",
+        )
         return candidate
     # 실DB(union/cart/purchase/order/aggregate/metric/member)로 매핑 가능한 조건이 없으면 후보 없음(→ 미지원 안내).
+    _record_sql_builder_decision(
+        query_plan, "sql_template", plan_decisions.REJECT,
+        "등록된 어떤 타겟 빌더도 이 조건 조합을 실DB 술어로 표현하지 못함",
+    )
     return None
+
+
+def _record_sql_builder_decision(query_plan: dict[str, Any], builder: str, action: str, reason: str) -> None:
+    plan_decisions.record(
+        query_plan, filter_name=f"builder:{builder}", action=action, slot="plan.sql", reason=reason,
+    )
 
 
 def build_analytical_aggregation_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
@@ -17311,6 +17469,7 @@ def _aggregate_targets_config() -> dict[str, Any]:
     return config
 
 
+@_audited_stage
 def _restore_aggregate_conditions_from_source(source_query: str, query_plan: dict[str, Any]) -> None:
     """원문을 결정론 파싱해 집계 조건의 **소실된 속성만** 복원한다(기간 창·지표 보정).
 
@@ -18704,6 +18863,7 @@ def build_union_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, A
     return candidate
 
 
+@_audited_stage
 def _apply_union_condition(original_query: str, query_plan: dict[str, Any], normalization_rules: Path | None) -> None:
     """원본 프롬프트에서 top-level 합집합(OR)을 감지해 union_condition(set_ast)으로 붙인다.
 
@@ -18942,6 +19102,7 @@ def _compile_logical_leaf(text: str, prefix: str) -> "_logic.LeafCompile":
     return _logic.LeafCompile(fragment=fragment, params=params, predicates=predicates)
 
 
+@_audited_stage
 def _apply_logical_expression(original_query: str, query_plan: dict[str, Any], normalization_rules: Path | None) -> None:
     """임계값과 서로 다른 지표가 섞인 OR-of-conjunctions 를 논리식 AST 로 파싱·컴파일·검증해 슬롯에 붙인다.
 
@@ -20699,6 +20860,8 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
                 f"② 계획 문장(타겟 절만): {planning_query}",
                 "③ Query Plan JSON:\n" + plan_json,
             ] + ([f"④ 이 JSON 으로 만들 SQL 생성 방식: {generation_label}"] if generation_label else [])
+            + (["── 조건 결정 감사 로그(필터 → 액션 슬롯: 사유) ──"] + plan_decisions.render(query_plan)
+               if plan_decisions.decisions(query_plan) else [])
             + (["── 실제 LLM 프롬프트(질의 계획, tool calling) ──"] + _format_captured_prompt(llm_query_plan_prompt)
                if llm_query_plan_prompt else ["LLM 미사용 — 규칙 파싱으로 계획 수립(parser=" + str((query_plan.get("parser") or {}).get("type") or "rules") + ")"]),
         ),
@@ -20791,6 +20954,9 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
         "prompt_scopes": prompt_scopes,
         "stages": stages,
         "stage_log": result.get("stage_log", []),
+        # 조건 결정 감사 로그(필터, 액션, 슬롯, 사유) — 어느 단계가 어떤 조건을 만들고 지웠는지의 원본 기록.
+        "decisions": plan_decisions.decisions(query_plan),
+        "decisions_truncated": bool(query_plan.get(plan_decisions.TRUNCATED_KEY)),
         "failure_diagnosis": failure_diagnosis,
         "result": {
             "status": api_response.get("status"),
