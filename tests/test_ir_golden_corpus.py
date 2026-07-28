@@ -98,6 +98,18 @@ def test_snapshot_is_deterministic(case: dict) -> None:
     assert first == second, f"[{case['id']}] 같은 프롬프트가 두 번 다른 IR 을 냈다"
 
 
+@pytest.mark.parametrize("case", CASES, ids=IDS)
+def test_resolved_cases_do_not_enter_the_unresolved_queue(case: dict, plans: dict[str, dict]) -> None:
+    """미해석 탐지기가 정상 프롬프트를 잡으면 주간 큐가 잡음으로 덮여 루프가 죽는다.
+
+    코퍼스는 전부 '해석돼야 하는' 프롬프트이므로, 여기서 한 건이라도 잡히면 탐지기가 너무 넓다.
+    """
+    import unresolved_triage
+
+    reason = unresolved_triage.detect_no_condition(plans[case["id"]], case["prompt"])
+    assert reason is None, f"[{case['id']}] '{case['prompt']}' 가 미해석으로 오탐됐다: {reason}"
+
+
 def test_known_gaps_carry_a_reason() -> None:
     """결함 마커는 사유를 적어야 한다 — 사유 없는 마커는 그냥 숨긴 실패다."""
     for case in CASES:

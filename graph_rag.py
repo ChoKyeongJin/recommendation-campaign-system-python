@@ -24,6 +24,8 @@ from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 
 import lexicon_patterns
+import parser_shadow
+import unresolved_triage
 from common_utils import elapsed_ms as _elapsed_ms
 from aggregation_requirements import (
     SchemaMetadata,
@@ -2264,7 +2266,60 @@ def build_query_plan(
         normalized_query=(base.get("retrieval") or {}).get("query"),
     )
     semantic_requirements.verify_source_requirements(result)
+    _observe_plan(result, source_query, parser=parser, llm_model=llm_model, prompt_dir=prompt_dir,
+                  normalization_rules=normalization_rules, business_policies=business_policies,
+                  metric_lexicon=metric_lexicon, sql_schema=sql_schema)
     return result
+
+
+# 관찰이 실행 경로를 바꾸지 않게 하는 재진입 가드. shadow 후보를 만들 때 build_query_plan 이 다시
+# 불리므로, 그 안쪽 호출에서는 관찰을 건너뛴다(무한 재귀·이중 기록 방지).
+_OBSERVING = contextvars.ContextVar("graph_rag_observing", default=False)
+
+
+def _observe_plan(
+    plan: dict[str, Any],
+    source_query: str,
+    *,
+    parser: str,
+    llm_model: str,
+    prompt_dir: Path | None,
+    normalization_rules: Path | None,
+    business_policies: Path | None,
+    metric_lexicon: Path,
+    sql_schema: Path,
+) -> None:
+    """완성된 플랜을 관찰한다 — 미해석 큐 적재(8단계)와 파서 shadow 비교(5단계).
+
+    관찰은 부수 효과다. 여기서 나는 어떤 예외도 요청을 깨뜨리면 안 되므로 통째로 삼킨다 —
+    "관찰하려다 프로덕션이 죽는" 것은 관찰을 켜지 않는 것보다 나쁘다.
+    """
+    if _OBSERVING.get():
+        return
+    token = _OBSERVING.set(True)
+    try:
+        case = unresolved_triage.extract(plan, query=source_query)
+        if case is not None:
+            unresolved_triage.record(case)
+
+        if not parser_shadow.enabled():
+            return
+        # 후보 경로: 지금 실행한 파서의 반대편. rules 로 실행 중이면 LLM 구조화 경로를 후보로 본다.
+        candidate_parser = "llm" if parser.casefold() == "rules" else "rules"
+        candidate = _build_single_query_plan(
+            source_query, normalization_rules, business_policies, metric_lexicon, sql_schema,
+            candidate_parser, llm_model, prompt_dir, None, None,
+        )
+        comparison = parser_shadow.compare(
+            plan, candidate,
+            baseline_label=parser, candidate_label=candidate_parser, query=source_query,
+        )
+        parser_shadow.attach(plan, comparison)
+        parser_shadow.record(comparison)
+    except Exception:  # noqa: BLE001 - 관찰 실패가 요청을 깨뜨리지 않는다
+        pass
+    finally:
+        _OBSERVING.reset(token)
 
 
 def _attach_entity_set_scope_filter(

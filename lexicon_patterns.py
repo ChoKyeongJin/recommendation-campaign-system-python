@@ -66,6 +66,8 @@ _CODE_FALLBACK: dict[str, Any] = {
             "거주", "지역", "등급", "성별", "남성", "여성", "나이", "연령", "휴면", "탈퇴", "정상",
             "활동", "가입", "수신", "블랙리스트",
         ],
+        # 오디언스 전체를 가리키는 말. 조건이 없는 것이 정상이므로 미해석 탐지에서 제외하는 데 쓴다.
+        "whole_audience": ["전체", "모든", "전부", "모두", "아무나", "누구나"],
         # 낱말이 아닌 구분자(쉼표 등). 어휘로 두어 패턴 조합에서 같은 방식으로 다룬다.
         "clause_separator": [","],
     },
@@ -116,6 +118,7 @@ _CODE_FALLBACK: dict[str, Any] = {
             "include": ["purchase_verb", "condition_domain_noun"], "exclude": ["샀"],
             "note": "조건 언어 판정. 구어체 '샀'만 빠져 있다 — 이관 전 상태 보존.",
         },
+        "whole_audience": {"include": ["whole_audience"]},
     },
 }
 

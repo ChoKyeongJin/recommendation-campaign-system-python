@@ -1,0 +1,161 @@
+{
+  "version": "1.1",
+  "description": "슬롯 소유권 정책. owner=지금 이 슬롯 값을 확정하는 경로(rule|llm), risk=틀렸을 때의 피해 등급, backstop=LLM 없이 어떻게 되는가(rule=정규식 백스톱 있음 / fail_close=미해석 표시 / none=조용한 소실, 결함). 승격(rule to llm)은 parser_shadow 누적 관찰이 promotion_gates 문턱을 넘고 위험 판정 0건일 때만 한다.",
+  "risk_meaning": {
+    "low": "틀려도 후보가 조금 넓어지거나 좁아지는 정도",
+    "medium": "대상 집합이 눈에 띄게 달라진다",
+    "high": "조용히 0명이 되거나 전혀 다른 모집단이 된다"
+  },
+  "backstop_meaning": {
+    "rule": "정규식/렉시콘 백스톱이 있다 — LLM 이 없어도 좁게나마 값을 만든다",
+    "fail_close": "백스톱이 없고, 못 만들면 미해석으로 표시한다",
+    "none": "백스톱도 표시도 없다 — 조용한 소실. 결함이며 0 이 되어야 한다"
+  },
+  "promotion_gates": {
+    "low": {
+      "min_observations": 20,
+      "min_agreement": 0.9
+    },
+    "medium": {
+      "min_observations": 50,
+      "min_agreement": 0.97
+    },
+    "high": {
+      "min_observations": 200,
+      "min_agreement": 0.995
+    }
+  },
+  "unregistered_default": {
+    "owner": "rule",
+    "risk": "high",
+    "backstop": "rule",
+    "note": "정책 미등록 — 기본값(규칙 소유/최고 위험)"
+  },
+  "slots": {
+    "plan.result_limit": {
+      "owner": "rule",
+      "risk": "low",
+      "note": "개수 제한. 틀리면 결과가 잘리거나 늘 뿐이다."
+    },
+    "plan.intent": {
+      "owner": "rule",
+      "risk": "low",
+      "note": "라우팅 의도. 틀리면 다른 트랙으로 가지만 결과가 조용히 비지는 않는다."
+    },
+    "campaign_constraints.objective": {
+      "owner": "rule",
+      "risk": "low"
+    },
+    "campaign_constraints.offer_type": {
+      "owner": "rule",
+      "risk": "low"
+    },
+    "campaign_constraints.channels": {
+      "owner": "rule",
+      "risk": "low"
+    },
+    "target_user.gender": {
+      "owner": "rule",
+      "risk": "medium"
+    },
+    "target_user.age_min": {
+      "owner": "rule",
+      "risk": "medium"
+    },
+    "target_user.age_max": {
+      "owner": "rule",
+      "risk": "medium"
+    },
+    "target_user.lifecycle": {
+      "owner": "rule",
+      "risk": "medium"
+    },
+    "target_user.interests": {
+      "owner": "rule",
+      "risk": "medium"
+    },
+    "target_user.preferred_channels": {
+      "owner": "rule",
+      "risk": "medium"
+    },
+    "plan.dimension_filters": {
+      "owner": "rule",
+      "risk": "medium"
+    },
+    "target_user.purchase_object": {
+      "owner": "llm",
+      "risk": "medium",
+      "backstop": "none",
+      "gap": "결정론 상품명 추출기가 없어 TARGET_OBJECT_LLM_FALLBACK=false 면 조건이 조용히 사라진다(fail-open). 최소한 fail_close 표시가 필요하고, 이상적으로는 상품 마스터 기반 백스톱을 둔다."
+    },
+    "target_user.purchase_object_kind": {
+      "owner": "llm",
+      "risk": "medium",
+      "backstop": "none",
+      "gap": "purchase_object 와 같은 결함(값의 종속 슬롯)."
+    },
+    "target_user.purchase_date": {
+      "owner": "rule",
+      "risk": "high",
+      "note": "절대 달력 창. 틀리면 0명."
+    },
+    "target_user.recent_login": {
+      "owner": "rule",
+      "risk": "high"
+    },
+    "target_user.purchase_inactivity": {
+      "owner": "rule",
+      "risk": "high"
+    },
+    "target_user.birthday_target": {
+      "owner": "rule",
+      "risk": "high",
+      "note": "MMDD 비교. 연도가 섞이면 0명."
+    },
+    "target_user.signup_target": {
+      "owner": "rule",
+      "risk": "high"
+    },
+    "target_user.cart_retention": {
+      "owner": "rule",
+      "risk": "high"
+    },
+    "target_user.cart_type": {
+      "owner": "rule",
+      "risk": "high"
+    },
+    "target_user.aggregate_conditions": {
+      "owner": "rule",
+      "risk": "high",
+      "note": "집계 임계. 방향·값이 틀리면 전혀 다른 모집단."
+    },
+    "target_user.behaviors": {
+      "owner": "rule",
+      "risk": "high"
+    },
+    "target_user.campaign_response_frequency": {
+      "owner": "rule",
+      "risk": "high"
+    },
+    "target_user.purchase_membership": {
+      "owner": "rule",
+      "risk": "high"
+    },
+    "plan.member_metric_ranking": {
+      "owner": "rule",
+      "risk": "high"
+    },
+    "plan.semantic_conditions": {
+      "owner": "rule",
+      "risk": "high"
+    },
+    "plan.set_expressions": {
+      "owner": "rule",
+      "risk": "high"
+    },
+    "plan.logical_expression": {
+      "owner": "rule",
+      "risk": "high"
+    }
+  }
+}

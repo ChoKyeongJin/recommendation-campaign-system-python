@@ -46,6 +46,8 @@ DERIVED_PLAN_KEYS = frozenset({
     "policy_constraints",     # 업무 정책에서 파생된 제약
     "semantic_resolutions",   # 의미 해소 흔적
     "source_requirements",    # 소스 요구(다이제스트와 쌍)
+    "parser_shadow",          # 파서 shadow 비교 계측(parser_shadow) — 조건이 아니라 관찰이다
+    "slot_policy",            # 슬롯 소유권 판정 흔적(slot_policy)
 })
 
 # 조건이 아니라고 이미 선언된 키(원문·계측·감사 로그). plan_decisions 가 소유한다.
