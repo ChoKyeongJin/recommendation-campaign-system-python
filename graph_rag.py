@@ -2371,6 +2371,10 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
         # 파생 비율('하루 평균 로그인 횟수')은 원 임계(balance_condition) 앞에 실행해 CNT/DAYS 비로 먼저
         # 확정한다 — 뒤 balance_condition 이 '로그인 횟수'를 원 횟수 임계로 오탐하는 걸 접두어 게이트로 막는다.
         "ratio_metric": _FilterSpec(_apply_ratio_metric_filter),
+        # 등록형 외부 회원 프로필 날짜(구매예정일/만료일 등)의 상대 상태. 지표 JSON만 추가하면 재사용.
+        "profile_date_condition": _FilterSpec(
+            _apply_profile_date_condition_filter, init_key="profile_date_conditions", init_list=True
+        ),
         "balance_condition": _FilterSpec(_apply_balance_condition_filter),
         "balance_selection": _FilterSpec(_apply_balance_selection_filter),
         # 행위 동사형 지표('한 번도 로그인하지 않은/정확히 20번 로그인한/평균보다 많이 로그인') → 명사형(balance_*)
@@ -2659,7 +2663,7 @@ _RULES_PRE_FILTERS: tuple[str, ...] = (
 )
 _RULES_POST_FILTERS: tuple[str, ...] = (
     "cart_repurchase", "cart_presence", "cart_absence", "inactivity_period", "recent_login",
-    "signup_channel", "signup_device", "ratio_metric", "balance_condition", "balance_selection", "action_metric",
+    "signup_channel", "signup_device", "ratio_metric", "profile_date_condition", "balance_condition", "balance_selection", "action_metric",
     "campaign_response", "no_additional_purchase", "campaign_response_frequency", "campaign_buy_amount",
     "campaign_buy_count", "cell_rate", "children_registered", "grade_threshold", "channel_consent", "member_flag", "policy",
     "group_ranking", "region_member_count", "region_density", "member_metric_ranking", "purchase_count_ranking",
@@ -2670,7 +2674,7 @@ _AUTO_FILTERS: tuple[str, ...] = (
     "group_ranking", "region_member_count", "region_density",
     "member_metric_ranking", "purchase_count_ranking", "purchase_object", "purchase_date",
     "result_limit", "purchase_inactivity", "recent_login", "signup_channel", "signup_device",
-    "ratio_metric", "balance_condition", "balance_selection", "action_metric", "campaign_response", "no_additional_purchase",
+    "ratio_metric", "profile_date_condition", "balance_condition", "balance_selection", "action_metric", "campaign_response", "no_additional_purchase",
     "cart_presence", "cart_absence", "campaign_response_frequency", "children_registered",
     "grade_threshold", "channel_consent", "member_flag", "aggregate", "purchase_count_threshold",
     "campaign_buy_amount", "campaign_buy_count", "cell_rate", "cart_aggregate", "cart_retention", "cart_type",
@@ -2847,6 +2851,7 @@ def _build_rule_query_plan(
             "birthday_target": None,
             "signup_target": None,
             "aggregate_conditions": [],
+            "profile_date_conditions": [],
             "cart_retention": None,
             "cart_type": None,
         },
@@ -5506,7 +5511,7 @@ _AGG_UNIT = r"원|건수|회수|종류|종수|품목|가지|건|회|명|개|장|
 # age/balance/aggregate/count 마다 재구현하던 '이상/이하/초과/미만/넘는/보다 많은/정확히/범위'를 단위(unit)만
 # 바꿔 한 곳에서 파싱한다. 새 표현형은 여기 한 번만 추가하면 모든 도메인이 함께 얻는다(도메인별 함수 추가 불필요).
 # rich 형(부사·'보다 많은/적은')도 기본 4어(_OP_ALT_BASIC)를 단일 소스에서 포함한다.
-_COMPARISON_OP_ALT = rf"{_OP_ALT_BASIC}|넘|미달|보다\s*(?:많|큰|높|적|작|낮|{_OP_ALT_BASIC})"
+_COMPARISON_OP_ALT = rf"{_OP_ALT_BASIC}|이내|넘|미달|보다\s*(?:많|큰|높|적|작|낮|{_OP_ALT_BASIC})"
 
 
 def _threshold_measure(num: str, unit: str, *, mag: bool = False, sep: str = r"\s*", unit_optional: bool = False) -> str:
@@ -5618,7 +5623,7 @@ def _comparison_operator(op_text: str) -> str | None:
     t = op_text.replace(" ", "")
     if t.startswith("이상") or t == "보다이상":
         return ">="
-    if t.startswith("이하") or t == "보다이하":
+    if t.startswith("이하") or t.startswith("이내") or t == "보다이하":
         return "<="
     if t.startswith("초과") or t.startswith("넘") or t.startswith("보다많") or t.startswith("보다큰") or t.startswith("보다높") or t.startswith("보다초과"):
         return ">"
@@ -8070,16 +8075,117 @@ _COUNT_METRIC_UNIT = "회|번|차례|건|회수"  # integer 지표 임계값 측
 
 
 def _numeric_metric_filters() -> list[dict[str, Any]]:
-    """일반 비교/선택 머신러리가 다루는 회원 수치 지표(numeric_filters, type∈{money,integer}, age 제외)."""
+    """일반 비교/선택 머신러리가 다루는 회원 수치 지표.
+
+    기존 ``numeric_filters``의 기본 회원 테이블 컬럼과, 통합 지표 스펙에서
+    ``targeting.enabled=true``로 공개한 외부 회원 프로필 컬럼을 한 경로로 합친다. 외부 소스는
+    table/alias/member join/grain filter를 조건에 보존해 컴파일러가 최신 스냅샷 ``EXISTS``로 묶는다.
+    따라서 새 스냅샷 수치 속성은 파서 코드를 추가하지 않고 지표 JSON 하나로 등록할 수 있다.
+    """
     raw = _MEMBER_TARGET_FILTERS.get("numeric_filters")
     if not isinstance(raw, list):
         raw = _DEFAULT_MEMBER_TARGET_FILTERS.get("numeric_filters", [])
     out: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for entry in raw:
         if (isinstance(entry, dict) and isinstance(entry.get("column"), str)
                 and entry.get("type") in {"money", "integer"} and entry.get("canonical") != "age"):
-            out.append(entry)
+            copied = dict(entry)
+            out.append(copied)
+            if isinstance(copied.get("canonical"), str):
+                seen.add(copied["canonical"])
+
+    for spec in _METRIC_REGISTRY.by_semantic_type("scalar"):
+        targeting = spec.raw.get("targeting") if isinstance(spec.raw.get("targeting"), dict) else {}
+        if not targeting.get("enabled") or spec.source is None or spec.metric_id in seen:
+            continue
+        out.append({
+            "canonical": spec.metric_id,
+            "category": targeting.get("category") or "member_profile",
+            "column": spec.source.qualified,
+            "type": spec.data_type,
+            "synonyms": list(spec.aliases_nouns),
+            "profile_source": {
+                "table": spec.source.table,
+                "alias": spec.source.alias,
+                "column": spec.source.column,
+                "member_column": targeting.get("member_column") or "MEMBER_NO",
+                "base_member_column": targeting.get("base_member_column") or "MEMBER_NO",
+                "grain_filter": targeting.get("grain_filter"),
+            },
+        })
     return out
+
+
+def _profile_source_metadata(entry: dict[str, Any]) -> dict[str, Any]:
+    """수치 지표 엔트리의 외부 회원 프로필 소스 메타를 조건에 복사한다(기본 B 컬럼은 빈 dict)."""
+    source = entry.get("profile_source")
+    if not isinstance(source, dict) or not all(
+        isinstance(source.get(key), str) and source.get(key) for key in ("table", "alias", "column")
+    ):
+        return {}
+    return {"profile_source": dict(source)}
+
+
+def _apply_profile_date_condition_filter(query: str, plan: dict[str, Any]) -> None:
+    """등록형 회원 프로필 날짜 지표의 상대 상태를 타겟 조건으로 해석한다.
+
+    지표 JSON의 ``targeting.relative_states``가 표면어·연산자·기준일 식을 소유한다. 이 함수는
+    어떤 날짜 컬럼인지 알지 못하며, 같은 파서가 구매예정일·계약만료일·포인트소멸일처럼 향후 추가되는
+    YYYYMMDD 회원 프로필에도 그대로 적용된다. 외부 스냅샷의 조인/최신 grain 정보도 조건에 보존한다.
+    """
+    conditions: list[dict[str, Any]] = []
+    for spec in _METRIC_REGISTRY.by_semantic_type("date"):
+        targeting = spec.raw.get("targeting") if isinstance(spec.raw.get("targeting"), dict) else {}
+        states = targeting.get("relative_states")
+        if not targeting.get("enabled") or spec.source is None or not isinstance(states, list):
+            continue
+        aliases = sorted(spec.aliases_nouns, key=len, reverse=True)
+        matched_alias = next((alias for alias in aliases if alias in query), None)
+        if matched_alias is None:
+            continue
+        start = query.find(matched_alias) + len(matched_alias)
+        window = _clause_scoped_window(query, start)
+        # 긴 상태 표면어를 우선해 ``아직 지나지 않은``이 짧은 ``지난``에 가로채이지 않게 한다.
+        candidates: list[tuple[int, str, dict[str, Any]]] = []
+        for state in states:
+            if not isinstance(state, dict):
+                continue
+            for term in state.get("terms", []) or []:
+                if isinstance(term, str) and term and term in window:
+                    candidates.append((len(term), term, state))
+        if not candidates:
+            continue
+        _length, _term, state = max(candidates, key=lambda item: item[0])
+        operator = state.get("operator")
+        anchor = state.get("anchor_expression")
+        if operator not in {"=", ">", ">=", "<", "<="} or not isinstance(anchor, str) or not anchor:
+            continue
+        conditions.append({
+            "metric_id": spec.metric_id,
+            "column": spec.source.column,
+            "operator": operator,
+            "right_expression": anchor,
+            "state": state.get("state"),
+            "label": spec.metric_id,
+            "profile_source": {
+                "table": spec.source.table,
+                "alias": spec.source.alias,
+                "column": spec.source.column,
+                "member_column": targeting.get("member_column") or "MEMBER_NO",
+                "base_member_column": targeting.get("base_member_column") or "MEMBER_NO",
+                "grain_filter": targeting.get("grain_filter"),
+            },
+        })
+    if conditions:
+        target_user = plan.setdefault("target_user", {})
+        existing = target_user.get("profile_date_conditions")
+        if isinstance(existing, list):
+            for condition in conditions:
+                if condition not in existing:
+                    existing.append(condition)
+        else:
+            target_user["profile_date_conditions"] = conditions
 
 
 def _default_metric_grammar(data_type: str | None) -> tuple[str, bool]:
@@ -8129,19 +8235,22 @@ _ACTION_ZERO_PATTERN = re.compile(r"한\s*번도|전혀|이력이?\s*없|기록�
 
 
 def _balance_condition_from_pair(
-    column: str, label: str, operator: str, threshold: float, coalesce_zero: bool
+    column: str, label: str, operator: str, threshold: float, coalesce_zero: bool,
+    source_entry: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """(operator, threshold) 한 쌍을 balance_condition dict 로 변환한다. NULL/0 구분 센티넬
     (IS NULL / NULL_OR_ZERO / ZERO_EXACT)을 null_mode·명시 =0 으로 풀어, 잔액 필터와 행위형 필터가
     같은 방식으로 '값 없음'과 '0'을 구분하게 한다."""
+    source_meta = _profile_source_metadata(source_entry) if isinstance(source_entry, dict) else {}
     if operator == "IS NULL":
-        return {"column": column, "null_mode": "is_null", "label": label}
+        return {"column": column, "null_mode": "is_null", "label": label, **source_meta}
     if operator == "NULL_OR_ZERO":
-        return {"column": column, "null_mode": "null_or_zero", "label": label}
+        return {"column": column, "null_mode": "null_or_zero", "label": label, **source_meta}
     if operator == "ZERO_EXACT":
         # 명시적 0(0회/0원)은 NULL 을 포함하지 않는다 — '한 번도'(COALESCE=0)와 구분한다.
-        return {"column": column, "operator": "=", "threshold": 0.0, "label": label}
+        return {"column": column, "operator": "=", "threshold": 0.0, "label": label, **source_meta}
     cond = {"column": column, "operator": operator, "threshold": threshold, "label": label}
+    cond.update(source_meta)
     if coalesce_zero and operator == "=" and threshold == 0:
         cond["coalesce_zero"] = True
     return cond
@@ -8196,7 +8305,7 @@ def _apply_action_metric_filter(query: str, plan: dict[str, Any]) -> None:
             classified = _classify_balance_window(after, unit, bare_equals)
             if classified:
                 tu["balance_conditions"] = [
-                    _balance_condition_from_pair(column, label, op, th, coalesce_zero)
+                    _balance_condition_from_pair(column, label, op, th, coalesce_zero, entry)
                     for op, th in classified
                 ]
                 return
@@ -8294,7 +8403,7 @@ def _apply_balance_condition_filter(query: str, plan: dict[str, Any]) -> None:
                     # NULL/0 구분 센티넬(IS NULL / NULL_OR_ZERO / ZERO_EXACT)과 nullable 부재(COALESCE)를
                     # 공용 변환기로 처리한다 — '값 없음'과 '0'을 구분한다.
                     conditions.append(
-                        _balance_condition_from_pair(column, label, operator, threshold, coalesce_zero)
+                        _balance_condition_from_pair(column, label, operator, threshold, coalesce_zero, entry)
                     )
                 break  # 한 지표당 하나(범위는 위에서 두 술어로 확장)
             # 컬럼 대 컬럼 비교('적립금이 예치금보다 많은') — 금액 지표끼리, 숫자 임계가 없을 때만.
@@ -13610,6 +13719,43 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
             select_columns=["u.last_login_at"],
         )
 
+    # 등록형 회원 수치/날짜 프로필도 검증 토큰으로 승격한다. 새 지표가 외부 스냅샷을 쓰더라도
+    # table/column/operator/value 근거가 SQL에 없으면 coverage 단계에서 fail-close 된다.
+    for index, condition in enumerate(target_user.get("balance_conditions") or []):
+        if not isinstance(condition, dict):
+            continue
+        operator = condition.get("operator")
+        threshold = condition.get("threshold")
+        source = condition.get("profile_source")
+        if operator not in {"=", ">", ">=", "<", "<="} or not isinstance(threshold, (int, float)):
+            continue
+        if isinstance(source, dict):
+            alias, column, table = source.get("alias"), source.get("column"), source.get("table")
+        else:
+            alias, column, table = "B", condition.get("column"), _member_table()
+        if not all(isinstance(value, str) and value for value in (alias, column, table)):
+            continue
+        _add_token(
+            tokens, f"target_user.balance_conditions[{index}]", "member_metric", operator,
+            threshold, [f"{alias}.{column} {operator} {_format_threshold(threshold)}"], [table],
+        )
+
+    for index, condition in enumerate(target_user.get("profile_date_conditions") or []):
+        if not isinstance(condition, dict):
+            continue
+        source = condition.get("profile_source")
+        operator = condition.get("operator")
+        right = condition.get("right_expression")
+        if not isinstance(source, dict) or operator not in {"=", ">", ">=", "<", "<="}:
+            continue
+        alias, column, table = source.get("alias"), source.get("column"), source.get("table")
+        if not all(isinstance(value, str) and value for value in (alias, column, table, right)):
+            continue
+        _add_token(
+            tokens, f"target_user.profile_date_conditions[{index}]", "member_date", operator,
+            str(condition.get("state") or right), [f"{alias}.{column} {operator} {right}"], [table],
+        )
+
     for lifecycle in target_user.get("lifecycle", []):
         if lifecycle in LIFECYCLE_TERMS and not _has_explicit_long_inactivity_period(inactivity_period):
             _add_token(tokens, "target_user.lifecycle", "lifecycle", "=", lifecycle, ["u.lifecycle = " + _sql_quote(lifecycle)], [])
@@ -14848,6 +14994,7 @@ _UNSUPPORTED_CONDITION_LABELS = {
     "target_user.metric_trend": "기간 대비 지표 증감 조건",
     "target_user.cart_type": "장바구니 유형 조건",
     "target_user.balance_conditions": "잔액 조건",
+    "target_user.profile_date_conditions": "회원 프로필 날짜 조건",
     "target_user.campaign_responses": "캠페인 반응 조건",
     "target_user.purchase_membership": "구매 이력 조건",
     "target_user.purchase_inactivity": "미구매 기간 조건",
@@ -14929,6 +15076,9 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     eq_includes: dict[str, list[str]] = {}  # 실컬럼 -> 포함 저장값들(같은 컬럼은 IN 으로 OR)
     include_categories: set[str] = set()
     other_predicates: list[str] = []  # 제외(<>)/연령/활동 등은 그대로 AND
+    # 외부 회원 프로필 조건은 같은 table/alias/grain끼리 한 EXISTS로 묶는다. 서로 다른 월 행에
+    # 조건이 나뉘어 참이 되는 오류를 막고, 최신 스냅샷 필터도 한 번만 적용한다.
+    profile_predicates: dict[tuple[str, str, str, str, str | None], list[str]] = {}
     labels: list[str] = []
     unsupported: list[str] = []
     has_signal = False
@@ -14943,6 +15093,23 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
         if value not in eq_includes[column]:
             eq_includes[column].append(value)
         include_categories.add(category)
+
+    def _add_profile_predicate(source: Any, predicate: str) -> bool:
+        if not isinstance(source, dict):
+            return False
+        table = source.get("table")
+        alias = source.get("alias")
+        member_column = source.get("member_column")
+        base_member_column = source.get("base_member_column")
+        grain_filter = source.get("grain_filter")
+        identifiers = (table, alias, member_column, base_member_column)
+        if not all(isinstance(value, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_\.]*", value) for value in identifiers):
+            return False
+        if grain_filter is not None and not isinstance(grain_filter, str):
+            return False
+        key = (table, alias, member_column, base_member_column, grain_filter)
+        profile_predicates.setdefault(key, []).append(predicate)
+        return True
 
     # 성별(포함/제외)
     gender = target_user.get("gender")
@@ -15021,6 +15188,19 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
         # 회원과 값 자체가 없는(미기입) 회원을 다른 대상으로 취급한다([[deterministic-filter-registry]]).
         null_mode = condition.get("null_mode")
         if isinstance(column, str) and column and null_mode in {"is_null", "null_or_zero"}:
+            source = condition.get("profile_source")
+            if isinstance(source, dict):
+                alias = source.get("alias")
+                source_column = source.get("column") or column
+                if not (isinstance(alias, str) and isinstance(source_column, str)):
+                    continue
+                predicate = (
+                    f"{alias}.{source_column} IS NULL" if null_mode == "is_null"
+                    else f"({alias}.{source_column} IS NULL OR {alias}.{source_column} = 0)"
+                )
+                if _add_profile_predicate(source, predicate):
+                    labels.append(str(condition.get("label") or column)); has_signal = True
+                continue
             if null_mode == "is_null":
                 other_predicates.append(f"B.{column} IS NULL")
             else:
@@ -15043,10 +15223,49 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
         if isinstance(column_expr, str) and column_expr:
             left = column_expr
         else:
+            source = condition.get("profile_source")
+            if isinstance(source, dict) and isinstance(source.get("alias"), str):
+                qualified = f"{source['alias']}.{source.get('column') or column}"
+            else:
+                qualified = f"B.{column}"
             # zero_semantics(missing_as_zero): NULL 을 0 으로 봐야 '한 번도 …' 조건이 NULL 회원까지 포함한다.
-            left = f"COALESCE(B.{column}, 0)" if condition.get("coalesce_zero") else f"B.{column}"
-        other_predicates.append(f"{left} {operator} {right}")
+            left = f"COALESCE({qualified}, 0)" if condition.get("coalesce_zero") else qualified
+        predicate = f"{left} {operator} {right}"
+        source = condition.get("profile_source")
+        if isinstance(source, dict):
+            if not _add_profile_predicate(source, predicate):
+                unsupported.append("target_user.balance_conditions")
+                continue
+        else:
+            other_predicates.append(predicate)
         labels.append(str(condition.get("label") or column)); has_signal = True
+
+    # 날짜 프로필의 현재일 상대 상태(지난/도래 전 등). 숫자 프로필과 같은 source key를 사용하므로
+    # BUY_CYCLE과 BUY_DUE_DATE처럼 한 스냅샷 행에서 동시에 만족해야 하는 조건은 하나의 EXISTS가 된다.
+    for condition in target_user.get("profile_date_conditions", []):
+        if not isinstance(condition, dict):
+            continue
+        source = condition.get("profile_source")
+        operator = condition.get("operator")
+        right = condition.get("right_expression")
+        if not isinstance(source, dict) or operator not in {"=", ">", ">=", "<", "<="}:
+            continue
+        alias = source.get("alias")
+        column = source.get("column") or condition.get("column")
+        if not (isinstance(alias, str) and isinstance(column, str) and isinstance(right, str) and right):
+            continue
+        if _add_profile_predicate(source, f"{alias}.{column} {operator} {right}"):
+            labels.append(str(condition.get("label") or condition.get("metric_id") or column)); has_signal = True
+
+    for (table, alias, member_column, base_member_column, grain_filter), predicates in profile_predicates.items():
+        clauses = [f"{alias}.{member_column} = B.{base_member_column}"]
+        if grain_filter:
+            clauses.append(grain_filter)
+        clauses.extend(_unique_strings(predicates))
+        other_predicates.append(
+            "EXISTS (SELECT 1 FROM " + table + " " + alias
+            + " WHERE " + " AND ".join(clauses) + ")"
+        )
 
     # 캠페인 반응(접촉 성공/오퍼·구매 반응/쿠폰 사용): 회원키 EXISTS 서브쿼리라 회원 컬럼 술어와 똑같이
     # AND 결합된다. 여기서 컴파일해야 어느 빌더를 타든 조건이 남는다 — 예전엔 전용 빌더만 이 조건을
@@ -17140,7 +17359,7 @@ _LOGIC_CONDITION_SLOTS = frozenset({
     "gender", "age_min", "age_max", "age_exclude_ranges", "lifecycle", "interests", "preferred_channels",
     "behaviors", "purchase_object", "purchase_date", "price_sensitivity", "inactivity_period", "recent_login",
     "purchase_inactivity", "birthday_target", "signup_target", "aggregate_conditions", "cart_retention",
-    "cart_type", "cart_aggregate", "balance_conditions", "campaign_responses", "campaign_response_frequency",
+    "cart_type", "cart_aggregate", "balance_conditions", "profile_date_conditions", "campaign_responses", "campaign_response_frequency",
     "campaign_buy_amount", "campaign_buy_count", "cell_rate_target",
 })
 
@@ -17299,6 +17518,10 @@ def _compile_logical_leaf(text: str, prefix: str) -> "_logic.LeafCompile":
             covered.add("aggregate_conditions")
 
     for condition in tu.get("balance_conditions") or []:
+        if isinstance(condition.get("profile_source"), dict):
+            # 외부 스냅샷 조건의 OR은 상관 EXISTS를 논리 AST leaf로 보존하는 별도 지원이 필요하다.
+            # 기본 B 컬럼으로 조용히 바꾸면 오답이므로 현재는 fail-close 한다.
+            raise _logic.LeafUnsupported(text, "external_member_profile")
         column = condition.get("column_expr") or f"B.{condition['column']}"
         operator, threshold = condition.get("operator"), condition.get("threshold")
         if operator not in {"=", ">", ">=", "<", "<="} or not isinstance(threshold, (int, float)):
@@ -17903,6 +18126,38 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
                 all_terms=["last_login"],
             )
         )
+
+    for index, condition in enumerate(target_user.get("balance_conditions") or []):
+        if not isinstance(condition, dict):
+            continue
+        operator = condition.get("operator")
+        threshold = condition.get("threshold")
+        source = condition.get("profile_source")
+        if operator not in {"=", ">", ">=", "<", "<="} or not isinstance(threshold, (int, float)):
+            continue
+        column = source.get("column") if isinstance(source, dict) else condition.get("column")
+        table = source.get("table") if isinstance(source, dict) else _member_table()
+        if isinstance(column, str) and isinstance(table, str):
+            rendered_threshold = _format_threshold(threshold)
+            conditions.append(_condition(
+                f"target_user.balance_conditions[{index}]", rendered_threshold, [rendered_threshold],
+                all_terms=[table, column, operator],
+            ))
+
+    for index, condition in enumerate(target_user.get("profile_date_conditions") or []):
+        if not isinstance(condition, dict):
+            continue
+        source = condition.get("profile_source")
+        operator = condition.get("operator")
+        if not isinstance(source, dict) or operator not in {"=", ">", ">=", "<", "<="}:
+            continue
+        column, table = source.get("column"), source.get("table")
+        if isinstance(column, str) and isinstance(table, str):
+            conditions.append(_condition(
+                f"target_user.profile_date_conditions[{index}]",
+                str(condition.get("state") or "relative_date"), [],
+                all_terms=[table, column, operator, "getdate"],
+            ))
 
     price_sensitivity = target_user.get("price_sensitivity")
     if price_sensitivity:

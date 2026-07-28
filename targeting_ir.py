@@ -567,6 +567,16 @@ def _extract_aggregate_conditions(plan: dict[str, Any], _behaviors: frozenset[st
     return [{"conditions": conditions}] if isinstance(conditions, list) and conditions else []
 
 
+def _extract_member_profile_conditions(
+    name: str,
+) -> Callable[[dict[str, Any], frozenset[str]], list[dict[str, Any]]]:
+    """회원 기본/외부 프로필의 선언형 조건 리스트를 IR 노드 하나로 묶어 추출한다."""
+    def extract(plan: dict[str, Any], _behaviors: frozenset[str]) -> list[dict[str, Any]]:
+        conditions = _tu(plan).get(name)
+        return [{"conditions": conditions}] if isinstance(conditions, list) and conditions else []
+    return extract
+
+
 def _cart_retention_ko(params: dict[str, Any]) -> str:
     days = params.get("min_days") or params.get("max_days")
     direction = "이상" if params.get("min_days") else "이내"
@@ -605,6 +615,16 @@ CONDITION_SPECS: tuple[ConditionSpec, ...] = (
             ko=lambda p: f"최근 {p.get('min_days')}일 이내 로그인",
             applies=lambda p: isinstance(p.get("min_days"), int),
         ),
+    ),
+    # 등록형 수치/날짜 회원 프로필. 기본 B 컬럼과 외부 월 스냅샷 모두 member compiler가 직접
+    # 술어/EXISTS로 결합하므로 전용 fact-join 빌더가 필요 없다.
+    ConditionSpec(
+        kind="balance_conditions", fact="member", fact_join=False, signals_target=True,
+        extract=_extract_member_profile_conditions("balance_conditions"),
+    ),
+    ConditionSpec(
+        kind="profile_date_conditions", fact="member", fact_join=False, signals_target=True,
+        extract=_extract_member_profile_conditions("profile_date_conditions"),
     ),
     # ── 주문 팩트 계열 ──
     ConditionSpec(

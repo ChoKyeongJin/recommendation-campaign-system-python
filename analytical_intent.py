@@ -45,7 +45,11 @@ DEFAULT_ANALYTICS_REGISTRY_PATH = Path("docs/data/analytics_registry.json")
 
 _OUTPUT_ACTION_RE = re.compile(r"알려|보여|조회|계산|구해|집계")
 _TARGETING_COMPARISON_RE = re.compile(
-    r"(?:\d[\d,]*(?:\.\d+)?\s*(?:원|건|회|개|명)?\s*(?:이상|이하|초과|미만|같|넘)|"
+    # 수치 지표뿐 아니라 구매주기·경과일 같은 기간형 회원 속성도 같은 선택 술어다.
+    # 단위/비교어를 여기에 열어두면 ``회원별 평균 <속성>이 30일 이내``의 ``평균``을
+    # 결과 집계 AVG로 오인하지 않고 회원 행 선택 경로에 양보한다.
+    r"(?:\d[\d,]*(?:\.\d+)?\s*(?:원|건|회|개|명|일|주|주일|개월|달|년)?\s*"
+    r"(?:이상|이하|초과|미만|이내|이전|이후|같|넘)|"
     r"상위|하위|높은|낮은|많은|적은)"
 )
 _RECENT_DAYS_RE = re.compile(r"최근\s*(\d+)\s*일(?:간|동안|이내)?")

@@ -1,0 +1,40 @@
+{
+  "metric_id": "buy_cycle",
+  "name": "회원 평균 구매주기",
+  "semantic_type": "scalar",
+  "data_type": "integer",
+  "source": {
+    "table": "CRM_MB_MONTHCRMINFO",
+    "alias": "M",
+    "column": "BUY_CYCLE"
+  },
+  "aliases": {
+    "nouns": [
+      "회원별 평균 구매주기",
+      "평균 구매주기",
+      "평균 구매 주기",
+      "구매주기",
+      "구매 주기"
+    ]
+  },
+  "units": {
+    "canonical": "day",
+    "expressions": ["일"]
+  },
+  "operators": {
+    "allowed": ["EQ", "GT", "GTE", "LT", "LTE", "BETWEEN"]
+  },
+  "null_semantics": {
+    "comparison": "exclude"
+  },
+  "time_semantics": {
+    "supports_recent_period": false
+  },
+  "targeting": {
+    "enabled": true,
+    "category": "purchase_profile",
+    "member_column": "MEMBER_NO",
+    "base_member_column": "MEMBER_NO",
+    "grain_filter": "M.YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)"
+  }
+}

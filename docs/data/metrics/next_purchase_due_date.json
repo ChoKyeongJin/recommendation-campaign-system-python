@@ -1,0 +1,63 @@
+{
+  "metric_id": "next_purchase_due_date",
+  "name": "다음 구매예정일",
+  "semantic_type": "date",
+  "data_type": "date_string",
+  "source": {
+    "table": "CRM_MB_MONTHCRMINFO",
+    "alias": "M",
+    "column": "BUY_DUE_DATE",
+    "date_format": "yyyyMMdd"
+  },
+  "aliases": {
+    "nouns": [
+      "다음 구매예정일",
+      "다음 구매 예정일",
+      "차기 구매예정일",
+      "차기 구매 예정일",
+      "구매예정일",
+      "구매 예정일"
+    ]
+  },
+  "operators": {
+    "allowed": ["BEFORE", "WITHIN"]
+  },
+  "null_semantics": {
+    "comparison": "exclude"
+  },
+  "time_semantics": {
+    "supports_recent_period": true,
+    "anchor": "today",
+    "windows": {
+      "past": {
+        "operator": "<",
+        "include_null": false
+      },
+      "not_due": {
+        "operator": ">=",
+        "include_null": false
+      }
+    }
+  },
+  "targeting": {
+    "enabled": true,
+    "category": "purchase_profile",
+    "member_column": "MEMBER_NO",
+    "base_member_column": "MEMBER_NO",
+    "grain_filter": "M.YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)",
+    "relative_states": [
+      {
+        "state": "past",
+        "terms": ["지난", "지났", "경과", "넘긴", "초과한"],
+        "operator": "<",
+        "anchor_expression": "CONVERT(char(8), GETDATE(), 112)"
+      },
+      {
+        "state": "not_due",
+        "terms": ["아직 지나지 않은", "도래하지 않은", "예정인", "다가오는"],
+        "operator": ">=",
+        "anchor_expression": "CONVERT(char(8), GETDATE(), 112)"
+      }
+    ]
+  }
+}
