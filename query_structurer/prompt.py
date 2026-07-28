@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from .schema import STRUCTURED_QUERY_JSON_SCHEMA
+from .campaign_plan_v2 import CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA
 from .types import QueryStructuringInput
 
 
@@ -38,6 +39,8 @@ COMPLEX_QUERY_STRUCTURER_SYSTEM_PROMPT = """너는 RAG 시스템의 Complex Quer
 - 날짜를 확정할 수 없으면 원래 표현만 유지하고 임의의 날짜를 생성하지 않는다.
 - 단순 질문을 불필요하게 여러 informationNeed로 분해하지 않는다.
 - 출력은 지정된 JSON 스키마만 반환한다.
+- 스키마의 nullable 필드는 알 수 없거나 적용되지 않으면 JSON null로 채운다. 문자열 "null"을 쓰지 않는다.
+- 배열 값이 없으면 빈 배열로 채우고 모든 필수 필드를 빠짐없이 반환한다.
 - JSON 외의 설명이나 마크다운을 출력하지 않는다."""
 
 PLANNER_STRUCTURED_QUERY_RULES = """structuredQuery가 제공되면 이를 사용자 질문의 의미 구조로 참고한다.
@@ -79,5 +82,25 @@ def build_retry_prompt(previous_response: str, error: str) -> str:
             "[Validation Error]\n" + error,
             "[Previous Response]\n" + previous_response,
             "지정된 JSON 스키마에 맞는 JSON object만 다시 반환하라. 설명이나 마크다운을 포함하지 마라.",
+        ]
+    )
+
+
+def build_campaign_query_plan_v2_user_prompt(input: QueryStructuringInput) -> str:
+    context = {
+        "current_date": input.context.current_date,
+        "timezone": input.context.timezone,
+        "conversation_context": input.context.conversation_context,
+    }
+    return "\n\n".join(
+        [
+            "[User Query]\n" + input.query,
+            "[Structuring Context]\n" + json.dumps(context, ensure_ascii=False, indent=2),
+            "[Campaign QueryPlan v2 JSON Schema]\n"
+            + json.dumps(CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA, ensure_ascii=False, indent=2),
+            (
+                "original_query에는 User Query를 그대로 넣고, target_user/exclude/"
+                "campaign_constraints에 캠페인 조건을 직접 구조화하라."
+            ),
         ]
     )

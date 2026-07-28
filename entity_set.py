@@ -21,7 +21,12 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from calendar_window import parse_calendar_window, parse_duration_window, relative_window_label
+from calendar_window import (
+    parse_calendar_window,
+    parse_calendar_window_span,
+    parse_duration_window,
+    relative_window_label,
+)
 
 
 _MEMBER_NOUN_RE = re.compile(r"회원|고객|사용자|유저")
@@ -33,9 +38,41 @@ DEFAULT_LIMIT = 10
 MAX_LIMIT = 1000
 
 
+_COMPACT_DROP_RE = re.compile(r"[\s.,!?·_\-/'\"()]")
+
+
 def _compact(value: str) -> str:
     """공백·구두점을 지운 비교용 문자열(프로젝트 표면어 매칭 관례와 동일)."""
     return re.sub(r"[\s.,!?·_\-/'\"()]+", "", str(value)).casefold()
+
+
+def _compact_map(value: str) -> tuple[str, list[int]]:
+    """``_compact`` 와 같은 문자열 + compact 인덱스 → 원문 인덱스 대응표.
+
+    이 절이 원문의 **어느 구간**을 읽었는지 호출자에게 돌려주려면(소유권 회수가 '같은 종류'가
+    아니라 '같은 구간'으로 판정되게 하려면) compact 좌표를 원문 좌표로 되돌릴 수 있어야 한다.
+    글자 단위 casefold 가 길이를 바꾸는 문자(라틴 확장 등)는 대응이 깨지므로 원문자를 유지한다 —
+    이 파서의 표면어는 한글/ASCII 라 실사용 결과는 ``_compact`` 와 동일하다."""
+    chars: list[str] = []
+    index_map: list[int] = []
+    for index, char in enumerate(str(value)):
+        if _COMPACT_DROP_RE.match(char):
+            continue
+        folded = char.casefold()
+        chars.append(folded if len(folded) == 1 else char)
+        index_map.append(index)
+    return "".join(chars), index_map
+
+
+def _raw_span(index_map: list[int], start: int | None, end: int | None) -> list[int] | None:
+    """compact 좌표 [start, end) → 원문 좌표 [start, end). 범위 밖이면 None."""
+    if start is None or end is None or not index_map:
+        return None
+    start = max(0, min(int(start), len(index_map)))
+    end = max(0, min(int(end), len(index_map)))
+    if end <= start:
+        return None
+    return [index_map[start], index_map[end - 1] + 1]
 
 
 def _find_term(compact: str, terms: Any, start: int = 0) -> tuple[int, int, str] | None:
@@ -67,6 +104,15 @@ def _match_direction(compact: str, config: dict[str, Any]) -> tuple[int, int, st
     return min(found, key=lambda item: (item[0], -item[1]))
 
 
+def _match_window_span(compact: str) -> list[int] | None:
+    """``_match_window`` 가 고른 창의 compact 좌표 구간. 절대 달력 창만 위치를 안다.
+
+    상대 기간('최근 3개월')은 선택 규칙이 앵커 근접성까지 보므로 위치를 단정하지 않는다 —
+    구간을 모르면 소유권 회수는 기존(종류 기준) 동작으로 남는다(fail-safe)."""
+    span = parse_calendar_window_span(compact)
+    return [span[0], span[1]] if span is not None else None
+
+
 def _match_window(compact: str, rank_marker: str = "") -> dict[str, Any] | None:
     """절 앞머리의 기간 표현. 달력 표현은 절대창, 기간 표현은 상대창.
 
@@ -93,7 +139,7 @@ def parse_entity_set_condition(query: str, config: dict[str, Any] | None) -> dic
     """
     if not isinstance(config, dict) or not isinstance(query, str) or not query.strip():
         return None
-    compact = _compact(query)
+    compact, index_map = _compact_map(query)
     if not _MEMBER_NOUN_RE.search(compact):
         return None
 
@@ -104,21 +150,25 @@ def parse_entity_set_condition(query: str, config: dict[str, Any] | None) -> dic
     if entity is None:
         return None
     entity_id, entity_start, entity_end = entity
+    entity_noun_end = entity_end
 
     limit = DEFAULT_LIMIT
+    count_span: tuple[int, int] | None = None
     count = _COUNT_AFTER_RE.match(compact[entity_end:])
     if count is not None:
         limit = max(1, min(MAX_LIMIT, int(count.group(1))))
+        count_span = (entity_end + count.start(), entity_end + count.end())
         entity_end += count.end()
     else:
         count = _COUNT_BEFORE_RE.search(compact[direction[0]: entity_start])
         if count is not None:
             limit = max(1, min(MAX_LIMIT, int(count.group(1))))
+            count_span = (direction[0] + count.start(), direction[0] + count.end())
 
     relation = _match_relation(compact, config, entity_end)
     if relation is None:
         return None
-    relation_id, negated = relation
+    relation_id, negated, _relation_start, relation_end = relation
     # 순위를 계산하는 관계와 회원을 잇는 관계는 다를 수 있다("가장 많이 *장바구니에 담은* 상품을
     # *구매한* 고객"). 엔터티 앞의 관계 표현이 순위 관계, 뒤의 것이 회원 연결 관계다.
     # 순위 관계가 문장에 없으면('가장 많이 팔린 상품') 판매 실적 관계가 기본이다 — 회원 연결 관계를
@@ -130,6 +180,18 @@ def parse_entity_set_condition(query: str, config: dict[str, Any] | None) -> dic
     # 기간은 이 절(순위 계산)의 것이다 — 엔터티 앞에 있는 기간 표현만 가져간다.
     # '2019년 가장 많이 팔린 상품을 구매한 고객'에서 2019년은 판매 순위의 창이지 구매 시점이 아니다.
     window = _match_window(compact[: entity_start], compact[direction[0]: direction[1]])
+    window_span = _match_window_span(compact[: entity_start]) if window else None
+
+    # 이 절이 원문의 어느 구간을 읽었는지(요소별). 소유권 회수가 '조건의 종류'가 아니라 '문장의
+    # 같은 구간'으로 판정되게 하는 근거다 — 순위 절의 기간이 뒤쪽 절의 구매 기간까지 지우는 사고를
+    # 막는다. 위치를 단정할 수 없는 요소(상대 기간 등)는 None 이고, 그때는 기존 동작이 유지된다.
+    spans = {
+        "clause": _raw_span(index_map, min(direction[0], window_span[0] if window_span else direction[0]), relation_end),
+        "window": _raw_span(index_map, window_span[0], window_span[1]) if window_span else None,
+        "entity": _raw_span(index_map, entity_start, entity_noun_end),
+        "count": _raw_span(index_map, count_span[0], count_span[1]) if count_span else None,
+        "relation": _raw_span(index_map, entity_end, relation_end),
+    }
 
     node: dict[str, Any] = {
         "relation": relation_id,
@@ -141,6 +203,7 @@ def parse_entity_set_condition(query: str, config: dict[str, Any] | None) -> dic
         "window": window,
         "negated": negated,
         "surface": query.strip(),
+        "spans": spans,
     }
     node["unsupported_reason"] = entity_set_capability(node, config)
     return node
@@ -162,24 +225,26 @@ def _match_entity(compact: str, config: dict[str, Any], start: int) -> tuple[str
 
 def _match_relation(
     compact: str, config: dict[str, Any], start: int, end: int | None = None
-) -> tuple[str, bool] | None:
-    """[start, end) 구간의 관계 동사. 부정형('구매하지 않은')을 먼저 본다."""
+) -> tuple[str, bool, int, int] | None:
+    """[start, end) 구간의 관계 동사 → (관계, 부정여부, 시작, 끝). 부정형('구매하지 않은')을 먼저 본다.
+
+    위치까지 돌려주는 이유: 이 절이 문장의 어디서 끝나는지가 소유권 구간의 경계이기 때문이다."""
     span = compact[start: end] if end is not None else compact[start:]
-    found: list[tuple[int, str, bool]] = []
+    found: list[tuple[int, int, str, bool]] = []
     for relation_id, spec in (config.get("relations") or {}).items():
         if not isinstance(spec, dict):
             continue
         negative = _find_term(span, spec.get("negationTerms"))
         if negative is not None:
-            found.append((negative[0], str(relation_id), True))
+            found.append((negative[0], negative[1], str(relation_id), True))
             continue
         positive = _find_term(span, spec.get("terms"))
         if positive is not None:
-            found.append((positive[0], str(relation_id), False))
+            found.append((positive[0], positive[1], str(relation_id), False))
     if not found:
         return None
-    _position, relation_id, negated = min(found, key=lambda item: item[0])
-    return relation_id, negated
+    position, position_end, relation_id, negated = min(found, key=lambda item: item[0])
+    return relation_id, negated, start + position, start + position_end
 
 
 def _match_measure(compact: str, config: dict[str, Any], direction_start: int, entity_start: int) -> str:

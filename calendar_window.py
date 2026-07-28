@@ -209,21 +209,8 @@ def parse_calendar_windows(text: str, *, label_suffix: str = "") -> list[dict[st
     return [window for window, _start, _end in parse_calendar_window_spans(text, label_suffix=label_suffix)]
 
 
-def parse_calendar_window_group(text: str, *, label_suffix: str = "") -> list[dict[str, Any]]:
-    """'가장 좁은 창' + 그와 **한 나열로 이어진** 같은 구체성의 창들을 등장 순서대로 돌려준다.
-
-    ``parse_calendar_window`` 의 일반화다. 단일 창 계약('가장 좁은 표현 하나')을 그대로 유지하되,
-    그 창이 나열의 일원이면 나열 전체를 돌려준다 — '2018년 및 2019년'·'2018, 2019년'·'2019년 2월과
-    3월'은 한 조건의 두 구간이지 두 조건이 아니기 때문이다. 하나만 골라 쓰면 나머지 구간이 조용히
-    사라져 '2018·2019년 합계'가 '2018년 합계'가 된다.
-
-    나열 판정은 위치로 한다 — 창 사이 문구가 연결어/조사/구분자뿐일 때만 같은 나열이다. 서로 다른
-    조건이 각자 창을 가진 문장('2018년에 구매하고 2019년에 로그인한')은 나열이 아니므로 뭉치지 않는다.
-    구체성이 다른 창(연 vs 월)도 섞지 않는다 — '2019년 3월 … 2018년'은 여전히 가장 좁은 3월 하나다.
-    """
-    scanned = _scan_calendar_windows(text, label_suffix)
-    if not scanned:
-        return []
+def _calendar_group_range(scanned: list[tuple[dict[str, Any], int, int, int]], text: str) -> tuple[int, int]:
+    """``parse_calendar_window_group`` 이 고르는 나열의 (첫 인덱스, 끝 인덱스). 선택 규칙의 단일 소스."""
     pivot = min(range(len(scanned)), key=lambda i: (scanned[i][1], scanned[i][2]))
     rank = scanned[pivot][1]
 
@@ -241,6 +228,46 @@ def parse_calendar_window_group(text: str, *, label_suffix: str = "") -> list[di
     last = pivot
     while last + 1 < len(scanned) and _linked(last, last + 1):
         last += 1
+    return first, last
+
+
+def parse_calendar_window_group_span(text: str, *, label_suffix: str = "") -> tuple[int, int] | None:
+    """``parse_calendar_window_group`` 이 고른 나열 전체가 차지하는 원문 구간 (시작, 끝).
+
+    창을 소비한 슬롯의 **출처 구간**을 기록하려는 쪽이 쓴다(slot_ownership) — 소유권 회수가
+    '같은 종류'가 아니라 '같은 구간'으로 판정되게 하려면 문법 소유자가 위치도 함께 줘야 한다."""
+    scanned = _scan_calendar_windows(text, label_suffix)
+    if not scanned:
+        return None
+    first, last = _calendar_group_range(scanned, text)
+    return scanned[first][2], scanned[last][3]
+
+
+def parse_calendar_window_span(text: str, *, label_suffix: str = "") -> tuple[int, int] | None:
+    """``parse_calendar_window`` 가 고르는 창 하나의 원문 구간 (시작, 끝)."""
+    scanned = _scan_calendar_windows(text, label_suffix)
+    if not scanned:
+        return None
+    chosen = min(scanned, key=lambda item: (item[1], item[2]))
+    return chosen[2], chosen[3]
+
+
+def parse_calendar_window_group(text: str, *, label_suffix: str = "") -> list[dict[str, Any]]:
+    """'가장 좁은 창' + 그와 **한 나열로 이어진** 같은 구체성의 창들을 등장 순서대로 돌려준다.
+
+    ``parse_calendar_window`` 의 일반화다. 단일 창 계약('가장 좁은 표현 하나')을 그대로 유지하되,
+    그 창이 나열의 일원이면 나열 전체를 돌려준다 — '2018년 및 2019년'·'2018, 2019년'·'2019년 2월과
+    3월'은 한 조건의 두 구간이지 두 조건이 아니기 때문이다. 하나만 골라 쓰면 나머지 구간이 조용히
+    사라져 '2018·2019년 합계'가 '2018년 합계'가 된다.
+
+    나열 판정은 위치로 한다 — 창 사이 문구가 연결어/조사/구분자뿐일 때만 같은 나열이다. 서로 다른
+    조건이 각자 창을 가진 문장('2018년에 구매하고 2019년에 로그인한')은 나열이 아니므로 뭉치지 않는다.
+    구체성이 다른 창(연 vs 월)도 섞지 않는다 — '2019년 3월 … 2018년'은 여전히 가장 좁은 3월 하나다.
+    """
+    scanned = _scan_calendar_windows(text, label_suffix)
+    if not scanned:
+        return []
+    first, last = _calendar_group_range(scanned, text)
     return [scanned[index][0] for index in range(first, last + 1)]
 
 

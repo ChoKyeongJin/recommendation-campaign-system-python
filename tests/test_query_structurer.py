@@ -1,6 +1,14 @@
 import json
+from types import SimpleNamespace
 
-from query_structurer import LLMQueryStructurer, QueryStructuringInput, StructuringContext
+import graph_rag as g
+from query_structurer import (
+    LLMQueryStructurer,
+    QueryStructuringInput,
+    STRUCTURED_QUERY_JSON_SCHEMA,
+    STRUCTURED_QUERY_TOOL,
+    StructuringContext,
+)
 
 
 class ResponseSequence:
@@ -48,6 +56,109 @@ def _payload(query, **overrides):
     }
     payload.update(overrides)
     return payload
+
+
+def _strict_payload(query, **overrides):
+    payload = _payload(query)
+    payload.update(
+        {
+            "subjects": [],
+            "constraints": {"timeRange": None, "metadata": []},
+            "outputPreference": None,
+        }
+    )
+    payload.update(overrides)
+    return payload
+
+
+def _assert_strict_objects(schema):
+    if not isinstance(schema, dict):
+        return
+    if schema.get("type") == "object":
+        properties = schema.get("properties", {})
+        assert schema.get("additionalProperties") is False
+        assert set(schema.get("required", [])) == set(properties)
+    for value in schema.values():
+        if isinstance(value, dict):
+            _assert_strict_objects(value)
+        elif isinstance(value, list):
+            for item in value:
+                _assert_strict_objects(item)
+
+
+def test_structured_query_tool_uses_a_complete_strict_schema():
+    function = STRUCTURED_QUERY_TOOL["function"]
+    assert function["name"] == "submit_structured_query"
+    assert function["strict"] is True
+    assert function["parameters"] is STRUCTURED_QUERY_JSON_SCHEMA
+    _assert_strict_objects(STRUCTURED_QUERY_JSON_SCHEMA)
+
+
+def test_graph_structurer_forces_strict_tool_call(monkeypatch):
+    query = "지난해 주문 건수를 월별로 비교해줘."
+    payload = _strict_payload(
+        query,
+        normalizedQuery="2025년 주문 건수 월별 비교",
+        intent="comparison",
+        complexity="moderate",
+        operations=["aggregate", "compare"],
+        plannerHints={
+            "requiresMultipleRetrievals": True,
+            "requiresSequentialExecution": False,
+            "requiresComparison": True,
+            "requiresAggregation": True,
+            "reason": "월별 주문 건수를 집계한 뒤 비교한다.",
+        },
+    )
+    captured = {}
+
+    def fake_chat_create(client, **kwargs):
+        captured.update(kwargs)
+        function = SimpleNamespace(
+            name="submit_structured_query",
+            arguments=json.dumps(payload, ensure_ascii=False),
+        )
+        message = SimpleNamespace(tool_calls=[SimpleNamespace(function=function)], content=None)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(g, "_openai_chat_create", fake_chat_create)
+    monkeypatch.setattr(g, "_write_rag_llm_log", lambda *args, **kwargs: None)
+
+    result = g._structure_query(
+        query,
+        StructuringContext(current_date="2026-07-28", timezone="Asia/Seoul"),
+        "gpt-5-mini",
+    )
+
+    assert result.intent == "comparison"
+    assert captured["tools"][0]["function"]["strict"] is True
+    assert captured["tool_choice"]["function"]["name"] == "submit_structured_query"
+    assert captured["parallel_tool_calls"] is False
+
+
+def test_structurer_emits_validation_and_success_events():
+    query = "지난해 주문 건수를 비교해줘."
+    events = []
+    completion = ResponseSequence(
+        [
+            "not-json",
+            json.dumps(_strict_payload(query, intent="comparison", operations=["compare"]), ensure_ascii=False),
+        ]
+    )
+
+    result = LLMQueryStructurer(
+        completion,
+        on_event=lambda event, payload: events.append((event, payload)),
+    ).structure(QueryStructuringInput(query=query, context=StructuringContext(current_date="2026-07-28")))
+
+    assert result.intent == "comparison"
+    assert [event for event, _ in events] == [
+        "query_structuring_attempt_failed",
+        "query_structuring_success",
+    ]
+    assert events[0][1]["attempt"] == 1
+    assert events[1][1]["attempt"] == 2
 
 
 def test_simple_question_keeps_a_single_information_need():
@@ -235,7 +346,11 @@ def test_conversation_reference_uses_only_supplied_context():
 def test_invalid_llm_json_retries_twice_then_returns_fallback():
     query = "복잡한 질문"
     completion = ResponseSequence(["not json", "[]", "{\"unexpected\": true}"])
-    result = LLMQueryStructurer(completion).structure(
+    events = []
+    result = LLMQueryStructurer(
+        completion,
+        on_event=lambda event, payload: events.append((event, payload)),
+    ).structure(
         QueryStructuringInput(query=query, context=StructuringContext(current_date="2026-07-27"))
     )
 
@@ -259,3 +374,10 @@ def test_invalid_llm_json_retries_twice_then_returns_fallback():
         },
     }
     assert "Validation Error" in completion.messages[1][-1]["content"]
+    assert [event for event, _ in events] == [
+        "query_structuring_attempt_failed",
+        "query_structuring_attempt_failed",
+        "query_structuring_attempt_failed",
+        "query_structuring_fallback",
+    ]
+    assert events[-1][1]["attempts"] == 3

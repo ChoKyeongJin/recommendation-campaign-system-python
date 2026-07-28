@@ -32,6 +32,124 @@ METADATA_OPERATORS = {"eq", "neq", "gt", "gte", "lt", "lte", "in", "contains"}
 OPERATIONS = {"find", "filter", "compare", "aggregate", "rank", "summarize", "explain", "build_timeline"}
 OUTPUT_FORMATS = {"text", "table", "list", "json"}
 
+
+def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return the strict-output representation of an optional value.
+
+    OpenAI strict structured outputs require every object property to be listed
+    in ``required``.  Optional application values therefore stay present in the
+    wire payload and use JSON ``null`` when they are unknown.
+    """
+
+    return {"anyOf": [schema, {"type": "null"}]}
+
+
+_SUBJECT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["name", "type", "aliases"],
+    "properties": {
+        "name": {"type": "string"},
+        "type": _nullable({"type": "string"}),
+        "aliases": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
+_TIME_RANGE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["from", "to", "originalExpression"],
+    "properties": {
+        "from": _nullable({"type": "string"}),
+        "to": _nullable({"type": "string"}),
+        "originalExpression": _nullable({"type": "string"}),
+    },
+}
+
+_METADATA_VALUE_SCHEMA: dict[str, Any] = {
+    "anyOf": [
+        {"type": "string"},
+        {"type": "number"},
+        {"type": "boolean"},
+        {"type": "array", "items": {"type": "string"}},
+        {"type": "null"},
+    ]
+}
+
+_METADATA_CONSTRAINT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["expression", "field", "operator", "value"],
+    "properties": {
+        "expression": {"type": "string"},
+        "field": _nullable({"type": "string"}),
+        "operator": _nullable({"type": "string", "enum": sorted(METADATA_OPERATORS)}),
+        "value": _METADATA_VALUE_SCHEMA,
+    },
+}
+
+_CONSTRAINTS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["timeRange", "metadata"],
+    "properties": {
+        "timeRange": _nullable(_TIME_RANGE_SCHEMA),
+        "metadata": {"type": "array", "items": _METADATA_CONSTRAINT_SCHEMA},
+    },
+}
+
+_INFORMATION_NEED_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["id", "target", "subjectRefs", "description"],
+    "properties": {
+        "id": {"type": "string"},
+        "target": {"type": "string"},
+        "subjectRefs": {"type": "array", "items": {"type": "string"}},
+        "description": {"type": "string"},
+    },
+}
+
+_DEPENDENCY_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["from", "to", "reason"],
+    "properties": {
+        "from": {"type": "string"},
+        "to": {"type": "string"},
+        "reason": {"type": "string"},
+    },
+}
+
+_OUTPUT_PREFERENCE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["format", "language"],
+    "properties": {
+        "format": _nullable({"type": "string", "enum": sorted(OUTPUT_FORMATS)}),
+        "language": _nullable({"type": "string"}),
+    },
+}
+
+_PLANNER_HINTS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "requiresMultipleRetrievals",
+        "requiresSequentialExecution",
+        "requiresComparison",
+        "requiresAggregation",
+        "reason",
+    ],
+    "properties": {
+        "requiresMultipleRetrievals": {"type": "boolean"},
+        "requiresSequentialExecution": {"type": "boolean"},
+        "requiresComparison": {"type": "boolean"},
+        "requiresAggregation": {"type": "boolean"},
+        "reason": {"type": "string"},
+    },
+}
+
 STRUCTURED_QUERY_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -45,6 +163,7 @@ STRUCTURED_QUERY_JSON_SCHEMA: dict[str, Any] = {
         "informationNeeds",
         "operations",
         "dependencies",
+        "outputPreference",
         "plannerHints",
     ],
     "properties": {
@@ -52,13 +171,23 @@ STRUCTURED_QUERY_JSON_SCHEMA: dict[str, Any] = {
         "normalizedQuery": {"type": "string"},
         "intent": {"type": "string", "enum": sorted(INTENTS)},
         "complexity": {"type": "string", "enum": sorted(COMPLEXITIES)},
-        "subjects": {"type": "array"},
-        "constraints": {"type": "object"},
-        "informationNeeds": {"type": "array"},
-        "operations": {"type": "array", "items": {"enum": sorted(OPERATIONS)}},
-        "dependencies": {"type": "array"},
-        "outputPreference": {"type": "object"},
-        "plannerHints": {"type": "object"},
+        "subjects": {"type": "array", "items": _SUBJECT_SCHEMA},
+        "constraints": _CONSTRAINTS_SCHEMA,
+        "informationNeeds": {"type": "array", "items": _INFORMATION_NEED_SCHEMA},
+        "operations": {"type": "array", "items": {"type": "string", "enum": sorted(OPERATIONS)}},
+        "dependencies": {"type": "array", "items": _DEPENDENCY_SCHEMA},
+        "outputPreference": _nullable(_OUTPUT_PREFERENCE_SCHEMA),
+        "plannerHints": _PLANNER_HINTS_SCHEMA,
+    },
+}
+
+STRUCTURED_QUERY_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "submit_structured_query",
+        "description": "사용자 질문의 의미와 정보 요구를 검증 가능한 StructuredQuery로 제출한다.",
+        "strict": True,
+        "parameters": STRUCTURED_QUERY_JSON_SCHEMA,
     },
 }
 
@@ -154,7 +283,7 @@ def _constraints(value: Any) -> Constraints:
     data = _object(value, "constraints")
     _keys(data, "constraints", required={"metadata"}, optional={"timeRange"})
     metadata = [_metadata_constraint(item, index) for index, item in enumerate(_array(data["metadata"], "constraints.metadata"))]
-    time_range = _time_range(data["timeRange"]) if "timeRange" in data else None
+    time_range = _time_range(data["timeRange"]) if data.get("timeRange") is not None else None
     return Constraints(metadata=metadata, time_range=time_range)
 
 
@@ -176,7 +305,7 @@ def _metadata_constraint(value: Any, index: int) -> MetadataConstraint:
     data = _object(value, f"constraints.metadata[{index}]")
     _keys(data, f"constraints.metadata[{index}]", required={"expression"}, optional={"field", "operator", "value"})
     metadata_value = data.get("value")
-    if "value" in data and not _valid_metadata_value(metadata_value):
+    if metadata_value is not None and not _valid_metadata_value(metadata_value):
         raise StructuredQueryValidationError(f"constraints.metadata[{index}].value has an unsupported type")
     operator = _optional_enum(data.get("operator"), f"constraints.metadata[{index}].operator", METADATA_OPERATORS)
     return MetadataConstraint(

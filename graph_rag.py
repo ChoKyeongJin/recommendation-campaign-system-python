@@ -53,6 +53,7 @@ from calendar_window import (
     month_last_day as _month_last_day,
     parse_calendar_window,
     parse_calendar_window_group,
+    parse_calendar_window_group_span,
     parse_calendar_window_spans,
     parse_calendar_windows,
     parse_duration_window as _parse_duration_window,
@@ -94,17 +95,25 @@ from confidence import render_confidence_markdown, render_confidence_report, sco
 from sql_dialect import SqlDialect, get_dialect
 import targeting_ir
 from targeting_ir import extract_target_conditions, fact_join_kinds
+import slot_ownership
+from slot_ownership import claim_slots as _claim_slots
 import metric_registry
 import segment_semantics
 import semantic_requirements
 import compiler_strategies
 from query_structurer import (
+    CAMPAIGN_QUERY_PLAN_V2_TOOL,
+    CampaignQueryPlanV2,
+    LLMCampaignQueryPlanStructurer,
     LLMQueryStructurer,
     QueryPlannerInput,
     QueryStructurer,
     QueryStructuringInput,
     StructuredQuery,
     StructuringContext,
+    STRUCTURED_QUERY_TOOL,
+    as_campaign_query_plan_v2,
+    build_campaign_query_plan_v2_fallback,
     build_fallback,
     call_query_planner,
 )
@@ -166,28 +175,155 @@ def _structure_query(
     if query_structurer is not None:
         try:
             return query_structurer.structure(input)
-        except Exception:  # noqa: BLE001 - structuring must never block the existing planner.
+        except Exception as exc:  # noqa: BLE001 - structuring must never block the existing planner.
+            _write_rag_llm_log(
+                "query_structuring_injected_failed",
+                {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
+            )
             return build_fallback(query)
 
     if not os.getenv("OPENAI_API_KEY"):
+        _write_rag_llm_log(
+            "query_structuring_skipped",
+            {"query": query, "reason": "missing_openai_api_key"},
+        )
         return build_fallback(query)
     try:
         from openai import OpenAI
 
         client = OpenAI()
+        call_count = 0
 
         def complete(messages: list[dict[str, str]]) -> str:
+            nonlocal call_count
+            call_count += 1
+            model = _fast_llm_model(llm_model) or llm_model
+            _write_rag_llm_log(
+                "query_structuring_request",
+                {
+                    "attempt": call_count,
+                    "model": model,
+                    "query": query,
+                    "mode": "strict_function_calling",
+                },
+            )
             response = _openai_chat_create(
                 client,
-                model=_fast_llm_model(llm_model) or llm_model,
+                model=model,
                 temperature=0,
                 messages=messages,
+                tools=[STRUCTURED_QUERY_TOOL],
+                tool_choice={
+                    "type": "function",
+                    "function": {"name": STRUCTURED_QUERY_TOOL["function"]["name"]},
+                },
+                parallel_tool_calls=False,
             )
-            return response.choices[0].message.content or ""
+            message = response.choices[0].message
+            tool_calls = getattr(message, "tool_calls", None) or []
+            if not tool_calls:
+                refusal = getattr(message, "refusal", None)
+                raise ValueError(f"structured query tool call missing; refusal={refusal!r}")
+            function = tool_calls[0].function
+            if function.name != STRUCTURED_QUERY_TOOL["function"]["name"]:
+                raise ValueError(f"unexpected structured query tool: {function.name}")
+            content = function.arguments or "{}"
+            _write_rag_llm_log(
+                "query_structuring_response",
+                {"attempt": call_count, "model": model, "query": query, "content": content},
+            )
+            return content
 
-        return LLMQueryStructurer(complete).structure(input)
-    except Exception:  # noqa: BLE001 - unavailable LLM uses the same safe fallback as invalid output.
+        return LLMQueryStructurer(
+            complete,
+            on_event=lambda event, payload: _write_rag_llm_log(
+                event, {"query": query, **payload}
+            ),
+        ).structure(input)
+    except Exception as exc:  # noqa: BLE001 - unavailable LLM uses the same safe fallback as invalid output.
+        _write_rag_llm_log(
+            "query_structuring_setup_failed",
+            {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
+        )
         return build_fallback(query)
+
+
+def _structure_campaign_query_plan_v2(
+    query: str,
+    context: StructuringContext,
+    llm_model: str,
+    query_structurer: QueryStructurer | None = None,
+) -> CampaignQueryPlanV2:
+    """Produce the campaign IR that is passed unchanged to the planner/compiler."""
+
+    input = QueryStructuringInput(query=query, context=context)
+    if query_structurer is not None:
+        try:
+            structured = query_structurer.structure(input)
+            if isinstance(structured, CampaignQueryPlanV2):
+                return structured
+            return build_campaign_query_plan_v2_fallback(query)
+        except Exception as exc:  # noqa: BLE001 - safe deterministic fallback.
+            _write_rag_llm_log(
+                "campaign_query_plan_v2_injected_failed",
+                {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
+            )
+            return build_campaign_query_plan_v2_fallback(query)
+
+    if not os.getenv("OPENAI_API_KEY"):
+        _write_rag_llm_log(
+            "campaign_query_plan_v2_skipped",
+            {"query": query, "reason": "missing_openai_api_key"},
+        )
+        return build_campaign_query_plan_v2_fallback(query)
+    try:
+        from openai import OpenAI
+
+        client = OpenAI()
+        call_count = 0
+
+        def complete(messages: list[dict[str, str]]) -> str:
+            nonlocal call_count
+            call_count += 1
+            model = _fast_llm_model(llm_model) or llm_model
+            response = _openai_chat_create(
+                client,
+                model=model,
+                temperature=0,
+                messages=messages,
+                tools=[CAMPAIGN_QUERY_PLAN_V2_TOOL],
+                tool_choice={
+                    "type": "function",
+                    "function": {"name": CAMPAIGN_QUERY_PLAN_V2_TOOL["function"]["name"]},
+                },
+                parallel_tool_calls=False,
+            )
+            message = response.choices[0].message
+            tool_calls = getattr(message, "tool_calls", None) or []
+            if not tool_calls:
+                raise ValueError("campaign QueryPlan v2 tool call missing")
+            function = tool_calls[0].function
+            if function.name != CAMPAIGN_QUERY_PLAN_V2_TOOL["function"]["name"]:
+                raise ValueError(f"unexpected campaign QueryPlan v2 tool: {function.name}")
+            content = function.arguments or "{}"
+            _write_rag_llm_log(
+                "campaign_query_plan_v2_response",
+                {"attempt": call_count, "model": model, "query": query, "content": content},
+            )
+            return content
+
+        return LLMCampaignQueryPlanStructurer(
+            complete,
+            on_event=lambda event, payload: _write_rag_llm_log(
+                event, {"query": query, **payload}
+            ),
+        ).structure(input)
+    except Exception as exc:  # noqa: BLE001 - unavailable provider is a safe fallback.
+        _write_rag_llm_log(
+            "campaign_query_plan_v2_setup_failed",
+            {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
+        )
+        return build_campaign_query_plan_v2_fallback(query)
 
 
 def _fast_llm_model(current: str | None) -> str | None:
@@ -1995,7 +2131,8 @@ def build_query_plan(
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
     multi_query_variants: int = 0,
     structured_query: StructuredQuery | None = None,
-) -> dict[str, Any]:
+    query_plan_v2: CampaignQueryPlanV2 | None = None,
+) -> CampaignQueryPlanV2:
     """단일 파싱으로 query_plan 을 만든다. multi_query_variants>0 이고 LLM 사용 가능하면 프롬프트를
     의미보존 재구성한 변이들도 파싱해 '성공적으로 잡힌 타겟 조건'을 base 에 합집합으로 병합한다.
 
@@ -2013,6 +2150,7 @@ def build_query_plan(
         llm_model,
         prompt_dir,
         structured_query,
+        query_plan_v2,
     )
     if multi_query_variants and multi_query_variants > 0 and parser.casefold() != "rules":
         variant_intents: list[str] = []
@@ -2027,12 +2165,14 @@ def build_query_plan(
                 llm_model,
                 prompt_dir,
                 structured_query,
+                None,
             )
             _merge_targeting_conditions(base, variant_plan)
             variant_intents.append(variant_plan.get("intent"))
         _upgrade_intent_from_variants(base, variant_intents)
         base.setdefault("parser", {})["multi_query_variants"] = multi_query_variants
     if structured_query is not None:
+        # Compatibility for callers that still pass the retired general IR.
         base["structured_query"] = structured_query.to_dict()
     # Entity extraction and analytical routing consume the same deterministic
     # token-role view.  Exposing it on the plan also makes silent role drift
@@ -2058,7 +2198,11 @@ def build_query_plan(
     _reconcile_cart_aggregate_ownership(base)
     _attach_query_output_contract(query, base)
     base["complexity"] = classify_query_complexity(base)
-    return base
+    return as_campaign_query_plan_v2(
+        base,
+        original_query=query,
+        normalized_query=(base.get("retrieval") or {}).get("query"),
+    )
 
 
 def _apply_entity_set_condition(query: str, plan: dict[str, Any]) -> None:
@@ -2083,35 +2227,59 @@ def _apply_entity_set_condition(query: str, plan: dict[str, Any]) -> None:
         return
     target_user = plan.setdefault("target_user", {})
     target_user["entity_set_condition"] = node
-    # 순위 절이 소유한 어구는 오디언스 슬롯에서 회수한다.
-    target_user.pop("purchase_object", None)
-    target_user.pop("purchase_object_kind", None)
-    target_user.pop("purchase_objects", None)
+    # 순위 절이 소유한 어구는 오디언스 슬롯에서 회수한다. 회수 판정은 '조건의 종류'가 아니라 '문장의
+    # 같은 구간'이다 — 슬롯이 이 절 밖(예: 뒤쪽 구매 시점 절)에서 왔다면 종류가 같아도 남긴다.
+    # 회수된 값은 사라지지 않고 plan["superseded_conditions"] 에 사유와 함께 기록된다.
+    spans = node.get("spans") if isinstance(node.get("spans"), dict) else {}
+    owner = "entity_set_condition"
+    _claim_slots(
+        plan, (("target_user", "purchase_object"), ("target_user", "purchase_object_kind"),
+               ("target_user", "purchase_objects")),
+        owner=owner, reason="순위 절의 엔터티(상품)를 리터럴 상품 조건으로 이중 해석",
+        source_text=query, owner_span=spans.get("entity"),
+    )
     if node.get("window"):
-        target_user.pop("purchase_date", None)
+        # 순위 창('2019년 가장 많이 팔린')은 순위 계산의 기간이지 구매 시점이 아니다. 다만 문장에
+        # 별도의 구매 시점('… 2020년 3월에 구매한')이 있으면 그건 다른 절의 조건이라 남긴다.
+        _claim_slots(
+            plan, (("target_user", "purchase_date"),),
+            owner=owner, reason="순위 절의 기간을 구매 시점 조건으로 이중 해석",
+            source_text=query, owner_span=spans.get("window"),
+        )
     # 관계 자체(구매/장바구니의 존재·부재)는 이 조건의 EXISTS/NOT EXISTS 가 이미 표현한다.
     # 부정도 마찬가지다 — '상위 상품을 구매하지 않은'은 전체 무주문(no_purchase)이 아니라
     # 이 집합에 한정된 부재이므로, 일반 무주문 조건으로 남겨두면 서로 다른 모집단을 요구하게 된다.
-    target_user.pop("purchase_membership", None)
+    relation_targets: list[tuple[str, str]] = [("target_user", "purchase_membership")]
     # 순위 절의 관계 표현('가장 많이 *장바구니에 담은* 상품')도 이 조건이 소유한다 — 오디언스
     # 행동 조건으로 남으면 순위 절의 어구가 회원 조건으로 두 번 해석된다.
     relations = {str(node.get("relation")), str(node.get("rankRelation") or node.get("relation"))}
-    owned_behaviors = {"cart_abandoner"} if "cart" in relations else set()
+    if "cart" in relations:
+        relation_targets.append(("target_user", "behaviors:cart_abandoner"))
     if node.get("negated"):
-        owned_behaviors.add("no_purchase" if node.get("relation") == "purchase" else "no_cart")
-        target_user.pop("purchase_inactivity", None)
-        target_user.pop("cart_absence", None)
-    if owned_behaviors:
-        target_user["behaviors"] = [
-            value for value in target_user.get("behaviors", []) or [] if value not in owned_behaviors
-        ]
+        relation_targets.append(
+            ("target_user", "behaviors:no_purchase" if node.get("relation") == "purchase" else "behaviors:no_cart")
+        )
+        relation_targets.extend((("target_user", "purchase_inactivity"), ("target_user", "cart_absence")))
+    _claim_slots(
+        plan, tuple(relation_targets),
+        owner=owner, reason="순위 절의 관계(구매/장바구니 존재·부재)를 별도 행동 조건으로 이중 해석",
+        source_text=query, owner_span=spans.get("relation"),
+    )
     # 극값 표현('가장 많이')은 순위 집합의 것이지 회원 지표 랭킹이 아니다.
-    for key in ("member_metric_selection", "member_metric_ranking", "purchase_count_ranking", "group_ranking_target"):
-        plan.pop(key, None)
+    _claim_slots(
+        plan, (("plan", "member_metric_selection"), ("plan", "member_metric_ranking"),
+               ("plan", "purchase_count_ranking"), ("plan", "group_ranking_target")),
+        owner=owner, reason="순위 절의 극값 표현을 회원 지표 랭킹으로 이중 해석",
+        source_text=query, owner_span=spans.get("clause"),
+    )
     # '매출 상위 5개'의 개수는 엔터티 개수지 결과 회원 수 제한이 아니다. 같은 수가 행수 제한으로도
     # 잡혔을 때만 회수한다("… 구매한 회원 100명"처럼 별도로 지정한 제한은 보존).
     if plan.get("result_limit") == node.get("limit"):
-        plan["result_limit"] = None
+        _claim_slots(
+            plan, (("plan", "result_limit"),),
+            owner=owner, reason="순위 절의 엔터티 개수를 결과 행수 제한으로 이중 해석",
+            source_text=query, owner_span=spans.get("count"), mode="clear",
+        )
     # 같은 어구('매출이 높은')를 회원 단위 랭킹 정책으로도 읽은 결과는 이 조건과 이중 해석이다.
     # 임계값 정책은 진짜 추가 조건이므로 남긴다 — 순위(rank) 정책만 회수한다.
     policies = plan.get("policy_constraints")
@@ -2454,6 +2622,14 @@ class _FilterSpec:
     # exception_reason 에 사유를 적는다 — 테스트가 '클러스터 소속은 선언형이거나 사유 있는 예외' 불변식을 강제한다.
     family: str | None = None
     exception_reason: str | None = None
+    # 출처 구간(span) 위치추적기: span(query, plan) -> (start, end) | None. 선언하면 필터 실행 뒤
+    # span_slots 각 슬롯의 '원문 어디서 왔는지'를 기록한다(slot_ownership). 기록된 슬롯은 소유권
+    # 회수가 '조건의 종류'가 아니라 '문장의 같은 구간'으로 판정돼, 다른 절이 만든 동종 조건이
+    # 함께 지워지지 않는다. 미선언 필터는 기존 동작 그대로다(점진 도입).
+    span: Callable[[str, dict[str, Any]], tuple[int, int] | None] | None = None
+    # (컨테이너, 슬롯) 목록. 리스트 슬롯의 개별 값은 "behaviors:cart_abandoner" 형태.
+    # 비우면 slot_setter 의 (slot_on, slot) 하나가 기본이다.
+    span_slots: tuple[tuple[str, str], ...] = ()
     paths: frozenset[str] = frozenset({"rules", "auto"})
 
 
@@ -2479,10 +2655,14 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
         "purchase_count_ranking": _FilterSpec(_apply_purchase_count_ranking_target),
         # 연령(정규식) — rules 전용. target_user 를 직접 받는다.
         "age": _FilterSpec(_apply_age_filters, arg="target_user", paths=frozenset({"rules"})),
-        "purchase_object": _FilterSpec(_apply_purchase_object_filter, arg="target_user"),
+        "purchase_object": _FilterSpec(_apply_purchase_object_filter, arg="target_user",
+                                       span=_purchase_object_span,
+                                       span_slots=(("target_user", "purchase_object"), ("target_user", "purchase_objects"))),
         # 선언형(slot_setter): 감지 파서 → 슬롯. 전용 _apply_* 함수 없이 레지스트리 한 줄.
-        "purchase_date": _FilterSpec(impl="slot_setter", detect=_parse_purchase_date_period, slot="purchase_date", init_key="purchase_date"),
-        "result_limit": _FilterSpec(impl="slot_setter", detect=_parse_result_limit, slot="result_limit", slot_on="plan", init_key="result_limit", init_on="plan"),
+        "purchase_date": _FilterSpec(impl="slot_setter", detect=_parse_purchase_date_period, slot="purchase_date", init_key="purchase_date",
+                                     span=_purchase_date_span),
+        "result_limit": _FilterSpec(impl="slot_setter", detect=_parse_result_limit, slot="result_limit", slot_on="plan", init_key="result_limit", init_on="plan",
+                                    span=_result_limit_span),
         "purchase_inactivity": _FilterSpec(_apply_purchase_inactivity_filter, init_key="purchase_inactivity"),
         "recent_login": _FilterSpec(impl="slot_setter", detect=_parse_recent_login_period, slot="recent_login", init_key="recent_login"),
         # 예외(attribute_token 클러스터지만 커스텀): 온/오프라인 가입은 online=NOT offline 상호정의 + 이중부정
@@ -2552,6 +2732,46 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
         "inactivity_period": _FilterSpec(_apply_inactivity_period_filter, paths=frozenset({"rules"})),
         "policy": _FilterSpec(_apply_policy_constraints, needs_policies=True, paths=frozenset({"rules"})),
     }
+
+
+# ── 출처 구간(span) 위치추적기 ─────────────────────────────────────────────────────
+# 결정론 파서는 전부 원문 정규식이라 '어느 구간을 읽었는지'는 이미 부산물로 존재한다. 아래 함수들이
+# 그 부산물을 슬롯 옆에 남겨, 소유권 회수가 '조건의 종류'가 아니라 '문장의 같은 구간'으로 판정되게 한다.
+
+
+def _purchase_date_span(query: str, _plan: dict[str, Any]) -> tuple[int, int] | None:
+    """구매일 슬롯이 읽은 달력 창 나열 전체의 원문 구간(문법 소유자 calendar_window 가 계산)."""
+    return parse_calendar_window_group_span(query)
+
+
+def _result_limit_span(query: str, _plan: dict[str, Any]) -> tuple[int, int] | None:
+    """'N명만' 개수 제한 표현의 원문 구간."""
+    matched = _match_result_limit(query)
+    return matched[1] if matched else None
+
+
+def _purchase_object_span(query: str, plan: dict[str, Any]) -> tuple[int, int] | None:
+    """구매 상품 슬롯이 읽은 상품어(들)의 원문 구간.
+
+    값 자체가 원문에서 잘라낸 부분 문자열이므로 값의 위치가 곧 출처 구간이다(나열형이면 전체를 덮는
+    구간). 조사·수식어를 떼어낸 값이 원문에서 안 보이면 구간을 만들지 않는다 — 잘못된 구간보다
+    '모름'이 안전하다(기존 동작 유지)."""
+    target_user = plan.get("target_user") if isinstance(plan.get("target_user"), dict) else {}
+    values = [
+        item.get("value")
+        for item in (target_user.get("purchase_objects") or [])
+        if isinstance(item, dict)
+    ] or [target_user.get("purchase_object")]
+    positions: list[tuple[int, int]] = []
+    for value in values:
+        if not isinstance(value, str) or not value:
+            continue
+        index = query.find(value)
+        if index >= 0:
+            positions.append((index, index + len(value)))
+    if not positions:
+        return None
+    return min(start for start, _ in positions), max(end for _, end in positions)
 
 
 def _detect_birthday_target(query: str) -> dict[str, Any] | None:
@@ -2769,6 +2989,41 @@ def _dispatch_filter(spec: "_FilterSpec", query: str, plan: dict[str, Any], busi
         spec.apply(query, plan)
 
 
+def _slot_is_filled(plan: dict[str, Any], container: str, slot: str) -> bool:
+    """(컨테이너, 슬롯)에 값이 있는지. "behaviors:cart_abandoner" 형태면 리스트 원소 존재 여부."""
+    holder = plan if container == "plan" else plan.get(container)
+    if not isinstance(holder, dict):
+        return False
+    name, _, value = slot.partition(":")
+    current = holder.get(name)
+    if value:
+        return isinstance(current, list) and value in current
+    return not _is_empty_slot(current)
+
+
+def _record_filter_spans(name: str, spec: "_FilterSpec", query: str, plan: dict[str, Any]) -> None:
+    """필터가 채운 슬롯에 출처 구간을 기록한다(span 을 선언한 필터만).
+
+    값이 실제로 들어간 슬롯만 기록한다 — 필터가 발동하지 않았는데 구간만 남으면 그 다음 소유권
+    판정이 유령 구간을 근거로 삼는다."""
+    if spec.span is None:
+        return
+    targets = spec.span_slots or ((((spec.slot_on, spec.slot),)) if spec.slot else ())
+    if not targets:
+        return
+    try:
+        span = spec.span(query, plan)
+    except (AttributeError, IndexError, KeyError, TypeError, ValueError):
+        return  # 구간을 못 찾는 것은 조건 파싱 실패가 아니다(기존 동작으로 폴백).
+    if span is None:
+        return
+    for container, slot in targets:
+        if _slot_is_filled(plan, container, slot):
+            slot_ownership.record_slot_span(
+                plan, slot, span, source_text=query, container=container, filter_name=name
+            )
+
+
 def _apply_named_filter(
     name: str,
     query: str,
@@ -2783,6 +3038,7 @@ def _apply_named_filter(
         container = plan if spec.init_on == "plan" else plan.setdefault("target_user", {})
         container.setdefault(spec.init_key, [] if spec.init_list else None)
     _dispatch_filter(spec, query, plan, business_policies)
+    _record_filter_spans(name, spec, query, plan)
 
 
 def _run_filters(
@@ -2838,6 +3094,7 @@ def _build_single_query_plan(
     llm_model: str = DEFAULT_LLM_MODEL,
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
     structured_query: StructuredQuery | None = None,
+    query_plan_v2: CampaignQueryPlanV2 | None = None,
 ) -> dict[str, Any]:
     parser = parser.casefold()
     if parser not in {"rules", "auto", "llm"}:
@@ -2863,6 +3120,9 @@ def _build_single_query_plan(
     # 정규식이 못 뽑은 상품 구매이력/판매 상품을 검증된 LLM 추출로 보완한다(표현형 변화 흡수).
     # rules_plan 에 반영하면 llm 경로도 _coerce_llm_query_plan 의 깊은 복사로 값을 물려받는다.
     _apply_llm_object_fallback(parse_query, rules_plan, llm_model=llm_model, prompt_dir=prompt_dir)
+    if query_plan_v2 is not None and query_plan_v2.get("intent") != "unknown":
+        rules_plan = _coerce_llm_query_plan(query_plan_v2, rules_plan, sql_schema)
+        _apply_llm_structured_slots(rules_plan)
     # 의도·복잡도 판별(파이프라인 2단계): 이후 라우팅·관측용으로 plan 에 기록한다.
     rules_plan["complexity"] = classify_query_complexity(rules_plan)
     if parser == "rules":
@@ -2884,14 +3144,17 @@ def _build_single_query_plan(
         _attach_retrieval_scopes(rules_plan, scopes)
         return rules_plan
 
-    llm_plan, failure_reason = _try_llm_query_plan(
-        parse_query,
-        rules_plan,
-        llm_model,
-        prompt_dir,
-        sql_schema,
-        structured_query,
-    )
+    if query_plan_v2 is not None and query_plan_v2.get("intent") != "unknown":
+        llm_plan, failure_reason = rules_plan, None
+    else:
+        llm_plan, failure_reason = _try_llm_query_plan(
+            parse_query,
+            rules_plan,
+            llm_model,
+            prompt_dir,
+            sql_schema,
+            structured_query,
+        )
     if llm_plan is None:
         rules_plan["parser"] = {
             "type": "rules",
@@ -8016,7 +8279,8 @@ _RESULT_LIMIT_PATTERNS = (
 )
 
 
-def _parse_result_limit(query: str) -> int | None:
+def _match_result_limit(query: str) -> tuple[int, tuple[int, int]] | None:
+    """개수 제한 표현 → (제한값, 원문 구간). 값과 구간을 같은 매칭에서 뽑아 둘이 어긋나지 않게 한다."""
     for pattern in _RESULT_LIMIT_PATTERNS:
         match = pattern.search(query)
         if not match:
@@ -8026,8 +8290,13 @@ def _parse_result_limit(query: str) -> int | None:
         except ValueError:
             continue
         if value > 0:
-            return min(value, _RESULT_LIMIT_MAX_ROWS)
+            return min(value, _RESULT_LIMIT_MAX_ROWS), match.span()
     return None
+
+
+def _parse_result_limit(query: str) -> int | None:
+    matched = _match_result_limit(query)
+    return matched[0] if matched else None
 
 
 # 결과 개수 제한('N명만')은 slot_setter(_parse_result_limit → plan.result_limit)가 담당한다(레지스트리 "result_limit").
@@ -10094,7 +10363,9 @@ def retrieve(
         current_date=date.today().isoformat(),
         timezone=os.getenv("GRAPH_RAG_TIMEZONE"),
     )
-    structured_query = _structure_query(targeting_prompt, context, llm_model, query_structurer)
+    campaign_query_plan = _structure_campaign_query_plan_v2(
+        targeting_prompt, context, llm_model, query_structurer
+    )
     timings_ms["query_structuring"] = _elapsed_ms(stage_started_at)
 
     # 파싱 전에 사용자 프롬프트를 타겟 조건 중심으로 재작성(룰/LLM)한다. 재작성본으로 파싱하되 원문은 보존한다.
@@ -10124,7 +10395,7 @@ def retrieve(
     timings_ms["prompt_scopes"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
-    planner_input = QueryPlannerInput(query=plan_query, structured_query=structured_query)
+    planner_input = QueryPlannerInput(query=plan_query, query_plan=campaign_query_plan)
     query_plan = call_query_planner(
         build_query_plan,
         planner_input,
@@ -10345,7 +10616,9 @@ def retrieve(
     api_response = build_recommendation_api_response(query, query_plan, sql_result, answer_response, message_generation, prompt_normalization)
     return {
         "query": query,
-        "structured_query": structured_query.to_dict(),
+        # Deprecated response alias retained for clients that still read the
+        # former camelCase DTO. Planning and execution use query_plan v2 only.
+        "structured_query": build_fallback(campaign_query_plan.original_query).to_dict(),
         "llm_query_plan_prompt": llm_query_plan_prompt,
         "llm_sql_prompt": llm_sql_prompt,
         "prompt_normalization": prompt_normalization,
@@ -15500,7 +15773,14 @@ def build_entity_set_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[s
         ast,
         "sql_template",
     )
-    candidate["dropped_conditions"] = compiled["unsupported"]
+    dropped = list(compiled["unsupported"])
+    # 순위 절이 소유하지 않아 보존된 팩트 조건(다른 절의 구매 시점 등)은 이 빌더가 컴파일하지 않는다.
+    # 소유권 회수가 span 으로 정밀해진 만큼 '살아남았지만 SQL 에는 없는' 조건이 생길 수 있으므로,
+    # 조용히 무시하지 말고 부분추출로 고지한다 — 형제 빌더(_attach_cart_dropped_conditions)와 같은 규칙.
+    if (query_plan.get("target_user") or {}).get("purchase_date"):
+        dropped.append("target_user.purchase_date")
+    candidate["dropped_conditions"] = dropped
+    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]
     return candidate
 
 
