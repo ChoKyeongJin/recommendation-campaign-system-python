@@ -91,6 +91,21 @@ def test_default_period_scope_belongs_to_the_ranking_clause(config):
     assert predicate.split("IN (", 1)[0].count("ORDER_DATE") == 0
 
 
+def test_month_scoped_ranking_window_keeps_the_month(config):
+    """'2019년 3월 구매에서 가장 많이 팔린 상품 5개' — 월이 살아 있어야 그 달의 순위다.
+
+    창 파서가 연도만 알던 동안 3월이 통째로 사라져 2019년 연간 베스트셀러를 뽑았고, 의미 검증이
+    이를 잡아내 SQL 이 차단됐다(사용자는 결과를 못 받는다).
+    """
+    query = "2019년 3월 구매에서 가장 많이 팔린상품 5개를 구매한 고객 리스트"
+    node = parse_entity_set_condition(query, config)
+    assert node["window"] == {"from": "20190301", "to": "20190331", "label": "2019년 3월"}
+    assert node["limit"] == 5
+    predicate = compile_entity_set_predicate(node, config)
+    inner = predicate.split("IN (", 1)[1]
+    assert "ORDER_DATE BETWEEN '20190301' AND '20190331'" in inner
+
+
 def test_unsupported_combination_names_the_offending_element(config):
     """장바구니 테이블에는 브랜드 키가 없다 — 조용히 무시하지 않고 어느 요소가 문제인지 알린다."""
     node = parse_entity_set_condition("가장 많이 팔린 브랜드 3개를 장바구니에 담은 회원", config)

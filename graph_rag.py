@@ -41,6 +41,21 @@ from analytical_intent import (
     member_condition_filter,
     validate_intent_sql_contract,
 )
+from calendar_window import (
+    DURATION_ANCHOR_GAP as _DURATION_ANCHOR_GAP,
+    DURATION_UNIT_DAYS as _DURATION_UNIT_DAYS,
+    KO_UNIT_TO_CANON as _KO_UNIT_TO_CANON,
+    NUMERIC_DURATION_PATTERN as _NUMERIC_DURATION_PATTERN,
+    QUARTER_MONTH_RANGES as _QUARTER_MONTH_RANGES,
+    WORD_DURATION_DAYS as _WORD_DURATION_DAYS,
+    WORD_DURATION_PATTERN as _WORD_DURATION_PATTERN,
+    duration_window_candidates as _duration_window_candidates,
+    month_last_day as _month_last_day,
+    parse_calendar_window,
+    parse_duration_window as _parse_duration_window,
+    parse_half_or_quarter_window,
+    ymd as _ymd,
+)
 from entity_set import (
     compile_entity_set_predicate,
     entity_set_label,
@@ -7040,24 +7055,10 @@ def _apply_cart_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> 
     _set_cart_aggregate(plan, conditions)
 
 
-# 한글 기간 단위 → 캐노니컬 영문 단위(슬롯 정규화용). 일수 환산은 targeting_ir.UNIT_DAYS 가 소유한다.
-_KO_UNIT_TO_CANON = {"일": "days", "주": "weeks", "주일": "weeks", "개월": "months", "달": "months", "년": "years"}
-# 기간 표현 → 일수. 숫자형('7일', '2주')과 숫자 없는 한글 단어형('일주일', '보름', '한 달')을 모두 본다.
-# 단어형은 숫자가 없어서 재작성 가드의 숫자 서명에도, 기존 '최근 N일' 파서에도 안 잡혔다.
-# 한글토큰→일수는 토큰→canonical(_KO_UNIT_TO_CANON)과 canonical→일수(targeting_ir.UNIT_DAYS)의 합성으로
-# 파생한다 — 별도 한글 일수표를 두지 않아, 새 단위는 _KO_UNIT_TO_CANON(+targeting_ir.UNIT_DAYS)만 고치면 된다.
-_DURATION_UNIT_DAYS = {ko: targeting_ir.UNIT_DAYS[canon] for ko, canon in _KO_UNIT_TO_CANON.items()}
-_NUMERIC_DURATION_PATTERN = re.compile(r"(?P<num>\d+)\s*(?P<unit>주일|개월|일|주|달|년)")
-_WORD_DURATION_DAYS = {
-    "일주일": 7, "한주일": 7, "한주": 7, "일주": 7,
-    "이주일": 14, "두주일": 14, "두주": 14,
-    "삼주일": 21, "세주일": 21, "세주": 21,
-    "보름": 15,
-    "한달": 30, "한개월": 30,
-    "두달": 60, "두개월": 60,
-    "석달": 90, "세달": 90, "세개월": 90,
-    "반년": 180, "일년": 365, "한해": 365, "한햇": 365,
-}
+# 기간 어휘(_KO_UNIT_TO_CANON/_DURATION_UNIT_DAYS/_WORD_DURATION_DAYS/패턴)와 통합 파서
+# (_parse_duration_window/_duration_window_candidates)는 calendar_window 가 소유한다 — 이름은 여기서
+# 그대로 재노출한다(호출부 다수). 창 문법이 이 모듈 안에만 있어 순수 파서(entity_set 등)가 재사용하지
+# 못하고 각자 빈약한 정규식을 따로 갖던 것이 '2019년 3월 → 2019년 전체' 류 결함의 원인이었다.
 
 
 def _duration_days_signals(text: str) -> set[int]:
@@ -7066,9 +7067,6 @@ def _duration_days_signals(text: str) -> set[int]:
     재작성 가드가 '일주일 이상 유지' 같은 기간 조건 소실을 잡을 때 쓴다. 숫자 서명만으로는
     숫자 없는 단어형('일주일')이 사라져도 알 수 없었다."""
     return {days for _, _, days in _duration_matches((text or "").replace(" ", ""))}
-
-
-_WORD_DURATION_PATTERN = re.compile("|".join(sorted(map(re.escape, _WORD_DURATION_DAYS), key=len, reverse=True)))
 
 
 def _duration_matches(compact: str) -> list[tuple[int, int, int]]:
@@ -7096,68 +7094,6 @@ def _recently_default_days() -> int:
     recently = registry.get("relative_terms", {}).get("recently", {}) if isinstance(registry, dict) else {}
     days = recently.get("default_days") if isinstance(recently, dict) else None
     return days if isinstance(days, int) and days > 0 else 30
-
-
-def _duration_window_candidates(compact: str) -> list[tuple[int, int, int, str]]:
-    """공백 제거 텍스트의 기간 표현을 (시작, 끝, value, canonical_unit) 목록으로(등장 순). 단어형은 unit=days."""
-    out: list[tuple[int, int, int, str]] = []
-    for match in _NUMERIC_DURATION_PATTERN.finditer(compact):
-        value = int(match.group("num"))
-        # 2019년/2026년은 달력 연도이지 2019년 길이의 롤링 창이 아니다. 이를 기간으로 잡으면
-        # DATEADD(DAY, -736935, ...) 같은 비정상 조건이 절대 날짜 범위와 함께 생성된다.
-        if value > 0 and not (match.group("unit") == "년" and 1900 <= value <= 2199):
-            out.append((match.start(), match.end(), value, _KO_UNIT_TO_CANON.get(match.group("unit"), "days")))
-    for match in _WORD_DURATION_PATTERN.finditer(compact):
-        out.append((match.start(), match.end(), _WORD_DURATION_DAYS[match.group(0)], "days"))
-    return sorted(out)
-
-
-# 앵커어와 기간 표현 사이 허용 간격(공백 제거 기준). '6개월동안로그인'(동안=2), '1년이내가입'(이내=2)은
-# 붙은 것으로 보고, 프롬프트 반대편의 다른 조건 창은 배제한다.
-_DURATION_ANCHOR_GAP = 8
-
-
-def _parse_duration_window(
-    query: str,
-    *,
-    require_number: bool = True,
-    default_days: int | None = None,
-    exclude_past: bool = False,
-    anchor_terms: tuple[str, ...] | None = None,
-) -> dict[str, Any] | None:
-    """통합 기간 창 파서 — 숫자형(3개월/2주/1년)·단어형(일주일/반년/한달)을 모두 잡아 정규 shape로 돌려준다.
-
-    반환 {value, unit(∈days/weeks/months/years), min_days}. 파편화된 슬롯별 창 파서(가입/로그인/미구매/
-    미접속)가 각자 다른 단위 부분집합만 지원해 '1년 이내 가입'·'반년 미구매' 같은 표현을 놓치던 것을
-    한 곳으로 모은다. 문맥 게이트(가입 신호/로그인 신호/부정어)는 호출자가 유지한다.
-
-    anchor_terms 를 주면 그 앵커어 근처(±_DURATION_ANCHOR_GAP)의 기간만 본다 — 여러 조건이 각자 창을
-    가진 프롬프트('최근 1년 이내 가입 … 최근 로그인')에서 로그인 창이 가입의 '1년'을 훔쳐가는 조건 간
-    창 충돌을 막는다(앵커가 하나도 없으면 전체에서 첫 창으로 폴백). exclude_past=True 면 'N개월 전'을 건너뛴다."""
-    compact = query.replace(" ", "").casefold()
-    candidates = _duration_window_candidates(compact)
-    if exclude_past:
-        candidates = [c for c in candidates if compact[c[1]:c[1] + 1] != "전"]
-    if anchor_terms:
-        anchor_spans = [
-            (match.start(), match.end())
-            for term in anchor_terms
-            for match in re.finditer(re.escape(term), compact)
-        ]
-        if anchor_spans:
-            def _near(cand: tuple[int, int, int, str]) -> bool:
-                start, end = cand[0], cand[1]
-                return any(
-                    max(start, a_start) - min(end, a_end) <= _DURATION_ANCHOR_GAP
-                    for a_start, a_end in anchor_spans
-                )
-            candidates = [c for c in candidates if _near(c)]
-    if candidates:
-        _s, _e, value, unit = candidates[0]
-        return {"value": value, "unit": unit, "min_days": value * targeting_ir.UNIT_DAYS[unit]}
-    if not require_number and default_days:
-        return {"value": default_days, "unit": "days", "min_days": default_days}
-    return None
 
 
 # 장바구니 보관 기간: "장바구니에 담아둔 지 일주일 이상", "일주일 이상 유지/담고 있는". 담은 시점
@@ -7345,90 +7281,20 @@ def _apply_cart_type_filter(query: str, plan: dict[str, Any]) -> None:
 _PURCHASE_DATE_SIGNALS = ("구매", "구입", "주문")
 
 
-def _month_last_day(year: int, month: int) -> int:
-    if month == 2:
-        leap = (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)
-        return 29 if leap else 28
-    return 30 if month in (4, 6, 9, 11) else 31
-
-
-def _ymd(year: int, month: int, day: int) -> str:
-    return f"{year:04d}{month:02d}{day:02d}"
-
-
 def _parse_purchase_date_period(query: str) -> dict[str, Any] | None:
     """구매가 일어난 절대 날짜/기간을 ORDER_DATE(YYYYMMDD CHAR8) 창 {from,to}로 파싱한다.
 
-    지원: 'YYYY년 M월 D일'(하루), 'YYYY년 M월'(그 달 전체), 'YYYY년'(그 해 전체),
-          'YYYY-MM-DD'/'YYYY.MM.DD'/'YYYY/MM/DD'(하루), 'YYYY-MM'(그 달 전체),
-          'YYYY년 상반기/하반기'(6개월), 'YYYY년 N분기(=N사분기)'(3개월).
-    구매/구입/주문 신호가 있어야 발동한다(생일·캠페인 기간 등 무관한 날짜를 잡지 않기 위함)."""
+    달력 문법 자체는 calendar_window.parse_calendar_window 가 소유한다 — 이 함수는 도메인 게이트
+    (구매/구입/주문 신호가 있어야 발동. 생일·캠페인 기간 등 무관한 날짜를 잡지 않기 위함)와 라벨
+    꼬리말('구매')만 얹는다."""
     if not any(signal in query for signal in _PURCHASE_DATE_SIGNALS):
         return None
-
-    # YYYY년 M월 D일 (하루)
-    m = re.search(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", query)
-    if m:
-        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if 1 <= mo <= 12 and 1 <= d <= _month_last_day(y, mo):
-            return {"from": _ymd(y, mo, d), "to": _ymd(y, mo, d), "label": f"{y}년 {mo}월 {d}일 구매"}
-    # YYYY-MM-DD / YYYY.MM.DD / YYYY/MM/DD (하루)
-    m = re.search(r"(\d{4})[-./](\d{1,2})[-./](\d{1,2})", query)
-    if m:
-        y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        if 1 <= mo <= 12 and 1 <= d <= _month_last_day(y, mo):
-            return {"from": _ymd(y, mo, d), "to": _ymd(y, mo, d), "label": f"{y}-{mo:02d}-{d:02d} 구매"}
-    # YYYY년 M월 (그 달 전체)
-    m = re.search(r"(\d{4})\s*년\s*(\d{1,2})\s*월", query)
-    if m:
-        y, mo = int(m.group(1)), int(m.group(2))
-        if 1 <= mo <= 12:
-            return {"from": _ymd(y, mo, 1), "to": _ymd(y, mo, _month_last_day(y, mo)), "label": f"{y}년 {mo}월 구매"}
-    # YYYY-MM (그 달 전체; 뒤에 일자 구분자가 없을 때만)
-    m = re.search(r"(\d{4})[-./](\d{1,2})(?![-./]?\d)", query)
-    if m:
-        y, mo = int(m.group(1)), int(m.group(2))
-        if 1 <= mo <= 12:
-            return {"from": _ymd(y, mo, 1), "to": _ymd(y, mo, _month_last_day(y, mo)), "label": f"{y}-{mo:02d} 구매"}
-    # YYYY년 상반기/하반기·N분기(반기/분기 기간). '그 해 전체' 폴백보다 먼저 봐야 한 해로 뭉개지지 않는다.
-    half_quarter = _parse_half_or_quarter_period(query)
-    if half_quarter is not None:
-        return half_quarter
-    # YYYY년 (그 해 전체; 뒤에 '월'이 없을 때)
-    m = re.search(r"(\d{4})\s*년(?!\s*\d{1,2}\s*월)", query)
-    if m:
-        y = int(m.group(1))
-        return {"from": _ymd(y, 1, 1), "to": _ymd(y, 12, 31), "label": f"{y}년 구매"}
-    return None
-
-
-# 반기/분기 → 월 범위. 상반기=1~6월, 하반기=7~12월, N분기=(N-1)*3+1 부터 3개월.
-_QUARTER_MONTH_RANGES = {1: (1, 3), 2: (4, 6), 3: (7, 9), 4: (10, 12)}
+    return parse_calendar_window(query, label_suffix="구매")
 
 
 def _parse_half_or_quarter_period(query: str) -> dict[str, Any] | None:
-    """'YYYY년 상반기/하반기', 'YYYY년 N분기(=N사분기)'를 ORDER_DATE 창 {from,to}로 파싱한다.
-
-    연도가 명시돼야 발동한다(연도 없는 '상반기'는 어느 해인지 모호 → 미해석, 오탐 방지). 그냥 '반기'
-    (상/하 없이)나 숫자 없는 '분기'도 어느 반/분기인지 모호하므로 잡지 않는다."""
-    year_match = re.search(r"(\d{4})\s*년", query)
-    if year_match is None:
-        return None
-    y = int(year_match.group(1))
-    if "상반기" in query:
-        return {"from": _ymd(y, 1, 1), "to": _ymd(y, 6, 30), "label": f"{y}년 상반기 구매"}
-    if "하반기" in query:
-        return {"from": _ymd(y, 7, 1), "to": _ymd(y, 12, 31), "label": f"{y}년 하반기 구매"}
-    quarter_match = re.search(r"([1-4])\s*(?:사)?분기", query)
-    if quarter_match is not None:
-        q = int(quarter_match.group(1))
-        start_month, end_month = _QUARTER_MONTH_RANGES[q]
-        return {
-            "from": _ymd(y, start_month, 1),
-            "to": _ymd(y, end_month, _month_last_day(y, end_month)),
-            "label": f"{y}년 {q}분기 구매",
-        }
-    return None
+    """'YYYY년 상반기/하반기', 'YYYY년 N분기(=N사분기)'를 ORDER_DATE 창 {from,to}로 파싱한다."""
+    return parse_half_or_quarter_window(query, label_suffix="구매")
 
 
 # 구매 날짜 타겟 감지는 slot_setter(_parse_purchase_date_period)가 담당한다(레지스트리 "purchase_date").
@@ -11900,6 +11766,8 @@ def _build_llm_targeting_ir_candidate(
         "- 스키마에 열거된 어휘(member_filter/relations/entities/measures)만 사용한다. 없는 값은 만들지 않는다.",
         "- 원문에 있는 조건만 넣는다. 성별·연령·지역 등을 임의로 추가하지 않는다.",
         "- '가장 많이 팔린 상품 N개' 같은 순위 집합은 relation.entitySet 으로 표현한다.",
+        "- 원문의 기간은 반드시 옮긴다. 절대 기간('2019년 3월', '2019년 2분기')은 period 에 원문 그대로 넣고,"
+        " 상대 기간('최근 90일')은 windowDays 에 넣는다. 월을 빼고 연도만 넣으면 안 된다.",
         "- 회원 상태(정상/휴면) 기본 정책과 결과 컬럼은 시스템이 붙이므로 표현식에 넣지 않는다.",
         "- 이 문법으로 표현할 수 없으면 expression 없이 unsupported 에 사유만 적는다(억지로 근사하지 않는다).",
         "JSON 스키마:",

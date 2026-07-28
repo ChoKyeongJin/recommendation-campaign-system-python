@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
+from calendar_window import calendar_window_from_parts, parse_calendar_window
 from entity_set import compile_entity_set_predicate, entity_set_capability
 
 
@@ -39,6 +40,17 @@ class TargetingExpressionError(ValueError):
 
 def _relative_date(days: int) -> str:
     return f"CONVERT(CHAR(8), DATEADD(DAY, -{int(days)}, GETDATE()), 112)"
+
+
+# 절대 기간의 자유 표현 슬롯. 연/월 이외의 달력 표현(분기·반기·특정일)까지 한 필드로 받고 해석은
+# calendar_window 가 한다 — 표현형이 늘어도 스키마를 늘리지 않는다(LLM 이 문장의 기간을 그대로 옮긴다).
+_PERIOD_FIELD = {
+    "type": ["string", "null"],
+    "description": (
+        "절대 기간 표현을 원문 그대로(예: '2019년 3월', '2019년 2분기', '2019년 상반기', "
+        "'2019-03-05', '2019년'). 상대 기간(최근 N일)은 windowDays 를 쓴다."
+    ),
+}
 
 
 def targeting_expression_json_schema(
@@ -58,8 +70,10 @@ def targeting_expression_json_schema(
             "direction": {"type": "string", "enum": ["top", "bottom"]},
             "limit": {"type": "integer", "minimum": 1, "maximum": 1000},
             "rankRelation": {"type": "string", "enum": relations, "description": "순위를 계산할 관계(기본: 구매)."},
-            "windowDays": {"type": ["integer", "null"], "description": "상대 기간(일). 절대 연도는 year 로 준다."},
-            "year": {"type": ["integer", "null"], "description": "절대 연도(예: 2019)."},
+            "windowDays": {"type": ["integer", "null"], "description": "상대 기간(일). 절대 기간은 period/year 로 준다."},
+            "year": {"type": ["integer", "null"], "description": "절대 연도(예: 2019). month 와 함께 주면 그 달."},
+            "month": {"type": ["integer", "null"], "minimum": 1, "maximum": 12, "description": "절대 월(1~12). year 필요."},
+            "period": _PERIOD_FIELD,
         },
         "required": ["entity", "measure", "direction", "limit"],
     }
@@ -85,6 +99,8 @@ def targeting_expression_json_schema(
                     "exists": {"type": "boolean"},
                     "windowDays": {"type": ["integer", "null"]},
                     "year": {"type": ["integer", "null"]},
+                    "month": {"type": ["integer", "null"], "minimum": 1, "maximum": 12},
+                    "period": _PERIOD_FIELD,
                     "entitySet": entity_set,
                 },
                 "required": ["name", "exists"],
@@ -109,9 +125,18 @@ def targeting_expression_json_schema(
 
 
 def _window(payload: dict[str, Any]) -> dict[str, Any] | None:
-    year = payload.get("year")
-    if isinstance(year, int) and 1900 < year < 3000:
-        return {"from": f"{year}0101", "to": f"{year}1231", "label": f"{year}년"}
+    """LLM 이 준 기간 슬롯을 창으로 해석한다. 달력 규칙은 calendar_window 가 단일 소유한다.
+
+    period(자유 표현) → year/month(구조화) → windowDays(상대) 순. 예전에는 year 정수 하나뿐이라
+    '2019년 3월'을 LLM 이 표현할 수단 자체가 없어 연 단위로 뭉개졌다."""
+    period = payload.get("period")
+    if isinstance(period, str) and period.strip():
+        window = parse_calendar_window(period)
+        if window is not None:
+            return window
+    absolute = calendar_window_from_parts(payload.get("year"), payload.get("month"))
+    if absolute is not None:
+        return absolute
     days = payload.get("windowDays")
     if isinstance(days, int) and days > 0:
         return {"days": days, "label": f"최근 {days}일"}

@@ -21,14 +21,13 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from calendar_window import parse_calendar_window, parse_duration_window, relative_window_label
+
 
 _MEMBER_NOUN_RE = re.compile(r"회원|고객|사용자|유저")
-_YEAR_RE = re.compile(r"(\d{4})년")
-_RECENT_RE = re.compile(r"최근(\d+)(일|주|개월|달|년)")
 _COUNT_AFTER_RE = re.compile(r"^(\d{1,4})\s*(?:개|종|가지|건|위)")
 # '상위 5개 카테고리'처럼 개수가 엔터티 앞에 오는 어순.
 _COUNT_BEFORE_RE = re.compile(r"(\d{1,4})\s*(?:개|종|가지|건|위)\s*$")
-_UNIT_DAYS = {"일": 1, "주": 7, "개월": 30, "달": 30, "년": 365}
 
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 1000
@@ -68,16 +67,21 @@ def _match_direction(compact: str, config: dict[str, Any]) -> tuple[int, int, st
     return min(found, key=lambda item: (item[0], -item[1]))
 
 
-def _match_window(compact: str) -> dict[str, Any] | None:
-    """절 앞머리의 기간 표현. 연도는 절대창, '최근 N일'은 상대창."""
-    year = _YEAR_RE.search(compact)
-    if year is not None:
-        value = year.group(1)
-        return {"from": f"{value}0101", "to": f"{value}1231", "label": f"{value}년"}
-    recent = _RECENT_RE.search(compact)
-    if recent is not None:
-        days = int(recent.group(1)) * _UNIT_DAYS.get(recent.group(2), 1)
-        return {"days": days, "label": f"최근 {recent.group(1)}{recent.group(2)}"}
+def _match_window(compact: str, rank_marker: str = "") -> dict[str, Any] | None:
+    """절 앞머리의 기간 표현. 달력 표현은 절대창, 기간 표현은 상대창.
+
+    문법은 calendar_window 가 소유한다 — 여기서 별도 정규식을 갖고 있던 동안 '2019년 3월'의 월이
+    통째로 사라져 그 달 순위가 연간 순위로 바뀌었다(연도만 아는 파서였다). 절대창을 먼저 보는 이유는
+    '2019년'이 상대 기간('N년')으로도 읽힐 수 있어서다.
+
+    상대창은 방향 표지(rank_marker, 예: '가장많이') 근처의 것만 본다 — 앞 절에 자기 기간을 가진 다른
+    조건이 있으면('2주 이내 가입한 회원 중 가장 많이 팔린 …') 그 창을 순위 창으로 훔쳐오게 된다."""
+    absolute = parse_calendar_window(compact)
+    if absolute is not None:
+        return absolute
+    relative = parse_duration_window(compact, anchor_terms=(rank_marker,) if rank_marker else None)
+    if relative is not None:
+        return {"days": relative["min_days"], "label": relative_window_label(relative)}
     return None
 
 
@@ -125,7 +129,7 @@ def parse_entity_set_condition(query: str, config: dict[str, Any] | None) -> dic
     measure_id = _match_measure(compact, config, direction[0], entity_start)
     # 기간은 이 절(순위 계산)의 것이다 — 엔터티 앞에 있는 기간 표현만 가져간다.
     # '2019년 가장 많이 팔린 상품을 구매한 고객'에서 2019년은 판매 순위의 창이지 구매 시점이 아니다.
-    window = _match_window(compact[: entity_start])
+    window = _match_window(compact[: entity_start], compact[direction[0]: direction[1]])
 
     node: dict[str, Any] = {
         "relation": relation_id,
