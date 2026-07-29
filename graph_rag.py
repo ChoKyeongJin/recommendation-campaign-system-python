@@ -17395,9 +17395,14 @@ def build_sql_result(
     # 표현할 수 있으면 그것이 더 정확한 근거이므로 확인 요청 대신 그 후보로 진행한다. IR 은 어휘가
     # 레지스트리로 검증되고 회원 투영이 컴파일러 소유라, 슬롯 없이도 임의 SQL 이 나올 수 없다.
     # 빈 표현식(전체 회원)은 조건 소실과 구분되지 않으므로 채택하지 않는다.
+    # 조건 판정 IR 이 검증을 통과했으면 그 컴파일러가 SQL 의 단일 소유자다. 슬롯 기준 입력 검증이
+    # 미충족이더라도 자유 IR 후보로 우회하지 않는다 — 그 후보는 2단계 구조를 만들지 못해 어차피
+    # 탈락하고, 미충족은 IR 이 담지 못한 조건(회원 속성 등)이 있다는 뜻이라 fail-close 가 정답이다.
+    evaluation_locked = condition_evaluation_locked(query_plan)
     structured_ir_candidate = None
     if (
         not input_validation["is_satisfied"]
+        and not evaluation_locked
         and llm_model
         and not query_plan.get("unsupported")
         and query_plan.get("intent") in ("recommend_campaign", "find_user_segment")
@@ -17489,6 +17494,9 @@ def build_sql_result(
     )
     if (
         (not candidates or member_unsupported or isinstance(query_plan.get("aggregation_request"), dict))
+        # 조건 판정 IR 잠금: 집계 요청이 함께 있어도 자유 SQL 을 경쟁시키지 않는다. 자유 SQL 은
+        # 조건 판정 grain(주문·상품 단위 HAVING)을 회원 COUNT 로 평탄화하면서도 그럴듯해 보인다.
+        and not evaluation_locked
         and not query_plan.get("unsupported")
         and llm_model
         and query_plan.get("intent") in ("recommend_campaign", "find_user_segment", "analyze_aggregation")
@@ -17511,6 +17519,15 @@ def build_sql_result(
         if llm_candidate is not None:
             candidates.append(llm_candidate)
             llm_fallback_used = True
+
+    if evaluation_locked:
+        # 잠금 불변식(마지막 방어선): 어떤 경로로 세워졌든 조건 판정 컴파일러 산출물이 아닌 후보는
+        # 출고 자격이 없다. 컴파일러가 후보를 못 냈으면 후보 0개 → no_sql_candidates 로 fail-close 한다.
+        candidates = [
+            candidate for candidate in candidates
+            if candidate.get("id") == CONDITION_EVALUATION_CANDIDATE_ID
+        ]
+        llm_fallback_used = False
 
     # 타겟 오디언스는 기본적으로 전체가 나와야 하므로 행수 제한(TOP/LIMIT)을 붙이지 않는다(default_limit=None).
     # 단 프롬프트가 'N명만' 등으로 개수를 명시했을 때만 그 값을 sql_guard 에 넘겨 대상 DBMS 방언에 맞는
@@ -17690,6 +17707,36 @@ def build_sql_result(
         # 이 SQL 을 실제 어느 DB에서 실행해야 하는지(외부 실DB면 커넥션명, 로컬이면 None) 판별.
         target_connection = infer_target_connection(selected.get("tables", []), table_databases)
         target_dialect = validation.get("dialect")
+        # 후보 SQL 이 아니라 '실제 출고되는' SQL 로 조건 판정 구조를 재검증한다. sql_guard 의 재작성
+        # (마스킹·행수 제한 부착 등)이 2단계 구조나 IR 기간을 지워도 조용히 나가지 않게 한다.
+        if evaluation_locked:
+            shipped_issues = [
+                issue
+                for evaluation in query_plan[CONDITION_EVALUATIONS_KEY]
+                if isinstance(evaluation, dict)
+                for issue in validate_condition_evaluation_sql(evaluation, selected_sql)
+            ]
+            if shipped_issues:
+                selected["condition_evaluation_validation"] = {
+                    "ran": True,
+                    "valid": False,
+                    "errors": [issue.to_dict() for issue in shipped_issues],
+                }
+                selected["validation"] = {
+                    **validation,
+                    "issues": [
+                        *validation["issues"],
+                        *[
+                            {"code": issue.code, "severity": "error", "message": issue.message}
+                            for issue in shipped_issues
+                        ],
+                    ],
+                    "is_valid": False,
+                }
+                selected["is_eligible"] = False
+                selected_sql = None
+                target_connection = None
+                target_dialect = None
 
     failure_reason = None
     if selected is None:
@@ -19458,6 +19505,24 @@ def _sql_target_builder_registry() -> tuple[tuple[Any, frozenset[str]], ...]:
     )
 
 
+CONDITION_EVALUATION_CANDIDATE_ID = "sql_template:condition_evaluation"
+
+
+def condition_evaluation_locked(query_plan: dict[str, Any]) -> bool:
+    """검증된 조건 판정 IR이 있으면 그 컴파일러만 SQL 을 낼 수 있다(단일 소유).
+
+    조건 판정 IR 은 판정 grain 과 최종 결과 grain 을 분리하는 닫힌 IR 이라, 실행 SQL 은 반드시
+    ``WITH CONDITION_GROUPS`` → ``QUALIFIED_MEMBERS`` → 최종 집계 구조와 IR 의 기간을 그대로 보존해야
+    한다(condition_evaluation_ir.validate_compiled_sql 가 강제). 자유 SQL/타겟팅 IR 후보는 이 구조를
+    만들지 못하므로 경쟁시켜 봐야 검증에서 탈락하고, 그 탈락 사유가 응답에 실려 '구조 보장 실패'로
+    보인다. 후보 자체를 세우지 않아 컴파일러 산출물만 출고되게 잠근다."""
+
+    evaluations = query_plan.get(CONDITION_EVALUATIONS_KEY)
+    if not isinstance(evaluations, list) or not evaluations:
+        return False
+    return not validate_condition_evaluations(evaluations)
+
+
 def build_condition_evaluation_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     """검증된 조건 판정 IR을 조건 그룹→판정 회원→최종 집계의 2단계 SQL로 만든다."""
     evaluations = query_plan.get(CONDITION_EVALUATIONS_KEY)
@@ -19496,7 +19561,7 @@ def build_condition_evaluation_sql_candidate(query_plan: dict[str, Any]) -> dict
             })
         return None
     candidate = _sql_candidate(
-        "sql_template:condition_evaluation",
+        CONDITION_EVALUATION_CANDIDATE_ID,
         "조건 판정 grain과 최종 결과 grain 분리 SQL 템플릿",
         1.0,
         sql,
