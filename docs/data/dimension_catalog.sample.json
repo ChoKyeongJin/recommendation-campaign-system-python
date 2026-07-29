@@ -1,6 +1,6 @@
 {
   "version": "2.0",
-  "description": "프롬프트 키워드(디멘션) 정의 스냅샷. 값(코드/이름)은 저장하지 않고 런타임에 DS_SQL 로 동적 해석한다. t_xlig_dimension_list(ML_DS_DIV_CD='DS', DEL_F='N') + t_xlig_query_prompt(label/operator)에서 생성.",
+  "description": "프롬프트 키워드(디멘션) 정의 스냅샷. 값(코드/이름)은 저장하지 않고 런타임에 DS_SQL 로 동적 해석한다. t_xlig_dimension_list(ML_DS_DIV_CD='DS', DEL_F='N') + t_xlig_query_prompt(label)에서 생성.",
   "source": {
     "dimension_table": "quadmax_sdz.t_xlig_dimension_list",
     "query_prompt_table": "quadmax_sdz.t_xlig_query_prompt",
@@ -22,7 +22,6 @@
       "prmp_kwd_nm": "moon_test",
       "dbms_id": "CRMAN",
       "connection": "CRMAN",
-      "operator": "IN",
       "synonyms": [],
       "target_table": null,
       "target_column": null,
@@ -35,7 +34,6 @@
       "prmp_kwd_nm": "Dimension_Test",
       "dbms_id": "CRMAN",
       "connection": "CRMAN",
-      "operator": "IN",
       "synonyms": [],
       "target_table": null,
       "target_column": null,
@@ -48,7 +46,6 @@
       "prmp_kwd_nm": "SMS수신동의여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "SMS수신동의여부"
       ],
@@ -63,7 +60,6 @@
       "prmp_kwd_nm": "SNS채널",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "SNS채널"
       ],
@@ -78,7 +74,6 @@
       "prmp_kwd_nm": "@@테스트@@",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "=",
       "synonyms": [],
       "target_table": null,
       "target_column": null,
@@ -91,7 +86,6 @@
       "prmp_kwd_nm": "가입경로",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "가입경로"
       ],
@@ -106,7 +100,6 @@
       "prmp_kwd_nm": "가입유형",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "가입 유형",
         "가입유형"
@@ -122,7 +115,6 @@
       "prmp_kwd_nm": "거래브랜드",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "상품브랜드",
         "거래브랜드"
@@ -138,7 +130,6 @@
       "prmp_kwd_nm": "거래채널유형",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "거래채널유형"
       ],
@@ -153,7 +144,6 @@
       "prmp_kwd_nm": "결제사",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "결제사"
       ],
@@ -168,7 +158,6 @@
       "prmp_kwd_nm": "결제상태",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "결제상태"
       ],
@@ -183,7 +172,6 @@
       "prmp_kwd_nm": "결제수단",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "결제수단"
       ],
@@ -198,7 +186,6 @@
       "prmp_kwd_nm": "결제유형",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "결제유형"
       ],
@@ -213,7 +200,6 @@
       "prmp_kwd_nm": "관심브랜드",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "관심브랜드"
       ],
@@ -228,7 +214,6 @@
       "prmp_kwd_nm": "구매반응여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "=",
       "synonyms": [
         "구매반응여부"
       ],
@@ -243,7 +228,6 @@
       "prmp_kwd_nm": "구매채널",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "구매채널"
       ],
@@ -258,7 +242,6 @@
       "prmp_kwd_nm": "구매카테고리",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "구매카테고리"
       ],
@@ -273,7 +256,6 @@
       "prmp_kwd_nm": "기획전",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "기획전"
       ],
@@ -288,7 +270,6 @@
       "prmp_kwd_nm": "다자녀카드유형",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "다자녀카드유형"
       ],
@@ -303,7 +284,6 @@
       "prmp_kwd_nm": "다자녀카드인증여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "다자녀카드인증여부"
       ],
@@ -318,7 +298,6 @@
       "prmp_kwd_nm": "당첨여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "당첨여부"
       ],
@@ -333,7 +312,6 @@
       "prmp_kwd_nm": "대량구매고객여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "=",
       "synonyms": [
         "대량구매고객여부"
       ],
@@ -348,7 +326,6 @@
       "prmp_kwd_nm": "대표매장여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "대표매장여부"
       ],
@@ -363,7 +340,6 @@
       "prmp_kwd_nm": "데이트팝업",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [],
       "target_table": null,
       "target_column": null,
@@ -376,7 +352,6 @@
       "prmp_kwd_nm": "등급성장유형",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "등급성장유형",
         "이메일수신동의여부"
@@ -392,7 +367,6 @@
       "prmp_kwd_nm": "등급성장유형명",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "등급성장유형명"
       ],
@@ -407,7 +381,6 @@
       "prmp_kwd_nm": "디바이스유형",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "디바이스유형"
       ],
@@ -422,7 +395,6 @@
       "prmp_kwd_nm": "딜유형",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "딜유형"
       ],
@@ -437,7 +409,6 @@
       "prmp_kwd_nm": "매장_AK",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "매장_AK"
       ],
@@ -452,7 +423,6 @@
       "prmp_kwd_nm": "모델",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "모델"
       ],
@@ -467,7 +437,6 @@
       "prmp_kwd_nm": "ZTS모바일OS유형",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "모바일OS유형",
         "ZTS모바일OS유형"
@@ -483,7 +452,6 @@
       "prmp_kwd_nm": "모바일방문여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "모바일방문여부"
       ],
@@ -498,7 +466,6 @@
       "prmp_kwd_nm": "방문매장",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "방문매장"
       ],
@@ -513,7 +480,6 @@
       "prmp_kwd_nm": "보유보험연체여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "보유보험연체여부"
       ],
@@ -528,7 +494,6 @@
       "prmp_kwd_nm": "보험상품",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "보험상품"
       ],
@@ -543,7 +508,6 @@
       "prmp_kwd_nm": "보험완납경험여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "보험완납경험여부"
       ],
@@ -558,7 +522,6 @@
       "prmp_kwd_nm": "보험직업",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "보험직업"
       ],
@@ -573,7 +536,6 @@
       "prmp_kwd_nm": "브랜드",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "브랜드"
       ],
@@ -588,7 +550,6 @@
       "prmp_kwd_nm": "블랙리스트상태",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "블랙리스트상태"
       ],
@@ -603,7 +564,6 @@
       "prmp_kwd_nm": "블랙리스트유형",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "블랙리스트유형"
       ],
@@ -618,7 +578,6 @@
       "prmp_kwd_nm": "사용쿠폰",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "사용쿠폰"
       ],
@@ -633,7 +592,6 @@
       "prmp_kwd_nm": "상권차수",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "상권차수"
       ],
@@ -648,7 +606,6 @@
       "prmp_kwd_nm": "상태등급",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "상태등급"
       ],
@@ -663,7 +620,6 @@
       "prmp_kwd_nm": "상태등급명",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "상태등급명"
       ],
@@ -678,7 +634,6 @@
       "prmp_kwd_nm": "상품",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "상품"
       ],
@@ -693,7 +648,6 @@
       "prmp_kwd_nm": "서비스구분",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "서비스구분"
       ],
@@ -708,7 +662,6 @@
       "prmp_kwd_nm": "선물구매형여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "선물구매형여부"
       ],
@@ -723,7 +676,6 @@
       "prmp_kwd_nm": "성별",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "성별"
       ],
@@ -738,7 +690,6 @@
       "prmp_kwd_nm": "스코어구분",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "스코어구분"
       ],
@@ -753,7 +704,6 @@
       "prmp_kwd_nm": "시간대",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "시간대"
       ],
@@ -768,7 +718,6 @@
       "prmp_kwd_nm": "시간대분류",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "시간대분류"
       ],
@@ -783,7 +732,6 @@
       "prmp_kwd_nm": "시도",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "시도"
       ],
@@ -798,7 +746,6 @@
       "prmp_kwd_nm": "신상품선호형여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "신상품선호형여부"
       ],
@@ -813,7 +760,6 @@
       "prmp_kwd_nm": "실효여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "실효여부"
       ],
@@ -828,7 +774,6 @@
       "prmp_kwd_nm": "앱버전",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "앱버전"
       ],
@@ -843,7 +788,6 @@
       "prmp_kwd_nm": "연령대_5세단위",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "연령대_5세단위",
         "연령대 5세 단위"
@@ -859,7 +803,6 @@
       "prmp_kwd_nm": "연령대명",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "연령대명",
         "연령대"
@@ -875,7 +818,6 @@
       "prmp_kwd_nm": "연식",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "연식"
       ],
@@ -890,7 +832,6 @@
       "prmp_kwd_nm": "연체여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "연체여부"
       ],
@@ -905,7 +846,6 @@
       "prmp_kwd_nm": "예치금유형",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "예치금유형"
       ],
@@ -920,7 +860,6 @@
       "prmp_kwd_nm": "오퍼반응여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "=",
       "synonyms": [
         "오퍼반응여부"
       ],
@@ -935,7 +874,6 @@
       "prmp_kwd_nm": "오프라인쿠폰명",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "오프라인쿠폰명"
       ],
@@ -950,7 +888,6 @@
       "prmp_kwd_nm": "외국인여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "=",
       "synonyms": [
         "외국인여부",
         "외국인 여부"
@@ -966,7 +903,6 @@
       "prmp_kwd_nm": "요일",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "요일"
       ],
@@ -981,7 +917,6 @@
       "prmp_kwd_nm": "운전용도",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "운전용도"
       ],
@@ -996,7 +931,6 @@
       "prmp_kwd_nm": "유입시간대",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "유입시간대"
       ],
@@ -1011,7 +945,6 @@
       "prmp_kwd_nm": "유입채널",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "유입채널"
       ],
@@ -1026,7 +959,6 @@
       "prmp_kwd_nm": "거래유형",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "거래유형"
       ],
@@ -1041,7 +973,6 @@
       "prmp_kwd_nm": "이마트거래점",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "이마트거래점"
       ],
@@ -1056,7 +987,6 @@
       "prmp_kwd_nm": "이메일수신동의여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "=",
       "synonyms": [
         "이메일수신동의여부"
       ],
@@ -1071,7 +1001,6 @@
       "prmp_kwd_nm": "이벤트",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "이벤트"
       ],
@@ -1086,7 +1015,6 @@
       "prmp_kwd_nm": "이벤트명",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "이벤트명"
       ],
@@ -1101,7 +1029,6 @@
       "prmp_kwd_nm": "보험상품",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "보험상품"
       ],
@@ -1116,7 +1043,6 @@
       "prmp_kwd_nm": "임직원여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "=",
       "synonyms": [
         "임직원여부"
       ],
@@ -1131,7 +1057,6 @@
       "prmp_kwd_nm": "자녀여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "자녀여부"
       ],
@@ -1146,7 +1071,6 @@
       "prmp_kwd_nm": "장바구니유형",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "장바구니유형"
       ],
@@ -1161,7 +1085,6 @@
       "prmp_kwd_nm": "전시카테고리",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "전시카테고리"
       ],
@@ -1176,7 +1099,6 @@
       "prmp_kwd_nm": "점검항목",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "점검항목"
       ],
@@ -1191,7 +1113,6 @@
       "prmp_kwd_nm": "점수",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "점수"
       ],
@@ -1206,7 +1127,6 @@
       "prmp_kwd_nm": "접속매체",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "접속매체"
       ],
@@ -1221,7 +1141,6 @@
       "prmp_kwd_nm": "접촉성공여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "=",
       "synonyms": [
         "접촉성공여부"
       ],
@@ -1236,7 +1155,6 @@
       "prmp_kwd_nm": "제조사",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "제조사"
       ],
@@ -1251,7 +1169,6 @@
       "prmp_kwd_nm": "조합기준",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "=",
       "synonyms": [
         "조합기준"
       ],
@@ -1266,7 +1183,6 @@
       "prmp_kwd_nm": "주거래지점",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "주거래지점",
         "SELECT"
@@ -1282,7 +1198,6 @@
       "prmp_kwd_nm": "주결제수단",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "주결제수단"
       ],
@@ -1297,7 +1212,6 @@
       "prmp_kwd_nm": "주구매브랜드명",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "주구매브랜드명"
       ],
@@ -1312,7 +1226,6 @@
       "prmp_kwd_nm": "주구매시간대",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "주구매시간대"
       ],
@@ -1327,7 +1240,6 @@
       "prmp_kwd_nm": "주구매시간대분류",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "주구매시간대분류"
       ],
@@ -1342,7 +1254,6 @@
       "prmp_kwd_nm": "주구매요일",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "주구매요일"
       ],
@@ -1357,7 +1268,6 @@
       "prmp_kwd_nm": "주구매채널",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "주구매채널"
       ],
@@ -1372,7 +1282,6 @@
       "prmp_kwd_nm": "주구매채널명",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "주구매채널명"
       ],
@@ -1387,7 +1296,6 @@
       "prmp_kwd_nm": "주구매카테고리명",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "주구매카테고리명"
       ],
@@ -1402,7 +1310,6 @@
       "prmp_kwd_nm": "주문디바이스",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "주문디바이스"
       ],
@@ -1417,7 +1324,6 @@
       "prmp_kwd_nm": "주문유형",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "주문유형"
       ],
@@ -1432,7 +1338,6 @@
       "prmp_kwd_nm": "주이용노선",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "주이용노선"
       ],
@@ -1447,7 +1352,6 @@
       "prmp_kwd_nm": "주주문시간대",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "주주문시간대"
       ],
@@ -1462,7 +1366,6 @@
       "prmp_kwd_nm": "주주문시간대분류",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "주주문시간대분류"
       ],
@@ -1477,7 +1380,6 @@
       "prmp_kwd_nm": "체류지점",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "체류지점"
       ],
@@ -1492,7 +1394,6 @@
       "prmp_kwd_nm": "최종구매채널",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "최종구매채널"
       ],
@@ -1507,7 +1408,6 @@
       "prmp_kwd_nm": "최종로그인채널",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "최종로그인채널"
       ],
@@ -1522,7 +1422,6 @@
       "prmp_kwd_nm": "최초로그인채널",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "최초로그인채널"
       ],
@@ -1537,7 +1436,6 @@
       "prmp_kwd_nm": "쿠폰발행상태",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "쿠폰발행상태"
       ],
@@ -1552,7 +1450,6 @@
       "prmp_kwd_nm": "쿠폰사용여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "쿠폰사용여부"
       ],
@@ -1567,7 +1464,6 @@
       "prmp_kwd_nm": "쿠폰사용점",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "쿠폰사용점"
       ],
@@ -1582,7 +1478,6 @@
       "prmp_kwd_nm": "쿠폰유형",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "쿠폰유형"
       ],
@@ -1597,7 +1492,6 @@
       "prmp_kwd_nm": "타사B2E여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "=",
       "synonyms": [
         "타사B2E여부"
       ],
@@ -1612,7 +1506,6 @@
       "prmp_kwd_nm": "이마트통합회원여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "이마트통합회원여부"
       ],
@@ -1627,7 +1520,6 @@
       "prmp_kwd_nm": "해지여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "해지여부"
       ],
@@ -1642,7 +1534,6 @@
       "prmp_kwd_nm": "혼인여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "=",
       "synonyms": [
         "혼인여부"
       ],
@@ -1657,7 +1548,6 @@
       "prmp_kwd_nm": "혼인여부",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "=",
       "synonyms": [
         "혼인여부"
       ],
@@ -1672,7 +1562,6 @@
       "prmp_kwd_nm": "회원등급테스트",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [],
       "target_table": null,
       "target_column": null,
@@ -1685,7 +1574,6 @@
       "prmp_kwd_nm": "회원등급",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "회원등급",
         "RADIO"
@@ -1701,7 +1589,6 @@
       "prmp_kwd_nm": "회원등급명",
       "dbms_id": "CRMDW",
       "connection": "CRMDW",
-      "operator": "IN",
       "synonyms": [
         "회원등급명"
       ],
@@ -1716,7 +1603,6 @@
       "prmp_kwd_nm": "프롬프트테스트",
       "dbms_id": "QUADMAX",
       "connection": null,
-      "operator": "IN",
       "synonyms": [],
       "target_table": null,
       "target_column": null,
@@ -1729,7 +1615,6 @@
       "prmp_kwd_nm": "결혼여부",
       "dbms_id": "QUADMAX",
       "connection": null,
-      "operator": "=",
       "synonyms": [
         "결혼여부"
       ],
@@ -1744,7 +1629,6 @@
       "prmp_kwd_nm": "고객등급",
       "dbms_id": "QUADMAX",
       "connection": null,
-      "operator": "IN",
       "synonyms": [
         "고객등급"
       ],
@@ -1759,7 +1643,6 @@
       "prmp_kwd_nm": "구매경험여부",
       "dbms_id": "QUADMAX",
       "connection": null,
-      "operator": "IN",
       "synonyms": [
         "구매경험여부"
       ],
@@ -1774,7 +1657,6 @@
       "prmp_kwd_nm": "날짜변수",
       "dbms_id": "QUADMAX",
       "connection": null,
-      "operator": "IN",
       "synonyms": [
         "날짜변수"
       ],
@@ -1789,7 +1671,6 @@
       "prmp_kwd_nm": "날짜변수",
       "dbms_id": "QUADMAX",
       "connection": null,
-      "operator": "IN",
       "synonyms": [
         "날짜변수"
       ],
@@ -1804,7 +1685,6 @@
       "prmp_kwd_nm": "설문참여채널",
       "dbms_id": "QUADMAX",
       "connection": null,
-      "operator": "IN",
       "synonyms": [
         "설문참여채널"
       ],
@@ -1819,7 +1699,6 @@
       "prmp_kwd_nm": "연령대",
       "dbms_id": "QUADMAX",
       "connection": null,
-      "operator": "IN",
       "synonyms": [
         "연령대"
       ],
@@ -1834,7 +1713,6 @@
       "prmp_kwd_nm": "이미지URL",
       "dbms_id": "QUADMAX",
       "connection": null,
-      "operator": "=",
       "synonyms": [
         "이미지URL"
       ],
@@ -1849,7 +1727,6 @@
       "prmp_kwd_nm": "이미지파일명",
       "dbms_id": "QUADMAX",
       "connection": null,
-      "operator": "=",
       "synonyms": [
         "이미지파일명"
       ],
@@ -1864,7 +1741,6 @@
       "prmp_kwd_nm": "캠페인구매반응정보",
       "dbms_id": "QUADMAX",
       "connection": null,
-      "operator": "IN",
       "synonyms": [
         "캠페인구매반응정보"
       ],
@@ -1879,7 +1755,6 @@
       "prmp_kwd_nm": "CAMPLIST1",
       "dbms_id": "QUADMAX_76",
       "connection": null,
-      "operator": "IN",
       "synonyms": [
         "CAMPLIST",
         "CAMPLIST1"
@@ -1895,7 +1770,6 @@
       "prmp_kwd_nm": "SSBINDEX",
       "dbms_id": "QUADMAX_76",
       "connection": null,
-      "operator": "IN",
       "synonyms": [
         "SSBINDEX"
       ],
@@ -1910,7 +1784,6 @@
       "prmp_kwd_nm": "SSBI프로젝트",
       "dbms_id": "QUADMAX_76",
       "connection": null,
-      "operator": "IN",
       "synonyms": [
         "SSBI프로젝트"
       ],
@@ -1925,7 +1798,6 @@
       "prmp_kwd_nm": "@@test_moon@@",
       "dbms_id": "QUADMAX_76",
       "connection": null,
-      "operator": "IN",
       "synonyms": [],
       "target_table": null,
       "target_column": null,
@@ -1938,7 +1810,6 @@
       "prmp_kwd_nm": "프로젝트",
       "dbms_id": "QUADMAX_76",
       "connection": null,
-      "operator": "IN",
       "synonyms": [
         "프로젝트"
       ],
@@ -1953,7 +1824,6 @@
       "prmp_kwd_nm": "CAMP_ID_MOON",
       "dbms_id": "QUADMAX_SDZ",
       "connection": "quadmax_sdz",
-      "operator": "IN",
       "synonyms": [
         "CAMP_ID_MOON"
       ],
@@ -1968,7 +1838,6 @@
       "prmp_kwd_nm": "테스트",
       "dbms_id": "QUADMAX_SDZ",
       "connection": "quadmax_sdz",
-      "operator": "IN",
       "synonyms": [],
       "target_table": null,
       "target_column": null,
@@ -1981,7 +1850,6 @@
       "prmp_kwd_nm": "마이데이터사업자기관코드",
       "dbms_id": "QUADMAX_SDZ",
       "connection": "quadmax_sdz",
-      "operator": "IN",
       "synonyms": [
         "마이데이터사업자기관코드"
       ],
@@ -1996,7 +1864,6 @@
       "prmp_kwd_nm": "마이데이터정보제공자코드",
       "dbms_id": "QUADMAX_SDZ",
       "connection": "quadmax_sdz",
-      "operator": "IN",
       "synonyms": [
         "마이데이터정보제공자코드"
       ],
@@ -2011,7 +1878,6 @@
       "prmp_kwd_nm": "마케팅수신동의여부",
       "dbms_id": "QUADMAX_SDZ",
       "connection": "quadmax_sdz",
-      "operator": "=",
       "synonyms": [
         "마케팅수신동의여부"
       ],
@@ -2026,7 +1892,6 @@
       "prmp_kwd_nm": "문캠페인2",
       "dbms_id": "QUADMAX_SDZ",
       "connection": "quadmax_sdz",
-      "operator": "IN",
       "synonyms": [
         "문캠페인2"
       ],
@@ -2041,7 +1906,6 @@
       "prmp_kwd_nm": "@@정보@@",
       "dbms_id": "QUADMAX_SDZ",
       "connection": "quadmax_sdz",
-      "operator": "IN",
       "synonyms": [
         "@@정보@@"
       ],
@@ -2056,7 +1920,6 @@
       "prmp_kwd_nm": "조건단일",
       "dbms_id": "QUADMAX_SDZ",
       "connection": "quadmax_sdz",
-      "operator": "IN",
       "synonyms": [
         "조건단일"
       ],
@@ -2071,7 +1934,6 @@
       "prmp_kwd_nm": "타겟리스트",
       "dbms_id": "QUADMAX_SDZ",
       "connection": "quadmax_sdz",
-      "operator": "IN",
       "synonyms": [
         "타겟리스트"
       ],
@@ -2086,7 +1948,6 @@
       "prmp_kwd_nm": "통화코드",
       "dbms_id": "QUADMAX_SDZ",
       "connection": "quadmax_sdz",
-      "operator": "IN",
       "synonyms": [
         "통화코드"
       ],
@@ -2101,7 +1962,6 @@
       "prmp_kwd_nm": "신규고객여부",
       "dbms_id": "QUADMAX_SDZ_MART",
       "connection": null,
-      "operator": "IN",
       "synonyms": [
         "신규고객여부SN",
         "신규고객여부"
@@ -2117,7 +1977,6 @@
       "prmp_kwd_nm": "연령대SN",
       "dbms_id": "QUADMAX_SDZ_MART",
       "connection": null,
-      "operator": "IN",
       "synonyms": [
         "연령대SN"
       ],

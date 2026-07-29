@@ -14,11 +14,12 @@ import re
 import time
 import uuid
 from collections import Counter
+from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from string import Template
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import networkx as nx
 from fastembed import TextEmbedding
@@ -2392,12 +2393,231 @@ def _finalize_deterministic_query_plan(
     }
     _apply_core_membership_semantics(query, plan)
     _apply_entity_set_condition(query, plan)
+    _reconcile_deterministic_member_exclusions(query, plan)
+    _drop_deterministically_owned_set_expressions(plan)
     _reconcile_semantic_ir_with_execution_plan(plan)
     _guard_unparsed_entity_ranking(query, plan)
     _apply_analytical_intent(query, plan, sql_schema)
     _reconcile_cart_aggregate_ownership(plan)
     _attach_query_output_contract(query, plan)
     plan["complexity"] = classify_query_complexity(plan)
+
+
+@dataclass(frozen=True)
+class ExclusionReconciliationRule:
+    """Explicit domain policy for reconciling grounded exclusions.
+
+    This is not a general hallucination remover.  It handles only the narrow
+    case where the user names an excluded value and an LLM adds an ungrounded
+    include value to the same logical field as a complement/substitute.
+
+    The rule is appropriate for open domains where ``exclude A`` does not imply
+    ``include B``.  A truly binary, exhaustive domain with a logically guaranteed
+    complement may not need this reconciliation.  Rules must be registered only
+    after reviewing each field's domain semantics; sharing an allowed-value set
+    is never sufficient reason to opt a field in automatically.
+    """
+
+    include_path: tuple[str, ...]
+    exclude_path: tuple[str, ...]
+    signature_key: str
+    allowed_values: frozenset[str]
+    filter_name: str
+    reason: str
+    clear_value: Any = None
+    include_mode: Literal["scalar", "collection"] = "scalar"
+
+
+EXCLUSION_RECONCILIATION_RULES: tuple[ExclusionReconciliationRule, ...] = (
+    ExclusionReconciliationRule(
+        include_path=("target_user", "gender"),
+        exclude_path=("exclude", "gender"),
+        signature_key="genders",
+        allowed_values=frozenset(GENDER_TERMS),
+        filter_name="deterministic_gender_exclusion_reconciliation",
+        reason=(
+            "원문에 없는 긍정 성별을 제거하고 "
+            "명시적으로 근거화된 성별 제외 조건을 우선"
+        ),
+    ),
+)
+
+# Registration examples only — do not enable these until the corresponding
+# canonical sets, signature keys, and open-domain semantics are reviewed:
+# ExclusionReconciliationRule(
+#     include_path=("target_user", "region"),
+#     exclude_path=("exclude", "region"),
+#     signature_key="regions",
+#     allowed_values=frozenset(REGION_TERMS),
+#     filter_name="deterministic_region_exclusion_reconciliation",
+#     reason="원문에 없는 포함 지역을 제거하고 명시된 지역 제외 조건을 우선",
+#     clear_value=[],
+#     include_mode="collection",
+# )
+# ExclusionReconciliationRule(
+#     include_path=("target_user", "membership"),
+#     exclude_path=("exclude", "membership"),
+#     signature_key="memberships",
+#     allowed_values=frozenset(MEMBERSHIP_TERMS),
+#     filter_name="deterministic_membership_exclusion_reconciliation",
+#     reason="원문에 없는 포함 멤버십을 제거하고 명시된 멤버십 제외 조건을 우선",
+# )
+# ExclusionReconciliationRule(
+#     include_path=("target_user", "age_group"),
+#     exclude_path=("exclude", "age_group"),
+#     signature_key="age_groups",
+#     allowed_values=frozenset(AGE_GROUP_TERMS),
+#     filter_name="deterministic_age_group_exclusion_reconciliation",
+#     reason="원문에 없는 포함 연령대를 제거하고 명시된 연령대 제외 조건을 우선",
+# )
+
+
+def _get_nested(data: Mapping[str, Any], path: tuple[str, ...]) -> Any:
+    """Read an existing nested mapping path without creating intermediates."""
+
+    if not path:
+        return None
+    current: Any = data
+    for part in path:
+        if not isinstance(current, Mapping) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _set_nested(
+    data: MutableMapping[str, Any], path: tuple[str, ...], value: Any
+) -> bool:
+    """Set an existing nested path; safely refuse missing/non-mapping paths."""
+
+    if not path:
+        return False
+    current: MutableMapping[str, Any] = data
+    for part in path[:-1]:
+        child = current.get(part)
+        if not isinstance(child, MutableMapping):
+            return False
+        current = child
+    leaf = path[-1]
+    if leaf not in current:
+        return False
+    current[leaf] = value
+    return True
+
+
+def _allowed_exclusion_values(value: Any, allowed: frozenset[str]) -> set[str]:
+    """Return allowed canonical exclusions from scalar or collection storage."""
+
+    if isinstance(value, str):
+        candidates = (value,)
+    elif isinstance(value, (list, tuple, set, frozenset)):
+        candidates = value
+    else:
+        return set()
+    return {item for item in candidates if isinstance(item, str) and item in allowed}
+
+
+def _rebuild_collection(original: Any, values: list[Any]) -> Any:
+    """Rebuild a supported include collection while preserving its container."""
+
+    if isinstance(original, list):
+        return values
+    if isinstance(original, tuple):
+        return tuple(values)
+    if isinstance(original, frozenset):
+        return frozenset(values)
+    if isinstance(original, set):
+        return set(values)
+    return original
+
+
+def _reconcile_grounded_exclusion(
+    query: str,
+    plan: dict[str, Any],
+    rule: ExclusionReconciliationRule,
+    *,
+    signature: Mapping[str, set[str]] | None = None,
+) -> None:
+    """Remove only ungrounded includes paired with a grounded exclusion.
+
+    Exclusions are never removed.  Scalar mode clears one unmentioned include;
+    collection mode removes only allowed include values absent from the source,
+    preserving mentioned and unknown values plus the original container type.
+    Missing/malformed paths are ignored and no intermediate plan objects are
+    created.  The function deliberately makes no inference for unregistered
+    fields and exits safely for malformed plan data.
+    """
+
+    try:
+        included = _get_nested(plan, rule.include_path)
+        excluded = _allowed_exclusion_values(
+            _get_nested(plan, rule.exclude_path), rule.allowed_values
+        )
+        if not excluded:
+            return
+
+        resolved_signature = signature if signature is not None else _prompt_signal_signature(query)
+        raw_mentions = resolved_signature.get(rule.signature_key, set())
+        if not isinstance(raw_mentions, (set, frozenset)):
+            return
+        mentioned = {value for value in raw_mentions if isinstance(value, str)}
+        if not (excluded & mentioned):
+            return
+
+        replacement: Any
+        if rule.include_mode == "scalar":
+            if not isinstance(included, str) or included not in rule.allowed_values:
+                return
+            if included in mentioned:
+                return
+            replacement = rule.clear_value
+        elif rule.include_mode == "collection":
+            if isinstance(included, str) or not isinstance(
+                included, (list, tuple, set, frozenset)
+            ):
+                return
+            original_values = list(included)
+            remaining = [
+                value
+                for value in original_values
+                if not (
+                    isinstance(value, str)
+                    and value in rule.allowed_values
+                    and value not in mentioned
+                )
+            ]
+            if len(remaining) == len(original_values):
+                return
+            replacement = (
+                _rebuild_collection(included, remaining)
+                if remaining
+                else rule.clear_value
+            )
+        else:
+            return
+
+        if not _set_nested(plan, rule.include_path, replacement):
+            return
+        plan_decisions.record(
+            plan,
+            filter_name=rule.filter_name,
+            action=plan_decisions.CLEAR,
+            slot=".".join(rule.include_path),
+            reason=rule.reason,
+            value=replacement,
+            previous=included,
+            evidence=query,
+        )
+    except Exception:  # noqa: BLE001 - reconciliation must be fail-safe for malformed plans.
+        return
+
+
+def _reconcile_deterministic_member_exclusions(query: str, plan: dict[str, Any]) -> None:
+    """Apply explicitly registered exclusion rules with one source scan."""
+
+    signature = _prompt_signal_signature(query)
+    for rule in EXCLUSION_RECONCILIATION_RULES:
+        _reconcile_grounded_exclusion(query, plan, rule, signature=signature)
 
 
 def _apply_condition_evaluation_ir(query: str, plan: dict[str, Any]) -> None:
@@ -6702,7 +6922,6 @@ def _apply_dimension_filters(query: str, plan: dict[str, Any], dimension_catalog
                     "prompt_label": dimension.get("prompt_label"),
                     "column": dimension.get("target_column"),
                     "table": dimension.get("target_table"),
-                    "operator": dimension.get("operator", "IN"),
                     "codes": codes,
                     "names": names,
                 }
@@ -6850,7 +7069,6 @@ def _apply_member_value_filters(
             "prompt_label": column,
             "column": source_table + "." + column,
             "table": source_table,
-            "operator": "IN",
             "codes": [code for code, _ in matched],
             "names": [name for _, name in matched],
             "source": "member_value_index",
@@ -6902,7 +7120,6 @@ def _apply_macro_region_filter(query: str, plan: dict[str, Any]) -> None:
         "prompt_label": column,
         "column": table + "." + column,
         "table": table,
-        "operator": "IN",
         "codes": list(names),
         "names": list(names),
         "source": "macro_region",
@@ -15712,6 +15929,7 @@ def _refresh_unresolved_source_conditions(
         for item in (query_plan.get("unresolved_source_conditions") or [])
         if isinstance(item, dict)
         and item.get("source") in {"llm_semantic_ir", "legacy_source_validator"}
+        and not _unresolved_source_condition_is_deterministically_resolved(item, query_plan)
     ]
     evaluation_unresolved: list[dict[str, Any]] = []
     evaluations = query_plan.get(CONDITION_EVALUATIONS_KEY)
@@ -16494,6 +16712,73 @@ def _complete_calendar_window(value: Any) -> bool:
     )
 
 
+def _compiled_entity_set_condition(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """Return an entity-set node only when the deterministic compiler completes it.
+
+    LLM semantic planning runs before deterministic enrichment and can therefore
+    call an input "missing" even though the closed entity-set parser later builds
+    the complete aggregation -> ranking -> member predicate.  A parsed node alone
+    is not sufficient evidence: the physical capability check and predicate
+    compiler must both succeed, otherwise an incomplete or unmapped AST could
+    incorrectly waive a real clarification.
+    """
+
+    entity_set = (query_plan.get("target_user") or {}).get("entity_set_condition")
+    if not isinstance(entity_set, dict) or entity_set.get("unsupported_reason"):
+        return None
+    config = _entity_set_config()
+    if entity_set_capability(entity_set, config) is not None:
+        return None
+    predicate = compile_entity_set_predicate(
+        entity_set,
+        config,
+        member_alias=_member_alias(),
+        member_key=_member_key_column(),
+    )
+    return entity_set if isinstance(predicate, str) and predicate.strip() else None
+
+
+def _unresolved_source_condition_is_deterministically_resolved(
+    item: dict[str, Any], query_plan: dict[str, Any]
+) -> bool:
+    """Whether a stale LLM/validator disagreement is owned by compiled IR."""
+
+    path = str(item.get("path") or "").strip()
+    entity_set = _compiled_entity_set_condition(query_plan)
+    if path == "target_user.entity_set_condition":
+        return entity_set is not None
+    if path == "plan.semantic_conditions" and entity_set is not None:
+        return any(
+            isinstance(entry, dict)
+            and entry.get("owner") == "entity_set_condition"
+            and entry.get("slot") == "target_user.purchase_membership"
+            and entry.get("outcome") == "removed"
+            for entry in (query_plan.get("superseded_conditions") or [])
+        )
+    if item.get("source") == "llm_semantic_ir" and path:
+        return _semantic_missing_field_resolution(query_plan, path) is not None
+    return False
+
+
+def _entity_set_source_span(entity_set: dict[str, Any], name: str) -> str | None:
+    """Return the exact source text owned by a deterministic entity-set span."""
+
+    surface = entity_set.get("surface")
+    spans = entity_set.get("spans") if isinstance(entity_set.get("spans"), dict) else {}
+    span = spans.get(name)
+    if (
+        not isinstance(surface, str)
+        or not isinstance(span, (list, tuple))
+        or len(span) != 2
+        or not all(isinstance(index, int) and not isinstance(index, bool) for index in span)
+    ):
+        return None
+    start, end = span
+    if start < 0 or end <= start or end > len(surface):
+        return None
+    return surface[start:end]
+
+
 def _semantic_missing_field_resolution(
     query_plan: dict[str, Any], field: str,
 ) -> dict[str, str] | None:
@@ -16515,7 +16800,24 @@ def _semantic_missing_field_resolution(
         if _read_non_empty_plan_path(query_plan, path) is not None:
             return {"field": normalized, "resolved_by": path, "reason": "grounded_plan_slot"}
 
-    if normalized.rsplit(".", 1)[-1] != "purchase_date":
+    leaf = normalized.rsplit(".", 1)[-1]
+    entity_set = _compiled_entity_set_condition(query_plan)
+    # A ranked entity set computes the product/brand/category operand itself.  A
+    # concrete purchase_object is therefore not an input to ask the user for.
+    # Require the deterministic parser's exact entity span in addition to a
+    # compilable predicate so an unrelated entity set cannot waive the field.
+    if (
+        leaf in {"purchase_object", "purchase_objects"}
+        and isinstance(entity_set, dict)
+        and _entity_set_source_span(entity_set, "entity")
+    ):
+        return {
+            "field": normalized,
+            "resolved_by": "target_user.entity_set_condition.derived_set_ast",
+            "reason": "entity_ranking_owns_purchase_object",
+        }
+
+    if leaf != "purchase_date":
         return None
     ownership = next(
         (
@@ -16527,7 +16829,6 @@ def _semantic_missing_field_resolution(
         ),
         None,
     )
-    entity_set = (query_plan.get("target_user") or {}).get("entity_set_condition")
     if not isinstance(entity_set, dict):
         return None
     window = entity_set.get("window")
@@ -16627,6 +16928,8 @@ def build_sql_result(
     # 재확정)가 순위 절의 어구를 오디언스 조건으로 되살리면 같은 어구가 두 번 컴파일된다.
     _apply_condition_evaluation_ir(original_query or query, query_plan)
     _apply_entity_set_condition(original_query or query, query_plan)
+    _reconcile_deterministic_member_exclusions(original_query or query, query_plan)
+    _drop_deterministically_owned_set_expressions(query_plan)
     _reconcile_semantic_ir_with_execution_plan(query_plan)
     _guard_unparsed_entity_ranking(original_query or query, query_plan)
     semantic_ir_block = _semantic_ir_blocking_sql_result(query_plan)
@@ -17933,6 +18236,73 @@ def _drop_dimension_consumed_set_expressions(plan: dict[str, Any]) -> None:
     plan["set_expressions"] = kept
 
 
+def _entity_set_execution_ast(node: Any) -> dict[str, Any] | None:
+    """Return the execution-only AST for a fully compilable entity-set node."""
+
+    if not isinstance(node, dict):
+        return None
+    config = _entity_set_config()
+    if entity_set_capability(node, config) is not None:
+        return None
+    if not compile_entity_set_predicate(
+        node, config, member_alias=_member_alias(), member_key=_member_key_column()
+    ):
+        return None
+    ast = node.get("derived_set_ast")
+    return copy.deepcopy(ast) if isinstance(ast, dict) else None
+
+
+def _set_difference_owned_by_entity_set(
+    expression: dict[str, Any], plan: dict[str, Any], entity_ast: dict[str, Any]
+) -> bool:
+    """Whether ``<ranked members> 중 <attribute> 제외`` is already compiled."""
+
+    if expression.get("detection") != "natural":
+        return False
+    ast = expression.get("set_ast")
+    if not isinstance(ast, dict) or ast.get("op") != "-":
+        return False
+    left, right = ast.get("left"), ast.get("right")
+    if not isinstance(left, dict) or left.get("type") != "unknown_operand":
+        return False
+    if not isinstance(right, dict) or right.get("type") != "operand":
+        return False
+    canonical = right.get("canonical")
+    if canonical not in set((plan.get("exclude") or {}).get("gender") or []):
+        return False
+    left_text = left.get("text")
+    if not isinstance(left_text, str) or not left_text.strip():
+        return False
+    parsed_left = parse_entity_set_condition(left_text, _entity_set_config())
+    return _entity_set_execution_ast(parsed_left) == entity_ast
+
+
+def _drop_deterministically_owned_set_expressions(plan: dict[str, Any]) -> None:
+    """Drop a redundant set-expression only when every branch has an owner.
+
+    Prompt normalization often rewrites an attribute exclusion as
+    ``<ranked customer set> 중 남성 제외``.  The generic set parser then treats
+    the ranked left side as an unknown named segment even though the entity-set
+    compiler has already built it, while the right side is already represented by
+    ``exclude.gender``.  Exact AST equality plus the grounded exclusion proves the
+    entire difference is covered; any partial or unrelated expression remains
+    fail-closed.
+    """
+
+    expressions = plan.get("set_expressions")
+    entity_set = (plan.get("target_user") or {}).get("entity_set_condition")
+    entity_ast = _entity_set_execution_ast(entity_set)
+    if not isinstance(expressions, list) or not expressions or entity_ast is None:
+        return
+    plan["set_expressions"] = [
+        expression for expression in expressions
+        if not (
+            isinstance(expression, dict)
+            and _set_difference_owned_by_entity_set(expression, plan, entity_ast)
+        )
+    ]
+
+
 def _compile_set_operand(operand: dict[str, Any]) -> dict[str, Any]:
     canonical = operand.get("canonical")
     if canonical in GENDER_TERMS:
@@ -19091,10 +19461,7 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
         else:
             in_list = ", ".join(_sql_quote(code) for code in codes)
             if table_name == _member_table():
-                if len(codes) == 1 and (dimension_filter.get("operator") or "IN").upper() == "=":
-                    other_predicates.append("B." + column_short + " = " + _sql_quote(codes[0]))
-                else:
-                    other_predicates.append("B." + column_short + " IN (" + in_list + ")")
+                other_predicates.append("B." + column_short + " IN (" + in_list + ")")
             else:
                 other_predicates.append(
                     f"B.{join_column} IN (SELECT S.{join_column} FROM {table_name} S WHERE S.{column_short} IN ({in_list}))"

@@ -2,7 +2,7 @@
 
 값(코드/이름)은 저장하지 않는다 — 디멘션마다 값이 매우 많을 수 있으므로 런타임에 DS_SQL 을 실행해
 동적으로 해석한다(graph_rag._apply_dimension_filters). 이 스크립트는 '정의'(프롬프트 라벨/동의어,
-DBMS, DS_SQL, 연산자, 타겟 컬럼)만 스냅샷한다.
+DBMS, DS_SQL, 타겟 컬럼)만 스냅샷한다.
 
 타겟 컬럼(target_column/target_table)은 t_xlig_query_prompt.field 가 쿼리별 별칭(A./C.)이라 테이블을
 자동 특정할 수 없으므로, 안전하게 '큐레이션된' 매핑만 채운다(TARGETABLE_OVERRIDES). 나머지는 null 로
@@ -71,14 +71,12 @@ def fetch_dimensions() -> list[dict[str, Any]]:
         "quadmax_sdz",
         """
         SELECT PRMP_KWD,
-               JSON_UNQUOTE(JSON_EXTRACT(PRMP_JSON_INFO, '$.label.kr')) AS label_kr,
-               PRMP_OP
+               JSON_UNQUOTE(JSON_EXTRACT(PRMP_JSON_INFO, '$.label.kr')) AS label_kr
         FROM quadmax_sdz.t_xlig_query_prompt
         """,
         enforce_select=False,
     )
     labels_by_kwd: dict[str, list[str]] = {}
-    ops_by_kwd: dict[str, list[str]] = {}
     for row in prompt_rows:
         kwd = row.get("PRMP_KWD")
         if not kwd:
@@ -88,11 +86,6 @@ def fetch_dimensions() -> list[dict[str, Any]]:
             labels_by_kwd.setdefault(kwd, [])
             if label not in labels_by_kwd[kwd]:
                 labels_by_kwd[kwd].append(label)
-        op = row.get("PRMP_OP")
-        if isinstance(op, str) and op.upper() in {"IN", "="}:
-            ops_by_kwd.setdefault(kwd, [])
-            if op.upper() not in ops_by_kwd[kwd]:
-                ops_by_kwd[kwd].append(op.upper())
 
     dimensions = []
     for row in rows:
@@ -109,8 +102,6 @@ def fetch_dimensions() -> list[dict[str, Any]]:
             candidate = candidate.strip() if isinstance(candidate, str) else ""
             if candidate and candidate not in synonyms and not _NOISE_LABEL.search(candidate):
                 synonyms.append(candidate)
-        operators = ops_by_kwd.get(prmp_kwd, [])
-        operator = "IN" if "IN" in operators or not operators else operators[0]
         override = TARGETABLE_OVERRIDES.get(prmp_kwd, {})
         dimensions.append(
             {
@@ -120,7 +111,6 @@ def fetch_dimensions() -> list[dict[str, Any]]:
                 "prmp_kwd_nm": prmp_kwd_nm,
                 "dbms_id": row.get("DBMS_ID"),
                 "connection": DBMS_CONNECTION_MAP.get(row.get("DBMS_ID")),
-                "operator": operator,
                 "synonyms": synonyms,
                 "target_table": override.get("target_table"),
                 "target_column": override.get("target_column"),
@@ -135,7 +125,7 @@ def build_payload(dimensions: list[dict[str, Any]]) -> dict[str, Any]:
         "version": "2.0",
         "description": (
             "프롬프트 키워드(디멘션) 정의 스냅샷. 값(코드/이름)은 저장하지 않고 런타임에 DS_SQL 로 동적 해석한다. "
-            "t_xlig_dimension_list(ML_DS_DIV_CD='DS', DEL_F='N') + t_xlig_query_prompt(label/operator)에서 생성."
+            "t_xlig_dimension_list(ML_DS_DIV_CD='DS', DEL_F='N') + t_xlig_query_prompt(label)에서 생성."
         ),
         "source": {
             "dimension_table": "quadmax_sdz.t_xlig_dimension_list",

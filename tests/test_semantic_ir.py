@@ -247,6 +247,92 @@ def test_entity_ranking_window_resolves_stale_purchase_date_missing_field() -> N
     assert "D.ORDER_DATE BETWEEN '20190501' AND '20190531'" in result["sql"]
 
 
+def test_compilable_entity_ranking_overrides_stale_purchase_object_missing_field() -> None:
+    query = "2019년 하반기 가장 잘 팔린 제품 11개를 산 고객 추출하고 남성을 빼줘"
+    semantic_ir = {
+        "status": "needs_clarification",
+        "operations": [],
+        "missing_fields": ["target_user.purchase_object"],
+        "policy_applications": [],
+        "unsupported_operations": [],
+        "message": None,
+    }
+    payload = _payload(semantic_ir)
+    # Reproduce the LLM's two false inferences: requiring a concrete product and
+    # rewriting the explicit male exclusion as a positive female condition.
+    payload["target_user"] = {"gender": "female"}
+    payload["exclude"] = {"gender": ["male"], "interests": [], "lifecycle": []}
+    payload["semantic_evidence"] = []
+    semantic_plan = validate_campaign_query_plan_v3(
+        attach_campaign_query_plan_v3_identity(
+            payload, query, current_date="2026-07-29"
+        ),
+        query=query,
+    )
+
+    plan = graph_rag.build_query_plan(
+        query,
+        parser="auto",
+        query_plan_v2=semantic_plan,
+        precomputed_scopes={"mode": "llm", "targeting": query, "channel": ""},
+    )
+
+    assert plan["semantic_ir"]["status"] == "resolved"
+    assert plan["semantic_ir"]["missing_fields"] == []
+    assert plan["target_user"]["gender"] is None
+    assert plan["exclude"]["gender"] == ["male"]
+    assert plan["set_expressions"] == []
+    assert plan["semantic_ir_reconciliation"]["resolved_fields"] == [
+        {
+            "field": "target_user.purchase_object",
+            "resolved_by": "target_user.entity_set_condition.derived_set_ast",
+            "reason": "entity_ranking_owns_purchase_object",
+        }
+    ]
+    result = graph_rag.build_sql_result(
+        nx.Graph(), query, plan, [], graph_rag.DEFAULT_SCHEMA_PATH, 100,
+        original_query=query,
+    )
+
+    assert result["is_success"] is True
+    assert "SELECT TOP 11 D.PRODUCT_ID" in result["sql"]
+    assert "D.ORDER_DATE BETWEEN '20190701' AND '20191231'" in result["sql"]
+    assert "B.GENDER_CD <> 'GENDER_CD.MALE'" in result["sql"]
+
+
+def test_explicit_positive_gender_is_not_removed_by_exclusion_reconciliation() -> None:
+    plan = {
+        "target_user": {"gender": "female"},
+        "exclude": {"gender": ["male"]},
+    }
+
+    graph_rag._reconcile_deterministic_member_exclusions(
+        "여성 고객을 대상으로 하되 남성은 제외해줘", plan
+    )
+
+    assert plan["target_user"]["gender"] == "female"
+    assert plan["exclude"]["gender"] == ["male"]
+
+
+def test_purchase_object_missing_without_compilable_entity_ranking_still_blocks() -> None:
+    semantic_ir = {
+        "status": "needs_clarification",
+        "operations": [],
+        "missing_fields": ["target_user.purchase_object"],
+        "policy_applications": [],
+        "unsupported_operations": [],
+        "message": "구매 상품을 지정해 주세요.",
+    }
+    plan = {"semantic_ir": semantic_ir, "target_user": {}}
+
+    graph_rag._reconcile_semantic_ir_with_execution_plan(plan)
+    result = graph_rag._semantic_ir_blocking_sql_result(plan)
+
+    assert plan["semantic_ir"]["status"] == "needs_clarification"
+    assert result is not None
+    assert result["clarification_questions"] == ["구매 상품을 지정해 주세요."]
+
+
 def test_unowned_purchase_date_missing_field_still_blocks() -> None:
     semantic_ir = {
         "status": "needs_clarification",

@@ -435,9 +435,8 @@ def dimension_nodes(dimension_payload: dict[str, Any] | None) -> list[dict[str, 
         # 값(코드/이름)은 런타임에 DS_SQL 로 동적 해석하므로 노드에 담지 않는다. 정의만 임베딩한다.
         synonyms = dimension.get("synonyms", [])
         target_column = dimension.get("target_column")
-        operator = dimension.get("operator", "IN")
         if target_column:
-            targeting_text = f"타겟 컬럼 {target_column}, 연산자 {operator}. 값 이름을 코드로 변환해 {target_column} {operator} (코드목록) 으로 건다."
+            targeting_text = f"타겟 컬럼 {target_column}. 값 이름을 코드로 변환해 {target_column} IN (코드목록) 으로 건다."
         else:
             targeting_text = "타겟 컬럼 매핑은 아직 없어 값 해석/참조용으로만 등록한다."
         dimension_text = (
