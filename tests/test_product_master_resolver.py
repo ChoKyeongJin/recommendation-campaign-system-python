@@ -7,6 +7,8 @@ import product_master_resolver as resolver
 
 
 QUERY = "2019년 상반기에 하기스 기저귀를 가장 많이 산 고객 추출해줘"
+GENERIC_RANKING_QUERY = "2026년3월 구매에서 가장 많이 팔린상품 5개를 구매한 고객 리스트"
+KOREAN_AMOUNT_QUERY = "2019년에 이십만원 이상을 구매한고객에서 남자는 제외해."
 
 
 def _product_row(*, brand: str = "유한킴벌리") -> dict[str, str]:
@@ -117,6 +119,128 @@ def test_explicit_surface_kind_is_owned_by_user_without_db_inference(monkeypatch
     assert calls == []
     assert plan["target_user"]["purchase_object"] == "알로루"
     assert plan["target_user"]["purchase_object_kind"] == "brand"
+
+
+def test_non_entity_purchase_phrase_never_queries_product_master(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        graph_rag.product_master_resolver,
+        "resolve_product_phrase",
+        lambda phrase: calls.append(phrase) or {},
+    )
+    plan = {"target_user": {"purchase_object": "구매 팔린상품"}}
+
+    graph_rag._apply_product_master_resolution(GENERIC_RANKING_QUERY, plan)
+
+    assert calls == []
+    assert "purchase_object" not in plan["target_user"]
+    assert "purchase_object_resolution" not in plan["target_user"]
+
+
+def test_generic_ranking_phrase_is_not_a_product_master_candidate() -> None:
+    assert graph_rag._ambiguous_purchase_scope_phrase(GENERIC_RANKING_QUERY) is None
+    assert graph_rag._is_concrete_purchase_scope_phrase("구매 팔린상품") is False
+    assert graph_rag._is_concrete_purchase_scope_phrase("인기 상품") is False
+    assert graph_rag._is_concrete_purchase_scope_phrase("모든 제품") is False
+    assert graph_rag._is_concrete_purchase_scope_phrase("하기스 기저귀") is True
+
+
+def test_generic_product_ranking_uses_derived_set_without_product_lookup(monkeypatch) -> None:
+    monkeypatch.setattr(
+        graph_rag.product_master_resolver,
+        "resolve_product_phrase",
+        lambda _phrase: (_ for _ in ()).throw(AssertionError("product lookup must not run")),
+    )
+
+    plan = graph_rag.build_query_plan(GENERIC_RANKING_QUERY, parser="rules")
+    candidate = graph_rag.build_entity_set_targets_sql_candidate(plan)
+
+    assert plan["target_user"].get("purchase_object_resolution") is None
+    assert plan["target_user"]["entity_set_condition"]["limit"] == 5
+    assert candidate is not None
+    assert "SELECT TOP 5" in candidate["sql"]
+    assert "20260301" in candidate["sql"] and "20260331" in candidate["sql"]
+
+
+def test_korean_written_amount_is_not_queried_as_a_product(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(
+        graph_rag.product_master_resolver,
+        "resolve_product_phrase",
+        lambda phrase: calls.append(phrase) or {},
+    )
+
+    plan = graph_rag.build_query_plan(KOREAN_AMOUNT_QUERY, parser="rules")
+    candidate = graph_rag.build_aggregate_targets_sql_candidate(plan)
+
+    assert calls == []
+    assert plan["target_user"].get("purchase_object") is None
+    assert plan["target_user"].get("purchase_object_resolution") is None
+    assert plan["target_user"]["aggregate_conditions"][0]["threshold"] == 200000.0
+    assert plan["exclude"]["gender"] == ["male"]
+    assert candidate is not None
+    assert "20190101" in candidate["sql"] and "20191231" in candidate["sql"]
+
+
+def test_not_found_product_uses_whole_phrase_broad_fallback(monkeypatch) -> None:
+    phrase = "하기쓰 기저귀"
+    query = f"{phrase}를 구매한 고객"
+    monkeypatch.setattr(
+        graph_rag.product_master_resolver,
+        "resolve_product_phrase",
+        lambda value: {
+            "input": value,
+            "status": "not_found",
+            "source": "product_master_lookup",
+            "confidence": 0.0,
+            "filters": [],
+            "alternatives": [],
+        },
+    )
+
+    plan = graph_rag.build_query_plan(query, parser="rules")
+    candidate = graph_rag.build_purchase_history_targets_sql_candidate(plan)
+    result = graph_rag.build_sql_result(
+        nx.Graph(), query, plan, [], graph_rag.DEFAULT_SCHEMA_PATH, 100, original_query=query,
+    )
+
+    resolution = plan["target_user"]["purchase_object_resolution"]
+    assert resolution["status"] == "fallback"
+    assert resolution["lookup_status"] == "not_found"
+    assert resolution["fallback_value"] == phrase
+    assert candidate is not None
+    assert all(
+        f"P.{column} LIKE N'%{phrase}%'" in candidate["sql"]
+        for column in ("PRODUCT_NAME", "BRAND_NAME", "CATEGORY", "CATEGORYL_NAME", "CATEGORYM_NAME", "CATEGORYS_NAME")
+    )
+    assert result["is_success"] is True
+
+
+def test_resolved_product_still_uses_split_same_row_facets(monkeypatch) -> None:
+    monkeypatch.setattr(
+        graph_rag.product_master_resolver,
+        "resolve_product_phrase",
+        lambda phrase: {
+            "input": phrase,
+            "status": "resolved",
+            "source": "product_master_lookup",
+            "confidence": 0.97,
+            "filters": [
+                {"kind": "product", "value": "하기스", "columns": ["PRODUCT_NAME"]},
+                {"kind": "category", "value": "기저귀", "columns": ["CATEGORYM_NAME"]},
+            ],
+            "alternatives": [],
+        },
+    )
+
+    plan = graph_rag.build_query_plan(QUERY, parser="rules")
+    candidate = graph_rag.build_purchase_count_ranking_sql_candidate(plan)
+
+    assert plan["target_user"]["purchase_object_resolution"]["status"] == "resolved"
+    assert candidate is not None
+    assert "P.PRODUCT_NAME LIKE N'%하기스%'" in candidate["sql"]
+    assert "P.CATEGORYM_NAME LIKE N'%기저귀%'" in candidate["sql"]
+    assert ") AND (" in candidate["sql"]
 
 
 def test_resolved_facets_compile_as_same_row_and_predicates(monkeypatch) -> None:

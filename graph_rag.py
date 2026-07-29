@@ -152,7 +152,7 @@ from query_structurer import (
     call_query_planner,
 )
 from query_structurer.prompt import PLANNER_STRUCTURED_QUERY_RULES
-from query_semantics import classify_query_tokens, extract_extreme_semantics, is_non_entity_candidate
+from query_semantics import NON_ENTITY_TERMS, classify_query_tokens, extract_extreme_semantics, is_non_entity_candidate
 from data_quality import validate_metric_profile
 from member_policy import (
     active_member_filter,
@@ -3254,9 +3254,15 @@ def _apply_entity_set_condition(query: str, plan: dict[str, Any]) -> None:
         plan, owner=owner, span=spans.get("clause"), source_text=query,
         reason="순위 절이 읽은 원문 구간 — 같은 어구를 다른 해석이 다시 읽지 못한다",
     )
+    literal_product_slots = [
+        ("target_user", "purchase_object"),
+        ("target_user", "purchase_object_kind"),
+        ("target_user", "purchase_objects"),
+    ]
+    if scope_filter_span is None:
+        literal_product_slots.append(("target_user", "purchase_object_resolution"))
     _claim_slots(
-        plan, (("target_user", "purchase_object"), ("target_user", "purchase_object_kind"),
-               ("target_user", "purchase_objects")),
+        plan, tuple(literal_product_slots),
         owner=owner,
         reason=(
             "순위 집계의 상품 범위 한정자를 바깥 구매상품 조건으로 이중 해석"
@@ -6625,11 +6631,69 @@ _AMBIGUOUS_PURCHASE_SCOPE_PATTERN = re.compile(
 _PURCHASE_SCOPE_TIME_WORDS = frozenset({
     "상반기", "하반기", "올해", "작년", "금년", "지난달", "이번달", "전월", "당월",
 })
+_PURCHASE_SCOPE_NON_ENTITY_TERMS = frozenset({
+    # 구매·판매는 관계/집계 동작이지 상품 마스터 값이 아니다.
+    "구매", "구입", "주문", "결제", "판매", "팔림", "팔린", "팔리는", "판매된", "판매되는",
+    # 순위·집계·결과 집합을 설명하는 말도 특정 상품 식별자가 아니다.
+    "인기", "베스트", "스테디셀러", "랭킹", "순위", "판매량", "판매수량", "매출", "매출액",
+    "구매량", "구매수량", "주문량", "주문수량", "리스트", "목록", "결과", "추출", "조회",
+    "중", "중에서", "내", "대상", "사람", "고객", "회원", "사용자", "유저",
+    "특정", "어떤", "일부", "각", "그", "이", "저", "무슨", "어느", "임의", "여러", "다양", "다양한",
+    "각기", "각각", "서로", "전체", "전부", "모든", "모두", "평균", "평균값",
+}) | frozenset(_PURCHASE_VALUE_QUALIFIERS) | frozenset(_PURCHASE_SIGNAL_STOPWORDS)
+_PURCHASE_SCOPE_GENERIC_SUFFIXES = tuple(sorted(
+    {"상품명", "제품명", "품목명", "브랜드명", "카테고리명", "상품", "제품", "품목", "아이템", "굿즈"},
+    key=len,
+    reverse=True,
+))
+_PURCHASE_SCOPE_ACTION_RE = re.compile(
+    r"^(?:잘)?(?:구매|구입|주문|결제|판매|팔리|팔린|팔리는|팔렸|판매된|판매되는|판매량|매출)(?:한|한것|된|되는|에서)?$"
+)
 _EXPLICIT_PURCHASE_KIND_TERMS: dict[str, tuple[str, ...]] = {
     "brand": ("브랜드명", "브랜드"),
     "category": ("카테고리명", "카테고리", "품목군"),
     "product": ("상품명", "제품명", "품목명", "상품", "제품"),
 }
+
+
+def _concrete_purchase_scope_terms(value: str) -> list[str]:
+    """Return lexical fragments that could identify a product-master value.
+
+    Unknown words are deliberately retained: the live product master, rather than this vocabulary, decides whether
+    ``하기스`` or ``기저귀`` is a product/brand/category value.  This gate only removes text that is structurally an
+    operation, quantity, time, output word, or generic entity name.
+    """
+
+    concrete: list[str] = []
+    for raw_token in re.findall(r"[0-9A-Za-z가-힣_+\-]+", value or ""):
+        token = raw_token.casefold().strip()
+        if not token or _is_schema_query_value_token(token) or _is_date_like_token(token):
+            continue
+        token = _PURCHASE_OBJECT_PARTICLE_RE.sub("", re.sub(r"(?:을|를|이|가|은|는)$", "", token))
+        for suffix in _PURCHASE_SCOPE_GENERIC_SUFFIXES:
+            if token.endswith(suffix):
+                token = token[:-len(suffix)]
+                break
+        if not token:
+            continue
+        if (
+            token in _GENERIC_PRODUCT_NOUNS
+            or token in _GENERIC_PRODUCT_OBJECT_WORDS
+            or token in _PURCHASE_SCOPE_TIME_WORDS
+            or token in _PURCHASE_SCOPE_NON_ENTITY_TERMS
+            or token in {item.replace(" ", "") for item in NON_ENTITY_TERMS}
+            or _PURCHASE_SCOPE_ACTION_RE.fullmatch(token)
+            or _QUANTITY_COUNT_TOKEN.fullmatch(token)
+        ):
+            continue
+        concrete.append(token)
+    return concrete
+
+
+def _is_concrete_purchase_scope_phrase(value: str) -> bool:
+    """Whether an untyped phrase contains evidence worth querying in the product master."""
+
+    return bool(_concrete_purchase_scope_terms(value))
 
 
 def _explicit_purchase_kind(query: str, phrase: str) -> tuple[str, str] | None:
@@ -6677,7 +6741,12 @@ def _ambiguous_purchase_scope_phrase(query: str) -> str | None:
         and not _is_date_like_token(term)
     ]
     phrase = " ".join(terms[-4:]).strip()
-    if not phrase or phrase in _GENERIC_PRODUCT_NOUNS or phrase in _GENERIC_PRODUCT_OBJECT_WORDS:
+    if (
+        not phrase
+        or phrase in _GENERIC_PRODUCT_NOUNS
+        or phrase in _GENERIC_PRODUCT_OBJECT_WORDS
+        or not _is_concrete_purchase_scope_phrase(phrase)
+    ):
         return None
     return phrase
 
@@ -6688,13 +6757,12 @@ def _apply_product_master_resolution(query: str, plan: dict[str, Any]) -> None:
 
     Explicit ``purchase_object_kind`` values already have a user-owned column meaning, so this stage does not
     reinterpret them.  Untyped phrases are resolved to same-row product/brand/category filters; low-confidence,
-    tied, missing, or unavailable results remain non-executable and are converted to clarification by source
-    coverage validation.
+    tied or unavailable results remain non-executable and are converted to clarification by source coverage
+    validation. A genuine ``not_found`` keeps the complete phrase as a broad product-master LIKE fallback so a
+    typo or newly introduced product does not block the request.
     """
 
     target_user = plan.setdefault("target_user", {})
-    if target_user.get("purchase_object_kind") in _PURCHASE_OBJECT_KIND_COLUMNS:
-        return
     phrase = target_user.get("purchase_object")
     if not isinstance(phrase, str) or not phrase.strip():
         phrase = _ambiguous_purchase_scope_phrase(query)
@@ -6706,26 +6774,60 @@ def _apply_product_master_resolution(query: str, plan: dict[str, Any]) -> None:
         target_user["purchase_object"] = explicit_value
         target_user["purchase_object_kind"] = kind
         return
+    if not _is_concrete_purchase_scope_phrase(phrase):
+        for slot in ("purchase_object", "purchase_object_kind", "purchase_objects", "purchase_object_resolution"):
+            target_user.pop(slot, None)
+        plan_decisions.record(
+            plan,
+            filter_name="product_master_resolution",
+            action="skip",
+            slot="target_user.purchase_object_resolution",
+            reason="구매 명사구에 상품 마스터 값으로 조회할 구체 식별어가 없어 일반 상품 집합으로 해석",
+            value={"input": phrase, "concrete_terms": []},
+            source="deterministic_non_entity_gate",
+        )
+        return
+    # 종류 표지가 원문에 없으면 LLM/선행 규칙이 추측한 kind에 기대지 않고 상품 마스터로 검증한다.
+    target_user.pop("purchase_object_kind", None)
     if not _has_purchase_history_signal(query) and not isinstance(plan.get("purchase_count_ranking"), dict):
         return
 
     existing = target_user.get("purchase_object_resolution")
-    if isinstance(existing, dict) and existing.get("input") == phrase and existing.get("status") == "resolved":
+    if (
+        isinstance(existing, dict)
+        and existing.get("input") == phrase
+        and existing.get("status") in {"resolved", "fallback"}
+    ):
         return
 
     resolution = product_master_resolver.resolve_product_phrase(phrase)
+    if resolution.get("status") == "not_found":
+        resolution = {
+            **resolution,
+            "lookup_status": "not_found",
+            "status": "fallback",
+            "fallback_strategy": "whole_phrase_broad_match",
+            "fallback_value": phrase,
+            "fallback_columns": [
+                "PRODUCT_NAME", "BRAND_NAME", "CATEGORY", "CATEGORYL_NAME", "CATEGORYM_NAME", "CATEGORYS_NAME",
+            ],
+        }
     target_user["purchase_object"] = phrase
     target_user["purchase_object_resolution"] = resolution
     status = str(resolution.get("status") or "unavailable")
     plan_decisions.record(
         plan,
         filter_name="product_master_resolution",
-        action="resolve" if status == "resolved" else "clarify",
+        action="resolve" if status in {"resolved", "fallback"} else "clarify",
         slot="target_user.purchase_object_resolution",
         reason=(
             "종류 미지정 구매 표현을 같은 상품 행의 상품명·브랜드·카테고리 값으로 확정"
             if status == "resolved"
-            else "상품 마스터 근거가 없거나 후보 간 신뢰도 차이가 작아 자동 확정하지 않음"
+            else (
+                "상품 마스터에서 분해 근거를 찾지 못해 원문 전체를 상품명·브랜드·카테고리에 광역 검색"
+                if status == "fallback"
+                else "상품 마스터 후보 간 신뢰도 차이가 작거나 조회할 수 없어 자동 확정하지 않음"
+            )
         ),
         value={
             "input": phrase,
@@ -12485,7 +12587,10 @@ def _is_schema_query_value_token(token: str) -> bool:
     stripped = token.strip().strip(",.")
     if not stripped:
         return False
-    return _is_date_like_token(stripped) or bool(_SCHEMA_QUERY_VALUE_RE.match(stripped))
+    # 집계 파서와 같은 한자어 금액 정규화를 먼저 적용한다. 그렇지 않으면 집계에서는
+    # '이십만원'→200000원으로 처리하면서 상품 게이트에서는 알 수 없는 명사로 다시 읽게 된다.
+    normalized = _normalize_sino_korean_amounts(stripped)
+    return _is_date_like_token(stripped) or bool(_SCHEMA_QUERY_VALUE_RE.match(normalized))
 
 
 def _schema_retrieval_query(text: str) -> str:
@@ -16599,7 +16704,10 @@ def _refresh_unresolved_source_conditions(
     product_resolution_unresolved: list[dict[str, Any]] = []
     target_user = query_plan.get("target_user") if isinstance(query_plan.get("target_user"), dict) else {}
     product_resolution = target_user.get("purchase_object_resolution")
-    if isinstance(product_resolution, dict) and product_resolution.get("status") != "resolved":
+    if (
+        isinstance(product_resolution, dict)
+        and product_resolution.get("status") not in {"resolved", "fallback"}
+    ):
         phrase = str(product_resolution.get("input") or target_user.get("purchase_object") or "구매 상품")
         status = str(product_resolution.get("status") or "unavailable")
         reason_by_status = {
