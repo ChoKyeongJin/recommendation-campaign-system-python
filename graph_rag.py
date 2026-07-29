@@ -109,6 +109,7 @@ import metric_registry
 import segment_semantics
 import lexicon_llm
 import semantic_requirements
+import semantic_resolution
 import compiler_strategies
 import condition_evaluation_ir
 from condition_evaluation_ir import (
@@ -2366,10 +2367,20 @@ def _merge_targeting_conditions(base: dict[str, Any], other: dict[str, Any]) -> 
         if merged:
             base_campaign[field] = merged
 
-    # 디멘션 필터(지역/브랜드 등): (컬럼, 코드집합) 기준 중복 제거 합집합.
-    existing = {(f.get("column"), tuple(f.get("codes", []))) for f in base.get("dimension_filters", [])}
+    # 디멘션 필터(지역/브랜드 등): 극성이 다른 IN/NOT_IN은 서로 다른 조건이다. operator를 빼고
+    # 중복 제거하면 exclude가 include에 먹히므로 dimension/column/operator/code를 모두 키로 쓴다.
+    existing = {
+        (
+            f.get("dimension_id"), f.get("column"), str(f.get("operator") or "IN").upper(),
+            tuple(f.get("codes", [])),
+        )
+        for f in base.get("dimension_filters", [])
+    }
     for dimension_filter in other.get("dimension_filters", []):
-        key = (dimension_filter.get("column"), tuple(dimension_filter.get("codes", [])))
+        key = (
+            dimension_filter.get("dimension_id"), dimension_filter.get("column"),
+            str(dimension_filter.get("operator") or "IN").upper(), tuple(dimension_filter.get("codes", [])),
+        )
         if key not in existing:
             existing.add(key)
             base.setdefault("dimension_filters", []).append(dimension_filter)
@@ -2400,6 +2411,12 @@ def _finalize_deterministic_query_plan(
     _apply_analytical_intent(query, plan, sql_schema)
     _reconcile_cart_aggregate_ownership(plan)
     _attach_query_output_contract(query, plan)
+    dimension_filter_errors = _validate_dimension_filters(plan)
+    if dimension_filter_errors:
+        existing_validation_errors = plan.setdefault("validation_errors", [])
+        for error in dimension_filter_errors:
+            if error not in existing_validation_errors:
+                existing_validation_errors.append(error)
     plan["complexity"] = classify_query_complexity(plan)
 
 
@@ -6851,45 +6868,57 @@ _ASCII_ALNUM = re.compile(r"[0-9A-Za-z]")
 # 값(예: 지역명) 뒤에 한글이 바로 이어져도 값 언급으로 인정할 조사/행정접미(예: '서울에', '경기도').
 _VALUE_TAIL_TOKENS = (
     "특별자치시", "특별자치도", "특별시", "광역시", "도", "시", "권", "지역", "지방", "쪽",
-    "거주", "사는", "살", "에서", "에게", "에", "은", "는", "이", "가", "을", "를", "의",
+    "거주", "사는", "살", "고객", "회원", "사용자", "유저", "대상", "사람",
+    "에서", "에게", "에", "은", "는", "이", "가", "을", "를", "의", "도",
     "만", "과", "와", "랑", "보다", "까지", "부터",
 )
 
 
-def _value_token_mentioned(value: str, query: str) -> bool:
-    """값(예: '서울', 'VIP')이 프롬프트에 '토큰 경계'로 나타나는지 검사한다(ASCII 는 대소문자 무시).
+def _value_token_spans(value: str, query: str) -> list[tuple[int, int]]:
+    """값(예: '서울', 'VIP')이 프롬프트에 나타난 모든 유효 span을 반환한다.
 
     값만으로 조건을 활성화하는 경로(회원 값 인덱스)는 순수 부분문자열 매칭이면 짧은 값이 무관한
     단어에 얻어걸린다(예: '경기'가 '경기침체'에, 'APP'이 'HAPPY'에). 앞경계: 한글 금지, ASCII 값이면
     영숫자도 금지. 뒤경계: 끝/비한글·비영숫자면 통과, 한글 값+한글 연속은 조사·행정접미만 허용,
     ASCII 값 뒤 영숫자는 거절(단어 내부), ASCII 값 뒤 한글은 자연 경계('VIP고객')로 허용.
+
+    polarity 판정은 값과 제외 cue의 정확한 위치를 연결해야 하므로 bool만 반환하지 않는다. 같은 값이
+    한 문장에 여러 번 나오는 경우도 보존한다. 기존 호출부는 ``_value_token_mentioned`` wrapper를 쓴다.
     """
     if not value:
-        return False
+        return []
     haystack = query.casefold()
     needle = value.casefold()
     first_ascii = bool(_ASCII_ALNUM.match(needle[0]))
     last_ascii = bool(_ASCII_ALNUM.match(needle[-1]))
+    spans: list[tuple[int, int]] = []
     start = 0
     while True:
         idx = haystack.find(needle, start)
         if idx < 0:
-            return False
+            return spans
         start = idx + 1
         before = haystack[idx - 1] if idx > 0 else ""
         after = haystack[idx + len(needle):]
         if before and (_HANGUL_SYLLABLE.match(before) or (first_ascii and _ASCII_ALNUM.match(before))):
             continue  # 앞이 같은 종류 문자면 다른 단어의 일부
         if not after:
-            return True
+            spans.append((idx, idx + len(needle)))
+            continue
         next_char = after[0]
         if _HANGUL_SYLLABLE.match(next_char):
             if not _HANGUL_SYLLABLE.match(needle[-1]) or any(after.startswith(token) for token in _VALUE_TAIL_TOKENS):
-                return True
+                spans.append((idx, idx + len(needle)))
             continue
         if last_ascii and _ASCII_ALNUM.match(next_char):
             continue  # ASCII 단어 내부(예: 'APP'이 'APPLE'에)
-        return True
+        spans.append((idx, idx + len(needle)))
+
+
+def _value_token_mentioned(value: str, query: str) -> bool:
+    """경계가 유효한 값 언급이 하나라도 있는지 검사하는 하위 호환 wrapper."""
+
+    return bool(_value_token_spans(value, query))
 
 
 def _apply_dimension_filters(query: str, plan: dict[str, Any], dimension_catalog: Path | None = DEFAULT_DIMENSION_CATALOG_PATH) -> None:
@@ -6909,21 +6938,36 @@ def _apply_dimension_filters(query: str, plan: dict[str, Any], dimension_catalog
         # 라벨 없이 값만 언급되는 회원 속성은 member_value_index(_apply_member_value_filters)가 담당한다.
         if not any(synonym.replace(" ", "").casefold() in compact_query for synonym in synonyms):
             continue
-        codes: list[str] = []
-        names: list[str] = []
+        matches_by_operator: dict[str, list[tuple[str, str, PolarityResult]]] = {"IN": [], "NOT_IN": []}
         for code, name in _resolve_dimension_values(dimension):
-            if name and name.replace(" ", "").casefold() in compact_query and code not in codes:
-                codes.append(code)
-                names.append(name)
-        if codes:
+            if not name:
+                continue
+            for value_span in _value_token_spans(name, query):
+                polarity = _resolve_value_polarity(query, name, value_span=value_span)
+                operator = "NOT_IN" if polarity.polarity == "exclude" else "IN"
+                key = (code, polarity.polarity)
+                if key not in [(item[0], item[2].polarity) for item in matches_by_operator[operator]]:
+                    matches_by_operator[operator].append((code, name, polarity))
+        for operator, matched in matches_by_operator.items():
+            if not matched:
+                continue
             filters.append(
                 {
                     "dimension_id": dimension.get("dimension_id"),
                     "prompt_label": dimension.get("prompt_label"),
                     "column": dimension.get("target_column"),
                     "table": dimension.get("target_table"),
-                    "codes": codes,
-                    "names": names,
+                    "operator": operator,
+                    "codes": _unique_strings([code for code, _, _ in matched]),
+                    "names": _unique_strings([name for _, name, _ in matched]),
+                    "polarity": "exclude" if operator == "NOT_IN" else "include",
+                    "evidence": " | ".join(
+                        _unique_strings([
+                            query[result.value_span[0] : (result.cue_span[1] if result.cue_span else result.value_span[1])].strip()
+                            for _, _, result in matched
+                        ])
+                    ),
+                    "source": "dimension_catalog",
                 }
             )
     if filters:
@@ -7001,7 +7045,7 @@ def _apply_member_value_filters(
     """회원 값 인덱스(member_value_index.json)로 프롬프트의 값 토큰을 실컬럼 조건으로 해석한다.
 
     build_member_value_index.py 가 실DB에서 자동 생성한 인덱스가 소스이므로 컬럼별 수동 큐레이션이
-    필요 없다 — 새 컬럼/값은 인덱스 재생성만으로 타겟팅에 반영된다. 값 이름은 _value_token_mentioned
+    필요 없다 — 새 컬럼/값은 인덱스 재생성만으로 타겟팅에 반영된다. 값 이름은 _value_token_spans
     경계 검사로 매칭해 부분문자열 오탐('경기'≠'경기침체')을 막고, 결과는 dimension_filters 와 같은
     형태로 추가돼 기존 컴파일러(compile_member_target_conditions)·커버리지 검증이 그대로 소비한다.
     """
@@ -7014,15 +7058,16 @@ def _apply_member_value_filters(
         (dimension_filter.get("column") or "").split(".")[-1].upper()
         for dimension_filter in plan.get("dimension_filters", [])
     }
-    matches_by_column: dict[str, list[tuple[str, str]]] = {}
+    matches_by_column: dict[str, list[tuple[str, str, PolarityResult]]] = {}
     columns_by_name: dict[str, set[str]] = {}
     column_sources: dict[str, dict[str, Any]] = {}
     region_columns = _region_columns()
 
-    def _record_match(column: str, code: str, name: str) -> None:
+    def _record_match(column: str, code: str, name: str, polarity: PolarityResult) -> None:
         matches_by_column.setdefault(column, [])
-        if code not in [existing_code for existing_code, _ in matches_by_column[column]]:
-            matches_by_column[column].append((code, name))
+        key = (code, polarity.polarity)
+        if key not in [(existing_code, existing_polarity.polarity) for existing_code, _, existing_polarity in matches_by_column[column]]:
+            matches_by_column[column].append((code, name, polarity))
         columns_by_name.setdefault(name.casefold(), set()).add(column)
 
     for column_entry in index.get("columns", []):
@@ -7036,22 +7081,25 @@ def _apply_member_value_filters(
             name = entry.get("name") or ""
             if not code or not _matchable_value_name(name):
                 continue
-            if _value_token_mentioned(name, query):
-                _record_match(column, code, name)
+            for value_span in _value_token_spans(name, query):
+                _record_match(
+                    column, code, name,
+                    _resolve_value_polarity(query, name, value_span=value_span),
+                )
         # 지역 컬럼은 시 단위 입력('안양')을 같은 시의 구 단위 저장값('안양시 동안구/만안구')으로 확장한다.
         if column.upper() in region_columns:
             name_to_code = {(entry.get("name") or ""): (entry.get("value") or "") for entry in values}
-            exact_names = {name for _, name in matches_by_column.get(column, [])}
+            exact_names = {name for _, name, _ in matches_by_column.get(column, [])}
             for city_alias, member_names in _region_city_alias_map(values).items():
                 # 사용자가 특정 구('안양시 동안구')를 명시했으면 그 시를 전체로 넓히지 않는다(정확도 우선).
                 if any(name in exact_names for name in member_names):
                     continue
-                if not _value_token_mentioned(city_alias, query):
-                    continue
-                for name in member_names:
-                    code = name_to_code.get(name)
-                    if code:
-                        _record_match(column, code, name)
+                for value_span in _value_token_spans(city_alias, query):
+                    polarity = _resolve_value_polarity(query, city_alias, value_span=value_span)
+                    for name in member_names:
+                        code = name_to_code.get(name)
+                        if code:
+                            _record_match(column, code, name, polarity)
 
     # 같은 이름이 여러 컬럼에 존재하면(예: 'App' 이 가입채널·로그인채널 양쪽) 어느 컬럼 조건인지
     # 추측할 수 없으므로 그 이름은 매칭에서 제외한다(조용한 오필터 방지).
@@ -7059,23 +7107,41 @@ def _apply_member_value_filters(
 
     filters = []
     for column, matched in matches_by_column.items():
-        matched = [(code, name) for code, name in matched if name.casefold() not in ambiguous_names]
+        matched = [item for item in matched if item[1].casefold() not in ambiguous_names]
         if not matched:
             continue
         # 보조 속성 테이블 컬럼(예: JOB_CD)은 저장 테이블/조인키를 실어 회원키 서브쿼리로 컴파일되게 한다.
         source_table = column_sources[column].get("source_table") or table
-        filter_entry = {
-            "dimension_id": "member_value:" + column,
-            "prompt_label": column,
-            "column": source_table + "." + column,
-            "table": source_table,
-            "codes": [code for code, _ in matched],
-            "names": [name for _, name in matched],
-            "source": "member_value_index",
-        }
-        if column_sources[column].get("join_column"):
-            filter_entry["join_column"] = column_sources[column]["join_column"]
-        filters.append(filter_entry)
+        by_operator: dict[str, list[tuple[str, str, PolarityResult]]] = {"IN": [], "NOT_IN": []}
+        for code, name, polarity in matched:
+            operator = "NOT_IN" if polarity.polarity == "exclude" else "IN"
+            by_operator[operator].append((code, name, polarity))
+        for operator, operator_matches in by_operator.items():
+            if not operator_matches:
+                continue
+            evidence_parts: list[str] = []
+            for _, _, polarity in operator_matches:
+                evidence_end = polarity.cue_span[1] if polarity.cue_span else polarity.value_span[1]
+                evidence = query[polarity.value_span[0] : evidence_end].strip()
+                if evidence and evidence not in evidence_parts:
+                    evidence_parts.append(evidence)
+            filter_entry = {
+                "dimension_id": "member_value:" + column,
+                "prompt_label": column,
+                "column": source_table + "." + column,
+                "table": source_table,
+                "operator": operator,
+                "codes": _unique_strings([code for code, _, _ in operator_matches]),
+                "names": _unique_strings([name for _, name, _ in operator_matches]),
+                "polarity": "exclude" if operator == "NOT_IN" else "include",
+                "evidence": " | ".join(evidence_parts),
+                "value_spans": [list(polarity.value_span) for _, _, polarity in operator_matches],
+                "cue_spans": [list(polarity.cue_span) if polarity.cue_span else None for _, _, polarity in operator_matches],
+                "source": "member_value_index",
+            }
+            if column_sources[column].get("join_column"):
+                filter_entry["join_column"] = column_sources[column]["join_column"]
+            filters.append(filter_entry)
     if filters:
         plan.setdefault("dimension_filters", [])
         plan["dimension_filters"].extend(filters)
@@ -7096,34 +7162,51 @@ def _apply_macro_region_filter(query: str, plan: dict[str, Any]) -> None:
     if not isinstance(groups, dict):
         return
     column = (config.get("column") or "SIDO").upper()
-    names: list[str] = []
+    names_by_operator: dict[str, list[str]] = {"IN": [], "NOT_IN": []}
+    evidence_by_operator: dict[str, list[str]] = {"IN": [], "NOT_IN": []}
     for macro, members in groups.items():
-        if not isinstance(members, list) or not _value_token_mentioned(macro, query):
+        if not isinstance(members, list):
             continue
-        for name in members:
-            if isinstance(name, str) and name and name not in names:
-                names.append(name)
-    if not names:
-        return
-    # 이미 같은 시도 컬럼 조건이 있으면(구체 시도 지정) 합집합으로 병합한다.
-    for dimension_filter in plan.get("dimension_filters", []):
-        if (dimension_filter.get("column") or "").split(".")[-1].upper() == column:
-            for key in ("codes", "names"):
-                existing = dimension_filter.setdefault(key, [])
-                for name in names:
-                    if name not in existing:
-                        existing.append(name)
-            return
+        for value_span in _value_token_spans(macro, query):
+            polarity = _resolve_value_polarity(query, macro, value_span=value_span)
+            operator = "NOT_IN" if polarity.polarity == "exclude" else "IN"
+            for name in members:
+                if isinstance(name, str) and name and name not in names_by_operator[operator]:
+                    names_by_operator[operator].append(name)
+            evidence_end = polarity.cue_span[1] if polarity.cue_span else polarity.value_span[1]
+            evidence = query[polarity.value_span[0] : evidence_end].strip()
+            if evidence and evidence not in evidence_by_operator[operator]:
+                evidence_by_operator[operator].append(evidence)
     table = _member_table()
-    plan.setdefault("dimension_filters", []).append({
-        "dimension_id": "macro_region:" + column,
-        "prompt_label": column,
-        "column": table + "." + column,
-        "table": table,
-        "codes": list(names),
-        "names": list(names),
-        "source": "macro_region",
-    })
+    for operator, names in names_by_operator.items():
+        if not names:
+            continue
+        # 같은 컬럼·같은 극성만 합집합으로 병합한다. IN과 NOT_IN은 서로 다른 조건이다.
+        for dimension_filter in plan.get("dimension_filters", []):
+            existing_operator = str(dimension_filter.get("operator") or "IN").upper()
+            if (
+                (dimension_filter.get("column") or "").split(".")[-1].upper() == column
+                and existing_operator == operator
+            ):
+                for key in ("codes", "names"):
+                    existing = dimension_filter.setdefault(key, [])
+                    for name in names:
+                        if name not in existing:
+                            existing.append(name)
+                break
+        else:
+            plan.setdefault("dimension_filters", []).append({
+                "dimension_id": "macro_region:" + column,
+                "prompt_label": column,
+                "column": table + "." + column,
+                "table": table,
+                "operator": operator,
+                "codes": list(names),
+                "names": list(names),
+                "polarity": "exclude" if operator == "NOT_IN" else "include",
+                "evidence": " | ".join(evidence_by_operator[operator]),
+                "source": "macro_region",
+            })
 
 
 # "X가 많이 거주하는 동네/지역" 같은 밀집 지역(집계 랭킹) 표현 감지. 지역 단위 어휘와 단위→컬럼
@@ -12203,22 +12286,129 @@ def _is_known_brand_term(term: str) -> bool:
     return bool(normalized) and any(_normalize_product_term(name) == normalized for name in _purchase_brand_names())
 
 
-def _is_exclusion_context(query: str, matched_text: str, match_type: str) -> bool:
-    lowered_query = query.casefold()
-    match_index = lowered_query.find(matched_text.casefold())
-    if match_index < 0:
-        return False
+@dataclass(frozen=True)
+class PolarityResult:
+    """원문의 한 값 언급과 그 값에 귀속된 포함/제외 cue."""
 
-    match_end = match_index + len(matched_text)
-    before_window = lowered_query[max(0, match_index - 8) : match_index]
-    after_window = lowered_query[match_end : match_end + 12]
-    if any(marker in after_window for marker in ("제외", "빼고", "말고", "아닌", "아니고")) or any(
-        marker in before_window for marker in ("not ", "except ", "exclude ")
-    ):
-        return True
-    # 나열형 제외("휴면·탈퇴 상태인 회원은 제외")는 제외 표지가 고정 창(12자) 밖으로 밀려난다. 나열
-    # 구분자로 이어진 뒤 제외 표지가 오는 경우만 인정해(_ENUM_EXCLUSION_TAIL_RE) 나열 앞 항목도 제외로 본다.
-    return bool(_ENUM_EXCLUSION_TAIL_RE.match(re.sub(r"\s+", "", lowered_query[match_end:])))
+    polarity: Literal["include", "exclude", "unknown"]
+    value_span: tuple[int, int]
+    cue_span: tuple[int, int] | None
+    clause_span: tuple[int, int]
+    reason: str
+
+
+# 쉼표는 값 나열("남성, 서울 고객은 제외")에 쓰이므로 hard boundary가 아니다.
+_POLARITY_CLAUSE_BOUNDARY_RE = re.compile(r"[.!?;。！？；\n\r]")
+_EXCLUSION_CUE_RE = re.compile(
+    r"(?:"
+    r"포함\s*하지\s*(?:않는|않은|않고|말아\s*줘|말아줘|말아|마)?"
+    r"|제외(?:해\s*주고|해주고|해\s*줘|해줘|하고|해\s*달라(?:고)?|해달라(?:고)?|할)?"
+    r"|빼(?!\s*지\s*말)(?:\s*주고|주고|\s*줘|줘|\s*달라(?:고)?|달라(?:고)?|고)?"
+    r"|말고|아닌|아니고"
+    r")",
+    re.IGNORECASE,
+)
+_INCLUSION_CUE_RE = re.compile(
+    r"(?:포함(?!\s*하지)(?:해\s*주고|해주고|해\s*줘|해줘|하고|하라고|해\s*달라(?:고)?|해달라(?:고)?)?)",
+    re.IGNORECASE,
+)
+# 제외 동사를 언급했지만 실제 요청은 그 제외를 취소하는 표현. 이 span과 겹치는 raw 제외 cue는 버린다.
+_NEGATED_EXCLUSION_RE = re.compile(
+    r"(?:"
+    r"빼\s*지\s*말(?:아\s*줘|아줘|아|라)?"
+    r"|제외\s*할\s*필요(?:는|가)?\s*없(?:어|다|어요)?"
+    r"|빼\s*달라(?:고|는|라는)?(?:\s*뜻|\s*말)?(?:은|는)?\s*아니(?:야|다|에요|고)?"
+    r")",
+    re.IGNORECASE,
+)
+_POLARITY_CORRECTION_MARKERS = ("지만", "그러나", "그런데", "이번에는", "정정", "대신")
+
+
+def _polarity_clause_span(query: str, value_span: tuple[int, int]) -> tuple[int, int]:
+    """문장부호/개행을 hard boundary로 삼은 값의 절 범위."""
+
+    start, end = value_span
+    left = 0
+    for match in _POLARITY_CLAUSE_BOUNDARY_RE.finditer(query, 0, start):
+        left = match.end()
+    boundary = _POLARITY_CLAUSE_BOUNDARY_RE.search(query, end)
+    right = boundary.start() if boundary else len(query)
+    return left, right
+
+
+def _resolve_value_polarity(
+    query: str,
+    matched_text: str,
+    *,
+    value_span: tuple[int, int] | None = None,
+) -> PolarityResult:
+    """값 span 뒤의 가장 가까운 의미 cue를 값에 귀속해 include/exclude/unknown을 판정한다.
+
+    접속된 값들은 같은 뒤쪽 cue를 공유할 수 있지만, 먼저 나온 값은 자신의 첫 cue만 소유한다. 따라서
+    ``남성과 서울은 빼줘``는 둘 다 exclude이고, ``남성은 빼고 서울은 포함``은 서로 다른 극성이 된다.
+    ``...했지만 이번에는...`` 같은 명시적 정정만 뒤 cue가 앞 cue를 덮는다.
+    """
+
+    if value_span is None:
+        spans = _value_token_spans(matched_text, query)
+        if not spans:
+            missing = (-1, -1)
+            return PolarityResult("unknown", missing, None, (0, len(query)), "value_not_found")
+        value_span = spans[-1]
+
+    clause_span = _polarity_clause_span(query, value_span)
+    clause_start, clause_end = clause_span
+    cancellations = list(_NEGATED_EXCLUSION_RE.finditer(query, value_span[1], clause_end))
+
+    def _overlaps_cancellation(match: re.Match[str]) -> bool:
+        return any(match.start() < cancel.end() and cancel.start() < match.end() for cancel in cancellations)
+
+    cues: list[tuple[int, int, Literal["include", "exclude"], str]] = []
+    for match in _EXCLUSION_CUE_RE.finditer(query, value_span[1], clause_end):
+        if not _overlaps_cancellation(match):
+            cues.append((match.start(), match.end(), "exclude", match.group(0)))
+    for match in _INCLUSION_CUE_RE.finditer(query, value_span[1], clause_end):
+        cues.append((match.start(), match.end(), "include", match.group(0)))
+    for match in cancellations:
+        cues.append((match.start(), match.end(), "include", match.group(0)))
+    cues.sort(key=lambda item: (item[0], -(item[1] - item[0]), 0 if item[2] == "include" else 1))
+
+    if not cues:
+        before = query[clause_start : value_span[0]]
+        english_prefix = re.search(r"(?:\bnot\b|\bexcept\b|\bexclude\b)\s*$", before, re.IGNORECASE)
+        if english_prefix:
+            return PolarityResult(
+                "exclude", value_span,
+                (clause_start + english_prefix.start(), clause_start + english_prefix.end()),
+                clause_span, f"exclude_cue:{english_prefix.group(0).strip()}",
+            )
+        return PolarityResult("unknown", value_span, None, clause_span, "no_polarity_cue")
+
+    selected = cues[0]
+    for candidate in cues[1:]:
+        between = query[selected[1] : candidate[0]].replace(" ", "").casefold()
+        if any(marker in between for marker in _POLARITY_CORRECTION_MARKERS):
+            selected = candidate
+    cue_start, cue_end, polarity, cue_text = selected
+    return PolarityResult(
+        polarity,
+        value_span,
+        (cue_start, cue_end),
+        (clause_start, clause_end),
+        f"{polarity}_cue:{cue_text}",
+    )
+
+
+def _is_exclusion_context(query: str, matched_text: str, match_type: str) -> bool:
+    """기존 정규화 호출부용 wrapper. 동일 값이 반복되면 마지막 명시 극성을 우선한다."""
+
+    del match_type  # match 유형보다 원문 span/cue가 극성의 권위다.
+    results = [
+        _resolve_value_polarity(query, matched_text, value_span=span)
+        for span in _value_token_spans(matched_text, query)
+    ]
+    explicit = [result for result in results if result.polarity != "unknown"]
+    return bool(explicit and explicit[-1].polarity == "exclude")
 
 
 def _is_delivery_channel_context(query: str, matched_text: str) -> bool:
@@ -16691,27 +16881,6 @@ def _semantic_ir_blocking_sql_result(
     }
 
 
-def _read_non_empty_plan_path(query_plan: dict[str, Any], path: str) -> Any:
-    """Read a dotted execution-plan path, returning ``None`` for empty values."""
-
-    current: Any = query_plan
-    for part in path.split("."):
-        if not isinstance(current, dict) or part not in current:
-            return None
-        current = current[part]
-    return None if current in (None, "", [], {}) else current
-
-
-def _complete_calendar_window(value: Any) -> bool:
-    return bool(
-        isinstance(value, dict)
-        and isinstance(value.get("from"), str)
-        and value["from"]
-        and isinstance(value.get("to"), str)
-        and value["to"]
-    )
-
-
 def _compiled_entity_set_condition(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     """Return an entity-set node only when the deterministic compiler completes it.
 
@@ -16760,106 +16929,27 @@ def _unresolved_source_condition_is_deterministically_resolved(
     return False
 
 
-def _entity_set_source_span(entity_set: dict[str, Any], name: str) -> str | None:
-    """Return the exact source text owned by a deterministic entity-set span."""
+def _semantic_resolution_evidence(
+    query_plan: dict[str, Any],
+) -> list[semantic_resolution.ResolutionEvidence]:
+    """Build grounded claims while keeping alias/ownership policy outside this orchestrator."""
 
-    surface = entity_set.get("surface")
-    spans = entity_set.get("spans") if isinstance(entity_set.get("spans"), dict) else {}
-    span = spans.get(name)
-    if (
-        not isinstance(surface, str)
-        or not isinstance(span, (list, tuple))
-        or len(span) != 2
-        or not all(isinstance(index, int) and not isinstance(index, bool) for index in span)
-    ):
-        return None
-    start, end = span
-    if start < 0 or end <= start or end > len(surface):
-        return None
-    return surface[start:end]
+    return semantic_resolution.build_resolution_evidence(
+        query_plan,
+        compiled_entity_set=_compiled_entity_set_condition(query_plan),
+        member_table=_member_table(),
+        region_columns=_region_columns(),
+    )
 
 
 def _semantic_missing_field_resolution(
     query_plan: dict[str, Any], field: str,
 ) -> dict[str, str] | None:
-    """Return deterministic evidence that a model-declared field is resolved.
+    """Resolve one model field against declarative, executable-plan evidence."""
 
-    Direct plan slots are unambiguous.  A purchase date consumed by an entity-set
-    ranking is resolved only when slot-ownership provenance says that the exact
-    source condition was removed and the owning entity set has a complete window.
-    Merely finding some date elsewhere in the plan is deliberately insufficient.
-    """
-
-    normalized = field.strip()
-    direct_paths = [normalized] if "." in normalized else [
-        normalized,
-        f"target_user.{normalized}",
-        f"campaign_constraints.{normalized}",
-    ]
-    for path in direct_paths:
-        if _read_non_empty_plan_path(query_plan, path) is not None:
-            return {"field": normalized, "resolved_by": path, "reason": "grounded_plan_slot"}
-
-    leaf = normalized.rsplit(".", 1)[-1]
-    entity_set = _compiled_entity_set_condition(query_plan)
-    # A ranked entity set computes the product/brand/category operand itself.  A
-    # concrete purchase_object is therefore not an input to ask the user for.
-    # Require the deterministic parser's exact entity span in addition to a
-    # compilable predicate so an unrelated entity set cannot waive the field.
-    if (
-        leaf in {"purchase_object", "purchase_objects"}
-        and isinstance(entity_set, dict)
-        and _entity_set_source_span(entity_set, "entity")
-    ):
-        return {
-            "field": normalized,
-            "resolved_by": "target_user.entity_set_condition.derived_set_ast",
-            "reason": "entity_ranking_owns_purchase_object",
-        }
-
-    if leaf != "purchase_date":
-        return None
-    ownership = next(
-        (
-            item for item in (query_plan.get("superseded_conditions") or [])
-            if isinstance(item, dict)
-            and item.get("slot") == "target_user.purchase_date"
-            and item.get("owner") == "entity_set_condition"
-            and item.get("outcome") == "removed"
-        ),
-        None,
+    return semantic_resolution.resolve_missing_field(
+        field, _semantic_resolution_evidence(query_plan)
     )
-    if not isinstance(entity_set, dict):
-        return None
-    window = entity_set.get("window")
-    if not _complete_calendar_window(window):
-        return None
-    spans = entity_set.get("spans") if isinstance(entity_set.get("spans"), dict) else {}
-    window_span = spans.get("window")
-    literal_match = next(
-        (
-            item for item in (query_plan.get("literal_bindings") or [])
-            if isinstance(item, dict)
-            and item.get("kind") == "date_window"
-            and isinstance(window_span, (list, tuple))
-            and len(window_span) == 2
-            and [item.get("start"), item.get("end")] == list(window_span)
-            and isinstance(item.get("normalized"), dict)
-            and item["normalized"].get("from") == window.get("from")
-            and item["normalized"].get("to") == window.get("to")
-        ),
-        None,
-    )
-    # There may be no superseded slot when the model omitted purchase_date
-    # entirely.  In that case exact source-span + normalized-window equality is
-    # equivalent ownership evidence and does not rely on lexical date guessing.
-    if ownership is None and literal_match is None:
-        return None
-    return {
-        "field": normalized,
-        "resolved_by": "target_user.entity_set_condition.window",
-        "reason": "ranking_window_owns_purchase_date",
-    }
 
 
 def _reconcile_semantic_ir_with_execution_plan(query_plan: dict[str, Any]) -> None:
@@ -16882,12 +16972,15 @@ def _reconcile_semantic_ir_with_execution_plan(query_plan: dict[str, Any]) -> No
     ]
     resolved: list[dict[str, str]] = []
     remaining: list[str] = []
+    execution_evidence = _semantic_resolution_evidence(query_plan)
     for field in missing_fields:
-        evidence = _semantic_missing_field_resolution(query_plan, field)
-        if evidence is None:
+        resolution_evidence = semantic_resolution.resolve_missing_field(
+            field, execution_evidence
+        )
+        if resolution_evidence is None:
             remaining.append(field)
         else:
-            resolved.append(evidence)
+            resolved.append(resolution_evidence)
     if not resolved:
         return
 
@@ -16935,6 +17028,9 @@ def build_sql_result(
     semantic_ir_block = _semantic_ir_blocking_sql_result(query_plan)
     if semantic_ir_block is not None:
         return semantic_ir_block
+    dimension_filter_errors = _validate_dimension_filters(query_plan)
+    if dimension_filter_errors:
+        return _invalid_dimension_filters_sql_result(dimension_filter_errors)
     _normalize_aggregation_axis_filters(query_plan)
     _normalize_purchase_aggregation_request(query_plan)
     _refresh_aggregation_request_validation(query_plan, schema_path)
@@ -17793,14 +17889,15 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
     if brand_filter is not None:
         column_short = brand_filter.get("column", "").split(".")[-1]
         codes = [code for code in brand_filter.get("codes", []) if isinstance(code, str) and code]
-        if column_short and codes:
+        operator = _dimension_filter_operator(brand_filter)
+        if column_short and codes and operator is not None:
             in_list = ", ".join(_sql_quote(code) for code in codes)
-            clause = f"C.{column_short} {brand_filter.get('operator', 'IN')} ({in_list})"
+            clause = f"C.{column_short} {_DIMENSION_OPERATOR_SQL_MAP[operator]} ({in_list})"
             _add_token(
                 tokens,
                 "dimension_filters." + str(brand_filter.get("dimension_id", "dimension")),
                 "dimension_filter",
-                "in",
+                operator.casefold(),
                 ",".join(codes),
                 [clause],
                 [],
@@ -17814,13 +17911,22 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
                 continue
             column = str(dimension_filter.get("column") or "").split(".")[-1]
             codes = [str(code) for code in dimension_filter.get("codes") or [] if str(code)]
-            if not column or not codes:
+            operator = _dimension_filter_operator(dimension_filter)
+            if not column or not codes or operator is None:
                 continue
             alias = "B" if dimension_filter.get("table") == _member_table() else "S"
-            clause = f"{alias}.{column} IN ({', '.join(_sql_quote(code) for code in codes)})"
+            in_list = ", ".join(_sql_quote(code) for code in codes)
+            if alias == "S" and operator == "NOT_IN" and dimension_filter.get("join_column"):
+                join_column = dimension_filter["join_column"]
+                clause = (
+                    f"NOT EXISTS (SELECT 1 FROM {dimension_filter.get('table')} S "
+                    f"WHERE S.{join_column} = B.{join_column} AND S.{column} IN ({in_list}))"
+                )
+            else:
+                clause = f"{alias}.{column} {_DIMENSION_OPERATOR_SQL_MAP[operator]} ({in_list})"
             _add_token(
                 tokens, "dimension_filters." + str(dimension_filter.get("dimension_id") or index),
-                "dimension_filter", "in", ",".join(codes), [clause], [str(dimension_filter.get("table") or "")],
+                "dimension_filter", operator.casefold(), ",".join(codes), [clause], [str(dimension_filter.get("table") or "")],
             )
 
     region_count = query_plan.get("region_member_count_target")
@@ -18743,7 +18849,10 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
         # 실DB 미지원 조건은 dropped 로 고지한다 — 장바구니 경로만 조건을 조용히 버리지 않게.
         compiled = compile_member_target_conditions(query_plan)
         column_short = brand_filter.get("column", "CRM_CM_PRODUCT.BRAND_ID").split(".")[-1]
-        operator = brand_filter.get("operator", "IN")
+        ir_operator = _dimension_filter_operator(brand_filter)
+        if ir_operator is None:
+            return None
+        operator = _DIMENSION_OPERATOR_SQL_MAP[ir_operator]
         in_list = ", ".join(_sql_quote(code) for code in brand_filter["codes"])
         where_clauses = [
             *_cart_keep_predicates(query_plan),
@@ -19113,6 +19222,81 @@ def _unsupported_condition_label(path: str) -> str:
     return f"{label}: {value}" if value else label
 
 
+_DIMENSION_OPERATOR_SQL_MAP: dict[str, str] = {"IN": "IN", "NOT_IN": "NOT IN"}
+
+
+def _dimension_filter_operator(dimension_filter: Mapping[str, Any]) -> str | None:
+    """IR operator를 닫힌 enum으로 검증한다. 누락은 기존 plan 호환을 위해 IN으로 본다."""
+
+    raw = dimension_filter.get("operator")
+    operator = "IN" if raw is None else str(raw).strip().upper()
+    return operator if operator in _DIMENSION_OPERATOR_SQL_MAP else None
+
+
+def _validate_dimension_filters(query_plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """지원하지 않는 operator와 동일 물리 값의 IN/NOT_IN 충돌을 fail-closed로 찾는다."""
+
+    errors: list[dict[str, Any]] = []
+    seen: dict[tuple[str, str, str], tuple[str, int]] = {}
+    for index, dimension_filter in enumerate(query_plan.get("dimension_filters") or []):
+        if not isinstance(dimension_filter, Mapping):
+            errors.append({
+                "code": "DIMENSION_FILTER_INVALID",
+                "path": f"dimension_filters.{index}",
+                "message": "dimension filter must be an object",
+            })
+            continue
+        operator = _dimension_filter_operator(dimension_filter)
+        if operator is None:
+            errors.append({
+                "code": "DIMENSION_OPERATOR_UNSUPPORTED",
+                "path": f"dimension_filters.{index}.operator",
+                "message": f"unsupported dimension operator: {dimension_filter.get('operator')!r}",
+            })
+            continue
+        table = str(dimension_filter.get("table") or "")
+        column = str(dimension_filter.get("column") or "").split(".")[-1].upper()
+        for code in dimension_filter.get("codes") or []:
+            if not isinstance(code, str) or not code:
+                continue
+            key = (table.upper(), column, code)
+            previous = seen.get(key)
+            if previous and previous[0] != operator:
+                errors.append({
+                    "code": "DIMENSION_POLARITY_CONFLICT",
+                    "path": f"dimension_filters.{index}",
+                    "message": f"conflicting polarity for {table}.{column}: {code}",
+                    "conflicts_with": f"dimension_filters.{previous[1]}",
+                })
+            else:
+                seen[key] = (operator, index)
+    return errors
+
+
+def _invalid_dimension_filters_sql_result(errors: list[dict[str, Any]]) -> dict[str, Any]:
+    """잘못된/충돌한 dimension IR이 SQL 후보나 LLM 폴백으로 우회하지 못하게 차단한다."""
+
+    return {
+        "sql": None,
+        "blocked_sql": None,
+        "selected": None,
+        "candidates": [],
+        "candidate_count": 0,
+        "condition_tokens": [],
+        "required_conditions": [],
+        "input_validation": {"is_satisfied": False, "errors": errors},
+        "missing_input_conditions": [],
+        "clarification_questions": [],
+        "semantic_verification": {"ran": False},
+        "llm_fallback_used": False,
+        "generation_source": None,
+        "confidence": _failed_sql_confidence("invalid_dimension_filters"),
+        "is_success": False,
+        "failure_reason": "invalid_dimension_filters",
+        "validation_errors": errors,
+    }
+
+
 def _member_region_predicates(region_codes: dict[str, list[str]]) -> list[str]:
     """지역 컬럼(SIDO/SIGUNGU) 조건의 결합 방식을 행정 계층 데이터로 판별해 술어 목록을 만든다.
 
@@ -19171,6 +19355,10 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     profile_predicates: dict[tuple[str, str, str, str, str | None], list[str]] = {}
     labels: list[str] = []
     unsupported: list[str] = []
+    unsupported.extend(
+        str(error.get("path") or "dimension_filters")
+        for error in _validate_dimension_filters(query_plan)
+    )
     has_signal = False
     # 장기 미접속(휴면 재활성화) 신호가 있으면 기본 상태필터(NORMAL 한정)를 해제한다 — "6개월 이상
     # 접속하지 않은 휴면 고객"처럼 미접속=휴면으로 읽는 요청에서 NORMAL 이 붙으면 SLEEP/WITHDRAW 를
@@ -19446,29 +19634,50 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     # (B.<join> IN (SELECT <join> FROM <표> WHERE <컬럼> IN ...))로 결합한다 — 값 인덱스가 채워지면
     # 코드 수정 없이 자동으로 이 경로를 탄다. (dimension_id 별 필터는 각각 술어가 되어 자동 조합.)
     member_region_codes: dict[str, list[str]] = {}
-    for dimension_filter in query_plan.get("dimension_filters", []):
+    member_region_excludes: dict[str, list[str]] = {}
+    for dimension_index, dimension_filter in enumerate(query_plan.get("dimension_filters", [])):
+        if not isinstance(dimension_filter, Mapping):
+            unsupported.append(f"dimension_filters.{dimension_index}")
+            continue
+        operator = _dimension_filter_operator(dimension_filter)
+        if operator is None:
+            unsupported.append(f"dimension_filters.{dimension_index}.operator")
+            continue
+        sql_operator = _DIMENSION_OPERATOR_SQL_MAP[operator]
         table_name = dimension_filter.get("table")
         join_column = dimension_filter.get("join_column")
         if table_name != _member_table() and not join_column:
             continue
-        column_short = (dimension_filter.get("column") or "").split(".")[-1]
+        column_short = (dimension_filter.get("column") or "").split(".")[-1].upper()
         codes = [code for code in dimension_filter.get("codes", []) if isinstance(code, str) and code]
         if not column_short or not codes:
             continue
         if table_name == _member_table() and column_short in _member_region_short_columns():
-            member_region_codes.setdefault(column_short, [])
-            member_region_codes[column_short].extend(code for code in codes if code not in member_region_codes[column_short])
+            region_target = member_region_excludes if operator == "NOT_IN" else member_region_codes
+            region_target.setdefault(column_short, [])
+            region_target[column_short].extend(code for code in codes if code not in region_target[column_short])
         else:
             in_list = ", ".join(_sql_quote(code) for code in codes)
             if table_name == _member_table():
-                other_predicates.append("B." + column_short + " IN (" + in_list + ")")
+                other_predicates.append("B." + column_short + f" {sql_operator} (" + in_list + ")")
+            elif operator == "NOT_IN":
+                # 보조 테이블은 한 회원에 여러 행이 있을 수 있다. ``IN (SELECT ... WHERE value NOT IN)``은
+                # 제외값 행과 다른 행이 함께 있을 때 회원을 다시 포함하므로, 제외값 존재 자체를 anti-join 한다.
+                other_predicates.append(
+                    f"NOT EXISTS (SELECT 1 FROM {table_name} S WHERE S.{join_column} = B.{join_column} "
+                    f"AND S.{column_short} IN ({in_list}))"
+                )
             else:
                 other_predicates.append(
                     f"B.{join_column} IN (SELECT S.{join_column} FROM {table_name} S WHERE S.{column_short} IN ({in_list}))"
                 )
-        labels.extend(dimension_filter.get("names") or codes)
+        label_values = dimension_filter.get("names") or codes
+        labels.extend(["non_" + str(value) for value in label_values] if operator == "NOT_IN" else label_values)
         has_signal = True
     other_predicates.extend(_member_region_predicates(member_region_codes))
+    for column, codes in member_region_excludes.items():
+        in_list = ", ".join(_sql_quote(code) for code in codes)
+        other_predicates.append(f"B.{column} NOT IN ({in_list})")
 
     # CRM_MB_BASEINFO 단독으로 표현할 수 없는 조건(→ unsupported 로 모아 fallback 유도)
     for field in ("interests", "preferred_channels", "behaviors", "purchase_object", "price_sensitivity"):
@@ -22752,6 +22961,10 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
             if dimension_filter.get("table") != _member_table() and not dimension_filter.get("join_column"):
                 continue
             column_short = (dimension_filter.get("column") or "").split(".")[-1]
+            operator = _dimension_filter_operator(dimension_filter)
+            if operator is None:
+                continue
+            operator_term = _DIMENSION_OPERATOR_SQL_MAP[operator].casefold()
             for code in dimension_filter.get("codes", []):
                 if column_short and isinstance(code, str) and code:
                     conditions.append(
@@ -22759,7 +22972,7 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
                             "dimension_filters." + str(dimension_filter.get("dimension_id", "dimension")),
                             code,
                             [_sql_quote(code)],
-                            all_terms=[column_short],
+                            all_terms=[column_short, operator_term],
                         )
                     )
 

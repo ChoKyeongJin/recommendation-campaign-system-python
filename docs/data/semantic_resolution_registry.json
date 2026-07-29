@@ -1,0 +1,134 @@
+{
+  "version": 1,
+  "structural_prefixes": [
+    "target_user",
+    "campaign_constraints",
+    "customer",
+    "member",
+    "audience",
+    "user",
+    "exclude",
+    "excluded",
+    "plan",
+    "고객",
+    "회원",
+    "대상"
+  ],
+  "structural_suffixes": ["field", "value", "condition", "criteria"],
+  "dimension_operators": ["IN", "NOT_IN"],
+  "top_level_plan_fields": [
+    "aggregation_request",
+    "condition_evaluations",
+    "computed_metrics",
+    "group_ranking_target",
+    "logical_expression",
+    "member_column_selection_filter",
+    "member_metric_ranking",
+    "member_metric_selection",
+    "policy_constraints",
+    "purchase_count_ranking",
+    "region_density_target",
+    "region_member_count_target",
+    "result_limit",
+    "set_expressions",
+    "union_condition"
+  ],
+  "requirements": [
+    {
+      "id": "target_user.location",
+      "aliases": [
+        "location",
+        "region",
+        "residence",
+        "residential_area",
+        "living_area",
+        "address",
+        "customer_location",
+        "member_location",
+        "customer_region",
+        "member_region",
+        "거주지",
+        "거주지역",
+        "지역",
+        "주소",
+        "시도",
+        "시군구",
+        "동"
+      ],
+      "evidence": {"kind": "dimension_group", "group": "member_region"},
+      "reason": "grounded_dimension_filter"
+    },
+    {
+      "id": "metric_trend.baseline",
+      "aliases": ["baseline", "baseline_period", "baseline_date", "comparison_period_1", "comparison_month_1", "period_1", "month_1", "기준기간"],
+      "evidence": {"kind": "path", "path": "target_user.metric_trend.baseline", "validator": "calendar_window"},
+      "reason": "deterministic_metric_trend_owns_field"
+    },
+    {
+      "id": "metric_trend.current",
+      "aliases": ["current", "current_period", "current_date", "comparison_period_2", "comparison_month_2", "period_2", "month_2", "비교기간"],
+      "evidence": {"kind": "path", "path": "target_user.metric_trend.current", "validator": "calendar_window"},
+      "reason": "deterministic_metric_trend_owns_field"
+    },
+    {
+      "id": "metric_trend.metric_id",
+      "aliases": ["metric", "metric_id", "measure", "comparison_metric", "지표"],
+      "evidence": {"kind": "path", "path": "target_user.metric_trend.metric_id", "validator": "non_empty_string"},
+      "reason": "deterministic_metric_trend_owns_field"
+    },
+    {
+      "id": "metric_trend.direction",
+      "aliases": ["direction", "change_direction", "trend_direction", "증감방향"],
+      "evidence": {"kind": "path", "path": "target_user.metric_trend.direction", "validator": "non_empty_string"},
+      "reason": "deterministic_metric_trend_owns_field"
+    },
+    {
+      "id": "metric_trend.relative_change",
+      "aliases": ["threshold", "change_threshold", "percentage_threshold", "comparison_threshold", "comparison", "comparison_operator", "relative_change", "임계값", "비교연산자"],
+      "evidence": {"kind": "path", "path": "target_user.metric_trend.relative_change", "validator": "relative_change"},
+      "reason": "deterministic_metric_trend_owns_field"
+    },
+    {
+      "id": "metric_trend.purchase_periods",
+      "aliases": ["target_user.purchase_date", "purchase_date", "purchase_period", "purchase_window", "order_date", "order_period", "comparison_periods", "date_windows", "구매일", "구매기간"],
+      "evidence": {"kind": "composite_path", "paths": ["target_user.metric_trend.baseline", "target_user.metric_trend.current"], "validator": "calendar_window", "resolved_by": "target_user.metric_trend.baseline+current"},
+      "reason": "deterministic_metric_trend_owns_purchase_periods"
+    },
+    {
+      "id": "entity_ranking.purchase_object",
+      "aliases": ["target_user.purchase_object", "purchase_object", "purchase_objects", "purchase_product", "purchased_product", "product", "product_id", "product_name", "상품", "제품"],
+      "evidence": {"kind": "entity_path", "path": "entity", "validator": "non_empty_string", "source_span": "entity", "resolved_by": "target_user.entity_set_condition.derived_set_ast"},
+      "reason": "entity_ranking_owns_purchase_object"
+    },
+    {
+      "id": "entity_ranking.limit",
+      "aliases": ["ranking_limit", "top_n", "limit", "entity_count", "product_count", "순위개수"],
+      "evidence": {"kind": "entity_path", "path": "limit", "validator": "positive_integer", "source_span": "count", "resolved_by": "target_user.entity_set_condition.limit"},
+      "reason": "entity_ranking_owns_limit"
+    },
+    {
+      "id": "entity_ranking.entity",
+      "aliases": ["ranking_entity", "entity", "group_by", "entity_type", "대상엔터티"],
+      "evidence": {"kind": "entity_path", "path": "entity", "validator": "non_empty_string", "source_span": "entity", "resolved_by": "target_user.entity_set_condition.entity"},
+      "reason": "entity_ranking_owns_entity"
+    },
+    {
+      "id": "entity_ranking.measure",
+      "aliases": ["ranking_measure", "measure", "sales_measure", "ranking_metric", "순위지표"],
+      "evidence": {"kind": "entity_path", "path": "measure", "validator": "non_empty_string", "resolved_by": "target_user.entity_set_condition.measure"},
+      "reason": "entity_ranking_owns_measure"
+    },
+    {
+      "id": "entity_ranking.direction",
+      "aliases": ["ranking_direction", "direction", "sort_direction", "순위방향"],
+      "evidence": {"kind": "entity_path", "path": "direction", "validator": "non_empty_string", "resolved_by": "target_user.entity_set_condition.direction"},
+      "reason": "entity_ranking_owns_direction"
+    },
+    {
+      "id": "entity_ranking.purchase_date",
+      "aliases": ["target_user.purchase_date", "purchase_date", "purchase_period", "purchase_window", "order_date", "order_period", "구매일", "구매기간"],
+      "evidence": {"kind": "entity_path", "path": "window", "validator": "calendar_window", "source_span": "window", "provenance": "entity_window", "resolved_by": "target_user.entity_set_condition.window"},
+      "reason": "ranking_window_owns_purchase_date"
+    }
+  ]
+}
