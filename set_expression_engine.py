@@ -452,11 +452,20 @@ def _unknown_terms(ast: Any) -> list[str]:
     return [*_unknown_terms(ast.get("left")), *_unknown_terms(ast.get("right"))]
 
 
-def _clarification_question(unknown_terms: list[str]) -> str | None:
+def clarification_question(unknown_terms: list[str]) -> str | None:
+    """미해결 피연산자 목록 → 확인 질문(없으면 None).
+
+    파싱 직후뿐 아니라 소유권 조정(condition_reconciliation) 이후 **남은 미해결만** 다시 묻기 위해
+    공개한다 — 이미 다른 슬롯이 해석한 항목을 질문에 남기지 않으려면 같은 문구 생성기를 써야 한다.
+    """
     unknown_terms = [term for term in unknown_terms if term]
     if not unknown_terms:
         return None
     return "집합식의 다음 항목을 정규화 사전에서 찾지 못했습니다: " + ", ".join(unknown_terms)
+
+
+def _clarification_question(unknown_terms: list[str]) -> str | None:
+    return clarification_question(unknown_terms)
 
 
 def main() -> None:

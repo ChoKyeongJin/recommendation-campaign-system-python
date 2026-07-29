@@ -30,6 +30,7 @@
 | 채널 메시지 정책/예시    | `docs/guides/channel.md`, `docs/policies/message-policy.json`, `docs/data/local_bootstrap.sql`         | LMS/RCS 메시지 생성 규칙과 기존 메시지 참고 테이블 정의                                                                  |
 | 계산식 엔진              | `formula_engine.py`                                                                        | LLM이 제안한 `formula_ast`를 검증하고 안전한 SQL expression으로 컴파일                                                   |
 | 집합식 엔진              | `set_expression_engine.py`                                                                 | 합집합/교집합/차집합 세그먼트 표현을 `set_ast`로 파싱                                                                    |
+| 조건 소유권 재조정       | `condition_reconciliation.py`, `docs/data/condition_ownership_policy.json`                 | 파서들이 병행 해석한 같은 조건에 canonical owner 하나만 남기고(권위 슬롯 우선), 남은 진짜 미해결만 확인요청으로 승격     |
 | RAG 지식 베이스 생성     | `build_rag_knowledge.py`                                                                   | 스키마, 사전, 비즈니스 용어, 업무 정책, SQL 예시를 지식 노드로 통합                                                      |
 | GraphRAG 검색            | `graph_rag.py`                                                                             | 질의 계획 생성, 검색, 집합식 predicate 조립, SQL 템플릿 검증                                                             |
 | 메시지 생성 프롬프트     | `docs/prompts/message_generation_*.txt`, `docs/prompts/message_generation_tone_manner.txt` | SQL 성공 이후 LMS/RCS 메시지 생성용 system/user/variant 및 톤앤매너 프롬프트                                             |
@@ -199,6 +200,8 @@ LMS/RCS 메시지 요청은 정규화 사전에서 각각 `lms`, `rcs` canonical
 의미 해석 정책도 같은 파일에서 읽는다. `지역` 표현은 `region_context_default` 정책으로 매칭되어 Query Plan의 `semantic_resolutions`에 기록된다. 기본 해석은 `users.region`이며, 구매 장소나 배송지처럼 대체 의미가 명시됐지만 스키마 컬럼이 없으면 `query_plan_required_conditions_missing`으로 clarification을 반환한다.
 
 복합 집합식은 `set_expressions`에 기록된다. 규칙 기반 parser는 `여성 고객과 VIP 고객의 합집합`, `(여성 고객 + VIP 고객) * 쿠폰 관심 고객 - 휴면 고객`, `쿠폰 관심 고객에서 휴면 고객 제외`, `20대 여성 고객 또는 VIP 고객을 대상으로 하되 쿠폰 관심 고객만 포함하고 휴면 고객은 빼고 찾아줘` 같은 표현을 `set_ast`로 변환한다. `set_expression_engine.py`는 정규화 사전의 canonical 피연산자만 사용하고, GraphRAG는 AST의 집합 의미를 보존한 채 최종 SQL에서는 중간 CTE 체인 없이 `OR`/`AND`/`AND NOT` 및 `EXISTS` predicate로 컴파일한다.
+
+집합식은 다른 파서와 **소유권 경쟁**을 한다. 같은 어구를 전용 슬롯(`exclude.gender`, `dimension_filters`, `target_user.entity_set_condition` 등)이 이미 실DB 컬럼까지 확정해 소유했는데 집합식이 한 번 더 소비하면, 그 중복 때문에 `unknown_operand`가 생겨 플랜 전체가 clarification으로 막힌다(`… 빼줘` vs `… 중 … 제외`처럼 표현형만 달라도 결과가 갈렸다). 이를 막기 위해 파서 결과 병합 직후·최종 clarification 판정 직전에 `condition_reconciliation.py`가 돈다. 소유권 우선순위와 억제/매칭/충돌 규칙은 `docs/data/condition_ownership_policy.json`이 소유하며(코드에 슬롯 이름을 나열하지 않는다), 처리 순서는 ① 후보 수집 → ② 소유권 판정 → ③ 소비 표시(원문 span 겹침·의미 지문·정규화 텍스트) → ④ 집합식 prune/rebuild → ⑤ 남은 미해결 재수집 → ⑥ 최종 `requires_clarification` 계산 → ⑦ `condition_reconciliation` 트레이스 기록이다. 의미 보존 규칙: 교집합 하위와 차집합 우변의 소유된 피연산자는 제거하고, 차집합 좌변이 통째로 소유되면 전칭 노드(`universe`, `1=1`)를 세워 부정을 유지하며, 긍정 문맥의 합집합은 하위 전부가 같은 소유 인스턴스일 때만 제거한다. 이 단계 이후에도 어느 슬롯도 소유하지 못한 항목만 확인요청 대상이고, 권위 슬롯끼리 같은 속성을 상반된 방향으로 잡으면 중복이 아니라 충돌(`condition_ownership.*`)로 되묻는다.
 
 숫자 지표 계산식은 `computed_metrics`에 기록된다. LLM parser가 제안한 `formula_ast`를 `formula_engine.py`가 숫자형 컬럼·허용 연산자 기준으로 검증하고, 통과한 계산식만 SELECT/WHERE/ORDER BY 토큰으로 변환한다(규칙 기반 계산식 파서는 제거됨).
 

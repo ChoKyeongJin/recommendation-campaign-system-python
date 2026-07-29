@@ -60,6 +60,9 @@ NON_CONDITION_PLAN_KEYS = frozenset({
     "source_requirements", "source_requirements_digest", "structured_query",
     "plan_resolution",
     "recognized_domains", "superseded_conditions", "failure_log",
+    # 조건 소유권 조정 흔적(condition_reconciliation) — 어느 슬롯이 무엇을 소유했고 어떤 중복을
+    # 억제했는지의 계측이다. 조건 자체가 아니므로 IR 스냅샷/골든 비교에는 들어가지 않는다.
+    "condition_reconciliation",
     DECISIONS_KEY, TRUNCATED_KEY, *AUDITED_CONTAINERS,
 })
 

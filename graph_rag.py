@@ -25,6 +25,7 @@ import networkx as nx
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 
+import condition_reconciliation
 import lexicon_patterns
 import parser_shadow
 import unresolved_triage
@@ -2405,7 +2406,8 @@ def _finalize_deterministic_query_plan(
     _apply_core_membership_semantics(query, plan)
     _apply_entity_set_condition(query, plan)
     _reconcile_deterministic_member_exclusions(query, plan)
-    _drop_deterministically_owned_set_expressions(plan)
+    # 파생 엔터티 집합·회원 제외까지 확정된 뒤 조건 소유권을 재조정한다(집합식 중복 억제 + 최종 clarification).
+    _reconcile_condition_ownership(plan)
     _reconcile_semantic_ir_with_execution_plan(plan)
     _guard_unparsed_entity_ranking(query, plan)
     _apply_analytical_intent(query, plan, sql_schema)
@@ -4602,8 +4604,9 @@ def _build_single_query_plan(
     # 값 보강까지 끝난 뒤, 컴파일되지 않는 리던던트 집합식(잘못 감싼 AND 나열, 지표/디멘션 canonical 오매칭
     # 등)은 버린다 — 결정론 필터가 조건을 커버하므로 SQL 을 막지 않는다(미정규화 값 clarification 은 유지).
     _drop_uncompilable_set_expressions(llm_plan)
-    # dimension/속성 필터가 이미 소유한 operator-scan 집합식(평범한 지역 OR)을 버린다(중복 clarification 방지).
-    _drop_dimension_consumed_set_expressions(llm_plan)
+    # 조건 소유권 재조정: 권위 슬롯(제외/디멘션/파생 엔터티 집합)이 이미 소유한 집합식 후보를 억제하고
+    # 남은 미해결만 clarification 으로 남긴다(정책: docs/data/condition_ownership_policy.json).
+    _reconcile_condition_ownership(llm_plan)
     # 어휘로 인식된 도메인을 기록한다(조건 생성 X) — SQL 이 안 나왔을 때 "조건을 못 찾음"과
     # "조건은 인식했지만 그 형태는 미지원"을 구별해 안내하기 위한 진단 정보다.
     _apply_recognized_domains(parse_query, llm_plan)
@@ -4759,9 +4762,9 @@ def _build_rule_query_plan(
     # 레지스트리 엔트리 주석이 문서화한다(예: no_additional_purchase 는 campaign_response 뒤, channel_consent 는
     # preferred_channels 가 matched_terms 루프에서 채워진 뒤, region_density 는 policy 의 semantic_resolutions 뒤).
     _run_filters(_RULES_POST_FILTERS, query, plan, business_policies=business_policies)
-    # 모든 결정론 필터가 끝나(dimension_filters·gender·lifecycle 확정) 소유권이 확정된 뒤, dimension/속성
-    # 필터가 이미 소유한 operator-scan 집합식(평범한 '서울 또는 경기' 지역 OR)을 버려 중복 clarification 을 막는다.
-    _drop_dimension_consumed_set_expressions(plan)
+    # 모든 결정론 필터가 끝나(dimension_filters·gender·lifecycle 확정) 소유권이 확정된 뒤 조건 소유권을
+    # 재조정한다 — 권위 슬롯이 이미 소유한 집합식 후보를 억제하고, 남은 미해결만 clarification 으로 남긴다.
+    _reconcile_condition_ownership(plan)
     # 계산식(computed_metrics)은 규칙 경로가 만들지 않는다 — formula_ast 는 LLM 파서만 제안하고
     # (_coerce_llm_computed_metric), formula_engine 은 그 AST 를 검증·컴파일만 한다.
     policy_terms = [
@@ -14891,6 +14894,7 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
 # 같은 '조건 인식' 단계라도 집합식 파싱에서 막혔는지, 계산식/의미 해석에서 막혔는지 구분해 보여준다.
 _MISSING_CONDITION_KINDS: tuple[tuple[str, str, str], ...] = (
     ("source_coverage.", "원문 조건 해석", "원문 조건"),
+    ("condition_ownership.", "조건 소유권 확정", "조건 소유권"),
     ("aggregation_request.", "집계 요구사항 확정", "집계 요구사항"),
     ("set_expressions.", "집합식 파싱", "집합식"),
     ("computed_metrics.", "계산식 해석", "계산식"),
@@ -17022,7 +17026,9 @@ def build_sql_result(
     _apply_condition_evaluation_ir(original_query or query, query_plan)
     _apply_entity_set_condition(original_query or query, query_plan)
     _reconcile_deterministic_member_exclusions(original_query or query, query_plan)
-    _drop_deterministically_owned_set_expressions(query_plan)
+    # 파생 엔터티 집합·회원 제외가 확정된 지금이 소유권 재조정의 마지막 지점이다(집합식 clarification 은
+    # 파서 직후가 아니라 여기서 최종 판정된다 — 조정 후에도 미해결인 항목만 남는다).
+    _reconcile_condition_ownership(query_plan)
     _reconcile_semantic_ir_with_execution_plan(query_plan)
     _guard_unparsed_entity_ranking(original_query or query, query_plan)
     semantic_ir_block = _semantic_ir_blocking_sql_result(query_plan)
@@ -18053,6 +18059,10 @@ def _compile_set_expression_ast(ast: dict[str, Any]) -> dict[str, Any]:
         if op == "-":
             return {"is_valid": True, "expression_sql": f"({left['expression_sql']} AND NOT ({right['expression_sql']}))", "issues": []}
         return {"is_valid": False, "expression_sql": "", "issues": [f"지원하지 않는 집합 연산자입니다: {op}"]}
+    if ast.get("type") == condition_reconciliation.UNIVERSE_TYPE:
+        # 소유 슬롯이 이미 술어를 건 자리(조건 소유권 재조정이 남긴 전칭 노드). 항진식으로 컴파일해
+        # 남은 구조(특히 '전체 - X' 의 부정)를 의미 그대로 보존한다.
+        return {"is_valid": True, "expression_sql": "1=1", "issues": []}
     if ast.get("type") == "age_range":
         age_min = ast.get("age_min")
         age_max = ast.get("age_max")
@@ -18407,6 +18417,45 @@ def _drop_deterministically_owned_set_expressions(plan: dict[str, Any]) -> None:
             and _set_difference_owned_by_entity_set(expression, plan, entity_ast)
         )
     ]
+
+
+# 조건 소유권 정책(어느 슬롯이 어떤 조건의 canonical owner 인가 + 중복 억제/충돌 규칙)의 단일 소스.
+# 슬롯 추가·우선순위 변경은 이 JSON 만 고치면 된다(condition_reconciliation 이 해석한다).
+DEFAULT_CONDITION_OWNERSHIP_POLICY_PATH = condition_reconciliation.DEFAULT_POLICY_PATH
+
+
+def _condition_ownership_policy() -> condition_reconciliation.ConditionPolicy:
+    return condition_reconciliation.ConditionPolicyLoader.load(DEFAULT_CONDITION_OWNERSHIP_POLICY_PATH)
+
+
+@_audited_stage
+def _reconcile_condition_ownership(plan: dict[str, Any]) -> None:
+    """조건 소유권 재조정 — 파서들이 병행 생성한 후보에서 canonical owner 하나만 남긴다.
+
+    파서 결과가 다 모인 뒤·최종 clarification 판정 전에 도는 단일 지점이다. 여기서 하는 일:
+
+      1. 기존 소유권 규칙(dimension 소비 / 파생 엔터티 집합 소유)을 먼저 적용한다 — 삭제하지 않고
+         이 단계 안으로 들여왔다(두 규칙은 좁고 확정적이라 정책 엔진의 특수 케이스가 아니라 전처리다).
+      2. 정책 엔진(condition_reconciliation)이 권위 슬롯이 소유한 집합식 operand 를 억제하고,
+         남은 미소비 operand 로 집합식을 재구성하며, 최종 requires_clarification 을 다시 계산한다.
+      3. 재구성 후 컴파일되지 않는 리던던트 집합식을 정리한다.
+
+    핵심 불변식: ``unknown_operand`` 가 있다는 사실 자체는 더 이상 clarification 사유가 아니다 —
+    조정 이후에도 어느 슬롯도 소유하지 못한 항목만 사유가 된다.
+    """
+    _drop_dimension_consumed_set_expressions(plan)
+    _drop_deterministically_owned_set_expressions(plan)
+    trace = condition_reconciliation.reconcile_plan(plan, policy=_condition_ownership_policy())
+    for entry in trace.get("suppressed_diagnostics", []) if isinstance(trace, dict) else []:
+        plan_decisions.record(
+            plan,
+            filter_name="condition_reconciliation",
+            action=plan_decisions.DROP,
+            slot=f"set_expressions.{entry.get('condition_id')}",
+            reason=f"{entry.get('owner')} 가 이미 소유한 조건이라 집합식 후보에서 억제({entry.get('reason')})",
+            evidence=entry.get("raw_text"),
+        )
+    _drop_uncompilable_set_expressions(plan)
 
 
 def _compile_set_operand(operand: dict[str, Any]) -> dict[str, Any]:
@@ -22445,6 +22494,23 @@ def validate_required_input_conditions(query_plan: dict[str, Any], condition_tok
                 "missing_conditions": missing,
                 "clarification_questions": [condition["question"] for condition in missing],
             }
+
+    # 권위 슬롯끼리 같은 조건을 상반된 방향으로 잡은 경우(포함 vs 제외)는 중복이 아니라 충돌이다 —
+    # 조용히 한쪽을 지우지 않고 되묻는다(정책: conflicts.same_attribute_opposite_polarity).
+    ownership_conflicts = [
+        _missing_input_condition(
+            f"condition_ownership.{conflict.get('attribute', 'condition')}",
+            f"조건 소유권 충돌({conflict.get('attribute')})",
+            str(conflict.get("question") or "같은 조건이 서로 다른 방향으로 지정됐습니다. 포함/제외를 명확히 지정해 주세요."),
+        )
+        for conflict in condition_reconciliation.conflict_clarifications(query_plan)
+    ]
+    if ownership_conflicts:
+        return {
+            "is_satisfied": False,
+            "missing_conditions": ownership_conflicts,
+            "clarification_questions": [condition["question"] for condition in ownership_conflicts],
+        }
 
     set_expression_missing_conditions = [
         _missing_input_condition(
