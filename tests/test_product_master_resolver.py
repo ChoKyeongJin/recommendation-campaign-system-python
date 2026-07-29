@@ -145,6 +145,22 @@ def test_generic_ranking_phrase_is_not_a_product_master_candidate() -> None:
     assert graph_rag._is_concrete_purchase_scope_phrase("하기스 기저귀") is True
 
 
+def test_ranking_action_is_removed_by_shared_purchase_object_validation() -> None:
+    target_user = {
+        "purchase_object": "팔린",
+        "purchase_object_kind": "product",
+    }
+
+    graph_rag._validate_purchase_objects(GENERIC_RANKING_QUERY, target_user)
+
+    assert target_user["purchase_object"] is None
+    assert "purchase_object_kind" not in target_user
+    assert graph_rag._target_purchase_objects({
+        "purchase_object": "팔린",
+        "purchase_object_kind": "product",
+    }) == []
+
+
 def test_generic_product_ranking_uses_derived_set_without_product_lookup(monkeypatch) -> None:
     monkeypatch.setattr(
         graph_rag.product_master_resolver,
@@ -160,6 +176,79 @@ def test_generic_product_ranking_uses_derived_set_without_product_lookup(monkeyp
     assert candidate is not None
     assert "SELECT TOP 5" in candidate["sql"]
     assert "20260301" in candidate["sql"] and "20260331" in candidate["sql"]
+
+
+def test_ranking_action_misread_as_product_never_reaches_entity_set_sql() -> None:
+    """LLM의 ``팔린=상품명`` 오인을 순위 AST가 복원하거나 SQL로 컴파일하면 안 된다."""
+    query = "2019년 가장 많이 팔린 상품10개를 구매한고객만 추출해"
+    plan = {
+        "intent": "find_user_segment",
+        "target_user": {
+            "purchase_object": "팔린",
+            "purchase_object_kind": "product",
+        },
+        "campaign_constraints": {"objective": "purchase"},
+    }
+
+    graph_rag._apply_entity_set_condition(query, plan)
+    candidate = graph_rag.build_entity_set_targets_sql_candidate(plan)
+
+    assert candidate is not None
+    assert "SELECT TOP 10" in candidate["sql"]
+    assert "20190101" in candidate["sql"] and "20191231" in candidate["sql"]
+    assert "CRM_CM_PRODUCT" not in candidate["sql"]
+    assert "PRODUCT_NAME" not in candidate["sql"]
+    assert "팔린" not in candidate["sql"]
+
+
+def test_stale_generic_scope_filter_is_not_restored_from_existing_ast() -> None:
+    """앞선 패스가 만든 검증 전 AST 필터도 다음 패스에서 제거한다."""
+    query = "2019년 가장 많이 팔린 상품10개를 구매한고객만 추출해"
+    stale = graph_rag.parse_entity_set_condition(query, graph_rag._entity_set_config())
+    assert stale is not None
+    aggregation = stale["derived_set_ast"]["source"]["source"]
+    aggregation["filters"] = [{
+        "type": "dimension_filter",
+        "dimension": "product",
+        "operator": "contains",
+        "value": "팔린",
+    }]
+    stale["filters"] = list(aggregation["filters"])
+    plan = {
+        "intent": "find_user_segment",
+        "target_user": {
+            "purchase_object": None,
+            "entity_set_condition": stale,
+        },
+        "campaign_constraints": {"objective": "purchase"},
+    }
+
+    graph_rag._apply_entity_set_condition(query, plan)
+    candidate = graph_rag.build_entity_set_targets_sql_candidate(plan)
+
+    assert candidate is not None
+    assert plan["target_user"]["entity_set_condition"].get("filters") in (None, [])
+    assert "CRM_CM_PRODUCT" not in candidate["sql"]
+    assert "PRODUCT_NAME" not in candidate["sql"]
+
+
+def test_concrete_category_scope_still_filters_the_ranked_product_population() -> None:
+    query = "2019년 카테고리가 어린이건강인 상품 중 많이 팔린 5개를 구매한 고객"
+    plan = {
+        "intent": "find_user_segment",
+        "target_user": {
+            "purchase_object": "어린이건강",
+            "purchase_object_kind": "category",
+        },
+        "campaign_constraints": {},
+    }
+
+    graph_rag._apply_entity_set_condition(query, plan)
+    candidate = graph_rag.build_entity_set_targets_sql_candidate(plan)
+
+    assert candidate is not None
+    assert "INNER JOIN CRM_CM_PRODUCT CP" in candidate["sql"]
+    assert "CP.CATEGORY LIKE N'%어린이건강%'" in candidate["sql"]
 
 
 def test_korean_written_amount_is_not_queried_as_a_product(monkeypatch) -> None:

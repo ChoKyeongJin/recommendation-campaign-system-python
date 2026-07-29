@@ -3109,6 +3109,20 @@ def _attach_entity_set_scope_filter(
         if isinstance(existing_aggregation, dict) and isinstance(existing_aggregation.get("filters"), list)
         else []
     )
+    # 이전 패스의 AST를 그대로 신뢰하지 않는다. Query Plan LLM이 순위 동작어인 ``팔린``을
+    # purchase_object(product)로 오인하면 첫 패스에서 PRODUCT_NAME 범위 필터가 만들어질 수 있다.
+    # 이후 원문 검증이 purchase_object를 지워도 기존 AST 필터를 무조건 복원하면 그 오필터가 살아나
+    # ``가장 많이 팔린 상품``이 PRODUCT_NAME LIKE N'%팔린%'으로 컴파일된다.
+    # 상품 마스터를 식별할 구체어가 없는 필터는 여기서 폐기해 AST와 SQL로 전달하지 않는다.
+    existing_filters = [
+        dict(item)
+        for item in existing_filters
+        if isinstance(item, dict)
+        and item.get("dimension") in {"category", "brand", "product"}
+        and isinstance(item.get("value"), str)
+        and _object_present_in_text(item["value"], query)
+        and _is_concrete_purchase_scope_phrase(item["value"])
+    ]
     ast = node.get("derived_set_ast")
     aggregation = ((ast or {}).get("source") or {}).get("source") if isinstance(ast, dict) else None
     if not isinstance(aggregation, dict):
@@ -3117,6 +3131,8 @@ def _attach_entity_set_scope_filter(
         aggregation["filters"] = [dict(item) for item in existing_filters if isinstance(item, dict)]
         node["filters"] = [dict(item) for item in aggregation["filters"]]
         return None
+    if isinstance(value, str) and not _is_concrete_purchase_scope_phrase(value):
+        value, dimension = None, None
     if not isinstance(value, str):
         # 반복 파이프라인에서 리터럴 슬롯이 이미 소유권 회수된 경우에도 원문 한정자를 복원한다.
         category = _extract_category_object(query)
@@ -6593,10 +6609,15 @@ def _validate_purchase_objects(query: str, target_user: dict[str, Any]) -> None:
             if not validated:
                 continue
             for term in (_split_product_terms(validated) or [validated]):
-                if _is_generic_purchase_object(term):
+                if _is_generic_purchase_object(term) or not _is_concrete_purchase_scope_phrase(term):
                     continue
                 canonical = _canonicalize_product_term(term)
-                if not canonical or _is_generic_purchase_object(canonical) or canonical in seen:
+                if (
+                    not canonical
+                    or _is_generic_purchase_object(canonical)
+                    or not _is_concrete_purchase_scope_phrase(canonical)
+                    or canonical in seen
+                ):
                     continue
                 seen.add(canonical)
                 kind = raw_kind if raw_kind in _PURCHASE_OBJECT_KIND_COLUMNS else None
@@ -6942,7 +6963,12 @@ def _apply_llm_object_fallback(
                 continue
             for term in (_split_product_terms(validated) or [validated]):
                 canonical = _canonicalize_product_term(term)
-                if not canonical or canonical in _GENERIC_PRODUCT_NOUNS or canonical in seen:
+                if (
+                    not canonical
+                    or canonical in _GENERIC_PRODUCT_NOUNS
+                    or not _is_concrete_purchase_scope_phrase(canonical)
+                    or canonical in seen
+                ):
                     continue
                 seen.add(canonical)
                 objects.append({"value": canonical, "kind": "brand" if _is_known_brand_term(canonical) else None})
@@ -21297,7 +21323,11 @@ def _target_purchase_objects(target_user: dict[str, Any]) -> list[dict[str, Any]
         )
     for item in source:
         value = item["value"].strip()
-        if value in _GENERIC_PRODUCT_OBJECT_WORDS or value in seen:
+        if (
+            value in _GENERIC_PRODUCT_OBJECT_WORDS
+            or not _is_concrete_purchase_scope_phrase(value)
+            or value in seen
+        ):
             continue
         seen.add(value)
         result.append({"value": value, "kind": item.get("kind")})
