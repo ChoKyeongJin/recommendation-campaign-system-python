@@ -41,6 +41,7 @@ from aggregation_requirements import (
 from analytical_intent import (
     SUPPORTED_QUERY_TYPES,
     SUPPORTED_RESULT_SHAPES,
+    EVIDENCE_KEY as ANALYTICAL_EVIDENCE_KEY,
     UNSUPPORTED_CLARIFICATIONS as ANALYTICAL_UNSUPPORTED_CLARIFICATIONS,
     analyze_analytical_intent,
     build_aggregation_request as build_deterministic_aggregation_request,
@@ -3245,6 +3246,12 @@ def _apply_entity_set_condition(query: str, plan: dict[str, Any]) -> None:
     # 회수된 값은 사라지지 않고 plan["superseded_conditions"] 에 사유와 함께 기록된다.
     spans = node.get("spans") if isinstance(node.get("spans"), dict) else {}
     owner = "entity_set_condition"
+    # 절 전체 구간을 소유로 선언한다. 아래 회수는 '슬롯이 있을 때'만 일어나므로, 슬롯을 만들지 않는
+    # 뒤 단계(집계 의도 판정 등)가 같은 어구를 다시 읽는 것은 그것만으로 막을 수 없다.
+    slot_ownership.record_owned_span(
+        plan, owner=owner, span=spans.get("clause"), source_text=query,
+        reason="순위 절이 읽은 원문 구간 — 같은 어구를 다른 해석이 다시 읽지 못한다",
+    )
     _claim_slots(
         plan, (("target_user", "purchase_object"), ("target_user", "purchase_object_kind"),
                ("target_user", "purchase_objects")),
@@ -3307,6 +3314,33 @@ def _apply_entity_set_condition(query: str, plan: dict[str, Any]) -> None:
         ]
 
 
+def _duplicate_surface_owner(query: str, plan: dict[str, Any], intent: dict[str, Any]) -> str | None:
+    """이 분석 해석의 근거 표현을 이미 소유한 조건(있으면 그 이름) — 같은 어구의 중복 해석 판정.
+
+    막는 기준은 '조건의 종류'가 아니라 **근거 표현이 같은가**다. 근거가 하나라도 다른 조건 바깥에서
+    왔다면 그 절은 진짜 집계 요구이므로 그대로 진행한다("… 상위 5개 상품을 구매한 고객의 평균
+    구매금액"의 '평균'·'구매금액'은 순위 절 밖이다). 근거를 하나도 못 짚으면 판단하지 않는다
+    (=기존 동작) — 근거 없는 억제는 조용한 조건 소실로 이어진다.
+
+    소유 대장은 구간을 선언한 모든 조건이 채우므로(slot_ownership), 새 조건이 생겨도 이 판정은
+    자동으로 그 조건까지 포함한다.
+    """
+    evidence = intent.get(ANALYTICAL_EVIDENCE_KEY)
+    if not isinstance(evidence, list) or not evidence:
+        return None
+    owners: set[str] = set()
+    for item in evidence:
+        if not isinstance(item, dict):
+            return None
+        entry = slot_ownership.owning_condition(
+            plan, item.get("span"), source_text=query, surface=item.get("surface"),
+        )
+        if entry is None:
+            return None
+        owners.add(str(entry.get("owner")))
+    return ", ".join(sorted(owners)) or None
+
+
 @_audited_stage
 def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path) -> None:
     """Attach the deterministic aggregate contract and consume audience-only misclassification."""
@@ -3322,6 +3356,24 @@ def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path
         return
     intent = analyze_analytical_intent(query)
     if not isinstance(intent, dict):
+        return
+    # 같은 어구를 두 번 읽지 않는다. 이 해석의 근거가 전부 다른 조건이 이미 소유한 표현이면
+    # (예: 순위 절의 '가장 많이'가 집계 표지로도 읽힌 경우) 여기서 멈춘다 — 그러지 않으면 이미
+    # 성립한 조건이 지표 없는 집계 요구로 뒤집혀 unresolved_aggregate_metric 으로 끝난다.
+    duplicate_owner = _duplicate_surface_owner(query, plan, intent)
+    if duplicate_owner is not None:
+        plan_decisions.record(
+            plan,
+            filter_name="apply_analytical_intent",
+            action=plan_decisions.KEEP,
+            slot="plan.analytical_intent",
+            reason=f"집계 해석의 근거 표현을 이미 {duplicate_owner} 가 소유 — 같은 어구의 중복 해석을 막음",
+            value={"aggregate_function": intent.get("aggregate_function"), "metric": intent.get("metric")},
+            evidence=" / ".join(
+                str(item.get("surface")) for item in intent.get(ANALYTICAL_EVIDENCE_KEY) or []
+                if isinstance(item, dict)
+            ),
+        )
         return
     public_keys = (
         "query_type", "aggregate_function", "metric", "dimensions", "filters",

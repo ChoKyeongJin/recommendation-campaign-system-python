@@ -34,6 +34,7 @@ from sqlglot import exp
 
 import lexicon_llm
 import lexicon_patterns
+from common_utils import compact_index_map, raw_span
 from sql_ast import SelectAst
 from member_policy import (
     active_member_filter,
@@ -116,8 +117,20 @@ _REJECTION_PRIORITY = (
 )
 
 
+_COMPACT_DROP_RE = re.compile(r"[\s.,!?·_\-/]")
+
+# 이 해석을 유발한 표면 근거(원문 좌표). 호출자는 이 구간으로 "같은 어구를 이미 다른 조건이
+# 소유했는가"를 판정한다 — 근거 없이 종류만 보고 막으면 문장의 다른 절이 요구한 집계까지 죽는다.
+EVIDENCE_KEY = "evidence"
+
+
 def _compact(value: str) -> str:
     return re.sub(r"[\s.,!?·_\-/]+", "", value).casefold()
+
+
+def _compact_map(value: str) -> tuple[str, list[int]]:
+    """``_compact`` 와 같은 문자열 + compact 좌표 → 원문 좌표 대응표."""
+    return compact_index_map(value, _COMPACT_DROP_RE)
 
 
 def _contains(text: str, term: str) -> bool:
@@ -343,49 +356,62 @@ def _matches_required_terms(compact: str, spec: dict[str, Any]) -> bool:
     return all(any(_contains(compact, term) for term in group) for group in required if isinstance(group, list))
 
 
-def _match_metric(compact: str, registry: dict[str, Any]) -> dict[str, Any] | None:
+def _match_metric_evidence(compact: str, registry: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    """(지표, 그 판정의 근거 표면형). 근거는 compact 좌표계 문자열이다."""
     metrics = [item for item in registry.get("metrics", []) if isinstance(item, dict)]
     metrics.sort(key=lambda item: int(item.get("priority", 0)), reverse=True)
     for metric in metrics:
-        terms = metric.get("terms") or []
-        if terms and any(_contains(compact, term) for term in terms) and _matches_required_terms(compact, metric):
-            return metric
-    return None
+        terms = [str(term) for term in metric.get("terms") or []]
+        matched = [term for term in terms if _contains(compact, term)]
+        if matched and _matches_required_terms(compact, metric):
+            return metric, max((_compact(term) for term in matched), key=len)
+    return None, None
 
 
-def _match_aggregate_function(compact: str, registry: dict[str, Any]) -> str | None:
-    """집계 함수어 판정 — 동결 백스톱 최장일치가 먼저, 침묵하면 LLM 이 읽은 함수.
+def _match_metric(compact: str, registry: dict[str, Any]) -> dict[str, Any] | None:
+    return _match_metric_evidence(compact, registry)[0]
+
+
+def _match_aggregate_function_evidence(compact: str, registry: dict[str, Any]) -> tuple[str | None, str | None]:
+    """(집계 함수, 그 판정의 근거 표면형) — 동결 백스톱 최장일치가 먼저, 침묵하면 LLM 이 읽은 함수.
 
     최장일치를 유지하는 이유: '총 구매금액'이 '합계'보다 구체적이듯 긴 표현이 짧은 표현을 이겨야
-    한다. LLM 은 백스톱이 아무것도 못 읽었을 때만 개입하므로 그 우선순위를 흔들지 않는다."""
+    한다. LLM 은 백스톱이 아무것도 못 읽었을 때만 개입하므로 그 우선순위를 흔들지 않는다.
+
+    근거를 함께 돌려주는 이유: '가장 많이'처럼 **다른 조건이 이미 소유한 어구**가 집계 표지로도
+    읽히는 일이 있어서다. 그때 근거 표현이 같은지를 보고 중복 해석만 골라 막을 수 있어야 한다."""
     terms_by_function = registry.get("aggregateFunctions") or _AGGREGATE_FUNCTION_BACKSTOP
-    matches: list[tuple[int, str]] = []
+    matches: list[tuple[int, str, str]] = []
     for function, terms in terms_by_function.items():
         for term in terms or []:
             normalized = _compact(str(term))
             if normalized and normalized in compact:
-                matches.append((len(normalized), str(function).upper()))
-    matched = max(matches, default=(0, ""))[1] or None
-    if matched is not None:
-        return matched
-    return next(
-        (
-            function
-            for function in _AGGREGATE_FUNCTION_BACKSTOP
-            if lexicon_llm.signal_hit(f"aggregate_{function.casefold()}", compact)
-        ),
-        None,
-    )
+                matches.append((len(normalized), str(function).upper(), normalized))
+    if matches:
+        _length, function, surface = max(matches)
+        return function, surface
+    for function in _AGGREGATE_FUNCTION_BACKSTOP:
+        surface = lexicon_llm.signal_evidence(f"aggregate_{function.casefold()}", compact)
+        if surface is not None:
+            return function, surface
+    return None, None
 
 
-def _match_dimensions(compact: str, registry: dict[str, Any]) -> list[str]:
+def _match_aggregate_function(compact: str, registry: dict[str, Any]) -> str | None:
+    return _match_aggregate_function_evidence(compact, registry)[0]
+
+
+def _match_dimensions_evidence(compact: str, registry: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
+    """(선택된 그룹 축, 축별 근거 표면형)."""
     matches: list[tuple[int, int, str, dict[str, Any]]] = []
+    surfaces: dict[str, str] = {}
     for dimension_id, spec in (registry.get("dimensions") or {}).items():
         if not isinstance(spec, dict):
             continue
         matched_terms = [str(term) for term in spec.get("terms", []) if _contains(compact, str(term))]
         if matched_terms:
             matches.append((max(len(_compact(term)) for term in matched_terms), int(spec.get("priority", 0)), str(dimension_id), spec))
+            surfaces[str(dimension_id)] = max((_compact(term) for term in matched_terms), key=len)
 
     # Closely related dimensions (first/last/generic login channel, signup
     # channel/shop) declare an exclusive group.  Longest and then highest
@@ -400,7 +426,11 @@ def _match_dimensions(compact: str, registry: dict[str, Any]) -> list[str]:
         selected.append(dimension_id)
         if group:
             claimed_groups.add(group)
-    return selected
+    return selected, surfaces
+
+
+def _match_dimensions(compact: str, registry: dict[str, Any]) -> list[str]:
+    return _match_dimensions_evidence(compact, registry)[0]
 
 
 def _match_filters(compact: str, registry: dict[str, Any], query: str) -> list[dict[str, Any]]:
@@ -596,6 +626,52 @@ def _unsupported(reason: str, items: tuple[str, ...] = (), **extra: Any) -> dict
 # ---------------------------------------------------------------------------
 
 
+def _surface_evidence(compact: str, index_map: list[int], query: str, surface: str | None) -> dict[str, Any] | None:
+    """정규형 표면형을 원문 구간으로 되돌린다. 원문에서 못 찾으면 None(= 근거 미상)."""
+    needle = _compact(surface or "")
+    if not needle:
+        return None
+    position = compact.find(needle)
+    if position < 0:
+        return None
+    span = raw_span(index_map, position, position + len(needle))
+    if span is None:
+        return None
+    return {"surface": query[span[0]: span[1]], "span": span}
+
+
+def intent_evidence(query: str, intent: dict[str, Any], registry: dict[str, Any]) -> list[dict[str, Any]]:
+    """이 해석을 성립시킨 표면 근거들(원문 좌표) — 역할별로 하나씩.
+
+    담는 것은 **이 문장을 집계/랭킹 질문으로 만든 요소**(집계 함수어·지표어·그룹 축·출력 동사·
+    극값 표지)뿐이다. 필터·스코프는 그 해석의 한정자일 뿐 성립 근거가 아니므로 넣지 않는다 —
+    넣으면 "근거가 전부 남의 것"이라는 판정이 한정자 때문에 흐려진다.
+    """
+    compact, index_map = _compact_map(query)
+    items: list[dict[str, Any]] = []
+
+    def add(role: str, surface: str | None) -> None:
+        found = _surface_evidence(compact, index_map, query, surface)
+        if found is not None:
+            items.append({"role": role, **found})
+
+    if intent.get("aggregate_function"):
+        add("aggregate_function", _match_aggregate_function_evidence(compact, registry)[1])
+    if intent.get("metric"):
+        add("metric", _match_metric_evidence(compact, registry)[1])
+    dimension_surfaces = _match_dimensions_evidence(compact, registry)[1]
+    for dimension in intent.get("dimensions") or []:
+        add("dimension", dimension_surfaces.get(str(dimension)))
+    action = _OUTPUT_ACTION_RE.search(query)
+    if action is not None:
+        items.append({"role": "output_action", "surface": action.group(0), "span": [action.start(), action.end()]})
+    if intent.get("query_type") == "ranking":
+        ranking = _RANKING_LOW_RE.search(query) or _RANKING_HIGH_RE.search(query)
+        if ranking is not None:
+            items.append({"role": "ranking", "surface": ranking.group(0), "span": [ranking.start(), ranking.end()]})
+    return items
+
+
 def analyze_analytical_intent(
     query: str,
     registry_path: Path = DEFAULT_ANALYTICS_REGISTRY_PATH,
@@ -605,7 +681,23 @@ def analyze_analytical_intent(
     The detector intentionally requires a registered metric.  An aggregate-like
     request with an unknown metric is returned as unsupported instead of being
     silently converted to a member list.
+
+    The returned intent carries the surface evidence that produced it
+    (:data:`EVIDENCE_KEY`) so a caller can tell an independent aggregate request
+    from a re-reading of words another condition already owns.
     """
+    intent = _analyze_analytical_intent(query, registry_path)
+    if isinstance(intent, dict):
+        intent[EVIDENCE_KEY] = intent_evidence(
+            query, intent, load_analytics_registry(str(registry_path))
+        )
+    return intent
+
+
+def _analyze_analytical_intent(
+    query: str,
+    registry_path: Path = DEFAULT_ANALYTICS_REGISTRY_PATH,
+) -> dict[str, Any] | None:
     registry = load_analytics_registry(str(registry_path))
     if not registry or not isinstance(query, str) or not query.strip():
         return None

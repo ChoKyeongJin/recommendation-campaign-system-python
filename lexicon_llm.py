@@ -158,13 +158,22 @@ def resolve(
     return validate(payload, concept_ids(catalog), query)
 
 
-def hit(signals: dict[str, tuple[str, ...]], concept_id: str, text: str) -> bool:
-    """해석된 신호가 주어진 텍스트 조각에서 성립하는가 — 근거 스팬이 그 조각 안에 있어야 한다."""
+def evidence(signals: dict[str, tuple[str, ...]], concept_id: str, text: str) -> str | None:
+    """신호를 성립시킨 근거 스팬(정규형). 성립하지 않으면 None.
+
+    판정(bool)만이 아니라 **무엇을 읽고 그렇게 판정했는지**를 돌려주는 이유: 소비자가 그 표현을
+    원문에서 다시 찾아, 같은 어구를 이미 다른 조건이 소유했는지 판정할 수 있어야 하기 때문이다.
+    """
     spans = signals.get(concept_id)
     if not spans:
-        return False
+        return None
     haystack = compact(text)
-    return any(span in haystack for span in spans)
+    return next((span for span in spans if span in haystack), None)
+
+
+def hit(signals: dict[str, tuple[str, ...]], concept_id: str, text: str) -> bool:
+    """해석된 신호가 주어진 텍스트 조각에서 성립하는가 — 근거 스팬이 그 조각 안에 있어야 한다."""
+    return evidence(signals, concept_id, text) is not None
 
 
 # ── 질의 스코프 ────────────────────────────────────────────────────────────────────────────
@@ -206,3 +215,8 @@ def current_signals() -> dict[str, tuple[str, ...]]:
 def signal_hit(concept_id: str, text: str) -> bool:
     """열린 스코프의 신호로 판정. 스코프가 없으면 항상 False라 결정론 경로가 그대로 유지된다."""
     return hit(current_signals(), concept_id, text)
+
+
+def signal_evidence(concept_id: str, text: str) -> str | None:
+    """열린 스코프에서 이 판정을 만든 근거 표면형(정규형). 스코프가 없거나 미성립이면 None."""
+    return evidence(current_signals(), concept_id, text)

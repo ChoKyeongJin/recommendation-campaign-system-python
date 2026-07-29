@@ -20,3 +20,38 @@ def elapsed_ms(started_at: float) -> float:
 def compact(value: str) -> str:
     """공백 제거 + casefold — 표면형 매칭 전 정규화(한글 문장의 공백 흔들림 흡수)."""
     return re.sub(r"\s+", "", value.casefold())
+
+
+_DEFAULT_COMPACT_DROP_RE = re.compile(r"\s")
+
+
+def compact_index_map(value: str, drop: "re.Pattern[str] | None" = None) -> tuple[str, list[int]]:
+    """정규형 문자열 + ``compact 좌표 → 원문 좌표`` 대응표.
+
+    표면어 매칭은 정규형(공백·구두점 제거)에서 하지만, "이 판정이 원문의 **어느 구간**을 읽었는가"는
+    원문 좌표로만 답할 수 있다(소유권 판정이 그 좌표를 쓴다). 대응표가 그 되돌림이다.
+
+    글자 단위 casefold 가 길이를 바꾸는 문자(라틴 확장 등)는 대응이 깨지므로 원문자를 유지한다 —
+    이 프로젝트의 표면어는 한글/ASCII 라 실사용 결과는 :func:`compact` 계열과 동일하다.
+    """
+    pattern = drop if drop is not None else _DEFAULT_COMPACT_DROP_RE
+    chars: list[str] = []
+    index_map: list[int] = []
+    for index, char in enumerate(str(value)):
+        if pattern.match(char):
+            continue
+        folded = char.casefold()
+        chars.append(folded if len(folded) == 1 else char)
+        index_map.append(index)
+    return "".join(chars), index_map
+
+
+def raw_span(index_map: list[int], start: int | None, end: int | None) -> list[int] | None:
+    """compact 좌표 ``[start, end)`` → 원문 좌표 ``[start, end)``. 범위 밖이거나 빈 구간이면 None."""
+    if start is None or end is None or not index_map:
+        return None
+    start = max(0, min(int(start), len(index_map)))
+    end = max(0, min(int(end), len(index_map)))
+    if end <= start:
+        return None
+    return [index_map[start], index_map[end - 1] + 1]

@@ -30,10 +30,14 @@ from __future__ import annotations
 from typing import Any
 
 import plan_decisions
+from common_utils import compact as _compact_surface
 
 
 # 슬롯별 출처 구간 저장소(내부용 — 밑줄 접두어 키는 응답 직렬화에서 제외되는 관례를 따른다).
 SLOT_SPANS_KEY = "_slot_spans"
+# 조건이 '읽어서 소유한' 원문 구간 대장(내부용). 슬롯 회수는 슬롯이 있을 때만 일어나지만, 소유는
+# 슬롯 유무와 무관하다 — 뒤에 오는 해석기가 "이 어구는 이미 누가 읽었나"를 물을 곳이 필요하다.
+OWNED_SPANS_KEY = "_owned_spans"
 # 회수된(=다른 조건에 소유권을 넘긴) 조건 기록. 진단용이므로 공개 키다.
 SUPERSEDED_KEY = "superseded_conditions"
 # 구간을 알 수 없는 슬롯을 회수했을 때의 사유(기존 동작 = 종류 기준 회수).
@@ -133,6 +137,80 @@ def slot_span(plan: dict[str, Any], slot: str, *, container: str = "target_user"
     return entry if isinstance(entry, dict) else None
 
 
+# ── 구간 소유 대장 ────────────────────────────────────────────────────────────────────────
+# 슬롯 회수(claim_slot)가 "이미 만들어진 값"을 조정하는 장치라면, 이 대장은 "원문의 이 구간은
+# 내가 읽었다"는 선언이다. 둘을 나누는 이유: 같은 어구를 **뒤늦게 다시 읽는** 해석기(집계 의도
+# 판정 등)는 슬롯을 거치지 않고 플랜 전체를 갈아치우므로, 슬롯 단위 회수로는 막을 수 없다.
+
+
+def owned_spans(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """조건들이 소유를 선언한 원문 구간 목록."""
+    entries = plan.get(OWNED_SPANS_KEY)
+    return entries if isinstance(entries, list) else []
+
+
+def record_owned_span(
+    plan: dict[str, Any],
+    *,
+    owner: str,
+    span: Any,
+    source_text: str,
+    reason: str = "",
+) -> None:
+    """``owner`` 가 원문의 ``span`` 구간을 읽어 소유했음을 기록한다(같은 선언의 중복은 접는다)."""
+    normalized = _as_span(span)
+    if normalized is None or not isinstance(source_text, str):
+        return
+    entries = plan.get(OWNED_SPANS_KEY)
+    if not isinstance(entries, list):
+        entries = []
+        plan[OWNED_SPANS_KEY] = entries
+    record = {
+        "owner": str(owner),
+        "start": normalized[0],
+        "end": normalized[1],
+        "text": source_text[normalized[0]: normalized[1]],
+        "source": source_text,
+        "reason": reason,
+    }
+    signature = (record["owner"], record["start"], record["end"], record["source"])
+    for existing in entries:
+        if (existing.get("owner"), existing.get("start"), existing.get("end"), existing.get("source")) == signature:
+            return
+    entries.append(record)
+
+
+def owning_condition(
+    plan: dict[str, Any],
+    span: Any = None,
+    *,
+    source_text: str,
+    surface: str | None = None,
+) -> dict[str, Any] | None:
+    """이 구간(또는 표면형)을 이미 소유한 조건. 없으면 None.
+
+    판정 순서는 좌표가 먼저다. 좌표계가 같으면(``_source_compatible``) 겹침 여부가 곧 답이고,
+    **겹치지 않으면 문장의 다른 절이므로 표면 비교로 뒤집지 않는다** — 같은 낱말이 두 절에 나오는
+    문장에서 남의 절 근거까지 소유로 삼는 것을 막는다. 좌표계가 다를 때만(재작성본 vs 원문)
+    같은 표현인지로 판정한다.
+    """
+    normalized = _as_span(span)
+    needle = _compact_surface(surface) if isinstance(surface, str) else ""
+    for entry in owned_spans(plan):
+        if not isinstance(entry, dict):
+            continue
+        entry_span = _as_span((entry.get("start"), entry.get("end")))
+        if entry_span is None:
+            continue
+        if normalized is not None and _source_compatible(entry.get("source"), source_text):
+            if spans_overlap(normalized, entry_span):
+                return entry
+            continue
+        if needle and needle in _compact_surface(str(entry.get("text") or "")):
+            return entry
+    return None
+
+
 def superseded_conditions(plan: dict[str, Any]) -> list[dict[str, Any]]:
     """회수(또는 회수 시도 후 보존)된 조건 기록."""
     entries = plan.get(SUPERSEDED_KEY)
@@ -185,6 +263,8 @@ def claim_slot(
     다른 절의 조건을 지우던 사고를 여기서 막는다. 둘 중 하나라도 구간을 모르면 기존 동작(회수)이다.
     ``mode="pop"`` 은 키 자체를 제거(기존 ``plan.pop`` 과 동일), ``"clear"`` 는 None/[] 로 비운다.
     """
+    # 소유 선언은 슬롯에 값이 있었는지와 무관하다 — 회수할 값이 없어도 그 어구를 읽은 사실은 남는다.
+    record_owned_span(plan, owner=owner, span=owner_span, source_text=source_text, reason=reason)
     holder = _container(plan, container)
     current = holder.get(slot)
     if value is not None and isinstance(current, list):

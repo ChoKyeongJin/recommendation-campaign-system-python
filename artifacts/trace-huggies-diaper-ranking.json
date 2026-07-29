@@ -1,0 +1,940 @@
+﻿{
+    "query":  "2019년 상반기에 하기스 기저귀를 가장 많이 산 고객 추출해줘",
+    "collection":  "campaign_knowledge_rag",
+    "retrieval_scope":  "targeting",
+    "prompt_scopes":  {
+                          "mode":  "llm",
+                          "targeting":  "하기스 기저귀를 가장 많이 산 고객",
+                          "channel":  ""
+                      },
+    "stages":  [
+                   {
+                       "step":  1,
+                       "name":  "프롬프트 재작성",
+                       "tech_name":  "정규화·재작성 (normalize_prompt)",
+                       "method":  "혼합",
+                       "status":  "info",
+                       "refs":  [
+                                    {
+                                        "kind":  "프롬프트",
+                                        "name":  "prompt_rewrite_system.txt (targeting opt-in)",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "프롬프트",
+                                        "name":  "prompt_normalize_system.txt (보수 모드)",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "모델",
+                                        "name":  "gpt-4o-mini",
+                                        "used":  false
+                                    }
+                                ],
+                       "description":  "고객 문장의 오타·표현을 시스템이 이해할 표준 문장으로 다시 씁니다(LLM 재작성).",
+                       "plain":  [
+                                     "입력: 2019년 상반기에 하기스 기저귀를 가장 많이 산 고객 추출해줘",
+                                     "재작성: 2019년 상반기에 하기스 기저귀를 가장 많이 산 고객 추출해줘"
+                                 ]
+                   },
+                   {
+                       "step":  2,
+                       "name":  "타겟/채널 분리",
+                       "tech_name":  "스코프 분리 (split_prompt_scopes)",
+                       "method":  "혼합",
+                       "status":  "info",
+                       "refs":  [
+                                    {
+                                        "kind":  "프롬프트",
+                                        "name":  "prompt_scope_split_system.txt",
+                                        "used":  true
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "targeting_lexicon.json",
+                                        "used":  true
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "surface_concepts.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "프롬프트",
+                                        "name":  "surface_signal_extract_system.txt",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "모델",
+                                        "name":  "gpt-4o-mini",
+                                        "used":  true
+                                    }
+                                ],
+                       "description":  "재작성 문장을 \u0027누구를(타겟)\u0027 절과 \u0027무엇을 보낼지(채널·혜택)\u0027 절로 나눕니다.",
+                       "plain":  [
+                                     "타겟 절: 하기스 기저귀를 가장 많이 산 고객"
+                                 ],
+                       "details":  [
+                                       "scope_mode=llm"
+                                   ]
+                   },
+                   {
+                       "step":  3,
+                       "name":  "질의 계획 수립",
+                       "tech_name":  "Query Plan (build_query_plan)",
+                       "method":  "혼합",
+                       "status":  "info",
+                       "refs":  [
+                                    {
+                                        "kind":  "프롬프트",
+                                        "name":  "query_plan_system.txt",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "프롬프트",
+                                        "name":  "query_plan_user.txt",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "normalization_rules.sample.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "business_policies.sample.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "targeting_lexicon.json",
+                                        "used":  true
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "surface_concepts.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "attribute_token_groups.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "member_metrics.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "schema_catalog.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "모델",
+                                        "name":  "gpt-5-mini (tool calling)",
+                                        "used":  false
+                                    }
+                                ],
+                       "summary":  "intent=find_user_segment",
+                       "description":  "타겟 절을 규칙 파싱 + LLM tool calling 으로 구조화된 Query Plan JSON(슬롯)으로 바꿉니다. 이 JSON 이 다음 SQL 조립의 입력입니다.",
+                       "plain":  [
+                                     "계획 문장(파싱 대상): 하기스 기저귀를 가장 많이 산 고객"
+                                 ],
+                       "details":  [
+                                       "① 입력 원문: 2019년 상반기에 하기스 기저귀를 가장 많이 산 고객 추출해줘",
+                                       "② 계획 문장(타겟 절만): 하기스 기저귀를 가장 많이 산 고객",
+                                       "③ Query Plan JSON:\n{\n  \"intent\": \"find_user_segment\"\n}",
+                                       "── 조건 결정 감사 로그(필터 → 액션 슬롯: 사유) ──",
+                                       "apply_purchase_count_ranking_target → set plan.purchase_count_ranking: \u0027(기간 내) 많이/자주 구입한 사람 상위 N 명\u0027을 구매 건수 랭킹 타겟(purchase_count_ranking)으로 해석한다.",
+                                       "attach_query_output_contract → set plan.output_contract: 질문의 기대 결과 단위와 API 결과 계약을 SQL 생성 전에 확정한다.",
+                                       "attach_query_output_contract → set plan.capability_check: 질문의 기대 결과 단위와 API 결과 계약을 SQL 생성 전에 확정한다.",
+                                       "attach_query_output_contract → set plan.selected_route: 질문의 기대 결과 단위와 API 결과 계약을 SQL 생성 전에 확정한다.",
+                                       "attach_query_output_contract → set plan.member_policy: 질문의 기대 결과 단위와 API 결과 계약을 SQL 생성 전에 확정한다.",
+                                       "LLM 미사용 — 규칙 파싱으로 계획 수립(parser=llm)"
+                                   ]
+                   },
+                   {
+                       "step":  4,
+                       "name":  "상품·구매이력 추출",
+                       "tech_name":  "타겟 오브젝트 추출 (정규식+LLM)",
+                       "method":  "혼합",
+                       "status":  "skipped",
+                       "refs":  [
+                                    {
+                                        "kind":  "프롬프트",
+                                        "name":  "target_object_extract_system.txt",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "surface_concepts.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "모델",
+                                        "name":  "gpt-4o-mini (폴백)",
+                                        "used":  false
+                                    }
+                                ],
+                       "description":  "상품 구매·판매 이력은 LLM으로 추출한 뒤 원문 검증하고, 장바구니 같은 행동 조건은 규칙으로 구조화합니다.",
+                       "plain":  [
+                                     "구매·상품 관련 조건 없음"
+                                 ]
+                   },
+                   {
+                       "step":  5,
+                       "name":  "값 해석(브랜드→코드)",
+                       "tech_name":  "디멘션 값 해석 (DS_SQL)",
+                       "method":  "규칙",
+                       "status":  "skipped",
+                       "refs":  [
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "dimension_catalog.sample.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "member_value_index.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "member_target_filters.json",
+                                        "used":  true
+                                    },
+                                    {
+                                        "kind":  "인프라",
+                                        "name":  "실DB (DS_SQL 값 조회)",
+                                        "used":  false
+                                    }
+                                ],
+                       "description":  "브랜드·지역 같은 표기를 실DB 코드(DS_SQL)로 변환합니다(결정론)."
+                   },
+                   {
+                       "step":  6,
+                       "name":  "집합식 파싱",
+                       "tech_name":  "집합식 (parse_set_expressions)",
+                       "method":  "규칙",
+                       "status":  "skipped",
+                       "refs":  [
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "normalization_rules.sample.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "코드",
+                                        "name":  "set_expression_engine.py",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "코드",
+                                        "name":  "logical_expression.py",
+                                        "used":  false
+                                    }
+                                ],
+                       "description":  "‘A 또는 B’·‘A이면서 B’ 같은 집합 연산을 파싱해 SQL 술어로 만듭니다(결정론).",
+                       "plain":  [
+                                     "집합식 없음"
+                                 ]
+                   },
+                   {
+                       "step":  7,
+                       "name":  "지식그래프 검색",
+                       "tech_name":  "벡터+키워드+Graph 확장 (GraphRAG)",
+                       "method":  "혼합",
+                       "status":  "info",
+                       "refs":  [
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "rag_knowledge_base.json (적재시)",
+                                        "used":  true
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "sql_examples.sample.sql (적재시)",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "모델",
+                                        "name":  "BAAI/bge-small-en-v1.5",
+                                        "used":  true
+                                    },
+                                    {
+                                        "kind":  "인프라",
+                                        "name":  "Qdrant + 인메모리 그래프",
+                                        "used":  true
+                                    }
+                                ],
+                       "summary":  "벡터 0 · 키워드 5 → 확장 9",
+                       "description":  "벡터(의미)·키워드(글자) 검색으로 지식을 찾고 관계 그래프로 확장합니다.",
+                       "plain":  [
+                                     "AI 유사도 검색 0건, 키워드 검색 5건에서 출발해 관계 그래프로 9건까지 넓혔습니다."
+                                 ],
+                       "hits":  [
+                                    {
+                                        "rank":  1,
+                                        "id":  "business_policy:top_revenue_user",
+                                        "type":  "business_policy",
+                                        "title":  "매출이 가장 높은 고객",
+                                        "score":  14.575045,
+                                        "seed_score":  14.575045,
+                                        "is_seed":  true,
+                                        "reached_via":  [
+                                                            "seed=business_policy:top_revenue_user, distance=0"
+                                                        ],
+                                        "path":  [
+                                                     {
+                                                         "id":  "business_policy:top_revenue_user",
+                                                         "title":  "매출이 가장 높은 고객",
+                                                         "type":  "business_policy",
+                                                         "relation":  null
+                                                     }
+                                                 ]
+                                    },
+                                    {
+                                        "rank":  2,
+                                        "id":  "schema_table:CRM_MB_MONTHCRMINFO",
+                                        "type":  "schema_table",
+                                        "title":  "CRM_MB_MONTHCRMINFO",
+                                        "score":  10.79633,
+                                        "seed_score":  null,
+                                        "is_seed":  false,
+                                        "reached_via":  [
+                                                            "seed=business_policy:top_revenue_user, distance=1"
+                                                        ],
+                                        "path":  [
+                                                     {
+                                                         "id":  "business_policy:top_revenue_user",
+                                                         "title":  "매출이 가장 높은 고객",
+                                                         "type":  "business_policy",
+                                                         "relation":  null
+                                                     },
+                                                     {
+                                                         "id":  "schema_table:CRM_MB_MONTHCRMINFO",
+                                                         "title":  "CRM_MB_MONTHCRMINFO",
+                                                         "type":  "schema_table",
+                                                         "relation":  "business_policy_table"
+                                                     }
+                                                 ]
+                                    },
+                                    {
+                                        "rank":  3,
+                                        "id":  "schema_column:CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT",
+                                        "type":  "schema_column",
+                                        "title":  "CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT",
+                                        "score":  10.79633,
+                                        "seed_score":  null,
+                                        "is_seed":  false,
+                                        "reached_via":  [
+                                                            "seed=business_policy:top_revenue_user, distance=1"
+                                                        ],
+                                        "path":  [
+                                                     {
+                                                         "id":  "business_policy:top_revenue_user",
+                                                         "title":  "매출이 가장 높은 고객",
+                                                         "type":  "business_policy",
+                                                         "relation":  null
+                                                     },
+                                                     {
+                                                         "id":  "schema_column:CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT",
+                                                         "title":  "CRM_MB_MONTHCRMINFO.TOTAL_BUY_AMT",
+                                                         "type":  "schema_column",
+                                                         "relation":  "business_policy_column"
+                                                     }
+                                                 ]
+                                    },
+                                    {
+                                        "rank":  4,
+                                        "id":  "schema_column:CRM_MB_MONTHCRMINFO.MEMBER_NO",
+                                        "type":  "schema_column",
+                                        "title":  "CRM_MB_MONTHCRMINFO.MEMBER_NO",
+                                        "score":  10.79633,
+                                        "seed_score":  null,
+                                        "is_seed":  false,
+                                        "reached_via":  [
+                                                            "seed=business_policy:top_revenue_user, distance=1"
+                                                        ],
+                                        "path":  [
+                                                     {
+                                                         "id":  "business_policy:top_revenue_user",
+                                                         "title":  "매출이 가장 높은 고객",
+                                                         "type":  "business_policy",
+                                                         "relation":  null
+                                                     },
+                                                     {
+                                                         "id":  "schema_column:CRM_MB_MONTHCRMINFO.MEMBER_NO",
+                                                         "title":  "CRM_MB_MONTHCRMINFO.MEMBER_NO",
+                                                         "type":  "schema_column",
+                                                         "relation":  "business_policy_column"
+                                                     }
+                                                 ]
+                                    },
+                                    {
+                                        "rank":  5,
+                                        "id":  "schema_column:CRM_MB_MONTHCRMINFO.YYYYMM",
+                                        "type":  "schema_column",
+                                        "title":  "CRM_MB_MONTHCRMINFO.YYYYMM",
+                                        "score":  10.79633,
+                                        "seed_score":  null,
+                                        "is_seed":  false,
+                                        "reached_via":  [
+                                                            "seed=business_policy:top_revenue_user, distance=1"
+                                                        ],
+                                        "path":  [
+                                                     {
+                                                         "id":  "business_policy:top_revenue_user",
+                                                         "title":  "매출이 가장 높은 고객",
+                                                         "type":  "business_policy",
+                                                         "relation":  null
+                                                     },
+                                                     {
+                                                         "id":  "schema_column:CRM_MB_MONTHCRMINFO.YYYYMM",
+                                                         "title":  "CRM_MB_MONTHCRMINFO.YYYYMM",
+                                                         "type":  "schema_column",
+                                                         "relation":  "business_policy_column"
+                                                     }
+                                                 ]
+                                    },
+                                    {
+                                        "rank":  6,
+                                        "id":  "normalization_rule:customer_status_grade",
+                                        "type":  "normalization_rule",
+                                        "title":  "customer_status_grade",
+                                        "score":  5.07939,
+                                        "seed_score":  5.07939,
+                                        "is_seed":  true,
+                                        "reached_via":  [
+                                                            "seed=normalization_rule:customer_status_grade, distance=0"
+                                                        ],
+                                        "path":  [
+                                                     {
+                                                         "id":  "normalization_rule:customer_status_grade",
+                                                         "title":  "customer_status_grade",
+                                                         "type":  "normalization_rule",
+                                                         "relation":  null
+                                                     }
+                                                 ]
+                                    },
+                                    {
+                                        "rank":  7,
+                                        "id":  "normalization_rule:vip",
+                                        "type":  "normalization_rule",
+                                        "title":  "vip",
+                                        "score":  5.023964,
+                                        "seed_score":  5.023964,
+                                        "is_seed":  true,
+                                        "reached_via":  [
+                                                            "seed=normalization_rule:vip, distance=0"
+                                                        ],
+                                        "path":  [
+                                                     {
+                                                         "id":  "normalization_rule:vip",
+                                                         "title":  "vip",
+                                                         "type":  "normalization_rule",
+                                                         "relation":  null
+                                                     }
+                                                 ]
+                                    },
+                                    {
+                                        "rank":  8,
+                                        "id":  "normalization_rule:kw_신규고객여부SN",
+                                        "type":  "normalization_rule",
+                                        "title":  "신규고객여부SN",
+                                        "score":  4.978611,
+                                        "seed_score":  4.978611,
+                                        "is_seed":  true,
+                                        "reached_via":  [
+                                                            "seed=normalization_rule:kw_신규고객여부SN, distance=0"
+                                                        ],
+                                        "path":  [
+                                                     {
+                                                         "id":  "normalization_rule:kw_신규고객여부SN",
+                                                         "title":  "신규고객여부SN",
+                                                         "type":  "normalization_rule",
+                                                         "relation":  null
+                                                     }
+                                                 ]
+                                    },
+                                    {
+                                        "rank":  9,
+                                        "id":  "normalization_rule:kw_퍼널고객등급",
+                                        "type":  "normalization_rule",
+                                        "title":  "퍼널고객등급",
+                                        "score":  4.969974,
+                                        "seed_score":  4.969974,
+                                        "is_seed":  true,
+                                        "reached_via":  [
+                                                            "seed=normalization_rule:kw_퍼널고객등급, distance=0"
+                                                        ],
+                                        "path":  [
+                                                     {
+                                                         "id":  "normalization_rule:kw_퍼널고객등급",
+                                                         "title":  "퍼널고객등급",
+                                                         "type":  "normalization_rule",
+                                                         "relation":  null
+                                                     }
+                                                 ]
+                                    }
+                                ],
+                       "count":  9,
+                       "seed_count":  5,
+                       "details":  [
+                                       "keyword: business_policy:top_revenue_user (14.575045)",
+                                       "keyword: normalization_rule:customer_status_grade (5.07939)",
+                                       "keyword: normalization_rule:vip (5.023964)",
+                                       "keyword: normalization_rule:kw_신규고객여부SN (4.978611)",
+                                       "keyword: normalization_rule:kw_퍼널고객등급 (4.969974)"
+                                   ]
+                   },
+                   {
+                       "step":  8,
+                       "name":  "타겟팅 SQL 생성",
+                       "tech_name":  "SelectAst 조립·렌더 (sql_ast.py) + 조건빌더/LLM",
+                       "method":  "혼합",
+                       "status":  "info",
+                       "refs":  [
+                                    {
+                                        "kind":  "코드",
+                                        "name":  "sql_ast.py (SelectAst)",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "코드",
+                                        "name":  "조건빌더 build_*_sql_candidate",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "schema_catalog.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "member_target_filters.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "member_metrics.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "docs/data/metrics/*.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "프롬프트",
+                                        "name":  "(LLM 폴백 인라인)",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "모델",
+                                        "name":  "gpt-5-mini (폴백)",
+                                        "used":  false
+                                    }
+                                ],
+                       "summary":  "후보 0개 · 미선택",
+                       "description":  "Query Plan JSON 을 조건빌더가 SelectAst(sql_ast.py)로 조립해 SQL 로 렌더합니다. 결정론 빌더가 표현 못 하면 LLM 폴백으로 초안을 만들고 같은 가드를 태웁니다.",
+                       "plain":  [
+                                     "조건 토큰 0개로 SQL 후보 0개를 SelectAst 로 조립했습니다.",
+                                     "선택된 SQL이 아직 없습니다(다음 단계에서 사유 표시)."
+                                 ],
+                       "details":  [
+                                       "결정론 조건빌더가 SelectAst 로 직접 조립 — LLM 프롬프트 없음(생성 SQL 은 아래 \u0027실행된 SQL\u0027 참조)"
+                                   ]
+                   },
+                   {
+                       "step":  9,
+                       "name":  "SQL 안전 검증",
+                       "tech_name":  "sql_guard + 의미 검증",
+                       "method":  "혼합",
+                       "status":  "fail",
+                       "refs":  [
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "schema_catalog.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "데이터",
+                                        "name":  "member_target_filters.json",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "프롬프트",
+                                        "name":  "(의미검증 인라인)",
+                                        "used":  false
+                                    },
+                                    {
+                                        "kind":  "모델",
+                                        "name":  "gpt-5-mini (의미검증)",
+                                        "used":  false
+                                    }
+                                ],
+                       "summary":  "검증 실패 · 원문 조건 해석",
+                       "description":  "생성된 SQL이 허용 테이블·컬럼만 쓰는지, 요청 의도와 어긋나지 않는지 자동 점검합니다.",
+                       "plain":  [
+                                     "‘원문 조건 해석’ 단계에서 막혔습니다."
+                                 ],
+                       "details":  [
+                                       "failure_reason: query_plan_required_conditions_missing"
+                                   ],
+                       "failure_stage":  {
+                                             "code":  "condition_recognition",
+                                             "label":  "원문 조건 해석",
+                                             "order":  1,
+                                             "total":  7,
+                                             "reason":  "query_plan_required_conditions_missing",
+                                             "pipeline":  [
+                                                              {
+                                                                  "order":  1,
+                                                                  "code":  "condition_recognition",
+                                                                  "label":  "원문 조건 해석"
+                                                              },
+                                                              {
+                                                                  "order":  2,
+                                                                  "code":  "real_db_mapping",
+                                                                  "label":  "실DB 조건 매핑"
+                                                              },
+                                                              {
+                                                                  "order":  3,
+                                                                  "code":  "sql_safety_validation",
+                                                                  "label":  "SQL 안전 검증"
+                                                              },
+                                                              {
+                                                                  "order":  4,
+                                                                  "code":  "aggregation_validation",
+                                                                  "label":  "집계 요구 검증"
+                                                              },
+                                                              {
+                                                                  "order":  5,
+                                                                  "code":  "condition_coverage",
+                                                                  "label":  "조건 반영 검증"
+                                                              },
+                                                              {
+                                                                  "order":  6,
+                                                                  "code":  "intent_scope",
+                                                                  "label":  "요청 의도 검증"
+                                                              },
+                                                              {
+                                                                  "order":  7,
+                                                                  "code":  "semantic_verification",
+                                                                  "label":  "의미 검증"
+                                                              }
+                                                          ]
+                                         }
+                   },
+                   {
+                       "step":  10,
+                       "name":  "실행·결과",
+                       "tech_name":  "DB 실행",
+                       "method":  "규칙",
+                       "status":  "skipped",
+                       "refs":  [
+                                    {
+                                        "kind":  "코드",
+                                        "name":  "db_connections.py (run_read_query / psycopg)",
+                                        "used":  false
+                                    }
+                                ],
+                       "summary":  "실행 대기",
+                       "description":  "확정된 SQL을 실DB에서 실행해 대상 고객 수를 집계합니다."
+                   }
+               ],
+    "stage_log":  [
+                      {
+                          "stage":  "1. Query Planning",
+                          "summary":  "intent=find_user_segment, normalized_query=하기스 기저귀를 가장 많이 산 고객",
+                          "metrics":  {
+                                          "matched_terms":  0,
+                                          "retrieval_terms":  6
+                                      }
+                      },
+                      {
+                          "stage":  "2. Hybrid Retrieval",
+                          "summary":  "Dense vector hits and BM25 keyword hits were collected as seed candidates.",
+                          "metrics":  {
+                                          "vector_hits":  0,
+                                          "keyword_hits":  5
+                                      }
+                      },
+                      {
+                          "stage":  "3. Merge / Score Sort",
+                          "summary":  "Duplicate node ids were merged by highest score and sorted by relevance.",
+                          "metrics":  {
+                                          "merged_hits":  5
+                                      }
+                      },
+                      {
+                          "stage":  "4. Graph Expansion",
+                          "summary":  "Seed nodes were expanded through graph relationships to build retrieval context.",
+                          "metrics":  {
+                                          "context_nodes":  9
+                                      }
+                      },
+                      {
+                          "stage":  "5. Context Assembly",
+                          "summary":  "Top-K chunks, graph context, metadata, and prompt context were assembled.",
+                          "metrics":  {
+                                          "node_count":  9,
+                                          "node_types":  {
+                                                             "business_policy":  1,
+                                                             "normalization_rule":  4,
+                                                             "schema_column":  3,
+                                                             "schema_table":  1
+                                                         }
+                                      }
+                      },
+                      {
+                          "stage":  "6. SQL Template / Guard",
+                          "summary":  "Verified condition tokens were assembled into an intent SQL template and validated by sql_guard.",
+                          "metrics":  {
+                                          "candidate_count":  0,
+                                          "condition_tokens":  0,
+                                          "selected_sql":  false,
+                                          "selected_valid":  false,
+                                          "required_conditions":  0,
+                                          "expected_grain":  null,
+                                          "actual_grain":  null,
+                                          "extracted_conditions":  [
+
+                                                                   ],
+                                          "missing_conditions":  [
+
+                                                                 ],
+                                          "semantic_issues":  [
+
+                                                              ],
+                                          "sql_evidence":  {
+
+                                                           },
+                                          "failure_reason":  "query_plan_required_conditions_missing"
+                                      }
+                      }
+                  ],
+    "decisions":  [
+                      {
+                          "seq":  0,
+                          "filter":  "apply_purchase_count_ranking_target",
+                          "action":  "set",
+                          "slot":  "plan.purchase_count_ranking",
+                          "reason":  "\u0027(기간 내) 많이/자주 구입한 사람 상위 N 명\u0027을 구매 건수 랭킹 타겟(purchase_count_ranking)으로 해석한다.",
+                          "value":  {
+                                        "top_n":  100
+                                    }
+                      },
+                      {
+                          "seq":  1,
+                          "filter":  "attach_query_output_contract",
+                          "action":  "set",
+                          "slot":  "plan.output_contract",
+                          "reason":  "질문의 기대 결과 단위와 API 결과 계약을 SQL 생성 전에 확정한다.",
+                          "value":  {
+                                        "target_entity":  "member",
+                                        "expected_grain":  "member",
+                                        "requires_member_id":  true,
+                                        "requires_member_no_as_cust_id":  true,
+                                        "whole_target":  false
+                                    }
+                      },
+                      {
+                          "seq":  2,
+                          "filter":  "attach_query_output_contract",
+                          "action":  "set",
+                          "slot":  "plan.capability_check",
+                          "reason":  "질문의 기대 결과 단위와 API 결과 계약을 SQL 생성 전에 확정한다.",
+                          "value":  {
+                                        "endpoint":  "/target-sql",
+                                        "query_type":  "member_selection",
+                                        "result_shape":  "member_rows",
+                                        "passed":  true,
+                                        "reason":  null
+                                    }
+                      },
+                      {
+                          "seq":  3,
+                          "filter":  "attach_query_output_contract",
+                          "action":  "set",
+                          "slot":  "plan.selected_route",
+                          "reason":  "질문의 기대 결과 단위와 API 결과 계약을 SQL 생성 전에 확정한다.",
+                          "value":  "member_target_sql"
+                      },
+                      {
+                          "seq":  4,
+                          "filter":  "attach_query_output_contract",
+                          "action":  "set",
+                          "slot":  "plan.member_policy",
+                          "reason":  "질문의 기대 결과 단위와 API 결과 계약을 SQL 생성 전에 확정한다.",
+                          "value":  {
+                                        "policy_id":  "active_member",
+                                        "mode":  "default",
+                                        "states":  [
+                                                       "MEMBER_STATE_CD.NORMAL"
+                                                   ],
+                                        "source":  "service_policy",
+                                        "appliedPolicyFilters":  [
+                                                                     {
+                                                                         "id":  "policy_active_member",
+                                                                         "column":  "MEMBER_STATE_CD",
+                                                                         "operator":  "eq",
+                                                                         "value":  "MEMBER_STATE_CD.NORMAL",
+                                                                         "mode":  "default"
+                                                                     }
+                                                                 ]
+                                    }
+                      }
+                  ],
+    "decisions_truncated":  false,
+    "plan_resolution":  {
+                            "resolver":  "single_pass_v1",
+                            "candidates":  [
+                                               {
+                                                   "source":  "rules",
+                                                   "priority":  300
+                                               },
+                                               {
+                                                   "source":  "llm_query_structurer",
+                                                   "priority":  100
+                                               }
+                                           ],
+                            "conflicts":  [
+
+                                          ],
+                            "resolutions":  [
+                                                {
+                                                    "path":  "intent",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "target_user",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "exclude",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "campaign_constraints",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "retrieval",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "cart_context",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "purchase_count_ranking",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "decisions",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "_decision_marks",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "_slot_spans",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "plan_resolution",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "complexity",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "parser",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "query_semantics",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "output_contract",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "capability_check",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "selected_route",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "member_policy",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                },
+                                                {
+                                                    "path":  "unresolved_source_conditions",
+                                                    "action":  "select",
+                                                    "source":  "rules"
+                                                }
+                                            ]
+                        },
+    "failure_diagnosis":  {
+                              "category":  "input_incomplete",
+                              "label":  "입력 조건 추가 필요",
+                              "confidence":  "high",
+                              "summary":  "필수 조건이 확정되지 않아 SQL을 만들지 못했습니다. 참조 JSON 부족으로 단정하지 않습니다.",
+                              "evidence":  [
+                                               "미확정 조건: source_coverage.unresolved[0]",
+                                               "확인 질문: 원문 신호가 구조화된 실행 슬롯으로 귀결되지 않았습니다."
+                                           ],
+                              "next_action":  "실패 단계에 표시된 조건을 더 구체적으로 입력한 뒤 다시 실행하세요."
+                          },
+    "result":  {
+                   "status":  "needs_clarification",
+                   "sql":  null,
+                   "blocked_sql":  null,
+                   "target_connection":  null,
+                   "message":  "원문 조건 해석을 위해 조건 확인이 필요합니다: 원문 신호가 구조화된 실행 슬롯으로 귀결되지 않았습니다."
+               },
+    "timings_ms":  {
+                       "query_structuring":  1684.84,
+                       "prompt_normalization":  0.02,
+                       "prompt_scopes":  1354.85,
+                       "query_plan":  2844.26,
+                       "retrieval_query":  0.02,
+                       "vector_search":  0.0,
+                       "keyword_search":  324.53,
+                       "context_assembly":  8.8,
+                       "sql_generation":  10.32,
+                       "stage_log":  0.01,
+                       "answer_generation":  0.22,
+                       "message_context":  8.88,
+                       "message_prompt":  0.0,
+                       "message_generation":  0.03,
+                       "total_retrieve":  5872.63
+                   }
+}

@@ -27,6 +27,7 @@ from typing import Any
 
 import lexicon_patterns
 from calendar_window import parse_time_window, parse_time_window_span
+from common_utils import compact_index_map, raw_span
 
 
 _MEMBER_NOUN_RE = lexicon_patterns.pattern("member_noun_basic")
@@ -188,28 +189,13 @@ def _compact_map(value: str) -> tuple[str, list[int]]:
 
     이 절이 원문의 **어느 구간**을 읽었는지 호출자에게 돌려주려면(소유권 회수가 '같은 종류'가
     아니라 '같은 구간'으로 판정되게 하려면) compact 좌표를 원문 좌표로 되돌릴 수 있어야 한다.
-    글자 단위 casefold 가 길이를 바꾸는 문자(라틴 확장 등)는 대응이 깨지므로 원문자를 유지한다 —
-    이 파서의 표면어는 한글/ASCII 라 실사용 결과는 ``_compact`` 와 동일하다."""
-    chars: list[str] = []
-    index_map: list[int] = []
-    for index, char in enumerate(str(value)):
-        if _COMPACT_DROP_RE.match(char):
-            continue
-        folded = char.casefold()
-        chars.append(folded if len(folded) == 1 else char)
-        index_map.append(index)
-    return "".join(chars), index_map
+    되돌림 규약 자체는 common_utils 가 소유한다 — 같은 규약을 쓰는 파서가 둘 이상이다."""
+    return compact_index_map(value, _COMPACT_DROP_RE)
 
 
 def _raw_span(index_map: list[int], start: int | None, end: int | None) -> list[int] | None:
     """compact 좌표 [start, end) → 원문 좌표 [start, end). 범위 밖이면 None."""
-    if start is None or end is None or not index_map:
-        return None
-    start = max(0, min(int(start), len(index_map)))
-    end = max(0, min(int(end), len(index_map)))
-    if end <= start:
-        return None
-    return [index_map[start], index_map[end - 1] + 1]
+    return raw_span(index_map, start, end)
 
 
 def _find_term(compact: str, terms: Any, start: int = 0) -> tuple[int, int, str] | None:
