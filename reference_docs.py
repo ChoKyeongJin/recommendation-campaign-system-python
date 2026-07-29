@@ -48,12 +48,9 @@ DESCRIPTIONS: dict[str, str] = {
     "target_object_extract_system.txt": "상품/구매이력 등 '대상 객체'를 프롬프트에서 추출하는 시스템 프롬프트(정규식이 놓친 경우의 LLM 폴백용).",
     "answer_system.txt": "답변 생성 시스템 프롬프트. 검증된 SQL만 근거로 쓰도록 역할을 제한한다.",
     "answer_user.txt": "질문·Query Plan·검색 context·SQL 결과를 묶어 답변 LLM에 넣는 사용자 템플릿.",
-    "message_generation_system.txt": "캠페인 메시지 생성 시스템 프롬프트. 허위 혜택 방지, 채널 제약 등 규칙 포함.",
-    "message_generation_user.txt": "캠페인·타겟·SQL context로 메시지 3종을 생성하는 사용자 템플릿.",
+    "message_generation_system.txt": "캠페인 메시지 생성 시스템 프롬프트. 입력 근거 준수와 단일 variant 출력 역할을 제한한다.",
     "message_generation_variant_user.txt": "메시지 variant를 1개만 생성하는 사용자 템플릿.",
-    "message_generation_retry_user.txt": "메시지 검증 실패 시 실패 사유로 재시도·수정하는 사용자 템플릿.",
     "message_generation_tone_manner.txt": "브랜드 톤·매너·설득 포인트 규칙(고정 텍스트).",
-    "extractllmjson.md": "LLM 응답에서 JSON을 안전하게 추출하는 방법을 정리한 참고 문서.",
 }
 
 # 확장자 → 표시용 포맷 라벨(프론트 하이라이트/아이콘 힌트).

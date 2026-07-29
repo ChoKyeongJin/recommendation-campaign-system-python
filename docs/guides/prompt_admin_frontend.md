@@ -195,10 +195,8 @@ POST /prompts/seed
 | `query_plan_user.txt` | 질문·허용값·fallback plan을 묶는 템플릿 | `${query}`, `${allowed_values}`, `${fallback_plan}` |
 | `answer_system.txt` | 검증된 SQL만 사용하도록 답변 역할 제한 | (고정 텍스트, 변수 없음) |
 | `answer_user.txt` | Query Plan·Context·SQL 결과로 답변 입력 구성 | `${query}`, `${query_plan}`, `${context}`, `${sql_result}`, `${sql_policy}` |
-| `message_generation_system.txt` | 메시지 생성 역할, 허위 혜택 방지, 채널 제약 | (고정 텍스트, 변수 없음) |
-| `message_generation_user.txt` | 캠페인/타겟/SQL context로 메시지 3종 생성 | `${query}`, `${requested_channel}`, `${channel_policy}`, `${selected_channel_policy}`, `${query_plan}`, `${campaign_context}`, `${target_context}`, `${message_examples}`, `${tone_manner_rules}`, `${sql_result}` |
-| `message_generation_variant_user.txt` | variant 1개만 생성 | `${variant}`, `${requested_channel}`, `${selected_channel_policy}`, `${campaign_context}`, `${target_context}`, `${message_examples}`, `${tone_manner_rules}`, `${repair_context}` |
-| `message_generation_retry_user.txt` | 검증 실패 사유로 재시도 수정 | `${original_prompt}`, `${previous_content}`, `${failure_reason}`, `${validation_issues}`, `${attempt_number}`, `${max_attempts}` |
+| `message_generation_system.txt` | 입력 근거 준수와 단일 variant 출력 역할 제한 | (고정 텍스트, 변수 없음) |
+| `message_generation_variant_user.txt` | variant 1개만 생성 | `${query}`, `${variant}`, `${requested_channel}`, `${selected_channel_policy}`, `${campaign_context}`, `${target_context}`, `${message_examples}`, `${tone_manner_rules}`, `${repair_context}` |
 | `message_generation_tone_manner.txt` | 브랜드 톤·스타일·설득 포인트 | (고정 텍스트, 변수 없음) |
 
 > 프론트에서 이 표를 상수로 들고 있으면(name → {role, variables}) 상세 화면의 변수 도우미 패널과 저장 전 `${...}` 검증에 활용할 수 있다.

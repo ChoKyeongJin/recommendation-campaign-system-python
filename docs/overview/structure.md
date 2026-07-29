@@ -622,7 +622,7 @@ docker compose exec python python sql_guard.py "SELECT user_id, name FROM users"
 - `init_rag_collections.py`로 `campaign_user_rag_nodes`와 `campaign_knowledge_rag` 컬렉션을 한 번에 초기화
 - LMS/RCS canonical 채널 정규화와 메시지 생성 정책 추가
 - `campaign_message_examples` 테이블과 기존 메시지/브랜드 톤 근거 모델 추가
-- `message_generation_system.txt`, `message_generation_user.txt` 기반 메시지 생성 프롬프트 추가
+- `message_generation_system.txt`, `message_generation_variant_user.txt` 기반 메시지 생성 프롬프트 추가
 - `--generate-messages`, `--message-channel` 옵션과 `api_response.message_variants` 응답 구조 추가
 - 메시지 variant, 채널, 캠페인 ID, offer, 글자 수 검증 추가
 
@@ -659,7 +659,7 @@ docker compose exec python python sql_guard.py "SELECT user_id, name FROM users"
 - `lms`, `rcs`를 독립 메시지 채널 canonical 값으로 추가했다.
 - `campaign_message_examples` 테이블을 추가해 기존 메시지와 브랜드 톤을 캠페인별 근거 데이터로 관리한다.
 - `channel_message_generation` 정책을 추가해 기본 채널, 허용 채널, 글자 수, 필수 메시지 variant를 정책 파일에서 관리한다.
-- `message_generation_system.txt`, `message_generation_user.txt` 프롬프트를 추가했다.
+- `message_generation_system.txt`, `message_generation_variant_user.txt` 프롬프트를 추가했다.
 - `graph_rag.py`에 `--generate-messages`, `--message-channel` 옵션과 `message_generation_prompt`, `message_generation`, `api_response.message_variants`를 추가했다.
 - 메시지 생성은 SQL 성공과 캠페인 컨텍스트가 있을 때 실행하며, campaign offer 근거가 없으면 확인되지 않은 혜택 표현과 `used_offer`를 만들지 않는다.
 - Python 컨테이너가 `.env`를 읽도록 `docker-compose.yml`에 `env_file: .env`를 추가했다.

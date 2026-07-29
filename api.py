@@ -34,7 +34,7 @@ from graph_rag import (
     graph_stats,
     load_payload,
     rag_llm_run_scope,
-    render_message_prompt,
+    render_message_variant_prompt,
     retrieve,
 )
 from common_utils import elapsed_ms as _elapsed_ms
@@ -4189,15 +4189,24 @@ def refresh_message_generation_from_database(request: TargetSqlRequest, result: 
         requested_channel=request.message_channel,
         business_policies=Path(os.getenv("GRAPH_RAG_BUSINESS_POLICIES", DEFAULT_POLICY_PATH)),
         message_policy=Path(os.getenv("GRAPH_RAG_MESSAGE_POLICY", DEFAULT_MESSAGE_POLICY_PATH)),
+        query=request.prompt,
     )
     timings_ms["database_message_refresh.context"] = _elapsed_ms(started_at)
     started_at = time.perf_counter()
-    message_prompt = render_message_prompt(request.prompt, result["query_plan"], result["sql_result"], message_context, prompt_dir) if message_context.get("is_success") else None
+    message_prompt = (
+        render_message_variant_prompt(
+            variant="benefit_emphasis",
+            message_context=message_context,
+            repair_context="none",
+            prompt_dir=prompt_dir,
+        )
+        if message_context.get("is_success")
+        else None
+    )
     result["message_generation_prompt"] = message_prompt
     timings_ms["database_message_refresh.prompt"] = _elapsed_ms(started_at)
     started_at = time.perf_counter()
     result["message_generation"] = build_message_response(
-        message_prompt=message_prompt,
         message_context=message_context,
         llm_model=os.getenv("OPENAI_MODEL", DEFAULT_LLM_MODEL),
         generate_messages=request.generate_messages,

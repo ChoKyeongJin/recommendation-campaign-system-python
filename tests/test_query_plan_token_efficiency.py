@@ -121,16 +121,14 @@ def test_generation_prompts_exclude_internal_audit_fields() -> None:
         {"prompt": "context"},
         sql_result,
     )
-    message = graph_rag.render_message_prompt(
-        "여성 고객",
-        query_plan,
-        sql_result,
-        {
+    message = graph_rag.render_message_variant_prompt(
+        variant="benefit_emphasis",
+        message_context={
+            "query": "여성 고객",
             "channel": "lms",
-            "channel_policy": {},
             "selected_channel_policy": {},
             "campaigns": [],
-            "target_context": {},
+            "target_context": {"target_user": {"marker": "TARGET_MARKER"}},
             "message_examples": [],
         },
     )
@@ -140,6 +138,40 @@ def test_generation_prompts_exclude_internal_audit_fields() -> None:
         assert "AUDIT_SECRET" not in prompt
         assert "RESOLVER_SECRET" not in prompt
         assert "DIGEST_SECRET" not in prompt
+
+
+def test_message_variant_prompt_receives_user_query_and_single_variant_contract(monkeypatch) -> None:
+    monkeypatch.setenv("GRAPH_RAG_PROMPT_SOURCE", "file")
+    prompt = graph_rag.render_message_variant_prompt(
+        variant="urgency_emphasis",
+        message_context={
+            "query": "친근하게 오늘 마감 소식을 알려줘",
+            "channel": "lms",
+            "selected_channel_policy": {},
+            "campaigns": [{"campaign_id": "C1"}],
+            "target_context": {},
+            "message_examples": [],
+        },
+    )
+
+    assert "친근하게 오늘 마감 소식을 알려줘" in prompt
+    assert "정확히 1개 object" in prompt
+    assert "urgency_emphasis" in prompt
+    assert "3개" not in graph_rag._read_prompt_template(
+        graph_rag.DEFAULT_PROMPT_DIR,
+        "message_generation_system.txt",
+        "",
+    )
+
+
+def test_message_repair_context_keeps_issues_and_previous_messages() -> None:
+    repair = graph_rag._message_repair_context(
+        {"messages": [{"variant": "benefit_emphasis", "text": "이전 문안"}]},
+        {"issues": [{"path": "messages[0].text", "message": "too long"}]},
+    )
+
+    assert "이전 문안" in repair
+    assert "too long" in repair
 
 
 def test_non_aggregation_planner_prompt_omits_aggregation_schema() -> None:

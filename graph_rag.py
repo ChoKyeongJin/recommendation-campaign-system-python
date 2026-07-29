@@ -5010,23 +5010,7 @@ def _query_plan_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> s
             "반드시 JSON object만 출력한다.",
         ]
     )
-    base = _read_prompt_template(prompt_dir, "query_plan_system.txt", fallback)
-    examples = _query_plan_fewshot_examples(prompt_dir)
-    if examples:
-        base = f"{base}\n\n{examples}"
-    return base
-
-
-def _query_plan_fewshot_examples(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
-    """입력 패턴별 few-shot 가이드(query_plan_examples.txt)를 읽어 시스템 프롬프트에 덧붙일 본문을 만든다.
-
-    "이런 구조의 입력이면 query_plan 을 이렇게 채워라" 예시를 운영자가 파일/DB 로 관리하는 지점이다.
-    '#' 로 시작하는 줄은 편집자용 주석이라 LLM 에 보내지 않고, 실제 예시 줄이 하나도 없으면
-    빈 문자열을 반환해 시스템 프롬프트에 아무 것도 덧붙이지 않는다(기본 무동작 → 예시 채우면 활성).
-    """
-    raw = _read_prompt_template(prompt_dir, "query_plan_examples.txt", "")
-    body = "\n".join(line for line in raw.splitlines() if not line.lstrip().startswith("#"))
-    return body.strip()
+    return _read_prompt_template(prompt_dir, "query_plan_system.txt", fallback)
 
 
 def _query_plan_user_prompt(
@@ -12855,16 +12839,25 @@ def retrieve(
         requested_channel=message_channel,
         business_policies=business_policies,
         message_policy=message_policy,
+        query=query,
     )
     timings_ms["message_context"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
-    message_generation_prompt = render_message_prompt(query, query_plan, sql_result, message_context, prompt_dir) if message_context.get("is_success") else None
+    message_generation_prompt = (
+        render_message_variant_prompt(
+            variant=MESSAGE_VARIANTS[0],
+            message_context=message_context,
+            repair_context="none",
+            prompt_dir=prompt_dir,
+        )
+        if message_context.get("is_success")
+        else None
+    )
     timings_ms["message_prompt"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
     message_generation = build_message_response(
-        message_prompt=message_generation_prompt,
         message_context=message_context,
         llm_model=llm_model,
         generate_messages=generate_messages,
@@ -13193,7 +13186,7 @@ def render_answer_prompt(
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
 ) -> str:
     sql_policy = [
-        "SQL은 SQL Result의 검증된 safe_sql 또는 masked_sql만 사용하라.",
+        "SQL은 SQL Result 최상위의 sql 값만 사용하라. blocked_sql이나 candidates 내부 SQL은 제시하지 마라.",
     ]
     if not sql_result.get("is_success"):
         sql_policy.extend(
@@ -13357,6 +13350,7 @@ def build_message_context(
     requested_channel: str = "auto",
     business_policies: Path | None = DEFAULT_POLICY_PATH,
     message_policy: Path | None = DEFAULT_MESSAGE_POLICY_PATH,
+    query: str | None = None,
 ) -> dict[str, Any]:
     channel_policy = _message_channel_policy(business_policies, message_policy)
     channel = _resolve_message_channel(query_plan, requested_channel, channel_policy)
@@ -13369,6 +13363,7 @@ def build_message_context(
             "campaigns": [],
             "message_examples": [],
             "target_context": _message_target_context(query_plan),
+            "query": query or str(query_plan.get("original_query") or ""),
             "failure_reason": "unsupported_message_channel",
         }
 
@@ -13390,6 +13385,7 @@ def build_message_context(
         "campaigns": campaigns,
         "message_examples": _message_example_contexts(context_nodes, campaigns, channel),
         "target_context": _message_target_context(query_plan),
+        "query": query or str(query_plan.get("original_query") or ""),
         "failure_reason": None,
     }
 
@@ -13670,53 +13666,6 @@ def _message_target_context(query_plan: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def render_message_prompt(
-    query: str,
-    query_plan: dict[str, Any],
-    sql_result: dict[str, Any],
-    message_context: dict[str, Any],
-    prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
-) -> str:
-    fallback = "\n".join(
-        [
-            "[User Query]\n${query}",
-            "",
-            "[Requested Channel]\n${requested_channel}",
-            "",
-            "[Channel Policy]\n${channel_policy}",
-            "",
-            "[Query Plan]\n${query_plan}",
-            "",
-            "[Campaign Context]\n${campaign_context}",
-            "",
-            "[Target Context]\n${target_context}",
-            "",
-            "[Existing Message Examples]\n${message_examples}",
-            "",
-            "[Tone And Manner Rules]\n${tone_manner_rules}",
-            "",
-            "[SQL Result]\n${sql_result}",
-            "",
-            "messages 배열에 benefit_emphasis, urgency_emphasis, emotion_emphasis 3개 JSON object만 반환하라.",
-        ]
-    )
-    template = _read_prompt_template(prompt_dir, "message_generation_user.txt", fallback)
-    generation_plan = _query_plan_for_generation(query_plan)
-    return _render_prompt_template(
-        template,
-        query=query,
-        requested_channel=message_context.get("channel", DEFAULT_MESSAGE_CHANNEL),
-        channel_policy=json.dumps(message_context.get("channel_policy", {}), ensure_ascii=False, indent=2),
-        selected_channel_policy=json.dumps(message_context.get("selected_channel_policy", {}), ensure_ascii=False, indent=2),
-        query_plan=json.dumps(generation_plan, ensure_ascii=False, indent=2),
-        campaign_context=json.dumps(message_context.get("campaigns", []), ensure_ascii=False, indent=2),
-        target_context=json.dumps(message_context.get("target_context", {}), ensure_ascii=False, indent=2),
-        message_examples=json.dumps(message_context.get("message_examples", []), ensure_ascii=False, indent=2),
-        tone_manner_rules=_message_generation_tone_manner_rules(prompt_dir),
-        sql_result=json.dumps(sql_result, ensure_ascii=False, indent=2),
-    )
-
-
 _GENERATION_QUERY_PLAN_KEYS = (
     "intent",
     "target_user",
@@ -13760,7 +13709,6 @@ def _message_generation_tone_manner_rules(prompt_dir: Path | None = DEFAULT_PROM
 
 
 def build_message_response(
-    message_prompt: str | None,
     message_context: dict[str, Any],
     llm_model: str,
     generate_messages: bool,
@@ -13791,18 +13739,6 @@ def build_message_response(
             "validation": None,
             "context": message_context,
             "failure_reason": None,
-        }
-    if message_prompt is None:
-        return {
-            "is_success": False,
-            "mode": "openai_chat_completion",
-            "model": llm_model,
-            "options": effective_options,
-            "content": None,
-            "messages": [],
-            "validation": None,
-            "context": message_context,
-            "failure_reason": "message_prompt_missing",
         }
     if not os.getenv("OPENAI_API_KEY"):
         return {
@@ -13838,14 +13774,15 @@ def build_message_response(
         "\n".join(
             [
                 "너는 캠페인 채널 메시지 생성기다.",
-                "반드시 한국어 JSON object만 출력한다.",
-                "없는 혜택이나 근거 없는 사실을 만들지 않는다.",
+                "입력 근거에 없는 혜택, 기간, 사실을 만들지 않는다.",
+                "요청된 채널과 variant 하나만 한국어 JSON object로 출력한다.",
+                "기존 메시지의 문장을 복사하지 않는다.",
             ]
         ),
     )
     max_attempts = effective_options["max_attempts"]
     attempts: list[dict[str, Any]] = []
-    current_prompt = message_prompt
+    repair_context = "none"
     last_content = None
     last_validation = None
     last_failure_reason = None
@@ -13857,14 +13794,14 @@ def build_message_response(
             "options": effective_options,
             "message_context": message_context,
             "system_prompt": system_prompt,
-            "base_prompt": message_prompt,
+            "query": message_context.get("query", ""),
         },
     )
 
     for attempt_number in range(1, max_attempts + 1):
         attempt_started_at = time.perf_counter()
         parallel_result = _generate_message_variants_parallel(
-            base_prompt=current_prompt,
+            repair_context=repair_context,
             message_context=message_context,
             system_prompt=system_prompt,
             llm_model=llm_model,
@@ -13911,14 +13848,9 @@ def build_message_response(
             }
 
         if attempt_number < max_attempts:
-            current_prompt = render_message_retry_prompt(
-                original_prompt=message_prompt,
-                previous_content=last_content,
-                failure_reason=last_failure_reason,
+            repair_context = _message_repair_context(
+                previous_payload=parallel_result["payload"],
                 validation=last_validation,
-                attempt_number=attempt_number + 1,
-                max_attempts=max_attempts,
-                prompt_dir=prompt_dir,
             )
 
     return {
@@ -13938,7 +13870,7 @@ def build_message_response(
 
 
 def _generate_message_variants_parallel(
-    base_prompt: str,
+    repair_context: str,
     message_context: dict[str, Any],
     system_prompt: str,
     llm_model: str,
@@ -13955,7 +13887,7 @@ def _generate_message_variants_parallel(
             executor.submit(
                 _generate_single_message_variant,
                 variant,
-                base_prompt,
+                repair_context,
                 message_context,
                 system_prompt,
                 llm_model,
@@ -14007,7 +13939,7 @@ def _generate_message_variants_parallel(
 
 def _generate_single_message_variant(
     variant: str,
-    base_prompt: str,
+    repair_context: str,
     message_context: dict[str, Any],
     system_prompt: str,
     llm_model: str,
@@ -14025,7 +13957,12 @@ def _generate_single_message_variant(
         }
         if "top_p" in message_generation_options:
             completion_options["top_p"] = message_generation_options["top_p"]
-        user_prompt = render_message_variant_prompt(base_prompt, variant, message_context, prompt_dir)
+        user_prompt = render_message_variant_prompt(
+            variant=variant,
+            message_context=message_context,
+            repair_context=repair_context,
+            prompt_dir=prompt_dir,
+        )
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -14134,15 +14071,16 @@ def _generate_single_message_variant(
 
 
 def render_message_variant_prompt(
-    base_prompt: str,
     variant: str,
     message_context: dict[str, Any],
+    repair_context: str = "none",
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
 ) -> str:
     fallback = "\n".join(
         [
             "아래 입력만 사용해 지정된 variant 1개만 생성하라.",
             "반환 JSON은 messages 배열에 정확히 1개 object만 포함해야 한다.",
+            "[User Query] ${query}",
             "[Variant] ${variant}",
             "[Requested Channel] ${requested_channel}",
             "[Selected Channel Policy] ${selected_channel_policy}",
@@ -14156,6 +14094,7 @@ def render_message_variant_prompt(
     template = _read_prompt_template(prompt_dir, "message_generation_variant_user.txt", fallback)
     return _render_prompt_template(
         template,
+        query=message_context.get("query", ""),
         variant=variant,
         requested_channel=message_context.get("channel", DEFAULT_MESSAGE_CHANNEL),
         selected_channel_policy=json.dumps(message_context.get("selected_channel_policy", {}), ensure_ascii=False, separators=(",", ":")),
@@ -14163,7 +14102,7 @@ def render_message_variant_prompt(
         target_context=json.dumps(message_context.get("target_context", {}), ensure_ascii=False, separators=(",", ":")),
         message_examples=json.dumps(_compact_message_context_items(message_context.get("message_examples", []), 6), ensure_ascii=False, separators=(",", ":")),
         tone_manner_rules=_message_generation_tone_manner_rules(prompt_dir),
-        repair_context=_message_variant_repair_context(base_prompt),
+        repair_context=repair_context,
     )
 
 
@@ -14173,15 +14112,20 @@ def _compact_message_context_items(items: Any, limit: int) -> list[Any]:
     return items[:limit]
 
 
-def _message_variant_repair_context(prompt: str) -> str:
-    failure_match = re.search(r"\[Failure Reason\]\s*(.*?)(?:\n\[|$)", prompt, re.DOTALL)
-    issues_match = re.search(r"\[Validation Issues\]\s*(.*?)(?:\n\[|$)", prompt, re.DOTALL)
-    parts = []
-    if failure_match:
-        parts.append("Failure Reason: " + failure_match.group(1).strip())
-    if issues_match:
-        parts.append("Validation Issues: " + issues_match.group(1).strip())
-    return "\n".join(parts) or "none"
+def _message_repair_context(previous_payload: Any, validation: dict[str, Any] | None) -> str:
+    previous_messages = (
+        previous_payload.get("messages", [])
+        if isinstance(previous_payload, dict) and isinstance(previous_payload.get("messages"), list)
+        else []
+    )
+    return json.dumps(
+        {
+            "validation_issues": (validation or {}).get("issues", []),
+            "previous_messages": previous_messages,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def _single_variant_message(payload: Any, variant: str) -> dict[str, Any] | None:
@@ -14197,41 +14141,6 @@ def _single_variant_message(payload: Any, variant: str) -> dict[str, Any] | None
     if isinstance(payload, dict) and any(key in payload for key in ("text", "title", "description")):
         return dict(payload)
     return None
-
-
-def render_message_retry_prompt(
-    original_prompt: str,
-    previous_content: str | None,
-    failure_reason: str | None,
-    validation: dict[str, Any] | None,
-    attempt_number: int,
-    max_attempts: int,
-    prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
-) -> str:
-    fallback = "\n".join(
-        [
-            "이전 채널 메시지 생성 결과가 검증에 실패했다.",
-            "이번 응답은 아래 실패 사유를 모두 수정해서 JSON object만 반환하라.",
-            "",
-            "[Attempt] ${attempt_number}/${max_attempts}",
-            "[Failure Reason] ${failure_reason}",
-            "[Validation Issues] ${validation_issues}",
-            "[Previous Content] ${previous_content}",
-            "",
-            "[Original Prompt]",
-            "${original_prompt}",
-        ]
-    )
-    template = _read_prompt_template(prompt_dir, "message_generation_retry_user.txt", fallback)
-    return _render_prompt_template(
-        template,
-        original_prompt=original_prompt,
-        previous_content=previous_content or "",
-        failure_reason=failure_reason or "message_validation_failed",
-        validation_issues=json.dumps((validation or {}).get("issues", []), ensure_ascii=False, indent=2),
-        attempt_number=str(attempt_number),
-        max_attempts=str(max_attempts),
-    )
 
 
 def _message_generation_attempt(
@@ -23411,7 +23320,6 @@ _TRACE_STAGE_REFS: dict[int, tuple[dict[str, str], ...]] = {
     ),
     3: (
         {"kind": "프롬프트", "name": "query_plan_system.txt"},
-        {"kind": "프롬프트", "name": "query_plan_examples.txt"},
         {"kind": "프롬프트", "name": "query_plan_user.txt"},
         # 규칙 계획(_build_rule_query_plan)이 항상 로딩: 정규화 사전·업무정책·어휘/속성 사전·지표 사전·스키마.
         {"kind": "데이터", "name": "normalization_rules.sample.json"},
@@ -23553,9 +23461,6 @@ def _mark_trace_refs_used(stages: list[dict[str, Any]], result: dict[str, Any]) 
     parser_used_llm = parser.get("type") == "llm" and isinstance(llm_query_plan_prompt, dict)
     if parser_used_llm:
         mark(3, "query_plan_system.txt", "query_plan_user.txt", kind="모델")
-        examples = _query_plan_fewshot_examples()
-        if examples and examples in str(llm_query_plan_prompt.get("system") or ""):
-            mark(3, "query_plan_examples.txt")
     if matched_terms:
         mark(3, "normalization_rules.sample.json")
     if policy_constraints or any(
