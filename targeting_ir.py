@@ -172,6 +172,24 @@ def _coerce_threshold_list(raw: Any, *, allowed: Any = None) -> list[dict[str, A
             window_parts = _window_days(item["window"])
             window = window_parts[2] if window_parts is not None else None
         cond["window_days"] = window
+        aggregation_scope = item.get("aggregation_scope")
+        if aggregation_scope in {"per_member", "per_order", "per_product", "per_brand"}:
+            if aggregation_scope != "per_member":
+                cond["aggregation_scope"] = aggregation_scope
+        raw_scope = item.get("scope")
+        if isinstance(raw_scope, dict):
+            scope: dict[str, str] = {}
+            for key in ("brand", "category"):
+                value = raw_scope.get(key)
+                if not isinstance(value, str) or not value.strip():
+                    continue
+                value = value.strip()
+                if key == "brand" and value in {"같은", "동일", "동일한"}:
+                    cond["aggregation_scope"] = "per_brand"
+                    continue
+                scope[key] = value
+            if scope:
+                cond["scope"] = scope
         if isinstance(item.get("label"), str) and item["label"]:
             cond["label"] = item["label"]
         out.append(cond)
@@ -455,6 +473,47 @@ def _list_schema(desc: str) -> dict[str, Any]:
     return {"type": "array", "description": desc, "items": {"type": "object"}}
 
 
+def _aggregate_condition_schema() -> dict[str, Any]:
+    """Strict-tool-compatible schema for one aggregate threshold."""
+
+    return {
+        "type": "array",
+        "description": (
+            "누적 지표 임계 리스트. 개=item quantity, 회/번/건=order count, "
+            "종/종류=distinct product count. 같은 브랜드는 scope 값이 아니라 per_brand grain이다."
+        ),
+        "items": {
+            "type": "object",
+            "properties": {
+                "metric_id": {"type": "string"},
+                "operator": {"type": "string", "enum": [">=", ">", "<=", "<"]},
+                "threshold": {"type": "number"},
+                "window_days": {"type": "integer", "minimum": 1},
+                "window": {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "integer", "minimum": 1},
+                        "unit": {"type": "string", "enum": ["days", "weeks", "months", "years"]},
+                    },
+                },
+                "aggregation_scope": {
+                    "type": "string",
+                    "enum": ["per_member", "per_order", "per_product", "per_brand"],
+                },
+                "scope": {
+                    "type": "object",
+                    "properties": {
+                        "brand": {"type": "string"},
+                        "category": {"type": "string"},
+                    },
+                },
+                "label": {"type": "string"},
+            },
+            "required": ["metric_id", "operator", "threshold"],
+        },
+    }
+
+
 # 구조화 슬롯 레지스트리(단일 소스). ConditionSpec.slot 이 이 중 하나를 참조한다.
 _UNIT_HINT = "기간 단위 unit ∈ days|weeks|months|years, 또는 min_days 정수"
 _OP_HINT = "연산자 operator ∈ >=|>|<=|<"
@@ -514,7 +573,7 @@ SLOT_SHAPES: dict[str, SlotShape] = {
         {"type": "boolean", "description": "장바구니(보관 상품)가 없는 회원. true 만 설정('장바구니 없는/생성 안 한')."},
         _coerce_bool_true),
     "aggregate_conditions": SlotShape("aggregate_conditions", "target_user",
-        _list_schema(f"누적 지표 임계 리스트. [{{metric_id, operator, threshold, window_days? 또는 window:{{value,unit}}}}]. {_OP_HINT}"),
+        _aggregate_condition_schema(),
         _coerce_threshold_list, allowed_key="aggregate_metrics",
         resolves_unsupported=frozenset({"metric_not_resolved"})),
     "region_density_target": SlotShape("region_density_target", "plan",

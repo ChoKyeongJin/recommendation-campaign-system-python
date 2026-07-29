@@ -59,12 +59,14 @@ from calendar_window import (
     duration_window_candidates as _duration_window_candidates,
     month_last_day as _month_last_day,
     parse_calendar_window_group,
+    parse_calendar_window,
     parse_calendar_window_spans,
     parse_calendar_windows,
     parse_duration_window as _parse_duration_window,
     parse_half_or_quarter_window,
     parse_time_window_group_span,
     parse_time_windows,
+    calendar_window_from_parts,
     ymd as _ymd,
 )
 from entity_set import (
@@ -124,6 +126,8 @@ from condition_evaluation_ir import (
     validate_evaluations as validate_condition_evaluations,
 )
 from query_structurer import (
+    COUNTER_LITERAL_RE,
+    COUNTER_UNIT_SEMANTICS,
     CAMPAIGN_QUERY_PLAN_V2_TOOL,
     CAMPAIGN_QUERY_PLAN_V3_TOOL,
     CampaignQueryPlanV2,
@@ -1897,6 +1901,16 @@ def _campaign_response_signals(text: str) -> set[str]:
     return {canonical for canonical, _predicate, pattern in _CAMPAIGN_RESPONSE_PATTERNS if pattern.search(compact)}
 
 
+def _audience_polarity_signals(text: str) -> set[str]:
+    """스코프 분리에서 반드시 타겟팅 절에 남아야 하는 회원 조건의 값+극성 서명."""
+
+    return {
+        *(f"gender:{signal}" for signal in _gender_polarity_signals(text)),
+        *(f"consent:{signal}" for signal in _consent_signals(text)),
+        *(f"member_flag:{signal}" for signal in _member_flag_signals(text)),
+    }
+
+
 def _prompt_signal_signature(text: str) -> dict[str, set[str]]:
     """재작성 전후 비교용 '핵심 신호' 서명.
 
@@ -1913,7 +1927,12 @@ def _prompt_signal_signature(text: str) -> dict[str, set[str]]:
     genders = {canonical for surface, canonical in _GENDER_SURFACE_TO_CANONICAL.items() if surface in compact}
     return {
         "numbers": numbers,
+        "counter_units": {
+            f"{match.group('value').replace(',', '')}:{COUNTER_UNIT_SEMANTICS[match.group('unit')]}"
+            for match in COUNTER_LITERAL_RE.finditer(compact)
+        },
         "genders": genders,
+        "gender_polarities": _gender_polarity_signals(compact),
         "purchases": _purchase_object_signals(compact),
         "brands": _brand_object_signals(compact),
         "consents": _consent_signals(compact),
@@ -1934,8 +1953,20 @@ def _rewrite_dropped_signals(original: str, rewritten: str) -> list[str]:
     dropped: list[str] = []
     for number in sorted(before["numbers"] - after["numbers"]):
         dropped.append(f"숫자 '{number}'")
+    for counter in sorted(before["counter_units"] - after["counter_units"]):
+        value, semantic_unit = counter.split(":", 1)
+        label = {
+            "item_quantity": "상품 수량",
+            "order_count": "주문 횟수",
+            "distinct_product_count": "상품 종류 수",
+        }.get(semantic_unit, semantic_unit)
+        dropped.append(f"수량 단위 '{value} {label}'")
     for gender in sorted(before["genders"] - after["genders"]):
         dropped.append(f"성별 '{_GENDER_CANONICAL_KO.get(gender, gender)}'")
+    for signal in sorted(before["gender_polarities"] - after["gender_polarities"]):
+        canonical, polarity = signal.split(":", 1)
+        direction = "제외" if polarity == "exclude" else "포함"
+        dropped.append(f"성별 극성 '{_GENDER_CANONICAL_KO.get(canonical, canonical)} {direction}'")
     # 구매 상품은 재작성이 구매 표현형을 바꿔도(예: '구매한'→'구매') 상품명 자체가 남아있으면 보존으로 본다.
     # 그래서 엄격 패턴 재추출이 아니라 상품명이 재작성본 어디에도 없을 때만 소실로 판정한다(오탐 방지).
     after_compact = (rewritten or "").casefold()
@@ -2088,6 +2119,7 @@ def _prompt_scope_split_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_D
             "타겟팅: 누구를 뽑을지(속성/구매이력/세그먼트 등 오디언스 정의)만.",
             "채널: 그들에게 무엇을 어떻게 알릴지(홍보/판매/알림/채널/메시지/혜택).",
             "원문 표현을 그대로 나눠 담고 의미를 새로 지어내지 않는다. 한쪽이 없으면 빈 문자열로 둔다.",
+            "제외·부정 표현(제외, 빼고, 아닌, 말고)은 오디언스 조건의 극성이므로 대상 값과 함께 타겟팅에 그대로 보존한다.",
             '다음 JSON object 만 출력한다: {"targeting": "…", "channel": "…"}.',
         ]
     )
@@ -2151,6 +2183,11 @@ def _llm_split_prompt_scopes(
         targeting = data.get("targeting")
         channel = data.get("channel")
         if not isinstance(targeting, str) or not targeting.strip():
+            return None
+        # 스코프 분리는 표현을 옮길 수만 있고 오디언스 조건의 극성을 바꿀 수는 없다. 특히 LLM 이
+        # ``여성 제외``를 ``여성, ... 고객``으로 바꾸면 뒤 파서는 포함 조건으로 읽는다. 원문에 있던
+        # 성별 포함/제외 신호가 targeting 절에서 사라졌으면 이 분리를 폐기하고 규칙 폴백(원문)을 쓴다.
+        if _audience_polarity_signals(text) - _audience_polarity_signals(targeting):
             return None
         result = {"targeting": targeting.strip(), "channel": channel.strip() if isinstance(channel, str) else ""}
         _write_rag_llm_log("prompt_scope_split", {"text": text, **result})
@@ -2446,6 +2483,9 @@ class ExclusionReconciliationRule:
     reason: str
     clear_value: Any = None
     include_mode: Literal["scalar", "collection"] = "scalar"
+    # canonical 값별 원문 표면형. 등록된 도메인은 공통 span 극성 판정기를 사용해 같은 값이
+    # include/exclude 양쪽에 생겼을 때 원문의 명시 극성으로 정리한다.
+    value_surfaces: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 EXCLUSION_RECONCILIATION_RULES: tuple[ExclusionReconciliationRule, ...] = (
@@ -2458,6 +2498,10 @@ EXCLUSION_RECONCILIATION_RULES: tuple[ExclusionReconciliationRule, ...] = (
         reason=(
             "원문에 없는 긍정 성별을 제거하고 "
             "명시적으로 근거화된 성별 제외 조건을 우선"
+        ),
+        value_surfaces=(
+            ("female", ("여성", "여자", "female")),
+            ("male", ("남성", "남자", "male")),
         ),
     ),
 )
@@ -2551,6 +2595,27 @@ def _rebuild_collection(original: Any, values: list[Any]) -> Any:
     return original
 
 
+def _rule_value_polarities(
+    query: str, rule: ExclusionReconciliationRule
+) -> dict[str, set[str]]:
+    """등록된 표면형의 원문 span별 명시 극성을 canonical 값으로 모은다.
+
+    같은 값이 실제로 포함과 제외 양쪽에 명시되면 두 극성을 모두 보존한다. 그 경우는 자동 정리 대상이
+    아니라 진짜 의미 충돌이며, 후속 semantic AST 게이트가 사용자 확인을 요청해야 한다.
+    """
+
+    polarities: dict[str, set[str]] = {}
+    for canonical, surfaces in rule.value_surfaces:
+        if canonical not in rule.allowed_values:
+            continue
+        for surface in surfaces:
+            for span in _value_token_spans(surface, query):
+                resolved = _resolve_value_polarity(query, surface, value_span=span)
+                if resolved.polarity != "unknown":
+                    polarities.setdefault(canonical, set()).add(resolved.polarity)
+    return polarities
+
+
 def _reconcile_grounded_exclusion(
     query: str,
     plan: dict[str, Any],
@@ -2560,9 +2625,10 @@ def _reconcile_grounded_exclusion(
 ) -> None:
     """Remove only ungrounded includes paired with a grounded exclusion.
 
-    Exclusions are never removed.  Scalar mode clears one unmentioned include;
-    collection mode removes only allowed include values absent from the source,
-    preserving mentioned and unknown values plus the original container type.
+    Exclusions are never removed.  Scalar mode clears one unmentioned include or a same-value include whose
+    source span is explicitly exclude-only; collection mode applies the same invariant per value.  A value that
+    is explicitly included and excluded remains untouched so the semantic conflict gate can fail closed.
+    Other mentioned and unknown values plus the original container type are preserved.
     Missing/malformed paths are ignored and no intermediate plan objects are
     created.  The function deliberately makes no inference for unregistered
     fields and exits safely for malformed plan data.
@@ -2584,11 +2650,20 @@ def _reconcile_grounded_exclusion(
         if not (excluded & mentioned):
             return
 
+        explicit_polarities = _rule_value_polarities(query, rule)
+
+        def _is_explicit_exclude_only(value: Any) -> bool:
+            return (
+                isinstance(value, str)
+                and value in excluded
+                and explicit_polarities.get(value) == {"exclude"}
+            )
+
         replacement: Any
         if rule.include_mode == "scalar":
             if not isinstance(included, str) or included not in rule.allowed_values:
                 return
-            if included in mentioned:
+            if included in mentioned and not _is_explicit_exclude_only(included):
                 return
             replacement = rule.clear_value
         elif rule.include_mode == "collection":
@@ -2603,7 +2678,7 @@ def _reconcile_grounded_exclusion(
                 if not (
                     isinstance(value, str)
                     and value in rule.allowed_values
-                    and value not in mentioned
+                    and (value not in mentioned or _is_explicit_exclude_only(value))
                 )
             ]
             if len(remaining) == len(original_values):
@@ -4391,6 +4466,10 @@ def _resolve_query_plan_candidates(
 ) -> dict[str, Any]:
     plan = plan_resolver.resolve_plan_candidates(candidates)
     _attach_candidate_source_requirements(plan, source_query, candidates)
+    # 후보 병합은 서로 다른 슬롯(target_user.gender / exclude.gender)을 독립적으로 합치므로 LLM·rules 중
+    # 하나가 극성을 중복 제출하면 같은 값의 포함+제외가 만들어질 수 있다. 후보가 모두 모인 이 단일 지점에서
+    # 원문 span의 명시 극성을 적용한다. 실제로 양쪽을 명시한 문장은 건드리지 않아 후속 충돌 게이트가 막는다.
+    _reconcile_deterministic_member_exclusions(source_query, plan)
     return plan
 
 
@@ -9163,6 +9242,7 @@ _AGG_UNIT_TOKEN_RE = re.compile(r"\d[\d,]*\s*(?:억|천만|백만|만|천)?\s*(�
 # 집계 범위(grain): 한 주문 내 / 동일 상품별 / 회원 누적.
 _AGG_SCOPE_PER_ORDER_RE = re.compile(r"한\s*주문|한\s*번에|한번에|주문당|주문\s*당|주문별|주문\s*별|1회\s*주문")
 _AGG_SCOPE_PER_PRODUCT_RE = re.compile(r"동일\s*상품|같은\s*상품|동일한\s*상품|상품별|상품\s*별|동일\s*제품|같은\s*제품")
+_AGG_SCOPE_PER_BRAND_RE = re.compile(r"동일한?\s*브랜드|같은\s*브랜드|브랜드별|브랜드\s*별")
 # 범위(scope) 필터: 브랜드/카테고리. '특정/어떤/모든' 등은 값 미지정 자리표시자다.
 _BRAND_SCOPE_RE = re.compile(r"(?P<val>[가-힣A-Za-z0-9]+)\s*브랜드")
 _CATEGORY_SCOPE_RE = re.compile(r"(?P<val>[가-힣A-Za-z0-9]+)\s*카테고리")
@@ -9172,6 +9252,7 @@ _SCOPE_PLACEHOLDER_VALUES = {"특정", "어떤", "모든", "해당", "일부", "
 # 자리에 이 수식어가 잡히면 scope 로 쓰지 않는다('서로 다른 브랜드' → BRAND_NAME='다른' 오필터 방지).
 # 자리표시자('특정 브랜드')와 달리 clarification 대상도 아니다 — 애초에 값을 묻는 표현이 아니기 때문이다.
 _SCOPE_DISTINCT_MODIFIERS = {"다른", "여러", "다양", "다양한", "각기", "각각", "가지각색", "서로"}
+_SCOPE_GROUPING_MODIFIERS = {"같은", "동일", "동일한"}
 # 디멘션 '가짓수(distinct)' 의도 표지 — 지표 스펙의 distinct_of 게이트에 쓴다.
 _DISTINCT_INTENT_RE = re.compile(r"서로\s*다른|각기\s*다른|각각\s*다른|여러\s*가지|여러|다양한|가짓수|종류별|서로다른")
 # 가짓수를 셀 때 함께 쓰이는 일반 계수 단위. distinct 디멘션 지표는 이 단위들을 단위 불일치로 보지 않는다
@@ -9185,10 +9266,14 @@ def _clause_primary_unit(clause: str) -> str | None:
 
 
 def _extract_aggregation_scope(clause: str) -> tuple[str, str]:
-    """절의 집계 grain(per_member/per_order/per_product)을 판정하고, grain 표지 어구를 절에서 제거한 사본을
+    """절의 집계 grain(per_member/per_order/per_product/per_brand)을 판정하고, grain 표지 어구를 절에서 제거한 사본을
     함께 돌려준다. 표지 제거는 '한 번에'가 한글 수사 정규화로 '1번'이 돼 개수 단위로 오인되는 것을 막는다.
     반드시 한글 수사 정규화 전(원문)에 호출한다('한 번에'/'한 주문'을 그대로 봐야 하므로)."""
-    for scope_name, pattern in (("per_product", _AGG_SCOPE_PER_PRODUCT_RE), ("per_order", _AGG_SCOPE_PER_ORDER_RE)):
+    for scope_name, pattern in (
+        ("per_product", _AGG_SCOPE_PER_PRODUCT_RE),
+        ("per_brand", _AGG_SCOPE_PER_BRAND_RE),
+        ("per_order", _AGG_SCOPE_PER_ORDER_RE),
+    ):
         match = pattern.search(clause)
         if match is not None:
             cleaned = clause[: match.start()] + " " + clause[match.end():]
@@ -9207,7 +9292,7 @@ def _clause_scope(clause: str) -> dict[str, str]:
         if match is None:
             continue
         value = match.group("val")
-        if value in _SCOPE_DISTINCT_MODIFIERS:
+        if value in _SCOPE_DISTINCT_MODIFIERS or value in _SCOPE_GROUPING_MODIFIERS:
             continue
         scope[key] = value
     return scope
@@ -12391,6 +12476,22 @@ def _resolve_value_polarity(
     )
 
 
+def _gender_polarity_signals(text: str) -> set[str]:
+    """성별 값의 원문 극성을 ``canonical:include|exclude`` 신호로 정규화한다.
+
+    명시 cue가 없는 단순 성별 언급은 기존 실행 의미와 같이 include로 본다. 따라서 재작성·스코프
+    분리가 ``여성 제외``를 단순 ``여성``으로 바꾸면 exclude 신호 소실로 감지된다.
+    """
+
+    signals: set[str] = set()
+    for surface, canonical in _GENDER_SURFACE_TO_CANONICAL.items():
+        for span in _value_token_spans(surface, text or ""):
+            resolved = _resolve_value_polarity(text or "", surface, value_span=span)
+            polarity = "include" if resolved.polarity == "unknown" else resolved.polarity
+            signals.add(f"{canonical}:{polarity}")
+    return signals
+
+
 def _is_exclusion_context(query: str, matched_text: str, match_type: str) -> bool:
     """기존 정규화 호출부용 wrapper. 동일 값이 반복되면 마지막 명시 극성을 우선한다."""
 
@@ -15051,6 +15152,37 @@ def _walk_dict_values(value: Any, key: str) -> list[Any]:
     return found
 
 
+def _targeting_fallback_schema_tables(
+    query_plan: dict[str, Any],
+    schema_path: Path,
+) -> set[str]:
+    """자유 SQL 폴백에 보여줄 최소 물리 스키마 범위.
+
+    테이블 설명만 주던 경로를 실제 컬럼 메타데이터로 보강한다. 특히 집계 지표는 metric_id+grain을
+    카탈로그 검증 capability로 되짚어 정확한 소스 테이블을 고른다.
+    """
+    tables = {_member_table()}
+    target_user = query_plan.get("target_user") if isinstance(query_plan.get("target_user"), dict) else {}
+    capabilities = _targeting_aggregate_capabilities(schema_path)
+    for condition in target_user.get("aggregate_conditions") or []:
+        if not isinstance(condition, dict):
+            continue
+        metric_id = str(condition.get("metric_id") or "")
+        scope = str(condition.get("aggregation_scope") or "per_member")
+        scope_spec = ((capabilities.get(metric_id) or {}).get("scopes") or {}).get(scope)
+        if isinstance(scope_spec, dict) and scope_spec.get("table"):
+            tables.add(str(scope_spec["table"]))
+    for table in _walk_dict_values(query_plan.get("dimension_filters") or [], "table"):
+        if isinstance(table, str) and table:
+            tables.add(table)
+    if target_user.get("purchase_date") or target_user.get("purchase_object"):
+        order_config = _order_count_targets_config()
+        tables.add(str(order_config.get("table") or "CRM_SL_ORDERHEADERMALL"))
+    if target_user.get("cart_aggregate") or query_plan.get("cart_context"):
+        tables.add(str(_cart_targets_registry().get("table") or "ODS_MALL_OMS_CART"))
+    return tables
+
+
 def _llm_aggregation_response_errors(payload: dict[str, Any]) -> list[dict[str, Any]]:
     """LLM의 자기진술을 신뢰하지 않되 구조화 응답 계약 자체는 엄격히 검사한다."""
     errors: list[dict[str, Any]] = []
@@ -15090,8 +15222,119 @@ def _member_condition_predicate(canonical: str) -> str | None:
     return _member_activity_predicate(days) if isinstance(days, int) else None
 
 
-def _targeting_expression_tool_schema() -> dict[str, Any]:
-    return targeting_expression_json_schema(_entity_set_config(), member_condition_canonicals())
+def _targeting_aggregate_capabilities(
+    schema_path: Path = DEFAULT_SCHEMA_PATH,
+) -> dict[str, dict[str, Any]]:
+    """카탈로그로 물리 바인딩까지 증명된 구매 집계 지표만 타겟팅 IR 어휘로 연다.
+
+    LLM에는 metric_id와 허용 grain만 보이고 테이블·컬럼은 보이지 않는다. 레지스트리의 의미 매핑과
+    schema_catalog의 실제 존재·타입이 모두 맞는 조합만 capability가 되므로, ``QTY``처럼 다른 팩트의
+    동명·유사 컬럼을 모델이 골라 주문상세에 붙이는 표현은 IR에서 만들 수 없다.
+    """
+    config = _aggregate_targets_config()
+    metrics = config.get("metrics") if isinstance(config.get("metrics"), dict) else {}
+    schema_columns = load_schema_columns(schema_path)
+    column_types = load_column_types(schema_path)
+    join_column = str(config.get("join_column") or "MEMBER_NO")
+    date_column = str(config.get("date_column") or "ORDER_DATE")
+    capabilities: dict[str, dict[str, Any]] = {}
+    grain_columns = {
+        "per_member": None,
+        "per_order": "ORDER_ID",
+        "per_product": "PRODUCT_ID",
+        "per_brand": "BRAND_ID",
+    }
+    for metric_id, metric in metrics.items():
+        if not isinstance(metric, dict) or _metric_column_on_product(metric):
+            continue
+        column = metric.get("column")
+        if not isinstance(column, str) or not column or metric.get("expression"):
+            continue
+        scopes: dict[str, dict[str, str | None]] = {}
+        for scope, grain_column in grain_columns.items():
+            table = (
+                _PRODUCT_SCOPE_TABLE
+                if scope in {"per_product", "per_brand"}
+                else str(metric.get("table") or config.get("table") or "CRM_SL_ORDERHEADERMALL")
+            )
+            catalog_columns = schema_columns.get(table.casefold(), set())
+            required = {join_column.casefold(), column.casefold()}
+            if grain_column:
+                required.add(grain_column.casefold())
+            if date_column:
+                required.add(date_column.casefold())
+            if not required <= catalog_columns:
+                continue
+            agg = str(metric.get("agg") or "SUM").upper()
+            if agg != "COUNT" and column_types.get(table.casefold(), {}).get(column.casefold()) != "numeric":
+                continue
+            scopes[scope] = {
+                "table": table,
+                "column": column,
+                "join_column": join_column,
+                "date_column": date_column or None,
+                "grain_column": grain_column,
+            }
+        if scopes:
+            capabilities[str(metric_id)] = {
+                "relation": "purchase",
+                "label": str(metric.get("ko_label") or metric_id),
+                "scopes": scopes,
+            }
+    return capabilities
+
+
+def _targeting_expression_tool_schema(
+    schema_path: Path = DEFAULT_SCHEMA_PATH,
+) -> dict[str, Any]:
+    return targeting_expression_json_schema(
+        _entity_set_config(),
+        member_condition_canonicals(),
+        _targeting_aggregate_capabilities(schema_path),
+    )
+
+
+def _targeting_aggregate_threshold_predicate(
+    aggregate: dict[str, Any],
+    schema_path: Path = DEFAULT_SCHEMA_PATH,
+) -> str | None:
+    """카탈로그 검증 capability의 metric_id를 기존 주문 집계 컴파일러로 렌더한다."""
+    if not isinstance(aggregate, dict):
+        return None
+    metric_id = str(aggregate.get("metric_id") or "")
+    scope = str(aggregate.get("aggregation_scope") or "")
+    capability = _targeting_aggregate_capabilities(schema_path).get(metric_id)
+    if not isinstance(capability, dict) or scope not in (capability.get("scopes") or {}):
+        return None
+    config = _aggregate_targets_config()
+    metric = (config.get("metrics") or {}).get(metric_id)
+    if not isinstance(metric, dict):
+        return None
+    operator = aggregate.get("operator")
+    threshold = aggregate.get("threshold")
+    if operator not in {"=", ">", ">=", "<", "<="} or not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
+        return None
+    purchase_date = None
+    period = aggregate.get("period")
+    if isinstance(period, str) and period.strip():
+        purchase_date = parse_calendar_window(period.strip())
+    if purchase_date is None:
+        purchase_date = calendar_window_from_parts(aggregate.get("year"), aggregate.get("month"))
+    window_days = aggregate.get("windowDays")
+    window_days = window_days if isinstance(window_days, int) and not isinstance(window_days, bool) and window_days > 0 else None
+    subquery = _aggregate_member_subquery(
+        config,
+        metric,
+        str(operator),
+        threshold,
+        window_days,
+        "",
+        purchase_date=purchase_date,
+        aggregation_scope=scope,
+    )
+    if not isinstance(subquery, str) or not subquery.strip():
+        return None
+    return f"{_member_alias()}.{config.get('join_column', 'MEMBER_NO')} IN {subquery.rstrip()}"
 
 
 # IR 근거로 넣을 노드 종류 — 어휘·값 계열만 넣는다. schema_table/sql_example 같은 물리·SQL 노드는
@@ -15151,6 +15394,7 @@ def _build_llm_targeting_ir_candidate(
     query_plan: dict[str, Any],
     llm_model: str,
     context_nodes: list[dict[str, Any]] | None = None,
+    schema_path: Path = DEFAULT_SCHEMA_PATH,
 ) -> dict[str, Any] | None:
     """LLM 에게 SQL 이 아니라 타겟팅 IR 을 받아 결정론 컴파일한다(1.5티어 폴백).
 
@@ -15168,12 +15412,21 @@ def _build_llm_targeting_ir_candidate(
     canonicals = member_condition_canonicals()
     if not config or not canonicals:
         return None
-    schema = _targeting_expression_tool_schema()
+    aggregate_capabilities = _targeting_aggregate_capabilities(schema_path)
+    schema = _targeting_expression_tool_schema(schema_path)
     vocabulary = {
         "member_filter": {name: meta.get("terms", [])[:4] for name, meta in canonicals.items()},
         "relations": sorted(str(name) for name in (config.get("relations") or {})),
         "entities": sorted(str(name) for name in (config.get("entities") or {})),
         "measures": sorted(str(name) for name in (config.get("measures") or {})),
+        "aggregate_metrics": {
+            metric_id: {
+                "label": spec.get("label"),
+                "relation": spec.get("relation"),
+                "aggregation_scopes": sorted((spec.get("scopes") or {}).keys()),
+            }
+            for metric_id, spec in aggregate_capabilities.items()
+        },
     }
     evidence = _targeting_ir_evidence(context_nodes)
     prompt_lines = [
@@ -15182,6 +15435,9 @@ def _build_llm_targeting_ir_candidate(
         "- 스키마에 열거된 어휘(member_filter/relations/entities/measures)만 사용한다. 없는 값은 만들지 않는다.",
         "- 원문에 있는 조건만 넣는다. 성별·연령·지역 등을 임의로 추가하지 않는다.",
         "- '가장 많이 팔린 상품 N개' 같은 순위 집합은 relation.entitySet 으로 표현한다.",
+        "- 회원별 지표 임계값은 aggregate_threshold로 표현한다. 테이블·컬럼명은 쓰지 않고 "
+        "aggregate_metrics의 metric_id만 고른다. '같은 브랜드에서 2개 이상 구매'는 "
+        "total_item_quantity + per_brand + >= 2다.",
         "- 원문의 기간은 반드시 옮긴다. 절대 기간('2019년 3월', '2019년 2분기')은 period 에 원문 그대로 넣고,"
         " 상대 기간('최근 90일')은 windowDays 에 넣는다. 월을 빼고 연도만 넣으면 안 된다.",
         "- 회원 상태(정상/휴면) 기본 정책과 결과 컬럼은 시스템이 붙이므로 표현식에 넣지 않는다.",
@@ -15241,7 +15497,7 @@ def _build_llm_targeting_ir_candidate(
         expression = payload.get("expression")
         if isinstance(expression, dict):
             try:
-                validate_targeting_expression(expression, config, canonicals)
+                validate_targeting_expression(expression, config, canonicals, aggregate_capabilities)
             except TargetingExpressionError as exc:
                 _write_rag_llm_log("llm_targeting_ir_invalid", {"query": query, "error": str(exc), "attempt": attempt})
                 messages += [
@@ -15249,7 +15505,7 @@ def _build_llm_targeting_ir_candidate(
                     {"role": "user", "content": f"표현식이 규칙을 위반했습니다: {exc}. 스키마와 어휘를 지켜 다시 작성하세요."},
                 ]
                 continue
-            candidate = _compile_targeting_ir_candidate(expression)
+            candidate = _compile_targeting_ir_candidate(expression, schema_path=schema_path)
             if candidate is not None and evidence:
                 # 응답/디버그에서 이 후보의 해석 근거를 되짚을 수 있게 함께 싣는다(SQL 에는 영향 없음).
                 candidate["targeting_ir_evidence"] = evidence
@@ -15259,7 +15515,11 @@ def _build_llm_targeting_ir_candidate(
     return None
 
 
-def _compile_targeting_ir_candidate(expression: dict[str, Any]) -> dict[str, Any] | None:
+def _compile_targeting_ir_candidate(
+    expression: dict[str, Any],
+    *,
+    schema_path: Path = DEFAULT_SCHEMA_PATH,
+) -> dict[str, Any] | None:
     """검증된 타겟팅 IR → SQL 후보. 회원 투영·상태 정책은 여기(컴파일러)가 소유한다.
 
     생성 주체(LLM/규칙/테스트)와 무관하게 같은 계약을 강제하려고 분리했다 — 표현식이 무엇이든
@@ -15267,11 +15527,15 @@ def _compile_targeting_ir_candidate(expression: dict[str, Any]) -> dict[str, Any
     """
     config = _entity_set_config()
     canonicals = member_condition_canonicals()
+    aggregate_capabilities = _targeting_aggregate_capabilities(schema_path)
     try:
-        validate_targeting_expression(expression, config, canonicals)
+        validate_targeting_expression(expression, config, canonicals, aggregate_capabilities)
         predicate = compile_targeting_expression(
             expression, config,
             member_predicate=_member_condition_predicate,
+            aggregate_predicate=lambda aggregate: _targeting_aggregate_threshold_predicate(
+                aggregate, schema_path
+            ),
             member_alias=_member_alias(),
             member_key=_member_key_column(),
             relative_date=_member_dialect().char8_cutoff,
@@ -15342,15 +15606,19 @@ def _build_llm_sql_fallback_candidate(
         aggregation_request = None
         aggregation_request_errors = []
         aggregation_schema_context: list[dict[str, Any]] = []
+        referenced_tables: set[str] = set()
+        if schema_path is not None:
+            referenced_tables.update(_targeting_fallback_schema_tables(query_plan, schema_path))
         if isinstance(aggregation_request_payload, dict) and schema_path is not None:
             aggregation_request, aggregation_request_errors = parse_aggregation_request(
                 aggregation_request_payload, schema_path, dialect=_member_dialect().name
             )
-            referenced_tables = {
+            referenced_tables.update({
                 str(value)
                 for value in _walk_dict_values(aggregation_request_payload, "table")
                 if isinstance(value, str) and value
-            }
+            })
+        if schema_path is not None and referenced_tables:
             aggregation_schema_context = SchemaMetadata.load(schema_path).prompt_context(referenced_tables)
         # 스키마 사실(회원 테이블/키/상태 술어/코드값 예시)과 방언은 레지스트리·어댑터에서 렌더한다 —
         # 프롬프트에 직접 박으면 DB 스왑 시 프롬프트도 고쳐야 한다(docs/operations/db_portability_audit.md §4-C).
@@ -15404,7 +15672,9 @@ def _build_llm_sql_fallback_candidate(
                     if target_entity == "customer"
                     else "- 일반 집계 결과에는 요청하지 않은 segment_label이나 회원 컬럼을 추가하지 않는다."
                 ),
-                "- 컨텍스트에 없는 테이블/컬럼을 지어내지 않는다. 확실한 SQL 을 만들 수 없으면 {\"sql\": null, \"explanation\": \"이유\"} 를 반환한다.",
+                "- aggregation_schema_metadata에 없는 테이블/컬럼을 지어내지 않는다. table_catalog의 설명은 "
+                "테이블 탐색용일 뿐 컬럼 존재 근거가 아니다. 확실한 SQL을 만들 수 없으면 "
+                "{\"sql\": null, \"explanation\": \"이유\"}를 반환한다.",
                 "- 테이블 요약의 ⚠️(0행/미적재) 경고가 있는 테이블은 조건 판정 기준으로 쓰지 않는다(빈 테이블 anti-join 은 전원 매칭 오류).",
                 "자연어 조건 추출(SQL 변환 전에 반드시 수행):",
                 "- extracted_conditions 에 다음 8개 항목을 명시적으로 추출한다: "
@@ -16809,6 +17079,49 @@ def _semantic_ir_blocking_sql_result(
     }
 
 
+def _unresolved_source_blocking_sql_result(
+    unresolved: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """실행 슬롯으로 귀결되지 않은 원문 조건은 SQL·IR·자유 SQL 모든 생성 경로를 닫는다."""
+    questions = _unique_strings([
+        str(item.get("reason") or item.get("label") or item.get("condition") or "요청 조건을 확인해 주세요.")
+        for item in unresolved
+        if isinstance(item, dict)
+    ]) or ["실행 조건으로 확정되지 않은 요청이 있습니다. 조건을 확인해 주세요."]
+    reason = "query_plan_required_conditions_missing"
+    return {
+        "sql": None,
+        "blocked_sql": None,
+        "target_connection": None,
+        "target_dialect": None,
+        "selected": None,
+        "candidates": [],
+        "candidate_count": 0,
+        "condition_tokens": [],
+        "required_conditions": [],
+        "input_validation": {
+            "is_satisfied": False,
+            "missing_conditions": copy.deepcopy(unresolved),
+            "clarification_questions": questions,
+        },
+        "missing_input_conditions": copy.deepcopy(unresolved),
+        "clarification_questions": questions,
+        "semantic_verification": {"ran": False},
+        "delivery_validation": {
+            "is_satisfied": False,
+            "failure_reason": reason,
+            "semantic_issues": [],
+        },
+        "llm_fallback_used": False,
+        "generation_source": None,
+        "confidence": _failed_sql_confidence(reason),
+        "is_success": False,
+        "failure_reason": reason,
+        "interpretation_status": "needs_clarification",
+        "unresolved_source_conditions": copy.deepcopy(unresolved),
+    }
+
+
 def _compiled_entity_set_condition(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     """Return an entity-set node only when the deterministic compiler completes it.
 
@@ -16854,6 +17167,28 @@ def _unresolved_source_condition_is_deterministically_resolved(
         )
     if item.get("source") == "llm_semantic_ir" and path:
         return _semantic_missing_field_resolution(query_plan, path) is not None
+    if item.get("source") == "llm_semantic_ir" and not path:
+        # V3 모델이 이미 ``target_user.gender=female``로 근거화한 "여자만 추출"을 동시에
+        # "성별 제외가 불명확"이라는 path 없는 unresolved로 제출한 실제 장애를 정리한다. path가
+        # 없다고 무조건 버리면 진짜 미해결 요구까지 지워지므로, 원문 evidence의 값+극성을 결정론으로
+        # 다시 읽고 최종 include/exclude 슬롯이 그 신호를 전부 소유할 때만 해소한다.
+        evidence = item.get("condition") or item.get("source_text")
+        if isinstance(evidence, str) and evidence.strip():
+            signals = _gender_polarity_signals(evidence)
+            if signals:
+                target_user = query_plan.get("target_user") if isinstance(query_plan.get("target_user"), dict) else {}
+                exclude = query_plan.get("exclude") if isinstance(query_plan.get("exclude"), dict) else {}
+                excluded = {
+                    str(value) for value in (exclude.get("gender") or [])
+                    if isinstance(value, str)
+                }
+                return all(
+                    (polarity == "include" and target_user.get("gender") == canonical)
+                    or (polarity == "exclude" and canonical in excluded)
+                    for canonical, polarity in (
+                        signal.split(":", 1) for signal in signals
+                    )
+                )
     return False
 
 
@@ -16976,7 +17311,13 @@ def build_sql_result(
     elif not isinstance(query_plan.get("output_contract"), dict):
         _attach_query_output_contract(original_query or query, query_plan)
     semantic_requirements.verify_source_requirements(query_plan)
-    _refresh_unresolved_source_conditions(original_query or query, query_plan)
+    unresolved_source_conditions = _refresh_unresolved_source_conditions(
+        original_query or query, query_plan
+    )
+    if unresolved_source_conditions:
+        # 미해결 조건 때문에 결정론 후보가 사라진 뒤 ``not candidates`` 분기로 자유 SQL이 다시
+        # 호출되면 fail-close가 우회된다. 생성 후보를 만들기 전에 명시적으로 종료한다.
+        return _unresolved_source_blocking_sql_result(unresolved_source_conditions)
     condition_tokens = build_verified_condition_tokens(query_plan)
     input_validation = validate_required_input_conditions(query_plan, condition_tokens)
     required_conditions = required_sql_conditions(query_plan)
@@ -16992,7 +17333,8 @@ def build_sql_result(
         and query_plan.get("intent") in ("recommend_campaign", "find_user_segment")
     ):
         candidate = _build_llm_targeting_ir_candidate(
-            original_query or query, query_plan, llm_model, context_nodes=context_nodes
+            original_query or query, query_plan, llm_model,
+            context_nodes=context_nodes, schema_path=schema_path,
         )
         if candidate is not None and describe_targeting_expression(candidate["targeting_expression"]):
             structured_ir_candidate = candidate
@@ -17088,7 +17430,8 @@ def build_sql_result(
             # 원문 문장을 넘긴다 — 이 시점의 query 는 검색용으로 canonical 토큰이 덧붙은 확장 질의라
             # 그대로 주면 모델이 사람 문장이 아닌 토큰 나열을 해석하게 된다(간헐 실패의 원인).
             llm_candidate = _build_llm_targeting_ir_candidate(
-                original_query or query, query_plan, llm_model, context_nodes=context_nodes
+                original_query or query, query_plan, llm_model,
+                context_nodes=context_nodes, schema_path=schema_path,
             )
         if llm_candidate is None and not member_unsupported:
             # 자유 SQL 폴백은 종전대로 '후보 없음/집계' 경로에서만 쓴다.
@@ -20906,7 +21249,11 @@ def _member_summary_threshold_subquery(
 
 _PRODUCT_SCOPE_TABLE = "CRM_SL_ORDERDETAILMALL"  # 상품 단위 컬럼(PRODUCT_ID/ORDER_QTY/PAYMENT_AMT/DC_AMT) 보유
 _PRODUCT_MASTER_TABLE = "CRM_CM_PRODUCT"         # 상품 속성(BRAND_NAME/CATEGORY*) 보유
-_AGG_GRAIN_COLUMN = {"per_order": "ORDER_ID", "per_product": "PRODUCT_ID"}
+_AGG_GRAIN_COLUMN = {
+    "per_order": "ORDER_ID",
+    "per_product": "PRODUCT_ID",
+    "per_brand": "BRAND_ID",
+}
 
 
 def _metric_column_on_product(metric: dict[str, Any]) -> bool:
@@ -20948,7 +21295,8 @@ def _aggregate_member_subquery(
     """회원별 집계 조건 서브쿼리(GROUP BY <회원키>[, grain] HAVING <집계식> <연산자> <임계값>)를 만든다.
 
     지표 소스: ①회원 요약 컬럼(스냅샷, 기간창·grain·scope 없을 때만), ②집계식(expression 템플릿),
-    ③agg+column. **aggregation_scope**: per_member(회원 누적)·per_order(주문별)·per_product(상품별) — grain
+    ③agg+column. **aggregation_scope**: per_member(회원 누적)·per_order(주문별)·per_product(상품별)·
+    per_brand(브랜드별) — grain
     컬럼을 GROUP BY 에 추가한다. **scope**: 브랜드/카테고리면 상품 마스터를 조인(CRM_SL_ORDERDETAILMALL D
     JOIN CRM_CM_PRODUCT P)해 그 범위 안에서만 집계한다. **product_scope**({value,kind}): 상품 자유텍스트
     ('기저귀')를 6컬럼 LIKE 로 같은 상품 마스터 조인 위에 얹어 그 상품 범위 안에서만 집계한다('기저귀를
@@ -20972,8 +21320,9 @@ def _aggregate_member_subquery(
     metric_on_product = _metric_column_on_product(metric)
     needs_product_join = needs_scope or metric_on_product
     # scope/grain 이 있으면 상품 단위 테이블(D)로 계산한다(PRODUCT_ID/ORDER_QTY 등 보유). 별칭 접두어 결정.
-    table = _PRODUCT_SCOPE_TABLE if (needs_product_join or aggregation_scope == "per_product") else (metric.get("table") or config.get("table", "CRM_SL_ORDERHEADERMALL"))
-    use_alias = needs_product_join
+    detail_grain = aggregation_scope == "per_brand"
+    table = _PRODUCT_SCOPE_TABLE if (needs_product_join or aggregation_scope in {"per_product", "per_brand"}) else (metric.get("table") or config.get("table", "CRM_SL_ORDERHEADERMALL"))
+    use_alias = needs_product_join or detail_grain
     tp = "D." if use_alias else ""
     # 회원키/기간/grain 은 주문 상세(D), 지표 컬럼만 상품 마스터(P) — 접두어를 분리해 소유 테이블을 지킨다.
     mp = "P." if metric_on_product else tp
@@ -21088,8 +21437,8 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
         # 지표 보정(반품 차감 등)이 붙은 조건은 보정된 집계식으로 컴파일한다(_adjusted_metric).
         metric, _applied_adjustments = _adjusted_metric(metrics[condition["metric_id"]], condition.get("adjustments"))
         condition_scope = condition.get("aggregation_scope", "per_member")
-        # per_product/per_order grain('동일 상품'·'한 주문에')은 grain 이 이미 상품 범위를 표현하므로 상품
-        # 스코프 LIKE 를 얹지 않는다(충돌). per_member 조건만 상품별로 편다; 상품이 없으면 스코프 1개(None).
+        # per_product/per_order/per_brand grain('동일 상품'·'한 주문에'·'같은 브랜드')은 grain 이 이미
+        # 범위를 표현하므로 상품 스코프 LIKE 를 얹지 않는다(충돌). per_member 조건만 상품별로 편다.
         cond_scopes = product_scopes if (condition_scope == "per_member" and product_scopes) else [None]
         for cond_product_scope in cond_scopes:
             alias = f"AGG{alias_index}"

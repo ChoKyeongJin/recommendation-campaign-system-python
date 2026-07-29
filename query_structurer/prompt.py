@@ -127,10 +127,23 @@ def build_campaign_query_plan_v3_user_prompt(input: QueryStructuringInput) -> st
                 "요구는 추측하지 말고 unresolved에 기록한다. SQL, 테이블, 컬럼은 생성하지 않는다."
             ),
             (
+                "포함과 제외는 상호배타 슬롯이다. '여성 제외', '휴면 빼고', '특정 관심사가 아닌'처럼 값에 "
+                "제외·부정 표현이 붙으면 대응 exclude 슬롯에만 넣고 동일한 target_user 포함 슬롯은 null 또는 "
+                "빈 배열로 둔다. 스키마에 대응 exclude 슬롯이 없으면 긍정으로 뒤집지 말고 unresolved에 기록한다. "
+                "원문이 같은 값을 포함과 제외 양쪽에 실제로 명시한 경우에만 양쪽에 기록한다."
+            ),
+            (
                 "날짜·숫자·퍼센트·비교 연산자의 값은 위 literal bindings만 신뢰한다. semantic_ir의 "
                 "operation은 값을 다시 쓰지 말고 literal_id를 baseline/current/threshold/comparison 역할에 "
                 "연결한다. 필요한 literal이 없으면 값을 추론하지 말고 status=needs_clarification과 "
                 "missing_fields를 반환한다. 지원하지 않는 연산은 status=unsupported로 반환한다."
+            ),
+            (
+                "숫자 뒤 한국어 단위는 의미의 일부이며 절대 바꾸지 않는다. number_with_unit binding의 "
+                "semantic_unit을 그대로 사용한다: 개=item_quantity(상품 수량 합계), 회/번/건=order_count"
+                "(서로 다른 주문 수), 종/종류=distinct_product_count(서로 다른 상품 수). binding과 실행 슬롯이 "
+                "있으면 같은 값을 missing_fields로 다시 요구하지 않는다. '같은/동일 브랜드'는 브랜드명이 "
+                "'같은'이라는 필터가 아니라 회원별·브랜드별 그룹에서 임계값을 검사하는 per_brand 조건이다."
             ),
             (
                 "두 개의 date_window literal이 원문 순서로 제시되고 두 기간 사이의 증가/감소를 묻는다면, "

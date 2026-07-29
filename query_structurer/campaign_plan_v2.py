@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from entity_set import derived_set_ast_error
+import targeting_ir
 
 
 CAMPAIGN_QUERY_PLAN_VERSION = "2.1"
@@ -104,7 +105,9 @@ _TARGET_USER_SCHEMA: dict[str, Any] = {
         "purchase_inactivity": _nullable({"type": "object"}),
         "birthday_target": _nullable({"type": "object"}),
         "signup_target": _nullable({"type": "object"}),
-        "aggregate_conditions": {"type": "array", "items": {"type": "object"}},
+        "aggregate_conditions": copy.deepcopy(
+            targeting_ir.SLOT_SHAPES["aggregate_conditions"].schema
+        ),
         "profile_date_conditions": {"type": "array", "items": {"type": "object"}},
         "campaign_responses": {"type": "array", "items": {"type": "object"}},
         "campaign_response_frequency": _nullable({"type": "object"}),

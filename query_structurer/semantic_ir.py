@@ -26,6 +26,18 @@ _COMPARISON_RE = re.compile(
     "|".join(re.escape(surface) for surface, _canonical in _COMPARISON_TERMS)
 )
 _PERCENT_RE = re.compile(r"(?<![\d.])(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>%|퍼센트|프로)")
+COUNTER_LITERAL_RE = re.compile(
+    r"(?<![\d.])(?P<value>\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?P<unit>종류|개|회|번|건|종)(?![가-힣A-Za-z0-9])"
+)
+COUNTER_UNIT_SEMANTICS = {
+    "개": "item_quantity",
+    "회": "order_count",
+    "번": "order_count",
+    "건": "order_count",
+    "종": "distinct_product_count",
+    "종류": "distinct_product_count",
+}
 _NUMBER_RE = re.compile(r"(?<![\d.])\d+(?:\.\d+)?(?![\d.])")
 
 
@@ -137,7 +149,10 @@ def extract_literal_bindings(
 ) -> list[dict[str, Any]]:
     """Extract value atoms without assigning business meaning between them.
 
-    Dates, numbers, percentages, and comparison operators are application-owned.
+    Dates, counter-bearing numbers, percentages, and comparison operators are
+    application-owned. Korean counters are semantic literals: ``개`` means item
+    quantity, ``회/번/건`` means order count, and ``종/종류`` means distinct
+    product count. The LLM may not rewrite one counter into another.
     The LLM may only connect the returned IDs to semantic roles; it cannot submit
     replacement values in the semantic operation payload.
     """
@@ -187,6 +202,22 @@ def extract_literal_bindings(
         if not _overlaps(match.start(), match.end(), occupied):
             value = _number(match.group("value"))
             append("percentage", match.start(), match.end(), value, {"value": value, "unit": "percent"})
+
+    for match in COUNTER_LITERAL_RE.finditer(query):
+        if not _overlaps(match.start(), match.end(), occupied):
+            value = _number(match.group("value").replace(",", ""))
+            unit = match.group("unit")
+            append(
+                "number_with_unit",
+                match.start(),
+                match.end(),
+                value,
+                {
+                    "value": value,
+                    "surface_unit": unit,
+                    "semantic_unit": COUNTER_UNIT_SEMANTICS[unit],
+                },
+            )
 
     comparison_map = dict(_COMPARISON_TERMS)
     for match in _COMPARISON_RE.finditer(query):

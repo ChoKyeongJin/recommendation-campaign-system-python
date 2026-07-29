@@ -53,6 +53,26 @@ def test_explicit_positive_gender_is_preserved() -> None:
     assert plan["target_user"]["gender"] == "female"
 
 
+def test_same_gender_include_is_cleared_when_source_is_exclude_only() -> None:
+    plan = _gender_plan(include="female", exclude=["female"])
+
+    graph_rag._reconcile_deterministic_member_exclusions("여자만 빼줘", plan)
+
+    assert plan["target_user"]["gender"] is None
+    assert plan["exclude"]["gender"] == ["female"]
+
+
+def test_same_gender_real_include_and_exclude_remains_a_conflict() -> None:
+    plan = _gender_plan(include="female", exclude=["female"])
+
+    graph_rag._reconcile_deterministic_member_exclusions(
+        "여성은 포함하고 여성은 제외해줘", plan
+    )
+
+    assert plan["target_user"]["gender"] == "female"
+    assert plan["exclude"]["gender"] == ["female"]
+
+
 def test_unmentioned_excluded_value_does_not_clear_include() -> None:
     plan = _gender_plan()
 

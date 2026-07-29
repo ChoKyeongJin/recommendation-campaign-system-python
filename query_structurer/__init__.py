@@ -33,6 +33,8 @@ from .structurer import (
     LLMQueryStructurer,
 )
 from .semantic_ir import (
+    COUNTER_LITERAL_RE,
+    COUNTER_UNIT_SEMANTICS,
     SEMANTIC_IR_LLM_JSON_SCHEMA,
     SEMANTIC_IR_STATUSES,
     empty_semantic_ir,
@@ -48,6 +50,8 @@ from .types import (
 )
 
 __all__ = [
+    "COUNTER_LITERAL_RE",
+    "COUNTER_UNIT_SEMANTICS",
     "CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA",
     "CAMPAIGN_QUERY_PLAN_V2_TOOL",
     "CAMPAIGN_QUERY_PLAN_VERSION",

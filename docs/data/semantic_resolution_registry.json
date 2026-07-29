@@ -95,6 +95,29 @@
       "reason": "deterministic_metric_trend_owns_purchase_periods"
     },
     {
+      "id": "aggregate.purchase_count_threshold",
+      "aliases": [
+        "purchase_buy_count",
+        "purchase_count",
+        "buy_count",
+        "item_quantity",
+        "purchase_quantity",
+        "order_count",
+        "distinct_product_count",
+        "구매개수",
+        "구매수량",
+        "구매횟수",
+        "상품종류수"
+      ],
+      "evidence": {
+        "kind": "path",
+        "path": "target_user.aggregate_conditions",
+        "validator": "aggregate_count_threshold",
+        "resolved_by": "target_user.aggregate_conditions"
+      },
+      "reason": "deterministic_aggregate_condition_owns_purchase_count"
+    },
+    {
       "id": "entity_ranking.purchase_object",
       "aliases": ["target_user.purchase_object", "purchase_object", "purchase_objects", "purchase_product", "purchased_product", "product", "product_id", "product_name", "상품", "제품"],
       "evidence": {"kind": "entity_path", "path": "entity", "validator": "non_empty_string", "source_span": "entity", "resolved_by": "target_user.entity_set_condition.derived_set_ast"},

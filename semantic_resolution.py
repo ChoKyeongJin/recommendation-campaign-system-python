@@ -137,6 +137,20 @@ def _valid_value(value: Any, validator: str) -> bool:
                 for item in value.get("comparisons", [])
             )
         )
+    if validator == "aggregate_count_threshold":
+        return bool(
+            isinstance(value, list)
+            and any(
+                isinstance(item, Mapping)
+                and item.get("metric_id") in {
+                    "order_count", "total_item_quantity", "distinct_product_count",
+                }
+                and item.get("operator") in {">=", ">", "<=", "<", "="}
+                and isinstance(item.get("threshold"), (int, float))
+                and not isinstance(item.get("threshold"), bool)
+                for item in value
+            )
+        )
     raise SemanticResolutionRegistryError(f"unsupported semantic evidence validator: {validator}")
 
 
@@ -204,6 +218,7 @@ def _validate_registry(registry: Any) -> dict[str, Any]:
     supported_kinds = {"path", "composite_path", "dimension_group", "entity_path"}
     supported_validators = {
         "non_empty", "non_empty_string", "positive_integer", "calendar_window", "relative_change",
+        "aggregate_count_threshold",
     }
     for index, requirement in enumerate(registry["requirements"]):
         if not isinstance(requirement, dict):
