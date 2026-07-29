@@ -40,6 +40,7 @@ CONTAINERS = plan_decisions.AUDITED_CONTAINERS
 # 판정·능력 점검은 조건이 바뀌면 따라 바뀌므로, 스냅샷에 넣으면 같은 사실을 두 번 비교하게 된다.
 DERIVED_PLAN_KEYS = frozenset({
     "capability_check",       # 능력 점검 결과
+    "detected_intent",        # 입력 조건에서 계산된 분석 라우팅 힌트
     "member_policy",          # 회원 정책 판정
     "output_contract",        # 출력 계약(컬럼/그레인)
     "selected_route",         # 선택된 라우트
@@ -94,6 +95,7 @@ def unclassified_plan_keys(plan: dict[str, Any]) -> list[str]:
 # "이건 파생이 아니라 사용자가 말한 조건이다" 라는 선언이다).
 KNOWN_CONDITION_PLAN_KEYS = frozenset({
     "intent",
+    "condition_evaluations",
     "result_limit",
     "dimension_filters",
     "computed_metrics",

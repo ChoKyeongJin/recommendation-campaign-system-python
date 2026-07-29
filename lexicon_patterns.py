@@ -45,6 +45,10 @@ _CODE_FALLBACK: dict[str, Any] = {
         "member_noun_informal": ["유저"],
         "member_noun_honorific": ["고객님"],
         "member_noun_role": ["사람", "구매자", "소비자"],
+        # 조건 판정 IR의 의미 표지. 낱말은 데이터가 소유하고, 코드에는 조합 구조만 둔다.
+        "identity_same": ["동일", "동일한", "같은", "똑같은"],
+        "simultaneity": ["동시", "동시에", "함께"],
+        "count_result_noun": ["수", "수량", "인원", "인원수", "명수"],
         # 크기 방향어(랭킹 정렬 방향).
         "direction_high": ["높은", "많은", "큰", "상위"],
         "direction_low": ["낮은", "적은", "작은", "하위"],

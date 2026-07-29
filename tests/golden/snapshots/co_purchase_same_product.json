@@ -3,7 +3,72 @@
     "objective": "purchase"
   },
   "plan": {
-    "intent": "find_user_segment",
+    "condition_evaluations": [
+      {
+        "aggregation": {
+          "function": "sum",
+          "measure": "order_quantity"
+        },
+        "bindings": {
+          "columns": {
+            "member_no": "MEMBER_NO",
+            "order_date": "ORDER_DATE",
+            "order_id": "ORDER_ID",
+            "order_quantity": "ORDER_QTY",
+            "product_id": "PRODUCT_ID"
+          },
+          "fact_alias": "D",
+          "fact_table": "CRM_SL_ORDERDETAILMALL",
+          "member_alias": "B",
+          "member_table": "CRM_MB_BASEINFO"
+        },
+        "capability": "same_product_same_order_quantity_v1",
+        "comparison": {
+          "operator": "gte",
+          "value": 2
+        },
+        "condition_result": {
+          "distinct": true,
+          "entity": "member",
+          "key": "member_no"
+        },
+        "decision_target": {
+          "entity": "member",
+          "key": "member_no"
+        },
+        "evaluation_scope": {
+          "entity": "purchase_order_detail",
+          "time_range": {
+            "field": "order_date",
+            "from": "20190301",
+            "to": "20190331"
+          }
+        },
+        "final_result": {
+          "aggregation": {
+            "alias": "CUSTOMER_COUNT",
+            "field": "member_no",
+            "function": "count_distinct"
+          },
+          "unit": "scalar"
+        },
+        "grouping_unit": {
+          "entity": "order_product",
+          "keys": [
+            "member_no",
+            "order_id",
+            "product_id"
+          ]
+        },
+        "id": "same_product_co_purchase",
+        "measure": {
+          "entity": "purchase_order_detail",
+          "field": "order_quantity"
+        },
+        "source_text": "2019년 3월에 같은 상품을 동시 구매한 고객 수"
+      }
+    ],
+    "intent": "analyze_aggregation",
     "semantic_conditions": [
       {
         "domain": "purchase",

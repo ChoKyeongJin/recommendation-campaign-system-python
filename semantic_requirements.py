@@ -52,6 +52,7 @@ SOURCE_REQUIREMENTS_DIGEST_KEY = "source_requirements_digest"
 # campaign_constraints 는 컨테이너 전체가 의미 슬롯이므로 별도 allow-list 없이 비어 있지 않은 값을 기록한다.
 _PLAN_REQUIREMENT_SLOTS = frozenset({
     "aggregation_request",
+    "condition_evaluations",
     "computed_metrics",
     "dimension_filters",
     "group_ranking_target",

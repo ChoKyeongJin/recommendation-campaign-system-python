@@ -109,6 +109,16 @@ import segment_semantics
 import lexicon_llm
 import semantic_requirements
 import compiler_strategies
+import condition_evaluation_ir
+from condition_evaluation_ir import (
+    PLAN_KEY as CONDITION_EVALUATIONS_KEY,
+    build_same_product_co_purchase_evaluation,
+    compile_evaluation as compile_condition_evaluation,
+    detects_same_product_co_purchase,
+    requests_member_count,
+    validate_compiled_sql as validate_condition_evaluation_sql,
+    validate_evaluations as validate_condition_evaluations,
+)
 from query_structurer import (
     CAMPAIGN_QUERY_PLAN_V2_TOOL,
     CAMPAIGN_QUERY_PLAN_V3_TOOL,
@@ -2374,6 +2384,7 @@ def _finalize_deterministic_query_plan(
     query: str, plan: dict[str, Any], sql_schema: Path
 ) -> None:
     """LLM 필요 여부를 판단하기 전에 모든 결정론 의미 후처리를 완료한다."""
+    _apply_condition_evaluation_ir(query, plan)
     plan["query_semantics"] = {
         "tokens": classify_query_tokens(query),
         "extreme": extract_extreme_semantics(query),
@@ -2385,6 +2396,66 @@ def _finalize_deterministic_query_plan(
     _reconcile_cart_aggregate_ownership(plan)
     _attach_query_output_contract(query, plan)
     plan["complexity"] = classify_query_complexity(plan)
+
+
+def _apply_condition_evaluation_ir(query: str, plan: dict[str, Any]) -> None:
+    """서로 다른 판정/결과 grain을 일반 구매 조건보다 먼저 구조화한다.
+
+    현재 실행이 검증된 조합은 동일 주문·동일 상품의 수량 합계 조건을 판정한 뒤 고유 회원 수를
+    반환하는 capability 하나다. 결과 단위까지 원문에서 확인되지 않으면 임의 회원목록/숫자로
+    바꾸지 않고 IR을 만들지 않는다. 후속 source coverage가 이를 unresolved로 봉인한다.
+    """
+    if not detects_same_product_co_purchase(query):
+        return
+    existing = plan.get(CONDITION_EVALUATIONS_KEY)
+    if isinstance(existing, list) and existing:
+        return
+    if not requests_member_count(query):
+        return
+    target_user = plan.setdefault("target_user", {})
+    evaluation = build_same_product_co_purchase_evaluation(
+        query,
+        target_user.get("purchase_date") if isinstance(target_user.get("purchase_date"), dict) else None,
+    )
+    plan[CONDITION_EVALUATIONS_KEY] = [evaluation]
+    plan["intent"] = "analyze_aggregation"
+    plan["detected_intent"] = {
+        "query_type": "conditional_aggregate",
+        "result_shape": "scalar",
+        "target_entity": "member",
+        "metric": "distinct_member_count",
+    }
+    plan["selected_route"] = "condition_evaluation_sql"
+    plan["capability_check"] = {
+        "endpoint": "/target-sql",
+        "query_type": "conditional_aggregate",
+        "result_shape": "scalar",
+        "passed": True,
+        "reason": None,
+    }
+    plan_decisions.record(
+        plan,
+        filter_name="lexicon:condition_evaluation",
+        action=plan_decisions.SET,
+        slot=f"plan.{CONDITION_EVALUATIONS_KEY}",
+        reason="사전 표면어 조합을 검증된 다중-grain 조건 판정 capability로 구조화",
+        value=[evaluation],
+        evidence=query,
+    )
+    for slot, value in (
+        ("intent", plan["intent"]),
+        ("detected_intent", plan["detected_intent"]),
+        ("selected_route", plan["selected_route"]),
+        ("capability_check", plan["capability_check"]),
+    ):
+        plan_decisions.record(
+            plan,
+            filter_name="apply_condition_evaluation_ir",
+            action=plan_decisions.SET,
+            slot=f"plan.{slot}",
+            reason="조건 판정 IR에서 파생된 실행 라우팅/출력 형태",
+            value=value,
+        )
 
 
 _QUERY_PLAN_AUTHORITY_ENV = "QUERY_PLAN_AUTHORITY"
@@ -2900,6 +2971,10 @@ def _apply_entity_set_condition(query: str, plan: dict[str, Any]) -> None:
 @_audited_stage
 def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path) -> None:
     """Attach the deterministic aggregate contract and consume audience-only misclassification."""
+    # 판정 grain과 결과 grain을 분리한 닫힌 IR은 전용 컴파일러가 소유한다. 일반 분석 계약으로
+    # 재해석하면 주문·상품 그룹이 단일 COUNT(DISTINCT 회원)으로 평탄화된다.
+    if isinstance(plan.get(CONDITION_EVALUATIONS_KEY), list) and plan[CONDITION_EVALUATIONS_KEY]:
+        return
     # 기간 대 기간 지표 증감(metric_trend)은 두 기간의 회원별 집계를 비교해 '대상 회원 목록'을 내는
     # 오디언스 조건이다. 등록형 집계 계약에는 두 기간 비교 개념이 없어 이 조건을 담을 수 없으므로,
     # 분석 라우팅이 문장을 가져가면('주문건수' 같은 지표어가 집계 질문으로 읽혀) 조건이 통째로 남아
@@ -3976,6 +4051,8 @@ def _source_authoritative_stages(
          "복원된 조건을 집계 축 필터 표기로 정규화한다"),
         ("purchase_aggregation", lambda _query, plan: _normalize_purchase_aggregation_request(plan),
          "복원된 구매 조건을 집계 요구사항 IR 로 정규화한다"),
+        ("condition_evaluation", _apply_condition_evaluation_ir,
+         "판정 범위·그룹 grain·최종 결과 grain을 원문에서 함께 복원한다"),
         ("campaign_response_frequency", _apply_campaign_response_frequency_filter,
          "재작성이 반응 '횟수'·기간 어구를 흔든다"),
         ("campaign_buy_amount", _apply_campaign_buy_amount_filter,
@@ -4482,6 +4559,8 @@ def _build_rule_query_plan(
     # 판정을 게이트보다 먼저 남겨(게이트는 unsupported 가 있으면 양보) 어순 무관하게 일관되게 처리하고,
     # 논리식 리프(_compile_logical_leaf → _build_rule_query_plan)에서도 동일하게 동작하게 한다.
     _apply_coupon_semantics(query, plan)
+    # 서로 다른 판정/결과 grain을 일반 분석 및 미지원 게이트보다 먼저 닫힌 실행 IR로 승격한다.
+    _apply_condition_evaluation_ir(query, plan)
     # 모든 결정론 필터가 끝난 뒤 미지원 표현을 명시 표시한다(조용한 오답/빈결과 방지). member_metric_selection
     # 등 필터 결과를 봐야 하므로 반드시 필터 실행 후에 둔다.
     _apply_unsupported_intent_gate(query, plan)
@@ -5520,7 +5599,10 @@ def _attach_member_policy_contract(query: str, plan: dict[str, Any]) -> None:
 def _attach_query_output_contract(query: str, plan: dict[str, Any]) -> None:
     """질문의 기대 결과 단위와 API 결과 계약을 SQL 생성 전에 확정한다."""
     _normalize_aggregation_axis_filters(plan)
-    if isinstance(plan.get("aggregation_request"), dict) or plan.get("intent") == "analyze_aggregation":
+    if isinstance(plan.get(CONDITION_EVALUATIONS_KEY), list) and plan[CONDITION_EVALUATIONS_KEY]:
+        expected_grain = "analytical"
+        requires_member_id = False
+    elif isinstance(plan.get("aggregation_request"), dict) or plan.get("intent") == "analyze_aggregation":
         if isinstance(plan.get("aggregation_request"), dict):
             plan["intent"] = "analyze_aggregation"
         analytical = plan.get("analytical_intent") if isinstance(plan.get("analytical_intent"), dict) else {}
@@ -8140,6 +8222,8 @@ def _apply_unsupported_intent_gate(query: str, plan: dict[str, Any]) -> None:
     plan['unsupported']={reason,message,clarification} 를 남기면 build_sql_template_candidate 가 후보
     생성을 중단하고 build_sql_result 가 unsupported_reason/clarification 으로 명시 응답한다."""
     if plan.get("unsupported"):
+        return
+    if isinstance(plan.get(CONDITION_EVALUATIONS_KEY), list) and plan[CONDITION_EVALUATIONS_KEY]:
         return
     target_user = plan.get("target_user", {})
     compact = query.replace(" ", "")
@@ -15313,6 +15397,41 @@ def _refresh_unresolved_source_conditions(
         if isinstance(item, dict)
         and item.get("source") in {"llm_semantic_ir", "legacy_source_validator"}
     ]
+    evaluation_unresolved: list[dict[str, Any]] = []
+    evaluations = query_plan.get(CONDITION_EVALUATIONS_KEY)
+    if detects_same_product_co_purchase(original_query) and not (
+        isinstance(evaluations, list) and evaluations
+    ):
+        missing_path = "final_result" if not requests_member_count(original_query) else CONDITION_EVALUATIONS_KEY
+        evaluation_unresolved.append({
+            "id": "usr_" + hashlib.sha256(
+                f"{original_query}\0{missing_path}\0condition_evaluation".encode("utf-8")
+            ).hexdigest()[:16],
+            "path": missing_path,
+            "label": "동일 상품 동시 구매 조건",
+            "source_text": original_query,
+            "reason": (
+                "조건 판정 결과의 최종 결과 단위를 확정할 수 없습니다."
+                if missing_path == "final_result"
+                else "판정 범위·그룹화 단위·측정·집계·비교·최종 결과를 실행 IR로 완전하게 표현하지 못했습니다."
+            ),
+            "status": "unresolved",
+            "source": "condition_evaluation_ir",
+        })
+    elif isinstance(evaluations, list) and evaluations:
+        for issue in validate_condition_evaluations(evaluations):
+            evaluation_unresolved.append({
+                "id": "usr_" + hashlib.sha256(
+                    f"{original_query}\0{issue.path}\0{issue.code}".encode("utf-8")
+                ).hexdigest()[:16],
+                "path": issue.path,
+                "label": "조건 판정 IR 구성요소",
+                "source_text": original_query,
+                "reason": issue.message,
+                "code": issue.code,
+                "status": "unresolved",
+                "source": "condition_evaluation_ir",
+            })
     labels = _deterministic_dropped_conditions(original_query, query_plan)
     unresolved = [
         {
@@ -15327,7 +15446,8 @@ def _refresh_unresolved_source_conditions(
         }
         for index, label in enumerate(labels)
     ]
-    merged = preserved + [item for item in unresolved if item not in preserved]
+    merged = [*preserved, *evaluation_unresolved]
+    merged.extend(item for item in unresolved if item not in merged)
     query_plan["unresolved_source_conditions"] = merged
     return merged
 
@@ -15989,6 +16109,7 @@ def build_sql_result(
     # 호출자가 수동 plan을 넘기는 단위/통합 경로도 동일한 의미 추출·출력 계약을 거친다.
     # 파생 엔터티 집합이 소유한 슬롯은 여기서 마지막으로 회수한다 — 계획 이후 단계(변이 병합·조건
     # 재확정)가 순위 절의 어구를 오디언스 조건으로 되살리면 같은 어구가 두 번 컴파일된다.
+    _apply_condition_evaluation_ir(original_query or query, query_plan)
     _apply_entity_set_condition(original_query or query, query_plan)
     _guard_unparsed_entity_ranking(original_query or query, query_plan)
     _normalize_aggregation_axis_filters(query_plan)
@@ -15996,7 +16117,9 @@ def build_sql_result(
     _refresh_aggregation_request_validation(query_plan, schema_path)
     if not isinstance(query_plan.get("semantic_conditions"), list):
         _apply_core_membership_semantics(original_query or query, query_plan)
-    if not isinstance(query_plan.get("output_contract"), dict):
+    if query_plan.get(CONDITION_EVALUATIONS_KEY):
+        _attach_query_output_contract(original_query or query, query_plan)
+    elif not isinstance(query_plan.get("output_contract"), dict):
         _attach_query_output_contract(original_query or query, query_plan)
     semantic_requirements.verify_source_requirements(query_plan)
     _refresh_unresolved_source_conditions(original_query or query, query_plan)
@@ -16174,6 +16297,33 @@ def build_sql_result(
         analytics_warnings = [issue for issue in analytics_shape["issues"] if issue["severity"] == "warning"]
         if analytics_errors:
             validation = {**validation, "issues": [*validation["issues"], *analytics_errors], "is_valid": False}
+        condition_evaluation_validation: dict[str, Any] = {"ran": False, "valid": True, "errors": []}
+        evaluations = query_plan.get(CONDITION_EVALUATIONS_KEY)
+        if isinstance(evaluations, list) and evaluations:
+            evaluation_errors = [
+                issue
+                for evaluation in evaluations
+                if isinstance(evaluation, dict)
+                for issue in validate_condition_evaluation_sql(evaluation, candidate["sql"])
+            ]
+            condition_evaluation_validation = {
+                "ran": True,
+                "valid": not evaluation_errors,
+                "errors": [issue.to_dict() for issue in evaluation_errors],
+            }
+            candidate["condition_evaluation_validation"] = condition_evaluation_validation
+            if evaluation_errors:
+                validation = {
+                    **validation,
+                    "issues": [
+                        *validation["issues"],
+                        *[
+                            {"code": issue.code, "severity": "error", "message": issue.message}
+                            for issue in evaluation_errors
+                        ],
+                    ],
+                    "is_valid": False,
+                }
         aggregation_validation: dict[str, Any] = {"ran": False}
         if structured_aggregation is not None:
             aggregation_validation = validate_aggregation_sql(
@@ -16539,6 +16689,11 @@ def build_sql_result(
         # 일반 집계 요구사항 IR과 SQL AST의 강제 검증 결과. valid=false면 SQL은 출고·실행되지 않는다.
         "aggregation_request": query_plan.get("aggregation_request"),
         "aggregation_validation": (selected or {}).get("aggregation_validation", {"ran": False}),
+        # 판정 grain과 최종 결과 grain을 분리한 조건 IR 및 구조 보존 검증.
+        "condition_evaluations": query_plan.get(CONDITION_EVALUATIONS_KEY),
+        "condition_evaluation_validation": (selected or {}).get(
+            "condition_evaluation_validation", {"ran": False, "valid": True, "errors": []}
+        ),
         # QueryIntent의 기대 결과 shape·집계 함수·지표 컬럼·랭킹 방향/TOP 1 계약 검증.
         "intent_sql_contract": (selected or {}).get("intent_sql_contract", {"ran": False}),
         "metric_profile_validation": (selected or {}).get("metric_profile_validation", {"ran": False, "valid": True}),
@@ -16572,6 +16727,24 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
     campaign_constraints = query_plan.get("campaign_constraints", {})
     exclude = query_plan.get("exclude", {})
     intent = query_plan.get("intent")
+
+    for index, evaluation in enumerate(query_plan.get(CONDITION_EVALUATIONS_KEY) or []):
+        if not isinstance(evaluation, dict) or condition_evaluation_ir.validate_evaluation(evaluation):
+            continue
+        _add_token(
+            tokens,
+            f"{CONDITION_EVALUATIONS_KEY}[{index}]",
+            "condition_evaluation",
+            "gte",
+            2,
+            [
+                "GROUP BY D.MEMBER_NO, D.ORDER_ID, D.PRODUCT_ID",
+                "HAVING SUM(D.ORDER_QTY) >= 2",
+                "COUNT(DISTINCT M.MEMBER_NO)",
+            ],
+            ["CRM_SL_ORDERDETAILMALL", "CRM_MB_BASEINFO"],
+            ctes=["CONDITION_GROUPS", "QUALIFIED_MEMBERS"],
+        )
 
     gender = target_user.get("gender")
     if gender in GENDER_TERMS:
@@ -16720,6 +16893,7 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
     # already prove the same condition.
     if (
         not isinstance(query_plan.get("aggregation_request"), dict)
+        and not query_plan.get(CONDITION_EVALUATIONS_KEY)
         and isinstance(purchase_membership, dict)
         and purchase_membership.get("operator") == "exists"
         and purchase_membership.get("satisfied_by") != "aggregate_conditions"
@@ -17782,6 +17956,9 @@ def _sql_target_builder_registry() -> tuple[tuple[Any, frozenset[str]], ...]:
     먼저(EXISTS 빌더는 fact_join 신호에 양보). 빌더는 비해당이면 None 을 반환하고 다음으로 넘어간다.
     (런타임 호출이라 아래 빌더가 이 함수 정의보다 파일에서 나중에 나와도 된다.)"""
     return (
+        # 조건 판정 grain과 최종 결과 grain을 분리하는 닫힌 IR. 일반 집계보다 먼저 실행해
+        # 주문·상품 단위 HAVING이 회원 COUNT로 평탄화되지 않게 한다.
+        (build_condition_evaluation_sql_candidate, frozenset({"condition_evaluation"})),
         # 등록형 일반 집계: metric/dimension/filter IR을 결정론 SelectAst로 컴파일한다. 분석 의도에서
         # 회원 목록 빌더로 폴백하면 안 되므로 가장 먼저 두고, 비분석 플랜에서는 즉시 None을 반환한다.
         (build_analytical_aggregation_sql_candidate, frozenset()),
@@ -17829,6 +18006,59 @@ def _sql_target_builder_registry() -> tuple[tuple[Any, frozenset[str]], ...]:
     )
 
 
+def build_condition_evaluation_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """검증된 조건 판정 IR을 조건 그룹→판정 회원→최종 집계의 2단계 SQL로 만든다."""
+    evaluations = query_plan.get(CONDITION_EVALUATIONS_KEY)
+    if not isinstance(evaluations, list) or not evaluations:
+        return None
+    issues = validate_condition_evaluations(evaluations)
+    if issues:
+        unresolved = query_plan.setdefault("unresolved_source_conditions", [])
+        for issue in issues:
+            item = {
+                "path": issue.path,
+                "condition": "condition_evaluation",
+                "reason": issue.message,
+                "code": issue.code,
+                "source": "condition_evaluation_ir",
+                "status": "unresolved",
+            }
+            if item not in unresolved:
+                unresolved.append(item)
+        return None
+
+    sql, compile_issues = compile_condition_evaluation(
+        evaluations[0],
+        member_predicates=_member_policy_predicates(query_plan),
+    )
+    if sql is None or compile_issues:
+        unresolved = query_plan.setdefault("unresolved_source_conditions", [])
+        for issue in compile_issues:
+            unresolved.append({
+                "path": issue.path,
+                "condition": "condition_evaluation",
+                "reason": issue.message,
+                "code": issue.code,
+                "source": "condition_evaluation_ir",
+                "status": "unresolved",
+            })
+        return None
+    candidate = _sql_candidate(
+        "sql_template:condition_evaluation",
+        "조건 판정 grain과 최종 결과 grain 분리 SQL 템플릿",
+        1.0,
+        sql,
+        _template_tables(sql),
+        "sql_template",
+    )
+    candidate["condition_evaluation_validation"] = {
+        "ran": True,
+        "valid": True,
+        "capability": evaluations[0].get("capability"),
+    }
+    return candidate
+
+
 def _sql_target_builders() -> tuple[Any, ...]:
     """실CRM 타겟 SQL 빌더 목록(우선순위 순) — _sql_target_builder_registry 에서 파생."""
     return tuple(builder for builder, _owned in _sql_target_builder_registry())
@@ -17869,6 +18099,14 @@ def build_sql_template_candidate(query_plan: dict[str, Any]) -> dict[str, Any] |
     for builder in _sql_target_builders():
         name = getattr(builder, "__name__", str(builder))
         candidate = builder(query_plan)
+        # 의미 구성요소가 불완전하거나 지원 조합 검증에 실패한 경우, 다음의 더 단순한 빌더로
+        # 폴백하지 않는다. unresolved 자체가 실행 SQL 생성 차단 사유다.
+        if query_plan.get("unresolved_source_conditions"):
+            _record_sql_builder_decision(
+                query_plan, name, plan_decisions.UNSUPPORTED,
+                "미해결 소스 조건이 생겨 다른 빌더로의 의미 축소 폴백을 차단",
+            )
+            return None
         # 빌더가 무효 지표 등으로 plan 을 미지원 표시했으면 즉시 중단한다 — 다른 트랙으로 조용히 폴백 금지.
         if isinstance(query_plan.get("unsupported"), dict):
             _record_sql_builder_decision(
@@ -21303,6 +21541,22 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     campaign_constraints = query_plan.get("campaign_constraints", {})
     exclude = query_plan.get("exclude", {})
 
+    for index, evaluation in enumerate(query_plan.get(CONDITION_EVALUATIONS_KEY) or []):
+        if not isinstance(evaluation, dict):
+            continue
+        conditions.append(_condition(
+            f"{CONDITION_EVALUATIONS_KEY}[{index}]",
+            str(evaluation.get("capability") or "condition_evaluation"),
+            [],
+            all_terms=[
+                "CRM_SL_ORDERDETAILMALL",
+                "GROUP BY D.MEMBER_NO, D.ORDER_ID, D.PRODUCT_ID",
+                "HAVING SUM(D.ORDER_QTY) >= 2",
+                "SELECT DISTINCT MEMBER_NO",
+                "COUNT(DISTINCT M.MEMBER_NO)",
+            ],
+        ))
+
     gender = target_user.get("gender")
     if gender:
         conditions.append(
@@ -21382,6 +21636,7 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     purchase_membership = target_user.get("purchase_membership")
     if (
         not isinstance(query_plan.get("aggregation_request"), dict)
+        and not query_plan.get(CONDITION_EVALUATIONS_KEY)
         and isinstance(purchase_membership, dict)
         and purchase_membership.get("operator") == "exists"
         and purchase_membership.get("satisfied_by") != "aggregate_conditions"

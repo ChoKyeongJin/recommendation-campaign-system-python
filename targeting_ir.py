@@ -576,6 +576,16 @@ def _plan_dict(name: str) -> Callable[[dict[str, Any], frozenset[str]], list[dic
     return extract
 
 
+def _plan_dict_list(name: str) -> Callable[[dict[str, Any], frozenset[str]], list[dict[str, Any]]]:
+    """plan 최상위 객체 목록을 각각 독립 조건 IR 노드로 추출한다."""
+
+    def extract(plan: dict[str, Any], _behaviors: frozenset[str]) -> list[dict[str, Any]]:
+        values = plan.get(name)
+        return [value for value in values if isinstance(value, dict)] if isinstance(values, list) else []
+
+    return extract
+
+
 def _extract_signup(plan: dict[str, Any], _behaviors: frozenset[str]) -> list[dict[str, Any]]:
     tu = _tu(plan)
     signup = tu.get("signup_target")
@@ -646,6 +656,12 @@ def _cart_retention_ko(params: dict[str, Any]) -> str:
 # 가입 → 생일 → 최근로그인 → 미구매창 → 캠페인반응횟수 → 카트보관/유형 → 행동 → 상품/날짜 구매이력).
 CONDITION_SPECS: tuple[ConditionSpec, ...] = (
     # ── 회원 술어 계열(compile_member_target_conditions 가 컴파일; 신호도 그쪽 has_signal 이 담당) ──
+    ConditionSpec(
+        # 판정 grain과 최종 결과 grain이 다른 조건. 전용 2단계 컴파일러만 소유하며 일반 구매
+        # EXISTS/집계 빌더로 평탄화하지 않는다.
+        kind="condition_evaluation", fact="order", fact_join=True, signals_target=True,
+        extract=_plan_dict_list("condition_evaluations"),
+    ),
     ConditionSpec(
         kind="signup_target", fact="member", fact_join=False, signals_target=False,
         extract=_extract_signup,

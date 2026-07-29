@@ -245,6 +245,7 @@ CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA: dict[str, Any] = {
             },
         },
         "aggregation_request": _nullable({"type": "object"}),
+        "condition_evaluations": {"type": "array", "items": {"type": "object"}},
         "set_expressions": {"type": "array", "items": {"type": "object"}},
         "computed_metrics": {"type": "array", "items": {"type": "object"}},
         "result_limit": _nullable({"type": "integer", "minimum": 1}),
@@ -269,6 +270,7 @@ _APPLICATION_OWNED_PLAN_FIELDS = frozenset(
         QUERY_IDENTITY_DIGEST_KEY,
         "strict_source_coverage",
         "unresolved_source_conditions",
+        "condition_evaluations",
     }
 )
 

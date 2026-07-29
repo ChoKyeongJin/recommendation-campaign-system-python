@@ -126,11 +126,8 @@
     {
       "id": "co_purchase_same_product",
       "prompt": "2019년 3월에 같은 상품을 동시 구매한 고객 수",
-      "expect_slots": ["target_user.purchase_date", "plan.unresolved_source_conditions"],
-      "known_gap": {
-        "missing_slots": ["plan.unresolved_source_conditions"],
-        "reason": "'같은 상품을 동시 구매'(주문 그레인 공기)를 표현할 조건 IR 이 없다. 현재는 조건이 조용히 사라져 '2019년 3월 구매자 수'가 되고, 미해석 표시도 남지 않아 A/B/C 분류 큐에 잡히지 않는다. 새 capability(co_purchase) 또는 최소한 fail-close 표시가 필요하다."
-      }
+      "expect_slots": ["target_user.purchase_date", "plan.condition_evaluations"],
+      "note": "주문·상품 단위 조건 판정과 고유 회원 수 최종 집계를 서로 다른 grain으로 보존한다."
     }
   ]
 }
