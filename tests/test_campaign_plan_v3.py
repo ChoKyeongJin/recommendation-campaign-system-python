@@ -60,6 +60,14 @@ def _payload(query: str = "서울 여성 회원") -> dict:
                 "confidence": 0.99,
             }
         ],
+        "semantic_ir": {
+            "status": "resolved",
+            "operations": [],
+            "missing_fields": [],
+            "policy_applications": [],
+            "unsupported_operations": [],
+            "message": None,
+        },
         "unresolved": [],
     }
 

@@ -1,7 +1,6 @@
 {
   "plan": {
-    "intent": "find_user_segment",
-    "member_scope": "all"
+    "intent": "find_user_segment"
   },
   "schema_version": 1
 }

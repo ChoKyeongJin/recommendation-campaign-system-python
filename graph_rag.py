@@ -137,6 +137,7 @@ from query_structurer import (
     build_campaign_query_plan_v2_fallback,
     build_campaign_query_plan_v3_fallback,
     build_fallback,
+    materialize_semantic_operations,
     verify_campaign_query_identity,
     call_query_planner,
 )
@@ -2391,6 +2392,7 @@ def _finalize_deterministic_query_plan(
     }
     _apply_core_membership_semantics(query, plan)
     _apply_entity_set_condition(query, plan)
+    _reconcile_semantic_ir_with_execution_plan(plan)
     _guard_unparsed_entity_ranking(query, plan)
     _apply_analytical_intent(query, plan, sql_schema)
     _reconcile_cart_aggregate_ownership(plan)
@@ -5114,6 +5116,32 @@ def _coerce_llm_query_plan_candidate(
         coerced_set_expressions = [expression for expression in coerced_set_expressions if expression is not None]
         if coerced_set_expressions:
             plan["set_expressions"] = coerced_set_expressions
+    semantic_ir = candidate.get("semantic_ir")
+    literal_bindings = candidate.get("literal_bindings")
+    if isinstance(semantic_ir, dict) and isinstance(literal_bindings, list):
+        plan["semantic_ir"] = copy.deepcopy(semantic_ir)
+        plan["literal_bindings"] = copy.deepcopy(literal_bindings)
+        try:
+            semantic_slots = materialize_semantic_operations(
+                semantic_ir, literal_bindings
+            )
+        except (KeyError, TypeError, ValueError):
+            semantic_slots = {}
+        for name, value in semantic_slots.items():
+            shape = targeting_ir.SLOT_SHAPES.get(name)
+            allowed_vocab = (
+                _llm_slot_allowed().get(shape.allowed_key)
+                if shape is not None and shape.allowed_key
+                else None
+            )
+            coerced = (
+                shape.coerce(value, allowed=allowed_vocab)
+                if shape is not None
+                else None
+            )
+            if coerced is not None:
+                container = plan["target_user"] if shape.container == "target_user" else plan
+                container[name] = coerced
     # 구조화 슬롯도 후보의 정식 슬롯으로 제출한다. 적용 여부와 충돌은 resolver 한 곳에서만 정한다.
     unsupported_resolvers: list[dict[str, str]] = []
     for name, value in _coerce_llm_structured_conditions(candidate).items():
@@ -14275,6 +14303,17 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
     selected = sql_result.get("selected") or {}
     unsupported_labels = sql_result.get("unsupported_condition_labels", [])
 
+    if reason in {"semantic_ir_needs_clarification", "semantic_ir_unsupported"}:
+        semantic_ir = sql_result.get("semantic_ir") or query_plan.get("semantic_ir") or {}
+        message = semantic_ir.get("message") if isinstance(semantic_ir, dict) else None
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        return (
+            "필수 의미 조건을 확인해 주세요."
+            if reason == "semantic_ir_needs_clarification"
+            else "요청한 연산은 현재 지원하지 않습니다."
+        )
+
     # 명시적 미지원(쿠폰 건수/순위/비교/파생 등): 게이트가 만든 구체적 안내를 그대로 노출한다 — 무관한
     # 일반 조건 라벨('혜택 유형 조건')로 덮어쓰지 않는다(_UNSUPPORTED_INTENT_REASONS).
     if reason in _UNSUPPORTED_INTENT_REASONS:
@@ -14574,6 +14613,11 @@ def build_recommendation_api_response(
         "answer_mode": answer_response.get("mode"),
         "answer_failure_reason": answer_response.get("failure_reason"),
         "failure_reason": sql_result.get("failure_reason"),
+        "interpretation_status": (
+            sql_result.get("interpretation_status")
+            or (query_plan.get("semantic_ir") or {}).get("status")
+        ),
+        "semantic_ir": sql_result.get("semantic_ir") or query_plan.get("semantic_ir"),
         # 실패가 발생한 파이프라인 단계(어디서 막혔는지). {code,label,order,total,reason,pipeline}.
         # 성공이면 None — 프론트는 이 값이 있을 때만 "실패 단계" 배지·스텝퍼를 노출한다.
         "failure_stage": _classify_failure_stage(sql_result.get("failure_reason"), sql_result),
@@ -14603,6 +14647,8 @@ def build_recommendation_api_response(
 def _api_status(sql_result: dict[str, Any]) -> str:
     if sql_result.get("is_success"):
         return "success"
+    if sql_result.get("interpretation_status") in {"needs_clarification", "unsupported"}:
+        return str(sql_result["interpretation_status"])
     # 의미 검증 게이트 차단·명시적 미지원(쿠폰 건수/순위/비교/파생 등)은 '틀린 SQL' 이 아니라 '확인 필요' 다
     # — 재작성/입력 보완(예: 쿠폰 '사용 여부')으로 풀 수 있어 needs_clarification 으로 안내한다.
     if sql_result.get("failure_reason") in (
@@ -16366,6 +16412,201 @@ def _failed_sql_confidence(reason: str | None, *, execution_error: bool = False)
     }
 
 
+def _semantic_ir_blocking_sql_result(
+    query_plan: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Fail closed before SQL compilation for a non-executable semantic IR."""
+
+    semantic_ir = query_plan.get("semantic_ir")
+    if not isinstance(semantic_ir, dict):
+        return None
+    status = semantic_ir.get("status")
+    if status not in {"needs_clarification", "unsupported"}:
+        return None
+    missing_fields = [
+        str(field)
+        for field in semantic_ir.get("missing_fields", [])
+        if isinstance(field, str) and field.strip()
+    ]
+    message = semantic_ir.get("message")
+    if not isinstance(message, str) or not message.strip():
+        message = (
+            "필수 비교 조건을 확인해 주세요."
+            if status == "needs_clarification"
+            else "요청한 연산은 현재 지원하지 않습니다."
+        )
+    missing = [
+        _missing_input_condition(
+            f"semantic_ir.{field}", field, message
+        )
+        for field in missing_fields
+    ]
+    failure_reason = f"semantic_ir_{status}"
+    return {
+        "sql": None,
+        "blocked_sql": None,
+        "target_connection": None,
+        "target_dialect": None,
+        "selected": None,
+        "candidates": [],
+        "candidate_count": 0,
+        "condition_tokens": [],
+        "required_conditions": [],
+        "input_validation": {
+            "is_satisfied": False,
+            "missing_conditions": missing,
+            "clarification_questions": [message],
+        },
+        "missing_input_conditions": missing,
+        "clarification_questions": [message],
+        "semantic_verification": {"ran": False},
+        "llm_fallback_used": False,
+        "generation_source": None,
+        "confidence": _failed_sql_confidence(failure_reason),
+        "is_success": False,
+        "failure_reason": failure_reason,
+        "unsupported_reason": (
+            "semantic_ir_unsupported" if status == "unsupported" else None
+        ),
+        "interpretation_status": status,
+        "semantic_ir": copy.deepcopy(semantic_ir),
+    }
+
+
+def _read_non_empty_plan_path(query_plan: dict[str, Any], path: str) -> Any:
+    """Read a dotted execution-plan path, returning ``None`` for empty values."""
+
+    current: Any = query_plan
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return None if current in (None, "", [], {}) else current
+
+
+def _complete_calendar_window(value: Any) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and isinstance(value.get("from"), str)
+        and value["from"]
+        and isinstance(value.get("to"), str)
+        and value["to"]
+    )
+
+
+def _semantic_missing_field_resolution(
+    query_plan: dict[str, Any], field: str,
+) -> dict[str, str] | None:
+    """Return deterministic evidence that a model-declared field is resolved.
+
+    Direct plan slots are unambiguous.  A purchase date consumed by an entity-set
+    ranking is resolved only when slot-ownership provenance says that the exact
+    source condition was removed and the owning entity set has a complete window.
+    Merely finding some date elsewhere in the plan is deliberately insufficient.
+    """
+
+    normalized = field.strip()
+    direct_paths = [normalized] if "." in normalized else [
+        normalized,
+        f"target_user.{normalized}",
+        f"campaign_constraints.{normalized}",
+    ]
+    for path in direct_paths:
+        if _read_non_empty_plan_path(query_plan, path) is not None:
+            return {"field": normalized, "resolved_by": path, "reason": "grounded_plan_slot"}
+
+    if normalized.rsplit(".", 1)[-1] != "purchase_date":
+        return None
+    ownership = next(
+        (
+            item for item in (query_plan.get("superseded_conditions") or [])
+            if isinstance(item, dict)
+            and item.get("slot") == "target_user.purchase_date"
+            and item.get("owner") == "entity_set_condition"
+            and item.get("outcome") == "removed"
+        ),
+        None,
+    )
+    entity_set = (query_plan.get("target_user") or {}).get("entity_set_condition")
+    if not isinstance(entity_set, dict):
+        return None
+    window = entity_set.get("window")
+    if not _complete_calendar_window(window):
+        return None
+    spans = entity_set.get("spans") if isinstance(entity_set.get("spans"), dict) else {}
+    window_span = spans.get("window")
+    literal_match = next(
+        (
+            item for item in (query_plan.get("literal_bindings") or [])
+            if isinstance(item, dict)
+            and item.get("kind") == "date_window"
+            and isinstance(window_span, (list, tuple))
+            and len(window_span) == 2
+            and [item.get("start"), item.get("end")] == list(window_span)
+            and isinstance(item.get("normalized"), dict)
+            and item["normalized"].get("from") == window.get("from")
+            and item["normalized"].get("to") == window.get("to")
+        ),
+        None,
+    )
+    # There may be no superseded slot when the model omitted purchase_date
+    # entirely.  In that case exact source-span + normalized-window equality is
+    # equivalent ownership evidence and does not rely on lexical date guessing.
+    if ownership is None and literal_match is None:
+        return None
+    return {
+        "field": normalized,
+        "resolved_by": "target_user.entity_set_condition.window",
+        "reason": "ranking_window_owns_purchase_date",
+    }
+
+
+def _reconcile_semantic_ir_with_execution_plan(query_plan: dict[str, Any]) -> None:
+    """Clear stale LLM missing fields only when the final executable plan proves them.
+
+    The LLM-first plan is intentionally fail-closed, but deterministic enrichment
+    runs after candidate resolution and can ground a field the model called missing.
+    Keeping that stale status would reject a fully compilable plan before SQL
+    generation.  This reconciliation records its evidence in plan metadata and
+    leaves every unproved field blocking.
+    """
+
+    semantic_ir = query_plan.get("semantic_ir")
+    if not isinstance(semantic_ir, dict) or semantic_ir.get("status") != "needs_clarification":
+        return
+    missing_fields = [
+        str(field).strip()
+        for field in semantic_ir.get("missing_fields", [])
+        if isinstance(field, str) and field.strip()
+    ]
+    resolved: list[dict[str, str]] = []
+    remaining: list[str] = []
+    for field in missing_fields:
+        evidence = _semantic_missing_field_resolution(query_plan, field)
+        if evidence is None:
+            remaining.append(field)
+        else:
+            resolved.append(evidence)
+    if not resolved:
+        return
+
+    semantic_ir["missing_fields"] = remaining
+    if not remaining:
+        semantic_ir["status"] = "resolved"
+        semantic_ir["message"] = None
+    query_plan["semantic_ir_reconciliation"] = {
+        "resolved_fields": resolved,
+        "remaining_fields": remaining,
+    }
+    resolution = query_plan.get(plan_resolver.RESOLUTION_KEY)
+    if isinstance(resolution, dict) and isinstance(resolution.get("resolutions"), list):
+        resolution["resolutions"].append({
+            "path": "semantic_ir.missing_fields",
+            "action": "clear_deterministically_resolved",
+            "resolved": copy.deepcopy(resolved),
+        })
+
+
 def build_sql_result(
     graph: nx.Graph,
     query: str,
@@ -16386,7 +16627,11 @@ def build_sql_result(
     # 재확정)가 순위 절의 어구를 오디언스 조건으로 되살리면 같은 어구가 두 번 컴파일된다.
     _apply_condition_evaluation_ir(original_query or query, query_plan)
     _apply_entity_set_condition(original_query or query, query_plan)
+    _reconcile_semantic_ir_with_execution_plan(query_plan)
     _guard_unparsed_entity_ranking(original_query or query, query_plan)
+    semantic_ir_block = _semantic_ir_blocking_sql_result(query_plan)
+    if semantic_ir_block is not None:
+        return semantic_ir_block
     _normalize_aggregation_axis_filters(query_plan)
     _normalize_purchase_aggregation_request(query_plan)
     _refresh_aggregation_request_validation(query_plan, schema_path)

@@ -32,6 +32,14 @@ from .structurer import (
     LLMCampaignQueryPlanV3Structurer,
     LLMQueryStructurer,
 )
+from .semantic_ir import (
+    SEMANTIC_IR_LLM_JSON_SCHEMA,
+    SEMANTIC_IR_STATUSES,
+    empty_semantic_ir,
+    extract_literal_bindings,
+    materialize_semantic_operations,
+    validate_semantic_ir,
+)
 from .types import (
     QueryStructurer,
     QueryStructuringInput,
@@ -71,4 +79,10 @@ __all__ = [
     "validate_campaign_query_plan_v2",
     "validate_campaign_query_plan_v3",
     "verify_campaign_query_identity",
+    "SEMANTIC_IR_LLM_JSON_SCHEMA",
+    "SEMANTIC_IR_STATUSES",
+    "empty_semantic_ir",
+    "extract_literal_bindings",
+    "materialize_semantic_operations",
+    "validate_semantic_ir",
 ]

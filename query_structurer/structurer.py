@@ -185,7 +185,12 @@ class LLMCampaignQueryPlanV3Structurer:
                 "content": (
                     "너는 캠페인 요청의 의미 구조화기다. 사용자 원문에서 확인되는 의미만 "
                     "QueryPlan v3로 제출한다. SQL이나 물리 스키마를 만들지 않는다. 부정, 기간의 "
-                    "소유 대상, AND/OR 범위를 보존하고 불확실한 내용은 unresolved로 반환한다."
+                    "소유 대상, AND/OR 범위를 보존하고 불확실한 내용은 unresolved로 반환한다. "
+                    "missing_fields에는 이 질문의 결과를 계산하는 데 실제로 필수인 값만 넣는다. 고객 "
+                    "리스트 요청에 사용자가 요구하지 않은 캠페인 채널·혜택·상품·목표를 추가로 요구하지 "
+                    "않는다. 증가/감소 가까이 있는 퍼센트는 증감률 임계값이며 할인 혜택이 아니다. "
+                    "application-owned literal 두 날짜와 퍼센트·비교 연산자가 있으면 값을 다시 만들지 "
+                    "말고 period_over_period_change의 baseline/current/threshold/comparison으로 연결한다."
                 ),
             },
             {"role": "user", "content": build_campaign_query_plan_v3_user_prompt(input)},
@@ -196,7 +201,9 @@ class LLMCampaignQueryPlanV3Structurer:
             try:
                 response = self._complete(messages)
                 payload = attach_campaign_query_plan_v3_identity(
-                    json.loads(response), input.query
+                    json.loads(response),
+                    input.query,
+                    current_date=input.context.current_date,
                 )
                 result = validate_campaign_query_plan_v3(payload, query=input.query)
                 self._emit(
@@ -228,4 +235,6 @@ class LLMCampaignQueryPlanV3Structurer:
             "campaign_query_plan_v3_fallback",
             {"attempts": self._max_retries + 1, "last_error": last_error},
         )
-        return build_campaign_query_plan_v3_fallback(input.query)
+        return build_campaign_query_plan_v3_fallback(
+            input.query, current_date=input.context.current_date
+        )

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from .schema import STRUCTURED_QUERY_JSON_SCHEMA
+from .semantic_ir import extract_literal_bindings
 from .types import QueryStructuringInput
 
 
@@ -110,15 +111,45 @@ def build_campaign_query_plan_v3_user_prompt(input: QueryStructuringInput) -> st
         "timezone": input.context.timezone,
         "conversation_context": input.context.conversation_context,
     }
+    literal_bindings = extract_literal_bindings(
+        input.query, current_date=input.context.current_date
+    )
     return "\n\n".join(
         [
             "[User Query]\n" + input.query,
             "[Structuring Context]\n" + json.dumps(context, ensure_ascii=False, indent=2),
+            "[Application-owned Literal Bindings]\n"
+            + json.dumps(literal_bindings, ensure_ascii=False, indent=2),
             "응답은 submit_campaign_query_plan_v3 도구만 호출한다.",
             (
                 "원문을 다시 쓰지 말고 의미를 직접 구조화한다. 모든 채택 슬롯은 semantic_evidence에 "
                 "경로와 원문의 정확한 문자 구간을 남긴다. 스키마 또는 닫힌 어휘로 표현할 수 없는 "
                 "요구는 추측하지 말고 unresolved에 기록한다. SQL, 테이블, 컬럼은 생성하지 않는다."
+            ),
+            (
+                "날짜·숫자·퍼센트·비교 연산자의 값은 위 literal bindings만 신뢰한다. semantic_ir의 "
+                "operation은 값을 다시 쓰지 말고 literal_id를 baseline/current/threshold/comparison 역할에 "
+                "연결한다. 필요한 literal이 없으면 값을 추론하지 말고 status=needs_clarification과 "
+                "missing_fields를 반환한다. 지원하지 않는 연산은 status=unsupported로 반환한다."
+            ),
+            (
+                "두 개의 date_window literal이 원문 순서로 제시되고 두 기간 사이의 증가/감소를 묻는다면, "
+                "문법상 반대 근거가 없는 한 첫 기간을 baseline, 둘째 기간을 current로 연결한다. 이 경우 "
+                "baseline/current가 누락된 것이 아니다. 퍼센트와 비교 연산자 literal도 있으면 각각 "
+                "threshold/comparison으로 연결한다. 예: 구매 금액의 기간 대비 증감은 "
+                "kind=period_over_period_change, metric_id=purchase_amount로 표현한다."
+            ),
+            (
+                "고객 리스트·회원 명단처럼 결과가 회원 행이면, 조건 계산에 SUM/COUNT가 필요해도 intent는 "
+                "find_user_segment다. 집계 숫자나 그룹별 분석 행 자체를 요청한 경우에만 "
+                "analyze_aggregation을 사용한다."
+            ),
+            (
+                "missing_fields는 요청 결과를 계산하는 데 반드시 필요한 입력만 포함한다. 고객 목록을 "
+                "계산하는 데 캠페인 발송 채널·혜택·판매 상품·캠페인 목적은 필요하지 않으므로 사용자가 "
+                "직접 요구하지 않았다면 누락 필드로 만들지 않는다. '10% 이상 증가'의 10%는 할인율이 "
+                "아니라 증감률 임계값이므로 offer_type을 설정하지 않는다. 기간 대비 증감은 "
+                "target_user.purchase_date로 중복 표현하지 않고 semantic_ir operation만 사용한다."
             ),
             (
                 "선택 사항은 도구 스키마상 required-but-nullable이다. 해당 의미가 없으면 null 또는 빈 배열을 "

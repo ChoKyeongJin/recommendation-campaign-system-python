@@ -42,6 +42,7 @@ DERIVED_PLAN_KEYS = frozenset({
     "capability_check",       # 능력 점검 결과
     "detected_intent",        # 입력 조건에서 계산된 분석 라우팅 힌트
     "member_policy",          # 회원 정책 판정
+    "member_scope",           # '전체 회원 대상'인가 — output_contract.whole_target 에서 따라 나오는 판정
     "output_contract",        # 출력 계약(컬럼/그레인)
     "selected_route",         # 선택된 라우트
     "policy_constraints",     # 업무 정책에서 파생된 제약

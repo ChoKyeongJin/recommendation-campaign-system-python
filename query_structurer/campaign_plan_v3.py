@@ -11,6 +11,12 @@ from .campaign_plan_v2 import (
     CampaignQueryPlanValidationError,
     campaign_query_identity_digest,
 )
+from .semantic_ir import (
+    SEMANTIC_IR_LLM_JSON_SCHEMA,
+    empty_semantic_ir,
+    extract_literal_bindings,
+    validate_semantic_ir,
+)
 
 
 CAMPAIGN_QUERY_PLAN_V3_VERSION = "3.0"
@@ -54,6 +60,27 @@ def _strictify(schema: Any, *, required_here: bool = True) -> Any:
         return copy.deepcopy(schema)
 
     out = {key: copy.deepcopy(value) for key, value in schema.items()}
+    # OpenAI strict tools reject const/enum-only property schemas even though
+    # they are valid JSON Schema.  Infer the primitive type so every property
+    # has an explicit provider-compatible shape.
+    if "type" not in out and "const" in out:
+        const = out["const"]
+        out["type"] = (
+            "boolean" if isinstance(const, bool)
+            else "integer" if isinstance(const, int)
+            else "number" if isinstance(const, float)
+            else "string" if isinstance(const, str)
+            else "null" if const is None
+            else "object"
+        )
+    if "type" not in out and isinstance(out.get("enum"), list) and out["enum"]:
+        values = out["enum"]
+        if all(isinstance(value, str) for value in values):
+            out["type"] = "string"
+        elif all(isinstance(value, bool) for value in values):
+            out["type"] = "boolean"
+        elif all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+            out["type"] = "integer"
     for keyword in ("anyOf", "oneOf", "allOf"):
         if isinstance(out.get(keyword), list):
             out[keyword] = [_strictify(item) for item in out[keyword]]
@@ -120,8 +147,9 @@ def _build_llm_schema() -> dict[str, Any]:
         "type": "array",
         "items": _UNRESOLVED_ITEM_SCHEMA,
     }
+    properties["semantic_ir"] = copy.deepcopy(SEMANTIC_IR_LLM_JSON_SCHEMA)
     required = set(schema.get("required") or [])
-    required.update({"semantic_evidence", "unresolved"})
+    required.update({"semantic_evidence", "unresolved", "semantic_ir"})
     schema["required"] = [name for name in properties if name in required]
     return _strictify(schema)
 
@@ -142,10 +170,44 @@ CAMPAIGN_QUERY_PLAN_V3_TOOL: dict[str, Any] = {
 }
 
 
-def attach_campaign_query_plan_v3_identity(payload: Any, query: str) -> Any:
+def _normalize_unique_evidence_spans(payload: dict[str, Any], query: str) -> None:
+    """Repair only unambiguous model offsets; never invent evidence text."""
+
+    evidence = payload.get("semantic_evidence")
+    if not isinstance(evidence, list):
+        return
+    for item in evidence:
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            continue
+        text = item["text"]
+        start, end = item.get("start"), item.get("end")
+        if (
+            isinstance(start, int)
+            and isinstance(end, int)
+            and 0 <= start <= end <= len(query)
+            and query[start:end] == text
+        ):
+            continue
+        occurrences: list[int] = []
+        cursor = 0
+        while text and (found := query.find(text, cursor)) >= 0:
+            occurrences.append(found)
+            cursor = found + 1
+        if len(occurrences) == 1:
+            item["start"] = occurrences[0]
+            item["end"] = occurrences[0] + len(text)
+
+
+def attach_campaign_query_plan_v3_identity(
+    payload: Any,
+    query: str,
+    *,
+    current_date: str | None = None,
+) -> Any:
     if not isinstance(payload, dict):
         return payload
     enriched = copy.deepcopy(payload)
+    _normalize_unique_evidence_spans(enriched, query)
     enriched.update(
         {
             "schema_version": CAMPAIGN_QUERY_PLAN_V3_VERSION,
@@ -153,13 +215,20 @@ def attach_campaign_query_plan_v3_identity(payload: Any, query: str) -> Any:
             "original_query": query,
             "planning_query": query,
             "normalized_query": query,
+            "literal_bindings": extract_literal_bindings(
+                query, current_date=current_date
+            ),
         }
     )
     enriched[QUERY_IDENTITY_DIGEST_KEY] = campaign_query_identity_digest(enriched)
     return enriched
 
 
-def build_campaign_query_plan_v3_fallback(query: str) -> CampaignQueryPlanV3:
+def build_campaign_query_plan_v3_fallback(
+    query: str,
+    *,
+    current_date: str | None = None,
+) -> CampaignQueryPlanV3:
     payload = attach_campaign_query_plan_v3_identity(
         {
             "intent": "unknown",
@@ -171,6 +240,10 @@ def build_campaign_query_plan_v3_fallback(query: str) -> CampaignQueryPlanV3:
             "computed_metrics": [],
             "result_limit": None,
             "semantic_evidence": [],
+            "semantic_ir": empty_semantic_ir(
+                missing_fields=["semantic_interpretation"],
+                message="LLM 의미 구조화를 사용할 수 없습니다.",
+            ),
             "unresolved": [
                 {
                     "path": None,
@@ -180,6 +253,7 @@ def build_campaign_query_plan_v3_fallback(query: str) -> CampaignQueryPlanV3:
             ],
         },
         query,
+        current_date=current_date,
     )
     return CampaignQueryPlanV3(payload)
 
@@ -247,6 +321,38 @@ def validate_campaign_query_plan_v3(
         for item in unresolved
     ):
         raise CampaignQueryPlanValidationError("unresolved must be an array of objects")
+
+    literals = payload.get("literal_bindings")
+    if not isinstance(literals, list):
+        raise CampaignQueryPlanValidationError("literal_bindings must be an array")
+    seen_literal_ids: set[str] = set()
+    for index, item in enumerate(literals):
+        if not isinstance(item, dict):
+            raise CampaignQueryPlanValidationError(
+                f"literal_bindings[{index}] must be an object"
+            )
+        literal_id = item.get("id")
+        start, end = item.get("start"), item.get("end")
+        text = item.get("text")
+        if not isinstance(literal_id, str) or not literal_id or literal_id in seen_literal_ids:
+            raise CampaignQueryPlanValidationError(
+                f"literal_bindings[{index}].id must be unique"
+            )
+        seen_literal_ids.add(literal_id)
+        if not all(isinstance(value, int) and not isinstance(value, bool) for value in (start, end)):
+            raise CampaignQueryPlanValidationError(
+                f"literal_bindings[{index}] must contain integer start/end"
+            )
+        if not isinstance(text, str) or start < 0 or end < start or payload["original_query"][start:end] != text:
+            raise CampaignQueryPlanValidationError(
+                f"literal_bindings[{index}] span does not match original_query"
+            )
+    try:
+        validate_semantic_ir(
+            payload.get("semantic_ir"), literals, payload=payload
+        )
+    except ValueError as exc:
+        raise CampaignQueryPlanValidationError(str(exc)) from exc
 
     expected_digest = campaign_query_identity_digest(payload)
     if payload.get(QUERY_IDENTITY_DIGEST_KEY) != expected_digest:
