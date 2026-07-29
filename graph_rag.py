@@ -2011,13 +2011,15 @@ def normalize_prompt(
 ) -> dict[str, Any]:
     """다운스트림 파싱 전에 사용자 프롬프트를 타겟 조건 중심으로 정리/재작성한다.
 
-    style="targeting"(기본): LLM 이 구어체·오타·모호한 표현을 표준 타겟 용어로 재작성한다. 원문의
+    style="unresolved_only"(기본): 전체 문장을 재작성하지 않고 원문을 규칙·스키마 해석기에 넘긴다.
+      이후 단계에서 해석되지 않아 비어 있는 슬롯만 제한된 LLM fallback이 채운다.
+    style="targeting": LLM 이 구어체·오타·모호한 표현을 표준 타겟 용어로 재작성한다. 원문의
       타겟 조건은 추가·삭제 없이 보존하고, BFF 가 붙인 "발송 채널: ..." 지시는 원문 그대로 유지한다.
       재작성 결과(effective_query)가 실제 타겟 SQL·세그먼트 생성의 기준이 된다.
     style="conservative": 오타/띄어쓰기만 보수적으로 교정한다(기존 동작).
     style="off"/"none"/"rules" 또는 OPENAI_API_KEY 미설정/호출 실패 시 공백만 정리하는 규칙
       fallback 을 쓴다. 원문(original)은 항상 보존해 감사·표시에 사용한다.
-    재작성은 query_parser 와 무관하게 OPENAI_API_KEY 유무로 동작한다(전처리 단계이므로 분리).
+    targeting/conservative 재작성은 query_parser 와 무관하게 OPENAI_API_KEY 유무로 동작한다.
     반환: {original, normalized, summary, corrections, mode}.
     """
     llm_model = _fast_llm_model(llm_model)  # 재작성은 빠르고 정확한 모델 고정(느린 추론모델 분리)
@@ -2031,7 +2033,12 @@ def normalize_prompt(
         "targeting_label": "",
         "mode": "rules",
     }
-    resolved_style = (style or os.getenv("PROMPT_REWRITE_STYLE", "targeting")).casefold()
+    # Full-prompt rewriting can also touch conditions already resolved by rules/schema.
+    # Keep it opt-in; the default path preserves the prompt and lets downstream,
+    # fill-only LLM fallbacks handle only unresolved slots.
+    resolved_style = (style or os.getenv("PROMPT_REWRITE_STYLE", "unresolved_only")).casefold()
+    if resolved_style in {"unresolved_only", "unresolved-only", "unresolved"}:
+        return {**fallback, "mode": "rules_unresolved_only"}
     # 재작성 비활성(off/none/rules)이거나 LLM 사용 불가하면 공백 정리만 한다(원문 의미는 그대로).
     if resolved_style in {"off", "none", "rules"} or not os.getenv("OPENAI_API_KEY") or not rule_cleaned:
         return fallback
@@ -23891,8 +23898,8 @@ def _format_captured_prompt(captured: Any, cap: int = 2500) -> list[str]:
 # 근거로 그 단계가 동작하는지 사용자가 바로 알 수 있게. (정적 매핑 — 실제 로딩 경로는 코드 주석 참고.)
 _TRACE_STAGE_REFS: dict[int, tuple[dict[str, str], ...]] = {
     1: (
-        # 기본 style="targeting" 은 재작성 프롬프트를, conservative 모드만 정규화 프롬프트를 쓴다(normalize_prompt).
-        {"kind": "프롬프트", "name": "prompt_rewrite_system.txt"},
+        # 기본 unresolved_only는 원문을 보존한다. 아래 프롬프트는 명시적 targeting/conservative 모드에서만 쓴다.
+        {"kind": "프롬프트", "name": "prompt_rewrite_system.txt (targeting opt-in)"},
         {"kind": "프롬프트", "name": "prompt_normalize_system.txt (보수 모드)"},
         {"kind": "모델", "name": "{model}"},
     ),
