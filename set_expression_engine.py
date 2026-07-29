@@ -166,6 +166,18 @@ def _split_exclusion_clause(query: str) -> tuple[str, str | None]:
     split_match = re.search(r"(?P<left>.+?)(?:중에서|에서|중)\s*(?P<right>.+)$", before_marker)
     if split_match:
         return split_match.group("left").strip(" ,"), _strip_operand_suffix(split_match.group("right"))
+
+    # 범위 표지(쉼표·중에서)가 없어도 포함 표지가 있으면 그 뒤가 제외 대상이다("A는 포함하고 B는 제외해줘").
+    # 여기서 포기하고 query 전체를 include 로 돌려주면 제외 절이 통째로 사라져(포함 조건으로 흡수돼)
+    # 극성이 조용히 뒤집힌다 — 제외 표지가 존재하는 한 제외 절은 반드시 어딘가로 귀결돼야 한다.
+    include_markers = list(re.finditer(
+        r"(?:포함(?:하고|해서|하되|하며|하여|한|해\s*줘|해줘)?|남기고)(?=\s|[,\.!?。]|$)", before_marker
+    ))
+    if include_markers:
+        marker_end = include_markers[-1].end()
+        remainder = _strip_operand_suffix(before_marker[marker_end:])
+        if remainder:
+            return before_marker[:marker_end].strip(" ,"), remainder
     return query, None
 
 
@@ -256,23 +268,37 @@ def _strip_operand_suffix(text: str) -> str:
     return re.sub(r"(?:의|을|를|은|는|이|가|만|으로|로|인)\s*$", "", text.strip())
 
 
+# 조건이 아니라 '요청 꼬리'인 어구. 집합식 피연산자 자리에 이것만 남으면 조건이 아니라 잡음이다 —
+# 잡음을 unknown_operand 로 남기면 실제 조건(예: SIDO NOT IN)이 멀쩡한데도 전체가 확인 요청으로 막힌다.
+_QUERY_TAIL_VERBS = (
+    "찾아줘", "찾아", "조회해줘", "조회", "보여줘", "알려줘", "추천해줘", "추천해",
+    "추출해줘", "추출해", "추출", "뽑아줘", "뽑아", "뽑기", "만들어줘", "만들어",
+    "정리해줘", "정리해", "골라줘", "골라", "선정해줘", "선정",
+    "해줘", "해주세요", "주세요", "줘",
+)
+# 조건 의미가 없는 명사/조사류(피연산자가 이것들로만 이뤄지면 잡음).
+_NOISE_OPERAND_TOKENS = (
+    "고객", "사용자", "사람", "세그먼트", "집합", "대상", "추천", "캠페인", "목록", "리스트", "명단",
+    "중", "에서", "의", "인", "인사람", "인고객", "좀",
+    "만", "포함하고", "포함", "남기고", "대상으로", "하되", "있는", "있고",
+    # 연산자 어구('제외한/제외해서')에서 연산자만 소비되고 남은 활용 어미. 조건 의미가 없다.
+    "한", "하여", "해서", "된", "되는", "및",
+)
+
+_QUERY_TAIL_RE = re.compile(
+    r"(?:" + "|".join(sorted(_QUERY_TAIL_VERBS, key=len, reverse=True)) + r")\s*[.!?。]*\s*$"
+)
+_NOISE_OPERAND_RE = re.compile(
+    r"(?:" + "|".join(sorted((*_NOISE_OPERAND_TOKENS, *_QUERY_TAIL_VERBS), key=len, reverse=True)) + r")"
+)
+
+
 def _strip_query_tail(text: str) -> str:
-    return re.sub(
-        r"(?:찾아줘|찾아|조회해줘|조회|보여줘|알려줘|추천해줘|추천해|해줘|해주세요|줘)\s*[.!?。]*\s*$",
-        "",
-        text.strip(),
-    ).strip(" ,")
+    return _QUERY_TAIL_RE.sub("", text.strip()).strip(" ,")
 
 
 def _is_noise_operand_text(compact_text: str) -> bool:
-    noise_removed = re.sub(
-        r"(?:고객|사용자|사람|세그먼트|집합|대상|추천|캠페인|중|에서|의|인|인사람|인고객|"
-        r"찾아줘|찾아|조회해줘|조회|보여줘|알려줘|추천해줘|추천해|해줘|해주세요|줘|"
-        r"만|포함하고|포함|남기고|대상으로|하되|있는|있고)",
-        "",
-        compact_text,
-    )
-    return not noise_removed
+    return not _NOISE_OPERAND_RE.sub("", compact_text)
 
 
 def _set_ast_contains_age_range(ast: Any) -> bool:

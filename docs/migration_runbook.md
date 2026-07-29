@@ -91,6 +91,7 @@ docker compose exec -e PYTHONPATH=/app -w /app api \
 | `CONDITION_SLOT_LLM_FALLBACK` | `true`(기본)/`off` | 사전에 없는 말투를 조건 슬롯으로 채우는 LLM 보완(회원 상태 플래그·쿠폰 임계·**회원 지표 선택**). 끄면 동결 백스톱 표면어와 `segment_lexicon.json`·`member_metrics.json` 동의어만으로 동작한다(기존 동작). 켜져 있으면 회원 명사가 있고 규칙이 플래그를 못 올린 질의마다 빠른 모델 호출이 1회 추가되고, 지표 개념 신호가 참인 질의에 1회 더 추가된다 |
 | `SURFACE_LEXICON_LLM` | `true`(기본)/`off` | 표면 신호(의도·목적·문맥·집계 함수어)의 LLM 해석. **끄면 동결 백스톱 낱말만 읽으므로 처음 보는 말투가 조용히 침묵한다**(이관 전 동작). 켜져 있으면 질의당 빠른 모델 호출이 1회 추가되고, 그 결과는 질의 스코프 안에서 재사용된다(절 단위로 다시 부르지 않는다) |
 | `SURFACE_CONCEPTS_PATH` | 경로 | 표면 개념(닫힌 집합) 선언 파일 |
+| `SEMANTIC_AST_GATE` | `on`(기본)/`off` | 의미 AST 게이트(포함·제외 충돌 검사 + 생성 SQL 극성/구조 역검증). 조건을 만들지 않고 '조용한 의미 변형'만 차단하므로 켠 상태가 기본이다. `off` 는 이관 비교·사고 대응용 비상구 |
 
 ## 안전장치 (전부 `pytest tests/` 가 강제)
 
@@ -105,6 +106,8 @@ docker compose exec -e PYTHONPATH=/app -w /app api \
 | LLM 슬롯 경계 | `tests/test_condition_slot_llm.py` | LLM 이 목록 밖 값·근거 없는 조건을 만들어내는 것 |
 | 세그먼트 소유권 분리 | `tests/test_segment_semantics.py` | 표면어와 접지(소스·capability)가 한 파일로 다시 섞이는 것 |
 | 미해석 오탐 | `tests/test_ir_golden_corpus.py` | 탐지기가 정상 프롬프트를 잡아 큐를 잡음으로 덮는 것 |
+| 의미 AST 불변식 | `tests/test_semantic_ast.py` | 부정·AND/OR·owner 가 정규화 과정에서 뒤집히거나 사라지는 것 |
+| 의미 보존 계약 | `tests/test_plan_semantic_ast.py` | 제외가 포함으로 컴파일되는 것, OR 이 AND 로 축소되는 것, 포함/제외 충돌이 한쪽만 실행되는 것, rules/LLM 경로가 다른 의미로 갈라지는 것 |
 
 ## 재생성 명령
 

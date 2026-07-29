@@ -425,11 +425,20 @@ class SourceConsumptionMatcher:
         threshold = float(config.get("minimum_overlap_ratio", 0.6))
         # 값을 가진 소유자(지역/등급 등)는 '값이 operand 표면에 나타나는가'로 본다.
         if owned.values:
+            if not config.get("allow_value_only_match", True):
+                return False
             value_tokens = {token for value in owned.values for token in self.tokens(value) or [value]}
             shared = len(value_tokens & operand_tokens)
             ratio = float(self.policy.matching.get("semantic_fingerprint", {}).get("minimum_value_overlap_ratio", 1.0))
             return bool(value_tokens) and shared / len(value_tokens) >= ratio
-        # 값 없이 표면 어구만 가진 소유자(파생 엔터티 집합 등)는 토큰 겹침 비율로 본다.
+        # 값 없이 표면 어구만 가진 소유자(파생 엔터티 집합 등). 토큰 겹침만으로 소유를 확정하면 과매칭
+        # 위험이 크므로(표면어가 흔한 명사로만 이뤄질 수 있다) 정책이 요구하면 명시적 source span 을
+        # 가진 소유자에게만, 더 높은 임계값으로 허용한다. 근거가 없으면 소유를 주장하지 않는다.
+        valueless = config.get("valueless_owner")
+        valueless = valueless if isinstance(valueless, dict) else {}
+        if valueless.get("require_explicit_span", True) and not owned.spans:
+            return False
+        threshold = float(valueless.get("minimum_overlap_ratio", threshold))
         owner_tokens = set(self.tokens(owned.text))
         if not owner_tokens:
             return False

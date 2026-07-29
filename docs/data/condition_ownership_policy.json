@@ -127,6 +127,12 @@
     "normalized_text": {
       "enabled": true,
       "minimum_overlap_ratio": 0.6,
+      "allow_value_only_match": true,
+      "valueless_owner": {
+        "require_explicit_span": true,
+        "minimum_overlap_ratio": 0.8,
+        "description": "값 없이 표면 어구만 가진 소유자(파생 엔터티 집합 등)는 흔한 명사 겹침만으로 과매칭되기 쉽다. 명시적 source span 을 가진 소유자에게만, 더 높은 토큰 겹침으로 소유를 인정한다 — 근거가 없으면 소유를 주장하지 않고 미해결로 남긴다."
+      },
       "ignore_tokens": [
         "고객", "회원", "사용자", "사람", "세그먼트", "집합", "그룹", "대상",
         "중", "도", "을", "를", "이", "가", "은", "는", "의", "과", "와", "에", "에서", "으로", "로", "만"

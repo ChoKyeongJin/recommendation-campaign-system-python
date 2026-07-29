@@ -494,7 +494,10 @@ def test_conflicting_dimension_polarity_is_blocked_before_sql() -> None:
         nx.Graph(), "서울 포함과 제외", plan, [], graph_rag.DEFAULT_SCHEMA_PATH, 100,
     )
     assert result["is_success"] is False
-    assert result["failure_reason"] == "invalid_dimension_filters"
+    # 같은 사건을 의미 AST 게이트가 먼저·더 구체적으로(전체 충돌 + 겹친 값) 보고한다.
+    assert result["failure_reason"] == "semantic_condition_conflict"
+    assert [error["code"] for error in result["validation_errors"]] == ["FULL_CONFLICT"]
+    assert result["validation_errors"][0]["metadata"]["overlap"] == ["서울"]
     assert result["sql"] is None
 
 

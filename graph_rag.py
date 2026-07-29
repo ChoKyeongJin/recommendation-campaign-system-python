@@ -28,6 +28,7 @@ from qdrant_client import QdrantClient
 import condition_reconciliation
 import lexicon_patterns
 import parser_shadow
+import plan_semantic_ast
 import unresolved_triage
 from common_utils import elapsed_ms as _elapsed_ms
 from aggregation_requirements import (
@@ -6858,6 +6859,10 @@ _VALUE_TAIL_TOKENS = (
     "거주", "사는", "살", "고객", "회원", "사용자", "유저", "대상", "사람",
     "에서", "에게", "에", "은", "는", "이", "가", "을", "를", "의", "도",
     "만", "과", "와", "랑", "보다", "까지", "부터",
+    # 나열형 접속 조사. 없으면 '서울하고 부산 빼줘'의 '서울'이 경계 검사에서 탈락해 조건이 통째로
+    # 사라진다(조용한 조건 유실). 값 뒤에 붙는 접속 형태만 넣는다 — 단음절 '고/나'는 다른 단어의
+    # 첫 음절('서울고등학교')과 구분되지 않으므로 넣지 않는다.
+    "하고", "이랑", "이나", "이며", "이고", "하며", "든지", "든가",
 )
 
 
@@ -16091,6 +16096,7 @@ def _refresh_unresolved_source_conditions(
 
 def _verify_sql_semantic_invariants(
     query: str, plan: dict[str, Any], sql: str, dropped_signal_warnings: list[str],
+    dialect: str | None = None,
 ) -> dict[str, Any]:
     """SQL 생성 시 항상 실행되는 결정론 의미 보존 불변식 점검(LLM 불필요, ran=True 보장).
 
@@ -16135,6 +16141,15 @@ def _verify_sql_semantic_invariants(
     if purchase_absence_mentioned and not represented and not warned:
         issues.append({"type": "purchase_absence_dropped",
                        "detail": "구매 미발생 조건이 plan/SQL/경고 어디에도 반영되지 않음"})
+
+    # (3) SQL 역해석 대조: plan 의 의미 AST 와 생성 SQL 의 의미(극성·AND/OR·조건 존재)를 맞춘다.
+    #     제외가 포함으로 뒤집히거나 OR 이 AND 로 축소된 SQL 은 여기서 출고가 막힌다.
+    for issue in _verify_compiled_sql_semantics(plan, sql, dialect):
+        issues.append({
+            "type": str(issue.get("code") or "sql_semantic_mismatch").casefold(),
+            "detail": str(issue.get("message") or "생성된 SQL 의 의미가 요청과 다릅니다."),
+            "metadata": issue.get("metadata"),
+        })
 
     return {"ran": True, "ok": not issues, "issues": issues}
 
@@ -16943,6 +16958,11 @@ def build_sql_result(
     semantic_ir_block = _semantic_ir_blocking_sql_result(query_plan)
     if semantic_ir_block is not None:
         return semantic_ir_block
+    # 의미 충돌 게이트(의미 AST): 포함/제외가 겹치거나 항진식이면 어느 한쪽을 임의로 고르지 않고 묻는다.
+    # dimension 전용 검사보다 먼저 돈다 — 같은 사건을 더 정확한 코드(전체/부분 충돌)와 근거로 보고한다.
+    semantic_conflicts = _verify_plan_semantic_conflicts(query_plan)
+    if semantic_conflicts:
+        return _semantic_conflict_sql_result(semantic_conflicts)
     dimension_filter_errors = _validate_dimension_filters(query_plan)
     if dimension_filter_errors:
         return _invalid_dimension_filters_sql_result(dimension_filter_errors)
@@ -17440,7 +17460,7 @@ def build_sql_result(
     # 점검해 '조용한 오답 출고'를 막는다. 감지된 dropped 신호는 critical issue와 사용자 확인 질문으로 귀결된다.
     if selected_sql is not None:
         semantic_invariants = _verify_sql_semantic_invariants(
-            original_query or query, query_plan, selected_sql, dropped_signal_warnings
+            original_query or query, query_plan, selected_sql, dropped_signal_warnings, target_dialect
         )
         if not semantic_invariants.get("ok", True):
             failure_reason = "semantic_verification_failed"
@@ -18178,16 +18198,39 @@ def _iter_all_set_operands(ast: Any):
     yield from _iter_all_set_operands(ast.get("right"))
 
 
-def _plan_dimension_filter_has_value(plan: dict[str, Any], value: str) -> bool:
-    """dimension_filters(지역 등)가 이 값을 이미 소비했는지(names/codes 경계 일치)."""
+def _plan_dimension_filter_owner_key(plan: dict[str, Any], value: str) -> str | None:
+    """이 값을 소비한 dimension 필터의 '소유 인스턴스 키'(컬럼+극성). 없으면 None.
+
+    합집합 보호 판정이 '같은 소유 인스턴스인가'를 물어야 하므로 bool 이 아니라 키를 돌려준다 —
+    같은 컬럼·같은 극성의 IN 목록이면 OR 이 그대로 IN 나열로 컴파일되지만, 서로 다른 슬롯이면
+    결정론 필터가 AND 로 결합해 OR 의미가 무너진다."""
     fold = str(value).casefold()
     for f in plan.get("dimension_filters", []):
         if not isinstance(f, dict):
             continue
         for v in (f.get("names") or []) + (f.get("codes") or []):
             if isinstance(v, str) and v.casefold() == fold:
-                return True
-    return False
+                column = str(f.get("column") or f.get("dimension_id") or "").split(".")[-1].upper()
+                operator = str(f.get("operator") or "IN").upper()
+                return f"dimension:{column}:{operator}"
+    return None
+
+
+def _plan_dimension_filter_has_value(plan: dict[str, Any], value: str) -> bool:
+    """dimension_filters(지역 등)가 이 값을 이미 소비했는지(names/codes 경계 일치)."""
+    return _plan_dimension_filter_owner_key(plan, value) is not None
+
+
+def _set_operand_text_owner_key(text: str, plan: dict[str, Any]) -> str | None:
+    """미해결 집합 operand 표면어를 소비한 dimension 필터의 소유 인스턴스 키."""
+    stripped = text.strip() if isinstance(text, str) else ""
+    if not stripped:
+        return None
+    key = _plan_dimension_filter_owner_key(plan, stripped)
+    if key is not None:
+        return key
+    region = _region_value_from_query(stripped)
+    return _plan_dimension_filter_owner_key(plan, region) if region else None
 
 
 def _set_operand_text_dimension_consumed(text: str, plan: dict[str, Any]) -> bool:
@@ -18195,13 +18238,7 @@ def _set_operand_text_dimension_consumed(text: str, plan: dict[str, Any]) -> boo
 
     '서울 또는 경기'처럼 지역 값이 dimension_filters(SIDO IN)로 이미 처리됐는데 operator-scan 폴백이 같은
     지역을 unknown_operand 로 다시 물어 SQL 을 막던 중복을 걸러낸다(source span 이 없으므로 값 동등성으로 판정)."""
-    stripped = text.strip() if isinstance(text, str) else ""
-    if not stripped:
-        return False
-    if _plan_dimension_filter_has_value(plan, stripped):
-        return True
-    region = _region_value_from_query(stripped)
-    return bool(region and _plan_dimension_filter_has_value(plan, region))
+    return _set_operand_text_owner_key(text, plan) is not None
 
 
 def _set_operand_text_attribute_consumed(text: str, plan: dict[str, Any]) -> bool:
@@ -18225,7 +18262,12 @@ def _operator_scan_expression_fully_owned(expression: dict[str, Any], plan: dict
     operand 는 전부 dimension(지역) 또는 lifecycle(등급) 필터가 이미 소비한 값이다. 이때 집합식은 결정론
     필터가 커버하는 평범한 dimension/등급 OR/AND 나열이므로 버려도 조건이 사라지지 않는다(오히려 데모
     스키마 오컴파일·중복 clarification 방지). 지표(로그인횟수/구매금액 등) operand 는 세그먼트류가 아니라
-    balance/aggregate 필터 소유이므로 drop 을 막지 않는다."""
+    balance/aggregate 필터 소유이므로 drop 을 막지 않는다.
+
+    합집합(OR) 보호: 결정론 슬롯들은 서로 AND 로 결합되므로, 서로 다른 슬롯이 소유한 항들을 OR 로 묶은
+    집합식을 버리면 'A 또는 B' 가 조용히 'A 그리고 B' 가 된다. 그래서 합집합은 **하위 전부가 같은 소유
+    인스턴스**(같은 컬럼·같은 극성의 IN 목록 등)일 때만 소유된 것으로 본다 — 정책
+    (condition_ownership_policy.suppression.union_operands_require_same_owner)과 같은 규칙이다."""
     ast = expression.get("set_ast")
     operands = list(_iter_all_set_operands(ast))
     if not operands:
@@ -18238,7 +18280,47 @@ def _operator_scan_expression_fully_owned(expression: dict[str, Any], plan: dict
                 return False  # 미소비 unknown = 진짜 세그먼트/clarification 대상 → 유지
         elif operand.get("canonical") in segment_canonicals:
             return False  # 진짜 세그먼트 피연산자 → 집합식 유지
-    return True
+    return not _set_ast_has_cross_owner_union(ast, plan)
+
+
+def _set_operand_owner_key(operand: dict[str, Any], plan: dict[str, Any]) -> str | None:
+    """집합식 리프를 소유한 결정론 슬롯 인스턴스 키(합집합 보호 판정용)."""
+    if not isinstance(operand, dict):
+        return None
+    if operand.get("type") == "unknown_operand":
+        text = operand.get("text", "")
+        return _set_operand_text_owner_key(text, plan) or (
+            "lifecycle" if _set_operand_text_attribute_consumed(text, plan) else None
+        )
+    canonical = operand.get("canonical")
+    if not isinstance(canonical, str) or not canonical:
+        return None
+    if canonical in GENDER_TERMS:
+        return "gender"
+    if canonical in LIFECYCLE_TERMS:
+        return "lifecycle"
+    if canonical in INTEREST_TERMS:
+        return "interests"
+    if canonical in CHANNEL_TERMS:
+        return "preferred_channels"
+    if canonical.startswith("age_"):
+        return "age"
+    return _plan_dimension_filter_owner_key(plan, canonical)
+
+
+def _set_ast_has_cross_owner_union(ast: Any, plan: dict[str, Any]) -> bool:
+    """서로 다른 소유 슬롯의 항을 잇는 합집합(OR)이 있는가 — 있으면 통째 drop 은 의미를 바꾼다."""
+    if not isinstance(ast, dict):
+        return False
+    if ast.get("type") == "set_op":
+        if ast.get("op") == "+":
+            owners = {_set_operand_owner_key(leaf, plan) for leaf in _iter_all_set_operands(ast)}
+            if len(owners) > 1 or None in owners:
+                return True
+        return _set_ast_has_cross_owner_union(ast.get("left"), plan) or _set_ast_has_cross_owner_union(
+            ast.get("right"), plan
+        )
+    return False
 
 
 @_audited_stage
@@ -19189,6 +19271,161 @@ def _dimension_filter_operator(dimension_filter: Mapping[str, Any]) -> str | Non
     raw = dimension_filter.get("operator")
     operator = "IN" if raw is None else str(raw).strip().upper()
     return operator if operator in _DIMENSION_OPERATOR_SQL_MAP else None
+
+
+def _semantic_ast_gate_enabled() -> bool:
+    """의미 AST 게이트(충돌 검사·SQL 극성 역검증) 사용 여부(환경변수 SEMANTIC_AST_GATE).
+
+    기본 on. 이 게이트는 조건을 만들지 않고 '조용한 의미 변형'만 차단하므로 켜진 상태가 안전한 기본값이다.
+    off 는 이관 중 비교(shadow)나 사고 대응용 비상구다."""
+    return os.getenv("SEMANTIC_AST_GATE", "on").strip().casefold() not in {"off", "0", "false"}
+
+
+@functools.lru_cache(maxsize=1)
+def _semantic_ast_value_dimensions() -> dict[str, str]:
+    """canonical 값 → 의미 AST dimension. 어휘 레지스트리에서 파생한다(중복 수기 목록 없음).
+
+    집합식 operand('male')와 슬롯 조건(exclude.gender=['male'])이 같은 dimension 으로 정준화돼야
+    같은 조건으로 인식된다 — 이 표가 그 연결이다."""
+    mapping: dict[str, str] = {}
+    for value in GENDER_TERMS:
+        mapping[value] = "gender"
+    for slot, values in (
+        ("lifecycle", LIFECYCLE_TERMS),
+        ("interests", INTEREST_TERMS),
+        ("preferred_channels", CHANNEL_TERMS),
+        ("behaviors", BEHAVIOR_TERMS),
+    ):
+        for value in values:
+            mapping.setdefault(value, slot)
+    return mapping
+
+
+def _plan_semantic_expr(query_plan: Mapping[str, Any]) -> Any:
+    """plan 을 의미 AST 로 투영한다(rules/llm 공통 — 두 파서가 같은 plan 스키마를 쓴다)."""
+    return plan_semantic_ast.plan_to_semantic_expr(
+        query_plan, value_dimensions=_semantic_ast_value_dimensions()
+    )
+
+
+# 이 코드들은 '어느 한쪽을 골라 실행' 하면 안 되는 의미 충돌이다(§충돌 시 임의 선택 금지).
+_SEMANTIC_CONFLICT_CODES = frozenset({"FULL_CONFLICT", "PARTIAL_CONFLICT", "TAUTOLOGY"})
+
+
+def _verify_plan_semantic_conflicts(query_plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """포함/제외 충돌(전체/부분)과 항진식을 의미 AST 기준으로 찾는다.
+
+    파서가 슬롯을 몇 개 만들었는지에 의존하지 않는다 — 정준화된 predicate 의 owner·dimension·값·극성과
+    논리 경로(AND/OR 스코프)만 본다. owner 가 다르면 충돌이 아니고, 서로 다른 OR 분기의 반대 극성도
+    충돌이 아니다."""
+    if not _semantic_ast_gate_enabled():
+        return []
+    try:
+        result = plan_semantic_ast.verify_plan_semantics(
+            query_plan, value_dimensions=_semantic_ast_value_dimensions()
+        )
+    except Exception:
+        return []  # 검증기 자체 오류로 정상 요청을 막지 않는다(게이트는 추가 안전장치다)
+    issues = [issue.to_dict() for issue in result.issues if issue.code in _SEMANTIC_CONFLICT_CODES]
+    if issues:
+        _log_semantic_ast_verification(query_plan, result, issues)
+    return issues
+
+
+def _log_semantic_ast_verification(
+    query_plan: Mapping[str, Any],
+    result: Any,
+    issues: list[dict[str, Any]],
+    compiled_sql: str | None = None,
+) -> None:
+    """검증 실패의 구조화 진단(원문·파서·Raw Plan·정규화 AST·SQL·코드·span)을 남긴다."""
+    try:
+        _write_rag_llm_log(
+            "semantic_ast_verification",
+            plan_semantic_ast.semantic_debug_info(
+                input_text=str((query_plan.get("retrieval") or {}).get("query") or ""),
+                parser=str((query_plan.get("parser") or {}).get("type") or "rules"),
+                plan=query_plan,
+                expr=result.expr,
+                result=result,
+                compiled_sql=compiled_sql,
+            )
+            | {"blocking_issues": issues},
+        )
+    except Exception:
+        pass  # 진단 로깅 실패가 판정을 바꾸지 않는다
+
+
+def _semantic_conflict_sql_result(issues: list[dict[str, Any]]) -> dict[str, Any]:
+    """충돌한 요청은 SQL 을 만들지 않고 확인 질문으로 돌려준다(부분 실행·임의 선택 금지)."""
+    questions = _unique_strings([str(issue.get("message") or "조건이 서로 충돌합니다.") for issue in issues])
+    return {
+        "sql": None,
+        "blocked_sql": None,
+        "selected": None,
+        "candidates": [],
+        "candidate_count": 0,
+        "condition_tokens": [],
+        "required_conditions": [],
+        "input_validation": {"is_satisfied": False, "errors": issues},
+        "missing_input_conditions": [],
+        "clarification_questions": questions,
+        "semantic_verification": {"ran": False},
+        "llm_fallback_used": False,
+        "generation_source": None,
+        "confidence": _failed_sql_confidence("semantic_condition_conflict"),
+        "is_success": False,
+        "failure_reason": "semantic_condition_conflict",
+        "validation_errors": issues,
+    }
+
+
+def _semantic_ast_verified_columns(query_plan: Mapping[str, Any]) -> set[str]:
+    """SQL 역검증 대상 컬럼 — 회원 테이블 단독 술어로 컴파일되는 dimension 필터만.
+
+    보조 테이블(join_column)은 EXISTS/서브쿼리로 인코딩돼 극성이 블록 구조에 실린다. 그 형태까지
+    단정하면 정상 SQL 을 오탐으로 막을 수 있어 대상에서 제외한다(그쪽은 조건별 근거 검증이 맡는다)."""
+    columns: set[str] = set()
+    for dimension_filter in query_plan.get("dimension_filters") or []:
+        if not isinstance(dimension_filter, Mapping) or dimension_filter.get("join_column"):
+            continue
+        if dimension_filter.get("table") not in (None, _member_table()):
+            continue
+        column = str(dimension_filter.get("column") or "").split(".")[-1].strip().upper()
+        if column:
+            columns.add(column)
+    return columns
+
+
+# SQL 역해석에서 '조용한 의미 변형' 으로 확정할 수 있는 코드만 차단 사유로 쓴다. 파싱 실패
+# (UNSUPPORTED_EXPRESSION)는 근거가 없는 상태이므로 차단하지 않는다(fail-open 이 아니라 판정 보류).
+_SQL_SEMANTIC_BLOCKING_CODES = frozenset(
+    {"POLARITY_MISMATCH", "LOGICAL_OPERATOR_MISMATCH", "MISSING_CONDITION", "VALUE_MISMATCH"}
+)
+
+
+def _verify_compiled_sql_semantics(
+    query_plan: Mapping[str, Any], sql: str, dialect: str | None = None
+) -> list[dict[str, Any]]:
+    """생성된 SQL 을 AST 로 되읽어 원문 의미(극성·결합자·조건 존재)와 대조한다.
+
+    문자열 포함 검사가 아니다 — ``SIDO NOT IN ('서울')`` 과 ``NOT (SIDO IN ('서울'))`` 은 같은 의미로,
+    ``SIDO IN ('서울')`` 은 다른 의미로 읽는다."""
+    if not _semantic_ast_gate_enabled():
+        return []
+    columns = _semantic_ast_verified_columns(query_plan)
+    if not columns:
+        return []
+    try:
+        result = plan_semantic_ast.verify_compiled_sql(
+            _plan_semantic_expr(query_plan), sql, dialect=dialect, columns=columns
+        )
+    except Exception:
+        return []
+    issues = [issue.to_dict() for issue in result.issues if issue.code in _SQL_SEMANTIC_BLOCKING_CODES]
+    if issues:
+        _log_semantic_ast_verification(query_plan, result, issues, compiled_sql=sql)
+    return issues
 
 
 def _validate_dimension_filters(query_plan: Mapping[str, Any]) -> list[dict[str, Any]]:
