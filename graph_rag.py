@@ -29,6 +29,7 @@ import condition_reconciliation
 import lexicon_patterns
 import parser_shadow
 import plan_semantic_ast
+import product_master_resolver
 import unresolved_triage
 from common_utils import elapsed_ms as _elapsed_ms
 from aggregation_requirements import (
@@ -2464,6 +2465,7 @@ def _finalize_deterministic_query_plan(
         "extreme": extract_extreme_semantics(query),
     }
     _apply_core_membership_semantics(query, plan)
+    _apply_product_master_resolution(query, plan)
     _apply_entity_set_condition(query, plan)
     _reconcile_deterministic_member_exclusions(query, plan)
     # 파생 엔터티 집합·회원 제외까지 확정된 뒤 조건 소유권을 재조정한다(집합식 중복 억제 + 최종 clarification).
@@ -4411,6 +4413,8 @@ def _source_authoritative_stages(
         ("purchase_object_validation",
          lambda query, plan: _validate_purchase_objects(query, plan.setdefault("target_user", {})),
          "LLM 상품명은 원문 존재·일반명사 제외 검증을 통과해야 하며, 확인되지 않으면 null 로 확정한다"),
+        ("product_master_resolution", _apply_product_master_resolution,
+         "종류가 명시되지 않은 구매 표현만 상품 마스터의 같은 행에서 상품명·브랜드·카테고리로 확정한다"),
         ("core_membership", _apply_core_membership_semantics,
          "구매 존재/기간 슬롯은 상대기간 집계 정규화의 근거라 실행 직전에 재확정한다"),
         # 아래 셋은 값 복원보다 **출처 구간을 원문 좌표계로 다시 기록**하는 것이 목적이다. 순위 절이
@@ -4438,6 +4442,8 @@ def _source_authoritative_stages(
          "재작성이 '10% 이상 증가'를 단순 '증가'로 줄여 결과 집합이 넓어진다"),
         ("purchase_date", _restore_purchase_date_from_source,
          "절 분리가 기간 표현을 통째로 지우면 고아 창 귀속으로도 되찾을 수 없다"),
+        ("calendar_window_claim", _apply_calendar_window_claim_filter,
+         "구매 활용형('산')처럼 직접 날짜 파서의 표면어 게이트를 통과하지 못한 고아 달력 창을 주문 팩트에 귀속한다"),
         ("aggregation_axis", lambda _query, plan: _normalize_aggregation_axis_filters(plan),
          "복원된 조건을 집계 축 필터 표기로 정규화한다"),
         ("purchase_aggregation", lambda _query, plan: _normalize_purchase_aggregation_request(plan),
@@ -6610,6 +6616,128 @@ def _validate_purchase_objects(query: str, target_user: dict[str, Any]) -> None:
         target_user.pop("purchase_objects", None)
 
 
+_AMBIGUOUS_PURCHASE_SCOPE_PATTERN = re.compile(
+    r"(?P<object>[0-9A-Za-z가-힣_+\-]+(?:\s+[0-9A-Za-z가-힣_+\-]+){0,4})\s*(?:을|를)\s*"
+    r"(?:(?:가장|제일)\s*)?(?:(?:많이|자주|최다)\s*)?"
+    r"(?:구매|구입|주문|샀|산(?!책))",
+    re.IGNORECASE,
+)
+_PURCHASE_SCOPE_TIME_WORDS = frozenset({
+    "상반기", "하반기", "올해", "작년", "금년", "지난달", "이번달", "전월", "당월",
+})
+_EXPLICIT_PURCHASE_KIND_TERMS: dict[str, tuple[str, ...]] = {
+    "brand": ("브랜드명", "브랜드"),
+    "category": ("카테고리명", "카테고리", "품목군"),
+    "product": ("상품명", "제품명", "품목명", "상품", "제품"),
+}
+
+
+def _explicit_purchase_kind(query: str, phrase: str) -> tuple[str, str] | None:
+    """Return a user-declared kind and the phrase with its marker removed, when locally adjacent."""
+
+    compact_query = re.sub(r"\s+", "", query or "").casefold()
+    compact_phrase = re.sub(r"\s+", "", phrase or "").casefold()
+    position = compact_query.find(compact_phrase)
+    if position < 0:
+        return None
+    local = compact_query[max(0, position - 10): position + len(compact_phrase) + 8]
+    for kind, markers in _EXPLICIT_PURCHASE_KIND_TERMS.items():
+        marker = next((item for item in markers if item in local), None)
+        if marker is None:
+            continue
+        cleaned = phrase
+        for item in markers:
+            cleaned = re.sub(re.escape(item), " ", cleaned, flags=re.IGNORECASE)
+        cleaned = _sanitize_purchase_object(cleaned) or ""
+        return (kind, cleaned) if cleaned else None
+    return None
+
+
+def _ambiguous_purchase_scope_phrase(query: str) -> str | None:
+    """Return the untyped object immediately owned by a purchase verb/ranking clause."""
+
+    matches = list(_AMBIGUOUS_PURCHASE_SCOPE_PATTERN.finditer(query or ""))
+    if not matches:
+        return None
+    raw = matches[-1].group("object")
+    # '알로루 브랜드를 구매', '하기스 상품명을 구매'처럼 사용자가 종류를 직접 말한 표현은 DB가 종류를
+    # 추론할 대상이 아니다. 기존 명시형 파서/LLM 슬롯에 맡기고 이 resolver는 순수 무표지 명사구만 소유한다.
+    explicit_markers = _GENERIC_PRODUCT_NOUNS | _declared_distinct_dimension_terms() | {"카테고리", "브랜드"}
+    raw_tokens = [token.casefold() for token in re.findall(r"[0-9A-Za-z가-힣_+\-]+", raw)]
+    if any(token in explicit_markers for token in raw_tokens):
+        return None
+    cleaned = _sanitize_purchase_object(raw)
+    if not cleaned:
+        return None
+    terms = [
+        term
+        for term in cleaned.split()
+        if term not in _PURCHASE_SCOPE_TIME_WORDS
+        and not re.fullmatch(r"(?:상|하)반기", term)
+        and not _is_date_like_token(term)
+    ]
+    phrase = " ".join(terms[-4:]).strip()
+    if not phrase or phrase in _GENERIC_PRODUCT_NOUNS or phrase in _GENERIC_PRODUCT_OBJECT_WORDS:
+        return None
+    return phrase
+
+
+@_audited_stage
+def _apply_product_master_resolution(query: str, plan: dict[str, Any]) -> None:
+    """Ground only untyped purchase expressions in the live product master.
+
+    Explicit ``purchase_object_kind`` values already have a user-owned column meaning, so this stage does not
+    reinterpret them.  Untyped phrases are resolved to same-row product/brand/category filters; low-confidence,
+    tied, missing, or unavailable results remain non-executable and are converted to clarification by source
+    coverage validation.
+    """
+
+    target_user = plan.setdefault("target_user", {})
+    if target_user.get("purchase_object_kind") in _PURCHASE_OBJECT_KIND_COLUMNS:
+        return
+    phrase = target_user.get("purchase_object")
+    if not isinstance(phrase, str) or not phrase.strip():
+        phrase = _ambiguous_purchase_scope_phrase(query)
+    if not isinstance(phrase, str) or not phrase.strip():
+        return
+    explicit = _explicit_purchase_kind(query, phrase)
+    if explicit is not None:
+        kind, explicit_value = explicit
+        target_user["purchase_object"] = explicit_value
+        target_user["purchase_object_kind"] = kind
+        return
+    if not _has_purchase_history_signal(query) and not isinstance(plan.get("purchase_count_ranking"), dict):
+        return
+
+    existing = target_user.get("purchase_object_resolution")
+    if isinstance(existing, dict) and existing.get("input") == phrase and existing.get("status") == "resolved":
+        return
+
+    resolution = product_master_resolver.resolve_product_phrase(phrase)
+    target_user["purchase_object"] = phrase
+    target_user["purchase_object_resolution"] = resolution
+    status = str(resolution.get("status") or "unavailable")
+    plan_decisions.record(
+        plan,
+        filter_name="product_master_resolution",
+        action="resolve" if status == "resolved" else "clarify",
+        slot="target_user.purchase_object_resolution",
+        reason=(
+            "종류 미지정 구매 표현을 같은 상품 행의 상품명·브랜드·카테고리 값으로 확정"
+            if status == "resolved"
+            else "상품 마스터 근거가 없거나 후보 간 신뢰도 차이가 작아 자동 확정하지 않음"
+        ),
+        value={
+            "input": phrase,
+            "status": status,
+            "confidence": resolution.get("confidence"),
+            "filters": resolution.get("filters", []),
+            "source": resolution.get("source"),
+        },
+        source="product_master_lookup",
+    )
+
+
 def _target_object_extract_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
     fallback = "\n".join(
         [
@@ -8226,7 +8354,9 @@ def _apply_purchase_count_ranking_target(query: str, plan: dict[str, Any]) -> No
     if not (top_match or _PURCHASE_RANK_TARGET_PATTERN.search(query)):
         return
     if top_n is None:
-        top_n = int(config.get("default_top_n") or 100)
+        # 명시적 최상급('가장/제일 많이 산 고객')은 단일 극값이다. 일반적인 '상위 고객' 기본 페이지
+        # 크기(100명)를 적용하면 "가장 많이"가 top 100으로 넓어져 의미가 달라진다.
+        top_n = 1 if superlative else int(config.get("default_top_n") or 100)
     plan["purchase_count_ranking"] = {"top_n": top_n}
 
 
@@ -16466,6 +16596,29 @@ def _refresh_unresolved_source_conditions(
                 "status": "unresolved",
                 "source": "condition_evaluation_ir",
             })
+    product_resolution_unresolved: list[dict[str, Any]] = []
+    target_user = query_plan.get("target_user") if isinstance(query_plan.get("target_user"), dict) else {}
+    product_resolution = target_user.get("purchase_object_resolution")
+    if isinstance(product_resolution, dict) and product_resolution.get("status") != "resolved":
+        phrase = str(product_resolution.get("input") or target_user.get("purchase_object") or "구매 상품")
+        status = str(product_resolution.get("status") or "unavailable")
+        reason_by_status = {
+            "ambiguous": "상품명·브랜드·카테고리 후보의 신뢰도 차이가 작아 종류를 자동 확정할 수 없습니다.",
+            "not_found": "상품 마스터에서 해당 표현과 일치하는 상품명·브랜드·카테고리를 찾지 못했습니다.",
+            "unavailable": "상품 마스터 조회를 완료하지 못해 상품 조건을 검증할 수 없습니다.",
+        }
+        product_resolution_unresolved.append({
+            "id": "usr_" + hashlib.sha256(
+                f"{original_query}\0{phrase}\0product_master_resolution".encode("utf-8")
+            ).hexdigest()[:16],
+            "path": "source_coverage.product_master_resolution",
+            "label": f"구매 대상 '{phrase}'의 상품/브랜드/카테고리 구분",
+            "source_text": original_query,
+            "reason": reason_by_status.get(status, "구매 대상의 상품 마스터 의미를 확정할 수 없습니다."),
+            "status": "unresolved",
+            "source": "product_master_resolver",
+            "alternatives": copy.deepcopy(product_resolution.get("alternatives") or []),
+        })
     labels = _deterministic_dropped_conditions(original_query, query_plan)
     unresolved = [
         {
@@ -16480,7 +16633,7 @@ def _refresh_unresolved_source_conditions(
         }
         for index, label in enumerate(labels)
     ]
-    merged = [*preserved, *evaluation_unresolved]
+    merged = [*preserved, *evaluation_unresolved, *product_resolution_unresolved]
     merged.extend(item for item in unresolved if item not in merged)
     query_plan["unresolved_source_conditions"] = merged
     return merged
@@ -20995,6 +21148,29 @@ def _target_purchase_objects(target_user: dict[str, Any]) -> list[dict[str, Any]
 
     나열형 다중 상품은 target_user['purchase_objects'] 에, 단일 상품은 target_user['purchase_object'] 에 담기므로
     둘 중 있는 쪽을 리스트로 통일한다. 일반 지시어('상품/제품')는 스코프로 쓸 수 없어 제외한다."""
+    resolution = target_user.get("purchase_object_resolution")
+    if isinstance(resolution, dict) and resolution.get("status") == "resolved":
+        filters = [
+            {
+                "kind": item.get("kind"),
+                "value": item.get("value"),
+                "columns": list(item.get("columns") or []),
+            }
+            for item in (resolution.get("filters") or [])
+            if isinstance(item, dict)
+            and item.get("kind") in _PURCHASE_OBJECT_KIND_COLUMNS
+            and isinstance(item.get("value"), str)
+            and item["value"].strip()
+        ]
+        if filters:
+            return [{
+                "value": str(resolution.get("input") or target_user.get("purchase_object") or "").strip(),
+                "kind": "resolved",
+                "filters": filters,
+                "resolution_source": resolution.get("source"),
+                "confidence": resolution.get("confidence"),
+            }]
+
     result: list[dict[str, Any]] = []
     seen: set[str] = set()
     objects = target_user.get("purchase_objects")
@@ -21042,6 +21218,23 @@ def _purchase_object_match_predicate(purchase_object: str, object_kind: Any = No
     return "(" + " OR ".join(_sql_nlike_contains(f"{alias}.{column}", purchase_object) for column in columns) + ")"
 
 
+def _purchase_scope_match_predicate(product_scope: dict[str, Any], alias: str = "P") -> str:
+    """Compile a resolved multi-facet scope on one product row, or a legacy free-text scope."""
+
+    filters = product_scope.get("filters")
+    if product_scope.get("kind") == "resolved" and isinstance(filters, list) and filters:
+        predicates = [
+            _purchase_object_match_predicate(str(item["value"]), item.get("kind"), alias)
+            for item in filters
+            if isinstance(item, dict) and isinstance(item.get("value"), str) and item["value"]
+        ]
+        if predicates:
+            return "(" + " AND ".join(predicates) + ")"
+    return _purchase_object_match_predicate(
+        str(product_scope.get("value") or ""), product_scope.get("kind"), alias
+    )
+
+
 def _valid_aggregate_conditions(target_user: dict[str, Any]) -> list[dict[str, Any]]:
     """aggregate_targets 레지스트리가 실제로 컴파일할 수 있는(지표 등록 + 연산자 + 임계값) 집계 조건만
     추린다. purchase_history 빌더의 '집계 빌더에 양보' 판정과 집계 빌더의 valid 판정이 같은 규칙을 쓰게
@@ -21060,7 +21253,7 @@ def _valid_aggregate_conditions(target_user: dict[str, Any]) -> list[dict[str, A
 def _product_presence_member_subquery(product: dict[str, Any], purchase_date: Any, alias: str) -> str:
     """특정 상품을 (기간 내) 구매한 회원 id 집합 서브쿼리. 나열형 다중 상품을 상품별로 나눠 INNER JOIN(AND)
     하려는 용도 — 한 주문상세행은 상품 하나라 두 상품 LIKE 를 같은 행에 AND 하면 공집합이 되기 때문이다."""
-    where = ["D.MEMBER_NO IS NOT NULL", _purchase_object_match_predicate(product["value"], product.get("kind"), "P")]
+    where = ["D.MEMBER_NO IS NOT NULL", _purchase_scope_match_predicate(product, "P")]
     date_between = _purchase_date_predicate(purchase_date, alias="D")
     if date_between is not None:
         where.append(date_between)
@@ -21134,9 +21327,7 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
         if has_object:
             # 사용자가 '브랜드'/'상품명'을 명시했거나 값이 실DB 브랜드명으로 확정된 경우, 광역 6컬럼 LIKE 대신
             # 해당 컬럼(BRAND_NAME/PRODUCT_NAME)만 매칭한다(다른 컬럼 우연 일치 방지). 애매하면 광역 6컬럼 LIKE.
-            where_clauses.append(
-                _purchase_object_match_predicate(product_objects[0]["value"], product_objects[0].get("kind"), "P")
-            )
+            where_clauses.append(_purchase_scope_match_predicate(product_objects[0], "P"))
         if date_predicate is not None:
             where_clauses.append(date_predicate)
         where_clauses.extend(member_where)
@@ -21174,18 +21365,18 @@ def build_purchase_count_ranking_sql_candidate(query_plan: dict[str, Any]) -> di
         return None
     top_n = int(ranking.get("top_n") or 100)
     target_user = query_plan.get("target_user", {})
-    purchase_object = target_user.get("purchase_object")
-    has_object = isinstance(purchase_object, str) and bool(purchase_object)
+    product_scopes = _target_purchase_objects(target_user)
+    has_object = bool(product_scopes)
     date_predicate = _purchase_date_predicate(target_user.get("purchase_date"))
 
     compiled = compile_member_target_conditions(query_plan)
     where_clauses: list[str] = []
     if has_object:
-        where_clauses.append(
-            "(" + " OR ".join(
-                _sql_nlike_contains("P." + column, purchase_object) for column in _PURCHASE_PRODUCT_MATCH_COLUMNS
-            ) + ")"
-        )
+        # 종류 미지정 복합 표현은 resolver가 같은 상품 행의 facet AND로 확정한다. 진짜 다중 상품 나열은
+        # 회원 집합 교집합 의미라 이 랭킹에서 자동 합산하지 않고 첫 상품으로 축소하지 않는다.
+        if len(product_scopes) != 1:
+            return None
+        where_clauses.append(_purchase_scope_match_predicate(product_scopes[0], "P"))
     if date_predicate is not None:
         where_clauses.append(date_predicate)
     where_clauses.extend(compiled["predicates"])
@@ -21535,9 +21726,7 @@ def _aggregate_member_subquery(
             return None  # 미지원 scope → 무효(호출부가 처리)
         scope_predicates = resolved
         if product_scope and isinstance(product_scope.get("value"), str) and product_scope["value"]:
-            scope_predicates.append(
-                _purchase_object_match_predicate(product_scope["value"], product_scope.get("kind"), "P")
-            )
+            scope_predicates.append(_purchase_scope_match_predicate(product_scope, "P"))
     if needs_product_join:
         from_lines.append(f"         INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID")
 
@@ -21735,7 +21924,7 @@ def _metric_trend_window_subquery(
     from_lines = [f"    FROM {table}" + (" D" if use_scope else "")]
     if use_scope:
         from_lines.append("         INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID")
-        where.append(_purchase_object_match_predicate(product_scope["value"], product_scope.get("kind"), "P"))
+        where.append(_purchase_scope_match_predicate(product_scope, "P"))
     return "\n".join([
         "(",
         f"    SELECT {tp}{join_column}, {agg_expr} AS {_METRIC_TREND_VALUE_COLUMN}",
@@ -23453,7 +23642,20 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     if purchase_object:
         # 상품 구매 이력 타겟(purchase_history_targets)은 상품값을 SQL 리터럴(LIKE N'%값%')로 직접 담으므로
         # 값 문자열이 SQL 에 존재하면 커버된 것으로 본다(데모 fallback 의 behavior LIKE '%값%' 도 동일 충족).
-        conditions.append(_condition("target_user.purchase_object", purchase_object, [purchase_object]))
+        resolution = target_user.get("purchase_object_resolution")
+        resolved_values = [
+            str(item.get("value"))
+            for item in ((resolution or {}).get("filters") or [])
+            if isinstance(item, dict) and isinstance(item.get("value"), str) and item.get("value")
+        ] if isinstance(resolution, dict) and resolution.get("status") == "resolved" else []
+        conditions.append(
+            _condition(
+                "target_user.purchase_object",
+                purchase_object,
+                [purchase_object] if not resolved_values else [],
+                all_terms=resolved_values,
+            )
+        )
 
     entity_set = target_user.get("entity_set_condition")
     if isinstance(entity_set, dict):
@@ -24261,6 +24463,9 @@ def _mark_trace_refs_used(stages: list[dict[str, Any]], result: dict[str, Any]) 
         mark(4, "target_object_extract_system.txt", kind="모델")
     if target_user.get("purchase_object") or (query_plan.get("campaign_constraints") or {}).get("sell_object"):
         mark(4, "surface_concepts.json")
+    product_resolution = target_user.get("purchase_object_resolution")
+    if isinstance(product_resolution, dict):
+        mark(5, "CRM_CM_PRODUCT", kind="인프라")
 
     uses_member_value_index = any(
         item.get("source") == "member_value_index"
