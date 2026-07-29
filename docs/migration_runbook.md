@@ -83,6 +83,32 @@ python tools/regen_ir_goldens.py
 python tools/regex_inventory.py [--set-baseline]
 ```
 
+## QueryPlan V3 LLM-first 전환
+
+캠페인 API의 기본 파서는 `auto`이며, 원문을 재작성하거나 정규식으로 읽기 전에 strict
+`CampaignQueryPlanV3` 구조화를 먼저 수행한다. V3는 채택한 슬롯의 원문 구간을
+`semantic_evidence`에 남기고 표현할 수 없는 의미는 `unresolved`로 반환한다. LLM 출력은
+SQL을 포함하지 않으며 기존 결정론 컴파일러와 SQL 검증기를 그대로 통과한다.
+
+| 환경 변수 | 값 | 동작 |
+|---|---|---|
+| `QUERY_PARSER` | `auto`(기본) / `llm` / `rules` | `auto`와 `llm`은 V3 의미 구조화를 사용한다. `rules`는 명시적 레거시 경로다. |
+| `QUERY_PLAN_AUTHORITY` | `llm_first`(기본) | V3가 충돌 슬롯을 소유하고 레거시 규칙은 빈 슬롯만 보완한다. |
+| `QUERY_PLAN_AUTHORITY` | `shadow` | 기존 rules-first 실행을 유지하며 `PARSER_SHADOW_*`로 차이를 관측한다. |
+| `QUERY_PLAN_AUTHORITY` | `rules_first` | 즉시 롤백용. 기존 규칙 우선순위와 지연 LLM 보완을 사용한다. |
+
+LLM-first에서 원문 권위 규칙은 실행 플랜을 수정하지 않는다. 복사본에 적용해 V3와 비교하며,
+차이가 있으면 `llm_legacy_semantic_disagreement` 미해결 조건으로 기록해 SQL 생성을 차단한다.
+
+배포 순서:
+
+1. `QUERY_PLAN_AUTHORITY=shadow`, `PARSER_SHADOW_MODE=shadow`로 슬롯별 일치율을 수집한다.
+2. 위험 차이를 골든 코퍼스에 추가하고 V3 스키마·프롬프트를 수정한다. 새 문장별 정규식은 추가하지 않는다.
+3. `QUERY_PLAN_AUTHORITY=llm_first`로 전환한다.
+4. 장애 시 `QUERY_PLAN_AUTHORITY=rules_first` 또는 요청별 `query_parser=rules`로 되돌린다.
+
+계약 테스트는 `tests/test_campaign_plan_v3.py`가 소유한다.
+
 ## 남은 결함 (2026-07-29 기준)
 
 - **조용한 소실 2건** — `target_user.purchase_object` / `purchase_object_kind`. 결정론 백스톱이 없고

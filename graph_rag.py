@@ -110,8 +110,11 @@ import semantic_requirements
 import compiler_strategies
 from query_structurer import (
     CAMPAIGN_QUERY_PLAN_V2_TOOL,
+    CAMPAIGN_QUERY_PLAN_V3_TOOL,
     CampaignQueryPlanV2,
+    CampaignQueryPlanV3,
     LLMCampaignQueryPlanStructurer,
+    LLMCampaignQueryPlanV3Structurer,
     LLMQueryStructurer,
     QueryPlannerInput,
     QueryStructurer,
@@ -121,6 +124,7 @@ from query_structurer import (
     STRUCTURED_QUERY_TOOL,
     as_campaign_query_plan_v2,
     build_campaign_query_plan_v2_fallback,
+    build_campaign_query_plan_v3_fallback,
     build_fallback,
     verify_campaign_query_identity,
     call_query_planner,
@@ -374,6 +378,83 @@ def _structure_campaign_query_plan_v2(
             {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
         )
         return build_campaign_query_plan_v2_fallback(query)
+
+
+def _structure_campaign_query_plan_v3(
+    query: str,
+    context: StructuringContext,
+    llm_model: str,
+    query_structurer: QueryStructurer | None = None,
+) -> CampaignQueryPlanV3:
+    """Extract the evidence-bound semantic IR before legacy parsing."""
+
+    input = QueryStructuringInput(query=query, context=context)
+    if query_structurer is not None:
+        try:
+            structured = query_structurer.structure(input)
+            if isinstance(structured, CampaignQueryPlanV3):
+                return structured
+        except Exception as exc:  # noqa: BLE001 - legacy fallback remains available.
+            _write_rag_llm_log(
+                "campaign_query_plan_v3_injected_failed",
+                {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
+            )
+        return build_campaign_query_plan_v3_fallback(query)
+
+    if not os.getenv("OPENAI_API_KEY"):
+        _write_rag_llm_log(
+            "campaign_query_plan_v3_skipped",
+            {"query": query, "reason": "missing_openai_api_key"},
+        )
+        return build_campaign_query_plan_v3_fallback(query)
+
+    try:
+        from openai import OpenAI
+
+        client = OpenAI()
+        call_count = 0
+
+        def complete(messages: list[dict[str, str]]) -> str:
+            nonlocal call_count
+            call_count += 1
+            model = _fast_llm_model(llm_model) or llm_model
+            response = _openai_chat_create(
+                client,
+                model=model,
+                temperature=0,
+                messages=messages,
+                tools=[CAMPAIGN_QUERY_PLAN_V3_TOOL],
+                tool_choice={
+                    "type": "function",
+                    "function": {"name": CAMPAIGN_QUERY_PLAN_V3_TOOL["function"]["name"]},
+                },
+                parallel_tool_calls=False,
+            )
+            tool_calls = getattr(response.choices[0].message, "tool_calls", None) or []
+            if not tool_calls:
+                raise ValueError("campaign QueryPlan v3 tool call missing")
+            function = tool_calls[0].function
+            if function.name != CAMPAIGN_QUERY_PLAN_V3_TOOL["function"]["name"]:
+                raise ValueError(f"unexpected campaign QueryPlan v3 tool: {function.name}")
+            content = function.arguments or "{}"
+            _write_rag_llm_log(
+                "campaign_query_plan_v3_response",
+                {"attempt": call_count, "model": model, "query": query, "content": content},
+            )
+            return content
+
+        return LLMCampaignQueryPlanV3Structurer(
+            complete,
+            on_event=lambda event, payload: _write_rag_llm_log(
+                event, {"query": query, **payload}
+            ),
+        ).structure(input)
+    except Exception as exc:  # noqa: BLE001 - fail closed into legacy rules.
+        _write_rag_llm_log(
+            "campaign_query_plan_v3_setup_failed",
+            {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
+        )
+        return build_campaign_query_plan_v3_fallback(query)
 
 
 def _fast_llm_model(current: str | None) -> str | None:
@@ -2172,6 +2253,19 @@ def _finalize_deterministic_query_plan(
     plan["complexity"] = classify_query_complexity(plan)
 
 
+_QUERY_PLAN_AUTHORITY_ENV = "QUERY_PLAN_AUTHORITY"
+_QUERY_PLAN_AUTHORITIES = frozenset({"rules_first", "shadow", "llm_first"})
+
+
+def _query_plan_authority(parser: str) -> str:
+    """Return the migration authority without changing explicit rules mode."""
+
+    if parser.casefold() == "rules":
+        return "rules_first"
+    configured = os.getenv(_QUERY_PLAN_AUTHORITY_ENV, "llm_first").strip().casefold()
+    return configured if configured in _QUERY_PLAN_AUTHORITIES else "llm_first"
+
+
 def build_query_plan(
     query: str,
     normalization_rules: Path | None = DEFAULT_NORMALIZATION_PATH,
@@ -2196,9 +2290,37 @@ def build_query_plan(
     변이 파싱은 rules(결정론)로 하여 비용을 낮춘다 — 다양한 표현형이 서로 다른 규칙 패턴에 걸리는 것이 핵심.
     """
     requested_parser = parser.casefold()
+    authority = _query_plan_authority(requested_parser)
+    semantic_plan = query_plan_v2
+    structuring_failure: str | None = None
+    # LLM-first means the raw source query is structured before any linguistic
+    # regex parser runs.  The factory is deliberately called with an empty plan;
+    # it may not use legacy extraction as a hint.
+    if (
+        authority == "llm_first"
+        and requested_parser in {"auto", "llm"}
+        and semantic_plan is None
+        and query_plan_v2_factory is not None
+    ):
+        try:
+            proposed = query_plan_v2_factory({})
+            if isinstance(proposed, dict) and proposed.get("intent") != "unknown":
+                semantic_plan = proposed
+            else:
+                structuring_failure = "llm_semantic_structuring_unavailable"
+        except Exception as exc:  # noqa: BLE001 - rules are the availability fallback.
+            structuring_failure = f"llm_semantic_structuring_failed:{exc.__class__.__name__}"
+            _write_rag_llm_log(
+                "campaign_query_plan_v3_factory_failed",
+                {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
+            )
     initial_parser = (
         "rules"
-        if query_plan_v2_factory is not None and requested_parser in {"auto", "llm"}
+        if (
+            query_plan_v2_factory is not None
+            and requested_parser in {"auto", "llm"}
+            and semantic_plan is None
+        )
         else parser
     )
     base = _build_single_query_plan(
@@ -2210,7 +2332,7 @@ def build_query_plan(
         llm_model,
         prompt_dir,
         structured_query,
-        query_plan_v2,
+        semantic_plan,
         original_query,
         precomputed_scopes,
     )
@@ -2241,24 +2363,32 @@ def build_query_plan(
     # ``query``는 retrieve 경로에서 정규화/스코프 분리된 planning query일 수 있다. 최초 구조화기가
     # 보존한 원문 타겟 절과 API 원문 전체를 각각 유지해, 내부 재작성문이 original/raw를 덮지 못하게 한다.
     source_query = (
-        str(query_plan_v2.get("original_query"))
-        if isinstance(query_plan_v2, dict) and isinstance(query_plan_v2.get("original_query"), str)
-        and str(query_plan_v2.get("original_query")).strip()
+        str(semantic_plan.get("original_query"))
+        if isinstance(semantic_plan, dict) and isinstance(semantic_plan.get("original_query"), str)
+        and str(semantic_plan.get("original_query")).strip()
         else (original_query or query)
     )
     preserved_raw_query = (
         raw_query
         or (
-            str(query_plan_v2.get("raw_query"))
-            if isinstance(query_plan_v2, dict) and isinstance(query_plan_v2.get("raw_query"), str)
-            and str(query_plan_v2.get("raw_query")).strip()
+            str(semantic_plan.get("raw_query"))
+            if isinstance(semantic_plan, dict) and isinstance(semantic_plan.get("raw_query"), str)
+            and str(semantic_plan.get("raw_query")).strip()
             else None
         )
         or source_query
     )
     _refresh_unresolved_source_conditions(source_query, base)
-    if query_plan_v2_factory is not None and requested_parser in {"auto", "llm"}:
-        needs_enrichment = requested_parser == "llm" or _query_plan_needs_llm_enrichment(base)
+    if (
+        authority != "llm_first"
+        and query_plan_v2_factory is not None
+        and requested_parser in {"auto", "llm"}
+    ):
+        needs_enrichment = (
+            authority == "shadow"
+            or requested_parser == "llm"
+            or _query_plan_needs_llm_enrichment(base)
+        )
         if needs_enrichment:
             structured_plan = query_plan_v2_factory(base)
             llm_candidate = None
@@ -2284,6 +2414,7 @@ def build_query_plan(
                     "requested": requested_parser,
                     "fallback_used": False,
                     "model": llm_model,
+                    "authority": authority,
                 }
                 _finalize_deterministic_query_plan(query, base, sql_schema)
             else:
@@ -2300,6 +2431,21 @@ def build_query_plan(
                 "fallback_used": False,
                 "skip_reason": "deterministic_plan_complete",
             }
+    if authority == "llm_first":
+        parser_state = base.setdefault("parser", {})
+        parser_state["authority"] = "llm_first"
+        parser_state["semantic_schema_version"] = (
+            semantic_plan.get("schema_version") if isinstance(semantic_plan, dict) else None
+        )
+        if semantic_plan is None:
+            parser_state.update(
+                {
+                    "type": "rules",
+                    "requested": requested_parser,
+                    "fallback_used": True,
+                    "fallback_reason": structuring_failure or "llm_semantic_structuring_unavailable",
+                }
+            )
     # 정밀 신호가 원문에는 있는데 어떤 실행 슬롯에도 귀결되지 않은 경우, 경고로 흘리지 않고 IR의
     # 미해결 요구로 남긴다. build_sql_result가 같은 검사를 다시 수행하므로 이후 보강 단계의 변경도 반영된다.
     _refresh_unresolved_source_conditions(source_query, base)
@@ -3687,6 +3833,55 @@ def _run_source_authoritative_stages(
         )
 
 
+def _validate_source_authoritative_stages(
+    source_query: str,
+    plan: dict[str, Any],
+    *,
+    sql_schema: Path,
+    normalization_rules: Path | None,
+) -> dict[str, Any]:
+    """Run legacy source stages as a non-mutating validator for V3 plans.
+
+    A divergent legacy interpretation is diagnostic evidence, never permission
+    to silently rewrite the LLM-owned IR.  Divergence is carried as unresolved
+    input so SQL generation fails closed until the semantic contract covers it.
+    """
+
+    candidate = copy.deepcopy(plan)
+    _run_source_authoritative_stages(
+        source_query,
+        candidate,
+        sql_schema=sql_schema,
+        normalization_rules=normalization_rules,
+    )
+    comparison = parser_shadow.compare(
+        plan,
+        candidate,
+        baseline_label="llm_first_v3",
+        candidate_label="legacy_source_validator",
+        query=source_query,
+    )
+    divergent = parser_shadow.divergent_slots(comparison)
+    validation = {
+        "is_satisfied": not divergent,
+        "counts": comparison.get("counts", {}),
+        "divergent_slots": divergent,
+    }
+    plan.setdefault("parser", {})["source_validation"] = validation
+    if divergent:
+        unresolved = plan.setdefault("unresolved_source_conditions", [])
+        for slot in divergent:
+            item = {
+                "path": slot,
+                "condition": slot,
+                "reason": "llm_legacy_semantic_disagreement",
+                "source": "legacy_source_validator",
+            }
+            if item not in unresolved:
+                unresolved.append(item)
+    return validation
+
+
 def _resolve_query_plan_candidates(
     candidates: list[plan_resolver.PlanCandidate],
     *,
@@ -3742,6 +3937,8 @@ def _build_single_query_plan(
     parser = parser.casefold()
     if parser not in {"rules", "auto", "llm"}:
         raise ValueError("query parser must be one of: rules, auto, llm.")
+    authority = _query_plan_authority(parser)
+    llm_first = authority == "llm_first" and parser in {"auto", "llm"}
 
     # 검색·그래프 컨텍스트 스코핑용 타겟팅/채널 절 분리(전체 문장 파싱·SQL 에는 영향 없음).
     scopes = (
@@ -3776,19 +3973,49 @@ def _build_single_query_plan(
         )
         else (original_query or parse_query)
     )
-    candidates = [plan_resolver.PlanCandidate("rules", rules_candidate, priority=300)]
+    candidates = [
+        plan_resolver.PlanCandidate(
+            "rules", rules_candidate, priority=100 if llm_first else 300
+        )
+    ]
     object_candidate = _build_llm_object_candidate(
         parse_query, rules_candidate, llm_model=llm_model, prompt_dir=prompt_dir
     )
     if any(isinstance(value, dict) and value for value in object_candidate.values()):
-        candidates.append(plan_resolver.PlanCandidate("llm_object_fallback", object_candidate, priority=200))
+        candidates.append(
+            plan_resolver.PlanCandidate(
+                "llm_object_fallback", object_candidate, priority=200
+            )
+        )
 
     supplied_llm_candidate: dict[str, Any] | None = None
     if isinstance(query_plan_v2, dict) and query_plan_v2.get("intent") != "unknown":
         supplied_llm_candidate = _coerce_llm_query_plan_candidate(
             query_plan_v2, rules_candidate, sql_schema, source_query=source_query
         )
-        candidates.append(plan_resolver.PlanCandidate("llm_query_structurer", supplied_llm_candidate, priority=100))
+        if isinstance(query_plan_v2.get("semantic_evidence"), list):
+            supplied_llm_candidate["semantic_evidence"] = copy.deepcopy(
+                query_plan_v2["semantic_evidence"]
+            )
+        unresolved = query_plan_v2.get("unresolved")
+        if isinstance(unresolved, list) and unresolved:
+            supplied_llm_candidate["unresolved_source_conditions"] = [
+                {
+                    "path": item.get("path"),
+                    "condition": item.get("evidence") or item.get("reason"),
+                    "reason": item.get("reason"),
+                    "source": "llm_semantic_ir",
+                }
+                for item in unresolved
+                if isinstance(item, dict)
+            ]
+        candidates.append(
+            plan_resolver.PlanCandidate(
+                "llm_query_structurer",
+                supplied_llm_candidate,
+                priority=400 if llm_first else 100,
+            )
+        )
 
     # 파서들은 후보만 제출한다. 슬롯 충돌·리스트 결합·미결정 intent 보완은 이 단일 resolver 호출이 소유한다.
     rules_plan = _resolve_query_plan_candidates(candidates, source_query=source_query)
@@ -3833,7 +4060,11 @@ def _build_single_query_plan(
             llm_plan = None
         else:
             candidates.append(
-                plan_resolver.PlanCandidate("llm_query_structurer", generated_llm_candidate, priority=100)
+                plan_resolver.PlanCandidate(
+                    "llm_query_structurer",
+                    generated_llm_candidate,
+                    priority=400 if llm_first else 100,
+                )
             )
             llm_plan = _resolve_query_plan_candidates(candidates, source_query=source_query)
     if llm_plan is None:
@@ -3851,6 +4082,7 @@ def _build_single_query_plan(
         "requested": parser,
         "fallback_used": False,
         "model": llm_model,
+        "authority": authority,
     }
     # 디멘션 값(브랜드명)→코드 해석과 판매 상품 추출은 프롬프트 텍스트에서 결정론적으로 뽑으므로,
     # LLM 플랜에도 동일하게 적용해 rules/llm 어느 경로든 동일한 타겟팅/메시지 컨텍스트를 보장한다.
@@ -11501,14 +11733,37 @@ def retrieve(
         current_date=date.today().isoformat(),
         timezone=os.getenv("GRAPH_RAG_TIMEZONE"),
     )
-    campaign_query_plan = build_campaign_query_plan_v2_fallback(targeting_prompt)
+    authority = _query_plan_authority(query_parser)
+    campaign_query_plan: CampaignQueryPlanV2 = build_campaign_query_plan_v3_fallback(
+        targeting_prompt
+    )
     timings_ms["query_structuring"] = 0.0
+    if authority == "llm_first" and query_parser.casefold() in {"auto", "llm"}:
+        # The model sees the untouched targeting prompt before rewrite/scope
+        # splitting.  Later stages consume this plan; they do not provide hints
+        # back into semantic extraction.
+        structuring_started_at = time.perf_counter()
+        campaign_query_plan = _structure_campaign_query_plan_v3(
+            targeting_prompt, context, llm_model, query_structurer
+        )
+        timings_ms["query_structuring"] = _elapsed_ms(structuring_started_at)
 
     def lazy_campaign_query_plan(_rules_plan: dict[str, Any]) -> CampaignQueryPlanV2:
         nonlocal campaign_query_plan
+        if (
+            authority == "llm_first"
+            and campaign_query_plan.get("schema_version") == "3.0"
+        ):
+            return campaign_query_plan
         structuring_started_at = time.perf_counter()
-        campaign_query_plan = _structure_campaign_query_plan_v2(
-            targeting_prompt, context, llm_model, query_structurer
+        campaign_query_plan = (
+            _structure_campaign_query_plan_v3(
+                targeting_prompt, context, llm_model, query_structurer
+            )
+            if authority in {"llm_first", "shadow"}
+            else _structure_campaign_query_plan_v2(
+                targeting_prompt, context, llm_model, query_structurer
+            )
         )
         timings_ms["query_structuring"] = _elapsed_ms(structuring_started_at)
         return campaign_query_plan
@@ -11562,10 +11817,18 @@ def retrieve(
     # 결정론 조건을 원문 기준으로 다시 확정한다. 단계 목록·순서·사유는 _source_authoritative_stages
     # 가 단일 소스로 소유한다 — 이전에는 같은 규칙이 여기 스무 줄로 흩어져 있었고, 일부는 원문을
     # 일부는 재작성본을 넘겨 출처 구간(span) 좌표계가 섞였다(→ 소유권 판정이 종류 기준으로 퇴화).
-    _run_source_authoritative_stages(
-        targeting_prompt, query_plan,
-        sql_schema=sql_schema, normalization_rules=normalization_rules,
-    )
+    if (query_plan.get("parser") or {}).get("authority") == "llm_first":
+        _validate_source_authoritative_stages(
+            targeting_prompt,
+            query_plan,
+            sql_schema=sql_schema,
+            normalization_rules=normalization_rules,
+        )
+    else:
+        _run_source_authoritative_stages(
+            targeting_prompt, query_plan,
+            sql_schema=sql_schema, normalization_rules=normalization_rules,
+        )
     # 타겟팅 스코프면 plan_query 가 오디언스 절뿐이라 '재구매를 유도' 같은 캠페인 목적 절이 잘려
     # intent 가 recommend_campaign→find_user_segment 로 약화된다(장바구니 이탈 재구매 유도 등).
     # 목적 절이 살아있는 전체 재작성본으로 intent 를 재추론해 더 강한 캠페인 의도로만 승격한다.
@@ -14863,6 +15126,12 @@ def _refresh_unresolved_source_conditions(
     바꾸지 않기 위한 fail-close 입력이다. 매 호출마다 최종 plan 기준으로 다시 계산하므로 앞 단계에서
     미해결이던 조건을 후속 원문 권위 단계가 복원하면 자동으로 해소된다.
     """
+    preserved = [
+        copy.deepcopy(item)
+        for item in (query_plan.get("unresolved_source_conditions") or [])
+        if isinstance(item, dict)
+        and item.get("source") in {"llm_semantic_ir", "legacy_source_validator"}
+    ]
     labels = _deterministic_dropped_conditions(original_query, query_plan)
     unresolved = [
         {
@@ -14877,8 +15146,9 @@ def _refresh_unresolved_source_conditions(
         }
         for index, label in enumerate(labels)
     ]
-    query_plan["unresolved_source_conditions"] = unresolved
-    return unresolved
+    merged = preserved + [item for item in unresolved if item not in preserved]
+    query_plan["unresolved_source_conditions"] = merged
+    return merged
 
 
 def _verify_sql_semantic_invariants(
@@ -22558,7 +22828,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-key", default=os.getenv("QDRANT_API_KEY"), help="Qdrant API key.")
     parser.add_argument("--collection", default=os.getenv("QDRANT_GRAPH_COLLECTION", DEFAULT_COLLECTION), help="Qdrant collection name.")
     parser.add_argument("--embedding-model", default=os.getenv("QDRANT_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL), help="FastEmbed model name.")
-    parser.add_argument("--query-parser", choices=["rules", "auto", "llm"], default=os.getenv("QUERY_PARSER", "rules"), help="Query planning parser. auto/llm uses OpenAI when OPENAI_API_KEY is available and falls back to rules.")
+    parser.add_argument("--query-parser", choices=["rules", "auto", "llm"], default=os.getenv("QUERY_PARSER", "auto"), help="Query planning parser. auto/llm structures meaning with OpenAI first and falls back to legacy rules.")
     parser.add_argument("--llm-model", default=DEFAULT_LLM_MODEL, help="OpenAI model for optional query parsing and answer generation.")
     parser.add_argument("--generate-answer", action="store_true", help="Call OpenAI to generate the final answer from answer_prompt.")
     parser.add_argument("--generate-messages", action="store_true", help="Call OpenAI to generate LMS/RCS message variants after SQL generation succeeds.")

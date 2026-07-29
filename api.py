@@ -128,7 +128,7 @@ class PolicyUpsertRequest(BaseModel):
 
 class TargetSqlRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="Natural language prompt used to generate targeting SQL.")
-    query_parser: Literal["rules", "auto", "llm"] = Field(default=os.getenv("QUERY_PARSER", "rules"))
+    query_parser: Literal["rules", "auto", "llm"] = Field(default=os.getenv("QUERY_PARSER", "auto"))
     # 검색·그래프 컨텍스트 스코프. 타겟팅 탭은 오디언스 절만으로 지식을 찾도록 기본 targeting.
     # (SQL 타겟 추출은 스코프와 무관하게 전체 문장 기준으로 동일하게 생성된다.)
     retrieval_scope: Literal["targeting", "channel", "all"] = Field(default="targeting")
@@ -154,7 +154,7 @@ class TargetSqlRequest(BaseModel):
 
 class RetrieveTraceRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="추론 과정을 추적할 자연어 프롬프트.")
-    query_parser: Literal["rules", "auto", "llm"] = Field(default=os.getenv("QUERY_PARSER", "rules"))
+    query_parser: Literal["rules", "auto", "llm"] = Field(default=os.getenv("QUERY_PARSER", "auto"))
     # 타겟팅 탭의 관계그래프 추적이므로 검색·그래프 컨텍스트는 기본 targeting 스코프.
     retrieval_scope: Literal["targeting", "channel", "all"] = Field(default="targeting")
     collection: str = Field(default=os.getenv("QDRANT_GRAPH_COLLECTION", DEFAULT_COLLECTION))
@@ -172,7 +172,7 @@ class ChannelMessagesRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="Natural language prompt used to generate channel message recommendations.")
     message_channel: Literal["auto", "lms", "rcs", "rcsSms"] = "lms"
     message_generation_options: MessageGenerationOptions | None = None
-    query_parser: Literal["rules", "auto", "llm"] = Field(default=os.getenv("QUERY_PARSER", "rules"))
+    query_parser: Literal["rules", "auto", "llm"] = Field(default=os.getenv("QUERY_PARSER", "auto"))
     collection: str = Field(default=os.getenv("QDRANT_GRAPH_COLLECTION", DEFAULT_COLLECTION))
     vector_top_k: int = Field(default=_env_int("GRAPH_RAG_VECTOR_TOP_K", 0), ge=0)
     keyword_top_k: int = Field(default=_env_int("GRAPH_RAG_KEYWORD_TOP_K", 5), ge=0)
@@ -4044,7 +4044,7 @@ def execute_target_sql(
             persist_targeting=persist_targeting,
             audience_ttl_days=audience_ttl_days,
             prompt=prompt or "",
-            query_parser=query_parser or "rules",
+            query_parser=query_parser or "auto",
             request_options=request_options or {},
             query_plan=query_plan or {},
         )

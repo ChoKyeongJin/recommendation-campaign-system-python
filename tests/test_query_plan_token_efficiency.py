@@ -49,12 +49,12 @@ def test_campaign_structurer_injects_application_owned_identity() -> None:
     assert "source_requirements" not in tool_properties
 
 
-def test_rules_and_complete_auto_plans_skip_v2_factory() -> None:
+def test_rules_skip_but_auto_calls_semantic_factory_first() -> None:
     calls: list[str] = []
 
     def factory(_plan: dict) -> graph_rag.CampaignQueryPlanV2:
         calls.append("called")
-        raise AssertionError("complete deterministic plans must not call the v2 structurer")
+        raise RuntimeError("semantic structurer unavailable")
 
     scopes = {"mode": "rules", "targeting": "20대 여성 고객", "channel": ""}
     rules_plan = graph_rag.build_query_plan(
@@ -63,6 +63,9 @@ def test_rules_and_complete_auto_plans_skip_v2_factory() -> None:
         query_plan_v2_factory=factory,
         precomputed_scopes=scopes,
     )
+    assert calls == []
+    assert rules_plan["parser"]["type"] == "rules"
+
     auto_plan = graph_rag.build_query_plan(
         "20대 여성 고객",
         parser="auto",
@@ -70,9 +73,9 @@ def test_rules_and_complete_auto_plans_skip_v2_factory() -> None:
         precomputed_scopes=scopes,
     )
 
-    assert calls == []
-    assert rules_plan["parser"]["type"] == "rules"
-    assert auto_plan["parser"]["skip_reason"] == "deterministic_plan_complete"
+    assert calls == ["called"]
+    assert auto_plan["parser"]["authority"] == "llm_first"
+    assert auto_plan["parser"]["fallback_used"] is True
 
     aggregate_query = "2019년 3월에 같은 상품을 동시 구매한 고객수"
     aggregate_plan = graph_rag.build_query_plan(
@@ -81,8 +84,8 @@ def test_rules_and_complete_auto_plans_skip_v2_factory() -> None:
         query_plan_v2_factory=factory,
         precomputed_scopes={"mode": "llm", "targeting": aggregate_query, "channel": ""},
     )
-    assert calls == []
-    assert aggregate_plan["parser"]["skip_reason"] == "deterministic_plan_complete"
+    assert calls == ["called", "called"]
+    assert aggregate_plan["parser"]["fallback_used"] is True
 
 
 def test_precomputed_scopes_avoid_second_split(monkeypatch) -> None:

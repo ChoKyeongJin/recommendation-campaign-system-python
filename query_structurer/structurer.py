@@ -7,8 +7,15 @@ from typing import Any
 from .prompt import (
     COMPLEX_QUERY_STRUCTURER_SYSTEM_PROMPT,
     build_campaign_query_plan_v2_user_prompt,
+    build_campaign_query_plan_v3_user_prompt,
     build_retry_prompt,
     build_structuring_user_prompt,
+)
+from .campaign_plan_v3 import (
+    CampaignQueryPlanV3,
+    attach_campaign_query_plan_v3_identity,
+    build_campaign_query_plan_v3_fallback,
+    validate_campaign_query_plan_v3,
 )
 from .campaign_plan_v2 import (
     CampaignQueryPlanV2,
@@ -152,3 +159,73 @@ class LLMCampaignQueryPlanStructurer:
             {"attempts": self._max_retries + 1, "last_error": last_error},
         )
         return build_campaign_query_plan_v2_fallback(input.query)
+
+
+class LLMCampaignQueryPlanV3Structurer:
+    """Extract an evidence-bound semantic plan before legacy parsing runs."""
+
+    def __init__(
+        self,
+        complete: Completion,
+        max_retries: int = 1,
+        on_event: EventSink | None = None,
+    ) -> None:
+        self._complete = complete
+        self._max_retries = max_retries
+        self._on_event = on_event
+
+    def _emit(self, event: str, payload: dict[str, Any]) -> None:
+        if self._on_event is not None:
+            self._on_event(event, payload)
+
+    def structure(self, input: QueryStructuringInput) -> CampaignQueryPlanV3:
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "너는 캠페인 요청의 의미 구조화기다. 사용자 원문에서 확인되는 의미만 "
+                    "QueryPlan v3로 제출한다. SQL이나 물리 스키마를 만들지 않는다. 부정, 기간의 "
+                    "소유 대상, AND/OR 범위를 보존하고 불확실한 내용은 unresolved로 반환한다."
+                ),
+            },
+            {"role": "user", "content": build_campaign_query_plan_v3_user_prompt(input)},
+        ]
+        last_error = "unknown"
+        for attempt in range(self._max_retries + 1):
+            response = ""
+            try:
+                response = self._complete(messages)
+                payload = attach_campaign_query_plan_v3_identity(
+                    json.loads(response), input.query
+                )
+                result = validate_campaign_query_plan_v3(payload, query=input.query)
+                self._emit(
+                    "campaign_query_plan_v3_success",
+                    {"attempt": attempt + 1, "query_plan": result.to_dict()},
+                )
+                return result
+            except (
+                json.JSONDecodeError,
+                CampaignQueryPlanValidationError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                last_error = f"{exc.__class__.__name__}: {exc}"
+            except Exception as exc:  # noqa: BLE001 - provider failure uses legacy fallback.
+                last_error = f"{exc.__class__.__name__}: {exc}"
+            self._emit(
+                "campaign_query_plan_v3_attempt_failed",
+                {"attempt": attempt + 1, "error": last_error, "response": response},
+            )
+            if attempt < self._max_retries:
+                messages.extend(
+                    [
+                        {"role": "assistant", "content": response},
+                        {"role": "user", "content": build_retry_prompt(response, last_error)},
+                    ]
+                )
+        self._emit(
+            "campaign_query_plan_v3_fallback",
+            {"attempts": self._max_retries + 1, "last_error": last_error},
+        )
+        return build_campaign_query_plan_v3_fallback(input.query)

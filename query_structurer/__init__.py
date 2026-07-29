@@ -18,7 +18,20 @@ from .campaign_plan_v2 import (
     verify_campaign_query_identity,
     validate_campaign_query_plan_v2,
 )
-from .structurer import LLMCampaignQueryPlanStructurer, LLMQueryStructurer
+from .campaign_plan_v3 import (
+    CAMPAIGN_QUERY_PLAN_V3_LLM_JSON_SCHEMA,
+    CAMPAIGN_QUERY_PLAN_V3_TOOL,
+    CAMPAIGN_QUERY_PLAN_V3_VERSION,
+    CampaignQueryPlanV3,
+    attach_campaign_query_plan_v3_identity,
+    build_campaign_query_plan_v3_fallback,
+    validate_campaign_query_plan_v3,
+)
+from .structurer import (
+    LLMCampaignQueryPlanStructurer,
+    LLMCampaignQueryPlanV3Structurer,
+    LLMQueryStructurer,
+)
 from .types import (
     QueryStructurer,
     QueryStructuringInput,
@@ -32,8 +45,13 @@ __all__ = [
     "CAMPAIGN_QUERY_PLAN_VERSION",
     "CampaignQueryPlanV2",
     "CampaignQueryPlanValidationError",
+    "CAMPAIGN_QUERY_PLAN_V3_LLM_JSON_SCHEMA",
+    "CAMPAIGN_QUERY_PLAN_V3_TOOL",
+    "CAMPAIGN_QUERY_PLAN_V3_VERSION",
+    "CampaignQueryPlanV3",
     "attach_campaign_query_plan_v2_identity",
     "LLMCampaignQueryPlanStructurer",
+    "LLMCampaignQueryPlanV3Structurer",
     "LLMQueryStructurer",
     "QueryPlannerInput",
     "QueryStructurer",
@@ -46,8 +64,11 @@ __all__ = [
     "build_fallback",
     "as_campaign_query_plan_v2",
     "build_campaign_query_plan_v2_fallback",
+    "attach_campaign_query_plan_v3_identity",
+    "build_campaign_query_plan_v3_fallback",
     "call_query_planner",
     "validate_structured_query",
     "validate_campaign_query_plan_v2",
+    "validate_campaign_query_plan_v3",
     "verify_campaign_query_identity",
 ]

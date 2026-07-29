@@ -47,6 +47,7 @@ DERIVED_PLAN_KEYS = frozenset({
     "semantic_resolutions",   # 의미 해소 흔적
     "source_requirements",    # 소스 요구(다이제스트와 쌍)
     "parser_shadow",          # 파서 shadow 비교 계측(parser_shadow) — 조건이 아니라 관찰이다
+    "semantic_evidence",      # V3 의미 슬롯의 원문 근거 — 조건값이 아니라 provenance다
     "slot_policy",            # 슬롯 소유권 판정 흔적(slot_policy)
 })
 
