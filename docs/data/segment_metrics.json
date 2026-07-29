@@ -1,24 +1,10 @@
 {
-  "_comment": "세그먼트 지표 스펙(도메인·별칭·단위·capability·파생·미지원 안내). 쿠폰 관련 의미(지표/연산자/지원 여부/안내 문구)를 코드가 아닌 이 JSON 으로 분리한다. segment_semantics.py 가 로드/검증하고, 파서는 정규화된 의미 노드(IR)를 만든 뒤 capability 를 조회해 지원/미지원을 판정한다. 새 별칭·capability·안내 문구는 이 파일만 고치면 되고 파서 코드 수정 불필요.",
+  "_comment": "세그먼트 지표의 '접지(grounding)' 스펙 — 물리 소스·집계·capability·미지원 안내. 여기 값은 취향이 아니라 사실이다: 어느 테이블/컬럼에서 오는가, 컴파일러가 그 연산을 실제로 구현했는가. 그래서 LLM 이 추론으로 채우면 안 되고(없는 지원을 '지원됨'이라 답하면 fail-open), 이 파일이 단일 소스로 남는다. 사람이 말하는 표면어(별칭·단위·동사·부정 표현)는 이 파일이 아니라 segment_lexicon.json 이 소유한다 — 두 성격이 한 파일에 섞여 있으면 '어휘 한 줄 추가'가 접지 파일을 건드리는 일이 된다. segment_semantics.py 가 둘을 합쳐 로드/교차검증하고, 파서는 정규화된 의미 노드(IR)를 만든 뒤 capability 를 조회해 지원/미지원을 판정한다.",
   "metrics": {
     "coupon_usage_count": {
       "domain": "coupon",
       "value_type": "integer",
       "source": { "table": "MCS_CAMP_MBR_RSPN_FT", "alias": "R", "column": "USE_CPN_CNT" },
-      "usage_verbs": ["사용", "이용", "썼", "쓴", "쓰"],
-      "aliases": [
-        "쿠폰 사용 횟수", "쿠폰 사용 회수", "쿠폰 사용 건수", "쿠폰 사용 수",
-        "사용한 쿠폰 수", "사용한 쿠폰 개수", "쿠폰을 사용한 횟수", "쿠폰 사용 개수",
-        "쿠폰 수", "쿠폰 개수"
-      ],
-      "units": ["회", "건", "개", "장", "번"],
-      "negative_expressions": [
-        "한 번도 사용하지 않은", "한번도 사용하지 않은", "한 번도 사용하지않은",
-        "사용하지 않은", "사용하지않은", "사용 안 한", "사용 안한", "사용안한",
-        "미사용", "사용 이력이 없는", "사용이력이 없는", "사용 이력 없는",
-        "사용한 적 없는", "사용한적 없는", "사용한 적이 없는",
-        "사용한 쿠폰이 없는", "사용한 쿠폰이없는"
-      ],
       "aggregation": { "member_key": "MBR_NO", "agg": "SUM", "null_as": 0 },
       "capabilities": {
         "existence_filter": { "supported": true,  "supported_operators": ["gt_zero", "eq_zero"] },
@@ -48,8 +34,6 @@
     "purchase_count": {
       "domain": "purchase",
       "value_type": "integer",
-      "aliases": ["구매건수", "구매 건수", "구매횟수", "구매 횟수", "주문건수", "주문 건수", "주문횟수", "주문 횟수"],
-      "units": ["회", "건"],
       "_note": "비교 연산의 대상(operand)으로만 쓰인다 — 쿠폰과의 비교 게이트는 coupon_usage_count.metric_comparison 으로 판정하므로 여기 metric_comparison capability 는 두지 않는다.",
       "capabilities": {
         "filter":  { "supported": true, "supported_operators": ["eq", "gt", "gte", "lt", "lte", "between"] },
@@ -60,8 +44,6 @@
     "purchase_amount": {
       "domain": "purchase",
       "value_type": "money",
-      "aliases": ["구매금액", "구매 금액", "결제금액", "결제 금액", "구매액", "결제액"],
-      "units": ["원"],
       "_note": "비교 대상(operand) 전용 — 쿠폰과의 비교 게이트는 coupon_usage_count.metric_comparison 이 소유.",
       "capabilities": {
         "filter":  { "supported": true, "supported_operators": ["eq", "gt", "gte", "lt", "lte", "between"] },
@@ -72,12 +54,6 @@
     "purchase_amount_per_coupon": {
       "domain": "derived",
       "value_type": "money",
-      "aliases": [
-        "쿠폰 한 개당 구매금액", "쿠폰 한 개당 구매 금액", "쿠폰 한개당 구매금액",
-        "쿠폰 1개당 구매금액", "쿠폰 1개당 구매 금액", "쿠폰당 구매금액", "쿠폰당 구매 금액",
-        "쿠폰 사용 건당 구매금액", "쿠폰 사용 건당 구매 금액", "쿠폰 건당 구매금액"
-      ],
-      "units": ["원"],
       "formula": {
         "type": "ratio",
         "numerator": "purchase_amount",

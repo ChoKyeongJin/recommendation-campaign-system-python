@@ -13,8 +13,13 @@
          → 의미 노드(IR) 완성 → capability 게이트 → 지원/미지원 판정
 
 핵심 원칙(구조):
-  * 지표 이름·별칭·단위·지원 연산자·지원 여부·파생 정의·미지원 코드/문구는 코드가 아니라 JSON
-    (docs/data/segment_metrics.json, docs/data/segment_operators.json)에 둔다.
+  * 지표 정의는 코드가 아니라 JSON 두 파일이 소유하고, 두 파일은 성격으로 갈린다.
+      - docs/data/segment_metrics.json  = 접지: 물리 소스(테이블/컬럼)·집계·capability·미지원 문구.
+        틀리면 잘못된 SQL 이나 못 지킬 약속이 되는 '사실'이라, 추론으로 채우면 안 되는 계층.
+      - docs/data/segment_lexicon.json  = 어휘: 별칭·단위·사용 동사·부정 표현·연산자/표지 표면어.
+        끝없이 늘어나는 '말' 계층이라, 나중에 LLM 슬롯 추출로 대체·보강할 수 있는 쪽.
+    로더가 둘을 metric_id 로 합쳐 SegmentMetric 하나로 만들고, 교차검증으로 드리프트를 막는다
+    (어휘에만 있는 지표 = 오타, 접지에만 있는 지표 = 별칭 없음 → 로드 실패).
   * 의미 노드를 먼저 '완성'한다 — 지원 여부와 무관하게 metric/operator/value/range/negation/비교대상/
     파생식을 보존한다. 지원 여부는 그 다음 capability 게이트에서만 판정한다.
   * 미지원이라고 해서 의미 노드의 일부(임계값·분모·비교대상)를 삭제하지 않는다.
@@ -30,13 +35,13 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 
-DEFAULT_METRICS_PATH = Path("docs/data/segment_metrics.json")
-DEFAULT_OPERATORS_PATH = Path("docs/data/segment_operators.json")
+DEFAULT_METRICS_PATH = Path("docs/data/segment_metrics.json")   # 접지(사실)
+DEFAULT_LEXICON_PATH = Path("docs/data/segment_lexicon.json")   # 어휘(말)
 
 # capability 가 선언할 수 있는 연산(operation). condition.type → operation 매핑의 치역.
 OPERATIONS = frozenset({"filter", "existence_filter", "ranking", "metric_comparison"})
@@ -100,6 +105,16 @@ class SegmentMetric:
 
 
 @dataclass(frozen=True)
+class MetricVocabulary:
+    """지표 하나의 표면 표현(어휘 파일이 소유). 접지(SegmentMetric 의 source/capabilities)와 분리된 계층."""
+
+    aliases: tuple[str, ...]
+    units: tuple[str, ...] = ()
+    usage_verbs: tuple[str, ...] = ()
+    negative_expressions: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class OperatorGrammar:
     # operator_id → 표면 표현(공백 제거) 튜플
     operators: dict[str, tuple[str, ...]]
@@ -130,6 +145,7 @@ class SegmentCondition:
     right_metric: str | None = None
     formula: dict[str, Any] | None = None
     source_text: str = ""
+    slot_source: str | None = None  # 어휘 스캐너가 아닌 외부(LLM) 슬롯에서 왔으면 "llm"
 
     def to_dict(self) -> dict[str, Any]:
         return {k: v for k, v in self.__dict__.items() if v is not None and v != ""}
@@ -189,10 +205,12 @@ class SegmentSemanticsRegistry:
     def load(
         cls,
         metrics_path: Path | str = DEFAULT_METRICS_PATH,
-        operators_path: Path | str = DEFAULT_OPERATORS_PATH,
+        lexicon_path: Path | str = DEFAULT_LEXICON_PATH,
     ) -> "SegmentSemanticsRegistry":
-        metrics = _load_metrics(Path(metrics_path))
-        operators = _load_operators(Path(operators_path))
+        """접지(segment_metrics) + 어휘(segment_lexicon)를 metric_id 로 합쳐 로드한다."""
+        grounding = _load_grounding(Path(metrics_path))
+        vocabularies, operators = _load_lexicon(Path(lexicon_path))
+        metrics = _merge_metrics(grounding, vocabularies, Path(lexicon_path).name)
         _validate_cross(metrics, operators)
         return cls(metrics=metrics, operators=operators)
 
@@ -210,7 +228,8 @@ class SegmentSemanticsRegistry:
         return best
 
 
-def _load_metrics(path: Path) -> dict[str, SegmentMetric]:
+def _load_grounding(path: Path) -> dict[str, SegmentMetric]:
+    """접지 파일(segment_metrics.json) → 어휘가 비어 있는 SegmentMetric. 어휘는 _merge_metrics 가 채운다."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
@@ -224,9 +243,11 @@ def _load_metrics(path: Path) -> dict[str, SegmentMetric]:
         _require(isinstance(data, dict), metric_id, "지표 정의는 객체여야 함")
         _require(isinstance(data.get("domain"), str) and data["domain"].strip(), metric_id, "domain 필수")
         _require(isinstance(data.get("value_type"), str) and data["value_type"].strip(), metric_id, "value_type 필수")
-        aliases = _str_tuple(data.get("aliases"))
-        _require(bool(aliases), metric_id, "aliases 최소 1개 필요")
-        units = _str_tuple(data.get("units"))
+        # 표면어(aliases/units/usage_verbs/negative_expressions)는 이 파일이 소유하지 않는다 — 어휘 파일에
+        # 있어야 할 키가 접지 파일에 섞여 들어오면 조용히 무시되는 대신 즉시 실패한다(소유권 드리프트 차단).
+        stray = [k for k in ("aliases", "units", "usage_verbs", "negative_expressions") if k in data]
+        _require(not stray, metric_id,
+                 f"표면어 키는 어휘 파일(segment_lexicon.json)이 소유한다 — 접지 파일에서 제거: {stray}")
 
         # capability 파싱 + 검증
         capabilities: dict[str, Capability] = {}
@@ -285,10 +306,8 @@ def _load_metrics(path: Path) -> dict[str, SegmentMetric]:
             metric_id=metric_id,
             domain=data["domain"].strip(),
             value_type=data["value_type"].strip(),
-            aliases=aliases,
-            units=units,
-            usage_verbs=_str_tuple(data.get("usage_verbs")),
-            negative_expressions=_str_tuple(data.get("negative_expressions")),
+            aliases=(),
+            units=(),
             source=source,
             formula=formula,
             capabilities=capabilities,
@@ -297,12 +316,52 @@ def _load_metrics(path: Path) -> dict[str, SegmentMetric]:
     return metrics
 
 
-def _load_operators(path: Path) -> OperatorGrammar:
+def _merge_metrics(
+    grounding: dict[str, SegmentMetric],
+    vocabularies: dict[str, MetricVocabulary],
+    lexicon_name: str,
+) -> dict[str, SegmentMetric]:
+    """접지 + 어휘를 metric_id 로 합친다. 한쪽에만 있는 지표는 드리프트이므로 즉시 실패한다."""
+    unknown = sorted(set(vocabularies) - set(grounding))
+    _require(not unknown, lexicon_name,
+             f"접지(segment_metrics.json)에 없는 지표의 어휘: {unknown}")
+    missing = sorted(set(grounding) - set(vocabularies))
+    _require(not missing, lexicon_name,
+             f"어휘가 없는 지표(별칭 없이는 문장에서 인식 불가): {missing}")
+    return {
+        metric_id: replace(
+            metric,
+            aliases=vocabularies[metric_id].aliases,
+            units=vocabularies[metric_id].units,
+            usage_verbs=vocabularies[metric_id].usage_verbs,
+            negative_expressions=vocabularies[metric_id].negative_expressions,
+        )
+        for metric_id, metric in grounding.items()
+    }
+
+
+def _load_lexicon(path: Path) -> tuple[dict[str, MetricVocabulary], OperatorGrammar]:
+    """어휘 파일(segment_lexicon.json) → 지표별 표면어 + 연산자/표지 문법."""
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise SegmentSemanticsError(f"[{path.name}] 읽기/파싱 실패: {exc}") from exc
     _require(isinstance(payload, dict), path.name, "최상위는 객체여야 함")
+
+    raw_vocab = payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}
+    _require(bool(raw_vocab), path.name, "'metrics' 객체 필요(지표별 표면어)")
+    vocabularies: dict[str, MetricVocabulary] = {}
+    for metric_id, data in raw_vocab.items():
+        _require(isinstance(data, dict), metric_id, "어휘 정의는 객체여야 함")
+        aliases = _str_tuple(data.get("aliases"))
+        _require(bool(aliases), metric_id, "aliases 최소 1개 필요")
+        vocabularies[metric_id] = MetricVocabulary(
+            aliases=aliases,
+            units=_str_tuple(data.get("units")),
+            usage_verbs=_str_tuple(data.get("usage_verbs")),
+            negative_expressions=_str_tuple(data.get("negative_expressions")),
+        )
+
     raw_ops = payload.get("operators") if isinstance(payload.get("operators"), dict) else {}
     _require(bool(raw_ops), path.name, "'operators' 객체 필요")
 
@@ -322,7 +381,7 @@ def _load_operators(path: Path) -> OperatorGrammar:
     def m(key: str) -> tuple[str, ...]:
         return _compact_tuple(_str_tuple(markers.get(key)))
 
-    return OperatorGrammar(
+    grammar = OperatorGrammar(
         operators=operators,
         between_markers=between_markers,
         ranking_markers=m("ranking"),
@@ -331,6 +390,7 @@ def _load_operators(path: Path) -> OperatorGrammar:
         comparison_less=m("comparison_less"),
         derived_per=m("derived_per"),
     )
+    return vocabularies, grammar
 
 
 def _validate_cross(metrics: dict[str, SegmentMetric], operators: OperatorGrammar) -> None:
@@ -428,11 +488,21 @@ def _has_usage_sense(compact: str, coupon: SegmentMetric) -> bool:
 
 
 # ── 해석(extract → normalize → gate) ──────────────────────────────────────────────────────
-def interpret(query: str, registry: SegmentSemanticsRegistry) -> Interpretation | None:
+def interpret(
+    query: str,
+    registry: SegmentSemanticsRegistry,
+    slots: dict[str, Any] | None = None,
+) -> Interpretation | None:
     """쿠폰 도메인 조건을 하나의 의미 노드로 정규화하고 capability 게이트를 적용한다.
 
     쿠폰 관련 의도가 없으면 None(호출 측은 기존 경로 유지). 반환 시 condition 은 지원 여부와 무관하게
-    원문 의미를 보존하고, capability.supported 로 지원/미지원을 알린다."""
+    원문 의미를 보존하고, capability.supported 로 지원/미지원을 알린다.
+
+    slots: 어휘 스캐너가 못 읽은 임계를 채우는 외부(LLM) 슬롯 — {operator, value} 또는
+    {operator: "between", min_value, max_value}. 어휘가 먼저이고 슬롯은 **빈칸만** 메운다('세 번 넘게'
+    처럼 한글 수사·처음 보는 연산자 표현이 숫자+단위 정규식에 안 걸리는 경우). 슬롯이 정하는 것은
+    연산자와 값뿐이고, 그 조건을 실제로 지원하는지(capability)는 여전히 접지 JSON 이 판정한다 —
+    LLM 이 지원 여부를 만들어내지 못하게 하는 경계다. 호출 측이 닫힌 집합으로 검증해서 넘긴다."""
     compact = _compact(query)
     if "쿠폰" not in compact:
         return None
@@ -470,7 +540,8 @@ def interpret(query: str, registry: SegmentSemanticsRegistry) -> Interpretation 
         return _gate(cond, "ranking", coupon)
 
     # 4) 임계 필터('쿠폰 5회 초과 사용', '1회에서 3회 사이') — 임계값/범위 보존.
-    threshold = _try_threshold(compact, query, coupon, grammar)
+    #    어휘 스캐너가 우선이고, 못 읽었을 때만 외부 슬롯으로 메운다(어휘가 읽은 값을 LLM 이 덮지 않는다).
+    threshold = _try_threshold(compact, query, coupon, grammar) or _threshold_from_slots(slots, query)
     if threshold is not None:
         # '1개 이상'(gte,≤1)·'0개 초과'(gt,<1)은 사실상 '쿠폰을 사용한'(존재)과 동치 — 회원별 집계 없이
         # EXISTS(USE_CPN_CNT>0)로 처리한다(더 싸고 의미 동일). 그 외 임계(≥2, >5, 범위 등)는 그대로 둔다.
@@ -481,6 +552,36 @@ def interpret(query: str, registry: SegmentSemanticsRegistry) -> Interpretation 
     # 5) 존재 여부(사용/미사용) — 지원. 부정 표현은 exists=false.
     exists = not _has_any(compact, _compact_tuple(coupon.negative_expressions))
     return _existence(query, coupon, exists=exists)
+
+
+def _threshold_from_slots(slots: dict[str, Any] | None, query: str) -> SegmentCondition | None:
+    """외부 슬롯을 임계 의미 노드로. 연산자는 닫힌 집합, 값은 유한한 수여야 한다(아니면 무시)."""
+    if not isinstance(slots, dict):
+        return None
+    operator = slots.get("operator")
+    if operator not in OPERATOR_IDS:
+        return None
+
+    def _number(key: str) -> float | None:
+        value = slots.get(key)
+        return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else None
+
+    if operator == "between":
+        low, high = _number("min_value"), _number("max_value")
+        if low is None or high is None:
+            return None
+        return SegmentCondition(
+            type="metric_filter", metric="coupon_usage_count", operator="between",
+            min_value=min(low, high), max_value=max(low, high), unit="count",
+            source_text=query, slot_source="llm",
+        )
+    value = _number("value")
+    if value is None:
+        return None
+    return SegmentCondition(
+        type="metric_filter", metric="coupon_usage_count", operator=operator,
+        value=value, unit="count", source_text=query, slot_source="llm",
+    )
 
 
 def _threshold_is_at_least_one(cond: SegmentCondition) -> bool:

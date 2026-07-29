@@ -17,7 +17,6 @@ DEFAULT_USER_DATA = Path("docs/data/campaign_user_rag_sample_50_with_edges.json"
 DEFAULT_SCHEMA = Path("docs/data/schema_catalog.json")
 DEFAULT_NORMALIZATION = Path("docs/data/normalization_rules.sample.json")
 DEFAULT_BUSINESS_POLICIES = Path("docs/data/business_policies.sample.json")
-DEFAULT_METRIC_LEXICON = Path("docs/data/metric_lexicon.sample.json")
 DEFAULT_DIMENSION_CATALOG = Path("docs/data/dimension_catalog.sample.json")
 DEFAULT_MEMBER_VALUE_INDEX = Path("docs/data/member_value_index.json")
 DEFAULT_SQL_EXAMPLES = Path("docs/data/sql_examples.sample.sql")
@@ -30,7 +29,6 @@ def rebuild_knowledge_base(
     schema_path: Path,
     normalization_path: Path,
     business_policies_path: Path,
-    metric_lexicon_path: Path,
     sql_examples_path: Path,
     output_path: Path,
     campaign_user_path: Path | None = None,
@@ -41,7 +39,6 @@ def rebuild_knowledge_base(
         schema_catalog=load_json(schema_path),
         normalization_payload=load_json(normalization_path),
         policy_payload=load_json(business_policies_path) if business_policies_path.exists() else None,
-        metric_lexicon_payload=load_json(metric_lexicon_path) if metric_lexicon_path.exists() else None,
         sql_text=sql_examples_path.read_text(encoding="utf-8"),
         campaign_user_payload=(
             load_json(campaign_user_path) if campaign_user_path and campaign_user_path.exists() else None
@@ -118,7 +115,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--schema", type=Path, default=DEFAULT_SCHEMA, help="Schema catalog JSON path.")
     parser.add_argument("--normalization", type=Path, default=DEFAULT_NORMALIZATION, help="Normalization dictionary JSON path.")
     parser.add_argument("--business-policies", type=Path, default=DEFAULT_BUSINESS_POLICIES, help="Business policy JSON path.")
-    parser.add_argument("--metric-lexicon", type=Path, default=DEFAULT_METRIC_LEXICON, help="Metric alias JSON path for computed formula parsing.")
     parser.add_argument("--dimension-catalog", type=Path, default=DEFAULT_DIMENSION_CATALOG, help="Dimension catalog JSON path (prompt keyword -> column + code/name snapshot).")
     parser.add_argument("--member-value-index", type=Path, default=DEFAULT_MEMBER_VALUE_INDEX, help="Member column value index JSON path (auto-built from the live member table).")
     parser.add_argument("--sql-examples", type=Path, default=DEFAULT_SQL_EXAMPLES, help="SQL examples file path.")
@@ -149,7 +145,6 @@ def main() -> None:
             schema_path=args.schema,
             normalization_path=args.normalization,
             business_policies_path=args.business_policies,
-            metric_lexicon_path=args.metric_lexicon,
             sql_examples_path=args.sql_examples,
             output_path=args.knowledge_data,
             campaign_user_path=args.user_data,

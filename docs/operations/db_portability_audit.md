@@ -17,7 +17,7 @@
 | 계층 | 자산 | DB 스왑 시 |
 |------|------|-----------|
 | ① 자동생성 카탈로그 | `schema_catalog.json`, `dimension_catalog.sample.json`, `member_value_index.json`, `table_relationships.md`, `rag_knowledge_base.json` | `build_*.py` 재실행 (단 §2 캐비앗) |
-| ② 수작업 설정(단일 진실 소스) | `member_target_filters.json`(★최대, ~1040줄), `member_metrics.json`, `sql_examples.sample.sql`, `business_policies`/`metric_lexicon`(아직 데모 스키마 기준) | 사람이 재매핑 |
+| ② 수작업 설정(단일 진실 소스) | `member_target_filters.json`(★최대, ~1040줄), `member_metrics.json`, `sql_examples.sample.sql`, `business_policies`(아직 데모 스키마 기준) | 사람이 재매핑 |
 | ③ 소스에 샌 결합 | `graph_rag.py`, `api.py`, `confidence.py`, `formula_engine.py` 일부 | **리팩터로 소거해야 할 대상 (§4)** |
 
 `metadata_ddl.sql` 은 앱 소유 로컬 메타 DB라 스왑과 무관.

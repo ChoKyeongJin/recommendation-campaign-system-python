@@ -419,37 +419,6 @@ def policy_nodes(policy_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
     return nodes
 
 
-def metric_alias_nodes(metric_lexicon_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
-    if not metric_lexicon_payload:
-        return []
-
-    nodes = []
-    for metric in metric_lexicon_payload.get("metrics", []):
-        table = metric.get("table")
-        column = metric.get("column")
-        if not metric.get("metric_id") or not metric.get("canonical") or not table or not column:
-            continue
-        related_columns = [f"{table}.{column}"]
-        synonyms = metric.get("synonyms", [])
-        text = (
-            f"계산 지표 별칭 {metric.get('ko_label', metric['canonical'])} canonical {metric['canonical']}. "
-            f"자연어 계산식에서 {table}.{column} 숫자형 컬럼으로 해석한다. "
-            f"관련 테이블: {table}. 관련 컬럼: {', '.join(related_columns)}. "
-            f"동의어: {', '.join(synonyms)}."
-        )
-        nodes.append(
-            {
-                "id": f"metric_alias:{metric['metric_id']}",
-                "type": "metric_alias",
-                **metric,
-                "related_tables": [table],
-                "related_columns": related_columns,
-                "text_for_embedding": text,
-            }
-        )
-    return nodes
-
-
 def dimension_nodes(dimension_payload: dict[str, Any] | None) -> list[dict[str, Any]]:
     if not dimension_payload:
         return []
@@ -539,7 +508,6 @@ def build_payload(
     normalization_payload: dict[str, Any],
     sql_text: str,
     policy_payload: dict[str, Any] | None = None,
-    metric_lexicon_payload: dict[str, Any] | None = None,
     campaign_user_payload: dict[str, Any] | None = None,
     dimension_payload: dict[str, Any] | None = None,
     member_value_payload: dict[str, Any] | None = None,
@@ -549,7 +517,6 @@ def build_payload(
         *normalization_nodes(normalization_payload),
         *business_term_nodes(DEFAULT_BUSINESS_TERMS),
         *policy_nodes(policy_payload),
-        *metric_alias_nodes(metric_lexicon_payload),
         *dimension_nodes(dimension_payload),
         *member_value_nodes(member_value_payload),
         *sql_example_nodes(sql_text),
@@ -563,7 +530,6 @@ def build_payload(
             "table_schema": "docs/data/schema_catalog.json",
             "normalization_dictionary": "docs/data/normalization_rules.sample.json",
             "business_policies": "docs/data/business_policies.sample.json",
-            "metric_lexicon": "docs/data/metric_lexicon.sample.json",
             "sql_examples": "docs/data/sql_examples.sample.sql",
             "business_terms": "build_rag_knowledge.py",
             "dimension_catalog": "docs/data/dimension_catalog.sample.json",
@@ -575,7 +541,6 @@ def build_payload(
             "normalization_rule": len([node for node in nodes if node["type"] == "normalization_rule"]),
             "business_term": len([node for node in nodes if node["type"] == "business_term"]),
             "business_policy": len([node for node in nodes if node["type"] == "business_policy"]),
-            "metric_alias": len([node for node in nodes if node["type"] == "metric_alias"]),
             "dimension": len([node for node in nodes if node["type"] == "dimension"]),
             "dimension_value": len([node for node in nodes if node["type"] == "dimension_value"]),
             "sql_example": len([node for node in nodes if node["type"] == "sql_example"]),
@@ -593,7 +558,6 @@ def main() -> None:
     parser.add_argument("--schema", type=Path, default=Path("docs/data/schema_catalog.json"))
     parser.add_argument("--normalization", type=Path, default=Path("docs/data/normalization_rules.sample.json"))
     parser.add_argument("--business-policies", type=Path, default=Path("docs/data/business_policies.sample.json"))
-    parser.add_argument("--metric-lexicon", type=Path, default=Path("docs/data/metric_lexicon.sample.json"))
     parser.add_argument("--dimension-catalog", type=Path, default=Path("docs/data/dimension_catalog.sample.json"))
     parser.add_argument("--sql-examples", type=Path, default=Path("docs/data/sql_examples.sample.sql"))
     parser.add_argument("--campaign-user", type=Path, default=Path("docs/data/campaign_user_rag_sample_50_with_edges.json"))
@@ -606,7 +570,6 @@ def main() -> None:
         normalization_payload=load_json(args.normalization),
         sql_text=args.sql_examples.read_text(encoding="utf-8"),
         policy_payload=load_json(args.business_policies) if args.business_policies.exists() else None,
-        metric_lexicon_payload=load_json(args.metric_lexicon) if args.metric_lexicon.exists() else None,
         campaign_user_payload=load_json(args.campaign_user) if args.campaign_user.exists() else None,
         dimension_payload=load_json(args.dimension_catalog) if args.dimension_catalog.exists() else None,
         member_value_payload=load_json(args.member_value_index) if args.member_value_index.exists() else None,

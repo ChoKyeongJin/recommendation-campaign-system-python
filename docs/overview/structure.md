@@ -28,8 +28,7 @@
 | DDL 스키마 추출          | `schema_extract.py`                                                                        | PostgreSQL DDL에서 테이블/컬럼/키/인덱스 추출                                                                            |
 | 업무 정책 정의           | `docs/data/business_policies.sample.json`                                                  | 매출 상위, 고매출, 고예산 같은 업무 기준과 SQL 반영 방식을 외부 파일로 정의                                              |
 | 채널 메시지 정책/예시    | `docs/guides/channel.md`, `docs/policies/message-policy.json`, `docs/data/local_bootstrap.sql`         | LMS/RCS 메시지 생성 규칙과 기존 메시지 참고 테이블 정의                                                                  |
-| 계산 지표 별칭           | `docs/data/metric_lexicon.sample.json`                                                     | 자연어 계산식의 지표명을 숫자형 스키마 컬럼으로 연결                                                                     |
-| 계산식 엔진              | `formula_engine.py`                                                                        | 자연어/AST 계산식을 검증하고 안전한 SQL expression으로 컴파일                                                            |
+| 계산식 엔진              | `formula_engine.py`                                                                        | LLM이 제안한 `formula_ast`를 검증하고 안전한 SQL expression으로 컴파일                                                   |
 | 집합식 엔진              | `set_expression_engine.py`                                                                 | 합집합/교집합/차집합 세그먼트 표현을 `set_ast`로 파싱                                                                    |
 | RAG 지식 베이스 생성     | `build_rag_knowledge.py`                                                                   | 스키마, 사전, 비즈니스 용어, 업무 정책, SQL 예시를 지식 노드로 통합                                                      |
 | GraphRAG 검색            | `graph_rag.py`                                                                             | 질의 계획 생성, 검색, 집합식 predicate 조립, SQL 템플릿 검증                                                             |
@@ -97,7 +96,7 @@ flowchart TD
 
 ### 4.3 스키마/정책/SQL 지식 베이스
 
-- 입력: `docs/data/local_bootstrap.sql`, `docs/data/schema_catalog.json`, `docs/data/business_policies.sample.json`, `docs/data/metric_lexicon.sample.json`, `docs/data/sql_examples.sample.sql`
+- 입력: `docs/data/local_bootstrap.sql`, `docs/data/schema_catalog.json`, `docs/data/business_policies.sample.json`, `docs/data/sql_examples.sample.sql`
 - 처리: `schema_extract.py`, `build_rag_knowledge.py`
 - 출력: `docs/data/rag_knowledge_base.json`
 - 출력 컬렉션: `campaign_knowledge_rag`
@@ -114,7 +113,7 @@ flowchart TD
 
 사용자가 `(여성 고객 + VIP 고객) * 쿠폰 관심 고객 - 휴면 고객`처럼 세그먼트 집합식을 쓰면 `set_expression_engine.py`가 이를 `set_ast`로 파싱한다. `+`는 합집합, `*`는 교집합, `-`는 차집합으로 해석하며, 자연어 표현인 `또는`, `그리고`, `제외`, `빼고`도 같은 연산으로 정규화한다. GraphRAG는 집합식에 포함된 canonical 조건을 일반 AND 조건으로 중복 적용하지 않고, `set_ast` 전체를 최종 SQL의 단일 predicate로 컴파일한다. 최종 SQL에서는 합집합을 `OR`, 교집합을 `AND`, 차집합을 `AND NOT`으로 낮추고, 관심사/행동/채널처럼 별도 테이블이 필요한 피연산자는 `EXISTS` semijoin으로 표현한다.
 
-`metric_lexicon.sample.json`은 `평균주문금액`, `구매횟수`, `예산` 같은 자연어 지표명을 숫자형 스키마 컬럼으로 연결한다. 사용자가 `(평균주문금액 + 구매횟수) * 구매횟수 - 최근활동일`처럼 명시적인 숫자 지표 계산식을 쓰면 `formula_engine.py`가 이를 `formula_ast`로 파싱하고, 스키마에 있는 숫자형 컬럼과 허용 연산자만 사용했는지 검증한 뒤 SQL expression으로 컴파일한다. LLM parser를 쓰더라도 SQL 문자열을 직접 받지 않고 `set_ast` 또는 `formula_ast`만 받아 같은 검증 경로를 통과시킨다.
+숫자 지표 계산식(`formula_ast`)은 LLM parser만 제안한다. LLM 에게서도 SQL 문자열을 직접 받지 않고 `set_ast`/`formula_ast` 만 받아, `formula_engine.py`가 스키마에 있는 숫자형 컬럼과 허용 연산자(`+ - * /`)만 썼는지 검증한 뒤 SQL expression으로 컴파일한다. 별칭 사전으로 자연어에서 지표명을 뽑던 규칙 파서(`metric_lexicon.sample.json`)는 2026-07-29에 제거했다 — 사전이 비어 있었고, 컬럼 해석 관문인 `TABLE_ALIASES`가 데모 스키마 고정이라 실 CRM 에서 항상 빈 결과였다.
 
 지식 베이스는 다음 노드 타입을 가진다.
 
@@ -125,7 +124,6 @@ flowchart TD
 | `normalization_rule` | canonical 용어와 동의어 사전                          |
 | `business_term`      | 캠페인, 사용자, 추천 등 도메인 용어                   |
 | `business_policy`    | 업무 기준과 SQL filter/rank 반영 방식                 |
-| `metric_alias`       | 자연어 계산 지표명과 숫자형 스키마 컬럼 매핑          |
 | `sql_example`        | NL2SQL 참고용 대표 SQL 예시                           |
 
 ### 4.4 Qdrant 컬렉션 상태 점검
@@ -202,7 +200,7 @@ LMS/RCS 메시지 요청은 정규화 사전에서 각각 `lms`, `rcs` canonical
 
 복합 집합식은 `set_expressions`에 기록된다. 규칙 기반 parser는 `여성 고객과 VIP 고객의 합집합`, `(여성 고객 + VIP 고객) * 쿠폰 관심 고객 - 휴면 고객`, `쿠폰 관심 고객에서 휴면 고객 제외`, `20대 여성 고객 또는 VIP 고객을 대상으로 하되 쿠폰 관심 고객만 포함하고 휴면 고객은 빼고 찾아줘` 같은 표현을 `set_ast`로 변환한다. `set_expression_engine.py`는 정규화 사전의 canonical 피연산자만 사용하고, GraphRAG는 AST의 집합 의미를 보존한 채 최종 SQL에서는 중간 CTE 체인 없이 `OR`/`AND`/`AND NOT` 및 `EXISTS` predicate로 컴파일한다.
 
-숫자 지표 계산식은 `computed_metrics`에 기록된다. 규칙 기반 parser는 `평균주문금액과 구매횟수를 곱한 값`, `(평균주문금액 + 구매횟수) * 구매횟수 - 최근활동일` 같은 명시적 계산식을 `formula_ast`로 변환한다. `formula_engine.py`는 숫자형 컬럼, 허용 연산자, intent별 테이블 범위를 검증하고, 통과한 계산식만 SELECT/WHERE/ORDER BY 토큰으로 변환한다.
+숫자 지표 계산식은 `computed_metrics`에 기록된다. LLM parser가 제안한 `formula_ast`를 `formula_engine.py`가 숫자형 컬럼·허용 연산자 기준으로 검증하고, 통과한 계산식만 SELECT/WHERE/ORDER BY 토큰으로 변환한다(규칙 기반 계산식 파서는 제거됨).
 
 LLM Query Parser, 답변 생성, 메시지 생성 프롬프트는 `docs/prompts`의 텍스트 파일에서 읽는다. 운영 중 프롬프트를 조정해야 하면 코드를 수정하지 않고 `docs/prompts/query_plan_system.txt`, `docs/prompts/query_plan_user.txt`, `docs/prompts/answer_system.txt`, `docs/prompts/answer_user.txt`, `docs/prompts/message_generation_*.txt`, `docs/prompts/message_generation_tone_manner.txt`를 수정한 뒤 같은 질의를 다시 실행한다. 다른 프롬프트 디렉터리를 사용하려면 `GRAPH_RAG_PROMPT_DIR` 환경 변수나 `--prompt-dir` 옵션을 지정한다. 상세 가이드는 `docs/guides/prompt_engineering.md`에 정리한다.
 

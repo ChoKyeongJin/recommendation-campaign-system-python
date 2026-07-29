@@ -1,5 +1,6 @@
 {
   "version": "1.0",
+  "_llm": "여기 표면어 목록은 '아는 말투'일 뿐 전부가 아니다. 사전에 없는 말투는 LLM 조건 슬롯 추출기(graph_rag._apply_llm_condition_slot_fallback + docs/prompts/condition_slot_extract_system.txt)가 메운다 — 단, LLM 은 이 파일이 선언한 canonical 중에서 '고르기만' 하고(닫힌 집합), 규칙이 이미 올린 canonical 은 덮지 않는다. 즉 이 파일은 무엇이 존재하는지(canonical)의 단일 소스로 남고, 어떻게 말하는지(표면어)는 LLM 이 보완한다. OPENAI_API_KEY 가 없거나 CONDITION_SLOT_LLM_FALLBACK=off 면 아래 표면어만으로 동작한다.",
   "description": "회원속성 토큰 승격 필터의 선언형 그룹 스펙. 표면어(canonical)를 lifecycle(포함)/exclude.lifecycle(제외)로 올리는 '단순 속성형' 필터를 코드 없이 선언한다. 새 그룹/카노니컬은 여기에 한 줄 추가 + graph_rag 레지스트리에 attribute_token 엔트리 등록만으로 동작한다(전용 _apply_* 함수 불필요). 필드: neg(부정 접미어 정규식→exclude, null=부정없음), pos(긍정 접미어 정규식, ''=표면어단독), gate(이 문자열 있어야 발동, null=무조건), first_only(첫 매치 하나만=구체성우선), canonicals([[canonical, [기본 표면어]]] — eq_filters surface_terms 가 있으면 그걸로 덮음). 복합 파싱(서열 랭크 확장·이중부정 등)은 이 문법으로 표현 못 하므로 커스텀 필터로 남긴다.",
   "groups": {
     "member_flag": {

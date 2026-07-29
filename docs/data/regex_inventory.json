@@ -2,10 +2,10 @@
   "description": "코드에 박힌 정규식 상수의 이행 분류 초안. decision 열은 사람이 채운다.",
   "counts": {
     "lexical": 8,
-    "domain": 149,
+    "domain": 151,
     "grammar": 31
   },
-  "total": 188,
+  "total": 190,
   "rows": [
     {
       "file": "build_dimension_catalog.py",
@@ -19,7 +19,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6914,
+      "line": 7272,
       "name": "_BALANCE_DEFER_PATTERN",
       "pattern": "가장|제일|상위|하위|최상위|랭킹|순위|top|톱|퍼센트|프로|%|평균",
       "alternatives": 13,
@@ -29,7 +29,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 14745,
+      "line": 15145,
       "name": "_THRESHOLD_CUE_RE",
       "pattern": "이상|이하|미만|초과|이내|같은|동일|>=|<=|>|<|=",
       "alternatives": 12,
@@ -59,7 +59,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6918,
+      "line": 7276,
       "name": "_BALANCE_PRESENCE_PATTERN",
       "pattern": "보유|가지고|가진|있는|있으신",
       "alternatives": 5,
@@ -69,7 +69,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 8836,
+      "line": 9195,
       "name": "_TREND_ORDER_MARKER_RE",
       "pattern": "대비|보다|에서|→|->",
       "alternatives": 5,
@@ -79,7 +79,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6919,
+      "line": 7277,
       "name": "_BALANCE_METRIC_NOUN_PATTERN",
       "pattern": "보유액|보유금액|보유량",
       "alternatives": 3,
@@ -89,7 +89,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 3337,
+      "line": 3382,
       "name": "_ENUM_EXCLUSION_TAIL_RE",
       "pattern": "^(?:(?:[·ㆍ‧・/,]|와|과|및|또는|이나|랑)[가-힣A-Za-z]{1,8}?)+(?:상태|중|인|한|된)*(?:회원|고객|사용자|유저|이용자|대상)?(?:은|는|이|가|을|를|만)?(?:모두|전부|다)?(?:제외|배제|제거|아닌|아니|않은|않는|않았)",
       "alternatives": 31,
@@ -99,7 +99,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6495,
+      "line": 6853,
       "name": "_METRIC_SCOPING_PERIOD_RE",
       "pattern": "최근\\s*\\d+\\s*(?:일|주|주간|개월|달|년|년간|개월간|분기)|지난\\s*(?:달|주|해|분기|주간)|지난달|저번\\s*달|저번달|전월|당월|이번\\s*달|이번달|올해|금년|작년|지난해|재작년|\\d{4}\\s*년(?!령)",
       "alternatives": 27,
@@ -119,7 +119,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 9195,
+      "line": 9554,
       "name": "_CART_ABSENCE_PATTERN",
       "pattern": "장바구니(?:생성|생성한|담긴|담은|상품|물건|제품|아이템|이력)?(?:이나|나|또는|랑|이랑)?(?:구매이력|주문이력|구매내역|구매|주문|상품)?(?:이|가|을|를|은|는|도)?(?:없|않)",
       "alternatives": 25,
@@ -129,7 +129,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 19773,
+      "line": 20173,
       "name": "_LOGIC_TAIL_RE",
       "pattern": "\\s*(?:인|한|하는|이신|된)?\\s*(?:회원|고객|사람|유저|이용자|분|대상|명단)(?:\\s*(?:을|를|들)?\\s*(?:찾아|보여|추출|조회|알려|뽑아|골라|선정|선별|검색|리스트업?)\\S*)?\\s*$",
       "alternatives": 24,
@@ -139,7 +139,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 4725,
+      "line": 4831,
       "name": "_PURCHASE_POSITIVE_MEMBERSHIP_RE",
       "pattern": "(?:구매|구입|주문)(?:이력|내역)?(?:을|를|은|는|이|가|도)*(?:했|한|했던|있는|있었|있던|있음)|(?:구매|구입|주문)(?=(?:고객|회원|사용자|유저))",
       "alternatives": 22,
@@ -149,7 +149,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 4730,
+      "line": 4836,
       "name": "_CAMPAIGN_GENERIC_RESPONSE_RE",
       "pattern": "캠페인(?:에|에서|을|를|의)?(?:는|은|도)?(?:반응|응답)(?:을|를|이|가|은|는|도)?(?P<negative>하지않|안한|안했|않은|없)?(?:했|한|자|회원|고객)?",
       "alternatives": 22,
@@ -159,7 +159,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 5391,
+      "line": 5519,
       "name": "_AGE_EXCLUSION_TAIL",
       "pattern": "^(?:인|한|된)?\\s*(?:회원|고객|사용자|유저|이용자|분|명)?\\s*(?:은|는|을|를|이|가)?\\s*(?:모두|전부|다)?\\s*(?:제외|제거|빼|제하|아닌|아니)",
       "alternatives": 21,
@@ -169,7 +169,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10063,
+      "line": 10422,
       "name": "_CAMPAIGN_BUY_NEG_PATTERN",
       "pattern": "캠페인(?:에서|에|을|를)?(?:는|은|도)?(?:보고|통해|후)?(?:구매(?:이력|내역)?(?:를|은|는|도|이|가)*(?:반응)?(?:이|가|은|는)?(?:하지않|안하|안한|없)|미구매)",
       "alternatives": 21,
@@ -179,7 +179,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10197,
+      "line": 10556,
       "name": "_ADDITIONAL_PURCHASE_ABSENCE_PATTERN",
       "pattern": "(?:추가로|추가|더이상|더)(?:의)?(?:구매|구입|주문)(?:를|은|는|가|도|한)?(?:없|안했|안한|않았|않은|않는|하지않|안함|못했|못한)",
       "alternatives": 20,
@@ -189,7 +189,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10229,
+      "line": 10588,
       "name": "_ZERO_PURCHASE_COUNT_PATTERN",
       "pattern": "(?:구매|구입|주문)\\s*(?:횟수|건수|건|회|번)?(?:가|이|은|는|도)?\\s*(?:(?<![\\d,.])0\\s*(?:회|건|번)(?!\\s*(?:이상|이하|초과|미만|넘|보다))|(?<![\\d,.])0(?![\\d,.회건번])|없)",
       "alternatives": 20,
@@ -199,7 +199,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6675,
+      "line": 7033,
       "name": "_PURCHASE_NEG_RE",
       "pattern": "(?:구매|구입|주문)(?:이력|내역)?(?:을|를|은|는|이|가|도)*(?:없|않|하지않|안함|안한|안했|안하)|미(?:구매|구입|주문)",
       "alternatives": 19,
@@ -209,7 +209,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 14268,
+      "line": 14668,
       "name": "_NEGATION_CUE_RE",
       "pattern": "없|않|못[한했하받]|아닌|아니|제외|미사용|미구매|미접속|미반응|미결제|미가입|미방문|비동의|취소|해지|중단|안\\s*[한함했하샀]|\\bNOT\\b",
       "alternatives": 19,
@@ -229,7 +229,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 4706,
+      "line": 4812,
       "name": "_COMPLETED_BEHAVIOR_RE",
       "pattern": "(?:구매|구입|주문)(?:했|한|했던)|장바구니.{0,10}(?:담|보관|있)|캠페인.{0,12}(?:반응|응답)(?:했|한|없는|않)|(?:로그인|방문)(?:했|한|하지않|없는)",
       "alternatives": 18,
@@ -239,7 +239,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7762,
+      "line": 8121,
       "name": "_AGG_CLAUSE_SPLIT_RE",
       "pattern": "이지만|하지만|지만|반면에|반면|그리고|이면서|면서|동시에|이고|이며|했고|았고|었고|하고|또는|(?<!\\d),|,(?!\\d)",
       "alternatives": 18,
@@ -249,7 +249,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7786,
+      "line": 8145,
       "name": "_AGG_UNIT_TOKEN_RE",
       "pattern": "\\d[\\d,]*\\s*(?:억|천만|백만|만|천)?\\s*(종류|종수|품목|가지|건수|회수|종|개|건|회|번|원|점|장)",
       "alternatives": 18,
@@ -259,7 +259,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 4703,
+      "line": 4809,
       "name": "_COUNT_OUTPUT_SIGNAL_RE",
       "pattern": "(?:몇\\s*(?:명|건|개|곳)|(?:회원|고객|사용자|가입자|구매자|상품|제품|주문|구매|반응)\\s*(?:수|인원|개수|건수))",
       "alternatives": 17,
@@ -269,7 +269,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 4710,
+      "line": 4816,
       "name": "_OUTREACH_ACTION_RE",
       "pattern": "추천(?:해|하|안)|캠페인(?:을)?\\s*(?:생성|만들|기획)|발송(?:해|하|할)|보내(?:줘|고|기)|알리(?:고|기)|홍보|유도|판매하고\\s*싶",
       "alternatives": 17,
@@ -289,7 +289,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 9184,
+      "line": 9543,
       "name": "_CART_PRESENCE_PATTERN",
       "pattern": "장바구니(?:에|에는|를|을|가|이)?(?:상품|물건|제품|아이템)?(?:이|가|을|를)?(?:들어)?(?:있(?!지)|담(?!지)|보유(?!하지)|보관(?!하지)|가지(?!지))",
       "alternatives": 16,
@@ -299,7 +299,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10079,
+      "line": 10438,
       "name": "_CAMPAIGN_BUY_ZERO_COUNT_PATTERN",
       "pattern": "캠페인(?:을|를|에서|으로|에|의)?(?:통해|통한|보고|반응|후)?(?:한)?(?:구매|결제)(?:건수|횟수)(?:가|이|은|는)?(?:없|(?<![\\d,.])0\\s*건)",
       "alternatives": 16,
@@ -309,7 +309,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 1333,
+      "line": 1332,
       "name": "_PURCHASE_OBJECT_PATTERN",
       "pattern": "(?P<object>[0-9A-Za-z가-힣_+\\-]{1,40})\\s*(?:(?:을|를)\\s*|\\s+)(?:구매|구입)\\s*(?:한|했|했던|하신|하였|이력|내역|경험|고객|회원|유저|구매자)",
       "alternatives": 15,
@@ -319,7 +319,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7114,
+      "line": 7472,
       "name": "_MESSAGE_RECEIVED_COUNT_RE",
       "pattern": "(?:메시지|문자|알림|톡|dm)(?:를|을|이|은|는)?\\s*\\d+\\s*(?:회|번|건)\\s*(?:이상|이하|초과|미만)?\\s*(?:받|수신)",
       "alternatives": 15,
@@ -329,7 +329,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10072,
+      "line": 10431,
       "name": "_CAMPAIGN_BUY_ZERO_AMOUNT_PATTERN",
       "pattern": "캠페인(?:을|를|에서|으로|에|의)?(?:통해|통한|보고|반응|후)?(?:한)?(?:구매|결제)한?금액(?:이|은|는|가)?(?:(?<!\\d)0원|없)",
       "alternatives": 15,
@@ -359,7 +359,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7125,
+      "line": 7483,
       "name": "_OR_OPERAND_THRESHOLD_RE",
       "pattern": "\\d[\\d,]*\\s*(?:회|원|개|건|명|번|종|일|장|점|%)\\s*(?:이상|이하|초과|미만)",
       "alternatives": 14,
@@ -369,7 +369,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 8383,
+      "line": 8742,
       "name": "_CART_AGGREGATE_DOMAIN_BREAK_RE",
       "pattern": "구매(?:금액|액|횟수|건수|수량|상품|제품|품목|이력)|구입|주문|결제|캠페인반응|쿠폰",
       "alternatives": 14,
@@ -379,7 +379,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 9371,
+      "line": 9730,
       "name": "_RECENT_LOGIN_SIGNAL_RE",
       "pattern": "(?:로그인|접속)(?:은|는|을|를|이|도)?(?:한|했|하신|하였|함|이력|기록)|loggedin",
       "alternatives": 14,
@@ -389,7 +389,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10090,
+      "line": 10449,
       "name": "_GENERIC_BUY_NEG_PATTERN",
       "pattern": "구매(?:이력|내역)?(?:를|은|는|도|이|가)*(?:반응)?(?:이|가|은|는)?(?:하지않|안하|안한|없)|미구매",
       "alternatives": 14,
@@ -399,7 +399,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10653,
+      "line": 11012,
       "name": "_CONSENT_EXCLUSION_TAIL_RE",
       "pattern": "^[^.。!?\\n,]{0,40}?(?:회원|고객|사용자|유저|이용자|대상)?(?:은|는|을|를|만)?(?:모두|전부|다)?(?:제외|배제|제거)",
       "alternatives": 14,
@@ -429,7 +429,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 1415,
+      "line": 1414,
       "name": "_QUANTITY_COUNT_TOKEN",
       "pattern": "^\\d+(?:개|회|번|건|원|명|장|종|가지|종류|품목|매|권)?$",
       "alternatives": 13,
@@ -439,7 +439,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7625,
+      "line": 7984,
       "name": "_EXACT_AMOUNT_PATTERN",
       "pattern": "(?P<num>[\\d,]+(?:\\.\\d+)?)\\s*(?P<mag>억|천만|백만|만|천)?\\s*(?:원|건|회|명|개|장|번|건수|회수)?",
       "alternatives": 13,
@@ -449,7 +449,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10300,
+      "line": 10659,
       "name": "_PURCHASE_EXISTS_ASSERT_RE",
       "pattern": "(?:구매|구입|주문)(?:이력|내역)?(?:은|는|이|가|를|도)?(?:있|했지만|했으나|했는데|하였)",
       "alternatives": 13,
@@ -459,7 +459,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 1429,
+      "line": 1428,
       "name": "_PURCHASE_OBJECT_CHAIN_PATTERN",
       "pattern": "(?P<chain>[0-9A-Za-z가-힣_+\\-]{1,40}(?:(?:(?<=[가-힣])(?:와|과|랑|이랑)\\s+|\\s*(?:및|그리고)\\s+|\\s*[,、]\\s*)[0-9A-Za-z가-힣_+\\-]{1,40}){1,4})\\s*(?:을|를)(?![0-9A-Za-z가-힣])(?=[^을를]{0,15}?(?:구매|구입|주문|샀|산(?=\\s)))",
       "alternatives": 12,
@@ -469,7 +469,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 5071,
+      "line": 5177,
       "name": "_DATE_WINDOW_UNRESOLVED_RE",
       "pattern": "(?:\\b(?:date|from|to|today|window|yyyy(?:mmdd)?)\\b|order_date|purchase_date|날짜|기간|현재일|실행\\s*시점)",
       "alternatives": 12,
@@ -479,7 +479,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 9863,
+      "line": 10222,
       "name": "_BALANCE_SUM_RE",
       "pattern": "합계|합산|합쳐|합친|합한|더한|더하면|더해|의\\s*합\\b|합이\\b|합은\\b|합으로",
       "alternatives": 12,
@@ -489,7 +489,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10487,
+      "line": 10846,
       "name": "_CAMPAIGN_BUY_COUNT_METRIC_PATTERN",
       "pattern": "캠페인(?:을|를|에서|으로|에|의)?(?:통해|통한|보고|반응|후)?(?:한)?(?:구매|결제)(?:건수|횟수)",
       "alternatives": 12,
@@ -529,7 +529,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6567,
+      "line": 6925,
       "name": "_MEMBER_COUNT_SIGNAL_RE",
       "pattern": "(?:회원|고객|가입자)\\s*수|(?:회원|고객|가입자)\\s*(?:이|가|은|는)\\s*(?:가장\\s*|제일\\s*)?(?:많|적)",
       "alternatives": 11,
@@ -539,7 +539,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10416,
+      "line": 10775,
       "name": "_CAMPAIGN_BUY_AMOUNT_METRIC_PATTERN",
       "pattern": "캠페인(?:을|를|에서|으로|에|의)?(?:통해|통한|보고|반응|후)?(?:한)?(?:구매|결제)한?금액",
       "alternatives": 11,
@@ -549,7 +549,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 14741,
+      "line": 15141,
       "name": "_POST_PROCESSING_REQUEST_CUE_RE",
       "pattern": "(?:캠페인|타겟리스트|타겟\\s*리스트|타깃리스트|세그먼트|셀)[^.\\n]{0,24}?(?:생성|만들|설정|등록|저장|발행)",
       "alternatives": 11,
@@ -559,7 +559,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 1368,
+      "line": 1367,
       "name": "_BRAND_COPULA_PATTERN",
       "pattern": "브랜드(?:가|는|명이|명은)\\s*(?P<object>[0-9A-Za-z가-힣_+\\-]{1,40}?)(?:이면서|이거나|인데|이고|이며|면서|인)(?![0-9A-Za-z가-힣])",
       "alternatives": 10,
@@ -569,7 +569,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6924,
+      "line": 7282,
       "name": "_DATA_MISSING_PATTERN",
       "pattern": "정보\\S*\\s*없|값\\S*\\s*없|입력\\s*(?:되지|하지)?\\s*(?:않|안|못)|미입력|기재\\S*\\s*않|미기재|누락",
       "alternatives": 10,
@@ -579,7 +579,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 4702,
+      "line": 4808,
       "name": "_MEMBER_OUTPUT_RE",
       "pattern": "회원|고객|사용자|가입자|대상|몇\\s*명|인원\\s*수|회원\\s*수|고객\\s*수",
       "alternatives": 9,
@@ -589,7 +589,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6950,
+      "line": 7308,
       "name": "_BALANCE_HIGH_TERMS",
       "pattern": "가장\\s*많|제일\\s*많|가장\\s*높|제일\\s*높|많은|높은|큰|상위|최상위",
       "alternatives": 9,
@@ -599,7 +599,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7800,
+      "line": 8159,
       "name": "_DISTINCT_INTENT_RE",
       "pattern": "서로\\s*다른|각기\\s*다른|각각\\s*다른|여러\\s*가지|여러|다양한|가짓수|종류별|서로다른",
       "alternatives": 9,
@@ -609,7 +609,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10804,
+      "line": 11163,
       "name": "_PURCHASE_OBJECT_PARTICLE_RE",
       "pattern": "(?:으로부터|로부터|에서|에게|부터|으로|에|의|로)$",
       "alternatives": 9,
@@ -629,7 +629,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6621,
+      "line": 6979,
       "name": "_PURCHASE_QUANTITY_RANK_PATTERN",
       "pattern": "(?P<sup>가장\\s*|제일\\s*)?(?:많이|자주|최다)\\s*(?:구매|구입|주문|샀|산(?!책))",
       "alternatives": 8,
@@ -639,7 +639,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6951,
+      "line": 7309,
       "name": "_BALANCE_LOW_TERMS",
       "pattern": "가장\\s*적|제일\\s*적|가장\\s*낮|제일\\s*낮|적은|낮은|작은|하위",
       "alternatives": 8,
@@ -649,7 +649,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7788,
+      "line": 8147,
       "name": "_AGG_SCOPE_PER_ORDER_RE",
       "pattern": "한\\s*주문|한\\s*번에|한번에|주문당|주문\\s*당|주문별|주문\\s*별|1회\\s*주문",
       "alternatives": 8,
@@ -659,7 +659,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 9379,
+      "line": 9738,
       "name": "_CUMULATIVE_DAYS_THRESHOLD_RE",
       "pattern": "\\d+일(?:을|를|이|가)?(?:이상|이하|초과|미만|미달)",
       "alternatives": 8,
@@ -669,7 +669,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 9779,
+      "line": 10138,
       "name": "_ACTION_METRIC_DATE_GATE",
       "pattern": "\\d+\\s*(?:일|주|주일|개월|달|년|시간|분)",
       "alternatives": 8,
@@ -679,7 +679,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10087,
+      "line": 10446,
       "name": "_BUY_RSPN_NEG_PATTERN",
       "pattern": "구매반응(?:이|가|은|는|도)?(?:없|하지않|안하|안한)",
       "alternatives": 8,
@@ -689,7 +689,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 14738,
+      "line": 15138,
       "name": "_PRESENTATION_REQUEST_CUE_RE",
       "pattern": "산출|표시|출력|보여|노출|함께\\s*보|요약|정렬해\\s*보",
       "alternatives": 8,
@@ -709,7 +709,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 1421,
+      "line": 1420,
       "name": "_PRODUCT_CONJUNCTION_RE",
       "pattern": "(?:(?<=[가-힣])(?:와|과|랑|이랑)\\s+|\\s*(?:및|그리고)\\s+|\\s*[,、]\\s*)",
       "alternatives": 7,
@@ -719,7 +719,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 4734,
+      "line": 4840,
       "name": "_WHOLE_MEMBER_RE",
       "pattern": "(?:전체|모든|전부|모두의?)\\s*(?:회원|고객|사용자|가입자)",
       "alternatives": 7,
@@ -729,7 +729,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7067,
+      "line": 7425,
       "name": "_LATEST_PURCHASE_REF_RE",
       "pattern": "최근\\s*구매|마지막\\s*구매|최종\\s*구매|최근\\s*주문|마지막\\s*주문|최종\\s*주문|최근\\s*결제",
       "alternatives": 7,
@@ -739,7 +739,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7789,
+      "line": 8148,
       "name": "_AGG_SCOPE_PER_PRODUCT_RE",
       "pattern": "동일\\s*상품|같은\\s*상품|동일한\\s*상품|상품별|상품\\s*별|동일\\s*제품|같은\\s*제품",
       "alternatives": 7,
@@ -749,7 +749,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 8546,
+      "line": 8905,
       "name": "_CART_PURCHASE_ABSENCE_RE",
       "pattern": "구매하지|구입하지|주문하지|주문이?없|사지않|안\\s*샀|미구매",
       "alternatives": 7,
@@ -779,7 +779,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 4735,
+      "line": 4841,
       "name": "_ACTIVE_MEMBER_RE",
       "pattern": "정상\\s*(?:회원|고객|사용자)|활성\\s*상태\\s*(?:회원|고객|사용자)",
       "alternatives": 6,
@@ -789,7 +789,17 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 5871,
+      "line": 5844,
+      "name": "_MEMBER_NOUN_RE",
+      "pattern": "(?:회원|고객|유저|사용자|멤버|가입자)",
+      "alternatives": 6,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6229,
       "name": "_REGION_CITY_SUFFIX",
       "pattern": "(?:특별자치시|특별자치도|특별시|광역시|시|군)$",
       "alternatives": 6,
@@ -799,7 +809,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6570,
+      "line": 6928,
       "name": "_MEMBER_COUNT_HIGH_RE",
       "pattern": "많은|높은|상위|가장\\s*많|제일\\s*많|많은\\s*순",
       "alternatives": 6,
@@ -809,7 +819,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6571,
+      "line": 6929,
       "name": "_MEMBER_COUNT_LOW_RE",
       "pattern": "적은|낮은|하위|가장\\s*적|제일\\s*적|적은\\s*순",
       "alternatives": 6,
@@ -819,7 +829,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6929,
+      "line": 7287,
       "name": "_BALANCE_ZERO_MARKER",
       "pattern": "(?<![\\d,.])0\\s*(?:원|회|건|개|번|명)?(?![\\d,.])",
       "alternatives": 6,
@@ -829,7 +839,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7023,
+      "line": 7381,
       "name": "_AVERAGE_COMPARISON_MARKER",
       "pattern": "평균\\s*(?:보다|대비|이상|이하|초과|미만)",
       "alternatives": 6,
@@ -839,7 +849,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7066,
+      "line": 7424,
       "name": "_FIRST_PURCHASE_REF_RE",
       "pattern": "첫\\s*구매|첫구매|최초\\s*구매|첫\\s*주문|최초\\s*주문|첫\\s*결제",
       "alternatives": 6,
@@ -849,7 +859,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7784,
+      "line": 8143,
       "name": "_CUMULATIVE_WINDOW_MARKER_RE",
       "pattern": "누적|누계|평생|통산|역대|전체\\s*기간",
       "alternatives": 6,
@@ -859,7 +869,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 8217,
+      "line": 8576,
       "name": "_CART_SAME_PRODUCT_PATTERN",
       "pattern": "(동일|같은|똑같은)(상품|제품|품목|것)",
       "alternatives": 6,
@@ -869,7 +879,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 9781,
+      "line": 10140,
       "name": "_ACTION_ZERO_PATTERN",
       "pattern": "한\\s*번도|전혀|이력이?\\s*없|기록이?\\s*없|한\\s*적이?\\s*없|없",
       "alternatives": 6,
@@ -929,7 +939,17 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6490,
+      "line": 5841,
+      "name": "_DIGIT_WITH_UNIT_RE",
+      "pattern": "\\d[\\d,]*\\s*(?:회|건|개|장|번)",
+      "alternatives": 5,
+      "class": "domain",
+      "reason": "한글 표면어와 구조가 섞여 있다 — 어휘 부분만 분리 가능한지 개별 판단",
+      "decision": ""
+    },
+    {
+      "file": "graph_rag.py",
+      "line": 6848,
       "name": "_UNSUPPORTED_GROUP_AXIS_RE",
       "pattern": "등급\\s*별|회원등급\\s*별|채널\\s*별|브랜드\\s*별|카테고리\\s*별",
       "alternatives": 5,
@@ -939,7 +959,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6917,
+      "line": 7275,
       "name": "_BALANCE_ABSENCE_PATTERN",
       "pattern": "없|미보유|보유하지\\s*않|보유\\s*안|보유하지\\s*못",
       "alternatives": 5,
@@ -949,7 +969,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7620,
+      "line": 7979,
       "name": "_RECENT_WINDOW_PATTERN",
       "pattern": "최근\\s*(\\d+)\\s*(일|주|개월|달|년)",
       "alternatives": 5,
@@ -979,7 +999,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6176,
+      "line": 6534,
       "name": "_RANKING_PERCENT_PATTERN",
       "pattern": "(?P<dir>상위|하위)?\\s*(?P<pct>\\d+(?:\\.\\d+)?)\\s*(?:%|퍼센트|프로)",
       "alternatives": 4,
@@ -989,7 +1009,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6484,
+      "line": 6842,
       "name": "_GROUP_PER_COUNT_RE",
       "pattern": "([\\d,]+)\\s*명\\s*씩|(?:상위|하위)\\s*([\\d,]+)\\s*명|([\\d,]+)\\s*명",
       "alternatives": 4,
@@ -999,7 +1019,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6487,
+      "line": 6845,
       "name": "_PER_GROUP_SUFFIX_RE",
       "pattern": "([\\d,]+)\\s*(?:명|개|곳)?\\s*씩|명씩",
       "alternatives": 4,
@@ -1009,7 +1029,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6952,
+      "line": 7310,
       "name": "_BALANCE_PERCENT_PATTERN",
       "pattern": "(?P<dir>상위|하위)?\\s*(?P<pct>\\d+(?:\\.\\d+)?)\\s*(?:%|퍼센트|프로)",
       "alternatives": 4,
@@ -1019,7 +1039,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7626,
+      "line": 7985,
       "name": "_EXACT_COUNT_PATTERN",
       "pattern": "(?P<num>\\d+)\\s*(?:개|번|회|건)",
       "alternatives": 4,
@@ -1029,7 +1049,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7718,
+      "line": 8077,
       "name": "_SINO_KOREAN_AMOUNT_RE",
       "pattern": "(?P<num>[영공일이삼사오육칠팔구십백천]+)(?P<mag>억|천만|백만|만)?원",
       "alternatives": 4,
@@ -1039,7 +1059,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 8294,
+      "line": 8653,
       "name": "_CART_TOTAL_QTY_SIGNAL",
       "pattern": "수량|총\\s*개수|총\\s*\\d+\\s*개|총\\s*\\d",
       "alternatives": 4,
@@ -1049,7 +1069,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 9982,
+      "line": 10341,
       "name": "_RATIO_METRIC_PREFIX_RE",
       "pattern": "(?:하루|1일|매일|일)\\s*평균\\s*$",
       "alternatives": 4,
@@ -1059,7 +1079,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10100,
+      "line": 10459,
       "name": "_CAMPAIGN_TAIL_NEG_RE",
       "pattern": "없|않|못[한했하받]|안[한함했하]",
       "alternatives": 4,
@@ -1079,7 +1099,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6079,
+      "line": 6437,
       "name": "_REGION_DENSITY_TOP_N_PATTERN",
       "pattern": "상위\\s*([\\d,]+)|(?:top|톱)\\s*([\\d,]+)",
       "alternatives": 3,
@@ -1089,7 +1109,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6172,
+      "line": 6530,
       "name": "_RANKING_HIGH_DIRECTIVE",
       "pattern": "상위\\s*[\\d,]*\\s*명?|높은\\s*순|top\\s*[\\d,]+",
       "alternatives": 3,
@@ -1099,7 +1119,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6174,
+      "line": 6532,
       "name": "_RANKING_DIRECTIVE_TOP_N",
       "pattern": "(?:상위|하위|top)\\s*([\\d,]+)",
       "alternatives": 3,
@@ -1109,7 +1129,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6482,
+      "line": 6840,
       "name": "_PER_GROUP_COUNT_RE",
       "pattern": "(?:상위\\s*)?([\\d,]+)\\s*(?:명|개|곳)?\\s*씩",
       "alternatives": 3,
@@ -1119,7 +1139,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6572,
+      "line": 6930,
       "name": "_REGION_COUNT_TOP_N_RE",
       "pattern": "([\\d,]+)\\s*(?:개|곳|군데)",
       "alternatives": 3,
@@ -1129,7 +1149,7 @@
     },
     {
       "file": "segment_semantics.py",
-      "line": 49,
+      "line": 54,
       "name": "_AMOUNT_RE",
       "pattern": "(\\d[\\d,]*)\\s*(억|만|천)?\\s*원",
       "alternatives": 3,
@@ -1139,7 +1159,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6173,
+      "line": 6531,
       "name": "_RANKING_LOW_DIRECTIVE",
       "pattern": "하위\\s*[\\d,]*\\s*명?|낮은\\s*순",
       "alternatives": 2,
@@ -1149,7 +1169,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6953,
+      "line": 7311,
       "name": "_BALANCE_TOPN_PATTERN",
       "pattern": "상위\\s*(?P<a>[\\d,]+)|(?P<b>[\\d,]+)\\s*명",
       "alternatives": 2,
@@ -1219,7 +1239,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 1298,
+      "line": 1297,
       "name": "_CHANNEL_SUFFIX_PATTERN",
       "pattern": "\\n?\\s*발송\\s*채널\\s*:.*$",
       "alternatives": 1,
@@ -1229,7 +1249,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 1482,
+      "line": 1481,
       "name": "_BRAND_ADJACENT_BEFORE",
       "pattern": "(?P<object>[0-9A-Za-z가-힣_+\\-]{1,40})\\s*브랜드",
       "alternatives": 1,
@@ -1239,7 +1259,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 1483,
+      "line": 1482,
       "name": "_BRAND_ADJACENT_AFTER",
       "pattern": "브랜드\\s+(?P<object>[0-9A-Za-z가-힣_+\\-]{1,40})",
       "alternatives": 1,
@@ -1249,7 +1269,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 5070,
+      "line": 5176,
       "name": "_GROUP_AXIS_OBJECT_RE",
       "pattern": "^\\s*[0-9A-Za-z가-힣_+\\-]+\\s*별\\s*$",
       "alternatives": 1,
@@ -1259,7 +1279,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 5748,
+      "line": 6106,
       "name": "_HANGUL_SYLLABLE",
       "pattern": "[가-힣]",
       "alternatives": 1,
@@ -1269,7 +1289,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7026,
+      "line": 7384,
       "name": "_ZERO_AMOUNT_MARKER",
       "pattern": "(?<!\\d)0\\s*원",
       "alternatives": 1,
@@ -1279,7 +1299,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7791,
+      "line": 8150,
       "name": "_BRAND_SCOPE_RE",
       "pattern": "(?P<val>[가-힣A-Za-z0-9]+)\\s*브랜드",
       "alternatives": 1,
@@ -1289,7 +1309,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7792,
+      "line": 8151,
       "name": "_CATEGORY_SCOPE_RE",
       "pattern": "(?P<val>[가-힣A-Za-z0-9]+)\\s*카테고리",
       "alternatives": 1,
@@ -1379,7 +1399,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 1384,
+      "line": 1383,
       "name": "_CATEGORY_COPULA_PATTERN",
       "pattern": null,
       "alternatives": 0,
@@ -1389,7 +1409,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 1391,
+      "line": 1390,
       "name": "_CATEGORY_ADJACENT_PATTERN",
       "pattern": null,
       "alternatives": 0,
@@ -1399,7 +1419,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 1888,
+      "line": 1887,
       "name": "pattern",
       "pattern": null,
       "alternatives": 0,
@@ -1409,7 +1429,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6075,
+      "line": 6433,
       "name": "_REGION_DENSITY_PATTERN",
       "pattern": null,
       "alternatives": 0,
@@ -1419,7 +1439,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6078,
+      "line": 6436,
       "name": "_REGION_DENSITY_ALT_PATTERN",
       "pattern": null,
       "alternatives": 0,
@@ -1429,7 +1449,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6863,
+      "line": 7221,
       "name": "range_p",
       "pattern": null,
       "alternatives": 0,
@@ -1439,7 +1459,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6864,
+      "line": 7222,
       "name": "op_p",
       "pattern": null,
       "alternatives": 0,
@@ -1449,7 +1469,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 6865,
+      "line": 7223,
       "name": "eq_p",
       "pattern": null,
       "alternatives": 0,
@@ -1459,7 +1479,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7272,
+      "line": 7631,
       "name": "_METRIC_THRESHOLD_TAIL_RE",
       "pattern": null,
       "alternatives": 0,
@@ -1469,7 +1489,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 7698,
+      "line": 8057,
       "name": "_KOREAN_COUNT_NUMERAL_RE",
       "pattern": null,
       "alternatives": 0,
@@ -1479,7 +1499,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 8185,
+      "line": 8544,
       "name": "_PURCHASE_COUNT_THRESHOLD_PATTERN",
       "pattern": null,
       "alternatives": 0,
@@ -1489,7 +1509,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 9472,
+      "line": 9831,
       "name": "chain",
       "pattern": null,
       "alternatives": 0,
@@ -1499,7 +1519,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 9548,
+      "line": 9907,
       "name": "_SIGNUP_ONLINE_RE",
       "pattern": null,
       "alternatives": 0,
@@ -1509,7 +1529,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 9549,
+      "line": 9908,
       "name": "_SIGNUP_OFFLINE_RE",
       "pattern": null,
       "alternatives": 0,
@@ -1519,7 +1539,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10424,
+      "line": 10783,
       "name": "_CAMPAIGN_BUY_VERB_PATTERN",
       "pattern": null,
       "alternatives": 0,
@@ -1529,7 +1549,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 10774,
+      "line": 11133,
       "name": "_SCHEMA_QUERY_VALUE_RE",
       "pattern": null,
       "alternatives": 0,
@@ -1539,7 +1559,7 @@
     },
     {
       "file": "segment_semantics.py",
-      "line": 379,
+      "line": 439,
       "name": "pattern",
       "pattern": null,
       "alternatives": 0,
@@ -1589,7 +1609,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 14679,
+      "line": 15079,
       "name": "_TARGET_MEMBER_PROJECTION_RE",
       "pattern": "(?i)(?:\\b[A-Za-z_][\\w$]*\\s*\\.\\s*)?(?:\\[\\s*MEMBER_NO\\s*\\]|`MEMBER_NO`|\\\"MEMBER_NO\\\"|MEMBER_NO)\\s+AS\\s+(?:\\[\\s*CUST_ID\\s*\\]|`CUST_ID`|\\\"CUST_ID\\\"|CUST_ID)(?![\\w$])",
       "alternatives": 7,
@@ -1699,7 +1719,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 5749,
+      "line": 6107,
       "name": "_ASCII_ALNUM",
       "pattern": "[0-9A-Za-z]",
       "alternatives": 1,
@@ -1709,7 +1729,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 5835,
+      "line": 6193,
       "name": "_PLAIN_NUMERIC_VALUE",
       "pattern": "^[\\d.\\-/:%\\s]+$",
       "alternatives": 1,
@@ -1719,7 +1739,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 14575,
+      "line": 14975,
       "name": "prefix",
       "pattern": "\\bnot\\s+exists\\s*\\(",
       "alternatives": 1,
@@ -1729,7 +1749,7 @@
     },
     {
       "file": "graph_rag.py",
-      "line": 14747,
+      "line": 15147,
       "name": "_CONSTANT_PROJECTION_RE",
       "pattern": "N?'([^']*)'\\s+AS\\s+([A-Za-z_]\\w*)",
       "alternatives": 1,
@@ -1839,7 +1859,7 @@
     },
     {
       "file": "segment_semantics.py",
-      "line": 48,
+      "line": 53,
       "name": "_NUMBER_RE",
       "pattern": "\\d[\\d,]*",
       "alternatives": 1,

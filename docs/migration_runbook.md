@@ -14,6 +14,21 @@
 
 A 가 코드로 가는 것이 원래 문제였다. C 가 코드인 것은 정상이다.
 
+### A 를 사람이 다 못 적을 때 — LLM 보완
+
+A(어휘)는 끝이 없다. 사전에 없는 말투는 규칙이 조용히 침묵하므로, 그 **빈칸만** LLM 이 채운다
+(`CONDITION_SLOT_LLM_FALLBACK`, `docs/prompts/condition_slot_extract_system.txt`). 대신 채우는
+범위가 묶여 있다 — 이 경계가 "LLM 이 스키마를 지어내지 않는다"의 실질이다.
+
+| | LLM 이 정한다 | JSON 이 정한다 |
+|---|---|---|
+| 회원 상태 플래그 | 문장이 어느 canonical 을 말하는가 | 어떤 canonical 이 존재하는가(`attribute_token_groups.json` ∩ 컴파일 가능) |
+| 쿠폰 임계 | 연산자와 값(`세 번 넘게` → `gt 3`) | 그 조건을 실제로 지원하는가(`segment_metrics.json` 의 capability) |
+
+채택 조건 셋: **닫힌 집합에서 고르기만**(목록 밖 값은 버림), **근거는 원문에 그대로**(회원 명사 포함,
+규칙이 이미 읽은 조각과 겹치면 거부), **빈칸만**(규칙이 채운 슬롯은 안 덮음). 채택분은
+`plan_decisions` 에 `source: llm` 으로 남는다. 계약은 `tests/test_condition_slot_llm.py` 가 강제한다.
+
 ## 주간 루틴 (15분)
 
 ```bash
@@ -42,6 +57,7 @@ docker compose exec -e PYTHONPATH=/app -w /app api \
 | `PARSER_LEXICON_PATH` | 경로 | 파서 표면어 사전 |
 | `SLOT_POLICY_PATH` | 경로 | 슬롯 소유권 정책 |
 | `TARGET_OBJECT_LLM_FALLBACK` | `true`(기본)/`false` | 상품명 LLM 후보. **끄면 상품 조건이 조용히 사라진다** |
+| `CONDITION_SLOT_LLM_FALLBACK` | `true`(기본)/`off` | 사전에 없는 말투를 조건 슬롯으로 채우는 LLM 보완(회원 상태 플래그·쿠폰 임계). 끄면 `attribute_token_groups.json`·`segment_lexicon.json` 의 표면어만으로 동작한다(기존 동작). 켜져 있으면 회원 명사가 있고 규칙이 플래그를 못 올린 질의마다 빠른 모델 호출이 1회 추가된다 |
 
 ## 안전장치 (전부 `pytest tests/` 가 강제)
 
@@ -53,6 +69,8 @@ docker compose exec -e PYTHONPATH=/app -w /app api \
 | rule 생산자 래칫 | `tests/golden/method_mix_baseline.json` | 조건 생산자가 정규식으로 늘어나는 것 |
 | 조용한 소실 상한 | `tests/test_slot_policy.py` | 백스톱도 fail-close 도 없는 슬롯이 느는 것 |
 | 이관 동등성 | `tests/test_lexicon_patterns.py` | 사전으로 옮기며 몰래 어휘를 넓히는 것 |
+| LLM 슬롯 경계 | `tests/test_condition_slot_llm.py` | LLM 이 목록 밖 값·근거 없는 조건을 만들어내는 것 |
+| 세그먼트 소유권 분리 | `tests/test_segment_semantics.py` | 표면어와 접지(소스·capability)가 한 파일로 다시 섞이는 것 |
 | 미해석 오탐 | `tests/test_ir_golden_corpus.py` | 탐지기가 정상 프롬프트를 잡아 큐를 잡음으로 덮는 것 |
 
 ## 재생성 명령

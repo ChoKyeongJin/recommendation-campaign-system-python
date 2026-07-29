@@ -70,7 +70,7 @@ from entity_set import (
     entity_set_label,
     parse_entity_set_condition,
 )
-from formula_engine import DEFAULT_METRIC_LEXICON_PATH, compile_formula_ast, parse_computed_metrics_from_query, validate_formula_ast
+from formula_engine import compile_formula_ast, validate_formula_ast
 from targeting_expression import (
     TargetingExpressionError,
     compile_targeting_expression,
@@ -728,10 +728,10 @@ _METRIC_REGISTRY = _load_metric_registry()
 
 
 def _load_segment_semantics() -> "segment_semantics.SegmentSemanticsRegistry | None":
-    """쿠폰 도메인 의미 스펙(docs/data/segment_metrics.json + segment_operators.json)을 읽는다.
+    """쿠폰 도메인 의미 스펙을 읽는다 — 접지(segment_metrics.json) + 어휘(segment_lexicon.json).
 
     스펙 파손/부재로 import 가 죽지 않게 실패 시 None 으로 강등한다 — 그러면 _apply_coupon_semantics 가
-    무동작(no-op)이 되어 기존 경로가 유지된다(가시적 실패는 tests/test_coupon_semantics.py 가 잡는다)."""
+    무동작(no-op)이 되어 기존 경로가 유지된다(가시적 실패는 tests/test_segment_semantics.py 가 잡는다)."""
     try:
         return segment_semantics.SegmentSemanticsRegistry.load()
     except segment_semantics.SegmentSemanticsError:
@@ -1247,8 +1247,6 @@ def build_graph(payload: dict[str, Any]) -> nx.Graph:
             _add_business_term_edges(graph, node)
         elif node["type"] == "business_policy":
             _add_business_policy_edges(graph, node)
-        elif node["type"] == "metric_alias":
-            _add_metric_alias_edges(graph, node)
         elif node["type"] == "normalization_rule":
             _add_normalization_edges(graph, node)
         elif node["type"] == "dimension":
@@ -2178,7 +2176,6 @@ def build_query_plan(
     query: str,
     normalization_rules: Path | None = DEFAULT_NORMALIZATION_PATH,
     business_policies: Path | None = DEFAULT_POLICY_PATH,
-    metric_lexicon: Path = DEFAULT_METRIC_LEXICON_PATH,
     sql_schema: Path = DEFAULT_SCHEMA_PATH,
     parser: str = "rules",
     llm_model: str = DEFAULT_LLM_MODEL,
@@ -2208,7 +2205,6 @@ def build_query_plan(
         query,
         normalization_rules,
         business_policies,
-        metric_lexicon,
         sql_schema,
         initial_parser,
         llm_model,
@@ -2225,7 +2221,6 @@ def build_query_plan(
                 variant,
                 normalization_rules,
                 business_policies,
-                metric_lexicon,
                 sql_schema,
                 "rules",
                 llm_model,
@@ -2319,7 +2314,7 @@ def build_query_plan(
     semantic_requirements.verify_source_requirements(result)
     _observe_plan(result, source_query, parser=parser, llm_model=llm_model, prompt_dir=prompt_dir,
                   normalization_rules=normalization_rules, business_policies=business_policies,
-                  metric_lexicon=metric_lexicon, sql_schema=sql_schema)
+                  sql_schema=sql_schema)
     return result
 
 
@@ -2337,7 +2332,6 @@ def _observe_plan(
     prompt_dir: Path | None,
     normalization_rules: Path | None,
     business_policies: Path | None,
-    metric_lexicon: Path,
     sql_schema: Path,
 ) -> None:
     """완성된 플랜을 관찰한다 — 미해석 큐 적재(8단계)와 파서 shadow 비교(5단계).
@@ -2358,7 +2352,7 @@ def _observe_plan(
         # 후보 경로: 지금 실행한 파서의 반대편. rules 로 실행 중이면 LLM 구조화 경로를 후보로 본다.
         candidate_parser = "llm" if parser.casefold() == "rules" else "rules"
         candidate = _build_single_query_plan(
-            source_query, normalization_rules, business_policies, metric_lexicon, sql_schema,
+            source_query, normalization_rules, business_policies, sql_schema,
             candidate_parser, llm_model, prompt_dir, None, None,
         )
         comparison = parser_shadow.compare(
@@ -3736,7 +3730,6 @@ def _build_single_query_plan(
     query: str,
     normalization_rules: Path | None = DEFAULT_NORMALIZATION_PATH,
     business_policies: Path | None = DEFAULT_POLICY_PATH,
-    metric_lexicon: Path = DEFAULT_METRIC_LEXICON_PATH,
     sql_schema: Path = DEFAULT_SCHEMA_PATH,
     parser: str = "rules",
     llm_model: str = DEFAULT_LLM_MODEL,
@@ -3768,8 +3761,9 @@ def _build_single_query_plan(
         parse_query,
         normalization_rules=normalization_rules,
         business_policies=business_policies,
-        metric_lexicon=metric_lexicon,
         sql_schema=sql_schema,
+        llm_model=llm_model,
+        prompt_dir=prompt_dir,
     )
     # 조건 소유권 조정·분석 라우팅이 슬롯을 pop/이동하기 전에 원문 요구를 별도 불변 스냅샷으로 봉인한다.
     # rules와 선행 CampaignQueryPlanV2가 충돌해도 둘 중 하나를 덮지 않고 각각의 requirement로 남긴다.
@@ -3910,8 +3904,9 @@ def _build_rule_query_plan(
     query: str,
     normalization_rules: Path | None = DEFAULT_NORMALIZATION_PATH,
     business_policies: Path | None = DEFAULT_POLICY_PATH,
-    metric_lexicon: Path = DEFAULT_METRIC_LEXICON_PATH,
     sql_schema: Path = DEFAULT_SCHEMA_PATH,
+    llm_model: str = DEFAULT_LLM_MODEL,
+    prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
 ) -> dict[str, Any]:
     normalized_query = query
     matches: list[dict[str, str]] = []
@@ -4036,7 +4031,8 @@ def _build_rule_query_plan(
     # 모든 결정론 필터가 끝나(dimension_filters·gender·lifecycle 확정) 소유권이 확정된 뒤, dimension/속성
     # 필터가 이미 소유한 operator-scan 집합식(평범한 '서울 또는 경기' 지역 OR)을 버려 중복 clarification 을 막는다.
     _drop_dimension_consumed_set_expressions(plan)
-    plan["computed_metrics"] = parse_computed_metrics_from_query(query, schema_path=sql_schema, metric_lexicon_path=metric_lexicon)
+    # 계산식(computed_metrics)은 규칙 경로가 만들지 않는다 — formula_ast 는 LLM 파서만 제안하고
+    # (_coerce_llm_computed_metric), formula_engine 은 그 AST 를 검증·컴파일만 한다.
     policy_terms = [
         term
         for policy in plan["policy_constraints"]
@@ -4049,12 +4045,6 @@ def _build_rule_query_plan(
         for term in (resolution.get("canonical"), resolution.get("ambiguous_term"), resolution.get("default_resolution"))
         if isinstance(term, str) and term
     ]
-    computed_metric_terms = [
-        term
-        for metric in plan["computed_metrics"]
-        for term in (metric.get("metric_id"), metric.get("ko_label"), metric.get("formula_text"))
-        if isinstance(term, str) and term
-    ]
     set_expression_terms = [
         term
         for expression in plan["set_expressions"]
@@ -4064,12 +4054,15 @@ def _build_rule_query_plan(
         [match["canonical"] for match in plan["matched_terms"]]
         + policy_terms
         + semantic_terms
-        + computed_metric_terms
         + set_expression_terms
         + _inactivity_retrieval_terms(plan["target_user"].get("inactivity_period"))
         + _recent_login_retrieval_terms(plan["target_user"].get("recent_login"))
         + _query_tokens(normalized_query)
     )
+    # 결정론 필터가 끝난 뒤, 어휘 사전이 비워둔 조건 슬롯만 LLM 으로 메운다(닫힌 집합 검증 후 채택).
+    # 여기 두는 이유: 규칙이 무엇을 채웠는지 봐야 '빈칸만' 메울 수 있고, 쿠폰 임계 슬롯은 바로 아래
+    # _apply_coupon_semantics 가 소비하기 때문이다.
+    _apply_llm_condition_slot_fallback(query, plan, llm_model=llm_model, prompt_dir=prompt_dir)
     # 쿠폰 도메인 의미(사용 여부/건수 임계/순위/지표 비교/파생)를 JSON 스펙 기반으로 확정한다. 미지원
     # 판정을 게이트보다 먼저 남겨(게이트는 unsupported 가 있으면 양보) 어순 무관하게 일관되게 처리하고,
     # 논리식 리프(_compile_logical_leaf → _build_rule_query_plan)에서도 동일하게 동작하게 한다.
@@ -5834,6 +5827,236 @@ def _apply_llm_object_fallback(
             constraints["sell_object"] = sell_object
 
 
+# ── 조건 슬롯 LLM 보완(표면어 사전이 못 읽은 말투) ────────────────────────────────────────
+# 어휘 사전(attribute_token_groups.json·segment_lexicon.json)은 표면 표현을 한 줄씩 쌓는 구조라 처음 보는
+# 말투('세 번 넘게 쓴', '블랙 처리된 분들')에는 조용히 침묵한다. 여기서 LLM 이 그 빈칸만 메운다.
+#
+# 경계가 핵심이다 — LLM 은 **닫힌 집합에서 고르기만** 한다:
+#   * 회원 속성: canonical 은 attribute_token_groups 가 선언한 것 ∩ MEMBER_EQ_FILTERS(실제 컴파일 가능한 것).
+#     목록에 없는 값은 버린다. 그래서 LLM 이 컬럼이나 새 속성을 만들어낼 수 없다.
+#   * 쿠폰 임계: 연산자는 segment_semantics.OPERATOR_IDS, 지원 여부 판정은 여전히 접지 JSON(capability).
+# 어휘가 이미 읽은 슬롯은 건드리지 않는다(빈칸 보완만). 키가 없거나 호출이 실패하면 규칙 결과 그대로 간다.
+_SEGMENT_SLOT_KEY = "_llm_segment_slots"
+# 어휘 스캐너가 읽는 형태 — 아라비아 숫자 + 단위. 이게 있으면 임계는 어휘가 소유하므로 LLM 을 부르지 않는다.
+_DIGIT_WITH_UNIT_RE = re.compile(r"\d[\d,]*\s*(?:회|건|개|장|번)")
+# 회원 신분을 가리키는 명사. LLM 이 채울 수 있는 것은 '회원 상태 플래그'뿐이므로, 부를 때도(트리거)
+# 받을 때도(근거 검증) 이 명사가 있어야 한다 — '가입한' 같은 동사만 보고 속성을 만들어내는 것을 막는다.
+_MEMBER_NOUN_RE = re.compile(r"(?:회원|고객|유저|사용자|멤버|가입자)")
+
+
+def _condition_slot_llm_enabled() -> bool:
+    value = os.getenv("CONDITION_SLOT_LLM_FALLBACK", "true").strip().casefold()
+    return value not in {"0", "false", "no", "off"}
+
+
+def _attribute_token_canonicals() -> tuple[str, ...]:
+    """LLM 이 고를 수 있는 회원 속성 canonical 의 닫힌 집합.
+
+    member_flag 그룹으로 한정한다 — 표면어가 곧 신분 라벨(활동회원·블랙리스트·임직원 …)이라 새 말투가
+    끝없이 생기는 쪽이다. children/signup_device 는 '자녀'·'가입' 같은 하드 게이트가 규칙 쪽에서 이미
+    문맥을 좁혀 놓았고, 그 게이트어를 LLM 에 열어주면 '가입한 회원'을 멤버십 가입으로 읽는 식의 오탐이
+    난다(실제로 골든 코퍼스에서 관측됨). 선언돼 있어도 컴파일 불가(MEMBER_EQ_FILTERS 부재)면 제외한다."""
+    group = _attribute_token_groups().get("member_flag")
+    if group is None:
+        return ()
+    return tuple(
+        canonical for canonical, _terms in group.canonicals if canonical in MEMBER_EQ_FILTERS
+    )
+
+
+def _claimed_spans(plan: dict[str, Any]) -> list[str]:
+    """결정론 층이 이미 '읽은' 원문 조각(정규화 매칭 텍스트) — 공백 제거·소문자."""
+    spans: list[str] = []
+    for match in plan.get("matched_terms") or []:
+        if not isinstance(match, dict):
+            continue
+        text = str(match.get("matched_text") or "").replace(" ", "").casefold()
+        if text:
+            spans.append(text)
+    return spans
+
+
+def _flag_evidence_accepted(evidence: Any, query: str, plan: dict[str, Any]) -> bool:
+    """LLM 이 댄 근거가 채택 가능한가 — 세 관문 모두 통과해야 한다.
+
+      1. 원문에 그대로 있는 표현이어야 한다(번역·유추 금지).
+      2. 결정론 층이 이미 읽은 조각과 겹치면 안 된다 — 규칙이 '신규'로 읽은 텍스트를 LLM 이 다시
+         멤버십으로 읽어 조건을 하나 더 만들어내는 중복 해석을 막는다(빈칸만 메운다는 원칙의 스팬 판).
+      3. 회원 신분을 가리키는 명사를 포함해야 한다 — 이 경로가 채우는 것이 회원 상태 플래그이기 때문."""
+    if not isinstance(evidence, str):
+        return False
+    span = evidence.replace(" ", "").casefold()
+    if len(span) < 2 or span not in query.replace(" ", "").casefold():
+        return False
+    if any(claimed in span or span in claimed for claimed in _claimed_spans(plan)):
+        return False
+    return bool(_MEMBER_NOUN_RE.search(span))
+
+
+def _condition_slot_system_prompt(canonicals: tuple[str, ...], prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
+    fallback = "\n".join(
+        [
+            "너는 한국어 캠페인 타겟팅 문장에서 '조건 슬롯'만 뽑아내는 추출기다. 문장을 해석하지 말고,",
+            "아래 정해진 값 중에서만 고른다. 해당 없으면 빈 배열/null 로 둔다(추측 금지).",
+            "",
+            "member_flags: 회원 신분/상태 속성. 각 원소는 {\"canonical\": <목록 중 하나>, \"polarity\":",
+            "  \"include\"|\"exclude\", \"evidence\": \"<문장에서 그대로 오려낸 근거>\"}.",
+            "  polarity 는 그 속성인 고객을 '포함'하면 include, '제외/아닌/빼고'면 exclude 다.",
+            "  고를 수 있는 canonical: " + ", ".join(canonicals),
+            "  목록에 없는 속성은 절대 만들지 마라. 문장에 근거가 없으면 빈 배열 [].",
+            "  evidence 는 문장에 글자 그대로 있어야 하고 회원을 가리키는 말(회원/고객/유저)을 포함해야 한다.",
+            "  행위(가입한/구매한)나 기간은 신분 속성이 아니다 — '가입한 신규 회원'은 빈 배열 [].",
+            "",
+            "coupon_usage: 쿠폰 '사용 횟수' 임계. {\"operator\": \"eq\"|\"gt\"|\"gte\"|\"lt\"|\"lte\"|\"between\", \"value\": 숫자,",
+            "  \"min_value\": 숫자, \"max_value\": 숫자} 형태이고, 임계가 없으면 null.",
+            "  한글 수사도 숫자로 바꾼다('세 번 넘게' → operator gt, value 3). '이상'=gte, '초과/넘는'=gt,",
+            "  '이하'=lte, '미만'=lt, '정확히'=eq, 범위는 between 에 min_value/max_value.",
+            "  단순히 '쿠폰을 쓴/안 쓴'처럼 횟수가 없으면 null 이다(여부는 다른 경로가 처리한다).",
+            "",
+            '다음 JSON object 만 출력한다: {"member_flags": [...], "coupon_usage": {...} 또는 null}.',
+        ]
+    )
+    return _read_prompt_template(prompt_dir, "condition_slot_extract_system.txt", fallback).replace(
+        "{canonicals}", ", ".join(canonicals)
+    )
+
+
+def _llm_extract_condition_slots(
+    query: str, canonicals: tuple[str, ...], llm_model: str, prompt_dir: Path | None
+) -> dict[str, Any] | None:
+    """LLM 으로 회원 속성 플래그·쿠폰 임계 슬롯을 추출한다. 사용 불가/실패 시 None(규칙 결과 유지)."""
+    llm_model = _fast_llm_model(llm_model)
+    if not os.getenv("OPENAI_API_KEY") or not query.strip() or not canonicals:
+        return None
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return None
+    try:
+        client = OpenAI()
+        response = _openai_chat_create(client,
+            model=llm_model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _condition_slot_system_prompt(canonicals, prompt_dir)},
+                {"role": "user", "content": query},
+            ],
+            timeout=_prompt_rewrite_timeout_seconds(),
+        )
+        data = json.loads(response.choices[0].message.content or "{}")
+        if not isinstance(data, dict):
+            return None
+        _write_rag_llm_log("condition_slot_extraction", {"query": query, **data})
+        return data
+    except Exception:
+        return None
+
+
+def _validated_member_flags(
+    raw: Any, canonicals: tuple[str, ...], query: str, plan: dict[str, Any]
+) -> list[tuple[str, str]]:
+    """LLM 이 준 회원 속성 후보를 닫힌 집합 + 근거 검증으로 거른 (canonical, polarity) 목록."""
+    if not isinstance(raw, list):
+        return []
+    allowed = set(canonicals)
+    out: list[tuple[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        canonical = item.get("canonical")
+        polarity = item.get("polarity") if item.get("polarity") in {"include", "exclude"} else "include"
+        if not (isinstance(canonical, str) and canonical in allowed):
+            continue
+        if not _flag_evidence_accepted(item.get("evidence"), query, plan):
+            continue
+        if (canonical, polarity) not in out:
+            out.append((canonical, polarity))
+    return out
+
+
+def _validated_coupon_slots(raw: Any) -> dict[str, Any] | None:
+    """LLM 이 준 쿠폰 임계를 닫힌 연산자 집합 + 유한한 양수로 검증한다. 값 검증 실패면 None."""
+    if not isinstance(raw, dict):
+        return None
+    operator = raw.get("operator")
+    if operator not in segment_semantics.OPERATOR_IDS:
+        return None
+
+    def _number(key: str) -> float | None:
+        value = raw.get(key)
+        if isinstance(value, bool) or not isinstance(value, int | float):
+            return None
+        return float(value) if 0 <= float(value) < 1_000_000 else None
+
+    if operator == "between":
+        low, high = _number("min_value"), _number("max_value")
+        return None if low is None or high is None else {
+            "operator": "between", "min_value": min(low, high), "max_value": max(low, high),
+        }
+    value = _number("value")
+    return None if value is None else {"operator": operator, "value": value}
+
+
+def _apply_llm_condition_slot_fallback(
+    query: str,
+    plan: dict[str, Any],
+    llm_model: str = DEFAULT_LLM_MODEL,
+    prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
+) -> None:
+    """어휘 사전이 비워둔 조건 슬롯만 LLM 으로 메운다(회원 속성 canonical·쿠폰 임계).
+
+    _apply_llm_object_fallback 과 같은 전제로 동작한다 — parser 모드가 아니라 OPENAI_API_KEY 유무.
+    규칙이 이미 채운 슬롯은 절대 덮지 않고, 채택한 것은 plan_decisions 에 LLM 출처로 남긴다."""
+    if not _condition_slot_llm_enabled() or not os.getenv("OPENAI_API_KEY"):
+        return
+    canonicals = _attribute_token_canonicals()
+    target_user = plan.setdefault("target_user", {})
+    exclude = plan.get("exclude") if isinstance(plan.get("exclude"), dict) else {}
+    promoted = set(target_user.get("lifecycle") or []) | set(exclude.get("lifecycle") or [])
+    # 회원 속성: 회원 신분 명사가 있고(문장이 회원 상태를 말하고 있고) 규칙이 이 닫힌 집합에서 아무것도
+    # 못 올렸을 때만 부른다 — 이미 읽었거나 회원 상태 얘기가 아니면 LLM 을 부르지 않는다.
+    need_flags = (
+        bool(canonicals)
+        and bool(_MEMBER_NOUN_RE.search(query))
+        and not (promoted & set(canonicals))
+    )
+    # 쿠폰 임계: '쿠폰'이 있는데 어휘 스캐너가 읽는 '숫자+단위'가 없을 때만(한글 수사·낯선 표현).
+    need_coupon = "쿠폰" in query and not _DIGIT_WITH_UNIT_RE.search(query)
+    if not (need_flags or need_coupon):
+        return
+
+    extracted = _llm_extract_condition_slots(query, canonicals, llm_model, prompt_dir)
+    if not extracted:
+        return
+
+    if need_flags:
+        for canonical, polarity in _validated_member_flags(
+            extracted.get("member_flags"), canonicals, query, plan
+        ):
+            if polarity == "exclude":
+                _append_unique(plan.setdefault("exclude", {}).setdefault("lifecycle", []), canonical)
+                slot = "exclude.lifecycle"
+            else:
+                _append_unique(target_user.setdefault("lifecycle", []), canonical)
+                slot = "target_user.lifecycle"
+            plan_decisions.record(
+                plan, filter_name="llm_condition_slots", action="fill", slot=slot, value=canonical,
+                reason="어휘 사전에 없는 표현이라 닫힌 canonical 집합에서 LLM 이 고름", source="llm",
+            )
+
+    if need_coupon:
+        slots = _validated_coupon_slots(extracted.get("coupon_usage"))
+        if slots:
+            plan[_SEGMENT_SLOT_KEY] = slots
+            plan_decisions.record(
+                plan, filter_name="llm_condition_slots", action="fill",
+                slot="target_user.coupon_usage_thresholds", value=slots,
+                reason="숫자+단위 표기가 아니라 어휘 스캐너가 임계를 못 읽음(지원 여부는 접지가 판정)",
+                source="llm",
+            )
+
+
 @functools.lru_cache(maxsize=8)
 def _load_dimension_catalog(path: Path) -> tuple[dict[str, Any], ...]:
     if not path or not path.exists():
@@ -7242,7 +7465,7 @@ def _detect_ratio_comparison(query: str) -> dict[str, str] | None:
 
 
 # 쿠폰 '사용 건수' 임계('쿠폰 3개 이상 사용')·순위·지표 비교·파생(쿠폰당 구매금액)의 미지원 판정은 이제
-# 문장별 정규식이 아니라 JSON 스펙(segment_metrics.json) + segment_semantics 의미 노드 + capability 게이트로
+# 문장별 정규식이 아니라 JSON 스펙(segment_metrics/segment_lexicon) + segment_semantics 의미 노드 + capability 게이트로
 # 처리한다(_apply_coupon_semantics). 어순에 따라 임계값이 조용히 USE_CPN_CNT>0 으로 축소되던 결함을 없앤다.
 # 캠페인 메시지 '받은/수신 횟수' 임계('메시지 3회 이상 받은'): 접촉(EXISTS)·반응 횟수(campaign_response_frequency)
 # 는 있으나 '발송/수신 건수' 임계는 모델링되지 않았다(반응 팩트는 반응자 중심 적재라 수신 횟수 분모가 없다).
@@ -7292,7 +7515,7 @@ def _remove_coupon_campaign_responses(target_user: dict[str, Any]) -> None:
 
 @_audited_stage
 def _apply_coupon_semantics(query: str, plan: dict[str, Any]) -> None:
-    """쿠폰 도메인 조건을 JSON 스펙(segment_metrics/operators) 기반 의미 노드 + capability 게이트로 해석한다.
+    """쿠폰 도메인 조건을 JSON 스펙(segment_metrics/segment_lexicon) 기반 의미 노드 + capability 게이트로 해석한다.
 
     문장별 정규식·어순 의존 대신 segment_semantics.interpret() 가 지표/연산자/값/범위/부정/비교대상/파생식을
     '완성'한 뒤 capability 로 지원/미지원을 판정한다. 이 어댑터는 그 결과를 plan 에 반영한다:
@@ -7304,7 +7527,8 @@ def _apply_coupon_semantics(query: str, plan: dict[str, Any]) -> None:
     보존 검증(_guard_coupon_semantic_preservation)이 조용한 의미 소실을 fail-close 로 막게 한다."""
     if _SEGMENT_SEMANTICS is None or "쿠폰" not in query:
         return
-    interp = segment_semantics.interpret(query, _SEGMENT_SEMANTICS)
+    # 어휘가 못 읽은 임계('세 번 넘게')를 메우는 LLM 슬롯. 어휘가 먼저이고 슬롯은 빈칸만 채운다.
+    interp = segment_semantics.interpret(query, _SEGMENT_SEMANTICS, slots=plan.get(_SEGMENT_SLOT_KEY))
     if interp is None:
         return
     target_user = plan.setdefault("target_user", {})
@@ -11223,7 +11447,6 @@ def retrieve(
     hops: int,
     normalization_rules: Path | None = DEFAULT_NORMALIZATION_PATH,
     business_policies: Path | None = DEFAULT_POLICY_PATH,
-    metric_lexicon: Path = DEFAULT_METRIC_LEXICON_PATH,
     sql_schema: Path = DEFAULT_SCHEMA_PATH,
     sql_limit: int = DEFAULT_LIMIT,
     query_parser: str = "rules",
@@ -11325,7 +11548,6 @@ def retrieve(
         planner_input,
         normalization_rules=normalization_rules,
         business_policies=business_policies,
-        metric_lexicon=metric_lexicon,
         sql_schema=sql_schema,
         parser=query_parser,
         llm_model=llm_model,
@@ -13781,7 +14003,6 @@ _TARGETING_IR_EVIDENCE_TYPES = frozenset({
     "dimension",
     "business_term",
     "normalization_rule",
-    "metric_alias",
 })
 _TARGETING_IR_EVIDENCE_LIMIT = 12
 _TARGETING_IR_EVIDENCE_CHARS = 300
@@ -21324,7 +21545,6 @@ _TRACE_STAGE_REFS: dict[int, tuple[dict[str, str], ...]] = {
         {"kind": "데이터", "name": "targeting_lexicon.json"},
         {"kind": "데이터", "name": "attribute_token_groups.json"},
         {"kind": "데이터", "name": "member_metrics.json"},
-        {"kind": "데이터", "name": "metric_lexicon.sample.json"},
         {"kind": "데이터", "name": "schema_catalog.json"},
         {"kind": "모델", "name": "{model} (tool calling)"},
     ),
@@ -21477,7 +21697,7 @@ def _mark_trace_refs_used(stages: list[dict[str, Any]], result: dict[str, Any]) 
     if query_plan.get("member_metric_selection") is not None or target_user.get("balance_conditions"):
         mark(3, "member_metrics.json")
     if computed_metrics:
-        mark(3, "metric_lexicon.sample.json", "schema_catalog.json")
+        mark(3, "schema_catalog.json")
 
     if query_plan.get("_trace_target_object_llm_used"):
         mark(4, "target_object_extract_system.txt", kind="모델")
@@ -22190,18 +22410,6 @@ def _add_business_policy_edges(graph: nx.Graph, node: dict[str, Any]) -> None:
             graph.add_edge(node["id"], column_node_id, relation="business_policy_column")
 
 
-def _add_metric_alias_edges(graph: nx.Graph, node: dict[str, Any]) -> None:
-    for table_name in node.get("related_tables", []):
-        table_node_id = f"schema_table:{table_name}"
-        if table_node_id in graph:
-            graph.add_edge(node["id"], table_node_id, relation="metric_alias_table")
-
-    for column_name in node.get("related_columns", []):
-        column_node_id = f"schema_column:{column_name}"
-        if column_node_id in graph:
-            graph.add_edge(node["id"], column_node_id, relation="metric_alias_column")
-
-
 def _add_normalization_edges(graph: nx.Graph, node: dict[str, Any]) -> None:
     business_term_node_id = f"business_term:{node.get('canonical')}"
     if business_term_node_id in graph:
@@ -22252,8 +22460,6 @@ def _node_title(node: dict[str, Any]) -> str:
     if node["type"] == "business_term":
         return node.get("term", node["id"])
     if node["type"] == "business_policy":
-        return node.get("ko_label", node.get("canonical", node["id"]))
-    if node["type"] == "metric_alias":
         return node.get("ko_label", node.get("canonical", node["id"]))
     if node["type"] == "sql_example":
         return node.get("title", node["id"])
@@ -22348,7 +22554,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data", type=Path, default=DEFAULT_DATA_PATH, help="RAG knowledge JSON path.")
     parser.add_argument("--normalization-rules", type=Path, default=DEFAULT_NORMALIZATION_PATH, help="Normalization dictionary JSON path for query planning.")
     parser.add_argument("--business-policies", type=Path, default=DEFAULT_POLICY_PATH, help="Business policy JSON path for query planning.")
-    parser.add_argument("--metric-lexicon", type=Path, default=DEFAULT_METRIC_LEXICON_PATH, help="Metric alias JSON path for computed formula query planning.")
     parser.add_argument("--url", default=os.getenv("QDRANT_URL", "http://localhost:6333"), help="Qdrant URL.")
     parser.add_argument("--api-key", default=os.getenv("QDRANT_API_KEY"), help="Qdrant API key.")
     parser.add_argument("--collection", default=os.getenv("QDRANT_GRAPH_COLLECTION", DEFAULT_COLLECTION), help="Qdrant collection name.")
@@ -22397,7 +22602,6 @@ def main() -> None:
             hops=args.hops,
             normalization_rules=args.normalization_rules,
             business_policies=args.business_policies,
-            metric_lexicon=args.metric_lexicon,
             sql_schema=args.sql_schema,
             sql_limit=args.sql_limit,
             query_parser=args.query_parser,

@@ -248,31 +248,18 @@ WHERE (((u.gender = 'female' OR u.lifecycle = 'vip')
   AND NOT (u.lifecycle = 'inactive_90d'))
 ```
 
-### 2.8 계산 지표 별칭 정의
+### 2.8 계산 지표(계산식)
 
-수정 대상:
+수정 대상: 없음(사전 파일 없음).
 
-- `docs/data/metric_lexicon.sample.json`
+`평균주문금액 * 구매횟수` 같은 숫자 지표 계산식은 **LLM parser 만** `computed_metrics.formula_ast` 로
+제안한다. `formula_engine.py` 는 그 AST 가 스키마에 있는 숫자형 컬럼과 `+`, `-`, `*`, `/` 연산자만
+쓰는지 검증하고, 통과한 것만 SQL expression 으로 컴파일한다(검증 실패 시 clarification).
 
-왜 이걸 쓰는가:
-
-- `평균주문금액`, `객단가`, `구매횟수`, `예산` 같은 자연어 지표명을 숫자형 스키마 컬럼으로 연결한다.
-- 사용자가 `평균주문금액과 구매횟수를 곱한 값`처럼 숫자 지표 계산을 명시하면 GraphRAG가 `computed_metrics.formula_ast`를 만든다.
-- `formula_engine.py`는 스키마에 있는 숫자형 컬럼과 `+`, `-`, `*`, `/` 연산자만 허용하고, 검증된 계산식만 SQL expression으로 컴파일한다.
-- 계산식 자체를 모두 정책 파일에 미리 넣지 않고, 자연어 지표 별칭만 운영 데이터로 보강한다.
-
-예시:
-
-```json
-{
-  "metric_id": "avg_order_value_krw",
-  "canonical": "avg_order_value_krw",
-  "ko_label": "평균주문금액",
-  "table": "users",
-  "column": "avg_order_value_krw",
-  "synonyms": ["객단가", "평균 주문 금액", "aov"]
-}
-```
+별칭 사전 `metric_lexicon.sample.json` + 규칙 파서는 2026-07-29에 제거했다. 사전이 이미 비어 있었고,
+컬럼 해석의 관문인 `formula_engine.TABLE_ALIASES` 가 데모 스키마(`users`/`campaigns`) 고정이라 실 CRM
+스키마에서는 규칙 파서가 항상 빈 결과를 냈다. 실DB에서 계산식을 쓰려면 `TABLE_ALIASES` 를 실 테이블로
+넓히면 되고, 자연어 → AST 변환은 LLM 이 담당한다.
 
 ### 2.9 RAG 지식 베이스 생성
 
@@ -281,17 +268,15 @@ docker compose run --rm python python build_rag_knowledge.py \
   --schema docs/data/schema_catalog.json \
   --normalization docs/data/normalization_rules.sample.json \
   --business-policies docs/data/business_policies.sample.json \
-  --metric-lexicon docs/data/metric_lexicon.sample.json \
   --sql-examples docs/data/sql_examples.sample.sql \
   --output docs/data/rag_knowledge_base.json
 ```
 
 왜 이걸 쓰는가:
 
-- `build_rag_knowledge.py`는 스키마, 정규화 사전, 비즈니스 용어, 업무 정책, 계산 지표 별칭, SQL 예시를 하나의 RAG 지식 노드 JSON으로 합친다.
+- `build_rag_knowledge.py`는 스키마, 정규화 사전, 비즈니스 용어, 업무 정책, 디멘션, 회원 값 인덱스, SQL 예시를 하나의 RAG 지식 노드 JSON으로 합친다.
 - `graph_rag.py`는 이 파일을 읽어 NetworkX 그래프를 만들고, Qdrant의 `campaign_knowledge_rag` 컬렉션과 함께 검색한다.
 - 업무 정책은 `business_policy` 노드로 생성되고 관련 테이블/컬럼과 graph edge로 연결된다.
-- 계산 지표 별칭은 `metric_alias` 노드로 생성되고 관련 숫자형 컬럼과 graph edge로 연결된다.
 - `campaign_message_examples`, `campaign_channel_messages`, `campaign_experiments`, `campaign_message_variants`, `campaign_message_deliveries`, `campaign_message_events`, 성과 view, `channel_message_generation`, `channel_message`, `brand_tone`도 지식 노드와 그래프 관계에 반영된다.
 - SQL 예시는 최종 SQL을 그대로 복사하기 위한 용도가 아니라, 검색 context와 대표 패턴 설명을 제공하기 위한 근거 자료로 쓴다.
 
@@ -371,7 +356,6 @@ docker compose run --rm python python graph_rag.py "20대 여성 고객 또는 V
 - `graph_rag.py`는 사용자 질문 하나를 받아 Query Plan, 벡터 검색, 키워드 검색, 그래프 확장, context 조립, SQL 템플릿 검증까지 한 번에 수행한다.
 - 기본 parser는 규칙 기반이라 `OPENAI_API_KEY` 없이도 동작한다.
 - 기본 정책 파일은 `docs/data/business_policies.sample.json`이며, 다른 파일을 쓰려면 `--business-policies`를 지정한다.
-- 기본 계산 지표 별칭 파일은 `docs/data/metric_lexicon.sample.json`이며, 다른 파일을 쓰려면 `--metric-lexicon`을 지정한다.
 - `--query-parser auto` 또는 `--query-parser llm`은 OpenAI 기반 Query Parser를 시도하되 실패하면 규칙 기반 결과로 fallback한다.
 
 ### 3.3 타겟 SQL API 실행
@@ -635,7 +619,6 @@ docker compose run --rm python python sql_guard.py "SELECT user_id, name FROM us
 | 조인 패턴이나 대표 질의가 부족함         | `docs/data/sql_examples.sample.sql`                               | SQL 예시는 GraphRAG context와 패턴 설명을 보강한다.                                       |
 | 업무 기준이나 기준 금액이 불명확함       | `docs/data/business_policies.sample.json`                         | 매출 상위, 고매출, 고예산 같은 정책 기준은 코드가 아니라 정책 파일이 소유한다.            |
 | 모호한 용어의 기본 해석이 맞지 않음      | `docs/data/business_policies.sample.json`                         | 지역, 고객, 구매 장소처럼 의미가 갈리는 표현의 기본 컬럼과 확인 질문을 정책으로 관리한다. |
-| 계산식 지표명이 컬럼으로 연결되지 않음   | `docs/data/metric_lexicon.sample.json`                            | 자연어 계산식의 A/B/C 용어는 metric alias를 통해 숫자형 컬럼으로 연결한다.                |
 | 계산식 SQL이 잘못 생성됨                 | `formula_engine.py`, `graph_rag.py`                               | 계산식 AST 검증과 SQL expression 컴파일은 코드 경로에서 결정한다.                         |
 | 집합식 AST나 predicate SQL이 잘못 생성됨 | `set_expression_engine.py`, `graph_rag.py`                        | 자연어 집합식 파싱과 `OR`/`AND`/`AND NOT` predicate 컴파일은 코드 경로에서 결정한다.      |
 | SQL이 사용자 조건을 빠뜨림               | `graph_rag.py`의 조건 토큰/SQL 템플릿                             | 최종 SQL은 Query Plan 조건 coverage를 통과해야 한다.                                      |
@@ -700,7 +683,7 @@ docker compose run --rm python python check_rag_collections.py --strict
 현재 입력 데이터 검증 결과:
 
 - `campaign_user_rag_nodes`: 입력 노드 50개, campaign 25개, user 25개
-- `campaign_knowledge_rag`: 입력 노드 107개, schema_table 18개, normalization_rule 40개, business_term 20개, business_policy 5개, metric_alias 6개, sql_example 18개
+- `campaign_knowledge_rag`: 입력 노드 107개, schema_table 18개, normalization_rule 40개, business_term 20개, business_policy 5개, sql_example 18개
 - Qdrant에 실제로 다시 반영하려면 `init_rag_collections.py --recreate` 후 `check_rag_collections.py --strict`를 실행한다.
 
 운영 순서:

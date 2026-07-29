@@ -1,5 +1,0 @@
-{
-  "version": "0.2",
-  "description": "자연어 계산식(공식)용 지표 별칭 사전. 2026-07-25 데모 지표를 비웠다. 이유: (1) 공식 파싱 경로(formula_engine)는 TABLE_ALIASES=users/campaigns 데모 스키마 전용인데 연결된 실 CRM schema_catalog 에는 그 테이블이 없어 이미 비활성이다. (2) 실 회원 지표(매출 TOTAL_BUY_AMT·구매횟수 TOTAL_BUY_CNT·객단가 MEAN_BUY_AMT 등)는 member_metrics.json + member_metric_ranking 이 담당한다. 따라서 데모 스키마를 가리키던 별칭이 RAG 검색을 오도하지 않도록 metrics 를 비운다. 실DB용 공식 지표가 필요하면 formula_engine.TABLE_ALIASES 를 실 테이블로 확장한 뒤 아래 metrics 에 {metric_id, canonical, ko_label, table, column, synonyms} 형식으로 추가한다.",
-  "metrics": []
-}
