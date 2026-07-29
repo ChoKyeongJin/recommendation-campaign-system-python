@@ -14377,7 +14377,7 @@ def build_recommendation_api_response(
         # 실패가 발생한 파이프라인 단계(어디서 막혔는지). {code,label,order,total,reason,pipeline}.
         # 성공이면 None — 프론트는 이 값이 있을 때만 "실패 단계" 배지·스텝퍼를 노출한다.
         "failure_stage": _classify_failure_stage(sql_result.get("failure_reason"), sql_result),
-        # 의미 검증 게이트 판정(원문↔최종 SQL 직접 대조). {ran, faithful, issues} — 오탐 튜닝·디버깅용.
+        # 의미 검증 게이트 판정. status=review는 비차단이며 faithful은 기존 소비자 호환 필드다.
         "semantic_verification": sql_result.get("semantic_verification", {"ran": False}),
         "delivery_validation": sql_result.get("delivery_validation", {"is_satisfied": False}),
         "aggregation_request": sql_result.get("aggregation_request"),
@@ -15007,6 +15007,7 @@ _SEMANTIC_ISSUE_LABELS = {
     "inverted": "의미 반전(긍정↔부정/이상↔이하 등이 뒤집힘)",
     "wrong_value": "값 불일치(연령·지역·등급 등 값이 다름)",
     "spurious": "미요청 추가(원문에 없는 조건이 SQL에 있음)",
+    "ambiguous": "복수 해석 가능(확인 권장·비차단)",
 }
 
 
@@ -15103,12 +15104,102 @@ def _sql_semantic_verify_system_prompt() -> str:
         "구조화 집계 계약의 businessRules.appliedPolicyFilters 또는 별도로 제공된 [적용된 서비스 정책]의 "
         "appliedPolicyFilters에 기록된 조건은 서비스 정책이므로 원문에 없어도 spurious가 아니다. "
         "반대로 dimensions의 컬럼은 SELECT와 GROUP BY에 모두 있어야 하며, 다른 의미의 컬럼으로 바꾸면 dropped로 판정하라.\n"
-        "중요: **확실한 의미 불일치만** 보고하라. 표현만 다르고 의미가 같으면 faithful=true. 판단이 애매하면 "
-        "faithful=true 로 둔다(정상 SQL 을 막는 오탐이 놓치는 것보다 나쁘다). NOT EXISTS=조건 없음/부정, "
-        "EXISTS=조건 있음/긍정임에 유의하라.\n"
-        'JSON 으로만 답하라: {"faithful": true|false, "issues": [{"type": "dropped|inverted|wrong_value|spurious", '
-        '"condition": "원문의 해당 표현", "detail": "무엇이 어떻게 틀렸는지 한 문장"}]}. faithful=true 면 issues 는 빈 배열.'
+        "함께 제공된 [확정 의미 해석]은 앞 단계가 선택한 구조화 의미 계약이다. 원문이 그 해석을 명백히 "
+        "배제하지 않고 여러 합리적 해석 중 하나로 허용한다면, SQL이 그 계약을 구현한 것을 불일치로 보지 마라. "
+        "예를 들어 '같은 상품을 동시 구매'의 확정 계약이 동일 회원·동일 주문·동일 상품의 수량 합계 2개 이상이라면 "
+        "SQL의 MEMBER_NO, ORDER_ID, PRODUCT_ID 그룹과 SUM(ORDER_QTY) >= 2는 유효한 해석이다. 다른 해석도 가능하다는 "
+        "이유만으로 fail을 반환하면 안 된다. 단, 원문의 명시 조건이 확정 계약 또는 SQL과 직접 모순되면 fail이다.\n"
+        "판정 기준: pass는 명시 요구 또는 합리적인 확정 해석을 충족한 경우, review는 복수 해석이 가능하지만 "
+        "명시적인 모순·누락 근거가 없는 경우, fail은 원문의 명시 조건이 누락·반전·다른 값으로 변경됐다는 구체적 "
+        "근거가 있는 경우에만 사용한다. review는 확인 권장일 뿐 SQL 출고를 막는 실패가 아니다. "
+        "표현만 다르고 의미가 같으면 pass다. NOT EXISTS=조건 없음/부정, EXISTS=조건 있음/긍정임에 유의하라.\n"
+        'JSON 으로만 답하라: {"status": "pass|review|fail", "reason": "판정 사유", '
+        '"issues": [{"type": "dropped|inverted|wrong_value|spurious|ambiguous", '
+        '"condition": "원문의 해당 표현", "detail": "판정 근거 한 문장"}]}. pass면 issues는 빈 배열이다. '
+        'review의 issue type은 ambiguous를 사용하고, fail은 반드시 구체적인 불일치 issue를 포함한다.'
     )
+
+
+def _semantic_verification_contract_context(query_plan: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Return upstream semantic choices that the final verifier must treat as its comparison contract.
+
+    The original-query verifier used to see only ``aggregation_request``.  That made it reinterpret
+    ambiguous phrases from scratch even after the planner had selected a supported condition evaluation
+    (for example same-product/same-order quantity).  Preserve those selected meanings here while still
+    allowing the verifier to fail an explicit contradiction with the original query.
+    """
+    if not isinstance(query_plan, dict):
+        return None
+    context: dict[str, Any] = {}
+    for key in ("aggregation_request", CONDITION_EVALUATIONS_KEY, "semantic_resolutions"):
+        value = query_plan.get(key)
+        if value not in (None, [], {}):
+            context[key] = value
+    return context or None
+
+
+def _normalize_semantic_verification_verdict(data: Any) -> dict[str, Any] | None:
+    """Normalize tri-state and legacy Boolean LLM verdicts without making ``review`` blocking.
+
+    ``faithful`` remains a Boolean compatibility field for API/UI consumers.  It is false only for a
+    concrete ``fail``; an uncertain ``review`` is exposed through ``status`` and issues but is allowed to
+    continue through the legacy delivery gate.
+    """
+    if not isinstance(data, dict):
+        return None
+    raw_status = str(data.get("status") or "").strip().casefold()
+    if raw_status in {"pass", "review", "fail"}:
+        status = raw_status
+    elif isinstance(data.get("faithful"), bool):
+        status = "pass" if data["faithful"] else "fail"
+    else:
+        return None
+
+    raw_issues = data.get("issues") if isinstance(data.get("issues"), list) else []
+    issues = [
+        {
+            "type": issue.get("type") if issue.get("type") in _SEMANTIC_ISSUE_LABELS else (
+                "ambiguous" if status == "review" else "dropped"
+            ),
+            "condition": str(issue.get("condition") or "").strip(),
+            "detail": str(issue.get("detail") or "").strip(),
+        }
+        for issue in raw_issues
+        if isinstance(issue, dict)
+    ]
+    reason = str(data.get("reason") or "").strip()
+    if status == "pass":
+        issues = []
+    elif status == "review" and not issues:
+        issues = [{
+            "type": "ambiguous",
+            "condition": "복수 해석 가능한 요청",
+            "detail": reason or "생성 SQL이 합리적인 해석 중 하나를 충족하지만 의미를 하나로 확정하기 어렵습니다.",
+        }]
+    elif status == "fail" and not issues:
+        issues = [{
+            "type": "dropped",
+            "condition": "요청한 핵심 의도",
+            "detail": reason or "의미 검증기가 SQL과 원문의 불일치를 감지했지만 세부 항목을 반환하지 않았습니다.",
+        }]
+
+    return {
+        "ran": True,
+        "status": status,
+        "faithful": status != "fail",
+        "reason": reason,
+        "issues": issues,
+    }
+
+
+def _semantic_verification_is_failure(verification: dict[str, Any] | None) -> bool:
+    """Return true only for a concrete fail, with legacy Boolean fallback."""
+    if not isinstance(verification, dict) or not verification.get("ran"):
+        return False
+    status = str(verification.get("status") or "").strip().casefold()
+    if status in {"pass", "review", "fail"}:
+        return status == "fail"
+    return verification.get("faithful") is False
 
 
 def _verify_sql_semantics(
@@ -15120,9 +15211,9 @@ def _verify_sql_semantics(
 ) -> dict[str, Any]:
     """최종 SQL 이 원문 의도를 충실히 반영했는지 LLM 으로 검증한다(원문↔SQL 직접 대조).
 
-    반환 {ran, faithful, issues}. 게이트 비활성/LLM 불가/호출 실패면 ran=False 로 **통과(fail-open)** —
-    검증기 자체 문제로 정상 SQL 을 막지 않는다. ran=True 이고 faithful=False 일 때만 호출자가 출고를 막는다.
-    비결정적 LLM 이라 temperature=0 + '확신할 때만 불일치' 프롬프트로 오탐을 억제한다."""
+    반환 {ran, status, faithful, issues}. 게이트 비활성/LLM 불가/호출 실패면 ran=False 로
+    **통과(fail-open)** 한다. status=review 는 관측만 하고, 명시적 status=fail 일 때만 출고를 막는다.
+    ``faithful``은 기존 소비자 호환 필드로 fail 에서만 false다."""
     llm_model = _semantic_verify_model(llm_model)  # 의미검증 전용 모델(OPENAI_SEMANTIC_VERIFY_MODEL, 미지정 시 fast)
     if not _sql_semantic_verify_enabled() or not llm_model or not os.getenv("OPENAI_API_KEY"):
         return {"ran": False}
@@ -15134,17 +15225,15 @@ def _verify_sql_semantics(
         return {"ran": False}
     try:
         client = OpenAI()
-        aggregation_context = None
-        if isinstance(query_plan, dict) and isinstance(query_plan.get("aggregation_request"), dict):
-            aggregation_context = query_plan["aggregation_request"]
+        semantic_contract = _semantic_verification_contract_context(query_plan)
         member_policy_context = None
         if isinstance(query_plan, dict) and isinstance(query_plan.get("member_policy"), dict):
             policy = query_plan["member_policy"]
             if isinstance(policy.get("appliedPolicyFilters"), list) and policy["appliedPolicyFilters"]:
                 member_policy_context = policy
         user_content = f"[원문]\n{original_query.strip()}"
-        if aggregation_context is not None:
-            user_content += "\n\n[구조화 집계 계약]\n" + json.dumps(aggregation_context, ensure_ascii=False, indent=2)
+        if semantic_contract is not None:
+            user_content += "\n\n[확정 의미 해석]\n" + json.dumps(semantic_contract, ensure_ascii=False, indent=2)
         if member_policy_context is not None:
             user_content += "\n\n[적용된 서비스 정책]\n" + json.dumps(
                 member_policy_context, ensure_ascii=False, indent=2
@@ -15161,28 +15250,9 @@ def _verify_sql_semantics(
             timeout=_prompt_rewrite_timeout_seconds(),
         )
         data = json.loads(response.choices[0].message.content or "{}")
-        if not isinstance(data, dict) or not isinstance(data.get("faithful"), bool):
+        verdict = _normalize_semantic_verification_verdict(data)
+        if verdict is None:
             return {"ran": False}  # 형식 불명 → 통과(fail-open)
-        raw_issues = data.get("issues") if isinstance(data.get("issues"), list) else []
-        issues = [
-            {
-                "type": issue.get("type") if issue.get("type") in _SEMANTIC_ISSUE_LABELS else "dropped",
-                "condition": str(issue.get("condition") or "").strip(),
-                "detail": str(issue.get("detail") or "").strip(),
-            }
-            for issue in raw_issues
-            if isinstance(issue, dict)
-        ]
-        # 모델이 faithful=false를 명시했다면 issue 배열이 비었어도 출고 게이트가 반드시 막는다.
-        # 근거가 비어 있는 경우에는 구조화된 일반 issue를 보강해 사용자에게 확인 이유를 남긴다.
-        faithful = bool(data.get("faithful"))
-        if not faithful and not issues:
-            issues = [{
-                "type": "dropped",
-                "condition": "요청한 핵심 의도",
-                "detail": "의미 검증기가 SQL과 원문의 불일치를 감지했지만 세부 항목을 반환하지 않았습니다.",
-            }]
-        verdict = {"ran": True, "faithful": faithful, "issues": [] if faithful else issues}
         _write_rag_llm_log("sql_semantic_verify", {"query": original_query, "sql": sql, **verdict})
         return verdict
     except Exception as exc:  # noqa: BLE001 - 게이트 실패는 치명적이지 않다(정상 SQL 통과 유지).
@@ -15998,7 +16068,12 @@ def _validate_sql_delivery_contract(
             continue
         # 결과 집합(행 집합)과 무관함이 결정론으로 확인되는 판정은 차단에서 면제한다(자문으로만 남김).
         exempt_reason = _semantic_issue_exemption(raw_issue, sql, query_plan)
-        critical = exempt_reason is None and _semantic_issue_is_critical(raw_issue, query, sql)
+        # review는 관측용 경고다. 같은 issue 문구라도 검증기의 최종 판정이 fail일 때만 차단 후보가 된다.
+        critical = (
+            _semantic_verification_is_failure(verification)
+            and exempt_reason is None
+            and _semantic_issue_is_critical(raw_issue, query, sql)
+        )
         issue_type = str(raw_issue.get("type") or "dropped").casefold()
         reason_code = {
             "dropped": "DROPPED_SEMANTIC_REQUIREMENT",
@@ -16032,12 +16107,12 @@ def _validate_sql_delivery_contract(
         reasons.append("targeting_result_member_projection_missing")
     if dropped_conditions:
         reasons.append("critical_conditions_dropped")
-    # faithful=false 자체가 최종 출고 불가 조건이다. issue 분류는 reason code와 안내 품질을 위한
+    # status=fail(구형 응답은 faithful=false) 자체가 최종 출고 불가 조건이다. issue 분류는 안내 품질을 위한
     # 부가 정보이며, 빈/오분류 issue 때문에 불일치 SQL이 success로 빠져나가면 안 된다.
     # 유일한 예외: 모든 판정이 '결과 집합과 무관함'을 결정론으로 확인한 면제(_semantic_issue_exemption)인
     # 경우 — 출력 컬럼 요구·상수 라벨 프로젝션처럼 행 집합을 바꿀 수 없는 지적만 남았다면 차단하지 않는다.
     # 판정이 비었거나 하나라도 면제 불가면 종전대로 차단한다(오분류 통과 방지).
-    if verification.get("ran") and verification.get("faithful") is False:
+    if _semantic_verification_is_failure(verification):
         if not enriched_issues or any(not issue.get("exempt_reason") for issue in enriched_issues):
             reasons.append("critical_semantic_issue")
     return {
@@ -16477,7 +16552,7 @@ def build_sql_result(
 
     # 최종 SQL↔원문 의미 검증 게이트: plan 을 신뢰하는 결정론 검증(coverage/intent_scope)과 달리, 원문 NL 과
     # SQL 을 직접 대조해 정규식 파서의 조용한 드롭·의미 반전(예: '구매 이력이 없는'을 EXISTS 구매로 뒤집음)을
-    # 잡는다. 불일치를 확신하면(ran & not faithful) 틀린 SQL 을 조용히 출고하는 대신 clarification 으로 전환한다.
+    # 잡는다. 불일치를 확신해 status=fail이면 틀린 SQL을 조용히 출고하는 대신 clarification으로 전환한다.
     # LLM 불가/게이트 비활성이면 ran=False 라 통과(fail-open) — rules 모드는 llm_model=None 이라 자연히 skip.
     semantic_verification: dict[str, Any] = {"ran": False}
     clarification_questions: list[str] = []
@@ -16518,10 +16593,10 @@ def build_sql_result(
                 **semantic_verification,
                 "issues": delivery_validation.get("semantic_issues", []),
             }
-        # faithful=false는 issue 세부 분류와 무관하게 차단한다. 결정론 AST/스키마 계약이 정상이어도
-        # 원문↔SQL 직접 검증에서 불일치가 확인된 SQL을 success로 출고하지 않는다.
+        # status=fail만 차단한다. review는 복수의 합리적 해석을 기록하지만 SQL 출고는 계속한다.
+        # 구형 faithful Boolean 응답은 _semantic_verification_is_failure가 동일하게 지원한다.
         blocking_issues = []
-        if semantic_verification.get("ran") and not semantic_verification.get("faithful"):
+        if _semantic_verification_is_failure(semantic_verification):
             blocking_issues = [
                 issue for issue in semantic_verification.get("issues", [])
                 if issue.get("severity") == "critical"
@@ -16553,7 +16628,7 @@ def build_sql_result(
                     *clarification_questions,
                     "원문 의미 검증기를 실행할 수 없습니다. 검증기 설정과 연결 상태를 확인해 주세요.",
                 ])
-            if not clarification_questions and semantic_verification.get("faithful") is False:
+            if not clarification_questions and _semantic_verification_is_failure(semantic_verification):
                 clarification_questions = [
                     "생성 SQL이 원문의 핵심 집계·필터·그룹 의도와 일치하지 않습니다. 요청 의도를 확인해 주세요."
                 ]
@@ -16676,7 +16751,7 @@ def build_sql_result(
         "input_validation": input_validation,
         "missing_input_conditions": [],
         "clarification_questions": clarification_questions,
-        # 의미 검증 게이트 판정(트레이스/디버깅용): {ran, faithful, issues}. ran=False 면 게이트 미실행.
+        # 의미 검증 게이트 판정: {ran, status, faithful, issues}. ran=False면 게이트 미실행.
         "semantic_verification": semantic_verification,
         # 공통 semantic requirement 회계(트레이스/디버깅용): 원문 조건별 귀결(compiled/unsupported/clarification).
         "source_requirements": sql_result_requirements,
@@ -22946,10 +23021,20 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
             description="생성된 SQL이 허용 테이블·컬럼만 쓰는지, 요청 의도와 어긋나지 않는지 자동 점검합니다.",
             plain=[line for line in [
                 "안전 검증을 통과했습니다." if is_success else (f"‘{failure_stage.get('label')}’ 단계에서 막혔습니다." if failure_stage else "검증에서 막혔습니다."),
-                (f"의미 검증: {'원문과 일치' if semantic_verification.get('faithful') else '불일치(확인 필요)'}") if semantic_verification.get("ran") else None,
+                (
+                    "의미 검증: "
+                    + {
+                        "pass": "원문과 일치",
+                        "review": "복수 해석 가능(비차단 검토)",
+                        "fail": "불일치(확인 필요)",
+                    }.get(
+                        str(semantic_verification.get("status") or ""),
+                        "원문과 일치" if semantic_verification.get("faithful") else "불일치(확인 필요)",
+                    )
+                ) if semantic_verification.get("ran") else None,
             ] if line],
             details=candidate_flag_lines
-                    + ([f"semantic_verification: ran={semantic_verification.get('ran')} faithful={semantic_verification.get('faithful')} issues={_trace_line(semantic_verification.get('issues', []))}"] if semantic_verification.get("ran") else [])
+                    + ([f"semantic_verification: ran={semantic_verification.get('ran')} status={semantic_verification.get('status')} faithful={semantic_verification.get('faithful')} issues={_trace_line(semantic_verification.get('issues', []))}"] if semantic_verification.get("ran") else [])
                     + ([f"failure_reason: {sql_result.get('failure_reason')}"] if sql_result.get("failure_reason") else []),
             failure_stage=failure_stage,
         ),

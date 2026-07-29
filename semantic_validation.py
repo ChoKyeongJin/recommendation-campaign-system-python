@@ -285,8 +285,8 @@ def validate_target_sql(
 def to_legacy_semantic_verification(result: ValidationResult) -> dict[str, Any]:
     """기존 semantic_verification {ran, faithful, issues} 형태로 변환(§12 호환 어댑터).
 
-    pass→faithful, review/fail→not faithful(단 review 는 차단 아님은 호출자가 결정). issues 는 위반 근거."""
-    faithful = result.status == "pass"
+    pass/review→faithful, fail→not faithful. review는 status로 구분되는 비차단 판정이며 issues는 위반 근거다."""
+    faithful = result.status != "fail"
     issues: list[dict[str, Any]] = []
     for check in result.checks:
         if check.status == "contradicted":
