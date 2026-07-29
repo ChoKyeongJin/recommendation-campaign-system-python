@@ -3,6 +3,12 @@ from __future__ import annotations
 import graph_rag as g
 
 
+def test_auto_parser_defaults_to_rules_first_authority(monkeypatch) -> None:
+    monkeypatch.delenv("QUERY_PLAN_AUTHORITY", raising=False)
+
+    assert g._query_plan_authority("auto") == "rules_first"
+
+
 def test_prompt_normalization_defaults_to_unresolved_only(monkeypatch) -> None:
     """The default path must not rewrite clear conditions in the full prompt."""
     monkeypatch.delenv("PROMPT_REWRITE_STYLE", raising=False)

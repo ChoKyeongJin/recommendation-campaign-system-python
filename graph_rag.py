@@ -754,7 +754,7 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
         },
     },
     "member_metric_ranking": {
-        "granularity_tokens": ["고객님", "구매자", "사용자", "고객", "회원", "유저", "손님"],
+        "granularity_tokens": ["고객님", "구매자", "사용자", "고객", "회원", "유저", "손님", "사람"],
         "default_top_n": 100,
         "max_top_n": 10000,
     },
@@ -1304,11 +1304,19 @@ def _resolve_surface_signals(
 
 
 def _surface_signal_scope(
-    query: str, llm_model: str = DEFAULT_LLM_MODEL, prompt_dir: Path | None = DEFAULT_PROMPT_DIR
+    query: str,
+    llm_model: str = DEFAULT_LLM_MODEL,
+    prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
+    precomputed_signals: dict[str, tuple[str, ...]] | None = None,
 ):
     """질의 하나 동안 표면 신호 해석을 열어 둔다(진입점에서 한 번, 안에서는 캐시)."""
     return lexicon_llm.signal_scope(
-        query, lambda text: _resolve_surface_signals(text, llm_model, prompt_dir)
+        query,
+        lambda text: (
+            precomputed_signals
+            if precomputed_signals is not None
+            else _resolve_surface_signals(text, llm_model, prompt_dir)
+        ),
     )
 
 
@@ -2208,6 +2216,7 @@ def split_prompt_scopes(
     parser: str = "rules",
     llm_model: str = DEFAULT_LLM_MODEL,
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
+    precomputed_surface_signals: dict[str, tuple[str, ...]] | None = None,
 ) -> dict[str, Any]:
     """프롬프트를 타겟팅(오디언스) 절과 채널(발송·메시지) 절로 분리한다.
 
@@ -2215,7 +2224,12 @@ def split_prompt_scopes(
     보완한다. 검색·그래프 컨텍스트를 스코프별로 좁히는 용도이며 SQL/Query Plan 에는 영향을 주지 않는다.
     반환: {targeting, channel, mode}.
     """
-    with _surface_signal_scope(text if isinstance(text, str) else "", llm_model, prompt_dir):
+    with _surface_signal_scope(
+        text if isinstance(text, str) else "",
+        llm_model,
+        prompt_dir,
+        precomputed_surface_signals,
+    ):
         return _split_prompt_scopes(text, parser, llm_model, prompt_dir)
 
 
@@ -2791,8 +2805,8 @@ def _query_plan_authority(parser: str) -> str:
 
     if parser.casefold() == "rules":
         return "rules_first"
-    configured = os.getenv(_QUERY_PLAN_AUTHORITY_ENV, "llm_first").strip().casefold()
-    return configured if configured in _QUERY_PLAN_AUTHORITIES else "llm_first"
+    configured = os.getenv(_QUERY_PLAN_AUTHORITY_ENV, "rules_first").strip().casefold()
+    return configured if configured in _QUERY_PLAN_AUTHORITIES else "rules_first"
 
 
 def build_query_plan(
@@ -2810,6 +2824,7 @@ def build_query_plan(
     original_query: str | None = None,
     query_plan_v2_factory: Callable[[dict[str, Any]], CampaignQueryPlanV2] | None = None,
     precomputed_scopes: dict[str, Any] | None = None,
+    precomputed_surface_signals: dict[str, tuple[str, ...]] | None = None,
 ) -> CampaignQueryPlanV2:
     """단일 파싱으로 query_plan 을 만든다. multi_query_variants>0 이고 LLM 사용 가능하면 프롬프트를
     의미보존 재구성한 변이들도 파싱해 '성공적으로 잡힌 타겟 조건'을 base 에 합집합으로 병합한다.
@@ -2818,7 +2833,7 @@ def build_query_plan(
     변이는 값이 아니라 표현만 바꾸므로(결정론 파서가 실제 조건 추출) 없는 조건을 지어내지 않는다.
     변이 파싱은 rules(결정론)로 하여 비용을 낮춘다 — 다양한 표현형이 서로 다른 규칙 패턴에 걸리는 것이 핵심.
     """
-    with _surface_signal_scope(query, llm_model, prompt_dir):
+    with _surface_signal_scope(query, llm_model, prompt_dir, precomputed_surface_signals):
         return _build_query_plan(
             query, normalization_rules, business_policies, sql_schema, parser, llm_model, prompt_dir,
             multi_query_variants, structured_query, query_plan_v2, raw_query, original_query,
@@ -7553,9 +7568,11 @@ def _member_metric_choice_system_prompt(
             "",
             "{metrics}",
             "",
+            "경제 형편을 에둘러 말한 표현은 실제 재산·소득 추정이 아니라 캠페인용 구매행동 대리 지표로 바꾼다.",
+            "돈이 많아 보이는/부유해 보이는 고객은 total_buy_amt high, 돈이 없어 보이는/가난해 보이는 사람은 total_buy_amt low 다.",
             "direction 은 큰 쪽을 원하면 \"high\", 작은 쪽을 원하면 \"low\" 다.",
             "evidence 는 입력 문장에 글자 그대로 있는 조각이어야 하고, 고객을 가리키는 말",
-            "(고객/회원/유저/사용자/구매자 등)을 포함해야 한다. 번역·요약·유추는 금지다.",
+            "(고객/회원/유저/사용자/구매자/손님/사람 등)을 포함해야 한다. 번역·요약·유추는 금지다.",
             "인원수나 퍼센트는 절대 만들지 마라 — 개수는 시스템이 문장에서 따로 읽는다.",
             "지표 이름을 그대로 말한 문장('매출이 높은 고객')은 이미 처리됐으므로 metric_id 를 null 로 둔다.",
             "",
@@ -7600,6 +7617,43 @@ def _llm_choose_member_metric(
         return None
 
 
+def _restore_compact_source_span(text: str, compact_span: str) -> str | None:
+    """Map a validated whitespace-free span back to the exact source substring."""
+    folded_chars: list[str] = []
+    source_indexes: list[int] = []
+    for index, char in enumerate(text or ""):
+        if char == " ":
+            continue
+        folded = char.casefold()
+        folded_chars.extend(folded)
+        source_indexes.extend([index] * len(folded))
+    start = "".join(folded_chars).find(compact_span)
+    if start < 0 or not compact_span:
+        return None
+    end = start + len(compact_span) - 1
+    if end >= len(source_indexes):
+        return None
+    return text[source_indexes[start] : source_indexes[end] + 1]
+
+
+def _member_metric_grounded_evidence(query: str, evidence: str) -> str | None:
+    """Use the broader, already-validated surface span when metric evidence drops the member noun."""
+    span = lexicon_llm.compact(evidence)
+    if len(span) < 2 or span not in lexicon_llm.compact(query):
+        return None
+    if _member_metric_granularity_hit(span):
+        return evidence.strip()
+    for surface_span in lexicon_llm.current_signals().get(_MEMBER_METRIC_CONCEPT_ID, ()):
+        if span not in surface_span and surface_span not in span:
+            continue
+        if not _member_metric_granularity_hit(surface_span):
+            continue
+        restored = _restore_compact_source_span(query, surface_span)
+        if restored:
+            return restored.strip()
+    return None
+
+
 def _validated_member_metric_choice(
     raw: Any, metrics: tuple[dict[str, Any], ...], query: str, plan: dict[str, Any]
 ) -> dict[str, Any] | None:
@@ -7618,12 +7672,11 @@ def _validated_member_metric_choice(
     evidence = raw.get("evidence")
     if not isinstance(evidence, str):
         return None
-    span = evidence.replace(" ", "").casefold()
-    if len(span) < 2 or span not in query.replace(" ", "").casefold():
+    evidence = _member_metric_grounded_evidence(query, evidence)
+    if evidence is None:
         return None
+    span = lexicon_llm.compact(evidence)
     if any(claimed in span or span in claimed for claimed in _claimed_spans(plan)):
-        return None
-    if not _member_metric_granularity_hit(span):
         return None
     return {"metric": metric, "direction": direction, "evidence": evidence.strip()}
 
@@ -12779,13 +12832,22 @@ def retrieve(
     effective_query = prompt_normalization["normalized"]
     timings_ms["prompt_normalization"] = _elapsed_ms(stage_started_at)
 
+    # Resolve vague surface concepts once from the complete targeting prompt.
+    # Scope splitting must reuse these evidence spans instead of asking the model
+    # again for a shorter substring and potentially receiving a different answer.
+    surface_signals = _resolve_surface_signals(targeting_prompt, llm_model, prompt_dir)
+
     # 타겟팅 스코프면 SQL·추론(Query Plan)을 오디언스(타겟팅) 절로만 수행한다. 채널·발송·혜택 문구는
     # 파싱에서 제외해 타겟 조건만 SQL/트레이스에 반영한다(검색 스코프 원칙을 파싱까지 확장). 채널 절은
     # 검색 스코프·메시지 생성에서만 쓰인다. 타겟팅 절이 비면 전체 재작성본으로 폴백한다.
     scope = (retrieval_scope or "all").casefold()
     stage_started_at = time.perf_counter()
     plan_scopes = split_prompt_scopes(
-        effective_query, parser=query_parser, llm_model=llm_model, prompt_dir=prompt_dir
+        effective_query,
+        parser=query_parser,
+        llm_model=llm_model,
+        prompt_dir=prompt_dir,
+        precomputed_surface_signals=surface_signals,
     )
     if scope == "targeting":
         plan_query = (plan_scopes.get("targeting") or "").strip() or effective_query
@@ -12811,6 +12873,7 @@ def retrieve(
         original_query=targeting_prompt,
         query_plan_v2_factory=lazy_campaign_query_plan,
         precomputed_scopes=plan_scopes,
+        precomputed_surface_signals=surface_signals,
     )
     # 파싱에 실제 사용한 문장(타겟팅 절 또는 전체 재작성본)을 트레이스/응답에 노출한다.
     query_plan["planning_query"] = plan_query

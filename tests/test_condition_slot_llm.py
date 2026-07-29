@@ -194,7 +194,7 @@ def _stub_metric_chooser(
 
 def _metric_plan(query: str, *, concept_fires: bool = True) -> dict[str, Any]:
     """표면 개념 신호를 고정한 채 플랜을 만든다(개념 판정 자체는 별도 계층의 계약이다)."""
-    signals = {g._MEMBER_METRIC_CONCEPT_ID: ("돈이많아보이는",)} if concept_fires else {}
+    signals = {g._MEMBER_METRIC_CONCEPT_ID: (lexicon_llm.compact(query),)} if concept_fires else {}
     with lexicon_llm.signal_scope(query, lambda _text: signals):
         return g._build_rule_query_plan(query)
 
@@ -211,6 +211,69 @@ def test_vague_metric_phrase_is_resolved_from_the_closed_set(
     assert ranking["direction"] == "high"
     # 사전이 아니라 뜻으로 읽혔다는 표시가 남아야 감사가 가능하다.
     assert ranking["resolution_source"] == "llm"
+
+
+def test_vague_low_metric_phrase_accepts_person_as_member_granularity(
+    llm_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """'사람'도 회원 단위 표현이며, 모호한 저방향 지표만 LLM이 빈 슬롯에 채운다."""
+    query = "돈없을 것 같은 사람 추출해줘"
+    _stub_metric_chooser(monkeypatch, {
+        "metric_id": "total_buy_amt", "direction": "low", "evidence": "돈없을 것 같은 사람",
+    })
+
+    ranking = _metric_plan(query)["member_metric_ranking"]
+
+    assert ranking["metric_id"] == "total_buy_amt"
+    assert ranking["direction"] == "low"
+    assert ranking["resolution_source"] == "llm"
+
+
+def test_precomputed_surface_signal_survives_targeting_subquery(
+    llm_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """전체 문장에서 얻은 evidence를 짧아진 planning query가 그대로 재사용한다."""
+    query = "돈없을 것 같은 사람"
+    _stub_metric_chooser(monkeypatch, {
+        "metric_id": "total_buy_amt", "direction": "low", "evidence": query,
+    })
+    signals = {g._MEMBER_METRIC_CONCEPT_ID: (lexicon_llm.compact(query),)}
+
+    plan = g.build_query_plan(
+        query,
+        parser="rules",
+        precomputed_surface_signals=signals,
+    )
+
+    assert plan["member_metric_ranking"]["metric_id"] == "total_buy_amt"
+    assert plan["member_metric_ranking"]["direction"] == "low"
+
+
+def test_member_metric_prompt_declares_financial_metaphor_proxy_policy() -> None:
+    prompt = g._member_metric_choice_system_prompt(g._member_metric_catalog())
+
+    assert "total_buy_amt/low" in prompt
+    assert "실제 재산·소득을 추정" in prompt
+
+
+def test_short_metric_evidence_recovers_validated_surface_span(
+    llm_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """지표 선택 응답이 회원 명사를 잘라도 앞 단계의 검증된 원문 evidence로 복원한다."""
+    query = "돈없을 것 같은 사람"
+    _stub_metric_chooser(monkeypatch, {
+        "metric_id": "total_buy_amt", "direction": "low", "evidence": "돈없을 것 같은",
+    })
+    signals = {g._MEMBER_METRIC_CONCEPT_ID: (lexicon_llm.compact(query),)}
+
+    plan = g.build_query_plan(
+        query,
+        parser="rules",
+        precomputed_surface_signals=signals,
+    )
+
+    assert plan["member_metric_ranking"]["matched_text"] == query
+    assert plan["member_metric_ranking"]["direction"] == "low"
 
 
 def test_metric_outside_the_registry_is_dropped(
@@ -233,14 +296,18 @@ def test_metric_evidence_absent_from_the_query_is_rejected(
     assert _metric_plan(VAGUE_QUERY).get("member_metric_ranking") is None
 
 
-def test_metric_evidence_without_a_member_noun_is_rejected(
+def test_metric_evidence_without_a_related_member_surface_span_is_rejected(
     llm_enabled: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """회원 단위 표현이 없는 근거는 거절한다 — 지역·상품 순위가 회원 랭킹으로 새는 것을 막는다."""
+    query = "돈이 많아 보이는 지역의 고객"
     _stub_metric_chooser(monkeypatch, {
-        "metric_id": "total_buy_amt", "direction": "high", "evidence": "돈이 많아 보이는",
+        "metric_id": "total_buy_amt", "direction": "high", "evidence": "돈이 많아 보이는 지역",
     })
-    assert _metric_plan(VAGUE_QUERY).get("member_metric_ranking") is None
+    signals = {g._MEMBER_METRIC_CONCEPT_ID: (lexicon_llm.compact("지역의 고객"),)}
+
+    with lexicon_llm.signal_scope(query, lambda _text: signals):
+        assert g._build_rule_query_plan(query).get("member_metric_ranking") is None
 
 
 def test_invalid_direction_is_rejected(llm_enabled: None, monkeypatch: pytest.MonkeyPatch) -> None:

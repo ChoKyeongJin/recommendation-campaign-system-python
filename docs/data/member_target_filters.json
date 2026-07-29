@@ -1313,7 +1313,8 @@
       "고객",
       "회원",
       "유저",
-      "손님"
+      "손님",
+      "사람"
     ],
     "supported_metrics": [
       "purchase_amount",
