@@ -9,9 +9,12 @@
   "parser": "rules",
   "env": {
     "TARGET_OBJECT_LLM_FALLBACK": "false",
+    "SURFACE_LEXICON_LLM": "off",
+    "CONDITION_SLOT_LLM_FALLBACK": "off",
     "LOGICAL_OR_COMPILER": "1"
   },
-  "env_note": "parser='rules' 는 이름과 달리 오프라인이 아니다 — 상품명은 llm_object_fallback 후보로 병합된다. 골든은 네트워크·모델 출력에 의존하면 안 되므로 끈다. 그 결과 드러나는 결함(결정론 경로에 상품명 추출기가 없음)은 known_gap 으로 기록한다.",
+  "env_note": "parser='rules' 는 이름과 달리 오프라인이 아니다 — 상품명(llm_object_fallback)·표면 신호(surface_lexicon)·조건 슬롯/지표 선택(condition_slot)이 모두 LLM 후보를 병합한다. 골든은 네트워크·모델 출력에 의존하면 안 되므로 셋 다 끈다. 그 결과 드러나는 결함(결정론 경로에 상품명 추출기가 없음)이나 설계상 경계(에두른 지표어는 사전이 못 읽음)는 known_gap 으로 기록한다.",
+  "env_incident": "SURFACE_LEXICON_LLM/CONDITION_SLOT_LLM_FALLBACK 은 원래 이 목록에 없었다. 그래서 키가 있는 환경에서 재생성하면 cart_type_subscription 의 unpaid_only 가 모델 판정(cart_abandonment_terms)에 따라 흔들렸다 — 스냅샷이 조용히 비결정론이었다는 뜻이다. 새 LLM 계층을 추가할 때는 이 목록에 스위치를 함께 등록한다.",
   "cases": [
     {
       "id": "purchase_date_count_age_gender",
@@ -94,6 +97,16 @@
       "prompt": "누적 구매금액이 높은 상위 100명",
       "expect_slots": ["plan.member_metric_ranking", "plan.result_limit"],
       "note": "MONTHCRMINFO 조인 상위 N 랭킹."
+    },
+    {
+      "id": "metric_ranking_vague_phrase",
+      "prompt": "돈이 많아 보이는 고객 100명 뽑아줘",
+      "expect_slots": ["plan.member_metric_ranking"],
+      "known_gap": {
+        "missing_slots": ["plan.member_metric_ranking"],
+        "reason": "지표를 에둘러 말한 표현('돈이 많아 보이는')은 동의어 사전이 읽지 못한다 — 설계상 그렇다. 이 슬롯은 표면 개념 신호(member_magnitude_ranking) + 닫힌 지표 집합 선택(_resolve_member_metric_via_llm)이 채우며, 골든 환경은 LLM 을 끄므로 여기서는 비어 있는 것이 정상이다. **결정론 경로에서 이 슬롯이 채워지기 시작하면 마커를 지우기 전에 원인을 확인하라** — member_metrics.json 동의어에 '돈'류 표면어를 부어 넣은 것이라면 그건 고쳐진 것이 아니라 두더지 잡기의 재발이다(그 부류는 무한하므로 낱말로 닫을 수 없다)."
+      },
+      "note": "사전이 못 닫는 어휘의 경계 사례. 계약은 tests/test_condition_slot_llm.py 의 '회원 지표 선택' 절이 소유한다."
     },
     {
       "id": "campaign_response_frequency",

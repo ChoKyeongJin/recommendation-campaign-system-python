@@ -1,6 +1,8 @@
 {
-  "version": "1.0",
+  "version": "1.1",
   "description": "회원 단위 수치 지표 레지스트리(실DB CRM_MB_MONTHCRMINFO 기준). '<지표>가 높은 지역' 같은 그룹 랭킹 타겟팅에서 랭킹 기준으로 쓴다. 새 지표는 여기 한 항목 추가로 끝난다 — 템플릿 코드 추가 없음. grain_filter 는 월 스냅샷 테이블의 중복 집계를 막는 필수 절(최신 월만 사용).",
+  "synonyms_note": "synonyms 는 결정론 매칭용 표면어다. 손으로 무한히 늘리지 않는다 — 에두른 표현('돈이 많아 보이는', '큰손')은 description 을 읽는 LLM 지표 해석(graph_rag._resolve_member_metric_via_llm)이 담당한다.",
+  "description_note": "description 은 LLM 프롬프트에 그대로 들어간다. '무엇이면 이 지표인가'를 경계까지 적고, 특히 **무엇이 아닌지(반례)** 를 적어야 형제 지표와의 혼동이 준다. surface_concepts.json 의 how_to_add 와 같은 규약이다.",
   "value_table": "CRM_MB_MONTHCRMINFO",
   "join_column": "MEMBER_NO",
   "grain_filter": "C.YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)",
@@ -10,6 +12,7 @@
       "ko_label": "매출",
       "agg": "SUM",
       "column": "TOTAL_BUY_AMT",
+      "description": "회원이 지금까지 쓴 돈의 누적 총액. '돈을 많이 쓴다·구매력이 크다·씀씀이가 크다·큰손' 처럼 금전적 규모 전반을 에둘러 말하면 기본적으로 이 지표다. 1회 결제의 크기가 아니고(그건 mean_buy_amt), 산 횟수도 아니다(total_buy_cnt). 예치금·적립금 잔액처럼 '아직 안 쓴 돈'도 아니다.",
       "synonyms": ["매출", "매출액", "구매금액", "구매 금액", "누적 구매금액", "총 구매금액", "revenue"]
     },
     {
@@ -17,6 +20,7 @@
       "ko_label": "구매횟수",
       "agg": "SUM",
       "column": "TOTAL_BUY_CNT",
+      "description": "회원이 주문한 건수의 누적 합. '자주 산다·많이 시킨다·단골' 처럼 빈도를 말할 때다. 금액이 아니라 횟수이며, 한 주문에 여러 개를 담은 수량과도 다르다(total_buy_qty).",
       "synonyms": ["구매횟수", "구매 횟수", "구매건수", "구매 건수", "주문횟수", "주문 횟수", "주문건수", "주문 건수", "주문 수", "주문수", "구매 수", "구매수"]
     },
     {
@@ -24,6 +28,7 @@
       "ko_label": "객단가",
       "agg": "AVG",
       "column": "MEAN_BUY_AMT",
+      "description": "주문 1건당 평균 결제 금액. '한 번에 많이 지른다·객단가가 높다·비싼 걸 산다' 처럼 **1회 결제의 크기**를 말할 때만이다. 총액을 말하는 표현('돈을 많이 쓴')은 total_buy_amt 다 — 평균이라는 말이나 1회당이라는 뜻이 없으면 이 지표를 고르지 마라.",
       "synonyms": ["객단가", "평균 구매금액", "평균구매금액", "평균 구매 금액", "평균 주문 금액", "평균 주문금액", "평균주문금액", "평균 결제 금액", "평균 결제금액", "평균결제금액", "aov"]
     },
     {
@@ -31,6 +36,7 @@
       "ko_label": "최대 구매금액",
       "agg": "MAX",
       "column": "MAX_BUY_AMT",
+      "description": "한 번에 결제한 금액 중 가장 큰 값. '역대 최고로 크게 지른' 처럼 최댓값을 명시할 때만이다. 평균(mean_buy_amt)이나 누적 총액(total_buy_amt)과 혼동하지 마라 — '최고·최대'라는 뜻이 원문에 없으면 고르지 않는다.",
       "synonyms": ["최대 구매금액", "최대 구매 금액", "최고 구매금액"]
     },
     {
@@ -38,6 +44,7 @@
       "ko_label": "구매수량",
       "agg": "SUM",
       "column": "TOTAL_BUY_QTY",
+      "description": "구매한 상품 개수(수량)의 누적 합. '물건을 많이 사간다·개수를 많이 담는다' 처럼 낱개 수량을 말할 때다. 주문 건수(total_buy_cnt)나 금액(total_buy_amt)이 아니다.",
       "synonyms": ["구매수량", "구매 수량", "구매 개수"]
     }
   ]

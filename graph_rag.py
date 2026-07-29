@@ -7090,6 +7090,186 @@ def _resolve_member_metric_in_query(query: str) -> dict[str, Any] | None:
     return None
 
 
+# ── 회원 지표 해석의 LLM 계층 ──────────────────────────────────────────────────────────
+# '돈이 많아 보이는 고객'처럼 지표를 에둘러 말하는 표현은 동의어 목록으로 닫을 수 없다(큰손·여유 있는·
+# 씀씀이 큰·플렉스하는 …). 낱말을 한 줄씩 더하는 대신 판정을 LLM 으로 옮기되, 옮기는 것은 **표면어
+# (어떻게 말하는가)뿐**이고 지표 자체(무엇이 존재하는가)는 member_metrics.json 이 소유한다 —
+# lexicon_llm 의 개념/표면어 분리를 지표 선택(N지선다)에 그대로 적용한 것이다.
+#
+# 채택 규약은 조건 슬롯 보완(_apply_llm_condition_slot_fallback)과 같은 셋이다:
+#   1. 닫힌 집합에서 고르기만 — 레지스트리에 없는 metric_id 는 버린다.
+#   2. 근거는 원문 그대로 — 글자 그대로 있고, 규칙이 이미 읽은 조각과 겹치지 않고, 회원 단위 표현
+#      (granularity_tokens)을 포함해야 한다. '매출 높은 지역'을 회원 랭킹으로 읽지 않게 하는 관문이다.
+#   3. 빈칸만 — 결정론 동의어 매칭이 침묵했을 때만 부른다(규칙 결과를 뒤집지 않는다).
+#
+# 개수·퍼센트는 LLM 이 정하지 않는다. 문장에 숫자가 있으면 결정론 파서가 읽고 없으면 레지스트리
+# 기본값(default_top_n)이다 — 문장에 없는 빈 슬롯을 근거로 메우는 것이 곧 환각이기 때문이다.
+_MEMBER_METRIC_CONCEPT_ID = "member_magnitude_ranking"
+
+
+def _member_metric_catalog(
+    path_text: str = str(DEFAULT_MEMBER_METRICS_PATH),
+) -> tuple[dict[str, Any], ...]:
+    """LLM 이 고를 수 있는 지표의 닫힌 집합 — 레지스트리 선언 ∩ 랭킹 빌더가 컴파일 가능(column 보유)."""
+    registry = _load_member_metrics(path_text)
+    if not registry:
+        return ()
+    return tuple(
+        metric
+        for metric in registry.get("metrics", [])
+        if isinstance(metric, dict) and metric.get("metric_id") and metric.get("column")
+    )
+
+
+def _member_metric_granularity_hit(text: str) -> bool:
+    """회원 단위 표현(고객/회원/유저 …)이 조각 안에 있는가. 낱말은 레지스트리(config)가 소유한다."""
+    compact = (text or "").replace(" ", "").casefold()
+    return any(
+        token.replace(" ", "").casefold() in compact
+        for token in _member_metric_ranking_config().get("granularity_tokens", [])
+        if isinstance(token, str) and token
+    )
+
+
+def _member_metric_choice_system_prompt(
+    metrics: tuple[dict[str, Any], ...], prompt_dir: Path | None = DEFAULT_PROMPT_DIR
+) -> str:
+    """지표 카탈로그(뜻)를 끼운 선택 프롬프트. 낱말이 아니라 description 이 판정 근거다."""
+    catalog = "\n".join(
+        f"- {metric['metric_id']} ({metric.get('ko_label') or metric['metric_id']}): "
+        f"{metric.get('description') or '설명 없음'}"
+        for metric in metrics
+    )
+    fallback = "\n".join(
+        [
+            "너는 한국어 타겟팅 문장이 '어느 회원 지표'의 크기를 말하는지 고르는 판정기다.",
+            "아래 목록 중에서만 고르고, 딱 맞는 것이 없으면 metric_id 를 null 로 둔다(추측 금지).",
+            "",
+            "{metrics}",
+            "",
+            "direction 은 큰 쪽을 원하면 \"high\", 작은 쪽을 원하면 \"low\" 다.",
+            "evidence 는 입력 문장에 글자 그대로 있는 조각이어야 하고, 고객을 가리키는 말",
+            "(고객/회원/유저/사용자/구매자 등)을 포함해야 한다. 번역·요약·유추는 금지다.",
+            "인원수나 퍼센트는 절대 만들지 마라 — 개수는 시스템이 문장에서 따로 읽는다.",
+            "지표 이름을 그대로 말한 문장('매출이 높은 고객')은 이미 처리됐으므로 metric_id 를 null 로 둔다.",
+            "",
+            '다음 JSON object 만 출력한다: {"metric_id": "...", "direction": "high"|"low", "evidence": "..."}.',
+        ]
+    )
+    return _read_prompt_template(prompt_dir, "member_metric_choose_system.txt", fallback).replace(
+        "{metrics}", catalog
+    )
+
+
+def _llm_choose_member_metric(
+    query: str, metrics: tuple[dict[str, Any], ...], llm_model: str, prompt_dir: Path | None
+) -> dict[str, Any] | None:
+    """지표 목록을 주고 문장이 말하는 지표 하나와 방향을 받아온다. 사용 불가/실패 시 None(규칙 결과 유지)."""
+    llm_model = _fast_llm_model(llm_model)
+    if not llm_model or not os.getenv("OPENAI_API_KEY") or not metrics or not query.strip():
+        return None
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return None
+    try:
+        client = OpenAI()
+        response = _openai_chat_create(
+            client,
+            model=llm_model,
+            temperature=0,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": _member_metric_choice_system_prompt(metrics, prompt_dir)},
+                {"role": "user", "content": query},
+            ],
+            timeout=_prompt_rewrite_timeout_seconds(),
+        )
+        data = json.loads(response.choices[0].message.content or "{}")
+        if not isinstance(data, dict):
+            return None
+        _write_rag_llm_log("member_metric_choice", {"query": query, **data})
+        return data
+    except Exception:
+        return None
+
+
+def _validated_member_metric_choice(
+    raw: Any, metrics: tuple[dict[str, Any], ...], query: str, plan: dict[str, Any]
+) -> dict[str, Any] | None:
+    """LLM 이 고른 지표를 닫힌 집합 + 근거 세 관문으로 거른다. 하나라도 어긋나면 None(fail-close).
+
+    관문은 _flag_evidence_accepted 와 같은 계열이다 — 원문 존재 / 규칙이 읽은 조각과 비중복 / 회원
+    단위 표현 포함. 마지막 관문이 지역·상품 단위 랭킹이 회원 랭킹으로 새는 것을 막는다."""
+    if not isinstance(raw, dict):
+        return None
+    metric = {str(item["metric_id"]): item for item in metrics}.get(str(raw.get("metric_id") or ""))
+    if metric is None:
+        return None
+    direction = raw.get("direction")
+    if direction not in {"high", "low"}:
+        return None
+    evidence = raw.get("evidence")
+    if not isinstance(evidence, str):
+        return None
+    span = evidence.replace(" ", "").casefold()
+    if len(span) < 2 or span not in query.replace(" ", "").casefold():
+        return None
+    if any(claimed in span or span in claimed for claimed in _claimed_spans(plan)):
+        return None
+    if not _member_metric_granularity_hit(span):
+        return None
+    return {"metric": metric, "direction": direction, "evidence": evidence.strip()}
+
+
+def _resolve_member_metric_via_llm(
+    query: str,
+    plan: dict[str, Any],
+    llm_model: str = DEFAULT_LLM_MODEL,
+    prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
+) -> dict[str, Any] | None:
+    """결정론 동의어가 침묵한 '정도만 말한' 지표 표현을 닫힌 집합에서 해석한다.
+
+    호출 게이트가 둘이다. (i) 회원 단위 표현이 있을 것. (ii) 표면 개념 신호 — 이 문장이 '수치 크기로
+    회원을 가려내려는 뜻'인가. (ii)는 질의당 한 번 도는 표면 신호 해석(_surface_signal_scope)을 그대로
+    읽으므로 여기서 LLM 호출이 늘지 않는다. 둘 다 참일 때만 지표 선택 호출을 한 번 더 한다 —
+    그래서 '서울 사는 30대 여성' 같은 평범한 질의에는 추가 비용이 0 이다."""
+    if not _condition_slot_llm_enabled() or not os.getenv("OPENAI_API_KEY"):
+        return None
+    if not _member_metric_granularity_hit(query):
+        return None
+    if not lexicon_llm.signal_hit(_MEMBER_METRIC_CONCEPT_ID, query):
+        return None
+    metrics = _member_metric_catalog()
+    if not metrics:
+        return None
+    return _validated_member_metric_choice(
+        _llm_choose_member_metric(query, metrics, llm_model, prompt_dir), metrics, query, plan
+    )
+
+
+def _ranking_limit_from_query(query: str, default_top_n: int, max_top_n: int) -> dict[str, Any]:
+    """문장에서 랭킹의 개수/퍼센트만 읽는다(지표·방향과 무관). 퍼센트가 있으면 개수보다 우선한다.
+
+    지표를 LLM 이 해석한 경로도 개수는 여기서 결정론으로 읽는다 — LLM 은 문장에 없는 숫자를 만들지
+    않는다. direction_hint 는 퍼센트에 방향어가 붙었을 때만('하위 5%') 채워지고, 없으면 호출부가
+    이미 정한 방향을 유지한다."""
+    percent_match = _RANKING_PERCENT_PATTERN.search(query)
+    if percent_match:
+        return {
+            "limit_type": "percent",
+            "percent": float(percent_match.group("pct")),
+            "top_n": default_top_n,
+            "direction_hint": {"상위": "high", "하위": "low"}.get(percent_match.group("dir")),
+        }
+    top_match = _REGION_DENSITY_TOP_N_PATTERN.search(query) or re.search(r"([\d,]+)\s*명", query)
+    top_n = default_top_n
+    if top_match:
+        parsed = _parse_count(next(group for group in top_match.groups() if group))
+        top_n = max(1, min(parsed or default_top_n, max_top_n))
+    return {"limit_type": "count", "percent": None, "top_n": top_n, "direction_hint": None}
+
+
 @_audited_stage
 def _apply_member_metric_ranking_target(query: str, plan: dict[str, Any]) -> None:
     """'<지표>가 높은 고객' 및 '<지표> 기준 상위/하위 N명'을 회원 단위 지표 랭킹(member_metric_ranking)으로 해석한다.
@@ -7102,7 +7282,11 @@ def _apply_member_metric_ranking_target(query: str, plan: dict[str, Any]) -> Non
 
     지표 없는 순수 순위 지시('상위 100명')는 여기서 확정하지 않는다 — 부사형 구매 랭킹(purchase_count_ranking)
     등 다른 트랙에 먼저 양보하고, 끝까지 미해석이면 후단 게이트(_apply_unsupported_intent_gate)가
-    '무엇 기준인지' clarification 으로 돌려준다."""
+    '무엇 기준인지' clarification 으로 돌려준다.
+
+    경로가 셋이다. ①② 는 동의어 사전이 지표어를 글자로 읽는 결정론 경로이고, ③ 은 지표를 에둘러
+    말해(‘돈이 많아 보이는 고객’) 사전이 침묵할 때만 닫힌 집합에서 LLM 이 고르는 경로다. ③ 은 ①② 가
+    모두 실패했을 때만 도는 '빈칸 보완'이라 규칙 결과를 뒤집지 않는다."""
     if isinstance(plan.get("group_ranking_target"), dict):
         # 그룹별 랭킹('지역별로 … 10명씩')으로 이미 해석됐으면 전역 회원 랭킹으로 가로채지 않는다.
         return
@@ -7126,38 +7310,43 @@ def _apply_member_metric_ranking_target(query: str, plan: dict[str, Any]) -> Non
     limit_type = "count"
     top_n = default_top_n
     percent: float | None = None
+    resolution_source = "rule"
     if match:
         matched_metric_text = match.group(1)
         metric_info = _member_metric_by_synonym(str(DEFAULT_MEMBER_METRICS_PATH), matched_metric_text)
         # 관용 어순이라도 '상위 N% 회원'처럼 퍼센트가 붙으면 퍼센트 랭킹으로 잡는다(공용 % 문법 재사용).
-        percent_match = _RANKING_PERCENT_PATTERN.search(query)
-        if percent_match:
-            limit_type = "percent"
-            percent = float(percent_match.group("pct"))
-            if percent_match.group("dir") == "하위":
-                direction = "low"
-        else:
-            top_match = _REGION_DENSITY_TOP_N_PATTERN.search(query) or re.search(r"([\d,]+)\s*명", query)
-            if top_match:
-                top_n = max(1, min(_parse_count(next(group for group in top_match.groups() if group)) or default_top_n, max_top_n))
+        limit = _ranking_limit_from_query(query, default_top_n, max_top_n)
+        limit_type, percent, top_n = limit["limit_type"], limit["percent"], limit["top_n"]
+        direction = limit["direction_hint"] or direction
     else:
         # ② 공용 순위 지시('<지표> 기준 상위/하위 N명', '높은/낮은 순 N명', 'TOP N').
         directive = _detect_ranking_directive(query)
-        if directive is None:
-            return
         # 정렬키는 '랭킹 어구에 결합된 지표'만 인정한다 — 질의 아무 데나 있는 지표(_resolve_member_metric_in_query)를
         # 상위 N 에 묶으면 '구매 횟수 10회 이상 … 상위 100명'의 임계 지표를 정렬키로 오결합해(가짜 랭킹) 임계
         # HAVING 이 소실됐다. 결합된 정렬키가 없으면(순수 '상위 N') 확정하지 않고 result_limit/게이트에 양보한다.
-        metric_info = _resolve_ranking_sort_metric_info(query)
-        if metric_info is None:
-            return  # 정렬키 미결합 — 후단 게이트/‌result_limit 이 처리(부사형 구매 랭킹 등에 먼저 양보).
-        matched_metric_text = metric_info.get("ko_label")
-        direction = directive["direction"]
-        if directive.get("limit_type") == "percent":
-            limit_type = "percent"
-            percent = directive.get("percent")
+        metric_info = _resolve_ranking_sort_metric_info(query) if directive is not None else None
+        if metric_info is not None:
+            matched_metric_text = metric_info.get("ko_label")
+            direction = directive["direction"]
+            if directive.get("limit_type") == "percent":
+                limit_type = "percent"
+                percent = directive.get("percent")
+            else:
+                top_n = max(1, min(directive["top_n"] or default_top_n, max_top_n))
         else:
-            top_n = max(1, min(directive["top_n"] or default_top_n, max_top_n))
+            # ③ 사전이 침묵 — 지표를 에둘러 말한 표현만 닫힌 집합에서 LLM 이 고른다. 순위 지시가 없어도
+            # 진입한다: '돈이 많아 보이는 고객'에는 '상위/N명' 같은 지시 자체가 없기 때문이다.
+            choice = _resolve_member_metric_via_llm(query, plan)
+            if choice is None:
+                return  # 정렬키 미결합 — 후단 게이트/‌result_limit 이 처리(부사형 구매 랭킹 등에 먼저 양보).
+            metric_info = choice["metric"]
+            matched_metric_text = choice["evidence"]
+            direction = choice["direction"]
+            resolution_source = "llm"
+            # 개수·퍼센트는 LLM 이 아니라 문장에서 결정론으로 읽는다(없으면 레지스트리 기본값).
+            limit = _ranking_limit_from_query(query, default_top_n, max_top_n)
+            limit_type, percent, top_n = limit["limit_type"], limit["percent"], limit["top_n"]
+            direction = limit["direction_hint"] or direction
 
     if metric_info is None:
         return
@@ -7176,7 +7365,18 @@ def _apply_member_metric_ranking_target(query: str, plan: dict[str, Any]) -> Non
     }
     if limit_type == "percent":
         ranking["percent"] = percent
+    if resolution_source == "llm":
+        # 결정론 경로에는 이 키를 달지 않는다 — 기존 골든 스냅샷의 모양을 그대로 두기 위함이고,
+        # 키가 있다는 사실 자체가 '이 지표는 사전이 아니라 뜻으로 읽혔다'는 표시가 된다.
+        ranking["resolution_source"] = "llm"
     plan["member_metric_ranking"] = ranking
+    if resolution_source == "llm":
+        plan_decisions.record(
+            plan, filter_name="member_metric_ranking", action="fill",
+            slot="plan.member_metric_ranking", value=ranking["metric_id"],
+            reason=f"지표어가 사전에 없어 닫힌 지표 집합에서 LLM 이 고름(근거: {matched_metric_text})",
+            source="llm",
+        )
     # 같은 지표어에 얻어걸린 데모 스키마(users) 회원 정책을 소비한다(실DB 미지원 → clarification 차단).
     _consume_metric_labeled_target_policies(plan, matched_metric_text)
 
@@ -22787,6 +22987,29 @@ def build_partial_retrieve_trace(query: str, timings_ms: dict[str, Any], error_m
     }
 
 
+def _trace_metric_ranking_line(ranking: dict[str, Any] | None) -> str | None:
+    """지표 랭킹 조건을 '원문 어느 말이 어느 지표가 됐는가' 한 줄로 만든다(3단계 표시용).
+
+    지표어를 그대로 말한 문장은 사전이 읽고, 에두른 표현('돈이 많아 보이는 고객')은 닫힌 지표 집합에서
+    LLM 이 고른다. 두 경로는 결과 SQL 이 같아서 화면에서 구분이 안 되는데, 사용자가 확인해야 할 것은
+    바로 그 차이다 — 뜻으로 읽은 해석은 사람이 맞는지 봐야 하기 때문에 경로를 명시한다."""
+    if not ranking:
+        return None
+    side = "하위" if ranking.get("direction") == "low" else "상위"
+    if ranking.get("limit_type") == "percent":
+        percent = ranking.get("percent")
+        # 5.0 → '5' (정수 퍼센트를 소수로 보이지 않게). 소수 퍼센트는 그대로 둔다.
+        shown = int(percent) if isinstance(percent, float) and percent.is_integer() else percent
+        limit = f"{side} {shown}%"
+    else:
+        limit = f"{side} {ranking.get('top_n')}명"
+    label = ranking.get("metric_label") or ranking.get("metric_id")
+    route = "뜻 해석(LLM이 지표 목록에서 선택)" if ranking.get("resolution_source") == "llm" else "지표어 사전 매칭"
+    source = ranking.get("matched_text")
+    head = f"‘{source}’ → " if source else ""
+    return f"{head}{label}({ranking.get('metric_id')}) 기준 {limit} · {route}"
+
+
 def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
     """retrieve() 결과를 사용자용 10단계 트레이스(프롬프트 재작성 → … → 실행·결과)로 재구성한다.
     각 단계에 method(혼합/규칙)·status(ok/info/fail/skipped)를 붙인다. LLM 호출 없이 결정론적으로 동작."""
@@ -22885,14 +23108,20 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
     # ── 3단계용: 원문 → 계획 문장 → Query Plan JSON (실제 예문이 잘려 JSON 이 되는 모습) ──
     planning_query = query_plan.get("planning_query") or prompt_normalization.get("normalized")
     campaign_constraints = {k: v for k, v in query_plan.get("campaign_constraints", {}).items() if v not in (None, [], {})}
+    # 지표 랭킹은 target_user 가 아니라 plan 최상위에 사는 슬롯이라 위 묶음에 안 잡혔다 — 화면의
+    # Query Plan JSON 에서 '무엇 기준 상위 N명인가'가 통째로 안 보이던 구멍이었다.
+    metric_ranking = query_plan.get("member_metric_ranking")
+    metric_ranking = metric_ranking if isinstance(metric_ranking, dict) else None
     plan_json_slots = {k: v for k, v in {
         "intent": query_plan.get("intent"),
         "target_user": tu,
+        "member_metric_ranking": metric_ranking,
         "dimension_filters": dimension_filters,
         "set_expressions": [e.get("ko_label") or e.get("expression_id") for e in set_expressions],
         "campaign_constraints": campaign_constraints,
     }.items() if v not in (None, [], {}, "")}
     plan_json = json.dumps(plan_json_slots, ensure_ascii=False, indent=2)
+    metric_ranking_line = _trace_metric_ranking_line(metric_ranking)
 
     # 실제 전송된 LLM 프롬프트(질의 계획 tool calling / SQL 폴백). retrieve 가 result 상단에 담아 준다.
     llm_query_plan_prompt = result.get("llm_query_plan_prompt")
@@ -22952,6 +23181,9 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
             plain=[line for line in (
                 [f"계획 문장(파싱 대상): {planning_query}" if planning_query else None]
                 + [f"‘{m.get('matched_text')}’ → {m.get('canonical')}" for m in targeting_matched_terms if m.get("matched_text") and m.get("canonical")]
+                # 지표 랭킹은 matched_terms 에 안 남는다(사전 매칭이 아니라 슬롯 확정이라). 사전이
+                # 침묵해 LLM 이 뜻으로 읽은 경우엔 특히 이 줄이 유일한 표시라 함께 노출한다.
+                + [metric_ranking_line]
             ) if line],
             # 원문이 어떻게 잘려 어떤 JSON 값이 되는지 그대로 노출한다.
             details=[

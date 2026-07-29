@@ -105,7 +105,10 @@ _CODE_FALLBACK: dict[str, dict[str, Any]] = {
     "target_user.behaviors": {"owner": RULE, "risk": HIGH},
     "target_user.campaign_response_frequency": {"owner": RULE, "risk": HIGH},
     "target_user.purchase_membership": {"owner": RULE, "risk": HIGH},
-    "plan.member_metric_ranking": {"owner": RULE, "risk": HIGH},
+    "plan.member_metric_ranking": {
+        "owner": RULE, "risk": HIGH, "backstop": BACKSTOP_RULE,
+        "note": "동의어 사전이 지표어를 확정하고, 사전이 침묵하는 에두른 표현만 LLM 이 닫힌 지표 집합에서 빈칸 보완한다.",
+    },
     "plan.semantic_conditions": {"owner": RULE, "risk": HIGH},
     "plan.set_expressions": {"owner": RULE, "risk": HIGH},
     "plan.logical_expression": {"owner": RULE, "risk": HIGH},

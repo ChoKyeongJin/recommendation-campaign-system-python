@@ -10,6 +10,10 @@
   * **빈칸만.** 규칙이 채운 슬롯은 덮지 않는다.
   * **지원 여부는 여전히 접지가 판정한다.** LLM 은 연산자·값만 정하고 capability 게이트는 JSON 이 쥔다.
 
+같은 계약이 **회원 지표 선택**(member_metric_ranking)에도 적용된다 — '돈이 많아 보이는 고객'처럼
+지표를 에둘러 말한 표현은 동의어 목록으로 닫을 수 없어 판정을 LLM 으로 옮겼지만, 고를 수 있는 지표는
+member_metrics.json 이 소유하고 개수·퍼센트는 여전히 문장에서 결정론으로 읽는다(파일 하단 절 참조).
+
 LLM 호출은 스텁으로 갈아끼운다 — 이 테스트는 네트워크를 타지 않는다.
 """
 
@@ -18,6 +22,7 @@ from __future__ import annotations
 from typing import Any
 
 import graph_rag as g
+import lexicon_llm
 import pytest
 import segment_semantics as ss
 
@@ -162,3 +167,156 @@ def test_disabled_flag_keeps_rules_only(monkeypatch: pytest.MonkeyPatch) -> None
     plan = _plan("차단 처리된 회원은 빼고 발송할 대상 뽑아줘")
     assert calls == []
     assert "blacklisted" not in (plan.get("exclude") or {}).get("lifecycle", [])
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════════
+# 회원 지표 선택: '돈이 많아 보이는 고객'
+#
+# 지표를 에둘러 말하는 표현은 끝이 없다(큰손·여유 있는·씀씀이 큰 …). 동의어를 한 줄씩 더하는 대신
+# 판정을 LLM 으로 옮겼고, 옮긴 것은 표면어뿐이다 — 지표 목록·개수·방향의 소유권은 그대로다.
+# ═══════════════════════════════════════════════════════════════════════════════════════
+VAGUE_QUERY = "돈이 많아 보이는 고객 100명 뽑아줘"
+
+
+def _stub_metric_chooser(
+    monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any] | None
+) -> list[str]:
+    """지표 선택기를 고정 응답으로 갈아끼우고, 실제로 호출된 질의를 기록해 돌려준다."""
+    calls: list[str] = []
+
+    def _fake(query: str, metrics: tuple[dict[str, Any], ...], llm_model: str, prompt_dir: Any) -> Any:
+        calls.append(query)
+        return payload
+
+    monkeypatch.setattr(g, "_llm_choose_member_metric", _fake)
+    return calls
+
+
+def _metric_plan(query: str, *, concept_fires: bool = True) -> dict[str, Any]:
+    """표면 개념 신호를 고정한 채 플랜을 만든다(개념 판정 자체는 별도 계층의 계약이다)."""
+    signals = {g._MEMBER_METRIC_CONCEPT_ID: ("돈이많아보이는",)} if concept_fires else {}
+    with lexicon_llm.signal_scope(query, lambda _text: signals):
+        return g._build_rule_query_plan(query)
+
+
+def test_vague_metric_phrase_is_resolved_from_the_closed_set(
+    llm_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """사전에 없는 '돈이 많아 보이는'을 닫힌 지표 집합의 한 항목으로 해석한다."""
+    _stub_metric_chooser(monkeypatch, {
+        "metric_id": "total_buy_amt", "direction": "high", "evidence": "돈이 많아 보이는 고객",
+    })
+    ranking = _metric_plan(VAGUE_QUERY)["member_metric_ranking"]
+    assert ranking["metric_id"] == "total_buy_amt"
+    assert ranking["direction"] == "high"
+    # 사전이 아니라 뜻으로 읽혔다는 표시가 남아야 감사가 가능하다.
+    assert ranking["resolution_source"] == "llm"
+
+
+def test_metric_outside_the_registry_is_dropped(
+    llm_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """레지스트리에 없는 지표 id 는 버린다 — LLM 이 컬럼을 지어내지 못한다."""
+    _stub_metric_chooser(monkeypatch, {
+        "metric_id": "estimated_net_worth", "direction": "high", "evidence": "돈이 많아 보이는 고객",
+    })
+    assert _metric_plan(VAGUE_QUERY).get("member_metric_ranking") is None
+
+
+def test_metric_evidence_absent_from_the_query_is_rejected(
+    llm_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """근거가 원문에 글자 그대로 없으면 채택하지 않는다(번역·유추 금지)."""
+    _stub_metric_chooser(monkeypatch, {
+        "metric_id": "total_buy_amt", "direction": "high", "evidence": "부유한 고객",
+    })
+    assert _metric_plan(VAGUE_QUERY).get("member_metric_ranking") is None
+
+
+def test_metric_evidence_without_a_member_noun_is_rejected(
+    llm_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """회원 단위 표현이 없는 근거는 거절한다 — 지역·상품 순위가 회원 랭킹으로 새는 것을 막는다."""
+    _stub_metric_chooser(monkeypatch, {
+        "metric_id": "total_buy_amt", "direction": "high", "evidence": "돈이 많아 보이는",
+    })
+    assert _metric_plan(VAGUE_QUERY).get("member_metric_ranking") is None
+
+
+def test_invalid_direction_is_rejected(llm_enabled: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    _stub_metric_chooser(monkeypatch, {
+        "metric_id": "total_buy_amt", "direction": "descending", "evidence": "돈이 많아 보이는 고객",
+    })
+    assert _metric_plan(VAGUE_QUERY).get("member_metric_ranking") is None
+
+
+def test_lexicon_resolved_metric_never_calls_the_chooser(
+    llm_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """지표어를 그대로 말한 문장은 사전이 소유한다 — 빈칸이 아니므로 LLM 을 부르지도 않는다."""
+    calls = _stub_metric_chooser(monkeypatch, {
+        "metric_id": "mean_buy_amt", "direction": "low", "evidence": "매출이 높은 고객",
+    })
+    ranking = _metric_plan("매출이 높은 고객 100명")["member_metric_ranking"]
+    assert ranking["metric_id"] == "total_buy_amt"
+    assert "resolution_source" not in ranking
+    assert calls == []
+
+
+def test_chooser_is_not_called_without_the_surface_concept(
+    llm_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """개념 신호가 없으면 지표 선택 호출 자체가 없다 — 평범한 질의의 추가 비용이 0 이라는 계약."""
+    calls = _stub_metric_chooser(monkeypatch, {
+        "metric_id": "total_buy_amt", "direction": "high", "evidence": "돈이 많아 보이는 고객",
+    })
+    assert _metric_plan(VAGUE_QUERY, concept_fires=False).get("member_metric_ranking") is None
+    assert calls == []
+
+
+def test_counts_come_from_the_sentence_not_the_model(
+    llm_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """개수·퍼센트는 LLM 이 정하지 않는다 — 문장의 숫자를 결정론으로 읽고, 없으면 레지스트리 기본값."""
+    _stub_metric_chooser(monkeypatch, {
+        # 모델이 top_n 을 우겨 넣어도 무시돼야 한다(스키마에 없는 키).
+        "metric_id": "total_buy_amt", "direction": "high", "evidence": "돈이 많아 보이는 고객", "top_n": 7,
+    })
+    assert _metric_plan(VAGUE_QUERY)["member_metric_ranking"]["top_n"] == 100
+
+    default_top_n = int(g._member_metric_ranking_config()["default_top_n"])
+    plain = _metric_plan("돈이 많아 보이는 고객 뽑아줘")["member_metric_ranking"]
+    assert plain["top_n"] == default_top_n
+    assert plain["limit_type"] == "count"
+
+
+def test_percent_directive_still_wins_over_count(
+    llm_enabled: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """'상위 5%'는 상위 5명이 아니다 — LLM 경로도 같은 퍼센트 문법을 쓴다."""
+    _stub_metric_chooser(monkeypatch, {
+        "metric_id": "total_buy_amt", "direction": "high", "evidence": "돈이 많아 보이는 고객",
+    })
+    ranking = _metric_plan("돈이 많아 보이는 고객 상위 5%")["member_metric_ranking"]
+    assert (ranking["limit_type"], ranking["percent"]) == ("percent", 5.0)
+
+
+def test_metric_disabled_flag_keeps_lexicon_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """플래그를 끄면 사전 매칭만 남는다(이관 전 결정론 동작)."""
+    monkeypatch.setenv("CONDITION_SLOT_LLM_FALLBACK", "off")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key-not-used")
+    calls = _stub_metric_chooser(monkeypatch, {
+        "metric_id": "total_buy_amt", "direction": "high", "evidence": "돈이 많아 보이는 고객",
+    })
+    assert _metric_plan(VAGUE_QUERY).get("member_metric_ranking") is None
+    assert calls == []
+
+
+def test_every_catalog_metric_declares_its_meaning() -> None:
+    """지표 설명은 LLM 프롬프트에 그대로 들어간다 — 비면 모델이 형제 지표와의 경계를 알 수 없다."""
+    metrics = g._member_metric_catalog()
+    assert metrics, "지표 레지스트리를 못 읽었다(파일 부재/파손이면 LLM 지표 해석이 통째로 비활성)"
+    for metric in metrics:
+        assert len(str(metric.get("description") or "")) >= 20, (
+            f"{metric['metric_id']}: description 이 없거나 너무 짧다"
+        )
