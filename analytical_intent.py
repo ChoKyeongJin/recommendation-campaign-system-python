@@ -32,6 +32,7 @@ from typing import Any
 import sqlglot
 from sqlglot import exp
 
+import lexicon_llm
 import lexicon_patterns
 from sql_ast import SelectAst
 from member_policy import (
@@ -43,6 +44,22 @@ from member_policy import (
 
 
 DEFAULT_ANALYTICS_REGISTRY_PATH = Path("docs/data/analytics_registry.json")
+
+# ── 집계 표면어의 동결 백스톱 ──────────────────────────────────────────────────────────────
+# 집계 함수어("총액"→SUM)와 미지원 한정어("미래 예상")는 위치를 쓰지 않는 순수 불리언/최장일치
+# 판정이라 표면어 소유권을 LLM 으로 옮겼다(surface_concepts.json 의 aggregate_* / unsupported_metric_qualifier).
+# 아래는 이관 시점 낱말을 그대로 옮긴 백스톱이며, 키가 없는 환경의 재현이 유일한 역할이다 —
+# 손으로 늘리지 않는다. 레지스트리 JSON 에 같은 키가 남아 있으면 그쪽이 이긴다(구버전 호환).
+_AGGREGATE_FUNCTION_BACKSTOP: dict[str, tuple[str, ...]] = {
+    "SUM": ("합계", "총액", "총합", "전체 금액", "전체 구매 금액", "총 구매금액", "합산", "얼마"),
+    "COUNT": ("건수", "개수", "몇 건"),
+    "AVG": ("평균",),
+    "MAX": ("최대", "최고", "가장 최근", "최근"),
+    "MIN": ("최소", "최저", "가장 오래된", "오래된"),
+}
+_UNSUPPORTED_QUALIFIER_BACKSTOP: tuple[str, ...] = (
+    "미래 예상", "미래예상", "예측 구매", "예상 구매",
+)
 
 _OUTPUT_ACTION_RE = re.compile(r"알려|보여|조회|계산|구해|집계")
 _TARGETING_COMPARISON_RE = re.compile(
@@ -337,13 +354,28 @@ def _match_metric(compact: str, registry: dict[str, Any]) -> dict[str, Any] | No
 
 
 def _match_aggregate_function(compact: str, registry: dict[str, Any]) -> str | None:
+    """집계 함수어 판정 — 동결 백스톱 최장일치가 먼저, 침묵하면 LLM 이 읽은 함수.
+
+    최장일치를 유지하는 이유: '총 구매금액'이 '합계'보다 구체적이듯 긴 표현이 짧은 표현을 이겨야
+    한다. LLM 은 백스톱이 아무것도 못 읽었을 때만 개입하므로 그 우선순위를 흔들지 않는다."""
+    terms_by_function = registry.get("aggregateFunctions") or _AGGREGATE_FUNCTION_BACKSTOP
     matches: list[tuple[int, str]] = []
-    for function, terms in (registry.get("aggregateFunctions") or {}).items():
+    for function, terms in terms_by_function.items():
         for term in terms or []:
             normalized = _compact(str(term))
             if normalized and normalized in compact:
                 matches.append((len(normalized), str(function).upper()))
-    return max(matches, default=(0, ""))[1] or None
+    matched = max(matches, default=(0, ""))[1] or None
+    if matched is not None:
+        return matched
+    return next(
+        (
+            function
+            for function in _AGGREGATE_FUNCTION_BACKSTOP
+            if lexicon_llm.signal_hit(f"aggregate_{function.casefold()}", compact)
+        ),
+        None,
+    )
 
 
 def _match_dimensions(compact: str, registry: dict[str, Any]) -> list[str]:
@@ -634,7 +666,10 @@ def analyze_analytical_intent(
         return None
     if not aggregate_signal:
         return None
-    if any(_contains(compact, term) for term in registry.get("unsupportedMetricQualifiers", [])):
+    if any(
+        _contains(compact, term)
+        for term in registry.get("unsupportedMetricQualifiers", _UNSUPPORTED_QUALIFIER_BACKSTOP)
+    ) or lexicon_llm.signal_hit("unsupported_metric_qualifier", compact):
         return {
             "query_type": "aggregate",
             "aggregate_function": function or metric.get("defaultFunction"),

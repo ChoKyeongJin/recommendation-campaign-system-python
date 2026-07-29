@@ -1,7 +1,7 @@
 {
-  "version": "1.0",
-  "_llm": "여기 표면어 목록은 '아는 말투'일 뿐 전부가 아니다. 사전에 없는 말투는 LLM 조건 슬롯 추출기(graph_rag._apply_llm_condition_slot_fallback + docs/prompts/condition_slot_extract_system.txt)가 메운다 — 단, LLM 은 이 파일이 선언한 canonical 중에서 '고르기만' 하고(닫힌 집합), 규칙이 이미 올린 canonical 은 덮지 않는다. 즉 이 파일은 무엇이 존재하는지(canonical)의 단일 소스로 남고, 어떻게 말하는지(표면어)는 LLM 이 보완한다. OPENAI_API_KEY 가 없거나 CONDITION_SLOT_LLM_FALLBACK=off 면 아래 표면어만으로 동작한다.",
-  "description": "회원속성 토큰 승격 필터의 선언형 그룹 스펙. 표면어(canonical)를 lifecycle(포함)/exclude.lifecycle(제외)로 올리는 '단순 속성형' 필터를 코드 없이 선언한다. 새 그룹/카노니컬은 여기에 한 줄 추가 + graph_rag 레지스트리에 attribute_token 엔트리 등록만으로 동작한다(전용 _apply_* 함수 불필요). 필드: neg(부정 접미어 정규식→exclude, null=부정없음), pos(긍정 접미어 정규식, ''=표면어단독), gate(이 문자열 있어야 발동, null=무조건), first_only(첫 매치 하나만=구체성우선), canonicals([[canonical, [기본 표면어]]] — eq_filters surface_terms 가 있으면 그걸로 덮음). 복합 파싱(서열 랭크 확장·이중부정 등)은 이 문법으로 표현 못 하므로 커스텀 필터로 남긴다.",
+  "version": "2.0",
+  "_llm": "이 파일은 **무엇이 존재하는지(canonical)** 만 선언한다. 어떻게 말하는지(표면어)는 더 이상 여기 없다 — 사전에 없는 말투는 LLM 조건 슬롯 추출기(graph_rag._apply_llm_condition_slot_fallback + docs/prompts/condition_slot_extract_system.txt)가 메우고, LLM 은 아래 canonicals 중에서 '고르기만' 한다(닫힌 집합). 규칙이 이미 올린 canonical 은 덮지 않는다. OPENAI_API_KEY 가 없거나 CONDITION_SLOT_LLM_FALLBACK=off 면 코드의 동결 백스톱 표면어(graph_rag._MEMBER_FLAG_TARGETS / _CHILDREN_TERMS / _SIGNUP_DEVICE_TARGETS)와 member_target_filters.json 의 eq_filters surface_terms 만으로 동작한다.",
+  "description": "회원속성 토큰 승격 필터의 선언형 그룹 스펙. canonical 을 lifecycle(포함)/exclude.lifecycle(제외)로 올리는 '단순 속성형' 필터를 코드 없이 선언한다. 새 그룹/카노니컬은 여기에 한 줄 추가 + graph_rag 레지스트리에 attribute_token 엔트리 등록만으로 동작한다(전용 _apply_* 함수 불필요). 필드: neg(부정 접미어 정규식→exclude, null=부정없음), pos(긍정 접미어 정규식, ''=표면어단독), gate(이 문자열 있어야 발동, null=무조건), first_only(첫 매치 하나만=구체성우선), canonicals(canonical id 목록 — 표면어는 동결 백스톱/eq_filters surface_terms/LLM 이 소유). 복합 파싱(서열 랭크 확장·이중부정 등)은 이 문법으로 표현 못 하므로 커스텀 필터로 남긴다.",
   "groups": {
     "member_flag": {
       "neg": "(?:인|한|중인|상태)?(?:회원|고객|사람)?(?:가|이|은|는|를|을|도|이면)?(?:아니|아닌|제외|빼|말고|배제)",
@@ -9,55 +9,12 @@
       "gate": null,
       "first_only": false,
       "canonicals": [
-        [
-          "active_member",
-          [
-            "활동회원",
-            "활성회원",
-            "액티브회원",
-            "활동중인회원"
-          ]
-        ],
-        [
-          "blacklisted",
-          [
-            "블랙리스트",
-            "발송제외고객",
-            "차단회원"
-          ]
-        ],
-        [
-          "employee",
-          [
-            "임직원",
-            "직원회원"
-          ]
-        ],
-        [
-          "premium_member",
-          [
-            "프리미엄회원",
-            "프리미엄고객",
-            "프리미엄"
-          ]
-        ],
-        [
-          "membership_member",
-          [
-            "멤버십회원",
-            "멤버십가입고객",
-            "멤버십가입"
-          ]
-        ],
-        [
-          "sns_registered",
-          [
-            "sns가입",
-            "소셜가입",
-            "간편가입",
-            "sns회원"
-          ]
-        ]
+        "active_member",
+        "blacklisted",
+        "employee",
+        "premium_member",
+        "membership_member",
+        "sns_registered"
       ]
     },
     "children": {
@@ -65,51 +22,14 @@
       "pos": "(?:정보)?(?:가|이|를|을|은|는)?(?:등록|보유|있|존재)",
       "gate": null,
       "first_only": false,
-      "canonicals": [
-        [
-          "children_registered",
-          [
-            "자녀",
-            "아이",
-            "키즈"
-          ]
-        ]
-      ]
+      "canonicals": ["children_registered"]
     },
     "signup_device": {
       "neg": null,
       "pos": "(?:으로|로|에서|을통해|를통해|앱)?가입",
       "gate": "가입",
       "first_only": true,
-      "canonicals": [
-        [
-          "app_signup",
-          [
-            "앱",
-            "어플",
-            "app",
-            "어플리케이션"
-          ]
-        ],
-        [
-          "mobile_web_signup",
-          [
-            "모바일웹",
-            "엠웹",
-            "모바일브라우저"
-          ]
-        ],
-        [
-          "pc_signup",
-          [
-            "pc",
-            "컴퓨터",
-            "웹",
-            "데스크탑",
-            "데스크톱"
-          ]
-        ]
-      ]
+      "canonicals": ["app_signup", "mobile_web_signup", "pc_signup"]
     }
   }
 }

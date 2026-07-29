@@ -106,6 +106,7 @@ import plan_decisions
 import plan_resolver
 import metric_registry
 import segment_semantics
+import lexicon_llm
 import semantic_requirements
 import compiler_strategies
 from query_structurer import (
@@ -1088,12 +1089,39 @@ def _member_recent_login_predicate(days: int, alias: str = "B") -> str:
 
 
 # ── 타겟팅 신호어 사전(intent/objective/문맥) ─────────────────────────────────
-# 의도·목적 분류와 문맥 판정(판매 아웃리치/신제품 알림/재활성/장바구니 이탈 등)에 쓰는 표현형의
-# 단일 출처는 docs/data/targeting_lexicon.json 이다. 새 표현("리텐션 캠페인", 새 판매 동사 등)은
-# 코드 수정 없이 그 파일에 추가한다. 아래 기본값은 파일 부재/파손 시 폴백이자 스키마 예시다.
+# 의도·목적 분류와 문맥 판정(판매 아웃리치/신제품 알림/재활성/장바구니 이탈 등)의 **표면어 소유권은
+# LLM 에 있다**(lexicon_llm.py + docs/data/surface_concepts.json). 새 말투("리텐션 캠페인", 처음 보는
+# 판매 동사)를 위해 낱말을 추가하는 일은 더 이상 없다 — 개념이 새로 필요할 때만 surface_concepts.json 에
+# 한 항목을 더한다.
+#
+# 아래 목록은 그 이관 시점의 낱말을 그대로 옮긴 **동결 백스톱**이다. OPENAI_API_KEY 가 없거나
+# SURFACE_LEXICON_LLM=off 일 때(테스트·오프라인 실행 포함) 기존 결정론 동작을 그대로 유지하는 것이
+# 유일한 역할이고, 손으로 늘리지 않는다 — tests/test_surface_lexicon_llm.py 의 래칫이 이를 강제한다.
+#
+# docs/data/targeting_lexicon.json 에는 **LLM 이 대체할 수 없는 것만** 남는다: 대상 지향 표지와
+# 장바구니 어휘처럼 문장 안의 '위치'로 판정하는(분리 지점 인덱스·인접성) 스팬 지역 어휘.
 # objective_rules 는 순서가 의미(먼저 걸린 목적 승리)라 리스트로 유지한다.
 DEFAULT_TARGETING_LEXICON_PATH = Path(
     os.getenv("GRAPH_RAG_TARGETING_LEXICON", "docs/data/targeting_lexicon.json")
+)
+
+# LLM 이 표면어를 소유하는 그룹(= surface_concepts.json 의 concept_id). 이 그룹의 낱말은 데이터
+# 파일에서 제거됐고, 아래 동결 백스톱만 남는다.
+_LLM_OWNED_LEXICON_GROUPS: frozenset[str] = frozenset(
+    {
+        "channel_signal_words",
+        "intent_recommend_campaign",
+        "intent_find_user_segment",
+        "awareness_launch_terms",
+        "awareness_announce_terms",
+        "sell_outreach_verbs",
+        "sell_outreach_audience",
+        "reactivation_goal_terms",
+        "purchase_history_signals",
+        "cart_abandonment_terms",
+        "repurchase_terms",
+        "repurchase_outreach_terms",
+    }
 )
 
 _DEFAULT_TARGETING_LEXICON: dict[str, Any] = {
@@ -1103,31 +1131,46 @@ _DEFAULT_TARGETING_LEXICON: dict[str, Any] = {
     # 표지가 다른 낱말의 꼬리로 들어간 경우(부사 '함께'의 '께' 등)는 대상 지향 표지가 아니다.
     # 여기 걸린 매치는 분리 지점 후보에서 건너뛴다 — 오디언스 절이 채널 절로 잘려나가는 것을 막는다.
     "audience_direction_marker_exceptions": ["함께", "다함께", "언제", "이제", "그곳에", "이곳에", "저곳에"],
-    # 채널/메시지 의도 신호. 규칙 분리 실패(표지 없음) 판정과 LLM 폴백 트리거에 쓴다.
+    "cart_terms": ["장바구니"],
+    # ── 아래부터는 동결 백스톱(_LLM_OWNED_LEXICON_GROUPS) ─────────────────────────────
+    # 표면어 소유권은 LLM 에 있다. 이 목록은 이관 시점에 targeting_lexicon.json 이 갖고 있던 낱말을
+    # 글자 그대로 옮긴 것이며, 키가 없는 환경에서 기존 결정론 동작을 재현하는 것이 유일한 역할이다.
+    # **손으로 늘리지 않는다** — 새 말투는 LLM 이 읽고, 새 '개념'만 surface_concepts.json 에 추가한다.
+    # 낱말 수는 tests/test_surface_lexicon_llm.py 의 래칫이 고정한다.
     "channel_signal_words": [
         "홍보", "광고", "알림", "알리", "안내", "소식", "공지", "캠페인",
         "메시지", "발송", "보내", "판매", "팔", "프로모션", "쿠폰", "이벤트",
+        "SMS", "문자", "이메일", "앱푸시", "푸시", "알림톡",
     ],
     "intent_recommend_campaign": ["캠페인", "추천", "recommend", "campaign"],
-    "intent_find_user_segment": ["사용자", "고객", "사람", "지역", "세그먼트", "user", "segment", "region"],
+    "intent_find_user_segment": [
+        "사용자", "회원", "고객", "사람", "지역", "세그먼트", "segment", "user",
+        "region", "조회", "검색", "추출", "찾아", "보여", "대상",
+    ],
     "objective_rules": [
-        {"objective": "purchase", "keywords": ["구매", "구입", "전환", "매출", "purchase", "conversion", "판매", "팔고", "팔려", "sell"]},
-        {"objective": "subscription", "keywords": ["구독", "subscription"]},
-        {"objective": "reactivation", "keywords": ["휴면", "복귀", "재방문", "reactivation"]},
-        {"objective": "retention", "keywords": ["retention"]},
+        {"objective": "purchase", "keywords": ["구매", "구입", "전환", "매출", "purchase", "conversion", "판매", "팔고", "팔려", "sell", "주문", "결제"]},
+        {"objective": "subscription", "keywords": ["구독", "subscription", "정기배송"]},
+        {"objective": "reactivation", "keywords": ["휴면", "복귀", "재방문", "reactivation", "재활성", "활성화"]},
+        {"objective": "retention", "keywords": ["retention", "유지", "충성"]},
         {"objective": "awareness", "keywords": ["신제품", "신상품", "출시", "런칭", "awareness", "launch"]},
     ],
     "awareness_launch_terms": ["신제품", "신상품", "출시", "런칭", "launch", "awareness"],
     "awareness_announce_terms": ["알리", "알림", "소식", "안내", "홍보"],
     # "팔레트/팔로우" 등 오탐을 피하려고 "팔" 단독이 아닌 "팔고/팔려/판매"만 판매 동사로 본다.
     "sell_outreach_verbs": ["팔고", "팔려", "팔것", "판매", "sell"],
-    "sell_outreach_audience": ["에게", "한테", "고객", "대상", "타겟", "타깃"],
-    "reactivation_goal_terms": ["재활성", "다시활성", "활성화", "휴면복귀", "복귀캠페인", "reactivation", "reactivate"],
-    "cart_terms": ["장바구니"],
-    "cart_abandonment_terms": ["결제하지않", "결제안", "미결제", "구매하지않", "구매안", "안산", "방치", "이탈", "cartabandon"],
+    "sell_outreach_audience": ["에게", "한테", "고객", "회원", "대상", "타겟", "타깃"],
+    "reactivation_goal_terms": [
+        "재활성", "다시활성", "활성화", "휴면복귀", "복귀캠페인", "reactivation", "reactivate",
+    ],
+    "cart_abandonment_terms": [
+        "결제하지않", "결제안", "미결제", "구매하지않", "구매안", "안산", "방치", "이탈",
+        "cartabandon", "주문으로이어지지않", "주문으로 이어지지 않은",
+    ],
     "repurchase_terms": ["재구매", "repurchase"],
     "repurchase_outreach_terms": ["유도", "촉진", "리마인드", "캠페인", "메시지", "발송", "추천"],
-    "purchase_history_signals": ["구매", "구입", "샀", "purchased", "bought"],
+    "purchase_history_signals": [
+        "구매", "구입", "샀", "purchased", "bought", "주문", "결제", "구매이력", "주문이력",
+    ],
 }
 
 
@@ -1174,6 +1217,91 @@ def _lexicon_objective_rules() -> list[tuple[str, tuple[str, ...]]]:
             for rule in _DEFAULT_TARGETING_LEXICON["objective_rules"]
         ]
     return rules
+
+
+# ── 표면어 LLM 해석(질의당 1회) ────────────────────────────────────────────────────────────
+# 낱말 목록이 못 읽은 말투를 LLM 이 읽는다. 판정 단위는 '뜻'(surface_concepts.json 의 닫힌 집합)이고,
+# LLM 은 그 목록에서 고르기만 하며 근거를 원문에서 그대로 오려내야 한다(lexicon_llm.validate).
+#
+# 근거를 스팬으로 받는 이유: 하위 판정은 질의 전체가 아니라 그 일부(타겟팅 절/채널 절/절 조각)에 대해
+# 신호를 묻는다. 스팬 포함 검사로 같은 해석 결과를 조각 단위 질문에 그대로 재사용한다.
+#
+# 해석은 질의 진입점에서 한 번 열리고(_surface_signal_scope) 그 안에서 캐시된다. 스코프 밖에서는
+# 빈 결과라 백스톱 낱말만으로 동작한다 — 파서 내부 헬퍼를 단위 테스트할 때의 결정론이 유지된다.
+# 스코프 자체는 lexicon_llm 이 들고 있다(analytical_intent 등 다른 모듈도 같은 해석을 읽는다).
+
+
+def _llm_extract_surface_signals(
+    query: str,
+    concepts: tuple[lexicon_llm.SurfaceConcept, ...],
+    llm_model: str,
+    prompt_dir: Path | None,
+) -> dict[str, Any] | None:
+    """개념 목록을 주고 이 질의에서 참인 신호를 받아온다. 사용 불가/실패 시 None(백스톱 유지)."""
+    llm_model = _fast_llm_model(llm_model)
+    if not llm_model or not os.getenv("OPENAI_API_KEY"):
+        return None
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return None
+    fallback = "\n".join(
+        [
+            "너는 한국어 캠페인/타겟팅 문장에서 '표면 신호'만 읽어내는 판정기다. 아래 개념 목록",
+            "중에서만 고르고, 해당 없으면 빈 배열로 둔다(추측 금지).",
+            "",
+            "{concepts}",
+            "",
+            "evidence 는 입력 문장에 글자 그대로 있는 가장 짧은 조각이어야 한다.",
+            '다음 JSON object 만 출력한다: {"signals": [{"concept_id": "...", "evidence": "..."}]}',
+        ]
+    )
+    system = _read_prompt_template(prompt_dir, lexicon_llm.PROMPT_FILENAME, fallback).replace(
+        "{concepts}", lexicon_llm.concept_catalog(concepts)
+    )
+    client = OpenAI()
+    response = _openai_chat_create(
+        client,
+        model=llm_model,
+        temperature=0,
+        response_format={"type": "json_object"},
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": query}],
+        timeout=_prompt_rewrite_timeout_seconds(),
+    )
+    data = json.loads(response.choices[0].message.content or "{}")
+    if not isinstance(data, dict):
+        return None
+    _write_rag_llm_log("surface_signal_extraction", {"query": query, **data})
+    return data
+
+
+def _resolve_surface_signals(
+    query: str, llm_model: str = DEFAULT_LLM_MODEL, prompt_dir: Path | None = DEFAULT_PROMPT_DIR
+) -> dict[str, tuple[str, ...]]:
+    return lexicon_llm.resolve(
+        query,
+        lambda text, concepts: _llm_extract_surface_signals(text, concepts, llm_model, prompt_dir),
+    )
+
+
+def _surface_signal_scope(
+    query: str, llm_model: str = DEFAULT_LLM_MODEL, prompt_dir: Path | None = DEFAULT_PROMPT_DIR
+):
+    """질의 하나 동안 표면 신호 해석을 열어 둔다(진입점에서 한 번, 안에서는 캐시)."""
+    return lexicon_llm.signal_scope(
+        query, lambda text: _resolve_surface_signals(text, llm_model, prompt_dir)
+    )
+
+
+def _lexicon_signal(group: str, text: str) -> bool:
+    """텍스트 조각에서 그 뜻의 신호가 성립하는가 — 동결 백스톱 낱말 OR LLM 해석(빈칸 보완).
+
+    규칙이 먼저다: 백스톱이 읽어낸 것은 LLM 호출 없이 그대로 참이다. LLM 은 백스톱이 침묵한
+    말투만 메운다(어느 쪽이든 결과는 같은 불리언이라 '빈칸 보완'이 곧 OR 이다)."""
+    compact = text.replace(" ", "").casefold()
+    if any(term in compact for term in _lexicon_terms(group)):
+        return True
+    return lexicon_llm.signal_hit(group, text)
 
 
 BEHAVIOR_TERMS = {
@@ -1980,8 +2108,7 @@ def _rule_split_prompt_scopes(text: str) -> tuple[str, str] | None:
 
 
 def _has_channel_signal(text: str) -> bool:
-    compact = text.replace(" ", "").casefold()
-    return any(word in compact for word in _lexicon_terms("channel_signal_words"))
+    return _lexicon_signal("channel_signal_words", text)
 
 
 def _llm_split_prompt_scopes(
@@ -2029,6 +2156,13 @@ def split_prompt_scopes(
     보완한다. 검색·그래프 컨텍스트를 스코프별로 좁히는 용도이며 SQL/Query Plan 에는 영향을 주지 않는다.
     반환: {targeting, channel, mode}.
     """
+    with _surface_signal_scope(text if isinstance(text, str) else "", llm_model, prompt_dir):
+        return _split_prompt_scopes(text, parser, llm_model, prompt_dir)
+
+
+def _split_prompt_scopes(
+    text: str, parser: str, llm_model: str, prompt_dir: Path | None
+) -> dict[str, Any]:
     llm_model = _fast_llm_model(llm_model)  # 분리도 빠르고 정확한 모델 고정
     original = text if isinstance(text, str) else ""
     # BFF 가 붙이는 구조적 "발송 채널: <채널> (설명)" 절은 오디언스 표지·파서와 무관하게 항상 채널
@@ -2289,6 +2423,30 @@ def build_query_plan(
     변이는 값이 아니라 표현만 바꾸므로(결정론 파서가 실제 조건 추출) 없는 조건을 지어내지 않는다.
     변이 파싱은 rules(결정론)로 하여 비용을 낮춘다 — 다양한 표현형이 서로 다른 규칙 패턴에 걸리는 것이 핵심.
     """
+    with _surface_signal_scope(query, llm_model, prompt_dir):
+        return _build_query_plan(
+            query, normalization_rules, business_policies, sql_schema, parser, llm_model, prompt_dir,
+            multi_query_variants, structured_query, query_plan_v2, raw_query, original_query,
+            query_plan_v2_factory, precomputed_scopes,
+        )
+
+
+def _build_query_plan(
+    query: str,
+    normalization_rules: Path | None,
+    business_policies: Path | None,
+    sql_schema: Path,
+    parser: str,
+    llm_model: str,
+    prompt_dir: Path | None,
+    multi_query_variants: int,
+    structured_query: StructuredQuery | None,
+    query_plan_v2: CampaignQueryPlanV2 | None,
+    raw_query: str | None,
+    original_query: str | None,
+    query_plan_v2_factory: Callable[[dict[str, Any]], CampaignQueryPlanV2] | None,
+    precomputed_scopes: dict[str, Any] | None,
+) -> CampaignQueryPlanV2:
     requested_parser = parser.casefold()
     authority = _query_plan_authority(requested_parser)
     semantic_plan = query_plan_v2
@@ -3445,12 +3603,27 @@ def _load_attribute_token_groups_raw(path: Path = DEFAULT_ATTRIBUTE_TOKEN_GROUPS
     return _default_attribute_token_groups_raw()
 
 
-def _coerce_attribute_token_group(raw: Any) -> _AttributeTokenGroup | None:
-    """JSON 그룹 dict → _AttributeTokenGroup 스펙. canonicals 는 [[canonical, [표면어]]] 형태여야 한다."""
+def _coerce_attribute_token_group(raw: Any, backstop: dict[str, tuple[str, ...]] | None = None) -> _AttributeTokenGroup | None:
+    """JSON 그룹 dict → _AttributeTokenGroup 스펙.
+
+    canonicals 는 두 형태를 받는다.
+
+      * ``"active_member"``            — canonical 만 선언(권장). 표면어는 코드의 동결 백스톱에서
+        가져오고, 백스톱이 모르는 말투는 LLM 조건 슬롯 추출기가 이 닫힌 집합에서 골라 메운다.
+      * ``["active_member", [표면어…]]`` — 표면어까지 파일이 들고 있던 구형. 계속 읽어 준다.
+
+    표면어를 파일에서 뺀 이유: 그 목록은 끝이 없어 사람이 다 적을 수 없고, 다 적지 못한 만큼 조용히
+    침묵한다. 파일이 소유하는 것은 **무엇이 존재하는가**(canonical)이고, 그 경계가 곧 LLM 이 지어낼
+    수 없는 이유다. 백스톱에 없는 canonical 을 표면어 없이 선언하면 규칙은 침묵하고 LLM 만 채운다.
+    """
     if not isinstance(raw, dict):
         return None
+    backstop = backstop or {}
     canonicals: list[tuple[str, tuple[str, ...]]] = []
     for item in raw.get("canonicals", []):
+        if isinstance(item, str) and item:
+            canonicals.append((item, backstop.get(item, ())))
+            continue
         if isinstance(item, (list, tuple)) and len(item) == 2 and isinstance(item[0], str) and isinstance(item[1], (list, tuple)):
             terms = tuple(t for t in item[1] if isinstance(t, str) and t)
             if item[0] and terms:
@@ -3472,15 +3645,25 @@ def _attribute_token_groups() -> dict[str, _AttributeTokenGroup]:
     """회원속성 토큰 승격 그룹의 선언형 문법 스펙(단일 소스 = attribute_token_groups.json, 코드 폴백).
 
     새 단순 속성형 필터는 이 JSON 에 그룹/카노니컬 한 줄 추가 + graph_rag 레지스트리에 attribute_token
-    엔트리 등록만으로 열린다(전용 _apply_* 함수 불필요)."""
+    엔트리 등록만으로 열린다(전용 _apply_* 함수 불필요). 표면어는 파일이 아니라 그룹별 동결 백스톱
+    (+ eq_filters surface_terms, + LLM 조건 슬롯 추출기)이 소유한다."""
+    defaults = _default_attribute_token_groups_raw()
+    backstops = {
+        name: {
+            canonical: tuple(terms)
+            for canonical, terms in raw.get("canonicals", [])
+            if isinstance(canonical, str)
+        }
+        for name, raw in defaults.items()
+    }
     out: dict[str, _AttributeTokenGroup] = {}
     for name, raw in _load_attribute_token_groups_raw().items():
-        group = _coerce_attribute_token_group(raw)
+        group = _coerce_attribute_token_group(raw, backstops.get(name))
         if group is not None:
             out[name] = group
     return out or {
-        name: _coerce_attribute_token_group(raw)
-        for name, raw in _default_attribute_token_groups_raw().items()
+        name: _coerce_attribute_token_group(raw, backstops.get(name))
+        for name, raw in defaults.items()
     }
 
 
@@ -5010,7 +5193,6 @@ def _merge_list(target: dict[str, Any], source: dict[str, Any], key: str, allowe
 
 
 def _infer_intent(query: str) -> str:
-    compact_query = query.replace(" ", "").casefold()
     # 과거 행동을 완료형으로 조회하면서 회원 집합/인원수를 요구하면 캠페인 추천이 아니라 세그먼트
     # 조회다. 특히 "캠페인에 반응한 회원은 몇 명"을 '캠페인' 한 단어 때문에 추천 intent로 보내면
     # 반응 팩트 조회가 사라지므로, 발송/생성 목적보다 먼저 출력 형태와 완료 행동을 함께 본다.
@@ -5030,9 +5212,9 @@ def _infer_intent(query: str) -> str:
     # 분기보다 먼저 recommend_campaign 으로 잡아 메시지 생성(build_message_context)까지 이어지게 한다.
     if _is_sales_outreach_context(query):
         return "recommend_campaign"
-    if any(keyword in compact_query for keyword in _lexicon_terms("intent_recommend_campaign")):
+    if _lexicon_signal("intent_recommend_campaign", query):
         return "recommend_campaign"
-    if any(keyword in compact_query for keyword in _lexicon_terms("intent_find_user_segment")):
+    if _lexicon_signal("intent_find_user_segment", query):
         return "find_user_segment"
     return "unknown"
 
@@ -5648,8 +5830,12 @@ def _infer_objective(query: str) -> str | None:
         return "repurchase"
     if _is_reactivation_goal_context(query):
         return "reactivation"
+    # 선언 순서가 곧 우선순위(먼저 걸린 목적 승리)다. 목적마다 동결 백스톱 낱말을 먼저 보고, 침묵하면
+    # LLM 이 읽은 목적 개념(objective_<name>)을 본다 — 순서는 두 경로에서 동일하게 유지된다.
     for objective, keywords in _lexicon_objective_rules():
         if any(keyword in compact_query for keyword in keywords):
+            return objective
+        if lexicon_llm.signal_hit(f"objective_{objective}", query):
             return objective
     return None
 
@@ -5657,25 +5843,22 @@ def _infer_objective(query: str) -> str | None:
 def _is_awareness_announcement_context(query: str) -> bool:
     # 신제품/출시/런칭 등 인지(awareness) 키워드 + 알림/홍보 아웃리치 동사가 함께 있으면 캠페인 발송 의도.
     # "신제품 관심 고객 찾아줘"(조회)처럼 아웃리치 동사가 없으면 걸리지 않도록 둘 다 요구한다.
-    compact_query = query.replace(" ", "").casefold()
-    has_launch = any(keyword in compact_query for keyword in _lexicon_terms("awareness_launch_terms"))
-    has_announce = any(keyword in compact_query for keyword in _lexicon_terms("awareness_announce_terms"))
-    return has_launch and has_announce
+    return _lexicon_signal("awareness_launch_terms", query) and _lexicon_signal(
+        "awareness_announce_terms", query
+    )
 
 
 def _is_sales_outreach_context(query: str) -> bool:
     # 판매 동사(팔다/판매/sell) + 대상 지향(에게/한테/고객/대상/타겟)이 함께 있으면 특정 상품을
     # 파는 캠페인 발송 의도. "고객 찾아줘"(조회)처럼 판매 동사가 없으면 걸리지 않도록 둘 다 요구한다.
     # "팔레트/팔로우" 등 오탐을 피하려고 "팔" 단독이 아닌 "팔고/팔려/판매"만 판매 동사로 본다.
-    compact_query = query.replace(" ", "").casefold()
-    has_sell = any(keyword in compact_query for keyword in _lexicon_terms("sell_outreach_verbs"))
-    has_audience = any(keyword in compact_query for keyword in _lexicon_terms("sell_outreach_audience"))
-    return has_sell and has_audience
+    return _lexicon_signal("sell_outreach_verbs", query) and _lexicon_signal(
+        "sell_outreach_audience", query
+    )
 
 
 def _is_reactivation_goal_context(query: str) -> bool:
-    compact_query = query.replace(" ", "").casefold()
-    return any(keyword in compact_query for keyword in _lexicon_terms("reactivation_goal_terms"))
+    return _lexicon_signal("reactivation_goal_terms", query)
 
 
 def _apply_age_filters(query: str, target_user: dict[str, Any]) -> None:
@@ -5851,13 +6034,11 @@ def _apply_sell_object(query: str, plan: dict[str, Any]) -> None:
 # 상품명 표현형의 재현율은 LLM이 담당하고, 정밀도(없는 상품·일반명사를 실행 조건으로 쓰지 않음)는
 # _validate_purchase_objects 의 원문 존재 검증이 담당한다. 구매/판매 신호 자체가 없으면 호출하지 않는다.
 def _has_purchase_history_signal(query: str) -> bool:
-    compact = query.replace(" ", "").casefold()
-    return any(signal in compact for signal in _lexicon_terms("purchase_history_signals"))
+    return _lexicon_signal("purchase_history_signals", query)
 
 
 def _has_sell_signal(query: str) -> bool:
-    compact = query.replace(" ", "").casefold()
-    return any(signal in compact for signal in _lexicon_terms("sell_outreach_verbs"))
+    return _lexicon_signal("sell_outreach_verbs", query)
 
 
 def _object_present_in_text(obj: str, text: str) -> bool:
@@ -11323,17 +11504,17 @@ _MEMBER_FLAG_NEG = r"(?:인|한|중인|상태)?(?:회원|고객|사람)?(?:가|�
 
 
 def _is_cart_abandonment_query(query: str) -> bool:
+    # 장바구니 어휘는 스팬 지역 판정(인접성)이라 사전이 계속 소유한다 — 이탈(미결제) 쪽만 LLM 소유다.
     compact_query = query.replace(" ", "").casefold()
-    return any(keyword in compact_query for keyword in _lexicon_terms("cart_terms")) and any(
-        keyword in compact_query for keyword in _lexicon_terms("cart_abandonment_terms")
+    return any(keyword in compact_query for keyword in _lexicon_terms("cart_terms")) and (
+        _lexicon_signal("cart_abandonment_terms", query)
     )
 
 
 def _is_repurchase_goal_context(query: str) -> bool:
-    compact_query = query.replace(" ", "").casefold()
-    if not any(keyword in compact_query for keyword in _lexicon_terms("repurchase_terms")):
+    if not _lexicon_signal("repurchase_terms", query):
         return False
-    return any(keyword in compact_query for keyword in _lexicon_terms("repurchase_outreach_terms"))
+    return _lexicon_signal("repurchase_outreach_terms", query)
 
 
 def _is_date_like_token(token: str) -> bool:
@@ -21801,8 +21982,10 @@ _TRACE_STAGE_REFS: dict[int, tuple[dict[str, str], ...]] = {
     ),
     2: (
         {"kind": "프롬프트", "name": "prompt_scope_split_system.txt"},
-        # 대상 방향 표지·채널 신호어를 어휘 사전에서 읽어 절을 나눈다(split_prompt_scopes).
+        # 대상 방향 표지는 어휘 사전이, 채널 신호는 표면 개념(LLM 해석)이 소유한다(split_prompt_scopes).
         {"kind": "데이터", "name": "targeting_lexicon.json"},
+        {"kind": "데이터", "name": "surface_concepts.json"},
+        {"kind": "프롬프트", "name": "surface_signal_extract_system.txt"},
         {"kind": "모델", "name": "{model}"},
     ),
     3: (
@@ -21813,6 +21996,7 @@ _TRACE_STAGE_REFS: dict[int, tuple[dict[str, str], ...]] = {
         {"kind": "데이터", "name": "normalization_rules.sample.json"},
         {"kind": "데이터", "name": "business_policies.sample.json"},
         {"kind": "데이터", "name": "targeting_lexicon.json"},
+        {"kind": "데이터", "name": "surface_concepts.json"},
         {"kind": "데이터", "name": "attribute_token_groups.json"},
         {"kind": "데이터", "name": "member_metrics.json"},
         {"kind": "데이터", "name": "schema_catalog.json"},
@@ -21820,8 +22004,8 @@ _TRACE_STAGE_REFS: dict[int, tuple[dict[str, str], ...]] = {
     ),
     4: (
         {"kind": "프롬프트", "name": "target_object_extract_system.txt"},
-        # 구매이력·판매 동사 신호로 LLM 추출을 게이팅한다(정규식이 놓친 경우만 폴백).
-        {"kind": "데이터", "name": "targeting_lexicon.json"},
+        # 구매이력·판매 동사 신호로 LLM 추출을 게이팅한다(동결 백스톱이 놓치면 표면 개념 해석이 메움).
+        {"kind": "데이터", "name": "surface_concepts.json"},
         {"kind": "모델", "name": "{model} (폴백)"},
     ),
     5: (
@@ -21937,6 +22121,11 @@ def _mark_trace_refs_used(stages: list[dict[str, Any]], result: dict[str, Any]) 
 
     # 스코프 분리는 규칙 우선이며, LLM 분리가 실제로 선택됐을 때만 프롬프트/모델을 강조한다.
     mark(2, "targeting_lexicon.json")
+    # 표면 개념 해석이 실제로 무언가를 읽었을 때만 강조한다 — 백스톱만으로 돈 질의와 구분된다.
+    if lexicon_llm.current_signals():
+        mark(2, "surface_concepts.json")
+        mark(2, "surface_signal_extract_system.txt", kind="모델")
+        mark(3, "surface_concepts.json")
     if retrieval.get("scope_mode") == "llm":
         mark(2, "prompt_scope_split_system.txt", kind="모델")
 
@@ -21972,7 +22161,7 @@ def _mark_trace_refs_used(stages: list[dict[str, Any]], result: dict[str, Any]) 
     if query_plan.get("_trace_target_object_llm_used"):
         mark(4, "target_object_extract_system.txt", kind="모델")
     if target_user.get("purchase_object") or (query_plan.get("campaign_constraints") or {}).get("sell_object"):
-        mark(4, "targeting_lexicon.json")
+        mark(4, "surface_concepts.json")
 
     uses_member_value_index = any(
         item.get("source") == "member_value_index"

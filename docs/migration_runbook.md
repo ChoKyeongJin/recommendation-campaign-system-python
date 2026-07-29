@@ -24,10 +24,30 @@ A(어휘)는 끝이 없다. 사전에 없는 말투는 규칙이 조용히 침�
 |---|---|---|
 | 회원 상태 플래그 | 문장이 어느 canonical 을 말하는가 | 어떤 canonical 이 존재하는가(`attribute_token_groups.json` ∩ 컴파일 가능) |
 | 쿠폰 임계 | 연산자와 값(`세 번 넘게` → `gt 3`) | 그 조건을 실제로 지원하는가(`segment_metrics.json` 의 capability) |
+| 표면 신호 | 문장이 어느 뜻을 말하는가(채널 발송·판매·재활성·재구매·구매이력·집계 함수 …) | 어떤 뜻이 존재하는가(`surface_concepts.json` 의 닫힌 개념 집합) |
 
 채택 조건 셋: **닫힌 집합에서 고르기만**(목록 밖 값은 버림), **근거는 원문에 그대로**(회원 명사 포함,
 규칙이 이미 읽은 조각과 겹치면 거부), **빈칸만**(규칙이 채운 슬롯은 안 덮음). 채택분은
-`plan_decisions` 에 `source: llm` 으로 남는다. 계약은 `tests/test_condition_slot_llm.py` 가 강제한다.
+`plan_decisions` 에 `source: llm` 으로 남는다. 계약은 `tests/test_condition_slot_llm.py` 와
+`tests/test_surface_lexicon_llm.py` 가 강제한다.
+
+### 표면 신호는 이미 A 를 졸업했다
+
+의도·목적·문맥 신호어(채널 발송·판매 아웃리치·재활성·재구매·장바구니 이탈·구매이력·집계 함수어)는
+낱말 목록이 아니라 **뜻**으로 판정한다. 표면어 소유권은 `lexicon_llm.py` + `surface_concepts.json`
+(개념 선언)에 있고, 데이터 파일에서는 그 낱말이 빠졌다. 즉 **이 부류에는 A 가 없다** — 새 말투가
+나와도 사전에 한 줄 추가할 일이 없고, 새 *개념*이 필요할 때만 `surface_concepts.json` 에 항목을 더한다.
+
+코드에 남은 낱말 목록(`graph_rag._DEFAULT_TARGETING_LEXICON` 의 LLM 소유 그룹,
+`analytical_intent._AGGREGATE_FUNCTION_BACKSTOP`)은 **동결 백스톱**이다. 키가 없거나
+`SURFACE_LEXICON_LLM=off` 인 환경(테스트 포함)에서 이관 전 결정론 동작을 재현하는 것이 유일한
+역할이고, 손으로 늘리지 않는다 — `tests/test_surface_lexicon_llm.py` 의 래칫이 강제한다.
+
+대체되지 **않은** 어휘도 있다. 문장에 있는가가 아니라 **어디에 있는가**로 판정하는 것들이다:
+대상 지향 표지(절 분리 지점), 장바구니 어휘(금액·수량 인접성), `parser_lexicon.json` 어휘(교대
+정규식으로 합성), `normalization_rules` 의 동의어(매칭 스팬 `matched_text` 를 하위가 소비),
+`segment_lexicon.json` 의 별칭·연산자·표지(`_metric_ending`/`_metric_leading` 이 접두·접미 위치로
+비교 방향을 정한다). 불리언이 아니라 위치라서 개념 판정으로 못 바꾼다.
 
 ## 주간 루틴 (15분)
 
@@ -57,7 +77,9 @@ docker compose exec -e PYTHONPATH=/app -w /app api \
 | `PARSER_LEXICON_PATH` | 경로 | 파서 표면어 사전 |
 | `SLOT_POLICY_PATH` | 경로 | 슬롯 소유권 정책 |
 | `TARGET_OBJECT_LLM_FALLBACK` | `true`(기본)/`false` | 상품명 LLM 후보. **끄면 상품 조건이 조용히 사라진다** |
-| `CONDITION_SLOT_LLM_FALLBACK` | `true`(기본)/`off` | 사전에 없는 말투를 조건 슬롯으로 채우는 LLM 보완(회원 상태 플래그·쿠폰 임계). 끄면 `attribute_token_groups.json`·`segment_lexicon.json` 의 표면어만으로 동작한다(기존 동작). 켜져 있으면 회원 명사가 있고 규칙이 플래그를 못 올린 질의마다 빠른 모델 호출이 1회 추가된다 |
+| `CONDITION_SLOT_LLM_FALLBACK` | `true`(기본)/`off` | 사전에 없는 말투를 조건 슬롯으로 채우는 LLM 보완(회원 상태 플래그·쿠폰 임계). 끄면 동결 백스톱 표면어와 `segment_lexicon.json` 만으로 동작한다(기존 동작). 켜져 있으면 회원 명사가 있고 규칙이 플래그를 못 올린 질의마다 빠른 모델 호출이 1회 추가된다 |
+| `SURFACE_LEXICON_LLM` | `true`(기본)/`off` | 표면 신호(의도·목적·문맥·집계 함수어)의 LLM 해석. **끄면 동결 백스톱 낱말만 읽으므로 처음 보는 말투가 조용히 침묵한다**(이관 전 동작). 켜져 있으면 질의당 빠른 모델 호출이 1회 추가되고, 그 결과는 질의 스코프 안에서 재사용된다(절 단위로 다시 부르지 않는다) |
+| `SURFACE_CONCEPTS_PATH` | 경로 | 표면 개념(닫힌 집합) 선언 파일 |
 
 ## 안전장치 (전부 `pytest tests/` 가 강제)
 

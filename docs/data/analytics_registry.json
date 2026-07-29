@@ -1,13 +1,6 @@
 {
   "description": "분석 집계 계약 레지스트리. 지표·차원·필터·모집단 스코프를 논리 선언 1개로 두고, 물리 매핑은 소스의 테이블/조인에서 계산한다(조합 행렬을 손으로 유지하지 않는다).",
-  "aggregateFunctions": {
-    "SUM": ["합계", "총액", "총합", "전체 금액", "전체 구매 금액", "총 구매금액", "합산", "얼마"],
-    "COUNT": ["건수", "개수", "몇 건"],
-    "AVG": ["평균"],
-    "MAX": ["최대", "최고", "가장 최근", "최근"],
-    "MIN": ["최소", "최저", "가장 오래된", "오래된"]
-  },
-  "unsupportedMetricQualifiers": ["미래 예상", "미래예상", "예측 구매", "예상 구매"],
+  "_surface_ownership": "집계 함수어('총액'→SUM)와 미지원 한정어('미래 예상')의 **표면어**는 이 파일이 소유하지 않는다 — 위치를 쓰지 않는 순수 불리언/최장일치 판정이라 LLM 이 읽는다(docs/data/surface_concepts.json 의 aggregate_* / unsupported_metric_qualifier). 키 없는 환경용 동결 백스톱만 analytical_intent.py 에 남고 손으로 늘리지 않는다. 아래 memberScopes 의 terms 는 다르다 — 부정형 스팬(negationTerms)과 짝을 이뤄 문장 안 위치로 판정하므로 계속 여기 있다.",
   "memberScopes": [
     {
       "id": "purchase",

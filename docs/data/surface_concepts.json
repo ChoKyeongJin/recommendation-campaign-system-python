@@ -1,0 +1,122 @@
+{
+  "version": "1.0",
+  "description": "표면 신호 '개념'의 닫힌 집합. 여기 있는 것은 뜻(무엇이 존재하는가)뿐이고 낱말(어떻게 말하는가)은 없다 — 낱말 판정은 LLM 이 소유한다(lexicon_llm.py). 이 파일이 targeting_lexicon.json 의 신호어 목록을 대체한다. 새 '표현'은 여기 추가하지 않는다(LLM 이 읽는다). 새 '개념'이 필요할 때만 한 항목을 추가하고, 그 개념을 소비하는 코드가 있어야 한다.",
+  "how_to_add": "concept_id 는 소비 지점(graph_rag._lexicon_signal 의 그룹명)과 같아야 한다. description 은 LLM 프롬프트에 그대로 들어가므로 '무엇이면 참인가'를 경계까지 적는다 — 특히 무엇이 아닌지(반례)를 적어야 오탐이 준다.",
+  "concepts": [
+    {
+      "concept_id": "channel_signal_words",
+      "label": "채널·메시지 발송 의도",
+      "description": "고객에게 무언가를 보내거나 알리려는 의도 전반을 덮는 상위 개념. 홍보·광고·안내·공지·발송·메시지·쿠폰 지급·이벤트 고지는 물론, 알려 준다는 뜻의 어떤 표현이든(귀띔한다·전한다·소식을 준다) 해당한다. awareness_announce_terms 나 sell_outreach_verbs 가 참이면 이것도 함께 참이다 — 더 좁은 개념을 골랐다고 이것을 빼지 마라. 단순히 '고객을 찾아줘'처럼 조회만 요구하면 아니다."
+    },
+    {
+      "concept_id": "intent_recommend_campaign",
+      "label": "캠페인 실행·추천 요청",
+      "description": "캠페인을 만들어 달라, 추천해 달라, 진행하고 싶다는 요청. 대상만 뽑아 달라는 조회 요청은 아니다."
+    },
+    {
+      "concept_id": "intent_find_user_segment",
+      "label": "고객·세그먼트 조회 요청",
+      "description": "조건에 맞는 회원·고객·사용자·지역·세그먼트를 찾아/뽑아/집계해 달라는 요청. 발송이나 캠페인 실행 의도가 아니다."
+    },
+    {
+      "concept_id": "awareness_launch_terms",
+      "label": "신제품·출시 소재",
+      "description": "신제품·신상품·새로 나온 것·출시·런칭처럼 '새로 선보이는 것'을 가리키는 말. 기존 상품의 할인·재고 소진은 아니다."
+    },
+    {
+      "concept_id": "awareness_announce_terms",
+      "label": "알림·홍보 아웃리치 동사",
+      "description": "알린다·안내한다·소식을 전한다·홍보한다처럼 정보를 전달하는 행위. '찾아줘'·'뽑아줘' 같은 조회 동사는 아니다."
+    },
+    {
+      "concept_id": "sell_outreach_verbs",
+      "label": "판매 동사",
+      "description": "무언가를 팔려는 행위(팔다·판매하다·sell). '팔레트'·'팔로우'처럼 낱말 일부가 우연히 겹치는 경우는 아니다. 고객이 '구매한' 이력은 판매 동사가 아니다."
+    },
+    {
+      "concept_id": "sell_outreach_audience",
+      "label": "판매 대상 지향",
+      "description": "판매·발송의 상대를 가리키는 표현. '~에게', '~한테', 고객·대상·타겟처럼 받는 쪽을 지목하는 말이 있으면 참이다."
+    },
+    {
+      "concept_id": "reactivation_goal_terms",
+      "label": "재활성·휴면 복귀 목표",
+      "description": "떠났거나 활동이 멈춘 고객을 다시 움직이게 하려는 목표(재활성화·휴면 복귀·되돌리기). 단순히 '휴면 회원'을 조건으로 지목하는 것과는 다르다 — 그들을 '되살리려는 목적'이어야 한다."
+    },
+    {
+      "concept_id": "purchase_history_signals",
+      "label": "구매 이력 언급",
+      "description": "고객이 무언가를 샀다/구매했다/구입했다/주문했다는 이력 언급. 앞으로 팔겠다는 판매 의도는 아니다."
+    },
+    {
+      "concept_id": "cart_abandonment_terms",
+      "label": "장바구니 이탈(미결제)",
+      "description": "장바구니에 담아 두고 결제·구매하지 않은 상태. 결제하지 않음·미결제·안 삼·방치·이탈 등이 해당한다. 담은 사실만 말하면 아니다."
+    },
+    {
+      "concept_id": "repurchase_terms",
+      "label": "재구매 언급",
+      "description": "이미 산 고객이 다시 사는 것(재구매·또 구매·반복 구매). 첫 구매나 단순 구매 이력은 아니다."
+    },
+    {
+      "concept_id": "repurchase_outreach_terms",
+      "label": "재구매 유도 아웃리치",
+      "description": "재구매를 유도·촉진하려는 행위(유도·촉진·리마인드·캠페인·메시지 발송·추천). 재구매 고객을 '조회'만 하는 것은 아니다."
+    },
+    {
+      "concept_id": "objective_purchase",
+      "label": "캠페인 목적: 구매 전환",
+      "description": "캠페인의 목적이 구매·구입·전환·매출·판매를 일으키는 것."
+    },
+    {
+      "concept_id": "objective_subscription",
+      "label": "캠페인 목적: 구독",
+      "description": "캠페인의 목적이 구독 가입·구독 유지인 경우."
+    },
+    {
+      "concept_id": "objective_reactivation",
+      "label": "캠페인 목적: 재활성",
+      "description": "캠페인의 목적이 휴면·이탈 고객의 복귀·재방문인 경우."
+    },
+    {
+      "concept_id": "objective_retention",
+      "label": "캠페인 목적: 유지",
+      "description": "캠페인의 목적이 기존 고객을 이탈시키지 않고 붙잡아 두는 것(리텐션·유지·이탈 방지)."
+    },
+    {
+      "concept_id": "objective_awareness",
+      "label": "캠페인 목적: 인지",
+      "description": "캠페인의 목적이 신제품·출시 사실을 알려 인지시키는 것."
+    },
+    {
+      "concept_id": "aggregate_sum",
+      "label": "집계: 합계",
+      "description": "여러 건을 더한 총량을 묻는다(합계·총액·다 합치면 얼마). 건수를 세는 것이 아니라 금액·수량을 더하는 것이다."
+    },
+    {
+      "concept_id": "aggregate_count",
+      "label": "집계: 건수",
+      "description": "몇 건인지 세는 것(건수·개수·몇 개나). 금액을 더하는 것이 아니다."
+    },
+    {
+      "concept_id": "aggregate_avg",
+      "label": "집계: 평균",
+      "description": "평균값을 묻는다(평균·1인당 얼마·건당 얼마)."
+    },
+    {
+      "concept_id": "aggregate_max",
+      "label": "집계: 최대",
+      "description": "가장 큰 값이나 가장 마지막 시점을 묻는다(최대·최고·제일 큰·가장 최근). 상위 N명을 뽑아 달라는 랭킹 요청은 아니다."
+    },
+    {
+      "concept_id": "aggregate_min",
+      "label": "집계: 최소",
+      "description": "가장 작은 값이나 가장 이른 시점을 묻는다(최소·최저·제일 작은·가장 오래된)."
+    },
+    {
+      "concept_id": "unsupported_metric_qualifier",
+      "label": "지원하지 않는 지표 한정어",
+      "description": "아직 일어나지 않은 값을 지표에 요구한다(미래 예상 구매금액, 예측 매출처럼 추정·예측값). 과거·현재 데이터에 대한 질문은 아니다."
+    }
+  ]
+}
