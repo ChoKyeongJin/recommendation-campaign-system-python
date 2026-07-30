@@ -14,10 +14,10 @@ from __future__ import annotations
 import json
 
 import pytest
+from golden_support import build_plan, load_cases, load_corpus
 
 import ir_snapshot
 import plan_decisions
-from golden_support import build_plan, load_cases, load_corpus
 
 CASES = load_cases()
 PARSER = load_corpus().get("parser", "rules")
@@ -71,6 +71,21 @@ def test_derived_and_condition_key_sets_are_disjoint() -> None:
     """같은 키를 조건이자 파생으로 선언하면 분류가 무의미해진다."""
     overlap = ir_snapshot.DERIVED_PLAN_KEYS & ir_snapshot.KNOWN_CONDITION_PLAN_KEYS
     assert not overlap, f"조건과 파생에 동시에 선언된 키: {sorted(overlap)}"
+
+
+def test_canonical_expression_is_a_condition_but_execution_receipts_are_derived() -> None:
+    assert "canonical_targeting_expression" in ir_snapshot.KNOWN_CONDITION_PLAN_KEYS
+    receipts = {
+        "canonical_projection",
+        "canonical_targeting_validation",
+        "canonical_targeting_version",
+        "condition_claims",
+        "event_compiler_capability",
+        "event_semantic_validation",
+        "ownership_reconciliation_complete",
+    }
+    assert receipts <= ir_snapshot.DERIVED_PLAN_KEYS
+    assert not (receipts & ir_snapshot.KNOWN_CONDITION_PLAN_KEYS)
 
 
 def test_empty_plan_snapshots_to_version_only() -> None:

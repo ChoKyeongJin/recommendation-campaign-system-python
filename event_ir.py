@@ -44,9 +44,10 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import date, timedelta
-from typing import Any, Callable, Iterator
+from typing import Any
 
 import lexicon_patterns
 
@@ -892,13 +893,19 @@ def existence_views(expression: Condition, negated: bool = False) -> list[Existe
     if isinstance(expression, (And, Or)):
         return [view for operand in expression.operands for view in existence_views(operand, negated)]
     if isinstance(expression, Exists):
-        relation = expression.relation
-        window: TimeWindow | None = None
-        if isinstance(relation, Filter) and isinstance(relation.where, TimeFilter):
-            window = relation.where.window
-            relation = relation.relation
-        if isinstance(relation, Source):
-            return [ExistenceView(relation.name, negated, window, expression.evidence)]
+        relation_sources = {
+            node.name for node in walk(expression.relation) if isinstance(node, Source)
+        }
+        windows = [
+            node.window for node in walk(expression.relation) if isinstance(node, TimeFilter)
+        ]
+        if len(relation_sources) == 1 and len(windows) <= 1:
+            return [ExistenceView(
+                next(iter(relation_sources)),
+                negated,
+                windows[0] if windows else None,
+                expression.evidence,
+            )]
     return []
 
 
@@ -915,7 +922,9 @@ _NEGATION_ALT = lexicon_patterns.alternation("generic_negation")
 _COUNT_UNIT_ALT = lexicon_patterns.alternation("event_count_unit")
 GENERIC_NEGATION_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(rf"(?:{_NEGATION_ALT})"),
-    re.compile(rf"0\s*(?:{_COUNT_UNIT_ALT})"),
+    # Numeric boundaries are required on both sides.  Without them the last
+    # zero of ``5,000개`` is mistaken for the negative expression ``0개``.
+    re.compile(rf"(?<![\d,.])0(?![\d,.])\s*(?:{_COUNT_UNIT_ALT})"),
 )
 
 

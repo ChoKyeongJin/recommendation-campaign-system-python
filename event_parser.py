@@ -40,6 +40,7 @@ from typing import Any
 import calendar_window
 import event_compiler
 import event_ir
+import event_semantic_registry
 import lexicon_patterns
 import targeting_ir
 from event_ir import (
@@ -59,8 +60,6 @@ from event_ir import (
     TimeWindow,
     conjunction,
     disjunction,
-    event_relation,
-    existence,
 )
 
 # ── 어휘(사전 소유) ────────────────────────────────────────────────────────────────
@@ -120,6 +119,19 @@ _TEMPORAL_RE = re.compile(
     rf"(?:{_AFTER_ALT})\s*(?P<num>\d+)\s*(?P<unit>{_DURATION_UNIT_ALT})\s*(?:{_WITHIN_ALT})"
 )
 _KO_DURATION_UNITS = {**calendar_window.KO_UNIT_TO_CANON, "시간": "hour"}
+_DYNAMIC_SCOPE_VALUE_RE = r"[0-9A-Za-z가-힣_+&.\-]{1,40}"
+_DYNAMIC_SCOPE_STOPWORDS = frozenset(
+    lexicon_patterns.vocabulary("event_scope_value_stopword")
+)
+
+
+def _dynamic_scope_value(value: str) -> str | None:
+    canonical = value.strip().casefold()
+    if not canonical or canonical in _DYNAMIC_SCOPE_STOPWORDS:
+        return None
+    if re.fullmatch(r"\d+(?:일|주|개월|달|년|회|건|개|원|만원)", canonical):
+        return None
+    return canonical
 
 
 def _event_term_patterns() -> dict[str, re.Pattern[str]]:
@@ -136,6 +148,86 @@ def _event_term_patterns() -> dict[str, re.Pattern[str]]:
             continue  # 별칭 어휘가 없는 사건은 자연어로 부를 수 없다(레지스트리에만 존재)
         patterns[event] = re.compile(rf"(?:{alias_alt})(?:\s*(?:{_RECORD_ALT}))?")
     return patterns
+
+
+def _scope_matches(clause: "Clause", event: str) -> tuple[list[tuple[str, str, tuple[int, int]]], list[tuple[int, int]]]:
+    """Return canonical scope values and unrestricted evidence spans for one event clause.
+
+    The same registry owns aliases and semantic relations.  Physical compiler
+    support is intentionally not consulted here; an unknown field remains in
+    the IR and is rejected later by capability validation instead of being
+    silently removed.
+    """
+
+    registry = event_semantic_registry.registry()
+    dimension_names = registry.domain_dimensions(event)
+    if dimension_names is None:
+        return [], []
+    matches: list[tuple[str, str, tuple[int, int]]] = []
+    unrestricted: list[tuple[int, int]] = []
+    for dimension_name in dimension_names:
+        dimension = registry.dimensions[dimension_name]
+        candidates: list[tuple[int, int, str | None]] = []
+        for alias in dimension.unrestricted_aliases:
+            candidates.extend((hit.start(), hit.end(), None) for hit in re.finditer(re.escape(alias), clause.text))
+        for canonical, value in dimension.values.items():
+            for alias in value.aliases:
+                candidates.extend(
+                    (hit.start(), hit.end(), canonical)
+                    for hit in re.finditer(re.escape(alias), clause.text)
+                )
+        for qualifier in dimension.qualifier_aliases:
+            escaped = re.escape(qualifier)
+            patterns = (
+                re.compile(rf"(?P<value>{_DYNAMIC_SCOPE_VALUE_RE})\s*{escaped}"),
+                re.compile(rf"{escaped}\s+(?P<value>{_DYNAMIC_SCOPE_VALUE_RE})"),
+            )
+            for pattern in patterns:
+                for hit in pattern.finditer(clause.text):
+                    canonical = _dynamic_scope_value(hit.group("value"))
+                    if canonical is not None:
+                        candidates.append((hit.start(), hit.end(), canonical))
+        # Longest match wins at the same/overlapping location (온라인몰 over 온라인).
+        selected: list[tuple[int, int, str | None]] = []
+        for candidate in sorted(candidates, key=lambda item: (-(item[1] - item[0]), item[0], item[2] or "")):
+            if any(max(candidate[0], item[0]) < min(candidate[1], item[1]) for item in selected):
+                continue
+            selected.append(candidate)
+        for start, end, canonical in sorted(selected):
+            absolute = (clause.start + start, clause.start + end)
+            if canonical is None:
+                unrestricted.append(absolute)
+            else:
+                matches.append((dimension_name, canonical, absolute))
+    return matches, unrestricted
+
+
+def _event_relation_with_scopes(
+    event: str,
+    window: TimeWindow | None,
+    scope_matches: list[tuple[str, str, tuple[int, int]]],
+    clause: "Clause",
+) -> event_ir.Relation:
+    relation: event_ir.Relation = Source(name=event)
+    filters: list[Condition] = []
+    if window is not None:
+        filters.append(event_ir.TimeFilter(field=event_ir.time_field(event), window=window))
+    registry = event_semantic_registry.registry()
+    for dimension_name, canonical, span in scope_matches:
+        dimension = registry.dimensions[dimension_name]
+        filters.append(Comparison(
+            operator="=",
+            left=FieldRef(name=dimension.field_for(event)),
+            right=Literal(value=canonical),
+            evidence=Evidence(
+                text=clause.text[span[0] - clause.start:span[1] - clause.start],
+                start=span[0],
+                end=span[1],
+            ),
+        ))
+    if filters:
+        relation = event_ir.Filter(relation=relation, where=conjunction(filters))
+    return relation
 
 
 # ── 절 분할 ───────────────────────────────────────────────────────────────────────
@@ -245,15 +337,30 @@ def _clause_event(clause: Clause, event_terms: dict[str, re.Pattern[str]]) -> tu
     return max(hits, key=lambda hit: (hit[0], hit[1])) if hits else None
 
 
-def _clause_evidence(clause: Clause, event_span: tuple[int, int], time_span: tuple[int, int] | None) -> Evidence:
-    start = min(event_span[0], time_span[0]) if time_span else event_span[0]
+def _clause_evidence(
+    clause: Clause,
+    event_span: tuple[int, int],
+    time_span: tuple[int, int] | None,
+    scope_spans: list[tuple[int, int]] | None = None,
+) -> Evidence:
+    local_scope_spans = [
+        (start - clause.start, end - clause.start) for start, end in (scope_spans or [])
+    ]
+    starts = [event_span[0], *(span[0] for span in local_scope_spans)]
+    if time_span:
+        starts.append(time_span[0])
+    start = min(starts)
     ends = [event_span[1], *(match.end() for match in _POLARITY_END_RE.finditer(clause.text) if match.end() > event_span[0])]
     end = max(ends)
     return Evidence(text=clause.text[start:end].strip(), start=clause.start + start, end=clause.start + end)
 
 
 def _aggregate_condition(
-    clause: Clause, event: str, evidence: Evidence, windows: list[TimeWindow]
+    clause: Clause,
+    event: str,
+    evidence: Evidence,
+    windows: list[TimeWindow],
+    scope_matches: list[tuple[str, str, tuple[int, int]]],
 ) -> Condition | None:
     """'N회 이상 구매' / '구매 금액 합계 X원 이상' → ``Comparison(Aggregate, Literal)``.
 
@@ -261,6 +368,7 @@ def _aggregate_condition(
     한 줄이고, 새 비교어는 targeting_ir 의 비교어 표 한 줄이다.
     """
     window = windows[0] if windows else None
+    relation = _event_relation_with_scopes(event, window, scope_matches, clause)
     fields = event_compiler.resolve_fields(event_compiler.EVENT_REGISTRY)
 
     amount = _AMOUNT_THRESHOLD_RE.search(clause.text)
@@ -270,7 +378,7 @@ def _aggregate_condition(
             return Comparison(
                 operator=targeting_ir.COMPARISON_WORD_OPERATORS[amount.group("op")],
                 left=Aggregate(
-                    function="sum", relation=event_relation(event, window), expression=FieldRef(name=field_name)
+                    function="sum", relation=relation, expression=FieldRef(name=field_name)
                 ),
                 right=Literal(value=int(amount.group("num"))),
                 evidence=evidence,
@@ -285,7 +393,7 @@ def _aggregate_condition(
     return Comparison(
         operator=targeting_ir.COMPARISON_WORD_OPERATORS[count.group("op")],
         left=Aggregate(
-            function="count", relation=event_relation(event, window),
+            function="count", relation=relation,
             expression=expression, distinct=expression is not None,
         ),
         right=Literal(value=int(count.group("num"))),
@@ -348,19 +456,36 @@ def _clause_conditions(
     event_start, event_end, event = hit
 
     windows = _clause_windows(clause, today)
-    evidence = _clause_evidence(clause, (event_start, event_end), _clause_time_span(clause, today))
+    scope_matches, unrestricted_spans = _scope_matches(clause, event)
+    scope_spans = [span for _dimension, _canonical, span in scope_matches] + unrestricted_spans
+    evidence = _clause_evidence(
+        clause, (event_start, event_end), _clause_time_span(clause, today), scope_spans
+    )
 
-    aggregate = _aggregate_condition(clause, event, evidence, windows)
+    aggregate = _aggregate_condition(clause, event, evidence, windows, scope_matches)
     if aggregate is not None:
         return [aggregate]
 
     negated = _NEGATION_RE.search(clause.text) is not None
     if not windows:
-        return [existence(event, negated=negated, evidence=evidence)]
+        node: Condition = event_ir.Exists(
+            relation=_event_relation_with_scopes(event, None, scope_matches, clause),
+            evidence=evidence,
+        )
+        return [event_ir.Not(node) if negated else node]
     # 같은 절의 여러 구간은 극성에 따라 결합이 다르다 — '2018, 2019년에 구매'는 둘 중 **하나라도**
     # 있으면 참(OR)이고, '2018, 2019년에 구매 없음'은 둘 **다** 없어야 참(AND)이다(드모르간).
     conditions = [
-        existence(event, negated=negated, window=window, evidence=evidence) for window in windows
+        (
+            event_ir.Not(node)
+            if negated
+            else node
+        )
+        for window in windows
+        for node in [event_ir.Exists(
+            relation=_event_relation_with_scopes(event, window, scope_matches, clause),
+            evidence=evidence,
+        )]
     ]
     if len(conditions) == 1:
         return conditions

@@ -86,11 +86,8 @@
     {
       "id": "brand_purchase",
       "prompt": "알로루 브랜드를 구매한 고객",
-      "expect_slots": ["target_user.purchase_object"],
-      "known_gap": {
-        "missing_slots": ["target_user.purchase_object"],
-        "reason": "결정론 경로에 상품/브랜드명 추출기가 없다. 이 슬롯은 오직 LLM 후보(llm_object_fallback)만 채우며, 끄면 조건이 통째로 사라진다(표기 보정 '알로루 → 알로&루' 포함). 이미 LLM-first 인 슬롯이라 6단계 전환의 기준 사례이자, 동시에 LLM 없으면 조건이 조용히 소실되는 fail-open 이다."
-      }
+      "expect_slots": ["plan.event_expression", "plan.canonical_targeting_expression"],
+      "note": "브랜드 범위를 Event/Canonical IR에 보존한다. 물리 필드가 미등록이면 compiler capability가 unsupported로 차단하며 조건을 조용히 버리지 않는다."
     },
     {
       "id": "metric_ranking_top_n",
@@ -117,7 +114,7 @@
     {
       "id": "or_of_age_with_and_threshold",
       "prompt": "20대 또는 30대이면서 5회 이상 구매한 고객",
-      "expect_slots": ["target_user.aggregate_conditions", "target_user.age_min", "target_user.age_max"],
+      "expect_slots": ["plan.event_expression", "plan.canonical_targeting_expression", "target_user.age_min", "target_user.age_max"],
       "known_gap": {
         "missing_slots": ["target_user.age_min", "target_user.age_max"],
         "reason": "'20대 또는 30대' 연령 OR 이 어느 슬롯에도 남지 않고 통째로 사라진다(logical_expression 도 안 생김). 임계 조건만 살아남아 '5회 이상 구매한 고객 전체'가 된다 — 나열형 복합 프롬프트의 조건 소실이 아직 남아 있는 자리."

@@ -28,6 +28,7 @@ from qdrant_client import QdrantClient
 import aggregate_parser_config
 import aggregate_semantics
 import aggregate_spans
+import canonical_targeting
 import condition_reconciliation
 from external_conditions.classifier import (
     classify_external_conditions,
@@ -40,6 +41,7 @@ import event_ir
 import event_parser
 import lexicon_patterns
 import parser_shadow
+import plan_validation
 import plan_semantic_ast
 import product_master_resolver
 import unresolved_triage
@@ -2891,6 +2893,16 @@ def _build_query_plan(
     requested_parser = parser.casefold()
     authority = _query_plan_authority(requested_parser)
     semantic_plan = query_plan_v2
+    if (
+        authority == "rules_first"
+        and requested_parser in {"auto", "llm"}
+        and (semantic_plan is not None or query_plan_v2_factory is not None)
+    ):
+        # The default remains rules-first when no semantic producer was
+        # supplied.  An explicit semantic plan/factory is itself an opt-in to
+        # that candidate, so run it before legacy rules; otherwise parser call
+        # order silently overrides the caller's declared source of authority.
+        authority = "llm_first"
     structuring_failure: str | None = None
     # LLM-first means the raw source query is structured before any linguistic
     # regex parser runs.  The factory is deliberately called with an empty plan;
@@ -4729,6 +4741,8 @@ def _build_single_query_plan(
     if parser not in {"rules", "auto", "llm"}:
         raise ValueError("query parser must be one of: rules, auto, llm.")
     authority = _query_plan_authority(parser)
+    if authority == "rules_first" and parser in {"auto", "llm"} and query_plan_v2 is not None:
+        authority = "llm_first"
     llm_first = authority == "llm_first" and parser in {"auto", "llm"}
 
     # 검색·그래프 컨텍스트 스코핑용 타겟팅/채널 절 분리(전체 문장 파싱·SQL 에는 영향 없음).
@@ -6298,7 +6312,11 @@ EVENT_EXPRESSION_KEY = "event_expression"
 # (소유권 판정 기준을 targeting_ir 레지스트리에서 파생 — 새 조건이 생겨도 이 목록을 손대지 않는다).
 _EVENT_IR_REPLACED_KINDS = frozenset({"purchase_date", "purchase_inactivity", EVENT_EXPRESSION_KEY})
 # 사건 IR 이 담지 못하는 상위 실행 모델. 하나라도 있으면 그쪽이 문장의 주 해석이다.
-_EVENT_IR_BLOCKING_PLAN_KEYS = ("set_expressions", "logical_expression", "aggregation_request", "analytical_intent")
+_EVENT_IR_BLOCKING_PLAN_KEYS = (
+    "aggregation_request",
+    "analytical_intent",
+    "condition_evaluations",
+)
 # 사건 심볼 → 그 사건의 **거친 요약**으로만 존재하는 legacy 행동 값. 첫 구매/재구매/무구매는 주문 사건의
 # 횟수를 세 칸으로 뭉갠 표기라, IR 이 같은 사건을 더 정확히(기간·시간 관계까지) 표현하면 그 표기는
 # 같은 사실의 그림자다 — 남겨 두면 같은 조건이 두 번, 그것도 서로 모순되게 컴파일된다
@@ -6308,7 +6326,104 @@ _EVENT_SHADOW_BEHAVIORS: dict[str, frozenset[str]] = {
 }
 
 
-def _event_expression_blocking_conditions(plan: dict[str, Any], sources: set[str]) -> list[str]:
+def _event_expression_has_aggregate(expression: event_ir.Condition) -> bool:
+    return any(
+        isinstance(atom, event_ir.Comparison)
+        and isinstance(atom.left, event_ir.Aggregate)
+        for atom in event_ir.iter_atoms(expression)
+    )
+
+
+def _event_aggregate_signature(
+    atom: event_ir.Condition,
+) -> tuple[str, str, float, int | None] | None:
+    """Return the legacy aggregate identity represented by one Event leaf.
+
+    Event parsing and the legacy aggregate parser do not always agree on a
+    counter's business grain (for example, ``3개`` used to become an order
+    count in Event IR while the legacy parser correctly selects item
+    quantity).  Ownership may move only when the metric, comparison and
+    rolling window all agree; merely finding *some* Aggregate node is not a
+    sufficient no-loss proof.
+    """
+    if (
+        not isinstance(atom, event_ir.Comparison)
+        or not isinstance(atom.left, event_ir.Aggregate)
+        or not isinstance(atom.right, event_ir.Literal)
+        or not isinstance(atom.right.value, (int, float))
+    ):
+        return None
+    aggregate = atom.left
+    field_name = aggregate.expression.name if isinstance(aggregate.expression, event_ir.FieldRef) else None
+    metric_id: str | None = None
+    if aggregate.function == "count" and field_name == "purchase.order_id":
+        metric_id = "order_count"
+    elif aggregate.function == "count" and aggregate.distinct and field_name == "purchase.product_id":
+        metric_id = "distinct_product_count"
+    elif aggregate.function == "sum" and field_name == "purchase.amount":
+        metric_id = "purchase_amount"
+    elif aggregate.function == "sum" and field_name == "purchase.quantity":
+        metric_id = "total_item_quantity"
+    if metric_id is None:
+        return None
+
+    rolling_windows = [
+        window.days
+        for window in event_ir.time_windows(atom)
+        if isinstance(window, event_ir.RollingWindow)
+    ]
+    non_rolling_windows = [
+        window
+        for window in event_ir.time_windows(atom)
+        if not isinstance(window, event_ir.RollingWindow)
+    ]
+    if non_rolling_windows or len(rolling_windows) > 1:
+        return None
+    window_days = rolling_windows[0] if rolling_windows else None
+    return metric_id, atom.operator, float(atom.right.value), window_days
+
+
+def _legacy_aggregate_signature(
+    condition: Any,
+) -> tuple[str, str, float, int | None] | None:
+    if not isinstance(condition, dict) or condition.get("aggregation_scope"):
+        # ``per_brand`` and similar grain constraints have no equivalent in
+        # the current Event Aggregate node and therefore cannot be released.
+        return None
+    metric_id = condition.get("metric_id")
+    operator = condition.get("operator")
+    threshold = condition.get("threshold")
+    window_days = condition.get("window_days")
+    if (
+        not isinstance(metric_id, str)
+        or operator not in {"=", ">", ">=", "<", "<="}
+        or not isinstance(threshold, (int, float))
+        or (window_days is not None and not isinstance(window_days, int))
+    ):
+        return None
+    return metric_id, operator, float(threshold), window_days
+
+
+def _event_expression_fully_covers_legacy_aggregates(
+    plan: dict[str, Any], expression: event_ir.Condition
+) -> bool:
+    legacy_conditions = plan.get("target_user", {}).get("aggregate_conditions")
+    if not isinstance(legacy_conditions, list) or not legacy_conditions:
+        return False
+    legacy_signatures = [_legacy_aggregate_signature(condition) for condition in legacy_conditions]
+    if any(signature is None for signature in legacy_signatures):
+        return False
+    event_signatures = [
+        signature
+        for atom in event_ir.iter_atoms(expression)
+        if (signature := _event_aggregate_signature(atom)) is not None
+    ]
+    return Counter(event_signatures) == Counter(legacy_signatures)
+
+
+def _event_expression_blocking_conditions(
+    plan: dict[str, Any], sources: set[str], expression: event_ir.Condition
+) -> list[str]:
     """사건 IR 이 개입하면 안 되는 사유 목록(빈 목록이면 개입 가능).
 
     판정을 손으로 나열하지 않고 조건 레지스트리에서 파생한다 — '전용 팩트조인 빌더가 소유하는
@@ -6318,6 +6433,14 @@ def _event_expression_blocking_conditions(plan: dict[str, Any], sources: set[str
     blocking = [key for key in _EVENT_IR_BLOCKING_PLAN_KEYS if plan.get(key)]
     for condition in _extract_conditions_ir(plan):
         if not condition.spec.fact_join or condition.kind in _EVENT_IR_REPLACED_KINDS:
+            continue
+        if (
+            condition.kind == "aggregate_conditions"
+            and _event_expression_fully_covers_legacy_aggregates(plan, expression)
+        ):
+            # The typed event tree already owns the aggregate leaf and its
+            # Boolean position.  Keeping the flat legacy list would either
+            # duplicate it or turn an OR branch into a plan-level AND.
             continue
         if condition.kind == "order_count_behavior" and condition.params.get("behavior") in shadowed:
             continue
@@ -6342,12 +6465,24 @@ def _event_semantic_conditions(expression: event_ir.Condition) -> list[dict[str,
     return out
 
 
-def _release_event_expression_slots(plan: dict[str, Any], sources: set[str]) -> None:
+def _release_event_expression_slots(
+    plan: dict[str, Any], sources: set[str], expression: event_ir.Condition
+) -> None:
     """IR 이 소유하게 된 조건의 기존 슬롯을 회수한다(같은 어구의 이중 컴파일 방지)."""
     target_user = plan.setdefault("target_user", {})
-    target_user["purchase_date"] = None
-    target_user["purchase_inactivity"] = None
-    target_user.pop("purchase_membership", None)
+    scalar_slots = {
+        slot
+        for source in sources
+        for slot in event_ir.LEGACY_SLOT_BINDINGS.get(source, {}).values()
+        if ":" not in slot
+    }
+    for slot in scalar_slots:
+        if slot in target_user:
+            target_user[slot] = None
+    if "purchase" in sources:
+        target_user.pop("purchase_membership", None)
+    if _event_expression_fully_covers_legacy_aggregates(plan, expression):
+        target_user["aggregate_conditions"] = []
     shadowed = {value for source in sources for value in _EVENT_SHADOW_BEHAVIORS.get(source, frozenset())}
     for container in ("behaviors", "lifecycle"):
         values = target_user.get(container)
@@ -6360,6 +6495,19 @@ def _apply_event_expression_filter(query: str, plan: dict[str, Any]) -> None:
     """원문 → 조건 논리식. 기존 슬롯으로 무손실 표현이 가능하면 물러나고, 아니면 IR 이 실행 모델이 된다."""
     if plan.get("intent") not in _SQL_TARGET_INTENTS:
         return
+    if detects_same_product_co_purchase(query):
+        # This phrase has a dedicated multi-grain ConditionEvaluation IR.  A
+        # generic purchase Exists tree cannot represent its per-order/product
+        # grouping semantics and must not take (or clear) the shared time span
+        # before the authoritative evaluator is built.
+        plan_decisions.record(
+            plan,
+            filter_name="event_expression",
+            action=plan_decisions.KEEP,
+            slot=f"plan.{EVENT_EXPRESSION_KEY}",
+            reason="전용 다중-grain condition_evaluation이 동일 원문과 시간창을 소유함",
+        )
+        return
 
     expression = event_parser.parse_expression(query)
     if expression is None:
@@ -6368,7 +6516,7 @@ def _apply_event_expression_filter(query: str, plan: dict[str, Any]) -> None:
 
     # 소유권 판정은 **파싱 뒤**에 한다 — IR 이 어떤 사건을 어떻게 표현했는지 알아야 요약 행동을
     # 그 표현의 그림자로 볼 수 있는지 판단할 수 있다.
-    blocking = _event_expression_blocking_conditions(plan, sources)
+    blocking = _event_expression_blocking_conditions(plan, sources, expression)
     if blocking:
         plan_decisions.record(
             plan, filter_name="event_expression", action=plan_decisions.KEEP,
@@ -6396,7 +6544,10 @@ def _apply_event_expression_filter(query: str, plan: dict[str, Any]) -> None:
         )
         return
 
-    if not event_ir.requires_general_ir(expression):
+    has_cross_parser_boolean_candidate = bool(
+        plan.get("set_expressions") or plan.get("logical_expression")
+    )
+    if not event_ir.requires_general_ir(expression) and not has_cross_parser_boolean_candidate:
         # 기존 슬롯 모델이 이 모양을 무손실로 담는다 → IR 은 실행 모델이 되지 않고 물러난다.
         # (어떤 슬롯 표기가 되는지는 감사 로그에 남긴다 — 두 모델의 대응을 사후에 읽을 수 있게.)
         plan_decisions.record(
@@ -6407,28 +6558,40 @@ def _apply_event_expression_filter(query: str, plan: dict[str, Any]) -> None:
         )
         return
 
-    registry = event_compiler.resolve_registry(_event_registry_overrides())
-    unregistered = event_compiler.unsupported_events(expression, registry) + event_compiler.unsupported_fields(
-        expression, registry
-    )
-    if unregistered:
-        # 심볼이 레지스트리에 없다 = 물리 매핑을 지어낼 수 없다. 의미를 보존한 채 미지원으로 고지한다.
-        payload = event_ir.unsupported_payload("unregistered_symbol", expression)
-        plan["unsupported"] = {
-            "reason": "event_not_registered",
-            "message": f"등록되지 않은 사건/필드입니다: {', '.join(unregistered)}",
-            "clarification": "해당 행동을 다른 표현으로 말씀해 주시겠어요?",
-            "preserved_expression": payload["preserved_expression"],
-        }
-        return
-
     span = event_ir.evidence_span(expression)
     plan[EVENT_EXPRESSION_KEY] = {
         "expression": expression.to_dict(),
         "source_text": query,
         "evidence_span": list(span) if span else None,
+        "candidate_scope": (
+            "subtree"
+            if has_cross_parser_boolean_candidate and not event_ir.requires_general_ir(expression)
+            else "complete"
+        ),
     }
-    _release_event_expression_slots(plan, sources)
+    capability = event_compiler.validate_compiler_capability(
+        expression, context=_event_compile_context()
+    )
+    plan["event_compiler_capability"] = {
+        "status": capability.status,
+        "issues": [
+            {"code": issue.code, "node_id": issue.node_id, "symbol": issue.symbol}
+            for issue in capability.issues
+        ],
+        "supported_node_ids": list(capability.supported_node_ids),
+        "unsupported_node_ids": list(capability.unsupported_node_ids),
+    }
+    if (
+        capability.status == event_compiler.CAPABILITY_SUPPORTED
+        and isinstance(plan.get("unsupported"), dict)
+        and plan["unsupported"].get("reason") == "mixed_and_or_precedence_unsupported"
+    ):
+        # The legacy flat-condition parser cannot compile threshold OR, but the
+        # typed Event IR can.  Once the full Boolean tree has an admitted
+        # compiler, retaining that earlier capability verdict would reject the
+        # exact representation in favour of no result.
+        plan.pop("unsupported", None)
+    _release_event_expression_slots(plan, sources, expression)
     plan["semantic_conditions"] = [
         condition
         for condition in (plan.get("semantic_conditions") or [])
@@ -10227,7 +10390,13 @@ def _normalize_sino_korean_amounts(text: str) -> str:
 # 없어 고아 bound 로 앞 지표에 병합되므로 범위가 안 깨진다.
 # 동사 연결어미(구매'했고'/'하고', 받'았고'/넘'었고')도 절 경계다 — 이게 없으면 '5회 이상 구매했고 구매금액이
 # 500,000원 이상'이 한 절로 뭉쳐 같은 방향 임계 둘이 첫 값(5) 하나로 붕괴하고 500,000·주문수가 소실된다.
-_AGG_CLAUSE_SPLIT_RE = re.compile(r"이지만|하지만|지만|반면에|반면|그리고|이면서|면서|동시에|이고|이며|했고|았고|었고|하고|또는|(?<!\d),|,(?!\d)")
+_AGG_CLAUSE_CONNECTOR_ALT = lexicon_patterns.alternation(
+    "contrast_connective", "and_connective", "or_connective"
+)
+_AGG_CLAUSE_VERB_STEM_ALT = lexicon_patterns.alternation("clause_verb_stem")
+_AGG_CLAUSE_SPLIT_RE = re.compile(
+    rf"(?:{_AGG_CLAUSE_CONNECTOR_ALT})|(?:{_AGG_CLAUSE_VERB_STEM_ALT})고|(?<!\d),|,(?!\d)"
+)
 
 
 def _clause_scoped_window(query: str, start: int, length: int = 50) -> str:
@@ -17493,6 +17662,7 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
         and any(marker in compact for marker in _RECENCY_MARKERS)
         and not isinstance(target_user.get("recent_login"), dict)
         and not isinstance(target_user.get("inactivity_period"), dict)
+        and not _event_expression_covers(query_plan, "login", "exists")
     ):
         warnings.append("최근 로그인/접속 조건")
 
@@ -18629,6 +18799,54 @@ def _external_condition_blocking_sql_result(
     }
 
 
+def _plan_validation_blocking_sql_result(
+    validation: plan_validation.PlanValidationResult,
+) -> dict[str, Any]:
+    issue_payloads = [
+        {
+            "code": issue.code,
+            "status": issue.status,
+            "path": issue.path,
+            "blocking_claim_ids": list(issue.blocking_claim_ids),
+            "unresolved_span_ids": list(issue.unresolved_span_ids),
+        }
+        for issue in validation.issues
+    ]
+    return {
+        "sql": None,
+        "blocked_sql": None,
+        "target_connection": None,
+        "target_dialect": None,
+        "selected": None,
+        "candidates": [],
+        "candidate_count": 0,
+        "condition_tokens": [],
+        "required_conditions": [],
+        "input_validation": {"is_satisfied": False, "errors": issue_payloads},
+        "missing_input_conditions": [],
+        "clarification_questions": [],
+        "semantic_verification": {"ran": False},
+        "delivery_validation": {"is_satisfied": False},
+        "llm_fallback_used": False,
+        "generation_source": None,
+        "confidence": _failed_sql_confidence("plan_validation_blocked"),
+        "is_success": False,
+        "failure_reason": "plan_validation_" + validation.status,
+        "error_code": "PLAN_VALIDATION_" + validation.status.upper(),
+        "interpretation_status": (
+            "needs_clarification"
+            if validation.status == plan_validation.CLARIFICATION_REQUIRED
+            else "unsupported"
+        ),
+        "plan_validation": {
+            "status": validation.status,
+            "issues": issue_payloads,
+            "blocking_claim_ids": list(validation.blocking_claim_ids),
+            "unresolved_span_ids": list(validation.unresolved_span_ids),
+        },
+    }
+
+
 def build_sql_result(
     graph: nx.Graph,
     query: str,
@@ -18770,7 +18988,12 @@ def build_sql_result(
     column_types = load_column_types(schema_path)
     schema_columns = load_schema_columns(schema_path)
     join_key_registry = load_join_key_registry(schema_path)
-    template_candidate = build_sql_template_candidate(query_plan)
+    executable_validation = plan_validation.validate_executable_plan(query_plan)
+    if executable_validation.status != plan_validation.EXECUTABLE:
+        return _plan_validation_blocking_sql_result(executable_validation)
+    template_candidate = compile_executable_plan(
+        query_plan, validation_result=executable_validation
+    )
     candidates = [template_candidate] if template_candidate is not None else []
     if structured_ir_candidate is not None:
         candidates.append(structured_ir_candidate)
@@ -20298,6 +20521,63 @@ def _reconcile_condition_ownership(plan: dict[str, Any]) -> None:
     핵심 불변식: ``unknown_operand`` 가 있다는 사실 자체는 더 이상 clarification 사유가 아니다 —
     조정 이후에도 어느 슬롯도 소유하지 못한 항목만 사유가 된다.
     """
+    if not isinstance(plan.get(EVENT_EXPRESSION_KEY), dict) and (
+        plan.get("set_expressions") or plan.get("logical_expression")
+    ):
+        # Candidate arrival order is not ownership precedence.  A caller may
+        # merge Set/legacy candidates after the initial Event parser pass; in
+        # that case collect the Event candidate now, before final ownership is
+        # decided, so the same source produces the same canonical tree.
+        source_query = next(
+            (
+                plan.get(key)
+                for key in ("original_query", "raw_query", "planning_query")
+                if isinstance(plan.get(key), str) and plan.get(key).strip()
+            ),
+            None,
+        )
+        if isinstance(source_query, str):
+            _apply_event_expression_filter(source_query, plan)
+    event_payload = plan.get(EVENT_EXPRESSION_KEY)
+    target_user = plan.get("target_user") if isinstance(plan.get("target_user"), dict) else {}
+    entity_set = target_user.get("entity_set_condition")
+    if isinstance(event_payload, dict) and isinstance(entity_set, dict):
+        event_span = event_payload.get("evidence_span")
+        entity_spans = entity_set.get("spans")
+        clause_span = entity_spans.get("clause") if isinstance(entity_spans, dict) else None
+        if (
+            isinstance(event_span, (list, tuple))
+            and len(event_span) == 2
+            and all(isinstance(value, int) for value in event_span)
+            and isinstance(clause_span, (list, tuple))
+            and len(clause_span) == 2
+            and all(isinstance(value, int) for value in clause_span)
+            and clause_span[0] <= event_span[0]
+            and event_span[1] <= clause_span[1]
+        ):
+            # A derived entity-set condition owns the whole ranking/purchase
+            # clause.  The earlier generic Event candidate is a duplicate that
+            # may have arrived before entity-set detection; keeping it would
+            # make parser order affect capability and ownership.
+            plan.pop(EVENT_EXPRESSION_KEY, None)
+            plan.pop("event_compiler_capability", None)
+            plan.pop("event_semantic_validation", None)
+            plan["semantic_conditions"] = [
+                condition
+                for condition in (plan.get("semantic_conditions") or [])
+                if not (
+                    isinstance(condition, dict)
+                    and condition.get("domain") == entity_set.get("relation")
+                )
+            ]
+            plan_decisions.record(
+                plan,
+                filter_name="condition_reconciliation",
+                action=plan_decisions.DROP,
+                slot=f"plan.{EVENT_EXPRESSION_KEY}",
+                reason="파생 entity_set_condition이 동일 절 전체를 canonical owner로 소유함",
+                value=event_payload,
+            )
     _drop_dimension_consumed_set_expressions(plan)
     _drop_deterministically_owned_set_expressions(plan)
     trace = condition_reconciliation.reconcile_plan(plan, policy=_condition_ownership_policy())
@@ -20311,6 +20591,8 @@ def _reconcile_condition_ownership(plan: dict[str, Any]) -> None:
             evidence=entry.get("raw_text"),
         )
     _drop_uncompilable_set_expressions(plan)
+    canonical_targeting.attach_canonical_targeting(plan)
+    _attach_event_semantic_validation(plan)
 
 
 def _compile_set_operand(operand: dict[str, Any]) -> dict[str, Any]:
@@ -21006,7 +21288,117 @@ def _guard_coupon_semantic_preservation(query_plan: dict[str, Any]) -> None:
             return
 
 
+_SQL_VALIDATION_CONTEXT: contextvars.ContextVar[
+    tuple[int, plan_validation.PlanValidationResult] | None
+] = contextvars.ContextVar("sql_validation_context", default=None)
+
+
+def project_executable_plan(query_plan: dict[str, Any]) -> dict[str, Any]:
+    """Return the already-resolved execution projection.
+
+    Projection/coercion happens in the planning stages in this repository.  The
+    facade keeps this named boundary so no builder can insert a second,
+    builder-specific projection policy.
+    """
+
+    return query_plan
+
+
+def _record_plan_validation_blocker(
+    query_plan: dict[str, Any], validation: plan_validation.PlanValidationResult
+) -> None:
+    """Compatibility receipt for callers that historically inspected ``unsupported``."""
+
+    if validation.status not in {plan_validation.SEMANTIC_CONFLICT, plan_validation.UNSUPPORTED}:
+        return
+    first = next(
+        (issue for issue in validation.issues if issue.status == validation.status),
+        validation.issues[0] if validation.issues else None,
+    )
+    reason = first.code if first is not None else "plan_validation_" + validation.status
+    query_plan.setdefault("unsupported", {
+        "reason": reason,
+        "message": "실행 전 공통 plan validation을 통과하지 못했습니다.",
+        "clarification": "충돌하거나 지원되지 않는 조건을 분리해서 다시 입력해 주세요.",
+    })
+
+
+def compile_executable_plan(
+    query_plan: dict[str, Any],
+    *,
+    validation_result: plan_validation.PlanValidationResult | None = None,
+) -> dict[str, Any] | None:
+    """The single admission facade for executable SQL template compilation."""
+
+    current = plan_validation.validate_executable_plan(query_plan)
+    if validation_result is not None and (
+        validation_result != current
+        or not validation_result.plan_fingerprint
+        or validation_result.plan_fingerprint != current.plan_fingerprint
+    ):
+        # The plan changed after admission.  Never compile using a stale token.
+        return None
+    validation = validation_result or current
+    if validation.status != plan_validation.EXECUTABLE:
+        _record_plan_validation_blocker(query_plan, validation)
+        return None
+    projected = project_executable_plan(query_plan)
+    token = _SQL_VALIDATION_CONTEXT.set((id(projected), validation))
+    try:
+        return _compile_sql_template_candidate_validated(projected)
+    finally:
+        _SQL_VALIDATION_CONTEXT.reset(token)
+
+
 def build_sql_template_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """Compatibility entry point routed through :func:`compile_executable_plan`."""
+
+    return compile_executable_plan(query_plan)
+
+
+def _candidate_drops_conditions(candidate: Any) -> bool:
+    """Return whether a SQL candidate admits that it omitted plan conditions."""
+
+    return bool(
+        isinstance(candidate, Mapping)
+        and candidate.get("dropped_conditions")
+    )
+
+
+def _admitted_sql_builder(builder: Any) -> Any:
+    """Protect a public lower builder from direct validation bypass."""
+
+    if getattr(builder, "_requires_plan_validation", False):
+        return builder
+
+    def admitted(query_plan: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
+        context = _SQL_VALIDATION_CONTEXT.get()
+        if context is not None and context[0] == id(query_plan):
+            return builder(query_plan, *args, **kwargs)
+        validation = plan_validation.validate_executable_plan(query_plan)
+        if validation.status != plan_validation.EXECUTABLE:
+            return None
+        token = _SQL_VALIDATION_CONTEXT.set((id(query_plan), validation))
+        try:
+            candidate = builder(query_plan, *args, **kwargs)
+        finally:
+            _SQL_VALIDATION_CONTEXT.reset(token)
+        # A lower builder may discover projection loss only while mapping
+        # logical conditions to physical predicates.  A direct public call
+        # must still fail closed instead of returning that partial SQL.
+        return None if _candidate_drops_conditions(candidate) else candidate
+
+    # Preserve useful diagnostics without exposing functools' ``__wrapped__``
+    # escape hatch to the unvalidated lower builder.
+    admitted.__name__ = getattr(builder, "__name__", "admitted_sql_builder")
+    admitted.__qualname__ = getattr(builder, "__qualname__", admitted.__name__)
+    admitted.__doc__ = getattr(builder, "__doc__", None)
+    admitted.__module__ = getattr(builder, "__module__", __name__)
+    admitted._requires_plan_validation = True
+    return admitted
+
+
+def _compile_sql_template_candidate_validated(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     """등록된 타겟 빌더를 우선순위대로 시도해 첫 유효 후보를 낸다. 어느 빌더가 왜 채택/거부됐는지는
     감사 로그(decisions)에 남는다 — "왜 이 SQL 이 나왔나"를 SQL 문자열 역추적 없이 답하기 위함."""
     if query_plan.get("intent") not in _SQL_TARGET_INTENTS:
@@ -21040,6 +21432,12 @@ def build_sql_template_candidate(query_plan: dict[str, Any]) -> dict[str, Any] |
             return None
         if candidate is None:
             continue
+        if _candidate_drops_conditions(candidate):
+            _record_sql_builder_decision(
+                query_plan, name, plan_decisions.REJECT,
+                "SQL 후보가 일부 조건을 dropped_conditions로 남겨 의미 축소를 차단",
+            )
+            return None
         # Validation 게이트(파이프라인: 빌더 → AST → Validation → SQL): 별칭 허용 목록·raw SQL 토큰·
         # OR 분기 수 위반 후보는 채택하지 않는다(_sql_candidate 가 검증을 수행하고 여기서 거부).
         if candidate.get("validation", {}).get("issues"):
@@ -22435,10 +22833,7 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
         return None
     try:
         expression = event_ir.condition_from_dict(payload["expression"])
-        condition_sql = event_compiler.compile_expression(
-            expression, context=_event_compile_context()
-        ).sql
-    except (event_ir.IrSchemaError, event_compiler.SqlCompileError) as exc:
+    except event_ir.IrSchemaError as exc:
         # 컴파일 불가를 다른 빌더로의 축소 폴백으로 바꾸지 않는다 — 의미를 보존한 미해결로 남긴다.
         unresolved = query_plan.setdefault("unresolved_source_conditions", [])
         item = {
@@ -22452,15 +22847,47 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
             unresolved.append(item)
         return None
 
-    # 존재/부재가 같은 이벤트 범위·기간을 가리키면 이 SQL 은 정의상 공집합이다 — 극성별 창을 그대로
-    # 보존하는 빌더라서 그런 조합이 문법적으로는 멀쩡한 EXISTS/NOT EXISTS 쌍으로 나간다. 집계 빌더와
-    # 같은 판정기(포함 관계)를 SQL 조립 전에 통과시킨다.
-    anchor = datetime.now()
-    if not _guard_purchase_event_semantics(
-        query_plan,
-        _event_expression_predicates(expression, anchor)
-        + _purchase_absence_predicates(query_plan, anchor, _purchase_event_dimensions() or ()),
-    ):
+    _attach_event_semantic_validation(query_plan)
+    semantic = query_plan.get("event_semantic_validation") or {}
+    if semantic.get("status") != aggregate_semantics.CONSISTENT:
+        first_issue = next(iter(semantic.get("issues") or []), {})
+        reason = first_issue.get("code") or "event_semantic_unknown"
+        text = (
+            aggregate_parser_config.rules().messages.render(reason)
+            if aggregate_parser_config.rules().messages.has(reason)
+            else "이벤트 조건의 분기 의미를 확정할 수 없습니다. 조건을 분리해서 입력해 주세요."
+        )
+        query_plan["unsupported"] = {
+            "reason": reason,
+            "message": text,
+            "clarification": text,
+        }
+        return None
+
+    capability = query_plan.get("event_compiler_capability") or {}
+    if capability.get("status") != event_compiler.CAPABILITY_SUPPORTED:
+        query_plan["unsupported"] = {
+            "reason": "event_compiler_" + str(capability.get("status") or "unsupported"),
+            "message": "이벤트 의미는 일관되지만 일부 조건을 현재 SQL 컴파일러가 지원하지 않습니다.",
+            "clarification": "지원되지 않은 이벤트 범위나 필터를 제거하거나 조건을 나눠 입력해 주세요.",
+        }
+        return None
+
+    try:
+        condition_sql = event_compiler.compile_expression(
+            expression, context=_event_compile_context()
+        ).sql
+    except event_compiler.SqlCompileError as exc:
+        unresolved = query_plan.setdefault("unresolved_source_conditions", [])
+        item = {
+            "path": f"plan.{EVENT_EXPRESSION_KEY}",
+            "condition": EVENT_EXPRESSION_KEY,
+            "reason": f"조건을 실DB 술어로 컴파일하지 못했습니다: {exc}",
+            "source": "event_ir",
+            "status": "unresolved",
+        }
+        if item not in unresolved:
+            unresolved.append(item)
         return None
 
     compiled = compile_member_target_conditions(query_plan)
@@ -23443,16 +23870,16 @@ def _event_window_to_normalized(
 
 
 def _event_relation_semantics(
-    relation: Any, anchor: datetime,
-) -> tuple["aggregate_semantics.NormalizedWindow | None", frozenset[str] | None]:
-    """사건 관계의 (적용 기간, 비시간 필터 지문). 지문이 None 이면 '그 소스 전체'다.
-
-    비시간 필터를 값이 아니라 **지문 집합**으로 다루는 이유는 판정 방향의 안전성이다. 부재 쪽 필터를
-    '제한 없음'으로 낙관하면 없는 충돌을 만들어내므로(‘취소 구매 없음’이 '모든 구매 없음'이 된다),
-    필터가 있으면 반드시 서로 같은 지문일 때만 부분집합으로 본다."""
+    relation: Any,
+    anchor: datetime,
+    source: str,
+    dimensions: tuple[str, ...],
+) -> tuple["aggregate_semantics.NormalizedWindow | None", dict[str, frozenset[str] | None]]:
+    """사건 관계의 기간과 registry 차원별 canonical scope를 보존한다."""
     windows: list[aggregate_semantics.NormalizedWindow] = []
     unresolved = False
-    fingerprints: set[str] = set()
+    values: dict[str, set[str]] = {dimension: set() for dimension in dimensions}
+    opaque_filters: list[str] = []
     for node in event_ir.walk(relation):
         if isinstance(node, event_ir.TimeFilter):
             normalized = _event_window_to_normalized(node.window, anchor)
@@ -23460,48 +23887,216 @@ def _event_relation_semantics(
                 unresolved = True
             else:
                 windows.append(normalized)
-        elif isinstance(node, (event_ir.Comparison, event_ir.TemporalRelation, event_ir.Join, event_ir.Group)):
-            fingerprints.add(json.dumps(node.to_dict(), sort_keys=True, ensure_ascii=False))
+        elif isinstance(node, event_ir.Comparison):
+            dimension = None
+            literal_value = None
+            if isinstance(node.left, event_ir.FieldRef) and isinstance(node.right, event_ir.Literal):
+                prefix = source + "."
+                if node.left.name.startswith(prefix):
+                    dimension = node.left.name[len(prefix):]
+                    literal_value = str(node.right.value)
+            if dimension in values and node.operator == "=" and literal_value is not None:
+                values[dimension].add(literal_value)
+            else:
+                opaque_filters.append(json.dumps(node.to_dict(), sort_keys=True, ensure_ascii=False))
+        elif isinstance(node, (event_ir.TemporalRelation, event_ir.Join, event_ir.Group)):
+            opaque_filters.append(json.dumps(node.to_dict(), sort_keys=True, ensure_ascii=False))
     if unresolved:
-        return None, (frozenset(fingerprints) or None)
-    window = aggregate_semantics.lifetime_window(anchor)
-    for candidate in windows:
-        narrowed = aggregate_semantics.intersect(window, candidate)
-        if narrowed is None:
-            return None, (frozenset(fingerprints) or None)
-        window = narrowed
-    return window, (frozenset(fingerprints) or None)
+        window = None
+    else:
+        window = aggregate_semantics.lifetime_window(anchor)
+        for candidate in windows:
+            narrowed = aggregate_semantics.intersect(window, candidate)
+            if narrowed is None:
+                window = None
+                break
+            window = narrowed
+    if opaque_filters and dimensions:
+        fallback_dimension = "product_scope" if "product_scope" in values else dimensions[0]
+        values[fallback_dimension].add(
+            "opaque:" + hashlib.sha256("|".join(sorted(opaque_filters)).encode("utf-8")).hexdigest()
+        )
+    constraints = {
+        dimension: frozenset(dimension_values) if dimension_values else None
+        for dimension, dimension_values in values.items()
+    }
+    return window, constraints
+
+
+def _aggregate_comparison_event_polarity(
+    comparison: event_ir.Comparison,
+) -> str | None:
+    """Return an exact existence implication for a COUNT/aggregate predicate.
+
+    ``None`` means the threshold admits both zero and non-zero event counts, so
+    it must not be coerced into either existence or absence.  Non-COUNT SQL
+    aggregates evaluate to NULL on an empty relation; a true comparison thus
+    requires at least one source row.
+    """
+
+    aggregate = comparison.left
+    literal = comparison.right
+    if not isinstance(aggregate, event_ir.Aggregate) or not isinstance(literal, event_ir.Literal):
+        return None
+    if aggregate.function != "count":
+        return aggregate_semantics.PRESENCE
+    threshold = literal.value
+    if not isinstance(threshold, (int, float)) or isinstance(threshold, bool):
+        return None
+    value = float(threshold)
+    operator = comparison.operator
+    if operator == "=":
+        if value == 0:
+            return aggregate_semantics.ABSENCE
+        return aggregate_semantics.PRESENCE if value > 0 and value.is_integer() else None
+    if operator == "!=":
+        return aggregate_semantics.PRESENCE if value == 0 else None
+    if operator == ">":
+        return aggregate_semantics.PRESENCE if value >= 0 else None
+    if operator == ">=":
+        return aggregate_semantics.PRESENCE if value > 0 else None
+    if operator == "<":
+        return aggregate_semantics.ABSENCE if 0 < value <= 1 else None
+    if operator == "<=":
+        return aggregate_semantics.ABSENCE if 0 <= value < 1 else None
+    return None
+
+
+def _event_predicate_factory(
+    atom: event_ir.Condition,
+    negated: bool,
+    anchor: datetime,
+) -> "aggregate_semantics.EventPredicate | None":
+    relation: event_ir.Relation
+    polarity: str
+    source_kind_suffix: str
+    if isinstance(atom, event_ir.Exists):
+        relation = atom.relation
+        polarity = aggregate_semantics.ABSENCE if negated else aggregate_semantics.PRESENCE
+        source_kind_suffix = "not_exists" if negated else "exists"
+    elif isinstance(atom, event_ir.Comparison) and isinstance(atom.left, event_ir.Aggregate):
+        relation = atom.left.relation
+        aggregate_polarity = _aggregate_comparison_event_polarity(atom)
+        if aggregate_polarity is None:
+            # This comparison does not prove either event presence or total
+            # absence (for example COUNT <= 3).  It remains in the Boolean IR
+            # and compiler capability check, but contributes no existence fact.
+            return None
+        if negated:
+            aggregate_polarity = (
+                aggregate_semantics.ABSENCE
+                if aggregate_polarity == aggregate_semantics.PRESENCE
+                else aggregate_semantics.PRESENCE
+            )
+        polarity = aggregate_polarity
+        source_kind_suffix = "aggregate_presence" if polarity == aggregate_semantics.PRESENCE else "aggregate_absence"
+    else:
+        return None
+    sources = sorted(
+        node.name for node in event_ir.walk(relation) if isinstance(node, event_ir.Source)
+    )
+    if len(sources) != 1:
+        return aggregate_semantics.EventPredicate(
+            domain="__ambiguous_event_relation__",
+            polarity=polarity,
+            window=None,
+            constraints={},
+            source_kind="event_relation_ambiguous",
+            source_id="event:" + hashlib.sha256(
+                json.dumps(atom.to_dict(), sort_keys=True, ensure_ascii=False).encode("utf-8")
+            ).hexdigest()[:16],
+        )
+    source = sources[0]
+    domain = aggregate_parser_config.rules().semantic_domains.get(source)
+    dimensions = domain.event_dimensions if domain is not None else ()
+    window, constraints = _event_relation_semantics(relation, anchor, source, dimensions)
+    semantic_payload = atom.to_dict()
+    semantic_payload.pop("evidence", None)
+    source_id = "event:" + hashlib.sha256(
+        json.dumps(
+            {"atom": semantic_payload, "negated": negated},
+            sort_keys=True,
+            ensure_ascii=False,
+        ).encode("utf-8")
+    ).hexdigest()[:16]
+    return aggregate_semantics.EventPredicate(
+        domain=source,
+        polarity=polarity,
+        window=window,
+        constraints=constraints,
+        source_kind=f"{source}_{source_kind_suffix}",
+        source_id=source_id,
+    )
 
 
 def _event_expression_predicates(
     expression: Any, anchor: datetime,
 ) -> list["aggregate_semantics.EventPredicate"]:
-    """사건 논리식의 원자를 존재/부재 IR 로 펼친다. Not 위에 쌓인 극성을 그대로 읽는다."""
-    dimensions = _purchase_event_dimensions()
-    if dimensions is None:
-        return []
+    """호환용 signed predicate view. Boolean 의미 판정은 이 목록을 쓰지 않는다."""
     predicates: list[aggregate_semantics.EventPredicate] = []
-    for index, (atom, negated) in enumerate(event_ir.iter_signed_atoms(expression)):
-        if not isinstance(atom, event_ir.Exists):
-            continue
-        sources = sorted(
-            node.name for node in event_ir.walk(atom.relation) if isinstance(node, event_ir.Source)
-        )
-        if len(sources) != 1:
-            continue  # 여러 소스가 섞인 관계는 이 도메인 판정의 대상이 아니다
-        window, fingerprint = _event_relation_semantics(atom.relation, anchor)
-        constraints: dict[str, frozenset[str] | None] = {dimension: None for dimension in dimensions}
-        if "product_scope" in constraints:
-            constraints["product_scope"] = fingerprint
-        predicates.append(aggregate_semantics.EventPredicate(
-            domain=sources[0],
-            polarity=aggregate_semantics.ABSENCE if negated else aggregate_semantics.PRESENCE,
-            window=window,
-            constraints=constraints,
-            source_kind="purchase_not_exists" if negated else "purchase_aggregate",
-            source_id=f"plan.{EVENT_EXPRESSION_KEY}.atoms[{index}]:{sources[0]}",
-        ))
+    for atom, negated in event_ir.iter_signed_atoms(expression):
+        predicate = _event_predicate_factory(atom, negated, anchor)
+        if predicate is not None:
+            predicates.append(predicate)
     return predicates
+
+
+def _attach_event_semantic_validation(query_plan: dict[str, Any]) -> None:
+    payload = query_plan.get(EVENT_EXPRESSION_KEY)
+    if not isinstance(payload, dict) or not isinstance(payload.get("expression"), dict):
+        query_plan.pop("event_semantic_validation", None)
+        return
+    try:
+        expression = event_ir.condition_from_dict(payload["expression"])
+    except (event_ir.IrSchemaError, TypeError, ValueError):
+        query_plan["event_semantic_validation"] = {
+            "status": aggregate_semantics.SEMANTIC_UNKNOWN,
+            "issues": [{"code": "event_expression_schema_invalid"}],
+            "branches": [],
+        }
+        return
+    # Conflict reasoning needs one shared anchor, not wall-clock precision.
+    # Using ``now()`` made branch/source ids change on every reconciliation of
+    # an otherwise identical plan.  A day-stable anchor preserves rolling-window
+    # relations while keeping repeated planning/SQL entrypoints deterministic.
+    anchor = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
+    result = aggregate_semantics.validate_boolean_expression(
+        expression,
+        lambda atom, negated: _event_predicate_factory(atom, negated, anchor),
+    )
+    query_plan["event_semantic_validation"] = {
+        "status": result.status,
+        "issues": [
+            {
+                "code": issue.code,
+                "branch_id": issue.branch_id,
+                "domain": issue.domain,
+                "positive_condition_id": issue.positive_condition_id,
+                "negative_condition_id": issue.negative_condition_id,
+            }
+            for issue in result.issues
+        ],
+        "branches": [
+            {
+                "branch_id": branch.branch_id,
+                "status": branch.status,
+                "predicate_ids": [predicate.source_id for predicate in branch.predicates],
+            }
+            for branch in result.branches
+        ],
+    }
+    capability = event_compiler.validate_compiler_capability(
+        expression, context=_event_compile_context()
+    )
+    query_plan["event_compiler_capability"] = {
+        "status": capability.status,
+        "issues": [
+            {"code": issue.code, "node_id": issue.node_id, "symbol": issue.symbol}
+            for issue in capability.issues
+        ],
+        "supported_node_ids": list(capability.supported_node_ids),
+        "unsupported_node_ids": list(capability.unsupported_node_ids),
+    }
 
 
 def _guard_purchase_event_semantics(
@@ -27274,6 +27869,18 @@ def main() -> None:
 
     print("\nPROMPT CONTEXT")
     print(result["prompt_context"])
+
+
+def _install_sql_builder_admission_guards() -> None:
+    """Wrap every registered lower SQL builder after module definitions load."""
+
+    for builder, _owned_kinds in _sql_target_builder_registry():
+        name = getattr(builder, "__name__", "")
+        if name and globals().get(name) is builder:
+            globals()[name] = _admitted_sql_builder(builder)
+
+
+_install_sql_builder_admission_guards()
 
 
 if __name__ == "__main__":

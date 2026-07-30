@@ -237,7 +237,6 @@ CONTRADICTORY_QUERIES = [
 SATISFIABLE_QUERIES = [
     "최근 6개월 구매 있고 최근 1개월 구매 없는 고객",
     "4~6개월 전 구매 있고 최근 1개월 구매 없는 고객",
-    "최근 1개월 전체 구매 있고 최근 1개월 취소 구매 없는 고객",
 ]
 
 
@@ -255,13 +254,8 @@ def test_satisfiable_event_expressions_still_compile(query: str) -> None:
     assert plan.get("unsupported") is None, query
 
 
-def test_channel_words_are_not_yet_part_of_the_purchase_event_ir() -> None:
-    """알려진 한계(이 작업 범위 밖): 구매 사건 IR 에 채널 차원이 없다.
-
-    '온라인 구매 있고 오프라인 구매 없는' 은 파서가 두 원자를 **같은** purchase/30일로 만든다 —
-    즉 IR 자체가 '같은 구매 있음 AND 없음'이다. 검증기는 받은 IR 대로 판정하므로 차단이 맞다
-    (예전엔 정의상 빈 결과 SQL 이 조용히 나갔다). 채널 구분은 사건 소스에 채널 차원을 도입해야
-    풀리는 별개 과제이고, 부분집합 판정 자체는 위 constraints 단위 테스트가 이미 보장한다."""
+def test_channel_scope_is_preserved_but_unsupported_compilation_is_blocked() -> None:
+    """채널은 IR/semantic에는 남고, 물리 field 미등록은 capability 단계에서만 막힌다."""
     plan = graph_rag.build_query_plan(
         "최근 1개월 온라인 구매 있고 최근 1개월 오프라인 구매 없는 고객", parser="rules",
     )
@@ -270,7 +264,73 @@ def test_channel_words_are_not_yet_part_of_the_purchase_event_ir() -> None:
         json.dumps(atom.get("relation", atom.get("operand", {}).get("relation", {})), sort_keys=True)
         for atom in atoms
     }
-    assert len(windows) == 1, "채널이 IR 에 반영됐다면 이 한계 테스트를 실제 통과 케이스로 옮겨야 한다"
+    assert len(windows) == 2
+    assert plan["event_semantic_validation"]["status"] == semantics.CONSISTENT
+    assert plan["event_compiler_capability"]["status"] == "unsupported"
+    assert graph_rag.build_sql_template_candidate(plan) is None
+    assert plan["unsupported"]["reason"] == "event_compiler_unsupported"
+
+
+def test_order_status_scope_is_not_silently_dropped() -> None:
+    plan = graph_rag.build_query_plan(
+        "최근 1개월 전체 구매 있고 최근 1개월 취소 구매 없는 고객", parser="rules",
+    )
+
+    assert plan["event_semantic_validation"]["status"] == semantics.CONSISTENT
+    assert plan["event_compiler_capability"]["status"] == "partially_supported"
+    assert graph_rag.build_sql_template_candidate(plan) is None
+    assert plan["unsupported"]["reason"] == "event_compiler_partially_supported"
+
+
+def test_dynamic_brand_scope_is_preserved_and_unknown_relation_fails_closed() -> None:
+    plan = graph_rag.build_query_plan(
+        "최근 1개월 나이키 브랜드 구매 있고 최근 1개월 아디다스 브랜드 구매 없는 고객",
+        parser="rules",
+    )
+
+    expression_text = json.dumps(plan["event_expression"]["expression"], ensure_ascii=False)
+    assert "purchase.brand" in expression_text
+    assert "나이키" in expression_text and "아디다스" in expression_text
+    assert plan["event_semantic_validation"]["status"] == semantics.SEMANTIC_UNKNOWN
+    assert plan["event_semantic_validation"]["issues"][0]["code"] == "semantic_scope_unknown"
+    assert graph_rag.build_sql_template_candidate(plan) is None
+
+
+def test_dynamic_product_scope_is_preserved_and_equal_scope_conflicts() -> None:
+    plan = graph_rag.build_query_plan(
+        "최근 1개월 라면 상품 구매 있고 최근 1개월 라면 상품 구매 없는 고객",
+        parser="rules",
+    )
+
+    expression_text = json.dumps(plan["event_expression"]["expression"], ensure_ascii=False)
+    assert "purchase.product_scope" in expression_text
+    assert "라면" in expression_text
+    assert plan["event_semantic_validation"]["status"] == semantics.CONTRADICTORY
+    assert graph_rag.build_sql_template_candidate(plan) is None
+
+
+def test_aggregate_or_absence_keeps_the_branch_topology_in_event_ir() -> None:
+    query = "최근 30일 구매건수 1건 이상 고객 또는 최근 180일 구매하지 않은 고객"
+    plan = graph_rag.build_query_plan(query, parser="rules")
+
+    assert plan["event_expression"]["expression"]["type"] == "or"
+    assert plan["target_user"]["aggregate_conditions"] == []
+    assert plan["target_user"]["purchase_inactivity"] is None
+    assert plan["event_semantic_validation"]["status"] == semantics.CONSISTENT
+
+    candidate = graph_rag.build_sql_template_candidate(plan)
+    assert candidate is not None
+    assert candidate["id"] == "sql_template:event_expression"
+    assert " OR " in candidate["sql"]
+
+
+def test_aggregate_and_containing_absence_is_a_branch_local_conflict() -> None:
+    query = "최근 30일 구매건수 1건 이상 고객 그리고 최근 180일 구매하지 않은 고객"
+    plan = graph_rag.build_query_plan(query, parser="rules")
+
+    assert plan["event_expression"]["expression"]["type"] == "and"
+    assert plan["target_user"]["aggregate_conditions"] == []
+    assert plan["event_semantic_validation"]["status"] == semantics.CONTRADICTORY
     assert graph_rag.build_sql_template_candidate(plan) is None
     assert plan["unsupported"]["reason"] == "presence_absence_conflict"
 

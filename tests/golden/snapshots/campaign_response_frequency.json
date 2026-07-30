@@ -1,8 +1,30 @@
 {
   "plan": {
+    "canonical_targeting_expression": {
+      "canonical_fingerprint": "69f22c5ed217205ba1935f3ad6cefd346ae57d9b3096655ba1c0b7cd4d176cde",
+      "expression_node_id": "expr_69f22c5ed217205ba1935f3ad6cefd346ae57d9b3096655ba1c0b7cd4d176cde",
+      "payload": {
+        "legacy_condition": {
+          "fact": "campaign",
+          "fact_join": true,
+          "kind": "campaign_response_frequency",
+          "params": {
+            "count": 2,
+            "event": "campaign_response",
+            "label": "campaign_response 2회 이상",
+            "operator": ">=",
+            "window_days": 90
+          }
+        }
+      },
+      "predicate_kind": "LegacyPredicate",
+      "semantic_key": "legacy:campaign_response_frequency:f929325d00a98fd0f0bc9d39673a3a962527bf582ad0112bac5eca34d2e15840",
+      "source_spans": [],
+      "type": "predicate_ref"
+    },
     "intent": "find_user_segment"
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "target_user": {
     "campaign_response_frequency": {
       "count": 2,

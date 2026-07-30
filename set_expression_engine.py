@@ -6,16 +6,12 @@ import re
 from pathlib import Path
 from typing import Any
 
+import lexicon_patterns
 from common_utils import compact as _compact
-
 
 DEFAULT_NORMALIZATION_PATH = Path("docs/data/normalization_rules.sample.json")
 OPERATOR_WORDS = {
     "합집합": "+",
-    "또는": "+",
-    "혹은": "+",
-    "이거나": "+",
-    "거나": "+",
     "or": "+",
     "union": "+",
     "교집합": "*",
@@ -28,6 +24,7 @@ OPERATOR_WORDS = {
     "except": "-",
     "minus": "-",
 }
+OPERATOR_WORDS.update({word: "+" for word in lexicon_patterns.vocabulary("or_connective")})
 OPERATOR_LABELS = {
     "+": "union",
     "*": "intersection",
@@ -53,6 +50,12 @@ def load_set_term_catalog(normalization_path: Path = DEFAULT_NORMALIZATION_PATH)
     terms: list[dict[str, str]] = []
     for rule in payload.get("normalization_rules", []):
         if not isinstance(rule, dict) or not isinstance(rule.get("canonical"), str):
+            continue
+        # ``prmp_kwd`` rows describe metrics/dimensions used by other parsers
+        # (for example purchase-count), not named/member sets.  Treating every
+        # normalization row as a Set operand can turn an Event aggregate OR into
+        # a fake named segment and erase its aggregate predicate.
+        if rule.get("source") == "prmp_kwd":
             continue
         aliases = [rule.get("canonical"), rule.get("ko_label"), *rule.get("synonyms", [])]
         for alias in aliases:
@@ -213,7 +216,8 @@ def _parse_operand_group(text: str, term_catalog: list[dict[str, str]], conjunct
     if not cleaned:
         return None
     normalized = re.sub(r"\s*(?:와|과|및|하고|그리고)\s*", f" {conjunction_op} ", cleaned)
-    normalized = re.sub(r"\s*(?:또는|혹은)\s*", " + ", normalized)
+    or_alternation = lexicon_patterns.alternation("or_connective")
+    normalized = re.sub(rf"\s*(?:{or_alternation})\s*", " + ", normalized)
     tokens = _scan_set_tokens(normalized, term_catalog)
     if any(token["kind"] == "op" for token in tokens):
         return _tokens_to_ast(tokens)

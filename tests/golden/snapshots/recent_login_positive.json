@@ -1,8 +1,29 @@
 {
   "plan": {
+    "canonical_targeting_expression": {
+      "canonical_fingerprint": "aad4f4d7fb0e718d56080dc27fac3b7543b9a96259a0a3d872a682aa2efee8bb",
+      "expression_node_id": "expr_aad4f4d7fb0e718d56080dc27fac3b7543b9a96259a0a3d872a682aa2efee8bb",
+      "payload": {
+        "legacy_condition": {
+          "fact": "member",
+          "fact_join": false,
+          "kind": "recent_login",
+          "params": {
+            "min_days": 30,
+            "sql_interval": "30 days",
+            "unit": "days",
+            "value": 30
+          }
+        }
+      },
+      "predicate_kind": "LegacyPredicate",
+      "semantic_key": "legacy:recent_login:6bb829e4fe0523dec80cfb67327d507aac43388ef75f311ab867f9a6642ecb65",
+      "source_spans": [],
+      "type": "predicate_ref"
+    },
     "intent": "find_user_segment"
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "target_user": {
     "recent_login": {
       "min_days": 30,

@@ -18,11 +18,15 @@
 
 from __future__ import annotations
 
+import hashlib
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Iterable, Mapping, Sequence
+from typing import Any
 
 import aggregate_parser_config
+import event_ir
+import event_semantic_registry
 
 PRESENCE = "presence"
 ABSENCE = "absence"
@@ -31,8 +35,15 @@ PROVEN_CONFLICT = "PROVEN_CONFLICT"
 PROVEN_SAFE = "PROVEN_SAFE"
 UNKNOWN = "UNKNOWN"
 
+# Boolean-expression level semantic status.  These values intentionally do not
+# encode compiler support: a semantically consistent expression can still be
+# unsupported by the physical compiler.
+CONSISTENT = "consistent"
+CONTRADICTORY = "contradictory"
+SEMANTIC_UNKNOWN = "unknown"
+
 # 기간을 '평생'으로 표현할 때 쓰는 하한. 실제 데이터 시작보다 이르기만 하면 되고, 포함 관계 판정에만 쓴다.
-BEGINNING_OF_TIME = datetime.min
+BEGINNING_OF_TIME = datetime.min  # noqa: DTZ901 - sentinel, never a wall-clock instant
 
 
 class AggregateSemanticConflict(Exception):
@@ -91,6 +102,42 @@ class ConflictFinding:
             "positive_source_kind": self.positive.source_kind,
             "negative_source_kind": self.negative.source_kind,
         }
+
+
+@dataclass(frozen=True)
+class SemanticValidationIssue:
+    """A machine-readable semantic issue; presentation is a later concern."""
+
+    code: str
+    branch_id: str | None = None
+    domain: str | None = None
+    positive_condition_id: str | None = None
+    negative_condition_id: str | None = None
+
+
+@dataclass(frozen=True)
+class BranchValidationResult:
+    branch_id: str
+    status: str
+    predicates: tuple[EventPredicate, ...]
+    issues: tuple[SemanticValidationIssue, ...] = ()
+
+
+@dataclass(frozen=True)
+class BooleanValidationResult:
+    status: str
+    issues: tuple[SemanticValidationIssue, ...]
+    branches: tuple[BranchValidationResult, ...]
+
+    @property
+    def verdict(self) -> str:
+        """Compatibility projection for callers that still use the old tri-state."""
+
+        return {
+            CONSISTENT: PROVEN_SAFE,
+            CONTRADICTORY: PROVEN_CONFLICT,
+            SEMANTIC_UNKNOWN: UNKNOWN,
+        }[self.status]
 
 
 @dataclass
@@ -166,26 +213,148 @@ def constraints_are_subset(
     return True
 
 
+def classify_scope_relation(
+    positive: Mapping[str, frozenset[str] | None],
+    negative: Mapping[str, frozenset[str] | None],
+    dimensions: Iterable[str],
+    semantic_registry: event_semantic_registry.EventSemanticRegistry | None = None,
+) -> str:
+    """Classify whether a positive event scope is covered by an absence scope.
+
+    Different strings are never assumed disjoint.  Only an explicit registry
+    relation can prove that.  ``None`` is the dimension universe: a constrained
+    positive is a subset of an unconstrained absence, while an unconstrained
+    positive has known room outside a constrained absence.
+    """
+
+    registry = semantic_registry or event_semantic_registry.registry()
+    dimension_relations: list[str] = []
+    for dimension in dimensions:
+        allowed = positive.get(dimension)
+        forbidden = negative.get(dimension)
+        if forbidden is None:
+            dimension_relations.append(
+                event_semantic_registry.EQUAL
+                if allowed is None
+                else event_semantic_registry.SUBSET
+            )
+            continue
+        if allowed is None:
+            # The positive scope is the full dimension and the negative scope
+            # names a proper registered subset.
+            dimension_spec = registry.dimensions.get(dimension)
+            if dimension_spec is not None and all(value in dimension_spec.values for value in forbidden):
+                dimension_relations.append(event_semantic_registry.OVERLAP_POSSIBLE)
+            else:
+                dimension_relations.append(event_semantic_registry.UNKNOWN)
+            continue
+
+        all_covered = True
+        all_disjoint = True
+        has_known_outside = False
+        for positive_value in allowed:
+            relations = [
+                registry.relation(dimension, positive_value, negative_value)
+                for negative_value in forbidden
+            ]
+            covered = any(
+                relation in (event_semantic_registry.EQUAL, event_semantic_registry.SUBSET)
+                for relation in relations
+            )
+            all_covered = all_covered and covered
+            value_disjoint = bool(relations) and all(
+                relation == event_semantic_registry.DISJOINT for relation in relations
+            )
+            all_disjoint = all_disjoint and value_disjoint
+            reverse_overlap = any(
+                registry.relation(dimension, negative_value, positive_value)
+                in (event_semantic_registry.SUBSET, event_semantic_registry.OVERLAP_POSSIBLE)
+                for negative_value in forbidden
+            )
+            has_known_outside = has_known_outside or value_disjoint or reverse_overlap or any(
+                relation == event_semantic_registry.OVERLAP_POSSIBLE for relation in relations
+            )
+
+        if all_covered:
+            dimension_relations.append(
+                event_semantic_registry.EQUAL
+                if allowed == forbidden
+                else event_semantic_registry.SUBSET
+            )
+        elif all_disjoint:
+            dimension_relations.append(event_semantic_registry.DISJOINT)
+        elif has_known_outside:
+            dimension_relations.append(event_semantic_registry.OVERLAP_POSSIBLE)
+        else:
+            dimension_relations.append(event_semantic_registry.UNKNOWN)
+
+    # Event dimensions are conjunctive.  One proven-disjoint dimension makes
+    # the complete scopes disjoint; one proven outside portion is enough to
+    # show the positive scope is not contained by the absence scope.  Unknown
+    # only dominates when neither fact has been established.
+    if event_semantic_registry.DISJOINT in dimension_relations:
+        return event_semantic_registry.DISJOINT
+    if event_semantic_registry.OVERLAP_POSSIBLE in dimension_relations:
+        return event_semantic_registry.OVERLAP_POSSIBLE
+    if event_semantic_registry.UNKNOWN in dimension_relations:
+        return event_semantic_registry.UNKNOWN
+    if event_semantic_registry.SUBSET in dimension_relations:
+        return event_semantic_registry.SUBSET
+    return event_semantic_registry.EQUAL
+
+
+def classify_pair_detail(
+    positive: EventPredicate,
+    negative: EventPredicate,
+    dimensions: Iterable[str],
+    semantic_registry: event_semantic_registry.EventSemanticRegistry | None = None,
+) -> tuple[str, str | None]:
+    if not positive.requires_event_presence:
+        return PROVEN_SAFE, None
+    if positive.window is None or negative.window is None:
+        return UNKNOWN, "semantic_period_unresolved"
+    scope_relation = classify_scope_relation(
+        positive.constraints, negative.constraints, dimensions, semantic_registry
+    )
+    if scope_relation == event_semantic_registry.UNKNOWN:
+        return UNKNOWN, "semantic_scope_unknown"
+    if scope_relation in (event_semantic_registry.DISJOINT, event_semantic_registry.OVERLAP_POSSIBLE):
+        return PROVEN_SAFE, None
+    verdict = PROVEN_CONFLICT if window_is_subset(positive.window, negative.window) else PROVEN_SAFE
+    return verdict, "presence_absence_conflict" if verdict == PROVEN_CONFLICT else None
+
+
 def classify_pair(
-    positive: EventPredicate, negative: EventPredicate, dimensions: Iterable[str],
+    positive: EventPredicate,
+    negative: EventPredicate,
+    dimensions: Iterable[str],
+    semantic_registry: event_semantic_registry.EventSemanticRegistry | None = None,
 ) -> str:
     """존재/부재 한 쌍의 판정. 기간을 모르면 UNKNOWN(모순 SQL 대신 clarification)."""
-    if not positive.requires_event_presence:
-        return PROVEN_SAFE
-    if positive.window is None or negative.window is None:
-        return UNKNOWN
-    if not constraints_are_subset(positive.constraints, negative.constraints, dimensions):
-        return PROVEN_SAFE
-    return PROVEN_CONFLICT if window_is_subset(positive.window, negative.window) else PROVEN_SAFE
+    return classify_pair_detail(positive, negative, dimensions, semantic_registry)[0]
 
 
 def validate(
     predicates: Sequence[EventPredicate],
-    domains: Mapping[str, "aggregate_parser_config.SemanticDomain"] | None = None,
+    domains: Mapping[str, aggregate_parser_config.SemanticDomain] | None = None,
+    *,
+    semantic_registry: event_semantic_registry.EventSemanticRegistry | None = None,
 ) -> ValidationResult:
     """같은 도메인의 존재×부재 쌍을 전부 판정한다. 도메인 정의(이벤트 차원)는 설정이 소유한다."""
     resolved_domains = domains if domains is not None else aggregate_parser_config.rules().semantic_domains
+    registry = semantic_registry or event_semantic_registry.registry()
     result = ValidationResult()
+    known_domains = set(resolved_domains)
+    for predicate in predicates:
+        if predicate.domain in known_domains:
+            continue
+        result.unresolved.append(ConflictFinding(
+            UNKNOWN,
+            "semantic_domain_unknown",
+            predicate.domain,
+            predicate,
+            predicate,
+        ))
     for domain_name, domain in resolved_domains.items():
         positives = [
             p for p in predicates if p.domain == domain_name and p.polarity == PRESENCE
@@ -195,21 +364,208 @@ def validate(
         ]
         for positive in positives:
             for negative in negatives:
-                verdict = classify_pair(positive, negative, domain.event_dimensions)
+                verdict, code = classify_pair_detail(
+                    positive, negative, domain.event_dimensions, registry
+                )
                 if verdict == PROVEN_CONFLICT:
                     result.conflicts.append(ConflictFinding(
-                        verdict, "presence_absence_conflict", domain_name, positive, negative,
+                        verdict, code or "presence_absence_conflict", domain_name, positive, negative,
                     ))
                 elif verdict == UNKNOWN:
                     result.unresolved.append(ConflictFinding(
-                        verdict, "semantic_period_unresolved", domain_name, positive, negative,
+                        verdict, code or "semantic_scope_unknown", domain_name, positive, negative,
                     ))
     return result
 
 
+PredicateFactory = Callable[[event_ir.Condition, bool], EventPredicate | None]
+
+
+class _BranchExpansionLimit(RuntimeError):
+    pass
+
+
+def _predicate_signature(predicate: EventPredicate) -> tuple[Any, ...]:
+    return (
+        predicate.domain,
+        predicate.polarity,
+        _window_repr(predicate.window),
+        tuple(
+            sorted(
+                (dimension, None if values is None else tuple(sorted(values)))
+                for dimension, values in predicate.constraints.items()
+            )
+        ),
+        predicate.source_kind,
+        predicate.source_id,
+        predicate.requires_event_presence,
+    )
+
+
+def _deduplicate_predicates(predicates: Iterable[EventPredicate]) -> tuple[EventPredicate, ...]:
+    unique: dict[tuple[Any, ...], EventPredicate] = {}
+    for predicate in predicates:
+        unique.setdefault(_predicate_signature(predicate), predicate)
+    return tuple(unique[key] for key in sorted(unique, key=repr))
+
+
+def _branch_id(predicates: Sequence[EventPredicate]) -> str:
+    encoded = repr(tuple(_predicate_signature(predicate) for predicate in predicates)).encode("utf-8")
+    return "branch_" + hashlib.sha256(encoded).hexdigest()[:16]
+
+
+def _expand_boolean_branches(
+    expression: event_ir.Condition,
+    predicate_factory: PredicateFactory,
+    *,
+    negated: bool,
+    max_branches: int,
+) -> list[tuple[EventPredicate, ...]]:
+    """Accumulate conjunction-local constraints without unbounded DNF expansion."""
+
+    if isinstance(expression, event_ir.Not):
+        return _expand_boolean_branches(
+            expression.operand,
+            predicate_factory,
+            negated=not negated,
+            max_branches=max_branches,
+        )
+
+    if isinstance(expression, (event_ir.And, event_ir.Or)):
+        effective_and = isinstance(expression, event_ir.And) != negated
+        child_branches = [
+            _expand_boolean_branches(
+                child,
+                predicate_factory,
+                negated=negated,
+                max_branches=max_branches,
+            )
+            for child in expression.operands
+        ]
+        if effective_and:
+            branches: list[tuple[EventPredicate, ...]] = [()]
+            for alternatives in child_branches:
+                if len(branches) * len(alternatives) > max_branches:
+                    raise _BranchExpansionLimit
+                branches = [
+                    _deduplicate_predicates((*left, *right))
+                    for left in branches
+                    for right in alternatives
+                ]
+            return branches
+        count = sum(len(alternatives) for alternatives in child_branches)
+        if count > max_branches:
+            raise _BranchExpansionLimit
+        return [branch for alternatives in child_branches for branch in alternatives]
+
+    predicate = predicate_factory(expression, negated)
+    if predicate is None:
+        return [()]
+    if not isinstance(predicate, EventPredicate):
+        raise TypeError("predicate_factory must return EventPredicate or None")
+    return [(predicate,)]
+
+
+def validate_boolean_expression(
+    expression: event_ir.Condition,
+    predicate_factory: PredicateFactory,
+    *,
+    semantic_registry: event_semantic_registry.EventSemanticRegistry | None = None,
+    max_branches: int = 64,
+) -> BooleanValidationResult:
+    """Validate presence/absence constraints inside Boolean branches.
+
+    A conflict is considered only inside one conjunction branch.  An OR is
+    contradictory only when every branch is contradictory.  Any surviving
+    unknown branch keeps the whole result unknown.  Expansion is bounded; the
+    tree is never simplified or flattened after the limit is reached.
+    """
+
+    if not isinstance(max_branches, int) or isinstance(max_branches, bool) or max_branches < 1:
+        raise ValueError("max_branches must be a positive integer")
+    if not isinstance(expression, event_ir.Condition.__args__):
+        raise TypeError("expression must be an event_ir.Condition")
+
+    try:
+        raw_branches = _expand_boolean_branches(
+            expression,
+            predicate_factory,
+            negated=False,
+            max_branches=max_branches,
+        )
+    except _BranchExpansionLimit:
+        issue = SemanticValidationIssue(code="semantic_complexity_limit")
+        return BooleanValidationResult(SEMANTIC_UNKNOWN, (issue,), ())
+
+    registry = semantic_registry or event_semantic_registry.registry()
+    configured_domains = aggregate_parser_config.rules().semantic_domains
+    branches: list[BranchValidationResult] = []
+    all_issues: list[SemanticValidationIssue] = []
+    for predicates in raw_branches:
+        branch_id = _branch_id(predicates)
+        validation = validate(
+            predicates,
+            configured_domains,
+            semantic_registry=registry,
+        )
+        if validation.conflicts:
+            status = CONTRADICTORY
+            findings = validation.conflicts
+        elif validation.unresolved:
+            status = SEMANTIC_UNKNOWN
+            findings = validation.unresolved
+        else:
+            status = CONSISTENT
+            findings = []
+        branch_issues = tuple(
+            SemanticValidationIssue(
+                code=finding.code,
+                branch_id=branch_id,
+                domain=finding.domain,
+                positive_condition_id=finding.positive.source_id,
+                negative_condition_id=finding.negative.source_id,
+            )
+            for finding in findings
+        )
+        all_issues.extend(branch_issues)
+        branches.append(BranchValidationResult(branch_id, status, tuple(predicates), branch_issues))
+
+    if branches and all(branch.status == CONTRADICTORY for branch in branches):
+        status = CONTRADICTORY
+    elif any(branch.status == SEMANTIC_UNKNOWN for branch in branches):
+        status = SEMANTIC_UNKNOWN
+    else:
+        status = CONSISTENT
+    unique_issues = tuple(dict.fromkeys(all_issues))
+    return BooleanValidationResult(status, unique_issues, tuple(branches))
+
+
 __all__ = [
-    "PRESENCE", "ABSENCE", "PROVEN_CONFLICT", "PROVEN_SAFE", "UNKNOWN", "BEGINNING_OF_TIME",
-    "AggregateSemanticConflict", "NormalizedWindow", "EventPredicate", "ConflictFinding",
-    "ValidationResult", "rolling_window", "lifetime_window", "intersect",
-    "window_is_subset", "constraints_are_subset", "classify_pair", "validate",
+    "ABSENCE",
+    "BEGINNING_OF_TIME",
+    "CONSISTENT",
+    "CONTRADICTORY",
+    "PRESENCE",
+    "PROVEN_CONFLICT",
+    "PROVEN_SAFE",
+    "SEMANTIC_UNKNOWN",
+    "UNKNOWN",
+    "AggregateSemanticConflict",
+    "BooleanValidationResult",
+    "BranchValidationResult",
+    "ConflictFinding",
+    "EventPredicate",
+    "NormalizedWindow",
+    "SemanticValidationIssue",
+    "ValidationResult",
+    "classify_pair",
+    "classify_pair_detail",
+    "classify_scope_relation",
+    "constraints_are_subset",
+    "intersect",
+    "lifetime_window",
+    "rolling_window",
+    "validate",
+    "validate_boolean_expression",
+    "window_is_subset",
 ]

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import networkx as nx
@@ -35,13 +35,29 @@ import slot_ownership
 FIXED_TODAY = date(2026, 7, 30)
 # 파이프라인 경로는 기준일을 인자로 받지 않으므로 기대값을 같은 **규칙**으로 계산한다
 # (이웃 스위트 test_event_expression_pipeline 과 같은 관례).
-TODAY = date.today()
+TODAY = datetime.now(timezone(timedelta(hours=9))).date()
 
 
 @pytest.fixture(autouse=True)
 def _offline_parsers(monkeypatch: pytest.MonkeyPatch) -> None:
     """LLM 보완 계층을 끈다 — 결정론 경로의 의미 보존만 고정한다(기존 테스트와 같은 관례)."""
     monkeypatch.setattr(graph_rag, "_apply_llm_condition_slot_fallback", lambda *_a, **_kw: None)
+    # This suite verifies temporal ownership, not live product-master
+    # availability.  Keep the product predicate grounded so the executable
+    # plan gate can test the date SQL without depending on CRMDW credentials.
+    monkeypatch.setattr(
+        graph_rag.product_master_resolver,
+        "resolve_product_phrase",
+        lambda phrase: {
+            "input": phrase,
+            "source": "time_expression_test_fixture",
+            "status": "resolved",
+            "grounded": True,
+            "confidence": 1.0,
+            "filters": [{"kind": "product", "value": phrase, "columns": ["PRODUCT_NAME"]}],
+            "alternatives": [],
+        },
+    )
     monkeypatch.setenv("TARGET_OBJECT_LLM_FALLBACK", "false")
     monkeypatch.setenv("SURFACE_LEXICON_LLM", "off")
     monkeypatch.setenv("CONDITION_SLOT_LLM_FALLBACK", "off")

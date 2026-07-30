@@ -25,7 +25,6 @@ from __future__ import annotations
 
 from typing import Any
 
-
 # 감사 로그(공개 키 — 응답 디버그로 나간다).
 DECISIONS_KEY = "decisions"
 # 사유를 명시해 기록을 '시도한' 슬롯의 자취(내부용). 중복이라 접힌 기록도 남겨야, 두 번째 파이프라인
@@ -63,6 +62,16 @@ NON_CONDITION_PLAN_KEYS = frozenset({
     # 조건 소유권 조정 흔적(condition_reconciliation) — 어느 슬롯이 무엇을 소유했고 어떤 중복을
     # 억제했는지의 계측이다. 조건 자체가 아니므로 IR 스냅샷/골든 비교에는 들어가지 않는다.
     "condition_reconciliation",
+    # Canonical targeting receipts are derived execution metadata, not
+    # independently executable audience conditions. Canonical/event
+    # expressions intentionally remain outside this set.
+    "canonical_projection",
+    "canonical_targeting_validation",
+    "canonical_targeting_version",
+    "condition_claims",
+    "event_compiler_capability",
+    "event_semantic_validation",
+    "ownership_reconciliation_complete",
     DECISIONS_KEY, TRUNCATED_KEY, *AUDITED_CONTAINERS,
 })
 

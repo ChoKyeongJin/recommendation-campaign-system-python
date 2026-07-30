@@ -134,10 +134,14 @@ def test_lifetime_absence_keeps_the_behavior_slot() -> None:
     assert "no_purchase" in plan["target_user"]["behaviors"]
 
 
-def test_product_condition_defers_to_the_purchase_history_builder() -> None:
-    """전용 팩트조인 조건(상품 구매 이력)이 있으면 IR 은 개입하지 않는다."""
+def test_brand_scope_is_preserved_when_legacy_product_extraction_has_no_owner() -> None:
+    """브랜드 scope를 버리고 일반 구매로 축소하지 않으며, 물리 미지원이면 차단한다."""
     plan = plan_for("알로루 브랜드를 구매한 고객")
-    assert plan.get("event_expression") is None
+    expression = plan["event_expression"]["expression"]
+    assert "purchase.brand" in str(expression)
+    assert "알로루" in str(expression)
+    assert plan["event_compiler_capability"]["status"] == "unsupported"
+    assert graph_rag.build_sql_template_candidate(plan) is None
 
 
 # ── 회원 속성 결합 ────────────────────────────────────────────────────────────────

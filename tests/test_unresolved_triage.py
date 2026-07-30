@@ -43,6 +43,16 @@ def test_no_condition_detector_is_quiet_when_conditions_exist() -> None:
     assert triage.detect_no_condition(plan, None) is None
 
 
+def test_no_condition_detector_accepts_a_canonical_only_condition() -> None:
+    plan = {
+        "original_query": "알로루 브랜드를 구매한 고객",
+        "target_user": {},
+        "canonical_targeting_expression": {"type": "predicate_ref"},
+        "event_compiler_capability": {"status": "unsupported"},
+    }
+    assert triage.detect_no_condition(plan, None) is None
+
+
 def test_no_condition_detector_ignores_non_audience_text() -> None:
     """오디언스 서술이 아닌 문장(회원 명사 없음)은 조건이 없어도 미해석이 아니다."""
     plan = {"original_query": "매출 합계 알려줘", "target_user": {}}

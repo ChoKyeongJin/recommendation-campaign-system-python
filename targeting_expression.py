@@ -24,10 +24,614 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
+import copy
+import hashlib
+import json
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, field
+from typing import Any, ClassVar
 
+import lexicon_patterns
 from calendar_window import calendar_window_from_parts, parse_calendar_window
-from entity_set import build_derived_set_ast, compile_entity_set_predicate, entity_set_capability
+from entity_set import (
+    build_derived_set_ast,
+    compile_entity_set_predicate,
+    entity_set_capability,
+)
+
+# ---------------------------------------------------------------------------
+# Canonical, typed targeting expression and condition-claim contracts.
+#
+# The module predates these types and also owns the dict-based LLM schema and
+# SQL compiler below.  The two APIs intentionally remain separate: callers may
+# adopt the typed tree as a planning/ownership contract without changing the
+# legacy compiler payload in the same release.
+# ---------------------------------------------------------------------------
+
+SourceSpan = tuple[int, int]
+
+_OR_ALIASES = frozenset(
+    {
+        "or",
+        "any",
+        "any_of",
+        "union",
+        "||",
+        "|",
+        "+",
+        *lexicon_patterns.vocabulary("or_connective"),
+    }
+)
+_AND_ALIASES = frozenset(lexicon_patterns.vocabulary("targeting_and_alias"))
+_NOT_ALIASES = frozenset(lexicon_patterns.vocabulary("targeting_not_alias"))
+
+# These fields describe where a predicate came from, not what it means.  They
+# are retained by ``to_dict`` but excluded recursively from semantic hashes.
+_PROVENANCE_PAYLOAD_KEYS = frozenset(
+    {
+        "evidence",
+        "evidence_text",
+        "evidenceText",
+        "evidence_span",
+        "evidenceSpan",
+        "source_text",
+        "sourceText",
+        "sourceSpan",
+        "raw_text",
+        "rawText",
+        "source_span",
+        "source_spans",
+        "_source_span",
+    }
+)
+
+CLAIM_STATUSES = frozenset({"resolved", "unresolved"})
+CLAIM_DISPOSITIONS = frozenset(
+    {
+        "owned",
+        "suppressed_duplicate",
+        "rejected_conflict",
+        "unresolved",
+        "unsupported",
+    }
+)
+
+
+class TargetingExpressionInvariantError(ValueError):
+    """Raised when serialized typed IR disagrees with its content hash."""
+
+
+class ConditionClaimInvariantError(ValueError):
+    """Raised when condition claims violate ownership invariants."""
+
+    def __init__(self, issues: Iterable[str]) -> None:
+        self.issues = tuple(str(issue) for issue in issues)
+        super().__init__("; ".join(self.issues))
+
+
+def _canonical_json(value: Any) -> str:
+    """Return a deterministic JSON encoding and reject non-JSON-safe values."""
+
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("value must be JSON-safe") from exc
+
+
+def _content_hash(prefix: str, value: Any) -> str:
+    digest = hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+    return f"{prefix}_{digest}"
+
+
+def _normalize_token(value: Any, *, field_name: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{field_name} must be a non-empty string")
+    return value.strip()
+
+
+def _normalize_source_spans(value: Any) -> tuple[SourceSpan, ...]:
+    if value is None:
+        return ()
+    if isinstance(value, Mapping) or (
+        isinstance(value, (tuple, list))
+        and len(value) == 2
+        and all(isinstance(part, int) and not isinstance(part, bool) for part in value)
+    ):
+        values = [value]
+    elif isinstance(value, (tuple, list)):
+        values = list(value)
+    else:
+        raise ValueError("source_spans must be a sequence of spans")
+
+    normalized: list[SourceSpan] = []
+    for span in values:
+        if isinstance(span, Mapping):
+            start, end = span.get("start"), span.get("end")
+        elif isinstance(span, (tuple, list)) and len(span) == 2:
+            start, end = span
+        else:
+            raise ValueError("each source span must contain start and end")
+        if (
+            not isinstance(start, int)
+            or isinstance(start, bool)
+            or not isinstance(end, int)
+            or isinstance(end, bool)
+            or start < 0
+            or end <= start
+        ):
+            raise ValueError("source spans require integer bounds with 0 <= start < end")
+        normalized.append((start, end))
+    # A claim treats evidence locations as a set.  Sorting and de-duplicating
+    # makes IDs stable when parsers discover the same spans in a different order.
+    return tuple(sorted(set(normalized)))
+
+
+def _serialize_source_spans(spans: tuple[SourceSpan, ...]) -> list[dict[str, int]]:
+    return [{"start": start, "end": end} for start, end in spans]
+
+
+def _strip_semantic_provenance(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _strip_semantic_provenance(child)
+            for key, child in value.items()
+            if str(key) not in _PROVENANCE_PAYLOAD_KEYS
+        }
+    if isinstance(value, list):
+        return [_strip_semantic_provenance(child) for child in value]
+    if isinstance(value, tuple):
+        return [_strip_semantic_provenance(child) for child in value]
+    return value
+
+
+def _normalize_operator(value: Any, expected: str) -> str:
+    token = _normalize_token(value, field_name="operator").casefold().replace("-", "_").replace(" ", "_")
+    aliases = _AND_ALIASES if expected == "and" else _OR_ALIASES
+    if token not in aliases:
+        raise ValueError(f"operator {value!r} is not an alias for {expected}")
+    return expected
+
+
+@dataclass(frozen=True)
+class TargetingExpression:
+    """Base class for the canonical Boolean targeting tree.
+
+    Node IDs are derived from semantic content.  Evidence positions and raw
+    evidence text therefore do not split the same predicate into parser-specific
+    node identities.
+    """
+
+    _canonical_fingerprint: str = field(init=False, repr=False, compare=False)
+    _expression_node_id: str = field(init=False, repr=False, compare=False)
+
+    TYPE: ClassVar[str] = "expression"
+
+    @property
+    def canonical_fingerprint(self) -> str:
+        return self._canonical_fingerprint
+
+    @property
+    def fingerprint(self) -> str:
+        """Short alias used by ownership and comparison code."""
+
+        return self._canonical_fingerprint
+
+    @property
+    def expression_node_id(self) -> str:
+        return self._expression_node_id
+
+    @property
+    def node_id(self) -> str:
+        return self._expression_node_id
+
+    def _set_identity(self, semantic_content: Any) -> None:
+        fingerprint = hashlib.sha256(_canonical_json(semantic_content).encode("utf-8")).hexdigest()
+        object.__setattr__(self, "_canonical_fingerprint", fingerprint)
+        object.__setattr__(self, "_expression_node_id", f"expr_{fingerprint}")
+
+    def to_dict(self) -> dict[str, Any]:
+        raise NotImplementedError
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "TargetingExpression":
+        return targeting_expression_from_dict(payload)
+
+
+@dataclass(frozen=True)
+class PredicateRef(TargetingExpression):
+    predicate_kind: str
+    semantic_key: str
+    source_spans: tuple[SourceSpan, ...] = ()
+    payload: Any = field(default_factory=dict, compare=False, hash=False)
+    _payload_canonical: str = field(init=False, repr=False)
+
+    TYPE: ClassVar[str] = "predicate_ref"
+
+    def __post_init__(self) -> None:
+        predicate_kind = _normalize_token(self.predicate_kind, field_name="predicate_kind")
+        semantic_key = _normalize_token(self.semantic_key, field_name="semantic_key")
+        spans = _normalize_source_spans(self.source_spans)
+        payload_copy = copy.deepcopy(self.payload)
+        payload_canonical = _canonical_json(payload_copy)
+        object.__setattr__(self, "predicate_kind", predicate_kind)
+        object.__setattr__(self, "semantic_key", semantic_key)
+        object.__setattr__(self, "source_spans", spans)
+        object.__setattr__(self, "payload", payload_copy)
+        object.__setattr__(self, "_payload_canonical", payload_canonical)
+        self._set_identity(
+            {
+                "type": self.TYPE,
+                "predicate_kind": predicate_kind,
+                "semantic_key": semantic_key,
+                "payload": _strip_semantic_provenance(json.loads(payload_canonical)),
+            }
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.TYPE,
+            "expression_node_id": self.expression_node_id,
+            "canonical_fingerprint": self.canonical_fingerprint,
+            "predicate_kind": self.predicate_kind,
+            "semantic_key": self.semantic_key,
+            "source_spans": _serialize_source_spans(self.source_spans),
+            "payload": json.loads(self._payload_canonical),
+        }
+
+
+@dataclass(frozen=True)
+class And(TargetingExpression):
+    children: tuple[TargetingExpression, ...]
+    operator: str = "and"
+
+    TYPE: ClassVar[str] = "and"
+
+    def __post_init__(self) -> None:
+        children = tuple(self.children)
+        if len(children) < 2 or not all(isinstance(child, TargetingExpression) for child in children):
+            raise ValueError("And requires at least two TargetingExpression children")
+        object.__setattr__(self, "children", children)
+        object.__setattr__(self, "operator", _normalize_operator(self.operator, self.TYPE))
+        self._set_identity(
+            {"type": self.TYPE, "children": sorted(child.canonical_fingerprint for child in children)}
+        )
+
+    @property
+    def operands(self) -> tuple[TargetingExpression, ...]:
+        return self.children
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.TYPE,
+            "expression_node_id": self.expression_node_id,
+            "canonical_fingerprint": self.canonical_fingerprint,
+            "children": [child.to_dict() for child in self.children],
+        }
+
+
+@dataclass(frozen=True)
+class Or(TargetingExpression):
+    children: tuple[TargetingExpression, ...]
+    operator: str = "or"
+
+    TYPE: ClassVar[str] = "or"
+
+    def __post_init__(self) -> None:
+        children = tuple(self.children)
+        if len(children) < 2 or not all(isinstance(child, TargetingExpression) for child in children):
+            raise ValueError("Or requires at least two TargetingExpression children")
+        object.__setattr__(self, "children", children)
+        object.__setattr__(self, "operator", _normalize_operator(self.operator, self.TYPE))
+        self._set_identity(
+            {"type": self.TYPE, "children": sorted(child.canonical_fingerprint for child in children)}
+        )
+
+    @property
+    def operands(self) -> tuple[TargetingExpression, ...]:
+        return self.children
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.TYPE,
+            "expression_node_id": self.expression_node_id,
+            "canonical_fingerprint": self.canonical_fingerprint,
+            "children": [child.to_dict() for child in self.children],
+        }
+
+
+@dataclass(frozen=True)
+class Not(TargetingExpression):
+    operand: TargetingExpression
+
+    TYPE: ClassVar[str] = "not"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.operand, TargetingExpression):
+            raise ValueError("Not requires a TargetingExpression operand")
+        self._set_identity({"type": self.TYPE, "operand": self.operand.canonical_fingerprint})
+
+    @property
+    def child(self) -> TargetingExpression:
+        return self.operand
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": self.TYPE,
+            "expression_node_id": self.expression_node_id,
+            "canonical_fingerprint": self.canonical_fingerprint,
+            "operand": self.operand.to_dict(),
+        }
+
+
+def _serialized_expression_type(payload: Mapping[str, Any]) -> tuple[str, Any]:
+    raw_type = payload.get("type", payload.get("operator"))
+    if raw_type is not None:
+        token = str(raw_type).strip().casefold().replace("-", "_").replace(" ", "_")
+        if token in _AND_ALIASES:
+            return "and", payload.get("children", payload.get("operands"))
+        if token in _OR_ALIASES:
+            return "or", payload.get("children", payload.get("operands"))
+        if token in _NOT_ALIASES:
+            return "not", payload.get("operand", payload.get("child"))
+        if token in {"predicate", "predicate_ref", "predicateref"}:
+            return "predicate_ref", None
+    for alias in (*_AND_ALIASES, *_OR_ALIASES, *_NOT_ALIASES):
+        if alias in payload:
+            canonical = "and" if alias in _AND_ALIASES else "or" if alias in _OR_ALIASES else "not"
+            return canonical, payload[alias]
+    if "predicate_kind" in payload and "semantic_key" in payload:
+        return "predicate_ref", None
+    raise ValueError("serialized targeting expression has an unknown node type")
+
+
+def _verify_serialized_expression_identity(node: TargetingExpression, payload: Mapping[str, Any]) -> None:
+    expected_id = payload.get("expression_node_id")
+    if expected_id is not None and expected_id != node.expression_node_id:
+        raise TargetingExpressionInvariantError("serialized expression_node_id does not match node content")
+    expected_fingerprint = payload.get("canonical_fingerprint")
+    if expected_fingerprint is not None and expected_fingerprint != node.canonical_fingerprint:
+        raise TargetingExpressionInvariantError("serialized canonical_fingerprint does not match node content")
+
+
+def targeting_expression_from_dict(payload: Mapping[str, Any]) -> TargetingExpression:
+    """Deserialize a canonical tree while accepting common Boolean aliases."""
+
+    if not isinstance(payload, Mapping):
+        raise ValueError("serialized targeting expression must be an object")
+    node_type, child_payload = _serialized_expression_type(payload)
+    if node_type == "predicate_ref":
+        node: TargetingExpression = PredicateRef(
+            predicate_kind=payload.get("predicate_kind"),
+            semantic_key=payload.get("semantic_key"),
+            source_spans=payload.get("source_spans", ()),
+            payload=payload.get("payload", {}),
+        )
+    elif node_type == "not":
+        if not isinstance(child_payload, Mapping):
+            raise ValueError("Not.operand must be an expression object")
+        node = Not(targeting_expression_from_dict(child_payload))
+    else:
+        if not isinstance(child_payload, (tuple, list)):
+            raise ValueError(f"{node_type}.children must be an array")
+        children = tuple(targeting_expression_from_dict(child) for child in child_payload)
+        node = And(children, operator=str(payload.get("operator") or node_type)) if node_type == "and" else Or(
+            children, operator=str(payload.get("operator") or node_type)
+        )
+    _verify_serialized_expression_identity(node, payload)
+    return node
+
+
+def targeting_expression_to_dict(expression: TargetingExpression) -> dict[str, Any]:
+    if not isinstance(expression, TargetingExpression):
+        raise TypeError("expression must be a TargetingExpression")
+    return expression.to_dict()
+
+
+def expression_fingerprint(expression: TargetingExpression) -> str:
+    return expression.canonical_fingerprint
+
+
+def expression_node_id(expression: TargetingExpression) -> str:
+    return expression.expression_node_id
+
+
+@dataclass(frozen=True)
+class ConditionClaim:
+    """A parser's immutable ownership claim for one canonical predicate."""
+
+    source_spans: tuple[SourceSpan, ...]
+    expression_node_id: str
+    parent_expression_node_id: str | None
+    predicate_kind: str
+    semantic_key: str
+    owner: str | None
+    status: str
+    disposition: str
+    origin_parser: str
+    issues: tuple[Any, ...] = field(default_factory=tuple, compare=False, hash=False)
+    claim_id: str = ""
+    _issues_canonical: str = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        spans = _normalize_source_spans(self.source_spans)
+        expression_id = _normalize_token(self.expression_node_id, field_name="expression_node_id")
+        parent_id = self.parent_expression_node_id
+        if parent_id is not None:
+            parent_id = _normalize_token(parent_id, field_name="parent_expression_node_id")
+            if parent_id == expression_id:
+                raise ValueError("a condition claim cannot be its own parent")
+        predicate_kind = _normalize_token(self.predicate_kind, field_name="predicate_kind")
+        semantic_key = _normalize_token(self.semantic_key, field_name="semantic_key")
+        owner = self.owner
+        if owner is not None:
+            owner = _normalize_token(owner, field_name="owner")
+        status = _normalize_token(self.status, field_name="status")
+        if status not in CLAIM_STATUSES:
+            raise ValueError(f"status must be one of {sorted(CLAIM_STATUSES)}")
+        disposition = _normalize_token(self.disposition, field_name="disposition")
+        if disposition not in CLAIM_DISPOSITIONS:
+            raise ValueError(f"disposition must be one of {sorted(CLAIM_DISPOSITIONS)}")
+        origin_parser = _normalize_token(self.origin_parser, field_name="origin_parser")
+        if not isinstance(self.issues, (tuple, list)):
+            raise ValueError("issues must be an array")
+        issues_copy = copy.deepcopy(list(self.issues))
+        issues_canonical = _canonical_json(issues_copy)
+
+        object.__setattr__(self, "source_spans", spans)
+        object.__setattr__(self, "expression_node_id", expression_id)
+        object.__setattr__(self, "parent_expression_node_id", parent_id)
+        object.__setattr__(self, "predicate_kind", predicate_kind)
+        object.__setattr__(self, "semantic_key", semantic_key)
+        object.__setattr__(self, "owner", owner)
+        object.__setattr__(self, "status", status)
+        object.__setattr__(self, "disposition", disposition)
+        object.__setattr__(self, "origin_parser", origin_parser)
+        object.__setattr__(self, "issues", tuple(issues_copy))
+        object.__setattr__(self, "_issues_canonical", issues_canonical)
+
+        content = {
+            "source_spans": _serialize_source_spans(spans),
+            "expression_node_id": expression_id,
+            "parent_expression_node_id": parent_id,
+            "predicate_kind": predicate_kind,
+            "semantic_key": semantic_key,
+            "owner": owner,
+            "status": status,
+            "disposition": disposition,
+            "origin_parser": origin_parser,
+            "issues": json.loads(issues_canonical),
+        }
+        derived_id = _content_hash("claim", content)
+        if self.claim_id and self.claim_id != derived_id:
+            raise ConditionClaimInvariantError(("serialized claim_id does not match claim content",))
+        object.__setattr__(self, "claim_id", derived_id)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "claim_id": self.claim_id,
+            "source_spans": _serialize_source_spans(self.source_spans),
+            "expression_node_id": self.expression_node_id,
+            "parent_expression_node_id": self.parent_expression_node_id,
+            "predicate_kind": self.predicate_kind,
+            "semantic_key": self.semantic_key,
+            "owner": self.owner,
+            "status": self.status,
+            "disposition": self.disposition,
+            "origin_parser": self.origin_parser,
+            "issues": json.loads(self._issues_canonical),
+        }
+
+    @classmethod
+    def from_dict(cls, payload: Mapping[str, Any]) -> "ConditionClaim":
+        if not isinstance(payload, Mapping):
+            raise ValueError("serialized condition claim must be an object")
+        return cls(
+            source_spans=payload.get("source_spans", ()),
+            expression_node_id=payload.get("expression_node_id"),
+            parent_expression_node_id=payload.get("parent_expression_node_id"),
+            predicate_kind=payload.get("predicate_kind"),
+            semantic_key=payload.get("semantic_key"),
+            owner=payload.get("owner"),
+            status=payload.get("status"),
+            disposition=payload.get("disposition"),
+            origin_parser=payload.get("origin_parser"),
+            issues=payload.get("issues", ()),
+            claim_id=str(payload.get("claim_id") or ""),
+        )
+
+
+def condition_claim_invariant_issues(claims: Iterable[ConditionClaim]) -> tuple[str, ...]:
+    """Return deterministic ownership errors without mutating claims.
+
+    Two parsers may report the same predicate, but only one claim may own a
+    semantic node/source span.  Other equivalent claims must be explicitly
+    marked ``suppressed_duplicate`` (or carry another non-owning disposition).
+    """
+
+    materialized = tuple(claims)
+    issues: list[str] = []
+    seen_claim_ids: set[str] = set()
+    node_semantics: dict[str, tuple[str, str]] = {}
+    owned_nodes: dict[tuple[str, str, str], ConditionClaim] = {}
+    owned_spans: dict[SourceSpan, ConditionClaim] = {}
+    suppressed_claims: list[ConditionClaim] = []
+
+    for index, claim in enumerate(materialized):
+        if not isinstance(claim, ConditionClaim):
+            issues.append(f"claims[{index}] is not a ConditionClaim")
+            continue
+        if claim.claim_id in seen_claim_ids:
+            issues.append(f"duplicate claim_id: {claim.claim_id}")
+        seen_claim_ids.add(claim.claim_id)
+
+        semantic_identity = (claim.predicate_kind, claim.semantic_key)
+        previous_semantics = node_semantics.setdefault(claim.expression_node_id, semantic_identity)
+        if previous_semantics != semantic_identity:
+            issues.append(
+                f"expression node {claim.expression_node_id} has multiple semantic identities"
+            )
+
+        if claim.disposition in {"owned", "suppressed_duplicate"} and claim.owner is None:
+            issues.append(f"{claim.disposition} claim {claim.claim_id} requires an owner")
+
+        if claim.disposition in {"owned", "suppressed_duplicate"} and claim.status != "resolved":
+            issues.append(f"{claim.disposition} claim {claim.claim_id} must be resolved")
+        if claim.disposition in {"unresolved", "unsupported"} and claim.status != "unresolved":
+            issues.append(f"{claim.disposition} claim {claim.claim_id} must be unresolved")
+
+        if claim.disposition == "suppressed_duplicate":
+            suppressed_claims.append(claim)
+
+        if claim.disposition != "owned":
+            continue
+
+        node_key = (claim.expression_node_id, claim.predicate_kind, claim.semantic_key)
+        previous_node_owner = owned_nodes.get(node_key)
+        if previous_node_owner is not None:
+            issues.append(
+                "duplicate owned expression node: "
+                f"{claim.expression_node_id} ({previous_node_owner.owner!r}, {claim.owner!r})"
+            )
+        else:
+            owned_nodes[node_key] = claim
+
+        for span in claim.source_spans:
+            previous_span_owner = owned_spans.get(span)
+            if previous_span_owner is not None:
+                issues.append(
+                    "duplicate owned source span: "
+                    f"{span[0]}:{span[1]} "
+                    f"({previous_span_owner.semantic_key!r}, {claim.semantic_key!r}) "
+                    f"({previous_span_owner.owner!r}, {claim.owner!r})"
+                )
+            else:
+                owned_spans[span] = claim
+
+    for claim in suppressed_claims:
+        node_key = (claim.expression_node_id, claim.predicate_kind, claim.semantic_key)
+        if node_key not in owned_nodes:
+            issues.append(f"suppressed duplicate {claim.claim_id} has no owned canonical claim")
+
+    return tuple(sorted(set(issues)))
+
+
+def validate_condition_claims(claims: Iterable[ConditionClaim]) -> tuple[ConditionClaim, ...]:
+    materialized = tuple(claims)
+    issues = condition_claim_invariant_issues(materialized)
+    if issues:
+        raise ConditionClaimInvariantError(issues)
+    return materialized
+
+
+# Explicit alias for callers that name the operation after the contract rather
+# than the collection being validated.
+validate_condition_claim_invariants = validate_condition_claims
 
 
 MAX_DEPTH = 6

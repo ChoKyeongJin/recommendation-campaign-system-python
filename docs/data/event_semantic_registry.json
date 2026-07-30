@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "description": "이벤트 도메인별 의미 차원, 표면어, scope 관계를 함께 소유한다. 파서와 의미 검증기는 이 레지스트리에서 같은 canonical 값을 읽고, 물리 SQL 매핑은 event_compiler의 별도 registry가 소유한다.",
+  "domains": {
+    "purchase": {
+      "dimensions": ["channel", "order_status", "product_scope", "brand"]
+    },
+    "login": {
+      "dimensions": ["channel"]
+    },
+    "signup": {
+      "dimensions": ["channel"]
+    },
+    "cart": {
+      "dimensions": ["product_scope", "brand"]
+    }
+  },
+  "dimensions": {
+    "channel": {
+      "field_template": "{domain}.channel",
+      "unrestricted_aliases": ["전체", "모든"],
+      "values": {
+        "online": {
+          "aliases": ["온라인", "온라인몰", "쇼핑몰"],
+          "disjoint_with": ["offline"]
+        },
+        "offline": {
+          "aliases": ["오프라인", "오프샵", "매장", "점포", "지점"],
+          "disjoint_with": ["online"]
+        }
+      }
+    },
+    "order_status": {
+      "field_template": "{domain}.order_status",
+      "unrestricted_aliases": ["전체", "모든", "모든 상태"],
+      "values": {
+        "completed": {
+          "aliases": ["정상", "완료", "결제완료"],
+          "disjoint_with": ["cancelled"]
+        },
+        "cancelled": {
+          "aliases": ["취소", "취소된"],
+          "disjoint_with": ["completed"]
+        }
+      }
+    },
+    "product_scope": {
+      "field_template": "{domain}.product_scope",
+      "unrestricted_aliases": ["전체 상품", "모든 상품"],
+      "qualifier_aliases": ["상품", "제품", "품목", "카테고리"],
+      "values": {}
+    },
+    "brand": {
+      "field_template": "{domain}.brand",
+      "unrestricted_aliases": ["전체 브랜드", "모든 브랜드"],
+      "qualifier_aliases": ["브랜드"],
+      "values": {}
+    }
+  }
+}

@@ -3,6 +3,149 @@
     "objective": "purchase"
   },
   "plan": {
+    "canonical_targeting_expression": {
+      "canonical_fingerprint": "78852fccb0331f972ea04143fa0b68d42c828a3c9314d5bb1ee30c7275b20b01",
+      "children": [
+        {
+          "canonical_fingerprint": "06240df9f69d9389251dd49730e58e2a56f5ce5411fa5ff4e8b77615dc29dd2f",
+          "expression_node_id": "expr_06240df9f69d9389251dd49730e58e2a56f5ce5411fa5ff4e8b77615dc29dd2f",
+          "payload": {
+            "legacy_condition": {
+              "fact": "member",
+              "fact_join": false,
+              "kind": "purchase_membership",
+              "params": {
+                "domain": "purchase",
+                "operator": "exists",
+                "satisfied_by": "aggregate_conditions"
+              }
+            }
+          },
+          "predicate_kind": "LegacyPredicate",
+          "semantic_key": "legacy:purchase_membership:b5dc6c1200719e92925da577a0f0509505a16a6560407522f675085cfd47bc89",
+          "source_spans": [],
+          "type": "predicate_ref"
+        },
+        {
+          "canonical_fingerprint": "75db8b1414dbac3e66aad18357e058d5605ae919d992712f549e9d93d237a957",
+          "children": [
+            {
+              "canonical_fingerprint": "628d8ca7d767da8372324310551c7539c8b625d5f793f3f64227272b3490f414",
+              "expression_node_id": "expr_628d8ca7d767da8372324310551c7539c8b625d5f793f3f64227272b3490f414",
+              "payload": {
+                "legacy_member": {
+                  "predicate": {
+                    "dimension": "age",
+                    "operator": "gte",
+                    "owner": "member",
+                    "values": [
+                      30
+                    ]
+                  },
+                  "type": "predicate"
+                }
+              },
+              "predicate_kind": "MemberPredicate",
+              "semantic_key": "member:d1bad9b6b5a19d4dfeaf14e2ddecfcdac0b1cb29a46d4eca9900870382144cdf",
+              "source_spans": [],
+              "type": "predicate_ref"
+            },
+            {
+              "canonical_fingerprint": "673965fb6a2f550343936da1338c1fcbde7cfa9644e5abe60c71cec3dd9fa744",
+              "expression_node_id": "expr_673965fb6a2f550343936da1338c1fcbde7cfa9644e5abe60c71cec3dd9fa744",
+              "payload": {
+                "legacy_member": {
+                  "predicate": {
+                    "dimension": "gender",
+                    "operator": "eq",
+                    "owner": "member",
+                    "values": [
+                      "female"
+                    ]
+                  },
+                  "type": "predicate"
+                }
+              },
+              "predicate_kind": "MemberPredicate",
+              "semantic_key": "member:428984ffedf003d1d592edc93d93ed2caa969b6c92b95553dba04672d70b3c02",
+              "source_spans": [],
+              "type": "predicate_ref"
+            },
+            {
+              "canonical_fingerprint": "badc0bd37b286f820e148668e53d50e1fca5456af464dff082978d2a9f6ecfd5",
+              "expression_node_id": "expr_badc0bd37b286f820e148668e53d50e1fca5456af464dff082978d2a9f6ecfd5",
+              "payload": {
+                "legacy_member": {
+                  "predicate": {
+                    "dimension": "age",
+                    "operator": "lte",
+                    "owner": "member",
+                    "values": [
+                      39
+                    ]
+                  },
+                  "type": "predicate"
+                }
+              },
+              "predicate_kind": "MemberPredicate",
+              "semantic_key": "member:c3994363591dbd2b75103d1107252a970fa187f0ae1421c9ddda3421c5ed7b86",
+              "source_spans": [],
+              "type": "predicate_ref"
+            }
+          ],
+          "expression_node_id": "expr_75db8b1414dbac3e66aad18357e058d5605ae919d992712f549e9d93d237a957",
+          "type": "and"
+        },
+        {
+          "canonical_fingerprint": "9b409c01d1dff9146e2ff01c7b54ff2fd5b90c78f6c2b1e113303fa1f923e6e6",
+          "expression_node_id": "expr_9b409c01d1dff9146e2ff01c7b54ff2fd5b90c78f6c2b1e113303fa1f923e6e6",
+          "payload": {
+            "legacy_condition": {
+              "fact": "order",
+              "fact_join": true,
+              "kind": "purchase_date",
+              "params": {
+                "from": "20190301",
+                "label": "2019년 3월 구매",
+                "to": "20190331"
+              }
+            }
+          },
+          "predicate_kind": "LegacyPredicate",
+          "semantic_key": "legacy:purchase_date:a280ce0c7e195b83d547352425889f37d76d74e8d71b7fa88077f234e599ee93",
+          "source_spans": [],
+          "type": "predicate_ref"
+        },
+        {
+          "canonical_fingerprint": "f3566b4d2e239fbf39b681e2e26799e9583e095d5c524fb56fd41866bc472d58",
+          "expression_node_id": "expr_f3566b4d2e239fbf39b681e2e26799e9583e095d5c524fb56fd41866bc472d58",
+          "payload": {
+            "legacy_condition": {
+              "fact": "order",
+              "fact_join": true,
+              "kind": "aggregate_conditions",
+              "params": {
+                "conditions": [
+                  {
+                    "label": "구매 횟수",
+                    "metric_id": "order_count",
+                    "operator": ">=",
+                    "threshold": 3.0,
+                    "window_days": null
+                  }
+                ]
+              }
+            }
+          },
+          "predicate_kind": "LegacyPredicate",
+          "semantic_key": "legacy:aggregate_conditions:3f3d61bcacf8fc2955e12c9e7d855cda6b58d7c6d2b626781da6cf05a14908f1",
+          "source_spans": [],
+          "type": "predicate_ref"
+        }
+      ],
+      "expression_node_id": "expr_78852fccb0331f972ea04143fa0b68d42c828a3c9314d5bb1ee30c7275b20b01",
+      "type": "and"
+    },
     "intent": "find_user_segment",
     "semantic_conditions": [
       {
@@ -13,7 +156,7 @@
       }
     ]
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "target_user": {
     "age_max": 39,
     "age_min": 30,

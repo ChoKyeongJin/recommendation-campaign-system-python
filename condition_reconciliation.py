@@ -41,9 +41,10 @@ import json
 import os
 import re
 from collections import defaultdict
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any
 
 import set_expression_engine
 
@@ -906,13 +907,16 @@ class ClarificationEvaluator:
         remaining: list[dict[str, Any]] = []
         issues: list[dict[str, Any]] = []
 
-        for expression in plan.get("set_expressions", []) or []:
+        for expression_index, expression in enumerate(plan.get("set_expressions", []) or []):
             if not isinstance(expression, dict):
                 continue
             unresolved = [
                 _operand_text(node)
-                for node, _polarity, _path in iter_set_operands(expression.get("set_ast"))
+                for node, _polarity, path in iter_set_operands(expression.get("set_ast"))
                 if node.get("type") == "unknown_operand"
+                and not ownership.is_consumed(
+                    f"set_expressions[{expression_index}].{path}"
+                )
             ]
             had_unknown_before = bool(expression.get("_unknown_operands_before", unresolved))
             other_reason = bool(expression.get("requires_clarification")) and not had_unknown_before

@@ -24,8 +24,10 @@ timestamp 일 때 마지막 날을 잘라먹는다 — IR 이 정한 경계를 S
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date
 from typing import Any
 
 import event_ir
@@ -55,6 +57,26 @@ from sql_dialect import SqlDialect, get_dialect
 
 class SqlCompileError(Exception):
     """IR 은 유효하지만 이 스키마/방언으로는 표현할 수 없다. 의미를 줄이지 말고 여기서 멈춘다."""
+
+
+CAPABILITY_SUPPORTED = "supported"
+CAPABILITY_UNSUPPORTED = "unsupported"
+CAPABILITY_PARTIALLY_SUPPORTED = "partially_supported"
+
+
+@dataclass(frozen=True)
+class CompilerCapabilityIssue:
+    code: str
+    node_id: str
+    symbol: str | None = None
+
+
+@dataclass(frozen=True)
+class CompilerCapabilityResult:
+    status: str
+    issues: tuple[CompilerCapabilityIssue, ...]
+    supported_node_ids: tuple[str, ...]
+    unsupported_node_ids: tuple[str, ...]
 
 
 @dataclass
@@ -556,3 +578,90 @@ def unsupported_fields(
     """레지스트리에 없는 필드 심볼 목록."""
     resolved = fields or resolve_fields(registry or EVENT_REGISTRY)
     return sorted(name for name in event_ir.field_names(expression) if name not in resolved)
+
+
+def _semantic_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _semantic_payload(child)
+            for key, child in value.items()
+            if key not in {"evidence", "source_text", "evidence_span", "source_span"}
+        }
+    if isinstance(value, list):
+        return [_semantic_payload(child) for child in value]
+    return value
+
+
+def _capability_node_id(expression: event_ir.Condition) -> str:
+    payload = json.dumps(
+        _semantic_payload(expression.to_dict()),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "event_node_" + hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _capability_leaves(expression: event_ir.Condition) -> list[event_ir.Condition]:
+    if isinstance(expression, (And, Or)):
+        return [leaf for child in expression.operands for leaf in _capability_leaves(child)]
+    return [expression]
+
+
+def _fresh_context(context: CompileContext) -> CompileContext:
+    return CompileContext(
+        subject=context.subject,
+        registry=context.registry,
+        fields=context.fields,
+        dialect=context.dialect,
+        literals=context.literals,
+        today=context.today,
+    )
+
+
+def validate_compiler_capability(
+    expression: event_ir.Condition,
+    *,
+    context: CompileContext | None = None,
+) -> CompilerCapabilityResult:
+    """Report physical compiler capability without changing semantic status.
+
+    Capability is evaluated per Boolean leaf.  A mixture of supported and
+    unsupported leaves is ``partially_supported`` and must never be projected
+    to SQL by dropping the unsupported leaves.
+    """
+
+    active = context or CompileContext()
+    issues: list[CompilerCapabilityIssue] = []
+    supported: list[str] = []
+    unsupported: list[str] = []
+    for leaf in _capability_leaves(expression):
+        node_id = _capability_node_id(leaf)
+        leaf_issues: list[CompilerCapabilityIssue] = []
+        for symbol in unsupported_events(leaf, active.registry):
+            leaf_issues.append(CompilerCapabilityIssue("compiler_event_unregistered", node_id, symbol))
+        for symbol in unsupported_fields(leaf, active.registry, active.fields):
+            leaf_issues.append(CompilerCapabilityIssue("compiler_field_unregistered", node_id, symbol))
+        if not leaf_issues:
+            try:
+                compile_expression(leaf, context=_fresh_context(active))
+            except (SqlCompileError, event_ir.IrSchemaError, ValueError):
+                leaf_issues.append(CompilerCapabilityIssue("compiler_operation_unsupported", node_id))
+        if leaf_issues:
+            unsupported.append(node_id)
+            issues.extend(leaf_issues)
+        else:
+            supported.append(node_id)
+
+    if unsupported and supported:
+        status = CAPABILITY_PARTIALLY_SUPPORTED
+    elif unsupported or not supported:
+        status = CAPABILITY_UNSUPPORTED
+    else:
+        status = CAPABILITY_SUPPORTED
+    return CompilerCapabilityResult(
+        status=status,
+        issues=tuple(issues),
+        supported_node_ids=tuple(supported),
+        unsupported_node_ids=tuple(unsupported),
+    )

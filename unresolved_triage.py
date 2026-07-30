@@ -21,8 +21,9 @@ import json
 import os
 import re
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 import lexicon_patterns
 
@@ -57,6 +58,10 @@ NO_CONDITION_MARKER = "no_target_conditions"
 _WHOLE_AUDIENCE_RE = lexicon_patterns.pattern("whole_audience")
 # 타겟 조건이 사는 컨테이너(이 안이 비면 오디언스가 무제한이라는 뜻).
 _TARGET_CONTAINERS = ("target_user", "exclude")
+# Ownership reconciliation may move a condition out of legacy target slots.
+# A canonical/Event expression is still a real condition even when its
+# compiler capability later blocks execution.
+_TARGET_PLAN_KEYS = ("canonical_targeting_expression", "event_expression")
 
 
 def _has_target_conditions(plan: dict[str, Any]) -> bool:
@@ -68,7 +73,7 @@ def _has_target_conditions(plan: dict[str, Any]) -> bool:
             if isinstance(key, str) and not key.startswith("_")
         ):
             return True
-    return False
+    return any(plan.get(key) not in (None, [], {}, "", False) for key in _TARGET_PLAN_KEYS)
 
 
 def _describes_an_audience(query: str) -> bool:

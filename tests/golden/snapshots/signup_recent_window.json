@@ -1,8 +1,26 @@
 {
   "plan": {
+    "canonical_targeting_expression": {
+      "canonical_fingerprint": "5149293b18beec6fdaaf44417b7cfa9225e73284eb05fcb5e6f749e546b61037",
+      "expression_node_id": "expr_5149293b18beec6fdaaf44417b7cfa9225e73284eb05fcb5e6f749e546b61037",
+      "payload": {
+        "legacy_condition": {
+          "fact": "member",
+          "fact_join": false,
+          "kind": "signup_target",
+          "params": {
+            "days": 90
+          }
+        }
+      },
+      "predicate_kind": "LegacyPredicate",
+      "semantic_key": "legacy:signup_target:c74a133443946e772b9f7e7efe69b81292f7ee85dda6601e1b2e4f19303adc50",
+      "source_spans": [],
+      "type": "predicate_ref"
+    },
     "intent": "find_user_segment"
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "target_user": {
     "lifecycle": [
       "new_user"

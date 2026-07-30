@@ -89,7 +89,22 @@
     "purchase": {
       "presence_node_kinds": ["aggregate_inner_join", "purchase_aggregate"],
       "absence_node_kinds": ["purchase_inactivity", "purchase_not_exists"],
-      "event_dimensions": ["channel", "order_status", "product_scope"]
+      "event_dimensions": ["channel", "order_status", "product_scope", "brand"]
+    },
+    "login": {
+      "presence_node_kinds": ["login_exists"],
+      "absence_node_kinds": ["login_not_exists"],
+      "event_dimensions": ["channel"]
+    },
+    "signup": {
+      "presence_node_kinds": ["signup_exists"],
+      "absence_node_kinds": ["signup_not_exists"],
+      "event_dimensions": ["channel"]
+    },
+    "cart": {
+      "presence_node_kinds": ["cart_exists"],
+      "absence_node_kinds": ["cart_not_exists"],
+      "event_dimensions": ["product_scope", "brand"]
     }
   }
 }

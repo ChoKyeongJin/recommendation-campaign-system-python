@@ -3,6 +3,52 @@
     "objective": "purchase"
   },
   "plan": {
+    "canonical_targeting_expression": {
+      "canonical_fingerprint": "7022736cdbce330dd00bdcadf0efc2ca094f7c9056cee94635bbe364b12a1e91",
+      "children": [
+        {
+          "canonical_fingerprint": "0dffbe143889ac14017b02272c276f3ad2c535b716e3f2ab0357cd8067802fff",
+          "expression_node_id": "expr_0dffbe143889ac14017b02272c276f3ad2c535b716e3f2ab0357cd8067802fff",
+          "payload": {
+            "legacy_condition": {
+              "fact": "member",
+              "fact_join": false,
+              "kind": "purchase_membership",
+              "params": {
+                "domain": "purchase",
+                "operator": "exists"
+              }
+            }
+          },
+          "predicate_kind": "LegacyPredicate",
+          "semantic_key": "legacy:purchase_membership:553463f7d2a6fa7aeb3bc861ff5f57c137c0374fdf5ac159ca28d243d3fde2e5",
+          "source_spans": [],
+          "type": "predicate_ref"
+        },
+        {
+          "canonical_fingerprint": "d096ead9d7b0c1e7f1848393cf595e1ce5a7530ca8870fd75eb7a72e4b44a6f1",
+          "expression_node_id": "expr_d096ead9d7b0c1e7f1848393cf595e1ce5a7530ca8870fd75eb7a72e4b44a6f1",
+          "payload": {
+            "legacy_condition": {
+              "fact": "order",
+              "fact_join": true,
+              "kind": "purchase_inactivity",
+              "params": {
+                "min_days": 180,
+                "unit": "days",
+                "value": 180
+              }
+            }
+          },
+          "predicate_kind": "LegacyPredicate",
+          "semantic_key": "legacy:purchase_inactivity:5451e04c1773c5822052ea30a3ebbd9c59f1953e53c5d4f9444727a81930a444",
+          "source_spans": [],
+          "type": "predicate_ref"
+        }
+      ],
+      "expression_node_id": "expr_7022736cdbce330dd00bdcadf0efc2ca094f7c9056cee94635bbe364b12a1e91",
+      "type": "and"
+    },
     "intent": "find_user_segment",
     "semantic_conditions": [
       {
@@ -18,7 +64,7 @@
       }
     ]
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "target_user": {
     "purchase_inactivity": {
       "min_days": 180,

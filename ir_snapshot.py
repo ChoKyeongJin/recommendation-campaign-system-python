@@ -30,7 +30,7 @@ import plan_decisions
 
 # 스냅샷 스키마 버전. 정규형의 모양(키 구성·정렬 규칙)이 바뀌면 올린다 — 골든 파일이 어느 규칙으로
 # 만들어졌는지 파일 자체가 답하게 하려는 것이다. 값 변화(파서 개선)로는 올리지 않는다.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # 조건이 사는 컨테이너(plan_decisions 감사 대상과 같은 목록을 재사용한다 — 두 곳이 갈라지면
 # '감사에는 잡히는데 스냅샷에는 없는' 슬롯이 생긴다).
@@ -53,6 +53,15 @@ DERIVED_PLAN_KEYS = frozenset({
     "external_condition_results",  # Resolver/공급자/매핑 감사 스냅샷
     "external_condition_resolution",  # 외부 의존성 처리 결과 요약
     "slot_policy",            # 슬롯 소유권 판정 흔적(slot_policy)
+    # Canonical targeting execution metadata. The expression itself is a
+    # condition; these are validation, ownership, and projection receipts.
+    "canonical_projection",
+    "canonical_targeting_validation",
+    "canonical_targeting_version",
+    "condition_claims",
+    "event_compiler_capability",
+    "event_semantic_validation",
+    "ownership_reconciliation_complete",
 })
 
 # 조건이 아니라고 이미 선언된 키(원문·계측·감사 로그). plan_decisions 가 소유한다.
@@ -117,6 +126,7 @@ KNOWN_CONDITION_PLAN_KEYS = frozenset({
     "entity_set",
     "retrieval_scope",
     "event_expression",
+    "canonical_targeting_expression",
 })
 
 

@@ -3,6 +3,130 @@
     "objective": "purchase"
   },
   "plan": {
+    "canonical_targeting_expression": {
+      "canonical_fingerprint": "3b405e3c834fbfc02c627ea91bc798953b3615ea1b6ed52aceccb8fc73b9637e",
+      "children": [
+        {
+          "canonical_fingerprint": "0dffbe143889ac14017b02272c276f3ad2c535b716e3f2ab0357cd8067802fff",
+          "expression_node_id": "expr_0dffbe143889ac14017b02272c276f3ad2c535b716e3f2ab0357cd8067802fff",
+          "payload": {
+            "legacy_condition": {
+              "fact": "member",
+              "fact_join": false,
+              "kind": "purchase_membership",
+              "params": {
+                "domain": "purchase",
+                "operator": "exists"
+              }
+            }
+          },
+          "predicate_kind": "LegacyPredicate",
+          "semantic_key": "legacy:purchase_membership:553463f7d2a6fa7aeb3bc861ff5f57c137c0374fdf5ac159ca28d243d3fde2e5",
+          "source_spans": [],
+          "type": "predicate_ref"
+        },
+        {
+          "canonical_fingerprint": "38780664021270382eb228734c2adbde16edf18f721341df36e59e99150da220",
+          "expression_node_id": "expr_38780664021270382eb228734c2adbde16edf18f721341df36e59e99150da220",
+          "payload": {
+            "legacy_condition": {
+              "fact": "order",
+              "fact_join": true,
+              "kind": "condition_evaluation",
+              "params": {
+                "aggregation": {
+                  "function": "sum",
+                  "measure": "order_quantity"
+                },
+                "bindings": {
+                  "columns": {
+                    "member_no": "MEMBER_NO",
+                    "order_date": "ORDER_DATE",
+                    "order_id": "ORDER_ID",
+                    "order_quantity": "ORDER_QTY",
+                    "product_id": "PRODUCT_ID"
+                  },
+                  "fact_alias": "D",
+                  "fact_table": "CRM_SL_ORDERDETAILMALL",
+                  "member_alias": "B",
+                  "member_table": "CRM_MB_BASEINFO"
+                },
+                "capability": "same_product_same_order_quantity_v1",
+                "comparison": {
+                  "operator": "gte",
+                  "value": 2
+                },
+                "condition_result": {
+                  "distinct": true,
+                  "entity": "member",
+                  "key": "member_no"
+                },
+                "decision_target": {
+                  "entity": "member",
+                  "key": "member_no"
+                },
+                "evaluation_scope": {
+                  "entity": "purchase_order_detail",
+                  "time_range": {
+                    "field": "order_date",
+                    "from": "20190301",
+                    "to": "20190331"
+                  }
+                },
+                "final_result": {
+                  "aggregation": {
+                    "alias": "CUSTOMER_COUNT",
+                    "field": "member_no",
+                    "function": "count_distinct"
+                  },
+                  "unit": "scalar"
+                },
+                "grouping_unit": {
+                  "entity": "order_product",
+                  "keys": [
+                    "member_no",
+                    "order_id",
+                    "product_id"
+                  ]
+                },
+                "id": "same_product_co_purchase",
+                "measure": {
+                  "entity": "purchase_order_detail",
+                  "field": "order_quantity"
+                },
+                "source_text": "2019년 3월에 같은 상품을 동시 구매한 고객 수"
+              }
+            }
+          },
+          "predicate_kind": "LegacyPredicate",
+          "semantic_key": "legacy:condition_evaluation:61857dcbe1f52d38733165294c3ed2af29d6b94e857a2b184bce2ecd3a9c08d4",
+          "source_spans": [],
+          "type": "predicate_ref"
+        },
+        {
+          "canonical_fingerprint": "9b409c01d1dff9146e2ff01c7b54ff2fd5b90c78f6c2b1e113303fa1f923e6e6",
+          "expression_node_id": "expr_9b409c01d1dff9146e2ff01c7b54ff2fd5b90c78f6c2b1e113303fa1f923e6e6",
+          "payload": {
+            "legacy_condition": {
+              "fact": "order",
+              "fact_join": true,
+              "kind": "purchase_date",
+              "params": {
+                "from": "20190301",
+                "label": "2019년 3월 구매",
+                "to": "20190331"
+              }
+            }
+          },
+          "predicate_kind": "LegacyPredicate",
+          "semantic_key": "legacy:purchase_date:a280ce0c7e195b83d547352425889f37d76d74e8d71b7fa88077f234e599ee93",
+          "source_spans": [],
+          "type": "predicate_ref"
+        }
+      ],
+      "expression_node_id": "expr_3b405e3c834fbfc02c627ea91bc798953b3615ea1b6ed52aceccb8fc73b9637e",
+      "type": "and"
+    },
     "condition_evaluations": [
       {
         "aggregation": {
@@ -77,7 +201,7 @@
       }
     ]
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "target_user": {
     "purchase_date": {
       "from": "20190301",

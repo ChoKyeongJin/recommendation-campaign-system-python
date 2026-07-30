@@ -26,8 +26,9 @@ import functools
 import json
 import os
 import re
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 DEFAULT_LEXICON_PATH = Path(
     os.getenv("PARSER_LEXICON_PATH", str(Path(__file__).resolve().parent / "docs" / "data" / "parser_lexicon.json"))
@@ -38,8 +39,10 @@ _CODE_FALLBACK: dict[str, Any] = {
     "vocabularies": {
         # 논리 접속: AND 계열과 OR 계열. 절 경계 판정과 논리식 파싱이 공유한다.
         "and_connective": ["이면서", "면서", "이고", "이며", "그리고", "동시에"],
+        "targeting_and_alias": ["and", "all", "all_of", "intersection", "&&", "&", "그리고", "및"],
+        "targeting_not_alias": ["not", "negate", "!", "아님", "제외"],
         "contrast_connective": ["반면", "지만", "다만"],
-        "or_connective": ["또는", "혹은", "이거나", "거나"],
+        "or_connective": ["또는", "혹은", "이거나", "거나", "아니면"],
         # 사람(오디언스) 명사. 세 모듈이 각자 다른 범위를 쓰고 있어 층으로 나눈다.
         "member_noun": ["회원", "고객", "사용자"],
         "member_noun_informal": ["유저"],
@@ -96,6 +99,11 @@ _CODE_FALLBACK: dict[str, Any] = {
         # 도메인 무관 부정 어휘(의미 보존 검증용). 파서가 쓰는 event_negation_marker 와 **다른**
         # 목록이어야 한다 — 같은 목록으로 검사하면 낱말이 빠졌을 때 파서와 검증이 함께 못 본다.
         "generic_negation": ["없", "않", "미구매", "미구입", "미주문", "미접속", "미보유", "제외", "한번도"],
+        "event_scope_value_stopword": [
+            "최근", "지난", "이번", "올해", "작년", "전체", "전부", "모든", "모두", "누적", "총", "평균",
+            "첫", "최초", "재", "반복", "미", "없는", "있는", "고객", "회원", "사용자", "사람", "대상", "조건",
+            "구매", "구입", "주문", "브랜드", "상품", "제품", "품목", "카테고리",
+        ],
         # 사건 횟수 단위('0건'·'0회'의 단위). 수량 0 결합 구조는 코드가 갖고 단위만 데이터다.
         "event_count_unit": ["건", "회", "번", "개"],
         # 구매 존재/부재 표면 판정이 공유하는 동사(긍정·부정 정규식이 같은 목록을 쓰게 하는 단일 소스).
@@ -123,20 +131,17 @@ _CODE_FALLBACK: dict[str, Any] = {
         "or_operand_boundary": {
             "include": ["and_connective", "contrast_connective", "or_connective", "clause_separator"],
             "extra": ["중"],
-            "exclude": ["다만", "혹은"],
-            "note": "OR 피연산자 경계. '중'은 '회원 중'의 경계. 다만/혹은 누락은 이관 전 상태 보존 — 의도 미확인.",
+            "exclude": ["다만"],
+            "note": "OR 피연산자 경계. '중'은 '회원 중'의 경계이고 다만은 대조 표지라 제외한다.",
         },
         "campaign_clause_boundary": {
             "include": ["and_connective", "contrast_connective", "or_connective", "clause_separator"],
-            "exclude": ["이면서", "동시에", "혹은"],
+            "exclude": ["이면서", "동시에"],
             "note": "캠페인 절 경계. 이면서/동시에가 빠져 있다 — AND 접속어인데 경계로 안 치는 것이 의도인지 미확인(누락 의심).",
         },
         "logic_and": {"include": ["and_connective"]},
         "logic_or": {"include": ["or_connective"]},
-        "or_connective": {
-            "include": ["or_connective"], "exclude": ["혹은"],
-            "note": "OR 게이트 판정용. logic_or 와 달리 '혹은'이 빠져 있다 — 이관 전 상태 보존.",
-        },
+        "or_connective": {"include": ["or_connective"]},
         "member_noun_core": {"include": ["member_noun"]},
         "member_noun_basic": {"include": ["member_noun", "member_noun_informal"]},
         "purchase_rank_target": {
