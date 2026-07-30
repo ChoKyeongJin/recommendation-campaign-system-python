@@ -26,6 +26,7 @@ from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 
 import aggregate_parser_config
+import aggregate_semantics
 import aggregate_spans
 import condition_reconciliation
 from external_conditions.classifier import (
@@ -23212,6 +23213,153 @@ def _aggregate_subquery_matches_metric(metric: dict[str, Any], subquery: str) ->
     return column in subquery
 
 
+# ── SQL 합성 전 의미 검증(존재 vs 부재) ─────────────────────────────────────────────────
+# 파서가 잘못된 중간 결과를 만들어도 **모순된 SQL 은 나가지 않게** 하는 마지막 방어선이다. 판정은
+# SQL 문자열이 아니라 typed IR(EventPredicate) 위에서 한다 — 별칭/키워드 검색은 리팩터링에 취약하고,
+# 무엇보다 '왜 모순인가'를 설명하지 못한다. 규칙과 근거는 aggregate_semantics 모듈이 소유한다.
+def _calendar_window_hull(purchase_date: Any, anchor: datetime) -> "aggregate_semantics.NormalizedWindow | None":
+    """절대 구매창(다구간 포함)을 하나의 반개방 구간으로 감싼다. 확정 불가면 None.
+
+    다구간('2018, 2019년')을 감싸는 hull 은 실제 집합보다 넓다 — 존재 조건 쪽에서만 쓰므로
+    '존재 ⊆ 부재' 판정이 더 엄격해질 뿐, 없는 충돌을 만들어내지 않는다."""
+    ranges = _calendar_window_ranges(purchase_date)
+    if not ranges:
+        return None
+    try:
+        start = min(datetime.strptime(begin, "%Y%m%d") for begin, _ in ranges)
+        end = max(datetime.strptime(finish, "%Y%m%d") for _, finish in ranges) + timedelta(days=1)
+    except (TypeError, ValueError):
+        return None
+    return aggregate_semantics.NormalizedWindow(start=start, end=min(end, anchor) if end > anchor else end)
+
+
+def _aggregate_condition_window(
+    condition: dict[str, Any], purchase_date: Any, anchor: datetime,
+) -> "aggregate_semantics.NormalizedWindow | None":
+    """집계 조건의 적용 기간을 반개방 구간으로 정규화한다(확정 불가면 None → UNKNOWN).
+
+    개월을 여기서 일수로 다시 환산하지 않는다 — window_days 는 이미 기존 기간 파서가 확정한 값이다."""
+    if condition.get("calendar_period"):
+        return None  # 달력 구간 표기는 구체 날짜로 확정되기 전이라 포함 관계를 증명할 수 없다
+    windows: list[aggregate_semantics.NormalizedWindow] = []
+    window_days = condition.get("window_days")
+    if isinstance(window_days, int) and window_days > 0:
+        windows.append(aggregate_semantics.rolling_window(anchor, window_days))
+    if purchase_date is not None:
+        absolute = _calendar_window_hull(purchase_date, anchor)
+        if absolute is None:
+            return None
+        windows.append(absolute)
+    if not windows:
+        return aggregate_semantics.lifetime_window(anchor)
+    combined = windows[0]
+    for window in windows[1:]:
+        narrowed = aggregate_semantics.intersect(combined, window)
+        if narrowed is None:
+            return None
+        combined = narrowed
+    return combined
+
+
+def _aggregate_requires_event_presence(
+    metric: dict[str, Any], condition: dict[str, Any], purchase_date: Any, has_product_scope: bool,
+) -> bool:
+    """이 조건이 실제로 '이벤트가 하나 이상' 을 요구하는가.
+
+    회원 요약 컬럼(스냅샷) 소스는 주문이 없어도 행이 남으므로 존재를 요구하지 않는다 — 그 경로까지
+    충돌로 보면 정상 조건을 막는다. 그 밖의 집계는 GROUP BY 결과에 INNER JOIN 하므로 창 안에 주문이
+    최소 한 건 있어야 성립한다(임계값 방향과 무관하다)."""
+    source = metric.get("source") if isinstance(metric.get("source"), dict) else {}
+    summary = metric.get("summary") if isinstance(metric.get("summary"), dict) else None
+    window_days = condition.get("window_days")
+    has_window = (isinstance(window_days, int) and window_days > 0) or purchase_date is not None
+    needs_grain = condition.get("aggregation_scope", "per_member") in _AGG_GRAIN_COLUMN
+    needs_scope = bool(condition.get("scope")) or has_product_scope
+    if summary and source.get("preferred") == "member_summary_column" and not (has_window or needs_grain or needs_scope):
+        return False
+    return True
+
+
+def _purchase_event_predicates(
+    query_plan: dict[str, Any], conditions: list[dict[str, Any]], metrics: dict[str, Any],
+    product_scopes: list[dict[str, Any]], anchor: datetime,
+) -> list["aggregate_semantics.EventPredicate"]:
+    """이 빌더가 만들려는 SQL 의 구매 이벤트 의미를 IR 로 뽑는다(존재 = 집계 INNER JOIN, 부재 = anti-join)."""
+    domain = aggregate_parser_config.rules().semantic_domains.get("purchase")
+    if domain is None:
+        return []
+    dimensions = domain.event_dimensions
+    target_user = query_plan.get("target_user", {})
+    purchase_date = target_user.get("purchase_date")
+    scope_values = frozenset(
+        str(scope.get("value"))
+        for scope in product_scopes
+        if isinstance(scope, dict) and scope.get("value")
+    )
+    predicates: list[aggregate_semantics.EventPredicate] = []
+    for index, condition in enumerate(conditions):
+        metric, _applied = _adjusted_metric(metrics[condition["metric_id"]], condition.get("adjustments"))
+        condition_scope = condition.get("scope") or {}
+        product_scope: frozenset[str] | None = None
+        if scope_values or condition_scope:
+            product_scope = scope_values | frozenset(str(v) for v in condition_scope.values() if v)
+        constraints: dict[str, frozenset[str] | None] = {dimension: None for dimension in dimensions}
+        if "product_scope" in constraints:
+            constraints["product_scope"] = product_scope
+        predicates.append(aggregate_semantics.EventPredicate(
+            domain="purchase",
+            polarity=aggregate_semantics.PRESENCE,
+            window=_aggregate_condition_window(condition, purchase_date, anchor),
+            constraints=constraints,
+            source_kind="aggregate_inner_join",
+            source_id=f"target_user.aggregate_conditions[{index}]:{condition.get('metric_id')}",
+            requires_event_presence=_aggregate_requires_event_presence(
+                metric, condition, purchase_date, bool(scope_values),
+            ),
+        ))
+    inactivity = target_user.get("purchase_inactivity")
+    if isinstance(inactivity, dict) and isinstance(inactivity.get("min_days"), int):
+        predicates.append(aggregate_semantics.EventPredicate(
+            domain="purchase",
+            polarity=aggregate_semantics.ABSENCE,
+            window=aggregate_semantics.rolling_window(anchor, inactivity["min_days"]),
+            constraints={dimension: None for dimension in dimensions},
+            source_kind="purchase_inactivity",
+            source_id="target_user.purchase_inactivity",
+        ))
+    if "no_purchase" in (target_user.get("behaviors") or []):
+        predicates.append(aggregate_semantics.EventPredicate(
+            domain="purchase",
+            polarity=aggregate_semantics.ABSENCE,
+            window=aggregate_semantics.lifetime_window(anchor),
+            constraints={dimension: None for dimension in dimensions},
+            source_kind="purchase_not_exists",
+            source_id="target_user.behaviors:no_purchase",
+        ))
+    return predicates
+
+
+def _guard_purchase_event_semantics(
+    query_plan: dict[str, Any], predicates: list["aggregate_semantics.EventPredicate"],
+) -> bool:
+    """모순/미확정이면 plan 을 미지원으로 표시하고 False 를 돌려 SQL 조립을 중단시킨다.
+
+    사용자에게는 예외나 노드명이 아니라 메시지 JSON 의 문구만 나간다. 진단은 구조화 로그에 남기되
+    원문 전체는 담지 않는다(개인정보가 섞일 수 있다)."""
+    result = aggregate_semantics.validate(predicates)
+    if result.verdict == aggregate_semantics.PROVEN_SAFE:
+        return True
+    finding = (result.conflicts or result.unresolved)[0]
+    _write_rag_llm_log("aggregate_semantic_validation", finding.as_log_fields())
+    text = aggregate_parser_config.rules().messages.render(finding.code)
+    query_plan["unsupported"] = {
+        "reason": finding.code,
+        "message": text,
+        "clarification": text,
+    }
+    return False
+
+
 def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     """범용 집계 조건('최근 N일 누적 구매 금액 100만원 이상' 등)을 실주문 집계로 타겟 추출한다.
 
@@ -23307,6 +23455,14 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
     objective = query_plan.get("campaign_constraints", {}).get("objective")
     if objective:
         select_columns.append(_sql_quote(objective) + " AS objective")
+
+    # 최종 SQL 문자열을 조립하기 직전에 의미 검증을 건다 — 존재(집계 INNER JOIN)와 부재(anti-join)가
+    # 같은 이벤트 범위·기간을 가리키면 그 SQL 은 정의상 공집합이다. 기간이 조금 겹치는 정상 조합
+    # ('최근 6개월 구매 있고 최근 1개월 구매 없는')은 통과한다 — 포함 관계로만 판정하기 때문이다.
+    if not _guard_purchase_event_semantics(
+        query_plan, _purchase_event_predicates(query_plan, valid, metrics, product_scopes, datetime.now()),
+    ):
+        return None
 
     sql_lines = ["SELECT " + ", ".join(select_columns), *from_clause]
     if where_clauses:
