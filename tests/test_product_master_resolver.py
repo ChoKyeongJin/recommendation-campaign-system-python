@@ -271,6 +271,69 @@ def test_korean_written_amount_is_not_queried_as_a_product(monkeypatch) -> None:
     assert "20190101" in candidate["sql"] and "20191231" in candidate["sql"]
 
 
+def test_no_guess_fallback_infers_nothing_from_a_groundless_phrase() -> None:
+    """근거가 없을 때 폴백은 종류·값 분해·컬럼 선택을 **하나도** 추측하지 않는다.
+
+    이 세 가지가 무추측 폴백의 전부다. 하나라도 추측하면 '실DB 근거 없이 지어낸 술어'가 되고,
+    그때부터 부정 목록으로 다시 막아야 한다.
+    """
+    resolution = resolver.resolve_product_phrase("없는브랜드 없는상품", lookup=lambda _terms: [])
+    fallback = resolver.no_guess_fallback(resolution)
+
+    assert resolution["status"] == "not_found"
+    assert fallback["status"] == "fallback"
+    assert fallback["grounded"] is False
+    assert fallback["filters"] == [], "종류별 술어를 만들지 않는다"
+    assert fallback["fallback_value"] == fallback["input"], "값을 쪼개거나 다듬지 않는다"
+    assert fallback["fallback_columns"] == list(resolver.SEARCH_COLUMNS), "컬럼을 골라 좁히지 않는다"
+    assert fallback["no_guess"] == list(resolver.NO_GUESS_DIMENSIONS)
+
+
+def test_no_guess_fallback_leaves_ambiguous_and_unavailable_alone() -> None:
+    """근거가 있는데 고를 수 없는 것(ambiguous)·조회 실패(unavailable)는 광역 검색으로 덮지 않는다."""
+    for status in ("ambiguous", "unavailable", "resolved"):
+        untouched = resolver.no_guess_fallback({"status": status, "input": "하기스"})
+        assert untouched["status"] == status
+        assert "no_guess" not in untouched
+
+
+def test_grounded_resolution_is_marked_grounded() -> None:
+    """접지 여부는 resolver 가 밝힌다 — 소비처가 status 문자열을 각자 해석하지 않게."""
+    grounded = resolver.resolve_product_phrase("하기스 기저귀", lookup=lambda _terms: [_product_row()])
+    assert grounded["grounded"] is True
+
+    unavailable = resolver.resolve_product_phrase("하기스", lookup=lambda _terms: (_ for _ in ()).throw(RuntimeError()))
+    assert unavailable["grounded"] is False
+
+
+def test_fallback_product_condition_is_reported_as_ungrounded(monkeypatch) -> None:
+    """무추측 폴백은 실행되지만(clarification 아님) 신뢰도 리포트에 근거 없음으로 드러난다."""
+    phrase = "하기쓰 기저귀"
+    query = f"{phrase}를 구매한 고객"
+    monkeypatch.setattr(
+        graph_rag.product_master_resolver,
+        "resolve_product_phrase",
+        lambda value: {
+            "input": value, "status": "not_found", "grounded": False,
+            "source": "product_master_lookup", "confidence": 0.0, "filters": [], "alternatives": [],
+        },
+    )
+
+    plan = graph_rag.build_query_plan(query, parser="rules")
+    result = graph_rag.build_sql_result(
+        nx.Graph(), query, plan, [], graph_rag.DEFAULT_SCHEMA_PATH, 100, original_query=query,
+    )
+
+    assert plan["target_user"]["purchase_object_resolution"]["status"] == "fallback"
+    assert "purchase_object_kind" not in plan["target_user"], "폴백은 종류를 추측하지 않는다"
+    assert result["is_success"] is True, "폴백은 실행 가능하다(오탈자·신규 상품이 요청을 막지 않는다)"
+    confidence = result.get("confidence") or {}
+    assert any("근거를 찾지 못해" in warning for warning in confidence.get("warnings", [])), confidence.get("warnings")
+    product_condition = next(c for c in confidence["conditions"] if c["key"] == "purchase_object")
+    assert not any(e["source_type"] == "product_master" for e in product_condition["evidence"]), \
+        "근거 없는 폴백이 상품 마스터 확인 근거를 달면 안 된다"
+
+
 def test_not_found_product_uses_whole_phrase_broad_fallback(monkeypatch) -> None:
     phrase = "하기쓰 기저귀"
     query = f"{phrase}를 구매한 고객"

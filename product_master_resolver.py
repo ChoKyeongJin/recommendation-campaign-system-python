@@ -5,6 +5,23 @@ surface is a product, brand, or category.  It searches ``CRM_CM_PRODUCT`` with
 bound parameters, builds a small normalized in-process index over the matching
 rows, and only returns an executable filter set when one interpretation wins by
 both confidence and margin.
+
+무추측 폴백(no-guess fallback)
+-----------------------------
+상품 마스터에 근거가 없을 때(``not_found``) 이 모듈은 **추측하지 않고 폴백한다**.
+:func:`no_guess_fallback` 이 그 정책의 단일 소유자다. 추측하지 않는 것 셋:
+
+  * ``kind``       — 상품명/브랜드/카테고리 중 무엇인지 정하지 않는다(``kind: None``).
+  * ``value``      — 원문 구절을 쪼개거나 다듬지 않는다(들어온 문자열 그대로).
+  * ``columns``    — 컬럼을 골라 좁히지 않는다(:data:`SEARCH_COLUMNS` 전체 광역 검색).
+
+폴백은 **실행 가능하다**(clarification 이 아니다) — 오탈자나 신규 등록 상품이 요청을 통째로
+막지 않게 하기 위함이다. 대신 ``grounded=False`` 로 표시해, 근거 있는 확정(``resolved``)과
+근거 없는 광역 검색을 소비처가 구분할 수 있게 한다(신뢰도 근거·경고가 이 플래그를 읽는다).
+
+``ambiguous``(후보는 있는데 우열이 없음)와 ``unavailable``(마스터 조회 실패)은 폴백 대상이
+아니다. 근거가 있는데 고를 수 없는 것과 근거 자체를 못 본 것은 광역 검색으로 덮을 문제가
+아니라 확인이 필요한 문제이므로 clarification 으로 남는다.
 """
 
 from __future__ import annotations
@@ -195,6 +212,31 @@ def _build_candidates(phrase: str, rows: list[dict[str, Any]]) -> list[dict[str,
     return sorted(candidates, key=lambda item: (item["confidence"], item["support_count"]), reverse=True)
 
 
+GROUNDED_STATUSES = frozenset({"resolved"})
+# 폴백이 추측하지 않은 것들. 소비처가 "무엇을 안 정했는지"를 문자열 비교 없이 읽을 수 있게 남긴다.
+NO_GUESS_DIMENSIONS = ("kind", "value_split", "column_subset")
+
+
+def no_guess_fallback(resolution: dict[str, Any]) -> dict[str, Any]:
+    """근거 없는 구절을 **추측 없이** 실행 가능한 광역 검색으로 바꾼다(정책 단일 소유자).
+
+    ``not_found`` 이외의 상태는 그대로 돌려준다 — 근거가 있는데 고를 수 없는 것(``ambiguous``)과
+    조회 자체가 실패한 것(``unavailable``)은 광역 검색으로 덮지 않는다.
+    """
+    if resolution.get("status") != "not_found":
+        return resolution
+    return {
+        **resolution,
+        "lookup_status": "not_found",
+        "status": "fallback",
+        "grounded": False,
+        "fallback_strategy": "whole_phrase_broad_match",
+        "fallback_value": resolution.get("input"),
+        "fallback_columns": list(SEARCH_COLUMNS),
+        "no_guess": list(NO_GUESS_DIMENSIONS),
+    }
+
+
 def _threshold(name: str, default: float) -> float:
     try:
         value = float(os.getenv(name, str(default)))
@@ -222,7 +264,7 @@ def resolve_product_phrase(
         "lookup_terms": list(terms),
     }
     if not normalized_phrase or not terms:
-        return {**base, "status": "not_found", "confidence": 0.0, "filters": [], "alternatives": []}
+        return {**base, "status": "not_found", "grounded": False, "confidence": 0.0, "filters": [], "alternatives": []}
 
     try:
         rows = (lookup or _live_lookup)(terms)
@@ -230,6 +272,7 @@ def resolve_product_phrase(
         return {
             **base,
             "status": "unavailable",
+            "grounded": False,
             "confidence": 0.0,
             "filters": [],
             "alternatives": [],
@@ -241,6 +284,7 @@ def resolve_product_phrase(
         return {
             **base,
             "status": "not_found",
+            "grounded": False,
             "confidence": 0.0,
             "filters": [],
             "alternatives": [],
@@ -267,6 +311,7 @@ def resolve_product_phrase(
     return {
         **base,
         "status": status,
+        "grounded": status in GROUNDED_STATUSES,
         "confidence": best["confidence"],
         "margin": margin,
         "equivalent_alternatives": equivalent_rows,

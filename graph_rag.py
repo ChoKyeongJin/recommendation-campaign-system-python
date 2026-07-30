@@ -3165,6 +3165,10 @@ def _attach_entity_set_scope_filter(
     return qualifier_span
 
 
+# 회원 명사는 이관된 어휘다(`member_noun_basic`). 인라인 정규식으로 다시 적으면 사전과 코드가 갈라진다.
+_MEMBER_NOUN_BASIC_RE = lexicon_patterns.pattern("member_noun_basic")
+
+
 def _has_entity_ranking_source_signal(query: str, config: dict[str, Any]) -> bool:
     """원문에 엔터티·순위·회원관계가 모두 있는지 느슨하게 감지한다.
 
@@ -3172,7 +3176,7 @@ def _has_entity_ranking_source_signal(query: str, config: dict[str, Any]) -> boo
     조건으로 조용히 축소하지 않도록, 원문 요구가 있었다는 사실만 보존하는 fail-closed 안전망이다.
     """
     compact = re.sub(r"[\s.,!?·_\-/'\"()]+", "", query or "").casefold()
-    if not compact or not re.search(r"회원|고객|사용자|유저", compact):
+    if not compact or not _MEMBER_NOUN_BASIC_RE.search(compact):
         return False
     entity_terms = [
         str(term).replace(" ", "").casefold()
@@ -3198,10 +3202,37 @@ def _has_entity_ranking_source_signal(query: str, config: dict[str, Any]) -> boo
     )
 
 
+# 회원 단위 랭킹 트랙들. 이들이 잡혔다면 순위의 대상은 상품이 아니라 **회원**이고 이미 구조화됐다 —
+# '상품을 가장 많이 산 고객 100명'처럼 엔터티 명사·순위어·구매어·회원 명사가 한 문장에 다 있어도
+# 엔터티 순위(= 많이 팔린 상품 N개)가 아니다. 아래 가드는 이 트랙들에 양보한다.
+_MEMBER_UNIT_RANKING_SLOTS = (
+    "purchase_count_ranking",    # '많이 산 고객 상위 N명' — 주문 팩트 집계 랭킹
+    "member_metric_ranking",     # '<지표> 높은 고객 상위 N명' — 월 스냅샷 지표 랭킹
+    "group_ranking_target",      # 그룹(지역/성별)별 Top-N
+    "region_density_target",     # '많이 거주하는 지역' — 지역 단위 랭킹
+)
+
+
+def _clear_entity_ranking_block(plan: dict[str, Any]) -> None:
+    """다른 트랙이 순위를 구조화했으므로 앞선 패스가 세운 fail-close 차단을 거둔다."""
+    if (plan.get("unsupported") or {}).get("reason") != "entity_ranking_not_structured":
+        return
+    plan.pop("unsupported", None)
+    plan["unmatched_source_conditions"] = [
+        item for item in plan.get("unmatched_source_conditions", [])
+        if not (isinstance(item, dict) and item.get("type") == "entity_ranking")
+    ]
+
+
 @_audited_stage
 def _guard_unparsed_entity_ranking(query: str, plan: dict[str, Any]) -> None:
     """원문 랭킹 요구가 AST로 구조화되지 않았으면 단순 구매 SQL 폴백을 차단한다."""
     if isinstance((plan.get("target_user") or {}).get("entity_set_condition"), dict):
+        return
+    # 회원 단위 랭킹이 잡혔으면 순위 요구는 이미 구조화된 것이다. 이 가드는 매 패스마다 다시 도는데
+    # 앞선 패스(재작성문 좌표계)에서 랭킹 어구가 지워져 차단이 걸렸을 수 있으므로 여기서 거둔다.
+    if any(isinstance(plan.get(slot), dict) for slot in _MEMBER_UNIT_RANKING_SLOTS):
+        _clear_entity_ranking_block(plan)
         return
     if not _has_entity_ranking_source_signal(query, _entity_set_config()):
         return
@@ -3209,7 +3240,9 @@ def _guard_unparsed_entity_ranking(query: str, plan: dict[str, Any]) -> None:
     plan["unsupported"] = {
         "reason": reason,
         "message": "상품·브랜드·카테고리 순위 조건을 인식했지만 집계→랭킹→회원 집합 구조로 확정하지 못했습니다.",
-        "clarification": "순위 개수와 구매 관계를 숫자로 명시해 주세요. 예: '2019년 어린이건강 카테고리 상품 중 많이 팔린 5개를 구매한 고객'.",
+        # 예시에 구체적인 값(카테고리명 등)을 넣지 않는다 — 사용자가 쓴 적 없는 값이 화면에 뜨면
+        # 시스템이 프롬프트에서 그 값을 뽑아냈다고 읽힌다.
+        "clarification": "순위 개수와 구매 관계를 숫자로 명시해 주세요. 예: '2019년에 많이 팔린 상품 10개를 구매한 고객'.",
     }
     unmatched = plan.setdefault("unmatched_source_conditions", [])
     unmatched.append({
@@ -3251,12 +3284,7 @@ def _apply_entity_set_condition(query: str, plan: dict[str, Any]) -> None:
             "clarification": "순위 기준(판매수량/매출)이나 대상(상품/브랜드/카테고리)을 바꿔서 다시 요청해 주시겠어요?",
         }
         return
-    if (plan.get("unsupported") or {}).get("reason") == "entity_ranking_not_structured":
-        plan.pop("unsupported", None)
-        plan["unmatched_source_conditions"] = [
-            item for item in plan.get("unmatched_source_conditions", [])
-            if not (isinstance(item, dict) and item.get("type") == "entity_ranking")
-        ]
+    _clear_entity_ranking_block(plan)
     target_user = plan.setdefault("target_user", {})
     target_user["entity_set_condition"] = node
     # 순위 절이 소유한 어구는 오디언스 슬롯에서 회수한다. 회수 판정은 '조건의 종류'가 아니라 '문장의
@@ -6821,18 +6849,11 @@ def _apply_product_master_resolution(query: str, plan: dict[str, Any]) -> None:
     ):
         return
 
-    resolution = product_master_resolver.resolve_product_phrase(phrase)
-    if resolution.get("status") == "not_found":
-        resolution = {
-            **resolution,
-            "lookup_status": "not_found",
-            "status": "fallback",
-            "fallback_strategy": "whole_phrase_broad_match",
-            "fallback_value": phrase,
-            "fallback_columns": [
-                "PRODUCT_NAME", "BRAND_NAME", "CATEGORY", "CATEGORYL_NAME", "CATEGORYM_NAME", "CATEGORYS_NAME",
-            ],
-        }
+    # 근거를 못 찾았으면 추측하지 않고 폴백한다 — 종류·값 분해·컬럼 선택을 모두 비워 둔 채
+    # 원문 구절 그대로 광역 검색한다. 폴백 정책은 product_master_resolver 가 소유한다.
+    resolution = product_master_resolver.no_guess_fallback(
+        product_master_resolver.resolve_product_phrase(phrase)
+    )
     target_user["purchase_object"] = phrase
     target_user["purchase_object_resolution"] = resolution
     status = str(resolution.get("status") or "unavailable")
@@ -9611,7 +9632,13 @@ _CUMULATIVE_WINDOW_MARKER_RE = re.compile(r"누적|누계|평생|통산|역대|�
 _AGG_UNIT_TOKEN_RE = re.compile(r"\d[\d,]*\s*(?:억|천만|백만|만|천)?\s*(종류|종수|품목|가지|건수|회수|종|개|건|회|번|원|점|장)")
 # 집계 범위(grain): 한 주문 내 / 동일 상품별 / 회원 누적.
 _AGG_SCOPE_PER_ORDER_RE = re.compile(r"한\s*주문|한\s*번에|한번에|주문당|주문\s*당|주문별|주문\s*별|1회\s*주문")
-_AGG_SCOPE_PER_PRODUCT_RE = re.compile(r"동일\s*상품|같은\s*상품|동일한\s*상품|상품별|상품\s*별|동일\s*제품|같은\s*제품")
+# 동일성 표지·상품 명사는 렉시콘 어휘다(`identity_same` × `product_noun`) — 구조만 코드에 남기고
+# 낱말은 사전에서 끼워 넣는다. 손으로 나열하던 조합에는 빈칸이 있었다('동일한 제품'·'제품별'이 누락).
+_SAME_MARKER_ALT = lexicon_patterns.alternation("identity_same")
+_PRODUCT_NOUN_ALT = lexicon_patterns.alternation("product_noun")
+_AGG_SCOPE_PER_PRODUCT_RE = re.compile(
+    rf"(?:{_SAME_MARKER_ALT})\s*(?:{_PRODUCT_NOUN_ALT})|(?:{_PRODUCT_NOUN_ALT})\s*별"
+)
 _AGG_SCOPE_PER_BRAND_RE = re.compile(r"동일한?\s*브랜드|같은\s*브랜드|브랜드별|브랜드\s*별")
 # 범위(scope) 필터: 브랜드/카테고리. '특정/어떤/모든' 등은 값 미지정 자리표시자다.
 _BRAND_SCOPE_RE = re.compile(r"(?P<val>[가-힣A-Za-z0-9]+)\s*브랜드")
@@ -10045,7 +10072,8 @@ _CART_AMOUNT_PURCHASE_WORDS = ("구매", "결제", "주문", "누적")
 # 동일 상품 복수 담기: "장바구니에 동일 상품을 여러 개 담은". 한 라인의 담은 수량(QTY)이 임계값 이상인
 # 장바구니를 뜻하므로 MAX(QTY) 로 판정한다 — SUM(QTY)은 서로 다른 상품을 하나씩 담아도 커져서 '동일 상품'이
 # 아니고, COUNT(라인)는 상품 종류 수라 역시 다르다.
-_CART_SAME_PRODUCT_PATTERN = re.compile(r"(동일|같은|똑같은)(상품|제품|품목|것)")
+# 장바구니 '동일 상품' 표지. 어휘는 렉시콘(`identity_same` × `product_noun`), '것'은 지시대명사라 여기 남는다.
+_CART_SAME_PRODUCT_PATTERN = re.compile(rf"(?:{_SAME_MARKER_ALT})(?:{_PRODUCT_NOUN_ALT}|것)")
 # 수량이 숫자로 안 나오는 표현('여러 개', '복수'). 이때 '여럿'의 하한은 2다.
 _CART_MULTIPLE_WORDS = ("여러", "복수", "중복", "2개이상", "두개이상")
 _CART_MULTIPLE_DEFAULT_THRESHOLD = 2

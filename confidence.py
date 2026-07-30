@@ -140,7 +140,8 @@ def _extract_conditions(query_plan: dict[str, Any], candidate: dict[str, Any]) -
         if meta is None or not meta.applies(condition.params):
             continue
         add(key=meta.key(condition.params), value=meta.value(condition.params),
-            ko=meta.ko(condition.params), kind=meta.kind, category=meta.category)
+            ko=meta.ko(condition.params), kind=meta.kind, category=meta.category,
+            **meta.extra(condition.params))
 
     for dimension_filter in query_plan.get("dimension_filters", []):
         names = dimension_filter.get("names") or dimension_filter.get("codes") or []
@@ -294,10 +295,24 @@ def _score_condition(
         cols = filters.get("purchase_product_match_columns", [])
         evidence.append(_ev("filter_registry", "member_target_filters.json: purchase_product_match_columns",
                              f"상품 {len(cols)}개 컬럼 LIKE N'%{cond['value']}%'", "confirmed"))
-        evidence.append(_ev("inference", "AI 추론", f"'{cond['value']}' 는 자유 텍스트 부분일치라 상품 매핑이 확정 코드가 아닙니다", "inferred"))
+        # 상품 마스터 접지 여부로 근거를 가른다. 근거로 확정한 값(resolved)과 근거를 못 찾아
+        # 추측 없이 원문을 광역 검색하는 값(무추측 폴백)은 같은 LIKE 지만 신뢰도가 다르다.
+        if cond.get("grounded"):
+            evidence.append(_ev("product_master", "CRM_CM_PRODUCT 조회",
+                                 f"'{cond['value']}' 의 상품명/브랜드/카테고리 의미를 같은 상품 행에서 확인", "confirmed"))
+            clarity = 75
+        else:
+            evidence.append(_ev("inference", "AI 추론",
+                                 f"'{cond['value']}' 는 자유 텍스트 부분일치라 상품 매핑이 확정 코드가 아닙니다", "inferred"))
+            clarity = 55
+            if cond.get("resolution_status") == "fallback":
+                warnings.append(
+                    f"상품 조건 '{cond['value']}' 은 상품 마스터에서 근거를 찾지 못해 종류를 추측하지 않고 "
+                    "원문 그대로 상품명·브랜드·카테고리를 광역 검색합니다(오탈자·신규 상품 가능성)."
+                )
+            else:
+                warnings.append(f"상품 조건 '{cond['value']}' 은 코드가 아닌 텍스트 LIKE 매칭이라 오탐/누락 가능성이 있습니다.")
         value_confirmed = False
-        clarity = 55
-        warnings.append(f"상품 조건 '{cond['value']}' 은 코드가 아닌 텍스트 LIKE 매칭이라 오탐/누락 가능성이 있습니다.")
     elif kind == "dimension":
         df = cond.get("dimension_filter", {})
         src = df.get("source") or "dimension_catalog"

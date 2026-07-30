@@ -51,6 +51,8 @@ class ConfidenceMeta:
     ko: Callable[[dict[str, Any]], str]
     # 파라미터가 채점 가능한 꼴인지(현행 confidence 의 isinstance 가드 보존). False 면 수집하지 않는다.
     applies: Callable[[dict[str, Any]], bool] = lambda params: True
+    # 채점 분기가 추가로 읽는 필드(예: 상품 조건의 접지 여부). 수집 항목에 그대로 병합된다.
+    extra: Callable[[dict[str, Any]], dict[str, Any]] = lambda params: {}
 
 
 # ── LLM 구조화 슬롯 스키마(단일 소스) ──────────────────────────────────────────────
@@ -677,7 +679,16 @@ def _extract_purchase_object(plan: dict[str, Any], _behaviors: frozenset[str]) -
     tu = _tu(plan)
     value = tu.get("purchase_object")
     if isinstance(value, str) and value:
-        return [{"value": value, "object_kind": tu.get("purchase_object_kind")}]
+        # 상품 마스터 접지 여부를 같이 싣는다 — 근거로 확정한 값과 근거 없이 광역 검색하는 값은
+        # 같은 LIKE 로 컴파일되지만 신뢰도가 다르다(무추측 폴백).
+        resolution = tu.get("purchase_object_resolution")
+        resolution = resolution if isinstance(resolution, dict) else {}
+        return [{
+            "value": value,
+            "object_kind": tu.get("purchase_object_kind"),
+            "resolution_status": resolution.get("status"),
+            "grounded": bool(resolution.get("grounded")),
+        }]
     return []
 
 
@@ -905,6 +916,10 @@ CONDITION_SPECS: tuple[ConditionSpec, ...] = (
             key=lambda p: "purchase_object", value=lambda p: p["value"],
             ko=lambda p: ("브랜드 구매 이력" if p.get("object_kind") == "brand" else "상품 구매 이력")
             + f": '{p['value']}'",
+            extra=lambda p: {
+                "grounded": p.get("grounded"),
+                "resolution_status": p.get("resolution_status"),
+            },
         ),
     ),
     ConditionSpec(

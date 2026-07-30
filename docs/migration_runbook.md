@@ -99,7 +99,8 @@ docker compose exec -e PYTHONPATH=/app -w /app api \
 |---|---|---|
 | 골든 IR 스냅샷 | `tests/golden/` | 파서 변경이 조건을 조용히 잃는 것 |
 | `known_gap` 마커 | `tests/golden/cases.json` | 결함을 스냅샷으로 축복하는 것 (고쳐지면 마커를 지우라고 실패) |
-| 어휘형 정규식 래칫 | `docs/data/regex_inventory_baseline.json` | 새 표면어를 또 코드로 받는 것 |
+| 코드 규칙 래칫 | `docs/data/regex_inventory_baseline.json` | 새 표면어를 또 코드로 받는 것 (어휘형·낱말집합·업무의미형 상한) |
+| 래칫 스캔 범위 | `tests/test_regex_inventory_ratchet.py` | 규칙이 **세지지 않는 형태**로 들어오는 것(묶음·인라인 정규식·낱말집합) |
 | rule 생산자 래칫 | `tests/golden/method_mix_baseline.json` | 조건 생산자가 정규식으로 늘어나는 것 |
 | 조용한 소실 상한 | `tests/test_slot_policy.py` | 백스톱도 fail-close 도 없는 슬롯이 느는 것 |
 | 이관 동등성 | `tests/test_lexicon_patterns.py` | 사전으로 옮기며 몰래 어휘를 넓히는 것 |
@@ -115,9 +116,61 @@ docker compose exec -e PYTHONPATH=/app -w /app api \
 # 골든 스냅샷 + 방법 구성 기준선 (diff 를 눈으로 검토한 뒤 커밋)
 python tools/regen_ir_goldens.py
 
-# 정규식 인벤토리 (--set-baseline 은 어휘형 상한을 내릴 때만)
-python tools/regex_inventory.py [--set-baseline]
+# 규칙 인벤토리 (--set-baseline 은 상한을 내릴 때. 올릴 때는 --reason 이 필수다)
+python tools/regex_inventory.py [--set-baseline] [--reason "..."]
 ```
+
+### 래칫이 세는 것 (2026-07-30 확대)
+
+래칫이 `lexical` 만 보던 동안 `domain` 은 147 → 162 로 조용히 늘었다. 상한 없는 분류가 배출구가
+되므로, 이제 **`lexical`·`wordlist`·`domain` 세 분류 모두**에 상한이 있다(`grammar` 는 구조라 제외).
+
+더 중요한 것은 **스캔 범위**였다. 상한은 세는 것만 막을 수 있어서, 규칙이 세지지 않는 형태로 들어오면
+상한이 있어도 늘어난다. 인벤토리는 이제 넷을 모두 본다 — 총 205 → 315개가 드러났다:
+
+| `source` | 형태 | 이전 |
+|---|---|---|
+| `constant` | `NAME = re.compile("리터럴")` | 셌음 |
+| `collection` | `NAME = (re.compile(...), ...)` — 튜플·딕트에 담긴 정규식 | **못 봄** |
+| `inline` | `re.search("한글…", text)` — 이름 없는 호출 | **못 봄** |
+| `wordlist` | `NAME = frozenset({"상품", "제품", …})` — 한글 낱말집합 상수 | **못 봄** |
+
+분류가 하나 늘었다: **`composed`** — 사전 어휘를 끼워 넣어 조립한 구조
+(`rf"(?:{alternation('identity_same')})\s*(?:{...})"`). 이행 **완료** 형태라 상한을 걸지 않는다.
+걸면 손으로 쓴 `domain` 정규식을 사전으로 옮길 때 지표가 그대로여서 이관이 손해가 된다 —
+이제 옮기면 `domain` 이 내려가고 `composed` 가 올라간다.
+
+확대 즉시 이관 회귀 1건이 잡혔다: `member_noun_basic`(이미 사전으로 옮긴 어휘)이
+`graph_rag._has_entity_ranking_source_signal` 안에서 인라인 정규식으로 되살아나 있었다. 이름이 없어서
+기존 래칫의 `test_migrated_patterns_are_gone_from_the_inventory` 도 못 보던 자리다.
+
+낱말집합은 **규칙 상수만** 센다(상수 이름 규약 `^_?[A-Z][A-Z0-9_]*$`) — LLM 프롬프트 문구를 조립하는
+지역 리스트까지 세면 문구 수정이 래칫을 깨고, 그러면 래칫이 신뢰를 잃는다.
+
+## 상품 조건의 접지 — 무추측 폴백 (2026-07-30)
+
+상품 자유텍스트(`target_user.purchase_object`)는 닫힌 어휘가 없어 사전으로 못 옮긴다. 대신 **실DB
+접지**로 판정한다: `product_master_resolver` 가 `CRM_CM_PRODUCT` 를 조회해 같은 상품 행에서
+상품명/브랜드/카테고리 facet 이 우열(신뢰도+마진)로 결정될 때만 `resolved` 로 확정한다.
+
+근거를 못 찾았을 때(`not_found`)의 정책이 **무추측 폴백**이다 — `no_guess_fallback` 이 단일 소유자다.
+
+| 상태 | 실행 | 추측 | 결과 |
+|---|---|---|---|
+| `resolved` | O | — | facet 별 술어(같은 행 AND). `grounded=True` |
+| `not_found` | O | **없음** | 종류·값 분해·컬럼 선택을 모두 비운 채 원문 그대로 광역 LIKE. `grounded=False` + 신뢰도 경고 |
+| `ambiguous` | X | — | 근거는 있는데 우열이 없음 → clarification |
+| `unavailable` | X | — | 마스터 조회 실패 → clarification |
+
+폴백이 clarification 이 **아닌** 이유: 오탈자·신규 등록 상품이 요청을 통째로 막으면 안 된다. 폴백이
+추측을 **하지 않는** 이유: 종류를 하나 고르는 순간 실DB 근거 없이 지어낸 술어가 되고, 그때부터 다시
+부정 목록으로 막아야 한다. 실행은 하되 근거 없음을 드러내는 것이 이 설계다(`grounded` 플래그 →
+`confidence` 근거·경고).
+
+**남은 것**: 접지 판정은 폴백을 정리했지만 **입력 게이트를 대체하지 못한다.** `'고액'`·`'다'`·`'3월'`
+같은 잡토큰은 `not_found` 가 아니라 마스터에서 *많이* 매칭되므로, 구체 식별어 게이트
+(`_is_concrete_purchase_scope_phrase` + `_GENERIC_PRODUCT_NOUNS` 계열 46개 낱말집합 중 일부)는
+그대로 필요하다. 그 목록의 데이터 이관은 낱말집합 래칫이 관리하는 별건이다.
 
 ## QueryPlan V3 LLM-first 전환
 
@@ -151,6 +204,8 @@ LLM-first에서 원문 권위 규칙은 실행 플랜을 수정하지 않는다.
   fail-close 표시도 없다. 7단계의 종료 조건은 이 값이 0 이 되는 것이다.
 - **부분 소실은 탐지 못 한다** — 미해석 탐지기는 "조건이 하나도 없는" 경우만 잡는다. `안양에 사는`
   처럼 일부만 빠지는 것은 shadow 비교의 `only_candidate` 판정이 담당하므로, shadow 를 켜야 보인다.
-- **어휘형 정규식 8개** — `_BALANCE_*` 3, `_THRESHOLD_CUE_RE`, `_OUTPUT_ACTION_RE`,
-  `_MEMBER_METRIC_COMPARISON_RE`, `_TREND_ORDER_MARKER_RE`, `_NOISE_LABEL`(빌드 스크립트).
-- **업무의미형 149개** — 어휘와 구조가 섞여 건별 판단이 필요하다. `docs/regex_inventory.md` 참조.
+- **어휘형 11개 / 낱말집합 46개 / 업무의미형 218개 / 조립형 5개** (2026-07-30 확대 스캔 기준). 어휘형은
+  `_BALANCE_*` 3, `_THRESHOLD_CUE_RE`, `_OUTPUT_ACTION_RE`, `_MEMBER_METRIC_COMPARISON_RE`,
+  `_TREND_ORDER_MARKER_RE`, `_NOISE_LABEL`(빌드 스크립트) + 인라인 3. 우선순위는
+  `docs/regex_inventory.md` 의 교대수 순서다. 낱말집합 상위는 `_VALUE_TAIL_TOKENS`(45),
+  `query_semantics.NON_ENTITY_TERMS`(36), `_NOISE_OPERAND_TOKENS`(32).

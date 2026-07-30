@@ -81,15 +81,17 @@ class SourceRequirementIntegrityError(ValueError):
 
 # entity qualifier 표면 표지(브랜드/상품/카테고리·제품·품목명 + 조사/콜론 + 값). 조사를 '필수'로 둬
 # 일반 명사구('상품 구매한')가 값으로 오포착되는 것을 막고, 바로 뒤의 고유 값만 딴다. 값 뒤 조사는 뗀다.
-_ENTITY_QUALIFIER_RE = re.compile(
-    r"(브랜드명|브랜드|상품명|카테고리명|카테고리|제품명|품목명)"
-    r"(?:이|가|은|는|:|=)\s*([가-힣A-Za-z0-9][가-힣A-Za-z0-9]+)"
-)
 _ENTITY_MARKER_DOMAIN = {
     "브랜드명": "brand", "브랜드": "brand",
     "상품명": "product", "제품명": "product", "품목명": "product",
     "카테고리명": "category", "카테고리": "category",
 }
+# 표지 목록의 단일 소스는 위 매핑이다 — 정규식에 같은 낱말을 한 번 더 나열하면 표지를 추가할 때
+# 한쪽만 고쳐 조용히 어긋난다. 긴 표지 우선 정렬이 필수다('브랜드명'이 '브랜드'보다 먼저 와야 한다).
+_ENTITY_QUALIFIER_RE = re.compile(
+    "(" + "|".join(sorted(_ENTITY_MARKER_DOMAIN, key=lambda marker: (-len(marker), marker))) + ")"
+    r"(?:이|가|은|는|:|=)\s*([가-힣A-Za-z0-9][가-힣A-Za-z0-9]+)"
+)
 _JOSA_TAIL_RE = re.compile(r"(을|를|이|가|은|는|인|의|와|과|도|만|에게|에서|에)$")
 # '브랜드가 3개 이상'의 '3개'는 엔티티 **이름**이 아니라 가짓수(임계값)다 — 수량은 qualifier 값에서 뺀다.
 # 숫자 + (한글 계수 단위)만 배제하므로 '3M'·'5th' 같은 실제 영문 브랜드명은 그대로 값으로 남는다.
