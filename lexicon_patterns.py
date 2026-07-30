@@ -74,6 +74,11 @@ _CODE_FALLBACK: dict[str, Any] = {
         "whole_audience": ["전체", "모든", "전부", "모두", "아무나", "누구나"],
         # 낱말이 아닌 구분자(쉼표 등). 어휘로 두어 패턴 조합에서 같은 방식으로 다룬다.
         "clause_separator": [","],
+        # 기간(창) 두 개를 잇는 말. 나열('2018년 및 2019년' = 두 구간의 합집합)과 범위
+        # ('2019년 3월부터 5월까지' = 하나의 연속 구간)는 뜻이 다르므로 어휘부터 나눠 둔다.
+        "enum_connective": ["및", "와", "과", "그리고", "또는", "이나", "랑", "하고"],
+        "range_opener": ["부터", "에서", "에서부터", "으로부터", "로부터"],
+        "range_closer": ["까지", "사이"],
     },
     # 이관 원칙: 낱말 **집합은 이관 전과 정확히 같다**. 어휘를 합치는 것(동작 변경)은 이관과 섞지
     # 않는다 — 골든 diff 가 "옮긴 것"과 "바꾼 것"을 구분할 수 없게 되기 때문이다. 그래서 역사적으로
@@ -123,6 +128,10 @@ _CODE_FALLBACK: dict[str, Any] = {
             "note": "조건 언어 판정. 구어체 '샀'만 빠져 있다 — 이관 전 상태 보존.",
         },
         "whole_audience": {"include": ["whole_audience"]},
+        # 달력 창의 링크 어휘(calendar_window 가 조합 구조만 갖고 낱말은 여기서 받는다).
+        "calendar_enum_connective": {"include": ["enum_connective"]},
+        "calendar_range_opener": {"include": ["range_opener"]},
+        "calendar_range_closer": {"include": ["range_closer"]},
     },
 }
 

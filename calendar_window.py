@@ -16,6 +16,10 @@
 parse_calendar_windows 가 등장 순서대로 전부 돌려주고, parse_calendar_window 는 그중 하나를 고르는
 얇은 래퍼다. 기간 대 기간 비교(증감) 같은 다중 창 소비자는 전자를 쓴다.
 
+창이 이어져 나올 때 **그 사이의 링크에는 종류가 있다**(_link_kind). 나열('2018년 및 2019년')은 서로 다른
+두 구간의 합집합이지만, 범위('2019년 3월부터 2020년 5월까지')는 시작과 끝만 준 **하나의 연속 구간**이다.
+범위는 스캔 단계에서 창 하나로 접어서 내보내므로 소비자는 원래 창이 몇 개였는지 알 필요가 없다.
+
 순수 모듈 불변식: graph_rag 를 import 하지 않는다. 도메인 게이트(구매 신호 여부 등)와 물리 매핑은
 호출자가 소유한다 — 이 모듈은 '언제'만 읽고 '무엇에 대한 언제'인지는 모른다.
 """
@@ -26,6 +30,7 @@ import re
 from datetime import date, timedelta
 from typing import Any
 
+import lexicon_patterns
 import targeting_ir
 
 
@@ -47,11 +52,17 @@ _RELATIVE_YEAR_OFFSETS = {
 }
 _RELATIVE_YEAR_ALTERNATION = "|".join(sorted(_RELATIVE_YEAR_OFFSETS, key=len, reverse=True))
 
-# 나열/범위 연결어. '2018, 2019년'·'2018년 및 2019년'·'2019년 2월과 3월'처럼 창이 이어져 나올 때
-# 그 사이에 오는 토큰이다. 나열형 베어 연도 문법(_CAL_TOKEN_RE 의 yb)과 '한 나열에 속하는가' 판정
-# (_ENUM_LINK_RE)이 같은 어휘를 쓰도록 한 곳에서 소유한다.
-_ENUM_CONNECTORS = ("및", "와", "과", "그리고", "또는", "이나", "랑", "하고")
-_YEAR_ENUM_SEP = r"(?:\s*[,·/~∼]\s*|\s*[-–]\s*|\s*(?:" + "|".join(_ENUM_CONNECTORS) + r")\s*)"
+# 창이 이어져 나올 때 그 사이에 오는 토큰. 낱말은 사전(parser_lexicon.json)이 소유하고 여기에는 조합
+# 구조만 둔다 — 새 연결 표현은 데이터 한 줄이면 토큰 스캐너와 링크 판정이 함께 얻는다.
+_ENUM_CONNECTOR_ALT = lexicon_patterns.alternation("enum_connective")
+_RANGE_OPENER_ALT = lexicon_patterns.alternation("range_opener")
+_RANGE_CLOSER_ALT = lexicon_patterns.alternation("range_closer")
+# 낱말이 아닌 구분자. 나열('2018, 2019년')과 범위('3월~5월')는 뜻이 달라 문자 집합부터 나눈다.
+_ENUM_SEP_CHARS = r",·/"
+_RANGE_SEP_CHARS = r"~∼\-–"
+# 나열형 베어 연도 문법(_CAL_TOKEN_RE 의 yb)이 쓰는 구분자 — 나열이든 범위든 '연도가 이어진다'는
+# 신호라 둘 다 받는다. 어느 쪽인지는 링크 판정(_link_kind)이 정한다.
+_YEAR_ENUM_SEP = rf"(?:\s*[{_ENUM_SEP_CHARS}{_RANGE_SEP_CHARS}]\s*|\s*(?:{_ENUM_CONNECTOR_ALT})\s*)"
 
 # 달력 토큰 스캐너(단일 정규식, 좁은 표현 우선 순서). 파이썬 정규식은 같은 시작 위치에서 앞선 대안을
 # 먼저 채택하므로, 이 열거 순서가 곧 '일 > 월 > 분기 > 반기 > 연' 구체성 우선순위다 — '2019년 3월'이
@@ -80,12 +91,21 @@ _CAL_TOKEN_RE = re.compile(
 # 여러 창이 섞인 문장에서 위치가 아니라 구체성으로 뽑던 기존 계약을 그대로 보존한다.
 _GRAIN_RANK = {"ymd": 0, "ymdd": 0, "ym": 1, "ymd2": 1, "m": 1, "yq": 2, "q": 2, "yh": 3, "h": 3, "y": 4, "yb": 4}
 
-# 창 두 개 '사이'의 문구가 나열 연결에 불과한지(= 두 창이 한 나열에 속하는지). 조사/연결어/구분자만
-# 있으면 나열이고, 그 밖의 낱말(용언 등)이 끼면 서로 다른 조건의 창이다 — '2018년 및 2019년'은 나열,
-# '2018년에 구매하고 2019년에 로그인한'은 나열이 아니다.
+# 창 두 개 '사이'의 문구가 무슨 링크인지. 조사/연결어/구분자만 있으면 링크이고, 그 밖의 낱말(용언 등)이
+# 끼면 서로 다른 조건의 창이다 — '2018년 및 2019년'은 링크, '2018년에 구매하고 2019년에 로그인한'은
+# 링크가 아니다. 링크에는 **종류**가 있다: 나열은 두 구간의 합집합이고, 범위는 시작·끝만 준 하나의 연속
+# 구간이다. 이 구분이 없던 동안 범위는 조용히 다른 뜻이 됐다 — '2019년 3월~5월'이 3월 OR 5월(4월 누락)로
+# 컴파일되고, '2019년부터 2020년까지'는 뒤쪽 창이 주인을 못 찾아 확인 질문으로 막혔다.
 _ENUM_LINK_RE = re.compile(
-    r"[\s,·/~∼\-–]*(?:" + "|".join(_ENUM_CONNECTORS) + r")?[\s,·/~∼\-–]*(?:년도|년)?[\s,·/~∼\-–]*"
+    rf"[\s{_ENUM_SEP_CHARS}]*(?:{_ENUM_CONNECTOR_ALT})?[\s{_ENUM_SEP_CHARS}]*"
+    rf"(?:년도|년)?[\s{_ENUM_SEP_CHARS}]*"
 )
+# 범위 링크 두 형태: 구분자형('3월~5월', '3월-5월')과 여는 말형('3월부터 …', '3월에서 …').
+_RANGE_SEP_LINK_RE = re.compile(rf"\s*[{_RANGE_SEP_CHARS}]\s*(?:{_RANGE_OPENER_ALT})?\s*")
+_RANGE_OPEN_LINK_RE = re.compile(rf"\s*(?:년도|년)?\s*(?:{_RANGE_OPENER_ALT})\s*")
+# 닫는 말은 오른쪽 창 **뒤**에 온다. 여는 말만 있고 닫는 말이 없으면 경계가 반쪽이라 범위로 읽지 않는다
+# ('2019년부터 2020년' → fail-close). 접두 일치라 '사이에'·'까지의'도 닫는 말로 본다.
+_RANGE_CLOSER_RE = re.compile(rf"\s*(?:{_RANGE_CLOSER_ALT})")
 
 
 def month_last_day(year: int, month: int) -> int:
@@ -231,6 +251,90 @@ def _token_window(match: "re.Match[str]", year: int | None, label_suffix: str) -
     return _window(ymd(year, 1, 1), ymd(year, 12, 31), f"{year}년", label_suffix)
 
 
+# ── 창 사이 링크(나열 vs 범위) ─────────────────────────────────────────────────────
+# 스캔 결과 한 항목: (창, 구체성등급, 원문 시작, 원문 끝).
+_Scanned = tuple[dict[str, Any], int, int, int]
+
+
+def _link_text(text: str, left: _Scanned, right: _Scanned) -> str:
+    """창 두 개 사이의 링크 문구.
+
+    나열형 베어 연도 토큰('2019~'의 yb)은 구분자를 토큰 **안에서** 소비하므로 사이 문구가 빈다. 그때는
+    그 토큰이 삼킨 구분자를 링크로 본다 — 안 그러면 '2019~2021년'의 범위 표지가 사라져 2019·2021 두
+    구간의 합집합(가운데 2020년 누락)이 된다."""
+    between = text[left[3]:right[2]]
+    if between:
+        return between
+    swallowed = re.fullmatch(r"\s*\d{4}(.*)", text[left[2]:left[3]], flags=re.DOTALL)
+    return swallowed.group(1) if swallowed is not None else ""
+
+
+def _link_kind(text: str, left: _Scanned, right: _Scanned) -> str | None:
+    """링크 종류 — ``"range"``(하나의 연속 구간) | ``"enum"``(두 구간의 합집합) | None(별개 조건).
+
+    범위를 나열보다 **먼저** 본다. '~'·'-' 를 나열로 읽으면 '3월~5월'이 3월 OR 5월이 되어 가운데 달이
+    조용히 빠진다. 여는 말('부터/에서')은 닫는 말('까지/사이')이 오른쪽 창 뒤에 실제로 있을 때만 범위이고,
+    반쪽이면 나열로 강등하지 않고 미해석으로 남긴다(잘못 건 구간은 드롭보다 나쁘다)."""
+    link = _link_text(text, left, right)
+    if _RANGE_SEP_LINK_RE.fullmatch(link) is not None:
+        return "range"
+    if _RANGE_OPEN_LINK_RE.fullmatch(link) is not None:
+        return "range" if _RANGE_CLOSER_RE.match(text, right[3]) is not None else None
+    return "enum" if _ENUM_LINK_RE.fullmatch(link) is not None else None
+
+
+def _base_label(window: dict[str, Any], label_suffix: str) -> str:
+    """창 라벨에서 호출자 꼬리말('구매')을 뗀 부분 — 범위 라벨을 다시 조립할 때 쓴다."""
+    label = str(window.get("label") or "")
+    tail = f" {label_suffix}"
+    return label[: -len(tail)] if label_suffix and label.endswith(tail) else label
+
+
+def _merge_range(left: _Scanned, right: _Scanned, text: str, label_suffix: str) -> _Scanned | None:
+    """범위 링크로 이어진 창 두 개 → 시작·끝만 남긴 하나의 연속 창(합성할 수 없으면 None).
+
+    합성하지 않는(fail-close) 경우 둘: (1) 구체성이 다르면 어디가 경계인지 단정할 수 없다
+    ('2019년부터 3월까지' — 연 시작과 월 끝을 이어 붙이는 것은 추측이다). (2) 합성 결과가 역전이면
+    ('2020년 5월부터 2019년 3월까지') 범위가 아니다. 접지 않고 남기면 뒤쪽 창이 주인 없는 구간으로
+    남아 소비자 쪽에서 미해석으로 고지된다.
+
+    구간의 원문 출처는 닫는 말까지다 — 반쪽만 덮으면 남은 표현을 다른 슬롯이 다시 주워 간다."""
+    left_window, left_rank, left_start, _left_end = left
+    right_window, right_rank, _right_start, right_end = right
+    if left_rank != right_rank:
+        return None
+    if left_window["from"] > right_window["to"]:
+        return None
+    closer = _RANGE_CLOSER_RE.match(text, right_end)
+    label = f"{_base_label(left_window, label_suffix)}~{_base_label(right_window, label_suffix)}"
+    return (
+        _window(left_window["from"], right_window["to"], label, label_suffix),
+        left_rank,
+        left_start,
+        closer.end() if closer is not None else right_end,
+    )
+
+
+def _fold_range_links(scanned: list[_Scanned], text: str, label_suffix: str) -> list[_Scanned]:
+    """범위 링크를 스캔 단계에서 접는다 — 소비자는 창이 원래 몇 개였는지 알 필요가 없다.
+
+    여기서 접어야 하는 이유는 뒤에서 되돌릴 수 없기 때문이다. 창 목록을 그대로 내보내면 소비하는 쪽마다
+    '이 둘이 한 구간인가'를 다시 판정해야 하고, 실제로 한쪽(구매일 슬롯)은 앞 창만 쓰고 다른 쪽(드롭 고지)은
+    뒤 창을 미해석으로 올려 같은 표현이 경로마다 다르게 읽혔다."""
+    folded: list[_Scanned] = []
+    index = 0
+    while index < len(scanned):
+        current = scanned[index]
+        while index + 1 < len(scanned) and _link_kind(text, current, scanned[index + 1]) == "range":
+            merged = _merge_range(current, scanned[index + 1], text, label_suffix)
+            if merged is None:
+                break
+            current, index = merged, index + 1
+        folded.append(current)
+        index += 1
+    return folded
+
+
 def _scan_calendar_windows(
     text: str, label_suffix: str, today: date | None = None
 ) -> list[tuple[dict[str, Any], int, int, int]]:
@@ -238,7 +342,10 @@ def _scan_calendar_windows(
 
     연도 생략 토큰('2019년 2월과 3월'의 '3월')은 앞서 나온 명시 연도를 상속한다. 바로 앞에
     '올해/작년' 같은 상대 연도 표지가 있으면 그 연도를 쓴다. 반기·분기는 연도가 끝내 없으면 현재
-    연도로 확정한다. 월 단독은 숫자 오탐을 피하기 위해 기존처럼 연도 앵커가 있을 때만 창이 된다."""
+    연도로 확정한다. 월 단독은 숫자 오탐을 피하기 위해 기존처럼 연도 앵커가 있을 때만 창이 된다.
+
+    마지막에 범위 링크를 접는다(_fold_range_links) — 축약된 오른쪽 창이 왼쪽 문맥(연도)을 상속한 **뒤**에
+    합성해야 '2019년 3월부터 5월까지'의 끝이 2019년 5월로 확정된다."""
     if not isinstance(text, str) or not text:
         return []
     matches = list(_CAL_TOKEN_RE.finditer(text))
@@ -278,7 +385,7 @@ def _scan_calendar_windows(
             # 앵커에서 연도를 받은 토큰의 구간은 앵커까지다('7년전 상반기' 전체가 한 창의 출처).
             start = anchor[1] if (explicit is None and anchor is not None) else match.start()
             out.append((window, rank, start, match.end()))
-    return out
+    return _fold_range_links(out, text, label_suffix)
 
 
 def parse_calendar_window_spans(
@@ -312,11 +419,14 @@ def _calendar_group_range(scanned: list[tuple[dict[str, Any], int, int, int]], t
     rank = scanned[pivot][1]
 
     def _linked(left: int, right: int) -> bool:
-        """scanned[left] 와 scanned[right] 가 둘 다 같은 구체성이면서 나열로 이어져 있는지."""
+        """scanned[left] 와 scanned[right] 가 둘 다 같은 구체성이면서 나열로 이어져 있는지.
+
+        범위 링크는 스캔 단계에서 이미 창 하나로 접혔으므로 여기 남은 범위는 합성이 거부된 것(구체성 불일치·
+        역전)뿐이다 — 나열로 강등하지 않는다(그러면 '2019년부터 3월까지'가 두 구간 합집합이 된다)."""
         return (
             scanned[left][1] == rank
             and scanned[right][1] == rank
-            and _ENUM_LINK_RE.fullmatch(text[scanned[left][3]:scanned[right][2]]) is not None
+            and _link_kind(text, scanned[left], scanned[right]) == "enum"
         )
 
     first = pivot

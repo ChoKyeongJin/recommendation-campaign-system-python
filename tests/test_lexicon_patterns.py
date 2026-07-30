@@ -34,6 +34,7 @@ MIGRATED_ORIGINALS: dict[str, str] = {
     "exact_equals_marker": r"정확히|정확하게|딱",
     "agg_domain_context": r"구매|구입|주문|샀|상품|제품|품목|결제|할인|수량|종류|객단가|매출|구매액|금액|건수|종수",
     "campaign_concept_anchor": r"구매|구입|쿠폰|오퍼|혜택|제안|발송|전송|접촉|도달",
+    "calendar_enum_connective": r"및|와|과|그리고|또는|이나|랑|하고",
     "condition_language": (
         r"구매|구입|주문|재구매|장바구니|카트|캠페인|반응|로그인|접속|방문|쿠폰|찜|"
         r"거주|지역|등급|성별|남성|여성|나이|연령|휴면|탈퇴|정상|활동|가입|수신|블랙리스트"

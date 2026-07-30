@@ -168,6 +168,27 @@
     ],
     "clause_separator": [
       ","
+    ],
+    "enum_connective": [
+      "및",
+      "와",
+      "과",
+      "그리고",
+      "또는",
+      "이나",
+      "랑",
+      "하고"
+    ],
+    "range_opener": [
+      "부터",
+      "에서",
+      "에서부터",
+      "으로부터",
+      "로부터"
+    ],
+    "range_closer": [
+      "까지",
+      "사이"
     ]
   },
   "patterns": {
@@ -312,6 +333,21 @@
     "whole_audience": {
       "include": [
         "whole_audience"
+      ]
+    },
+    "calendar_enum_connective": {
+      "include": [
+        "enum_connective"
+      ]
+    },
+    "calendar_range_opener": {
+      "include": [
+        "range_opener"
+      ]
+    },
+    "calendar_range_closer": {
+      "include": [
+        "range_closer"
       ]
     }
   }
