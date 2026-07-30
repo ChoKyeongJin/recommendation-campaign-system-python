@@ -211,6 +211,32 @@ def owning_condition(
     return None
 
 
+def owns_exact_span(
+    plan: dict[str, Any],
+    *,
+    owner: str,
+    span: Any,
+    source_text: str,
+) -> bool:
+    """Whether ``owner`` declared exactly ``span`` in the same source coordinates.
+
+    Unlike :func:`owning_condition`, this deliberately has no overlap or surface
+    fallback.  It is for destructive de-duplication: a larger unknown clause must
+    not be discarded merely because it contains a smaller, already-owned phrase.
+    """
+
+    normalized = _as_span(span)
+    if normalized is None or not isinstance(source_text, str):
+        return False
+    for entry in owned_spans(plan):
+        if not isinstance(entry, dict) or entry.get("owner") != owner:
+            continue
+        entry_span = _as_span((entry.get("start"), entry.get("end")))
+        if entry_span == normalized and entry.get("source") == source_text:
+            return True
+    return False
+
+
 def superseded_conditions(plan: dict[str, Any]) -> list[dict[str, Any]]:
     """회수(또는 회수 시도 후 보존)된 조건 기록."""
     entries = plan.get(SUPERSEDED_KEY)

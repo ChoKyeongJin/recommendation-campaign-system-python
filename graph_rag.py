@@ -3815,7 +3815,7 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
         ),
         "purchase_count_ranking": _FilterSpec(
             _apply_purchase_count_ranking_target,
-            span=_pattern_span(_PURCHASE_QUANTITY_RANK_PATTERN),
+            span=_purchase_count_ranking_clause_span,
             span_slots=(("plan", "purchase_count_ranking"),),
         ),
         # 연령(정규식) — rules 전용. target_user 를 직접 받는다.
@@ -8464,6 +8464,65 @@ _PURCHASE_QUANTITY_RANK_PATTERN = re.compile(
 )
 # 랭킹 대상이 '사람/회원'임을 확인한다(밀집 '지역' 랭킹과 구분 — 지역이면 region_density 가 이미 소비).
 _PURCHASE_RANK_TARGET_PATTERN = lexicon_patterns.pattern("purchase_rank_target")
+_PURCHASE_RANK_PRODUCT_PATTERN = re.compile(lexicon_patterns.alternation("product_noun"))
+_PURCHASE_RANK_WHOLE_AUDIENCE_PATTERN = lexicon_patterns.pattern("whole_audience")
+_PURCHASE_RANK_OBJECT_BRIDGE_RE = re.compile(r"^\s*(?:을|를)?\s*$")
+_PURCHASE_RANK_TIME_BRIDGE_RE = re.compile(
+    rf"^\s*(?:에|에서|동안|내|기준(?:으로)?)?\s*"
+    rf"(?:{_PURCHASE_RANK_WHOLE_AUDIENCE_PATTERN.pattern}\s*)?$"
+)
+
+
+def _purchase_count_ranking_clause_span(
+    query: str, _plan: dict[str, Any]
+) -> tuple[int, int] | None:
+    """Source span owned by a member purchase-count ranking clause.
+
+    The span is assembled only from parser evidence: calendar window, the nearest
+    generic product noun directly governing the rank verb, the rank verb itself,
+    the member noun and the rank count.  Unknown text before or between those
+    pieces is never absorbed into the owner span, so exact-span de-duplication
+    remains fail-closed.
+    """
+
+    if not isinstance(query, str) or not query.strip():
+        return None
+    rank_match = _PURCHASE_QUANTITY_RANK_PATTERN.search(query)
+    if rank_match is None:
+        return None
+
+    start = rank_match.start()
+    product_matches = [
+        match
+        for match in _PURCHASE_RANK_PRODUCT_PATTERN.finditer(query, 0, rank_match.start())
+        if _PURCHASE_RANK_OBJECT_BRIDGE_RE.fullmatch(query[match.end():rank_match.start()])
+    ]
+    if product_matches:
+        start = product_matches[-1].start()
+
+    date_span = parse_time_window_group_span(
+        query,
+        allow_relative_past=not any(anchor in query for anchor in _NON_ORDER_DATE_ANCHORS),
+    )
+    if (
+        date_span is not None
+        and date_span[1] <= start
+        and _PURCHASE_RANK_TIME_BRIDGE_RE.fullmatch(query[date_span[1]:start])
+    ):
+        start = date_span[0]
+
+    end = rank_match.end()
+    target_match = _PURCHASE_RANK_TARGET_PATTERN.search(query, rank_match.end())
+    if target_match is not None:
+        end = max(end, target_match.end())
+    directive_match = _REGION_DENSITY_TOP_N_PATTERN.search(query, rank_match.end())
+    count_match = re.search(r"[\d,]+\s*명", query[rank_match.end():])
+    if directive_match is not None:
+        end = max(end, directive_match.end())
+    elif count_match is not None:
+        # This match uses a rank-relative slice, so translate back to query offsets.
+        end = max(end, rank_match.end() + count_match.end())
+    return (start, end)
 
 
 @_audited_stage
@@ -8507,6 +8566,23 @@ def _apply_purchase_count_ranking_target(query: str, plan: dict[str, Any]) -> No
         # 크기(100명)를 적용하면 "가장 많이"가 top 100으로 넓어져 의미가 달라진다.
         top_n = 1 if superlative else int(config.get("default_top_n") or 100)
     plan["purchase_count_ranking"] = {"top_n": top_n}
+    clause_span = _purchase_count_ranking_clause_span(query, plan)
+    if clause_span is not None:
+        slot_ownership.record_slot_span(
+            plan,
+            "purchase_count_ranking",
+            clause_span,
+            source_text=query,
+            container="plan",
+            filter_name="purchase_count_ranking",
+        )
+        slot_ownership.record_owned_span(
+            plan,
+            owner="purchase_count_ranking",
+            span=clause_span,
+            source_text=query,
+            reason="회원 구매 건수 랭킹 IR이 기간·대상·순위·인원 절 전체를 소유",
+        )
 
 
 # "최근 N일/개월 동안 구매하지 않은" 같은 구매 미발생 기간(구매 리센시) 신호. 구매 부정어 + 시간 창이
@@ -19211,28 +19287,98 @@ def _set_difference_owned_by_entity_set(
     return _entity_set_execution_ast(parsed_left) == entity_ast
 
 
+def _unique_source_span(source_text: str, surface: str) -> tuple[int, int] | None:
+    """Return the unique exact occurrence of ``surface`` in ``source_text``."""
+
+    if not isinstance(source_text, str) or not isinstance(surface, str) or not surface:
+        return None
+    start = source_text.find(surface)
+    if start < 0 or source_text.find(surface, start + 1) >= 0:
+        return None
+    return (start, start + len(surface))
+
+
+def _purchase_count_ranking_ir_matches(text: str, plan: dict[str, Any]) -> bool:
+    """Whether ``text`` deterministically reproduces the final ranking/date IR."""
+
+    ranking = plan.get("purchase_count_ranking")
+    if not isinstance(ranking, dict) or not isinstance(text, str) or not text.strip():
+        return False
+    parsed: dict[str, Any] = {"target_user": {}}
+    _apply_purchase_count_ranking_target(text, parsed)
+    if parsed.get("purchase_count_ranking") != ranking:
+        return False
+    parsed_date = _parse_purchase_date_period(text)
+    if parsed_date is None:
+        _apply_calendar_window_claim_filter(text, parsed)
+        parsed_date = (parsed.get("target_user") or {}).get("purchase_date")
+    return parsed_date == (plan.get("target_user") or {}).get("purchase_date")
+
+
+def _set_difference_owned_by_purchase_count_ranking(
+    expression: dict[str, Any], plan: dict[str, Any]
+) -> bool:
+    """Whether ``<purchase-count-ranked members> - <owned gender>`` is redundant.
+
+    Deletion requires exact source-span ownership plus an identical execution IR.
+    Overlap is insufficient: ``블루 후보군 <ranking>`` contains a valid ranking
+    but the larger unknown operand must remain fail-closed.
+    """
+
+    ast = expression.get("set_ast")
+    if not isinstance(ast, dict) or ast.get("op") != "-":
+        return False
+    left, right = ast.get("left"), ast.get("right")
+    if not isinstance(left, dict) or left.get("type") != "unknown_operand":
+        return False
+    if not isinstance(right, dict) or right.get("type") != "operand":
+        return False
+    canonical = right.get("canonical")
+    if canonical not in set((plan.get("exclude") or {}).get("gender") or []):
+        return False
+    expression_text = expression.get("expression_text")
+    left_text = left.get("text")
+    if not isinstance(expression_text, str) or not isinstance(left_text, str):
+        return False
+    left_span = _unique_source_span(expression_text, left_text)
+    if left_span is None or not slot_ownership.owns_exact_span(
+        plan,
+        owner="purchase_count_ranking",
+        span=left_span,
+        source_text=expression_text,
+    ):
+        return False
+    return _purchase_count_ranking_ir_matches(left_text, plan)
+
+
 def _drop_deterministically_owned_set_expressions(plan: dict[str, Any]) -> None:
     """Drop a redundant set-expression only when every branch has an owner.
 
     Prompt normalization often rewrites an attribute exclusion as
     ``<ranked customer set> 중 남성 제외``.  The generic set parser then treats
-    the ranked left side as an unknown named segment even though the entity-set
-    compiler has already built it, while the right side is already represented by
-    ``exclude.gender``.  Exact AST equality plus the grounded exclusion proves the
-    entire difference is covered; any partial or unrelated expression remains
-    fail-closed.
+    the ranked left side as an unknown named segment even though an entity-set or
+    member purchase-count ranking compiler has already built it, while the right
+    side is already represented by ``exclude.gender``.  Exact re-parsing plus the
+    grounded exclusion proves the entire difference is covered; any partial or
+    unrelated expression remains fail-closed.
     """
 
     expressions = plan.get("set_expressions")
     entity_set = (plan.get("target_user") or {}).get("entity_set_condition")
     entity_ast = _entity_set_execution_ast(entity_set)
-    if not isinstance(expressions, list) or not expressions or entity_ast is None:
+    if not isinstance(expressions, list) or not expressions:
         return
     plan["set_expressions"] = [
         expression for expression in expressions
         if not (
             isinstance(expression, dict)
-            and _set_difference_owned_by_entity_set(expression, plan, entity_ast)
+            and (
+                (
+                    entity_ast is not None
+                    and _set_difference_owned_by_entity_set(expression, plan, entity_ast)
+                )
+                or _set_difference_owned_by_purchase_count_ranking(expression, plan)
+            )
         )
     ]
 

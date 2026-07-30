@@ -84,6 +84,29 @@ def test_ledger_matches_by_span_within_one_coordinate_system() -> None:
     assert slot_ownership.owning_condition(plan, [12, 14], source_text=source) is None
 
 
+def test_exact_span_owner_rejects_merely_overlapping_larger_clause() -> None:
+    """파괴적 중복 제거는 부분 겹침이 아니라 같은 좌표의 완전 일치만 허용한다."""
+    source = "블루 후보군 2019년 구매 랭킹"
+    ranking_span = [7, len(source)]
+    plan: dict = {}
+    slot_ownership.record_owned_span(
+        plan, owner="purchase_count_ranking", span=ranking_span, source_text=source
+    )
+
+    assert slot_ownership.owns_exact_span(
+        plan, owner="purchase_count_ranking", span=ranking_span, source_text=source
+    )
+    assert not slot_ownership.owns_exact_span(
+        plan, owner="purchase_count_ranking", span=[0, len(source)], source_text=source
+    )
+    assert not slot_ownership.owns_exact_span(
+        plan,
+        owner="purchase_count_ranking",
+        span=ranking_span,
+        source_text=f"{source} 중 남성 제외",
+    )
+
+
 def test_ledger_falls_back_to_the_surface_when_coordinates_differ() -> None:
     """재작성본과 원문처럼 좌표계가 다르면 구간을 비교할 수 없다 — 그때만 같은 표현인지로 본다."""
     plan: dict = {}

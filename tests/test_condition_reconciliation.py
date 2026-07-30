@@ -102,6 +102,105 @@ def test_entity_set_exclusions_are_owned_without_clarification(prompt: str) -> N
     assert (plan.get("target_user") or {}).get("entity_set_condition"), "파생 엔터티 집합 조건이 사라졌다"
 
 
+@pytest.mark.parametrize(
+    "prompt",
+    [
+        "2019년 5월에 상품을 가장 많이 산 고객 100명 중 남성 제외",
+        "2019년 5월에 상품을 가장 많이 산 고객 100명, 남성 제외",
+    ],
+)
+def test_member_purchase_ranking_exclusion_is_owned_without_clarification(prompt: str) -> None:
+    """회원 구매 랭킹을 일반 집합명으로 재해석해 unknown clarification을 만들지 않는다."""
+    plan = _plan(prompt)
+
+    assert plan.get("purchase_count_ranking") == {"top_n": 100}
+    assert (plan.get("target_user") or {}).get("purchase_date") == {
+        "from": "20190501",
+        "to": "20190531",
+        "label": "2019년 5월 구매",
+    }
+    assert (plan.get("exclude") or {}).get("gender") == ["male"]
+    assert not plan.get("set_expressions"), "이미 소유된 구매 랭킹이 미해결 집합식으로 남았다"
+
+
+def test_member_purchase_ranking_does_not_swallow_unknown_named_segment() -> None:
+    """랭킹 문법 밖의 이름 붙은 후보군은 중복 제거로 조용히 사라지면 안 된다."""
+    source = "블루 후보군 2019년 5월에 상품을 가장 많이 산 고객 100명 중 남성 제외"
+    left_text = "블루 후보군 2019년 5월에 상품을 가장 많이 산 고객 100명"
+    plan = {
+        "purchase_count_ranking": {"top_n": 100},
+        "target_user": {
+            "purchase_date": {"from": "20190501", "to": "20190531", "label": "2019년 5월 구매"}
+        },
+        "exclude": {"gender": ["male"]},
+        "set_expressions": [
+            {
+                "expression_id": "segment_set_expression",
+                "expression_text": source,
+                "set_ast": {
+                    "type": "set_op",
+                    "op": "-",
+                    "left": {"type": "unknown_operand", "text": left_text},
+                    "right": {"type": "operand", "canonical": "male", "matched_text": "남성"},
+                },
+                "requires_clarification": True,
+                "detection": "natural",
+            }
+        ],
+    }
+    owned_span = graph_rag._purchase_count_ranking_clause_span(source, plan)
+    assert owned_span == (source.index("2019년"), source.index(" 중 남성"))
+    graph_rag.slot_ownership.record_owned_span(
+        plan,
+        owner="purchase_count_ranking",
+        span=owned_span,
+        source_text=source,
+        reason="테스트 랭킹 절 소유",
+    )
+
+    graph_rag._drop_deterministically_owned_set_expressions(plan)
+
+    assert len(plan["set_expressions"]) == 1
+
+
+def test_llm_set_expression_is_dropped_only_with_exact_ranking_source_span() -> None:
+    """LLM 집합식도 동일 좌표의 전체 좌변을 랭킹 IR이 소유할 때만 중복으로 제거한다."""
+    source = "2019년 5월에 상품을 가장 많이 산 고객 100명 중 남성 제외"
+    left_text = "2019년 5월에 상품을 가장 많이 산 고객 100명"
+    plan = {
+        "purchase_count_ranking": {"top_n": 100},
+        "target_user": {
+            "purchase_date": {"from": "20190501", "to": "20190531", "label": "2019년 5월 구매"}
+        },
+        "exclude": {"gender": ["male"]},
+        "set_expressions": [
+            {
+                "expression_id": "segment_set_expression",
+                "expression_text": source,
+                "set_ast": {
+                    "type": "set_op",
+                    "op": "-",
+                    "left": {"type": "unknown_operand", "text": left_text},
+                    "right": {"type": "operand", "canonical": "male", "matched_text": "남성"},
+                },
+                "requires_clarification": True,
+                "source": "llm_set_expression_ast",
+            }
+        ],
+    }
+    graph_rag.slot_ownership.record_owned_span(
+        plan,
+        owner="purchase_count_ranking",
+        span=(0, len(left_text)),
+        source_text=source,
+        reason="테스트 랭킹 절 소유",
+    )
+
+    graph_rag._drop_deterministically_owned_set_expressions(plan)
+
+    assert plan["set_expressions"] == []
+
+
 def test_josa_variants_are_owned_by_dedicated_slots() -> None:
     """조사/표현이 바뀌어도 성별·지역은 전용 슬롯 소유이고 집합식 중복이 남지 않는다."""
     plan = _plan("서울에 사는 회원은 제외하고 남자 고객도 제외해줘")

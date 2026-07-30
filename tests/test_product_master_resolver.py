@@ -178,6 +178,33 @@ def test_generic_product_ranking_uses_derived_set_without_product_lookup(monkeyp
     assert "20260301" in candidate["sql"] and "20260331" in candidate["sql"]
 
 
+def test_generic_product_noun_means_all_products_in_member_purchase_ranking(monkeypatch) -> None:
+    """`상품을 많이 산 고객`의 상품은 특정 상품 조건이 아니라 전체 상품 범위다."""
+    query = "2019년 5월에 상품을 가장 많이 산 고객 100명 뽑아줘"
+    monkeypatch.setattr(
+        graph_rag.product_master_resolver,
+        "resolve_product_phrase",
+        lambda _phrase: (_ for _ in ()).throw(AssertionError("generic 상품 must not be looked up")),
+    )
+
+    plan = graph_rag.build_query_plan(query, parser="rules")
+    candidate = graph_rag.build_purchase_count_ranking_sql_candidate(plan)
+
+    assert plan["purchase_count_ranking"] == {"top_n": 100}
+    assert plan.get("unsupported") is None
+    assert plan["target_user"].get("purchase_object") is None
+    assert plan["target_user"]["purchase_date"] == {
+        "from": "20190501",
+        "to": "20190531",
+        "label": "2019년 5월 구매",
+    }
+    assert candidate is not None
+    assert candidate["sql"].startswith("SELECT TOP 100 ")
+    assert "20190501" in candidate["sql"] and "20190531" in candidate["sql"]
+    assert "CRM_CM_PRODUCT" not in candidate["sql"]
+    assert "PRODUCT_NAME" not in candidate["sql"]
+
+
 def test_ranking_action_misread_as_product_never_reaches_entity_set_sql() -> None:
     """LLM의 ``팔린=상품명`` 오인을 순위 AST가 복원하거나 SQL로 컴파일하면 안 된다."""
     query = "2019년 가장 많이 팔린 상품10개를 구매한고객만 추출해"
