@@ -146,6 +146,61 @@ def _select_unit_at(tokens: Sequence[UnitToken], start: int) -> UnitToken | None
     return max(same_start, key=lambda token: (len(token.surface), token.priority))
 
 
+def _adjacent_unit(
+    clause: str, value_span: TextSpan, tokens: Sequence[UnitToken], rules: AggregateParserRules,
+    taken: set[tuple[int, int]] | None = None,
+) -> UnitToken | None:
+    """값 스팬 **바로 뒤**의 단위 토큰. 사이에 공백 말고 다른 것이 오면 그 단위는 남의 것이다.
+
+    ``taken`` 을 주면 이미 다른 값이 소유한 단위를 건너뛴다(한 단위 토큰은 한 주인)."""
+    allowed_gap = rules.span_binding.max_unit_whitespace
+    for gap in range(allowed_gap + 1):
+        start = value_span.end + gap
+        gap_text = clause[value_span.end:start]
+        if gap_text.strip() != "":
+            return None
+        token = _select_unit_at(tokens, start)
+        if token is None:
+            continue
+        key = (token.span.start, token.span.end)
+        if taken is not None and key in taken:
+            return None
+        if taken is not None:
+            taken.add(key)
+        return token
+    return None
+
+
+_NUMBER_PATTERN_CACHE: dict[int, "re.Pattern[str]"] = {}
+
+
+def _number_pattern(rules: AggregateParserRules) -> "re.Pattern[str]":
+    key = id(rules)
+    pattern = _NUMBER_PATTERN_CACHE.get(key)
+    if pattern is None:
+        magnitude_alternation = aggregate_parser_config.magnitude_alternation(rules)
+        pattern = re.compile(rf"(?P<num>[\d,]*\d)\s*(?P<mag>{magnitude_alternation})?")
+        _NUMBER_PATTERN_CACHE[key] = pattern
+    return pattern
+
+
+def find_value_unit_pairs(
+    clause: str, rules: AggregateParserRules,
+) -> list[tuple[TextSpan, UnitToken | None]]:
+    """절 안의 숫자 표현과 **그 숫자에 인접한** 단위 쌍. 비교어가 없는 표현('상품 5개')도 포함한다.
+
+    절 전체에서 단위 하나를 골라 모든 숫자에 씌우던 휴리스틱을 대신한다 — 그 방식은 '3개월 동안'의
+    '개'를 옆 절 숫자의 단위로 쓸 수 있었다."""
+    tokens = find_unit_tokens(clause, rules)
+    taken: set[tuple[int, int]] = set()
+    pairs: list[tuple[TextSpan, UnitToken | None]] = []
+    for match in _number_pattern(rules).finditer(clause):
+        end = match.end("mag") if match.group("mag") else match.end("num")
+        span = TextSpan(match.start("num"), end, clause[match.start("num"):end])
+        pairs.append((span, _adjacent_unit(clause, span, tokens, rules, taken)))
+    return pairs
+
+
 # ── 비교 표현 스캔 ─────────────────────────────────────────────────────────────────────
 _COMPARISON_PATTERN_CACHE: dict[tuple[int, str], "re.Pattern[str]"] = {}
 _NUMBER = r"[\d,]+(?:\.\d+)?"
@@ -223,29 +278,9 @@ def bind_units(
 
     인접성은 ``clause[value_span.end:unit.span.start]`` 이 허용 공백 이내인지로만 판정한다. 조사·
     접속사·문장부호·다른 숫자가 끼면 그 단위는 남의 것이다. 한 단위 토큰은 한 candidate 만 소유한다."""
-    allowed_gap = rules.span_binding.max_unit_whitespace
     taken: set[tuple[int, int]] = set()
     for candidate in candidates:
-        token = _select_unit_at(tokens, candidate.value_span.end)
-        if token is None:
-            # 값과 단위 사이에 공백이 허용 범위만큼 있는 경우('10만 원')를 본다.
-            for gap in range(1, allowed_gap + 1):
-                start = candidate.value_span.end + gap
-                if clause[candidate.value_span.end:start].strip() != "":
-                    break
-                token = _select_unit_at(tokens, start)
-                if token is not None:
-                    break
-        if token is None:
-            continue
-        gap_text = clause[candidate.value_span.end:token.span.start]
-        if gap_text != "" and (gap_text.strip() != "" or len(gap_text) > allowed_gap):
-            continue
-        key = (token.span.start, token.span.end)
-        if key in taken:
-            continue  # 이미 다른 candidate 가 소유한 단위 — 두 숫자가 한 단위를 나눠 갖지 않는다.
-        taken.add(key)
-        candidate.unit_ref = token
+        candidate.unit_ref = _adjacent_unit(clause, candidate.value_span, tokens, rules, taken)
 
 
 # ── 속성 결합 ──────────────────────────────────────────────────────────────────────────
@@ -505,7 +540,7 @@ def has_disjunction(text: str, rules: AggregateParserRules) -> bool:
 __all__ = [
     "UNCLAIMED", "CLAIMED_SUPPORTED", "CLAIMED_UNSUPPORTED", "REJECTED_AMBIGUOUS",
     "TextSpan", "UnitToken", "AttributeRef", "ComparisonCandidate", "AttributeIndex",
-    "normalize_amount", "find_unit_tokens", "scan_comparisons", "bind_units",
+    "normalize_amount", "find_unit_tokens", "find_value_unit_pairs", "scan_comparisons", "bind_units",
     "build_attribute_index", "bind_attributes", "bind_clause", "attribute_search_windows",
     "has_disjunction", "replace",
 ]

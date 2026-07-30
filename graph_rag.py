@@ -9287,11 +9287,15 @@ def _comparison_candidate(
 
 def _parse_amount_comparison_candidates(
     window: str, unit: str, *, bare_equals: bool = False, unit_required: bool = False,
+    reduce_bounds: bool = True,
 ) -> list[aggregate_spans.ComparisonCandidate] | None:
     """:func:`_parse_amount_comparison` 과 같은 판정을, 스팬을 보존한 candidate 목록으로 돌려준다.
 
     호출부가 '이 임계값이 원문 어디에서 왔는가'를 물을 수 있어야 값·단위·속성 소유권을 판정할 수 있다.
-    튜플만 돌려주던 기존 반환형은 아래 호환 wrapper 가 유지한다."""
+    튜플만 돌려주던 기존 반환형은 아래 호환 wrapper 가 유지한다.
+
+    ``reduce_bounds=False`` 면 하한/상한 축약을 하지 않고 매치된 비교를 전부 돌려준다 — 한 절에
+    서로 다른 단위의 임계값이 여럿일 때 단위별로 나눈 **뒤에** 축약해야 하기 때문이다."""
     range_p, op_p, eq_p = _comparison_patterns(unit, unit_required)
     rng = range_p.search(window)
     if rng is not None:
@@ -9323,6 +9327,8 @@ def _parse_amount_comparison_candidates(
                 window, op, operator, value, number_group="num", magnitude_group="mag", index=index,
             ))
     if parsed_ops:
+        if not reduce_bounds:
+            return parsed_ops
         # 이중 경계('30 이상이지만 100 미만'처럼 하한+상한이 한 window 에 함께)면 둘 다 반환(BETWEEN 유사).
         # 하나뿐이면 그대로. '사이/에서~까지' 범위형은 위 range_p 가 이미 처리한다.
         lower = next((p for p in parsed_ops if p.operator in (">=", ">")), None)
@@ -10244,11 +10250,9 @@ _AGG_DOMAIN_CONTEXT_RE = lexicon_patterns.pattern("agg_domain_context")
 # 누적/평생 표지: 이 절의 집계는 전 생애(창 없음)로 본다 — 옆 절의 최근성 창('최근 180일 무주문')이 '누적
 # 구매액'에 새어 들어와 '최근 180일 구매 100만↑ AND 최근 180일 무주문'(공집합)이 되는 걸 막는다.
 _CUMULATIVE_WINDOW_MARKER_RE = re.compile(r"누적|누계|평생|통산|역대|전체\s*기간")
-# 임계값 단위 추출(숫자 뒤 단위, 긴 단위 우선). 상품 수량/종류 단위 포함.
-# 수량 단위 '개'는 기간 표현('3개월'·'3개년') 안에서는 단위가 아니다 — 부정 전방탐색으로 그 자리를 막는다.
-# 이게 없으면 '3개월 동안'의 '개'가 절 단위로 잡혀 옆 절의 숫자(‘인구 50만’)와 '상품 수량 50만개'로 합쳐진다.
-# TODO: typed unit tokenization과 longest-match 적용 후 이 임시 regex 가드 제거
-_AGG_UNIT_TOKEN_RE = re.compile(r"\d[\d,]*\s*(?:억|천만|백만|만|천)?\s*(종류|종수|품목|가지|건수|회수|종|개(?![월년])|건|회|번|원|점|장)")
+# 임계값 단위는 정규식 한 줄이 아니라 typed tokenizer(aggregate_spans.find_unit_tokens)가 뽑는다 —
+# 표면어·종류·우선순위는 aggregate_parser_rules.json 이 소유하고, longest-match 로 '3개월'을 duration
+# 토큰 하나로 만들기 때문에 '개'가 수량 단위로 새어 나오는 자리가 아예 생기지 않는다(임시 가드 불필요).
 # 집계 범위(grain): 한 주문 내 / 동일 상품별 / 회원 누적.
 _AGG_SCOPE_PER_ORDER_RE = re.compile(r"한\s*주문|한\s*번에|한번에|주문당|주문\s*당|주문별|주문\s*별|1회\s*주문")
 # 동일성 표지·상품 명사는 렉시콘 어휘다(`identity_same` × `product_noun`) — 구조만 코드에 남기고
@@ -10277,8 +10281,16 @@ _GENERIC_COUNT_UNITS = frozenset({"개", "가지", "종", "종류", "품목"})
 
 
 def _clause_primary_unit(clause: str) -> str | None:
-    match = _AGG_UNIT_TOKEN_RE.search(clause)
-    return match.group(1) if match else None
+    """(호환 wrapper) 절의 대표 임계 단위. 새 코드는 값별 단위 결합(_clause_threshold_groups)을 쓴다.
+
+    절 전체에서 단위 하나를 골라 모든 숫자에 씌우던 옛 휴리스틱의 자리를 지키되, 선택 방식은 바뀌었다:
+    **숫자 스팬에 인접한** 단위만 후보이고, 기간·면적·나이 단위처럼 임계값 단위가 아닌 종류는 건너뛴다.
+    그래서 '3개월 동안'은 단위를 내지 않고 '최근 3개월 동안 3개 이상'은 '개'를 낸다."""
+    rules = aggregate_parser_config.rules()
+    for _value_span, unit in aggregate_spans.find_value_unit_pairs(clause, rules):
+        if unit is not None and rules.is_aggregate_threshold_unit(unit.kind):
+            return unit.surface
+    return None
 
 
 def _extract_aggregation_scope(clause: str) -> tuple[str, str]:
@@ -10570,22 +10582,51 @@ def _unsupported_threshold_attribute_notice(
     }
 
 
-def _surviving_clause_comparisons(
-    clause: str, bound: list["aggregate_spans.ComparisonCandidate"],
-) -> list[tuple[str, float]] | None:
-    """절의 비교값 중 **다른 의미가 이미 소유한 숫자**를 뺀 나머지를 돌려준다.
+def _reduce_bounds(comparisons: list[tuple[str, float]]) -> list[tuple[str, float]]:
+    """이중 경계('30 이상이지만 100 미만')는 둘 다, 같은 방향이 여럿이면 첫 값만 남긴다(기존 규칙)."""
+    lower = next((item for item in comparisons if item[0] in (">=", ">")), None)
+    upper = next((item for item in comparisons if item[0] in ("<=", "<")), None)
+    if lower is not None and upper is not None:
+        return [lower, upper]
+    return comparisons[:1]
 
-    소유 판정은 값이나 문자열이 아니라 스팬 겹침으로 한다 — 같은 값이 문장에 두 번 나와도(‘10만 이상
-    이고 10만 이하’) 한쪽만 정확히 걷어내기 위해서다."""
-    candidates = _parse_amount_comparison_candidates(clause, _AGG_UNIT, bare_equals=False)
+
+def _clause_threshold_groups(
+    clause: str, bound: list["aggregate_spans.ComparisonCandidate"],
+) -> list[tuple[str | None, list[tuple[str, float]]]]:
+    """절의 비교값을 **자기 단위별로** 묶어 [(단위 표면어|None, [(연산자, 값)…])…] 로 돌려준다.
+
+    세 가지를 여기서 동시에 지킨다.
+      ① 다른 의미가 이미 소유한 숫자(미지원 속성이 가져간 값)는 스팬 겹침으로 걷어낸다.
+      ② 단위는 절 전체의 대표 단위가 아니라 **각 값에 인접한** 토큰이다 — '구매금액 10만원'과
+         '상품 3개'가 한 절에 있어도 10만↔원, 3↔개 로 각각 붙는다.
+      ③ 임계값 단위가 아닌 종류(기간·면적·나이)에 붙은 값은 집계 임계값이 아니다 — '3개월'이
+         수량 3개로 둔갑하지 않는다.
+    단위가 하나뿐이면 단위 없는 값은 그 그룹에 흡수한다(고아 bound: '10만원 이상 50만 이하')."""
+    candidates = _parse_amount_comparison_candidates(
+        clause, _AGG_UNIT, bare_equals=False, reduce_bounds=False,
+    )
     if not candidates:
-        return None
-    claimed = [c.value_span for c in bound if c.blocks_sql]
+        return []
+    rules = aggregate_parser_config.rules()
+    aggregate_spans.bind_units(clause, candidates, aggregate_spans.find_unit_tokens(clause, rules), rules)
+    claimed = [candidate.value_span for candidate in bound if candidate.blocks_sql]
     surviving = [
         candidate for candidate in candidates
         if not any(candidate.value_span.overlaps(span) for span in claimed)
+        and (candidate.unit_ref is None or rules.is_aggregate_threshold_unit(candidate.unit_ref.kind))
     ]
-    return [(candidate.operator, candidate.normalized_value) for candidate in surviving] or None
+    if not surviving:
+        return []
+    units = {candidate.unit_ref.surface for candidate in surviving if candidate.unit_ref}
+    if len(units) <= 1:
+        comparisons = [(candidate.operator, candidate.normalized_value) for candidate in surviving]
+        return [(next(iter(units), None), _reduce_bounds(comparisons))]
+    grouped: dict[str | None, list[tuple[str, float]]] = {}
+    for candidate in surviving:
+        key = candidate.unit_ref.surface if candidate.unit_ref else None
+        grouped.setdefault(key, []).append((candidate.operator, candidate.normalized_value))
+    return [(unit, _reduce_bounds(comparisons)) for unit, comparisons in grouped.items()]
 
 
 def _make_aggregate_condition(
@@ -10665,8 +10706,9 @@ def _apply_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
         # 값·단위·속성의 소유권을 먼저 확정한다 — 미지원 속성이 가져간 숫자는 아래 지표 해석이 못 본다.
         bound = _bind_threshold_candidates(clause, clause_index)
         blocked_candidates.extend(candidate for candidate in bound if candidate.blocks_sql)
-        comparisons = _surviving_clause_comparisons(clause, bound)
-        if not comparisons:
+        # 단위는 절 대표값이 아니라 **각 값에 인접한** 토큰이다. 단위별로 묶어 지표를 따로 확정한다.
+        threshold_groups = _clause_threshold_groups(clause, bound)
+        if not threshold_groups:
             # 임계값 없는 **선행 창 절**("최근 90일간 온라인몰에서 주문한 회원 중 …")은 뒤따르는 지표 절의
             # 공유 창이 된다 — 그 창은 문장 전체의 집계 기간이라 지표마다 다시 쓰지 않는 게 자연스러운 표현이다.
             # 구매 도메인의 긍정 창일 때만 흘려보내 로그인/미접속/캠페인 창의 도메인 누수를 막는다
@@ -10674,9 +10716,6 @@ def _apply_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
             if clause_window is not None and _is_shared_purchase_window_clause(raw_clause):
                 last_window, last_calendar = clause_window, clause_calendar
             continue
-        unit = _clause_primary_unit(clause)
-        # 같은 절에서 값 필터로 쓰인 디멘션(scope)은 가짓수 축이 될 수 없다 — 리졸버에 함께 넘긴다.
-        metric_id, status = _resolve_clause_metric(clause, metrics, unit, frozenset(scope))
         # 유효 창: 절 자체 창 > (lifetime 확정이면 창 없음) > 앞 aggregate 지표의 공유 창 상속.
         # 공유 창('최근 90일 동안 A이고 B이며 C')은 같은 문장의 연속 집계 지표에만 흐르고, lifetime(누적)
         # 절이나 로그인 등 비집계 절(last_window 를 세팅하지 않음)에서는 상속되지 않는다(도메인 간 누수 차단).
@@ -10687,31 +10726,34 @@ def _apply_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
         else:
             effective_window = last_window
             effective_calendar = clause_calendar if clause_calendar is not None else last_calendar
-        if metric_id is None:
-            # 지표어 없는 뒷 절(범위 연속) → 앞 지표에 병합(고아 bound). 앞 지표가 없으면:
-            #  - none(도메인 아님): 무시. - unresolved/ambiguous(도메인 문맥 있음): clarification.
-            if last_context is not None:
-                for operator, threshold in comparisons:
-                    conditions.append(_make_aggregate_condition(last_context, operator, threshold, effective_window, effective_calendar, metrics))
+        for unit, comparisons in threshold_groups:
+            # 같은 절에서 값 필터로 쓰인 디멘션(scope)은 가짓수 축이 될 수 없다 — 리졸버에 함께 넘긴다.
+            metric_id, status = _resolve_clause_metric(clause, metrics, unit, frozenset(scope))
+            if metric_id is None:
+                # 지표어 없는 뒷 절(범위 연속) → 앞 지표에 병합(고아 bound). 앞 지표가 없으면:
+                #  - none(도메인 아님): 무시. - unresolved/ambiguous(도메인 문맥 있음): clarification.
+                if last_context is not None:
+                    for operator, threshold in comparisons:
+                        conditions.append(_make_aggregate_condition(last_context, operator, threshold, effective_window, effective_calendar, metrics))
+                    continue
+                if status in ("unresolved", "ambiguous") and not blocked_candidates:
+                    plan["unsupported"] = {
+                        "reason": "metric_not_resolved",
+                        "message": "상품/주문 조건의 지표를 확정할 수 없습니다(수량/종류/횟수/금액 등).",
+                        "clarification": "상품 개수는 총수량을 의미하나요, 서로 다른 상품 종류 수를 의미하나요? 또는 주문 건수/금액 중 무엇인가요?",
+                    }
+                    return
                 continue
-            if status in ("unresolved", "ambiguous") and not blocked_candidates:
-                plan["unsupported"] = {
-                    "reason": "metric_not_resolved",
-                    "message": "상품/주문 조건의 지표를 확정할 수 없습니다(수량/종류/횟수/금액 등).",
-                    "clarification": "상품 개수는 총수량을 의미하나요, 서로 다른 상품 종류 수를 의미하나요? 또는 주문 건수/금액 중 무엇인가요?",
-                }
-                return
-            continue
-        for key, value in list(scope.items()):
-            if value in _SCOPE_PLACEHOLDER_VALUES:
-                scope_clarify_key = key  # 값 미지정('특정 브랜드')이라 필터로 못 씀 → 뒤에서 clarification
-                scope.pop(key)
-        context = {"metric_id": metric_id, "aggregation_scope": aggregation_scope, "scope": scope}
-        last_context = context
-        last_window = effective_window
-        last_calendar = effective_calendar
-        for operator, threshold in comparisons:
-            conditions.append(_make_aggregate_condition(context, operator, threshold, effective_window, effective_calendar, metrics))
+            for key, value in list(scope.items()):
+                if value in _SCOPE_PLACEHOLDER_VALUES:
+                    scope_clarify_key = key  # 값 미지정('특정 브랜드')이라 필터로 못 씀 → 뒤에서 clarification
+                    scope.pop(key)
+            context = {"metric_id": metric_id, "aggregation_scope": aggregation_scope, "scope": scope}
+            last_context = context
+            last_window = effective_window
+            last_calendar = effective_calendar
+            for operator, threshold in comparisons:
+                conditions.append(_make_aggregate_condition(context, operator, threshold, effective_window, effective_calendar, metrics))
 
     # 미지원 속성이 unresolved 로 남아 있으면 SQL 을 만들지 않는다(fail-close). 조건이 하나도 안 잡힌
     # 문장('평수 30평 이상인 매장의 고객')도 여기 걸린다 — 임계값 소비 여부와 무관한 판정이기 때문이다.
