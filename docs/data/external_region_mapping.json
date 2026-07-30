@@ -1,0 +1,25 @@
+{
+  "version": "2026-07-30",
+  "valid_from": "2026-07-30",
+  "valid_to": null,
+  "description": "공식 시도 코드/명칭을 CRM_MB_BASEINFO.SIDO 저장값으로 변환한다. 시군구는 member_value_index의 정확한 계층값으로 검증한다.",
+  "sido": [
+    {"external_code": "11", "external_name": "서울특별시", "aliases": ["서울"], "crm_value": "서울"},
+    {"external_code": "26", "external_name": "부산광역시", "aliases": ["부산"], "crm_value": "부산"},
+    {"external_code": "27", "external_name": "대구광역시", "aliases": ["대구"], "crm_value": "대구"},
+    {"external_code": "28", "external_name": "인천광역시", "aliases": ["인천"], "crm_value": "인천"},
+    {"external_code": "29", "external_name": "광주광역시", "aliases": ["광주"], "crm_value": "광주"},
+    {"external_code": "30", "external_name": "대전광역시", "aliases": ["대전"], "crm_value": "대전"},
+    {"external_code": "31", "external_name": "울산광역시", "aliases": ["울산"], "crm_value": "울산"},
+    {"external_code": "36", "external_name": "세종특별자치시", "aliases": ["세종"], "crm_value": "세종"},
+    {"external_code": "41", "external_name": "경기도", "aliases": ["경기"], "crm_value": "경기"},
+    {"external_code": "42", "external_name": "강원특별자치도", "aliases": ["강원도", "강원"], "crm_value": "강원"},
+    {"external_code": "43", "external_name": "충청북도", "aliases": ["충북"], "crm_value": "충북"},
+    {"external_code": "44", "external_name": "충청남도", "aliases": ["충남"], "crm_value": "충남"},
+    {"external_code": "45", "external_name": "전북특별자치도", "aliases": ["전라북도", "전북"], "crm_value": "전북"},
+    {"external_code": "46", "external_name": "전라남도", "aliases": ["전남"], "crm_value": "전남"},
+    {"external_code": "47", "external_name": "경상북도", "aliases": ["경북"], "crm_value": "경북"},
+    {"external_code": "48", "external_name": "경상남도", "aliases": ["경남"], "crm_value": "경남"},
+    {"external_code": "50", "external_name": "제주특별자치도", "aliases": ["제주도", "제주"], "crm_value": "제주"}
+  ]
+}

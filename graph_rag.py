@@ -16,7 +16,7 @@ import uuid
 from collections import Counter
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from string import Template
 from typing import Any, Callable, Literal
@@ -26,6 +26,15 @@ from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 
 import condition_reconciliation
+from external_conditions.classifier import (
+    classify_external_conditions,
+    mask_external_condition_spans,
+)
+from external_conditions.models import ResolutionContext
+from external_conditions.service import ExternalConditionService, get_default_service
+import event_compiler
+import event_ir
+import event_parser
 import lexicon_patterns
 import parser_shadow
 import plan_semantic_ast
@@ -718,10 +727,14 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
     },
     # AST 검증(validate_select_ast) 설정. 기본값에 키가 있어야 파일의 validation 섹션이 머지된다.
     # 별칭 허용 목록은 실제 빌더가 쓰는 별칭 전체(B 회원, A 카트, C/CP 상품, R 캠페인반응, O/OH/OD 주문,
-    # M 지표/캠페인멤버, M2/CELL 셀 집계, S 보조속성, ZC 등)를 담는다 — 목록에 없는 별칭이 SQL 에
-    # 나타나면 후보를 거부한다.
+    # M 지표/캠페인멤버, M2/CELL 셀 집계, S 보조속성, ZC, EO/EC 조건 IR 서브쿼리)를 담는다. 숫자 접미
+    # (EO1/EO2)는 시간 관계처럼 같은 테이블을 중첩 참조하는 조건이 쓰는 기준/대상 별칭이다 —
+    # 목록에 없는 별칭이 SQL 에 나타나면 후보를 거부한다.
     "validation": {
-        "allowed_table_aliases": ["A", "B", "C", "CELL", "CP", "D", "M", "M2", "O", "OD", "OH", "P", "R", "S", "ZC"],
+        "allowed_table_aliases": [
+            "A", "B", "C", "CELL", "CP", "D", "EC", "EC1", "EC2", "EO", "EO1", "EO2",
+            "M", "M2", "O", "OD", "OH", "P", "R", "S", "ZC",
+        ],
         "max_conditions": 30,
         "max_or_branches": 10,
         "allow_raw_sql": False,
@@ -2465,6 +2478,9 @@ def _finalize_deterministic_query_plan(
         "extreme": extract_extreme_semantics(query),
     }
     _apply_core_membership_semantics(query, plan)
+    # 핵심 존재/부재 슬롯이 확정된 직후 사건 IR 을 세운다. core_membership 은 문장 전체를 하나의
+    # 구매 극성으로 접으므로(절 구조를 모른다), 절 단위 해석이 그 결과를 대체할 수 있어야 한다.
+    _apply_event_expression_filter(query, plan)
     _apply_product_master_resolution(query, plan)
     _apply_entity_set_condition(query, plan)
     _reconcile_deterministic_member_exclusions(query, plan)
@@ -3793,6 +3809,7 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
     파이프라인 위치가 두 경로에서 달라(진단 전용) 레지스트리 밖에서 명시 호출한다."""
     return {
         # 회원 속성/값/지역 + 랭킹(정렬·TOP·서브쿼리류).
+        "external_condition": _FilterSpec(_apply_external_condition_filter),
         "sell_object": _FilterSpec(_apply_sell_object),
         "dimension": _FilterSpec(_apply_dimension_filters),
         "member_value": _FilterSpec(_apply_member_value_filters),
@@ -3865,6 +3882,13 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
         # 주인 없는 절대 달력 창을 plan 이 요구하는 팩트의 날짜창으로 귀속한다. 모든 창 파서(구매일/증감/
         # 가입/로그인/미구매)보다 뒤에 실행해야 '이미 주인 있는 창'을 덮지 않는다 → 경로 리스트 맨 끝.
         "calendar_window_claim": _FilterSpec(_apply_calendar_window_claim_filter),
+        # 범용 사건 IR. 모든 슬롯 파서 뒤에 실행해 '기존 슬롯이 이 문장을 온전히 담았는가'를 판정한다 —
+        # 담았으면 물러나고(기존 경로 유지), 못 담았으면 IR 이 실행 모델이 되고 그 슬롯을 회수한다.
+        "event_expression": _FilterSpec(
+            _apply_event_expression_filter,
+            span=_event_expression_span,
+            span_slots=(("plan", EVENT_EXPRESSION_KEY),),
+        ),
         # '구매 횟수가 0회/없는'(공집합 COUNT=0)도 no_purchase 로 승격 — 집계(order_count '='0) 파싱 뒤에
         # 실행해 그 공집합 조건을 걷어내고 anti-join 으로 대체한다. 캠페인/기간창 문맥은 각 트랙에 양보.
         "zero_purchase_count": _FilterSpec(_apply_zero_purchase_count_filter),
@@ -3931,6 +3955,37 @@ def _result_limit_span(query: str, _plan: dict[str, Any]) -> tuple[int, int] | N
     """'N명만' 개수 제한 표현의 원문 구간."""
     matched = _match_result_limit(query)
     return matched[1] if matched else None
+
+
+def _plan_event_expression(plan: dict[str, Any]) -> "event_ir.Condition | None":
+    """plan 에 세워진 조건 논리식(없거나 파손이면 None). 소비자 공통 진입점."""
+    payload = plan.get(EVENT_EXPRESSION_KEY)
+    if not isinstance(payload, dict) or not isinstance(payload.get("expression"), dict):
+        return None
+    try:
+        return event_ir.condition_from_dict(payload["expression"])
+    except event_ir.IrSchemaError:
+        return None
+
+
+def _event_expression_covers(plan: dict[str, Any], source: str, quantifier: str) -> bool:
+    """IR 이 이 사건/극성 조건을 이미 소유하고 있는가(드롭 고지·커버리지 판정용).
+
+    ``Not(Exists(...))`` 조합을 (소스, 극성)으로 읽는 것은 event_ir 의 파생 뷰가 담당한다 —
+    여기서 트리 모양을 다시 해석하면 IR 구조가 바뀔 때 조용히 어긋난다."""
+    expression = _plan_event_expression(plan)
+    if expression is None:
+        return False
+    return event_ir.covers_existence(expression, source, negated=quantifier == "not_exists")
+
+
+def _event_expression_span(_query: str, plan: dict[str, Any]) -> tuple[int, int] | None:
+    """사건 IR 이 소유한 원문 구간 — IR 노드의 근거 구간 합집합이 곧 출처다."""
+    payload = plan.get(EVENT_EXPRESSION_KEY)
+    if not isinstance(payload, dict):
+        return None
+    span = payload.get("evidence_span")
+    return (int(span[0]), int(span[1])) if isinstance(span, list) and len(span) == 2 else None
 
 
 # ── 범용 위치추적기 팩토리 ────────────────────────────────────────────────────────
@@ -4494,6 +4549,10 @@ def _source_authoritative_stages(
          "절 분리가 기간 표현을 통째로 지우면 고아 창 귀속으로도 되찾을 수 없다"),
         ("calendar_window_claim", _apply_calendar_window_claim_filter,
          "구매 활용형('산')처럼 직접 날짜 파서의 표면어 게이트를 통과하지 못한 고아 달력 창을 주문 팩트에 귀속한다"),
+        # 창·극성 슬롯이 전부 확정된 **뒤**에 사건 IR 을 세운다 — 슬롯이 문장을 온전히 담았는지는
+        # 그때만 판정할 수 있다. 앞서 실행하면 아직 안 채워진 슬롯을 보고 개입 여부를 잘못 정한다.
+        ("event_expression", _apply_event_expression_filter,
+         "절 단위 사건 의미(기간별 구매 있음/없음)는 원문에서만 절 구조가 남아 있다"),
         ("aggregation_axis", lambda _query, plan: _normalize_aggregation_axis_filters(plan),
          "복원된 조건을 집계 축 필터 표기로 정규화한다"),
         ("purchase_aggregation", lambda _query, plan: _normalize_purchase_aggregation_request(plan),
@@ -4607,7 +4666,7 @@ def _resolve_query_plan_candidates(
 # rules 경로는 정규화 matched_terms 루프를 사이에 끼우므로 PRE/POST 두 단계로 나뉜다.
 _RULES_PRE_FILTERS: tuple[str, ...] = (
     "age", "purchase_date", "result_limit", "purchase_inactivity",
-    "birthday", "signup_target", "sell_object", "dimension", "member_value", "macro_region",
+    "birthday", "signup_target", "external_condition", "sell_object", "dimension", "member_value", "macro_region",
     "aggregate", "purchase_count_threshold", "cart_aggregate", "cart_retention", "cart_type",
 )
 _RULES_POST_FILTERS: tuple[str, ...] = (
@@ -4617,9 +4676,10 @@ _RULES_POST_FILTERS: tuple[str, ...] = (
     "campaign_buy_count", "cell_rate", "children_registered", "grade_threshold", "channel_consent", "member_flag", "policy",
     "group_ranking", "region_member_count", "region_density", "member_metric_ranking", "purchase_count_ranking",
     "zero_amount_purchase", "zero_purchase_count", "metric_trend", "calendar_window_claim",
+    "event_expression",
 )
 _AUTO_FILTERS: tuple[str, ...] = (
-    "sell_object", "dimension", "member_value", "macro_region",
+    "external_condition", "sell_object", "dimension", "member_value", "macro_region",
     "group_ranking", "region_member_count", "region_density",
     "member_metric_ranking", "purchase_count_ranking", "purchase_date",
     "result_limit", "purchase_inactivity", "recent_login", "signup_channel", "signup_device",
@@ -4628,7 +4688,7 @@ _AUTO_FILTERS: tuple[str, ...] = (
     "grade_threshold", "channel_consent", "member_flag", "aggregate", "purchase_count_threshold",
     "campaign_buy_amount", "campaign_buy_count", "cell_rate", "cart_aggregate", "cart_retention", "cart_type",
     "birthday", "signup_target", "zero_amount_purchase", "zero_purchase_count", "metric_trend",
-    "calendar_window_claim",
+    "calendar_window_claim", "event_expression",
 )
 
 
@@ -4800,11 +4860,11 @@ def _build_single_query_plan(
     llm_plan.setdefault("campaign_constraints", {}).setdefault("sell_object", None)
     # 결정론 필터를 레지스트리 순서(_AUTO_FILTERS)로 실행한다 — 호출 방식·슬롯 선초기화(init=True: 희소한
     # LLM 플랜)는 _deterministic_filter_registry 가 소유한다. 집합식 operand 값 복원(_enrich)은 값 인덱스
-    # (member_value/dimension) 뒤·랭킹 감지 전에 끼워야 하므로 macro_region 까지(앞 4개)와 그 뒤로 나눠 돈다.
-    _run_filters(_AUTO_FILTERS[:4], parse_query, llm_plan, init=True)
+    # (member_value/dimension) 뒤·랭킹 감지 전에 끼워야 하므로 macro_region 까지(앞 5개)와 그 뒤로 나눠 돈다.
+    _run_filters(_AUTO_FILTERS[:5], parse_query, llm_plan, init=True)
     # LLM 이 만든 집합식 operand(지역/등급 디멘션)에도 프롬프트에서 복원한 값을 실어 컴파일되게 한다.
     _enrich_set_expression_operand_values(llm_plan, parse_query)
-    _run_filters(_AUTO_FILTERS[4:], parse_query, llm_plan, init=True)
+    _run_filters(_AUTO_FILTERS[5:], parse_query, llm_plan, init=True)
     # 구조화 LLM 슬롯도 이미 희소 후보로 제출되어 resolver에서 rules 슬롯과 함께 판정됐다.
     # behaviors 가 이미 소유한 canonical(예: cart_abandoner)이 lifecycle 에도 중복 분류되면 lifecycle 쪽을 뺀다.
     # lifecycle_extra_terms 에 behavior 겸용 어휘가 있어 LLM 이 같은 값을 lifecycle 로도 넣으면, compile 이 그
@@ -4904,6 +4964,8 @@ def _build_rule_query_plan(
         "semantic_resolutions": [],
         "computed_metrics": [],
         "dimension_filters": [],
+        "external_conditions": [],
+        "compound_dimension_filters": [],
         "cart_context": False,
         "result_limit": None,
         "member_metric_selection": None,
@@ -5783,10 +5845,16 @@ def _is_completed_behavior_segment_lookup(query: str) -> bool:
     )
 
 
+# 구매 존재/부재 표면 판정. **동사·기록 명사 목록은 두 극성이 공유한다**(사전 소유) — 예전에는 두
+# 정규식이 각자 명사 목록을 갖고 있어 '구매 기록'이 부정형에도 긍정형에도 안 잡혔다(같은 뜻인데
+# 표현형 하나가 통째로 샌 것). 조사·어미 결합은 구조라 코드에 남는다.
+_PURCHASE_VERB_ALT = lexicon_patterns.alternation("purchase_membership_verb")
+_PURCHASE_RECORD_ALT = lexicon_patterns.alternation("event_record_noun")
+_PURCHASE_MEMBER_ALT = lexicon_patterns.alternation("member_noun", "member_noun_informal")
 _PURCHASE_POSITIVE_MEMBERSHIP_RE = re.compile(
-    r"(?:구매|구입|주문)(?:이력|내역)?(?:을|를|은|는|이|가|도)*"
+    rf"(?:{_PURCHASE_VERB_ALT})(?:{_PURCHASE_RECORD_ALT})?(?:을|를|은|는|이|가|도)*"
     r"(?:했|한|했던|있는|있었|있던|있음)"
-    r"|(?:구매|구입|주문)(?=(?:고객|회원|사용자|유저))"
+    rf"|(?:{_PURCHASE_VERB_ALT})(?=(?:{_PURCHASE_MEMBER_ALT}))"
 )
 _CAMPAIGN_GENERIC_RESPONSE_RE = re.compile(
     r"캠페인(?:에|에서|을|를|의)?(?:는|은|도)?(?:반응|응답)"
@@ -5999,6 +6067,161 @@ def _apply_core_membership_semantics(query: str, plan: dict[str, Any]) -> None:
             "days": inactivity_period.get("min_days"), "is_primary_condition": True,
         })
     plan["semantic_conditions"] = semantic_conditions
+
+
+# ── 범용 사건 IR 단계(event_expression) ────────────────────────────────────────────
+# 기존 고정 슬롯(purchase_date / purchase_inactivity / behaviors:no_purchase)은 **기준 모델이 아니라
+# 파생 출력**이다. 이 단계는 원문을 절 단위로 다시 읽어 사건 논리식(event_ir)을 세우고,
+#
+#   * 그 의미가 기존 슬롯으로 **완전히** 표현되면 → 슬롯을 그대로 두고 물러난다(기존 경로 유지),
+#   * 표현할 수 없으면(절대 기간 부재, 극성이 다른 두 창, OR 결합) → IR 을 실행 모델로 세우고
+#     같은 어구에서 나온 기존 슬롯을 회수한다(같은 조건이 두 번 컴파일되지 않게).
+#
+# 표현할 수 없다고 해서 의미를 **줄이지 않는다**. 예전에는 '특정 기간 구매 없음'이 표현 수단이 없어
+# '평생 구매 없음'(no_purchase)으로 바뀌거나 창이 통째로 사라졌다 — 둘 다 다른 집합을 뽑는다.
+# 이제는 IR 을 보존한 채 컴파일하거나, 컴파일 불가면 근거를 실은 미지원으로 고지한다(fail-close).
+
+EVENT_EXPRESSION_KEY = "event_expression"
+# IR 이 대체하는 조건 kind. 이 밖의 팩트조인 조건이 있으면 그 전용 빌더가 소유하므로 개입하지 않는다
+# (소유권 판정 기준을 targeting_ir 레지스트리에서 파생 — 새 조건이 생겨도 이 목록을 손대지 않는다).
+_EVENT_IR_REPLACED_KINDS = frozenset({"purchase_date", "purchase_inactivity", EVENT_EXPRESSION_KEY})
+# 사건 IR 이 담지 못하는 상위 실행 모델. 하나라도 있으면 그쪽이 문장의 주 해석이다.
+_EVENT_IR_BLOCKING_PLAN_KEYS = ("set_expressions", "logical_expression", "aggregation_request", "analytical_intent")
+# 사건 심볼 → 그 사건의 **거친 요약**으로만 존재하는 legacy 행동 값. 첫 구매/재구매/무구매는 주문 사건의
+# 횟수를 세 칸으로 뭉갠 표기라, IR 이 같은 사건을 더 정확히(기간·시간 관계까지) 표현하면 그 표기는
+# 같은 사실의 그림자다 — 남겨 두면 같은 조건이 두 번, 그것도 서로 모순되게 컴파일된다
+# ('첫 구매 후 30일 이내 재구매' → first_purchase(=1건) AND repeat_buyer(>=2건) → 항상 공집합).
+_EVENT_SHADOW_BEHAVIORS: dict[str, frozenset[str]] = {
+    "purchase": frozenset({"first_purchase", "repeat_buyer", "no_purchase"}),
+}
+
+
+def _event_expression_blocking_conditions(plan: dict[str, Any], sources: set[str]) -> list[str]:
+    """사건 IR 이 개입하면 안 되는 사유 목록(빈 목록이면 개입 가능).
+
+    판정을 손으로 나열하지 않고 조건 레지스트리에서 파생한다 — '전용 팩트조인 빌더가 소유하는
+    조건이 하나라도 남아 있으면 IR 이 그 문장을 대표하지 않는다'가 규칙이다. 예외는 IR 이 같은
+    사건을 이미 더 정확히 표현하는 요약 행동(:data:`_EVENT_SHADOW_BEHAVIORS`)뿐이다."""
+    shadowed = {value for source in sources for value in _EVENT_SHADOW_BEHAVIORS.get(source, frozenset())}
+    blocking = [key for key in _EVENT_IR_BLOCKING_PLAN_KEYS if plan.get(key)]
+    for condition in _extract_conditions_ir(plan):
+        if not condition.spec.fact_join or condition.kind in _EVENT_IR_REPLACED_KINDS:
+            continue
+        if condition.kind == "order_count_behavior" and condition.params.get("behavior") in shadowed:
+            continue
+        blocking.append(condition.kind)
+    return blocking
+
+
+def _event_semantic_conditions(expression: event_ir.Condition) -> list[dict[str, Any]]:
+    """조건 IR → 기존 ``semantic_conditions`` 표기(커버리지·검증 계층과의 호환 출력)."""
+    out: list[dict[str, Any]] = []
+    for view in event_ir.existence_views(expression):
+        item: dict[str, Any] = {
+            "domain": view.source,
+            "operator": "not_exists" if view.negated else "exists",
+            "is_primary_condition": True,
+        }
+        if isinstance(view.window, event_ir.RollingWindow):
+            item["window_days"] = view.window.days
+        elif isinstance(view.window, event_ir.AbsoluteInterval):
+            item["window"] = view.window.to_calendar_window()
+        out.append(item)
+    return out
+
+
+def _release_event_expression_slots(plan: dict[str, Any], sources: set[str]) -> None:
+    """IR 이 소유하게 된 조건의 기존 슬롯을 회수한다(같은 어구의 이중 컴파일 방지)."""
+    target_user = plan.setdefault("target_user", {})
+    target_user["purchase_date"] = None
+    target_user["purchase_inactivity"] = None
+    target_user.pop("purchase_membership", None)
+    shadowed = {value for source in sources for value in _EVENT_SHADOW_BEHAVIORS.get(source, frozenset())}
+    for container in ("behaviors", "lifecycle"):
+        values = target_user.get(container)
+        if isinstance(values, list):
+            target_user[container] = [value for value in values if value not in shadowed]
+
+
+@_audited_stage
+def _apply_event_expression_filter(query: str, plan: dict[str, Any]) -> None:
+    """원문 → 조건 논리식. 기존 슬롯으로 무손실 표현이 가능하면 물러나고, 아니면 IR 이 실행 모델이 된다."""
+    if plan.get("intent") not in _SQL_TARGET_INTENTS:
+        return
+
+    expression = event_parser.parse_expression(query)
+    if expression is None:
+        return
+    sources = event_ir.sources(expression)
+
+    # 소유권 판정은 **파싱 뒤**에 한다 — IR 이 어떤 사건을 어떻게 표현했는지 알아야 요약 행동을
+    # 그 표현의 그림자로 볼 수 있는지 판단할 수 있다.
+    blocking = _event_expression_blocking_conditions(plan, sources)
+    if blocking:
+        plan_decisions.record(
+            plan, filter_name="event_expression", action=plan_decisions.KEEP,
+            slot=f"plan.{EVENT_EXPRESSION_KEY}",
+            reason=f"전용 팩트조인 조건이 문장을 대표한다({', '.join(sorted(set(blocking)))})",
+        )
+        return
+
+    scoped_text = event_parser.event_clause_text(query)
+    try:
+        event_ir.validate_expression(
+            scoped_text, expression, parsed_time_span_count=event_parser.source_time_span_count(query)
+        )
+    except event_ir.SemanticLossError as exc:
+        # 검증 실패는 축소 폴백의 신호가 아니다 — 원문 의미가 IR 에 다 담기지 않았다는 뜻이므로
+        # 어떤 해석도 확정하지 않고 미지원으로 고지한다.
+        plan["unsupported"] = {
+            "reason": "event_semantics_loss",
+            "message": f"조건의 의미가 실행 모델로 온전히 옮겨지지 않았습니다: {exc}",
+            "clarification": "기간과 '구매 있음/없음'을 조건별로 나눠 다시 말씀해 주시겠어요?",
+        }
+        plan_decisions.record(
+            plan, filter_name="event_expression", action=plan_decisions.UNSUPPORTED,
+            slot=f"plan.{EVENT_EXPRESSION_KEY}", reason=f"의미 보존 검증 실패: {exc}",
+        )
+        return
+
+    if not event_ir.requires_general_ir(expression):
+        # 기존 슬롯 모델이 이 모양을 무손실로 담는다 → IR 은 실행 모델이 되지 않고 물러난다.
+        # (어떤 슬롯 표기가 되는지는 감사 로그에 남긴다 — 두 모델의 대응을 사후에 읽을 수 있게.)
+        plan_decisions.record(
+            plan, filter_name="event_expression", action=plan_decisions.KEEP,
+            slot=f"plan.{EVENT_EXPRESSION_KEY}",
+            reason="기존 슬롯으로 무손실 표현 가능 — 기존 컴파일 경로를 유지한다",
+            value=event_ir.try_convert_to_legacy_slots(expression),
+        )
+        return
+
+    registry = event_compiler.resolve_registry(_event_registry_overrides())
+    unregistered = event_compiler.unsupported_events(expression, registry) + event_compiler.unsupported_fields(
+        expression, registry
+    )
+    if unregistered:
+        # 심볼이 레지스트리에 없다 = 물리 매핑을 지어낼 수 없다. 의미를 보존한 채 미지원으로 고지한다.
+        payload = event_ir.unsupported_payload("unregistered_symbol", expression)
+        plan["unsupported"] = {
+            "reason": "event_not_registered",
+            "message": f"등록되지 않은 사건/필드입니다: {', '.join(unregistered)}",
+            "clarification": "해당 행동을 다른 표현으로 말씀해 주시겠어요?",
+            "preserved_expression": payload["preserved_expression"],
+        }
+        return
+
+    span = event_ir.evidence_span(expression)
+    plan[EVENT_EXPRESSION_KEY] = {
+        "expression": expression.to_dict(),
+        "source_text": query,
+        "evidence_span": list(span) if span else None,
+    }
+    _release_event_expression_slots(plan, sources)
+    plan["semantic_conditions"] = [
+        condition
+        for condition in (plan.get("semantic_conditions") or [])
+        if condition.get("domain") not in event_ir.sources(expression)
+    ] + _event_semantic_conditions(expression)
 
 
 def _attach_member_policy_contract(query: str, plan: dict[str, Any]) -> None:
@@ -6341,6 +6564,9 @@ def _query_plan_needs_llm_enrichment(query_plan: dict[str, Any]) -> bool:
         return True
     if query_plan.get("unsupported") or query_plan.get("unresolved_source_conditions"):
         return True
+    for condition in query_plan.get("external_conditions") or []:
+        if not isinstance(condition, dict) or condition.get("resolution_status") != "resolved":
+            return True
     aggregation = query_plan.get("aggregation_request")
     if isinstance(aggregation, dict) and aggregation.get("unresolvedFields"):
         return True
@@ -6560,13 +6786,51 @@ def _extract_category_object(query: str) -> str | None:
     return None
 
 
+def _apply_external_condition_filter(query: str, plan: dict[str, Any]) -> None:
+    """실시간 의존 조건의 종류만 분류한다. 실제 지역/수치는 Resolver가 확정한다."""
+
+    detected = classify_external_conditions(query)
+    existing = plan.get("external_conditions")
+    values = list(existing) if isinstance(existing, list) else []
+    signatures = {
+        (
+            item.get("domain"), item.get("condition_type"),
+            item.get("condition_code"), item.get("state", "active"),
+        )
+        for item in values if isinstance(item, dict)
+    }
+    for condition in detected:
+        signature = (
+            condition.get("domain"), condition.get("condition_type"),
+            condition.get("condition_code"), condition.get("state", "active"),
+        )
+        if signature not in signatures:
+            values.append(condition)
+            signatures.add(signature)
+    plan["external_conditions"] = values
+
+
 def _apply_sell_object(query: str, plan: dict[str, Any]) -> None:
     # "…(신상 컴퓨터)를 팔고 싶어요 / 판매하고 싶어요" 에서 파는 상품을 뽑아 캠페인 목표로 쓴다.
     # 타겟 필터가 아니라 채널메시지 카피의 소재(캠페인 컨텍스트)로만 사용한다.
-    match = re.search(r"(?P<object>.+?)\s*(?:을|를)\s*(?:팔|판매)", query)
-    if not match:
+    # 분류기가 외부 대상 조건으로 확정한 근거 span만 가린다. '폭염 대비 양산 세트'처럼 상품
+    # 수식으로 쓰인 표현은 외부 조건이 아니므로 그대로 보존된다.
+    product_query = mask_external_condition_spans(
+        query, plan.get("external_conditions") or []
+    )
+    match = re.search(r"(?P<object>.+?)\s*(?:을|를)\s*(?:팔|판매)", product_query)
+    fragment = match.group("object") if match else None
+    if fragment is None:
+        # '<상품> 구매 캠페인'은 과거 구매자 조건('<상품> 구매 고객')과 달리 캠페인의 판매 소재다.
+        marker_indexes = [
+            product_query.find(marker)
+            for marker in ("구매 캠페인", "구매캠페인", "구입 캠페인", "구입캠페인")
+            if product_query.find(marker) > 0
+        ]
+        if marker_indexes:
+            fragment = product_query[:min(marker_indexes)]
+    if fragment is None:
         return
-    fragment = match.group("object")
     # "…에게/…한테/…께/…대상으로" 같은 대상 지향 표현 뒤의 상품만 취해 대상 문구를 삼키지 않는다.
     fragment = re.split(r".*(?:에게|한테|께|대상으로)\s*", fragment)[-1]
     sell_object = _sanitize_purchase_object(fragment)
@@ -6890,6 +7154,8 @@ def _target_object_extract_system_prompt(prompt_dir: Path | None = DEFAULT_PROMP
             "  나열되면('기저귀와 건강식품') 각 상품을 배열 원소로 분리한다. 하나면 원소 1개, 없으면 빈 배열 [].",
             "  하나의 상품명을 여러 문자열로 쪼개지 말고, 여러 상품을 한 문자열로 합치지도 마라.",
             "sell_object: 이 캠페인이 '팔려는/판매하려는' 상품명(하나, 없으면 null).",
+            "폭염 지역·미세먼지 심한 지역처럼 실시간 대상 범위를 나타내는 말은 상품명에 포함하지 마라.",
+            "단, '폭염 대비 양산 세트'처럼 대상 지역이 아니라 실제 상품 수식이면 상품명으로 보존한다.",
             "반드시 입력 문장에 그대로 등장하는 명사만 사용한다(번역·유추·추가 금지).",
             "'상품', '제품', '품목', '물건', '브랜드' 같은 일반명사만 있고 실제 이름이 없으면 purchase_objects는 빈 배열이다.",
             "조사·수식어(첫/재/최근 등)와 수량어(2개/3번 등)는 빼고 핵심 상품 명사만 남긴다.",
@@ -8588,12 +8854,14 @@ def _apply_purchase_count_ranking_target(query: str, plan: dict[str, Any]) -> No
 # "최근 N일/개월 동안 구매하지 않은" 같은 구매 미발생 기간(구매 리센시) 신호. 구매 부정어 + 시간 창이
 # 함께 있을 때만 잡는다. 시간 창이 없으면(예: '미구매 고객') '전혀 구매 안 함(no_purchase)'과 구분이
 # 없으므로 여기서 잡지 않고 기존 no_purchase 경로로 둔다.
-# 구매/구입/주문 + (이력/내역)? + (조사)* + 부정어. 조사('구매가 없는'의 '가')·명사('구매 이력이 없는')가
-# 사이에 껴도 잡는다 — '구매없'만 리터럴로 보면 '구매가없'을 놓쳐 '최근 90일 구매가 없는'이 통째로 샜다.
+# 구매 동사 + (기록 명사)? + (조사)* + 부정어. 낱말 목록은 긍정형과 **같은 사전 어휘**를 쓴다
+# (purchase_membership_verb / event_record_noun) — 목록이 갈라지면 같은 뜻의 표현형 하나가 한쪽
+# 극성에서만 사라진다. 조사('구매가 없는'의 '가')·명사('구매 이력이 없는')가 사이에 껴도 잡는다.
 # 부정어는 '안내'(안 아님) 오탐을 피해 없/않/하지않/안함·안한·안했·안하 로 한정. 접두형 '미구매'도 본다.
 _PURCHASE_NEG_RE = re.compile(
-    r"(?:구매|구입|주문)(?:이력|내역)?(?:을|를|은|는|이|가|도)*(?:없|않|하지않|안함|안한|안했|안하)"
-    r"|미(?:구매|구입|주문)"
+    rf"(?:{_PURCHASE_VERB_ALT})(?:{_PURCHASE_RECORD_ALT})?(?:을|를|은|는|이|가|도)*"
+    r"(?:없|않|하지않|안함|안한|안했|안하)"
+    rf"|미(?:{_PURCHASE_VERB_ALT})"
 )
 
 
@@ -13136,6 +13404,41 @@ def _unique_strings(values: list[str]) -> list[str]:
     return unique_values
 
 
+def _mark_external_resolution_unavailable(
+    plan: dict[str, Any], *, error_code: str
+) -> None:
+    """서비스 초기화 자체가 실패해도 외부 조건을 제거하지 않고 차단 상태로 보존한다."""
+
+    now = datetime.now(timezone.utc)
+    failed_results = []
+    for condition in plan.get("external_conditions") or []:
+        if not isinstance(condition, dict):
+            continue
+        condition["resolution_status"] = "failed"
+        failed_results.append({
+            "condition_id": str(condition.get("id") or "external-condition"),
+            "status": "failed",
+            "provider": "none",
+            "resolver": "none",
+            "resolver_version": "1.0",
+            "observed_at": now.isoformat(),
+            "expires_at": (now + timedelta(seconds=1)).isoformat(),
+            "targets": [],
+            "error_code": error_code,
+            "error_detail": "External condition service is unavailable",
+            "metadata": {},
+            "cache_hit": False,
+        })
+    plan["external_condition_results"] = failed_results
+    plan["compound_dimension_filters"] = []
+    plan["external_condition_resolution"] = {
+        "status": "failed",
+        "condition_count": len(failed_results),
+        "filter_count": 0,
+        "resolved_at": now.isoformat(),
+    }
+
+
 def retrieve(
     query: str,
     graph: nx.Graph,
@@ -13164,6 +13467,7 @@ def retrieve(
     timings_ms: dict[str, float] | None = None,
     structuring_context: StructuringContext | None = None,
     query_structurer: QueryStructurer | None = None,
+    external_condition_service: ExternalConditionService | None = None,
 ) -> dict[str, Any]:
     # 계측 dict 을 호출자가 넘길 수 있게 한다. 트레이스 엔드포인트는 이 dict 을 소유해, retrieve() 가
     # 중간 단계에서 예외로 죽어도 그때까지 채워진 단계별 시간을 읽어 "오류 전까지" 부분 트레이스를 만든다.
@@ -13322,6 +13626,22 @@ def retrieve(
     # 캠페인/조회 동사 없이 회원 속성만 나열한 프롬프트는 파서가 intent=unknown 을 주는데, 그러면
     # 회원 타겟 SQL 빌더가 호출되지 않는다. 실DB 매핑 가능한 타겟 신호가 있으면 세그먼트 조회로 승격.
     _promote_unknown_intent_for_target_signal(query_plan)
+    external_started_at = time.perf_counter()
+    if query_plan.get("external_conditions"):
+        try:
+            service = external_condition_service or get_default_service()
+            service.resolve_plan(
+                query_plan,
+                ResolutionContext(
+                    now=datetime.now(timezone.utc),
+                    request_id=hashlib.sha256(query.encode("utf-8")).hexdigest()[:16],
+                ),
+            )
+        except Exception:
+            _mark_external_resolution_unavailable(
+                query_plan, error_code="external_condition_service_unavailable"
+            )
+    timings_ms["external_conditions"] = _elapsed_ms(external_started_at)
     # 위의 원문 복원·소유권 이동은 실행 플랜만 바꿀 수 있고 최초 source requirement는 바꾸면 안 된다.
     semantic_requirements.verify_source_requirements(query_plan)
     # API 출고 경로는 원문 의미 검증을 선택 기능으로 두지 않는다. 검증기가 실행되지 못한 경우도
@@ -15215,6 +15535,9 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
     selected = sql_result.get("selected") or {}
     unsupported_labels = sql_result.get("unsupported_condition_labels", [])
 
+    if reason == "external_condition_resolution_failed":
+        return "현재 외부 조건의 대상 지역을 확인하지 못했습니다. 직접 대상 지역을 지정해 주세요."
+
     if reason in {"semantic_ir_needs_clarification", "semantic_ir_unsupported"}:
         semantic_ir = sql_result.get("semantic_ir") or query_plan.get("semantic_ir") or {}
         message = semantic_ir.get("message") if isinstance(semantic_ir, dict) else None
@@ -15367,6 +15690,7 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
     "semantic_conditions_not_extracted": "condition_recognition",
     "entity_ranking_not_structured": "condition_recognition",
     "real_db_unsupported_conditions": "real_db_mapping",
+    "external_condition_resolution_failed": "real_db_mapping",
     # 명시적 미지원(쿠폰 건수/순위/비교/파생·의미보존 실패): 조건은 인식했으나 실DB 로 매핑 불가 —
     # SQL 안전 검증/의미 검증이 아니라 '실DB 조건 매핑' 단계에서 막힌 것으로 스텝퍼에 정직하게 표시한다.
     "coupon_usage_count_filter_unsupported": "real_db_mapping",
@@ -15526,6 +15850,14 @@ def build_recommendation_api_response(
         "answer_mode": answer_response.get("mode"),
         "answer_failure_reason": answer_response.get("failure_reason"),
         "failure_reason": sql_result.get("failure_reason"),
+        "error_code": sql_result.get("error_code"),
+        "failed_conditions": sql_result.get("failed_conditions", []),
+        "external_conditions": copy.deepcopy(query_plan.get("external_conditions") or []),
+        "external_condition_results": copy.deepcopy(
+            query_plan.get("external_condition_results")
+            or sql_result.get("external_condition_results")
+            or []
+        ),
         "interpretation_status": (
             sql_result.get("interpretation_status")
             or (query_plan.get("semantic_ir") or {}).get("status")
@@ -15566,6 +15898,7 @@ def _api_status(sql_result: dict[str, Any]) -> str:
     # — 재작성/입력 보완(예: 쿠폰 '사용 여부')으로 풀 수 있어 needs_clarification 으로 안내한다.
     if sql_result.get("failure_reason") in (
         "query_plan_required_conditions_missing", "semantic_conditions_not_extracted", "semantic_verification_failed",
+        "external_condition_resolution_failed",
     ) or sql_result.get("failure_reason") in _UNSUPPORTED_INTENT_REASONS:
         return "needs_clarification"
     return "no_verified_sql"
@@ -16745,6 +17078,8 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
         or "no_purchase" in behaviors
         or "no_buy_response" in campaign_canonicals
         or target_user.get("cart_absence")
+        # 사건 IR 이 구매 부재를 노드로 들고 있으면 드롭이 아니다(슬롯이 아니라 IR 이 소유).
+        or _event_expression_covers(query_plan, "purchase", "not_exists")
     ):
         warnings.append("구매 미발생(미구매/최근 N일 미구매/구매건수 0건) 조건")
 
@@ -16919,6 +17254,8 @@ def _verify_sql_semantic_invariants(
         or any(isinstance(r, dict) and r.get("canonical") == "no_buy_response"
                for r in (target_user.get("campaign_responses") or []))
         or target_user.get("cart_absence")
+        # 사건 IR 의 not_exists 노드도 '구매 미발생을 표현했다'에 해당한다(슬롯 대신 IR 이 소유).
+        or _event_expression_covers(plan, "purchase", "not_exists")
     )
     warned = any(("구매" in w or "주문" in w) for w in (dropped_signal_warnings or []))
     if purchase_absence_mentioned and not represented and not warned:
@@ -17777,6 +18114,86 @@ def _reconcile_semantic_ir_with_execution_plan(query_plan: dict[str, Any]) -> No
         })
 
 
+def _external_condition_blocking_sql_result(
+    query_plan: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """외부 의존성이 완전히 스냅샷/매핑되지 않았으면 SQL 생성을 fail-close한다."""
+
+    conditions = query_plan.get("external_conditions")
+    if not isinstance(conditions, list) or not conditions:
+        return None
+    results = query_plan.get("external_condition_results")
+    filters = query_plan.get("compound_dimension_filters")
+    resolution = query_plan.get("external_condition_resolution")
+    result_by_id = {
+        str(item.get("condition_id")): item
+        for item in results or []
+        if isinstance(item, Mapping) and item.get("condition_id")
+    }
+    failed_conditions: list[dict[str, Any]] = []
+    for condition in conditions:
+        if not isinstance(condition, Mapping):
+            failed_conditions.append({
+                "condition_id": "external-condition",
+                "reason": "external_condition_invalid",
+            })
+            continue
+        condition_id = str(condition.get("id") or "external-condition")
+        result = result_by_id.get(condition_id, {})
+        status = str(result.get("status") or condition.get("resolution_status") or "pending")
+        if status != "resolved":
+            failed_conditions.append({
+                "condition_id": condition_id,
+                "domain": condition.get("domain"),
+                "condition_code": condition.get("condition_code"),
+                "status": status,
+                "reason": result.get("error_code") or f"external_condition_{status}",
+            })
+    fully_resolved = (
+        isinstance(resolution, Mapping)
+        and resolution.get("status") == "resolved"
+        and isinstance(results, list)
+        and len(results) >= len(conditions)
+        and isinstance(filters, list)
+        and bool(filters)
+        and not failed_conditions
+    )
+    if fully_resolved:
+        return None
+    if not failed_conditions:
+        failed_conditions.append({
+            "condition_id": "external-condition",
+            "status": "failed",
+            "reason": "external_condition_filter_missing",
+        })
+    questions = ["직접 대상 지역을 지정하시겠어요?"]
+    return {
+        "sql": None,
+        "blocked_sql": None,
+        "target_connection": None,
+        "target_dialect": None,
+        "selected": None,
+        "candidates": [],
+        "candidate_count": 0,
+        "condition_tokens": [],
+        "required_conditions": [],
+        "input_validation": {"is_satisfied": False, "errors": failed_conditions},
+        "missing_input_conditions": [],
+        "clarification_questions": questions,
+        "semantic_verification": {"ran": False},
+        "delivery_validation": {"is_satisfied": False},
+        "llm_fallback_used": False,
+        "generation_source": None,
+        "confidence": _failed_sql_confidence("external_condition_resolution_failed"),
+        "is_success": False,
+        "failure_reason": "external_condition_resolution_failed",
+        "error_code": "EXTERNAL_CONDITION_RESOLUTION_FAILED",
+        "interpretation_status": "needs_clarification",
+        "failed_conditions": failed_conditions,
+        "external_condition_results": copy.deepcopy(results or []),
+    }
+
+
 def build_sql_result(
     graph: nx.Graph,
     query: str,
@@ -17792,6 +18209,9 @@ def build_sql_result(
 ) -> dict[str, Any]:
     if isinstance(query_plan, CampaignQueryPlanV2):
         verify_campaign_query_identity(query_plan)
+    external_condition_block = _external_condition_blocking_sql_result(query_plan)
+    if external_condition_block is not None:
+        return external_condition_block
     # 호출자가 수동 plan을 넘기는 단위/통합 경로도 동일한 의미 추출·출력 계약을 거친다.
     # 파생 엔터티 집합이 소유한 슬롯은 여기서 마지막으로 회수한다 — 계획 이후 단계(변이 병합·조건
     # 재확정)가 순위 절의 어구를 오디언스 조건으로 되살리면 같은 어구가 두 번 컴파일된다.
@@ -17812,6 +18232,7 @@ def build_sql_result(
     if semantic_conflicts:
         return _semantic_conflict_sql_result(semantic_conflicts)
     dimension_filter_errors = _validate_dimension_filters(query_plan)
+    dimension_filter_errors.extend(_validate_compound_dimension_filters(query_plan))
     if dimension_filter_errors:
         return _invalid_dimension_filters_sql_result(dimension_filter_errors)
     _normalize_aggregation_axis_filters(query_plan)
@@ -18485,6 +18906,31 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
     exclude = query_plan.get("exclude", {})
     intent = query_plan.get("intent")
 
+    # 조건 IR: **원자 조건 하나가 검증 토큰 하나**다. 통째로 한 토큰으로 묶으면 두 조건 중 하나만
+    # SQL 에 남아도 커버리지가 통과한다.
+    event_expression = _plan_event_expression(query_plan)
+    if event_expression is not None:
+        event_registry = event_compiler.resolve_registry(_event_registry_overrides())
+        event_context = _event_compile_context()
+        for index, (atom, negated) in enumerate(event_ir.iter_signed_atoms(event_expression)):
+            sources = sorted(event_ir.sources(atom))
+            tables = [
+                spec.table
+                for spec in (event_registry.get(name) for name in sources)
+                if spec is not None and spec.binding == "fact_table"
+            ]
+            # 부정이 붙은 원자는 Not 을 씌워 컴파일한다 — 원자만 컴파일하면 토큰이 SQL 과 극성이 어긋난다.
+            node = event_ir.Not(operand=atom) if negated else atom
+            _add_token(
+                tokens,
+                f"plan.{EVENT_EXPRESSION_KEY}[{index}]",
+                atom.type,
+                getattr(atom, "operator", "not_exists" if negated else "exists"),
+                ":".join(sources) or atom.type,
+                [event_compiler.compile_condition(node, event_context).sql],
+                _unique_strings(tables),
+            )
+
     for index, evaluation in enumerate(query_plan.get(CONDITION_EVALUATIONS_KEY) or []):
         if not isinstance(evaluation, dict) or condition_evaluation_ir.validate_evaluation(evaluation):
             continue
@@ -18766,6 +19212,18 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
                 tokens, "dimension_filters." + str(dimension_filter.get("dimension_id") or index),
                 "dimension_filter", operator.casefold(), ",".join(codes), [clause], [str(dimension_filter.get("table") or "")],
             )
+        if not _validate_compound_dimension_filters(query_plan):
+            for index, compound in enumerate(query_plan.get("compound_dimension_filters") or []):
+                clause = _compile_compound_dimension_filter(compound)
+                _add_token(
+                    tokens,
+                    "compound_dimension_filters." + str(compound.get("dimension_id") or index),
+                    "compound_dimension_filter",
+                    "or_of_and",
+                    str(compound.get("condition_id") or compound.get("dimension_id") or index),
+                    [clause],
+                    [_member_table()],
+                )
 
     region_count = query_plan.get("region_member_count_target")
     if isinstance(region_count, dict):
@@ -19997,6 +20455,9 @@ def _sql_target_builder_registry() -> tuple[tuple[Any, frozenset[str]], ...]:
         # 기간 대 기간 지표 증감(두 기간 집계 비교). 구매 이력/집계 빌더보다 먼저 — 같은 문장의 기간·상품
         # 표현이 단일 기간 필터로 새면 '증감' 자체가 통째로 사라진 그럴듯한 SQL 이 나간다.
         (build_metric_trend_targets_sql_candidate, frozenset({"metric_trend"})),
+        # 범용 사건 논리식(기간별 구매 있음/없음, 사건 간 AND/OR). 구매 이력/주문수 빌더보다 먼저 —
+        # 그 빌더들은 극성별 창을 하나씩만 담을 수 있어, 뒤로 밀면 한쪽 창이 조용히 사라진다.
+        (build_event_expression_sql_candidate, frozenset({EVENT_EXPRESSION_KEY})),
         # "○○ 구매/구입한 고객"(상품 LIKE) + 절대 날짜 구매창(ORDER_DATE BETWEEN).
         (build_purchase_history_targets_sql_candidate, frozenset({"purchase_object", "purchase_date"})),
         # 첫 구매/재구매/무구매(주문수 집계) + 구매 미발생 기간(anti-join). 지원 집합 밖 행동
@@ -20459,6 +20920,72 @@ def _validate_dimension_filters(query_plan: Mapping[str, Any]) -> list[dict[str,
     return errors
 
 
+def _validate_compound_dimension_filters(
+    query_plan: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """중첩 필터의 닫힌 문법을 검증해 컬럼/연산자 주입과 계층 유실을 막는다."""
+
+    errors: list[dict[str, Any]] = []
+    allowed_columns = {"SIDO", "SIGUNGU"}
+    for outer_index, compound in enumerate(query_plan.get("compound_dimension_filters") or []):
+        path = f"compound_dimension_filters.{outer_index}"
+        if not isinstance(compound, Mapping) or compound.get("logic") != "OR":
+            errors.append({"code": "COMPOUND_FILTER_INVALID", "path": path,
+                           "message": "compound filter must be an OR object"})
+            continue
+        groups = compound.get("groups")
+        if not isinstance(groups, list) or not groups:
+            errors.append({"code": "COMPOUND_FILTER_EMPTY", "path": path,
+                           "message": "compound filter must contain groups"})
+            continue
+        for group_index, group in enumerate(groups):
+            group_path = f"{path}.groups.{group_index}"
+            if not isinstance(group, Mapping) or group.get("logic") != "AND":
+                errors.append({"code": "COMPOUND_GROUP_INVALID", "path": group_path,
+                               "message": "compound group must be an AND object"})
+                continue
+            filters = group.get("filters")
+            if not isinstance(filters, list) or not filters:
+                errors.append({"code": "COMPOUND_GROUP_EMPTY", "path": group_path,
+                               "message": "compound group must contain filters"})
+                continue
+            seen_columns: set[str] = set()
+            for filter_index, item in enumerate(filters):
+                item_path = f"{group_path}.filters.{filter_index}"
+                if not isinstance(item, Mapping):
+                    errors.append({"code": "COMPOUND_ITEM_INVALID", "path": item_path,
+                                   "message": "compound filter item must be an object"})
+                    continue
+                table = str(item.get("table") or "")
+                column = str(item.get("column") or "").split(".")[-1].upper()
+                value = item.get("value")
+                if table != _member_table() or column not in allowed_columns:
+                    errors.append({"code": "COMPOUND_COLUMN_UNSUPPORTED", "path": item_path,
+                                   "message": "compound region filter must use CRM member region columns"})
+                if item.get("operator") != "=":
+                    errors.append({"code": "COMPOUND_OPERATOR_UNSUPPORTED", "path": item_path,
+                                   "message": "compound region filter only supports equality"})
+                if not isinstance(value, str) or not value:
+                    errors.append({"code": "COMPOUND_VALUE_INVALID", "path": item_path,
+                                   "message": "compound region filter value must be non-empty"})
+                if column in seen_columns:
+                    errors.append({"code": "COMPOUND_COLUMN_DUPLICATE", "path": item_path,
+                                   "message": "a compound group cannot repeat a region column"})
+                seen_columns.add(column)
+    return errors
+
+
+def _compile_compound_dimension_filter(compound: Mapping[str, Any]) -> str:
+    groups: list[str] = []
+    for group in compound.get("groups") or []:
+        predicates = []
+        for item in group.get("filters") or []:
+            column = str(item["column"]).split(".")[-1].upper()
+            predicates.append(f"B.{column} = {_sql_quote(str(item['value']))}")
+        groups.append("(" + " AND ".join(predicates) + ")")
+    return "(" + " OR ".join(groups) + ")"
+
+
 def _invalid_dimension_filters_sql_result(errors: list[dict[str, Any]]) -> dict[str, Any]:
     """잘못된/충돌한 dimension IR이 SQL 후보나 LLM 폴백으로 우회하지 못하게 차단한다."""
 
@@ -20544,6 +21071,10 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     unsupported.extend(
         str(error.get("path") or "dimension_filters")
         for error in _validate_dimension_filters(query_plan)
+    )
+    unsupported.extend(
+        str(error.get("path") or "compound_dimension_filters")
+        for error in _validate_compound_dimension_filters(query_plan)
     )
     has_signal = False
     # 장기 미접속(휴면 재활성화) 신호가 있으면 기본 상태필터(NORMAL 한정)를 해제한다 — "6개월 이상
@@ -20864,6 +21395,16 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     for column, codes in member_region_excludes.items():
         in_list = ", ".join(_sql_quote(code) for code in codes)
         other_predicates.append(f"B.{column} NOT IN ({in_list})")
+    if not _validate_compound_dimension_filters(query_plan):
+        for compound in query_plan.get("compound_dimension_filters") or []:
+            other_predicates.append(_compile_compound_dimension_filter(compound))
+            for group in compound.get("groups") or []:
+                labels.extend(
+                    str(item.get("value"))
+                    for item in group.get("filters") or []
+                    if isinstance(item, Mapping) and item.get("value")
+                )
+            has_signal = True
 
     # CRM_MB_BASEINFO 단독으로 표현할 수 없는 조건(→ unsupported 로 모아 fallback 유도)
     for field in ("interests", "preferred_channels", "behaviors", "purchase_object", "price_sensitivity"):
@@ -21351,6 +21892,216 @@ def build_member_column_selection_sql_candidate(query_plan: dict[str, Any]) -> d
     candidate["dropped_conditions"] = compiled["unsupported"]
     candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in compiled["unsupported"]]
     return candidate
+
+
+def _event_registry_overrides() -> dict[str, "event_compiler.EventSpec"]:
+    """사건 심볼 → 물리 바인딩을 **설정(member_target_filters.json)에서** 만든다.
+
+    event_compiler 의 코드 기본값은 설정 부재 시 폴백이고, 실제 테이블/컬럼/조인키의 단일 소스는
+    설정이다 — 주문 테이블을 바꾸면 조건 IR 도 같이 따라와야 한다(두 곳에 적으면 갈라진다).
+    새 사건은 여기 한 항목 + 사전의 ``event_alias_<event>`` 어휘로 열린다(IR 타입은 늘지 않는다)."""
+    order = _order_count_targets_config()
+    login = _MEMBER_TARGET_FILTERS.get("recent_login_target")
+    login = login if isinstance(login, dict) else _DEFAULT_MEMBER_TARGET_FILTERS["recent_login_target"]
+    signup = _MEMBER_TARGET_FILTERS.get("signup_target")
+    signup = signup if isinstance(signup, dict) else _DEFAULT_MEMBER_TARGET_FILTERS["signup_target"]
+    cart = _cart_targets_registry()
+    cart_join = cart.get("join") if isinstance(cart.get("join"), dict) else {}
+    cart_active = cart.get("active_condition") if isinstance(cart.get("active_condition"), dict) else {}
+    member_key = _member_key_column()
+    overrides = {
+        "purchase": event_compiler.EventSpec(
+            table=order.get("table", "CRM_SL_ORDERHEADERMALL"),
+            alias="EO",
+            subject_key=member_key,
+            event_subject_key=order.get("join_column", "MEMBER_NO"),
+            time_column=order.get("order_date_column", "ORDER_DATE"),
+            time_format="char8",
+            binding="fact_table",
+            label="구매",
+        ),
+        "login": event_compiler.EventSpec(
+            table=login.get("table", "CRM_MB_BASEINFO"),
+            alias=_member_alias(),
+            subject_key=member_key,
+            event_subject_key=member_key,
+            time_column=login.get("column", "LAST_LOGIN_DATE"),
+            time_format="char8",
+            binding="subject_column",
+            label="로그인",
+        ),
+        "signup": event_compiler.EventSpec(
+            table=signup.get("table", "CRM_MB_BASEINFO"),
+            alias=_member_alias(),
+            subject_key=member_key,
+            event_subject_key=member_key,
+            time_column=signup.get("column", "REG_DT"),
+            time_format="char8",
+            binding="subject_column",
+            label="가입",
+        ),
+    }
+    if cart:
+        keep_column = str(cart_active.get("column") or "C.KEEP_YN").split(".")[-1]
+        overrides["cart"] = event_compiler.EventSpec(
+            table=cart.get("table", "ODS_MALL_OMS_CART"),
+            alias="EC",
+            subject_key=str(cart_join.get("right") or "B.MEMBER_ID").split(".")[-1],
+            event_subject_key=str(cart_join.get("left") or "C.CART_ID").split(".")[-1],
+            time_column=str(cart.get("registered_date_column") or "C.UPD_DT").split(".")[-1],
+            time_format="char8",
+            binding="fact_table",
+            extra_predicates=(f"{{alias}}.{keep_column} = {_sql_quote(str(cart_active.get('value', 'Y')))}",),
+            label="장바구니 담기",
+        )
+    return overrides
+
+
+def _event_field_overrides() -> dict[str, "event_compiler.FieldSpec"]:
+    """필드 심볼 → 물리 컬럼(설정 파생). 새 업무 속성은 이 표 한 줄로 조건에 쓸 수 있다.
+
+    금액·주문키는 집계 레지스트리(aggregate_targets)가 이미 컬럼을 소유하므로 거기서 읽는다 —
+    같은 컬럼을 두 곳에 적으면 DB 스왑 때 한쪽만 따라간다."""
+    aggregate = _aggregate_targets_config()
+    metrics = aggregate.get("metrics") if isinstance(aggregate.get("metrics"), dict) else {}
+    amount = metrics.get("purchase_amount") if isinstance(metrics.get("purchase_amount"), dict) else {}
+    order_count = metrics.get("order_count") if isinstance(metrics.get("order_count"), dict) else {}
+    return {
+        "purchase.amount": event_compiler.FieldSpec(
+            source="purchase", column=str(amount.get("column") or "PAYMENT_AMT"), data_type="number",
+        ),
+        "purchase.order_id": event_compiler.FieldSpec(
+            source="purchase", column=str(order_count.get("column") or "ORDER_ID"), data_type="string",
+        ),
+        "subject.grade": event_compiler.FieldSpec(
+            # 등급 컬럼은 별칭 접두를 포함한 표기라 컬럼명만 취한다(별칭은 컴파일러가 붙인다).
+            source="subject", column=_member_grade_column().split(".")[-1], data_type="string",
+        ),
+    }
+
+
+def _event_compile_context() -> "event_compiler.CompileContext":
+    """조건 IR 컴파일 환경(주체=회원 기준 테이블, 방언·별칭은 기존 빌더 관례와 동일)."""
+    registry = event_compiler.resolve_registry(_event_registry_overrides())
+    return event_compiler.CompileContext(
+        subject=event_compiler.SubjectSpec(
+            table=_member_table(), alias=_member_alias(), key=_member_key_column()
+        ),
+        registry=registry,
+        fields=event_compiler.resolve_fields(registry, _event_field_overrides()),
+        dialect=_member_dialect(),
+        literals=True,
+    )
+
+
+def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """사건 논리식(event_expression) → 회원 추출 SQL.
+
+    기존 구매 빌더와 달리 극성별 창을 **각각** 보존한다 — '상반기 구매 있음 + 하반기 구매 없음'은
+    EXISTS 와 NOT EXISTS 두 상관 서브쿼리의 AND 이고, 어느 한쪽으로 접히지 않는다. 회원 속성
+    (성별/등급/지역 …)은 다른 빌더와 같이 compile_member_target_conditions 로 AND 결합한다.
+    """
+    payload = query_plan.get(EVENT_EXPRESSION_KEY)
+    if not isinstance(payload, dict) or not isinstance(payload.get("expression"), dict):
+        return None
+    try:
+        expression = event_ir.condition_from_dict(payload["expression"])
+        condition_sql = event_compiler.compile_expression(
+            expression, context=_event_compile_context()
+        ).sql
+    except (event_ir.IrSchemaError, event_compiler.SqlCompileError) as exc:
+        # 컴파일 불가를 다른 빌더로의 축소 폴백으로 바꾸지 않는다 — 의미를 보존한 미해결로 남긴다.
+        unresolved = query_plan.setdefault("unresolved_source_conditions", [])
+        item = {
+            "path": f"plan.{EVENT_EXPRESSION_KEY}",
+            "condition": EVENT_EXPRESSION_KEY,
+            "reason": f"조건을 실DB 술어로 컴파일하지 못했습니다: {exc}",
+            "source": "event_ir",
+            "status": "unresolved",
+        }
+        if item not in unresolved:
+            unresolved.append(item)
+        return None
+
+    compiled = compile_member_target_conditions(query_plan)
+    where_clauses = list(compiled["predicates"])
+    if not compiled["forces_state"]:
+        where_clauses.append(_member_active_state_predicate())
+    where_clauses.append(condition_sql)
+
+    select_columns = ["DISTINCT " + _member_key_select(), _member_grade_select()]
+    labels = list(compiled["labels"]) + [_event_expression_label(expression)]
+    select_columns.append(_sql_quote(",".join(label for label in labels if label)) + " AS segment_label")
+    objective = query_plan.get("campaign_constraints", {}).get("objective")
+    if objective:
+        select_columns.append(_sql_quote(objective) + " AS objective")
+
+    sql = "\n".join(
+        [
+            "SELECT " + ", ".join(select_columns),
+            _member_from_clause(),
+            "WHERE " + "\n  AND ".join(_unique_strings(where_clauses)),
+        ]
+    )
+    candidate = _sql_candidate(
+        "sql_template:event_expression",
+        "사건 논리식(기간별 발생/미발생) 타겟 추출 SQL 템플릿(CRMDW)",
+        1.0,
+        sql,
+        _template_tables(sql),
+        "sql_template",
+    )
+    candidate["dropped_conditions"] = compiled["unsupported"]
+    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in compiled["unsupported"]]
+    return candidate
+
+
+def _event_source_label(source: str, registry: dict[str, Any]) -> str:
+    spec = registry.get(source)
+    return spec.label if spec is not None and spec.label else source
+
+
+def _event_window_label(window: Any) -> str:
+    if isinstance(window, event_ir.AbsoluteInterval):
+        calendar = window.to_calendar_window()
+        return f"{calendar['from']}~{calendar['to']} "
+    if isinstance(window, event_ir.RollingWindow):
+        return f"최근 {window.days}일 "
+    if isinstance(window, event_ir.RelativeWindow):
+        return f"{window.value}{window.unit} 전 "
+    return ""
+
+
+def _event_expression_label(expression: "event_ir.Condition") -> str:
+    """조건 IR 의 한글 라벨(세그먼트 표기·신뢰도 근거용).
+
+    라벨은 **원자 조건 종류별**로 만든다 — 문장 유형별 분기가 아니라 노드 종류별 분기라, 새 문장이
+    늘어도 여기 분기가 늘지 않는다."""
+    registry = event_compiler.resolve_registry(_event_registry_overrides())
+    existence_labels = {
+        (view.source, view.negated, id(view.evidence)): (
+            f"{_event_window_label(view.window)}{_event_source_label(view.source, registry)} "
+            f"{'없음' if view.negated else '있음'}"
+        )
+        for view in event_ir.existence_views(expression)
+    }
+    parts: list[str] = list(existence_labels.values())
+    for atom in event_ir.iter_atoms(expression):
+        if isinstance(atom, event_ir.Comparison) and isinstance(atom.left, event_ir.Aggregate):
+            aggregate = atom.left
+            source = next(iter(sorted(event_ir.sources(aggregate.relation))), aggregate.function)
+            window = next(iter(event_ir.time_windows(aggregate.relation)), None)
+            parts.append(
+                f"{_event_window_label(window)}{_event_source_label(source, registry)} "
+                f"{aggregate.function} {atom.operator} {getattr(atom.right, 'value', '')}"
+            )
+        elif isinstance(atom, event_ir.TemporalRelation):
+            parts.append(
+                f"{_event_source_label(atom.left.source, registry)} 후 {atom.duration.value}"
+                f"{atom.duration.unit} 이내 {_event_source_label(atom.right.source, registry)}"
+            )
+    joiner = " 또는 " if event_ir.has_operator(expression, "or") else ", "
+    return joiner.join(parts)
 
 
 # 상품 구매 이력 매칭 대상 컬럼(CRM_CM_PRODUCT). 카테고리 계층~상품명~브랜드명까지 넓게 LIKE 매칭해
@@ -23886,6 +24637,31 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     campaign_constraints = query_plan.get("campaign_constraints", {})
     exclude = query_plan.get("exclude", {})
 
+    # 조건 IR: 원자 조건마다 필수 SQL 토큰을 만든다 — 극성(EXISTS/NOT EXISTS)과 기간 경계가 SQL 에
+    # 실제로 남았는지 개별로 확인해야 조건 하나만 조용히 빠지는 사고를 잡는다.
+    event_expression = _plan_event_expression(query_plan)
+    if event_expression is not None:
+        registry = event_compiler.resolve_registry(_event_registry_overrides())
+        for index, (atom, negated) in enumerate(event_ir.iter_signed_atoms(event_expression)):
+            # 존재/부재 조건만 EXISTS 토큰을 요구한다 — 집계 비교는 스칼라 서브쿼리라 EXISTS 가 없다.
+            terms = ["not exists" if negated else "exists"] if isinstance(atom, event_ir.Exists) else []
+            terms.extend(
+                spec.table
+                for spec in (registry.get(name) for name in sorted(event_ir.sources(atom)))
+                if spec is not None and spec.binding == "fact_table"
+            )
+            terms.extend(
+                window.start.strftime("%Y%m%d")
+                for window in event_ir.time_windows(atom)
+                if isinstance(window, event_ir.AbsoluteInterval)
+            )
+            conditions.append(_condition(
+                f"plan.{EVENT_EXPRESSION_KEY}[{index}]",
+                ":".join(sorted(event_ir.sources(atom))) or atom.type,
+                [],
+                all_terms=_unique_strings(terms),
+            ))
+
     for index, evaluation in enumerate(query_plan.get(CONDITION_EVALUATIONS_KEY) or []):
         if not isinstance(evaluation, dict):
             continue
@@ -24237,6 +25013,18 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
                             all_terms=[column_short, operator_term],
                         )
                     )
+        if not _validate_compound_dimension_filters(query_plan):
+            for index, compound in enumerate(query_plan.get("compound_dimension_filters") or []):
+                clause = _compile_compound_dimension_filter(compound)
+                conditions.append(
+                    _condition(
+                        "compound_dimension_filters."
+                        + str(compound.get("dimension_id") or index),
+                        str(compound.get("condition_id") or "external_region"),
+                        [clause],
+                        all_terms=["B.SIDO"],
+                    )
+                )
 
     offer_type = campaign_constraints.get("offer_type")
     if offer_type:

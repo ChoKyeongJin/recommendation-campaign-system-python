@@ -31,6 +31,7 @@
 | 계산식 엔진              | `formula_engine.py`                                                                        | LLM이 제안한 `formula_ast`를 검증하고 안전한 SQL expression으로 컴파일                                                   |
 | 집합식 엔진              | `set_expression_engine.py`                                                                 | 합집합/교집합/차집합 세그먼트 표현을 `set_ast`로 파싱                                                                    |
 | 조건 소유권 재조정       | `condition_reconciliation.py`, `docs/data/condition_ownership_policy.json`                 | 파서들이 병행 해석한 같은 조건에 canonical owner 하나만 남기고(권위 슬롯 우선), 남은 진짜 미해결만 확인요청으로 승격     |
+| 범용 조건 의미 IR        | `event_ir.py`, `event_parser.py`, `event_compiler.py`                                      | 자연어를 절 단위로 읽어 논리·관계 대수(And/Or/Not · Source/Filter/Aggregate/Exists · 시간)로 보존하고 SQL 로 컴파일. 업무 이벤트·필드는 IR 타입이 아니라 레지스트리 심볼이며, 문장 유형이 늘어도 노드 타입은 늘지 않는다 |
 | RAG 지식 베이스 생성     | `build_rag_knowledge.py`                                                                   | 스키마, 사전, 비즈니스 용어, 업무 정책, SQL 예시를 지식 노드로 통합                                                      |
 | GraphRAG 검색            | `graph_rag.py`                                                                             | 질의 계획 생성, 검색, 집합식 predicate 조립, SQL 템플릿 검증                                                             |
 | 메시지 생성 프롬프트     | `docs/prompts/message_generation_*.txt`, `docs/prompts/message_generation_tone_manner.txt` | SQL 성공 이후 LMS/RCS 메시지 생성용 system/user/variant 및 톤앤매너 프롬프트                                             |
@@ -204,6 +205,31 @@ LMS/RCS 메시지 요청은 정규화 사전에서 각각 `lms`, `rcs` canonical
 집합식은 다른 파서와 **소유권 경쟁**을 한다. 같은 어구를 전용 슬롯(`exclude.gender`, `dimension_filters`, `target_user.entity_set_condition` 등)이 이미 실DB 컬럼까지 확정해 소유했는데 집합식이 한 번 더 소비하면, 그 중복 때문에 `unknown_operand`가 생겨 플랜 전체가 clarification으로 막힌다(`… 빼줘` vs `… 중 … 제외`처럼 표현형만 달라도 결과가 갈렸다). 이를 막기 위해 파서 결과 병합 직후·최종 clarification 판정 직전에 `condition_reconciliation.py`가 돈다. 소유권 우선순위와 억제/매칭/충돌 규칙은 `docs/data/condition_ownership_policy.json`이 소유하며(코드에 슬롯 이름을 나열하지 않는다), 처리 순서는 ① 후보 수집 → ② 소유권 판정 → ③ 소비 표시(원문 span 겹침·의미 지문·정규화 텍스트) → ④ 집합식 prune/rebuild → ⑤ 남은 미해결 재수집 → ⑥ 최종 `requires_clarification` 계산 → ⑦ `condition_reconciliation` 트레이스 기록이다. 의미 보존 규칙: 교집합 하위와 차집합 우변의 소유된 피연산자는 제거하고, 차집합 좌변이 통째로 소유되면 전칭 노드(`universe`, `1=1`)를 세워 부정을 유지하며, 긍정 문맥의 합집합은 하위 전부가 같은 소유 인스턴스일 때만 제거한다. 이 단계 이후에도 어느 슬롯도 소유하지 못한 항목만 확인요청 대상이고, 권위 슬롯끼리 같은 속성을 상반된 방향으로 잡으면 중복이 아니라 충돌(`condition_ownership.*`)로 되묻는다.
 
 숫자 지표 계산식은 `computed_metrics`에 기록된다. LLM parser가 제안한 `formula_ast`를 `formula_engine.py`가 숫자형 컬럼·허용 연산자 기준으로 검증하고, 통과한 계산식만 SELECT/WHERE/ORDER BY 토큰으로 변환한다(규칙 기반 계산식 파서는 제거됨).
+
+조건의 **의미 자체**(무엇이 · 있나없나 · 얼마나 · 언제)는 고정 슬롯이 아니라 범용 논리·관계 대수(`event_expression`)가 담는다. 배경: 슬롯 모델은 극성 하나에 창 하나뿐이라 `올해 상반기 구매 기록이 있는 고객 중 하반기 구매 기록이 없는 고객` 같은 문장에서 한쪽 창이 사라지거나(주인 없는 기간), 특정 기간의 부재가 자리 없는 탓에 **평생 무구매**로 왜곡됐다.
+
+설계 규칙은 하나다 — **문장 유형마다 타입을 늘리지 않는다.** `PurchaseInFirstHalf` 같은 타입은 고정 슬롯과 같은 병(표현형 하나당 자리 하나)을 이름만 바꿔 되풀이하므로 만들지 않는다. `event_ir.py`가 선언한 연산자는 닫힌 집합이고(계약 테스트가 강제), 새 문장은 새 조합이다.
+
+```text
+논리   And · Or · Not
+스칼라 Literal · FieldRef · Arithmetic · Aggregate
+관계   Source · Filter · Join · Group
+조건   Comparison · Exists · TimeFilter · TemporalRelation
+시간   AbsoluteInterval · RollingWindow · RelativeWindow · Duration
+```
+
+| 문장 | 조합 |
+| --- | --- |
+| 하반기 구매 기록이 없는 | `Not(Exists(Filter(Source("purchase"), TimeFilter(interval))))` |
+| 최근 30일 3회 이상 구매 | `Comparison(">=", Aggregate("count", Filter(…)), Literal(3))` |
+| 상반기 구매 금액 합계 10만원 이상 | `Comparison(">=", Aggregate("sum", …, FieldRef("purchase.amount")), Literal)` |
+| 첫 구매 후 30일 이내 재구매 | `TemporalRelation("within_after", EventReference…, Duration)` |
+
+업무 개념은 타입이 아니라 **레지스트리 심볼**이다. `purchase`/`login`/`signup`/`cart`는 `Source(name=…)`의 이름이고, `purchase.amount`/`subject.grade`는 `FieldRef(name=…)`의 이름이다. 물리 바인딩은 `event_compiler.py`의 `EVENT_REGISTRY`/`FIELD_REGISTRY`(값은 `member_target_filters.json`에서 파생)가 소유하고, 사건의 발생 시각 필드 `<event>.occurred_at`은 이벤트 등록에서 자동 파생된다. **새 업무 이벤트·속성은 레지스트리 한 줄이고 IR 은 손대지 않는다.** 새 IR 타입은 여러 도메인에서 재사용되는 논리 관계일 때만 허용한다 — `TemporalRelation`이 그 예로, 같은 노드가 '첫 구매 후 30일 이내 재구매'·'가입 후 7일 이내 구매'·'배송 후 30일 이내 반품'에 그대로 쓰인다.
+
+`event_parser.py`는 문장을 절로 나눈 뒤 **그 절 안에서만** 기간을 읽어 위 노드를 조합하고, `event_ir.py`가 원문 근거·부정·기간 보존을 검증한 다음, `event_compiler.py`가 EXISTS/NOT EXISTS 상관 서브쿼리·스칼라 집계 서브쿼리·GROUP BY+HAVING 으로 컴파일한다. 절대 구간은 반개구간(`>= start AND < end_exclusive`)이다.
+
+기존 슬롯은 기준 모델이 아니라 **호환용 파생 결과**다. `event_ir.requires_general_ir` 이 '슬롯 모델이 담지 못하는 모양'(절대 기간 부재 / 절대 기간 집계 / 시간 관계 / 극성·사건이 섞인 다중 조건 — 단 `exists` 창 합집합은 예외)일 때만 IR 이 실행 모델이 되고, 그 외에는 IR 이 물러나 기존 경로(`purchase_date`·`purchase_inactivity`·`behaviors:no_purchase`·`recent_login`·`aggregate_conditions`)를 그대로 쓴다. 표현할 수 없는 의미를 다른 슬롯으로 축소하는 폴백은 없다 — 컴파일 불가는 IR 을 보존한 채 미해결/미지원으로 고지한다.
 
 LLM Query Parser, 답변 생성, 메시지 생성 프롬프트는 `docs/prompts`의 텍스트 파일에서 읽는다. 운영 중 프롬프트를 조정해야 하면 코드를 수정하지 않고 `docs/prompts/query_plan_system.txt`, `docs/prompts/query_plan_user.txt`, `docs/prompts/answer_system.txt`, `docs/prompts/answer_user.txt`, `docs/prompts/message_generation_*.txt`, `docs/prompts/message_generation_tone_manner.txt`를 수정한 뒤 같은 질의를 다시 실행한다. 다른 프롬프트 디렉터리를 사용하려면 `GRAPH_RAG_PROMPT_DIR` 환경 변수나 `--prompt-dir` 옵션을 지정한다. 상세 가이드는 `docs/guides/prompt_engineering.md`에 정리한다.
 

@@ -238,6 +238,8 @@ def build_campaign_query_plan_v3_fallback(
             "aggregation_request": None,
             "set_expressions": [],
             "computed_metrics": [],
+            "external_conditions": [],
+            "compound_dimension_filters": [],
             "result_limit": None,
             "semantic_evidence": [],
             "semantic_ir": empty_semantic_ir(

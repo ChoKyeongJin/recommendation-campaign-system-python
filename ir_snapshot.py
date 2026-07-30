@@ -50,6 +50,8 @@ DERIVED_PLAN_KEYS = frozenset({
     "source_requirements",    # 소스 요구(다이제스트와 쌍)
     "parser_shadow",          # 파서 shadow 비교 계측(parser_shadow) — 조건이 아니라 관찰이다
     "semantic_evidence",      # V3 의미 슬롯의 원문 근거 — 조건값이 아니라 provenance다
+    "external_condition_results",  # Resolver/공급자/매핑 감사 스냅샷
+    "external_condition_resolution",  # 외부 의존성 처리 결과 요약
     "slot_policy",            # 슬롯 소유권 판정 흔적(slot_policy)
 })
 
@@ -99,6 +101,8 @@ KNOWN_CONDITION_PLAN_KEYS = frozenset({
     "condition_evaluations",
     "result_limit",
     "dimension_filters",
+    "compound_dimension_filters",
+    "external_conditions",
     "computed_metrics",
     "member_metric_selection",
     "member_metric_ranking",
@@ -112,6 +116,7 @@ KNOWN_CONDITION_PLAN_KEYS = frozenset({
     "purchase_count_ranking",
     "entity_set",
     "retrieval_scope",
+    "event_expression",
 })
 
 

@@ -189,6 +189,128 @@
     "range_closer": [
       "까지",
       "사이"
+    ],
+    "clause_verb_stem": [
+      "있",
+      "했",
+      "였",
+      "었",
+      "았",
+      "하",
+      "되"
+    ],
+    "clause_scope_marker": [
+      "중",
+      "가운데",
+      "중에서"
+    ],
+    "event_record_noun": [
+      "기록",
+      "이력",
+      "내역",
+      "경험",
+      "실적"
+    ],
+    "event_existence_marker": [
+      "있는",
+      "있었",
+      "있음",
+      "있고",
+      "있으며",
+      "존재",
+      "한 적",
+      "했던"
+    ],
+    "event_negation_marker": [
+      "없",
+      "않",
+      "안함",
+      "안한",
+      "안했",
+      "안하",
+      "미구매",
+      "미구입",
+      "미주문",
+      "미접속",
+      "미보유"
+    ],
+    "generic_negation": [
+      "없",
+      "않",
+      "미구매",
+      "미구입",
+      "미주문",
+      "미접속",
+      "미보유",
+      "제외",
+      "한번도"
+    ],
+    "event_count_unit": [
+      "건",
+      "회",
+      "번",
+      "개"
+    ],
+    "purchase_membership_verb": [
+      "구매",
+      "구입",
+      "주문"
+    ],
+    "non_event_date_anchor": [
+      "가입",
+      "등록",
+      "생일",
+      "생년",
+      "발송",
+      "만료",
+      "휴면",
+      "탈퇴"
+    ],
+    "event_alias_purchase": [
+      "구매",
+      "구입",
+      "주문",
+      "결제",
+      "샀"
+    ],
+    "event_alias_login": [
+      "로그인",
+      "접속",
+      "방문"
+    ],
+    "event_alias_cart": [
+      "장바구니",
+      "카트"
+    ],
+    "event_alias_signup": [
+      "가입",
+      "회원가입",
+      "등록"
+    ],
+    "aggregate_sum_marker": [
+      "합계",
+      "총액",
+      "총합",
+      "누적",
+      "총"
+    ],
+    "currency_unit": [
+      "원"
+    ],
+    "temporal_after_marker": [
+      "후",
+      "뒤",
+      "이후"
+    ],
+    "temporal_within_marker": [
+      "이내",
+      "안에",
+      "내에"
+    ],
+    "first_occurrence_marker": [
+      "첫",
+      "최초",
+      "처음"
     ]
   },
   "patterns": {

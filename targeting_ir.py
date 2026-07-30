@@ -716,6 +716,25 @@ def _extract_member_profile_conditions(
     return extract
 
 
+def _event_expression_signature(expression: Any) -> str:
+    """사건 논리식의 짧은 서명('purchase:exists+purchase:not_exists') — confidence 수집 값.
+
+    IR 을 직렬화 형태(dict)로만 읽는다 — 이 모듈은 순수 계층이라 event_ir 의 타입에 의존하지 않는다."""
+    parts: list[str] = []
+
+    def walk(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        if node.get("type") == "event_predicate":
+            parts.append(f"{node.get('event')}:{node.get('quantifier')}")
+            return
+        for operand in node.get("operands") or []:
+            walk(operand)
+
+    walk(expression)
+    return "+".join(parts)
+
+
 def _cart_retention_ko(params: dict[str, Any]) -> str:
     days = params.get("min_days") or params.get("max_days")
     direction = "이상" if params.get("min_days") else "이내"
@@ -772,6 +791,19 @@ CONDITION_SPECS: tuple[ConditionSpec, ...] = (
         extract=_extract_member_profile_conditions("profile_date_conditions"),
     ),
     # ── 주문 팩트 계열 ──
+    # 범용 사건 논리식('상반기 구매 있음 AND 하반기 구매 없음'). 극성·기간이 조건마다 독립이라
+    # 단일 창 슬롯(purchase_date/purchase_inactivity) 조합으로 평탄화할 수 없다 → 전용 빌더 소유.
+    ConditionSpec(
+        kind="event_expression", fact="order", fact_join=True, signals_target=True,
+        extract=_plan_dict("event_expression"),
+        confidence=ConfidenceMeta(
+            kind="event_expression", category="behavior",
+            key=lambda p: "event_expression",
+            value=lambda p: _event_expression_signature(p.get("expression")),
+            ko=lambda p: f"사건 조건: {_event_expression_signature(p.get('expression'))}",
+            applies=lambda p: bool(p.get("expression")),
+        ),
+    ),
     ConditionSpec(
         kind="purchase_inactivity", fact="order", fact_join=True, signals_target=True,
         extract=_tu_dict("purchase_inactivity"),

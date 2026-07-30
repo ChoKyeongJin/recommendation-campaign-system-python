@@ -1,0 +1,47 @@
+{
+  "version": "1.0",
+  "description": "실시간 외부 조건의 의미 분류 카탈로그. 실제 지역/수치는 Resolver가 공식 공급자에서 조회한다.",
+  "target_context_terms": ["특보 지역", "경보 지역", "주의보 지역", "발령 지역", "예상 지역", "심한 지역", "지역"],
+  "current_context_terms": ["현재", "지금", "오늘", "실시간", "발령 중", "특보", "경보", "주의보", "예보", "예상"],
+  "historical_context_terms": ["지난해", "작년", "과거", "이전", "지난", "종료된"],
+  "product_name_context_terms": ["상품명", "제품명", "품목명", "캠페인명"],
+  "whole_audience_terms": ["전국 회원", "전체 회원", "모든 회원", "전 고객"],
+  "conditions": [
+    {
+      "domain": "weather",
+      "condition_type": "alert",
+      "condition_code": "heatwave",
+      "aliases": ["폭염특보", "더위특보", "폭염"],
+      "provider_values": ["12", "폭염"],
+      "default_state": "active",
+      "default_target_basis": {"entity": "member", "attribute": "residence"}
+    },
+    {
+      "domain": "weather",
+      "condition_type": "alert",
+      "condition_code": "coldwave",
+      "aliases": ["한파특보", "한파"],
+      "provider_values": ["3", "한파"],
+      "default_state": "active",
+      "default_target_basis": {"entity": "member", "attribute": "residence"}
+    },
+    {
+      "domain": "weather",
+      "condition_type": "alert",
+      "condition_code": "heavy_rain",
+      "aliases": ["호우특보", "호우경보", "호우주의보", "호우"],
+      "provider_values": ["2", "호우"],
+      "default_state": "active",
+      "default_target_basis": {"entity": "member", "attribute": "residence"}
+    },
+    {
+      "domain": "air_quality",
+      "condition_type": "level",
+      "condition_code": "fine_dust",
+      "aliases": ["초미세먼지", "미세먼지"],
+      "provider_values": ["PM2.5", "PM10"],
+      "default_state": "active",
+      "default_target_basis": {"entity": "member", "attribute": "residence"}
+    }
+  ]
+}

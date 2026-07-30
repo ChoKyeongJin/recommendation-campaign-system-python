@@ -32,6 +32,11 @@ class SqlDialect:
         """anchor(날짜/시각 식)에서 days 일 전."""
         return f"({anchor} - INTERVAL '{int(days)} day')"
 
+    def date_add_days(self, anchor: str, days: int) -> str:
+        """anchor 에서 days 일 후. ``date_sub_days(anchor, -days)`` 로 대신하지 않는다 —
+        엔진에 따라 부호가 겹쳐(``DATEADD(DAY, --30, …)``) 주석 토큰이 되기 때문이다."""
+        return f"({anchor} + INTERVAL '{int(days)} day')"
+
     # ── YYYYMMDD(char8) 문자열 컬럼 관례 ───────────────────────────
     def to_char8(self, expr: str) -> str:
         """날짜 식을 'YYYYMMDD' 문자열로 렌더(char8 컬럼과 사전식 비교용)."""
@@ -48,6 +53,15 @@ class SqlDialect:
     def char8_today(self) -> str:
         """오늘을 'YYYYMMDD' 로."""
         return self.to_char8(self.now())
+
+    def char8_shift(self, char8_expr: str, days: int) -> str:
+        """'YYYYMMDD' 문자열 식을 days 일만큼 옮겨 다시 'YYYYMMDD' 로.
+
+        시점 기준 상대 조건('첫 구매 후 30일 이내')처럼 **컬럼에서 읽은 날짜**를 앵커로 삼는 경우가
+        있다. 리터럴 컷오프(char8_cutoff)와 달리 앵커가 식이므로 파싱→연산→포맷을 왕복한다."""
+        shifted = self.date_add_days(self.parse_char8(char8_expr), days) if days >= 0 else \
+            self.date_sub_days(self.parse_char8(char8_expr), -days)
+        return self.to_char8(shifted)
 
     def datetime_cutoff(self, days: int) -> str:
         """오늘 - days 일(진짜 날짜/시각 컬럼과 직접 비교용 — char8 변환 없음)."""
@@ -88,6 +102,9 @@ class TSqlDialect(SqlDialect):
     def date_sub_days(self, anchor: str, days: int) -> str:
         return f"DATEADD(DAY, -{int(days)}, {anchor})"
 
+    def date_add_days(self, anchor: str, days: int) -> str:
+        return f"DATEADD(DAY, {int(days)}, {anchor})"
+
     def to_char8(self, expr: str) -> str:
         return f"CONVERT(CHAR(8), {expr}, 112)"
 
@@ -115,6 +132,9 @@ class MySqlDialect(SqlDialect):
 
     def date_sub_days(self, anchor: str, days: int) -> str:
         return f"DATE_SUB({anchor}, INTERVAL {int(days)} DAY)"
+
+    def date_add_days(self, anchor: str, days: int) -> str:
+        return f"DATE_ADD({anchor}, INTERVAL {int(days)} DAY)"
 
     def to_char8(self, expr: str) -> str:
         return f"DATE_FORMAT({expr}, '%Y%m%d')"

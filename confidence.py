@@ -233,6 +233,16 @@ def _score_condition(
                              f"{table} 회원별 주문 집계 ({rule})", "confirmed"))
         if schema_ok:
             evidence.append(_ev("schema", f"schema_catalog.json: {table}", "주문 테이블 실재 확인", "confirmed"))
+    elif kind == "event_expression":
+        # 범용 사건 논리식: 사건→테이블 매핑은 event_compiler.EVENT_REGISTRY(설정 파생)가 소유하고
+        # 기간·극성은 IR 노드가 원문 근거와 함께 들고 있다. 실테이블 상관 서브쿼리라 확정 조건이다.
+        cfg = filters.get("order_count_targets", {})
+        table = cfg.get("table", "CRM_SL_ORDERHEADERMALL")
+        schema_ok = table in schema_cols
+        evidence.append(_ev("filter_registry", "event_compiler.EVENT_REGISTRY(member_target_filters.json 파생)",
+                             f"사건별 EXISTS/NOT EXISTS 상관 서브쿼리 ({cond['value']})", "confirmed"))
+        if schema_ok:
+            evidence.append(_ev("schema", f"schema_catalog.json: {table}", "사건 팩트 테이블 실재 확인", "confirmed"))
     elif kind == "metric_trend":
         # 기간 대 기간 지표 증감: aggregate_targets 레지스트리의 지표를 두 절대 기간으로 각각 집계해
         # 비교한다. 지표 정의(집계 함수/컬럼)와 주문 테이블 모두 실재 근거라 확정 조건이다.
@@ -377,7 +387,7 @@ def _score_condition(
         check_tokens = ["last_login"]
     elif kind == "birthday":
         check_tokens = [filters.get("birthday_target", {}).get("column", "birthday").casefold()]
-    elif kind in ("order_count", "order_window"):
+    elif kind in ("order_count", "order_window", "event_expression"):
         check_tokens = [filters.get("order_count_targets", {}).get("table", "crm_sl_orderheadermall").casefold()]
     elif kind == "metric_trend":
         check_tokens = [filters.get("aggregate_targets", {}).get("table", "crm_sl_orderheadermall").casefold()]

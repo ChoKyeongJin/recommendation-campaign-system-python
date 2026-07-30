@@ -148,6 +148,43 @@ _SOURCE_REQUIREMENT_SCHEMA: dict[str, Any] = {
 }
 
 
+_EXTERNAL_CONDITION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": [
+        "id", "domain", "condition_type", "condition_code", "state",
+        "target_basis", "resolution_status",
+    ],
+    "properties": {
+        "id": {"type": "string", "minLength": 1},
+        "domain": {"type": "string", "minLength": 1},
+        "condition_type": {"type": "string", "minLength": 1},
+        "condition_code": {"type": "string", "minLength": 1},
+        "state": {"type": "string", "minLength": 1},
+        "target_basis": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["entity", "attribute"],
+            "properties": {
+                "entity": {"type": "string", "minLength": 1},
+                "attribute": {"type": "string", "minLength": 1},
+            },
+        },
+        "resolution_status": {
+            "type": "string",
+            "enum": ["pending", "resolved", "empty", "failed", "unsupported"],
+        },
+        "source_text": {"type": "string"},
+        "source_span": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["start", "end"],
+            "properties": {"start": {"type": "integer"}, "end": {"type": "integer"}},
+        },
+    },
+}
+
+
 CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA: dict[str, Any] = {
     "$id": "campaign-query-plan-v2",
     "type": "object",
@@ -249,6 +286,10 @@ CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA: dict[str, Any] = {
         },
         "aggregation_request": _nullable({"type": "object"}),
         "condition_evaluations": {"type": "array", "items": {"type": "object"}},
+        "external_conditions": {"type": "array", "items": _EXTERNAL_CONDITION_SCHEMA},
+        "compound_dimension_filters": {"type": "array", "items": {"type": "object"}},
+        "external_condition_results": {"type": "array", "items": {"type": "object"}},
+        "external_condition_resolution": {"type": "object"},
         "set_expressions": {"type": "array", "items": {"type": "object"}},
         "computed_metrics": {"type": "array", "items": {"type": "object"}},
         "result_limit": _nullable({"type": "integer", "minimum": 1}),
@@ -274,6 +315,9 @@ _APPLICATION_OWNED_PLAN_FIELDS = frozenset(
         "strict_source_coverage",
         "unresolved_source_conditions",
         "condition_evaluations",
+        "compound_dimension_filters",
+        "external_condition_results",
+        "external_condition_resolution",
     }
 )
 
@@ -341,6 +385,8 @@ def build_campaign_query_plan_v2_fallback(query: str) -> CampaignQueryPlanV2:
         aggregation_request=None,
         set_expressions=[],
         computed_metrics=[],
+        external_conditions=[],
+        compound_dimension_filters=[],
         result_limit=None,
     )
     plan[QUERY_IDENTITY_DIGEST_KEY] = campaign_query_identity_digest(plan)
@@ -382,10 +428,12 @@ def validate_campaign_query_plan_v2(
             raise CampaignQueryPlanValidationError(
                 f"target_user.entity_set_condition.derived_set_ast is invalid: {ast_error}"
             )
-    for key in ("set_expressions", "computed_metrics"):
+    for key in ("set_expressions", "computed_metrics", "external_conditions", "compound_dimension_filters"):
         value = payload.get(key, [])
         if not isinstance(value, list):
             raise CampaignQueryPlanValidationError(f"{key} must be an array")
+    for index, condition in enumerate(payload.get("external_conditions", [])):
+        _validate_external_condition(condition, index)
     result_limit = payload.get("result_limit")
     if result_limit is not None and (
         not isinstance(result_limit, int) or isinstance(result_limit, bool) or result_limit < 1
@@ -454,6 +502,8 @@ def as_campaign_query_plan_v2(
     payload.setdefault("campaign_constraints", {})
     payload.setdefault("set_expressions", [])
     payload.setdefault("computed_metrics", [])
+    payload.setdefault("external_conditions", [])
+    payload.setdefault("compound_dimension_filters", [])
     payload.setdefault("result_limit", None)
     payload.setdefault("unresolved_source_conditions", [])
     payload[QUERY_IDENTITY_DIGEST_KEY] = campaign_query_identity_digest(payload)
@@ -486,3 +536,20 @@ def _validate_source_requirement(value: Any, index: int) -> None:
         raise CampaignQueryPlanValidationError(f"{path}.source_span must contain integer start/end")
     if start < 0 or end < start:
         raise CampaignQueryPlanValidationError(f"{path}.source_span is out of range")
+
+
+def _validate_external_condition(value: Any, index: int) -> None:
+    path = f"external_conditions[{index}]"
+    if not isinstance(value, dict):
+        raise CampaignQueryPlanValidationError(f"{path} must be an object")
+    for key in ("id", "domain", "condition_type", "condition_code", "state"):
+        _non_empty_string(value.get(key), f"{path}.{key}")
+    target_basis = value.get("target_basis")
+    if not isinstance(target_basis, dict):
+        raise CampaignQueryPlanValidationError(f"{path}.target_basis must be an object")
+    for key in ("entity", "attribute"):
+        _non_empty_string(target_basis.get(key), f"{path}.target_basis.{key}")
+    if value.get("resolution_status") not in {
+        "pending", "resolved", "empty", "failed", "unsupported",
+    }:
+        raise CampaignQueryPlanValidationError(f"{path}.resolution_status is invalid")

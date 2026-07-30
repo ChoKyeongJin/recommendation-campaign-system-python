@@ -189,6 +189,9 @@ class LLMCampaignQueryPlanV3Structurer:
                     "missing_fields에는 이 질문의 결과를 계산하는 데 실제로 필수인 값만 넣는다. 고객 "
                     "리스트 요청에 사용자가 요구하지 않은 캠페인 채널·혜택·상품·목표를 추가로 요구하지 "
                     "않는다. 증가/감소 가까이 있는 퍼센트는 증감률 임계값이며 할인 혜택이 아니다. "
+                    "폭염·한파·미세먼지처럼 현재 또는 미래의 실시간 외부 상태가 대상 범위를 정하면 "
+                    "external_conditions에는 조건 종류만 기록하고 실제 지역이나 수치를 생성하지 않는다. "
+                    "과거 캠페인명·상품명에 포함된 단어는 실시간 외부 조건으로 만들지 않는다. "
                     "application-owned literal 두 날짜와 퍼센트·비교 연산자가 있으면 값을 다시 만들지 "
                     "말고 period_over_period_change의 baseline/current/threshold/comparison으로 연결한다."
                 ),

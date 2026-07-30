@@ -7,16 +7,17 @@
   ],
   "counts": {
     "lexical": 11,
-    "wordlist": 46,
-    "domain": 218,
-    "composed": 5,
-    "grammar": 35
+    "wordlist": 45,
+    "domain": 217,
+    "composed": 18,
+    "grammar": 36
   },
-  "raise_reason": "스캔 범위 확대(튜플/딕트 묶음 정규식 + 이름 없는 인라인 한글 정규식 + 한글 낱말집합 상수). 새 규칙을 추가한 것이 아니라 이전 스캐너가 세지 않던 기존 규칙을 세기 시작한 결과다. 이행이 진행되면 내려간다.",
+  "raise_reason": "",
   "previous_counts": {
     "lexical": 11,
     "wordlist": 46,
-    "domain": 223,
+    "domain": 218,
+    "composed": 5,
     "grammar": 35
   }
 }
