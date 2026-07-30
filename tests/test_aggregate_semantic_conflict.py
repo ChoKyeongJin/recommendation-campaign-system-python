@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
 
 import pytest
@@ -222,3 +223,63 @@ def test_builder_does_not_validate_when_there_is_no_absence() -> None:
     plan = _plan_with(30, None)
     plan["target_user"]["aggregate_conditions"][0]["calendar_period"] = "last_month"
     assert graph_rag.build_aggregate_targets_sql_candidate(plan) is not None
+
+
+# ── 6. 사건 논리식 트랙(EXISTS/NOT EXISTS 쌍)도 같은 판정기를 통과한다 ─────────────────────
+# 이 문장들은 집계 임계값이 없어 event_expression 빌더가 소유한다 — 극성별 창을 그대로 보존하는
+# 빌더라서, 판정이 없으면 정의상 공집합인 EXISTS/NOT EXISTS 쌍이 문법적으로 멀쩡한 SQL 로 나간다.
+CONTRADICTORY_QUERIES = [
+    "최근 1개월 구매 있고 최근 6개월 구매 없는 고객",
+    "최근 3개월 구매 있고 최근 3개월 구매 없는 고객",
+    "최근 1개월 온라인 구매 있고 최근 1개월 모든 구매 없는 고객",
+]
+
+SATISFIABLE_QUERIES = [
+    "최근 6개월 구매 있고 최근 1개월 구매 없는 고객",
+    "4~6개월 전 구매 있고 최근 1개월 구매 없는 고객",
+    "최근 1개월 전체 구매 있고 최근 1개월 취소 구매 없는 고객",
+]
+
+
+@pytest.mark.parametrize("query", CONTRADICTORY_QUERIES)
+def test_contradictory_event_expressions_produce_no_sql(query: str) -> None:
+    plan = graph_rag.build_query_plan(query, parser="rules")
+    assert graph_rag.build_sql_template_candidate(plan) is None, query
+    assert plan["unsupported"]["reason"] == "presence_absence_conflict"
+
+
+@pytest.mark.parametrize("query", SATISFIABLE_QUERIES)
+def test_satisfiable_event_expressions_still_compile(query: str) -> None:
+    plan = graph_rag.build_query_plan(query, parser="rules")
+    assert graph_rag.build_sql_template_candidate(plan) is not None, query
+    assert plan.get("unsupported") is None, query
+
+
+def test_channel_words_are_not_yet_part_of_the_purchase_event_ir() -> None:
+    """알려진 한계(이 작업 범위 밖): 구매 사건 IR 에 채널 차원이 없다.
+
+    '온라인 구매 있고 오프라인 구매 없는' 은 파서가 두 원자를 **같은** purchase/30일로 만든다 —
+    즉 IR 자체가 '같은 구매 있음 AND 없음'이다. 검증기는 받은 IR 대로 판정하므로 차단이 맞다
+    (예전엔 정의상 빈 결과 SQL 이 조용히 나갔다). 채널 구분은 사건 소스에 채널 차원을 도입해야
+    풀리는 별개 과제이고, 부분집합 판정 자체는 위 constraints 단위 테스트가 이미 보장한다."""
+    plan = graph_rag.build_query_plan(
+        "최근 1개월 온라인 구매 있고 최근 1개월 오프라인 구매 없는 고객", parser="rules",
+    )
+    atoms = plan["event_expression"]["expression"]["operands"]
+    windows = {
+        json.dumps(atom.get("relation", atom.get("operand", {}).get("relation", {})), sort_keys=True)
+        for atom in atoms
+    }
+    assert len(windows) == 1, "채널이 IR 에 반영됐다면 이 한계 테스트를 실제 통과 케이스로 옮겨야 한다"
+    assert graph_rag.build_sql_template_candidate(plan) is None
+    assert plan["unsupported"]["reason"] == "presence_absence_conflict"
+
+
+def test_the_reported_query_never_emits_both_an_aggregate_join_and_an_anti_join() -> None:
+    """원본 재현 쿼리: 집계 INNER JOIN 과 미구매 NOT EXISTS 가 한 SQL 에 함께 나오지 않는다."""
+    plan = graph_rag.build_query_plan(
+        "인구가 50만 이상인 도시중에 3개월 동안 구매내역 없는 사람 뽑아줘", parser="rules",
+    )
+    candidate = graph_rag.build_sql_template_candidate(plan)
+    assert candidate is None
+    assert plan["unsupported"]["reason"] == "unsupported_threshold_attribute"

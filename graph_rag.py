@@ -10611,10 +10611,21 @@ def _clause_threshold_groups(
     rules = aggregate_parser_config.rules()
     aggregate_spans.bind_units(clause, candidates, aggregate_spans.find_unit_tokens(clause, rules), rules)
     claimed = [candidate.value_span for candidate in bound if candidate.blocks_sql]
+
+    def accepted(candidate: "aggregate_spans.ComparisonCandidate") -> bool:
+        if any(candidate.value_span.overlaps(span) for span in claimed):
+            return False
+        return candidate.unit_ref is None or rules.is_aggregate_threshold_unit(candidate.unit_ref.kind)
+
+    # 범위형('4~6개월 전')은 하나의 표현이라 통째로 살거나 통째로 죽는다 — 한 경계만 걷어내면 '4 이상'
+    # 같은 반쪽 임계값이 남아 원문에 없는 조건이 된다. 같은 비교 스팬을 공유하는 candidate 가 곧 한 표현이다.
+    rejected_spans = {
+        (candidate.comparison_span.start, candidate.comparison_span.end)
+        for candidate in candidates if not accepted(candidate)
+    }
     surviving = [
         candidate for candidate in candidates
-        if not any(candidate.value_span.overlaps(span) for span in claimed)
-        and (candidate.unit_ref is None or rules.is_aggregate_threshold_unit(candidate.unit_ref.kind))
+        if (candidate.comparison_span.start, candidate.comparison_span.end) not in rejected_spans
     ]
     if not surviving:
         return []
@@ -22441,6 +22452,17 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
             unresolved.append(item)
         return None
 
+    # 존재/부재가 같은 이벤트 범위·기간을 가리키면 이 SQL 은 정의상 공집합이다 — 극성별 창을 그대로
+    # 보존하는 빌더라서 그런 조합이 문법적으로는 멀쩡한 EXISTS/NOT EXISTS 쌍으로 나간다. 집계 빌더와
+    # 같은 판정기(포함 관계)를 SQL 조립 전에 통과시킨다.
+    anchor = datetime.now()
+    if not _guard_purchase_event_semantics(
+        query_plan,
+        _event_expression_predicates(expression, anchor)
+        + _purchase_absence_predicates(query_plan, anchor, _purchase_event_dimensions() or ()),
+    ):
+        return None
+
     compiled = compile_member_target_conditions(query_plan)
     where_clauses = list(compiled["predicates"])
     if not compiled["forces_state"]:
@@ -23325,15 +23347,47 @@ def _aggregate_requires_event_presence(
     return True
 
 
+def _purchase_event_dimensions() -> tuple[str, ...] | None:
+    domain = aggregate_parser_config.rules().semantic_domains.get("purchase")
+    return domain.event_dimensions if domain is not None else None
+
+
+def _purchase_absence_predicates(
+    query_plan: dict[str, Any], anchor: datetime, dimensions: tuple[str, ...],
+) -> list["aggregate_semantics.EventPredicate"]:
+    """plan 슬롯이 소유한 구매 부재 조건(창 anti-join / 평생 무주문)을 IR 로 뽑는다."""
+    target_user = query_plan.get("target_user", {})
+    predicates: list[aggregate_semantics.EventPredicate] = []
+    inactivity = target_user.get("purchase_inactivity")
+    if isinstance(inactivity, dict) and isinstance(inactivity.get("min_days"), int):
+        predicates.append(aggregate_semantics.EventPredicate(
+            domain="purchase",
+            polarity=aggregate_semantics.ABSENCE,
+            window=aggregate_semantics.rolling_window(anchor, inactivity["min_days"]),
+            constraints={dimension: None for dimension in dimensions},
+            source_kind="purchase_inactivity",
+            source_id="target_user.purchase_inactivity",
+        ))
+    if "no_purchase" in (target_user.get("behaviors") or []):
+        predicates.append(aggregate_semantics.EventPredicate(
+            domain="purchase",
+            polarity=aggregate_semantics.ABSENCE,
+            window=aggregate_semantics.lifetime_window(anchor),
+            constraints={dimension: None for dimension in dimensions},
+            source_kind="purchase_not_exists",
+            source_id="target_user.behaviors:no_purchase",
+        ))
+    return predicates
+
+
 def _purchase_event_predicates(
     query_plan: dict[str, Any], conditions: list[dict[str, Any]], metrics: dict[str, Any],
     product_scopes: list[dict[str, Any]], anchor: datetime,
 ) -> list["aggregate_semantics.EventPredicate"]:
     """이 빌더가 만들려는 SQL 의 구매 이벤트 의미를 IR 로 뽑는다(존재 = 집계 INNER JOIN, 부재 = anti-join)."""
-    domain = aggregate_parser_config.rules().semantic_domains.get("purchase")
-    if domain is None:
+    dimensions = _purchase_event_dimensions()
+    if dimensions is None:
         return []
-    dimensions = domain.event_dimensions
     target_user = query_plan.get("target_user", {})
     purchase_date = target_user.get("purchase_date")
     scope_values = frozenset(
@@ -23362,24 +23416,90 @@ def _purchase_event_predicates(
                 metric, condition, purchase_date, bool(scope_values),
             ),
         ))
-    inactivity = target_user.get("purchase_inactivity")
-    if isinstance(inactivity, dict) and isinstance(inactivity.get("min_days"), int):
+    predicates.extend(_purchase_absence_predicates(query_plan, anchor, dimensions))
+    return predicates
+
+
+def _event_window_to_normalized(
+    window: Any, anchor: datetime,
+) -> "aggregate_semantics.NormalizedWindow | None":
+    """사건 IR 의 시간 창을 반개방 구간으로 정규화한다(확정 불가면 None).
+
+    달력 문법은 calendar_window/event_ir 이 소유하므로 여기서 다시 구현하지 않고 그 산출물만 받는다."""
+    if isinstance(window, event_ir.RollingWindow):
+        return aggregate_semantics.rolling_window(anchor, window.days)
+    interval = window
+    if isinstance(window, event_ir.RelativeWindow):
+        try:
+            interval = event_ir.resolve_relative_window(window, anchor.date())
+        except (event_ir.IrSchemaError, ValueError):
+            return None
+    if isinstance(interval, event_ir.AbsoluteInterval):
+        return aggregate_semantics.NormalizedWindow(
+            start=datetime.combine(interval.start, datetime.min.time()),
+            end=datetime.combine(interval.end_exclusive, datetime.min.time()),
+        )
+    return None
+
+
+def _event_relation_semantics(
+    relation: Any, anchor: datetime,
+) -> tuple["aggregate_semantics.NormalizedWindow | None", frozenset[str] | None]:
+    """사건 관계의 (적용 기간, 비시간 필터 지문). 지문이 None 이면 '그 소스 전체'다.
+
+    비시간 필터를 값이 아니라 **지문 집합**으로 다루는 이유는 판정 방향의 안전성이다. 부재 쪽 필터를
+    '제한 없음'으로 낙관하면 없는 충돌을 만들어내므로(‘취소 구매 없음’이 '모든 구매 없음'이 된다),
+    필터가 있으면 반드시 서로 같은 지문일 때만 부분집합으로 본다."""
+    windows: list[aggregate_semantics.NormalizedWindow] = []
+    unresolved = False
+    fingerprints: set[str] = set()
+    for node in event_ir.walk(relation):
+        if isinstance(node, event_ir.TimeFilter):
+            normalized = _event_window_to_normalized(node.window, anchor)
+            if normalized is None:
+                unresolved = True
+            else:
+                windows.append(normalized)
+        elif isinstance(node, (event_ir.Comparison, event_ir.TemporalRelation, event_ir.Join, event_ir.Group)):
+            fingerprints.add(json.dumps(node.to_dict(), sort_keys=True, ensure_ascii=False))
+    if unresolved:
+        return None, (frozenset(fingerprints) or None)
+    window = aggregate_semantics.lifetime_window(anchor)
+    for candidate in windows:
+        narrowed = aggregate_semantics.intersect(window, candidate)
+        if narrowed is None:
+            return None, (frozenset(fingerprints) or None)
+        window = narrowed
+    return window, (frozenset(fingerprints) or None)
+
+
+def _event_expression_predicates(
+    expression: Any, anchor: datetime,
+) -> list["aggregate_semantics.EventPredicate"]:
+    """사건 논리식의 원자를 존재/부재 IR 로 펼친다. Not 위에 쌓인 극성을 그대로 읽는다."""
+    dimensions = _purchase_event_dimensions()
+    if dimensions is None:
+        return []
+    predicates: list[aggregate_semantics.EventPredicate] = []
+    for index, (atom, negated) in enumerate(event_ir.iter_signed_atoms(expression)):
+        if not isinstance(atom, event_ir.Exists):
+            continue
+        sources = sorted(
+            node.name for node in event_ir.walk(atom.relation) if isinstance(node, event_ir.Source)
+        )
+        if len(sources) != 1:
+            continue  # 여러 소스가 섞인 관계는 이 도메인 판정의 대상이 아니다
+        window, fingerprint = _event_relation_semantics(atom.relation, anchor)
+        constraints: dict[str, frozenset[str] | None] = {dimension: None for dimension in dimensions}
+        if "product_scope" in constraints:
+            constraints["product_scope"] = fingerprint
         predicates.append(aggregate_semantics.EventPredicate(
-            domain="purchase",
-            polarity=aggregate_semantics.ABSENCE,
-            window=aggregate_semantics.rolling_window(anchor, inactivity["min_days"]),
-            constraints={dimension: None for dimension in dimensions},
-            source_kind="purchase_inactivity",
-            source_id="target_user.purchase_inactivity",
-        ))
-    if "no_purchase" in (target_user.get("behaviors") or []):
-        predicates.append(aggregate_semantics.EventPredicate(
-            domain="purchase",
-            polarity=aggregate_semantics.ABSENCE,
-            window=aggregate_semantics.lifetime_window(anchor),
-            constraints={dimension: None for dimension in dimensions},
-            source_kind="purchase_not_exists",
-            source_id="target_user.behaviors:no_purchase",
+            domain=sources[0],
+            polarity=aggregate_semantics.ABSENCE if negated else aggregate_semantics.PRESENCE,
+            window=window,
+            constraints=constraints,
+            source_kind="purchase_not_exists" if negated else "purchase_aggregate",
+            source_id=f"plan.{EVENT_EXPRESSION_KEY}.atoms[{index}]:{sources[0]}",
         ))
     return predicates
 
