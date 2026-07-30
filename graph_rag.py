@@ -10245,7 +10245,10 @@ _AGG_DOMAIN_CONTEXT_RE = lexicon_patterns.pattern("agg_domain_context")
 # 구매액'에 새어 들어와 '최근 180일 구매 100만↑ AND 최근 180일 무주문'(공집합)이 되는 걸 막는다.
 _CUMULATIVE_WINDOW_MARKER_RE = re.compile(r"누적|누계|평생|통산|역대|전체\s*기간")
 # 임계값 단위 추출(숫자 뒤 단위, 긴 단위 우선). 상품 수량/종류 단위 포함.
-_AGG_UNIT_TOKEN_RE = re.compile(r"\d[\d,]*\s*(?:억|천만|백만|만|천)?\s*(종류|종수|품목|가지|건수|회수|종|개|건|회|번|원|점|장)")
+# 수량 단위 '개'는 기간 표현('3개월'·'3개년') 안에서는 단위가 아니다 — 부정 전방탐색으로 그 자리를 막는다.
+# 이게 없으면 '3개월 동안'의 '개'가 절 단위로 잡혀 옆 절의 숫자(‘인구 50만’)와 '상품 수량 50만개'로 합쳐진다.
+# TODO: typed unit tokenization과 longest-match 적용 후 이 임시 regex 가드 제거
+_AGG_UNIT_TOKEN_RE = re.compile(r"\d[\d,]*\s*(?:억|천만|백만|만|천)?\s*(종류|종수|품목|가지|건수|회수|종|개(?![월년])|건|회|번|원|점|장)")
 # 집계 범위(grain): 한 주문 내 / 동일 상품별 / 회원 누적.
 _AGG_SCOPE_PER_ORDER_RE = re.compile(r"한\s*주문|한\s*번에|한번에|주문당|주문\s*당|주문별|주문\s*별|1회\s*주문")
 # 동일성 표지·상품 명사는 렉시콘 어휘다(`identity_same` × `product_noun`) — 구조만 코드에 남기고
