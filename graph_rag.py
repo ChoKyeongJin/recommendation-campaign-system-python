@@ -10494,6 +10494,96 @@ def _is_shared_purchase_window_clause(raw_clause: str) -> bool:
     return _NEGATION_CUE_RE.search(compact) is None
 
 
+# ── 임계값 숫자의 소유권(속성 결합) ──────────────────────────────────────────────────────
+# 소유권 판정이 낸 미지원 사유. 원문 권위 재확정 단계가 이 사유만 plan 으로 승격한다.
+_THRESHOLD_OWNERSHIP_UNSUPPORTED_REASONS = frozenset(
+    {"unsupported_threshold_attribute", "ambiguous_threshold_attribute"}
+)
+# 하나의 숫자는 하나의 의미만 소유한다. 스키마에 없는 속성('인구 50만')이 임계값을 데리고 나오면 그
+# 숫자를 조용히 버리거나 다른 지표에 재사용하지 않고 그 자리에서 소유권을 확정한다 — 재사용을 허용하면
+# '인구 50만'이 '상품 수량 50만개'가 되어, 사용자가 요청하지도 않은 조건의 SQL 이 나간다.
+# 지원 속성 목록은 member_target_filters.json, 미지원 힌트·탐색 정책은 aggregate_parser_rules.json 소유.
+@functools.lru_cache(maxsize=1)
+def _threshold_attribute_index() -> "aggregate_spans.AttributeIndex":
+    return aggregate_spans.build_attribute_index(_MEMBER_TARGET_FILTERS, aggregate_parser_config.rules())
+
+
+def _bind_threshold_candidates(clause: str, clause_index: int = 0) -> list["aggregate_spans.ComparisonCandidate"]:
+    """한 절의 비교 표현에 인접 단위와 로컬 속성을 결합해 소유 상태까지 확정한다.
+
+    비교어 어휘는 이 도메인의 단일 소스(_COMPARISON_OP_ALT / _comparison_operator)에서 넘긴다 —
+    스팬 모듈이 비교어를 다시 선언하지 않게 한다."""
+    return aggregate_spans.bind_clause(
+        clause, _threshold_attribute_index(), aggregate_parser_config.rules(),
+        operator_alternation=_COMPARISON_OP_ALT,
+        operator_normalizer=_comparison_operator,
+        id_prefix=f"clause{clause_index}",
+    )
+
+
+def _remaining_condition_labels(plan: dict[str, Any], conditions: list[dict[str, Any]]) -> list[str]:
+    """미지원 조건을 뺐을 때 남는 조건의 사람이 읽을 라벨. '나머지 조건만으로 조회할까요?' 의 근거다."""
+    labels = [
+        _UNSUPPORTED_CONDITION_LABELS[f"target_user.{slot}"]
+        for slot, value in (plan.get("target_user") or {}).items()
+        if value and slot != "aggregate_conditions" and f"target_user.{slot}" in _UNSUPPORTED_CONDITION_LABELS
+    ]
+    labels.extend(str(condition["label"]) for condition in conditions if condition.get("label"))
+    return _unique_strings(labels)
+
+
+def _unsupported_threshold_attribute_notice(
+    query: str, blocked: list["aggregate_spans.ComparisonCandidate"], remaining: list[str],
+) -> dict[str, Any]:
+    """미지원 속성/모호한 결합에 대한 **사용자용** 안내를 만든다(문구는 전부 메시지 JSON 소유).
+
+    AND 와 OR 를 가른다: AND 는 미지원 조건을 빼도 나머지 의미가 남으므로 '나머지만 조회할까요?' 를
+    제안할 수 있지만, OR 는 한 쪽을 빼면 원래 의미가 달라지므로 제안하지 않는다."""
+    rules = aggregate_parser_config.rules()
+    messages = rules.messages
+    ambiguous = next((c for c in blocked if c.ownership == aggregate_spans.REJECTED_AMBIGUOUS), None)
+    if ambiguous is not None:
+        text = messages.render("ambiguous_threshold_attribute", value=ambiguous.value_span.text)
+        return {"reason": "ambiguous_threshold_attribute", "message": text, "clarification": text}
+    candidate = blocked[0]
+    reference = candidate.attribute_ref
+    hint = messages.render(reference.message_key) if reference and reference.message_key else ""
+    surface = reference.surface if reference else candidate.value_span.text
+    if aggregate_spans.has_disjunction(query, rules):
+        text = messages.render("unsupported_attribute_or_expression", attribute=surface, hint=hint)
+    elif remaining:
+        text = messages.render(
+            "unsupported_attribute_with_remaining",
+            attribute=surface, hint=hint, remaining_conditions=", ".join(remaining),
+        )
+    else:
+        text = messages.render("unsupported_attribute_only", attribute=surface, hint=hint)
+    return {
+        "reason": "unsupported_threshold_attribute",
+        "message": text,
+        "clarification": text,
+        "attribute": reference.key if reference else None,
+    }
+
+
+def _surviving_clause_comparisons(
+    clause: str, bound: list["aggregate_spans.ComparisonCandidate"],
+) -> list[tuple[str, float]] | None:
+    """절의 비교값 중 **다른 의미가 이미 소유한 숫자**를 뺀 나머지를 돌려준다.
+
+    소유 판정은 값이나 문자열이 아니라 스팬 겹침으로 한다 — 같은 값이 문장에 두 번 나와도(‘10만 이상
+    이고 10만 이하’) 한쪽만 정확히 걷어내기 위해서다."""
+    candidates = _parse_amount_comparison_candidates(clause, _AGG_UNIT, bare_equals=False)
+    if not candidates:
+        return None
+    claimed = [c.value_span for c in bound if c.blocks_sql]
+    surviving = [
+        candidate for candidate in candidates
+        if not any(candidate.value_span.overlaps(span) for span in claimed)
+    ]
+    return [(candidate.operator, candidate.normalized_value) for candidate in surviving] or None
+
+
 def _make_aggregate_condition(
     context: dict[str, Any], operator: str, threshold: float, window_days: Any,
     calendar_period: str | None, metrics: dict[str, Any],
@@ -10557,8 +10647,10 @@ def _apply_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
     last_window: int | None = None       # 앞 aggregate 지표(절)의 유효 창 — 공유 창/고아 bound 상속용
     last_calendar: str | None = None
     scope_clarify_key: str | None = None
+    # 미지원 속성이 데려온 숫자(재사용 금지 대상). 하나라도 남으면 이 문장은 SQL 을 만들지 않는다.
+    blocked_candidates: list["aggregate_spans.ComparisonCandidate"] = []
     # 원문(정규화 전)으로 절 분리·grain/scope 판정 — '한 번에'가 '1번'으로 바뀌기 전에 봐야 한다.
-    for raw_clause in _AGG_CLAUSE_SPLIT_RE.split(query):
+    for clause_index, raw_clause in enumerate(_AGG_CLAUSE_SPLIT_RE.split(query)):
         aggregation_scope, scoped_clause = _extract_aggregation_scope(raw_clause)
         scope = _clause_scope(raw_clause)
         # grain 표지를 뗀 뒤 한글 수사 정규화('두 번'→'2번') → 임계값/단위/지표 해석.
@@ -10566,7 +10658,10 @@ def _apply_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
         # 시간 창은 이 절 텍스트에서만 귀속한다(전역 first-match 금지) — 옆 절(로그인/미접속)의 창 누수·
         # 누적 절의 롤링 창 오상속을 원천 차단한다([[numeric-metric-unit-and-ratio]] 창 게이트와 동일 원칙).
         clause_window, clause_calendar, clause_lifetime = _aggregate_clause_time_scope(raw_clause, inactivity_days_set)
-        comparisons = _parse_amount_comparison(clause, _AGG_UNIT, bare_equals=False)
+        # 값·단위·속성의 소유권을 먼저 확정한다 — 미지원 속성이 가져간 숫자는 아래 지표 해석이 못 본다.
+        bound = _bind_threshold_candidates(clause, clause_index)
+        blocked_candidates.extend(candidate for candidate in bound if candidate.blocks_sql)
+        comparisons = _surviving_clause_comparisons(clause, bound)
         if not comparisons:
             # 임계값 없는 **선행 창 절**("최근 90일간 온라인몰에서 주문한 회원 중 …")은 뒤따르는 지표 절의
             # 공유 창이 된다 — 그 창은 문장 전체의 집계 기간이라 지표마다 다시 쓰지 않는 게 자연스러운 표현이다.
@@ -10595,7 +10690,7 @@ def _apply_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
                 for operator, threshold in comparisons:
                     conditions.append(_make_aggregate_condition(last_context, operator, threshold, effective_window, effective_calendar, metrics))
                 continue
-            if status in ("unresolved", "ambiguous"):
+            if status in ("unresolved", "ambiguous") and not blocked_candidates:
                 plan["unsupported"] = {
                     "reason": "metric_not_resolved",
                     "message": "상품/주문 조건의 지표를 확정할 수 없습니다(수량/종류/횟수/금액 등).",
@@ -10613,6 +10708,14 @@ def _apply_aggregate_condition_filter(query: str, plan: dict[str, Any]) -> None:
         last_calendar = effective_calendar
         for operator, threshold in comparisons:
             conditions.append(_make_aggregate_condition(context, operator, threshold, effective_window, effective_calendar, metrics))
+
+    # 미지원 속성이 unresolved 로 남아 있으면 SQL 을 만들지 않는다(fail-close). 조건이 하나도 안 잡힌
+    # 문장('평수 30평 이상인 매장의 고객')도 여기 걸린다 — 임계값 소비 여부와 무관한 판정이기 때문이다.
+    if blocked_candidates:
+        plan["unsupported"] = _unsupported_threshold_attribute_notice(
+            query, blocked_candidates, _remaining_condition_labels(plan, conditions),
+        )
+        return
 
     if not conditions:
         return
@@ -22781,6 +22884,16 @@ def _restore_aggregate_conditions_from_source(source_query: str, query_plan: dic
     target_user = query_plan.setdefault("target_user", {})
     scratch: dict[str, Any] = {"target_user": {}}
     _apply_named_filter("aggregate", source_query, scratch)
+    # 미지원 속성 임계값('인구 50만')은 원문에서만 보인다 — 재작성본이 그 어구를 지우면 판정 자체가
+    # 사라져 SQL 이 그냥 나가버린다. 임계값 소유권 판정만은 원문 결과를 plan 으로 승격한다(fail-close).
+    scratch_unsupported = scratch.get("unsupported")
+    if (
+        isinstance(scratch_unsupported, dict)
+        and scratch_unsupported.get("reason") in _THRESHOLD_OWNERSHIP_UNSUPPORTED_REASONS
+        and not isinstance(query_plan.get("unsupported"), dict)
+    ):
+        query_plan["unsupported"] = scratch_unsupported
+        return
     source_conditions = [
         condition
         for condition in (scratch.get("target_user", {}).get("aggregate_conditions") or [])
