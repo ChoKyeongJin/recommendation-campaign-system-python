@@ -1,0 +1,172 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://internal/schemas/aggregate_parser_rules.schema.json",
+  "title": "Aggregate parser rules",
+  "description": "집계 조건 파서의 값·단위·속성 결합 정책. 표면어(단위 토큰·미지원 속성 별칭·접속 경계)와 정책 수치(탐색 거리·허용 공백)만 담는다. 스팬 계산·결합 알고리즘·SQL 생성은 코드가 소유한다.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "span_binding",
+    "number_multipliers",
+    "prefix_operators",
+    "unit_kinds",
+    "aggregate_threshold_unit_kinds",
+    "unit_tokens",
+    "supported_attribute_sources",
+    "unsupported_attribute_hints",
+    "generic_unsupported_message_key",
+    "semantic_domains"
+  ],
+  "properties": {
+    "version": {
+      "description": "설정 스키마 버전. 로더가 지원하는 버전과 다르면 fail-fast 한다.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "span_binding": {
+      "description": "숫자 스팬에 단위·속성을 붙일 때의 근접성 정책.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_unit_whitespace",
+        "attribute_search_left_tokens",
+        "attribute_search_right_tokens",
+        "stop_at_conjunction",
+        "stop_at_clause_boundary",
+        "conjunction_tokens",
+        "disjunction_tokens",
+        "boundary_punctuation",
+        "generic_attribute_particles",
+        "generic_attribute_min_length"
+      ],
+      "properties": {
+        "max_unit_whitespace": {
+          "description": "숫자 스팬 끝과 단위 스팬 시작 사이에 허용되는 공백 문자 수(그 밖의 문자는 어떤 것도 허용하지 않는다).",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "attribute_search_left_tokens": {"type": "integer", "minimum": 0, "maximum": 16},
+        "attribute_search_right_tokens": {"type": "integer", "minimum": 0, "maximum": 16},
+        "stop_at_conjunction": {"type": "boolean"},
+        "stop_at_clause_boundary": {"type": "boolean"},
+        "conjunction_tokens": {"$ref": "#/$defs/surfaceList"},
+        "disjunction_tokens": {"$ref": "#/$defs/surfaceList"},
+        "boundary_punctuation": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "string", "minLength": 1, "maxLength": 2}
+        },
+        "generic_attribute_particles": {"$ref": "#/$defs/surfaceList"},
+        "generic_attribute_min_length": {"type": "integer", "minimum": 1, "maximum": 8}
+      }
+    },
+    "number_multipliers": {
+      "description": "숫자 배수 표현 → 배수값. 단독 '십'/'백'은 아라비아 숫자 표기와 섞이면 '5백'과 '500'이 갈리지 않아 의도적으로 뺐다(기존 동작 보존).",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "number", "exclusiveMinimum": 0},
+      "propertyNames": {"minLength": 1}
+    },
+    "prefix_operators": {
+      "description": "숫자 **앞**에 오는 비교어('최소 10억'). 숫자 뒤 비교어는 targeting_ir 의 비교어 표가 소유한다.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["surface", "operator"],
+        "properties": {
+          "surface": {"type": "string", "minLength": 1},
+          "operator": {"type": "string", "enum": [">=", ">", "<=", "<", "="]}
+        }
+      }
+    },
+    "unit_kinds": {
+      "description": "선언된 단위 종류의 닫힌 집합. unit_tokens 의 kind 는 반드시 여기 있어야 한다.",
+      "$ref": "#/$defs/surfaceList"
+    },
+    "aggregate_threshold_unit_kinds": {
+      "description": "집계 임계값에 결합될 수 있는 단위 종류(기간·면적·나이 단위는 임계값 단위가 아니다).",
+      "$ref": "#/$defs/surfaceList"
+    },
+    "unit_tokens": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["surface", "kind", "canonical", "priority"],
+        "properties": {
+          "surface": {"type": "string", "minLength": 1},
+          "kind": {"type": "string", "minLength": 1},
+          "canonical": {"type": "string", "minLength": 1},
+          "priority": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "supported_attribute_sources": {
+      "description": "지원 속성 별칭을 읽어올 member_target_filters.json 의 섹션. 지원 목록은 이 파일이 아니라 그 레지스트리가 소유한다.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["section", "key_field", "alias_fields"],
+        "properties": {
+          "section": {"type": "string", "minLength": 1},
+          "key_field": {"type": ["string", "null"]},
+          "alias_fields": {"$ref": "#/$defs/surfaceList"}
+        }
+      }
+    },
+    "unsupported_attribute_hints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["key", "aliases", "context_aliases", "message_key"],
+        "properties": {
+          "key": {"type": "string", "minLength": 1},
+          "aliases": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "context_aliases": {
+            "description": "문맥이 있어야 이 속성으로 보는 별칭('매출'은 지점/매장 문맥에서만 지점매출이다).",
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["surface", "context_terms"],
+              "properties": {
+                "surface": {"type": "string", "minLength": 1},
+                "context_terms": {"$ref": "#/$defs/surfaceList"}
+              }
+            }
+          },
+          "message_key": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "generic_unsupported_message_key": {"type": "string", "minLength": 1},
+    "semantic_domains": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["presence_node_kinds", "absence_node_kinds", "event_dimensions"],
+        "properties": {
+          "presence_node_kinds": {"$ref": "#/$defs/surfaceList"},
+          "absence_node_kinds": {"$ref": "#/$defs/surfaceList"},
+          "event_dimensions": {"$ref": "#/$defs/surfaceList"}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "surfaceList": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"type": "string", "minLength": 1}
+    }
+  }
+}

@@ -25,6 +25,8 @@ import networkx as nx
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 
+import aggregate_parser_config
+import aggregate_spans
 import condition_reconciliation
 from external_conditions.classifier import (
     classify_external_conditions,
@@ -9109,8 +9111,9 @@ def _apply_purchase_inactivity_filter(query: str, plan: dict[str, Any]) -> None:
 
 # 범용 집계 조건('<지표> <임계값> 이상/이하')의 값·기간·연산자 파서. 지표/컬럼 정의는 member_target_filters.json
 # 의 aggregate_targets 가 소유하고(코드-프리 레지스트리), 여기서는 프롬프트 텍스트에서 조건만 뽑는다.
-# 배수 단위는 긴 것부터(천만/백만이 만/천보다 먼저) 매칭한다.
-_AMOUNT_MAGNITUDES = (("억", 100_000_000), ("천만", 10_000_000), ("백만", 1_000_000), ("만", 10_000), ("천", 1_000))
+# 배수 단위는 긴 것부터(천만/백만이 만/천보다 먼저) 매칭한다. 목록 자체는 코드가 아니라
+# docs/data/aggregate_parser_rules.json(number_multipliers)이 소유한다 — 표면어는 데이터, 정렬 규칙만 코드.
+_AMOUNT_MAGNITUDES = aggregate_parser_config.rules().number_multipliers
 # ── 비교 연산자 어휘의 단일 소스 ────────────────────────────────────────────────────
 # 이상/초과/이하/미만 → 부등호. 정규식 열거(_OP_ALT_BASIC)·매핑(_AGG_OPERATOR_WORDS)·rich 문법
 # (_COMPARISON_OP_ALT)이 전부 여기서 파생한다 — 새 비교어는 여기 한 곳에만 추가하면 모든 도메인이 얻는다.
@@ -9262,28 +9265,67 @@ def _comparison_patterns(unit: str, unit_required: bool = False) -> tuple["re.Pa
     return range_p, op_p, eq_p
 
 
-def _parse_amount_comparison(window: str, unit: str, *, bare_equals: bool = False, unit_required: bool = False) -> list[tuple[str, float]] | None:
-    """단위(unit) 뒤 비교 어구를 [(operator, value), ...] 로 정규화한다(범위=두 술어 >=lo,<=hi). 부등호
-    (부사형·동사형·'보다 많은/적은')·정확값('정확히 N')·범위를 공통 처리한다. bare_equals=True 면 연산자 없는
-    맨 'N<unit>'을 등호로 본다(잔액처럼 맥락상 정확값이 자연스러운 도메인용; 횟수처럼 모호하면 False).
-    unit_required=True 면 단위를 필수로 요구해 단위 없는 숫자·범위를 흡수하지 않는다(장바구니 개수 등)."""
+def _comparison_candidate(
+    window: str, match: "re.Match[str]", operator: str, value: float,
+    *, number_group: str, magnitude_group: str, index: int,
+) -> aggregate_spans.ComparisonCandidate:
+    """정규식 매치에서 **숫자 스팬과 비교 스팬을 따로** 뜬다.
+
+    전체 매치의 끝을 숫자 스팬의 끝으로 쓰면 '50만원 이상'의 숫자가 '50만원 이상' 전체가 돼, 뒤이어
+    붙일 단위의 인접성을 계산할 수 없다. 값은 숫자+배수어까지, 단위/조사/비교어는 값 밖이다."""
+    start = match.start(number_group)
+    end = match.end(magnitude_group) if match.group(magnitude_group) else match.end(number_group)
+    return aggregate_spans.ComparisonCandidate(
+        candidate_id=f"amount:{index}:{start}",
+        operator=operator,
+        normalized_value=value,
+        value_span=aggregate_spans.TextSpan(start, end, window[start:end]),
+        comparison_span=aggregate_spans.TextSpan(match.start(), match.end(), match.group(0)),
+    )
+
+
+def _parse_amount_comparison_candidates(
+    window: str, unit: str, *, bare_equals: bool = False, unit_required: bool = False,
+) -> list[aggregate_spans.ComparisonCandidate] | None:
+    """:func:`_parse_amount_comparison` 과 같은 판정을, 스팬을 보존한 candidate 목록으로 돌려준다.
+
+    호출부가 '이 임계값이 원문 어디에서 왔는가'를 물을 수 있어야 값·단위·속성 소유권을 판정할 수 있다.
+    튜플만 돌려주던 기존 반환형은 아래 호환 wrapper 가 유지한다."""
     range_p, op_p, eq_p = _comparison_patterns(unit, unit_required)
     rng = range_p.search(window)
     if rng is not None:
         lo = _parse_korean_amount(rng.group("lo"), rng.group("lomag") or "")
         hi = _parse_korean_amount(rng.group("hi"), rng.group("himag") or "")
-        return [(">=", lo), ("<=", hi)] if lo is not None and hi is not None and lo <= hi else None
-    parsed_ops: list[tuple[str, float]] = []
-    for op in op_p.finditer(window):
+        if lo is None or hi is None or lo > hi:
+            return None
+        lo_end = rng.end("lomag") if rng.group("lomag") else rng.end("lo")
+        hi_end = rng.end("himag") if rng.group("himag") else rng.end("hi")
+        span = aggregate_spans.TextSpan(rng.start(), rng.end(), rng.group(0))
+        return [
+            aggregate_spans.ComparisonCandidate(
+                candidate_id=f"amount:range_lo:{rng.start('lo')}", operator=">=", normalized_value=lo,
+                value_span=aggregate_spans.TextSpan(rng.start("lo"), lo_end, window[rng.start("lo"):lo_end]),
+                comparison_span=span,
+            ),
+            aggregate_spans.ComparisonCandidate(
+                candidate_id=f"amount:range_hi:{rng.start('hi')}", operator="<=", normalized_value=hi,
+                value_span=aggregate_spans.TextSpan(rng.start("hi"), hi_end, window[rng.start("hi"):hi_end]),
+                comparison_span=span,
+            ),
+        ]
+    parsed_ops: list[aggregate_spans.ComparisonCandidate] = []
+    for index, op in enumerate(op_p.finditer(window)):
         operator = _comparison_operator(op.group("op"))
         value = _parse_korean_amount(op.group("num"), op.group("mag") or "")
         if operator and value is not None:
-            parsed_ops.append((operator, value))
+            parsed_ops.append(_comparison_candidate(
+                window, op, operator, value, number_group="num", magnitude_group="mag", index=index,
+            ))
     if parsed_ops:
         # 이중 경계('30 이상이지만 100 미만'처럼 하한+상한이 한 window 에 함께)면 둘 다 반환(BETWEEN 유사).
         # 하나뿐이면 그대로. '사이/에서~까지' 범위형은 위 range_p 가 이미 처리한다.
-        lower = next((p for p in parsed_ops if p[0] in (">=", ">")), None)
-        upper = next((p for p in parsed_ops if p[0] in ("<=", "<")), None)
+        lower = next((p for p in parsed_ops if p.operator in (">=", ">")), None)
+        upper = next((p for p in parsed_ops if p.operator in ("<=", "<")), None)
         if lower is not None and upper is not None:
             return [lower, upper]
         return [parsed_ops[0]]
@@ -9295,14 +9337,34 @@ def _parse_amount_comparison(window: str, unit: str, *, bare_equals: bool = Fals
         if amt is not None and amt.group("num"):
             value = _parse_korean_amount(amt.group("num"), amt.group("mag") or "")
             if value is not None:
-                return [("=", value)]
+                return [_comparison_candidate(
+                    window, amt, "=", value, number_group="num", magnitude_group="mag", index=0,
+                )]
     if bare_equals:
         eq = eq_p.search(window)
         if eq is not None:
             value = _parse_korean_amount(eq.group("num"), eq.group("mag") or "")
             if value is not None:
-                return [("=", value)]
+                return [_comparison_candidate(
+                    window, eq, "=", value, number_group="num", magnitude_group="mag", index=0,
+                )]
     return None
+
+
+def _parse_amount_comparison(window: str, unit: str, *, bare_equals: bool = False, unit_required: bool = False) -> list[tuple[str, float]] | None:
+    """단위(unit) 뒤 비교 어구를 [(operator, value), ...] 로 정규화한다(범위=두 술어 >=lo,<=hi). 부등호
+    (부사형·동사형·'보다 많은/적은')·정확값('정확히 N')·범위를 공통 처리한다. bare_equals=True 면 연산자 없는
+    맨 'N<unit>'을 등호로 본다(잔액처럼 맥락상 정확값이 자연스러운 도메인용; 횟수처럼 모호하면 False).
+    unit_required=True 면 단위를 필수로 요구해 단위 없는 숫자·범위를 흡수하지 않는다(장바구니 개수 등).
+
+    스팬이 필요한 신규 호출부는 :func:`_parse_amount_comparison_candidates` 를 쓴다 — 이 함수는 튜플
+    반환형에 의존하는 기존 호출부를 위한 호환 wrapper 다."""
+    candidates = _parse_amount_comparison_candidates(
+        window, unit, bare_equals=bare_equals, unit_required=unit_required,
+    )
+    if not candidates:
+        return None
+    return [(candidate.operator, candidate.normalized_value) for candidate in candidates]
 
 
 # 잔액 지표어 뒤 window 분류: 숫자 비교는 위 공용 문법에 위임하고, 랭킹/%/평균(선택 전략)·존재/부재(잔액

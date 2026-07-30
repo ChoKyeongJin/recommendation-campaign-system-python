@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://internal/schemas/clarification_messages.schema.json",
+  "title": "Clarification messages",
+  "description": "사용자에게 노출되는 안내 문구. 내부 사유 코드(reason)·노드명·예외 클래스명은 여기 들어가지 않는다 — 코드가 message_key 로만 참조한다.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "messages"],
+  "properties": {
+    "version": {"type": "integer", "minimum": 1},
+    "messages": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "string", "minLength": 1},
+      "propertyNames": {"minLength": 1}
+    }
+  }
+}

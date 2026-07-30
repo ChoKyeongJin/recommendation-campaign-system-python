@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "span_binding": {
+    "max_unit_whitespace": 1,
+    "attribute_search_left_tokens": 4,
+    "attribute_search_right_tokens": 4,
+    "stop_at_conjunction": true,
+    "stop_at_clause_boundary": true,
+    "conjunction_tokens": ["이고", "이며", "그리고", "이면서", "면서", "동시에", "했고", "았고", "었고", "하고", "이지만", "하지만", "지만", "반면에", "반면"],
+    "disjunction_tokens": ["또는", "이거나", "거나", "혹은", "아니면"],
+    "boundary_punctuation": [",", ".", "?", "!", ";", ":", "\n"],
+    "generic_attribute_particles": ["이", "가"],
+    "generic_attribute_min_length": 2
+  },
+  "number_multipliers": {
+    "조": 1000000000000,
+    "억": 100000000,
+    "천만": 10000000,
+    "백만": 1000000,
+    "만": 10000,
+    "천": 1000
+  },
+  "prefix_operators": [
+    {"surface": "최소", "operator": ">="},
+    {"surface": "최대", "operator": "<="}
+  ],
+  "unit_kinds": ["currency", "quantity", "count", "variety", "person_count", "duration", "area", "age", "ratio"],
+  "aggregate_threshold_unit_kinds": ["currency", "quantity", "count", "variety"],
+  "unit_tokens": [
+    {"surface": "개월", "kind": "duration", "canonical": "month", "priority": 300},
+    {"surface": "개년", "kind": "duration", "canonical": "year_period", "priority": 300},
+    {"surface": "주일", "kind": "duration", "canonical": "week", "priority": 300},
+    {"surface": "년", "kind": "duration", "canonical": "year", "priority": 200},
+    {"surface": "월", "kind": "duration", "canonical": "month", "priority": 200},
+    {"surface": "주", "kind": "duration", "canonical": "week", "priority": 200},
+    {"surface": "일", "kind": "duration", "canonical": "day", "priority": 200},
+    {"surface": "원", "kind": "currency", "canonical": "KRW", "priority": 200},
+    {"surface": "건수", "kind": "count", "canonical": "case", "priority": 150},
+    {"surface": "회수", "kind": "count", "canonical": "time", "priority": 150},
+    {"surface": "건", "kind": "count", "canonical": "case", "priority": 100},
+    {"surface": "회", "kind": "count", "canonical": "time", "priority": 100},
+    {"surface": "번", "kind": "count", "canonical": "time", "priority": 100},
+    {"surface": "수량", "kind": "quantity", "canonical": "item", "priority": 150},
+    {"surface": "개", "kind": "quantity", "canonical": "item", "priority": 100},
+    {"surface": "점", "kind": "quantity", "canonical": "item", "priority": 100},
+    {"surface": "장", "kind": "quantity", "canonical": "sheet", "priority": 100},
+    {"surface": "종류", "kind": "variety", "canonical": "variety", "priority": 150},
+    {"surface": "종수", "kind": "variety", "canonical": "variety", "priority": 150},
+    {"surface": "품목", "kind": "variety", "canonical": "variety", "priority": 150},
+    {"surface": "가지", "kind": "variety", "canonical": "variety", "priority": 150},
+    {"surface": "종", "kind": "variety", "canonical": "variety", "priority": 100},
+    {"surface": "명", "kind": "person_count", "canonical": "person", "priority": 100},
+    {"surface": "제곱미터", "kind": "area", "canonical": "square_meter", "priority": 300},
+    {"surface": "㎡", "kind": "area", "canonical": "square_meter", "priority": 300},
+    {"surface": "평", "kind": "area", "canonical": "pyeong", "priority": 100},
+    {"surface": "세", "kind": "age", "canonical": "year_old", "priority": 100},
+    {"surface": "퍼센트", "kind": "ratio", "canonical": "percent", "priority": 300},
+    {"surface": "프로", "kind": "ratio", "canonical": "percent", "priority": 300},
+    {"surface": "%", "kind": "ratio", "canonical": "percent", "priority": 300}
+  ],
+  "supported_attribute_sources": [
+    {"section": "numeric_filters", "key_field": "canonical", "alias_fields": ["synonyms"]},
+    {"section": "aggregate_targets.metrics", "key_field": null, "alias_fields": ["synonyms"]}
+  ],
+  "unsupported_attribute_hints": [
+    {
+      "key": "population",
+      "aliases": ["인구", "주민수", "거주인구", "인구수"],
+      "context_aliases": [],
+      "message_key": "unsupported_population"
+    },
+    {
+      "key": "area",
+      "aliases": ["면적", "평수", "연면적", "전용면적"],
+      "context_aliases": [],
+      "message_key": "unsupported_area"
+    },
+    {
+      "key": "branch_sales",
+      "aliases": ["지점매출", "매장매출", "점포매출"],
+      "context_aliases": [
+        {"surface": "매출", "context_terms": ["지점", "매장", "점포", "가맹점", "영업점"]}
+      ],
+      "message_key": "unsupported_branch_sales"
+    }
+  ],
+  "generic_unsupported_message_key": "unsupported_attribute_generic_hint",
+  "semantic_domains": {
+    "purchase": {
+      "presence_node_kinds": ["aggregate_inner_join", "purchase_aggregate"],
+      "absence_node_kinds": ["purchase_inactivity", "purchase_not_exists"],
+      "event_dimensions": ["channel", "order_status", "product_scope"]
+    }
+  }
+}

@@ -60,7 +60,9 @@ CLASS_ORDER = {"lexical": 0, "wordlist": 1, "domain": 2, "composed": 3, "grammar
 # (구조만 코드, 낱말은 사전)이므로 둘 다 상한을 걸지 않는다 — 걸면 이행이 지표상 손해가 된다.
 RATCHETED_CLASSES = ("lexical", "wordlist", "domain")
 # 어휘를 사전에서 끼워 넣었다는 표시. 이 이름을 참조해 조립된 정규식은 composed 로 센다.
-_LEXICON_MARKERS = ("lexicon_patterns", "_alt(")
+# 어휘의 데이터 소스는 렉시콘 하나가 아니다 — 설정 레지스트리(aggregate_parser_config)에서 표면어를
+# 읽어 조립한 정규식도 '구조만 코드, 낱말은 데이터'라는 같은 이행 완료 형태이므로 함께 표시한다.
+_LEXICON_MARKERS = ("lexicon_patterns", "_alt(", "aggregate_parser_config")
 # 인라인 한글 정규식을 만드는 re 함수(이름 없이 호출되는 규칙).
 _INLINE_RE_FUNCTIONS = frozenset({"search", "match", "fullmatch", "sub", "subn", "findall", "finditer", "split"})
 # 낱말집합으로 셀 최소 한글 낱말 수. 1개는 상수 하나이지 '목록'이 아니다.
