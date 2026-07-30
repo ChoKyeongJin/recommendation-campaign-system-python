@@ -196,7 +196,7 @@ def _clause_windows(clause: Clause, today: date | None) -> list[TimeWindow]:
     'N단위 전'은 절대 구간으로 미리 굳히지 않고 :class:`RelativeWindow` 로 남긴다(원문에 더 가깝고,
     확정은 컴파일러가 기준일로 한다).
     """
-    relative = calendar_window.RELATIVE_PAST_PATTERN.search(clause.text)
+    relative = next(iter(calendar_window.past_point_matches(clause.text)), None)
     if relative is not None and _OTHER_DATE_ANCHOR_RE.search(clause.text) is None:
         unit = event_ir.canonical_unit(calendar_window.KO_UNIT_TO_CANON.get(relative.group("unit"), ""))
         if unit is not None:

@@ -65,9 +65,13 @@ from calendar_window import (
     KO_UNIT_TO_CANON as _KO_UNIT_TO_CANON,
     NUMERIC_DURATION_PATTERN as _NUMERIC_DURATION_PATTERN,
     QUARTER_MONTH_RANGES as _QUARTER_MONTH_RANGES,
+    SOURCE_SPAN_KEY as _SOURCE_SPAN_KEY,
+    SOURCE_TEMPORAL_KIND_KEY as _SOURCE_TEMPORAL_KIND_KEY,
     WORD_DURATION_DAYS as _WORD_DURATION_DAYS,
     WORD_DURATION_PATTERN as _WORD_DURATION_PATTERN,
+    DurationCandidate as _DurationCandidate,
     duration_window_candidates as _duration_window_candidates,
+    duration_window_from_candidate as _duration_window_from_candidate,
     month_last_day as _month_last_day,
     parse_calendar_window_group,
     parse_calendar_window,
@@ -2490,6 +2494,11 @@ def _finalize_deterministic_query_plan(
     _guard_unparsed_entity_ranking(query, plan)
     _apply_analytical_intent(query, plan, sql_schema)
     _reconcile_cart_aggregate_ownership(plan)
+    # 시간 조건이 모두 확정된 뒤: 창 없는 구매 존재의 소유권 이전 → 그리고 같은 어구가 시간 조건을
+    # 두 개 만들었는지 감사(경고만). 원문 권위 재확정 목록에도 같은 두 단계가 있고 둘 다 멱등이다 —
+    # 여기서도 도는 이유는 이 경로(계획 확정)만 타는 소비자(골든 스냅샷·플랜 API)가 있기 때문이다.
+    _absorb_windowless_purchase_membership(query, plan)
+    _audit_time_span_ownership(query, plan)
     _attach_query_output_contract(query, plan)
     dimension_filter_errors = _validate_dimension_filters(plan)
     if dimension_filter_errors:
@@ -4553,6 +4562,11 @@ def _source_authoritative_stages(
         # 그때만 판정할 수 있다. 앞서 실행하면 아직 안 채워진 슬롯을 보고 개입 여부를 잘못 정한다.
         ("event_expression", _apply_event_expression_filter,
          "절 단위 사건 의미(기간별 구매 있음/없음)는 원문에서만 절 구조가 남아 있다"),
+        # 구매일 창이 확정된 뒤(위 purchase_date/calendar_window_claim, 그리고 IR 의 슬롯 회수 뒤)에
+        # 창 없는 구매 존재의 SQL 소유권을 넘긴다 — 순서가 곧 정확성이다(창을 보기 전에 판정하면
+        # 같은 문장이 실행 경로에 따라 다르게 흡수된다).
+        ("purchase_membership_absorption", _absorb_windowless_purchase_membership,
+         "구매일 창 조건이 이미 증명하는 주문 존재 EXISTS 를 중복 방출하지 않게 소유권을 넘긴다"),
         ("aggregation_axis", lambda _query, plan: _normalize_aggregation_axis_filters(plan),
          "복원된 조건을 집계 축 필터 표기로 정규화한다"),
         ("purchase_aggregation", lambda _query, plan: _normalize_purchase_aggregation_request(plan),
@@ -4576,6 +4590,9 @@ def _source_authoritative_stages(
         ("analytical_intent",
          lambda query, plan: _apply_analytical_intent(query, plan, sql_schema),
          "원문 복원이 되살린 오디언스 슬롯을 분석 계약이 다시 소비한다"),
+        # 맨 끝: 모든 시간 조건이 확정된 뒤에 '같은 어구가 두 조건을 만들었는지'를 감사한다(경고만).
+        ("time_span_ownership", _audit_time_span_ownership,
+         "하나의 원문 시간 표현이 독립 시간 조건 둘 이상을 소유하면 경고를 남긴다(드롭 없음)"),
     )
 
 
@@ -5905,6 +5922,153 @@ def _mark_purchase_membership_ownership(target_user: dict[str, Any]) -> None:
         membership.pop("satisfied_by", None)
 
 
+def _purchase_membership_needs_own_predicate(membership: Any) -> bool:
+    """이 구매 존재 조건이 **자기** 주문 EXISTS 술어를 따로 내야 하는가.
+
+    소유권 표식(``satisfied_by``)이 붙어 있으면 같은 범위의 구매 존재를 다른 조건이 이미 증명한다.
+    표식의 값(집계/구매일)으로 여기서 다시 분기하지 않는다 — 새 소유자가 생겨도 방출·커버리지·
+    신뢰도 세 곳의 판정이 자동으로 같이 움직인다.
+    """
+    return (
+        isinstance(membership, dict)
+        and membership.get("operator") == "exists"
+        and not membership.get("satisfied_by")
+    )
+
+
+# 창 없는 구매 존재 조건이 가질 수 있는 키. 이 밖의 키가 있으면 그 조건은 자기 술어를 더 들고 있다는
+# 뜻이므로 흡수하지 않는다 — 흡수는 SQL 중복을 지우는 장치이지 술어를 버리는 장치가 아니다.
+_ABSORBABLE_MEMBERSHIP_KEYS = frozenset({"domain", "operator", "window_days", "satisfied_by"})
+
+
+def _absorb_windowless_purchase_membership(_query: str, plan: dict[str, Any]) -> None:
+    """창 없는 구매 존재(주문 EXISTS)의 SQL 소유권을 구매일 창 조건에 넘긴다.
+
+    구매일 조건(``purchase_date``)은 주문 팩트를 그 기간으로 조인하므로 '주문이 있다'를 이미
+    증명한다. 의미 조건은 그대로 두고 표식만 남기므로(``satisfied_by``) 무엇이 왜 안 나갔는지는
+    플랜이 답한다.
+
+    창이 **있는** 구매 존재는 넘기지 않는다 — 실행시점 기준 롤링 창과 절대 달력 창은 같은 범위가
+    아니다(:func:`_aggregate_conditions_imply_purchase_membership` 와 같은 규칙).
+    구매일 창이 확정된 **뒤**에 실행해야 한다(원문 권위 재확정 목록의 순서가 그 의존성이다).
+    """
+    target_user = plan.get("target_user")
+    if not isinstance(target_user, dict):
+        return
+    membership = target_user.get("purchase_membership")
+    purchase_date = target_user.get("purchase_date")
+    if not _purchase_membership_needs_own_predicate(membership):
+        return
+    if membership.get("window_days") is not None:
+        return
+    if not (isinstance(purchase_date, dict) and purchase_date.get("from") and purchase_date.get("to")):
+        return
+    # 출처 표기(밑줄 키)는 술어가 아니므로 대상 집합 비교에서 뺀다.
+    if {key for key in membership if not str(key).startswith("_")} - _ABSORBABLE_MEMBERSHIP_KEYS:
+        return  # 구매 존재 조건이 자기 술어를 더 들고 있다 → 흡수하면 그 술어가 사라진다
+    membership["satisfied_by"] = "purchase_date"
+    plan_decisions.record(
+        plan, filter_name="purchase_membership_absorption", action=plan_decisions.CLAIM,
+        slot="target_user.purchase_membership",
+        reason="구매일 창 조건이 같은 주문 존재를 이미 증명한다(창 없는 구매 존재의 SQL 소유권 이전)",
+        value=purchase_date.get("label") or f"{purchase_date.get('from')}~{purchase_date.get('to')}",
+    )
+
+
+# ── 시간 표현 소유권 감사(경고 모드) ───────────────────────────────────────────────
+# 불변식: 하나의 원문 시간 표현은 기본적으로 **하나의 독립적인** 계획 시간 제약만 소유한다.
+# '7년 전 구매'가 절대 창(2019년)과 롤링 창(최근 2555일)을 동시에 만들면 두 조건이 AND 로 겹쳐
+# 원문에 없는 교집합(2019년 8~12월)이 된다 — 조건이 사라지는 결함과 달리 그럴듯한 SQL 이라 눈에 띄지 않는다.
+#
+# 이 감사는 **경고만** 남긴다(1차 도입). 조건을 드롭하지도, 환경에 따라 다르게 동작하지도 않는다 —
+# 테스트만 통과하고 운영에서 조용히 조건이 빠지는 조합을 만들지 않기 위해서다. 코퍼스 전수로 정당한
+# 1:N 확장을 모두 열거하고 명시 표시(``_expansion_of``)를 붙인 뒤에야 드롭/실패로 승격한다.
+_TIME_EXPANSION_KEY = "_expansion_of"  # 정당한 1:N 확장의 명시 표시(있으면 독립 조건으로 세지 않는다)
+
+
+def _time_constraint_span(
+    plan: dict[str, Any], source_query: str, container: str, slot: str, value: dict[str, Any]
+) -> tuple[int, int] | None:
+    """시간 제약 하나의 원문 구간(원문 좌표계). 모르면 None.
+
+    출처는 두 갈래다: 창 dict 이 실어 온 구간(:data:`_SOURCE_SPAN_KEY` — 공백 제거 좌표계라 원문으로
+    변환한다)과 필터가 기록한 슬롯 구간(slot_ownership — 이미 원문 좌표계). 좌표계를 섞지 않는 것이
+    이 함수의 유일한 책임이다."""
+    carried = value.get(_SOURCE_SPAN_KEY)
+    if isinstance(carried, (list, tuple)) and len(carried) == 2:
+        return _compact_source_span(source_query, (int(carried[0]), int(carried[1])))
+    recorded = slot_ownership.slot_span(plan, slot, container=container)
+    if not isinstance(recorded, dict) or recorded.get("source") != source_query:
+        return None  # 다른 텍스트(재작성본) 좌표계의 구간은 이 문장과 비교할 수 없다
+    span = (recorded.get("start"), recorded.get("end"))
+    return span if all(isinstance(bound, int) for bound in span) else None
+
+
+def _is_time_constraint_value(value: Any) -> bool:
+    """이 슬롯 값이 시간 제약인가 — 슬롯 **이름 목록이 아니라 값의 구조**로 판정한다.
+
+    이름 목록으로 두면 새 시간 슬롯이 생길 때 감사에서 조용히 빠진다(그게 원래 결함의 재발 경로다)."""
+    if not isinstance(value, dict):
+        return False
+    if isinstance(value.get("min_days"), int) or isinstance(value.get("window_days"), int):
+        return True
+    return bool(re.fullmatch(r"\d{8}", str(value.get("from") or "")) and re.fullmatch(r"\d{8}", str(value.get("to") or "")))
+
+
+def _plan_time_constraints(plan: dict[str, Any], source_query: str) -> list[dict[str, Any]]:
+    """계획에 남은 **독립** 시간 제약 목록: {slot, span, kind}.
+
+    소유권이 이전된 조건(``satisfied_by``)과 명시된 정당 확장(:data:`_TIME_EXPANSION_KEY`)은 독립
+    조건으로 세지 않는다 — 이미 다른 조건이 그 어구를 대표한다."""
+    out: list[dict[str, Any]] = []
+    for container in plan_decisions.AUDITED_CONTAINERS:
+        holder = plan.get(container)
+        if not isinstance(holder, dict):
+            continue
+        for slot, value in holder.items():
+            if not isinstance(slot, str) or slot.startswith("_") or not _is_time_constraint_value(value):
+                continue
+            if value.get("satisfied_by") or value.get(_TIME_EXPANSION_KEY):
+                continue
+            span = _time_constraint_span(plan, source_query, container, slot, value)
+            if span is None:
+                continue
+            out.append({
+                "slot": f"{container}.{slot}",
+                "span": span,
+                "kind": value.get(_SOURCE_TEMPORAL_KIND_KEY),
+            })
+    return out
+
+
+def _audit_time_span_ownership(source_query: str, plan: dict[str, Any]) -> None:
+    """같은 원문 시간 표현이 독립 시간 제약을 둘 이상 만들었으면 경고를 남긴다(드롭하지 않는다).
+
+    비교 단위는 전체 개수가 아니라 **원문 구간**이다 — 한 문장에 시간 표현이 여러 개 오는 것은
+    정상이고('1년 전 구매하고 최근 3개월 미구매'), 문제는 *같은* 구간이 두 조건을 만들 때뿐이다.
+    구간이 정확히 같기를 요구하지 않는다: 같은 어구를 읽어도 읽은 범위가 다를 수 있다
+    ('7년 전' vs 그 안의 '7년') — 그래서 겹침으로 묶는다."""
+    constraints = _plan_time_constraints(plan, source_query)
+    for index, constraint in enumerate(constraints):
+        overlapping = [
+            other for other in constraints[index + 1:]
+            if slot_ownership.spans_overlap(constraint["span"], other["span"])
+        ]
+        if not overlapping:
+            continue
+        start, end = constraint["span"]
+        plan_decisions.record(
+            plan, filter_name="time_span_ownership", action=plan_decisions.KEEP,
+            slot=constraint["slot"],
+            reason=(
+                f"같은 원문 시간 표현('{source_query[start:end]}')이 독립 시간 조건 "
+                f"{len(overlapping) + 1}개를 소유한다 — 경고만 남긴다(조건은 그대로 유지)"
+            ),
+            value=[constraint["slot"], *[other["slot"] for other in overlapping]],
+            evidence=source_query[start:end],
+        )
+
+
 def _span_distance(left: tuple[int, int], right: tuple[int, int]) -> int:
     """겹치지 않는 두 compact-text span 사이 문자 수. 겹치거나 맞닿으면 0."""
     if left[1] <= right[0]:
@@ -5918,6 +6082,9 @@ def _duration_window_owned_by_span(
     query: str,
     owner_span: tuple[int, int],
     competing_spans: list[tuple[int, int]],
+    *,
+    plan: dict[str, Any] | None = None,
+    owner_slot: str = "target_user.purchase_membership",
 ) -> dict[str, Any] | None:
     """행동 표현 하나가 소유하는 상대 기간을 반환한다.
 
@@ -5925,16 +6092,22 @@ def _duration_window_owned_by_span(
     ``최근 3개월 주문 … 최근 30일 구매 없음``처럼 같은 도메인이 한 문장에 여러 번 나와도 각 기간이
     자기 조건에 남는다. 구매 전용 규칙은 호출자가 소유하고, 이 함수는 다른 행동 도메인에서도 재사용할
     수 있도록 span과 기간 거리만 다룬다.
+
+    의미 종류 판정은 calendar_window 가 소유한다 — 여기서는 억제 표시가 붙은 후보(과거 시점 '7년 전'
+    안의 '7년')를 롤링 기간으로 쓰지 않고, ``plan`` 이 주어지면 그 억제를 감사 로그에 남긴다.
     """
     compact = query.replace(" ", "").casefold()
     candidates = _duration_window_candidates(compact)
+    if plan is not None:
+        _record_suppressed_duration_candidates(plan, query, compact, candidates, owner_slot)
+    candidates = [candidate for candidate in candidates if candidate.suppressed_by is None]
     if not candidates:
         return None
 
     owners = list(dict.fromkeys(competing_spans))
-    owned: list[tuple[int, int, int, str]] = []
+    owned: list[_DurationCandidate] = []
     for candidate in candidates:
-        candidate_span = (candidate[0], candidate[1])
+        candidate_span = (candidate.start, candidate.end)
         distance = _span_distance(candidate_span, owner_span)
         if distance > _DURATION_ANCHOR_GAP:
             continue
@@ -5947,11 +6120,36 @@ def _duration_window_owned_by_span(
 
     if not owned:
         return None
-    _start, _end, value, unit = min(
+    return _duration_window_from_candidate(min(
         owned,
-        key=lambda candidate: (_span_distance((candidate[0], candidate[1]), owner_span), candidate[0]),
-    )
-    return {"value": value, "unit": unit, "min_days": value * targeting_ir.UNIT_DAYS[unit]}
+        key=lambda candidate: (_span_distance((candidate.start, candidate.end), owner_span), candidate.start),
+    ))
+
+
+def _record_suppressed_duration_candidates(
+    plan: dict[str, Any],
+    query: str,
+    compact: str,
+    candidates: "list[_DurationCandidate]",
+    owner_slot: str,
+) -> None:
+    """롤링 기간으로 쓰이지 않은(억제된) 기간 후보를 감사 로그에 남긴다.
+
+    조용히 빠지면 '왜 이 조건에 창이 없나'를 코드로 거슬러 읽어야 한다 — 억제는 결정이므로 사유와
+    함께 남긴다(조건을 버리는 것이 아니라, 그 어구를 시점 트랙이 소유한다는 기록이다)."""
+    for candidate in candidates:
+        if candidate.suppressed_by is None:
+            continue
+        source_span = _compact_source_span(query, (candidate.start, candidate.end))
+        plan_decisions.record(
+            plan, filter_name="duration_window", action=plan_decisions.DROP, slot=owner_slot,
+            reason=(
+                f"'{compact[candidate.start:candidate.end]}'은 과거 시점 표현의 일부라 롤링 기간이 아니다"
+                f"(억제: {candidate.suppressed_by})"
+            ),
+            value={"value": candidate.value, "unit": candidate.unit, "kind": candidate.kind},
+            evidence=query[source_span[0]: source_span[1]] if source_span else None,
+        )
 
 
 def _purchase_membership_matches(compact_query: str) -> tuple[list[re.Match[str]], list[re.Match[str]]]:
@@ -5986,7 +6184,10 @@ def _apply_core_membership_semantics(query: str, plan: dict[str, Any]) -> None:
             (
                 window
                 for match in negative_matches
-                if (window := _duration_window_owned_by_span(query, match.span(), all_membership_spans)) is not None
+                if (window := _duration_window_owned_by_span(
+                    query, match.span(), all_membership_spans,
+                    plan=plan, owner_slot="target_user.purchase_inactivity",
+                )) is not None
             ),
             None,
         )
@@ -6005,10 +6206,18 @@ def _apply_core_membership_semantics(query: str, plan: dict[str, Any]) -> None:
 
     if positive_matches and not campaign_scoped_purchase:
         positive_match = positive_matches[0]
-        window = _duration_window_owned_by_span(query, positive_match.span(), all_membership_spans)
+        window = _duration_window_owned_by_span(
+            query, positive_match.span(), all_membership_spans,
+            plan=plan, owner_slot="target_user.purchase_membership",
+        )
         condition: dict[str, Any] = {"domain": "purchase", "operator": "exists"}
         if isinstance(window, dict) and isinstance(window.get("min_days"), int):
             condition["window_days"] = window["min_days"]
+            # 창이 원문 어디서 왔는지를 조건과 함께 남긴다 — 소유권 감사가 '같은 어구가 두 조건을
+            # 만들었는지'를 텍스트 재해석 없이 판정할 수 있는 유일한 근거다.
+            for key in (_SOURCE_SPAN_KEY, _SOURCE_TEMPORAL_KIND_KEY):
+                if window.get(key) is not None:
+                    condition[key] = window[key]
         target_user["purchase_membership"] = condition
         # 기간 수식어가 상품명으로 오인된 경우를 제거한다("최근 30일 이내 구매한 회원" → 상품 '이내').
         if target_user.get("purchase_object") in {"이내", "동안", "최근", "기간", "내"}:
@@ -13031,6 +13240,10 @@ def _sanitize_purchase_object(value: str) -> str | None:
             # 요구해 1차로 막지만, 브랜드·계사·chain 패턴과 LLM 폴백도 이 sanitize 를 공유하므로 우회
             # 경로까지 같은 기준으로 막는다(첫/재/미 와 같은 구매행동 수식어 범주).
             "다", "총", "무",
+            # 과거 시점 표현의 꼬리('7년 전 기저귀' → 토큰 '7년'/'전'/'기저귀'). 숫자 쪽은 날짜 토큰으로
+            # 걸러지지만 홀로 남은 '전'은 상품명으로 새어 PRODUCT_NAME LIKE N'%전 기저귀%'(0건)를 만든다.
+            # 시점을 뜻하는 의존 형태소지 상품이 아니다 — 그 '언제'는 purchase_date 가 소유한다.
+            "전",
             "이곳", "이곳에서", "그곳", "그곳에서", "저곳", "여기", "여기서", "여기에서", "거기", "거기서", "거기에서", "저기", "저기서", "해당", "동일", "같은",
             # '캠페인 구매 이력'의 '캠페인'은 상품명이 아니라 캠페인 반응(구매 반응) 문맥어다. 상품 LIKE
             # 로 새면 PRODUCT_NAME LIKE N'%캠페인%' 같은 무의미 매칭이 되므로 상품 후보에서 제외한다.
@@ -19097,9 +19310,7 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
     if (
         not isinstance(query_plan.get("aggregation_request"), dict)
         and not query_plan.get(CONDITION_EVALUATIONS_KEY)
-        and isinstance(purchase_membership, dict)
-        and purchase_membership.get("operator") == "exists"
-        and purchase_membership.get("satisfied_by") != "aggregate_conditions"
+        and _purchase_membership_needs_own_predicate(purchase_membership)
     ):
         _add_token(
             tokens, "target_user.purchase_membership", "purchase", "exists",
@@ -21320,11 +21531,7 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     # 구매 이력 존재(선택적으로 최근 N일 창). 단순 "구매한 회원"도 주문 근거 없이 회원 테이블 전체로
     # 축약되지 않도록 반드시 주문 헤더 EXISTS로 컴파일한다.
     purchase_membership = target_user.get("purchase_membership")
-    if (
-        isinstance(purchase_membership, dict)
-        and purchase_membership.get("operator") == "exists"
-        and purchase_membership.get("satisfied_by") != "aggregate_conditions"
-    ):
+    if _purchase_membership_needs_own_predicate(purchase_membership):
         other_predicates.append(_purchase_membership_predicate(purchase_membership.get("window_days")))
         labels.append("purchase_exists"); has_signal = True
 
@@ -24771,9 +24978,7 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     if (
         not isinstance(query_plan.get("aggregation_request"), dict)
         and not query_plan.get(CONDITION_EVALUATIONS_KEY)
-        and isinstance(purchase_membership, dict)
-        and purchase_membership.get("operator") == "exists"
-        and purchase_membership.get("satisfied_by") != "aggregate_conditions"
+        and _purchase_membership_needs_own_predicate(purchase_membership)
     ):
         order_table = _order_count_targets_config().get("table", "CRM_SL_ORDERHEADERMALL")
         terms = [str(order_table), "exists"]

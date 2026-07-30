@@ -86,7 +86,8 @@
     },
     "purchase_membership": {
       "domain": "purchase",
-      "operator": "exists"
+      "operator": "exists",
+      "satisfied_by": "purchase_date"
     }
   }
 }

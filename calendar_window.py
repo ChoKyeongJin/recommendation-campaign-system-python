@@ -28,9 +28,10 @@ from __future__ import annotations
 
 import re
 from datetime import date, timedelta
-from typing import Any
+from typing import Any, NamedTuple
 
 import lexicon_patterns
+import slot_ownership
 import targeting_ir
 
 
@@ -131,7 +132,26 @@ def _window(start: str, end: str, label: str, suffix: str) -> dict[str, Any]:
 # 분리하면 조합이 코드가 아니라 합성에서 나온다 — 새 앵커 어휘는 표 한 줄이면 모든 한정자와 붙는다.
 # '전부터/전까지/전 이후'는 시점이 아니라 그 시점을 경계로 삼는 범위다(fail-close). 과거 시점 스캐너와
 # 앵커가 같은 규칙을 쓰도록 한 곳에서 소유한다 — 한쪽만 닫혀 있으면 같은 표현이 경로마다 다르게 읽힌다.
-_PAST_POINT_BOUNDARY = r"(?!\s*(?:부터|까지|이후|이래|이전|보다))"
+#
+# 그 판정을 어휘 표 하나에서 파생한다: 표가 (a) 앵커·과거 시점 패턴의 lookahead 와 (b) 기간 표현의
+# **의미 종류**(:data:`TEMPORAL_KINDS`) 분류를 동시에 만든다. 예전에는 같은 구분이 정규식 lookahead 와
+# ``compact[end] == "전"`` 문자 검사로 두 곳에 따로 살았고, 그래서 '7년 전'이 한쪽에서는 시점, 다른
+# 쪽에서는 '최근 7년' 롤링 기간으로 읽혀 한 어구가 시간 조건 두 개를 만들었다.
+KIND_PAST_POINT = "past_point"            # 'N단위 전' — 과거의 한 시점(그 단위의 달력 구간)
+KIND_ROLLING = "rolling_duration"         # '최근 N단위' — 기준일에서 거슬러 세는 기간
+KIND_BOUNDARY_FROM = "boundary_from"      # 'N단위 전부터/이후/이래' — 그 시점을 시작 경계로 삼는 범위
+KIND_BOUNDARY_UNTIL = "boundary_until"    # 'N단위 전까지/이전/보다' — 그 시점을 끝 경계로 삼는 범위
+PAST_BOUNDARY_KINDS: dict[str, str] = {
+    "부터": KIND_BOUNDARY_FROM,
+    "까지": KIND_BOUNDARY_UNTIL,
+    "이후": KIND_BOUNDARY_FROM,
+    "이래": KIND_BOUNDARY_FROM,
+    "이전": KIND_BOUNDARY_UNTIL,
+    "보다": KIND_BOUNDARY_UNTIL,
+}
+TEMPORAL_KINDS = frozenset({KIND_PAST_POINT, KIND_ROLLING, KIND_BOUNDARY_FROM, KIND_BOUNDARY_UNTIL})
+_PAST_BOUNDARY_ALT = "|".join(PAST_BOUNDARY_KINDS)
+_PAST_POINT_BOUNDARY = rf"(?!\s*(?:{_PAST_BOUNDARY_ALT}))"
 _YEAR_ANCHOR_PATTERN = (
     rf"(?:(?P<rel>{_RELATIVE_YEAR_ALTERNATION})(?:도)?|(?P<past>\d+)\s*년\s*전{_PAST_POINT_BOUNDARY})"
 )
@@ -559,18 +579,103 @@ WORD_DURATION_PATTERN = re.compile("|".join(sorted(map(re.escape, WORD_DURATION_
 DURATION_ANCHOR_GAP = 8
 
 
-def duration_window_candidates(compact: str) -> list[tuple[int, int, int, str]]:
-    """공백 제거 텍스트의 기간 표현을 (시작, 끝, value, canonical_unit) 목록으로(등장 순). 단어형은 unit=days."""
-    out: list[tuple[int, int, int, str]] = []
+# 창 dict 에 실리는 출처 표기(내부 키 — 밑줄 접두어는 IR 스냅샷·감사 로그에서 제외되는 관례다).
+# 구간은 **후보를 만든 텍스트(공백 제거)의 좌표계**다. 원문 좌표가 필요한 소비자는 그쪽에서 변환한다.
+SOURCE_SPAN_KEY = "_source_span"
+SOURCE_TEMPORAL_KIND_KEY = "_source_temporal_kind"
+# 후보가 억제된 사유(§ 과거 시점 표현 안의 기간은 롤링 기간이 아니다). 후보를 목록에서 지우지 않고
+# 표시로 남긴다 — 지우면 오작동해도 흔적이 없고, 감사 로그가 '무엇이 왜 빠졌는지'에 답할 수 없다.
+SUPPRESSED_BY_PAST_POINT = "past_point"
+
+
+class DurationCandidate(NamedTuple):
+    """기간 표현 후보 하나 + **생성 시점에 확정된** 의미 종류.
+
+    소비자는 ``kind``/``suppressed_by`` 만 보고 거르며 텍스트를 다시 읽지 않는다 — 소비자마다
+    '이게 시점인가 기간인가'를 재해석하던 것이 같은 어구를 시간 조건 두 개로 만든 원인이었다.
+    """
+
+    start: int
+    end: int
+    value: int
+    unit: str
+    kind: str = KIND_ROLLING
+    suppressed_by: str | None = None
+
+
+def _raw_duration_window_candidates(compact: str) -> list[DurationCandidate]:
+    """의미 종류 판정 전의 기간 표면형 후보(등장 순). 단어형은 unit=days."""
+    out: list[DurationCandidate] = []
     for match in NUMERIC_DURATION_PATTERN.finditer(compact):
         value = int(match.group("num"))
         # 2019년/2026년은 달력 연도이지 2019년 길이의 롤링 창이 아니다. 이를 기간으로 잡으면
         # DATEADD(DAY, -736935, ...) 같은 비정상 조건이 절대 날짜 범위와 함께 생성된다.
         if value > 0 and not (match.group("unit") == "년" and 1900 <= value <= 2199):
-            out.append((match.start(), match.end(), value, KO_UNIT_TO_CANON.get(match.group("unit"), "days")))
+            out.append(DurationCandidate(
+                match.start(), match.end(), value, KO_UNIT_TO_CANON.get(match.group("unit"), "days")
+            ))
     for match in WORD_DURATION_PATTERN.finditer(compact):
-        out.append((match.start(), match.end(), WORD_DURATION_DAYS[match.group(0)], "days"))
+        out.append(DurationCandidate(match.start(), match.end(), WORD_DURATION_DAYS[match.group(0)], "days"))
     return sorted(out)
+
+
+def _classified_duration_candidate(
+    candidate: DurationCandidate, past_expressions: list[tuple[tuple[int, int], str]]
+) -> DurationCandidate:
+    """후보에 의미 종류를 붙인다 — 후보 구간을 **포함**하는 'N단위 전' 표현이 그 종류를 정한다.
+
+    겹침이 아니라 포함으로 판정한다: '7년'(0,2)은 '7년전'(0,3) 안에 있으므로 시점의 일부지만,
+    인접한 별개 표현('… 3년 전 가입한 최근 1년 …')은 한 글자 겹침만으로 남의 종류를 물려받지 않는다.
+    """
+    span = (candidate.start, candidate.end)
+    for outer, kind in past_expressions:
+        if not slot_ownership.span_contains(outer, span):
+            continue
+        return candidate._replace(
+            kind=kind,
+            suppressed_by=SUPPRESSED_BY_PAST_POINT if kind == KIND_PAST_POINT else None,
+        )
+    return candidate
+
+
+def duration_window_candidates(compact: str) -> list[DurationCandidate]:
+    """공백 제거 텍스트의 기간 표현 후보(등장 순) — 각 후보에 의미 종류와 억제 표시가 붙어 나온다.
+
+    과거 시점('7년 전') 안의 기간 표면형('7년')은 롤링 기간이 아니므로 ``suppressed_by="past_point"``
+    로 표시된다. 목록에서 지우지 않는 이유는 진단이다 — 지우면 오작동해도 흔적이 없다. 표시를 실제로
+    거를지는 슬롯의 정책이 정하고(:func:`parse_duration_window` 의 ``past_point``), 판정 자체는 이
+    공통 경로 한 곳에서만 한다.
+
+    전제: 입력은 공백 제거 텍스트다(:data:`NUMERIC_DURATION_PATTERN` 이 공백을 건너뛰지 않는다).
+    시점 구간도 같은 문자열에서 계산하므로 좌표계가 섞일 자리가 없다.
+    """
+    past_expressions = [(match.span(), kind) for match, kind in _past_expressions(compact)]
+    return [
+        _classified_duration_candidate(candidate, past_expressions)
+        for candidate in _raw_duration_window_candidates(compact)
+    ]
+
+
+def duration_window_from_candidate(candidate: DurationCandidate) -> dict[str, Any]:
+    """기간 후보 → 상대 창 표기 {value, unit, min_days} + 출처(구간·의미 종류).
+
+    창 shape 의 단일 소유자다 — 예전에는 graph_rag 가 같은 dict 을 따로 조립해, 출처를 붙이려면
+    두 곳을 고쳐야 했다."""
+    return {
+        "value": candidate.value,
+        "unit": candidate.unit,
+        "min_days": candidate.value * targeting_ir.UNIT_DAYS[candidate.unit],
+        SOURCE_SPAN_KEY: (candidate.start, candidate.end),
+        SOURCE_TEMPORAL_KIND_KEY: candidate.kind,
+    }
+
+
+# 과거 시점 표현을 만난 슬롯의 정책. 억제(suppress)는 **그 시점을 표현할 다른 소유자가 있을 때만**
+# 옳다 — 구매 도메인에는 절대 창 슬롯(purchase_date)이 있어 시점이 그쪽으로 간다. 가입·집계·휴면처럼
+# 아직 절대 창 슬롯이 없는 도메인에서 억제하면 조건이 조용히 사라지므로(그 자체가 더 큰 결함) 현행
+# 해석(롤링 기간)을 유지한다. 그 도메인에 절대 창 소유자가 생기면 이 정책만 바꾼다.
+PAST_POINT_AS_DURATION = "as_duration"
+PAST_POINT_SUPPRESS = "suppress"
 
 
 def parse_duration_window(
@@ -580,6 +685,7 @@ def parse_duration_window(
     default_days: int | None = None,
     exclude_past: bool = False,
     anchor_terms: tuple[str, ...] | None = None,
+    past_point: str = PAST_POINT_AS_DURATION,
 ) -> dict[str, Any] | None:
     """통합 기간 창 파서 — 숫자형(3개월/2주/1년)·단어형(일주일/반년/한달)을 모두 잡아 정규 shape로 돌려준다.
 
@@ -589,11 +695,19 @@ def parse_duration_window(
 
     anchor_terms 를 주면 그 앵커어 근처(±DURATION_ANCHOR_GAP)의 기간만 본다 — 여러 조건이 각자 창을
     가진 프롬프트('최근 1년 이내 가입 … 최근 로그인')에서 로그인 창이 가입의 '1년'을 훔쳐가는 조건 간
-    창 충돌을 막는다(앵커가 하나도 없으면 전체에서 첫 창으로 폴백). exclude_past=True 면 'N개월 전'을 건너뛴다."""
+    창 충돌을 막는다(앵커가 하나도 없으면 전체에서 첫 창으로 폴백).
+
+    과거 시점('7년 전')을 어떻게 볼지는 **호출자(슬롯)의 정책**이다(``past_point``) — 그 시점을 표현할
+    절대 창 소유자가 있는 도메인만 :data:`PAST_POINT_SUPPRESS` 를 쓴다(:data:`PAST_POINT_AS_DURATION`
+    설명 참조). ``exclude_past=True`` 는 그보다 넓은 정책이다: '전'을 낀 어떤 형태도(시점이든 '전부터/
+    전까지' 경계든) 이 슬롯의 창으로 보지 않는다. 두 정책 모두 후보의 **의미 종류**로 판정하며 '전'
+    문자 검사로 되돌아가지 않는다."""
     compact = query.replace(" ", "").casefold()
-    candidates = duration_window_candidates(compact)
+    candidates = list(duration_window_candidates(compact))
+    if past_point == PAST_POINT_SUPPRESS:
+        candidates = [c for c in candidates if c.suppressed_by is None]
     if exclude_past:
-        candidates = [c for c in candidates if compact[c[1]:c[1] + 1] != "전"]
+        candidates = [c for c in candidates if c.kind == KIND_ROLLING]
     if anchor_terms:
         anchor_spans = [
             (match.start(), match.end())
@@ -601,16 +715,14 @@ def parse_duration_window(
             for match in re.finditer(re.escape(term), compact)
         ]
         if anchor_spans:
-            def _near(cand: tuple[int, int, int, str]) -> bool:
-                start, end = cand[0], cand[1]
+            def _near(cand: DurationCandidate) -> bool:
                 return any(
-                    max(start, a_start) - min(end, a_end) <= DURATION_ANCHOR_GAP
+                    max(cand.start, a_start) - min(cand.end, a_end) <= DURATION_ANCHOR_GAP
                     for a_start, a_end in anchor_spans
                 )
             candidates = [c for c in candidates if _near(c)]
     if candidates:
-        _s, _e, value, unit = candidates[0]
-        return {"value": value, "unit": unit, "min_days": value * targeting_ir.UNIT_DAYS[unit]}
+        return duration_window_from_candidate(candidates[0])
     if not require_number and default_days:
         return {"value": default_days, "unit": "days", "min_days": default_days}
     return None
@@ -633,9 +745,44 @@ def relative_window_label(window: dict[str, Any]) -> str:
 #
 # '전부터/전까지/전 이후'는 시점이 아니라 그 시점을 **경계로 삼는 범위**라 여기서 잡지 않는다
 # (fail-close — 경계 어휘는 _PAST_POINT_BOUNDARY 가 앵커와 공유한다).
+#
+# 'N단위 전' + (선택) 경계 어휘 하나. 경계 그룹이 비면 시점이고, 차 있으면 그 시점을 **경계로 삼는
+# 범위**다 — 한 패턴이 두 종류를 함께 읽으므로 시점 판정 규칙이 이 파일 안에서도 두 벌이 되지 않는다
+# (예전에는 lookahead 와 소비자 쪽 '전' 문자 검사로 나뉘어 있었고, 그래서 경로마다 다르게 읽혔다).
 RELATIVE_PAST_PATTERN = re.compile(
-    rf"(?P<num>\d+)\s*(?P<unit>주일|개월|년|달|주|일)\s*전{_PAST_POINT_BOUNDARY}"
+    rf"(?P<num>\d+)\s*(?P<unit>주일|개월|년|달|주|일)\s*전\s*(?P<boundary>{_PAST_BOUNDARY_ALT})?"
 )
+
+
+def past_expression_kind(match: "re.Match[str]") -> str:
+    """:data:`RELATIVE_PAST_PATTERN` 매치 하나의 의미 종류(시점/시작 경계/끝 경계)."""
+    boundary = match.group("boundary")
+    return PAST_BOUNDARY_KINDS[boundary] if boundary else KIND_PAST_POINT
+
+
+def _past_expressions(text: str) -> list[tuple["re.Match[str]", str]]:
+    """'N단위 전' 표현을 (매치, 의미 종류) 로 스캔한다 — 순수 함수(날짜 연산·창 생성 없음).
+
+    창을 만들지 않으므로 구간만 필요한 소비자(:func:`past_point_spans`)가 부작용 없이 재사용한다."""
+    return [(match, past_expression_kind(match)) for match in RELATIVE_PAST_PATTERN.finditer(text or "")]
+
+
+def past_point_matches(text: str) -> list["re.Match[str]"]:
+    """과거 시점 표현의 매치 목록(경계 표현 제외).
+
+    시점인지 아닌지를 소비자가 다시 판정하지 않게 하는 공개 진입점이다 — 매치의 ``num``/``unit``
+    그룹은 그대로 쓰면 된다."""
+    return [match for match, kind in _past_expressions(text) if kind == KIND_PAST_POINT]
+
+
+def past_point_spans(text: str) -> list[tuple[int, int]]:
+    """과거 시점 표현의 구간 목록(등장 순).
+
+    포함: '7년 전', '2주 전'  /  제외: '3개월 전부터', '3개월 전까지'(경계 표현)
+
+    구간은 입력한 텍스트의 좌표계다 — 호출자는 후보 구간을 만든 것과 **같은 문자열**을 넘겨야 한다.
+    """
+    return [match.span() for match in past_point_matches(text)]
 
 
 def _relative_past_target(value: int, unit: str, today: "date") -> "date":
@@ -656,7 +803,10 @@ def relative_past_window(
     """'value 단위 전' 시점이 속한 달력 구간을 절대 창 {from,to,label} 으로 만든다.
 
     구조화된 입력(LLM 슬롯 등)도 텍스트 경로와 같은 규칙을 쓰게 하는 진입점이다
-    (calendar_window_from_parts 가 절대 창에 대해 하는 역할과 같다)."""
+    (calendar_window_from_parts 가 절대 창에 대해 하는 역할과 같다).
+
+    반환 창에는 의미 종류(``_source_temporal_kind`` = :data:`KIND_PAST_POINT`)가 실려 나간다 —
+    소비자가 '이 창이 시점에서 나왔는지'를 텍스트를 다시 읽어 판단하지 않게 하는 것이 목적이다."""
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         return None
     if unit not in ("years", "months", "weeks", "days"):
@@ -664,32 +814,40 @@ def relative_past_window(
     anchor = today or date.today()
     target = _relative_past_target(value, unit, anchor)
     if unit == "years":
-        return _window(ymd(target.year, 1, 1), ymd(target.year, 12, 31), f"{target.year}년", label_suffix)
-    if unit == "months":
+        window = _window(ymd(target.year, 1, 1), ymd(target.year, 12, 31), f"{target.year}년", label_suffix)
+    elif unit == "months":
         last = month_last_day(target.year, target.month)
-        return _window(
+        window = _window(
             ymd(target.year, target.month, 1), ymd(target.year, target.month, last),
             f"{target.year}년 {target.month}월", label_suffix,
         )
-    if unit == "weeks":
+    elif unit == "weeks":
         start = target - timedelta(days=target.weekday())  # 그 주 월요일
         end = start + timedelta(days=6)
-        return _window(
+        window = _window(
             ymd(start.year, start.month, start.day), ymd(end.year, end.month, end.day),
             f"{start.year}년 {start.month}월 {start.day}일~{end.month}월 {end.day}일", label_suffix,
         )
-    return _window(
-        ymd(target.year, target.month, target.day), ymd(target.year, target.month, target.day),
-        f"{target.year}년 {target.month}월 {target.day}일", label_suffix,
-    )
+    else:
+        window = _window(
+            ymd(target.year, target.month, target.day), ymd(target.year, target.month, target.day),
+            f"{target.year}년 {target.month}월 {target.day}일", label_suffix,
+        )
+    window[SOURCE_TEMPORAL_KIND_KEY] = KIND_PAST_POINT
+    return window
 
 
 def _scan_relative_past_windows(
     text: str, today: "date | None", label_suffix: str
 ) -> list[tuple[dict[str, Any], int, int]]:
-    """'N단위 전' 표현을 (창, 시작, 끝) 으로 등장 순서대로 스캔한다."""
+    """'N단위 전' 표현을 (창, 시작, 끝) 으로 등장 순서대로 스캔한다.
+
+    표현을 찾는 일은 :func:`_past_expressions`(순수 스캔)가, 창을 만드는 일은 여기가 한다 — 구간만
+    필요한 소비자가 날짜 연산까지 다시 돌지 않게 나눈 것이다."""
     out: list[tuple[dict[str, Any], int, int]] = []
-    for match in RELATIVE_PAST_PATTERN.finditer(text or ""):
+    for match, kind in _past_expressions(text or ""):
+        if kind != KIND_PAST_POINT:
+            continue  # 경계 표현('3개월 전부터')은 시점이 아니다 — 범위 문법이 소유한다
         unit = KO_UNIT_TO_CANON.get(match.group("unit"))
         window = relative_past_window(int(match.group("num")), unit or "", today=today, label_suffix=label_suffix)
         if window is not None:

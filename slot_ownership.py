@@ -68,6 +68,19 @@ def spans_overlap(left: Any, right: Any) -> bool:
     return a[0] < b[1] and b[0] < a[1]
 
 
+def span_contains(outer: Any, inner: Any) -> bool:
+    """``inner`` 가 ``outer`` 안에 온전히 들어 있는지(경계 포함). 구간을 모르면 False.
+
+    겹침(:func:`spans_overlap`)보다 좁은 판정이 필요한 자리가 있다 — 한 표현이 다른 표현의 **부분**
+    인지를 물을 때다('7년전' 안의 '7년'). 한 글자 겹침으로 판정하면 인접한 별개 표현이 서로의
+    성질을 물려받는다.
+    """
+    a, b = _as_span(outer), _as_span(inner)
+    if a is None or b is None:
+        return False
+    return a[0] <= b[0] and b[1] <= a[1]
+
+
 def _container(plan: dict[str, Any], name: str) -> dict[str, Any]:
     """컨테이너 이름("plan" | "target_user" | "exclude" | …) → 실제 dict."""
     if name == "plan":
