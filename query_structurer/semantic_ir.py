@@ -195,7 +195,13 @@ def extract_literal_bindings(
             start,
             end,
             query[start:end],
-            {"from": window["from"], "to": window["to"], "label": window.get("label")},
+            {
+                "from": window["from"],
+                "to": window["to"],
+                "label": window.get("label"),
+                # 시각 경계는 있을 때만 싣는다 — 날짜만 있는 창의 normalized shape 를 바꾸지 않는다.
+                **{key: window[key] for key in ("from_time", "to_time") if window.get(key) is not None},
+            },
         )
 
     for match in _PERCENT_RE.finditer(query):

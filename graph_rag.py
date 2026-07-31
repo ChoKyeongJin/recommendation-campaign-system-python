@@ -12269,8 +12269,20 @@ def _calendar_window_slot(windows: list[dict[str, Any]], label_suffix: str = "")
     slot: dict[str, Any] = {"from": ordered[0]["from"], "to": ordered[-1]["to"]}
     if label or label_suffix:
         slot["label"] = f"{label} {label_suffix}".strip()
+    # 시각 경계(from_time/to_time)는 창별로 보존한다 — 키가 없을 때는 싣지 않아 기존 shape 를 유지한다.
+    if len(ordered) == 1:
+        for key in ("from_time", "to_time"):
+            if ordered[0].get(key) is not None:
+                slot[key] = ordered[0][key]
     if len(ordered) > 1:
-        slot["windows"] = [{"from": window["from"], "to": window["to"]} for window in ordered]
+        slot["windows"] = [
+            {
+                "from": window["from"],
+                "to": window["to"],
+                **{key: window[key] for key in ("from_time", "to_time") if window.get(key) is not None},
+            }
+            for window in ordered
+        ]
     return slot
 
 
@@ -18959,7 +18971,45 @@ def _verify_sql_semantic_invariants(
             "metadata": issue.get("metadata"),
         })
 
+    # (4) 시각 경계 silent drop 금지: plan 어딘가의 창이 시각(from_time/to_time)을 들고 있는데 SQL 에
+    #     시각 컬럼이 전혀 없으면, 시각을 표현 못 하는 빌더가 날짜만 걸고 조건을 넓힌 것이다. 슬롯
+    #     이름이 아니라 구조(from/to 창 + 시각 키)로 훑는다 — 새 창 슬롯도 자동으로 검사받게.
+    dropped_time_labels = _plan_time_bounded_window_labels(plan)
+    if dropped_time_labels and _ORDER_TIME_COLUMN not in (sql or ""):
+        issues.append({
+            "type": "time_window_dropped",
+            "detail": "시각 조건("
+                      + ", ".join(dropped_time_labels[:3])
+                      + ")이 SQL 에 반영되지 않음(날짜만 걸면 조건이 넓어짐)",
+        })
+
     return {"ran": True, "ok": not issues, "issues": issues}
+
+
+def _plan_time_bounded_window_labels(plan: Any) -> list[str]:
+    """plan 구조 안에서 시각 경계(from_time/to_time)를 들고 있는 절대 창의 라벨을 전부 모은다."""
+    found: list[str] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            has_window = (
+                isinstance(node.get("from"), str) and re.fullmatch(r"\d{8}", node["from"]) is not None
+                and isinstance(node.get("to"), str) and re.fullmatch(r"\d{8}", node["to"]) is not None
+            )
+            has_time = any(
+                isinstance(node.get(key), str) and re.fullmatch(r"\d{6}", node[key]) is not None
+                for key in ("from_time", "to_time")
+            )
+            if has_window and has_time:
+                found.append(str(node.get("label") or f"{node['from']}~{node['to']}"))
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(plan)
+    return _unique_strings(found)
 
 
 def _semantic_evidence_sources() -> dict[str, tuple[str, ...]]:
@@ -24518,17 +24568,24 @@ def _sql_nlike_contains(column: str, term: str) -> str:
     return f"{column} LIKE N'%{term.replace(chr(39), chr(39) * 2)}%'"
 
 
-def _calendar_window_ranges(window_slot: Any) -> list[tuple[str, str]]:
-    """날짜창 슬롯 → 정규화된 (시작, 끝) YYYYMMDD 구간 목록(정렬 + 인접/중첩 병합).
+def _window_time_token(candidate: dict[str, Any], key: str) -> str | None:
+    """창 후보의 시각 경계(HHMMSS) — 형식이 어긋나면 없는 것으로 본다(무효 술어 생성 금지)."""
+    value = candidate.get(key)
+    return value if isinstance(value, str) and re.fullmatch(r"\d{6}", value) else None
+
+
+def _calendar_window_ranges(window_slot: Any) -> list[tuple[str, str, str | None, str | None]]:
+    """날짜창 슬롯 → 정규화된 (시작, 끝, 시작시각, 끝시각) 구간 목록(정렬 + 인접/중첩 병합).
 
     슬롯이 windows 나열을 들고 있으면 그 구간들을, 없으면 {from,to} 한 구간을 읽는다. 맞닿은 구간
     ('2018년'+'2019년')은 하나로 합쳐 불필요한 OR 을 만들지 않는다 — 결과 집합은 같고 SQL 은 사람이
-    쓴 것과 같아진다. 형식이 어긋난 값은 버린다(무효 술어 생성 금지)."""
+    쓴 것과 같아진다. 시각(from_time/to_time, HHMMSS)이 걸린 구간은 병합하지 않는다 — 날짜 병합이
+    시각 경계를 지우면 조건이 조용히 넓어진다. 형식이 어긋난 값은 버린다(무효 술어 생성 금지)."""
     if not isinstance(window_slot, dict):
         return []
     raw = window_slot.get("windows")
     candidates = raw if isinstance(raw, list) and raw else [window_slot]
-    parsed: list[tuple[str, str]] = []
+    parsed: list[tuple[str, str, str | None, str | None]] = []
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
@@ -24536,13 +24593,20 @@ def _calendar_window_ranges(window_slot: Any) -> list[tuple[str, str]]:
         if not (isinstance(start, str) and isinstance(end, str)
                 and re.fullmatch(r"\d{8}", start) and re.fullmatch(r"\d{8}", end)):
             continue
-        parsed.append((start, end) if start <= end else (end, start))
-    merged: list[tuple[str, str]] = []
-    for start, end in sorted(parsed):
-        if merged and start <= _next_day8(merged[-1][1]):
-            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        from_time = _window_time_token(candidate, "from_time")
+        to_time = _window_time_token(candidate, "to_time")
+        if start > end:
+            start, end = end, start
+            from_time, to_time = to_time, from_time
+        parsed.append((start, end, from_time, to_time))
+    merged: list[tuple[str, str, str | None, str | None]] = []
+    for start, end, from_time, to_time in sorted(parsed, key=lambda item: item[:2]):
+        timeless = from_time is None and to_time is None
+        previous_timeless = bool(merged) and merged[-1][2] is None and merged[-1][3] is None
+        if merged and timeless and previous_timeless and start <= _next_day8(merged[-1][1]):
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end), None, None)
         else:
-            merged.append((start, end))
+            merged.append((start, end, from_time, to_time))
     return merged
 
 
@@ -24551,7 +24615,53 @@ def _next_day8(token: str) -> str:
     return (date(int(token[:4]), int(token[4:6]), int(token[6:8])) + timedelta(days=1)).strftime("%Y%m%d")
 
 
-def _purchase_date_predicate(purchase_date: Any, alias: str | None = "D", column: str = "ORDER_DATE") -> str | None:
+# 주문 시각의 물리 소유자. 시각(HHMMSS)은 주문 헤더에만 있다 — 상세(CRM_SL_ORDERDETAILMALL)에는
+# ORDER_DATE 만 있어, 상세 기반 쿼리의 시각 조건은 헤더 상관 EXISTS(ORDER_ID 조인)로만 표현된다.
+_ORDER_TIME_TABLE = "CRM_SL_ORDERHEADERMALL"
+_ORDER_TIME_COLUMN = "ORDER_TIME"
+_ORDER_TIME_JOIN_KEY = "ORDER_ID"
+
+
+def _order_time_refinement(
+    prefix: str, column: str, start: str, end: str,
+    from_time: str | None, to_time: str | None,
+    source_table: str | None, alias: str | None,
+) -> str | None:
+    """날짜 BETWEEN 위에 얹는 시각 경계 술어. 경계일에만 시각을 비교한다(중간일은 전일 포함).
+
+    컴파일 문맥의 테이블이 시각 컬럼을 직접 보유하면(주문 헤더) 인라인 비교, 별칭이 있는 다른 주문
+    테이블(상세)이면 헤더 상관 EXISTS 로 표현한다. 둘 다 아니면 None — 시각을 조용히 버리고 날짜만
+    걸면 조건이 넓어진 채 실행되므로, 호출부가 술어 전체를 미생성으로 처리하고 결정론 불변식
+    (_verify_sql_semantic_invariants)이 출고를 막는다(fail-close)."""
+    def _bounds(date_prefix: str, date_column: str, time_prefix: str) -> str:
+        parts: list[str] = []
+        if from_time is not None:
+            parts.append(
+                f"({date_prefix}{date_column} > {_sql_quote(start)}"
+                f" OR {time_prefix}{_ORDER_TIME_COLUMN} >= {_sql_quote(from_time)})"
+            )
+        if to_time is not None:
+            parts.append(
+                f"({date_prefix}{date_column} < {_sql_quote(end)}"
+                f" OR {time_prefix}{_ORDER_TIME_COLUMN} <= {_sql_quote(to_time)})"
+            )
+        return " AND ".join(parts)
+
+    if source_table == _ORDER_TIME_TABLE:
+        return _bounds(prefix, column, prefix)
+    if alias:
+        inner = _bounds("OT.", "ORDER_DATE", "OT.")
+        return (
+            f"EXISTS (SELECT 1 FROM {_ORDER_TIME_TABLE} OT"
+            f" WHERE OT.{_ORDER_TIME_JOIN_KEY} = {prefix}{_ORDER_TIME_JOIN_KEY} AND {inner})"
+        )
+    return None
+
+
+def _purchase_date_predicate(
+    purchase_date: Any, alias: str | None = "D", column: str = "ORDER_DATE",
+    source_table: str | None = None,
+) -> str | None:
     """구매 날짜 창을 ORDER_DATE BETWEEN 술어로 만든다(날짜창 → SQL 술어의 단일 소유자).
 
     ORDER_DATE 는 CHAR(8) 'YYYYMMDD' 로 저장되므로 문자열 BETWEEN 이 곧 날짜 범위다(집계 빌더의
@@ -24559,12 +24669,25 @@ def _purchase_date_predicate(purchase_date: Any, alias: str | None = "D", column
     BETWEEN 을 만들어 OR 로 묶는다 — 나열형 기간('2018, 2019년', '1월과 3월')이 한 구간으로 뭉개지거나
     사라지지 않게 하는 유일한 지점이라, 모든 빌더가 이 함수를 통과하는 한 자동으로 다구간을 얻는다.
     alias=None 이면 컬럼을 별칭 없이 쓴다(집계 서브쿼리처럼 단일 테이블 스캔이라 별칭이 없는 문맥용).
-    값이 없거나 형식이 어긋나면 None."""
+    값이 없거나 형식이 어긋나면 None.
+
+    시각 경계(from_time/to_time)가 걸린 구간은 날짜 BETWEEN(색인 활용) 위에 시각 조건을 AND 로 얹는다.
+    ``source_table`` 은 호출 문맥의 실제 테이블 — 시각 컬럼 보유 여부(헤더 인라인 vs 상세 EXISTS)를
+    이것으로 판정한다. 시각을 표현할 수 없는 문맥이면 술어 전체를 만들지 않는다(부분 표현 금지)."""
     ranges = _calendar_window_ranges(purchase_date)
     if not ranges:
         return None
     prefix = f"{alias}." if alias else ""
-    terms = [f"{prefix}{column} BETWEEN {_sql_quote(start)} AND {_sql_quote(end)}" for start, end in ranges]
+    terms: list[str] = []
+    for start, end, from_time, to_time in ranges:
+        base = f"{prefix}{column} BETWEEN {_sql_quote(start)} AND {_sql_quote(end)}"
+        if from_time is None and to_time is None:
+            terms.append(base)
+            continue
+        refinement = _order_time_refinement(prefix, column, start, end, from_time, to_time, source_table, alias)
+        if refinement is None:
+            return None
+        terms.append(f"({base} AND {refinement})")
     return terms[0] if len(terms) == 1 else "(" + " OR ".join(terms) + ")"
 
 
@@ -25189,7 +25312,12 @@ def _aggregate_member_subquery(
     where = [f"{tp}{join_column} IS NOT NULL"]
     if isinstance(window_days, int) and window_days > 0 and date_column:
         where.append(f"{tp}{date_column} >= {_member_dialect().char8_cutoff(window_days)}")
-    date_between = _purchase_date_predicate(purchase_date, alias=("D" if use_alias else None), column=date_column) if date_column else None
+    date_between = (
+        _purchase_date_predicate(
+            purchase_date, alias=("D" if use_alias else None), column=date_column, source_table=table,
+        )
+        if date_column else None
+    )
     if date_between is not None:
         where.append(date_between)
     where.extend(scope_predicates)
@@ -25236,8 +25364,8 @@ def _calendar_window_hull(purchase_date: Any, anchor: datetime) -> "aggregate_se
     if not ranges:
         return None
     try:
-        start = min(datetime.strptime(begin, "%Y%m%d") for begin, _ in ranges)
-        end = max(datetime.strptime(finish, "%Y%m%d") for _, finish in ranges) + timedelta(days=1)
+        start = min(datetime.strptime(begin, "%Y%m%d") for begin, _finish, _ft, _tt in ranges)
+        end = max(datetime.strptime(finish, "%Y%m%d") for _begin, finish, _ft, _tt in ranges) + timedelta(days=1)
     except (TypeError, ValueError):
         return None
     return aggregate_semantics.NormalizedWindow(start=start, end=min(end, anchor) if end > anchor else end)
@@ -25794,7 +25922,9 @@ def _metric_trend_window_subquery(
             return None
         agg_expr = f"COUNT(DISTINCT {tp}{column})" if metric.get("distinct") else f"{agg}({tp}{column})"
 
-    date_between = _purchase_date_predicate(window, alias=("D" if use_scope else None), column=date_column)
+    date_between = _purchase_date_predicate(
+        window, alias=("D" if use_scope else None), column=date_column, source_table=table,
+    )
     if date_between is None:
         return None
     where = [f"{tp}{join_column} IS NOT NULL", date_between]

@@ -9,8 +9,11 @@
 이 모듈이 그 문법의 유일한 소유자다. 새 표현(예: 'YYYY년 M월 상순')은 여기 한 곳에 추가하면 규칙
 파서·LLM 라우트·구매일 타겟이 동시에 얻는다.
 
-    절대 창 := {from, to, label}      # 달력상 확정된 구간. YYYYMMDD CHAR(8) 비교용.
-    상대 창 := {value, unit, min_days} # 기준일로부터 거슬러 세는 구간.
+    절대 창 := {from, to, label[, from_time, to_time]}  # 달력상 확정된 구간. YYYYMMDD CHAR(8) 비교용.
+    상대 창 := {value, unit, min_days}                   # 기준일로부터 거슬러 세는 구간.
+
+    시각(from_time/to_time, HHMMSS)은 일 단위 창에 시각 한정자('9시부터')가 붙었을 때만 실린다 —
+    날짜만 있는 창은 기존 shape 그대로라 시각을 모르는 소비자와 호환된다.
 
 한 문장에 창이 둘 이상 나오는 표현('2019년 2월과 3월', '2019년 1분기 대비 2분기')도 이 문법이 소유한다 —
 parse_calendar_windows 가 등장 순서대로 전부 돌려주고, parse_calendar_window 는 그중 하나를 고르는
@@ -65,16 +68,34 @@ _RANGE_SEP_CHARS = r"~∼\-–"
 # 신호라 둘 다 받는다. 어느 쪽인지는 링크 판정(_link_kind)이 정한다.
 _YEAR_ENUM_SEP = rf"(?:\s*[{_ENUM_SEP_CHARS}{_RANGE_SEP_CHARS}]\s*|\s*(?:{_ENUM_CONNECTOR_ALT})\s*)"
 
+def _time_suffix_pattern(prefix: str) -> str:
+    """일 단위 토큰 뒤에 붙는 시각 한정자('9시', '오후 6시 30분'). 통째로 선택적이다.
+
+    '시간'은 시각이 아니라 기간이므로 lookahead 로 배제한다('3시간 이내'의 '3시'를 시각으로 오인하면
+    기간 표현이 반쪽 남는다). 시각은 일 단위 토큰에만 붙는다 — 날짜 없는 시각 단독('9시 이후 주문')은
+    어느 날의 9시인지 창으로 확정할 수 없어 잡지 않는다(fail-close)."""
+    return (
+        rf"(?:\s*(?:(?P<{prefix}_ap>오전|오후)\s*)?(?P<{prefix}_hh>\d{{1,2}})\s*시(?!간)"
+        rf"(?:\s*(?P<{prefix}_mi>\d{{1,2}})\s*분)?)?"
+    )
+
+
 # 달력 토큰 스캐너(단일 정규식, 좁은 표현 우선 순서). 파이썬 정규식은 같은 시작 위치에서 앞선 대안을
 # 먼저 채택하므로, 이 열거 순서가 곧 '일 > 월 > 분기 > 반기 > 연' 구체성 우선순위다 — '2019년 3월'이
-# 연 전체로 뭉개지지 않는다. 뒤쪽 세 대안(연도 생략 월/분기/반기)은 '2019년 2월과 3월'의 '3월'처럼
+# 연 전체로 뭉개지지 않는다. 뒤쪽 대안들(연도 생략 월일/월/분기/반기)은 '2019년 2월과 3월'의 '3월'처럼
 # 연도가 생략된 두 번째 창을 잡기 위한 것으로, 앞선 명시 연도를 상속할 때만 창이 된다.
 _CAL_TOKEN_RE = re.compile(
-    r"(?P<ymd>(?P<ymd_y>\d{4})\s*년\s*(?P<ymd_m>\d{1,2})\s*월\s*(?P<ymd_d>\d{1,2})\s*일)"
-    r"|(?P<ymdd>(?P<ymdd_y>\d{4})[-./](?P<ymdd_m>\d{1,2})[-./](?P<ymdd_d>\d{1,2}))"
+    r"(?P<ymd>(?P<ymd_y>\d{4})\s*년\s*(?P<ymd_m>\d{1,2})\s*월\s*(?P<ymd_d>\d{1,2})\s*일"
+    + _time_suffix_pattern("ymd") + r")"
+    r"|(?P<ymdd>(?P<ymdd_y>\d{4})[-./](?P<ymdd_m>\d{1,2})[-./](?P<ymdd_d>\d{1,2})"
+    + _time_suffix_pattern("ymdd") + r")"
     r"|(?P<ym>(?P<ym_y>\d{4})\s*년\s*(?P<ym_m>\d{1,2})\s*월)"
     # 뒤에 일자 구분자가 없을 때만 '그 달 전체'다(2019-03-05 를 2019-03 으로 읽지 않기 위함).
     r"|(?P<ymd2>(?P<ymd2_y>\d{4})[-./](?P<ymd2_m>\d{1,2})(?![-./]?\d))"
+    # 연도 생략 월+일('7월 1일부터 7월 31일까지'의 '7월 31일'). 연도 생략 월('3월')이 앞선 명시 연도를
+    # 상속하는 문법의 일 단위 대칭이다 — 이 대안이 없으면 '7월 31일'이 '7월'(월 전체)로 잡히고 '31일'이
+    # 주인 없는 표현으로 남아 범위 접기가 실패한다. m 보다 앞에 둬야 같은 시작 위치에서 일 단위가 이긴다.
+    rf"|(?P<md>(?P<md_m>\d{{1,2}})\s*월\s*(?P<md_d>\d{{1,2}})\s*일{_time_suffix_pattern('md')})"
     r"|(?P<yq>(?P<yq_y>\d{4})\s*년\s*(?P<yq_q>[1-4])\s*(?:사)?분기)"
     r"|(?P<yh>(?P<yh_y>\d{4})\s*년\s*(?P<yh_h>[상하])반기)"
     r"|(?P<y>(?P<y_y>\d{4})\s*년)"
@@ -90,7 +111,7 @@ _CAL_TOKEN_RE = re.compile(
 )
 # 창 하나의 구체성 등급(작을수록 좁다). parse_calendar_window 가 '가장 좁은 표현' 하나를 고를 때 쓴다 —
 # 여러 창이 섞인 문장에서 위치가 아니라 구체성으로 뽑던 기존 계약을 그대로 보존한다.
-_GRAIN_RANK = {"ymd": 0, "ymdd": 0, "ym": 1, "ymd2": 1, "m": 1, "yq": 2, "q": 2, "yh": 3, "h": 3, "y": 4, "yb": 4}
+_GRAIN_RANK = {"ymd": 0, "ymdd": 0, "md": 0, "ym": 1, "ymd2": 1, "m": 1, "yq": 2, "q": 2, "yh": 3, "h": 3, "y": 4, "yb": 4}
 _MONTH_GRAIN_RANK = _GRAIN_RANK["ym"]
 
 # 창 두 개 '사이'의 문구가 무슨 링크인지. 조사/연결어/구분자만 있으면 링크이고, 그 밖의 낱말(용언 등)이
@@ -121,8 +142,18 @@ def ymd(year: int, month: int, day: int) -> str:
     return f"{year:04d}{month:02d}{day:02d}"
 
 
-def _window(start: str, end: str, label: str, suffix: str) -> dict[str, Any]:
-    return {"from": start, "to": end, "label": f"{label} {suffix}".strip()}
+def _window(
+    start: str, end: str, label: str, suffix: str,
+    from_time: str | None = None, to_time: str | None = None,
+) -> dict[str, Any]:
+    """절대 창 dict. 시각(HHMMSS)은 일 단위 창에 시각 한정자가 붙었을 때만 실린다 — 키 자체가
+    없으면 기존 {from,to,label} shape 그대로라, 시각을 모르는 소비자·스냅샷과 호환된다."""
+    out: dict[str, Any] = {"from": start, "to": end, "label": f"{label} {suffix}".strip()}
+    if from_time is not None:
+        out["from_time"] = from_time
+    if to_time is not None:
+        out["to_time"] = to_time
+    return out
 
 
 # ── 연도 앵커(anchor) ─────────────────────────────────────────────────────────────
@@ -234,18 +265,60 @@ def _token_year(match: "re.Match[str]") -> int | None:
     return None
 
 
+# 시각 한정자가 문법상 잡혔지만 달력상 불가능한 값('25시', '9시 75분')임을 알리는 표지 — 시각만 조용히
+# 버리고 날짜 창을 만들면 의미가 넓어진 채 실행되므로, 창 전체를 미해석으로 남긴다(fail-close).
+_INVALID_TIME = object()
+
+
+def _token_time(match: "re.Match[str]", prefix: str) -> tuple[str, str, str] | None | object:
+    """일 단위 토큰에 붙은 시각 한정자 → (구간 시작 HHMMSS, 구간 끝 HHMMSS, 라벨 조각).
+
+    시각 토큰은 그 단위 전체 구간을 뜻한다 — '9시'는 09:00:00~09:59:59, '9시 30분'은 09:30:00~09:30:59.
+    날짜의 '7월까지'가 7월 말일까지를 포함하는 것과 같은 단위 의미론이다. 범위 합성(_merge_range)이
+    왼쪽 창의 시작 시각과 오른쪽 창의 끝 시각만 취하므로 '9시부터 18시까지'는 09:00:00~18:59:59 가 된다."""
+    hh = match.group(f"{prefix}_hh")
+    if hh is None:
+        return None
+    meridiem = match.group(f"{prefix}_ap")
+    minute_raw = match.group(f"{prefix}_mi")
+    hour = int(hh)
+    if meridiem is not None:
+        if not 1 <= hour <= 12:
+            return _INVALID_TIME
+        if meridiem == "오후":
+            hour = 12 if hour == 12 else hour + 12
+        else:
+            hour = 0 if hour == 12 else hour
+    elif hour > 23:
+        return _INVALID_TIME
+    minute = int(minute_raw) if minute_raw is not None else None
+    if minute is not None and minute > 59:
+        return _INVALID_TIME
+    label = f"{meridiem + ' ' if meridiem else ''}{int(hh)}시" + (f" {minute}분" if minute is not None else "")
+    if minute is not None:
+        return (f"{hour:02d}{minute:02d}00", f"{hour:02d}{minute:02d}59", label)
+    return (f"{hour:02d}0000", f"{hour:02d}5959", label)
+
+
 def _token_window(match: "re.Match[str]", year: int | None, label_suffix: str) -> dict[str, Any] | None:
     """달력 토큰 하나 + 연도(생략 토큰은 상속받은 연도) → 절대 창. 달력상 불가능한 값이면 None."""
     if year is None:
         return None  # 연도를 끝내 못 정한 생략 토큰('3월' 단독)은 어느 해인지 모호 → 미해석
-    if match.group("ymd") is not None or match.group("ymdd") is not None:
-        korean = match.group("ymd") is not None
-        mo = int(match.group("ymd_m") if korean else match.group("ymdd_m"))
-        d = int(match.group("ymd_d") if korean else match.group("ymdd_d"))
+    day_prefix = next((p for p in ("ymd", "ymdd", "md") if match.group(p) is not None), None)
+    if day_prefix is not None:
+        mo = int(match.group(f"{day_prefix}_m"))
+        d = int(match.group(f"{day_prefix}_d"))
         if not (1 <= mo <= 12 and 1 <= d <= month_last_day(year, mo)):
             return None
-        label = f"{year}년 {mo}월 {d}일" if korean else f"{year}-{mo:02d}-{d:02d}"
-        return _window(ymd(year, mo, d), ymd(year, mo, d), label, label_suffix)
+        time_parts = _token_time(match, day_prefix)
+        if time_parts is _INVALID_TIME:
+            return None
+        label = f"{year}-{mo:02d}-{d:02d}" if day_prefix == "ymdd" else f"{year}년 {mo}월 {d}일"
+        from_time = to_time = None
+        if time_parts is not None:
+            from_time, to_time, time_label = time_parts
+            label = f"{label} {time_label}"
+        return _window(ymd(year, mo, d), ymd(year, mo, d), label, label_suffix, from_time, to_time)
     for month_group, label_fmt in (("ym_m", "{y}년 {m}월"), ("ymd2_m", "{y}-{m:02d}"), ("m_m", "{y}년 {m}월")):
         raw = match.group(month_group)
         if raw is not None:
@@ -319,17 +392,28 @@ def _merge_range(left: _Scanned, right: _Scanned, text: str, label_suffix: str) 
     ('2020년 5월부터 2019년 3월까지') 범위가 아니다. 접지 않고 남기면 뒤쪽 창이 주인 없는 구간으로
     남아 소비자 쪽에서 미해석으로 고지된다.
 
-    구간의 원문 출처는 닫는 말까지다 — 반쪽만 덮으면 남은 표현을 다른 슬롯이 다시 주워 간다."""
+    구간의 원문 출처는 닫는 말까지다 — 반쪽만 덮으면 남은 표현을 다른 슬롯이 다시 주워 간다.
+
+    시각은 경계에서만 남는다 — 왼쪽 창의 시작 시각과 오른쪽 창의 끝 시각이 합성 구간의 경계이고,
+    각 창이 홀로 뜻하던 단위 구간의 나머지 경계(왼쪽의 끝, 오른쪽의 시작)는 구간 내부라 사라진다."""
     left_window, left_rank, left_start, _left_end = left
     right_window, right_rank, _right_start, right_end = right
     if left_rank != right_rank:
         return None
     if left_window["from"] > right_window["to"]:
         return None
+    from_time = left_window.get("from_time")
+    to_time = right_window.get("to_time")
+    if (
+        left_window["from"] == right_window["to"]
+        and from_time is not None and to_time is not None
+        and from_time > to_time
+    ):
+        return None  # 같은 날 시각 역전('7월 1일 18시부터 7월 1일 9시까지')은 범위가 아니다
     closer = _RANGE_CLOSER_RE.match(text, right_end)
     label = f"{_base_label(left_window, label_suffix)}~{_base_label(right_window, label_suffix)}"
     return (
-        _window(left_window["from"], right_window["to"], label, label_suffix),
+        _window(left_window["from"], right_window["to"], label, label_suffix, from_time, to_time),
         left_rank,
         left_start,
         closer.end() if closer is not None else right_end,
@@ -557,10 +641,12 @@ def parse_calendar_window(
 ) -> dict[str, Any] | None:
     """절대 달력 표현 하나를 YYYYMMDD 창 ``{from, to, label}`` 으로 읽는다(없으면 None).
 
-    지원: 'YYYY년 M월 D일'(하루), 'YYYY년 M월'(그 달 전체), 'YYYY년'(그 해 전체),
+    지원: 'YYYY년 M월 D일'(하루), 'M월 D일'(연도 상속), 'YYYY년 M월'(그 달 전체), 'YYYY년'(그 해 전체),
           'YYYY-MM-DD'/'YYYY.MM.DD'/'YYYY/MM/DD'(하루), 'YYYY-MM'(그 달 전체),
           'YYYY년/올해/작년 상반기·하반기'(6개월), 연도 생략 상·하반기(현재 연도),
           'YYYY년/올해/작년 N분기'(3개월), 연도 생략 N분기(현재 연도).
+    일 단위 표현에는 시각 한정자('9시', '오후 6시 30분')가 붙을 수 있고, 그때만 창에
+    ``from_time``/``to_time``(HHMMSS) 키가 실린다.
 
     창이 여럿이면 가장 좁은 표현을 고른다 — 일 > 월 > 분기 > 반기 > 연(동급이면 먼저 나온 것).
     순서가 뒤집히면 'YYYY년 M월'이 연 전체로 뭉개진다.

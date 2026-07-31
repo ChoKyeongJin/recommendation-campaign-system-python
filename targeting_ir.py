@@ -315,13 +315,28 @@ def _has_window_year(token: str) -> bool:
     return len(token) == 4 and 1900 <= int(token) <= 2100
 
 
+def _window_time_bounds(item: Any) -> dict[str, str]:
+    """창 항목의 시각 경계(from_time/to_time, HHMMSS)만 통과시킨다 — 형식이 어긋나면 버린다.
+
+    시각을 조용히 버리면 조건이 날짜로 넓어진 채 실행되지만, 여기서 지워도 SQL 결정론 불변식
+    (시각 창 ↔ 시각 컬럼 대조)이 출고를 막아 silent drop 이 되지는 않는다."""
+    if not isinstance(item, dict):
+        return {}
+    out: dict[str, str] = {}
+    for key in ("from_time", "to_time"):
+        value = str(item.get(key, "") or "").strip()
+        if len(value) == 6 and value.isdigit() and value[:2] < "24" and value[2:4] < "60" and value[4:6] < "60":
+            out[key] = value
+    return out
+
+
 def _coerce_purchase_date(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
-    """purchase_date: {from, to, label?, windows?}. from/to 는 YYYY 이상 날짜 토큰(자릿수 검증).
+    """purchase_date: {from, to, label?, windows?, from_time?, to_time?}. from/to 는 YYYY 이상 날짜 토큰.
 
     windows 는 한 조건이 여러 구간을 가리키는 표현('2018, 2019년', '1월과 3월')용 나열이다. 규칙 경로가
     만드는 shape 와 같다 — 구간을 하나로 뭉개면 나열의 나머지가 조용히 사라지고, 사이 기간까지 포함하는
     넓은 한 구간으로 합치면 없는 기간이 딸려 들어온다. from/to 는 전체 범위(min~max)로 함께 채워
-    이 슬롯을 {from,to} 로만 읽는 소비자와의 호환을 유지한다."""
+    이 슬롯을 {from,to} 로만 읽는 소비자와의 호환을 유지한다. 시각 경계(HHMMSS)는 있을 때만 실린다."""
     if not isinstance(raw, dict):
         return None
     windows: list[dict[str, str]] = []
@@ -330,7 +345,9 @@ def _coerce_purchase_date(raw: Any, *, allowed: Any = None) -> dict[str, Any] | 
             continue
         start, end = str(item.get("from", "")).strip(), str(item.get("to", "")).strip()
         if _has_window_year(start) and _has_window_year(end):
-            windows.append({"from": start, "to": end} if start <= end else {"from": end, "to": start})
+            entry = {"from": start, "to": end} if start <= end else {"from": end, "to": start}
+            entry.update(_window_time_bounds(item))
+            windows.append(entry)
     frm = str(raw.get("from", "")).strip()
     to = str(raw.get("to", "")).strip()
     if not (_has_window_year(frm) and _has_window_year(to)):
@@ -339,6 +356,9 @@ def _coerce_purchase_date(raw: Any, *, allowed: Any = None) -> dict[str, Any] | 
         frm = min(window["from"] for window in windows)
         to = max(window["to"] for window in windows)
     out: dict[str, Any] = {"from": frm, "to": to}
+    if len(windows) <= 1:
+        # 단일 구간은 top-level 로 평탄화되므로 시각 경계도 top-level 로 올린다(없으면 창 항목 것).
+        out.update(_window_time_bounds(raw) or (_window_time_bounds(windows[0]) if windows else {}))
     if isinstance(raw.get("label"), str) and raw["label"]:
         out["label"] = raw["label"]
     if len(windows) > 1:
@@ -560,7 +580,9 @@ SLOT_SHAPES: dict[str, SlotShape] = {
     "purchase_date": SlotShape("purchase_date", "target_user",
         _obj_schema("절대 구매 날짜창. {from:'YYYYMMDD', to:'YYYYMMDD'} (연도 필수). 기간이 나열이면"
                     "('2018, 2019년', '1월과 3월') windows:[{from,to},…] 에 구간을 전부 적는다 —"
-                    "하나만 적거나 사이 기간까지 포함하는 한 구간으로 합치지 않는다."),
+                    "하나만 적거나 사이 기간까지 포함하는 한 구간으로 합치지 않는다."
+                    " 시각이 명시되면('9시부터 18시까지') from_time/to_time:'HHMMSS' 를 함께 적는다"
+                    "(시각 단위 전체 구간: '18시까지'=to_time '185959')."),
         _coerce_purchase_date),
     "metric_trend": SlotShape("metric_trend", "target_user",
         _obj_schema("기간 대 기간 지표 증감. {metric_id, direction:'increase'|'decrease', "
