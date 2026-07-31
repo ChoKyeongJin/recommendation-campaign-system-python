@@ -137,30 +137,54 @@ def test_rules_and_llm_fixture_reach_the_same_semantic_ast(query: str, fixture: 
     assert describe(_expr(_plan(query))) == describe(_expr(_plan(query, fixture)))
 
 
-def test_llm_exclusion_slot_becomes_a_negative_predicate() -> None:
-    """LLM 이 제외를 슬롯으로 내놔도 AST 에서는 ``excluded`` 플래그가 아니라 부정 노드가 된다."""
+def test_rule_owned_llm_exclusion_is_replaced_by_source_grounded_negative_predicate() -> None:
+    """Broad LLM 제외값은 버리고 원문 파서가 확인한 값만 부정 노드가 된다."""
+    query = "남성 빼고"
+    rules = graph_rag._build_rule_query_plan(query)
     candidate = {
         "intent": "find_user_segment",
         "target_user": {},
         "exclude": {"gender": ["male"]},
         "campaign_constraints": {},
-        "retrieval": {"query": "남성 빼고", "terms": []},
+        "retrieval": {"query": query, "terms": []},
     }
-    plan = graph_rag._coerce_llm_query_plan_candidate(candidate, {"intent": "find_user_segment"})
+    llm = graph_rag._coerce_llm_query_plan_candidate(
+        candidate,
+        rules,
+        source_query=query,
+    )
+    plan = graph_rag.plan_resolver.resolve_plan_candidates([
+        graph_rag.plan_resolver.PlanCandidate("rules", rules, priority=300),
+        graph_rag.plan_resolver.PlanCandidate(
+            "llm_query_structurer", llm, priority=100
+        ),
+    ])
     signed = [item for item in signed_predicates(_expr(plan)) if item.predicate.dimension == "gender"]
     assert [(item.polarity, item.predicate.values) for item in signed] == [("negative", ("male",))]
 
 
 def test_llm_fixture_schema_is_the_shared_plan_schema() -> None:
     """어댑터 출력은 rules 와 같은 슬롯 스키마다 — 이후 경로가 파서별로 갈라지지 않는다."""
+    query = "남성 빼고"
+    rules = graph_rag._build_rule_query_plan(query)
     candidate = {
         "intent": "find_user_segment",
         "target_user": {"lifecycle": ["vip"]},
         "exclude": {"gender": ["male"]},
         "campaign_constraints": {},
-        "retrieval": {"query": "vip", "terms": []},
+        "retrieval": {"query": query, "terms": []},
     }
-    plan = graph_rag._coerce_llm_query_plan_candidate(candidate, {"intent": "find_user_segment"})
+    llm = graph_rag._coerce_llm_query_plan_candidate(
+        candidate,
+        rules,
+        source_query=query,
+    )
+    plan = graph_rag.plan_resolver.resolve_plan_candidates([
+        graph_rag.plan_resolver.PlanCandidate("rules", rules, priority=300),
+        graph_rag.plan_resolver.PlanCandidate(
+            "llm_query_structurer", llm, priority=100
+        ),
+    ])
     assert set(plan["target_user"]) <= set(_plan("VIP 고객 뽑아줘")["target_user"])
     assert plan["exclude"]["gender"] == ["male"]
 

@@ -107,6 +107,15 @@ def classify_external_conditions(
                         or {"entity": "member", "attribute": "residence"}
                     ),
                     "resolution_status": "pending",
+                    # The default common-sense resolver is intentionally
+                    # non-realtime.  Preserve whether the source explicitly
+                    # requested a current/provider-backed snapshot so it can
+                    # fail closed instead of silently weakening that meaning.
+                    "freshness_requirement": (
+                        "live"
+                        if current_context
+                        else "general_knowledge_non_realtime"
+                    ),
                     "source_text": source_text,
                     "source_span": {"start": start, "end": end},
                 }

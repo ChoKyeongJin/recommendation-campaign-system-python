@@ -174,6 +174,14 @@ _EXTERNAL_CONDITION_SCHEMA: dict[str, Any] = {
             "type": "string",
             "enum": ["pending", "resolved", "empty", "failed", "unsupported"],
         },
+        "freshness_requirement": {
+            "type": "string",
+            "enum": [
+                "unspecified",
+                "live",
+                "general_knowledge_non_realtime",
+            ],
+        },
         "source_text": {"type": "string"},
         "source_span": {
             "type": "object",
@@ -553,3 +561,10 @@ def _validate_external_condition(value: Any, index: int) -> None:
         "pending", "resolved", "empty", "failed", "unsupported",
     }:
         raise CampaignQueryPlanValidationError(f"{path}.resolution_status is invalid")
+    freshness = value.get("freshness_requirement")
+    if freshness is not None and freshness not in {
+        "unspecified", "live", "general_knowledge_non_realtime",
+    }:
+        raise CampaignQueryPlanValidationError(
+            f"{path}.freshness_requirement is invalid"
+        )

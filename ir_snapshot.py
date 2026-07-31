@@ -52,6 +52,8 @@ DERIVED_PLAN_KEYS = frozenset({
     "semantic_evidence",      # V3 의미 슬롯의 원문 근거 — 조건값이 아니라 provenance다
     "external_condition_results",  # Resolver/공급자/매핑 감사 스냅샷
     "external_condition_resolution",  # 외부 의존성 처리 결과 요약
+    "conceptual_resolutions",  # 상식 grounding 영수증(실행 조건은 materialized 슬롯이 소유)
+    "conceptual_targeting_resolution",  # 상식 grounding 실행/모델/캐시 요약
     "slot_policy",            # 슬롯 소유권 판정 흔적(slot_policy)
     # Canonical targeting execution metadata. The expression itself is a
     # condition; these are validation, ownership, and projection receipts.

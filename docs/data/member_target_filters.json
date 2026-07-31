@@ -1,5 +1,5 @@
 {
-  "version": "1.1",
+  "version": "1.2",
   "description": "회원 타겟 규칙 엔진 레지스트리. 회원 속성, 활동성, 동의, 지역, 가입, 로그인, 구매, 장바구니, 캠페인 반응 조건을 선언형으로 관리한다.",
 
   "base_entity": {
@@ -216,6 +216,7 @@
       "surface_terms": ["자녀", "아이", "키즈"],
       "category": "family",
       "column": "B.CHILDREN_YN",
+      "conceptual_inference": "common_sense",
       "value": "Y",
       "synonyms": [
         "자녀 정보 등록",
@@ -336,6 +337,7 @@
       "canonical": "children_registered",
       "category": "family",
       "column": "B.CHILDREN_YN",
+      "conceptual_inference": "common_sense",
       "true_value": "Y",
       "false_value": "N",
       "synonyms": ["자녀 정보 보유", "자녀 등록 회원", "아이 정보가 있는 회원"]
@@ -618,6 +620,11 @@
   "region_target": {
     "table": "CRM_MB_BASEINFO",
     "alias": "B",
+    "target_basis": {
+      "entity": "member",
+      "attribute": "residence"
+    },
+    "default_capability": "sido",
     "columns": {
       "sido": "B.SIDO",
       "sigungu": "B.SIGUNGU",

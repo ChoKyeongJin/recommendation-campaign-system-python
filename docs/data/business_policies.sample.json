@@ -1,5 +1,5 @@
 {
-  "version": "1.1",
+  "version": "1.2",
   "description": "캠페인 추천/NL2SQL에서 자연어 업무 기준을 정책으로 해석하기 위한 외부 정책 정의. 2026-07-25 연결된 실 CRM DB(회원=CRM_MB_BASEINFO, 월 지표=CRM_MB_MONTHCRMINFO) 기준으로 설명·참조 스키마를 정렬했다. 주의: 실제 타겟 SQL 실행은 이 파일이 아니라 member_metrics.json(매출/구매 지표 랭킹)·aggregate_targets(주문 집계)·member_target_filters.json(region_target 등)이 담당한다 — 이 정책들은 RAG 검색/설명 문맥용이며, 정책→SQL 변환기는 데모 스키마(u./c. 별칭)만 컴파일하므로 실 CRM 컬럼으로는 SQL을 직접 생성하지 않는다(무해한 no-op).",
   "policies": [
     {
@@ -103,6 +103,7 @@
       "scope": "semantic_resolution",
       "ambiguous_term": "지역",
       "default_resolution": "customer_residence_region",
+      "default_capability_role": "member.residence.default",
       "default_column": "CRM_MB_BASEINFO.SIDO",
       "default_select": "B.SIDO",
       "sql_behavior": "disambiguation",

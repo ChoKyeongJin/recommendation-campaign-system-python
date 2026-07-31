@@ -15,3 +15,7 @@ os.environ["CONDITION_SLOT_LLM_FALLBACK"] = "off"
 # 의존한다. 끈 상태에서는 동결 백스톱 낱말만으로 동작하므로 이관 전 결정론 동작이 그대로 재현된다.
 # 이 경로의 동작은 tests/test_surface_lexicon_llm.py 가 추출기를 스텁으로 갈아끼워 검증한다.
 os.environ["SURFACE_LEXICON_LLM"] = "off"
+
+# 범용 상식 타겟 해석도 운영 기본은 on이지만, 회귀 테스트는 네트워크/모델 출력과 분리한다.
+# 전용 테스트는 fake structured completion 또는 주입 service를 사용해 명시적으로 검증한다.
+os.environ["CONCEPTUAL_TARGETING_LLM"] = "off"

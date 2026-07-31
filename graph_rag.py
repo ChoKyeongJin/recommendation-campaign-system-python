@@ -11,6 +11,7 @@ import json
 import math
 import os
 import re
+import threading
 import time
 import uuid
 from collections import Counter
@@ -29,13 +30,14 @@ import aggregate_parser_config
 import aggregate_semantics
 import aggregate_spans
 import canonical_targeting
+import conceptual_targeting
 import condition_reconciliation
 from external_conditions.classifier import (
     classify_external_conditions,
     mask_external_condition_spans,
 )
 from external_conditions.models import ResolutionContext
-from external_conditions.service import ExternalConditionService, get_default_service
+from external_conditions.service import ExternalConditionService
 import event_compiler
 import event_ir
 import event_parser
@@ -128,6 +130,7 @@ from sql_dialect import SqlDialect, get_dialect
 import targeting_ir
 from targeting_ir import extract_target_conditions, fact_join_kinds
 import slot_ownership
+import slot_policy
 from slot_ownership import claim_slots as _claim_slots
 import plan_decisions
 import plan_resolver
@@ -1025,6 +1028,29 @@ def _member_region_short_columns() -> tuple[str, str]:
     sido = str(columns.get("sido") or "B.SIDO").split(".")[-1]
     sigungu = str(columns.get("sigungu") or "B.SIGUNGU").split(".")[-1]
     return sido, sigungu
+
+
+def _member_age_column(alias: str | None = None) -> str:
+    """Return the configured executable age binding for the member base table."""
+
+    entries = _MEMBER_TARGET_FILTERS.get("numeric_filters")
+    if not isinstance(entries, list):
+        entries = _DEFAULT_MEMBER_TARGET_FILTERS.get("numeric_filters", [])
+    for entry in entries:
+        if (
+            not isinstance(entry, Mapping)
+            or str(entry.get("canonical") or "").casefold() != "age"
+            or str(entry.get("category") or "").casefold() != "demographic"
+        ):
+            continue
+        table = str(entry.get("table") or _member_table())
+        column = str(entry.get("column") or "").split(".")[-1]
+        if (
+            table.casefold() == _member_table().casefold()
+            and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column)
+        ):
+            return f"{alias or _member_alias()}.{column}"
+    return f"{alias or _member_alias()}.AGE"
 
 
 def _member_activity_predicate(days: int) -> str:
@@ -4688,6 +4714,74 @@ def _attach_candidate_source_requirements(
     semantic_requirements.attach_source_requirements(plan, *snapshots)
 
 
+def _reconcile_llm_candidate_source_bound_slots(
+    source_query: str, candidate: dict[str, Any]
+) -> None:
+    """Remove broad-planner values from slots owned by deterministic parsers.
+
+    Candidate priority is not semantic ownership.  In particular, list union
+    would otherwise preserve an LLM-only gender, lifecycle, interest, channel,
+    exclusion, or campaign constraint even when the source never mentioned it.
+    The slot policy is the single authority: rule-owned execution leaves are
+    removed from this candidate before merge and source-requirement capture,
+    while the independently built rules candidate supplies any values that are
+    actually grounded in the source.
+
+    Subjective phrases are intentionally not converted here.  They are handled
+    by ``conceptual_targeting`` against registry-derived closed IDs and receive
+    a grounding receipt before they can reach SQL.
+    """
+
+    del source_query  # ownership, not a second ad-hoc lexicon, controls this gate
+    execution_containers = {
+        "target_user": "target_user",
+        "exclude": "exclude",
+        "campaign_constraints": "campaign_constraints",
+    }
+    for container, path_prefix in execution_containers.items():
+        values = candidate.get(container)
+        if not isinstance(values, dict):
+            continue
+        for slot in list(values):
+            policy_path = f"{path_prefix}.{slot}"
+            # Multi-product values are produced only by the shared source
+            # presence validator and are the list projection of the registered
+            # LLM-owned purchase_object slot.
+            if (
+                container == "target_user"
+                and slot == "purchase_objects"
+                and slot_policy.owner_of("target_user.purchase_object")
+                == slot_policy.LLM
+            ):
+                continue
+            if slot_policy.owner_of(policy_path) != slot_policy.LLM:
+                values.pop(slot, None)
+
+    if slot_policy.owner_of("plan.intent") != slot_policy.LLM:
+        candidate.pop("intent", None)
+
+    # A structured slot that was removed cannot legitimately clear a prior
+    # unsupported gate later in plan resolution.
+    resolvers = candidate.get("_candidate_resolves_unsupported")
+    if isinstance(resolvers, list):
+        candidate["_candidate_resolves_unsupported"] = [
+            item
+            for item in resolvers
+            if isinstance(item, dict)
+            and isinstance(item.get("path"), str)
+            and _candidate_path_has_value(candidate, item["path"])
+        ]
+
+
+def _candidate_path_has_value(candidate: Mapping[str, Any], path: str) -> bool:
+    current: Any = candidate
+    for part in path.split("."):
+        if not isinstance(current, Mapping) or part not in current:
+            return False
+        current = current[part]
+    return current not in (None, "", [], {})
+
+
 # ── 원문 권위(source-authoritative) 재확정 단계 ────────────────────────────────────
 # 배경: 계획 입력(plan_query)은 프롬프트 재작성(LLM) + 타겟/채널 절 분리(LLM)를 거친 문장이라
 # 비결정적으로 조건을 잃거나 값을 손상시킨다('알로루'→'알로&루', 'N명만'→'N명', '7년전' 통째 삭제).
@@ -4983,6 +5077,9 @@ def _build_single_query_plan(
         supplied_llm_candidate = _coerce_llm_query_plan_candidate(
             query_plan_v2, rules_candidate, sql_schema, source_query=source_query
         )
+        _reconcile_llm_candidate_source_bound_slots(
+            source_query, supplied_llm_candidate
+        )
         if isinstance(query_plan_v2.get("semantic_evidence"), list):
             supplied_llm_candidate["semantic_evidence"] = copy.deepcopy(
                 query_plan_v2["semantic_evidence"]
@@ -5049,6 +5146,9 @@ def _build_single_query_plan(
         if generated_llm_candidate is None:
             llm_plan = None
         else:
+            _reconcile_llm_candidate_source_bound_slots(
+                source_query, generated_llm_candidate
+            )
             candidates.append(
                 plan_resolver.PlanCandidate(
                     "llm_query_structurer",
@@ -5877,6 +5977,10 @@ def _coerce_llm_query_plan_candidate(
     _validate_purchase_objects(validation_query if isinstance(validation_query, str) else "", plan["target_user"])
     if unsupported_resolvers:
         plan["_candidate_resolves_unsupported"] = unsupported_resolvers
+    _reconcile_llm_candidate_source_bound_slots(
+        validation_query if isinstance(validation_query, str) else "",
+        plan,
+    )
     return plan
 
 
@@ -14263,6 +14367,7 @@ def _semantic_resolution(query: str, policy: dict[str, Any]) -> dict[str, Any]:
         "ko_label": policy.get("ko_label", policy["canonical"]),
         "ambiguous_term": policy.get("ambiguous_term"),
         "default_resolution": policy.get("default_resolution"),
+        "default_capability_role": policy.get("default_capability_role"),
         "default_column": policy.get("default_column"),
         "default_select": policy.get("default_select"),
         "requires_clarification": requires_clarification,
@@ -14364,6 +14469,145 @@ def _mark_external_resolution_unavailable(
     }
 
 
+def _append_conceptual_targeting_unresolved(
+    plan: dict[str, Any], query: str, *, error_code: str
+) -> None:
+    """Seal an unavailable common-sense review as a blocking source condition."""
+
+    item = {
+        "id": "usr_" + hashlib.sha256(
+            f"{query}\0{error_code}\0conceptual_targeting".encode("utf-8")
+        ).hexdigest()[:16],
+        "path": "source_coverage.conceptual_targeting",
+        "label": query,
+        "source_text": query,
+        "reason": (
+            "상식 표현 해석을 완료하지 못해 원문 조건의 누락 여부를 검증할 수 없습니다"
+            f" ({error_code})."
+        ),
+        "status": "unresolved",
+        "source": "conceptual_targeting",
+    }
+    unresolved = plan.setdefault("unresolved_source_conditions", [])
+    if isinstance(unresolved, list) and not any(
+        isinstance(existing, Mapping) and existing.get("id") == item["id"]
+        for existing in unresolved
+    ):
+        unresolved.append(item)
+
+
+_CONCEPTUAL_TARGETING_SERVICES: dict[
+    tuple[str, ...], conceptual_targeting.ConceptualTargetingService
+] = {}
+_CONCEPTUAL_TARGETING_SERVICES_LOCK = threading.Lock()
+
+
+def _conceptual_targeting_enabled() -> bool:
+    return os.getenv("CONCEPTUAL_TARGETING_LLM", "true").strip().casefold() not in {
+        "0", "false", "no", "off",
+    }
+
+
+def _conceptual_targeting_model(llm_model: str | None) -> str:
+    return (
+        os.getenv("OPENAI_CONCEPTUAL_TARGETING_MODEL")
+        or llm_model
+        or os.getenv("OPENAI_FAST_MODEL")
+        or _fast_llm_model("gpt-4o-mini")
+        or "gpt-4o-mini"
+    )
+
+
+def _default_conceptual_targeting_service(
+    *,
+    llm_model: str,
+    sql_schema: Path,
+    prompt_dir: Path | None,
+) -> conceptual_targeting.ConceptualTargetingService | None:
+    """Return a cached closed-set common-sense resolver; never constructs a KMA client."""
+
+    if not _conceptual_targeting_enabled() or not os.getenv("OPENAI_API_KEY"):
+        return None
+    model = _conceptual_targeting_model(llm_model)
+    prompt_path = (
+        (prompt_dir / "conceptual_targeting_system.txt")
+        if prompt_dir is not None
+        else None
+    )
+
+    def revision(path: Path | None) -> str:
+        if path is None:
+            return "none"
+        try:
+            stat = path.stat()
+            return f"{stat.st_mtime_ns}:{stat.st_size}"
+        except OSError:
+            return "missing"
+
+    key = (
+        str(DEFAULT_MEMBER_TARGET_FILTERS_PATH),
+        revision(DEFAULT_MEMBER_TARGET_FILTERS_PATH),
+        str(DEFAULT_MEMBER_VALUE_INDEX_PATH),
+        revision(DEFAULT_MEMBER_VALUE_INDEX_PATH),
+        str(sql_schema),
+        revision(sql_schema),
+        str(prompt_dir or ""),
+        revision(prompt_path),
+        model,
+    )
+    with _CONCEPTUAL_TARGETING_SERVICES_LOCK:
+        service = _CONCEPTUAL_TARGETING_SERVICES.get(key)
+        if service is None:
+            service = conceptual_targeting.build_openai_service(
+                member_filters_path=DEFAULT_MEMBER_TARGET_FILTERS_PATH,
+                member_value_index_path=DEFAULT_MEMBER_VALUE_INDEX_PATH,
+                schema_path=sql_schema,
+                prompt_dir=prompt_dir,
+                model=model,
+                on_event=lambda event, payload: _write_rag_llm_log(event, payload),
+            )
+            _CONCEPTUAL_TARGETING_SERVICES[key] = service
+        return service
+
+
+def _mask_conceptual_resolution_spans(
+    query: str, resolutions: list[dict[str, Any]]
+) -> str:
+    """Mask grounded concept evidence while preserving offsets for downstream parsers."""
+
+    chars = list(query)
+    for resolution in resolutions:
+        if not isinstance(resolution, dict) or resolution.get("status") != "resolved":
+            continue
+        evidence = resolution.get("source_text")
+        if not isinstance(evidence, str) or not evidence:
+            continue
+        span = resolution.get("source_span")
+        start = (
+            span.get("start")
+            if isinstance(span, Mapping) and isinstance(span.get("start"), int)
+            else query.find(evidence)
+        )
+        end = (
+            span.get("end")
+            if isinstance(span, Mapping) and isinstance(span.get("end"), int)
+            else start + len(evidence)
+        )
+        if start < 0 or end <= start or end > len(chars):
+            continue
+        for index in range(start, end):
+            chars[index] = " "
+    return "".join(chars)
+
+
+def _pending_external_conditions(plan: Mapping[str, Any]) -> bool:
+    return any(
+        not isinstance(condition, Mapping)
+        or condition.get("resolution_status") != "resolved"
+        for condition in (plan.get("external_conditions") or [])
+    )
+
+
 def retrieve(
     query: str,
     graph: nx.Graph,
@@ -14393,6 +14637,7 @@ def retrieve(
     structuring_context: StructuringContext | None = None,
     query_structurer: QueryStructurer | None = None,
     external_condition_service: ExternalConditionService | None = None,
+    conceptual_targeting_service: conceptual_targeting.ConceptualTargetingService | None = None,
 ) -> dict[str, Any]:
     # 계측 dict 을 호출자가 넘길 수 있게 한다. 트레이스 엔드포인트는 이 dict 을 소유해, retrieve() 가
     # 중간 단계에서 예외로 죽어도 그때까지 채워진 단계별 시간을 읽어 "오류 전까지" 부분 트레이스를 만든다.
@@ -14555,14 +14800,15 @@ def retrieve(
         # 보여주도록 파이프라인 레벨 분리(plan_scopes)로 스코프 필드를 되살린다 — BFF 는 채널 절이
         # 있어야 분리 성공으로 보고 타겟팅 절을 "타겟팅 프롬프트"로 표시한다.
         _attach_retrieval_scopes(query_plan, plan_scopes)
-    # 캠페인/조회 동사 없이 회원 속성만 나열한 프롬프트는 파서가 intent=unknown 을 주는데, 그러면
-    # 회원 타겟 SQL 빌더가 호출되지 않는다. 실DB 매핑 가능한 타겟 신호가 있으면 세그먼트 조회로 승격.
-    _promote_unknown_intent_for_target_signal(query_plan)
+    # Planner/원문 재확정 시간은 여기서 닫는다. 외부조건·상식 LLM은 각각 별도
+    # 타이머를 가지므로 query_plan에 다시 포함하면 지연시간이 이중 계상된다.
+    timings_ms["query_plan"] = _elapsed_ms(stage_started_at)
     external_started_at = time.perf_counter()
-    if query_plan.get("external_conditions"):
+    # 외부 resolver는 호출자가 명시적으로 주입한 경우에만 사용한다. 기본 경로에서는 기상청/KMA를
+    # 구성하지 않고 아래의 일반지식 LLM grounding이 같은 조건을 닫힌 DB 후보에 연결한다.
+    if query_plan.get("external_conditions") and external_condition_service is not None:
         try:
-            service = external_condition_service or get_default_service()
-            service.resolve_plan(
+            external_condition_service.resolve_plan(
                 query_plan,
                 ResolutionContext(
                     now=datetime.now(timezone.utc),
@@ -14574,12 +14820,103 @@ def retrieve(
                 query_plan, error_code="external_condition_service_unavailable"
             )
     timings_ms["external_conditions"] = _elapsed_ms(external_started_at)
+
+    conceptual_started_at = time.perf_counter()
+    common_sense_service = conceptual_targeting_service or _default_conceptual_targeting_service(
+        llm_model=llm_model,
+        sql_schema=sql_schema,
+        prompt_dir=prompt_dir,
+    )
+    if common_sense_service is not None:
+        try:
+            # All conceptual mutations and downstream reconciliation happen on
+            # a staging copy.  A late parser/reconciliation exception therefore
+            # cannot leave inferred filters attached to a failed plan.
+            staged_plan = copy.deepcopy(query_plan)
+            staged_plan["_conceptual_scope"] = {
+                "targeting": plan_scopes.get("targeting") or plan_query,
+                "channel": plan_scopes.get("channel") or "",
+            }
+            common_sense_service.apply_plan(targeting_prompt, staged_plan)
+            resolutions = [
+                item for item in (staged_plan.get("conceptual_resolutions") or [])
+                if isinstance(item, dict)
+            ]
+            if resolutions:
+                # 원문의 상식 개념이 상품명 앞에 붙은 경우(예: '폭염지역에 양산을 팔고') 초기
+                # sell_object 파서가 개념까지 상품명으로 삼킬 수 있다. 확정된 evidence span만 가린
+                # 동일 길이 문장으로 상품 슬롯을 재확정한다.
+                masked_query = _mask_conceptual_resolution_spans(targeting_prompt, resolutions)
+                if masked_query != targeting_prompt:
+                    _apply_sell_object(masked_query, staged_plan)
+                # 새 실행 슬롯을 붙인 뒤 canonical plan/소유권/LLM clarification 상태를 다시 동기화한다.
+                _reconcile_condition_ownership(staged_plan)
+                _reconcile_semantic_ir_with_execution_plan(staged_plan)
+            staged_plan.pop("_conceptual_scope", None)
+            query_plan.clear()
+            query_plan.update(staged_plan)
+        except Exception as exc:
+            _write_rag_llm_log(
+                "conceptual_targeting_integration_failed",
+                {
+                    "query": targeting_prompt,
+                    "error": f"{exc.__class__.__name__}: {exc}",
+                },
+            )
+            query_plan["conceptual_targeting_resolution"] = {
+                "status": "failed",
+                "error_code": "conceptual_targeting_integration_failed",
+                "error_detail": exc.__class__.__name__,
+                "basis": "general_knowledge_non_realtime",
+                "model": getattr(common_sense_service, "model", None),
+            }
+            _append_conceptual_targeting_unresolved(
+                query_plan,
+                targeting_prompt,
+                error_code="conceptual_targeting_integration_failed",
+            )
+    elif (
+        _conceptual_targeting_enabled()
+        and query_plan.get("external_conditions")
+    ):
+        # A known external/common-sense condition must not disappear merely
+        # because the LLM provider is unconfigured.  Pure deterministic plans,
+        # however, continue to run without an OPENAI_API_KEY.
+        query_plan["conceptual_targeting_resolution"] = {
+            "status": "unavailable",
+            "error_code": "conceptual_targeting_provider_unavailable",
+            "basis": "general_knowledge_non_realtime",
+        }
+        _append_conceptual_targeting_unresolved(
+            query_plan,
+            targeting_prompt,
+            error_code="conceptual_targeting_provider_unavailable",
+        )
+
+    # 일반지식 grounding도, 명시 주입 resolver도 해결하지 못한 외부 조건은 자유 SQL로 우회시키지 않는다.
+    if (
+        query_plan.get("external_conditions")
+        and _pending_external_conditions(query_plan)
+        and not query_plan.get("external_condition_results")
+    ):
+        _mark_external_resolution_unavailable(
+            query_plan,
+            error_code=(
+                "conceptual_targeting_disabled"
+                if not _conceptual_targeting_enabled()
+                else "conceptual_targeting_unavailable"
+            ),
+        )
+    timings_ms["conceptual_targeting"] = _elapsed_ms(conceptual_started_at)
+
+    # 캠페인/조회 동사 없이 회원 속성만 나열한 프롬프트는 파서가 intent=unknown 을 주는데, 그러면
+    # 회원 타겟 SQL 빌더가 호출되지 않는다. 실DB 매핑 가능한 타겟 신호(상식 grounding 포함)가 있으면 승격.
+    _promote_unknown_intent_for_target_signal(query_plan)
     # 위의 원문 복원·소유권 이동은 실행 플랜만 바꿀 수 있고 최초 source requirement는 바꾸면 안 된다.
     semantic_requirements.verify_source_requirements(query_plan)
     # API 출고 경로는 원문 의미 검증을 선택 기능으로 두지 않는다. 검증기가 실행되지 못한 경우도
     # '검증되지 않은 SQL'이므로 build_sql_result가 fail-close한다.
     query_plan["strict_source_coverage"] = True
-    timings_ms["query_plan"] = _elapsed_ms(stage_started_at)
 
     stage_started_at = time.perf_counter()
     retrieval = query_plan["retrieval"]
@@ -16790,6 +17127,14 @@ def build_recommendation_api_response(
             or sql_result.get("external_condition_results")
             or []
         ),
+        # 주관적 상식 표현을 어떤 실행 capability/후보값으로 해석했는지의 감사 영수증.
+        # 실시간 관측이 아니라는 표시와 confidence/rationale/catalog hash를 함께 노출한다.
+        "conceptual_resolutions": copy.deepcopy(
+            query_plan.get("conceptual_resolutions") or []
+        ),
+        "conceptual_targeting_resolution": copy.deepcopy(
+            query_plan.get("conceptual_targeting_resolution")
+        ),
         "interpretation_status": (
             sql_result.get("interpretation_status")
             or (query_plan.get("semantic_ir") or {}).get("status")
@@ -17724,10 +18069,25 @@ def _semantic_verification_contract_context(query_plan: dict[str, Any] | None) -
     if not isinstance(query_plan, dict):
         return None
     context: dict[str, Any] = {}
-    for key in ("aggregation_request", CONDITION_EVALUATIONS_KEY, "semantic_resolutions"):
+    for key in (
+        "aggregation_request",
+        CONDITION_EVALUATIONS_KEY,
+        "semantic_resolutions",
+    ):
         value = query_plan.get(key)
         if value not in (None, [], {}):
             context[key] = value
+    conceptual_resolutions = [
+        copy.deepcopy(item)
+        for item in (query_plan.get("conceptual_resolutions") or [])
+        if isinstance(item, Mapping)
+        and item.get("status") == "resolved"
+        and _generated_filter_is_attached(
+            query_plan, item.get("generated_filter")
+        )
+    ]
+    if conceptual_resolutions:
+        context["conceptual_resolutions"] = conceptual_resolutions
     return context or None
 
 
@@ -18061,7 +18421,11 @@ def _refresh_unresolved_source_conditions(
         copy.deepcopy(item)
         for item in (query_plan.get("unresolved_source_conditions") or [])
         if isinstance(item, dict)
-        and item.get("source") in {"llm_semantic_ir", "legacy_source_validator"}
+        and item.get("source") in {
+            "llm_semantic_ir",
+            "legacy_source_validator",
+            "conceptual_targeting",
+        }
         and not _unresolved_source_condition_is_deterministically_resolved(item, query_plan)
     ]
     evaluation_unresolved: list[dict[str, Any]] = []
@@ -18948,6 +19312,21 @@ def _unresolved_source_condition_is_deterministically_resolved(
             and entry.get("outcome") == "removed"
             for entry in (query_plan.get("superseded_conditions") or [])
         )
+    if item.get("source") == "conceptual_targeting":
+        evidence = str(item.get("source_text") or item.get("label") or "")
+        normalized = re.sub(r"\s+", "", evidence).casefold()
+        return bool(normalized) and any(
+            isinstance(resolution, dict)
+            and resolution.get("status") == "resolved"
+            and re.sub(
+                r"\s+", "", str(resolution.get("source_text") or "")
+            ).casefold() == normalized
+            and isinstance(resolution.get("generated_filter"), dict)
+            and _generated_filter_is_attached(
+                query_plan, resolution.get("generated_filter")
+            )
+            for resolution in (query_plan.get("conceptual_resolutions") or [])
+        )
     if item.get("source") == "llm_semantic_ir" and path:
         return _semantic_missing_field_resolution(query_plan, path) is not None
     if item.get("source") == "llm_semantic_ir" and not path:
@@ -19047,6 +19426,106 @@ def _reconcile_semantic_ir_with_execution_plan(query_plan: dict[str, Any]) -> No
         })
 
 
+def _generated_filter_is_attached(
+    query_plan: Mapping[str, Any], generated: Any
+) -> bool:
+    """Require the complete generated filter, not an ID lookalike, in execution IR."""
+
+    if not isinstance(generated, Mapping):
+        return False
+    if generated.get("logic") == "OR":
+        return any(
+            isinstance(item, Mapping) and dict(item) == dict(generated)
+            for item in (query_plan.get("compound_dimension_filters") or [])
+        )
+    if "dimension_id" in generated:
+        return any(
+            isinstance(item, Mapping) and dict(item) == dict(generated)
+            for item in (query_plan.get("dimension_filters") or [])
+        )
+    target_values = generated.get("target_user")
+    if isinstance(target_values, Mapping):
+        target = query_plan.get("target_user")
+        return isinstance(target, Mapping) and all(
+            target.get(key) == value for key, value in target_values.items()
+        )
+    numeric_values = generated.get("target_user.balance_conditions")
+    if isinstance(numeric_values, list):
+        attached = (
+            (query_plan.get("target_user") or {}).get("balance_conditions")
+            if isinstance(query_plan.get("target_user"), Mapping)
+            else None
+        )
+        return isinstance(attached, list) and all(
+            any(
+                isinstance(item, Mapping)
+                and isinstance(candidate, Mapping)
+                and dict(item) == dict(candidate)
+                for candidate in attached
+            )
+            for item in numeric_values
+        )
+    return False
+
+
+def _common_sense_external_contract_errors(
+    condition: Mapping[str, Any],
+    result: Mapping[str, Any],
+) -> list[str]:
+    """Recheck the logical-role and positive-IN contract at the SQL boundary."""
+
+    if result.get("resolver") != "llm_common_sense":
+        return []
+    errors: list[str] = []
+    metadata = result.get("metadata")
+    metadata = metadata if isinstance(metadata, Mapping) else {}
+    generated = result.get("generated_filter")
+    if condition.get("freshness_requirement") == "live":
+        errors.append("live freshness cannot use common-sense grounding")
+    if metadata.get("realtime") is not False:
+        errors.append("common-sense result must explicitly be non-realtime")
+    if not isinstance(generated, Mapping) or generated.get("operator") != "IN":
+        errors.append("positive external concept must materialize as IN")
+        return errors
+    grounding = generated.get("grounding")
+    if not isinstance(grounding, Mapping):
+        errors.append("common-sense external grounding receipt is missing")
+        return errors
+    catalog = conceptual_targeting.catalog_by_digest(
+        grounding.get("catalog_digest")
+    )
+    if catalog is None:
+        errors.append("common-sense external capability snapshot is stale")
+        return errors
+    errors.extend(
+        conceptual_targeting.validate_grounded_dimension_filter(
+            generated, catalog
+        )
+    )
+    target_basis = condition.get("target_basis")
+    target_basis = target_basis if isinstance(target_basis, Mapping) else {}
+    entity = str(target_basis.get("entity") or "").strip().casefold()
+    attribute = str(target_basis.get("attribute") or "").strip().casefold()
+    required_role = (
+        f"{entity}.{attribute}.default"
+        if entity and attribute
+        else ""
+    )
+    matching = [
+        capability
+        for capability in catalog.capabilities
+        if capability.kind == "categorical"
+        and required_role in capability.semantic_roles
+    ]
+    if len(matching) != 1:
+        errors.append("external logical role does not map to exactly one capability")
+    elif grounding.get("capability_id") != matching[0].capability_id:
+        errors.append("external generated filter uses the wrong logical capability")
+    if metadata.get("catalog_digest") != catalog.digest:
+        errors.append("external result catalog digest does not match grounding")
+    return errors
+
+
 def _external_condition_blocking_sql_result(
     query_plan: Mapping[str, Any],
 ) -> dict[str, Any] | None:
@@ -19056,14 +19535,45 @@ def _external_condition_blocking_sql_result(
     if not isinstance(conditions, list) or not conditions:
         return None
     results = query_plan.get("external_condition_results")
-    filters = query_plan.get("compound_dimension_filters")
     resolution = query_plan.get("external_condition_resolution")
+    condition_ids = [
+        str(item.get("id") or "external-condition")
+        for item in conditions
+        if isinstance(item, Mapping)
+    ]
+    result_items = [
+        item for item in (results or []) if isinstance(item, Mapping)
+    ]
+    result_ids = [
+        str(item.get("condition_id") or "") for item in result_items
+    ]
+    condition_counts = Counter(condition_ids)
+    result_counts = Counter(result_ids)
     result_by_id = {
-        str(item.get("condition_id")): item
-        for item in results or []
-        if isinstance(item, Mapping) and item.get("condition_id")
+        condition_id: next(
+            (
+                item
+                for item in result_items
+                if str(item.get("condition_id") or "") == condition_id
+            ),
+            {},
+        )
+        for condition_id in condition_ids
+        if condition_counts[condition_id] == 1 and result_counts[condition_id] == 1
     }
     failed_conditions: list[dict[str, Any]] = []
+    for condition_id, count in condition_counts.items():
+        if count != 1:
+            failed_conditions.append({
+                "condition_id": condition_id,
+                "reason": "external_condition_id_not_unique",
+            })
+    for result_id, count in result_counts.items():
+        if not result_id or count != 1 or result_id not in condition_counts:
+            failed_conditions.append({
+                "condition_id": result_id or "external-condition",
+                "reason": "external_condition_result_mismatch",
+            })
     for condition in conditions:
         if not isinstance(condition, Mapping):
             failed_conditions.append({
@@ -19082,13 +19592,47 @@ def _external_condition_blocking_sql_result(
                 "status": status,
                 "reason": result.get("error_code") or f"external_condition_{status}",
             })
+        elif (
+            contract_errors := _common_sense_external_contract_errors(
+                condition, result
+            )
+        ):
+            failed_conditions.append({
+                "condition_id": condition_id,
+                "domain": condition.get("domain"),
+                "condition_code": condition.get("condition_code"),
+                "status": status,
+                "reason": "external_common_sense_contract_invalid",
+                "details": contract_errors,
+            })
+        elif not _generated_filter_is_attached(
+            query_plan, result.get("generated_filter")
+        ):
+            failed_conditions.append({
+                "condition_id": condition_id,
+                "domain": condition.get("domain"),
+                "condition_code": condition.get("condition_code"),
+                "status": status,
+                "reason": "external_condition_filter_missing",
+            })
+
+    resolved_results = [
+        item for item in result_items
+        if isinstance(item, Mapping) and item.get("status") == "resolved"
+    ]
+    attached_result_filters = bool(resolved_results) and all(
+        _generated_filter_is_attached(
+            query_plan, item.get("generated_filter")
+        )
+        for item in resolved_results
+    )
     fully_resolved = (
         isinstance(resolution, Mapping)
         and resolution.get("status") == "resolved"
         and isinstance(results, list)
-        and len(results) >= len(conditions)
-        and isinstance(filters, list)
-        and bool(filters)
+        and len(results) == len(conditions)
+        and Counter(condition_ids) == Counter(result_ids)
+        and attached_result_filters
         and not failed_conditions
     )
     if fully_resolved:
@@ -22067,6 +22611,27 @@ def _validate_dimension_filters(query_plan: Mapping[str, Any]) -> list[dict[str,
                 "message": f"unsupported dimension operator: {dimension_filter.get('operator')!r}",
             })
             continue
+        if dimension_filter.get("source") == "llm_common_sense":
+            grounding = dimension_filter.get("grounding")
+            digest = grounding.get("catalog_digest") if isinstance(grounding, Mapping) else None
+            catalog = conceptual_targeting.catalog_by_digest(digest)
+            if catalog is None:
+                errors.append({
+                    "code": "CONCEPTUAL_GROUNDING_STALE",
+                    "path": f"dimension_filters.{index}.grounding",
+                    "message": "conceptual capability snapshot is unavailable or stale",
+                })
+                continue
+            grounding_errors = conceptual_targeting.validate_grounded_dimension_filter(
+                dimension_filter, catalog
+            )
+            if grounding_errors:
+                errors.extend({
+                    "code": "CONCEPTUAL_GROUNDING_INVALID",
+                    "path": f"dimension_filters.{index}.grounding",
+                    "message": message,
+                } for message in grounding_errors)
+                continue
         table = str(dimension_filter.get("table") or "")
         column = str(dimension_filter.get("column") or "").split(".")[-1].upper()
         for code in dimension_filter.get("codes") or []:
@@ -22083,6 +22648,48 @@ def _validate_dimension_filters(query_plan: Mapping[str, Any]) -> list[dict[str,
                 })
             else:
                 seen[key] = (operator, index)
+    errors.extend(_validate_conceptual_resolution_receipts(query_plan))
+    return errors
+
+
+def _validate_conceptual_resolution_receipts(
+    query_plan: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Recompute every executed LLM receipt, including native numeric slots."""
+
+    errors: list[dict[str, Any]] = []
+    for index, receipt in enumerate(
+        query_plan.get("conceptual_resolutions") or []
+    ):
+        if not isinstance(receipt, Mapping) or receipt.get("status") != "resolved":
+            continue
+        path = f"conceptual_resolutions.{index}"
+        catalog = conceptual_targeting.catalog_by_digest(
+            receipt.get("catalog_digest")
+        )
+        if catalog is None:
+            errors.append({
+                "code": "CONCEPTUAL_GROUNDING_STALE",
+                "path": path,
+                "message": "conceptual capability snapshot is unavailable or stale",
+            })
+            continue
+        for message in conceptual_targeting.validate_grounded_resolution(
+            receipt, catalog
+        ):
+            errors.append({
+                "code": "CONCEPTUAL_GROUNDING_INVALID",
+                "path": path,
+                "message": message,
+            })
+        if not _generated_filter_is_attached(
+            query_plan, receipt.get("generated_filter")
+        ):
+            errors.append({
+                "code": "CONCEPTUAL_FILTER_DETACHED",
+                "path": path,
+                "message": "conceptual generated filter is not attached to execution IR",
+            })
     return errors
 
 
@@ -22288,18 +22895,19 @@ def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, An
     # 의미검증 게이트가 '>=N AND <=N'을 '=N'과 다르다고 오탐하는 것도 원천 차단한다.
     age_min = target_user.get("age_min")
     age_max = target_user.get("age_max")
+    age_column = _member_age_column()
     if isinstance(age_min, int) and isinstance(age_max, int) and age_min == age_max:
-        other_predicates.append(f"B.AGE = {age_min}"); has_signal = True
+        other_predicates.append(f"{age_column} = {age_min}"); has_signal = True
     else:
         if isinstance(age_min, int):
-            other_predicates.append(f"B.AGE >= {age_min}"); has_signal = True
+            other_predicates.append(f"{age_column} >= {age_min}"); has_signal = True
         if isinstance(age_max, int):
-            other_predicates.append(f"B.AGE <= {age_max}"); has_signal = True
+            other_predicates.append(f"{age_column} <= {age_max}"); has_signal = True
     # 닫힌 연령 구간 제외("20대가 아닌"). 여집합이 분리 2구간이라 NOT BETWEEN 으로 뺀다(널은 BETWEEN 이 이미 거름).
     for age_range in target_user.get("age_exclude_ranges", []):
         if isinstance(age_range, (list, tuple)) and len(age_range) == 2 and all(isinstance(v, int) for v in age_range):
             lo, hi = age_range
-            other_predicates.append(f"NOT (B.AGE BETWEEN {lo} AND {hi})"); has_signal = True
+            other_predicates.append(f"NOT ({age_column} BETWEEN {lo} AND {hi})"); has_signal = True
 
     # lifecycle 포함(등가/활동). 같은 canonical 이 제외에도 있으면 제외가 이긴다 — 포함·제외를 둘 다
     # 컴파일하면 `= 'Y' AND <> 'Y'` 같은 항상-거짓 술어가 되어 결과가 무조건 0명이 된다. 재작성·스코프
@@ -25492,7 +26100,8 @@ def _compile_crm_set_ast(ast: Any, query_plan: dict[str, Any]) -> str | None:
     if node_type == "age_range":
         age_min, age_max = ast.get("age_min"), ast.get("age_max")
         if isinstance(age_min, int) and isinstance(age_max, int):
-            return f"(B.AGE >= {age_min} AND B.AGE <= {age_max})"
+            age_column = _member_age_column()
+            return f"({age_column} >= {age_min} AND {age_column} <= {age_max})"
         return None
     if node_type == "operand":
         return _resolve_union_operand_predicate(ast, query_plan)
@@ -25713,10 +26322,11 @@ def _compile_logical_leaf(text: str, prefix: str) -> "_logic.LeafCompile":
     age_min, age_max = tu.get("age_min"), tu.get("age_max")
     if age_min is not None or age_max is not None:
         parts: list[str] = []
+        age_column = _member_age_column()
         if age_min is not None:
-            parts.append(f"B.AGE >= @{namer(age_min)}")
+            parts.append(f"{age_column} >= @{namer(age_min)}")
         if age_max is not None:
-            parts.append(f"B.AGE <= @{namer(age_max)}")
+            parts.append(f"{age_column} <= @{namer(age_max)}")
         fragments.append("(" + " AND ".join(parts) + ")")
         predicates.append({"metric": "age", "operator": ">=" if age_min is not None else "<=",
                            "value": age_min if age_min is not None else age_max, "domain": "age"})
@@ -26245,7 +26855,15 @@ def _has_gender_filter(normalized_sql: str) -> bool:
 
 
 def _has_age_filter(normalized_sql: str) -> bool:
-    return bool(re.search(r"\bage\b\s*(?:=|<>|!=|>|<|between\b|in\b)", normalized_sql))
+    configured = _member_age_column().split(".")[-1].casefold()
+    names = {configured, "age"}
+    return any(
+        re.search(
+            rf"\b{re.escape(name)}\b\s*(?:=|<>|!=|>|<|between\b|in\b)",
+            normalized_sql,
+        )
+        for name in names
+    )
 
 
 def _has_behavior_filter(normalized_sql: str) -> bool:
@@ -26334,11 +26952,21 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
 
     age_min = target_user.get("age_min")
     if age_min is not None:
-        conditions.append(_condition("target_user.age_min", str(age_min), [str(age_min)], all_terms=["age"]))
+        conditions.append(_condition(
+            "target_user.age_min",
+            str(age_min),
+            [str(age_min)],
+            all_terms=[_member_age_column().split(".")[-1]],
+        ))
 
     age_max = target_user.get("age_max")
     if age_max is not None:
-        conditions.append(_condition("target_user.age_max", str(age_max), [str(age_max)], all_terms=["age"]))
+        conditions.append(_condition(
+            "target_user.age_max",
+            str(age_max),
+            [str(age_max)],
+            all_terms=[_member_age_column().split(".")[-1]],
+        ))
 
     for field_name in ("lifecycle", "interests", "preferred_channels", "behaviors"):
         for value in target_user.get(field_name, []):
@@ -26963,7 +27591,7 @@ _TRACE_STAGES_META: tuple[tuple[int, str, str, str], ...] = (
     (2, "타겟/채널 분리", "스코프 분리 (split_prompt_scopes)", "혼합"),
     (3, "질의 계획 수립", "Query Plan (build_query_plan)", "혼합"),
     (4, "상품·구매이력 추출", "타겟 오브젝트 추출 (정규식+LLM)", "혼합"),
-    (5, "값 해석(브랜드→코드)", "디멘션 값 해석 (DS_SQL)", "규칙"),
+    (5, "값·상식 개념 해석", "디멘션 값 + 상식 grounding", "혼합"),
     (6, "집합식 파싱", "집합식 (parse_set_expressions)", "규칙"),
     (7, "지식그래프 검색", "벡터+키워드+Graph 확장 (GraphRAG)", "혼합"),
     (8, "타겟팅 SQL 생성", "SelectAst 조립·렌더 (sql_ast.py) + 조건빌더/LLM", "혼합"),
@@ -26978,6 +27606,7 @@ _TRACE_TIMING_TO_STEPS: tuple[tuple[str, tuple[int, ...]], ...] = (
     ("prompt_scopes", (2,)),
     # 2·4·5·6 중 3~6 은 build_query_plan 안에서 함께 수행되므로 query_plan 계측 하나로 완료 판정한다.
     ("query_plan", (3, 4, 5, 6)),
+    ("conceptual_targeting", (5,)),
     ("vector_search", (7,)),
     ("keyword_search", (7,)),
     ("context_assembly", (7,)),
@@ -27053,9 +27682,13 @@ _TRACE_STAGE_REFS: dict[int, tuple[dict[str, str], ...]] = {
         {"kind": "모델", "name": "{model} (폴백)"},
     ),
     5: (
+        {"kind": "프롬프트", "name": "conceptual_targeting_system.txt"},
+        {"kind": "코드", "name": "conceptual_targeting.py"},
         {"kind": "데이터", "name": "dimension_catalog.sample.json"},
         {"kind": "데이터", "name": "member_value_index.json"},
         {"kind": "데이터", "name": "member_target_filters.json"},
+        {"kind": "데이터", "name": "schema_catalog.json"},
+        {"kind": "모델", "name": "{conceptual_model} (상식 grounding)"},
         # 디멘션 DS_SQL 을 실DB 에서 실행해 이름→코드로 값을 해석한다(런타임 조회).
         {"kind": "인프라", "name": "실DB (DS_SQL 값 조회)"},
     ),
@@ -27112,10 +27745,19 @@ def _trace_stage_shell(step: int, name: str, tech_name: str, method: str, status
         else:
             model = main_model
         embed_model = os.getenv("QDRANT_EMBEDDING_MODEL") or DEFAULT_EMBEDDING_MODEL
+        conceptual_model = (
+            os.getenv("OPENAI_CONCEPTUAL_TARGETING_MODEL")
+            or main_model
+        )
         shell["refs"] = [
             {
                 **ref,
-                "name": ref["name"].replace("{model}", model).replace("{embed_model}", embed_model),
+                "name": (
+                    ref["name"]
+                    .replace("{model}", model)
+                    .replace("{embed_model}", embed_model)
+                    .replace("{conceptual_model}", conceptual_model)
+                ),
                 "used": False,
             }
             for ref in refs
@@ -27146,6 +27788,8 @@ def _mark_trace_refs_used(stages: list[dict[str, Any]], result: dict[str, Any]) 
     parser = query_plan.get("parser") or {}
     matched_terms = query_plan.get("matched_terms") or []
     dimension_filters = query_plan.get("dimension_filters") or []
+    conceptual_resolutions = query_plan.get("conceptual_resolutions") or []
+    conceptual_summary = query_plan.get("conceptual_targeting_resolution") or {}
     semantic_resolutions = query_plan.get("semantic_resolutions") or []
     set_expressions = query_plan.get("set_expressions") or []
     computed_metrics = query_plan.get("computed_metrics") or []
@@ -27213,15 +27857,40 @@ def _mark_trace_refs_used(stages: list[dict[str, Any]], result: dict[str, Any]) 
         if isinstance(item, dict)
     )
     uses_dimension_catalog = any(
-        item.get("codes") and item.get("source") not in {"member_value_index", "macro_region"}
+        item.get("codes")
+        and item.get("source")
+        not in {"member_value_index", "macro_region", "llm_common_sense"}
         for item in dimension_filters
         if isinstance(item, dict)
+    )
+    conceptual_used = any(
+        isinstance(item, Mapping)
+        and item.get("status") == "resolved"
+        and _generated_filter_is_attached(
+            query_plan, item.get("generated_filter")
+        )
+        for item in conceptual_resolutions
+    )
+    conceptual_invoked = (
+        isinstance(conceptual_summary, Mapping)
+        and bool(conceptual_summary.get("model"))
     )
     has_member_condition = any(value not in (None, [], {}) for value in target_user.values()) or bool(exclude) or bool(dimension_filters)
     if uses_dimension_catalog:
         mark(5, "dimension_catalog.sample.json", "실DB (DS_SQL 값 조회)")
     if uses_member_value_index:
         mark(5, "member_value_index.json")
+    if conceptual_used or conceptual_invoked:
+        mark(
+            5,
+            "conceptual_targeting_system.txt",
+            "conceptual_targeting.py",
+            "member_value_index.json",
+            "member_target_filters.json",
+            "schema_catalog.json",
+        )
+    if conceptual_invoked:
+        mark(5, kind="모델")
     if has_member_condition:
         mark(5, "member_target_filters.json")
 
@@ -27609,6 +28278,27 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
     set_expressions = query_plan.get("set_expressions", []) or []
     dimension_filters = query_plan.get("dimension_filters", []) or []
     semantic_resolutions = query_plan.get("semantic_resolutions", []) or []
+    conceptual_resolutions = query_plan.get("conceptual_resolutions", []) or []
+    conceptual_summary = (
+        query_plan.get("conceptual_targeting_resolution") or {}
+    )
+    conceptual_status = str(
+        conceptual_summary.get("status") or ""
+    ).casefold()
+    conceptual_stage_status = (
+        "fail"
+        if conceptual_status in {"failed", "unavailable", "unsupported"}
+        else (
+            "info"
+            if (
+                dimension_filters
+                or semantic_resolutions
+                or conceptual_resolutions
+                or conceptual_summary
+            )
+            else "skipped"
+        )
+    )
     semantic_verification = sql_result.get("semantic_verification", {"ran": False}) or {"ran": False}
     failure_stage = _classify_failure_stage(sql_result.get("failure_reason"), sql_result)
     cart_context = query_plan.get("cart_context")
@@ -27631,6 +28321,7 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
         "target_user": tu,
         "member_metric_ranking": metric_ranking,
         "dimension_filters": dimension_filters,
+        "conceptual_resolutions": conceptual_resolutions,
         "set_expressions": [e.get("ko_label") or e.get("expression_id") for e in set_expressions],
         "campaign_constraints": campaign_constraints,
     }.items() if v not in (None, [], {}, "")}
@@ -27718,14 +28409,67 @@ def build_retrieve_trace(result: dict[str, Any]) -> dict[str, Any]:
                     + ([f"cart_context: {_trace_line(cart_context)}"] if cart_context else []),
         ),
         _stage(
-            5, "info" if (dimension_filters or semantic_resolutions) else "skipped",
-            description="브랜드·지역 같은 표기를 실DB 코드(DS_SQL)로 변환합니다(결정론).",
+            5,
+            conceptual_stage_status,
+            description=(
+                "명시 디멘션 값은 레지스트리/DS_SQL로 변환하고, 상식 표현은 LLM이 "
+                "동적으로 발견된 닫힌 후보 ID만 선택한 뒤 서버가 실제 DB 필터로 연결합니다."
+            ),
             plain=[
-                f"{d.get('prompt_label') or d.get('dimension_id')} → {', '.join(map(str, d.get('codes', []))) or _trace_line(d.get('names', []))}"
+                (
+                    f"{d.get('prompt_label') or d.get('dimension_id')} → "
+                    f"{', '.join(map(str, d.get('codes', []))) or _trace_line(d.get('names', []))}"
+                    + (
+                        " (LLM 일반지식·비실시간)"
+                        if d.get("source") == "llm_common_sense"
+                        else ""
+                    )
+                )
                 for d in dimension_filters
-            ] or (None if not semantic_resolutions else ["의미 해석 규칙 적용"]),
+            ] or (
+                [f"상식 해석 결과: {conceptual_status or 'unknown'}"]
+                if conceptual_summary
+                else (
+                    ["의미 해석 적용"]
+                    if semantic_resolutions
+                    else None
+                )
+            ),
             details=[f"dimension: {_trace_line(d)}" for d in dimension_filters]
-                    + [f"semantic: {_trace_line(s)}" for s in semantic_resolutions],
+                    + [f"semantic: {_trace_line(s)}" for s in semantic_resolutions]
+                    + [
+                        (
+                            "conceptual receipt: "
+                            + _trace_line({
+                                "evidence": item.get("source_text"),
+                                "selected_values": item.get("selected_values"),
+                                "operator": item.get("operator"),
+                                "confidence": item.get("confidence"),
+                                "rationale": item.get("rationale"),
+                                "model": item.get("model"),
+                                "catalog_digest": item.get("catalog_digest"),
+                                "realtime": item.get("realtime"),
+                                "status": item.get("status"),
+                            })
+                        )
+                        for item in conceptual_resolutions
+                        if isinstance(item, Mapping)
+                    ]
+                    + (
+                        [
+                            "conceptual summary: "
+                            + _trace_line({
+                                "status": conceptual_summary.get("status"),
+                                "model": conceptual_summary.get("model"),
+                                "prompt_digest": conceptual_summary.get("prompt_digest"),
+                                "catalog_digest": conceptual_summary.get("catalog_digest"),
+                                "cache_hit": conceptual_summary.get("cache_hit"),
+                                "basis": conceptual_summary.get("basis"),
+                            })
+                        ]
+                        if conceptual_summary
+                        else []
+                    ),
         ),
         _stage(
             6, "info" if set_expressions else "skipped",

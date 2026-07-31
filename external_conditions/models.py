@@ -44,6 +44,7 @@ class ExternalCondition:
         default_factory=lambda: {"entity": "member", "attribute": "residence"}
     )
     resolution_status: ResolutionStatus = "pending"
+    freshness_requirement: str = "unspecified"
     source_text: str | None = None
     source_span: tuple[int, int] | None = None
 
@@ -63,6 +64,15 @@ class ExternalCondition:
         status = str(value.get("resolution_status") or "pending")
         if status not in RESULT_STATUSES | {"pending"}:
             raise ValueError("external condition resolution_status is invalid")
+        freshness = str(
+            value.get("freshness_requirement") or "unspecified"
+        ).strip().casefold()
+        if freshness not in {
+            "unspecified",
+            "live",
+            "general_knowledge_non_realtime",
+        }:
+            raise ValueError("external condition freshness_requirement is invalid")
         required = {
             "id": _text(value.get("id")),
             "domain": _text(value.get("domain")),
@@ -83,6 +93,7 @@ class ExternalCondition:
                 "attribute": str(target_basis.get("attribute") or "residence"),
             },
             resolution_status=status,  # type: ignore[arg-type]
+            freshness_requirement=freshness,
             source_text=_text(value.get("source_text")),
             source_span=parsed_span,
         )
@@ -110,6 +121,7 @@ class ExternalCondition:
             "state": self.state,
             "target_basis": dict(self.target_basis),
             "resolution_status": resolution_status or self.resolution_status,
+            "freshness_requirement": self.freshness_requirement,
         }
         if self.source_text:
             payload["source_text"] = self.source_text

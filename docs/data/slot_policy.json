@@ -66,6 +66,10 @@
       "owner": "rule",
       "risk": "medium"
     },
+    "target_user.age_exclude_ranges": {
+      "owner": "rule",
+      "risk": "medium"
+    },
     "target_user.lifecycle": {
       "owner": "rule",
       "risk": "medium"
@@ -75,6 +79,26 @@
       "risk": "medium"
     },
     "target_user.preferred_channels": {
+      "owner": "rule",
+      "risk": "medium"
+    },
+    "target_user.price_sensitivity": {
+      "owner": "rule",
+      "risk": "medium"
+    },
+    "exclude.gender": {
+      "owner": "rule",
+      "risk": "medium"
+    },
+    "exclude.interests": {
+      "owner": "rule",
+      "risk": "medium"
+    },
+    "exclude.lifecycle": {
+      "owner": "rule",
+      "risk": "medium"
+    },
+    "campaign_constraints.category": {
       "owner": "rule",
       "risk": "medium"
     },
