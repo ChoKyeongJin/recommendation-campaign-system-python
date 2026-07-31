@@ -20,7 +20,12 @@
       },
       "predicate_kind": "LegacyPredicate",
       "semantic_key": "legacy:purchase_inactivity:20b7ffc3ecab6b1595e0501d63ee81b03a652142683c2e29ef9a056c6808d80e",
-      "source_spans": [],
+      "source_spans": [
+        {
+          "end": 11,
+          "start": 8
+        }
+      ],
       "type": "predicate_ref"
     },
     "intent": "find_user_segment",

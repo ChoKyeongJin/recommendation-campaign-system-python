@@ -18,7 +18,12 @@
       },
       "predicate_kind": "LegacyPredicate",
       "semantic_key": "legacy:recent_login:5496cb7bcc4aecf7e40e00665949206ad369886fdaa5fd5ca4cab00a2dec2ab9",
-      "source_spans": [],
+      "source_spans": [
+        {
+          "end": 5,
+          "start": 2
+        }
+      ],
       "type": "predicate_ref"
     },
     "intent": "find_user_segment"

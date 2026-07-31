@@ -28,7 +28,7 @@ graph_rag.py 는 _apply_coupon_semantics(→ interpret())로 이 모듈을 호�
 campaign_responses(존재 여부) 를 붙이거나 plan['unsupported'] 를 남긴다. 이 모듈은 graph_rag 를 import
 하지 않는다(순환 방지) — 순수 dict/dataclass in/out.
 
-실행: python -m pytest tests/test_coupon_semantics.py -q
+실행: python -m pytest tests/test_segment_semantics.py -q
 """
 
 from __future__ import annotations
@@ -40,8 +40,11 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_METRICS_PATH = Path("docs/data/segment_metrics.json")   # 접지(사실)
-DEFAULT_LEXICON_PATH = Path("docs/data/segment_lexicon.json")   # 어휘(말)
+# 기본 경로는 **모듈 기준 절대경로**다. 상대경로면 cwd 가 저장소 밖일 때 설정을 못 읽고
+# 조용히 빈 레지스트리로 강등된다(증상이 예외가 아니라 '조금 다른 답'이라 눈에 띄지 않는다).
+_REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_METRICS_PATH = _REPO_ROOT / "docs" / "data" / "segment_metrics.json"   # 접지(사실)
+DEFAULT_LEXICON_PATH = _REPO_ROOT / "docs" / "data" / "segment_lexicon.json"   # 어휘(말)
 
 # capability 가 선언할 수 있는 연산(operation). condition.type → operation 매핑의 치역.
 OPERATIONS = frozenset({"filter", "existence_filter", "ranking", "metric_comparison"})

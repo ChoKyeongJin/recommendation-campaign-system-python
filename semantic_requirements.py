@@ -23,10 +23,12 @@ build_sql_result 가 account_requirements(query, plan, sql)로 호출해 귀결�
 현재 추출 범위: entity qualifier(브랜드/상품/카테고리/제품/품목명 + 값)와 평탄화 시 손실되는 조합
 연산자(주기 반복, 외부 지정 집합, 최신 스냅샷 선택). 후자는 compiler receipt가 있어야만 해소된다.
 
-실행: python -m pytest tests/test_semantic_requirements.py -q
+실행: python -m pytest tests/test_source_semantic_contract.py -q  (이 모듈 일부만 덮는다 — 전용 스위트 없음)
 """
 
 from __future__ import annotations
+
+import common_utils
 
 import json
 import hashlib
@@ -39,7 +41,10 @@ from typing import Any
 import lexicon_patterns
 
 
-DEFAULT_CAPABILITIES_PATH = Path("docs/data/requirement_capabilities.json")
+# 기본 경로는 **모듈 기준 절대경로**다. 상대경로면 cwd 가 저장소 밖일 때 설정을 못 읽고
+# 조용히 빈 레지스트리로 강등된다(증상이 예외가 아니라 '조금 다른 답'이라 눈에 띄지 않는다).
+_REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_CAPABILITIES_PATH = _REPO_ROOT / "docs" / "data" / "requirement_capabilities.json"
 
 # requirement 귀결 상태. 'detected' 는 아직 회계 전(초기값). 검증기가 나머지 넷 중 하나로 확정해야 한다.
 TERMINAL_STATUSES = frozenset({"parsed", "compiled", "clarification", "unsupported"})
@@ -178,8 +183,9 @@ def _normalize_value(text: str) -> str:
 
     시스템이 사용자 표기('알로루')를 실DB 브랜드명('알로&루')으로 canonical 보정하므로, 원문 값과 SQL 의
     canonical 값이 특수문자에서 달라진다. 같은 정규화로 비교해야 정상 컴파일을 '누락'으로 오탐하지 않는다
-    (graph_rag._normalize_product_term 과 동일 규칙)."""
-    return re.sub(r"[^0-9a-z가-힣]", "", (text or "").casefold())
+    구현은 common_utils.normalize_entity_term 이 단일 소유한다(예전에는 graph_rag 와 각자 구현하고
+    동일성을 주석으로만 약속했다)."""
+    return common_utils.normalize_entity_term(text)
 
 
 # ── source requirement 스키마 ─────────────────────────────────────────────────────────────

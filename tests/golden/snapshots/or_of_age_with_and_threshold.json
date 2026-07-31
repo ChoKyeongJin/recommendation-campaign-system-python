@@ -22,7 +22,12 @@
           },
           "predicate_kind": "LegacyPredicate",
           "semantic_key": "legacy:purchase_membership:553463f7d2a6fa7aeb3bc861ff5f57c137c0374fdf5ac159ca28d243d3fde2e5",
-          "source_spans": [],
+          "source_spans": [
+            {
+              "end": 23,
+              "start": 20
+            }
+          ],
           "type": "predicate_ref"
         },
         {

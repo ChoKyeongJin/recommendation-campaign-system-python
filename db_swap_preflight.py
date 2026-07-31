@@ -26,8 +26,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
+
+# 결과 줄에 한글·기호(✅/❌)가 들어간다. Windows 레거시 콘솔(cp949)에서는 print 가
+# UnicodeEncodeError 로 죽어 **ok 여부와 무관하게 종료코드가 1** 이 된다 — 게이트 도구가
+# 통과를 실패로 보고하는 최악의 오작동이라 인코딩을 먼저 고정한다.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 REGISTRY_PATHS = [
     Path("docs/data/member_target_filters.json"),
@@ -158,7 +165,14 @@ def _configured_table_columns(registry: dict[str, Any]) -> set[tuple[str, str]]:
                     or key.endswith("_columns")
                     or key in {"columns", "match_columns", "cell_keys"}
                 ):
-                    owner_table = node.get(f"{key[:-len('_column')]}_table") if key.endswith("_column") else None
+                    # 소유 테이블 선언은 두 가지 형태로 나타난다: 형제 키 ``<키>_table``(예:
+                    # column_table 이 column 의 소유자)과 접두어 규칙 ``<접두어>_table``(예:
+                    # campaign_date_column ↔ campaign_date_table). 형제 키를 먼저 보지 않으면
+                    # column_table 처럼 이름이 겹치는 선언을 놓쳐, 실제로는 상품 마스터가 소유한
+                    # 컬럼을 주문 테이블 소유로 오귀속해 오탐이 난다.
+                    owner_table = node.get(f"{key}_table")
+                    if owner_table is None and key.endswith("_column"):
+                        owner_table = node.get(f"{key[:-len('_column')]}_table")
                     add_columns(owner_table if isinstance(owner_table, str) else table, value)
                 walk(value, table)
         elif isinstance(node, list):
@@ -186,6 +200,21 @@ def run_preflight(check_db: bool = False) -> dict[str, Any]:
         else:
             warnings.append(f"레지스트리 파일 없음(건너뜀): {path}")
 
+    # 논리 심볼 → 물리 테이블. 설정은 물리 테이블명 대신 심볼('product' 등)을 쓸 수 있고, 그 매핑은
+    # 레지스트리의 table_symbols 가 소유한다. 심볼을 해석하지 못하면 멀쩡한 설정이 '카탈로그에 없는
+    # 테이블'로 보고돼 게이트가 상시 빨강이 된다 — 반대로 매핑이 선언되지 않은 심볼은 여전히 실패해야
+    # 하므로(그게 이식성 결함이다) 원문 심볼명을 메시지에 그대로 남긴다.
+    table_symbols: dict[str, str] = {}
+    for registry in registries.values():
+        declared = registry.get("table_symbols")
+        if isinstance(declared, dict):
+            table_symbols.update(
+                {str(k): str(v) for k, v in declared.items() if isinstance(v, str)}
+            )
+
+    def resolve(table: str) -> str:
+        return table_symbols.get(table, table)
+
     # 1) registry 테이블 참조 ↔ catalog
     referenced_tables: set[str] = set()
     for name, registry in registries.items():
@@ -193,7 +222,7 @@ def run_preflight(check_db: bool = False) -> dict[str, Any]:
         _walk_table_refs(registry, refs)
         referenced_tables |= refs
         for table in sorted(refs):
-            if table not in catalog_tables:
+            if resolve(table) not in catalog_tables:
                 problems.append(f"[{name}] 참조 테이블 '{table}' 이 schema_catalog 에 없음")
 
     # 2) base_entity 및 table 소유 선언형 컬럼 ↔ catalog
@@ -212,7 +241,7 @@ def run_preflight(check_db: bool = False) -> dict[str, Any]:
         configured_columns |= _configured_table_columns(registry)
 
     for table, column in sorted(configured_columns):
-        present = columns_by_table.get(table)
+        present = columns_by_table.get(resolve(table))
         if present is None:
             continue  # 테이블 참조 검사가 위에서 더 정확한 원인을 이미 보고한다.
         if column not in present:

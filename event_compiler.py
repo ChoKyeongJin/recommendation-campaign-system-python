@@ -24,6 +24,8 @@ timestamp 일 때 마지막 날을 잘라먹는다 — IR 이 정한 경계를 S
 
 from __future__ import annotations
 
+import sql_dialect
+
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -242,7 +244,8 @@ class CompileContext:
 
 
 def _sql_quote(value: Any) -> str:
-    return "'" + str(value).replace("'", "''") + "'"
+    """SQL 문자열 리터럴. 구현은 sql_dialect 가 단일 소유한다(미러 복제 금지)."""
+    return sql_dialect.quote_literal(value)
 
 
 # ── 시간 ──────────────────────────────────────────────────────────────────────────

@@ -15,6 +15,7 @@ from typing import Any
 
 import event_ir
 import event_parser
+import member_filters_config
 import plan_semantic_ast
 import semantic_ast
 import semantic_fields
@@ -88,6 +89,18 @@ def _slot_source_spans(
     """
     recorded = slot_ownership.slot_span(plan, slot, container=container)
     direct = _valid_source_span(recorded)
+    if direct is None:
+        # 리스트 슬롯의 개별 값은 대장에 ``behaviors:cart_abandoner`` 형태로 기록되는데
+        # (slot_ownership.record_slot_span) 조건 kind 는 ``cart_abandoner`` 라 슬롯 이름만으로는
+        # 그 기록을 놓친다. 그러면 조건이 자기 어구를 소유하지 못해 커버리지 판정이 그 구간을
+        # 미해석으로 보고 개념 리뷰가 불필요하게 돈다. 담는 슬롯 이름은 requirement_aliases 가
+        # 이미 선언하므로(예: cart_abandoner → ("cart_abandoner", "behaviors")) 그걸 재사용한다.
+        for alias in requirement_aliases:
+            direct = _valid_source_span(
+                slot_ownership.slot_span(plan, f"{alias}:{slot}", container=container)
+            )
+            if direct is not None:
+                break
     if direct is not None:
         return (direct,)
 
@@ -561,7 +574,9 @@ def _legacy_condition_trees(plan: dict[str, Any]) -> tuple[TargetingExpression, 
     trees: list[TargetingExpression] = []
     registered_kinds: set[str] = set()
     target_user = plan.get("target_user") if isinstance(plan.get("target_user"), dict) else {}
-    for condition in targeting_ir.extract_target_conditions(plan):
+    for condition in targeting_ir.extract_target_conditions(
+        plan, order_count_behaviors=member_filters_config.order_count_behaviors()
+    ):
         if condition.kind == "event_expression":
             continue
         registered_kinds.add(condition.kind)

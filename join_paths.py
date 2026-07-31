@@ -13,8 +13,10 @@ curated `foreign_keys`/`join_hints` 와 member_target_filters(cart_targets.produ
 purchase_product_target) 에서 온다. 그래서 조인 조건의 relation_type 은 기본 `logical_reference` 이며,
 evidence 에 출처를 적는다. 컬럼 이름 유사성만으로 조인을 추론하지 않는다.
 
-이 모듈은 graph_rag 를 import 하지 않는다(순수 dict/dataclass). graph_rag 의 빌더가 JOIN_PATHS[name]
-으로 조인 라인을 얻고, compiler_strategies 가 필터를 붙인다.
+이 모듈은 graph_rag 를 import 하지 않는다(순수 dict/dataclass). 설계상 JOIN_PATHS[name] 이 조인 라인의
+단일 소스지만, 현재 실제 소비자는 capability_registry(대상 테이블 조회)와 compiler_strategies(경로 존재
+확인)뿐이고 graph_rag 빌더는 이 모듈을 import 하지 않는다 — render_join_line() 은 호출부 0건이다(TODO).
+선언된 경로가 카탈로그에 실재하는지는 tests/test_registry_ownership_guards.py 가 지킨다.
 """
 
 from __future__ import annotations

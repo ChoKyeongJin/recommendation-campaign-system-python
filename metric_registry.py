@@ -43,7 +43,8 @@ semantic_type 별 필수:
 
 로더는 이 스펙을 읽고 규칙을 검증할 뿐, SQL 을 만들지 않는다(그건 이후 단계의 전략 컴파일러 몫).
 JSON 을 쓰는 이유: 레포 전 설정이 JSON(docs/data/*.json) 이라 포맷·의존성을 통일한다(개선안 YAML 예시와
-키 구조는 동일 — 나중에 YAML 로 바꿔도 스키마는 그대로). 실행: python -m pytest tests/test_metric_registry.py -q
+키 구조는 동일 — 나중에 YAML 로 바꿔도 스키마는 그대로).
+로드 건전성: python -m pytest tests/test_registry_ownership_guards.py -q
 """
 
 from __future__ import annotations
@@ -54,7 +55,10 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_METRIC_SPEC_DIR = Path("docs/data/metrics")
+# 기본 경로는 **모듈 기준 절대경로**다. 상대경로면 cwd 가 저장소 밖일 때 설정을 못 읽고
+# 조용히 빈 레지스트리로 강등된다(증상이 예외가 아니라 '조금 다른 답'이라 눈에 띄지 않는다).
+_REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_METRIC_SPEC_DIR = _REPO_ROOT / "docs" / "data" / "metrics"
 
 SEMANTIC_TYPES = frozenset({"scalar", "ratio", "date"})
 DATA_TYPES = frozenset({"integer", "decimal", "money", "date_string"})

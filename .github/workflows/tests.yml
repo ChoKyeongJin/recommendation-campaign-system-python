@@ -1,0 +1,118 @@
+name: Tests
+
+# needs 는 같은 워크플로 파일 안의 잡만 가리킬 수 있다. docker-publish.yml 이 테스트를 게이트로
+# 쓰려면 이 워크플로를 재사용 호출해야 하므로 workflow_call 을 열어 둔다.
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+  workflow_call:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 결정론 실행 고정. tests/conftest.py 가 같은 값을 세팅하지만, CI 에서는 수집 순서·모듈 로드와
+  # 무관하게 러너 환경에서도 못 박는다.
+  CONDITION_SLOT_LLM_FALLBACK: "off"
+  SURFACE_LEXICON_LLM: "off"
+  CONCEPTUAL_TARGETING_LLM: "off"
+  TARGET_OBJECT_LLM_FALLBACK: "false"
+  # 한국어 assert 메시지·진행 로그가 러너 로그에서 깨지지 않게.
+  PYTHONIOENCODING: "utf-8"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  # OPENAI_API_KEY 는 절대 주입하지 않는다 — 있으면 graph_rag 의 여러 분기가 LLM 경로로 갈린다.
+
+jobs:
+  contracts:
+    name: contracts (fast gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          # Dockerfile 이 FROM python:3.12-slim 이다. 배포 런타임과 같은 버전으로 검증한다.
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: DB swap preflight (registry <-> schema_catalog)
+        # 정적 검사만 수행 — DB 접속 불필요, 종료코드로 게이트한다. 설정과 카탈로그가 어긋난 채
+        # 배포되면 SQL 이 '성공하는데 0명'으로 조용히 틀린다.
+        run: python db_swap_preflight.py
+
+      - name: Contract tests
+        # 계약·파사드·래칫만 먼저 — 스위트 전체를 기다리지 않고 깨진 계약을 빨리 드러낸다.
+        run: >
+          python -m pytest
+          tests/test_graph_rag_facade.py
+          tests/test_ir_schema_contract.py
+          tests/test_provenance_contract.py
+          tests/test_source_semantic_contract.py
+          tests/test_schema_catalog_targeting_ir.py
+          tests/test_regex_inventory_ratchet.py
+          tests/test_known_failures_ratchet.py
+          tests/test_db_swap_preflight_gate.py
+          tests/test_registry_ownership_guards.py
+          tests/test_doc_claims.py
+          tests/test_env_isolation.py
+          tests/test_config_crossref_contract.py
+          tests/test_logic_leaf_slot_coverage.py
+          tests/test_remaining_condition_labels.py
+          tests/test_order_count_behavior_parity.py
+          tests/test_plan_key_ownership_drift.py
+          tests/test_api_response_contract.py
+          tests/test_pass_idempotence.py
+          tests/test_auto_filter_order_contract.py
+          tests/test_physical_binding_ratchet.py
+          tests/test_unsupported_reason_closure.py
+          tests/test_plan_schema_registry.py
+          -q
+
+  suite:
+    name: suite (pytest tests)
+    needs: contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run test suite
+        run: python -m pytest tests -q --junitxml=pytest-report.xml
+
+      - name: Assert tests did not dirty the work tree
+        # tests/golden_support.py:write_snapshot 처럼 저장소 안에 쓰는 통로가 tests/ 에 열려 있다.
+        # 현재 테스트는 호출하지 않지만, 실수로 호출되는 순간을 CI 가 잡게 한다.
+        run: git diff --exit-code
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-report
+          path: pytest-report.xml
+          if-no-files-found: ignore

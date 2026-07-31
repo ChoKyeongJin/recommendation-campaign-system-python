@@ -17,6 +17,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "tests"))
 
+# 진행 로그에 한글·기호(⚠)가 섞이므로 콘솔 기본 인코딩(예: Windows cp949)에서는 print 가
+# UnicodeEncodeError 로 죽는다 — 그러면 스냅샷 일부만 쓰인 채 중단돼 골든이 반쪽 상태가 된다.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 import ir_snapshot  # noqa: E402
 import provenance  # noqa: E402
 from golden_support import BASELINE_PATH, build_plan, load_cases, load_corpus, load_snapshot, write_snapshot  # noqa: E402

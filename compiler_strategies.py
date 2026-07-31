@@ -10,10 +10,13 @@ graph_rag 빌더에 하드코딩돼 있었다. 이 모듈은 그 라벨을 dispa
     검색이 아니라 evidence 로 반영 여부를 확인한다(코드 치환·canonical 보정에도 안 깨짐).
 
 이 모듈은 graph_rag 를 import 하지 않는다(순수). SQL 리터럴 헬퍼(_quote/_nlike)는 graph_rag._sql_quote/
-_sql_nlike_contains 와 **바이트 동일** 출력을 내도록 맞췄다(tests/test_capability_contract.py 가 parity 검증).
+_sql_nlike_contains 와 **바이트 동일** 출력을 내도록 맞췄다
+(parity 검증: tests/test_registry_ownership_guards.py).
 """
 
 from __future__ import annotations
+
+import sql_dialect
 
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -22,14 +25,17 @@ from join_paths import JOIN_PATHS
 
 
 # ── SQL 리터럴 헬퍼(graph_rag 미러) ────────────────────────────────────────────────────────
-def _quote(value: str) -> str:
-    """graph_rag._sql_quote 와 동일: 홑따옴표 이스케이프 후 감싼다."""
-    return "'" + str(value).replace("'", "''") + "'"
+def _quote(value: object) -> str:
+    """SQL 문자열 리터럴. 구현은 sql_dialect 가 단일 소유한다.
+
+    예전에는 graph_rag 의 같은 함수와 "동일하게 맞췄다"는 주석만 있었고 실제로는 갈라져 있었다.
+    """
+    return sql_dialect.quote_literal(value)
 
 
-def _nlike_contains(column: str, term: str) -> str:
-    """graph_rag._sql_nlike_contains 와 동일: 유니코드 부분일치 LIKE(N'%term%')."""
-    return f"{column} LIKE N'%{str(term).replace(chr(39), chr(39) * 2)}%'"
+def _nlike_contains(column: str, term: object) -> str:
+    """유니코드 부분일치 LIKE(N'%term%'). 구현은 sql_dialect 가 단일 소유한다."""
+    return sql_dialect.nlike_contains(column, term)
 
 
 # ── 컴파일 결과(구조화 evidence) ────────────────────────────────────────────────────────────

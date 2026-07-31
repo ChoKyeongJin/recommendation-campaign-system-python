@@ -1,0 +1,22 @@
+{
+  "total": 369,
+  "tables": 143,
+  "columns": 226,
+  "per_file": {
+    "graph_rag.py": 214,
+    "build_table_relationships.py": 68,
+    "event_compiler.py": 24,
+    "condition_evaluation_ir.py": 14,
+    "confidence.py": 14,
+    "product_master_resolver.py": 10,
+    "join_paths.py": 7,
+    "member_policy.py": 5,
+    "external_conditions/mappers/administrative_region_mapper.py": 4,
+    "api.py": 3,
+    "targeting_expression.py": 2,
+    "analytical_intent.py": 1,
+    "build_dimension_catalog.py": 1,
+    "build_rag_knowledge.py": 1,
+    "entity_set.py": 1
+  }
+}

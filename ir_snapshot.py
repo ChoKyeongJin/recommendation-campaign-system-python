@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import Any
 
 import plan_decisions
+import plan_schema
 
 # 스냅샷 스키마 버전. 정규형의 모양(키 구성·정렬 규칙)이 바뀌면 올린다 — 골든 파일이 어느 규칙으로
 # 만들어졌는지 파일 자체가 답하게 하려는 것이다. 값 변화(파서 개선)로는 올리지 않는다.
@@ -38,33 +39,9 @@ CONTAINERS = plan_decisions.AUDITED_CONTAINERS
 
 # plan 최상위 중 **파생 결과**(입력 해석이 아니라 해석의 결과로 계산된 것). 라우팅·출력 계약·정책
 # 판정·능력 점검은 조건이 바뀌면 따라 바뀌므로, 스냅샷에 넣으면 같은 사실을 두 번 비교하게 된다.
-DERIVED_PLAN_KEYS = frozenset({
-    "capability_check",       # 능력 점검 결과
-    "detected_intent",        # 입력 조건에서 계산된 분석 라우팅 힌트
-    "member_policy",          # 회원 정책 판정
-    "member_scope",           # '전체 회원 대상'인가 — output_contract.whole_target 에서 따라 나오는 판정
-    "output_contract",        # 출력 계약(컬럼/그레인)
-    "selected_route",         # 선택된 라우트
-    "policy_constraints",     # 업무 정책에서 파생된 제약
-    "semantic_resolutions",   # 의미 해소 흔적
-    "source_requirements",    # 소스 요구(다이제스트와 쌍)
-    "parser_shadow",          # 파서 shadow 비교 계측(parser_shadow) — 조건이 아니라 관찰이다
-    "semantic_evidence",      # V3 의미 슬롯의 원문 근거 — 조건값이 아니라 provenance다
-    "external_condition_results",  # Resolver/공급자/매핑 감사 스냅샷
-    "external_condition_resolution",  # 외부 의존성 처리 결과 요약
-    "conceptual_resolutions",  # 상식 grounding 영수증(실행 조건은 materialized 슬롯이 소유)
-    "conceptual_targeting_resolution",  # 상식 grounding 실행/모델/캐시 요약
-    "slot_policy",            # 슬롯 소유권 판정 흔적(slot_policy)
-    # Canonical targeting execution metadata. The expression itself is a
-    # condition; these are validation, ownership, and projection receipts.
-    "canonical_projection",
-    "canonical_targeting_validation",
-    "canonical_targeting_version",
-    "condition_claims",
-    "event_compiler_capability",
-    "event_semantic_validation",
-    "ownership_reconciliation_complete",
-})
+# 분류의 단일 소유자는 plan_schema 다. 예전에는 여기·plan_decisions·semantic_requirements 가
+# 각자 목록을 들고 있어서 한 곳만 고치면 같은 키가 곳에 따라 조건이었다가 파생이 됐다.
+DERIVED_PLAN_KEYS = plan_schema.names(plan_schema.DERIVED)
 
 # 조건이 아니라고 이미 선언된 키(원문·계측·감사 로그). plan_decisions 가 소유한다.
 _NON_CONDITION = plan_decisions.NON_CONDITION_PLAN_KEYS
@@ -107,29 +84,9 @@ def unclassified_plan_keys(plan: dict[str, Any]) -> list[str]:
 
 # 조건으로 확정 선언된 plan 최상위 키. 새 조건 유형을 열면 여기 한 줄 추가한다(그 행위가 곧
 # "이건 파생이 아니라 사용자가 말한 조건이다" 라는 선언이다).
-KNOWN_CONDITION_PLAN_KEYS = frozenset({
-    "intent",
-    "condition_evaluations",
-    "result_limit",
-    "dimension_filters",
-    "compound_dimension_filters",
-    "external_conditions",
-    "computed_metrics",
-    "member_metric_selection",
-    "member_metric_ranking",
-    "set_expressions",
-    "semantic_conditions",
-    "cart_context",
-    "unresolved_source_conditions",
-    "logical_expression",
-    "analytical_intent",
-    "metric_trend",
-    "purchase_count_ranking",
-    "entity_set",
-    "retrieval_scope",
-    "event_expression",
-    "canonical_targeting_expression",
-})
+# 조건으로 확정 선언된 plan 최상위 키. 새 조건 유형은 plan_schema 에 한 줄 추가한다
+# (그 행위가 곧 "이건 파생이 아니라 사용자가 말한 조건이다" 라는 선언이다).
+KNOWN_CONDITION_PLAN_KEYS = plan_schema.names(plan_schema.CONDITION)
 
 
 def snapshot(plan: dict[str, Any]) -> dict[str, Any]:

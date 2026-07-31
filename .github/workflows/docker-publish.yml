@@ -16,7 +16,13 @@ env:
   IMAGE_NAME: recommendation-campaign-system
 
 jobs:
+  # 테스트를 이미지 푸시의 게이트로 둔다 — 이전에는 master push 가 곧바로 latest 태그로 나갔다.
+  # needs 는 같은 워크플로 파일 안의 잡만 가리키므로 tests.yml 을 재사용 호출한다.
+  tests:
+    uses: ./.github/workflows/tests.yml
+
   build-and-push:
+    needs: tests
     runs-on: ubuntu-latest
     permissions:
       contents: read

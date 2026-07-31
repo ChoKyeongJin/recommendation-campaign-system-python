@@ -12,6 +12,8 @@ changed, and changed N times are shared by every compatible attribute.
 
 from __future__ import annotations
 
+import sql_dialect
+
 import copy
 import json
 import re
@@ -453,7 +455,7 @@ def compile_sql(
         "WITH " + "\n".join(ctes),
         "SELECT DISTINCT " + ", ".join([
             *member_select_columns,
-            "'" + segment_label.replace("'", "''") + "' AS segment_label",
+            sql_dialect.quote_literal(segment_label) + " AS segment_label",
         ]),
         f"FROM {member_table} {member_alias}",
         f"INNER JOIN ATTRIBUTE_SUMMARY R ON R.MEMBER_NO = {member_alias}.{member_key}",

@@ -186,3 +186,23 @@ CONNECTION_DIALECTS: dict[str, str] = {
 def dialect_for_connection(connection: str | None, default: str = "ansi") -> SqlDialect:
     """커넥션명으로 방언 어댑터를 얻는다(미등록 커넥션은 default)."""
     return get_dialect(CONNECTION_DIALECTS.get(connection or "", default))
+
+
+# ── SQL 리터럴 렌더(방언 무관) ────────────────────────────────────────────────────────
+# 홑따옴표 이스케이프와 유니코드 LIKE 술어는 지금까지 세 모듈이 각자 복제하고 있었고,
+# "바이트 동일 출력"이라는 계약은 주석으로만 존재했다. 실제로 갈라져 있었다 — graph_rag 쪽만
+# str() 캐스팅이 없어 비문자열 입력에서 AttributeError 를 던졌다. 같은 WHERE 리스트에 섞이는
+# 리터럴이라 한 글자만 달라도 다른 SQL 이 되므로, 여기 한 곳이 소유한다.
+
+
+def quote_literal(value: object) -> str:
+    """문자열 리터럴로 감싼다('O'Brien' → 'O''Brien'). 비문자열은 str() 로 강제한다."""
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def nlike_contains(column: str, term: object) -> str:
+    """유니코드 부분일치 LIKE 술어(N'%term%').
+
+    N 접두어는 tsql/mysql 모두 유효해 한글 리터럴을 안전하게 비교한다.
+    """
+    return f"{column} LIKE N'%{str(term).replace(chr(39), chr(39) * 2)}%'"

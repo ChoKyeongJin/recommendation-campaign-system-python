@@ -7,6 +7,8 @@ queries and audience builders from drifting to different member populations.
 
 from __future__ import annotations
 
+import sql_dialect
+
 import functools
 import json
 import os
@@ -190,5 +192,4 @@ def active_member_filter(
 
 def active_member_predicate(alias: str = "B", path: Path = DEFAULT_MEMBER_POLICY_PATH) -> str:
     definition = active_member_definition(path)
-    escaped = definition["value"].replace("'", "''")
-    return f"{alias}.{definition['column']} = '{escaped}'"
+    return f"{alias}.{definition['column']} = {sql_dialect.quote_literal(definition['value'])}"

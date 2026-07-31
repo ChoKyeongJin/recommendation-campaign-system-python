@@ -12,6 +12,9 @@ import re
 import time
 
 
+_ENTITY_TERM_NOISE_RE = re.compile(r"[^0-9a-z가-힣]")
+
+
 def elapsed_ms(started_at: float) -> float:
     """time.perf_counter() 기준 시각(started_at)부터 지금까지 경과 밀리초(소수 2자리)."""
     return round((time.perf_counter() - started_at) * 1000, 2)
@@ -55,3 +58,14 @@ def raw_span(index_map: list[int], start: int | None, end: int | None) -> list[i
     if end <= start:
         return None
     return [index_map[start], index_map[end - 1] + 1]
+
+
+def normalize_entity_term(value: object) -> str:
+    """엔티티 값 비교용 정규화: 영숫자·한글만 남긴다('알로&루'→'알로루', 'A-BC '→'abc').
+
+    브랜드/상품명은 사용자 표기와 실DB canonical 표기가 특수문자에서 갈린다('알로루' vs '알로&루').
+    같은 정규화로 비교해야 정상 컴파일을 '미반영'으로 오탐하지 않는다. 예전에는 graph_rag 와
+    semantic_requirements 가 각자 구현하고 "동일 규칙"을 주석으로만 약속해, None 처리가 갈라져
+    있었다 — 규칙이 어긋나면 정상 SQL 이 부당하게 차단된다.
+    """
+    return _ENTITY_TERM_NOISE_RE.sub("", str(value or "").casefold())

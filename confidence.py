@@ -24,6 +24,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import member_filters_config
 from targeting_ir import BEHAVIOR_KO, extract_target_conditions
 
 DEFAULT_SCHEMA_PATH = Path("docs/data/schema_catalog.json")
@@ -135,7 +136,9 @@ def _extract_conditions(query_plan: dict[str, Any], candidate: dict[str, Any]) -
     # 레지스트리(targeting_ir.CONDITION_SPECS)의 confidence 메타에서 파생한다 — 예전처럼 조건 유형마다
     # 이 함수에 수집 분기를 복붙하면 하나만 빠져도 조용히 '확인되지 않음' 감점으로 새던 것을 구조적으로
     # 차단한다(수집 키/값/한글 라벨의 단일 소스는 레지스트리).
-    for condition in extract_target_conditions(query_plan):
+    for condition in extract_target_conditions(
+        query_plan, order_count_behaviors=member_filters_config.order_count_behaviors()
+    ):
         meta = condition.spec.confidence
         if meta is None or not meta.applies(condition.params):
             continue

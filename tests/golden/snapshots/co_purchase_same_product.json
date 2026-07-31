@@ -22,7 +22,12 @@
           },
           "predicate_kind": "LegacyPredicate",
           "semantic_key": "legacy:purchase_membership:553463f7d2a6fa7aeb3bc861ff5f57c137c0374fdf5ac159ca28d243d3fde2e5",
-          "source_spans": [],
+          "source_spans": [
+            {
+              "end": 23,
+              "start": 20
+            }
+          ],
           "type": "predicate_ref"
         },
         {
@@ -94,13 +99,22 @@
                   "entity": "purchase_order_detail",
                   "field": "order_quantity"
                 },
+                "source_span": {
+                  "end": 28,
+                  "start": 10
+                },
                 "source_text": "2019년 3월에 같은 상품을 동시 구매한 고객 수"
               }
             }
           },
           "predicate_kind": "LegacyPredicate",
           "semantic_key": "legacy:condition_evaluation:61857dcbe1f52d38733165294c3ed2af29d6b94e857a2b184bce2ecd3a9c08d4",
-          "source_spans": [],
+          "source_spans": [
+            {
+              "end": 28,
+              "start": 10
+            }
+          ],
           "type": "predicate_ref"
         },
         {
@@ -120,7 +134,12 @@
           },
           "predicate_kind": "LegacyPredicate",
           "semantic_key": "legacy:purchase_date:a280ce0c7e195b83d547352425889f37d76d74e8d71b7fa88077f234e599ee93",
-          "source_spans": [],
+          "source_spans": [
+            {
+              "end": 8,
+              "start": 0
+            }
+          ],
           "type": "predicate_ref"
         }
       ],
@@ -188,6 +207,10 @@
         "measure": {
           "entity": "purchase_order_detail",
           "field": "order_quantity"
+        },
+        "source_span": {
+          "end": 28,
+          "start": 10
         },
         "source_text": "2019년 3월에 같은 상품을 동시 구매한 고객 수"
       }

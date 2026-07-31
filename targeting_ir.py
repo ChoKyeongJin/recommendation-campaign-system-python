@@ -14,7 +14,8 @@ confidence 조건 수집/라벨까지 서로 다른 곳에 손배선해야 했�
   - 빌더 defer: spec.fact_join 인 조건은 전용 팩트조인 빌더가 소유한다 — EXISTS-류 범용 빌더는
     이런 조건이 있으면 양보한다(graph_rag 캠페인 반응 빌더 등).
   - 빌더 소유권: fact_join 조건 kind ↔ 빌더 매핑은 graph_rag._sql_target_builder_registry 가 선언하고,
-    테스트가 '모든 fact_join kind 는 정확히 하나의 빌더가 소유한다'를 강제한다(죽은 레지스트리 방지).
+    '모든 fact_join kind 는 정확히 하나의 빌더가 소유한다'가 불변식이다(죽은 레지스트리 방지).
+    강제: tests/test_registry_ownership_guards.py
   - confidence: spec.confidence 메타로 조건 수집/한글 라벨이 자동 파생된다(confidence._extract_conditions).
 
 순환 방지: 이 모듈은 graph_rag/confidence 를 import 하지 않는다(plain dict 입력). 설정 의존 값

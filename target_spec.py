@@ -11,7 +11,7 @@
 이 모듈은 순수 타입/직렬화만 담는다 — graph_rag 를 import 하지 않는다(순환 방지). SqlSemantics 추출은
 sql_semantics.py, 규칙 매핑/판정은 semantic_mapping.py, 오케스트레이션은 semantic_validation.py 가 맡는다.
 
-실행: python -m pytest tests/test_semantic_validation_v2.py -q
+실행: python -m pytest tests/test_semantic_verification_tristate.py -q
 """
 
 from __future__ import annotations

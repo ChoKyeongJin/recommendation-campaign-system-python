@@ -22,6 +22,8 @@ opaque "unsupported contract" code.
 
 from __future__ import annotations
 
+import sql_dialect
+
 import functools
 import json
 import re
@@ -1121,7 +1123,7 @@ def _sql_literal(value: Any) -> str:
         return "1" if value else "0"
     if isinstance(value, (int, float)):
         return str(value)
-    return "'" + str(value).replace("'", "''") + "'"
+    return sql_dialect.quote_literal(value)
 
 
 def _relative_date_expression(days: int) -> str:

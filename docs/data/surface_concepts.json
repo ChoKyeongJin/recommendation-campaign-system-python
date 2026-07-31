@@ -69,6 +69,11 @@
       "description": "캠페인의 목적이 구매·구입·전환·매출·판매를 일으키는 것."
     },
     {
+      "concept_id": "objective_repurchase",
+      "label": "캠페인 목적: 재구매",
+      "description": "캠페인의 목적이 이미 구매한 적 있는 고객에게 다시 사도록 유도하는 것(재구매·리오더). 첫 구매 유도(objective_purchase)와 구별된다."
+    },
+    {
       "concept_id": "objective_subscription",
       "label": "캠페인 목적: 구독",
       "description": "캠페인의 목적이 구독 가입·구독 유지인 경우."

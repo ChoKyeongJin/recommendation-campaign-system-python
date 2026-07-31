@@ -6,18 +6,18 @@
     "domain"
   ],
   "counts": {
+    "lexical": 12,
+    "wordlist": 46,
+    "domain": 223,
+    "composed": 37,
+    "grammar": 37
+  },
+  "raise_reason": "80fe0a4 에서 들어온 신규 표면 규칙 6종(기간 출처 접두/접미, compositional_targeting 안정·변동 감지 등)을 반영. 어휘의 데이터 이관(parser_lexicon.json)은 IR 결합 완화 플랜 Wave 4 로 분리했고, 그때 이 상한을 다시 내린다.",
+  "previous_counts": {
     "lexical": 11,
     "wordlist": 45,
     "domain": 217,
     "composed": 18,
     "grammar": 36
-  },
-  "raise_reason": "",
-  "previous_counts": {
-    "lexical": 11,
-    "wordlist": 46,
-    "domain": 218,
-    "composed": 5,
-    "grammar": 35
   }
 }

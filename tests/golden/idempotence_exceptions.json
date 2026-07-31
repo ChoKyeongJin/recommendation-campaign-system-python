@@ -1,0 +1,11 @@
+{
+  "description": "멱등성 측정의 허용목록. 사유 없는 등재는 계약 테스트가 거부한다. 목표는 전부 비우는 것이고, 개수는 하향 전용이다. 구조 이동(플랜 Wave 5)의 성공 판정이 이 파일이 비는 것이다.",
+  "filters": {},
+  "source_authoritative": {
+    "or_of_age_with_and_threshold": "원문 권위 재확정 번들을 한 번 더 돌리면 의미가 달라진다. 첫 실행에서 소실됐던 조건이 재실행으로 되살아나는 형태라, 재실행 횟수가 곧 결과가 된다. 33단계 목록의 순서 의존을 데이터로 선언하고 소유권 기반 early-return 을 넣는 작업(플랜 W5-2)에서 해소한다."
+  },
+  "build_sql_result_mutating_cases": [
+    "co_purchase_same_product"
+  ],
+  "build_sql_result_note": "build_sql_result 가 입력 plan 의 의미 슬롯까지 변형하는 케이스. 빌더가 플래너 패스를 내부에서 다시 돌리기 때문이다(생성과 소비의 경계 없음). 플랜 W5-1 에서 0 으로 내리는 것이 목표이며, 착수 전에 W3-5(API 응답 계약 테스트)가 먼저 있어야 한다 — capability_check/output_contract 는 골든에서 제외되는 파생 키라 순수화가 응답을 조용히 비울 수 있다."
+}

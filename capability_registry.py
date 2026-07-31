@@ -13,8 +13,8 @@ compiler_strategy 는 어디서도 dispatch 되지 않는 죽은 라벨이었다
 compilation_unavailable 로 강등한다. 정책적으로 막은 조합은 policy.disabled 로 별도 표시(status=
 disabled_by_policy) 해 '기술 미구현'과 '정책 비활성'을 혼동하지 않는다.
 
-validate_capabilities() 는 애플리케이션 시작/CI 에서 전체 정의를 정적 검증한다(요청 7): supported=true
-인데 compiler/join/field 가 없으면 배포 이전에 실패한다.
+validate_capabilities() 는 전체 정의를 정적 검증한다(요청 7): supported=true 인데 compiler/join/field 가
+없으면 실패를 낸다. 배선: tests/test_registry_ownership_guards.py 와 CI contracts 잡(.github/workflows/tests.yml).
 """
 
 from __future__ import annotations
@@ -27,8 +27,11 @@ from typing import Any
 import compiler_strategies
 from join_paths import JOIN_PATHS
 
-DEFAULT_CAPABILITIES_PATH = Path("docs/data/requirement_capabilities.json")
-DEFAULT_SCHEMA_CATALOG_PATH = Path("docs/data/schema_catalog.json")
+# 기본 경로는 **모듈 기준 절대경로**다. 상대경로면 cwd 가 저장소 밖일 때 설정을 못 읽고
+# 조용히 빈 레지스트리로 강등된다(증상이 예외가 아니라 '조금 다른 답'이라 눈에 띄지 않는다).
+_REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_CAPABILITIES_PATH = _REPO_ROOT / "docs" / "data" / "requirement_capabilities.json"
+DEFAULT_SCHEMA_CATALOG_PATH = _REPO_ROOT / "docs" / "data" / "schema_catalog.json"
 
 
 # 상태 taxonomy(요청 6) — '기술 미구현/스키마 없음/정책 비활성/입력 부족/검증 실패'를 혼용하지 않는다.

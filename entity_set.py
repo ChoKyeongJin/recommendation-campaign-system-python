@@ -22,6 +22,8 @@
 
 from __future__ import annotations
 
+import sql_dialect
+
 import re
 from datetime import date
 from typing import Any
@@ -530,7 +532,7 @@ def _scope_filter_specs(node: dict[str, Any], config: dict[str, Any]) -> list[tu
 
 
 def _sql_unicode(value: str) -> str:
-    return "N'" + str(value).replace("'", "''") + "'"
+    return "N" + sql_dialect.quote_literal(value)
 
 
 def _scope_filter_predicate(

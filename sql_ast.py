@@ -6,7 +6,7 @@
     validate_select_ast(Validation) → render_select_ast(SQL Builder 최종 렌더) → SQL
 
 빌더(graph_rag._sql_target_builders)는 문자열 join 대신 SelectAst 를 만들고, 렌더러가 기존과
-바이트 단위로 동일한 SQL 텍스트를 생성한다(기존 259개 회귀 테스트가 렌더 동등성을 보장).
+바이트 단위로 동일한 SQL 텍스트를 생성한다(렌더 동등성을 직접 보장하는 회귀 테스트는 현재 없다 — TODO).
 술어(leaf)는 원문 SQL 문자열로 둔다 — 구조(SELECT/FROM/JOIN/WHERE·AND 결합)가 AST 의 대상이고,
 리프까지 완전 파싱하는 것은 이 시스템 범위에서 얻는 것보다 위험이 크다.
 

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import common_utils
+
 import argparse
 import concurrent.futures
 import contextlib
@@ -42,6 +44,7 @@ import event_compiler
 import event_ir
 import event_parser
 import lexicon_patterns
+import member_filters_config
 import parser_shadow
 import plan_validation
 import plan_semantic_ast
@@ -126,6 +129,7 @@ from sql_guard import (
     validate_sql,
 )
 from confidence import render_confidence_markdown, render_confidence_report, score_targeting_confidence
+import sql_dialect
 from sql_dialect import SqlDialect, get_dialect
 import targeting_ir
 from targeting_ir import extract_target_conditions, fact_join_kinds
@@ -843,16 +847,29 @@ def _parse_activity_filters(entries: Any) -> dict[str, int]:
 _MEMBER_TARGET_FILTERS = _load_member_target_filters()
 
 
+# 설정 레지스트리 강등 기록. 세 로더는 import 가 통째로 죽지 않게 실패를 삼키는데, 삼킨 사실이
+# 어디에도 남지 않으면 "레지스트리가 빈 채로 도는" 상태를 아무도 모른다 — 증상이 예외가 아니라
+# '조금 다른 답'(단위 소실, 회계 무동작)이라 눈에 띄지 않기 때문이다. 값이 None 이면 정상,
+# 문자열이면 강등 사유다. tests/test_registry_ownership_guards.py 가 전부 None 인지 확인한다.
+REGISTRY_HEALTH: dict[str, str | None] = {
+    "metric": None,
+    "segment_semantics": None,
+    "requirement": None,
+}
+
+
 def _load_metric_registry() -> "metric_registry.MetricRegistry":
     """통합 지표 스펙 레지스트리(docs/data/metrics/*.json)를 읽는다. 스펙 파손/부재로 import 가
     통째로 죽지 않게 실패 시 빈 레지스트리로 강등한다 — 그러면 각 지표는 semantic_type/type 기반
-    기본 단위로 폴백하므로(회귀 테스트가 '일' 단위 소실을 즉시 잡음) 조용한 크래시 대신 가시적 실패가 된다.
+    기본 단위로 폴백하므로 조용한 크래시 대신 가시적 실패가 된다. 강등 자체는
+    tests/test_registry_ownership_guards.py 가 잡는다(빈 레지스트리로 커밋되지 않게).
 
     신규 지표 추가 구조 개선안 P1(단위): _metric_window_grammar 가 numeric_filters 의 unit 대신 이
     레지스트리의 units 를 우선 읽는다. 이후 단계(zero/최근성/비율)에서 소비 범위를 넓힌다."""
     try:
         return metric_registry.MetricRegistry.load()
-    except metric_registry.MetricSpecError:
+    except metric_registry.MetricSpecError as exc:
+        REGISTRY_HEALTH["metric"] = f"지표 스펙 로드 실패({exc}) → 빈 레지스트리로 강등"
         return metric_registry.MetricRegistry(specs=())
 
 
@@ -866,7 +883,8 @@ def _load_segment_semantics() -> "segment_semantics.SegmentSemanticsRegistry | N
     무동작(no-op)이 되어 기존 경로가 유지된다(가시적 실패는 tests/test_segment_semantics.py 가 잡는다)."""
     try:
         return segment_semantics.SegmentSemanticsRegistry.load()
-    except segment_semantics.SegmentSemanticsError:
+    except segment_semantics.SegmentSemanticsError as exc:
+        REGISTRY_HEALTH["segment_semantics"] = f"쿠폰 의미 스펙 로드 실패({exc}) → 무동작으로 강등"
         return None
 
 
@@ -875,10 +893,12 @@ _SEGMENT_SEMANTICS = _load_segment_semantics()
 
 def _load_requirement_registry() -> "semantic_requirements.RequirementRegistry | None":
     """공통 semantic requirement capability 레지스트리(docs/data/requirement_capabilities.json)를 읽는다.
-    파손/부재 시 None 으로 강등(회계 계층이 무동작 → 기존 동작 유지). 가시적 실패는 테스트가 잡는다."""
+    파손/부재 시 None 으로 강등(회계 계층이 무동작 → 기존 동작 유지).
+    강등 감지: tests/test_registry_ownership_guards.py"""
     try:
         return semantic_requirements.RequirementRegistry.load()
-    except semantic_requirements.RequirementCapabilityError:
+    except semantic_requirements.RequirementCapabilityError as exc:
+        REGISTRY_HEALTH["requirement"] = f"requirement capability 로드 실패({exc}) → 회계 무동작으로 강등"
         return None
 
 
@@ -1087,9 +1107,9 @@ def _member_policy_predicates(query_plan: dict[str, Any], alias: str = "B") -> l
         if not column:
             continue
         if operator == "eq" and isinstance(value, str):
-            predicates.append(f"{alias}.{column} = '{value.replace(chr(39), chr(39) * 2)}'")
+            predicates.append(f"{alias}.{column} = {sql_dialect.quote_literal(value)}")
         elif operator == "in" and isinstance(value, list) and value:
-            quoted = ", ".join("'" + str(v).replace("'", "''") + "'" for v in value)
+            quoted = ", ".join(sql_dialect.quote_literal(v) for v in value)
             predicates.append(f"{alias}.{column} IN ({quoted})")
     return predicates
 
@@ -2705,7 +2725,7 @@ def _finalize_deterministic_query_plan(
     _apply_entity_set_condition(query, plan)
     _reconcile_deterministic_member_exclusions(query, plan)
     # 파생 엔터티 집합·회원 제외까지 확정된 뒤 조건 소유권을 재조정한다(집합식 중복 억제 + 최종 clarification).
-    _reconcile_condition_ownership(plan)
+    _reconcile_condition_ownership(plan, query)
     _reconcile_semantic_ir_with_execution_plan(plan)
     _guard_unparsed_entity_ranking(query, plan)
     _apply_analytical_intent(query, plan, sql_schema)
@@ -4043,8 +4063,9 @@ def classify_query_complexity(query_plan: dict[str, Any]) -> str:
 # "rules 는 되는데 auto 만 실패"가 나온다(반복 사고). 이 레지스트리는 '필터를 어떻게 호출하나'(컨테이너/슬롯
 # 초기화/추가 인자/참여 경로)를 필터당 한 엔트리로 선언하고, 두 경로는 이름 순서 리스트만 넘겨 _run_filters 로
 # 순회한다. 순서는 문서화된 의존성(주석 참조)이 경로마다 달라 경로별 리스트가 소유하고, 참여 경로 집합은 spec
-# 이 소유한다 — test_deterministic_filter_registry 가 '리스트 == spec.paths'와 '고아 없음'을 강제해 등록 누락을
-# 컴파일타임 아닌 테스트타임에 잡는다(_sql_target_builder_registry 의 소유권 불변식과 같은 방식).
+# 이 소유한다 — 불변식은 '경로별 리스트 == spec.paths' 와 '고아 spec 없음'이며, 어기면 '규칙은 되는데
+# auto 만 실패'가 재발한다. 현재 이 불변식을 강제하는 가드는 없다(TODO — fact_join 소유권 쪽은
+# tests/test_registry_ownership_guards.py 가 같은 방식으로 지킨다).
 @dataclass(frozen=True)
 class _FilterSpec:
     """결정론 필터 하나의 호출 방식 선언. 새 필터는 여기 한 엔트리 + 경로 리스트에 이름 추가만 하면 된다."""
@@ -4078,7 +4099,7 @@ class _FilterSpec:
     needs_policies: bool = False  # apply(query, plan, business_policies)
     # family: 이 필터가 속한 선언형 클러스터(예: "attribute_token"). impl 이 선언형이면 impl 이 곧 family 지만,
     # 공통화 불가 예외를 커스텀(impl="custom")으로 남길 때 family 로 '원래 이 클러스터 소속'임을 표시하고
-    # exception_reason 에 사유를 적는다 — 테스트가 '클러스터 소속은 선언형이거나 사유 있는 예외' 불변식을 강제한다.
+    # exception_reason 에 사유를 적는다 — 불변식은 '클러스터 소속은 선언형이거나 사유 있는 예외'다(강제 가드 없음 — TODO).
     family: str | None = None
     exception_reason: str | None = None
     # 출처 구간(span) 위치추적기: span(query, plan) -> (start, end) | None. 선언하면 필터 실행 뒤
@@ -4499,7 +4520,7 @@ class _AttributeTokenGroup:
     올리는 '단순 속성형' 필터의 전체 동작을 데이터로 선언한다 — 새 필터는 이 스펙 한 줄 + 레지스트리
     attribute_token 엔트리 등록만으로 열린다(전용 _apply_* 함수 불필요). 복합 파싱(서열 랭크 확장·이중부정·
     채널어 강등 등)은 이 문법으로 표현 못 하므로 커스텀 필터(impl="custom", family="attribute_token",
-    exception_reason=...)로 남긴다 — test_deterministic_filter_registry 가 그 분류를 강제한다."""
+    exception_reason=...)로 남긴다 — 그 분류를 강제하는 가드는 없다(TODO)."""
 
     canonicals: tuple[tuple[str, tuple[str, ...]], ...]  # (canonical, 기본 표면어); surface_terms JSON 있으면 덮음
     neg: str | None = None   # 부정 접미어 정규식 → exclude.lifecycle (None=부정 없음)
@@ -5194,7 +5215,7 @@ def _resolve_query_plan_candidates(
     # requirements and post-merge dependencies are attached.  Rebuild once at
     # this shared boundary so every parser receives identical ownership and
     # requirement→claim provenance.
-    _reconcile_condition_ownership(plan)
+    _reconcile_condition_ownership(plan, source_query)
     return plan
 
 
@@ -5226,6 +5247,18 @@ _AUTO_FILTERS: tuple[str, ...] = (
     "birthday", "signup_target", "zero_amount_purchase", "zero_purchase_count", "metric_trend",
     "calendar_window_claim", "event_expression",
 )
+
+# 집합식 operand 값 복원(_enrich_set_expression_operand_values)이 끼어드는 지점. 값 인덱스 계열
+# 필터가 전부 끝난 **뒤**, 랭킹 감지가 시작되기 **전**이어야 한다. 이름으로 선언해 두면 튜플에
+# 필터를 추가해도 경계가 따라 움직인다.
+_AUTO_FILTER_ENRICHMENT_BOUNDARY = "macro_region"
+
+
+def _split_auto_filters_at_enrichment() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """_AUTO_FILTERS 를 값 복원 전/후 두 구간으로 나눈다(경계 필터는 앞 구간에 포함)."""
+    index = _AUTO_FILTERS.index(_AUTO_FILTER_ENRICHMENT_BOUNDARY) + 1
+    return _AUTO_FILTERS[:index], _AUTO_FILTERS[index:]
+
 
 
 def _build_single_query_plan(
@@ -5404,11 +5437,16 @@ def _build_single_query_plan(
     llm_plan.setdefault("campaign_constraints", {}).setdefault("sell_object", None)
     # 결정론 필터를 레지스트리 순서(_AUTO_FILTERS)로 실행한다 — 호출 방식·슬롯 선초기화(init=True: 희소한
     # LLM 플랜)는 _deterministic_filter_registry 가 소유한다. 집합식 operand 값 복원(_enrich)은 값 인덱스
-    # (member_value/dimension) 뒤·랭킹 감지 전에 끼워야 하므로 macro_region 까지(앞 5개)와 그 뒤로 나눠 돈다.
-    _run_filters(_AUTO_FILTERS[:5], parse_query, llm_plan, init=True)
+    # (member_value/dimension) 뒤·랭킹 감지 전에 끼워야 하므로 두 구간으로 나눠 돈다.
+    #
+    # 경계는 **이름**으로 잡는다. 예전에는 [:5]/[5:] 슬라이스였는데, 그러면 튜플 앞쪽에 필터를 하나
+    # 추가하는 것만으로 경계가 조용히 밀려 _enrich 가 엉뚱한 시점에 끼어든다(순서 요구가 숫자에만
+    # 적혀 있어 컴파일도 테스트도 못 잡는다).
+    before, after = _split_auto_filters_at_enrichment()
+    _run_filters(before, parse_query, llm_plan, init=True)
     # LLM 이 만든 집합식 operand(지역/등급 디멘션)에도 프롬프트에서 복원한 값을 실어 컴파일되게 한다.
     _enrich_set_expression_operand_values(llm_plan, parse_query)
-    _run_filters(_AUTO_FILTERS[5:], parse_query, llm_plan, init=True)
+    _run_filters(after, parse_query, llm_plan, init=True)
     # 구조화 LLM 슬롯도 이미 희소 후보로 제출되어 resolver에서 rules 슬롯과 함께 판정됐다.
     # behaviors 가 이미 소유한 canonical(예: cart_abandoner)이 lifecycle 에도 중복 분류되면 lifecycle 쪽을 뺀다.
     # lifecycle_extra_terms 에 behavior 겸용 어휘가 있어 LLM 이 같은 값을 lifecycle 로도 넣으면, compile 이 그
@@ -5420,7 +5458,7 @@ def _build_single_query_plan(
     _drop_uncompilable_set_expressions(llm_plan)
     # 조건 소유권 재조정: 권위 슬롯(제외/디멘션/파생 엔터티 집합)이 이미 소유한 집합식 후보를 억제하고
     # 남은 미해결만 clarification 으로 남긴다(정책: docs/data/condition_ownership_policy.json).
-    _reconcile_condition_ownership(llm_plan)
+    _reconcile_condition_ownership(llm_plan, parse_query)
     # 어휘로 인식된 도메인을 기록한다(조건 생성 X) — SQL 이 안 나왔을 때 "조건을 못 찾음"과
     # "조건은 인식했지만 그 형태는 미지원"을 구별해 안내하기 위한 진단 정보다.
     _apply_recognized_domains(parse_query, llm_plan)
@@ -5580,7 +5618,7 @@ def _build_rule_query_plan(
     _run_filters(_RULES_POST_FILTERS, query, plan, business_policies=business_policies)
     # 모든 결정론 필터가 끝나(dimension_filters·gender·lifecycle 확정) 소유권이 확정된 뒤 조건 소유권을
     # 재조정한다 — 권위 슬롯이 이미 소유한 집합식 후보를 억제하고, 남은 미해결만 clarification 으로 남긴다.
-    _reconcile_condition_ownership(plan)
+    _reconcile_condition_ownership(plan, query)
     # 계산식(computed_metrics)은 규칙 경로가 만들지 않는다 — formula_ast 는 LLM 파서만 제안하고
     # (_coerce_llm_computed_metric), formula_engine 은 그 AST 를 검증·컴파일만 한다.
     policy_terms = [
@@ -7502,9 +7540,13 @@ def _extract_conditions_ir(query_plan: dict[str, Any]):
     """query_plan → 타겟 조건 IR(targeting_ir.extract_target_conditions)의 graph_rag 진입점.
 
     설정 소유 값(order_count_targets.behaviors 키 집합)을 주입한다 — IR 모듈은 설정/graph_rag 를
-    import 하지 않는 순수 도메인 계층이라 컨텍스트를 호출자가 준다."""
+    import 하지 않는 순수 도메인 계층이라 컨텍스트를 호출자가 준다.
+
+    주입값은 member_filters_config 가 단일 소스로 소유한다. 예전에는 여기만 설정을 주입하고
+    confidence·canonical_targeting 은 코드 기본값 폴백을 써서, 설정에 행동을 추가하면 같은 조건이
+    소비자마다 다르게 분류되는 이중 소유 분기점이었다."""
     return extract_target_conditions(
-        query_plan, order_count_behaviors=frozenset(_order_count_targets_config()["behaviors"])
+        query_plan, order_count_behaviors=member_filters_config.order_count_behaviors()
     )
 
 
@@ -11460,11 +11502,17 @@ def _bind_threshold_candidates(clause: str, clause_index: int = 0) -> list["aggr
 
 
 def _remaining_condition_labels(plan: dict[str, Any], conditions: list[dict[str, Any]]) -> list[str]:
-    """미지원 조건을 뺐을 때 남는 조건의 사람이 읽을 라벨. '나머지 조건만으로 조회할까요?' 의 근거다."""
+    """미지원 조건을 뺐을 때 남는 조건의 사람이 읽을 라벨. '나머지 조건만으로 조회할까요?' 의 근거다.
+
+    라벨 유무로 거르지 않는다 — 예전에는 ``_UNSUPPORTED_CONDITION_LABELS`` 에 없는 슬롯이 안내에서
+    통째로 사라져, 실제로는 살아 있는 조건을 사용자가 못 보는 침묵 삭제가 생겼다(장바구니 보관·캠페인
+    반응 횟수 등 6종이 그 상태였다). 조건 슬롯인지 여부는 논리식 게이트가 소유하는 집합으로 판정하고,
+    라벨이 없으면 일반 문구로 폴백해 '보이기는 한다'를 보장한다.
+    """
     labels = [
-        _UNSUPPORTED_CONDITION_LABELS[f"target_user.{slot}"]
+        _UNSUPPORTED_CONDITION_LABELS.get(f"target_user.{slot}", "기타 타겟 조건")
         for slot, value in (plan.get("target_user") or {}).items()
-        if value and slot != "aggregate_conditions" and f"target_user.{slot}" in _UNSUPPORTED_CONDITION_LABELS
+        if value and slot != "aggregate_conditions" and slot in _LOGIC_CONDITION_SLOTS
     ]
     labels.extend(str(condition["label"]) for condition in conditions if condition.get("label"))
     return _unique_strings(labels)
@@ -14467,8 +14515,12 @@ def _purchase_brand_names() -> tuple[str, ...]:
 
 
 def _normalize_product_term(value: str) -> str:
-    """브랜드/상품명 비교용 정규화: 영숫자·한글만 남긴다('알로&루'→'알로루', 'A-BC '→'abc')."""
-    return re.sub(r"[^0-9a-z가-힣]", "", value.casefold())
+    """브랜드/상품명 비교용 정규화: 영숫자·한글만 남긴다('알로&루'→'알로루', 'A-BC '→'abc').
+
+    구현은 common_utils 가 단일 소유한다 — 두 함수가 갈리면 canonical 보정된 정상 SQL 이
+    '미반영'으로 오탐돼 출고가 부당 차단된다.
+    """
+    return common_utils.normalize_entity_term(value)
 
 
 def _canonicalize_product_term(term: str) -> str:
@@ -15145,7 +15197,7 @@ def retrieve(
     compositional_targeting.apply_to_plan(
         targeting_prompt, query_plan, schema_path=sql_schema
     )
-    _reconcile_condition_ownership(query_plan)
+    _reconcile_condition_ownership(query_plan, plan_query)
     # 타겟팅 스코프면 plan_query 가 오디언스 절뿐이라 '재구매를 유도' 같은 캠페인 목적 절이 잘려
     # intent 가 recommend_campaign→find_user_segment 로 약화된다(장바구니 이탈 재구매 유도 등).
     # 목적 절이 살아있는 전체 재작성본으로 intent 를 재추론해 더 강한 캠페인 의도로만 승격한다.
@@ -15206,7 +15258,7 @@ def retrieve(
                 if masked_query != targeting_prompt:
                     _apply_sell_object(masked_query, staged_plan)
                 # 새 실행 슬롯을 붙인 뒤 canonical plan/소유권/LLM clarification 상태를 다시 동기화한다.
-                _reconcile_condition_ownership(staged_plan)
+                _reconcile_condition_ownership(staged_plan, targeting_prompt)
                 _reconcile_semantic_ir_with_execution_plan(staged_plan)
             staged_plan.pop("_conceptual_scope", None)
             query_plan.clear()
@@ -20279,7 +20331,7 @@ def build_sql_result(
     _reconcile_deterministic_member_exclusions(original_query or query, query_plan)
     # 파생 엔터티 집합·회원 제외가 확정된 지금이 소유권 재조정의 마지막 지점이다(집합식 clarification 은
     # 파서 직후가 아니라 여기서 최종 판정된다 — 조정 후에도 미해결인 항목만 남는다).
-    _reconcile_condition_ownership(query_plan)
+    _reconcile_condition_ownership(query_plan, original_query or query)
     _reconcile_semantic_ir_with_execution_plan(query_plan)
     _guard_unparsed_entity_ranking(original_query or query, query_plan)
     relational_ir_block = _relational_ir_blocking_sql_result(query_plan)
@@ -21943,7 +21995,7 @@ def _condition_ownership_policy() -> condition_reconciliation.ConditionPolicy:
 
 
 @_audited_stage
-def _reconcile_condition_ownership(plan: dict[str, Any]) -> None:
+def _reconcile_condition_ownership(plan: dict[str, Any], source_query: str | None = None) -> None:
     """조건 소유권 재조정 — 파서들이 병행 생성한 후보에서 canonical owner 하나만 남긴다.
 
     파서 결과가 다 모인 뒤·최종 clarification 판정 전에 도는 단일 지점이다. 여기서 하는 일:
@@ -21956,7 +22008,19 @@ def _reconcile_condition_ownership(plan: dict[str, Any]) -> None:
 
     핵심 불변식: ``unknown_operand`` 가 있다는 사실 자체는 더 이상 clarification 사유가 아니다 —
     조정 이후에도 어느 슬롯도 소유하지 못한 항목만 사유가 된다.
+
+    ``source_query`` 는 이 plan 이 파싱된 문장이다. plan 이 아직 자기 질의를 싣지 않은 단계
+    (플랜 빌드 경로는 retrieve 의 planning_query 기록보다 앞선다)에서도 아래 두 규칙이 문장을
+    필요로 하므로 여기서 확정 기록한다 — (1) 집합식/논리식이 뒤늦게 병합된 경우의 사건 IR 재수집,
+    (2) canonical_targeting 의 '질의 전체 스팬 폴백' 가드(_is_full_query_fallback). 문장이 없으면
+    후자가 무력화돼 서로 다른 조건이 같은 전체-질의 구간을 중복 소유하고, 그 결과 소유권 불변식이
+    깨져 SQL 이 조용히 억제된다.
     """
+    if isinstance(source_query, str) and source_query.strip() and not any(
+        isinstance(plan.get(key), str) and plan.get(key).strip()
+        for key in ("original_query", "raw_query", "planning_query")
+    ):
+        plan["planning_query"] = source_query
     if not isinstance(plan.get(EVENT_EXPRESSION_KEY), dict) and (
         plan.get("set_expressions") or plan.get("logical_expression")
     ):
@@ -22570,7 +22634,7 @@ def _sql_target_builder_registry() -> tuple[tuple[Any, frozenset[str]], ...]:
     라우팅·소유권의 단일 소스. 새 조건 유형은 targeting_ir.CONDITION_SPECS 에 spec 을 선언하고 여기서
     소유 빌더에 kind 를 달면 발송(recommend_campaign)·조회(find_user_segment) 두 의도, 신호 감지,
     EXISTS-류 빌더 defer 까지 자동 반영된다. '모든 fact_join kind 는 정확히 하나의 빌더가 소유한다'는
-    불변식을 테스트가 강제한다(소유자 없는 조건이 조용히 다른 빌더로 새는 사고 방지 — 이번
+    불변식을 tests/test_registry_ownership_guards.py 가 강제한다(소유자 없는 조건이 조용히 다른 빌더로 새는 사고 방지 — 이번
     campaign_response_frequency 이전의 '캠페인 반응 횟수→주문 집계 오배정'이 정확히 그 사고였다).
     순서 주의: purchase_count_ranking(기간 내 상위 N)은 상품 구매 이력(purchase_history)보다 먼저 — 날짜만
     있는 랭킹이 구매 이력 쪽으로 새지 않게. 반응 '횟수'(HAVING COUNT) 빌더는 EXISTS-only 캠페인 빌더보다
@@ -23009,6 +23073,12 @@ _UNSUPPORTED_CONDITION_LABELS = {
     "target_user.purchase_membership": "구매 이력 조건",
     "target_user.purchase_inactivity": "미구매 기간 조건",
     "target_user.cart_absence": "장바구니 미보유 조건",
+    "target_user.cart_retention": "장바구니 보관 기간 조건",
+    "target_user.cart_aggregate": "장바구니 집계 조건(담은 수량/금액)",
+    "target_user.campaign_response_frequency": "캠페인 반응 횟수 조건",
+    "target_user.campaign_buy_amount": "캠페인 구매 금액 조건",
+    "target_user.campaign_buy_count": "캠페인 구매 건수 조건",
+    "target_user.cell_rate_target": "캠페인 셀 반응률 조건",
     "target_user.age_exclude_ranges": "연령 제외 조건",
     "target_user.price_sensitivity": "가격 민감도 조건",
     "target_user.inactivity_period": "미접속 기간 조건",
@@ -24562,10 +24632,13 @@ def _order_detail_member_join_lines(alias: str = "D", product_alias: str | None 
     return lines
 
 
-def _sql_nlike_contains(column: str, term: str) -> str:
+def _sql_nlike_contains(column: str, term: Any) -> str:
     """유니코드 부분일치 LIKE 술어(N'%term%'). term 은 _sanitize_purchase_object 로 정제돼 홑따옴표가 없으나
-    방어적으로 이스케이프한다. N 접두어는 tsql/mysql 모두 유효해 한글 리터럴을 안전하게 비교한다."""
-    return f"{column} LIKE N'%{term.replace(chr(39), chr(39) * 2)}%'"
+    방어적으로 이스케이프한다. N 접두어는 tsql/mysql 모두 유효해 한글 리터럴을 안전하게 비교한다.
+
+    구현은 sql_dialect 가 단일 소유한다(미러 복제 금지).
+    """
+    return sql_dialect.nlike_contains(column, term)
 
 
 def _window_time_token(candidate: dict[str, Any], key: str) -> str | None:
@@ -26892,13 +26965,19 @@ _LOGIC_HANDLED_SLOTS = frozenset({
     "gender", "age_min", "age_max", "lifecycle", "aggregate_conditions", "balance_conditions", "cart_aggregate",
 })
 # target_user 에서 '조건'을 담는 슬롯(비면 무시). 이 중 _LOGIC_HANDLED_SLOTS 밖이 채워져 있으면 미지원 Leaf.
-_LOGIC_CONDITION_SLOTS = frozenset({
+#
+# 구조화 슬롯(targeting_ir.SLOT_SHAPES)은 **파생**하고, 규칙 파서만 만드는 슬롯만 여기 나열한다.
+# 전부 손으로 나열하면 새 슬롯이 게이트에 누락돼 fail-close 가 fail-OPEN 으로 뒤집힌다 —
+# leftover 검사가 이 집합만 훑기 때문에, 집합 밖 슬롯은 채워져 있어도 '남은 조건 없음'으로 통과하고
+# 그 조건은 SQL 에 반영되지 않은 채 조용히 사라진다. 실제로 cart_absence·metric_trend 가 그 상태였다.
+_LOGIC_RULE_ONLY_CONDITION_SLOTS = frozenset({
     "gender", "age_min", "age_max", "age_exclude_ranges", "lifecycle", "interests", "preferred_channels",
-    "behaviors", "purchase_object", "purchase_date", "price_sensitivity", "inactivity_period", "recent_login",
-    "purchase_inactivity", "birthday_target", "signup_target", "aggregate_conditions", "cart_retention",
-    "cart_type", "cart_aggregate", "balance_conditions", "profile_date_conditions", "campaign_responses", "campaign_response_frequency",
-    "campaign_buy_amount", "campaign_buy_count", "cell_rate_target",
+    "behaviors", "price_sensitivity", "inactivity_period", "balance_conditions", "profile_date_conditions",
 })
+_LOGIC_CONDITION_SLOTS = _LOGIC_RULE_ONLY_CONDITION_SLOTS | frozenset(
+    name for name, shape in targeting_ir.SLOT_SHAPES.items()
+    if getattr(shape, "container", None) == "target_user"
+)
 
 
 def _logical_or_compiler_enabled() -> bool:
@@ -27326,8 +27405,9 @@ def _template_tables(sql: str) -> list[str]:
     )
 
 
-def _sql_quote(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
+def _sql_quote(value: Any) -> str:
+    """SQL 문자열 리터럴. 구현은 sql_dialect 가 단일 소유한다(미러 복제 금지)."""
+    return sql_dialect.quote_literal(value)
 
 
 def validate_required_input_conditions(query_plan: dict[str, Any], condition_tokens: list[dict[str, Any]]) -> dict[str, Any]:

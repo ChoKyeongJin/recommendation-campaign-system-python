@@ -18,7 +18,12 @@
       },
       "predicate_kind": "MemberPredicate",
       "semantic_key": "member:428984ffedf003d1d592edc93d93ed2caa969b6c92b95553dba04672d70b3c02",
-      "source_spans": [],
+      "source_spans": [
+        {
+          "end": 12,
+          "start": 7
+        }
+      ],
       "type": "predicate_ref"
     },
     "intent": "find_user_segment"
