@@ -1,4 +1,10 @@
-"""구매 의미의 단일 소스 — 활용형·명사형·존재/부재를 한곳에서 판정한다.
+"""구매 의미의 **형태 판정** 계층 — 활용형·명사형·존재/부재를 한곳에서 읽는다.
+
+위치: 구매 의미의 1순위 판정은 :mod:`semantic_signal` 의 구조화 추출이 갖는다(뜻을 문맥으로 읽고
+실제 발생·의향·가정·단순 언급·부정을 상태로 구분한다). 이 모듈은 그 아래 **2순위 폴백**이자, 창
+귀속에 필요한 **스팬 공급자**다 — 구조화 추출은 뜻을 주지 위치를 주지 않기 때문이다.
+:func:`rule_signal` 이 이 계층을 구조화 신호로 올려 주는 어댑터이며, 표면형 목록으로 발생을
+판정하는 유일한 정당한 자리는 여기(장애 대응 폴백)뿐이다.
 
 배경: '구매 신호'를 읽는 규칙이 파서·재작성 게이트·상품 추출에 각자 흩어져 있었다. 그래서 같은
 뜻의 표현형 하나가 한 곳에서만 새는 결함이 반복됐다.
@@ -29,6 +35,7 @@ from dataclasses import dataclass
 from typing import Iterable
 
 import lexicon_patterns
+import semantic_signal
 
 # ── 어휘 조합(낱말은 lexicon_patterns 가 소유) ────────────────────────────────────────────
 # 구매 존재/부재가 공유하는 동사. 두 극성이 같은 목록을 봐야 표현형 하나가 한쪽에서만 새지 않는다.
@@ -208,12 +215,19 @@ def colloquial_spans(text: str) -> tuple[SurfaceSpan, ...]:
 EXISTS = "purchase:exists"
 ABSENT = "purchase:absent"
 
+SIGNAL = "purchase"
+
 
 def membership_signals(text: str) -> frozenset[str]:
-    """텍스트가 담은 구매 의미(존재/부재) 집합.
+    """텍스트가 담은 구매 의미(존재/부재) 집합 — **형태 판정 계층**의 답이다.
 
-    재작성·절 분리가 표현을 바꾸어도 **이 집합은 보존돼야 한다**. 호출부는 전후를 비교해 신호가
-    사라졌으면 그 변환을 폐기한다(문자열을 되돌리는 것이지 동사를 지어내는 것이 아니다).
+    이 함수는 더 이상 구매 의미의 1순위 판정기가 아니다. 파이프라인의 1순위는
+    :func:`semantic_signal.resolve` 의 구조화 추출이고, 여기 형태 판정은 그 위가 침묵하거나
+    실패했을 때의 2순위 폴백이다(:func:`rule_signal` 이 그 어댑터다).
+
+    그래도 이 계층이 남아 있는 이유는 둘이다. (i) 키가 없는 오프라인·테스트 실행에서 기존 결정론
+    동작을 그대로 재현해야 한다. (ii) 창 귀속에 필요한 **스팬**은 형태에서만 나온다 — 구조화
+    추출은 뜻을 주지 위치를 주지 않는다.
     """
     source = text if isinstance(text, str) else ""
     compact = source.replace(" ", "").casefold()
@@ -226,5 +240,24 @@ def membership_signals(text: str) -> frozenset[str]:
 
 
 def has_purchase_expression(text: str) -> bool:
-    """구매(존재/부재 무관) 표현이 있는가 — 상품 추출 등 '구매 문맥' 게이트가 쓴다."""
+    """구매(존재/부재 무관) 표현이 있는가 — 형태 판정만으로 답하는 저수준 질문."""
     return bool(membership_signals(text))
+
+
+def rule_signal(text: str) -> semantic_signal.SemanticSignal:
+    """형태 판정 → 구조화 신호. 폴백 사슬 2순위(:func:`semantic_signal.resolve`)의 어댑터다.
+
+    형태가 줄 수 있는 것은 '관계를 주장했는가'와 그 극성뿐이다. 의향·가정·단순 언급은 활용형으로
+    구분되지 않으므로 여기서는 만들지 않는다 — 그 구분은 1순위 구조화 추출의 몫이고, 폴백이
+    없는 뜻을 지어내면 폴백이 조용한 오탐원이 된다.
+
+    극성이 둘 다 잡히면("A는 샀고 B는 안 샀다") 둘을 **각각의 주장으로** 남긴다. 대상 이름은
+    형태로 알 수 없어 대상 미지정 주장이 되고, 문장 단위 롤업 정책이 발생으로 접는다.
+    """
+    signals = membership_signals(text)
+    claims = []
+    if EXISTS in signals:
+        claims.append(semantic_signal.claim(SIGNAL, semantic_signal.COMPLETED))
+    if ABSENT in signals:
+        claims.append(semantic_signal.claim(SIGNAL, semantic_signal.DENIED))
+    return semantic_signal.build(SIGNAL, claims, source=semantic_signal.SOURCE_RULES)

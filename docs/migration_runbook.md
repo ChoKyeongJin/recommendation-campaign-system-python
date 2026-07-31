@@ -54,6 +54,32 @@ A(어휘)는 끝이 없다. 사전에 없는 말투는 규칙이 조용히 침�
 `SURFACE_LEXICON_LLM=off` 인 환경(테스트 포함)에서 이관 전 결정론 동작을 재현하는 것이 유일한
 역할이고, 손으로 늘리지 않는다 — `tests/test_surface_lexicon_llm.py` 의 래칫이 강제한다.
 
+### 불리언으로는 부족한 뜻 — 의미 신호(status)
+
+표면 개념은 "이 문장이 그 얘기인가"라는 **불리언**이다. 그런데 어떤 뜻은 불리언으로 접는 순간 반드시
+틀린다. 구매가 그렇다 — `샀다`·`살까 고민 중`·`사지 않았다`·`구매 방법을 알려줘`는 전부 "구매 얘기"
+지만 오디언스는 완전히 다르다. 이 부류는 `semantic_signal.py` + `docs/data/semantic_signals.json` 이
+소유하고, 불리언 대신 **상태(status)** 를 돌려준다.
+
+| | 무엇 | 어디에 |
+|---|---|---|
+| 상태 집합 | `completed`/`history`/`ongoing`/`intent`/`hypothetical`/`mentioned`/`denied`/`none`/`unknown` | 코드(구조) |
+| 어떤 상태가 '실제 발생'인가 | `detected_statuses` | `semantic_signals.json`(정책) |
+| 그 뜻을 어떻게 말하는가 | — | **어느 목록도 소유하지 않는다**(추출기가 읽는다) |
+
+규약 넷이 이 계층의 실질이다.
+
+1. **한 번만 판정한다.** 원문에서 한 번 구조화하고 게이트·필터·재작성 비교가 같은 값을 읽는다.
+   재작성본 문자열을 같은 키워드로 다시 검사하는 자리가 조건이 사라지던 자리였다.
+2. **boolean 을 뭉개지 않는다.** `detected` 는 `semantic_signal.detected_for` 한 곳만 계산한다.
+   문맥 게이트(`_has_purchase_history_signal`)와 발생 판정은 같은 status 에서 나온 **다른** 질문이다.
+3. **폴백은 우선순위지 OR 이 아니다.** 구조화 결과 → 형태 판정(`purchase_lexicon`) → 보수적 낱말
+   (문맥만, 발생으로 승격 안 함) → `unknown`. 상위가 답하면 하위는 보지 않는다.
+4. **메타데이터는 의미가 아니다.** 출처·모델·소요시간은 `canonical_form` 에 들어가지 않는다.
+
+새 표현이 들어와도 여기는 고칠 것이 없다. 새 *뜻*이 필요할 때만 `semantic_signals.json` 에 항목
+하나와 그 뜻을 소비하는 코드를 더한다. 표현형 전수는 `tests/test_semantic_signal.py` 가 갖는다.
+
 대체되지 **않은** 어휘도 있다. 문장에 있는가가 아니라 **어디에 있는가**로 판정하는 것들이다:
 대상 지향 표지(절 분리 지점), 장바구니 어휘(금액·수량 인접성), `parser_lexicon.json` 어휘(교대
 정규식으로 합성), `normalization_rules` 의 동의어(매칭 스팬 `matched_text` 를 하위가 소비),
@@ -91,6 +117,9 @@ docker compose exec -e PYTHONPATH=/app -w /app api \
 | `CONDITION_SLOT_LLM_FALLBACK` | `true`(기본)/`off` | 사전에 없는 말투를 조건 슬롯으로 채우는 LLM 보완(회원 상태 플래그·쿠폰 임계·**회원 지표 선택**). 끄면 동결 백스톱 표면어와 `segment_lexicon.json`·`member_metrics.json` 동의어만으로 동작한다(기존 동작). 켜져 있으면 회원 명사가 있고 규칙이 플래그를 못 올린 질의마다 빠른 모델 호출이 1회 추가되고, 지표 개념 신호가 참인 질의에 1회 더 추가된다 |
 | `SURFACE_LEXICON_LLM` | `true`(기본)/`off` | 표면 신호(의도·목적·문맥·집계 함수어)의 LLM 해석. **끄면 동결 백스톱 낱말만 읽으므로 처음 보는 말투가 조용히 침묵한다**(이관 전 동작). 켜져 있으면 질의당 빠른 모델 호출이 1회 추가되고, 그 결과는 질의 스코프 안에서 재사용된다(절 단위로 다시 부르지 않는다) |
 | `SURFACE_CONCEPTS_PATH` | 경로 | 표면 개념(닫힌 집합) 선언 파일 |
+| `SEMANTIC_SIGNAL_LLM` | `true`(기본)/`off` | 의미 신호(구매 등)의 구조화 판정. **끄면 형태 판정 폴백만 돌아 의향·가정·단순 언급이 발생과 구분되지 않는다**(이관 전 동작). 켜져 있으면 질의당 선언된 뜻 수만큼 빠른 모델 호출이 추가되고, 그 결과는 질의 스코프 안에서 재사용된다(절 단위로 다시 부르지 않는다) |
+| `SEMANTIC_SIGNALS_PATH` | 경로 | 의미 신호(뜻 + detected 정책) 선언 파일 |
+| `SEMANTIC_SIGNAL_LOG_EVIDENCE` | `off`(기본)/`on` | 관측 로그에 판정 근거(원문 조각)를 남길지. 원문은 개인정보일 수 있어 기본은 끔 |
 | `SEMANTIC_AST_GATE` | `on`(기본)/`off` | 의미 AST 게이트(포함·제외 충돌 검사 + 생성 SQL 극성/구조 역검증). 조건을 만들지 않고 '조용한 의미 변형'만 차단하므로 켠 상태가 기본이다. `off` 는 이관 비교·사고 대응용 비상구 |
 
 ## 안전장치 (전부 `pytest tests/` 가 강제)
@@ -108,6 +137,7 @@ docker compose exec -e PYTHONPATH=/app -w /app api \
 | 세그먼트 소유권 분리 | `tests/test_segment_semantics.py` | 표면어와 접지(소스·capability)가 한 파일로 다시 섞이는 것 |
 | 미해석 오탐 | `tests/test_ir_golden_corpus.py` | 탐지기가 정상 프롬프트를 잡아 큐를 잡음으로 덮는 것 |
 | 의미 AST 불변식 | `tests/test_semantic_ast.py` | 부정·AND/OR·owner 가 정규화 과정에서 뒤집히거나 사라지는 것 |
+| 의미 신호 계약 | `tests/test_semantic_signal.py` | 발생·의향·부정·동음이의가 한 boolean 으로 뭉쳐지는 것, 폴백이 OR 로 퇴화하는 것, 메타데이터가 의미 비교에 섞이는 것, 재작성이 뜻을 지우거나 지어내는 것 |
 | 의미 보존 계약 | `tests/test_plan_semantic_ast.py` | 제외가 포함으로 컴파일되는 것, OR 이 AND 로 축소되는 것, 포함/제외 충돌이 한쪽만 실행되는 것, rules/LLM 경로가 다른 의미로 갈라지는 것 |
 
 ## 재생성 명령

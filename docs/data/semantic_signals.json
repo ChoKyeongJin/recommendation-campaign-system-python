@@ -1,0 +1,50 @@
+{
+  "version": "1.0",
+  "description": "의미 신호(semantic signal)의 닫힌 선언. 여기 있는 것은 '무슨 뜻을 판정하는가'와 '어떤 상태를 발생으로 볼 것인가'라는 정책뿐이고, 표면어(어떻게 말하는가) 목록은 없다 — 표면어 판정은 semantic_signal.py 의 추출기가 소유한다(1순위 LLM 구조화 출력, 실패 시 형태 판정 폴백). 새 '표현'은 여기 추가하지 않는다. 새 '뜻'이 필요할 때만 signal 한 항목을 추가하고, 그 신호를 소비하는 코드가 있어야 한다.",
+  "how_to_add": "signal 은 소비 지점이 부르는 이름이다. description 과 guidance 는 LLM 프롬프트에 그대로 들어가므로 '무엇이면 어떤 status 인가'를 경계까지 적는다 — 특히 반례를 적어야 오탐이 준다. examples 는 판단 기준을 보여 주는 few-shot 이며 소수만 둔다(표현형 전수는 tests/test_semantic_signal.py 가 갖는다). detected_statuses 는 '실제 발생으로 볼 상태'의 정책이고, 이 목록 밖의 상태는 detected=false 다.",
+  "statuses": [
+    {"status": "completed", "description": "그 행위가 실제로 일어나 끝났다."},
+    {"status": "history", "description": "과거에 그런 일이 있었다는 이력·경험·기록이 있다."},
+    {"status": "ongoing", "description": "지금 진행 중이거나 유지되고 있는 상태다."},
+    {"status": "intent", "description": "아직 일어나지 않았고 계획·희망·고민·예정 단계다."},
+    {"status": "hypothetical", "description": "가정·조건절이라 실제 발생을 주장하지 않는다."},
+    {"status": "mentioned", "description": "그 개념이 말로 언급되기만 했다. 방법을 묻거나, 뜻을 설명하거나, 앞으로 하려는 우리 쪽 행위이거나, 대상 회원이 아닌 제3자의 행위인 경우를 포함한다."},
+    {"status": "denied", "description": "그 행위가 일어나지 않았다고 명시적으로 말한다."},
+    {"status": "none", "description": "문장에 그 뜻이 없다."},
+    {"status": "unknown", "description": "정보가 부족하거나 판정에 실패했다."}
+  ],
+  "signals": [
+    {
+      "signal": "purchase",
+      "label": "구매",
+      "description": "타겟 대상인 고객·회원이 상품이나 서비스를 사는 행위, 또는 그 이력. 동사형('샀다'·'구매했다'·'질렀다'·'장만했다')이든 명사형('구매 이력'·'구입 내역'·'주문 기록')이든 같은 뜻이다. 어떤 낱말을 썼는지가 아니라 문맥상 그 고객이 실제로 샀는가를 본다.",
+      "detected_statuses": ["completed", "history", "ongoing"],
+      "guidance": [
+        "우리가 고객에게 무언가를 '팔려는' 행위(판매·발송·홍보)는 고객의 구매가 아니다 → mentioned.",
+        "대상 회원이 아닌 제3자가 샀다는 문장은 그 회원의 구매가 아니다 → mentioned.",
+        "'살까 고민 중'·'구매 예정'·'사고 싶어하는'처럼 아직 안 산 것은 intent 다 → detected 가 아니다.",
+        "'샀다고 가정하면'·'산 경우에는' 같은 가정·조건은 hypothetical 이다.",
+        "'구매 방법을 알려줘'·'구매란 무엇인가'처럼 개념을 묻기만 하면 mentioned 다.",
+        "'안 샀다'·'구매 이력이 없는'·'미구매'·'한 번도 사지 않은'은 denied 다.",
+        "한 문장에서 대상마다 판정이 다르면 entities 에 대상별로 따로 적는다('노트북은 안 샀지만 모니터는 샀다').",
+        "entity 는 산 물건·브랜드·카테고리의 이름이며 입력 문장에 글자 그대로 있는 말만 쓴다. 없으면 빈 배열로 둔다."
+      ],
+      "examples": {
+        "positive": [
+          {"text": "기저귀 산 사람들 찾아줘", "status": "completed", "entities": ["기저귀"]},
+          {"text": "화장품 구매 이력이 있는 고객", "status": "history", "entities": ["화장품"]},
+          {"text": "지난달에 노트북 질러버린 회원", "status": "completed", "entities": ["노트북"]},
+          {"text": "정기배송을 유지하고 있는 고객", "status": "ongoing", "entities": []}
+        ],
+        "negative": [
+          {"text": "노트북을 살까 고민 중인 고객", "status": "intent"},
+          {"text": "구매 이력이 없는 고객", "status": "denied"},
+          {"text": "신상품을 팔고 싶은 고객에게 발송", "status": "mentioned"},
+          {"text": "구매 방법을 안내해줘", "status": "mentioned"},
+          {"text": "부산에 사는 고객", "status": "none"},
+          {"text": "친구가 대신 사줬다는 회원", "status": "mentioned"}
+        ]
+      }
+    }
+  ]
+}
