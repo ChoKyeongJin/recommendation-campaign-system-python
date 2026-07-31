@@ -981,9 +981,42 @@ def _exact_evidence(query: str, value: Any) -> str | None:
     if start >= 0:
         return query[start : start + len(evidence)]
     folded_start = query.casefold().find(evidence.casefold())
-    if folded_start < 0:
+    if folded_start >= 0:
+        return query[folded_start : folded_start + len(evidence)]
+    compact_match = _compact_match_range(query, evidence)
+    if compact_match is None:
         return None
-    return query[folded_start : folded_start + len(evidence)]
+    return query[compact_match[0] : compact_match[1]]
+
+
+def _compact_match_range(source: str, value: str) -> tuple[int, int] | None:
+    """Find ``value`` in ``source`` while treating whitespace as formatting.
+
+    Parser-owned spans use the normalized targeting sentence, while the
+    conceptual resolver validates evidence against the untouched user request.
+    The two may differ only by spacing (for example ``고객중`` vs ``고객 중``).
+    """
+
+    if not source or not value:
+        return None
+    source_chars: list[str] = []
+    source_positions: list[int] = []
+    for index, char in enumerate(source):
+        if char.isspace():
+            continue
+        source_chars.append(char)
+        source_positions.append(index)
+    compact_value = "".join(char for char in value if not char.isspace())
+    if not compact_value:
+        return None
+    compact_source = "".join(source_chars)
+    compact_start = compact_source.casefold().find(compact_value.casefold())
+    if compact_start < 0:
+        return None
+    compact_end = compact_start + len(compact_value)
+    if compact_end > len(source_positions):
+        return None
+    return source_positions[compact_start], source_positions[compact_end - 1] + 1
 
 
 def _number(value: Any) -> float | None:
@@ -1398,6 +1431,140 @@ def _is_non_audience_boilerplate(value: str) -> bool:
     return not compact
 
 
+def _resolved_claim_spans(plan: Mapping[str, Any]) -> list[tuple[int, int]]:
+    spans: list[tuple[int, int]] = []
+    for claim in plan.get("condition_claims") or []:
+        if (
+            not isinstance(claim, Mapping)
+            or claim.get("status") != "resolved"
+            or claim.get("disposition") != "owned"
+            or not claim.get("owner")
+        ):
+            continue
+        for span in claim.get("source_spans") or []:
+            if isinstance(span, Mapping):
+                start, end = span.get("start"), span.get("end")
+            elif isinstance(span, (list, tuple)) and len(span) == 2:
+                start, end = span
+            else:
+                continue
+            if (
+                isinstance(start, int)
+                and not isinstance(start, bool)
+                and isinstance(end, int)
+                and not isinstance(end, bool)
+                and 0 <= start < end
+            ):
+                spans.append((start, end))
+    return sorted(set(spans))
+
+
+def _claim_span_source(query: str, plan: Mapping[str, Any]) -> str:
+    scope = plan.get("_conceptual_scope")
+    candidates: list[Any] = [
+        scope.get("targeting") if isinstance(scope, Mapping) else None,
+        (
+            plan.get("event_expression", {}).get("source_text")
+            if isinstance(plan.get("event_expression"), Mapping)
+            else None
+        ),
+        (
+            plan.get("_slot_spans", {}).get("plan.event_expression", {}).get("source")
+            if isinstance(plan.get("_slot_spans"), Mapping)
+            and isinstance(
+                plan.get("_slot_spans", {}).get("plan.event_expression"),
+                Mapping,
+            )
+            else None
+        ),
+        plan.get("planning_query"),
+        plan.get("normalized_query"),
+        plan.get("original_query"),
+        query,
+    ]
+    required_length = max((end for _start, end in _resolved_claim_spans(plan)), default=0)
+    for candidate in candidates:
+        if isinstance(candidate, str) and len(candidate) >= required_length:
+            return candidate
+    return query
+
+
+def _without_resolved_claims(
+    source: str,
+    plan: Mapping[str, Any],
+    *,
+    within: tuple[int, int] | None = None,
+) -> tuple[str, bool]:
+    start, end = within or (0, len(source))
+    start = max(0, start)
+    end = min(len(source), end)
+    chars = list(source[start:end])
+    owned = False
+    for claim_start, claim_end in _resolved_claim_spans(plan):
+        overlap_start = max(start, claim_start)
+        overlap_end = min(end, claim_end)
+        if overlap_start >= overlap_end:
+            continue
+        owned = True
+        for index in range(overlap_start - start, overlap_end - start):
+            chars[index] = " "
+    return "".join(chars), owned
+
+
+def _strip_non_audience_objects(value: str, plan: Mapping[str, Any]) -> str:
+    output = value
+    for product in sorted(_product_redaction_terms(plan), key=len, reverse=True):
+        output = output.replace(product, " ")
+    return output
+
+
+def _conceptual_review_text(query: str, plan: Mapping[str, Any]) -> str:
+    source = _claim_span_source(query, plan)
+    remaining, _owned = _without_resolved_claims(source, plan)
+    return re.sub(r"\s+", " ", remaining).strip()
+
+
+def evidence_is_owned_by_resolved_claim(
+    evidence: str,
+    plan: Mapping[str, Any],
+    *,
+    query: str = "",
+) -> bool:
+    """Whether canonical resolved claims fully account for an evidence phrase."""
+
+    if not isinstance(evidence, str) or not evidence.strip():
+        return False
+    source = _claim_span_source(query or evidence, plan)
+    evidence_range = _compact_match_range(source, evidence)
+    if evidence_range is None:
+        return False
+    remaining, owned = _without_resolved_claims(
+        source,
+        plan,
+        within=evidence_range,
+    )
+    if not owned:
+        return False
+    remaining = _strip_non_audience_objects(remaining, plan)
+    return _is_non_audience_boilerplate(remaining)
+
+
+def _conceptual_review_required(query: str, plan: Mapping[str, Any]) -> bool:
+    if any(
+        isinstance(condition, Mapping)
+        and condition.get("resolution_status") != "resolved"
+        for condition in (plan.get("external_conditions") or [])
+    ):
+        return True
+    if not _resolved_claim_spans(plan):
+        return True
+    remaining = _strip_non_audience_objects(
+        _conceptual_review_text(query, plan),
+        plan,
+    )
+    return not _is_non_audience_boilerplate(remaining)
+
+
 def _resolved_plan_evidence_terms(plan: Mapping[str, Any]) -> list[str]:
     terms: list[Any] = []
     for item in plan.get("dimension_filters") or []:
@@ -1443,6 +1610,8 @@ def _ignored_is_server_grounded(
     normalized = _compact_text(evidence)
     if not normalized:
         return False
+    if evidence_is_owned_by_resolved_claim(evidence, plan):
+        return True
     scope = plan.get("_conceptual_scope")
     if isinstance(scope, Mapping):
         targeting = _compact_text(scope.get("targeting"))
@@ -1612,14 +1781,15 @@ class ConceptualTargetingService:
         return output
 
     def _messages(self, query: str, plan: Mapping[str, Any]) -> list[dict[str, str]]:
-        redacted_request = query
+        review_text = _conceptual_review_text(query, plan) or query
+        redacted_request = review_text
         redaction_terms = _product_redaction_terms(plan)
         for value in sorted(redaction_terms, key=len, reverse=True):
             redacted_request = redacted_request.replace(value, "[상품]")
         scope = plan.get("_conceptual_scope")
         model_scope: dict[str, Any] | None = None
         if isinstance(scope, Mapping):
-            targeting_scope = str(scope.get("targeting") or "")
+            targeting_scope = review_text
             for value in sorted(redaction_terms, key=len, reverse=True):
                 targeting_scope = targeting_scope.replace(value, "[상품]")
             model_scope = {
@@ -1685,6 +1855,7 @@ class ConceptualTargetingService:
         by_capability = self.catalog.by_id()
         accepted: list[dict[str, Any]] = []
         rejected: list[dict[str, str]] = []
+        server_ignored: list[dict[str, str]] = []
         seen_evidence: set[str] = set()
         seen_bindings: set[tuple[str, str, str]] = set()
         external_constraints = self._external_constraints(plan)
@@ -1732,6 +1903,17 @@ class ConceptualTargetingService:
             evidence_key = re.sub(r"\s+", "", evidence).casefold()
             if evidence_key in seen_evidence:
                 rejected.append({"evidence": evidence, "reason": "duplicate_evidence"})
+                continue
+            if evidence_is_owned_by_resolved_claim(
+                evidence,
+                plan,
+                query=query,
+            ):
+                server_ignored.append({
+                    "evidence": evidence,
+                    "reason": "already_owned_by_resolved_condition_claim",
+                })
+                seen_evidence.add(evidence_key)
                 continue
             if capability is None:
                 rejected.append({"evidence": evidence, "reason": "unknown_capability_id"})
@@ -2071,6 +2253,23 @@ class ConceptualTargetingService:
             normalized_evidence = re.sub(r"\s+", "", evidence or "").casefold()
             if (
                 evidence
+                and evidence_is_owned_by_resolved_claim(
+                    evidence,
+                    plan,
+                    query=query,
+                )
+            ):
+                if normalized_evidence not in {
+                    re.sub(r"\s+", "", item["evidence"]).casefold()
+                    for item in server_ignored
+                }:
+                    server_ignored.append({
+                        "evidence": evidence,
+                        "reason": "already_owned_by_resolved_condition_claim",
+                    })
+                continue
+            if (
+                evidence
                 and normalized_evidence not in accepted_evidence
                 and isinstance(reason, str)
                 and reason.strip()
@@ -2089,7 +2288,7 @@ class ConceptualTargetingService:
                 for item in unsupported
             },
         }
-        ignored: list[dict[str, str]] = []
+        ignored: list[dict[str, str]] = list(server_ignored)
         for item in raw["ignored"][:8]:
             if not isinstance(item, Mapping) or set(item) != {"evidence", "reason"}:
                 continue
@@ -2122,6 +2321,28 @@ class ConceptualTargetingService:
 
     def interpret(self, query: str, plan: Mapping[str, Any]) -> dict[str, Any]:
         now = self.clock()
+        if not _conceptual_review_required(query, plan):
+            report = {
+                "status": "not_required",
+                "interpretations": [],
+                "unsupported": [],
+                "ignored": [],
+                "coverage_complete": True,
+                "validation_errors": [],
+                "error_code": None,
+                "error_detail": None,
+                "model": None,
+                "catalog_digest": self.catalog.digest,
+                "prompt_digest": self._prompt_digest,
+                "policy_version": POLICY_VERSION,
+                "output_schema_version": OUTPUT_SCHEMA_VERSION,
+                "cache_hit": False,
+            }
+            self._emit("conceptual_targeting_not_required", {
+                "catalog_digest": self.catalog.digest,
+                "resolved_claim_count": len(_resolved_claim_spans(plan)),
+            })
+            return report
         cache_key = self._cache_key(query, plan)
         cached = self.cache.get(cache_key, now)
         if cached is not None:
@@ -2919,6 +3140,7 @@ __all__ = [
     "build_openai_service",
     "catalog_by_digest",
     "discover_capabilities",
+    "evidence_is_owned_by_resolved_claim",
     "load_system_prompt",
     "materialize_resolution",
     "validate_grounded_dimension_filter",

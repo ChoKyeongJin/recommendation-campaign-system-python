@@ -19381,6 +19381,17 @@ def _unresolved_source_condition_is_deterministically_resolved(
         )
     if item.get("source") == "conceptual_targeting":
         evidence = str(item.get("source_text") or item.get("label") or "")
+        if conceptual_targeting.evidence_is_owned_by_resolved_claim(
+            evidence,
+            query_plan,
+            query=str(
+                query_plan.get("original_query")
+                or query_plan.get("raw_query")
+                or query_plan.get("planning_query")
+                or ""
+            ),
+        ):
+            return True
         normalized = re.sub(r"\s+", "", evidence).casefold()
         if entity_set is not None and evidence.strip():
             source_query = str(

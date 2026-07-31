@@ -245,6 +245,64 @@ def _service(
     )
 
 
+def test_resolved_event_claims_skip_conceptual_review_and_compile(
+    tmp_path: Path,
+) -> None:
+    query = "올해 상반기 구매 기록이 있는 고객중 하반기 구매 기록이 없는 고객"
+    plan = graph_rag.build_query_plan(query, parser="rules")
+    plan["_conceptual_scope"] = {
+        "targeting": plan["event_expression"]["source_text"],
+        "channel": "",
+    }
+    completion = FakeCompletion()
+
+    _service(_catalog(tmp_path), completion).apply_plan(query, plan)
+
+    assert completion.calls == 0
+    assert plan["conceptual_targeting_resolution"]["status"] == "not_required"
+    assert plan.get("unresolved_source_conditions") in (None, [])
+
+    result = graph_rag.build_sql_result(
+        graph=nx.Graph(),
+        query=query,
+        query_plan=plan,
+        context_nodes=[],
+        schema_path=graph_rag.DEFAULT_SCHEMA_PATH,
+        default_limit=100,
+        original_query=query,
+    )
+    assert result["sql"] is not None
+    assert "EXISTS" in result["sql"]
+    assert "NOT EXISTS" in result["sql"]
+
+
+def test_conceptual_review_sees_only_unowned_text_and_cannot_reject_owned_claims(
+    tmp_path: Path,
+) -> None:
+    owned = "올해 상반기 구매 기록이 있는 고객 중 하반기 구매 기록이 없는 고객"
+    query = f"{owned} 중 폭염지역 고객"
+    plan = graph_rag.build_query_plan(query, parser="rules")
+    plan["_conceptual_scope"] = {"targeting": query, "channel": ""}
+    completion = FakeCompletion({
+        "interpretations": [],
+        "unsupported": [{
+            "evidence": owned,
+            "reason": "No closed capability corresponds to purchase-period existence.",
+        }],
+        "ignored": [],
+        "coverage_complete": True,
+    })
+
+    _service(_catalog(tmp_path), completion).apply_plan(query, plan)
+
+    payload = json.loads(completion.messages[0][1]["content"])
+    assert "폭염지역" in payload["request"]
+    assert "상반기" not in payload["request"]
+    assert "하반기" not in payload["request"]
+    assert plan.get("unresolved_source_conditions") in (None, [])
+    assert plan["conceptual_targeting_resolution"]["ignored_count"] == 1
+
+
 def test_registry_discovery_and_compiler_follow_renamed_table_and_column(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
