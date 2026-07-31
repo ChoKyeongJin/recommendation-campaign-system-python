@@ -241,6 +241,18 @@ CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA: dict[str, Any] = {
                 "type": {"const": "member_set"},
                 "relation": {"type": "string", "minLength": 1},
                 "exists": {"type": "boolean"},
+                "cardinality": {
+                    "type": "object",
+                    "description": (
+                        "랭킹 집합과 회원 행동 집합의 서로 다른 엔터티 교집합 개수. "
+                        "예: 상위 3개 상품 중 정확히 2개 구매."
+                    ),
+                    "required": ["operator", "value"],
+                    "properties": {
+                        "operator": {"enum": ["=", ">", ">=", "<", "<="]},
+                        "value": {"type": "integer", "minimum": 0, "maximum": 1000},
+                    },
+                },
                 "source": {"$ref": "#/$defs/derivedSetRankingNode"},
             },
         },

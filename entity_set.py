@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Any
 
 import lexicon_patterns
@@ -30,11 +31,29 @@ from calendar_window import parse_time_window, parse_time_window_span
 from common_utils import compact_index_map, raw_span
 
 
-_MEMBER_NOUN_RE = lexicon_patterns.pattern("member_noun_basic")
+_MEMBER_NOUN_RE = lexicon_patterns.pattern("purchase_rank_target")
 _COUNT_AFTER_RE = re.compile(r"^(\d{1,4})\s*(?:개|종|가지|건|위)")
 # '상위 5개 카테고리'처럼 개수가 엔터티 앞에 오는 어순.
 _COUNT_BEFORE_RE = re.compile(r"(\d{1,4})\s*(?:개|종|가지|건|위)\s*$")
 _COUNT_SEARCH_RE = re.compile(r"(\d{1,4})\s*(?:개|종|가지|건|위)")
+# 랭킹으로 만든 유한 집합과 회원 행동 집합의 교집합 크기.
+# ``상위 3개 중에서 2개만 구매``처럼 모집단 크기와 회원별 일치 개수가 함께 있는 문법만 읽는다.
+# 단독 ``2개 구매``는 상품 수량일 수 있으므로 이 파서가 소유하지 않는다.
+_SET_SCOPE_ALT = lexicon_patterns.alternation("clause_scope_marker")
+_SET_CARDINALITY_RE = re.compile(
+    rf"(?:{_SET_SCOPE_ALT})"
+    r"(\d{1,4})\s*(?:개|종|가지)"
+    r"(만|이상|이하|초과|미만)?"
+)
+_CARDINALITY_OPERATOR = {
+    None: "=",
+    "만": "=",
+    "이상": ">=",
+    "이하": "<=",
+    "초과": ">",
+    "미만": "<",
+}
+CARDINALITY_OPERATORS = frozenset({"=", ">", ">=", "<", "<="})
 
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 1000
@@ -57,6 +76,7 @@ def build_derived_set_ast(
     limit: int,
     window: dict[str, Any] | None = None,
     filters: list[dict[str, Any]] | None = None,
+    cardinality: dict[str, Any] | None = None,
     negated: bool = False,
 ) -> dict[str, Any]:
     """평면 파싱 결과를 ``집계 → 랭킹 → 회원 집합`` AST로 만든다.
@@ -74,7 +94,7 @@ def build_derived_set_ast(
         aggregation["window"] = dict(window)
     if filters:
         aggregation["filters"] = [dict(item) for item in filters if isinstance(item, dict)]
-    return {
+    member_set = {
         "type": MEMBER_SET_NODE,
         "relation": str(member_relation),
         "exists": not bool(negated),
@@ -85,6 +105,12 @@ def build_derived_set_ast(
             "source": aggregation,
         },
     }
+    if isinstance(cardinality, dict):
+        member_set["cardinality"] = {
+            "operator": cardinality.get("operator"),
+            "value": cardinality.get("value"),
+        }
+    return member_set
 
 
 def derived_set_ast_error(ast: Any) -> str | None:
@@ -95,6 +121,17 @@ def derived_set_ast_error(ast: Any) -> str | None:
         return "invalid_derived_set_member_relation"
     if not isinstance(ast.get("exists"), bool):
         return "invalid_derived_set_membership"
+    cardinality = ast.get("cardinality")
+    if cardinality is not None:
+        if not isinstance(cardinality, dict):
+            return "invalid_derived_set_cardinality"
+        if cardinality.get("operator") not in CARDINALITY_OPERATORS:
+            return "invalid_derived_set_cardinality_operator"
+        value = cardinality.get("value")
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            return "invalid_derived_set_cardinality_value"
+        if ast.get("exists") is not True:
+            return "invalid_derived_set_cardinality_membership"
 
     ranking = ast.get("source")
     if not isinstance(ranking, dict) or ranking.get("type") != RANKING_NODE:
@@ -104,6 +141,8 @@ def derived_set_ast_error(ast: Any) -> str | None:
     limit = ranking.get("limit")
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_LIMIT:
         return "invalid_derived_set_ranking_limit"
+    if isinstance(cardinality, dict) and int(cardinality["value"]) > limit:
+        return "invalid_derived_set_cardinality_exceeds_ranking_limit"
 
     aggregation = ranking.get("source")
     if not isinstance(aggregation, dict) or aggregation.get("type") != AGGREGATION_NODE:
@@ -155,6 +194,7 @@ def entity_set_node_from_ast(ast: Any) -> dict[str, Any] | None:
         "limit": ranking["limit"],
         "window": aggregation.get("window"),
         "filters": [dict(item) for item in aggregation.get("filters", [])],
+        "cardinality": dict(ast["cardinality"]) if isinstance(ast.get("cardinality"), dict) else None,
         "negated": not ast["exists"],
         DERIVED_SET_AST_FIELD: ast,
     }
@@ -266,7 +306,9 @@ def _match_window_span(compact: str) -> list[int] | None:
     return [span[0], span[1]] if span is not None else None
 
 
-def _match_window(compact: str, rank_marker: str = "") -> dict[str, Any] | None:
+def _match_window(
+    compact: str, rank_marker: str = "", *, today: date | None = None
+) -> dict[str, Any] | None:
     """절 앞머리의 기간 표현. 달력 표현은 절대창, 롤링 기간은 상대창.
 
     문법도 창 종류 간 우선순위도 calendar_window 가 소유한다 — 여기서 별도 정규식을 갖고 있던 동안
@@ -277,12 +319,18 @@ def _match_window(compact: str, rank_marker: str = "") -> dict[str, Any] | None:
     조건이 있으면('2주 이내 가입한 회원 중 가장 많이 팔린 …') 그 창을 순위 창으로 훔쳐오게 된다."""
     return parse_time_window(
         compact,
+        today=today,
         include_duration=True,
         duration_anchor_terms=(rank_marker,) if rank_marker else None,
     )
 
 
-def parse_entity_set_condition(query: str, config: dict[str, Any] | None) -> dict[str, Any] | None:
+def parse_entity_set_condition(
+    query: str,
+    config: dict[str, Any] | None,
+    *,
+    today: date | None = None,
+) -> dict[str, Any] | None:
     """엔터티 랭킹 결과를 구매/장바구니 회원 집합으로 잇는 표현을 읽는다.
 
     정방향(``가장 많이 팔린 상품 5개``)과 한국어에서 흔한 범위 선행형
@@ -332,6 +380,19 @@ def parse_entity_set_condition(query: str, config: dict[str, Any] | None) -> dic
     if relation is None:
         return None
     relation_id, negated, relation_start, relation_end = relation
+    cardinality: dict[str, Any] | None = None
+    cardinality_span: tuple[int, int] | None = None
+    cardinality_match = _SET_CARDINALITY_RE.search(
+        compact,
+        count_span[1] if count_span is not None else entity_noun_end,
+        relation_start,
+    )
+    if cardinality_match is not None:
+        cardinality = {
+            "operator": _CARDINALITY_OPERATOR[cardinality_match.group(2)],
+            "value": int(cardinality_match.group(1)),
+        }
+        cardinality_span = cardinality_match.span()
     # 순위를 계산하는 관계와 회원을 잇는 관계는 다를 수 있다("가장 많이 *장바구니에 담은* 상품을
     # *구매한* 고객"). 엔터티 앞의 관계 표현이 순위 관계, 뒤의 것이 회원 연결 관계다.
     # 순위 관계가 문장에 없으면('가장 많이 팔린 상품') 판매 실적 관계가 기본이다 — 회원 연결 관계를
@@ -344,7 +405,11 @@ def parse_entity_set_condition(query: str, config: dict[str, Any] | None) -> dic
     measure_id = _match_measure(compact, config, direction[0], measure_end)
     # 기간은 이 절(순위 계산)의 것이다 — 엔터티 앞에 있는 기간 표현만 가져간다.
     # '2019년 가장 많이 팔린 상품을 구매한 고객'에서 2019년은 판매 순위의 창이지 구매 시점이 아니다.
-    window = _match_window(compact[: entity_start], compact[direction[0]: direction[1]])
+    window = _match_window(
+        compact[: entity_start],
+        compact[direction[0]: direction[1]],
+        today=today,
+    )
     window_span = _match_window_span(compact[: entity_start]) if window else None
 
     # 이 절이 원문의 어느 구간을 읽었는지(요소별). 소유권 회수가 '조건의 종류'가 아니라 '문장의
@@ -359,6 +424,10 @@ def parse_entity_set_condition(query: str, config: dict[str, Any] | None) -> dic
         "window": _raw_span(index_map, window_span[0], window_span[1]) if window_span else None,
         "entity": _raw_span(index_map, entity_start, entity_noun_end),
         "count": _raw_span(index_map, count_span[0], count_span[1]) if count_span else None,
+        "cardinality": (
+            _raw_span(index_map, cardinality_span[0], cardinality_span[1])
+            if cardinality_span else None
+        ),
         "relation": _raw_span(index_map, relation_start, relation_end),
     }
 
@@ -370,6 +439,7 @@ def parse_entity_set_condition(query: str, config: dict[str, Any] | None) -> dic
         "direction": direction[2],
         "limit": limit,
         "window": window,
+        "cardinality": cardinality,
         "negated": negated,
         "surface": query.strip(),
         "spans": spans,
@@ -382,6 +452,7 @@ def parse_entity_set_condition(query: str, config: dict[str, Any] | None) -> dic
         direction=direction[2],
         limit=limit,
         window=window,
+        cardinality=cardinality,
         negated=negated,
     )
     node["unsupported_reason"] = entity_set_capability(node, config)
@@ -552,7 +623,20 @@ def entity_set_label(node: dict[str, Any], config: dict[str, Any]) -> str:
         ) if part
     ]
     action = relation.get("label", node.get("relation"))
-    suffix = f"{action} 안 한 회원" if node.get("negated") else f"{action}한 회원"
+    cardinality = node.get("cardinality")
+    if isinstance(cardinality, dict):
+        operator_label = {
+            "=": "정확히",
+            ">": "초과",
+            ">=": "이상",
+            "<": "미만",
+            "<=": "이하",
+        }.get(str(cardinality.get("operator")), str(cardinality.get("operator")))
+        suffix = (
+            f"중 {operator_label} {cardinality.get('value')}개를 {action}한 회원"
+        )
+    else:
+        suffix = f"{action} 안 한 회원" if node.get("negated") else f"{action}한 회원"
     return " ".join(parts) + " " + suffix
 
 
@@ -635,7 +719,13 @@ def compile_entity_set_predicate(
     # 동점 시 결과가 흔들리지 않도록 엔터티 키로 결정론 정렬을 덧붙인다(집계 랭킹 계약과 동일).
     inner_lines.append(f"ORDER BY {measure_expression} {order}, {inner_column} ASC")
 
-    outer_lines = ["SELECT 1", f"FROM {relation['table']} {outer}"]
+    cardinality = node.get("cardinality")
+    outer_select = (
+        f"SELECT COUNT(DISTINCT {_entity_column(entity, outer, outer_product)})"
+        if isinstance(cardinality, dict)
+        else "SELECT 1"
+    )
+    outer_lines = [outer_select, f"FROM {relation['table']} {outer}"]
     if needs_outer_product and outer_join:
         outer_lines.append(
             f"     INNER JOIN {outer_join['table']} {outer_product} "
@@ -650,6 +740,10 @@ def compile_entity_set_predicate(
     outer_where.append(f"{_entity_column(entity, outer, outer_product)} IN (\n          {indented_inner}\n      )")
     outer_lines.append("WHERE " + "\n      AND ".join(outer_where))
 
-    keyword = "NOT EXISTS" if node.get("negated") else "EXISTS"
     body = "\n".join("    " + line for line in outer_lines)
+    if isinstance(cardinality, dict):
+        operator = str(cardinality["operator"])
+        value = int(cardinality["value"])
+        return f"(\n{body}\n  ) {operator} {value}"
+    keyword = "NOT EXISTS" if node.get("negated") else "EXISTS"
     return f"{keyword} (\n{body}\n  )"

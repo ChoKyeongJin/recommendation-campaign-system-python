@@ -698,6 +698,20 @@ def targeting_expression_json_schema(
             "year": {"type": ["integer", "null"], "description": "절대 연도(예: 2019). month 와 함께 주면 그 달."},
             "month": {"type": ["integer", "null"], "minimum": 1, "maximum": 12, "description": "절대 월(1~12). year 필요."},
             "period": _PERIOD_FIELD,
+            "cardinality": {
+                "type": ["object", "null"],
+                "description": (
+                    "이 랭킹 집합과 회원 행동 집합의 서로 다른 엔터티 교집합 개수 조건."
+                ),
+                "properties": {
+                    "operator": {
+                        "type": "string",
+                        "enum": ["=", ">", ">=", "<", "<="],
+                    },
+                    "value": {"type": "integer", "minimum": 0, "maximum": 1000},
+                },
+                "required": ["operator", "value"],
+            },
             "filters": {
                 "type": "array",
                 "items": {
@@ -911,6 +925,11 @@ def _entity_set_node(
         "direction": "bottom" if str(payload.get("direction")) == "bottom" else "top",
         "limit": int(payload.get("limit") or 10),
         "window": _window(payload),
+        "cardinality": (
+            dict(payload.get("cardinality"))
+            if isinstance(payload.get("cardinality"), dict)
+            else None
+        ),
         "negated": negated,
     }
     node["derived_set_ast"] = build_derived_set_ast(
@@ -922,6 +941,7 @@ def _entity_set_node(
         limit=node["limit"],
         window=node["window"],
         filters=payload.get("filters") if isinstance(payload.get("filters"), list) else None,
+        cardinality=node["cardinality"],
         negated=negated,
     )
     return node

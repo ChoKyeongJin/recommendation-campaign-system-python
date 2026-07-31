@@ -117,7 +117,11 @@ class LLMCampaignQueryPlanStructurer:
                 "content": (
                     "너는 캠페인 타겟팅 QueryPlan v2 구조화기다. "
                     "실행기가 그대로 소비할 snake_case 필드를 사용하고 JSON 외에는 출력하지 않는다. "
-                    "명시되지 않은 타겟 조건이나 혜택은 만들지 않는다."
+                    "명시되지 않은 타겟 조건이나 혜택은 만들지 않는다. "
+                    "'기간 내 상위 N개 상품 중 M개를 구매한 회원'처럼 계산으로 정해지는 대상을 "
+                    "리터럴 상품명이나 일반 구매횟수로 바꾸지 말고, entity_set_condition의 "
+                    "aggregation→ranking→member_set AST로 표현한다. 이때 N은 ranking.limit, "
+                    "M은 member_set.cardinality이며 'M개만'은 operator '='이다."
                 ),
             },
             {"role": "user", "content": build_campaign_query_plan_v2_user_prompt(input)},

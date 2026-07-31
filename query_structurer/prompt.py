@@ -142,7 +142,10 @@ def build_campaign_query_plan_v3_user_prompt(input: QueryStructuringInput) -> st
                 "숫자 뒤 한국어 단위는 의미의 일부이며 절대 바꾸지 않는다. number_with_unit binding의 "
                 "semantic_unit을 그대로 사용한다: 개=item_quantity(상품 수량 합계), 회/번/건=order_count"
                 "(서로 다른 주문 수), 종/종류=distinct_product_count(서로 다른 상품 수). binding과 실행 슬롯이 "
-                "있으면 같은 값을 missing_fields로 다시 요구하지 않는다. '같은/동일 브랜드'는 브랜드명이 "
+                "있으면 같은 값을 missing_fields로 다시 요구하지 않는다. 단, '상위 N개 상품 중 M개'의 "
+                "M은 수량 합계가 아니라 랭킹 집합과 회원 구매 집합의 distinct 엔터티 교집합 개수다. "
+                "이 구조는 entity_set_condition의 ranking.limit=N과 member_set.cardinality로 표현하고 "
+                "'M개만'은 operator '='로 보존한다. '같은/동일 브랜드'는 브랜드명이 "
                 "'같은'이라는 필터가 아니라 회원별·브랜드별 그룹에서 임계값을 검사하는 per_brand 조건이다."
             ),
             (

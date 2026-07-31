@@ -1192,6 +1192,17 @@ def materialize_resolution(
 
 def _plan_summary(plan: Mapping[str, Any]) -> dict[str, Any]:
     target = plan.get("target_user") if isinstance(plan.get("target_user"), Mapping) else {}
+    entity_set = (
+        target.get("entity_set_condition")
+        if isinstance(target.get("entity_set_condition"), Mapping)
+        else None
+    )
+    entity_set_ast = (
+        entity_set.get("derived_set_ast")
+        if isinstance(entity_set, Mapping)
+        and isinstance(entity_set.get("derived_set_ast"), Mapping)
+        else None
+    )
     dimensions = []
     for item in plan.get("dimension_filters") or []:
         if not isinstance(item, Mapping):
@@ -1212,6 +1223,20 @@ def _plan_summary(plan: Mapping[str, Any]) -> dict[str, Any]:
         "interests": list(target.get("interests") or []),
         "preferred_channels": list(target.get("preferred_channels") or []),
         "purchase_object_already_resolved": bool(target.get("purchase_object")),
+        "entity_set_condition": (
+            {
+                "surface": entity_set.get("surface"),
+                "label": entity_set.get("ko_label"),
+                "derived_set_ast": copy.deepcopy(entity_set_ast),
+                "compiler_status": (
+                    "supported"
+                    if not entity_set.get("unsupported_reason")
+                    else "unsupported"
+                ),
+            }
+            if isinstance(entity_set, Mapping)
+            else None
+        ),
         "purchase_date": copy.deepcopy(target.get("purchase_date")),
         "inactivity_period": copy.deepcopy(target.get("inactivity_period")),
         "recent_login": copy.deepcopy(target.get("recent_login")),
@@ -1398,6 +1423,15 @@ def _resolved_plan_evidence_terms(plan: Mapping[str, Any]) -> list[str]:
             and item.get("resolution_status") == "resolved"
         ):
             terms.append(item.get("source_text"))
+    target = plan.get("target_user")
+    entity_set = (
+        target.get("entity_set_condition")
+        if isinstance(target, Mapping)
+        and isinstance(target.get("entity_set_condition"), Mapping)
+        else None
+    )
+    if isinstance(entity_set, Mapping) and not entity_set.get("unsupported_reason"):
+        terms.extend([entity_set.get("surface"), entity_set.get("ko_label")])
     return list(_unique_text(terms))
 
 
@@ -2566,12 +2600,22 @@ class ConceptualTargetingService:
             evidence = item.get("evidence")
             if not isinstance(evidence, str) or not evidence:
                 continue
+            technical_reason = str(
+                item.get("reason")
+                or "conceptual expression was not mapped to an executable capability"
+            )
             unresolved_items.append({
                 "id": _stable_id("usr", query, evidence, item.get("reason")),
                 "path": "source_coverage.conceptual_targeting",
                 "label": evidence,
                 "source_text": evidence,
-                "reason": str(item.get("reason") or "상식 표현을 실행 가능한 DB 조건에 연결하지 못했습니다."),
+                # reason은 검증기들이 판별하는 내부 계약이다. 모델 원문은 진단용으로 보존하되,
+                # 화면에는 서버가 소유하는 한국어 display_reason만 노출한다.
+                "reason": technical_reason,
+                "display_reason": (
+                    f"'{evidence}' 조건을 현재 실행 가능한 타겟 조건으로 "
+                    "구조화하지 못했습니다."
+                ),
                 "status": "unresolved",
                 "source": "conceptual_targeting",
             })
@@ -2599,9 +2643,10 @@ class ConceptualTargetingService:
                 "path": "source_coverage.conceptual_targeting",
                 "label": query,
                 "source_text": query,
-                "reason": (
-                    "상식 표현 해석을 완료하지 못해 원문 조건의 누락 여부를 검증할 수 없습니다"
-                    f" ({reason})."
+                "reason": reason,
+                "display_reason": (
+                    "상식 표현 해석을 완료하지 못해 원문 조건의 누락 여부를 "
+                    "검증할 수 없습니다."
                 ),
                 "status": "unresolved",
                 "source": "conceptual_targeting",

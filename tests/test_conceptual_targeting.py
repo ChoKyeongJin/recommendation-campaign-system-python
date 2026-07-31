@@ -402,6 +402,7 @@ def test_unknown_value_or_low_confidence_fails_closed_and_stays_unresolved(
     assert plan["conceptual_targeting_resolution"]["status"] == "unsupported"
     assert any(
         item["reason"] == expected_reason
+        and any("가" <= char <= "힣" for char in item["display_reason"])
         for item in plan["unresolved_source_conditions"]
     )
     assert plan["external_condition_resolution"]["status"] == "failed"
@@ -823,6 +824,51 @@ def test_campaign_boilerplate_can_be_safely_ignored(
     assert plan["dimension_filters"]
     assert plan.get("unresolved_source_conditions") in (None, [])
     assert plan["conceptual_targeting_resolution"]["ignored_count"] == 1
+
+
+def test_provider_english_unsupported_reason_is_not_exposed_to_the_user(
+    tmp_path: Path,
+) -> None:
+    catalog = _catalog(tmp_path)
+    response = {
+        "interpretations": [],
+        "unsupported": [{
+            "evidence": "새로운 복합 조건",
+            "reason": "No capability supports this expression.",
+        }],
+        "ignored": [],
+        "coverage_complete": True,
+    }
+    plan = _plan()
+
+    _service(catalog, FakeCompletion(response)).apply_plan(
+        "새로운 복합 조건의 고객",
+        plan,
+    )
+
+    unresolved = plan["unresolved_source_conditions"][0]
+    assert unresolved["display_reason"] == (
+        "'새로운 복합 조건' 조건을 현재 실행 가능한 타겟 조건으로 구조화하지 못했습니다."
+    )
+    assert unresolved["reason"] == "No capability supports this expression."
+
+    sql_result = graph_rag._unresolved_source_blocking_sql_result([unresolved])
+    assert "No capability" not in sql_result["clarification_questions"][0]
+    assert any(
+        "가" <= char <= "힣"
+        for char in sql_result["clarification_questions"][0]
+    )
+
+    api_response = graph_rag.build_recommendation_api_response(
+        "새로운 복합 조건의 고객",
+        plan,
+        sql_result,
+        {},
+    )
+    public_condition = api_response["missing_input_conditions"][0]
+    assert "No capability" not in public_condition["reason"]
+    assert "display_reason" not in public_condition
+    assert any("가" <= char <= "힣" for char in public_condition["reason"])
 
 
 def test_sell_object_redaction_preserves_unknown_concept_prefix(

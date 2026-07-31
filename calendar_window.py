@@ -91,6 +91,7 @@ _CAL_TOKEN_RE = re.compile(
 # 창 하나의 구체성 등급(작을수록 좁다). parse_calendar_window 가 '가장 좁은 표현' 하나를 고를 때 쓴다 —
 # 여러 창이 섞인 문장에서 위치가 아니라 구체성으로 뽑던 기존 계약을 그대로 보존한다.
 _GRAIN_RANK = {"ymd": 0, "ymdd": 0, "ym": 1, "ymd2": 1, "m": 1, "yq": 2, "q": 2, "yh": 3, "h": 3, "y": 4, "yb": 4}
+_MONTH_GRAIN_RANK = _GRAIN_RANK["ym"]
 
 # 창 두 개 '사이'의 문구가 무슨 링크인지. 조사/연결어/구분자만 있으면 링크이고, 그 밖의 낱말(용언 등)이
 # 끼면 서로 다른 조건의 창이다 — '2018년 및 2019년'은 링크, '2018년에 구매하고 2019년에 로그인한'은
@@ -355,6 +356,52 @@ def _fold_range_links(scanned: list[_Scanned], text: str, label_suffix: str) -> 
     return folded
 
 
+def _shift_month(reference: date, offset: int) -> tuple[int, int]:
+    """기준일의 월을 offset만큼 이동한 (연도, 월). 연말/연초도 같은 산술을 쓴다."""
+    serial = reference.year * 12 + reference.month - 1 + int(offset)
+    return serial // 12, serial % 12 + 1
+
+
+def _scan_relative_calendar_months(
+    text: str, label_suffix: str, reference: date
+) -> list[_Scanned]:
+    """이번 달/지난달 계열을 기준일에 고정된 절대 월 창으로 스캔한다.
+
+    표면어는 parser_lexicon.json이 소유하고 이 함수는 의미별 월 offset만 합성한다. SQL 실행 시점의
+    GETDATE에 기대지 않으므로 계획과 실행 사이에 월이 바뀌어도 요청 의미가 흔들리지 않는다.
+    """
+    found: list[_Scanned] = []
+    occupied: list[tuple[int, int]] = []
+    for vocabulary_name, offset in (
+        ("calendar_current_month", 0),
+        ("calendar_previous_month", -1),
+    ):
+        words = sorted(
+            lexicon_patterns.vocabulary(vocabulary_name),
+            key=lambda value: (-len(value), value),
+        )
+        if not words:
+            continue
+        pattern = re.compile("|".join(re.escape(word) for word in words))
+        for match in pattern.finditer(text):
+            if any(match.start() < end and start < match.end() for start, end in occupied):
+                continue
+            year, month = _shift_month(reference, offset)
+            found.append((
+                _window(
+                    ymd(year, month, 1),
+                    ymd(year, month, month_last_day(year, month)),
+                    f"{year}년 {month}월",
+                    label_suffix,
+                ),
+                _MONTH_GRAIN_RANK,
+                match.start(),
+                match.end(),
+            ))
+            occupied.append(match.span())
+    return sorted(found, key=lambda item: item[2])
+
+
 def _scan_calendar_windows(
     text: str, label_suffix: str, today: date | None = None
 ) -> list[tuple[dict[str, Any], int, int, int]]:
@@ -368,12 +415,12 @@ def _scan_calendar_windows(
     합성해야 '2019년 3월부터 5월까지'의 끝이 2019년 5월로 확정된다."""
     if not isinstance(text, str) or not text:
         return []
-    matches = list(_CAL_TOKEN_RE.finditer(text))
-    if not matches:
-        return []
-    fallback_year = next((y for y in (_token_year(m) for m in matches) if y is not None), None)
     reference = today or date.today()
-    out: list[tuple[dict[str, Any], int, int, int]] = []
+    matches = list(_CAL_TOKEN_RE.finditer(text))
+    fallback_year = next((y for y in (_token_year(m) for m in matches) if y is not None), None)
+    out: list[tuple[dict[str, Any], int, int, int]] = _scan_relative_calendar_months(
+        text, label_suffix, reference
+    )
     running_year: int | None = None
     for match in matches:
         explicit = _token_year(match)
@@ -405,6 +452,7 @@ def _scan_calendar_windows(
             # 앵커에서 연도를 받은 토큰의 구간은 앵커까지다('7년전 상반기' 전체가 한 창의 출처).
             start = anchor[1] if (explicit is None and anchor is not None) else match.start()
             out.append((window, rank, start, match.end()))
+    out.sort(key=lambda item: item[2])
     return _fold_range_links(out, text, label_suffix)
 
 

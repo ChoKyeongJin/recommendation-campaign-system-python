@@ -3608,6 +3608,19 @@ def _apply_entity_set_condition(query: str, plan: dict[str, Any]) -> None:
             owner=owner, reason="순위 절의 엔터티 개수를 결과 행수 제한으로 이중 해석",
             source_text=query, owner_span=spans.get("count"), mode="clear",
         )
+    cardinality = node.get("cardinality")
+    if (
+        isinstance(cardinality, dict)
+        and plan.get("result_limit") == cardinality.get("value")
+    ):
+        _claim_slots(
+            plan, (("plan", "result_limit"),),
+            owner=owner,
+            reason="파생 집합과의 교집합 개수를 결과 행수 제한으로 이중 해석",
+            source_text=query,
+            owner_span=spans.get("cardinality"),
+            mode="clear",
+        )
     # 같은 어구('매출이 높은')를 회원 단위 랭킹 정책으로도 읽은 결과는 이 조건과 이중 해석이다.
     # 임계값 정책은 진짜 추가 조건이므로 남긴다 — 순위(rank) 정책만 회수한다.
     policies = plan.get("policy_constraints")
@@ -12005,6 +12018,22 @@ def _plan_calendar_ranges(plan: dict[str, Any]) -> list[tuple[str, str]]:
                 walk(value)
 
     walk(plan)
+    # 생일 월 타겟은 연도 범위를 저장하지 않고 현재 월의 MM만 비교한다. 따라서 구조 안에
+    # from/to가 없어도 현재 월 창은 이미 이 슬롯이 소유한다. 이를 범위 목록에 합치면
+    # ``이번 달 생일``의 기간이 고아 창으로 다시 차단되지 않으며, 과거 생일 월은 여전히 미해결이다.
+    target_user = plan.get("target_user")
+    birthday = (
+        target_user.get("birthday_target")
+        if isinstance(target_user, dict)
+        and isinstance(target_user.get("birthday_target"), dict)
+        else None
+    )
+    if isinstance(birthday, dict) and birthday.get("granularity") == "month":
+        today = date.today()
+        found.append((
+            _ymd(today.year, today.month, 1),
+            _ymd(today.year, today.month, _month_last_day(today.year, today.month)),
+        ))
     return found
 
 
@@ -16798,6 +16827,41 @@ _UNSUPPORTED_INTENT_REASONS = frozenset({
 })
 
 
+def _unresolved_display_reason(item: Mapping[str, Any]) -> str:
+    """내부 코드·모델 원문과 분리된 사용자 표시용 한국어 사유."""
+    explicit = item.get("display_reason")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    reason = item.get("reason")
+    if isinstance(reason, str) and any("가" <= char <= "힣" for char in reason):
+        return reason.strip()
+    evidence = str(
+        item.get("source_text")
+        or item.get("label")
+        or item.get("condition")
+        or ""
+    ).strip()
+    if evidence:
+        return f"'{evidence}' 조건을 실행 가능한 타겟 조건으로 확정하지 못했습니다."
+    return "요청 조건을 실행 가능한 타겟 조건으로 확정하지 못했습니다."
+
+
+def _public_missing_input_conditions(
+    conditions: Any,
+) -> list[dict[str, Any]]:
+    """API에는 진단용 영문·오류 코드 대신 사용자용 한국어 사유를 반환한다."""
+    public: list[dict[str, Any]] = []
+    for condition in conditions if isinstance(conditions, list) else []:
+        if not isinstance(condition, Mapping):
+            continue
+        item = copy.deepcopy(dict(condition))
+        item["reason"] = _unresolved_display_reason(condition)
+        item.pop("display_reason", None)
+        item.pop("technical_reason", None)
+        public.append(item)
+    return public
+
+
 def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]) -> str:
     """검증 SQL 실패를 실패 유형별로 구체적으로 설명한다(어디서 왜 막혔는지 사용자가 알 수 있게)."""
     reason = sql_result.get("failure_reason")
@@ -17110,7 +17174,9 @@ def build_recommendation_api_response(
         "confidence_report": render_confidence_report(sql_result["confidence"]) if sql_result.get("confidence") else None,
         "confidence_markdown": render_confidence_markdown(sql_result["confidence"]) if sql_result.get("confidence") else None,
         "message": message,
-        "missing_input_conditions": sql_result.get("missing_input_conditions", []),
+        "missing_input_conditions": _public_missing_input_conditions(
+            sql_result.get("missing_input_conditions", [])
+        ),
         "clarification_questions": sql_result.get("clarification_questions", []),
         "unsupported_conditions": sql_result.get("unsupported_conditions", []),
         "unsupported_condition_labels": unsupported_labels,
@@ -19230,8 +19296,9 @@ def _unresolved_source_blocking_sql_result(
     unresolved: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """실행 슬롯으로 귀결되지 않은 원문 조건은 SQL·IR·자유 SQL 모든 생성 경로를 닫는다."""
+
     questions = _unique_strings([
-        str(item.get("reason") or item.get("label") or item.get("condition") or "요청 조건을 확인해 주세요.")
+        _unresolved_display_reason(item)
         for item in unresolved
         if isinstance(item, dict)
     ]) or ["실행 조건으로 확정되지 않은 요청이 있습니다. 조건을 확인해 주세요."]
@@ -19315,6 +19382,25 @@ def _unresolved_source_condition_is_deterministically_resolved(
     if item.get("source") == "conceptual_targeting":
         evidence = str(item.get("source_text") or item.get("label") or "")
         normalized = re.sub(r"\s+", "", evidence).casefold()
+        if entity_set is not None and evidence.strip():
+            source_query = str(
+                query_plan.get("original_query")
+                or query_plan.get("raw_query")
+                or query_plan.get("planning_query")
+                or ""
+            )
+            cursor = 0
+            while source_query and (start := source_query.find(evidence, cursor)) >= 0:
+                end = start + len(evidence)
+                owner = slot_ownership.owning_condition(
+                    query_plan,
+                    [start, end],
+                    source_text=source_query,
+                    surface=evidence,
+                )
+                if isinstance(owner, dict) and owner.get("owner") == "entity_set_condition":
+                    return True
+                cursor = start + 1
         return bool(normalized) and any(
             isinstance(resolution, dict)
             and resolution.get("status") == "resolved"
@@ -27021,12 +27107,22 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
         ranking = ast.get("source") if isinstance(ast, dict) else None
         aggregation = ranking.get("source") if isinstance(ranking, dict) else None
         if isinstance(ranking, dict) and isinstance(aggregation, dict):
+            cardinality = ast.get("cardinality")
             required_terms = [
-                "not exists" if ast.get("exists") is False else "exists",
                 f"top {ranking.get('limit')}",
                 "group by",
                 "order by",
             ]
+            if isinstance(cardinality, dict):
+                required_terms.extend([
+                    "count(distinct",
+                    f") {cardinality.get('operator')} {cardinality.get('value')}",
+                ])
+            else:
+                required_terms.insert(
+                    0,
+                    "not exists" if ast.get("exists") is False else "exists",
+                )
             for scope_filter in aggregation.get("filters") or []:
                 if isinstance(scope_filter, dict) and isinstance(scope_filter.get("value"), str):
                     required_terms.append(scope_filter["value"])
