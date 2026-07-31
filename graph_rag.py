@@ -74,9 +74,7 @@ from analytical_intent import (
 from calendar_window import (
     DURATION_ANCHOR_GAP as _DURATION_ANCHOR_GAP,
     DURATION_UNIT_DAYS as _DURATION_UNIT_DAYS,
-    KO_UNIT_TO_CANON as _KO_UNIT_TO_CANON,
     NUMERIC_DURATION_PATTERN as _NUMERIC_DURATION_PATTERN,
-    QUARTER_MONTH_RANGES as _QUARTER_MONTH_RANGES,
     SOURCE_SPAN_KEY as _SOURCE_SPAN_KEY,
     SOURCE_TEMPORAL_KIND_KEY as _SOURCE_TEMPORAL_KIND_KEY,
     WORD_DURATION_DAYS as _WORD_DURATION_DAYS,
@@ -90,7 +88,6 @@ from calendar_window import (
     parse_calendar_window_spans,
     parse_calendar_windows,
     parse_duration_window as _parse_duration_window,
-    parse_half_or_quarter_window,
     parse_time_window_group_span,
     parse_time_windows,
     calendar_window_from_parts,
@@ -132,7 +129,7 @@ from confidence import render_confidence_markdown, render_confidence_report, sco
 import sql_dialect
 from sql_dialect import SqlDialect, get_dialect
 import targeting_ir
-from targeting_ir import extract_target_conditions, fact_join_kinds
+from targeting_ir import extract_target_conditions
 import slot_ownership
 import slot_policy
 from slot_ownership import claim_slots as _claim_slots
@@ -165,13 +162,11 @@ from query_structurer import (
     CampaignQueryPlanV3,
     LLMCampaignQueryPlanStructurer,
     LLMCampaignQueryPlanV3Structurer,
-    LLMQueryStructurer,
     QueryPlannerInput,
     QueryStructurer,
     QueryStructuringInput,
     StructuredQuery,
     StructuringContext,
-    STRUCTURED_QUERY_TOOL,
     as_campaign_query_plan_v2,
     build_campaign_query_plan_v2_fallback,
     build_campaign_query_plan_v3_fallback,
@@ -268,89 +263,6 @@ def _openai_chat_create(client: Any, *, model: str, messages: list[dict[str, Any
         # 이 파이프라인은 구조화 추출이 대부분이라 최소 추론으로 충분하고 빠르다(~4s). env 로 조절 가능.
         params.setdefault("reasoning_effort", os.getenv("OPENAI_REASONING_EFFORT", "minimal"))
     return client.chat.completions.create(model=model, messages=messages, **params)
-
-
-def _structure_query(
-    query: str,
-    context: StructuringContext,
-    llm_model: str,
-    query_structurer: QueryStructurer | None = None,
-) -> StructuredQuery:
-    input = QueryStructuringInput(query=query, context=context)
-    if query_structurer is not None:
-        try:
-            return query_structurer.structure(input)
-        except Exception as exc:  # noqa: BLE001 - structuring must never block the existing planner.
-            _write_rag_llm_log(
-                "query_structuring_injected_failed",
-                {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
-            )
-            return build_fallback(query)
-
-    if not os.getenv("OPENAI_API_KEY"):
-        _write_rag_llm_log(
-            "query_structuring_skipped",
-            {"query": query, "reason": "missing_openai_api_key"},
-        )
-        return build_fallback(query)
-    try:
-        from openai import OpenAI
-
-        client = OpenAI()
-        call_count = 0
-
-        def complete(messages: list[dict[str, str]]) -> str:
-            nonlocal call_count
-            call_count += 1
-            model = _fast_llm_model(llm_model) or llm_model
-            _write_rag_llm_log(
-                "query_structuring_request",
-                {
-                    "attempt": call_count,
-                    "model": model,
-                    "query": query,
-                    "mode": "strict_function_calling",
-                },
-            )
-            response = _openai_chat_create(
-                client,
-                model=model,
-                temperature=0,
-                messages=messages,
-                tools=[STRUCTURED_QUERY_TOOL],
-                tool_choice={
-                    "type": "function",
-                    "function": {"name": STRUCTURED_QUERY_TOOL["function"]["name"]},
-                },
-                parallel_tool_calls=False,
-            )
-            message = response.choices[0].message
-            tool_calls = getattr(message, "tool_calls", None) or []
-            if not tool_calls:
-                refusal = getattr(message, "refusal", None)
-                raise ValueError(f"structured query tool call missing; refusal={refusal!r}")
-            function = tool_calls[0].function
-            if function.name != STRUCTURED_QUERY_TOOL["function"]["name"]:
-                raise ValueError(f"unexpected structured query tool: {function.name}")
-            content = function.arguments or "{}"
-            _write_rag_llm_log(
-                "query_structuring_response",
-                {"attempt": call_count, "model": model, "query": query, "content": content},
-            )
-            return content
-
-        return LLMQueryStructurer(
-            complete,
-            on_event=lambda event, payload: _write_rag_llm_log(
-                event, {"query": query, **payload}
-            ),
-        ).structure(input)
-    except Exception as exc:  # noqa: BLE001 - unavailable LLM uses the same safe fallback as invalid output.
-        _write_rag_llm_log(
-            "query_structuring_setup_failed",
-            {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
-        )
-        return build_fallback(query)
 
 
 def _structure_campaign_query_plan_v2(
@@ -6074,37 +5986,6 @@ def _is_empty_slot(current: Any) -> bool:
     return current is None or current == [] or current == {}
 
 
-@_audited_stage
-def _apply_llm_structured_slots(plan: dict[str, Any]) -> None:
-    """coerce 완료된 LLM 구조화 슬롯을 fill-if-empty(덧셈형)로 병합하고 stash 를 제거한다.
-
-    정규식이 이미 값을 채운 슬롯은 건드리지 않는다 — LLM 은 정규식이 비운(표현 변형으로 못 잡은) 슬롯만
-    메운다. 신뢰 모델: 정규식 우선."""
-    slots = plan.pop("_llm_structured_slots", None)
-    if not isinstance(slots, dict):
-        return
-    target_user = plan.setdefault("target_user", {})
-    resolved_unsupported_reasons: set[str] = set()
-    for name, value in slots.items():
-        shape = targeting_ir.SLOT_SHAPES.get(name)
-        container = target_user if (shape is None or shape.container == "target_user") else plan
-        if _is_empty_slot(container.get(name)):
-            container[name] = value
-            if shape is not None:
-                resolved_unsupported_reasons.update(shape.resolves_unsupported)
-
-    # A deterministic parser can leave a clarification before the LLM fills the
-    # corresponding empty slot.  Keeping that stale state would make the SQL
-    # builder fail closed despite a valid condition.  Clear only reasons that the
-    # applied slot explicitly declares it resolves; unrelated gates stay intact.
-    unsupported = plan.get("unsupported")
-    if (
-        isinstance(unsupported, dict)
-        and unsupported.get("reason") in resolved_unsupported_reasons
-    ):
-        plan.pop("unsupported", None)
-
-
 def _coerce_llm_query_plan_candidate(
     candidate: Any,
     reference_plan: dict[str, Any],
@@ -6245,23 +6126,6 @@ def _coerce_llm_query_plan_candidate(
         plan,
     )
     return plan
-
-
-def _coerce_llm_query_plan(
-    candidate: Any,
-    fallback_plan: dict[str, Any],
-    sql_schema: Path = DEFAULT_SCHEMA_PATH,
-    *,
-    source_query: str | None = None,
-) -> dict[str, Any]:
-    """구 호출자 호환 래퍼. 실제 병합 정책은 :mod:`plan_resolver`에 위임한다."""
-    llm_candidate = _coerce_llm_query_plan_candidate(
-        candidate, fallback_plan, sql_schema, source_query=source_query
-    )
-    return plan_resolver.resolve_plan_candidates([
-        plan_resolver.PlanCandidate("rules", fallback_plan, priority=300),
-        plan_resolver.PlanCandidate("llm_query_structurer", llm_candidate, priority=100),
-    ])
 
 
 def _is_substantive_aggregation_request(request: dict[str, Any]) -> bool:
@@ -6954,14 +6818,6 @@ _EVENT_IR_BLOCKING_PLAN_KEYS = (
 _EVENT_SHADOW_BEHAVIORS: dict[str, frozenset[str]] = {
     "purchase": frozenset({"first_purchase", "repeat_buyer", "no_purchase"}),
 }
-
-
-def _event_expression_has_aggregate(expression: event_ir.Condition) -> bool:
-    return any(
-        isinstance(atom, event_ir.Comparison)
-        and isinstance(atom.left, event_ir.Aggregate)
-        for atom in event_ir.iter_atoms(expression)
-    )
 
 
 def _event_aggregate_signature(
@@ -10101,18 +9957,6 @@ def _threshold_measure(num: str, unit: str, *, mag: bool = False, sep: str = r"\
     return rf"(?P<num>{num}){mag_part}{sep}{u}"
 
 
-def _threshold_regex(num: str, unit: str, *, mag: bool = False, sep: str = r"\s*", prefix: str = "", unit_optional: bool = False) -> str:
-    """<숫자>[<배수어>]<단위><연산자> 정규식 '문자열'. 연산자 열거는 단일 소스(_OP_ALT_BASIC)에서 온다.
-    문자열이라 다른 정규식에 임베드할 수 있다(예: 셀 비율 = 지표어 + 이 조각)."""
-    measure = _threshold_measure(num, unit, mag=mag, sep=sep, unit_optional=unit_optional)
-    return rf"{prefix}{measure}{sep}(?P<op>{_OP_ALT_BASIC})"
-
-
-def _threshold_pattern(num: str, unit: str, *, mag: bool = False, sep: str = r"\s*", prefix: str = "", unit_optional: bool = False) -> "re.Pattern[str]":
-    """_threshold_regex 컴파일본(단독 search 용). 스펙 기반 도메인 생성은 _compile_threshold 를 쓴다."""
-    return re.compile(_threshold_regex(num, unit, mag=mag, sep=sep, prefix=prefix, unit_optional=unit_optional))
-
-
 # 숫자 고유어 수사(한~열) → 값. 순수 카운트('세 번 이상')용 — 금액/배수어와 구분한다.
 _NATIVE_COUNT_WORDS = {
     "한": 1, "두": 2, "세": 3, "네": 4, "다섯": 5,
@@ -12446,11 +12290,6 @@ def _apply_calendar_window_claim_filter(query: str, plan: dict[str, Any]) -> Non
         return
 
 
-def _parse_half_or_quarter_period(query: str) -> dict[str, Any] | None:
-    """'YYYY년 상반기/하반기', 'YYYY년 N분기(=N사분기)'를 ORDER_DATE 창 {from,to}로 파싱한다."""
-    return parse_half_or_quarter_window(query, label_suffix="구매")
-
-
 # ── 기간 대 기간 지표 증감(metric_trend) ────────────────────────────────────────────
 # '2019년 2월과 3월의 구매금액이 증가한 고객'처럼 두 기간의 회원별 집계를 비교하는 조건. 지표는
 # aggregate_targets 레지스트리(구매금액/주문건수/구매수량/객단가/할인금액 …)에서, 기간은 calendar_window
@@ -13229,21 +13068,6 @@ _SIGNUP_DEVICE_SUFFIX = r"(?:으로|로|에서|을통해|를통해|앱)?가입"
 
 # 가입 디바이스(앱/PC/모바일웹) 승격은 attribute_token 실행기(그룹 "signup_device")가 담당한다.
 # 문법·표면어는 _attribute_token_groups()["signup_device"] + eq_filters surface_terms 가 소유한다.
-
-
-def _balance_numeric_filters() -> list[dict[str, Any]]:
-    """numeric_filters 중 잔액(balance) 카테고리 항목(적립금/예치금)을 반환한다(컬럼 대 컬럼 비교 전용).
-
-    member_target_filters.json numeric_filters 의 category=="balance" 만 골라, '적립금이 예치금보다 많은'
-    같은 동종(금액) 컬럼 비교에 쓴다. 일반 비교/선택은 _numeric_metric_filters(type 구동)가 담당한다."""
-    raw = _MEMBER_TARGET_FILTERS.get("numeric_filters")
-    if not isinstance(raw, list):
-        raw = _DEFAULT_MEMBER_TARGET_FILTERS.get("numeric_filters", [])
-    out: list[dict[str, Any]] = []
-    for entry in raw:
-        if isinstance(entry, dict) and entry.get("category") == "balance" and isinstance(entry.get("column"), str):
-            out.append(entry)
-    return out
 
 
 # 회원 수치 지표를 balance 한정이 아니라 numeric_filters 의 type 구동으로 일반화한다 — 새 수치 컬럼(로그인 횟수·
@@ -21721,11 +21545,6 @@ def _plan_dimension_filter_owner_key(plan: dict[str, Any], value: str) -> str | 
     return None
 
 
-def _plan_dimension_filter_has_value(plan: dict[str, Any], value: str) -> bool:
-    """dimension_filters(지역 등)가 이 값을 이미 소비했는지(names/codes 경계 일치)."""
-    return _plan_dimension_filter_owner_key(plan, value) is not None
-
-
 def _set_operand_text_owner_key(text: str, plan: dict[str, Any]) -> str | None:
     """미해결 집합 operand 표면어를 소비한 dimension 필터의 소유 인스턴스 키."""
     stripped = text.strip() if isinstance(text, str) else ""
@@ -25746,18 +25565,6 @@ def _event_predicate_factory(
     )
 
 
-def _event_expression_predicates(
-    expression: Any, anchor: datetime,
-) -> list["aggregate_semantics.EventPredicate"]:
-    """호환용 signed predicate view. Boolean 의미 판정은 이 목록을 쓰지 않는다."""
-    predicates: list[aggregate_semantics.EventPredicate] = []
-    for atom, negated in event_ir.iter_signed_atoms(expression):
-        predicate = _event_predicate_factory(atom, negated, anchor)
-        if predicate is not None:
-            predicates.append(predicate)
-    return predicates
-
-
 def _attach_event_semantic_validation(query_plan: dict[str, Any]) -> None:
     payload = query_plan.get(EVENT_EXPRESSION_KEY)
     if not isinstance(payload, dict) or not isinstance(payload.get("expression"), dict):
@@ -27567,16 +27374,6 @@ def validate_required_input_conditions(query_plan: dict[str, Any], condition_tok
 
 def _missing_input_condition(path: str, label: str, question: str) -> dict[str, str]:
     return {"path": path, "label": label, "question": question}
-
-
-def _has_target_segment_input(query_plan: dict[str, Any]) -> bool:
-    target_user = query_plan.get("target_user", {})
-    return bool(
-        target_user.get("behaviors")
-        or target_user.get("lifecycle")
-        or target_user.get("interests")
-        or target_user.get("price_sensitivity")
-    )
 
 
 def validate_unmentioned_sql_conditions(sql: str, query_plan: dict[str, Any]) -> dict[str, Any]:
