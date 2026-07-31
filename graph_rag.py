@@ -4,7 +4,6 @@ import common_utils
 
 import argparse
 import concurrent.futures
-import contextlib
 import contextvars
 import copy
 import functools
@@ -14,13 +13,11 @@ import os
 import re
 import threading
 import time
-import uuid
 from collections import Counter
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from string import Template
 from typing import Any, Callable, Literal
 
 import networkx as nx
@@ -69,6 +66,20 @@ from rag.search import (  # noqa: F401 - façade 재수출
     vector_search,
 )
 from rag.search import _query_tokens
+
+# LLM 호출·프롬프트 로딩·RAG LLM 로그 배관은 rag.llm_io 가 소유한다(fan-in 최대 리프 계층).
+# 재수출은 façade 계약(tests/test_graph_rag_facade.py)에 있거나 아래에서 실제로 쓰는 것만 둔다 —
+# 안 쓰는 재수출을 남기면 façade 가 계약보다 커져서 나중에 줄일 때 무엇이 진짜 계약인지 흐려진다.
+from rag.llm_io import rag_llm_run_scope  # noqa: F401 - façade 재수출
+from rag.llm_io import (
+    _fast_llm_model,
+    _message_summary,
+    _openai_chat_create,
+    _read_prompt_template,
+    _render_prompt_template,
+    _semantic_verify_model,
+    _write_rag_llm_log,
+)
 from aggregation_requirements import (
     SchemaMetadata,
     aggregation_request_json_schema,
@@ -211,9 +222,6 @@ DEFAULT_EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 DEFAULT_LLM_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 DEFAULT_PROMPT_DIR = Path(os.getenv("GRAPH_RAG_PROMPT_DIR", "docs/prompts"))
 DEFAULT_MESSAGE_POLICY_PATH = Path(os.getenv("GRAPH_RAG_MESSAGE_POLICY", "docs/policies/message-policy.json"))
-DEFAULT_RAG_LLM_LOG_DIR = Path(os.getenv("RAG_LLM_LOG_DIR", "logs/rag_llm"))
-
-
 def _stage_reason(func: Any) -> str:
     """스테이지의 사유 문구 = docstring 첫 문장(왜 이 단계가 슬롯을 건드리는지 이미 적혀 있다)."""
     doc = (getattr(func, "__doc__", "") or "").strip()
@@ -254,31 +262,6 @@ def _audited_stage(func: Any) -> Any:
         return result
 
     return wrapper
-
-
-def _model_restricts_sampling(model: str | None) -> bool:
-    """gpt-5·o-series 추론 모델은 Chat Completions 에서 temperature 기본값(1)만 허용한다.
-    이런 모델에 temperature=0 등을 보내면 400(invalid_request)로 실패한다."""
-    lowered = (model or "").lower()
-    return lowered.startswith(("gpt-5", "o1", "o3", "o4"))
-
-
-def _openai_chat_create(client: Any, *, model: str, messages: list[dict[str, Any]], **kwargs: Any) -> Any:
-    """모델 호환 OpenAI Chat 호출 래퍼. 모든 chat.completions 호출은 이걸 거친다.
-
-    - gpt-5/o-series 는 temperature!=1 미지원 → 제약 모델이면 temperature 를 떼고 기본값(1)을 쓴다.
-    - 신모델은 max_tokens 대신 max_completion_tokens 를 요구 → 있으면 이관(구모델도 허용).
-    이렇게 안 하면 이런 모델에서 전 LLM 단계가 400 으로 실패하고 규칙으로 조용히 폴백한다.
-    """
-    params = dict(kwargs)
-    if "max_tokens" in params:
-        params.setdefault("max_completion_tokens", params.pop("max_tokens"))
-    if _model_restricts_sampling(model):
-        params.pop("temperature", None)
-        # 추론 모델은 기본 추론 깊이가 커서 느리다(재작성 1회 ~18s > 12s 타임아웃 → 규칙 폴백).
-        # 이 파이프라인은 구조화 추출이 대부분이라 최소 추론으로 충분하고 빠르다(~4s). env 로 조절 가능.
-        params.setdefault("reasoning_effort", os.getenv("OPENAI_REASONING_EFFORT", "minimal"))
-    return client.chat.completions.create(model=model, messages=messages, **params)
 
 
 def _structure_campaign_query_plan_v2(
@@ -434,26 +417,6 @@ def _structure_campaign_query_plan_v3(
             {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
         )
         return build_campaign_query_plan_v3_fallback(query)
-
-
-def _fast_llm_model(current: str | None) -> str | None:
-    """지연에 민감하거나 정확도가 중요한 경량 단계(재작성·타겟/채널 분리·상품추출·의미검증)용 모델.
-
-    메인 OPENAI_MODEL 이 느린 추론모델(gpt-5 등)이면 이 단계들은 12s 타임아웃에 걸리거나(폴백) 최소
-    추론에서 조건을 드롭해 가드에 반려된다. 그래서 이들만 빠르고 정확한 모델(기본 gpt-4o-mini)로 고정한다.
-    current=None(규칙 모드)이면 그대로 None 을 돌려줘 LLM 을 건너뛴다. OPENAI_FAST_MODEL 로 조절 가능.
-    """
-    if current is None:
-        return None
-    return os.getenv("OPENAI_FAST_MODEL") or "gpt-4o-mini"
-
-
-def _semantic_verify_model(current: str | None) -> str | None:
-    """의미검증(최종 SQL↔원문 직접 대조) 전용 모델. 재작성·타겟분리·상품추출과 분리해 따로 지정할 수 있게
-    한다(OPENAI_SEMANTIC_VERIFY_MODEL). 미지정이면 fast 모델을 그대로 쓴다. 규칙 모드(current=None)면 None."""
-    if current is None:
-        return None
-    return os.getenv("OPENAI_SEMANTIC_VERIFY_MODEL") or _fast_llm_model(current)
 
 
 # 위 경량 단계에 해당하는 트레이스 step 번호(배지 모델명을 메인이 아니라 fast 모델로 표기).
@@ -1520,80 +1483,6 @@ MESSAGE_POLICY_CHANNEL_ALIASES = {
 }
 CHANNEL_TERMS = {"app_push", "kakao", "email", "sms", "instagram", *MESSAGE_CHANNEL_TERMS}
 OFFER_TERMS = {"coupon", "free_shipping", "subscription"}
-
-def _rag_llm_log_enabled() -> bool:
-    value = os.getenv("RAG_LLM_LOG_ENABLED", "true").strip().casefold()
-    return value not in {"0", "false", "no", "off"}
-
-
-def _rag_llm_log_dir() -> Path:
-    configured_dir = os.getenv("RAG_LLM_LOG_DIR")
-    return Path(configured_dir) if configured_dir else DEFAULT_RAG_LLM_LOG_DIR
-
-
-# 캠페인 생성(프롬프트 1건 = retrieve() 1회) 단위로 로그 파일을 분리하기 위한 실행 스코프.
-# 값이 설정돼 있으면 해당 실행의 모든 이벤트가 같은 파일(<날짜>/<시각-해시>.jsonl)에 기록된다.
-_rag_llm_run_path: contextvars.ContextVar[Path | None] = contextvars.ContextVar(
-    "_rag_llm_run_path", default=None
-)
-
-
-@contextlib.contextmanager
-def rag_llm_run_scope():
-    """retrieve() 한 번을 하나의 캠페인 로그 파일로 묶는 컨텍스트."""
-    if not _rag_llm_log_enabled():
-        yield None
-        return
-    now = datetime.now().astimezone()
-    run_key = f"{now.strftime('%H%M%S')}-{uuid.uuid4().hex[:6]}"
-    log_path = _rag_llm_log_dir() / now.date().isoformat() / f"{run_key}.jsonl"
-    token = _rag_llm_run_path.set(log_path)
-    try:
-        yield log_path
-    finally:
-        _rag_llm_run_path.reset(token)
-
-
-def _write_rag_llm_log(event: str, payload: dict[str, Any]) -> None:
-    if not _rag_llm_log_enabled():
-        return
-    try:
-        now = datetime.now().astimezone()
-        log_path = _rag_llm_run_path.get()
-        if log_path is None:
-            # 실행 스코프 밖에서 호출된 경우 기존과 동일하게 날짜별 파일로 남긴다.
-            log_path = _rag_llm_log_dir() / f"{now.date().isoformat()}.jsonl"
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        record = {
-            "timestamp": now.isoformat(timespec="milliseconds"),
-            "event": event,
-            **payload,
-        }
-        with log_path.open("a", encoding="utf-8") as file:
-            file.write(json.dumps(record, ensure_ascii=False, default=_json_log_default) + "\n")
-    except Exception as exc:
-        print(f"rag_llm_log_failed:{exc.__class__.__name__}", flush=True)
-
-
-def _json_log_default(value: Any) -> Any:
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, (date, datetime)):
-        return value.isoformat()
-    if isinstance(value, set):
-        return sorted(str(item) for item in value)
-    return str(value)
-
-
-def _message_summary(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "role": message.get("role"),
-            "content_length": len(str(message.get("content") or "")),
-        }
-        for message in messages
-    ]
-
 
 def _prompt_normalize_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
     fallback = "\n".join(
@@ -5704,36 +5593,6 @@ def _try_llm_query_plan(
             },
         )
         return None, f"llm_query_parser_failed:{exc.__class__.__name__}"
-
-
-def _read_prompt_template(prompt_dir: Path | None, filename: str, fallback: str) -> str:
-    # 1) DB(prompt_store 캐시) 우선
-    db_template = _read_prompt_from_db(filename)
-    if db_template:
-        return db_template
-    # 2) 파일(prompt_dir)
-    if prompt_dir is not None:
-        try:
-            template = (prompt_dir / filename).read_text(encoding="utf-8").strip()
-        except OSError:
-            template = ""
-        if template:
-            return template
-    # 3) 코드 내 하드코딩 fallback
-    return fallback
-
-
-def _read_prompt_from_db(filename: str) -> str | None:
-    try:
-        import prompt_store
-
-        return prompt_store.get_template(filename)
-    except Exception:  # noqa: BLE001 - DB 미가용 시 파일/하드코딩 fallback으로 진행
-        return None
-
-
-def _render_prompt_template(template: str, **values: str) -> str:
-    return Template(template).safe_substitute(values)
 
 
 def _query_plan_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
