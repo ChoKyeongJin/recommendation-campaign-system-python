@@ -1256,6 +1256,15 @@ def _plan_summary(plan: Mapping[str, Any]) -> dict[str, Any]:
         "interests": list(target.get("interests") or []),
         "preferred_channels": list(target.get("preferred_channels") or []),
         "purchase_object_already_resolved": bool(target.get("purchase_object")),
+        "purchase_membership": (
+            {
+                "domain": target["purchase_membership"].get("domain"),
+                "operator": target["purchase_membership"].get("operator"),
+                "window_days": target["purchase_membership"].get("window_days"),
+            }
+            if isinstance(target.get("purchase_membership"), Mapping)
+            else None
+        ),
         "entity_set_condition": (
             {
                 "surface": entity_set.get("surface"),
@@ -1365,13 +1374,20 @@ def _non_audience_objects(plan: Mapping[str, Any]) -> list[str]:
         if isinstance(plan.get("target_user"), Mapping)
         else {}
     )
-    return list(_unique_text([
+    raw_objects: list[Any] = [
         campaign.get("sell_object"),
         target.get("purchase_object"),
         *list(target.get("purchase_objects") or []),
         *list(target.get("sales_objects") or []),
         *list(target.get("target_objects") or []),
-    ]))
+    ]
+    # Multi-object slots use normalized {value, kind} records, whereas older
+    # single-object slots are strings.  Redaction must consume both shapes or
+    # the second product and its conjunction leak into conceptual review.
+    return list(_unique_text(
+        item.get("value") if isinstance(item, Mapping) else item
+        for item in raw_objects
+    ))
 
 
 def _product_redaction_terms(plan: Mapping[str, Any]) -> list[str]:
@@ -1408,13 +1424,18 @@ def _product_redaction_terms(plan: Mapping[str, Any]) -> list[str]:
 _NON_AUDIENCE_FILLER_RE = re.compile(
     r"(?:"
     r"캠페인|프로모션|마케팅|광고|타겟팅|타깃팅|타겟|타깃|대상|"
-    r"고객|회원|유저|사용자|사람|명단|"
+    r"고객(?:들)?|회원(?:들)?|유저(?:들)?|사용자(?:들)?|사람(?:들)?|명단|리스트|목록|"
+    # 실행 claim을 지운 뒤 남는 관계 동사·활용형. 수식어(동시/특정 기간/비교값)는
+    # 지우지 않으므로 실제 미해석 의미는 잔여 텍스트로 계속 검토된다.
+    r"구매(?:한|하고|했고|하는|해|하기)?|구입(?:한|하고|하는)?|산|"
+    r"추출(?:해줘|해주세요|하기|해)?|뽑(?:아줘|아주세요|기)?|"
+    r"재구매|유도(?:하고|해|하기)?|하고싶어(?:요)?|싶어(?:요)?|"
     r"만들(?:어줘|어주세요|어|고싶어(?:요)?|기)?|생성(?:해줘|해주세요|하기)?|"
     r"판매(?:해줘|해주세요|하고싶어(?:요)?|하기)?|팔(?:고싶어(?:요)?|아줘|기)?|"
     r"보내(?:줘|주세요|기)?|발송(?:해줘|해주세요|하기)?|"
     r"추천(?:해줘|해주세요|하기)?|조회(?:해줘|해주세요|하기)?|"
     r"찾아(?:줘|주세요|보기)?|골라(?:줘|주세요)?|"
-    r"에게|한테|께|으로|로|부터|중|만|을|를|은|는|이|가|에|의|와|과|도"
+    r"에게|한테|께|으로|로|부터|중|만|을|를|은|는|이|가|에|의|와|과|이랑|랑|하고|도"
     r")+",
     flags=re.IGNORECASE,
 )

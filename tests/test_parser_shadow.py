@@ -165,6 +165,9 @@ def test_semantic_form_drops_provenance_but_keeps_conditions() -> None:
     value = {
         "operator": "exists",
         "value": "노트북",
+        "surface": "노트북을 구매한 고객",
+        "span": [0, 11],
+        "spans": {"clause": [0, 11]},
         "source": "llm",
         "confidence": 0.97,
         "evidence": {"text": "노트북", "start": 0, "end": 3},
@@ -176,6 +179,39 @@ def test_semantic_form_drops_provenance_but_keeps_conditions() -> None:
         "value": "노트북",
         "nested": [{"operator": "="}],
     }
+
+
+def test_entity_set_source_coordinates_do_not_change_meaning() -> None:
+    """절 분리본과 원문은 surface/span이 달라도 같은 실행 AST면 같은 조건이다."""
+    derived_set_ast = {
+        "type": "member_set",
+        "relation": "purchase",
+        "exists": True,
+        "source": {
+            "type": "ranking",
+            "direction": "top",
+            "limit": 5,
+            "source": {
+                "type": "aggregation",
+                "relation": "purchase",
+                "group_by": "product",
+                "measure": "sales_quantity",
+                "window": {"from": "20260301", "to": "20260331"},
+            },
+        },
+    }
+    baseline = _plan(entity_set_condition={
+        "derived_set_ast": derived_set_ast,
+        "surface": "2026년 3월 가장 많이 팔린 상품 5개를 구매한 고객",
+        "spans": {"clause": [0, 31]},
+    })
+    candidate = _plan(entity_set_condition={
+        "derived_set_ast": copy.deepcopy(derived_set_ast),
+        "surface": "2026년 3월 가장 많이 팔린 상품 5개를 구매한 고객 리스트",
+        "spans": {"clause": [4, 38]},
+    })
+
+    assert parser_shadow.divergent_slots(parser_shadow.compare(baseline, candidate)) == []
 
 
 def test_product_order_is_meaningful_and_stays_compared() -> None:

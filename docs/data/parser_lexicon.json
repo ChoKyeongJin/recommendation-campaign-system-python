@@ -421,6 +421,93 @@
       "첫",
       "최초",
       "처음"
+    ],
+    "source_recurrence_prefix": [
+      "매"
+    ],
+    "source_recurrence_universal": [
+      "각",
+      "모든"
+    ],
+    "source_recurrence_bucket": [
+      "일",
+      "주차",
+      "주",
+      "개월",
+      "월",
+      "분기",
+      "년"
+    ],
+    "source_recurrence_suffix": [
+      "마다"
+    ],
+    "source_recurrence_action": [
+      "구매",
+      "구입",
+      "주문",
+      "로그인",
+      "접속",
+      "방문",
+      "반응",
+      "사용",
+      "이용",
+      "발송",
+      "수신",
+      "보유",
+      "변경"
+    ],
+    "source_entity_reference": [
+      "지정한",
+      "선택한",
+      "고른",
+      "해당",
+      "이들",
+      "위",
+      "위의"
+    ],
+    "source_korean_count": [
+      "한",
+      "두",
+      "세",
+      "네",
+      "다섯"
+    ],
+    "source_entity_counter": [
+      "개",
+      "종",
+      "가지"
+    ],
+    "source_entity_domain": [
+      "브랜드",
+      "상품",
+      "제품",
+      "품목",
+      "카테고리"
+    ],
+    "source_all_quantifier": [
+      "모두",
+      "전부",
+      "각각",
+      "빠짐없이"
+    ],
+    "source_superlative": [
+      "가장"
+    ],
+    "source_latest_selector": [
+      "최신",
+      "최근"
+    ],
+    "source_snapshot_grain": [
+      "월",
+      "월별",
+      "월간"
+    ],
+    "source_snapshot_system": [
+      "crm"
+    ],
+    "source_snapshot_noun": [
+      "스냅샷",
+      "snapshot"
     ]
   },
   "patterns": {

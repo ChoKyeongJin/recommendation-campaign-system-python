@@ -20,8 +20,8 @@ base×qualifier capability 로 각 requirement 의 귀결(parsed/compiled/clarif
 build_sql_result 가 account_requirements(query, plan, sql)로 호출해 귀결을 얻고, unsupported/clarification 이
 있으면 needs_clarification 로 응답한다.
 
-현재 추출 범위(v1): entity qualifier(브랜드/상품/카테고리/제품/품목명 + 값). 스키마·레지스트리·검증기는
-도메인 공통이라, 새 qualifier 종류(dimension/time_scope 등)는 추출기 detector 하나 + JSON 항목만 추가하면 된다.
+현재 추출 범위: entity qualifier(브랜드/상품/카테고리/제품/품목명 + 값)와 평탄화 시 손실되는 조합
+연산자(주기 반복, 외부 지정 집합, 최신 스냅샷 선택). 후자는 compiler receipt가 있어야만 해소된다.
 
 실행: python -m pytest tests/test_semantic_requirements.py -q
 """
@@ -35,6 +35,8 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
+
+import lexicon_patterns
 
 
 DEFAULT_CAPABILITIES_PATH = Path("docs/data/requirement_capabilities.json")
@@ -96,6 +98,67 @@ _JOSA_TAIL_RE = re.compile(r"(을|를|이|가|은|는|인|의|와|과|도|만|�
 # '브랜드가 3개 이상'의 '3개'는 엔티티 **이름**이 아니라 가짓수(임계값)다 — 수량은 qualifier 값에서 뺀다.
 # 숫자 + (한글 계수 단위)만 배제하므로 '3M'·'5th' 같은 실제 영문 브랜드명은 그대로 값으로 남는다.
 _QUANTITY_VALUE_RE = re.compile(r"^\d[\d,]*\s*(?:개|종|종류|가지|품목|건|회|번|명|점|장|원|%|퍼센트)?$")
+
+# 실행 슬롯보다 먼저 보존해야 하는 조합 의미. 이 표면어들은 특정 SQL 템플릿을 고르는 규칙이 아니라,
+# 평탄한 ``window_days + threshold`` 같은 슬롯으로 낮출 때 사라질 수 있는 **연산자**를 감지한다.
+# 감지된 의무는 compiler receipt가 없으면 unresolved로 남으므로, 새 컴파일러가 생기기 전까지 근사 SQL로
+# 축소되지 않는다. 낱말은 parser_lexicon.json 에 두고 여기에는 결합 구조만 둔다.
+_RECURRENCE_PREFIX_ALT = lexicon_patterns.alternation("source_recurrence_prefix")
+_RECURRENCE_UNIVERSAL_ALT = lexicon_patterns.alternation("source_recurrence_universal")
+_RECURRENCE_BUCKET_ALT = lexicon_patterns.alternation("source_recurrence_bucket")
+_RECURRENCE_SUFFIX_ALT = lexicon_patterns.alternation("source_recurrence_suffix")
+_RECURRENCE_ACTION_ALT = lexicon_patterns.alternation("source_recurrence_action")
+_ENTITY_REFERENCE_ALT = lexicon_patterns.alternation("source_entity_reference")
+_KOREAN_COUNT_ALT = lexicon_patterns.alternation("source_korean_count")
+_ENTITY_COUNTER_ALT = lexicon_patterns.alternation("source_entity_counter")
+_ENTITY_DOMAIN_ALT = lexicon_patterns.alternation("source_entity_domain")
+_ALL_QUANTIFIER_ALT = lexicon_patterns.alternation("source_all_quantifier")
+_SUPERLATIVE_ALT = lexicon_patterns.alternation("source_superlative")
+_LATEST_SELECTOR_ALT = lexicon_patterns.alternation("source_latest_selector")
+_SNAPSHOT_GRAIN_ALT = lexicon_patterns.alternation("source_snapshot_grain")
+_SNAPSHOT_SYSTEM_ALT = lexicon_patterns.alternation("source_snapshot_system")
+_SNAPSHOT_NOUN_ALT = lexicon_patterns.alternation("source_snapshot_noun")
+_MEMBER_NOUN_ALT = lexicon_patterns.alternation("member_noun")
+_RECURRENCE_RE = re.compile(
+    rf"(?P<marker>"
+    rf"(?:{_RECURRENCE_PREFIX_ALT})\s*(?P<bucket>{_RECURRENCE_BUCKET_ALT})(?:{_RECURRENCE_SUFFIX_ALT})?"
+    rf"|(?:{_RECURRENCE_UNIVERSAL_ALT})\s*(?P<bucket2>{_RECURRENCE_BUCKET_ALT})"
+    rf"(?:{_RECURRENCE_SUFFIX_ALT})?"
+    rf")"
+)
+_RECURRENCE_CONDITION_RE = re.compile(rf"(?:{_RECURRENCE_ACTION_ALT})")
+_DEICTIC_ENTITY_SET_RE = re.compile(
+    rf"(?P<reference>{_ENTITY_REFERENCE_ALT})\s*"
+    rf"(?:(?P<count>\d+|{_KOREAN_COUNT_ALT})\s*(?:{_ENTITY_COUNTER_ALT})?\s*)?"
+    rf"(?P<entity>{_ENTITY_DOMAIN_ALT})"
+)
+_ALL_QUANTIFIER_RE = re.compile(rf"(?:{_ALL_QUANTIFIER_ALT})")
+_LATEST_SNAPSHOT_RE = re.compile(
+    rf"(?:(?:{_MEMBER_NOUN_ALT})별\s*)?(?:{_SUPERLATIVE_ALT}\s*)?"
+    rf"(?:{_LATEST_SELECTOR_ALT})\s*(?P<grain>{_SNAPSHOT_GRAIN_ALT})?\s*"
+    rf"(?:{_SNAPSHOT_SYSTEM_ALT}\s*)?(?:{_SNAPSHOT_NOUN_ALT})",
+    re.IGNORECASE,
+)
+_KOREAN_COUNT_VALUES = {
+    "한": 1,
+    "두": 2,
+    "세": 3,
+    "네": 4,
+    "다섯": 5,
+}
+_BUCKET_VALUES = {
+    "일": "day",
+    "주": "week",
+    "주차": "week",
+    "월": "month",
+    "개월": "month",
+    "분기": "quarter",
+    "년": "year",
+}
+SOURCE_REQUIREMENT_RECEIPTS_KEY = "source_requirement_receipts"
+_RECEIPT_TERMINAL_STATUSES = frozenset(
+    {"compiled", "unsupported", "clarification"}
+)
 
 
 def _unique(seq: list[str]) -> list[str]:
@@ -505,6 +568,236 @@ def capture_plan_source_requirements(
     return tuple(captured)
 
 
+def _semantic_obligation(
+    query: str,
+    *,
+    kind: str,
+    span: tuple[int, int],
+    value: dict[str, Any],
+) -> SourceRequirement:
+    """Create an immutable requirement for meaning that must not be flattened."""
+
+    start, end = span
+    path = f"source_semantics.{kind}"
+    return SourceRequirement(
+        id=_stable_requirement_id(
+            path=path,
+            polarity="positive",
+            source="source_semantic_contract",
+            span=span,
+            value=value,
+        ),
+        type="semantic_obligation",
+        base={"type": "semantic_operator", "name": kind},
+        relation="must_preserve",
+        value=value,
+        source_text=query[start:end],
+        source_span=span,
+        path=path,
+        polarity="positive",
+        source="source_semantic_contract",
+        status="detected",
+    )
+
+
+def _recurrence_obligations(query: str) -> list[SourceRequirement]:
+    requirements: list[SourceRequirement] = []
+    for match in _RECURRENCE_RE.finditer(query):
+        # "매월 뉴스레터" 같은 캠페인 일정 명사를 타겟 조건으로 오인하지 않는다. 주기 표지와 같은
+        # 절에 대상 결과를 바꾸는 행동/상태 술어가 있을 때만 의미 의무로 봉인한다.
+        clause_start = max(
+            query.rfind(",", 0, match.start()),
+            query.rfind(".", 0, match.start()),
+            query.rfind(";", 0, match.start()),
+        ) + 1
+        following_boundaries = [
+            index
+            for token in (",", ".", ";")
+            if (index := query.find(token, match.end())) >= 0
+        ]
+        clause_end = min(following_boundaries) if following_boundaries else len(query)
+        clause = query[clause_start:clause_end]
+        if _RECURRENCE_CONDITION_RE.search(clause) is None:
+            continue
+        raw_bucket = match.group("bucket") or match.group("bucket2")
+        requirements.append(_semantic_obligation(
+            query,
+            kind="temporal_recurrence",
+            span=(match.start(), match.end()),
+            value={
+                "quantifier": "every",
+                "bucket": _BUCKET_VALUES[raw_bucket],
+                "surface": match.group("marker"),
+            },
+        ))
+    return requirements
+
+
+def _entity_set_obligations(query: str) -> list[SourceRequirement]:
+    requirements: list[SourceRequirement] = []
+    for match in _DEICTIC_ENTITY_SET_RE.finditer(query):
+        tail_end = min(len(query), match.end() + 24)
+        quantifier = _ALL_QUANTIFIER_RE.search(query[match.end():tail_end])
+        if quantifier is None:
+            continue
+        raw_count = match.group("count")
+        cardinality = (
+            int(raw_count)
+            if isinstance(raw_count, str) and raw_count.isdigit()
+            else _KOREAN_COUNT_VALUES.get(raw_count or "")
+        )
+        entity = match.group("entity")
+        domain = {
+            "브랜드": "brand",
+            "상품": "product",
+            "제품": "product",
+            "품목": "product",
+            "카테고리": "category",
+        }[entity]
+        requirements.append(_semantic_obligation(
+            query,
+            kind="referenced_entity_set",
+            span=(match.start(), quantifier.end() + match.end()),
+            value={
+                "reference": "deictic",
+                "entity_domain": domain,
+                "cardinality": cardinality,
+                "set_quantifier": "all",
+            },
+        ))
+    return requirements
+
+
+def _snapshot_obligations(query: str) -> list[SourceRequirement]:
+    requirements: list[SourceRequirement] = []
+    for match in _LATEST_SNAPSHOT_RE.finditer(query):
+        context = query[max(0, match.start() - 12):match.end()].casefold()
+        if not any(marker in context for marker in ("crm", "회원", "고객")):
+            continue
+        requirements.append(_semantic_obligation(
+            query,
+            kind="snapshot_selector",
+            span=(match.start(), match.end()),
+            value={
+                "selector": "latest",
+                "partition_by": "member",
+                "grain": "month" if match.group("grain") else None,
+            },
+        ))
+    return requirements
+
+
+def capture_source_semantic_obligations(
+    query: str,
+) -> tuple[SourceRequirement, ...]:
+    """Capture lossy semantic operators directly from the immutable source.
+
+    These requirements are intentionally independent of parser output.  A
+    parser may recognize a nearby number, date window, entity noun, or grade,
+    but that does not discharge the recurrence/set/snapshot operator itself.
+    Only an explicit compiler receipt can do so.
+    """
+
+    captured = [
+        *_recurrence_obligations(query),
+        *_entity_set_obligations(query),
+        *_snapshot_obligations(query),
+    ]
+    unique: dict[str, SourceRequirement] = {}
+    for requirement in captured:
+        unique.setdefault(requirement.id, requirement)
+    return tuple(unique.values())
+
+
+def unresolved_semantic_obligations(
+    plan: Mapping[str, Any],
+    query: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return source obligations without a terminal compiler disposition.
+
+    ``query`` is a fail-close backstop for manually constructed or legacy plans
+    that do not yet carry the immutable source ledger.  It is inspected without
+    mutating an already sealed snapshot.
+    """
+
+    receipts: dict[str, Mapping[str, Any]] = {}
+    raw_receipts = plan.get(SOURCE_REQUIREMENT_RECEIPTS_KEY)
+    if isinstance(raw_receipts, list):
+        for item in raw_receipts:
+            if (
+                isinstance(item, Mapping)
+                and isinstance(item.get("requirement_id"), str)
+                and item.get("status") in _RECEIPT_TERMINAL_STATUSES
+            ):
+                receipts[str(item["requirement_id"])] = item
+
+    ledger_requirements = [
+        requirement
+        for requirement in (plan.get(SOURCE_REQUIREMENTS_KEY) or [])
+        if isinstance(requirement, Mapping)
+    ]
+    known_ids = {
+        str(requirement.get("id") or "")
+        for requirement in ledger_requirements
+    }
+    if isinstance(query, str) and query:
+        ledger_requirements.extend(
+            requirement.to_dict()
+            for requirement in capture_source_semantic_obligations(query)
+            if requirement.id not in known_ids
+        )
+
+    unresolved: list[dict[str, Any]] = []
+    for requirement in ledger_requirements:
+        if (
+            not isinstance(requirement, Mapping)
+            or requirement.get("type") != "semantic_obligation"
+        ):
+            continue
+        requirement_id = str(requirement.get("id") or "")
+        receipt = receipts.get(requirement_id)
+        if receipt is not None and receipt.get("status") == "compiled":
+            continue
+        base = requirement.get("base")
+        kind = (
+            str(base.get("name"))
+            if isinstance(base, Mapping) and base.get("name")
+            else "semantic_obligation"
+        )
+        default_reason = {
+            "temporal_recurrence": (
+                "주기별 반복 조건을 총 기간 집계로 축소하지 않고 컴파일했다는 근거가 없습니다."
+            ),
+            "referenced_entity_set": (
+                "외부에서 지정된 엔터티 집합의 구체 값과 전체집합 조건을 컴파일했다는 근거가 없습니다."
+            ),
+            "snapshot_selector": (
+                "회원별 최신 스냅샷 선택 조건을 컴파일했다는 근거가 없습니다."
+            ),
+        }.get(kind, "원문의 조합 의미를 보존했다는 컴파일 근거가 없습니다.")
+        unresolved.append({
+            "id": requirement_id,
+            "path": requirement.get("path"),
+            "label": requirement.get("source_text") or kind,
+            "source_text": requirement.get("source_text") or "",
+            "source_span": requirement.get("source_span"),
+            "reason": (
+                str(receipt.get("reason"))
+                if receipt is not None and receipt.get("reason")
+                else default_reason
+            ),
+            "status": (
+                str(receipt.get("status"))
+                if receipt is not None
+                else "unresolved"
+            ),
+            "source": "source_semantic_contract",
+            "requirement_id": requirement_id,
+            "semantic_kind": kind,
+        })
+    return unresolved
+
+
 def _requirements_payload(requirements: Any) -> list[dict[str, Any]]:
     payload: list[dict[str, Any]] = []
     for requirement in requirements or ():
@@ -545,6 +838,47 @@ def verify_source_requirements(plan: dict[str, Any]) -> bool:
     if not isinstance(expected, str) or actual != expected:
         raise SourceRequirementIntegrityError("source requirements changed after initial capture")
     return True
+
+
+def record_source_requirement_receipt(
+    plan: dict[str, Any],
+    *,
+    requirement_id: str,
+    status: str,
+    compiler: str,
+    evidence: Any = None,
+    reason: str | None = None,
+) -> None:
+    """Record a compiler-owned terminal disposition outside the sealed ledger."""
+
+    if status not in _RECEIPT_TERMINAL_STATUSES:
+        raise ValueError(f"non-terminal source requirement status: {status!r}")
+    known_ids = {
+        str(item.get("id") or "")
+        for item in plan.get(SOURCE_REQUIREMENTS_KEY) or []
+        if isinstance(item, Mapping)
+    }
+    if requirement_id not in known_ids:
+        raise ValueError(f"unknown source requirement id: {requirement_id!r}")
+    receipt = {
+        "requirement_id": requirement_id,
+        "status": status,
+        "compiler": compiler,
+        "evidence": _thaw_json(_freeze_json(evidence)),
+        "reason": reason,
+    }
+    receipts = plan.setdefault(SOURCE_REQUIREMENT_RECEIPTS_KEY, [])
+    if not isinstance(receipts, list):
+        raise ValueError(f"{SOURCE_REQUIREMENT_RECEIPTS_KEY} must be a list")
+    receipts[:] = [
+        item
+        for item in receipts
+        if not (
+            isinstance(item, Mapping)
+            and item.get("requirement_id") == requirement_id
+        )
+    ]
+    receipts.append(receipt)
 
 
 # ── 회계: 각 requirement 를 parsed/compiled/clarification/unsupported 로 귀결 ────────────────

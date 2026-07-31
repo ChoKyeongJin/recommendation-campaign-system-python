@@ -141,12 +141,14 @@ import semantic_requirements
 import semantic_resolution
 import compiler_strategies
 import condition_evaluation_ir
+import compositional_targeting
 from condition_evaluation_ir import (
     PLAN_KEY as CONDITION_EVALUATIONS_KEY,
     build_same_product_co_purchase_evaluation,
     compile_evaluation as compile_condition_evaluation,
     detects_same_product_co_purchase,
     requests_member_count,
+    same_product_co_purchase_source_span,
     validate_compiled_sql as validate_condition_evaluation_sql,
     validate_evaluations as validate_condition_evaluations,
 )
@@ -2691,14 +2693,14 @@ def _finalize_deterministic_query_plan(
 ) -> None:
     """LLM 필요 여부를 판단하기 전에 모든 결정론 의미 후처리를 완료한다."""
     _apply_condition_evaluation_ir(query, plan)
+    compositional_targeting.apply_to_plan(query, plan, schema_path=sql_schema)
     plan["query_semantics"] = {
         "tokens": classify_query_tokens(query),
         "extreme": extract_extreme_semantics(query),
     }
-    _apply_core_membership_semantics(query, plan)
-    # 핵심 존재/부재 슬롯이 확정된 직후 사건 IR 을 세운다. core_membership 은 문장 전체를 하나의
-    # 구매 극성으로 접으므로(절 구조를 모른다), 절 단위 해석이 그 결과를 대체할 수 있어야 한다.
-    _apply_event_expression_filter(query, plan)
+    # 후보 병합으로 새 기반 사실(상품/행동 등)이 들어온 뒤에는 그 사실에 의존하는 날짜·사건 조건을
+    # 반드시 다시 닫는다. 개별 필터를 여기서 따로 나열하지 않고 병합 경계와 같은 closure를 공유한다.
+    _recompute_post_merge_condition_dependencies(query, plan)
     _apply_product_master_resolution(query, plan)
     _apply_entity_set_condition(query, plan)
     _reconcile_deterministic_member_exclusions(query, plan)
@@ -2998,6 +3000,16 @@ def _apply_condition_evaluation_ir(query: str, plan: dict[str, Any]) -> None:
         target_user.get("purchase_date") if isinstance(target_user.get("purchase_date"), dict) else None,
     )
     plan[CONDITION_EVALUATIONS_KEY] = [evaluation]
+    source_span = same_product_co_purchase_source_span(query)
+    if source_span is not None:
+        slot_ownership.record_slot_span(
+            plan,
+            CONDITION_EVALUATIONS_KEY,
+            source_span,
+            source_text=query,
+            container="plan",
+            filter_name="lexicon:condition_evaluation",
+        )
     plan["intent"] = "analyze_aggregation"
     plan["detected_intent"] = {
         "query_type": "conditional_aggregate",
@@ -3476,6 +3488,31 @@ def _clear_entity_ranking_block(plan: dict[str, Any]) -> None:
     ]
 
 
+def _drop_superseded_purchase_membership_semantic_condition(
+    plan: dict[str, Any],
+    membership: Any,
+) -> None:
+    """회수된 구매 존재 슬롯에서 파생된 호환용 의미 조건만 함께 제거한다.
+
+    ``semantic_conditions``는 레거시 슬롯에서 만들어지는 파생 출력이다. 이후
+    ``entity_set_condition``이 그 슬롯을 소유하면 실행 소유자가 사라진 파생 행도 제거해야
+    원문 재검증에서 가짜 의미 불일치가 생기지 않는다. 별도 구매 절을 보존하기 위해 도메인
+    전체가 아니라 원래 membership에서 만들어진 완전한 값만 일치시킨다.
+    """
+
+    if not isinstance(membership, dict):
+        return
+    expected = {**membership, "is_primary_condition": True}
+    conditions = plan.get("semantic_conditions")
+    if not isinstance(conditions, list):
+        return
+    plan["semantic_conditions"] = [
+        condition
+        for condition in conditions
+        if not (isinstance(condition, dict) and condition == expected)
+    ]
+
+
 @_audited_stage
 def _guard_unparsed_entity_ranking(query: str, plan: dict[str, Any]) -> None:
     """원문 랭킹 요구가 AST로 구조화되지 않았으면 단순 구매 SQL 폴백을 차단한다."""
@@ -3588,11 +3625,16 @@ def _apply_entity_set_condition(query: str, plan: dict[str, Any]) -> None:
             ("target_user", "behaviors:no_purchase" if node.get("relation") == "purchase" else "behaviors:no_cart")
         )
         relation_targets.extend((("target_user", "purchase_inactivity"), ("target_user", "cart_absence")))
-    _claim_slots(
+    purchase_membership = copy.deepcopy(target_user.get("purchase_membership"))
+    relation_outcomes = _claim_slots(
         plan, tuple(relation_targets),
         owner=owner, reason="순위 절의 관계(구매/장바구니 존재·부재)를 별도 행동 조건으로 이중 해석",
         source_text=query, owner_span=spans.get("relation"),
     )
+    if relation_outcomes.get("target_user.purchase_membership") == "removed":
+        _drop_superseded_purchase_membership_semantic_condition(
+            plan, purchase_membership,
+        )
     # 극값 표현('가장 많이')은 순위 집합의 것이지 회원 지표 랭킹이 아니다.
     _claim_slots(
         plan, (("plan", "member_metric_selection"), ("plan", "member_metric_ranking"),
@@ -4127,10 +4169,22 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
         "zero_amount_purchase": _FilterSpec(_apply_zero_amount_with_purchase_filter),
         # 기간 대 기간 지표 증감('2019년 2월과 3월의 구매금액이 증가한')은 구매일(purchase_date)·집계 파싱
         # 뒤에 실행해, 두 창 중 첫 창만 잡힌 단일 기간 조건을 증감 조건으로 대체한다.
-        "metric_trend": _FilterSpec(_apply_metric_trend_filter, init_key="metric_trend"),
+        "metric_trend": _FilterSpec(
+            _apply_metric_trend_filter,
+            init_key="metric_trend",
+            span=_metric_trend_source_span,
+            span_slots=(("target_user", "metric_trend"),),
+        ),
         # 주인 없는 절대 달력 창을 plan 이 요구하는 팩트의 날짜창으로 귀속한다. 모든 창 파서(구매일/증감/
         # 가입/로그인/미구매)보다 뒤에 실행해야 '이미 주인 있는 창'을 덮지 않는다 → 경로 리스트 맨 끝.
-        "calendar_window_claim": _FilterSpec(_apply_calendar_window_claim_filter),
+        "calendar_window_claim": _FilterSpec(
+            _apply_calendar_window_claim_filter,
+            # 이 필터는 직접 구매일 파서가 놓친 창을 같은 purchase_date 슬롯으로 복구한다.
+            # 값만 복구하고 출처를 남기지 않으면 canonical claim 은 resolved/source_spans=[]
+            # 모순 상태가 되므로, 직접 경로와 동일한 provenance 계약을 반드시 공유한다.
+            span=_purchase_date_span,
+            span_slots=(("target_user", "purchase_date"),),
+        ),
         # 범용 사건 IR. 모든 슬롯 파서 뒤에 실행해 '기존 슬롯이 이 문장을 온전히 담았는가'를 판정한다 —
         # 담았으면 물러나고(기존 경로 유지), 못 담았으면 IR 이 실행 모델이 되고 그 슬롯을 회수한다.
         "event_expression": _FilterSpec(
@@ -4144,7 +4198,7 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
         # 선언형(slot_setter, append): 카트 '존재' 감지 → behaviors 에 cart_abandoner 유일 추가.
         "cart_presence": _FilterSpec(
             impl="slot_setter", detect=_detect_cart_presence, slot="behaviors", mode="append",
-            span=_pattern_span(_CART_PRESENCE_PATTERN, compact=True, casefold=True),
+            span=_cart_abandoner_source_span,
             span_slots=(("target_user", "behaviors:cart_abandoner"),),
         ),
         # 카트 '부재'는 존재/이탈 승격 뒤에 실행해 오파싱된 cart_abandoner 를 걷어낸다.
@@ -4179,7 +4233,12 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
         "birthday": _FilterSpec(impl="slot_setter", detect=_detect_birthday_target, slot="birthday_target", init_key="birthday_target"),
         "signup_target": _FilterSpec(_apply_signup_target_filter, init_key="signup_target"),
         # rules 전용(정규화 매칭 뒤 문맥 보정 / 업무 정책).
-        "cart_repurchase": _FilterSpec(_apply_cart_repurchase_context, paths=frozenset({"rules"})),
+        "cart_repurchase": _FilterSpec(
+            _apply_cart_repurchase_context,
+            span=_cart_abandoner_source_span,
+            span_slots=(("target_user", "behaviors:cart_abandoner"),),
+            paths=frozenset({"rules"}),
+        ),
         "inactivity_period": _FilterSpec(_apply_inactivity_period_filter, paths=frozenset({"rules"})),
         "policy": _FilterSpec(_apply_policy_constraints, needs_policies=True, paths=frozenset({"rules"})),
     }
@@ -4324,6 +4383,59 @@ def _slot_text_span(
         return None
 
     return locate
+
+
+def _metric_trend_source_span(
+    query: str, plan: dict[str, Any]
+) -> tuple[int, int] | None:
+    """Locate the period-change predicate without claiming later conjuncts."""
+
+    target_user = plan.get("target_user")
+    if not isinstance(target_user, dict) or not isinstance(
+        target_user.get("metric_trend"), dict
+    ):
+        return None
+    windows = parse_calendar_window_spans(query)
+    if len(windows) < 2:
+        return None
+    start = windows[0][1]
+    search_start = windows[1][2]
+    terms = tuple(
+        term
+        for _direction, direction_terms in _METRIC_TREND_DIRECTIONS
+        for term in direction_terms
+    )
+    direction = re.search(
+        "|".join(re.escape(term) for term in sorted(terms, key=len, reverse=True)),
+        query[search_start:],
+    )
+    if direction is None:
+        return None
+    end = search_start + direction.end()
+    suffix = re.match(r"(?:한|하는|된|인)", query[end:])
+    if suffix is not None:
+        end += suffix.end()
+    return start, end
+
+
+def _cart_abandoner_source_span(
+    query: str, plan: dict[str, Any]
+) -> tuple[int, int] | None:
+    """Locate the complete cart-abandonment clause, including non-payment."""
+
+    target_user = plan.get("target_user")
+    behaviors = target_user.get("behaviors") if isinstance(target_user, dict) else []
+    if "cart_abandoner" not in (behaviors or []):
+        return None
+    start = query.find("장바구니")
+    if start < 0:
+        return None
+    audience = re.search(r"고객|회원|사용자|유저|사람", query[start:])
+    if audience is not None:
+        return start, start + audience.start()
+    return _pattern_span(
+        _CART_PRESENCE_PATTERN, compact=True, casefold=True
+    )(query, plan)
 
 
 def _purchase_inactivity_span(query: str, _plan: dict[str, Any]) -> tuple[int, int] | None:
@@ -4724,7 +4836,13 @@ def _attach_candidate_source_requirements(
         semantic_requirements.capture_plan_source_requirements(query, candidate.payload, source=candidate.source)
         for candidate in candidates
     ]
-    semantic_requirements.attach_source_requirements(plan, *snapshots)
+    # 슬롯 후보와 무관하게 원문에 존재하는 조합 연산자도 같은 불변 원장에 먼저 기록한다.
+    # 매월→기간 총합, 지정 집합→랭킹, 최신 스냅샷→현재 회원값 같은 축소는 슬롯만 캡처하면
+    # 이미 사라진 뒤이므로 발견할 수 없다.
+    source_semantics = semantic_requirements.capture_source_semantic_obligations(query)
+    semantic_requirements.attach_source_requirements(
+        plan, *snapshots, source_semantics
+    )
 
 
 def _reconcile_llm_candidate_source_bound_slots(
@@ -4863,7 +4981,8 @@ def _source_authoritative_stages(
          "재작성이 '10% 이상 증가'를 단순 '증가'로 줄여 결과 집합이 넓어진다"),
         ("purchase_date", _restore_purchase_date_from_source,
          "절 분리가 기간 표현을 통째로 지우면 고아 창 귀속으로도 되찾을 수 없다"),
-        ("calendar_window_claim", _apply_calendar_window_claim_filter,
+        ("calendar_window_claim",
+         lambda query, plan: _apply_named_filter("calendar_window_claim", query, plan),
          "구매 활용형('산')처럼 직접 날짜 파서의 표면어 게이트를 통과하지 못한 고아 달력 창을 주문 팩트에 귀속한다"),
         # 창·극성 슬롯이 전부 확정된 **뒤**에 사건 IR 을 세운다 — 슬롯이 문장을 온전히 담았는지는
         # 그때만 판정할 수 있다. 앞서 실행하면 아직 안 채워진 슬롯을 보고 개입 여부를 잘못 정한다.
@@ -4880,6 +4999,11 @@ def _source_authoritative_stages(
          "복원된 구매 조건을 집계 요구사항 IR 로 정규화한다"),
         ("condition_evaluation", _apply_condition_evaluation_ir,
          "판정 범위·그룹 grain·최종 결과 grain을 원문에서 함께 복원한다"),
+        ("relational_ir",
+         lambda query, plan: compositional_targeting.apply_to_plan(
+             query, plan, schema_path=sql_schema
+         ),
+         "속성·기간·집계·비교를 공통 IR로 조합하고 물리 이력 바인딩을 검증한다"),
         ("campaign_response_frequency", _apply_campaign_response_frequency_filter,
          "재작성이 반응 '횟수'·기간 어구를 흔든다"),
         ("campaign_buy_amount", _apply_campaign_buy_amount_filter,
@@ -4972,6 +5096,85 @@ def _validate_source_authoritative_stages(
     return validation
 
 
+_SOURCE_AUTHORITATIVE_IR_VALIDATION_ENV = "SOURCE_AUTHORITATIVE_IR_VALIDATION"
+
+
+def _source_authoritative_ir_validation_enabled() -> bool:
+    """Return whether LLM-first IR should be cross-checked by the legacy parser."""
+
+    return os.getenv(
+        _SOURCE_AUTHORITATIVE_IR_VALIDATION_ENV, "off"
+    ).strip().casefold() in {"1", "true", "on", "yes"}
+
+
+def _apply_source_authoritative_stages(
+    source_query: str,
+    plan: dict[str, Any],
+    *,
+    sql_schema: Path,
+    normalization_rules: Path | None,
+) -> None:
+    """Run source stages unless the final execution IR is actually LLM-owned.
+
+    ``authority`` describes the requested migration policy, not the parser that
+    ultimately produced the plan.  When semantic structuring fails, a plan can
+    legitimately carry ``authority=llm_first`` together with
+    ``type=rules/fallback_used=true``.  Treating that fallback as LLM-owned skips
+    the deterministic source closure and leaves dependencies unresolved.
+    """
+
+    parser_state = plan.get("parser") if isinstance(plan.get("parser"), dict) else {}
+    actual_llm_owned = (
+        parser_state.get("authority") == "llm_first"
+        and not (
+            parser_state.get("type") == "rules"
+            and parser_state.get("fallback_used") is True
+        )
+    )
+    if not actual_llm_owned:
+        _run_source_authoritative_stages(
+            source_query,
+            plan,
+            sql_schema=sql_schema,
+            normalization_rules=normalization_rules,
+        )
+        return
+    if _source_authoritative_ir_validation_enabled():
+        _validate_source_authoritative_stages(
+            source_query,
+            plan,
+            sql_schema=sql_schema,
+            normalization_rules=normalization_rules,
+        )
+        return
+    plan.setdefault("parser", {})["source_validation"] = {
+        "ran": False,
+        "is_satisfied": True,
+        "skipped": True,
+        "reason": "disabled_by_configuration",
+        "divergent_slots": [],
+    }
+
+
+def _recompute_post_merge_condition_dependencies(
+    source_query: str,
+    plan: dict[str, Any],
+) -> None:
+    """Close conditions derived from the final merged base facts.
+
+    Candidate producers are intentionally independent: rules may provide a
+    calendar phrase while an object extractor supplies the purchase fact that
+    gives that phrase its domain.  Therefore derived conditions cannot be
+    finalized inside either candidate.  This closure runs only after their
+    values coexist and is idempotent, so every merge path (LLM success, rules
+    fallback, supplied semantic plan) receives the same dependency ordering.
+    """
+    _apply_core_membership_semantics(source_query, plan)
+    _apply_named_filter("calendar_window_claim", source_query, plan)
+    # Event IR depends on the final membership polarity and calendar ownership.
+    _apply_event_expression_filter(source_query, plan)
+
+
 def _resolve_query_plan_candidates(
     candidates: list[plan_resolver.PlanCandidate],
     *,
@@ -4983,6 +5186,15 @@ def _resolve_query_plan_candidates(
     # 하나가 극성을 중복 제출하면 같은 값의 포함+제외가 만들어질 수 있다. 후보가 모두 모인 이 단일 지점에서
     # 원문 span의 명시 극성을 적용한다. 실제로 양쪽을 명시한 문장은 건드리지 않아 후속 충돌 게이트가 막는다.
     _reconcile_deterministic_member_exclusions(source_query, plan)
+    # 파생 조건은 후보 안에서 확정할 수 없다. 예를 들어 rules 후보의 달력 창은 나중에 병합되는
+    # object 후보의 주문 사실이 있어야 purchase_date로 귀속된다. 모든 후보가 모인 뒤 공통 closure를
+    # 실행함으로써 LLM 성공/실패 여부에 따른 순서 차이를 없앤다.
+    _recompute_post_merge_condition_dependencies(source_query, plan)
+    # Candidate plans build their canonical tree before immutable source
+    # requirements and post-merge dependencies are attached.  Rebuild once at
+    # this shared boundary so every parser receives identical ownership and
+    # requirement→claim provenance.
+    _reconcile_condition_ownership(plan)
     return plan
 
 
@@ -6440,6 +6652,41 @@ def _duration_window_owned_by_span(
     ))
 
 
+_DURATION_SOURCE_SUFFIX_RE = re.compile(r"(?:이내|동안|간|내)(?:에|의)?")
+_DURATION_SOURCE_PREFIXES = ("최근", "지난")
+
+
+def _duration_condition_source_span(
+    query: str, window: Mapping[str, Any]
+) -> tuple[int, int] | None:
+    """기간 창의 수치뿐 아니라 방향 표지까지 포함한 원문 구간을 반환한다.
+
+    ``calendar_window``가 운반하는 ``_source_span``은 공백 제거 좌표계의 ``3개월`` 부분이다.
+    실행 의미는 ``최근``/``이내`` 같은 방향 표지까지 합쳐져야 완전하므로 canonical claim에는
+    ``최근 3개월``·``3개월 이내에`` 전체를 기록한다. 그래야 후속 상식 검토기가 이미 컴파일된
+    표지를 별도 미지원 조건으로 다시 제출하지 않는다.
+    """
+    carried = window.get(_SOURCE_SPAN_KEY)
+    if not isinstance(carried, (list, tuple)) or len(carried) != 2:
+        return None
+    try:
+        start, end = int(carried[0]), int(carried[1])
+    except (TypeError, ValueError):
+        return None
+    compact = query.replace(" ", "")
+    if start < 0 or end <= start or end > len(compact):
+        return None
+    for prefix in _DURATION_SOURCE_PREFIXES:
+        prefix_start = start - len(prefix)
+        if prefix_start >= 0 and compact[prefix_start:start] == prefix:
+            start = prefix_start
+            break
+    suffix = _DURATION_SOURCE_SUFFIX_RE.match(compact, end)
+    if suffix is not None:
+        end = suffix.end()
+    return _compact_source_span(query, (start, end))
+
+
 def _record_suppressed_duration_candidates(
     plan: dict[str, Any],
     query: str,
@@ -6565,6 +6812,22 @@ def _apply_core_membership_semantics(query: str, plan: dict[str, Any]) -> None:
                 if window.get(key) is not None:
                     condition[key] = window[key]
         target_user["purchase_membership"] = condition
+        membership_span = (
+            _duration_condition_source_span(query, window)
+            if isinstance(window, Mapping)
+            else None
+        )
+        if membership_span is None:
+            membership_span = _compact_source_span(query, positive_match.span())
+        if membership_span is not None:
+            slot_ownership.record_slot_span(
+                plan,
+                "purchase_membership",
+                membership_span,
+                source_text=query,
+                container="target_user",
+                filter_name="core_membership_semantics",
+            )
         # 기간 수식어가 상품명으로 오인된 경우를 제거한다("최근 30일 이내 구매한 회원" → 상품 '이내').
         if target_user.get("purchase_object") in {"이내", "동안", "최근", "기간", "내"}:
             target_user["purchase_object"] = None
@@ -8140,13 +8403,58 @@ def _claimed_spans(plan: dict[str, Any]) -> list[str]:
     return spans
 
 
-def _flag_evidence_accepted(evidence: Any, query: str, plan: dict[str, Any]) -> bool:
+def _registered_member_attribute_mentions(evidence: str) -> set[str]:
+    """Return registered member attributes explicitly named in an evidence span.
+
+    The LLM fallback may interpret a novel phrase when no registry term is
+    present.  It may not, however, relabel an explicit known attribute as a
+    different flag (for example ``골드 회원`` → ``premium_member``).
+    """
+
+    compact = evidence.replace(" ", "").casefold()
+    mentioned: set[str] = set()
+    entries = _MEMBER_TARGET_FILTERS.get("eq_filters")
+    if not isinstance(entries, list):
+        return mentioned
+    for entry in entries:
+        if not isinstance(entry, dict) or not isinstance(entry.get("canonical"), str):
+            continue
+        terms = [
+            *(
+                entry.get("surface_terms")
+                if isinstance(entry.get("surface_terms"), list)
+                else []
+            ),
+            *(
+                entry.get("synonyms")
+                if isinstance(entry.get("synonyms"), list)
+                else []
+            ),
+        ]
+        if any(
+            isinstance(term, str)
+            and len(term.replace(" ", "")) >= 2
+            and term.replace(" ", "").casefold() in compact
+            for term in terms
+        ):
+            mentioned.add(str(entry["canonical"]))
+    return mentioned
+
+
+def _flag_evidence_accepted(
+    evidence: Any,
+    query: str,
+    plan: dict[str, Any],
+    *,
+    canonical: str | None = None,
+) -> bool:
     """LLM 이 댄 근거가 채택 가능한가 — 세 관문 모두 통과해야 한다.
 
       1. 원문에 그대로 있는 표현이어야 한다(번역·유추 금지).
       2. 결정론 층이 이미 읽은 조각과 겹치면 안 된다 — 규칙이 '신규'로 읽은 텍스트를 LLM 이 다시
          멤버십으로 읽어 조건을 하나 더 만들어내는 중복 해석을 막는다(빈칸만 메운다는 원칙의 스팬 판).
-      3. 회원 신분을 가리키는 명사를 포함해야 한다 — 이 경로가 채우는 것이 회원 상태 플래그이기 때문."""
+      3. 회원 신분을 가리키는 명사를 포함해야 한다 — 이 경로가 채우는 것이 회원 상태 플래그이기 때문.
+      4. 이미 등록된 다른 회원 속성 표면어를 후보 canonical로 재분류하면 안 된다."""
     if not isinstance(evidence, str):
         return False
     span = evidence.replace(" ", "").casefold()
@@ -8154,7 +8462,12 @@ def _flag_evidence_accepted(evidence: Any, query: str, plan: dict[str, Any]) -> 
         return False
     if any(claimed in span or span in claimed for claimed in _claimed_spans(plan)):
         return False
-    return bool(_MEMBER_NOUN_RE.search(span))
+    if not _MEMBER_NOUN_RE.search(span):
+        return False
+    explicit_attributes = _registered_member_attribute_mentions(evidence)
+    if explicit_attributes and canonical not in explicit_attributes:
+        return False
+    return True
 
 
 def _condition_slot_system_prompt(canonicals: tuple[str, ...], prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
@@ -8232,7 +8545,9 @@ def _validated_member_flags(
         polarity = item.get("polarity") if item.get("polarity") in {"include", "exclude"} else "include"
         if not (isinstance(canonical, str) and canonical in allowed):
             continue
-        if not _flag_evidence_accepted(item.get("evidence"), query, plan):
+        if not _flag_evidence_accepted(
+            item.get("evidence"), query, plan, canonical=canonical
+        ):
             continue
         if (canonical, polarity) not in out:
             out.append((canonical, polarity))
@@ -14807,18 +15122,18 @@ def retrieve(
     # 결정론 조건을 원문 기준으로 다시 확정한다. 단계 목록·순서·사유는 _source_authoritative_stages
     # 가 단일 소스로 소유한다 — 이전에는 같은 규칙이 여기 스무 줄로 흩어져 있었고, 일부는 원문을
     # 일부는 재작성본을 넘겨 출처 구간(span) 좌표계가 섞였다(→ 소유권 판정이 종류 기준으로 퇴화).
-    if (query_plan.get("parser") or {}).get("authority") == "llm_first":
-        _validate_source_authoritative_stages(
-            targeting_prompt,
-            query_plan,
-            sql_schema=sql_schema,
-            normalization_rules=normalization_rules,
-        )
-    else:
-        _run_source_authoritative_stages(
-            targeting_prompt, query_plan,
-            sql_schema=sql_schema, normalization_rules=normalization_rules,
-        )
+    _apply_source_authoritative_stages(
+        targeting_prompt,
+        query_plan,
+        sql_schema=sql_schema,
+        normalization_rules=normalization_rules,
+    )
+    # LLM-first 계획에서도 물리 데이터 바인딩은 애플리케이션 카탈로그가 최종 권위를 가진다.
+    # 문장의 표면형을 LLM 슬롯에 추가하는 대신 동일한 조합형 IR을 원문에서 확정한다.
+    compositional_targeting.apply_to_plan(
+        targeting_prompt, query_plan, schema_path=sql_schema
+    )
+    _reconcile_condition_ownership(query_plan)
     # 타겟팅 스코프면 plan_query 가 오디언스 절뿐이라 '재구매를 유도' 같은 캠페인 목적 절이 잘려
     # intent 가 recommend_campaign→find_user_segment 로 약화된다(장바구니 이탈 재구매 유도 등).
     # 목적 절이 살아있는 전체 재작성본으로 intent 를 재추론해 더 강한 캠페인 의도로만 승격한다.
@@ -18555,6 +18870,11 @@ def _refresh_unresolved_source_conditions(
             "source": "product_master_resolver",
             "alternatives": copy.deepcopy(product_resolution.get("alternatives") or []),
         })
+    semantic_obligation_unresolved = (
+        semantic_requirements.unresolved_semantic_obligations(
+            query_plan, original_query
+        )
+    )
     labels = _deterministic_dropped_conditions(original_query, query_plan)
     unresolved = [
         {
@@ -18569,7 +18889,12 @@ def _refresh_unresolved_source_conditions(
         }
         for index, label in enumerate(labels)
     ]
-    merged = [*preserved, *evaluation_unresolved, *product_resolution_unresolved]
+    merged = [
+        *preserved,
+        *evaluation_unresolved,
+        *product_resolution_unresolved,
+        *semantic_obligation_unresolved,
+    ]
     merged.extend(item for item in unresolved if item not in merged)
     query_plan["unresolved_source_conditions"] = merged
     return merged
@@ -19292,6 +19617,65 @@ def _semantic_ir_blocking_sql_result(
     }
 
 
+def _relational_ir_blocking_sql_result(
+    query_plan: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Stop before SQL when meaning is known but its data binding is not."""
+
+    relational_ir = query_plan.get(compositional_targeting.PLAN_IR_KEY)
+    if not isinstance(relational_ir, dict):
+        return None
+    status = relational_ir.get("status")
+    if status not in {"needs_clarification", "unsupported"}:
+        return None
+    message = relational_ir.get("message")
+    if not isinstance(message, str) or not message.strip():
+        message = (
+            "비교할 이력 속성을 지정해 주세요."
+            if status == "needs_clarification"
+            else "해당 시간 속성 연산은 현재 데이터 바인딩으로 실행할 수 없습니다."
+        )
+    missing_fields = [
+        str(field)
+        for field in relational_ir.get("missing_fields") or []
+        if isinstance(field, str) and field.strip()
+    ]
+    missing = [
+        _missing_input_condition(
+            f"{compositional_targeting.PLAN_IR_KEY}.{field}", field, message
+        )
+        for field in missing_fields
+    ]
+    failure_reason = f"relational_ir_{status}"
+    return {
+        "sql": None,
+        "blocked_sql": None,
+        "target_connection": None,
+        "target_dialect": None,
+        "selected": None,
+        "candidates": [],
+        "candidate_count": 0,
+        "condition_tokens": [],
+        "required_conditions": [],
+        "input_validation": {
+            "is_satisfied": False,
+            "missing_conditions": missing,
+            "clarification_questions": [message],
+        },
+        "missing_input_conditions": missing,
+        "clarification_questions": [message],
+        "semantic_verification": {"ran": False},
+        "llm_fallback_used": False,
+        "generation_source": None,
+        "confidence": _failed_sql_confidence(failure_reason),
+        "is_success": False,
+        "failure_reason": failure_reason,
+        "unsupported_reason": failure_reason if status == "unsupported" else None,
+        "interpretation_status": status,
+        compositional_targeting.PLAN_IR_KEY: copy.deepcopy(relational_ir),
+    }
+
+
 def _unresolved_source_blocking_sql_result(
     unresolved: list[dict[str, Any]],
 ) -> dict[str, Any]:
@@ -19838,6 +20222,9 @@ def build_sql_result(
     # 파생 엔터티 집합이 소유한 슬롯은 여기서 마지막으로 회수한다 — 계획 이후 단계(변이 병합·조건
     # 재확정)가 순위 절의 어구를 오디언스 조건으로 되살리면 같은 어구가 두 번 컴파일된다.
     _apply_condition_evaluation_ir(original_query or query, query_plan)
+    compositional_targeting.apply_to_plan(
+        original_query or query, query_plan, schema_path=schema_path
+    )
     _apply_entity_set_condition(original_query or query, query_plan)
     _reconcile_deterministic_member_exclusions(original_query or query, query_plan)
     # 파생 엔터티 집합·회원 제외가 확정된 지금이 소유권 재조정의 마지막 지점이다(집합식 clarification 은
@@ -19845,6 +20232,9 @@ def build_sql_result(
     _reconcile_condition_ownership(query_plan)
     _reconcile_semantic_ir_with_execution_plan(query_plan)
     _guard_unparsed_entity_ranking(original_query or query, query_plan)
+    relational_ir_block = _relational_ir_blocking_sql_result(query_plan)
+    if relational_ir_block is not None:
+        return relational_ir_block
     semantic_ir_block = _semantic_ir_blocking_sql_result(query_plan)
     if semantic_ir_block is not None:
         return semantic_ir_block
@@ -20581,6 +20971,26 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
             ],
             ["CRM_SL_ORDERDETAILMALL", "CRM_MB_BASEINFO"],
             ctes=["CONDITION_GROUPS", "QUALIFIED_MEMBERS"],
+        )
+
+    for index, operation in enumerate(
+        query_plan.get(compositional_targeting.PLAN_OPERATIONS_KEY) or []
+    ):
+        if not isinstance(operation, dict) or operation.get("status") != "resolved":
+            continue
+        binding = operation.get("binding")
+        binding = binding if isinstance(binding, dict) else {}
+        comparison = operation.get("comparison")
+        comparison = comparison if isinstance(comparison, dict) else {}
+        _add_token(
+            tokens,
+            f"{compositional_targeting.PLAN_OPERATIONS_KEY}[{index}]",
+            "relational_operation",
+            str(comparison.get("operator") or ""),
+            comparison.get("value"),
+            compositional_targeting.validation_terms(operation),
+            [str(binding.get("table") or "")],
+            ctes=["WINDOW_MONTHS", "ATTRIBUTE_MONTHS", "ATTRIBUTE_SUMMARY"],
         )
 
     gender = target_user.get("gender")
@@ -22117,6 +22527,8 @@ def _sql_target_builder_registry() -> tuple[tuple[Any, frozenset[str]], ...]:
     먼저(EXISTS 빌더는 fact_join 신호에 양보). 빌더는 비해당이면 None 을 반환하고 다음으로 넘어간다.
     (런타임 호출이라 아래 빌더가 이 함수 정의보다 파일에서 나중에 나와도 된다.)"""
     return (
+        # 데이터 카탈로그에 바인딩된 속성 + 시간창 + 집계 + 비교의 공통 컴파일러.
+        (build_relational_targeting_sql_candidate, frozenset({"relational_operation"})),
         # 조건 판정 grain과 최종 결과 grain을 분리하는 닫힌 IR. 일반 집계보다 먼저 실행해
         # 주문·상품 단위 HAVING이 회원 COUNT로 평탄화되지 않게 한다.
         (build_condition_evaluation_sql_candidate, frozenset({"condition_evaluation"})),
@@ -22168,6 +22580,61 @@ def _sql_target_builder_registry() -> tuple[tuple[Any, frozenset[str]], ...]:
         # 회원 속성 폴백 + 밀집 지역 랭킹(코호트 조건으로 지역 랭킹 후 거주 회원 타겟).
         (build_member_targets_sql_candidate, frozenset({"region_density_target"})),
     )
+
+
+RELATIONAL_TARGETING_CANDIDATE_ID = "sql_template:relational_targeting"
+
+
+def build_relational_targeting_sql_candidate(
+    query_plan: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Compile a catalog-bound temporal attribute expression.
+
+    The parser does not select tables or columns.  It only builds the logical
+    expression; ``compositional_targeting`` validates and binds it before this
+    builder is reached.
+    """
+
+    operations = query_plan.get(compositional_targeting.PLAN_OPERATIONS_KEY)
+    if not isinstance(operations, list) or len(operations) != 1:
+        return None
+    operation = operations[0]
+    if not isinstance(operation, dict) or operation.get("status") != "resolved":
+        return None
+
+    compiled = compile_member_target_conditions(query_plan)
+    # Other conditions may be composed when the normal member compiler can
+    # express them.  Never silently drop a condition owned by another builder.
+    if compiled["unsupported"]:
+        return None
+    predicates = list(compiled["predicates"])
+    if not compiled["forces_state"]:
+        predicates.extend(_member_policy_predicates(query_plan, _member_alias()))
+    attribute = operation.get("attribute")
+    attribute = attribute if isinstance(attribute, dict) else {}
+    label = "attribute_history:" + str(attribute.get("id") or "unknown")
+    try:
+        sql = compositional_targeting.compile_sql(
+            operation,
+            member_table=_member_table(),
+            member_alias=_member_alias(),
+            member_key=_member_key_column(),
+            member_select_columns=[_member_key_select(), _member_grade_select()],
+            member_predicates=predicates,
+            segment_label=label,
+        )
+    except ValueError:
+        return None
+    candidate = _sql_candidate(
+        RELATIONAL_TARGETING_CANDIDATE_ID,
+        f"{attribute.get('label') or '회원 속성'} 기간 변화 타겟 SQL",
+        1.0,
+        sql,
+        _template_tables(sql),
+        "sql_template",
+    )
+    candidate["applied_relational_operations"] = [copy.deepcopy(operation)]
+    return candidate
 
 
 CONDITION_EVALUATION_CANDIDATE_ID = "sql_template:condition_evaluation"
@@ -27032,6 +27499,22 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
                 "HAVING SUM(D.ORDER_QTY) >= 2",
                 "SELECT DISTINCT MEMBER_NO",
                 "COUNT(DISTINCT M.MEMBER_NO)",
+            ],
+        ))
+
+    for index, operation in enumerate(
+        query_plan.get(compositional_targeting.PLAN_OPERATIONS_KEY) or []
+    ):
+        if not isinstance(operation, dict) or operation.get("status") != "resolved":
+            continue
+        conditions.append(_condition(
+            f"{compositional_targeting.PLAN_OPERATIONS_KEY}[{index}]",
+            str((operation.get("attribute") or {}).get("label") or "relational_operation"),
+            [],
+            all_terms=[
+                term
+                for term in compositional_targeting.validation_terms(operation)
+                if term
             ],
         ))
 

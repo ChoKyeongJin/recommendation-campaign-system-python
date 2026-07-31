@@ -746,6 +746,13 @@ def _cart_retention_ko(params: dict[str, Any]) -> str:
 CONDITION_SPECS: tuple[ConditionSpec, ...] = (
     # ── 회원 술어 계열(compile_member_target_conditions 가 컴파일; 신호도 그쪽 has_signal 이 담당) ──
     ConditionSpec(
+        # 속성·기간·집계·비교의 조합형 IR. 문장별 capability가 아니라 검증된 데이터 바인딩 하나를
+        # 나타내며, 전용 관계형 컴파일러만 소유한다.
+        kind="relational_operation", fact="member_attribute_history",
+        fact_join=True, signals_target=True,
+        extract=_plan_dict_list("relational_operations"),
+    ),
+    ConditionSpec(
         # 판정 grain과 최종 결과 grain이 다른 조건. 전용 2단계 컴파일러만 소유하며 일반 구매
         # EXISTS/집계 빌더로 평탄화하지 않는다.
         kind="condition_evaluation", fact="order", fact_join=True, signals_target=True,

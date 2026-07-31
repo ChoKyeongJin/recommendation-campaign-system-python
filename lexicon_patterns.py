@@ -144,6 +144,25 @@ _CODE_FALLBACK: dict[str, Any] = {
         "temporal_after_marker": ["후", "뒤", "이후"],
         "temporal_within_marker": ["이내", "안에", "내에"],
         "first_occurrence_marker": ["첫", "최초", "처음"],
+        # 원문 의미 계약 감지용 어휘. 컴파일러 선택 규칙이 아니라, 평탄화 전에 보존할 연산자의 표면형이다.
+        "source_recurrence_prefix": ["매"],
+        "source_recurrence_universal": ["각", "모든"],
+        "source_recurrence_bucket": ["일", "주차", "주", "개월", "월", "분기", "년"],
+        "source_recurrence_suffix": ["마다"],
+        "source_recurrence_action": [
+            "구매", "구입", "주문", "로그인", "접속", "방문", "반응",
+            "사용", "이용", "발송", "수신", "보유", "변경",
+        ],
+        "source_entity_reference": ["지정한", "선택한", "고른", "해당", "이들", "위", "위의"],
+        "source_korean_count": ["한", "두", "세", "네", "다섯"],
+        "source_entity_counter": ["개", "종", "가지"],
+        "source_entity_domain": ["브랜드", "상품", "제품", "품목", "카테고리"],
+        "source_all_quantifier": ["모두", "전부", "각각", "빠짐없이"],
+        "source_superlative": ["가장"],
+        "source_latest_selector": ["최신", "최근"],
+        "source_snapshot_grain": ["월", "월별", "월간"],
+        "source_snapshot_system": ["crm"],
+        "source_snapshot_noun": ["스냅샷", "snapshot"],
     },
     # 이관 원칙: 낱말 **집합은 이관 전과 정확히 같다**. 어휘를 합치는 것(동작 변경)은 이관과 섞지
     # 않는다 — 골든 diff 가 "옮긴 것"과 "바꾼 것"을 구분할 수 없게 되기 때문이다. 그래서 역사적으로

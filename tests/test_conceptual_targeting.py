@@ -9,6 +9,7 @@ from typing import Any
 import networkx as nx
 import pytest
 
+import canonical_targeting
 import conceptual_targeting
 import graph_rag
 from external_conditions.resolvers.kma_weather_alert import KmaWeatherAlertResolver
@@ -301,6 +302,336 @@ def test_conceptual_review_sees_only_unowned_text_and_cannot_reject_owned_claims
     assert "하반기" not in payload["request"]
     assert plan.get("unresolved_source_conditions") in (None, [])
     assert plan["conceptual_targeting_resolution"]["ignored_count"] == 1
+
+
+def test_resolved_purchase_window_cannot_return_as_conceptual_unsupported(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    query = "3개월 이내에 우주복 구매한 고객"
+    monkeypatch.setattr(
+        graph_rag,
+        "_apply_product_master_resolution",
+        lambda _query, _plan: None,
+    )
+    plan = graph_rag.build_query_plan(query, parser="rules")
+    plan["_conceptual_scope"] = {"targeting": query, "channel": ""}
+
+    membership = plan["target_user"]["purchase_membership"]
+    assert membership["window_days"] == 90
+    assert conceptual_targeting._plan_summary(plan)["purchase_membership"] == {
+        "domain": "purchase",
+        "operator": "exists",
+        "window_days": 90,
+    }
+    membership_claim = next(
+        claim
+        for claim in plan["condition_claims"]
+        if claim["semantic_key"].startswith("legacy:purchase_membership:")
+    )
+    assert membership_claim["source_spans"]
+    source_span = membership_claim["source_spans"][0]
+    assert query[source_span["start"]:source_span["end"]] == "3개월 이내에"
+
+    completion = FakeCompletion({
+        "interpretations": [],
+        "unsupported": [{
+            "evidence": "3개월 이내",
+            "reason": "No capability supports this expression.",
+        }],
+        "ignored": [],
+        "coverage_complete": True,
+    })
+    _service(_catalog(tmp_path), completion).apply_plan(query, plan)
+
+    assert completion.calls == 0
+    assert plan.get("unresolved_source_conditions") in (None, [])
+    assert plan["conceptual_targeting_resolution"]["status"] == "not_required"
+    assert plan["conceptual_targeting_resolution"]["unsupported_count"] == 0
+    assert plan["conceptual_targeting_resolution"]["ignored_count"] == 0
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "2026년 2월과 3월의 구매금액차이가 10% 이상 증가한 고객 리스트",
+        "2026년 3월 구매에서 가장 많이 팔린 상품 5개를 구매한 고객 리스트",
+        "장바구니에 상품을 담고 결제하지 않은 고객에게 재구매를 유도하고 싶어요",
+    ],
+)
+def test_compilable_claims_are_removed_before_conceptual_review(
+    query: str,
+    tmp_path: Path,
+) -> None:
+    """Any parser kind with a resolved canonical claim owns its source phrase."""
+
+    plan = graph_rag.build_query_plan(query, parser="rules")
+    plan["_conceptual_scope"] = {"targeting": query, "channel": ""}
+    completion = FakeCompletion()
+
+    _service(_catalog(tmp_path), completion).apply_plan(query, plan)
+
+    assert completion.calls == 0
+    assert plan["conceptual_targeting_resolution"]["status"] == "not_required"
+    assert plan.get("unresolved_source_conditions") in (None, [])
+    assert any(
+        claim.get("source_spans")
+        for claim in plan.get("condition_claims") or []
+        if claim.get("disposition") == "owned"
+    )
+
+
+def test_recovered_calendar_window_keeps_provenance_across_all_consumers(
+    tmp_path: Path,
+) -> None:
+    query = "2019년 상반기에 두부랑 음료수 산 사람들 찾아줘"
+    # This is the deterministic merge boundary reached by the auto parser:
+    # product facts already exist, while the shorthand verb "산" made the
+    # direct purchase-date parser yield no value.
+    plan = {
+        "target_user": {
+            "purchase_object": "두부",
+            "purchase_objects": [
+                {"value": "두부", "kind": None},
+                {"value": "음료수", "kind": None},
+            ],
+        },
+        "exclude": {},
+        "planning_query": query,
+        "normalized_query": query,
+        "original_query": query,
+    }
+    graph_rag._apply_named_filter("calendar_window_claim", query, plan)
+    canonical_targeting.attach_canonical_targeting(plan)
+    plan["_conceptual_scope"] = {"targeting": query, "channel": ""}
+
+    assert plan["target_user"]["purchase_date"] == {
+        "from": "20190101",
+        "to": "20190630",
+        "label": "2019년 상반기 구매",
+    }
+    recorded = plan["_slot_spans"]["target_user.purchase_date"]
+    assert query[recorded["start"]:recorded["end"]] == "2019년 상반기"
+
+    date_claim = next(
+        claim
+        for claim in plan["condition_claims"]
+        if claim["semantic_key"].startswith("legacy:purchase_date:")
+    )
+    assert date_claim["source_spans"] == [{"start": 0, "end": 9}]
+
+    # Producer metadata is not the only line of defence.  A plan assembled by
+    # another parser still receives the same exact, grammar-verified span at
+    # the canonical boundary.
+    detached = {
+        "target_user": {"purchase_date": copy.deepcopy(plan["target_user"]["purchase_date"])},
+        "original_query": query,
+    }
+    canonical_targeting.attach_canonical_targeting(detached)
+    detached_claim = detached["condition_claims"][0]
+    assert detached_claim["source_spans"] == [{"start": 0, "end": 9}]
+
+    completion = FakeCompletion()
+    _service(_catalog(tmp_path), completion).apply_plan(query, plan)
+
+    assert completion.calls == 0
+    assert plan["conceptual_targeting_resolution"]["status"] == "not_required"
+    assert plan.get("unresolved_source_conditions") in (None, [])
+
+
+def test_member_ast_projection_preserves_provenance_without_changing_sql(
+    tmp_path: Path,
+) -> None:
+    query = "7년전 기저귀를 구매한 여자 고객 찾아줘"
+    plan = {
+        "intent": "find_user_segment",
+        "target_user": {
+            "gender": "female",
+            "purchase_object": "기저귀",
+            "purchase_objects": [{"value": "기저귀", "kind": None}],
+            "purchase_date": {
+                "from": "20190101",
+                "to": "20191231",
+                "label": "2019년 구매",
+            },
+            "purchase_membership": {
+                "domain": "purchase",
+                "operator": "exists",
+                "satisfied_by": "purchase_date",
+            },
+        },
+        "exclude": {},
+        "campaign_constraints": {},
+        "original_query": query,
+        "planning_query": query,
+        "normalized_query": query,
+        "source_requirements": [
+            {
+                "base": {"type": "target_user", "name": "purchase_date"},
+                "source_text": "7년전 ",
+                "source_span": {"start": 0, "end": 4},
+            },
+            {
+                "base": {"type": "target_user", "name": "purchase_object"},
+                "source_text": "기저귀",
+                "source_span": {"start": 4, "end": 7},
+            },
+            {
+                "base": {"type": "target_user", "name": "purchase_membership"},
+                "source_text": "구매한",
+                "source_span": {"start": 9, "end": 12},
+            },
+            {
+                "base": {"type": "target_user", "name": "gender"},
+                "source_text": "여자 고객",
+                "source_span": {"start": 13, "end": 18},
+            },
+        ],
+    }
+    sql_before = graph_rag.build_purchase_history_targets_sql_candidate(
+        copy.deepcopy(plan)
+    )
+
+    canonical_targeting.attach_canonical_targeting(plan)
+
+    member_claim = next(
+        claim
+        for claim in plan["condition_claims"]
+        if claim["predicate_kind"] == "MemberPredicate"
+    )
+    assert member_claim["source_spans"] == [{"start": 13, "end": 18}]
+    sql_after = graph_rag.build_purchase_history_targets_sql_candidate(plan)
+    assert sql_before is not None and sql_after is not None
+    assert sql_after["sql"] == sql_before["sql"]
+
+    plan["_conceptual_scope"] = {"targeting": query, "channel": ""}
+    completion = FakeCompletion()
+    _service(_catalog(tmp_path), completion).apply_plan(query, plan)
+
+    assert completion.calls == 0
+    assert plan["conceptual_targeting_resolution"]["status"] == "not_required"
+    assert plan.get("unresolved_source_conditions") in (None, [])
+
+
+def test_member_provenance_does_not_hide_unresolved_neighbor(
+    tmp_path: Path,
+) -> None:
+    query = "여자 고객 중 인구 50만 이상 도시 거주자"
+    plan = {
+        "target_user": {"gender": "female"},
+        "exclude": {},
+        "original_query": query,
+        "planning_query": query,
+        "normalized_query": query,
+        "source_requirements": [{
+            "base": {"type": "target_user", "name": "gender"},
+            "source_text": "여자 고객",
+            "source_span": {"start": 0, "end": 5},
+        }],
+    }
+    canonical_targeting.attach_canonical_targeting(plan)
+    plan["_conceptual_scope"] = {"targeting": query, "channel": ""}
+    completion = FakeCompletion({
+        "interpretations": [],
+        "unsupported": [{
+            "evidence": "인구 50만 이상 도시",
+            "reason": "No executable population capability.",
+        }],
+        "ignored": [],
+        "coverage_complete": True,
+    })
+
+    _service(_catalog(tmp_path), completion).apply_plan(query, plan)
+
+    assert completion.calls == 1
+    assert plan["unresolved_source_conditions"][0]["label"] == "인구 50만 이상 도시"
+
+
+def test_top_level_registered_condition_preserves_exact_source_ownership(
+    tmp_path: Path,
+) -> None:
+    query = "2026년 3월 같은 상품을 동시에 구매한 고객수"
+    plan = graph_rag.build_query_plan(query, parser="rules")
+    plan["_conceptual_scope"] = {"targeting": query, "channel": ""}
+
+    claim = next(
+        item
+        for item in plan["condition_claims"]
+        if item["semantic_key"].startswith("legacy:condition_evaluation:")
+    )
+    assert claim["source_spans"] == [{"start": 9, "end": len(query)}]
+    assert query[9:] == "같은 상품을 동시에 구매한 고객수"
+
+    completion = FakeCompletion()
+    _service(_catalog(tmp_path), completion).apply_plan(query, plan)
+
+    assert completion.calls == 0
+    assert plan["conceptual_targeting_resolution"]["status"] == "not_required"
+    assert plan.get("unresolved_source_conditions") in (None, [])
+
+
+def test_top_level_condition_span_does_not_claim_an_unrelated_suffix(
+    tmp_path: Path,
+) -> None:
+    owned_query = "2026년 3월 같은 상품을 동시에 구매한 고객수"
+    query = owned_query + ", 인구 50만 이상 도시만"
+    # Assemble the neighboring clause after parsing so this test isolates the
+    # canonical provenance boundary rather than the region-condition parser.
+    plan = graph_rag.build_query_plan(owned_query, parser="rules")
+    for key in ("original_query", "planning_query", "normalized_query"):
+        plan[key] = query
+    canonical_targeting.attach_canonical_targeting(plan)
+    plan["_conceptual_scope"] = {"targeting": query, "channel": ""}
+    completion = FakeCompletion({
+        "interpretations": [],
+        "unsupported": [{
+            "evidence": "인구 50만 이상 도시",
+            "reason": "No executable population capability.",
+        }],
+        "ignored": [],
+        "coverage_complete": True,
+    })
+
+    claim = next(
+        item
+        for item in plan["condition_claims"]
+        if item["semantic_key"].startswith("legacy:condition_evaluation:")
+    )
+    span = claim["source_spans"][0]
+    assert query[span["start"]:span["end"]] == "같은 상품을 동시에 구매한 고객수"
+
+    _service(_catalog(tmp_path), completion).apply_plan(query, plan)
+
+    assert completion.calls == 1
+    assert any(
+        item.get("label") == "인구 50만 이상 도시"
+        for item in plan["unresolved_source_conditions"]
+    )
+
+
+def test_resolved_claim_does_not_hide_a_separate_unsupported_conjunct(
+    tmp_path: Path,
+) -> None:
+    query = (
+        "2026년 2월과 3월의 구매금액이 증가한 고객 중 "
+        "인구 50만 이상 도시 거주자"
+    )
+    plan = graph_rag.build_query_plan(query, parser="rules")
+    plan["_conceptual_scope"] = {"targeting": query, "channel": ""}
+    completion = FakeCompletion({
+        "interpretations": [],
+        "unsupported": [{
+            "evidence": "인구 50만 이상 도시",
+            "reason": "No executable population capability.",
+        }],
+        "ignored": [],
+        "coverage_complete": True,
+    })
+
+    _service(_catalog(tmp_path), completion).apply_plan(query, plan)
+
+    assert completion.calls == 1
+    assert plan["unresolved_source_conditions"][0]["label"] == "인구 50만 이상 도시"
 
 
 def test_registry_discovery_and_compiler_follow_renamed_table_and_column(

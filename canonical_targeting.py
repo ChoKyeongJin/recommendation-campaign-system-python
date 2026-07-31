@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -18,7 +18,9 @@ import event_parser
 import plan_semantic_ast
 import semantic_ast
 import semantic_fields
+import slot_ownership
 import targeting_ir
+from calendar_window import parse_time_window_group_span, parse_time_windows
 from targeting_expression import (
     And,
     ConditionClaim,
@@ -66,6 +68,191 @@ def _combine(kind: str, children: Iterable[TargetingExpression]) -> TargetingExp
     if len(ordered) == 1:
         return ordered[0]
     return And(ordered) if kind == "and" else Or(ordered)
+
+
+def _slot_source_spans(
+    plan: dict[str, Any],
+    slot: str,
+    *,
+    container: str = "target_user",
+    value: Any = None,
+    requirement_aliases: tuple[str, ...] = (),
+) -> tuple[tuple[int, int], ...]:
+    """Return a condition's source spans from the shared provenance ledger.
+
+    New parsers record ``_slot_spans`` directly.  Older condition producers may
+    instead carry a span inside their value (for example ``entity_set_condition``)
+    or only in the immutable ``source_requirements`` snapshot.  Canonical claims
+    must not care which parser produced the condition, so this is the single
+    compatibility bridge for all three representations.
+    """
+    recorded = slot_ownership.slot_span(plan, slot, container=container)
+    direct = _valid_source_span(recorded)
+    if direct is not None:
+        return (direct,)
+
+    embedded = _embedded_source_spans(value)
+    if embedded:
+        return embedded
+
+    names = {slot, *requirement_aliases}
+    requirement_spans: list[tuple[int, int]] = []
+    for requirement in plan.get("source_requirements") or []:
+        if not isinstance(requirement, Mapping):
+            continue
+        base = requirement.get("base")
+        if not isinstance(base, Mapping):
+            continue
+        if base.get("type") != container or base.get("name") not in names:
+            continue
+        span = _valid_source_span(requirement.get("source_span"))
+        if span is not None and not _is_full_query_fallback(plan, requirement, span):
+            requirement_spans.append(span)
+    if requirement_spans:
+        return tuple(sorted(set(requirement_spans)))
+
+    # Final semantic backstop.  Provenance normally travels with the producer
+    # (_slot_spans), embedded condition, or immutable source requirement.  A
+    # recovery/normalization stage can nevertheless replace a value after those
+    # ledgers were attached.  Resolve such values against the original grammar
+    # here, but only when the normalized value exactly matches what that grammar
+    # reads; never claim the whole query as a fallback.
+    return _semantic_source_spans(plan, slot, value)
+
+
+def _semantic_source_spans(
+    plan: Mapping[str, Any],
+    slot: str,
+    value: Any,
+) -> tuple[tuple[int, int], ...]:
+    resolver = _SEMANTIC_SOURCE_SPAN_RESOLVERS.get(slot)
+    return resolver(plan, value) if resolver is not None else ()
+
+
+def _source_queries(plan: Mapping[str, Any]) -> tuple[str, ...]:
+    values: list[str] = []
+    for key in ("planning_query", "normalized_query", "original_query", "raw_query"):
+        value = plan.get(key)
+        if isinstance(value, str) and value and value not in values:
+            values.append(value)
+    return tuple(values)
+
+
+def _purchase_date_source_spans(
+    plan: Mapping[str, Any],
+    value: Any,
+) -> tuple[tuple[int, int], ...]:
+    """Recover a purchase-date span by semantic round-trip, independent of producer.
+
+    This covers direct parsers, LLM candidates, and later calendar-window
+    recovery stages uniformly.  Exact normalized range equality is the safety
+    boundary: a different date clause or an unrelated full-query fallback can
+    never be borrowed as this condition's evidence.
+    """
+    if not isinstance(value, Mapping):
+        return ()
+    expected_windows = value.get("windows")
+    if isinstance(expected_windows, list) and expected_windows:
+        expected = {
+            (item.get("from"), item.get("to"))
+            for item in expected_windows
+            if isinstance(item, Mapping)
+        }
+    else:
+        expected = {(value.get("from"), value.get("to"))}
+    if not expected or any(
+        not isinstance(start, str) or not isinstance(end, str)
+        for start, end in expected
+    ):
+        return ()
+
+    for source in _source_queries(plan):
+        parsed = parse_time_windows(source)
+        actual = {
+            (item.get("from"), item.get("to"))
+            for item in parsed
+            if isinstance(item, Mapping)
+        }
+        if actual != expected:
+            continue
+        span = parse_time_window_group_span(source)
+        if span is not None:
+            return (span,)
+    return ()
+
+
+_SEMANTIC_SOURCE_SPAN_RESOLVERS = {
+    "purchase_date": _purchase_date_source_spans,
+}
+
+
+def _valid_source_span(value: Any) -> tuple[int, int] | None:
+    if isinstance(value, Mapping):
+        start, end = value.get("start"), value.get("end")
+    elif isinstance(value, (list, tuple)) and len(value) == 2:
+        start, end = value
+    else:
+        return None
+    if (
+        not isinstance(start, int)
+        or isinstance(start, bool)
+        or not isinstance(end, int)
+        or isinstance(end, bool)
+        or start < 0
+        or end <= start
+    ):
+        return None
+    return start, end
+
+
+def _embedded_source_spans(value: Any) -> tuple[tuple[int, int], ...]:
+    """Read parser-carried provenance without knowing a condition kind."""
+
+    if not isinstance(value, Mapping):
+        return ()
+    candidates: list[Any] = [
+        value.get("source_span"),
+        value.get("evidence_span"),
+        value.get("_source_span"),
+        value.get("span"),
+    ]
+    spans = value.get("spans")
+    if isinstance(spans, Mapping):
+        candidates.extend(spans.values())
+    elif isinstance(spans, (list, tuple)):
+        candidates.extend(spans)
+    normalized = [
+        span
+        for candidate in candidates
+        if (span := _valid_source_span(candidate)) is not None
+    ]
+    return tuple(sorted(set(normalized)))
+
+
+def _is_full_query_fallback(
+    plan: Mapping[str, Any],
+    requirement: Mapping[str, Any],
+    span: tuple[int, int],
+) -> bool:
+    """Do not let one conservative whole-query span hide another condition."""
+
+    source_text = requirement.get("source_text")
+    if not isinstance(source_text, str) or span != (0, len(source_text)):
+        return False
+    return any(
+        isinstance(candidate, str)
+        and candidate.strip()
+        and (
+            candidate == source_text
+            or candidate.startswith(source_text)
+            or source_text.startswith(candidate)
+        )
+        for candidate in (
+            plan.get("original_query"),
+            plan.get("raw_query"),
+            plan.get("planning_query"),
+        )
+    )
 
 
 def event_condition_to_targeting(
@@ -201,32 +388,103 @@ def _semantic_span(node: Any) -> tuple[tuple[int, int], ...]:
     return ()
 
 
-def _member_semantic_to_targeting(node: Any) -> TargetingExpression | None:
+_MEMBER_DIMENSION_SOURCE_SLOTS: dict[str, tuple[str, ...]] = {
+    "gender": ("gender",),
+    "lifecycle": ("lifecycle",),
+    "interests": ("interests",),
+    "preferred_channels": ("preferred_channels",),
+    "behaviors": ("behaviors",),
+}
+
+
+def _member_predicate_source_spans(
+    node: semantic_ast.Predicate,
+    plan: dict[str, Any],
+    *,
+    negated: bool,
+) -> tuple[tuple[int, int], ...]:
+    """Recover member-leaf provenance at the plan→semantic-AST boundary.
+
+    ``plan_semantic_ast`` deliberately projects normalized values and Boolean
+    topology, but legacy scalar/list member slots do not carry SourceSpan on the
+    AST node itself.  Reattach their existing slot/source-requirement evidence
+    here, where the normalized predicate still identifies its source slot.
+    This changes provenance only; predicate values and topology are untouched.
+    """
+    embedded = _semantic_span(node)
+    if embedded:
+        return embedded
+
+    container = "exclude" if negated else "target_user"
+    slots = _MEMBER_DIMENSION_SOURCE_SLOTS.get(node.dimension, ())
+    if node.dimension == "age":
+        if node.operator == "gte":
+            slots = ("age_min",)
+        elif node.operator == "lte":
+            slots = ("age_max",)
+        elif node.operator == "between" and negated:
+            slots = ("age_exclude_ranges",)
+
+    spans: list[tuple[int, int]] = []
+    for slot in slots:
+        spans.extend(
+            _slot_source_spans(
+                plan,
+                slot,
+                container=container,
+                value=(
+                    (plan.get(container) or {}).get(slot)
+                    if isinstance(plan.get(container), Mapping)
+                    else None
+                ),
+            )
+        )
+    return tuple(sorted(set(spans)))
+
+
+def _member_semantic_to_targeting(
+    node: Any,
+    plan: dict[str, Any],
+    *,
+    negated: bool = False,
+) -> TargetingExpression | None:
     """Project the established legacy member AST into the common typed tree."""
 
     if isinstance(node, semantic_ast.And):
         children = tuple(
             child
             for raw_child in node.children
-            if (child := _member_semantic_to_targeting(raw_child)) is not None
+            if (
+                child := _member_semantic_to_targeting(
+                    raw_child, plan, negated=negated
+                )
+            ) is not None
         )
         return _combine("and", children) if children else None
     if isinstance(node, semantic_ast.Or):
         children = tuple(
             child
             for raw_child in node.children
-            if (child := _member_semantic_to_targeting(raw_child)) is not None
+            if (
+                child := _member_semantic_to_targeting(
+                    raw_child, plan, negated=negated
+                )
+            ) is not None
         )
         return _combine("or", children) if children else None
     if isinstance(node, semantic_ast.Not):
-        child = _member_semantic_to_targeting(node.child)
+        child = _member_semantic_to_targeting(
+            node.child, plan, negated=not negated
+        )
         return Not(child) if child is not None else None
     if isinstance(node, semantic_ast.Predicate):
         payload = semantic_ast.to_dict(node)
         return PredicateRef(
             predicate_kind="MemberPredicate",
             semantic_key=f"member:{_semantic_hash(payload)}",
-            source_spans=_semantic_span(node),
+            source_spans=_member_predicate_source_spans(
+                node, plan, negated=negated
+            ),
             payload={"legacy_member": payload},
         )
     if isinstance(node, semantic_ast.Unknown):
@@ -260,12 +518,49 @@ def _legacy_member_tree(plan: dict[str, Any]) -> TargetingExpression | None:
         else [],
         "set_expressions": [],
     }
-    return _member_semantic_to_targeting(plan_semantic_ast.plan_to_semantic_expr(semantic_plan))
+    return _member_semantic_to_targeting(
+        plan_semantic_ast.plan_to_semantic_expr(semantic_plan),
+        plan,
+    )
+
+
+def _registered_condition_source(
+    plan: dict[str, Any],
+    condition: targeting_ir.TargetCondition,
+) -> tuple[str, str, Any]:
+    """Locate a registered condition's actual plan storage without kind guesses.
+
+    Registry extractors may read a dict from ``target_user`` or an item from a
+    top-level list whose key differs from the singular condition kind.  The
+    extracted params retain object identity, so use that identity to recover the
+    producer's container and slot.  Generated wrapper params fall back to the
+    historical kind-based target-user lookup.
+    """
+
+    holders: tuple[tuple[str, Mapping[str, Any]], ...] = (
+        (
+            "target_user",
+            plan.get("target_user")
+            if isinstance(plan.get("target_user"), Mapping)
+            else {},
+        ),
+        ("plan", plan),
+    )
+    for container, holder in holders:
+        for slot, value in holder.items():
+            if value is condition.params:
+                return container, str(slot), condition.params
+            if isinstance(value, list) and any(
+                item is condition.params for item in value
+            ):
+                return container, str(slot), condition.params
+    return "target_user", condition.kind, condition.params
 
 
 def _legacy_condition_trees(plan: dict[str, Any]) -> tuple[TargetingExpression, ...]:
     trees: list[TargetingExpression] = []
     registered_kinds: set[str] = set()
+    target_user = plan.get("target_user") if isinstance(plan.get("target_user"), dict) else {}
     for condition in targeting_ir.extract_target_conditions(plan):
         if condition.kind == "event_expression":
             continue
@@ -276,12 +571,39 @@ def _legacy_condition_trees(plan: dict[str, Any]) -> tuple[TargetingExpression, 
             "fact_join": condition.spec.fact_join,
             "params": condition.params,
         }
+        source_container, source_slot, source_value = _registered_condition_source(
+            plan, condition
+        )
+        if condition.kind == "relational_operation":
+            trees.append(PredicateRef(
+                predicate_kind="RelationalPredicate",
+                semantic_key=f"relational:{_semantic_hash(condition.params)}",
+                source_spans=_slot_source_spans(
+                    plan,
+                    source_slot,
+                    container=source_container,
+                    value=source_value,
+                    requirement_aliases=(condition.kind,),
+                ),
+                payload={"relational_ir": condition.params},
+            ))
+            continue
         trees.append(PredicateRef(
             predicate_kind="LegacyPredicate",
             semantic_key=f"legacy:{condition.kind}:{_semantic_hash(payload)}",
+            source_spans=_slot_source_spans(
+                plan,
+                source_slot,
+                container=source_container,
+                value=source_value,
+                requirement_aliases=(
+                    (condition.kind, "behaviors")
+                    if condition.kind in {"cart_abandoner", "order_count_behavior"}
+                    else (condition.kind,)
+                ),
+            ),
             payload={"legacy_condition": payload},
         ))
-    target_user = plan.get("target_user") if isinstance(plan.get("target_user"), dict) else {}
     for slot in ("purchase_membership", "inactivity_period"):
         value = target_user.get(slot)
         if slot in registered_kinds or not isinstance(value, dict):
@@ -290,6 +612,7 @@ def _legacy_condition_trees(plan: dict[str, Any]) -> tuple[TargetingExpression, 
         trees.append(PredicateRef(
             predicate_kind="LegacyPredicate",
             semantic_key=f"legacy:{slot}:{_semantic_hash(payload)}",
+            source_spans=_slot_source_spans(plan, slot, value=value),
             payload={"legacy_condition": payload},
         ))
     return tuple(trees)
@@ -308,6 +631,17 @@ def _expression_from_plan(plan: dict[str, Any]) -> TargetingExpression | None:
         return _combine("and", set_trees)
 
     trees: list[TargetingExpression] = []
+    relational_ir = plan.get("relational_ir")
+    if (
+        isinstance(relational_ir, dict)
+        and relational_ir.get("status") in {"needs_clarification", "unsupported"}
+    ):
+        trees.append(PredicateRef(
+            predicate_kind="RelationalPredicate",
+            semantic_key=f"relational:{_semantic_hash(relational_ir)}",
+            source_spans=_embedded_source_spans(relational_ir),
+            payload={"relational_ir": relational_ir},
+        ))
     payload = plan.get("event_expression")
     if isinstance(payload, dict) and isinstance(payload.get("expression"), dict):
         try:
@@ -342,6 +676,8 @@ def _walk(
 
 def _owner_for(predicate: PredicateRef) -> str | None:
     payload = predicate.payload if isinstance(predicate.payload, dict) else {}
+    if "relational_ir" in payload:
+        return "relational_ir"
     if "legacy_condition" in payload:
         return "legacy_conditions"
     if "legacy_member" in payload:
@@ -355,6 +691,8 @@ def _owner_for(predicate: PredicateRef) -> str | None:
 
 def _origin_for(predicate: PredicateRef) -> str:
     payload = predicate.payload if isinstance(predicate.payload, dict) else {}
+    if "relational_ir" in payload:
+        return "semantic_attribute_catalog"
     if "legacy_condition" in payload:
         return "legacy_slot_registry"
     if "legacy_member" in payload:

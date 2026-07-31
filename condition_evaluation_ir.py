@@ -62,13 +62,39 @@ _SAME_PRODUCT_PATTERNS = (
 _MEMBER_COUNT_RE = re.compile(rf"(?:{_MEMBER})\s*(?:의\s*)?{_COUNT_RESULT}")
 
 
+def _same_product_co_purchase_matches(query: str) -> list[re.Match[str]]:
+    source = query or ""
+    return [
+        match
+        for pattern in _SAME_PRODUCT_PATTERNS
+        for match in pattern.finditer(source)
+    ]
+
+
 def detects_same_product_co_purchase(query: str) -> bool:
-    compact = re.sub(r"\s+", " ", query or "").strip()
-    return any(pattern.search(compact) for pattern in _SAME_PRODUCT_PATTERNS)
+    return bool(_same_product_co_purchase_matches(query))
 
 
 def requests_member_count(query: str) -> bool:
     return _MEMBER_COUNT_RE.search(query or "") is not None
+
+
+def same_product_co_purchase_source_span(query: str) -> tuple[int, int] | None:
+    """Return the exact clause owned by the registered co-purchase capability.
+
+    Detection and provenance deliberately share the same grammar.  The span
+    starts at the identity/product phrase and ends at the member-count result;
+    calendar qualifiers and unrelated neighboring clauses remain available to
+    their own condition owners.
+    """
+
+    candidates: list[tuple[int, int]] = []
+    for condition_match in _same_product_co_purchase_matches(query):
+        count_match = _MEMBER_COUNT_RE.search(query, condition_match.end())
+        if count_match is not None:
+            candidates.append((condition_match.start(), count_match.end()))
+    unique = sorted(set(candidates))
+    return unique[0] if len(unique) == 1 else None
 
 
 def build_same_product_co_purchase_evaluation(
@@ -89,7 +115,7 @@ def build_same_product_co_purchase_evaluation(
             "from": purchase_date.get("from"),
             "to": purchase_date.get("to"),
         }
-    return {
+    evaluation = {
         "id": "same_product_co_purchase",
         "capability": SAME_PRODUCT_CAPABILITY,
         "source_text": query,
@@ -138,6 +164,13 @@ def build_same_product_co_purchase_evaluation(
             },
         },
     }
+    source_span = same_product_co_purchase_source_span(query)
+    if source_span is not None:
+        evaluation["source_span"] = {
+            "start": source_span[0],
+            "end": source_span[1],
+        }
+    return evaluation
 
 
 def _value(node: Any, *path: str) -> Any:

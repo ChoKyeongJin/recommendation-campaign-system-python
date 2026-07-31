@@ -36,6 +36,11 @@ PROVENANCE_FIELDS: frozenset[str] = frozenset({
     "source_spans",
     "sourceSpan",
     "source_text",
+    # 표면 문자열과 그 좌표. 실행 AST와 함께 보존되지만 절 분리본과 원문은 같은 뜻이어도
+    # 접두사·출력 명사 때문에 이 값이 달라질 수 있다.
+    "surface",
+    "span",
+    "spans",
     # 그 값을 만든 주체·경로(어느 파서·후보·룩업이 채웠는가).
     "source",
     "sources",
