@@ -14,6 +14,22 @@ import time
 
 _ENTITY_TERM_NOISE_RE = re.compile(r"[^0-9a-z가-힣]")
 
+# 한글 음절 1자. 토큰 경계 판정(검색 토크나이저·값 인덱스 매칭)이 공유한다.
+HANGUL_SYLLABLE = re.compile(r"[가-힣]")
+
+
+def unique_strings(values: list[str]) -> list[str]:
+    """빈 값을 버리고 첫 등장 순서를 보존한 중복 제거.
+
+    set 이 아니라 순서 보존 리스트인 것이 계약이다 — 반환값이 SQL 조각·조건 토큰·안내 문구의
+    나열 순서로 그대로 나가므로, 순서가 흔들리면 골든 스냅샷이 이유 없이 깨진다.
+    """
+    unique_values: list[str] = []
+    for value in values:
+        if value and value not in unique_values:
+            unique_values.append(value)
+    return unique_values
+
 
 def elapsed_ms(started_at: float) -> float:
     """time.perf_counter() 기준 시각(started_at)부터 지금까지 경과 밀리초(소수 2자리)."""
