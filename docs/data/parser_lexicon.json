@@ -307,7 +307,48 @@
     "purchase_membership_verb": [
       "구매",
       "구입",
-      "주문"
+      "주문",
+      "샀"
+    ],
+    "purchase_verb_completed_stem": [
+      "샀"
+    ],
+    "purchase_verb_colloquial": [
+      "산",
+      "사다"
+    ],
+    "purchase_verb_colloquial_object_bound": [
+      "사서",
+      "사고"
+    ],
+    "event_completion_ending": [
+      "했던",
+      "했",
+      "한",
+      "있는",
+      "있었",
+      "있던",
+      "있음"
+    ],
+    "object_particle": [
+      "을",
+      "를"
+    ],
+    "bound_particle": [
+      "을",
+      "를",
+      "은",
+      "는",
+      "이",
+      "가",
+      "도"
+    ],
+    "negation_adverb": [
+      "안",
+      "못"
+    ],
+    "negation_prefix": [
+      "미"
     ],
     "non_event_date_anchor": [
       "가입",

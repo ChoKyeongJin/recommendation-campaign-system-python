@@ -138,6 +138,13 @@
       "prompt": "2019년 3월에 같은 상품을 동시 구매한 고객 수",
       "expect_slots": ["target_user.purchase_date", "plan.condition_evaluations"],
       "note": "주문·상품 단위 조건 판정과 고유 회원 수 최종 집계를 서로 다른 grain으로 보존한다."
+    },
+    {
+      "id": "no_purchase_prefix",
+      "prompt": "미구매 고객",
+      "expect_slots": ["target_user.behaviors"],
+      "forbid_slots": ["target_user.purchase_membership", "target_user.purchase_inactivity"],
+      "note": "부정 접두사 '미'는 부재다. 긍정형이 '구매'+'고객'을 존재로도 읽으면 한 프롬프트가 존재와 부재를 동시에 갖는다."
     }
   ]
 }

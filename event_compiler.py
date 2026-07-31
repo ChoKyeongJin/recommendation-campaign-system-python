@@ -31,6 +31,7 @@ from datetime import date
 from typing import Any
 
 import event_ir
+import semantic_fields
 from event_ir import (
     AbsoluteInterval,
     Aggregate,
@@ -581,15 +582,8 @@ def unsupported_fields(
 
 
 def _semantic_payload(value: Any) -> Any:
-    if isinstance(value, dict):
-        return {
-            key: _semantic_payload(child)
-            for key, child in value.items()
-            if key not in {"evidence", "source_text", "evidence_span", "source_span"}
-        }
-    if isinstance(value, list):
-        return [_semantic_payload(child) for child in value]
-    return value
+    """노드 지문용 의미 정규형. 무엇이 출처인지는 :mod:`semantic_fields` 가 단일 소스로 소유한다."""
+    return semantic_fields.strip_provenance(value)
 
 
 def _capability_node_id(expression: event_ir.Condition) -> str:

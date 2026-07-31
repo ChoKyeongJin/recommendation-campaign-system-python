@@ -17,6 +17,7 @@ import event_ir
 import event_parser
 import plan_semantic_ast
 import semantic_ast
+import semantic_fields
 import targeting_ir
 from targeting_expression import (
     And,
@@ -37,25 +38,13 @@ class CanonicalTargetingResult:
 
 
 def _semantic_hash(value: Any) -> str:
-    def strip(node: Any) -> Any:
-        if isinstance(node, dict):
-            return {
-                str(key): strip(child)
-                for key, child in node.items()
-                if str(key) not in {
-                    "evidence",
-                    "source_text",
-                    "source_span",
-                    "sourceSpan",
-                    "evidence_span",
-                }
-            }
-        if isinstance(node, list):
-            return [strip(child) for child in node]
-        return node
-
+    """의미 지문. 출처 필드 목록은 :mod:`semantic_fields` 가 단일 소스로 소유한다 — 지문과 파서
+    게이트가 서로 다른 목록을 쓰면 "지문은 같은데 게이트는 다르다"는 모순이 생긴다."""
     encoded = json.dumps(
-        strip(value), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        semantic_fields.strip_provenance(value),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 

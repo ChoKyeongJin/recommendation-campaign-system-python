@@ -103,3 +103,86 @@ def test_record_survives_unwritable_paths(tmp_path) -> None:
 def test_comparison_is_json_serializable() -> None:
     result = parser_shadow.compare(_plan(gender="female"), _plan(age_min=20))
     assert json.loads(json.dumps(result, ensure_ascii=False)) == result
+
+
+# ── 의미 동일성: 출처가 달라도 뜻이 같으면 같다 ────────────────────────────────────────────
+# 두 경로는 애초에 서로 다른 입력 문자열(원문 / 재작성·절 분리본)을 본다. 그래서 근거 텍스트·좌표는
+# **항상** 다르다. 그것을 불일치로 세면 의미가 동일한 해석까지 위험 칸이 되고, LLM-first 경로에서는
+# 그 한 칸 때문에 SQL 생성이 통째로 막힌다(llm_legacy_semantic_disagreement).
+
+
+def _purchase_plan(product: str, source_text: str) -> dict:
+    """같은 뜻을 서로 다른 입력에서 읽은 조건 IR(출처 필드만 다르다)."""
+    return {
+        "intent": "purchase_history",
+        "event_expression": {
+            "expression": {
+                "type": "exists",
+                "relation": {
+                    "type": "filter",
+                    "relation": {"type": "source", "name": "purchase"},
+                    "where": {
+                        "type": "comparison",
+                        "operator": "=",
+                        "left": {"type": "field", "name": "purchase.product"},
+                        "right": {"type": "literal", "value": product},
+                        "evidence": {"text": product, "start": 0, "end": len(product)},
+                    },
+                },
+                "evidence": {"text": f"{product} 구매", "start": 0, "end": len(product) + 3},
+            },
+            "source_text": source_text,
+            "evidence_span": [0, len(source_text)],
+        },
+    }
+
+
+def test_same_meaning_from_different_sources_is_not_a_divergence() -> None:
+    """source 만 다른 두 해석은 게이트를 통과해야 한다(순수 오탐 차단)."""
+    baseline = _purchase_plan("노트북", "노트북을 구매한 고객 뽑아줘")
+    candidate = _purchase_plan("노트북", "노트북을 구매한 고객")
+
+    result = parser_shadow.compare(baseline, candidate)
+
+    assert result["agreed"] is True
+    assert parser_shadow.divergent_slots(result) == []
+
+
+def test_different_meaning_is_a_divergence_even_with_the_same_source() -> None:
+    """반대 방향도 지켜야 한다 — 출처가 같아도 의미가 다르면 같다고 판정하면 안 된다."""
+    source = "노트북을 구매한 고객"
+    baseline = _purchase_plan("노트북", source)
+    candidate = _purchase_plan("모니터", source)
+
+    result = parser_shadow.compare(baseline, candidate)
+
+    assert result["agreed"] is False
+    assert parser_shadow.divergent_slots(result) == ["plan.event_expression"]
+
+
+def test_semantic_form_drops_provenance_but_keeps_conditions() -> None:
+    """무엇이 출처인지는 semantic_fields 가 소유한다 — 여기서는 그 경계를 계약으로 못 박는다."""
+    value = {
+        "operator": "exists",
+        "value": "노트북",
+        "source": "llm",
+        "confidence": 0.97,
+        "evidence": {"text": "노트북", "start": 0, "end": 3},
+        "nested": [{"operator": "=", "source_text": "원문"}],
+    }
+
+    assert parser_shadow.semantic_form(value) == {
+        "operator": "exists",
+        "value": "노트북",
+        "nested": [{"operator": "="}],
+    }
+
+
+def test_product_order_is_meaningful_and_stays_compared() -> None:
+    """상품 순서는 의미를 갖는다(첫 상품이 단수 슬롯·라벨로 투영된다) — 집합으로 접지 않는다."""
+    baseline = _plan(purchase_objects=[{"value": "노트북"}, {"value": "모니터"}])
+    candidate = _plan(purchase_objects=[{"value": "모니터"}, {"value": "노트북"}])
+
+    assert parser_shadow.divergent_slots(parser_shadow.compare(baseline, candidate)) == [
+        "target_user.purchase_objects"
+    ]

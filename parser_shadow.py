@@ -16,7 +16,10 @@ shadow 는 그 사이다 — 후보 경로를 **함께 돌리되 결과는 버�
     value_differs    둘 다 만들었는데 값이 다르다(가장 위험한 칸)
 
 이 판정은 :mod:`ir_snapshot` 정규형 위에서 계산한다 — SQL 이나 플랜 원형이 아니라 '해석 결과'를
-비교해야 컴파일러 변경에 흔들리지 않는다.
+비교해야 컴파일러 변경에 흔들리지 않는다. 거기서 한 겹 더 들어가, 비교 직전에 :mod:`semantic_fields`
+로 **출처 필드를 걷어낸 의미 정규형**을 만든다. 두 경로는 애초에 서로 다른 입력 문자열(원문 / 재작성·
+절 분리본)을 보므로 ``source_text``·``evidence`` 는 항상 다르다 — 그것을 불일치로 세면 의미가 같은
+해석까지 위험 칸으로 올라가고, LLM-first 경로에서는 SQL 생성이 통째로 막힌다.
 
 순수 모듈 불변식: graph_rag 를 import 하지 않는다(plain dict 입력).
 """
@@ -30,6 +33,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import ir_snapshot
+import semantic_fields
 
 MODE_OFF = "off"
 MODE_SHADOW = "shadow"
@@ -59,15 +63,24 @@ def enabled() -> bool:
     return mode() != MODE_OFF
 
 
+def semantic_form(value: Any) -> Any:
+    """슬롯 값의 **의미 비교 전용** 정규형(출처 필드 제거). 판정 어휘의 정의 그 자체다."""
+    return semantic_fields.strip_provenance(value)
+
+
 def _slots(plan: dict[str, Any]) -> dict[str, Any]:
-    """조건 IR 정규형을 ``"컨테이너.슬롯" -> 값`` 평면 dict 로 편다."""
+    """조건 IR 정규형을 ``"컨테이너.슬롯" -> 의미 정규형`` 평면 dict 로 편다.
+
+    스냅샷(골든·감사용)은 출처를 그대로 담고, 여기서 비교 직전에만 걷어낸다 — 진단 정보를 잃지
+    않으면서 "같은 뜻인가"만 판정하기 위해서다.
+    """
     snapshot = ir_snapshot.snapshot(plan)
     flat: dict[str, Any] = {}
     for container, slots in snapshot.items():
         if container == "schema_version" or not isinstance(slots, dict):
             continue
         for slot, value in slots.items():
-            flat[f"{container}.{slot}"] = value
+            flat[f"{container}.{slot}"] = semantic_form(value)
     return flat
 
 

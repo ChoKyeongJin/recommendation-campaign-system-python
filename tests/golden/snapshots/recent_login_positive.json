@@ -1,8 +1,8 @@
 {
   "plan": {
     "canonical_targeting_expression": {
-      "canonical_fingerprint": "aad4f4d7fb0e718d56080dc27fac3b7543b9a96259a0a3d872a682aa2efee8bb",
-      "expression_node_id": "expr_aad4f4d7fb0e718d56080dc27fac3b7543b9a96259a0a3d872a682aa2efee8bb",
+      "canonical_fingerprint": "96152887716e78e6d226c6d88817133605a64883c91ac41294920cdd46195375",
+      "expression_node_id": "expr_96152887716e78e6d226c6d88817133605a64883c91ac41294920cdd46195375",
       "payload": {
         "legacy_condition": {
           "fact": "member",
@@ -17,7 +17,7 @@
         }
       },
       "predicate_kind": "LegacyPredicate",
-      "semantic_key": "legacy:recent_login:6bb829e4fe0523dec80cfb67327d507aac43388ef75f311ab867f9a6642ecb65",
+      "semantic_key": "legacy:recent_login:5496cb7bcc4aecf7e40e00665949206ad369886fdaa5fd5ca4cab00a2dec2ab9",
       "source_spans": [],
       "type": "predicate_ref"
     },

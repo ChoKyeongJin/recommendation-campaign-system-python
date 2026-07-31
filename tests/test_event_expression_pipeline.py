@@ -166,3 +166,38 @@ def test_aggregate_sentences_still_belong_to_the_registry_backed_builder() -> No
     plan = plan_for("최근 30일 동안 3회 이상 구매한 고객")
     assert plan.get("event_expression") is None
     assert plan["target_user"]["aggregate_conditions"]
+
+
+def test_uncompilable_atom_fails_closed_instead_of_raising() -> None:
+    """컴파일 못 하는 원자(미등록 필드)는 검증 토큰을 못 만들고 SQL 이 막힌다 — 예외로 500 이 되면 안 된다.
+
+    구조화 계층이 스키마에 없는 필드를 만들어 낼 수 있으므로(예: 'purchase.product_scope'), 컴파일
+    불가는 정상 경로의 한 갈래다. 사용자에게는 오류가 아니라 사유가 나가야 한다.
+    """
+    query = "노트북을 구매한 고객"
+    plan = plan_for(query)
+    plan["event_expression"] = {
+        "expression": {
+            "type": "exists",
+            "relation": {
+                "type": "filter",
+                "relation": {"type": "source", "name": "purchase"},
+                "where": {
+                    "type": "comparison",
+                    "operator": "=",
+                    "left": {"type": "field", "name": "purchase.not_a_registered_field"},
+                    "right": {"type": "literal", "value": "노트북"},
+                    "evidence": {"text": "노트북", "start": 0, "end": 3},
+                },
+            },
+            "evidence": {"text": "노트북을 구매", "start": 0, "end": 7},
+        },
+        "source_text": query,
+        "evidence_span": [0, 7],
+    }
+
+    assert graph_rag.build_verified_condition_tokens(plan) is not None
+    assert all(
+        not token["path"].startswith("plan.event_expression")
+        for token in graph_rag.build_verified_condition_tokens(plan)
+    ), "컴파일 불가 원자는 검증 토큰을 만들지 않는다(만들면 미지원 SQL 이 통과한다)"

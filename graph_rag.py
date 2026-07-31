@@ -44,6 +44,7 @@ import parser_shadow
 import plan_validation
 import plan_semantic_ast
 import product_master_resolver
+import purchase_lexicon
 import unresolved_triage
 from common_utils import elapsed_ms as _elapsed_ms
 from aggregation_requirements import (
@@ -1693,7 +1694,8 @@ _PURCHASE_OBJECT_CHAIN_PATTERN = re.compile(
     # 이 목적격 조사가 '구매'의 목적어임을 보장 — 뒤로 짧은 필러(개수·비교어·부사, 다른 목적격 조사 을/를은
     # 불허)를 지나 구매 동사가 나와야 한다. 이 앵커가 없으면 '남성과 여성을 대상으로 기저귀를 구매'에서
     # 데모그래픽 나열('남성과 여성을')을 상품으로 오검출한다(그 경우 뒤의 '기저귀를'의 를이 필러를 막아 거부).
-    r"(?=[^을를]{0,15}?(?:구매|구입|주문|샀|산(?=\s)))",
+    # 구매 동사 목록은 purchase_lexicon 단일 소스 — 상품 추출과 존재 판정이 같은 활용형을 읽는다.
+    rf"(?=[^을를]{{0,15}}?(?:{purchase_lexicon.verb_surface_alt()}))",
     re.IGNORECASE,
 )
 
@@ -1934,13 +1936,27 @@ def _campaign_response_signals(text: str) -> set[str]:
 
 
 def _audience_polarity_signals(text: str) -> set[str]:
-    """스코프 분리에서 반드시 타겟팅 절에 남아야 하는 회원 조건의 값+극성 서명."""
+    """스코프 분리에서 반드시 타겟팅 절에 남아야 하는 회원 조건의 값+극성 서명.
+
+    구매 존재/부재도 여기 포함된다 — 절 분리가 "…를 구매한 여자 고객"을 "여자 고객, … 구매 이력"
+    처럼 명사구로 옮기면서 구매 관계를 통째로 흘리면, 뒤 파서에는 구매 조건이 아예 없는 문장이
+    도착한다. 신호가 사라졌으면 그 분리를 폐기하고 원문으로 되돌리는 것이 정답이다(문자열에 동사를
+    지어 넣지 않는다). 표현형만 바뀐 정상 분리는 purchase_lexicon 이 명사형까지 읽으므로 통과한다.
+    """
 
     return {
         *(f"gender:{signal}" for signal in _gender_polarity_signals(text)),
         *(f"consent:{signal}" for signal in _consent_signals(text)),
         *(f"member_flag:{signal}" for signal in _member_flag_signals(text)),
+        *purchase_lexicon.membership_signals(text),
     }
+
+
+# 구매 관계 신호 → 사람이 읽는 라벨(소실 고지 문구용).
+_PURCHASE_MEMBERSHIP_SIGNAL_LABELS = {
+    purchase_lexicon.EXISTS: "구매 이력 있음",
+    purchase_lexicon.ABSENT: "구매 이력 없음",
+}
 
 
 def _prompt_signal_signature(text: str) -> dict[str, set[str]]:
@@ -1965,6 +1981,9 @@ def _prompt_signal_signature(text: str) -> dict[str, set[str]]:
         },
         "genders": genders,
         "gender_polarities": _gender_polarity_signals(compact),
+        # 구매 '관계' 자체(존재/부재). 상품명(purchases)만 보던 시절에는 상품어가 남아 있으면
+        # 통과했지만, 동사가 사라지면 뒤 파서가 구매 조건을 못 만든다 — 관계와 값을 따로 서명한다.
+        "purchase_membership": set(purchase_lexicon.membership_signals(compact)),
         "purchases": _purchase_object_signals(compact),
         "brands": _brand_object_signals(compact),
         "consents": _consent_signals(compact),
@@ -1999,6 +2018,11 @@ def _rewrite_dropped_signals(original: str, rewritten: str) -> list[str]:
         canonical, polarity = signal.split(":", 1)
         direction = "제외" if polarity == "exclude" else "포함"
         dropped.append(f"성별 극성 '{_GENDER_CANONICAL_KO.get(canonical, canonical)} {direction}'")
+    # 구매 관계(존재/부재)는 표현형이 아니라 뜻이 보존돼야 한다 — '샀다'→'구매 이력'처럼 명사형으로
+    # 바뀌는 것은 보존이고(purchase_lexicon 이 같은 신호로 읽는다), 관계 자체가 사라지거나 극성이
+    # 뒤집히는 것만 소실이다.
+    for signal in sorted(before["purchase_membership"] - after["purchase_membership"]):
+        dropped.append(f"구매 조건 '{_PURCHASE_MEMBERSHIP_SIGNAL_LABELS.get(signal, signal)}'")
     # 구매 상품은 재작성이 구매 표현형을 바꿔도(예: '구매한'→'구매') 상품명 자체가 남아있으면 보존으로 본다.
     # 그래서 엄격 패턴 재추출이 아니라 상품명이 재작성본 어디에도 없을 때만 소실로 판정한다(오탐 방지).
     after_compact = (rewritten or "").casefold()
@@ -4108,8 +4132,7 @@ def _purchase_inactivity_span(query: str, _plan: dict[str, Any]) -> tuple[int, i
     **슬롯이 실제로 창을 가져간 그 매치 하나**여야 한다. 전체를 덮으면 두 절이 한 구간이 돼
     순위 절이 뒤 절의 조건까지 소유하게 된다 — 슬롯 판정과 같은 게이트를 그대로 다시 쓴다.
     """
-    compact_query = query.replace(" ", "").casefold()
-    positive_matches, negative_matches = _purchase_membership_matches(compact_query)
+    positive_matches, negative_matches = _purchase_membership_matches(query)
     if not negative_matches:
         return None
     all_membership_spans = [match.span() for match in (*positive_matches, *negative_matches)]
@@ -5879,17 +5902,12 @@ def _is_completed_behavior_segment_lookup(query: str) -> bool:
     )
 
 
-# 구매 존재/부재 표면 판정. **동사·기록 명사 목록은 두 극성이 공유한다**(사전 소유) — 예전에는 두
-# 정규식이 각자 명사 목록을 갖고 있어 '구매 기록'이 부정형에도 긍정형에도 안 잡혔다(같은 뜻인데
-# 표현형 하나가 통째로 샌 것). 조사·어미 결합은 구조라 코드에 남는다.
-_PURCHASE_VERB_ALT = lexicon_patterns.alternation("purchase_membership_verb")
-_PURCHASE_RECORD_ALT = lexicon_patterns.alternation("event_record_noun")
-_PURCHASE_MEMBER_ALT = lexicon_patterns.alternation("member_noun", "member_noun_informal")
-_PURCHASE_POSITIVE_MEMBERSHIP_RE = re.compile(
-    rf"(?:{_PURCHASE_VERB_ALT})(?:{_PURCHASE_RECORD_ALT})?(?:을|를|은|는|이|가|도)*"
-    r"(?:했|한|했던|있는|있었|있던|있음)"
-    rf"|(?:{_PURCHASE_VERB_ALT})(?=(?:{_PURCHASE_MEMBER_ALT}))"
-)
+# 구매 존재/부재 표면 판정은 purchase_lexicon 이 단일 소스로 소유한다 — 동사 활용형(샀/산/사다),
+# 명사형 기록('구매 이력'), 부정 문맥 배제가 한 곳에서 정의돼야 같은 뜻의 표현형 하나가 한쪽
+# 극성에서만 새는 일이 없다. 여기서는 그 판정을 그대로 쓴다(별칭은 기존 호출부 이름 보존용).
+_PURCHASE_VERB_ALT = purchase_lexicon.VERB_ALT
+_PURCHASE_RECORD_ALT = purchase_lexicon.RECORD_ALT
+_PURCHASE_POSITIVE_MEMBERSHIP_RE = purchase_lexicon.POSITIVE_MEMBERSHIP_RE
 _CAMPAIGN_GENERIC_RESPONSE_RE = re.compile(
     r"캠페인(?:에|에서|을|를|의)?(?:는|은|도)?(?:반응|응답)"
     r"(?:을|를|이|가|은|는|도)?(?P<negative>하지않|안한|안했|않은|없)?(?:했|한|자|회원|고객)?"
@@ -6169,12 +6187,19 @@ def _record_suppressed_duration_candidates(
         )
 
 
-def _purchase_membership_matches(compact_query: str) -> tuple[list[re.Match[str]], list[re.Match[str]]]:
-    """구매 존재/부재 표현을 독립 span으로 수집한다(한 문장에 둘 다 존재 가능)."""
-    return (
-        list(_PURCHASE_POSITIVE_MEMBERSHIP_RE.finditer(compact_query)),
-        list(_PURCHASE_NEG_RE.finditer(compact_query)),
-    )
+def _purchase_membership_matches(query: str) -> tuple[list[Any], list[Any]]:
+    """구매 존재/부재 표현을 독립 span으로 수집한다(한 문장에 둘 다 존재 가능).
+
+    입력은 **공백이 살아 있는 원문**이고 반환 span 은 compact 좌표다. 두 좌표계가 필요한 이유는
+    중의 활용형('기저귀 산 사람'의 '산') 때문이다 — 조사·어미 결합은 공백을 지워야 읽히고, 동음이의
+    (山)는 띄어쓰기가 있어야 풀린다. purchase_lexicon 이 원문에서 읽어 compact 좌표로 옮겨 준다.
+    반환 원소는 ``span()`` 만 쓰이므로 ``re.Match`` 와 :class:`purchase_lexicon.SurfaceSpan` 이 섞여도 된다.
+    """
+    compact_query = (query or "").replace(" ", "").casefold()
+    positives: list[Any] = list(_PURCHASE_POSITIVE_MEMBERSHIP_RE.finditer(compact_query))
+    positives.extend(purchase_lexicon.colloquial_spans(query or ""))
+    positives.sort(key=lambda match: match.span())
+    return positives, list(_PURCHASE_NEG_RE.finditer(compact_query))
 
 
 @_audited_stage
@@ -6186,7 +6211,7 @@ def _apply_core_membership_semantics(query: str, plan: dict[str, Any]) -> None:
     """
     target_user = plan.setdefault("target_user", {})
     compact = query.replace(" ", "").casefold()
-    positive_matches, negative_matches = _purchase_membership_matches(compact)
+    positive_matches, negative_matches = _purchase_membership_matches(query)
     all_membership_spans = [match.span() for match in (*positive_matches, *negative_matches)]
 
     # 캠페인 구매반응은 campaign_responses 전용 의미이므로 일반 주문 존재 조건으로 중복 승격하지 않는다.
@@ -7217,7 +7242,13 @@ def _apply_sell_object(query: str, plan: dict[str, Any]) -> None:
 # 상품명 표현형의 재현율은 LLM이 담당하고, 정밀도(없는 상품·일반명사를 실행 조건으로 쓰지 않음)는
 # _validate_purchase_objects 의 원문 존재 검증이 담당한다. 구매/판매 신호 자체가 없으면 호출하지 않는다.
 def _has_purchase_history_signal(query: str) -> bool:
-    return _lexicon_signal("purchase_history_signals", query)
+    """구매 이력 문맥인가 — 동결 백스톱/LLM 해석 **또는** 형태 판정(purchase_lexicon).
+
+    백스톱 낱말 목록은 표면형 단위라 '샀'은 알아도 '산'(사다의 관형형)은 못 담는다. 동음이의(山)
+    때문에 낱말로는 넣을 수 없기 때문이다. 활용형 판정은 낱말이 아니라 **형태 + 문맥**이므로
+    purchase_lexicon 이 소유하고, 여기서는 같은 불리언으로 합류시킨다(빈칸 보완이 곧 OR).
+    """
+    return _lexicon_signal("purchase_history_signals", query) or purchase_lexicon.has_purchase_expression(query)
 
 
 def _has_sell_signal(query: str) -> bool:
@@ -7292,28 +7323,15 @@ def _validate_purchase_objects(query: str, target_user: dict[str, Any]) -> None:
                     kind = "brand"
                 validated_entries.append({"value": canonical, "kind": kind})
 
-    if not validated_entries:
-        target_user["purchase_object"] = None
-        target_user.pop("purchase_objects", None)
-        target_user.pop("purchase_object_kind", None)
-        return
-
-    first = validated_entries[0]
-    target_user["purchase_object"] = first["value"]
-    if first["kind"]:
-        target_user["purchase_object_kind"] = first["kind"]
-    else:
-        target_user.pop("purchase_object_kind", None)
-    if len(validated_entries) > 1:
-        target_user["purchase_objects"] = validated_entries
-    else:
-        target_user.pop("purchase_objects", None)
+    # 슬롯 쓰기는 한 함수가 소유한다 — 검증기와 접지 스테이지가 각자 쓰면 복수 배열과 단수 투영이
+    # 어긋난다(한쪽만 상품 두 개를 알고 있는 상태).
+    _store_purchase_objects(target_user, validated_entries)
 
 
 _AMBIGUOUS_PURCHASE_SCOPE_PATTERN = re.compile(
     r"(?P<object>[0-9A-Za-z가-힣_+\-]+(?:\s+[0-9A-Za-z가-힣_+\-]+){0,4})\s*(?:을|를)\s*"
     r"(?:(?:가장|제일)\s*)?(?:(?:많이|자주|최다)\s*)?"
-    r"(?:구매|구입|주문|샀|산(?!책))",
+    rf"(?:{purchase_lexicon.verb_surface_alt()})",
     re.IGNORECASE,
 )
 _PURCHASE_SCOPE_TIME_WORDS = frozenset({
@@ -7439,32 +7457,70 @@ def _ambiguous_purchase_scope_phrase(query: str) -> str | None:
     return phrase
 
 
+def _ambiguous_purchase_scope_phrases(query: str) -> list[str]:
+    """구매 동사가 소유한 무표지 명사구를 **상품별 목록**으로 돌려준다(단일 상품도 길이 1).
+
+    나열형('노트북과 모니터를 샀다', '노트북, 모니터, 키보드를 구입했다')은 상품 사슬 패턴이 통째로
+    잡고(쉼표·및·그리고까지), 단일 상품은 기존 무표지 명사구 패턴이 잡는다. 어느 쪽이든 상품 연결어
+    기준으로 나눈다 — 분리 규칙(_split_product_terms)은 LLM 경로와 공유해 두 경로가 같은 상품 목록을
+    만든다. 순서는 보존하고 중복은 제거한다.
+    """
+    phrase = _ambiguous_purchase_scope_phrase(query)
+    # 사슬 패턴은 연결어를 최소 1개 요구하므로 진짜 나열형에서만 걸린다. 목적격 조사만 앵커라
+    # 비구매 나열('서울과 부산을 대상으로') 오검출을 막으려 구매 신호가 있을 때만 본다.
+    chain = (
+        _PURCHASE_OBJECT_CHAIN_PATTERN.search(query or "")
+        if _has_purchase_history_signal(query or "")
+        else None
+    )
+    if chain is not None:
+        terms = _split_product_terms(chain.group("chain"))
+    elif phrase:
+        terms = _split_product_terms(phrase) or [phrase]
+    else:
+        return []
+    ordered: list[str] = []
+    for term in terms:
+        if term and term not in ordered and _is_concrete_purchase_scope_phrase(term):
+            ordered.append(term)
+    return ordered
+
+
 @_audited_stage
 def _apply_product_master_resolution(query: str, plan: dict[str, Any]) -> None:
-    """Ground only untyped purchase expressions in the live product master.
+    """Ground every untyped purchase expression in the live product master.
 
     Explicit ``purchase_object_kind`` values already have a user-owned column meaning, so this stage does not
     reinterpret them.  Untyped phrases are resolved to same-row product/brand/category filters; low-confidence,
     tied or unavailable results remain non-executable and are converted to clarification by source coverage
     validation. A genuine ``not_found`` keeps the complete phrase as a broad product-master LIKE fallback so a
     typo or newly introduced product does not block the request.
+
+    상품은 **여러 개일 수 있다**('보행기 구매한 사람 중에 이불 세트 구매한 사람'). 접지도 상품별로
+    하고 결과를 상품별로 싣는다 — 단수 슬롯 하나에 담던 시절에는 두 번째 상품의 접지가 통째로
+    사라져 SQL 에 조건이 하나만 남았다.
     """
 
     target_user = plan.setdefault("target_user", {})
-    phrase = target_user.get("purchase_object")
-    if not isinstance(phrase, str) or not phrase.strip():
-        phrase = _ambiguous_purchase_scope_phrase(query)
-    if not isinstance(phrase, str) or not phrase.strip():
+    phrases = _purchase_object_phrases(query, target_user)
+    if not phrases:
         return
-    explicit = _explicit_purchase_kind(query, phrase)
-    if explicit is not None:
-        kind, explicit_value = explicit
-        target_user["purchase_object"] = explicit_value
-        target_user["purchase_object_kind"] = kind
-        return
-    if not _is_concrete_purchase_scope_phrase(phrase):
-        for slot in ("purchase_object", "purchase_object_kind", "purchase_objects", "purchase_object_resolution"):
-            target_user.pop(slot, None)
+
+    entries: list[dict[str, Any]] = []
+    non_entity: list[str] = []
+    for phrase in phrases:
+        explicit = _explicit_purchase_kind(query, phrase)
+        if explicit is not None:
+            kind, explicit_value = explicit
+            entries.append({"value": explicit_value, "kind": kind, "explicit": True})
+            continue
+        if not _is_concrete_purchase_scope_phrase(phrase):
+            non_entity.append(phrase)
+            continue
+        # 종류 표지가 원문에 없으면 LLM/선행 규칙이 추측한 kind에 기대지 않고 상품 마스터로 검증한다.
+        entries.append({"value": phrase, "kind": None, "explicit": False})
+
+    for phrase in non_entity:
         plan_decisions.record(
             plan,
             filter_name="product_master_resolution",
@@ -7474,27 +7530,100 @@ def _apply_product_master_resolution(query: str, plan: dict[str, Any]) -> None:
             value={"input": phrase, "concrete_terms": []},
             source="deterministic_non_entity_gate",
         )
+    if not entries:
+        for slot in _PURCHASE_OBJECT_SLOTS:
+            target_user.pop(slot, None)
         return
-    # 종류 표지가 원문에 없으면 LLM/선행 규칙이 추측한 kind에 기대지 않고 상품 마스터로 검증한다.
-    target_user.pop("purchase_object_kind", None)
+
+    _store_purchase_objects(target_user, entries)
+    if all(entry["explicit"] for entry in entries):
+        return
     if not _has_purchase_history_signal(query) and not isinstance(plan.get("purchase_count_ranking"), dict):
         return
 
-    existing = target_user.get("purchase_object_resolution")
-    if (
-        isinstance(existing, dict)
-        and existing.get("input") == phrase
-        and existing.get("status") in {"resolved", "fallback"}
-    ):
+    resolutions: list[dict[str, Any]] = []
+    for entry in entries:
+        if entry["explicit"]:
+            continue
+        resolution = _resolve_purchase_object(plan, entry["value"], target_user)
+        if resolution is not None:
+            resolutions.append(resolution)
+    if resolutions:
+        target_user["purchase_object_resolutions"] = resolutions
+        # 단수 슬롯은 호환 투영이다 — 기존 소비자(신뢰도 리포트·커버리지·근거 표기)가 계속 읽는다.
+        target_user["purchase_object_resolution"] = resolutions[0]
+
+
+# 상품 조건이 사는 슬롯 전체(복수 배열이 내부 표준, 단수 필드는 호환 투영). 한 곳에서 지워야
+# '값은 지웠는데 접지 결과만 남은' 어긋난 상태가 생기지 않는다.
+_PURCHASE_OBJECT_SLOTS = (
+    "purchase_object",
+    "purchase_object_kind",
+    "purchase_objects",
+    "purchase_object_resolution",
+    "purchase_object_resolutions",
+)
+
+
+def _purchase_object_phrases(query: str, target_user: dict[str, Any]) -> list[str]:
+    """구매 상품 조건의 상품 구절을 **순서 있는 목록**으로 정규화한다(단일 상품도 길이 1).
+
+    입력은 셋 중 하나다: 복수 슬롯(LLM/검증기가 채운 배열), 단수 슬롯(구 계약), 원문에서 읽은
+    무표지 명사구. 어느 경로로 들어와도 이후 로직은 같은 배열 하나만 본다.
+    """
+    values: list[str] = []
+    raw = target_user.get("purchase_objects")
+    if isinstance(raw, list):
+        for item in raw:
+            value = item.get("value") if isinstance(item, dict) else item
+            if isinstance(value, str) and value.strip():
+                values.append(value.strip())
+    single = target_user.get("purchase_object")
+    if isinstance(single, str) and single.strip():
+        values.append(single.strip())
+    if not values:
+        values = _ambiguous_purchase_scope_phrases(query)
+    ordered: list[str] = []
+    for value in values:
+        if value and value not in ordered:
+            ordered.append(value)
+    return ordered
+
+
+def _store_purchase_objects(target_user: dict[str, Any], entries: list[dict[str, Any]]) -> None:
+    """정규화된 상품 목록을 슬롯에 쓴다 — 복수 배열이 내부 표준이고 단수 필드는 호환 투영이다."""
+    if not entries:
+        target_user["purchase_object"] = None
+        for slot in _PURCHASE_OBJECT_SLOTS[1:]:
+            target_user.pop(slot, None)
         return
+    target_user["purchase_objects"] = [
+        {"value": entry["value"], "kind": entry.get("kind")} for entry in entries
+    ]
+    first = entries[0]
+    target_user["purchase_object"] = first["value"]
+    if first.get("kind"):
+        target_user["purchase_object_kind"] = first["kind"]
+    else:
+        target_user.pop("purchase_object_kind", None)
+
+
+def _resolve_purchase_object(
+    plan: dict[str, Any], phrase: str, target_user: dict[str, Any]
+) -> dict[str, Any] | None:
+    """상품 구절 하나를 상품 마스터로 접지한다(이미 확정된 같은 구절은 재조회하지 않는다)."""
+    existing = _purchase_object_resolution_for(target_user, phrase)
+    if isinstance(existing, dict) and existing.get("status") in {"resolved", "fallback"}:
+        return existing
 
     # 근거를 못 찾았으면 추측하지 않고 폴백한다 — 종류·값 분해·컬럼 선택을 모두 비워 둔 채
     # 원문 구절 그대로 광역 검색한다. 폴백 정책은 product_master_resolver 가 소유한다.
     resolution = product_master_resolver.no_guess_fallback(
         product_master_resolver.resolve_product_phrase(phrase)
     )
-    target_user["purchase_object"] = phrase
-    target_user["purchase_object_resolution"] = resolution
+    if not isinstance(resolution, dict) or not resolution:
+        return None
+    resolution.setdefault("input", phrase)
     status = str(resolution.get("status") or "unavailable")
     plan_decisions.record(
         plan,
@@ -7519,6 +7648,21 @@ def _apply_product_master_resolution(query: str, plan: dict[str, Any]) -> None:
         },
         source="product_master_lookup",
     )
+    return resolution
+
+
+def _purchase_object_resolution_for(target_user: dict[str, Any], value: str) -> dict[str, Any] | None:
+    """상품 구절 하나의 접지 결과. 복수 배열을 먼저 보고 없으면 단수 슬롯(구 계약)을 본다.
+
+    인덱스가 아니라 ``input`` 값으로 짝짓는다 — 이후 단계가 상품 목록을 걸러도 짝이 어긋나지 않는다.
+    """
+    for holder in (target_user.get("purchase_object_resolutions"), [target_user.get("purchase_object_resolution")]):
+        if not isinstance(holder, list):
+            continue
+        for item in holder:
+            if isinstance(item, dict) and str(item.get("input") or "").strip() == value:
+                return item
+    return None
 
 
 def _target_object_extract_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
@@ -7615,8 +7759,8 @@ def _apply_llm_object_fallback(
     if not extracted:
         return
     if need_purchase:
-        # LLM 이 준 상품 배열의 각 원소를 원문 존재 검증 → 나열형 분리 → DB 표기 보정한다. 나열형 다중 상품이면
-        # purchase_objects 리스트로, 하나면 단일 필드만 채운다(빌더가 상품별로 각각 결합).
+        # LLM 이 준 상품 배열의 각 원소를 원문 존재 검증 → 나열형 분리 → DB 표기 보정한다. 결과는 상품
+        # 개수와 무관하게 같은 배열 구조로 싣는다(빌더가 상품별로 각각 결합한다).
         objects: list[dict[str, Any]] = []
         seen: set[str] = set()
         for raw in extracted.get("purchase_objects") or []:
@@ -7635,11 +7779,7 @@ def _apply_llm_object_fallback(
                 seen.add(canonical)
                 objects.append({"value": canonical, "kind": "brand" if _is_known_brand_term(canonical) else None})
         if objects:
-            target_user["purchase_object"] = objects[0]["value"]
-            if objects[0]["kind"]:
-                target_user["purchase_object_kind"] = objects[0]["kind"]
-            if len(objects) > 1:
-                target_user["purchase_objects"] = objects
+            _store_purchase_objects(target_user, objects)
     if need_sell:
         sell_object = _validated_object(extracted.get("sell_object"), query)
         if sell_object:
@@ -9230,19 +9370,12 @@ def _apply_purchase_count_ranking_target(query: str, plan: dict[str, Any]) -> No
 # 함께 있을 때만 잡는다. 시간 창이 없으면(예: '미구매 고객') '전혀 구매 안 함(no_purchase)'과 구분이
 # 없으므로 여기서 잡지 않고 기존 no_purchase 경로로 둔다.
 # 구매 동사 + (기록 명사)? + (조사)* + 부정어. 낱말 목록은 긍정형과 **같은 사전 어휘**를 쓴다
-# (purchase_membership_verb / event_record_noun) — 목록이 갈라지면 같은 뜻의 표현형 하나가 한쪽
-# 극성에서만 사라진다. 조사('구매가 없는'의 '가')·명사('구매 이력이 없는')가 사이에 껴도 잡는다.
-# 부정어는 '안내'(안 아님) 오탐을 피해 없/않/하지않/안함·안한·안했·안하 로 한정. 접두형 '미구매'도 본다.
-_PURCHASE_NEG_RE = re.compile(
-    rf"(?:{_PURCHASE_VERB_ALT})(?:{_PURCHASE_RECORD_ALT})?(?:을|를|은|는|이|가|도)*"
-    r"(?:없|않|하지않|안함|안한|안했|안하)"
-    rf"|미(?:{_PURCHASE_VERB_ALT})"
-)
+# (purchase_lexicon 단일 소스) — 목록이 갈라지면 같은 뜻의 표현형 하나가 한쪽 극성에서만 사라진다.
+_PURCHASE_NEG_RE = purchase_lexicon.NEGATIVE_MEMBERSHIP_RE
 
 
 def _parse_purchase_inactivity_period(query: str) -> dict[str, Any] | None:
-    compact_query = query.replace(" ", "").casefold()
-    positive_matches, negative_matches = _purchase_membership_matches(compact_query)
+    positive_matches, negative_matches = _purchase_membership_matches(query)
     if not negative_matches:
         return None
     # 통합 창 문법(년/주/단어형 포함)을 쓰되, 각 기간을 가장 가까운 구매 존재/부재 span에 먼저 귀속한다.
@@ -19579,13 +19712,20 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
             ]
             # 부정이 붙은 원자는 Not 을 씌워 컴파일한다 — 원자만 컴파일하면 토큰이 SQL 과 극성이 어긋난다.
             node = event_ir.Not(operand=atom) if negated else atom
+            try:
+                condition_sql = event_compiler.compile_condition(node, event_context).sql
+            except event_compiler.SqlCompileError:
+                # 컴파일할 수 없는 원자(미등록 필드·사건)는 **검증 토큰을 만들지 않는다**. 토큰이 없으면
+                # 그 조건은 커버리지에서 미충족으로 남아 SQL 이 fail-close 된다 — 여기서 예외를 올리면
+                # 같은 상황이 500 이 되어 사용자에게 사유 대신 오류가 나간다(빌더 쪽은 이미 이 규칙이다).
+                continue
             _add_token(
                 tokens,
                 f"plan.{EVENT_EXPRESSION_KEY}[{index}]",
                 atom.type,
                 getattr(atom, "operator", "not_exists" if negated else "exists"),
                 ":".join(sources) or atom.type,
-                [event_compiler.compile_condition(node, event_context).sql],
+                [condition_sql],
                 _unique_strings(tables),
             )
 
@@ -23069,36 +23209,31 @@ _GENERIC_PRODUCT_OBJECT_WORDS = frozenset(
 )
 
 
+def _resolved_scope_filters(resolution: Any) -> list[dict[str, Any]]:
+    """접지 결과에서 컴파일 가능한 같은 행(facet) 필터만 추린다. 확정(resolved)이 아니면 비어 있다."""
+    if not isinstance(resolution, dict) or resolution.get("status") != "resolved":
+        return []
+    return [
+        {
+            "kind": item.get("kind"),
+            "value": item.get("value"),
+            "columns": list(item.get("columns") or []),
+        }
+        for item in (resolution.get("filters") or [])
+        if isinstance(item, dict)
+        and item.get("kind") in _PURCHASE_OBJECT_KIND_COLUMNS
+        and isinstance(item.get("value"), str)
+        and item["value"].strip()
+    ]
+
+
 def _target_purchase_objects(target_user: dict[str, Any]) -> list[dict[str, Any]]:
     """구매 상품 조건을 상품별 [{value, kind}] 리스트로 정규화한다(빌더 공용 단일 소스).
 
-    나열형 다중 상품은 target_user['purchase_objects'] 에, 단일 상품은 target_user['purchase_object'] 에 담기므로
-    둘 중 있는 쪽을 리스트로 통일한다. 일반 지시어('상품/제품')는 스코프로 쓸 수 없어 제외한다."""
-    resolution = target_user.get("purchase_object_resolution")
-    if isinstance(resolution, dict) and resolution.get("status") == "resolved":
-        filters = [
-            {
-                "kind": item.get("kind"),
-                "value": item.get("value"),
-                "columns": list(item.get("columns") or []),
-            }
-            for item in (resolution.get("filters") or [])
-            if isinstance(item, dict)
-            and item.get("kind") in _PURCHASE_OBJECT_KIND_COLUMNS
-            and isinstance(item.get("value"), str)
-            and item["value"].strip()
-        ]
-        if filters:
-            return [{
-                "value": str(resolution.get("input") or target_user.get("purchase_object") or "").strip(),
-                "kind": "resolved",
-                "filters": filters,
-                "resolution_source": resolution.get("source"),
-                "confidence": resolution.get("confidence"),
-            }]
-
-    result: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    복수 배열(target_user['purchase_objects'])이 내부 표준이고, 단수 슬롯(purchase_object)은 외부에서
+    조립된 플랜을 위한 호환 입력이다. 접지 결과도 **상품별로** 짝지어 붙인다 — 예전에는 단수 접지가
+    있으면 그것 하나만 돌려주어 두 번째 상품이 통째로 사라졌다('보행기 … 이불 세트' → 보행기만 SQL).
+    일반 지시어('상품/제품')는 스코프로 쓸 수 없어 제외한다."""
     objects = target_user.get("purchase_objects")
     if isinstance(objects, list) and objects:
         source = [
@@ -23113,6 +23248,9 @@ def _target_purchase_objects(target_user: dict[str, Any]) -> list[dict[str, Any]
             if isinstance(value, str) and value.strip()
             else []
         )
+
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for item in source:
         value = item["value"].strip()
         if (
@@ -23122,7 +23260,18 @@ def _target_purchase_objects(target_user: dict[str, Any]) -> list[dict[str, Any]
         ):
             continue
         seen.add(value)
-        result.append({"value": value, "kind": item.get("kind")})
+        resolution = _purchase_object_resolution_for(target_user, value)
+        filters = _resolved_scope_filters(resolution)
+        if filters:
+            result.append({
+                "value": value,
+                "kind": "resolved",
+                "filters": filters,
+                "resolution_source": resolution.get("source"),
+                "confidence": resolution.get("confidence"),
+            })
+        else:
+            result.append({"value": value, "kind": item.get("kind")})
     return result
 
 
