@@ -11273,7 +11273,6 @@
         "EMAIL수신여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 EMAIL수신여부는 EMAIL수신여부을 의미한다. 동의어: EMAIL수신여부. 부정 동의어: 없음."
     },
     {
@@ -11286,7 +11285,6 @@
         "F등급"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 F등급는 F등급을 의미한다. 동의어: F등급. 부정 동의어: 없음."
     },
     {
@@ -11299,7 +11297,6 @@
         "M등급"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 M등급는 M등급을 의미한다. 동의어: M등급. 부정 동의어: 없음."
     },
     {
@@ -11312,7 +11309,6 @@
         "R등급"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 R등급는 R등급을 의미한다. 동의어: R등급. 부정 동의어: 없음."
     },
     {
@@ -11327,7 +11323,6 @@
         "문자 동의"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 SMS동의여부는 SMS동의여부을 의미한다. 동의어: SMS동의여부, SMS 동의, 문자 동의. 부정 동의어: 없음."
     },
     {
@@ -11343,7 +11338,6 @@
         "문자 수신 동의 여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 SMS수신동의여부는 SMS수신동의여부을 의미한다. 동의어: SMS수신동의여부, 문자 수신동의, SMS 수신동의, 문자 수신 동의 여부. 부정 동의어: 없음."
     },
     {
@@ -11358,7 +11352,6 @@
         "SMS 수신"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 SMS수신여부는 SMS수신여부을 의미한다. 동의어: SMS수신여부, 문자 수신 여부, SMS 수신. 부정 동의어: 없음."
     },
     {
@@ -11371,7 +11364,6 @@
         "SNS등록여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 SNS등록여부는 SNS등록여부을 의미한다. 동의어: SNS등록여부. 부정 동의어: 없음."
     },
     {
@@ -11384,7 +11376,6 @@
         "SNS채널"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 SNS채널는 SNS채널을 의미한다. 동의어: SNS채널. 부정 동의어: 없음."
     },
     {
@@ -11397,7 +11388,6 @@
         "VIP등급"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 VIP등급는 VIP등급을 의미한다. 동의어: VIP등급. 부정 동의어: 없음."
     },
     {
@@ -11413,7 +11403,6 @@
         "가입 방법"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 가입경로는 가입경로을 의미한다. 동의어: 가입경로, 가입 루트, 회원가입 경로, 가입 방법. 부정 동의어: 없음."
     },
     {
@@ -11428,7 +11417,6 @@
         "회원가입 기간"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 가입기간는 가입기간을 의미한다. 동의어: 가입기간, 가입한 지, 회원가입 기간. 부정 동의어: 없음."
     },
     {
@@ -11443,7 +11431,6 @@
         "가입한 매장"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 가입매장는 가입매장을 의미한다. 동의어: 가입매장, 가입 점포, 가입한 매장. 부정 동의어: 없음."
     },
     {
@@ -11456,7 +11443,6 @@
         "가입매장_브랜드"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 가입매장_브랜드는 가입매장_브랜드을 의미한다. 동의어: 가입매장_브랜드. 부정 동의어: 없음."
     },
     {
@@ -11469,7 +11455,6 @@
         "가입매장_지역"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 가입매장_지역는 가입매장_지역을 의미한다. 동의어: 가입매장_지역. 부정 동의어: 없음."
     },
     {
@@ -11484,7 +11469,6 @@
         "가입한 해"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 가입연도는 가입연도을 의미한다. 동의어: 가입연도, 가입 년도, 가입한 해. 부정 동의어: 없음."
     },
     {
@@ -11500,7 +11484,6 @@
         "가입 종류"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 가입유형는 가입유형을 의미한다. 동의어: 가입유형, 가입 형태, 회원가입 유형, 가입 종류. 부정 동의어: 없음."
     },
     {
@@ -11516,7 +11499,6 @@
         "회원가입일"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 가입일는 가입일을 의미한다. 동의어: 가입일, 가입 날짜, 가입한 날, 회원가입일. 부정 동의어: 없음."
     },
     {
@@ -11531,7 +11513,6 @@
         "가입한 날짜"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 가입일자는 가입일자을 의미한다. 동의어: 가입일자, 회원 가입일자, 가입한 날짜. 부정 동의어: 없음."
     },
     {
@@ -11548,7 +11529,6 @@
         "평균 객단가"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 객단가는 객단가을 의미한다. 동의어: 객단가, 평균 구매액, 평균 결제액, 인당 구매액, 평균 객단가. 부정 동의어: 없음."
     },
     {
@@ -11563,7 +11543,6 @@
         "구매 브랜드"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 거래브랜드는 거래브랜드을 의미한다. 동의어: 거래브랜드, 취급 브랜드, 구매 브랜드. 부정 동의어: 없음."
     },
     {
@@ -11576,7 +11555,6 @@
         "거래채널유형"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 거래채널유형는 거래채널유형을 의미한다. 동의어: 거래채널유형. 부정 동의어: 없음."
     },
     {
@@ -11589,7 +11567,6 @@
         "거래채널조합"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 거래채널조합는 거래채널조합을 의미한다. 동의어: 거래채널조합. 부정 동의어: 없음."
     },
     {
@@ -11602,7 +11579,6 @@
         "결혼기념일4자리_월일"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 결혼기념일4자리_월일는 결혼기념일4자리_월일을 의미한다. 동의어: 결혼기념일4자리_월일. 부정 동의어: 없음."
     },
     {
@@ -11617,7 +11593,6 @@
         "결혼 유무"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 결혼여부는 결혼여부을 의미한다. 동의어: 결혼여부, 결혼 상태, 결혼 유무. 부정 동의어: 없음."
     },
     {
@@ -11630,7 +11605,6 @@
         "과거구매기간"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 과거구매기간는 과거구매기간을 의미한다. 동의어: 과거구매기간. 부정 동의어: 없음."
     },
     {
@@ -11643,7 +11617,6 @@
         "관점구분"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 관점구분는 관점구분을 의미한다. 동의어: 관점구분. 부정 동의어: 없음."
     },
     {
@@ -11656,7 +11629,6 @@
         "구매구분"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 구매구분는 구매구분을 의미한다. 동의어: 구매구분. 부정 동의어: 없음."
     },
     {
@@ -11673,7 +11645,6 @@
         "구입금액"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 구매금액는 구매금액을 의미한다. 동의어: 구매금액, 구매액, 결제금액, 주문금액, 구입금액. 부정 동의어: 없음."
     },
     {
@@ -11688,7 +11659,6 @@
         "구입 기간"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 구매기간는 구매기간을 의미한다. 동의어: 구매기간, 구매한 기간, 구입 기간. 부정 동의어: 없음."
     },
     {
@@ -11703,7 +11673,6 @@
         "구매 응답 여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 구매반응여부는 구매반응여부을 의미한다. 동의어: 구매반응여부, 구매 반응, 구매 응답 여부. 부정 동의어: 없음."
     },
     {
@@ -11717,7 +11686,6 @@
         "선호 구매 채널"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 구매선호채널는 구매선호채널을 의미한다. 동의어: 구매선호채널, 선호 구매 채널. 부정 동의어: 없음."
     },
     {
@@ -11733,7 +11701,6 @@
         "주문 수량"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 구매수량는 구매수량을 의미한다. 동의어: 구매수량, 구매 개수, 구입 수량, 주문 수량. 부정 동의어: 없음."
     },
     {
@@ -11750,7 +11717,6 @@
         "구입일자"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 구매일자는 구매일자을 의미한다. 동의어: 구매일자, 구매 날짜, 구매한 날, 결제일, 구입일자. 부정 동의어: 없음."
     },
     {
@@ -11767,7 +11733,6 @@
         "구입 횟수"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 구매횟수는 구매횟수을 의미한다. 동의어: 구매횟수, 구매 건수, 주문 횟수, 구매 빈도, 구입 횟수. 부정 동의어: 없음."
     },
     {
@@ -11780,7 +11745,6 @@
         "기본배송지주소"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 기본배송지주소는 기본배송지주소을 의미한다. 동의어: 기본배송지주소. 부정 동의어: 없음."
     },
     {
@@ -11796,7 +11760,6 @@
         "연령층"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 나이대는 나이대을 의미한다. 동의어: 나이대, 나이 구간, 연령 구간, 연령층. 부정 동의어: 없음."
     },
     {
@@ -11809,7 +11772,6 @@
         "뉴베스트SMS동의여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 뉴베스트SMS동의여부는 뉴베스트SMS동의여부을 의미한다. 동의어: 뉴베스트SMS동의여부. 부정 동의어: 없음."
     },
     {
@@ -11822,7 +11784,6 @@
         "당근잔액"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 당근잔액는 당근잔액을 의미한다. 동의어: 당근잔액. 부정 동의어: 없음."
     },
     {
@@ -11838,7 +11799,6 @@
         "대량 구입"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 대량구매고객여부는 대량구매고객여부을 의미한다. 동의어: 대량구매고객여부, 대량구매 여부, 대량 구매, 대량 구입. 부정 동의어: 없음."
     },
     {
@@ -11854,7 +11814,6 @@
         "디바이스 종류"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 디바이스유형는 디바이스유형을 의미한다. 동의어: 디바이스유형, 기기 유형, 단말 유형, 디바이스 종류. 부정 동의어: 없음."
     },
     {
@@ -11867,7 +11826,6 @@
         "랜딩페이지"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 랜딩페이지는 랜딩페이지을 의미한다. 동의어: 랜딩페이지. 부정 동의어: 없음."
     },
     {
@@ -11881,7 +11839,6 @@
         "접속 기간"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 로그인기간는 로그인기간을 의미한다. 동의어: 로그인기간, 접속 기간. 부정 동의어: 없음."
     },
     {
@@ -11895,7 +11852,6 @@
         "접속 일수"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 로그인일수는 로그인일수을 의미한다. 동의어: 로그인일수, 접속 일수. 부정 동의어: 없음."
     },
     {
@@ -11911,7 +11867,6 @@
         "로그인 일"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 로그인일자는 로그인일자을 의미한다. 동의어: 로그인일자, 로그인 날짜, 접속일, 로그인 일. 부정 동의어: 없음."
     },
     {
@@ -11926,7 +11881,6 @@
         "로그인 수"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 로그인횟수는 로그인횟수을 의미한다. 동의어: 로그인횟수, 접속 횟수, 로그인 수. 부정 동의어: 없음."
     },
     {
@@ -11939,7 +11893,6 @@
         "마이데이터ISO국가기호내용"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 마이데이터ISO국가기호내용는 마이데이터ISO국가기호내용을 의미한다. 동의어: 마이데이터ISO국가기호내용. 부정 동의어: 없음."
     },
     {
@@ -11952,7 +11905,6 @@
         "마이데이터사업자기관코드"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 마이데이터사업자기관코드는 마이데이터사업자기관코드을 의미한다. 동의어: 마이데이터사업자기관코드. 부정 동의어: 없음."
     },
     {
@@ -11965,7 +11917,6 @@
         "마이데이터승인일시"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 마이데이터승인일시는 마이데이터승인일시을 의미한다. 동의어: 마이데이터승인일시. 부정 동의어: 없음."
     },
     {
@@ -11978,7 +11929,6 @@
         "마이데이터정보제공자코드"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 마이데이터정보제공자코드는 마이데이터정보제공자코드을 의미한다. 동의어: 마이데이터정보제공자코드. 부정 동의어: 없음."
     },
     {
@@ -11992,7 +11942,6 @@
         "마지막 로그인"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 마지막로그인일자는 마지막로그인일자을 의미한다. 동의어: 마지막로그인일자, 마지막 로그인. 부정 동의어: 없음."
     },
     {
@@ -12005,7 +11954,6 @@
         "마케팅수신동의여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 마케팅수신동의여부는 마케팅수신동의여부을 의미한다. 동의어: 마케팅수신동의여부. 부정 동의어: 없음."
     },
     {
@@ -12021,7 +11969,6 @@
         "OS 유형"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 모바일OS유형는 모바일OS유형을 의미한다. 동의어: 모바일OS유형, 모바일 OS, 스마트폰 OS, OS 유형. 부정 동의어: 없음."
     },
     {
@@ -12034,7 +11981,6 @@
         "문캠페인3"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 문캠페인3는 문캠페인3을 의미한다. 동의어: 문캠페인3. 부정 동의어: 없음."
     },
     {
@@ -12047,7 +11993,6 @@
         "발행쿠폰수"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 발행쿠폰수는 발행쿠폰수을 의미한다. 동의어: 발행쿠폰수. 부정 동의어: 없음."
     },
     {
@@ -12060,7 +12005,6 @@
         "분석기준"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 분석기준는 분석기준을 의미한다. 동의어: 분석기준. 부정 동의어: 없음."
     },
     {
@@ -12075,7 +12019,6 @@
         "상표"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 브랜드는 브랜드을 의미한다. 동의어: 브랜드, 브랜드명, 상표. 부정 동의어: 없음."
     },
     {
@@ -12088,7 +12031,6 @@
         "사용자정의연령대"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 사용자정의연령대는 사용자정의연령대을 의미한다. 동의어: 사용자정의연령대. 부정 동의어: 없음."
     },
     {
@@ -12101,7 +12043,6 @@
         "사용쿠폰수"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 사용쿠폰수는 사용쿠폰수을 의미한다. 동의어: 사용쿠폰수. 부정 동의어: 없음."
     },
     {
@@ -12115,7 +12056,6 @@
         "활동 등급"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 상태등급는 상태등급을 의미한다. 동의어: 상태등급, 활동 등급. 부정 동의어: 없음."
     },
     {
@@ -12128,7 +12068,6 @@
         "상품별구매금액"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 상품별구매금액는 상품별구매금액을 의미한다. 동의어: 상품별구매금액. 부정 동의어: 없음."
     },
     {
@@ -12141,7 +12080,6 @@
         "상품분류_상품"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 상품분류_상품는 상품분류_상품을 의미한다. 동의어: 상품분류_상품. 부정 동의어: 없음."
     },
     {
@@ -12156,7 +12094,6 @@
         "대분류"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 상품분류_상품대분류는 상품분류_상품대분류을 의미한다. 동의어: 상품분류_상품대분류, 상품 대분류, 대분류. 부정 동의어: 없음."
     },
     {
@@ -12171,7 +12108,6 @@
         "소분류"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 상품분류_상품소분류는 상품분류_상품소분류을 의미한다. 동의어: 상품분류_상품소분류, 상품 소분류, 소분류. 부정 동의어: 없음."
     },
     {
@@ -12186,7 +12122,6 @@
         "중분류"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 상품분류_상품중분류는 상품분류_상품중분류을 의미한다. 동의어: 상품분류_상품중분류, 상품 중분류, 중분류. 부정 동의어: 없음."
     },
     {
@@ -12201,7 +12136,6 @@
         "카테고리 분류"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 상품분류_카테고리는 상품분류_카테고리을 의미한다. 동의어: 상품분류_카테고리, 상품 카테고리, 카테고리 분류. 부정 동의어: 없음."
     },
     {
@@ -12214,7 +12148,6 @@
         "상품카테고리G"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 상품카테고리G는 상품카테고리G을 의미한다. 동의어: 상품카테고리G. 부정 동의어: 없음."
     },
     {
@@ -12233,7 +12166,6 @@
         "dob"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 생년월일는 생년월일을 의미한다. 동의어: 생년월일, 출생일, 태어난 날, 생년, 출생년월일, date of birth, dob. 부정 동의어: 없음."
     },
     {
@@ -12248,7 +12180,6 @@
         "생월일"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 생일4자리_월일는 생일4자리_월일을 의미한다. 동의어: 생일4자리_월일, 생일 월일, 생월일. 부정 동의어: 없음."
     },
     {
@@ -12263,7 +12194,6 @@
         "관심 상품군"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 선호상품군는 선호상품군을 의미한다. 동의어: 선호상품군, 선호 상품, 관심 상품군. 부정 동의어: 없음."
     },
     {
@@ -12277,7 +12207,6 @@
         "설문 응답 여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 설문참여여부는 설문참여여부을 의미한다. 동의어: 설문참여여부, 설문 응답 여부. 부정 동의어: 없음."
     },
     {
@@ -12291,7 +12220,6 @@
         "설문 채널"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 설문참여채널는 설문참여채널을 의미한다. 동의어: 설문참여채널, 설문 채널. 부정 동의어: 없음."
     },
     {
@@ -12308,7 +12236,6 @@
         "sex"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 성별는 성별을 의미한다. 동의어: 성별, 남녀, 남녀구분, 성별구분, sex. 부정 동의어: 없음."
     },
     {
@@ -12323,7 +12250,6 @@
         "성별명칭"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 성별명는 성별명을 의미한다. 동의어: 성별명, 성별 이름, 성별명칭. 부정 동의어: 없음."
     },
     {
@@ -12336,7 +12262,6 @@
         "소속부서"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 소속부서는 소속부서을 의미한다. 동의어: 소속부서. 부정 동의어: 없음."
     },
     {
@@ -12350,7 +12275,6 @@
         "수신 허용 여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 수신동의여부는 수신동의여부을 의미한다. 동의어: 수신동의여부, 수신 허용 여부. 부정 동의어: 없음."
     },
     {
@@ -12367,7 +12291,6 @@
         "시도지역"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 시도는 시도을 의미한다. 동의어: 시도, 광역시도, 시·도, 거주시도, 시도지역. 부정 동의어: 없음."
     },
     {
@@ -12380,7 +12303,6 @@
         "시도_검색"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 시도_검색는 시도_검색을 의미한다. 동의어: 시도_검색. 부정 동의어: 없음."
     },
     {
@@ -12395,7 +12317,6 @@
         "시도 명칭"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 시도명는 시도명을 의미한다. 동의어: 시도명, 시도 이름, 시도 명칭. 부정 동의어: 없음."
     },
     {
@@ -12408,7 +12329,6 @@
         "신규고객여부SN"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 신규고객여부SN는 신규고객여부SN을 의미한다. 동의어: 신규고객여부SN. 부정 동의어: 없음."
     },
     {
@@ -12423,7 +12343,6 @@
         "애플리케이션 버전"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 앱버전는 앱버전을 의미한다. 동의어: 앱버전, 어플 버전, 애플리케이션 버전. 부정 동의어: 없음."
     },
     {
@@ -12439,7 +12358,6 @@
         "age"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 연령는 연령을 의미한다. 동의어: 연령, 나이, 만나이, age. 부정 동의어: 없음."
     },
     {
@@ -12455,7 +12373,6 @@
         "5세단위"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 연령대_5세단위는 연령대_5세단위을 의미한다. 동의어: 연령대_5세단위, 5세단위 연령대, 5세 구간, 5세단위. 부정 동의어: 없음."
     },
     {
@@ -12470,7 +12387,6 @@
         "연령구간명"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 연령대명는 연령대명을 의미한다. 동의어: 연령대명, 연령대 이름, 연령구간명. 부정 동의어: 없음."
     },
     {
@@ -12483,7 +12399,6 @@
         "연령대체크"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 연령대체크는 연령대체크을 의미한다. 동의어: 연령대체크. 부정 동의어: 없음."
     },
     {
@@ -12496,7 +12411,6 @@
         "연령대코드"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 연령대코드는 연령대코드을 의미한다. 동의어: 연령대코드. 부정 동의어: 없음."
     },
     {
@@ -12509,7 +12423,6 @@
         "예치금잔액"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 예치금잔액는 예치금잔액을 의미한다. 동의어: 예치금잔액. 부정 동의어: 없음."
     },
     {
@@ -12523,7 +12436,6 @@
         "제안 반응 여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 오퍼반응여부는 오퍼반응여부을 의미한다. 동의어: 오퍼반응여부, 제안 반응 여부. 부정 동의어: 없음."
     },
     {
@@ -12536,7 +12448,6 @@
         "오퍼사용구매금액"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 오퍼사용구매금액는 오퍼사용구매금액을 의미한다. 동의어: 오퍼사용구매금액. 부정 동의어: 없음."
     },
     {
@@ -12549,7 +12460,6 @@
         "오퍼할인금액"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 오퍼할인금액는 오퍼할인금액을 의미한다. 동의어: 오퍼할인금액. 부정 동의어: 없음."
     },
     {
@@ -12562,7 +12472,6 @@
         "오프GL등급"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 오프GL등급는 오프GL등급을 의미한다. 동의어: 오프GL등급. 부정 동의어: 없음."
     },
     {
@@ -12575,7 +12484,6 @@
         "온오프GL등급"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 온오프GL등급는 온오프GL등급을 의미한다. 동의어: 온오프GL등급. 부정 동의어: 없음."
     },
     {
@@ -12590,7 +12498,6 @@
         "외국 국적 여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 외국인여부는 외국인여부을 의미한다. 동의어: 외국인여부, 내외국인 여부, 외국 국적 여부. 부정 동의어: 없음."
     },
     {
@@ -12603,7 +12510,6 @@
         "원화환산금액"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 원화환산금액는 원화환산금액을 의미한다. 동의어: 원화환산금액. 부정 동의어: 없음."
     },
     {
@@ -12619,7 +12525,6 @@
         "이메일 동의 여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 이메일수신동의여부는 이메일수신동의여부을 의미한다. 동의어: 이메일수신동의여부, 이메일 수신동의, 메일 수신동의, 이메일 동의 여부. 부정 동의어: 없음."
     },
     {
@@ -12632,7 +12537,6 @@
         "이미지URL"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 이미지URL는 이미지URL을 의미한다. 동의어: 이미지URL. 부정 동의어: 없음."
     },
     {
@@ -12645,7 +12549,6 @@
         "이미지파일명"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 이미지파일명는 이미지파일명을 의미한다. 동의어: 이미지파일명. 부정 동의어: 없음."
     },
     {
@@ -12661,7 +12564,6 @@
         "임직원 유무"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 임직원여부는 임직원여부을 의미한다. 동의어: 임직원여부, 직원 여부, 사원 여부, 임직원 유무. 부정 동의어: 없음."
     },
     {
@@ -12677,7 +12579,6 @@
         "자녀 보유 여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 자녀여부는 자녀여부을 의미한다. 동의어: 자녀여부, 아이 여부, 자녀 유무, 자녀 보유 여부. 부정 동의어: 없음."
     },
     {
@@ -12692,7 +12593,6 @@
         "포인트 잔액"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 잔여포인트는 잔여포인트을 의미한다. 동의어: 잔여포인트, 남은 포인트, 포인트 잔액. 부정 동의어: 없음."
     },
     {
@@ -12707,7 +12607,6 @@
         "포인트 잔액 구간"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 잔여포인트구간는 잔여포인트구간을 의미한다. 동의어: 잔여포인트구간, 포인트 구간, 포인트 잔액 구간. 부정 동의어: 없음."
     },
     {
@@ -12721,7 +12620,6 @@
         "카트 금액"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 장바구니금액는 장바구니금액을 의미한다. 동의어: 장바구니금액, 카트 금액. 부정 동의어: 없음."
     },
     {
@@ -12734,7 +12632,6 @@
         "장바구니보관시작일"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 장바구니보관시작일는 장바구니보관시작일을 의미한다. 동의어: 장바구니보관시작일. 부정 동의어: 없음."
     },
     {
@@ -12747,7 +12644,6 @@
         "장바구니보관종료일"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 장바구니보관종료일는 장바구니보관종료일을 의미한다. 동의어: 장바구니보관종료일. 부정 동의어: 없음."
     },
     {
@@ -12762,7 +12658,6 @@
         "장바구니 종류"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 장바구니유형는 장바구니유형을 의미한다. 동의어: 장바구니유형, 카트 유형, 장바구니 종류. 부정 동의어: 없음."
     },
     {
@@ -12776,7 +12671,6 @@
         "지난달 가치등급"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 전월가치등급는 전월가치등급을 의미한다. 동의어: 전월가치등급, 지난달 가치등급. 부정 동의어: 없음."
     },
     {
@@ -12792,7 +12686,6 @@
         "지난달 등급"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 전월회원등급는 전월회원등급을 의미한다. 동의어: 전월회원등급, 전월 등급, 지난달 회원등급, 지난달 등급. 부정 동의어: 없음."
     },
     {
@@ -12806,7 +12699,6 @@
         "접촉 후 경과일"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 접촉경과일수는 접촉경과일수을 의미한다. 동의어: 접촉경과일수, 접촉 후 경과일. 부정 동의어: 없음."
     },
     {
@@ -12821,7 +12713,6 @@
         "컨택 성공 여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 접촉성공여부는 접촉성공여부을 의미한다. 동의어: 접촉성공여부, 접촉 성공, 컨택 성공 여부. 부정 동의어: 없음."
     },
     {
@@ -12834,7 +12725,6 @@
         "접촉일자"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 접촉일자는 접촉일자을 의미한다. 동의어: 접촉일자. 부정 동의어: 없음."
     },
     {
@@ -12847,7 +12737,6 @@
         "조합기준"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 조합기준는 조합기준을 의미한다. 동의어: 조합기준. 부정 동의어: 없음."
     },
     {
@@ -12860,7 +12749,6 @@
         "조합수"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 조합수는 조합수을 의미한다. 동의어: 조합수. 부정 동의어: 없음."
     },
     {
@@ -12875,7 +12763,6 @@
         "메인 지점"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 주거래지점는 주거래지점을 의미한다. 동의어: 주거래지점, 주거래점, 메인 지점. 부정 동의어: 없음."
     },
     {
@@ -12890,7 +12777,6 @@
         "주요 브랜드"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 주구매브랜드는 주구매브랜드을 의미한다. 동의어: 주구매브랜드, 주로 구매 브랜드, 주요 브랜드. 부정 동의어: 없음."
     },
     {
@@ -12904,7 +12790,6 @@
         "주로 구매 채널"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 주구매채널는 주구매채널을 의미한다. 동의어: 주구매채널, 주로 구매 채널. 부정 동의어: 없음."
     },
     {
@@ -12923,7 +12808,6 @@
         "area"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 지역는 지역을 의미한다. 동의어: 지역, 거주지역, 사는 지역, 거주지, 사는 곳, region, area. 부정 동의어: 없음."
     },
     {
@@ -12940,7 +12824,6 @@
         "최종 구매 날짜"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 최종구매일자는 최종구매일자을 의미한다. 동의어: 최종구매일자, 최종 구매일, 마지막 구매일, 최근 구매일, 최종 구매 날짜. 부정 동의어: 없음."
     },
     {
@@ -12956,7 +12839,6 @@
         "최종 로그인 날짜"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 최종로그인일자는 최종로그인일자을 의미한다. 동의어: 최종로그인일자, 최종 로그인일, 마지막 로그인일, 최종 로그인 날짜. 부정 동의어: 없음."
     },
     {
@@ -12970,7 +12852,6 @@
         "마지막 로그인 채널"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 최종로그인채널는 최종로그인채널을 의미한다. 동의어: 최종로그인채널, 마지막 로그인 채널. 부정 동의어: 없음."
     },
     {
@@ -12985,7 +12866,6 @@
         "처음 로그인 채널"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 최초로그인채널는 최초로그인채널을 의미한다. 동의어: 최초로그인채널, 첫 로그인 채널, 처음 로그인 채널. 부정 동의어: 없음."
     },
     {
@@ -12998,7 +12878,6 @@
         "추천모델"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 추천모델는 추천모델을 의미한다. 동의어: 추천모델. 부정 동의어: 없음."
     },
     {
@@ -13011,7 +12890,6 @@
         "추천순위"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 추천순위는 추천순위을 의미한다. 동의어: 추천순위. 부정 동의어: 없음."
     },
     {
@@ -13024,7 +12902,6 @@
         "추천타입"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 추천타입는 추천타입을 의미한다. 동의어: 추천타입. 부정 동의어: 없음."
     },
     {
@@ -13037,7 +12914,6 @@
         "추천타입_전체포함"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 추천타입_전체포함는 추천타입_전체포함을 의미한다. 동의어: 추천타입_전체포함. 부정 동의어: 없음."
     },
     {
@@ -13053,7 +12929,6 @@
         "카드 이용액"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 카드이용금액는 카드이용금액을 의미한다. 동의어: 카드이용금액, 카드 사용액, 카드 결제액, 카드 이용액. 부정 동의어: 없음."
     },
     {
@@ -13066,7 +12941,6 @@
         "카테고리_분류"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 카테고리_분류는 카테고리_분류을 의미한다. 동의어: 카테고리_분류. 부정 동의어: 없음."
     },
     {
@@ -13079,7 +12953,6 @@
         "캠페인"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 캠페인는 캠페인을 의미한다. 동의어: 캠페인. 부정 동의어: 없음."
     },
     {
@@ -13092,7 +12965,6 @@
         "캠페인그룹"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 캠페인그룹는 캠페인그룹을 의미한다. 동의어: 캠페인그룹. 부정 동의어: 없음."
     },
     {
@@ -13105,7 +12977,6 @@
         "캠페인명"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 캠페인명는 캠페인명을 의미한다. 동의어: 캠페인명. 부정 동의어: 없음."
     },
     {
@@ -13118,7 +12989,6 @@
         "타겟리스트"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 타겟리스트는 타겟리스트을 의미한다. 동의어: 타겟리스트. 부정 동의어: 없음."
     },
     {
@@ -13131,7 +13001,6 @@
         "타사B2E여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 타사B2E여부는 타사B2E여부을 의미한다. 동의어: 타사B2E여부. 부정 동의어: 없음."
     },
     {
@@ -13147,7 +13016,6 @@
         "currency"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 통화코드는 통화코드을 의미한다. 동의어: 통화코드, 화폐 코드, 통화 코드값, currency. 부정 동의어: 없음."
     },
     {
@@ -13160,7 +13028,6 @@
         "퍼널고객등급"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 퍼널고객등급는 퍼널고객등급을 의미한다. 동의어: 퍼널고객등급. 부정 동의어: 없음."
     },
     {
@@ -13173,7 +13040,6 @@
         "퍼널성별"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 퍼널성별는 퍼널성별을 의미한다. 동의어: 퍼널성별. 부정 동의어: 없음."
     },
     {
@@ -13186,7 +13052,6 @@
         "퍼널식별"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 퍼널식별는 퍼널식별을 의미한다. 동의어: 퍼널식별. 부정 동의어: 없음."
     },
     {
@@ -13199,7 +13064,6 @@
         "퍼널연령대"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 퍼널연령대는 퍼널연령대을 의미한다. 동의어: 퍼널연령대. 부정 동의어: 없음."
     },
     {
@@ -13214,7 +13078,6 @@
         "프로모션 민감도"
       ],
       "source": "prmp_kwd",
-      "value_type": "numeric",
       "text_for_embedding": "정규화 사전 행사민감도는 행사민감도을 의미한다. 동의어: 행사민감도, 이벤트 민감도, 프로모션 민감도. 부정 동의어: 없음."
     },
     {
@@ -13227,7 +13090,6 @@
         "현재구매기간"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 현재구매기간는 현재구매기간을 의미한다. 동의어: 현재구매기간. 부정 동의어: 없음."
     },
     {
@@ -13240,7 +13102,6 @@
         "혼인_여부"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 혼인_여부는 혼인_여부을 의미한다. 동의어: 혼인_여부. 부정 동의어: 없음."
     },
     {
@@ -13255,7 +13116,6 @@
         "혼인 유무"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 혼인여부는 혼인여부을 의미한다. 동의어: 혼인여부, 혼인 상태, 혼인 유무. 부정 동의어: 없음."
     },
     {
@@ -13271,7 +13131,6 @@
         "멤버 상태"
       ],
       "source": "prmp_kwd",
-      "value_type": "text",
       "text_for_embedding": "정규화 사전 회원상태는 회원상태을 의미한다. 동의어: 회원상태, 계정 상태, 회원 상태 코드, 멤버 상태. 부정 동의어: 없음."
     },
     {
@@ -13851,6 +13710,7 @@
       "scope": "semantic_resolution",
       "ambiguous_term": "지역",
       "default_resolution": "customer_residence_region",
+      "default_capability_role": "member.residence.default",
       "default_column": "CRM_MB_BASEINFO.SIDO",
       "default_select": "B.SIDO",
       "sql_behavior": "disambiguation",

@@ -13,7 +13,7 @@ import re
 import time
 from collections import Counter
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
@@ -215,6 +215,21 @@ def _audited_stage(func: Any) -> Any:
     return wrapper
 
 
+# V4 구조화기 슬롯 선택 안내(닫힌 어휘 자체는 _allowed_canonical_values 가 주입). 스키마 description
+# 만으로는 '어느 슬롯인가'의 경합(특히 entity_set_condition 오모델링)을 못 막아 프롬프트에 명시한다.
+_V4_SLOT_GUIDANCE = (
+    "타겟 조건은 스키마의 전용 슬롯으로 표현한다. "
+    "장바구니에 담았지만 구매/결제하지 않은(이탈·방치) 고객은 target_user.behaviors 의 'cart_abandoner' "
+    "하나로 표현한다 — entity_set_condition 으로 만들지 않는다. entity_set_condition 은 '상위/가장 많이 "
+    "팔린 N개 중 M개 구매'처럼 랭킹 집합이 명시된 요청 전용이다. 장바구니 보관/담은 지 N일은 "
+    "cart_retention, 담은 유형(정기배송 등)은 cart_type, 담은 개수/수량 임계는 cart_aggregate, "
+    "장바구니가 없는 회원은 cart_absence 를 사용한다. 구매 이력이 전혀 없으면 behaviors 'no_purchase', "
+    "최근 N기간 미구매는 purchase_inactivity 를 사용한다. 'N개월/일 이상 접속하지 않은/미접속/휴면'은 "
+    "구매가 아니라 접속의 부재이므로 inactivity_period 에 넣는다(구매 부재 슬롯과 혼동 금지). "
+    "'휴면 고객'처럼 상태어가 함께 있으면 lifecycle 과 inactivity_period 를 함께 채운다."
+)
+
+
 def _structure_campaign_query_plan_v4(
     query: str,
     context: StructuringContext,
@@ -223,6 +238,15 @@ def _structure_campaign_query_plan_v4(
 ) -> CampaignQueryPlanV4:
     """Extract the evidence-bound IR that is passed unchanged to the planner/compiler."""
 
+    if context.slot_vocabulary is None or context.slot_guidance is None:
+        try:
+            context = dataclass_replace(
+                context,
+                slot_vocabulary=context.slot_vocabulary or _allowed_canonical_values(),
+                slot_guidance=context.slot_guidance or _V4_SLOT_GUIDANCE,
+            )
+        except Exception:  # noqa: BLE001 - 어휘 주입 실패가 구조화 자체를 막으면 안 된다.
+            pass
     input = QueryStructuringInput(query=query, context=context)
     if query_structurer is not None:
         try:
@@ -3152,15 +3176,13 @@ def _query_plan_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> s
     return _read_prompt_template(prompt_dir, "query_plan_system.txt", fallback)
 
 
-def _query_plan_user_prompt(
-    query: str,
-    fallback_plan: dict[str, Any],
-    prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
-    structured_query: StructuredQuery | None = None,
-    sql_schema: Path = DEFAULT_SCHEMA_PATH,
-) -> str:
+def _allowed_canonical_values() -> dict[str, list[str]]:
+    """닫힌 어휘 슬롯의 canonical 값 목록 — 레거시 플래너와 V4 구조화기 프롬프트가 공유하는 단일 소스.
+
+    V4 병합 때 이 주입이 레거시 프롬프트에만 남아 구조화기가 behaviors('cart_abandoner' 등)
+    canonical 을 모른 채 파싱하던 결함의 수리 지점이다."""
     allowed = _llm_slot_allowed()
-    allowed_values = {
+    return {
         "gender": sorted(GENDER_TERMS),
         "lifecycle": sorted(LIFECYCLE_TERMS),
         "behaviors": sorted(BEHAVIOR_TERMS),
@@ -3177,6 +3199,16 @@ def _query_plan_user_prompt(
         "aggregate_metric_id": sorted(allowed["aggregate_metrics"]),
         "cart_aggregate_metric": sorted(allowed["cart_aggregate_metrics"]),
     }
+
+
+def _query_plan_user_prompt(
+    query: str,
+    fallback_plan: dict[str, Any],
+    prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
+    structured_query: StructuredQuery | None = None,
+    sql_schema: Path = DEFAULT_SCHEMA_PATH,
+) -> str:
+    allowed_values = _allowed_canonical_values()
     fallback = "\n".join(
         [
             "[User Query]\n${query}",
@@ -9156,6 +9188,70 @@ def _failed_sql_confidence(reason: str | None, *, execution_error: bool = False)
     }
 
 
+# 구매 기간을 뜻하는 missing_field 이름(compact 정규화 후 비교). 모델 표기 변형을 흡수한다.
+_PURCHASE_PERIOD_FIELD_TOKENS = frozenset({
+    "purchase_date", "purchase_dates", "purchase_period", "purchase_window",
+    "order_date", "order_period", "구매기간", "구매일",
+})
+
+
+def _is_purchase_period_field(name: Any) -> bool:
+    if not isinstance(name, str) or not name.strip():
+        return False
+    compact = re.sub(r"[^0-9a-z가-힣]+", "_", name.strip().casefold()).strip("_")
+    for prefix in ("target_user_", "user_", "customer_"):
+        if compact.startswith(prefix):
+            compact = compact[len(prefix):]
+    return compact in _PURCHASE_PERIOD_FIELD_TOKENS
+
+
+def _plan_has_purchase_fact_condition(query_plan: dict[str, Any]) -> bool:
+    """플랜에 구매 사실 조건(기간 한정의 대상이 될 수 있는)이 하나라도 있는가.
+
+    미접속·카트 이탈처럼 구매 조건이 전혀 없는 플랜에서 모델이 요구하는 구매 기간은
+    존재하지 않는 조건의 빈 자리라 fabricated 로 본다. 보수적으로 넓게 잡는다 —
+    구매와 조금이라도 닿는 슬롯이 있으면 True(기간 요구를 유지해 확인을 받는다)."""
+    target_user = query_plan.get("target_user") if isinstance(query_plan.get("target_user"), dict) else {}
+    if any(
+        target_user.get(key)
+        for key in (
+            "purchase_object", "purchase_date", "aggregate_conditions",
+            "campaign_buy_amount", "campaign_buy_count", "entity_set_condition",
+            "metric_trend", "purchase_membership",
+        )
+    ):
+        return True
+    behaviors = set(target_user.get("behaviors") or [])
+    if behaviors & {"first_purchase", "repeat_buyer", "no_purchase"}:
+        return True
+    if query_plan.get(CONDITION_EVALUATIONS_KEY) or query_plan.get("event_expression") or target_user.get("event_expression"):
+        return True
+    return bool(query_plan.get("purchase_count_ranking"))
+
+
+def _drop_fabricated_purchase_period_fields(query_plan: dict[str, Any]) -> None:
+    """구매 조건이 전혀 없는 플랜에서 요구된 구매 기간 missing_field 를 걷어낸다.
+
+    V4 모델이 '재구매 유도' 같은 캠페인 목적 언급만으로 target_user.purchase_date 를
+    missing_fields 로 반복 요구하는 계약 위반의 결정론 집행이다(프롬프트 규칙:
+    명시되지 않은 선택 제한은 '제한 없음'). 구매 사실 슬롯이 하나라도 있으면 건드리지
+    않으므로, '지난 시즌 구매 고객'처럼 기간이 진짜 미확정인 요구는 그대로 남는다."""
+    semantic_ir = query_plan.get("semantic_ir")
+    if not isinstance(semantic_ir, dict) or semantic_ir.get("status") != "needs_clarification":
+        return
+    missing = semantic_ir.get("missing_fields")
+    if not isinstance(missing, list) or not missing:
+        return
+    if _plan_has_purchase_fact_condition(query_plan):
+        return
+    kept = [field for field in missing if not _is_purchase_period_field(field)]
+    if len(kept) == len(missing):
+        return
+    semantic_ir["missing_fields"] = kept
+    if not kept and not semantic_ir.get("unsupported_operations"):
+        semantic_ir["status"] = "resolved"
+
+
 def _semantic_ir_blocking_sql_result(
     query_plan: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -9164,6 +9260,7 @@ def _semantic_ir_blocking_sql_result(
     semantic_ir = query_plan.get("semantic_ir")
     if not isinstance(semantic_ir, dict):
         return None
+    _drop_fabricated_purchase_period_fields(query_plan)
     status = semantic_ir.get("status")
     if status not in {"needs_clarification", "unsupported"}:
         return None
@@ -9409,6 +9506,10 @@ def _unresolved_source_condition_is_deterministically_resolved(
             for resolution in (query_plan.get("conceptual_resolutions") or [])
         )
     if item.get("source") == "llm_semantic_ir" and path:
+        # 구매 조건이 전혀 없는 플랜의 구매 기간 요구는 존재하지 않는 조건의 빈 자리다
+        # (_drop_fabricated_purchase_period_fields 와 같은 판정을 unresolved 행에도 적용).
+        if _is_purchase_period_field(path) and not _plan_has_purchase_fact_condition(query_plan):
+            return True
         return _semantic_missing_field_resolution(query_plan, path) is not None
     if item.get("source") == "llm_semantic_ir" and not path:
         # V4 모델이 이미 ``target_user.gender=female``로 근거화한 "여자만 추출"을 동시에

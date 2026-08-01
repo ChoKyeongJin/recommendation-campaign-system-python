@@ -3,8 +3,10 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from typing import Any
 
+from aggregation_requirements import aggregation_request_json_schema
 from entity_set import derived_set_ast_error
 import targeting_ir
 
@@ -102,6 +104,71 @@ def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
     return {"anyOf": [schema, {"type": "null"}]}
 
 
+def _slot_schema(name: str) -> dict[str, Any]:
+    """targeting_ir.SLOT_SHAPES 가 소유한 슬롯 스키마 조각(설명+properties)을 그대로 노출한다.
+
+    V4 병합 때 이 배선이 빠져 슬롯이 설명 없는 불투명 object 로 노출됐고, strict 변환이
+    properties 없는 object 를 빈 닫힌 객체로 만들어 LLM 이 카트/창 슬롯을 아예 표현할 수
+    없었다(장바구니 이탈 질의가 entity_set_condition 으로 오모델링되던 원인)."""
+    return copy.deepcopy(targeting_ir.SLOT_SHAPES[name].schema)
+
+
+def _aggregation_request_llm_schema() -> dict[str, Any]:
+    """aggregation_requirements 소유 집계 계약을 strict tool 호환형으로 변환해 노출한다.
+
+    변환 규칙(계약 자체는 aggregation_request_json_schema 가 소유하고, 여기서는 strict
+    함수 호출이 못 삼키는 형태만 고친다):
+      - 무타입 자유값 스키마({"description": ...})는 스칼라/문자배열 union 으로 명시한다.
+      - businessRules/comparison 자유형 dict 는 노출하지 않는다(파서 기본값이 소유).
+      - aggregations[].condition 의 '필터와 같은 구조' 서술형 object 는 실제 필터 스키마로 치환한다.
+      - table/column 필수는 해제한다 — V4 계약상 모델은 물리 스키마를 생성하지 않으며,
+        파서(_field_ref)도 논리 entity/field 만으로 항목을 보존한다.
+    """
+    schema = copy.deepcopy(aggregation_request_json_schema())
+    for key in ("businessRules", "comparison"):
+        schema["properties"].pop(key, None)
+    schema["required"] = [key for key in schema.get("required", []) if key in schema["properties"]]
+    filter_item = copy.deepcopy(schema["properties"]["filters"]["items"])
+
+    value_union: dict[str, Any] = {
+        "anyOf": [
+            {"type": "string"},
+            {"type": "number"},
+            {"type": "boolean"},
+            {"type": "array", "items": {"type": "string"}},
+            {"type": "null"},
+        ]
+    }
+
+    def scrub(node: Any) -> None:
+        if not isinstance(node, dict):
+            return
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            for key, sub in list(properties.items()):
+                if not isinstance(sub, dict):
+                    continue
+                if key == "condition" and sub.get("type") == "object" and not sub.get("properties"):
+                    replacement = copy.deepcopy(filter_item)
+                    if sub.get("description"):
+                        replacement["description"] = sub["description"]
+                    properties[key] = replacement
+                    scrub(replacement)
+                    continue
+                if not (sub.keys() & {"type", "anyOf", "enum", "$ref"}):
+                    properties[key] = {**value_union, "description": sub.get("description", "비교값")}
+                    continue
+                scrub(sub)
+        if isinstance(node.get("items"), dict):
+            scrub(node["items"])
+        required = node.get("required")
+        if isinstance(required, list):
+            node["required"] = [key for key in required if key not in {"table", "column"}]
+
+    scrub(schema)
+    return schema
+
+
 _TARGET_USER_SCHEMA: dict[str, Any] = {
     "type": "object",
     # Targeting slots are registry-driven and grow independently.  Known core
@@ -111,34 +178,52 @@ _TARGET_USER_SCHEMA: dict[str, Any] = {
         "gender": _nullable({"type": "string"}),
         "age_min": _nullable({"type": "integer"}),
         "age_max": _nullable({"type": "integer"}),
-        "age_exclude_ranges": {"type": "array", "items": {"type": "object"}},
+        "age_exclude_ranges": {
+            "type": "array",
+            "description": (
+                "제외 연령 구간 목록. 각 항목은 [최소나이, 최대나이] 정수 2개 배열(경계 포함). "
+                "예: '30대 제외' → [[30, 39]], '25~35세 제외' → [[25, 35]]."
+            ),
+            "items": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 120}},
+        },
         "lifecycle": {"type": "array", "items": {"type": "string"}},
         "interests": {"type": "array", "items": {"type": "string"}},
         "preferred_channels": {"type": "array", "items": {"type": "string"}},
-        "behaviors": {"type": "array", "items": {"type": "string"}},
-        "purchase_object": _nullable({"type": "string"}),
-        "purchase_date": _nullable({"type": "object"}),
+        "behaviors": {
+            "type": "array",
+            "description": (
+                "행동 canonical 목록([Allowed Canonical Values].behaviors 값만 사용). "
+                "장바구니에 담았지만 구매/결제하지 않은 이탈 고객은 'cart_abandoner' 하나로 표현한다."
+            ),
+            "items": {"type": "string"},
+        },
+        "purchase_object": _nullable(_slot_schema("purchase_object")),
+        "purchase_date": _nullable(_slot_schema("purchase_date")),
         "price_sensitivity": _nullable({"type": "string"}),
-        "inactivity_period": _nullable({"type": "object"}),
-        "recent_login": _nullable({"type": "object"}),
-        "purchase_inactivity": _nullable({"type": "object"}),
-        "birthday_target": _nullable({"type": "object"}),
-        "signup_target": _nullable({"type": "object"}),
-        "aggregate_conditions": copy.deepcopy(
-            targeting_ir.SLOT_SHAPES["aggregate_conditions"].schema
-        ),
+        "inactivity_period": _nullable(_slot_schema("inactivity_period")),
+        "recent_login": _nullable(_slot_schema("recent_login")),
+        "purchase_inactivity": _nullable(_slot_schema("purchase_inactivity")),
+        "birthday_target": _nullable(_slot_schema("birthday_target")),
+        "signup_target": _nullable(_slot_schema("signup_target")),
+        "aggregate_conditions": _slot_schema("aggregate_conditions"),
         "profile_date_conditions": {"type": "array", "items": {"type": "object"}},
-        "campaign_responses": {"type": "array", "items": {"type": "object"}},
-        "campaign_response_frequency": _nullable({"type": "object"}),
-        "campaign_buy_amount": _nullable({"type": "object"}),
-        "campaign_buy_count": _nullable({"type": "object"}),
-        "cart_retention": _nullable({"type": "object"}),
-        "cart_type": _nullable({"type": "object"}),
-        "cart_aggregate": _nullable({"type": "object"}),
-        "cart_absence": _nullable({"type": "boolean"}),
+        "campaign_responses": _slot_schema("campaign_responses"),
+        "campaign_response_frequency": _nullable(_slot_schema("campaign_response_frequency")),
+        "campaign_buy_amount": _nullable(_slot_schema("campaign_buy_amount")),
+        "campaign_buy_count": _nullable(_slot_schema("campaign_buy_count")),
+        "cart_retention": _nullable(_slot_schema("cart_retention")),
+        "cart_type": _nullable(_slot_schema("cart_type")),
+        "cart_aggregate": _nullable(_slot_schema("cart_aggregate")),
+        "cart_absence": _nullable(_slot_schema("cart_absence")),
+        "cell_rate_target": _nullable(_slot_schema("cell_rate_target")),
+        "metric_trend": _nullable(_slot_schema("metric_trend")),
         "entity_set_condition": _nullable({
             "type": "object",
-            "description": "집계 → 랭킹 → 회원 집합으로 구성된 파생 집합 조건.",
+            "description": (
+                "집계 → 랭킹 → 회원 집합으로 구성된 파생 집합 조건. "
+                "'상위/가장 많이 팔린 N개 중 M개 구매'처럼 랭킹 집합이 명시된 요청 전용이다 — "
+                "장바구니 이탈·미구매 같은 단순 행동 조건을 이 슬롯으로 우회 표현하지 않는다."
+            ),
             "properties": {
                 "derived_set_ast": {"$ref": "#/$defs/derivedSetMemberNode"},
             },
@@ -261,12 +346,106 @@ CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA: dict[str, Any] = {
                 "relation": {"type": "string", "minLength": 1},
                 "group_by": {"type": "string", "minLength": 1},
                 "measure": {"type": "string", "minLength": 1},
-                "window": {"type": "object"},
+                "window": {
+                    "type": "object",
+                    "description": (
+                        "집계 창. 절대 구간은 {from,to}(둘 다 문자열), 상대 창은 {days}(양의 정수)만 "
+                        "유효하다. 창이 명시되지 않았으면 window 자체를 null 로 둔다 — 빈 객체는 거부된다."
+                    ),
+                    "properties": {
+                        "from": {"type": "string"},
+                        "to": {"type": "string"},
+                        "days": {"type": "integer", "minimum": 1},
+                        "label": {"type": "string"},
+                    },
+                },
                 "filters": {
                     "type": "array",
                     "items": {"$ref": "#/$defs/derivedSetDimensionFilter"},
                 },
             },
+        },
+        # 세그먼트 집합식 AST(+ 합집합, * 교집합, - 차집합). 피연산자 canonical 은 집합식 카탈로그가
+        # 소유하므로, 확실하지 않은 피연산자는 unknown_operand 로 원문을 보존한다(임의 canonical 금지).
+        "setAstNode": {
+            "anyOf": [
+                {
+                    "type": "object",
+                    "description": "집합 연산 노드. op: + 합집합, * 교집합, - 차집합.",
+                    "required": ["type", "op", "left", "right"],
+                    "properties": {
+                        "type": {"const": "set_op"},
+                        "op": {"enum": ["+", "*", "-"]},
+                        "left": {"$ref": "#/$defs/setAstNode"},
+                        "right": {"$ref": "#/$defs/setAstNode"},
+                    },
+                },
+                {
+                    "type": "object",
+                    "description": "카탈로그 canonical 피연산자(등급/지역 등).",
+                    "required": ["type", "canonical"],
+                    "properties": {
+                        "type": {"const": "operand"},
+                        "canonical": {"type": "string", "minLength": 1},
+                        "label": {"type": "string"},
+                        "matched_text": {"type": "string"},
+                    },
+                },
+                {
+                    "type": "object",
+                    "description": "연령대 피연산자('30대' → age_min 30, age_max 39).",
+                    "required": ["type", "age_min", "age_max"],
+                    "properties": {
+                        "type": {"const": "age_range"},
+                        "canonical": {"type": "string"},
+                        "label": {"type": "string"},
+                        "age_min": {"type": "integer", "minimum": 0, "maximum": 120},
+                        "age_max": {"type": "integer", "minimum": 0, "maximum": 120},
+                        "matched_text": {"type": "string"},
+                    },
+                },
+                {
+                    "type": "object",
+                    "description": "정규화하지 못한 피연산자 — 원문 표현을 그대로 보존한다.",
+                    "required": ["type", "text"],
+                    "properties": {
+                        "type": {"const": "unknown_operand"},
+                        "text": {"type": "string", "minLength": 1},
+                    },
+                },
+            ],
+        },
+        # 숫자 계산식 AST. column 은 스키마에 실재하는 수치 컬럼만 허용되며 검증기가 카탈로그로 판정한다.
+        "formulaAstNode": {
+            "anyOf": [
+                {
+                    "type": "object",
+                    "description": "숫자 리터럴.",
+                    "required": ["type", "value"],
+                    "properties": {"type": {"const": "number"}, "value": {"type": "number"}},
+                },
+                {
+                    "type": "object",
+                    "description": "수치 컬럼 참조(실제 테이블/컬럼명).",
+                    "required": ["type", "table", "column"],
+                    "properties": {
+                        "type": {"const": "column"},
+                        "table": {"type": "string", "minLength": 1},
+                        "column": {"type": "string", "minLength": 1},
+                    },
+                },
+                {
+                    "type": "object",
+                    "description": "이항 연산(+, -, *, / 만).",
+                    "required": ["type", "op", "left", "right"],
+                    "properties": {
+                        "type": {"const": "binary_op"},
+                        "op": {"enum": ["+", "-", "*", "/"]},
+                        "left": {"$ref": "#/$defs/formulaAstNode"},
+                        "right": {"$ref": "#/$defs/formulaAstNode"},
+                    },
+                },
+            ],
         },
         "derivedSetRankingNode": {
             "type": "object",
@@ -351,14 +530,53 @@ CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA: dict[str, Any] = {
                 "sell_object": _nullable({"type": "string"}),
             },
         },
-        "aggregation_request": _nullable({"type": "object"}),
+        "aggregation_request": _nullable(_aggregation_request_llm_schema()),
         "condition_evaluations": {"type": "array", "items": {"type": "object"}},
         "external_conditions": {"type": "array", "items": _EXTERNAL_CONDITION_SCHEMA},
         "compound_dimension_filters": {"type": "array", "items": {"type": "object"}},
         "external_condition_results": {"type": "array", "items": {"type": "object"}},
         "external_condition_resolution": {"type": "object"},
-        "set_expressions": {"type": "array", "items": {"type": "object"}},
-        "computed_metrics": {"type": "array", "items": {"type": "object"}},
+        "set_expressions": {
+            "type": "array",
+            "description": (
+                "세그먼트 합집합/교집합/차집합 요청. SQL 문자열이 아니라 set_ast 로만 표현하고, "
+                "집합 연산이 없으면 빈 배열로 둔다."
+            ),
+            "items": {
+                "type": "object",
+                "required": ["set_ast"],
+                "properties": {
+                    "expression_id": {"type": "string"},
+                    "ko_label": {"type": "string"},
+                    "expression_text": {"type": "string"},
+                    "set_ast": {"$ref": "#/$defs/setAstNode"},
+                    "requires_clarification": {"type": "boolean"},
+                    "clarification_question": {"type": "string"},
+                },
+            },
+        },
+        "computed_metrics": {
+            "type": "array",
+            "description": "숫자 지표 계산식(column/number/binary_op AST만, SQL 문자열 금지).",
+            "items": {
+                "type": "object",
+                "required": ["formula_ast"],
+                "properties": {
+                    "metric_id": {"type": "string"},
+                    "ko_label": {"type": "string"},
+                    "formula_text": {"type": "string"},
+                    "formula_ast": {"$ref": "#/$defs/formulaAstNode"},
+                    "sql_behavior": {"enum": ["select", "rank", "filter"]},
+                    "operator": {"enum": ["=", ">", ">=", "<", "<="]},
+                    "threshold": {"type": "number"},
+                    "order_by": {"enum": ["asc", "desc"]},
+                    "unit": {"type": "string"},
+                    "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+                    "requires_clarification": {"type": "boolean"},
+                    "clarification_question": {"type": "string"},
+                },
+            },
+        },
         "result_limit": _nullable({"type": "integer", "minimum": 1}),
         "semantic_evidence": {"type": "array", "items": _EVIDENCE_ITEM_SCHEMA},
         "unresolved": {"type": "array", "items": _UNRESOLVED_ITEM_SCHEMA},
@@ -464,6 +682,12 @@ def _strictify(schema: Any, *, required_here: bool = True) -> Any:
     return out
 
 
+# LLM 에 노출하지 않는 target_user 하위 필드. profile_date_conditions 는 물리 alias/column/table
+# 참조라 V4 계약("모델은 물리 스키마를 만들지 않는다")과 충돌하고, LLM 후보 coercion 도 이 슬롯을
+# 병합하지 않는다 — 노출해 봐야 채워질 수 없는 빈 닫힌 객체만 남는다(집행/보강 단계 소유).
+_APPLICATION_OWNED_TARGET_USER_FIELDS = frozenset({"profile_date_conditions"})
+
+
 def _campaign_query_plan_v4_llm_schema() -> dict[str, Any]:
     """Tool 호출에서 모델이 결정할 필드만 strict 형태로 노출한다."""
     schema = copy.deepcopy(CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA)
@@ -474,6 +698,9 @@ def _campaign_query_plan_v4_llm_schema() -> dict[str, Any]:
     properties = schema.get("properties", {})
     for key in _APPLICATION_OWNED_PLAN_FIELDS:
         properties.pop(key, None)
+    target_user_properties = (properties.get("target_user") or {}).get("properties", {})
+    for key in _APPLICATION_OWNED_TARGET_USER_FIELDS:
+        target_user_properties.pop(key, None)
     return _strictify(schema)
 
 
@@ -522,6 +749,65 @@ def _normalize_unique_evidence_spans(payload: dict[str, Any], query: str) -> Non
             item["end"] = occurrences[0] + len(text)
 
 
+# 고객 목록/집계 분석 요청에서 모델이 누락으로 요구하면 안 되는 캠페인 제약 필드. 프롬프트 계약
+# ("고객 리스트 요청에 사용자가 요구하지 않은 캠페인 채널·혜택·상품·목표를 추가로 요구하지 않는다")
+# 의 결정론 집행이다 — 선언만으로는 위반이 반복돼 needs_clarification 이 타겟 추출을 막는다.
+# 이 필드들은 타겟 계산에 쓰이지 않으므로 제거해도 조건 손실이 없다. category 는 상품 조건과
+# 중의적이라 제외한다(계약 문구의 채널·혜택·판매상품·목표만).
+_CAMPAIGN_CONSTRAINT_FIELD_TOKENS = frozenset({
+    "objective", "offer_type", "offer", "channels", "channel", "sell_object",
+    "campaign_constraints",
+})
+
+
+def _is_campaign_constraint_field(name: Any) -> bool:
+    if not isinstance(name, str) or not name.strip():
+        return False
+    compact = re.sub(r"[^0-9a-z]+", "_", name.strip().casefold()).strip("_")
+    candidates = {compact}
+    for prefix in ("campaign_constraints_", "constraints_", "campaign_"):
+        if compact.startswith(prefix):
+            candidates.add(compact[len(prefix):])
+    return bool(candidates & _CAMPAIGN_CONSTRAINT_FIELD_TOKENS)
+
+
+def _campaign_constraint_only_unresolved(item: Any) -> bool:
+    """unresolved 항목이 캠페인 제약 필드만을 근거로 삼는지(그때만 계약 위반으로 제거)."""
+    if not isinstance(item, dict):
+        return False
+    if _is_campaign_constraint_field(item.get("path")):
+        return True
+    evidence = item.get("evidence")
+    if isinstance(evidence, str) and evidence.strip():
+        tokens = [token for token in re.split(r"[,/;\s]+", evidence.strip()) if token]
+        return bool(tokens) and all(_is_campaign_constraint_field(token) for token in tokens)
+    return False
+
+
+def _drop_campaign_constraint_requirements(payload: dict[str, Any]) -> None:
+    """고객 목록/집계 요청의 semantic_ir·unresolved 에서 캠페인 제약 누락 요구를 걷어낸다.
+
+    프롬프트가 금지한 요구인데도 모델이 반복 위반하므로 결정론으로 집행한다. 캠페인 필드 외의
+    누락(예: 기간 확정)은 그대로 남고, 전부 캠페인 필드였을 때만 needs_clarification 을
+    resolved 로 되돌린다 — 실제 미해결 의미를 조용히 지우는 일은 구조적으로 불가능하다."""
+    if payload.get("intent") not in {"find_user_segment", "analyze_aggregation"}:
+        return
+    semantic_ir = payload.get("semantic_ir")
+    if isinstance(semantic_ir, dict):
+        missing = semantic_ir.get("missing_fields")
+        if isinstance(missing, list):
+            kept = [field for field in missing if not _is_campaign_constraint_field(field)]
+            if len(kept) != len(missing):
+                semantic_ir["missing_fields"] = kept
+                if not kept and semantic_ir.get("status") == "needs_clarification":
+                    semantic_ir["status"] = "resolved"
+    unresolved = payload.get("unresolved")
+    if isinstance(unresolved, list):
+        kept_items = [item for item in unresolved if not _campaign_constraint_only_unresolved(item)]
+        if len(kept_items) != len(unresolved):
+            payload["unresolved"] = kept_items
+
+
 def attach_campaign_query_plan_v4_identity(
     payload: Any,
     query: str,
@@ -533,6 +819,7 @@ def attach_campaign_query_plan_v4_identity(
         return payload
     enriched = copy.deepcopy(payload)
     _normalize_unique_evidence_spans(enriched, query)
+    _drop_campaign_constraint_requirements(enriched)
     enriched.update(
         {
             "schema_version": CAMPAIGN_QUERY_PLAN_V4_VERSION,
@@ -636,6 +923,11 @@ def validate_campaign_query_plan_v4(
             )
     for key in ("set_expressions", "computed_metrics", "external_conditions", "compound_dimension_filters"):
         value = payload.get(key, [])
+        if value is None:
+            # strict tool 은 이 키들을 required-but-nullable 로 노출하고, 프롬프트도 '없으면 null'을
+            # 허용한다. 명시적 null 은 빈 배열과 같은 뜻이므로 정규화한다 — null 하나마다 재시도
+            # 1회를 태우면 슬롯을 고칠 재시도 한도가 형식 문제로 소진된다(실측: 3회 중 2회).
+            payload[key] = value = []
         if not isinstance(value, list):
             raise CampaignQueryPlanValidationError(f"{key} must be an array")
     for index, condition in enumerate(payload.get("external_conditions", [])):

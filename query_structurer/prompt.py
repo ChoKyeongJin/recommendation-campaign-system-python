@@ -95,12 +95,23 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
     literal_bindings = extract_literal_bindings(
         input.query, current_date=input.context.current_date
     )
+    knowledge_sections: list[str] = []
+    if input.context.slot_vocabulary:
+        knowledge_sections.append(
+            "[Allowed Canonical Values]\n"
+            + json.dumps(input.context.slot_vocabulary, ensure_ascii=False, indent=2)
+            + "\n닫힌 어휘 슬롯(behaviors, cart_type, campaign_responses 등)은 위 canonical 값만 사용한다. "
+            "목록에 없는 값을 만들지 말고, 표현할 수 없으면 unresolved 에 기록한다."
+        )
+    if input.context.slot_guidance:
+        knowledge_sections.append("[Slot Guidance]\n" + input.context.slot_guidance)
     return "\n\n".join(
         [
             "[User Query]\n" + input.query,
             "[Structuring Context]\n" + json.dumps(context, ensure_ascii=False, indent=2),
             "[Application-owned Literal Bindings]\n"
             + json.dumps(literal_bindings, ensure_ascii=False, indent=2),
+            *knowledge_sections,
             "응답은 submit_campaign_query_plan_v4 도구만 호출한다.",
             (
                 "질의 identity와 schema_version은 애플리케이션이 주입한다. 모델은 이를 반환하지 말고 "
@@ -150,7 +161,11 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
                 "계산하는 데 캠페인 발송 채널·혜택·판매 상품·캠페인 목적은 필요하지 않으므로 사용자가 "
                 "직접 요구하지 않았다면 누락 필드로 만들지 않는다. '10% 이상 증가'의 10%는 할인율이 "
                 "아니라 증감률 임계값이므로 offer_type을 설정하지 않는다. 기간 대비 증감은 "
-                "target_user.purchase_date로 중복 표현하지 않고 semantic_ir operation만 사용한다."
+                "target_user.purchase_date로 중복 표현하지 않고 semantic_ir operation만 사용한다. "
+                "사용자가 명시하지 않은 선택 제한(기간·상품·지역 등)은 '제한 없음'으로 해석하며, "
+                "지정되지 않았다는 이유로 missing_fields나 unresolved로 만들지 않는다. 특히 원문에 "
+                "구매 조건이 없으면 purchase_date를 요구하지 않고, 원문의 기간 표현이 이미 다른 슬롯"
+                "(미접속 기간 등)에 반영됐으면 같은 기간을 구매 기간으로 다시 요구하지 않는다."
             ),
             (
                 "선택 사항은 도구 스키마상 required-but-nullable이다. 해당 의미가 없으면 null 또는 빈 배열을 "

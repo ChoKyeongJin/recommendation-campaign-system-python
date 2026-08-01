@@ -136,16 +136,21 @@ def _coerce_window(raw: Any, *, sql_interval: bool, allowed: Any = None) -> dict
 
 
 def _coerce_signup(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
-    """signup_target: {days:int|None}. 'days' 명시(또는 None=기본창) 또는 {value,unit} 정규화."""
+    """signup_target: {days:int|None}. 'days' 명시(또는 None=기본창) 또는 {value,unit} 정규화.
+
+    strict tool 은 모든 키를 실어 보내므로 days:null 이 '기본창'이 되려면 value/unit 도 비어
+    있어야 한다 — 유효한 {value,unit} 이 함께 오면 그 창이 이긴다(명시 기간을 기본창으로 뭉개지 않는다)."""
     if not isinstance(raw, dict):
         return None
-    if "days" in raw:
-        if raw["days"] is None:
-            return {"days": None}
-        days = _pos_int(raw["days"])
-        return {"days": days} if days else None
+    days = _pos_int(raw.get("days"))
+    if days:
+        return {"days": days}
     parts = _window_days(raw)
-    return {"days": parts[2]} if parts else None
+    if parts:
+        return {"days": parts[2]}
+    if "days" in raw and raw["days"] is None:
+        return {"days": None}
+    return None
 
 
 def _coerce_threshold_list(raw: Any, *, allowed: Any = None) -> list[dict[str, Any]] | None:
@@ -488,12 +493,41 @@ class SlotShape:
 
 
 # JSON-schema 조각 헬퍼(간결 표기 — 세부 검증은 coerce 가 담당하므로 스키마는 느슨하게).
-def _obj_schema(desc: str) -> dict[str, Any]:
-    return {"type": "object", "description": desc}
+# properties 는 strict tool 호환용이다: strict 함수 호출은 properties 없는 object 를
+# `additionalProperties:false` 빈 객체로 닫아 버려, 조각에 키를 선언하지 않으면 LLM 이
+# 그 슬롯을 아예 표현할 수 없다({} 또는 null 만 가능). 값 검증은 여전히 coerce 소유.
+def _obj_schema(desc: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+    schema: dict[str, Any] = {"type": "object", "description": desc}
+    if properties:
+        schema["properties"] = properties
+    return schema
 
 
-def _list_schema(desc: str) -> dict[str, Any]:
-    return {"type": "array", "description": desc, "items": {"type": "object"}}
+def _list_schema(desc: str, item_properties: dict[str, Any] | None = None) -> dict[str, Any]:
+    items: dict[str, Any] = {"type": "object"}
+    if item_properties:
+        items["properties"] = item_properties
+    return {"type": "array", "description": desc, "items": items}
+
+
+# 공용 property 조각(strict 변환 시 전부 required-but-nullable 이 되므로 미사용 키는 null 로 둔다).
+_POS_INT_PROP: dict[str, Any] = {"type": "integer", "minimum": 1}
+_NUMBER_PROP: dict[str, Any] = {"type": "number"}
+_STRING_PROP: dict[str, Any] = {"type": "string"}
+_UNIT_PROP: dict[str, Any] = {"type": "string", "enum": sorted(UNIT_DAYS)}
+_OPERATOR_PROP: dict[str, Any] = {"type": "string", "enum": sorted(OPERATORS)}
+_WINDOW_PROPS: dict[str, Any] = {
+    "value": _POS_INT_PROP,
+    "unit": _UNIT_PROP,
+    "min_days": _POS_INT_PROP,
+}
+_DATE_WINDOW_PROPS: dict[str, Any] = {
+    "from": _STRING_PROP,
+    "to": _STRING_PROP,
+    "from_time": _STRING_PROP,
+    "to_time": _STRING_PROP,
+}
+_RATE_PROPS: dict[str, Any] = {"operator": _OPERATOR_PROP, "value": _NUMBER_PROP}
 
 
 def _aggregate_condition_schema() -> dict[str, Any]:
@@ -542,54 +576,94 @@ _UNIT_HINT = "기간 단위 unit ∈ days|weeks|months|years, 또는 min_days �
 _OP_HINT = "연산자 operator ∈ >=|>|<=|<"
 SLOT_SHAPES: dict[str, SlotShape] = {
     "signup_target": SlotShape("signup_target", "target_user",
-        _obj_schema(f"최근 N기간 이내 가입. {{days:int}} 또는 {{value,unit}}({_UNIT_HINT}). days=null 이면 기본창."),
+        _obj_schema(f"최근 N기간 이내 가입. {{days:int}} 또는 {{value,unit}}({_UNIT_HINT}). "
+                    "기간 없는 '최근 가입'은 days=null(value/unit 도 null)로 기본창.",
+                    {"days": _POS_INT_PROP, "value": _POS_INT_PROP, "unit": _UNIT_PROP}),
         _coerce_signup),
     "recent_login": SlotShape("recent_login", "target_user",
-        _obj_schema(f"최근 N기간 이내 로그인/접속. {{value,unit}} 또는 {{min_days}}. {_UNIT_HINT}"),
+        _obj_schema(f"최근 N기간 이내 로그인/접속. {{value,unit}} 또는 {{min_days}}. {_UNIT_HINT}",
+                    dict(_WINDOW_PROPS)),
+        lambda raw, *, allowed=None: _coerce_window(raw, sql_interval=True, allowed=allowed)),
+    "inactivity_period": SlotShape("inactivity_period", "target_user",
+        _obj_schema(f"N기간 이상 미접속/휴면(마지막 접속이 N기간보다 오래됨). {{value,unit}} 또는 {{min_days}}. {_UNIT_HINT} — "
+                    "'접속하지 않은/미접속'은 purchase_inactivity(미구매)가 아니라 이 슬롯이다.",
+                    dict(_WINDOW_PROPS)),
         lambda raw, *, allowed=None: _coerce_window(raw, sql_interval=True, allowed=allowed)),
     "purchase_inactivity": SlotShape("purchase_inactivity", "target_user",
-        _obj_schema(f"최근 N기간 미구매(창 anti-join). {{value,unit}} 또는 {{min_days}}. {_UNIT_HINT}"),
+        _obj_schema(f"최근 N기간 미구매(창 anti-join). {{value,unit}} 또는 {{min_days}}. {_UNIT_HINT}",
+                    dict(_WINDOW_PROPS)),
         lambda raw, *, allowed=None: _coerce_window(raw, sql_interval=False, allowed=allowed)),
     "cart_retention": SlotShape("cart_retention", "target_user",
         _obj_schema(f"장바구니 기간. {{min_days}}(이상) 또는 {{max_days}}(이내), 또는 {{value,unit,direction}}. "
-                    "최근 담기/생성 기간은 date_basis='created', 보관/방치 기간은 'last_updated'."),
+                    "최근 담기/생성 기간은 date_basis='created', 보관/방치 기간은 'last_updated'.",
+                    {"min_days": _POS_INT_PROP, "max_days": _POS_INT_PROP,
+                     "value": _POS_INT_PROP, "unit": _UNIT_PROP,
+                     "direction": {"type": "string", "enum": ["min", "max"]},
+                     "date_basis": {"type": "string", "enum": ["created", "last_updated"]},
+                     "label": _STRING_PROP}),
         _coerce_cart_retention),
     "cart_aggregate": SlotShape("cart_aggregate", "target_user",
-        _obj_schema(f"장바구니 개수/수량 임계. {{metric, operator, threshold}}. {_OP_HINT}"),
+        _obj_schema(f"장바구니 개수/수량 임계. {{metric, operator, threshold}}. {_OP_HINT}",
+                    {"metric": _STRING_PROP, "operator": _OPERATOR_PROP, "threshold": _POS_INT_PROP}),
         _coerce_cart_aggregate, allowed_key="cart_aggregate_metrics"),
     "cart_type": SlotShape("cart_type", "target_user",
-        _obj_schema("장바구니 유형. {value:<canonical>} (정기배송/픽업/일반 등 허용 canonical)."),
+        _obj_schema("장바구니 유형. {value:<canonical>} (정기배송/픽업/일반 등 허용 canonical).",
+                    {"canonical": _STRING_PROP, "value": _STRING_PROP}),
         _coerce_cart_type, allowed_key="cart_types"),
     "birthday_target": SlotShape("birthday_target", "target_user",
-        _obj_schema("생일 타겟. {granularity: 'month'(이달)|'today'(오늘)}."),
+        _obj_schema("생일 타겟. {granularity: 'month'(이달)|'today'(오늘)}.",
+                    {"granularity": {"type": "string", "enum": ["month", "today"]}}),
         _coerce_birthday),
     "campaign_responses": SlotShape("campaign_responses", "target_user",
-        _list_schema("캠페인 반응 리스트. [{canonical:<접촉/오퍼/구매반응/쿠폰 canonical>, negated?:bool}]."),
+        _list_schema("캠페인 반응 리스트. [{canonical:<접촉/오퍼/구매반응/쿠폰 canonical>, negated?:bool}].",
+                     {"canonical": _STRING_PROP, "negated": {"type": "boolean"}}),
         _coerce_campaign_responses, allowed_key="campaign_responses"),
     "campaign_response_frequency": SlotShape("campaign_response_frequency", "target_user",
-        _obj_schema(f"캠페인 이벤트 횟수 임계. {{event, operator, count, window_days?}}. {_OP_HINT}"),
+        _obj_schema(f"캠페인 이벤트 횟수 임계. {{event, operator, count, window_days?}}. {_OP_HINT}",
+                    {"event": _STRING_PROP, "operator": _OPERATOR_PROP,
+                     "count": _POS_INT_PROP, "window_days": _POS_INT_PROP, "label": _STRING_PROP}),
         _coerce_freq, allowed_key="campaign_frequency_events"),
     "campaign_buy_amount": SlotShape("campaign_buy_amount", "target_user",
-        _obj_schema(f"캠페인 귀속 구매금액 임계. {{operator, amount, window_days?}}. {_OP_HINT}"),
+        _obj_schema(f"캠페인 귀속 구매금액 임계. {{operator, amount, window_days?}}. {_OP_HINT}",
+                    {"operator": _OPERATOR_PROP, "amount": _NUMBER_PROP,
+                     "window_days": _POS_INT_PROP, "label": _STRING_PROP}),
         _coerce_buy_amount),
     "campaign_buy_count": SlotShape("campaign_buy_count", "target_user",
-        _obj_schema(f"캠페인 귀속 구매 건수 임계. {{operator, count, window_days?}}. {_OP_HINT}"),
+        _obj_schema(f"캠페인 귀속 구매 건수 임계. {{operator, count, window_days?}}. {_OP_HINT}",
+                    {"operator": _OPERATOR_PROP, "count": _POS_INT_PROP,
+                     "window_days": _POS_INT_PROP, "label": _STRING_PROP}),
         _coerce_freq),
     "cell_rate_target": SlotShape("cell_rate_target", "target_user",
-        _obj_schema(f"셀 성공률/구매율. {{success_rate:{{operator,value}}, buy_rate:{{operator,value}}}} (value 0~100). {_OP_HINT}"),
+        _obj_schema(f"셀 성공률/구매율. {{success_rate:{{operator,value}}, buy_rate:{{operator,value}}}} (value 0~100). {_OP_HINT}",
+                    {"success_rate": _obj_schema("성공률 조건.", dict(_RATE_PROPS)),
+                     "buy_rate": _obj_schema("구매율 조건.", dict(_RATE_PROPS)),
+                     "label": _STRING_PROP}),
         _coerce_cell_rate),
     "purchase_date": SlotShape("purchase_date", "target_user",
         _obj_schema("절대 구매 날짜창. {from:'YYYYMMDD', to:'YYYYMMDD'} (연도 필수). 기간이 나열이면"
                     "('2018, 2019년', '1월과 3월') windows:[{from,to},…] 에 구간을 전부 적는다 —"
                     "하나만 적거나 사이 기간까지 포함하는 한 구간으로 합치지 않는다."
                     " 시각이 명시되면('9시부터 18시까지') from_time/to_time:'HHMMSS' 를 함께 적는다"
-                    "(시각 단위 전체 구간: '18시까지'=to_time '185959')."),
+                    "(시각 단위 전체 구간: '18시까지'=to_time '185959').",
+                    {**_DATE_WINDOW_PROPS, "label": _STRING_PROP,
+                     "windows": {"type": "array",
+                                 "items": {"type": "object", "properties": dict(_DATE_WINDOW_PROPS)}}}),
         _coerce_purchase_date),
     "metric_trend": SlotShape("metric_trend", "target_user",
         _obj_schema("기간 대 기간 지표 증감. {metric_id, direction:'increase'|'decrease', "
                     "baseline:{from:'YYYYMMDD',to:'YYYYMMDD'}, current:{from,to}, "
                     "relative_change?:{unit:'percent',comparisons:[{operator,value}]}} — baseline 이 기준 기간, "
-                    "current 가 비교 기간이다('2월 대비 3월 증가' → baseline=2월, current=3월). 연도 필수."),
+                    "current 가 비교 기간이다('2월 대비 3월 증가' → baseline=2월, current=3월). 연도 필수.",
+                    {"metric_id": _STRING_PROP,
+                     "direction": {"type": "string", "enum": ["increase", "decrease"]},
+                     "baseline": _obj_schema("기준 기간.", dict(_DATE_WINDOW_PROPS)),
+                     "current": _obj_schema("비교 기간.", dict(_DATE_WINDOW_PROPS)),
+                     "relative_change": _obj_schema(
+                         "상대 변화율 조건.",
+                         {"unit": {"type": "string", "enum": ["percent"]},
+                          "comparisons": {"type": "array",
+                                          "items": {"type": "object", "properties": dict(_RATE_PROPS)}}}),
+                     "label": _STRING_PROP}),
         _coerce_metric_trend, allowed_key="aggregate_metrics"),
     "purchase_object": SlotShape("purchase_object", "target_user",
         {"type": "string", "description": "구매한 실제 상품/브랜드명 자유 텍스트(부분일치). 실제 이름 없이 '상품/제품/품목' 같은 일반명사만 있으면 null."},
@@ -806,6 +880,18 @@ CONDITION_SPECS: tuple[ConditionSpec, ...] = (
             kind="recent_login", category="date",
             key=lambda p: "recent_login", value=lambda p: p.get("min_days"),
             ko=lambda p: f"최근 {p.get('min_days')}일 이내 로그인",
+            applies=lambda p: isinstance(p.get("min_days"), int),
+        ),
+    ),
+    ConditionSpec(
+        # 미접속/휴면 창(마지막 접속이 N일보다 오래됨). recent_login 의 반대 방향이며 member
+        # compiler 가 활동일 컬럼 술어로 직접 컴파일한다(graph_rag 의 _member_activity_predicate).
+        kind="inactivity_period", fact="member", fact_join=False, signals_target=False,
+        extract=_tu_dict("inactivity_period"),
+        confidence=ConfidenceMeta(
+            kind="activity", category="date",
+            key=lambda p: "inactivity_period", value=lambda p: p.get("min_days"),
+            ko=lambda p: f"{p.get('min_days')}일 이상 미접속",
             applies=lambda p: isinstance(p.get("min_days"), int),
         ),
     ),
