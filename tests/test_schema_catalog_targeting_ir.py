@@ -57,41 +57,8 @@ def test_catalog_removal_closes_aggregate_ir_capability(tmp_path) -> None:
     assert "total_item_quantity" not in capabilities
 
 
-def test_grounded_female_include_clears_pathless_llm_unresolved() -> None:
-    plan = graph_rag.build_query_plan(QUERY, parser="rules")
-    plan["unresolved_source_conditions"] = [
-        {
-            "path": None,
-            "condition": "여자만 추출해줘",
-            "reason": "exclusion of gender is not specified clearly",
-            "source": "llm_semantic_ir",
-        }
-    ]
-
-    unresolved = graph_rag._refresh_unresolved_source_conditions(QUERY, plan)
-
-    assert unresolved == []
 
 
-def test_grounded_pathless_unresolved_still_uses_deterministic_sql() -> None:
-    plan = graph_rag.build_query_plan(QUERY, parser="rules")
-    plan["unresolved_source_conditions"] = [
-        {
-            "path": None,
-            "condition": "여자만 추출해줘",
-            "reason": "exclusion of gender is not specified clearly",
-            "source": "llm_semantic_ir",
-        }
-    ]
-
-    result = graph_rag.build_sql_result(
-        nx.Graph(), QUERY, plan, [], graph_rag.DEFAULT_SCHEMA_PATH, 100,
-        original_query=QUERY,
-    )
-
-    assert result["is_success"] is True
-    assert result["llm_fallback_used"] is False
-    assert "HAVING SUM(D.ORDER_QTY) >= 2" in result["sql"]
 
 
 def test_real_unresolved_condition_blocks_every_llm_fallback(monkeypatch) -> None:
@@ -151,17 +118,3 @@ def test_sql_guard_distinguishes_order_quantity_from_cart_quantity() -> None:
     assert good["is_valid"] is True
 
 
-def test_free_sql_fallback_receives_exact_catalog_columns_for_relevant_fact() -> None:
-    plan = graph_rag.build_query_plan(QUERY, parser="rules")
-    tables = graph_rag._targeting_fallback_schema_tables(
-        plan, graph_rag.DEFAULT_SCHEMA_PATH
-    )
-    context = SchemaMetadata.load(graph_rag.DEFAULT_SCHEMA_PATH).prompt_context(tables)
-    detail = next(
-        table for table in context
-        if str(table["table"]).casefold() == "crm_sl_orderdetailmall"
-    )
-    columns = {column["column"] for column in detail["columns"]}
-
-    assert "ORDER_QTY" in columns
-    assert "QTY" not in columns

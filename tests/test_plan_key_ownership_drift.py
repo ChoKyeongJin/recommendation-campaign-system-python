@@ -86,7 +86,7 @@ KNOWN_UNCLASSIFIED_CEILING = 0
 def test_inventory_is_not_empty() -> None:
     """AST 스캔이 아무것도 못 찾으면 이 계약 전체가 공허해진다."""
 
-    assert len(_assigned_plan_keys()) > 30, f"인벤토리가 너무 작다: {sorted(_assigned_plan_keys())}"
+    assert len(_assigned_plan_keys()) > 15, f"인벤토리가 너무 작다: {sorted(_assigned_plan_keys())}"
 
 
 def test_unclassified_plan_keys_do_not_grow() -> None:

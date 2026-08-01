@@ -39,8 +39,8 @@ A(어휘)는 끝이 없다. 사전에 없는 말투는 규칙이 조용히 침�
 
 채택 조건 셋: **닫힌 집합에서 고르기만**(목록 밖 값은 버림), **근거는 원문에 그대로**(회원 명사 포함,
 규칙이 이미 읽은 조각과 겹치면 거부), **빈칸만**(규칙이 채운 슬롯은 안 덮음). 채택분은
-`plan_decisions` 에 `source: llm` 으로 남는다. 계약은 `tests/test_condition_slot_llm.py` 와
-`tests/test_surface_lexicon_llm.py` 가 강제한다.
+`plan_decisions` 에 `source: llm` 으로 남는다. 계약은 `tests/test_condition_slot_llm.py` 와 (이 테스트는 규칙 계층 철거와 함께 삭제됨)
+`tests/test_surface_lexicon_llm.py` 가 강제한다. (이 테스트는 규칙 계층 철거와 함께 삭제됨)
 
 ### 표면 신호는 이미 A 를 졸업했다
 
@@ -52,7 +52,7 @@ A(어휘)는 끝이 없다. 사전에 없는 말투는 규칙이 조용히 침�
 코드에 남은 낱말 목록(`graph_rag._DEFAULT_TARGETING_LEXICON` 의 LLM 소유 그룹,
 `analytical_intent._AGGREGATE_FUNCTION_BACKSTOP`)은 **동결 백스톱**이다. 키가 없거나
 `SURFACE_LEXICON_LLM=off` 인 환경(테스트 포함)에서 이관 전 결정론 동작을 재현하는 것이 유일한
-역할이고, 손으로 늘리지 않는다 — `tests/test_surface_lexicon_llm.py` 의 래칫이 강제한다.
+역할이고, 손으로 늘리지 않는다 — `tests/test_surface_lexicon_llm.py` 의 래칫이 강제한다. (이 테스트는 규칙 계층 철거와 함께 삭제됨)
 
 ### 불리언으로는 부족한 뜻 — 의미 신호(status)
 
@@ -78,7 +78,7 @@ A(어휘)는 끝이 없다. 사전에 없는 말투는 규칙이 조용히 침�
 4. **메타데이터는 의미가 아니다.** 출처·모델·소요시간은 `canonical_form` 에 들어가지 않는다.
 
 새 표현이 들어와도 여기는 고칠 것이 없다. 새 *뜻*이 필요할 때만 `semantic_signals.json` 에 항목
-하나와 그 뜻을 소비하는 코드를 더한다. 표현형 전수는 `tests/test_semantic_signal.py` 가 갖는다.
+하나와 그 뜻을 소비하는 코드를 더한다. 표현형 전수는 `tests/test_semantic_signal.py` 가 갖는다. (이 테스트는 규칙 계층 철거와 함께 삭제됨)
 
 대체되지 **않은** 어휘도 있다. 문장에 있는가가 아니라 **어디에 있는가**로 판정하는 것들이다:
 대상 지향 표지(절 분리 지점), 장바구니 어휘(금액·수량 인접성), `parser_lexicon.json` 어휘(교대
@@ -129,16 +129,16 @@ docker compose exec -e PYTHONPATH=/app -w /app api \
 | 골든 IR 스냅샷 | `tests/golden/` | 파서 변경이 조건을 조용히 잃는 것 |
 | `known_gap` 마커 | `tests/golden/cases.json` | 결함을 스냅샷으로 축복하는 것 (고쳐지면 마커를 지우라고 실패) |
 | 코드 규칙 래칫 | `docs/data/regex_inventory_baseline.json` | 새 표면어를 또 코드로 받는 것 (어휘형·낱말집합·업무의미형 상한) |
-| 래칫 스캔 범위 | `tests/test_regex_inventory_ratchet.py` | 규칙이 **세지지 않는 형태**로 들어오는 것(묶음·인라인 정규식·낱말집합) |
+| 래칫 스캔 범위 | `tests/test_regex_inventory_ratchet.py` | 규칙이 **세지지 않는 형태**로 들어오는 것(묶음·인라인 정규식·낱말집합) | (이 테스트는 규칙 계층 철거와 함께 삭제됨)
 | rule 생산자 래칫 | `tests/golden/method_mix_baseline.json` | 조건 생산자가 정규식으로 늘어나는 것 |
-| 조용한 소실 상한 | `tests/test_slot_policy.py` | 백스톱도 fail-close 도 없는 슬롯이 느는 것 |
+| 조용한 소실 상한 | `tests/test_slot_policy.py` | 백스톱도 fail-close 도 없는 슬롯이 느는 것 | (이 테스트는 규칙 계층 철거와 함께 삭제됨)
 | 이관 동등성 | `tests/test_lexicon_patterns.py` | 사전으로 옮기며 몰래 어휘를 넓히는 것 |
-| LLM 슬롯 경계 | `tests/test_condition_slot_llm.py` | LLM 이 목록 밖 값·근거 없는 조건을 만들어내는 것 |
-| 세그먼트 소유권 분리 | `tests/test_segment_semantics.py` | 표면어와 접지(소스·capability)가 한 파일로 다시 섞이는 것 |
-| 미해석 오탐 | `tests/test_ir_golden_corpus.py` | 탐지기가 정상 프롬프트를 잡아 큐를 잡음으로 덮는 것 |
+| LLM 슬롯 경계 | `tests/test_condition_slot_llm.py` | LLM 이 목록 밖 값·근거 없는 조건을 만들어내는 것 | (이 테스트는 규칙 계층 철거와 함께 삭제됨)
+| 세그먼트 소유권 분리 | `tests/test_segment_semantics.py` | 표면어와 접지(소스·capability)가 한 파일로 다시 섞이는 것 | (이 테스트는 규칙 계층 철거와 함께 삭제됨)
+| 미해석 오탐 | `tests/test_ir_golden_corpus.py` | 탐지기가 정상 프롬프트를 잡아 큐를 잡음으로 덮는 것 | (이 테스트는 규칙 계층 철거와 함께 삭제됨)
 | 의미 AST 불변식 | `tests/test_semantic_ast.py` | 부정·AND/OR·owner 가 정규화 과정에서 뒤집히거나 사라지는 것 |
-| 의미 신호 계약 | `tests/test_semantic_signal.py` | 발생·의향·부정·동음이의가 한 boolean 으로 뭉쳐지는 것, 폴백이 OR 로 퇴화하는 것, 메타데이터가 의미 비교에 섞이는 것, 재작성이 뜻을 지우거나 지어내는 것 |
-| 의미 보존 계약 | `tests/test_plan_semantic_ast.py` | 제외가 포함으로 컴파일되는 것, OR 이 AND 로 축소되는 것, 포함/제외 충돌이 한쪽만 실행되는 것, rules/LLM 경로가 다른 의미로 갈라지는 것 |
+| 의미 신호 계약 | `tests/test_semantic_signal.py` | 발생·의향·부정·동음이의가 한 boolean 으로 뭉쳐지는 것, 폴백이 OR 로 퇴화하는 것, 메타데이터가 의미 비교에 섞이는 것, 재작성이 뜻을 지우거나 지어내는 것 | (이 테스트는 규칙 계층 철거와 함께 삭제됨)
+| 의미 보존 계약 | `tests/test_plan_semantic_ast.py` | 제외가 포함으로 컴파일되는 것, OR 이 AND 로 축소되는 것, 포함/제외 충돌이 한쪽만 실행되는 것, rules/LLM 경로가 다른 의미로 갈라지는 것 | (이 테스트는 규칙 계층 철거와 함께 삭제됨)
 
 ## 재생성 명령
 
@@ -226,7 +226,7 @@ LLM-first에서 원문 권위 규칙은 실행 플랜을 수정하지 않는다.
 3. `QUERY_PLAN_AUTHORITY=llm_first`로 전환한다.
 4. 장애 시 `QUERY_PLAN_AUTHORITY=rules_first` 또는 요청별 `query_parser=rules`로 되돌린다.
 
-계약 테스트는 `tests/test_campaign_plan_v3.py`가 소유한다.
+계약 테스트는 `tests/test_campaign_plan_v3.py`가 소유한다. (이 테스트는 규칙 계층 철거와 함께 삭제됨)
 
 ## 남은 결함 (2026-07-29 기준)
 

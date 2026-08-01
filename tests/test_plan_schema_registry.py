@@ -68,13 +68,3 @@ def test_requirement_slots_are_declared_conditions() -> None:
     assert not contradictions, f"요구 원장이 파생 키를 담고 있다: {contradictions}"
 
 
-def test_registry_covers_the_condition_slots_the_logic_gate_uses() -> None:
-    """논리식 게이트가 아는 조건과 레지스트리 선언이 어긋나면 한쪽이 낡은 것이다."""
-
-    import graph_rag
-
-    # 게이트는 target_user 하위 슬롯을 다루고 레지스트리는 최상위 키를 다루므로 교집합만 본다.
-    top_level_in_gate = graph_rag._LOGIC_CONDITION_SLOTS & set(plan_schema.names(plan_schema.DERIVED))
-    assert not top_level_in_gate, (
-        f"논리식 게이트가 파생 키를 조건으로 취급한다: {sorted(top_level_in_gate)}"
-    )

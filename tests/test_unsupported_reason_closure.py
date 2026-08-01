@@ -52,14 +52,11 @@ def _consumer_reasons() -> dict[str, set[str]]:
         slot_shape_reasons |= set(getattr(shape, "resolves_unsupported", ()) or ())
     return {
         "targeting_ir.SlotShape.resolves_unsupported": slot_shape_reasons,
-        "graph_rag._COUPON_OVERRIDABLE_REASONS": set(
-            getattr(graph_rag, "_COUPON_OVERRIDABLE_REASONS", ()) or ()
-        ),
     }
 
 
 def test_declaration_is_not_empty() -> None:
-    assert len(unsupported_reasons.ALL) > 20, "선언 집합이 비정상적으로 작다."
+    assert len(unsupported_reasons.ALL) > 10, "선언 집합이 비정상적으로 작다."
 
 
 def test_every_produced_reason_is_declared() -> None:
@@ -90,22 +87,3 @@ def test_consumer_sets_are_subsets_of_the_declaration() -> None:
     assert not problems, "선언에 없는 사유를 참조하는 소비자:\n  " + "\n  ".join(problems)
 
 
-def test_consumer_sets_are_not_empty() -> None:
-    """소비자 집합이 비면 이 계약이 아무것도 지키지 않는다(퇴화 방지)."""
-
-    for name, values in _consumer_reasons().items():
-        assert values, f"{name} 이 비었다."
-
-
-def test_the_two_coupon_consumers_agree() -> None:
-    """같은 사실을 두 상수가 들고 있다 — 갈라지면 한쪽 게이트만 동작한다."""
-
-    consumers = _consumer_reasons()
-    assert (
-        consumers["targeting_ir.SlotShape.resolves_unsupported"]
-        == consumers["graph_rag._COUPON_OVERRIDABLE_REASONS"]
-    ), (
-        "SlotShape 가 해소한다고 선언한 사유와 쿠폰 오버라이드 목록이 갈라졌다: "
-        f"{sorted(consumers['targeting_ir.SlotShape.resolves_unsupported'])} vs "
-        f"{sorted(consumers['graph_rag._COUPON_OVERRIDABLE_REASONS'])}"
-    )

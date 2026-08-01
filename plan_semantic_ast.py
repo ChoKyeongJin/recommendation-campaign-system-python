@@ -13,7 +13,7 @@
   * ``unknown_operand`` 는 ``Unknown`` 으로 남긴다 — 어떤 단계도 조용히 지우지 않는다.
 
 graph_rag 를 import 하지 않는다(순수 in/out). 어휘(값→dimension)는 호출자가 주입한다.
-실행: python -m pytest tests/test_plan_semantic_ast.py -q
+실행: 전용 테스트는 규칙 계층 철거와 함께 삭제됐다.
 """
 
 from __future__ import annotations

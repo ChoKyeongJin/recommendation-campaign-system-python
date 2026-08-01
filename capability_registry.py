@@ -14,7 +14,7 @@ compilation_unavailable 로 강등한다. 정책적으로 막은 조합은 polic
 disabled_by_policy) 해 '기술 미구현'과 '정책 비활성'을 혼동하지 않는다.
 
 validate_capabilities() 는 전체 정의를 정적 검증한다(요청 7): supported=true 인데 compiler/join/field 가
-없으면 실패를 낸다. 배선: tests/test_registry_ownership_guards.py 와 CI contracts 잡(.github/workflows/tests.yml).
+없으면 실패를 낸다. 배선: CI contracts 잡(.github/workflows/tests.yml). 전용 계약 테스트는 규칙 계층 철거와 함께 삭제됐다.
 """
 
 from __future__ import annotations

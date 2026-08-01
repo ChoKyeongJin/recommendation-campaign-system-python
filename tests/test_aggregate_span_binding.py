@@ -10,7 +10,12 @@ import pytest
 
 import aggregate_parser_config as config
 import aggregate_spans as spans
+import aggregate_parser_config
 import graph_rag
+
+
+# 단위 어휘의 단일 소스는 docs/data/aggregate_parser_rules.json 이다(옛 graph_rag._AGG_UNIT 대체).
+_UNIT_ALTERNATION = aggregate_parser_config.unit_alternation(aggregate_parser_config.rules())
 
 
 @pytest.fixture(scope="module")
@@ -56,7 +61,7 @@ def test_duration_token_does_not_emit_an_inner_quantity_token(rules) -> None:
 def test_comparison_span_separates_value_from_operator(
     text, operator, value, value_text, comparison_text,
 ) -> None:
-    candidates = graph_rag._parse_amount_comparison_candidates(text, graph_rag._AGG_UNIT)
+    candidates = graph_rag._parse_amount_comparison_candidates(text, _UNIT_ALTERNATION)
     assert candidates is not None and len(candidates) == 1
     candidate = candidates[0]
     assert candidate.operator == operator
@@ -68,20 +73,20 @@ def test_comparison_span_separates_value_from_operator(
 
 
 def test_dual_bound_keeps_a_span_per_bound() -> None:
-    candidates = graph_rag._parse_amount_comparison_candidates("나이 30 이상 40 미만", graph_rag._AGG_UNIT)
+    candidates = graph_rag._parse_amount_comparison_candidates("나이 30 이상 40 미만", _UNIT_ALTERNATION)
     assert [(c.operator, c.normalized_value, c.value_span.text) for c in candidates] == [
         (">=", 30.0, "30"), ("<", 40.0, "40"),
     ]
 
 
 def test_compat_wrapper_returns_the_legacy_tuples() -> None:
-    assert graph_rag._parse_amount_comparison("50만원 이상", graph_rag._AGG_UNIT) == [(">=", 500000.0)]
-    assert graph_rag._parse_amount_comparison("없는 문장", graph_rag._AGG_UNIT) is None
+    assert graph_rag._parse_amount_comparison("50만원 이상", _UNIT_ALTERNATION) == [(">=", 500000.0)]
+    assert graph_rag._parse_amount_comparison("없는 문장", _UNIT_ALTERNATION) is None
 
 
 # ── 3. 값 ↔ 단위 인접성 ────────────────────────────────────────────────────────────────
 def _bind(text: str, rules):
-    candidates = graph_rag._parse_amount_comparison_candidates(text, graph_rag._AGG_UNIT) or []
+    candidates = graph_rag._parse_amount_comparison_candidates(text, _UNIT_ALTERNATION) or []
     spans.bind_units(text, candidates, spans.find_unit_tokens(text, rules), rules)
     return candidates
 
@@ -130,6 +135,6 @@ def test_zero_whitespace_policy_rejects_a_gap(tmp_path, rules) -> None:
     path = tmp_path / "rules.json"
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     strict = config.load_rules(path=path)
-    candidates = graph_rag._parse_amount_comparison_candidates("10만 원 이상", graph_rag._AGG_UNIT) or []
+    candidates = graph_rag._parse_amount_comparison_candidates("10만 원 이상", _UNIT_ALTERNATION) or []
     spans.bind_units("10만 원 이상", candidates, spans.find_unit_tokens("10만 원 이상", strict), strict)
     assert candidates[0].unit_ref is None

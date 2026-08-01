@@ -1,11 +1,4 @@
 {
   "description": "알려진 실패 대장. 여기 실린 nodeid 는 strict xfail 로 처리된다 — 스위트를 막지 않되 고쳐지는 순간 XPASS(strict) 로 빨개져서 이 줄을 지우도록 강제한다. 사유·발견일·담당 없는 등록은 로더가 거부한다. 골든 스냅샷 실패는 여기 넣지 마라(재생성이 정답이고, 넣으면 회귀 감지를 통째로 끄는 셈이다).",
-  "failures": [
-    {
-      "nodeid": "tests/test_conceptual_targeting.py::test_resolved_purchase_window_cannot_return_as_conceptual_unsupported",
-      "reason": "80fe0a4 에서 red 상태로 커밋된 신규 테스트(직전 커밋 fa04093 에는 존재하지 않음 — 초록이었던 적이 없다). '3개월 이내에 우주복 구매한 고객'에서 구매 윈도우 클레임은 (0,7)='3개월 이내에' 를 정상 소유하지만, 남은 '우주복'이 미해소 상품이라 개념 리뷰가 정당하게 돈다(assert completion.calls == 0 실패). 해소된 클레임을 리뷰 대상에서 빼는 필터의 적용 범위를 넓힐지, 미해소 상품이 있으면 리뷰를 도는 현 동작이 맞는지 = 저자 의도 확인이 선행돼야 하는 설계 결정이라 IR 결합 완화 플랜 밖으로 분리했다.",
-      "found_at": "2026-07-31",
-      "owner": "TBD"
-    }
-  ]
+  "failures": []
 }

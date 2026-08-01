@@ -30,8 +30,6 @@ DESCRIPTIONS: dict[str, str] = {
     "dimension_catalog.sample.json": "디멘션(브랜드·카테고리 등) 카탈로그. 이름→코드 변환용 DS_SQL과 동의어를 정의해 '브랜드명'을 실제 코드로 해석한다. (.sample = 예시본)",
     "member_value_index.json": "라벨 없이 값만 언급될 때(예: 라벨 없이 브랜드명만) 값→컬럼을 찾아주는 인덱스. build_member_value_index.py 로 생성.",
     "member_metrics.json": "회원 지표(구매액·방문수 등)의 정의와 랭킹용 메타데이터.",
-    "segment_metrics.json": "세그먼트(쿠폰 등) 지표의 접지 — 물리 소스 테이블·컬럼, 집계, 그리고 어떤 연산을 실제로 지원하는지(capability)와 미지원 안내 문구. 지원 여부는 컴파일러 구현 사실이라 여기서만 선언한다.",
-    "segment_lexicon.json": "세그먼트 지표의 어휘 — 별칭·단위·사용 동사·부정 표현과 비교 연산자(이상/초과/미만)·순위 표지. 표면 표현만 모으며, 새 말투는 여기 한 줄 추가로 끝난다.",
     "business_policies.sample.json": "캠페인 비즈니스 정책(임계값·규칙) 정의. RAG 지식으로 적재되어 정책 유사도·근거 제시에 쓰인다. (.sample = 예시본)",
     "rag_knowledge_base.json": "RAG 지식 그래프 본체(노드·엣지). 정책·SQL 예시·스키마 등 검색 대상 지식이 모두 들어있다. build_rag_knowledge.py 산출물.",
     "sql_examples.sample.sql": "예시 SQL 모음. 검색 근거·LLM SQL 폴백의 참고 자료. (.sample = 예시본)",

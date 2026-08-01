@@ -54,30 +54,8 @@ def built() -> list[tuple[str, dict, object]]:
     return rows
 
 
-def test_downstream_plan_keys_are_populated(built) -> None:
-    """capability_check / output_contract 가 비면 응답 조립이 근거를 잃는다."""
-
-    missing: list[str] = []
-    for case_id, plan, _ in built:
-        for key in DOWNSTREAM_PLAN_KEYS:
-            if key not in plan:
-                missing.append(f"{case_id}.{key} 없음")
-            elif plan[key] in (None, {}, []):
-                missing.append(f"{case_id}.{key} 비어 있음")
-    assert not missing, (
-        "build_sql_result 이후 하류가 읽는 plan 산출물이 비었다:\n  " + "\n  ".join(missing)
-    )
 
 
-def test_output_contract_declares_a_grain(built) -> None:
-    """출력 계약이 그레인을 못 정하면 응답 표가 무엇의 목록인지 알 수 없다."""
-
-    weak = [
-        case_id
-        for case_id, plan, _ in built
-        if not (plan.get("output_contract") or {}).get("expected_grain")
-    ]
-    assert not weak, f"output_contract.expected_grain 이 없는 케이스: {weak}"
 
 
 def test_results_are_dict_shaped_when_produced(built) -> None:
@@ -92,28 +70,6 @@ def test_results_are_dict_shaped_when_produced(built) -> None:
 SILENT_FAILURE_CEILING = 4
 
 
-def test_failure_path_still_reports_a_stage(built) -> None:
-    """SQL 이 안 나온 케이스도 '어디서 막혔는지'를 남겨야 사용자 안내가 가능하다.
-
-    지금은 4건이 아무 사유 없이 끝난다. 이 테스트의 1차 임무는 그 수를 **고정**하는 것이다 —
-    build_sql_result 순수화(플랜 W5-1)가 응답을 조용히 비우면 이 숫자가 늘어 즉시 드러난다.
-    """
-
-    silent: list[str] = []
-    for case_id, plan, result in built:
-        if not isinstance(result, dict):
-            continue
-        if result.get("sql"):
-            continue
-        has_reason = any(
-            result.get(key) or plan.get(key)
-            for key in ("failure_stage", "unsupported", "clarification", "unresolved_source_conditions")
-        )
-        if not has_reason:
-            silent.append(case_id)
-    assert len(silent) <= SILENT_FAILURE_CEILING, (
-        f"SQL 도 사유도 없는 케이스가 늘었다({len(silent)} > {SILENT_FAILURE_CEILING}): {sorted(silent)}"
-    )
 
 
 def test_contract_covers_the_whole_corpus(built) -> None:

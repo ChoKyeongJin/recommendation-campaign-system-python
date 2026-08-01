@@ -15,7 +15,7 @@ confidence 조건 수집/라벨까지 서로 다른 곳에 손배선해야 했�
     이런 조건이 있으면 양보한다(graph_rag 캠페인 반응 빌더 등).
   - 빌더 소유권: fact_join 조건 kind ↔ 빌더 매핑은 graph_rag._sql_target_builder_registry 가 선언하고,
     '모든 fact_join kind 는 정확히 하나의 빌더가 소유한다'가 불변식이다(죽은 레지스트리 방지).
-    강제: tests/test_registry_ownership_guards.py
+    강제: 전용 레지스트리 계약 테스트는 삭제됐다(현재 가드 없음).
   - confidence: spec.confidence 메타로 조건 수집/한글 라벨이 자동 파생된다(confidence._extract_conditions).
 
 순환 방지: 이 모듈은 graph_rag/confidence 를 import 하지 않는다(plain dict 입력). 설정 의존 값
@@ -599,17 +599,16 @@ SLOT_SHAPES: dict[str, SlotShape] = {
         _coerce_bool_true),
     "aggregate_conditions": SlotShape("aggregate_conditions", "target_user",
         _aggregate_condition_schema(),
-        _coerce_threshold_list, allowed_key="aggregate_metrics",
-        resolves_unsupported=frozenset({"metric_not_resolved"})),
+        _coerce_threshold_list, allowed_key="aggregate_metrics"),
     "region_density_target": SlotShape("region_density_target", "plan",
         _obj_schema("밀집 지역 랭킹 타겟(코호트 조건으로 지역 랭킹)."),
-        _coerce_ranking_dict, resolves_unsupported=frozenset({"ranking_metric_unspecified"})),
+        _coerce_ranking_dict),
     "member_metric_ranking": SlotShape("member_metric_ranking", "plan",
         _obj_schema("회원 지표 상위 N 랭킹."),
-        _coerce_ranking_dict, resolves_unsupported=frozenset({"ranking_metric_unspecified"})),
+        _coerce_ranking_dict),
     "purchase_count_ranking": SlotShape("purchase_count_ranking", "plan",
         _obj_schema("기간 내 구매 상위 N 랭킹."),
-        _coerce_ranking_dict, resolves_unsupported=frozenset({"ranking_metric_unspecified"})),
+        _coerce_ranking_dict),
 }
 
 

@@ -18,7 +18,8 @@ DATA = REPO_ROOT / "docs" / "data"
 
 import aggregate_parser_config  # noqa: E402
 import aggregate_spans  # noqa: E402
-import graph_rag  # noqa: E402
+import graph_rag
+import metric_registry  # noqa: E402
 
 
 def _json(name: str):
@@ -102,7 +103,8 @@ def test_metric_spec_sources_exist_in_the_schema_catalog() -> None:
     catalog = db_swap_preflight._load_json(DATA / "schema_catalog.json")
     columns_by_table, _ = db_swap_preflight._catalog_index(catalog)
 
-    registry = graph_rag._METRIC_REGISTRY
+    # 지표 카탈로그는 metric_registry 가 단일 소유자다(graph_rag 재수출은 규칙 계층과 함께 사라졌다).
+    registry = metric_registry.MetricRegistry.load()
     assert registry is not None and registry.specs, "지표 레지스트리가 비었다."
 
     problems: list[str] = []

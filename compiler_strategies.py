@@ -11,7 +11,7 @@ graph_rag 빌더에 하드코딩돼 있었다. 이 모듈은 그 라벨을 dispa
 
 이 모듈은 graph_rag 를 import 하지 않는다(순수). SQL 리터럴 헬퍼(_quote/_nlike)는 graph_rag._sql_quote/
 _sql_nlike_contains 와 **바이트 동일** 출력을 내도록 맞췄다
-(parity 검증: tests/test_registry_ownership_guards.py).
+(parity 를 강제하던 레지스트리 계약 테스트는 규칙 계층 철거와 함께 삭제됐다 — 현재 가드 없음).
 """
 
 from __future__ import annotations

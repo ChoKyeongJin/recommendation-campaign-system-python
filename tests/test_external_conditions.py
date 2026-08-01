@@ -58,18 +58,6 @@ def _config() -> KmaWeatherAlertConfig:
     )
 
 
-def test_query_plan_separates_live_condition_from_sell_object() -> None:
-    plan = graph_rag.build_query_plan(
-        "폭염특보 지역 회원에게 양산 구매 캠페인 만들어줘",
-        parser="rules",
-    )
-
-    assert plan["campaign_constraints"]["sell_object"] == "양산"
-    assert plan["campaign_constraints"]["objective"] == "purchase"
-    assert [
-        (item["domain"], item["condition_type"], item["condition_code"], item["resolution_status"])
-        for item in plan["external_conditions"]
-    ] == [("weather", "alert", "heatwave", "pending")]
 
 
 def test_classifier_does_not_turn_product_or_history_context_into_live_condition() -> None:

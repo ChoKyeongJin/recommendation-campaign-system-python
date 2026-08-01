@@ -44,7 +44,7 @@ semantic_type 별 필수:
 로더는 이 스펙을 읽고 규칙을 검증할 뿐, SQL 을 만들지 않는다(그건 이후 단계의 전략 컴파일러 몫).
 JSON 을 쓰는 이유: 레포 전 설정이 JSON(docs/data/*.json) 이라 포맷·의존성을 통일한다(개선안 YAML 예시와
 키 구조는 동일 — 나중에 YAML 로 바꿔도 스키마는 그대로).
-로드 건전성: python -m pytest tests/test_registry_ownership_guards.py -q
+로드 건전성: 전용 레지스트리 계약 테스트는 삭제됐다(현재 가드 없음).
 """
 
 from __future__ import annotations

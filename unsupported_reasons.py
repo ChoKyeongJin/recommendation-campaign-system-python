@@ -13,45 +13,22 @@
 
 from __future__ import annotations
 
-# 소스가 실제로 생산하는 사유 식별자(2026-08-01 AST 인벤토리 기준).
+# 소스가 실제로 생산하는 사유 식별자(2026-08-01 기준). 규칙 기반 해석 계층을 철거하면서 그 계층만
+# 내던 사유 24종은 함께 지웠다 — 아무도 내지 않는 선언은 게이트가 있다는 착시만 만든다.
 ALL: frozenset[str] = frozenset({
-    "ambiguous_threshold_attribute",
-    "analytical_signal_dropped",
     "analytical_sql_compilation_failed",
-    "average_comparison_metric_unsupported",
-    "conflicting_aggregate_conditions",
     "coupon_semantic_preservation_failed",
-    "disabled_by_configuration",
-    "event_semantics_loss",
     "external_common_sense_contract_invalid",
     "external_condition_filter_missing",
     "external_condition_id_not_unique",
     "external_condition_invalid",
     "external_condition_result_mismatch",
-    "group_ranking_axis_unsupported",
-    "intra_member_temporal_metric_comparison_not_supported",
-    "llm_legacy_semantic_disagreement",
-    "logical_expression_parse_failed",
-    "logical_expression_unsupported_predicate",
-    "logical_expression_verification_failed",
-    "message_received_count_unsupported",
     "metric_aggregation_mismatch",
-    "metric_not_resolved",
     "metric_trend_metric_unsupported",
     "metric_trend_multi_product_scope_unsupported",
-    "metric_trend_periods_unresolved",
     "metric_trend_relative_change_invalid",
     "missing_openai_api_key",
-    "mixed_and_or_precedence_unsupported",
-    "period_over_period_comparison_not_supported",
-    "period_scoped_ranking_unsupported",
-    "ranking_metric_unspecified",
-    "scope_value_unspecified",
-    "unregistered_ratio_metric",
     "unresolved_aggregate_column",
-    "unsupported_aggregate_contract",
-    "unsupported_threshold_attribute",
-    "zero_amount_semantics_requires_policy",
 })
 
 
