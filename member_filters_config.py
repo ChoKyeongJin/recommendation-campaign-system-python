@@ -66,9 +66,34 @@ def behavior_spec(behavior: str, path: Path | None = None) -> dict[str, Any] | N
     return spec if isinstance(spec, dict) else None
 
 
+@lru_cache(maxsize=4)
+def _aggregate_metrics_cached(path_text: str) -> tuple[tuple[str, str], ...]:
+    """(metric_id, spec_json) 튜플 — lru_cache 는 해시 가능 값만 담으므로 직렬화해 캐시한다."""
+    section = _load(Path(path_text)).get("aggregate_targets") or {}
+    metrics = section.get("metrics") if isinstance(section, dict) else None
+    if not isinstance(metrics, dict):
+        return ()
+    return tuple(
+        (metric_id, json.dumps(spec, ensure_ascii=False, sort_keys=True))
+        for metric_id, spec in metrics.items()
+        if isinstance(metric_id, str) and isinstance(spec, dict)
+    )
+
+
+def aggregate_metrics(path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """집계 지표 스펙(aggregate_targets.metrics)의 metric_id → 선언 사본.
+
+    concept_catalog 가 공통 조건 개념을 파생하는 소스다 — 지표·동의어를 카탈로그에 다시
+    나열하지 않는다(이중 소유 금지). 설정을 못 읽으면 빈 dict(폴백 없음, order_count_behaviors
+    와 같은 정책)."""
+    target = str(Path(path) if path is not None else DEFAULT_PATH)
+    return {metric_id: json.loads(spec) for metric_id, spec in _aggregate_metrics_cached(target)}
+
+
 def clear_cache() -> None:
     """설정 파일을 바꿔 끼우는 테스트용."""
     _behaviors_cached.cache_clear()
+    _aggregate_metrics_cached.cache_clear()
 
 
-__all__ = ["DEFAULT_PATH", "behavior_spec", "clear_cache", "order_count_behaviors"]
+__all__ = ["DEFAULT_PATH", "aggregate_metrics", "behavior_spec", "clear_cache", "order_count_behaviors"]

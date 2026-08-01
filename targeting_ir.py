@@ -27,6 +27,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable
 
+import condition_normalizers
+
 # 주문 횟수 행동(집계 기준은 member_target_filters.json 의 order_count_targets.behaviors 가 소유).
 # graph_rag 는 로드된 설정 키 집합을 주입하고, 이 기본값은 설정 부재 시 폴백이다.
 DEFAULT_ORDER_COUNT_BEHAVIORS = frozenset({"first_purchase", "repeat_buyer", "no_purchase"})
@@ -64,23 +66,24 @@ class ConfidenceMeta:
 # 순수 모듈 불변식 유지: graph_rag 를 import 하지 않는다. 런타임 렉시콘 의존 어휘(등급/카트 canonical)는
 # 호출자가 coerce(raw, allowed=...) 로 주입한다.
 
+# 단위·비교어 어휘의 소유는 condition_normalizers(docs/data/normalization_lexicon.json + 코드 폴백)로
+# 이관됐다. 아래 이름들은 기존 소비자(calendar_window/event_parser/graph_rag)를 위한 파생 재수출이다 —
+# 새 표기는 이 파일이 아니라 어휘 JSON 에 추가한다.
 # 캐노니컬 기간 단위 → 일수(LLM 슬롯 정규화 전용). graph_rag 의 한글 토큰 기간표(_DURATION_UNIT_DAYS)와
 # 별개다 — 이건 정규화된 영문 단위값을 다룬다. 기존 파서가 쓰는 값 표기('days'/'months')와 호환.
-UNIT_DAYS: dict[str, int] = {"days": 1, "weeks": 7, "months": 30, "years": 365}
+UNIT_DAYS: dict[str, int] = condition_normalizers.unit_days()
 # LLM/정규식이 낼 수 있는 단위 표기(한글·단수·복수)를 캐노니컬로 접는다.
-_UNIT_ALIASES: dict[str, str] = {
-    "일": "days", "day": "days", "days": "days",
-    "주": "weeks", "주일": "weeks", "week": "weeks", "weeks": "weeks",
-    "개월": "months", "달": "months", "month": "months", "months": "months",
-    "년": "years", "해": "years", "year": "years", "years": "years",
-}
+_UNIT_ALIASES: dict[str, str] = condition_normalizers.unit_aliases()
 OPERATORS: frozenset[str] = frozenset({">=", ">", "<=", "<"})
-# 비교어 → 부등호 매핑의 단일 소스(순수 모듈이 소유). graph_rag 의 표면 정규식 추출도 이 표를 재수출해 쓴다
-# (graph_rag._COMPARISON_OPERATORS). 새 비교어는 여기 한 줄만 추가하면 IR 정규화와 표면 파싱이 함께 얻는다.
-# 순서(이상/초과/이하/미만)는 graph_rag 의 _OP_ALT_BASIC="|".join(...) 정규식 열거가 의존하므로 보존한다.
-COMPARISON_WORD_OPERATORS: dict[str, str] = {"이상": ">=", "초과": ">", "이하": "<=", "미만": "<"}
-# LLM/구조화 입력이 낼 수 있는 부등호 기호 자기사상까지 포함(단어 매핑 + 기호 항등). 단어 표는 위 단일 소스에서 파생.
-_OPERATOR_ALIASES: dict[str, str] = {**COMPARISON_WORD_OPERATORS, ">=": ">=", ">": ">", "<=": "<=", "<": "<"}
+# 비교어 → 부등호 핵심 매핑(파생 재수출). graph_rag 의 표면 정규식 추출도 이 표를 재수출해 쓴다
+# (graph_rag._COMPARISON_OPERATORS). 순서(이상/초과/이하/미만)는 graph_rag 의 _OP_ALT_BASIC="|".join(...)
+# 와 event_parser 의 정규식 열거가 의존하므로 어휘 JSON 이 보존한다(확장 별칭은 여기 안 들어온다).
+COMPARISON_WORD_OPERATORS: dict[str, str] = condition_normalizers.comparison_word_operators()
+# LLM/구조화 입력이 낼 수 있는 표기(단어 확장 별칭 + 기호 항등). 이 IR 이 내는 연산자는 OPERATORS
+# 밖으로 나가지 않는다 — 확장 별칭('같은'→'=')이 미지원 연산자를 들여오지 못하게 교집합만 취한다.
+_OPERATOR_ALIASES: dict[str, str] = {
+    word: op for word, op in condition_normalizers.operator_aliases().items() if op in OPERATORS
+}
 
 
 def _pos_int(raw: Any) -> int | None:
@@ -110,11 +113,16 @@ def _canon_operator(raw: Any) -> str | None:
 
 
 def _window_days(raw: dict[str, Any]) -> tuple[int, str, int] | None:
-    """{value,unit} 또는 {min_days}/{days} 를 (value, canonical_unit, min_days) 로 정규화."""
-    value = _pos_int(raw.get("value"))
-    unit = _canon_unit(raw.get("unit"))
-    if value and unit:
-        return value, unit, value * UNIT_DAYS[unit]
+    """{value,unit} 또는 {min_days}/{days} 를 (value, canonical_unit, min_days) 로 정규화.
+
+    {value,unit} 검증은 공통 DurationNormalizer(condition_normalizers.normalize_duration)에
+    위임한다 — 가입/로그인/미접속/미구매/카트보관 창 슬롯이 전부 이 한 정규화기를 공유한다.
+    coerce 계약(실패=None)은 유지하되, 소수점 기간 같은 유효하지 않은 값은 잘라 쓰지 않고
+    버린다(fail-close)."""
+    result = condition_normalizers.normalize_duration(raw)
+    if result.ok:
+        value = result.value
+        return value["value"], value["unit"], value["min_days"]
     min_days = _pos_int(raw.get("min_days")) or _pos_int(raw.get("days"))
     if min_days:
         return min_days, "days", min_days

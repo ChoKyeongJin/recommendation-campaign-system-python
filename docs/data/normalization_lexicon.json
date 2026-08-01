@@ -1,0 +1,47 @@
+{
+  "version": "1.0",
+  "description": "공통 타입 정규화기(condition_normalizers.py)의 어휘 사전. 기간 단위 별칭·비교 연산자 낱말·모호 정도어를 코드 밖에서 소유한다. units 의 키는 canonical 단위, 값은 그 단위로 접히는 표기들이다. comparison_word_operators 는 순서가 의미를 갖는다 — graph_rag 의 표면 정규식(_OP_ALT_BASIC)이 이 열거 순서로 만들어지므로 순서를 바꾸지 않는다. operator_aliases_extended 는 새 정규화 계층 전용 확장 별칭이고 표면 정규식에는 들어가지 않는다(기존 파서 동작 보존).",
+  "how_to_add": "새 단위 표기 → units 의 canonical 아래에 낱말 추가. 새 비교어 → 결정론으로 확정 가능한 말만 operator_aliases_extended 에 추가. 값·연산자를 확정할 수 없는 정도어는 ambiguous_degree_terms 에 넣는다 — 정규화기가 needs_review 로 처리한다(강제 확정 금지).",
+  "fallback": "파일이 없거나 파손되면 condition_normalizers._CODE_FALLBACK 으로 폴백한다.",
+  "units": {
+    "days": ["일", "하루", "day", "days"],
+    "weeks": ["주", "주일", "week", "weeks"],
+    "months": ["개월", "달", "월", "month", "months"],
+    "years": ["년", "해", "year", "years"]
+  },
+  "unit_days": {
+    "days": 1,
+    "weeks": 7,
+    "months": 30,
+    "years": 365
+  },
+  "comparison_word_operators": {
+    "이상": ">=",
+    "초과": ">",
+    "이하": "<=",
+    "미만": "<"
+  },
+  "operator_aliases_extended": {
+    ">=": ["최소", "적어도"],
+    "<=": ["최대"],
+    "=": ["같은", "정확히"]
+  },
+  "unit_conversions": {
+    "분기": {"unit": "months", "factor": 3},
+    "quarter": {"unit": "months", "factor": 3},
+    "quarters": {"unit": "months", "factor": 3},
+    "반기": {"unit": "months", "factor": 6}
+  },
+  "ambiguous_degree_terms": [
+    "높은",
+    "많은",
+    "낮은",
+    "적은",
+    "많이",
+    "꽤",
+    "꽤 많이",
+    "자주",
+    "오랫동안",
+    "우수한"
+  ]
+}

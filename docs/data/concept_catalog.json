@@ -1,0 +1,97 @@
+{
+  "version": "1.0",
+  "description": "데이터 카탈로그(concept_catalog.py)의 특수 슬롯 개념 선언 + 파생 개념의 별칭 확장. 공통 조건 개념(구매금액/주문횟수 등)은 여기 다시 나열하지 않는다 — member_target_filters.json 의 aggregate_targets.metrics 와 metric_registry(docs/data/metrics)에서 파생된다(이중 소유 금지). aliases 는 LLM 이 이해하는 모든 문장을 등록하는 곳이 아니다: 명확한 표준 표현·고빈도 별칭·도메인 고유 용어만 담는다. compiler 는 compiler_registry.default_registry() 에 등록된 이름만 가리킬 수 있다 — 미등록이면 그 개념은 is_executable=false 로 강등되고 SQL 생성이 차단된다.",
+  "how_to_add": "새 특수 슬롯 개념 → concepts 에 한 항목(kind=special_slot, normalizer, compiler 선언). 파생 개념의 새 별칭 → alias_extensions 에 추가(원 스펙의 synonyms 를 옮기지 않는다). 새 공통 지표는 이 파일이 아니라 member_target_filters.json aggregate_targets.metrics 에 추가한다.",
+  "concepts": {
+    "purchase_inactivity": {
+      "label": "미구매 기간",
+      "description": "최근 N기간 동안 완료된 구매가 전혀 없는 회원(창 anti-join)",
+      "aliases": ["미구매", "무구매", "구매 안 한", "구매가 없는", "구매하지 않은", "구매 이력 없는", "안 산", "아무것도 안 산"],
+      "kind": "special_slot",
+      "entity_type": "slot",
+      "data_type": "duration",
+      "normalizer": "duration",
+      "compiler": "purchase_inactivity",
+      "allowed_units": ["days", "weeks", "months", "years"],
+      "min_value": 1,
+      "data_source": "order",
+      "active": true
+    },
+    "inactivity_period": {
+      "label": "미접속 기간",
+      "description": "마지막 접속이 N기간보다 오래된 휴면 회원",
+      "aliases": ["미접속", "접속하지 않은", "휴면", "비활성", "로그인하지 않은", "로그인 안 한"],
+      "kind": "special_slot",
+      "entity_type": "slot",
+      "data_type": "duration",
+      "normalizer": "duration",
+      "compiler": "inactivity_period",
+      "allowed_units": ["days", "weeks", "months", "years"],
+      "min_value": 1,
+      "data_source": "member",
+      "active": true
+    },
+    "recent_login": {
+      "label": "최근 로그인",
+      "description": "최근 N기간 이내 로그인/접속한 회원",
+      "aliases": ["최근 로그인", "최근 접속", "로그인한", "접속한"],
+      "kind": "special_slot",
+      "entity_type": "slot",
+      "data_type": "duration",
+      "normalizer": "duration",
+      "compiler": "recent_login",
+      "allowed_units": ["days", "weeks", "months", "years"],
+      "min_value": 1,
+      "data_source": "member",
+      "active": true
+    },
+    "signup_window": {
+      "label": "가입 기간",
+      "description": "최근 N기간 이내 가입한 회원",
+      "aliases": ["가입", "신규 가입", "회원가입", "새로 가입한"],
+      "kind": "special_slot",
+      "entity_type": "slot",
+      "data_type": "duration",
+      "normalizer": "duration",
+      "compiler": "signup_window",
+      "allowed_units": ["days", "weeks", "months", "years"],
+      "min_value": 1,
+      "data_source": "member",
+      "active": true
+    },
+    "cart_retention": {
+      "label": "장바구니 보관 기간",
+      "description": "장바구니에 상품을 담아둔 지 N일 이상/이내인 회원",
+      "aliases": ["장바구니 보관", "장바구니 방치", "장바구니 이탈", "담아둔"],
+      "kind": "special_slot",
+      "entity_type": "slot",
+      "data_type": "duration",
+      "normalizer": "duration",
+      "compiler": "cart_retention",
+      "allowed_units": ["days", "weeks", "months", "years"],
+      "min_value": 1,
+      "data_source": "cart",
+      "active": true
+    },
+    "campaign_buy_amount": {
+      "label": "캠페인 구매 금액",
+      "description": "캠페인 반응에 귀속된 회원별 구매 금액 합계",
+      "aliases": ["캠페인 구매 금액", "캠페인 매출", "캠페인 구매액"],
+      "kind": "generic_condition",
+      "entity_type": "metric",
+      "data_type": "number",
+      "normalizer": "generic_condition",
+      "compiler": "campaign_purchase_aggregate",
+      "allowed_operators": [">", ">=", "<", "<="],
+      "supported_windows": true,
+      "supported_aggregations": ["sum", "avg"],
+      "default_aggregation": "sum",
+      "data_source": "campaign_response",
+      "active": true
+    }
+  },
+  "alias_extensions": {
+    "purchase_amount": ["결제한 돈", "최근 쓴 금액", "소비액", "쓴 돈", "주문 총액", "주문총액"],
+    "order_count": ["결제횟수", "구매 건수"]
+  }
+}
