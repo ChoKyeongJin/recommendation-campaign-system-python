@@ -1,0 +1,16 @@
+{
+  "description": "모듈 줄 수 상한(하향 전용 래칫). 올리려면 커밋 메시지에 사유가 필요하다. 자동 재생성 도구는 일부러 두지 않았다 — 손으로 고치는 마찰이 목적이다.",
+  "recorded_at": "2026-08-01",
+  "reason": "graph_rag.py 분할 Phase 1 완료 시점(29,775 → 26,307)의 값 + 여유 200 으로 최초 기록.",
+  "max_lines": {
+    "graph_rag.py": 26507,
+    "rag/attribute_tokens.py": 383,
+    "rag/config.py": 245,
+    "rag/failure_stage.py": 381,
+    "rag/llm_io.py": 383,
+    "rag/message.py": 1457,
+    "rag/plan_inspect.py": 262,
+    "rag/search.py": 768,
+    "rag/trace.py": 1329
+  }
+}
