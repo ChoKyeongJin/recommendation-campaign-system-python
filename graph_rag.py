@@ -151,20 +151,17 @@ from condition_evaluation_ir import (PLAN_KEY as CONDITION_EVALUATIONS_KEY, comp
 from query_structurer import (
     COUNTER_LITERAL_RE,
     COUNTER_UNIT_SEMANTICS,
-    CAMPAIGN_QUERY_PLAN_V2_TOOL,
-    CAMPAIGN_QUERY_PLAN_V3_TOOL,
-    CampaignQueryPlanV2,
-    CampaignQueryPlanV3,
-    LLMCampaignQueryPlanStructurer,
-    LLMCampaignQueryPlanV3Structurer,
+    CAMPAIGN_QUERY_PLAN_V4_TOOL,
+    CAMPAIGN_QUERY_PLAN_V4_VERSION,
+    CampaignQueryPlanV4,
+    LLMCampaignQueryPlanV4Structurer,
     QueryPlannerInput,
     QueryStructurer,
     QueryStructuringInput,
     StructuredQuery,
     StructuringContext,
-    as_campaign_query_plan_v2,
-    build_campaign_query_plan_v2_fallback,
-    build_campaign_query_plan_v3_fallback,
+    as_campaign_query_plan_v4,
+    build_campaign_query_plan_v4_fallback,
     build_fallback,
     materialize_semantic_operations,
     verify_campaign_query_identity,
@@ -218,111 +215,37 @@ def _audited_stage(func: Any) -> Any:
     return wrapper
 
 
-def _structure_campaign_query_plan_v2(
+def _structure_campaign_query_plan_v4(
     query: str,
     context: StructuringContext,
     llm_model: str,
     query_structurer: QueryStructurer | None = None,
-) -> CampaignQueryPlanV2:
-    """Produce the campaign IR that is passed unchanged to the planner/compiler."""
+) -> CampaignQueryPlanV4:
+    """Extract the evidence-bound IR that is passed unchanged to the planner/compiler."""
 
     input = QueryStructuringInput(query=query, context=context)
     if query_structurer is not None:
         try:
             structured = query_structurer.structure(input)
-            if isinstance(structured, CampaignQueryPlanV2):
+            if isinstance(structured, CampaignQueryPlanV4):
                 return structured
-            return build_campaign_query_plan_v2_fallback(query)
         except Exception as exc:  # noqa: BLE001 - safe deterministic fallback.
             _write_rag_llm_log(
-                "campaign_query_plan_v2_injected_failed",
+                "campaign_query_plan_v4_injected_failed",
                 {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
             )
-            return build_campaign_query_plan_v2_fallback(query)
+        return build_campaign_query_plan_v4_fallback(
+            query, current_date=context.current_date
+        )
 
     if not os.getenv("OPENAI_API_KEY"):
         _write_rag_llm_log(
-            "campaign_query_plan_v2_skipped",
+            "campaign_query_plan_v4_skipped",
             {"query": query, "reason": "missing_openai_api_key"},
         )
-        return build_campaign_query_plan_v2_fallback(query)
-    try:
-        from openai import OpenAI
-
-        client = OpenAI()
-        call_count = 0
-
-        def complete(messages: list[dict[str, str]]) -> str:
-            nonlocal call_count
-            call_count += 1
-            model = _fast_llm_model(llm_model) or llm_model
-            response = _openai_chat_create(
-                client,
-                model=model,
-                temperature=0,
-                messages=messages,
-                tools=[CAMPAIGN_QUERY_PLAN_V2_TOOL],
-                tool_choice={
-                    "type": "function",
-                    "function": {"name": CAMPAIGN_QUERY_PLAN_V2_TOOL["function"]["name"]},
-                },
-                parallel_tool_calls=False,
-            )
-            message = response.choices[0].message
-            tool_calls = getattr(message, "tool_calls", None) or []
-            if not tool_calls:
-                raise ValueError("campaign QueryPlan v2 tool call missing")
-            function = tool_calls[0].function
-            if function.name != CAMPAIGN_QUERY_PLAN_V2_TOOL["function"]["name"]:
-                raise ValueError(f"unexpected campaign QueryPlan v2 tool: {function.name}")
-            content = function.arguments or "{}"
-            _write_rag_llm_log(
-                "campaign_query_plan_v2_response",
-                {"attempt": call_count, "model": model, "query": query, "content": content},
-            )
-            return content
-
-        return LLMCampaignQueryPlanStructurer(
-            complete,
-            on_event=lambda event, payload: _write_rag_llm_log(
-                event, {"query": query, **payload}
-            ),
-        ).structure(input)
-    except Exception as exc:  # noqa: BLE001 - unavailable provider is a safe fallback.
-        _write_rag_llm_log(
-            "campaign_query_plan_v2_setup_failed",
-            {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
+        return build_campaign_query_plan_v4_fallback(
+            query, current_date=context.current_date
         )
-        return build_campaign_query_plan_v2_fallback(query)
-
-
-def _structure_campaign_query_plan_v3(
-    query: str,
-    context: StructuringContext,
-    llm_model: str,
-    query_structurer: QueryStructurer | None = None,
-) -> CampaignQueryPlanV3:
-    """Extract the evidence-bound semantic IR before legacy parsing."""
-
-    input = QueryStructuringInput(query=query, context=context)
-    if query_structurer is not None:
-        try:
-            structured = query_structurer.structure(input)
-            if isinstance(structured, CampaignQueryPlanV3):
-                return structured
-        except Exception as exc:  # noqa: BLE001 - legacy fallback remains available.
-            _write_rag_llm_log(
-                "campaign_query_plan_v3_injected_failed",
-                {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
-            )
-        return build_campaign_query_plan_v3_fallback(query)
-
-    if not os.getenv("OPENAI_API_KEY"):
-        _write_rag_llm_log(
-            "campaign_query_plan_v3_skipped",
-            {"query": query, "reason": "missing_openai_api_key"},
-        )
-        return build_campaign_query_plan_v3_fallback(query)
 
     try:
         from openai import OpenAI
@@ -339,38 +262,40 @@ def _structure_campaign_query_plan_v3(
                 model=model,
                 temperature=0,
                 messages=messages,
-                tools=[CAMPAIGN_QUERY_PLAN_V3_TOOL],
+                tools=[CAMPAIGN_QUERY_PLAN_V4_TOOL],
                 tool_choice={
                     "type": "function",
-                    "function": {"name": CAMPAIGN_QUERY_PLAN_V3_TOOL["function"]["name"]},
+                    "function": {"name": CAMPAIGN_QUERY_PLAN_V4_TOOL["function"]["name"]},
                 },
                 parallel_tool_calls=False,
             )
             tool_calls = getattr(response.choices[0].message, "tool_calls", None) or []
             if not tool_calls:
-                raise ValueError("campaign QueryPlan v3 tool call missing")
+                raise ValueError("campaign QueryPlan v4 tool call missing")
             function = tool_calls[0].function
-            if function.name != CAMPAIGN_QUERY_PLAN_V3_TOOL["function"]["name"]:
-                raise ValueError(f"unexpected campaign QueryPlan v3 tool: {function.name}")
+            if function.name != CAMPAIGN_QUERY_PLAN_V4_TOOL["function"]["name"]:
+                raise ValueError(f"unexpected campaign QueryPlan v4 tool: {function.name}")
             content = function.arguments or "{}"
             _write_rag_llm_log(
-                "campaign_query_plan_v3_response",
+                "campaign_query_plan_v4_response",
                 {"attempt": call_count, "model": model, "query": query, "content": content},
             )
             return content
 
-        return LLMCampaignQueryPlanV3Structurer(
+        return LLMCampaignQueryPlanV4Structurer(
             complete,
             on_event=lambda event, payload: _write_rag_llm_log(
                 event, {"query": query, **payload}
             ),
         ).structure(input)
-    except Exception as exc:  # noqa: BLE001 - fail closed into legacy rules.
+    except Exception as exc:  # noqa: BLE001 - fail closed into the deterministic fallback.
         _write_rag_llm_log(
-            "campaign_query_plan_v3_setup_failed",
+            "campaign_query_plan_v4_setup_failed",
             {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
         )
-        return build_campaign_query_plan_v3_fallback(query)
+        return build_campaign_query_plan_v4_fallback(
+            query, current_date=context.current_date
+        )
 
 
 CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "subscription", "awareness"}
@@ -2291,14 +2216,14 @@ def build_query_plan(
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
     multi_query_variants: int = 0,
     structured_query: StructuredQuery | None = None,
-    query_plan_v2: CampaignQueryPlanV2 | None = None,
+    query_plan_v4: CampaignQueryPlanV4 | None = None,
     raw_query: str | None = None,
     original_query: str | None = None,
-    query_plan_v2_factory: Callable[[dict[str, Any]], CampaignQueryPlanV2] | None = None,
+    query_plan_v4_factory: Callable[[dict[str, Any]], CampaignQueryPlanV4] | None = None,
     precomputed_scopes: dict[str, Any] | None = None,
     precomputed_surface_signals: dict[str, tuple[str, ...]] | None = None,
     precomputed_semantic_signals: dict[str, semantic_signal.SemanticSignal] | None = None,
-) -> CampaignQueryPlanV2:
+) -> CampaignQueryPlanV4:
     """단일 파싱으로 query_plan 을 만든다. multi_query_variants>0 이고 LLM 사용 가능하면 프롬프트를
     의미보존 재구성한 변이들도 파싱해 '성공적으로 잡힌 타겟 조건'을 base 에 합집합으로 병합한다.
 
@@ -2311,8 +2236,8 @@ def build_query_plan(
     ):
         return _build_query_plan(
             query, normalization_rules, business_policies, sql_schema, parser, llm_model, prompt_dir,
-            multi_query_variants, structured_query, query_plan_v2, raw_query, original_query,
-            query_plan_v2_factory, precomputed_scopes,
+            multi_query_variants, structured_query, query_plan_v4, raw_query, original_query,
+            query_plan_v4_factory, precomputed_scopes,
         )
 
 
@@ -2326,19 +2251,19 @@ def _build_query_plan(
     prompt_dir: Path | None,
     multi_query_variants: int,
     structured_query: StructuredQuery | None,
-    query_plan_v2: CampaignQueryPlanV2 | None,
+    query_plan_v4: CampaignQueryPlanV4 | None,
     raw_query: str | None,
     original_query: str | None,
-    query_plan_v2_factory: Callable[[dict[str, Any]], CampaignQueryPlanV2] | None,
+    query_plan_v4_factory: Callable[[dict[str, Any]], CampaignQueryPlanV4] | None,
     precomputed_scopes: dict[str, Any] | None,
-) -> CampaignQueryPlanV2:
+) -> CampaignQueryPlanV4:
     requested_parser = parser.casefold()
     authority = _query_plan_authority(requested_parser)
-    semantic_plan = query_plan_v2
+    semantic_plan = query_plan_v4
     if (
         authority == "rules_first"
         and requested_parser in {"auto", "llm"}
-        and (semantic_plan is not None or query_plan_v2_factory is not None)
+        and (semantic_plan is not None or query_plan_v4_factory is not None)
     ):
         # The default remains rules-first when no semantic producer was
         # supplied.  An explicit semantic plan/factory is itself an opt-in to
@@ -2353,10 +2278,10 @@ def _build_query_plan(
         authority == "llm_first"
         and requested_parser in {"auto", "llm"}
         and semantic_plan is None
-        and query_plan_v2_factory is not None
+        and query_plan_v4_factory is not None
     ):
         try:
-            proposed = query_plan_v2_factory({})
+            proposed = query_plan_v4_factory({})
             if isinstance(proposed, dict) and proposed.get("intent") != "unknown":
                 semantic_plan = proposed
             else:
@@ -2364,13 +2289,13 @@ def _build_query_plan(
         except Exception as exc:  # noqa: BLE001 - rules are the availability fallback.
             structuring_failure = f"llm_semantic_structuring_failed:{exc.__class__.__name__}"
             _write_rag_llm_log(
-                "campaign_query_plan_v3_factory_failed",
+                "campaign_query_plan_v4_factory_failed",
                 {"query": query, "error": f"{exc.__class__.__name__}: {exc}"},
             )
     initial_parser = (
         "rules"
         if (
-            query_plan_v2_factory is not None
+            query_plan_v4_factory is not None
             and requested_parser in {"auto", "llm"}
             and semantic_plan is None
         )
@@ -2415,7 +2340,7 @@ def _build_query_plan(
     _refresh_unresolved_source_conditions(source_query, base)
     if (
         authority != "llm_first"
-        and query_plan_v2_factory is not None
+        and query_plan_v4_factory is not None
         and requested_parser in {"auto", "llm"}
     ):
         needs_enrichment = (
@@ -2424,7 +2349,7 @@ def _build_query_plan(
             or _query_plan_needs_llm_enrichment(base)
         )
         if needs_enrichment:
-            structured_plan = query_plan_v2_factory(base)
+            structured_plan = query_plan_v4_factory(base)
             llm_candidate = None
             failure_reason = None
             if isinstance(structured_plan, dict) and structured_plan.get("intent") != "unknown":
@@ -2483,7 +2408,7 @@ def _build_query_plan(
     # 미해결 요구로 남긴다. build_sql_result가 같은 검사를 다시 수행하므로 이후 보강 단계의 변경도 반영된다.
     _refresh_unresolved_source_conditions(source_query, base)
     semantic_requirements.verify_source_requirements(base)
-    result = as_campaign_query_plan_v2(
+    result = as_campaign_query_plan_v4(
         base,
         raw_query=preserved_raw_query,
         original_query=source_query,
@@ -2902,7 +2827,7 @@ def _build_single_query_plan(
     llm_model: str = DEFAULT_LLM_MODEL,
     prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
     structured_query: StructuredQuery | None = None,
-    query_plan_v2: CampaignQueryPlanV2 | None = None,
+    query_plan_v4: CampaignQueryPlanV4 | None = None,
     original_query: str | None = None,
     precomputed_scopes: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -2910,7 +2835,7 @@ def _build_single_query_plan(
     if parser not in {"rules", "auto", "llm"}:
         raise ValueError("query parser must be one of: rules, auto, llm.")
     authority = _query_plan_authority(parser)
-    if authority == "rules_first" and parser in {"auto", "llm"} and query_plan_v2 is not None:
+    if authority == "rules_first" and parser in {"auto", "llm"} and query_plan_v4 is not None:
         authority = "llm_first"
     llm_first = authority == "llm_first" and parser in {"auto", "llm"}
 
@@ -2932,13 +2857,13 @@ def _build_single_query_plan(
     # 구조화 결과가 실릴 빈 플랜 골격만 만든다(슬롯 형태는 IR 스키마가 소유한다).
     rules_candidate = _empty_query_plan(parse_query)
     # 조건 소유권 조정·분석 라우팅이 슬롯을 pop/이동하기 전에 원문 요구를 별도 불변 스냅샷으로 봉인한다.
-    # rules와 선행 CampaignQueryPlanV2가 충돌해도 둘 중 하나를 덮지 않고 각각의 requirement로 남긴다.
+    # rules와 선행 CampaignQueryPlanV4가 충돌해도 둘 중 하나를 덮지 않고 각각의 requirement로 남긴다.
     source_query = (
-        query_plan_v2.get("original_query")
+        query_plan_v4.get("original_query")
         if (
-            isinstance(query_plan_v2, dict)
-            and isinstance(query_plan_v2.get("original_query"), str)
-            and query_plan_v2["original_query"].strip()
+            isinstance(query_plan_v4, dict)
+            and isinstance(query_plan_v4.get("original_query"), str)
+            and query_plan_v4["original_query"].strip()
         )
         else (original_query or parse_query)
     )
@@ -2948,15 +2873,15 @@ def _build_single_query_plan(
         )
     ]
     supplied_llm_candidate: dict[str, Any] | None = None
-    if isinstance(query_plan_v2, dict) and query_plan_v2.get("intent") != "unknown":
+    if isinstance(query_plan_v4, dict) and query_plan_v4.get("intent") != "unknown":
         supplied_llm_candidate = _coerce_llm_query_plan_candidate(
-            query_plan_v2, rules_candidate, sql_schema, source_query=source_query
+            query_plan_v4, rules_candidate, sql_schema, source_query=source_query
         )
-        if isinstance(query_plan_v2.get("semantic_evidence"), list):
+        if isinstance(query_plan_v4.get("semantic_evidence"), list):
             supplied_llm_candidate["semantic_evidence"] = copy.deepcopy(
-                query_plan_v2["semantic_evidence"]
+                query_plan_v4["semantic_evidence"]
             )
-        unresolved = query_plan_v2.get("unresolved")
+        unresolved = query_plan_v4.get("unresolved")
         if isinstance(unresolved, list) and unresolved:
             supplied_llm_candidate["unresolved_source_conditions"] = [
                 {
@@ -6372,8 +6297,8 @@ def retrieve(
         timezone=os.getenv("GRAPH_RAG_TIMEZONE"),
     )
     authority = _query_plan_authority(query_parser)
-    campaign_query_plan: CampaignQueryPlanV2 = build_campaign_query_plan_v3_fallback(
-        targeting_prompt
+    campaign_query_plan: CampaignQueryPlanV4 = build_campaign_query_plan_v4_fallback(
+        targeting_prompt, current_date=context.current_date
     )
     timings_ms["query_structuring"] = 0.0
     if authority == "llm_first" and query_parser.casefold() in {"auto", "llm"}:
@@ -6381,27 +6306,21 @@ def retrieve(
         # splitting.  Later stages consume this plan; they do not provide hints
         # back into semantic extraction.
         structuring_started_at = time.perf_counter()
-        campaign_query_plan = _structure_campaign_query_plan_v3(
+        campaign_query_plan = _structure_campaign_query_plan_v4(
             targeting_prompt, context, llm_model, query_structurer
         )
         timings_ms["query_structuring"] = _elapsed_ms(structuring_started_at)
 
-    def lazy_campaign_query_plan(_rules_plan: dict[str, Any]) -> CampaignQueryPlanV2:
+    def lazy_campaign_query_plan(_rules_plan: dict[str, Any]) -> CampaignQueryPlanV4:
         nonlocal campaign_query_plan
         if (
             authority == "llm_first"
-            and campaign_query_plan.get("schema_version") == "3.0"
+            and campaign_query_plan.get("schema_version") == CAMPAIGN_QUERY_PLAN_V4_VERSION
         ):
             return campaign_query_plan
         structuring_started_at = time.perf_counter()
-        campaign_query_plan = (
-            _structure_campaign_query_plan_v3(
-                targeting_prompt, context, llm_model, query_structurer
-            )
-            if authority in {"llm_first", "shadow"}
-            else _structure_campaign_query_plan_v2(
-                targeting_prompt, context, llm_model, query_structurer
-            )
+        campaign_query_plan = _structure_campaign_query_plan_v4(
+            targeting_prompt, context, llm_model, query_structurer
         )
         timings_ms["query_structuring"] = _elapsed_ms(structuring_started_at)
         return campaign_query_plan
@@ -6462,7 +6381,7 @@ def retrieve(
         prompt_dir=prompt_dir,
         multi_query_variants=multi_query_variants,
         original_query=targeting_prompt,
-        query_plan_v2_factory=lazy_campaign_query_plan,
+        query_plan_v4_factory=lazy_campaign_query_plan,
         precomputed_scopes=plan_scopes,
         precomputed_surface_signals=surface_signals,
         precomputed_semantic_signals=semantic_signals,
@@ -9492,7 +9411,7 @@ def _unresolved_source_condition_is_deterministically_resolved(
     if item.get("source") == "llm_semantic_ir" and path:
         return _semantic_missing_field_resolution(query_plan, path) is not None
     if item.get("source") == "llm_semantic_ir" and not path:
-        # V3 모델이 이미 ``target_user.gender=female``로 근거화한 "여자만 추출"을 동시에
+        # V4 모델이 이미 ``target_user.gender=female``로 근거화한 "여자만 추출"을 동시에
         # "성별 제외가 불명확"이라는 path 없는 unresolved로 제출한 실제 장애를 정리한다. path가
         # 없다고 무조건 버리면 진짜 미해결 요구까지 지워지므로, 원문 evidence의 값+극성을 결정론으로
         # 다시 읽고 최종 include/exclude 슬롯이 그 신호를 전부 소유할 때만 해소한다.
@@ -9816,7 +9735,7 @@ def build_sql_result(
     prompt_dir: Path | None = None,
     semantic_verification_model: str | None = None,
 ) -> dict[str, Any]:
-    if isinstance(query_plan, CampaignQueryPlanV2):
+    if isinstance(query_plan, CampaignQueryPlanV4):
         verify_campaign_query_identity(query_plan)
     external_condition_block = _external_condition_blocking_sql_result(query_plan)
     if external_condition_block is not None:
@@ -10416,7 +10335,7 @@ def build_sql_result(
 
     # SQL 후보 생성·검증 전체 과정에서도 최초 원문 요구 스냅샷이 건드려지지 않았음을 마지막에 확인한다.
     semantic_requirements.verify_source_requirements(query_plan)
-    if isinstance(query_plan, CampaignQueryPlanV2):
+    if isinstance(query_plan, CampaignQueryPlanV4):
         verify_campaign_query_identity(query_plan)
     return {
         "sql": selected_sql,

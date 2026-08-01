@@ -88,7 +88,7 @@ _DERIVED = _keys(DERIVED, {
     "selected_route": "선택된 라우트",
     "semantic_resolutions": "의미 해소 흔적",
     "source_requirements": "소스 요구 봉인 원장(다이제스트와 쌍)",
-    "semantic_evidence": "V3 의미 슬롯의 원문 근거",
+    "semantic_evidence": "V4 의미 슬롯의 원문 근거",
     "external_condition_results": "Resolver 감사 스냅샷",
     "external_condition_resolution": "외부 의존성 처리 요약",
     "conceptual_resolutions": "상식 grounding 영수증",

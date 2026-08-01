@@ -17,7 +17,7 @@ import graph_rag
 # 외부 소비처가 참조하는 graph_rag 심볼 전수(공개 + 프라이빗 + 네임스페이스 경유 서브모듈).
 FACADE_SYMBOLS: tuple[str, ...] = (
     "CONDITION_EVALUATION_CANDIDATE_ID",
-    "CampaignQueryPlanV2",
+    "CampaignQueryPlanV4",
     "DEFAULT_COLLECTION",
     "DEFAULT_DATA_PATH",
     "DEFAULT_EMBEDDING_MODEL",

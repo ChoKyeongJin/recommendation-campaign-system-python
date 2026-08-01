@@ -86,26 +86,7 @@ def build_retry_prompt(previous_response: str, error: str) -> str:
     )
 
 
-def build_campaign_query_plan_v2_user_prompt(input: QueryStructuringInput) -> str:
-    context = {
-        "current_date": input.context.current_date,
-        "timezone": input.context.timezone,
-        "conversation_context": input.context.conversation_context,
-    }
-    return "\n\n".join(
-        [
-            "[User Query]\n" + input.query,
-            "[Structuring Context]\n" + json.dumps(context, ensure_ascii=False, indent=2),
-            "응답은 제공된 submit_campaign_query_plan_v2 tool schema를 따른다.",
-            (
-                "질의 identity와 schema_version은 애플리케이션이 주입한다. 모델은 이를 반환하지 말고 "
-                "target_user/exclude/campaign_constraints와 필요한 실행 의미 슬롯만 구조화하라."
-            ),
-        ]
-    )
-
-
-def build_campaign_query_plan_v3_user_prompt(input: QueryStructuringInput) -> str:
+def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> str:
     context = {
         "current_date": input.context.current_date,
         "timezone": input.context.timezone,
@@ -120,7 +101,11 @@ def build_campaign_query_plan_v3_user_prompt(input: QueryStructuringInput) -> st
             "[Structuring Context]\n" + json.dumps(context, ensure_ascii=False, indent=2),
             "[Application-owned Literal Bindings]\n"
             + json.dumps(literal_bindings, ensure_ascii=False, indent=2),
-            "응답은 submit_campaign_query_plan_v3 도구만 호출한다.",
+            "응답은 submit_campaign_query_plan_v4 도구만 호출한다.",
+            (
+                "질의 identity와 schema_version은 애플리케이션이 주입한다. 모델은 이를 반환하지 말고 "
+                "target_user/exclude/campaign_constraints와 필요한 실행 의미 슬롯만 구조화하라."
+            ),
             (
                 "원문을 다시 쓰지 말고 의미를 직접 구조화한다. 모든 채택 슬롯은 semantic_evidence에 "
                 "경로와 원문의 정확한 문자 구간을 남긴다. 스키마 또는 닫힌 어휘로 표현할 수 없는 "

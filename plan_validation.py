@@ -991,9 +991,9 @@ def _collect_unresolved_source_conditions(
                 item,
             ))
 
-    unresolved_v3 = plan.get("unresolved")
-    if isinstance(unresolved_v3, list) and plan.get("ownership_reconciliation_complete") is True:
-        for index, item in enumerate(unresolved_v3):
+    unresolved_v4 = plan.get("unresolved")
+    if isinstance(unresolved_v4, list) and plan.get("ownership_reconciliation_complete") is True:
+        for index, item in enumerate(unresolved_v4):
             if not isinstance(item, Mapping):
                 continue
             issues.append(_issue(

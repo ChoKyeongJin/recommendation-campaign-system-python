@@ -202,31 +202,39 @@ python tools/regex_inventory.py [--set-baseline] [--reason "..."]
 (`_is_concrete_purchase_scope_phrase` + `_GENERIC_PRODUCT_NOUNS` 계열 46개 낱말집합 중 일부)는
 그대로 필요하다. 그 목록의 데이터 이관은 낱말집합 래칫이 관리하는 별건이다.
 
-## QueryPlan V3 LLM-first 전환
+## QueryPlan V4 LLM-first 전환
 
 캠페인 API의 기본 파서는 `auto`이며, 원문을 재작성하거나 정규식으로 읽기 전에 strict
-`CampaignQueryPlanV3` 구조화를 먼저 수행한다. V3는 채택한 슬롯의 원문 구간을
-`semantic_evidence`에 남기고 표현할 수 없는 의미는 `unresolved`로 반환한다. LLM 출력은
-SQL을 포함하지 않으며 기존 결정론 컴파일러와 SQL 검증기를 그대로 통과한다.
+`CampaignQueryPlanV4` 구조화를 먼저 수행한다. V4는 실행기가 그대로 소비하는 실행 슬롯
+계약(구 V2)과 의미 계약(구 V3)을 한 IR로 합친 버전이다: 채택한 슬롯의 원문 구간을
+`semantic_evidence`에 남기고 표현할 수 없는 의미는 `unresolved`로 반환하며, 날짜·숫자
+리터럴은 애플리케이션 소유 `literal_bindings`로 봉인된다. LLM 출력은 SQL을 포함하지
+않으며 기존 결정론 컴파일러와 SQL 검증기를 그대로 통과한다.
 
 | 환경 변수 | 값 | 동작 |
 |---|---|---|
-| `QUERY_PARSER` | `auto`(기본) / `llm` / `rules` | `auto`와 `llm`은 V3 의미 구조화를 사용한다. `rules`는 명시적 레거시 경로다. |
-| `QUERY_PLAN_AUTHORITY` | `llm_first`(기본) | V3가 충돌 슬롯을 소유하고 레거시 규칙은 빈 슬롯만 보완한다. |
+| `QUERY_PARSER` | `auto`(기본) / `llm` / `rules` | `auto`와 `llm`은 V4 의미 구조화를 사용한다. `rules`는 명시적 레거시 경로다. |
+| `QUERY_PLAN_AUTHORITY` | `llm_first`(기본) | V4가 충돌 슬롯을 소유하고 레거시 규칙은 빈 슬롯만 보완한다. |
 | `QUERY_PLAN_AUTHORITY` | `shadow` | 기존 rules-first 실행을 유지하며 `PARSER_SHADOW_*`로 차이를 관측한다. |
 | `QUERY_PLAN_AUTHORITY` | `rules_first` | 즉시 롤백용. 기존 규칙 우선순위와 지연 LLM 보완을 사용한다. |
 
-LLM-first에서 원문 권위 규칙은 실행 플랜을 수정하지 않는다. 복사본에 적용해 V3와 비교하며,
+V4 통합 이후 구조화기는 하나뿐이므로 `QUERY_PLAN_AUTHORITY`는 구조화기 종류를 바꾸지
+않는다(모든 값이 V4 의미 계약 — 근거 스팬 검증·unresolved fail-close — 을 따른다).
+authority는 구조화 시점(즉시/지연)과 후보 우선순위만 바꾸며, 비의미(구 V2) 레인은 없다.
+LLM 의미 구조화를 완전히 우회하는 유일한 경로는 요청별 `query_parser=rules`다.
+
+LLM-first에서 원문 권위 규칙은 실행 플랜을 수정하지 않는다. 복사본에 적용해 V4와 비교하며,
 차이가 있으면 `llm_legacy_semantic_disagreement` 미해결 조건으로 기록해 SQL 생성을 차단한다.
 
 배포 순서:
 
 1. `QUERY_PLAN_AUTHORITY=shadow`, `PARSER_SHADOW_MODE=shadow`로 슬롯별 일치율을 수집한다.
-2. 위험 차이를 골든 코퍼스에 추가하고 V3 스키마·프롬프트를 수정한다. 새 문장별 정규식은 추가하지 않는다.
+2. 위험 차이를 골든 코퍼스에 추가하고 V4 스키마·프롬프트를 수정한다. 새 문장별 정규식은 추가하지 않는다.
 3. `QUERY_PLAN_AUTHORITY=llm_first`로 전환한다.
 4. 장애 시 `QUERY_PLAN_AUTHORITY=rules_first` 또는 요청별 `query_parser=rules`로 되돌린다.
 
-계약 테스트는 `tests/test_campaign_plan_v3.py`가 소유한다. (이 테스트는 규칙 계층 철거와 함께 삭제됨)
+(V2·V3 구현은 2026-08-01 V4로 통합되며 삭제됐다. 계약 테스트였던 `tests/test_campaign_plan_v3.py`는
+규칙 계층 철거와 함께 삭제됨.)
 
 ## 남은 결함 (2026-07-29 기준)
 

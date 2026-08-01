@@ -6,23 +6,16 @@ from typing import Any
 
 from .prompt import (
     COMPLEX_QUERY_STRUCTURER_SYSTEM_PROMPT,
-    build_campaign_query_plan_v2_user_prompt,
-    build_campaign_query_plan_v3_user_prompt,
+    build_campaign_query_plan_v4_user_prompt,
     build_retry_prompt,
     build_structuring_user_prompt,
 )
-from .campaign_plan_v3 import (
-    CampaignQueryPlanV3,
-    attach_campaign_query_plan_v3_identity,
-    build_campaign_query_plan_v3_fallback,
-    validate_campaign_query_plan_v3,
-)
-from .campaign_plan_v2 import (
-    CampaignQueryPlanV2,
+from .campaign_plan_v4 import (
+    CampaignQueryPlanV4,
     CampaignQueryPlanValidationError,
-    attach_campaign_query_plan_v2_identity,
-    build_campaign_query_plan_v2_fallback,
-    validate_campaign_query_plan_v2,
+    attach_campaign_query_plan_v4_identity,
+    build_campaign_query_plan_v4_fallback,
+    validate_campaign_query_plan_v4,
 )
 from .schema import StructuredQueryValidationError, build_fallback, validate_structured_query
 from .types import QueryStructurer, QueryStructuringInput, StructuredQuery
@@ -93,8 +86,13 @@ class LLMQueryStructurer(QueryStructurer):
         return build_fallback(input.query)
 
 
-class LLMCampaignQueryPlanStructurer:
-    """Build the same CampaignQueryPlanV2 object consumed by the executor."""
+class LLMCampaignQueryPlanV4Structurer:
+    """Extract the evidence-bound plan the executor consumes unchanged.
+
+    V4 merges the two former structurers: the executor-shaped slot contract
+    (formerly v2) and the semantic contracts — evidence spans, unresolved
+    reporting, application-owned literals (formerly v3).
+    """
 
     def __init__(
         self,
@@ -110,85 +108,15 @@ class LLMCampaignQueryPlanStructurer:
         if self._on_event is not None:
             self._on_event(event, payload)
 
-    def structure(self, input: QueryStructuringInput) -> CampaignQueryPlanV2:
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "너는 캠페인 타겟팅 QueryPlan v2 구조화기다. "
-                    "실행기가 그대로 소비할 snake_case 필드를 사용하고 JSON 외에는 출력하지 않는다. "
-                    "명시되지 않은 타겟 조건이나 혜택은 만들지 않는다. "
-                    "'기간 내 상위 N개 상품 중 M개를 구매한 회원'처럼 계산으로 정해지는 대상을 "
-                    "리터럴 상품명이나 일반 구매횟수로 바꾸지 말고, entity_set_condition의 "
-                    "aggregation→ranking→member_set AST로 표현한다. 이때 N은 ranking.limit, "
-                    "M은 member_set.cardinality이며 'M개만'은 operator '='이다."
-                ),
-            },
-            {"role": "user", "content": build_campaign_query_plan_v2_user_prompt(input)},
-        ]
-        last_error = "unknown"
-        for attempt in range(self._max_retries + 1):
-            response = ""
-            try:
-                response = self._complete(messages)
-                payload = attach_campaign_query_plan_v2_identity(json.loads(response), input.query)
-                result = validate_campaign_query_plan_v2(payload, query=input.query)
-                self._emit(
-                    "campaign_query_plan_v2_success",
-                    {"attempt": attempt + 1, "query_plan": result.to_dict()},
-                )
-                return result
-            except (
-                json.JSONDecodeError,
-                CampaignQueryPlanValidationError,
-                TypeError,
-                ValueError,
-            ) as exc:
-                last_error = f"{exc.__class__.__name__}: {exc}"
-            except Exception as exc:  # noqa: BLE001 - provider failure is a safe fallback.
-                last_error = f"{exc.__class__.__name__}: {exc}"
-            self._emit(
-                "campaign_query_plan_v2_attempt_failed",
-                {"attempt": attempt + 1, "error": last_error, "response": response},
-            )
-            if attempt < self._max_retries:
-                messages.extend(
-                    [
-                        {"role": "assistant", "content": response},
-                        {"role": "user", "content": build_retry_prompt(response, last_error)},
-                    ]
-                )
-        self._emit(
-            "campaign_query_plan_v2_fallback",
-            {"attempts": self._max_retries + 1, "last_error": last_error},
-        )
-        return build_campaign_query_plan_v2_fallback(input.query)
-
-
-class LLMCampaignQueryPlanV3Structurer:
-    """Extract an evidence-bound semantic plan before legacy parsing runs."""
-
-    def __init__(
-        self,
-        complete: Completion,
-        max_retries: int = 1,
-        on_event: EventSink | None = None,
-    ) -> None:
-        self._complete = complete
-        self._max_retries = max_retries
-        self._on_event = on_event
-
-    def _emit(self, event: str, payload: dict[str, Any]) -> None:
-        if self._on_event is not None:
-            self._on_event(event, payload)
-
-    def structure(self, input: QueryStructuringInput) -> CampaignQueryPlanV3:
+    def structure(self, input: QueryStructuringInput) -> CampaignQueryPlanV4:
         messages = [
             {
                 "role": "system",
                 "content": (
                     "너는 캠페인 요청의 의미 구조화기다. 사용자 원문에서 확인되는 의미만 "
-                    "QueryPlan v3로 제출한다. SQL이나 물리 스키마를 만들지 않는다. 부정, 기간의 "
+                    "QueryPlan v4로 제출한다. 실행기가 그대로 소비할 snake_case 필드를 사용하고 "
+                    "SQL이나 물리 스키마를 만들지 않는다. 명시되지 않은 타겟 조건이나 혜택은 만들지 "
+                    "않는다. 부정, 기간의 "
                     "소유 대상, AND/OR 범위를 보존하고 불확실한 내용은 unresolved로 반환한다. "
                     "missing_fields에는 이 질문의 결과를 계산하는 데 실제로 필수인 값만 넣는다. 고객 "
                     "리스트 요청에 사용자가 요구하지 않은 캠페인 채널·혜택·상품·목표를 추가로 요구하지 "
@@ -197,24 +125,30 @@ class LLMCampaignQueryPlanV3Structurer:
                     "external_conditions에는 조건 종류만 기록하고 실제 지역이나 수치를 생성하지 않는다. "
                     "과거 캠페인명·상품명에 포함된 단어는 실시간 외부 조건으로 만들지 않는다. "
                     "application-owned literal 두 날짜와 퍼센트·비교 연산자가 있으면 값을 다시 만들지 "
-                    "말고 period_over_period_change의 baseline/current/threshold/comparison으로 연결한다."
+                    "말고 period_over_period_change의 baseline/current/threshold/comparison으로 연결한다. "
+                    "'기간 내 상위 N개 상품 중 M개를 구매한 회원'처럼 계산으로 정해지는 대상을 "
+                    "리터럴 상품명이나 일반 구매횟수로 바꾸지 말고, entity_set_condition의 "
+                    "aggregation→ranking→member_set AST로 표현한다. 이때 N은 ranking.limit, "
+                    "M은 member_set.cardinality이며 'M개만'은 operator '='이다."
                 ),
             },
-            {"role": "user", "content": build_campaign_query_plan_v3_user_prompt(input)},
+            {"role": "user", "content": build_campaign_query_plan_v4_user_prompt(input)},
         ]
         last_error = "unknown"
         for attempt in range(self._max_retries + 1):
             response = ""
             try:
                 response = self._complete(messages)
-                payload = attach_campaign_query_plan_v3_identity(
+                payload = attach_campaign_query_plan_v4_identity(
                     json.loads(response),
                     input.query,
                     current_date=input.context.current_date,
                 )
-                result = validate_campaign_query_plan_v3(payload, query=input.query)
+                result = validate_campaign_query_plan_v4(
+                    payload, query=input.query, require_semantic=True
+                )
                 self._emit(
-                    "campaign_query_plan_v3_success",
+                    "campaign_query_plan_v4_success",
                     {"attempt": attempt + 1, "query_plan": result.to_dict()},
                 )
                 return result
@@ -228,7 +162,7 @@ class LLMCampaignQueryPlanV3Structurer:
             except Exception as exc:  # noqa: BLE001 - provider failure uses legacy fallback.
                 last_error = f"{exc.__class__.__name__}: {exc}"
             self._emit(
-                "campaign_query_plan_v3_attempt_failed",
+                "campaign_query_plan_v4_attempt_failed",
                 {"attempt": attempt + 1, "error": last_error, "response": response},
             )
             if attempt < self._max_retries:
@@ -239,9 +173,9 @@ class LLMCampaignQueryPlanV3Structurer:
                     ]
                 )
         self._emit(
-            "campaign_query_plan_v3_fallback",
+            "campaign_query_plan_v4_fallback",
             {"attempts": self._max_retries + 1, "last_error": last_error},
         )
-        return build_campaign_query_plan_v3_fallback(
+        return build_campaign_query_plan_v4_fallback(
             input.query, current_date=input.context.current_date
         )

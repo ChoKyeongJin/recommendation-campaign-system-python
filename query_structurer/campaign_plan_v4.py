@@ -8,8 +8,15 @@ from typing import Any
 from entity_set import derived_set_ast_error
 import targeting_ir
 
+from .semantic_ir import (
+    SEMANTIC_IR_LLM_JSON_SCHEMA,
+    empty_semantic_ir,
+    extract_literal_bindings,
+    validate_semantic_ir,
+)
 
-CAMPAIGN_QUERY_PLAN_VERSION = "2.1"
+
+CAMPAIGN_QUERY_PLAN_V4_VERSION = "4.0"
 QUERY_IDENTITY_DIGEST_KEY = "query_identity_digest"
 CAMPAIGN_INTENTS = {
     "recommend_campaign",
@@ -23,12 +30,15 @@ class CampaignQueryPlanValidationError(ValueError):
     """Raised when the shared campaign planning/execution IR is malformed."""
 
 
-class CampaignQueryPlanV2(dict[str, Any]):
-    """The single mutable IR shared by query structuring and SQL execution.
+class CampaignQueryPlanV4(dict[str, Any]):
+    """The single mutable IR shared by LLM structuring and SQL execution.
 
     It deliberately remains a ``dict`` subtype because the existing compiler
     enriches plans in place.  The type gives that payload a versioned contract
     without introducing a second DTO and a lossy front-to-back conversion.
+    On top of the execution contract, every accepted value carries source
+    evidence and anything the model cannot express is returned as an
+    unresolved item instead of being guessed.
     """
 
     @property
@@ -80,6 +90,15 @@ def verify_campaign_query_identity(payload: dict[str, Any]) -> bool:
 
 
 def _nullable(schema: dict[str, Any]) -> dict[str, Any]:
+    if schema.get("type") == "null":
+        return schema
+    if isinstance(schema.get("type"), list) and "null" in schema["type"]:
+        return schema
+    if "anyOf" in schema and any(
+        isinstance(item, dict) and item.get("type") == "null"
+        for item in schema["anyOf"]
+    ):
+        return schema
     return {"anyOf": [schema, {"type": "null"}]}
 
 
@@ -193,8 +212,33 @@ _EXTERNAL_CONDITION_SCHEMA: dict[str, Any] = {
 }
 
 
-CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA: dict[str, Any] = {
-    "$id": "campaign-query-plan-v2",
+_EVIDENCE_ITEM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["path", "text", "start", "end", "confidence"],
+    "properties": {
+        "path": {"type": "string", "minLength": 1},
+        "text": {"type": "string", "minLength": 1},
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 0},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+    },
+}
+
+_UNRESOLVED_ITEM_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["path", "reason", "evidence"],
+    "properties": {
+        "path": {"type": ["string", "null"]},
+        "reason": {"type": "string", "minLength": 1},
+        "evidence": {"type": "string"},
+    },
+}
+
+
+CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA: dict[str, Any] = {
+    "$id": "campaign-query-plan-v4",
     "type": "object",
     "additionalProperties": True,
     "$defs": {
@@ -267,9 +311,12 @@ CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA: dict[str, Any] = {
         "target_user",
         "exclude",
         "campaign_constraints",
+        "semantic_evidence",
+        "unresolved",
+        "semantic_ir",
     ],
     "properties": {
-        "schema_version": {"type": "string", "const": CAMPAIGN_QUERY_PLAN_VERSION},
+        "schema_version": {"type": "string", "const": CAMPAIGN_QUERY_PLAN_V4_VERSION},
         "raw_query": {
             "type": "string",
             "minLength": 1,
@@ -313,6 +360,14 @@ CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA: dict[str, Any] = {
         "set_expressions": {"type": "array", "items": {"type": "object"}},
         "computed_metrics": {"type": "array", "items": {"type": "object"}},
         "result_limit": _nullable({"type": "integer", "minimum": 1}),
+        "semantic_evidence": {"type": "array", "items": _EVIDENCE_ITEM_SCHEMA},
+        "unresolved": {"type": "array", "items": _UNRESOLVED_ITEM_SCHEMA},
+        "semantic_ir": copy.deepcopy(SEMANTIC_IR_LLM_JSON_SCHEMA),
+        "literal_bindings": {
+            "type": "array",
+            "description": "원문 날짜·숫자·퍼센트 리터럴의 애플리케이션 소유 스냅샷. LLM은 생성하지 않는다.",
+            "items": {"type": "object"},
+        },
         "source_requirements": {"type": "array", "items": _SOURCE_REQUIREMENT_SCHEMA},
         "source_requirements_digest": {"type": "string"},
         QUERY_IDENTITY_DIGEST_KEY: {"type": "string"},
@@ -329,6 +384,7 @@ _APPLICATION_OWNED_PLAN_FIELDS = frozenset(
         "original_query",
         "planning_query",
         "normalized_query",
+        "literal_bindings",
         "source_requirements",
         "source_requirements_digest",
         QUERY_IDENTITY_DIGEST_KEY,
@@ -342,9 +398,75 @@ _APPLICATION_OWNED_PLAN_FIELDS = frozenset(
 )
 
 
-def _campaign_query_plan_v2_llm_schema() -> dict[str, Any]:
-    """Tool 호출에서 모델이 결정할 필드만 노출한다."""
-    schema = copy.deepcopy(CAMPAIGN_QUERY_PLAN_V2_JSON_SCHEMA)
+def _strictify(schema: Any, *, required_here: bool = True) -> Any:
+    """Return the fixed strict-function-calling form of a JSON schema.
+
+    Chat Completions strict tools require every object property to be required
+    and every object to reject additional properties.  Fields that used to be
+    optional become required-but-nullable, keeping the semantic distinction
+    without permitting an open-ended payload.
+    """
+
+    if isinstance(schema, list):
+        return [_strictify(item) for item in schema]
+    if not isinstance(schema, dict):
+        return copy.deepcopy(schema)
+
+    out = {key: copy.deepcopy(value) for key, value in schema.items()}
+    # OpenAI strict tools reject const/enum-only property schemas even though
+    # they are valid JSON Schema.  Infer the primitive type so every property
+    # has an explicit provider-compatible shape.
+    if "type" not in out and "const" in out:
+        const = out["const"]
+        out["type"] = (
+            "boolean" if isinstance(const, bool)
+            else "integer" if isinstance(const, int)
+            else "number" if isinstance(const, float)
+            else "string" if isinstance(const, str)
+            else "null" if const is None
+            else "object"
+        )
+    if "type" not in out and isinstance(out.get("enum"), list) and out["enum"]:
+        values = out["enum"]
+        if all(isinstance(value, str) for value in values):
+            out["type"] = "string"
+        elif all(isinstance(value, bool) for value in values):
+            out["type"] = "boolean"
+        elif all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+            out["type"] = "integer"
+    for keyword in ("anyOf", "oneOf", "allOf"):
+        if isinstance(out.get(keyword), list):
+            out[keyword] = [_strictify(item) for item in out[keyword]]
+    if isinstance(out.get("items"), dict):
+        out["items"] = _strictify(out["items"])
+    if isinstance(out.get("$defs"), dict):
+        out["$defs"] = {
+            name: _strictify(value) for name, value in out["$defs"].items()
+        }
+
+    properties = out.get("properties")
+    if isinstance(properties, dict):
+        originally_required = set(out.get("required") or [])
+        strict_properties: dict[str, Any] = {}
+        for name, value in properties.items():
+            strict_value = _strictify(value)
+            if name not in originally_required:
+                strict_value = _nullable(strict_value)
+            strict_properties[name] = strict_value
+        out["properties"] = strict_properties
+        out["required"] = list(strict_properties)
+        out["additionalProperties"] = False
+    elif out.get("type") == "object":
+        out["properties"] = {}
+        out["required"] = []
+        out["additionalProperties"] = False
+
+    return out
+
+
+def _campaign_query_plan_v4_llm_schema() -> dict[str, Any]:
+    """Tool 호출에서 모델이 결정할 필드만 strict 형태로 노출한다."""
+    schema = copy.deepcopy(CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA)
     schema.pop("$id", None)
     schema["required"] = [
         key for key in schema.get("required", []) if key not in _APPLICATION_OWNED_PLAN_FIELDS
@@ -352,79 +474,143 @@ def _campaign_query_plan_v2_llm_schema() -> dict[str, Any]:
     properties = schema.get("properties", {})
     for key in _APPLICATION_OWNED_PLAN_FIELDS:
         properties.pop(key, None)
-    return schema
+    return _strictify(schema)
 
 
-CAMPAIGN_QUERY_PLAN_V2_LLM_JSON_SCHEMA = _campaign_query_plan_v2_llm_schema()
+CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA = _campaign_query_plan_v4_llm_schema()
 
 
-CAMPAIGN_QUERY_PLAN_V2_TOOL: dict[str, Any] = {
+CAMPAIGN_QUERY_PLAN_V4_TOOL: dict[str, Any] = {
     "type": "function",
     "function": {
-        "name": "submit_campaign_query_plan_v2",
-        "description": "캠페인 타겟팅 요청을 실행기와 공유하는 QueryPlan v2로 제출한다.",
-        "parameters": CAMPAIGN_QUERY_PLAN_V2_LLM_JSON_SCHEMA,
+        "name": "submit_campaign_query_plan_v4",
+        "description": (
+            "사용자 원문의 캠페인/타겟팅 의미를 실행기와 공유하는 QueryPlan v4로 제출한다. "
+            "SQL이나 물리 컬럼을 만들지 않고 원문 근거와 미해결 의미를 함께 반환한다."
+        ),
+        "strict": True,
+        "parameters": CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA,
     },
 }
 
 
-def attach_campaign_query_plan_v2_identity(payload: Any, query: str) -> Any:
-    """모델 출력에 애플리케이션이 소유하는 버전·질의 identity를 결정론적으로 붙인다."""
+def _normalize_unique_evidence_spans(payload: dict[str, Any], query: str) -> None:
+    """Repair only unambiguous model offsets; never invent evidence text."""
+
+    evidence = payload.get("semantic_evidence")
+    if not isinstance(evidence, list):
+        return
+    for item in evidence:
+        if not isinstance(item, dict) or not isinstance(item.get("text"), str):
+            continue
+        text = item["text"]
+        start, end = item.get("start"), item.get("end")
+        if (
+            isinstance(start, int)
+            and isinstance(end, int)
+            and 0 <= start <= end <= len(query)
+            and query[start:end] == text
+        ):
+            continue
+        occurrences: list[int] = []
+        cursor = 0
+        while text and (found := query.find(text, cursor)) >= 0:
+            occurrences.append(found)
+            cursor = found + 1
+        if len(occurrences) == 1:
+            item["start"] = occurrences[0]
+            item["end"] = occurrences[0] + len(text)
+
+
+def attach_campaign_query_plan_v4_identity(
+    payload: Any,
+    query: str,
+    *,
+    current_date: str | None = None,
+) -> Any:
+    """모델 출력에 애플리케이션이 소유하는 버전·질의 identity·리터럴을 결정론적으로 붙인다."""
     if not isinstance(payload, dict):
         return payload
     enriched = copy.deepcopy(payload)
+    _normalize_unique_evidence_spans(enriched, query)
     enriched.update(
         {
-            "schema_version": CAMPAIGN_QUERY_PLAN_VERSION,
+            "schema_version": CAMPAIGN_QUERY_PLAN_V4_VERSION,
             "raw_query": query,
             "original_query": query,
             "planning_query": query,
             "normalized_query": query,
+            "literal_bindings": extract_literal_bindings(
+                query, current_date=current_date
+            ),
         }
     )
+    enriched[QUERY_IDENTITY_DIGEST_KEY] = campaign_query_identity_digest(enriched)
     return enriched
 
 
-def build_campaign_query_plan_v2_fallback(query: str) -> CampaignQueryPlanV2:
-    plan = CampaignQueryPlanV2(
-        schema_version=CAMPAIGN_QUERY_PLAN_VERSION,
-        raw_query=query,
-        original_query=query,
-        planning_query=query,
-        normalized_query=query,
-        intent="unknown",
-        target_user={},
-        exclude={"gender": [], "interests": [], "lifecycle": []},
-        campaign_constraints={
-            "category": [],
-            "objective": None,
-            "offer_type": None,
-            "channels": [],
-            "sell_object": None,
+def build_campaign_query_plan_v4_fallback(
+    query: str,
+    *,
+    current_date: str | None = None,
+) -> CampaignQueryPlanV4:
+    payload = attach_campaign_query_plan_v4_identity(
+        {
+            "intent": "unknown",
+            "target_user": {},
+            "exclude": {"gender": [], "interests": [], "lifecycle": []},
+            "campaign_constraints": {
+                "category": [],
+                "objective": None,
+                "offer_type": None,
+                "channels": [],
+                "sell_object": None,
+            },
+            "aggregation_request": None,
+            "set_expressions": [],
+            "computed_metrics": [],
+            "external_conditions": [],
+            "compound_dimension_filters": [],
+            "result_limit": None,
+            "semantic_evidence": [],
+            "semantic_ir": empty_semantic_ir(
+                missing_fields=["semantic_interpretation"],
+                message="LLM 의미 구조화를 사용할 수 없습니다.",
+            ),
+            "unresolved": [
+                {
+                    "path": None,
+                    "reason": "llm_structuring_unavailable",
+                    "evidence": query,
+                }
+            ],
         },
-        aggregation_request=None,
-        set_expressions=[],
-        computed_metrics=[],
-        external_conditions=[],
-        compound_dimension_filters=[],
-        result_limit=None,
+        query,
+        current_date=current_date,
     )
-    plan[QUERY_IDENTITY_DIGEST_KEY] = campaign_query_identity_digest(plan)
-    return plan
+    return CampaignQueryPlanV4(payload)
 
 
-def validate_campaign_query_plan_v2(
+def validate_campaign_query_plan_v4(
     payload: Any,
     *,
     query: str | None = None,
     raw_query: str | None = None,
-) -> CampaignQueryPlanV2:
+    require_semantic: bool = False,
+) -> CampaignQueryPlanV4:
+    """실행 계약과 의미 계약을 하나의 검증으로 판정한다.
+
+    ``require_semantic=True``는 LLM 구조화기 경로다: 의미 계층 필드
+    (semantic_evidence/unresolved/semantic_ir/literal_bindings)의 존재와 원문
+    일치를 강제한다. ``False``는 실행기 보강 경로다: 실행 슬롯 계약만 검증하고
+    의미 필드는 보강 단계가 소유권을 이미 회수했으므로 재검증하지 않는다.
+    """
     if not isinstance(payload, dict):
-        raise CampaignQueryPlanValidationError("campaign QueryPlan v2 must be an object")
+        raise CampaignQueryPlanValidationError("campaign QueryPlan v4 must be an object")
     version = payload.get("schema_version")
-    if version != CAMPAIGN_QUERY_PLAN_VERSION:
+    if version != CAMPAIGN_QUERY_PLAN_V4_VERSION:
         raise CampaignQueryPlanValidationError(
-            f"schema_version must be {CAMPAIGN_QUERY_PLAN_VERSION}"
+            f"schema_version must be {CAMPAIGN_QUERY_PLAN_V4_VERSION}"
         )
     preserved_raw_query = _non_empty_string(payload.get("raw_query"), "raw_query")
     if raw_query is not None and preserved_raw_query != raw_query:
@@ -437,7 +623,7 @@ def validate_campaign_query_plan_v2(
     _non_empty_string(payload.get("planning_query"), "planning_query")
     _non_empty_string(payload.get("normalized_query"), "normalized_query")
     if payload.get("intent") not in CAMPAIGN_INTENTS:
-        raise CampaignQueryPlanValidationError("intent is not supported by campaign QueryPlan v2")
+        raise CampaignQueryPlanValidationError("intent is not supported by campaign QueryPlan v4")
     for key in ("target_user", "exclude", "campaign_constraints"):
         if not isinstance(payload.get(key), dict):
             raise CampaignQueryPlanValidationError(f"{key} must be an object")
@@ -486,27 +672,106 @@ def validate_campaign_query_plan_v2(
     strict_source_coverage = payload.get("strict_source_coverage")
     if strict_source_coverage is not None and not isinstance(strict_source_coverage, bool):
         raise CampaignQueryPlanValidationError("strict_source_coverage must be a boolean")
+
+    if require_semantic:
+        _validate_semantic_layer(payload)
+
     actual_identity_digest = campaign_query_identity_digest(payload)
     supplied_identity_digest = payload.get(QUERY_IDENTITY_DIGEST_KEY)
     if supplied_identity_digest is not None and supplied_identity_digest != actual_identity_digest:
         raise CampaignQueryPlanValidationError("query identity digest mismatch")
-    validated = CampaignQueryPlanV2(copy.deepcopy(payload))
+    validated = CampaignQueryPlanV4(copy.deepcopy(payload))
     validated[QUERY_IDENTITY_DIGEST_KEY] = actual_identity_digest
     return validated
 
 
-def as_campaign_query_plan_v2(
+def _validate_semantic_layer(payload: dict[str, Any]) -> None:
+    """의미 계층 계약: 모든 채택 값에 원문 근거, 값 리터럴은 애플리케이션 소유."""
+
+    evidence = payload.get("semantic_evidence")
+    if not isinstance(evidence, list):
+        raise CampaignQueryPlanValidationError("semantic_evidence must be an array")
+    for index, item in enumerate(evidence):
+        if not isinstance(item, dict):
+            raise CampaignQueryPlanValidationError(
+                f"semantic_evidence[{index}] must be an object"
+            )
+        text = item.get("text")
+        start, end = item.get("start"), item.get("end")
+        confidence = item.get("confidence")
+        if not isinstance(text, str) or text not in payload["original_query"]:
+            raise CampaignQueryPlanValidationError(
+                f"semantic_evidence[{index}].text must occur in original_query"
+            )
+        if not all(isinstance(value, int) and not isinstance(value, bool) for value in (start, end)):
+            raise CampaignQueryPlanValidationError(
+                f"semantic_evidence[{index}] must contain integer start/end"
+            )
+        if start < 0 or end < start or payload["original_query"][start:end] != text:
+            raise CampaignQueryPlanValidationError(
+                f"semantic_evidence[{index}] span does not match original_query"
+            )
+        if (
+            not isinstance(confidence, (int, float))
+            or isinstance(confidence, bool)
+            or not 0 <= float(confidence) <= 1
+        ):
+            raise CampaignQueryPlanValidationError(
+                f"semantic_evidence[{index}].confidence must be between 0 and 1"
+            )
+
+    unresolved = payload.get("unresolved")
+    if not isinstance(unresolved, list) or not all(
+        isinstance(item, dict) and isinstance(item.get("reason"), str)
+        for item in unresolved
+    ):
+        raise CampaignQueryPlanValidationError("unresolved must be an array of objects")
+
+    literals = payload.get("literal_bindings")
+    if not isinstance(literals, list):
+        raise CampaignQueryPlanValidationError("literal_bindings must be an array")
+    seen_literal_ids: set[str] = set()
+    for index, item in enumerate(literals):
+        if not isinstance(item, dict):
+            raise CampaignQueryPlanValidationError(
+                f"literal_bindings[{index}] must be an object"
+            )
+        literal_id = item.get("id")
+        start, end = item.get("start"), item.get("end")
+        text = item.get("text")
+        if not isinstance(literal_id, str) or not literal_id or literal_id in seen_literal_ids:
+            raise CampaignQueryPlanValidationError(
+                f"literal_bindings[{index}].id must be unique"
+            )
+        seen_literal_ids.add(literal_id)
+        if not all(isinstance(value, int) and not isinstance(value, bool) for value in (start, end)):
+            raise CampaignQueryPlanValidationError(
+                f"literal_bindings[{index}] must contain integer start/end"
+            )
+        if not isinstance(text, str) or start < 0 or end < start or payload["original_query"][start:end] != text:
+            raise CampaignQueryPlanValidationError(
+                f"literal_bindings[{index}] span does not match original_query"
+            )
+    try:
+        validate_semantic_ir(
+            payload.get("semantic_ir"), literals, payload=payload
+        )
+    except ValueError as exc:
+        raise CampaignQueryPlanValidationError(str(exc)) from exc
+
+
+def as_campaign_query_plan_v4(
     plan: dict[str, Any],
     *,
     original_query: str,
     raw_query: str | None = None,
     planning_query: str | None = None,
     normalized_query: str | None = None,
-) -> CampaignQueryPlanV2:
-    """Attach the v2 identity to an existing execution plan without remapping it."""
+) -> CampaignQueryPlanV4:
+    """Attach the v4 identity to an existing execution plan without remapping it."""
 
     payload = copy.deepcopy(dict(plan))
-    payload["schema_version"] = CAMPAIGN_QUERY_PLAN_VERSION
+    payload["schema_version"] = CAMPAIGN_QUERY_PLAN_V4_VERSION
     payload["raw_query"] = raw_query or payload.get("raw_query") or original_query
     payload["original_query"] = original_query
     payload["planning_query"] = planning_query or payload.get("planning_query") or original_query
@@ -527,7 +792,7 @@ def as_campaign_query_plan_v2(
     payload.setdefault("result_limit", None)
     payload.setdefault("unresolved_source_conditions", [])
     payload[QUERY_IDENTITY_DIGEST_KEY] = campaign_query_identity_digest(payload)
-    return validate_campaign_query_plan_v2(
+    return validate_campaign_query_plan_v4(
         payload,
         query=original_query,
         raw_query=payload["raw_query"],
