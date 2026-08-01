@@ -22,8 +22,6 @@
 
 | 구분                     | 파일                                                                                       | 역할                                                                                                                     |
 | ------------------------ | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| 정규화 사전 인제스터     | `ingest.py`                                                                                | 동의어/부정 동의어를 canonical 값으로 변환                                                                               |
-| 정규화 사전 벡터 인덱싱  | `qdrant_index.py`                                                                          | 사전 용어를 Qdrant 컬렉션에 적재                                                                                         |
 | 캠페인/사용자 RAG 인덱싱 | `rag_index.py`                                                                             | 샘플 노드 전처리, 임베딩 생성, Qdrant 적재                                                                               |
 | DDL 스키마 추출          | `schema_extract.py`                                                                        | PostgreSQL DDL에서 테이블/컬럼/키/인덱스 추출                                                                            |
 | 업무 정책 정의           | `docs/data/business_policies.sample.json`                                                  | 매출 상위, 고매출, 고예산 같은 업무 기준과 SQL 반영 방식을 외부 파일로 정의                                              |
@@ -82,9 +80,7 @@ flowchart TD
 
 ### 4.1 정규화 사전
 
-- 입력: `docs/data/normalization_rules.sample.json`
-- 처리: `ingest.py`, `qdrant_index.py`
-- 출력 컬렉션: `campaign_normalization_terms`
+- 입력: `docs/data/normalization_rules.sample.json` (graph_rag 질의 시 런타임에 직접 로딩)
 
 정규화 사전은 한국어 표현, 영어 표현, 부정 동의어를 canonical 값으로 통합한다. 예를 들어 `여성`, `여자 고객`, `female`은 `female`로 변환된다.
 

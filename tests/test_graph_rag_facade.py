@@ -1,7 +1,7 @@
 """graph_rag façade 계약: 외부 소비 심볼은 분리(rag/ 패키지 이행) 중에도 반드시 보존된다.
 
 graph_rag.py 를 역할별 모듈(rag/)로 나누는 동안 graph_rag 는 재수출 façade 로 남는다.
-아래 목록은 외부 소비처(tests/, tools/, api.py, repro.py, seed_prompts.py,
+아래 목록은 외부 소비처(tests/, tools/, api.py,
 build_member_value_index.py)가 실제로 참조하는 심볼의 전수 스냅샷(2026-07-31)이다 —
 속성 접근(graph_rag.X), from-import, monkeypatch 문자열 참조까지 포함한다.
 
