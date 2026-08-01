@@ -48,13 +48,31 @@ _CODE_FALLBACK: dict[str, Any] = {
         "member_noun_informal": ["유저"],
         "member_noun_honorific": ["고객님"],
         "member_noun_role": ["사람", "구매자", "소비자"],
+        "member_noun_registrant": ["가입자"],
         # 조건 판정 IR의 의미 표지. 낱말은 데이터가 소유하고, 코드에는 조합 구조만 둔다.
         "identity_same": ["동일", "동일한", "같은", "똑같은"],
         "simultaneity": ["동시", "동시에", "함께"],
         "count_result_noun": ["수", "수량", "인원", "인원수", "명수"],
         # 크기 방향어(랭킹 정렬 방향).
-        "direction_high": ["높은", "많은", "큰", "상위"],
-        "direction_low": ["낮은", "적은", "작은", "하위"],
+        "direction_high": ["높은", "많은", "큰"],
+        "direction_low": ["낮은", "적은", "작은"],
+        # 정렬 지시. '상위/하위'는 크기 형용사가 아니라 **순위 구간**을 가리키는 말이라 어휘를 나눈다
+        # (방향 패턴은 둘을 다시 합쳐 예전 낱말 집합을 그대로 낸다). 'top/톱'은 정렬 지시로만 쓰인다.
+        "sort_directive_high": ["상위"],
+        "sort_directive_low": ["하위"],
+        "sort_directive_alias": ["top", "톱"],
+        # 최상급 표지. 공백을 지운 compact 문자열에 매칭하므로 낱말에 공백이 없다.
+        "superlative_most": ["가장많은", "가장많이", "제일많은", "최다"],
+        "superlative_least": ["가장적은", "제일적은", "제일낮은"],
+        # 행 수를 세는 단위. '개'는 '3개월/2개국'처럼 다른 명사의 앞머리가 될 수 있어 배제 꼬리가
+        # 필요하고(그 구조는 코드가 갖는다), '곳/군데'는 그대로 세도 안전하다.
+        "dimension_row_counter": ["곳", "군데"],
+        "dimension_row_counter_ambiguous": ["개"],
+        "dimension_row_counter_exclusion_tail": ["월", "년", "국", "소", "점", "사", "씩"],
+        # '하다' 활용 어미. 명사 바로 뒤에 붙으면 그 낱말이 명사가 아니라 동사라는 표지다('시도한').
+        "verb_ending_hada": ["하", "한", "할", "해", "했", "함"],
+        # 거주 표지. 축 앞에 오면 그 축은 '집계 대상'이 아니라 '거주지'다('많이 사는 시군구').
+        "residence_verb": ["거주하는", "거주", "사는", "살고있는", "밀집"],
         # 비교 표지: 두 값을 견주는 말과, 변화 방향을 나타내는 말.
         "comparison_marker": ["보다", "대비"],
         "change_direction": ["증가", "감소", "늘", "줄", "커진"],
@@ -190,8 +208,19 @@ _CODE_FALLBACK: dict[str, Any] = {
             "exclude": ["사용자"],
             "note": "구매 랭킹 대상 명사. '사용자'만 빠져 있다 — 누락 의심(다른 회원 명사 패턴에는 모두 있다).",
         },
-        "direction_high": {"include": ["direction_high"]},
-        "direction_low": {"include": ["direction_low"]},
+        "direction_high": {"include": ["direction_high", "sort_directive_high"]},
+        "direction_low": {"include": ["direction_low", "sort_directive_low"]},
+        "dimension_rank_high": {
+            "include": ["direction_high", "sort_directive_high", "superlative_most"],
+            "exclude": ["큰"],
+            "note": "축 행 랭킹의 '많은 쪽' 순위 표지. compact 문자열에 매칭하므로 낱말에 공백이 없다. "
+                    "'큰 시군구'는 면적 얘기라 크기 형용사는 제외한다.",
+        },
+        "dimension_rank_low": {
+            "include": ["direction_low", "sort_directive_low", "superlative_least"],
+            "exclude": ["작은"],
+            "note": "축 행 랭킹의 '적은 쪽' 순위 표지. dimension_rank_high 와 대칭으로 크기 형용사를 제외한다.",
+        },
         "period_compare_marker": {
             "include": ["comparison_marker", "change_direction"], "exclude": ["커진"],
             "note": "기간 비교 표지. intra_temporal_compare 와 달리 '커진'이 빠져 있다 — 이관 전 상태 보존.",

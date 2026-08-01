@@ -74,7 +74,6 @@ _CONDITIONS = _keys(CONDITION, {
     "union_condition": "합집합 타겟(A 이거나 B)",
     "group_ranking_target": "그룹별 상위 N",
     "region_density_target": "회원 밀집 지역",
-    "region_member_count_target": "지역 회원수 랭킹",
     "aggregation_request": "사용자가 요청한 집계('회원수를 세어줘')",
     "policy_constraints": "업무 정책으로 실체화되지만 촉발은 사용자 어구",
 })

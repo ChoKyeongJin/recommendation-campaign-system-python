@@ -21,7 +21,8 @@ import graph_rag  # noqa: E402
 # 값 인덱스 계열 — 경계 앞에 있어야 한다(집합식 operand 가 복원할 값을 이들이 만든다).
 VALUE_INDEX_FILTERS = ("dimension", "member_value", "macro_region")
 # 랭킹 감지 계열 — 경계 뒤에 있어야 한다(복원된 값 위에서 판정해야 한다).
-RANKING_FILTERS = ("group_ranking", "region_member_count", "region_density")
+# 지역 회원수 랭킹은 등록형 집계 IR 로 흡수돼 결정론 필터가 아니다(감지는 analytical_intent 소유).
+RANKING_FILTERS = ("group_ranking", "region_density")
 
 
 def test_boundary_filter_exists_in_the_registry() -> None:

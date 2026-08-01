@@ -220,6 +220,7 @@
       "id": "member_count",
       "priority": 250,
       "terms": ["회원 수", "회원수", "고객 수", "고객수", "가입자 수", "가입자수"],
+      "rankingTerms": ["회원", "고객", "가입자"],
       "defaultFunction": "COUNT",
       "allowedFunctions": ["COUNT"],
       "sources": [
@@ -404,6 +405,8 @@
     },
     "sigungu": {
       "terms": ["시군구별", "시군구 별"],
+      "rankingTerms": ["시군구"],
+      "blankIsMissing": true,
       "semanticType": "residence_sigungu",
       "priority": 20,
       "exclusiveGroup": "residence_region",
@@ -414,12 +417,27 @@
     },
     "sido": {
       "terms": ["시도별", "시도 별", "지역별", "지역 별", "권역별"],
+      "rankingTerms": ["시도", "지역"],
+      "blankIsMissing": true,
       "semanticType": "residence_sido",
       "priority": 10,
       "exclusiveGroup": "residence_region",
       "field": {
         "entity": "member", "field": "sido", "table": "CRM_MB_BASEINFO",
         "column": "SIDO", "outputAlias": "SIDO", "semanticType": "residence_sido"
+      }
+    },
+    "dong": {
+      "terms": ["동네별", "동네 별", "읍면동별", "읍면동 별", "행정동별", "행정동 별"],
+      "rankingTerms": ["동네", "읍면동"],
+      "note": "축 표면어는 부분문자열로 매칭되므로 '동별'은 쓰지 않는다 — 활동별·행동별·이동별이 모두 걸려 요청하지 않은 GROUP BY DONG 이 된다.",
+      "blankIsMissing": true,
+      "semanticType": "residence_dong",
+      "priority": 30,
+      "exclusiveGroup": "residence_region",
+      "field": {
+        "entity": "member", "field": "dong", "table": "CRM_MB_BASEINFO",
+        "column": "DONG", "outputAlias": "DONG", "semanticType": "residence_dong"
       }
     },
     "registration_channel": {

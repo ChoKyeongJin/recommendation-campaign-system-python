@@ -968,9 +968,12 @@ def _member_region_short_columns() -> tuple[str, str]:
     return sido, sigungu
 
 
-def _member_age_column(alias: str | None = None) -> str:
-    """Return the configured executable age binding for the member base table."""
+def _member_age_field() -> dict[str, str] | None:
+    """연령의 물리 바인딩(테이블/컬럼) — member_target_filters.json numeric_filters 가 소유한다.
 
+    표현식(``B.AGE``)이 아니라 표/컬럼을 돌려주는 이유: 집계 계약은 소스마다 별칭이 달라
+    별칭 부착을 ``_resolve_field_for_source`` 가 한다(회원 단독 vs 주문상세에서의 조인).
+    """
     entries = _MEMBER_TARGET_FILTERS.get("numeric_filters")
     if not isinstance(entries, list):
         entries = _DEFAULT_MEMBER_TARGET_FILTERS.get("numeric_filters", [])
@@ -987,8 +990,17 @@ def _member_age_column(alias: str | None = None) -> str:
             table.casefold() == _member_table().casefold()
             and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", column)
         ):
-            return f"{alias or _member_alias()}.{column}"
-    return f"{alias or _member_alias()}.AGE"
+            return {"table": table, "column": column}
+    return None
+
+
+def _member_age_column(alias: str | None = None) -> str:
+    """Return the configured executable age binding for the member base table."""
+
+    binding = _member_age_field()
+    if binding is None:
+        return f"{alias or _member_alias()}.AGE"
+    return f"{alias or _member_alias()}.{binding['column']}"
 
 
 def _member_activity_predicate(days: int) -> str:
@@ -3598,7 +3610,7 @@ def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path
     # measures, user filters, and policy filters as separate concepts.
     plan_decisions.drop_slots(
         plan,
-        tuple(("plan", key) for key in ("region_density_target", "region_member_count_target", "group_ranking_target")),
+        tuple(("plan", key) for key in ("region_density_target", "group_ranking_target")),
         owner="analytical_contract",
         reason="집계 계약이 디멘션·측정값·필터를 별도 개념으로 소유 — 타겟팅 전용 그룹/랭킹 슬롯은 술어를 만들면 안 된다",
     )
@@ -3615,7 +3627,7 @@ def _apply_analytical_intent(query: str, plan: dict[str, Any], schema_path: Path
             plan,
             tuple(("plan", key) for key in (
                 "member_metric_selection", "member_column_selection_filter", "cart_aggregate",
-                "group_ranking_target", "region_member_count_target", "region_density_target",
+                "group_ranking_target", "region_density_target",
                 "purchase_count_ranking",
             )),
             owner="analytical_ranking_contract",
@@ -3686,6 +3698,30 @@ _ANALYTICAL_IGNORED_SLOTS = frozenset({"purchase_object_kind", "sell_object"})
 _ANALYTICAL_OWNED_LIFECYCLE = frozenset({"normal_member"})
 
 
+def _analytical_owned_audience_slots(plan: Mapping[str, Any]) -> frozenset[str]:
+    """집계 계약이 직접 컴파일해 회수한 오디언스 슬롯 이름들.
+
+    출처는 **계약 그 자체**다 — 필터가 계약에 실려 있으면 같은 계약에서 렌더된 SQL 에도 그 술어가
+    있다. 별도 회수 목록을 두면 목록과 계약이 어긋나 '슬롯은 비었는데 SQL 엔 조건이 없는' 조용한
+    오답이 가능해지므로, 목록이 아니라 계약에서 파생한다.
+
+    소비자는 '조건이 사라졌다'(_deterministic_dropped_conditions)와 '요청 안 한 조건이 붙었다'
+    (validate_unmentioned_sql_conditions)를 판정하는 두 게이트다. 둘 다 슬롯이 비었다는 사실만
+    보므로, 조건이 계약으로 **옮겨간** 경우를 여기서 구분해 준다.
+    """
+    intent = plan.get("analytical_intent") if isinstance(plan.get("analytical_intent"), dict) else {}
+    owned: set[str] = set()
+    for item in intent.get("filters", []) or []:
+        if not isinstance(item, dict):
+            continue
+        # 코호트 바인더가 실은 필터는 자기가 회수한 슬롯을 계약에 적어 둔다.
+        owned.update(str(slot).partition(":")[0] for slot in item.get("ownsSlots") or ())
+        # 레지스트리 필터(female/vip/app_login_channel)는 기존 소유 표가 안다.
+        for slot, _value in _ANALYTICAL_FILTER_OWNERSHIP.get(str(item.get("id")), ()):
+            owned.add(slot)
+    return frozenset(owned)
+
+
 def _remove_slot_value(plan: dict[str, Any], slot: str, value: str | None, *, reason: str) -> None:
     """분석 계약이 직접 컴파일한 오디언스 슬롯(또는 리스트의 한 값)을 사유와 함께 회수한다."""
     plan_decisions.drop_slots(
@@ -3711,38 +3747,174 @@ def _consume_analytical_scope_conditions(plan: dict[str, Any], intent: dict[str,
             _remove_slot_value(plan, slot, value, reason=f"집계 계약이 필터('{filter_id}')로 직접 컴파일")
 
 
-def _bind_member_condition_filters(plan: dict[str, Any], intent: dict[str, Any]) -> None:
-    """Compile audience canonicals the parser found into the analytical contract.
+@dataclass(frozen=True)
+class _CohortFilter:
+    """집계 계약이 모집단으로 흡수할 수 있는 오디언스 조건 하나.
 
-    ``VIP``/``임직원``/``휴면``/``앱 사용자`` already have one physical definition in
-    ``member_target_filters.json``.  Binding them here means an aggregate over that
-    population reuses the audience definition instead of failing closed — and the
-    count always describes the same rows the member list would return.
+    slots: 바인딩에 **성공했을 때만** 회수할 target_user 슬롯(리스트 값은 "lifecycle:vip" 형태).
+    """
+
+    filter_id: str
+    slots: tuple[str, ...]
+    spec: dict[str, Any]
+
+
+def _age_cohort_filter(
+    filter_id: str, slots: tuple[str, ...], operator: str, bound: int, label: str
+) -> _CohortFilter | None:
+    """연령 경계 하나를 집계 계약의 인라인 필터 spec 으로. 컬럼은 설정(numeric_filters)이 소유한다."""
+    binding = _member_age_field()
+    if binding is None:
+        return None
+    return _CohortFilter(filter_id, slots, {
+        "label": label,
+        "category": "demographic",
+        "field": {"entity": "member", "field": "age", **binding},
+        "operator": operator,
+        "value": int(bound),
+    })
+
+
+def _cohort_filter_candidates(plan: dict[str, Any]) -> list[_CohortFilter]:
+    """집계 계약이 담을 수 있는 모집단 조건 후보 — 담을 수 없는 슬롯은 아예 후보가 되지 않는다.
+
+    성별·생애주기는 member_target_filters.json 의 canonical 이 이미 물리 정의를 갖고 있어
+    (member_condition_filter) 여기에 컬럼 지식이 새로 들어오지 않는다. 연령만 숫자 경계라
+    gte/lte 인라인 spec 이 필요하고, 그 컬럼도 numeric_filters 가 소유한다.
+
+    새 모집단 슬롯(최근 로그인/미접속 기간 등)은 이 함수에 후보 생성 블록 한 개를 더하는 것으로
+    열린다 — 표현마다 빌더를 복제하지 않는다는 것이 등록형 IR 로 옮기는 이유다.
     """
     target_user = plan.get("target_user") if isinstance(plan.get("target_user"), dict) else {}
-    remaining: list[str] = []
+    candidates: list[_CohortFilter] = []
+
+    gender = target_user.get("gender")
+    if isinstance(gender, str) and gender:
+        spec = member_condition_filter(gender)
+        if spec is not None:
+            candidates.append(_CohortFilter(f"cohort_{gender}", ("gender",), spec))
+
+    age_min, age_max = target_user.get("age_min"), target_user.get("age_max")
+    if isinstance(age_min, int) and isinstance(age_max, int) and age_min == age_max:
+        # 정확 연령('30세인')은 >=N AND <=N 이 아니라 = N 으로 낸다 — 의미검증기가 둘을 다르게 읽는다.
+        item = _age_cohort_filter("cohort_age", ("age_min", "age_max"), "eq", age_min, f"{age_min}세")
+        if item is not None:
+            candidates.append(item)
+    else:
+        if isinstance(age_min, int):
+            item = _age_cohort_filter("cohort_age_min", ("age_min",), "gte", age_min, f"{age_min}세 이상")
+            if item is not None:
+                candidates.append(item)
+        if isinstance(age_max, int):
+            item = _age_cohort_filter("cohort_age_max", ("age_max",), "lte", age_max, f"{age_max}세 이하")
+            if item is not None:
+                candidates.append(item)
+
     for canonical in list(target_user.get("lifecycle", []) or []):
         spec = member_condition_filter(str(canonical))
-        if spec is None:
-            remaining.append(str(canonical))
+        if spec is not None:
+            candidates.append(_CohortFilter(f"member_{canonical}", (f"lifecycle:{canonical}",), spec))
+
+    # 값 인덱스가 해석한 회원 속성 조건(지역·직업 등). '서울에서 회원 수가 많은 시군구'의 '서울'이
+    # 여기 들어온다 — 삭제된 지역 회원수 빌더가 하던 모집단 한정을 계약이 이어받는다.
+    for index, item in enumerate(plan.get("dimension_filters") or []):
+        cohort = _dimension_cohort_filter(index, item)
+        if cohort is not None:
+            candidates.append(cohort)
+    return candidates
+
+
+_DIMENSION_FILTER_OPERATORS = {"IN": "in", "NOT_IN": "not_in"}
+
+
+def _dimension_cohort_filter(index: int, item: Any) -> "_CohortFilter | None":
+    """dimension_filters 항목 하나를 집계 계약의 인라인 필터로. 물리 컬럼은 값 인덱스가 소유한다."""
+    if not isinstance(item, Mapping):
+        return None
+    table = str(item.get("table") or "").split(".")[-1]
+    column = str(item.get("column") or "").split(".")[-1]
+    codes = [str(code) for code in (item.get("codes") or []) if isinstance(code, (str, int))]
+    operator = _DIMENSION_FILTER_OPERATORS.get(str(item.get("operator") or "IN").upper())
+    if not (table and column and codes and operator):
+        return None
+    dimension_id = str(item.get("dimension_id") or column)
+    label = str(item.get("prompt_label") or dimension_id)
+    return _CohortFilter(
+        f"cohort_dimension_{index}",
+        (f"dimension_filters:{dimension_id}",),
+        {
+            "label": label,
+            "category": "dimension",
+            "field": {"entity": "member", "field": dimension_id, "table": table, "column": column},
+            "operator": operator,
+            "value": codes,
+        },
+    )
+
+
+def _remove_dimension_filter(plan: dict[str, Any], dimension_id: str, *, reason: str) -> None:
+    """계약이 컴파일한 dimension_filters 항목 하나를 사유와 함께 회수한다(plan 최상위 리스트)."""
+    filters = plan.get("dimension_filters")
+    if not isinstance(filters, list):
+        return
+    kept = [
+        item for item in filters
+        if not (isinstance(item, Mapping) and str(item.get("dimension_id") or "") == dimension_id)
+    ]
+    if len(kept) == len(filters):
+        return
+    plan["dimension_filters"] = kept
+    plan_decisions.record(
+        plan, filter_name="analytical_contract", action=plan_decisions.DROP,
+        slot=f"plan.dimension_filters:{dimension_id}", reason=reason, value=dimension_id,
+    )
+
+
+def _bind_cohort_filter(plan: dict[str, Any], intent: dict[str, Any], cohort: _CohortFilter) -> bool:
+    """후보 하나를 계약에 실어 보고, 계약이 받아들였을 때만 커밋한다(받아들임 = SQL 에 실린다)."""
+    entry = {
+        "id": cohort.filter_id,
+        "label": cohort.spec.get("label", cohort.filter_id),
+        "spec": cohort.spec,
+        # 이 필터가 회수한 슬롯. 하류 게이트 면제(_analytical_owned_audience_slots)의 유일한 근거다.
+        "ownsSlots": list(cohort.slots),
+    }
+    candidate = {**intent, "filters": [*intent.get("filters", []), entry]}
+    try:
+        request = build_deterministic_aggregation_request(candidate)
+    except (KeyError, TypeError, ValueError):
+        # 이 지표 소스가 해당 회원 컬럼에 닿지 못한다 — 조용히 무시하지 않고 미반영으로 남긴다.
+        return False
+    intent["filters"] = candidate["filters"]
+    plan["analytical_intent"] = intent
+    plan["aggregation_request"] = request
+    plan["detected_intent"] = {**(plan.get("detected_intent") or {}), "filters": intent["filters"]}
+    return True
+
+
+def _bind_member_condition_filters(plan: dict[str, Any], intent: dict[str, Any]) -> None:
+    """파서가 찾은 오디언스 조건을 집계 계약의 **모집단 필터**로 컴파일한다.
+
+    ``여성``/``20대``/``VIP``/``휴면`` 은 member_target_filters.json 에 물리 정의가 하나씩 있다.
+    여기서 바인딩하면 그 모집단 위의 집계가 fail-close 되지 않고, 세는 행이 회원 목록이 돌려줄
+    행과 항상 같아진다.
+
+    바인딩에 실패한 조건은 슬롯에 그대로 남는다 — 남은 조건은 _analytical_dropped_conditions 가
+    미반영으로 보고한다(조용한 드롭 금지).
+    """
+    target_user = plan.get("target_user") if isinstance(plan.get("target_user"), dict) else {}
+    for cohort in _cohort_filter_candidates(plan):
+        if not _bind_cohort_filter(plan, intent, cohort):
             continue
-        candidate = {
-            **intent,
-            "filters": [*intent.get("filters", []), {
-                "id": f"member_{canonical}", "label": spec.get("label", canonical), "spec": spec,
-            }],
-        }
-        try:
-            request = build_deterministic_aggregation_request(candidate)
-        except (KeyError, TypeError, ValueError):
-            # 이 지표 소스가 해당 회원 조건에 닿지 못한다 — 조용히 무시하지 않고 미반영으로 남긴다.
-            remaining.append(str(canonical))
-            continue
-        intent["filters"] = candidate["filters"]
-        plan["analytical_intent"] = intent
-        plan["aggregation_request"] = request
-        plan["detected_intent"] = {**(plan.get("detected_intent") or {}), "filters": intent["filters"]}
-    target_user["lifecycle"] = remaining
+        for slot in cohort.slots:
+            name, _, value = slot.partition(":")
+            reason = f"집계 계약이 모집단 필터('{cohort.filter_id}')로 직접 컴파일"
+            if name == "dimension_filters":
+                _remove_dimension_filter(plan, value, reason=reason)
+                continue
+            _remove_slot_value(plan, name, value or None, reason=reason)
+    # 리스트 슬롯은 값 단위로 회수되므로, 남은 값이 곧 '계약이 담지 못한 조건'이다.
+    target_user.setdefault("lifecycle", [])
 
 
 def _analytical_dropped_conditions(plan: dict[str, Any]) -> list[str]:
@@ -3827,7 +3999,6 @@ def classify_query_complexity(query_plan: dict[str, Any]) -> str:
         query_plan.get("set_expressions"),            # 집합식
         query_plan.get("region_density_target"),      # 밀집 지역 랭킹(집계)
         query_plan.get("group_ranking_target"),       # 그룹별 회원 Top-N(PARTITION BY 윈도)
-        query_plan.get("region_member_count_target"), # 지역 단위 회원 수 집계 랭킹
         query_plan.get("member_metric_ranking"),      # 지표 상위 N 랭킹(지표 조인)
         query_plan.get("member_metric_selection"),    # 잔액 등 회원 컬럼 선택(상위 N/N%/평균 대비)
         query_plan.get("purchase_count_ranking"),     # 기간 내 구매 랭킹(주문 집계)
@@ -3907,15 +4078,15 @@ def _deterministic_filter_registry() -> dict[str, _FilterSpec]:
         "member_value": _FilterSpec(_apply_member_value_filters),
         # 광역 권역어(수도권 등)를 구성 시도(SIDO IN)로 확장 — 값 인덱스 뒤에 실행해 명시 시도와 병합.
         "macro_region": _FilterSpec(_apply_macro_region_filter),
-        # 그룹별 회원 Top-N(지역별 … N명씩)·지역 회원수 랭킹은 전역 회원/지역밀집 랭킹보다 먼저 실행해
-        # 그룹/지역-단위 의도를 먼저 확정한다(전역 랭킹이 가로채지 못하게 라우팅 우선순위 소유).
+        # 그룹별 회원 Top-N(지역별 … N명씩)은 전역 회원/지역밀집 랭킹보다 먼저 실행해 그룹 단위 의도를
+        # 먼저 확정한다(전역 랭킹이 가로채지 못하게 라우팅 우선순위 소유). 출력 행이 회원이 아니라
+        # 지역인 '지역 회원수 랭킹'은 결정론 필터가 아니라 등록형 집계 IR(analytical_intent)이 소유한다.
         "group_ranking": _FilterSpec(
             _apply_group_ranking_target,
             # 그룹 랭킹은 떨어진 두 어구(축 표지 + 그룹당 개수)로 성립하므로 절 구간은 둘의 합집합이다.
             span=_spans_union(_group_axis_span, _pattern_span(_GROUP_PER_COUNT_RE)),
             span_slots=(("plan", "group_ranking_target"),),
         ),
-        "region_member_count": _FilterSpec(_apply_region_member_count_target),
         "region_density": _FilterSpec(_apply_region_density_target),
         "member_metric_ranking": _FilterSpec(
             _apply_member_metric_ranking_target,
@@ -4904,13 +5075,13 @@ _RULES_POST_FILTERS: tuple[str, ...] = (
     "signup_channel", "signup_device", "ratio_metric", "profile_date_condition", "balance_condition", "balance_selection", "action_metric",
     "campaign_response", "no_additional_purchase", "campaign_response_frequency", "campaign_buy_amount",
     "campaign_buy_count", "cell_rate", "children_registered", "grade_threshold", "channel_consent", "member_flag", "policy",
-    "group_ranking", "region_member_count", "region_density", "member_metric_ranking", "purchase_count_ranking",
+    "group_ranking", "region_density", "member_metric_ranking", "purchase_count_ranking",
     "zero_amount_purchase", "zero_purchase_count", "metric_trend", "calendar_window_claim",
     "event_expression",
 )
 _AUTO_FILTERS: tuple[str, ...] = (
     "external_condition", "sell_object", "dimension", "member_value", "macro_region",
-    "group_ranking", "region_member_count", "region_density",
+    "group_ranking", "region_density",
     "member_metric_ranking", "purchase_count_ranking", "purchase_date",
     "result_limit", "purchase_inactivity", "recent_login", "signup_channel", "signup_device",
     "ratio_metric", "profile_date_condition", "balance_condition", "balance_selection", "action_metric", "campaign_response", "no_additional_purchase",
@@ -6889,9 +7060,6 @@ def _attach_query_output_contract(query: str, plan: dict[str, Any]) -> None:
         else:
             expected_grain = "analytical"
             requires_member_id = False
-    elif isinstance(plan.get("region_member_count_target"), dict):
-        expected_grain = "region"
-        requires_member_id = False
     else:
         # 타겟 API의 기본 계약은 회원 ID 집합이며 인원수는 실행부가 별도로 계산한다.
         expected_grain = "member"
@@ -6931,7 +7099,7 @@ def _attach_query_output_contract(query: str, plan: dict[str, Any]) -> None:
     # 명시적인 지역 그룹/랭킹 슬롯이 결과 축을 소유하면 일반 "지역=시도" 의미정책은 더 이상 필터
     # requirement가 아니다. 남겨두면 시군구 PARTITION SQL에 B.SIDO를 추가 요구해 정상 SQL을 차단한다.
     if any(isinstance(plan.get(key), dict) for key in (
-        "group_ranking_target", "region_member_count_target", "region_density_target",
+        "group_ranking_target", "region_density_target",
     )):
         plan["semantic_resolutions"] = [
             item for item in plan.get("semantic_resolutions") or []
@@ -8676,23 +8844,6 @@ def _region_granularity_alternation() -> str:
     return "|".join(re.escape(token) for token in tokens)
 
 
-def _region_granularity_match(query: str) -> re.Match[str] | None:
-    """Return an explicit region-granularity token, excluding substrings such as ``구매``.
-
-    Most configured tokens are self-describing words (시도, 시군구, 지역).  Single-syllable
-    tokens such as ``구`` and ``동`` need a following unit boundary; otherwise ``구매`` or ``동안``
-    is misrouted to the regional member-count builder.
-    """
-    for match in re.finditer(rf"({_region_granularity_alternation()})", query):
-        token = match.group(1)
-        if len(token) > 1:
-            return match
-        suffix = query[match.end():]
-        if not suffix or re.match(r"(?:\s|별|단위|마다|지역)", suffix):
-            return match
-    return None
-
-
 def _region_column_bare(granularity: str) -> str:
     """지역 단위어(지역/시군구/시도/동…)를 실컬럼명(SIGUNGU/SIDO/DONG)으로. 매핑에 없으면 기본 컬럼.
 
@@ -9430,58 +9581,6 @@ def _apply_group_ranking_target(query: str, plan: dict[str, Any]) -> None:
     plan.pop("region_density_target", None)
     _consume_metric_labeled_target_policies(plan, metric_info.get("ko_label"))
 
-
-# ── 지역 단위 회원 수 랭킹('회원 수가 많은 시군구 상위 N개') ──────────────────────────────
-# 밀집 지역(region_density: 코호트가 많이 '거주'하는 지역의 회원을 추출)과 달리, 이건 지역 자체의 회원
-# 수를 집계해 '지역명 + 회원수'를 반환하는 지역-단위 랭킹이다(출력 행 = 지역, not 회원). 회원 수는
-# COUNT(DISTINCT 회원키)로 안전 집계한다.
-_MEMBER_COUNT_SIGNAL_RE = re.compile(
-    r"(?:회원|고객|가입자)\s*수|(?:회원|고객|가입자)\s*(?:이|가|은|는)\s*(?:가장\s*|제일\s*)?(?:많|적)"
-)
-_MEMBER_COUNT_HIGH_RE = re.compile(r"많은|높은|상위|가장\s*많|제일\s*많|많은\s*순")
-_MEMBER_COUNT_LOW_RE = re.compile(r"적은|낮은|하위|가장\s*적|제일\s*적|적은\s*순")
-_REGION_COUNT_TOP_N_RE = re.compile(r"([\d,]+)\s*(?:개|곳|군데)")
-
-
-def _apply_region_member_count_target(query: str, plan: dict[str, Any]) -> None:
-    """'회원 수가 많은 시군구 상위 N개' 등을 지역 단위 회원 수 랭킹(region_member_count_target)으로 해석한다.
-
-    build_region_member_count_sql_candidate 가 지역 컬럼으로 GROUP BY 해 COUNT(DISTINCT 회원키)로 회원
-    수를 집계하고, 순위 요청이 있으면 정렬·상위 N 을 적용한다(지역명+회원수 반환). 밀집 지역(거주 회원
-    추출)과는 다른 출력 형태라 별도 슬롯/빌더로 소유한다 — '많이 거주하는' 밀집 표현은 양보한다."""
-    if isinstance(plan.get("group_ranking_target"), dict) or isinstance(plan.get("region_member_count_target"), dict):
-        return
-    # '많이 거주하는 동네/밀집 지역'은 밀집 지역(거주 회원 추출) 트랙 소유 — 여기서 가로채지 않는다.
-    if _REGION_DENSITY_PATTERN.search(query) or _REGION_DENSITY_ALT_PATTERN.search(query):
-        return
-    if not _MEMBER_COUNT_SIGNAL_RE.search(query):
-        return
-    granularity_match = _region_granularity_match(query)
-    if not granularity_match:
-        return
-    granularity = granularity_match.group(1)
-    column = _region_column_bare(granularity)
-    low = bool(_MEMBER_COUNT_LOW_RE.search(query))
-    high = bool(_MEMBER_COUNT_HIGH_RE.search(query))
-    direction = "low" if (low and not high) else "high"
-    config = _region_density_config()
-    max_top_n = int(config.get("max_top_n") or 30)
-    top_n: int | None = None
-    top_match = _REGION_DENSITY_TOP_N_PATTERN.search(query) or _REGION_COUNT_TOP_N_RE.search(query)
-    if top_match:
-        top_n = max(1, min(_parse_count(next((g for g in top_match.groups() if g), None)) or 1, max_top_n))
-    plan["region_member_count_target"] = {
-        "column": column,
-        "granularity": granularity,
-        "direction": direction,
-        "top_n": top_n,
-    }
-    # '지역/동네' 언급으로 잡힌 지역 모호성 정책(region_context_default)은 여기서 구체 해석됐으므로 소비.
-    plan["semantic_resolutions"] = [
-        resolution
-        for resolution in plan.get("semantic_resolutions", [])
-        if resolution.get("policy_id") != "region_context_default"
-    ]
 
 
 # "많이/자주 구입한 사람" 처럼 수량·빈도 부사가 구매 동사 앞에 오는 '구매 많은 순 상위 N' 랭킹 신호.
@@ -10544,7 +10643,6 @@ def _apply_unsupported_intent_gate(query: str, plan: dict[str, Any]) -> None:
         _UNSUPPORTED_GROUP_AXIS_RE.search(query)
         and (_PER_GROUP_SUFFIX_RE.search(query) or _detect_ranking_directive(query) is not None)
         and not isinstance(plan.get("group_ranking_target"), dict)
-        and not isinstance(plan.get("region_member_count_target"), dict)
         and not _entity_set_condition_supported(query)
     ):
         plan["unsupported"] = {
@@ -10566,7 +10664,6 @@ def _apply_unsupported_intent_gate(query: str, plan: dict[str, Any]) -> None:
         and plan.get("member_metric_selection") is None
         and not isinstance(plan.get("region_density_target"), dict)
         and not isinstance(plan.get("group_ranking_target"), dict)
-        and not isinstance(plan.get("region_member_count_target"), dict)
         and not _is_threshold_limited_audience(query, plan)
         # 엔터티 순위('상위 5개 카테고리')는 회원 순위가 아니다 — 기준 지표가 그 절 안에 있고
         # 엔터티 집합 트랙이 컴파일하므로 되묻지 않는다.
@@ -16672,7 +16769,9 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
     target_user = query_plan.get("target_user", {})
     exclude = query_plan.get("exclude", {})
 
-    if signature["genders"] and not (target_user.get("gender") or exclude.get("gender")):
+    # 슬롯이 빈 이유가 '집계 계약이 모집단 필터로 가져갔기 때문'이면 조건은 사라진 게 아니라 옮겨간 것이다.
+    owned_slots = _analytical_owned_audience_slots(query_plan)
+    if signature["genders"] and not (target_user.get("gender") or exclude.get("gender")) and "gender" not in owned_slots:
         for gender in sorted(signature["genders"]):
             warnings.append(f"성별 '{_GENDER_CANONICAL_KO.get(gender, gender)}'")
 
@@ -19231,12 +19330,6 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
                     [_member_table()],
                 )
 
-    region_count = query_plan.get("region_member_count_target")
-    if isinstance(region_count, dict):
-        column = str(region_count.get("column") or "SIGUNGU")
-        _add_token(tokens, "region_member_count_target", "aggregation", "group_by", column,
-                   [f"GROUP BY B.{column}", "COUNT(DISTINCT"], [_member_table()])
-
     # 정렬/랭킹 전용 빌더 조건도 검증 토큰으로 명시한다. 이들은 WHERE 술어가 아니라 TOP/ORDER BY/
     # PARTITION BY 구조라 기존 토큰 생성기가 0개를 반환했고, fail-closed 0-token 게이트에 정상 SQL까지 막혔다.
     for path, value, clauses in (
@@ -20545,9 +20638,6 @@ def _sql_target_builder_registry() -> tuple[tuple[Any, frozenset[str]], ...]:
         (build_member_metric_ranking_sql_candidate, frozenset({"member_metric_ranking"})),
         # 회원 컬럼(잔액) 선택 전략: 상위 N/N%/평균 대비(정렬·TOP/PERCENT·서브쿼리, 단일 테이블).
         (build_member_column_selection_sql_candidate, frozenset({"member_metric_selection"})),
-        # 지역 단위 회원 수 집계 랭킹(회원 수 많은 지역 상위 N): 지역+회원수 반환. 밀집지역(거주 회원 추출)과
-        # 출력 형태가 달라(지역 행 vs 회원 행) 별도 빌더로 소유한다.
-        (build_region_member_count_sql_candidate, frozenset({"region_member_count_target"})),
         # 회원 속성 폴백 + 밀집 지역 랭킹(코호트 조건으로 지역 랭킹 후 거주 회원 타겟).
         (build_member_targets_sql_candidate, frozenset({"region_density_target"})),
     )
@@ -22063,57 +22153,6 @@ def build_group_ranking_sql_candidate(query_plan: dict[str, Any]) -> dict[str, A
     candidate = _sql_candidate(
         "sql_template:group_ranking",
         f"그룹별 회원 Top-N({axis_spec.label}별 {group.get('metric_label', metric_id)}) 타겟 추출 SQL 템플릿(CRMDW)",
-        1.0,
-        sql,
-        _template_tables(sql),
-        "sql_template",
-    )
-    candidate["dropped_conditions"] = compiled["unsupported"]
-    candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in compiled["unsupported"]]
-    return candidate
-
-
-def build_region_member_count_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
-    """'회원 수가 많은 시군구 상위 N개'를 지역 단위 회원 수 랭킹 SQL 로 생성한다(지역명 + 회원수 반환).
-
-    지역 컬럼으로 GROUP BY 해 COUNT(DISTINCT 회원키)로 회원 수를 집계하고, 순위 요청이 있으면 정렬
-    (많은=DESC/적은=ASC)·상위 N(TOP)을 적용한다. 밀집 지역 빌더(거주 회원 추출)와 달리 출력 행이
-    지역이라 회원 추출 SELECT 가 아니다. 코호트(성별/연령 등) 조건이 있으면 집계 모집단을 그만큼 좁힌다."""
-    target = query_plan.get("region_member_count_target")
-    if not isinstance(target, dict):
-        return None
-    column = target.get("column") or "SIGUNGU"
-    group_expr = f"B.{column}"
-    key_column = _member_key_column()
-    count_expr = f"COUNT(DISTINCT B.{key_column})"
-    top_n = target.get("top_n")
-    order_direction = "ASC" if target.get("direction") == "low" else "DESC"
-
-    compiled = compile_member_target_conditions(query_plan)
-    where_clauses = list(compiled["predicates"])
-    if not compiled["forces_state"]:
-        where_clauses.append(_member_active_state_predicate())
-    where_clauses.append(f"{group_expr} IS NOT NULL")
-    where_clauses.append(f"{group_expr} <> ''")
-    where_clauses = _unique_strings(where_clauses)
-
-    top_clause = f"TOP {int(top_n)} " if isinstance(top_n, int) and top_n > 0 else ""
-    select_columns = [
-        f"{top_clause}{group_expr} AS target_region",
-        f"{count_expr} AS member_count",
-    ]
-    sql = "\n".join(
-        [
-            "SELECT " + ", ".join(select_columns),
-            _member_from_clause(),
-            "WHERE " + "\n  AND ".join(where_clauses),
-            f"GROUP BY {group_expr}",
-            f"ORDER BY {count_expr} {order_direction}",
-        ]
-    )
-    candidate = _sql_candidate(
-        "sql_template:region_member_count",
-        f"지역 단위 회원 수 랭킹({target.get('granularity', '지역')}별 회원 수) 추출 SQL 템플릿(CRMDW)",
         1.0,
         sql,
         _template_tables(sql),
@@ -25424,10 +25463,12 @@ def validate_unmentioned_sql_conditions(sql: str, query_plan: dict[str, Any]) ->
     # 그룹별 랭킹의 그룹 축(성별/연령대)은 '필터'가 아니라 '그룹 기준'이다 — 성별 PARTITION·연령대 CASE 가
     # SQL 에 있는 건 사용자가 명시한 그룹 축이므로 '추가된 미명시 조건'으로 오탐하면 안 된다(축별 면제).
     group_axis = _group_ranking_axis(query_plan)
-    if not target_user.get("gender") and not exclude.get("gender") and not (set_expression_terms & GENDER_TERMS) and group_axis != "gender" and _has_gender_filter(normalized_sql):
+    # 집계 계약이 모집단 필터로 가져간 조건은 슬롯이 비어 있어도 사용자가 요청한 조건이다(축별 면제와 같은 자리).
+    owned_slots = _analytical_owned_audience_slots(query_plan)
+    if not target_user.get("gender") and not exclude.get("gender") and not (set_expression_terms & GENDER_TERMS) and group_axis != "gender" and "gender" not in owned_slots and _has_gender_filter(normalized_sql):
         unexpected_conditions.append(_unexpected_sql_condition("target_user.gender", "성별 조건"))
 
-    if target_user.get("age_min") is None and target_user.get("age_max") is None and not target_user.get("age_exclude_ranges") and not any(term.startswith("age_") for term in set_expression_terms) and group_axis != "age_group" and _has_age_filter(normalized_sql):
+    if target_user.get("age_min") is None and target_user.get("age_max") is None and not target_user.get("age_exclude_ranges") and not any(term.startswith("age_") for term in set_expression_terms) and group_axis != "age_group" and not ({"age_min", "age_max"} & owned_slots) and _has_age_filter(normalized_sql):
         unexpected_conditions.append(_unexpected_sql_condition("target_user.age_range", "연령대 조건"))
 
     if not target_user.get("behaviors") and not target_user.get("purchase_object") and not (set_expression_terms & BEHAVIOR_TERMS) and _has_behavior_filter(normalized_sql):
@@ -25867,19 +25908,6 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
                 )
             )
 
-    # 지역 회원 수 랭킹(region_member_count_target)은 지역 GROUP BY 와 회원 수 집계가 SQL 에 있어야 커버로 본다.
-    member_count = query_plan.get("region_member_count_target")
-    if isinstance(member_count, dict):
-        mc_column = member_count.get("column", "SIGUNGU")
-        conditions.append(
-            _condition(
-                "region_member_count_target",
-                mc_column,
-                [mc_column],
-                all_terms=["group by", "count("],
-            )
-        )
-
     # 구매 건수 랭킹(purchase_count_ranking)은 상위 N(TOP)과 정렬(ORDER BY)이 SQL 에 실제로 있어야 커버된
     # 것으로 본다 — 생성부(build_purchase_count_ranking_sql_candidate)-검증부 일치.
     count_ranking = query_plan.get("purchase_count_ranking")
@@ -26148,7 +26176,8 @@ def _sql_candidate(
 
 def _select_ast_candidate(node_id: str, title: str, score: float, ast: "SelectAst", source: str) -> dict[str, Any]:
     """SelectAst 를 렌더(SQL 생성)하고 검증 메타를 실은 후보를 만든다 — 빌더의 AST 경로 공통 꼬리."""
-    sql = render_select_ast(ast)
+    # 행 수 제한(TOP n / LIMIT n)의 문법은 실행 엔진이 정한다 — 방언을 아는 곳은 여기다.
+    sql = render_select_ast(ast, _member_dialect())
     return _sql_candidate(node_id, title, score, sql, _template_tables(sql), source, ast=ast)
 
 

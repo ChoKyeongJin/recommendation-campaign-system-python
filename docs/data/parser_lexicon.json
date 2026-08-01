@@ -77,14 +77,12 @@
     "direction_high": [
       "높은",
       "많은",
-      "큰",
-      "상위"
+      "큰"
     ],
     "direction_low": [
       "낮은",
       "적은",
-      "작은",
-      "하위"
+      "작은"
     ],
     "comparison_marker": [
       "보다",
@@ -508,6 +506,61 @@
     "source_snapshot_noun": [
       "스냅샷",
       "snapshot"
+    ],
+    "sort_directive_high": [
+      "상위"
+    ],
+    "sort_directive_low": [
+      "하위"
+    ],
+    "sort_directive_alias": [
+      "top",
+      "톱"
+    ],
+    "superlative_most": [
+      "가장많은",
+      "가장많이",
+      "제일많은",
+      "최다"
+    ],
+    "superlative_least": [
+      "가장적은",
+      "제일적은",
+      "제일낮은"
+    ],
+    "dimension_row_counter": [
+      "곳",
+      "군데"
+    ],
+    "dimension_row_counter_ambiguous": [
+      "개"
+    ],
+    "dimension_row_counter_exclusion_tail": [
+      "월",
+      "년",
+      "국",
+      "소",
+      "점",
+      "사",
+      "씩"
+    ],
+    "member_noun_registrant": [
+      "가입자"
+    ],
+    "verb_ending_hada": [
+      "하",
+      "한",
+      "할",
+      "해",
+      "했",
+      "함"
+    ],
+    "residence_verb": [
+      "거주하는",
+      "거주",
+      "사는",
+      "살고있는",
+      "밀집"
     ]
   },
   "patterns": {
@@ -579,12 +632,14 @@
     },
     "direction_high": {
       "include": [
-        "direction_high"
+        "direction_high",
+        "sort_directive_high"
       ]
     },
     "direction_low": {
       "include": [
-        "direction_low"
+        "direction_low",
+        "sort_directive_low"
       ]
     },
     "period_compare_marker": {
@@ -662,6 +717,28 @@
       "include": [
         "range_closer"
       ]
+    },
+    "dimension_rank_high": {
+      "include": [
+        "direction_high",
+        "sort_directive_high",
+        "superlative_most"
+      ],
+      "exclude": [
+        "큰"
+      ],
+      "note": "축 행 랭킹의 '많은 쪽' 순위 표지. 공백을 지운 compact 문자열에 매칭하므로 낱말에 공백이 없다. 크기 형용사 '큰'은 '큰 시군구'(면적)로 읽혀 축 개수 표현이 아니라 제외한다."
+    },
+    "dimension_rank_low": {
+      "include": [
+        "direction_low",
+        "sort_directive_low",
+        "superlative_least"
+      ],
+      "exclude": [
+        "작은"
+      ],
+      "note": "축 행 랭킹의 '적은 쪽' 순위 표지. dimension_rank_high 와 대칭으로 크기 형용사 '작은'을 제외한다."
     }
   }
 }

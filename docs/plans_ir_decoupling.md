@@ -15,6 +15,13 @@
 | Wave 4 단일소스화 | 완료 | plan_schema 레지스트리 신설 + ir_snapshot 파생 전환, 미분류 13→0, 분류 모순 0, SQL 리터럴 7→1, 정규화 2→1, unsupported reason 닫힌 집합 |
 | Wave 5 구조 이동 | 미착수 | 착수 게이트(W3-5)는 확보. 부채는 측정·고정됨 |
 
+> **2026-08-01 추가 — 빌더 흡수 파일럿.** 이 문서가 여러 곳에서 예로 드는 `region_member_count_target`
+> 은 더 이상 존재하지 않는다. 표현 하나가 슬롯·빌더·정규식·분류 레지스트리 5개 파일에 걸쳐 있던
+> 것을 **등록형 집계 IR**(analytical_intent + analytics_registry + aggregation_requirements + sql_ast)로
+> 흡수하고 전용 빌더 `build_region_member_count_sql_candidate` 를 삭제했다. 아래 W3-4/W4-4 서술의
+> 그 키는 '미분류였다가 분류된' 사례가 아니라 **'흡수로 사라진'** 사례로 읽어야 한다.
+> 새 지역 축(동/읍면동 등)은 이제 `docs/data/analytics_registry.json` 항목 하나로 열린다.
+
 **단일소스화 성과**
 
 | 대상 | 이전 | 현재 |

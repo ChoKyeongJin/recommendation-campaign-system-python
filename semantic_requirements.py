@@ -70,7 +70,6 @@ _PLAN_REQUIREMENT_SLOTS = frozenset({
     "policy_constraints",
     "purchase_count_ranking",
     "region_density_target",
-    "region_member_count_target",
     "result_limit",
     "set_expressions",
     "union_condition",

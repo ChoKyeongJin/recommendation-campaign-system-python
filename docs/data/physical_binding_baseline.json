@@ -1,9 +1,9 @@
 {
-  "total": 369,
+  "total": 366,
   "tables": 143,
-  "columns": 226,
+  "columns": 223,
   "per_file": {
-    "graph_rag.py": 213,
+    "graph_rag.py": 210,
     "build_table_relationships.py": 68,
     "event_compiler.py": 24,
     "condition_evaluation_ir.py": 14,

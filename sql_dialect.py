@@ -85,6 +85,17 @@ class SqlDialect:
     def concat(self, *parts: str) -> str:
         return f"CONCAT({', '.join(parts)})"
 
+    # ── 행 수 제한(상위 N) ─────────────────────────────────────────
+    # 엔진이 제한을 앞(SELECT TOP n)에 두느냐 뒤(LIMIT n)에 두느냐만 다르다. 두 자리를 모두
+    # 물어보게 해서 렌더러가 위치를 알 필요 없게 한다 — 쓰지 않는 쪽은 빈 문자열이다.
+    def row_limit_prefix(self, limit: int) -> str:
+        """SELECT 바로 뒤에 붙는 제한 구문(없으면 빈 문자열)."""
+        return ""
+
+    def row_limit_suffix(self, limit: int) -> str:
+        """문장 끝에 붙는 제한 구문(없으면 빈 문자열)."""
+        return f"LIMIT {int(limit)}"
+
     # ── 힌트 ───────────────────────────────────────────────────────
     def nolock_hint(self) -> str:
         """더티리드 허용 테이블 힌트(진단용 COUNT 등). 지원 안 하는 엔진은 빈 문자열."""
@@ -120,6 +131,12 @@ class TSqlDialect(SqlDialect):
 
     def coalesce(self, expr: str, default_sql: str) -> str:
         return f"ISNULL({expr}, {default_sql})"
+
+    def row_limit_prefix(self, limit: int) -> str:
+        return f"TOP {int(limit)} "
+
+    def row_limit_suffix(self, limit: int) -> str:
+        return ""
 
     def nolock_hint(self) -> str:
         return " WITH(NOLOCK)"

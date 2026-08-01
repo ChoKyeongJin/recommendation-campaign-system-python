@@ -1037,11 +1037,6 @@ CONDITION_SPECS: tuple[ConditionSpec, ...] = (
         kind="group_ranking_target", fact="order", fact_join=True, signals_target=True,
         extract=_plan_dict("group_ranking_target"),
     ),
-    ConditionSpec(
-        # 지역 단위 회원 수 집계 랭킹('회원 수 많은 시군구 상위 N개'): 지역+회원수 반환(지역 그룹 집계).
-        kind="region_member_count_target", fact="region", fact_join=True, signals_target=True,
-        extract=_plan_dict("region_member_count_target"),
-    ),
 )
 
 _SPECS_BY_KIND = {spec.kind: spec for spec in CONDITION_SPECS}

@@ -20,6 +20,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
+from sql_dialect import SqlDialect, get_dialect
+
 # 서브쿼리/조인 별칭 추출: "FROM <테이블> <별칭>" / "JOIN <테이블> <별칭>" (ON 앞).
 _ALIAS_PATTERN = re.compile(
     r"\b(?:FROM|JOIN)\s+([A-Za-z_][A-Za-z0-9_\.]*)\s+(?!ON\b|WHERE\b|GROUP\b|ORDER\b|HAVING\b)([A-Za-z_][A-Za-z0-9_]*)",
@@ -38,6 +40,8 @@ class SelectAst:
     from_lines: 첫 줄 "FROM <표> <별칭>", 이후 조인 줄("     INNER JOIN ... ON ...") — 들여쓰기 포함 원문.
     where: AND 로 결합되는 술어 목록(각각 완결된 불리언 식; OR 는 술어 내부 괄호로 표현).
     group_by/having/order_by: 집계·랭킹 빌더용(없으면 빈 값).
+    limit: 상위 N 행 제한. **어느 문법으로 렌더할지는 방언이 정한다**(T-SQL 은 SELECT TOP n,
+        그 외는 끝의 LIMIT n) — 빌더가 컬럼 문자열에 "TOP n" 을 박으면 그 SQL 은 그 엔진 전용이 된다.
     """
 
     columns: list[str]
@@ -47,11 +51,19 @@ class SelectAst:
     group_by: list[str] = field(default_factory=list)
     having: list[str] = field(default_factory=list)
     order_by: list[str] = field(default_factory=list)
+    limit: int | None = None
 
 
-def render_select_ast(ast: SelectAst) -> str:
-    """SelectAst → SQL 텍스트. 기존 빌더들의 '\n'.join 포맷과 동일한 모양을 유지한다."""
-    lines = [("SELECT DISTINCT " if ast.distinct else "SELECT ") + ", ".join(ast.columns)]
+def render_select_ast(ast: SelectAst, dialect: "SqlDialect | None" = None) -> str:
+    """SelectAst → SQL 텍스트. 기존 빌더들의 '\n'.join 포맷과 동일한 모양을 유지한다.
+
+    dialect 는 행 수 제한(limit)의 문법만 결정한다. 미지정이면 ANSI(끝의 LIMIT n)다 —
+    실행 엔진을 아는 호출부(graph_rag 의 _member_dialect)가 넘겨준다.
+    """
+    engine = dialect if dialect is not None else get_dialect(None)
+    limited = isinstance(ast.limit, int) and ast.limit > 0
+    prefix = engine.row_limit_prefix(ast.limit) if limited else ""
+    lines = [("SELECT DISTINCT " if ast.distinct else "SELECT ") + prefix + ", ".join(ast.columns)]
     lines.extend(ast.from_lines)
     if ast.where:
         lines.append("WHERE " + "\n  AND ".join(ast.where))
@@ -61,6 +73,10 @@ def render_select_ast(ast: SelectAst) -> str:
         lines.append("HAVING " + "\n   AND ".join(ast.having))
     if ast.order_by:
         lines.append("ORDER BY " + ", ".join(ast.order_by))
+    if limited:
+        suffix = engine.row_limit_suffix(ast.limit)
+        if suffix:
+            lines.append(suffix)
     return "\n".join(lines)
 
 

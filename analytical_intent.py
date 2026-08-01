@@ -474,6 +474,213 @@ def _ranking_direction(query: str) -> str | None:
     return None
 
 
+# ── 디멘션 행 랭킹('회원 수가 많은 시군구 상위 5개') ────────────────────────────────────
+# 회원 행 랭킹(_ranking_direction)과 **출력 단위가 다르다**: 결과 1행이 회원이 아니라 그룹 축
+# 하나다. 따라서 별도 실행 경로가 아니라 grouped_aggregate 위의 ORDER BY 집계 + 상위 N 이다.
+#
+# 어떤 축·지표가 존재하는지는 레지스트리(dimensions/metrics 의 terms·rankingTerms)가 안다 —
+# 여기 있는 것은 순위 문법뿐이고, 새 축(등급별·채널별 …)은 레지스트리 한 줄로 열린다.
+# 표면 낱말은 사전(docs/data/parser_lexicon.json)이 소유하고, 여기 코드에는 **구조**만 둔다.
+_DIMENSION_RANK_HIGH_RE = lexicon_patterns.pattern("dimension_rank_high")
+_DIMENSION_RANK_LOW_RE = lexicon_patterns.pattern("dimension_rank_low")
+# 정렬 지시가 **직접 데리고 있는** 수. 이것이 행 수 제한의 1순위 근거다.
+_SORT_DIRECTIVE_COUNT_RE = re.compile(
+    "(?:" + lexicon_patterns.alternation(
+        "sort_directive_high", "sort_directive_low", "sort_directive_alias"
+    ) + r")(\d+)",
+    re.IGNORECASE,
+)
+# 맨 카운터('시군구 5곳'). '3개월'·'2개국' 같은 기간·단위 명사는 행 수가 아니므로 배제한다 —
+# 문장 아무 데나 있는 수를 행 수 제한으로 읽으면 **요청하지 않은 TOP N** 이 조용히 나간다.
+_DIMENSION_RANK_COUNTER_RE = re.compile(
+    r"(\d+)(?:(?:" + lexicon_patterns.alternation("dimension_row_counter_ambiguous")
+    + ")(?!" + lexicon_patterns.alternation("dimension_row_counter_exclusion_tail") + ")|"
+    + lexicon_patterns.alternation("dimension_row_counter") + ")"
+)
+# 축 뒤 어디든 회원 명사가 있으면 결과 행은 축이 아니라 회원이다('…지역의 회원을 추출').
+# '회원 수'는 지표어이지 출력 단위가 아니므로 (?!수) 로 면제한다.
+_MEMBER_ROW_TAIL_RE = re.compile(
+    "(?:" + lexicon_patterns.alternation("member_noun", "member_noun_registrant") + ")(?!수)"
+)
+# 축 낱말 바로 뒤에 오면 그 낱말이 명사가 아니라 동사 어간인 경우('시도한/시도하는').
+_AXIS_VERB_SUFFIX_RE = re.compile("(?:" + lexicon_patterns.alternation("verb_ending_hada") + ")")
+# 그 자리에 정렬 지시가 오면 동사가 아니다('시군구 **하**위 3개').
+_SORT_DIRECTIVE_HEAD_RE = re.compile(
+    "(?:" + lexicon_patterns.alternation(
+        "sort_directive_high", "sort_directive_low", "sort_directive_alias"
+    ) + ")"
+)
+# 축 바로 앞의 거주 표지('많이 **사는** 시군구'). 이 축은 집계 대상이 아니라 거주지이고,
+# 요청은 '그곳에 사는 회원'이다 — 밀집 지역 트랙(회원 행)이 소유한다.
+_RESIDENCE_VERB_RE = re.compile("(?:" + lexicon_patterns.alternation("residence_verb") + ")")
+# 축 앞에서 거주 표지를 찾는 창(compact).
+_RESIDENCE_LOOKBEHIND = 6
+# 순위 표지와 축 표면어 사이 허용 간격(compact). '많은 시군구'는 0, 조사 한둘까지만.
+_DIMENSION_RANK_ADJACENCY = 2
+# 정렬 지시('상위 3개')와 축 사이 허용 간격. 문장 반대편의 축을 끌어오지 못하게 한다.
+_SORT_DIRECTIVE_REACH = 12
+# 맨 카운터가 축에 붙어 행 수를 세는 것으로 인정하는 간격('시군구 10곳').
+_COUNTER_REACH = 2
+
+
+def _term_positions(
+    specs: Any, compact: str, *, ranking_terms: bool
+) -> list[tuple[str, int, int]]:
+    """(항목 id, 시작, 끝) — 레지스트리 표면어가 이 문장에서 나타난 **모든** compact 좌표.
+
+    ``rankingTerms`` 는 순위 문법 안에서만 축/지표로 읽는 맨 낱말이다(``시군구``·``회원``).
+    그 자체로는 축도 지표도 아니므로(``결제를 시도한``), 인정 여부는 호출부가 문법으로 판정한다.
+
+    첫 등장만 보면 앞 절의 같은 낱말이 진짜 축을 가린다('**지역별** 매출을 보고 회원 수가 많은
+    **시군구** 상위 5개' → 축이 지역으로 잡힌다). 그래서 등장마다 좌표를 낸다.
+    """
+    items = specs.items() if isinstance(specs, dict) else (
+        (str(spec.get("id")), spec) for spec in specs or [] if isinstance(spec, dict)
+    )
+    positions: list[tuple[str, int, int]] = []
+    for item_id, spec in items:
+        if not isinstance(spec, dict):
+            continue
+        terms = [*(spec.get("terms") or [])]
+        if ranking_terms:
+            terms.extend(spec.get("rankingTerms") or [])
+        for term in terms:
+            needle = _compact(str(term))
+            if not needle:
+                continue
+            start = compact.find(needle)
+            while start >= 0:
+                end = start + len(needle)
+                if not _is_verb_stem_use(compact, end):
+                    positions.append((str(item_id), start, end))
+                start = compact.find(needle, start + 1)
+    return positions
+
+
+def _is_verb_stem_use(compact: str, end: int) -> bool:
+    """낱말 바로 뒤가 '하다' 활용이면 그 낱말은 명사가 아니라 동사다('시도한').
+
+    다만 그 자리에 오는 것이 **정렬 지시**면 동사가 아니다 — '시군구 하위 3개'의 '하'는
+    '하위'의 첫 글자다. 한 글자만 보고 자르면 '하위 N' 표현 전체가 축을 잃는다.
+    """
+    tail = compact[end:]
+    if not _AXIS_VERB_SUFFIX_RE.match(tail[:1]):
+        return False
+    return _SORT_DIRECTIVE_HEAD_RE.match(tail) is None
+
+
+def _ranking_cues(compact: str) -> list[tuple[int, int, str]]:
+    """(시작, 끝, 방향) — 문장에 나타난 순위 표지를 **등장 순서대로**.
+
+    방향을 '문장에 낮은 표지가 하나라도 있으면 ASC' 로 정하면, 무관한 절의 ``하위 등급``이
+    정렬을 통째로 뒤집는다. 순위에 실제로 참여한 표지 하나만 방향을 정해야 한다.
+    """
+    cues = [
+        (match.start(), match.end(), direction)
+        for pattern, direction in ((_DIMENSION_RANK_LOW_RE, "ASC"), (_DIMENSION_RANK_HIGH_RE, "DESC"))
+        for match in pattern.finditer(compact)
+    ]
+    return sorted(cues)
+
+
+def _dimension_ranking(query: str, compact: str, registry: dict[str, Any]) -> dict[str, Any] | None:
+    """그룹 축 행을 지표로 줄세우는 요청이면 {dimension, direction, limit} 를 돌려준다.
+
+    두 가지 표면형만 인정한다 — 둘 다 '줄세우는 대상이 축'이라는 것이 문장에 드러난 경우다:
+      (a) 순위 표지 바로 뒤에 축이 온다: ``회원 수가 **많은 시군구**``
+      (b) 정렬 지시가 개수를 데리고 축 가까이 있다: ``시도별 회원 수 **상위 3개**``
+
+    셋 중 하나라도 걸리면 물러난다 — 요청된 행이 축이 아니기 때문이다:
+      ``N명``(그룹별 회원 Top-N 트랙), 축 뒤의 회원 명사(``…지역**의 회원**`` 밀집 거주자 트랙),
+      순위 표지 앞에 지표어가 없음(``**실적은** 시군구별…`` — 무엇이 많은지가 앞에 없으면 순위가 아니다).
+    """
+    if _EXPLICIT_MEMBER_LIMIT_RE.search(query):
+        return None
+    axes = _term_positions(registry.get("dimensions"), compact, ranking_terms=True)
+    if not axes:
+        return None
+    metrics = _term_positions(registry.get("metrics"), compact, ranking_terms=True)
+    directive = _SORT_DIRECTIVE_COUNT_RE.search(compact)
+    counter = _DIMENSION_RANK_COUNTER_RE.search(compact)
+    for cue_start, cue_end, direction in _ranking_cues(compact):
+        # 무엇을 기준으로 줄세우는가(지표)가 표지보다 앞에 있어야 순위 표현이다.
+        if not any(metric_end <= cue_start for _id, _start, metric_end in metrics):
+            continue
+        carries_count = directive is not None and directive.start() == cue_start
+        for dimension_id, start, end in axes:
+            adjacent = 0 <= start - cue_end <= _DIMENSION_RANK_ADJACENCY
+            near_directive = carries_count and abs(cue_start - end) <= _SORT_DIRECTIVE_REACH
+            if not adjacent and not near_directive:
+                continue
+            if _MEMBER_ROW_TAIL_RE.search(compact[end:]):
+                continue  # 축 뒤에 회원 명사 — 결과 행은 축이 아니라 회원이다
+            if _RESIDENCE_VERB_RE.search(compact[max(0, start - _RESIDENCE_LOOKBEHIND): start]):
+                continue  # '많이 사는 시군구' — 밀집 지역(거주 회원 추출) 트랙 소유
+            return {
+                "dimension": dimension_id,
+                "direction": direction,
+                "limit": _ranking_limit(directive, counter, end),
+                "surface": compact[cue_start:cue_end],
+            }
+    return None
+
+
+def _promote_ranked_axis(axis: str, dimensions: list[str], registry: dict[str, Any]) -> list[str]:
+    """순위 절이 지목한 축을 결과 축으로 올린다.
+
+    결과 행의 단위를 정하는 것은 순위 절이다 — '**지역별** 매출을 보고 회원 수가 많은 **시군구**
+    상위 5개'에서 그룹 축은 시군구다. 같은 배타 그룹(residence_region)의 다른 축이 문장 앞쪽에서
+    잡혀 있으면 그것을 대체하고, 다른 축(성별 등)은 그대로 둔다.
+    """
+    if axis in dimensions:
+        return dimensions
+    group = _dimension_spec(registry, axis).get("exclusiveGroup")
+    kept = [
+        item for item in dimensions
+        if not group or _dimension_spec(registry, item).get("exclusiveGroup") != group
+    ]
+    return [axis, *kept]
+
+
+def _match_ranking_metric(compact: str, registry: dict[str, Any]) -> dict[str, Any] | None:
+    """순위 문법 안에서만 지표로 읽는 맨 낱말로 지표를 찾는다('회원이 가장 많은' → member_count).
+
+    ``회원``·``고객``을 일반 지표어로 열면 회원 조건이 있는 모든 문장이 집계로 오독되므로,
+    이 조회는 축 랭킹이 이미 성립한 뒤에만 부른다.
+    """
+    catalog = {
+        str(metric.get("id")): metric
+        for metric in registry.get("metrics", []) or []
+        if isinstance(metric, dict) and metric.get("id")
+    }
+    positions = _term_positions(registry.get("metrics"), compact, ranking_terms=True)
+    if not positions:
+        return None
+    best = max(
+        positions,
+        key=lambda item: (int(catalog.get(item[0], {}).get("priority", 0)), item[2] - item[1]),
+    )
+    return catalog.get(best[0])
+
+
+def _ranking_limit(
+    directive: "re.Match[str] | None", counter: "re.Match[str] | None", axis_end: int
+) -> int | None:
+    """행 수 제한. 정렬 지시가 데려온 수가 1순위, 축에 붙은 맨 카운터가 2순위, 없으면 None.
+
+    방향을 정한 표지와 개수를 데려온 표지는 다를 수 있다('… **많은** 시군구 **상위 10곳**').
+    그래서 제한은 방향과 따로, **축에서 가까운가**로만 판정한다. 문장 아무 데나 있는 수
+    ('장바구니에 3개 이상')는 축에서 멀어 탈락한다 — 없는 제한을 지어내면 요청하지 않은 TOP N 이다.
+
+    None 은 '제한 없음'(정렬만)이다.
+    """
+    if directive is not None and abs(directive.start() - axis_end) <= _SORT_DIRECTIVE_REACH:
+        return int(directive.group(1))
+    if counter is not None and 0 <= counter.start() - axis_end <= _COUNTER_REACH:
+        return int(counter.group(1))
+    return None
+
+
 # ---------------------------------------------------------------------------
 # 소스 선택 — 요청된 축·스코프·필터·기간을 모두 담을 수 있는 소스를 찾는다.
 # ---------------------------------------------------------------------------
@@ -671,6 +878,10 @@ def intent_evidence(query: str, intent: dict[str, Any], registry: dict[str, Any]
         ranking = _RANKING_LOW_RE.search(query) or _RANKING_HIGH_RE.search(query)
         if ranking is not None:
             items.append({"role": "ranking", "surface": ranking.group(0), "span": [ranking.start(), ranking.end()]})
+    elif isinstance(intent.get("ranking"), dict):
+        # 축 랭킹의 순위 표지도 이 해석을 성립시킨 근거다 — 빠뜨리면 '근거가 전부 남의 것'으로
+        # 판정돼(중복 해석 방지 게이트) 정상 축 랭킹이 조용히 승격되지 않는다.
+        add("ranking", intent["ranking"].get("surface"))
     return items
 
 
@@ -708,6 +919,17 @@ def _analyze_analytical_intent(
     function = _match_aggregate_function(compact, registry)
     dimensions = _match_dimensions(compact, registry)
     ranking_direction = _ranking_direction(query)
+    dimension_ranking = _dimension_ranking(query, compact, registry)
+    if dimension_ranking is not None:
+        # 맨 낱말('시군구'·'회원')은 순위 문법 안에서만 축·지표다 — 그 판정이 섰으니 이제 축이고 지표다.
+        # ('회원이 가장 많은 시군구' 처럼 '수' 없이 세는 표현이 여기서 지표를 얻는다)
+        dimensions = _promote_ranked_axis(dimension_ranking["dimension"], dimensions, registry)
+        if metric is None:
+            metric = _match_ranking_metric(compact, registry)
+    # 결과 행이 그룹 축인 요청은 '회원을 고르는 문장'이 아니다. 아래 회원 선택 방어들은 임계·비교
+    # 표현이 있는 문장을 집계로 오인하지 않기 위한 것인데, 축 랭킹에서는 그 표현이 출력 단위를
+    # 바꾸지 않고 모집단만 한정한다 — 그대로 두면 축 랭킹이 통째로 회원 목록으로 되돌아간다.
+    member_selection_guard = dimension_ranking is None
 
     # Explicit top-N member requests belong to the existing configurable
     # audience-ranking path.  The analytical path below owns only the default
@@ -729,13 +951,13 @@ def _analyze_analytical_intent(
 
     # Member-valued thresholds are selection predicates.  Ranking is checked
     # first because ``가장 많은 회원`` is genuinely analytical.
-    if ranking_direction is None and _MEMBER_TARGET_RE.search(query) and _MEMBER_VALUE_PREDICATE_RE.search(query):
+    if member_selection_guard and ranking_direction is None and _MEMBER_TARGET_RE.search(query) and _MEMBER_VALUE_PREDICATE_RE.search(query):
         return None
-    if ranking_direction is None and _MEMBER_TARGET_RE.search(query) and _TARGETING_COMPARISON_RE.search(query):
+    if member_selection_guard and ranking_direction is None and _MEMBER_TARGET_RE.search(query) and _TARGETING_COMPARISON_RE.search(query):
         return None
-    if ranking_direction is None and _MEMBER_TARGET_RE.search(query) and _MEMBER_METRIC_COMPARISON_RE.search(query):
+    if member_selection_guard and ranking_direction is None and _MEMBER_TARGET_RE.search(query) and _MEMBER_METRIC_COMPARISON_RE.search(query):
         return None
-    if ranking_direction is None and _MEMBER_TARGET_RE.search(query) and _MEMBER_NUMERIC_PREDICATE_RE.search(query):
+    if member_selection_guard and ranking_direction is None and _MEMBER_TARGET_RE.search(query) and _MEMBER_NUMERIC_PREDICATE_RE.search(query):
         return None
 
     aggregate_signal = bool(function or dimensions or _OUTPUT_ACTION_RE.search(query))
@@ -753,7 +975,9 @@ def _analyze_analytical_intent(
                 "clarification": UNSUPPORTED_CLARIFICATIONS["unresolved_aggregate_metric"],
             }
         return None
-    if ranking_direction:
+    # 회원 극값(TOP 1 회원) 계약. 같은 문장이 축 랭킹으로도 읽히면 축 랭킹이 이긴다 —
+    # '가장 많은 시군구'의 결과 행은 회원이 아니라 시군구다.
+    if ranking_direction and dimension_ranking is None:
         return _ranking_intent(metric, ranking_direction)
     # Amount thresholds and ranking phrases are audience conditions, not scalar/grouped analytics.
     if _TARGETING_COMPARISON_RE.search(query) and not function and not dimensions:
@@ -793,6 +1017,8 @@ def _analyze_analytical_intent(
         "scopes": scopes,
         "window_days": window_days,
         "comparison": None,
+        # 축 행의 정렬·상위 N. 없으면 None(그룹 집계 전체 행).
+        "ranking": dimension_ranking,
         "result_shape": "grouped_rows" if dimensions else "scalar",
         "target_entity": None,
         "member_policy": resolve_member_scope(query),
@@ -1024,14 +1250,31 @@ def build_aggregation_request(
         groupings = [member_ref, *dimensions]
     else:
         groupings = list(dimensions)
+    # 축 행 랭킹은 IR 이 이미 가진 sorting/ranking 계약으로 표현한다(정렬 기준은 컬럼이 아니라 지표 id).
+    axis_ranking = intent.get("ranking") if isinstance(intent.get("ranking"), dict) else None
+    sorting = (
+        [{"metricId": metric_id, "direction": str(axis_ranking["direction"]).casefold()}]
+        if axis_ranking else []
+    )
+    # ranking 계약은 '상위 N' 요청 자체다 — 제한 개수가 없으면 켜지 않는다(계약 검증이 limit>=1 을
+    # 요구하므로, 켜고 비워 두면 '회원 수가 많은 시군구'(제한 없는 정렬)가 plan 통째로 무효가 된다).
+    axis_limit = axis_ranking.get("limit") if axis_ranking else None
+    ranking_contract: dict[str, Any] = {"enabled": False, "partitionBy": []}
+    if axis_ranking and isinstance(axis_limit, int) and axis_limit > 0:
+        ranking_contract = {
+            "enabled": True,
+            "type": "bottom" if str(axis_ranking["direction"]).upper() == "ASC" else "top",
+            "limit": int(axis_limit),
+            "partitionBy": [], "orderByMetricId": metric_id, "tiePolicy": "first",
+        }
     return {
         "targetEntity": target_entity,
         "outputColumns": dimensions,
         "filters": filters,
         "groupings": groupings,
         "aggregations": [aggregation],
-        "derivedMetrics": [], "sorting": [],
-        "ranking": {"enabled": False, "partitionBy": []},
+        "derivedMetrics": [], "sorting": sorting,
+        "ranking": ranking_contract,
         "postAggregationFilters": [], "relationConditions": relations,
         "dateGrain": None, "comparison": None,
         "businessRules": {
@@ -1047,7 +1290,7 @@ def build_aggregation_request(
             "intentContract": {
                 key: intent.get(key) for key in (
                     "query_type", "aggregate_function", "metric", "dimensions", "filters",
-                    "scopes", "comparison", "result_shape", "target_entity",
+                    "scopes", "comparison", "ranking", "result_shape", "target_entity",
                 )
             },
         },
@@ -1231,6 +1474,24 @@ def compile_aggregation_ast(
     columns.append(f"{_aggregate_expression(function, measure)} AS {measure.get('alias', 'AGGREGATE_VALUE')}")
 
     where = _compile_where(contract, dependencies)
+    # 축 행 랭킹: 집계식으로 정렬하고 상위 N 행만 남긴다. 값이 없는 그룹(NULL/공백)은 '어느
+    # 시군구인가'에 대한 답이 아니므로 순위 모집단에서 제외한다 — 빈 축 값이 1위를 차지하는
+    # 그럴듯한 오답을 막는다. 공백이 결측인지는 축 선언(blankIsMissing)이 안다.
+    ranking = intent.get("ranking") if isinstance(intent.get("ranking"), dict) else None
+    order_by: list[str] = []
+    limit: int | None = None
+    if ranking:
+        # 값이 없는 그룹은 '어느 시군구인가'에 대한 답이 아니므로 순위 모집단에서 뺀다. 다만
+        # **줄세우는 축에만** 적용한다 — 다른 축까지 걸면 요청하지 않은 모집단 축소가 된다.
+        ranked_axis = str(ranking.get("dimension") or (contract.dimensions[0] if contract.dimensions else ""))
+        mapping = bindings.dimensions.get(ranked_axis)
+        if mapping is not None:
+            where.append(f"{mapping['expression']} IS NOT NULL")
+            if _dimension_spec(registry, ranked_axis).get("blankIsMissing"):
+                where.append(f"{mapping['expression']} <> ''")
+        order_by = [f"{_aggregate_expression(function, measure)} {str(ranking['direction']).upper()}"]
+        limit = ranking["limit"] if isinstance(ranking.get("limit"), int) and ranking["limit"] > 0 else None
+
     joins = [
         f"     INNER JOIN {join['table']} {join['alias']} ON {join['on']}"
         for join in _source_joins(source) if join.get("id") in dependencies
@@ -1240,6 +1501,8 @@ def compile_aggregation_ast(
         from_lines=[f"FROM {source['table']} {source['alias']}", *joins],
         where=where,
         group_by=groups,
+        order_by=order_by,
+        limit=limit,
     )
 
 
