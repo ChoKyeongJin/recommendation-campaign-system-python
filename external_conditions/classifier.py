@@ -9,7 +9,10 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_CATALOG_PATH = Path(__file__).resolve().parent.parent / "docs/data/external_condition_catalog.json"
+DEFAULT_CATALOG_PATH = (
+    Path(__file__).resolve().parent.parent
+    / "docs/data/runtime/external/external_condition_catalog.json"
+)
 
 
 @lru_cache(maxsize=8)

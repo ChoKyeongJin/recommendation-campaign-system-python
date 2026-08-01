@@ -23,7 +23,9 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import compiler_strategies as cs  # noqa: E402
 
-SHIPPED_CONFIG_PATH = REPO_ROOT / "docs" / "data" / "member_target_filters.json"
+SHIPPED_CONFIG_PATH = (
+    REPO_ROOT / "docs" / "data" / "runtime" / "sql" / "member_target_filters.json"
+)
 
 
 def _shipped_config() -> dict:

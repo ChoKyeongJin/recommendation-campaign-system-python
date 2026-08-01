@@ -59,7 +59,7 @@ from typing import Any
 # 기본 경로는 **모듈 기준 절대경로**다. 상대경로면 cwd 가 저장소 밖일 때 설정을 못 읽고
 # 조용히 빈 레지스트리로 강등된다(증상이 예외가 아니라 '조금 다른 답'이라 눈에 띄지 않는다).
 _REPO_ROOT = Path(__file__).resolve().parent
-DEFAULT_METRIC_SPEC_DIR = _REPO_ROOT / "docs" / "data" / "metrics"
+DEFAULT_METRIC_SPEC_DIR = _REPO_ROOT / "docs" / "data" / "runtime" / "sql" / "metrics"
 
 SEMANTIC_TYPES = frozenset({"scalar", "ratio", "date"})
 DATA_TYPES = frozenset({"integer", "decimal", "money", "date_string"})

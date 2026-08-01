@@ -330,7 +330,7 @@ def _structure_campaign_query_plan_v4(
 CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "subscription", "awareness"}
 # ── 실회원(CRM_MB_BASEINFO) 타겟 속성 레지스트리 ──────────────────────────────
 # recommend_campaign 의 타겟을 데모 스키마(users/campaigns) 대신 실회원 테이블로 추출하기 위한
-# "조건 -> 실컬럼 술어" 매핑의 단일 출처는 docs/data/member_target_filters.json 이다. 새 속성/값
+# "조건 -> 실컬럼 술어" 매핑의 단일 출처는 docs/data/runtime/sql/member_target_filters.json 이다. 새 속성/값
 # 지원(등급 추가, 상태 추가 등)은 코드 수정이 아니라 그 파일에 항목만 추가하면 되고, 조합은
 # compile_member_target_conditions 가 자동 처리한다(포함/제외/연령 등 임의 조합). 아래
 # _DEFAULT_MEMBER_TARGET_FILTERS 는 파일 부재/파손 시 폴백이자 스키마 예시다.
@@ -354,7 +354,7 @@ CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "s
 #   기본 'getdate' — 적재 데이터가 과거라 0명이 나올 수 있어도, 조건 표현이 가능하면 요청 기간을
 #   왜곡하지 않고 무조건 그대로 건다는 방침이다('data_max' 는 데모 시연용 옵션).
 DEFAULT_MEMBER_TARGET_FILTERS_PATH = Path(
-    os.getenv("GRAPH_RAG_MEMBER_TARGET_FILTERS", "docs/data/member_target_filters.json")
+    os.getenv("GRAPH_RAG_MEMBER_TARGET_FILTERS", "docs/data/runtime/sql/member_target_filters.json")
 )
 _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
     "eq_filters": [
@@ -643,7 +643,8 @@ REGISTRY_HEALTH: dict[str, str | None] = {
 
 
 def _load_requirement_registry() -> "semantic_requirements.RequirementRegistry | None":
-    """공통 semantic requirement capability 레지스트리(docs/data/requirement_capabilities.json)를 읽는다.
+    """공통 semantic requirement capability 레지스트리
+    (docs/data/runtime/semantics/requirement_capabilities.json)를 읽는다.
     파손/부재 시 None 으로 강등(회계 계층이 무동작 → 기존 동작 유지).
     강등 감지: tests/test_registry_ownership_guards.py"""
     try:
@@ -965,7 +966,7 @@ def _member_recent_login_predicate(days: int, alias: str = "B") -> str:
 
 # ── 타겟팅 신호어 사전(intent/objective/문맥) ─────────────────────────────────
 # 의도·목적 분류와 문맥 판정(판매 아웃리치/신제품 알림/재활성/장바구니 이탈 등)의 **표면어 소유권은
-# LLM 에 있다**(lexicon_llm.py + docs/data/surface_concepts.json). 새 말투("리텐션 캠페인", 처음 보는
+# LLM 에 있다**(lexicon_llm.py + docs/data/runtime/semantics/surface_concepts.json). 새 말투("리텐션 캠페인", 처음 보는
 # 판매 동사)를 위해 낱말을 추가하는 일은 더 이상 없다 — 개념이 새로 필요할 때만 surface_concepts.json 에
 # 한 항목을 더한다.
 #
@@ -973,10 +974,10 @@ def _member_recent_login_predicate(days: int, alias: str = "B") -> str:
 # SURFACE_LEXICON_LLM=off 일 때(테스트·오프라인 실행 포함) 기존 결정론 동작을 그대로 유지하는 것이
 # 유일한 역할이고, 손으로 늘리지 않는다 — 낱말 수를 고정하던 래칫 테스트는 삭제됐다.
 #
-# docs/data/targeting_lexicon.json 에는 **LLM 이 대체할 수 없는 것만** 남는다: 대상 지향 표지와
+# docs/data/runtime/language/targeting_lexicon.json 에는 **LLM 이 대체할 수 없는 것만** 남는다: 대상 지향 표지와
 # 장바구니 어휘처럼 문장 안의 '위치'로 판정하는(분리 지점 인덱스·인접성) 스팬 지역 어휘.
 DEFAULT_TARGETING_LEXICON_PATH = Path(
-    os.getenv("GRAPH_RAG_TARGETING_LEXICON", "docs/data/targeting_lexicon.json")
+    os.getenv("GRAPH_RAG_TARGETING_LEXICON", "docs/data/runtime/language/targeting_lexicon.json")
 )
 
 _DEFAULT_TARGETING_LEXICON: dict[str, Any] = {
@@ -4404,7 +4405,7 @@ def _value_token_spans(value: str, query: str) -> list[tuple[int, int]]:
 
 
 
-DEFAULT_MEMBER_VALUE_INDEX_PATH = Path("docs/data/member_value_index.json")
+DEFAULT_MEMBER_VALUE_INDEX_PATH = Path("docs/data/generated/member_value_index.json")
 
 
 @functools.lru_cache(maxsize=4)
@@ -4463,7 +4464,7 @@ def _region_column_bare(granularity: str) -> str:
 
 
 
-DEFAULT_MEMBER_METRICS_PATH = Path("docs/data/member_metrics.json")
+DEFAULT_MEMBER_METRICS_PATH = Path("docs/data/runtime/sql/member_metrics.json")
 
 
 @functools.lru_cache(maxsize=4)
@@ -4671,7 +4672,7 @@ _PURCHASE_NEG_RE = purchase_lexicon.NEGATIVE_MEMBERSHIP_RE
 # 범용 집계 조건('<지표> <임계값> 이상/이하')의 값·기간·연산자 파서. 지표/컬럼 정의는 member_target_filters.json
 # 의 aggregate_targets 가 소유하고(코드-프리 레지스트리), 여기서는 프롬프트 텍스트에서 조건만 뽑는다.
 # 배수 단위는 긴 것부터(천만/백만이 만/천보다 먼저) 매칭한다. 목록 자체는 코드가 아니라
-# docs/data/aggregate_parser_rules.json(number_multipliers)이 소유한다 — 표면어는 데이터, 정렬 규칙만 코드.
+# docs/data/runtime/language/aggregate_parser_rules.json(number_multipliers)이 소유한다 — 표면어는 데이터, 정렬 규칙만 코드.
 _AMOUNT_MAGNITUDES = aggregate_parser_config.rules().number_multipliers
 # ── 비교 연산자 어휘의 단일 소스 ────────────────────────────────────────────────────
 # 이상/초과/이하/미만 → 부등호. 정규식 열거(_OP_ALT_BASIC)·매핑(_AGG_OPERATOR_WORDS)·rich 문법

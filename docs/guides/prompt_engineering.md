@@ -72,8 +72,8 @@ docker compose run --rm python python graph_rag.py "20대 여성 장바구니 �
 2. 검증된 SQL이 있는데 답변이 과장되거나 새 SQL을 만들려고 하면 `answer_system.txt` 또는 `answer_user.txt`를 조정한다.
 3. 메시지의 말투, 브랜드 표현, variant별 설득 포인트가 어긋나면 `message_generation_tone_manner.txt`를 먼저 조정한다.
 4. 메시지 JSON 구조나 채널별 필드가 틀리면 `message_generation_variant_user.txt`와 채널 정책을 조정한다. 재시도 정보는 검증기가 이 템플릿의 `${repair_context}`에 직접 주입한다.
-5. 올바른 테이블이나 컬럼을 못 찾으면 프롬프트보다 `docs/data/schema_catalog.json`의 `description_llm`, `human_note`와 `docs/data/sql_examples.sample.sql`을 먼저 보강한다.
-6. 특정 표현을 canonical 값으로 못 바꾸면 `docs/data/normalization_rules.sample.json`을 먼저 보강한다.
+5. 올바른 테이블이나 컬럼을 못 찾으면 프롬프트보다 `docs/data/generated/schema_catalog.json`의 `description_llm`, `human_note`와 `docs/data/sql_examples.sample.sql`을 먼저 보강한다.
+6. 특정 표현을 canonical 값으로 못 바꾸면 `docs/data/runtime/language/normalization_rules.sample.json`을 먼저 보강한다.
 
 ## 주의 사항
 

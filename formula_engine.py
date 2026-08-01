@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_SCHEMA_PATH = Path("docs/data/schema_catalog.json")
+DEFAULT_SCHEMA_PATH = Path("docs/data/generated/schema_catalog.json")
 
 # 계산식이 참조할 수 있는 테이블과 SQL 별칭. 여기 없는 테이블의 컬럼은 산술에 쓸 수 없다(검증 실패).
 TABLE_ALIASES = {

@@ -13,8 +13,8 @@ rag_index.py
 build_rag_knowledge.py
 docs/data/local_bootstrap.sql
 docs/data/campaign_user_rag_sample_50_with_edges.json
-docs/data/schema_catalog.json
-docs/data/rag_knowledge_base.json
+docs/data/generated/schema_catalog.json
+docs/data/generated/rag_knowledge_base.json
 docs/prompts/*
 docs/policies/message-policy.json
 docker-compose.yml
@@ -735,7 +735,7 @@ LightGBM 기반 CTR 예측 MVP를 추가한다.
 ## 18. 참고 문서
 
 - 현재 DDL: `docs/data/local_bootstrap.sql`
-- 현재 스키마 카탈로그: `docs/data/schema_catalog.json`
+- 현재 스키마 카탈로그: `docs/data/generated/schema_catalog.json`
 - 캠페인/사용자 샘플: `docs/data/campaign_user_rag_sample_50_with_edges.json`
 - 프로젝트 구조 보고서: `docs/overview/structure.md`
 - API 구현: `api.py`

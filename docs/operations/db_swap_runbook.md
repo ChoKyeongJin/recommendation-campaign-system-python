@@ -71,7 +71,7 @@ docker compose exec -w /app python python schema_extract.py --refresh-external
 
 이 단계가 실질 작업량의 대부분이다. 새 스키마의 테이블/컬럼/코드값/조인에 맞춰 아래를 고친다.
 
-**[member_target_filters.json](../data/member_target_filters.json)** (규칙 엔진 전체):
+**[member_target_filters.json](../data/runtime/sql/member_target_filters.json)** (규칙 엔진 전체):
 
 - `base_entity`: 회원 기준 테이블/별칭/회원키/로그인ID키/날짜포맷. **`dialect`를 여기 명시**하면
   (`"tsql"`/`"mysql"`/`"postgres"`) 결정론 빌더가 그 방언으로 렌더한다(미지정 시 카탈로그 방언→tsql).
@@ -85,7 +85,7 @@ docker compose exec -w /app python python schema_extract.py --refresh-external
   `member_join.left`에 캐스트 조인(빌더 기본은 방언 어댑터의 `cast_bigint`).
 - `validation.allowed_table_aliases`: 새 별칭을 쓰면 추가.
 
-**[member_metrics.json](../data/member_metrics.json)**: `value_table`/`join_column`/`grain_filter`와
+**[member_metrics.json](../data/runtime/sql/member_metrics.json)**: `value_table`/`join_column`/`grain_filter`와
 각 지표 `column`을 새 월/스냅샷 테이블에 맞춘다.
 
 **[sql_examples.sample.sql](../data/sql_examples.sample.sql)**: RAG 예시 SQL을 새 테이블/방언으로.
@@ -99,14 +99,14 @@ docker compose exec -w /app python python schema_extract.py --refresh-external
 
 | 파일                                                                                                               | 결합 대상                        | 스왑 시            |
 | ------------------------------------------------------------------------------------------------------------------ | -------------------------------- | ------------------ |
-| `member_target_filters.json` · `member_metrics.json` · `sql_examples.sample.sql`                                   | 실 CRM 테이블/컬럼/코드값        | **수동 ④ 필수**    |
-| `schema_catalog.json`                                                                                              | 실DB 테이블 목록·구조            | 수동 ② + 자동 ③    |
-| `business_policies.sample.json`                                                                                    | **데모 스키마(users/campaigns)** | 데모 잔재 — 아래 ※ |
-| `normalization_rules.sample.json` · `targeting_lexicon.json`                                                       | 스키마 중립(언어)                | 손댈 것 없음       |
-| `rag_knowledge_base.json` · `member_value_index.json` · `dimension_catalog.sample.json` · `table_relationships.md` | 파생물                           | 자동 ⑥/③           |
+| `runtime/sql/member_target_filters.json` · `runtime/sql/member_metrics.json` · `sql_examples.sample.sql`           | 실 CRM 테이블/컬럼/코드값        | **수동 ④ 필수**    |
+| `generated/schema_catalog.json`                                                                                    | 실DB 테이블 목록·구조            | 수동 ② + 자동 ③    |
+| `runtime/policies/business_policies.sample.json`                                                                   | **데모 스키마(users/campaigns)** | 데모 잔재 — 아래 ※ |
+| `runtime/language/normalization_rules.sample.json` · `runtime/language/targeting_lexicon.json`                     | 스키마 중립(언어)                | 손댈 것 없음       |
+| `generated/rag_knowledge_base.json` · `generated/member_value_index.json` · `generated/dimension_catalog.sample.json` · `table_relationships.md` | 파생물 | 자동 ⑥/③ |
 | `metadata_ddl.sql`                                                                                                 | 로컬 메타DB(실DB 아님)           | 무관               |
 
-> ※ **데모 잔재**: `business_policies.sample.json` 은 아직 `users`/`campaigns` 데모 스키마만 참조한다
+> ※ **데모 잔재**: `runtime/policies/business_policies.sample.json` 은 아직 `users`/`campaigns` 데모 스키마만 참조한다
 > (실 CRM 테이블 0). `_apply_policy_constraints` 로 매 질의에 로드되지만, 그 결과(policy_constraints)는
 > 실회원 SQL 경로에서 `unsupported` 로 처리돼 **실제 타겟 결과엔 영향이 없다**(지금도 실DB와 안 맞은 채
 > 정상 동작). 즉 DB 스왑이 만드는 작업이 아니라, 정책 기능을 실DB로 쓰려 할 때만 별도로 재작성하는
@@ -137,7 +137,7 @@ docker compose exec -w /app python python db_swap_preflight.py --check-db
 
 ```bash
 # 디멘션 정의 스냅샷 (quadmax_sdz 접속)
-docker compose exec -w /app python python build_dimension_catalog.py -o docs/data/dimension_catalog.sample.json
+docker compose exec -w /app python python build_dimension_catalog.py -o docs/data/generated/dimension_catalog.sample.json
 # 회원 값 인덱스 (CRMDW 접속) — 저카디널리티 컬럼 실값 스냅샷
 docker compose exec -w /app python python build_member_value_index.py
 # 테이블 관계도 + FK 주입 (DB 미접속)

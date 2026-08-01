@@ -24,7 +24,7 @@
 | ------------------------ | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
 | 캠페인/사용자 RAG 인덱싱 | `rag_index.py`                                                                             | 샘플 노드 전처리, 임베딩 생성, Qdrant 적재                                                                               |
 | DDL 스키마 추출          | `schema_extract.py`                                                                        | PostgreSQL DDL에서 테이블/컬럼/키/인덱스 추출                                                                            |
-| 업무 정책 정의           | `docs/data/business_policies.sample.json`                                                  | 매출 상위, 고매출, 고예산 같은 업무 기준과 SQL 반영 방식을 외부 파일로 정의                                              |
+| 업무 정책 정의           | `docs/data/runtime/policies/business_policies.sample.json`                                 | 매출 상위, 고매출, 고예산 같은 업무 기준과 SQL 반영 방식을 외부 파일로 정의                                              |
 | 채널 메시지 정책/예시    | `docs/guides/channel.md`, `docs/policies/message-policy.json`, `docs/data/local_bootstrap.sql`         | LMS/RCS 메시지 생성 규칙과 기존 메시지 참고 테이블 정의                                                                  |
 | 계산식 엔진              | `formula_engine.py`                                                                        | LLM이 제안한 `formula_ast`를 검증하고 안전한 SQL expression으로 컴파일                                                   |
 | 집합식 엔진              | `set_expression_engine.py`                                                                 | 합집합/교집합/차집합 세그먼트 표현을 `set_ast`로 파싱                                                                    |
@@ -80,7 +80,7 @@ flowchart TD
 
 ### 4.1 정규화 사전
 
-- 입력: `docs/data/normalization_rules.sample.json` (graph_rag 질의 시 런타임에 직접 로딩)
+- 입력: `docs/data/runtime/language/normalization_rules.sample.json` (graph_rag 질의 시 런타임에 직접 로딩)
 
 정규화 사전은 한국어 표현, 영어 표현, 부정 동의어를 canonical 값으로 통합한다. 예를 들어 `여성`, `여자 고객`, `female`은 `female`로 변환된다.
 
@@ -94,9 +94,9 @@ flowchart TD
 
 ### 4.3 스키마/정책/SQL 지식 베이스
 
-- 입력: `docs/data/local_bootstrap.sql`, `docs/data/schema_catalog.json`, `docs/data/business_policies.sample.json`, `docs/data/sql_examples.sample.sql`
+- 입력: `docs/data/local_bootstrap.sql`, `docs/data/generated/schema_catalog.json`, `docs/data/runtime/policies/business_policies.sample.json`, `docs/data/sql_examples.sample.sql`
 - 처리: `schema_extract.py`, `build_rag_knowledge.py`
-- 출력: `docs/data/rag_knowledge_base.json`
+- 출력: `docs/data/generated/rag_knowledge_base.json`
 - 출력 컬렉션: `campaign_knowledge_rag`
 
 `business_policies.sample.json`은 `매출이 가장 높은`, `고매출`, `예산이 큰`처럼 코드에 하드코딩하면 운영 기준이 흐려지는 표현을 별도 정책으로 정의한다. 순위형 정책은 `sql_behavior=rank`로 ORDER BY를 만들고, 기준 금액이 필요한 정책은 `sql_behavior=filter`, `threshold_krw` 값으로 WHERE 조건을 만든다. `threshold_krw`가 `null`이면 GraphRAG는 임의 기준을 만들지 않고 기준 금액을 정책 파일에 정의하라는 clarification을 반환한다.
@@ -126,7 +126,7 @@ flowchart TD
 
 ### 4.4 Qdrant 컬렉션 상태 점검
 
-- 입력: `docs/data/campaign_user_rag_sample_50_with_edges.json`, `docs/data/rag_knowledge_base.json`
+- 입력: `docs/data/campaign_user_rag_sample_50_with_edges.json`, `docs/data/generated/rag_knowledge_base.json`
 - 처리: `check_rag_collections.py`
 - 점검 컬렉션: `campaign_user_rag_nodes`, `campaign_knowledge_rag`
 
@@ -192,7 +192,7 @@ docker compose run --rm python python check_rag_collections.py --strict
 
 LMS/RCS 메시지 요청은 정규화 사전에서 각각 `lms`, `rcs` canonical 값으로 변환된다. 이 값은 `target_user.preferred_channels`와 `campaign_constraints.channels`에 들어가며, SQL에서는 `user_preferred_channels`와 `campaign_channels` 조건으로 반영된다. 메시지 생성 단계는 `--message-channel auto|lms|rcs` 옵션을 기준으로 최종 발송 채널을 확정한다.
 
-업무 정책 매칭은 기본적으로 `docs/data/business_policies.sample.json`을 읽는다. 다른 정책 파일을 사용하려면 `graph_rag.py` 실행 시 `--business-policies`를 지정한다. 예를 들어 `매출이 가장 높은 고객`은 `top_revenue_user` 정책으로 매칭되어 추정 매출 기준 ORDER BY를 만들고, `매출이 높은 고객`은 `high_revenue_user` 정책의 `threshold_krw`가 채워져 있을 때만 WHERE 조건을 만든다.
+업무 정책 매칭은 기본적으로 `docs/data/runtime/policies/business_policies.sample.json`을 읽는다. 다른 정책 파일을 사용하려면 `graph_rag.py` 실행 시 `--business-policies`를 지정한다. 예를 들어 `매출이 가장 높은 고객`은 `top_revenue_user` 정책으로 매칭되어 추정 매출 기준 ORDER BY를 만들고, `매출이 높은 고객`은 `high_revenue_user` 정책의 `threshold_krw`가 채워져 있을 때만 WHERE 조건을 만든다.
 
 의미 해석 정책도 같은 파일에서 읽는다. `지역` 표현은 `region_context_default` 정책으로 매칭되어 Query Plan의 `semantic_resolutions`에 기록된다. 기본 해석은 `users.region`이며, 구매 장소나 배송지처럼 대체 의미가 명시됐지만 스키마 컬럼이 없으면 `query_plan_required_conditions_missing`으로 clarification을 반환한다.
 
@@ -484,7 +484,7 @@ Python 컨테이너는 계속 실행 상태로 유지되므로 이후 명령은 
 ### 11.2 스키마 카탈로그 재생성
 
 ```bash
-docker compose exec python python schema_extract.py docs/data/local_bootstrap.sql --output docs/data/schema_catalog.json
+docker compose exec python python schema_extract.py docs/data/local_bootstrap.sql --output docs/data/generated/schema_catalog.json
 ```
 
 ### 11.3 지식 베이스 재생성
@@ -520,7 +520,7 @@ docker compose exec python python init_rag_collections.py --validate-only --skip
 ### 11.5 스키마/사전/SQL 지식 노드 적재
 
 ```bash
-docker compose exec python python rag_index.py docs/data/rag_knowledge_base.json --collection campaign_knowledge_rag --recreate
+docker compose exec python python rag_index.py docs/data/generated/rag_knowledge_base.json --collection campaign_knowledge_rag --recreate
 ```
 
 ### 11.6 GraphRAG 검색 실행
@@ -609,7 +609,7 @@ docker compose exec python python sql_guard.py "SELECT user_id, name FROM users"
 - `--query-parser auto`가 `OPENAI_API_KEY` 미설정 시 규칙 기반 parser로 fallback하는지 확인
 - `--generate-answer`가 `OPENAI_API_KEY` 미설정 시 실패 사유를 남기고 `api_response.status=no_verified_sql`을 유지하는지 확인
 - `init_rag_collections.py --validate-only --skip-knowledge-build` 기준 두 입력 JSON 검증 통과
-- `docs/data/rag_knowledge_base.json` 기준 지식 노드 96개 검증 통과
+- `docs/data/generated/rag_knowledge_base.json` 기준 지식 노드 96개 검증 통과
 - `campaign_message_examples` 스키마 추출과 지식 노드 반영 확인
 - `OPENAI_API_KEY`가 Docker Python 컨테이너에서 로드되는지 확인
 - RCS 메시지 생성 prompt-only 실행 시 `message_generation.context.campaigns`가 `camp_001`로 필터링되는지 확인
@@ -664,12 +664,12 @@ docker compose exec python python sql_guard.py "SELECT user_id, name FROM users"
 - `answer_prompt`에 SQL Result를 포함해 후속 LLM이 검증 SQL만 참조하도록 했다.
 - `--vector-top-k 0` 입력 시 Qdrant vector search를 건너뛰어 BM25/Graph/SQL 흐름만 검증할 수 있게 했다.
 - SQL 후보가 Query Plan의 필수 조건을 모두 포함하지 않으면 `sql_result.sql=null`, `failure_reason=query_plan_conditions_missing`으로 실패 처리한다.
-- `docs/data/sql_examples.sample.sql`에 `20대 여성 장바구니 이탈 쿠폰 캠페인 추천` 예시를 추가하고 `docs/data/rag_knowledge_base.json`을 재생성했다.
+- `docs/data/sql_examples.sample.sql`에 `20대 여성 장바구니 이탈 쿠폰 캠페인 추천` 예시를 추가하고 `docs/data/generated/rag_knowledge_base.json`을 재생성했다.
 - `20~30대 남성이 아닌 사용자`처럼 부정 조건이 포함된 요청은 긍정 조건으로 대체하지 않고, 검증 SQL이 없으면 새 SQL 생성 없이 실패 답변하도록 보강했다.
 - `--query-parser auto|llm` 옵션을 추가해 LLM Query Parser를 선택적으로 사용하고, 실패 시 규칙 기반 parser로 fallback하도록 했다.
 - `--generate-answer` 옵션과 `api_response`를 추가해 `answer_prompt`, `sql_result.sql`, 최종 사용자 메시지를 하나의 응답 구조로 연결했다.
 - `init_rag_collections.py`를 추가해 지식 베이스 재생성과 두 Qdrant 컬렉션 초기화를 한 번에 수행할 수 있게 했다.
-- `docs/data/sql_examples.sample.sql`에 `20~30대 남성이 아닌 장바구니 이탈 쿠폰 캠페인 추천` 예시를 추가하고 `docs/data/rag_knowledge_base.json`을 재생성했다.
+- `docs/data/sql_examples.sample.sql`에 `20~30대 남성이 아닌 장바구니 이탈 쿠폰 캠페인 추천` 예시를 추가하고 `docs/data/generated/rag_knowledge_base.json`을 재생성했다.
 - `find_user_segment` 질의가 캠페인 추천 SQL로 과매칭되지 않도록 `intent_scope_mismatch` 검증을 추가했다.
 - 추천 기준 조건이 사용자 입력에 하나도 없으면 SQL을 생성하지 않고 `needs_clarification`과 질문 목록을 반환하도록 했다.
 - `target_user.behaviors`가 있으면 SQL coverage에서 `campaign_target_segments.target_segment` 조건도 함께 확인하도록 보강했다.

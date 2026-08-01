@@ -14,13 +14,13 @@ from rag_index import DEFAULT_EMBEDDING_MODEL, build_points, load_nodes, upsert_
 
 
 DEFAULT_USER_DATA = Path("docs/data/campaign_user_rag_sample_50_with_edges.json")
-DEFAULT_SCHEMA = Path("docs/data/schema_catalog.json")
-DEFAULT_NORMALIZATION = Path("docs/data/normalization_rules.sample.json")
-DEFAULT_BUSINESS_POLICIES = Path("docs/data/business_policies.sample.json")
-DEFAULT_DIMENSION_CATALOG = Path("docs/data/dimension_catalog.sample.json")
-DEFAULT_MEMBER_VALUE_INDEX = Path("docs/data/member_value_index.json")
+DEFAULT_SCHEMA = Path("docs/data/generated/schema_catalog.json")
+DEFAULT_NORMALIZATION = Path("docs/data/runtime/language/normalization_rules.sample.json")
+DEFAULT_BUSINESS_POLICIES = Path("docs/data/runtime/policies/business_policies.sample.json")
+DEFAULT_DIMENSION_CATALOG = Path("docs/data/generated/dimension_catalog.sample.json")
+DEFAULT_MEMBER_VALUE_INDEX = Path("docs/data/generated/member_value_index.json")
 DEFAULT_SQL_EXAMPLES = Path("docs/data/sql_examples.sample.sql")
-DEFAULT_KNOWLEDGE_DATA = Path("docs/data/rag_knowledge_base.json")
+DEFAULT_KNOWLEDGE_DATA = Path("docs/data/generated/rag_knowledge_base.json")
 DEFAULT_USER_COLLECTION = "campaign_user_rag_nodes"
 DEFAULT_KNOWLEDGE_COLLECTION = "campaign_knowledge_rag"
 

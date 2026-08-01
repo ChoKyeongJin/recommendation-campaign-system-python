@@ -30,7 +30,7 @@
 
 ```bash
 python schema_extract.py --from-db            # → schema_catalog.json  (⚠ 아래 캐비앗)
-python build_dimension_catalog.py -o docs/data/dimension_catalog.sample.json
+python build_dimension_catalog.py -o docs/data/generated/dimension_catalog.sample.json
 python build_member_value_index.py            # → member_value_index.json
 python build_table_relationships.py           # FK 주입 + table_relationships.md
 python build_rag_knowledge.py                 # → rag_knowledge_base.json

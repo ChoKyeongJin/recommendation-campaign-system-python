@@ -66,7 +66,8 @@ class ConfidenceMeta:
 # 순수 모듈 불변식 유지: graph_rag 를 import 하지 않는다. 런타임 렉시콘 의존 어휘(등급/카트 canonical)는
 # 호출자가 coerce(raw, allowed=...) 로 주입한다.
 
-# 단위·비교어 어휘의 소유는 condition_normalizers(docs/data/normalization_lexicon.json + 코드 폴백)로
+# 단위·비교어 어휘의 소유는
+# condition_normalizers(docs/data/runtime/language/normalization_lexicon.json + 코드 폴백)로
 # 이관됐다. 아래 이름들은 기존 소비자(calendar_window/event_parser/graph_rag)를 위한 파생 재수출이다 —
 # 새 표기는 이 파일이 아니라 어휘 JSON 에 추가한다.
 # 캐노니컬 기간 단위 → 일수(LLM 슬롯 정규화 전용). graph_rag 의 한글 토큰 기간표(_DURATION_UNIT_DAYS)와
@@ -813,7 +814,7 @@ SLOT_SHAPES: dict[str, SlotShape] = {
         _aggregate_condition_schema(),
         _coerce_threshold_list, allowed_key="aggregate_metrics"),
     # 회원 프로필 수치 지표 임계('평균 구매주기 30일 이내'). LLM 은 논리 canonical(metric_id)만 고르고
-    # coerce 가 지표 스펙 레지스트리(docs/data/metrics) 주입 매핑으로 물리 balance_conditions 를 만든다 —
+    # coerce 가 지표 스펙 레지스트리(docs/data/runtime/sql/metrics) 주입 매핑으로 물리 balance_conditions 를 만든다 —
     # V4 계약(모델은 물리 스키마를 만들지 않는다)을 지키면서 기존 회원 프로필 컴파일러를 재사용한다.
     "balance_conditions": SlotShape("balance_conditions", "target_user",
         _list_schema(f"회원 프로필 수치 지표 임계 리스트. 각 항목 {{metric_id, operator, threshold}}. {_OP_HINT}. "

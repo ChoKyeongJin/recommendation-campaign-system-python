@@ -839,7 +839,10 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="--refresh-external 결과를 쓰지 않고 변경 요약만 출력한다.")
     parser.add_argument("--conninfo", default=None, help="psycopg conninfo 문자열. 미지정 시 POSTGRES_* 환경변수 사용.")
     parser.add_argument("--schema-name", default="public", help="대상 스키마 이름. 기본 public.")
-    parser.add_argument("--output", "-o", type=Path, default=Path("docs/data/schema_catalog.json"))
+    parser.add_argument(
+        "--output", "-o", type=Path,
+        default=Path("docs/data/generated/schema_catalog.json"),
+    )
     args = parser.parse_args()
 
     existing_schema = None

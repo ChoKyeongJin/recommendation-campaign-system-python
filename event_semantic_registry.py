@@ -23,7 +23,10 @@ OVERLAP_POSSIBLE = "overlap_possible"
 UNKNOWN = "unknown"
 
 DEFAULT_REGISTRY_PATH = Path(
-    os.getenv("EVENT_SEMANTIC_REGISTRY", "docs/data/event_semantic_registry.json")
+    os.getenv(
+        "EVENT_SEMANTIC_REGISTRY",
+        "docs/data/runtime/semantics/event_semantic_registry.json",
+    )
 )
 
 

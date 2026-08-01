@@ -2,7 +2,7 @@
 
 배경
 ----
-타겟팅 신호어 사전(``docs/data/targeting_lexicon.json``)은 "이 문장이 채널 발송 얘기인가",
+타겟팅 신호어 사전(``docs/data/runtime/language/targeting_lexicon.json``)은 "이 문장이 채널 발송 얘기인가",
 "재구매 유도인가" 같은 **뜻**을 판정하려고 낱말 목록을 쌓아 왔다. 낱말은 끝이 없어서 새 말투가
 나올 때마다 사람이 한 줄씩 추가해야 했고, 추가하기 전까지 그 신호는 조용히 침묵했다.
 
@@ -37,7 +37,13 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 DEFAULT_CONCEPTS_PATH = Path(
-    os.getenv("SURFACE_CONCEPTS_PATH", str(Path(__file__).resolve().parent / "docs" / "data" / "surface_concepts.json"))
+    os.getenv(
+        "SURFACE_CONCEPTS_PATH",
+        str(
+            Path(__file__).resolve().parent
+            / "docs" / "data" / "runtime" / "semantics" / "surface_concepts.json"
+        ),
+    )
 )
 
 PROMPT_FILENAME = "surface_signal_extract_system.txt"

@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "description": "데이터 카탈로그(concept_catalog.py)의 특수 슬롯 개념 선언 + 파생 개념의 별칭 확장. 공통 조건 개념(구매금액/주문횟수 등)은 여기 다시 나열하지 않는다 — member_target_filters.json 의 aggregate_targets.metrics 와 metric_registry(docs/data/metrics)에서 파생된다(이중 소유 금지). aliases 는 LLM 이 이해하는 모든 문장을 등록하는 곳이 아니다: 명확한 표준 표현·고빈도 별칭·도메인 고유 용어만 담는다. compiler 는 compiler_registry.default_registry() 에 등록된 이름만 가리킬 수 있다 — 미등록이면 그 개념은 is_executable=false 로 강등되고 SQL 생성이 차단된다.",
+  "description": "데이터 카탈로그(concept_catalog.py)의 특수 슬롯 개념 선언 + 파생 개념의 별칭 확장. 공통 조건 개념(구매금액/주문횟수 등)은 여기 다시 나열하지 않는다 — member_target_filters.json 의 aggregate_targets.metrics 와 metric_registry(docs/data/runtime/sql/metrics)에서 파생된다(이중 소유 금지). aliases 는 LLM 이 이해하는 모든 문장을 등록하는 곳이 아니다: 명확한 표준 표현·고빈도 별칭·도메인 고유 용어만 담는다. compiler 는 compiler_registry.default_registry() 에 등록된 이름만 가리킬 수 있다 — 미등록이면 그 개념은 is_executable=false 로 강등되고 SQL 생성이 차단된다.",
   "how_to_add": "새 특수 슬롯 개념 → concepts 에 한 항목(kind=special_slot, normalizer, compiler 선언). 파생 개념의 새 별칭 → alias_extensions 에 추가(원 스펙의 synonyms 를 옮기지 않는다). 새 공통 지표는 이 파일이 아니라 member_target_filters.json aggregate_targets.metrics 에 추가한다.",
   "concepts": {
     "purchase_inactivity": {

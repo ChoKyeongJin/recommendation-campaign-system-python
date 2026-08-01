@@ -13,7 +13,7 @@
 
 경로 변경 시 주의할 기본값:
 
-- `graph_rag.py`는 기본 RAG 데이터로 `docs/data/rag_knowledge_base.json`을 읽는다.
+- `graph_rag.py`는 기본 RAG 데이터로 `docs/data/generated/rag_knowledge_base.json`을 읽는다.
 - `graph_rag.py`는 기본 프롬프트 디렉터리로 `docs/prompts`를 읽는다.
 - 메시지 채널 정책 기본값은 `docs/policies/message-policy.json`이다. 다른 파일을 쓰려면 `GRAPH_RAG_MESSAGE_POLICY` 환경 변수나 `--message-policy` 옵션을 사용한다.
 
@@ -23,8 +23,8 @@
 
 ```
 PostgreSQL(campaign_db)
-  └─(schema_extract.py --from-db)→ docs/data/schema_catalog.json
-       └─(build_rag_knowledge.py)→ docs/data/rag_knowledge_base.json  ┐
+  └─(schema_extract.py --from-db)→ docs/data/generated/schema_catalog.json
+       └─(build_rag_knowledge.py)→ docs/data/generated/rag_knowledge_base.json  ┐
                                                                        ├─(init_rag_collections.py)→ Qdrant
        docs/data/campaign_user_rag_sample_50_with_edges.json ─────────┘   · campaign_knowledge_rag (지식 노드 + 캠페인/사용자)
                                                                           · campaign_user_rag_nodes (캠페인/사용자 벡터)

@@ -18,7 +18,10 @@ from typing import Any
 
 
 DEFAULT_MEMBER_POLICY_PATH = Path(
-    os.getenv("GRAPH_RAG_MEMBER_TARGET_FILTERS", "docs/data/member_target_filters.json")
+    os.getenv(
+        "GRAPH_RAG_MEMBER_TARGET_FILTERS",
+        "docs/data/runtime/sql/member_target_filters.json",
+    )
 )
 
 _ALL_MEMBER_RE = re.compile(r"(?:전체|모든|전부)\s*(?:회원|고객|사용자|가입자)")

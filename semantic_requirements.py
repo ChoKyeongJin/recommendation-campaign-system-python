@@ -10,7 +10,8 @@ base×qualifier capability 로 각 requirement 의 귀결(parsed/compiled/clarif
 이 모듈은 그 대신 **공통 계층**을 둔다:
   1) 원문에서 조건을 source requirement 로 기록한다(base + qualifiers + relation + operator + value +
      time_scope + negation + comparison_target + derived_formula + source_span). 지원 여부와 무관하게 '기록'이 먼저다.
-  2) 도메인별 지원 여부는 코드가 아니라 JSON capability registry(docs/data/requirement_capabilities.json)의
+  2) 도메인별 지원 여부는 코드가 아니라 JSON capability registry
+     (docs/data/runtime/semantics/requirement_capabilities.json)의
      base→qualifier→{supported, message, compiler_strategy}로 관리한다.
   3) 공통 검증기(account_requirements)는 '특정 브랜드 인식 성공' 이 아니라, **모든 requirement 가
      parsed/compiled/clarification/unsupported 중 하나로 귀결됐는지**만 본다. 'detected' 로 남은(= 조용히
@@ -44,7 +45,9 @@ import lexicon_patterns
 # 기본 경로는 **모듈 기준 절대경로**다. 상대경로면 cwd 가 저장소 밖일 때 설정을 못 읽고
 # 조용히 빈 레지스트리로 강등된다(증상이 예외가 아니라 '조금 다른 답'이라 눈에 띄지 않는다).
 _REPO_ROOT = Path(__file__).resolve().parent
-DEFAULT_CAPABILITIES_PATH = _REPO_ROOT / "docs" / "data" / "requirement_capabilities.json"
+DEFAULT_CAPABILITIES_PATH = (
+    _REPO_ROOT / "docs" / "data" / "runtime" / "semantics" / "requirement_capabilities.json"
+)
 
 # requirement 귀결 상태. 'detected' 는 아직 회계 전(초기값). 검증기가 나머지 넷 중 하나로 확정해야 한다.
 TERMINAL_STATUSES = frozenset({"parsed", "compiled", "clarification", "unsupported"})

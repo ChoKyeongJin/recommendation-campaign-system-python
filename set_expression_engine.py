@@ -9,7 +9,9 @@ from typing import Any
 import lexicon_patterns
 from common_utils import compact as _compact
 
-DEFAULT_NORMALIZATION_PATH = Path("docs/data/normalization_rules.sample.json")
+DEFAULT_NORMALIZATION_PATH = Path(
+    "docs/data/runtime/language/normalization_rules.sample.json"
+)
 OPERATOR_WORDS = {
     "합집합": "+",
     "or": "+",

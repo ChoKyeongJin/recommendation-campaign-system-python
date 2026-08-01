@@ -3,7 +3,8 @@
 이 모듈이 지키는 계약은 셋이다.
 
 1. **표면어를 코드에 두지 않는다.** 단위 토큰·미지원 속성 별칭·접속 경계·안내 문구는 전부
-   ``docs/data/aggregate_parser_rules.json`` 과 ``docs/data/clarification_messages.ko.json``
+   ``docs/data/runtime/language/aggregate_parser_rules.json`` 과
+   ``docs/data/runtime/language/clarification_messages.ko.json``
    이 소유한다. 새 표현은 JSON 한 줄이지 파이썬 분기가 아니다.
 2. **조용한 폴백을 하지 않는다.** 설정이 스키마를 어기거나 참조가 끊기면 코드 기본값으로 계속
    달리지 않고 :class:`AggregateParserConfigError` 로 즉시 실패한다 — 운영에서 설정과 동작이
@@ -33,10 +34,16 @@ import jsonschema
 SUPPORTED_VERSION = 1
 
 _DATA_DIR = Path(__file__).resolve().parent / "docs" / "data"
-DEFAULT_RULES_PATH = Path(os.getenv("AGGREGATE_PARSER_RULES", _DATA_DIR / "aggregate_parser_rules.json"))
-DEFAULT_RULES_SCHEMA_PATH = _DATA_DIR / "aggregate_parser_rules.schema.json"
-DEFAULT_MESSAGES_PATH = Path(os.getenv("CLARIFICATION_MESSAGES", _DATA_DIR / "clarification_messages.ko.json"))
-DEFAULT_MESSAGES_SCHEMA_PATH = _DATA_DIR / "clarification_messages.schema.json"
+_LANGUAGE_DIR = _DATA_DIR / "runtime" / "language"
+_SCHEMA_DIR = _DATA_DIR / "schemas"
+DEFAULT_RULES_PATH = Path(
+    os.getenv("AGGREGATE_PARSER_RULES", _LANGUAGE_DIR / "aggregate_parser_rules.json")
+)
+DEFAULT_RULES_SCHEMA_PATH = _SCHEMA_DIR / "aggregate_parser_rules.schema.json"
+DEFAULT_MESSAGES_PATH = Path(
+    os.getenv("CLARIFICATION_MESSAGES", _LANGUAGE_DIR / "clarification_messages.ko.json")
+)
+DEFAULT_MESSAGES_SCHEMA_PATH = _SCHEMA_DIR / "clarification_messages.schema.json"
 
 
 class AggregateParserConfigError(RuntimeError):

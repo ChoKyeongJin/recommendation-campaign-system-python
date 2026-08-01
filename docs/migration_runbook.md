@@ -8,7 +8,7 @@
 
 | | 무엇 | 어디에 | 배포 |
 |---|---|---|---|
-| **A 어휘** | 기존 능력의 새 표면어 | `docs/data/parser_lexicon.json` 의 `vocabularies` | 불필요 |
+| **A 어휘** | 기존 능력의 새 표면어 | `docs/data/runtime/language/parser_lexicon.json` 의 `vocabularies` | 불필요 |
 | **B 파라미터** | 기존 팩트의 새 조건 모양 | `targeting_ir.CONDITION_SPECS` / `_FilterSpec` 레지스트리 | 필요 |
 | **C 능력** | 새 grain·조인이 필요 | 새 ConditionSpec + 빌더 | 필요 |
 
@@ -58,7 +58,7 @@ A(어휘)는 끝이 없다. 사전에 없는 말투는 규칙이 조용히 침�
 
 표면 개념은 "이 문장이 그 얘기인가"라는 **불리언**이다. 그런데 어떤 뜻은 불리언으로 접는 순간 반드시
 틀린다. 구매가 그렇다 — `샀다`·`살까 고민 중`·`사지 않았다`·`구매 방법을 알려줘`는 전부 "구매 얘기"
-지만 오디언스는 완전히 다르다. 이 부류는 `semantic_signal.py` + `docs/data/semantic_signals.json` 이
+지만 오디언스는 완전히 다르다. 이 부류는 `semantic_signal.py` + `docs/data/runtime/semantics/semantic_signals.json` 이
 소유하고, 불리언 대신 **상태(status)** 를 돌려준다.
 
 | | 무엇 | 어디에 |

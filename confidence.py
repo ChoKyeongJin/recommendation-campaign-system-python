@@ -28,8 +28,8 @@ import compiler_strategies
 import member_filters_config
 from targeting_ir import BEHAVIOR_KO, extract_target_conditions
 
-DEFAULT_SCHEMA_PATH = Path("docs/data/schema_catalog.json")
-DEFAULT_MEMBER_FILTERS_PATH = Path("docs/data/member_target_filters.json")
+DEFAULT_SCHEMA_PATH = Path("docs/data/generated/schema_catalog.json")
+DEFAULT_MEMBER_FILTERS_PATH = Path("docs/data/runtime/sql/member_target_filters.json")
 DEFAULT_NORMALIZATION_DOC = "normalization_rules.sample.json"
 
 # 5개 축 가중치(합 1.0). 조정 가능 — 근거 신호 자체는 결정론이고 이 가중치만 정책값이다.

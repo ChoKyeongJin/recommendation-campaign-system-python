@@ -42,7 +42,9 @@ PHYSICAL_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{2,}$")
 
 
 def _catalog_names() -> tuple[set[str], set[str]]:
-    catalog = json.loads((ROOT / "docs" / "data" / "schema_catalog.json").read_text(encoding="utf-8"))
+    catalog = json.loads(
+        (ROOT / "docs" / "data" / "generated" / "schema_catalog.json").read_text(encoding="utf-8")
+    )
     tables = catalog.get("tables") or {}
     table_names: set[str] = set()
     column_names: set[str] = set()

@@ -43,7 +43,10 @@ from typing import Any, Callable, Iterable, Mapping
 DEFAULT_SIGNALS_PATH = Path(
     os.getenv(
         "SEMANTIC_SIGNALS_PATH",
-        str(Path(__file__).resolve().parent / "docs" / "data" / "semantic_signals.json"),
+        str(
+            Path(__file__).resolve().parent
+            / "docs" / "data" / "runtime" / "semantics" / "semantic_signals.json"
+        ),
     )
 )
 

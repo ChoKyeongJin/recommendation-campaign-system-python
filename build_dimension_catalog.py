@@ -9,7 +9,7 @@ DBMS, DS_SQL, 타겟 컬럼)만 스냅샷한다.
 두어 카탈로그/값해석에는 쓰되 타겟팅 SQL 조건은 만들지 않는다.
 
 실행: (컨테이너 안, pymysql 필요)
-    python build_dimension_catalog.py -o docs/data/dimension_catalog.sample.json
+    python build_dimension_catalog.py -o docs/data/generated/dimension_catalog.sample.json
 """
 
 from __future__ import annotations
@@ -143,7 +143,10 @@ def build_payload(dimensions: list[dict[str, Any]]) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build dimension catalog (definitions only) from t_xlig_dimension_list.")
-    parser.add_argument("--output", "-o", type=Path, default=Path("docs/data/dimension_catalog.sample.json"))
+    parser.add_argument(
+        "--output", "-o", type=Path,
+        default=Path("docs/data/generated/dimension_catalog.sample.json"),
+    )
     args = parser.parse_args()
 
     dimensions = fetch_dimensions()

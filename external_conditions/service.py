@@ -19,8 +19,8 @@ from .resolvers.kma_weather_alert import KmaWeatherAlertConfig, KmaWeatherAlertR
 
 logger = logging.getLogger("external_conditions")
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_MAPPING_PATH = _PROJECT_ROOT / "docs/data/external_region_mapping.json"
-DEFAULT_MEMBER_VALUE_INDEX_PATH = _PROJECT_ROOT / "docs/data/member_value_index.json"
+DEFAULT_MAPPING_PATH = _PROJECT_ROOT / "docs/data/runtime/external/external_region_mapping.json"
+DEFAULT_MEMBER_VALUE_INDEX_PATH = _PROJECT_ROOT / "docs/data/generated/member_value_index.json"
 
 
 class ResolverResultCache:

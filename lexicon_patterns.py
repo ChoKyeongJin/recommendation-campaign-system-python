@@ -31,7 +31,13 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_LEXICON_PATH = Path(
-    os.getenv("PARSER_LEXICON_PATH", str(Path(__file__).resolve().parent / "docs" / "data" / "parser_lexicon.json"))
+    os.getenv(
+        "PARSER_LEXICON_PATH",
+        str(
+            Path(__file__).resolve().parent
+            / "docs" / "data" / "runtime" / "language" / "parser_lexicon.json"
+        ),
+    )
 )
 
 # ── 코드 폴백(파일 부재/파손 시). 파일과 같은 스키마이며, 이관 시점의 값을 그대로 옮긴 것이다. ──

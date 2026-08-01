@@ -15,6 +15,9 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 DATA = REPO_ROOT / "docs" / "data"
+LANGUAGE_DATA = DATA / "runtime" / "language"
+SEMANTIC_DATA = DATA / "runtime" / "semantics"
+GENERATED_DATA = DATA / "generated"
 
 import aggregate_parser_config  # noqa: E402
 import aggregate_spans  # noqa: E402
@@ -23,7 +26,11 @@ import metric_registry  # noqa: E402
 
 
 def _json(name: str):
-    return json.loads((DATA / name).read_text(encoding="utf-8"))
+    locations = {
+        "surface_concepts.json": SEMANTIC_DATA,
+        "clarification_messages.ko.json": LANGUAGE_DATA,
+    }
+    return json.loads((locations[name] / name).read_text(encoding="utf-8"))
 
 
 # ── aggregate_parser_rules.json → member_target_filters.json 섹션 경로 ────────────────
@@ -104,7 +111,7 @@ def test_retained_orphan_concepts_still_exist() -> None:
     assert not stale, f"이미 삭제된 개념이 허용 목록에 남아 있다: {stale}"
 
 
-# ── metrics/*.json ↔ member_target_filters.numeric_filters ──────────────────────────
+# ── runtime/sql/metrics/*.json ↔ member_target_filters.numeric_filters ──────────────
 
 
 def test_metric_spec_sources_exist_in_the_schema_catalog() -> None:
@@ -117,7 +124,7 @@ def test_metric_spec_sources_exist_in_the_schema_catalog() -> None:
 
     import db_swap_preflight
 
-    catalog = db_swap_preflight._load_json(DATA / "schema_catalog.json")
+    catalog = db_swap_preflight._load_json(GENERATED_DATA / "schema_catalog.json")
     columns_by_table, _ = db_swap_preflight._catalog_index(catalog)
 
     # 지표 카탈로그는 metric_registry 가 단일 소유자다(graph_rag 재수출은 규칙 계층과 함께 사라졌다).

@@ -16,7 +16,7 @@
 재시도(retryable)/안내(needs_review)/차단(unresolved) 을 구분한다. 기존 SlotShape coerce 계약
 (raw → value | None)은 :mod:`targeting_ir` 의 얇은 어댑터가 유지한다.
 
-어휘(단위 별칭·비교어·모호 정도어)는 docs/data/normalization_lexicon.json 이 소유하고, 파일이
+어휘(단위 별칭·비교어·모호 정도어)는 docs/data/runtime/language/normalization_lexicon.json 이 소유하고, 파일이
 없거나 파손되면 ``_CODE_FALLBACK`` 으로 폴백한다(:mod:`lexicon_patterns` 와 같은 관례).
 모호 정도어('높은/많은/자주' 등)는 어떤 연산자로도 강제 확정하지 않는다 — needs_review 로 낸다.
 
@@ -46,7 +46,9 @@ from normalization_result import (
 )
 
 _REPO_ROOT = Path(__file__).resolve().parent
-DEFAULT_NORMALIZATION_LEXICON_PATH = _REPO_ROOT / "docs" / "data" / "normalization_lexicon.json"
+DEFAULT_NORMALIZATION_LEXICON_PATH = (
+    _REPO_ROOT / "docs" / "data" / "runtime" / "language" / "normalization_lexicon.json"
+)
 
 # JSON 과 같은 스키마의 코드 폴백(이관 시점 값 그대로). 두 소스의 드리프트는
 # tests/test_condition_normalizers.py 의 parity 가드가 막는다.

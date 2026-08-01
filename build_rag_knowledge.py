@@ -526,13 +526,13 @@ def build_payload(
         "version": "1.0",
         "description": "NL2SQL/RAG 검색용 지식 노드. 테이블 스키마, 정규화 사전, 비즈니스 용어, 업무 정책, SQL 예시, 캠페인/사용자 샘플을 포함한다.",
         "source_files": {
-            "table_schema": "docs/data/schema_catalog.json",
-            "normalization_dictionary": "docs/data/normalization_rules.sample.json",
-            "business_policies": "docs/data/business_policies.sample.json",
+            "table_schema": "docs/data/generated/schema_catalog.json",
+            "normalization_dictionary": "docs/data/runtime/language/normalization_rules.sample.json",
+            "business_policies": "docs/data/runtime/policies/business_policies.sample.json",
             "sql_examples": "docs/data/sql_examples.sample.sql",
             "business_terms": "build_rag_knowledge.py",
-            "dimension_catalog": "docs/data/dimension_catalog.sample.json",
-            "member_value_index": "docs/data/member_value_index.json",
+            "dimension_catalog": "docs/data/generated/dimension_catalog.sample.json",
+            "member_value_index": "docs/data/generated/member_value_index.json",
             "campaign_user_nodes": "docs/data/campaign_user_rag_sample_50_with_edges.json",
         },
         "node_counts": {
@@ -554,14 +554,29 @@ def build_payload(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build RAG-ready JSON knowledge nodes.")
-    parser.add_argument("--schema", type=Path, default=Path("docs/data/schema_catalog.json"))
-    parser.add_argument("--normalization", type=Path, default=Path("docs/data/normalization_rules.sample.json"))
-    parser.add_argument("--business-policies", type=Path, default=Path("docs/data/business_policies.sample.json"))
-    parser.add_argument("--dimension-catalog", type=Path, default=Path("docs/data/dimension_catalog.sample.json"))
+    parser.add_argument("--schema", type=Path, default=Path("docs/data/generated/schema_catalog.json"))
+    parser.add_argument(
+        "--normalization", type=Path,
+        default=Path("docs/data/runtime/language/normalization_rules.sample.json"),
+    )
+    parser.add_argument(
+        "--business-policies", type=Path,
+        default=Path("docs/data/runtime/policies/business_policies.sample.json"),
+    )
+    parser.add_argument(
+        "--dimension-catalog", type=Path,
+        default=Path("docs/data/generated/dimension_catalog.sample.json"),
+    )
     parser.add_argument("--sql-examples", type=Path, default=Path("docs/data/sql_examples.sample.sql"))
     parser.add_argument("--campaign-user", type=Path, default=Path("docs/data/campaign_user_rag_sample_50_with_edges.json"))
-    parser.add_argument("--member-value-index", type=Path, default=Path("docs/data/member_value_index.json"))
-    parser.add_argument("--output", "-o", type=Path, default=Path("docs/data/rag_knowledge_base.json"))
+    parser.add_argument(
+        "--member-value-index", type=Path,
+        default=Path("docs/data/generated/member_value_index.json"),
+    )
+    parser.add_argument(
+        "--output", "-o", type=Path,
+        default=Path("docs/data/generated/rag_knowledge_base.json"),
+    )
     args = parser.parse_args()
 
     payload = build_payload(

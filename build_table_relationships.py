@@ -23,7 +23,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-SCHEMA_CATALOG_PATH = Path("docs/data/schema_catalog.json")
+SCHEMA_CATALOG_PATH = Path("docs/data/generated/schema_catalog.json")
 DIAGRAM_PATH = Path("docs/data/table_relationships.md")
 
 # (child_table, [child_cols], parent_table, [parent_cols], confidence, source)

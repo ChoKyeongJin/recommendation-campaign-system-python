@@ -21,7 +21,7 @@ def test_catalog_is_not_empty_and_contains_all_three_sources() -> None:
     assert "purchase_amount" in ids and "order_count" in ids
     # 파생: 프로필 지표(metric_registry, targeting.enabled)
     assert "buy_cycle" in ids
-    # 선언: 특수 슬롯(docs/data/concept_catalog.json)
+    # 선언: 특수 슬롯(docs/data/runtime/semantics/concept_catalog.json)
     assert "purchase_inactivity" in ids and "inactivity_period" in ids
 
 

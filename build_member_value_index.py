@@ -14,7 +14,7 @@ graph_rag._apply_member_value_filters 가 런타임에 결정론적으로 매칭
     함께 저장한다(매칭은 이름 기준, SQL 은 저장값 기준).
 
 실행(컨테이너): docker compose exec python python build_member_value_index.py
-출력: docs/data/member_value_index.json (build_rag_knowledge 가 dimension_value 노드로도 적재)
+출력: docs/data/generated/member_value_index.json (build_rag_knowledge 가 dimension_value 노드로도 적재)
 """
 
 from __future__ import annotations
@@ -216,7 +216,10 @@ def build_index() -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build member column value index from the live member table.")
-    parser.add_argument("--output", "-o", type=Path, default=Path("docs/data/member_value_index.json"))
+    parser.add_argument(
+        "--output", "-o", type=Path,
+        default=Path("docs/data/generated/member_value_index.json"),
+    )
     args = parser.parse_args()
 
     payload = build_index()

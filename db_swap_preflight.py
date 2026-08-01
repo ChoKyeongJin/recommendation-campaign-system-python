@@ -37,10 +37,10 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 REGISTRY_PATHS = [
-    Path("docs/data/member_target_filters.json"),
-    Path("docs/data/member_metrics.json"),
+    Path("docs/data/runtime/sql/member_target_filters.json"),
+    Path("docs/data/runtime/sql/member_metrics.json"),
 ]
-SCHEMA_CATALOG_PATH = Path("docs/data/schema_catalog.json")
+SCHEMA_CATALOG_PATH = Path("docs/data/generated/schema_catalog.json")
 
 # 레지스트리에서 테이블명을 담는 키(정확 일치 또는 '*_table' 접미어).
 _TABLE_KEYS = {"table", "member_table", "value_table"}

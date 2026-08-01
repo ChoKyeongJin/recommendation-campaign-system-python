@@ -11,7 +11,7 @@ graph_rag 에서는 ``order_count_behavior`` 로, 나머지 둘에서는 ``uncla
 (호출자가 주입하는 규약 유지). (당시 세 번째 소비자였던 canonical_targeting 모듈은 이후 삭제됐다.)
 
 경로 규약은 graph_rag 와 동일하다: 환경변수 GRAPH_RAG_MEMBER_TARGET_FILTERS 로 재지정 가능,
-기본값은 저장소의 docs/data/member_target_filters.json. 기본 경로는 **모듈 기준 절대경로**다 —
+기본값은 저장소의 docs/data/runtime/sql/member_target_filters.json. 기본 경로는 **모듈 기준 절대경로**다 —
 상대경로면 cwd 가 바뀌는 순간 조용히 빈 설정으로 강등되기 때문이다.
 """
 
@@ -26,7 +26,7 @@ from typing import Any
 _REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_PATH = Path(
     os.getenv("GRAPH_RAG_MEMBER_TARGET_FILTERS")
-    or (_REPO_ROOT / "docs" / "data" / "member_target_filters.json")
+    or (_REPO_ROOT / "docs" / "data" / "runtime" / "sql" / "member_target_filters.json")
 )
 
 

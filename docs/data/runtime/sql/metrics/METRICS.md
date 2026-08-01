@@ -1,12 +1,11 @@
-# 통합 지표 스펙 (`docs/data/metrics/*.json`)
+# 통합 지표 스펙 (`docs/data/runtime/sql/metrics/*.json`)
 
 신규 지표 추가 구조 개선안의 **단일 진실 소스**. 지표별 정보(컬럼·별칭·단위·NULL/0건·최근성·우선순위·
 집계·파생)를 코드가 아니라 이 스펙으로 관리한다. 한 파일 = 한 지표(`metric_id.json`).
 
-> **현재 상태(P0):** 스키마 + 로더([../../../metric_registry.py](../../../metric_registry.py))만 존재하며
-> **graph_rag 파이프라인에는 아직 연결되지 않았다.** 기존 동작은 여전히 `member_target_filters.json`
-> (numeric_filters / ratio_filters / activity_filters / recent_login_target)이 구동한다. 이후 단계에서
-> 단위 → zero_semantics → 최근성 → 비율 순으로 이 레지스트리로 점진 교체한다.
+> **현재 상태:** 로더([metric_registry.py](../../../../../metric_registry.py))가 모든 스펙을 검증하고,
+> `targeting.enabled=true`인 지표는 graph_rag 프로필 타겟 슬롯에 연결된다. 나머지 지표의 기존 동작은
+> `member_target_filters.json` 설정이 구동한다.
 
 ## semantic_type 별 최소 계약
 
@@ -16,7 +15,7 @@
 | `ratio`  | `derivation.{numerator,denominator}`, `units` | 파생 비율(하루 평균 = CNT/DAYS) |
 | `date`   | `source.date_format`, `time_semantics.{supports_recent_period=true, windows}` | 최근성/미접속(YYYYMMDD 창) |
 
-스키마 규범은 [metric_registry.py](../../../metric_registry.py) 상단 docstring + 데이터클래스다. 위반 시
+스키마 규범은 [metric_registry.py](../../../../../metric_registry.py) 상단 docstring + 데이터클래스다. 위반 시
 로더가 `MetricSpecError`(어느 지표 어느 필드가 왜 틀렸는지)를 던진다.
 
 ## 새 지표 추가 절차(목표 상태)

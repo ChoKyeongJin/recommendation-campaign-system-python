@@ -13,12 +13,12 @@
 ## 자동 추출
 
 ```bash
-docker compose run --rm python python schema_extract.py docs/data/local_bootstrap.sql --output docs/data/schema_catalog.json
+docker compose run --rm python python schema_extract.py docs/data/local_bootstrap.sql --output docs/data/generated/schema_catalog.json
 ```
 
 생성 파일:
 
-- `docs/data/schema_catalog.json`
+- `docs/data/generated/schema_catalog.json`
 
 이미 생성된 카탈로그가 있으면 재추출 시 `description_llm`과 `human_note`는 보존한다.
 
@@ -89,7 +89,7 @@ SQL 예시는 `docs/data/sql_examples.sample.sql`에 10~30개만 둔다. 예시�
 
 | 로그 유형                              | 조치                                                              |
 | -------------------------------------- | ----------------------------------------------------------------- |
-| 자연어 용어를 canonical 값으로 못 바꿈 | `docs/data/normalization_rules.sample.json`에 동의어 추가         |
+| 자연어 용어를 canonical 값으로 못 바꿈 | `docs/data/runtime/language/normalization_rules.sample.json`에 동의어 추가 |
 | 올바른 테이블을 못 고름                | 해당 테이블의 `description_llm` 개선                              |
 | 중요한 조건 컬럼을 빠뜨림              | 해당 컬럼을 `IMPORTANT_COLUMN_NAMES`에 추가하고 `human_note` 작성 |
 | 조인 경로를 틀림                       | `docs/data/sql_examples.sample.sql`에 대표 예시 1개 추가          |

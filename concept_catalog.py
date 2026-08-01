@@ -6,8 +6,9 @@ LLM 의미 해석 계층은 여기서 검색된 후보 중에서만 개념을 �
 개념 소스 3종(이중 소유 금지 — 카탈로그는 기존 스펙의 **파생 뷰** + 특수 슬롯 선언만 갖는다):
   1. 공통 조건(집계 지표): member_target_filters.json aggregate_targets.metrics 파생.
      지표 id·동의어·집계 방식은 그 설정이 계속 소유한다(member_filters_config 경유).
-  2. 회원 프로필 지표: metric_registry(docs/data/metrics/*.json) 파생 — targeting.enabled 만.
-  3. 특수 슬롯 개념(미구매/미접속/가입/카트보관 등): docs/data/concept_catalog.json 선언.
+  2. 회원 프로필 지표: metric_registry(docs/data/runtime/sql/metrics/*.json) 파생 — targeting.enabled 만.
+  3. 특수 슬롯 개념(미구매/미접속/가입/카트보관 등):
+     docs/data/runtime/semantics/concept_catalog.json 선언.
      별칭 확장(alias_extensions)도 이 파일이 갖는다 — 원 스펙의 synonyms 를 복제하지 않는다.
 
 실행 가능성(is_executable)은 "활성 + 선언된 compiler 가 compiler_registry 에 실재"다. 컴파일러
@@ -34,7 +35,9 @@ from common_utils import normalize_entity_term
 from condition_normalizers import NORMALIZERS
 
 _REPO_ROOT = Path(__file__).resolve().parent
-DEFAULT_CONCEPT_CATALOG_PATH = _REPO_ROOT / "docs" / "data" / "concept_catalog.json"
+DEFAULT_CONCEPT_CATALOG_PATH = (
+    _REPO_ROOT / "docs" / "data" / "runtime" / "semantics" / "concept_catalog.json"
+)
 
 _DEFAULT_OPERATORS: tuple[str, ...] = (">", ">=", "<", "<=")
 CONCEPT_KINDS: frozenset[str] = frozenset({"special_slot", "generic_condition"})

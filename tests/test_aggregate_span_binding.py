@@ -14,7 +14,8 @@ import aggregate_parser_config
 import graph_rag
 
 
-# 단위 어휘의 단일 소스는 docs/data/aggregate_parser_rules.json 이다(옛 graph_rag._AGG_UNIT 대체).
+# 단위 어휘의 단일 소스는 docs/data/runtime/language/aggregate_parser_rules.json 이다
+# (옛 graph_rag._AGG_UNIT 대체).
 _UNIT_ALTERNATION = aggregate_parser_config.unit_alternation(aggregate_parser_config.rules())
 
 

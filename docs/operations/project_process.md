@@ -26,7 +26,7 @@ flowchart TD
 
 | 구분          | 목적                                                                                                    | 주요 파일                                                                                                                                                       |
 | ------------- | ------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 구축 프로세스 | 검색, SQL 생성, 메시지 생성을 위한 지식 데이터를 만든 뒤 Qdrant에 색인하고 상태를 점검한다.             | `schema_extract.py`, `build_rag_knowledge.py`, `rag_index.py`, `init_rag_collections.py`, `check_rag_collections.py`, `docs/data/business_policies.sample.json` |
+| 구축 프로세스 | 검색, SQL 생성, 메시지 생성을 위한 지식 데이터를 만든 뒤 Qdrant에 색인하고 상태를 점검한다.             | `schema_extract.py`, `build_rag_knowledge.py`, `rag_index.py`, `init_rag_collections.py`, `check_rag_collections.py`, `docs/data/runtime/policies/business_policies.sample.json` |
 | 질의 프로세스 | 사용자 질문을 Query Plan으로 바꾸고, 검색 context, 검증된 SQL/API 응답, 선택적 LMS/RCS 메시지를 만든다. | `graph_rag.py`, `ingest.py`, `set_expression_engine.py`, `sql_guard.py`, `docs/prompts/message_generation_*.txt`                                                |
 
 ## 1.1 화면 기준 사용자 실행 흐름
@@ -109,7 +109,7 @@ docker compose run --rm python python -c "import os; print('OPENAI_API_KEY loade
 ### 2.3 DDL에서 스키마 카탈로그 생성
 
 ```bash
-docker compose run --rm python python schema_extract.py docs/data/local_bootstrap.sql --output docs/data/schema_catalog.json
+docker compose run --rm python python schema_extract.py docs/data/local_bootstrap.sql --output docs/data/generated/schema_catalog.json
 ```
 
 왜 이걸 쓰는가:
@@ -122,7 +122,7 @@ docker compose run --rm python python schema_extract.py docs/data/local_bootstra
 
 수정 대상:
 
-- `docs/data/schema_catalog.json`의 `description_llm`
+- `docs/data/generated/schema_catalog.json`의 `description_llm`
 - `important: true` 컬럼의 `human_note`
 
 왜 이걸 쓰는가:
@@ -134,19 +134,19 @@ docker compose run --rm python python schema_extract.py docs/data/local_bootstra
 ### 2.5 정규화 사전 검증
 
 ```bash
-docker compose run --rm python python ingest.py docs/data/normalization_rules.sample.json --text "20대 여성 장바구니 이탈 고객에게 쿠폰 캠페인 추천"
+docker compose run --rm python python ingest.py docs/data/runtime/language/normalization_rules.sample.json --text "20대 여성 장바구니 이탈 고객에게 쿠폰 캠페인 추천"
 ```
 
 LMS/RCS 메시지 채널 정규화도 확인한다.
 
 ```bash
-docker compose run --rm python python ingest.py docs/data/normalization_rules.sample.json --text "RCS로 장바구니 이탈 고객에게 메시지 만들어줘"
+docker compose run --rm python python ingest.py docs/data/runtime/language/normalization_rules.sample.json --text "RCS로 장바구니 이탈 고객에게 메시지 만들어줘"
 ```
 
 필요하면 사전 인덱스도 확인한다.
 
 ```bash
-docker compose run --rm python python ingest.py docs/data/normalization_rules.sample.json --dump-index
+docker compose run --rm python python ingest.py docs/data/runtime/language/normalization_rules.sample.json --dump-index
 ```
 
 왜 이걸 쓰는가:
@@ -159,7 +159,7 @@ docker compose run --rm python python ingest.py docs/data/normalization_rules.sa
 
 수정 대상:
 
-- `docs/data/business_policies.sample.json`
+- `docs/data/runtime/policies/business_policies.sample.json`
 
 왜 이걸 쓰는가:
 
@@ -222,7 +222,7 @@ docker compose run --rm python python ingest.py docs/data/normalization_rules.sa
 관련 파일:
 
 - `set_expression_engine.py`
-- `docs/data/normalization_rules.sample.json`
+- `docs/data/runtime/language/normalization_rules.sample.json`
 
 왜 이걸 쓰는가:
 
@@ -265,11 +265,11 @@ WHERE (((u.gender = 'female' OR u.lifecycle = 'vip')
 
 ```bash
 docker compose run --rm python python build_rag_knowledge.py \
-  --schema docs/data/schema_catalog.json \
-  --normalization docs/data/normalization_rules.sample.json \
-  --business-policies docs/data/business_policies.sample.json \
+  --schema docs/data/generated/schema_catalog.json \
+  --normalization docs/data/runtime/language/normalization_rules.sample.json \
+  --business-policies docs/data/runtime/policies/business_policies.sample.json \
   --sql-examples docs/data/sql_examples.sample.sql \
-  --output docs/data/rag_knowledge_base.json
+  --output docs/data/generated/rag_knowledge_base.json
 ```
 
 왜 이걸 쓰는가:
@@ -300,7 +300,7 @@ docker compose run --rm python python init_rag_collections.py --recreate
 
 왜 이걸 쓰는가:
 
-- 이 명령은 기본적으로 `docs/data/rag_knowledge_base.json`을 다시 만든 뒤 두 컬렉션을 색인한다.
+- 이 명령은 기본적으로 `docs/data/generated/rag_knowledge_base.json`을 다시 만든 뒤 두 컬렉션을 색인한다.
 - `campaign_user_rag_nodes`에는 캠페인/사용자 샘플 노드와 추천 edge payload가 들어간다.
 - `campaign_knowledge_rag`에는 스키마, 정규화 사전, 비즈니스 용어, 업무 정책, 계산 지표 별칭, SQL 예시 노드와 함께 `campaign_user_rag_sample_50_with_edges.json`의 캠페인/사용자 노드 및 추천 edge가 들어간다.
 - `--recreate`는 컬렉션을 삭제 후 재생성하므로, 샘플 데이터나 지식 베이스가 크게 바뀐 뒤 일관된 상태로 맞출 때 적합하다.
@@ -328,7 +328,7 @@ docker compose run --rm python python graph_rag.py --stats
 
 왜 이걸 쓰는가:
 
-- `graph_rag.py`가 `docs/data/rag_knowledge_base.json`으로 그래프를 만들 수 있는지 확인한다.
+- `graph_rag.py`가 `docs/data/generated/rag_knowledge_base.json`으로 그래프를 만들 수 있는지 확인한다.
 - 노드 타입과 edge 타입 분포를 보면 지식 베이스가 의도한 구조로 만들어졌는지 빠르게 확인할 수 있다.
 
 ### 3.2 GraphRAG 질의 실행
@@ -355,7 +355,7 @@ docker compose run --rm python python graph_rag.py "20대 여성 고객 또는 V
 
 - `graph_rag.py`는 사용자 질문 하나를 받아 Query Plan, 벡터 검색, 키워드 검색, 그래프 확장, context 조립, SQL 템플릿 검증까지 한 번에 수행한다.
 - 기본 parser는 규칙 기반이라 `OPENAI_API_KEY` 없이도 동작한다.
-- 기본 정책 파일은 `docs/data/business_policies.sample.json`이며, 다른 파일을 쓰려면 `--business-policies`를 지정한다.
+- 기본 정책 파일은 `docs/data/runtime/policies/business_policies.sample.json`이며, 다른 파일을 쓰려면 `--business-policies`를 지정한다.
 - `--query-parser auto` 또는 `--query-parser llm`은 OpenAI 기반 Query Parser를 시도하되 실패하면 규칙 기반 결과로 fallback한다.
 
 ### 3.3 타겟 SQL API 실행
@@ -614,17 +614,17 @@ docker compose run --rm python python sql_guard.py "SELECT user_id, name FROM us
 
 | 문제 유형                                | 보강 위치                                                         | 이유                                                                                      |
 | ---------------------------------------- | ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| 자연어 표현을 canonical 값으로 못 바꿈   | `docs/data/normalization_rules.sample.json`                       | Query Plan 조건 추출의 출발점이 정규화 사전이다.                                          |
-| 테이블/컬럼 검색이 부정확함              | `docs/data/schema_catalog.json`의 `description_llm`, `human_note` | 스키마 노드 embedding text가 검색 품질에 직접 영향을 준다.                                |
+| 자연어 표현을 canonical 값으로 못 바꿈   | `docs/data/runtime/language/normalization_rules.sample.json`      | Query Plan 조건 추출의 출발점이 정규화 사전이다.                                          |
+| 테이블/컬럼 검색이 부정확함              | `docs/data/generated/schema_catalog.json`의 `description_llm`, `human_note` | 스키마 노드 embedding text가 검색 품질에 직접 영향을 준다.                       |
 | 조인 패턴이나 대표 질의가 부족함         | `docs/data/sql_examples.sample.sql`                               | SQL 예시는 GraphRAG context와 패턴 설명을 보강한다.                                       |
-| 업무 기준이나 기준 금액이 불명확함       | `docs/data/business_policies.sample.json`                         | 매출 상위, 고매출, 고예산 같은 정책 기준은 코드가 아니라 정책 파일이 소유한다.            |
-| 모호한 용어의 기본 해석이 맞지 않음      | `docs/data/business_policies.sample.json`                         | 지역, 고객, 구매 장소처럼 의미가 갈리는 표현의 기본 컬럼과 확인 질문을 정책으로 관리한다. |
+| 업무 기준이나 기준 금액이 불명확함       | `docs/data/runtime/policies/business_policies.sample.json`        | 매출 상위, 고매출, 고예산 같은 정책 기준은 코드가 아니라 정책 파일이 소유한다.            |
+| 모호한 용어의 기본 해석이 맞지 않음      | `docs/data/runtime/policies/business_policies.sample.json`        | 지역, 고객, 구매 장소처럼 의미가 갈리는 표현의 기본 컬럼과 확인 질문을 정책으로 관리한다. |
 | 계산식 SQL이 잘못 생성됨                 | `formula_engine.py`, `graph_rag.py`                               | 계산식 AST 검증과 SQL expression 컴파일은 코드 경로에서 결정한다.                         |
 | 집합식 AST나 predicate SQL이 잘못 생성됨 | `set_expression_engine.py`, `graph_rag.py`                        | 자연어 집합식 파싱과 `OR`/`AND`/`AND NOT` predicate 컴파일은 코드 경로에서 결정한다.      |
 | SQL이 사용자 조건을 빠뜨림               | `graph_rag.py`의 조건 토큰/SQL 템플릿                             | 최종 SQL은 Query Plan 조건 coverage를 통과해야 한다.                                      |
 | SQL은 생성됐지만 위험하거나 범위가 넓음  | `sql_guard.py` 정책                                               | 운영 안전성은 검색 품질과 별도로 강제해야 한다.                                           |
-| 메시지 채널 표현이 정규화되지 않음       | `docs/data/normalization_rules.sample.json`                       | LMS/RCS 표현은 Query Plan의 채널 canonical 값으로 들어가야 한다.                          |
-| 메시지가 없는 혜택을 말함                | `docs/data/business_policies.sample.json`, `graph_rag.py` 검증    | 혜택 근거는 `campaigns.offer`와 기존 메시지 예시로 제한한다.                              |
+| 메시지 채널 표현이 정규화되지 않음       | `docs/data/runtime/language/normalization_rules.sample.json`      | LMS/RCS 표현은 Query Plan의 채널 canonical 값으로 들어가야 한다.                          |
+| 메시지가 없는 혜택을 말함                | `docs/data/runtime/policies/business_policies.sample.json`, `graph_rag.py` 검증 | 혜택 근거는 `campaigns.offer`와 기존 메시지 예시로 제한한다.                  |
 | 브랜드 톤이 맞지 않음                    | `campaign_message_examples.brand_tone`                            | 기존 메시지 예시와 톤 정보를 운영 데이터로 보강한다.                                      |
 
 보강 후에는 다음 순서로 다시 확인한다.
@@ -735,9 +735,9 @@ LIMIT 50;
 
 1. `failure_stage`, `failure_reason`으로 실패 유형을 묶는다.
 2. `clarification_questions`가 반복되면 정책 기준이나 필수 입력 UI를 보강한다.
-3. canonical 매칭 실패는 `docs/data/normalization_rules.sample.json`에 동의어를 추가한다.
-4. 조인/컬럼/coverage 실패는 `docs/data/schema_catalog.json`의 설명이나 `docs/data/sql_examples.sample.sql`을 보강한다.
-5. DDL을 새로 적용한 환경에서는 `schema_extract.py`로 `docs/data/schema_catalog.json`을 재생성한 뒤 RAG 지식 베이스를 다시 만든다.
+3. canonical 매칭 실패는 `docs/data/runtime/language/normalization_rules.sample.json`에 동의어를 추가한다.
+4. 조인/컬럼/coverage 실패는 `docs/data/generated/schema_catalog.json`의 설명이나 `docs/data/sql_examples.sample.sql`을 보강한다.
+5. DDL을 새로 적용한 환경에서는 `schema_extract.py`로 `docs/data/generated/schema_catalog.json`을 재생성한 뒤 RAG 지식 베이스를 다시 만든다.
 
 ### 7.6 SQL 템플릿 확장 정책
 
@@ -762,9 +762,9 @@ LIMIT 50;
 처음부터 다시 구축할 때는 아래 순서를 따른다.
 
 1. `docker compose up -d qdrant postgres`
-2. `docker compose run --rm python python schema_extract.py docs/data/local_bootstrap.sql --output docs/data/schema_catalog.json`
-3. `docs/data/schema_catalog.json`의 `description_llm`, 중요 컬럼 `human_note` 확인
-4. `docker compose run --rm python python ingest.py docs/data/normalization_rules.sample.json --dump-index`
+2. `docker compose run --rm python python schema_extract.py docs/data/local_bootstrap.sql --output docs/data/generated/schema_catalog.json`
+3. `docs/data/generated/schema_catalog.json`의 `description_llm`, 중요 컬럼 `human_note` 확인
+4. `docker compose run --rm python python ingest.py docs/data/runtime/language/normalization_rules.sample.json --dump-index`
 5. `docker compose run --rm python python build_rag_knowledge.py`
 6. `docker compose run --rm python python init_rag_collections.py --validate-only --skip-knowledge-build`
 7. `docker compose run --rm python python init_rag_collections.py --recreate`

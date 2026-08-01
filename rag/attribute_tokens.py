@@ -4,7 +4,7 @@ graph_rag.py 에서 분리했다. "활동회원", "자녀 등록", "앱 가입" 
 파싱 구조가 전부 같다(표면어 + 긍정/부정 접미어 + 발동 게이트). 그 공통 문법을 데이터로
 선언해 두면 새 속성 필터가 전용 _apply_* 함수 없이 스펙 한 줄로 열린다.
 
-설정(docs/data/attribute_token_groups.json)이 우선이고, 파일이 없거나 깨졌을 때를 위한
+설정(docs/data/runtime/language/attribute_token_groups.json)이 우선이고, 파일이 없거나 깨졌을 때를 위한
 코드 폴백(_default_attribute_token_groups_raw)이 같은 스키마로 여기 함께 산다 — 둘이
 갈라지면 "설정만 읽는 도구"와 "런타임"이 다른 답을 내므로, 한 모듈에 두어 나란히 읽히게 했다.
 
@@ -26,7 +26,10 @@ from typing import Any
 # 속성 토큰 그룹 선언(회원속성 표면어→lifecycle/exclude 승격 문법)의 단일 소스. 파일 부재/파손 시
 # _default_attribute_token_groups_raw() 코드 폴백을 쓴다(동작 불변).
 DEFAULT_ATTRIBUTE_TOKEN_GROUPS_PATH = Path(
-    os.getenv("GRAPH_RAG_ATTRIBUTE_TOKEN_GROUPS", "docs/data/attribute_token_groups.json")
+    os.getenv(
+        "GRAPH_RAG_ATTRIBUTE_TOKEN_GROUPS",
+        "docs/data/runtime/language/attribute_token_groups.json",
+    )
 )
 
 

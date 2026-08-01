@@ -24,7 +24,7 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 
 import physical_binding_inventory as inventory  # noqa: E402
 
-BASELINE_PATH = REPO_ROOT / "docs" / "data" / "physical_binding_baseline.json"
+BASELINE_PATH = REPO_ROOT / "docs" / "data" / "test_baselines" / "physical_binding_baseline.json"
 
 
 def _baseline() -> dict:
@@ -44,7 +44,8 @@ def test_total_does_not_regress() -> None:
     assert current["total"] <= baseline["total"], (
         f"소스 하드코딩 물리 바인딩이 {baseline['total']} → {current['total']} 로 늘었다.\n"
         "설정(member_target_filters.json)으로 빼거나, 정말 필요하면 "
-        "`python tools/physical_binding_inventory.py --json > docs/data/physical_binding_baseline.json` 로 "
+        "`python tools/physical_binding_inventory.py --json > "
+        "docs/data/test_baselines/physical_binding_baseline.json` 로 "
         "기준선을 올리고 커밋 메시지에 사유를 남겨라."
     )
 

@@ -46,7 +46,7 @@ from member_policy import (
 )
 
 
-DEFAULT_ANALYTICS_REGISTRY_PATH = Path("docs/data/analytics_registry.json")
+DEFAULT_ANALYTICS_REGISTRY_PATH = Path("docs/data/runtime/semantics/analytics_registry.json")
 
 # ── 집계 표면어의 동결 백스톱 ──────────────────────────────────────────────────────────────
 # 집계 함수어("총액"→SUM)와 미지원 한정어("미래 예상")는 위치를 쓰지 않는 순수 불리언/최장일치
@@ -511,7 +511,7 @@ def _ranking_direction(query: str) -> str | None:
 #
 # 어떤 축·지표가 존재하는지는 레지스트리(dimensions/metrics 의 terms·rankingTerms)가 안다 —
 # 여기 있는 것은 순위 문법뿐이고, 새 축(등급별·채널별 …)은 레지스트리 한 줄로 열린다.
-# 표면 낱말은 사전(docs/data/parser_lexicon.json)이 소유하고, 여기 코드에는 **구조**만 둔다.
+# 표면 낱말은 사전(docs/data/runtime/language/parser_lexicon.json)이 소유하고, 여기 코드에는 **구조**만 둔다.
 _DIMENSION_RANK_HIGH_RE = lexicon_patterns.pattern("dimension_rank_high")
 _DIMENSION_RANK_LOW_RE = lexicon_patterns.pattern("dimension_rank_low")
 # 정렬 지시가 **직접 데리고 있는** 수. 이것이 행 수 제한의 1순위 근거다.

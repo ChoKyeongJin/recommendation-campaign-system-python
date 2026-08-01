@@ -29,8 +29,8 @@ NOW = datetime(2026, 7, 30, 5, 0, tzinfo=timezone.utc)
 
 def _mapper() -> AdministrativeRegionMapper:
     return AdministrativeRegionMapper(
-        "docs/data/external_region_mapping.json",
-        "docs/data/member_value_index.json",
+        "docs/data/runtime/external/external_region_mapping.json",
+        "docs/data/generated/member_value_index.json",
     )
 
 

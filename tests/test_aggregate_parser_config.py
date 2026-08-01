@@ -14,7 +14,7 @@ import pytest
 
 import aggregate_parser_config as config
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "docs" / "data"
+DATA_DIR = Path(__file__).resolve().parents[1] / "docs" / "data" / "runtime" / "language"
 
 
 def _rules_payload() -> dict:

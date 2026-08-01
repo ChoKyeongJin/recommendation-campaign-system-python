@@ -1,6 +1,6 @@
 """DB 스왑 프리플라이트를 pytest 게이트로 승격한다.
 
-db_swap_preflight.py 는 설정 레지스트리(docs/data/*.json)가 참조하는 테이블·컬럼이
+db_swap_preflight.py 는 설정 레지스트리(docs/data/runtime/sql/*.json)가 참조하는 테이블·컬럼이
 schema_catalog 에 실재하는지 대조하는 이식성 가드다. 그런데 CLI 로만 존재해서 아무도 돌리지
 않았고, 그 사이 실제로 3건이 어긋난 채 문서에는 '완료 ✅' 로 적혀 있었다. 설정과 카탈로그가
 어긋나면 SQL 은 '성공하는데 0명'으로 조용히 틀린다 — 가장 잡기 어려운 실패 형태다.
@@ -80,7 +80,7 @@ def test_declared_symbol_resolves_to_a_catalog_table(at_repo_root: None) -> None
     """table_symbols 의 매핑 대상은 카탈로그에 실재해야 한다(오타 방지)."""
 
     registry = db_swap_preflight._load_json(
-        REPO_ROOT / "docs" / "data" / "member_target_filters.json"
+        REPO_ROOT / "docs" / "data" / "runtime" / "sql" / "member_target_filters.json"
     )
     symbols = registry.get("table_symbols") or {}
     assert symbols, "table_symbols 선언이 사라졌다 — 논리 심볼 해석이 무력화된다."

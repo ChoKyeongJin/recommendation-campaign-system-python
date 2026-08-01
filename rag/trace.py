@@ -234,8 +234,8 @@ _TRACE_STAGE_REFS: dict[int, tuple[dict[str, str], ...]] = {
         {"kind": "데이터", "name": "schema_catalog.json"},
         {"kind": "데이터", "name": "member_target_filters.json"},
         {"kind": "데이터", "name": "member_metrics.json"},
-        # 수치 지표 측정단위는 지표 레지스트리(docs/data/metrics/*.json)에서 읽는다(metric_registry).
-        {"kind": "데이터", "name": "docs/data/metrics/*.json"},
+        # 수치 지표 측정단위는 지표 레지스트리(docs/data/runtime/sql/metrics/*.json)에서 읽는다(metric_registry).
+        {"kind": "데이터", "name": "docs/data/runtime/sql/metrics/*.json"},
         {"kind": "프롬프트", "name": "(LLM 폴백 인라인)"},
         {"kind": "모델", "name": "{model} (폴백)"},
     ),
@@ -450,7 +450,7 @@ def _mark_trace_refs_used(stages: list[dict[str, Any]], result: dict[str, Any]) 
         for token in condition_tokens
         if isinstance(token, dict)
     ):
-        mark(8, "member_metrics.json", "docs/data/metrics/*.json")
+        mark(8, "member_metrics.json", "docs/data/runtime/sql/metrics/*.json")
     if isinstance(llm_sql_prompt, dict):
         mark(8, "(LLM 폴백 인라인)", kind="모델")
 

@@ -33,7 +33,7 @@ CRM 필터를 붙인다.
 | `CONCEPTUAL_TARGETING_CONFIDENCE_THRESHOLD` | `0.65` |
 | `CONCEPTUAL_TARGETING_CACHE_TTL_SECONDS` | `86400` |
 | `CONCEPTUAL_TARGETING_TIMEOUT_SECONDS` | `30`; SDK 내부 재시도는 끄고 grounding 서비스가 재시도 예산을 소유 |
-| `EXTERNAL_CONDITION_CATALOG_PATH` | `docs/data/external_condition_catalog.json` |
+| `EXTERNAL_CONDITION_CATALOG_PATH` | `docs/data/runtime/external/external_condition_catalog.json` |
 
 이 결과는 실시간 관측이나 공식 판정이 아니다. 캠페인용 주관적 세그먼트이며 모델·후보 데이터·프롬프트
 버전이 바뀌면 선택값도 달라질 수 있다.

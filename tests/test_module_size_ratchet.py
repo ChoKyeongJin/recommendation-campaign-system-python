@@ -8,7 +8,7 @@ graph_rag.py 가 여전히 가장 만만한 곳이라 한 함수씩 다시 쌓�
   (1) graph_rag.py 줄 수가 기준선을 넘지 않는다.
   (2) rag/ 하위 모듈도 개별 상한을 넘지 않는다 — 한 모듈이 다시 만물상이 되는 것을 막는다.
 
-기준선을 올리려면 `docs/data/module_size_baseline.json` 을 직접 고치고 커밋 메시지에
+기준선을 올리려면 `docs/data/test_baselines/module_size_baseline.json` 을 직접 고치고 커밋 메시지에
 사유를 남겨야 한다. 자동 재생성 도구를 일부러 두지 않았다 — 한 줄 고치는 마찰이
 "일단 여기 넣자"를 한 번 더 생각하게 만드는 것이 이 가드의 목적이다.
 
@@ -22,7 +22,7 @@ import json
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-BASELINE_PATH = REPO_ROOT / "docs" / "data" / "module_size_baseline.json"
+BASELINE_PATH = REPO_ROOT / "docs" / "data" / "test_baselines" / "module_size_baseline.json"
 
 # 기준선보다 이만큼 넘게 줄어 있으면 "기준선을 내려라"라고 알린다.
 # 래칫이 실질을 잃지 않게 하는 장치 — 상한이 현재값에서 너무 멀면 아무것도 안 지킨다.

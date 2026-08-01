@@ -22,10 +22,10 @@ from typing import Any
 
 
 # ── 지식/정책 데이터 (env 덮어쓰기 없음 — 레포에 동봉된 자산) ──────────────────────
-DEFAULT_DATA_PATH = Path("docs/data/rag_knowledge_base.json")
-DEFAULT_NORMALIZATION_PATH = Path("docs/data/normalization_rules.sample.json")
-DEFAULT_POLICY_PATH = Path("docs/data/business_policies.sample.json")
-DEFAULT_DIMENSION_CATALOG_PATH = Path("docs/data/dimension_catalog.sample.json")
+DEFAULT_DATA_PATH = Path("docs/data/generated/rag_knowledge_base.json")
+DEFAULT_NORMALIZATION_PATH = Path("docs/data/runtime/language/normalization_rules.sample.json")
+DEFAULT_POLICY_PATH = Path("docs/data/runtime/policies/business_policies.sample.json")
+DEFAULT_DIMENSION_CATALOG_PATH = Path("docs/data/generated/dimension_catalog.sample.json")
 
 # ── 검색 백엔드 ──────────────────────────────────────────────────────────────────
 DEFAULT_COLLECTION = "campaign_knowledge_rag"

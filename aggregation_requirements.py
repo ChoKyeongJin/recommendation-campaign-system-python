@@ -201,7 +201,7 @@ class SchemaMetadata:
         case-insensitively and the explicitly supplied schema wins on metadata
         conflicts.
         """
-        project_catalog = Path("docs/data/schema_catalog.json")
+        project_catalog = Path("docs/data/generated/schema_catalog.json")
         configured = [
             Path(value)
             for value in os.getenv("AGGREGATION_SCHEMA_FALLBACK_PATHS", "").split(os.pathsep)

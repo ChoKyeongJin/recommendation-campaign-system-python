@@ -18,7 +18,9 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 
-DEFAULT_REGISTRY_PATH = Path("docs/data/semantic_resolution_registry.json")
+DEFAULT_REGISTRY_PATH = Path(
+    "docs/data/runtime/semantics/semantic_resolution_registry.json"
+)
 
 
 class SemanticResolutionRegistryError(ValueError):

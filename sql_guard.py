@@ -10,7 +10,7 @@ import sqlglot
 from sqlglot import exp
 
 
-DEFAULT_SCHEMA_PATH = Path("docs/data/schema_catalog.json")
+DEFAULT_SCHEMA_PATH = Path("docs/data/generated/schema_catalog.json")
 DEFAULT_LIMIT = 100
 FORBIDDEN_KEYWORDS = {
     "alter",
