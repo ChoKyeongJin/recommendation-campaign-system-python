@@ -220,13 +220,17 @@ def _audited_stage(func: Any) -> Any:
 _V4_SLOT_GUIDANCE = (
     "타겟 조건은 스키마의 전용 슬롯으로 표현한다. "
     "장바구니에 담았지만 구매/결제하지 않은(이탈·방치) 고객은 target_user.behaviors 의 'cart_abandoner' "
-    "하나로 표현한다 — entity_set_condition 으로 만들지 않는다. entity_set_condition 은 '상위/가장 많이 "
-    "팔린 N개 중 M개 구매'처럼 랭킹 집합이 명시된 요청 전용이다. 장바구니 보관/담은 지 N일은 "
-    "cart_retention, 담은 유형(정기배송 등)은 cart_type, 담은 개수/수량 임계는 cart_aggregate, "
-    "장바구니가 없는 회원은 cart_absence 를 사용한다. 구매 이력이 전혀 없으면 behaviors 'no_purchase', "
-    "최근 N기간 미구매는 purchase_inactivity 를 사용한다. 'N개월/일 이상 접속하지 않은/미접속/휴면'은 "
-    "구매가 아니라 접속의 부재이므로 inactivity_period 에 넣는다(구매 부재 슬롯과 혼동 금지). "
-    "'휴면 고객'처럼 상태어가 함께 있으면 lifecycle 과 inactivity_period 를 함께 채운다."
+    "로 표현한다 — entity_set_condition 으로 만들지 않는다. '결제하지 않은/미결제'는 담긴 카트 라인의 "
+    "상태라 cart_abandoner 만으로 충분하고 no_purchase 를 추가하지 않는다. 반면 '주문하지 않은/구매하지 "
+    "않은/구매 이력 없는'처럼 회원의 실주문 부재를 명시하면 behaviors 에 'no_purchase' 도 같이 넣는다"
+    "(빌더가 카트 보관과 무주문 anti-join 을 합성한다). entity_set_condition 은 '상위/가장 많이 "
+    "팔린 N개 중 M개 구매'처럼 랭킹 집합이 명시된 요청 전용이다. 장바구니 담은 시점 조건은 "
+    "cart_retention — '최근 N일 장바구니'(N일 이내 담김)는 max_days=N, 'N일 이상 보관/방치'만 "
+    "min_days=N 이다(방향 반전 금지). 담은 유형(정기배송 등)은 cart_type, 담은 금액/개수/수량 임계는 "
+    "cart_aggregate, 장바구니가 없는 회원은 cart_absence 를 사용한다. 구매 이력이 전혀 없으면 behaviors "
+    "'no_purchase', 최근 N기간 미구매는 purchase_inactivity 를 사용한다. 'N개월/일 이상 접속하지 "
+    "않은/미접속/휴면'은 구매가 아니라 접속의 부재이므로 inactivity_period 에 넣는다(구매 부재 슬롯과 "
+    "혼동 금지). '휴면 고객'처럼 상태어가 함께 있으면 lifecycle 과 inactivity_period 를 함께 채운다."
 )
 
 
@@ -3522,6 +3526,30 @@ def _coerce_llm_query_plan_candidate(
         validation_query = candidate_query if isinstance(candidate_query, str) else retrieval.get("query")
     # 원문 좌표가 전혀 없으면 자유 텍스트 상품명을 검증할 수 없으므로 빈 원문으로 검사해 null 처리한다.
     _validate_purchase_objects(validation_query if isinstance(validation_query, str) else "", plan["target_user"])
+    # no_purchase(구매 부재)의 표면 판정은 결정론 부정 어휘가 소유한다(드롭 가드와 동일 소스). 원문에
+    # 구매/주문 부정 표면이 없는데 LLM 이 no_purchase 를 넣으면('결제하지 않은'=카트 라인 상태의 확대
+    # 해석 등) 평생 무주문 anti-join 으로 대상이 조용히 뒤바뀌므로, 근거 없는 슬롯은 여기서 제거한다.
+    behaviors = plan["target_user"].get("behaviors")
+    if isinstance(behaviors, list) and "no_purchase" in behaviors and isinstance(validation_query, str):
+        compact_query = validation_query.replace(" ", "").casefold()
+        if not (_PURCHASE_NEG_RE.search(compact_query) or _ZERO_PURCHASE_COUNT_PATTERN.search(compact_query)):
+            kept_behaviors = [behavior for behavior in behaviors if behavior != "no_purchase"]
+            if kept_behaviors:
+                plan["target_user"]["behaviors"] = kept_behaviors
+            else:
+                plan["target_user"].pop("behaviors", None)
+    # '최근 N일 장바구니'(N일 이내 담김)를 모델이 min_days(N일 이상 보관)로 뒤집는 사고의 결정론 교정.
+    # 롤링 윈도우 표면('최근 N일/개월')은 결정론 파서가 소유하며, 그 일수가 min_days 와 정확히 일치하면
+    # 방향 반전으로 보고 max_days 로 되돌린다 — 'N일 이상 보관/방치'는 '최근' 표면이 없어 건드리지 않는다.
+    cart_retention = plan["target_user"].get("cart_retention")
+    if (
+        isinstance(cart_retention, dict)
+        and isinstance(validation_query, str)
+        and cart_retention.get("min_days")
+        and not cart_retention.get("max_days")
+        and _parse_recent_window_days(validation_query) == cart_retention["min_days"]
+    ):
+        cart_retention["max_days"] = cart_retention.pop("min_days")
     if unsupported_resolvers:
         plan["_candidate_resolves_unsupported"] = unsupported_resolvers
     # 슬롯 소유권 게이트(_reconcile_llm_candidate_source_bound_slots)는 '규칙 파서가 소유한 슬롯의 LLM
@@ -9222,7 +9250,10 @@ def _plan_has_purchase_fact_condition(query_plan: dict[str, Any]) -> bool:
     ):
         return True
     behaviors = set(target_user.get("behaviors") or [])
-    if behaviors & {"first_purchase", "repeat_buyer", "no_purchase"}:
+    # no_purchase(구매 부재)는 제외 — 부재에는 구매 발생 기간(purchase_date)을 붙일 수 없다.
+    # 창이 있는 부재는 purchase_inactivity 슬롯 소관이고, 연도 명시 달력 창의 드롭은
+    # _unclaimed_calendar_windows 가드가 별도로 차단한다.
+    if behaviors & {"first_purchase", "repeat_buyer"}:
         return True
     if query_plan.get(CONDITION_EVALUATIONS_KEY) or query_plan.get("event_expression") or target_user.get("event_expression"):
         return True
@@ -11546,11 +11577,14 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
             return None
         operator = _DIMENSION_OPERATOR_SQL_MAP[ir_operator]
         in_list = ", ".join(_sql_quote(code) for code in brand_filter["codes"])
+        # 실주문 부재(no_purchase)가 명시 슬롯으로 오면 형제 분기와 동일하게 anti-join 을 AND 결합한다.
+        dimension_no_purchase = "no_purchase" in set(query_plan.get("target_user", {}).get("behaviors", []))
         where_clauses = [
             *_cart_keep_predicates(query_plan),
             *_cart_retention_predicates(query_plan),
             *_cart_type_predicates(query_plan),
             f"C.{column_short} {operator} ({in_list})",
+            *([_no_purchase_anti_join_predicate()] if dimension_no_purchase else []),
             *compiled["predicates"],
         ]
         # 회원상태 직접 지정(dormant 등)이 아니면 발송 대상 기본 정책대로 정상 회원으로 한정한다.
@@ -11569,7 +11603,14 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
             where=_unique_strings(where_clauses),
         )
         candidate = _select_ast_candidate("sql_template:cart_dimension_targets", "장바구니 상품브랜드 타겟팅 SQL 템플릿", 1.0, ast, "sql_template")
-        _attach_cart_dropped_conditions(candidate, query_plan, compiled)
+        _attach_cart_dropped_conditions(
+            candidate, query_plan, compiled,
+            covered_behaviors=(
+                frozenset({"cart_abandoner", "no_purchase"})
+                if dimension_no_purchase
+                else frozenset({"cart_abandoner"})
+            ),
+        )
         # 구조화 evidence: 검증기가 SQL 문자열(코드 'A')이 아니라 이 evidence 로 브랜드 반영을 확인한다
         # (dimension 코드 치환으로 원문 값 'CJ제일제당'은 SQL 에 없으므로 문자열 검사로는 오탐).
         candidate["applied_requirements"] = [{
@@ -11598,11 +11639,17 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
         select_columns = [_member_key_select(), _sql_quote(_cart_segment_label(query_plan)) + " AS target_segment"]
         if objective:
             select_columns.append(_sql_quote(objective) + " AS objective")
+        # '담고 주문/구매하지 않은'처럼 실주문 부재(no_purchase)가 명시 슬롯으로 온 경우에만 평생 무주문
+        # anti-join 을 AND 결합한다(형제 집계 빌더와 동일 규칙). 무조건 걸던 과거 동작은 재구매 대상과
+        # 자기모순이라 제거됐고(위 주석), 여기서는 플랜이 명시한 조건만 조용히 드롭하지 않는 것이다.
+        behaviors = set(query_plan.get("target_user", {}).get("behaviors", []))
+        no_purchase_requested = "no_purchase" in behaviors
         where_clauses = [
             *_cart_keep_predicates(query_plan),
             *_cart_retention_predicates(query_plan),
             *_cart_type_predicates(query_plan),
             *([brand_cf.filter_expression] if brand_cf else []),
+            *([_no_purchase_anti_join_predicate()] if no_purchase_requested else []),
             *compiled["predicates"],
         ]
         if not compiled["forces_state"]:
@@ -11623,7 +11670,14 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
             else "장바구니 유형(정기배송 등) 타겟 SQL 템플릿(CRMDW)"
         )
         candidate = _select_ast_candidate("sql_template:cart_repurchase_targets", title, 1.0, ast, "sql_template")
-        _attach_cart_dropped_conditions(candidate, query_plan, compiled)
+        _attach_cart_dropped_conditions(
+            candidate, query_plan, compiled,
+            covered_behaviors=(
+                frozenset({"cart_abandoner", "no_purchase"})
+                if no_purchase_requested
+                else frozenset({"cart_abandoner"})
+            ),
+        )
         if brand_cf:
             candidate["applied_requirements"] = [brand_cf.to_evidence()]
         return candidate

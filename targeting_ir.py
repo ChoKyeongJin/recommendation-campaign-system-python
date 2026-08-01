@@ -595,7 +595,8 @@ SLOT_SHAPES: dict[str, SlotShape] = {
         lambda raw, *, allowed=None: _coerce_window(raw, sql_interval=False, allowed=allowed)),
     "cart_retention": SlotShape("cart_retention", "target_user",
         _obj_schema(f"장바구니 기간. {{min_days}}(이상) 또는 {{max_days}}(이내), 또는 {{value,unit,direction}}. "
-                    "최근 담기/생성 기간은 date_basis='created', 보관/방치 기간은 'last_updated'.",
+                    "'최근 N일 장바구니'(N일 이내 담김)는 max_days=N 이고, min_days=N 은 'N일 이상 보관/방치'다 — "
+                    "방향을 뒤집지 않는다. 최근 담기/생성 기간은 date_basis='created', 보관/방치 기간은 'last_updated'.",
                     {"min_days": _POS_INT_PROP, "max_days": _POS_INT_PROP,
                      "value": _POS_INT_PROP, "unit": _UNIT_PROP,
                      "direction": {"type": "string", "enum": ["min", "max"]},
