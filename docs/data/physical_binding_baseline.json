@@ -3,7 +3,7 @@
   "tables": 143,
   "columns": 226,
   "per_file": {
-    "graph_rag.py": 214,
+    "graph_rag.py": 213,
     "build_table_relationships.py": 68,
     "event_compiler.py": 24,
     "condition_evaluation_ir.py": 14,
@@ -17,6 +17,7 @@
     "analytical_intent.py": 1,
     "build_dimension_catalog.py": 1,
     "build_rag_knowledge.py": 1,
-    "entity_set.py": 1
+    "entity_set.py": 1,
+    "rag/trace.py": 1
   }
 }
