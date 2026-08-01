@@ -22,9 +22,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-os.environ.setdefault("CONDITION_SLOT_LLM_FALLBACK", "off")
 os.environ.setdefault("SURFACE_LEXICON_LLM", "off")
-os.environ.setdefault("TARGET_OBJECT_LLM_FALLBACK", "false")
 
 import event_compiler
 import event_ir

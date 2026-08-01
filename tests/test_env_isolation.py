@@ -19,11 +19,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 # conftest 가 모든 테스트에 적용하는 결정론 바닥값. 코퍼스 선언과 같아야 한다.
+# 소스가 실제로 읽는 스위치만 남는다(lexicon_llm.py:57). 나머지 셋은 소비 계층이 8ba50b6 에서
+# 사라져 '이미 철거된 계층을 계속 끄고' 있었다 — 2026-08-01 에 제거했다.
 DETERMINISM_FLOOR = {
-    "CONDITION_SLOT_LLM_FALLBACK": "off",
     "SURFACE_LEXICON_LLM": "off",
-    "CONCEPTUAL_TARGETING_LLM": "off",
-    "TARGET_OBJECT_LLM_FALLBACK": "false",
 }
 
 
@@ -31,20 +30,6 @@ def test_determinism_floor_is_applied() -> None:
     for key, value in DETERMINISM_FLOOR.items():
         assert os.environ.get(key) == value, f"{key} 가 결정론 바닥값과 다르다: {os.environ.get(key)!r}"
 
-
-def test_corpus_env_matches_the_conftest_floor() -> None:
-    """코퍼스 선언과 conftest 바닥값이 갈라지면 '골든이 돌았는지'가 환경을 정한다."""
-
-    corpus = json.loads(
-        (REPO_ROOT / "tests" / "golden" / "cases.json").read_text(encoding="utf-8")
-    )
-    declared = {str(k): str(v) for k, v in (corpus.get("env") or {}).items()}
-    conflicting = {
-        key: (value, DETERMINISM_FLOOR[key])
-        for key, value in declared.items()
-        if key in DETERMINISM_FLOOR and DETERMINISM_FLOOR[key] != value
-    }
-    assert not conflicting, f"코퍼스 env 와 conftest 바닥값 불일치 (코퍼스, conftest): {conflicting}"
 
 
 def test_env_written_by_a_test_does_not_leak(monkeypatch) -> None:
@@ -62,18 +47,3 @@ def test_previous_tests_env_did_not_leak_here() -> None:
     )
 
 
-def test_golden_helper_env_is_restored_after_use() -> None:
-    """골든 헬퍼를 직접 호출해도 세션 환경이 오염되지 않는지 확인한다."""
-
-    sys.path.insert(0, str(REPO_ROOT / "tests"))
-    import golden_support
-
-    before = dict(os.environ)
-    golden_support.apply_corpus_env()
-    os.environ["_GOLDEN_PROBE"] = "1"
-    # 헬퍼는 코퍼스 선언값을 쓰므로 바닥값과 같아야 한다(다르면 위 테스트가 먼저 잡는다).
-    for key, value in DETERMINISM_FLOOR.items():
-        assert os.environ.get(key) == value
-    # 복원은 fixture 가 담당한다 — 여기서는 그 사실을 문서화하고 흔적만 남긴다.
-    assert "_GOLDEN_PROBE" in os.environ
-    assert set(before) <= set(os.environ)

@@ -1227,8 +1227,7 @@
       "synonyms": [
         "EMAIL수신여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_F등급",
@@ -1237,8 +1236,7 @@
       "synonyms": [
         "F등급"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_M등급",
@@ -1247,8 +1245,7 @@
       "synonyms": [
         "M등급"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_R등급",
@@ -1257,8 +1254,7 @@
       "synonyms": [
         "R등급"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_SMS동의여부",
@@ -1269,8 +1265,7 @@
         "SMS 동의",
         "문자 동의"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_SMS수신동의여부",
@@ -1282,8 +1277,7 @@
         "SMS 수신동의",
         "문자 수신 동의 여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_SMS수신여부",
@@ -1294,8 +1288,7 @@
         "문자 수신 여부",
         "SMS 수신"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_SNS등록여부",
@@ -1304,8 +1297,7 @@
       "synonyms": [
         "SNS등록여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_SNS채널",
@@ -1314,8 +1306,7 @@
       "synonyms": [
         "SNS채널"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_VIP등급",
@@ -1324,8 +1315,7 @@
       "synonyms": [
         "VIP등급"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_가입경로",
@@ -1337,8 +1327,7 @@
         "회원가입 경로",
         "가입 방법"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_가입기간",
@@ -1349,8 +1338,7 @@
         "가입한 지",
         "회원가입 기간"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_가입매장",
@@ -1361,8 +1349,7 @@
         "가입 점포",
         "가입한 매장"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_가입매장_브랜드",
@@ -1371,8 +1358,7 @@
       "synonyms": [
         "가입매장_브랜드"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_가입매장_지역",
@@ -1381,8 +1367,7 @@
       "synonyms": [
         "가입매장_지역"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_가입연도",
@@ -1393,8 +1378,7 @@
         "가입 년도",
         "가입한 해"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_가입유형",
@@ -1406,8 +1390,7 @@
         "회원가입 유형",
         "가입 종류"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_가입일",
@@ -1419,8 +1402,7 @@
         "가입한 날",
         "회원가입일"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_가입일자",
@@ -1431,8 +1413,7 @@
         "회원 가입일자",
         "가입한 날짜"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_객단가",
@@ -1445,8 +1426,7 @@
         "인당 구매액",
         "평균 객단가"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_거래브랜드",
@@ -1457,8 +1437,7 @@
         "취급 브랜드",
         "구매 브랜드"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_거래채널유형",
@@ -1467,8 +1446,7 @@
       "synonyms": [
         "거래채널유형"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_거래채널조합",
@@ -1477,8 +1455,7 @@
       "synonyms": [
         "거래채널조합"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_결혼기념일4자리_월일",
@@ -1487,8 +1464,7 @@
       "synonyms": [
         "결혼기념일4자리_월일"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_결혼여부",
@@ -1499,8 +1475,7 @@
         "결혼 상태",
         "결혼 유무"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_과거구매기간",
@@ -1509,8 +1484,7 @@
       "synonyms": [
         "과거구매기간"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_관점구분",
@@ -1519,8 +1493,7 @@
       "synonyms": [
         "관점구분"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_구매구분",
@@ -1529,8 +1502,7 @@
       "synonyms": [
         "구매구분"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_구매금액",
@@ -1543,8 +1515,7 @@
         "주문금액",
         "구입금액"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_구매기간",
@@ -1555,8 +1526,7 @@
         "구매한 기간",
         "구입 기간"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_구매반응여부",
@@ -1567,8 +1537,7 @@
         "구매 반응",
         "구매 응답 여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_구매선호채널",
@@ -1578,8 +1547,7 @@
         "구매선호채널",
         "선호 구매 채널"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_구매수량",
@@ -1591,8 +1559,7 @@
         "구입 수량",
         "주문 수량"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_구매일자",
@@ -1605,8 +1572,7 @@
         "결제일",
         "구입일자"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_구매횟수",
@@ -1619,8 +1585,7 @@
         "구매 빈도",
         "구입 횟수"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_기본배송지주소",
@@ -1629,8 +1594,7 @@
       "synonyms": [
         "기본배송지주소"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_나이대",
@@ -1642,8 +1606,7 @@
         "연령 구간",
         "연령층"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_뉴베스트SMS동의여부",
@@ -1652,8 +1615,7 @@
       "synonyms": [
         "뉴베스트SMS동의여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_당근잔액",
@@ -1662,8 +1624,7 @@
       "synonyms": [
         "당근잔액"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_대량구매고객여부",
@@ -1675,8 +1636,7 @@
         "대량 구매",
         "대량 구입"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_디바이스유형",
@@ -1688,8 +1648,7 @@
         "단말 유형",
         "디바이스 종류"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_랜딩페이지",
@@ -1698,8 +1657,7 @@
       "synonyms": [
         "랜딩페이지"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_로그인기간",
@@ -1709,8 +1667,7 @@
         "로그인기간",
         "접속 기간"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_로그인일수",
@@ -1720,8 +1677,7 @@
         "로그인일수",
         "접속 일수"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_로그인일자",
@@ -1733,8 +1689,7 @@
         "접속일",
         "로그인 일"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_로그인횟수",
@@ -1745,8 +1700,7 @@
         "접속 횟수",
         "로그인 수"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_마이데이터ISO국가기호내용",
@@ -1755,8 +1709,7 @@
       "synonyms": [
         "마이데이터ISO국가기호내용"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_마이데이터사업자기관코드",
@@ -1765,8 +1718,7 @@
       "synonyms": [
         "마이데이터사업자기관코드"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_마이데이터승인일시",
@@ -1775,8 +1727,7 @@
       "synonyms": [
         "마이데이터승인일시"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_마이데이터정보제공자코드",
@@ -1785,8 +1736,7 @@
       "synonyms": [
         "마이데이터정보제공자코드"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_마지막로그인일자",
@@ -1796,8 +1746,7 @@
         "마지막로그인일자",
         "마지막 로그인"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_마케팅수신동의여부",
@@ -1806,8 +1755,7 @@
       "synonyms": [
         "마케팅수신동의여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_모바일OS유형",
@@ -1819,8 +1767,7 @@
         "스마트폰 OS",
         "OS 유형"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_문캠페인3",
@@ -1829,8 +1776,7 @@
       "synonyms": [
         "문캠페인3"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_발행쿠폰수",
@@ -1839,8 +1785,7 @@
       "synonyms": [
         "발행쿠폰수"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_분석기준",
@@ -1849,8 +1794,7 @@
       "synonyms": [
         "분석기준"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_브랜드",
@@ -1861,8 +1805,7 @@
         "브랜드명",
         "상표"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_사용자정의연령대",
@@ -1871,8 +1814,7 @@
       "synonyms": [
         "사용자정의연령대"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_사용쿠폰수",
@@ -1881,8 +1823,7 @@
       "synonyms": [
         "사용쿠폰수"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_상태등급",
@@ -1892,8 +1833,7 @@
         "상태등급",
         "활동 등급"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_상품별구매금액",
@@ -1902,8 +1842,7 @@
       "synonyms": [
         "상품별구매금액"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_상품분류_상품",
@@ -1912,8 +1851,7 @@
       "synonyms": [
         "상품분류_상품"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_상품분류_상품대분류",
@@ -1924,8 +1862,7 @@
         "상품 대분류",
         "대분류"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_상품분류_상품소분류",
@@ -1936,8 +1873,7 @@
         "상품 소분류",
         "소분류"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_상품분류_상품중분류",
@@ -1948,8 +1884,7 @@
         "상품 중분류",
         "중분류"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_상품분류_카테고리",
@@ -1960,8 +1895,7 @@
         "상품 카테고리",
         "카테고리 분류"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_상품카테고리G",
@@ -1970,8 +1904,7 @@
       "synonyms": [
         "상품카테고리G"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_생년월일",
@@ -1986,8 +1919,7 @@
         "date of birth",
         "dob"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_생일4자리_월일",
@@ -1998,8 +1930,7 @@
         "생일 월일",
         "생월일"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_선호상품군",
@@ -2010,8 +1941,7 @@
         "선호 상품",
         "관심 상품군"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_설문참여여부",
@@ -2021,8 +1951,7 @@
         "설문참여여부",
         "설문 응답 여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_설문참여채널",
@@ -2032,8 +1961,7 @@
         "설문참여채널",
         "설문 채널"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_성별",
@@ -2046,8 +1974,7 @@
         "성별구분",
         "sex"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_성별명",
@@ -2058,8 +1985,7 @@
         "성별 이름",
         "성별명칭"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_소속부서",
@@ -2068,8 +1994,7 @@
       "synonyms": [
         "소속부서"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_수신동의여부",
@@ -2079,8 +2004,7 @@
         "수신동의여부",
         "수신 허용 여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_시도",
@@ -2093,8 +2017,7 @@
         "거주시도",
         "시도지역"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_시도_검색",
@@ -2103,8 +2026,7 @@
       "synonyms": [
         "시도_검색"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_시도명",
@@ -2115,8 +2037,7 @@
         "시도 이름",
         "시도 명칭"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_신규고객여부SN",
@@ -2125,8 +2046,7 @@
       "synonyms": [
         "신규고객여부SN"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_앱버전",
@@ -2137,8 +2057,7 @@
         "어플 버전",
         "애플리케이션 버전"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_연령",
@@ -2150,8 +2069,7 @@
         "만나이",
         "age"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_연령대_5세단위",
@@ -2163,8 +2081,7 @@
         "5세 구간",
         "5세단위"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_연령대명",
@@ -2175,8 +2092,7 @@
         "연령대 이름",
         "연령구간명"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_연령대체크",
@@ -2185,8 +2101,7 @@
       "synonyms": [
         "연령대체크"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_연령대코드",
@@ -2195,8 +2110,7 @@
       "synonyms": [
         "연령대코드"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_예치금잔액",
@@ -2205,8 +2119,7 @@
       "synonyms": [
         "예치금잔액"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_오퍼반응여부",
@@ -2216,8 +2129,7 @@
         "오퍼반응여부",
         "제안 반응 여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_오퍼사용구매금액",
@@ -2226,8 +2138,7 @@
       "synonyms": [
         "오퍼사용구매금액"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_오퍼할인금액",
@@ -2236,8 +2147,7 @@
       "synonyms": [
         "오퍼할인금액"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_오프GL등급",
@@ -2246,8 +2156,7 @@
       "synonyms": [
         "오프GL등급"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_온오프GL등급",
@@ -2256,8 +2165,7 @@
       "synonyms": [
         "온오프GL등급"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_외국인여부",
@@ -2268,8 +2176,7 @@
         "내외국인 여부",
         "외국 국적 여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_원화환산금액",
@@ -2278,8 +2185,7 @@
       "synonyms": [
         "원화환산금액"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_이메일수신동의여부",
@@ -2291,8 +2197,7 @@
         "메일 수신동의",
         "이메일 동의 여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_이미지URL",
@@ -2301,8 +2206,7 @@
       "synonyms": [
         "이미지URL"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_이미지파일명",
@@ -2311,8 +2215,7 @@
       "synonyms": [
         "이미지파일명"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_임직원여부",
@@ -2324,8 +2227,7 @@
         "사원 여부",
         "임직원 유무"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_자녀여부",
@@ -2337,8 +2239,7 @@
         "자녀 유무",
         "자녀 보유 여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_잔여포인트",
@@ -2349,8 +2250,7 @@
         "남은 포인트",
         "포인트 잔액"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_잔여포인트구간",
@@ -2361,8 +2261,7 @@
         "포인트 구간",
         "포인트 잔액 구간"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_장바구니금액",
@@ -2372,8 +2271,7 @@
         "장바구니금액",
         "카트 금액"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_장바구니보관시작일",
@@ -2382,8 +2280,7 @@
       "synonyms": [
         "장바구니보관시작일"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_장바구니보관종료일",
@@ -2392,8 +2289,7 @@
       "synonyms": [
         "장바구니보관종료일"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_장바구니유형",
@@ -2404,8 +2300,7 @@
         "카트 유형",
         "장바구니 종류"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_전월가치등급",
@@ -2415,8 +2310,7 @@
         "전월가치등급",
         "지난달 가치등급"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_전월회원등급",
@@ -2428,8 +2322,7 @@
         "지난달 회원등급",
         "지난달 등급"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_접촉경과일수",
@@ -2439,8 +2332,7 @@
         "접촉경과일수",
         "접촉 후 경과일"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_접촉성공여부",
@@ -2451,8 +2343,7 @@
         "접촉 성공",
         "컨택 성공 여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_접촉일자",
@@ -2461,8 +2352,7 @@
       "synonyms": [
         "접촉일자"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_조합기준",
@@ -2471,8 +2361,7 @@
       "synonyms": [
         "조합기준"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_조합수",
@@ -2481,8 +2370,7 @@
       "synonyms": [
         "조합수"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_주거래지점",
@@ -2493,8 +2381,7 @@
         "주거래점",
         "메인 지점"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_주구매브랜드",
@@ -2505,8 +2392,7 @@
         "주로 구매 브랜드",
         "주요 브랜드"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_주구매채널",
@@ -2516,8 +2402,7 @@
         "주구매채널",
         "주로 구매 채널"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_지역",
@@ -2532,8 +2417,7 @@
         "region",
         "area"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_최종구매일자",
@@ -2546,8 +2430,7 @@
         "최근 구매일",
         "최종 구매 날짜"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_최종로그인일자",
@@ -2559,8 +2442,7 @@
         "마지막 로그인일",
         "최종 로그인 날짜"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_최종로그인채널",
@@ -2570,8 +2452,7 @@
         "최종로그인채널",
         "마지막 로그인 채널"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_최초로그인채널",
@@ -2582,8 +2463,7 @@
         "첫 로그인 채널",
         "처음 로그인 채널"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_추천모델",
@@ -2592,8 +2472,7 @@
       "synonyms": [
         "추천모델"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_추천순위",
@@ -2602,8 +2481,7 @@
       "synonyms": [
         "추천순위"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_추천타입",
@@ -2612,8 +2490,7 @@
       "synonyms": [
         "추천타입"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_추천타입_전체포함",
@@ -2622,8 +2499,7 @@
       "synonyms": [
         "추천타입_전체포함"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_카드이용금액",
@@ -2635,8 +2511,7 @@
         "카드 결제액",
         "카드 이용액"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_카테고리_분류",
@@ -2645,8 +2520,7 @@
       "synonyms": [
         "카테고리_분류"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_캠페인",
@@ -2655,8 +2529,7 @@
       "synonyms": [
         "캠페인"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_캠페인그룹",
@@ -2665,8 +2538,7 @@
       "synonyms": [
         "캠페인그룹"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_캠페인명",
@@ -2675,8 +2547,7 @@
       "synonyms": [
         "캠페인명"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_타겟리스트",
@@ -2685,8 +2556,7 @@
       "synonyms": [
         "타겟리스트"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_타사B2E여부",
@@ -2695,8 +2565,7 @@
       "synonyms": [
         "타사B2E여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_통화코드",
@@ -2708,8 +2577,7 @@
         "통화 코드값",
         "currency"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_퍼널고객등급",
@@ -2718,8 +2586,7 @@
       "synonyms": [
         "퍼널고객등급"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_퍼널성별",
@@ -2728,8 +2595,7 @@
       "synonyms": [
         "퍼널성별"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_퍼널식별",
@@ -2738,8 +2604,7 @@
       "synonyms": [
         "퍼널식별"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_퍼널연령대",
@@ -2748,8 +2613,7 @@
       "synonyms": [
         "퍼널연령대"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_행사민감도",
@@ -2760,8 +2624,7 @@
         "이벤트 민감도",
         "프로모션 민감도"
       ],
-      "source": "prmp_kwd",
-      "value_type": "numeric"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_현재구매기간",
@@ -2770,8 +2633,7 @@
       "synonyms": [
         "현재구매기간"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_혼인_여부",
@@ -2780,8 +2642,7 @@
       "synonyms": [
         "혼인_여부"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_혼인여부",
@@ -2792,8 +2653,7 @@
         "혼인 상태",
         "혼인 유무"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     },
     {
       "rule_id": "kw_회원상태",
@@ -2805,8 +2665,7 @@
         "회원 상태 코드",
         "멤버 상태"
       ],
-      "source": "prmp_kwd",
-      "value_type": "text"
+      "source": "prmp_kwd"
     }
   ],
   "example_queries": [

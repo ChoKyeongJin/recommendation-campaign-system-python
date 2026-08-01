@@ -90,6 +90,8 @@ def fetch_dimensions() -> list[dict[str, Any]]:
     dimensions = []
     for row in rows:
         prmp_kwd = row.get("PRMP_KWD")
+        # DS_SQL 은 '값 해석이 가능한 디멘션인가'의 선별 조건으로만 쓴다. 산출물에는 싣지 않는다 —
+        # 실행하는 사이트가 없어 2026-08-01 에 카탈로그에서 제거했다(선별 동작은 그대로).
         ds_sql = row.get("DS_SQL")
         if not prmp_kwd or not isinstance(ds_sql, str) or not ds_sql.strip():
             continue
@@ -114,7 +116,6 @@ def fetch_dimensions() -> list[dict[str, Any]]:
                 "synonyms": synonyms,
                 "target_table": override.get("target_table"),
                 "target_column": override.get("target_column"),
-                "ds_sql": ds_sql.strip(),
             }
         )
     return dimensions

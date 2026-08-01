@@ -61,30 +61,47 @@ def test_attribute_index_is_not_empty() -> None:
 # ── surface_concepts.json ↔ 코드 상수(objective 이름) ────────────────────────────────
 
 
-def test_every_campaign_objective_has_a_surface_concept() -> None:
-    """코드가 f'objective_{objective}' 로 조회하므로 짝이 없으면 신호가 조용히 버려진다."""
+# 소비자가 없어도 남겨 두기로 한 개념 — 이유를 여기 적지 않으면 남길 수 없다.
+_CONCEPTS_WITHOUT_A_CONSUMER: dict[str, str] = {}
+
+
+def test_every_surface_concept_has_a_consumer() -> None:
+    """소비자 없는 개념은 프롬프트 토큰만 쓰고 판정에 쓰이지 않는다.
+
+    2026-08-01 에 그런 개념이 25개 중 16개였다(intent_*/objective_*/awareness_* 등 — 소비 계층이
+    커밋 8ba50b6 에서 사라졌는데 선언만 남아 있었다). 개념 목록은 '무엇을 판정할 수 있는가'의
+    선언이므로, 아무도 조회하지 않는 항목이 섞여 있으면 그 선언 자체가 거짓이 된다.
+
+    ``objective_*`` 를 CAMPAIGN_OBJECTIVES 와 대조하던 이전 두 테스트를 대체한다 — 그 테스트는
+    "코드가 f'objective_{objective}' 로 조회한다"를 전제했는데 그 조회부가 이미 없었다.
+    """
+
+    sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in sorted(REPO_ROOT.glob("*.py")) + sorted((REPO_ROOT / "rag").glob("*.py"))
+    )
+    orphans = []
+    for concept in _json("surface_concepts.json")["concepts"]:
+        concept_id = concept["concept_id"]
+        if concept_id in _CONCEPTS_WITHOUT_A_CONSUMER:
+            continue
+        quoted = f'"{concept_id}"'
+        # aggregate_* 는 analytical_intent 가 f"aggregate_{fn}" 로 만든다(정적 문자열이 없다).
+        dynamic = concept_id.startswith("aggregate_") and 'f"aggregate_{' in sources
+        if quoted not in sources and not dynamic:
+            orphans.append(concept_id)
+    assert not orphans, (
+        f"조회하는 코드가 없는 표면 개념: {orphans}. 소비자를 붙이거나 개념을 지워라 — "
+        "남겨야 한다면 _CONCEPTS_WITHOUT_A_CONSUMER 에 이유와 함께 등록한다."
+    )
+
+
+def test_retained_orphan_concepts_still_exist() -> None:
+    """허용 목록이 유령을 가리키면(개념은 지웠는데 예외만 남으면) 다음 사람이 오해한다."""
 
     concept_ids = {concept["concept_id"] for concept in _json("surface_concepts.json")["concepts"]}
-    missing = sorted(
-        objective
-        for objective in graph_rag.CAMPAIGN_OBJECTIVES
-        if f"objective_{objective}" not in concept_ids
-    )
-    assert not missing, (
-        f"surface_concepts.json 에 짝이 없는 캠페인 목적: {missing}. "
-        "닫힌 집합 검증에서 그 목적 신호가 조용히 버려진다."
-    )
-
-
-def test_no_orphan_objective_concepts() -> None:
-    """반대 방향 — 코드가 모르는 objective 개념이 남아 있으면 죽은 선언이다."""
-
-    concept_ids = {concept["concept_id"] for concept in _json("surface_concepts.json")["concepts"]}
-    declared = {f"objective_{objective}" for objective in graph_rag.CAMPAIGN_OBJECTIVES}
-    orphans = sorted(
-        cid for cid in concept_ids if cid.startswith("objective_") and cid not in declared
-    )
-    assert not orphans, f"CAMPAIGN_OBJECTIVES 에 없는 objective 개념: {orphans}"
+    stale = sorted(set(_CONCEPTS_WITHOUT_A_CONSUMER) - concept_ids)
+    assert not stale, f"이미 삭제된 개념이 허용 목록에 남아 있다: {stale}"
 
 
 # ── metrics/*.json ↔ member_target_filters.numeric_filters ──────────────────────────

@@ -1,5 +1,6 @@
 {
   "version": 1,
+  "_surface_ownership": "requirements[].aliases 중 **이름 변종**(location/region/거주지/주소 …)의 소유권은 LLM 에 있다 — surface_choices 가 requirements 에서 resolution_requirement 후보를 파생하고, 별칭표가 못 읽은 이름만 LLM 이 맞춘 뒤 그 id 를 다시 resolve_missing_field 로 되먹인다(근거·소유권 판정은 100% 기존 코드가 한다). 목록은 **동결 백스톱**으로 제자리에 남고 손으로 늘리지 않는다. 이관 대상이 아닌 것: 서수 대응(comparison_month_1→baseline, _2→current)은 뜻이 아니라 모델 출력 관례이고, 플랜 경로 별칭(target_user.purchase_date)과 다중 소유 항목은 후보를 모두 보존해 evidence 로 확정하는 성질이라 'id 하나 고르기'로 대체되지 않는다. structural_prefixes/suffixes 는 낱말이 아니라 근거 거부 목록이다 — 이게 비면 'customer' 한 조각이 customer_* 후보 전부를 정당화한다.",
   "structural_prefixes": [
     "target_user",
     "campaign_constraints",

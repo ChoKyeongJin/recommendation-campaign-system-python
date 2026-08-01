@@ -437,10 +437,22 @@ def _match_dimensions(compact: str, registry: dict[str, Any]) -> list[str]:
 
 def _match_filters(compact: str, registry: dict[str, Any], query: str) -> list[dict[str, Any]]:
     filters: list[dict[str, Any]] = []
+    # 좌표계를 맞춰 한 번에 읽는다(_match_scopes 와 같은 이유).
+    llm_filter_hits = {
+        key for key, _ in lexicon_llm.signal_choices("analytics_filter", compact, normalize=_compact)
+    }
     for filter_id, spec in (registry.get("filters") or {}).items():
         if not isinstance(spec, dict):
             continue
-        if any(_contains(compact, term) for term in spec.get("terms", [])) and _matches_required_terms(compact, spec):
+        # 표면어(트리거)는 백스톱 낱말 OR LLM 이지만, requiredTerms 는 표면어가 아니라 **공기
+        # 제약**(app_login_channel → [['로그인','접속']])이라 JSON 이 계속 소유하고 LLM 히트에도
+        # AND 로 그대로 걸린다. LLM 은 "이 낱말이 그 뜻인가"만 답하고 "그 뜻이 이 문맥에서
+        # 유효한가"는 계속 규칙이 답한다.
+        triggered = (
+            any(_contains(compact, term) for term in spec.get("terms", []))
+            or str(filter_id) in llm_filter_hits
+        )
+        if triggered and _matches_required_terms(compact, spec):
             filters.append({"id": str(filter_id), "label": spec.get("label", filter_id)})
     recent = _RECENT_DAYS_RE.search(query)
     if recent:
@@ -453,11 +465,30 @@ def _match_scopes(compact: str, registry: dict[str, Any]) -> list[dict[str, Any]
 
     Negation is checked first: ``구매하지 않은`` contains the positive surface
     ``구매`` and would otherwise invert the requested population.
+
+    표면어 보완은 **짝으로만** 한다. 이 판정은 EXISTS/NOT EXISTS 술어가 되어 모집단을 통째로
+    뒤집으므로, 긍정만 LLM 에 열면 미등록 부정형("구매 경험이 전무한")에서 근거 '구매'로 긍정이
+    켜진다 — 그 근거는 원문에 글자 그대로 있어서 근거 검사를 **통과한다**. 그래서 부정 개념
+    (analytics_scope_negated)을 함께 두고, 부정 우선 순서는 오늘과 문자 그대로 같게 유지한다.
     """
+    # 좌표계를 맞춰서 한 번에 읽는다: 여기 haystack 은 이미 _compact(문장부호까지 제거)인데
+    # 스팬은 lexicon_llm.compact(공백만 제거)라, 정규형을 맞추지 않으면 문장부호를 포함한 스팬이
+    # 조용히 증발한다(실패가 아니라 미검출이라 눈에 안 띈다).
+    llm_positive = {key for key, _ in lexicon_llm.signal_choices("analytics_scope", compact, normalize=_compact)}
+    llm_negated = {
+        key for key, _ in lexicon_llm.signal_choices("analytics_scope_negated", compact, normalize=_compact)
+    }
     scopes: list[dict[str, Any]] = []
     for scope in _scopes(registry):
-        negated = any(_contains(compact, term) for term in scope.get("negationTerms", []) or [])
-        if not negated and not any(_contains(compact, term) for term in scope.get("terms", []) or []):
+        scope_id = str(scope.get("id"))
+        negated = (
+            any(_contains(compact, term) for term in scope.get("negationTerms", []) or [])
+            or scope_id in llm_negated
+        )
+        if not negated and not (
+            any(_contains(compact, term) for term in scope.get("terms", []) or [])
+            or scope_id in llm_positive
+        ):
             continue
         scopes.append({"id": str(scope.get("id")), "label": scope.get("label", scope.get("id")), "negated": negated})
     return scopes

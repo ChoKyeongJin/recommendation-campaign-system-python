@@ -4,41 +4,82 @@
     "cart_retention": {
       "label": "장바구니 조건",
       "qualifiers": {
-        "brand":    { "supported": true, "compiler_strategy": "join_product_dimension", "join_path": "cart_to_product", "filter_field": "BRAND_NAME", "code_field": "BRAND_ID", "value_type": "string", "supports_multiple": true },
-        "product":  { "supported": false, "message": "현재 장바구니 조건에는 특정 상품 필터를 함께 적용할 수 없습니다." },
-        "category": { "supported": false, "message": "현재 장바구니 조건에는 카테고리 필터를 함께 적용할 수 없습니다." }
+        "brand": {
+          "supported": true
+        },
+        "product": {
+          "supported": false,
+          "message": "현재 장바구니 조건에는 특정 상품 필터를 함께 적용할 수 없습니다."
+        },
+        "category": {
+          "supported": false,
+          "message": "현재 장바구니 조건에는 카테고리 필터를 함께 적용할 수 없습니다."
+        }
       }
     },
     "purchase": {
       "label": "구매 조건",
       "qualifiers": {
-        "brand":    { "supported": true, "compiler_strategy": "join_product_dimension", "join_path": "purchase_to_product", "filter_field": "BRAND_NAME", "value_type": "string", "supports_multiple": true },
-        "product":  { "supported": true, "compiler_strategy": "join_product_dimension", "join_path": "purchase_to_product", "filter_field": "PRODUCT_NAME", "value_type": "string", "supports_multiple": true },
-        "category": { "supported": true, "compiler_strategy": "join_product_dimension", "join_path": "purchase_to_product", "filter_field": "CATEGORYL_NAME", "value_type": "string", "supports_multiple": true }
+        "brand": {
+          "supported": true
+        },
+        "product": {
+          "supported": true
+        },
+        "category": {
+          "supported": true
+        }
       }
     },
     "coupon": {
       "label": "쿠폰 사용 조건",
       "qualifiers": {
-        "brand":    { "supported": false, "message": "현재 쿠폰 사용 조건에는 브랜드 필터를 함께 적용할 수 없습니다." },
-        "product":  { "supported": false, "message": "현재 쿠폰 사용 조건에는 특정 상품 필터를 함께 적용할 수 없습니다." },
-        "category": { "supported": false, "message": "현재 쿠폰 사용 조건에는 카테고리 필터를 함께 적용할 수 없습니다." }
+        "brand": {
+          "supported": false,
+          "message": "현재 쿠폰 사용 조건에는 브랜드 필터를 함께 적용할 수 없습니다."
+        },
+        "product": {
+          "supported": false,
+          "message": "현재 쿠폰 사용 조건에는 특정 상품 필터를 함께 적용할 수 없습니다."
+        },
+        "category": {
+          "supported": false,
+          "message": "현재 쿠폰 사용 조건에는 카테고리 필터를 함께 적용할 수 없습니다."
+        }
       }
     },
     "login": {
       "label": "로그인/접속 조건",
       "qualifiers": {
-        "brand":    { "supported": false, "message": "현재 로그인/접속 조건에는 브랜드 필터를 함께 적용할 수 없습니다." },
-        "product":  { "supported": false, "message": "현재 로그인/접속 조건에는 특정 상품 필터를 함께 적용할 수 없습니다." },
-        "category": { "supported": false, "message": "현재 로그인/접속 조건에는 카테고리 필터를 함께 적용할 수 없습니다." }
+        "brand": {
+          "supported": false,
+          "message": "현재 로그인/접속 조건에는 브랜드 필터를 함께 적용할 수 없습니다."
+        },
+        "product": {
+          "supported": false,
+          "message": "현재 로그인/접속 조건에는 특정 상품 필터를 함께 적용할 수 없습니다."
+        },
+        "category": {
+          "supported": false,
+          "message": "현재 로그인/접속 조건에는 카테고리 필터를 함께 적용할 수 없습니다."
+        }
       }
     },
     "_default": {
       "label": "이 조건",
       "qualifiers": {
-        "brand":    { "supported": false, "message": "현재 이 조건에는 브랜드 필터를 함께 적용할 수 없습니다. 브랜드는 '구매' 조건으로 지정해 주세요." },
-        "product":  { "supported": false, "message": "현재 이 조건에는 특정 상품 필터를 함께 적용할 수 없습니다." },
-        "category": { "supported": false, "message": "현재 이 조건에는 카테고리 필터를 함께 적용할 수 없습니다." }
+        "brand": {
+          "supported": false,
+          "message": "현재 이 조건에는 브랜드 필터를 함께 적용할 수 없습니다. 브랜드는 '구매' 조건으로 지정해 주세요."
+        },
+        "product": {
+          "supported": false,
+          "message": "현재 이 조건에는 특정 상품 필터를 함께 적용할 수 없습니다."
+        },
+        "category": {
+          "supported": false,
+          "message": "현재 이 조건에는 카테고리 필터를 함께 적용할 수 없습니다."
+        }
       }
     }
   }

@@ -18,27 +18,9 @@ import lexicon_patterns
 # 이관 직전의 원본 정규식 소스(2026-07-29 기준). 낱말 집합 비교에만 쓴다 — 교대 **순서**는
 # 사전 쪽이 '긴 낱말 우선'으로 정렬하므로 일부러 비교하지 않는다(순서 함정 제거가 이관의 목적).
 MIGRATED_ORIGINALS: dict[str, str] = {
-    "or_operand_boundary": r"이면서|면서|이고|이며|그리고|동시에|반면|지만|중|또는|혹은|이거나|거나|아니면|,",
-    "campaign_clause_boundary": r"지만|면서|이며|이고|이거나|거나|또는|혹은|아니면|그리고|반면|다만|,",
-    "logic_and": r"그리고|이면서|동시에|이며|이고|면서",
-    "logic_or": r"또는|혹은|이거나|거나|아니면",
-    "or_connective": r"또는|혹은|이거나|거나|아니면",
     "member_noun_core": r"회원|고객|사용자",
-    "member_noun_basic": r"회원|고객|사용자|유저",
     "purchase_rank_target": r"고객님|고객|회원|유저|사람|구매자|소비자",
-    "direction_high": r"높은|많은|큰|상위",
-    "direction_low": r"낮은|적은|작은|하위",
-    "period_compare_marker": r"보다|대비|증가|감소|늘|줄",
-    "intra_temporal_compare": r"보다|대비|큰|작은|많은|적은|높은|낮은|증가|감소|커진|늘|줄",
-    "prior_period": r"이전|직전",
     "exact_equals_marker": r"정확히|정확하게|딱",
-    "agg_domain_context": r"구매|구입|주문|샀|상품|제품|품목|결제|할인|수량|종류|객단가|매출|구매액|금액|건수|종수",
-    "campaign_concept_anchor": r"구매|구입|쿠폰|오퍼|혜택|제안|발송|전송|접촉|도달",
-    "calendar_enum_connective": r"및|와|과|그리고|또는|이나|랑|하고",
-    "condition_language": (
-        r"구매|구입|주문|재구매|장바구니|카트|캠페인|반응|로그인|접속|방문|쿠폰|찜|"
-        r"거주|지역|등급|성별|남성|여성|나이|연령|휴면|탈퇴|정상|활동|가입|수신|블랙리스트"
-    ),
 }
 
 
@@ -69,35 +51,46 @@ def test_pattern_compiles_and_matches_every_term(name: str) -> None:
 
 
 def test_terms_are_escaped_so_data_cannot_inject_regex() -> None:
-    """사전은 사전이지 코드가 아니다 — 낱말에 정규식 메타문자가 있어도 리터럴로 다뤄야 한다."""
-    assert lexicon_patterns.alternation("clause_separator") == re.escape(",")
-    threshold = lexicon_patterns.pattern("logic_or")
-    assert threshold.search("또는") and not threshold.search("또")
+    """사전은 사전이지 코드가 아니다 — 낱말에 정규식 메타문자가 있어도 리터럴로 다뤄야 한다.
+
+    대상 교체(2026-08-01): 예전에는 clause_separator(',')와 logic_or 로 이 계약을 쟀는데 둘 다
+    소비자가 사라져 삭제됐다. 계약 자체는 지킬 값어치가 있으므로 메타문자를 가진 살아 있는
+    어휘(targeting_and_alias 의 '&&', '&')로 옮긴다.
+    """
+    alternation = lexicon_patterns.alternation("targeting_and_alias")
+    assert re.escape("&&") in alternation and "&&|" not in alternation.replace(re.escape("&&"), "")
+    # 이스케이프됐으므로 '&' 는 정규식 연산자가 아니라 글자로 매치된다.
+    assert re.search(alternation, "a && b")
+    marker = lexicon_patterns.pattern("member_noun_core")
+    assert marker.search("회원") and not marker.search("회")
 
 
 def test_proxy_exposes_the_regex_api_used_by_call_sites() -> None:
     """모듈 상수를 그대로 대체하므로 호출부가 쓰는 메서드가 다 있어야 한다."""
-    proxy = lexicon_patterns.pattern("logic_and")
-    assert proxy.search("A 그리고 B")
-    assert [m.group(0) for m in proxy.finditer("A 그리고 B 이면서 C")] == ["그리고", "이면서"]
-    assert proxy.match("동시에 구매", 0) is not None
+    proxy = lexicon_patterns.pattern("member_noun_core")
+    assert proxy.search("우리 회원 목록")
+    assert [m.group(0) for m in proxy.finditer("회원 과 고객")] == ["회원", "고객"]
+    assert proxy.match("고객 조회", 0) is not None
     assert isinstance(proxy.pattern, str)
 
 
 def test_shared_vocabulary_is_really_shared() -> None:
-    """같은 어휘를 쓰는 패턴은 낱말 추가를 함께 얻는다 — 이관의 목적 자체."""
-    and_terms = set(lexicon_patterns.vocabulary("and_connective"))
-    assert and_terms <= set(lexicon_patterns.terms("logic_and"))
-    assert "동시에" in and_terms
-    # or_operand_boundary 는 같은 어휘를 쓰므로 '동시에'를 자동으로 얻는다(예전에는 따로 적혀 있었다).
-    assert "동시에" in set(lexicon_patterns.terms("or_operand_boundary"))
+    """같은 어휘를 쓰는 패턴은 낱말 추가를 함께 얻는다 — 이관의 목적 자체.
+
+    member_noun 을 member_noun_core 와 purchase_rank_target 이 공유한다. 후자는 '사용자'를
+    exclude 하므로 부분집합(<=)이 아니라 공유 낱말의 멤버십으로 단언한다.
+    """
+    member_terms = set(lexicon_patterns.vocabulary("member_noun"))
+    assert member_terms <= set(lexicon_patterns.terms("member_noun_core"))
+    assert {"회원", "고객"} <= member_terms
+    assert {"회원", "고객"} <= set(lexicon_patterns.terms("purchase_rank_target"))
+    assert "사용자" not in set(lexicon_patterns.terms("purchase_rank_target"))
 
 
 def test_all_supported_or_connectives_come_from_one_vocabulary() -> None:
+    """OR 접속 어휘는 한 곳이 소유한다(소비자는 targeting_expression·event_parser 쪽 alternation)."""
     expected = {"또는", "혹은", "이거나", "거나", "아니면"}
     assert set(lexicon_patterns.vocabulary("or_connective")) == expected
-    assert expected <= set(lexicon_patterns.terms("logic_or"))
-    assert expected <= set(lexicon_patterns.terms("or_operand_boundary"))
 
 
 def test_exclusions_are_documented() -> None:

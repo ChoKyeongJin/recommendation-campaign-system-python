@@ -41,7 +41,6 @@ _CODE_FALLBACK: dict[str, Any] = {
         "and_connective": ["이면서", "면서", "이고", "이며", "그리고", "동시에"],
         "targeting_and_alias": ["and", "all", "all_of", "intersection", "&&", "&", "그리고", "및"],
         "targeting_not_alias": ["not", "negate", "!", "아님", "제외"],
-        "contrast_connective": ["반면", "지만", "다만"],
         "or_connective": ["또는", "혹은", "이거나", "거나", "아니면"],
         # 사람(오디언스) 명사. 세 모듈이 각자 다른 범위를 쓰고 있어 층으로 나눈다.
         "member_noun": ["회원", "고객", "사용자"],
@@ -74,10 +73,6 @@ _CODE_FALLBACK: dict[str, Any] = {
         # 거주 표지. 축 앞에 오면 그 축은 '집계 대상'이 아니라 '거주지'다('많이 사는 시군구').
         "residence_verb": ["거주하는", "거주", "사는", "살고있는", "밀집"],
         # 비교 표지: 두 값을 견주는 말과, 변화 방향을 나타내는 말.
-        "comparison_marker": ["보다", "대비"],
-        "change_direction": ["증가", "감소", "늘", "줄", "커진"],
-        "magnitude_adjective": ["큰", "작은", "많은", "적은", "높은", "낮은"],
-        "prior_period": ["이전", "직전"],
         "exact_marker": ["정확히", "정확하게", "딱"],
         # 기준일로 절대 월 범위를 계산하는 상대 달력 월. 의미별 어휘를 나눠 offset 계산이
         # 표면 문자열 분기에 의존하지 않게 한다.
@@ -86,19 +81,9 @@ _CODE_FALLBACK: dict[str, Any] = {
         # 도메인 문맥어: 이 낱말이 있어야 그 조건/집계를 해당 도메인으로 본다.
         "purchase_verb": ["구매", "구입", "주문", "샀"],
         "product_noun": ["상품", "제품", "품목"],
-        "money_noun": ["결제", "할인", "객단가", "매출", "구매액", "금액"],
-        "count_noun": ["수량", "종류", "건수", "종수"],
-        "campaign_contact_noun": ["쿠폰", "오퍼", "혜택", "제안", "발송", "전송", "접촉", "도달"],
         # 회원 조건을 나타내는 도메인 낱말(조건 언어 판정용 — 구매 동사와 합쳐 쓴다).
-        "condition_domain_noun": [
-            "재구매", "장바구니", "카트", "캠페인", "반응", "로그인", "접속", "방문", "쿠폰", "찜",
-            "거주", "지역", "등급", "성별", "남성", "여성", "나이", "연령", "휴면", "탈퇴", "정상",
-            "활동", "가입", "수신", "블랙리스트",
-        ],
         # 오디언스 전체를 가리키는 말. 조건이 없는 것이 정상이므로 미해석 탐지에서 제외하는 데 쓴다.
-        "whole_audience": ["전체", "모든", "전부", "모두", "아무나", "누구나"],
         # 낱말이 아닌 구분자(쉼표 등). 어휘로 두어 패턴 조합에서 같은 방식으로 다룬다.
-        "clause_separator": [","],
         # 기간(창) 두 개를 잇는 말. 나열('2018년 및 2019년' = 두 구간의 합집합)과 범위
         # ('2019년 3월부터 5월까지' = 하나의 연속 구간)는 뜻이 다르므로 어휘부터 나눠 둔다.
         "enum_connective": ["및", "와", "과", "그리고", "또는", "이나", "랑", "하고"],
@@ -187,29 +172,12 @@ _CODE_FALLBACK: dict[str, Any] = {
     # 빠져 있던 낱말은 exclude 로 보존하고, 그 사유를 note 에 적어 **드러나게** 둔다.
     # exclude 가 달린 패턴은 곧 "이 누락이 의도인가?" 라는 검토 목록이다(lexicon_patterns.exclusions()).
     "patterns": {
-        "or_operand_boundary": {
-            "include": ["and_connective", "contrast_connective", "or_connective", "clause_separator"],
-            "extra": ["중"],
-            "exclude": ["다만"],
-            "note": "OR 피연산자 경계. '중'은 '회원 중'의 경계이고 다만은 대조 표지라 제외한다.",
-        },
-        "campaign_clause_boundary": {
-            "include": ["and_connective", "contrast_connective", "or_connective", "clause_separator"],
-            "exclude": ["이면서", "동시에"],
-            "note": "캠페인 절 경계. 이면서/동시에가 빠져 있다 — AND 접속어인데 경계로 안 치는 것이 의도인지 미확인(누락 의심).",
-        },
-        "logic_and": {"include": ["and_connective"]},
-        "logic_or": {"include": ["or_connective"]},
-        "or_connective": {"include": ["or_connective"]},
         "member_noun_core": {"include": ["member_noun"]},
-        "member_noun_basic": {"include": ["member_noun", "member_noun_informal"]},
         "purchase_rank_target": {
             "include": ["member_noun", "member_noun_informal", "member_noun_honorific", "member_noun_role"],
             "exclude": ["사용자"],
             "note": "구매 랭킹 대상 명사. '사용자'만 빠져 있다 — 누락 의심(다른 회원 명사 패턴에는 모두 있다).",
         },
-        "direction_high": {"include": ["direction_high", "sort_directive_high"]},
-        "direction_low": {"include": ["direction_low", "sort_directive_low"]},
         "dimension_rank_high": {
             "include": ["direction_high", "sort_directive_high", "superlative_most"],
             "exclude": ["큰"],
@@ -221,27 +189,7 @@ _CODE_FALLBACK: dict[str, Any] = {
             "exclude": ["작은"],
             "note": "축 행 랭킹의 '적은 쪽' 순위 표지. dimension_rank_high 와 대칭으로 크기 형용사를 제외한다.",
         },
-        "period_compare_marker": {
-            "include": ["comparison_marker", "change_direction"], "exclude": ["커진"],
-            "note": "기간 비교 표지. intra_temporal_compare 와 달리 '커진'이 빠져 있다 — 이관 전 상태 보존.",
-        },
-        "intra_temporal_compare": {"include": ["comparison_marker", "magnitude_adjective", "change_direction"]},
-        "prior_period": {"include": ["prior_period"]},
         "exact_equals_marker": {"include": ["exact_marker"]},
-        "agg_domain_context": {"include": ["purchase_verb", "product_noun", "money_noun", "count_noun"]},
-        "campaign_concept_anchor": {
-            "include": ["purchase_verb", "campaign_contact_noun"], "exclude": ["주문", "샀"],
-            "note": "캠페인 개념 앵커. 구매 동사 중 구매/구입만 쓴다(주문·샀 제외) — 이관 전 상태 보존.",
-        },
-        "condition_language": {
-            "include": ["purchase_verb", "condition_domain_noun"], "exclude": ["샀"],
-            "note": "조건 언어 판정. 구어체 '샀'만 빠져 있다 — 이관 전 상태 보존.",
-        },
-        "whole_audience": {"include": ["whole_audience"]},
-        # 달력 창의 링크 어휘(calendar_window 가 조합 구조만 갖고 낱말은 여기서 받는다).
-        "calendar_enum_connective": {"include": ["enum_connective"]},
-        "calendar_range_opener": {"include": ["range_opener"]},
-        "calendar_range_closer": {"include": ["range_closer"]},
     },
 }
 

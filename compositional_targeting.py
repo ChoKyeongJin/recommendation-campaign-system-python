@@ -27,9 +27,6 @@ from calendar_window import SOURCE_SPAN_KEY, parse_duration_window
 PLAN_IR_KEY = "relational_ir"
 PLAN_OPERATIONS_KEY = "relational_operations"
 IR_VERSION = "1.0"
-CATALOG_PATH = Path(__file__).parent / "docs" / "data" / "semantic_attribute_catalog.json"
-SCHEMA_PATH = Path(__file__).parent / "docs" / "data" / "schema_catalog.json"
-
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _STABLE_RE = re.compile(
     r"(?:한번도)?(?:바뀌지않|변하지않|변경되지않|변동(?:이)?없|변화(?:가)?없|동일하게유지|그대로유지)"
@@ -48,13 +45,6 @@ _COMPARISONS = {
     "만큼": "eq",
 }
 _SQL_COMPARISONS = {"eq": "=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
-
-
-@dataclass(frozen=True)
-class AttributeMatch:
-    attribute: dict[str, Any]
-    synonym: str
-    compact_span: tuple[int, int]
 
 
 def _compact_with_offsets(text: str) -> tuple[str, list[int]]:
@@ -92,105 +82,6 @@ def _combined_span(
     )
 
 
-def _schema_columns(schema_path: Path) -> dict[str, set[str]]:
-    payload = json.loads(schema_path.read_text(encoding="utf-8"))
-    tables = payload.get("tables") if isinstance(payload, dict) else {}
-    result: dict[str, set[str]] = {}
-    for table_name, table in (tables or {}).items():
-        columns = table.get("columns") if isinstance(table, dict) else []
-        result[str(table_name)] = {
-            str(column.get("name"))
-            for column in columns
-            if isinstance(column, dict) and isinstance(column.get("name"), str)
-        }
-    return result
-
-
-def load_catalog(
-    catalog_path: Path = CATALOG_PATH, schema_path: Path = SCHEMA_PATH
-) -> dict[str, Any]:
-    """Load and verify all physical bindings against the approved schema."""
-
-    payload = json.loads(catalog_path.read_text(encoding="utf-8"))
-    attributes = payload.get("attributes") if isinstance(payload, dict) else None
-    if not isinstance(attributes, list):
-        raise ValueError("semantic attribute catalog requires attributes[]")
-    physical = _schema_columns(schema_path)
-    seen_ids: set[str] = set()
-    seen_synonyms: dict[str, str] = {}
-    for attribute in attributes:
-        if not isinstance(attribute, dict):
-            raise ValueError("catalog attribute must be an object")
-        attribute_id = attribute.get("id")
-        if not isinstance(attribute_id, str) or not attribute_id or attribute_id in seen_ids:
-            raise ValueError(f"invalid or duplicate attribute id: {attribute_id!r}")
-        seen_ids.add(attribute_id)
-        synonyms = attribute.get("synonyms")
-        if not isinstance(synonyms, list) or not synonyms:
-            raise ValueError(f"{attribute_id} requires synonyms")
-        for synonym in synonyms:
-            normalized = "".join(str(synonym).split()).casefold()
-            owner = seen_synonyms.get(normalized)
-            if owner is not None and owner != attribute_id:
-                raise ValueError(f"ambiguous synonym {synonym!r}: {owner}, {attribute_id}")
-            seen_synonyms[normalized] = attribute_id
-        for binding_name in ("current", "history"):
-            binding = attribute.get(binding_name)
-            if binding is None:
-                continue
-            if not isinstance(binding, dict):
-                raise ValueError(f"{attribute_id}.{binding_name} must be an object or null")
-            table = binding.get("table")
-            if table not in physical:
-                raise ValueError(f"{attribute_id}: unknown table {table!r}")
-            required = {"entity_key", "value_column"}
-            if binding_name == "history":
-                required.add("time_column")
-            for key in required:
-                column = binding.get(key)
-                if (
-                    not isinstance(column, str)
-                    or not _IDENTIFIER_RE.fullmatch(column)
-                    or column not in physical[table]
-                ):
-                    raise ValueError(
-                        f"{attribute_id}.{binding_name}.{key}: unknown column {column!r}"
-                    )
-            for column in binding.get("scope_columns") or []:
-                if not isinstance(column, str) or column not in physical[table]:
-                    raise ValueError(
-                        f"{attribute_id}.{binding_name}.scope_columns: unknown {column!r}"
-                    )
-    return copy.deepcopy(payload)
-
-
-def _find_attribute(compact: str, catalog: Mapping[str, Any]) -> AttributeMatch | None:
-    matches: list[AttributeMatch] = []
-    for attribute in catalog.get("attributes") or []:
-        if not isinstance(attribute, dict):
-            continue
-        for raw_synonym in attribute.get("synonyms") or []:
-            synonym = "".join(str(raw_synonym).split()).casefold()
-            if not synonym:
-                continue
-            for match in re.finditer(re.escape(synonym), compact):
-                matches.append(AttributeMatch(
-                    attribute=attribute,
-                    synonym=str(raw_synonym),
-                    compact_span=match.span(),
-                ))
-    if not matches:
-        return None
-    # The longest semantic name wins ("가치 등급" before the generic "등급").
-    return sorted(
-        matches,
-        key=lambda item: (
-            -(item.compact_span[1] - item.compact_span[0]),
-            item.compact_span[0],
-        ),
-    )[0]
-
-
 def _find_operation(compact: str) -> tuple[dict[str, Any], tuple[int, int]] | None:
     stable = _STABLE_RE.search(compact)
     if stable is not None:
@@ -226,146 +117,6 @@ def _find_operation(compact: str) -> tuple[dict[str, Any], tuple[int, int]] | No
             changed.span(),
         )
     return None
-
-
-def _history_alternatives(
-    attribute: Mapping[str, Any], catalog: Mapping[str, Any]
-) -> list[dict[str, str]]:
-    family = attribute.get("family")
-    return [
-        {"id": str(item.get("id")), "label": str(item.get("label"))}
-        for item in catalog.get("attributes") or []
-        if isinstance(item, dict)
-        and item.get("family") == family
-        and isinstance(item.get("history"), dict)
-    ]
-
-
-def interpret(
-    query: str,
-    *,
-    catalog_path: Path = CATALOG_PATH,
-    schema_path: Path = SCHEMA_PATH,
-) -> dict[str, Any] | None:
-    """Interpret a generic temporal attribute predicate, or return ``None``.
-
-    ``None`` means this is not this IR's domain.  A returned non-resolved IR
-    means the semantics were recognized but cannot safely be bound.
-    """
-
-    compact, offsets = _compact_with_offsets(query)
-    catalog = load_catalog(catalog_path, schema_path)
-    attribute_match = _find_attribute(compact, catalog)
-    operation_match = _find_operation(compact)
-    window = parse_duration_window(query, exclude_past=True)
-    if attribute_match is None or operation_match is None or window is None:
-        return None
-
-    operation, operation_span = operation_match
-    compact_window_span = window.get(SOURCE_SPAN_KEY)
-    if not (
-        isinstance(compact_window_span, tuple)
-        and len(compact_window_span) == 2
-        and all(isinstance(value, int) for value in compact_window_span)
-    ):
-        return None
-    # ``parse_duration_window`` deliberately returns only the numeric duration
-    # token.  In a semantic claim the adjacent rolling anchor is part of that
-    # same condition; leaving "최근" unowned makes the downstream source audit
-    # misclassify it as a separate unresolved condition.
-    window_start, window_end = compact_window_span
-    anchor = re.search(r"(?:최근|지난|직전)$", compact[:window_start])
-    if anchor is not None:
-        compact_window_span = (anchor.start(), window_end)
-    span = _combined_span(
-        query,
-        offsets,
-        [
-            attribute_match.compact_span,
-            operation_span,
-            compact_window_span,
-        ],
-    )
-    source_text = query[span["start"]:span["end"]]
-    attribute = attribute_match.attribute
-    history = attribute.get("history")
-    base = {
-        "version": IR_VERSION,
-        "kind": "attribute_aggregate_filter",
-        "status": "resolved",
-        "target_entity": "member",
-        "source_text": source_text,
-        "source_span": span,
-        "attribute": {
-            "id": attribute.get("id"),
-            "label": attribute.get("label"),
-            "family": attribute.get("family"),
-            "matched_synonym": attribute_match.synonym,
-        },
-        "window": {
-            "kind": "rolling",
-            "value": window.get("value"),
-            "unit": window.get("unit"),
-            "anchor": "latest_available_snapshot",
-        },
-        **operation,
-        "missing_fields": [],
-        "candidates": [],
-    }
-    if not isinstance(history, dict):
-        candidates = _history_alternatives(attribute, catalog)
-        labels = ", ".join(item["label"] for item in candidates)
-        base.update({
-            "status": "needs_clarification",
-            "binding": None,
-            "missing_fields": ["attribute.history_binding"],
-            "candidates": candidates,
-            "message": (
-                f"‘{attribute_match.synonym}’은 {attribute.get('label')} 컬럼으로 연결되지만 "
-                "월별 변경 이력이 없습니다. "
-                f"비교할 월별 등급을 지정해 주세요: {labels}."
-            ),
-        })
-        return base
-
-    unit = window.get("unit")
-    value = window.get("value")
-    if not isinstance(value, int) or value <= 0:
-        return None
-    if history.get("time_grain") != "month" or unit not in {"months", "years"}:
-        base.update({
-            "status": "unsupported",
-            "binding": copy.deepcopy(history),
-            "missing_fields": [],
-            "message": (
-                f"{attribute.get('label')} 이력은 월 단위입니다. "
-                "기간을 개월 또는 년 단위로 지정해 주세요."
-            ),
-        })
-        return base
-    observation_count = value if unit == "months" else value * 12
-    base["window"]["observation_count"] = observation_count
-    base["binding"] = copy.deepcopy(history)
-    return base
-
-
-def apply_to_plan(
-    query: str,
-    plan: dict[str, Any],
-    *,
-    catalog_path: Path = CATALOG_PATH,
-    schema_path: Path = SCHEMA_PATH,
-) -> None:
-    ir = interpret(query, catalog_path=catalog_path, schema_path=schema_path)
-    if ir is None:
-        plan.pop(PLAN_IR_KEY, None)
-        plan.pop(PLAN_OPERATIONS_KEY, None)
-        return
-    plan[PLAN_IR_KEY] = ir
-    if ir.get("status") == "resolved":
-        plan[PLAN_OPERATIONS_KEY] = [copy.deepcopy(ir)]
-    else:
-        plan.pop(PLAN_OPERATIONS_KEY, None)
 
 
 def compile_sql(

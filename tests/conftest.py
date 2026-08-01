@@ -9,24 +9,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# 조건 슬롯 LLM 보완은 테스트에서 기본 끔. 켜두면 OPENAI_API_KEY 가 있는 환경에서 스냅샷 테스트가
-# 네트워크·모델 출력에 의존하게 되어 같은 입력에 다른 결과가 나온다(골든 코퍼스가 흔들린다).
-# 이 경로를 스텁으로 검증하던 테스트는 규칙 계층 철거와 함께 삭제됐다.
-os.environ["CONDITION_SLOT_LLM_FALLBACK"] = "off"
 
 # 표면 신호 LLM 해석(의도/목적/문맥 신호어)도 같은 이유로 기본 끔 — 켜두면 골든 코퍼스가 모델 출력에
 # 의존한다. 끈 상태에서는 동결 백스톱 낱말만으로 동작하므로 이관 전 결정론 동작이 그대로 재현된다.
 # 이 경로를 스텁으로 검증하던 테스트는 규칙 계층 철거와 함께 삭제됐다.
 os.environ["SURFACE_LEXICON_LLM"] = "off"
 
-# 범용 상식 타겟 해석도 운영 기본은 on이지만, 회귀 테스트는 네트워크/모델 출력과 분리한다.
-# 전용 테스트는 fake structured completion 또는 주입 service를 사용해 명시적으로 검증한다.
-os.environ["CONCEPTUAL_TARGETING_LLM"] = "off"
 
-# 상품 추출 LLM 폴백도 기본 끔. 지금까지는 tests/golden/cases.json 의 env 를 골든 헬퍼가 프로세스
-# 전역에 덮어써서 "우연히" 꺼져 있었다(복원도 없음) — 그러면 이 값이 골든 모듈의 수집 여부에 좌우된다.
-# 결정론 바닥은 수집 순서와 무관하게 여기 한 곳이 소유한다. 기본값은 graph_rag 에서 "true" 다.
-os.environ["TARGET_OBJECT_LLM_FALLBACK"] = "false"
 
 
 @pytest.fixture(autouse=True)

@@ -208,9 +208,6 @@ def build_index() -> dict[str, Any]:
         ),
         "table": TABLE,
         "connection": CONNECTION,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-        "max_distinct": MAX_DISTINCT,
-        "column_count": len(columns_out),
         # 시군구 -> 시도 소속(주소 마스터). 복수 지역 조건의 OR(나열)/AND(수식) 판별용.
         "region_hierarchy": {"sigungu_to_sido": fetch_region_hierarchy()},
         "columns": columns_out,
@@ -229,7 +226,7 @@ def main() -> None:
         json.dumps(
             {
                 "output": str(args.output),
-                "column_count": payload["column_count"],
+                "column_count": len(payload["columns"]),
                 "value_count": sum(len(column["values"]) for column in payload["columns"]),
                 "columns": [column["column"] for column in payload["columns"]],
             },

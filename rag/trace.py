@@ -383,7 +383,7 @@ def _mark_trace_refs_used(stages: list[dict[str, Any]], result: dict[str, Any]) 
     uses_dimension_catalog = any(
         item.get("codes")
         and item.get("source")
-        not in {"member_value_index", "macro_region", "llm_common_sense"}
+        not in {"member_value_index", "llm_common_sense"}
         for item in dimension_filters
         if isinstance(item, dict)
     )

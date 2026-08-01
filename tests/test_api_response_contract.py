@@ -34,7 +34,6 @@ DOWNSTREAM_PLAN_KEYS = ("capability_check", "output_contract")
 def built() -> list[tuple[str, dict, object]]:
     """코퍼스 케이스를 실제 파이프라인에 태워 (프롬프트, plan, 결과) 를 모은다."""
 
-    golden_support.apply_corpus_env()
     rows: list[tuple[str, dict, object]] = []
     for case in golden_support.load_cases():
         prompt = case["prompt"]

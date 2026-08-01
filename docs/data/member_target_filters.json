@@ -1,8 +1,8 @@
 {
   "version": "1.2",
   "description": "회원 타겟 규칙 엔진 레지스트리. 회원 속성, 활동성, 동의, 지역, 가입, 로그인, 구매, 장바구니, 캠페인 반응 조건을 선언형으로 관리한다.",
+  "_surface_ownership": "이 파일이 소유하는 것은 **사실**(canonical·컬럼·코드값·서열·조인·임계)이고, 그 항목을 사람이 부르는 **낱말**은 LLM 이 읽는다. eq_filters[category=grade] 와 aggregate_targets.metrics 는 surface_choices 가 member_grade / aggregate_metric 선택지를 런타임 파생하므로, 새 등급·새 지표는 여기 한 줄만 추가하면 되고 synonyms 를 채우지 않아도 인식된다. 남아 있는 synonyms 는 **동결 백스톱**이다 — 키 없는 환경의 동작을 재현하는 것이 역할이고 손으로 늘리지 않는다. 예외(이관 금지, 계속 이 파일이 소유): eq_filters.*.surface_terms 는 정규식 원자이자 프롬프트 재작성 감시기의 입력이고, aggregate_targets.metrics.*.distinct_of.terms 는 '이 낱말은 상품명이 아니다'라는 부정 목록이며, eq_filters.*.synonyms 는 conceptual_targeting 의 직접근거 게이트가 검증 어휘로 쓴다(검증기 어휘를 검증 대상 모델이 쓸 수 없다).",
 
-  "_comment_table_symbols": "설정이 물리 테이블명 대신 쓰는 논리 심볼의 물리 매핑. 지금까지 'product' → CRM_CM_PRODUCT 매핑은 코드(graph_rag._PRODUCT_MASTER_TABLE)에만 있어서, 설정만 읽는 이식성 검사(db_swap_preflight)가 미지의 테이블로 보고 실패했다. DB 를 바꿀 때 고쳐야 할 지식은 설정에 모은다.",
   "table_symbols": {
     "product": "CRM_CM_PRODUCT"
   },
@@ -15,54 +15,7 @@
     "date_format": "yyyyMMdd"
   },
 
-  "default_policy": {
-    "apply_active_member": true,
-    "exclude_withdrawn": true,
-    "exclude_blacklist": true,
-    "exclude_site_only_member": false,
-    "require_marketing_agreement": false,
-    "null_boolean_as": "N",
-    "distinct_member": true
-  },
 
-  "operator_registry": {
-    "eq": {
-      "sql": "=",
-      "synonyms": ["인", "인 사람", "해당하는", "같은", "동일한"]
-    },
-    "neq": {
-      "sql": "<>",
-      "synonyms": ["아닌", "제외한", "빼고", "해당하지 않는"]
-    },
-    "gte": {
-      "sql": ">=",
-      "synonyms": ["이상", "최소", "넘는 또는 같은"]
-    },
-    "gt": {
-      "sql": ">",
-      "synonyms": ["초과", "넘는", "보다 큰"]
-    },
-    "lte": {
-      "sql": "<=",
-      "synonyms": ["이하", "최대", "넘지 않는"]
-    },
-    "lt": {
-      "sql": "<",
-      "synonyms": ["미만", "보다 적은", "안 되는"]
-    },
-    "between": {
-      "sql": "BETWEEN",
-      "synonyms": ["사이", "부터", "에서", "구간"]
-    },
-    "in": {
-      "sql": "IN",
-      "synonyms": ["중", "또는", "포함하는"]
-    },
-    "not_in": {
-      "sql": "NOT IN",
-      "synonyms": ["제외", "포함하지 않는"]
-    }
-  },
 
   "eq_filters": [
     {
@@ -455,70 +408,6 @@
     }
   ],
 
-  "range_aliases": {
-    "age_groups": [
-      {
-        "canonical": "teens",
-        "min": 10,
-        "max": 19,
-        "synonyms": ["10대", "십대"]
-      },
-      {
-        "canonical": "twenties",
-        "min": 20,
-        "max": 29,
-        "synonyms": ["20대", "이십대"]
-      },
-      {
-        "canonical": "thirties",
-        "min": 30,
-        "max": 39,
-        "synonyms": ["30대", "삼십대"]
-      },
-      {
-        "canonical": "forties",
-        "min": 40,
-        "max": 49,
-        "synonyms": ["40대", "사십대"]
-      },
-      {
-        "canonical": "fifties",
-        "min": 50,
-        "max": 59,
-        "synonyms": ["50대", "오십대"]
-      },
-      {
-        "canonical": "seniors",
-        "min": 60,
-        "max": null,
-        "synonyms": ["60대 이상", "시니어", "고령 회원"]
-      }
-    ],
-    "grade_groups": [
-      {
-        "canonical": "gold_or_higher",
-        "values": ["MEM_GRADE_CD.GOLD", "MEM_GRADE_CD.VIP"],
-        "synonyms": ["골드 이상", "GOLD 이상", "골드 또는 VIP"]
-      },
-      {
-        "canonical": "silver_or_higher",
-        "values": [
-          "MEM_GRADE_CD.SILVER",
-          "MEM_GRADE_CD.GOLD",
-          "MEM_GRADE_CD.VIP"
-        ],
-        "synonyms": ["실버 이상", "SILVER 이상"]
-      }
-    ],
-    "region_groups": [
-      {
-        "canonical": "capital_area",
-        "column": "B.SIDO",
-        "values": ["서울", "경기", "인천"],
-        "synonyms": ["수도권", "서울 경기 인천", "서울·경기·인천"]
-      }
-    ]
-  },
 
   "activity_filters": [
     {
@@ -595,8 +484,7 @@
     "column": "BIRTHDAY",
     "date_format": "yyyyMMdd",
     "match_modes": ["exact_date", "month", "month_day", "upcoming_days"],
-    "default_upcoming_days": 7,
-    "synonyms": ["생일", "생일자", "생일이 다가오는", "이번 달 생일"]
+    "default_upcoming_days": 7
   },
 
   "signup_target": {
@@ -604,13 +492,7 @@
     "table": "CRM_MB_BASEINFO",
     "alias": "B",
     "default_days": 90,
-    "anchor": "data_max",
-    "synonyms": [
-      "신규 가입",
-      "최근 가입",
-      "새로 가입한",
-      "가입한 지 얼마 안 된"
-    ]
+    "anchor": "data_max"
   },
 
   "recent_login_target": {
@@ -618,8 +500,7 @@
     "table": "CRM_MB_BASEINFO",
     "alias": "B",
     "anchor": "getdate",
-    "default_days": 30,
-    "synonyms": ["최근 로그인", "최근 접속", "마지막 로그인"]
+    "default_days": 30
   },
 
   "region_target": {
@@ -636,31 +517,9 @@
       "dong": "B.DONG",
       "zip_code": "B.ZIP_CD",
       "road_address": "B.ROAD_NAME_ADDRESS"
-    },
-    "synonyms": {
-      "sido": ["시도", "광역시", "도", "거주 지역"],
-      "sigungu": ["시군구", "시", "군", "구"],
-      "dong": ["동", "읍", "면", "동네"]
     }
   },
 
-  "signup_store_target": {
-    "table": "CRM_CM_OFFSHOP",
-    "alias": "S",
-    "join": {
-      "type": "LEFT",
-      "left": "B.REG_OFFSHOP_ID",
-      "right": "S.OFFSHOP_ID"
-    },
-    "match_columns": [
-      "S.OFFSHOP_ID",
-      "S.OFFSHOP_NAME",
-      "S.SIDO",
-      "S.SIGUNGU",
-      "S.DONG"
-    ],
-    "synonyms": ["가입 매장", "등록 매장", "가입 지점", "가입 점포"]
-  },
 
   "order_count_targets": {
     "table": "CRM_SL_ORDERHEADERMALL",
@@ -951,13 +810,7 @@
       "P.PRODUCT_NAME"
     ],
     "match_mode": "contains",
-    "default_case_insensitive": true,
-    "synonyms": [
-      "구매한 상품",
-      "구매 카테고리",
-      "구매 브랜드",
-      "상품 구매 이력"
-    ]
+    "default_case_insensitive": true
   },
 
   "purchase_product_match_columns": [
@@ -1186,52 +1039,8 @@
     }
   },
 
-  "date_expression_registry": {
-    "anchors": {
-      "today": "CONVERT(char(8), GETDATE(), 112)",
-      "getdate": "GETDATE()",
-      "data_max": "MAX_AVAILABLE_DATE"
-    },
-    "relative_units": {
-      "day": ["일", "하루"],
-      "week": ["주", "주일"],
-      "month": ["개월", "달"],
-      "year": ["년"]
-    },
-    "relative_terms": {
-      "today": ["오늘", "금일"],
-      "yesterday": ["어제", "전일"],
-      "this_month": ["이번 달", "금월"],
-      "last_month": ["지난달", "전월"],
-      "recently": {
-        "default_days": 30,
-        "synonyms": ["최근", "요즘", "근래"]
-      }
-    }
-  },
 
-  "negative_expression_registry": [
-    {
-      "tokens": ["아닌", "제외", "빼고", "없고", "하지 않은"],
-      "effect": "negate_condition"
-    },
-    {
-      "tokens": ["한 번도", "전혀"],
-      "effect": "prefer_anti_join"
-    },
-    {
-      "tokens": ["아직"],
-      "effect": "prefer_current_non_occurrence"
-    }
-  ],
 
-  "logical_expression_registry": {
-    "and_tokens": ["그리고", "이면서", "동시에", "모두", "이며"],
-    "or_tokens": ["또는", "혹은", "중 하나", "이거나"],
-    "except_tokens": ["단", "제외하고", "빼고"],
-    "precedence": ["NOT", "AND", "OR"],
-    "require_parentheses_for_mixed_and_or": true
-  },
 
   "supported_condition_hint": "성별·연령·회원등급·회원상태·수신동의·활동/휴면·블랙리스트·가입채널·가입매장·지역·최근 로그인·신규 가입·생일·구매 여부·구매 횟수·구매 금액·구매 상품·장바구니·캠페인 접촉/오퍼/구매 반응",
 
@@ -1309,17 +1118,6 @@
     }
   },
 
-  "macro_regions": {
-    "column": "SIDO",
-    "groups": {
-      "수도권": ["서울", "경기", "인천"],
-      "충청권": ["대전", "세종", "충북", "충남"],
-      "호남권": ["광주", "전북", "전남"],
-      "영남권": ["부산", "대구", "울산", "경북", "경남"],
-      "강원권": ["강원"]
-    }
-  },
-
   "member_metric_ranking": {
     "granularity_tokens": [
       "고객님",
@@ -1373,13 +1171,6 @@
     "vague_low_default": 10
   },
 
-  "_entity_set_targets_comment": [
-    "파생 엔터티 집합 조건('가장 많이 팔린 상품 10개를 구매한 고객')의 물리 매핑.",
-    "엔터티 × 지표 × 방향 × 개수 × 기간 × 관계의 조합으로 정의되므로, 새 표현이 나와도 여기에",
-    "엔터티/지표/관계를 한 줄 추가하면 되고 컴파일러(entity_set.py)는 그대로다.",
-    "표현식의 {alias}/{product_alias}/{member} 는 컴파일러가 별칭으로 치환한다.",
-    "별칭은 validation.allowed_table_aliases 안에서만 쓴다(바깥/안쪽 서브쿼리가 서로 달라야 한다)."
-  ],
   "entity_set_targets": {
     "defaultMeasure": "sales_quantity",
     "defaultRankRelation": "purchase",

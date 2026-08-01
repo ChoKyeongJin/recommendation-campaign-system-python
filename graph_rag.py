@@ -35,6 +35,7 @@ import plan_validation
 import plan_semantic_ast
 import purchase_lexicon
 import semantic_signal
+import surface_choices
 from common_utils import elapsed_ms as _elapsed_ms
 from common_utils import HANGUL_SYLLABLE as _HANGUL_SYLLABLE
 from common_utils import unique_strings as _unique_strings
@@ -609,18 +610,6 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
         "default_top_n": 5,
         "max_top_n": 30,
     },
-    # 광역 권역어(수도권 등)를 구성 시도(SIDO 저장값)로 푼다. '수도권'은 단일 저장값이 아니라
-    # 서울/경기/인천을 묶은 관용어라 값 인덱스에 없어 조용히 탈락한다 → 여기서 시도 IN 조건으로 확장한다.
-    "macro_regions": {
-        "column": "SIDO",
-        "groups": {
-            "수도권": ["서울", "경기", "인천"],
-            "충청권": ["대전", "세종", "충북", "충남"],
-            "호남권": ["광주", "전북", "전남"],
-            "영남권": ["부산", "대구", "울산", "경북", "경남"],
-            "강원권": ["강원"],
-        },
-    },
     "member_metric_ranking": {
         "granularity_tokens": ["고객님", "구매자", "사용자", "고객", "회원", "유저", "손님", "사람"],
         "default_top_n": 100,
@@ -748,18 +737,38 @@ def _lifecycle_aliases() -> dict[str, str]:
     }
 
 
+def _lifecycle_compilable(value: str) -> bool:
+    return value in MEMBER_EQ_FILTERS or value in MEMBER_ACTIVITY_FILTERS
+
+
+def _resolve_lifecycle_value(value: str, aliases: dict[str, str]) -> str:
+    """lifecycle 값 하나를 컴파일 가능한 canonical 로. 못 맞추면 원값(= 오늘 동작).
+
+    '빈칸만 보완' 규약을 주석이 아니라 **조건문으로** 강제한다: 별칭표에 있으면 그대로, 이미
+    컴파일되는 값이면 손대지 않고, 둘 다 아닐 때(= 오늘이면 '미지원 조건'으로 SQL 이 통째로
+    막히는 값)만 LLM 에 묻는다. 돌아온 값도 기존 검증을 통과해야 채택한다.
+    """
+    if value in aliases:
+        return aliases[value]
+    if _lifecycle_compilable(value):
+        return value
+    picked = _resolve_name_choice("lifecycle_canonical", value)
+    return picked if picked and _lifecycle_compilable(picked) else value
+
+
 def _resolve_plan_lifecycle_aliases(slots: dict[str, Any]) -> dict[str, Any]:
     """plan 슬롯(target_user/exclude)의 lifecycle 값을 별칭 해석한 사본으로 돌려준다(원본 불변)."""
     values = slots.get("lifecycle") if isinstance(slots, dict) else None
     if not isinstance(values, list) or not values:
         return slots if isinstance(slots, dict) else {}
     aliases = _lifecycle_aliases()
-    if not any(isinstance(value, str) and value in aliases for value in values):
+    mapped = [
+        _resolve_lifecycle_value(value, aliases) if isinstance(value, str) else value
+        for value in values
+    ]
+    if mapped == list(values):
         return slots
-    resolved = _unique_strings([
-        aliases.get(value, value) if isinstance(value, str) else value for value in values
-    ])
-    return {**slots, "lifecycle": resolved}
+    return {**slots, "lifecycle": _unique_strings(mapped)}
 
 
 def _member_eq_predicate(canonical: str, negate: bool = False) -> str | None:
@@ -1012,13 +1021,9 @@ def _member_recent_login_predicate(days: int, alias: str = "B") -> str:
 #
 # docs/data/targeting_lexicon.json 에는 **LLM 이 대체할 수 없는 것만** 남는다: 대상 지향 표지와
 # 장바구니 어휘처럼 문장 안의 '위치'로 판정하는(분리 지점 인덱스·인접성) 스팬 지역 어휘.
-# objective_rules 는 순서가 의미(먼저 걸린 목적 승리)라 리스트로 유지한다.
 DEFAULT_TARGETING_LEXICON_PATH = Path(
     os.getenv("GRAPH_RAG_TARGETING_LEXICON", "docs/data/targeting_lexicon.json")
 )
-
-# LLM 이 표면어를 소유하는 그룹(= surface_concepts.json 의 concept_id). 이 그룹의 낱말은 데이터
-# 파일에서 제거됐고, 아래 동결 백스톱만 남는다.
 
 _DEFAULT_TARGETING_LEXICON: dict[str, Any] = {
     # 대상 지향 표지: 이 뒤부터는 "누구에게 무엇을 한다"의 캠페인/채널·메시지 절로 본다.
@@ -1028,42 +1033,21 @@ _DEFAULT_TARGETING_LEXICON: dict[str, Any] = {
     # 여기 걸린 매치는 분리 지점 후보에서 건너뛴다 — 오디언스 절이 채널 절로 잘려나가는 것을 막는다.
     "audience_direction_marker_exceptions": ["함께", "다함께", "언제", "이제", "그곳에", "이곳에", "저곳에"],
     "cart_terms": ["장바구니"],
-    # ── 아래부터는 동결 백스톱(_LLM_OWNED_LEXICON_GROUPS) ─────────────────────────────
-    # 표면어 소유권은 LLM 에 있다. 이 목록은 이관 시점에 targeting_lexicon.json 이 갖고 있던 낱말을
-    # 글자 그대로 옮긴 것이며, 키가 없는 환경에서 기존 결정론 동작을 재현하는 것이 유일한 역할이다.
-    # **손으로 늘리지 않는다** — 새 말투는 LLM 이 읽고, 새 '개념'만 surface_concepts.json 에 추가한다.
-    # 낱말 수를 고정하던 래칫 테스트는 삭제됐다(현재 가드 없음).
+    # ── 아래부터는 동결 백스톱 ────────────────────────────────────────────────────────
+    # 표면어 소유권은 LLM 에 있다(surface_concepts.json + lexicon_llm). 이 목록은 이관 시점에
+    # targeting_lexicon.json 이 갖고 있던 낱말을 글자 그대로 옮긴 것이며, 키가 없는 환경에서 기존
+    # 결정론 동작을 재현하는 것이 유일한 역할이다. **손으로 늘리지 않는다.**
+    #
+    # 2026-08-01 정리: 여기 있던 12개 그룹(intent_*, objective_rules, awareness_*, sell_outreach_*,
+    # reactivation_goal_terms, cart_abandonment_terms, repurchase_*)은 소비자가 커밋 8ba50b6
+    # ('규칙삭제')에서 사라져 짝 없는 고아였다. 낱말만 남아 있으면 '개념은 없는데 백스톱은 있는'
+    # 상태로 다음 감사를 또 오도하므로 개념(surface_concepts.json)과 함께 지웠다.
+    # 남은 둘은 실제 호출부가 있다: purchase_history_signals(:1363), channel_signal_words(:2094).
     "channel_signal_words": [
         "홍보", "광고", "알림", "알리", "안내", "소식", "공지", "캠페인",
         "메시지", "발송", "보내", "판매", "팔", "프로모션", "쿠폰", "이벤트",
         "SMS", "문자", "이메일", "앱푸시", "푸시", "알림톡",
     ],
-    "intent_recommend_campaign": ["캠페인", "추천", "recommend", "campaign"],
-    "intent_find_user_segment": [
-        "사용자", "회원", "고객", "사람", "지역", "세그먼트", "segment", "user",
-        "region", "조회", "검색", "추출", "찾아", "보여", "대상",
-    ],
-    "objective_rules": [
-        {"objective": "purchase", "keywords": ["구매", "구입", "전환", "매출", "purchase", "conversion", "판매", "팔고", "팔려", "sell", "주문", "결제"]},
-        {"objective": "subscription", "keywords": ["구독", "subscription", "정기배송"]},
-        {"objective": "reactivation", "keywords": ["휴면", "복귀", "재방문", "reactivation", "재활성", "활성화"]},
-        {"objective": "retention", "keywords": ["retention", "유지", "충성"]},
-        {"objective": "awareness", "keywords": ["신제품", "신상품", "출시", "런칭", "awareness", "launch"]},
-    ],
-    "awareness_launch_terms": ["신제품", "신상품", "출시", "런칭", "launch", "awareness"],
-    "awareness_announce_terms": ["알리", "알림", "소식", "안내", "홍보"],
-    # "팔레트/팔로우" 등 오탐을 피하려고 "팔" 단독이 아닌 "팔고/팔려/판매"만 판매 동사로 본다.
-    "sell_outreach_verbs": ["팔고", "팔려", "팔것", "판매", "sell"],
-    "sell_outreach_audience": ["에게", "한테", "고객", "회원", "대상", "타겟", "타깃"],
-    "reactivation_goal_terms": [
-        "재활성", "다시활성", "활성화", "휴면복귀", "복귀캠페인", "reactivation", "reactivate",
-    ],
-    "cart_abandonment_terms": [
-        "결제하지않", "결제안", "미결제", "구매하지않", "구매안", "안산", "방치", "이탈",
-        "cartabandon", "주문으로이어지지않", "주문으로 이어지지 않은",
-    ],
-    "repurchase_terms": ["재구매", "repurchase"],
-    "repurchase_outreach_terms": ["유도", "촉진", "리마인드", "캠페인", "메시지", "발송", "추천"],
     "purchase_history_signals": [
         "구매", "구입", "샀", "purchased", "bought", "주문", "결제", "구매이력", "주문이력",
     ],
@@ -1151,12 +1135,96 @@ def _llm_extract_surface_signals(
     return data
 
 
+@functools.lru_cache(maxsize=1)
+def _surface_concept_catalog() -> tuple[lexicon_llm.SurfaceConcept, ...]:
+    """손으로 쓴 개념 + 레지스트리에서 파생한 선택지. 이 둘이 LLM 이 고를 수 있는 전부다.
+
+    손 개념(surface_concepts.json)은 뜻이 코드에 박힌 판정용이고, 파생 개념(surface_choices)은
+    닫힌 집합이 이미 레지스트리에 있는 축용이다. 파생 id 는 ``<namespace>:<key>`` 라 콜론이 없는
+    손 개념과 구조적으로 겹칠 수 없지만, 그래도 겹치면 **즉시 예외**로 죽인다 — 조용히 하나가
+    다른 하나를 덮으면 어느 쪽 판정이 살아 있는지 알 수 없게 된다.
+    """
+    hand = lexicon_llm.load_concepts()
+    derived = surface_choices.query_concepts()
+    seen = {concept.concept_id for concept in hand}
+    collisions = sorted(c.concept_id for c in derived if c.concept_id in seen)
+    if collisions:
+        raise ValueError(f"표면 개념 id 충돌(손 개념 vs 레지스트리 파생): {collisions}")
+    return (*hand, *derived)
+
+
 def _resolve_surface_signals(
     query: str, llm_model: str = DEFAULT_LLM_MODEL, prompt_dir: Path | None = DEFAULT_PROMPT_DIR
 ) -> dict[str, tuple[str, ...]]:
     return lexicon_llm.resolve(
         query,
         lambda text, concepts: _llm_extract_surface_signals(text, concepts, llm_model, prompt_dir),
+        concepts=_surface_concept_catalog(),
+    )
+
+
+# ── Tier N: 이름 하나를 닫힌 후보로 맞추는 호출 ──────────────────────────────────────────────
+# 위의 표면 신호는 haystack 이 사용자 원문이다. 아래는 haystack 이 **식별자**인 자리를 위한 것이다
+# (metric canonical, plan lifecycle 값, 미해결 requirement 이름). 배관은 같고 프롬프트만 다르다.
+NAME_CHOICE_PROMPT_FILENAME = "name_choice_system.txt"
+
+
+def _llm_choose_name(
+    value: str,
+    candidates: tuple[tuple[str, str], ...],
+    llm_model: str = DEFAULT_LLM_MODEL,
+    prompt_dir: Path | None = DEFAULT_PROMPT_DIR,
+) -> dict[str, Any] | None:
+    """이름 하나를 후보 목록에 맞춘다. 사용 불가/실패 시 None(→ 호출자는 오늘 동작 유지)."""
+    llm_model = _fast_llm_model(llm_model)
+    if not llm_model or not os.getenv("OPENAI_API_KEY"):
+        return None
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return None
+    fallback = "\n".join(
+        [
+            "너는 식별자 하나를 아래 후보 목록의 항목 하나로 맞추는 판정기다. 목록에 없는 id 는",
+            "절대 만들지 마라. 확실히 고를 수 있으면 정확히 하나, 애매하면 빈 배열로 둔다.",
+            "",
+            "{candidates}",
+            "",
+            "evidence 는 **입력으로 주어진 이름** 안에 글자 그대로 있는 조각이어야 한다(질의가 아니다).",
+            "target_user·customer·member·field·value 같은 구조 접두/접미어는 근거가 되지 않는다.",
+            '다음 JSON object 만 출력한다: {"signals": [{"concept_id": "...", "evidence": "..."}]}',
+        ]
+    )
+    catalog = "\n".join(f"- {cid}: {description}" for cid, description in candidates)
+    system = _read_prompt_template(prompt_dir, NAME_CHOICE_PROMPT_FILENAME, fallback).replace(
+        "{candidates}", catalog
+    )
+    client = OpenAI()
+    response = _openai_chat_create(
+        client,
+        model=llm_model,
+        temperature=0,
+        response_format={"type": "json_object"},
+        messages=[{"role": "system", "content": system}, {"role": "user", "content": value}],
+        timeout=_prompt_rewrite_timeout_seconds(),
+    )
+    data = json.loads(response.choices[0].message.content or "{}")
+    if not isinstance(data, dict):
+        return None
+    _write_rag_llm_log("name_choice", {"value": value, **data})
+    return data
+
+
+def _resolve_name_choice(namespace: str, value: str) -> str | None:
+    """축 하나에서 이름을 맞춘다. 후보가 없거나 축이 꺼져 있으면 None."""
+    candidates = surface_choices.name_candidates(namespace)
+    if not candidates:
+        return None
+    return lexicon_llm.resolve_name(
+        value,
+        candidates,
+        _llm_choose_name,
+        reject_evidence=surface_choices.structural_identifier_noise(),
     )
 
 
@@ -5544,11 +5612,17 @@ _RECENT_LOGIN_NEG_SIGNALS = (
 
 
 def _grade_threshold_registry() -> list[dict[str, Any]]:
-    """등급 eq_filters 를 서열(rank) 오름차순으로 반환한다(등급 임계 확장용).
+    """등급 eq_filters 를 서열(rank) 오름차순으로 반환한다.
 
-    각 항목: canonical/value/rank/tokens(매칭 표면형 집합). rank 가 없으면 파일 등장 순서(낮음→높음)를
-    서열로 쓴다. tokens 는 synonyms + 코드값 영문 토큰(MEM_GRADE_CD.GOLD→gold) + canonical 접미어 제거형
-    (gold_grade→gold)까지 모아, '골드'·'GOLD'·'gold' 어느 표기로 와도 잡히게 한다(공백 제거·casefold)."""
+    각 항목: canonical/rank. rank 가 없으면 파일 등장 순서(낮음→높음)를 서열로 쓴다.
+
+    한때 '골드 등급 이상' 같은 서열 확장(임계 비교)의 입력이었고 그래서 표면형 매칭용 tokens 와
+    코드값 value 를 함께 실어 날랐다. 그 확장 경로(range_aliases.grade_groups + 등급 임계 파서)는
+    삭제됐고 지금 유일한 소비자는 api.py `_load_grade_lifecycle_canonicals()` 로, canonical 집합만
+    읽는다 — 그래서 tokens/value 는 아무도 읽지 않는 죽은 필드라 함께 지웠다.
+    **서열 확장을 되살린다면** 표면형 매칭(공백 제거·casefold 로 '골드'/'GOLD'/'gold' 흡수)을 여기서
+    다시 만들어야 한다: synonyms + value 의 코드 접미어(MEM_GRADE_CD.GOLD→gold) + canonical 의
+    `_grade` 접미어 제거형. 원재료는 member_target_filters.json eq_filters(grade) 에 그대로 남아 있다."""
     raw = _MEMBER_TARGET_FILTERS.get("eq_filters")
     if not isinstance(raw, list):
         raw = _DEFAULT_MEMBER_TARGET_FILTERS["eq_filters"]
@@ -5562,11 +5636,7 @@ def _grade_threshold_registry() -> list[dict[str, Any]]:
         rank = entry.get("rank")
         if not isinstance(rank, int):
             rank = idx  # 파일 등장 순서 폴백(리스트가 이미 낮음→높음)
-        tokens = {syn.replace(" ", "").casefold() for syn in entry.get("synonyms", []) if isinstance(syn, str) and syn}
-        tokens.add(value.split(".")[-1].casefold())  # 코드값 영문 토큰(GOLD/VIP/SILVER…)
-        tokens.add(re.sub(r"_grade$", "", canonical).casefold())  # canonical 접미어 제거형(gold 등)
-        tokens = {token for token in tokens if token}
-        grades.append({"canonical": canonical, "value": value, "rank": rank, "tokens": tokens})
+        grades.append({"canonical": canonical, "rank": rank})
     grades.sort(key=lambda grade: grade["rank"])
     return grades
 
@@ -7916,7 +7986,6 @@ def _sql_semantic_verify_system_prompt() -> str:
         (str(value) for _c, (cat, _col, value) in MEMBER_EQ_FILTERS.items() if cat == "gender"), "GENDER_CD.FEMALE"
     )
     grade_column = _member_grade_column().split(".")[-1]
-    sido_column, _sigungu = _member_region_short_columns()
     login_column = _short_column("recent_login_target", "LAST_LOGIN_DATE")
     signup_column = _short_column("signup_target", "REG_DT")
     birthday_column = _short_column("birthday_target", "BIRTHDAY")
@@ -7949,12 +8018,15 @@ def _sql_semantic_verify_system_prompt() -> str:
         "'요약해서 보여줘', 캠페인·타겟리스트 생성 요청 등은 결과 표현/후속 처리이지 오디언스 조건이 아니다. "
         "이 SQL 은 대상 회원 집합만 뽑으므로 그런 출력 컬럼이 SELECT 에 없어도 dropped 가 아니다"
         "(단, 같은 지표가 '~이상/이하' 임계 조건으로 쓰였다면 그건 필터이므로 반드시 검사한다).\n"
-        "**값 변환·확장의 '완전성'은 절대 판정하지 말라**: 자연어 값은 시스템이 코드/등급 체계/권역 매핑으로 "
-        f"변환·확장해 SQL 에 넣는다(여성→{gender_example}, 30대→AGE 30~39, 'GOLD 이상'→등급 IN 목록, 수도권→{sido_column} IN 목록). "
-        "너는 등급 서열·권역 구성을 알지 못하므로, 어떤 값이 IN 목록/범위에 들어갔는지의 정확성·완전성을 "
+        # 예시에서 'GOLD 이상'·'수도권' 을 뺐다(2026-08-01): 두 확장 모두 **컴파일러가 없다**.
+        # 시스템이 수행한다고 광고해 놓고 검증기에는 '판정하지 말라'고 지시하면, 미구현 기능의 미탐이
+        # 구조적으로 보장된다 — 조건이 통째로 빠진 SQL 이 faithful 로 통과한다. 실제로 하는 변환만 적는다.
+        "**값 변환·확장의 '완전성'은 절대 판정하지 말라**: 자연어 값은 시스템이 코드 체계로 "
+        f"변환해 SQL 에 넣는다(여성→{gender_example}, 30대→AGE 30~39). "
+        "너는 저장 코드값을 알지 못하므로, 어떤 값이 IN 목록/범위에 들어갔는지의 정확성·완전성을 "
         "**추측해서 판정하면 안 된다**. 원문의 각 조건이 SQL 에 **대응하는 컬럼 필터로 존재하기만 하면** 반영된 "
-        f"것으로 보라(예: 'GOLD 이상' → {grade_column} IN(...) 이 있으면 OK, 목록에 무엇이 들었든 faithful). "
-        "IN 목록·코드값·범위 확장을 dropped 나 wrong_value 로 보지 말라.\n"
+        f"것으로 보라(예: 등급 조건 → {grade_column} 필터가 있으면 OK, 목록에 무엇이 들었든 faithful). "
+        "다만 **대응하는 컬럼 필터 자체가 없으면 dropped 다** — 확장이 어렵다는 이유로 넘어가지 말라.\n"
         f"**날짜 창(window) 비교의 방향을 정확히 읽어라**: 날짜는 {date_format_label} 문자열이라 사전식 비교로 기간을 표현한다. "
         f"`{login_column} <= (기준일 - N일)` 은 마지막 접속이 N일보다 **이전** = '**N일 이상 미접속/장기 미접속/휴면**'(부정형 접속)이고, "
         f"`{login_column} >= (기준일 - N일)` 은 '**최근 N일 내 접속**'(긍정형)이다. `{signup_column} >= (기준일 - N일)` 은 '최근 N일 내 가입(신규)'이다. "
@@ -9462,9 +9534,20 @@ def _semantic_missing_field_resolution(
 ) -> dict[str, str] | None:
     """Resolve one model field against declarative, executable-plan evidence."""
 
-    return semantic_resolution.resolve_missing_field(
-        field, _semantic_resolution_evidence(query_plan)
-    )
+    evidence = _semantic_resolution_evidence(query_plan)
+    direct = semantic_resolution.resolve_missing_field(field, evidence)
+    if direct is not None:
+        return direct
+    # 별칭표(정규화 키 교집합)가 못 읽은 이름만 LLM 이 requirement 하나로 맞춘다. 그리고 그 id 를
+    # **다시 resolve_missing_field 로 되먹인다** — LLM 은 이름만 바꾸고 근거·소유권 판정은 100%
+    # 기존 코드가 한다. 그래서 근거 없는 requirement 를 '해결됨'으로 만들 수 없고, 틀린 개명의
+    # 최악은 여전히 '미해결'(오늘과 같음)이지 조용한 오답이 아니다.
+    # 패치 지점이 semantic_resolution.py 가 아닌 이유: 그 모듈은 LLM 배관이 없는 순수 모듈이고
+    # graph_rag 가 단방향으로 import 한다. 거기에 LLM 을 넣으면 그 방향이 깨진다.
+    requirement_id = _resolve_name_choice("resolution_requirement", field)
+    if not requirement_id:
+        return None
+    return semantic_resolution.resolve_missing_field(requirement_id, evidence)
 
 
 
@@ -10887,6 +10970,11 @@ def _compile_set_expression_ast(ast: dict[str, Any]) -> dict[str, Any]:
 _GRADE_DIMENSION_CANONICALS = {"member_grade", "vip등급", "grade", "tier", "등급", "회원등급", "membership grade"}
 _REGION_DIMENSION_CANONICALS = {"지역", "region", "area", "시도", "시군구", "sido", "sigungu"}
 # 등급 표면형 -> u.lifecycle 저장값(존재는 LIFECYCLE_TERMS 로 재검증). 긴 표기를 먼저 본다.
+#
+# **동결 백스톱이다 — 손으로 늘리지 않는다.** 새 등급은 member_target_filters.json 의 eq_filters 에
+# 한 줄(canonical/category=grade/column/value/rank)만 추가하면 된다: surface_choices 가 그 항목에서
+# member_grade 선택지를 파생하고 LLM 이 표면형을 읽는다(_lexicon_signal 의 백스톱 규약과 같다).
+# 낱말을 여기에 또 적으면 같은 사실을 소스와 JSON 두 곳이 소유하게 된다.
 _GRADE_SURFACE_TO_VALUE = (
     ("vvip", "vip"), ("vip", "vip"), ("브이아이피", "vip"),
     ("gold", "gold_grade"), ("골드", "gold_grade"),
@@ -10906,6 +10994,19 @@ def _set_operand_surface_terms(operand: dict[str, Any]) -> list[str]:
     return terms
 
 
+def _grade_value_from_surface(joined: str, allowed: Any) -> str | None:
+    """동결 백스톱이 침묵한 등급 표면형을 LLM 이 등급 canonical 하나로 읽는다.
+
+    ``joined`` 는 operand 의 표면형 필드(value/text/matched_text/label/canonical)를 이은 것이라
+    **원문 조각**이다 — 그래서 근거 스팬 검사가 성립한다(Tier Q). 고른 값은 호출자의 허용 집합
+    (LIFECYCLE_TERMS 또는 MEMBER_EQ_FILTERS)을 반드시 통과해야 채택된다.
+    """
+    picked = lexicon_llm.signal_choice(
+        "member_grade", joined, normalize=lambda text: text.replace(" ", "").casefold()
+    )
+    return picked if picked and picked in allowed else None
+
+
 def _compile_grade_dimension_operand(operand: dict[str, Any], canonical: Any) -> dict[str, Any] | None:
     """회원등급 디멘션 operand를 u.lifecycle 등가 조건으로 컴파일한다(비해당이면 None)."""
     if str(canonical).casefold() not in _GRADE_DIMENSION_CANONICALS:
@@ -10914,6 +11015,9 @@ def _compile_grade_dimension_operand(operand: dict[str, Any], canonical: Any) ->
     for surface, value in _GRADE_SURFACE_TO_VALUE:
         if surface in joined and value in LIFECYCLE_TERMS:
             return {"is_valid": True, "expression_sql": "u.lifecycle = " + _sql_quote(value), "issues": []}
+    picked = _grade_value_from_surface(joined, LIFECYCLE_TERMS)
+    if picked:
+        return {"is_valid": True, "expression_sql": "u.lifecycle = " + _sql_quote(picked), "issues": []}
     return {"is_valid": False, "expression_sql": "", "issues": ["어떤 회원 등급인지 지정해 주세요(예: VIP·골드·실버): " + str(canonical)]}
 
 
@@ -15532,7 +15636,12 @@ def _aggregate_metric_id_for_canonical(canonical: str) -> str | None:
         for synonym in metric.get("synonyms", []):
             if isinstance(synonym, str) and re.sub(r"\s+", "", synonym).casefold() == target:
                 return metric_id
-    return None
+    # 동결 백스톱(설정 synonyms)이 침묵한 표현만 LLM 이 지표 하나로 맞춘다. 반환값은 metric_id
+    # 뿐이고 곧바로 기존 _aggregate_in_predicate_from_plan 으로 들어가므로 **새 컴파일 경로가 없다**
+    # — LLM 이 틀려도 만들 수 있는 최악은 '다른 지표로 시도했다가 기존 검증에서 죽는 것'이다.
+    # synonyms 는 지우지 않는다: aggregate_spans.build_attribute_index 가 같은 목록을 TextSpan
+    # 오프셋과 함께 쓰는 두 번째 소비자이고, 그쪽은 스팬이 필요하다.
+    return _resolve_name_choice("aggregate_metric", canonical)
 
 
 def _aggregate_in_predicate_from_plan(metric_id: str, query_plan: dict[str, Any]) -> str | None:
@@ -15585,7 +15694,8 @@ def _resolve_union_operand_predicate(operand: dict[str, Any], query_plan: dict[s
         for surface, value in _GRADE_SURFACE_TO_VALUE:
             if surface in joined and value in MEMBER_EQ_FILTERS:
                 return _member_eq_predicate(value)
-        return None
+        picked = _grade_value_from_surface(joined, MEMBER_EQ_FILTERS)
+        return _member_eq_predicate(picked) if picked else None
     metric_id = _aggregate_metric_id_for_canonical(canonical)  # 집계 지표 → 회원키 IN 서브쿼리
     if metric_id:
         return _aggregate_in_predicate_from_plan(metric_id, query_plan)

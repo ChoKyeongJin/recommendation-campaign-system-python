@@ -32,9 +32,4 @@ ALL: frozenset[str] = frozenset({
 })
 
 
-def is_known(reason: str) -> bool:
-    """선언된 사유인가. 미선언 사유는 게이트가 못 알아보고 조용히 지나친다."""
-    return reason in ALL
-
-
-__all__ = ["ALL", "is_known"]
+__all__ = ["ALL"]

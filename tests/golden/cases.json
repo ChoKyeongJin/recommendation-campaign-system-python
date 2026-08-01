@@ -3,147 +3,189 @@
   "how_to_read": {
     "expect_slots": "이 프롬프트가 반드시 만들어야 하는 조건 슬롯. 현행 동작이 아니라 '올바른 해석'을 적는다.",
     "forbid_slots": "만들면 안 되는 슬롯(오탐 고정). 예: 날짜 토큰이 상품명으로 새는 것.",
-    "known_gap": "현행 파서가 expect 를 못 채우는 알려진 결함. 채워지면 테스트가 '마커를 지우라'고 실패한다 — 결함을 스냅샷으로 축복하지 않기 위한 장치.",
     "snapshot": "tests/golden/snapshots/<id>.json 에 별도 저장(회귀 감지용 기준선). tools/regen_ir_goldens.py 로 갱신."
   },
   "parser": "rules",
-  "env": {
-    "TARGET_OBJECT_LLM_FALLBACK": "false",
-    "SURFACE_LEXICON_LLM": "off",
-    "CONDITION_SLOT_LLM_FALLBACK": "off",
-    "LOGICAL_OR_COMPILER": "1"
-  },
-  "env_note": "parser='rules' 는 이름과 달리 오프라인이 아니다 — 상품명(llm_object_fallback)·표면 신호(surface_lexicon)·조건 슬롯/지표 선택(condition_slot)이 모두 LLM 후보를 병합한다. 골든은 네트워크·모델 출력에 의존하면 안 되므로 셋 다 끈다. 그 결과 드러나는 결함(결정론 경로에 상품명 추출기가 없음)이나 설계상 경계(에두른 지표어는 사전이 못 읽음)는 known_gap 으로 기록한다.",
-  "env_incident": "SURFACE_LEXICON_LLM/CONDITION_SLOT_LLM_FALLBACK 은 원래 이 목록에 없었다. 그래서 키가 있는 환경에서 재생성하면 cart_type_subscription 의 unpaid_only 가 모델 판정(cart_abandonment_terms)에 따라 흔들렸다 — 스냅샷이 조용히 비결정론이었다는 뜻이다. 새 LLM 계층을 추가할 때는 이 목록에 스위치를 함께 등록한다.",
   "cases": [
     {
       "id": "purchase_date_count_age_gender",
       "prompt": "2019년 3월에 3회 이상 구매한 30대 여성 고객",
-      "expect_slots": ["target_user.purchase_date", "target_user.aggregate_conditions", "target_user.age_min", "target_user.age_max", "target_user.gender"],
-      "forbid_slots": ["target_user.purchase_object"],
+      "expect_slots": [
+        "target_user.purchase_date",
+        "target_user.aggregate_conditions",
+        "target_user.age_min",
+        "target_user.age_max",
+        "target_user.gender"
+      ],
+      "forbid_slots": [
+        "target_user.purchase_object"
+      ],
       "note": "절대 달력 창 + 주문수 임계 + 회원속성 결합. 날짜 토큰이 상품명으로 새면 안 된다."
     },
     {
       "id": "birthday_this_month",
       "prompt": "이번 달 생일인 고객",
-      "expect_slots": ["target_user.birthday_target"],
+      "expect_slots": [
+        "target_user.birthday_target"
+      ],
       "note": "BIRTHDAY(YYYYMMDD)의 월일만 비교. 연도 비교는 0명 버그."
     },
     {
       "id": "signup_recent_window",
       "prompt": "최근 90일 이내 가입한 신규 회원",
-      "expect_slots": ["target_user.signup_target"],
+      "expect_slots": [
+        "target_user.signup_target"
+      ],
       "note": "REG_DT 최근 N일 창."
     },
     {
       "id": "recent_login_positive",
       "prompt": "최근 30일 동안 로그인한 고객",
-      "expect_slots": ["target_user.recent_login"],
-      "forbid_slots": ["target_user.inactivity_period"],
+      "expect_slots": [
+        "target_user.recent_login"
+      ],
+      "forbid_slots": [
+        "target_user.inactivity_period"
+      ],
       "note": "긍정형 접속 창. 미접속(부정) 트랙과 상호배제여야 한다."
     },
     {
       "id": "purchase_inactivity_window",
       "prompt": "최근 180일 미구매 고객",
-      "expect_slots": ["target_user.purchase_inactivity"],
+      "expect_slots": [
+        "target_user.purchase_inactivity"
+      ],
       "note": "창 anti-join. 평생 무주문(no_purchase)과 구분된다."
     },
     {
       "id": "no_purchase_lifetime",
       "prompt": "구매 이력이 없는 고객",
-      "expect_slots": ["target_user.behaviors"],
-      "forbid_slots": ["target_user.purchase_inactivity"],
+      "expect_slots": [
+        "target_user.behaviors"
+      ],
+      "forbid_slots": [
+        "target_user.purchase_inactivity"
+      ],
       "note": "평생 무구매. 창 조건이 붙으면 안 된다."
     },
     {
       "id": "region_city_expansion",
       "prompt": "안양에 사는 여성 고객",
-      "expect_slots": ["target_user.gender", "plan.dimension_filters"],
-      "known_gap": {
-        "missing_slots": ["plan.dimension_filters"],
-        "reason": "시 단위 '안양'이 SIGUNGU 구 단위 IN 확장으로 컴파일되지 않고 조건이 통째로 소실된다. 지역 조건이 어느 슬롯에도 남지 않아 '여성 전체'가 된다."
-      }
+      "expect_slots": [
+        "target_user.gender",
+        "plan.dimension_filters"
+      ]
     },
     {
       "id": "channel_consent_app_push",
       "prompt": "앱푸시 수신 동의한 고객",
-      "expect_slots": ["target_user.lifecycle"],
+      "expect_slots": [
+        "target_user.lifecycle"
+      ],
       "note": "수신동의 Y/N 회원속성이지 발송 채널이 아니다."
     },
     {
       "id": "cart_retention_week",
       "prompt": "장바구니에 일주일 이상 담아둔 고객",
-      "expect_slots": ["target_user.cart_retention", "target_user.behaviors"],
+      "expect_slots": [
+        "target_user.cart_retention",
+        "target_user.behaviors"
+      ],
       "note": "UPD_DT(담은 시점) 기준. INS_DT 는 적재시각 상수라 필터가 무력화된다."
     },
     {
       "id": "cart_type_subscription",
       "prompt": "정기배송 상품을 장바구니에 담은 고객",
-      "expect_slots": ["target_user.cart_type", "target_user.behaviors"],
-      "forbid_slots": ["target_user.purchase_object"],
+      "expect_slots": [
+        "target_user.cart_type",
+        "target_user.behaviors"
+      ],
+      "forbid_slots": [
+        "target_user.purchase_object"
+      ],
       "note": "CART_TYPE_CD 전용. 상품 마스터에 유형 컬럼은 없다."
     },
     {
       "id": "brand_purchase",
       "prompt": "알로루 브랜드를 구매한 고객",
-      "expect_slots": ["plan.event_expression", "plan.canonical_targeting_expression"],
+      "expect_slots": [
+        "plan.event_expression",
+        "plan.canonical_targeting_expression"
+      ],
       "note": "브랜드 범위를 Event/Canonical IR에 보존한다. 물리 필드가 미등록이면 compiler capability가 unsupported로 차단하며 조건을 조용히 버리지 않는다."
     },
     {
       "id": "metric_ranking_top_n",
       "prompt": "누적 구매금액이 높은 상위 100명",
-      "expect_slots": ["plan.member_metric_ranking", "plan.result_limit"],
+      "expect_slots": [
+        "plan.member_metric_ranking",
+        "plan.result_limit"
+      ],
       "note": "MONTHCRMINFO 조인 상위 N 랭킹."
     },
     {
       "id": "metric_ranking_vague_phrase",
       "prompt": "돈이 많아 보이는 고객 100명 뽑아줘",
-      "expect_slots": ["plan.member_metric_ranking"],
-      "known_gap": {
-        "missing_slots": ["plan.member_metric_ranking"],
-        "reason": "지표를 에둘러 말한 표현('돈이 많아 보이는')은 동의어 사전이 읽지 못한다 — 설계상 그렇다. 이 슬롯은 표면 개념 신호(member_magnitude_ranking) + 닫힌 지표 집합 선택(_resolve_member_metric_via_llm)이 채우며, 골든 환경은 LLM 을 끄므로 여기서는 비어 있는 것이 정상이다. **결정론 경로에서 이 슬롯이 채워지기 시작하면 마커를 지우기 전에 원인을 확인하라** — member_metrics.json 동의어에 '돈'류 표면어를 부어 넣은 것이라면 그건 고쳐진 것이 아니라 두더지 잡기의 재발이다(그 부류는 무한하므로 낱말로 닫을 수 없다)."
-      },
+      "expect_slots": [
+        "plan.member_metric_ranking"
+      ],
       "note": "사전이 못 닫는 어휘의 경계 사례. 계약은 tests/test_condition_slot_llm.py 의 '회원 지표 선택' 절이 소유한다."
     },
     {
       "id": "campaign_response_frequency",
       "prompt": "최근 3개월 캠페인에 2번 이상 반응한 고객",
-      "expect_slots": ["target_user.campaign_response_frequency"],
+      "expect_slots": [
+        "target_user.campaign_response_frequency"
+      ],
       "note": "반응팩트 ⨝ Z_CAMPAIGN 회원별 HAVING COUNT. 창은 CAMP_SDATE."
     },
     {
       "id": "or_of_age_with_and_threshold",
       "prompt": "20대 또는 30대이면서 5회 이상 구매한 고객",
-      "expect_slots": ["plan.event_expression", "plan.canonical_targeting_expression", "target_user.age_min", "target_user.age_max"],
-      "known_gap": {
-        "missing_slots": ["target_user.age_min", "target_user.age_max"],
-        "reason": "'20대 또는 30대' 연령 OR 이 어느 슬롯에도 남지 않고 통째로 사라진다(logical_expression 도 안 생김). 임계 조건만 살아남아 '5회 이상 구매한 고객 전체'가 된다 — 나열형 복합 프롬프트의 조건 소실이 아직 남아 있는 자리."
-      },
+      "expect_slots": [
+        "plan.event_expression",
+        "plan.canonical_targeting_expression",
+        "target_user.age_min",
+        "target_user.age_max"
+      ],
       "note": "OR 피연산자 경계 밖의 AND 임계가 OR 분기로 빨려들면 안 된다."
     },
     {
       "id": "relative_past_year_signup",
       "prompt": "1년 전에 가입한 고객",
-      "expect_slots": ["target_user.signup_target"],
+      "expect_slots": [
+        "target_user.signup_target"
+      ],
       "note": "'N년 전'은 그 단위 달력 구간."
     },
     {
       "id": "grade_with_result_limit",
       "prompt": "VIP 등급 고객 100명만",
-      "expect_slots": ["target_user.lifecycle", "plan.result_limit"],
+      "expect_slots": [
+        "target_user.lifecycle",
+        "plan.result_limit"
+      ],
       "note": "명시적 개수만 result_limit 로 잡는다."
     },
     {
       "id": "co_purchase_same_product",
       "prompt": "2019년 3월에 같은 상품을 동시 구매한 고객 수",
-      "expect_slots": ["target_user.purchase_date", "plan.condition_evaluations"],
+      "expect_slots": [
+        "target_user.purchase_date",
+        "plan.condition_evaluations"
+      ],
       "note": "주문·상품 단위 조건 판정과 고유 회원 수 최종 집계를 서로 다른 grain으로 보존한다."
     },
     {
       "id": "no_purchase_prefix",
       "prompt": "미구매 고객",
-      "expect_slots": ["target_user.behaviors"],
-      "forbid_slots": ["target_user.purchase_membership", "target_user.purchase_inactivity"],
+      "expect_slots": [
+        "target_user.behaviors"
+      ],
+      "forbid_slots": [
+        "target_user.purchase_membership",
+        "target_user.purchase_inactivity"
+      ],
       "note": "부정 접두사 '미'는 부재다. 긍정형이 '구매'+'고객'을 존재로도 읽으면 한 프롬프트가 존재와 부재를 동시에 갖는다."
     }
   ]

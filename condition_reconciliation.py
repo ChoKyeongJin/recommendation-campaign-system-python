@@ -51,10 +51,6 @@ import set_expression_engine
 # 플랜에 남는 조정 흔적(조건이 아니라 계측 — plan_decisions.NON_CONDITION_PLAN_KEYS 에 등록돼 있다).
 TRACE_KEY = "condition_reconciliation"
 
-DEFAULT_POLICY_PATH = Path(
-    os.getenv("GRAPH_RAG_CONDITION_OWNERSHIP_POLICY", "docs/data/condition_ownership_policy.json")
-)
-
 # 집합식 AST 리프 종류(피연산자). set_expression_engine 이 만드는 노드 타입과 같다.
 _LEAF_TYPES = ("operand", "unknown_operand", "age_range")
 # 소유 슬롯이 이미 술어를 걸어 '자리만 남은' 노드. 컴파일러는 항진식(1=1)으로 읽는다.
@@ -146,31 +142,6 @@ class ConditionPolicy:
         tokens = self.section("matching", "normalized_text", "ignore_tokens", default=[])
         values = [str(token) for token in tokens if isinstance(token, str) and token] if isinstance(tokens, list) else []
         return tuple(sorted(set(values), key=len, reverse=True))
-
-
-class ConditionPolicyLoader:
-    """정책 로더(경로+mtime 캐시). 정책 파일이 없으면 '조정하지 않음'(빈 정책)으로 동작한다."""
-
-    _cache: dict[tuple[str, float], ConditionPolicy] = {}
-
-    @classmethod
-    def load(cls, path: Path | str | None = None) -> ConditionPolicy:
-        policy_path = Path(path) if path is not None else DEFAULT_POLICY_PATH
-        try:
-            stamp = policy_path.stat().st_mtime
-        except OSError:
-            return ConditionPolicy(raw={})
-        key = (str(policy_path), stamp)
-        cached = cls._cache.get(key)
-        if cached is not None:
-            return cached
-        try:
-            raw = json.loads(policy_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return ConditionPolicy(raw={})
-        policy = ConditionPolicy(raw=raw if isinstance(raw, dict) else {})
-        cls._cache[key] = policy
-        return policy
 
 
 # ────────────────────────────── 후보 ──────────────────────────────
@@ -963,56 +934,6 @@ class ClarificationEvaluator:
 
 
 # ─────────────────────────── 파이프라인 진입점 ───────────────────────────
-
-
-def reconcile_plan(plan: dict[str, Any], policy: ConditionPolicy | None = None) -> dict[str, Any]:
-    """파서 결과 병합 이후·최종 clarification 판정 이전에 부르는 조정 단계.
-
-    1) 후보 수집 → 2) 소유권 판정 → 3) 소비 표시 → 4) 집합식 prune/rebuild →
-    5) 미해결 재수집 → 6) 최종 requires_clarification 계산 → 7) 흔적 기록.
-    """
-    active_policy = policy or ConditionPolicyLoader.load()
-    if not active_policy.owners:
-        return {}
-
-    for expression in plan.get("set_expressions", []) or []:
-        if isinstance(expression, dict):
-            expression["_unknown_operands_before"] = [
-                _operand_text(node)
-                for node, _polarity, _path in iter_set_operands(expression.get("set_ast"))
-                if node.get("type") == "unknown_operand"
-            ]
-
-    candidates = collect_condition_candidates(plan, active_policy)
-    ownership = ConditionOwnershipResolver(active_policy).resolve(candidates)
-    result = SetExpressionReconciler(active_policy).apply(plan, ownership)
-    verdict = ClarificationEvaluator(active_policy).evaluate(plan, ownership)
-
-    for expression in plan.get("set_expressions", []) or []:
-        if isinstance(expression, dict):
-            expression.pop("_unknown_operands_before", None)
-
-    max_entries = int(active_policy.observability.get("max_trace_entries", 50))
-    trace = {
-        "policy_version": active_policy.version,
-        "parser_diagnostics": result.parser_diagnostics,
-        "trace": result.trace[:max_entries],
-        "suppressed_diagnostics": result.suppressed[:max_entries],
-        "remaining_unresolved": verdict["remaining_unresolved"],
-        "conflicts": ownership.conflicts,
-        "issues": verdict["issues"],
-        "requires_clarification": verdict["requires_clarification"],
-        "dropped_expressions": result.dropped_expressions,
-        "rebuilt_expressions": result.rebuilt_expressions,
-    }
-    has_content = bool(
-        result.trace or ownership.conflicts or verdict["remaining_unresolved"] or result.parser_diagnostics
-    )
-    if has_content:
-        plan[TRACE_KEY] = trace
-    else:
-        plan.pop(TRACE_KEY, None)
-    return trace
 
 
 def conflict_clarifications(plan: dict[str, Any]) -> list[dict[str, Any]]:

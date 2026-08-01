@@ -16,10 +16,7 @@ concurrency:
 env:
   # 결정론 실행 고정. tests/conftest.py 가 같은 값을 세팅하지만, CI 에서는 수집 순서·모듈 로드와
   # 무관하게 러너 환경에서도 못 박는다.
-  CONDITION_SLOT_LLM_FALLBACK: "off"
   SURFACE_LEXICON_LLM: "off"
-  CONCEPTUAL_TARGETING_LLM: "off"
-  TARGET_OBJECT_LLM_FALLBACK: "false"
   # 한국어 assert 메시지·진행 로그가 러너 로그에서 깨지지 않게.
   PYTHONIOENCODING: "utf-8"
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
@@ -54,30 +51,34 @@ jobs:
 
       - name: Contract tests
         # 계약·파사드·래칫만 먼저 — 스위트 전체를 기다리지 않고 깨진 계약을 빨리 드러낸다.
+        #
+        # 부재 표지(2026-08-01): 아래 9개는 커밋 8ba50b6('규칙삭제')에서 소비 계층과 함께
+        # 삭제됐는데 이 목록에는 남아 있었다. pytest 는 없는 경로를 usage error(종료코드 4)로
+        # 처리하므로 contracts → suite → docker-publish 체인이 통째로 막혀 있었다.
+        #   test_provenance_contract / test_source_semantic_contract / test_regex_inventory_ratchet
+        #   test_registry_ownership_guards / test_logic_leaf_slot_coverage / test_remaining_condition_labels
+        #   test_order_count_behavior_parity / test_pass_idempotence / test_auto_filter_order_contract
+        # 이름을 지우기만 하면 무엇이 사라졌는지도 함께 사라지므로 여기 남긴다. 되살릴 때는
+        # 파일을 복원하고 이 주석에서 지운다.
         run: >
           python -m pytest
           tests/test_graph_rag_facade.py
           tests/test_ir_schema_contract.py
-          tests/test_provenance_contract.py
-          tests/test_source_semantic_contract.py
           tests/test_schema_catalog_targeting_ir.py
-          tests/test_regex_inventory_ratchet.py
           tests/test_known_failures_ratchet.py
           tests/test_db_swap_preflight_gate.py
-          tests/test_registry_ownership_guards.py
           tests/test_doc_claims.py
           tests/test_env_isolation.py
           tests/test_config_crossref_contract.py
-          tests/test_logic_leaf_slot_coverage.py
-          tests/test_remaining_condition_labels.py
-          tests/test_order_count_behavior_parity.py
           tests/test_plan_key_ownership_drift.py
           tests/test_api_response_contract.py
-          tests/test_pass_idempotence.py
-          tests/test_auto_filter_order_contract.py
           tests/test_physical_binding_ratchet.py
           tests/test_unsupported_reason_closure.py
           tests/test_plan_schema_registry.py
+          tests/test_surface_choice_contract.py
+          tests/test_surface_choice_offline_invariance.py
+          tests/test_scope_polarity_invariant.py
+          tests/test_name_resolver_contract.py
           -q
 
   suite:

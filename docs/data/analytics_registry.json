@@ -1,6 +1,6 @@
 {
   "description": "분석 집계 계약 레지스트리. 지표·차원·필터·모집단 스코프를 논리 선언 1개로 두고, 물리 매핑은 소스의 테이블/조인에서 계산한다(조합 행렬을 손으로 유지하지 않는다).",
-  "_surface_ownership": "집계 함수어('총액'→SUM)와 미지원 한정어('미래 예상')의 **표면어**는 이 파일이 소유하지 않는다 — 위치를 쓰지 않는 순수 불리언/최장일치 판정이라 LLM 이 읽는다(docs/data/surface_concepts.json 의 aggregate_* / unsupported_metric_qualifier). 키 없는 환경용 동결 백스톱만 analytical_intent.py 에 남고 손으로 늘리지 않는다. 아래 memberScopes 의 terms 는 다르다 — 부정형 스팬(negationTerms)과 짝을 이뤄 문장 안 위치로 판정하므로 계속 여기 있다.",
+  "_surface_ownership": "집계 함수어('총액'→SUM)와 미지원 한정어('미래 예상')의 **표면어**는 이 파일이 소유하지 않는다 — 위치를 쓰지 않는 순수 불리언/최장일치 판정이라 LLM 이 읽는다(docs/data/surface_concepts.json 의 aggregate_* / unsupported_metric_qualifier). 키 없는 환경용 동결 백스톱만 analytical_intent.py 에 남고 손으로 늘리지 않는다. 아래 memberScopes.terms 와 filters.*.terms 도 표면어 소유권은 LLM 에 있다(surface_choices 가 이 파일에서 analytics_scope / analytics_scope_negated / analytics_filter 선택지를 런타임 파생한다). 다만 낱말을 여기서 **지우지는 않는다** — 그대로 동결 백스톱으로 남아 키 없는 환경의 동작을 재현하고, LLM 은 백스톱이 침묵한 말투만 메운다. 손으로 늘리지 않는다. negationTerms 와 requiredTerms 는 표면어가 아니라 각각 극성과 공기(co-occurrence) 제약이라 계속 이 파일이 소유하고 LLM 히트에도 그대로 적용된다 — memberScopes.terms 판정은 문장 안 '위치'를 쓰지 않으므로(_match_scopes 는 _contains 불리언만 쓴다) 여기 남아야 하는 이유는 위치가 아니라 극성이다.",
   "memberScopes": [
     {
       "id": "purchase",
