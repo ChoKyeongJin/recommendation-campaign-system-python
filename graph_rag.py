@@ -3350,7 +3350,9 @@ def _llm_slot_allowed() -> dict[str, Any]:
     # 구매반응 부정(NOT EXISTS)은 negated=True 로 요청. 술어는 긍정형과 같고 부정은 컴파일러가 감싼다.
     campaign_map.setdefault("no_buy_response", {"predicate": "R.BUY_RSPN_YN = 'Y'"})
     cart_type_map: dict[str, dict[str, Any]] = {}
-    for entry in _cart_type_entries():
+    # 값 레지스트리는 direct-column 필드 레지스트리(compiler_strategies)가 단일 소유한다.
+    # missing_ok: 어휘 노출 경로는 레지스트리가 없으면 그 필드를 어휘에 안 올릴 뿐(컴파일 경로는 fail fast).
+    for entry in compiler_strategies.direct_filter_value_entries(_MEMBER_TARGET_FILTERS, "cart.type", missing_ok=True):
         shape = {
             "canonical": entry["canonical"],
             "value": entry["value"],
@@ -5242,24 +5244,6 @@ _RECENCY_MARKERS = ("최근", "요즘", "근래", "최근에")
 
 
 
-
-
-
-
-def _cart_type_entries() -> tuple[dict[str, Any], ...]:
-    """장바구니 유형(CART_TYPE_CD) 값 목록. 레지스트리(cart_targets.cart_types)가 소유한다."""
-    entries = _MEMBER_TARGET_FILTERS.get("cart_targets", {}).get("cart_types")
-    if not isinstance(entries, list):
-        return ()
-    return tuple(
-        entry
-        for entry in entries
-        if isinstance(entry, dict)
-        and isinstance(entry.get("canonical"), str)
-        and entry["canonical"]
-        and isinstance(entry.get("value"), str)
-        and entry["value"]
-    )
 
 
 
@@ -11398,19 +11382,47 @@ def _add_token(
         tokens.append(token)
 
 
+# 카트 빌더 스코프에 적용하는 direct-column 필드의 명시 목록. 새 필드(cart.channel 등)는
+# compiler_strategies.DIRECT_COLUMN_FILTER_SPECS 선언 + 설정 키 + 여기 이름 추가로 열린다
+# (전용 predicate builder 금지 — 스코프를 명시해 의도치 않은 필터 적용도 막는다).
+_CART_DIRECT_COLUMN_FIELDS = frozenset({"cart.type"})
+
+
+def _compile_cart_direct_column_filters(
+    query_plan: dict[str, Any], alias: str
+) -> compiler_strategies.CompiledDirectColumnFilters:
+    """카트 빌더 공용 direct-column 필터 컴파일(필드 스코프·설정 주입만 고정한 범용 경로 호출)."""
+    return compiler_strategies.compile_registered_direct_column_filters(
+        query_plan=query_plan,
+        field_names=_CART_DIRECT_COLUMN_FIELDS,
+        alias=alias,
+        config=_MEMBER_TARGET_FILTERS,
+    )
+
+
 def _attach_cart_dropped_conditions(
     candidate: dict[str, Any], query_plan: dict[str, Any], compiled: dict[str, Any],
     covered_behaviors: frozenset[str] = frozenset({"cart_abandoner"}),
+    direct_filters: compiler_strategies.CompiledDirectColumnFilters | None = None,
 ) -> None:
     """cart 템플릿용 부분 추출 고지(형제 빌더와 동일 규칙). 장바구니 행동(cart_abandoner)은 템플릿
     자체가 커버하므로 behaviors 가 그것뿐이면 dropped 에서 제외한다(purchase_object 처리와 같은 방식).
     빌더가 추가로 컴파일한 행동(예: 카트 집계 빌더의 no_purchase anti-join)은 covered_behaviors 로 넘겨
-    dropped 에서 함께 뺀다."""
+    dropped 에서 함께 뺀다.
+
+    direct-column 필터(cart.type 등)는 '특정 필드명이라서'가 아니라 범용 컴파일 결과를 근거로 판정한다:
+    consumed_paths(실제 컴파일된 경로)는 dropped 에서 빼고, unsupported_paths(값이 있었지만 컴파일 못 한
+    경로)는 dropped 에 더한다 — 조용한 드롭 대신 고지."""
     behaviors = set(query_plan.get("target_user", {}).get("behaviors", []))
+    consumed = direct_filters.consumed_paths if direct_filters else frozenset()
+    unsupported = list(compiled["unsupported"])
+    if direct_filters:
+        unsupported.extend(sorted(direct_filters.unsupported_paths - set(unsupported)))
     dropped = [
         path
-        for path in compiled["unsupported"]
-        if not (path == "target_user.behaviors" and behaviors <= covered_behaviors)
+        for path in unsupported
+        if path not in consumed
+        and not (path == "target_user.behaviors" and behaviors <= covered_behaviors)
     ]
     candidate["dropped_conditions"] = dropped
     candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in dropped]
@@ -11452,26 +11464,6 @@ def _cart_retention_predicates(query_plan: dict[str, Any], alias: str = "A") -> 
     return []
 
 
-def _cart_type_column() -> str:
-    """장바구니 유형 컬럼(레지스트리 cart_targets.cart_type_column 소유, 없으면 CART_TYPE_CD)."""
-    configured = _MEMBER_TARGET_FILTERS.get("cart_targets", {}).get("cart_type_column")
-    if not isinstance(configured, str) or not configured.strip():
-        configured = "C.CART_TYPE_CD"
-    return configured.split(".")[-1]
-
-
-def _cart_type_predicates(query_plan: dict[str, Any], alias: str = "A") -> list[str]:
-    """장바구니 유형(cart_type)을 CART_TYPE_CD 등가 술어로 만든다(없으면 빈 목록).
-
-    저장값은 도메인 접두어를 포함한다('CART_TYPE_CD.REGULARDELIVERY') — 값은 레지스트리가 들고 있고
-    코드가 접두어를 조립하지 않는다."""
-    cart_type = query_plan.get("target_user", {}).get("cart_type")
-    if not isinstance(cart_type, dict) or not isinstance(cart_type.get("value"), str) or not cart_type["value"]:
-        return []
-    column = (alias + "." if alias else "") + _cart_type_column()
-    return [f"{column} = {_sql_quote(cart_type['value'])}"]
-
-
 def _cart_is_unpaid_only(query_plan: dict[str, Any]) -> bool:
     """카트 오디언스를 미결제 보관(KEEP_YN='Y') 라인으로 좁혀야 하는지.
 
@@ -11487,8 +11479,18 @@ def _cart_is_unpaid_only(query_plan: dict[str, Any]) -> bool:
 
 
 def _cart_keep_predicates(query_plan: dict[str, Any], alias: str = "A") -> list[str]:
-    column = (alias + "." if alias else "") + "KEEP_YN"
-    return [f"{column} = 'Y'"] if _cart_is_unpaid_only(query_plan) else []
+    """미결제 보관 한정(KEEP_YN='Y') 정책 술어. 걸지 여부는 _cart_is_unpaid_only(도메인 게이트)가 정한다.
+
+    plan 경로에서 값을 읽는 direct-column 필드(cart.type 등 — compiler_strategies 레지스트리)와 달리
+    값이 정책 상수라 필드 레지스트리 대상이 아니다. 컬럼/값은 cart_targets.active_condition 레지스트리
+    소유(_cart_absence_predicate 와 동일 원천), 렌더는 범용 렌더러를 공유한다."""
+    if not _cart_is_unpaid_only(query_plan):
+        return []
+    active = _cart_targets_registry().get("active_condition")
+    active = active if isinstance(active, dict) else {}
+    column = str(active.get("column") or "C.KEEP_YN").split(".")[-1]
+    value = str(active.get("value") or "Y")
+    return [compiler_strategies.render_direct_column_predicate(column=column, operator="eq", values=(value,), alias=alias)]
 
 
 def _cart_segment_label(query_plan: dict[str, Any]) -> str:
@@ -11579,10 +11581,11 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
         in_list = ", ".join(_sql_quote(code) for code in brand_filter["codes"])
         # 실주문 부재(no_purchase)가 명시 슬롯으로 오면 형제 분기와 동일하게 anti-join 을 AND 결합한다.
         dimension_no_purchase = "no_purchase" in set(query_plan.get("target_user", {}).get("behaviors", []))
+        direct_filters = _compile_cart_direct_column_filters(query_plan, alias="A")
         where_clauses = [
             *_cart_keep_predicates(query_plan),
             *_cart_retention_predicates(query_plan),
-            *_cart_type_predicates(query_plan),
+            *direct_filters.predicates,
             f"C.{column_short} {operator} ({in_list})",
             *([_no_purchase_anti_join_predicate()] if dimension_no_purchase else []),
             *compiled["predicates"],
@@ -11610,6 +11613,7 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
                 if dimension_no_purchase
                 else frozenset({"cart_abandoner"})
             ),
+            direct_filters=direct_filters,
         )
         # 구조화 evidence: 검증기가 SQL 문자열(코드 'A')이 아니라 이 evidence 로 브랜드 반영을 확인한다
         # (dimension 코드 치환으로 원문 값 'CJ제일제당'은 SQL 에 없으므로 문자열 검사로는 오탐).
@@ -11644,10 +11648,11 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
         # 자기모순이라 제거됐고(위 주석), 여기서는 플랜이 명시한 조건만 조용히 드롭하지 않는 것이다.
         behaviors = set(query_plan.get("target_user", {}).get("behaviors", []))
         no_purchase_requested = "no_purchase" in behaviors
+        direct_filters = _compile_cart_direct_column_filters(query_plan, alias="A")
         where_clauses = [
             *_cart_keep_predicates(query_plan),
             *_cart_retention_predicates(query_plan),
-            *_cart_type_predicates(query_plan),
+            *direct_filters.predicates,
             *([brand_cf.filter_expression] if brand_cf else []),
             *([_no_purchase_anti_join_predicate()] if no_purchase_requested else []),
             *compiled["predicates"],
@@ -11677,6 +11682,7 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
                 if no_purchase_requested
                 else frozenset({"cart_abandoner"})
             ),
+            direct_filters=direct_filters,
         )
         if brand_cf:
             candidate["applied_requirements"] = [brand_cf.to_evidence()]
@@ -15120,11 +15126,13 @@ def build_cart_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> di
     label = ",".join(label_parts)
     # 보관 기간('일주일 이상 담아둔')이 함께 오면 집계 대상 라인도 담은 시점으로 좁힌다.
     retention_filter = "".join(" AND " + predicate for predicate in _cart_retention_predicates(query_plan, alias=""))
-    # 유형('정기배송 상품 3개 이상 담은')이 함께 오면 집계 대상 라인도 그 유형으로 좁힌다. 보관 상태
-    # (KEEP_YN='Y') 한정 여부는 형제 cart 빌더와 같은 규칙을 따른다(_cart_is_unpaid_only).
+    # 유형('정기배송 상품 3개 이상 담은') 같은 direct-column 필터가 함께 오면 집계 대상 라인도 그
+    # 필터로 좁힌다(범용 컴파일 경로 — 서브쿼리 단독 테이블이라 alias 없음). 보관 상태(KEEP_YN='Y')
+    # 한정 여부는 형제 cart 빌더와 같은 규칙을 따른다(_cart_is_unpaid_only).
+    direct_filters = _compile_cart_direct_column_filters(query_plan, alias="")
     line_filters = "".join(
         " AND " + predicate
-        for predicate in (*_cart_keep_predicates(query_plan, alias=""), *_cart_type_predicates(query_plan, alias=""))
+        for predicate in (*_cart_keep_predicates(query_plan, alias=""), *direct_filters.predicates)
     )
     cart_config = _cart_targets_registry()
     cart_table = cart_config.get("table", "ODS_MALL_OMS_CART")
@@ -15163,7 +15171,9 @@ def build_cart_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> di
     # 장바구니 행동(cart_abandoner)은 서브쿼리의 KEEP_YN='Y'가, no_purchase 는 위 anti-join 이 커버하므로
     # dropped 에서 뺀다(형제 cart 빌더와 동일 규칙 + 이 빌더가 추가 컴파일한 no_purchase).
     _attach_cart_dropped_conditions(
-        candidate, query_plan, compiled, covered_behaviors=frozenset({"cart_abandoner", "no_purchase"})
+        candidate, query_plan, compiled,
+        covered_behaviors=frozenset({"cart_abandoner", "no_purchase"}),
+        direct_filters=direct_filters,
     )
     return candidate
 

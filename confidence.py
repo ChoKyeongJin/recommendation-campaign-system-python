@@ -24,6 +24,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import compiler_strategies
 import member_filters_config
 from targeting_ir import BEHAVIOR_KO, extract_target_conditions
 
@@ -272,10 +273,15 @@ def _score_condition(
                                  f"{table}.{column}(담은 시점)와 기준일 차이로 보관 기간 비교", "confirmed"))
         elif cond["key"] == "cart_type":
             # 장바구니 유형은 카트 라인의 속성이다 — 상품 마스터에는 정기배송/픽업 구분 컬럼이 없다.
-            column = (cfg.get("cart_type_column") or "C.CART_TYPE_CD").split(".")[-1]
-            schema_ok = _column_in_schema(schema_cols, table, column)
+            # 컬럼 바인딩은 direct-column 필드 레지스트리(compiler_strategies)가 단일 소유한다 —
+            # 여기서 임의 컬럼명으로 폴백하지 않고, 설정 누락이면 근거 미확인으로 처리한다.
+            try:
+                column = compiler_strategies.resolve_direct_filter_column(filters, "cart.type")
+            except compiler_strategies.DirectColumnFilterError:
+                column = None
+            schema_ok = bool(column) and _column_in_schema(schema_cols, table, column)
             evidence.append(_ev("filter_registry", "member_target_filters.json: cart_targets.cart_types",
-                                 f"{table}.{column} = {cond['value']} (코드값 확정)", "confirmed"))
+                                 f"{table}.{column or '(컬럼 바인딩 미설정)'} = {cond['value']} (코드값 확정)", "confirmed"))
         else:
             keep = cfg.get("active_condition", {})
             schema_ok = table in schema_cols

@@ -1,14 +1,13 @@
 {
-  "total": 366,
-  "tables": 143,
-  "columns": 223,
+  "total": 343,
+  "tables": 139,
+  "columns": 204,
   "per_file": {
-    "graph_rag.py": 210,
+    "graph_rag.py": 197,
     "build_table_relationships.py": 68,
     "event_compiler.py": 24,
     "condition_evaluation_ir.py": 14,
     "confidence.py": 14,
-    "product_master_resolver.py": 10,
     "join_paths.py": 7,
     "member_policy.py": 5,
     "external_conditions/mappers/administrative_region_mapper.py": 4,
