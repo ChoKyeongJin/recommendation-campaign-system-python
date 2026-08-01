@@ -173,6 +173,31 @@ def build_same_product_co_purchase_evaluation(
     return evaluation
 
 
+def apply_same_product_co_purchase_backfill(query_plan: dict[str, Any], source_query: str) -> None:
+    """'같은 상품 동시 구매 고객수'의 조건 판정 IR 결정론 생산자(규칙 계층 삭제로 소실된 배선 복원).
+
+    condition_evaluations 는 application-owned plan 필드라 LLM 이 만들 수 없고, 생산자가 없으면
+    원문 감지가 무조건 fail-close(확인 요청)로 끝난다. 카운트 출력이 확정되고 조건 절 소유 스팬이
+    유일할 때만 검증된 capability IR 을 채운다 — 그 외(리스트 출력 요청, 다중 스팬)는 fail-close 를
+    유지한다. 판정 기간은 purchase_date 슬롯의 절대창을 물려받고, 생성 IR 은 기존 검증 체인
+    (validate_evaluations → 전용 2단계 컴파일러 잠금)을 그대로 탄다."""
+    if query_plan.get(PLAN_KEY):
+        return
+    if not (
+        detects_same_product_co_purchase(source_query)
+        and requests_member_count(source_query)
+        and same_product_co_purchase_source_span(source_query) is not None
+    ):
+        return
+    target_user = query_plan.get("target_user") if isinstance(query_plan.get("target_user"), dict) else {}
+    purchase_date = target_user.get("purchase_date")
+    query_plan[PLAN_KEY] = [
+        build_same_product_co_purchase_evaluation(
+            source_query, purchase_date if isinstance(purchase_date, dict) else None
+        )
+    ]
+
+
 def _value(node: Any, *path: str) -> Any:
     current = node
     for part in path:

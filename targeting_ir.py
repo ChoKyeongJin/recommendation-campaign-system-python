@@ -224,7 +224,11 @@ def _coerce_freq(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
 
 
 def _coerce_buy_amount(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
-    """campaign_buy_amount: {operator, amount, window_days?, label?}."""
+    """campaign_buy_amount: {operator, amount, agg?, window_days?, label?}.
+
+    agg 는 회원별 귀속 금액의 집계 방식이다: 기본(미설정)은 설정 소유 SUM(전 캠페인 합계),
+    'AVG' 는 '캠페인별 평균 …'(구매반응 캠페인당 평균 금액). 합계≥N 과 캠페인당 평균≥N 은
+    다른 대상 집합이므로 이 구분을 잃으면 의미가 뒤집힌다."""
     if not isinstance(raw, dict):
         return None
     operator = _canon_operator(raw.get("operator"))
@@ -232,6 +236,9 @@ def _coerce_buy_amount(raw: Any, *, allowed: Any = None) -> dict[str, Any] | Non
     if not (operator and amount is not None):
         return None
     out: dict[str, Any] = {"operator": operator, "amount": amount, "window_days": _pos_int(raw.get("window_days"))}
+    agg = str(raw.get("agg") or "").strip().upper()
+    if agg in {"SUM", "AVG"}:
+        out["agg"] = agg
     if isinstance(raw.get("label"), str) and raw["label"]:
         out["label"] = raw["label"]
     return out
@@ -288,8 +295,16 @@ def _coerce_cart_retention(raw: Any, *, allowed: Any = None) -> dict[str, Any] |
     return out or None
 
 
-def _coerce_cart_aggregate(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
-    """cart_aggregate: {metric, operator, threshold}. metric∈allowed(카트 지표 집합)."""
+def _coerce_cart_aggregate(raw: Any, *, allowed: Any = None) -> dict[str, Any] | list[dict[str, Any]] | None:
+    """cart_aggregate: {metric, operator, threshold} 또는 그 리스트. metric∈allowed(카트 지표 집합).
+
+    한 프롬프트가 서로 다른 카트 지표 임계를 함께 걸 수 있다('종류 2개 이상이고 총금액 10만 원 이상').
+    빌더는 원래 리스트를 HAVING AND 로 합성하므로, 리스트를 단일 dict 로 뭉개면 조건 하나가 조용히
+    사라진다 — 항목별로 검증해 유효한 것만 리스트로 보존한다(단일 dict 는 기존 shape 그대로)."""
+    if isinstance(raw, list):
+        items = [_coerce_cart_aggregate(item, allowed=allowed) for item in raw]
+        valid = [item for item in items if isinstance(item, dict)]
+        return valid or None
     if not isinstance(raw, dict):
         return None
     metric = raw.get("metric")
@@ -478,6 +493,115 @@ def _coerce_ranking_dict(raw: Any, *, allowed: Any = None) -> dict[str, Any] | N
     return raw if isinstance(raw, dict) and raw else None
 
 
+def _coerce_member_metric_ranking(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
+    """member_metric_ranking: {metric_id, direction?, limit_type?, top_n?|percent}. metric_id∈allowed.
+
+    '상위 10%'(limit_type=percent)는 percent 가 (0,100) 밖이면 슬롯을 만들지 않는다 — 개수형
+    상위 100 명으로 조용히 강등되면 대상 규모가 뒤바뀌므로 미설정(fail-close)이 낫다."""
+    if not isinstance(raw, dict):
+        return None
+    metric_id = raw.get("metric_id")
+    if not (isinstance(metric_id, str) and metric_id):
+        return None
+    if isinstance(allowed, (set, frozenset, dict)) and metric_id not in allowed:
+        return None
+    out: dict[str, Any] = {"metric_id": metric_id}
+    if str(raw.get("direction") or "").strip().casefold() in ("high", "low"):
+        out["direction"] = str(raw["direction"]).strip().casefold()
+    if str(raw.get("limit_type") or "").strip().casefold() == "percent":
+        percent = raw.get("percent")
+        try:
+            percent = float(percent)
+        except (TypeError, ValueError):
+            return None
+        if not 0 < percent < 100:
+            return None
+        out["limit_type"] = "percent"
+        out["percent"] = int(percent) if percent.is_integer() else percent
+    else:
+        top_n = _pos_int(raw.get("top_n"))
+        if top_n:
+            out["top_n"] = top_n
+    if isinstance(raw.get("metric_label"), str) and raw["metric_label"].strip():
+        out["metric_label"] = raw["metric_label"].strip()
+    return out
+
+
+# 회원 프로필 지표 연산자 화이트리스트(코erce 방어용 기호 집합 — allowed 매핑이 좁히면 그 교집합).
+_PROFILE_OPERATORS = frozenset({">=", ">", "<=", "<"})
+
+
+def _coerce_profile_metric_conditions(raw: Any, *, allowed: Any = None) -> list[dict[str, Any]] | None:
+    """balance_conditions(회원 프로필 수치 지표): [{metric_id, operator, threshold}] → 물리 조건 리스트.
+
+    LLM 은 metric_id canonical 과 비교만 고르고, 컬럼/profile_source(테이블·별칭·grain_filter) 물리
+    바인딩은 allowed({metric_id: {column, label, operators?, profile_source}}) 매핑에서 결정론으로
+    채운다 — campaign_responses 와 같은 닫힌 어휘 주입 패턴(임의 물리 스키마 생성 차단)."""
+    if not isinstance(raw, list) or not isinstance(allowed, dict):
+        return None
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        metric_id = item.get("metric_id")
+        mapping = allowed.get(metric_id) if isinstance(metric_id, str) else None
+        if not (isinstance(mapping, dict) and isinstance(mapping.get("column"), str)):
+            continue
+        operator = _canon_operator(item.get("operator"))
+        threshold = _pos_number(item.get("threshold"))
+        if operator not in _PROFILE_OPERATORS or threshold is None:
+            continue
+        metric_operators = mapping.get("operators")
+        if isinstance(metric_operators, (set, frozenset, list, tuple)) and operator not in metric_operators:
+            continue
+        entry: dict[str, Any] = {
+            "metric_id": metric_id,
+            "column": mapping["column"],
+            "operator": operator,
+            "threshold": threshold,
+            "label": mapping.get("label") or metric_id,
+        }
+        if isinstance(mapping.get("profile_source"), dict):
+            entry["profile_source"] = dict(mapping["profile_source"])
+        out.append(entry)
+    return out or None
+
+
+def _coerce_profile_date_states(raw: Any, *, allowed: Any = None) -> list[dict[str, Any]] | None:
+    """profile_date_conditions(회원 프로필 날짜 상대상태): [{metric_id, state}] → 물리 조건 리스트.
+
+    state 는 지표 스펙 relative_states canonical('past'=지난/경과, 'not_due'=도래 전)이고 연산자·앵커식은
+    allowed({metric_id: {states: {state: {operator, anchor_expression}}, profile_source}}) 매핑이 결정론으로
+    채운다 — 극성(지난 ↔ 도래 전) 반전을 LLM 재량의 부등호 선택에 맡기지 않는다."""
+    if not isinstance(raw, list) or not isinstance(allowed, dict):
+        return None
+    out: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        metric_id = item.get("metric_id")
+        metric_map = allowed.get(metric_id) if isinstance(metric_id, str) else None
+        if not isinstance(metric_map, dict):
+            continue
+        states = metric_map.get("states")
+        state = item.get("state")
+        mapping = states.get(state) if isinstance(states, dict) and isinstance(state, str) else None
+        if not (isinstance(mapping, dict) and isinstance(mapping.get("operator"), str)
+                and isinstance(mapping.get("anchor_expression"), str)):
+            continue
+        entry: dict[str, Any] = {
+            "metric_id": metric_id,
+            "state": state,
+            "operator": mapping["operator"],
+            "right_expression": mapping["anchor_expression"],
+            "label": mapping.get("label") or f"{metric_id}:{state}",
+        }
+        if isinstance(metric_map.get("profile_source"), dict):
+            entry["profile_source"] = dict(metric_map["profile_source"])
+        out.append(entry)
+    return out or None
+
+
 @dataclass(frozen=True)
 class SlotShape:
     """구조화 슬롯 하나의 LLM 스키마 조각 + 닫힌 어휘 coerce(단일 소스)."""
@@ -604,8 +728,10 @@ SLOT_SHAPES: dict[str, SlotShape] = {
                      "label": _STRING_PROP}),
         _coerce_cart_retention),
     "cart_aggregate": SlotShape("cart_aggregate", "target_user",
-        _obj_schema(f"장바구니 개수/수량 임계. {{metric, operator, threshold}}. {_OP_HINT}",
-                    {"metric": _STRING_PROP, "operator": _OPERATOR_PROP, "threshold": _POS_INT_PROP}),
+        _list_schema(f"장바구니 집계 임계 리스트. 각 항목 {{metric, operator, threshold}}. {_OP_HINT}. "
+                     "서로 다른 지표 조건이 함께 오면('종류 2개 이상이고 총금액 10만 원 이상') 항목을 "
+                     "전부 나열한다(AND) — 하나로 합치거나 하나만 적지 않는다.",
+                     {"metric": _STRING_PROP, "operator": _OPERATOR_PROP, "threshold": _POS_INT_PROP}),
         _coerce_cart_aggregate, allowed_key="cart_aggregate_metrics"),
     "cart_type": SlotShape("cart_type", "target_user",
         _obj_schema("장바구니 유형. {value:<canonical>} (정기배송/픽업/일반 등 허용 canonical).",
@@ -625,8 +751,11 @@ SLOT_SHAPES: dict[str, SlotShape] = {
                      "count": _POS_INT_PROP, "window_days": _POS_INT_PROP, "label": _STRING_PROP}),
         _coerce_freq, allowed_key="campaign_frequency_events"),
     "campaign_buy_amount": SlotShape("campaign_buy_amount", "target_user",
-        _obj_schema(f"캠페인 귀속 구매금액 임계. {{operator, amount, window_days?}}. {_OP_HINT}",
+        _obj_schema(f"캠페인 귀속 구매금액 임계. {{operator, amount, agg?, window_days?}}. {_OP_HINT}. "
+                    "agg 기본(null)은 회원별 전 캠페인 합계(SUM), '캠페인별/캠페인당 평균 금액'이면 "
+                    "agg='AVG'(구매반응 캠페인당 평균) — 합계와 평균을 바꿔치지 않는다.",
                     {"operator": _OPERATOR_PROP, "amount": _NUMBER_PROP,
+                     "agg": {"type": "string", "enum": ["SUM", "AVG"]},
                      "window_days": _POS_INT_PROP, "label": _STRING_PROP}),
         _coerce_buy_amount),
     "campaign_buy_count": SlotShape("campaign_buy_count", "target_user",
@@ -675,12 +804,40 @@ SLOT_SHAPES: dict[str, SlotShape] = {
     "aggregate_conditions": SlotShape("aggregate_conditions", "target_user",
         _aggregate_condition_schema(),
         _coerce_threshold_list, allowed_key="aggregate_metrics"),
+    # 회원 프로필 수치 지표 임계('평균 구매주기 30일 이내'). LLM 은 논리 canonical(metric_id)만 고르고
+    # coerce 가 지표 스펙 레지스트리(docs/data/metrics) 주입 매핑으로 물리 balance_conditions 를 만든다 —
+    # V4 계약(모델은 물리 스키마를 만들지 않는다)을 지키면서 기존 회원 프로필 컴파일러를 재사용한다.
+    "balance_conditions": SlotShape("balance_conditions", "target_user",
+        _list_schema(f"회원 프로필 수치 지표 임계 리스트. 각 항목 {{metric_id, operator, threshold}}. {_OP_HINT}. "
+                     "metric_id 는 [Allowed Canonical Values].profile_metric_id canonical 만 사용"
+                     "(예: '회원별 평균 구매주기 30일 이내' → {metric_id:'buy_cycle', operator:'<=', threshold:30}).",
+                     {"metric_id": _STRING_PROP, "operator": _OPERATOR_PROP, "threshold": _NUMBER_PROP}),
+        _coerce_profile_metric_conditions, allowed_key="profile_metrics"),
+    # 회원 프로필 날짜의 현재일 상대상태('다음 구매예정일이 지난'). state canonical 만 LLM 이 고르고
+    # 부등호·앵커식은 지표 스펙 relative_states 매핑이 결정론으로 채운다(극성 반전 차단).
+    "profile_date_conditions": SlotShape("profile_date_conditions", "target_user",
+        _list_schema("회원 프로필 날짜의 현재일 상대상태 리스트. 각 항목 {metric_id, state}. "
+                     "metric_id:state 는 [Allowed Canonical Values].profile_date_state canonical 만 사용"
+                     "(예: '다음 구매예정일이 지난' → {metric_id:'next_purchase_due_date', state:'past'}, "
+                     "'아직 도래하지 않은' → state:'not_due').",
+                     {"metric_id": _STRING_PROP, "state": _STRING_PROP}),
+        _coerce_profile_date_states, allowed_key="profile_date_states"),
     "region_density_target": SlotShape("region_density_target", "plan",
         _obj_schema("밀집 지역 랭킹 타겟(코호트 조건으로 지역 랭킹)."),
         _coerce_ranking_dict),
     "member_metric_ranking": SlotShape("member_metric_ranking", "plan",
-        _obj_schema("회원 지표 상위 N 랭킹."),
-        _coerce_ranking_dict),
+        _obj_schema("회원 지표 랭킹 타겟('<지표> 상위 N명' 또는 '상위 N%'). "
+                    "metric_id 는 [Allowed Canonical Values].member_metric_id canonical 만 사용"
+                    "(누적/총 구매금액=total_buy_amt, 누적 구매건수=total_buy_cnt, 평균 구매금액=mean_buy_amt, "
+                    "최대 구매금액=max_buy_amt, 누적 구매수량=total_buy_qty). "
+                    "'상위 10%'는 {limit_type:'percent', percent:10}, '상위 100명'은 {limit_type:'count', top_n:100}. "
+                    "direction 은 상위/높은=high, 하위/낮은=low.",
+                    {"metric_id": _STRING_PROP, "metric_label": _STRING_PROP,
+                     "direction": {"type": "string", "enum": ["high", "low"]},
+                     "limit_type": {"type": "string", "enum": ["count", "percent"]},
+                     "top_n": _POS_INT_PROP,
+                     "percent": _NUMBER_PROP}),
+        _coerce_member_metric_ranking, allowed_key="member_metrics"),
     "purchase_count_ranking": SlotShape("purchase_count_ranking", "plan",
         _obj_schema("기간 내 구매 상위 N 랭킹."),
         _coerce_ranking_dict),
@@ -801,6 +958,16 @@ def _extract_cart_absence(plan: dict[str, Any], _behaviors: frozenset[str]) -> l
 def _extract_aggregate_conditions(plan: dict[str, Any], _behaviors: frozenset[str]) -> list[dict[str, Any]]:
     conditions = _tu(plan).get("aggregate_conditions")
     return [{"conditions": conditions}] if isinstance(conditions, list) and conditions else []
+
+
+def _extract_cart_aggregate(plan: dict[str, Any], _behaviors: frozenset[str]) -> list[dict[str, Any]]:
+    """cart_aggregate 는 단일 dict(기존 shape) 또는 다중 조건 리스트 — 항목별 IR 노드로 추출한다."""
+    value = _tu(plan).get("cart_aggregate")
+    if isinstance(value, dict):
+        return [value]
+    if isinstance(value, list):
+        return [item for item in value if isinstance(item, dict)]
+    return []
 
 
 def _extract_member_profile_conditions(
@@ -1018,7 +1185,7 @@ CONDITION_SPECS: tuple[ConditionSpec, ...] = (
     ),
     ConditionSpec(
         kind="cart_aggregate", fact="cart", fact_join=True, signals_target=True,
-        extract=_tu_dict("cart_aggregate"),
+        extract=_extract_cart_aggregate,
     ),
     # 파생 엔터티 집합('가장 많이 팔린 상품 10개를 구매한 회원'). 피연산자가 리터럴이 아니라 다른
     # 질의의 결과이므로 전용 팩트조인 빌더가 소유한다(entity_set.py 가 술어를 컴파일).

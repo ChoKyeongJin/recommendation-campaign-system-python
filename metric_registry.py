@@ -49,6 +49,7 @@ JSON 을 쓰는 이유: 레포 전 설정이 JSON(docs/data/*.json) 이라 포�
 
 from __future__ import annotations
 
+import functools
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -67,6 +68,20 @@ OPERATORS = frozenset({"EQ", "NE", "GT", "GTE", "LT", "LTE", "BETWEEN", "WITHIN"
 
 # 파생 비율 기본 식 — 분모 0(로그인 일수 0)은 NULLIF 로 NULL 화해 나눗셈 예외를 막고 해당 회원을 자연 제외.
 DEFAULT_RATIO_FORMULA = "CAST({numerator} AS FLOAT) / NULLIF({denominator}, 0)"
+
+# 지표 스펙 연산자 토큰 → 비교 기호(수치 프로필 슬롯 coerce 화이트리스트). EQ/BETWEEN 은 슬롯 비교
+# 문법(부등호 4종) 밖이라 제외한다.
+_PROFILE_OPERATOR_SYMBOLS = {"GT": ">", "GTE": ">=", "LT": "<", "LTE": "<="}
+
+
+@functools.lru_cache(maxsize=1)
+def profile_slot_vocab() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """기본 스펙 디렉터리의 프로필 슬롯 어휘(모듈 수준 캐시). 스펙 오류는 어휘 없음(슬롯 침묵)으로
+    강등한다 — 지표 스펙 한 파일의 문제가 타겟팅 파이프라인 전체를 죽이지 않는다."""
+    try:
+        return MetricRegistry.load().profile_slot_vocab()
+    except MetricSpecError:
+        return {}, {}
 
 
 class MetricSpecError(ValueError):
@@ -300,6 +315,72 @@ class MetricRegistry:
                     hits.append((spec, alias))
                     break
         return hits
+
+    def profile_slot_vocab(self) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        """targeting.enabled 스펙에서 LLM 프로필 슬롯 닫힌 어휘를 파생한다: (수치 지표 맵, 날짜 상대상태 맵).
+
+        수치(scalar)는 balance_conditions, 날짜 relative_states 는 profile_date_conditions 로 컴파일된다.
+        물리 바인딩(profile_source: 테이블·별칭·회원키·grain_filter)은 스펙 targeting 블록에서만 채워
+        LLM 은 논리 canonical(metric_id/state)만 고른다. 회원키 컬럼을 소스 기본값으로 보충하지 않는다 —
+        물리 지식의 소유자는 스펙이고, targeting 블록이 불완전하면 그 지표는 어휘에 싣지 않는다."""
+        metrics: dict[str, dict[str, Any]] = {}
+        date_states: dict[str, dict[str, Any]] = {}
+        for spec in self.specs:
+            targeting = spec.raw.get("targeting") if isinstance(spec.raw.get("targeting"), dict) else {}
+            member_column = targeting.get("member_column")
+            base_member_column = targeting.get("base_member_column")
+            if not (
+                targeting.get("enabled")
+                and spec.source is not None
+                and isinstance(member_column, str) and member_column
+                and isinstance(base_member_column, str) and base_member_column
+            ):
+                continue
+            profile_source: dict[str, Any] = {
+                "table": spec.source.table,
+                "alias": spec.source.alias,
+                "column": spec.source.column,
+                "member_column": member_column,
+                "base_member_column": base_member_column,
+            }
+            if isinstance(targeting.get("grain_filter"), str) and targeting["grain_filter"]:
+                profile_source["grain_filter"] = targeting["grain_filter"]
+            if spec.semantic_type == "scalar":
+                operators = frozenset(
+                    _PROFILE_OPERATOR_SYMBOLS[token]
+                    for token in spec.operators_allowed
+                    if token in _PROFILE_OPERATOR_SYMBOLS
+                )
+                metrics[spec.metric_id] = {
+                    "column": spec.source.column,
+                    "label": spec.name,
+                    "operators": operators or None,
+                    "profile_source": profile_source,
+                }
+            elif spec.semantic_type == "date":
+                states: dict[str, dict[str, Any]] = {}
+                for state in targeting.get("relative_states") or []:
+                    if not isinstance(state, dict):
+                        continue
+                    name = state.get("state")
+                    operator = state.get("operator")
+                    anchor = state.get("anchor_expression")
+                    if (
+                        all(isinstance(value, str) and value for value in (name, operator, anchor))
+                        and operator in {"=", ">", ">=", "<", "<="}
+                    ):
+                        states[name] = {
+                            "operator": operator,
+                            "anchor_expression": anchor,
+                            "label": f"{spec.name}({name})",
+                        }
+                if states:
+                    date_states[spec.metric_id] = {
+                        "label": spec.name,
+                        "states": states,
+                        "profile_source": profile_source,
+                    }
+        return metrics, date_states
 
     def lint_against_catalog(self, columns_by_table: dict[str, set[str]]) -> list[str]:
         """스펙이 참조하는 컬럼이 스키마 카탈로그에 실재하는지 점검(경고 리스트). DB 이식성 목표와 연결 —

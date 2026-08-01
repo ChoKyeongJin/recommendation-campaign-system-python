@@ -206,7 +206,8 @@ _TARGET_USER_SCHEMA: dict[str, Any] = {
         "birthday_target": _nullable(_slot_schema("birthday_target")),
         "signup_target": _nullable(_slot_schema("signup_target")),
         "aggregate_conditions": _slot_schema("aggregate_conditions"),
-        "profile_date_conditions": {"type": "array", "items": {"type": "object"}},
+        "balance_conditions": _slot_schema("balance_conditions"),
+        "profile_date_conditions": _slot_schema("profile_date_conditions"),
         "campaign_responses": _slot_schema("campaign_responses"),
         "campaign_response_frequency": _nullable(_slot_schema("campaign_response_frequency")),
         "campaign_buy_amount": _nullable(_slot_schema("campaign_buy_amount")),
@@ -531,6 +532,10 @@ CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA: dict[str, Any] = {
             },
         },
         "aggregation_request": _nullable(_aggregation_request_llm_schema()),
+        # plan 컨테이너 구조화 슬롯. 랭킹 3형제 중 member_metric_ranking 만 LLM 에 노출한다 —
+        # 나머지(region_density_target/purchase_count_ranking)는 properties 없는 조각이라 strict 에서
+        # 표현 불가이고, 노출하려면 targeting_ir.SLOT_SHAPES 조각에 properties 를 먼저 선언해야 한다.
+        "member_metric_ranking": _nullable(_slot_schema("member_metric_ranking")),
         "condition_evaluations": {"type": "array", "items": {"type": "object"}},
         "external_conditions": {"type": "array", "items": _EXTERNAL_CONDITION_SCHEMA},
         "compound_dimension_filters": {"type": "array", "items": {"type": "object"}},
@@ -682,10 +687,10 @@ def _strictify(schema: Any, *, required_here: bool = True) -> Any:
     return out
 
 
-# LLM 에 노출하지 않는 target_user 하위 필드. profile_date_conditions 는 물리 alias/column/table
-# 참조라 V4 계약("모델은 물리 스키마를 만들지 않는다")과 충돌하고, LLM 후보 coercion 도 이 슬롯을
-# 병합하지 않는다 — 노출해 봐야 채워질 수 없는 빈 닫힌 객체만 남는다(집행/보강 단계 소유).
-_APPLICATION_OWNED_TARGET_USER_FIELDS = frozenset({"profile_date_conditions"})
+# LLM 에 노출하지 않는 target_user 하위 필드. profile_date_conditions 는 논리 슬롯
+# ({metric_id, state} canonical)으로 재정의되어 노출로 복귀했다 — 물리 alias/column/table 은 여전히
+# LLM 이 만들지 않고 coerce 가 지표 스펙 레지스트리 매핑에서 채운다(V4 계약 유지).
+_APPLICATION_OWNED_TARGET_USER_FIELDS = frozenset()
 
 
 def _campaign_query_plan_v4_llm_schema() -> dict[str, Any]:

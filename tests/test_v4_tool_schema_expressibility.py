@@ -89,3 +89,23 @@ def test_target_user_slot_fragments_declare_properties() -> None:
     assert not undeclared, (
         f"properties 없는 object 슬롯 조각은 strict 변환에서 빈 닫힌 객체가 된다: {undeclared}"
     )
+
+
+def test_plan_container_slots_with_properties_are_exposed() -> None:
+    """plan 컨테이너 슬롯도 properties 를 선언했다면 V4 루트에 노출돼야 한다.
+
+    P4('누적 구매금액 상위 10%') 사고의 재발 차단 — member_metric_ranking 은 컴파일러(TOP N PERCENT)
+    까지 완비돼 있었지만 V4 도구 스키마에 노출되지 않아 생산 경로 전체가 단절됐었다. 레지스트리에는
+    있는데 도구에는 없는 드리프트를 plan 컨테이너에서도 잡는다(target_user 는 위 가드가 담당)."""
+    root = set(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"])
+    expected = {
+        shape.name
+        for shape in targeting_ir.structured_slot_shapes()
+        if shape.container == "plan" and shape.schema.get("properties")
+    }
+    missing = expected - root
+    assert not missing, (
+        f"properties 를 선언한 plan 슬롯이 V4 도구 스키마에 노출되지 않았다: {sorted(missing)}\n"
+        "query_structurer/campaign_plan_v4.py 루트 properties 에 _slot_schema()로 배선하라."
+    )
+    assert "member_metric_ranking" in root, "P4 회귀: member_metric_ranking 슬롯이 V4 에서 사라졌다."

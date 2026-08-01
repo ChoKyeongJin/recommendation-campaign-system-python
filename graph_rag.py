@@ -31,6 +31,7 @@ import event_compiler
 import event_ir
 import lexicon_patterns
 import member_filters_config
+import metric_registry
 import plan_validation
 import plan_semantic_ast
 import purchase_lexicon
@@ -147,7 +148,7 @@ import semantic_resolution
 import compiler_strategies
 import condition_evaluation_ir
 import compositional_targeting
-from condition_evaluation_ir import (PLAN_KEY as CONDITION_EVALUATIONS_KEY, compile_evaluation as compile_condition_evaluation, detects_same_product_co_purchase, requests_member_count, validate_compiled_sql as validate_condition_evaluation_sql, validate_evaluations as validate_condition_evaluations)
+from condition_evaluation_ir import (PLAN_KEY as CONDITION_EVALUATIONS_KEY, apply_same_product_co_purchase_backfill, compile_evaluation as compile_condition_evaluation, detects_same_product_co_purchase, requests_member_count, validate_compiled_sql as validate_condition_evaluation_sql, validate_evaluations as validate_condition_evaluations)
 from query_structurer import (
     COUNTER_LITERAL_RE,
     COUNTER_UNIT_SEMANTICS,
@@ -3202,6 +3203,10 @@ def _allowed_canonical_values() -> dict[str, list[str]]:
         "cart_type_canonical": sorted({s["canonical"] for s in allowed["cart_types"].values()}),
         "aggregate_metric_id": sorted(allowed["aggregate_metrics"]),
         "cart_aggregate_metric": sorted(allowed["cart_aggregate_metrics"]),
+        "profile_metric_id": sorted(allowed["profile_metrics"]),
+        "profile_date_state": sorted(f"{metric}:{state}" for metric, entry in allowed["profile_date_states"].items()
+                                     for state in entry["states"]),
+        "member_metric_id": sorted(allowed["member_metrics"]),
     }
 
 
@@ -3361,6 +3366,9 @@ def _llm_slot_allowed() -> dict[str, Any]:
         }
         cart_type_map[entry["canonical"]] = shape
         cart_type_map[entry["value"]] = shape
+    # 프로필 지표(수치/날짜 상대상태) 어휘·물리 바인딩은 지표 스펙 레지스트리가 소유·파생한다.
+    profile_metrics, profile_date_states = metric_registry.profile_slot_vocab()
+    member_metrics_registry = _load_member_metrics(str(DEFAULT_MEMBER_METRICS_PATH)) or {}
     return {
         "campaign_responses": campaign_map,
         "campaign_frequency_events": set(
@@ -3369,6 +3377,11 @@ def _llm_slot_allowed() -> dict[str, Any]:
         "cart_types": cart_type_map,
         "cart_aggregate_metrics": set(_CART_AGGREGATE_METRIC_EXPRESSIONS),
         "aggregate_metrics": set(_aggregate_targets_config().get("metrics", {}) or {}),
+        "profile_metrics": profile_metrics,
+        "profile_date_states": profile_date_states,
+        # 회원 단위 지표 랭킹(member_metric_ranking) metric_id 닫힌 집합(member_metrics.json).
+        "member_metrics": {m["metric_id"] for m in member_metrics_registry.get("metrics", [])
+                           if isinstance(m, dict) and isinstance(m.get("metric_id"), str)},
     }
 
 
@@ -9877,6 +9890,8 @@ def build_sql_result(
     _normalize_purchase_aggregation_request(query_plan)
     _refresh_aggregation_request_validation(query_plan, schema_path)
     semantic_requirements.verify_source_requirements(query_plan)
+    # 동시구매(고객수) 조건 판정 IR 은 application-owned — 감지 fail-close 판정 전에 결정론으로 채운다.
+    apply_same_product_co_purchase_backfill(query_plan, original_query or query)
     unresolved_source_conditions = _refresh_unresolved_source_conditions(
         original_query or query, query_plan
     )
@@ -15557,7 +15572,11 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
         if buy_count is not None:
             buy_having.append(f"COUNT(DISTINCT {key_expr}) {buy_count['operator']} {buy_count['count']}")
         if buy is not None:
-            buy_having.append(f"{buy_amount_agg}({buy_amount_column}) {buy['operator']} {_format_threshold(buy['amount'])}")
+            # '캠페인별 평균'(agg=AVG)은 구매반응 캠페인당 평균 귀속 금액 — 캠페인당 팩트가 여러 행일
+            # 수 있어 AVG(행)이 아니라 합계/캠페인 수로 계산한다(* 1.0 은 정수 나눗셈 방지). 기본은 설정 SUM.
+            buy_expr = (f"SUM({buy_amount_column}) * 1.0 / COUNT(DISTINCT {key_expr})"
+                        if buy.get("agg") == "AVG" else f"{buy_amount_agg}({buy_amount_column})")
+            buy_having.append(f"{buy_expr} {buy['operator']} {_format_threshold(buy['amount'])}")
         buy_days = [
             condition.get("window_days") for condition in (buy, buy_count)
             if condition and isinstance(condition.get("window_days"), int) and condition.get("window_days") > 0
