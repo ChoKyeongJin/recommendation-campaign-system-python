@@ -1,9 +1,9 @@
 {
   "description": "모듈 줄 수 상한(하향 전용 래칫). 올리려면 커밋 메시지에 사유가 필요하다. 자동 재생성 도구는 일부러 두지 않았다 — 손으로 고치는 마찰이 목적이다.",
   "recorded_at": "2026-08-01",
-  "reason": "규칙 기반 해석 계층 철거 후 재기록(graph_rag.py 26,336 → 16,923) + 여유 200. 2026-08-01 슬롯 커버리지 gap 수리(+17): 프로필 지표 어휘 파생은 metric_registry, 동시구매 IR 백필은 condition_evaluation_ir 로 뺐고, graph_rag 에는 허용 어휘 맵·캠페인 AVG 분기·백필 호출 등 얇은 배선만 남김.",
+  "reason": "규칙 기반 해석 계층 철거 후 재기록(graph_rag.py 26,336 → 16,923) + 여유 200. 2026-08-01 슬롯 커버리지 gap 수리(+17): 프로필 지표 어휘 파생은 metric_registry, 동시구매 IR 백필은 condition_evaluation_ir 로 뺐고, graph_rag 에는 허용 어휘 맵·캠페인 AVG 분기·백필 호출 등 얇은 배선만 남김. 2026-08-01 구조화 실패 수리(+28): 소유권 sweep 은 condition_evaluation_ir, 행동 강등은 behavior_demotion, 리터럴 감사는 semantic_requirements 로 뺐고 graph_rag 에는 게이트 앞 백필·강등·감사 호출과 응답 키 등 얇은 배선만 추가.",
   "max_lines": {
-    "graph_rag.py": 17140,
+    "graph_rag.py": 17185,
     "rag/attribute_tokens.py": 383,
     "rag/config.py": 245,
     "rag/failure_stage.py": 381,

@@ -90,10 +90,57 @@ def aggregate_metrics(path: Path | None = None) -> dict[str, dict[str, Any]]:
     return {metric_id: json.loads(spec) for metric_id, spec in _aggregate_metrics_cached(target)}
 
 
+def order_count_rule_supported(rule: Any) -> bool:
+    """주문 횟수 행동 규칙이 컴파일 가능한 완전한 선언인가.
+
+    ``_supported: false`` 선언(lapsed_buyer)이나 operator/count 도 anti_join 도 없는 불완전 규칙을
+    ``.get(..., "=")/.get(..., 1)`` 폴백으로 조용히 '첫 구매'로 컴파일하던 잠복 결함의 차단 술어다.
+    빌더는 이 판정이 거짓인 행동을 선택하지 않는다(fail-close — 미지원 행동은 부분추출 고지로 남는다).
+    """
+    if not isinstance(rule, dict) or rule.get("_supported") is False:
+        return False
+    if rule.get("anti_join") is True:
+        return True
+    return isinstance(rule.get("operator"), str) and isinstance(rule.get("count"), int)
+
+
+def behavior_aggregate_equivalents(path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """집계 지표와 등가인 행동 선언(behavior → {metric_id, operator, count}).
+
+    설정의 ``behaviors.*.metric_id`` 가 단일 소스다(코드에 behavior→metric 매핑을 박으면 이중 소유
+    재발). anti_join(부재 조건)·미지원(_supported:false)·불완전 규칙은 등가가 아니다 — 부재 조건을
+    집계 임계값으로 오인해 강등하면 극성이 반전되므로 여기서부터 제외한다.
+    """
+    section = _load(path).get("order_count_targets") or {}
+    behaviors = section.get("behaviors") if isinstance(section, dict) else None
+    if not isinstance(behaviors, dict):
+        return {}
+    equivalents: dict[str, dict[str, Any]] = {}
+    for behavior, rule in behaviors.items():
+        if not order_count_rule_supported(rule) or rule.get("anti_join") is True:
+            continue
+        metric_id = rule.get("metric_id")
+        if isinstance(metric_id, str) and metric_id:
+            equivalents[behavior] = {
+                "metric_id": metric_id,
+                "operator": rule["operator"],
+                "count": rule["count"],
+            }
+    return equivalents
+
+
 def clear_cache() -> None:
     """설정 파일을 바꿔 끼우는 테스트용."""
     _behaviors_cached.cache_clear()
     _aggregate_metrics_cached.cache_clear()
 
 
-__all__ = ["DEFAULT_PATH", "aggregate_metrics", "behavior_spec", "clear_cache", "order_count_behaviors"]
+__all__ = [
+    "DEFAULT_PATH",
+    "aggregate_metrics",
+    "behavior_aggregate_equivalents",
+    "behavior_spec",
+    "clear_cache",
+    "order_count_behaviors",
+    "order_count_rule_supported",
+]

@@ -269,9 +269,14 @@ def _has_plan_meaning(payload: dict[str, Any]) -> bool:
             return any(has_value(child) for child in value)
         return True
 
+    # condition_evaluations 는 앱 소유 결정론 백필(동시구매 IR)이 채우는 plan 의미다 — 이것만 있는
+    # 플랜(예: '같은 상품 동시 구매 고객수')을 resolved 로 되돌릴 때 근거 없는 상태가 아니게 한다.
     return any(
         has_value(payload.get(key))
-        for key in ("target_user", "exclude", "campaign_constraints", "aggregation_request", "set_expressions")
+        for key in (
+            "target_user", "exclude", "campaign_constraints", "aggregation_request",
+            "set_expressions", "condition_evaluations",
+        )
     )
 
 

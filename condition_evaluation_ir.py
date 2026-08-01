@@ -198,6 +198,172 @@ def apply_same_product_co_purchase_backfill(query_plan: dict[str, Any], source_q
     ]
 
 
+# semantic_ir 게이트가 결정론 소유를 인정할 missing_fields 어휘(축별). LLM 의 missing_fields 는
+# 자유 문자열이라(닫힌 스키마에 enum 없음) 정규화 비교로 잡는다. 상품 축은 '같은 상품'이 특정
+# 상품명이 아니라 관계 조건임을 capability 가 보증한다. 기간 축은 **IR 이 판정창을 실제로
+# 물려받았을 때만** 소유한다 — time_range 없는 IR 에서 기간 결핍을 걷으면 '기간이 언급됐으나
+# 파싱 실패'(진짜 결핍)와 '기간 미언급'(제한 없음)을 구분하지 못해 조용한 lifetime 오답이 된다.
+# 브랜드/카테고리 등 다른 축은 이 capability 소유가 아니다 — 넓히면 진짜 결핍을 삼킨다(fail-close).
+_OWNED_PRODUCT_FIELD_TOKENS = frozenset({
+    "condition_evaluations",
+    "purchase_object", "purchase_objects", "purchase_product", "product", "product_name", "상품",
+})
+_OWNED_PERIOD_FIELD_TOKENS = frozenset({
+    "purchase_date", "purchase_dates", "purchase_period", "purchase_window",
+    "order_date", "order_period", "구매기간", "구매일",
+})
+
+_MISSING_FIELD_NORMALIZE_RE = re.compile(r"[^0-9a-z가-힣]+")
+# 동시구매 어구 밖의 다른 구매 절/엔터티 표지 — 있으면 이 플랜의 결핍이 다른 절 소유일 수 있어
+# sweep 전체를 포기한다(fail-close). 표지 낱말은 부분 문자열 검색이라 '상품명/브랜드명'도 잡힌다.
+_OUTSIDE_PURCHASE_RE = re.compile(_PURCHASE)
+_OUTSIDE_ENTITY_MARKERS = ("브랜드", "상품", "제품", "품목", "카테고리")
+
+
+def _normalize_missing_field(field: str) -> str:
+    lowered = _MISSING_FIELD_NORMALIZE_RE.sub("_", field.casefold()).strip("_")
+    for prefix in ("target_user_", "user_", "customer_"):
+        if lowered.startswith(prefix):
+            return lowered[len(prefix):]
+    return lowered
+
+
+def _owned_token(field: str, tokens: frozenset[str]) -> bool:
+    normalized = _normalize_missing_field(field)
+    # '구매 기간'→'구매_기간' 같은 공백 표기 변형도 흡수한다(밑줄 제거 후 재비교).
+    return normalized in tokens or normalized.replace("_", "") in {t.replace("_", "") for t in tokens}
+
+
+def _mask_spans(text: str, spans: list[tuple[int, int]]) -> str:
+    masked = list(text)
+    for start, end in spans:
+        for index in range(max(0, start), min(len(masked), end)):
+            masked[index] = " "
+    return "".join(masked)
+
+
+def scalar_count_output_contract(query_plan: dict[str, Any]) -> dict[str, Any] | None:
+    """검증 통과한 조건 판정 IR 전부가 스칼라 카운트 출력을 선언하면 그 출력 계약을 돌려준다.
+
+    배경: 출력 계약 생산자(규칙 계층)가 철거된 뒤 expected_grain 기본값이 'member' 라, '고객수'
+    질의의 정당한 COUNT 결과가 query_result_grain_mismatch 로 차단됐다(2026-08-01 실사고 —
+    semantic_ir 게이트를 열자 이 게이트가 다음 차단자였다). 출력 형태의 단일 소유자는
+    capability IR 의 final_result 다 — 거기서 파생한 계약만 결정론으로 인정하고, IR 이 하나라도
+    스칼라 카운트가 아니면 계약을 주장하지 않는다(fail-close)."""
+    evaluations = query_plan.get(PLAN_KEY)
+    if not isinstance(evaluations, list) or not evaluations or validate_evaluations(evaluations):
+        return None
+    for evaluation in evaluations:
+        final = evaluation.get("final_result") if isinstance(evaluation, dict) else None
+        if not (isinstance(final, dict) and final.get("unit") == "scalar"):
+            return None
+        aggregation = final.get("aggregation")
+        if not (
+            isinstance(aggregation, dict)
+            and str(aggregation.get("function", "")).startswith("count")
+        ):
+            return None
+    return {
+        "expected_grain": "analytical",
+        "requires_member_id": False,
+        "source": "condition_evaluations",
+    }
+
+
+def drop_capability_owned_missing_fields(query_plan: dict[str, Any], source_query: str) -> list[str]:
+    """검증 통과한 조건 판정 IR 이 **자기 절에 귀속되는** 결핍 보고를 걷어낸다.
+
+    LLM 은 '같은 상품'을 확정하지 못한 purchase_object 결핍으로, 판정 창을 purchase_date 요구로
+    보고하곤 한다. 동시구매 capability 는 상품 축(관계 조건 — 특정 상품명 불요)과, 판정창을
+    실제로 물려받았을 때의 기간 축을 스스로 소유하므로 그 요구는 사용자에게 물을 결핍이 아니다.
+    이 sweep 이 없으면 전용 capability 가 있어도 semantic_ir 게이트가 먼저 차단해 영원히 도달
+    불가다(2026-08-01 '같은 상품 동시 구매 고객수' 실사고).
+
+    귀속 가드(전부 통과해야 걷는다 — 하나라도 걸리면 sweep 전체 포기, fail-close):
+      1. 원문에서 동시구매 어구가 실제로 감지돼야 한다(감지 문법과 소유 문법의 공유).
+      2. 어구 **밖**에 다른 구매 동사·엔터티 표지가 있으면 걷지 않는다 — 그 결핍은 다른 절
+         ('행사 상품을 구매했고 …', '… 지난 시즌에 구매한 …')의 것일 수 있다.
+      3. 기간 축은 모든 IR 이 time_range 를 실제 보유할 때만 소유한다(위 어휘 주석 참고).
+    한계: 구매 동사·표지 없이 인접한 맨 고유명사('신라면과 같은 상품…')는 결정론으로 귀속을
+    가릴 수 없어 남는 잔여 위험이다 — 그 판정은 9단계 LLM 의미검증이 담당한다.
+
+    같은 LLM 결핍 신호의 두 번째 채널(unresolved_source_conditions 의 source=llm_semantic_ir
+    행)도 같은 귀속 규칙으로 걷는다 — missing_fields 만 걷으면 그 채널이 그대로 차단해 수리가
+    무효가 된다. 걷어낸 항목은 plan_decisions 에 CLAIM 으로 기록한다(소유권 이동 감사 —
+    behavior_demotion 의 claim_slot 관례와 같은 이유: 사라진 확인 질문을 사후 추적 가능하게).
+
+    걷어낸 뒤 missing_fields 가 비고 unsupported_operations 도 없으면 status 를 resolved 로
+    되돌린다 — needs_clarification 에 빈 missing_fields 를 남기면 validate_semantic_ir 의 닫힌
+    스키마가 internal_invalid 로 판정한다. 소유 주장은 IR 이 검증을 통과할 때만 한다.
+    반환: 걷어낸 missing_fields 필드명(진단용)."""
+    import plan_decisions
+
+    semantic_ir = query_plan.get("semantic_ir")
+    if not isinstance(semantic_ir, dict) or semantic_ir.get("status") != "needs_clarification":
+        return []
+    evaluations = query_plan.get(PLAN_KEY)
+    if not isinstance(evaluations, list) or not evaluations or validate_evaluations(evaluations):
+        return []
+    matches = _same_product_co_purchase_matches(source_query or "")
+    if not matches:
+        return []
+    outside = _mask_spans(source_query, [(m.start(), m.end()) for m in matches])
+    if _OUTSIDE_PURCHASE_RE.search(outside) or any(marker in outside for marker in _OUTSIDE_ENTITY_MARKERS):
+        return []
+    period_owned = all(
+        isinstance(evaluation, dict)
+        and isinstance(_value(evaluation, "evaluation_scope", "time_range"), dict)
+        for evaluation in evaluations
+    )
+
+    def owned(field: str) -> bool:
+        if _owned_token(field, _OWNED_PRODUCT_FIELD_TOKENS):
+            return True
+        return period_owned and _owned_token(field, _OWNED_PERIOD_FIELD_TOKENS)
+
+    matched_texts = [source_query[m.start():m.end()] for m in matches]
+
+    dropped: list[str] = []
+    missing = semantic_ir.get("missing_fields")
+    if isinstance(missing, list) and missing:
+        dropped = [field for field in missing if isinstance(field, str) and owned(field)]
+        if dropped:
+            semantic_ir["missing_fields"] = [field for field in missing if field not in dropped]
+            if not semantic_ir["missing_fields"] and not semantic_ir.get("unsupported_operations"):
+                semantic_ir["status"] = "resolved"
+
+    unresolved = query_plan.get("unresolved_source_conditions")
+    dropped_rows: list[str] = []
+    if isinstance(unresolved, list) and unresolved:
+        kept_rows = []
+        for row in unresolved:
+            if isinstance(row, dict) and row.get("source") == "llm_semantic_ir":
+                path_leaf = str(row.get("path") or "").rpartition(".")[2]
+                condition_text = str(row.get("condition") or "")
+                row_owned = (bool(path_leaf) and owned(path_leaf)) or any(
+                    text and (text in condition_text or condition_text in text)
+                    for text in matched_texts
+                )
+                if row_owned:
+                    dropped_rows.append(condition_text or path_leaf)
+                    continue
+            kept_rows.append(row)
+        if dropped_rows:
+            query_plan["unresolved_source_conditions"] = kept_rows
+
+    for label in [*dropped, *dropped_rows]:
+        plan_decisions.record(
+            query_plan,
+            filter_name=f"condition_evaluations:{SAME_PRODUCT_CAPABILITY}",
+            action=plan_decisions.CLAIM,
+            slot=f"semantic_ir.missing_fields:{label}",
+            reason="capability 소유 결핍 회수(상품=관계 조건, 기간=IR 판정창 보유)",
+            value=label,
+            evidence=matched_texts[0] if matched_texts else None,
+        )
+    return dropped
+
+
 def _value(node: Any, *path: str) -> Any:
     current = node
     for part in path:

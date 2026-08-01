@@ -146,9 +146,10 @@ import lexicon_llm
 import semantic_requirements
 import semantic_resolution
 import compiler_strategies
+import behavior_demotion
 import condition_evaluation_ir
 import compositional_targeting
-from condition_evaluation_ir import (PLAN_KEY as CONDITION_EVALUATIONS_KEY, apply_same_product_co_purchase_backfill, compile_evaluation as compile_condition_evaluation, detects_same_product_co_purchase, requests_member_count, validate_compiled_sql as validate_condition_evaluation_sql, validate_evaluations as validate_condition_evaluations)
+from condition_evaluation_ir import (PLAN_KEY as CONDITION_EVALUATIONS_KEY, apply_same_product_co_purchase_backfill, compile_evaluation as compile_condition_evaluation, detects_same_product_co_purchase, drop_capability_owned_missing_fields, requests_member_count, validate_compiled_sql as validate_condition_evaluation_sql, validate_evaluations as validate_condition_evaluations)
 from query_structurer import (
     COUNTER_LITERAL_RE,
     COUNTER_UNIT_SEMANTICS,
@@ -171,7 +172,7 @@ from query_structurer import (
 from query_structurer.prompt import PLANNER_STRUCTURED_QUERY_RULES
 from query_semantics import NON_ENTITY_TERMS, is_non_entity_candidate
 from data_quality import validate_metric_profile
-from member_policy import active_member_predicate, member_condition_canonicals
+from member_policy import active_member_filter, active_member_predicate, member_condition_canonicals
 
 
 def _stage_reason(func: Any) -> str:
@@ -7150,6 +7151,8 @@ def build_recommendation_api_response(
         "query_tuning": sql_result.get("query_tuning", {"findings": [], "recommended_indexes": []}),
         # ③ 결정론 드롭 경고: 원문 신호가 plan 에 안 잡힌 조건(비차단 자문 — 조용한 드롭을 시끄럽게).
         "dropped_signal_warnings": sql_result.get("dropped_signal_warnings", []),
+        # 미소비 리터럴 감사(비차단 자문): 숫자/기간 리터럴이 어떤 실행 조건에도 소비되지 않은 경우.
+        "literal_binding_advisories": sql_result.get("literal_binding_advisories", []),
     }
     if message_generation is not None:
         response.update(
@@ -9875,6 +9878,23 @@ def build_sql_result(
     relational_ir_block = _relational_ir_blocking_sql_result(query_plan)
     if relational_ir_block is not None:
         return relational_ir_block
+    # 동시구매 IR 은 application-owned — LLM 이 '같은 상품'을 미확정 결핍(purchase_object 등)으로
+    # 보고하기 전에 결정론 생산자가 채우고, capability 가 소유한 missing_fields 를 걷어낸다.
+    # 게이트보다 먼저여야 한다: 뒤(9895)에만 있으면 전용 capability 가 있어도 영원히 도달 불가다.
+    apply_same_product_co_purchase_backfill(query_plan, original_query or query)
+    drop_capability_owned_missing_fields(query_plan, original_query or query)
+    # 스칼라 카운트 IR('고객수')의 출력 계약도 capability 가 소유한다 — 계약 부재 시 기본
+    # expected_grain='member' 가 정당한 COUNT 결과를 grain 불일치로 차단하기 때문이다.
+    if not isinstance(query_plan.get("output_contract"), dict):
+        _evaluation_output_contract = condition_evaluation_ir.scalar_count_output_contract(query_plan)
+        if _evaluation_output_contract is not None:
+            query_plan["output_contract"] = _evaluation_output_contract
+    # 조건 판정 IR 경로도 정상회원 기본 정책을 '계약'으로 기록한다 — 계약 없이 술어만 SQL 에 넣으면
+    # 의미검증기가 미요청 필터(spurious)로 오판해 차단한다(면제·검증 프롬프트 모두 계약이 근거다).
+    if query_plan.get(CONDITION_EVALUATIONS_KEY) and not isinstance(query_plan.get("member_policy"), dict):
+        _active_policy_filter = active_member_filter(original_query or query, path=DEFAULT_MEMBER_TARGET_FILTERS_PATH)
+        if _active_policy_filter is not None:
+            query_plan["member_policy"] = {"appliedPolicyFilters": [_active_policy_filter]}
     semantic_ir_block = _semantic_ir_blocking_sql_result(query_plan)
     if semantic_ir_block is not None:
         return semantic_ir_block
@@ -9889,6 +9909,9 @@ def build_sql_result(
         return _invalid_dimension_filters_sql_result(dimension_filter_errors)
     _normalize_aggregation_axis_filters(query_plan)
     _normalize_purchase_aggregation_request(query_plan)
+    # 집계 조건이 논리적으로 함의하는 잉여 행동 라벨(repeat_buyer 등)을 강등한다 — required_sql_conditions
+    # 가 플랜을 읽기 전이어야 잉여 커버리지 조건이 안 생기고, 빌더 라우팅 가로채기도 사라진다.
+    behavior_demotion.demote_aggregate_covered_behaviors(query_plan, source_text=original_query or query)
     _refresh_aggregation_request_validation(query_plan, schema_path)
     semantic_requirements.verify_source_requirements(query_plan)
     # 동시구매(고객수) 조건 판정 IR 은 application-owned — 감지 fail-close 판정 전에 결정론으로 채운다.
@@ -10431,6 +10454,12 @@ def build_sql_result(
         dropped_signal_warnings = _deterministic_dropped_conditions(original_query or query, query_plan)
     except Exception:
         dropped_signal_warnings = []
+    # 미소비 리터럴 감사(비차단 자문): 결정론 드롭 감지기가 오탐 우려로 제외한 숫자/기간 family 의
+    # 사각을 채운다. 차단으로 승격하려면 아래 invariants 인자에 넘기는 한 곳만 바꾸면 된다.
+    try:
+        literal_binding_advisories = semantic_requirements.unconsumed_literal_advisories(query_plan, original_query or query)
+    except Exception:
+        literal_binding_advisories = []
 
     # 결정론 의미 보존 불변식 게이트: LLM 게이트(_verify_sql_semantics)와 달리 SQL 이 생성되면 LLM 유무와
     # 무관하게 항상 실행된다(ran=True). 창 도메인 누수·누적↔롤링 혼입·구매 미발생 silent drop 을 결정론으로
@@ -10508,6 +10537,8 @@ def build_sql_result(
         "query_tuning": query_tuning,
         # ③ 결정론 드롭 진단: 원문 신호가 plan 에 안 잡힌 조건 목록(존재하면 SQL 출고 차단).
         "dropped_signal_warnings": dropped_signal_warnings,
+        # 미소비 리터럴 감사(비차단): 바인딩만 되고 어떤 실행 조건에도 소비되지 않은 숫자/기간 리터럴.
+        "literal_binding_advisories": literal_binding_advisories,
         "unsupported_conditions": unsupported_conditions,
         "unsupported_condition_labels": unsupported_condition_labels,
         # 명시적 미지원 표현의 사유 코드(예: average_comparison_metric_unsupported). 지원 표현이면 None.
@@ -15998,7 +16029,16 @@ def build_order_count_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[
         return candidate
 
     # 프롬프트에 잡힌 행동 중 지원되는 주문 집계 행동을 고른다(정의 순서 우선; 보통 1개).
-    selected = next((behavior for behavior in behavior_rules if behavior in behaviors), None)
+    # 컴파일 불가 선언(_supported:false)·불완전 규칙은 선택하지 않는다 — lapsed_buyer 가 operator/count
+    # 폴백('=1')으로 조용히 '첫 구매'가 되던 잠복 결함의 fail-close(미지원 행동은 부분추출 고지로 남는다).
+    selected = next(
+        (
+            behavior for behavior in behavior_rules
+            if behavior in behaviors
+            and member_filters_config.order_count_rule_supported(behavior_rules[behavior])
+        ),
+        None,
+    )
     if selected is None:
         return None
 

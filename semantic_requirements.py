@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 import lexicon_patterns
+import member_filters_config
 
 
 # 기본 경로는 **모듈 기준 절대경로**다. 상대경로면 cwd 가 저장소 밖일 때 설정을 못 읽고
@@ -277,6 +278,11 @@ class SourceRequirement:
     source: str = "rules"
     status: str = "detected"  # detected → (parsed|compiled|clarification|unsupported)
     message: str | None = None
+    # 스팬 정밀도. 기존 source 필드는 후보 출처(rules/llm)이지 정밀도 신호가 아니라서, 전문장
+    # 폴백 (0,len(query)) 과 정밀 스팬을 소비자가 구별할 수 없었다 — 이 필드가 그 구별의 단일 신호다.
+    # exact(파서 기록/표면형 일치) | evidence(LLM 증거 스팬) | literal(리터럴 바인딩) |
+    # registry(레지스트리 동의어) | whole_query(폴백).
+    span_precision: str = "whole_query"
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "base", _freeze_json(self.base))
@@ -320,6 +326,7 @@ class SourceRequirement:
             "source": self.source,
             "status": self.status,
             "message": self.message,
+            "span_precision": self.span_precision,
         }
 
 
@@ -489,13 +496,144 @@ def _value_text_candidates(value: Any) -> list[str]:
     return candidates
 
 
+_PATH_INDEX_RE = re.compile(r"\[\d+\]")
+
+
+def _unique_span(candidates: list[tuple[int, int]]) -> tuple[int, int] | None:
+    """후보 스팬이 정확히 하나일 때만 채택한다(fail-close — 복수 후보에서 임의 선택하면
+    소유권 판정이 잘못된 좌표로 오염된다. condition_evaluation_ir 의 스팬 규칙과 동일)."""
+    unique = sorted(set(candidates))
+    return unique[0] if len(unique) == 1 else None
+
+
+def _evidence_span(query: str, plan: dict[str, Any], path: str) -> tuple[int, int] | None:
+    """LLM semantic_evidence 의 슬롯 경로 일치 스팬. V4 검증기가 query[start:end]==text 를 보장하는
+    가장 신뢰도 높은 재료지만, 경로 표기가 자유 문자열이라 인덱스 유무 차이는 흡수하고
+    본문 불일치(다른 좌표계)는 버린다."""
+    entries = plan.get("semantic_evidence")
+    if not isinstance(entries, list) or not path:
+        return None
+    valid = [
+        entry for entry in entries
+        if isinstance(entry, dict)
+        and isinstance(entry.get("path"), str)
+        and isinstance(entry.get("start"), int)
+        and isinstance(entry.get("end"), int)
+        and 0 <= entry["start"] < entry["end"] <= len(query)
+    ]
+    matches = [entry for entry in valid if entry["path"] == path]
+    if not matches:
+        # 인덱스 제거 폴백은 형제 원소 오귀속 위험이 있다 — 요구 경로가 무인덱스이거나 [0]일 때만,
+        # 그리고 **무인덱스 증거**만 후보로 삼는다([1]+ 원소가 [0]의 스팬을 상속하면 안 된다).
+        if _PATH_INDEX_RE.search(path) and not path.endswith("[0]"):
+            return None
+        stripped = _PATH_INDEX_RE.sub("", path)
+        matches = [
+            entry for entry in valid
+            if not _PATH_INDEX_RE.search(entry["path"]) and entry["path"] == stripped
+        ]
+    spans = sorted({(entry["start"], entry["end"]) for entry in matches})
+    if len(spans) != 1:
+        return None
+    start, end = spans[0]
+    recorded_text = matches[0].get("text")
+    if isinstance(recorded_text, str) and recorded_text and recorded_text != query[start:end]:
+        return None
+    return start, end
+
+
+def _literal_binding_span(query: str, plan: dict[str, Any], value: Any) -> tuple[int, int] | None:
+    """리터럴 바인딩(앱 소유 결정론 추출)의 정규화값과 슬롯 값의 구조 동치로 스팬을 복원한다.
+    날짜창은 from/to 정확 일치, 수치는 대표 필드(threshold/count/...) 하나만 대조한다 —
+    한 조건 안의 여러 숫자를 전부 풀어 비교하면 우연 일치가 는다."""
+    literals = plan.get("literal_bindings")
+    if not isinstance(literals, list):
+        return None
+
+    def span_of(item: dict[str, Any]) -> tuple[int, int] | None:
+        start, end = item.get("start"), item.get("end")
+        if not (isinstance(start, int) and isinstance(end, int) and 0 <= start < end <= len(query)):
+            return None
+        # 리터럴은 다른 문자열(재작성 프롬프트 등) 기준으로 추출됐을 수 있다 — 본문이 일치할 때만
+        # 이 query 좌표계의 스팬으로 신뢰한다.
+        text = item.get("text")
+        if isinstance(text, str) and text and query[start:end] != text:
+            return None
+        return start, end
+
+    if isinstance(value, Mapping) and isinstance(value.get("from"), str) and isinstance(value.get("to"), str):
+        candidates = []
+        for item in literals:
+            if not isinstance(item, dict) or item.get("kind") != "date_window":
+                continue
+            normalized = item.get("normalized")
+            if (
+                isinstance(normalized, Mapping)
+                and normalized.get("from") == value["from"]
+                and normalized.get("to") == value["to"]
+            ):
+                span = span_of(item)
+                if span is not None:
+                    candidates.append(span)
+        return _unique_span(candidates)
+
+    primary: Any = None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        primary = value
+    elif isinstance(value, Mapping):
+        for key in ("threshold", "count", "amount", "value", "min_days", "max_days"):
+            candidate = value.get(key)
+            if isinstance(candidate, (int, float)) and not isinstance(candidate, bool):
+                primary = candidate
+                break
+    if primary is None:
+        return None
+    candidates = []
+    for item in literals:
+        if not isinstance(item, dict) or item.get("kind") not in {"number", "number_with_unit", "percentage"}:
+            continue
+        normalized = item.get("normalized")
+        norm_value = normalized.get("value") if isinstance(normalized, Mapping) else normalized
+        if (
+            isinstance(norm_value, (int, float))
+            and not isinstance(norm_value, bool)
+            and float(norm_value) == float(primary)
+        ):
+            span = span_of(item)
+            if span is not None:
+                candidates.append(span)
+    return _unique_span(candidates)
+
+
+def _registry_synonym_span(query: str, slot: str, value: Any) -> tuple[int, int] | None:
+    """canonical 값(레지스트리 어휘)의 원문 표면형을 동의어 사전으로 역탐색한다.
+    현재는 주문 횟수 행동(behaviors)만 — 레지스트리가 synonyms 를 선언하는 유일한 canonical 슬롯이다."""
+    if slot != "behaviors" or not isinstance(value, str):
+        return None
+    spec = member_filters_config.behavior_spec(value)
+    if not isinstance(spec, dict):
+        return None
+    folded = query.casefold()
+    candidates: list[tuple[int, int]] = []
+    for synonym in spec.get("synonyms") or []:
+        if not isinstance(synonym, str) or not synonym:
+            continue
+        needle = synonym.casefold()
+        start = folded.find(needle)
+        while start >= 0:
+            candidates.append((start, start + len(synonym)))
+            start = folded.find(needle, start + 1)
+    return _unique_span(candidates)
+
+
 def _requirement_span(
     query: str,
     plan: dict[str, Any],
     container: str,
     slot: str,
+    path: str,
     value: Any,
-) -> tuple[int, int, str]:
+) -> tuple[int, int, str, str]:
     recorded = _slot_span(plan, container, slot, value)
     if recorded is not None:
         start, end = recorded["start"], recorded["end"]
@@ -506,18 +644,29 @@ def _requirement_span(
             or query.startswith(recorded_source)
         )
         if same_coordinates and 0 <= start < end <= len(query):
-            return start, end, query[start:end]
+            return start, end, query[start:end], "exact"
     matched = _matched_term_span(query, plan, value)
     if matched is not None:
-        return matched[0], matched[1], query[matched[0]:matched[1]]
+        return matched[0], matched[1], query[matched[0]:matched[1]], "exact"
     folded = query.casefold()
     for candidate in _value_text_candidates(value):
         start = folded.find(candidate.casefold())
         if start >= 0:
-            return start, start + len(candidate), query[start:start + len(candidate)]
-    # 정밀 구간을 아직 제공하지 않는 필터도 요구사항을 잃지 않는다. 이 경우 원문 전체를 보수적인 근거
-    # 구간으로 둔다. source가 rules/llm인지 별도로 남으므로 소비자는 정밀 span과 구분할 수 있다.
-    return 0, len(query), query
+            return start, start + len(candidate), query[start:start + len(candidate)], "exact"
+    # 결정론 스팬 재구성 — LLM 슬롯은 위 세 경로가 전부 비어 전문장 폴백으로 떨어져 왔고, 그러면
+    # 스팬 기반 중복 판별·소유권 회수·리터럴 소비 감사가 전부 무력화된다. 후보가 유일할 때만 채택.
+    evidence = _evidence_span(query, plan, path)
+    if evidence is not None:
+        return evidence[0], evidence[1], query[evidence[0]:evidence[1]], "evidence"
+    literal = _literal_binding_span(query, plan, value)
+    if literal is not None:
+        return literal[0], literal[1], query[literal[0]:literal[1]], "literal"
+    registry = _registry_synonym_span(query, slot, value)
+    if registry is not None:
+        return registry[0], registry[1], query[registry[0]:registry[1]], "registry"
+    # 정밀 구간을 복원하지 못한 필터도 요구사항을 잃지 않는다. 이 경우 원문 전체를 보수적인 근거
+    # 구간으로 두고 span_precision="whole_query" 로 표시한다 — 소비자는 이 신호로 정밀 span 과 구분한다.
+    return 0, len(query), query, "whole_query"
 
 
 def _stable_requirement_id(
@@ -556,7 +705,7 @@ def capture_plan_source_requirements(
         item_source = source
         negative = _negative_requirement(container, slot, value)
         polarity = "negative" if negative else "positive"
-        start, end, source_text = _requirement_span(query, plan, container, slot, value)
+        start, end, source_text, precision = _requirement_span(query, plan, container, slot, path, value)
         captured.append(SourceRequirement(
             id=_stable_requirement_id(
                 path=path, polarity=polarity, source=item_source, span=(start, end), value=value
@@ -572,6 +721,7 @@ def capture_plan_source_requirements(
             polarity=polarity,
             source=item_source,
             status="captured",
+            span_precision=precision,
         ))
     return tuple(captured)
 
@@ -804,6 +954,140 @@ def unresolved_semantic_obligations(
             "semantic_kind": kind,
         })
     return unresolved
+
+
+_ADVISORY_LITERAL_KIND_LABELS = {
+    "date_window": "기간",
+    "percentage": "백분율",
+    "number_with_unit": "수량",
+    "number": "숫자",
+}
+
+
+def unconsumed_literal_advisories(plan: dict[str, Any], query: str | None = None) -> list[dict[str, Any]]:
+    """원문에서 결정론 추출된 리터럴 중 어떤 실행 의미에도 소비되지 않은 것의 비차단 진단.
+
+    배경: '최근 3개월 주문은 있었지만'의 '3', '상위 10%'의 '10%'가 literal_bindings 에 바인딩만
+    되고 어느 슬롯도 참조하지 않은 채 플랜이 흘러가는 조용한 드롭이 반복됐다(2026-08-01 실사고).
+    결정론 드롭 감지기(_deterministic_dropped_conditions)는 숫자/기간 family 를 오탐 우려로 명시
+    제외하므로, 이 감사가 그 사각을 **비차단 자문**으로 채운다. 차단이 아니다 — 여기 항목이
+    있어도 SQL 은 나간다. 차단으로 승격하려면 graph_rag 의 semantic invariants 인자에 넘기는
+    한 곳만 바꾸면 되도록 게이트 지점을 하나로 모아 둔다.
+
+    소비 판정 3축(하나라도 성립하면 소비됨):
+      1. semantic_ir.operations[].bindings[].literal_id 명시 참조
+      2. 실행 슬롯 값과의 구조 동치(날짜창 from/to 일치, 숫자 정규화값 일치)
+      3. 정밀 스팬(span_precision != whole_query)을 가진 source requirement 가 리터럴 스팬을 포함
+    comparison_operator 리터럴은 항상 제외한다 — 연산자는 값 리터럴에 붙는 부속이라 단독 소비
+    개념이 없고, 전부 잡으면 잡음만 는다.
+    """
+    literals = plan.get("literal_bindings")
+    if not isinstance(literals, list) or not literals:
+        return []
+
+    consumed_ids: set[str] = set()
+    semantic_ir = plan.get("semantic_ir")
+    if isinstance(semantic_ir, Mapping):
+        for operation in semantic_ir.get("operations") or []:
+            if not isinstance(operation, Mapping):
+                continue
+            for binding in operation.get("bindings") or []:
+                if isinstance(binding, Mapping) and isinstance(binding.get("literal_id"), str):
+                    consumed_ids.add(binding["literal_id"])
+
+    numbers: set[float] = set()
+    windows: set[tuple[str, str]] = set()
+
+    def collect(node: Any) -> None:
+        if node is None or isinstance(node, bool) or isinstance(node, str):
+            return
+        if isinstance(node, (int, float)):
+            numbers.add(float(node))
+            return
+        if isinstance(node, Mapping):
+            frm, to = node.get("from"), node.get("to")
+            if isinstance(frm, str) and isinstance(to, str):
+                windows.add((frm, to))
+            for child in node.values():
+                collect(child)
+        elif isinstance(node, (list, tuple)):
+            for child in node:
+                collect(child)
+
+    for container in ("target_user", "exclude", "campaign_constraints"):
+        collect(plan.get(container))
+    for slot in _PLAN_REQUIREMENT_SLOTS:
+        collect(plan.get(slot))
+
+    precise_spans: list[tuple[int, int]] = []
+    for requirement in plan.get(SOURCE_REQUIREMENTS_KEY) or []:
+        if not isinstance(requirement, Mapping):
+            continue
+        if requirement.get("span_precision") in (None, "whole_query"):
+            continue
+        span = requirement.get("source_span")
+        if isinstance(span, Mapping) and isinstance(span.get("start"), int) and isinstance(span.get("end"), int):
+            precise_spans.append((span["start"], span["end"]))
+
+    advisories: list[dict[str, Any]] = []
+    for index, item in enumerate(literals):
+        if not isinstance(item, Mapping):
+            continue
+        kind = item.get("kind")
+        if kind == "comparison_operator":
+            continue
+        literal_id = item.get("id")
+        if isinstance(literal_id, str) and literal_id in consumed_ids:
+            continue
+        normalized = item.get("normalized")
+        if kind == "date_window" and isinstance(normalized, Mapping):
+            if (normalized.get("from"), normalized.get("to")) in windows:
+                continue
+        else:
+            norm_value = normalized.get("value") if isinstance(normalized, Mapping) else normalized
+            if (
+                isinstance(norm_value, (int, float))
+                and not isinstance(norm_value, bool)
+                and float(norm_value) in numbers
+            ):
+                continue
+            # 단위 환산 소비: '6개월'의 '6'은 window_days=180 으로, '2주'는 14 로 소비된다 —
+            # 환산을 모르면 정상 소비된 흔한 프롬프트마다 오탐 자문이 붙는다(비차단이지만 잡음).
+            if (
+                query
+                and kind == "number"
+                and isinstance(norm_value, (int, float))
+                and not isinstance(norm_value, bool)
+                and isinstance(item.get("end"), int)
+                and 0 <= item["end"] <= len(query)
+            ):
+                tail = query[item["end"]:item["end"] + 2]
+                factor = next(
+                    (mult for unit, mult in (("개월", 30), ("달", 30), ("주", 7), ("년", 365), ("일", 1)) if tail.startswith(unit)),
+                    None,
+                )
+                if factor is not None and float(norm_value) * factor in numbers:
+                    continue
+        start, end = item.get("start"), item.get("end")
+        spanned = isinstance(start, int) and isinstance(end, int)
+        if spanned and any(s <= start and end <= e for s, e in precise_spans):
+            continue
+        text = item.get("text") if isinstance(item.get("text"), str) else ""
+        kind_label = _ADVISORY_LITERAL_KIND_LABELS.get(str(kind), str(kind))
+        advisories.append({
+            "id": f"lit_{literal_id or index}",
+            "path": f"literal_bindings[{index}]",
+            "literal_id": literal_id,
+            "kind": kind,
+            "label": f"{kind_label} '{text}'",
+            "source_text": text,
+            "source_span": {"start": start, "end": end} if spanned else None,
+            "normalized": json.loads(json.dumps(normalized, ensure_ascii=False, default=str)),
+            "reason": "원문에서 추출된 리터럴이 어떤 실행 조건에도 소비되지 않았습니다(조용한 드롭 후보).",
+            "status": "advisory",
+            "source": "literal_binding_audit",
+        })
+    return advisories
 
 
 def _requirements_payload(requirements: Any) -> list[dict[str, Any]]:

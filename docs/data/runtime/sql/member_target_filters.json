@@ -536,13 +536,16 @@
     "order_date_column": "ORDER_DATE",
     "date_format": "yyyyMMdd",
     "default_period_days": null,
+    "_comment_behavior_metric_id": "behaviors.*.metric_id 는 그 행동이 aggregate_targets.metrics 의 어떤 지표와 같은 물리 집계(COUNT(DISTINCT ORDER_ID) 등)인지 잇는 등가 선언이다. 같은 문장을 LLM 이 aggregate_conditions 와 behaviors 로 이중 방출했을 때, 집계 임계값이 행동 규칙을 논리적으로 함의하면(예: order_count>=5 ⊇ repeat_buyer>=2) behavior_demotion 이 잉여 행동을 강등하는 근거로만 쓴다. anti_join 행동(no_purchase)은 부재 조건이라 집계 임계값과 등가가 없다 — metric_id 를 선언하지 않는다.",
     "behaviors": {
       "first_purchase": {
+        "metric_id": "order_count",
         "operator": "=",
         "count": 1,
         "synonyms": ["첫 구매", "최초 구매", "한 번 구매"]
       },
       "repeat_buyer": {
+        "metric_id": "order_count",
         "operator": ">=",
         "count": 2,
         "synonyms": ["재구매", "반복 구매", "두 번 이상 구매"]
