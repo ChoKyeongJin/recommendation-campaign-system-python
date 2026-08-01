@@ -15,6 +15,10 @@ member_metric_ranking 슬롯이 노출되지 않아 LLM 이 도달할 수 없었
      가리키면 오탐 고정이 무의미해진다).
 
 여기서 실패하면 프로덕션 프롬프트가 아니라 CI 가 먼저 알려 준다.
+
+(플랜 A-1 이후) target_user 노출면은 SLOT_SHAPES **파생**이 됐다 — 위 3번 검사는 '손 나열이
+빠뜨린 슬롯'을 잡던 임시 결속에서 '파생이 끊기는 회귀'를 잡는 회귀망으로 역할이 바뀌었고,
+파생 자체의 계약은 아래 '노출면 파생 계약' 절이 소유한다.
 """
 
 from __future__ import annotations
@@ -160,4 +164,80 @@ def test_forbid_slots_that_exist_are_exposed() -> None:
     assert not stale, (
         f"forbid_slots 가 SLOT_SHAPES 에는 있는데 V4 에 노출되지 않은 슬롯을 가리킨다: {sorted(stale)}. "
         "노출이 끊겼다면 금지 자체가 공허하다 — 노출을 복구하거나 케이스를 갱신하라."
+    )
+
+
+# ── 노출면 파생 계약(플랜 A-1) — 손 나열 시대의 드리프트가 구조적으로 재발 불가함을 고정 ──
+
+
+def test_every_target_user_slot_shape_is_llm_exposed() -> None:
+    """파생 완전성: SLOT_SHAPES 의 모든 target_user 슬롯이 LLM 스키마에 노출된다.
+
+    노출면이 SLOT_SHAPES 파생으로 바뀌어 새 슬롯은 등록만으로 자동 편입된다 — 이 테스트는
+    파생이 끊기는 회귀(누군가 다시 손 나열로 되돌리는 것)를 잡는다."""
+    shaped = {
+        name for name, shape in targeting_ir.SLOT_SHAPES.items()
+        if shape.container == "target_user"
+    }
+    missing = shaped - _EXPOSED_TARGET_USER
+    assert not missing, (
+        f"SLOT_SHAPES target_user 슬롯이 V4 LLM 스키마에 없다: {sorted(missing)}. "
+        "campaign_plan_v4._target_user_properties 파생이 끊겼다."
+    )
+
+
+def test_exposure_order_tuple_is_frozen_history_not_second_authority() -> None:
+    """순서 튜플은 바이트 보존 장치일 뿐 두 번째 권위가 아니다 — 스테일/누락 이름 금지."""
+    from query_structurer.campaign_plan_v4 import (  # noqa: PLC0415
+        _APP_OWNED_TARGET_USER_PROPERTIES,
+        _TARGET_USER_EXPOSURE_ORDER,
+    )
+
+    shaped = {
+        name for name, shape in targeting_ir.SLOT_SHAPES.items()
+        if shape.container == "target_user"
+    }
+    stale = [
+        name for name in _TARGET_USER_EXPOSURE_ORDER
+        if name not in shaped and name not in _APP_OWNED_TARGET_USER_PROPERTIES
+    ]
+    assert not stale, f"순서 튜플에 어느 소유에도 없는 이름이 있다: {stale}"
+    dropped = [
+        name for name in _APP_OWNED_TARGET_USER_PROPERTIES
+        if name not in _TARGET_USER_EXPOSURE_ORDER
+    ]
+    assert not dropped, (
+        f"앱 소유 속성이 순서 튜플에 없어 노출이 조용히 사라진다: {dropped}"
+    )
+
+
+def test_plan_container_slots_are_exposed_or_declared_excluded() -> None:
+    """plan 컨테이너 슬롯은 '노출 ∨ 사유 있는 제외' — 새 plan 슬롯의 조용한 미노출 금지."""
+    from query_structurer.campaign_plan_v4 import (  # noqa: PLC0415
+        _PLAN_SLOT_EXPOSURE_EXCLUSIONS,
+    )
+
+    plan_slots = {
+        name for name, shape in targeting_ir.SLOT_SHAPES.items()
+        if shape.container == "plan"
+    }
+    unhandled = {
+        name for name in plan_slots
+        if name not in _EXPOSED_PLAN_ROOT and name not in _PLAN_SLOT_EXPOSURE_EXCLUSIONS
+    }
+    assert not unhandled, (
+        f"plan 슬롯이 노출도 제외 선언도 없다: {sorted(unhandled)}. "
+        "V4 에 노출하거나 _PLAN_SLOT_EXPOSURE_EXCLUSIONS 에 사유와 함께 등재하라."
+    )
+    empty_reason = [
+        name for name, reason in _PLAN_SLOT_EXPOSURE_EXCLUSIONS.items()
+        if not str(reason).strip()
+    ]
+    assert not empty_reason, f"제외 선언에 사유가 비어 있다: {empty_reason}"
+    stale = [
+        name for name in _PLAN_SLOT_EXPOSURE_EXCLUSIONS
+        if name in _EXPOSED_PLAN_ROOT or name not in plan_slots
+    ]
+    assert not stale, (
+        f"제외 선언이 스테일이다(이미 노출됐거나 SLOT_SHAPES 에 없음): {stale}"
     )

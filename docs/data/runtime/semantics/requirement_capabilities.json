@@ -1,5 +1,5 @@
 {
-  "_comment": "공통 semantic requirement 계층의 base×qualifier capability 레지스트리. 모든 자연어 조건을 source requirement 로 기록한 뒤, base(behavior/metric/dimension/set)에 붙은 qualifier(entity/dimension/time_scope/attribute)가 그 base 에서 지원되는지 여기서 판정한다. supported=true 는 실제 실행 자산(compiler_strategy=compiler_strategies 등록됨 + join_path=join_paths 등록됨 + filter_field=schema_catalog 존재)이 있을 때만 capability_registry 정적 검증을 통과한다. supported=false 면 message 로 명시 안내(clarification/unsupported). policy.disabled=true 는 기술적으로 가능해도 정책상 막은 조합(disabled_by_policy)으로 '기술 미구현'과 구분한다. base 에 없는 조합은 _default 로 폴백한다. 상세: capability_registry.py / compiler_strategies.py / join_paths.py.",
+  "_comment": "공통 semantic requirement 계층의 base×qualifier capability 레지스트리. 모든 자연어 조건을 source requirement 로 기록한 뒤, base 에 붙은 qualifier 가 그 base 에서 지원되는지 여기서 판정한다. 항목 키는 supported(+미지원 시 message)뿐이다 — compiler_strategy/join_path/filter_field 키와 정적 검증기(capability_registry.py)는 ac924ff 정리에서 삭제됐다(실행자산 대조 validator 재작성은 plans_canonical_ir_capability.md Phase A-3). supported=false 면 message 로 명시 안내(clarification/unsupported). base 에 없는 조합은 _default 로 폴백한다. 로더·판정: semantic_requirements.py RequirementRegistry.",
   "capabilities": {
     "cart_retention": {
       "label": "장바구니 조건",

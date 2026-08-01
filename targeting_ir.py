@@ -1333,6 +1333,50 @@ _SPEC_KINDS = frozenset(spec.kind for spec in CONDITION_SPECS)
 assert set(SLOT_SHAPES) <= _SPEC_KINDS, f"SLOT_SHAPES 에 미등록 kind: {set(SLOT_SHAPES) - _SPEC_KINDS}"
 
 
+# 슬롯별 사용자 대면 한국어 라벨(facet). '남는 조건' 안내·미지원 안내·지원 조건 표가 전부 여기서
+# 파생된다 — graph_rag 등 소비자는 이 dict 를 복제하지 않는다(과거 42개 손 목록에서 6종이 빠져
+# 안내가 침묵 삭제되던 사고의 재발 방지). 새 슬롯 = SLOT_SHAPES 한 항목 + 라벨 한 줄이며,
+# 라벨을 빠뜨리면 아래 assert 가 임포트 시점에 잡는다.
+SLOT_KO_LABELS: dict[str, str] = {
+    "signup_target": "가입일 조건",
+    "recent_login": "최근 로그인 기간 조건",
+    "inactivity_period": "미접속 기간 조건",
+    "purchase_inactivity": "미구매 기간 조건",
+    "cart_retention": "장바구니 보관 기간 조건",
+    "cart_aggregate": "장바구니 집계 조건(담은 수량/금액)",
+    "cart_type": "장바구니 유형 조건",
+    "birthday_target": "생일 조건",
+    "campaign_responses": "캠페인 반응 조건",
+    "campaign_response_frequency": "캠페인 반응 횟수 조건",
+    "campaign_buy_amount": "캠페인 구매 금액 조건",
+    "campaign_buy_count": "캠페인 구매 건수 조건",
+    "cell_rate_target": "캠페인 셀 반응률 조건",
+    "purchase_date": "구매일 조건",
+    "metric_trend": "기간 대비 지표 증감 조건",
+    "purchase_object": "구매 상품 조건",
+    "cart_absence": "장바구니 미보유 조건",
+    "aggregate_conditions": "집계 조건(구매 금액/횟수 임계값)",
+    "balance_conditions": "잔액 조건",
+    "profile_date_conditions": "회원 프로필 날짜 조건",
+    "region_density_target": "지역 밀집 랭킹 조건",
+    "member_metric_ranking": "회원 지표 랭킹 조건",
+    "purchase_count_ranking": "구매 건수 랭킹 조건",
+}
+assert set(SLOT_KO_LABELS) == set(SLOT_SHAPES), (
+    f"SLOT_KO_LABELS ↔ SLOT_SHAPES 불일치: 라벨 없는 슬롯 {set(SLOT_SHAPES) - set(SLOT_KO_LABELS)}, "
+    f"스테일 라벨 {set(SLOT_KO_LABELS) - set(SLOT_SHAPES)}"
+)
+
+# 조건부 지원 각주(facet). '지원된다'는 슬롯이라도 전 조합이 컴파일되는 것은 아니다 — 지원 조건
+# 표(자동 생성)와 안내 문구가 이 각주를 함께 노출한다. 키는 SLOT_SHAPES 슬롯 이름만 허용.
+SLOT_SUPPORT_NOTES: dict[str, str] = {
+    "metric_trend": "수치 집계 지표만 지원(날짜·요약 지표의 기간 비교는 미지원 안내)",
+}
+assert set(SLOT_SUPPORT_NOTES) <= set(SLOT_SHAPES), (
+    f"SLOT_SUPPORT_NOTES 에 미등록 슬롯: {set(SLOT_SUPPORT_NOTES) - set(SLOT_SHAPES)}"
+)
+
+
 def structured_slot_shapes() -> tuple[SlotShape, ...]:
     """LLM 이 채울 수 있는 구조화 슬롯 목록(tool 스키마·coerce 파생의 단일 소스)."""
     return tuple(SLOT_SHAPES.values())

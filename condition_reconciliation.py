@@ -9,18 +9,18 @@
 이 모듈은 파서 뒤·최종 clarification 판정 앞에 들어가는 조정 단계다. 파서는 자유롭게 후보를
 만들고, 여기서 소유권을 정리한 뒤 **남은 진짜 미해결만** clarification 이 된다.
 
-구성(요구 인터페이스 그대로):
+구성(설계 시점 인터페이스):
 
-    policy     = ConditionPolicyLoader.load(path)
     candidates = collect_condition_candidates(plan, policy)
     ownership  = ConditionOwnershipResolver(policy).resolve(candidates)
     result     = SetExpressionReconciler(policy).apply(plan, ownership)
     verdict    = ClarificationEvaluator(policy).evaluate(plan, ownership)
 
-정책(슬롯 이름·우선순위·매칭 임계·충돌 처리)은 전부 ``docs/data/condition_ownership_policy.json``
-이 소유한다. 이 파일에는 특정 도시/성별/문장 표현이 없다 — 슬롯을 늘리거나 우선순위를 바꾸는
-일은 JSON 한 줄이고, 여기 파이썬은 정책 해석과 일반 알고리즘(스팬 겹침·토큰 정규화·AST 재구성)만
-가진다.
+정책 JSON(``docs/data/condition_ownership_policy.json``)과 그 로더는 rules 계층 철거(ac924ff)와
+함께 삭제됐다 — 현재 프로덕션이 소비하는 것은 ``conflict_clarifications``(plan 의
+``condition_reconciliation`` 트레이스 기반 충돌 확인요청)와 ``UNIVERSE_TYPE`` 뿐이고, 위 파이프라인을
+정책과 함께 배선하는 호출자는 없다. 설계 원칙(정책은 데이터, 파이썬은 스팬 겹침·토큰 정규화·AST
+재구성 같은 일반 알고리즘만)은 재배선 시에도 유지한다.
 
 AST 재구성의 안전 규칙(의미 보존):
 

@@ -63,7 +63,6 @@ _CONDITIONS = _keys(CONDITION, {
     "semantic_conditions": "의미 조건",
     "cart_context": "장바구니 문맥",
     "unresolved_source_conditions": "해소되지 않은 원문 조건(fail-close 근거)",
-    "logical_expression": "OR-of-conjunctions 논리식",
     "analytical_intent": "분석 의도",
     "metric_trend": "기간 대비 지표 증감",
     "purchase_count_ranking": "구매 건수 랭킹",
@@ -80,7 +79,7 @@ _CONDITIONS = _keys(CONDITION, {
 
 # 파서·검증·라우팅 산출물. 사용자가 말한 적 없다.
 _DERIVED = _keys(DERIVED, {
-    "capability_check": "능력 점검 결과",
+    "capability_check": "능력 점검 결과(plan 생산자 없음 — 응답 조립이 capability_validation 요약으로 파생)",
     "detected_intent": "입력 조건에서 계산된 라우팅 힌트",
     "member_policy": "회원 정책 판정",
     "member_scope": "'전체 회원 대상'인가",

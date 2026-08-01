@@ -169,67 +169,113 @@ def _aggregation_request_llm_schema() -> dict[str, Any]:
     return schema
 
 
+# ── target_user 노출면: SLOT_SHAPES 파생 ────────────────────────────────────────
+# 앱 소유 속성(SLOT_SHAPES 밖). coarse 축(성별/연령/행동 등)과 파생 집합 조건은 구조화기 계약이
+# 직접 소유한다 — 아래 순서 튜플에서 여기 없는 이름은 전부 targeting_ir.SLOT_SHAPES 파생이다.
+_APP_OWNED_TARGET_USER_PROPERTIES: dict[str, Any] = {
+    "gender": _nullable({"type": "string"}),
+    "age_min": _nullable({"type": "integer"}),
+    "age_max": _nullable({"type": "integer"}),
+    "age_exclude_ranges": {
+        "type": "array",
+        "description": (
+            "제외 연령 구간 목록. 각 항목은 [최소나이, 최대나이] 정수 2개 배열(경계 포함). "
+            "예: '30대 제외' → [[30, 39]], '25~35세 제외' → [[25, 35]]."
+        ),
+        "items": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 120}},
+    },
+    "lifecycle": {"type": "array", "items": {"type": "string"}},
+    "interests": {"type": "array", "items": {"type": "string"}},
+    "preferred_channels": {"type": "array", "items": {"type": "string"}},
+    "behaviors": {
+        "type": "array",
+        "description": (
+            "행동 canonical 목록([Allowed Canonical Values].behaviors 값만 사용). "
+            "장바구니에 담았지만 구매/결제하지 않은 이탈 고객은 'cart_abandoner' 하나로 표현한다."
+        ),
+        "items": {"type": "string"},
+    },
+    "price_sensitivity": _nullable({"type": "string"}),
+    "entity_set_condition": _nullable({
+        "type": "object",
+        "description": (
+            "집계 → 랭킹 → 회원 집합으로 구성된 파생 집합 조건. "
+            "'상위/가장 많이 팔린 N개 중 M개 구매'처럼 랭킹 집합이 명시된 요청 전용이다 — "
+            "장바구니 이탈·미구매 같은 단순 행동 조건을 이 슬롯으로 우회 표현하지 않는다."
+        ),
+        "properties": {
+            "derived_set_ast": {"$ref": "#/$defs/derivedSetMemberNode"},
+        },
+    }),
+}
+
+# 노출 순서 동결 — 기존 노출분의 프롬프트 바이트 보존 장치이지 두 번째 권위가 아니다.
+# 새 target_user 슬롯은 이 튜플에 추가하지 않는다: SLOT_SHAPES 등록만으로 뒤에 자동 편입된다.
+# 스테일 이름(SLOT_SHAPES 에도 앱 소유에도 없음)은 모듈 임포트 시점 KeyError 로 즉시 드러난다.
+_TARGET_USER_EXPOSURE_ORDER: tuple[str, ...] = (
+    "gender", "age_min", "age_max", "age_exclude_ranges", "lifecycle", "interests",
+    "preferred_channels", "behaviors", "purchase_object", "purchase_date", "price_sensitivity",
+    "inactivity_period", "recent_login", "purchase_inactivity", "birthday_target", "signup_target",
+    "aggregate_conditions", "balance_conditions", "profile_date_conditions", "campaign_responses",
+    "campaign_response_frequency", "campaign_buy_amount", "campaign_buy_count", "cart_retention",
+    "cart_type", "cart_aggregate", "cart_absence", "cell_rate_target", "metric_trend",
+    "entity_set_condition",
+)
+
+# 역사적으로 nullable 래핑 없이 노출된 배열 슬롯(빈 배열이 '표현 안 함'을 대신한다).
+# 신규 슬롯은 타입과 무관하게 _nullable 이 기본이다 — strict 모드에서 무표현을 null 로 명시한다.
+_BARE_ARRAY_SLOTS: frozenset[str] = frozenset({
+    "aggregate_conditions", "balance_conditions", "profile_date_conditions", "campaign_responses",
+})
+
+
+# plan 컨테이너 슬롯의 LLM 노출 제외 + 사유. 새 plan 슬롯은 노출하거나 여기 사유와 함께
+# 등재해야 한다 — 계약 테스트가 '노출 ∨ 선언된 제외' 전수를 강제한다(조용한 미노출 금지).
+_PLAN_SLOT_EXPOSURE_EXCLUSIONS: dict[str, str] = {
+    "region_density_target": (
+        "properties 없는 조각이라 strict 에서 표현 불가 — 노출하려면 targeting_ir.SLOT_SHAPES "
+        "조각에 properties 를 먼저 선언해야 한다."
+    ),
+    "purchase_count_ranking": (
+        "properties 없는 조각이라 strict 에서 표현 불가 — 노출하려면 targeting_ir.SLOT_SHAPES "
+        "조각에 properties 를 먼저 선언해야 한다."
+    ),
+}
+
+
+def _target_user_slot_names() -> tuple[str, ...]:
+    return tuple(
+        name for name, shape in targeting_ir.SLOT_SHAPES.items()
+        if shape.container == "target_user"
+    )
+
+
+def _target_user_properties() -> dict[str, Any]:
+    """target_user 노출면을 SLOT_SHAPES 에서 파생한다(손 나열 금지).
+
+    새 슬롯 추가 = SLOT_SHAPES 한 항목 — 이 모듈은 편집하지 않는다. 과거에는 슬롯 목록이 여기
+    리터럴로 중복돼, 컴파일러가 있어도 스키마에 빠진 슬롯은 LLM 이 표현할 수 없었다(감사에서
+    확인된 '지원되는데 미방출' 계열의 구조적 원인 하나)."""
+    shaped = set(_target_user_slot_names())
+    properties: dict[str, Any] = {}
+    for name in _TARGET_USER_EXPOSURE_ORDER:
+        if name in shaped:
+            schema = _slot_schema(name)
+            properties[name] = schema if name in _BARE_ARRAY_SLOTS else _nullable(schema)
+        else:
+            properties[name] = copy.deepcopy(_APP_OWNED_TARGET_USER_PROPERTIES[name])
+    for name in _target_user_slot_names():
+        if name not in properties:
+            properties[name] = _nullable(_slot_schema(name))
+    return properties
+
+
 _TARGET_USER_SCHEMA: dict[str, Any] = {
     "type": "object",
     # Targeting slots are registry-driven and grow independently.  Known core
     # properties document the stable contract while extensions remain valid.
     "additionalProperties": True,
-    "properties": {
-        "gender": _nullable({"type": "string"}),
-        "age_min": _nullable({"type": "integer"}),
-        "age_max": _nullable({"type": "integer"}),
-        "age_exclude_ranges": {
-            "type": "array",
-            "description": (
-                "제외 연령 구간 목록. 각 항목은 [최소나이, 최대나이] 정수 2개 배열(경계 포함). "
-                "예: '30대 제외' → [[30, 39]], '25~35세 제외' → [[25, 35]]."
-            ),
-            "items": {"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 120}},
-        },
-        "lifecycle": {"type": "array", "items": {"type": "string"}},
-        "interests": {"type": "array", "items": {"type": "string"}},
-        "preferred_channels": {"type": "array", "items": {"type": "string"}},
-        "behaviors": {
-            "type": "array",
-            "description": (
-                "행동 canonical 목록([Allowed Canonical Values].behaviors 값만 사용). "
-                "장바구니에 담았지만 구매/결제하지 않은 이탈 고객은 'cart_abandoner' 하나로 표현한다."
-            ),
-            "items": {"type": "string"},
-        },
-        "purchase_object": _nullable(_slot_schema("purchase_object")),
-        "purchase_date": _nullable(_slot_schema("purchase_date")),
-        "price_sensitivity": _nullable({"type": "string"}),
-        "inactivity_period": _nullable(_slot_schema("inactivity_period")),
-        "recent_login": _nullable(_slot_schema("recent_login")),
-        "purchase_inactivity": _nullable(_slot_schema("purchase_inactivity")),
-        "birthday_target": _nullable(_slot_schema("birthday_target")),
-        "signup_target": _nullable(_slot_schema("signup_target")),
-        "aggregate_conditions": _slot_schema("aggregate_conditions"),
-        "balance_conditions": _slot_schema("balance_conditions"),
-        "profile_date_conditions": _slot_schema("profile_date_conditions"),
-        "campaign_responses": _slot_schema("campaign_responses"),
-        "campaign_response_frequency": _nullable(_slot_schema("campaign_response_frequency")),
-        "campaign_buy_amount": _nullable(_slot_schema("campaign_buy_amount")),
-        "campaign_buy_count": _nullable(_slot_schema("campaign_buy_count")),
-        "cart_retention": _nullable(_slot_schema("cart_retention")),
-        "cart_type": _nullable(_slot_schema("cart_type")),
-        "cart_aggregate": _nullable(_slot_schema("cart_aggregate")),
-        "cart_absence": _nullable(_slot_schema("cart_absence")),
-        "cell_rate_target": _nullable(_slot_schema("cell_rate_target")),
-        "metric_trend": _nullable(_slot_schema("metric_trend")),
-        "entity_set_condition": _nullable({
-            "type": "object",
-            "description": (
-                "집계 → 랭킹 → 회원 집합으로 구성된 파생 집합 조건. "
-                "'상위/가장 많이 팔린 N개 중 M개 구매'처럼 랭킹 집합이 명시된 요청 전용이다 — "
-                "장바구니 이탈·미구매 같은 단순 행동 조건을 이 슬롯으로 우회 표현하지 않는다."
-            ),
-            "properties": {
-                "derived_set_ast": {"$ref": "#/$defs/derivedSetMemberNode"},
-            },
-        }),
-    },
+    "properties": _target_user_properties(),
 }
 
 
@@ -532,9 +578,8 @@ CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA: dict[str, Any] = {
             },
         },
         "aggregation_request": _nullable(_aggregation_request_llm_schema()),
-        # plan 컨테이너 구조화 슬롯. 랭킹 3형제 중 member_metric_ranking 만 LLM 에 노출한다 —
-        # 나머지(region_density_target/purchase_count_ranking)는 properties 없는 조각이라 strict 에서
-        # 표현 불가이고, 노출하려면 targeting_ir.SLOT_SHAPES 조각에 properties 를 먼저 선언해야 한다.
+        # plan 컨테이너 구조화 슬롯. 노출/제외는 _PLAN_SLOT_EXPOSURE_EXCLUSIONS 가 사유와 함께
+        # 선언한다(계약 테스트가 '노출 ∨ 선언된 제외' 를 전수 강제).
         "member_metric_ranking": _nullable(_slot_schema("member_metric_ranking")),
         "condition_evaluations": {"type": "array", "items": {"type": "object"}},
         "external_conditions": {"type": "array", "items": _EXTERNAL_CONDITION_SCHEMA},

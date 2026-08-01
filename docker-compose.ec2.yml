@@ -68,10 +68,6 @@ services:
       POSTGRES_DB: campaign_db
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: "1234"
-      # 임계값·서로 다른 지표가 섞인 OR-of-conjunctions('로그인 100회 이상 이거나 구매 10회 이상이면서
-      # 마케팅 동의')를 괄호·AND>OR 우선순위를 보존한 단일 SQL 로 컴파일한다(logical_expression 컴파일러,
-      # retrieve 경로). off(기본)면 mixed_and_or_precedence_unsupported 로 fail-close.
-      LOGICAL_OR_COMPILER: "1"
       # 최종 SQL↔원문 의미검증(9단계) 전용 모델. OPENAI_FAST_MODEL(재작성·분리·추출)과 분리 지정.
       OPENAI_SEMANTIC_VERIFY_MODEL: "gpt-5-mini"
       # fastembed 모델 캐시 공용 볼륨(python 적재 때 받은 모델을 재사용).

@@ -219,7 +219,6 @@ _TRACE_STAGE_REFS: dict[int, tuple[dict[str, str], ...]] = {
     6: (
         {"kind": "데이터", "name": "normalization_rules.sample.json"},
         {"kind": "코드", "name": "set_expression_engine.py"},
-        {"kind": "코드", "name": "logical_expression.py"},
     ),
     7: (
         # rag_knowledge_base·sql_examples 는 적재(빌드) 시 Qdrant/그래프로 들어간다 — 검색 단계는 그 인덱스를 조회.
@@ -419,7 +418,7 @@ def _mark_trace_refs_used(stages: list[dict[str, Any]], result: dict[str, Any]) 
         mark(5, "member_target_filters.json")
 
     if set_expressions:
-        mark(6, "normalization_rules.sample.json", "set_expression_engine.py", "logical_expression.py")
+        mark(6, "normalization_rules.sample.json", "set_expression_engine.py")
 
     search_executed = "vector_search" in timings_ms or "keyword_search" in timings_ms
     search_hits = [

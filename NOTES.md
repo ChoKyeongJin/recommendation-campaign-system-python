@@ -134,7 +134,11 @@
 > **2026-08-01: 실행 플랜 수립 완료 — `docs/plans_canonical_ir_capability.md`.** 현황 조사에서 아래 서술의
 > 전제 일부가 사실과 다름이 확인됐다(logical_expression.py 는 존재하지 않는 유령 참조, capability_registry.py 는
 > ac924ff 에서 이미 삭제됨, 진짜 씨앗은 targeting_expression 의 타입드 트리). 정정 내역과 Phase 0(잔해 정리)→
-> A(⑪)→B(⑩) 순서·게이트는 플랜 문서가 권위다.
+> A(⑪)→B0(경계 정리)→B1(⑩ 본체) 순서·게이트는 플랜 문서가 권위다.
+>
+> **2026-08-02: 리뷰 반영 개정 + Phase 0·A 구현 완료.** 테스트 660→680 passed, preflight PASS.
+> ⑪ 은 사실상 완료(노출면 파생·라벨/각주 facet·validator 4축·표 자동 생성), 장기 3번(문서 동기화)은
+> `docs/generated/supported_conditions.md` 자동 생성으로 구조 해소. 상세는 플랜 문서 '진행 상태' 표.
 
 - [ ] **⑩ Canonical IR 이행**: 신규 설계가 아니라 기존 씨앗(`condition_evaluation_ir` 의 "검증된 구성 서명만 허용", ~~`logical_expression.py`~~(부존재 — 플랜 §0-1), `targeting_expression.py`)의 일반화로. adapter 경계는 단방향 + "adapter 이후 의미 추가 금지" freeze 계약 필수(인플레이스 변형이 함정). `docs/plans_ir_decoupling.md` 5웨이브와 정합 확인. → 플랜 Phase B
 - [ ] **⑪ Capability Registry 단일 권위**: 지원 목록→LLM 스키마→validator→compiler dispatch→테스트를 한 곳에서 생성. 이번에 넣은 드리프트 가드들이 그때까지의 임시 결속. → 플랜 Phase A(씨앗은 `targeting_ir.CONDITION_SPECS` facet 확장, 신규 파일·JSON 외부화 아님)

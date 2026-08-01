@@ -15,6 +15,14 @@
 | Wave 4 단일소스화 | 완료 | plan_schema 레지스트리 신설 + ir_snapshot 파생 전환, 미분류 13→0, 분류 모순 0, SQL 리터럴 7→1, 정규화 2→1, unsupported reason 닫힌 집합 |
 | Wave 5 구조 이동 | 미착수 | 착수 게이트(W3-5)는 확보. 부채는 측정·고정됨 |
 
+> **2026-08-01 정정 — capability_registry 삭제.** 커밋 `ac924ff`("정리")가 `capability_registry.py`(209줄),
+> `docs/data/condition_ownership_policy.json` 을 삭제하고 `requirement_capabilities.json` 을
+> supported/message 만 남게 축소했다. 따라서 W1-4 (a) 의 "validate_capabilities(177-206) 3중 배선"과
+> 위험표의 클러스터1-①·2-⑩ 은 **복원이 아니라 신규 작성** 대상이다 — 후속 플랜은
+> `docs/plans_canonical_ir_capability.md`(Phase A-3: targeting_ir.CONDITION_SPECS facet 기반 validator
+> 신규 작성 + preflight 배선)가 권위다. 같은 문서 Phase 0 이 logical_expression 잔해(생산자 0 슬롯·
+> 미작동 LOGICAL_OR_COMPILER env·trace 허위 출처)를 처분했다 — 본문의 관련 서술은 그 시점 이전 기록이다.
+
 > **2026-08-01 추가 — 빌더 흡수 파일럿.** 이 문서가 여러 곳에서 예로 드는 `region_member_count_target`
 > 은 더 이상 존재하지 않는다. 표현 하나가 슬롯·빌더·정규식·분류 레지스트리 5개 파일에 걸쳐 있던
 > 것을 **등록형 집계 IR**(analytical_intent + analytics_registry + aggregation_requirements + sql_ast)로

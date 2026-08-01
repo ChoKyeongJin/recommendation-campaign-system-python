@@ -67,7 +67,6 @@ _PLAN_REQUIREMENT_SLOTS = frozenset({
     "computed_metrics",
     "dimension_filters",
     "group_ranking_target",
-    "logical_expression",
     "member_column_selection_filter",
     "member_metric_ranking",
     "member_metric_selection",

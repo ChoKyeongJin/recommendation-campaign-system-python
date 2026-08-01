@@ -27,6 +27,9 @@ import golden_support  # noqa: E402
 import graph_rag  # noqa: E402
 
 # 하류가 실제로 읽는 plan 산출물. 순수화가 이 중 하나라도 비우면 응답이 조용히 얇아진다.
+# capability_check 는 plan 생산자가 없고 응답 조립이 정적 검증 요약(_capability_check_summary)
+# 으로 파생 생산한다 — plan 키로서의 '비지 않음'은 여전히 단언 대상이 아니다(파생 계약은
+# tests/test_capability_contract.py 가 소유).
 DOWNSTREAM_PLAN_KEYS = ("capability_check", "output_contract")
 
 

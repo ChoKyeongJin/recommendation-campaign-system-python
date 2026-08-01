@@ -533,6 +533,7 @@ def build_payload(
             "business_terms": "build_rag_knowledge.py",
             "dimension_catalog": "docs/data/generated/dimension_catalog.sample.json",
             "member_value_index": "docs/data/generated/member_value_index.json",
+            # 기본 샘플 파일은 8ba50b6 에서 삭제돼 저장소에 없다 — 실행 시 실제 데이터 경로 필요.
             "campaign_user_nodes": "docs/data/campaign_user_rag_sample_50_with_edges.json",
         },
         "node_counts": {
@@ -568,6 +569,7 @@ def main() -> None:
         default=Path("docs/data/generated/dimension_catalog.sample.json"),
     )
     parser.add_argument("--sql-examples", type=Path, default=Path("docs/data/sql_examples.sample.sql"))
+    # 기본 샘플 파일은 8ba50b6 에서 삭제됨 — 기본값 그대로 실행하면 파일 부재로 스킵/실패하므로 실제 경로를 넘겨야 한다.
     parser.add_argument("--campaign-user", type=Path, default=Path("docs/data/campaign_user_rag_sample_50_with_edges.json"))
     parser.add_argument(
         "--member-value-index", type=Path,

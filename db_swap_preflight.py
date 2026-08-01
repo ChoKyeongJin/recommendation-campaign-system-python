@@ -257,6 +257,17 @@ def run_preflight(check_db: bool = False) -> dict[str, Any]:
     except Exception as exc:  # pragma: no cover
         warnings.append(f"방언 등록 확인 실패: {exc}")
 
+    # 5) capability 선언 ↔ 실행 자산 경량 대조(플랜 A-3). 빌더 소유권 축은 graph_rag import 가
+    # 필요해 무거우므로 여기서는 제외하고 tests/test_capability_contract.py 가 담당한다 —
+    # 이 분담은 의도된 설계다(preflight 는 설정·순수 모듈만 읽는 경량 게이트).
+    try:
+        import capability_validation
+
+        for issue in capability_validation.validate_capabilities():
+            problems.append(f"[capability] {issue}")
+    except Exception as exc:  # pragma: no cover
+        problems.append(f"[capability] 정적 검증 실행 실패: {exc}")
+
     # 3) catalog ↔ live DB (선택)
     db_summary: dict[str, Any] | None = None
     if check_db:

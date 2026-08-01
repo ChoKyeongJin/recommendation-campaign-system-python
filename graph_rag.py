@@ -137,6 +137,7 @@ from sql_guard import (
 from confidence import render_confidence_markdown, render_confidence_report, score_targeting_confidence
 import sql_dialect
 from sql_dialect import SqlDialect, get_dialect
+import capability_validation
 import targeting_ir
 from targeting_ir import extract_target_conditions
 import slot_ownership
@@ -557,7 +558,8 @@ _DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = {
     "purchase_product_match_columns": [
         "CATEGORY", "CATEGORYL_NAME", "CATEGORYM_NAME", "CATEGORYS_NAME", "BRAND_NAME", "PRODUCT_NAME",
     ],
-    "supported_condition_hint": "성별·연령·회원등급·휴면/미접속·최근 로그인 기간·수신동의(앱푸시/SMS/이메일)·상품 구매 이력",
+    # supported_condition_hint 는 여기 기본값을 두지 않는다 — JSON 큐레이션 문구가 1차 소스이고,
+    # 키가 없으면 라벨 레지스트리 파생 폴백(_derived_supported_condition_hint)을 쓴다(스테일 손 목록 금지).
     "region_density": {
         "granularity_tokens": ["동네", "지역", "시군구", "시도", "구"],
         "granularity_columns": {"시도": "SIDO"},
@@ -2570,7 +2572,6 @@ def classify_query_complexity(query_plan: dict[str, Any]) -> str:
         target_user.get("campaign_buy_count"),        # 캠페인 귀속 구매건수(팩트 구매반응 캠페인 수)
         target_user.get("cell_rate_target"),          # 셀 단위 성공률/구매율 비율(셀 집계)
         query_plan.get("union_condition"),            # 합집합(OR) 컴파일
-        query_plan.get("logical_expression"),         # 논리식(OR-of-conjunctions) 컴파일
         query_plan.get("set_expressions"),            # 집합식
         query_plan.get("region_density_target"),      # 밀집 지역 랭킹(집계)
         query_plan.get("group_ranking_target"),       # 그룹별 회원 Top-N(PARTITION BY 윈도)
@@ -6861,17 +6862,42 @@ def _query_plan_for_generation(query_plan: dict[str, Any]) -> dict[str, Any]:
 
 
 
+@functools.lru_cache(maxsize=1)
+def _capability_check_summary() -> dict[str, Any]:
+    """정적 capability 검증 요약(capability_validation 파생). 응답 조립이 읽는다 — plan 무변형.
+
+    레지스트리·선언은 임포트 시점에 고정되므로 1회 계산으로 충분하다. 소비자는 deepcopy 로 받아라
+    (lru_cache 공유 dict 를 응답에 그대로 실으면 하류 변형이 캐시를 오염시킨다)."""
+    return capability_validation.capability_check_summary(_sql_target_builder_registry())
+
+
 def _condition_labels(conditions: list[dict[str, Any]]) -> list[str]:
     """조건 dict 목록에서 사람이 읽을 라벨 목록을 만든다(라벨 없으면 path 기반)."""
     labels = [condition.get("label") or _unsupported_condition_label(condition.get("path", "")) for condition in conditions]
     return _unique_strings([label for label in labels if label])
 
 
-# 사용자 안내용 "지원 조건" 힌트. 지원 속성이 늘면 member_target_filters.json 에서 함께 갱신한다.
-_SUPPORTED_CONDITION_HINT = str(
-    _MEMBER_TARGET_FILTERS.get("supported_condition_hint")
-    or _DEFAULT_MEMBER_TARGET_FILTERS["supported_condition_hint"]
-)
+def _derived_supported_condition_hint() -> str:
+    """지원 조건 힌트의 파생 폴백 — 슬롯·coarse 라벨 레지스트리에서 만든다(스테일 손 목록 금지).
+
+    1차 소스는 member_target_filters.json 의 큐레이션 문구(supported_condition_hint)다.
+    키가 빠졌을 때만 이 폴백이 쓰이며, 라벨 파생이라 슬롯이 늘어도 저절로 따라온다."""
+    labels = _unique_strings([
+        label.removesuffix(" 조건")
+        for path, label in _UNSUPPORTED_CONDITION_LABELS.items()
+        if path.startswith("target_user.")
+    ])
+    return "·".join(labels)
+
+
+# 사용자 안내용 "지원 조건" 힌트. 큐레이션 문구(JSON)가 1차, 라벨 레지스트리 파생이 폴백.
+# 파생이 _UNSUPPORTED_CONDITION_LABELS(모듈 후반 정의)를 읽으므로 지연 평가한다.
+@functools.lru_cache(maxsize=1)
+def _supported_condition_hint() -> str:
+    return str(
+        _MEMBER_TARGET_FILTERS.get("supported_condition_hint")
+        or _derived_supported_condition_hint()
+    )
 # 실DB 미이관 데모 스키마 테이블. 이 테이블 참조로 가드 탈락하면 "조건이 실DB로 매핑 안 됨"을 뜻한다.
 _DEMO_SCHEMA_TABLES = {
     "users", "recommendation_edges", "campaigns", "campaign_target_segments",
@@ -6951,7 +6977,7 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
         if questions:
             lead = f"{kind[1]} 해석을 위해 " if kind else "SQL 생성을 위해 "
             return lead + "조건 확인이 필요합니다: " + " / ".join(str(q) for q in questions)
-        return f"SQL 생성을 위해 필요한 조건이 부족합니다. {_SUPPORTED_CONDITION_HINT} 같은 타겟 조건을 추가해 주세요."
+        return f"SQL 생성을 위해 필요한 조건이 부족합니다. {_supported_condition_hint()} 같은 타겟 조건을 추가해 주세요."
 
     if reason == "semantic_verification_failed":
         # 의미 검증 게이트가 원문↔SQL 불일치(드롭/반전 등)를 확신 → 틀린 SQL 출고 대신 확인 요청.
@@ -6971,7 +6997,7 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
     if unsupported_labels:
         # 요청 조건 중 실DB 타겟 추출로 아직 매핑되지 않은 것(관심사·행동·가격민감도 등)이 원인.
         return ("요청하신 조건 중 다음은 아직 실DB 타겟 추출로 지원되지 않아 검증 SQL을 만들지 못했습니다: "
-                + ", ".join(unsupported_labels) + f". 지원되는 조건({_SUPPORTED_CONDITION_HINT})으로 바꾸거나 조합해 주세요.")
+                + ", ".join(unsupported_labels) + f". 지원되는 조건({_supported_condition_hint()})으로 바꾸거나 조합해 주세요.")
 
     if reason in ("no_sql_candidates", "recognized_domain_unsupported"):
         recognized = _recognized_domains(query_plan)
@@ -6980,7 +7006,7 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
             return ("입력에서 " + "·".join(domain["label"] for domain in recognized)
                     + " 조건은 인식했지만, 요청하신 형태는 아직 실DB 타겟 추출로 지원되지 않습니다. 현재 지원되는 형태: "
                     + " / ".join(f"{domain['label']} — {domain['supported']}" for domain in recognized) + ".")
-        return f"입력에서 타겟 조건을 찾지 못해 SQL을 만들지 못했습니다. {_SUPPORTED_CONDITION_HINT} 같은 타겟 조건을 넣어 주세요."
+        return f"입력에서 타겟 조건을 찾지 못해 SQL을 만들지 못했습니다. {_supported_condition_hint()} 같은 타겟 조건을 넣어 주세요."
 
     if reason == "aggregation_validation_failed":
         errors = selected.get("aggregation_validation", {}).get("errors", [])
@@ -7003,7 +7029,7 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
         disallowed = [issue.get("message", "").split(":")[-1].strip() for issue in issues if issue.get("code") == "table_not_allowed"]
         if disallowed and {table.casefold() for table in disallowed} & _DEMO_SCHEMA_TABLES:
             # 데모 스키마로만 생성됐다 = 요청 조건이 인식되지 않았거나 아직 실DB 회원 속성으로 매핑 안 됨.
-            return (f"입력에서 실DB로 타겟을 추출할 수 있는 조건을 찾지 못했습니다. {_SUPPORTED_CONDITION_HINT} 같은 조건으로 다시 입력해 주세요. "
+            return (f"입력에서 실DB로 타겟을 추출할 수 있는 조건을 찾지 못했습니다. {_supported_condition_hint()} 같은 조건으로 다시 입력해 주세요. "
                     "(요청한 조건이 인식되지 않았거나, 아직 실DB 회원 속성으로 매핑되지 않는 조건입니다.)")
         if disallowed:
             return "생성된 SQL이 실DB에 없는 테이블(" + ", ".join(_unique_strings(disallowed)) + ")을 참조해 안전 검증에서 제외됐습니다."
@@ -7089,7 +7115,9 @@ def build_recommendation_api_response(
         },
         "intent": query_plan.get("intent"),
         "detected_intent": query_plan.get("detected_intent"),
-        "capability_check": query_plan.get("capability_check"),
+        # plan 이 요청별 값을 실었으면 그 값, 없으면 정적 capability 검증 요약을 파생해 싣는다
+        # (과거엔 생산자 0 으로 항상 None 이던 계약 필드 — plan 을 변형하지 않고 응답에서 파생).
+        "capability_check": query_plan.get("capability_check") or copy.deepcopy(_capability_check_summary()),
         "selected_route": query_plan.get("selected_route"),
         "sql": sql_result.get("sql"),
         # 의미 검증 등으로 출고가 막혔지만 생성은 된 SQL(표시 전용, 실행 안 함). 정상 출고 시엔 None.
@@ -11179,8 +11207,8 @@ def _region_value_from_surface(operand: dict[str, Any], canonical: Any) -> str |
 
 
 
-# 조건 소유권 정책(어느 슬롯이 어떤 조건의 canonical owner 인가 + 중복 억제/충돌 규칙)의 단일 소스.
-# 슬롯 추가·우선순위 변경은 이 JSON 만 고치면 된다(condition_reconciliation 이 해석한다).
+# 조건 소유권 정책 JSON(condition_ownership_policy.json)과 로더는 rules 계층 철거(ac924ff)로 삭제됐다.
+# 남은 소비: condition_reconciliation.conflict_clarifications(트레이스 기반 충돌 확인요청)·UNIVERSE_TYPE.
 
 
 
@@ -11762,9 +11790,6 @@ def _sql_target_builder_registry() -> tuple[tuple[Any, frozenset[str]], ...]:
         # 등록형 일반 집계: metric/dimension/filter IR을 결정론 SelectAst로 컴파일한다. 분석 의도에서
         # 회원 목록 빌더로 폴백하면 안 되므로 가장 먼저 두고, 비분석 플랜에서는 즉시 None을 반환한다.
         (build_analytical_aggregation_sql_candidate, frozenset()),
-        # 논리식(OR-of-conjunctions) 컴파일러 — AND/OR/괄호를 보존한 복합 빌더. logical_expression 슬롯이
-        # 있을 때만(검증 통과) 발동하고 단일 조건 kind 를 소유하지 않는다. union 보다 우선(더 일반적).
-        (build_logical_expression_sql_candidate, frozenset()),
         # 합집합(OR) 컴파일러 — 피연산자를 재귀 컴파일하는 복합 빌더라 단일 조건 kind 를 소유하지 않는다.
         (build_union_targets_sql_candidate, frozenset()),
         # 파생 엔터티 집합('가장 많이 팔린 상품 N개를 구매한 회원') — 피연산자가 순위 서브쿼리다.
@@ -12161,34 +12186,17 @@ def build_analytical_aggregation_sql_candidate(query_plan: dict[str, Any]) -> di
     return candidate
 
 
-_UNSUPPORTED_CONDITION_LABELS = {
+# 구조화 슬롯 밖 경로의 라벨만 여기 남긴다(coarse 축·exclude·campaign_constraints·plan 키).
+# 슬롯 라벨은 targeting_ir.SLOT_KO_LABELS 가 단일 소유하고 아래에서 파생 병합한다 —
+# 과거 손 목록 시대에 슬롯 6종 라벨이 빠져 '남는 조건' 안내가 침묵 삭제되던 사고의 재발 방지.
+_RESIDUAL_CONDITION_LABELS = {
     "target_user.gender": "성별 조건",
     "target_user.interests": "관심사 조건",
     "target_user.preferred_channels": "선호 채널 조건",
     "target_user.behaviors": "행동 조건",
-    "target_user.purchase_object": "구매 상품 조건",
-    "target_user.aggregate_conditions": "집계 조건(구매 금액/횟수 임계값)",
-    "target_user.birthday_target": "생일 조건",
-    "target_user.signup_target": "가입일 조건",
-    "target_user.purchase_date": "구매일 조건",
-    "target_user.metric_trend": "기간 대비 지표 증감 조건",
-    "target_user.cart_type": "장바구니 유형 조건",
-    "target_user.balance_conditions": "잔액 조건",
-    "target_user.profile_date_conditions": "회원 프로필 날짜 조건",
-    "target_user.campaign_responses": "캠페인 반응 조건",
     "target_user.purchase_membership": "구매 이력 조건",
-    "target_user.purchase_inactivity": "미구매 기간 조건",
-    "target_user.cart_absence": "장바구니 미보유 조건",
-    "target_user.cart_retention": "장바구니 보관 기간 조건",
-    "target_user.cart_aggregate": "장바구니 집계 조건(담은 수량/금액)",
-    "target_user.campaign_response_frequency": "캠페인 반응 횟수 조건",
-    "target_user.campaign_buy_amount": "캠페인 구매 금액 조건",
-    "target_user.campaign_buy_count": "캠페인 구매 건수 조건",
-    "target_user.cell_rate_target": "캠페인 셀 반응률 조건",
     "target_user.age_exclude_ranges": "연령 제외 조건",
     "target_user.price_sensitivity": "가격 민감도 조건",
-    "target_user.inactivity_period": "미접속 기간 조건",
-    "target_user.recent_login": "최근 로그인 기간 조건",
     "target_user.lifecycle": "생애주기 조건",
     "exclude.gender": "성별 제외 조건",
     "exclude.interests": "관심사 제외 조건",
@@ -12205,6 +12213,18 @@ _UNSUPPORTED_CONDITION_LABELS = {
     "target_user.age_max": "최대 연령 조건",
     "target_user.age_range": "연령대 조건",
 }
+
+
+def _build_condition_labels() -> dict[str, str]:
+    """잔여 라벨 + 슬롯 라벨(targeting_ir.SLOT_KO_LABELS 파생). 슬롯 라벨이 항상 이긴다."""
+    labels = dict(_RESIDUAL_CONDITION_LABELS)
+    for name, shape in targeting_ir.SLOT_SHAPES.items():
+        if shape.container == "target_user":
+            labels[f"target_user.{name}"] = targeting_ir.SLOT_KO_LABELS[name]
+    return labels
+
+
+_UNSUPPORTED_CONDITION_LABELS = _build_condition_labels()
 
 
 def _unsupported_condition_label(path: str) -> str:
@@ -15908,67 +15928,6 @@ def build_union_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, A
     return candidate
 
 
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# 논리식(OR-of-conjunctions) 컴파일 계층 — 임계값과 서로 다른 지표가 섞인 AND/OR 를 괄호·우선순위를 보존한
-# 하나의 SQL 로 컴파일한다. 불리언 구조는 logical_expression 모듈(_logic)이 소유하고, 여기서는 각 Leaf(원자
-# 조건)를 기존 도메인 파서(_build_rule_query_plan)로 슬롯화한 뒤 회원(B) 상관 불리언 fragment 로 컴파일한다.
-# feature flag(LOGICAL_OR_COMPILER) 뒤에 두고, 실패/검증불일치는 fail-close(미지원) — AND-only 폴백 금지.
-# ══════════════════════════════════════════════════════════════════════════════
-# 오디언스 꼬리말('… 회원을 찾아줘 / 고객을 보여줘 / 회원')을 떼어, 괄호 뒤에 붙은 명사가 논리식 파서의
-# 최상위 여분 토큰이 되지 않게 한다('(A) 또는 (B) 회원'). 조건은 이 명사 앞에서 끝나므로 떼도 안전하다.
-# Leaf 로 컴파일할 때 지원하지 않는 조건 슬롯이 남아 있으면 fail-close(조용한 조건 소실 방지).
-# target_user 에서 '조건'을 담는 슬롯(비면 무시). 이 중 _LOGIC_HANDLED_SLOTS 밖이 채워져 있으면 미지원 Leaf.
-#
-# 구조화 슬롯(targeting_ir.SLOT_SHAPES)은 **파생**하고, 규칙 파서만 만드는 슬롯만 여기 나열한다.
-# 전부 손으로 나열하면 새 슬롯이 게이트에 누락돼 fail-close 가 fail-OPEN 으로 뒤집힌다 —
-# leftover 검사가 이 집합만 훑기 때문에, 집합 밖 슬롯은 채워져 있어도 '남은 조건 없음'으로 통과하고
-# 그 조건은 SQL 에 반영되지 않은 채 조용히 사라진다. 실제로 cart_absence·metric_trend 가 그 상태였다.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def build_logical_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
-    """logical_expression 슬롯(검증 통과한 OR-of-conjunctions)을 CRM_MB_BASEINFO 단일 쿼리로 컴파일한다.
-    회원 속성/집계 IN/카트 IN 술어의 괄호·AND/OR 구조를 그대로 WHERE 로 싣고 정상회원 상태를 AND 결합한다."""
-    logical = query_plan.get("logical_expression")
-    if not isinstance(logical, dict) or not logical.get("inline_where"):
-        return None
-    where_clauses = [logical["inline_where"], _member_active_state_predicate()]
-    labels = _unique_strings([
-        str(p.get("metric")) for p in logical.get("predicates", []) if p.get("metric")
-    ])
-    select_columns = [
-        "DISTINCT " + _member_key_select(),
-        _member_grade_select(),
-        _sql_quote(",".join(labels)) + " AS segment_label" if labels else _sql_quote("logical_or") + " AS segment_label",
-    ]
-    objective = query_plan.get("campaign_constraints", {}).get("objective")
-    if objective:
-        select_columns.append(_sql_quote(objective) + " AS objective")
-    sql = "\n".join([
-        "SELECT " + ", ".join(select_columns),
-        _member_from_clause(),
-        "WHERE " + "\n  AND ".join(where_clauses),
-    ])
-    candidate = _sql_candidate(
-        "sql_template:logical_expression", "AND/OR 논리식(OR-of-conjunctions) 타겟 추출 SQL 템플릿(CRMDW)", 1.0,
-        sql, _template_tables(sql), "sql_template",
-    )
-    candidate["logical_params"] = logical.get("params")
-    candidate["logical_predicates"] = logical.get("predicates")
-    return candidate
 
 
 def build_order_count_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:

@@ -13,6 +13,7 @@ from build_rag_knowledge import build_payload, load_json, save_json
 from rag_index import DEFAULT_EMBEDDING_MODEL, build_points, load_nodes, upsert_points
 
 
+# 기본 샘플 파일은 8ba50b6 에서 삭제돼 저장소에 없다 — 기본값 실행은 실패하며 실제 데이터 경로를 넘겨야 한다.
 DEFAULT_USER_DATA = Path("docs/data/campaign_user_rag_sample_50_with_edges.json")
 DEFAULT_SCHEMA = Path("docs/data/generated/schema_catalog.json")
 DEFAULT_NORMALIZATION = Path("docs/data/runtime/language/normalization_rules.sample.json")
