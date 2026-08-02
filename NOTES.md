@@ -166,3 +166,132 @@ docker exec recommendation-campaign-system-python-postgres-1 \
 ```
 
 코드 반영은 api 컨테이너 재시작으로 충분하다(볼륨 마운트): `docker restart recommendation-campaign-system-python-api-1`
+
+---
+
+# 작업 노트 — 타겟팅 프롬프트 26종 실패 분석·수리 (2026-08-02)
+
+26종 사용자 프롬프트 전수 감사(최초 4/26 성공, 가짜 성공 2 포함) 후 5단계 수리. 위 14종 작업의 후속이다.
+변경은 워킹트리에 있으며 아직 커밋되지 않았다. 회귀 코퍼스·응답 전문은 세션 스크래치패드에 있음.
+
+## 무엇을 했나 (Phase 1~5)
+
+1. **실패의 정직화**: `plan_validation_internal_invalid` 무언 실패 제거(이슈별 한국어 사유, `failure_messages.py`),
+   semantic_ir 범용 문구→필드 라벨화, `_RECURRENCE_RE`가 '구매주기' 안의 '매주'를 오탐하던 결함 수정(한글 lookbehind).
+2. **등급/상태 시점·이력 축 신설**: `compositional_targeting` 유령 부활 — `attribute_catalog.json`(물리 바인딩; 값 사전은
+   eq_filters 참조) + 결정론 감지기 10패턴 + 리졸버(지원 경계=카탈로그 선언) + as_of/transition 스냅샷 SQL.
+   실측: `CRM_MB_MONTHCRMINFO`는 201701 단일 월 + `PREV_*` 직전값 → 전이/기준월은 지원, 다월 연산(내내 유지/N회 변경
+   /모든 월 존재)은 적재 현황 명시 미지원(`snapshot_months_available` 숫자만 올리면 열림). `member_state`(정상/휴면)
+   이력은 소스 부재 명시(STATE_GRADE는 활동등급 — MEMBER_STATE_CD와 무상관, 실측). `member_attribute_history.py`가
+   오케스트레이션+소유권 sweep. 시간 한정어는 `member_state_history` 의무로 원장에 기록(가짜 성공 구조 차단),
+   영수증 발급은 컴파일 분기 안에서만(plans_ir_decoupling W5-4의 '첫 컴파일러' 경로).
+3. **방출 실패 봉합 3종 표준**: ① 레지스트리 파생 결정론 백필(fill-if-empty) — 프로필 지표(`metric_registry`),
+   캠페인 횟수/금액(`campaign_condition_backfill`), 카트 집계·기간 대 기간·회원 지표 랭킹(`numeric_condition_backfill`),
+   랭킹→회원(`parse_entity_set_condition` 부활 배선) ② 표적 재방출 1회(`slot_reemission` — 미귀결 라벨을 힌트로 보완
+   제출, coerce 통과분만 병합) ③ 소유권 sweep — 컴파일된 IR이 semantic_ir.missing_fields 와 llm_semantic_ir 자유문장
+   행 **두 채널**의 stale 결핍 보고를 회수(`_unresolved_source_condition_is_deterministically_resolved` 확장).
+4. **오배선 결정론 교정**: `no_*` 캠페인 canonical 은 항상 negated(구매반응 없음 반전 실사고), 근거 없는
+   cart_abandoner 환각 강등, lapsed 문형('주문 있었지만 최근 무구매')을 purchase_membership+purchase_inactivity 합성으로
+   정규화(`behavior_demotion`), '회원 수' 결정론 분석 의도 채택+출력 계약 승격(진짜 COUNT SQL), 조작된 캠페인 구성
+   필드 요구(채널/혜택/목적) 행 stale 판정.
+5. **플레이스홀더 조기 질문**: '특정 브랜드'는 파싱 직후 "브랜드 이름을 지정해 주세요"로 즉시 질문(재방출 제외).
+
+## 결과 (26종 라이브)
+
+- 성공(개별 검증 기준): #2 #4 #5 #6 #7 #8 #9 #10 #11 #12 #13 #14 #15 #19 — 컴파일러·백필·sweep 결합으로 안정화.
+  (#3 #8은 LLM 방출 편차 잔존 — ⑨ 모델 A/B 실험 대상; #3용 랭킹 백필은 member_metrics.json synonyms 추가로 배선)
+- 정직한 명시 미지원(메시지+개방 조건): 다월 등급 연산 #17 #20 #22 #24 #25 #26, 상태 이력 #16 #18 #21 #23.
+- 의도된 조기 질문: #1(특정 브랜드).
+- pytest 734 passed(신규 계약 테스트 5파일), preflight PASS, 지원 조건 표 재생성.
+- graph_rag 래칫 17185→17335(사유는 baseline reason에 기록 — 로직은 전부 소유 모듈로, graph_rag엔 얇은 배선만).
+
+## 함정 기록
+
+- LLM 결핍 보고는 **두 채널**(semantic_ir.missing_fields + llm_semantic_ir 자유문장 행)이라 sweep 은 양쪽을 함께
+  걷어야 한다. 한쪽만 걷으면 다른 채널이 그대로 차단한다(동시구매 docstring의 교훈이 세 번째로 재확인됨).
+- llm_semantic_ir 행의 condition 은 원문 전체가 실리곤 한다 — stale 판정은 reason 텍스트로 해야 한다.
+- api 컨테이너의 LLM 로그는 요청별 파일 `logs/rag_llm/<date>/<HHMMSS-hash>.jsonl`이다(날짜 파일은 스코프 밖 기록).
+
+## 적대적 리뷰(28 에이전트) 후속 — 반영 및 잔여
+
+- 반영(즉시 수리): entity_set surface 항진 stale 판정→절 경계 비교, member_state_history 의무 값-인접
+  마커화(구매 절 과발화 제거), as-of 값 앵커 인접 선택, 전이 제외 문맥 스킵, as_of_month 단일 스냅샷
+  가용성 게이트, kind 일괄 영수증→단일 절 가드+월 반복 의무 절 문맥 필터, 캠페인 백필 최장 동의어
+  승자+비캠페인 짧은 일반어 가드+AVG 어순, entity_set 기간 스윕 롤링 창 인지, 재방출 후 이력 리졸버
+  재실행, plan_schema 에 relational_operations/relational_ir 등재.
+- 잔여(후속 과제):
+  1. attribute_catalog.json 이 db_swap_preflight 대상 밖 — 바인딩 컬럼·snapshot_months_available 을
+     live DB 와 대조하는 섹션 추가 필요(적재 확장 시 숫자 갱신을 잊으면 다월 연산이 계속 미지원으로 남음).
+  2. relational_ir_unsupported 가 unsupported_reasons 닫힌 집합·failure_stage UI 계약 밖(기존 경로가
+     이번에 실활성화됨) — 닫힌 집합 등재는 생산 리터럴 규약과 함께 정리 필요.
+  3. 등급 값 어휘(VIP/골드/…)가 member_attribute_history·semantic_requirements·compositional 3곳
+     정규식에 재등장 — eq_filters 파생으로 통합하고 드리프트 가드 테스트 추가.
+
+---
+
+# 작업 노트 — 의미 해석과 query plan 생성의 분리 (SemanticPlanV2, 2026-08-02)
+
+26종 감사 수리(위 절)에서 표준으로 삼았던 "결정론 백필 3종"을 **일반화하지 않고 삭제**하고,
+의미의 소유자를 타입드 중간 표현으로 옮겼다. 위 절의 봉합책이 이 절에서 철거된다.
+
+## 왜 (문제의 구조)
+
+같은 원문을 세 번 해석하고 있었다.
+
+```
+원문 ─┬─ LLM        → query_plan 슬롯 + semantic_ir.missing_fields + status
+      ├─ 정규식 백필 → 같은 문장을 다시 읽어 빈 슬롯을 fill-if-empty
+      └─ sweep      → 앞 단계가 만든 missing_fields 를 사후 삭제
+```
+
+의미의 소유자가 없으니 새 조건마다 `_apply_*_backfill` 하나와 `_drop_*_missing_fields`
+하나가 늘었고, 어느 해석이 이겼는지는 **코드 순서에 숨었다**.
+
+## 목표 구조
+
+```
+원문 → SemanticPlanV2 추출(LLM) → 값 정규화 → coverage 검증(+누락 구간만 재추출)
+     → capability 판정 → 검증 → 결정론 컴파일 → 기존 query_plan
+```
+
+- **missing 은 계산값**: `required_fields(node) - populated_fields(node)`.
+- **status 는 파생값**: `derive_status(missing, unsupported, validation_errors, conflicts, uncovered)`.
+- **슬롯의 생산자는 하나**: `LegacyQueryPlanCompiler`. LLM 노출면에서 해당 슬롯을 뺐다.
+- 원문을 다시 읽는 곳은 **coverage 검증 하나**이고, 그 산출물은 슬롯이 아니라 재추출 요청이다.
+
+## 삭제한 것 (원문 재해석 계층)
+
+| 기존 | 대체 |
+|---|---|
+| `numeric_condition_backfill.apply` / `_fill` / `_drop_trend_owned_missing_fields` | AggregatePredicate / MetricComparison / RankedSet |
+| `campaign_condition_backfill.apply` | AggregatePredicate(scope=campaign) |
+| `metric_registry.apply_profile_condition_backfill` / `detect_profile_conditions` | Predicate(프로필 지표·날짜 상태) |
+| `graph_rag._apply_entity_set_backfill` / `entity_set.parse_entity_set_condition` / `drop_entity_set_owned_missing_fields` | EntitySetMembership |
+| `compositional_targeting.detect_member_attribute_history` / `apply_member_attribute_history_backfill` / `_drop_history_owned_missing_fields` | RelationPredicate(as_of/transition/…) |
+| `condition_evaluation_ir.apply_same_product_co_purchase_backfill` / `drop_capability_owned_missing_fields` / 감지 정규식 | RelationPredicate(co_purchase) |
+| `slot_reemission.attempt` | coverage 재추출(누락 구간 한정) |
+| `query_structurer.semantic_ir.drop_satisfied_missing_fields` / `materialize_semantic_operations` | 파생 `project_semantic_ir` |
+| `campaign_plan_v4._drop_campaign_constraint_requirements` | (불필요 — 캠페인 필드는 노드 필드가 아니다) |
+| `graph_rag._drop_fabricated_purchase_period_fields` | (불필요 — 기간은 노드 소유) |
+
+## 신규 모듈
+
+`semantic_plan`(노드·스키마·status 파생) / `semantic_normalizers`(값 정규화) /
+`semantic_capability`(축별 판정 + 실패 분류) / `semantic_coverage`(원문 대조) /
+`semantic_candidates`(후보 병합·충돌) / `semantic_plan_llm`(LLM 계약) /
+`semantic_pipeline`(단계 조립) / `legacy_plan_compiler`(슬롯 지식 단일 소유자) /
+`semantic_plan_bridge`(graph_rag 배선).
+
+## 검증
+
+- pytest **763 passed / 19 skipped**(기준선 744), preflight PASS, 지원 조건 표 재생성.
+- 코드베이스 전수 검사: 원문 정규식→슬롯 대입 0건, fill-if-empty 백필 호출 0건,
+  missing_fields 사후 삭제 0건, 삭제 대상 함수 정의 0건(`tests/test_single_interpretation_path.py` 상시 가드).
+- graph_rag.py 17,335 → 17,322줄(순감). 신규 로직은 전부 소유 모듈.
+
+## 남은 원문 해석기(이번 범위 밖 — 다음 이행 대상)
+
+`analyze_analytical_intent`(집계 의도), `behavior_demotion.*`(행동 라벨 강등),
+`active_member_filter`(회원 정책), V4 슬롯 계층의 coarse 축(성별/연령/행동/캠페인 제약).
+이들은 슬롯 백필이 아니라 각자 다른 축의 생산자라 같은 이행을 한 번 더 해야 한다 —
+노드 타입 추가 + capability 선언 + 컴파일러 매핑 3줄이면 되도록 확장 지점은 열려 있다.

@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "회원 속성의 월별 스냅샷 이력 카탈로그(compositional_targeting 소유).",
+    "새 물리 속성은 여기 JSON 한 항목으로 추가한다 — stable/changed/as_of/transition 등 연산자는 전 속성이 공유한다.",
+    "값 사전(canonical/물리값/rank/synonyms)은 member_target_filters.json eq_filters 가 단일 소유하며,",
+    "value_category 로 참조만 한다(이중 소유 금지). 로더가 런타임에 조인한다.",
+    "snapshot_months_available: 실DB에 적재된 월별 스냅샷 개수. 2026-08-02 실측: CRM_MB_MONTHCRMINFO 는",
+    "YYYYMM=201701 단일 월(회원당 1행) + PREV_* 직전값 컬럼. 다월 적재가 생기면 이 숫자만 올리면",
+    "stable/changed_n_times/exists_every_month 연산이 열린다(컴파일러는 이미 배선됨).",
+    "binding=null 은 '이력 데이터 소스 부재' 선언이다 — resolver 가 history_unsupported_reason 으로 정직하게 미지원을 알린다.",
+    "member_state 실측 근거: CRM_MB_MONTHCRMINFO.STATE_GRADE('01'~'05')는 활동등급으로,",
+    "MEMBER_STATE_CD(정상/휴면/탈퇴)와 무상관('03'에 정상·탈퇴·휴면 혼재) — 상태 이력 축으로 쓸 수 없다."
+  ],
+  "attributes": {
+    "member_grade": {
+      "label": "회원 등급(월별 스냅샷)",
+      "binding": {
+        "table": "CRM_MB_MONTHCRMINFO",
+        "entity_key": "MEMBER_NO",
+        "time_column": "YYYYMM",
+        "value_column": "ZTS_GRADE",
+        "prev_value_column": "PREV_ZTS_GRADE"
+      },
+      "snapshot_months_available": 1,
+      "value_category": "grade",
+      "surface_terms": ["등급", "구매등급", "회원등급", "구매 등급", "회원 등급"]
+    },
+    "member_state": {
+      "label": "회원 상태(정상/휴면/탈퇴)",
+      "binding": null,
+      "history_unsupported_reason": "회원 상태(정상/휴면/탈퇴)의 시점·이력 스냅샷 데이터가 적재되어 있지 않습니다. '현재 휴면인 회원'처럼 현재 상태 조건으로 요청해 주세요.",
+      "value_category": "state",
+      "surface_terms": ["상태", "회원 상태", "회원상태"]
+    }
+  }
+}

@@ -91,21 +91,29 @@ def test_target_user_slot_fragments_declare_properties() -> None:
     )
 
 
-def test_plan_container_slots_with_properties_are_exposed() -> None:
-    """plan 컨테이너 슬롯도 properties 를 선언했다면 V4 루트에 노출돼야 한다.
+def test_plan_container_slots_with_properties_have_a_producer() -> None:
+    """plan 컨테이너 슬롯도 properties 를 선언했다면 **생산 경로가 정확히 하나** 있어야 한다.
 
     P4('누적 구매금액 상위 10%') 사고의 재발 차단 — member_metric_ranking 은 컴파일러(TOP N PERCENT)
-    까지 완비돼 있었지만 V4 도구 스키마에 노출되지 않아 생산 경로 전체가 단절됐었다. 레지스트리에는
-    있는데 도구에는 없는 드리프트를 plan 컨테이너에서도 잡는다(target_user 는 위 가드가 담당)."""
+    까지 완비돼 있었지만 어떤 생산 경로에도 연결되지 않아 도달 불가였다. 2026-08-02 이행으로
+    생산 경로는 두 가지가 됐다: V4 도구 스키마 노출(LLM 직접 방출) 또는 SemanticPlan 컴파일러 소유.
+    둘 다 없으면 도달 불가고, 둘 다면 같은 의미의 이중 생산자다."""
+    import legacy_plan_compiler  # noqa: PLC0415
+
     root = set(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"])
+    compiler_owned = {slot for slot in legacy_plan_compiler.COMPILER_OWNED_SLOTS if "." not in slot}
     expected = {
         shape.name
         for shape in targeting_ir.structured_slot_shapes()
         if shape.container == "plan" and shape.schema.get("properties")
     }
-    missing = expected - root
+    missing = expected - root - compiler_owned
     assert not missing, (
-        f"properties 를 선언한 plan 슬롯이 V4 도구 스키마에 노출되지 않았다: {sorted(missing)}\n"
-        "query_structurer/campaign_plan_v4.py 루트 properties 에 _slot_schema()로 배선하라."
+        f"properties 를 선언한 plan 슬롯에 생산 경로가 없다: {sorted(missing)}\n"
+        "V4 루트 properties 에 _slot_schema()로 노출하거나 legacy_plan_compiler 에 매핑하라."
     )
-    assert "member_metric_ranking" in root, "P4 회귀: member_metric_ranking 슬롯이 V4 에서 사라졌다."
+    both = expected & root & compiler_owned
+    assert not both, f"plan 슬롯이 LLM 노출과 컴파일러 소유 양쪽에 있다(이중 생산자): {sorted(both)}."
+    assert "member_metric_ranking" in (root | compiler_owned), (
+        "P4 회귀: member_metric_ranking 의 생산 경로가 사라졌다."
+    )

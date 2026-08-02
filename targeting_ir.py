@@ -482,7 +482,9 @@ def _coerce_campaign_responses(raw: Any, *, allowed: Any = None) -> list[dict[st
         entry: dict[str, Any] = {"canonical": canonical, "predicate": mapping["predicate"]}
         if mapping.get("source"):
             entry["source"] = mapping["source"]
-        if item.get("negated"):
+        # 'no_*' canonical 은 그 자체가 부정 선언이다 — LLM 이 negated:false 로 제출해도
+        # 긍정 EXISTS 로 강등하지 않는다('구매반응이 없는'이 '있는'으로 뒤집히던 실사고 #5).
+        if item.get("negated") or (isinstance(canonical, str) and canonical.startswith("no_")):
             entry["negated"] = True
         out.append(entry)
     return out or None
@@ -609,6 +611,65 @@ def _coerce_profile_date_states(raw: Any, *, allowed: Any = None) -> list[dict[s
             entry["profile_source"] = dict(metric_map["profile_source"])
         out.append(entry)
     return out or None
+
+
+# 등급/상태 시점·이력 슬롯 연산자(닫힌 집합). compositional_targeting.OPERATORS 와 동일해야 하며
+# (이 모듈은 순수성 유지를 위해 import 하지 않는다), 드리프트는 계약 테스트가 잡는다.
+RELATIONAL_OPERATORS = frozenset({
+    "as_of_latest", "as_of_month", "transition",
+    "held_throughout", "stable", "changed_n_times",
+    "ever", "never", "exists_every_month",
+})
+_RELATIONAL_VALUE_COMPARISONS = frozenset({"eq", "gte", "lte"})
+_RELATIONAL_COUNT_OPERATORS = frozenset({"gte", "gt", "lte", "lt", "eq"})
+
+
+def _coerce_relational_operation(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
+    """relational_operation(등급/상태 시점·이력): 어휘 검증 + 값 canonical 정규화.
+
+    allowed = {"attributes": {attribute_id: {"value_tokens": {compact token: canonical}}}}.
+    값 토큰이 사전에 없으면 슬롯 전체를 drop 한다(환각 차단). 필드 누락은 통과시킨다 —
+    무엇이 비었는지는 resolver 가 사용자 문구로 답한다(coerce 는 어휘 소유, 해석은 컴파일러 소유)."""
+    if not isinstance(raw, dict) or not isinstance(allowed, dict):
+        return None
+    attributes = allowed.get("attributes")
+    if not isinstance(attributes, dict):
+        return None
+    attribute_id = raw.get("attribute_id")
+    operator = raw.get("operator")
+    spec = attributes.get(attribute_id) if isinstance(attribute_id, str) else None
+    if not isinstance(spec, dict) or operator not in RELATIONAL_OPERATORS:
+        return None
+    tokens = spec.get("value_tokens") if isinstance(spec.get("value_tokens"), dict) else {}
+
+    def _map_value(value: Any) -> str | None:
+        if not isinstance(value, str) or not value.strip():
+            return None
+        return tokens.get("".join(value.split()).casefold())
+
+    out: dict[str, Any] = {"attribute_id": attribute_id, "operator": operator}
+    for field in ("value", "from_value", "to_value"):
+        if raw.get(field) is not None:
+            mapped = _map_value(raw[field])
+            if mapped is None:
+                return None
+            out[field] = mapped
+    month = raw.get("month")
+    if isinstance(month, str) and len(month) == 6 and month.isdigit():
+        out["month"] = month
+    months = raw.get("months")
+    if isinstance(months, int) and months > 0:
+        out["months"] = months
+    if raw.get("value_comparison") in _RELATIONAL_VALUE_COMPARISONS:
+        out["value_comparison"] = raw["value_comparison"]
+    change_count = raw.get("change_count")
+    if isinstance(change_count, int) and change_count >= 0:
+        out["change_count"] = change_count
+    if raw.get("change_count_operator") in _RELATIONAL_COUNT_OPERATORS:
+        out["change_count_operator"] = raw["change_count_operator"]
+    if isinstance(raw.get("label"), str) and raw["label"].strip():
+        out["label"] = raw["label"].strip()
+    return out
 
 
 @dataclass(frozen=True)
@@ -831,6 +892,32 @@ SLOT_SHAPES: dict[str, SlotShape] = {
                      "'아직 도래하지 않은' → state:'not_due').",
                      {"metric_id": _STRING_PROP, "state": _STRING_PROP}),
         _coerce_profile_date_states, allowed_key="profile_date_states"),
+    "relational_operation": SlotShape("relational_operation", "target_user",
+        _obj_schema(
+            "회원 등급/상태의 시점·이력 조건(월별 스냅샷). 현재 값 필터(lifecycle)가 아니라 "
+            "'지난달 말 기준 VIP였던', '골드에서 VIP로 승급한', '3개월 내내 VIP 유지' 같은 "
+            "시점 한정·전이·기간 조건일 때만 사용한다. attribute_id 는 [Allowed Canonical Values]"
+            ".history_attribute_id canonical 만 사용(등급=member_grade, 정상/휴면 상태=member_state). "
+            "값(value/from_value/to_value)은 등급·상태 canonical(vip, gold_grade, dormant 등). "
+            "operator: as_of_latest('최신 기준월'·'지난달 말 기준'=최신 스냅샷 값), "
+            "as_of_month('2025년 12월 기준'→month:'202512'), "
+            "transition(직전→현재 전이: '골드에서 VIP로 승급'→{from_value:'gold_grade', to_value:'vip'}), "
+            "held_throughout(N개월 내내 유지, months 필수), stable(N개월 무변경), "
+            "changed_n_times(N개월 등급 M회 이상 변경: months+change_count), "
+            "ever/never(기간 내 한 번이라도/한 번도 아님), exists_every_month(모든 월 값 존재). "
+            "'골드 이상'은 value_comparison:'gte'.",
+            {"attribute_id": _STRING_PROP,
+             "operator": {"type": "string", "enum": sorted(RELATIONAL_OPERATORS)},
+             "month": _STRING_PROP,
+             "months": _POS_INT_PROP,
+             "value": _STRING_PROP,
+             "value_comparison": {"type": "string", "enum": sorted(_RELATIONAL_VALUE_COMPARISONS)},
+             "from_value": _STRING_PROP,
+             "to_value": _STRING_PROP,
+             "change_count": {"type": "integer", "minimum": 0},
+             "change_count_operator": {"type": "string", "enum": sorted(_RELATIONAL_COUNT_OPERATORS)},
+             "label": _STRING_PROP}),
+        _coerce_relational_operation, allowed_key="history_attributes"),
     "region_density_target": SlotShape("region_density_target", "plan",
         _obj_schema("밀집 지역 랭킹 타겟(코호트 조건으로 지역 랭킹)."),
         _coerce_ranking_dict),
@@ -1358,6 +1445,7 @@ SLOT_KO_LABELS: dict[str, str] = {
     "aggregate_conditions": "집계 조건(구매 금액/횟수 임계값)",
     "balance_conditions": "잔액 조건",
     "profile_date_conditions": "회원 프로필 날짜 조건",
+    "relational_operation": "등급·상태 시점/이력 조건",
     "region_density_target": "지역 밀집 랭킹 조건",
     "member_metric_ranking": "회원 지표 랭킹 조건",
     "purchase_count_ranking": "구매 건수 랭킹 조건",
@@ -1371,6 +1459,10 @@ assert set(SLOT_KO_LABELS) == set(SLOT_SHAPES), (
 # 표(자동 생성)와 안내 문구가 이 각주를 함께 노출한다. 키는 SLOT_SHAPES 슬롯 이름만 허용.
 SLOT_SUPPORT_NOTES: dict[str, str] = {
     "metric_trend": "수치 집계 지표만 지원(날짜·요약 지표의 기간 비교는 미지원 안내)",
+    "relational_operation": (
+        "기준월(as-of) 값·직전 스냅샷 대비 전이만 컴파일. 다월 연산(내내 유지/변경 횟수/모든 월 존재)은 "
+        "월별 스냅샷 적재 범위 내에서만 지원하며, 부족하면 적재 현황과 함께 미지원 안내"
+    ),
 }
 assert set(SLOT_SUPPORT_NOTES) <= set(SLOT_SHAPES), (
     f"SLOT_SUPPORT_NOTES 에 미등록 슬롯: {set(SLOT_SUPPORT_NOTES) - set(SLOT_SHAPES)}"

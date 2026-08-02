@@ -8,27 +8,61 @@
     {
       "metric_id": "total_buy_amt",
       "agg": "SUM",
-      "column": "TOTAL_BUY_AMT"
+      "column": "TOTAL_BUY_AMT",
+      "ko_label": "누적 구매금액",
+      "synonyms": [
+        "누적 구매금액",
+        "누적 구매 금액",
+        "총 구매금액",
+        "총구매금액",
+        "누적구매금액",
+        "구매금액"
+      ]
     },
     {
       "metric_id": "total_buy_cnt",
       "agg": "SUM",
-      "column": "TOTAL_BUY_CNT"
+      "column": "TOTAL_BUY_CNT",
+      "ko_label": "누적 구매건수",
+      "synonyms": [
+        "누적 구매건수",
+        "총 구매건수",
+        "누적 구매 건수",
+        "구매건수"
+      ]
     },
     {
       "metric_id": "mean_buy_amt",
       "agg": "AVG",
-      "column": "MEAN_BUY_AMT"
+      "column": "MEAN_BUY_AMT",
+      "ko_label": "평균 구매금액",
+      "synonyms": [
+        "평균 구매금액",
+        "평균 구매 금액",
+        "평균구매금액"
+      ]
     },
     {
       "metric_id": "max_buy_amt",
       "agg": "MAX",
-      "column": "MAX_BUY_AMT"
+      "column": "MAX_BUY_AMT",
+      "ko_label": "최대 구매금액",
+      "synonyms": [
+        "최대 구매금액",
+        "최대 구매 금액",
+        "최고 구매금액"
+      ]
     },
     {
       "metric_id": "total_buy_qty",
       "agg": "SUM",
-      "column": "TOTAL_BUY_QTY"
+      "column": "TOTAL_BUY_QTY",
+      "ko_label": "누적 구매수량",
+      "synonyms": [
+        "누적 구매수량",
+        "총 구매수량",
+        "누적 구매 수량"
+      ]
     }
   ]
 }

@@ -3,11 +3,11 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import re
 from typing import Any
 
 from aggregation_requirements import aggregation_request_json_schema
 from entity_set import derived_set_ast_error
+import semantic_plan as semantic_plan_module
 import targeting_ir
 
 from .semantic_ir import (
@@ -16,6 +16,11 @@ from .semantic_ir import (
     extract_literal_bindings,
     validate_semantic_ir,
 )
+
+
+def _semantic_plan_schema() -> dict[str, Any]:
+    """SemanticPlanV2 노출면(노드 선언에서 파생 — 여기에 두 번째 권위를 만들지 않는다)."""
+    return semantic_plan_module.semantic_plan_json_schema()
 
 
 CAMPAIGN_QUERY_PLAN_V4_VERSION = "4.0"
@@ -232,6 +237,10 @@ _BARE_ARRAY_SLOTS: frozenset[str] = frozenset({
 # plan 컨테이너 슬롯의 LLM 노출 제외 + 사유. 새 plan 슬롯은 노출하거나 여기 사유와 함께
 # 등재해야 한다 — 계약 테스트가 '노출 ∨ 선언된 제외' 전수를 강제한다(조용한 미노출 금지).
 _PLAN_SLOT_EXPOSURE_EXCLUSIONS: dict[str, str] = {
+    "member_metric_ranking": (
+        "SemanticPlanV2 RankedSet 소유 — LegacyQueryPlanCompiler 만 이 슬롯을 쓴다. "
+        "LLM 에 노출하면 같은 의미를 노드와 슬롯 두 곳에서 방출하는 이중 생산자가 된다."
+    ),
     "region_density_target": (
         "properties 없는 조각이라 strict 에서 표현 불가 — 노출하려면 targeting_ir.SLOT_SHAPES "
         "조각에 properties 를 먼저 선언해야 한다."
@@ -374,6 +383,10 @@ CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": True,
     "$defs": {
+        # SemanticPlanV2 의미 노드(재귀 — logical_expression.children / entity_set.ranked_set).
+        "semanticNode": semantic_plan_module.semantic_node_json_schema(
+            node_ref="#/$defs/semanticNode"
+        ),
         "derivedSetDimensionFilter": {
             "type": "object",
             "additionalProperties": False,
@@ -630,6 +643,9 @@ CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA: dict[str, Any] = {
         "result_limit": _nullable({"type": "integer", "minimum": 1}),
         "semantic_evidence": {"type": "array", "items": _EVIDENCE_ITEM_SCHEMA},
         "unresolved": {"type": "array", "items": _UNRESOLVED_ITEM_SCHEMA},
+        # 의미 계층의 단일 소유자. LLM 은 여기에만 의미를 쓴다 — 실행 슬롯도, 결핍 목록도,
+        # 최종 status 도 만들지 않는다(semantic_ir 은 이 노드들에서 파생되는 애플리케이션 소유물).
+        "semantic_plan": _semantic_plan_schema(),
         "semantic_ir": copy.deepcopy(SEMANTIC_IR_LLM_JSON_SCHEMA),
         "literal_bindings": {
             "type": "array",
@@ -645,8 +661,13 @@ CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA: dict[str, Any] = {
 }
 
 
+# LLM 이 만들지 않는 plan 필드. semantic_ir 이 여기 있는 것이 이번 이행의 핵심이다 —
+# 결핍·미지원·최종 status 의 소유자를 LLM 에서 시스템(semantic_pipeline)으로 옮겼다.
+# member_metric_ranking 은 SemanticPlan RankedSet 의 컴파일 산출물이라 역시 LLM 소관이 아니다.
 _APPLICATION_OWNED_PLAN_FIELDS = frozenset(
     {
+        "semantic_ir",
+        "member_metric_ranking",
         "schema_version",
         "raw_query",
         "original_query",
@@ -732,10 +753,22 @@ def _strictify(schema: Any, *, required_here: bool = True) -> Any:
     return out
 
 
-# LLM 에 노출하지 않는 target_user 하위 필드. profile_date_conditions 는 논리 슬롯
-# ({metric_id, state} canonical)으로 재정의되어 노출로 복귀했다 — 물리 alias/column/table 은 여전히
-# LLM 이 만들지 않고 coerce 가 지표 스펙 레지스트리 매핑에서 채운다(V4 계약 유지).
-_APPLICATION_OWNED_TARGET_USER_FIELDS = frozenset()
+# LLM 에 노출하지 않는 target_user 하위 필드 = **SemanticPlan 컴파일러가 소유한 슬롯**.
+# 이 목록은 legacy_plan_compiler 가 단일 소유하고 여기서는 파생만 한다 — 두 곳에서 손으로
+# 관리하면 슬롯 하나가 양쪽에서 방출되는 이중 생산자가 조용히 되살아난다.
+# (이 슬롯들의 의미는 semantic_plan 노드로 표현되고, 값은 컴파일러가 쓴다.)
+def _compiler_owned_target_user_fields() -> frozenset[str]:
+    import legacy_plan_compiler  # 순환 없음(컴파일러는 v4 스키마를 모른다)
+
+    prefix = "target_user."
+    return frozenset(
+        slot[len(prefix):]
+        for slot in legacy_plan_compiler.COMPILER_OWNED_SLOTS
+        if slot.startswith(prefix)
+    )
+
+
+_APPLICATION_OWNED_TARGET_USER_FIELDS = _compiler_owned_target_user_fields()
 
 
 def _campaign_query_plan_v4_llm_schema() -> dict[str, Any]:
@@ -799,63 +832,37 @@ def _normalize_unique_evidence_spans(payload: dict[str, Any], query: str) -> Non
             item["end"] = occurrences[0] + len(text)
 
 
-# 고객 목록/집계 분석 요청에서 모델이 누락으로 요구하면 안 되는 캠페인 제약 필드. 프롬프트 계약
-# ("고객 리스트 요청에 사용자가 요구하지 않은 캠페인 채널·혜택·상품·목표를 추가로 요구하지 않는다")
-# 의 결정론 집행이다 — 선언만으로는 위반이 반복돼 needs_clarification 이 타겟 추출을 막는다.
-# 이 필드들은 타겟 계산에 쓰이지 않으므로 제거해도 조건 손실이 없다. category 는 상품 조건과
-# 중의적이라 제외한다(계약 문구의 채널·혜택·판매상품·목표만).
-_CAMPAIGN_CONSTRAINT_FIELD_TOKENS = frozenset({
-    "objective", "offer_type", "offer", "channels", "channel", "sell_object",
-    "campaign_constraints",
-})
+# `_drop_campaign_constraint_requirements` 는 2026-08-02 SemanticPlanV2 이행으로 제거됐다.
+# 그 함수는 "LLM 이 낸 결핍 보고 중 캠페인 제약 항목"을 사후 삭제하는 sweep 이었다. 결핍의
+# 소유자가 LLM 이었기 때문에 필요했던 보정이고, 이제 결핍은 semantic_plan 노드 스키마에서
+# 계산된다 — 캠페인 채널·혜택은 애초에 노드 필드가 아니므로 결핍으로 생기지 않는다.
 
 
-def _is_campaign_constraint_field(name: Any) -> bool:
-    if not isinstance(name, str) or not name.strip():
-        return False
-    compact = re.sub(r"[^0-9a-z]+", "_", name.strip().casefold()).strip("_")
-    candidates = {compact}
-    for prefix in ("campaign_constraints_", "constraints_", "campaign_"):
-        if compact.startswith(prefix):
-            candidates.add(compact[len(prefix):])
-    return bool(candidates & _CAMPAIGN_CONSTRAINT_FIELD_TOKENS)
+def _derive_semantic_ir(payload: dict[str, Any], query: str) -> None:
+    """semantic_ir 을 semantic_plan 에서 파생한다(LLM 이 낸 semantic_ir 은 버린다).
 
+    이 시점의 파생은 **스키마 축만** 본다(필수 필드 결핍). capability·coverage 축까지 반영한
+    최종 파생은 실행 직전 `semantic_pipeline` 이 같은 함수로 다시 계산해 덮어쓴다 —
+    두 번 계산해도 같은 함수라 갈라지지 않는다.
+    """
+    import semantic_plan as plan_module  # 순환 없음
+    import semantic_pipeline  # 순환 없음(파이프라인은 v4 스키마를 모른다)
 
-def _campaign_constraint_only_unresolved(item: Any) -> bool:
-    """unresolved 항목이 캠페인 제약 필드만을 근거로 삼는지(그때만 계약 위반으로 제거)."""
-    if not isinstance(item, dict):
-        return False
-    if _is_campaign_constraint_field(item.get("path")):
-        return True
-    evidence = item.get("evidence")
-    if isinstance(evidence, str) and evidence.strip():
-        tokens = [token for token in re.split(r"[,/;\s]+", evidence.strip()) if token]
-        return bool(tokens) and all(_is_campaign_constraint_field(token) for token in tokens)
-    return False
-
-
-def _drop_campaign_constraint_requirements(payload: dict[str, Any]) -> None:
-    """고객 목록/집계 요청의 semantic_ir·unresolved 에서 캠페인 제약 누락 요구를 걷어낸다.
-
-    프롬프트가 금지한 요구인데도 모델이 반복 위반하므로 결정론으로 집행한다. 캠페인 필드 외의
-    누락(예: 기간 확정)은 그대로 남고, 전부 캠페인 필드였을 때만 needs_clarification 을
-    resolved 로 되돌린다 — 실제 미해결 의미를 조용히 지우는 일은 구조적으로 불가능하다."""
-    if payload.get("intent") not in {"find_user_segment", "analyze_aggregation"}:
+    raw_plan = payload.get("semantic_plan")
+    if not isinstance(raw_plan, dict):
+        raw_plan = {"nodes": []}
+        payload["semantic_plan"] = raw_plan
+    try:
+        plan = plan_module.plan_from_dict(raw_plan, source_query=query)
+    except plan_module.SemanticPlanError as exc:
+        payload["semantic_plan"] = {"nodes": []}
+        payload["semantic_ir"] = empty_semantic_ir(
+            missing_fields=["semantic_plan"],
+            message=f"의미 노드를 해석하지 못했습니다: {exc}",
+        )
         return
-    semantic_ir = payload.get("semantic_ir")
-    if isinstance(semantic_ir, dict):
-        missing = semantic_ir.get("missing_fields")
-        if isinstance(missing, list):
-            kept = [field for field in missing if not _is_campaign_constraint_field(field)]
-            if len(kept) != len(missing):
-                semantic_ir["missing_fields"] = kept
-                if not kept and semantic_ir.get("status") == "needs_clarification":
-                    semantic_ir["status"] = "resolved"
-    unresolved = payload.get("unresolved")
-    if isinstance(unresolved, list):
-        kept_items = [item for item in unresolved if not _campaign_constraint_only_unresolved(item)]
-        if len(kept_items) != len(unresolved):
-            payload["unresolved"] = kept_items
+    payload["semantic_plan"] = plan.to_dict()
+    payload["semantic_ir"] = semantic_pipeline.project_semantic_ir(plan)
 
 
 def attach_campaign_query_plan_v4_identity(
@@ -869,7 +876,7 @@ def attach_campaign_query_plan_v4_identity(
         return payload
     enriched = copy.deepcopy(payload)
     _normalize_unique_evidence_spans(enriched, query)
-    _drop_campaign_constraint_requirements(enriched)
+    _derive_semantic_ir(enriched, query)
     enriched.update(
         {
             "schema_version": CAMPAIGN_QUERY_PLAN_V4_VERSION,
@@ -910,10 +917,7 @@ def build_campaign_query_plan_v4_fallback(
             "compound_dimension_filters": [],
             "result_limit": None,
             "semantic_evidence": [],
-            "semantic_ir": empty_semantic_ir(
-                missing_fields=["semantic_interpretation"],
-                message="LLM 의미 구조화를 사용할 수 없습니다.",
-            ),
+            "semantic_plan": {"nodes": []},
             "unresolved": [
                 {
                     "path": None,
@@ -924,6 +928,12 @@ def build_campaign_query_plan_v4_fallback(
         },
         query,
         current_date=current_date,
+    )
+    # 구조화기 자체를 못 쓴 것은 '조건이 없다'가 아니라 내부 사고다 — 파생 semantic_ir(노드 0개
+    # → resolved)이 그것을 성공으로 오인하지 않도록 애플리케이션이 직접 선언한다.
+    payload["semantic_ir"] = empty_semantic_ir(
+        missing_fields=["semantic_interpretation"],
+        message="LLM 의미 구조화를 사용할 수 없습니다.",
     )
     return CampaignQueryPlanV4(payload)
 

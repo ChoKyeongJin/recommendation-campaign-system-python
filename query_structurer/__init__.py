@@ -30,7 +30,6 @@ from .semantic_ir import (
     SEMANTIC_IR_STATUSES,
     empty_semantic_ir,
     extract_literal_bindings,
-    materialize_semantic_operations,
     validate_semantic_ir,
 )
 from .types import (

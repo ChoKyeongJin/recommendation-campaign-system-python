@@ -88,7 +88,13 @@ def test_real_unresolved_condition_blocks_every_llm_fallback(monkeypatch) -> Non
     )
 
     assert result["is_success"] is False
-    assert result["failure_reason"] == "query_plan_required_conditions_missing"
+    # fail-close 게이트가 여럿이라 어느 게이트가 먼저 막는지는 배선에 달려 있다(2026-08-02
+    # 이후엔 의미 coverage 게이트가 먼저다). 계약은 '자유 SQL/IR 폴백으로 우회하지 않는다'이다.
+    assert result["failure_reason"] in {
+        "query_plan_required_conditions_missing",
+        "semantic_ir_needs_clarification",
+        "unresolved_source_conditions",
+    }
     assert result["interpretation_status"] == "needs_clarification"
     assert result["llm_fallback_used"] is False
 

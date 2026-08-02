@@ -32,7 +32,12 @@ import event_ir
 import lexicon_patterns
 import member_filters_config
 import metric_registry
+import failure_messages
+import member_attribute_history
 import plan_validation
+import legacy_plan_compiler
+import semantic_plan
+import semantic_plan_bridge
 import plan_semantic_ast
 import purchase_lexicon
 import semantic_signal
@@ -108,8 +113,8 @@ from aggregation_requirements import (
     validate_aggregation_sql,
 )
 from analytical_intent import (analyze_analytical_intent, build_aggregation_request as build_deterministic_aggregation_request, compile_aggregation_ast, validate_intent_sql_contract)
-from calendar_window import (DURATION_UNIT_DAYS as _DURATION_UNIT_DAYS, NUMERIC_DURATION_PATTERN as _NUMERIC_DURATION_PATTERN, WORD_DURATION_DAYS as _WORD_DURATION_DAYS, WORD_DURATION_PATTERN as _WORD_DURATION_PATTERN, month_last_day as _month_last_day, parse_calendar_window, parse_calendar_windows, calendar_window_from_parts, ymd as _ymd)
-from entity_set import compile_entity_set_predicate, entity_set_capability
+from calendar_window import (DURATION_UNIT_DAYS as _DURATION_UNIT_DAYS, NUMERIC_DURATION_PATTERN as _NUMERIC_DURATION_PATTERN, WORD_DURATION_DAYS as _WORD_DURATION_DAYS, WORD_DURATION_PATTERN as _WORD_DURATION_PATTERN, month_last_day as _month_last_day, parse_calendar_window, parse_calendar_window_spans, parse_calendar_windows, calendar_window_from_parts, ymd as _ymd)
+from entity_set import (compile_entity_set_predicate, entity_set_capability)
 from formula_engine import compile_formula_ast, validate_formula_ast
 from targeting_expression import (
     TargetingExpressionError,
@@ -150,7 +155,7 @@ import compiler_strategies
 import behavior_demotion
 import condition_evaluation_ir
 import compositional_targeting
-from condition_evaluation_ir import (PLAN_KEY as CONDITION_EVALUATIONS_KEY, apply_same_product_co_purchase_backfill, compile_evaluation as compile_condition_evaluation, detects_same_product_co_purchase, drop_capability_owned_missing_fields, requests_member_count, validate_compiled_sql as validate_condition_evaluation_sql, validate_evaluations as validate_condition_evaluations)
+from condition_evaluation_ir import (PLAN_KEY as CONDITION_EVALUATIONS_KEY, compile_evaluation as compile_condition_evaluation, validate_compiled_sql as validate_condition_evaluation_sql, validate_evaluations as validate_condition_evaluations)
 from query_structurer import (
     COUNTER_LITERAL_RE,
     COUNTER_UNIT_SEMANTICS,
@@ -166,11 +171,11 @@ from query_structurer import (
     as_campaign_query_plan_v4,
     build_campaign_query_plan_v4_fallback,
     build_fallback,
-    materialize_semantic_operations,
     verify_campaign_query_identity,
     call_query_planner,
 )
 from query_structurer.prompt import PLANNER_STRUCTURED_QUERY_RULES
+from query_structurer.semantic_ir import validate_semantic_ir
 from query_semantics import NON_ENTITY_TERMS, is_non_entity_candidate
 from data_quality import validate_metric_profile
 from member_policy import active_member_filter, active_member_predicate, member_condition_canonicals
@@ -242,6 +247,7 @@ def _structure_campaign_query_plan_v4(
     context: StructuringContext,
     llm_model: str,
     query_structurer: QueryStructurer | None = None,
+    extra_instruction: str | None = None,
 ) -> CampaignQueryPlanV4:
     """Extract the evidence-bound IR that is passed unchanged to the planner/compiler."""
 
@@ -318,7 +324,7 @@ def _structure_campaign_query_plan_v4(
             on_event=lambda event, payload: _write_rag_llm_log(
                 event, {"query": query, **payload}
             ),
-        ).structure(input)
+        ).structure(input, extra_instruction=extra_instruction)
     except Exception as exc:  # noqa: BLE001 - fail closed into the deterministic fallback.
         _write_rag_llm_log(
             "campaign_query_plan_v4_setup_failed",
@@ -2571,6 +2577,7 @@ def classify_query_complexity(query_plan: dict[str, Any]) -> str:
         target_user.get("campaign_buy_amount"),       # 캠페인 귀속 구매금액(팩트 BUY_AMT 집계)
         target_user.get("campaign_buy_count"),        # 캠페인 귀속 구매건수(팩트 구매반응 캠페인 수)
         target_user.get("cell_rate_target"),          # 셀 단위 성공률/구매율 비율(셀 집계)
+        target_user.get("relational_operation"),      # 등급·상태 시점/이력(월별 스냅샷 조인)
         query_plan.get("union_condition"),            # 합집합(OR) 컴파일
         query_plan.get("set_expressions"),            # 집합식
         query_plan.get("region_density_target"),      # 밀집 지역 랭킹(집계)
@@ -3210,6 +3217,7 @@ def _allowed_canonical_values() -> dict[str, list[str]]:
         "profile_date_state": sorted(f"{metric}:{state}" for metric, entry in allowed["profile_date_states"].items()
                                      for state in entry["states"]),
         "member_metric_id": sorted(allowed["member_metrics"]),
+        "history_attribute_id": sorted(allowed["history_attributes"].get("attributes") or {}),
     }
 
 
@@ -3385,20 +3393,34 @@ def _llm_slot_allowed() -> dict[str, Any]:
         # 회원 단위 지표 랭킹(member_metric_ranking) metric_id 닫힌 집합(member_metrics.json).
         "member_metrics": {m["metric_id"] for m in member_metrics_registry.get("metrics", [])
                            if isinstance(m, dict) and isinstance(m.get("metric_id"), str)},
+        "history_attributes": compositional_targeting.slot_vocab(_attribute_history_catalog()),
     }
+
+
+@functools.lru_cache(maxsize=1)
+def _attribute_history_catalog() -> dict[str, Any]:
+    """속성 이력 카탈로그(바인딩 JSON+eq_filters 값 조인). 실패는 조용한 강등 대신 예외."""
+    return compositional_targeting.load_attribute_catalog(
+        _MEMBER_TARGET_FILTERS.get("eq_filters") or []
+    )
 
 
 def _coerce_llm_structured_conditions(candidate: Any) -> dict[str, Any]:
     """LLM 후보의 구조화 슬롯을 IR SlotShape 의 닫힌 어휘로 검증·정규화해 {slot: value} 로 돌려준다.
 
-    유효한 슬롯만 담고 어휘 이탈/형식 오류는 drop(환각 차단). 실제 플랜 병합은 _apply_llm_structured_slots
-    가 재실행 _apply_* 이후 fill-if-empty(덧셈형)로 수행한다."""
+    유효한 슬롯만 담고 어휘 이탈/형식 오류는 drop(환각 차단). 이 함수는 **검증만** 한다 —
+    플랜 병합은 호출자 소관이고, 컴파일러 소유 슬롯은 애초에 후보에 실리지 않는다."""
     if not isinstance(candidate, dict):
         return {}
     allowed = _llm_slot_allowed()
     target_user = candidate.get("target_user") if isinstance(candidate.get("target_user"), dict) else {}
+    compiler_owned = {slot.rpartition(".")[2] for slot in legacy_plan_compiler.COMPILER_OWNED_SLOTS}
     out: dict[str, Any] = {}
     for shape in targeting_ir.slot_coercers():
+        # 컴파일러 소유 슬롯은 LLM 후보에서 받지 않는다 — 스키마에서 이미 뺐지만, 후보가
+        # 어디서 오든 슬롯의 생산자가 하나로 유지되게 여기서도 막는다(방어선 이중화).
+        if shape.name in compiler_owned:
+            continue
         container = target_user if shape.container == "target_user" else candidate
         if shape.name not in container:
             continue
@@ -3500,32 +3522,17 @@ def _coerce_llm_query_plan_candidate(
         coerced_set_expressions = [expression for expression in coerced_set_expressions if expression is not None]
         if coerced_set_expressions:
             plan["set_expressions"] = coerced_set_expressions
+    # 의미 계층 이관(2026-08-02): 의미의 소유자는 semantic_plan 노드이고, semantic_ir 은
+    # 그 파생물이다. 예전에 여기 있던 materialize_semantic_operations(LLM semantic_ir 연산 →
+    # metric_trend 슬롯 직접 생성)는 삭제됐다 — 그 슬롯은 이제 컴파일러만 쓴다.
+    semantic_plan_payload = candidate.get(semantic_plan_bridge.PLAN_KEY)
+    if isinstance(semantic_plan_payload, dict):
+        plan[semantic_plan_bridge.PLAN_KEY] = copy.deepcopy(semantic_plan_payload)
     semantic_ir = candidate.get("semantic_ir")
     literal_bindings = candidate.get("literal_bindings")
     if isinstance(semantic_ir, dict) and isinstance(literal_bindings, list):
         plan["semantic_ir"] = copy.deepcopy(semantic_ir)
         plan["literal_bindings"] = copy.deepcopy(literal_bindings)
-        try:
-            semantic_slots = materialize_semantic_operations(
-                semantic_ir, literal_bindings
-            )
-        except (KeyError, TypeError, ValueError):
-            semantic_slots = {}
-        for name, value in semantic_slots.items():
-            shape = targeting_ir.SLOT_SHAPES.get(name)
-            allowed_vocab = (
-                _llm_slot_allowed().get(shape.allowed_key)
-                if shape is not None and shape.allowed_key
-                else None
-            )
-            coerced = (
-                shape.coerce(value, allowed=allowed_vocab)
-                if shape is not None
-                else None
-            )
-            if coerced is not None:
-                container = plan["target_user"] if shape.container == "target_user" else plan
-                container[name] = coerced
     # 구조화 슬롯도 후보의 정식 슬롯으로 제출한다. 적용 여부와 충돌은 resolver 한 곳에서만 정한다.
     unsupported_resolvers: list[dict[str, str]] = []
     for name, value in _coerce_llm_structured_conditions(candidate).items():
@@ -5074,6 +5081,11 @@ _CUMULATIVE_WINDOW_MARKER_RE = re.compile(r"누적|누계|평생|통산|역대|�
 # 낱말은 사전에서 끼워 넣는다. 손으로 나열하던 조합에는 빈칸이 있었다('동일한 제품'·'제품별'이 누락).
 # 범위(scope) 필터: 브랜드/카테고리. '특정/어떤/모든' 등은 값 미지정 자리표시자다.
 _SCOPE_PLACEHOLDER_VALUES = {"특정", "어떤", "모든", "해당", "일부", "각", "그", "이", "저", "무슨", "어느", "임의"}
+# 자리표시자 중 '값을 물어야 답이 나오는' 명시 질문형만 조기 clarification 대상이다 —
+# '모든'(무필터)·'해당/그'(지시 참조)는 여기서 묻지 않는다.
+_SCOPE_PLACEHOLDER_QUESTION_RE = re.compile(
+    r"(?:특정|어떤|무슨|어느|임의의?|아무)\s*(?P<domain>브랜드|상품|제품|카테고리)"
+)
 # '서로 다른/여러/다양한 <디멘션>'의 수식어는 그 디멘션의 **값**이 아니라 '가짓수를 센다'는 표지다. 값
 # 자리에 이 수식어가 잡히면 scope 로 쓰지 않는다('서로 다른 브랜드' → BRAND_NAME='다른' 오필터 방지).
 # 자리표시자('특정 브랜드')와 달리 clarification 대상도 아니다 — 애초에 값을 묻는 표현이 아니기 때문이다.
@@ -5328,15 +5340,45 @@ def _plan_calendar_ranges(plan: dict[str, Any]) -> list[tuple[str, str]]:
     return found
 
 
-def _unclaimed_calendar_windows(windows: list[dict[str, Any]], plan: dict[str, Any]) -> list[dict[str, Any]]:
+def _semantic_plan_node_spans(plan: dict[str, Any]) -> list[tuple[int, int]]:
+    """SemanticPlan 노드가 청구한 원문 구간(감사·소유권 판정 공용)."""
+    payload = plan.get(semantic_plan_bridge.PLAN_KEY)
+    nodes = payload.get("nodes") if isinstance(payload, dict) else None
+    spans: list[tuple[int, int]] = []
+    for node in nodes or []:
+        if not isinstance(node, dict):
+            continue
+        start, end = node.get("source_start"), node.get("source_end")
+        if isinstance(start, int) and isinstance(end, int) and start <= end:
+            spans.append((start, end))
+    return spans
+
+
+def _unclaimed_calendar_windows(
+    windows: list[dict[str, Any]], plan: dict[str, Any], source_text: str | None = None
+) -> list[dict[str, Any]]:
     """주어진 절대 달력 창 중 plan 의 어떤 창 슬롯도 포함하지 못한 것들(= 조용히 드롭될 구간).
 
-    포함 판정은 '구간 커버'다 — 병합된 넓은 구간(2018-01-01~2019-12-31)이 그 안의 창(2019년)을 이미
-    표현하고 있으면 드롭이 아니다."""
+    포함 판정은 두 축이다:
+      ① 구간 커버 — 병합된 넓은 구간(2018-01-01~2019-12-31)이 그 안의 창(2019년)을 이미 표현.
+      ② 근거 스팬 소유 — 시점 앵커를 절대 구간으로 저장하지 않는 조건('지난달 말 기준 VIP'의
+         as-of 스냅샷)은 창을 값으로 갖지 않지만 그 어구를 **근거로 청구**한다. 노드가 그
+         구간을 청구했으면 드롭이 아니다(청구 없이 사라진 창만 고지한다)."""
     claimed = _plan_calendar_ranges(plan)
+    node_spans = _semantic_plan_node_spans(plan)
+    owned_ranges: set[tuple[str, str]] = set()
+    if node_spans and isinstance(source_text, str) and source_text:
+        # 창의 표면어('지난달')와 정규화 라벨('2026년 7월')이 달라서 라벨 비교로는 못 잇는다 —
+        # 좌표로 소유를 판정하고 구간(from/to)으로 대조한다.
+        owned_ranges = {
+            (str(window.get("from")), str(window.get("to")))
+            for window, start, end in parse_calendar_window_spans(source_text)
+            if any(node_start <= start and end <= node_end for node_start, node_end in node_spans)
+        }
     return [
         window for window in windows
         if not any(start <= window["from"] and window["to"] <= end for start, end in claimed)
+        and (str(window.get("from")), str(window.get("to"))) not in owned_ranges
     ]
 
 
@@ -8365,11 +8407,20 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
             warnings.append(f"수신동의 조건 '{_CONSENT_SIGNAL_LABELS.get(consent, consent)}'")
 
     # 캠페인 반응: plan 이 긍정/부정 어느 트랙이든 잡았으면 보존(canonical 의 no_ 접두어 제거 후 비교).
+    # 여부 슬롯만이 아니라 수치 슬롯(반응 횟수/구매반응 금액·건수)도 같은 신호의 소비자다 —
+    # frequency(event=campaign_contact)가 '발송 성공'을, buy_amount/count 가 '캠페인 반응 구매'를 소비한다.
     plan_responses = {
         str(response.get("canonical", "")).replace("no_", "", 1)
         for response in target_user.get("campaign_responses") or []
         if isinstance(response, dict)
     }
+    frequency_slot = target_user.get("campaign_response_frequency")
+    if isinstance(frequency_slot, dict) and frequency_slot.get("event"):
+        plan_responses.add(str(frequency_slot["event"]))
+    if isinstance(target_user.get("campaign_buy_amount"), dict) or isinstance(
+        target_user.get("campaign_buy_count"), dict
+    ):
+        plan_responses.add("buy_response")
     for response in sorted(signature["campaign_responses"]):
         if response not in plan_responses:
             warnings.append(f"캠페인 반응 조건 '{_CAMPAIGN_RESPONSE_SIGNAL_LABELS.get(response, response)}'")
@@ -8423,7 +8474,7 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
     # 조용한 드롭이다('2018, 2019년 …'이 기간 필터 없는 전 기간 집계로 나가는 사고). 창 소속을 되찾는
     # 것은 calendar_window_claim 이 맡고, 되찾지 못한 창(소속 모호·해당 팩트 없음)은 여기서 고지한다 —
     # 연도 명시 절대 창만 보므로 상대 기간('최근 3개월')·숫자 오탐은 대상이 아니다.
-    for window in _unclaimed_calendar_windows(parse_calendar_windows(text), query_plan):
+    for window in _unclaimed_calendar_windows(parse_calendar_windows(text), query_plan, text):
         warnings.append(f"기간 '{window['label']}' 조건")
 
     # 장바구니: 원문에 '장바구니'가 있는데 어떤 카트 슬롯도 안 잡혔으면 드롭(존재/부재/보관/유형/개수 전부).
@@ -8462,26 +8513,10 @@ def _refresh_unresolved_source_conditions(
     ]
     evaluation_unresolved: list[dict[str, Any]] = []
     evaluations = query_plan.get(CONDITION_EVALUATIONS_KEY)
-    if detects_same_product_co_purchase(original_query) and not (
-        isinstance(evaluations, list) and evaluations
-    ):
-        missing_path = "final_result" if not requests_member_count(original_query) else CONDITION_EVALUATIONS_KEY
-        evaluation_unresolved.append({
-            "id": "usr_" + hashlib.sha256(
-                f"{original_query}\0{missing_path}\0condition_evaluation".encode("utf-8")
-            ).hexdigest()[:16],
-            "path": missing_path,
-            "label": "동일 상품 동시 구매 조건",
-            "source_text": original_query,
-            "reason": (
-                "조건 판정 결과의 최종 결과 단위를 확정할 수 없습니다."
-                if missing_path == "final_result"
-                else "판정 범위·그룹화 단위·측정·집계·비교·최종 결과를 실행 IR로 완전하게 표현하지 못했습니다."
-            ),
-            "status": "unresolved",
-            "source": "condition_evaluation_ir",
-        })
-    elif isinstance(evaluations, list) and evaluations:
+    # '동시구매 어구가 원문에 있는데 IR 이 없다'를 여기서 정규식으로 다시 판정하던 분기는
+    # 삭제됐다 — 그 판정은 이제 coverage verifier 가 원문 앵커 기준으로 하고, 결과는
+    # semantic_ir.missing_fields(uncovered:...)로 나온다. 여기서는 **만들어진 IR 의 검증**만 한다.
+    if isinstance(evaluations, list) and evaluations:
         for issue in validate_condition_evaluations(evaluations):
             evaluation_unresolved.append({
                 "id": "usr_" + hashlib.sha256(
@@ -8526,6 +8561,26 @@ def _refresh_unresolved_source_conditions(
             query_plan, original_query
         )
     )
+    # 값 미지정 자리표시자('특정 브랜드')는 최종 의미검증까지 끌고 가지 않고 여기서 바로 묻는다 —
+    # 답이 정해져 있는 확인 질문이므로 재방출 대상도 아니다(reemission=skip).
+    placeholder_unresolved = [
+        {
+            "id": "usr_" + hashlib.sha256(
+                f"{original_query}\0{match.group(0)}\0scope_placeholder".encode("utf-8")
+            ).hexdigest()[:16],
+            "path": "source_coverage.scope_placeholder",
+            "label": f"{match.group('domain')} 지정 필요",
+            "source_text": original_query,
+            "reason": (
+                f"'{match.group(0)}'는 대상이 지정되지 않은 표현입니다. "
+                f"구체적인 {match.group('domain')} 이름을 지정해 주세요."
+            ),
+            "status": "unresolved",
+            "source": "scope_placeholder",
+            "reemission": "skip",
+        }
+        for match in _SCOPE_PLACEHOLDER_QUESTION_RE.finditer(original_query or "")
+    ]
     labels = _deterministic_dropped_conditions(original_query, query_plan)
     unresolved = [
         {
@@ -8535,7 +8590,11 @@ def _refresh_unresolved_source_conditions(
             "path": f"source_coverage.unresolved[{index}]",
             "label": label,
             "source_text": original_query,
-            "reason": "원문 신호가 구조화된 실행 슬롯으로 귀결되지 않았습니다.",
+            # 어떤 조건이 미귀결인지 라벨 없이 범용 문구만 내보내면 사용자·운영자 모두 원인을 알 수
+            # 없다 — 표시 사유에 조건 라벨을 직접 싣는다(_unresolved_display_reason 은 한글 reason 을
+            # 우선 노출한다).
+            "reason": f"{label} 신호가 구조화된 실행 슬롯으로 귀결되지 않았습니다. "
+                      "표현을 바꾸거나 조건을 나눠 다시 요청해 주세요.",
             "status": "unresolved",
         }
         for index, label in enumerate(labels)
@@ -8545,6 +8604,7 @@ def _refresh_unresolved_source_conditions(
         *evaluation_unresolved,
         *product_resolution_unresolved,
         *semantic_obligation_unresolved,
+        *placeholder_unresolved,
     ]
     merged.extend(item for item in unresolved if item not in merged)
     query_plan["unresolved_source_conditions"] = merged
@@ -9289,27 +9349,10 @@ def _plan_has_purchase_fact_condition(query_plan: dict[str, Any]) -> bool:
     return bool(query_plan.get("purchase_count_ranking"))
 
 
-def _drop_fabricated_purchase_period_fields(query_plan: dict[str, Any]) -> None:
-    """구매 조건이 전혀 없는 플랜에서 요구된 구매 기간 missing_field 를 걷어낸다.
-
-    V4 모델이 '재구매 유도' 같은 캠페인 목적 언급만으로 target_user.purchase_date 를
-    missing_fields 로 반복 요구하는 계약 위반의 결정론 집행이다(프롬프트 규칙:
-    명시되지 않은 선택 제한은 '제한 없음'). 구매 사실 슬롯이 하나라도 있으면 건드리지
-    않으므로, '지난 시즌 구매 고객'처럼 기간이 진짜 미확정인 요구는 그대로 남는다."""
-    semantic_ir = query_plan.get("semantic_ir")
-    if not isinstance(semantic_ir, dict) or semantic_ir.get("status") != "needs_clarification":
-        return
-    missing = semantic_ir.get("missing_fields")
-    if not isinstance(missing, list) or not missing:
-        return
-    if _plan_has_purchase_fact_condition(query_plan):
-        return
-    kept = [field for field in missing if not _is_purchase_period_field(field)]
-    if len(kept) == len(missing):
-        return
-    semantic_ir["missing_fields"] = kept
-    if not kept and not semantic_ir.get("unsupported_operations"):
-        semantic_ir["status"] = "resolved"
+# `_drop_fabricated_purchase_period_fields` 는 2026-08-02 삭제됐다 — LLM 이 근거 없이 요구한
+# 구매 기간 결핍을 사후에 걷어내던 sweep 이다. 결핍의 소유자가 LLM 이었기 때문에 필요했고,
+# 이제 missing_fields 는 semantic_plan 노드 스키마에서 계산되므로 조작된 요구가 생기지 않는다
+# (기간은 노드의 선택 필드이고, 노드가 소유하면 결핍이 아니다).
 
 
 def _semantic_ir_blocking_sql_result(
@@ -9320,7 +9363,6 @@ def _semantic_ir_blocking_sql_result(
     semantic_ir = query_plan.get("semantic_ir")
     if not isinstance(semantic_ir, dict):
         return None
-    _drop_fabricated_purchase_period_fields(query_plan)
     status = semantic_ir.get("status")
     if status not in {"needs_clarification", "unsupported"}:
         return None
@@ -9331,14 +9373,15 @@ def _semantic_ir_blocking_sql_result(
     ]
     message = semantic_ir.get("message")
     if not isinstance(message, str) or not message.strip():
-        message = (
-            "필수 비교 조건을 확인해 주세요."
-            if status == "needs_clarification"
-            else "요청한 연산은 현재 지원하지 않습니다."
+        field_labels = _unique_strings(
+            [failure_messages.semantic_ir_field_label(field) for field in missing_fields]
         )
+        message = failure_messages.semantic_ir_clarification_message(str(status), field_labels)
     missing = [
         _missing_input_condition(
-            f"semantic_ir.{field}", field, message
+            f"semantic_ir.{field}",
+            failure_messages.semantic_ir_field_label(field),
+            f"'{failure_messages.semantic_ir_field_label(field)}' 값을 원문에서 확정하지 못했습니다.",
         )
         for field in missing_fields
     ]
@@ -9509,9 +9552,52 @@ def _unresolved_source_condition_is_deterministically_resolved(
     """Whether a stale LLM/validator disagreement is owned by compiled IR."""
 
     path = str(item.get("path") or "").strip()
+    # 등급/상태 시점·이력 결핍 보고는 검증된 relational_operation 이 그 의미를 컴파일했으면 stale 이다.
+    if item.get("source") == "llm_semantic_ir" and member_attribute_history.row_owned_by_compiled_operation(item, query_plan):
+        return True
     entity_set = _compiled_entity_set_condition(query_plan)
     if path == "target_user.entity_set_condition":
         return entity_set is not None
+    # 자유 문장 결핍 보고('구체적인 상품 정보가 필요함' 등)는 그 어구가 컴파일된 파생 집합 **절**과
+    # 겹칠 때만 stale 이다 — surface(원문 전체)와 비교하면 모든 인용 행이 항진으로 걷혀
+    # 다른 절의 진짜 확인 질문까지 삼킨다(리뷰 실증). 절 밖 꼬리는 12자(보일러플레이트)만 허용.
+    if item.get("source") == "llm_semantic_ir" and entity_set is not None:
+        source_query = str(
+            query_plan.get("original_query") or query_plan.get("raw_query")
+            or query_plan.get("planning_query") or ""
+        )
+        clause = (entity_set.get("spans") or {}).get("clause")
+        clause_text = ""
+        if source_query and isinstance(clause, (list, tuple)) and len(clause) == 2:
+            start, end = int(clause[0]), int(clause[1])
+            if 0 <= start <= end <= len(source_query):
+                clause_text = re.sub(r"\s+", "", source_query[start:end]).casefold()
+        condition_text = re.sub(r"\s+", "", str(item.get("condition") or "")).casefold()
+        if condition_text and clause_text and (
+            condition_text in clause_text
+            or (clause_text in condition_text and len(condition_text) - len(clause_text) <= 12)
+        ):
+            return True
+    # 기간 대 기간 증감 조건이 컴파일돼 있으면, 같은 월쌍/기간 비교를 말하는 자유 문장 결핍 보고는
+    # stale 이중 보고다. 증감 낱말만으로 걷으면('재구매 증가 캠페인') 타 절을 삼킨다 — 월쌍/기간
+    # 문맥을 함께 요구한다.
+    if item.get("source") == "llm_semantic_ir" and isinstance(
+        (query_plan.get("target_user") or {}).get("metric_trend"), dict
+    ):
+        row_text = f"{item.get('condition') or ''} {item.get('reason') or ''}"
+        if re.search(r"증가|감소|증감", row_text) and re.search(
+            r"월\s*과|월\s*대비|차이|기간|%|퍼센트|증가율|감소율", row_text
+        ):
+            return True
+    # 캠페인 구성 필드(채널·혜택·목적) 요구는 타겟 조건 결핍이 아니다(BFF 소관) — 모델이 계약을
+    # 어기고 반복 생성하는 조작된 요구다. 판정은 reason(무엇이 없다는가)만으로 한다 — condition 은
+    # 원문 전체가 실리곤 해서 타겟 낱말이 섞인다. 타겟 축 낱말이 reason 에 있으면 회수하지 않는다.
+    if item.get("source") == "llm_semantic_ir":
+        reason_text = str(item.get("reason") or "") or str(item.get("condition") or "")
+        if re.search(r"채널|혜택|오퍼|캠페인\s*목적", reason_text) and not re.search(
+            r"금액|횟수|건수|기간|개월|등급|상태|성별|연령|지역|선호|수신|없는|미구매|반응이\s*없", reason_text
+        ):
+            return True
     if path == "plan.semantic_conditions" and entity_set is not None:
         return any(
             isinstance(entry, dict)
@@ -9848,6 +9934,17 @@ def _plan_validation_blocking_sql_result(
         }
         for issue in validation.issues
     ]
+    clarification_questions = _unique_strings(
+        [failure_messages.plan_validation_issue_ko(issue) for issue in validation.issues]
+    ) or ["요청을 실행 계획으로 확정하지 못했습니다. 조건을 확인해 주세요."]
+    missing_conditions = [
+        _missing_input_condition(
+            str(issue.path or "query_plan"),
+            str(issue.code or "plan_validation"),
+            failure_messages.plan_validation_issue_ko(issue),
+        )
+        for issue in validation.issues
+    ]
     return {
         "sql": None,
         "blocked_sql": None,
@@ -9858,9 +9955,14 @@ def _plan_validation_blocking_sql_result(
         "candidate_count": 0,
         "condition_tokens": [],
         "required_conditions": [],
-        "input_validation": {"is_satisfied": False, "errors": issue_payloads},
-        "missing_input_conditions": [],
-        "clarification_questions": [],
+        "input_validation": {
+            "is_satisfied": False,
+            "errors": issue_payloads,
+            "missing_conditions": missing_conditions,
+            "clarification_questions": clarification_questions,
+        },
+        "missing_input_conditions": missing_conditions,
+        "clarification_questions": clarification_questions,
         "semantic_verification": {"ran": False},
         "delivery_validation": {"is_satisfied": False},
         "llm_fallback_used": False,
@@ -9869,9 +9971,12 @@ def _plan_validation_blocking_sql_result(
         "is_success": False,
         "failure_reason": "plan_validation_" + validation.status,
         "error_code": "PLAN_VALIDATION_" + validation.status.upper(),
+        # internal_invalid 는 능력의 부재 선언이 아니라 해석 산출물의 내부 불량이다 —
+        # '미지원'으로 뭉개지 않고 확인 필요로 안내한다(표적 재방출·재시도의 대상).
         "interpretation_status": (
             "needs_clarification"
-            if validation.status == plan_validation.CLARIFICATION_REQUIRED
+            if validation.status
+            in (plan_validation.CLARIFICATION_REQUIRED, plan_validation.INTERNAL_INVALID)
             else "unsupported"
         ),
         "plan_validation": {
@@ -9881,6 +9986,90 @@ def _plan_validation_blocking_sql_result(
             "unresolved_span_ids": list(validation.unresolved_span_ids),
         },
     }
+
+
+def _semantic_compile_context() -> semantic_plan_bridge.CompileContext:
+    """실행 레지스트리 → SemanticPlan 컴파일 컨텍스트(주입 지점 하나)."""
+    profile_metrics, profile_date_states = metric_registry.profile_slot_vocab()
+    return semantic_plan_bridge.build_context(
+        slot_shapes=targeting_ir.SLOT_SHAPES,
+        allowed=_llm_slot_allowed(),
+        aggregate_metric_specs=_aggregate_targets_config().get("metrics", {}) or {},
+        member_metric_specs=(_load_member_metrics(str(DEFAULT_MEMBER_METRICS_PATH)) or {}).get("metrics", []),
+        cart_metric_ids=sorted(_CART_AGGREGATE_METRIC_EXPRESSIONS),
+        campaign_event_specs=(
+            _MEMBER_TARGET_FILTERS.get("campaign_response_targets", {}).get("frequency_events") or {}
+        ),
+        profile_metric_specs={**profile_metrics, **profile_date_states},
+        history_attribute_specs=compositional_targeting.slot_vocab(_attribute_history_catalog()),
+        entity_set_measures=_entity_set_config().get("measures") or {},
+        today=date.today(),
+    )
+
+
+def _semantic_reextractor(llm_model: str | None) -> Any:
+    """coverage 누락 구간만 다시 읽는 LLM 재추출기(없으면 None — 정직한 결핍 보고로 귀결)."""
+    if not llm_model:
+        return None
+
+    def reextract(query: str, spans: list[str]) -> tuple[Any, list[str]]:
+        instruction = (
+            "이전 제출에서 아래 원문 구절의 조건이 semantic_plan 노드로 표현되지 않았다:\n"
+            + "\n".join(f"- {span}" for span in spans)
+            + "\n이 구절들만 다시 읽고 해당하는 semantic_plan 노드를 만들어 전체 플랜을 다시 제출하라. "
+            "다른 구절의 노드를 새로 만들거나 바꾸지 마라. 원문에 없는 조건을 만들지 마라."
+        )
+        candidate = _structure_campaign_query_plan_v4(
+            query,
+            StructuringContext(
+                current_date=date.today().isoformat(), timezone=os.getenv("GRAPH_RAG_TIMEZONE")
+            ),
+            llm_model,
+            extra_instruction=instruction,
+        )
+        payload = candidate if isinstance(candidate, dict) else getattr(candidate, "to_dict", dict)()
+        raw = payload.get(semantic_plan_bridge.PLAN_KEY) or {"nodes": []}
+        return semantic_plan.plan_from_dict(raw, source_query=query), []
+
+    return reextract
+
+
+def _apply_semantic_plan_pipeline(
+    query_plan: dict[str, Any], query: str, *, llm_model: str | None = None
+) -> None:
+    """의미 → 실행 플랜 단일 경로. 실패는 삼키지 않고 내부 사고로 기록한다."""
+    try:
+        semantic_plan_bridge.apply(
+            query_plan,
+            query,
+            context=_semantic_compile_context(),
+            reextract=_semantic_reextractor(llm_model),
+            available_months=_attribute_snapshot_months(),
+        )
+    except Exception as exc:  # noqa: BLE001 — 배선 사고를 '미지원'으로 표시하면 거짓 선언이 된다.
+        plan_decisions.record(
+            query_plan, filter_name="semantic_plan_pipeline", action=plan_decisions.REJECT,
+            slot=semantic_plan_bridge.PLAN_KEY,
+            reason=f"의미 파이프라인 내부 오류: {exc.__class__.__name__}: {exc}",
+        )
+    # 등급/상태 이력 슬롯은 컴파일러가 쓰고, 실행 IR 로의 귀결은 전용 리졸버가 한다.
+    member_attribute_history.apply(
+        query_plan, query, catalog_loader=_attribute_history_catalog
+    )
+
+
+def _attribute_snapshot_months() -> dict[str, int]:
+    """그레인별 실적재 깊이(capability 판정 입력). 카탈로그 선언이 단일 권위."""
+    try:
+        catalog = _attribute_history_catalog()
+    except (OSError, ValueError):
+        return {}
+    months = [
+        int(spec.get("snapshot_months_available") or 0)
+        for spec in (catalog.get("attributes") or {}).values()
+        if isinstance(spec, dict)
+    ]
+    return {"monthly_attribute_snapshot": max(months) if months else 0}
 
 
 def build_sql_result(
@@ -9901,16 +10090,15 @@ def build_sql_result(
     external_condition_block = _external_condition_blocking_sql_result(query_plan)
     if external_condition_block is not None:
         return external_condition_block
-    # 여기 있던 조건 재해석(파생 엔터티 집합·회원 제외·소유권 재조정·조합형 IR)은 모두 원문을 다시
-    # 읽는 규칙 계층이었다. 이제 이 지점은 **검증만** 한다 — 플랜을 바꾸지 않고, 컴파일 가능한지만 본다.
+    # 의미 → 실행 플랜 단일 경로(2026-08-02). 원문을 다시 읽어 슬롯을 채우던 결정론 백필
+    # 6종과 결핍 사후 삭제 4종이 여기로 대체됐다: LLM 이 낸 SemanticPlanV2 노드를 정규화 →
+    # coverage 검증(+누락 구간만 재추출) → capability 판정 → 결정론 컴파일한다.
+    # semantic_ir(status/missing/unsupported)은 이 파이프라인의 **파생물**이라 이후 아무도 고치지 않는다.
+    _apply_semantic_plan_pipeline(query_plan, original_query or query, llm_model=llm_model)
+    # 이 지점은 **검증만** 한다 — 플랜을 바꾸지 않고, 컴파일 가능한지만 본다.
     relational_ir_block = _relational_ir_blocking_sql_result(query_plan)
     if relational_ir_block is not None:
         return relational_ir_block
-    # 동시구매 IR 은 application-owned — LLM 이 '같은 상품'을 미확정 결핍(purchase_object 등)으로
-    # 보고하기 전에 결정론 생산자가 채우고, capability 가 소유한 missing_fields 를 걷어낸다.
-    # 게이트보다 먼저여야 한다: 뒤(9895)에만 있으면 전용 capability 가 있어도 영원히 도달 불가다.
-    apply_same_product_co_purchase_backfill(query_plan, original_query or query)
-    drop_capability_owned_missing_fields(query_plan, original_query or query)
     # 스칼라 카운트 IR('고객수')의 출력 계약도 capability 가 소유한다 — 계약 부재 시 기본
     # expected_grain='member' 가 정당한 COUNT 결과를 grain 불일치로 차단하기 때문이다.
     if not isinstance(query_plan.get("output_contract"), dict):
@@ -9935,15 +10123,39 @@ def build_sql_result(
     dimension_filter_errors.extend(_validate_compound_dimension_filters(query_plan))
     if dimension_filter_errors:
         return _invalid_dimension_filters_sql_result(dimension_filter_errors)
+    # 결정론 분석 의도('회원 수를 알려줘' 등)는 LLM 방출과 무관하게 집계 계약으로 채택한다 —
+    # 채택 경로가 LLM 뿐이면 방출 편차로 카운트 질의가 회원 리스트로 강등된다(#14 실측).
+    if not isinstance(query_plan.get("aggregation_request"), dict):
+        deterministic_intent = analyze_analytical_intent(original_query or query)
+        if isinstance(deterministic_intent, dict):
+            try:
+                deterministic_request = build_deterministic_aggregation_request(deterministic_intent)
+            except (KeyError, TypeError, ValueError):
+                deterministic_request = None
+            if isinstance(deterministic_request, dict) and _is_substantive_aggregation_request(deterministic_request):
+                query_plan["aggregation_request"] = deterministic_request
+                # 분석 빌더(build_analytical_aggregation_sql_candidate)는 intent AST 도 요구하고,
+                # 출력 계약이 기본 'member'로 남으면 정당한 COUNT 가 grain 불일치로 차단된다
+                # (scalar_count_output_contract 와 같은 계약 승격).
+                query_plan["analytical_intent"] = deterministic_intent
+                existing_contract = query_plan.get("output_contract")
+                if not isinstance(existing_contract, dict) or existing_contract.get("expected_grain") in (None, "member"):
+                    query_plan["output_contract"] = {
+                        "expected_grain": "analytical",
+                        "requires_member_id": False,
+                        "source": "deterministic_analytical_intent",
+                    }
     _normalize_aggregation_axis_filters(query_plan)
     _normalize_purchase_aggregation_request(query_plan)
     # 집계 조건이 논리적으로 함의하는 잉여 행동 라벨(repeat_buyer 등)을 강등한다 — required_sql_conditions
     # 가 플랜을 읽기 전이어야 잉여 커버리지 조건이 안 생기고, 빌더 라우팅 가로채기도 사라진다.
     behavior_demotion.demote_aggregate_covered_behaviors(query_plan, source_text=original_query or query)
+    behavior_demotion.demote_unevidenced_cart_behavior(query_plan, source_text=original_query or query)
+    behavior_demotion.normalize_lapsed_purchase_pattern(query_plan, source_text=original_query or query)
     _refresh_aggregation_request_validation(query_plan, schema_path)
     semantic_requirements.verify_source_requirements(query_plan)
-    # 동시구매(고객수) 조건 판정 IR 은 application-owned — 감지 fail-close 판정 전에 결정론으로 채운다.
-    apply_same_product_co_purchase_backfill(query_plan, original_query or query)
+    # 미귀결 조건의 보완은 파이프라인의 coverage 재추출(원문 누락 구간만 1회)이 담당한다 —
+    # 여기서 슬롯 재방출을 한 번 더 시도하던 배선(slot_reemission)은 삭제됐다.
     unresolved_source_conditions = _refresh_unresolved_source_conditions(
         original_query or query, query_plan
     )
@@ -11581,6 +11793,10 @@ def _entity_set_config() -> dict[str, Any]:
     config = _MEMBER_TARGET_FILTERS.get("entity_set_targets")
     return config if isinstance(config, dict) else {}
 
+
+# `_apply_entity_set_backfill` 은 2026-08-02 삭제됐다 — 원문을 정규식으로 다시 읽어
+# target_user.entity_set_condition 을 채우던 fill-if-empty 백필이었다. 이제 이 슬롯은
+# SemanticPlanV2 EntitySetMembership 노드를 LegacyQueryPlanCompiler 가 컴파일해서만 만들어진다.
 
 
 

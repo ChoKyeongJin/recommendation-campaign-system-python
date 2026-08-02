@@ -75,6 +75,10 @@ _CONDITIONS = _keys(CONDITION, {
     "region_density_target": "회원 밀집 지역",
     "aggregation_request": "사용자가 요청한 집계('회원수를 세어줘')",
     "policy_constraints": "업무 정책으로 실체화되지만 촉발은 사용자 어구",
+    "relational_operations": "검증된 속성 시점·이력 연산(등급/상태 스냅샷)",
+    # 사용자 요구의 타입드 표현 그 자체(SemanticPlanV2). 표면 어구가 바뀌면 노드가 바뀐다 —
+    # 실행 슬롯은 이 노드의 컴파일 산출물이므로, 조건의 원본은 여기다.
+    "semantic_plan": "의미 노드 집합(SemanticPlanV2 — 조건의 타입드 원본)",
 })
 
 # 파서·검증·라우팅 산출물. 사용자가 말한 적 없다.
@@ -104,9 +108,11 @@ _DERIVED = _keys(DERIVED, {
     "unsupported": "미지원 판정 목록",
     "unmatched_source_conditions": "슬롯에 못 담은 원문 항목",
     "validation_errors": "플랜 검증 오류",
-    "semantic_ir": "LLM 소유 의미 연산 계층",
+    "semantic_ir": "의미 판정 투영(semantic_plan 파생 — status/missing/unsupported)",
+    "semantic_pipeline": "의미 파이프라인 감사 영수증(coverage·재추출·컴파일 산출)",
     "semantic_ir_reconciliation": "그 계층과 실행 플랜의 대조 결과",
     "literal_bindings": "원문 값 원자 봉인",
+    "relational_ir": "속성 이력 조건의 정직한 차단 판정(리졸버 산출물)",
 })
 
 ALL: tuple[PlanKey, ...] = _CONDITIONS + _DERIVED

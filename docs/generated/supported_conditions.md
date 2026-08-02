@@ -14,23 +14,24 @@
 | `inactivity_period` | 미접속 기간 조건 | target_user | O |  |
 | `purchase_inactivity` | 미구매 기간 조건 | target_user | O |  |
 | `cart_retention` | 장바구니 보관 기간 조건 | target_user | O |  |
-| `cart_aggregate` | 장바구니 집계 조건(담은 수량/금액) | target_user | O |  |
+| `cart_aggregate` | 장바구니 집계 조건(담은 수량/금액) | target_user | X |  |
 | `cart_type` | 장바구니 유형 조건 | target_user | O |  |
 | `birthday_target` | 생일 조건 | target_user | O |  |
 | `campaign_responses` | 캠페인 반응 조건 | target_user | O |  |
-| `campaign_response_frequency` | 캠페인 반응 횟수 조건 | target_user | O |  |
-| `campaign_buy_amount` | 캠페인 구매 금액 조건 | target_user | O |  |
+| `campaign_response_frequency` | 캠페인 반응 횟수 조건 | target_user | X |  |
+| `campaign_buy_amount` | 캠페인 구매 금액 조건 | target_user | X |  |
 | `campaign_buy_count` | 캠페인 구매 건수 조건 | target_user | O |  |
 | `cell_rate_target` | 캠페인 셀 반응률 조건 | target_user | O |  |
 | `purchase_date` | 구매일 조건 | target_user | O |  |
-| `metric_trend` | 기간 대비 지표 증감 조건 | target_user | O | 수치 집계 지표만 지원(날짜·요약 지표의 기간 비교는 미지원 안내) |
+| `metric_trend` | 기간 대비 지표 증감 조건 | target_user | X | 수치 집계 지표만 지원(날짜·요약 지표의 기간 비교는 미지원 안내) |
 | `purchase_object` | 구매 상품 조건 | target_user | O |  |
 | `cart_absence` | 장바구니 미보유 조건 | target_user | O |  |
-| `aggregate_conditions` | 집계 조건(구매 금액/횟수 임계값) | target_user | O |  |
-| `balance_conditions` | 잔액 조건 | target_user | O |  |
-| `profile_date_conditions` | 회원 프로필 날짜 조건 | target_user | O |  |
+| `aggregate_conditions` | 집계 조건(구매 금액/횟수 임계값) | target_user | X |  |
+| `balance_conditions` | 잔액 조건 | target_user | X |  |
+| `profile_date_conditions` | 회원 프로필 날짜 조건 | target_user | X |  |
+| `relational_operation` | 등급·상태 시점/이력 조건 | target_user | X | 기준월(as-of) 값·직전 스냅샷 대비 전이만 컴파일. 다월 연산(내내 유지/변경 횟수/모든 월 존재)은 월별 스냅샷 적재 범위 내에서만 지원하며, 부족하면 적재 현황과 함께 미지원 안내 |
 | `region_density_target` | 지역 밀집 랭킹 조건 | plan | X(제외 선언) |  |
-| `member_metric_ranking` | 회원 지표 랭킹 조건 | plan | O |  |
+| `member_metric_ranking` | 회원 지표 랭킹 조건 | plan | X(제외 선언) |  |
 | `purchase_count_ranking` | 구매 건수 랭킹 조건 | plan | X(제외 선언) |  |
 
 ## 2. 주문 행동(behaviors)
@@ -66,3 +67,4 @@
 
 - **동시구매(condition_evaluation)**: 검증된 구성 서명 `same_product_same_order_quantity_v1` 만 컴파일한다 — 동일 주문 내 동일 상품 수량 집계 외의 조합(주문 횡단·상이 상품 등)은 fail-close 로 명시 차단된다.
 - **기간 대비 지표 증감 조건(`metric_trend`)**: 수치 집계 지표만 지원(날짜·요약 지표의 기간 비교는 미지원 안내).
+- **등급·상태 시점/이력 조건(`relational_operation`)**: 기준월(as-of) 값·직전 스냅샷 대비 전이만 컴파일. 다월 연산(내내 유지/변경 횟수/모든 월 존재)은 월별 스냅샷 적재 범위 내에서만 지원하며, 부족하면 적재 현황과 함께 미지원 안내.

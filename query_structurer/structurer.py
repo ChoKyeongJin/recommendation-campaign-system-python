@@ -108,7 +108,12 @@ class LLMCampaignQueryPlanV4Structurer:
         if self._on_event is not None:
             self._on_event(event, payload)
 
-    def structure(self, input: QueryStructuringInput) -> CampaignQueryPlanV4:
+    def structure(
+        self, input: QueryStructuringInput, extra_instruction: str | None = None
+    ) -> CampaignQueryPlanV4:
+        # extra_instruction: 표적 재방출(1회) 힌트 — 이전 제출에서 실행 슬롯으로 귀결되지 않은
+        # 원문 조건 목록을 알려 보완 제출을 요구한다. 원문(query)은 그대로라 evidence span
+        # 좌표계는 변하지 않는다.
         messages = [
             {
                 "role": "system",
@@ -134,6 +139,8 @@ class LLMCampaignQueryPlanV4Structurer:
             },
             {"role": "user", "content": build_campaign_query_plan_v4_user_prompt(input)},
         ]
+        if extra_instruction:
+            messages.append({"role": "user", "content": extra_instruction})
         last_error = "unknown"
         for attempt in range(self._max_retries + 1):
             response = ""

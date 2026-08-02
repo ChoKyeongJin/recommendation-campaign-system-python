@@ -84,6 +84,13 @@ def profile_slot_vocab() -> tuple[dict[str, dict[str, Any]], dict[str, dict[str,
         return {}, {}
 
 
+# `detect_profile_conditions` / `apply_profile_condition_backfill` 은 2026-08-02 삭제됐다.
+# 원문을 지표 별칭 정규식으로 훑어 balance_conditions/profile_date_conditions 슬롯을
+# fill-if-empty 로 채우던 코드다. 그 의미는 이제 SemanticPlanV2 Predicate/AggregatePredicate
+# 노드가 소유하고, 슬롯은 LegacyQueryPlanCompiler 만 쓴다. 이 모듈에 남는 것은 지표 스펙
+# 레지스트리와 슬롯 어휘 파생(profile_slot_vocab)뿐 — 원문을 읽지 않는다.
+
+
 class MetricSpecError(ValueError):
     """지표 스펙이 스키마를 위반했을 때(필수 누락·타입 오류·중복 id·미지원 연산자 등). 어떤 metric_id 의
     어떤 필드가 왜 틀렸는지 메시지에 담아, 신규 지표를 스펙만으로 추가할 때 즉시 원인을 알 수 있게 한다."""

@@ -29,6 +29,7 @@ reject 지만, 잘못 강등하면 조용히 틀린 오디언스가 출고된다
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import member_filters_config
@@ -124,4 +125,103 @@ def demote_aggregate_covered_behaviors(
     return demoted
 
 
-__all__ = ["demote_aggregate_covered_behaviors"]
+# 장바구니 행동의 표면 근거. 원문에 이 표지가 없는데 cart_abandoner 가 방출됐다면 환각이다 —
+# 카트 빌더가 우선순위로 다른 조건(캠페인 반응 등)의 SQL 을 가로채는 실사고(26종 감사 #2/#5)를 낳는다.
+_CART_SURFACE_MARKERS = ("장바구니", "카트", "담아", "담은", "담고", "담기")
+
+
+def demote_unevidenced_cart_behavior(
+    plan: dict[str, Any], *, source_text: str
+) -> list[str]:
+    """원문에 장바구니 표면 근거가 전혀 없는 cart_abandoner 행동을 강등한다.
+
+    fill 근거가 없는 행동은 빌더 라우팅을 가로채므로(카트 빌더 승자독식) 환각으로 보고
+    걷는다. 반환: 강등된 행동 목록(진단용)."""
+    target_user = plan.get("target_user")
+    if not isinstance(target_user, dict):
+        return []
+    behaviors = target_user.get("behaviors")
+    if not isinstance(behaviors, list) or "cart_abandoner" not in behaviors:
+        return []
+    compact = "".join((source_text or "").split()).casefold()
+    if any(marker in compact for marker in _CART_SURFACE_MARKERS):
+        return []
+    outcome = slot_ownership.claim_slot(
+        plan,
+        "target_user",
+        "behaviors",
+        owner="behavior_demotion:unevidenced_cart",
+        reason="원문에 장바구니 표면 근거가 없어 cart_abandoner 를 환각으로 판정(빌더 가로채기 방지)",
+        source_text=source_text,
+        value="cart_abandoner",
+    )
+    return ["cart_abandoner"] if outcome == "removed" else []
+
+
+# '최근 N개월 주문은 있었지만 최근 M일 구매가 없는'(이탈 위험) 문형. LLM 은 이를
+# 평생 무구매(no_purchase)+미접속(inactivity_period)으로 오배선하곤 한다(26종 감사 #2) —
+# 올바른 합성은 구매 존재(purchase_membership, N창) + 미구매 창(purchase_inactivity, M일)이다.
+_LAPSED_RE = re.compile(
+    r"최근\s*(?P<active>\d+)\s*(?P<unit>개월|주|일)\s*(?:동안|간|내)?\s*(?:주문|구매)"
+    r"[은는이가도]?\s*있(?:었|던|는)?지만.{0,24}?"
+    r"최근\s*(?P<inactive>\d+)\s*일\s*(?:간|동안|내)?\s*(?:구매|주문)[가는은이]?\s*없"
+)
+_UNIT_DAYS = {"개월": 30, "주": 7, "일": 1}
+
+
+def normalize_lapsed_purchase_pattern(
+    plan: dict[str, Any], *, source_text: str
+) -> list[str]:
+    """이탈 위험 문형을 구매 존재+미구매 창 합성으로 정규화하고 오배선 슬롯을 회수한다.
+
+    반환: 적용한 변경 라벨 목록(진단용). 접속/로그인이 원문에 실재하면 inactivity_period 는
+    남긴다(다른 절 소유 가능, fail-close)."""
+    import plan_decisions
+
+    match = _LAPSED_RE.search(source_text or "")
+    if match is None:
+        return []
+    target_user = plan.get("target_user")
+    if not isinstance(target_user, dict):
+        target_user = {}
+        plan["target_user"] = target_user
+    active_days = int(match.group("active")) * _UNIT_DAYS[match.group("unit")]
+    inactive_days = int(match.group("inactive"))
+    changed: list[str] = []
+    if not isinstance(target_user.get("purchase_membership"), dict):
+        target_user["purchase_membership"] = {"operator": "exists", "window_days": active_days}
+        changed.append(f"purchase_membership:{active_days}d")
+    if not isinstance(target_user.get("purchase_inactivity"), dict):
+        target_user["purchase_inactivity"] = {
+            "value": inactive_days, "unit": "days", "min_days": inactive_days,
+        }
+        changed.append(f"purchase_inactivity:{inactive_days}d")
+    behaviors = target_user.get("behaviors")
+    if isinstance(behaviors, list) and "no_purchase" in behaviors:
+        # 평생 무구매는 '최근 M일 무구매'와 모순 — 창 조건이 소유권을 가진다.
+        target_user["behaviors"] = [item for item in behaviors if item != "no_purchase"]
+        changed.append("behaviors:no_purchase 회수")
+    compact = "".join((source_text or "").split()).casefold()
+    if (
+        isinstance(target_user.get("inactivity_period"), dict)
+        and not any(marker in compact for marker in ("접속", "로그인"))
+    ):
+        target_user["inactivity_period"] = None
+        changed.append("inactivity_period 회수(구매 부재를 접속 부재로 오배선)")
+    for label in changed:
+        plan_decisions.record(
+            plan,
+            filter_name="behavior_demotion:lapsed_purchase",
+            action=plan_decisions.SET if label.startswith("purchase_") else plan_decisions.CLAIM,
+            slot=label.split(":", 1)[0],
+            reason="이탈 위험 문형(주문 있었지만 최근 무구매)의 결정론 합성/오배선 회수",
+            value=label,
+        )
+    return changed
+
+
+__all__ = [
+    "demote_aggregate_covered_behaviors",
+    "demote_unevidenced_cart_behavior",
+    "normalize_lapsed_purchase_pattern",
+]

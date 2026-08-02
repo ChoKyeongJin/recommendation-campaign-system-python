@@ -34,7 +34,7 @@ import common_utils
 import json
 import hashlib
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -127,6 +127,9 @@ _SNAPSHOT_SYSTEM_ALT = lexicon_patterns.alternation("source_snapshot_system")
 _SNAPSHOT_NOUN_ALT = lexicon_patterns.alternation("source_snapshot_noun")
 _MEMBER_NOUN_ALT = lexicon_patterns.alternation("member_noun")
 _RECURRENCE_RE = re.compile(
+    # 한글은 \b 단어 경계가 성립하지 않아 접두 표지('매')가 낱말 내부에서 매칭될 수 있다:
+    # '구매주기'의 '매주', '구매일'의 '매일'. 앞 글자가 한글 음절이면 낱말 내부로 보고 배제한다.
+    rf"(?<![가-힣])"
     rf"(?P<marker>"
     rf"(?:{_RECURRENCE_PREFIX_ALT})\s*(?P<bucket>{_RECURRENCE_BUCKET_ALT})(?:{_RECURRENCE_SUFFIX_ALT})?"
     rf"|(?:{_RECURRENCE_UNIVERSAL_ALT})\s*(?P<bucket2>{_RECURRENCE_BUCKET_ALT})"
@@ -844,6 +847,57 @@ def _snapshot_obligations(query: str) -> list[SourceRequirement]:
     return requirements
 
 
+# 등급/상태의 시점·이력 한정어. '지난달 말 기준 VIP'·'골드에서 VIP로 승급'·'3개월 내내 유지'가
+# 현재 값 필터(lifecycle)로 조용히 축소되면 표면상 성공하는 오답이 된다 — 한정어를 원장에 기록해
+# 컴파일 영수증 없이는 통과하지 못하게 한다. 표지는 구간 구조가 강한 정규식 원자라 소스가 소유한다.
+_STATE_HISTORY_CONTEXT_RE = re.compile(
+    r"등급|상태|휴면|정상\s*회원|VIP|골드|실버|웰컴|패밀리", re.IGNORECASE
+)
+# 표지는 값/축 인접형으로 좁힌다 — '한 번이라도 구매한 실버 회원'·'한 번도 구매하지 않은 휴면
+# 회원'처럼 구매 절의 표지가 절 문맥의 상태 낱말과 결합해 지원되는 질의를 하드 차단하던
+# 과발화(리뷰 실증)를 막는다. 표지 자체가 등급/상태 값·축을 물고 있을 때만 의무를 봉인한다.
+_STATE_HISTORY_VALUE_ALT = r"VIP|골드|실버|웰컴|패밀리|휴면|정상"
+_STATE_HISTORY_MARKER_RES: tuple[re.Pattern[str], ...] = (
+    re.compile(r"승급|강등"),
+    re.compile(r"직전\s*(?:상태|등급)"),
+    re.compile(rf"(?:{_STATE_HISTORY_VALUE_ALT})[가-힣\s]{{0,6}}?(?:이었|였)다가"),
+    re.compile(rf"내내\s*(?:{_STATE_HISTORY_VALUE_ALT})"),
+    re.compile(rf"한\s*번이라도\s*(?:{_STATE_HISTORY_VALUE_ALT})"),
+    re.compile(rf"한\s*번도\s*(?:{_STATE_HISTORY_VALUE_ALT})[가-힣\s]{{0,10}}?(?:아니|않)"),
+    re.compile(r"(?:등급|상태)이?\s*한\s*번도[가-힣\s]{0,10}?(?:바뀌|변하|변경)"),
+    re.compile(r"(?:등급|상태)이?[가-힣\s]{0,8}?(?:번|회)\s*이상\s*변경"),
+    re.compile(r"기준월|(?:\d{4}\s*년\s*\d{1,2}\s*월|지난\s*달|전월)\s*(?:말\s*)?기준"),
+    re.compile(rf"(?:{_STATE_HISTORY_VALUE_ALT})[가-힣\s]{{0,6}}?(?:등급|상태)?[을를]?\s*유지"),
+)
+
+
+def _member_state_history_obligations(query: str) -> list[SourceRequirement]:
+    requirements: list[SourceRequirement] = []
+    for marker_re in _STATE_HISTORY_MARKER_RES:
+        for match in marker_re.finditer(query):
+            clause_start = max(
+                query.rfind(",", 0, match.start()),
+                query.rfind(".", 0, match.start()),
+                query.rfind(";", 0, match.start()),
+            ) + 1
+            following = [
+                index
+                for token in (",", ".", ";")
+                if (index := query.find(token, match.end())) >= 0
+            ]
+            clause_end = min(following) if following else len(query)
+            clause = query[clause_start:clause_end]
+            if _STATE_HISTORY_CONTEXT_RE.search(clause) is None:
+                continue
+            requirements.append(_semantic_obligation(
+                query,
+                kind="member_state_history",
+                span=(match.start(), match.end()),
+                value={"marker": match.group(0)},
+            ))
+    return requirements
+
+
 def capture_source_semantic_obligations(
     query: str,
 ) -> tuple[SourceRequirement, ...]:
@@ -859,6 +913,7 @@ def capture_source_semantic_obligations(
         *_recurrence_obligations(query),
         *_entity_set_obligations(query),
         *_snapshot_obligations(query),
+        *_member_state_history_obligations(query),
     ]
     unique: dict[str, SourceRequirement] = {}
     for requirement in captured:
@@ -930,6 +985,10 @@ def unresolved_semantic_obligations(
             ),
             "snapshot_selector": (
                 "회원별 최신 스냅샷 선택 조건을 컴파일했다는 근거가 없습니다."
+            ),
+            "member_state_history": (
+                "등급·상태의 시점/이력 조건(기준월·직전·전이·유지·변경 이력)을 "
+                "컴파일했다는 근거가 없습니다."
             ),
         }.get(kind, "원문의 조합 의미를 보존했다는 컴파일 근거가 없습니다.")
         unresolved.append({
@@ -1170,6 +1229,52 @@ def record_source_requirement_receipt(
         )
     ]
     receipts.append(receipt)
+
+
+def discharge_source_semantic_obligations(
+    plan: dict[str, Any],
+    query: str,
+    *,
+    kinds: frozenset[str] | set[str],
+    status: str,
+    compiler: str,
+    evidence: Any = None,
+    reason: str | None = None,
+    value_filter: Callable[[str, Any], bool] | None = None,
+    requirement_filter: Callable[[Any], bool] | None = None,
+) -> list[str]:
+    """컴파일 산출물이 실재할 때 원문 의무를 영수증으로 귀결한다(첫 컴파일러 경로, W5-4).
+
+    봉인된 원장은 절대 변형하지 않는다 — 영수증은 원장 밖 리스트에 쌓인다
+    (record_source_requirement_receipt). 원장에 없는 의무(수동/레거시 plan)는 조용히
+    건너뛴다: 없는 원장에 영수증을 강제로 만드는 것보다 fail-close 로 남는 쪽이 안전하다.
+    """
+    known_ids = {
+        str(item.get("id") or "")
+        for item in plan.get(SOURCE_REQUIREMENTS_KEY) or []
+        if isinstance(item, Mapping)
+    }
+    discharged: list[str] = []
+    for requirement in capture_source_semantic_obligations(query):
+        kind = str(requirement.base.get("name") or "")
+        if kind not in kinds:
+            continue
+        if value_filter is not None and not value_filter(kind, requirement.value):
+            continue
+        if requirement_filter is not None and not requirement_filter(requirement):
+            continue
+        if requirement.id not in known_ids:
+            continue
+        record_source_requirement_receipt(
+            plan,
+            requirement_id=requirement.id,
+            status=status,
+            compiler=compiler,
+            evidence=evidence,
+            reason=reason,
+        )
+        discharged.append(requirement.id)
+    return discharged
 
 
 # ── 회계: 각 requirement 를 parsed/compiled/clarification/unsupported 로 귀결 ────────────────

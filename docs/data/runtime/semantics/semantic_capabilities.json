@@ -1,0 +1,128 @@
+{
+  "_comment": [
+    "SemanticPlanV2 노드의 실행 가능성 선언(semantic_capability.py 소유).",
+    "왜 축이 여러 개인가: 'supported: true/false' 하나로는 '연산은 있는데 컴파일러가 없다'와",
+    "'컴파일러는 있는데 데이터 그레인이 부족하다'와 '우리 쪽이 터졌다'가 구분되지 않는다.",
+    "구분이 없으면 내부 사고가 사용자에게 '미지원'으로 표시된다(=능력에 대한 거짓말).",
+    "",
+    "축:",
+    "  semantic_supported  — 의미 연산자 자체를 이 시스템이 정의하는가",
+    "  compiler_supported  — SemanticPlan → 실행 플랜 컴파일러가 있는가",
+    "  executor_supported  — 컴파일된 플랜을 실제로 실행하는 빌더가 있는가",
+    "  required_grain      — 이 연산에 필요한 데이터 그레인",
+    "  available_grain     — 실DB에 실제로 있는 그레인",
+    "  coverage            — 그 그레인의 적재 구간(from/to/complete)",
+    "",
+    "실패 코드는 semantic_plan.FAILURE_CODES 닫힌 집합에서만 고른다.",
+    "확장 규약: 새 지표/이벤트는 metrics 항목 한 줄, 새 노드 종류는 node_types 항목 한 줄.",
+    "코드 변경 없이 판정이 바뀌는 범위가 이 파일이다."
+  ],
+  "version": "1.0",
+  "grains": {
+    "member_profile": {
+      "label": "회원 기준 테이블(현재 값)",
+      "coverage": {"from": null, "to": null, "complete": true}
+    },
+    "order_transaction": {
+      "label": "주문 트랜잭션(일자 단위)",
+      "coverage": {"from": null, "to": null, "complete": true}
+    },
+    "cart_snapshot": {
+      "label": "장바구니 보관 상품",
+      "coverage": {"from": null, "to": null, "complete": true}
+    },
+    "campaign_response": {
+      "label": "캠페인 반응 팩트",
+      "coverage": {"from": null, "to": null, "complete": true}
+    },
+    "monthly_attribute_snapshot": {
+      "label": "회원 속성 월별 스냅샷(CRM_MB_MONTHCRMINFO)",
+      "coverage": {"from": "201701", "to": "201701", "complete": false},
+      "note": "2026-08-02 실측 단일 월. attribute_catalog.snapshot_months_available 와 함께 관리한다."
+    }
+  },
+  "node_types": {
+    "predicate": {
+      "semantic_supported": true,
+      "compiler_supported": true,
+      "executor_supported": true,
+      "required_grain": "member_profile"
+    },
+    "aggregate_predicate": {
+      "semantic_supported": true,
+      "compiler_supported": true,
+      "executor_supported": true,
+      "required_grain": "order_transaction",
+      "scopes": {
+        "cart": {"required_grain": "cart_snapshot"},
+        "order": {"required_grain": "order_transaction"},
+        "campaign": {"required_grain": "campaign_response"},
+        "profile": {"required_grain": "member_profile"}
+      }
+    },
+    "metric_comparison": {
+      "semantic_supported": true,
+      "compiler_supported": true,
+      "executor_supported": true,
+      "required_grain": "order_transaction"
+    },
+    "ranked_set": {
+      "semantic_supported": true,
+      "compiler_supported": true,
+      "executor_supported": true,
+      "required_grain": "order_transaction",
+      "entities": {
+        "member": {"compiler_supported": true, "executor_supported": true},
+        "product": {
+          "compiler_supported": true,
+          "executor_supported": true,
+          "note": "상품 랭킹 단독은 entity_set_membership 안에서만 회원 집합으로 귀결된다."
+        },
+        "brand": {
+          "compiler_supported": false,
+          "unsupported_message": "브랜드 랭킹 타겟은 아직 실행 컴파일러가 없습니다."
+        }
+      }
+    },
+    "entity_set_membership": {
+      "semantic_supported": true,
+      "compiler_supported": true,
+      "executor_supported": true,
+      "required_grain": "order_transaction"
+    },
+    "relation_predicate": {
+      "semantic_supported": true,
+      "compiler_supported": true,
+      "executor_supported": true,
+      "required_grain": "monthly_attribute_snapshot",
+      "relations": {
+        "as_of": {"required_grain": "monthly_attribute_snapshot", "requires_months": 1},
+        "transition": {"required_grain": "monthly_attribute_snapshot", "requires_months": 1},
+        "change_count": {"required_grain": "monthly_attribute_snapshot", "requires_months": 2},
+        "count_distinct": {"required_grain": "monthly_attribute_snapshot", "requires_months": 2},
+        "co_purchase": {
+          "required_grain": "order_transaction",
+          "note": "같은 주문의 같은 상품 수량 합계 조건 — condition_evaluations 실행 IR 로 컴파일된다."
+        }
+      }
+    },
+    "logical_expression": {
+      "semantic_supported": true,
+      "compiler_supported": true,
+      "executor_supported": true,
+      "required_grain": null,
+      "operators": {
+        "and": {"compiler_supported": true},
+        "or": {"compiler_supported": true},
+        "not": {"compiler_supported": true}
+      }
+    }
+  },
+  "metrics": {
+    "_comment": "지표별 예외만 적는다. 여기 없는 지표는 node_types 판정을 그대로 따른다.",
+    "cart_line_count": {"grain": "cart_snapshot"},
+    "cart_amount": {"grain": "cart_snapshot"},
+    "purchase_amount": {"grain": "order_transaction"},
+    "purchase_count": {"grain": "order_transaction"}
+  }
+}

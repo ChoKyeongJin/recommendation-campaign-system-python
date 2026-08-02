@@ -269,13 +269,14 @@ def _has_plan_meaning(payload: dict[str, Any]) -> bool:
             return any(has_value(child) for child in value)
         return True
 
-    # condition_evaluations 는 앱 소유 결정론 백필(동시구매 IR)이 채우는 plan 의미다 — 이것만 있는
-    # 플랜(예: '같은 상품 동시 구매 고객수')을 resolved 로 되돌릴 때 근거 없는 상태가 아니게 한다.
+    # condition_evaluations 는 SemanticPlan 컴파일러가 채우는 plan 의미이고, semantic_plan 은
+    # 의미 노드 그 자체다 — 실행 슬롯이 비어도 의미 근거는 있다(슬롯 계층이 SemanticPlan 으로
+    # 이관되면서 '근거 있는 resolved'의 판정 기준이 노드로 옮겨졌다).
     return any(
         has_value(payload.get(key))
         for key in (
             "target_user", "exclude", "campaign_constraints", "aggregation_request",
-            "set_expressions", "condition_evaluations",
+            "set_expressions", "condition_evaluations", "semantic_plan",
         )
     )
 
@@ -391,51 +392,12 @@ def validate_semantic_ir(
     return copy.deepcopy(semantic_ir)
 
 
-def materialize_semantic_operations(
-    semantic_ir: dict[str, Any], literal_bindings: list[dict[str, Any]]
-) -> dict[str, Any]:
-    """Project validated semantic relations into legacy execution slots.
+# `materialize_semantic_operations` 는 2026-08-02 삭제됐다 — LLM 이 낸 semantic_ir 연산을
+# metric_trend 실행 슬롯으로 직접 투영하던 함수다. 그 슬롯의 생산자는 이제
+# LegacyQueryPlanCompiler 하나이고, 의미의 소유자는 SemanticPlanV2 MetricComparison 노드다.
 
-    Only deterministic literal values are copied.  The model owns relation,
-    direction, and metric selection; SQL and physical fields remain compiler-owned.
-    """
 
-    if semantic_ir.get("status") not in {"resolved", "policy_applied"}:
-        return {}
-    literal_by_id = {item["id"]: item for item in literal_bindings}
-    slots: dict[str, Any] = {}
-    for operation in semantic_ir.get("operations", []):
-        if operation.get("kind") != "period_over_period_change":
-            continue
-        by_role = {
-            binding["role"]: literal_by_id[binding["literal_id"]]
-            for binding in operation.get("bindings", [])
-        }
-        baseline = copy.deepcopy(by_role["baseline"]["normalized"])
-        current = copy.deepcopy(by_role["current"]["normalized"])
-        direction = operation["direction"]
-        arrow = "증가" if direction == "increase" else "감소"
-        trend: dict[str, Any] = {
-            "metric_id": operation["metric_id"],
-            "direction": direction,
-            "baseline": baseline,
-            "current": current,
-        }
-        threshold = by_role.get("threshold")
-        comparison = by_role.get("comparison")
-        threshold_label = ""
-        if threshold is not None and comparison is not None:
-            value = threshold["normalized"]["value"]
-            operator = comparison["normalized"]
-            trend["relative_change"] = {
-                "unit": "percent",
-                "comparisons": [{"operator": operator, "value": value}],
-            }
-            operator_label = {">=": "이상", ">": "초과", "<=": "이하", "<": "미만"}[operator]
-            threshold_label = f" {value:g}% {operator_label}" if isinstance(value, float) else f" {value}% {operator_label}"
-        trend["label"] = (
-            f"{baseline.get('label') or baseline['from']}→{current.get('label') or current['from']}"
-            f"{threshold_label} {arrow}"
-        )
-        slots["metric_trend"] = trend
-    return slots
+# 결핍 사후 삭제(`drop_satisfied_missing_fields`)는 2026-08-02 SemanticPlanV2 이행으로 제거됐다.
+# 그 함수는 "LLM 이 만든 결핍 보고 중 이미 채워진 것"을 걷는 sweep 이었고, 존재 이유는 결핍의
+# 소유자가 LLM 이었다는 점 하나였다. 이제 missing_fields 는 semantic_plan 노드 스키마에서
+# 계산되므로(`semantic_pipeline.project_semantic_ir`) 걷어낼 stale 이 구조적으로 생기지 않는다.
