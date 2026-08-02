@@ -31,6 +31,7 @@ import semantic_normalizers as norm  # noqa: E402
 import semantic_pipeline  # noqa: E402
 import semantic_plan  # noqa: E402
 import semantic_plan_bridge  # noqa: E402
+import semantic_reemission  # noqa: E402
 from semantic_plan import SemanticPlanV2  # noqa: E402
 
 
@@ -149,8 +150,8 @@ def test_ungrounded_node_is_a_validation_error() -> None:
     assert report.ungrounded_nodes
 
 
-def test_uncovered_span_triggers_targeted_reextraction_only() -> None:
-    """누락은 슬롯 백필이 아니라 **그 구간만** 재추출로 메운다."""
+def test_uncovered_span_triggers_targeted_patch_only(context) -> None:
+    """누락은 슬롯 백필이 아니라 **그 구간만** 패치 재방출로 메운다."""
     asked: list[list[str]] = []
 
     def reextract(query: str, spans):
@@ -160,18 +161,25 @@ def test_uncovered_span_triggers_targeted_reextraction_only() -> None:
             "scope": "cart", "metric": "cart_amount", "operator": ">=", "value": "10만 원",
         }]), []
 
-    plan = _plan(COVERAGE_QUERY, [{
+    seed = _plan(COVERAGE_QUERY, [{
         "id": "req-1", "type": "aggregate_predicate", "source_span": "상품 종류가 2개 이상",
-        "scope": "cart", "metric": "cart_line_count", "operator": ">=", "value": 2,
+        "scope": "cart", "metric": "cart_line_count", "operator": "이상", "value": "2개",
     }])
-    report, spans, _ = semantic_pipeline.close_coverage(COVERAGE_QUERY, plan, reextract=reextract)
-    assert asked and spans
-    assert len(plan.nodes) == 2
-    assert report.is_complete
+    result = semantic_pipeline.run(
+        COVERAGE_QUERY,
+        extract=lambda _query: (seed, []),
+        context=context,
+        reextract=reextract,
+    )
+    assert asked, "미해결 요구사항이 있는데 패치 요청이 나가지 않았다"
+    assert all("10만" in " ".join(spans) for spans in asked)
+    assert len(result.plan.nodes) == 2
+    assert result.coverage.is_complete
+    assert result.ledger.is_complete()
 
 
-def test_reextraction_outside_the_requested_span_is_rejected() -> None:
-    """재추출이 조용한 전체 재해석이 되지 않게 — 요청 구간 밖 노드는 병합하지 않는다."""
+def test_patch_outside_the_requested_span_is_rejected(context) -> None:
+    """패치가 조용한 전체 재해석이 되지 않게 — 요청 구간 밖 노드는 병합하지 않는다."""
     query = "30대 여성이고, 장바구니 총금액이 10만 원 이상인 회원"
 
     def reextract(_query: str, spans):
@@ -181,12 +189,60 @@ def test_reextraction_outside_the_requested_span_is_rejected() -> None:
             "subject": "member", "metric": "age", "operator": ">=", "value": 30,
         }]), []
 
-    plan = _plan(query, [])
-    report, spans, _ = semantic_pipeline.close_coverage(
-        query, plan, claimed_spans=[(0, len("30대 여성이고"))], reextract=reextract
+    result = semantic_pipeline.run(
+        query,
+        extract=lambda _query: (_plan(query, []), []),
+        context=context,
+        reextract=reextract,
+        claimed_spans=[(0, len("30대 여성이고"))],
     )
-    assert spans and all("장바구니" in span for span in spans)
-    assert [node.id for node in plan.nodes] == []
+    requested = [span for record in result.reemission["rounds"] for span in record["requested_spans"]]
+    assert requested and all("장바구니" in span for span in requested)
+    assert [node.id for node in result.plan.nodes] == []
+
+
+def test_patch_never_regresses_an_already_compiled_requirement(context) -> None:
+    """이미 통과한 요구사항이 재방출로 훼손되면 그 라운드를 통째로 되돌린다."""
+    good = {
+        "id": "req-1", "type": "aggregate_predicate", "source_span": "상품 종류가 2개 이상",
+        "scope": "cart", "metric": "cart_line_count", "operator": "이상", "value": "2개",
+    }
+
+    def sabotage(_query: str, _spans):
+        # 통과한 조건의 근거 구간을 '값 없는' 노드로 덮어쓰려는 패치.
+        return _plan(COVERAGE_QUERY, [
+            {**good, "value": None},
+            {"id": "req-2", "type": "aggregate_predicate", "source_span": "총금액이 10만 원 이상",
+             "scope": "cart", "metric": "cart_amount", "operator": "이상", "value": "10만 원"},
+        ]), []
+
+    result = semantic_pipeline.run(
+        COVERAGE_QUERY,
+        extract=lambda _query: (_plan(COVERAGE_QUERY, [good]), []),
+        context=context,
+        reextract=sabotage,
+    )
+    compiled = result.ledger.by_id("req-1")
+    assert compiled is not None and compiled.is_resolved, "통과한 요구사항이 패치로 훼손됐다"
+
+
+def test_reemission_round_count_is_a_policy_value(context) -> None:
+    calls: list[int] = []
+
+    def reextract(_query: str, _spans):
+        calls.append(1)
+        return _plan(COVERAGE_QUERY, []), []
+
+    for rounds in (0, 1):
+        calls.clear()
+        semantic_pipeline.run(
+            COVERAGE_QUERY,
+            extract=lambda _query: (_plan(COVERAGE_QUERY, []), []),
+            context=context,
+            reextract=reextract,
+            reemission_policy=semantic_reemission.ReemissionPolicy(max_rounds=rounds),
+        )
+        assert len(calls) == rounds, f"정책 {rounds} 라운드인데 {len(calls)}회 호출됐다"
 
 
 # ── 충돌 처리 ────────────────────────────────────────────────────────────────────

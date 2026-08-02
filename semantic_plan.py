@@ -1,21 +1,24 @@
 """SemanticPlanV2 — 사용자 요구를 최종 슬롯이 아닌 **의미 노드**로 소유하는 중간 표현.
 
 왜 필요했나: 이 시스템은 같은 원문을 두 번 해석했다. LLM 이 실행 슬롯(query_plan)과
-`semantic_ir.missing_fields` 를 만들고, 그 뒤 결정론 백필(numeric_condition_backfill 등)이
-같은 문장을 정규식으로 다시 읽어 빈 슬롯을 채우고, 다시 `_drop_*_missing_fields` 가 앞
-단계의 결핍 보고를 사후 삭제했다. 의미의 소유자가 없으니 새 조건마다 백필 함수 하나와
-결핍 삭제 함수 하나가 늘었다.
+`semantic_ir.missing_fields` 를 만들고, 그 뒤 결정론 백필이 같은 문장을 정규식으로 다시
+읽어 빈 슬롯을 채우고, 다시 결핍 삭제 함수가 앞 단계의 결핍 보고를 사후 삭제했다.
+의미의 소유자가 없으니 새 조건마다 백필 함수 하나와 결핍 삭제 함수 하나가 늘었다.
 
 SemanticPlanV2 는 그 소유자다:
 
   - **모든 의미는 노드가 소유한다.** 기간 대 기간 증감은 두 기간과 비교 관계를 한 노드가
-    가지므로 `purchase_date` 결핍이 애초에 생기지 않는다(사후 삭제할 것이 없다).
+    가지므로 별도 기간 필드의 결핍이 애초에 생기지 않는다(사후 삭제할 것이 없다).
   - **missing 은 계산값이다.** `required_fields(node) - populated_fields(node)`.
   - **status 는 파생값이다.** `derive_status(...)`.
   - **노드 추가 = 이 파일의 클래스 하나.** 백필 함수도, 결핍 삭제 함수도 늘지 않는다.
 
-순수 모듈 규약: graph_rag 를 import 하지 않는다. 실행 슬롯 이름(`target_user.cart_aggregate`
-등)을 **모른다** — 그 지식은 legacy_plan_compiler 하나만 갖는다.
+**범용 코어 규약**(2026-08-02 계층 분리):
+  - graph_rag 를 import 하지 않는다.
+  - 실행 슬롯 이름도, 실행 플랜 컨테이너 이름도 모른다(컴파일러 소유).
+  - 도메인 값 어휘(집계 도메인·엔터티·속성 관계 …)를 **하드코딩하지 않는다**. 필드 선언은
+    `vocabulary=` 로 도메인 어휘 키만 가리키고, 실제 값은 도메인 플러그인이 준다
+    (`semantic_domain_binding`). 여기 남는 enum 은 도메인과 무관한 논리 연산자뿐이다.
 """
 
 from __future__ import annotations
@@ -23,6 +26,8 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Iterator
+
+import semantic_domain_binding
 
 
 SEMANTIC_PLAN_VERSION = "2.0"
@@ -92,10 +97,11 @@ VALUE_KINDS: frozenset[str] = frozenset({
     "quantity",      # 수량/금액 → Money 또는 수 (AmountNormalizer)
     "period",        # 기간 표현 → Period(from,to) (PeriodNormalizer)
     "rank_limit",    # 상위 N/N% → RankLimit (PeriodNormalizer 와 별개)
-    "entity",        # 회원/상품/브랜드 → canonical entity (EntityResolver)
-    "scope",         # 집계 대상 도메인(cart/order/campaign/profile)
-    "relation",      # 관계·전이·증감 종류
-    "unit",          # 개/회/건/종 → 의미 단위 (UnitNormalizer)
+    "entity",        # 대상 엔터티 → canonical entity (EntityResolver)
+    "scope",         # 집계 대상 도메인(도메인 어휘)
+    "relation",      # 관계·전이·증감 종류(도메인 어휘)
+    "temporal",      # 시간 한정어 → TemporalQualifier (temporal_semantics)
+    "unit",          # 계수 단위 → 의미 단위 (UnitNormalizer)
     "text",          # 자유 텍스트(라벨·근거)
     "flag",          # bool
     "nodes",         # 하위 노드 목록(LogicalExpression)
@@ -105,17 +111,37 @@ VALUE_KINDS: frozenset[str] = frozenset({
 
 @dataclass(frozen=True)
 class FieldSpec:
-    """노드 필드 하나의 선언. 이 선언 하나가 missing 계산·LLM 스키마·정규화기 dispatch 를 모두 만든다."""
+    """노드 필드 하나의 선언. 이 선언 하나가 missing 계산·LLM 스키마·정규화기 dispatch 를 모두 만든다.
+
+    `enum` 은 **도메인과 무관한** 닫힌 집합에만 쓴다(예: 논리 연산자 and/or/not).
+    도메인 값 목록은 `vocabulary=` 로 어휘 키만 가리키고, 실제 값은 도메인 플러그인이 준다 —
+    새 집계 도메인·새 엔터티는 코어 수정 없이 선언 한 줄로 열린다.
+    """
 
     name: str
     kind: str
     required: bool = True
     description: str = ""
     enum: tuple[str, ...] = ()
+    vocabulary: str = ""
+    # 시스템이 계산하는 필드(생산자에게 노출하지 않는다 — status/missing 과 같은 규약).
+    derived: bool = False
 
     def __post_init__(self) -> None:
         if self.kind not in VALUE_KINDS:
             raise SemanticPlanError(f"{self.name}: 알 수 없는 값 종류 {self.kind!r}")
+        if self.enum and self.vocabulary:
+            raise SemanticPlanError(
+                f"{self.name}: enum 과 vocabulary 를 함께 쓸 수 없다(값의 소유자가 둘이 된다)"
+            )
+
+    def allowed_values(self) -> tuple[str, ...]:
+        """이 필드가 받을 수 있는 값(도메인 어휘 포함). 빈 튜플이면 제약 없음."""
+        if self.enum:
+            return self.enum
+        if self.vocabulary:
+            return semantic_domain_binding.vocabulary(self.vocabulary)
+        return ()
 
 
 def _empty(value: Any) -> bool:
@@ -180,6 +206,22 @@ class SemanticNode:
         missing = type(self).required_field_names() - self.populated_field_names()
         return tuple(sorted(missing))
 
+    def invalid_values(self) -> tuple[tuple[str, Any, tuple[str, ...]], ...]:
+        """닫힌 어휘 밖의 값 — 생산자(LLM 등)의 계약 위반이지 '미지원'이 아니다.
+
+        어휘가 선언되지 않은 필드는 제약이 없다(빈 튜플). 선언된 어휘를 벗어난 값만
+        (필드, 받은 값, 허용 목록)으로 보고한다.
+        """
+        offenders: list[tuple[str, Any, tuple[str, ...]]] = []
+        for spec in type(self).FIELDS:
+            allowed = spec.allowed_values()
+            value = self.values.get(spec.name)
+            if not allowed or _empty(value) or not isinstance(value, str):
+                continue
+            if value not in allowed:
+                offenders.append((spec.name, value, allowed))
+        return tuple(offenders)
+
     def children(self) -> tuple["SemanticNode", ...]:
         return ()
 
@@ -208,49 +250,52 @@ class SemanticNode:
 
 @dataclass
 class Predicate(SemanticNode):
-    """단일 속성/지표 술어. '평균 구매주기가 30일 이내', '잔액이 1만 원 이상'."""
+    """단일 속성/지표 술어 — 주어의 한 지표를 값과 비교한다."""
 
     TYPE: ClassVar[str] = "predicate"
     FIELDS: ClassVar[tuple[FieldSpec, ...]] = (
-        FieldSpec("subject", "entity", required=True, description="술어의 주어(기본 member)"),
+        FieldSpec("subject", "entity", required=True, description="술어의 주어 엔터티"),
         FieldSpec("metric", "metric", required=True, description="지표/속성 canonical 또는 원문 라벨"),
-        FieldSpec("operator", "operator", required=True, description="비교 연산자('이상' 등 원문 표현 허용)"),
-        FieldSpec("value", "quantity", required=True, description="비교 대상 값('30일'·'1만 원' 등)"),
-        FieldSpec("unit", "unit", required=False, description="수량의 단위(개/회/건/종/일)"),
+        FieldSpec("operator", "operator", required=True, description="비교 연산자(원문 표현 허용)"),
+        FieldSpec("value", "quantity", required=True, description="비교 대상 값"),
+        FieldSpec("unit", "unit", required=False, description="수량의 단위"),
         FieldSpec("period", "period", required=False, description="측정 기간"),
         FieldSpec("negated", "flag", required=False, description="부정 술어인가"),
-        FieldSpec("state", "relation", required=False, description="상대 상태(있음/없음/오늘 등 날짜 상태)"),
+        FieldSpec("state", "relation", required=False, description="상대 상태(날짜 상태 등)"),
+        FieldSpec("temporal", "temporal", required=False, derived=True,
+                  description="시간 한정어(범용 연산자 — 시스템이 파생한다)"),
     )
 
 
 @dataclass
 class AggregatePredicate(SemanticNode):
-    """집계 임계 술어. '장바구니 상품 종류가 2개 이상', '10만 원 이상 구매한'."""
+    """집계 임계 술어 — 한 도메인의 집계값을 임계와 비교한다."""
 
     TYPE: ClassVar[str] = "aggregate_predicate"
     FIELDS: ClassVar[tuple[FieldSpec, ...]] = (
         FieldSpec("scope", "scope", required=True,
-                  description="집계 대상 도메인",
-                  enum=("cart", "order", "campaign", "profile")),
+                  description="집계 대상 도메인", vocabulary="aggregate_scope"),
         FieldSpec("metric", "metric", required=True, description="집계 지표"),
         FieldSpec("operator", "operator", required=True, description="비교 연산자"),
         FieldSpec("value", "quantity", required=True, description="임계값"),
         FieldSpec("aggregation", "relation", required=False,
-                  description="집계 함수", enum=("sum", "avg", "count", "max", "min")),
+                  description="집계 함수", vocabulary="aggregation_function"),
         FieldSpec("unit", "unit", required=False, description="수량 단위"),
         FieldSpec("period", "period", required=False, description="집계 창"),
         FieldSpec("grain", "scope", required=False,
-                  description="집계 그레인", enum=("per_member", "per_order", "per_product", "per_brand")),
-        FieldSpec("qualifier", "text", required=False, description="브랜드/카테고리 등 한정어"),
-        FieldSpec("event", "relation", required=False, description="캠페인 이벤트 canonical(scope=campaign)"),
+                  description="집계 그레인", vocabulary="aggregate_grain"),
+        FieldSpec("qualifier", "text", required=False, description="집계 범위 한정어"),
+        FieldSpec("event", "relation", required=False, description="이벤트 canonical(이벤트형 도메인)"),
+        FieldSpec("temporal", "temporal", required=False, derived=True,
+                  description="시간 한정어(범용 연산자 — 시스템이 파생한다)"),
     )
 
 
 @dataclass
 class MetricComparison(SemanticNode):
-    """기간 대 기간 비교. '2026년 2월과 3월의 구매금액이 증가한'.
+    """기간 대 기간 비교.
 
-    **이 노드가 두 기간과 비교 관계를 모두 소유한다** — 그래서 별도 purchase_date 결핍이
+    **이 노드가 두 기간과 비교 관계를 모두 소유한다** — 그래서 별도 기간 조건의 결핍이
     구조적으로 생길 수 없다(사후 삭제가 필요 없어진 지점).
     """
 
@@ -260,24 +305,25 @@ class MetricComparison(SemanticNode):
         FieldSpec("baseline", "period", required=True, description="기준 기간"),
         FieldSpec("current", "period", required=True, description="비교 기간"),
         FieldSpec("relation", "relation", required=True,
-                  description="변화 방향", enum=("increase", "decrease")),
+                  description="변화 방향", vocabulary="trend_relation"),
         FieldSpec("threshold", "quantity", required=False, description="변화율 임계값"),
         FieldSpec("threshold_operator", "operator", required=False, description="변화율 비교 연산자"),
-        FieldSpec("scope", "scope", required=False, description="집계 도메인(기본 order)"),
+        FieldSpec("scope", "scope", required=False,
+                  description="집계 도메인", vocabulary="aggregate_scope"),
     )
 
 
 @dataclass
 class RankedSet(SemanticNode):
-    """랭킹 집합. '구매금액 상위 10% 회원', '가장 많이 팔린 상품 10개'."""
+    """랭킹 집합 — 한 지표로 정렬한 상위/하위 N(또는 N%) 집합."""
 
     TYPE: ClassVar[str] = "ranked_set"
     FIELDS: ClassVar[tuple[FieldSpec, ...]] = (
-        FieldSpec("entity", "entity", required=True, description="랭킹 대상 엔터티(member/product/…)"),
+        FieldSpec("entity", "entity", required=True, description="랭킹 대상 엔터티"),
         FieldSpec("metric", "metric", required=True, description="랭킹 기준 지표"),
         FieldSpec("direction", "relation", required=True,
-                  description="정렬 방향", enum=("descending", "ascending")),
-        FieldSpec("limit", "rank_limit", required=True, description="상위 N명/N% 제한"),
+                  description="정렬 방향", vocabulary="rank_direction"),
+        FieldSpec("limit", "rank_limit", required=True, description="상위 N/N% 제한"),
         FieldSpec("period", "period", required=False, description="랭킹 계산 창"),
         FieldSpec("qualifier", "text", required=False, description="랭킹 범위 한정어"),
     )
@@ -285,18 +331,18 @@ class RankedSet(SemanticNode):
 
 @dataclass
 class EntitySetMembership(SemanticNode):
-    """파생 집합 소속. '가장 많이 팔린 상품 10개를 구매한 회원'.
+    """파생 집합 소속 — 계산으로 정해지는 집합에 주어가 속하는가.
 
-    랭킹 집합(RankedSet)과 회원 관계를 잇는다 — 대상 상품은 계산 결과이므로 리터럴
-    상품 조건(purchase_object)이 결핍일 수 없다.
+    랭킹 집합(RankedSet)과 주어를 잇는다 — 대상이 계산 결과이므로 리터럴 대상 조건이
+    결핍일 수 없다.
     """
 
     TYPE: ClassVar[str] = "entity_set_membership"
     FIELDS: ClassVar[tuple[FieldSpec, ...]] = (
-        FieldSpec("member_entity", "entity", required=True, description="소속을 판정할 엔터티(member)"),
-        FieldSpec("relation", "relation", required=True, description="집합과의 관계(purchase/cart 등)"),
-        FieldSpec("ranked_set", "nodes", required=True, description="소속 대상 랭킹 집합(RankedSet 1개)"),
-        FieldSpec("negated", "flag", required=False, description="비소속(구매하지 않은)인가"),
+        FieldSpec("member_entity", "entity", required=True, description="소속을 판정할 주어 엔터티"),
+        FieldSpec("relation", "relation", required=True, description="집합과의 관계"),
+        FieldSpec("ranked_set", "nodes", required=True, description="소속 대상 랭킹 집합(1개)"),
+        FieldSpec("negated", "flag", required=False, description="비소속인가"),
         FieldSpec("cardinality", "quantity", required=False, description="교집합 개수 조건"),
         FieldSpec("cardinality_operator", "operator", required=False, description="교집합 개수 연산자"),
     )
@@ -307,27 +353,27 @@ class EntitySetMembership(SemanticNode):
 
 @dataclass
 class RelationPredicate(SemanticNode):
-    """엔터티 사이/속성 시점의 관계. '지난달 말 기준 VIP', '골드→VIP 승급', '같은 상품 동시 구매'."""
+    """엔터티 사이/속성 시점의 관계 — 시간 한정어를 갖는 술어의 일반형.
+
+    `relation` 은 도메인 어휘(도메인 플러그인 선언)이고, 그중 시간 축을 갖는 값은
+    `temporal_semantics` 의 **범용 연산자**로 정규화돼 `temporal` 필드에 실린다.
+    """
 
     TYPE: ClassVar[str] = "relation_predicate"
     FIELDS: ClassVar[tuple[FieldSpec, ...]] = (
-        FieldSpec("subject", "entity", required=True, description="주어 엔터티(member)"),
-        FieldSpec("attribute", "metric", required=True, description="속성/대상 canonical(등급·상태·상품)"),
+        FieldSpec("subject", "entity", required=True, description="주어 엔터티"),
+        FieldSpec("attribute", "metric", required=True, description="속성/대상 canonical"),
         FieldSpec("relation", "relation", required=True,
-                  description=(
-                      "관계 종류. as_of=특정 시점의 값, transition=값 전이, held_throughout=기간 내내 유지, "
-                      "stable=한 번도 안 바뀜, changed_n_times=N회 변경, ever=한 번이라도, "
-                      "never=한 번도 아님, exists_every_month=모든 월에 존재, co_purchase=동시 구매."
-                  ),
-                  enum=("as_of", "transition", "held_throughout", "stable", "changed_n_times",
-                        "ever", "never", "exists_every_month", "co_purchase")),
+                  description="관계 종류(도메인 어휘)", vocabulary="attribute_relation"),
+        FieldSpec("temporal", "temporal", required=False, derived=True,
+                  description="시간 한정어(범용 연산자 — relation 에서 파생된다)"),
         FieldSpec("value", "text", required=False, description="시점/보유 판정의 속성 값"),
         FieldSpec("value_comparison", "relation", required=False,
-                  description="값 비교(등급 순서)", enum=("eq", "gte", "lte")),
+                  description="값 비교(서열)", vocabulary="value_comparison"),
         FieldSpec("from_value", "text", required=False, description="전이 출발 값"),
         FieldSpec("to_value", "text", required=False, description="전이 도착 값"),
-        FieldSpec("period", "period", required=False, description="시점 앵커(달력 월)"),
-        FieldSpec("months", "quantity", required=False, description="관측 개월 수"),
+        FieldSpec("period", "period", required=False, description="시점 앵커/구간"),
+        FieldSpec("months", "quantity", required=False, description="관측 구간 길이"),
         FieldSpec("count", "quantity", required=False, description="변경 횟수"),
         FieldSpec("count_operator", "operator", required=False, description="변경 횟수 연산자"),
     )
@@ -598,6 +644,20 @@ _KIND_SCHEMA: dict[str, dict[str, Any]] = {
     "entity": {"type": "string"},
     "scope": {"type": "string"},
     "relation": {"type": "string"},
+    "temporal": {
+        "type": "object",
+        "description": (
+            "시간 한정어. {operator, anchor?, interval?, count?, subinterval_unit?}. "
+            "operator 는 시스템이 정의한 범용 연산자 식별자다."
+        ),
+        "properties": {
+            "operator": {"type": "string"},
+            "anchor": {"type": "object"},
+            "interval": {"type": "object"},
+            "count": {"type": "number"},
+            "subinterval_unit": {"type": "string"},
+        },
+    },
     "unit": {"type": "string"},
     "text": {"type": "string"},
     "flag": {"type": "boolean"},
@@ -613,10 +673,19 @@ def _field_schema(spec: FieldSpec, *, node_ref: str) -> dict[str, Any]:
             "items": {"$ref": node_ref},
         }
     schema = copy.deepcopy(_KIND_SCHEMA[spec.kind])
-    if spec.enum:
-        schema = {"type": "string", "enum": list(spec.enum)}
-    if spec.description:
-        schema["description"] = spec.description
+    allowed = spec.allowed_values()
+    if allowed:
+        schema = {"type": "string", "enum": list(allowed)}
+    description = spec.description
+    glossary = semantic_domain_binding.vocabulary_glossary(spec.vocabulary) if spec.vocabulary else {}
+    if glossary:
+        listed = ", ".join(
+            f"{value}={glossary[value]}" for value in allowed if value in glossary
+        )
+        if listed:
+            description = f"{description} ({listed})" if description else listed
+    if description:
+        schema["description"] = description
     return schema
 
 
@@ -638,6 +707,9 @@ def semantic_node_json_schema(*, node_ref: str = "#/$defs/semanticNode") -> dict
     properties: dict[str, Any] = copy.deepcopy(_COMMON_NODE_PROPERTIES)
     for cls in NODE_CLASSES:
         for spec in cls.FIELDS:
+            if spec.derived:
+                # 파생 필드는 생산자에게 노출하지 않는다 — 노출하면 LLM 이 계산값을 지어낸다.
+                continue
             schema = _field_schema(spec, node_ref=node_ref)
             existing = properties.get(spec.name)
             if existing is None:
@@ -683,7 +755,15 @@ def node_requirement_documentation() -> dict[str, dict[str, Any]]:
     return {
         cls.TYPE: {
             "required": sorted(spec.name for spec in cls.FIELDS if spec.required),
-            "optional": sorted(spec.name for spec in cls.FIELDS if not spec.required),
+            "optional": sorted(
+                spec.name for spec in cls.FIELDS if not spec.required and not spec.derived
+            ),
+            "derived": sorted(spec.name for spec in cls.FIELDS if spec.derived),
+            "vocabularies": {
+                spec.name: list(spec.allowed_values())
+                for spec in cls.FIELDS
+                if spec.allowed_values()
+            },
             "description": (cls.__doc__ or "").strip().splitlines()[0] if cls.__doc__ else "",
         }
         for cls in NODE_CLASSES

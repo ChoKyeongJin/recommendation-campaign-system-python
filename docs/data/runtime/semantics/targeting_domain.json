@@ -1,0 +1,202 @@
+{
+  "_comment": [
+    "회원 타기팅 **도메인 선언** — 범용 코어(semantic_plan / semantic_capability / semantic_coverage /",
+    "semantic_candidates / semantic_normalizers / semantic_pipeline / requirement_ledger /",
+    "temporal_semantics)가 도메인 낱말을 하나도 모르게 하기 위한 단일 주입원이다.",
+    "",
+    "코어는 이 파일을 직접 읽지 않는다. targeting_domain.py 가 읽어서 코어에 주입한다.",
+    "",
+    "무엇을 여기 두는가(3계층 규약):",
+    "  · JSON 카탈로그 = 스키마 결합(컬럼/값)과 **어휘 선언**            → 이 파일",
+    "  · 렉시콘        = 늘어나는 열린 동의어                            → targeting_lexicon.json 등",
+    "  · 소스          = 파싱 알고리즘(정규식 원자·좌표 산술·극성)      → targeting_domain.py",
+    "",
+    "JSON 만으로 열리는 것: 새 속성 축, 새 집계 도메인(scope), 새 엔터티, 새 단위,",
+    "                        기존 시간 연산자에 붙는 새 속성/새 실행 연산자 이름.",
+    "코드가 필요한 것:       **새로운 시간 연산 의미**(temporal_semantics 의 닫힌 집합 확장),",
+    "                        새 노드 종류, 새 값 종류(kind), 새 컴파일 대상 슬롯.",
+    "                        경계 상세는 docs/architecture_generic_core.md 참고."
+  ],
+  "version": "1.0",
+
+  "plan_containers": {
+    "_comment": [
+      "컴파일 산출물이 실행 플랜의 어느 컨테이너로 들어가는지. 코어 파이프라인은",
+      "'target_user' 라는 이름을 모른다 — 컴파일러가 컨테이너 이름을 붙여 돌려주고,",
+      "코어는 그것을 그대로 쓴다."
+    ],
+    "member_condition": "target_user",
+    "plan_root": null
+  },
+
+  "vocabularies": {
+    "_comment": [
+      "노드 필드의 닫힌 값 목록. semantic_plan.FieldSpec.vocabulary 가 이 키를 가리킨다.",
+      "새 값(예: 새 집계 도메인)은 여기 한 줄로 열리고, LLM 노출 스키마·검증이 함께 파생된다."
+    ],
+    "aggregate_scope": ["cart", "order", "campaign", "profile"],
+    "aggregation_function": ["sum", "avg", "count", "max", "min"],
+    "aggregate_grain": ["per_member", "per_order", "per_product", "per_brand"],
+    "rank_direction": ["descending", "ascending"],
+    "trend_relation": ["increase", "decrease"],
+    "value_comparison": ["eq", "gte", "lte"],
+    "attribute_relation": [
+      "as_of",
+      "transition",
+      "held_throughout",
+      "stable",
+      "changed_n_times",
+      "ever",
+      "never",
+      "exists_every_month",
+      "co_purchase"
+    ]
+  },
+
+  "vocabulary_glossary": {
+    "_comment": [
+      "어휘 값의 짧은 설명. LLM 노출 스키마의 description 이 여기서 파생하므로,",
+      "값을 추가할 때 설명도 같은 자리에서 추가된다(프롬프트 문구를 코드에 박지 않는다)."
+    ],
+    "attribute_relation": {
+      "as_of": "특정 시점의 값",
+      "transition": "값 전이",
+      "held_throughout": "기간 내내 유지",
+      "stable": "한 번도 안 바뀜",
+      "changed_n_times": "N회 변경",
+      "ever": "한 번이라도",
+      "never": "한 번도 아님",
+      "exists_every_month": "모든 월에 존재",
+      "co_purchase": "동시 구매"
+    },
+    "aggregate_scope": {
+      "cart": "장바구니 보관",
+      "order": "주문/구매",
+      "campaign": "캠페인 반응",
+      "profile": "회원 프로필 지표"
+    },
+    "trend_relation": {"increase": "증가", "decrease": "감소"},
+    "rank_direction": {"descending": "상위(내림차순)", "ascending": "하위(오름차순)"},
+    "value_comparison": {"eq": "같음", "gte": "이상(서열)", "lte": "이하(서열)"}
+  },
+
+  "node_field_vocabularies": {
+    "_comment": [
+      "의미 노드의 지표/속성 필드가 **어느 닫힌 어휘에서** 값을 골라야 하는지의 선언.",
+      "값 목록 자체는 실행 레지스트리(_allowed_canonical_values)가 소유하고, 여기서는",
+      "'노드 타입.필드 → 어휘 키' 결속만 한다(이중 소유 금지).",
+      "",
+      "왜 필요한가: 노드의 metric 은 자유 문자열이라 LLM 이 그럴듯한 id 를 지어낸다",
+      "(실측: 장바구니 지표에 'total_amount'). 어느 목록에서 골라야 하는지를 discriminator",
+      "(예: scope)와 함께 알려 주면 그 지어내기가 사라진다. 새 결속은 여기 한 줄이다."
+    ],
+    "aggregate_predicate.metric": {
+      "discriminator": "scope",
+      "by_value": {
+        "cart": "cart_aggregate_metric",
+        "order": "aggregate_metric_id",
+        "campaign": "campaign_frequency_event",
+        "profile": "profile_metric_id"
+      }
+    },
+    "predicate.metric": {"default": "profile_metric_id"},
+    "metric_comparison.metric": {"default": "aggregate_metric_id"},
+    "ranked_set.metric": {"default": "member_metric_id"},
+    "relation_predicate.attribute": {"default": "history_attribute_id"}
+  },
+
+  "capability_axes": [
+    {"declaration_key": "scopes", "node_field": "scope"},
+    {"declaration_key": "entities", "node_field": "entity"},
+    {"declaration_key": "relations", "node_field": "relation"},
+    {"declaration_key": "operators", "node_field": "operator"}
+  ],
+
+  "subject_fields": ["metric", "attribute"],
+
+  "identity_fields": [
+    "scope", "metric", "attribute", "entity", "relation", "operator", "direction"
+  ],
+
+  "entity_aliases": {
+    "_comment": "엔터티 표면 → canonical. 새 엔터티 축은 여기 한 줄.",
+    "member": "member", "회원": "member", "고객": "member", "users": "member", "user": "member",
+    "product": "product", "상품": "product", "제품": "product", "품목": "product",
+    "brand": "brand", "브랜드": "brand",
+    "category": "category", "카테고리": "category"
+  },
+
+  "counter_units": {
+    "_comment": [
+      "계수 단위 표면 → 의미 단위. '2개'와 '2종'이 다른 집계를 뜻하므로 값 문법이 아니라",
+      "도메인 의미다(코어 정규화기가 아니라 여기가 소유)."
+    ],
+    "개": "item_quantity",
+    "회": "order_count",
+    "번": "order_count",
+    "건": "order_count",
+    "종": "distinct_product_count",
+    "종류": "distinct_product_count"
+  },
+
+  "temporal": {
+    "_comment": [
+      "시간 한정어의 도메인 결속. 범용 연산자 식별자(temporal_semantics 의 닫힌 집합)와",
+      "① LLM/슬롯이 쓰는 도메인 관계명 ② 실행 컴파일러의 연산자 이름을 잇는다.",
+      "'기준'·'내내'·'직전' 같은 표면형 자체는 정규식 원자이므로 targeting_domain.py 소스가",
+      "소유하고, 그 안의 값 어휘는 eq_filters·attribute_catalog 에서 파생해 끼운다."
+    ],
+    "relation_aliases": {
+      "as_of": "AS_OF",
+      "transition": "CHANGE_BETWEEN",
+      "held_throughout": "THROUGHOUT_INTERVAL",
+      "stable": "UNCHANGED_THROUGHOUT",
+      "changed_n_times": "CHANGE_COUNT",
+      "ever": "AT_LEAST_ONCE_IN_INTERVAL",
+      "never": "NEVER_IN_INTERVAL",
+      "exists_every_month": "EVERY_SUBINTERVAL"
+    },
+    "execution_operators": {
+      "_comment": [
+        "범용 연산자 → 실행 컴파일러(compositional_targeting.OPERATORS) 이름.",
+        "anchored/unanchored 는 시점 앵커 유무로 갈리는 연산자용이다.",
+        "여기 없는 연산자는 '실행 컴파일러 없음'이며, 그것은 미지원 판정의 근거가 된다."
+      ],
+      "AS_OF": {"anchored": "as_of_month", "unanchored": "as_of_latest"},
+      "IMMEDIATELY_PRECEDING": {"unanchored": "transition"},
+      "CHANGE_BETWEEN": {"unanchored": "transition"},
+      "THROUGHOUT_INTERVAL": {"unanchored": "held_throughout"},
+      "UNCHANGED_THROUGHOUT": {"unanchored": "stable"},
+      "CHANGE_COUNT": {"unanchored": "changed_n_times"},
+      "AT_LEAST_ONCE_IN_INTERVAL": {"unanchored": "ever"},
+      "NEVER_IN_INTERVAL": {"unanchored": "never"},
+      "EVERY_SUBINTERVAL": {"unanchored": "exists_every_month"}
+    },
+    "subinterval_unit": "month",
+    "attribute_axis_terms": {
+      "_comment": [
+        "시간 한정어가 붙을 수 있는 속성 축의 표면형. attribute_catalog.json 의",
+        "surface_terms 에서 파생하는 것이 원칙이고, 여기 목록은 카탈로그가 없을 때의 폴백이다."
+      ],
+      "fallback": ["등급", "상태"]
+    }
+  },
+
+  "condition_labels": {
+    "_comment": "요구사항 원장이 사용자에게 보여 주는 조건 종류 라벨(노드 타입별).",
+    "predicate": "회원 속성 조건",
+    "aggregate_predicate": "집계 임계 조건",
+    "metric_comparison": "기간 대비 증감 조건",
+    "ranked_set": "랭킹 조건",
+    "entity_set_membership": "파생 집합 소속 조건",
+    "relation_predicate": "속성 시점·이력 조건",
+    "logical_expression": "논리 결합"
+  },
+
+  "scope_labels": {
+    "cart": "장바구니",
+    "order": "구매",
+    "campaign": "캠페인",
+    "profile": "회원 프로필"
+  }
+}

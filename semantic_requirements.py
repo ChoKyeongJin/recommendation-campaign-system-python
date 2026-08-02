@@ -847,55 +847,50 @@ def _snapshot_obligations(query: str) -> list[SourceRequirement]:
     return requirements
 
 
-# 등급/상태의 시점·이력 한정어. '지난달 말 기준 VIP'·'골드에서 VIP로 승급'·'3개월 내내 유지'가
-# 현재 값 필터(lifecycle)로 조용히 축소되면 표면상 성공하는 오답이 된다 — 한정어를 원장에 기록해
-# 컴파일 영수증 없이는 통과하지 못하게 한다. 표지는 구간 구조가 강한 정규식 원자라 소스가 소유한다.
-_STATE_HISTORY_CONTEXT_RE = re.compile(
-    r"등급|상태|휴면|정상\s*회원|VIP|골드|실버|웰컴|패밀리", re.IGNORECASE
-)
-# 표지는 값/축 인접형으로 좁힌다 — '한 번이라도 구매한 실버 회원'·'한 번도 구매하지 않은 휴면
-# 회원'처럼 구매 절의 표지가 절 문맥의 상태 낱말과 결합해 지원되는 질의를 하드 차단하던
-# 과발화(리뷰 실증)를 막는다. 표지 자체가 등급/상태 값·축을 물고 있을 때만 의무를 봉인한다.
-_STATE_HISTORY_VALUE_ALT = r"VIP|골드|실버|웰컴|패밀리|휴면|정상"
-_STATE_HISTORY_MARKER_RES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"승급|강등"),
-    re.compile(r"직전\s*(?:상태|등급)"),
-    re.compile(rf"(?:{_STATE_HISTORY_VALUE_ALT})[가-힣\s]{{0,6}}?(?:이었|였)다가"),
-    re.compile(rf"내내\s*(?:{_STATE_HISTORY_VALUE_ALT})"),
-    re.compile(rf"한\s*번이라도\s*(?:{_STATE_HISTORY_VALUE_ALT})"),
-    re.compile(rf"한\s*번도\s*(?:{_STATE_HISTORY_VALUE_ALT})[가-힣\s]{{0,10}}?(?:아니|않)"),
-    re.compile(r"(?:등급|상태)이?\s*한\s*번도[가-힣\s]{0,10}?(?:바뀌|변하|변경)"),
-    re.compile(r"(?:등급|상태)이?[가-힣\s]{0,8}?(?:번|회)\s*이상\s*변경"),
-    re.compile(r"기준월|(?:\d{4}\s*년\s*\d{1,2}\s*월|지난\s*달|전월)\s*(?:말\s*)?기준"),
-    re.compile(rf"(?:{_STATE_HISTORY_VALUE_ALT})[가-힣\s]{{0,6}}?(?:등급|상태)?[을를]?\s*유지"),
-)
+# 속성 시점·이력 한정어의 의무 기록.
+#
+# '지난달 말 기준 …'·'… 에서 … 로 승급'·'3개월 내내 유지'가 현재 값 필터로 조용히 축소되면
+# 표면상 성공하는 오답이 된다 — 한정어를 원장에 기록해 컴파일 영수증 없이는 통과하지 못하게 한다.
+#
+# 2026-08-02 일반화: 표지 정규식과 그 안의 값 어휘(등급/상태 값)를 여기 나열하지 않는다.
+# 어휘는 eq_filters/attribute_catalog 단일 소유에서 파생하고, 표지는 도메인 계층
+# (`targeting_domain.temporal_lexicon`)이 **범용 시간 연산자**로 사상해 준다. 값이 늘면
+# 설정 한 줄로 함께 열리고, 같은 낱말이 세 모듈의 정규식에 재등장하지 않는다.
+TEMPORAL_QUALIFIER_KIND = "member_state_history"
+
+
+def _clause_bounds_at(query: str, position: int, end: int) -> tuple[int, int]:
+    clause_start = max(
+        query.rfind(",", 0, position),
+        query.rfind(".", 0, position),
+        query.rfind(";", 0, position),
+    ) + 1
+    following = [
+        index for token in (",", ".", ";") if (index := query.find(token, end)) >= 0
+    ]
+    return clause_start, (min(following) if following else len(query))
 
 
 def _member_state_history_obligations(query: str) -> list[SourceRequirement]:
-    requirements: list[SourceRequirement] = []
-    for marker_re in _STATE_HISTORY_MARKER_RES:
-        for match in marker_re.finditer(query):
-            clause_start = max(
-                query.rfind(",", 0, match.start()),
-                query.rfind(".", 0, match.start()),
-                query.rfind(";", 0, match.start()),
-            ) + 1
-            following = [
-                index
-                for token in (",", ".", ";")
-                if (index := query.find(token, match.end())) >= 0
-            ]
-            clause_end = min(following) if following else len(query)
-            clause = query[clause_start:clause_end]
-            if _STATE_HISTORY_CONTEXT_RE.search(clause) is None:
-                continue
-            requirements.append(_semantic_obligation(
-                query,
-                kind="member_state_history",
-                span=(match.start(), match.end()),
-                value={"marker": match.group(0)},
-            ))
-    return requirements
+    """시간 한정어 마커 → 의무. 마커의 **범용 연산자**를 값에 함께 기록한다."""
+    import targeting_domain  # 도메인 어휘 조립(지연 import — 순환 없음)
+
+    try:
+        lexicon = targeting_domain.temporal_lexicon()
+    except Exception:  # noqa: BLE001 — 어휘 파생 실패로 요구 기록이 죽으면 안 된다.
+        return []
+    markers = lexicon.detect(
+        query, clause_bounds=lambda text, position: _clause_bounds_at(text, position, position)
+    )
+    return [
+        _semantic_obligation(
+            query,
+            kind=TEMPORAL_QUALIFIER_KIND,
+            span=(marker.start, marker.end),
+            value={"marker": marker.text, "temporal_operator": marker.operator},
+        )
+        for marker in markers
+    ]
 
 
 def capture_source_semantic_obligations(

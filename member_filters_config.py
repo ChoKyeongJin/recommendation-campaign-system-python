@@ -90,6 +90,40 @@ def aggregate_metrics(path: Path | None = None) -> dict[str, dict[str, Any]]:
     return {metric_id: json.loads(spec) for metric_id, spec in _aggregate_metrics_cached(target)}
 
 
+@lru_cache(maxsize=4)
+def _eq_filters_cached(path_text: str) -> str:
+    entries = _load(Path(path_text)).get("eq_filters")
+    return json.dumps(entries if isinstance(entries, list) else [], ensure_ascii=False)
+
+
+def eq_filters(path: Path | None = None) -> list[dict[str, Any]]:
+    """회원 속성 값 사전(eq_filters)의 사본.
+
+    등급 서열·상태 값 어휘의 **단일 소유자**다. 같은 낱말(VIP/골드/휴면…)이 여러 모듈의
+    정규식에 재등장하던 이중 소유를 여기서 파생으로 대체한다 — 값이 늘면 설정 한 줄로
+    모든 소비자가 함께 열린다. 설정을 못 읽으면 빈 목록(폴백 없음).
+    """
+    target = str(Path(path) if path is not None else DEFAULT_PATH)
+    return [entry for entry in json.loads(_eq_filters_cached(target)) if isinstance(entry, dict)]
+
+
+def eq_filter_values(category: str, path: Path | None = None) -> dict[str, dict[str, Any]]:
+    """한 범주(grade/state/gender…)의 canonical → {value, rank, synonyms}."""
+    values: dict[str, dict[str, Any]] = {}
+    for entry in eq_filters(path):
+        if str(entry.get("category") or "") != category:
+            continue
+        canonical = str(entry.get("canonical") or "")
+        if not canonical:
+            continue
+        values[canonical] = {
+            "value": entry.get("value"),
+            "rank": entry.get("rank"),
+            "synonyms": [str(term) for term in entry.get("synonyms") or [] if str(term).strip()],
+        }
+    return values
+
+
 def order_count_rule_supported(rule: Any) -> bool:
     """주문 횟수 행동 규칙이 컴파일 가능한 완전한 선언인가.
 
@@ -133,6 +167,7 @@ def clear_cache() -> None:
     """설정 파일을 바꿔 끼우는 테스트용."""
     _behaviors_cached.cache_clear()
     _aggregate_metrics_cached.cache_clear()
+    _eq_filters_cached.cache_clear()
 
 
 __all__ = [
@@ -141,6 +176,8 @@ __all__ = [
     "behavior_aggregate_equivalents",
     "behavior_spec",
     "clear_cache",
+    "eq_filter_values",
+    "eq_filters",
     "order_count_behaviors",
     "order_count_rule_supported",
 ]

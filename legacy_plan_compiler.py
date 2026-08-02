@@ -23,11 +23,13 @@ LLM(semantic_plan_llm), 정규화기(semantic_normalizers), coverage verifier(se
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field
-from datetime import date
-from typing import Any, Callable, Mapping
+from dataclasses import dataclass
+from typing import Any, Callable
 
+import compile_contract
+import semantic_domain_binding
 import semantic_plan
+from compile_contract import PLAN_ROOT, CompileContext
 from semantic_normalizers import (
     AmountNormalizer,
     Money,
@@ -53,47 +55,37 @@ SLOT_RELATIONAL_OPERATION = "relational_operation"
 SLOT_MEMBER_METRIC_RANKING = "member_metric_ranking"
 
 
-@dataclass
-class CompileContext:
-    """컴파일에 필요한 실행 지식(주입 — 컴파일러는 레지스트리를 스스로 열지 않는다)."""
+def member_container() -> str:
+    """회원 조건 슬롯이 들어갈 실행 플랜 컨테이너 이름(도메인 선언이 권위)."""
+    return semantic_domain_binding.plan_container("member_condition") or "target_user"
 
-    slot_shapes: Mapping[str, Any] = field(default_factory=dict)
-    allowed: Mapping[str, Any] = field(default_factory=dict)
-    today: date | None = None
-    # metric surface → metric_id 해소기(도메인별). 없으면 노드 값을 그대로 쓴다.
-    metric_resolvers: Mapping[str, Callable[[Any], str | None]] = field(default_factory=dict)
-    # scope → 슬롯 라우팅 override(설정으로 확장 가능한 지점).
-    scope_slots: Mapping[str, str] = field(default_factory=dict)
 
-    def resolve_metric(self, domain: str, surface: Any) -> str | None:
-        resolver = self.metric_resolvers.get(domain)
-        if resolver is None:
-            return str(surface) if isinstance(surface, str) and surface.strip() else None
-        return resolver(surface)
+def member_slot_path(slot: str) -> str:
+    """'<컨테이너>.<슬롯>' 감사 경로. 컨테이너 이름이 코드에 흩어지지 않게 한 곳에서 만든다."""
+    return f"{member_container()}.{slot}"
 
 
 @dataclass
-class CompileResult:
-    """컴파일 산출물. plan 을 직접 변형하지 않고 '무엇을 쓸지'를 돌려준다."""
+class CompileResult(compile_contract.CompileResult):
+    """도메인 컴파일 산출물 — 코어 계약에 컨테이너 별칭만 얹는다.
 
-    target_user: dict[str, Any] = field(default_factory=dict)
-    plan: dict[str, Any] = field(default_factory=dict)
-    # 노드 id → 채운 슬롯 경로(감사·소유권 대장).
-    node_slots: dict[str, str] = field(default_factory=dict)
-    # 컴파일하지 못한 노드(사유는 실패 분류 코드).
-    failures: list[dict[str, Any]] = field(default_factory=list)
+    코어 파이프라인은 컨테이너 **이름**을 모르고 `containers` 를 그대로 옮겨 쓴다.
+    `target_user` / `plan` 은 이 도메인 컴파일러 안에서만 쓰는 읽기 편의 별칭이다.
+    """
 
     @property
-    def is_empty(self) -> bool:
-        return not (self.target_user or self.plan)
+    def target_user(self) -> dict[str, Any]:
+        return self.container(member_container())
+
+    @property
+    def plan(self) -> dict[str, Any]:
+        return self.container(PLAN_ROOT)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "target_user": copy.deepcopy(self.target_user),
-            "plan": copy.deepcopy(self.plan),
-            "node_slots": dict(self.node_slots),
-            "failures": copy.deepcopy(self.failures),
-        }
+        payload = super().to_dict()
+        payload["target_user"] = copy.deepcopy(self.containers.get(member_container(), {}))
+        payload["plan"] = copy.deepcopy(self.containers.get(PLAN_ROOT, {}))
+        return payload
 
 
 class LegacyQueryPlanCompiler:
@@ -200,7 +192,7 @@ class LegacyQueryPlanCompiler:
     def _append_list_slot(result: CompileResult, node: SemanticNode, slot: str, items: list[Any]) -> None:
         bucket = result.target_user.setdefault(slot, [])
         bucket.extend(items)
-        result.node_slots[node.id] = f"target_user.{slot}"
+        result.node_slots[node.id] = member_slot_path(slot)
 
     # ── 노드별 컴파일 ────────────────────────────────────────────────────────────
     def _compile_aggregate_predicate(
@@ -291,7 +283,7 @@ class LegacyQueryPlanCompiler:
                 })
                 return
             result.target_user[SLOT_CAMPAIGN_BUY_AMOUNT] = coerced
-            result.node_slots[node.id] = f"target_user.{SLOT_CAMPAIGN_BUY_AMOUNT}"
+            result.node_slots[node.id] = member_slot_path(SLOT_CAMPAIGN_BUY_AMOUNT)
             return
         event = node.values.get("event") or ctx.resolve_metric("campaign_event", node.values.get("metric"))
         slot = {"event": event, "operator": operator, "count": int(value.value)}
@@ -304,7 +296,7 @@ class LegacyQueryPlanCompiler:
             })
             return
         result.target_user[SLOT_CAMPAIGN_FREQUENCY] = coerced
-        result.node_slots[node.id] = f"target_user.{SLOT_CAMPAIGN_FREQUENCY}"
+        result.node_slots[node.id] = member_slot_path(SLOT_CAMPAIGN_FREQUENCY)
 
     def _compile_profile_aggregate(
         self, node: SemanticNode, ctx: CompileContext, result: CompileResult
@@ -389,7 +381,7 @@ class LegacyQueryPlanCompiler:
             })
             return
         result.target_user[SLOT_METRIC_TREND] = coerced
-        result.node_slots[node.id] = f"target_user.{SLOT_METRIC_TREND}"
+        result.node_slots[node.id] = member_slot_path(SLOT_METRIC_TREND)
 
     def _compile_ranked_set(
         self, node: SemanticNode, ctx: CompileContext, result: CompileResult
@@ -466,7 +458,7 @@ class LegacyQueryPlanCompiler:
         if node.source_span:
             slot["surface"] = node.source_span
         result.target_user[SLOT_ENTITY_SET] = slot
-        result.node_slots[node.id] = f"target_user.{SLOT_ENTITY_SET}"
+        result.node_slots[node.id] = member_slot_path(SLOT_ENTITY_SET)
 
     def _compile_co_purchase(
         self, node: SemanticNode, ctx: CompileContext, result: CompileResult
@@ -503,17 +495,39 @@ class LegacyQueryPlanCompiler:
     def _compile_relation_predicate(
         self, node: SemanticNode, ctx: CompileContext, result: CompileResult
     ) -> None:
-        """속성 시점·전이 조건 → relational_operation 슬롯(리졸버가 실행 IR 로 귀결)."""
-        relation = str(node.values.get("relation"))
-        if relation == "co_purchase":
-            self._compile_co_purchase(node, ctx, result)
+        """속성 시점·전이 조건 → relational_operation 슬롯(리졸버가 실행 IR 로 귀결).
+
+        관계명으로 분기하지 않는다: 관계를 **범용 시간 연산자**로 정규화한 뒤, 도메인 선언의
+        `temporal.execution_operators` 표로 실행 연산자를 얻는다. 새 표현·새 실행 연산자
+        이름은 선언 한 줄로 열리고, 시간 축이 아닌 관계(동시구매 등)는 자연히 여기서 빠진다.
+        """
+        relation = str(node.values.get("relation") or "")
+        operator_id = semantic_domain_binding.temporal_operator_of(node)
+        if operator_id is None:
+            # 시간 축이 아닌 관계 — 전용 컴파일러로 넘긴다.
+            handler = self._RELATION_HANDLERS.get(relation)
+            if handler is None:
+                result.failures.append({
+                    "node_id": node.id,
+                    "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                    "reason": f"'{relation}' 관계의 컴파일러가 없다",
+                })
+                return
+            handler(self, node, ctx, result)
             return
         window = self._period(node, "period", ctx)
-        # 'as_of' 는 시점 앵커의 유무로 실행 연산자가 갈린다(최신 스냅샷 vs 지정 월) — 의미
-        # 노드는 그 구분을 알 필요가 없고, 여기서 앵커 유무로 결정한다.
-        operator = relation
-        if relation == "as_of":
-            operator = "as_of_month" if isinstance(window, Period) else "as_of_latest"
+        # 시점 앵커의 유무로 실행 연산자가 갈리는 연산자가 있다(최신 스냅샷 vs 지정 시점) —
+        # 의미 노드는 그 구분을 알 필요가 없고, 앵커 유무로 여기서 결정한다.
+        operator = semantic_domain_binding.execution_operator(
+            operator_id, anchored=isinstance(window, Period)
+        )
+        if operator is None:
+            result.failures.append({
+                "node_id": node.id,
+                "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                "reason": f"'{operator_id}' 시간 연산의 실행 컴파일러가 선언되어 있지 않다",
+            })
+            return
         slot: dict[str, Any] = {
             "attribute_id": ctx.resolve_metric("history_attribute", node.values.get("attribute")),
             "operator": operator,
@@ -547,13 +561,19 @@ class LegacyQueryPlanCompiler:
             })
             return
         result.target_user[SLOT_RELATIONAL_OPERATION] = coerced
-        result.node_slots[node.id] = f"target_user.{SLOT_RELATIONAL_OPERATION}"
+        result.node_slots[node.id] = member_slot_path(SLOT_RELATIONAL_OPERATION)
 
     _DEFAULT_SCOPE_SLOTS: dict[str, str] = {
         "cart": SLOT_CART_AGGREGATE,
         "order": SLOT_AGGREGATE_CONDITIONS,
         "campaign": SLOT_CAMPAIGN_FREQUENCY,
         "profile": SLOT_BALANCE_CONDITIONS,
+    }
+
+    # 시간 축이 아닌 관계의 전용 컴파일러(관계명 → 핸들러). 시간 축 관계는 여기 없다 —
+    # 그쪽은 범용 시간 연산자 + 도메인 실행 연산자 표가 처리한다.
+    _RELATION_HANDLERS: dict[str, Callable[..., None]] = {
+        "co_purchase": _compile_co_purchase,
     }
 
     _HANDLERS: dict[str, Callable[..., None]] = {
@@ -569,21 +589,21 @@ class LegacyQueryPlanCompiler:
 # SemanticPlan 노드 → 실행 슬롯 매핑표(문서·테스트가 읽는 파생 표).
 NODE_SLOT_MAP: dict[str, tuple[str, ...]] = {
     semantic_plan.Predicate.TYPE: (
-        f"target_user.{SLOT_BALANCE_CONDITIONS}",
-        f"target_user.{SLOT_PROFILE_DATE_CONDITIONS}",
+        member_slot_path(SLOT_BALANCE_CONDITIONS),
+        member_slot_path(SLOT_PROFILE_DATE_CONDITIONS),
     ),
     semantic_plan.AggregatePredicate.TYPE: (
-        f"target_user.{SLOT_CART_AGGREGATE}",
-        f"target_user.{SLOT_AGGREGATE_CONDITIONS}",
-        f"target_user.{SLOT_CAMPAIGN_FREQUENCY}",
-        f"target_user.{SLOT_CAMPAIGN_BUY_AMOUNT}",
-        f"target_user.{SLOT_BALANCE_CONDITIONS}",
+        member_slot_path(SLOT_CART_AGGREGATE),
+        member_slot_path(SLOT_AGGREGATE_CONDITIONS),
+        member_slot_path(SLOT_CAMPAIGN_FREQUENCY),
+        member_slot_path(SLOT_CAMPAIGN_BUY_AMOUNT),
+        member_slot_path(SLOT_BALANCE_CONDITIONS),
     ),
-    semantic_plan.MetricComparison.TYPE: (f"target_user.{SLOT_METRIC_TREND}",),
+    semantic_plan.MetricComparison.TYPE: (member_slot_path(SLOT_METRIC_TREND),),
     semantic_plan.RankedSet.TYPE: (SLOT_MEMBER_METRIC_RANKING,),
-    semantic_plan.EntitySetMembership.TYPE: (f"target_user.{SLOT_ENTITY_SET}",),
+    semantic_plan.EntitySetMembership.TYPE: (member_slot_path(SLOT_ENTITY_SET),),
     semantic_plan.RelationPredicate.TYPE: (
-        f"target_user.{SLOT_RELATIONAL_OPERATION}",
+        member_slot_path(SLOT_RELATIONAL_OPERATION),
         "condition_evaluations",
     ),
     semantic_plan.LogicalExpression.TYPE: (),
@@ -597,10 +617,13 @@ COMPILER_OWNED_SLOTS: frozenset[str] = frozenset(
 
 __all__ = [
     "COMPILER_OWNED_SLOTS",
+    "PLAN_ROOT",
     "CompileContext",
     "CompileResult",
     "LegacyQueryPlanCompiler",
     "NODE_SLOT_MAP",
+    "member_container",
+    "member_slot_path",
     "SLOT_AGGREGATE_CONDITIONS",
     "SLOT_BALANCE_CONDITIONS",
     "SLOT_CAMPAIGN_BUY_AMOUNT",

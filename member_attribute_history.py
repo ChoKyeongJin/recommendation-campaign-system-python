@@ -174,11 +174,11 @@ def apply(
     history_clauses = {
         _clause_index(query, requirement.source_span)
         for requirement in semantic_requirements.capture_source_semantic_obligations(query)
-        if requirement.base.get("name") == "member_state_history"
+        if requirement.base.get("name") == semantic_requirements.TEMPORAL_QUALIFIER_KIND
     }
     if len(history_clauses) > 1:
         return
-    kinds = {"member_state_history"}
+    kinds = {semantic_requirements.TEMPORAL_QUALIFIER_KIND}
     value_filter = None
     requirement_filter = None
     if operation.get("aggregate") in ("count_distinct", "change_count"):
@@ -189,12 +189,10 @@ def apply(
             lambda kind, value: kind != "temporal_recurrence"
             or (isinstance(value, Mapping) and value.get("bucket") == "month")
         )
+        axis_re = _attribute_axis_pattern()
         requirement_filter = (
             lambda requirement: requirement.base.get("name") != "temporal_recurrence"
-            or bool(re.search(
-                r"등급|상태",
-                _clause_text(query, requirement.source_span),
-            ))
+            or bool(axis_re.search(_clause_text(query, requirement.source_span)))
         )
     semantic_requirements.discharge_source_semantic_obligations(
         query_plan,
@@ -206,6 +204,16 @@ def apply(
         value_filter=value_filter,
         requirement_filter=requirement_filter,
     )
+
+
+def _attribute_axis_pattern() -> re.Pattern[str]:
+    """속성 축 표면형 정규식 — 낱말을 여기 나열하지 않고 카탈로그에서 파생한다."""
+    import targeting_domain  # 지연 import(순환 없음)
+
+    terms = targeting_domain.attribute_axis_terms()
+    if not terms:
+        return re.compile(r"(?!)")
+    return re.compile("|".join(re.escape(term) for term in terms))
 
 
 def _clause_bounds(query: str, span: Any) -> tuple[int, int]:

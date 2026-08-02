@@ -163,8 +163,21 @@ def test_llm_schema_is_derived_from_node_declarations() -> None:
     schema = semantic_plan_llm.semantic_plan_tool()["function"]["parameters"]
     node_schema = schema["$defs"]["semanticNode"]
     assert set(node_schema["properties"]["type"]["enum"]) == set(semantic_plan.NODE_CLASS_BY_TYPE)
+    derived_names = {
+        spec.name
+        for cls in semantic_plan.NODE_CLASSES
+        for spec in cls.FIELDS
+        if spec.derived
+    }
+    assert derived_names, "파생 필드가 하나도 없다 — 아래 노출 금지 계약이 공허해진다."
     for cls in semantic_plan.NODE_CLASSES:
         for spec in cls.FIELDS:
+            if spec.derived:
+                # 파생 필드(시간 한정어 등)는 시스템 계산값이다 — 노출하면 LLM 이 지어낸다.
+                assert spec.name not in node_schema["properties"], (
+                    f"{cls.TYPE}.{spec.name} 은 파생 필드인데 LLM 스키마에 노출됐다"
+                )
+                continue
             assert spec.name in node_schema["properties"], f"{cls.TYPE}.{spec.name} 미노출"
     # 슬롯 이름은 LLM 스키마 어디에도 없다.
     import json

@@ -1,24 +1,24 @@
-"""의미 해석과 query plan 생성의 분리 — 파이프라인 본체.
+"""의미 해석과 실행 계획 생성의 분리 — 파이프라인 본체(범용 코어).
 
     사용자 원문
-    → SemanticPlan 추출(LLM)
-    → 값 정규화
-    → 원문 coverage 검증 (+ 제한적 재추출)
-    → capability 판정
-    → semantic validation (schema 파생 missing/status)
-    → deterministic query plan compile
-    → 최종 검증
+    → requirement 추출(SemanticPlan 노드)
+    → 값·시간 한정어 정규화
+    → capability 판정(5축)
+    → 실행 계획 컴파일
+    → requirement 원장 조립 + requirement 단위 의미검증
+    → 미해결 requirement만 패치 재방출(정책 횟수)
+    → 구체적인 실패 또는 clarification
 
 각 단계의 소유자가 다르고, 뒤 단계가 앞 단계의 산출물을 **고치지 않는다**. 특히:
 
-  - missing_fields 는 4단계에서 계산되고 그 뒤 누구도 삭제하지 않는다
-    (그래서 `_drop_*_missing_fields` 계열이 존재할 자리가 없다).
-  - query_plan 슬롯은 6단계 컴파일러만 쓴다
-    (그래서 `_apply_*_backfill` 계열이 존재할 자리가 없다).
-  - 원문을 다시 읽는 곳은 3단계 coverage 검증뿐이고, 그 결과는 슬롯이 아니라
-    **재추출 요청**이다.
+  - missing 은 스키마에서 계산되고 그 뒤 누구도 삭제하지 않는다
+    (그래서 결핍 사후 삭제 함수가 존재할 자리가 없다).
+  - 실행 슬롯은 컴파일러만 쓴다(그래서 정규식 백필이 존재할 자리가 없다).
+  - 원문을 다시 읽는 곳은 coverage 검증뿐이고, 그 결과는 슬롯이 아니라 **패치 요청**이다.
+  - 재방출은 미해결 requirement 만 건드리고, 회귀가 생기면 라운드를 되돌린다.
 
-순수 모듈 규약: graph_rag 를 import 하지 않는다(실행 지식은 CompileContext 로 주입).
+범용 코어 규약: graph_rag 를 import 하지 않는다. 실행 플랜 **컨테이너 이름조차 모른다** —
+컴파일러가 컨테이너별로 산출물을 돌려주고, 여기서는 그것을 그대로 옮긴다.
 """
 
 from __future__ import annotations
@@ -27,10 +27,15 @@ import copy
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping, Sequence
 
+import requirement_ledger
 import semantic_capability
 import semantic_coverage
+import semantic_domain_binding
 import semantic_plan
-from legacy_plan_compiler import CompileContext, CompileResult, LegacyQueryPlanCompiler
+import semantic_reemission
+import temporal_semantics
+from compile_contract import CompileContext, CompileResult
+from requirement_ledger import RequirementLedger
 from semantic_normalizers import (
     AmountNormalizer,
     EntityResolver,
@@ -57,8 +62,10 @@ class PipelineResult:
     coverage: semantic_coverage.CoverageReport
     compiled: CompileResult
     status: str
+    ledger: RequirementLedger = field(default_factory=RequirementLedger)
     contract_violations: list[str] = field(default_factory=list)
     reextracted_spans: list[str] = field(default_factory=list)
+    reemission: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -66,8 +73,10 @@ class PipelineResult:
             "coverage": self.coverage.to_dict(),
             "compiled": self.compiled.to_dict(),
             "status": self.status,
+            "requirements": self.ledger.to_dict(),
             "contract_violations": list(self.contract_violations),
             "reextracted_spans": list(self.reextracted_spans),
+            "reemission": copy.deepcopy(self.reemission),
         }
 
 
@@ -105,7 +114,66 @@ def normalize_plan(
                     "reason": str(exc),
                     "received": raw,
                 })
+        _normalize_temporal(node, plan)
     return plan
+
+
+def _normalize_temporal(node: Any, plan: SemanticPlanV2) -> None:
+    """시간 한정어를 **범용 연산자**로 확정해 노드에 싣는다.
+
+    표면 표현별 예외가 아니라 사상이다: 도메인 관계명은 별칭 표로, 이미 범용 연산자면
+    그대로. 시간 축이 아닌 관계(동시구매 등)는 아무 일도 일어나지 않는다.
+    """
+    if not any(spec.kind == "temporal" for spec in type(node).FIELDS):
+        return
+    raw = node.values.get("temporal") or node.values.get("relation")
+    if raw in (None, "", {}, []):
+        return
+    try:
+        qualifier = temporal_semantics.normalize(
+            raw, aliases=semantic_domain_binding.temporal_aliases()
+        )
+    except temporal_semantics.TemporalSemanticsError as exc:
+        plan.validation_errors.append({
+            "node_id": node.id,
+            "field": "temporal",
+            "failure_code": semantic_plan.VALIDATION_MISMATCH,
+            "reason": f"시간 한정어를 해석하지 못했습니다: {exc}",
+            "received": raw,
+        })
+        return
+    if qualifier is None:
+        return
+    # 시간 인자는 노드가 이미 소유한 필드에서 가져온다(값의 이중 소유를 만들지 않는다).
+    anchor = node.values.get("period")
+    interval = node.values.get("period") if node.values.get("months") else None
+    payload = temporal_semantics.TemporalQualifier(
+        operator=qualifier.operator,
+        anchor=qualifier.anchor if qualifier.anchor is not None else anchor,
+        interval=(
+            qualifier.interval
+            if qualifier.interval is not None
+            else (interval or _interval_from_months(node))
+        ),
+        count=qualifier.count if qualifier.count is not None else node.values.get("count"),
+        subinterval_unit=(
+            qualifier.subinterval_unit
+            or (
+                semantic_domain_binding.temporal_subinterval_unit()
+                if temporal_semantics.ARG_SUBINTERVAL_UNIT in qualifier.spec.requires
+                else None
+            )
+        ),
+        source_span=qualifier.source_span or node.source_span,
+    )
+    node.values["temporal"] = payload.to_dict()
+
+
+def _interval_from_months(node: Any) -> Any:
+    months = node.values.get("months")
+    if isinstance(months, (int, float)) and not isinstance(months, bool) and months > 0:
+        return {"value": int(months), "unit": "months"}
+    return None
 
 
 def _plain(value: Any) -> Any:
@@ -123,34 +191,10 @@ def _plain(value: Any) -> Any:
     return value
 
 
-# ── 3단계: coverage 검증 + 제한적 재추출 ─────────────────────────────────────────
-def close_coverage(
-    query: str,
-    plan: SemanticPlanV2,
-    *,
-    claimed_spans: Sequence[tuple[int, int]] = (),
-    reextract: Callable[[str, Sequence[str]], tuple[SemanticPlanV2, list[str]]] | None = None,
-) -> tuple[semantic_coverage.CoverageReport, list[str], list[str]]:
-    """coverage 를 검증하고, 누락 구간이 있으면 **그 구간만** 한 번 재추출해 병합한다.
-
-    반환: (최종 coverage 보고, 재추출한 구간, 계약 위반)
-    """
-    report = semantic_coverage.verify_coverage(query, plan, claimed_spans=claimed_spans)
-    if not report.uncovered_requirements or reextract is None:
-        return report, [], []
-    spans = [str(item.get("source_span") or "") for item in report.uncovered_requirements]
-    spans = [span for span in spans if span.strip()]
-    if not spans:
-        return report, [], []
-    try:
-        addition, violations = reextract(query, spans)
-    except Exception:  # noqa: BLE001 — 재추출 실패는 원래의 정직한 결핍 보고로 귀결된다.
-        return report, [], []
-    import semantic_plan_llm  # 순환 없음(llm 모듈은 pipeline 을 모른다)
-
-    semantic_plan_llm.merge_reextracted(plan, addition, spans=spans)
-    final_report = semantic_coverage.verify_coverage(query, plan, claimed_spans=claimed_spans)
-    return final_report, spans, list(violations)
+# 재방출은 `semantic_reemission` 하나가 소유한다. 예전에 여기 있던 `close_coverage`
+# (uncovered 구간 재추출 + 무조건 병합)는 2026-08-02 계층 분리에서 삭제됐다 — 재방출 경로가
+# 둘이면 어느 쪽이 이겼는지가 다시 코드 순서에 숨는다. 지금은 원장의 미해결 항목만이
+# 패치 요청의 입력이고, 보호 집합과 회귀 되돌림이 그 경로에만 있다.
 
 
 # ── 4·5단계: capability 판정 + 검증 ──────────────────────────────────────────────
@@ -178,6 +222,10 @@ def judge_capabilities(
     return plan
 
 
+# coverage 검증이 만든 충돌의 계보 표시(재평가 때 파생분만 비우기 위한 것).
+_COVERAGE_CONFLICT_SOURCE = "coverage"
+
+
 def attach_coverage(plan: SemanticPlanV2, report: semantic_coverage.CoverageReport) -> SemanticPlanV2:
     """coverage 결과를 플랜에 싣는다 — status 파생의 입력이 된다."""
     plan.uncovered_requirements = list(report.uncovered_requirements)
@@ -191,6 +239,7 @@ def attach_coverage(plan: SemanticPlanV2, report: semantic_coverage.CoverageRepo
         plan.conflicts.append({
             "status": semantic_plan.STATUS_AMBIGUOUS,
             "failure_code": semantic_plan.AMBIGUOUS_REQUIREMENT,
+            "source": _COVERAGE_CONFLICT_SOURCE,
             "source_span": item.get("source_span"),
             "candidates": [{"type": node_type} for node_type in item.get("types", [])],
         })
@@ -198,11 +247,23 @@ def attach_coverage(plan: SemanticPlanV2, report: semantic_coverage.CoverageRepo
 
 
 # ── 6단계: 컴파일 ────────────────────────────────────────────────────────────────
+def default_compiler() -> Any:
+    """조립 지점이 컴파일러를 주입하지 않았을 때의 기본 도메인 컴파일러.
+
+    코어가 도메인 컴파일러를 **아는** 유일한 지점이며, 그것도 지연 import 로 이름만 안다.
+    다른 도메인을 얹을 때는 `run(compiler=...)` 로 주입하면 이 경로를 타지 않는다.
+    """
+    from legacy_plan_compiler import LegacyQueryPlanCompiler  # 조립 편의(코어 계약은 compile_contract)
+
+    return LegacyQueryPlanCompiler()
+
+
 def compile_plan(
     plan: SemanticPlanV2,
     *,
     context: CompileContext,
     registry: Any = None,
+    compiler: Any = None,
 ) -> CompileResult:
     capability_registry = registry
     if capability_registry is None:
@@ -210,31 +271,36 @@ def compile_plan(
             capability_registry = semantic_capability.registry()
         except semantic_capability.CapabilityRegistryError:
             capability_registry = None
-    return LegacyQueryPlanCompiler().compile(plan, capability_registry, context)
+    return (compiler or default_compiler()).compile(plan, capability_registry, context)
 
 
 def apply_to_query_plan(query_plan: dict[str, Any], compiled: CompileResult) -> list[str]:
     """컴파일 산출물을 실행 플랜에 쓴다. **슬롯을 쓰는 유일한 경로다.**
 
-    이미 값이 있는 슬롯은 덮어쓰지 않는다 — 이것은 fill-if-empty 백필이 아니라 같은
-    컴파일러 산출물끼리의 멱등 보호다(재실행 시 중복 누적 방지). 다른 생산자가 같은 슬롯을
-    쓰는 일은 드리프트 가드 테스트가 막는다.
+    컨테이너 이름은 컴파일러가 붙여 준다 — 이 함수는 도메인 컨테이너 이름을 모른다.
+    이미 값이 있는 슬롯은 덮어쓰지 않는다: fill-if-empty 백필이 아니라 같은 컴파일러
+    산출물끼리의 멱등 보호다(재실행 시 중복 누적 방지). 다른 생산자가 같은 슬롯을 쓰는
+    일은 드리프트 가드 테스트가 막는다.
     """
     written: list[str] = []
-    target_user = query_plan.get("target_user")
-    if not isinstance(target_user, dict):
-        target_user = {}
-        query_plan["target_user"] = target_user
-    for slot, value in compiled.target_user.items():
-        if target_user.get(slot):
+    for container, slots in (compiled.containers or {}).items():
+        if not slots:
             continue
-        target_user[slot] = copy.deepcopy(value)
-        written.append(f"target_user.{slot}")
-    for slot, value in compiled.plan.items():
-        if query_plan.get(slot):
-            continue
-        query_plan[slot] = copy.deepcopy(value)
-        written.append(slot)
+        if not container:
+            target = query_plan
+            prefix = ""
+        else:
+            existing = query_plan.get(container)
+            if not isinstance(existing, dict):
+                existing = {}
+                query_plan[container] = existing
+            target = existing
+            prefix = f"{container}."
+        for slot, value in slots.items():
+            if target.get(slot):
+                continue
+            target[slot] = copy.deepcopy(value)
+            written.append(f"{prefix}{slot}")
     return written
 
 
@@ -299,6 +365,76 @@ def _status_message(plan: SemanticPlanV2, status: str) -> str | None:
     return None
 
 
+# ── 평가 1회분(정규화 → coverage → capability → 컴파일 → 원장) ──────────────────
+@dataclass
+class Evaluation:
+    """플랜 한 상태의 전 단계 판정. 재방출 라운드마다 이 묶음을 통째로 다시 만든다."""
+
+    report: semantic_coverage.CoverageReport
+    compiled: CompileResult
+    ledger: RequirementLedger
+
+
+def evaluate(
+    query: str,
+    plan: SemanticPlanV2,
+    *,
+    context: CompileContext,
+    claimed_spans: Sequence[tuple[int, int]] = (),
+    registry: Any = None,
+    available_months: Mapping[str, int] | None = None,
+    entity_resolver: EntityResolver | None = None,
+    compiler: Any = None,
+    slot_catalog: Mapping[str, Sequence[str]] | None = None,
+    labeller: Any = None,
+) -> Evaluation:
+    """플랜을 정규화·판정·컴파일하고 요구사항 원장까지 만든다(재실행 가능).
+
+    파생 산출물(결핍 보고·capability 판정·충돌·미커버)은 **매번 비우고 다시 계산한다** —
+    파생값을 누적하면 이전 라운드의 실패가 유령으로 남는다.
+    """
+    plan.validation_errors.clear()
+    plan.capability_verdicts.clear()
+    plan.uncovered_requirements.clear()
+    # 충돌은 두 출처가 있다: 후보 병합 단계(생산자 소유)와 coverage 검증(파생).
+    # 파생분만 비운다 — 생산자가 남긴 모호성까지 지우면 그 조건이 조용히 사라진다.
+    plan.conflicts[:] = [
+        conflict for conflict in plan.conflicts
+        if not (isinstance(conflict, Mapping) and conflict.get("source") == _COVERAGE_CONFLICT_SOURCE)
+    ]
+
+    normalize_plan(plan, today=context.today, entity_resolver=entity_resolver)
+    report = semantic_coverage.verify_coverage(query, plan, claimed_spans=claimed_spans)
+    attach_coverage(plan, report)
+    judge_capabilities(plan, registry=registry, available_months=available_months)
+    compiled = compile_plan(plan, context=context, registry=registry, compiler=compiler)
+    for failure in compiled.failures:
+        code = failure.get("failure_code")
+        if code in semantic_plan.INTERNAL_FAILURE_CODES:
+            plan.validation_errors.append(failure)
+        else:
+            plan.capability_verdicts.append({
+                "node_id": failure.get("node_id"),
+                "node_type": "compiler",
+                "failure_code": code,
+                "message": failure.get("reason"),
+            })
+    ledger = requirement_ledger.build_ledger(
+        plan,
+        compiled=compiled,
+        coverage=report,
+        slot_catalog=slot_catalog or _default_slot_catalog(),
+        labeller=labeller,
+    )
+    return Evaluation(report=report, compiled=compiled, ledger=ledger)
+
+
+def _default_slot_catalog() -> Mapping[str, Sequence[str]]:
+    from legacy_plan_compiler import NODE_SLOT_MAP  # 조립 편의(코어 계약은 compile_contract)
+
+    return NODE_SLOT_MAP
+
+
 # ── 전체 실행 ────────────────────────────────────────────────────────────────────
 def run(
     query: str,
@@ -306,12 +442,21 @@ def run(
     extract: Callable[[str], tuple[SemanticPlanV2, list[str]]],
     context: CompileContext,
     reextract: Callable[[str, Sequence[str]], tuple[SemanticPlanV2, list[str]]] | None = None,
+    request_patch: Callable[[Any], SemanticPlanV2 | None] | None = None,
     claimed_spans: Sequence[tuple[int, int]] = (),
     registry: Any = None,
     available_months: Mapping[str, int] | None = None,
     entity_resolver: EntityResolver | None = None,
+    compiler: Any = None,
+    slot_catalog: Mapping[str, Sequence[str]] | None = None,
+    labeller: Any = None,
+    reemission_policy: semantic_reemission.ReemissionPolicy | None = None,
 ) -> PipelineResult:
-    """원문 하나를 파이프라인 전체에 통과시킨다."""
+    """원문 하나를 파이프라인 전체에 통과시킨다.
+
+    재방출은 **미해결 requirement 만** 대상으로 하는 패치이고, 라운드 수는 정책값이다.
+    `reextract` 는 이전 계약(구간 목록 재추출)을 패치 요청으로 감싸 그대로 받아들인다.
+    """
     violations: list[str] = []
     try:
         plan, extraction_violations = extract(query)
@@ -330,44 +475,75 @@ def run(
             contract_violations=violations,
         )
 
-    normalize_plan(plan, today=context.today, entity_resolver=entity_resolver)
-    report, reextracted, reextract_violations = close_coverage(
-        query, plan, claimed_spans=claimed_spans, reextract=reextract
+    evaluate_kwargs = {
+        "context": context,
+        "claimed_spans": claimed_spans,
+        "registry": registry,
+        "available_months": available_months,
+        "entity_resolver": entity_resolver,
+        "compiler": compiler,
+        "slot_catalog": slot_catalog,
+        "labeller": labeller,
+    }
+    state = evaluate(query, plan, **evaluate_kwargs)
+    latest: dict[str, Evaluation] = {"value": state}
+
+    def _rebuild(updated: SemanticPlanV2) -> RequirementLedger:
+        latest["value"] = evaluate(query, updated, **evaluate_kwargs)
+        return latest["value"].ledger
+
+    patcher = request_patch or _patch_adapter(query, reextract, violations)
+    outcome = semantic_reemission.run(
+        plan,
+        state.ledger,
+        request_patch=patcher,
+        rebuild=_rebuild,
+        policy=reemission_policy,
     )
-    violations.extend(reextract_violations)
-    if reextracted:
-        normalize_plan(plan, today=context.today, entity_resolver=entity_resolver)
-    attach_coverage(plan, report)
-    judge_capabilities(plan, registry=registry, available_months=available_months)
-    compiled = compile_plan(plan, context=context, registry=registry)
-    for failure in compiled.failures:
-        code = failure.get("failure_code")
-        if code in semantic_plan.INTERNAL_FAILURE_CODES:
-            plan.validation_errors.append(failure)
-        else:
-            plan.capability_verdicts.append({
-                "node_id": failure.get("node_id"),
-                "node_type": "compiler",
-                "failure_code": code,
-                "message": failure.get("reason"),
-            })
+    final = latest["value"] if outcome.patched else state
+    if outcome.plan is not plan:
+        # 라운드가 되돌려졌다 — 스냅샷 플랜으로 판정을 다시 맞춘다.
+        final = evaluate(query, outcome.plan, **evaluate_kwargs)
     return PipelineResult(
-        plan=plan,
-        coverage=report,
-        compiled=compiled,
-        status=plan.status(),
+        plan=outcome.plan,
+        coverage=final.report,
+        compiled=final.compiled,
+        status=outcome.plan.status(),
+        ledger=final.ledger,
         contract_violations=violations,
-        reextracted_spans=reextracted,
+        reextracted_spans=[
+            span for record in outcome.rounds for span in record.requested_spans
+        ],
+        reemission=outcome.to_dict(),
     )
+
+
+def _patch_adapter(
+    query: str,
+    reextract: Callable[[str, Sequence[str]], tuple[SemanticPlanV2, list[str]]] | None,
+    violations: list[str],
+) -> Callable[[Any], SemanticPlanV2 | None] | None:
+    """구간 재추출 계약 → 패치 요청 계약(호출자 코드를 바꾸지 않고 패치 경로로 태운다)."""
+    if reextract is None:
+        return None
+
+    def request_patch(request: Any) -> SemanticPlanV2 | None:
+        patch, patch_violations = reextract(query, list(request.spans))
+        violations.extend(patch_violations or [])
+        return patch
+
+    return request_patch
 
 
 __all__ = [
     "CompileContext",
+    "Evaluation",
     "PipelineResult",
     "apply_to_query_plan",
     "attach_coverage",
-    "close_coverage",
     "compile_plan",
+    "default_compiler",
+    "evaluate",
     "judge_capabilities",
     "normalize_plan",
     "project_semantic_ir",

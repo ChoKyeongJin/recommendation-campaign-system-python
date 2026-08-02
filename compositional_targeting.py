@@ -32,96 +32,10 @@ DEFAULT_ATTRIBUTE_CATALOG_PATH = (
 )
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _YYYYMM_RE = re.compile(r"^\d{6}$")
-_KOREAN_SMALL_COUNTS = {"한": 1, "두": 2, "세": 3, "네": 4, "다섯": 5}
-_STABLE_RE = re.compile(
-    r"(?:한번도)?(?:바뀌지않|변하지않|변경되지않|변동(?:이)?없|변화(?:가)?없|동일하게유지|그대로유지)"
-)
-_CHANGE_COUNT_RE = re.compile(
-    r"(?P<count>\d+|한|두|세|네|다섯)(?:번|회)(?P<comparison>이상|초과|이하|미만|정확히|만큼)?"
-    r"(?:바뀌|변하|변경|변동)"
-)
-_CHANGED_RE = re.compile(r"(?:바뀐|바뀌었|변한|변했|변경된|변경됐|변동한|변동됐)")
-_COMPARISONS = {
-    "이상": "gte",
-    "초과": "gt",
-    "이하": "lte",
-    "미만": "lt",
-    "정확히": "eq",
-    "만큼": "eq",
-}
+# 원문을 읽던 감지기(정규식 원자 + 소량 수사 + 스팬 재구성 헬퍼)는 2026-08-02 계층 분리에서
+# 삭제됐다. 시간 한정어 감지는 도메인 계층(targeting_domain.temporal_lexicon)이 **범용 시간
+# 연산자**로 사상하고, 이 모듈은 검증된 슬롯만 받아 SQL 로 낮춘다(원문을 읽지 않는다).
 _SQL_COMPARISONS = {"eq": "=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
-
-
-def _compact_with_offsets(text: str) -> tuple[str, list[int]]:
-    chars: list[str] = []
-    offsets: list[int] = []
-    for index, char in enumerate(text):
-        if char.isspace():
-            continue
-        chars.append(char.casefold())
-        offsets.append(index)
-    return "".join(chars), offsets
-
-
-def _source_span(
-    offsets: list[int], compact_start: int, compact_end: int, text_length: int
-) -> dict[str, int]:
-    if not offsets or compact_start >= len(offsets):
-        return {"start": 0, "end": text_length}
-    start = offsets[max(0, compact_start)]
-    end_index = min(len(offsets) - 1, max(compact_start, compact_end - 1))
-    return {"start": start, "end": offsets[end_index] + 1}
-
-
-def _combined_span(
-    text: str, offsets: list[int], spans: list[tuple[int, int]]
-) -> dict[str, int]:
-    present = [span for span in spans if span[1] > span[0]]
-    if not present:
-        return {"start": 0, "end": len(text)}
-    return _source_span(
-        offsets,
-        min(start for start, _ in present),
-        max(end for _, end in present),
-        len(text),
-    )
-
-
-def _find_operation(compact: str) -> tuple[dict[str, Any], tuple[int, int]] | None:
-    stable = _STABLE_RE.search(compact)
-    if stable is not None:
-        return (
-            {
-                "aggregate": "count_distinct",
-                "comparison": {"operator": "eq", "value": 1},
-                "semantic_operator": "stable",
-            },
-            stable.span(),
-        )
-    counted = _CHANGE_COUNT_RE.search(compact)
-    if counted is not None:
-        return (
-            {
-                "aggregate": "change_count",
-                "comparison": {
-                    "operator": _COMPARISONS.get(counted.group("comparison") or "이상", "gte"),
-                    "value": int(counted.group("count")),
-                },
-                "semantic_operator": "changed_n_times",
-            },
-            counted.span(),
-        )
-    changed = _CHANGED_RE.search(compact)
-    if changed is not None:
-        return (
-            {
-                "aggregate": "count_distinct",
-                "comparison": {"operator": "gt", "value": 1},
-                "semantic_operator": "changed",
-            },
-            changed.span(),
-        )
-    return None
 
 
 def compile_sql(
@@ -457,6 +371,18 @@ def _expand_value_predicate(
     return sorted(selected) or None
 
 
+def _value_examples(attribute: Mapping[str, Any], limit: int = 2) -> str:
+    """확인 요청 문구에 넣을 값 예시 — 낱말을 코드에 박지 않고 값 사전에서 뽑는다."""
+    samples: list[str] = []
+    for spec in (attribute.get("values") or {}).values():
+        synonyms = spec.get("synonyms") or []
+        if synonyms:
+            samples.append(str(synonyms[0]))
+        if len(samples) >= limit:
+            break
+    return f"(예: {'/'.join(samples)})" if samples else ""
+
+
 def resolve_operation(
     slot: Mapping[str, Any], catalog: Mapping[str, Any]
 ) -> dict[str, Any]:
@@ -523,7 +449,7 @@ def resolve_operation(
         if not values:
             return _blocked(
                 "needs_clarification",
-                f"{label} 조건의 값(예: VIP/골드)을 확정하지 못했습니다.",
+                f"{label} 조건의 값{_value_examples(attribute)}을 확정하지 못했습니다.",
             )
         anchor: dict[str, Any] = {"type": "latest"}
         if operator == "as_of_month":
@@ -553,13 +479,13 @@ def resolve_operation(
             return _blocked("unsupported", f"{label}의 직전 값 컬럼이 없어 전이 조건을 지원하지 않습니다.")
         to_values = _expand_value_predicate(attribute, str(slot.get("to_value") or ""), "eq")
         if not to_values:
-            return _blocked("needs_clarification", f"{label} 전이의 도착 값(예: VIP)을 확정하지 못했습니다.")
+            return _blocked("needs_clarification", f"{label} 전이의 도착 값{_value_examples(attribute)}을 확정하지 못했습니다.")
         from_values = None
         if slot.get("from_value"):
             from_values = _expand_value_predicate(attribute, str(slot.get("from_value")), "eq")
             if not from_values:
                 return _blocked(
-                    "needs_clarification", f"{label} 전이의 출발 값(예: 골드)을 확정하지 못했습니다."
+                    "needs_clarification", f"{label} 전이의 출발 값{_value_examples(attribute)}을 확정하지 못했습니다."
                 )
         base.update({
             "aggregate": "transition",

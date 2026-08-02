@@ -2,7 +2,7 @@
 
 경계(이 모듈이 하면 안 되는 것):
   1. 사용자 원문 전체를 다시 해석하지 않는다. 입력은 노드 필드 값 하나다.
-  2. 목적지 슬롯(`target_user.cart_aggregate` 등)을 모른다.
+  2. 목적지 슬롯도, 실행 플랜 컨테이너도 모른다(컴파일러 소유).
   3. LLM 결과가 비었는지 여부에 따라 동작을 바꾸지 않는다(fill-if-empty 금지).
   4. missing/status 를 만들지도 고치지도 않는다.
 
@@ -11,7 +11,8 @@
 '구매한' 뒤따름 검사 같은 것)는 옮기지 않고 버렸다 — 그것이 이중 해석의 본체였다.
 
 어휘 소유권: 단위/비교어는 `condition_normalizers`(normalization_lexicon.json)가 소유하고,
-지표·엔터티 어휘는 호출자가 카탈로그로 주입한다. 이 모듈은 낱말을 하드코딩하지 않는다
+계수 단위의 **의미**와 엔터티 별칭은 도메인 선언이 소유한다(`semantic_domain_binding`).
+지표 어휘는 호출자가 카탈로그로 주입한다. 이 모듈은 도메인 낱말을 하드코딩하지 않는다
 (예외: 한국어 수 배수어 만/억/천 — 값 문법 자체라 정규식 원자에 해당한다).
 """
 
@@ -24,6 +25,7 @@ from datetime import date, timedelta
 from typing import Any, Mapping
 
 import condition_normalizers
+import semantic_domain_binding
 
 DEFAULT_CURRENCY = "KRW"
 
@@ -293,20 +295,18 @@ class OperatorNormalizer:
 
 # ── Unit ─────────────────────────────────────────────────────────────────────────
 class UnitNormalizer:
-    """'개' → item_quantity, '회/번/건' → order_count, '종/종류' → distinct_product_count.
+    """계수 단위 표면 → **의미 단위**. 어느 표면이 어떤 의미인지는 도메인 선언이 소유한다.
 
     기간 단위(일/주/개월)는 condition_normalizers 의 canonical 단위로 넘긴다.
     """
 
-    _COUNTER_SEMANTICS = {
-        "개": "item_quantity",
-        "회": "order_count",
-        "번": "order_count",
-        "건": "order_count",
-        "종": "distinct_product_count",
-        "종류": "distinct_product_count",
-    }
-    _SEMANTIC_UNITS = frozenset(_COUNTER_SEMANTICS.values())
+    @staticmethod
+    def counter_semantics() -> dict[str, str]:
+        return semantic_domain_binding.counter_units()
+
+    @classmethod
+    def semantic_units(cls) -> frozenset[str]:
+        return frozenset(cls.counter_semantics().values())
 
     @classmethod
     def normalize(cls, raw: Any) -> str | None:
@@ -315,18 +315,26 @@ class UnitNormalizer:
         text = str(raw).strip()
         if not text:
             return None
-        if text in cls._SEMANTIC_UNITS:
+        counters = cls.counter_semantics()
+        if text in set(counters.values()):
             return text
-        if text in cls._COUNTER_SEMANTICS:
-            return cls._COUNTER_SEMANTICS[text]
+        if text in counters:
+            return counters[text]
         canonical = condition_normalizers.canonical_unit(text)
         return canonical or text
 
     @classmethod
     def from_surface(cls, surface: str) -> str | None:
-        """수량 표면에 붙어 온 계수 단위만 읽는다('2개' → item_quantity)."""
-        match = re.search(r"(종류|개|회|번|건|종)\s*$", surface.strip())
-        return cls._COUNTER_SEMANTICS.get(match.group(1)) if match else None
+        """수량 표면에 붙어 온 계수 단위만 읽는다(표면 목록은 도메인 선언에서 파생)."""
+        counters = cls.counter_semantics()
+        if not counters:
+            return None
+        # 긴 표면형 먼저 — '종류'가 '종'에 먹히지 않게 한다.
+        alternation = "|".join(
+            re.escape(term) for term in sorted(counters, key=lambda item: (-len(item), item))
+        )
+        match = re.search(rf"({alternation})\s*$", surface.strip())
+        return counters.get(match.group(1)) if match else None
 
 
 # ── Period / DateTime ────────────────────────────────────────────────────────────
@@ -525,17 +533,17 @@ class MetricResolver:
 
 
 class EntityResolver:
-    """엔터티 표면 → canonical. 어휘는 주입(기본값은 회원/상품 두 축)."""
-
-    _DEFAULT = {
-        "member": "member", "회원": "member", "고객": "member", "users": "member", "user": "member",
-        "product": "product", "상품": "product", "제품": "product", "품목": "product",
-        "brand": "brand", "브랜드": "brand",
-        "category": "category", "카테고리": "category",
-    }
+    """엔터티 표면 → canonical. 별칭 사전은 도메인 선언이 소유하고, 호출자가 덧댈 수 있다."""
 
     def __init__(self, aliases: Mapping[str, str] | None = None) -> None:
-        self._aliases = {**self._DEFAULT, **{str(k).casefold(): str(v) for k, v in (aliases or {}).items()}}
+        declared = {
+            str(key).casefold(): str(value)
+            for key, value in semantic_domain_binding.entity_aliases().items()
+        }
+        self._aliases = {
+            **declared,
+            **{str(k).casefold(): str(v) for k, v in (aliases or {}).items()},
+        }
 
     def resolve(self, surface: Any) -> str | None:
         if surface is None:

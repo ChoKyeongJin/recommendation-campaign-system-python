@@ -9,24 +9,23 @@
     → 그 span 만 재추출 → 병합 → 전체 재검증
 
 검증 방법(중요 — 이건 의미 파서가 아니다):
-  - 앵커는 애플리케이션이 이미 소유한 **값 원자**다(날짜창·수량·퍼센트·비교어 —
-    `query_structurer.semantic_ir.extract_literal_bindings`). 값의 의미는 보지 않고
-    "이 값을 어떤 노드가 근거로 삼았는가"만 본다.
-  - 값이 없는 의미 연산자(반복·집합·스냅샷)는 기존 요구 원장
-    (`semantic_requirements.capture_source_semantic_obligations`)이 앵커를 준다.
-  - 다른 소유자(V4 슬롯 계층 등)가 이미 근거로 청구한 구간은 `claimed_spans` 로 주입받아
+  - 앵커는 애플리케이션이 이미 소유한 **값 원자**(날짜창·수량·퍼센트 …)와, 값이 없는
+    의미 연산자의 요구 원장이다. 둘 다 **앵커 공급자로 주입**받는다 — 이 모듈은 어떤
+    도메인 모듈이 그것을 만드는지 모른다. 값의 의미도 보지 않고 "이 값을 어떤 노드가
+    근거로 삼았는가"만 본다.
+  - 다른 소유자(기존 슬롯 계층 등)가 이미 근거로 청구한 구간은 `claimed_spans` 로 주입받아
     커버된 것으로 본다 — 소유자가 여럿인 이행기에 거짓 누락 보고를 만들지 않기 위해서다.
 
 Coverage verifier 는 query plan 슬롯을 채우지 않는다. 판단만 하고 결과를 돌려준다.
 
-순수 모듈 규약: graph_rag 를 import 하지 않는다.
+범용 코어 규약: graph_rag 를 import 하지 않는다. 앵커 공급자는 등록으로 주입한다.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
 import semantic_plan
 from semantic_plan import SemanticPlanV2
@@ -66,37 +65,57 @@ class CoverageReport:
         }
 
 
-def _literal_anchors(query: str) -> list[Anchor]:
-    from query_structurer.semantic_ir import extract_literal_bindings  # 순환 없음
+AnchorProvider = Callable[[str], Iterable[Anchor]]
 
+# 등록된 앵커 공급자. 도메인 계층이 조립 시점에 등록한다(코어는 무엇이 등록됐는지 모른다).
+_ANCHOR_PROVIDERS: dict[str, AnchorProvider] = {}
+
+
+def register_anchor_provider(name: str, provider: AnchorProvider) -> None:
+    """앵커 공급자 등록(같은 이름이면 교체 — 조립 지점이 여러 번 실행돼도 중복되지 않는다)."""
+    _ANCHOR_PROVIDERS[str(name)] = provider
+
+
+def registered_anchor_providers() -> tuple[str, ...]:
+    return tuple(sorted(_ANCHOR_PROVIDERS))
+
+
+def reset_anchor_providers() -> None:
+    _ANCHOR_PROVIDERS.clear()
+
+
+def literal_anchors_from(
+    literals: Iterable[Any], *, exclude_kinds: Iterable[str] = _NON_ANCHOR_LITERAL_KINDS
+) -> list[Anchor]:
+    """값 원자 목록 → 앵커. 도메인 공급자가 자기 리터럴 추출기를 이 헬퍼로 감싼다."""
+    excluded = frozenset(exclude_kinds)
     anchors: list[Anchor] = []
-    for literal in extract_literal_bindings(query):
+    for literal in literals or []:
+        if not isinstance(literal, dict):
+            continue
         kind = str(literal.get("kind") or "")
-        if kind in _NON_ANCHOR_LITERAL_KINDS:
+        if kind in excluded:
             continue
         start, end = literal.get("start"), literal.get("end")
         if not isinstance(start, int) or not isinstance(end, int):
             continue
-        anchors.append(Anchor(start=start, end=end, text=str(literal.get("text") or ""), kind=f"literal:{kind}"))
+        anchors.append(
+            Anchor(start=start, end=end, text=str(literal.get("text") or ""), kind=f"literal:{kind}")
+        )
     return anchors
 
 
-def _obligation_anchors(query: str) -> list[Anchor]:
-    import semantic_requirements  # 순수 모듈
-
+def obligation_anchors_from(query: str, requirements: Iterable[Any], *, prefix: str = "obligation") -> list[Anchor]:
+    """요구 원장 항목 → 앵커. 도메인 공급자가 자기 원장을 이 헬퍼로 감싼다."""
     anchors: list[Anchor] = []
-    for requirement in semantic_requirements.capture_source_semantic_obligations(query):
-        span = getattr(requirement, "source_span", None)
-        start, end = _span_bounds(span)
+    for requirement in requirements or []:
+        start, end = _span_bounds(getattr(requirement, "source_span", None))
         if start is None or end is None:
             continue
+        base = getattr(requirement, "base", None) or {}
+        name = base.get("name", "unknown") if isinstance(base, dict) else "unknown"
         anchors.append(
-            Anchor(
-                start=start,
-                end=end,
-                text=query[start:end],
-                kind=f"obligation:{(requirement.base or {}).get('name', 'unknown')}",
-            )
+            Anchor(start=start, end=end, text=query[start:end], kind=f"{prefix}:{name}")
         )
     return anchors
 
@@ -114,8 +133,17 @@ def _span_bounds(span: Any) -> tuple[int | None, int | None]:
 
 
 def source_anchors(query: str) -> list[Anchor]:
-    """원문의 조건 앵커 전체(값 원자 + 값 없는 의미 연산자 의무)."""
-    anchors = [*_literal_anchors(query), *_obligation_anchors(query)]
+    """원문의 조건 앵커 전체 — 등록된 공급자들의 합집합.
+
+    공급자가 터지면 그 공급자만 건너뛴다(앵커가 줄면 누락 검출이 약해질 뿐, 조용한
+    오답으로 이어지지 않는다). 공급자가 하나도 없으면 커버리지 검증은 무해하게 통과한다.
+    """
+    anchors: list[Anchor] = []
+    for provider in list(_ANCHOR_PROVIDERS.values()):
+        try:
+            anchors.extend(provider(query) or [])
+        except Exception:  # noqa: BLE001 — 한 공급자의 사고가 전체 검증을 죽이지 않는다.
+            continue
     return sorted(anchors, key=lambda item: (item.start, item.end))
 
 
@@ -251,8 +279,14 @@ def _covered_external(anchor: Anchor, claimed: Sequence[tuple[int, int]]) -> boo
 
 __all__ = [
     "Anchor",
+    "AnchorProvider",
     "CoverageReport",
     "clause_bounds",
+    "literal_anchors_from",
+    "obligation_anchors_from",
+    "register_anchor_provider",
+    "registered_anchor_providers",
+    "reset_anchor_providers",
     "source_anchors",
     "verify_coverage",
 ]

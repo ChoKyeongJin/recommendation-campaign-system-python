@@ -10,7 +10,10 @@ semantic_ir 의 missing_fields 는 모델 내부 필드명(영문)이다. 응답
 
 from __future__ import annotations
 
+from typing import Any
+
 import plan_validation
+import requirement_ledger
 
 # semantic_ir missing_fields 의 첫 경로 세그먼트 → 한국어 라벨.
 SEMANTIC_IR_FIELD_KO_LABELS: dict[str, str] = {
@@ -61,6 +64,61 @@ def semantic_ir_clarification_message(
     if status == "needs_clarification":
         return "필수 비교 조건을 확인해 주세요."
     return "요청한 연산은 현재 지원하지 않습니다."
+
+
+def requirement_failure_report(
+    ledger_payload: Any,
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """요구사항 원장(직렬화본) → (미충족 조건 목록, 실패 분류 보고).
+
+    분류를 그대로 실어 보내는 것이 요점이다: 내부 사고(failed)와 능력 부재(unsupported)를
+    한 덩어리로 뭉개면 사용자가 '이 서비스는 이걸 못 한다'로 오해한다. 소비자는
+    `has_internal_failure` / `has_unsupported` 로 분기하고, 조건별 근거는 by_outcome 에 남는다.
+    """
+    requirements = ledger_payload.get("requirements") if isinstance(ledger_payload, dict) else None
+    if not isinstance(requirements, list) or not requirements:
+        return [], {}
+
+    missing: list[dict[str, str]] = []
+    questions: list[str] = []
+    by_outcome: dict[str, list[dict[str, Any]]] = {}
+    for item in requirements:
+        if not isinstance(item, dict):
+            continue
+        validation = item.get("validation") if isinstance(item.get("validation"), dict) else {}
+        outcome = str(validation.get("outcome") or "")
+        if outcome == requirement_ledger.COMPILED:
+            continue
+        label = str(item.get("label") or "조건")
+        span = str(item.get("source_span") or "").strip()
+        reason = str(validation.get("reason") or "").strip()
+        by_outcome.setdefault(outcome, []).append({
+            "requirement_id": item.get("requirement_id"),
+            "label": label,
+            "source_span": span,
+            "failure_code": validation.get("failure_code"),
+            "reason": reason,
+            "capability": item.get("capability"),
+            "candidate_slots": item.get("candidate_slots"),
+        })
+        question = (
+            f"'{span}' — {reason}" if span and reason
+            else (reason or f"'{label}' 을 확정하지 못했습니다.")
+        )
+        if question not in questions:
+            questions.append(question)
+        missing.append({
+            "path": f"requirements.{item.get('requirement_id')}",
+            "label": label,
+            "question": question,
+        })
+    return missing, {
+        "by_outcome": by_outcome,
+        "summary": ledger_payload.get("summary") or {},
+        "clarification_questions": questions,
+        "has_internal_failure": bool(by_outcome.get(requirement_ledger.FAILED)),
+        "has_unsupported": bool(by_outcome.get(requirement_ledger.UNSUPPORTED)),
+    }
 
 
 def plan_validation_issue_ko(issue: plan_validation.PlanValidationIssue) -> str:

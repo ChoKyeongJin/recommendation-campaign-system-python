@@ -60,12 +60,18 @@ def semantic_plan_tool() -> dict[str, Any]:
     }
 
 
-SYSTEM_PROMPT = """너는 캠페인 타겟팅 요청의 **의미 추출기**다.
+def _forbidden_examples(limit: int = 4) -> str:
+    """프롬프트에 넣을 금지 키 예시(파생 — 손 목록을 두면 새 슬롯이 조용히 빠진다)."""
+    names = sorted(FORBIDDEN_OUTPUT_KEYS)
+    return ", ".join(names[:limit]) + (" 등" if len(names) > limit else "")
+
+
+SYSTEM_PROMPT = f"""너는 캠페인 타겟팅 요청의 **의미 추출기**다.
 
 너의 산출물은 SemanticPlanV2 의미 노드 목록 하나뿐이다.
 
 절대 만들지 않는 것:
-- 실행 슬롯(query_plan, target_user, cart_aggregate, metric_trend, member_metric_ranking 등)
+- 실행 슬롯과 실행 플랜 컨테이너({_forbidden_examples()})
 - SQL, 테이블명, 컬럼명
 - 결핍 목록(missing_fields), 미지원 판정(unsupported_operations), 최종 상태(status)
   → 이 셋은 시스템이 네 노드에서 **계산**한다. 네가 판단하지 마라.
@@ -77,7 +83,7 @@ SYSTEM_PROMPT = """너는 캠페인 타겟팅 요청의 **의미 추출기**다.
 3. 확실하지 않은 필드는 **비워 둔다**. 지어내지 마라 — 비어 있으면 시스템이 결핍으로 계산해
    사용자에게 묻는다. 지어내면 틀린 결과가 조용히 나간다.
 4. 값은 원문 표현 그대로 써도 된다('10만 원', '이상', '2026년 2월', '상위 10%').
-   시스템이 정규화한다. 단위(개/회/건/종)를 다른 단위로 바꾸지 마라.
+   시스템이 정규화한다. 계수 단위를 다른 단위로 바꾸지 마라.
 5. 기간 대 기간 비교(증가/감소)는 metric_comparison 하나로 표현한다 —
    baseline 과 current 를 그 노드가 소유하므로 별도 기간 조건 노드를 만들지 마라.
 6. '상위 N개 상품을 구매한 회원'처럼 대상이 계산으로 정해지면 entity_set_membership 을 쓰고,
@@ -235,29 +241,6 @@ class SemanticPlanExtractor:
         return self._call(query, focus_spans=list(spans))
 
 
-def merge_reextracted(
-    base: SemanticPlanV2, addition: SemanticPlanV2, *, spans: Sequence[str]
-) -> SemanticPlanV2:
-    """재추출 결과 중 **요청한 구간에 실제로 근거를 둔 노드만** 병합한다.
-
-    구간 밖 노드를 받아들이면 재추출이 조용한 전체 재해석이 된다.
-    """
-    allowed = ["".join(span.split()) for span in spans if span and span.strip()]
-    existing_ids = {node.id for node in base.walk()}
-    counter = 0
-    for node in addition.nodes:
-        compact = "".join((node.source_span or "").split())
-        if not compact or not any(compact in span or span in compact for span in allowed):
-            continue
-        if node.id in existing_ids:
-            counter += 1
-            node.id = f"{node.id}-r{counter}"
-        node.producer = f"{node.producer}:reextract"
-        base.nodes.append(node)
-        existing_ids.add(node.id)
-    return base
-
-
 def contract_documentation() -> dict[str, Any]:
     """계약 문서(테스트가 읽는다) — LLM 이 만들 수 있는 것과 없는 것."""
     return {
@@ -276,7 +259,6 @@ __all__ = [
     "SemanticPlanExtractor",
     "build_user_prompt",
     "contract_documentation",
-    "merge_reextracted",
     "parse_semantic_plan_response",
     "semantic_plan_tool",
 ]

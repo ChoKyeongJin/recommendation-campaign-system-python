@@ -36,8 +36,10 @@ import failure_messages
 import member_attribute_history
 import plan_validation
 import legacy_plan_compiler
+import requirement_ledger
 import semantic_plan
 import semantic_plan_bridge
+import targeting_domain
 import plan_semantic_ast
 import purchase_lexicon
 import semantic_signal
@@ -242,6 +244,17 @@ _V4_SLOT_GUIDANCE = (
 )
 
 
+def _v4_slot_guidance(vocabulary: dict[str, Any]) -> str:
+    """슬롯 선택 안내 + 의미 노드 필드의 닫힌 어휘 결속(후자는 도메인 선언에서 파생).
+
+    노드의 metric/attribute 는 자유 문자열이라, 어느 목록에서 골라야 하는지를 말해 주지 않으면
+    LLM 이 그럴듯한 id 를 지어낸다(실측: 장바구니 지표에 'total_amount'). 결속표는
+    targeting_domain.json 선언이고 여기서는 붙이기만 한다.
+    """
+    binding = targeting_domain.node_field_vocabulary_guidance(vocabulary)
+    return f"{_V4_SLOT_GUIDANCE}\n\n{binding}" if binding else _V4_SLOT_GUIDANCE
+
+
 def _structure_campaign_query_plan_v4(
     query: str,
     context: StructuringContext,
@@ -253,10 +266,11 @@ def _structure_campaign_query_plan_v4(
 
     if context.slot_vocabulary is None or context.slot_guidance is None:
         try:
+            vocabulary = context.slot_vocabulary or _allowed_canonical_values()
             context = dataclass_replace(
                 context,
-                slot_vocabulary=context.slot_vocabulary or _allowed_canonical_values(),
-                slot_guidance=context.slot_guidance or _V4_SLOT_GUIDANCE,
+                slot_vocabulary=vocabulary,
+                slot_guidance=context.slot_guidance or _v4_slot_guidance(vocabulary),
             )
         except Exception:  # noqa: BLE001 - 어휘 주입 실패가 구조화 자체를 막으면 안 된다.
             pass
@@ -9355,6 +9369,15 @@ def _plan_has_purchase_fact_condition(query_plan: dict[str, Any]) -> bool:
 # (기간은 노드의 선택 필드이고, 노드가 소유하면 결핍이 아니다).
 
 
+def _requirement_failure_payload(
+    query_plan: dict[str, Any],
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
+    """요구사항 원장 → (사용자 표시 미충족 조건, 실패 분류 보고). 렌더링은 failure_messages 소유."""
+    return failure_messages.requirement_failure_report(
+        query_plan.get(semantic_plan_bridge.REQUIREMENTS_KEY)
+    )
+
+
 def _semantic_ir_blocking_sql_result(
     query_plan: dict[str, Any],
 ) -> dict[str, Any] | None:
@@ -9377,7 +9400,9 @@ def _semantic_ir_blocking_sql_result(
             [failure_messages.semantic_ir_field_label(field) for field in missing_fields]
         )
         message = failure_messages.semantic_ir_clarification_message(str(status), field_labels)
-    missing = [
+    # 요구사항 원장이 있으면 그것이 더 구체적이다(어느 조건이·원문 어디서·왜).
+    ledger_missing, requirement_report = _requirement_failure_payload(query_plan)
+    missing = ledger_missing or [
         _missing_input_condition(
             f"semantic_ir.{field}",
             failure_messages.semantic_ir_field_label(field),
@@ -9385,8 +9410,11 @@ def _semantic_ir_blocking_sql_result(
         )
         for field in missing_fields
     ]
+    if requirement_report.get("clarification_questions"):
+        message = " ".join(requirement_report["clarification_questions"])
     failure_reason = f"semantic_ir_{status}"
     return {
+        "requirement_report": requirement_report,
         "sql": None,
         "blocked_sql": None,
         "target_connection": None,

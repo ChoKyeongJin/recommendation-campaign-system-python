@@ -1,19 +1,23 @@
 """Capability 판정 — 의미 노드가 **실제로 실행 가능한가**를 축별로 나눠 답한다.
 
-`supported: true/false` 하나로 답하면 세 가지 다른 사건이 한 단어로 뭉개진다:
+`supported: true/false` 하나로 답하면 서로 다른 사건이 한 단어로 뭉개진다. 그래서 판정을
+5개 축으로 분해한다:
 
-  ① 의미 연산자를 우리가 정의하지 않았다        → unsupported_semantics
-  ② 연산은 있는데 데이터 그레인이 부족하다       → unsupported_data_grain
-  ③ 그레인은 맞는데 요청 기간에 적재가 없다      → data_unavailable
-  ④ 컴파일러/실행기가 터졌다                     → execution_failure / internal_fault
+  ① engine_supported   의미 연산자 자체를 엔진이 정의하는가        (아니면 unsupported_semantics)
+  ② executor_supported 컴파일러+실행 빌더가 있는가                 (아니면 unsupported_semantics)
+  ③ required_grain     이 연산에 필요한 데이터 그레인이 있는가     (아니면 unsupported_data_grain)
+  ④ data_coverage      그 그레인에 요청 구간의 적재가 있는가       (아니면 data_unavailable)
+  ⑤ executable         위 넷이 모두 참이라 **이번 요청 범위**에서 실행 가능한가
 
-④ 를 사용자에게 '미지원'으로 표시하면 능력의 부재를 거짓 선언하는 것이다. 그래서 이
-모듈은 판정을 축으로 분해하고, 실패 코드는 semantic_plan 의 닫힌 집합에서만 고른다.
+컴파일러/실행기가 터진 경우(execution_failure / internal_fault)는 능력의 부재가 아니라
+우리 쪽 사고다 — 사용자에게 '미지원'으로 표시하면 능력을 거짓 선언하는 것이다. 그 구분은
+실패 코드의 닫힌 집합(semantic_plan.FAILURE_CODES)이 강제한다.
 
 권위: `docs/data/runtime/semantics/semantic_capabilities.json`. 새 지표·새 노드 종류의
 지원 여부는 JSON 한 줄로 바뀐다(코드 변경 불필요).
 
-순수 모듈 규약: graph_rag 를 import 하지 않는다.
+범용 코어 규약: graph_rag 를 import 하지 않는다. 어떤 노드 필드가 판정 축이 되는지
+(scope/entity/relation/…)조차 도메인 선언에서 온다 — 이 파일에 도메인 이름이 없다.
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
+import semantic_domain_binding
 import semantic_plan
 
 DEFAULT_CAPABILITY_PATH = (
@@ -60,24 +65,63 @@ def _month_key(value: str) -> str:
 
 @dataclass(frozen=True)
 class CapabilityVerdict:
-    """노드 하나의 실행 가능성 판정. 축이 전부 참일 때만 executable 이다."""
+    """노드 하나의 실행 가능성 판정. 축이 전부 참일 때만 executable 이다.
+
+    `executable` 을 단독으로 읽지 말 것 — 왜 실행 불가인지는 축과 failure_code 가 말한다.
+    """
 
     node_id: str
     node_type: str
     metric: str | None
+    # ① 엔진(의미 연산자) 지원
     semantic_supported: bool
+    # ② 실행기 지원(컴파일러 + 빌더)
     compiler_supported: bool
     executor_supported: bool
+    # ③ 필요한 데이터 그레인 / 실제 보유 그레인
     required_grain: str | None
     available_grain: str | None
+    # ④ 그 그레인의 실적재 구간
     coverage: Coverage
     failure_code: str | None = None
     message: str | None = None
     detail: dict[str, Any] = field(default_factory=dict)
 
     @property
+    def engine_supported(self) -> bool:
+        """① 의미 연산자를 엔진이 정의하는가."""
+        return self.semantic_supported
+
+    @property
+    def executor_available(self) -> bool:
+        """② 컴파일러와 실행 빌더가 함께 있는가."""
+        return self.compiler_supported and self.executor_supported
+
+    @property
+    def grain_available(self) -> bool:
+        """③ 필요한 그레인이 선언·확보돼 있는가."""
+        return self.required_grain is None or self.available_grain is not None
+
+    @property
+    def data_covered(self) -> bool:
+        """④ 요청 구간이 적재 구간 안인가."""
+        return self.failure_code != semantic_plan.DATA_UNAVAILABLE
+
+    @property
     def executable(self) -> bool:
+        """⑤ 이번 요청 범위에서 실행 가능한가(위 축이 모두 참일 때만)."""
         return self.failure_code is None
+
+    def axes(self) -> dict[str, Any]:
+        """5축 판정표 — 요구사항 원장과 응답이 그대로 싣는다."""
+        return {
+            "engine_supported": self.engine_supported,
+            "executor_supported": self.executor_available,
+            "required_grain": self.required_grain,
+            "available_grain": self.available_grain,
+            "data_coverage": {"covered": self.data_covered, **self.coverage.to_dict()},
+            "executable_in_request": self.executable,
+        }
 
     def to_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -91,6 +135,7 @@ class CapabilityVerdict:
             "available_grain": self.available_grain,
             "coverage": self.coverage.to_dict(),
             "executable": self.executable,
+            "axes": self.axes(),
         }
         if self.failure_code:
             payload["failure_code"] = self.failure_code
@@ -139,19 +184,32 @@ class CapabilityRegistry:
             complete=bool(raw.get("complete", True)),
         )
 
+    @staticmethod
+    def _axes() -> tuple[tuple[str, str], ...]:
+        """(선언 키, 노드 필드) — 어떤 노드 필드가 판정 축인지는 도메인이 선언한다."""
+        return semantic_domain_binding.capability_axes()
+
+    @staticmethod
+    def _subject(node: semantic_plan.SemanticNode) -> Any:
+        """노드의 '주어 지표' 값 — 어떤 필드가 주어인지도 도메인 선언이다."""
+        for name in semantic_domain_binding.subject_fields() or ("metric",):
+            value = node.values.get(name)
+            if value:
+                return value
+        return None
+
     def _node_spec(self, node: semantic_plan.SemanticNode) -> dict[str, Any]:
-        """노드 타입 선언 + (scope/entity/relation) 하위 선언을 겹쳐 읽는다."""
+        """노드 타입 선언 + 축별 하위 선언을 겹쳐 읽는다(축 목록은 도메인 소유)."""
         base = self._node_types.get(node.type)
         spec: dict[str, Any] = dict(base) if isinstance(base, Mapping) else {}
-        for axis_key, value_field in (("scopes", "scope"), ("entities", "entity"), ("relations", "relation"),
-                                      ("operators", "operator")):
+        for axis_key, value_field in self._axes():
             table = spec.get(axis_key)
             key = node.values.get(value_field)
             if isinstance(table, Mapping) and isinstance(key, str):
                 override = table.get(key)
                 if isinstance(override, Mapping):
                     spec.update(override)
-        metric = node.values.get("metric") or node.values.get("attribute")
+        metric = self._subject(node)
         metric_spec = self._metrics.get(str(metric)) if isinstance(metric, str) else None
         if isinstance(metric_spec, Mapping):
             if metric_spec.get("grain"):
@@ -169,7 +227,7 @@ class CapabilityRegistry:
     ) -> CapabilityVerdict:
         """노드 하나의 축별 판정. `available_months` 는 그레인별 실적재 월 수(주입)."""
         spec = self._node_spec(node)
-        metric = node.values.get("metric") or node.values.get("attribute")
+        metric = self._subject(node)
         required_grain = spec.get("required_grain")
         required_grain = str(required_grain) if isinstance(required_grain, str) else None
         available_grain = required_grain if required_grain in self._grains else None
@@ -197,15 +255,16 @@ class CapabilityRegistry:
                 detail=detail,
             )
 
+        label = semantic_domain_binding.condition_label(node.type)
         if not semantic_ok:
             return verdict(semantic_plan.UNSUPPORTED_SEMANTICS,
-                           message or f"'{node.type}' 의미 연산을 아직 지원하지 않습니다.")
+                           message or f"'{label}' 의미 연산을 아직 지원하지 않습니다.")
         if not compiler_ok:
             return verdict(semantic_plan.UNSUPPORTED_SEMANTICS,
-                           message or f"'{node.type}' 조건을 실행 계획으로 옮기는 컴파일러가 없습니다.")
+                           message or f"'{label}' 을 실행 계획으로 옮기는 컴파일러가 없습니다.")
         if not executor_ok:
             return verdict(semantic_plan.UNSUPPORTED_SEMANTICS,
-                           message or f"'{node.type}' 조건을 실행할 빌더가 없습니다.")
+                           message or f"'{label}' 을 실행할 빌더가 없습니다.")
         if required_grain and available_grain is None:
             return verdict(semantic_plan.UNSUPPORTED_DATA_GRAIN,
                            message or f"이 조건에 필요한 데이터 그레인({required_grain})이 선언되어 있지 않습니다.",

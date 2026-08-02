@@ -7,7 +7,8 @@
 같은 원문 근거(span)에 서로 다른 의미가 오면 조용히 하나를 고르지 않고 conflict 로 남긴다 —
 그 결과는 status='ambiguous' 이고, 사용자에게 무엇이 모호한지 그대로 보인다.
 
-순수 모듈 규약: graph_rag 를 import 하지 않는다.
+범용 코어 규약: graph_rag 를 import 하지 않는다. '같은 의미인가'를 정하는 필드 목록도
+도메인 선언에서 온다(이 파일에 도메인 이름이 없다).
 """
 
 from __future__ import annotations
@@ -15,8 +16,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
+import semantic_domain_binding
 import semantic_plan
 from semantic_plan import SemanticNode, SemanticPlanV2
+
+# 도메인 선언이 없을 때의 폴백 — 노드 타입만으로 의미를 구분한다(과합병 대신 과분리).
+_FALLBACK_IDENTITY_FIELDS: tuple[str, ...] = ()
 
 
 @dataclass
@@ -47,10 +52,13 @@ def _span_key(candidate: RequirementCandidate) -> str:
     return "".join((candidate.source_span or node.source_span or "").split())
 
 
+def _identity_fields() -> tuple[str, ...]:
+    return semantic_domain_binding.identity_fields() or _FALLBACK_IDENTITY_FIELDS
+
+
 def _semantic_key(node: SemanticNode) -> tuple[Any, ...]:
-    """'같은 의미인가' 판정 키 — 타입 + 의미를 정하는 필드 값."""
-    identity_fields = ("scope", "metric", "attribute", "entity", "relation", "operator", "direction")
-    return (node.type, *(_hashable(node.values.get(name)) for name in identity_fields))
+    """'같은 의미인가' 판정 키 — 타입 + 의미를 정하는 필드 값(필드 목록은 도메인 선언)."""
+    return (node.type, *(_hashable(node.values.get(name)) for name in _identity_fields()))
 
 
 def _hashable(value: Any) -> Any:
@@ -72,7 +80,7 @@ def _conflict_payload(span: str, candidates: list[RequirementCandidate]) -> dict
                 "type": candidate.node.type,
                 **{
                     key: candidate.node.values.get(key)
-                    for key in ("scope", "metric", "attribute", "entity", "relation")
+                    for key in _identity_fields()
                     if candidate.node.values.get(key) is not None
                 },
             }
@@ -94,16 +102,16 @@ def resolve_candidates(
       - 다른 span            → 그대로 둘 다 남긴다.
     """
     grouped: dict[str, list[RequirementCandidate]] = {}
-    order: list[str] = []
+    insertion_order: list[str] = []
     for candidate in candidates:
         key = _span_key(candidate)
         if key not in grouped:
             grouped[key] = []
-            order.append(key)
+            insertion_order.append(key)
         grouped[key].append(candidate)
 
     plan = SemanticPlanV2(source_query=source_query)
-    for key in order:
+    for key in insertion_order:
         group = grouped[key]
         by_meaning: dict[tuple[Any, ...], list[RequirementCandidate]] = {}
         for candidate in group:
