@@ -30,11 +30,21 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # 설정/문서/도구는 스키마 지식의 정당한 소유자이거나 소비자가 아니다.
+#
+# 판단 기준(런타임 소비자인가, 카탈로그 생산자인가): 이 래칫이 재는 부채는 "DB 를 갈아끼울 때
+# 소스를 뒤져야 하는가"다. **카탈로그를 만드는 쪽**(schema_extract, build_*)은 스키마 이름을
+# 다루는 것이 직무이고, 새 DB 를 향해 다시 실행하면 되는 대상이지 고쳐야 할 부채가 아니다.
+# 세면 신호가 흐려진다 — 예를 들어 build_table_relationships.py 한 파일이 전체의 20% 를 차지해
+# 런타임 이관 진척을 가렸다.
 SKIP_FILES = {
     "db_swap_preflight.py",       # 카탈로그 대조 도구 자신
     "schema_extract.py",          # 스키마를 읽어 카탈로그를 만드는 도구
     "build_member_value_index.py",
     "physical_binding_inventory.py",
+    # 아래 셋은 같은 근거의 카탈로그 생산자다(2026-08-02 정의 수정 — 이관 진척이 아니다).
+    "build_table_relationships.py",   # FK 큐레이션을 schema_catalog 에 주입하는 생산자
+    "build_dimension_catalog.py",     # 디멘션 카탈로그 생산자
+    "build_rag_knowledge.py",         # 카탈로그를 읽어 RAG 지식베이스를 만드는 생산자
 }
 SKIP_DIR_PARTS = {".git", "__pycache__", ".pytest_cache", "tests", "docs", "node_modules"}
 

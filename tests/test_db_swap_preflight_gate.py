@@ -93,3 +93,57 @@ def test_declared_symbol_resolves_to_a_catalog_table(at_repo_root: None) -> None
         if physical not in columns_by_table
     )
     assert not unknown, f"카탈로그에 없는 물리 테이블로 매핑됨: {unknown}"
+
+
+# ── 게이트 범위: canonical 실행 경로의 카탈로그도 검사 대상인가 ───────────────────────
+
+
+def test_preflight_covers_the_canonical_execution_catalogs() -> None:
+    """SQL 로 가는 길은 둘(legacy 빌더 설정 / canonical Event IR 카탈로그)이다.
+
+    legacy 쪽 설정만 검사하면 canonical 경로가 게이트 밖에 남아, DB 스왑 후
+    "레거시는 되는데 canonical 만 0명"이 된다 — 그리고 그 차이는 응답에 드러나지 않는다.
+    """
+    covered = {path.name for path in db_swap_preflight.REGISTRY_PATHS}
+    for required in (
+        "member_target_filters.json",
+        "member_metrics.json",
+        "audience_catalog.json",   # canonical Event IR 물리 바인딩
+        "attribute_catalog.json",  # 회원 속성 시점/이력 물리 바인딩
+    ):
+        assert required in covered, (
+            f"{required} 가 프리플라이트 범위 밖이다 — 이 파일의 스키마 드리프트는 "
+            "배포 전에 아무도 보지 못한다."
+        )
+
+
+def test_expression_backed_columns_are_not_attributed_to_the_source_table(
+    at_repo_root: None,
+) -> None:
+    """``*_expression`` 이 있으면 나란한 ``*_column`` 은 이름표일 뿐이다.
+
+    canonical 캠페인 사건들은 time_column="CAMP_SDATE" 를 선언하지만 실제로 쓰는 것은
+    time_expression="ZC.CAMP_SDATE" 이고, ZC 는 from_sql 이 조인한 Z_CAMPAIGN 이다.
+    이름표를 소스 테이블 소유로 읽으면 멀쩡한 설정이 상시 빨강이 된다(오탐이 나면 사람이
+    게이트를 끈다 — 정확도가 곧 게이트의 수명이다).
+    """
+    pairs = db_swap_preflight._configured_table_columns(
+        {
+            "sources": {
+                "probe": {
+                    "table": "MCS_CAMP_MBR_RSPN_FT",
+                    "time_column": "CAMP_SDATE",
+                    "time_expression": "ZC.CAMP_SDATE",
+                }
+            }
+        }
+    )
+    assert ("MCS_CAMP_MBR_RSPN_FT", "CAMP_SDATE") not in pairs
+
+
+def test_column_without_expression_is_still_attributed(at_repo_root: None) -> None:
+    """반대 방향 — 표현식이 없으면 여전히 소스 테이블 소유로 검사해야 한다(가드 공허 방지)."""
+    pairs = db_swap_preflight._configured_table_columns(
+        {"sources": {"probe": {"table": "CRM_SL_ORDERHEADERMALL", "time_column": "ORDER_DATE"}}}
+    )
+    assert ("CRM_SL_ORDERHEADERMALL", "ORDER_DATE") in pairs

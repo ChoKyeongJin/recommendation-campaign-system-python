@@ -39,6 +39,11 @@ if hasattr(sys.stdout, "reconfigure"):
 REGISTRY_PATHS = [
     Path("docs/data/runtime/sql/member_target_filters.json"),
     Path("docs/data/runtime/sql/member_metrics.json"),
+    # canonical 실행 경로(Event IR)의 물리 바인딩 소유자. legacy 빌더 설정만 검사하면
+    # canonical 경로가 게이트 밖에 남아, DB 스왑 후 "레거시는 되는데 canonical 만 0명"이 된다.
+    Path("docs/data/runtime/semantics/audience_catalog.json"),
+    # 회원 속성 시점/이력(compositional_targeting)의 물리 바인딩.
+    Path("docs/data/runtime/semantics/attribute_catalog.json"),
 ]
 SCHEMA_CATALOG_PATH = Path("docs/data/generated/schema_catalog.json")
 
@@ -173,6 +178,14 @@ def _configured_table_columns(registry: dict[str, Any]) -> set[tuple[str, str]]:
                     owner_table = node.get(f"{key}_table")
                     if owner_table is None and key.endswith("_column"):
                         owner_table = node.get(f"{key[:-len('_column')]}_table")
+                    # 형제 ``<접두어>_expression`` 이 있으면 그 표현식이 **실제로 쓰이는 것**이고
+                    # 나란한 ``_column`` 은 이름표에 불과하다. 표현식은 from_sql 이 조인한 다른
+                    # 테이블의 별칭을 가리킬 수 있으므로(예: campaign_* 사건의 time_expression =
+                    # "ZC.CAMP_SDATE" → Z_CAMPAIGN), 소스 테이블에 귀속하면 오탐이 난다.
+                    if key.endswith("_column") and isinstance(
+                        node.get(f"{key[:-len('_column')]}_expression"), str
+                    ):
+                        continue
                     add_columns(owner_table if isinstance(owner_table, str) else table, value)
                 walk(value, table)
         elif isinstance(node, list):

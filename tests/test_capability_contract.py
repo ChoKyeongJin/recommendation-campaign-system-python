@@ -35,7 +35,8 @@ def test_summary_is_ok_and_covers_all_axes() -> None:
     assert summary["status"] == "ok"
     assert summary["issues"] == []
     assert set(summary["checked"]) == {
-        "slot_labels", "plan_exposure", "requirement_capabilities", "builder_ownership",
+        "slot_labels", "plan_exposure", "requirement_capabilities",
+        "builder_ownership", "builder_order",
     }
 
 

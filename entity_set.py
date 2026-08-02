@@ -371,8 +371,8 @@ def _window_predicate(window: dict[str, Any] | None, date_column: str) -> str | 
 def compile_entity_set_predicate(
     node: dict[str, Any],
     config: dict[str, Any],
-    member_alias: str = "B",
-    member_key: str = "MEMBER_NO",
+    member_alias: str,
+    member_key: str,
 ) -> str | None:
     """엔터티 집합 조건을 회원 기준 EXISTS/NOT EXISTS 술어로 컴파일한다.
 

@@ -1,9 +1,9 @@
 {
   "description": "모듈 줄 수 상한(하향 전용 래칫). 올리려면 커밋 메시지에 사유가 필요하다. 자동 재생성 도구는 일부러 두지 않았다 — 손으로 고치는 마찰이 목적이다.",
   "recorded_at": "2026-08-02",
-  "reason": "규칙 기반 해석 계층 철거 후 재기록(graph_rag.py 26,336 → 16,923) + 여유 200. 2026-08-01 슬롯 커버리지 gap 수리(+17): 프로필 지표 어휘 파생은 metric_registry, 동시구매 IR 백필은 condition_evaluation_ir 로 뺐고, graph_rag 에는 허용 어휘 맵·캠페인 AVG 분기·백필 호출 등 얇은 배선만 남김. 2026-08-01 구조화 실패 수리(+28): 소유권 sweep 은 condition_evaluation_ir, 행동 강등은 behavior_demotion, 리터럴 감사는 semantic_requirements 로 뺐고 graph_rag 에는 게이트 앞 백필·강등·감사 호출과 응답 키 등 얇은 배선만 추가. 2026-08-02 26종 감사 수리(+35): 실패 렌더링은 failure_messages, 등급/상태 이력 축은 compositional_targeting+member_attribute_history, 프로필 지표 결정론 감지는 metric_registry, 표적 재방출은 slot_reemission 으로 뺐고 graph_rag 에는 카탈로그 접근자·게이트 앞 백필 호출·재방출 게이트 등 얇은 배선만 추가. 2026-08-02 의미/실행 분리(SemanticPlanV2): 원문을 다시 읽던 결정론 백필 6종과 결핍 사후 삭제 5종을 삭제하고, graph_rag 에는 파이프라인 배선 3함수(_semantic_compile_context/_semantic_reextractor/_apply_semantic_plan_pipeline)만 남겼다. 로직은 전부 신규 소유 모듈(semantic_plan/semantic_normalizers/semantic_capability/semantic_coverage/semantic_candidates/semantic_plan_llm/semantic_pipeline/legacy_plan_compiler/semantic_plan_bridge)에 있다. 실측 17,322줄 → 상한 17,400 유지(순감). 2026-08-02 타입 정규화 계층(+70, 상한 17,400 → 17,470): 타입 판정·재분류는 신규 semantic_retype, 실패 문구·원인 렌더링은 failure_messages, 재방출 요청 문구는 semantic_reemission 이 소유한다. graph_rag 에 남은 것은 실행 어휘 2종(entity_set_measure/campaign_metric_id) 파생, 노드 타입 안내 조립, failure_kind 별 응답 분기, 모델 라우팅 로그 필드 — 전부 얇은 배선이다.",
+  "reason": "규칙 기반 해석 계층 철거 후 재기록(graph_rag.py 26,336 → 16,923) + 여유 200. 2026-08-01 슬롯 커버리지 gap 수리(+17): 프로필 지표 어휘 파생은 metric_registry, 동시구매 IR 백필은 condition_evaluation_ir 로 뺐고, graph_rag 에는 허용 어휘 맵·캠페인 AVG 분기·백필 호출 등 얇은 배선만 남김. 2026-08-01 구조화 실패 수리(+28): 소유권 sweep 은 condition_evaluation_ir, 행동 강등은 behavior_demotion, 리터럴 감사는 semantic_requirements 로 뺐고 graph_rag 에는 게이트 앞 백필·강등·감사 호출과 응답 키 등 얇은 배선만 추가. 2026-08-02 26종 감사 수리(+35): 실패 렌더링은 failure_messages, 등급/상태 이력 축은 compositional_targeting+member_attribute_history, 프로필 지표 결정론 감지는 metric_registry, 표적 재방출은 slot_reemission 으로 뺐고 graph_rag 에는 카탈로그 접근자·게이트 앞 백필 호출·재방출 게이트 등 얇은 배선만 추가. 2026-08-02 의미/실행 분리(SemanticPlanV2): 원문을 다시 읽던 결정론 백필 6종과 결핍 사후 삭제 5종을 삭제하고, graph_rag 에는 파이프라인 배선 3함수(_semantic_compile_context/_semantic_reextractor/_apply_semantic_plan_pipeline)만 남겼다. 로직은 전부 신규 소유 모듈(semantic_plan/semantic_normalizers/semantic_capability/semantic_coverage/semantic_candidates/semantic_plan_llm/semantic_pipeline/legacy_plan_compiler/semantic_plan_bridge)에 있다. 실측 17,322줄 → 상한 17,400 유지(순감). 2026-08-02 타입 정규화 계층(+70, 상한 17,400 → 17,470): 타입 판정·재분류는 신규 semantic_retype, 실패 문구·원인 렌더링은 failure_messages, 재방출 요청 문구는 semantic_reemission 이 소유한다. graph_rag 에 남은 것은 실행 어휘 2종(entity_set_measure/campaign_metric_id) 파생, 노드 타입 안내 조립, failure_kind 별 응답 분기, 모델 라우팅 로그 필드 — 전부 얇은 배선이다. 2026-08-02 빌더 순서 계약(+6, 상한 17,470 → 17,480, 이후 Phase 2 로 재하향): 선행 제약 데이터·검증·예외는 전부 capability_validation(축 E) 소유이고, graph_rag 에는 _install_sql_builder_admission_guards 안의 enforce 호출 한 줄과 registry 지역변수만 추가했다. 순서가 곧 어떤 SQL 이 나가는지를 결정하는데 그 지식이 주석 8줄(그중 1줄은 이미 거짓)에만 있었고, 계약 테스트는 두 번 일괄 삭제된 전력이 있어 기동 경로에 하드 게이트를 둔다. 2026-08-02 Phase 2 물리 바인딩 이관(상한 17,480 → 17,300, 실측 17,239 — 순감 241): 코드 기본값 미러 249줄을 graph_rag 밖 순수 설정 모듈(member_filters_config.CODE_DEFAULTS)로 옮기고 죽은 인라인 물리 기본값 64건을 걷었다. member_filters_config 는 미러를 받아 452줄이 됐다(상한 520). graph_rag 에 남은 것은 경로 상수·미러 바인딩 한 줄·설정 접근자다.",
   "max_lines": {
-    "graph_rag.py": 17470,
+    "graph_rag.py": 17300,
     "rag/attribute_tokens.py": 383,
     "rag/config.py": 245,
     "rag/failure_stage.py": 381,
@@ -11,6 +11,7 @@
     "rag/message.py": 1457,
     "rag/plan_inspect.py": 262,
     "rag/search.py": 768,
-    "rag/trace.py": 1329
+    "rag/trace.py": 1329,
+    "member_filters_config.py": 520
   }
 }

@@ -12,6 +12,7 @@
     "alias": "B",
     "member_key": "MEMBER_NO",
     "login_id_key": "MEMBER_ID",
+    "age_column": "AGE",
     "date_format": "yyyyMMdd"
   },
 

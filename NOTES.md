@@ -1,3 +1,122 @@
+# 작업 노트 — canonical audience 경로 + 실행 계층 범용화 (2026-08-02)
+
+두 개의 큰 변화가 같은 날 착지했다. 앞의 것은 다른 세션이(79dad3d, f4b8034), 뒤의 것은 이 문서를
+쓰는 작업이 했다. NOTES 에 79dad3d 이후 기록이 전무했으므로 둘 다 여기 적는다.
+
+---
+
+## A. canonical audience 경로 (79dad3d + f4b8034, 다른 세션)
+
+`+4,693/-847` 28파일 + 후속 수정. 커밋 메시지는 "ㅁ" 와 "오류수정" 이라 여기서 내용을 남긴다.
+
+**무엇인가.** 의미 → SQL 로 가는 **두 번째 길**이 생겼고, 그쪽이 범용 경로다.
+
+```
+canonical  SemanticPlanV2 → semantic_plan_event_lowering → Event IR → event_compiler → SQL
+           물리 바인딩은 docs/data/runtime/semantics/audience_catalog.json 이 선언한다.
+           lowering 에는 사건별 분기가 없다(새 사건 = JSON 한 항목).
+legacy     query_plan 슬롯 → 20개 빌더 레지스트리 → SQL
+           빌더 몸통이 SQL 모양을 코드로 들고 있다.
+```
+
+`graph_rag._apply_semantic_plan_pipeline` 이 canonical 을 **먼저** 시도하고(all-or-nothing,
+fail-close), 표현하지 못할 때만 legacy 브리지로 내려간다.
+
+**신규 모듈.** `resolved_semantic_catalog`(바인딩 해석) · `semantic_plan_event_lowering`(결정론 하강) ·
+`audience_runtime`(카탈로그 로딩) · `audience_schema`($ref/$defs 압축 LLM 스키마) ·
+`canonical_audience_claims`(청구·영수증).
+
+**Event IR 관계대수 확장.** `Project`/`Summarize`/`Order`/`Limit` + semi/anti Join 을 추가해
+"2019년 가장 많이 팔린 상품 10개를 구매한 고객" 류를 **일반 대수**로 표현한다(전용 빌더 아님).
+
+**LLM 스키마 압축.** 깊이 전개형 → `$ref`/`$defs` 고정형. 카탈로그가 커져도 전송면이 고정된다.
+라이브에서 OpenAI strict 모드 수락 확인(2026-08-02).
+
+## B. 실행 계층 범용화 (Phase 0~5)
+
+상세는 `docs/plans_generic_execution_layer.md`. 여기서는 **재현 가능한 숫자와 함정**만.
+
+### 측정
+
+| 항목 | 착수 전 | 완료 후 |
+|---|---|---|
+| pytest | 964 / 0 failed | **1,135 passed / 24 skipped / 0 failed** |
+| 소스 물리 바인딩 | 기준선 343 (실측 333) | **184** |
+| graph_rag.py | 17,470줄 (상한과 동일, 여유 0) | **17,247줄** (상한 17,300) |
+| db_swap_preflight | PASS (레지스트리 2종) | **PASS (4종)** |
+| live-26 | 재현 불가 | **SQL 4 / 미지원 12 / 되묻기 9 / 실패 1** |
+
+### live-26 기준선 분쟁이 닫혔다
+
+같은 코퍼스에 대해 세 숫자(NOTES 14/26 · architecture_generic_core 0/26 · 세션 기억 12/26)가
+서로를 반박하며 공존했다. 원인은 단순했다 — **측정 러너가 저장소 밖(세션 스크래치패드)에 있었다.**
+`tools/live_prompt_baseline.py` + `docs/data/test_baselines/live_prompts.json` 로 커밋했다.
+
+**함정 1: 분류기가 status 를 봐야 한다.** 첫 측정은 `clarification_questions` 를 먼저 봐서
+정직한 미지원 12건을 전부 '되묻기'로 셌다(unsupported 0). 미지원 응답도 같은 문구를 그 필드에
+싣기 때문이다. 권위는 `status`(`success`/`needs_clarification`/`unsupported`/`no_verified_sql`).
+
+**함정 2: 방출 편차가 있다.** 같은 프롬프트가 실행마다 다른 귀결을 낸다(#12 가 sql↔clarification).
+러너는 `--repeat` 를 지원하고 편차가 있으면 **가장 나쁜 귀결**로 센다.
+
+### 순서가 곧 SQL 이었는데 그 지식이 주석에만 있었다
+
+빌더 dispatch 는 첫 non-None 승자라 **순서 자체가 의미**다. 그런데 순서 지식은 레지스트리 주석
+8줄이 전부였고 **그중 하나는 이미 거짓**이었다("analytical 가장 먼저" — 실제 3번째).
+
+선행 제약 9종을 사유와 함께 `capability_validation.BUILDER_PRECEDENCE` 로 옮기고(축 E),
+위상정렬이 현재 순서를 재현하는지 검증한다. 강제 지점은 테스트 **와** import 시점 두 곳이다 —
+이 저장소에서 계약 테스트는 두 번(ce39f68, 8ba50b6) 일괄 삭제된 전력이 있다.
+
+### 물리 이름이 네 곳에 살았다
+
+JSON / 코드 미러 / 접근자 인라인 기본값(`config.get("table", "ODS_MALL_OMS_CART")`) /
+confidence·member_policy 의 자체 사본.
+
+셋째 층은 미러가 키를 선언하는 한 죽은 코드지만, **미러가 키를 빠뜨리면 조용히 되살아나 구DB
+이름으로 컴파일된다** — `base_entity.age_column` 이 정확히 그 상태였다. 미러를
+`member_filters_config.CODE_DEFAULTS`(순수 설정 모듈)로 옮기고 인라인 기본값 76건을 걷었다.
+
+**계약은 한 방향뿐이다: JSON ⊇ 미러.** 로더가 최상위 키 단위로 섹션을 통째로 대체하므로 JSON 에
+키가 빠지면 미러 값이 폴백되는 게 아니라 `None` 이 된다. 역방향(미러 ⊇ JSON)을 강제하면 방금
+걷어낸 이중 소유가 원래 크기로 되살아난다 — 미러는 **파일이 통째로 없을 때 기동만 되게** 하는 것이다.
+
+### 아무도 특성화하지 않았던 관문 두 개
+
+`plan_validation`(전) 과 `sql_guard`(후)는 모든 빌더 산출물이 통과하는데 계약이 없었다.
+
+- **`sql_guard` 는 SQL 을 재작성한다**: 입력은 `sql`, 실행용은 `safe_sql`(행 제한 부착).
+  빌더가 만든 문자열이 그대로 나가지 않으므로 회귀 귀속 시 둘을 구분해야 한다.
+- **`validate_join_keys(column_types=...)` 의 값은 원시 타입이 아니라 타입군**이다.
+  원시 타입을 넣으면 `bigint` vs `int` 가 불일치로 잡힌다(`load_column_types` 가 이미 환산한다).
+
+### preflight 오탐 하나가 게이트를 죽일 뻔했다
+
+canonical 카탈로그를 preflight 범위에 넣자 즉시 FAIL 이 났다 — 그런데 **오탐**이었다.
+캠페인 사건은 `time_column="CAMP_SDATE"` 를 선언하지만 실제로는 `time_expression="ZC.CAMP_SDATE"`
+(조인된 `Z_CAMPAIGN`)를 쓴다. `*_expression` 이 있으면 나란한 `*_column` 은 이름표다.
+**오탐이 나면 사람이 게이트를 끈다 — 정확도가 곧 게이트의 수명이다.**
+
+### BFF 계약
+
+형제 레포 `route.ts` 가 이름으로 읽는 키를 백엔드 테스트로 고정했다. 라벨 키는
+`*_condition_labels`(**단수** condition)다 — 복수형으로 바꾸면 조건 목록은 남고 라벨만 조용히 사라진다.
+
+---
+
+## 재현·검증
+
+```bash
+python -m pytest -q                          # 1,135 passed
+python db_swap_preflight.py                  # PASS (레지스트리 4종)
+python tools/physical_binding_inventory.py   # 184
+python tools/live_prompt_baseline.py --repeat 2
+```
+
+카탈로그를 재생성했다면 재시작만으로는 부족하다 — `docs/operations/catalog_freshness_runbook.md`.
+
+---
+
 # 작업 노트 — 타겟팅 프롬프트 14종 실패 분석·수리 (2026-08-01)
 
 `/target-sql` 로 실패하던 프롬프트 14종의 원인 분석부터 구조화 계층 수리, 검증까지의 기록.

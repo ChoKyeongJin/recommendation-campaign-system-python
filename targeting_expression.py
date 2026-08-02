@@ -953,9 +953,9 @@ def compile_targeting_expression(
     *,
     member_predicate: Callable[[str], str | None],
     aggregate_predicate: Callable[[dict[str, Any]], str | None] | None = None,
-    member_alias: str = "B",
-    member_key: str = "MEMBER_NO",
-    age_column: str = "AGE",
+    member_alias: str,
+    member_key: str,
+    age_column: str,
     relative_date: Callable[[int], str] = _relative_date,
 ) -> str:
     """IR 을 회원(B) 기준 단일 술어로 컴파일한다.

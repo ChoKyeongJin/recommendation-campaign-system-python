@@ -7,6 +7,7 @@ queries and audience builders from drifting to different member populations.
 
 from __future__ import annotations
 
+import member_filters_config
 import sql_dialect
 
 import functools
@@ -31,11 +32,20 @@ _INCLUDE_WITHDRAWN_RE = re.compile(r"탈퇴\s*(?:회원\s*)?(?:도\s*)?(?:포함
 
 @functools.lru_cache(maxsize=4)
 def load_member_policy(path_text: str = str(DEFAULT_MEMBER_POLICY_PATH)) -> dict[str, Any]:
+    """정책 레지스트리를 **코드 미러 위에** 덮어 읽는다(graph_rag/confidence 와 같은 규약).
+
+    예전에는 파일이 없으면 빈 dict 를 돌려줬고, 그래서 이 모듈은 물리 이름을 자기 인라인
+    기본값(`base.get("table") or "CRM_MB_BASEINFO"`)으로 또 들고 있었다. 미러를 공유하면
+    그 사본이 필요 없어지고, 값이 사라지면 조용한 구DB 이름 대신 빈 값으로 시끄럽게 드러난다.
+    """
+    merged = dict(member_filters_config.CODE_DEFAULTS)
     try:
         payload = json.loads(Path(path_text).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return {}
-    return payload if isinstance(payload, dict) else {}
+        return merged
+    if isinstance(payload, dict):
+        merged.update(payload)
+    return merged
 
 
 def active_member_definition(path: Path = DEFAULT_MEMBER_POLICY_PATH) -> dict[str, str]:
@@ -44,10 +54,10 @@ def active_member_definition(path: Path = DEFAULT_MEMBER_POLICY_PATH) -> dict[st
     base = config.get("base_entity") if isinstance(config.get("base_entity"), dict) else {}
     state = config.get("active_state") if isinstance(config.get("active_state"), dict) else {}
     return {
-        "table": str(base.get("table") or "CRM_MB_BASEINFO"),
-        "alias": str(base.get("alias") or "B"),
-        "column": str(state.get("column") or "MEMBER_STATE_CD").split(".")[-1],
-        "value": str(state.get("value") or "MEMBER_STATE_CD.NORMAL"),
+        "table": str(base.get("table") or ""),
+        "alias": str(base.get("alias") or ""),
+        "column": str(state.get("column") or "").split(".")[-1],
+        "value": str(state.get("value") or ""),
     }
 
 
@@ -74,7 +84,7 @@ def member_eq_filter(canonical: str, path: Path = DEFAULT_MEMBER_POLICY_PATH) ->
     """
     config = load_member_policy(str(path))
     base = config.get("base_entity") if isinstance(config.get("base_entity"), dict) else {}
-    table = str(base.get("table") or "CRM_MB_BASEINFO")
+    table = str(base.get("table") or "")
     for item in config.get("eq_filters", []) or []:
         if not isinstance(item, dict) or item.get("canonical") != canonical:
             continue
@@ -104,8 +114,8 @@ def member_activity_filter(canonical: str, path: Path = DEFAULT_MEMBER_POLICY_PA
             continue
         days = item.get("days") if isinstance(item.get("days"), int) else item.get("default_days")
         return {
-            "table": str(base.get("table") or "CRM_MB_BASEINFO"),
-            "column": str(item.get("column") or "LAST_LOGIN_DATE").split(".")[-1],
+            "table": str(base.get("table") or ""),
+            "column": str(item.get("column") or "").split(".")[-1],
             "operator": str(item.get("operator") or "<"),
             "days": days if isinstance(days, int) else None,
             "include_null": bool(item.get("include_null")),

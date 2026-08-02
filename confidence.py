@@ -69,10 +69,19 @@ def _schema_columns(schema_path_text: str) -> dict[str, set[str]]:
 
 @lru_cache(maxsize=4)
 def _member_filters(path_text: str) -> dict[str, Any]:
+    """회원 타겟 레지스트리를 graph_rag 와 **같은 규약**으로 읽는다(코드 미러 위에 파일을 덮는다).
+
+    예전에는 파일이 없으면 빈 dict 를 돌려줬고, 그래서 이 모듈은 물리 이름을 자기 인라인
+    기본값(`cfg.get("column")`)으로 따로 들고 있었다 — 같은 값의 네 번째
+    사본이었다. 미러를 공유하면 그 사본이 필요 없어진다.
+    """
     path = Path(path_text)
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text(encoding="utf-8"))
+    merged = dict(member_filters_config.CODE_DEFAULTS)
+    if path.exists():
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict):
+            merged.update(payload)
+    return merged
 
 
 def _level(score: int) -> str:
@@ -204,7 +213,7 @@ def _score_condition(
         schema_ok = col_ok
     elif kind == "recent_login":
         cfg = filters.get("recent_login_target", {})
-        column = cfg.get("column", "LAST_LOGIN_DATE")
+        column = cfg.get("column")
         schema_ok = _column_in_schema(schema_cols, base_table, column)
         evidence.append(_ev("filter_registry", "member_target_filters.json: recent_login_target",
                              f"{column} >= 최근 {cond['value']}일 하한 (anchor={cfg.get('anchor', 'getdate')})", "confirmed"))
@@ -212,7 +221,7 @@ def _score_condition(
             evidence.append(_ev("schema", f"schema_catalog.json: {base_table}.{column}", "최근 접속일 컬럼 실재 확인", "confirmed"))
     elif kind == "signup":
         cfg = filters.get("signup_target", {})
-        column = cfg.get("column", "REG_DT")
+        column = cfg.get("column")
         schema_ok = _column_in_schema(schema_cols, base_table, column)
         evidence.append(_ev("filter_registry", "member_target_filters.json: signup_target",
                              f"{column} 최근 {cond['value'] or cfg.get('default_days', 90)}일 창 (anchor={cfg.get('anchor')})", "confirmed"))
@@ -222,7 +231,7 @@ def _score_condition(
             warnings.append("가입 기간(일수)이 프롬프트에 명시되지 않아 기본값 90일을 적용했습니다.")
             clarity = 70
     elif kind == "birthday":
-        column = filters.get("birthday_target", {}).get("column", "BIRTHDAY")
+        column = filters.get("birthday_target", {}).get("column")
         schema_ok = _column_in_schema(schema_cols, base_table, column)
         evidence.append(_ev("filter_registry", "member_target_filters.json: birthday_target",
                              f"{column} 월일(MMDD) 비교", "confirmed"))
@@ -230,7 +239,7 @@ def _score_condition(
             evidence.append(_ev("schema", f"schema_catalog.json: {base_table}.{column}", "생일 컬럼 실재 확인", "confirmed"))
     elif kind in ("order_count", "order_window"):
         cfg = filters.get("order_count_targets", {})
-        table = cfg.get("table", "CRM_SL_ORDERHEADERMALL")
+        table = cfg.get("table")
         schema_ok = table in schema_cols
         rule = cfg.get("behaviors", {}).get(cond["value"]) if kind == "order_count" else {"anti_join": True}
         evidence.append(_ev("filter_registry", "member_target_filters.json: order_count_targets",
@@ -241,7 +250,7 @@ def _score_condition(
         # 범용 사건 논리식: 사건→테이블 매핑은 event_compiler.EVENT_REGISTRY(설정 파생)가 소유하고
         # 기간·극성은 IR 노드가 원문 근거와 함께 들고 있다. 실테이블 상관 서브쿼리라 확정 조건이다.
         cfg = filters.get("order_count_targets", {})
-        table = cfg.get("table", "CRM_SL_ORDERHEADERMALL")
+        table = cfg.get("table")
         schema_ok = table in schema_cols
         evidence.append(_ev("filter_registry", "event_compiler.EVENT_REGISTRY(member_target_filters.json 파생)",
                              f"사건별 EXISTS/NOT EXISTS 상관 서브쿼리 ({cond['value']})", "confirmed"))
@@ -251,7 +260,7 @@ def _score_condition(
         # 기간 대 기간 지표 증감: aggregate_targets 레지스트리의 지표를 두 절대 기간으로 각각 집계해
         # 비교한다. 지표 정의(집계 함수/컬럼)와 주문 테이블 모두 실재 근거라 확정 조건이다.
         cfg = filters.get("aggregate_targets", {})
-        table = cfg.get("table", "CRM_SL_ORDERHEADERMALL")
+        table = cfg.get("table")
         metric_id = str(cond["value"]).split(":")[0]
         metric = (cfg.get("metrics") or {}).get(metric_id) or {}
         schema_ok = table in schema_cols
@@ -265,7 +274,7 @@ def _score_condition(
         # 장바구니 조건(보관 상태 / 보관 기간)은 cart_targets 레지스트리 + 실제 CRMDW 카트 테이블 근거다.
         # (예전엔 cart kind 분기가 없어 '확인되지 않음' 폴백으로 떨어져 근거 없이 감점됐다.)
         cfg = filters.get("cart_targets", {})
-        table = cfg.get("table", "ODS_MALL_OMS_CART")
+        table = cfg.get("table")
         if cond["key"] == "cart_retention":
             column = (cfg.get("registered_date_column") or "C.UPD_DT").split(".")[-1]
             schema_ok = _column_in_schema(schema_cols, table, column)
@@ -294,14 +303,14 @@ def _score_condition(
         # 반응 캠페인 수(HAVING COUNT DISTINCT) 또는 귀속 구매금액(HAVING SUM(BUY_AMT))을 집계한다.
         # 실컬럼·실테이블 근거로 확정 조건이다.
         cfg = filters.get("campaign_response_targets", {})
-        table = cfg.get("table", "MCS_CAMP_MBR_RSPN_FT")
-        camp_table = (cfg.get("campaign_join", {}) or {}).get("table", "Z_CAMPAIGN")
+        table = cfg.get("table")
+        camp_table = (cfg.get("campaign_join", {}) or {}).get("table")
         schema_ok = table in schema_cols and camp_table in schema_cols
         if cond["key"] == "campaign_buy_amount":
             detail = f"{table}⨝{camp_table} 회원별 캠페인 귀속 구매금액 집계 (HAVING SUM(BUY_AMT), 임계 {cond['value']})"
         elif cond["key"] == "cell_rate_target":
             cell_cfg = filters.get("cell_rate_targets", {})
-            member_table = cell_cfg.get("member_table", "Z_CAMP_MBR")
+            member_table = cell_cfg.get("member_table")
             schema_ok = member_table in schema_cols and table in schema_cols
             detail = f"{member_table} 셀 단위 집계(발송 대상 분모, 접촉성공/구매반응 비율 HAVING) — {cond['value']}"
         else:
@@ -349,7 +358,7 @@ def _score_condition(
             evidence.append(_ev("schema", f"schema_catalog.json: {base_table}.AGE", "연령 컬럼 실재 확인", "confirmed"))
     elif kind == "injected_state":
         cfg = filters.get("active_state", {})
-        column = cfg.get("column", "MEMBER_STATE_CD")
+        column = cfg.get("column")
         schema_ok = _column_in_schema(schema_cols, base_table, column)
         evidence.append(_ev("filter_registry", "member_target_filters.json: active_state",
                              f"{column} = {cfg.get('value')} (탈퇴/휴면 제외 기본 정책)", "confirmed"))

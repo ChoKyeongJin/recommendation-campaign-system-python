@@ -159,6 +159,19 @@ Wave 2를 계측(Wave 3)보다 앞에 둔 것은 의도적 순서 변경이다. 
 
 **위험.** api.py 기동 시 validate_capabilities 예외가 서비스를 죽일 수 있다. 완화: try/except 로 로그+헬스 필드만, 절대 raise 금지(fail-close 승격은 별도 결정). test_doc_claims 도입 즉시 8건 red 가 되므로 같은 PR 에서 실체 생성 또는 문구 정정을 마쳐야 한다.
 
+> **착지 상태(2026-08-02).** (a)(b) 는 계획과 **다른 모양으로** 착지했다. `capability_registry.py` 는
+> 되살리지 않고 신규 `capability_validation.py` 가 축 A~E 를 소유하며, 소유권 가드는 별도 파일
+> `tests/test_builder_ownership_contract.py` 가 아니라 `tests/test_capability_contract.py` 안에 있다
+> (파일을 새로 만들면 같은 축을 두 곳이 검사하게 된다 — 만들지 마라). 계획 본문의
+> "kind 미소유 빌더는 **복합 컴파일러 3종**"은 실제로는 **2종**이다
+> (`capability_validation.COMPOSITE_BUILDER_NAMES` = analytical_aggregation, union).
+> 계획이 다루지 않았던 **순서** 축은 축 E(`BUILDER_PRECEDENCE` + `builder_order_issues` +
+> `tests/test_builder_order_contract.py`)로 신규 추가했다 — 소유권만 지키면 순서 변경이
+> 조용한 SQL 변경으로 남는다. 강제 지점은 테스트 **와** import 시점
+> (`graph_rag._install_sql_builder_admission_guards` → `enforce_builder_contracts`) 두 곳이다:
+> 이 저장소에서 계약 테스트는 두 번(ce39f68, 8ba50b6) 일괄 삭제된 전력이 있다.
+> (c) join_paths·(d) 리터럴 미러 parity 는 여전히 미착지.
+
 ### W1-5. db_swap_preflight 를 실제 게이트로 승격 + 현재 FAIL 3건 해소
 
 - **공수** S / **선행** W1-1 (preflight 테스트는 복원이 아니라 신규 작성)
