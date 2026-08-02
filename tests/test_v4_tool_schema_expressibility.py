@@ -10,7 +10,6 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
-import audience_runtime
 import event_ir
 from query_structurer.campaign_plan_v4 import CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA
 
@@ -68,21 +67,6 @@ def _discriminators(schema: dict[str, Any]) -> set[str]:
     return values
 
 
-def _catalog_symbol_enums(schema: dict[str, Any], discriminator: str) -> set[frozenset[str]]:
-    enums: set[frozenset[str]] = set()
-    for _, node in _walk_schema(schema):
-        properties = node.get("properties") or {}
-        type_property = properties.get("type")
-        if not isinstance(type_property, dict) or discriminator not in (
-            type_property.get("enum") or []
-        ):
-            continue
-        name_property = properties.get("name")
-        if isinstance(name_property, dict) and name_property.get("enum"):
-            enums.add(frozenset(str(value) for value in name_property["enum"]))
-    return enums
-
-
 def _representative_payload() -> dict[str, Any]:
     first_evidence = {"text": "최근 30일 캠페인 발송 성공 횟수가 3회 이상", "start": 0, "end": 29}
     second_evidence = {"text": "구매반응이 없는", "start": 32, "end": 40}
@@ -109,8 +93,6 @@ def _representative_payload() -> dict[str, Any]:
                             },
                             "window": {
                                 "type": "rolling",
-                                "start": None,
-                                "end_exclusive": None,
                                 "value": 30,
                                 "unit": "day",
                             },
@@ -128,11 +110,10 @@ def _representative_payload() -> dict[str, Any]:
             {
                 "type": "not",
                 "operand": {
-                    "type": "exists",
-                    "relation": {
-                        "type": "source",
-                        "name": "campaign_purchase_response",
-                    },
+                    "type": "comparison",
+                    "operator": "=",
+                    "left": {"type": "field", "name": "subject.gender"},
+                    "right": {"type": "literal", "value": "M"},
                     "evidence": second_evidence,
                 },
             },
@@ -171,28 +152,27 @@ def test_audience_requirement_exposes_the_complete_fixed_event_ir_algebra() -> N
     expression_schema = CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"][
         "audience_requirement"
     ]["properties"]["expression"]
-    discriminators = _discriminators(expression_schema)
+    discriminators = _discriminators(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA)
     assert event_ir.NODE_TYPES <= discriminators, (
         f"LLM Event IR 스키마에서 빠진 고정 대수 노드: {sorted(event_ir.NODE_TYPES - discriminators)}"
     )
 
 
-def test_event_ir_catalog_enums_come_from_the_resolved_catalog() -> None:
+def test_event_ir_catalog_symbols_are_canonical_strings_not_inline_enums() -> None:
     expression_schema = CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"][
         "audience_requirement"
     ]["properties"]["expression"]
-    catalog = audience_runtime.resolve_audience_catalog()
-    # ``subject`` is the correlated base row, not an event relation.  The LLM source
-    # enum therefore follows exactly the compiler-capable event/field projections.
-    assert frozenset(catalog.compiler_events) in _catalog_symbol_enums(
-        expression_schema, "source"
-    )
-    assert frozenset(catalog.compiler_fields) in _catalog_symbol_enums(
-        expression_schema, "field"
-    )
+    assert expression_schema["anyOf"][0]["$ref"] == "#/$defs/condition"
+    definitions = CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["$defs"]
+    source_id = definitions["source_id"]
+    field_id = definitions["field_id"]
+
+    assert source_id["minLength"] >= 1 and source_id.get("pattern")
+    assert field_id["minLength"] >= 1 and field_id.get("pattern")
+    assert "enum" not in source_id and "enum" not in field_id
 
 
-def test_schema_expresses_windowed_aggregate_and_negated_existence_composition() -> None:
+def test_schema_expresses_windowed_aggregate_and_negated_field_comparison() -> None:
     payload = _representative_payload()
     validator = Draft202012Validator(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA)
     errors = sorted(validator.iter_errors(payload), key=lambda error: list(error.path))

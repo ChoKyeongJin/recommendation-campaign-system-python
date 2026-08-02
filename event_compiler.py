@@ -46,12 +46,16 @@ from event_ir import (
     Filter,
     Group,
     Join,
+    Limit,
     Literal,
     Not,
+    Order,
     Or,
+    Project,
     RelativeWindow,
     RollingWindow,
     Source,
+    Summarize,
     TemporalRelation,
     TimeFilter,
 )
@@ -143,6 +147,23 @@ class FieldSpec:
     # 계산 필드/조인 필드. ``{alias}`` 는 필드가 속한 Source 의 현재 별칭이다.
     # 비어 있으면 기존 ``alias.column`` 바인딩을 사용한다.
     expression: str = ""
+    # 논리값(canonical) → 물리 저장값. 값 도메인이 선언된 필드는 알 수 없는
+    # 문자열을 그대로 SQL에 흘리지 않고 fail-close 한다.
+    value_map: tuple[tuple[str, Any], ...] = ()
+
+    def physical_value(self, value: Any) -> Any:
+        if not self.value_map:
+            return value
+        if not isinstance(value, str):
+            raise SqlCompileError(
+                f"값 도메인이 있는 필드 '{self.source}.{self.column}'에는 canonical 문자열이 필요합니다"
+            )
+        values = dict(self.value_map)
+        if value not in values:
+            raise SqlCompileError(
+                f"필드 '{self.source}.{self.column}'에 등록되지 않은 canonical 값입니다: {value}"
+            )
+        return values[value]
 
 
 # 기본 사건 레지스트리 — 실CRM(CRMDW) 바인딩. graph_rag 가 member_target_filters.json 의 값으로
@@ -226,6 +247,8 @@ class CompileContext:
     _counter: list[int] = field(default_factory=lambda: [0])
     # 컴파일 중인 관계 스코프: 소스 심볼 → 별칭. FieldRef 해석이 이걸 본다.
     _scope: dict[str, str] = field(default_factory=dict)
+    # 파생 관계가 materialize 된 뒤 canonical field가 가리키는 SQL 출력.
+    _field_bindings: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if self.fields is None:
@@ -253,6 +276,15 @@ class CompileContext:
             subject=self.subject, registry=self.registry, fields=self.fields, dialect=self.dialect,
             literals=self.literals, today=self.today, _counter=self._counter,
             _scope={**self._scope, **scope},
+            _field_bindings=self._field_bindings,
+        )
+
+    def with_field_bindings(self, bindings: dict[str, str]) -> "CompileContext":
+        return CompileContext(
+            subject=self.subject, registry=self.registry, fields=self.fields, dialect=self.dialect,
+            literals=self.literals, today=self.today, _counter=self._counter,
+            _scope=self._scope,
+            _field_bindings={**self._field_bindings, **bindings},
         )
 
 
@@ -320,6 +352,14 @@ class RelationPlan:
     root_source: str
     binding: str
     params: dict[str, Any]
+    projection: list[str] = field(default_factory=list)
+    # Both an output's short name and its canonical input FieldRef can resolve
+    # to the materialized column.  Measures only have the short name.
+    output_aliases: dict[str, str] = field(default_factory=dict)
+    output_expressions: dict[str, str] = field(default_factory=dict)
+    order_by: list[str] = field(default_factory=list)
+    limit: int | None = None
+    field_bindings: dict[str, str] = field(default_factory=dict)
 
 
 def _binding_tokens(
@@ -385,6 +425,8 @@ def compile_relation(relation: event_ir.Relation, context: CompileContext) -> Re
     if isinstance(relation, Source):
         spec = context.event_spec(relation.name)
         if spec.binding == "subject_column":
+            if relation.correlation == "none":
+                raise SqlCompileError("주체 컬럼 사건은 전역 비상관 관계로 사용할 수 없습니다")
             # 주체 테이블 컬럼으로 표현되는 사건은 독립 관계가 아니다 — 별도 서브쿼리를 만들지 않는다.
             return RelationPlan(
                 from_sql="", where=[], group_by=[], scope={relation.name: context.subject.alias},
@@ -392,47 +434,228 @@ def compile_relation(relation: event_ir.Relation, context: CompileContext) -> Re
             )
         return RelationPlan(
             from_sql=_source_sql(spec, context),
-            where=[_correlation(spec, context), *_extra_predicates(spec, context)],
+            where=[
+                *([_correlation(spec, context)] if relation.correlation == "subject" else []),
+                *_extra_predicates(spec, context),
+            ],
             group_by=[], scope={relation.name: spec.alias},
             root_source=relation.name, binding="fact_table", params={},
         )
 
     if isinstance(relation, Filter):
         plan = compile_relation(relation.relation, context)
-        compiled = compile_condition(relation.where, context.with_scope(plan.scope))
+        compiled = compile_condition(relation.where, _relation_context(plan, context))
         plan.where.append(compiled.sql)
         plan.params.update(compiled.params)
         return plan
 
     if isinstance(relation, Join):
-        plan = compile_relation(relation.left, context)
-        if plan.binding != "fact_table":
+        left = compile_relation(relation.left, context)
+        if left.binding != "fact_table":
             raise SqlCompileError("주체 컬럼 사건은 조인할 수 없습니다")
-        right_spec = context.event_spec(relation.right.name)
-        if right_spec.from_sql:
-            raise SqlCompileError("복합 물리 소스는 Join 오른쪽이 아니라 독립 Source 로 사용해야 합니다")
-        plan.scope[relation.right.name] = right_spec.alias
-        on_sql = compile_condition(relation.on, context.with_scope(plan.scope))
-        plan.from_sql += f" INNER JOIN {_source_sql(right_spec, context)} ON {on_sql.sql}"
-        plan.where.extend(_extra_predicates(right_spec, context))
-        plan.params.update(on_sql.params)
-        return plan
+        if relation.kind == "inner" and isinstance(relation.right, Source):
+            # Exact legacy shape: the joined source is governed by ON, not by
+            # an additional subject correlation predicate.
+            right_spec = context.event_spec(relation.right.name)
+            if right_spec.from_sql:
+                raise SqlCompileError("복합 물리 소스는 Join 오른쪽이 아니라 독립 Source 로 사용해야 합니다")
+            left.scope[relation.right.name] = right_spec.alias
+            on_sql = compile_condition(relation.on, _relation_context(left, context))
+            left.from_sql += f" INNER JOIN {_source_sql(right_spec, context)} ON {on_sql.sql}"
+            left.where.extend(_extra_predicates(right_spec, context))
+            left.params.update(on_sql.params)
+            return left
+
+        right = compile_relation(relation.right, context)
+        if right.binding != "fact_table":
+            raise SqlCompileError("주체 컬럼 사건은 파생 관계 조인 오른쪽에 사용할 수 없습니다")
+        if relation.kind in {"semi", "anti"}:
+            return _compile_membership_join(relation, left, right, context)
+        return _compile_derived_inner_join(relation, left, right, context)
 
     if isinstance(relation, Group):
         plan = compile_relation(relation.relation, context)
-        inner = context.with_scope(plan.scope)
+        inner = _relation_context(plan, context)
         plan.group_by.extend(compile_scalar(key, inner) for key in relation.keys)
+        return plan
+
+    if isinstance(relation, Project):
+        plan = compile_relation(relation.relation, context)
+        inner = _relation_context(plan, context)
+        projection: list[str] = []
+        aliases: dict[str, str] = {}
+        expressions: dict[str, str] = {}
+        for item in relation.items:
+            expression = compile_scalar(item.expression, inner)
+            projection.append(f"{expression} AS {item.name}")
+            aliases[item.name] = item.name
+            expressions[item.name] = expression
+            if isinstance(item.expression, FieldRef):
+                aliases[item.expression.name] = item.name
+                expressions[item.expression.name] = expression
+        plan.projection = projection
+        plan.output_aliases = aliases
+        plan.output_expressions = expressions
+        return plan
+
+    if isinstance(relation, Summarize):
+        plan = compile_relation(relation.relation, context)
+        if plan.group_by or plan.projection or plan.order_by or plan.limit is not None:
+            raise SqlCompileError("summarize 입력은 아직 materialize 된 관계를 지원하지 않습니다")
+        inner = _relation_context(plan, context)
+        projection: list[str] = []
+        aliases: dict[str, str] = {}
+        expressions: dict[str, str] = {}
+        group_by: list[str] = []
+        for key in relation.keys:
+            expression = compile_scalar(key.expression, inner)
+            projection.append(f"{expression} AS {key.name}")
+            group_by.append(expression)
+            aliases[key.name] = key.name
+            expressions[key.name] = expression
+            if isinstance(key.expression, FieldRef):
+                aliases[key.expression.name] = key.name
+                expressions[key.expression.name] = expression
+        for measure in relation.measures:
+            expression = _named_measure_expression(measure, inner)
+            projection.append(f"{expression} AS {measure.name}")
+            aliases[measure.name] = measure.name
+            expressions[measure.name] = expression
+        plan.projection = projection
+        plan.output_aliases = aliases
+        plan.output_expressions = expressions
+        plan.group_by = group_by
+        return plan
+
+    if isinstance(relation, Order):
+        plan = compile_relation(relation.relation, context)
+        inner = _relation_context(plan, context)
+        order_by: list[str] = []
+        for key in relation.keys:
+            expression = plan.output_expressions.get(key.name)
+            if expression is None and "." in key.name:
+                expression = compile_scalar(FieldRef(key.name), inner)
+            if expression is None:
+                raise SqlCompileError(f"정렬 출력이 관계에 없습니다: {key.name}")
+            order_by.append(f"{expression} {key.direction.upper()}")
+        plan.order_by = order_by
+        return plan
+
+    if isinstance(relation, Limit):
+        plan = compile_relation(relation.relation, context)
+        plan.limit = min(plan.limit, relation.count) if plan.limit is not None else relation.count
         return plan
 
     raise SqlCompileError(f"지원하지 않는 관계입니다: {relation!r}")
 
 
-def _subquery(plan: RelationPlan, projection: str) -> str:
-    parts = [f"SELECT {projection} FROM {plan.from_sql}"]
+def _relation_context(plan: RelationPlan, context: CompileContext) -> CompileContext:
+    return context.with_scope(plan.scope).with_field_bindings(plan.field_bindings)
+
+
+def _named_measure_expression(
+    measure: event_ir.NamedMeasure, context: CompileContext
+) -> str:
+    argument = "*" if measure.expression is None else compile_scalar(measure.expression, context)
+    distinct = "DISTINCT " if measure.distinct and argument != "*" else ""
+    return f"{measure.function.upper()}({distinct}{argument})"
+
+
+def _merge_params(target: dict[str, Any], incoming: dict[str, Any]) -> None:
+    duplicated = target.keys() & incoming.keys()
+    if duplicated:
+        raise SqlCompileError(f"SQL 파라미터 이름이 중복되었습니다: {sorted(duplicated)}")
+    target.update(incoming)
+
+
+def _derived_field_bindings(plan: RelationPlan, alias: str) -> dict[str, str]:
+    return {
+        symbol: f"{alias}.{column}"
+        for symbol, column in plan.output_aliases.items()
+        if "." in symbol
+    }
+
+
+def _compile_membership_join(
+    relation: Join,
+    left: RelationPlan,
+    right: RelationPlan,
+    context: CompileContext,
+) -> RelationPlan:
+    materialized = bool(
+        right.projection or right.group_by or right.order_by or right.limit is not None
+    )
+    if materialized:
+        if not right.projection:
+            raise SqlCompileError("파생 조인 관계에는 명시적 출력이 필요합니다")
+        alias = f"ER{context.next_index()}"
+        bindings = _derived_field_bindings(right, alias)
+        # Join.on has a directional contract: its left scalar is evaluated in
+        # the left relation and its right scalar in the right relation.  A
+        # self-semi-join legitimately uses the same canonical field on both
+        # sides; merging bindings first would turn ``left.id = right.id`` into
+        # the tautology ``right.id = right.id``.
+        left_context = _relation_context(left, context)
+        right_context = context.with_field_bindings(bindings)
+        on_sql = CompiledCondition(
+            sql=(
+                f"{compile_scalar(relation.on.left, left_context)} "
+                f"{relation.on.operator} "
+                f"{compile_scalar(relation.on.right, right_context)}"
+            )
+        )
+        body = _subquery(right, None, context)
+        predicate = f"EXISTS (SELECT 1 FROM ({body}) AS {alias} WHERE {on_sql.sql})"
+    else:
+        scope = {**left.scope, **right.scope}
+        bindings = {**left.field_bindings, **right.field_bindings}
+        on_context = context.with_scope(scope).with_field_bindings(bindings)
+        on_sql = compile_condition(relation.on, on_context)
+        right.where.append(on_sql.sql)
+        predicate = f"EXISTS ({_subquery(right, '1', context)})"
+    if relation.kind == "anti":
+        predicate = "NOT " + predicate
+    left.where.append(predicate)
+    _merge_params(left.params, right.params)
+    _merge_params(left.params, on_sql.params)
+    return left
+
+
+def _compile_derived_inner_join(
+    relation: Join,
+    left: RelationPlan,
+    right: RelationPlan,
+    context: CompileContext,
+) -> RelationPlan:
+    if not right.projection:
+        raise SqlCompileError("파생 inner join 오른쪽에는 명시적 출력이 필요합니다")
+    alias = f"ER{context.next_index()}"
+    bindings = _derived_field_bindings(right, alias)
+    on_context = _relation_context(left, context).with_field_bindings(bindings)
+    on_sql = compile_condition(relation.on, on_context)
+    left.from_sql += f" INNER JOIN ({_subquery(right, None, context)}) AS {alias} ON {on_sql.sql}"
+    left.field_bindings.update(bindings)
+    _merge_params(left.params, right.params)
+    _merge_params(left.params, on_sql.params)
+    return left
+
+
+def _subquery(
+    plan: RelationPlan, projection: str | None, context: CompileContext
+) -> str:
+    selected = projection if projection is not None else ", ".join(plan.projection or ["*"])
+    prefix = context.dialect.row_limit_prefix(plan.limit) if plan.limit is not None else ""
+    parts = [f"SELECT {prefix}{selected} FROM {plan.from_sql}"]
     if plan.where:
         parts.append("WHERE " + " AND ".join(plan.where))
     if plan.group_by:
         parts.append("GROUP BY " + ", ".join(plan.group_by))
+    if plan.order_by:
+        parts.append("ORDER BY " + ", ".join(plan.order_by))
+    if plan.limit is not None:
+        suffix = context.dialect.row_limit_suffix(plan.limit)
+        if suffix:
+            parts.append(suffix)
     return " ".join(parts)
 
 
@@ -444,6 +667,9 @@ def compile_scalar(scalar: event_ir.Scalar, context: CompileContext) -> str:
         return _sql_quote(scalar.value) if isinstance(scalar.value, str) else str(scalar.value)
 
     if isinstance(scalar, FieldRef):
+        bound = context._field_bindings.get(scalar.name)
+        if bound is not None:
+            return bound
         spec = context.field_spec(scalar.name)
         alias = context._scope.get(spec.source) or (
             context.subject.alias if spec.source == context.subject.name else None
@@ -487,7 +713,7 @@ def _aggregate_subquery(aggregate: Aggregate, plan: RelationPlan, context: Compi
     # 행이 없을 때 SUM 은 NULL 을 돌려줘 '0원 이상' 같은 조건이 조용히 거짓이 된다 — 0 으로 접는다.
     # COUNT 는 0 을 돌려주므로 감싸지 않는다(불필요한 함수 중첩은 인덱스 판단만 흐린다).
     projection = context.dialect.coalesce(expression, "0") if aggregate.function == "sum" else expression
-    return f"({_subquery(plan, projection)})"
+    return f"({_subquery(plan, projection, context)})"
 
 
 # ── 조건 ──────────────────────────────────────────────────────────────────────────
@@ -503,7 +729,13 @@ def compile_condition(condition: event_ir.Condition, context: CompileContext) ->
         # NOT EXISTS 는 SQL 이 직접 지원하는 형태라 NOT (EXISTS ...) 로 감싸지 않는다(플랜 동일, 가독성 우위).
         if inner.sql.startswith("EXISTS ("):
             return CompiledCondition(sql="NOT " + inner.sql, params=inner.params)
-        return CompiledCondition(sql=f"NOT ({inner.sql})", params=inner.params)
+        # SQL's NOT UNKNOWN is still UNKNOWN, while an audience complement is
+        # two-valued: members for whom the predicate is not true (including
+        # NULL/unknown) must remain.  Fold the predicate to 1/0 before NOT.
+        return CompiledCondition(
+            sql=f"NOT (CASE WHEN ({inner.sql}) THEN 1 ELSE 0 END = 1)",
+            params=inner.params,
+        )
     if isinstance(condition, TimeFilter):
         spec = context.field_spec(condition.field.name)
         return compile_time_window(
@@ -544,7 +776,7 @@ def _compile_exists(condition: Exists, context: CompileContext) -> CompiledCondi
             *plan.where,
         ]
         return CompiledCondition(sql="(" + " AND ".join(predicates) + ")", params=plan.params)
-    return CompiledCondition(sql=f"EXISTS ({_subquery(plan, '1')})", params=plan.params)
+    return CompiledCondition(sql=f"EXISTS ({_subquery(plan, '1', context)})", params=plan.params)
 
 
 def _compile_comparison(condition: Comparison, context: CompileContext) -> CompiledCondition:
@@ -557,9 +789,17 @@ def _compile_comparison(condition: Comparison, context: CompileContext) -> Compi
                 f"{_aggregate_expression(condition.left, plan, context)} "
                 f"{condition.operator} {compile_scalar(condition.right, context)}"
             )
-            return CompiledCondition(sql=f"EXISTS ({_subquery(plan, '1')} HAVING {having})", params=plan.params)
-    left = compile_scalar(condition.left, context)
-    right = compile_scalar(condition.right, context)
+            return CompiledCondition(
+                sql=f"EXISTS ({_subquery(plan, '1', context)} HAVING {having})",
+                params=plan.params,
+            )
+    left_scalar, right_scalar = condition.left, condition.right
+    if isinstance(left_scalar, FieldRef) and isinstance(right_scalar, Literal):
+        right_scalar = Literal(context.field_spec(left_scalar.name).physical_value(right_scalar.value))
+    elif isinstance(right_scalar, FieldRef) and isinstance(left_scalar, Literal):
+        left_scalar = Literal(context.field_spec(right_scalar.name).physical_value(left_scalar.value))
+    left = compile_scalar(left_scalar, context)
+    right = compile_scalar(right_scalar, context)
     return CompiledCondition(sql=f"{left} {condition.operator} {right}")
 
 
@@ -699,6 +939,7 @@ def _fresh_context(context: CompileContext) -> CompileContext:
         dialect=context.dialect,
         literals=context.literals,
         today=context.today,
+        _field_bindings=context._field_bindings,
     )
 
 

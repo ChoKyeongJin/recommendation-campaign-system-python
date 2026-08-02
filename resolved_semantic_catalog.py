@@ -140,6 +140,7 @@ class FieldSpec:
     compiler_field: event_compiler.FieldSpec
     nullable: bool = True
     allowed_operators: tuple[str, ...] = ()
+    value_domain: str | None = None
     coverage: str = UNKNOWN_COVERAGE
 
     @property
@@ -355,8 +356,9 @@ class ResolvedSemanticCatalog:
         for source_id, declaration in _section(raw, "sources").items():
             resolved_events[source_id] = _event_spec(source_id, declaration, subject_spec)
 
+        value_domains = _section(raw, "value_domains")
         runtime_fields = {
-            field_id: _compiler_field(field_id, declaration)
+            field_id: _compiler_field(field_id, declaration, value_domains=value_domains)
             for field_id, declaration in _section(raw, "fields").items()
         }
         if fields is None:
@@ -425,6 +427,10 @@ class ResolvedSemanticCatalog:
                 nullable=bool(declaration.get("nullable", True)),
                 allowed_operators=_string_tuple(
                     declaration.get("allowed_operators"), f"field {field_id}.allowed_operators"
+                ),
+                value_domain=(
+                    str(declaration["value_domain"])
+                    if declaration.get("value_domain") else None
                 ),
                 coverage=str(declaration.get("coverage") or UNKNOWN_COVERAGE),
             )
@@ -536,6 +542,12 @@ class ResolvedSemanticCatalog:
             require(self.compiler_fields, field_spec.id, f"field {field_spec.id!r}", "compiler field")
             for operator in field_spec.allowed_operators:
                 self.resolve_operator(operator)
+            if field_spec.value_domain and not field_spec.compiler_field.value_map:
+                raise CatalogError(
+                    "catalog_reference_unresolved",
+                    f"field {field_spec.id!r} references an empty value domain {field_spec.value_domain!r}",
+                    symbol=field_spec.value_domain,
+                )
         for join in self.joins.values():
             require(self.sources, join.left_source, f"join {join.id!r}", "left source")
             require(self.sources, join.right_source, f"join {join.id!r}", "right source")
@@ -744,17 +756,67 @@ def _event_spec(
         raise CatalogError("invalid_catalog_declaration", f"invalid source {source_id!r}: {exc}") from exc
 
 
-def _compiler_field(field_id: str, declaration: Any) -> event_compiler.FieldSpec:
+def _compiler_field(
+    field_id: str,
+    declaration: Any,
+    *,
+    value_domains: Mapping[str, Any] | None = None,
+) -> event_compiler.FieldSpec:
     if isinstance(declaration, event_compiler.FieldSpec):
         return declaration
     if not isinstance(declaration, Mapping):
         raise CatalogError("invalid_catalog_declaration", f"field {field_id!r} must be an object")
     source = str(declaration.get("source") or field_id.partition(".")[0])
+    domain_name = declaration.get("value_domain")
+    value_map: tuple[tuple[str, Any], ...] = ()
+    if domain_name:
+        domains = value_domains or {}
+        domain = domains.get(str(domain_name))
+        if not isinstance(domain, Mapping):
+            raise CatalogError(
+                "catalog_reference_unresolved",
+                f"field {field_id!r} references unknown value domain {domain_name!r}",
+                symbol=str(domain_name),
+            )
+        values = domain.get("values")
+        if not isinstance(values, Mapping) or not values:
+            raise CatalogError(
+                "invalid_catalog_declaration",
+                f"value domain {domain_name!r} needs non-empty values",
+                symbol=str(domain_name),
+            )
+        pairs: list[tuple[str, Any]] = []
+        for canonical, value_declaration in values.items():
+            if not isinstance(canonical, str) or not canonical:
+                raise CatalogError(
+                    "invalid_catalog_declaration",
+                    f"value domain {domain_name!r} has an invalid canonical id",
+                    symbol=str(domain_name),
+                )
+            if isinstance(value_declaration, Mapping):
+                if "physical" not in value_declaration:
+                    raise CatalogError(
+                        "invalid_catalog_declaration",
+                        f"value domain {domain_name!r}.{canonical} needs physical",
+                        symbol=str(domain_name),
+                    )
+                physical = value_declaration["physical"]
+            else:
+                physical = value_declaration
+            if not isinstance(physical, (str, int, float, bool)):
+                raise CatalogError(
+                    "invalid_catalog_declaration",
+                    f"value domain {domain_name!r}.{canonical} has an invalid physical value",
+                    symbol=str(domain_name),
+                )
+            pairs.append((canonical, physical))
+        value_map = tuple(sorted(pairs))
     return event_compiler.FieldSpec(
         source=_non_empty(source, f"field {field_id}.source"),
         column=_non_empty(declaration.get("column"), f"field {field_id}.column"),
         data_type=str(declaration.get("data_type") or "number"),
         expression=str(declaration.get("expression") or ""),
+        value_map=value_map,
     )
 
 

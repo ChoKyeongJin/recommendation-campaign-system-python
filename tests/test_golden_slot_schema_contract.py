@@ -88,9 +88,10 @@ def test_audience_requirement_is_the_only_llm_meaning_container() -> None:
     expression = requirement["properties"]["expression"]
     branches = expression.get("anyOf") or []
     assert any(branch.get("type") == "null" for branch in branches)
-    assert any("anyOf" in branch for branch in branches), (
+    assert any(branch.get("$ref") == "#/$defs/condition" for branch in branches), (
         "audience_requirement.expression 에 Event IR 조건 대수가 배선되지 않았다"
     )
+    assert "condition" in CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA.get("$defs", {})
 
 
 def test_corpus_slot_names_remain_known_to_internal_compatibility_schema() -> None:

@@ -8,6 +8,7 @@ from datetime import date
 from typing import Any
 
 import audience_runtime
+import canonical_audience_claims
 import event_compiler
 import event_ir
 from aggregation_requirements import aggregation_request_json_schema
@@ -880,6 +881,15 @@ def _campaign_query_plan_v4_llm_schema() -> dict[str, Any]:
             AUDIENCE_REQUIREMENT_KEY: copy.deepcopy(_AUDIENCE_REQUIREMENT_SCHEMA),
         },
     }
+    # ``#/$defs`` always resolves from the function-parameters document for the
+    # provider.  A standalone audience schema may own nested definitions via
+    # ``$id``, but embedding that object here leaves the provider looking for a
+    # non-existent root component.  Hoist the fixed algebra exactly once.
+    expression_branch = schema["properties"][AUDIENCE_REQUIREMENT_KEY]["properties"][
+        "expression"
+    ]["anyOf"][0]
+    schema["$defs"] = expression_branch.pop("$defs")
+    expression_branch.pop("$id", None)
     return _strictify(schema)
 
 
@@ -966,6 +976,35 @@ def _normalize_audience_evidence(payload: dict[str, Any], query: str) -> None:
         if len(positions) == 1:
             evidence["start"] = positions[0]
             evidence["end"] = positions[0] + len(text)
+
+    expression = requirement.get("expression")
+
+    def inherit_container_evidence(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key != "evidence":
+                    inherit_container_evidence(child)
+            if value.get("type") != "exists" or isinstance(value.get("evidence"), dict):
+                return
+            spans = [
+                (item.get("start"), item.get("end"))
+                for item in _walk_evidence_payloads(value.get("relation"))
+                if isinstance(item.get("start"), int)
+                and isinstance(item.get("end"), int)
+                and 0 <= item["start"] < item["end"] <= len(query)
+                and query[item["start"]:item["end"]] == item.get("text")
+            ]
+            if spans:
+                start = min(item[0] for item in spans)
+                end = max(item[1] for item in spans)
+                value["evidence"] = {
+                    "text": query[start:end], "start": start, "end": end,
+                }
+        elif isinstance(value, list):
+            for child in value:
+                inherit_container_evidence(child)
+
+    inherit_container_evidence(expression)
 
 
 def _validated_audience_issue(item: Any, query: str) -> dict[str, Any]:
@@ -1139,6 +1178,19 @@ def _derive_audience_execution(
         issues.extend(
             _temporal_requirement_issues(query, expression, current_date=current_date)
         )
+        literal_bindings = payload.get("literal_bindings")
+        if not isinstance(literal_bindings, list):
+            raise CampaignQueryPlanValidationError(
+                "application-owned literal_bindings must be attached before audience validation"
+            )
+        issues.extend(
+            canonical_audience_claims.canonical_claim_issues(
+                query,
+                expression,
+                literal_bindings,
+                audience_runtime.load_audience_catalog_config(),
+            )
+        )
     elif raw_expression is not None:
         raise CampaignQueryPlanValidationError(
             "audience_requirement.expression must be an object or null"
@@ -1255,9 +1307,8 @@ def attach_campaign_query_plan_v4_identity(
     enriched.setdefault("semantic_evidence", [])
     enriched.setdefault("unresolved", [])
     enriched.setdefault("semantic_plan", {"nodes": []})
-    _normalize_unique_evidence_spans(enriched, query)
-    _normalize_audience_evidence(enriched, query)
-    _derive_semantic_ir(enriched, query, current_date=current_date)
+    # Literal extraction is application-owned input to canonical validation,
+    # not a model output and not a post-validation decoration.
     enriched.update(
         {
             "schema_version": CAMPAIGN_QUERY_PLAN_V4_VERSION,
@@ -1270,6 +1321,9 @@ def attach_campaign_query_plan_v4_identity(
             ),
         }
     )
+    _normalize_unique_evidence_spans(enriched, query)
+    _normalize_audience_evidence(enriched, query)
+    _derive_semantic_ir(enriched, query, current_date=current_date)
     enriched[QUERY_IDENTITY_DIGEST_KEY] = campaign_query_identity_digest(enriched)
     return enriched
 
@@ -1324,6 +1378,7 @@ def build_campaign_query_plan_v4_fallback(
     payload["semantic_ir"] = empty_semantic_ir(
         missing_fields=["semantic_interpretation"],
         message="LLM 의미 구조화를 사용할 수 없습니다.",
+        failure_kind="system_failure",
     )
     return CampaignQueryPlanV4(payload)
 
@@ -1462,6 +1517,15 @@ def _validate_semantic_layer(payload: dict[str, Any]) -> None:
                         "audience expression evidence does not match original_query"
                     )
         execution = payload.get(EVENT_EXPRESSION_KEY)
+        if normalized_issues and isinstance(expression_raw, dict):
+            details = "; ".join(
+                f"{item['code']}[{item['argument']}]: {item['message']}"
+                for item in normalized_issues
+            )
+            raise CampaignQueryPlanValidationError(
+                "audience expression failed semantic validation; return a corrected "
+                f"expression or expression=null with issues: {details}"
+            )
         if normalized_issues and execution is not None:
             raise CampaignQueryPlanValidationError(
                 "audience issues and executable event_expression cannot coexist"

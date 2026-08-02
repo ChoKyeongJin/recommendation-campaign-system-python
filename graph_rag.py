@@ -23,7 +23,7 @@ import networkx as nx
 import aggregate_parser_config
 import aggregate_semantics
 import aggregate_spans
-import audience_runtime
+import audience_runtime, canonical_audience_claims
 import conceptual_targeting
 import condition_reconciliation
 from external_conditions.models import ResolutionContext
@@ -103,13 +103,13 @@ from rag.config import (DEFAULT_COLLECTION, DEFAULT_DATA_PATH, DEFAULT_EMBEDDING
 from rag.llm_io import rag_llm_run_scope  # noqa: F401 - façade 재수출
 from rag.llm_io import (
     _fast_llm_model,
+    _campaign_structuring_route,
     _message_summary,
     _openai_chat_create,
     _read_prompt_template,
     _render_prompt_template,
     _repair_llm_model,
     _semantic_verify_model,
-    _structuring_llm_model,
     _write_rag_llm_log,
 )
 from aggregation_requirements import (
@@ -284,7 +284,9 @@ def _structure_campaign_query_plan_v4(
         def complete(messages: list[dict[str, str]]) -> str:
             nonlocal call_count
             call_count += 1
-            model = model_override or _structuring_llm_model(llm_model) or llm_model
+            model, routing_reason = _campaign_structuring_route(
+                llm_model, attempt=call_count, override=model_override, prefer_repair=bool(semantic_requirements.capture_source_semantic_obligations(query))
+            )
             response = _openai_chat_create(
                 client,
                 model=model,
@@ -312,9 +314,7 @@ def _structure_campaign_query_plan_v4(
                     # "왜 이 단계만 품질이 낮은가"를 추적할 수 있다(실측: 설정과 실제가 달랐다).
                     "requested_model": llm_model,
                     "model": model,
-                    "routing_reason": (
-                        "structuring_override" if model != llm_model else "main_model"
-                    ),
+                    "routing_reason": routing_reason,
                     "schema_version": CAMPAIGN_QUERY_PLAN_V4_VERSION,
                     "query": query,
                     "content": content,
@@ -8542,8 +8542,7 @@ def _refresh_unresolved_source_conditions(
     미해결이던 조건을 후속 원문 권위 단계가 복원하면 자동으로 해소된다.
     """
     if isinstance(query_plan.get(AUDIENCE_REQUIREMENT_KEY), dict):
-        query_plan["unresolved_source_conditions"] = []
-        return []
+        return canonical_audience_claims.refresh_canonical_unresolved(original_query, query_plan, _plan_event_expression(query_plan), audience_runtime.load_audience_catalog_config())
 
     preserved = [
         copy.deepcopy(item)
@@ -8601,6 +8600,10 @@ def _refresh_unresolved_source_conditions(
             "source": "product_master_resolver",
             "alternatives": copy.deepcopy(product_resolution.get("alternatives") or []),
         })
+
+    legacy_entity_set = target_user.get("entity_set_condition")
+    if isinstance(legacy_entity_set, dict) and entity_set_capability(legacy_entity_set, _entity_set_config()) is None:
+        canonical_audience_claims.discharge_legacy_ranked_obligations(query_plan, original_query, legacy_entity_set)
     semantic_obligation_unresolved = (
         semantic_requirements.unresolved_semantic_obligations(
             query_plan, original_query
@@ -15029,9 +15032,9 @@ def _event_predicate_factory(
         source_kind_suffix = "aggregate_presence" if polarity == aggregate_semantics.PRESENCE else "aggregate_absence"
     else:
         return None
-    sources = sorted(
+    sources = sorted({
         node.name for node in event_ir.walk(relation) if isinstance(node, event_ir.Source)
-    )
+    })
     if len(sources) != 1:
         return aggregate_semantics.EventPredicate(
             domain="__ambiguous_event_relation__",

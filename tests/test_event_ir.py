@@ -54,7 +54,7 @@ def existence_shape(expression: event_ir.Condition) -> list[tuple[str, bool, Any
 EXPECTED_NODE_TYPES = {
     "and", "or", "not",
     "literal", "field", "arithmetic", "aggregate",
-    "source", "filter", "join", "group",
+    "source", "filter", "join", "group", "project", "summarize", "order", "limit",
     "comparison", "exists", "time_filter", "temporal_relation", "event_reference",
     "interval", "rolling", "relative", "duration",
 }

@@ -188,6 +188,30 @@ def test_runtime_catalog_extension_uses_the_same_ir_and_compiler(tmp_path: Path)
     assert "SS.SCORE >= 10" in compiled.sql
 
 
+def test_exists_inherits_exact_provenance_from_its_relation_predicate() -> None:
+    query = "구매 금액 10 이상"
+    expression = event_ir.Exists(
+        event_ir.Filter(
+            event_ir.Source("purchase"),
+            event_ir.Comparison(
+                ">=",
+                event_ir.FieldRef("purchase.amount"),
+                event_ir.Literal(10),
+                evidence=_evidence(query, query),
+            ),
+        )
+    )
+
+    structured = _canonical_payload(query, expression)
+
+    projected = structured[EVENT_EXPRESSION_KEY]["expression"]
+    assert projected["evidence"] == {
+        "text": query,
+        "start": 0,
+        "end": len(query),
+    }
+
+
 def test_bare_recent_is_a_missing_period_and_blocks_sql() -> None:
     expression = _campaign_audience_expression(
         BARE_RECENT_QUERY,

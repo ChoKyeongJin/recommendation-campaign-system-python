@@ -7,6 +7,21 @@
     "key": "MEMBER_NO",
     "label": "회원"
   },
+  "value_domains": {
+    "gender": {
+      "label": "성별",
+      "values": {
+        "female": {
+          "physical": "GENDER_CD.FEMALE",
+          "aliases": ["여성", "여자", "여성 회원", "여자 고객"]
+        },
+        "male": {
+          "physical": "GENDER_CD.MALE",
+          "aliases": ["남성", "남자", "남성 회원", "남자 고객"]
+        }
+      }
+    }
+  },
   "sources": {
     "purchase": {
       "table": "CRM_SL_ORDERHEADERMALL",
@@ -19,6 +34,18 @@
       "grain": "event",
       "label": "구매",
       "aliases": ["구매", "주문", "결제"]
+    },
+    "purchase_line": {
+      "table": "CRM_SL_ORDERDETAILMALL",
+      "alias": "OD",
+      "subject_key": "MEMBER_NO",
+      "event_subject_key": "MEMBER_NO",
+      "time_column": "ORDER_DATE",
+      "time_format": "char8",
+      "binding": "fact_table",
+      "grain": "line",
+      "label": "구매 상세",
+      "aliases": ["구매 상품", "주문 상품", "판매 상품"]
     },
     "login": {
       "table": "CRM_MB_BASEINFO",
@@ -142,6 +169,7 @@
       "source": "subject",
       "column": "GENDER_CD",
       "data_type": "string",
+      "value_domain": "gender",
       "label": "성별",
       "aliases": ["성별", "남성", "여성"]
     },
@@ -174,6 +202,47 @@
       "data_type": "string",
       "label": "주문 식별자",
       "aliases": ["주문", "구매 건"]
+    },
+    "purchase_line.product_id": {
+      "source": "purchase_line",
+      "column": "PRODUCT_ID",
+      "data_type": "string",
+      "nullable": false,
+      "label": "구매 상품",
+      "aliases": ["상품", "제품", "품목"]
+    },
+    "purchase_line.quantity": {
+      "source": "purchase_line",
+      "column": "ORDER_QTY",
+      "data_type": "number",
+      "nullable": false,
+      "label": "판매 수량",
+      "unit": "item",
+      "aliases": ["판매 수량", "판매량", "팔린 수량"]
+    },
+    "purchase_line.amount": {
+      "source": "purchase_line",
+      "column": "PAYMENT_AMT",
+      "data_type": "number",
+      "label": "판매 금액",
+      "unit": "KRW",
+      "aliases": ["매출", "판매 금액", "결제 금액"]
+    },
+    "purchase_line.order_id": {
+      "source": "purchase_line",
+      "column": "ORDER_ID",
+      "data_type": "string",
+      "nullable": false,
+      "label": "상세 주문 식별자",
+      "aliases": ["주문 건"]
+    },
+    "purchase_line.member_id": {
+      "source": "purchase_line",
+      "column": "MEMBER_NO",
+      "data_type": "string",
+      "nullable": false,
+      "label": "구매 회원 식별자",
+      "aliases": ["구매 고객", "구매자"]
     },
     "cart.quantity": {
       "source": "cart",
@@ -237,6 +306,42 @@
       "label": "캠페인 귀속 구매 건수",
       "unit": "event",
       "aliases": ["캠페인 구매 건수", "반응 구매 횟수"]
+    }
+  },
+  "relation_recipes": {
+    "ranked_entity_membership": {
+      "label": "순위 엔터티 집합 회원 포함",
+      "defaultMeasure": "sales_quantity",
+      "defaultRankRelation": "purchase",
+      "directions": {
+        "top": ["가장 많이", "제일 많이", "많이 팔린", "많이팔린", "최다", "상위", "인기", "베스트"],
+        "bottom": ["가장 적게", "제일 적게", "최저", "하위"]
+      },
+      "measures": {
+        "sales_quantity": {"label": "판매 수량", "terms": ["팔린", "판매량", "판매 수량", "인기", "베스트"]},
+        "sales_amount": {"label": "판매 금액", "terms": ["매출", "판매 금액", "구매 금액", "결제 금액"]},
+        "order_count": {"label": "주문 건수", "terms": ["주문 건수", "구매 건수", "많이 주문된"]},
+        "buyer_count": {"label": "구매 고객 수", "terms": ["구매 고객 수", "구매자 수", "많은 고객이 산"]}
+      },
+      "entities": {
+        "product": {"label": "상품", "terms": ["상품", "제품", "품목"]}
+      },
+      "relations": {
+        "purchase": {
+          "label": "구매",
+          "terms": ["구매", "구입", "주문", "결제", "구매한", "구입한"],
+          "canonicalSource": "purchase_line",
+          "canonicalEntities": {
+            "product": "purchase_line.product_id"
+          },
+          "canonicalMeasures": {
+            "sales_quantity": {"function": "sum", "field": "purchase_line.quantity"},
+            "sales_amount": {"function": "sum", "field": "purchase_line.amount"},
+            "order_count": {"function": "count", "field": "purchase_line.order_id", "distinct": true},
+            "buyer_count": {"function": "count", "field": "purchase_line.member_id", "distinct": true}
+          }
+        }
+      }
     }
   },
   "metrics": {

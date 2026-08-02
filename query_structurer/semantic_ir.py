@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import copy
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from calendar_window import parse_calendar_window_spans
+from semantic_normalizers import AmountNormalizer, Money, NormalizationError
 
 
 SEMANTIC_IR_STATUSES = frozenset(
@@ -26,9 +27,33 @@ _COMPARISON_RE = re.compile(
     "|".join(re.escape(surface) for surface, _canonical in _COMPARISON_TERMS)
 )
 _PERCENT_RE = re.compile(r"(?<![\d.])(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>%|퍼센트|프로)")
+# 문장 안에서 AmountNormalizer 에 넘길 금액 표면의 경계만 찾는다. 배수 계산과 한글 수사
+# 해석은 이 정규식이 아니라 AmountNormalizer 가 소유한다. 통화 표식이 필수이므로 기간이나
+# 단순 수량을 금액으로 추측하지 않는다.
+_MONEY_MAGNITUDE_GRAMMAR = r"(?:천만|백만|조|억|만|천)"
+_MONEY_ARABIC_GRAMMAR = r"(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?"
+_MONEY_SINO_GRAMMAR = r"[영공일이삼사오육칠팔구십백천]+"
+_MONEY_VALUE_GRAMMAR = (
+    rf"(?:{_MONEY_ARABIC_GRAMMAR}(?:\s*{_MONEY_MAGNITUDE_GRAMMAR})?"
+    rf"|{_MONEY_SINO_GRAMMAR}\s*{_MONEY_MAGNITUDE_GRAMMAR})"
+)
+_MONEY_SUFFIX_CURRENCY_GRAMMAR = r"(?:원|won|krw|₩)"
+# 한국어 '원'은 접미 통화 단위다. 접두사로도 허용하면 '지원 20만 명'의 끝 글자부터
+# '원 20만'을 금액으로 오인한다. 접두 통화 표식은 실제 접두 표기인 기호/영문만 연다.
+_MONEY_PREFIX_CURRENCY_GRAMMAR = r"(?:won|krw|₩)"
+MONEY_LITERAL_RE = re.compile(
+    rf"(?<![\d.,A-Za-z영공일이삼사오육칠팔구십백천])(?:"
+    rf"{_MONEY_VALUE_GRAMMAR}\s*{_MONEY_SUFFIX_CURRENCY_GRAMMAR}"
+    rf"|{_MONEY_PREFIX_CURRENCY_GRAMMAR}\s*{_MONEY_VALUE_GRAMMAR}"
+    rf")(?![\d.,A-Za-z])",
+    re.IGNORECASE,
+)
 COUNTER_LITERAL_RE = re.compile(
     r"(?<![\d.])(?P<value>\d[\d,]*(?:\.\d+)?)\s*"
-    r"(?P<unit>종류|개|회|번|건|종)(?![가-힣A-Za-z0-9])"
+    r"(?P<unit>종류|개|회|번|건|종)"
+    # Korean counters normally carry a case/topic particle (``10개를``,
+    # ``3회는``). Keep the particle outside the literal evidence span.
+    r"(?=(?:을|를|이|가|은|는|의|만|중|에서|으로|로)?(?:\s|[,.;!?]|$))"
 )
 COUNTER_UNIT_SEMANTICS = {
     "개": "item_quantity",
@@ -172,9 +197,9 @@ def extract_literal_bindings(
 ) -> list[dict[str, Any]]:
     """Extract value atoms without assigning business meaning between them.
 
-    Dates, counter-bearing numbers, percentages, and comparison operators are
-    application-owned. Korean counters are semantic literals: ``개`` means item
-    quantity, ``회/번/건`` means order count, and ``종/종류`` means distinct
+    Dates, money, counter-bearing numbers, percentages, and comparison operators
+    are application-owned. Korean counters are semantic literals: ``개`` means
+    item quantity, ``회/번/건`` means order count, and ``종/종류`` means distinct
     product count. The LLM may not rewrite one counter into another.
     The LLM may only connect the returned IDs to semantic roles; it cannot submit
     replacement values in the semantic operation payload.
@@ -213,6 +238,12 @@ def extract_literal_bindings(
         occupied.append((start, end))
 
     for window, start, end in parse_calendar_window_spans(query, today=reference_date):
+        start_date = date(
+            int(window["from"][:4]), int(window["from"][4:6]), int(window["from"][6:8])
+        )
+        inclusive_end = date(
+            int(window["to"][:4]), int(window["to"][4:6]), int(window["to"][6:8])
+        )
         append(
             "date_window",
             start,
@@ -222,9 +253,31 @@ def extract_literal_bindings(
                 "from": window["from"],
                 "to": window["to"],
                 "label": window.get("label"),
+                "event_ir_window": {
+                    "type": "interval",
+                    "start": start_date.isoformat(),
+                    "end_exclusive": (inclusive_end + timedelta(days=1)).isoformat(),
+                },
                 # 시각 경계는 있을 때만 싣는다 — 날짜만 있는 창의 normalized shape 를 바꾸지 않는다.
                 **{key: window[key] for key in ("from_time", "to_time") if window.get(key) is not None},
             },
+        )
+
+    for match in MONEY_LITERAL_RE.finditer(query):
+        if _overlaps(match.start(), match.end(), occupied):
+            continue
+        try:
+            normalized_money = AmountNormalizer.normalize(match.group(0))
+        except NormalizationError:
+            continue
+        if not isinstance(normalized_money, Money):
+            continue
+        append(
+            "money",
+            match.start(),
+            match.end(),
+            normalized_money.amount,
+            normalized_money.to_dict(),
         )
 
     for match in _PERCENT_RE.finditer(query):

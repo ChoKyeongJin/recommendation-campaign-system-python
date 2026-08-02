@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import semantic_requirements
+
 from .schema import STRUCTURED_QUERY_JSON_SCHEMA
 from .semantic_ir import extract_literal_bindings
 from .types import QueryStructuringInput
@@ -95,6 +97,12 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
     literal_bindings = extract_literal_bindings(
         input.query, current_date=input.context.current_date
     )
+    semantic_obligations = [
+        requirement.to_dict()
+        for requirement in semantic_requirements.capture_source_semantic_obligations(
+            input.query
+        )
+    ]
     knowledge_sections: list[str] = []
     if input.context.slot_vocabulary:
         knowledge_sections.append(
@@ -113,6 +121,11 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
             "[Structuring Context]\n" + json.dumps(context, ensure_ascii=False, indent=2),
             "[Application-owned Literal Bindings]\n"
             + json.dumps(literal_bindings, ensure_ascii=False, indent=2),
+            "[Application-owned Semantic Obligations]\n"
+            + json.dumps(semantic_obligations, ensure_ascii=False, indent=2)
+            + "\nThese immutable source meanings must each be realized exactly once by the fixed algebra. "
+            "They are requirements, not prior validation errors. Use the catalog relation recipe that matches "
+            "their kind and values; do not report a value as missing when it is present here.",
             *knowledge_sections,
             "응답은 submit_campaign_query_plan_v4 도구만 호출한다.",
             (
@@ -129,9 +142,16 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
             (
                 "Build the expression only with the Event IR algebra allowed by the tool schema, such as "
                 "And/Or/Not, Comparison, Exists, Aggregate, Source, Filter, Join, Group, TimeFilter, and "
-                "TemporalRelation. Use only source and field identifiers listed in the Audience Semantic "
+                "TemporalRelation, Project, Summarize, Order, and Limit. Use only source and field identifiers listed in the Audience Semantic "
                 "Catalog. Preserve negation, AND/OR grouping, comparison operators, aggregation grain, and "
                 "which condition owns each time window."
+            ),
+            (
+                "Use the exact JSON property names shown under [Fixed wire shapes]. Aggregate never has "
+                "source/field keys: it has function, relation, expression, and distinct. FieldRef uses name, "
+                "not field. A date window is the literal binding's normalized.event_ir_window nested in "
+                "TimeFilter, never a time_window sibling or a date_window node. Do not add unit/evidence/id "
+                "properties to Literal, FieldRef, Aggregate, Not, or the window object."
             ),
             (
                 "Every semantic atom and every issue must carry evidence whose text is an exact substring of "
@@ -146,8 +166,9 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
             (
                 "If a material audience requirement is ambiguous, unsupported, inconsistent with the catalog, "
                 "or lacks a required argument, set expression to null and add the corresponding issue using "
-                "only these codes: missing_argument, ambiguous_requirement, unsupported_semantics, or "
-                "validation_mismatch. State the missing/invalid semantic argument in issue.argument."
+                "only these codes: missing_argument, ambiguous_requirement, or unsupported_semantics. "
+                "validation_mismatch is application-owned and must never be authored by the model. State the "
+                "missing/invalid semantic argument in issue.argument."
             ),
             (
                 "Special temporal rule: when the query says '최근' but gives no duration or bounded period, "
@@ -165,6 +186,52 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
                 "COUNT or another aggregate. When the user explicitly asks to create or recommend a campaign, "
                 "use intent=recommend_campaign. Populate every tool-schema-required field; use JSON null or an "
                 "empty array for absent nullable/collection metadata, never the string 'null'."
+            ),
+        ]
+    )
+
+
+def build_campaign_query_plan_v4_retry_prompt(
+    previous_response: str, error: str
+) -> str:
+    """Retry instructions for the fixed canonical audience algebra."""
+    return "\n\n".join(
+        [
+            "The previous campaign tool arguments failed canonical validation.",
+            "[Validation Error]\n" + error,
+            "[Previous Tool Arguments]\n" + previous_response,
+            (
+                "Submit one complete corrected tool object. Emit no text or closing characters outside "
+                "that JSON object. Rebuild the meaning; do not add unrelated predicates merely to consume "
+                "a literal binding."
+            ),
+            (
+                "Keep each time window inside the Filter of the relation it constrains. A subject.* profile "
+                "field is a scalar FieldRef used directly by Comparison; 'subject' is not an event Source "
+                "and must not be wrapped in Source, Filter, or Exists."
+            ),
+            (
+                "The audience expression root must be a Condition. Join, Limit, Order, Summarize, Filter, "
+                "and Source are Relations, so wrap a membership Join in Exists. For ranked membership, use "
+                "a member-correlated left Source with the correlation key omitted. On the Source nested under "
+                "the right Summarize, correlation='none' is mandatory; omitting it changes the global rank "
+                "into a per-member aggregate."
+            ),
+            (
+                "Summarize output names are local aliases used by Order.keys.name, not FieldRef names. Join.on "
+                "uses catalog FieldRefs on both sides; their left/right relation scopes disambiguate identical "
+                "canonical field IDs. For a ranked obligation, both Join.on sides use its entity_field, never "
+                "the member_id. If it has time_window, Filter the global right Source before Summarize. Internal "
+                "top-K belongs in Limit.count, not root result_limit."
+            ),
+            (
+                "Comparison evidence must be the exact query slice containing the comparison's source value "
+                "and comparison-operator wording. Use only catalog source/field IDs and preserve every "
+                "application-owned binding once in its semantic owner."
+            ),
+            (
+                "If no faithful corrected expression exists, return expression=null and explicit issues. "
+                "Never return a non-null expression together with issues."
             ),
         ]
     )

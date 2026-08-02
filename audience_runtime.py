@@ -14,8 +14,8 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+import audience_schema
 import event_compiler
-import event_ir
 import resolved_semantic_catalog
 
 
@@ -77,13 +77,17 @@ def audience_expression_json_schema(
     path: str | Path = DEFAULT_AUDIENCE_CATALOG_PATH,
     depth: int = 1,
 ) -> dict[str, Any]:
-    """Derive the fixed algebra shape and the open catalog symbols together."""
-    catalog = resolve_audience_catalog(path)
-    return event_ir.condition_json_schema(
-        depth=depth,
-        source_names=tuple(catalog.compiler_events),
-        field_names=tuple(catalog.compiler_fields),
-    )
+    """Return the fixed algebra schema after validating the selected catalog.
+
+    ``depth`` remains for API compatibility, but recursive ``$ref`` definitions
+    no longer expand once per depth.  Catalog membership is intentionally not a
+    JSON Schema enum: the canonical runtime validator checks resolved source and
+    field symbols before producing executable IR.
+    """
+    if depth < 1:
+        raise ValueError("audience expression schema depth must be at least 1")
+    resolve_audience_catalog(path)
+    return audience_schema.audience_expression_json_schema()
 
 
 def audience_catalog_guidance(
@@ -95,9 +99,33 @@ def audience_catalog_guidance(
         "[Canonical Audience IR]",
         "타겟 조건은 audience_requirement.expression 하나에 Event IR로 작성한다. target_user/exclude/SQL은 만들지 않는다.",
         "부재·제외는 Not, 존재는 Exists, 임계는 Comparison, 횟수·금액은 Aggregate를 조합한다.",
-        "각 최상위 Boolean 원자에 원문 그대로의 evidence(text/start/end)를 붙인다.",
+        "전역 순위 집합은 Limit(Order(Summarize(...)))로 만들고, 회원 행동과의 포함/제외는 semi/anti Join으로 조합한다.",
+        "전역 집계 Source에만 correlation=none을 쓰고, 회원별 행동 Source는 correlation 키를 생략한다.",
+        "wire 형식은 아래 [Fixed wire shapes]를 그대로 따른다. source/field/unit 같은 축약 키를 새로 만들지 않는다.",
+        "Comparison/Exists/TemporalRelation에 원문 그대로의 evidence(text/start/end)를 붙인다. Comparison evidence는 그 비교가 소비한 값과 비교 연산자 문구를 모두 포함한다.",
+        "subject.* 프로필 필드는 현재 회원 행의 scalar FieldRef다. subject를 Source/Filter/Exists로 감싸지 않고 Comparison에서 직접 사용한다.",
         "catalog source에 고정 필터가 선언되어 있으므로 그 SQL 조건을 다시 만들지 않는다.",
         "'최근'처럼 시간 한정이 있으나 기간 값이 없으면 전체 이력으로 간주하지 말고 expression=null과 missing_argument(period) issue를 낸다.",
+        "",
+        "[Fixed wire shapes]",
+        '- Source: {"type":"source","name":"<source_id>"}; 전역이면 correlation:"none"만 추가',
+        '- FieldRef: {"type":"field","name":"<field_id>"}',
+        '- Literal: {"type":"literal","value":<application literal value>}',
+        '- TimeFilter: {"type":"time_filter","field":<FieldRef>,"window":<TimeWindow>}; 절대 기간은 literal_bindings.normalized.event_ir_window를 그대로 복사하고 rolling/relative 기간은 binding의 값·단위를 사용',
+        '- Filter: {"type":"filter","relation":<Relation>,"where":<Condition>}',
+        '- Aggregate: {"type":"aggregate","function":"sum|count|avg|min|max","relation":<Relation>,"expression":<Scalar|null>,"distinct":false}',
+        '- Comparison: {"type":"comparison","operator":"=|!=|>|>=|<|<=","left":<Scalar>,"right":<Scalar>,"evidence":{"text":"...","start":0,"end":1}}',
+        '- Exists: {"type":"exists","relation":<Relation>,"evidence":{"text":"...","start":0,"end":1}}',
+        '- Not/And/Or: {"type":"not","operand":<Condition>} / {"type":"and|or","operands":[<Condition>,...]}',
+        '- Summarize: {"type":"summarize","relation":<Relation>,"keys":[{"name":"entity_key","expression":<FieldRef>}],"measures":[{"name":"measure_value","function":"sum","expression":<FieldRef>,"distinct":false}]}',
+        '- Order/Limit: {"type":"limit","relation":{"type":"order","relation":<Summarize>,"keys":[{"name":"measure_value","direction":"desc"},{"name":"entity_key","direction":"asc"}]},"count":<N>}',
+        '- semi Join: {"type":"join","kind":"semi","left":<member-correlated Relation>,"right":<Limit>,"on":{"type":"comparison","operator":"=","left":<member entity FieldRef>,"right":<rank entity FieldRef>,"evidence":<exact evidence object>}}',
+        '- 순위 회원 조건: expression = Exists(semi Join). Join 자체는 Relation이므로 expression 루트에 직접 둘 수 없음. Join.left 회원 Source는 correlation 생략, Join.right의 Summarize 아래 전역 Source는 correlation:"none" 필수',
+        '- Summarize의 name은 Order.keys.name에서만 쓰는 로컬 alias다. Join.on 양쪽은 catalog FieldRef를 쓰며 같은 field id라도 left/right relation scope로 구분됨',
+        '- 내부 상위 N은 Limit.count이고 최종 회원 반환 수만 root result_limit이다.',
+        '- 기간 집계: Aggregate.relation = Filter(Source, TimeFilter(<source>.occurred_at, event_ir_window))',
+        '- 프로필 값: Comparison(FieldRef("subject.<field>"), Literal); subject Source나 프로필 Exists를 만들지 않음',
+        '- evidence 객체는 Comparison/Exists/TemporalRelation에만 둔다. 문자열 evidence나 임의 키는 금지한다.',
         "",
         "[Sources]",
     ]
@@ -114,6 +142,55 @@ def audience_catalog_guidance(
         label = str(declaration.get("label") or field_id)
         unit = str(declaration.get("unit") or "")
         lines.append(f"- {field_id}: {label}" + (f" [unit={unit}]" if unit else ""))
+    lines.extend(["", "[Canonical value domains]"])
+    for domain_id, declaration in sorted((raw.get("value_domains") or {}).items()):
+        if not isinstance(declaration, Mapping):
+            continue
+        values = declaration.get("values")
+        if not isinstance(values, Mapping):
+            continue
+        rendered: list[str] = []
+        for canonical, value_declaration in sorted(values.items()):
+            aliases = (
+                value_declaration.get("aliases")
+                if isinstance(value_declaration, Mapping) else []
+            )
+            rendered.append(
+                str(canonical)
+                + (f" ({', '.join(map(str, aliases))})" if aliases else "")
+            )
+        lines.append(f"- {domain_id}: " + ", ".join(rendered))
+    lines.extend(["", "[Relational recipes]"])
+    for recipe_id, recipe in sorted((raw.get("relation_recipes") or {}).items()):
+        if not isinstance(recipe, Mapping):
+            continue
+        lines.append(
+            f"- {recipe_id}: label={recipe.get('label') or recipe_id}, "
+            f"default_measure={recipe.get('defaultMeasure')}, "
+            f"default_relation={recipe.get('defaultRankRelation')}; "
+            "Exists(semi/anti Join(member Source, Limit(Order(Summarize(global Source)))))"
+        )
+        for vocabulary_key in ("directions", "entities", "measures"):
+            vocabulary = recipe.get(vocabulary_key)
+            if isinstance(vocabulary, Mapping):
+                lines.append(
+                    f"  - {vocabulary_key}="
+                    + json.dumps(vocabulary, ensure_ascii=False, sort_keys=True)
+                )
+        relations = recipe.get("relations")
+        if not isinstance(relations, Mapping):
+            continue
+        for relation_id, declaration in sorted(relations.items()):
+            if not isinstance(declaration, Mapping):
+                continue
+            source = declaration.get("canonicalSource")
+            entities = declaration.get("canonicalEntities") or {}
+            measures = declaration.get("canonicalMeasures") or {}
+            lines.append(
+                f"  - relation={relation_id}, source={source}, "
+                f"entities={json.dumps(entities, ensure_ascii=False, sort_keys=True)}, "
+                f"measures={json.dumps(measures, ensure_ascii=False, sort_keys=True)}"
+            )
     lines.extend(["", "[Metric recipes]"])
     for metric_id, declaration in sorted((raw.get("metrics") or {}).items()):
         if not isinstance(declaration, Mapping):
@@ -125,14 +202,24 @@ def audience_catalog_guidance(
         expression = str(declaration.get("expression") or declaration.get("expression_field") or "*")
         distinct = " distinct" if declaration.get("distinct") else ""
         if kind == "aggregate" or function:
-            recipe = (
-                f"Aggregate(function={function}, source={source}, "
-                f"expression={expression},{distinct or ' all'})"
-            )
+            recipe = json.dumps({
+                "type": "aggregate",
+                "function": function,
+                "relation": {"type": "source", "name": source},
+                "expression": (
+                    {"type": "field", "name": expression}
+                    if expression != "*" else None
+                ),
+                "distinct": bool(declaration.get("distinct")),
+            }, ensure_ascii=False, separators=(",", ":"))
         elif kind == "existence":
-            recipe = f"Exists(Source({source}))"
+            recipe = json.dumps({
+                "type": "exists",
+                "relation": {"type": "source", "name": source},
+                "evidence": {"text": "<exact source phrase>", "start": 0, "end": 1},
+            }, ensure_ascii=False, separators=(",", ":"))
         else:
-            recipe = f"Comparison(Field({expression}))"
+            recipe = json.dumps({"type": "field", "name": expression}, ensure_ascii=False)
         lines.append(f"- {metric_id} ({label}): {recipe}")
     return "\n".join(lines)
 

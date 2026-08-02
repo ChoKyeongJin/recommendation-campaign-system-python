@@ -87,6 +87,22 @@ def _repair_llm_model(current: str | None) -> str | None:
     return os.getenv(REPAIR_MODEL_ENV) or current
 
 
+def _campaign_structuring_route(
+    current: str | None, *, attempt: int, override: str | None = None,
+    prefer_repair: bool = False,
+) -> tuple[str | None, str]:
+    """Route first-pass extraction cheaply and validation retries to repair."""
+    if override:
+        return override, "explicit_override"
+    first_pass = _structuring_llm_model(current) or current
+    if attempt <= 1 and not prefer_repair:
+        return first_pass, "structuring_override" if first_pass != current else "main_model"
+    repair = _repair_llm_model(current) or current
+    if prefer_repair and attempt <= 1:
+        return repair, "semantic_complexity"
+    return repair, "validation_repair" if repair != first_pass else "structuring_retry"
+
+
 def _fast_llm_model(current: str | None) -> str | None:
     """지연에 민감하거나 정확도가 중요한 경량 단계(재작성·타겟/채널 분리·상품추출·의미검증)용 모델.
 

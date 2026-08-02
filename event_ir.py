@@ -16,7 +16,7 @@
 
     논리   And · Or · Not
     스칼라 Literal · FieldRef · Arithmetic · Aggregate
-    관계   Source · Filter · Join · Group
+    관계   Source · Filter · Join · Group · Project · Summarize · Order · Limit
     조건   Comparison · Exists · TimeFilter · TemporalRelation
     시간   AbsoluteInterval · RollingWindow · RelativeWindow · Duration
 
@@ -411,14 +411,23 @@ class Source:
     """업무 이벤트/엔터티의 **심볼**('purchase', 'login', 'refund'). 새 이벤트는 레지스트리 한 줄이다."""
 
     name: str
+    correlation: str = "subject"
     type: str = "source"
 
     def __post_init__(self) -> None:
         if not isinstance(self.name, str) or not self.name:
             raise IrSchemaError("source needs a non-empty name")
+        if self.correlation not in {"subject", "none"}:
+            raise IrSchemaError(f"unsupported source correlation: {self.correlation!r}")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": "source", "name": self.name}
+        payload: dict[str, Any] = {"type": "source", "name": self.name}
+        # The historical wire form omitted correlation and meant "subject".
+        # Keep that exact representation for backwards compatibility; global
+        # relations opt out explicitly.
+        if self.correlation != "subject":
+            payload["correlation"] = self.correlation
+        return payload
 
 
 @dataclass(frozen=True)
@@ -436,12 +445,23 @@ class Join:
     """두 소스의 조인(예: 주문상세 ⨝ 상품). ``on`` 은 두 FieldRef 의 Comparison 이다."""
 
     left: "Relation"
-    right: Source
+    right: "Relation"
     on: "Comparison"
+    kind: str = "inner"
     type: str = "join"
 
+    def __post_init__(self) -> None:
+        if self.kind not in {"inner", "semi", "anti"}:
+            raise IrSchemaError(f"unsupported join kind: {self.kind!r}")
+
     def to_dict(self) -> dict[str, Any]:
-        return {"type": "join", "left": self.left.to_dict(), "right": self.right.to_dict(), "on": self.on.to_dict()}
+        payload = {
+            "type": "join", "left": self.left.to_dict(),
+            "right": self.right.to_dict(), "on": self.on.to_dict(),
+        }
+        if self.kind != "inner":
+            payload["kind"] = self.kind
+        return payload
 
 
 @dataclass(frozen=True)
@@ -463,7 +483,150 @@ class Group:
         return {"type": "group", "relation": self.relation.to_dict(), "keys": [key.to_dict() for key in self.keys]}
 
 
-Relation = Source | Filter | Join | Group
+_OUTPUT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_output_name(value: str, owner: str) -> None:
+    if not isinstance(value, str) or not _OUTPUT_NAME_RE.fullmatch(value):
+        raise IrSchemaError(f"{owner} needs a safe output name: {value!r}")
+
+
+@dataclass(frozen=True)
+class NamedExpression:
+    """A row expression with a stable relation-output name."""
+
+    name: str
+    expression: Scalar
+
+    def __post_init__(self) -> None:
+        _validate_output_name(self.name, "named expression")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "expression": self.expression.to_dict()}
+
+
+@dataclass(frozen=True)
+class NamedMeasure:
+    """A named aggregate produced by :class:`Summarize`."""
+
+    name: str
+    function: str
+    expression: Scalar | None = None
+    distinct: bool = False
+
+    def __post_init__(self) -> None:
+        _validate_output_name(self.name, "named measure")
+        if self.function not in AGGREGATE_FUNCTIONS:
+            raise IrSchemaError(f"unsupported aggregate function: {self.function!r}")
+        if self.function != "count" and self.expression is None:
+            raise IrSchemaError(f"aggregate '{self.function}' needs an expression")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "function": self.function,
+            "expression": self.expression.to_dict() if self.expression is not None else None,
+            "distinct": self.distinct,
+        }
+
+
+@dataclass(frozen=True)
+class SortKey:
+    """Order by a named output of Project/Summarize."""
+
+    name: str
+    direction: str = "asc"
+
+    def __post_init__(self) -> None:
+        # Canonical field ids are also accepted, so a preserved input field can
+        # be used as a deterministic tie breaker without inventing an alias.
+        if not isinstance(self.name, str) or not self.name:
+            raise IrSchemaError("sort key needs a name")
+        if "." not in self.name:
+            _validate_output_name(self.name, "sort key")
+        if self.direction not in {"asc", "desc"}:
+            raise IrSchemaError(f"unsupported sort direction: {self.direction!r}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "direction": self.direction}
+
+
+@dataclass(frozen=True)
+class Project:
+    relation: "Relation"
+    items: tuple[NamedExpression, ...]
+    type: str = "project"
+
+    def __post_init__(self) -> None:
+        if not self.items:
+            raise IrSchemaError("project needs at least one item")
+        names = [item.name for item in self.items]
+        if len(names) != len(set(names)):
+            raise IrSchemaError("project output names must be unique")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "project", "relation": self.relation.to_dict(),
+            "items": [item.to_dict() for item in self.items],
+        }
+
+
+@dataclass(frozen=True)
+class Summarize:
+    """Group a relation and produce named aggregate measures."""
+
+    relation: "Relation"
+    keys: tuple[NamedExpression, ...]
+    measures: tuple[NamedMeasure, ...]
+    type: str = "summarize"
+
+    def __post_init__(self) -> None:
+        if not self.measures:
+            raise IrSchemaError("summarize needs at least one measure")
+        names = [item.name for item in (*self.keys, *self.measures)]
+        if len(names) != len(set(names)):
+            raise IrSchemaError("summarize output names must be unique")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "summarize", "relation": self.relation.to_dict(),
+            "keys": [key.to_dict() for key in self.keys],
+            "measures": [measure.to_dict() for measure in self.measures],
+        }
+
+
+@dataclass(frozen=True)
+class Order:
+    relation: "Relation"
+    keys: tuple[SortKey, ...]
+    type: str = "order"
+
+    def __post_init__(self) -> None:
+        if not self.keys:
+            raise IrSchemaError("order needs at least one sort key")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "order", "relation": self.relation.to_dict(),
+            "keys": [key.to_dict() for key in self.keys],
+        }
+
+
+@dataclass(frozen=True)
+class Limit:
+    relation: "Relation"
+    count: int
+    type: str = "limit"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.count, int) or isinstance(self.count, bool) or self.count <= 0:
+            raise IrSchemaError(f"limit count must be a positive int: {self.count!r}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "limit", "relation": self.relation.to_dict(), "count": self.count}
+
+
+Relation = Source | Filter | Join | Group | Project | Summarize | Order | Limit
 
 
 # ── 조건(불리언) ──────────────────────────────────────────────────────────────────
@@ -605,7 +768,7 @@ ATOM_TYPES = (Comparison, Exists, TemporalRelation)
 NODE_TYPES: frozenset[str] = frozenset({
     "and", "or", "not",
     "literal", "field", "arithmetic", "aggregate",
-    "source", "filter", "join", "group",
+    "source", "filter", "join", "group", "project", "summarize", "order", "limit",
     "comparison", "exists", "time_filter", "temporal_relation", "event_reference",
     "interval", "rolling", "relative", "duration",
 })
@@ -647,17 +810,22 @@ def relation_from_dict(raw: Any) -> Relation:
         raise IrSchemaError("relation must be an object")
     kind = raw.get("type")
     if kind == "source":
-        return Source(name=str(raw.get("name") or ""))
+        return Source(
+            name=str(raw.get("name") or ""),
+            correlation=str(raw.get("correlation") or "subject"),
+        )
     if kind == "filter":
         return Filter(relation=relation_from_dict(raw.get("relation")), where=condition_from_dict(raw.get("where")))
     if kind == "join":
         on = condition_from_dict(raw.get("on"))
         if not isinstance(on, Comparison):
             raise IrSchemaError("join 'on' must be a comparison")
-        right = relation_from_dict(raw.get("right"))
-        if not isinstance(right, Source):
-            raise IrSchemaError("join right side must be a source")
-        return Join(left=relation_from_dict(raw.get("left")), right=right, on=on)
+        return Join(
+            left=relation_from_dict(raw.get("left")),
+            right=relation_from_dict(raw.get("right")),
+            on=on,
+            kind=str(raw.get("kind") or "inner"),
+        )
     if kind == "group":
         keys = raw.get("keys")
         if not isinstance(keys, list) or not keys:
@@ -666,7 +834,67 @@ def relation_from_dict(raw: Any) -> Relation:
             relation=relation_from_dict(raw.get("relation")),
             keys=tuple(FieldRef(name=str(key.get("name") or "")) for key in keys if isinstance(key, dict)),
         )
+    if kind == "project":
+        items = raw.get("items")
+        if not isinstance(items, list) or not items:
+            raise IrSchemaError("project needs items")
+        return Project(
+            relation=relation_from_dict(raw.get("relation")),
+            items=tuple(_named_expression(item) for item in items),
+        )
+    if kind == "summarize":
+        keys, measures = raw.get("keys"), raw.get("measures")
+        if not isinstance(keys, list) or not isinstance(measures, list) or not measures:
+            raise IrSchemaError("summarize needs key and measure arrays")
+        return Summarize(
+            relation=relation_from_dict(raw.get("relation")),
+            keys=tuple(_named_expression(item) for item in keys),
+            measures=tuple(_named_measure(item) for item in measures),
+        )
+    if kind == "order":
+        keys = raw.get("keys")
+        if not isinstance(keys, list) or not keys:
+            raise IrSchemaError("order needs keys")
+        return Order(
+            relation=relation_from_dict(raw.get("relation")),
+            keys=tuple(_sort_key(item) for item in keys),
+        )
+    if kind == "limit":
+        count = raw.get("count")
+        if not isinstance(count, int) or isinstance(count, bool):
+            raise IrSchemaError("limit count must be an integer")
+        return Limit(relation=relation_from_dict(raw.get("relation")), count=count)
     raise IrSchemaError(f"unknown relation type: {kind!r}")
+
+
+def _named_expression(raw: Any) -> NamedExpression:
+    if not isinstance(raw, dict):
+        raise IrSchemaError("named expression must be an object")
+    return NamedExpression(
+        name=str(raw.get("name") or ""),
+        expression=scalar_from_dict(raw.get("expression")),
+    )
+
+
+def _named_measure(raw: Any) -> NamedMeasure:
+    if not isinstance(raw, dict):
+        raise IrSchemaError("named measure must be an object")
+    expression = raw.get("expression")
+    return NamedMeasure(
+        name=str(raw.get("name") or ""),
+        function=str(raw.get("function") or ""),
+        expression=scalar_from_dict(expression) if isinstance(expression, dict) else None,
+        distinct=bool(raw.get("distinct")),
+    )
+
+
+def _sort_key(raw: Any) -> SortKey:
+    if not isinstance(raw, dict):
+        raise IrSchemaError("sort key must be an object")
+    return SortKey(
+        name=str(raw.get("name") or ""),
+        direction=str(raw.get("direction") or "asc"),
+    )
 
 
 def condition_from_dict(raw: Any) -> Condition:
@@ -795,6 +1023,18 @@ def _children(node: Any) -> list[Any]:
         return [node.left, node.right, node.on]
     if isinstance(node, Group):
         return [node.relation, *node.keys]
+    if isinstance(node, Project):
+        return [node.relation, *(item.expression for item in node.items)]
+    if isinstance(node, Summarize):
+        return [
+            node.relation,
+            *(key.expression for key in node.keys),
+            *(measure.expression for measure in node.measures if measure.expression is not None),
+        ]
+    if isinstance(node, Order):
+        return [node.relation]
+    if isinstance(node, Limit):
+        return [node.relation]
     if isinstance(node, Aggregate):
         return [node.relation] + ([node.expression] if node.expression is not None else [])
     if isinstance(node, Arithmetic):

@@ -41,6 +41,7 @@ from typing import Any
 
 import lexicon_patterns
 import member_filters_config
+from calendar_window import parse_calendar_window_spans
 
 
 # 기본 경로는 **모듈 기준 절대경로**다. 상대경로면 cwd 가 저장소 밖일 때 설정을 못 읽고
@@ -828,6 +829,180 @@ def _entity_set_obligations(query: str) -> list[SourceRequirement]:
     return requirements
 
 
+def _configured_term_hits(query: str, values: Mapping[str, Any]) -> list[tuple[int, int, str]]:
+    """Find catalog-owned aliases without copying their vocabulary into code."""
+    hits: list[tuple[int, int, str]] = []
+    folded = query.casefold()
+    for canonical, declaration in values.items():
+        if isinstance(declaration, Mapping):
+            terms = declaration.get("terms")
+        elif isinstance(declaration, list):
+            terms = declaration
+        else:
+            continue
+        candidates = [canonical, *(terms if isinstance(terms, list) else [])]
+        for candidate in candidates:
+            term = str(candidate or "").strip()
+            if not term:
+                continue
+            cursor = 0
+            needle = term.casefold()
+            while (start := folded.find(needle, cursor)) >= 0:
+                hits.append((start, start + len(term), str(canonical)))
+                cursor = start + max(1, len(term))
+    return sorted(set(hits))
+
+
+def _ranked_entity_set_obligations(query: str) -> list[SourceRequirement]:
+    """Capture catalog-declared rank -> entity-set -> membership composition.
+
+    This is a loss guard, not a query builder.  It records the fixed relational
+    operators implied by a sentence so an incomplete model expression cannot
+    silently degrade to a plain event-existence filter.  Business vocabulary
+    and defaults come exclusively from ``entity_set_targets``.
+    """
+    # Canonical relation vocabulary and bindings share the exact same catalog
+    # snapshot as schema validation and SQL compilation.  The legacy SQL target
+    # registry is intentionally not another semantic owner.
+    import audience_runtime
+
+    raw_catalog = audience_runtime.load_audience_catalog_config()
+    recipes = raw_catalog.get("relation_recipes")
+    config = (
+        recipes.get("ranked_entity_membership")
+        if isinstance(recipes, Mapping) else None
+    )
+    if not config:
+        return []
+    directions = _configured_term_hits(query, config.get("directions") or {})
+    entities = _configured_term_hits(query, config.get("entities") or {})
+    if not directions or not entities:
+        return []
+
+    # A rank cardinality must be adjacent to the entity phrase.  The grammar is
+    # deliberately domain-neutral: it does not know products, brands, or a
+    # particular Top-N case.
+    number_hits = [
+        (match.start(), match.end(), int(match.group("value").replace(",", "")))
+        for match in re.finditer(r"(?<![\d.])(?P<value>\d[\d,]*)\s*(?:개|종류|종)?", query)
+    ]
+    candidates: list[tuple[int, int, int, str, str]] = []
+    for direction_start, direction_end, direction in directions:
+        for entity_start, entity_end, entity in entities:
+            nearby = [
+                (start, end, value)
+                for start, end, value in number_hits
+                if -12 <= start - entity_end <= 12 or -12 <= entity_start - end <= 12
+            ]
+            if not nearby:
+                continue
+            number_start, number_end, limit = min(
+                nearby,
+                key=lambda item: min(abs(item[0] - entity_end), abs(entity_start - item[1])),
+            )
+            span_start = min(direction_start, entity_start, number_start)
+            span_end = max(direction_end, entity_end, number_end)
+            candidates.append((span_start, span_end, limit, direction, entity))
+    if not candidates:
+        return []
+
+    measure_hits = _configured_term_hits(query, config.get("measures") or {})
+    relation_hits = _configured_term_hits(query, config.get("relations") or {})
+    default_measure = str(config.get("defaultMeasure") or "") or None
+    default_relation = str(config.get("defaultRankRelation") or "") or None
+    resolved_candidates: dict[tuple[Any, ...], tuple[int, int]] = {}
+    for span_start, span_end, limit, direction, entity in candidates:
+        measure = min(
+            measure_hits,
+            key=lambda item: min(abs(item[0] - span_end), abs(span_start - item[1])),
+            default=(0, 0, default_measure),
+        )[2]
+        relation = min(
+            relation_hits,
+            key=lambda item: min(abs(item[0] - span_end), abs(span_start - item[1])),
+            default=(0, 0, default_relation),
+        )[2]
+        relation_declaration = (config.get("relations") or {}).get(relation)
+        relation_declaration = (
+            relation_declaration if isinstance(relation_declaration, Mapping) else {}
+        )
+        entity_fields = relation_declaration.get("canonicalEntities")
+        entity_field = (
+            entity_fields.get(entity)
+            if isinstance(entity_fields, Mapping) and isinstance(entity_fields.get(entity), str)
+            else None
+        )
+        measure_declarations = relation_declaration.get("canonicalMeasures")
+        measure_declaration = (
+            measure_declarations.get(measure)
+            if isinstance(measure_declarations, Mapping)
+            and isinstance(measure_declarations.get(measure), Mapping)
+            else {}
+        )
+        source = relation_declaration.get("canonicalSource")
+        source = str(source) if isinstance(source, str) and source else None
+        measure_function = measure_declaration.get("function")
+        measure_function = (
+            str(measure_function) if isinstance(measure_function, str) and measure_function else None
+        )
+        measure_field = measure_declaration.get("field")
+        measure_field = str(measure_field) if isinstance(measure_field, str) and measure_field else None
+        measure_distinct = bool(measure_declaration.get("distinct", False))
+        key = (
+            limit, direction, entity, measure, relation, source,
+            entity_field, measure_function, measure_field, measure_distinct,
+        )
+        previous = resolved_candidates.get(key)
+        resolved_candidates[key] = (
+            min(span_start, previous[0]) if previous else span_start,
+            max(span_end, previous[1]) if previous else span_end,
+        )
+
+    requirements: list[SourceRequirement] = []
+    for (
+        limit, direction, entity, measure, relation, source,
+        entity_field, measure_function, measure_field, measure_distinct,
+    ), (span_start, span_end) in resolved_candidates.items():
+        adjacent_windows = [
+            (window, start, end)
+            for window, start, end in parse_calendar_window_spans(query)
+            if end <= span_start
+            and span_start - end <= 6
+            and not re.search(r"[,.;!?]", query[end:span_start])
+        ]
+        scoped_window = max(adjacent_windows, key=lambda item: item[2], default=None)
+        if scoped_window is not None:
+            window, window_start, _window_end = scoped_window
+            span_start = window_start
+            time_window = {
+                "from": window.get("from"),
+                "to": window.get("to"),
+                "label": window.get("label"),
+            }
+        else:
+            time_window = None
+        requirements.append(_semantic_obligation(
+            query,
+            kind="ranked_entity_set",
+            span=(span_start, span_end),
+            value={
+                "direction": direction,
+                "limit": limit,
+                "entity_domain": entity,
+                "measure": measure,
+                "rank_relation": relation,
+                "membership_relation": relation,
+                "source": source,
+                "entity_field": entity_field,
+                "measure_function": measure_function,
+                "measure_field": measure_field,
+                "measure_distinct": measure_distinct,
+                "time_window": time_window,
+            },
+        ))
+    return requirements
+
+
 def _snapshot_obligations(query: str) -> list[SourceRequirement]:
     requirements: list[SourceRequirement] = []
     for match in _LATEST_SNAPSHOT_RE.finditer(query):
@@ -907,6 +1082,7 @@ def capture_source_semantic_obligations(
     captured = [
         *_recurrence_obligations(query),
         *_entity_set_obligations(query),
+        *_ranked_entity_set_obligations(query),
         *_snapshot_obligations(query),
         *_member_state_history_obligations(query),
     ]
@@ -977,6 +1153,9 @@ def unresolved_semantic_obligations(
             ),
             "referenced_entity_set": (
                 "외부에서 지정된 엔터티 집합의 구체 값과 전체집합 조건을 컴파일했다는 근거가 없습니다."
+            ),
+            "ranked_entity_set": (
+                "정렬·개수 제한으로 만든 엔터티 집합과 회원 행동의 집합 관계를 컴파일했다는 근거가 없습니다."
             ),
             "snapshot_selector": (
                 "회원별 최신 스냅샷 선택 조건을 컴파일했다는 근거가 없습니다."
