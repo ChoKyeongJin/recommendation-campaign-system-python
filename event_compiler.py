@@ -143,13 +143,44 @@ class FieldSpec:
 
     source: str
     column: str
-    data_type: str = "number"  # number | string | date | date_char8
+    data_type: str = "number"  # number | string | date | date_char8 | date_char6
     # 계산 필드/조인 필드. ``{alias}`` 는 필드가 속한 Source 의 현재 별칭이다.
     # 비어 있으면 기존 ``alias.column`` 바인딩을 사용한다.
     expression: str = ""
     # 논리값(canonical) → 물리 저장값. 값 도메인이 선언된 필드는 알 수 없는
     # 문자열을 그대로 SQL에 흘리지 않고 fail-close 한다.
     value_map: tuple[tuple[str, Any], ...] = ()
+    # 값 도메인에 **순서가 있으면** canonical 을 낮은 등급부터 나열한다. 비면 무순서 도메인이고,
+    # 그때 서열 비교(>=, <, …)는 표현할 수 없다 — 저장값 문자열을 부등호로 비교하면 조용히 틀린다
+    # (실측: EMART_GRADE_CD 는 'MEM_GRADE_CD.*' 라 사전식 순서가 F<G<S<V<W 이고,
+    #  '골드 이상'에 SILVER·WELCOME 이 섞이고 '실버 이상'에서 GOLD 가 빠진다).
+    value_order: tuple[str, ...] = ()
+    # 값 표면어 → canonical. 표면어 목록의 소유자는 값 사전(eq_filters)이고 여기는 파생 사본이다.
+    value_aliases: tuple[tuple[str, str], ...] = ()
+
+    def canonicalize(self, value: Any) -> Any:
+        """표면어를 canonical 로 바꾼다. 모르는 값은 **그대로 둔다** — 판정은 physical_value 가 한다."""
+        if not isinstance(value, str) or not self.value_aliases:
+            return value
+        if any(canonical == value for canonical, _ in self.value_map):
+            return value
+        return dict(self.value_aliases).get(value.strip().casefold(), value)
+
+    def ordered_values(self, operator: str, canonical: Any) -> tuple[Any, ...]:
+        """서열 비교를 만족하는 **물리값 집합**. 부등호를 값 집합으로 바꿔 collation 의존을 없앤다."""
+        if not isinstance(canonical, str) or canonical not in self.value_order:
+            raise SqlCompileError(
+                f"필드 '{self.source}.{self.column}'의 순서 있는 값이 아닙니다: {canonical!r}"
+            )
+        index = self.value_order.index(canonical)
+        keep = {
+            ">=": lambda position: position >= index,
+            ">": lambda position: position > index,
+            "<=": lambda position: position <= index,
+            "<": lambda position: position < index,
+        }[operator]
+        values = dict(self.value_map)
+        return tuple(values[name] for position, name in enumerate(self.value_order) if keep(position))
 
     def physical_value(self, value: Any) -> Any:
         if not self.value_map:
@@ -202,7 +233,72 @@ FIELD_REGISTRY: dict[str, FieldSpec] = {
     "subject.age": FieldSpec(source="subject", column="AGE", data_type="number"),
 }
 
-_TIME_FORMAT_DATA_TYPE = {"char8": "date_char8", "date": "date"}
+@dataclass(frozen=True)
+class TimeGrainSpec:
+    """시간 컬럼 하나의 **저장 표기와 칸 크기**.
+
+    grain 을 타입으로 세우는 이유는 하나다 — 예전에는 미등록 포맷이 조용히 ``date`` 로 폴백했고,
+    그러면 월 스냅샷 컬럼(nvarchar(6) 'YYYYMM')에 ``>= '2026-07-01'`` 이 렌더돼 사전식 비교로
+    **항상 0건**이 나왔다. 예외도 경고도 없이. 등록되지 않은 포맷은 이제 컴파일 오류다.
+
+    ``unit`` 은 이 컬럼이 가리킬 수 있는 가장 작은 칸이다. 칸보다 잘게 쪼갠 창(월 컬럼에 '지난달
+    15일부터')이나 칸 산술이 성립하지 않는 연산(월 컬럼에 'N일 이내')은 fail-close 한다 —
+    근사해서 답하면 사용자가 요청하지 않은 대상이 나온다.
+    """
+
+    time_format: str
+    data_type: str
+    unit: str  # event_ir.WINDOW_UNITS 의 값. 'day' | 'month'
+    # 이 grain 이 롤링 창(실행 시점 컷오프)을 표현할 수 있는가. None 이면 표현 불가.
+    rolling_cutoff: Callable[[Any, int], str] | None = None
+    # 저장 표기로의 변환. 파라미터 바인딩과 리터럴 렌더가 같은 함수를 쓴다(두 벌이면 곧 어긋난다).
+    render: Callable[[date], Any] = lambda value: value
+
+    def aligned(self, value: date) -> bool:
+        """이 날짜가 grain 칸의 **시작**인가. 월 grain 은 달의 1일만 칸 경계다."""
+        return True if self.unit == "day" else value.day == 1
+
+
+TIME_GRAINS: dict[str, TimeGrainSpec] = {
+    "char8": TimeGrainSpec(
+        time_format="char8", data_type="date_char8", unit="day",
+        rolling_cutoff=lambda dialect, days: dialect.char8_cutoff(days),
+        render=lambda value: f"{value.year:04d}{value.month:02d}{value.day:02d}",
+    ),
+    "date": TimeGrainSpec(
+        time_format="date", data_type="date", unit="day",
+        rolling_cutoff=lambda dialect, days: dialect.datetime_cutoff(days),
+        render=lambda value: value,
+    ),
+    # 월 스냅샷. 0-패딩 고정폭이라 사전식 순서 = 시간 순서이므로 반개구간 계약이 그대로 보존된다.
+    "char6": TimeGrainSpec(
+        time_format="char6", data_type="date_char6", unit="month",
+        rolling_cutoff=None,  # '최근 N일'은 월 칸으로 답할 수 없다 — 근사 금지.
+        render=lambda value: f"{value.year:04d}{value.month:02d}",
+    ),
+}
+
+# 아래 둘은 **파생**이다. 손 목록으로 두면 grain 을 늘릴 때마다 어긋난다.
+DATA_TYPE_GRAINS: dict[str, TimeGrainSpec] = {grain.data_type: grain for grain in TIME_GRAINS.values()}
+DATE_DATA_TYPES: frozenset[str] = frozenset(DATA_TYPE_GRAINS)
+
+
+def time_format_data_type(time_format: str) -> str:
+    """선언된 저장 포맷 → 필드 data_type. 미등록 포맷은 **조용히 넘어가지 않는다**."""
+    grain = TIME_GRAINS.get(time_format)
+    if grain is None:
+        raise SqlCompileError(
+            f"등록되지 않은 시간 저장 포맷입니다: {time_format!r} "
+            f"(등록된 포맷: {', '.join(sorted(TIME_GRAINS))})"
+        )
+    return grain.data_type
+
+
+def _time_grain(data_type: str) -> TimeGrainSpec:
+    grain = DATA_TYPE_GRAINS.get(data_type)
+    if grain is None:
+        raise SqlCompileError(f"시간 컬럼이 아닌 타입에 기간 조건을 걸 수 없습니다: {data_type!r}")
+    return grain
 
 
 def resolve_registry(overrides: dict[str, EventSpec] | None = None) -> dict[str, EventSpec]:
@@ -224,10 +320,23 @@ def resolve_fields(
     for name, spec in registry.items():
         fields[f"{name}.{event_ir.TIME_FIELD_SUFFIX}"] = FieldSpec(
             source=name, column=spec.time_column,
-            data_type=_TIME_FORMAT_DATA_TYPE.get(spec.time_format, "date"),
+            data_type=time_format_data_type(spec.time_format),
             expression=spec.time_expression,
         )
     if overrides:
+        # 시각 필드를 override 로 다시 선언하면 grain 을 두 곳이 말하게 된다 — time_format 에서
+        # 파생된 것과 어긋나면 조용히 override 가 이긴다. 어긋남은 선언 오류로 막는다.
+        for name, override in overrides.items():
+            derived = fields.get(name)
+            if (
+                name.endswith(f".{event_ir.TIME_FIELD_SUFFIX}")
+                and derived is not None
+                and (override.column, override.data_type) != (derived.column, derived.data_type)
+            ):
+                raise SqlCompileError(
+                    f"시각 필드 '{name}' 의 선언이 소스의 time_column/time_format 과 어긋납니다: "
+                    f"{(override.column, override.data_type)} != {(derived.column, derived.data_type)}"
+                )
         fields.update(overrides)
     return fields
 
@@ -297,22 +406,34 @@ def _sql_quote(value: Any) -> str:
 
 
 def _render_date(value: date, data_type: str) -> str:
-    return _sql_quote(value.strftime("%Y%m%d") if data_type == "date_char8" else value.isoformat())
+    rendered = _time_grain(data_type).render(value)
+    return _sql_quote(rendered if isinstance(rendered, str) else rendered.isoformat())
 
 
 def _param_value(value: date, data_type: str) -> Any:
-    return value.strftime("%Y%m%d") if data_type == "date_char8" else value
+    return _time_grain(data_type).render(value)
 
 
 def compile_time_window(
     column: str, window: event_ir.TimeWindow, param_prefix: str, *,
     data_type: str, context: CompileContext,
 ) -> CompiledCondition:
-    """시간 창 하나 → 컬럼 비교 술어. 절대 구간은 반개구간, 롤링은 실행 시점 컷오프."""
+    """시간 창 하나 → 컬럼 비교 술어. 절대 구간은 반개구간, 롤링은 실행 시점 컷오프.
+
+    창은 grain 을 모른다(생산자는 대상 컬럼의 물리 저장 방식을 알 필요가 없다). 창과 컬럼의
+    grain 이 안 맞으면 근사하지 않고 fail-close 한다 — 월 컬럼에 일 단위 창을 접으면 조용히
+    다른 대상이 나온다.
+    """
+    grain = _time_grain(data_type)
     if isinstance(window, RelativeWindow):
         window = event_ir.resolve_relative_window(window, context.today)
 
     if isinstance(window, AbsoluteInterval):
+        if not (grain.aligned(window.start) and grain.aligned(window.end_exclusive)):
+            raise SqlCompileError(
+                f"{grain.unit} 단위로 적재된 컬럼에는 그 경계에 맞는 기간만 걸 수 있습니다"
+                f"(요청 구간: {window.start.isoformat()} ~ {window.end_exclusive.isoformat()})"
+            )
         start_key, end_key = f"{param_prefix}_start", f"{param_prefix}_end"
         if context.literals:
             start_sql = _render_date(window.start, data_type)
@@ -328,12 +449,12 @@ def compile_time_window(
 
     if isinstance(window, RollingWindow):
         # 롤링 경계는 실행 시점 함수로 렌더한다 — 계획 시점 날짜로 굳히면 '최근 30일'이 고정된다.
-        cutoff = (
-            context.dialect.char8_cutoff(window.days)
-            if data_type == "date_char8"
-            else context.dialect.datetime_cutoff(window.days)
-        )
-        return CompiledCondition(sql=f"{column} >= {cutoff}")
+        if grain.rolling_cutoff is None:
+            raise SqlCompileError(
+                f"{grain.unit} 단위로 적재된 컬럼에는 '최근 {window.days}일' 같은 롤링 창을 걸 수 없습니다"
+                " — 일수를 칸 수로 근사하면 요청과 다른 구간이 됩니다"
+            )
+        return CompiledCondition(sql=f"{column} >= {grain.rolling_cutoff(context.dialect, window.days)}")
 
     raise SqlCompileError(f"지원하지 않는 시간 창입니다: {window!r}")
 
@@ -779,6 +900,38 @@ def _compile_exists(condition: Exists, context: CompileContext) -> CompiledCondi
     return CompiledCondition(sql=f"EXISTS ({_subquery(plan, '1', context)})", params=plan.params)
 
 
+# 필드가 오른쪽에 오는 비교('VIP <= 등급')를 왼쪽 기준으로 뒤집는다.
+_MIRRORED_OPERATORS = {">=": "<=", "<=": ">=", ">": "<", "<": ">"}
+_ORDINAL_OPERATORS = frozenset(_MIRRORED_OPERATORS)
+
+
+def _compile_ordinal_comparison(
+    field: FieldRef, literal: Literal, operator: str, context: CompileContext
+) -> CompiledCondition | None:
+    """등급처럼 **순서 있는 코드 도메인**의 부등호를 물리값 IN 목록으로 컴파일한다.
+
+    None 을 돌려주면 서열 비교가 아니라는 뜻이다(=/≠ 이거나 순서 없는 도메인이 아닌 일반 필드).
+    순서가 선언되지 않은 코드 도메인(회원 상태: 정상/휴면/탈퇴)에 부등호가 오면 **fail-close** 한다 —
+    저장값 문자열을 부등호로 비교하면 아무 의미 없는 집합이 조용히 나온다.
+    """
+    if operator not in _ORDINAL_OPERATORS:
+        return None
+    spec = context.field_spec(field.name)
+    if not spec.value_map:
+        return None  # 값 도메인이 없는 일반 필드(숫자·날짜)는 원래 부등호가 옳다.
+    if not spec.value_order:
+        raise SqlCompileError(
+            f"'{field.name}' 은 순서가 선언되지 않은 값 도메인이라 크기 비교를 표현할 수 없습니다"
+            " — '<값> 이상' 대신 값을 직접 나열해 주세요"
+        )
+    values = spec.ordered_values(operator, literal.value)
+    if not values:
+        raise SqlCompileError(f"'{field.name}' 의 이 조건을 만족하는 값이 도메인에 없습니다: {literal.value!r}")
+    column = compile_scalar(field, context)
+    rendered = ", ".join(_sql_quote(value) for value in values)
+    return CompiledCondition(sql=f"{column} IN ({rendered})")
+
+
 def _compile_comparison(condition: Comparison, context: CompileContext) -> CompiledCondition:
     # 그룹 집계 비교('한 주문에 3개 이상')는 스칼라 서브쿼리로 표현할 수 없다 — grain 이 회원이 아니라
     # 그룹이므로 EXISTS + HAVING 이 정확한 번역이다.
@@ -795,8 +948,16 @@ def _compile_comparison(condition: Comparison, context: CompileContext) -> Compi
             )
     left_scalar, right_scalar = condition.left, condition.right
     if isinstance(left_scalar, FieldRef) and isinstance(right_scalar, Literal):
+        ordinal = _compile_ordinal_comparison(left_scalar, right_scalar, condition.operator, context)
+        if ordinal is not None:
+            return ordinal
         right_scalar = Literal(context.field_spec(left_scalar.name).physical_value(right_scalar.value))
     elif isinstance(right_scalar, FieldRef) and isinstance(left_scalar, Literal):
+        ordinal = _compile_ordinal_comparison(
+            right_scalar, left_scalar, _MIRRORED_OPERATORS.get(condition.operator, condition.operator), context
+        )
+        if ordinal is not None:
+            return ordinal
         left_scalar = Literal(context.field_spec(right_scalar.name).physical_value(left_scalar.value))
     left = compile_scalar(left_scalar, context)
     right = compile_scalar(right_scalar, context)
@@ -838,6 +999,12 @@ def _compile_temporal_relation(condition: TemporalRelation, context: CompileCont
             f"'{target.time_column}' 은 날짜 단위 컬럼이라 {condition.duration.unit} 단위 관계를 표현할 수 없습니다"
         )
 
+    # grain 스위치는 TIME_GRAINS 한 곳이 소유한다 — 여기 time_format 을 다시 읽으면 grain 지식이 두 벌이 된다.
+    if TIME_GRAINS[target.time_format].unit != "day":
+        raise SqlCompileError(
+            f"'{target.time_column}' 은 {TIME_GRAINS[target.time_format].unit} 단위로 적재된 컬럼이라 "
+            f"'{days}일 이내' 같은 시점 관계를 표현할 수 없습니다"
+        )
     anchor = _event_time_anchor(condition.left, context)
     alias = target.alias + "2"
     upper = (

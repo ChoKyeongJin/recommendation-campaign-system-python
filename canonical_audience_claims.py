@@ -15,6 +15,7 @@ from typing import Any
 
 import event_ir
 import lexicon_patterns
+import semantic_receipts
 import semantic_requirements
 
 
@@ -548,6 +549,14 @@ def refresh_canonical_unresolved(
     unresolved.extend(
         item
         for item in semantic_requirements.unresolved_semantic_obligations(plan, query)
+        if str(item.get("id") or "") not in known
+    )
+    # canonical 표현이 섰다고 해서 **다른 축의 노드**까지 귀결된 것은 아니다. 영수증 없는 노드는
+    # 여기서 미해결로 남아 SQL 출고를 막는다 — 그러지 않으면 그 절이 빠진 SQL 이 성공으로 나간다.
+    known.update(str(item.get("id") or "") for item in unresolved)
+    unresolved.extend(
+        item
+        for item in semantic_receipts.unreceipted_nodes(plan, query)
         if str(item.get("id") or "") not in known
     )
     plan["unresolved_source_conditions"] = unresolved

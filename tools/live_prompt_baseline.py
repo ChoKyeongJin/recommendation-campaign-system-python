@@ -22,6 +22,12 @@
 `unsupported` 를 실패로 세지 않는 것이 이 도구의 핵심 편향이다. 적재되지 않은 데이터를
 요구하는 프롬프트에서 '정직한 미지원'은 **정답**이고, 그럴듯한 SQL 이야말로 최악의 출력이다.
 
+`required_clauses`(코퍼스 항목의 선택 필드) — "SQL 을 낸다면 반드시 포함해야 하는 조각".
+선언된 조각이 빠졌으면 귀결을 `failure` 로 **강등**한다. 닫힌 5종 어휘는 "SQL 은 나왔는데
+절이 하나 사라졌다"를 표현하지 못하고, 그 상태는 `_verdict` 에서 `outcome == "sql"` 규칙에
+걸려 **improvement 로 오집계**된다(혼합축 프롬프트에서 실측: 이력 절이 사라진 성별 전용 SQL 이
+경고 0으로 '개선'으로 보고됐다). 강등이 없으면 그런 항목은 안전망이 아니라 오도 장치다.
+
 expectation 대비 판정(`--json` 및 종료코드):
 
     regression     기대가 sql 인데 sql 이 아니다 / 기대가 unsupported·clarification 인데 failure 다
@@ -138,6 +144,20 @@ def _reason(response: dict[str, Any]) -> str:
     return ""
 
 
+def missing_clauses(entry: dict[str, Any], response: dict[str, Any]) -> list[str]:
+    """SQL 이 나왔는데 항목이 요구한 조각이 빠졌다면 그 조각들을 돌려준다.
+
+    `classify` 를 건드리지 않는 이유: 저 함수는 응답 하나만 보는 순수 분류기이고
+    그 계약을 테스트가 고정한다. '기대되는 조각'은 응답이 아니라 **코퍼스 항목**의
+    지식이므로 분류 다음 단계에서 합성한다.
+    """
+    required = entry.get("required_clauses") or []
+    sql = response.get("sql")
+    if not required or not isinstance(sql, str) or not sql:
+        return []
+    return [clause for clause in required if clause not in sql]
+
+
 def run(
     corpus: list[dict[str, Any]],
     base_url: str,
@@ -155,10 +175,17 @@ def run(
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 observations.append({"outcome": "error", "reason": str(exc)[:120], "elapsed_s": None})
                 continue
+            outcome = classify(response)
+            reason = _reason(response)
+            missing = missing_clauses(entry, response)
+            if missing:
+                # 절이 사라진 SQL 은 출고가 아니다. 강등하지 않으면 improvement 로 오집계된다.
+                outcome = "failure"
+                reason = "partial_sql:" + ",".join(missing)
             observations.append(
                 {
-                    "outcome": classify(response),
-                    "reason": _reason(response),
+                    "outcome": outcome,
+                    "reason": reason,
                     "status": response.get("status"),
                     "elapsed_s": response.get("_elapsed_s"),
                 }

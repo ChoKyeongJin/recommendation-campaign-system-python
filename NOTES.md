@@ -1,3 +1,121 @@
+# 작업 노트 — 혼합축(일반 조건 × 등급/상태 이력) 흡수 (2026-08-03)
+
+## 발견 — 조용한 오답이 실제로 나가고 있었다
+
+`audience_requirement`(canonical Event IR)와 `semantic_plan`(등급/상태 이력)이 **함께** 있는 플랜은
+`graph_rag._apply_semantic_plan_pipeline` 조기 반환 때문에 이력 컴파일 경로 전체를 건너뛰고도
+`is_success=True` 로 SQL 을 냈다. 재현:
+
+```
+"여성이면서 정상에서 휴면으로 바뀐 회원"
+ → WHERE B.MEMBER_STATE_CD='...NORMAL' AND B.GENDER_CD='...FEMALE'   (경고 0, 되묻기 0)
+```
+
+이력 절이 사라졌을 뿐 아니라 기본 정상회원 필터 때문에 **요청과 정반대 대상**이 나온다.
+
+**갈림은 이력 절의 문형이다.** '지난달 말 기준' 처럼 시간 마커가 있으면 구조화 단계에서
+`event_expression` 이 통째로 버려져 조기 반환에 닿지도 않는다. 마커를 남기지 않는
+**'A에서 B로 바뀐' 전이 문형만** 샌다 — 흔히 드는 예시("지난달 말 기준 VIP")로 회귀 테스트를
+잡으면 통과하는 테스트를 만들고 버그는 남는다.
+
+라이브 코퍼스 72종에 혼합축 프롬프트가 **0건**이었다. 그래서 이 결함이 전수 감사를 통과했다.
+
+## 선택 — 교차 결합이 아니라 흡수
+
+두 산출물을 잇는 composition 계층을 새로 만들면 `plans_generic_execution_layer` 가 경고한
+"세 번째 소유자"가 된다. 대신 이력 축을 canonical Event IR 로 **흡수**했다 — 그러면
+"여성 AND 지난달 VIP" 가 Event IR 내부의 `And` 하나가 되고, 두 경로 사이의 논리 연산자를
+어떻게 보존하는가라는 문제 자체가 생기지 않는다.
+
+## 무엇을 했나
+
+**⑤ canonical 안전망 면제 제거(선행).** canonical 권위면 `dropped_signal_warnings` 를 질의 전체에
+대해 비우고 불변식 2건을 면제하던 분기를 걷었다. 대신 `canonical_signal_coverage` 가 카탈로그
+`signal_coverage` 선언에서 "IR 이 실제로 담은 신호"만 커버로 인정한다. 표현 불가 축(수신동의·
+쿠폰 사용)은 `expressible:false` 로 **명시 선언** — 빠뜨린 것과 못 하는 것을 가드가 구분한다.
+그 위에 `semantic_receipts` 영수증 게이트(노드는 있는데 영수증이 없으면 SQL 금지, 노드 단위
+fail-close)를 얹었다. 이 둘이 조용한 오답을 정직한 차단으로 바꾼다.
+
+**① 월 단위를 독립 타입으로.** `_TIME_FORMAT_DATA_TYPE.get(fmt, "date")` 폴백을 지우고
+`TimeGrainSpec` 레지스트리로. 폴백이 있으면 YYYYMM 컬럼이 `>= '2026-07-01'` 로 렌더돼
+nvarchar 와 사전식 비교로 **항상 0건**이 나온다(예외도 경고도 없이). 0건이 정상 취급이라 그
+사고는 영원히 드러나지 않는다. 월 grain 에 일 단위 창·롤링 창·시점 관계는 fail-close.
+날짜 타입 어휘 3중 복제(`resolved_semantic_catalog` 2곳 + lowering 1곳)를 파생으로 통합했다.
+
+**② 서열을 도메인 연산으로.** `B.EMART_GRADE_CD >= 'MEM_GRADE_CD.GOLD'` 는 사전식이라
+'골드 이상'에 SILVER·WELCOME 이 섞이고 '실버 이상'에서 GOLD 가 빠졌다. 부등호를 **물리값 IN
+목록**으로 컴파일한다. 서열(rank)의 단일 소유자는 eq_filters 그대로이고, 카탈로그는
+`ordered:true` 만 선언한 뒤 `audience_runtime` 이 런타임 조인한다. 순서 없는 도메인(성별·상태)에
+부등호가 오면 fail-close.
+
+**③ 전이는 원자 하나.** `Exists(Filter(Source, And(prev=from, cur=to)))` — 새 IR 노드 타입을
+만들지 않는다. 두 Comparison 을 최상위 And 로 흩뿌리면 **같은 행 상관**이 깨져 적재가 늘었을 때
+"1월에 골드→실버, 3월에 X→VIP" 인 회원이 통과한다. 한쪽 값만 지정된 전이('VIP로 승급한')는
+`cur != prev` 를 함께 요구한다 — 없으면 '원래부터 VIP였던' 회원이 섞인다.
+
+**④ 다월 연산 fail-close.** `times.snapshot_month.temporal_operators` 에 없는 연산자를 요구하는
+노드는 lowering 이 막는다. 구현 중 실측으로 드러난 것: `held_throughout`(3개월 내내 유지)이
+시간 한정어 없이 **"지금 VIP"로 조용히 축소**되고 있었다(`_temporal` 이 `relation` 을 안 읽었다).
+`relational_ir_*` 사유를 `failure_stage` 매핑에 등재해 프론트 스텝퍼가 비지 않게 했다.
+
+## 결과
+
+| | 전 | 후 |
+|---|---|---|
+| pytest | 1,145 | **1,194 passed / 24 skipped** |
+| preflight | PASS | PASS |
+| 혼합축 프롬프트 | 코퍼스 0건 | id 73~77 (전이형·마커형·구매결합) |
+
+```sql
+-- "여성이면서 골드에서 VIP로 바뀐 회원"
+WHERE B.MEMBER_STATE_CD = '...NORMAL' AND (B.GENDER_CD = 'GENDER_CD.FEMALE')
+  AND (EXISTS (SELECT 1 FROM CRM_MB_MONTHCRMINFO MS WHERE MS.MEMBER_NO = B.MEMBER_NO
+       AND (MS.PREV_ZTS_GRADE = 'MEM_GRADE_CD.GOLD') AND (MS.ZTS_GRADE = 'MEM_GRADE_CD.VIP')))
+```
+
+상태 이력은 소스 부재로 **여전히 정직하게 차단**된다(가짜 성공이 아니라 이름을 대는 미지원).
+
+## 등급 축 실측 — 구현 전에 물어야 했던 것
+
+| 컬럼 | 값 | 전이(PREV≠현재) |
+|---|---|---|
+| `ZTS_GRADE`(기존 바인딩) | `MEM_GRADE_CD.*` 5값, 현재값과 같은 코드 도메인 | **0건 / 69,609행** |
+| `WORTH_GRADE` | `WELCOME…VVIP` 6값, 접두어 없음, `~` 센티널 1,273행 | 22,409건 |
+
+기존 카탈로그의 전이 바인딩(ZTS)대로 구현했으면 컴파일러를 완성해도 **항상 빈 오디언스**였고,
+0건이 정상 취급이라 그 사실이 드러나지 않았을 것이다. 사용자 결정으로 **둘 다 별개 축**으로
+선언했다('등급'=ZTS, '가치등급'=WORTH). 가치등급 전이 SQL 은 실DB 에서 20건을 반환한다 —
+기능의 정확성을 실행 결과로 증명할 수 있는 축은 이쪽뿐이다.
+
+## 함정 기록
+
+- **러너가 가짜 성공을 '개선'으로 셌다.** `outcome=="sql"` 이면 무조건 improvement 라, 절이 사라진
+  SQL 도 종료코드 0 으로 "기대치 갱신 후보"가 된다. 코퍼스에 항목만 추가하면 안전망이 아니라
+  **오도 장치**다 → `required_clauses` 강등을 먼저 넣었다.
+- **문서 인용 가드가 먼저 잡는다.** 주석·문서에 테스트 파일 경로를 계약 근거로 적으면 그 파일이
+  실재해야 한다(`test_doc_claims`). 이 절을 쓰다가 예시로 적은 가짜 경로에도 걸렸다.
+- **새 별칭은 AST 허용목록에 등재해야 한다**(`validation.allowed_table_aliases`). 빠뜨리면
+  "허용되지 않은 테이블 별칭"으로 빌더가 조용히 후보에서 빠진다.
+- **JSON 을 파이썬으로 재작성하면 파일 전체가 재포맷된다.** 6줄 추가가 974줄 diff 가 됐다 —
+  설정 파일은 텍스트 삽입으로 고칠 것.
+- **캐노니컬 흡수는 legacy 산출물 계약을 바꾼다.** as_of 가 canonical 로 넘어가면
+  `semantic_pipeline.written_slots` 가 빈다. 테스트가 지켜야 할 불변식은 "슬롯이 찼는가"가 아니라
+  **"이 노드가 실행 조건으로 귀결됐는가"**(영수증)다.
+
+## 남은 것
+
+- 라이브 기준선 재측정(API 컨테이너 기동 필요): `docker restart …-api-1` 후
+  `python tools/live_prompt_baseline.py --only 73,74,75,76,77 --repeat 3`. 코퍼스 id 74·77 의 note 는
+  "미측정"으로 남겨 뒀다 — 추측을 기록하면 다음 회귀 판정이 오염된다.
+- `db_swap_preflight --check-db` 의 적재 구간 대조는 로컬에 드라이버(pymssql)가 없어 실행되지 않는다.
+  같은 명령의 기존 `[live-db]` 실패도 이번 변경 이전부터 있던 것이다(git stash 로 확인).
+- `member_grade_history` 는 `signal_coverage` 에 아직 `expressible:false` 로 남아 있다 — 소스가
+  선언됐으므로 `sources` 로 승격할 수 있다(승격하면 그 축의 드롭 경고가 IR 인지형이 된다).
+- LLM 노출면(`LLM_SEMANTIC_PLAN_NODE_TYPES`)은 그대로 둔다. 흡수는 **컴파일 경로**를 옮긴 것이고,
+  노출면 축소는 라이브 측정 뒤 별도 라운드다.
+
+---
+
 # 작업 노트 — 등급·상태 이력 축 복구 + 적재 부족의 비차단화 (2026-08-02, Phase 0~5)
 
 목표는 하나였다: **SQL 생성**. 사용자 결정으로 "결과가 0건인 것은 문제가 아니다"가 전제다.

@@ -46,6 +46,17 @@ def test_corpus_is_well_formed() -> None:
             f"id={entry['id']} 의 expectation={entry['expectation']!r} 이 선언되지 않았다. "
             f"허용: {sorted(allowed)}"
         )
+        # 러너는 항목을 entry.get(...) 으로만 읽는다. 키를 오타내면 그 항목의 게이트가
+        # 조용히 꺼진 채 초록이 된다 — required_clauses 처럼 '없으면 무동작'인 필드에서 특히.
+        assert set(entry) <= {"id", "text", "expectation", "note", "required_clauses"}, (
+            f"id={entry['id']} 에 알 수 없는 키: {sorted(set(entry) - {'id', 'text', 'expectation', 'note', 'required_clauses'})}"
+        )
+        clauses = entry.get("required_clauses")
+        if clauses is not None:
+            assert isinstance(clauses, list) and clauses, f"id={entry['id']} 의 required_clauses 가 비었다."
+            assert all(isinstance(item, str) and item.strip() for item in clauses), (
+                f"id={entry['id']} 의 required_clauses 원소는 비지 않은 문자열이어야 한다."
+            )
 
 
 def test_expectations_are_documented() -> None:
@@ -105,6 +116,41 @@ def test_classification_is_closed_and_ordered(response: dict, expected: str) -> 
 )
 def test_verdict_matrix(expectation: str, outcome: str, verdict: str) -> None:
     assert runner._verdict(expectation, outcome) == verdict
+
+
+@pytest.mark.parametrize(
+    ("entry", "response", "missing"),
+    [
+        # 선언된 조각이 전부 있으면 무동작이다.
+        ({"required_clauses": ["A", "B"]}, {"sql": "SELECT A, B"}, []),
+        # 하나라도 빠지면 그 조각을 이름으로 돌려준다 — 이것이 강등의 근거가 된다.
+        ({"required_clauses": ["A", "B"]}, {"sql": "SELECT A"}, ["B"]),
+        # 선언이 없는 항목은 영향받지 않는다(코퍼스 대부분).
+        ({}, {"sql": "SELECT 1"}, []),
+        # SQL 자체가 없으면 강등할 것이 없다 — 미지원/되묻기를 failure 로 덮으면 안 된다.
+        ({"required_clauses": ["A"]}, {"status": "unsupported"}, []),
+    ],
+)
+def test_missing_clauses_only_fires_on_emitted_sql(entry: dict, response: dict, missing: list) -> None:
+    assert runner.missing_clauses(entry, response) == missing
+
+
+def test_partial_sql_is_a_regression_not_an_improvement() -> None:
+    """이 항목의 존재 이유. 절이 사라진 SQL 은 '개선'이 아니라 회귀다.
+
+    강등이 없으면 `_verdict` 의 ``outcome == "sql"`` 규칙이 이런 응답을 improvement 로 세고
+    종료코드 0 을 낸다 — 실측된 혼합축 가짜 성공(이력 절이 통째로 빠진 성별 전용 SQL)이
+    '기대치 갱신 후보'로 보고되던 형태다.
+    """
+    entry = {"id": 73, "expectation": "unsupported", "required_clauses": ["PREV_"]}
+    response = {"sql": "SELECT B.MEMBER_NO FROM CRM_MB_BASEINFO B WHERE B.GENDER_CD = 'F'", "status": "success"}
+
+    assert runner.classify(response) == "sql"
+    assert runner._verdict(entry["expectation"], "sql") == "improvement"  # 강등 전: 오집계
+
+    missing = runner.missing_clauses(entry, response)
+    assert missing == ["PREV_"]
+    assert runner._verdict(entry["expectation"], "failure") == "regression"  # 강등 후: 회귀
 
 
 def test_unstable_emission_counts_as_the_worst_outcome() -> None:

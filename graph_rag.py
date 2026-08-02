@@ -23,7 +23,7 @@ import networkx as nx
 import aggregate_parser_config
 import aggregate_semantics
 import aggregate_spans
-import audience_runtime, canonical_audience_claims
+import audience_runtime, canonical_audience_claims, canonical_signal_coverage
 import conceptual_targeting
 import condition_reconciliation
 from external_conditions.models import ResolutionContext
@@ -41,6 +41,7 @@ import requirement_ledger
 import semantic_plan
 import semantic_plan_bridge
 import semantic_plan_event_lowering
+import semantic_receipts
 import semantic_reemission
 import targeting_domain
 import plan_semantic_ast
@@ -8202,7 +8203,10 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
     exclude = query_plan.get("exclude", {})
 
     # 슬롯이 빈 이유가 '집계 계약이 모집단 필터로 가져갔기 때문'이면 조건은 사라진 게 아니라 옮겨간 것이다.
-    owned_slots = _analytical_owned_audience_slots(query_plan)
+    # canonical Event IR 이 소유한 신호도 같은 이유로 슬롯이 빈다 — 판정 근거는 카탈로그 선언이다
+    # (canonical_signal_coverage). '권위가 있으니 면제'가 아니라 '이 신호를 실제로 담았는가'.
+    owned_slots = _analytical_owned_audience_slots(query_plan) | canonical_signal_coverage.covered_families(
+        query_plan, audience_runtime.load_audience_catalog_config())
     if signature["genders"] and not (target_user.get("gender") or exclude.get("gender")) and "gender" not in owned_slots:
         for gender in sorted(signature["genders"]):
             warnings.append(f"성별 '{_GENDER_CANONICAL_KO.get(gender, gender)}'")
@@ -8228,7 +8232,7 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
     ):
         plan_responses.add("buy_response")
     for response in sorted(signature["campaign_responses"]):
-        if response not in plan_responses:
+        if response not in plan_responses and response not in owned_slots:
             warnings.append(f"캠페인 반응 조건 '{_CAMPAIGN_RESPONSE_SIGNAL_LABELS.get(response, response)}'")
 
     # 최근 로그인/접속(긍정): 부정형(미접속/휴면)이 아닌데 recent_login·미접속 슬롯 둘 다 비었으면 드롭.
@@ -8291,6 +8295,7 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
         or target_user.get("cart_absence")
         or target_user.get("cart_aggregate")
         or target_user.get("cart_quantity_missing")
+        or "cart" in owned_slots
     ):
         warnings.append("장바구니 조건")
     return warnings
@@ -8418,6 +8423,8 @@ def _refresh_unresolved_source_conditions(
         *product_resolution_unresolved,
         *semantic_obligation_unresolved,
         *placeholder_unresolved,
+        # canonical 분기(refresh_canonical_unresolved)와 술어가 달라 여기로 오는 플랜도 덮는다.
+        *semantic_receipts.unreceipted_nodes(query_plan, original_query),
     ]
     merged.extend(item for item in unresolved if item not in merged)
     query_plan["unresolved_source_conditions"] = merged
@@ -8443,13 +8450,12 @@ def _verify_sql_semantic_invariants(
     target_user = plan.get("target_user", {}) if isinstance(plan.get("target_user"), dict) else {}
     compact = query.replace(" ", "").casefold()
     aggregates = [c for c in (target_user.get("aggregate_conditions") or []) if isinstance(c, dict)]
-    canonical_audience = _has_canonical_audience_authority(plan)
 
     # (1) lifetime↔rolling 혼입 금지: 원문에 '누적/평생' 표지가 있는데 명시 롤링 창('최근 N일')은 전혀 없고,
     #     그런데도 집계 조건에 window_days 가 붙어 있으면 옆 도메인 조건(로그인 등)에서 창이 흘러든 것이다.
+    #     canonical 면제는 두지 않는다 — 혼합 플랜에서 면제가 유효한 검사를 죽인다.
     if (
-        not canonical_audience
-        and _CUMULATIVE_WINDOW_MARKER_RE.search(compact)
+        _CUMULATIVE_WINDOW_MARKER_RE.search(compact)
         and _parse_recent_window_days(query) is None
     ):
         for condition in aggregates:
@@ -8475,7 +8481,9 @@ def _verify_sql_semantic_invariants(
         or _event_expression_covers(plan, "purchase", "not_exists")
     )
     warned = any(("구매" in w or "주문" in w) for w in (dropped_signal_warnings or []))
-    if not canonical_audience and purchase_absence_mentioned and not represented and not warned:
+    # IR 인지 좁히기는 바로 위 represented 의 _event_expression_covers 가 이미 한다 —
+    # canonical 이라는 이유로 한 번 더 면제하면 '다른 사건을 IR 이 표현했다'는 이유로 구매 부재 드롭이 통과한다.
+    if purchase_absence_mentioned and not represented and not warned:
         issues.append({"type": "purchase_absence_dropped",
                        "detail": "구매 미발생 조건이 plan/SQL/경고 어디에도 반영되지 않음"})
 
@@ -9896,6 +9904,16 @@ def _semantic_reextractor(llm_model: str | None) -> Any:
     return reextract
 
 
+def _merge_semantic_plan_into_event_expression(query_plan: dict[str, Any], query: str) -> None:
+    """이미 선 canonical 표현에 남은 의미 노드를 합류시킨다(로직은 semantic_receipts 소유)."""
+    semantic_receipts.merge_into_event_expression(
+        query_plan, query,
+        catalog=audience_runtime.resolve_audience_catalog(),
+        plan_key=semantic_plan_bridge.PLAN_KEY,
+        expression_key=EVENT_EXPRESSION_KEY,
+    )
+
+
 def _apply_semantic_plan_pipeline(
     query_plan: dict[str, Any], query: str, *, llm_model: str | None = None
 ) -> None:
@@ -9912,7 +9930,13 @@ def _apply_semantic_plan_pipeline(
     grade/state history axis: the working ``compositional_targeting`` compiler was
     never reachable because the pipeline returned before its input was written.
     """
+    raw_nodes = query_plan.get(semantic_plan_bridge.PLAN_KEY)
+    raw_nodes = raw_nodes.get("nodes") if isinstance(raw_nodes, dict) else None
     if _plan_event_expression(query_plan) is not None:
+        # 표현이 이미 섰어도 **다른 축의 노드**가 남아 있으면 같은 Event IR 로 합류시킨다.
+        # 여기서 반환하면 그 절이 흔적 없이 사라진 SQL 이 성공으로 나간다(2026-08-02 실측).
+        if raw_nodes:
+            _merge_semantic_plan_into_event_expression(query_plan, query)
         return
 
     def has_value(value: Any) -> bool:
@@ -9954,6 +9978,7 @@ def _apply_semantic_plan_pipeline(
                     "source": "semantic_plan",
                     "receipts": [receipt.to_dict() for receipt in lowered.receipts],
                 }
+                semantic_receipts.discharge_attribute_obligations(query_plan, query, lowered)
                 plan_decisions.record(
                     query_plan,
                     filter_name="semantic_plan_event_lowering",
@@ -10661,18 +10686,14 @@ def build_sql_result(
             query_tuning = {"findings": [], "recommended_indexes": []}
 
     # ③ 놓침을 fail-close(결정론): 원문 신호가 plan 에 조용히 드롭됐으면 아래 의미 불변식에서 출고 차단.
-    if _has_canonical_audience_authority(query_plan):
-        # Evidence, symbol resolution, and lowering receipts already account for
-        # the canonical atoms.  Re-running slot-oriented regex coverage here is
-        # a second semantic parser and misclassifies catalog-only sources.
+    # canonical 권위에도 감지기는 돈다 — IR 이 소유한 신호는 감지기 안에서 카탈로그 선언으로 걸러진다
+    # (canonical_signal_coverage). 권위를 이유로 통째로 끄면 IR 이 표현하지 못하는 축이 조용히 사라진다.
+    try:
+        dropped_signal_warnings = _deterministic_dropped_conditions(
+            original_query or query, query_plan
+        )
+    except Exception:
         dropped_signal_warnings = []
-    else:
-        try:
-            dropped_signal_warnings = _deterministic_dropped_conditions(
-                original_query or query, query_plan
-            )
-        except Exception:
-            dropped_signal_warnings = []
     # 미소비 리터럴 감사(비차단 자문): 결정론 드롭 감지기가 오탐 우려로 제외한 숫자/기간 family 의
     # 사각을 채운다. 차단으로 승격하려면 아래 invariants 인자에 넘기는 한 곳만 바꾸면 된다.
     try:
@@ -13636,7 +13657,7 @@ def build_member_column_selection_sql_candidate(query_plan: dict[str, Any]) -> d
     return candidate
 
 
-def _event_compile_context() -> "event_compiler.CompileContext":
+def _event_compile_context(today: date | None = None) -> "event_compiler.CompileContext":
     """Build Event IR compilation from the single resolved Semantic Catalog."""
     catalog = audience_runtime.resolve_audience_catalog()
     return catalog.compile_context(
@@ -13645,6 +13666,7 @@ def _event_compile_context() -> "event_compiler.CompileContext":
         ),
         dialect=_member_dialect(),
         literals=True,
+        today=today,
     )
 
 

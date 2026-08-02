@@ -17,7 +17,9 @@ import json
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+import event_compiler
 import event_ir
+import semantic_domain_binding
 import semantic_fields
 import semantic_plan
 import temporal_semantics
@@ -202,6 +204,8 @@ class SemanticPlanEventLowerer:
                 expression, symbols = self._aggregate(node)
             elif isinstance(node, semantic_plan.Predicate):
                 expression, symbols = self._predicate(node)
+            elif isinstance(node, semantic_plan.RelationPredicate):
+                expression, symbols = self._relation_predicate(node)
             else:
                 raise LoweringError(
                     OPERATION_UNSUPPORTED,
@@ -331,6 +335,120 @@ class SemanticPlanEventLowerer:
         if temporal.negate:
             expression = event_ir.Not(expression)
         return expression, (metric.id, metric.source, *symbols, operator)
+
+    def _relation_predicate(
+        self, node: semantic_plan.RelationPredicate
+    ) -> tuple[event_ir.Condition, tuple[str, ...]]:
+        """속성의 시점·이력 조건 → Event IR **원자 하나**.
+
+        전이('골드에서 VIP로 바뀐')는 두 술어처럼 보이지만 하나의 의미다. 두 Comparison 을
+        최상위 And 로 흩뿌리면 세 가지가 깨진다:
+
+        * **같은 행 상관** — 소스마다 독립 Exists 가 생겨 "1월에 골드→실버, 3월에 X→VIP" 인
+          회원이 통과한다. 지금은 한 달치만 적재돼 결과가 같지만, 적재가 늘면 **조용히** 뒤바뀐다.
+        * **부정** — '전이하지 않은'은 쌍 전체를 부정해야 하는데 한쪽에만 걸린다.
+        * **부분 누락** — LLM 이 한쪽만 방출해도 각 노드는 자기 기준으로 완전해서
+          '골드에서 VIP로'가 '지금 VIP인'으로 그럴듯하게 축소된다.
+
+        그래서 두 비교를 **같은 Filter 안**에 넣고 바깥을 ``Exists`` 하나로 닫는다 —
+        새 IR 노드 타입은 만들지 않는다(NODE_TYPES 는 닫힌 집합이고, 전이는 기존 대수로 표현된다).
+        """
+        metric = self.catalog.metric(
+            str(node.values.get("metric") or node.values.get("attribute") or "")
+        )
+        # 관계 어휘('내내 유지'/'N회 변경'/'기준월')는 범용 시간 연산자로 정규화된다. 그 연산자가
+        # 이 시간 바인딩의 선언 목록에 없으면 **fail-close** 한다 — 여기서 통과시키면 시간 한정이
+        # 통째로 사라진 채 "지금 그 값인 회원"으로 조용히 축소된다(실측: '3개월 내내 VIP 유지').
+        operator = semantic_domain_binding.temporal_operator_of(node)
+        if operator is not None and metric.time:
+            allowed = self.catalog.time(metric.time).temporal_operators
+            if operator not in allowed:
+                raise LoweringError(
+                    OPERATION_UNSUPPORTED,
+                    f"time binding {metric.time!r} does not support {operator!r}",
+                    catalog_symbols=(metric.id, metric.time),
+                )
+        # 생산자는 속성 이름 하나만 낸다. '값 변화' 를 요구하는 시간 연산자면 그 속성이 선언한
+        # 전이 메트릭으로 넘어간다 — 같은 속성을 두 이름으로 부르게 하지 않기 위한 선언 기반 라우팅.
+        if operator == temporal_semantics.CHANGE_BETWEEN and metric.kind != "transition":
+            if not metric.transition_metric:
+                raise LoweringError(
+                    OPERATION_UNSUPPORTED,
+                    f"metric {metric.id!r} has no transition binding",
+                    catalog_symbols=(metric.id,),
+                )
+            metric = self.catalog.metric(metric.transition_metric)
+        temporal = self._temporal(node, metric)
+        negated = self._bool_flag(node.values.get("negated"), "negated") ^ temporal.negate
+        evidence = self._evidence(node)
+
+        if metric.kind == "transition":
+            from_value = node.values.get("from_value")
+            to_value = node.values.get("to_value")
+            if not from_value and not to_value:
+                raise LoweringError(
+                    MISSING_ARGUMENT,
+                    "transition needs from_value or to_value",
+                    catalog_symbols=(metric.id,),
+                )
+            from_value = self._canonical_value(str(metric.expression_field), from_value)
+            to_value = self._canonical_value(str(metric.expression_field), to_value)
+            current = event_ir.FieldRef(str(metric.expression_field))
+            previous = event_ir.FieldRef(str(metric.prev_expression_field))
+            ends: list[event_ir.Condition] = []
+            if from_value:
+                ends.append(event_ir.Comparison("=", previous, event_ir.Literal(from_value), evidence))
+            if to_value:
+                ends.append(event_ir.Comparison("=", current, event_ir.Literal(to_value), evidence))
+            if not (from_value and to_value):
+                # 한쪽만 지정된 전이('VIP로 승급한')는 '값이 바뀌었다'가 함께 성립해야 한다 —
+                # 없으면 '원래부터 VIP였던' 회원까지 전이로 잡힌다.
+                ends.append(event_ir.Comparison("!=", current, previous, evidence))
+            symbols: tuple[str, ...] = (
+                str(metric.expression_field), str(metric.prev_expression_field)
+            )
+        elif metric.kind == "field":
+            value = node.values.get("value")
+            if value in (None, "", [], {}):
+                raise LoweringError(
+                    MISSING_ARGUMENT, "attribute value is missing", catalog_symbols=(metric.id,)
+                )
+            operator = self._operator(metric, node.values.get("value_comparison") or "=")
+            ends = [
+                event_ir.Comparison(
+                    operator,
+                    event_ir.FieldRef(str(metric.expression_field)),
+                    event_ir.Literal(
+                        self._canonical_value(
+                            str(metric.expression_field), self._literal(value, metric.value_type)
+                        )
+                    ),
+                    evidence,
+                )
+            ]
+            symbols = (str(metric.expression_field),)
+        else:
+            raise LoweringError(
+                CATALOG_CONTRACT_MISMATCH,
+                f"RelationPredicate requires a field or transition metric, got {metric.kind!r}",
+                symbol=metric.id,
+            )
+
+        relation, relation_symbols = self._relation(
+            metric, temporal.window, predicate=event_ir.conjunction(ends)
+        )
+        expression: event_ir.Condition = event_ir.Exists(relation=relation, evidence=evidence)
+        if negated:
+            expression = event_ir.Not(expression)
+        return expression, (metric.id, metric.source, *symbols, *relation_symbols)
+
+    def _canonical_value(self, field_id: str, value: Any) -> Any:
+        """값 도메인이 있는 필드의 표면어를 canonical 로 접는다(모르는 값은 그대로 — 판정은 컴파일러가)."""
+        try:
+            spec = self.catalog.fields[field_id].compiler_field
+        except KeyError:
+            return value
+        return spec.canonicalize(value)
 
     def _predicate(
         self, node: semantic_plan.Predicate
@@ -632,7 +750,9 @@ class SemanticPlanEventLowerer:
         if not isinstance(raw, (int, float, str, bool)):
             raise LoweringError(VALUE_NOT_NORMALIZED, f"unsupported literal value: {raw!r}")
         numeric_types = {"number", "integer", "decimal", "money"}
-        string_types = {"string", "date", "date_char8", "date_string"}
+        # 날짜 타입은 event_compiler.TIME_GRAINS 파생 — grain 을 늘릴 때 이 줄을 잊으면
+        # 그 grain 의 시각 필드를 값 비교에 쓰는 노드가 '정규화 안 됨'으로 막힌다.
+        string_types = {"string", "date_string"} | event_compiler.DATE_DATA_TYPES
         if value_type in numeric_types and (isinstance(raw, bool) or not isinstance(raw, (int, float))):
             raise LoweringError(VALUE_NOT_NORMALIZED, f"metric expects {value_type}, got {raw!r}")
         if value_type in string_types and not isinstance(raw, str):
@@ -678,6 +798,50 @@ def lower_semantic_plan(
     """Functional entry point for composition roots."""
 
     return SemanticPlanEventLowerer(catalog).lower(plan)
+
+
+def merge_event_expression(
+    existing: Mapping[str, Any] | None,
+    plan: semantic_plan.SemanticPlanV2,
+    catalog: ResolvedSemanticCatalog,
+) -> tuple[dict[str, Any] | None, LoweringResult]:
+    """이미 선 canonical 표현에 의미 노드를 **합류**시킨다(교차 경로 결합이 아니라 흡수).
+
+    한 문장에 일반 조건("여성")과 속성 이력 조건("골드에서 VIP로 바뀐")이 함께 오면 두 표면이
+    각각 산출을 낸다. 예전에는 앞의 것이 서면 뒤의 것을 **건너뛰었고**, 그래서 이력 절이 사라진
+    SQL 이 성공으로 나갔다(2026-08-02 실측).
+
+    두 산출물을 SQL 문자열로 잇거나 별도의 교차 결합 계층을 두지 않는다 — 같은 Event IR 대수
+    안에서 ``And`` 하나가 되면 결합 연산자·검증·컴파일이 전부 기존 경로 그대로다. 그래서
+    "두 경로 사이의 논리 연산자를 어떻게 보존하는가" 라는 문제 자체가 생기지 않는다.
+
+    합류에 실패하면 **아무것도 바꾸지 않는다**. 기존 표현만 남기면 이력 절이 조용히 사라진
+    바로 그 상태가 되므로, 판정은 영수증으로 넘기고(호출자의 fail-close 게이트) 여기서는
+    부분 성공을 만들지 않는다.
+    """
+    result = lower_semantic_plan(plan, catalog)
+    if not result.executable or result.expression is None:
+        return None, result
+
+    if not isinstance(existing, Mapping) or not isinstance(existing.get("expression"), Mapping):
+        merged: event_ir.Condition = result.expression
+        source = "semantic_plan"
+    else:
+        try:
+            current = event_ir.condition_from_dict(existing["expression"])
+        except event_ir.IrSchemaError:
+            return None, result
+        merged = event_ir.conjunction([current, result.expression])
+        source = str(existing.get("source") or "audience_requirement")
+
+    receipts = list(existing.get("receipts") or []) if isinstance(existing, Mapping) else []
+    receipts.extend(receipt.to_dict() for receipt in result.receipts)
+    payload = {
+        "expression": merged.to_dict(),
+        "source": source,
+        "receipts": receipts,
+    }
+    return payload, result
 
 
 __all__ = [

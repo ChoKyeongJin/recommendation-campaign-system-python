@@ -29,7 +29,11 @@ import event_ir
 import temporal_semantics
 
 
-METRIC_KINDS = frozenset({"field", "aggregate", "existence"})
+# transition = 같은 행에 현재값과 직전값이 함께 비정규화된 스냅샷의 **값 변화**.
+# 두 컬럼을 각각 field 메트릭으로 쪼개면 서로 다른 행에서 만족되어도 통과한다("1월에 G→S,
+# 3월에 X→V" 인 회원이 '골드에서 VIP로'에 걸린다) — 적재가 늘면 조용히 뒤바뀌는 오답이라
+# 전이는 한 메트릭이 두 컬럼을 **함께 소유**한다.
+METRIC_KINDS = frozenset({"field", "aggregate", "existence", "transition"})
 JOIN_CARDINALITIES = frozenset({"one_to_one", "many_to_one", "one_to_many", "many_to_many"})
 WINDOW_TYPES = frozenset({"interval", "rolling", "relative"})
 UNKNOWN_COVERAGE = "unknown"
@@ -248,6 +252,11 @@ class MetricSpec:
     kind: str
     aggregate_function: str | None = None
     expression_field: str | None = None
+    # transition 메트릭의 직전값 컬럼. 현재값(expression_field)과 **같은 행**에 있어야 한다.
+    prev_expression_field: str | None = None
+    # 이 속성의 '값 변화' 를 표현하는 메트릭. 같은 속성을 두 이름으로 부르지 않기 위한 선언이며,
+    # 생산자는 속성 이름 하나만 내고 시간 연산자(CHANGE_BETWEEN)가 어느 메트릭인지 정한다.
+    transition_metric: str | None = None
     distinct: bool = False
     allowed_operators: tuple[str, ...] = tuple(sorted(event_ir.COMPARISON_OPERATORS))
     value_type: str = "number"
@@ -283,6 +292,12 @@ class MetricSpec:
             raise CatalogError(
                 "invalid_catalog_declaration",
                 f"field metric {self.id!r} needs expression_field",
+                symbol=self.id,
+            )
+        elif self.kind == "transition" and not (self.expression_field and self.prev_expression_field):
+            raise CatalogError(
+                "invalid_catalog_declaration",
+                f"transition metric {self.id!r} needs expression_field and prev_expression_field",
                 symbol=self.id,
             )
         elif self.kind == "existence" and self.aggregate_function is not None:
@@ -362,7 +377,12 @@ class ResolvedSemanticCatalog:
             for field_id, declaration in _section(raw, "fields").items()
         }
         if fields is None:
-            resolved_fields = event_compiler.resolve_fields(resolved_events, runtime_fields)
+            try:
+                resolved_fields = event_compiler.resolve_fields(resolved_events, runtime_fields)
+            except event_compiler.SqlCompileError as exc:
+                # 선언 오류는 호출자 계약대로 CatalogError 로 나가야 한다 — 안 그러면
+                # audience_runtime 의 except CatalogError 를 빠져나가 raw 예외로 터진다.
+                raise CatalogError("invalid_catalog_declaration", str(exc)) from exc
         else:
             resolved_fields = {**fields, **runtime_fields}
             # A supplied field registry may predate runtime-added sources.  The
@@ -373,7 +393,7 @@ class ResolvedSemanticCatalog:
                     event_compiler.FieldSpec(
                         source=source_id,
                         column=source.time_column,
-                        data_type={"char8": "date_char8", "date": "date"}.get(source.time_format, "date"),
+                        data_type=event_compiler.time_format_data_type(source.time_format),
                     ),
                 )
 
@@ -571,7 +591,9 @@ class ResolvedSemanticCatalog:
                     f"time {time.id!r} has unknown temporal operators {sorted(unknown_temporal)}",
                     symbol=time.id,
                 )
-            if self.fields[time.field].data_type not in {"date", "date_char8", "date_string"}:
+            # 날짜 타입 어휘는 event_compiler.TIME_GRAINS 가 단일 소유한다(손 목록이면 grain 추가 때 어긋난다).
+            # date_string 만 별도 — metric_registry 어휘라 grain 레지스트리에 없다.
+            if self.fields[time.field].data_type not in event_compiler.DATE_DATA_TYPES | {"date_string"}:
                 raise CatalogError(
                     "catalog_reference_mismatch",
                     f"time {time.id!r} field {time.field!r} is not date typed",
@@ -592,6 +614,25 @@ class ResolvedSemanticCatalog:
                 )
             if metric.expression_field:
                 require(self.fields, metric.expression_field, f"metric {metric.id!r}", "field")
+            if metric.transition_metric:
+                require(self.metrics, metric.transition_metric, f"metric {metric.id!r}", "metric")
+                if self.metrics[metric.transition_metric].kind != "transition":
+                    raise CatalogError(
+                        "catalog_reference_mismatch",
+                        f"metric {metric.id!r}.transition_metric is not a transition metric",
+                        symbol=metric.transition_metric,
+                    )
+            if metric.prev_expression_field:
+                require(self.fields, metric.prev_expression_field, f"metric {metric.id!r}", "field")
+                # 두 컬럼이 다른 소스면 '같은 행' 보증이 깨진다 — 그게 전이 메트릭의 존재 이유다.
+                if self.fields[metric.prev_expression_field].source != self.fields[
+                    str(metric.expression_field)
+                ].source:
+                    raise CatalogError(
+                        "catalog_reference_mismatch",
+                        f"transition metric {metric.id!r} compares fields from different sources",
+                        symbol=metric.prev_expression_field,
+                    )
             if metric.time:
                 require(self.times, metric.time, f"metric {metric.id!r}", "time")
             for join in metric.joins:
@@ -769,6 +810,9 @@ def _compiler_field(
     source = str(declaration.get("source") or field_id.partition(".")[0])
     domain_name = declaration.get("value_domain")
     value_map: tuple[tuple[str, Any], ...] = ()
+    value_order: tuple[str, ...] = ()
+    value_aliases: tuple[tuple[str, str], ...] = ()
+    alias_pairs: list[tuple[str, str]] = []
     if domain_name:
         domains = value_domains or {}
         domain = domains.get(str(domain_name))
@@ -810,13 +854,36 @@ def _compiler_field(
                     symbol=str(domain_name),
                 )
             pairs.append((canonical, physical))
+            if isinstance(value_declaration, Mapping):
+                for alias in value_declaration.get("aliases") or ():
+                    if isinstance(alias, str) and alias.strip():
+                        alias_pairs.append((alias.strip().casefold(), canonical))
         value_map = tuple(sorted(pairs))
+        value_aliases = tuple(sorted(dict(alias_pairs).items()))
+        declared_order = domain.get("order")
+        if declared_order is not None:
+            if not isinstance(declared_order, (list, tuple)) or not declared_order:
+                raise CatalogError(
+                    "invalid_catalog_declaration",
+                    f"value domain {domain_name!r}.order must be a non-empty list",
+                    symbol=str(domain_name),
+                )
+            unknown = [str(name) for name in declared_order if str(name) not in dict(value_map)]
+            if unknown:
+                raise CatalogError(
+                    "catalog_reference_unresolved",
+                    f"value domain {domain_name!r}.order names unknown values: {unknown}",
+                    symbol=str(domain_name),
+                )
+            value_order = tuple(str(name) for name in declared_order)
     return event_compiler.FieldSpec(
         source=_non_empty(source, f"field {field_id}.source"),
         column=_non_empty(declaration.get("column"), f"field {field_id}.column"),
         data_type=str(declaration.get("data_type") or "number"),
         expression=str(declaration.get("expression") or ""),
         value_map=value_map,
+        value_order=value_order,
+        value_aliases=value_aliases,
     )
 
 
@@ -935,6 +1002,12 @@ def _metric_spec(item_id: str, declaration: Any) -> MetricSpec:
         kind=kind,
         aggregate_function=(str(function).casefold() if function is not None else None),
         expression_field=(str(field_id) if field_id else None),
+        prev_expression_field=(
+            str(declaration["prev_expression_field"]) if declaration.get("prev_expression_field") else None
+        ),
+        transition_metric=(
+            str(declaration["transition_metric"]) if declaration.get("transition_metric") else None
+        ),
         distinct=bool(declaration.get("distinct", False)),
         allowed_operators=allowed or tuple(sorted(event_ir.COMPARISON_OPERATORS)),
         value_type=str(declaration.get("value_type") or declaration.get("data_type") or "number"),

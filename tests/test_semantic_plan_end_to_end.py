@@ -20,6 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import graph_rag  # noqa: E402
+import semantic_receipts  # noqa: E402
 
 
 def _run(query: str, nodes: list[dict]) -> tuple[dict, dict]:
@@ -128,8 +129,15 @@ def test_semantic_plan_compiles_all_the_way_to_sql(query, nodes, expected_sql_fr
     sql = result["sql"]
     for fragment in expected_sql_fragments:
         assert fragment in sql, f"{query}: SQL 에 '{fragment}' 가 없다\n{sql}"
-    assert plan["semantic_ir"]["status"] == "resolved"
-    assert plan[graph_rag.semantic_plan_bridge.PIPELINE_KEY]["written_slots"]
+    # 노드가 **어느 컴파일러에 착지했든** 영수증이 남아야 한다. 등급/상태 이력처럼 canonical
+    # Event IR 로 흡수된 축은 legacy 슬롯을 쓰지 않으므로 written_slots 가 비는 것이 정상이다 —
+    # 지키는 것은 "슬롯이 찼는가"가 아니라 "이 노드가 실행 조건으로 귀결됐는가"다.
+    receipted = semantic_receipts.receipted_node_ids(plan)
+    assert {node["id"] for node in nodes} <= receipted, (
+        f"{query}: 영수증 없는 노드가 남았다 — {sorted({n['id'] for n in nodes} - receipted)}"
+    )
+    if plan.get("semantic_ir"):
+        assert plan["semantic_ir"]["status"] == "resolved"
 
 
 def test_held_throughout_emits_sql_with_a_coverage_advisory() -> None:

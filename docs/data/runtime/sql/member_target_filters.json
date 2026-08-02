@@ -76,6 +76,55 @@
     },
 
     {
+      "canonical": "welcome_worth_grade",
+      "category": "worth_grade",
+      "column": "MS.WORTH_GRADE",
+      "value": "WELCOME",
+      "rank": 1,
+      "synonyms": ["가치등급 웰컴", "웰컴 가치등급"]
+    },
+    {
+      "canonical": "family_worth_grade",
+      "category": "worth_grade",
+      "column": "MS.WORTH_GRADE",
+      "value": "FAMILY",
+      "rank": 2,
+      "synonyms": ["가치등급 패밀리", "패밀리 가치등급"]
+    },
+    {
+      "canonical": "silver_worth_grade",
+      "category": "worth_grade",
+      "column": "MS.WORTH_GRADE",
+      "value": "SILVER",
+      "rank": 3,
+      "synonyms": ["가치등급 실버", "실버 가치등급"]
+    },
+    {
+      "canonical": "gold_worth_grade",
+      "category": "worth_grade",
+      "column": "MS.WORTH_GRADE",
+      "value": "GOLD",
+      "rank": 4,
+      "synonyms": ["가치등급 골드", "골드 가치등급"]
+    },
+    {
+      "canonical": "vip_worth_grade",
+      "category": "worth_grade",
+      "column": "MS.WORTH_GRADE",
+      "value": "VIP",
+      "rank": 5,
+      "synonyms": ["가치등급 VIP", "VIP 가치등급"]
+    },
+    {
+      "canonical": "vvip_worth_grade",
+      "category": "worth_grade",
+      "column": "MS.WORTH_GRADE",
+      "value": "VVIP",
+      "rank": 6,
+      "synonyms": ["VVIP", "브이브이아이피", "최상위 가치등급"]
+    },
+
+    {
       "canonical": "normal_member",
       "category": "state",
       "column": "B.MEMBER_STATE_CD",
@@ -1261,7 +1310,8 @@
       "P",
       "R",
       "S",
-      "ZC"
+      "ZC",
+      "MS"
     ],
     "max_conditions": 30,
     "max_or_branches": 10,

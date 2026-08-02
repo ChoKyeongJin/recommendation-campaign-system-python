@@ -8,19 +8,37 @@
     "label": "회원"
   },
   "value_domains": {
-    "gender": {
-      "label": "성별",
-      "values": {
-        "female": {
-          "physical": "GENDER_CD.FEMALE",
-          "aliases": ["여성", "여자", "여성 회원", "여자 고객"]
-        },
-        "male": {
-          "physical": "GENDER_CD.MALE",
-          "aliases": ["남성", "남자", "남성 회원", "남자 고객"]
-        }
-      }
-    }
+    "_comment": [
+      "값 사전(canonical·물리코드·서열·동의어)의 단일 소유자는 member_target_filters.json 의 eq_filters 다.",
+      "여기서는 source_category 로 참조만 하고 audience_runtime.materialize_value_domains 가 런타임 조인한다",
+      "(attribute_catalog.json 과 같은 이중 소유 금지 계약). 값을 여기 다시 적으면 두 파일이 곧 어긋난다.",
+      "ordered:true 는 '이 도메인에는 서열이 있다'는 선언이며, 서열 자체(rank)는 eq_filters 가 소유한다.",
+      "서열이 없는 도메인에 '이상/이하'가 오면 컴파일러가 fail-close 한다 — 저장 코드값을 부등호로",
+      "비교하면 사전식 순서로 조용히 틀린 집합이 나온다(EMART_GRADE_CD 실측: '골드 이상'에 SILVER·WELCOME 혼입)."
+    ],
+    "gender": {"label": "성별", "source_category": "gender"},
+    "grade": {"label": "회원 등급", "source_category": "grade", "ordered": true},
+    "worth_grade": {"label": "가치등급", "source_category": "worth_grade", "ordered": true}
+  },
+  "signal_coverage": {
+    "_comment": [
+      "원문 신호 family → 이 신호를 Event IR 이 소유한다고 볼 카탈로그 심볼.",
+      "결정론 드롭 감지기(graph_rag._deterministic_dropped_conditions)가 슬롯만 보고 오탐을 내지 않도록,",
+      "IR 이 실제로 담은 소스/필드를 커버 근거로 쓴다. canonical 이라는 이유로 감지기를 통째로 면제하면",
+      "IR 이 표현하지 못하는 축(수신동의·등급/상태 이력)의 조건이 경고 없이 사라진다(2026-08-02 실측).",
+      "expressible:false 는 '아직 선언 안 함'이 아니라 '이 대수로 표현할 수 없음'의 명시 선언이다 —",
+      "둘을 구분해야 드리프트 가드가 누락을 잡는다. family id 는 graph_rag 의 신호 서명 키를 그대로 쓴다."
+    ],
+    "gender": {"fields": ["subject.gender"]},
+    "cart": {"sources": ["cart"]},
+    "login": {"sources": ["login"]},
+    "purchase_absence": {"negated_sources": ["purchase"]},
+    "campaign_contact": {"sources": ["campaign_contact_success"]},
+    "offer_response": {"sources": ["campaign_offer_response", "campaign_response"]},
+    "buy_response": {"sources": ["campaign_purchase_response", "campaign_response"]},
+    "coupon_used": {"expressible": false, "note": "쿠폰 사용 사건 소스가 카탈로그에 없다. 슬롯 경로가 소유한다."},
+    "consent": {"expressible": false, "note": "수신동의(앱푸시/SMS/이메일/마케팅)는 회원 속성 플래그이며 Event IR 소스·필드가 없다. 이 축이 원문에 있으면 canonical 이어도 드롭 경고가 나야 한다."},
+    "member_grade_history": {"expressible": false, "note": "등급·상태의 시점/이력 축. 흡수 전에는 Event IR 이 표현하지 못한다 — 소스가 선언되면 sources 로 바꾼다."}
   },
   "sources": {
     "purchase": {
@@ -82,6 +100,18 @@
       "grain": "event",
       "label": "장바구니 담기",
       "aliases": ["장바구니", "카트", "담기"]
+    },
+    "member_month_snapshot": {
+      "table": "CRM_MB_MONTHCRMINFO",
+      "alias": "MS",
+      "subject_key": "MEMBER_NO",
+      "event_subject_key": "MEMBER_NO",
+      "time_column": "YYYYMM",
+      "time_format": "char6",
+      "binding": "fact_table",
+      "grain": "event",
+      "label": "회원 월별 스냅샷",
+      "aliases": ["월별 스냅샷", "기준월 스냅샷"]
     },
     "campaign_contact_success": {
       "table": "Z_CAMP_MBR",
@@ -185,8 +215,41 @@
       "source": "subject",
       "column": "EMART_GRADE_CD",
       "data_type": "string",
+      "value_domain": "grade",
       "label": "회원 등급",
       "aliases": ["등급", "회원 등급"]
+    },
+    "member_month_snapshot.grade": {
+      "source": "member_month_snapshot",
+      "column": "ZTS_GRADE",
+      "data_type": "string",
+      "value_domain": "grade",
+      "label": "기준월 회원 등급",
+      "aliases": ["기준월 등급", "월별 등급"]
+    },
+    "member_month_snapshot.prev_grade": {
+      "source": "member_month_snapshot",
+      "column": "PREV_ZTS_GRADE",
+      "data_type": "string",
+      "value_domain": "grade",
+      "label": "직전 회원 등급",
+      "aliases": ["직전 등급", "이전 등급"]
+    },
+    "member_month_snapshot.worth_grade": {
+      "source": "member_month_snapshot",
+      "column": "WORTH_GRADE",
+      "data_type": "string",
+      "value_domain": "worth_grade",
+      "label": "기준월 가치등급",
+      "aliases": ["가치등급", "가치 등급"]
+    },
+    "member_month_snapshot.prev_worth_grade": {
+      "source": "member_month_snapshot",
+      "column": "PREV_WORTH_GRADE",
+      "data_type": "string",
+      "value_domain": "worth_grade",
+      "label": "직전 가치등급",
+      "aliases": ["직전 가치등급", "이전 가치등급"]
     },
     "purchase.amount": {
       "source": "purchase",
@@ -345,6 +408,58 @@
     }
   },
   "metrics": {
+    "member_grade": {
+      "source": "member_month_snapshot",
+      "kind": "field",
+      "expression_field": "member_month_snapshot.grade",
+      "data_type": "string",
+      "grain": "subject",
+      "time": "snapshot_month",
+      "coverage": "monthly_attribute_snapshot",
+      "allowed_operators": ["=", "!=", ">", ">=", "<", "<="],
+      "transition_metric": "member_grade_transition",
+      "label": "회원 등급(기준월)",
+      "aliases": ["등급", "회원 등급", "구매등급", "member_grade", "grade"]
+    },
+    "member_grade_transition": {
+      "source": "member_month_snapshot",
+      "kind": "transition",
+      "expression_field": "member_month_snapshot.grade",
+      "prev_expression_field": "member_month_snapshot.prev_grade",
+      "data_type": "string",
+      "grain": "subject",
+      "time": "snapshot_month",
+      "coverage": "monthly_attribute_snapshot",
+      "allowed_operators": ["=", "!="],
+      "label": "회원 등급 전이",
+      "aliases": ["등급 전이", "등급 변경", "승급", "강등"]
+    },
+    "member_worth_grade": {
+      "source": "member_month_snapshot",
+      "kind": "field",
+      "expression_field": "member_month_snapshot.worth_grade",
+      "data_type": "string",
+      "grain": "subject",
+      "time": "snapshot_month",
+      "coverage": "monthly_attribute_snapshot",
+      "allowed_operators": ["=", "!=", ">", ">=", "<", "<="],
+      "transition_metric": "member_worth_grade_transition",
+      "label": "가치등급(기준월)",
+      "aliases": ["가치등급", "가치 등급", "worth_grade"]
+    },
+    "member_worth_grade_transition": {
+      "source": "member_month_snapshot",
+      "kind": "transition",
+      "expression_field": "member_month_snapshot.worth_grade",
+      "prev_expression_field": "member_month_snapshot.prev_worth_grade",
+      "data_type": "string",
+      "grain": "subject",
+      "time": "snapshot_month",
+      "coverage": "monthly_attribute_snapshot",
+      "allowed_operators": ["=", "!="],
+      "label": "가치등급 전이",
+      "aliases": ["가치등급 전이", "가치등급 변경"]
+    },
     "purchase_count": {
       "source": "purchase",
       "kind": "aggregate",
@@ -425,5 +540,27 @@
     }
   },
   "joins": [],
-  "data_coverage": {}
+  "times": {
+    "snapshot_month": {
+      "_comment": [
+        "temporal_operators 는 이 시간 바인딩이 받을 수 있는 범용 연산자다. 여기 없는 연산자를",
+        "요구하는 노드는 lowering 이 fail-close 한다 — 다월 연산(내내 유지/N회 변경/모든 월 존재)이",
+        "빠져 있는 것은 누락이 아니라 선언이다: CRM_MB_MONTHCRMINFO 는 단일 월 + 직전값 컬럼뿐이라",
+        "다월 연산은 옳은 SQL 이 존재하지 않는다. 적재가 늘면 이 목록에 연산자를 더하고",
+        "data_coverage 의 창을 넓히면 열린다(코드 변경 없음)."
+      ],
+      "field": "member_month_snapshot.occurred_at",
+      "window_types": ["interval", "relative"],
+      "temporal_operators": ["AS_OF", "CHANGE_BETWEEN", "IMMEDIATELY_PRECEDING", "WITHIN_INTERVAL"],
+      "required": false,
+      "coverage": "monthly_attribute_snapshot"
+    }
+  },
+  "data_coverage": {
+    "monthly_attribute_snapshot": {
+      "label": "회원 월별 스냅샷 적재 구간",
+      "from": "20170101",
+      "to": "20170131"
+    }
+  }
 }

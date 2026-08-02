@@ -196,6 +196,83 @@ def _configured_table_columns(registry: dict[str, Any]) -> set[tuple[str, str]]:
     return result
 
 
+
+def _target_database(table: str) -> str:
+    """이 테이블이 사는 커넥션 이름(schema_catalog 선언에서 파생)."""
+    try:
+        catalog = _load_json(SCHEMA_CATALOG_PATH)
+    except Exception:  # pragma: no cover
+        return "CRMDW"
+    meta = (catalog.get("tables") or {}).get(table)
+    return str((meta or {}).get("database") or "CRMDW")
+
+
+def _declared_coverage_problems() -> list[str]:
+    """카탈로그가 선언한 적재 구간을 실DB 로 대조한다.
+
+    선언은 두 곳에서 쓰인다: 시간 창이 적재 밖이면 lowering 이 막고(fail-close), 그 문구가
+    사용자에게 "적재되어 있지 않습니다"로 나간다. 선언이 틀리면 **막지 말아야 할 것을 막거나
+    막아야 할 것을 통과**시키고, 어느 쪽이든 사용자는 이유를 알 수 없다. 정적 게이트는 손으로
+    적은 JSON 둘을 서로 비교할 뿐이라 둘 다 같이 틀리면 초록이다 — 그래서 여기서 실DB 에 묻는다.
+    """
+    problems: list[str] = []
+    try:
+        import audience_runtime
+        import db_connections
+
+        raw = audience_runtime.load_audience_catalog_config()
+        coverage = raw.get("data_coverage") or {}
+        sources = raw.get("sources") or {}
+        times = raw.get("times") or {}
+        fields = raw.get("fields") or {}
+    except Exception as exc:  # pragma: no cover - 설정 부재
+        return [f"[coverage] 선언 로딩 실패: {exc}"]
+
+    for time_id, declaration in times.items():
+        if not isinstance(declaration, dict):
+            continue
+        coverage_id = str(declaration.get("coverage") or "")
+        declared = coverage.get(coverage_id)
+        if not isinstance(declared, dict) or not (declared.get("from") or declared.get("to")):
+            continue
+        field = fields.get(str(declaration.get("field") or ""))
+        source_id = str(declaration.get("field") or "").partition(".")[0]
+        source = sources.get(source_id)
+        if not isinstance(source, dict):
+            continue
+        table = source.get("table")
+        column = (field or {}).get("column") if isinstance(field, dict) else source.get("time_column")
+        column = column or source.get("time_column")
+        if not table or not column:
+            continue
+        database = str(source.get("database") or _target_database(table))
+        try:
+            rows = db_connections.run_read_query(
+                database,
+                f"SELECT MIN({column}) AS lo, MAX({column}) AS hi, "
+                f"COUNT(DISTINCT {column}) AS buckets FROM {table}",
+            )
+        except Exception as exc:  # pragma: no cover - 접속 실패는 위에서 이미 보고된다
+            problems.append(f"[coverage] {time_id}: 실DB 조회 실패: {exc}")
+            continue
+        if not rows:
+            continue
+        observed = rows[0]
+        lo, hi = str(observed.get("lo") or ""), str(observed.get("hi") or "")
+        want_lo = str(declared.get("from") or "")[: len(lo)]
+        want_hi = str(declared.get("to") or "")[: len(hi)]
+        if lo and want_lo and lo != want_lo:
+            problems.append(
+                f"[coverage] {time_id}: 선언 시작 {want_lo} != 실DB {lo}"
+                f" ({table}.{column}) — 미지원 안내가 틀린 근거를 대게 된다"
+            )
+        if hi and want_hi and hi != want_hi:
+            problems.append(
+                f"[coverage] {time_id}: 선언 끝 {want_hi} != 실DB {hi} ({table}.{column})"
+            )
+    return problems
+
+
 def run_preflight(check_db: bool = False) -> dict[str, Any]:
     problems: list[str] = []
     warnings: list[str] = []
@@ -292,6 +369,11 @@ def run_preflight(check_db: bool = False) -> dict[str, Any]:
                 problems.append(f"[live-db] 카탈로그 테이블이 실DB에 없음: {missing}")
         except Exception as exc:
             problems.append(f"[live-db] 실DB 대조 실패(접속/권한 확인): {exc}")
+
+        # 4) 선언된 적재 구간 ↔ 실DB. 이 숫자는 "다월 연산 미지원" 안내의 근거이므로
+        #    틀리면 대량 거짓 안내가 된다. 지금까지의 검증은 손으로 적은 JSON 둘을 서로
+        #    비교할 뿐이라 **둘 다 같이 틀리면 통과**했다.
+        problems.extend(_declared_coverage_problems())
 
     return {
         "ok": not problems,

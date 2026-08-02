@@ -63,6 +63,56 @@
         "총 구매수량",
         "누적 구매 수량"
       ]
+    },
+    {
+      "metric_id": "buy_cycle",
+      "agg": "AVG",
+      "column": "BUY_CYCLE",
+      "ko_label": "구매주기",
+      "synonyms": [
+        "구매주기",
+        "구매 주기",
+        "평균 구매주기",
+        "평균 구매 주기",
+        "구매 간격"
+      ]
+    },
+    {
+      "metric_id": "activity_month_cnt",
+      "agg": "SUM",
+      "column": "ACTIVITY_MONTH_CNT",
+      "ko_label": "활동 개월 수",
+      "synonyms": [
+        "활동 개월 수",
+        "활동개월수",
+        "활동 월수",
+        "구매 활동 개월 수"
+      ]
+    },
+    {
+      "metric_id": "buy_product_cnt",
+      "agg": "SUM",
+      "column": "BUY_PRODUCT_CNT",
+      "ko_label": "구매 상품 수",
+      "synonyms": [
+        "구매 상품 수",
+        "구매상품수",
+        "구매 제품 수",
+        "구매한 상품 수",
+        "상품 구매 수"
+      ]
+    },
+    {
+      "metric_id": "min_buy_amt",
+      "agg": "MIN",
+      "column": "MIN_BUY_AMT",
+      "ko_label": "최소 구매금액",
+      "synonyms": [
+        "최소 구매금액",
+        "최소 구매 금액",
+        "최저 구매금액",
+        "최저 결제금액"
+      ]
     }
   ]
 }

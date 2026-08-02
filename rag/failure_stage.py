@@ -95,6 +95,11 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
     "coupon_usage_count_metric_comparison_unsupported": "real_db_mapping",
     "derived_metric_filter_unsupported": "real_db_mapping",
     "coupon_semantic_preservation_failed": "real_db_mapping",
+    # 속성 시점·이력 축(등급/상태): 조건은 인식했고 컴파일러도 있으나 그 축의 스냅샷이 실DB 에
+    # 없거나 적재가 얕아 막힌 것이다 — '조건 인식' 이 아니라 '실DB 매핑' 단계가 정직하다.
+    # f-string 으로 만들던 사유(relational_ir_<status>)는 닫힌 집합 밖이라 스텝퍼가 통째로 비었다.
+    "relational_ir_unsupported": "real_db_mapping",
+    "relational_ir_needs_clarification": "condition_recognition",
     "sql_guard_failed": "sql_safety_validation",
     "aggregation_validation_failed": "aggregation_validation",
     "intent_sql_contract_failed": "intent_scope",

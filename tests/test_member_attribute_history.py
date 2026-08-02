@@ -239,6 +239,40 @@ def test_shallow_snapshot_load_advises_instead_of_blocking() -> None:
     assert "적재되어 있지 않습니다" in blocked["message"]
 
 
+def test_transition_accepts_either_endpoint_alone() -> None:
+    """'직전 등급이 골드였던' 은 출발값만 준다 — 도착값을 요구하면 이 문형이 통째로 막힌다.
+
+    어느 쪽이 비어도 **'값이 바뀌었다'** 는 남겨야 한다. 그게 없으면 '직전이 골드'가
+    '지금도 골드'까지 삼켜 조용히 넓어진다(전이가 아니라 현재값 필터가 된다).
+    """
+    def _sql(slot: dict) -> str:
+        operation = _resolve(slot)
+        assert operation["status"] == "resolved", operation.get("message")
+        return ct.compile_sql(
+            operation,
+            member_table="CRM_MB_BASEINFO", member_alias="B", member_key="MEMBER_NO",
+            member_select_columns=["B.MEMBER_NO"], member_predicates=[], segment_label="s",
+        )
+
+    from_only = _sql({"operator": "transition", "attribute_id": "member_grade",
+                      "from_value": "gold_grade"})
+    assert "S.PREV_ZTS_GRADE = 'MEM_GRADE_CD.GOLD'" in from_only
+    assert "S.PREV_ZTS_GRADE <> S.ZTS_GRADE" in from_only
+
+    to_only = _sql({"operator": "transition", "attribute_id": "member_grade", "to_value": "vip"})
+    assert "S.ZTS_GRADE = 'MEM_GRADE_CD.VIP'" in to_only
+    assert "S.PREV_ZTS_GRADE <> S.ZTS_GRADE" in to_only
+
+    both = _sql({"operator": "transition", "attribute_id": "member_grade",
+                 "from_value": "gold_grade", "to_value": "vip"})
+    assert "S.ZTS_GRADE = 'MEM_GRADE_CD.VIP'" in both
+    assert "S.PREV_ZTS_GRADE = 'MEM_GRADE_CD.GOLD'" in both
+
+    # 양쪽 다 없으면 전이라고 부를 것이 남지 않는다 — 그때만 되묻는다.
+    blocked = _resolve({"operator": "transition", "attribute_id": "member_grade"})
+    assert blocked["status"] == "needs_clarification"
+
+
 def test_value_anchored_interval_operators_share_one_count() -> None:
     """보유/부재/전구간 유지는 **같은 카운트의 다른 임계**다 — 분기가 아니라 임계표로 갈린다."""
     ever = _resolve({"operator": "ever", "attribute_id": "member_grade",

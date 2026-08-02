@@ -16,6 +16,7 @@ from typing import Any, Mapping
 
 import audience_schema
 import event_compiler
+import member_filters_config
 import resolved_semantic_catalog
 
 
@@ -45,11 +46,59 @@ def load_audience_catalog_config(
     return payload
 
 
+def materialize_value_domains(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """``source_category`` 로 선언된 값 도메인을 eq_filters 에서 **런타임 조인**한다.
+
+    값 사전(canonical·물리코드·서열·동의어)의 단일 소유자는 ``member_target_filters.json`` 이다
+    (`attribute_catalog.json` 의 이중 소유 금지 조항과 같은 계약). 카탈로그는 "이 필드는 grade
+    범주의 값을 쓰고 순서가 있다"만 말하고, 값과 rank 는 여기서 붙인다 — 카탈로그에 값을 다시
+    적으면 두 파일이 같은 사실을 말하게 되고 곧 어긋난다.
+    """
+    domains = raw.get("value_domains")
+    if not isinstance(domains, Mapping):
+        return {}
+    materialized: dict[str, Any] = {}
+    for name, declaration in domains.items():
+        if not isinstance(declaration, Mapping):
+            continue
+        category = declaration.get("source_category")
+        if not category:
+            materialized[name] = declaration
+            continue
+        entries = member_filters_config.eq_filter_values(str(category))
+        if not entries:
+            raise AudienceCatalogLoadError(
+                f"value domain {name!r} references empty eq_filters category {category!r}"
+            )
+        resolved = dict(declaration)
+        resolved["values"] = {
+            canonical: {"physical": entry.get("value"), "aliases": entry.get("synonyms") or []}
+            for canonical, entry in entries.items()
+        }
+        if declaration.get("ordered"):
+            ranked = [
+                (entry.get("rank"), canonical)
+                for canonical, entry in entries.items()
+                if isinstance(entry.get("rank"), int)
+            ]
+            if len(ranked) != len(entries):
+                raise AudienceCatalogLoadError(
+                    f"value domain {name!r} is declared ordered but eq_filters category "
+                    f"{category!r} does not give every value a rank"
+                )
+            resolved["order"] = [canonical for _rank, canonical in sorted(ranked)]
+        materialized[name] = resolved
+    return materialized
+
+
 @functools.lru_cache(maxsize=4)
 def resolve_audience_catalog(
     path: str | Path = DEFAULT_AUDIENCE_CATALOG_PATH,
 ) -> resolved_semantic_catalog.ResolvedSemanticCatalog:
-    raw = load_audience_catalog_config(path)
+    raw = dict(load_audience_catalog_config(path))
+    materialized = materialize_value_domains(raw)
+    if materialized:
+        raw["value_domains"] = materialized
     subject_raw = raw.get("subject") if isinstance(raw.get("subject"), Mapping) else {}
     table = subject_raw.get("table")
     key = subject_raw.get("key")
@@ -227,8 +276,17 @@ def audience_catalog_guidance(
 def catalog_snapshot(
     path: str | Path = DEFAULT_AUDIENCE_CATALOG_PATH,
 ) -> dict[str, Any]:
-    """Defensive copy for diagnostics/tests; callers cannot mutate the cache."""
-    return copy.deepcopy(load_audience_catalog_config(path))
+    """Defensive copy for diagnostics/tests; callers cannot mutate the cache.
+
+    값 도메인은 **해석된 뷰**로 돌려준다 — 소비자(청구 감지기 등)가 필요로 하는 것은
+    "이 필드가 어떤 값을 갖는가"이고, 그 값의 소유자가 eq_filters 라는 사실은 로딩 상세다.
+    원본을 그대로 주면 source_category 참조만 보이고 값 어휘가 통째로 사라진다.
+    """
+    snapshot = copy.deepcopy(load_audience_catalog_config(path))
+    materialized = materialize_value_domains(snapshot)
+    if materialized:
+        snapshot["value_domains"] = materialized
+    return snapshot
 
 
 __all__ = [

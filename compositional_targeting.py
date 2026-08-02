@@ -200,10 +200,14 @@ def _compile_snapshot_sql(
         anchor_expr = f"(SELECT MAX({time_column}) FROM {table})"
     value_predicate = operation.get("value_predicate")
     values = list((value_predicate or {}).get("values") or [])
-    if not values or not all(isinstance(item, str) and item for item in values):
+    if not all(isinstance(item, str) and item for item in values):
         raise ValueError("snapshot operation requires value predicate")
-    predicates = [_values_predicate(f"S.{value_column}", values)]
-    if operation.get("aggregate") == "transition":
+    is_transition = operation.get("aggregate") == "transition"
+    if not values and not is_transition:
+        # as_of 는 '어떤 값인가'가 조건의 전부다 — 값이 없으면 전체 회원이 된다.
+        raise ValueError("snapshot operation requires value predicate")
+    predicates = [_values_predicate(f"S.{value_column}", values)] if values else []
+    if is_transition:
         prev_column = str(binding.get("prev_value_column") or "")
         if not _IDENTIFIER_RE.fullmatch(prev_column):
             raise ValueError("transition requires a safe prev_value_column")
@@ -213,6 +217,10 @@ def _compile_snapshot_sql(
         else:
             # 출발 값 미지정 전이('승급한')는 최소한 '직전과 값이 다름'을 강제한다 —
             # 이것마저 없으면 현재 값 필터로 조용히 축소되는 바로 그 오답이 된다.
+            predicates.append(f"S.{prev_column} <> S.{value_column}")
+        if not values:
+            # 도착값 미지정('직전 등급이 골드였던')도 같은 이유로 '값이 바뀌었다'를 요구한다 —
+            # 없으면 '직전이 골드'가 '지금도 골드'를 포함해 조용히 넓어진다.
             predicates.append(f"S.{prev_column} <> S.{value_column}")
     predicates.extend(dict.fromkeys(item for item in member_predicates if item))
     lines = [
@@ -542,8 +550,6 @@ def resolve_operation(
         if not prev_column:
             return _blocked("unsupported", f"{label}의 직전 값 컬럼이 없어 전이 조건을 지원하지 않습니다.")
         to_values = _expand_value_predicate(attribute, str(slot.get("to_value") or ""), "eq")
-        if not to_values:
-            return _blocked("needs_clarification", f"{label} 전이의 도착 값{_value_examples(attribute)}을 확정하지 못했습니다.")
         from_values = None
         if slot.get("from_value"):
             from_values = _expand_value_predicate(attribute, str(slot.get("from_value")), "eq")
@@ -551,10 +557,18 @@ def resolve_operation(
                 return _blocked(
                     "needs_clarification", f"{label} 전이의 출발 값{_value_examples(attribute)}을 확정하지 못했습니다."
                 )
+        # 전이는 **어느 한쪽 값만으로도 성립한다.** '직전 등급이 골드였던'은 출발값만 말하고
+        # 도착값에는 아무 제약이 없다 — 도착값을 요구하면 이 문형이 통째로 막힌다(실측 #19).
+        # 양쪽 다 없을 때만 되묻는다(그때는 전이라고 부를 것이 남지 않는다).
+        if not to_values and not from_values:
+            return _blocked(
+                "needs_clarification",
+                f"{label} 전이의 값{_value_examples(attribute)}을 확정하지 못했습니다.",
+            )
         base.update({
             "aggregate": "transition",
             "anchor": {"type": "latest"},
-            "value_predicate": {"values": to_values},
+            "value_predicate": {"values": to_values} if to_values else None,
             "prev_predicate": {"values": from_values} if from_values else None,
         })
         return {key: value for key, value in base.items() if value is not None}

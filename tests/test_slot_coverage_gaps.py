@@ -118,6 +118,29 @@ def test_member_metric_ranking_percent_produces_top_percent_sql() -> None:
     assert "TOTAL_BUY_AMT" in candidate["sql"]
 
 
+def test_member_metric_catalog_exposes_new_snapshot_rankings() -> None:
+    expected_columns = {
+        "buy_cycle": "BUY_CYCLE",
+        "activity_month_cnt": "ACTIVITY_MONTH_CNT",
+        "buy_product_cnt": "BUY_PRODUCT_CNT",
+        "min_buy_amt": "MIN_BUY_AMT",
+    }
+    allowed = graph_rag._llm_slot_allowed()["member_metrics"]
+
+    for metric_id, column in expected_columns.items():
+        assert metric_id in allowed
+        coerced = targeting_ir.SLOT_SHAPES["member_metric_ranking"].coerce(
+            {"metric_id": metric_id, "direction": "high", "top_n": 10},
+            allowed=allowed,
+        )
+        assert coerced is not None
+        candidate = graph_rag.build_member_metric_ranking_sql_candidate(
+            {"member_metric_ranking": coerced, "target_user": {}}
+        )
+        assert candidate is not None
+        assert f"C.{column}" in candidate["sql"]
+
+
 def test_member_metric_ranking_fails_closed_instead_of_degrading() -> None:
     allowed = graph_rag._llm_slot_allowed()["member_metrics"]
     shape = targeting_ir.SLOT_SHAPES["member_metric_ranking"]

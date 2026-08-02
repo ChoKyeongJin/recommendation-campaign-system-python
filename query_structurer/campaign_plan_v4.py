@@ -1058,6 +1058,14 @@ def _validated_audience_issue(item: Any, query: str) -> dict[str, Any]:
 _INCOMPLETE_RECENCY_RE = re.compile(r"최근(?!\s*\d)")
 
 
+def _as_of_date(current_date: str | None) -> date | None:
+    """계획 시점 기준일. 파싱 불가면 None(컴파일러가 실행 시점으로 폴백)."""
+    try:
+        return date.fromisoformat(current_date) if current_date else None
+    except ValueError:
+        return None
+
+
 def _temporal_requirement_issues(
     query: str,
     expression: event_ir.Condition,
@@ -1069,8 +1077,7 @@ def _temporal_requirement_issues(
     try:
         import event_parser  # 순환 없는 language adapter; canonical IR은 이 모듈을 import하지 않는다.
 
-        today = date.fromisoformat(current_date) if current_date else None
-        expected = event_parser.source_time_span_count(query, today=today)
+        expected = event_parser.source_time_span_count(query, today=_as_of_date(current_date))
     except (ImportError, ValueError):
         expected = 0
     actual = event_ir.count_time_constraints(expression)
@@ -1183,8 +1190,10 @@ def _derive_audience_execution(
                 "message": f"Semantic Catalog에 등록되지 않은 심볼입니다: {symbol}",
                 "evidence": {"text": query, "start": 0, "end": len(query)},
             })
+        # 기준일을 넘긴다 — 검증과 SQL 생성이 각자 date.today() 를 부르면 달 경계에서 서로 다른
+        # 달을 확정할 수 있고, 월 단위 컬럼에서는 그게 곧 다른 오디언스다.
         capability = event_compiler.validate_compiler_capability(
-            expression, context=catalog.compile_context(literals=True)
+            expression, context=catalog.compile_context(literals=True, today=_as_of_date(current_date))
         )
         if capability.status != event_compiler.CAPABILITY_SUPPORTED:
             for issue in capability.issues or ():

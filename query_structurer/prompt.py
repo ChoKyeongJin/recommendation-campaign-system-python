@@ -144,12 +144,17 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
             ),
             (
                 "semantic_plan is the narrow second surface for the one axis the Event IR algebra cannot "
-                "state: a member attribute observed at a point in time or across monthly snapshots "
-                "(등급/상태 기준월, 직전 대비 전이, N개월 유지·변경 횟수·매월 존재). Emit a "
-                "relation_predicate node there for such a condition and leave that condition out of "
-                "audience_requirement.expression — do not state it twice. When the query has no such "
-                "condition, return semantic_plan={\"nodes\": []}. Never put an ordinary audience predicate "
-                "(purchase, cart, campaign, login, profile value) into semantic_plan.\n"
+                "state: a member attribute read from a **past or per-month snapshot**. Use it only when the "
+                "query names a past reference month ('지난달 말 기준', '2025년 12월 기준'), a change relative "
+                "to the previous snapshot ('직전 등급', '승급'), or a multi-month pattern ('3개월 내내', "
+                "'2번 이상 변경', '매월', '한 번이라도').\n"
+                "A condition on the member's CURRENT attribute value is NOT this axis. '현재 등급이 VIP', "
+                "'골드 이상 등급', '휴면 회원' are ordinary profile predicates: put them in "
+                "audience_requirement.expression as a subject field Comparison and leave semantic_plan empty. "
+                "'최신 기준월 기준' also means the current value.\n"
+                "A condition belongs to exactly one surface — never state it in both. When the query has no "
+                "past/per-month snapshot condition, return semantic_plan={\"nodes\": []}. Never put a "
+                "purchase, cart, campaign, or login condition into semantic_plan.\n"
                 + semantic_plan.node_type_guidance(
                     node_types=campaign_plan_v4.LLM_SEMANTIC_PLAN_NODE_TYPES
                 )
