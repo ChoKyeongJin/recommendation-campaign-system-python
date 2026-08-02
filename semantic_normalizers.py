@@ -598,15 +598,27 @@ COUNT_THRESHOLD = "threshold"
 class CountThresholdNormalizer:
     """카운트 임계 비교의 의미 분류기(순수 대수 — 카운트는 음수가 아닌 정수라는 것만 안다)."""
 
+    # 이 분류기만 쓰는 **엄격** 연산자 표. 일반 정규화기(OperatorNormalizer)는 '10만 원 이상'처럼
+    # 값과 붙어 온 표면을 살리려고 부분 문자열 폴백을 갖는데, 그 관대함이 여기서는 극성을 뒤집는다:
+    # '!=' 안에서 별칭 '=' 가 발견돼 `order_count != 0`(주문 있음)이 부재로 분류됐다(실측).
+    # 분류가 곧 슬롯 선택이라 모르는 표기는 관대하게 넘기지 말고 **환원하지 않는 편**이 옳다.
+    _STRICT_OPERATORS: dict[str, str] = {
+        ">=": ">=", ">": ">", "<=": "<=", "<": "<", "=": "=", "==": "=",
+        "gte": ">=", "gt": ">", "lte": "<=", "lt": "<", "eq": "=",
+        "이상": ">=", "초과": ">", "이하": "<=", "미만": "<", "같음": "=", "동일": "=",
+    }
+
     @classmethod
     def classify(cls, operator: Any, threshold: Any) -> str:
         """(연산자, 임계값) → COUNT_* 분류. 판정 불가면 COUNT_THRESHOLD(기존 경로 유지)."""
-        symbol = OperatorNormalizer.normalize_or_none(operator)
+        symbol = cls._STRICT_OPERATORS.get(str(operator).strip()) if operator is not None else None
         try:
             value = float(threshold)
         except (TypeError, ValueError):
             return COUNT_THRESHOLD
-        if symbol is None or value != value:  # NaN
+        # NaN·무한대는 정수 카운트의 경계가 아니다. floor/ceil 이 OverflowError 를 던지는데 그것은
+        # 노드별 예외 처리(KeyError/TypeError/ValueError)를 빠져나가 파이프라인 전체를 죽인다.
+        if symbol is None or value != value or value in (float("inf"), float("-inf")):
             return COUNT_THRESHOLD
         # 정수 카운트 위의 하한/상한을 정수로 좁힌다: 'COUNT > 0.5' 는 'COUNT >= 1' 과 같다.
         if symbol == ">":

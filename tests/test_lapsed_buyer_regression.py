@@ -336,3 +336,124 @@ def test_rescue_claim_flows_through_the_bridge_and_clears_the_gate() -> None:
     assert result.status != semantic_plan.STATUS_UNSUPPORTED
     claimed = query_plan[semantic_plan_bridge.PIPELINE_KEY]["claimed_spans"]
     assert claimed, "결정론 구제의 슬롯 구간이 청구 목록에 없다"
+
+
+# ── 적대적 리뷰에서 확인된 결함의 회귀 고정(2026-08-02) ──────────────────────────────
+
+
+def test_classify_rejects_fuzzy_operators_instead_of_inverting_polarity() -> None:
+    """'!=' 안에서 별칭 '=' 를 찾아내던 관대함이 `order_count != 0`(주문 있음)을 부재로 뒤집었다.
+
+    분류가 곧 슬롯 선택이므로, 모르는 표기는 관대하게 넘기지 말고 **환원하지 않는다**.
+    """
+    for surface in ("!=", "<>", "≠", "not", ""):
+        assert CountThresholdNormalizer.classify(surface, 0) == COUNT_THRESHOLD, surface
+    # 정상 표기는 그대로 판정된다.
+    assert CountThresholdNormalizer.classify("=", 0) == COUNT_ABSENCE
+    assert CountThresholdNormalizer.classify("eq", 0) == COUNT_ABSENCE
+    assert CountThresholdNormalizer.classify("이상", 1) == COUNT_EXISTENCE
+
+
+def test_classify_survives_non_finite_thresholds() -> None:
+    """inf 는 floor/ceil 에서 OverflowError 를 던지는데, 그건 노드별 예외 처리를 빠져나가
+    파이프라인 전체를 죽이고 형제 노드가 만든 슬롯까지 함께 버린다."""
+    for value in (float("inf"), float("-inf"), float("nan")):
+        assert CountThresholdNormalizer.classify(">", value) == COUNT_THRESHOLD
+
+
+def test_existence_reduction_never_drops_a_narrowing_qualifier() -> None:
+    """'나이키를 1번 이상 구매' 를 존재로 환원하면 브랜드가 사라져 **대상이 조용히 넓어진다**.
+    한정어가 붙은 노드는 임계 경로에 남아야 한다(>=1 은 양수라 그대로 컴파일된다)."""
+    query = "최근 3개월 동안 나이키 브랜드를 1번 이상 구매한 회원"
+    _plan, evaluation = _compile(
+        [{
+            "id": "n", "type": "aggregate_predicate", "scope": "order", "metric": "order_count",
+            "operator": ">=", "value": 1, "period": {"value": 3, "unit": "months"},
+            "qualifier": "나이키",
+            "source_span": "나이키 브랜드를 1번 이상 구매", "source_start": 9, "source_end": 26,
+        }],
+        query=query,
+    )
+    target_user = evaluation.compiled.containers["target_user"]
+    assert "purchase_membership" not in target_user, "브랜드 한정어가 사라졌다 — 대상이 넓어진다"
+    assert target_user["aggregate_conditions"] == [
+        {"metric_id": "order_count", "operator": ">=", "threshold": 1,
+         "window_days": 90, "scope": {"brand": "나이키"}}
+    ]
+
+
+def test_non_member_grain_is_not_reduced_either() -> None:
+    """per_brand grain 도 존재 슬롯이 담을 수 없다 — '브랜드마다 1번 이상' ≠ '구매한 적 있음'."""
+    _plan, evaluation = _compile(
+        [{
+            "id": "n", "type": "aggregate_predicate", "scope": "order", "metric": "order_count",
+            "operator": ">=", "value": 1, "grain": "per_brand",
+            "source_span": "브랜드마다 1번 이상", "source_start": 0, "source_end": 10,
+        }],
+        query="브랜드마다 1번 이상 구매한 회원",
+    )
+    assert "purchase_membership" not in evaluation.compiled.containers.get("target_user", {})
+
+
+def test_two_existence_windows_conflict_instead_of_silently_overwriting() -> None:
+    """존재 슬롯은 값이 하나뿐이다. 덮어쓰면 **노드 순서가 곧 대상**이 되고 근거가 남지 않는다."""
+    query = "최근 3개월 이내 구매 이력이 있고 최근 7일 이내에도 주문한 회원"
+    _plan, evaluation = _compile(
+        [
+            _aggregate_node("a", ">=", 1, period={"value": 3, "unit": "months"},
+                            span="최근 3개월 이내 구매 이력이 있고", start=0, end=17),
+            _aggregate_node("b", ">=", 1, period={"value": 7, "unit": "days"},
+                            span="최근 7일 이내에도 주문한", start=18, end=31),
+        ],
+        query=query,
+    )
+    reasons = " ".join(failure["reason"] for failure in evaluation.compiled.failures)
+    assert "둘 있다" in reasons, f"충돌이 보고되지 않았다: {evaluation.compiled.to_dict()}"
+
+
+def test_lapsed_claim_does_not_swallow_an_interposed_condition() -> None:
+    """정규식의 `.{0,24}?` 사이에 무관한 조건이 낄 수 있다 — 매치 전체를 청구하면 그 조건이
+    '이미 표현됨'으로 처리돼 조용히 사라진다. 청구는 **각 절**의 구간이어야 한다."""
+    import behavior_demotion
+    import slot_ownership
+
+    query = "최근 3개월 주문은 있었지만 서울에 사는 30대 중 최근 30일간 구매가 없는 회원을 추출해줘"
+    plan: dict = {}
+    assert behavior_demotion.normalize_lapsed_purchase_pattern(plan, source_text=query)
+    for slot in ("purchase_membership", "purchase_inactivity"):
+        text = slot_ownership.slot_span(plan, slot)["text"]
+        assert "서울" not in text and "30대" not in text, f"{slot} 청구가 남의 절을 삼켰다: {text!r}"
+
+
+def test_a_node_claims_as_many_period_anchors_as_it_owns() -> None:
+    """기간을 둘 소유하는 노드(기간 대 기간 비교의 baseline·current)가 자기 기간 하나를
+    남의 것처럼 미커버로 흘리면 안 된다 — 1:1 고정은 그 노드를 통째로 막았다."""
+    import semantic_coverage
+
+    query = "2019년 2월 대비 2019년 3월 구매금액이 증가한 회원"
+    start = query.find("구매금액이 증가한")
+    plan = semantic_plan.plan_from_dict(
+        {"nodes": [{
+            "id": "n", "type": "metric_comparison", "metric": "purchase_amount", "relation": "increase",
+            "baseline": {"from": "20190201", "to": "20190228"},
+            "current": {"from": "20190301", "to": "20190331"},
+            "source_span": "구매금액이 증가한", "source_start": start, "source_end": start + 9,
+        }]},
+        source_query=query,
+    )
+    assert semantic_coverage.verify_coverage(query, plan).uncovered_requirements == []
+
+
+def test_a_single_period_node_still_claims_only_one_anchor() -> None:
+    """반대 방향: 기간 하나짜리 노드가 절 안의 다른 기간까지 덮으면 표현되지 않은 절이 사라진다."""
+    import semantic_coverage
+
+    plan = semantic_plan.plan_from_dict(
+        {"nodes": [_aggregate_node("a", ">", 0, period={"value": 3, "unit": "months"},
+                                   span="최근 3개월 주문은 있었지만", start=0, end=13)]},
+        source_query=_PROMPT,
+    )
+    uncovered = " ".join(
+        item["source_span"] for item in semantic_coverage.verify_coverage(_PROMPT, plan).uncovered_requirements
+    )
+    assert "30일" in uncovered, "표현되지 않은 두 번째 기간이 조용히 커버로 처리됐다"

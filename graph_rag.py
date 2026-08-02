@@ -10253,7 +10253,6 @@ def build_sql_result(
     # 가 플랜을 읽기 전이어야 잉여 커버리지 조건이 안 생기고, 빌더 라우팅 가로채기도 사라진다.
     behavior_demotion.demote_aggregate_covered_behaviors(query_plan, source_text=original_query or query)
     behavior_demotion.demote_unevidenced_cart_behavior(query_plan, source_text=original_query or query)
-    behavior_demotion.demote_unevidenced_exclusions(query_plan, source_text=original_query or query)
     _refresh_aggregation_request_validation(query_plan, schema_path)
     semantic_requirements.verify_source_requirements(query_plan)
     # 미귀결 조건의 보완은 파이프라인의 coverage 재추출(원문 누락 구간만 1회)이 담당한다 —

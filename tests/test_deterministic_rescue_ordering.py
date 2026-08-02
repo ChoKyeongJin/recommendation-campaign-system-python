@@ -83,11 +83,19 @@ def test_rescue_records_the_source_span_it_read() -> None:
     assert plan["target_user"]["purchase_inactivity"]["min_days"] == 30
     assert plan["target_user"]["behaviors"] == ["cart_abandoner"], "평생 무구매는 창 조건과 모순이다"
 
-    for slot in ("purchase_membership", "purchase_inactivity"):
+    # 청구는 **절 단위**다 — 매치 전체를 청구하면 두 절 사이에 낀 무관한 조건까지 삼킨다.
+    expected = {
+        "purchase_membership": ("주문", "있었지만"),
+        "purchase_inactivity": ("구매", "없"),
+    }
+    for slot, markers in expected.items():
         span = slot_ownership.slot_span(plan, slot)
         assert span is not None, f"{slot} 의 출처 구간이 기록되지 않았다"
         assert span["source"] == _LAPSED_PROMPT
-        assert "주문" in span["text"] and "구매가 없" in span["text"], span["text"]
+        assert all(marker in span["text"] for marker in markers), (slot, span["text"])
+    assert slot_ownership.slot_span(plan, "purchase_membership")["text"] != (
+        slot_ownership.slot_span(plan, "purchase_inactivity")["text"]
+    ), "두 슬롯이 같은 구간을 청구하면 절 단위 청구가 아니다"
 
 
 def test_rescue_does_not_overwrite_values_the_structurer_already_produced() -> None:

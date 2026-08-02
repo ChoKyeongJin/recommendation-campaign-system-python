@@ -329,6 +329,18 @@ class LegacyQueryPlanCompiler:
         "order": (SLOT_PURCHASE_MEMBERSHIP, SLOT_PURCHASE_INACTIVITY),
     }
 
+    @staticmethod
+    def _has_narrowing_qualifier(node: SemanticNode) -> bool:
+        """이 노드가 존재/부재 슬롯이 담을 수 없는 **범위 한정어**를 들고 있는가.
+
+        담을 수 없는 것을 환원하면 조건이 실패하는 게 아니라 **조용히 넓어진다** — 실패보다 나쁘다.
+        """
+        qualifier = node.values.get("qualifier")
+        if isinstance(qualifier, str) and qualifier.strip():
+            return True
+        grain = node.values.get("grain")
+        return isinstance(grain, str) and grain not in ("", "per_member")
+
     def _compile_count_presence(
         self,
         node: SemanticNode,
@@ -355,6 +367,12 @@ class LegacyQueryPlanCompiler:
         """
         verdict = CountThresholdNormalizer.classify(operator, threshold)
         if verdict == COUNT_THRESHOLD:
+            return False
+        # 존재/부재 슬롯은 **회원 단위 구매 사실**만 표현한다 — 브랜드·카테고리 한정어도, 회원 외
+        # grain(per_brand 등)도 담을 자리가 없다. 그런 노드를 환원하면 한정어가 조용히 사라져
+        # 대상이 넓어진다('나이키를 1번 이상' → 그냥 '구매한 적 있음'). 한정어가 붙은 노드는
+        # 임계 경로에 남긴다: '>=1' 은 양수라 그대로 컴파일되고, '>0' 은 정직하게 거부된다.
+        if self._has_narrowing_qualifier(node):
             return False
         surface = f"{metric} {operator} {threshold}"
         if verdict == COUNT_TAUTOLOGY:
@@ -409,6 +427,20 @@ class LegacyQueryPlanCompiler:
                 "reason": (
                     self._declared_rejection(ctx, slot_name, value, None)
                     or f"'{surface}' 의 존재/부재 환원 값이 슬롯 검증을 통과하지 못했다"
+                ),
+            })
+            return True
+        existing = result.target_user.get(slot_name)
+        if existing is not None and existing != coerced:
+            # 존재/부재 슬롯은 값이 하나뿐이라 두 번째 노드를 담을 자리가 없다. 덮어쓰면 **노드 순서가
+            # 곧 대상**이 되고(마지막 노드가 이긴다) 그 사실이 어디에도 안 남는다. 조용히 하나를
+            # 고르느니 무엇이 충돌했는지 말하고 막는다.
+            result.failures.append({
+                "node_id": node.id,
+                "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                "reason": (
+                    f"같은 조건 축에 서로 다른 {'존재' if verdict == COUNT_EXISTENCE else '부재'} 창이 "
+                    f"둘 있다({existing} vs {coerced}) — 한 번에 하나만 표현할 수 있다"
                 ),
             })
             return True

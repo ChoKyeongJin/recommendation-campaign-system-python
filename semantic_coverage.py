@@ -280,23 +280,26 @@ def _period_anchor_claims(
     ]
     claimed: set[tuple[int, int]] = set()
     for node in plan.walk():
-        owns_period = any(
-            spec.kind in _PERIOD_FIELD_KINDS and node.values.get(spec.name) not in (None, "", {}, [])
-            for spec in type(node).FIELDS
+        # 노드가 **채운 기간 필드의 수**만큼 청구한다. 하나로 고정하면 기간을 둘 소유하는 노드
+        # (기간 대 기간 비교의 baseline·current)가 자기 기간 하나를 남의 것처럼 미커버로 흘린다.
+        owned = sum(
+            1 for spec in type(node).FIELDS
+            if spec.kind in _PERIOD_FIELD_KINDS and node.values.get(spec.name) not in (None, "", {}, [])
         )
-        if not owns_period or node.id not in spans_by_id:
+        if not owned or node.id not in spans_by_id:
             continue
         node_start = spans_by_id[node.id][0]
         clause_start, clause_end = clause_bounds(query, node_start)
-        available = [
-            anchor for anchor in candidates
-            if (anchor.start, anchor.end) not in claimed
-            and clause_start <= anchor.start and anchor.end <= clause_end
-        ]
-        if not available:
-            continue
-        nearest = min(available, key=lambda anchor: (abs(anchor.start - node_start), anchor.start))
-        claimed.add((nearest.start, nearest.end))
+        for _ in range(owned):
+            available = [
+                anchor for anchor in candidates
+                if (anchor.start, anchor.end) not in claimed
+                and clause_start <= anchor.start and anchor.end <= clause_end
+            ]
+            if not available:
+                break
+            nearest = min(available, key=lambda anchor: (abs(anchor.start - node_start), anchor.start))
+            claimed.add((nearest.start, nearest.end))
     return claimed
 
 

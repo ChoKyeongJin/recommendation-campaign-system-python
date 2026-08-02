@@ -158,58 +158,13 @@ def demote_unevidenced_cart_behavior(
     return ["cart_abandoner"] if outcome == "removed" else []
 
 
-# 제외 **극성**의 표면 표지. 조건의 부정("구매가 없는")이 아니라 집합을 덜어내는 말만 넣는다 —
-# 둘을 섞으면 부정형 조건이 있는 모든 문장에서 환각 제외가 근거를 얻는다. 목록이 코드에 있는 이유:
-# 부정 표지는 LLM 에 넘기면 안 되는 부류다([[migration-forbidden-surface-lists]]).
-_EXCLUSION_MARKERS: tuple[str, ...] = (
-    "제외", "빼고", "뺀", "빼", "말고", "아닌", "아니라", "이외", "그외", "그 외", "외의", "except",
-)
-
-
-def demote_unevidenced_exclusions(plan: dict[str, Any], *, source_text: str) -> list[str]:
-    """원문에 제외 표지가 전혀 없는데 방출된 ``exclude.*`` 조건을 환각으로 걷는다.
-
-    실측(2026-08-02): "…회원을 추출해서 **이탈방지** 캠페인을 만들어줘" 에서 구조화기가
-    `exclude.lifecycle=['dormant_user']`(휴면 회원 제외)를 지어냈다. 사용자는 제외를 말한 적이
-    없고 '휴면'이라는 낱말도 없다 — 캠페인 **이름**에서 타겟 조건을 유추한 것이다.
-
-    그대로 두면 두 결말뿐이고 둘 다 나쁘다: 빌더가 반영하면 요청에 없는 회원이 조용히 빠지고,
-    반영하지 못하면 정상 요청이 "조건을 SQL 에 반영하지 못했다"로 막힌다(실측 6회 중 2회).
-
-    판정은 근거 유무 하나다. 제외는 집합을 덜어내는 연산이라 원문에 반드시 그 말이 있다 —
-    조건의 부정("구매가 **없는**")은 여기 해당하지 않으므로 표지 목록에서 뺀다.
-    """
-    exclude = plan.get("exclude")
-    if not isinstance(exclude, dict) or not any(exclude.get(axis) for axis in exclude):
-        return []
-    compact = "".join((source_text or "").split()).casefold()
-    if any(marker in compact for marker in _EXCLUSION_MARKERS):
-        return []
-    dropped: list[str] = []
-    for axis in sorted(exclude):
-        values = exclude.get(axis)
-        if not isinstance(values, list) or not values:
-            continue
-        for value in list(values):
-            outcome = slot_ownership.claim_slot(
-                plan, "exclude", axis,
-                owner="behavior_demotion:unevidenced_exclusion",
-                reason="원문에 제외 표지가 없어 환각으로 판정(요청하지 않은 회원이 조용히 빠지는 것을 막는다)",
-                source_text=source_text,
-                value=value,
-            )
-            if outcome == "removed":
-                dropped.append(f"exclude.{axis}:{value}")
-    return dropped
-
-
 # '최근 N개월 주문은 있었지만 최근 M일 구매가 없는'(이탈 위험) 문형. LLM 은 이를
 # 평생 무구매(no_purchase)+미접속(inactivity_period)으로 오배선하곤 한다(26종 감사 #2) —
 # 올바른 합성은 구매 존재(purchase_membership, N창) + 미구매 창(purchase_inactivity, M일)이다.
 _LAPSED_RE = re.compile(
-    r"최근\s*(?P<active>\d+)\s*(?P<unit>개월|주|일)\s*(?:동안|간|내)?\s*(?:주문|구매)"
-    r"[은는이가도]?\s*있(?:었|던|는)?지만.{0,24}?"
-    r"최근\s*(?P<inactive>\d+)\s*일\s*(?:간|동안|내)?\s*(?:구매|주문)[가는은이]?\s*없"
+    r"(?P<exists_clause>최근\s*(?P<active>\d+)\s*(?P<unit>개월|주|일)\s*(?:동안|간|내)?\s*(?:주문|구매)"
+    r"[은는이가도]?\s*있(?:었|던|는)?지만).{0,24}?"
+    r"(?P<absent_clause>최근\s*(?P<inactive>\d+)\s*일\s*(?:간|동안|내)?\s*(?:구매|주문)[가는은이]?\s*없)"
 )
 _UNIT_DAYS = {"개월": 30, "주": 7, "일": 1}
 
@@ -232,7 +187,13 @@ def normalize_lapsed_purchase_pattern(
         plan["target_user"] = target_user
     active_days = int(match.group("active")) * _UNIT_DAYS[match.group("unit")]
     inactive_days = int(match.group("inactive"))
-    span = match.span()
+    # 청구 구간은 **각 절의 구간**이지 매치 전체가 아니다. 두 절 사이에는 `.{0,24}?` 가 있고,
+    # 거기에 무관한 조건이 낄 수 있다("…있었지만 **서울에 사는 30대 중** 최근 30일간 구매가 없는").
+    # 매치 전체를 청구하면 그 조건까지 '이미 표현됨'으로 처리돼 조용히 사라진다.
+    spans = {
+        "purchase_membership": match.span("exists_clause"),
+        "purchase_inactivity": match.span("absent_clause"),
+    }
     changed: list[str] = []
     if not isinstance(target_user.get("purchase_membership"), dict):
         target_user["purchase_membership"] = {"operator": "exists", "window_days": active_days}
@@ -245,10 +206,12 @@ def normalize_lapsed_purchase_pattern(
     # 읽은 구간을 남긴다. 정규식 매치가 곧 근거 구간이므로 부산물로 이미 존재하고, 이것이 없으면
     # 같은 어구를 다시 방출한 노드가 '유실된 의미'로 보고돼 요청 전체가 막힌다(소유 판정의 입력).
     for label in changed:
-        slot_ownership.record_slot_span(
-            plan, label.split(":", 1)[0], span,
-            source_text=source_text, filter_name="behavior_demotion:lapsed_purchase",
-        )
+        slot = label.split(":", 1)[0]
+        if slot in spans:
+            slot_ownership.record_slot_span(
+                plan, slot, spans[slot],
+                source_text=source_text, filter_name="behavior_demotion:lapsed_purchase",
+            )
     behaviors = target_user.get("behaviors")
     if isinstance(behaviors, list) and "no_purchase" in behaviors:
         # 평생 무구매는 '최근 M일 무구매'와 모순 — 창 조건이 소유권을 가진다.
@@ -276,6 +239,5 @@ def normalize_lapsed_purchase_pattern(
 __all__ = [
     "demote_aggregate_covered_behaviors",
     "demote_unevidenced_cart_behavior",
-    "demote_unevidenced_exclusions",
     "normalize_lapsed_purchase_pattern",
 ]
