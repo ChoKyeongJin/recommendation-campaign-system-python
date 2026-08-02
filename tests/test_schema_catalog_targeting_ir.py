@@ -93,6 +93,9 @@ def test_real_unresolved_condition_blocks_every_llm_fallback(monkeypatch) -> Non
     assert result["failure_reason"] in {
         "query_plan_required_conditions_missing",
         "semantic_ir_needs_clarification",
+        # 결핍 원인 분류(2026-08-02) 이후 구조화기·설정 실패는 별도 코드로 갈린다.
+        "semantic_structurer_failure",
+        "semantic_registry_gap",
         "unresolved_source_conditions",
     }
     assert result["interpretation_status"] == "needs_clarification"

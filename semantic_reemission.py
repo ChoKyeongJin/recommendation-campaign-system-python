@@ -23,7 +23,7 @@ from __future__ import annotations
 import copy
 import os
 from dataclasses import dataclass, field
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 import requirement_ledger
 import semantic_plan
@@ -116,26 +116,55 @@ class ReemissionOutcome:
 
 
 def build_patch_request(
-    ledger: RequirementLedger, *, policy: ReemissionPolicy
+    ledger: RequirementLedger,
+    *,
+    policy: ReemissionPolicy,
+    structurer_issues: Sequence[Mapping[str, Any]] = (),
 ) -> PatchRequest:
-    """미해결 요구사항 → 패치 요청. 미지원·내부 사고는 재방출로 고쳐지지 않으므로 제외한다."""
+    """미해결 요구사항 + **정규화 실패 후보** → 패치 요청.
+
+    미지원·내부 사고는 재방출로 고쳐지지 않으므로 제외한다. 반대로 "노드는 있는데 타입이
+    어긋났다"는 재방출로 고쳐질 수 있는데도 예전에는 트리거가 아니었다 — coverage 상 그
+    구간은 노드가 청구하고 있어 uncovered 가 아니기 때문이다(실측: 최대 실패 군집이 여기였다).
+    """
     targets: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for item in ledger.unresolved():
-        span = (item.source_span or "").strip()
+
+    def _add(target: dict[str, Any]) -> bool:
+        span = str(target.get("source_span") or "").strip()
         if not span or span in seen:
-            continue
+            return True
         seen.add(span)
-        targets.append(
-            {
-                "requirement_id": item.requirement_id,
-                "label": item.label,
-                "source_span": span,
-                "reason": item.validation.get("reason"),
-                "missing_fields": list(item.validation.get("missing_fields") or []),
-            }
-        )
-        if policy.max_spans_per_round and len(targets) >= policy.max_spans_per_round:
+        targets.append({**target, "source_span": span})
+        return not (policy.max_spans_per_round and len(targets) >= policy.max_spans_per_round)
+
+    for issue in structurer_issues or ():
+        if str(issue.get("reemission") or "") == "skip":
+            continue
+        # 검증기의 구체적 피드백을 그대로 실어 보낸다 — "다시 해봐"보다 "이 타입 payload 가
+        # 비었고 저 타입은 완성됐다"가 훨씬 잘 고쳐진다.
+        if not _add({
+            "requirement_id": issue.get("node_id"),
+            "label": issue.get("proposed_type"),
+            "source_span": issue.get("source_span"),
+            "reason": issue.get("reason"),
+            "missing_fields": [],
+            "candidate_types": list(issue.get("compatible_types") or []),
+            "kind": "type_mismatch",
+        }):
+            return PatchRequest(
+                spans=tuple(item["source_span"] for item in targets), targets=tuple(targets)
+            )
+
+    for item in ledger.unresolved():
+        if not _add({
+            "requirement_id": item.requirement_id,
+            "label": item.label,
+            "source_span": item.source_span or "",
+            "reason": item.validation.get("reason"),
+            "missing_fields": list(item.validation.get("missing_fields") or []),
+            "kind": "unresolved",
+        }):
             break
     return PatchRequest(spans=tuple(item["source_span"] for item in targets), targets=tuple(targets))
 
@@ -210,9 +239,16 @@ def run(
 
     current_plan, current_ledger = plan, ledger
     for round_index in range(1, active_policy.max_rounds + 1):
-        if current_ledger.is_complete() and not active_policy.reemit_when_complete:
+        pending_issues = list(getattr(current_plan, "structurer_issues", []) or [])
+        if (
+            current_ledger.is_complete()
+            and not pending_issues
+            and not active_policy.reemit_when_complete
+        ):
             break
-        request = build_patch_request(current_ledger, policy=active_policy)
+        request = build_patch_request(
+            current_ledger, policy=active_policy, structurer_issues=pending_issues
+        )
         if not request.spans:
             break
         record = RoundRecord(
@@ -264,15 +300,37 @@ def run(
     return outcome
 
 
-def patch_prompt_targets(request: PatchRequest) -> list[str]:
-    """패치 요청을 사람이 읽는 줄로(프롬프트 조립은 호출자 몫 — 여기선 문구만 만든다)."""
+def patch_prompt_targets(
+    request: PatchRequest | None = None,
+    *,
+    spans: Sequence[str] = (),
+    targets: Sequence[Mapping[str, Any]] = (),
+) -> list[str]:
+    """패치 요청을 사람이 읽는 줄로(프롬프트 조립은 호출자 몫 — 여기선 문구만 만든다).
+
+    검증기의 구체적 피드백(왜 거절했는지 + 어떤 타입이 가능한지)을 함께 싣는다. 구간만
+    다시 보내면 같은 실수가 반복된다 — 타입 오배선은 재시도해도 같은 타입이 나온다.
+    """
+    listed = list(request.targets) if request is not None else list(targets)
+    sequence = list(request.spans) if request is not None else list(spans)
+    by_span = {
+        str(target.get("source_span") or "").strip(): target
+        for target in listed
+        if isinstance(target, Mapping)
+    }
     lines: list[str] = []
-    for target in request.targets:
+    for span in sequence or list(by_span):
+        span = str(span).strip()
+        target = by_span.get(span)
+        if not target:
+            lines.append(f"- {span}")
+            continue
         reason = str(target.get("reason") or "").strip()
-        span = str(target.get("source_span") or "").strip()
-        label = str(target.get("label") or "").strip()
-        detail = f" — {reason}" if reason else ""
-        lines.append(f"[{label}] {span}{detail}")
+        candidates = [str(item) for item in (target.get("candidate_types") or []) if item]
+        detail = f" (검증: {reason})" if reason else ""
+        if candidates:
+            detail += f" · 가능한 노드 타입: {', '.join(sorted(candidates))}"
+        lines.append(f"- {span}{detail}")
     return lines
 
 

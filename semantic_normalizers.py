@@ -191,6 +191,10 @@ class AmountNormalizer:
             unit = UnitNormalizer.normalize(unit_hint) if unit_hint else None
             return Quantity(value=_as_number(raw), unit=unit)
         if isinstance(raw, Mapping):
+            # strict function calling 은 **모든 키를 항상 존재하게** 만든다(무표현은 null).
+            # 그래서 키 존재 여부로 분기하면 `{"amount": null, "value": 2}` 가 금액으로 잘못
+            # 읽힌다 — 값이 있는 키만 존재로 본다.
+            raw = {key: value for key, value in raw.items() if value is not None}
             if "amount" in raw:
                 amount = raw.get("amount")
                 if isinstance(amount, str):
@@ -382,7 +386,14 @@ class PeriodNormalizer:
         if not isinstance(raw, Mapping):
             raise NormalizationError("invalid_period", f"기간 값을 알 수 없다: {raw!r}", received=raw)
 
-        kind = str(raw.get("type") or "").strip() or cls._infer_kind(raw)
+        # strict function calling 은 모든 키를 항상 존재하게 만든다(무표현은 null). 그래서
+        # 선언된 `type` 이 그 종류의 인자를 갖추지 못한 채 오는 일이 생긴다
+        # (실측: type='absolute' 인데 from/to 는 null 이고 value/unit 만 채워짐).
+        # 선언보다 **실제로 채워진 인자**를 믿는다 — 그쪽이 사용자가 말한 것이다.
+        raw = {key: value for key, value in raw.items() if value is not None}
+        kind = str(raw.get("type") or "").strip()
+        if not kind or not cls._has_arguments(kind, raw):
+            kind = cls._infer_kind(raw) or kind
         if kind == "calendar_month":
             year, month = raw.get("year"), raw.get("month")
             if not _is_int(year) or not _is_int(month) or not 1 <= int(month) <= 12:
@@ -405,6 +416,20 @@ class PeriodNormalizer:
             window = RelativeWindow(value=int(value), unit=canonical)
             return window.resolve(today) if today is not None else window
         raise NormalizationError("invalid_period", f"알 수 없는 기간 종류: {kind!r}", received=raw)
+
+    # 기간 종류별 **필수 인자**. `_infer_kind` 와 같은 표를 두 번 쓰지 않도록 여기 하나만 둔다.
+    _KIND_ARGUMENTS: dict[str, tuple[str, ...]] = {
+        "calendar_month": ("year", "month"),
+        "absolute": ("from", "to"),
+        "relative": ("value",),
+    }
+
+    @classmethod
+    def _has_arguments(cls, kind: str, raw: Mapping[str, Any]) -> bool:
+        required = cls._KIND_ARGUMENTS.get(kind)
+        if required is None:
+            return False
+        return all(raw.get(name) is not None for name in required)
 
     @staticmethod
     def _infer_kind(raw: Mapping[str, Any]) -> str:
@@ -552,9 +577,92 @@ class EntityResolver:
         return self._aliases.get(text)
 
 
+# ── 카운트 임계 대수 ─────────────────────────────────────────────────────────────
+# 정수 카운트에 대한 (연산자, 임계값) 의 **의미 분류**. 도메인 낱말도 슬롯 이름도 모른다 —
+# 어느 슬롯으로 가는지는 컴파일러가 정하고, 여기서는 대수만 판정한다.
+#
+# 왜 대수인가: '있음/없음'과 'N건 이상'은 표현이 아니라 값으로 갈린다.
+#     COUNT > 0  ≡  COUNT >= 1   ≡  존재
+#     COUNT = 0  ≡  COUNT < 1    ≡  부재
+#     COUNT >= 0                 ≡  항진식(조건이 아니다)
+# 이 분류가 없으면 (a) 존재 표현('주문은 있었지만' → order_count > 0)이 임계 슬롯의 양수
+# 도메인에 걸려 요청 전체가 막히고, (b) 부재 표현이 임계 비교로 컴파일돼 극성이 뒤집히고,
+# (c) 항진식이 조건인 척 SQL 에 들어간다. 실측(2026-08-02): (a) 로 4/4 실패.
+COUNT_TAUTOLOGY = "tautology"
+COUNT_EXISTENCE = "existence"
+COUNT_ABSENCE = "absence"
+COUNT_CONTRADICTION = "contradiction"
+COUNT_THRESHOLD = "threshold"
+
+
+class CountThresholdNormalizer:
+    """카운트 임계 비교의 의미 분류기(순수 대수 — 카운트는 음수가 아닌 정수라는 것만 안다)."""
+
+    @classmethod
+    def classify(cls, operator: Any, threshold: Any) -> str:
+        """(연산자, 임계값) → COUNT_* 분류. 판정 불가면 COUNT_THRESHOLD(기존 경로 유지)."""
+        symbol = OperatorNormalizer.normalize_or_none(operator)
+        try:
+            value = float(threshold)
+        except (TypeError, ValueError):
+            return COUNT_THRESHOLD
+        if symbol is None or value != value:  # NaN
+            return COUNT_THRESHOLD
+        # 정수 카운트 위의 하한/상한을 정수로 좁힌다: 'COUNT > 0.5' 는 'COUNT >= 1' 과 같다.
+        if symbol == ">":
+            return cls._from_lower_bound(_floor_int(value) + 1)
+        if symbol == ">=":
+            return cls._from_lower_bound(_ceil_int(value))
+        if symbol == "=":
+            if value < 0 or value != int(value):
+                return COUNT_CONTRADICTION
+            return COUNT_ABSENCE if value == 0 else COUNT_THRESHOLD
+        if symbol == "<":
+            return cls._from_upper_bound(_ceil_int(value) - 1)
+        if symbol == "<=":
+            return cls._from_upper_bound(_floor_int(value))
+        return COUNT_THRESHOLD
+
+    @staticmethod
+    def _from_lower_bound(minimum: int) -> str:
+        """'COUNT >= minimum' 의 의미."""
+        if minimum <= 0:
+            return COUNT_TAUTOLOGY
+        if minimum == 1:
+            return COUNT_EXISTENCE
+        return COUNT_THRESHOLD
+
+    @staticmethod
+    def _from_upper_bound(maximum: int) -> str:
+        """'COUNT <= maximum' 의 의미."""
+        if maximum < 0:
+            return COUNT_CONTRADICTION
+        if maximum == 0:
+            return COUNT_ABSENCE
+        return COUNT_THRESHOLD
+
+
+def _floor_int(value: float) -> int:
+    import math
+
+    return int(math.floor(value))
+
+
+def _ceil_int(value: float) -> int:
+    import math
+
+    return int(math.ceil(value))
+
+
 __all__ = [
     "AmountNormalizer",
+    "COUNT_ABSENCE",
+    "COUNT_CONTRADICTION",
+    "COUNT_EXISTENCE",
+    "COUNT_TAUTOLOGY",
+    "COUNT_THRESHOLD",
     "CalendarMonth",
+    "CountThresholdNormalizer",
     "DEFAULT_CURRENCY",
     "DateTimeNormalizer",
     "EntityResolver",

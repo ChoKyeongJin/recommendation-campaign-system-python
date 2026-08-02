@@ -318,6 +318,10 @@ def project_semantic_ir(plan: SemanticPlanV2) -> dict[str, Any]:
         span = str(item.get("source_span") or "").strip()
         if span:
             missing.append(f"uncovered:{span}")
+    for issue in plan.structurer_issues:
+        span = str(issue.get("source_span") or "").strip()
+        if span:
+            missing.append(f"structurer:{span}")
     unsupported = [
         {
             "kind": str(verdict.get("node_type") or "unknown"),
@@ -340,17 +344,24 @@ def project_semantic_ir(plan: SemanticPlanV2) -> dict[str, Any]:
             f"invalid:{error.get('node_id') or error.get('reason')}"
             for error in plan.validation_errors
         ] or ["semantic_interpretation"]
+    failure_kind = plan.failure_kind()
     return {
         "status": ir_status,
         "operations": [],
         "missing_fields": missing if ir_status == "needs_clarification" else [],
+        # **결핍에는 원인이 붙는다.** 원인 없는 결핍은 전부 사용자 확인 요청이 되고, 사용자는
+        # 답할 수 없는 내부 필드를 요구받는다(실측: 'req-1.member_entity 를 확정해 주세요').
+        "missing_field_causes": [
+            dict(record) for record in plan.missing_field_records()
+        ] if ir_status == "needs_clarification" else [],
+        "failure_kind": failure_kind,
         "policy_applications": [],
         "unsupported_operations": unsupported if ir_status == "unsupported" else [],
-        "message": _status_message(plan, status),
+        "message": _status_message(plan, status, failure_kind),
     }
 
 
-def _status_message(plan: SemanticPlanV2, status: str) -> str | None:
+def _status_message(plan: SemanticPlanV2, status: str, failure_kind: str | None = None) -> str | None:
     if status == semantic_plan.STATUS_UNSUPPORTED:
         messages = [str(item.get("message") or "") for item in plan.unsupported_operations()]
         joined = " ".join(message for message in messages if message)
@@ -361,8 +372,57 @@ def _status_message(plan: SemanticPlanV2, status: str) -> str | None:
         return f"'{listed}' 의 의미가 둘 이상으로 해석됩니다. 어느 쪽인지 알려주세요." if listed else None
     if status == semantic_plan.STATUS_INVALID:
         # 내부 불량은 '미지원'이 아니다 — 확인 요청으로 안내하고 코드는 따로 남긴다.
-        return "요청 해석 중 내부 검증에 실패했습니다. 조건을 조금 더 구체적으로 알려주세요."
+        return _internal_failure_message(plan)
+    if failure_kind == semantic_plan.FAILURE_KIND_USER:
+        questions = [
+            str(record.get("question") or "").strip()
+            for record in plan.missing_field_records()
+            if record.get("cause") == semantic_plan.CAUSE_USER_OMISSION
+        ]
+        listed = [question for question in dict.fromkeys(questions) if question]
+        if listed:
+            return " ".join(listed)
+        return None
+    if failure_kind == semantic_plan.FAILURE_KIND_SYSTEM:
+        return _internal_failure_message(plan)
+    if failure_kind == semantic_plan.FAILURE_KIND_STRUCTURER:
+        spans = [
+            str(record.get("source_span") or "").strip()
+            for record in plan.missing_field_records()
+            if record.get("cause") in {
+                semantic_plan.CAUSE_MODEL_OMISSION, semantic_plan.CAUSE_TYPE_MISMATCH
+            }
+        ]
+        listed = ", ".join(f"'{span}'" for span in dict.fromkeys(span for span in spans if span))
+        if listed:
+            return (
+                f"{listed} 조건을 실행 가능한 형태로 해석하지 못했습니다. "
+                "표현을 바꾸거나 조건을 나눠 다시 요청해 주세요."
+            )
+        return "요청을 실행 가능한 형태로 해석하지 못했습니다. 표현을 바꿔 다시 요청해 주세요."
     return None
+
+
+def _internal_failure_message(plan: SemanticPlanV2) -> str:
+    """설정/어휘 결함은 사용자에게 값을 묻지 않는다 — 물어도 사용자가 고칠 수 없다."""
+    gaps = [
+        str(record.get("source_span") or "").strip()
+        for record in plan.missing_field_records()
+        if record.get("cause") == semantic_plan.CAUSE_REGISTRY_GAP
+    ]
+    listed = ", ".join(f"'{span}'" for span in dict.fromkeys(span for span in gaps if span))
+    if listed:
+        return f"{listed} 조건을 처리할 실행 설정이 준비되지 않았습니다. 담당자에게 문의해 주세요."
+    # 사유 없는 '내부 검증 실패'는 운영자도 사용자도 아무것도 할 수 없다 — 검증기가 남긴
+    # 구체 사유를 그대로 싣는다(어느 노드의 어떤 필드가 왜 걸렸는지).
+    reasons = [
+        str(error.get("reason") or "").strip()
+        for error in plan.validation_errors
+    ]
+    detail = " ".join(dict.fromkeys(reason for reason in reasons if reason))
+    if detail:
+        return f"요청 해석 중 내부 검증에 실패했습니다: {detail}"
+    return "요청 해석 중 내부 검증에 실패했습니다. 잠시 후 다시 시도해 주세요."
 
 
 # ── 평가 1회분(정규화 → coverage → capability → 컴파일 → 원장) ──────────────────
@@ -528,7 +588,14 @@ def _patch_adapter(
         return None
 
     def request_patch(request: Any) -> SemanticPlanV2 | None:
-        patch, patch_violations = reextract(query, list(request.spans))
+        # 검증기 피드백(targets)까지 넘긴다 — "이 구간 다시" 보다 "이 타입 payload 가 비었다"가
+        # 훨씬 잘 고쳐진다. 옛 2-인자 계약도 그대로 받는다.
+        try:
+            patch, patch_violations = reextract(
+                query, list(request.spans), tuple(request.targets)
+            )
+        except TypeError:
+            patch, patch_violations = reextract(query, list(request.spans))
         violations.extend(patch_violations or [])
         return patch
 

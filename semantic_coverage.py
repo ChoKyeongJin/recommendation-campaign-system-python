@@ -148,9 +148,18 @@ def source_anchors(query: str) -> list[Anchor]:
 
 
 def _node_spans(plan: SemanticPlanV2, query: str) -> list[tuple[int, int, str]]:
-    """노드가 청구한 원문 구간. 좌표가 없으면 source_span 문자열로 되찾는다."""
+    """노드가 청구한 원문 구간. 좌표가 없으면 source_span 문자열로 되찾는다.
+
+    **컨테이너 노드는 자기 구간을 청구하지 않는다.** 결합 노드는 스스로 뜻하는 것이 없고 자식을
+    묶기만 하므로, 자식이 덮지 않는 구간까지 덮은 것으로 세면 그것은 커버리지 거짓말이다.
+    실측(2026-08-02): logical_expression 이 자식 하나만 데리고 두 절 전체를 source_span 으로
+    청구했고, 그래서 표현되지 않은 나머지 절('최근 30일간 구매가 없는')이 커버된 것으로 처리돼
+    누락 보고도 재방출도 일어나지 않았다. 자식의 구간은 자식 자신이 청구하므로 정보 손실은 없다.
+    """
     spans: list[tuple[int, int, str]] = []
     for node in plan.walk():
+        if node.type == semantic_plan.LogicalExpression.TYPE:
+            continue
         start, end = node.source_start, node.source_end
         text = node.source_span or ""
         if not (isinstance(start, int) and isinstance(end, int) and 0 <= start <= end <= len(query)
@@ -219,17 +228,16 @@ def verify_coverage(
             )
 
     # ③ 원문의 조건 앵커가 어떤 노드에도 대응하지 않는가.
-    # 기간을 소유한 노드는 자기 절의 날짜 리터럴을 함께 청구한다 — 근거 구절이 조건부만
+    # 기간을 소유한 노드는 자기 절의 기간 리터럴을 함께 청구한다 — 근거 구절이 조건부만
     # 가리키고 기간이 절 앞머리에 있는 흔한 형태('2019년 3월 같은 상품을 …')에서 정상
-    # 요청이 누락으로 오보고되는 것을 막는다.
-    period_clauses = _period_owner_clauses(query, plan, node_spans)
+    # 요청이 누락으로 오보고되는 것을 막는다. 단 **노드 하나가 청구하는 기간은 하나다**.
+    anchors_all = source_anchors(query)
+    period_claims = _period_anchor_claims(query, plan, node_spans, anchors_all)
     uncovered_by_clause: dict[tuple[int, int], list[Anchor]] = {}
-    for anchor in source_anchors(query):
+    for anchor in anchors_all:
         if _covered(anchor, node_spans) or _covered_external(anchor, external):
             continue
-        if anchor.kind == "literal:date_window" and any(
-            start <= anchor.start and anchor.end <= end for start, end in period_clauses
-        ):
+        if (anchor.start, anchor.end) in period_claims:
             continue
         bounds = clause_bounds(query, anchor.start)
         uncovered_by_clause.setdefault(bounds, []).append(anchor)
@@ -247,14 +255,30 @@ def verify_coverage(
 
 
 _PERIOD_FIELD_KINDS = frozenset({"period"})
+# 기간을 소유한 노드가 자기 절에서 함께 청구하는 값 원자의 종류. 달력 창(2019년 3월)과 상대
+# 기간(6개월)은 같은 대접을 받아야 한다 — 후자만 빠져 있던 동안, 상대 기간의 수는 주인 없는
+# 원자로 남아 정상 요청이 누락으로 오보고됐다(실측 2026-08-02).
+_PERIOD_OWNED_ANCHOR_KINDS = frozenset({"literal:date_window", "literal:duration"})
 
 
-def _period_owner_clauses(
-    query: str, plan: SemanticPlanV2, node_spans: Sequence[tuple[int, int, str]]
-) -> list[tuple[int, int]]:
-    """기간 필드를 실제로 채운 노드의 절 경계 목록."""
+def _period_anchor_claims(
+    query: str,
+    plan: SemanticPlanV2,
+    node_spans: Sequence[tuple[int, int, str]],
+    anchors: Sequence[Anchor],
+) -> set[tuple[int, int]]:
+    """기간 소유 노드가 청구하는 기간 원자 — **노드 하나당 하나**, 자기 절 안에서 가장 가까운 것.
+
+    절 전체를 통째로 면제하면 같은 절의 다른 조건이 소유해야 할 기간까지 덮인다: '3개월 주문은
+    있었지만 30일간 구매가 없는'은 절이 하나인데 기간이 둘이고, 노드가 하나만 있어도 두 기간이
+    모두 면제돼 표현되지 않은 절이 조용히 사라졌다(실측 2026-08-02). 1:1 배정이면 남는 기간은
+    남는다 — 그것이 곧 "이 기간을 아무도 소유하지 않았다"는 신호다.
+    """
     spans_by_id = {node_id: (start, end) for start, end, node_id in node_spans}
-    clauses: list[tuple[int, int]] = []
+    candidates = [
+        anchor for anchor in anchors if anchor.kind in _PERIOD_OWNED_ANCHOR_KINDS
+    ]
+    claimed: set[tuple[int, int]] = set()
     for node in plan.walk():
         owns_period = any(
             spec.kind in _PERIOD_FIELD_KINDS and node.values.get(spec.name) not in (None, "", {}, [])
@@ -262,8 +286,18 @@ def _period_owner_clauses(
         )
         if not owns_period or node.id not in spans_by_id:
             continue
-        clauses.append(clause_bounds(query, spans_by_id[node.id][0]))
-    return clauses
+        node_start = spans_by_id[node.id][0]
+        clause_start, clause_end = clause_bounds(query, node_start)
+        available = [
+            anchor for anchor in candidates
+            if (anchor.start, anchor.end) not in claimed
+            and clause_start <= anchor.start and anchor.end <= clause_end
+        ]
+        if not available:
+            continue
+        nearest = min(available, key=lambda anchor: (abs(anchor.start - node_start), anchor.start))
+        claimed.add((nearest.start, nearest.end))
+    return claimed
 
 
 def _covered(anchor: Anchor, node_spans: Sequence[tuple[int, int, str]]) -> bool:

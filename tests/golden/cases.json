@@ -58,6 +58,20 @@
       "note": "창 anti-join. 평생 무주문(no_purchase)과 구분된다."
     },
     {
+      "id": "lapsed_buyer_window_pair",
+      "prompt": "최근 3개월 주문은 있었지만 최근 30일간 구매가 없는 회원을 추출해서 이탈방지 캠페인을 만들어줘.",
+      "expect_slots": [
+        "target_user.purchase_membership",
+        "target_user.purchase_inactivity"
+      ],
+      "forbid_slots": [
+        "target_user.behaviors",
+        "target_user.inactivity_period",
+        "target_user.cart_type"
+      ],
+      "note": "이탈 위험 문형: 같은 사실(구매)의 존재 창과 부재 창이 한 문장에 있다. 존재는 임계 비교가 아니므로 aggregate_conditions 로 우회하면 안 되고(양수 임계 도메인에 걸려 요청 전체가 막힌다), 구매 부재를 접속 부재(inactivity_period)나 평생 무구매(behaviors=no_purchase)로 바꾸면 극성·범위가 뒤집힌다. 2026-08-02 실측 5회 중 4회 semantic_ir_unsupported."
+    },
+    {
       "id": "no_purchase_lifetime",
       "prompt": "구매 이력이 없는 고객",
       "expect_slots": [

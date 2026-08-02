@@ -80,6 +80,10 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
     "no_sql_candidates": "condition_recognition",
     "recognized_domain_unsupported": "condition_recognition",
     "query_plan_required_conditions_missing": "condition_recognition",
+    # 구조화기가 의미 노드를 못 만든 것과, 실행 어휘가 비어 있는 것은 서로 다른 실패다.
+    # 둘 다 '조건 인식' 단계지만 사유 코드로 갈려야 운영자가 어디를 고칠지 안다.
+    "semantic_structurer_failure": "condition_recognition",
+    "semantic_registry_gap": "condition_recognition",
     "semantic_conditions_not_extracted": "condition_recognition",
     "entity_ranking_not_structured": "condition_recognition",
     "real_db_unsupported_conditions": "real_db_mapping",

@@ -353,12 +353,39 @@ _EXTERNAL_CONDITION_SCHEMA: dict[str, Any] = {
 }
 
 
+_CLAIM_CONTAINERS: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("target_user", _TARGET_USER_SCHEMA),
+)
+
+
+def _claimable_slot_paths() -> list[str]:
+    """근거 청구가 가리킬 수 있는 **슬롯 경로**(파생 — 손 목록을 두면 새 슬롯이 조용히 빠진다).
+
+    청구는 "이 원문 구절은 내가 이 슬롯으로 표현했다"는 진술이다. 그래서 경로는 실제 슬롯이어야
+    한다. 실측(2026-08-02): 경로 제약이 없어 LLM 이 `path="User Query"` 로 원문 전체를 한 번에
+    청구했고, 그 청구가 coverage 검증기의 claimed_spans 가 되어 **모든 누락 검출을 무력화**했다.
+    """
+    paths: list[str] = []
+    for container, schema in _CLAIM_CONTAINERS:
+        for name in sorted((schema.get("properties") or {})):
+            paths.append(f"{container}.{name}")
+    return paths
+
+
 _EVIDENCE_ITEM_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "required": ["path", "text", "start", "end", "confidence"],
     "properties": {
-        "path": {"type": "string", "minLength": 1},
+        "path": {
+            "type": "string",
+            "description": (
+                "이 근거 구절을 표현한 **슬롯 경로 하나**. 여러 슬롯을 채웠으면 항목을 여러 개 만든다. "
+                "원문 전체를 한 항목으로 청구하지 마라 — 의미 노드로 표현한 조건은 여기 쓰지 않는다"
+                "(노드가 자기 source_span 을 이미 가진다)."
+            ),
+            "enum": _claimable_slot_paths(),
+        },
         "text": {"type": "string", "minLength": 1},
         "start": {"type": "integer", "minimum": 0},
         "end": {"type": "integer", "minimum": 0},

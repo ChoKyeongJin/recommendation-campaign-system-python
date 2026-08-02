@@ -28,11 +28,20 @@ class CompileContext:
 
     slot_shapes: Mapping[str, Any] = field(default_factory=dict)
     allowed: Mapping[str, Any] = field(default_factory=dict)
+    # 의미 노드 필드의 닫힌 어휘(`node_field_vocabularies` 선언이 가리키는 키 → 값 목록).
+    # `allowed` 와 별개인 이유: 이쪽은 **LLM 에 노출되는 어휘 이름**으로 키가 잡혀 있고,
+    # 타입 판정의 discriminator 역인덱스가 그 이름을 그대로 쓴다.
+    node_vocabularies: Mapping[str, Any] = field(default_factory=dict)
     today: date | None = None
     # 지표 표면 → id 해소기(도메인별). 없으면 노드 값을 그대로 쓴다.
     metric_resolvers: Mapping[str, Callable[[Any], str | None]] = field(default_factory=dict)
     # 집계 도메인 → 슬롯 라우팅 override(설정으로 확장 가능한 지점).
     scope_slots: Mapping[str, str] = field(default_factory=dict)
+    # 도메인 → **정수 카운트** 지표 id 집합. 카운트 위에서만 임계 비교가 존재/부재로 환원된다
+    # (COUNT>0 ≡ 있음, COUNT=0 ≡ 없음). 합계·비율 지표에는 그 환원이 성립하지 않으므로
+    # 이 집합에 없는 지표는 임계 경로 그대로 간다. 무엇이 카운트인지는 도메인 설정이 선언하고,
+    # 코어는 "카운트인가"만 묻는다(지표 이름을 알지 못한다).
+    count_metrics: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
     def resolve_metric(self, domain: str, surface: Any) -> str | None:
         resolver = self.metric_resolvers.get(domain)

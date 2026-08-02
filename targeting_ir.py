@@ -105,6 +105,48 @@ def _pos_number(raw: Any) -> float | int | None:
     return int(value) if float(value).is_integer() else value
 
 
+# ── coerce 거부 사유(관측) ────────────────────────────────────────────────────────
+# coerce 는 실패를 None 으로만 말한다. 그래서 소비자(컴파일러)가 "왜 떨어졌는지"를 **추측**했고,
+# 값 도메인 거부를 어휘 부재로 오보고했다 — 실측(2026-08-02): `order_count > 0` 의 임계값 0 이
+# `_pos_number` 에 걸려 떨어졌는데 사용자에게는 "집계 지표 'order_count' 는 실행 어휘에 없다"가
+# 나갔다. order_count 는 어휘에 **있었다**. 운영자는 멀쩡한 지표 카탈로그를 뒤졌다.
+#
+# 그래서 거부 판정은 coerce 와 **같은 함수**가 소유한다. 사유 함수를 따로 두면 두 벌이 곧
+# 어긋나고, 그때는 틀린 사유가 사유 없음보다 더 나쁘다. 아래 `_reject_*` 가 판정의 단일 소스이고
+# coerce 는 그 판정을 쓴다(반환 None = 수용).
+_REJECT_NOT_OBJECT = "항목이 객체가 아니다"
+
+
+def _reject_metric_vocabulary(metric: Any, allowed: Any, *, kind: str) -> str | None:
+    """지표 canonical 이 닫힌 어휘에 있는가. `allowed` 가 없으면 제약 없음."""
+    if not (isinstance(metric, str) and metric.strip()):
+        return f"{kind} 지표가 비었다"
+    if isinstance(allowed, (set, frozenset, dict)) and metric not in allowed:
+        return f"{kind} 지표 '{metric}' 는 실행 어휘에 없다"
+    return None
+
+
+def _reject_operator(raw: Any) -> str | None:
+    if _canon_operator(raw) is None:
+        return f"비교 연산자 {raw!r} 를 해석할 수 없다(지원: {', '.join(sorted(OPERATORS))})"
+    return None
+
+
+def _reject_positive_threshold(raw: Any, *, field: str = "임계값") -> str | None:
+    """양수 임계값 도메인. 0·음수는 임계 비교가 아니라 **존재/부재**라서 여기서 받지 않는다.
+
+    이 슬롯이 0 을 받으면 '0건 이상'(항진식)과 '0건'(부재, anti-join)이 임계 비교로 컴파일돼
+    극성이 조용히 뒤집힌다 — 0 계열의 귀결은 임계 슬롯이 아니라 카운트 대수(`count_algebra`)가
+    소유한다. 그래서 여기서는 거부하되 **이유를 정확히** 말한다.
+    """
+    if _pos_number(raw) is None:
+        return f"{field} {raw!r} 는 이 슬롯이 받지 않는다(양수만 — 0/부재 조건은 임계 비교가 아니다)"
+    return None
+
+
+_UNIT_HINT_TERSE = "unit ∈ days|weeks|months|years"
+
+
 def _canon_unit(raw: Any) -> str | None:
     return _UNIT_ALIASES.get(str(raw).strip().casefold()) if raw is not None else None
 
@@ -130,18 +172,49 @@ def _window_days(raw: dict[str, Any]) -> tuple[int, str, int] | None:
     return None
 
 
+def _reject_window(raw: Any, allowed: Any = None) -> str | None:
+    if not isinstance(raw, dict):
+        return _REJECT_NOT_OBJECT
+    if _window_days(raw) is None:
+        return (
+            f"기간 {raw!r} 를 일수로 확정할 수 없다"
+            f"({{value,unit}}({_UNIT_HINT_TERSE}) 또는 {{min_days}} 양의 정수)"
+        )
+    return None
+
+
 def _coerce_window(raw: Any, *, sql_interval: bool, allowed: Any = None) -> dict[str, Any] | None:
     """recent_login/purchase_inactivity 창 슬롯: {value,unit,min_days[,sql_interval]}."""
-    if not isinstance(raw, dict):
+    if _reject_window(raw, allowed) is not None:
         return None
     parts = _window_days(raw)
-    if parts is None:
-        return None
     value, unit, min_days = parts
     out: dict[str, Any] = {"value": value, "unit": unit, "min_days": min_days}
     if sql_interval:
         out["sql_interval"] = f"{value} {unit}"
     return out
+
+
+def _reject_purchase_membership(raw: Any, allowed: Any = None) -> str | None:
+    if not isinstance(raw, dict):
+        return _REJECT_NOT_OBJECT
+    if str(raw.get("operator") or "").strip().casefold() != "exists":
+        return f"구매 존재 조건의 연산자는 'exists' 뿐이다(받은 값: {raw.get('operator')!r})"
+    window = raw.get("window_days")
+    if window is not None and _pos_int(window) is None:
+        return f"구매 존재 창 {window!r} 는 양의 정수(일)여야 한다"
+    return None
+
+
+def _coerce_purchase_membership(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
+    """purchase_membership: {operator:'exists', window_days:int|None} — 구매 이력 **존재**.
+
+    창이 없으면 평생 구매 이력이다. `satisfied_by`(같은 범위의 구매 존재를 다른 조건이 이미
+    증명했다는 소유권 표식)는 실행 계층이 나중에 붙이는 파생값이라 입력으로 받지 않는다.
+    """
+    if _reject_purchase_membership(raw, allowed) is not None:
+        return None
+    return {"operator": "exists", "window_days": _pos_int(raw.get("window_days"))}
 
 
 def _coerce_signup(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
@@ -162,6 +235,17 @@ def _coerce_signup(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
     return None
 
 
+def _reject_aggregate_threshold(item: Any, allowed: Any) -> str | None:
+    """집계 임계 항목 하나의 수용 판정(단일 소스 — coerce 와 사유가 같은 함수를 쓴다)."""
+    if not isinstance(item, dict):
+        return _REJECT_NOT_OBJECT
+    return (
+        _reject_metric_vocabulary(item.get("metric_id"), allowed, kind="집계")
+        or _reject_operator(item.get("operator"))
+        or _reject_positive_threshold(item.get("threshold"))
+    )
+
+
 def _coerce_threshold_list(raw: Any, *, allowed: Any = None) -> list[dict[str, Any]] | None:
     """Normalize aggregate thresholds into the canonical targeting IR.
 
@@ -174,15 +258,11 @@ def _coerce_threshold_list(raw: Any, *, allowed: Any = None) -> list[dict[str, A
     metrics = allowed if isinstance(allowed, (set, frozenset, dict)) else None
     out: list[dict[str, Any]] = []
     for item in raw:
-        if not isinstance(item, dict):
+        if _reject_aggregate_threshold(item, metrics) is not None:
             continue
-        metric_id = item.get("metric_id")
+        metric_id = item["metric_id"]
         operator = _canon_operator(item.get("operator"))
         threshold = _pos_number(item.get("threshold"))
-        if not (isinstance(metric_id, str) and metric_id and operator and threshold is not None):
-            continue
-        if metrics is not None and metric_id not in metrics:
-            continue
         cond: dict[str, Any] = {"metric_id": metric_id, "operator": operator, "threshold": threshold}
         window = _pos_int(item.get("window_days"))
         if window is None and isinstance(item.get("window"), dict):
@@ -213,19 +293,29 @@ def _coerce_threshold_list(raw: Any, *, allowed: Any = None) -> list[dict[str, A
     return out or None
 
 
+def _reject_freq(raw: Any, allowed: Any) -> str | None:
+    if not isinstance(raw, dict):
+        return _REJECT_NOT_OBJECT
+    reason = _reject_operator(raw.get("operator"))
+    if reason is not None:
+        return reason
+    if _pos_int(raw.get("count")) is None:
+        return f"횟수 {raw.get('count')!r} 는 이 슬롯이 받지 않는다(양의 정수만 — 0회는 부재 조건이다)"
+    event = raw.get("event")
+    if isinstance(event, str) and event and allowed is not None and event not in allowed:
+        return f"캠페인 이벤트 '{event}' 는 실행 어휘에 없다"
+    return None
+
+
 def _coerce_freq(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
     """Frequency threshold with an optional registry-backed event discriminator."""
-    if not isinstance(raw, dict):
+    if _reject_freq(raw, allowed) is not None:
         return None
     operator = _canon_operator(raw.get("operator"))
     count = _pos_int(raw.get("count"))
-    if not (operator and count):
-        return None
     out: dict[str, Any] = {"operator": operator, "count": count, "window_days": _pos_int(raw.get("window_days"))}
     event = raw.get("event")
     if isinstance(event, str) and event:
-        if allowed is not None and event not in allowed:
-            return None
         out["event"] = event
     if isinstance(raw.get("label"), str) and raw["label"]:
         out["label"] = raw["label"]
@@ -304,6 +394,20 @@ def _coerce_cart_retention(raw: Any, *, allowed: Any = None) -> dict[str, Any] |
     return out or None
 
 
+def _reject_cart_aggregate(item: Any, allowed: Any) -> str | None:
+    if not isinstance(item, dict):
+        return _REJECT_NOT_OBJECT
+    reason = (
+        _reject_metric_vocabulary(item.get("metric"), allowed, kind="장바구니")
+        or _reject_operator(item.get("operator"))
+    )
+    if reason is not None:
+        return reason
+    if _pos_int(item.get("threshold")) is None:
+        return f"임계값 {item.get('threshold')!r} 는 이 슬롯이 받지 않는다(양의 정수만)"
+    return None
+
+
 def _coerce_cart_aggregate(raw: Any, *, allowed: Any = None) -> dict[str, Any] | list[dict[str, Any]] | None:
     """cart_aggregate: {metric, operator, threshold} 또는 그 리스트. metric∈allowed(카트 지표 집합).
 
@@ -314,16 +418,13 @@ def _coerce_cart_aggregate(raw: Any, *, allowed: Any = None) -> dict[str, Any] |
         items = [_coerce_cart_aggregate(item, allowed=allowed) for item in raw]
         valid = [item for item in items if isinstance(item, dict)]
         return valid or None
-    if not isinstance(raw, dict):
+    if _reject_cart_aggregate(raw, allowed) is not None:
         return None
-    metric = raw.get("metric")
-    operator = _canon_operator(raw.get("operator"))
-    threshold = _pos_int(raw.get("threshold"))
-    if not (isinstance(metric, str) and metric and operator and threshold):
-        return None
-    if isinstance(allowed, (set, frozenset, dict)) and metric not in allowed:
-        return None
-    return {"metric": metric, "operator": operator, "threshold": threshold}
+    return {
+        "metric": raw["metric"],
+        "operator": _canon_operator(raw.get("operator")),
+        "threshold": _pos_int(raw.get("threshold")),
+    }
 
 
 def _coerce_birthday(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
@@ -542,6 +643,27 @@ def _coerce_member_metric_ranking(raw: Any, *, allowed: Any = None) -> dict[str,
 _PROFILE_OPERATORS = frozenset({">=", ">", "<=", "<"})
 
 
+def _reject_profile_metric(item: Any, allowed: Any) -> str | None:
+    """프로필 지표 임계 항목 하나의 수용 판정. 어휘·물리 바인딩·연산자·값 도메인을 구분해 말한다."""
+    if not isinstance(item, dict):
+        return _REJECT_NOT_OBJECT
+    metric_id = item.get("metric_id")
+    if not (isinstance(metric_id, str) and metric_id.strip()):
+        return "프로필 지표가 비었다"
+    mapping = allowed.get(metric_id) if isinstance(allowed, dict) else None
+    if not isinstance(mapping, dict):
+        return f"프로필 지표 '{metric_id}' 는 실행 어휘에 없다"
+    if not isinstance(mapping.get("column"), str):
+        return f"프로필 지표 '{metric_id}' 에 물리 컬럼 바인딩이 없다"
+    operator = _canon_operator(item.get("operator"))
+    if operator is None or operator not in _PROFILE_OPERATORS:
+        return f"비교 연산자 {item.get('operator')!r} 를 이 지표에 쓸 수 없다"
+    metric_operators = mapping.get("operators")
+    if isinstance(metric_operators, (set, frozenset, list, tuple)) and operator not in metric_operators:
+        return f"지표 '{metric_id}' 는 연산자 '{operator}' 를 지원하지 않는다"
+    return _reject_positive_threshold(item.get("threshold"))
+
+
 def _coerce_profile_metric_conditions(raw: Any, *, allowed: Any = None) -> list[dict[str, Any]] | None:
     """balance_conditions(회원 프로필 수치 지표): [{metric_id, operator, threshold}] → 물리 조건 리스트.
 
@@ -552,19 +674,12 @@ def _coerce_profile_metric_conditions(raw: Any, *, allowed: Any = None) -> list[
         return None
     out: list[dict[str, Any]] = []
     for item in raw:
-        if not isinstance(item, dict):
+        if _reject_profile_metric(item, allowed) is not None:
             continue
-        metric_id = item.get("metric_id")
-        mapping = allowed.get(metric_id) if isinstance(metric_id, str) else None
-        if not (isinstance(mapping, dict) and isinstance(mapping.get("column"), str)):
-            continue
+        metric_id = item["metric_id"]
+        mapping = allowed[metric_id]
         operator = _canon_operator(item.get("operator"))
         threshold = _pos_number(item.get("threshold"))
-        if operator not in _PROFILE_OPERATORS or threshold is None:
-            continue
-        metric_operators = mapping.get("operators")
-        if isinstance(metric_operators, (set, frozenset, list, tuple)) and operator not in metric_operators:
-            continue
         entry: dict[str, Any] = {
             "metric_id": metric_id,
             "column": mapping["column"],
@@ -578,6 +693,25 @@ def _coerce_profile_metric_conditions(raw: Any, *, allowed: Any = None) -> list[
     return out or None
 
 
+def _reject_profile_date_state(item: Any, allowed: Any) -> str | None:
+    if not isinstance(item, dict):
+        return _REJECT_NOT_OBJECT
+    metric_id = item.get("metric_id")
+    if not (isinstance(metric_id, str) and metric_id.strip()):
+        return "프로필 날짜 지표가 비었다"
+    metric_map = allowed.get(metric_id) if isinstance(allowed, dict) else None
+    if not isinstance(metric_map, dict):
+        return f"프로필 날짜 지표 '{metric_id}' 는 실행 어휘에 없다"
+    states = metric_map.get("states")
+    state = item.get("state")
+    mapping = states.get(state) if isinstance(states, dict) and isinstance(state, str) else None
+    if not isinstance(mapping, dict):
+        return f"프로필 날짜 상태 '{state}' 는 지표 '{metric_id}' 의 실행 어휘에 없다"
+    if not (isinstance(mapping.get("operator"), str) and isinstance(mapping.get("anchor_expression"), str)):
+        return f"'{metric_id}:{state}' 에 부등호·앵커식 바인딩이 없다"
+    return None
+
+
 def _coerce_profile_date_states(raw: Any, *, allowed: Any = None) -> list[dict[str, Any]] | None:
     """profile_date_conditions(회원 프로필 날짜 상대상태): [{metric_id, state}] → 물리 조건 리스트.
 
@@ -588,18 +722,12 @@ def _coerce_profile_date_states(raw: Any, *, allowed: Any = None) -> list[dict[s
         return None
     out: list[dict[str, Any]] = []
     for item in raw:
-        if not isinstance(item, dict):
+        if _reject_profile_date_state(item, allowed) is not None:
             continue
-        metric_id = item.get("metric_id")
-        metric_map = allowed.get(metric_id) if isinstance(metric_id, str) else None
-        if not isinstance(metric_map, dict):
-            continue
-        states = metric_map.get("states")
+        metric_id = item["metric_id"]
+        metric_map = allowed[metric_id]
         state = item.get("state")
-        mapping = states.get(state) if isinstance(states, dict) and isinstance(state, str) else None
-        if not (isinstance(mapping, dict) and isinstance(mapping.get("operator"), str)
-                and isinstance(mapping.get("anchor_expression"), str)):
-            continue
+        mapping = metric_map["states"][state]
         entry: dict[str, Any] = {
             "metric_id": metric_id,
             "state": state,
@@ -684,6 +812,9 @@ class SlotShape:
     # Existing unsupported reasons made stale when this empty slot is filled
     # with a successfully coerced value.
     resolves_unsupported: frozenset[str] = frozenset()
+    # 항목 하나가 **왜** 거부됐는지(None = 수용). coerce 와 같은 판정 함수를 공유한다 —
+    # 선언하지 않은 슬롯은 사유가 없을 뿐이고, 있는 사유는 항상 실제 동작과 일치한다.
+    reject: Callable[[Any, Any], str | None] | None = None
 
 
 # JSON-schema 조각 헬퍼(간결 표기 — 세부 검증은 coerce 가 담당하므로 스키마는 느슨하게).
@@ -786,7 +917,19 @@ SLOT_SHAPES: dict[str, SlotShape] = {
     "purchase_inactivity": SlotShape("purchase_inactivity", "target_user",
         _obj_schema(f"최근 N기간 미구매(창 anti-join). {{value,unit}} 또는 {{min_days}}. {_UNIT_HINT}",
                     dict(_WINDOW_PROPS)),
-        lambda raw, *, allowed=None: _coerce_window(raw, sql_interval=False, allowed=allowed)),
+        lambda raw, *, allowed=None: _coerce_window(raw, sql_interval=False, allowed=allowed),
+        reject=_reject_window),
+    # 구매 이력 '존재' 축. 실행 술어(주문 EXISTS)·커버리지·신뢰도는 이미 있었는데 슬롯 선언만
+    # 없어서, LLM 도 컴파일러도 '있음'을 표현할 방법이 없었다 — '주문은 있었지만'이 임계 슬롯
+    # (order_count > 0)으로 우회 방출됐고 양수 임계 도메인에 걸려 요청 전체가 막혔다(2026-08-02).
+    "purchase_membership": SlotShape("purchase_membership", "target_user",
+        _obj_schema(
+            "구매 이력 **존재**(주문 EXISTS). {operator:'exists', window_days?}. "
+            "'구매한 적 있는', '주문은 있었지만', '구매 이력이 있는' 처럼 **있음만** 말하는 조건이다. "
+            "횟수·금액 임계가 붙으면 aggregate_conditions, '없음'이면 purchase_inactivity(창 있음)나 "
+            "behaviors=no_purchase(평생)로 간다. window_days 가 없으면(null) 평생 구매 이력.",
+            {"operator": {"type": "string", "enum": ["exists"]}, "window_days": _POS_INT_PROP}),
+        _coerce_purchase_membership, reject=_reject_purchase_membership),
     "cart_retention": SlotShape("cart_retention", "target_user",
         _obj_schema(f"장바구니 기간. {{min_days}}(이상) 또는 {{max_days}}(이내), 또는 {{value,unit,direction}}. "
                     "'최근 N일 장바구니'(N일 이내 담김)는 max_days=N 이고, min_days=N 은 'N일 이상 보관/방치'다 — "
@@ -802,7 +945,8 @@ SLOT_SHAPES: dict[str, SlotShape] = {
                      "서로 다른 지표 조건이 함께 오면('종류 2개 이상이고 총금액 10만 원 이상') 항목을 "
                      "전부 나열한다(AND) — 하나로 합치거나 하나만 적지 않는다.",
                      {"metric": _STRING_PROP, "operator": _OPERATOR_PROP, "threshold": _POS_INT_PROP}),
-        _coerce_cart_aggregate, allowed_key="cart_aggregate_metrics"),
+        _coerce_cart_aggregate, allowed_key="cart_aggregate_metrics",
+        reject=_reject_cart_aggregate),
     "cart_type": SlotShape("cart_type", "target_user",
         _obj_schema("장바구니 유형. {value:<canonical>} (정기배송/픽업/일반 등 허용 canonical).",
                     {"canonical": _STRING_PROP, "value": _STRING_PROP}),
@@ -819,7 +963,8 @@ SLOT_SHAPES: dict[str, SlotShape] = {
         _obj_schema(f"캠페인 이벤트 횟수 임계. {{event, operator, count, window_days?}}. {_OP_HINT}",
                     {"event": _STRING_PROP, "operator": _OPERATOR_PROP,
                      "count": _POS_INT_PROP, "window_days": _POS_INT_PROP, "label": _STRING_PROP}),
-        _coerce_freq, allowed_key="campaign_frequency_events"),
+        _coerce_freq, allowed_key="campaign_frequency_events",
+        reject=_reject_freq),
     "campaign_buy_amount": SlotShape("campaign_buy_amount", "target_user",
         _obj_schema(f"캠페인 귀속 구매금액 임계. {{operator, amount, agg?, window_days?}}. {_OP_HINT}. "
                     "agg 기본(null)은 회원별 전 캠페인 합계(SUM), '캠페인별/캠페인당 평균 금액'이면 "
@@ -873,7 +1018,8 @@ SLOT_SHAPES: dict[str, SlotShape] = {
         _coerce_bool_true),
     "aggregate_conditions": SlotShape("aggregate_conditions", "target_user",
         _aggregate_condition_schema(),
-        _coerce_threshold_list, allowed_key="aggregate_metrics"),
+        _coerce_threshold_list, allowed_key="aggregate_metrics",
+        reject=_reject_aggregate_threshold),
     # 회원 프로필 수치 지표 임계('평균 구매주기 30일 이내'). LLM 은 논리 canonical(metric_id)만 고르고
     # coerce 가 지표 스펙 레지스트리(docs/data/runtime/sql/metrics) 주입 매핑으로 물리 balance_conditions 를 만든다 —
     # V4 계약(모델은 물리 스키마를 만들지 않는다)을 지키면서 기존 회원 프로필 컴파일러를 재사용한다.
@@ -882,7 +1028,8 @@ SLOT_SHAPES: dict[str, SlotShape] = {
                      "metric_id 는 [Allowed Canonical Values].profile_metric_id canonical 만 사용"
                      "(예: '회원별 평균 구매주기 30일 이내' → {metric_id:'buy_cycle', operator:'<=', threshold:30}).",
                      {"metric_id": _STRING_PROP, "operator": _OPERATOR_PROP, "threshold": _NUMBER_PROP}),
-        _coerce_profile_metric_conditions, allowed_key="profile_metrics"),
+        _coerce_profile_metric_conditions, allowed_key="profile_metrics",
+        reject=_reject_profile_metric),
     # 회원 프로필 날짜의 현재일 상대상태('다음 구매예정일이 지난'). state canonical 만 LLM 이 고르고
     # 부등호·앵커식은 지표 스펙 relative_states 매핑이 결정론으로 채운다(극성 반전 차단).
     "profile_date_conditions": SlotShape("profile_date_conditions", "target_user",
@@ -891,7 +1038,8 @@ SLOT_SHAPES: dict[str, SlotShape] = {
                      "(예: '다음 구매예정일이 지난' → {metric_id:'next_purchase_due_date', state:'past'}, "
                      "'아직 도래하지 않은' → state:'not_due').",
                      {"metric_id": _STRING_PROP, "state": _STRING_PROP}),
-        _coerce_profile_date_states, allowed_key="profile_date_states"),
+        _coerce_profile_date_states, allowed_key="profile_date_states",
+        reject=_reject_profile_date_state),
     "relational_operation": SlotShape("relational_operation", "target_user",
         _obj_schema(
             "회원 등급/상태의 시점·이력 조건(월별 스냅샷). 현재 값 필터(lifecycle)가 아니라 "
@@ -1183,6 +1331,23 @@ CONDITION_SPECS: tuple[ConditionSpec, ...] = (
             applies=lambda p: bool(p.get("expression")),
         ),
     ),
+    # 구매 이력 '존재'. member compiler 가 주문 EXISTS 술어를 직접 얹으므로(graph_rag
+    # _purchase_membership_predicate) 전용 팩트조인 빌더가 필요 없다 — purchase_inactivity 의
+    # 정확한 반대 극성이고, 둘이 함께 오면 '이탈 위험'(있었지만 최근에는 없음) 문형이 된다.
+    ConditionSpec(
+        kind="purchase_membership", fact="order", fact_join=False, signals_target=True,
+        extract=_tu_dict("purchase_membership"),
+        confidence=ConfidenceMeta(
+            kind="order_window", category="behavior",
+            key=lambda p: "purchase_membership",
+            value=lambda p: p.get("window_days") or "any_time",
+            ko=lambda p: (
+                f"최근 {p.get('window_days')}일 이내 구매 이력 있음"
+                if isinstance(p.get("window_days"), int) else "구매 이력 있음"
+            ),
+            applies=lambda p: p.get("operator") == "exists",
+        ),
+    ),
     ConditionSpec(
         kind="purchase_inactivity", fact="order", fact_join=True, signals_target=True,
         extract=_tu_dict("purchase_inactivity"),
@@ -1429,6 +1594,7 @@ SLOT_KO_LABELS: dict[str, str] = {
     "recent_login": "최근 로그인 기간 조건",
     "inactivity_period": "미접속 기간 조건",
     "purchase_inactivity": "미구매 기간 조건",
+    "purchase_membership": "구매 이력 존재 조건",
     "cart_retention": "장바구니 보관 기간 조건",
     "cart_aggregate": "장바구니 집계 조건(담은 수량/금액)",
     "cart_type": "장바구니 유형 조건",
@@ -1467,6 +1633,22 @@ SLOT_SUPPORT_NOTES: dict[str, str] = {
 assert set(SLOT_SUPPORT_NOTES) <= set(SLOT_SHAPES), (
     f"SLOT_SUPPORT_NOTES 에 미등록 슬롯: {set(SLOT_SUPPORT_NOTES) - set(SLOT_SHAPES)}"
 )
+
+
+def slot_rejection_reason(slot: str, item: Any, *, allowed: Any = None) -> str | None:
+    """이 슬롯이 이 항목을 거부한 **정확한** 이유(None = 거부하지 않았거나 사유 미선언).
+
+    소비자는 coerce 실패를 추측하지 않는다. 사유가 없으면 없다고 말하는 편이, 그럴듯하지만
+    틀린 사유(“지표가 어휘에 없다”)를 지어내는 것보다 낫다 — 후자는 운영자를 엉뚱한 카탈로그로
+    보낸다(2026-08-02 실측). 사유는 coerce 와 같은 `_reject_*` 판정에서 나오므로 항상 실동작과 같다.
+    """
+    shape = SLOT_SHAPES.get(slot)
+    if shape is None or shape.reject is None:
+        return None
+    try:
+        return shape.reject(item, allowed)
+    except Exception:  # noqa: BLE001 — 진단이 본 흐름을 죽이지 않는다.
+        return None
 
 
 def structured_slot_shapes() -> tuple[SlotShape, ...]:

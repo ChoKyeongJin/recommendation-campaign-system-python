@@ -295,3 +295,94 @@ docker exec recommendation-campaign-system-python-postgres-1 \
 `active_member_filter`(회원 정책), V4 슬롯 계층의 coarse 축(성별/연령/행동/캠페인 제약).
 이들은 슬롯 백필이 아니라 각자 다른 축의 생산자라 같은 이행을 한 번 더 해야 한다 —
 노드 타입 추가 + capability 선언 + 컴파일러 매핑 3줄이면 되도록 확장 지점은 열려 있다.
+
+---
+
+# 작업 노트 — 이탈 위험 문형(존재 창 + 부재 창) 수리 (2026-08-02)
+
+대상 프롬프트: "최근 3개월 주문은 있었지만 최근 30일간 구매가 없는 회원을 추출해서 이탈방지 캠페인을 만들어줘."
+라이브 실측 **1/5 → 8/8**(같은 프롬프트·같은 모델·`query_parser=auto`).
+
+## 왜 1/5 였나 — 그리고 그 1이 왜 더 나쁜 신호였나
+
+성공한 1회는 LLM 이 노드를 **더 못 만들어서** 통과한 것이었다: 타입 확정 단계에서 폐기(unresolved) →
+슬롯 청구로 소거 → 결정론 합성이 SQL 을 만듦. 반대로 LLM 이 노드를 제대로 만들면 컴파일러까지 도달해
+하드 에러가 됐다. 판정이 뒤집혀 있었다는 뜻이고, 그래서 케이스별 미봉으로는 닫히지 않았다.
+
+원인 4종(전부 실측 근거 있음):
+
+| | 증상 | 진앙 |
+|---|---|---|
+| C1 | 존재 표현(`order_count > 0`)이 **착지할 슬롯이 없어** 임계 슬롯의 양수 도메인에 걸림. 게다가 사유가 "지표가 실행 어휘에 없다"로 오보고(어휘엔 **있었다**) | `targeting_ir._pos_number` / `_coerce_threshold_list` / 컴파일러의 사유 추측 |
+| C2 | 이 문형 전용 결정론 구제가 fail-close 게이트보다 **40줄 뒤**라 영영 도달 불가 | `graph_rag.build_sql_result` 호출 순서 |
+| C3 | 절대 기간 분기가 set-then-pop **no-op** — '최근 3개월'이 무음 드롭돼 평생 집계가 됨 | `legacy_plan_compiler._compile_order_aggregate` |
+| C4 | 자식 하나짜리 `logical_expression` 이 두 절 전체를 커버로 청구 → 표현되지 않은 절이 조용히 사라짐 | `semantic_coverage._node_spans` |
+| C5 | (수리 중 새로 드러남) 캠페인 **이름**('이탈방지')에서 `exclude.lifecycle=[dormant_user]` 환각 | V4 구조화기 |
+
+## 어떻게 고쳤나 (케이스가 아니라 축)
+
+1. **카운트 대수**(`semantic_normalizers.CountThresholdNormalizer`) — (연산자, 임계값)을 정수 카운트 위에서
+   항진식/존재/부재/모순/임계로 분류하는 **순수 대수**. 어구 목록이 아니라 값으로 갈리므로 새 지표가 늘어도
+   손댈 곳이 없다. 컴파일러가 존재→`purchase_membership`, 부재(창 있음)→`purchase_inactivity` 로 환원한다.
+   - 환원 자격은 설정이 선언한다: `semantic_type ∈ {count, count_distinct}` **그리고** `null_as == 0`.
+     후자가 없으면 안 된다 — 브랜드가 빈 주문만 가진 회원은 `distinct_brand_count = 0` 인데 구매는 했다.
+2. **`purchase_membership` 슬롯 신설** — 실행 술어·커버리지·신뢰도는 이미 있었고 **슬롯 선언만** 없었다.
+   `SLOT_SHAPES` + `CONDITION_SPECS`(fact_join=False) + `SLOT_KO_LABELS` 한 줄씩.
+   `NODE_SLOT_MAP` 에는 싣되 `COMPILER_OWNED_SLOTS` 에서는 뺀다(`SHARED_REDUCTION_SLOTS`) — '노출 XOR 컴파일러
+   소유' 계약을 지키면서 매핑표가 거짓말하지 않게. 이 둘을 동시에 만족시키는 유일한 길이었다.
+3. **거부 사유의 단일 소스**(`SlotShape.reject`) — coerce 와 사유가 **같은 함수**를 쓴다. 두 벌로 나누면 곧
+   어긋나고, 그때는 틀린 사유가 사유 없음보다 나쁘다.
+4. **순서 역전 수리** — 결정론 구제를 의미 파이프라인 **앞**으로. 슬롯 청구가 소유 판정의 입력이 되어야
+   같은 어구를 다시 방출한 노드가 '유실'이 아니라 '중복'으로 판정된다. + 컴파일 실패에도 슬롯 소유 소거를
+   적용(`supersede_slot_owned_failures`) — `semantic_ir` 를 고치는 게 아니라 **파생 입력**을 줄이고 다시 계산한다.
+5. **기간 정직화** — 절대 구간은 오늘로 끝나는 후행 창일 때만 일수로 환산, 아니면 fail-close. 창이 사라진
+   집계는 '평생'이 되어 원문과 다른 대상을 낸다.
+6. **커버리지 정직화** — 컨테이너 노드는 자식이 덮지 않는 구간을 청구하지 못한다. 그리고 기간 소유 노드는
+   자기 절의 기간 원자를 **하나만** 청구한다(절 전체 면제는 다른 조건의 기간까지 덮었다).
+7. **`duration` 리터럴 신설** — '6개월'의 '6' 이 주인 없는 맨 숫자로 남던 것을 타입 있는 원자로. 이게 없으면
+   ⑥ 을 고친 순간 '최근 6개월 5건 이상'이 0/5 로 무너진다(실제로 무너뜨렸다가 되살렸다).
+8. **환각 제외 강등** — 원문에 제외 표지가 없으면 `exclude.*` 는 근거 없는 조건이다. 조건의 부정('구매가 없는')은
+   표지가 아니다.
+
+## 함정 기록
+
+- **순서 이동만으로는 아무것도 고쳐지지 않는다.** `semantic_ir.status` 는 파이프라인이 계산한 파생값이라,
+  구제를 앞으로 옮겨도 게이트는 낡은 unsupported 를 그대로 본다. 소거 경로가 반드시 함께 필요하다.
+- **`COMPILER_OWNED_SLOTS` 에 슬롯을 더하는 것은 4개 가드를 동시에 건드린다**(결정론 백필 금지·
+  FORBIDDEN_OUTPUT_KEYS·V4 노출 제거·semantic_plan 스키마 부재). target_user 슬롯에는 plan 컨테이너 같은
+  '노출 제외 선언' 장치가 없어서 '노출'과 '컴파일러 소유'가 배타다.
+- **커버리지를 정직하게 만들면 그동안 거짓 커버가 가려 준 결핍이 드러난다.** ⑥ 직후 무관한 프롬프트가
+  0/5 로 무너졌고, 원인은 상대 기간의 수가 주인 없는 원자였다는 **원래부터 있던** 구멍이었다.
+- 인접 프롬프트 회귀는 **반드시 `git stash` 로 기준선을 재서** 판정한다. 이번에도 "내가 깼나?" 두 건 중
+  하나는 진짜 회귀(고침), 하나는 원래부터 실패(90일 미접속)였다.
+
+## 검증
+
+```
+python -m pytest tests -q          # 901 passed, 20 skipped
+python db_swap_preflight.py        # PASS
+python tools/generate_supported_conditions.py   # 문서 재생성(커밋 필수 — CI 가 git diff 로 잡는다)
+```
+라이브: 대상 프롬프트 8/8, 인접 5종(임계·카트·절대기간·평생무구매·제외) 회귀 없음.
+신규 테스트: `tests/test_lapsed_buyer_regression.py`(C1~C4 축별 고정),
+`tests/test_deterministic_rescue_ordering.py`(순서 불변식), 골든 케이스 `lapsed_buyer_window_pair`.
+
+## 남은 것 (이번 범위 밖, 실측으로 확인됨)
+
+- "이십만원 이상 구매한 회원 중 남자는 제외해줘" — 금액 조건이 SQL 에 반영되지 않아 의미검증에서 차단.
+  **수정 전후 동일**(clean tree 에서도 실패). 26종 감사 #8 과 같은 건.
+- "90일 이상 접속하지 않은 회원" — 구조화기가 `buy_cycle`(평균 구매주기)로 환각. **수정 전후 동일 0/4**.
+  이번 변경으로 사유만 정직해졌다("임계값 0 는 이 슬롯이 받지 않는다").
+- 대상 프롬프트의 결과는 여전히 **0건**이다 — 실데이터가 2017년인데 창은 오늘 기준. SQL·실행 모두 정상.
+- `intent=find_user_segment` 라 메시지 생성은 `intent_not_recommend_campaign` 으로 스킵된다(별건).
+- 이탈 문형 + 집계("…회원 수를 알려줘")는 여전히 `query_plan_conditions_missing` 으로 막힌다.
+  26종 감사 #14 와 같은 analytic 라우팅 군집이고 이번 범위 밖이다.
+
+## 의도한 상호작용 하나 (측정해 둠)
+
+구제를 앞으로 옮기면서 `_normalize_purchase_aggregation_request`(graph_rag:3908)가 **결정론으로 합성된**
+`purchase_membership` 을 보게 됐다. 실측: 집계 필터의 `ORDER_DATE >= P30D` 가 `P90D` 로 재작성된다.
+이것은 그 함수의 선언된 계약 그대로다 — docstring 이 "구매 존재 조건의 window_days 를 단일 진실 소스로
+사용한다"고 말한다. 이탈 문형에서 모집단의 **긍정** 창은 90일이 맞고(30일은 부재 술어로 따로 붙는다),
+재작성 전의 P30D 는 오히려 요청의 반대("최근 30일에 주문한")를 세고 있었다. 다만 라이브에서는
+`contractSource == analytics_registry` 조기 반환에 걸려 재작성이 발동하지 않는다.

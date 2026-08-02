@@ -126,3 +126,50 @@ def test_builder_still_compiles_supported_repeat_buyer() -> None:
     )
     assert candidate is not None
     assert "HAVING COUNT(DISTINCT ORDER_ID) >= 2" in candidate["sql"]
+
+
+# ── 근거 없는 제외(환각) 강등 ─────────────────────────────────────────────────────
+
+
+_LAPSED = "최근 3개월 주문은 있었지만 최근 30일간 구매가 없는 회원을 추출해서 이탈방지 캠페인을 만들어줘."
+
+
+def test_unevidenced_exclusion_is_demoted() -> None:
+    """캠페인 이름('이탈방지')에서 유추된 제외는 근거가 아니다 — 요청에 없는 회원을 빼면 안 된다."""
+    plan = {"exclude": {"lifecycle": ["dormant_user"], "gender": [], "interests": []}}
+    assert behavior_demotion.demote_unevidenced_exclusions(plan, source_text=_LAPSED) == [
+        "exclude.lifecycle:dormant_user"
+    ]
+    assert plan["exclude"]["lifecycle"] == []
+    records = plan.get("superseded_conditions") or []
+    assert any(
+        entry.get("owner") == "behavior_demotion:unevidenced_exclusion"
+        and entry.get("outcome") == "removed"
+        for entry in records
+    ), f"강등 근거가 기록되지 않았다: {records}"
+
+
+def test_condition_negation_is_not_an_exclusion_marker() -> None:
+    """'구매가 없는'은 조건의 부정이지 집합 제외가 아니다 — 섞으면 환각이 근거를 얻는다."""
+    plan = {"exclude": {"lifecycle": ["dormant_user"]}}
+    behavior_demotion.demote_unevidenced_exclusions(plan, source_text="최근 30일간 구매가 없는 회원")
+    assert plan["exclude"]["lifecycle"] == []
+
+
+def test_real_exclusion_is_kept() -> None:
+    """반대 방향 — 원문에 제외 표지가 있으면 절대 걷지 않는다(fail-close)."""
+    for text in (
+        "이십만원 이상 구매한 회원 중 남자는 제외해줘",
+        "VIP가 아닌 회원을 찾아줘",
+        "휴면 회원 빼고 추출해줘",
+        "여성 말고 남성만",
+    ):
+        plan = {"exclude": {"gender": ["male"], "lifecycle": [], "interests": []}}
+        assert behavior_demotion.demote_unevidenced_exclusions(plan, source_text=text) == [], text
+        assert plan["exclude"]["gender"] == ["male"], text
+
+
+def test_empty_exclusions_are_a_no_op() -> None:
+    plan = {"exclude": {"gender": [], "lifecycle": [], "interests": []}}
+    assert behavior_demotion.demote_unevidenced_exclusions(plan, source_text=_LAPSED) == []
+    assert plan.get("superseded_conditions") in (None, [])

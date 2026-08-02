@@ -13,6 +13,7 @@
 | `recent_login` | 최근 로그인 기간 조건 | target_user | O |  |
 | `inactivity_period` | 미접속 기간 조건 | target_user | O |  |
 | `purchase_inactivity` | 미구매 기간 조건 | target_user | O |  |
+| `purchase_membership` | 구매 이력 존재 조건 | target_user | O |  |
 | `cart_retention` | 장바구니 보관 기간 조건 | target_user | O |  |
 | `cart_aggregate` | 장바구니 집계 조건(담은 수량/금액) | target_user | X |  |
 | `cart_type` | 장바구니 유형 조건 | target_user | O |  |

@@ -37,6 +37,48 @@ SEMANTIC_IR_FIELD_KO_LABELS: dict[str, str] = {
 _SPAN_PREFIXES = ("uncovered:", "conflict:", "invalid:")
 
 
+def semantic_failure_reason(status: str, failure_kind: Any) -> str:
+    """failure_reason 도 원인을 말한다 — 운영자가 로그만 보고 어느 계층인지 알 수 있어야 한다.
+
+    `semantic_ir_needs_clarification` 하나로 뭉치면 "사용자가 안 알려준 것", "구조화기가 못
+    만든 것", "실행 설정이 비어 있는 것"이 같은 코드로 보인다 — 셋의 고칠 곳이 다 다르다.
+    """
+    import semantic_plan  # 지연 import — 렌더링 계층은 코어 스키마에 의존하지 않는다
+
+    if failure_kind == semantic_plan.FAILURE_KIND_STRUCTURER:
+        return "semantic_structurer_failure"
+    if failure_kind == semantic_plan.FAILURE_KIND_SYSTEM:
+        return "semantic_registry_gap"
+    return f"semantic_ir_{status}"
+
+
+def cause_missing_conditions(
+    causes: Any, fallback_message: str, *, build: Any, label_of: Any
+) -> list[dict[str, Any]]:
+    """결핍 원인 → 사용자용 미충족 조건. **내부 필드명을 노출하지 않는다.**
+
+    예전에는 `req-1.member_entity, ranked_set, relation` 이 그대로 나갔다 — 사용자가 정할 수
+    없는 이름이다. 이제 보이는 것은 원문 구절과 조건 라벨뿐이다.
+    """
+    conditions: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for record in causes or ():
+        span = str(record.get("source_span") or "").strip()
+        node_type = record.get("node_type")
+        label = (label_of(node_type) if isinstance(node_type, str) and node_type else "") or span or "조건"
+        key = f"{label}\0{span}"
+        if key in seen:
+            continue
+        seen.add(key)
+        question = str(record.get("question") or "").strip()
+        reason = question or (
+            f"'{span}' 조건을 실행 가능한 형태로 해석하지 못했습니다."
+            if span else fallback_message
+        )
+        conditions.append(build(f"requirements.{len(conditions) + 1}", label, reason))
+    return conditions
+
+
 def semantic_ir_field_label(field: str) -> str:
     for prefix in _SPAN_PREFIXES:
         if field.startswith(prefix):

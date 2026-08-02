@@ -162,7 +162,12 @@ def test_llm_schema_is_derived_from_node_declarations() -> None:
     """손으로 쓴 두 번째 스키마 권위가 생기지 않게 — 노드를 추가하면 스키마도 따라온다."""
     schema = semantic_plan_llm.semantic_plan_tool()["function"]["parameters"]
     node_schema = schema["$defs"]["semanticNode"]
-    assert set(node_schema["properties"]["type"]["enum"]) == set(semantic_plan.NODE_CLASS_BY_TYPE)
+    # 스키마는 **타입별 변형의 union** 이다 — 한 객체에 전 타입 필드를 합치면 타입과 필드가
+    # 어긋난 노드가 통과한다(2026-08-02 실측 실패의 경로).
+    variants = {
+        variant["properties"]["type"]["enum"][0]: variant for variant in node_schema["anyOf"]
+    }
+    assert set(variants) == set(semantic_plan.NODE_CLASS_BY_TYPE)
     derived_names = {
         spec.name
         for cls in semantic_plan.NODE_CLASSES
@@ -171,14 +176,24 @@ def test_llm_schema_is_derived_from_node_declarations() -> None:
     }
     assert derived_names, "파생 필드가 하나도 없다 — 아래 노출 금지 계약이 공허해진다."
     for cls in semantic_plan.NODE_CLASSES:
+        properties = variants[cls.TYPE]["properties"]
         for spec in cls.FIELDS:
             if spec.derived:
                 # 파생 필드(시간 한정어 등)는 시스템 계산값이다 — 노출하면 LLM 이 지어낸다.
-                assert spec.name not in node_schema["properties"], (
+                assert spec.name not in properties, (
                     f"{cls.TYPE}.{spec.name} 은 파생 필드인데 LLM 스키마에 노출됐다"
                 )
                 continue
-            assert spec.name in node_schema["properties"], f"{cls.TYPE}.{spec.name} 미노출"
+            assert spec.name in properties, f"{cls.TYPE}.{spec.name} 미노출"
+        # 다른 타입의 필드는 이 변형에 없어야 한다.
+        others = {
+            other.name
+            for klass in semantic_plan.NODE_CLASSES if klass is not cls
+            for other in klass.FIELDS
+        } - {spec.name for spec in cls.FIELDS}
+        assert not (others & set(properties)), (
+            f"{cls.TYPE} 변형이 다른 타입의 필드를 노출한다: {sorted(others & set(properties))}"
+        )
     # 슬롯 이름은 LLM 스키마 어디에도 없다.
     import json
 

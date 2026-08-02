@@ -40,6 +40,7 @@ CORE_MODULES: tuple[str, ...] = (
     "semantic_normalizers.py",
     "semantic_pipeline.py",
     "semantic_reemission.py",
+    "semantic_retype.py",
     "requirement_ledger.py",
     "temporal_semantics.py",
     "compile_contract.py",
@@ -163,8 +164,15 @@ def test_core_survives_without_a_domain_plugin(monkeypatch) -> None:
         assert semantic_domain_binding.vocabulary("aggregate_scope") == ()
         assert semantic_domain_binding.plan_container() is None
         # 어휘가 없으면 enum 이 사라질 뿐, 스키마 생성은 계속 동작한다.
+        # (스키마는 타입 판별 union 이므로 scope 를 선언한 변형에서 확인한다.)
         schema = semantic_plan.semantic_node_json_schema()
-        assert "enum" not in json.dumps(schema["properties"]["scope"])
+        scoped = [
+            variant for variant in schema["anyOf"]
+            if "scope" in variant["properties"]
+        ]
+        assert scoped, "scope 를 선언한 노드 변형이 없다"
+        for variant in scoped:
+            assert "enum" not in json.dumps(variant["properties"]["scope"])
     finally:
         semantic_domain_binding.reset()
 

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass
+from datetime import date
 from typing import Any, Callable
 
 import compile_contract
@@ -31,7 +32,13 @@ import semantic_domain_binding
 import semantic_plan
 from compile_contract import PLAN_ROOT, CompileContext
 from semantic_normalizers import (
+    COUNT_ABSENCE,
+    COUNT_CONTRADICTION,
+    COUNT_EXISTENCE,
+    COUNT_TAUTOLOGY,
+    COUNT_THRESHOLD,
     AmountNormalizer,
+    CountThresholdNormalizer,
     Money,
     NormalizationError,
     OperatorNormalizer,
@@ -53,6 +60,10 @@ SLOT_METRIC_TREND = "metric_trend"
 SLOT_ENTITY_SET = "entity_set_condition"
 SLOT_RELATIONAL_OPERATION = "relational_operation"
 SLOT_MEMBER_METRIC_RANKING = "member_metric_ranking"
+# 존재/부재 환원 착지 슬롯. 임계 슬롯과 달리 구조화기도 직접 채운다(존재·부재는 원문 표면이 곧
+# 슬롯이라 노드를 거칠 이유가 없다) — 그래서 매핑표에는 싣되 소유는 주장하지 않는다(아래 참조).
+SLOT_PURCHASE_MEMBERSHIP = "purchase_membership"
+SLOT_PURCHASE_INACTIVITY = "purchase_inactivity"
 
 
 def member_container() -> str:
@@ -188,6 +199,49 @@ class LegacyQueryPlanCompiler:
         allowed = ctx.allowed.get(allowed_key) if allowed_key else None
         return shape.coerce(raw, allowed=allowed)
 
+    @classmethod
+    def _coerce_failure_detail(
+        cls,
+        ctx: CompileContext,
+        slot_name: str,
+        item: dict[str, Any],
+        allowed_key: str | None,
+        core_keys: frozenset[str],
+    ) -> str:
+        """슬롯 검증이 **왜** 실패했는지 — 슬롯이 스스로 답하게 한다.
+
+        1순위는 슬롯 shape 이 선언한 거부 사유다(`SlotShape.reject`). 그것이 coerce 와 **같은**
+        판정 함수를 쓰므로 사유와 실동작이 어긋날 수 없다. 이 계층이 없던 동안에는 값 도메인
+        거부(임계값 0)까지 "지표가 실행 어휘에 없다"로 보고돼, 어휘에 멀쩡히 있는 지표를 두고
+        운영자가 카탈로그를 뒤졌다(실측 2026-08-02: `order_count > 0`).
+
+        사유 선언이 없는 슬롯만 이분 판정(핵심 항목만 남겨 다시 coerce)으로 넘어가 한정어(기간·
+        브랜드·그레인) 탓인지를 가른다.
+        """
+        detail = cls._declared_rejection(ctx, slot_name, item, allowed_key)
+        if detail:
+            return detail
+        core = {key: value for key, value in item.items() if key in core_keys}
+        if core == item or not cls._coerce(ctx, slot_name, [core], allowed_key):
+            return ""
+        extra = ", ".join(sorted(set(item) - set(core)))
+        return f"이 조건에는 한정어({extra})를 함께 적용할 수 없다"
+
+    @staticmethod
+    def _declared_rejection(
+        ctx: CompileContext, slot_name: str, item: Any, allowed_key: str | None
+    ) -> str:
+        """슬롯이 선언한 거부 사유(없으면 빈 문자열). shape 는 주입된 것만 쓴다 — 레지스트리를 열지 않는다."""
+        shape = ctx.slot_shapes.get(slot_name)
+        reject = getattr(shape, "reject", None)
+        if not callable(reject):
+            return ""
+        allowed = ctx.allowed.get(allowed_key) if allowed_key else None
+        try:
+            return str(reject(item, allowed) or "")
+        except Exception:  # noqa: BLE001 — 진단이 컴파일을 죽이지 않는다.
+            return ""
+
     @staticmethod
     def _append_list_slot(result: CompileResult, node: SemanticNode, slot: str, items: list[Any]) -> None:
         bucket = result.target_user.setdefault(slot, [])
@@ -224,30 +278,176 @@ class LegacyQueryPlanCompiler:
         item = {"metric": metric, "operator": self._operator(node), "threshold": threshold}
         coerced = self._coerce(ctx, SLOT_CART_AGGREGATE, [item], "cart_aggregate_metrics")
         if not coerced:
+            detail = self._coerce_failure_detail(
+                ctx, SLOT_CART_AGGREGATE, item, "cart_aggregate_metrics",
+                frozenset({"metric", "operator", "threshold"}),
+            )
             result.failures.append({
                 "node_id": node.id,
                 "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
-                "reason": f"장바구니 지표 '{metric}' 는 실행 어휘에 없다",
+                "reason": detail or f"장바구니 지표 '{metric}' 는 실행 어휘에 없다",
             })
             return
         self._append_list_slot(result, node, SLOT_CART_AGGREGATE, list(coerced))
+
+    @staticmethod
+    def _rolling_window_days(
+        window: Period | RelativeWindow | None, ctx: CompileContext
+    ) -> tuple[int | None, str]:
+        """집계 창을 롤링 일수로 확정한다. 반환: (일수|None, 확정 불가 사유|"").
+
+        상대 창('최근 3개월')은 그대로 일수다. 절대 구간은 **오늘로 끝나는 후행 창일 때만**
+        일수로 환산한다 — 달력 구간('2026년 5월')을 일수로 바꾸면 구간이 오늘 쪽으로 밀려
+        원문에 없는 기간이 된다. 확정할 수 없으면 사유를 돌려주고 호출자가 fail-close 한다:
+        조용히 창 없는(=평생) 집계로 내리면 '최근 3개월 5건'이 '평생 5건'이 되는 가짜 성공이다
+        (실측 2026-08-02: 절대 구간 분기가 set-then-pop no-op 이라 창이 통째로 사라졌다).
+        """
+        if isinstance(window, RelativeWindow):
+            return window.days, ""
+        if not isinstance(window, Period):
+            return None, ""
+        if ctx.today is None:
+            return None, "기준일이 주입되지 않아 기간을 확정할 수 없다"
+        try:
+            start = date(int(window.start[:4]), int(window.start[4:6]), int(window.start[6:8]))
+            end = date(int(window.end[:4]), int(window.end[4:6]), int(window.end[6:8]))
+        except (TypeError, ValueError):
+            return None, f"기간 '{window.start}~{window.end}' 을 날짜로 해석할 수 없다"
+        if end < ctx.today:
+            label = window.label or f"{window.start}~{window.end}"
+            return None, (
+                f"'{label}' 처럼 과거에서 끝나는 달력 구간의 집계는 아직 지원하지 않는다"
+                "(현재는 오늘로 끝나는 최근 N일 창만 컴파일된다)"
+            )
+        days = (ctx.today - start).days + 1
+        if days <= 0:
+            return None, f"기간 '{window.start}~{window.end}' 의 시작이 기준일보다 뒤에 있다"
+        return days, ""
+
+    # 집계 도메인 → (존재 슬롯, 부재 슬롯). 카운트 대수가 임계 비교를 존재/부재로 환원했을 때만 쓴다.
+    _SCOPE_PRESENCE_SLOTS: dict[str, tuple[str, str]] = {
+        "order": (SLOT_PURCHASE_MEMBERSHIP, SLOT_PURCHASE_INACTIVITY),
+    }
+
+    def _compile_count_presence(
+        self,
+        node: SemanticNode,
+        ctx: CompileContext,
+        result: CompileResult,
+        *,
+        scope: str,
+        domain: str,
+        metric: str | None,
+        operator: str,
+        threshold: int | float,
+        window_days: int | None,
+        window_issue: str,
+    ) -> bool:
+        """카운트 임계 비교를 존재/부재로 환원한다. 이 노드를 여기서 처리했으면 True.
+
+        '주문은 있었지만'(COUNT>0)과 '구매가 없는'(COUNT=0)은 임계 비교가 아니라 **존재/부재**다.
+        표현이 아니라 값으로 갈리므로 어구 목록이 아니라 대수로 판정한다 — 새 카운트 지표가
+        늘어도 여기 손댈 것이 없고, 무엇이 카운트인지는 지표 스펙 선언이 소유한다(ctx.count_metrics).
+
+        이 환원이 없던 동안 존재 표현은 갈 곳이 없어 임계 슬롯의 양수 도메인에 걸렸고, 요청 전체가
+        "지표가 실행 어휘에 없다"로 막혔다(2026-08-02 실측 4/4). 항진식·모순도 여기서 정직하게
+        끊는다 — '0건 이상'은 조건이 아니라 모든 회원이고, 조건인 척 SQL 에 들어가면 안 된다.
+        """
+        verdict = CountThresholdNormalizer.classify(operator, threshold)
+        if verdict == COUNT_THRESHOLD:
+            return False
+        surface = f"{metric} {operator} {threshold}"
+        if verdict == COUNT_TAUTOLOGY:
+            result.failures.append({
+                "node_id": node.id,
+                "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                "reason": f"'{surface}' 는 모든 대상이 만족하는 항진식이라 타겟 조건이 아니다",
+            })
+            return True
+        if verdict == COUNT_CONTRADICTION:
+            result.failures.append({
+                "node_id": node.id,
+                "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                "reason": f"'{surface}' 를 만족하는 대상은 존재할 수 없다",
+            })
+            return True
+        # 존재/부재 환원은 정수 카운트 위에서만 성립한다. 합계·비율 지표는 임계 경로 그대로 간다.
+        if metric not in (ctx.count_metrics.get(domain) or frozenset()):
+            return False
+        slots = self._SCOPE_PRESENCE_SLOTS.get(scope)
+        if slots is None:
+            return False
+        existence_slot, absence_slot = slots
+        if window_issue:
+            result.failures.append({
+                "node_id": node.id,
+                "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                "reason": window_issue,
+            })
+            return True
+        if verdict == COUNT_EXISTENCE:
+            value: dict[str, Any] = {"operator": "exists", "window_days": window_days}
+            slot_name = existence_slot
+        else:  # COUNT_ABSENCE
+            if window_days is None:
+                result.failures.append({
+                    "node_id": node.id,
+                    "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                    "reason": (
+                        f"기간이 없는 '{surface}'(평생 부재)는 이 경로가 컴파일하지 않는다 — "
+                        "기간을 붙이거나 무구매 행동으로 표현해야 한다"
+                    ),
+                })
+                return True
+            value = {"min_days": window_days}
+            slot_name = absence_slot
+        coerced = self._coerce(ctx, slot_name, value, None)
+        if coerced is None:
+            result.failures.append({
+                "node_id": node.id,
+                "failure_code": semantic_plan.VALIDATION_MISMATCH,
+                "reason": (
+                    self._declared_rejection(ctx, slot_name, value, None)
+                    or f"'{surface}' 의 존재/부재 환원 값이 슬롯 검증을 통과하지 못했다"
+                ),
+            })
+            return True
+        result.target_user[slot_name] = coerced
+        result.node_slots[node.id] = member_slot_path(slot_name)
+        return True
 
     def _compile_order_aggregate(
         self, node: SemanticNode, ctx: CompileContext, result: CompileResult
     ) -> None:
         metric = ctx.resolve_metric("aggregate", node.values.get("metric"))
         threshold, _unit = self._threshold(node)
+        operator = self._operator(node)
+        window = self._period(node, "period", ctx)
+        window_days, window_issue = self._rolling_window_days(window, ctx)
+        if self._compile_count_presence(
+            node, ctx, result,
+            scope="order", domain="aggregate", metric=metric, operator=operator,
+            threshold=threshold, window_days=window_days, window_issue=window_issue,
+        ):
+            return
         item: dict[str, Any] = {
             "metric_id": metric,
-            "operator": self._operator(node),
+            "operator": operator,
             "threshold": threshold,
         }
-        window = self._period(node, "period", ctx)
         if isinstance(window, RelativeWindow):
             item["window"] = {"value": window.value, "unit": window.unit}
         elif isinstance(window, Period):
-            item["window_days"] = None
-            item.pop("window_days")
+            # 절대 구간은 오늘로 끝나는 후행 창일 때만 롤링 일수가 된다. 아니면 조용히 버리지 않고
+            # 여기서 끊는다 — 창이 사라진 집계는 '평생'이 되어 원문과 다른 대상을 낸다.
+            if window_issue:
+                result.failures.append({
+                    "node_id": node.id,
+                    "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                    "reason": window_issue,
+                })
+                return
+            item["window_days"] = window_days
         grain = node.values.get("grain")
         if isinstance(grain, str) and grain:
             item["aggregation_scope"] = grain
@@ -256,10 +456,14 @@ class LegacyQueryPlanCompiler:
             item["scope"] = {"brand": qualifier.strip()}
         coerced = self._coerce(ctx, SLOT_AGGREGATE_CONDITIONS, [item], "aggregate_metrics")
         if not coerced:
+            detail = self._coerce_failure_detail(
+                ctx, SLOT_AGGREGATE_CONDITIONS, item, "aggregate_metrics",
+                frozenset({"metric_id", "operator", "threshold"}),
+            )
             result.failures.append({
                 "node_id": node.id,
                 "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
-                "reason": f"집계 지표 '{metric}' 는 실행 어휘에 없다",
+                "reason": detail or f"집계 지표 '{metric}' 는 실행 어휘에 없다",
             })
             return
         self._append_list_slot(result, node, SLOT_AGGREGATE_CONDITIONS, list(coerced))
@@ -279,7 +483,10 @@ class LegacyQueryPlanCompiler:
                 result.failures.append({
                     "node_id": node.id,
                     "failure_code": semantic_plan.VALIDATION_MISMATCH,
-                    "reason": "캠페인 귀속 금액 슬롯 검증 실패",
+                    "reason": (
+                        self._declared_rejection(ctx, SLOT_CAMPAIGN_BUY_AMOUNT, slot, None)
+                        or "캠페인 귀속 금액 슬롯 검증 실패"
+                    ),
                 })
                 return
             result.target_user[SLOT_CAMPAIGN_BUY_AMOUNT] = coerced
@@ -292,7 +499,10 @@ class LegacyQueryPlanCompiler:
             result.failures.append({
                 "node_id": node.id,
                 "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
-                "reason": f"캠페인 이벤트 '{event}' 는 실행 어휘에 없다",
+                "reason": (
+                    self._declared_rejection(ctx, SLOT_CAMPAIGN_FREQUENCY, slot, "campaign_frequency_events")
+                    or f"캠페인 이벤트 '{event}' 는 실행 어휘에 없다"
+                ),
             })
             return
         result.target_user[SLOT_CAMPAIGN_FREQUENCY] = coerced
@@ -309,7 +519,10 @@ class LegacyQueryPlanCompiler:
             result.failures.append({
                 "node_id": node.id,
                 "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
-                "reason": f"프로필 지표 '{metric}' 는 실행 어휘에 없다",
+                "reason": (
+                    self._declared_rejection(ctx, SLOT_BALANCE_CONDITIONS, item, "profile_metrics")
+                    or f"프로필 지표 '{metric}' 는 실행 어휘에 없다"
+                ),
             })
             return
         self._append_list_slot(result, node, SLOT_BALANCE_CONDITIONS, list(coerced))
@@ -327,7 +540,10 @@ class LegacyQueryPlanCompiler:
                 result.failures.append({
                     "node_id": node.id,
                     "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
-                    "reason": f"프로필 날짜 상태 '{state}' 는 실행 어휘에 없다",
+                    "reason": (
+                        self._declared_rejection(ctx, SLOT_PROFILE_DATE_CONDITIONS, item, "profile_date_states")
+                        or f"프로필 날짜 상태 '{state}' 는 실행 어휘에 없다"
+                    ),
                 })
                 return
             self._append_list_slot(result, node, SLOT_PROFILE_DATE_CONDITIONS, list(coerced))
@@ -339,7 +555,10 @@ class LegacyQueryPlanCompiler:
             result.failures.append({
                 "node_id": node.id,
                 "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
-                "reason": f"프로필 지표 '{metric}' 는 실행 어휘에 없다",
+                "reason": (
+                    self._declared_rejection(ctx, SLOT_BALANCE_CONDITIONS, item, "profile_metrics")
+                    or f"프로필 지표 '{metric}' 는 실행 어휘에 없다"
+                ),
             })
             return
         self._append_list_slot(result, node, SLOT_BALANCE_CONDITIONS, list(coerced))
@@ -598,6 +817,9 @@ NODE_SLOT_MAP: dict[str, tuple[str, ...]] = {
         member_slot_path(SLOT_CAMPAIGN_FREQUENCY),
         member_slot_path(SLOT_CAMPAIGN_BUY_AMOUNT),
         member_slot_path(SLOT_BALANCE_CONDITIONS),
+        # 카운트 대수가 임계 비교를 존재/부재로 환원했을 때의 착지 슬롯(_compile_count_presence).
+        member_slot_path(SLOT_PURCHASE_MEMBERSHIP),
+        member_slot_path(SLOT_PURCHASE_INACTIVITY),
     ),
     semantic_plan.MetricComparison.TYPE: (member_slot_path(SLOT_METRIC_TREND),),
     semantic_plan.RankedSet.TYPE: (SLOT_MEMBER_METRIC_RANKING,),
@@ -609,14 +831,28 @@ NODE_SLOT_MAP: dict[str, tuple[str, ...]] = {
     semantic_plan.LogicalExpression.TYPE: (),
 }
 
-# 이 컴파일러가 소유하는 슬롯 전체 — 다른 생산자가 쓰면 드리프트 가드가 잡는다.
+# 컴파일러가 **환원으로 채울 수 있지만 소유하지는 않는** 슬롯.
+#
+# 소유(COMPILER_OWNED_SLOTS)는 "이 슬롯을 만드는 생산자는 컴파일러 하나뿐"이라는 선언이고,
+# 그 대가로 그 슬롯은 LLM 노출면에서 빠진다(노출 XOR 컴파일러 소유). 존재/부재는 그 계약을
+# 만족하지 못한다 — 원문 표면('구매한 적 있는', '최근 30일 미구매')이 곧 슬롯이라 구조화기가
+# 직접 채우는 것이 맞고, 결정론 이탈 문형 정규화도 같은 슬롯을 쓴다. 그래서 두 갈래로 나눈다:
+#   NODE_SLOT_MAP        — 사실 그대로(이 노드 타입이 이 슬롯으로 갈 수 있다). 매핑표는 거짓말하지 않는다.
+#   COMPILER_OWNED_SLOTS — 배타적 소유만. 여기서 빼야 구조화기 노출·결정론 정규화가 이중 생산자가 되지 않는다.
+SHARED_REDUCTION_SLOTS: frozenset[str] = frozenset({
+    member_slot_path(SLOT_PURCHASE_MEMBERSHIP),
+    member_slot_path(SLOT_PURCHASE_INACTIVITY),
+})
+
+# 이 컴파일러가 **배타적으로** 소유하는 슬롯 — 다른 생산자가 쓰면 드리프트 가드가 잡는다.
 COMPILER_OWNED_SLOTS: frozenset[str] = frozenset(
     slot for slots in NODE_SLOT_MAP.values() for slot in slots
-)
+) - SHARED_REDUCTION_SLOTS
 
 
 __all__ = [
     "COMPILER_OWNED_SLOTS",
+    "SHARED_REDUCTION_SLOTS",
     "PLAN_ROOT",
     "CompileContext",
     "CompileResult",
@@ -633,5 +869,7 @@ __all__ = [
     "SLOT_MEMBER_METRIC_RANKING",
     "SLOT_METRIC_TREND",
     "SLOT_PROFILE_DATE_CONDITIONS",
+    "SLOT_PURCHASE_INACTIVITY",
+    "SLOT_PURCHASE_MEMBERSHIP",
     "SLOT_RELATIONAL_OPERATION",
 ]

@@ -66,6 +66,10 @@ def _forbidden_examples(limit: int = 4) -> str:
     return ", ".join(names[:limit]) + (" 등" if len(names) > limit else "")
 
 
+# 방출 규칙과 타입 표는 **`semantic_plan` 이 소유한다**(선언 옆). 여기서 다시 쓰지 않는 이유:
+# 2026-08-02 이전에는 이 프롬프트가 규칙의 유일 보관처였는데 프로덕션 경로
+# (`query_structurer.campaign_plan_v4`)는 이 모듈을 import 하지 않았다 — 그래서 라이브
+# 프롬프트에는 노드 타입 이야기가 한 줄도 없었고 거의 모든 요청이 타입 오분류로 막혔다.
 SYSTEM_PROMPT = f"""너는 캠페인 타겟팅 요청의 **의미 추출기**다.
 
 너의 산출물은 SemanticPlanV2 의미 노드 목록 하나뿐이다.
@@ -76,31 +80,15 @@ SYSTEM_PROMPT = f"""너는 캠페인 타겟팅 요청의 **의미 추출기**다
 - 결핍 목록(missing_fields), 미지원 판정(unsupported_operations), 최종 상태(status)
   → 이 셋은 시스템이 네 노드에서 **계산**한다. 네가 판단하지 마라.
 
-규칙:
-1. 원문에서 확인되는 조건 하나당 노드 하나. 조건이 여럿이면 노드도 여럿이다.
-2. 모든 노드에 source_span(원문 구절 그대로)과 source_start/source_end(문자 인덱스)를 붙인다.
-   원문에 없는 문구를 source_span 으로 쓰지 마라.
-3. 확실하지 않은 필드는 **비워 둔다**. 지어내지 마라 — 비어 있으면 시스템이 결핍으로 계산해
-   사용자에게 묻는다. 지어내면 틀린 결과가 조용히 나간다.
-4. 값은 원문 표현 그대로 써도 된다('10만 원', '이상', '2026년 2월', '상위 10%').
-   시스템이 정규화한다. 계수 단위를 다른 단위로 바꾸지 마라.
-5. 기간 대 기간 비교(증가/감소)는 metric_comparison 하나로 표현한다 —
-   baseline 과 current 를 그 노드가 소유하므로 별도 기간 조건 노드를 만들지 마라.
-6. '상위 N개 상품을 구매한 회원'처럼 대상이 계산으로 정해지면 entity_set_membership 을 쓰고,
-   그 안의 ranked_set 이 랭킹을 소유한다. 리터럴 상품명으로 바꾸지 마라.
-7. 조건들의 결합이 AND 가 아니면(OR/부정) logical_expression 으로 감싼다.
+값은 원문 표현 그대로 써도 된다('10만 원', '이상', '2026년 2월', '상위 10%').
+시스템이 정규화한다. 계수 단위를 다른 단위로 바꾸지 마라.
+
+{semantic_plan.node_type_guidance()}
 """
 
 
 def _node_type_guide() -> str:
-    lines = ["[노드 타입과 필수 필드]"]
-    for node_type, spec in semantic_plan.node_requirement_documentation().items():
-        required = ", ".join(spec["required"])
-        optional = ", ".join(spec["optional"])
-        lines.append(f"- {node_type}: 필수 {{{required}}}" + (f" / 선택 {{{optional}}}" if optional else ""))
-        if spec["description"]:
-            lines.append(f"    {spec['description']}")
-    return "\n".join(lines)
+    return semantic_plan.node_type_guidance()
 
 
 def build_user_prompt(

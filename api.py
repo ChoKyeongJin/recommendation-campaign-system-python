@@ -488,6 +488,9 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
             "decisions_truncated": bool(query_plan.get(plan_decisions.TRUNCATED_KEY)),
             "plan_resolution": query_plan.get("plan_resolution", {}),
             "superseded_conditions": query_plan.get("superseded_conditions", []),
+            # 의미 파이프라인의 판정 입력/출력(정규화 재분류·청구 구간·커버리지·재방출).
+            # "왜 이 타입이 됐고 왜 커버리지가 저렇게 나왔나"가 응답에서 보여야 회귀를 관측한다.
+            "semantic_pipeline": query_plan.get("semantic_pipeline", {}),
         }
 
     return api_response

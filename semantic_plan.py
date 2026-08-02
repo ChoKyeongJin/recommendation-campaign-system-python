@@ -69,6 +69,33 @@ INTERNAL_FAILURE_CODES: frozenset[str] = frozenset({
     VALIDATION_MISMATCH,
 })
 
+# ── 결핍의 원인(닫힌 집합) ──────────────────────────────────────────────────────
+# "왜 이 필드가 비었는가"를 구분하지 않으면 전부 사용자 확인 요청이 된다. 사용자는
+# `member_entity` 를 정해 줄 수 없다 — 그건 우리 쪽 사고이지 사용자의 정보 누락이 아니다.
+CAUSE_USER_OMISSION = "user_omission"      # 원문에 정말 없다 → 물어봐야 한다
+CAUSE_MODEL_OMISSION = "model_omission"    # 구간은 청구해 놓고 못 채웠다 → 재방출
+CAUSE_TYPE_MISMATCH = "type_mismatch"      # 타입/필드가 어긋났다 → 재분류 또는 재방출
+CAUSE_REGISTRY_GAP = "registry_gap"        # 실행 어휘가 비어 있다 → 설정/컴파일러 결함
+MISSING_CAUSES: frozenset[str] = frozenset({
+    CAUSE_USER_OMISSION,
+    CAUSE_MODEL_OMISSION,
+    CAUSE_TYPE_MISMATCH,
+    CAUSE_REGISTRY_GAP,
+})
+
+# 원인 → 실패의 **성격**. 사용자 노출 문구와 failure_reason 이 이 값으로 갈린다.
+FAILURE_KIND_USER = "user_clarification"
+FAILURE_KIND_STRUCTURER = "structurer_failure"
+FAILURE_KIND_SYSTEM = "system_failure"
+FAILURE_KIND_UNSUPPORTED = "unsupported"
+FAILURE_KIND_BY_CAUSE: dict[str, str] = {
+    CAUSE_USER_OMISSION: FAILURE_KIND_USER,
+    CAUSE_MODEL_OMISSION: FAILURE_KIND_STRUCTURER,
+    CAUSE_TYPE_MISMATCH: FAILURE_KIND_STRUCTURER,
+    CAUSE_REGISTRY_GAP: FAILURE_KIND_SYSTEM,
+}
+
+
 # 최종 status(파생값 — 어떤 생산자도 직접 쓰지 않는다).
 STATUS_RESOLVED = "resolved"
 STATUS_NEEDS_CLARIFICATION = "needs_clarification"
@@ -205,6 +232,28 @@ class SemanticNode:
         """`required_fields(node) - populated_fields(node)` — 계산값이지 보고값이 아니다."""
         missing = type(self).required_field_names() - self.populated_field_names()
         return tuple(sorted(missing))
+
+    def missing_cause(self, name: str) -> str:
+        """이 필드가 비어 있는 **원인**. 값이 아니라 선언에서 계산한다.
+
+        어휘가 선언됐는데 실행 값 목록이 비어 있으면 생산자를 탓할 수 없다 — 고를 것이
+        애초에 없었다(실측: `profile_metric_id` 가 값 1개뿐이라 그 하나를 강제로 고르게 됐다).
+        그 밖의 결핍은 구간을 청구해 놓고 채우지 못한 것이므로 생산자 누락이다.
+        """
+        spec = type(self).field_spec(name)
+        if spec is None:
+            return CAUSE_MODEL_OMISSION
+        if spec.vocabulary and not spec.allowed_values():
+            return CAUSE_REGISTRY_GAP
+        return CAUSE_MODEL_OMISSION
+
+    def missing_field_records(self) -> tuple[dict[str, Any], ...]:
+        return tuple(
+            {"node_id": self.id, "field": name, "path": f"{self.id}.{name}",
+             "node_type": self.TYPE, "source_span": self.source_span,
+             "cause": self.missing_cause(name)}
+            for name in self.missing_fields()
+        )
 
     def invalid_values(self) -> tuple[tuple[str, Any, tuple[str, ...]], ...]:
         """닫힌 어휘 밖의 값 — 생산자(LLM 등)의 계약 위반이지 '미지원'이 아니다.
@@ -430,6 +479,9 @@ class SemanticPlanV2:
     capability_verdicts: list[dict[str, Any]] = field(default_factory=list)
     # 스키마·정규화 검증 실패(내부 불량 — 미지원과 구분된다).
     validation_errors: list[dict[str, Any]] = field(default_factory=list)
+    # 정규화 계층이 타입을 확정하지 못한 후보(구조화기 실패 — 사용자에게 물을 것이 아니다).
+    # 각 항목은 최소 source_span 을 갖고, 그 구간이 재방출 요청의 입력이 된다.
+    structurer_issues: list[dict[str, Any]] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
     def walk(self) -> Iterator[SemanticNode]:
@@ -454,6 +506,71 @@ class SemanticPlanV2:
                 out.append(f"{node.id}.{name}")
         return tuple(out)
 
+    def missing_field_records(self) -> tuple[dict[str, Any], ...]:
+        """결핍 + **원인**. 원인 없는 결핍 보고는 전부 사용자 확인 요청이 되어 버린다.
+
+        마지막에 자리표시자 판정을 얹는 이유: 그 구절은 어떤 타입으로도 채울 수 없고
+        **오직 사용자만** 값을 줄 수 있다. 구조화기 실패로 뭉개면 답할 수 없는 오류가 된다.
+        """
+        records = [dict(record) for record in self._raw_missing_records()]
+        for record in records:
+            omission = semantic_domain_binding.user_omission_reason(
+                record.get("source_span") or ""
+            )
+            if omission:
+                record["cause"] = CAUSE_USER_OMISSION
+                record["question"] = omission.get("question")
+                record["matched"] = omission.get("matched")
+        return tuple(records)
+
+    def _raw_missing_records(self) -> tuple[dict[str, Any], ...]:
+        records: list[dict[str, Any]] = []
+        for node in self.walk():
+            records.extend(node.missing_field_records())
+        for issue in self.structurer_issues:
+            records.append({
+                "node_id": issue.get("node_id"),
+                "field": None,
+                "path": issue.get("path") or f"structurer:{issue.get('node_id') or ''}",
+                "node_type": issue.get("proposed_type"),
+                "source_span": issue.get("source_span"),
+                "cause": CAUSE_TYPE_MISMATCH,
+                "reason": issue.get("reason"),
+            })
+        for item in self.uncovered_requirements:
+            records.append({
+                "node_id": None,
+                "field": None,
+                "path": f"uncovered:{item.get('source_span')}",
+                "node_type": None,
+                "source_span": item.get("source_span"),
+                "cause": CAUSE_MODEL_OMISSION,
+                "reason": item.get("reason"),
+            })
+        return tuple(records)
+
+    def failure_kind(self) -> str | None:
+        """실패의 성격 — 사용자 문구·failure_reason 이 이 값으로 갈린다.
+
+        우선순위는 `derive_status` 와 같은 이유로 '내부 사고 > 미지원 > 사용자'다. 우리 쪽
+        사고를 사용자 질문으로 바꾸면 사용자는 답할 수 없는 것을 요구받는다.
+        """
+        causes = {record.get("cause") for record in self.missing_field_records()}
+        # 사용자 정보 누락이 가장 먼저다 — 그것만이 사용자가 실제로 해결할 수 있는 결핍이고,
+        # 물어보면 나머지 축들도 함께 다시 해석된다.
+        if CAUSE_USER_OMISSION in causes:
+            return FAILURE_KIND_USER
+        if self.validation_errors:
+            return FAILURE_KIND_SYSTEM
+        if self.unsupported_operations():
+            return FAILURE_KIND_UNSUPPORTED
+        if self.conflicts:
+            causes.add(CAUSE_TYPE_MISMATCH)
+        for cause in (CAUSE_REGISTRY_GAP, CAUSE_TYPE_MISMATCH, CAUSE_MODEL_OMISSION):
+            if cause in causes:
+                return FAILURE_KIND_BY_CAUSE[cause]
+        return None
+
     def unsupported_operations(self) -> tuple[dict[str, Any], ...]:
         """사용자에게 '미지원'으로 보여도 되는 capability 판정만 추린다."""
         return tuple(
@@ -475,6 +592,7 @@ class SemanticPlanV2:
             validation_errors=self.validation_errors,
             conflicts=self.conflicts,
             uncovered_requirements=self.uncovered_requirements,
+            structurer_issues=self.structurer_issues,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -486,7 +604,10 @@ class SemanticPlanV2:
             "uncovered_requirements": copy.deepcopy(self.uncovered_requirements),
             "capability_verdicts": copy.deepcopy(self.capability_verdicts),
             "validation_errors": copy.deepcopy(self.validation_errors),
+            "structurer_issues": copy.deepcopy(self.structurer_issues),
             "missing_fields": list(self.missing_fields()),
+            "missing_field_causes": [dict(record) for record in self.missing_field_records()],
+            "failure_kind": self.failure_kind(),
             "status": self.status(),
             "notes": list(self.notes),
         }
@@ -499,6 +620,7 @@ def derive_status(
     validation_errors: tuple[dict[str, Any], ...] | list[dict[str, Any]],
     conflicts: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
     uncovered_requirements: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
+    structurer_issues: tuple[dict[str, Any], ...] | list[dict[str, Any]] = (),
 ) -> str:
     """최종 status 는 계산값이다 — 어떤 생산자(LLM 포함)도 직접 쓰지 않는다.
 
@@ -512,7 +634,7 @@ def derive_status(
         return STATUS_UNSUPPORTED
     if conflicts:
         return STATUS_AMBIGUOUS
-    if missing_fields or uncovered_requirements:
+    if missing_fields or uncovered_requirements or structurer_issues:
         return STATUS_NEEDS_CLARIFICATION
     return STATUS_RESOLVED
 
@@ -676,7 +798,14 @@ def _field_schema(spec: FieldSpec, *, node_ref: str) -> dict[str, Any]:
     allowed = spec.allowed_values()
     if allowed:
         schema = {"type": "string", "enum": list(allowed)}
+    # 값 **모양** 설명(kind 소유)과 그 필드가 **무엇인지**(FieldSpec 소유)는 둘 다 필요하다.
+    # 필드 설명으로 덮어쓰면 모양 안내가 통째로 사라진다 — period 가 그랬고, 그래서 모델은
+    # 상대 창을 표현할 방법을 모른 채 '최근 3개월'을 임의의 절대 구간으로 환산해 보냈다
+    # (실측 2026-08-02: 같은 어구가 런마다 20260502 / 20260505 / 2026년 5월 로 갈렸다).
     description = spec.description
+    shape_hint = str(schema.get("description") or "")
+    if shape_hint and description and shape_hint not in description:
+        description = f"{description}. {shape_hint}"
     glossary = semantic_domain_binding.vocabulary_glossary(spec.vocabulary) if spec.vocabulary else {}
     if glossary:
         listed = ", ".join(
@@ -702,33 +831,53 @@ _COMMON_NODE_PROPERTIES: dict[str, Any] = {
 }
 
 
-def semantic_node_json_schema(*, node_ref: str = "#/$defs/semanticNode") -> dict[str, Any]:
-    """노드 선언에서 파생한 JSON 스키마(손으로 쓴 두 번째 권위를 만들지 않는다)."""
+def semantic_node_variant_schema(
+    cls: type[SemanticNode], *, node_ref: str = "#/$defs/semanticNode"
+) -> dict[str, Any]:
+    """노드 타입 하나의 스키마 — **그 타입의 필드만** 담고, 필수 필드는 required 로 선언한다.
+
+    이 두 가지가 핵심이다:
+      ① 다른 타입의 필드를 넣지 않는다 → strict 변환이 `additionalProperties:false` 를 붙이므로
+         타입 A 의 payload 를 담은 타입 B 노드는 **스키마 단계에서 거부**된다.
+      ② 필수 필드를 required 에 넣는다 → strict 변환기는 required 항목만 non-nullable 로 남기므로
+         `null` 로 비워 제출하는 길이 막힌다(실측: 전 필드 nullable 이라 전부 null 인 노드가 통과).
+    """
     properties: dict[str, Any] = copy.deepcopy(_COMMON_NODE_PROPERTIES)
-    for cls in NODE_CLASSES:
-        for spec in cls.FIELDS:
-            if spec.derived:
-                # 파생 필드는 생산자에게 노출하지 않는다 — 노출하면 LLM 이 계산값을 지어낸다.
-                continue
-            schema = _field_schema(spec, node_ref=node_ref)
-            existing = properties.get(spec.name)
-            if existing is None:
-                properties[spec.name] = schema
-                continue
-            if existing != schema:
-                # 같은 이름을 여러 노드가 서로 다른 종류로 쓰면 union 으로 노출한다.
-                variants = existing.get("anyOf") if "anyOf" in existing else [existing]
-                if schema not in variants:
-                    variants = [*variants, schema]
-                properties[spec.name] = {"anyOf": variants}
+    properties["type"] = {
+        "type": "string",
+        "enum": [cls.TYPE],
+        "description": semantic_domain_binding.condition_label(cls.TYPE) or (cls.__doc__ or "").strip().splitlines()[0],
+    }
+    required = ["id", "type", "source_span"]
+    for spec in cls.FIELDS:
+        if spec.derived:
+            # 파생 필드는 생산자에게 노출하지 않는다 — 노출하면 LLM 이 계산값을 지어낸다.
+            continue
+        properties[spec.name] = _field_schema(spec, node_ref=node_ref)
+        if spec.required:
+            required.append(spec.name)
     return {
         "type": "object",
-        "description": (
-            "의미 노드 하나. 타입별 필수 필드는 시스템이 검증하며, 확실하지 않은 필드는 "
-            "지어내지 말고 비워 둔다(시스템이 결핍으로 계산한다)."
-        ),
+        "description": (cls.__doc__ or "").strip().splitlines()[0],
         "properties": properties,
-        "required": ["id", "type", "source_span"],
+        "required": required,
+    }
+
+
+def semantic_node_json_schema(*, node_ref: str = "#/$defs/semanticNode") -> dict[str, Any]:
+    """노드 선언에서 파생한 **타입 판별 union**(손으로 쓴 두 번째 권위를 만들지 않는다).
+
+    `oneOf` 가 아니라 `anyOf` 다 — OpenAI strict function calling 이 `oneOf` 를 받지 않는다.
+    변형이 늘어나는 유일한 방법은 `NODE_CLASSES` 에 클래스를 추가하는 것이다.
+    """
+    return {
+        "description": (
+            "의미 노드 하나. **타입을 먼저 고르고 그 타입의 필수 필드를 전부 채운다** — "
+            "다른 타입의 필드는 쓸 수 없다. 확신이 없으면 그 조건의 노드를 만들지 마라."
+        ),
+        "anyOf": [
+            semantic_node_variant_schema(cls, node_ref=node_ref) for cls in NODE_CLASSES
+        ],
     }
 
 
@@ -768,6 +917,53 @@ def node_requirement_documentation() -> dict[str, dict[str, Any]]:
         }
         for cls in NODE_CLASSES
     }
+
+
+# 의미 노드 방출 계약. **낱말 목록이 아니라 계약**이므로 여기(선언 옆)가 소유자다 —
+# 프롬프트와 검증기가 서로 다른 규칙을 갖게 되면 그 차이가 조용한 실패로 돌아온다.
+# 2026-08-02 이전에는 이 규칙들이 프로덕션이 import 하지 않는 모듈에만 있었고, 라이브
+# 프롬프트에는 노드 타입 이야기가 한 줄도 없었다(그 결과가 전 요청의 타입 오분류다).
+NODE_EMISSION_RULES: tuple[str, ...] = (
+    "원문에서 확인되는 조건 하나당 노드 하나. 조건이 여럿이면 노드도 여럿이다.",
+    "**타입을 먼저 고르고 그 타입의 필수 필드를 전부 채운다.** 다른 타입의 필드를 채운 노드는"
+    " 스키마에서 거부되거나 시스템이 버린다.",
+    "모든 노드에 source_span(원문 구절 그대로)과 source_start/source_end 를 붙인다."
+    " 원문에 없는 문구를 source_span 으로 쓰지 마라.",
+    "확실하지 않은 필드는 비워 두지 말고 **그 노드를 만들지 마라** — 필수 필드를 채울 수 없으면"
+    " 그 조건은 노드로 표현할 수 없다는 뜻이다.",
+    "기간·시점은 **조건 노드의 period 필드**다. 기간만으로 노드를 만들지 마라"
+    " ('최근 1년 동안 2회 이상 구매' 는 노드 하나이고 period 가 그 안에 있다).",
+    "'최근 N일/N주/N개월/N년' 은 **상대 창 그대로** 낸다: {type:'relative', value:N, unit:...}."
+    " 직접 날짜로 환산해 {from,to} 로 보내지 마라 — 기준일 확정은 시스템 몫이고, 환산본은"
+    " 런마다 달라져 같은 문장이 다른 기간이 된다. {type:'absolute'} 는 원문에 연·월·일이"
+    " 명시된 구간('2026년 5월', '3월 1일부터')일 때만 쓴다.",
+    "원문이 횟수를 말하지 않는 '있다/없다'는 임계 비교가 아니라 **존재·부재**다. 그 의미를"
+    " 표현하는 실행 슬롯이 있으면 슬롯으로 내라(규칙 9). 굳이 노드로 낸다면 존재는 '1건 이상',"
+    " 부재는 '0건'으로 정확히 적어라 — 원문에 없는 임계값을 지어내면 대상이 달라진다.",
+    "기간 대 기간 비교(증가/감소)는 metric_comparison 하나로 표현한다 — baseline 과 current 를"
+    " 그 노드가 소유하므로 별도 기간 조건 노드를 만들지 마라.",
+    "대상이 계산으로 정해질 때만 entity_set_membership 을 쓰고(예: '가장 많이 팔린 상품 10개를"
+    " 구매한 회원'), 그 안의 ranked_set 이 랭킹을 소유한다. 임계값 비교는 여기가 아니다.",
+    "조건들의 결합이 AND 가 아니면(OR/부정) logical_expression 으로 감싼다.",
+    "실행 슬롯으로 이미 표현한 조건(연령·성별 등 프로필 값)은 노드로 중복 표현하지 마라.",
+)
+
+
+def node_type_guidance() -> str:
+    """노드 타입 경계 안내(선언에서 **생성**). 손으로 쓴 두 번째 권위를 만들지 않는다."""
+    lines = ["[의미 노드 방출 규칙]"]
+    lines += [f"{index}. {rule}" for index, rule in enumerate(NODE_EMISSION_RULES, start=1)]
+    lines.append("")
+    lines.append("[노드 타입과 필수 필드]")
+    for node_type, spec in node_requirement_documentation().items():
+        label = semantic_domain_binding.condition_label(node_type)
+        title = f"- {node_type}" + (f"({label})" if label and label != node_type else "")
+        lines.append(f"{title}: 필수 {{{', '.join(spec['required'])}}}")
+        if spec["optional"]:
+            lines.append(f"    선택 {{{', '.join(spec['optional'])}}}")
+        if spec["description"]:
+            lines.append(f"    {spec['description']}")
+    return "\n".join(lines)
 
 
 __all__ = [

@@ -95,14 +95,39 @@
       "by_value": {
         "cart": "cart_aggregate_metric",
         "order": "aggregate_metric_id",
-        "campaign": "campaign_frequency_event",
+        "campaign": "campaign_metric_id",
         "profile": "profile_metric_id"
       }
     },
     "predicate.metric": {"default": "profile_metric_id"},
     "metric_comparison.metric": {"default": "aggregate_metric_id"},
-    "ranked_set.metric": {"default": "member_metric_id"},
-    "relation_predicate.attribute": {"default": "history_attribute_id"}
+    "ranked_set.metric": {
+      "_comment": "회원 랭킹과 비회원 엔터티(상품·브랜드) 랭킹은 기준 지표 어휘가 다르다.",
+      "discriminator": "entity",
+      "by_value": {
+        "member": "member_metric_id",
+        "product": "entity_set_measure",
+        "brand": "entity_set_measure",
+        "category": "entity_set_measure"
+      }
+    },
+    "relation_predicate.attribute": {
+      "_comment": [
+        "속성 이력 연산만 이력 속성 어휘로 묶인다. 여기 없는 관계(동시구매 등)는 이 필드를",
+        "다른 뜻으로 쓰므로 제약하지 않는다 — 선언에 없는 분기는 '제약 없음'이다."
+      ],
+      "discriminator": "relation",
+      "by_value": {
+        "as_of": "history_attribute_id",
+        "transition": "history_attribute_id",
+        "held_throughout": "history_attribute_id",
+        "stable": "history_attribute_id",
+        "changed_n_times": "history_attribute_id",
+        "ever": "history_attribute_id",
+        "never": "history_attribute_id",
+        "exists_every_month": "history_attribute_id"
+      }
+    }
   },
 
   "capability_axes": [

@@ -379,6 +379,31 @@ def temporal_lexicon() -> temporal_semantics.TemporalLexicon:
     )
 
 
+# ── 자리표시자(= 사용자가 값을 말하지 않은 자리) ────────────────────────────────
+# 정규식 원자이므로 JSON 이 아니라 소스가 소유한다(3계층 규약). 오른쪽 캡처는 **무엇을**
+# 물어야 하는지다 — 이 판정이 없으면 '특정 브랜드'가 구조화기 실패로 뭉개져서, 사용자가
+# 답할 수 있는 유일한 결핍이 답할 수 없는 내부 오류로 보고된다(실측 2026-08-02).
+_PLACEHOLDER_RE = re.compile(
+    r"(?:특정|어떤|무슨|어느|임의의?|아무)\s*(?P<axis>브랜드|상품|제품|카테고리)"
+)
+
+
+def user_omission_reason(text: str) -> dict[str, str] | None:
+    """이 구절이 **사용자 정보 누락**인가. 맞으면 무엇을 물어야 하는지 함께 돌려준다.
+
+    '모든'(무필터)·'해당/그'(지시 참조)는 값을 묻는 표현이 아니므로 여기 없다.
+    """
+    match = _PLACEHOLDER_RE.search(str(text or ""))
+    if match is None:
+        return None
+    axis = match.group("axis")
+    return {
+        "axis": axis,
+        "matched": match.group(0),
+        "question": f"어떤 {axis}를 기준으로 할까요? {axis}명을 알려주세요.",
+    }
+
+
 # ── 코어 주입 번들 ───────────────────────────────────────────────────────────────
 def core_bindings() -> dict[str, Any]:
     """코어가 필요로 하는 도메인 지식 한 묶음(주입 지점을 하나로 유지한다)."""

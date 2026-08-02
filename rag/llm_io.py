@@ -59,6 +59,34 @@ def _openai_chat_create(client: Any, *, model: str, messages: list[dict[str, Any
     return client.chat.completions.create(model=model, messages=messages, **params)
 
 
+STRUCTURING_MODEL_ENV = "OPENAI_STRUCTURING_MODEL"
+REPAIR_MODEL_ENV = "OPENAI_REPAIR_MODEL"
+
+
+def _structuring_llm_model(current: str | None) -> str | None:
+    """QueryPlan v4 **1차 구조화** 모델. 기본은 빠른 모델(넓게 훑는 단계라 지연이 곱해진다).
+
+    이 함수가 따로 있는 이유는 라우팅을 **선언적으로** 만들기 위해서다. 예전에는 이 호출이
+    `_fast_llm_model` 을 그대로 타서, 설정이 `OPENAI_MODEL=gpt-5-mini` 여도 실제로는
+    gpt-4o-mini 로 돌았고 그 사실이 어디에도 기록되지 않았다(실측 2026-08-02).
+    이제 강등은 이 함수의 **선언**이고 로그에 requested/actual 이 함께 남는다.
+    """
+    if current is None:
+        return None
+    return os.getenv(STRUCTURING_MODEL_ENV) or _fast_llm_model(current) or current
+
+
+def _repair_llm_model(current: str | None) -> str | None:
+    """재방출(복구) 전용 모델 — 기본은 메인 모델.
+
+    강한 모델은 **복구 계층에만** 쓴다. 1차에서 전부 강한 모델로 돌리면 비용·지연이 모든
+    요청에 곱해지지만, 실제로 어려운 것은 검증기가 거절한 소수의 구간뿐이다.
+    """
+    if current is None:
+        return None
+    return os.getenv(REPAIR_MODEL_ENV) or current
+
+
 def _fast_llm_model(current: str | None) -> str | None:
     """지연에 민감하거나 정확도가 중요한 경량 단계(재작성·타겟/채널 분리·상품추출·의미검증)용 모델.
 

@@ -121,6 +121,26 @@ def condition_label(node_type: str) -> str:
     return str(value)
 
 
+def user_omission_reason(text: str) -> dict[str, str] | None:
+    """이 구절의 결핍이 **사용자 정보 누락**인가(맞으면 물어볼 질문 포함).
+
+    코어는 '무엇이 자리표시자인지'를 모른다 — 도메인만 안다. 이 판정이 없으면 사용자가
+    답할 수 있는 유일한 결핍까지 구조화기 실패로 뭉개진다.
+    """
+    value = _call("user_omission_reason", text, default=None)
+    return {str(k): str(v) for k, v in value.items()} if isinstance(value, Mapping) else None
+
+
+def node_field_bindings() -> dict[str, Any]:
+    """'노드타입.필드 → 닫힌 어휘' 결속 선언(정규화 계층의 타입 판정 입력).
+
+    코어는 이 선언을 **양방향**으로 쓴다: 값 검증(metric 이 이 scope 의 어휘에 있는가)과
+    역인덱스(이 metric 이면 scope 는 무엇인가). 둘 다 같은 선언 하나에서 나온다.
+    """
+    values = _call("node_field_vocabularies", default={})
+    return dict(values) if isinstance(values, Mapping) else {}
+
+
 def temporal_operator_of(node: Any) -> str | None:
     """노드의 시간 축을 **범용 연산자**로 읽는다(없으면 None = 시간 축 아님).
 
@@ -162,6 +182,7 @@ __all__ = [
     "entity_aliases",
     "execution_operator",
     "identity_fields",
+    "node_field_bindings",
     "plan_container",
     "plugin",
     "plugin_name",
@@ -170,6 +191,7 @@ __all__ = [
     "temporal_aliases",
     "temporal_operator_of",
     "temporal_subinterval_unit",
+    "user_omission_reason",
     "vocabulary",
     "vocabulary_glossary",
 ]

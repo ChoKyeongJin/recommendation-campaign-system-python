@@ -12,7 +12,7 @@ import os
 import re
 import time
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace as dataclass_replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -39,6 +39,7 @@ import legacy_plan_compiler
 import requirement_ledger
 import semantic_plan
 import semantic_plan_bridge
+import semantic_reemission
 import targeting_domain
 import plan_semantic_ast
 import purchase_lexicon
@@ -104,7 +105,9 @@ from rag.llm_io import (
     _openai_chat_create,
     _read_prompt_template,
     _render_prompt_template,
+    _repair_llm_model,
     _semantic_verify_model,
+    _structuring_llm_model,
     _write_rag_llm_log,
 )
 from aggregation_requirements import (
@@ -245,14 +248,21 @@ _V4_SLOT_GUIDANCE = (
 
 
 def _v4_slot_guidance(vocabulary: dict[str, Any]) -> str:
-    """슬롯 선택 안내 + 의미 노드 필드의 닫힌 어휘 결속(후자는 도메인 선언에서 파생).
+    """슬롯 선택 안내 + **의미 노드 타입 경계** + 노드 필드의 닫힌 어휘 결속.
 
     노드의 metric/attribute 는 자유 문자열이라, 어느 목록에서 골라야 하는지를 말해 주지 않으면
     LLM 이 그럴듯한 id 를 지어낸다(실측: 장바구니 지표에 'total_amount'). 결속표는
     targeting_domain.json 선언이고 여기서는 붙이기만 한다.
+
+    노드 타입 안내가 여기 있는 이유: 2026-08-02 이전 라이브 프롬프트에는 semantic_plan 이야기가
+    한 줄도 없었고(타입별 필수 필드 표는 프로덕션이 import 하지 않는 모듈에만 있었다), 그 결과
+    거의 모든 요청이 타입 오분류로 막혔다. 문구는 선언에서 생성한다 — 손으로 쓰면 또 갈라진다.
     """
+    sections = [_V4_SLOT_GUIDANCE, semantic_plan.node_type_guidance()]
     binding = targeting_domain.node_field_vocabulary_guidance(vocabulary)
-    return f"{_V4_SLOT_GUIDANCE}\n\n{binding}" if binding else _V4_SLOT_GUIDANCE
+    if binding:
+        sections.append(binding)
+    return "\n\n".join(sections)
 
 
 def _structure_campaign_query_plan_v4(
@@ -261,6 +271,7 @@ def _structure_campaign_query_plan_v4(
     llm_model: str,
     query_structurer: QueryStructurer | None = None,
     extra_instruction: str | None = None,
+    model_override: str | None = None,
 ) -> CampaignQueryPlanV4:
     """Extract the evidence-bound IR that is passed unchanged to the planner/compiler."""
 
@@ -307,7 +318,7 @@ def _structure_campaign_query_plan_v4(
         def complete(messages: list[dict[str, str]]) -> str:
             nonlocal call_count
             call_count += 1
-            model = _fast_llm_model(llm_model) or llm_model
+            model = model_override or _structuring_llm_model(llm_model) or llm_model
             response = _openai_chat_create(
                 client,
                 model=model,
@@ -329,7 +340,19 @@ def _structure_campaign_query_plan_v4(
             content = function.arguments or "{}"
             _write_rag_llm_log(
                 "campaign_query_plan_v4_response",
-                {"attempt": call_count, "model": model, "query": query, "content": content},
+                {
+                    "attempt": call_count,
+                    # 요청 모델과 실제 모델을 함께 남긴다 — 조용한 강등이 로그에서 보여야
+                    # "왜 이 단계만 품질이 낮은가"를 추적할 수 있다(실측: 설정과 실제가 달랐다).
+                    "requested_model": llm_model,
+                    "model": model,
+                    "routing_reason": (
+                        "structuring_override" if model != llm_model else "main_model"
+                    ),
+                    "schema_version": CAMPAIGN_QUERY_PLAN_V4_VERSION,
+                    "query": query,
+                    "content": content,
+                },
             )
             return content
 
@@ -3232,6 +3255,15 @@ def _allowed_canonical_values() -> dict[str, list[str]]:
                                      for state in entry["states"]),
         "member_metric_id": sorted(allowed["member_metrics"]),
         "history_attribute_id": sorted(allowed["history_attributes"].get("attributes") or {}),
+        # 회원이 아닌 엔터티(상품·브랜드·카테고리) 랭킹의 기준 지표. 회원 지표와 어휘가 다르므로
+        # ranked_set.metric 은 entity 로 갈린다 — 같은 필드가 두 어휘를 갖는다는 사실 자체가 선언이다.
+        "entity_set_measure": sorted(_entity_set_config().get("measures") or {}),
+        # 캠페인 도메인의 지표는 '반응 횟수 이벤트'와 '귀속 구매금액' 두 갈래다
+        # (컴파일러가 값의 종류로 슬롯을 가른다). 어휘도 그 합집합이어야 한다 —
+        # 이벤트 목록만 어휘로 두면 금액 조건이 어휘 위반으로 잘못 걸린다.
+        "campaign_metric_id": sorted(
+            set(allowed["campaign_frequency_events"]) | {"campaign_buy_amount"}
+        ),
     }
 
 
@@ -7005,16 +7037,25 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
     if reason == "external_condition_resolution_failed":
         return "현재 외부 조건의 대상 지역을 확인하지 못했습니다. 직접 대상 지역을 지정해 주세요."
 
-    if reason in {"semantic_ir_needs_clarification", "semantic_ir_unsupported"}:
+    if reason in {
+        "semantic_ir_needs_clarification",
+        "semantic_ir_unsupported",
+        "semantic_structurer_failure",
+        "semantic_registry_gap",
+    }:
         semantic_ir = sql_result.get("semantic_ir") or query_plan.get("semantic_ir") or {}
         message = semantic_ir.get("message") if isinstance(semantic_ir, dict) else None
         if isinstance(message, str) and message.strip():
             return message.strip()
-        return (
-            "필수 의미 조건을 확인해 주세요."
-            if reason == "semantic_ir_needs_clarification"
-            else "요청한 연산은 현재 지원하지 않습니다."
-        )
+        return {
+            "semantic_ir_unsupported": "요청한 연산은 현재 지원하지 않습니다.",
+            "semantic_structurer_failure": (
+                "요청을 실행 가능한 형태로 해석하지 못했습니다. 표현을 바꿔 다시 요청해 주세요."
+            ),
+            "semantic_registry_gap": (
+                "이 조건을 처리할 실행 설정이 준비되지 않았습니다. 담당자에게 문의해 주세요."
+            ),
+        }.get(reason, "필수 의미 조건을 확인해 주세요.")
 
     # 명시적 미지원(쿠폰 건수/순위/비교/파생 등): 게이트가 만든 구체적 안내를 그대로 노출한다 — 무관한
     # 일반 조건 라벨('혜택 유형 조건')로 덮어쓰지 않는다(_UNSUPPORTED_INTENT_REASONS).
@@ -9402,7 +9443,15 @@ def _semantic_ir_blocking_sql_result(
         message = failure_messages.semantic_ir_clarification_message(str(status), field_labels)
     # 요구사항 원장이 있으면 그것이 더 구체적이다(어느 조건이·원문 어디서·왜).
     ledger_missing, requirement_report = _requirement_failure_payload(query_plan)
-    missing = ledger_missing or [
+    failure_kind = semantic_ir.get("failure_kind")
+    causes = [
+        record for record in (semantic_ir.get("missing_field_causes") or [])
+        if isinstance(record, Mapping)
+    ]
+    missing = ledger_missing or failure_messages.cause_missing_conditions(
+        causes, message,
+        build=_missing_input_condition, label_of=targeting_domain.condition_label,
+    ) or [
         _missing_input_condition(
             f"semantic_ir.{field}",
             failure_messages.semantic_ir_field_label(field),
@@ -9410,9 +9459,18 @@ def _semantic_ir_blocking_sql_result(
         )
         for field in missing_fields
     ]
-    if requirement_report.get("clarification_questions"):
+    # 사용자에게 물을 수 있는 것만 질문이다. 구조화기·설정 실패까지 질문으로 내보내면
+    # 사용자는 `req-1.member_entity` 같은 답할 수 없는 것을 요구받는다.
+    if failure_kind in {
+        semantic_plan.FAILURE_KIND_STRUCTURER, semantic_plan.FAILURE_KIND_SYSTEM
+    }:
+        clarifications: list[str] = []
+    elif requirement_report.get("clarification_questions"):
         message = " ".join(requirement_report["clarification_questions"])
-    failure_reason = f"semantic_ir_{status}"
+        clarifications = [message]
+    else:
+        clarifications = [message]
+    failure_reason = failure_messages.semantic_failure_reason(status, failure_kind)
     return {
         "requirement_report": requirement_report,
         "sql": None,
@@ -9427,10 +9485,10 @@ def _semantic_ir_blocking_sql_result(
         "input_validation": {
             "is_satisfied": False,
             "missing_conditions": missing,
-            "clarification_questions": [message],
+            "clarification_questions": clarifications,
         },
         "missing_input_conditions": missing,
-        "clarification_questions": [message],
+        "clarification_questions": clarifications,
         "semantic_verification": {"ran": False},
         "llm_fallback_used": False,
         "generation_source": None,
@@ -10031,6 +10089,9 @@ def _semantic_compile_context() -> semantic_plan_bridge.CompileContext:
         profile_metric_specs={**profile_metrics, **profile_date_states},
         history_attribute_specs=compositional_targeting.slot_vocab(_attribute_history_catalog()),
         entity_set_measures=_entity_set_config().get("measures") or {},
+        # 타입 판정(정규화 계층)이 쓰는 어휘는 **LLM 에 노출되는 것과 같은 이름**이어야 한다 —
+        # 노출 어휘와 판정 어휘가 갈리면 "프롬프트엔 있는데 실행기는 모른다"가 다시 생긴다.
+        node_vocabularies=_allowed_canonical_values(),
         today=date.today(),
     )
 
@@ -10040,12 +10101,18 @@ def _semantic_reextractor(llm_model: str | None) -> Any:
     if not llm_model:
         return None
 
-    def reextract(query: str, spans: list[str]) -> tuple[Any, list[str]]:
+    def reextract(
+        query: str, spans: list[str], targets: Sequence[Mapping[str, Any]] = ()
+    ) -> tuple[Any, list[str]]:
         instruction = (
-            "이전 제출에서 아래 원문 구절의 조건이 semantic_plan 노드로 표현되지 않았다:\n"
-            + "\n".join(f"- {span}" for span in spans)
+            "이전 제출에서 아래 원문 구절이 실행 가능한 semantic_plan 노드로 귀결되지 않았다:\n"
+            + "\n".join(
+                semantic_reemission.patch_prompt_targets(spans=spans, targets=targets)
+            )
             + "\n이 구절들만 다시 읽고 해당하는 semantic_plan 노드를 만들어 전체 플랜을 다시 제출하라. "
-            "다른 구절의 노드를 새로 만들거나 바꾸지 마라. 원문에 없는 조건을 만들지 마라."
+            "노드 타입을 먼저 정하고 **그 타입의 필수 필드를 전부** 채워라 — 다른 타입의 필드를 "
+            "채우면 그 노드는 버려진다. 다른 구절의 노드를 새로 만들거나 바꾸지 마라. "
+            "원문에 없는 조건을 만들지 마라."
         )
         candidate = _structure_campaign_query_plan_v4(
             query,
@@ -10054,6 +10121,8 @@ def _semantic_reextractor(llm_model: str | None) -> Any:
             ),
             llm_model,
             extra_instruction=instruction,
+            # 복구는 강한 모델로 — 1차에서 놓친 것은 대개 더 어려운 구간이다.
+            model_override=_repair_llm_model(llm_model),
         )
         payload = candidate if isinstance(candidate, dict) else getattr(candidate, "to_dict", dict)()
         raw = payload.get(semantic_plan_bridge.PLAN_KEY) or {"nodes": []}
@@ -10122,6 +10191,11 @@ def build_sql_result(
     # 6종과 결핍 사후 삭제 4종이 여기로 대체됐다: LLM 이 낸 SemanticPlanV2 노드를 정규화 →
     # coverage 검증(+누락 구간만 재추출) → capability 판정 → 결정론 컴파일한다.
     # semantic_ir(status/missing/unsupported)은 이 파이프라인의 **파생물**이라 이후 아무도 고치지 않는다.
+    # 결정론 문형 정규화는 **의미 파이프라인보다 먼저** 돈다. 뒤에 두면 게이트(아래)가 먼저 요청을
+    # 끝내므로 구제가 도달하지 못했고(실측 2026-08-02: 40줄 차이로 영영 도달 불가), 무엇보다 그
+    # 슬롯 청구가 파이프라인의 소유 판정 입력이 되어야 같은 어구를 다시 방출한 노드가 '유실된 의미'가
+    # 아니라 중복으로 판정된다. 슬롯은 fill-if-empty 라 구조화기가 이미 채운 값은 덮지 않는다.
+    behavior_demotion.normalize_lapsed_purchase_pattern(query_plan, source_text=original_query or query)
     _apply_semantic_plan_pipeline(query_plan, original_query or query, llm_model=llm_model)
     # 이 지점은 **검증만** 한다 — 플랜을 바꾸지 않고, 컴파일 가능한지만 본다.
     relational_ir_block = _relational_ir_blocking_sql_result(query_plan)
@@ -10179,7 +10253,7 @@ def build_sql_result(
     # 가 플랜을 읽기 전이어야 잉여 커버리지 조건이 안 생기고, 빌더 라우팅 가로채기도 사라진다.
     behavior_demotion.demote_aggregate_covered_behaviors(query_plan, source_text=original_query or query)
     behavior_demotion.demote_unevidenced_cart_behavior(query_plan, source_text=original_query or query)
-    behavior_demotion.normalize_lapsed_purchase_pattern(query_plan, source_text=original_query or query)
+    behavior_demotion.demote_unevidenced_exclusions(query_plan, source_text=original_query or query)
     _refresh_aggregation_request_validation(query_plan, schema_path)
     semantic_requirements.verify_source_requirements(query_plan)
     # 미귀결 조건의 보완은 파이프라인의 coverage 재추출(원문 누락 구간만 1회)이 담당한다 —
@@ -12438,7 +12512,6 @@ _RESIDUAL_CONDITION_LABELS = {
     "target_user.interests": "관심사 조건",
     "target_user.preferred_channels": "선호 채널 조건",
     "target_user.behaviors": "행동 조건",
-    "target_user.purchase_membership": "구매 이력 조건",
     "target_user.age_exclude_ranges": "연령 제외 조건",
     "target_user.price_sensitivity": "가격 민감도 조건",
     "target_user.lifecycle": "생애주기 조건",

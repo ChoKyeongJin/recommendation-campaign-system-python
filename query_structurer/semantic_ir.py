@@ -38,6 +38,17 @@ COUNTER_UNIT_SEMANTICS = {
     "종": "distinct_product_count",
     "종류": "distinct_product_count",
 }
+# 상대 기간 표면('6개월', '30일', '2주'). 이것이 없으면 '최근 6개월'의 '6' 이 **주인 없는 맨 숫자**
+# 원자로 남는다 — 그 절의 노드가 period 를 소유해도 커버리지는 그 사실을 모르므로 정상 요청이
+# 누락으로 오보고되고 재방출까지 돌게 된다(실측 2026-08-02: '최근 6개월 주문 5건 이상' 0/5 실패).
+# 달력 창(2019년 3월)은 위에서 date_window 로 이미 점유되므로 여기 걸리지 않는다.
+DURATION_LITERAL_RE = re.compile(
+    r"(?<![\d.])(?P<value>\d+)\s*(?P<unit>개월|주일|주|일간|일|달|년간|년)(?![가-힣A-Za-z0-9])"
+)
+DURATION_UNIT_SEMANTICS = {
+    "일": "days", "일간": "days", "주": "weeks", "주일": "weeks",
+    "개월": "months", "달": "months", "년": "years", "년간": "years",
+}
 _NUMBER_RE = re.compile(r"(?<![\d.])\d+(?:\.\d+)?(?![\d.])")
 
 
@@ -56,6 +67,18 @@ SEMANTIC_IR_LLM_JSON_SCHEMA: dict[str, Any] = {
         "status": {
             "type": "string",
             "enum": sorted(SEMANTIC_IR_STATUSES),
+        },
+        # 결핍의 **원인**. status 만으로는 "사용자가 안 알려준 것"과 "우리가 못 만든 것"이
+        # 구분되지 않아 후자까지 사용자 확인 요청이 됐다(실측: req-1.member_entity 를 물어봄).
+        "missing_field_causes": {
+            "type": "array",
+            "items": {"type": "object"},
+        },
+        "failure_kind": {
+            "type": ["string", "null"],
+            "enum": [
+                "user_clarification", "structurer_failure", "system_failure", "unsupported", None
+            ],
         },
         "operations": {
             "type": "array",
@@ -225,6 +248,18 @@ def extract_literal_bindings(
                 },
             )
 
+    for match in DURATION_LITERAL_RE.finditer(query):
+        if not _overlaps(match.start(), match.end(), occupied):
+            value = _number(match.group("value"))
+            unit = match.group("unit")
+            append(
+                "duration",
+                match.start(),
+                match.end(),
+                value,
+                {"value": value, "surface_unit": unit, "semantic_unit": DURATION_UNIT_SEMANTICS[unit]},
+            )
+
     comparison_map = dict(_COMPARISON_TERMS)
     for match in _COMPARISON_RE.finditer(query):
         append(
@@ -248,11 +283,14 @@ def empty_semantic_ir(
     *,
     missing_fields: list[str] | None = None,
     message: str | None = None,
+    failure_kind: str | None = None,
 ) -> dict[str, Any]:
     return {
         "status": status,
         "operations": [],
         "missing_fields": list(missing_fields or []),
+        "missing_field_causes": [],
+        "failure_kind": failure_kind,
         "policy_applications": [],
         "unsupported_operations": [],
         "message": message,
@@ -289,8 +327,12 @@ def validate_semantic_ir(
 ) -> dict[str, Any]:
     if not isinstance(semantic_ir, dict):
         raise ValueError("semantic_ir must be an object")
-    expected_keys = set(SEMANTIC_IR_LLM_JSON_SCHEMA["required"])
-    if set(semantic_ir) != expected_keys:
+    # 필수 키는 반드시 있어야 하고, 선언되지 않은 키는 올 수 없다. 파생 진단 필드
+    # (missing_field_causes/failure_kind)는 **선택**이다 — 계산되지 않은 경로(빈 플랜·직접
+    # 조립한 payload)도 유효한 semantic_ir 이어야 하기 때문이다.
+    required_keys = set(SEMANTIC_IR_LLM_JSON_SCHEMA["required"])
+    declared_keys = set(SEMANTIC_IR_LLM_JSON_SCHEMA["properties"])
+    if not required_keys <= set(semantic_ir) or not set(semantic_ir) <= declared_keys:
         raise ValueError("semantic_ir fields do not match the closed schema")
     status = semantic_ir.get("status")
     if status not in SEMANTIC_IR_STATUSES:

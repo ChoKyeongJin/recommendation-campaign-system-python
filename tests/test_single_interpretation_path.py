@@ -160,9 +160,11 @@ def test_semantic_ir_is_derived_from_the_semantic_plan() -> None:
     assert list(signature.parameters) == ["plan"]
     plan = semantic_plan.SemanticPlanV2()
     projected = semantic_pipeline.project_semantic_ir(plan)
+    # 결핍에는 **원인**이 붙는다 — 원인 없는 결핍은 전부 사용자 확인 요청이 되고, 사용자는
+    # 답할 수 없는 내부 필드를 요구받는다(2026-08-02 실측).
     assert set(projected) == {
-        "status", "operations", "missing_fields", "policy_applications",
-        "unsupported_operations", "message",
+        "status", "operations", "missing_fields", "missing_field_causes", "failure_kind",
+        "policy_applications", "unsupported_operations", "message",
     }
 
 
