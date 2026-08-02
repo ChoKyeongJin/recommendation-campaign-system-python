@@ -1,3 +1,251 @@
+# 작업 노트 — 라이브 코퍼스 77종 전수 실측과 범용 수리 플랜 (2026-08-03)
+
+`live_prompts.json` 77종을 `/target-sql` 로 전수 실행했다. 이 절은 **측정값**, **원인 5종**,
+**플랜**을 담는다. 원인은 전부 재현 실험이나 설정 대조로 확인한 것만 적었다 — 추정은 적지 않았다.
+
+## 1. 실측 (2026-08-03, `query_parser=auto`)
+
+```
+python tools/live_prompt_baseline.py --json <out>.json
+```
+
+| 구간 | n | sql | unsupported | clarification | failure |
+|---|---|---|---|---|---|
+| id 1–26 (live-26 비교군) | 26 | **4** | 8 | 12 | 2 |
+| id 27–37 (이력 감사) | 11 | 0 | 6 | 4 | 1 |
+| id 38–72 (문형 감사) | 35 | 1 | 13 | 19 | 2 |
+| id 73–77 (혼합축) | 5 | **0** | 1 | 4 | 0 |
+| **합계** | **77** | **5** | **28** | **39** | **5** |
+
+판정: match 7 / improvement 1 / regression 23 / unknown 46.
+SQL 이 나온 5종: #12(기간 비교) #14(COUNT) #16(이번 달 as_of) #26 #63.
+
+두 가지를 정직하게 갈라 둔다:
+
+- **live-26 은 SQL 4 로 커밋된 기준선(4/12/9/1)과 같다.** SQL 출고 수는 회귀하지 않았다.
+  달라진 것은 *실패하는 방식*이다(미지원 12→8, 되묻기 9→12). 23건의 `regression` 판정은
+  커밋된 기준선이 아니라 **expectation**(합의된 귀결) 대비다.
+- **id 73–77 혼합축은 0/5 다.** 바로 위 절(2026-08-03 흡수 작업)이 목표로 삼은 구간인데
+  라이브에서는 SQL 이 하나도 나오지 않는다. 아래 R1·R3 가 그 이유이고, 흡수 코드 자체는
+  살아 있다(§2 의 재현 실험에서 정상 동작을 확인했다).
+
+실패 사유 분포:
+
+| n | 사유 |
+|---|---|
+| 28 | `semantic_ir_unsupported` |
+| 15 | `semantic_ir_needs_clarification` |
+| 9 | `semantic_structurer_failure` |
+| 8 | `query_plan_required_conditions_missing` |
+| 6 | `semantic_verification_failed` |
+| 3 | `sql_guard_failed` |
+| 1+1+1 | `relational_ir_needs_clarification` / `no_sql_candidates` / `presence_absence_conflict` |
+
+## 2. 원인 — 다섯 가지, 전부 케이스가 아니라 축
+
+### R1. 권한과 어휘의 비대칭 — **가장 큰 단일 원인**
+
+V4 구조화기는 요청 **전체**에 대한 권한을 갖는다(`audience_requirement` + `semantic_plan` 두 표면이
+산출의 전부다). 그런데 그 표면이 참조하는 canonical 카탈로그의 어휘는 요청의 일부만 덮는다:
+
+| | 심볼 수 |
+|---|---|
+| `audience_catalog.json` 전체 | **52** (대부분 사건 소스·시각 필드) |
+| 그중 **회원 프로필 필드** | **3** (`subject.age` / `subject.gender` / `subject.grade`) |
+| `member_target_filters.json` `eq_filters` 회원 속성 | **32** (+ `region_target`·`purchase_product_target`·`cart_targets`·`campaign_response_targets`·`aggregate_targets`·`entity_set_targets` …) |
+
+즉 legacy 실행 계층이 물리 컬럼까지 선언해 둔 축(수신동의 4종·로그인채널·가입채널 3종·지역·
+브랜드·상품 카테고리·`buy_cycle`·장바구니 금액 …)이 canonical 어휘에는 **없다**. 그리고
+`semantic_ir.status == "unsupported"` 는 `plan_validation._collect_unsupported_operations` 에서
+**빌더 dispatch 이전에** 종결되므로, 그 축을 처리할 수 있는 legacy 빌더는 **호출조차 되지 않는다**
+(`EXCLUSIVE_ROUTES` 의 `event_expression` 바이패스와는 별개 경로다).
+
+대응 관계가 그대로 드러난 예: #47·#50·#56 의 '이메일/문자/앱푸시 동의'는 `eq_filters` 의
+`email_optin`/`sms_optin`/`app_push_optin` 이고, #68 '앱으로 로그인'은 `app_user`,
+#58 '서울·경기·인천'은 `region_target` 이다. 전부 "미지원"으로 나갔다.
+
+> `plans_generic_execution_layer` Phase 4 의 결정은 **"canonical 이 덮는 범위를 넓혀 legacy 로
+> 내려가지 않게 한다"** 였다. 실제로 일어난 순서는 반대다 — **권한을 먼저 옮기고 어휘를 나중에**.
+> 그 사이 구간이 전부 "미지원"으로 떨어진다.
+
+### R2. capability 판정을 **모델이** 한다
+
+`semantic_plan_llm.py` 는 계약의 핵심으로 "LLM 은 `unsupported_operations` 와 `status` 를 내지
+않는다 — 시스템이 노드에서 **계산**한다"를 못 박아 뒀다(`FORBIDDEN_OUTPUT_KEYS`).
+그런데 **프로덕션 경로는 `query_structurer.campaign_plan_v4` 이고 그 모듈은 이 계약을 import 하지
+않는다**(모듈 주석 자체가 이 사실을 적고 있다). 라이브 스키마
+(`query_structurer/semantic_ir.py:166`)는 `unsupported_operations` 를 그대로 열어 두고,
+`campaign_plan_v4.py:1268` 이 그것을 응답에 싣는다.
+
+실측(`campaign_query_failure_logs`, 같은 시간대의 UI 요청 2건 포함 30건): `semantic_ir_unsupported`
+**30/30 전부**가 모델이 쓴 산문 판정을 담고 있었고, 모델이 지어낸 `kind` 는 **23종**이었다 — `grade_equality`·`grade_comparison`·`grade_transition`·
+`transition`(등급 축 하나에 이름 4개), `channel` vs `channels`, `purchase_cycle` vs
+`average_purchase_cycle`. 닫힌 어휘가 아니므로 **집계도 테스트도 신뢰도 불가능**하다.
+
+그리고 그 판정은 **틀렸다**. 사용자에게 나간 문장과 실제 자산:
+
+| 사용자에게 나간 모델의 판정 | 실제 |
+|---|---|
+| "회원 등급의 '골드에서 VIP로 바뀐' 전이 조건은 현재 Canonical Event IR에서 SQL 컴파일러로 표현할 수 없습니다"(#74) | `audience_catalog.json` 에 `member_grade_transition`(`prev_expression_field` 포함) 선언 + `semantic_plan_event_lowering.py:373-408` 에 전이 lowering 구현 — **정상 동작**(§ 재현 실험) |
+| "The compiler cannot represent the requested current-profile equality predicate"(#13 `현재 등급이 VIP인 회원`) | `subject.grade` 는 카탈로그 필드. 라이브 프롬프트(`query_structurer/prompt.py`)는 이 문형을 **명시적으로** "ordinary profile predicate 로 `audience_requirement` 에 넣으라"고 지시하고 있다 |
+| "'구매주기'는 Event IR 로 표현 불가"(#7) | `docs/data/runtime/sql/metrics/buy_cycle.json` — `targeting.enabled:true`, 물리컬럼 `CRM_MB_MONTHCRMINFO.BUY_CYCLE`, `LTE` 허용 |
+
+`campaign_plan_v4._finalize` 에는 이미 올바른 원칙이 주석으로 적혀 있다 —
+**"미지원 선언은 가설이지 판정이 아니다"** — 그리고 강등 분기도 있다. 그러나 강등 조건이
+`semantic_plan` 노드가 **존재할 때**로 걸려 있다. 모델이 "미지원"이라고 선언할 때는 노드를 내지
+않으므로, **그 가드는 보호가 필요한 경우에만 정확히 발동하지 않는다**(자기무력화 가드).
+
+### R3. 심볼 결속 부재 — 같은 개념의 이름이 레지스트리마다 다르다
+
+재현 실험(컨테이너 안, `lower_semantic_plan` 직접 호출). 같은 의미, `attribute` 값만 바꿨다:
+
+| 입력 | 결과 |
+|---|---|
+| `attribute="grade"` (**라이브 모델이 실제로 낸 값**) | `failed / catalog_symbol_unresolved` — "canonical metric is not registered: 'grade'" |
+| `attribute="member_grade"` (카탈로그 id) | `supported` — `Exists(Filter(member_month_snapshot, prev_grade='gold_grade' AND grade=…))` **정상** |
+
+원인은 스키마다. `semantic_plan` 의 필드 선언을 덤프하면:
+
+```
+predicate.metric            vocabulary=''  allowed=[]
+aggregate_predicate.metric  vocabulary=''  allowed=[]
+relation_predicate.attribute vocabulary='' allowed=[]      ← 자유 텍스트
+relation_predicate.value_comparison vocabulary='value_comparison' allowed=['eq','gte','lte']
+```
+
+- `metric`/`attribute` 는 **닫힌 어휘가 없다.** 카탈로그 id 는 52개로 닫혀 있는데 모델은
+  `grade` / `member_grade` / `member_month_snapshot.grade` 세 표면을 섞어 낸다(셋 중 둘만 등록돼 있다).
+- `value_comparison` 은 더 나쁘다. 스키마가 모델에게 `eq|gte|lte` 를 **허용값으로 제시**하는데,
+  카탈로그 연산자 레지스트리는 `= != > >= < <=` 다. 재현 실험 #13 의 실패 사유가 정확히
+  **"canonical operator is not registered: 'eq'"** 였다 — **모델이 스키마를 지켰는데 lowering 이
+  자기 스키마의 어휘를 거부한다.** 별칭 표가 없다. 이 모순 하나가 #13·#19·#24 를 함께 막는다.
+
+그리고 이 실패는 `catalog_symbol_unresolved` 라는 **정확한 코드로 receipt 에 기록되는데**,
+그 코드에 대한 **해소 경로(별칭 해석·재방출)가 없다.** 재방출기(`semantic_reemission`)는 존재하지만
+이 코드로는 트리거되지 않는다.
+
+### R4. 결핍 판정이 결정론 리터럴 색인과 대조되지 않는다
+
+`#3 누적 구매금액 상위 10% 회원을 추출해줘` 의 실제 기록:
+
+```
+literal_bindings = [{"id":"percentage_1","kind":"percentage","text":"10%","value":10,
+                     "normalized":{"unit":"percent","value":10}}]
+semantic_ir.missing_fields = ["audience.percentage"]
+→ 사용자에게 "몇 퍼센트인가요?" 되묻기
+```
+
+**시스템이 이미 결정론으로 추출해 정규화까지 마친 값을 사용자에게 되묻는다.**
+`missing_field_causes` 는 `[]` 로 비어 있다 — 아키텍처가 정의한 원인 축
+(`user_omission`=물어봐야 함 / `model_omission`=재방출)이 라이브 경로에서 **채워지지 않으므로**
+모든 결핍이 "사용자에게 묻기"로 귀결된다. 재방출 기계는 있는데 라우팅 입력이 없다.
+
+### R5. 실패가 진단 불가능하고, 가짜 성공이 강등되지 않는다
+
+- `sql_guard_failed` 3건은 `error_detail`·`generated_sql` 이 **둘 다 NULL** 이다
+  (`candidate_count:1, selected_valid:false`). 후보 SQL 이 있었는데 거부 사유도 거부된 SQL 도
+  남지 않는다 — 운영 로그만으로는 영원히 원인을 알 수 없다.
+- 반대 방향도 있다. #26 `한 번도 VIP였던 적이 없는 회원`(expectation=unsupported, 다월 적재 필요)이
+  **SQL 을 냈고 `improvement` 로 집계됐다.** `required_clauses` 가 없어 강등되지 않았다.
+  코퍼스 77종 중 `required_clauses` 를 가진 항목은 **5종뿐**이라, 나머지 72종에서는
+  "절이 사라진 SQL" 과 "옳은 SQL" 을 러너가 구분하지 못한다.
+
+## 3. 플랜 — 범용 수리
+
+원칙: **한 프롬프트를 통과시키는 분기를 추가하지 않는다.** 모든 항목은 레지스트리·파생·계약
+중 하나를 고치고, 각각 드리프트 가드를 동반한다. 순서는 의존성 순이다(P0 가 나머지의 계측 기반).
+
+### P0 — 안전망 먼저 (다른 단계의 판정 근거)
+
+1. **거부 근거 보존** — 관문(`sql_guard`)·후보 선택 실패 시 거부된 SQL 과 사유를
+   `campaign_query_failure_logs.generated_sql`/`error_detail` 에 반드시 남긴다. 지금은 후보가
+   있어도 NULL 이다. 가드: 실패 로그에 후보가 1 이상인데 사유가 비면 테스트 실패.
+2. **`required_clauses` 를 코퍼스 전반으로 확대** — "SQL 을 낸다면 반드시 담아야 할 조각"을
+   최소한 *조건이 둘 이상인* 모든 항목에 선언한다. 5/77 → 전 항목. 이것이 없으면 P1~P4 의
+   개선이 **절이 사라진 SQL** 로 나타나도 `improvement` 로 오집계된다(#26 이 그 상태다).
+3. **기준선 고정** — 이번 77종 결과를 커밋된 기준선으로 삼는다(재현 명령은 §1).
+
+### P1 — 심볼 결속을 단일 소스에서 파생 (R3)
+
+1. **`metric`/`attribute` 필드에 카탈로그 파생 어휘를 결속.** `FieldSpec.vocabulary` 기계는
+   이미 있다(`value_comparison` 이 그 증거). 카탈로그 id 집합을 어휘로 주입하면
+   **strict function-calling 스키마의 enum 이 되어 모델이 `grade` 를 낼 수 없게 된다.**
+   손 목록이 아니라 `ResolvedSemanticCatalog` 에서 파생한다 — 카탈로그가 늘면 자동으로 열린다.
+2. **연산자 별칭을 단일 표로.** `eq|gte|lte` ↔ `=|>=|<=` 를 한 곳에서 선언하고 **LLM 어휘와
+   카탈로그 해석이 같은 표에서 파생**하게 한다. 어느 쪽 표기를 정본으로 삼든 무방하나,
+   두 벌이 존재하는 상태가 결함이다.
+3. **`catalog_symbol_unresolved` 를 해소 가능한 실패로 승격** — ① 별칭·정규화로 해석 시도
+   ② 실패 시 **닫힌 목록을 실어 재방출**(`semantic_reemission` 재사용) ③ 그래도 안 되면
+   "필드 + 받은 값 + 허용 목록"을 이름 대는 정직한 실패. 지금은 ①②가 없다.
+4. 가드: 노드 스키마가 선언한 모든 어휘값이 카탈로그에서 해석되는지 검사하는 **양방향 패리티
+   테스트**(오늘의 `eq` 모순을 red 로 만드는 테스트).
+
+### P2 — capability 판정을 시스템으로 회수 (R2)
+
+1. **라이브 스키마에서 `unsupported_operations`·`status` 제거.** 이미 쓰여 있는 계약
+   (`semantic_plan_llm.FORBIDDEN_OUTPUT_KEYS`)을 프로덕션 경로
+   (`query_structurer/campaign_plan_v4`·`semantic_ir`)에 **적용**하는 일이다 — 새 규칙이 아니라
+   두 경로의 계약 통일이다.
+2. 모델이 낼 수 있는 것은 **`issues`(원문 결핍·모호)** 까지다. "표현할 수 없다"는
+   `semantic_capability` 5축 판정이 카탈로그·컴파일러 자산에서 **계산**한다.
+3. **강등 가드의 조건 교체** — "다른 생산자가 노드를 냈는가"(자기무력화)가 아니라
+   **"선언된 실행 자산 중 이 의미를 처리하는 것이 있는가"** 로 판정한다.
+4. 가드: 응답의 미지원 사유가 닫힌 `FAILURE_CODES` 밖이면 실패하는 테스트. 모델 산문이
+   사용자 표면에 도달하는 경로를 구조적으로 막는다.
+
+### P3 — 결핍 판정을 리터럴 색인과 대조 (R4)
+
+1. `missing_argument` 주장은 종결 전에 **`literal_bindings` 와 대조**한다. 주장된 근거 구간
+   안팎에 요구 종류의 미소비 리터럴이 있으면 `model_omission` 이다 → 되묻지 말고 재방출.
+   추출기(`extract_literal_bindings`)와 재방출기 둘 다 이미 있다 — **잇는 배선만 없다.**
+2. `missing_field_causes` 를 라이브 경로에서 실제로 채운다(현재 항상 `[]`).
+3. 리터럴 추출기의 **상대 기간 커버리지 보강**(`작년`·`지난달` 등이 현재 원자로 안 잡힌다 —
+   #10 이 그래서 `audience.period` 결핍으로 되묻는다). 표면 낱말 목록이 아니라
+   기존 시간 어휘 파생으로 여는 것이 조건이다.
+4. 가드: "원문에 값이 있는데 그 값을 되묻는" 응답을 red 로 만드는 테스트.
+
+### P4 — 커버리지 패리티 (R1)
+
+1. **기계 파생 결손 목록** — legacy 실행 자산(`eq_filters` 32종 + `*_targets` + `metric_registry`)과
+   canonical `audience_catalog` 심볼을 대조해 **"legacy 는 하는데 canonical 은 못 하는 축"**
+   목록을 자동 생성한다(`tools/` 에 인벤토리 스크립트, `physical_binding_inventory.py` 가 선례).
+   이 목록이 P4 의 작업 큐이자 진척 지표다 — 케이스가 아니라 **차집합**이 단위다.
+2. 그 목록을 **선언으로** 닫는다. 아키텍처 §8 이 "새 회원 속성 축 추가 = `attribute_catalog.json`
+   항목 1개"라고 약속한 경로다. 약속이 실제로 성립하는지 이 작업이 검증한다.
+3. **닫을 수 없는 축은 `expressible:false` 로 명시 선언**한다(NOTES ⑤ 의 `signal_coverage` 방식).
+   "빠뜨린 것"과 "못 하는 것"을 가드가 구분할 수 있어야 한다.
+4. 가드: 인벤토리의 차집합이 커지면(=canonical 이 뒤처지면) 실패하는 회귀 테스트.
+
+### P5 — 라우팅 정직화 (R1 의 나머지 절반)
+
+P4 가 끝나기 전까지 canonical 밖 축은 계속 존재한다. 그 구간에서 **"모델이 미지원이라고 했다"가
+빌더 dispatch 를 건너뛰는 현재 동작**을 고친다: 미지원 종결은 **선언된 모든 실행 계층에 대해**
+판정된 뒤에만 성립한다. legacy 빌더가 처리할 수 있으면 그리로 간다.
+
+> 주의 — 이것은 legacy 를 되살리자는 뜻이 아니다. P4 가 완료되면 이 경로는 자연히 비고,
+> 그때 제거하면 된다. 순서가 반대가 되면(어휘보다 권한이 먼저) 지금 상태가 재발한다.
+
+## 4. 하지 않을 것 (명시)
+
+- **프롬프트별 분기·정규식 특례 추가.** 오늘 실패의 대부분은 자산이 없어서가 아니라
+  자산에 닿지 못해서다. 케이스별 우회는 닿지 못하는 이유를 덮는다.
+- **모델 프롬프트 산문 보강으로 R2·R3 를 때우기.** 라이브 프롬프트는 이미 #13 을
+  명시적으로 지시하고 있고 그래도 실패한다. 산문은 계약이 아니다 — 스키마 enum 과
+  결정론 검증이 계약이다.
+- **`unsupported` 를 성공률로 바꾸려는 압박.** 적재 없는 데이터(#15·#20·#23·#25 등)에 대해
+  정직한 미지원은 **정답**이다. 목표는 미지원을 줄이는 것이 아니라 **틀린 미지원**을 없애는 것이다.
+
+## 5. 남은 관측 (플랜 밖, 기록만)
+
+- **같은 의미의 표현 변형이 다른 귀결로 간다** — #20 `3개월 내내 VIP를 유지한 회원`(unsupported) vs
+  #22 `3개월 내내 VIP 등급을 유지한 회원`(clarification). 같은 실행에서 관측됐다.
+  P1·P2 이후에도 남으면 방출 안정성 문제로 별도 계측이 필요하다.
+- 문형 감사 구간(38–72)의 `정확히 N`(45–48)·`모두/하나라도`(49–58) 군집은 Event IR 대수로는
+  표현 가능하다(`Comparison(Aggregate(count_distinct), '=', N)` / `And`·`Or`). 실패는 대수의
+  결핍이 아니라 R1·R3 다 — P1·P4 이후 재측정 대상이다.
+
+---
+
 # 작업 노트 — 혼합축(일반 조건 × 등급/상태 이력) 흡수 (2026-08-03)
 
 ## 발견 — 조용한 오답이 실제로 나가고 있었다
