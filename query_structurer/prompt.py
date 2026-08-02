@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 
+import semantic_plan
 import semantic_requirements
 
+from . import campaign_plan_v4
 from .schema import STRUCTURED_QUERY_JSON_SCHEMA
 from .semantic_ir import extract_literal_bindings
 from .types import QueryStructuringInput
@@ -134,10 +136,23 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
                 "execution fields, and compatibility fields are application-owned."
             ),
             (
-                "audience_requirement is the only audience-meaning contract. Put a complete Event IR "
-                "condition in audience_requirement.expression and validation or interpretation problems in "
-                "audience_requirement.issues. Do not return target_user, exclude, semantic_plan, semantic_ir, "
-                "semantic_evidence, unresolved, event_expression, SQL, physical tables, or physical columns."
+                "audience_requirement is the audience-meaning contract for everything the Event IR algebra "
+                "can state. Put a complete Event IR condition in audience_requirement.expression and "
+                "validation or interpretation problems in audience_requirement.issues. Do not return "
+                "target_user, exclude, semantic_ir, semantic_evidence, unresolved, event_expression, SQL, "
+                "physical tables, or physical columns."
+            ),
+            (
+                "semantic_plan is the narrow second surface for the one axis the Event IR algebra cannot "
+                "state: a member attribute observed at a point in time or across monthly snapshots "
+                "(등급/상태 기준월, 직전 대비 전이, N개월 유지·변경 횟수·매월 존재). Emit a "
+                "relation_predicate node there for such a condition and leave that condition out of "
+                "audience_requirement.expression — do not state it twice. When the query has no such "
+                "condition, return semantic_plan={\"nodes\": []}. Never put an ordinary audience predicate "
+                "(purchase, cart, campaign, login, profile value) into semantic_plan.\n"
+                + semantic_plan.node_type_guidance(
+                    node_types=campaign_plan_v4.LLM_SEMANTIC_PLAN_NODE_TYPES
+                )
             ),
             (
                 "Build the expression only with the Event IR algebra allowed by the tool schema, such as "

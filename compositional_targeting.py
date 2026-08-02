@@ -129,6 +129,25 @@ def compile_sql(
             f"     AND COUNT(DISTINCT ATTRIBUTE_VALUE) {sql_operator} {threshold}",
             ")",
         ])
+    elif aggregate == "value_month_count":
+        # 값 앵커가 있는 구간 판정(보유/부재/전구간 유지). 셋은 **같은 카운트의 다른 임계**다 —
+        # 창 안에서 값이 V 인 월 수를 세고, ever = ≥1 / never = 0 / held_throughout = 전체 월수.
+        # 관측 월 수를 전체로 요구하는 것은 fail-close 다: 안 보이는 달을 '아니었다'로 세면
+        # 미관측을 부정으로 단정하게 된다(never 가 그 함정에 가장 취약하다).
+        values = (operation.get("value_predicate") or {}).get("values") or []
+        if not values:
+            raise ValueError("value_month_count requires a value predicate")
+        rendered = ", ".join(sql_dialect.quote_literal(str(value)) for value in values)
+        ctes.extend([
+            "ATTRIBUTE_SUMMARY AS (",
+            "  SELECT MEMBER_NO",
+            "  FROM ATTRIBUTE_MONTHS",
+            "  GROUP BY MEMBER_NO",
+            f"  HAVING COUNT(DISTINCT SNAPSHOT_TIME) = {observation_count}",
+            f"     AND SUM(CASE WHEN ATTRIBUTE_VALUE IN ({rendered}) THEN 1 ELSE 0 END)"
+            f" {sql_operator} {threshold}",
+            ")",
+        ])
     else:
         raise ValueError(f"unsupported aggregate: {aggregate!r}")
 
@@ -227,8 +246,16 @@ OPERATORS = frozenset({
 MULTI_MONTH_OPERATORS = frozenset({
     "held_throughout", "stable", "changed_n_times", "ever", "never", "exists_every_month",
 })
-# 다월 데이터가 있어도 아직 컴파일러가 없는 연산(값 앵커가 요약 CTE에 없음).
-UNIMPLEMENTED_OPERATORS = frozenset({"held_throughout", "ever", "never"})
+# 값 앵커 구간 판정 3종은 **같은 카운트의 다른 임계**다(창 안에서 값이 V 인 월 수).
+# threshold=None 은 '창 전체 월수'라는 뜻으로, 창 길이에서 파생한다.
+_VALUE_MONTH_COUNT_THRESHOLDS: dict[str, tuple[str, int | None]] = {
+    "ever": ("gte", 1),
+    "never": ("eq", 0),
+    "held_throughout": ("eq", None),
+}
+# 다월 데이터가 있어도 아직 컴파일러가 없는 연산. 2026-08-02: 값 앵커 구간 판정 3종
+# (held_throughout/ever/never)에 `value_month_count` 집계를 붙여 비었다.
+UNIMPLEMENTED_OPERATORS: frozenset[str] = frozenset()
 
 
 def load_attribute_catalog(
@@ -301,6 +328,29 @@ def slot_vocab(catalog: Mapping[str, Any]) -> dict[str, Any]:
                     tokens.setdefault(compact, canonical)
         attributes[attribute_id] = {"value_tokens": tokens}
     return {"attributes": attributes}
+
+
+def attribute_resolver_specs(catalog: Mapping[str, Any]) -> dict[str, Any]:
+    """속성 **id** 해석용 스펙: {attribute_id: {label, synonyms}} (MetricResolver 입력 모양).
+
+    `slot_vocab` 은 속성의 **값** 어휘를 돌려준다. 그것을 그대로 resolver 에 넣으면
+    `{"attributes": {...}}` 가 통째로 스펙 하나로 읽혀 `attributes` 라는 이름의 지표 하나만
+    생긴다 — 실측(2026-08-02): LLM 이 낸 `attribute='grade'` 가 어느 형태로도 해석되지 않아
+    relation_predicate 노드가 타입 확정 단계에서 통째로 폐기됐다.
+
+    동의어는 카탈로그가 단일 소유한다(`surface_terms`). 여기에 낱말을 나열하지 않는다.
+    """
+    specs: dict[str, Any] = {}
+    for attribute_id, spec in (catalog.get("attributes") or {}).items():
+        if not isinstance(spec, Mapping):
+            continue
+        specs[str(attribute_id)] = {
+            "label": str(spec.get("label") or attribute_id),
+            "synonyms": [
+                str(term) for term in (spec.get("surface_terms") or []) if str(term).strip()
+            ],
+        }
+    return specs
 
 
 def _value_token_index(catalog: Mapping[str, Any]) -> dict[str, tuple[str, str]]:
@@ -414,6 +464,7 @@ def resolve_operation(
         return _blocked("unsupported", reason)
 
     months = slot.get("months")
+    advisories: list[dict[str, Any]] = []
     if operator in MULTI_MONTH_OPERATORS:
         available = int(attribute.get("snapshot_months_available") or 0)
         window = int(months) if isinstance(months, int) and months > 0 else None
@@ -423,12 +474,19 @@ def resolve_operation(
                 f"{label} 이력 조건의 기간(N개월)을 확정하지 못했습니다. '최근 3개월'처럼 기간을 명시해 주세요.",
             )
         if window > available:
-            return _blocked(
-                "unsupported",
-                f"{label} 월별 스냅샷이 현재 {available}개월치만 적재되어 있어 "
-                f"{window}개월 이력 조건(유지/변경 횟수/월별 존재 등)을 지원하지 않습니다. "
-                "월별 이력 적재가 확장되면 자동으로 열립니다.",
-            )
+            # 적재가 얕아도 **SQL 의 의미는 그대로다** — 관측 월 수를 세는 창 CTE 가
+            # 조건을 충족하는 회원을 못 찾아 0건이 될 뿐이다. 0건은 정직한 답이므로 내보내고
+            # 고지만 한다(semantic_capabilities.json 의 data_availability_policy 와 같은 기준).
+            advisories.append({
+                "code": "data_coverage_shallow",
+                "message": (
+                    f"{label} 월별 스냅샷이 현재 {available}개월치만 적재되어 있어 "
+                    f"{window}개월 이력 조건의 결과가 0건일 수 있습니다. "
+                    "월별 이력 적재가 확장되면 그대로 채워집니다."
+                ),
+                "required_months": window,
+                "available_months": available,
+            })
         if operator in UNIMPLEMENTED_OPERATORS:
             return _blocked(
                 "unsupported",
@@ -443,6 +501,8 @@ def resolve_operation(
         "semantic_operator": operator,
         "source_slot": copy.deepcopy(dict(slot)),
     }
+    if advisories:
+        base["advisories"] = advisories
     if operator in {"as_of_latest", "as_of_month"}:
         comparison = str(slot.get("value_comparison") or "eq")
         values = _expand_value_predicate(attribute, str(slot.get("value") or ""), comparison)
@@ -457,13 +517,17 @@ def resolve_operation(
             if not _YYYYMM_RE.fullmatch(month):
                 return _blocked("needs_clarification", "기준 월(YYYYMM)을 확정하지 못했습니다.")
             if int(attribute.get("snapshot_months_available") or 0) <= 1:
-                # 단일 스냅샷 적재에서 임의 월 리터럴은 조용한 빈 오디언스가 된다(리뷰 실증) —
-                # 적재가 다월로 확장되면 카탈로그 숫자만 올리면 열린다.
-                return _blocked(
-                    "unsupported",
-                    f"{label}의 월 지정 스냅샷 조회는 현재 최신 1개월 스냅샷만 적재되어 있어 "
-                    "지원되지 않습니다. '최신 기준월' 기준으로 요청해 주세요.",
-                )
+                # 지정 월 SQL 은 `YYYYMM = '지정월'` 로 의미가 정확하다 — 그 월이 적재되지
+                # 않았으면 0건일 뿐이다. **조용한** 빈 오디언스가 문제였지 빈 결과 자체가
+                # 문제가 아니므로, 막는 대신 이름을 대며 고지한다.
+                base["advisories"] = [*base.get("advisories", []), {
+                    "code": "data_coverage_shallow",
+                    "message": (
+                        f"{label}의 월별 스냅샷은 현재 최신 1개월만 적재되어 있어 "
+                        f"{month} 기준 조회 결과가 0건일 수 있습니다."
+                    ),
+                    "requested_month": month,
+                }]
             anchor = {"type": "month", "month": month}
         base.update({"aggregate": "as_of", "anchor": anchor, "value_predicate": {"values": values}})
         return base
@@ -509,6 +573,26 @@ def resolve_operation(
         base.update({"aggregate": "change_count", "window": window,
                      "comparison": {"operator": str(slot.get("change_count_operator") or "gte"),
                                     "value": count}})
+    elif operator in _VALUE_MONTH_COUNT_THRESHOLDS:
+        values = _expand_value_predicate(
+            attribute, str(slot.get("value") or ""), str(slot.get("value_comparison") or "eq")
+        )
+        if not values:
+            return _blocked(
+                "needs_clarification",
+                f"{label} 구간 조건의 값{_value_examples(attribute)}을 확정하지 못했습니다.",
+            )
+        comparison_operator, threshold = _VALUE_MONTH_COUNT_THRESHOLDS[operator]
+        base.update({
+            "aggregate": "value_month_count",
+            "window": window,
+            "value_predicate": {"values": values},
+            "comparison": {
+                "operator": comparison_operator,
+                # 전구간 유지는 '창 안 전체 월수'가 임계다 — 창 길이에서 파생한다.
+                "value": int(months) if threshold is None else threshold,
+            },
+        })
     else:  # pragma: no cover — OPERATORS 닫힌 집합에서 남는 분기 없음
         return _blocked("needs_clarification", f"'{operator}' 연산을 해석하지 못했습니다.")
     return base
@@ -560,15 +644,27 @@ def validation_terms(operation: Mapping[str, Any]) -> list[str]:
         else {}
     )
     operator = _SQL_COMPARISONS.get(str(comparison.get("operator")), "")
+    aggregate = operation.get("aggregate")
+    if aggregate == "count_distinct":
+        summary = f"COUNT(DISTINCT ATTRIBUTE_VALUE) {operator} {comparison.get('value')}"
+    elif aggregate == "value_month_count":
+        # 값 앵커가 SQL 에 실제로 남았는지까지 확인한다 — 임계만 보면 '어떤 값을 세는지'가
+        # 빠져도 통과한다(ever VIP 가 ever ANY 로 조용히 넓어지는 경로).
+        rendered = ", ".join(
+            sql_dialect.quote_literal(str(value))
+            for value in (operation.get("value_predicate") or {}).get("values") or []
+        )
+        summary = (
+            f"SUM(CASE WHEN ATTRIBUTE_VALUE IN ({rendered}) THEN 1 ELSE 0 END)"
+            f" {operator} {comparison.get('value')}"
+        )
+    else:
+        summary = "LAG(ATTRIBUTE_VALUE)"
     return [
         str(binding.get("table") or ""),
         str(binding.get("time_column") or ""),
         str(binding.get("value_column") or ""),
         f"TOP ({window.get('observation_count')})",
         f"COUNT(DISTINCT SNAPSHOT_TIME) = {window.get('observation_count')}",
-        (
-            f"COUNT(DISTINCT ATTRIBUTE_VALUE) {operator} {comparison.get('value')}"
-            if operation.get("aggregate") == "count_distinct"
-            else "LAG(ATTRIBUTE_VALUE)"
-        ),
+        summary,
     ]

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from datetime import date
 from pathlib import Path
@@ -327,19 +328,25 @@ def test_failure_taxonomy_distinguishes_causes() -> None:
         "limit": {"type": "count", "value": 5}})
     assert registry.judge(brand_ranking).failure_code == semantic_plan.UNSUPPORTED_SEMANTICS
 
-    # ④ 데이터 grain 부족(다월 이력이 필요한데 단일 월만 적재)
+    # ④⑤ 적재 부족은 **원인을 그대로 이름 대되 차단하지는 않는다**(data_availability_policy).
+    # 적재가 얕으면 같은 SQL 이 0건을 낼 뿐 의미는 그대로다 — 0건은 정직한 답이다.
     multi_month = semantic_plan.node_from_dict({
         "id": "req-1", "type": "relation_predicate", "source_span": "x", "subject": "member",
         "attribute": "member_grade", "relation": "change_count"})
     grain = registry.judge(multi_month, available_months={"monthly_attribute_snapshot": 1})
-    assert grain.failure_code == semantic_plan.UNSUPPORTED_DATA_GRAIN
+    assert grain.failure_code is None and grain.executable
+    assert [item["code"] for item in grain.advisories] == [semantic_plan.UNSUPPORTED_DATA_GRAIN]
 
-    # ⑤ 데이터 없음(적재 구간 밖 기간)
     out_of_range = semantic_plan.node_from_dict({
         "id": "req-1", "type": "relation_predicate", "source_span": "x", "subject": "member",
         "attribute": "member_grade", "relation": "as_of",
         "period": {"from": "20991201", "to": "20991231"}})
-    assert registry.judge(out_of_range).failure_code == semantic_plan.DATA_UNAVAILABLE
+    ranged = registry.judge(out_of_range)
+    assert ranged.failure_code is None and ranged.executable
+    assert [item["code"] for item in ranged.advisories] == [semantic_plan.DATA_UNAVAILABLE]
+    # 축은 사실 그대로 보고한다 — 고지로 바뀌어도 '적재 안에 있다'고 말하지 않는다.
+    assert ranged.data_covered is False
+    assert ranged.axes()["data_coverage"]["covered"] is False
 
     # ⑥ 검증 불일치(값 정규화 실패)
     bad_value = _plan("x", [{"id": "req-1", "type": "predicate", "source_span": "x",
@@ -360,6 +367,32 @@ def test_failure_taxonomy_distinguishes_causes() -> None:
                  semantic_plan.DATA_UNAVAILABLE, semantic_plan.VALIDATION_MISMATCH,
                  semantic_plan.EXECUTION_FAILURE, semantic_plan.INTERNAL_FAULT):
         assert code in semantic_plan.FAILURE_CODES
+
+
+def test_data_availability_policy_can_block_again() -> None:
+    """`advise` 는 정책이지 능력 선언이 아니다 — `block` 으로 되돌리면 그대로 차단한다.
+
+    되돌릴 수 없는 완화는 완화가 아니라 삭제다. 이 계약이 있어야 "SQL 은 내보내되 0건임을
+    고지한다"가 **선택**으로 남는다.
+    """
+    payload = json.loads(
+        semantic_capability.DEFAULT_CAPABILITY_PATH.read_text(encoding="utf-8")
+    )
+    node = semantic_plan.node_from_dict({
+        "id": "req-1", "type": "relation_predicate", "source_span": "x", "subject": "member",
+        "attribute": "member_grade", "relation": "as_of",
+        "period": {"from": "20991201", "to": "20991231"}})
+
+    blocking = semantic_capability.CapabilityRegistry({**payload, "data_availability_policy": "block"})
+    verdict = blocking.judge(node)
+    assert verdict.failure_code == semantic_plan.DATA_UNAVAILABLE
+    assert not verdict.executable and not verdict.advisories
+
+    advising = semantic_capability.CapabilityRegistry({**payload, "data_availability_policy": "advise"})
+    assert advising.judge(node).executable
+
+    with pytest.raises(semantic_capability.CapabilityRegistryError):
+        semantic_capability.CapabilityRegistry({**payload, "data_availability_policy": "maybe"})
 
 
 def test_internal_failures_are_never_shown_as_unsupported() -> None:

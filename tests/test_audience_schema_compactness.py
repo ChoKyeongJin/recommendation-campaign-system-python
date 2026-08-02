@@ -116,6 +116,7 @@ def _representative_payload() -> dict[str, Any]:
             },
             "issues": [],
         },
+        "semantic_plan": {"nodes": []},
     }
 
 
@@ -190,6 +191,7 @@ def test_catalog_membership_remains_a_fail_closed_runtime_check() -> None:
             },
             "issues": [],
         },
+        "semantic_plan": {"nodes": []},
     }
     # The compact schema checks canonical shape, not business catalog membership.
     assert not list(

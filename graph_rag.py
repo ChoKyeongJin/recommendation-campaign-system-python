@@ -7026,6 +7026,8 @@ def build_recommendation_api_response(
         "dropped_signal_warnings": sql_result.get("dropped_signal_warnings", []),
         # 미소비 리터럴 감사(비차단 자문): 숫자/기간 리터럴이 어떤 실행 조건에도 소비되지 않은 경우.
         "literal_binding_advisories": sql_result.get("literal_binding_advisories", []),
+        # 적재 부족 고지(비차단 자문): SQL 은 의미대로 나갔지만 실적재가 얕아 0건일 수 있는 조건.
+        "data_availability_advisories": sql_result.get("data_availability_advisories", []),
     }
     if message_generation is not None:
         response.update(
@@ -9848,7 +9850,9 @@ def _semantic_compile_context() -> semantic_plan_bridge.CompileContext:
             _MEMBER_TARGET_FILTERS.get("campaign_response_targets", {}).get("frequency_events") or {}
         ),
         profile_metric_specs={**profile_metrics, **profile_date_states},
-        history_attribute_specs=compositional_targeting.slot_vocab(_attribute_history_catalog()),
+        history_attribute_specs=compositional_targeting.attribute_resolver_specs(
+            _attribute_history_catalog()
+        ),
         entity_set_measures=_entity_set_config().get("measures") or {},
         # 타입 판정(정규화 계층)이 쓰는 어휘는 **LLM 에 노출되는 것과 같은 이름**이어야 한다 —
         # 노출 어휘와 판정 어휘가 갈리면 "프롬프트엔 있는데 실행기는 모른다"가 다시 생긴다.
@@ -9897,13 +9901,17 @@ def _apply_semantic_plan_pipeline(
 ) -> None:
     """Lower meaning once, preferring the canonical Event IR boundary.
 
-    New plans already carry ``audience_requirement`` and its application-owned
-    ``event_expression`` projection, so the legacy slot compiler must not see
-    them.  Stored SemanticPlanV2 payloads get a one-way, all-or-nothing Event IR
-    lowering attempt; only unlowerable legacy payloads use the frozen bridge.
+    A compiled ``event_expression`` is the audience: the slot compiler must not
+    also run, or the same clause is expressed twice.  But a bare
+    ``audience_requirement`` is **not** a compiled audience — when it carries only
+    issues, nothing was expressed, and the SemanticPlan nodes that survive on the
+    LLM surface (see ``campaign_plan_v4.LLM_SEMANTIC_PLAN_NODE_TYPES``) are the
+    only producer left for the axes Event IR cannot state.
+
+    Gating on the *key* rather than on a compiled expression is what orphaned the
+    grade/state history axis: the working ``compositional_targeting`` compiler was
+    never reachable because the pipeline returned before its input was written.
     """
-    if isinstance(query_plan.get(AUDIENCE_REQUIREMENT_KEY), dict):
-        return
     if _plan_event_expression(query_plan) is not None:
         return
 
@@ -9915,6 +9923,13 @@ def _apply_semantic_plan_pipeline(
         return value not in (None, "")
 
     raw_plan = query_plan.get(semantic_plan_bridge.PLAN_KEY)
+    # 노드가 **실제로 있을 때만** 슬롯 컴파일러를 태운다. 빈 플랜으로 파이프라인을 돌리면
+    # semantic_ir 이 빈 플랜에서 다시 파생돼 이미 확정된 정직한 사유를 덮어쓴다(실측:
+    # 맨 '최근' 의 missing_argument → 사유 없는 semantic_structurer_failure 로 강등).
+    if isinstance(query_plan.get(AUDIENCE_REQUIREMENT_KEY), dict) and not (
+        isinstance(raw_plan, dict) and raw_plan.get("nodes")
+    ):
+        return
     has_legacy_audience = has_value(query_plan.get("target_user", {})) or has_value(
         query_plan.get("exclude", {})
     )
@@ -9976,6 +9991,38 @@ def _apply_semantic_plan_pipeline(
     member_attribute_history.apply(
         query_plan, query, catalog_loader=_attribute_history_catalog
     )
+
+
+def _collect_data_availability_advisories(query_plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """적재 부족 고지를 두 생산자에서 모은다(비차단, 중복 제거).
+
+    생산자는 ① `semantic_capability` 판정의 advisories(요청 구간·다월 요구) ②
+    `compositional_targeting` 이력 연산의 advisories(스냅샷 깊이)다. 둘 다 "SQL 은 의미대로
+    나갔고 결과가 빌 수 있다"만 말하며, 어느 쪽도 SQL 출고를 막지 않는다.
+    """
+    collected: list[dict[str, Any]] = []
+    plan = query_plan.get(semantic_plan_bridge.PLAN_KEY)
+    verdicts = plan.get("capability_verdicts") if isinstance(plan, Mapping) else None
+    for verdict in verdicts or []:
+        if not isinstance(verdict, Mapping):
+            continue
+        for item in verdict.get("advisories") or []:
+            if isinstance(item, Mapping):
+                collected.append({"source": "capability", **dict(item)})
+    for operation in query_plan.get(compositional_targeting.PLAN_OPERATIONS_KEY) or []:
+        if not isinstance(operation, Mapping):
+            continue
+        for item in operation.get("advisories") or []:
+            if isinstance(item, Mapping):
+                collected.append({"source": "attribute_history", **dict(item)})
+    seen: set[str] = set()
+    unique: list[dict[str, Any]] = []
+    for item in collected:
+        key = f"{item.get('code')}|{item.get('message')}"
+        if key not in seen:
+            seen.add(key)
+            unique.append(item)
+    return unique
 
 
 def _attribute_snapshot_months() -> dict[str, int]:
@@ -10632,6 +10679,9 @@ def build_sql_result(
         literal_binding_advisories = semantic_requirements.unconsumed_literal_advisories(query_plan, original_query or query)
     except Exception:
         literal_binding_advisories = []
+    # 적재 부족 고지(비차단): "SQL 은 정확한데 실적재가 얕아 0건일 수 있다"를 사용자에게 알린다.
+    # `dropped_signal_warnings` 에 실으면 안 된다 — 이름과 달리 그쪽은 **차단 채널**이다.
+    data_availability_advisories = _collect_data_availability_advisories(query_plan)
 
     # 결정론 의미 보존 불변식 게이트: LLM 게이트(_verify_sql_semantics)와 달리 SQL 이 생성되면 LLM 유무와
     # 무관하게 항상 실행된다(ran=True). 창 도메인 누수·누적↔롤링 혼입·구매 미발생 silent drop 을 결정론으로
@@ -10711,6 +10761,8 @@ def build_sql_result(
         "dropped_signal_warnings": dropped_signal_warnings,
         # 미소비 리터럴 감사(비차단): 바인딩만 되고 어떤 실행 조건에도 소비되지 않은 숫자/기간 리터럴.
         "literal_binding_advisories": literal_binding_advisories,
+        # 적재 부족 고지(비차단): SQL 은 의미대로 나갔지만 실적재가 얕아 0건일 수 있는 조건.
+        "data_availability_advisories": data_availability_advisories,
         "unsupported_conditions": unsupported_conditions,
         "unsupported_condition_labels": unsupported_condition_labels,
         # 명시적 미지원 표현의 사유 코드(예: average_comparison_metric_unsupported). 지원 표현이면 None.

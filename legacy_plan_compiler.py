@@ -874,10 +874,25 @@ class LegacyQueryPlanCompiler:
                 )
         coerced = self._coerce(ctx, SLOT_RELATIONAL_OPERATION, slot, "history_attributes")
         if coerced is None:
+            # 사유를 속성 id 로 단정하면 안 된다 — 실제 거부는 **값** 쪽인 경우가 더 흔하다
+            # (실측 2026-08-02: LLM 이 낸 from_value='gold' 가 값 사전에 없었는데 사유는
+            # "속성 이력 'member_grade' 는 카탈로그에 없다"였고, 운영자가 멀쩡한 카탈로그를 뒤졌다).
+            known = set((ctx.allowed.get("history_attributes") or {}).get("attributes") or {})
+            values = {
+                key: value for key, value in slot.items()
+                if key in {"value", "from_value", "to_value"}
+            }
+            if slot["attribute_id"] not in known:
+                reason = f"속성 이력 '{slot['attribute_id']}' 는 카탈로그에 없다"
+            elif values:
+                listed = ", ".join(f"{key}={value!r}" for key, value in sorted(values.items()))
+                reason = f"속성 이력 '{slot['attribute_id']}' 의 값이 값 사전에 없다({listed})"
+            else:
+                reason = f"속성 이력 조건 '{slot['attribute_id']}' 를 실행 슬롯으로 확정하지 못했다"
             result.failures.append({
                 "node_id": node.id,
                 "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
-                "reason": f"속성 이력 '{slot['attribute_id']}' 는 카탈로그에 없다",
+                "reason": reason,
             })
             return
         self._set_scalar_slot(result, node, SLOT_RELATIONAL_OPERATION, coerced)

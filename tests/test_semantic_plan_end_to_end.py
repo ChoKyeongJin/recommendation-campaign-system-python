@@ -132,18 +132,33 @@ def test_semantic_plan_compiles_all_the_way_to_sql(query, nodes, expected_sql_fr
     assert plan[graph_rag.semantic_plan_bridge.PIPELINE_KEY]["written_slots"]
 
 
-def test_unsupported_data_grain_returns_an_honest_message() -> None:
-    """'최근 3개월 내내 VIP 유지' — 단일 월 적재라 미지원이고, 그 이유를 그대로 말한다."""
+def test_held_throughout_emits_sql_with_a_coverage_advisory() -> None:
+    """'최근 3개월 내내 VIP 유지' — 값 앵커 구간 판정으로 SQL 이 나가고, 0건 가능성만 고지된다.
+
+    적재 깊이는 차단 사유가 아니다(0건은 정직한 답이다). 그리고 이 문형의 컴파일러는
+    2026-08-02 에 신설됐다 — 그 전에는 '미구현'으로 막혔다.
+    """
     result, _plan = _run("최근 3개월 내내 VIP 등급을 유지한 회원", [
         {"id": "r1", "type": "relation_predicate", "source_span": "최근 3개월 내내 VIP 등급을 유지한",
          "subject": "member", "attribute": "member_grade", "relation": "held_throughout",
          "value": "VIP", "months": 3},
     ])
-    assert result["is_success"] is False
+    assert result["sql"], "값 앵커 구간 판정은 이제 SQL 을 낸다."
+    assert "SUM(CASE WHEN ATTRIBUTE_VALUE IN ('MEM_GRADE_CD.VIP')" in result["sql"]
+    advisories = result["data_availability_advisories"]
+    assert any(item["code"] == "data_coverage_shallow" for item in advisories)
+
+
+def test_state_history_without_a_source_still_blocks() -> None:
+    """소스가 없으면 낼 SQL 이 없다 — 적재가 얕은 것과 달리 여전히 정직하게 막는다."""
+    result, _plan = _run("정상에서 휴면으로 바뀐 회원", [
+        {"id": "r1", "type": "relation_predicate", "source_span": "정상에서 휴면으로 바뀐",
+         "subject": "member", "attribute": "member_state", "relation": "transition",
+         "from_value": "정상", "to_value": "휴면"},
+    ])
+    assert result["is_success"] is False and result["sql"] is None
     message = " ".join(result.get("clarification_questions") or [])
-    assert "1개월" in message and "적재" in message
-    # 내부 오류가 아니라 데이터 적재 경계임을 사유가 밝힌다.
-    assert result.get("failure_reason") == "relational_ir_unsupported"
+    assert "적재되어 있지 않습니다" in message
 
 
 def test_missing_condition_fails_closed_without_sql() -> None:

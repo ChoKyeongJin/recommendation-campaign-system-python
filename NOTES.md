@@ -1,3 +1,81 @@
+# 작업 노트 — 등급·상태 이력 축 복구 + 적재 부족의 비차단화 (2026-08-02, Phase 0~5)
+
+목표는 하나였다: **SQL 생성**. 사용자 결정으로 "결과가 0건인 것은 문제가 아니다"가 전제다.
+
+## 발견 — 이력 축은 미지원이 아니라 **고아**였다
+
+`/target-sql` 이력 16종을 조사한 결과, 등급/상태 시점·이력 조건은 설계상 미지원이 아니라
+**생산자를 잃은 상태**였다. canonical audience 웨이브(79dad3d)가 `semantic_plan` 을 LLM
+노출면에서 통째로 빼면서, `target_user.relational_operation` 의 **유일한 생산자**인
+`legacy_plan_compiler._compile_relation_predicate`(입력 = `relation_predicate` 노드)가 끊겼다.
+`compositional_targeting` 의 as_of/transition/stable/changed_n_times 컴파일러는 그대로 살아 있었다.
+
+실측(라이브 query_plan): `semantic_plan.nodes=[]` + `audience_requirement.issues=[unsupported_semantics]`
+→ 작동하는 컴파일러가 **한 번도 호출되지 않은 채** 미지원 응답.
+
+## 기준선 (재현 가능)
+
+코퍼스를 26→37 로 확장(`live_prompts.json` id 27~37 = 이력 감사 16종 중 신규 11종).
+
+| | Phase 0 (착수 전) | Phase 5 (완료) |
+|---|---|---|
+| live-37 | SQL 5 / 미지원 19 / 되묻기 12 / 실패 1 | 아래 '결과' 절 |
+| pytest | 1,136 | **1,145** |
+| preflight | PASS | PASS |
+
+착수 전 측정에서 **기록된 기대치 대비 회귀 14건**이 드러났다(#16 #17 #19 등 이력 축 전부 포함).
+이력 축 고아화가 설계 결정이 아니라 회귀임을 이 숫자가 확정한다.
+
+## 무엇을 했나
+
+**Phase 1 — 축 재연결.**
+① `semantic_plan` 을 V4 LLM 스키마에 **좁게** 복원(`LLM_SEMANTIC_PLAN_NODE_TYPES = ("relation_predicate",)`).
+Event IR 대수가 표현하지 못하는 축만 담으며, 폭은 계약 테스트가 타입 단위로 고정한다.
+② LLM 의 `unsupported_semantics` 를 **가설로 강등** — 표현 가능성은 실행 자산을 아는
+애플리케이션이 판정한다. 원문 결핍(`missing_argument`/`ambiguous_requirement`)만 즉시 종결.
+③ 같은 신고가 `unresolved_source_conditions`(차단 채널)로 재진입하던 경로를 **근거 스팬 겹침**
+소유권 sweep 으로 회수(`canonical_audience_claims._issue_is_superseded_by_another_compiler`).
+
+**Phase 2 — 적재 부족을 차단에서 고지로.** 기준은 "행이 나오는가"가 아니라 **"SQL 이 틀리는가"**다.
+`semantic_capabilities.json` 의 `data_availability_policy`(선언, `advise`/`block`)로 전환하고,
+응답에 비차단 키 `data_availability_advisories` 를 신설했다.
+
+**Phase 3 — 값 앵커 구간 판정 3종 신설.** `held_throughout`/`ever`/`never` 를 `value_month_count`
+집계 하나로 구현(같은 카운트의 다른 임계). `UNIMPLEMENTED_OPERATORS` 가 비었다.
+
+**Phase 4·5 — 정직화와 가드.** `member_state` 미지원 사유에 실측 근거 명시,
+적재 깊이 2중 선언(`snapshot_months_available` ↔ `grains.*.coverage`) 드리프트 가드 신설.
+
+## 함정 기록
+
+- **`history_attribute` 리졸버가 처음부터 깨져 있었다.** `slot_vocab()`(값 어휘)을 그대로
+  `MetricResolver.from_specs` 에 넣어 `{"attributes": {...}}` 가 **`attributes` 라는 지표 하나**로
+  읽혔다. LLM 이 낸 `attribute='grade'` 는 어느 형태로도 해석되지 않아 노드가 타입 확정 단계에서
+  통째로 폐기됐다 → `attribute_resolver_specs()` 신설(카탈로그 `surface_terms` 파생).
+- **값 사전에도 같은 구멍.** LLM 은 `gold`/`normal` 같은 영문 표면형을 낸다. eq_filters `synonyms` 에
+  선언했다. 그런데 **`state`/`status` 같은 프로그래밍 일반어는 넣으면 안 된다** — 도메인 어휘가
+  되는 순간 `test_generic_core_layering` 이 코어의 정상 코드를 도메인 누출로 잡는다(실제로 5건 빨감).
+- **거부 사유가 틀린 원인을 댔다.** 값 거부인데 "속성 이력 'member_grade' 는 카탈로그에 없다"로
+  보고돼 멀쩡한 카탈로그를 뒤지게 만든다 → 속성/값을 갈라 사유를 만든다.
+- **조기 반환을 걷을 때는 노드 유무로 좁혀야 한다.** `audience_requirement` 존재만으로 반환하던 것을
+  통째로 없앴더니 빈 플랜이 파이프라인을 돌아 **확정된 정직한 사유를 덮어썼다**(맨 '최근'의
+  `missing_argument` → 사유 없는 `semantic_structurer_failure`).
+- **`"sql"` 금지 가드가 설명문에 걸린다.** LLM 에게 "SQL 을 만들지 마라"라고 쓰는 순간 잡힌다 —
+  가드는 구조(필드명·enum)만 훑어야 한다.
+- 완화는 **되돌릴 수 있어야 완화다.** `data_availability_policy: block` 이 예전 동작을 그대로
+  복원함을 테스트가 고정한다.
+
+## 재현·검증
+
+```bash
+python -m pytest tests -q                    # 1,145 passed
+python db_swap_preflight.py                  # PASS
+python tools/live_prompt_baseline.py         # 37종
+python tools/generate_supported_conditions.py
+```
+
+---
+
 # 작업 노트 — canonical audience 경로 + 실행 계층 범용화 (2026-08-02)
 
 두 개의 큰 변화가 같은 날 착지했다. 앞의 것은 다른 세션이(79dad3d, f4b8034), 뒤의 것은 이 문서를

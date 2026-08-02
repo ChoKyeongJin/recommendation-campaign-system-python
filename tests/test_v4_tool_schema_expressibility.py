@@ -11,13 +11,21 @@ from typing import Any
 from jsonschema import Draft202012Validator
 
 import event_ir
-from query_structurer.campaign_plan_v4 import CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA
+import semantic_plan
+from query_structurer.campaign_plan_v4 import (
+    CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA,
+    LLM_SEMANTIC_PLAN_NODE_TYPES,
+)
 
-_LLM_ROOT = {"intent", "campaign_constraints", "result_limit", "audience_requirement"}
+_LLM_ROOT = {
+    "intent", "campaign_constraints", "result_limit", "audience_requirement",
+    # Event IR 대수가 표현하지 못하는 축만 남은 좁은 SemanticPlan 노출면.
+    # 노출 타입 목록 자체는 아래 test_semantic_plan_surface_stays_narrow 가 고정한다.
+    "semantic_plan",
+}
 _FORBIDDEN_LLM_ROOT = {
     "target_user",
     "exclude",
-    "semantic_plan",
     "semantic_ir",
     "semantic_evidence",
     "unresolved",
@@ -129,6 +137,7 @@ def _representative_payload() -> dict[str, Any]:
         },
         "result_limit": None,
         "audience_requirement": {"expression": expression, "issues": []},
+        "semantic_plan": {"nodes": []},
     }
 
 
@@ -137,6 +146,23 @@ def test_llm_schema_has_fixed_root_and_no_execution_or_legacy_slots() -> None:
     assert root == _LLM_ROOT
     assert set(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA.get("required") or []) == _LLM_ROOT
     assert not (_FORBIDDEN_LLM_ROOT & root)
+
+
+def test_semantic_plan_surface_stays_narrow() -> None:
+    """SemanticPlan 노출면은 **Event IR 이 표현하지 못하는 축만** 담는다.
+
+    이 계약이 없으면 노출면이 조용히 7종 전부로 되돌아가고, 그때는 같은 문장을 두 계약이
+    동시에 해석한다(2026-08-02 이행이 없앤 바로 그 구조). 목록을 넓히려면 "audience_requirement
+    로 표현할 수 없다"는 근거가 먼저다.
+    """
+    variants = CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"]["semantic_plan"][
+        "properties"
+    ]["nodes"]["items"]["anyOf"]
+    exposed = {branch["properties"]["type"]["enum"][0] for branch in variants}
+    assert exposed == set(LLM_SEMANTIC_PLAN_NODE_TYPES)
+    assert exposed < set(semantic_plan.NODE_CLASS_BY_TYPE), (
+        "노출면이 전체 노드 타입으로 되돌아갔다 — 이중 해석 계층의 부활이다."
+    )
 
 
 def test_llm_schema_has_no_inexpressible_closed_empty_nodes() -> None:

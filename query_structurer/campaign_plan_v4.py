@@ -33,6 +33,21 @@ CAMPAIGN_QUERY_PLAN_V4_VERSION = "4.0"
 QUERY_IDENTITY_DIGEST_KEY = "query_identity_digest"
 AUDIENCE_REQUIREMENT_KEY = "audience_requirement"
 EVENT_EXPRESSION_KEY = "event_expression"
+SEMANTIC_PLAN_KEY = "semantic_plan"
+
+# LLM 노출면에 남기는 SemanticPlan 노드 타입. **Event IR 대수가 표현하지 못하는 축만** 여기 온다.
+#
+# 2026-08-02 canonical audience 이행에서 semantic_plan 을 LLM 노출면에서 통째로 뺐는데, 그 결과
+# 등급/상태 시점·이력 조건이 **생산자를 잃었다** — `compositional_targeting` 의 as_of/transition/
+# stable/changed_n_times 컴파일러는 그대로 살아 있는데, 그 입력인 `target_user.relational_operation`
+# 을 만드는 유일한 경로가 `legacy_plan_compiler._compile_relation_predicate`(= relation_predicate
+# 노드)였기 때문이다. 실측(2026-08-02 라이브): '이번 달 기준 골드 등급 회원'의 query_plan 은
+# semantic_plan.nodes=[] + audience_requirement.issues=[unsupported_semantics] 로, 작동하는
+# 컴파일러가 한 번도 호출되지 않았다.
+#
+# 이 목록은 **줄어드는 방향**이 목표다: Event IR 이 월별 스냅샷 축을 흡수하면 여기서 빠진다.
+# 새 타입을 늘리려면 "audience_requirement 로 표현할 수 없다"는 근거가 먼저 있어야 한다.
+LLM_SEMANTIC_PLAN_NODE_TYPES: tuple[str, ...] = ("relation_predicate",)
 AUDIENCE_REQUIREMENT_ISSUE_CODES = frozenset({
     "missing_argument",
     "ambiguous_requirement",
@@ -873,12 +888,16 @@ def _campaign_query_plan_v4_llm_schema() -> dict[str, Any]:
         "additionalProperties": False,
         "required": [
             "intent", "campaign_constraints", "result_limit", AUDIENCE_REQUIREMENT_KEY,
+            SEMANTIC_PLAN_KEY,
         ],
         "properties": {
             "intent": copy.deepcopy(internal["intent"]),
             "campaign_constraints": campaign_metadata,
             "result_limit": copy.deepcopy(internal["result_limit"]),
             AUDIENCE_REQUIREMENT_KEY: copy.deepcopy(_AUDIENCE_REQUIREMENT_SCHEMA),
+            SEMANTIC_PLAN_KEY: semantic_plan_module.semantic_plan_json_schema(
+                node_types=LLM_SEMANTIC_PLAN_NODE_TYPES
+            ),
         },
     }
     # ``#/$defs`` always resolves from the function-parameters document for the
@@ -1215,6 +1234,23 @@ def _derive_audience_execution(
         })
         unsupported = [item for item in issues if item.get("code") == "unsupported_semantics"]
         if unsupported and not missing:
+            # **미지원 선언은 가설이지 판정이 아니다.** 원문 결핍(missing_argument/
+            # ambiguous_requirement)은 원문을 읽은 LLM 만 볼 수 있으므로 그대로 종결하지만,
+            # "표현할 수 없다"는 실행 자산(컴파일러·카탈로그)을 아는 애플리케이션의 몫이다.
+            # 실측(2026-08-02): '이번 달 기준 골드 등급 회원'이 unsupported_semantics 로
+            # 종결됐는데, 그 의미를 컴파일하는 as_of 컴파일러는 살아 있었고 호출조차 되지 않았다.
+            #
+            # 다른 생산자가 같은 의미를 냈을 때만 미룬다 — 아무도 못 냈으면 사유를 실은 정직한
+            # 미지원이 여전히 최선의 응답이다(사유 없는 conditions_missing 으로 강등되면 후퇴다).
+            plan_nodes = payload.get(SEMANTIC_PLAN_KEY)
+            plan_nodes = plan_nodes.get("nodes") if isinstance(plan_nodes, dict) else None
+            if plan_nodes:
+                payload["audience_unsupported_hypotheses"] = [
+                    {"kind": item["argument"], "reason": item["message"],
+                     "evidence": item["evidence"]["text"]}
+                    for item in unsupported
+                ]
+                return False
             payload["semantic_ir"] = empty_semantic_ir(
                 status="unsupported",
                 message=unsupported[0]["message"],

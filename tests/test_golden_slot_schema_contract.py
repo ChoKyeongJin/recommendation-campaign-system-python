@@ -23,7 +23,12 @@ from query_structurer.campaign_plan_v4 import (  # noqa: E402
 from golden_support import load_cases  # noqa: E402
 
 _LLM_ROOT = frozenset(
-    {"intent", "campaign_constraints", "result_limit", "audience_requirement"}
+    {
+        "intent", "campaign_constraints", "result_limit", "audience_requirement",
+        # Event IR 대수가 표현하지 못하는 축만 담는 좁은 SemanticPlan 노출면
+        # (campaign_plan_v4.LLM_SEMANTIC_PLAN_NODE_TYPES 가 폭을 선언한다).
+        "semantic_plan",
+    }
 )
 _EXECUTION_OR_COMPATIBILITY_ROOT = frozenset(
     {
@@ -37,7 +42,6 @@ _EXECUTION_OR_COMPATIBILITY_ROOT = frozenset(
         "member_metric_ranking",
         "semantic_evidence",
         "unresolved",
-        "semantic_plan",
         "semantic_ir",
         "event_expression",
         "literal_bindings",

@@ -216,15 +216,62 @@ def test_resolves_transition_and_blocks_windowed_transition() -> None:
     assert "직전 스냅샷 대비" in blocked["message"]
 
 
-def test_blocks_multi_month_beyond_snapshot_availability() -> None:
+def test_shallow_snapshot_load_advises_instead_of_blocking() -> None:
+    """적재가 얕은 것과 컴파일러가 없는 것은 **다른 사유**이고 귀결도 다르다.
+
+    창 CTE 는 관측 월 수를 세므로 1개월만 적재돼도 SQL 의 의미는 그대로다 — 조건을 만족하는
+    회원이 없어 0건일 뿐이다. 0건은 정직한 답이므로 내보내고 이름을 대며 고지한다.
+    반면 연산 자체의 컴파일러가 없으면 낼 SQL 이 없으므로 여전히 막는다.
+    """
+    resolved = _resolve({"operator": "stable", "attribute_id": "member_grade", "months": 12})
+    assert resolved["status"] == "resolved"
+    advisory = resolved["advisories"][0]
+    assert advisory["code"] == "data_coverage_shallow"
+    assert advisory["required_months"] == 12 and advisory["available_months"] == 1
+    assert "0건" in advisory["message"]
+
+    # 대조군: **소스 자체가 없으면** 낼 SQL 이 없으므로 여전히 막는다(적재가 얕은 것과 다르다).
     blocked = _resolve({
-        "operator": "held_throughout", "attribute_id": "member_grade",
-        "value": "vip", "months": 3,
+        "operator": "held_throughout", "attribute_id": "member_state",
+        "value": "dormant", "months": 3,
     })
     assert blocked["status"] == "unsupported"
-    assert "1개월치" in blocked["message"]
-    blocked = _resolve({"operator": "stable", "attribute_id": "member_grade", "months": 12})
-    assert blocked["status"] == "unsupported"
+    assert "적재되어 있지 않습니다" in blocked["message"]
+
+
+def test_value_anchored_interval_operators_share_one_count() -> None:
+    """보유/부재/전구간 유지는 **같은 카운트의 다른 임계**다 — 분기가 아니라 임계표로 갈린다."""
+    ever = _resolve({"operator": "ever", "attribute_id": "member_grade",
+                     "value": "gold_grade", "months": 6})
+    never = _resolve({"operator": "never", "attribute_id": "member_grade",
+                      "value": "gold_grade", "months": 6})
+    held = _resolve({"operator": "held_throughout", "attribute_id": "member_grade",
+                     "value": "gold_grade", "months": 3})
+
+    for operation in (ever, never, held):
+        assert operation["status"] == "resolved"
+        assert operation["aggregate"] == "value_month_count"
+        assert operation["value_predicate"]["values"] == ["MEM_GRADE_CD.GOLD"]
+    assert ever["comparison"] == {"operator": "gte", "value": 1}
+    assert never["comparison"] == {"operator": "eq", "value": 0}
+    # 전구간 유지의 임계는 창 길이에서 파생한다(손 상수가 아니다).
+    assert held["comparison"] == {"operator": "eq", "value": 3}
+
+
+def test_value_anchor_survives_into_sql() -> None:
+    """'ever VIP' 가 'ever ANY' 로 조용히 넓어지지 않는다 — 값이 SQL 에 남는지 본다."""
+    operation = _resolve({"operator": "ever", "attribute_id": "member_grade",
+                          "value": "vip", "months": 6})
+    sql = ct.compile_sql(
+        operation,
+        member_table="CRM_MB_BASEINFO", member_alias="B", member_key="MEMBER_NO",
+        member_select_columns=["B.MEMBER_NO"], member_predicates=[], segment_label="seg",
+    )
+    assert "SUM(CASE WHEN ATTRIBUTE_VALUE IN ('MEM_GRADE_CD.VIP') THEN 1 ELSE 0 END) >= 1" in sql
+    # 미관측 월을 '아니었다'로 세지 않는다(never 가 이 함정에 가장 취약하다).
+    assert "COUNT(DISTINCT SNAPSHOT_TIME) = 6" in sql
+    for term in ct.validation_terms(operation):
+        assert term in sql, f"검증 토큰이 SQL 에 없다: {term}"
 
 
 def test_blocks_state_history_without_binding() -> None:
@@ -299,16 +346,21 @@ def test_transition_without_from_value_requires_change() -> None:
 # ── 백필 + 의무(가짜 성공 구조 차단) ───────────────────────────────────────────────
 
 
-def test_resolver_blocks_with_honest_message() -> None:
-    """'최근 3개월 내내 VIP 등급을 유지한' — 단일 월 적재라 정직한 미지원."""
+def test_resolver_turns_held_throughout_slot_into_operations() -> None:
+    """'최근 3개월 내내 VIP 등급을 유지한' — 값 앵커 구간 판정으로 컴파일된다(2026-08-02 신설).
+
+    적재가 1개월뿐이라 결과는 0건이지만, 그건 정직한 답이므로 고지를 달고 실행 IR 로 간다.
+    """
     query = "최근 3개월 내내 VIP 등급을 유지한 회원을 찾아줘."
     plan = _plan_with_slot({
         "source_span": "최근 3개월 내내 VIP 등급을 유지한", "attribute": "member_grade",
         "relation": "held_throughout", "value": "VIP", "months": 3,
     }, query)
-    assert ct.resolve_slot_to_operations(plan, _catalog()) == "blocked"
-    assert plan[ct.PLAN_IR_KEY]["status"] == "unsupported"
-    assert "1개월치" in plan[ct.PLAN_IR_KEY]["message"]
+    assert ct.resolve_slot_to_operations(plan, _catalog()) == "resolved"
+    operation = plan[ct.PLAN_OPERATIONS_KEY][0]
+    assert operation["aggregate"] == "value_month_count"
+    assert operation["comparison"] == {"operator": "eq", "value": 3}
+    assert operation["advisories"][0]["code"] == "data_coverage_shallow"
 
 
 def test_resolver_turns_transition_slot_into_operations() -> None:
@@ -526,13 +578,20 @@ def test_no_source_text_parser_remains_in_the_history_path() -> None:
     assert plan["semantic_ir"]["missing_fields"] == ["latest_purchase_grade"]
 
 
-def test_as_of_month_blocked_on_single_snapshot() -> None:
-    blocked = _resolve({
+def test_as_of_month_advises_on_single_snapshot() -> None:
+    """지정 월 조회는 `YYYYMM = '지정월'` 로 의미가 정확하다 — 미적재면 0건일 뿐이다.
+
+    문제였던 것은 **조용한** 빈 오디언스지 빈 결과 자체가 아니다. 그래서 막는 대신 고지한다.
+    """
+    resolved = _resolve({
         "operator": "as_of_month", "attribute_id": "member_grade",
         "value": "vip", "month": "202512",
     })
-    assert blocked["status"] == "unsupported"
-    assert "최신 1개월" in blocked["message"]
+    assert resolved["status"] == "resolved"
+    assert resolved["anchor"] == {"type": "month", "month": "202512"}
+    advisory = resolved["advisories"][0]
+    assert advisory["code"] == "data_coverage_shallow"
+    assert advisory["requested_month"] == "202512" and "0건" in advisory["message"]
 
 
 def test_discharge_skipped_when_history_conditions_span_multiple_clauses() -> None:

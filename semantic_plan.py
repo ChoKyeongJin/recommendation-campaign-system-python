@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Iterator
+from typing import Any, ClassVar, Iterator, Sequence
 
 import semantic_domain_binding
 
@@ -864,11 +864,33 @@ def semantic_node_variant_schema(
     }
 
 
-def semantic_node_json_schema(*, node_ref: str = "#/$defs/semanticNode") -> dict[str, Any]:
+def node_classes_for(node_types: Sequence[str] | None) -> tuple[type[SemanticNode], ...]:
+    """방출 대상 노드 클래스를 이름으로 고른다(없는 이름은 조용히 넘기지 않고 예외).
+
+    오타를 허용하면 "그 타입만 노출했다"는 계약이 빈 목록으로 조용히 무너진다.
+    """
+    if node_types is None:
+        return NODE_CLASSES
+    unknown = sorted(set(node_types) - set(NODE_CLASS_BY_TYPE))
+    if unknown:
+        raise SemanticPlanError(f"알 수 없는 의미 노드 타입: {unknown}")
+    return tuple(NODE_CLASS_BY_TYPE[name] for name in node_types)
+
+
+def node_type_is_recursive(cls: type[SemanticNode]) -> bool:
+    """자식 노드를 갖는 타입인가 — 노출면을 좁힐 때 `$defs` 참조가 필요한지의 판정."""
+    return any(spec.kind == "nodes" for spec in cls.FIELDS)
+
+
+def semantic_node_json_schema(
+    *, node_ref: str = "#/$defs/semanticNode", node_types: Sequence[str] | None = None
+) -> dict[str, Any]:
     """노드 선언에서 파생한 **타입 판별 union**(손으로 쓴 두 번째 권위를 만들지 않는다).
 
     `oneOf` 가 아니라 `anyOf` 다 — OpenAI strict function calling 이 `oneOf` 를 받지 않는다.
     변형이 늘어나는 유일한 방법은 `NODE_CLASSES` 에 클래스를 추가하는 것이다.
+
+    `node_types` 로 노출면을 좁힐 수 있다(부분 노출은 여전히 **선언에서 파생**된다).
     """
     return {
         "description": (
@@ -876,12 +898,29 @@ def semantic_node_json_schema(*, node_ref: str = "#/$defs/semanticNode") -> dict
             "다른 타입의 필드는 쓸 수 없다. 확신이 없으면 그 조건의 노드를 만들지 마라."
         ),
         "anyOf": [
-            semantic_node_variant_schema(cls, node_ref=node_ref) for cls in NODE_CLASSES
+            semantic_node_variant_schema(cls, node_ref=node_ref)
+            for cls in node_classes_for(node_types)
         ],
     }
 
 
-def semantic_plan_json_schema() -> dict[str, Any]:
+def semantic_plan_json_schema(*, node_types: Sequence[str] | None = None) -> dict[str, Any]:
+    """의미 노드 목록 스키마.
+
+    `node_types` 를 주면 그 타입만 방출할 수 있는 좁은 노출면이 되고, 노드 스키마를
+    `$defs/semanticNode` 참조 대신 **인라인**한다 — 좁힌 노출면은 다른 스키마 문서(예:
+    canonical audience 대수) 안에 embed 되므로 남의 `$defs` 에 이름을 얹으면 안 된다.
+    자식 노드를 갖는 타입은 그 참조 없이 표현할 수 없으므로 좁힌 노출면에서 거부한다.
+    """
+    if node_types is None:
+        items: dict[str, Any] = {"$ref": "#/$defs/semanticNode"}
+    else:
+        recursive = [cls.TYPE for cls in node_classes_for(node_types) if node_type_is_recursive(cls)]
+        if recursive:
+            raise SemanticPlanError(
+                f"자식 노드를 갖는 타입은 좁힌 노출면에 담을 수 없다: {sorted(recursive)}"
+            )
+        items = semantic_node_json_schema(node_types=node_types)
     return {
         "type": "object",
         "description": (
@@ -892,7 +931,7 @@ def semantic_plan_json_schema() -> dict[str, Any]:
             "nodes": {
                 "type": "array",
                 "description": "원문에서 확인되는 조건 하나당 노드 하나.",
-                "items": {"$ref": "#/$defs/semanticNode"},
+                "items": items,
             }
         },
         "required": ["nodes"],
@@ -949,13 +988,25 @@ NODE_EMISSION_RULES: tuple[str, ...] = (
 )
 
 
-def node_type_guidance() -> str:
-    """노드 타입 경계 안내(선언에서 **생성**). 손으로 쓴 두 번째 권위를 만들지 않는다."""
+def node_type_guidance(*, node_types: Sequence[str] | None = None) -> str:
+    """노드 타입 경계 안내(선언에서 **생성**). 손으로 쓴 두 번째 권위를 만들지 않는다.
+
+    노출면을 좁히면 규칙도 함께 좁힌다. 규칙 선별은 손 큐레이션이 아니라 **파생**이다:
+    노출되지 않은 타입 이름을 언급하는 규칙은 지킬 수 없는 지시라서 뺀다(모델에게 존재하지
+    않는 선택지를 알려주면 그 타입으로 내려다 스키마에서 거부된다).
+    """
+    exposed = {cls.TYPE for cls in node_classes_for(node_types)}
+    hidden = set(NODE_CLASS_BY_TYPE) - exposed
+    rules = [
+        rule for rule in NODE_EMISSION_RULES
+        if not any(name in rule for name in hidden)
+    ]
     lines = ["[의미 노드 방출 규칙]"]
-    lines += [f"{index}. {rule}" for index, rule in enumerate(NODE_EMISSION_RULES, start=1)]
+    lines += [f"{index}. {rule}" for index, rule in enumerate(rules, start=1)]
     lines.append("")
     lines.append("[노드 타입과 필수 필드]")
-    for node_type, spec in node_requirement_documentation().items():
+    documentation = node_requirement_documentation()
+    for node_type, spec in ((name, documentation[name]) for name in sorted(exposed)):
         label = semantic_domain_binding.condition_label(node_type)
         title = f"- {node_type}" + (f"({label})" if label and label != node_type else "")
         lines.append(f"{title}: 필수 {{{', '.join(spec['required'])}}}")
@@ -1000,8 +1051,10 @@ __all__ = [
     "USER_FACING_UNSUPPORTED",
     "VALIDATION_MISMATCH",
     "derive_status",
+    "node_classes_for",
     "node_from_dict",
     "node_requirement_documentation",
+    "node_type_is_recursive",
     "plan_from_dict",
     "semantic_node_json_schema",
     "semantic_plan_json_schema",

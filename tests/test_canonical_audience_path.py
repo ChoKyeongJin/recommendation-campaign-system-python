@@ -122,6 +122,9 @@ def test_llm_contract_exposes_only_one_audience_requirement() -> None:
         "campaign_constraints",
         "result_limit",
         AUDIENCE_REQUIREMENT_KEY,
+        # Event IR 이 표현하지 못하는 축(등급/상태 시점·이력)만 남은 좁은 노출면.
+        # 이 계약의 폭은 test_v4_tool_schema_expressibility 가 타입 단위로 고정한다.
+        "semantic_plan",
     }
     assert set(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["required"]) == set(
         properties
@@ -129,9 +132,14 @@ def test_llm_contract_exposes_only_one_audience_requirement() -> None:
     assert {
         "target_user",
         "exclude",
-        "semantic_plan",
         EVENT_EXPRESSION_KEY,
     }.isdisjoint(properties)
+    # 오디언스 **술어**의 소유자는 여전히 audience_requirement 하나다 —
+    # semantic_plan 에 오디언스 조건 노드가 섞이면 같은 문장을 두 계약이 해석한다.
+    assert "predicate" not in {
+        branch["properties"]["type"]["enum"][0]
+        for branch in properties["semantic_plan"]["properties"]["nodes"]["items"]["anyOf"]
+    }
 
 
 def test_runtime_catalog_extension_uses_the_same_ir_and_compiler(tmp_path: Path) -> None:

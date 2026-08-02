@@ -40,7 +40,7 @@
       "column": "B.EMART_GRADE_CD",
       "value": "MEM_GRADE_CD.WELCOME",
       "rank": 1,
-      "synonyms": ["웰컴", "웰컴 등급", "신규 등급"]
+      "synonyms": ["웰컴", "웰컴 등급", "신규 등급", "welcome"]
     },
     {
       "canonical": "family_grade",
@@ -48,7 +48,7 @@
       "column": "B.EMART_GRADE_CD",
       "value": "MEM_GRADE_CD.FAMILY",
       "rank": 2,
-      "synonyms": ["패밀리", "패밀리 등급"]
+      "synonyms": ["패밀리", "패밀리 등급", "family"]
     },
     {
       "canonical": "silver_grade",
@@ -56,7 +56,7 @@
       "column": "B.EMART_GRADE_CD",
       "value": "MEM_GRADE_CD.SILVER",
       "rank": 3,
-      "synonyms": ["실버", "실버 등급"]
+      "synonyms": ["실버", "실버 등급", "silver"]
     },
     {
       "canonical": "gold_grade",
@@ -64,7 +64,7 @@
       "column": "B.EMART_GRADE_CD",
       "value": "MEM_GRADE_CD.GOLD",
       "rank": 4,
-      "synonyms": ["골드", "골드 등급"]
+      "synonyms": ["골드", "골드 등급", "gold"]
     },
     {
       "canonical": "vip",
@@ -72,7 +72,7 @@
       "column": "B.EMART_GRADE_CD",
       "value": "MEM_GRADE_CD.VIP",
       "rank": 5,
-      "synonyms": ["VIP", "브이아이피", "최우수 회원", "VIP 회원"]
+      "synonyms": ["VIP", "브이아이피", "최우수 회원", "VIP 회원", "vip_grade"]
     },
 
     {
@@ -80,21 +80,21 @@
       "category": "state",
       "column": "B.MEMBER_STATE_CD",
       "value": "MEMBER_STATE_CD.NORMAL",
-      "synonyms": ["정상 회원", "정상 상태", "활성 상태 회원"]
+      "synonyms": ["정상 회원", "정상 상태", "활성 상태 회원", "normal", "active"]
     },
     {
       "canonical": "dormant",
       "category": "state",
       "column": "B.MEMBER_STATE_CD",
       "value": "MEMBER_STATE_CD.SLEEP",
-      "synonyms": ["휴면", "휴면 회원", "잠자는 회원"]
+      "synonyms": ["휴면", "휴면 회원", "잠자는 회원", "dormant_member", "sleeping"]
     },
     {
       "canonical": "withdrawn",
       "category": "state",
       "column": "B.MEMBER_STATE_CD",
       "value": "MEMBER_STATE_CD.WITHDRAW",
-      "synonyms": ["탈퇴", "탈퇴 회원"]
+      "synonyms": ["탈퇴", "탈퇴 회원", "withdrawal"]
     },
 
     {

@@ -86,6 +86,8 @@ class CapabilityVerdict:
     failure_code: str | None = None
     message: str | None = None
     detail: dict[str, Any] = field(default_factory=dict)
+    # 적재 부족 고지(비차단). "SQL 이 틀린다"가 아니라 "결과가 빈다"인 사유가 여기 온다.
+    advisories: tuple[Mapping[str, Any], ...] = ()
 
     @property
     def engine_supported(self) -> bool:
@@ -104,8 +106,16 @@ class CapabilityVerdict:
 
     @property
     def data_covered(self) -> bool:
-        """④ 요청 구간이 적재 구간 안인가."""
-        return self.failure_code != semantic_plan.DATA_UNAVAILABLE
+        """④ 요청 구간이 적재 구간 안인가.
+
+        적재 부족이 **차단이 아니라 고지**로 처리돼도 이 축은 정직하게 거짓을 말한다 —
+        축은 사실의 보고이고, 차단 여부는 `executable` 이 따로 말한다.
+        """
+        if self.failure_code == semantic_plan.DATA_UNAVAILABLE:
+            return False
+        return not any(
+            item.get("code") == semantic_plan.DATA_UNAVAILABLE for item in self.advisories
+        )
 
     @property
     def executable(self) -> bool:
@@ -143,6 +153,8 @@ class CapabilityVerdict:
             payload["message"] = self.message
         if self.detail:
             payload["detail"] = dict(self.detail)
+        if self.advisories:
+            payload["advisories"] = [dict(item) for item in self.advisories]
         return payload
 
 
@@ -155,6 +167,12 @@ class CapabilityRegistry:
         self._grains = payload.get("grains") if isinstance(payload.get("grains"), Mapping) else {}
         self._node_types = payload.get("node_types") if isinstance(payload.get("node_types"), Mapping) else {}
         self._metrics = payload.get("metrics") if isinstance(payload.get("metrics"), Mapping) else {}
+        policy = payload.get("data_availability_policy", "advise")
+        if policy not in {"advise", "block"}:
+            raise CapabilityRegistryError(
+                f"data_availability_policy 는 'advise' 또는 'block' 이어야 한다: {policy!r}"
+            )
+        self._data_availability_policy = str(policy)
         if not self._node_types:
             raise CapabilityRegistryError("capability 선언에 node_types 가 없다")
         missing = sorted(set(semantic_plan.NODE_CLASS_BY_TYPE) - set(self._node_types))
@@ -239,6 +257,8 @@ class CapabilityRegistry:
         message = spec.get("unsupported_message")
         message = str(message) if isinstance(message, str) and message.strip() else None
 
+        advisories: list[dict[str, Any]] = []
+
         def verdict(code: str | None, note: str | None = None, **detail: Any) -> CapabilityVerdict:
             return CapabilityVerdict(
                 node_id=node.id,
@@ -253,7 +273,22 @@ class CapabilityRegistry:
                 failure_code=code,
                 message=note,
                 detail=detail,
+                advisories=tuple(advisories),
             )
+
+        def data_gate(code: str, note: str, **detail: Any) -> CapabilityVerdict | None:
+            """적재 부족 판정. 정책이 'advise' 면 차단 대신 고지만 남기고 계속한다.
+
+            **차단과 고지를 가르는 기준은 "SQL 이 틀리는가"이지 "행이 나오는가"가 아니다.**
+            적재가 얕으면 같은 SQL 이 빈 결과를 낼 뿐 의미는 그대로다 — 그건 정직한 답이므로
+            내보낸다. 반면 의미가 접히는 경우(예: 다월 전이를 1스텝으로 축소)는 데이터 문제가
+            아니라 컴파일러 문제이고, 여기가 아니라 컴파일러가 막는다.
+            """
+            item = {"code": code, "message": note, "grain": required_grain, **detail}
+            if self._data_availability_policy == "block":
+                return verdict(code, note, **detail)
+            advisories.append(item)
+            return None
 
         label = semantic_domain_binding.condition_label(node.type)
         if not semantic_ok:
@@ -275,27 +310,31 @@ class CapabilityRegistry:
         if isinstance(requires_months, int) and requires_months > 1:
             loaded = int((available_months or {}).get(str(required_grain), 0) or 0)
             if loaded < requires_months:
-                return verdict(
+                blocked = data_gate(
                     semantic_plan.UNSUPPORTED_DATA_GRAIN,
                     message or (
                         f"이 조건은 {requires_months}개월 이상의 이력이 필요하지만 현재 "
-                        f"{loaded}개월만 적재되어 있습니다."
+                        f"{loaded}개월만 적재되어 있어 결과가 0건일 수 있습니다."
                     ),
                     required_months=requires_months,
                     available_months=loaded,
                 )
+                if blocked is not None:
+                    return blocked
 
         # 요청 기간이 적재 구간 밖이면 능력 부재가 아니라 데이터 부재다.
         for period_field in ("period", "baseline", "current"):
             window = node.values.get(period_field)
             if isinstance(window, Mapping) and (window.get("from") or window.get("to")):
                 if not coverage.covers(window.get("from"), window.get("to")):
-                    return verdict(
+                    blocked = data_gate(
                         semantic_plan.DATA_UNAVAILABLE,
-                        f"요청 기간의 데이터가 적재되어 있지 않습니다(적재 구간: "
-                        f"{coverage.start or '제한 없음'}~{coverage.end or '제한 없음'}).",
+                        f"요청 기간의 데이터가 적재되어 있지 않아 결과가 0건일 수 있습니다"
+                        f"(적재 구간: {coverage.start or '제한 없음'}~{coverage.end or '제한 없음'}).",
                         requested={"field": period_field, **dict(window)},
                     )
+                    if blocked is not None:
+                        return blocked
         return verdict(None)
 
     def judge_plan(

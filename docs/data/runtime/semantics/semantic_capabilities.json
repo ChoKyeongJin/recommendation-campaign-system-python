@@ -15,8 +15,16 @@
     "",
     "실패 코드는 semantic_plan.FAILURE_CODES 닫힌 집합에서만 고른다.",
     "확장 규약: 새 지표/이벤트는 metrics 항목 한 줄, 새 노드 종류는 node_types 항목 한 줄.",
-    "코드 변경 없이 판정이 바뀌는 범위가 이 파일이다."
+    "코드 변경 없이 판정이 바뀌는 범위가 이 파일이다.",
+    "",
+    "data_availability_policy — 적재 부족(요청 구간이 적재 밖 / 다월 요구를 실적재가 못 채움)을",
+    "  'advise': 차단하지 않고 고지만 한다(기본). SQL 은 의미 그대로 나가고 결과가 0건일 뿐이다.",
+    "  'block' : 예전 동작. 정직한 미지원으로 막는다.",
+    "차단/고지의 기준은 '행이 나오는가'가 아니라 **'SQL 이 틀리는가'**다. 적재가 얕아 결과가 비는 것은",
+    "정직한 답이지만, 의미가 접히는 것(예: 다월 전이를 PREV_* 1스텝으로 축소)은 다른 대상을 내는 오답이다 —",
+    "후자는 여기가 아니라 컴파일러가 막는다(compositional_targeting.transition)."
   ],
+  "data_availability_policy": "advise",
   "version": "1.0",
   "grains": {
     "member_profile": {

@@ -464,6 +464,35 @@ def ranked_obligation_is_compiled(
     return _ranked_membership_matches(expression, requirement_value)
 
 
+def _issue_is_superseded_by_another_compiler(
+    issue: Mapping[str, Any], plan: Mapping[str, Any], query: str
+) -> bool:
+    """다른 컴파일러가 이미 그 구절을 실행 IR 로 만들었으면 LLM 의 미지원 신고는 stale 이다.
+
+    `audience_requirement.issues` 는 **Event IR 대수로 표현할 수 있는가**에 대한 LLM 의 보고다.
+    Event IR 이 표현하지 못하는 축(등급/상태 시점·이력)은 semantic_plan 노드가 다른 컴파일러로
+    가고, 그쪽이 성공하면 같은 구절에 대한 "표현할 수 없다"는 더 이상 참이 아니다.
+
+    이 회수가 없으면 판정 계층에서 미지원을 강등해도 소용이 없다 — 같은 신고가
+    `unresolved_source_conditions`(차단 채널)로 다시 들어와 SQL 생성 경로를 전부 닫는다
+    (실측 2026-08-02: 이력 연산이 resolved 인데 query_plan_required_conditions_missing).
+
+    귀속 판정은 **근거 스팬 겹침**으로만 한다 — 어휘 추정으로 걷으면 다른 절의 진짜 결핍까지
+    삼킨다(동시구매 sweep 의 교훈).
+    """
+    import member_attribute_history  # 지연 import(순환 없음)
+
+    evidence = issue.get("evidence")
+    if not isinstance(evidence, Mapping):
+        return False
+    start, end = evidence.get("start"), evidence.get("end")
+    if not (isinstance(start, int) and isinstance(end, int) and start <= end):
+        return False
+    return member_attribute_history.row_owned_by_compiled_operation(
+        {"source_span": {"start": start, "end": end}}, plan
+    )
+
+
 def refresh_canonical_unresolved(
     query: str,
     plan: dict[str, Any],
@@ -493,6 +522,7 @@ def refresh_canonical_unresolved(
         issues.extend(
             issue for issue in (requirement.get("issues") or [])
             if isinstance(issue, dict)
+            and not _issue_is_superseded_by_another_compiler(issue, plan, query)
         )
 
     unresolved = [

@@ -172,16 +172,41 @@ def test_semantic_ir_is_derived_from_the_semantic_plan() -> None:
 def test_llm_schema_exposes_no_execution_slot_or_verdict() -> None:
     import json
 
+    from query_structurer import campaign_plan_v4
     from query_structurer.campaign_plan_v4 import CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA
 
     properties = CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"]
     assert set(properties) == {
         "intent", "campaign_constraints", "result_limit", "audience_requirement",
+        "semantic_plan",
     }
     assert "semantic_ir" not in properties, "LLM 이 다시 결핍/상태의 소유자가 됐다."
-    assert "semantic_plan" not in properties, "이행기 의미 계약이 다시 LLM 에 노출됐다."
+    # semantic_plan 은 **좁은 노출면**으로만 허용된다. 여기서 이중 해석이 되살아나는 경로는
+    # "타입이 늘어나는 것"이므로, 금지 대상은 키의 존재가 아니라 **폭**이다.
+    exposed_node_types = {
+        branch["properties"]["type"]["enum"][0]
+        for branch in properties["semantic_plan"]["properties"]["nodes"]["items"]["anyOf"]
+    }
+    assert exposed_node_types == set(campaign_plan_v4.LLM_SEMANTIC_PLAN_NODE_TYPES), (
+        "이행기 의미 계약이 좁은 노출면을 넘어 다시 LLM 에 열렸다."
+    )
     assert "target_user" not in properties and "exclude" not in properties
-    rendered = json.dumps(properties, ensure_ascii=False)
+
+    # **구조만** 훑는다(필드명·enum). description 은 모델에게 주는 지시문이라 금지어가
+    # 정상적으로 등장한다 — "실행 슬롯·SQL 은 만들지 않는다" 가 'sql 노출'로 잡히면
+    # 가드가 지시문 자체를 금지하게 되고, 그건 이 테스트가 지키려는 것의 반대다.
+    def _structural(node: object) -> object:
+        if isinstance(node, dict):
+            return {
+                key: _structural(value)
+                for key, value in node.items()
+                if key not in {"description", "title"}
+            }
+        if isinstance(node, list):
+            return [_structural(item) for item in node]
+        return node
+
+    rendered = json.dumps(_structural(properties), ensure_ascii=False)
     for slot in legacy_plan_compiler.COMPILER_OWNED_SLOTS:
         name = slot.rpartition(".")[2]
         assert f'"{name}"' not in rendered, (

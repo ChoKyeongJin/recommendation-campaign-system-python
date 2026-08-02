@@ -8,6 +8,11 @@
     "YYYYMM=201701 단일 월(회원당 1행) + PREV_* 직전값 컬럼. 다월 적재가 생기면 이 숫자만 올리면",
     "stable/changed_n_times/exists_every_month 연산이 열린다(컴파일러는 이미 배선됨).",
     "binding=null 은 '이력 데이터 소스 부재' 선언이다 — resolver 가 history_unsupported_reason 으로 정직하게 미지원을 알린다.",
+    "surface_terms 는 속성 **id 해석**의 단일 소유자다(compositional_targeting.attribute_resolver_specs 가 읽는다).",
+    "LLM 은 relation_predicate.attribute 를 자연스럽게 영문 식별자로 내므로 그 형태도 여기 선언한다 —",
+    "빠지면 노드가 타입 확정 단계에서 통째로 폐기되고 '이력 조건이 아예 없었던 것'처럼 보인다(실측 2026-08-02).",
+    "단, 'state'/'status' 처럼 프로그래밍 일반어는 넣지 않는다 — 도메인 어휘가 되는 순간",
+    "generic core 계층 가드(tests/test_generic_core_layering.py)가 코어의 정상 코드를 도메인 누출로 잡는다.",
     "member_state 실측 근거: CRM_MB_MONTHCRMINFO.STATE_GRADE('01'~'05')는 활동등급으로,",
     "MEMBER_STATE_CD(정상/휴면/탈퇴)와 무상관('03'에 정상·탈퇴·휴면 혼재) — 상태 이력 축으로 쓸 수 없다."
   ],
@@ -23,14 +28,14 @@
       },
       "snapshot_months_available": 1,
       "value_category": "grade",
-      "surface_terms": ["등급", "구매등급", "회원등급", "구매 등급", "회원 등급"]
+      "surface_terms": ["등급", "구매등급", "회원등급", "구매 등급", "회원 등급", "grade", "member_grade", "purchase_grade", "구매 등급 스냅샷"]
     },
     "member_state": {
       "label": "회원 상태(정상/휴면/탈퇴)",
       "binding": null,
-      "history_unsupported_reason": "회원 상태(정상/휴면/탈퇴)의 시점·이력 스냅샷 데이터가 적재되어 있지 않습니다. '현재 휴면인 회원'처럼 현재 상태 조건으로 요청해 주세요.",
+      "history_unsupported_reason": "회원 상태(정상/휴면/탈퇴)의 시점·이력 스냅샷 데이터가 적재되어 있지 않습니다(2026-08-02 실측: 월별 상태 스냅샷 컬럼이 DB에 없고, CRM_MB_BASEINFO.MEMBER_STATE_CD·SLEEP_MEMBER_YN 은 현재값입니다). '현재 휴면인 회원'처럼 현재 상태 조건으로 요청하시면 그 부분은 바로 처리됩니다.",
       "value_category": "state",
-      "surface_terms": ["상태", "회원 상태", "회원상태"]
+      "surface_terms": ["상태", "회원 상태", "회원상태", "member_state", "member_status"]
     }
   }
 }

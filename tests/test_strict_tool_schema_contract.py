@@ -35,8 +35,12 @@ from query_structurer.campaign_plan_v4 import (  # noqa: E402
 
 # 라이브에서 수락이 확인된 검증 키워드(2026-08-02 스모크). 새 키워드를 쓰려면 여기 추가하고,
 # 추가 커밋에 라이브 확인 근거를 남겨라 — 오프라인으로는 수락 여부를 알 수 없다.
+#
+# `maximum`: semantic_plan 노드의 confidence(0~1) 가 들여온다. 2026-08-02 라이브 확인 —
+# 좁힌 semantic_plan 노출면을 붙인 스키마로 /target-sql 5건 호출, 전부 200 + strict tool
+# 인자 정상 반환(거부 코드 없음). 로그: logs/rag_llm/2026-08-02/ campaign_query_plan_v4_response.
 LIVE_VERIFIED_VALIDATION_KEYWORDS = frozenset({
-    "minimum", "minLength", "maxLength", "pattern", "format", "minItems",
+    "minimum", "maximum", "minLength", "maxLength", "pattern", "format", "minItems",
 })
 
 # 구조·의미 키워드(제공자 strict 규격의 뼈대). 이건 드리프트 관리 대상이 아니다.
