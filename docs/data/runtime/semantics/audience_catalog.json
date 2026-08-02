@@ -1,0 +1,324 @@
+{
+  "version": "1.0",
+  "subject": {
+    "name": "subject",
+    "table": "CRM_MB_BASEINFO",
+    "alias": "B",
+    "key": "MEMBER_NO",
+    "label": "회원"
+  },
+  "sources": {
+    "purchase": {
+      "table": "CRM_SL_ORDERHEADERMALL",
+      "alias": "EO",
+      "subject_key": "MEMBER_NO",
+      "event_subject_key": "MEMBER_NO",
+      "time_column": "ORDER_DATE",
+      "time_format": "char8",
+      "binding": "fact_table",
+      "grain": "event",
+      "label": "구매",
+      "aliases": ["구매", "주문", "결제"]
+    },
+    "login": {
+      "table": "CRM_MB_BASEINFO",
+      "alias": "B",
+      "subject_key": "MEMBER_NO",
+      "event_subject_key": "MEMBER_NO",
+      "time_column": "LAST_LOGIN_DATE",
+      "time_format": "char8",
+      "binding": "subject_column",
+      "grain": "member",
+      "label": "로그인",
+      "aliases": ["로그인", "접속"]
+    },
+    "signup": {
+      "table": "CRM_MB_BASEINFO",
+      "alias": "B",
+      "subject_key": "MEMBER_NO",
+      "event_subject_key": "MEMBER_NO",
+      "time_column": "REG_DT",
+      "time_format": "char8",
+      "binding": "subject_column",
+      "grain": "member",
+      "label": "가입",
+      "aliases": ["가입", "등록"]
+    },
+    "cart": {
+      "table": "ODS_MALL_OMS_CART",
+      "alias": "EC",
+      "subject_key": "MEMBER_NO",
+      "event_subject_key": "MEMBER_ID",
+      "time_column": "UPD_DT",
+      "time_format": "char8",
+      "binding": "fact_table",
+      "grain": "event",
+      "label": "장바구니 담기",
+      "aliases": ["장바구니", "카트", "담기"]
+    },
+    "campaign_contact_success": {
+      "table": "Z_CAMP_MBR",
+      "alias": "M",
+      "subject_key": "MEMBER_NO",
+      "event_subject_key": "MBR_NO",
+      "time_column": "CAMP_SDATE",
+      "time_format": "char8",
+      "binding": "fact_table",
+      "grain": "event",
+      "from_sql": "Z_CAMP_MBR {alias} INNER JOIN Z_CAMPAIGN ZC ON ZC.CAMP_ID = {alias}.CAMP_ID AND ZC.CAMP_EXEC_NO = {alias}.CAMP_EXEC_NO",
+      "correlation_sql": "TRY_CAST({alias}.MBR_NO AS BIGINT) = {subject_alias}.{subject_key}",
+      "time_expression": "ZC.CAMP_SDATE",
+      "extra_predicates": [
+        "{alias}.CELL_TYPE_CD = 'T'",
+        "{alias}.CONTAC_SUCC_YN = 'Y'",
+        "ISNULL(ZC.CANCEL_YN, 'N') = 'N'"
+      ],
+      "label": "캠페인 발송 성공",
+      "aliases": ["캠페인 발송 성공", "전송 성공", "접촉 성공", "도달 성공"]
+    },
+    "campaign_response": {
+      "table": "MCS_CAMP_MBR_RSPN_FT",
+      "alias": "R",
+      "subject_key": "MEMBER_NO",
+      "event_subject_key": "MBR_NO",
+      "time_column": "CAMP_SDATE",
+      "time_format": "char8",
+      "binding": "fact_table",
+      "grain": "event",
+      "from_sql": "MCS_CAMP_MBR_RSPN_FT {alias} INNER JOIN Z_CAMPAIGN ZC ON ZC.CAMP_ID = {alias}.CAMP_ID AND ZC.CAMP_EXEC_NO = {alias}.CAMP_EXEC_NO",
+      "correlation_sql": "TRY_CAST({alias}.MBR_NO AS BIGINT) = {subject_alias}.{subject_key}",
+      "time_expression": "ZC.CAMP_SDATE",
+      "extra_predicates": [
+        "{alias}.CGRP_TYPE_CD = 'T'",
+        "({alias}.OFFR_RSPN_YN = 'Y' OR {alias}.BUY_RSPN_YN = 'Y')",
+        "ISNULL(ZC.CANCEL_YN, 'N') = 'N'"
+      ],
+      "label": "캠페인 반응",
+      "aliases": ["캠페인 반응", "오퍼 또는 구매 반응"]
+    },
+    "campaign_offer_response": {
+      "table": "MCS_CAMP_MBR_RSPN_FT",
+      "alias": "R",
+      "subject_key": "MEMBER_NO",
+      "event_subject_key": "MBR_NO",
+      "time_column": "CAMP_SDATE",
+      "time_format": "char8",
+      "binding": "fact_table",
+      "grain": "event",
+      "from_sql": "MCS_CAMP_MBR_RSPN_FT {alias} INNER JOIN Z_CAMPAIGN ZC ON ZC.CAMP_ID = {alias}.CAMP_ID AND ZC.CAMP_EXEC_NO = {alias}.CAMP_EXEC_NO",
+      "correlation_sql": "TRY_CAST({alias}.MBR_NO AS BIGINT) = {subject_alias}.{subject_key}",
+      "time_expression": "ZC.CAMP_SDATE",
+      "extra_predicates": [
+        "{alias}.CGRP_TYPE_CD = 'T'",
+        "{alias}.OFFR_RSPN_YN = 'Y'",
+        "ISNULL(ZC.CANCEL_YN, 'N') = 'N'"
+      ],
+      "label": "캠페인 오퍼 반응",
+      "aliases": ["오퍼 반응", "혜택 반응", "쿠폰 반응"]
+    },
+    "campaign_purchase_response": {
+      "table": "MCS_CAMP_MBR_RSPN_FT",
+      "alias": "R",
+      "subject_key": "MEMBER_NO",
+      "event_subject_key": "MBR_NO",
+      "time_column": "CAMP_SDATE",
+      "time_format": "char8",
+      "binding": "fact_table",
+      "grain": "event",
+      "from_sql": "MCS_CAMP_MBR_RSPN_FT {alias} INNER JOIN Z_CAMPAIGN ZC ON ZC.CAMP_ID = {alias}.CAMP_ID AND ZC.CAMP_EXEC_NO = {alias}.CAMP_EXEC_NO",
+      "correlation_sql": "TRY_CAST({alias}.MBR_NO AS BIGINT) = {subject_alias}.{subject_key}",
+      "time_expression": "ZC.CAMP_SDATE",
+      "extra_predicates": [
+        "{alias}.CGRP_TYPE_CD = 'T'",
+        "{alias}.BUY_RSPN_YN = 'Y'",
+        "ISNULL(ZC.CANCEL_YN, 'N') = 'N'"
+      ],
+      "label": "캠페인 구매 반응",
+      "aliases": ["구매 반응", "구매반응", "구매 전환", "캠페인 구매"]
+    }
+  },
+  "fields": {
+    "subject.gender": {
+      "source": "subject",
+      "column": "GENDER_CD",
+      "data_type": "string",
+      "label": "성별",
+      "aliases": ["성별", "남성", "여성"]
+    },
+    "subject.age": {
+      "source": "subject",
+      "column": "AGE",
+      "data_type": "number",
+      "label": "나이",
+      "unit": "year",
+      "aliases": ["나이", "연령"]
+    },
+    "subject.grade": {
+      "source": "subject",
+      "column": "EMART_GRADE_CD",
+      "data_type": "string",
+      "label": "회원 등급",
+      "aliases": ["등급", "회원 등급"]
+    },
+    "purchase.amount": {
+      "source": "purchase",
+      "column": "PAYMENT_AMT",
+      "data_type": "number",
+      "label": "구매 금액",
+      "unit": "KRW",
+      "aliases": ["구매 금액", "결제 금액"]
+    },
+    "purchase.order_id": {
+      "source": "purchase",
+      "column": "ORDER_ID",
+      "data_type": "string",
+      "label": "주문 식별자",
+      "aliases": ["주문", "구매 건"]
+    },
+    "cart.quantity": {
+      "source": "cart",
+      "column": "QTY",
+      "data_type": "number",
+      "label": "장바구니 수량",
+      "unit": "item",
+      "aliases": ["장바구니 수량", "담은 수량"]
+    },
+    "cart.product_id": {
+      "source": "cart",
+      "column": "PRODUCT_ID",
+      "data_type": "string",
+      "label": "장바구니 상품",
+      "aliases": ["장바구니 상품", "담은 상품"]
+    },
+    "campaign_contact_success.execution_id": {
+      "source": "campaign_contact_success",
+      "column": "CAMP_ID",
+      "expression": "CONCAT({alias}.CAMP_ID, ':', {alias}.CAMP_EXEC_NO)",
+      "data_type": "string",
+      "label": "캠페인 실행",
+      "aliases": ["캠페인 실행", "발송 회차"]
+    },
+    "campaign_response.execution_id": {
+      "source": "campaign_response",
+      "column": "CAMP_ID",
+      "expression": "CONCAT({alias}.CAMP_ID, ':', {alias}.CAMP_EXEC_NO)",
+      "data_type": "string",
+      "label": "캠페인 실행",
+      "aliases": ["반응 캠페인", "반응 회차"]
+    },
+    "campaign_offer_response.execution_id": {
+      "source": "campaign_offer_response",
+      "column": "CAMP_ID",
+      "expression": "CONCAT({alias}.CAMP_ID, ':', {alias}.CAMP_EXEC_NO)",
+      "data_type": "string",
+      "label": "오퍼 반응 캠페인 실행",
+      "aliases": ["오퍼 반응 회차"]
+    },
+    "campaign_purchase_response.execution_id": {
+      "source": "campaign_purchase_response",
+      "column": "CAMP_ID",
+      "expression": "CONCAT({alias}.CAMP_ID, ':', {alias}.CAMP_EXEC_NO)",
+      "data_type": "string",
+      "label": "구매 반응 캠페인 실행",
+      "aliases": ["구매 반응 회차"]
+    },
+    "campaign_purchase_response.amount": {
+      "source": "campaign_purchase_response",
+      "column": "BUY_AMT",
+      "data_type": "number",
+      "label": "캠페인 귀속 구매 금액",
+      "unit": "KRW",
+      "aliases": ["캠페인 구매 금액", "반응 구매 금액"]
+    },
+    "campaign_purchase_response.count": {
+      "source": "campaign_purchase_response",
+      "column": "BUY_CNT",
+      "data_type": "number",
+      "label": "캠페인 귀속 구매 건수",
+      "unit": "event",
+      "aliases": ["캠페인 구매 건수", "반응 구매 횟수"]
+    }
+  },
+  "metrics": {
+    "purchase_count": {
+      "source": "purchase",
+      "kind": "aggregate",
+      "function": "count",
+      "expression_field": "purchase.order_id",
+      "distinct": true,
+      "data_type": "number",
+      "unit": "event",
+      "grain": "subject",
+      "allowed_operators": ["=", "!=", ">", ">=", "<", "<="],
+      "label": "구매 횟수",
+      "aliases": ["구매 횟수", "주문 건수"]
+    },
+    "purchase_amount": {
+      "source": "purchase",
+      "kind": "aggregate",
+      "function": "sum",
+      "expression_field": "purchase.amount",
+      "distinct": false,
+      "data_type": "number",
+      "unit": "KRW",
+      "grain": "subject",
+      "allowed_operators": ["=", "!=", ">", ">=", "<", "<="],
+      "label": "구매 금액",
+      "aliases": ["구매 금액", "결제 금액"]
+    },
+    "campaign_contact_success_count": {
+      "source": "campaign_contact_success",
+      "kind": "aggregate",
+      "function": "count",
+      "expression_field": "campaign_contact_success.execution_id",
+      "distinct": true,
+      "data_type": "number",
+      "unit": "event",
+      "grain": "subject",
+      "allowed_operators": ["=", "!=", ">", ">=", "<", "<="],
+      "label": "캠페인 발송 성공 횟수",
+      "aliases": ["캠페인 발송 성공 횟수", "발송 성공 횟수", "접촉 성공 횟수", "campaign_contact"]
+    },
+    "campaign_response_count": {
+      "source": "campaign_response",
+      "kind": "aggregate",
+      "function": "count",
+      "expression_field": "campaign_response.execution_id",
+      "distinct": true,
+      "data_type": "number",
+      "unit": "event",
+      "grain": "subject",
+      "allowed_operators": ["=", "!=", ">", ">=", "<", "<="],
+      "label": "캠페인 반응 횟수",
+      "aliases": ["캠페인 반응 횟수", "반응한 캠페인 수", "campaign_response"]
+    },
+    "campaign_purchase_response_count": {
+      "source": "campaign_purchase_response",
+      "kind": "aggregate",
+      "function": "count",
+      "expression_field": "campaign_purchase_response.execution_id",
+      "distinct": true,
+      "data_type": "number",
+      "unit": "event",
+      "grain": "subject",
+      "allowed_operators": ["=", "!=", ">", ">=", "<", "<="],
+      "label": "캠페인 구매 반응 횟수",
+      "aliases": ["구매 반응 횟수", "구매반응 횟수", "buy_response"]
+    },
+    "campaign_purchase_amount": {
+      "source": "campaign_purchase_response",
+      "kind": "aggregate",
+      "function": "sum",
+      "expression_field": "campaign_purchase_response.amount",
+      "distinct": false,
+      "data_type": "number",
+      "unit": "KRW",
+      "grain": "subject",
+      "allowed_operators": ["=", "!=", ">", ">=", "<", "<="],
+      "label": "캠페인 귀속 구매 금액",
+      "aliases": ["캠페인 구매 금액", "캠페인 귀속 구매 금액", "campaign_buy_amount"]
+    }
+  },
+  "joins": [],
+  "data_coverage": {}
+}

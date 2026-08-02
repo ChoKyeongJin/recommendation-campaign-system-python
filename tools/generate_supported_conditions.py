@@ -2,7 +2,7 @@
 
 손으로 쓰는 지원 조건 표는 만들자마자 드리프트한다(저장소에 표 자체가 없었고, 유일한 사용자
 대면 힌트는 lapsed_buyer 미지원과 자가모순이었다). 이 도구는 표를 **실행 자산에서 파생**한다:
-targeting_ir(슬롯·라벨·각주), V4 노출면, member_target_filters.json(behaviors),
+targeting_ir(호환 슬롯·라벨·각주), V4 단일 audience_requirement 노출면, member_target_filters.json(behaviors),
 requirement_capabilities.json(base×qualifier), condition_evaluation_ir(동시구매 서명).
 
 재생성:  python tools/generate_supported_conditions.py
@@ -36,24 +36,25 @@ def render() -> str:
     filters = json.loads(FILTERS_PATH.read_text(encoding="utf-8"))
     capabilities = json.loads(CAPABILITIES_PATH.read_text(encoding="utf-8"))["capabilities"]
 
-    exposed_target_user = set(
-        CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"]["target_user"]["properties"]
-    )
     exposed_plan_root = set(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"])
+    assert "audience_requirement" in exposed_plan_root
+    exposed_target_user: set[str] = set()
 
     lines: list[str] = []
     out = lines.append
     out("# 지원 타겟 조건 표")
     out("")
-    out("> **자동 생성 문서 — 손으로 편집하지 마라.** 실행 자산(targeting_ir·V4 스키마·")
+    out("> **자동 생성 문서 — 손으로 편집하지 마라.** LLM은 고정 Event IR 대수인")
+    out("> `audience_requirement`만 만들며 아래 호환 슬롯을 직접 만들지 않는다.")
+    out("> 표는 실행 자산(targeting_ir·V4 스키마·")
     out("> member_target_filters.json·requirement_capabilities.json)에서 파생되며,")
     out("> `python tools/generate_supported_conditions.py` 로 재생성한다.")
     out("> 최신성은 tests/test_supported_conditions_doc.py 가 CI 에서 강제한다.")
     out("")
 
-    out("## 1. 구조화 슬롯 조건")
+    out("## 1. 호환 실행 슬롯 조건")
     out("")
-    out("| 슬롯 | 라벨 | 컨테이너 | LLM 노출 | 조건부 지원 각주 |")
+    out("| 슬롯 | 라벨 | 컨테이너 | LLM 직접 노출 | 조건부 지원 각주 |")
     out("|---|---|---|---|---|")
     for name, shape in targeting_ir.SLOT_SHAPES.items():
         label = targeting_ir.SLOT_KO_LABELS[name]

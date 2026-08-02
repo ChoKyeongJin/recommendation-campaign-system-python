@@ -100,11 +100,13 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
         knowledge_sections.append(
             "[Allowed Canonical Values]\n"
             + json.dumps(input.context.slot_vocabulary, ensure_ascii=False, indent=2)
-            + "\n닫힌 어휘 슬롯(behaviors, cart_type, campaign_responses 등)은 위 canonical 값만 사용한다. "
-            "목록에 없는 값을 만들지 말고, 표현할 수 없으면 unresolved 에 기록한다."
+            + "\nUse these values only where the tool schema or semantic catalog requires a canonical value. "
+            "Do not invent identifiers that are absent from the provided contract."
         )
     if input.context.slot_guidance:
-        knowledge_sections.append("[Slot Guidance]\n" + input.context.slot_guidance)
+        knowledge_sections.append(
+            "[Audience Semantic Catalog]\n" + input.context.slot_guidance
+        )
     return "\n\n".join(
         [
             "[User Query]\n" + input.query,
@@ -114,62 +116,55 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
             *knowledge_sections,
             "응답은 submit_campaign_query_plan_v4 도구만 호출한다.",
             (
-                "질의 identity와 schema_version은 애플리케이션이 주입한다. 모델은 이를 반환하지 말고 "
-                "target_user/exclude/campaign_constraints와 필요한 실행 의미 슬롯만 구조화하라."
+                "Return exactly the four root fields declared by the tool schema: intent, "
+                "campaign_constraints, result_limit, and audience_requirement. Identity, schema version, "
+                "execution fields, and compatibility fields are application-owned."
             ),
             (
-                "원문을 다시 쓰지 말고 의미를 직접 구조화한다. 모든 채택 슬롯은 semantic_evidence에 "
-                "경로와 원문의 정확한 문자 구간을 남긴다. 스키마 또는 닫힌 어휘로 표현할 수 없는 "
-                "요구는 추측하지 말고 unresolved에 기록한다. SQL, 테이블, 컬럼은 생성하지 않는다."
+                "audience_requirement is the only audience-meaning contract. Put a complete Event IR "
+                "condition in audience_requirement.expression and validation or interpretation problems in "
+                "audience_requirement.issues. Do not return target_user, exclude, semantic_plan, semantic_ir, "
+                "semantic_evidence, unresolved, event_expression, SQL, physical tables, or physical columns."
             ),
             (
-                "포함과 제외는 상호배타 슬롯이다. '여성 제외', '휴면 빼고', '특정 관심사가 아닌'처럼 값에 "
-                "제외·부정 표현이 붙으면 대응 exclude 슬롯에만 넣고 동일한 target_user 포함 슬롯은 null 또는 "
-                "빈 배열로 둔다. 스키마에 대응 exclude 슬롯이 없으면 긍정으로 뒤집지 말고 unresolved에 기록한다. "
-                "원문이 같은 값을 포함과 제외 양쪽에 실제로 명시한 경우에만 양쪽에 기록한다."
+                "Build the expression only with the Event IR algebra allowed by the tool schema, such as "
+                "And/Or/Not, Comparison, Exists, Aggregate, Source, Filter, Join, Group, TimeFilter, and "
+                "TemporalRelation. Use only source and field identifiers listed in the Audience Semantic "
+                "Catalog. Preserve negation, AND/OR grouping, comparison operators, aggregation grain, and "
+                "which condition owns each time window."
             ),
             (
-                "날짜·숫자·퍼센트·비교 연산자의 값은 위 literal bindings만 신뢰한다. semantic_ir의 "
-                "operation은 값을 다시 쓰지 말고 literal_id를 baseline/current/threshold/comparison 역할에 "
-                "연결한다. 필요한 literal이 없으면 값을 추론하지 말고 status=needs_clarification과 "
-                "missing_fields를 반환한다. 지원하지 않는 연산은 status=unsupported로 반환한다."
+                "Every semantic atom and every issue must carry evidence whose text is an exact substring of "
+                "the User Query and whose start/end are exact zero-based Python slice offsets [start, end). "
+                "Do not attach evidence to a broader or different phrase merely because it is related."
             ),
             (
-                "숫자 뒤 한국어 단위는 의미의 일부이며 절대 바꾸지 않는다. number_with_unit binding의 "
-                "semantic_unit을 그대로 사용한다: 개=item_quantity(상품 수량 합계), 회/번/건=order_count"
-                "(서로 다른 주문 수), 종/종류=distinct_product_count(서로 다른 상품 수). binding과 실행 슬롯이 "
-                "있으면 같은 값을 missing_fields로 다시 요구하지 않는다. 단, '상위 N개 상품 중 M개'의 "
-                "M은 수량 합계가 아니라 랭킹 집합과 회원 구매 집합의 distinct 엔터티 교집합 개수다. "
-                "이 구조는 entity_set_condition의 ranking.limit=N과 member_set.cardinality로 표현하고 "
-                "'M개만'은 operator '='로 보존한다. '같은/동일 브랜드'는 브랜드명이 "
-                "'같은'이라는 필터가 아니라 회원별·브랜드별 그룹에서 임계값을 검사하는 per_brand 조건이다."
+                "Treat Application-owned Literal Bindings as authoritative for dates, durations, numbers, "
+                "units, percentages, and comparison operators. Reference or copy only values supported by "
+                "those bindings and the tool schema; never infer a missing value."
             ),
             (
-                "두 개의 date_window literal이 원문 순서로 제시되고 두 기간 사이의 증가/감소를 묻는다면, "
-                "문법상 반대 근거가 없는 한 첫 기간을 baseline, 둘째 기간을 current로 연결한다. 이 경우 "
-                "baseline/current가 누락된 것이 아니다. 퍼센트와 비교 연산자 literal도 있으면 각각 "
-                "threshold/comparison으로 연결한다. 예: 구매 금액의 기간 대비 증감은 "
-                "kind=period_over_period_change, metric_id=purchase_amount로 표현한다."
+                "If a material audience requirement is ambiguous, unsupported, inconsistent with the catalog, "
+                "or lacks a required argument, set expression to null and add the corresponding issue using "
+                "only these codes: missing_argument, ambiguous_requirement, unsupported_semantics, or "
+                "validation_mismatch. State the missing/invalid semantic argument in issue.argument."
             ),
             (
-                "고객 리스트·회원 명단처럼 결과가 회원 행이면, 조건 계산에 SUM/COUNT가 필요해도 intent는 "
-                "find_user_segment다. 집계 숫자나 그룹별 분석 행 자체를 요청한 경우에만 "
-                "analyze_aggregation을 사용한다."
+                "Special temporal rule: when the query says '최근' but gives no duration or bounded period, "
+                "do not interpret it as all history and do not choose a default. Return expression=null and "
+                "one missing_argument issue with argument='period' and evidence covering the exact word '최근'."
             ),
             (
-                "missing_fields는 요청 결과를 계산하는 데 반드시 필요한 입력만 포함한다. 고객 목록을 "
-                "계산하는 데 캠페인 발송 채널·혜택·판매 상품·캠페인 목적은 필요하지 않으므로 사용자가 "
-                "직접 요구하지 않았다면 누락 필드로 만들지 않는다. '10% 이상 증가'의 10%는 할인율이 "
-                "아니라 증감률 임계값이므로 offer_type을 설정하지 않는다. 기간 대비 증감은 "
-                "target_user.purchase_date로 중복 표현하지 않고 semantic_ir operation만 사용한다. "
-                "사용자가 명시하지 않은 선택 제한(기간·상품·지역 등)은 '제한 없음'으로 해석하며, "
-                "지정되지 않았다는 이유로 missing_fields나 unresolved로 만들지 않는다. 특히 원문에 "
-                "구매 조건이 없으면 purchase_date를 요구하지 않고, 원문의 기간 표현이 이미 다른 슬롯"
-                "(미접속 기간 등)에 반영됐으면 같은 기간을 구매 기간으로 다시 요구하지 않는다."
+                "campaign_constraints contains campaign-delivery metadata only. A campaign objective such as "
+                "재반응 유도 belongs only in campaign_constraints.objective; it must never become an audience "
+                "predicate, source filter, or inferred response condition. Do not request optional campaign "
+                "metadata that the user did not specify."
             ),
             (
-                "선택 사항은 도구 스키마상 required-but-nullable이다. 해당 의미가 없으면 null 또는 빈 배열을 "
-                "사용하고, 문자열 'null'은 사용하지 않는다."
+                "For a member-list request, use intent=find_user_segment even when its audience predicate uses "
+                "COUNT or another aggregate. When the user explicitly asks to create or recommend a campaign, "
+                "use intent=recommend_campaign. Populate every tool-schema-required field; use JSON null or an "
+                "empty array for absent nullable/collection metadata, never the string 'null'."
             ),
         ]
     )

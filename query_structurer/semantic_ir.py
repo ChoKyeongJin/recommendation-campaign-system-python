@@ -315,6 +315,7 @@ def _has_plan_meaning(payload: dict[str, Any]) -> bool:
         for key in (
             "target_user", "exclude", "campaign_constraints", "aggregation_request",
             "set_expressions", "condition_evaluations", "semantic_plan",
+            "audience_requirement", "event_expression",
         )
     )
 

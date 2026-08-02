@@ -995,8 +995,31 @@ def validate_expression(
 # 자유 형식 JSON 을 허용하지 않는다. 같은 정의에서 파생하므로 코드와 스키마가 갈라지지 않는다.
 
 
-def condition_json_schema(depth: int = 3) -> dict[str, Any]:
-    """조건 노드 JSON Schema($ref 없이 depth 만큼 펼친 형태 — strict tool 스키마 호환)."""
+def condition_json_schema(
+    depth: int = 1,
+    *,
+    source_names: tuple[str, ...] = (),
+    field_names: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """조건 대수의 JSON Schema.
+
+    dataclass/``*_from_dict`` 가 받는 연산자를 그대로 유한 깊이로 펼친다. 예전 스키마는
+    ``Filter.where`` 를 시간 필터로만 제한하고 ``Aggregate.expression``·``Join``·``Group`` 을
+    빠뜨려, 런타임은 범용인데 LLM 계약만 조건 사례별 슬롯을 요구했다. 이제 새 업무 개념은
+    ``source_names``/``field_names`` catalog enum 만 늘고 스키마 모양은 변하지 않는다.
+    """
+    if depth < 1:
+        raise ValueError("condition schema depth must be at least 1")
+
+    sources = tuple(sorted({str(name) for name in source_names if str(name)}))
+    fields = tuple(sorted({str(name) for name in field_names if str(name)}))
+
+    def symbol_schema(values: tuple[str, ...], description: str) -> dict[str, Any]:
+        schema: dict[str, Any] = {"type": "string", "description": description}
+        if values:
+            schema["enum"] = list(values)
+        return schema
+
     evidence_schema = {
         "type": "object",
         "properties": {
@@ -1020,112 +1043,217 @@ def condition_json_schema(depth: int = 3) -> dict[str, Any]:
     }
     source_schema = {
         "type": "object",
-        "description": "업무 이벤트 심볼(purchase/login/... — 레지스트리에 등록된 이름).",
-        "properties": {"type": {"type": "string", "enum": ["source"]}, "name": {"type": "string"}},
+        "description": "Semantic Catalog 에 등록된 업무 사건 소스.",
+        "properties": {
+            "type": {"type": "string", "enum": ["source"]},
+            "name": symbol_schema(sources, "catalog source id"),
+        },
         "required": ["type", "name"],
+    }
+    field_schema = {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": ["field"]},
+            "name": symbol_schema(fields, "catalog field id (<source>.<field>)"),
+        },
+        "required": ["type", "name"],
+    }
+    literal_schema = {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": ["literal"]},
+            "value": {
+                "anyOf": [
+                    {"type": "string"}, {"type": "number"}, {"type": "boolean"},
+                ]
+            },
+        },
+        "required": ["type", "value"],
     }
     time_filter_schema = {
         "type": "object",
         "properties": {
             "type": {"type": "string", "enum": ["time_filter"]},
-            "field": {"type": "object", "properties": {
-                "type": {"type": "string", "enum": ["field"]}, "name": {"type": "string"}}, "required": ["type", "name"]},
+            "field": field_schema,
             "window": window_schema,
         },
         "required": ["type", "field", "window"],
     }
-    relation_schema = {
-        "type": "object",
-        "description": "관계. {type:'source'} 또는 {type:'filter', relation:<source>, where:<time_filter>}",
-        "properties": {
-            "type": {"type": "string", "enum": ["source", "filter"]},
-            "name": {"type": "string"},
-            "relation": source_schema,
-            "where": time_filter_schema,
-        },
-        "required": ["type"],
-    }
-    scalar_schema = {
-        "type": "object",
-        "description": "스칼라. {type:'literal', value} | {type:'field', name:'<source>.<field>'} | "
-                       "{type:'aggregate', function:'count'|'sum'|'avg'|'min'|'max', relation, expression?, distinct?}",
-        "properties": {
-            "type": {"type": "string", "enum": ["literal", "field", "aggregate"]},
-            "value": {}, "name": {"type": "string"},
-            "function": {"type": "string", "enum": sorted(AGGREGATE_FUNCTIONS)},
-            "distinct": {"type": "boolean"},
-            "relation": relation_schema,
-        },
-        "required": ["type"],
-    }
-    atom_schemas = [
-        {
-            "type": "object",
-            "properties": {
-                "type": {"type": "string", "enum": ["exists"]},
-                "relation": relation_schema, "evidence": evidence_schema,
-            },
-            "required": ["type", "relation", "evidence"],
-        },
-        {
+
+    def scalar_schema(level: int) -> dict[str, Any]:
+        variants: list[dict[str, Any]] = [literal_schema, field_schema]
+        if level > 0:
+            child = scalar_schema(level - 1)
+            variants.extend([
+                {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string", "enum": ["arithmetic"]},
+                        "operator": {"type": "string", "enum": sorted(ARITHMETIC_OPERATORS)},
+                        "left": child,
+                        "right": child,
+                    },
+                    "required": ["type", "operator", "left", "right"],
+                },
+                {
+                    "type": "object",
+                    "description": "관계에 대한 집계. count(*)이면 expression은 null, 나머지는 field/scalar.",
+                    "properties": {
+                        "type": {"type": "string", "enum": ["aggregate"]},
+                        "function": {"type": "string", "enum": sorted(AGGREGATE_FUNCTIONS)},
+                        # Keep Boolean depth and relational depth independent here too.
+                        # At schema depth 1 an aggregate must still be able to consume
+                        # Filter(Source, TimeFilter); otherwise a perfectly ordinary
+                        # windowed count/sum is expressible by the runtime IR but not by
+                        # the LLM contract.
+                        "relation": relation_schema(level),
+                        "expression": {"anyOf": [child, {"type": "null"}]},
+                        "distinct": {"type": "boolean"},
+                    },
+                    "required": ["type", "function", "relation", "expression", "distinct"],
+                },
+            ])
+        return {"anyOf": variants}
+
+    def comparison_schema(level: int) -> dict[str, Any]:
+        scalar = scalar_schema(max(0, level))
+        return {
             "type": "object",
             "properties": {
                 "type": {"type": "string", "enum": ["comparison"]},
                 "operator": {"type": "string", "enum": sorted(COMPARISON_OPERATORS)},
-                "left": scalar_schema, "right": scalar_schema, "evidence": evidence_schema,
+                "left": scalar,
+                "right": scalar,
+                "evidence": evidence_schema,
             },
             "required": ["type", "operator", "left", "right", "evidence"],
+        }
+
+    def relation_schema(level: int) -> dict[str, Any]:
+        variants: list[dict[str, Any]] = [source_schema]
+        if level > 0:
+            child = relation_schema(level - 1)
+            variants.extend([
+                {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string", "enum": ["filter"]},
+                        "relation": child,
+                        "where": atom_schema(level - 1),
+                    },
+                    "required": ["type", "relation", "where"],
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string", "enum": ["join"]},
+                        "left": child,
+                        "right": source_schema,
+                        "on": comparison_schema(max(0, level - 1)),
+                    },
+                    "required": ["type", "left", "right", "on"],
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string", "enum": ["group"]},
+                        "relation": child,
+                        "keys": {"type": "array", "items": field_schema, "minItems": 1},
+                    },
+                    "required": ["type", "relation", "keys"],
+                },
+            ])
+        return {"anyOf": variants}
+
+    event_reference_schema = {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": ["event_reference"]},
+            "source": symbol_schema(sources, "catalog source id"),
+            "selector": {"type": "string", "enum": ["first", "last", "any", "subsequent"]},
         },
-        {
-            "type": "object",
-            "properties": {
-                "type": {"type": "string", "enum": ["temporal_relation"]},
-                "operator": {"type": "string", "enum": ["within_after", "within_before"]},
-                "left": {"type": "object", "properties": {
-                    "type": {"type": "string", "enum": ["event_reference"]},
-                    "source": {"type": "string"},
-                    "selector": {"type": "string", "enum": ["first", "last", "any", "subsequent"]},
-                }, "required": ["type", "source"]},
-                "right": {"type": "object", "properties": {
-                    "type": {"type": "string", "enum": ["event_reference"]},
-                    "source": {"type": "string"},
-                    "selector": {"type": "string", "enum": ["first", "last", "any", "subsequent"]},
-                }, "required": ["type", "source"]},
-                "duration": {"type": "object", "properties": {
+        "required": ["type", "source", "selector"],
+    }
+    temporal_relation_schema = {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": ["temporal_relation"]},
+            "operator": {"type": "string", "enum": ["within_after", "within_before"]},
+            "left": event_reference_schema,
+            "right": event_reference_schema,
+            "duration": {
+                "type": "object",
+                "properties": {
                     "type": {"type": "string", "enum": ["duration"]},
                     "value": {"type": "integer"},
                     "unit": {"type": "string", "enum": list(DURATION_UNITS)},
-                }, "required": ["type", "value", "unit"]},
-                "evidence": evidence_schema,
+                },
+                "required": ["type", "value", "unit"],
             },
-            "required": ["type", "operator", "left", "right", "duration", "evidence"],
+            "evidence": evidence_schema,
         },
-    ]
+        "required": ["type", "operator", "left", "right", "duration", "evidence"],
+    }
 
-    def boolean_schema(level: int) -> dict[str, Any]:
-        operand = (
-            {"anyOf": atom_schemas}
-            if level <= 1
-            else {"anyOf": [*atom_schemas, boolean_schema(level - 1), {
+    def atom_schema(level: int) -> dict[str, Any]:
+        return {"anyOf": [
+            comparison_schema(level),
+            {
                 "type": "object",
-                "properties": {"type": {"type": "string", "enum": ["not"]}, "operand": {"anyOf": atom_schemas}},
-                "required": ["type", "operand"],
-            }]}
-        )
-        return {
-            "type": "object",
-            "properties": {
-                "type": {"type": "string", "enum": ["and", "or"]},
-                "operands": {"type": "array", "items": operand, "minItems": 1},
+                "properties": {
+                    "type": {"type": "string", "enum": ["exists"]},
+                    "relation": relation_schema(level),
+                    "evidence": evidence_schema,
+                },
+                "required": ["type", "relation", "evidence"],
             },
-            "required": ["type", "operands"],
-        }
+            time_filter_schema,
+            temporal_relation_schema,
+        ]}
 
-    return {"anyOf": [*atom_schemas, {
-        "type": "object",
-        "properties": {"type": {"type": "string", "enum": ["not"]}, "operand": {"anyOf": atom_schemas}},
-        "required": ["type", "operand"],
-    }, boolean_schema(depth)]}
+    def condition_schema(boolean_level: int, algebra_level: int) -> dict[str, Any]:
+        # Boolean nesting and relational/scalar nesting are independent axes.
+        # Decrementing both together made ``And(aggregate comparison, ...)`` impossible in the
+        # generated contract even though each part was valid on its own.
+        atom = atom_schema(algebra_level)
+        if boolean_level <= 0:
+            # Negation is a signed leaf, not another business-specific condition
+            # shape.  Keep it available at the Boolean boundary so depth=1 can
+            # express And(positive_atom, Not(negative_atom)), the normal form
+            # used by inclusion + exclusion audience requests.
+            return {"anyOf": [
+                *atom["anyOf"],
+                {
+                    "type": "object",
+                    "properties": {
+                        "type": {"type": "string", "enum": ["not"]},
+                        "operand": atom,
+                    },
+                    "required": ["type", "operand"],
+                },
+            ]}
+        child = condition_schema(boolean_level - 1, algebra_level)
+        return {"anyOf": [
+            *atom["anyOf"],
+            {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": ["not"]},
+                    "operand": child,
+                },
+                "required": ["type", "operand"],
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "enum": ["and", "or"]},
+                    "operands": {"type": "array", "items": child, "minItems": 1},
+                },
+                "required": ["type", "operands"],
+            },
+        ]}
+
+    return condition_schema(depth, depth)
 
 
 expression_json_schema = condition_json_schema

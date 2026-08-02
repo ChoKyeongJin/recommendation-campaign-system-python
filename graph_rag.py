@@ -23,6 +23,7 @@ import networkx as nx
 import aggregate_parser_config
 import aggregate_semantics
 import aggregate_spans
+import audience_runtime
 import conceptual_targeting
 import condition_reconciliation
 from external_conditions.models import ResolutionContext
@@ -39,6 +40,7 @@ import legacy_plan_compiler
 import requirement_ledger
 import semantic_plan
 import semantic_plan_bridge
+import semantic_plan_event_lowering
 import semantic_reemission
 import targeting_domain
 import plan_semantic_ast
@@ -228,41 +230,10 @@ def _audited_stage(func: Any) -> Any:
     return wrapper
 
 
-# V4 구조화기 슬롯 선택 안내(닫힌 어휘 자체는 _allowed_canonical_values 가 주입). 스키마 description
-# 만으로는 '어느 슬롯인가'의 경합(특히 entity_set_condition 오모델링)을 못 막아 프롬프트에 명시한다.
-_V4_SLOT_GUIDANCE = (
-    "타겟 조건은 스키마의 전용 슬롯으로 표현한다. "
-    "장바구니에 담았지만 구매/결제하지 않은(이탈·방치) 고객은 target_user.behaviors 의 'cart_abandoner' "
-    "로 표현한다 — entity_set_condition 으로 만들지 않는다. '결제하지 않은/미결제'는 담긴 카트 라인의 "
-    "상태라 cart_abandoner 만으로 충분하고 no_purchase 를 추가하지 않는다. 반면 '주문하지 않은/구매하지 "
-    "않은/구매 이력 없는'처럼 회원의 실주문 부재를 명시하면 behaviors 에 'no_purchase' 도 같이 넣는다"
-    "(빌더가 카트 보관과 무주문 anti-join 을 합성한다). entity_set_condition 은 '상위/가장 많이 "
-    "팔린 N개 중 M개 구매'처럼 랭킹 집합이 명시된 요청 전용이다. 장바구니 담은 시점 조건은 "
-    "cart_retention — '최근 N일 장바구니'(N일 이내 담김)는 max_days=N, 'N일 이상 보관/방치'만 "
-    "min_days=N 이다(방향 반전 금지). 담은 유형(정기배송 등)은 cart_type, 담은 금액/개수/수량 임계는 "
-    "cart_aggregate, 장바구니가 없는 회원은 cart_absence 를 사용한다. 구매 이력이 전혀 없으면 behaviors "
-    "'no_purchase', 최근 N기간 미구매는 purchase_inactivity 를 사용한다. 'N개월/일 이상 접속하지 "
-    "않은/미접속/휴면'은 구매가 아니라 접속의 부재이므로 inactivity_period 에 넣는다(구매 부재 슬롯과 "
-    "혼동 금지). '휴면 고객'처럼 상태어가 함께 있으면 lifecycle 과 inactivity_period 를 함께 채운다."
-)
-
-
 def _v4_slot_guidance(vocabulary: dict[str, Any]) -> str:
-    """슬롯 선택 안내 + **의미 노드 타입 경계** + 노드 필드의 닫힌 어휘 결속.
-
-    노드의 metric/attribute 는 자유 문자열이라, 어느 목록에서 골라야 하는지를 말해 주지 않으면
-    LLM 이 그럴듯한 id 를 지어낸다(실측: 장바구니 지표에 'total_amount'). 결속표는
-    targeting_domain.json 선언이고 여기서는 붙이기만 한다.
-
-    노드 타입 안내가 여기 있는 이유: 2026-08-02 이전 라이브 프롬프트에는 semantic_plan 이야기가
-    한 줄도 없었고(타입별 필수 필드 표는 프로덕션이 import 하지 않는 모듈에만 있었다), 그 결과
-    거의 모든 요청이 타입 오분류로 막혔다. 문구는 선언에서 생성한다 — 손으로 쓰면 또 갈라진다.
-    """
-    sections = [_V4_SLOT_GUIDANCE, semantic_plan.node_type_guidance()]
-    binding = targeting_domain.node_field_vocabulary_guidance(vocabulary)
-    if binding:
-        sections.append(binding)
-    return "\n\n".join(sections)
+    """Return prompt guidance derived from the resolved Semantic Catalog."""
+    del vocabulary
+    return audience_runtime.audience_catalog_guidance()
 
 
 def _structure_campaign_query_plan_v4(
@@ -275,16 +246,11 @@ def _structure_campaign_query_plan_v4(
 ) -> CampaignQueryPlanV4:
     """Extract the evidence-bound IR that is passed unchanged to the planner/compiler."""
 
-    if context.slot_vocabulary is None or context.slot_guidance is None:
-        try:
-            vocabulary = context.slot_vocabulary or _allowed_canonical_values()
-            context = dataclass_replace(
-                context,
-                slot_vocabulary=vocabulary,
-                slot_guidance=context.slot_guidance or _v4_slot_guidance(vocabulary),
-            )
-        except Exception:  # noqa: BLE001 - 어휘 주입 실패가 구조화 자체를 막으면 안 된다.
-            pass
+    context = dataclass_replace(
+        context,
+        slot_vocabulary={},
+        slot_guidance=context.slot_guidance or _v4_slot_guidance({}),
+    )
     input = QueryStructuringInput(query=query, context=context)
     if query_structurer is not None:
         try:
@@ -2665,6 +2631,16 @@ def _plan_event_expression(plan: dict[str, Any]) -> "event_ir.Condition | None":
         return None
 
 
+def _has_canonical_audience_authority(plan: Mapping[str, Any]) -> bool:
+    """Whether Event IR, rather than compatibility slots, owns the audience."""
+    payload = plan.get(EVENT_EXPRESSION_KEY)
+    return bool(
+        isinstance(payload, Mapping)
+        and payload.get("source") in {AUDIENCE_REQUIREMENT_KEY, "semantic_plan"}
+        and isinstance(payload.get("expression"), Mapping)
+    )
+
+
 def _event_expression_covers(plan: dict[str, Any], source: str, quantifier: str) -> bool:
     """IR 이 이 사건/극성 조건을 이미 소유하고 있는가(드롭 고지·커버리지 판정용).
 
@@ -3579,6 +3555,15 @@ def _coerce_llm_query_plan_candidate(
     if isinstance(semantic_ir, dict) and isinstance(literal_bindings, list):
         plan["semantic_ir"] = copy.deepcopy(semantic_ir)
         plan["literal_bindings"] = copy.deepcopy(literal_bindings)
+    audience_requirement = candidate.get("audience_requirement")
+    event_expression = candidate.get(EVENT_EXPRESSION_KEY)
+    if isinstance(audience_requirement, dict):
+        plan["audience_requirement"] = copy.deepcopy(audience_requirement)
+    if isinstance(event_expression, dict):
+        plan[EVENT_EXPRESSION_KEY] = copy.deepcopy(event_expression)
+    result_limit = candidate.get("result_limit")
+    if isinstance(result_limit, int) and not isinstance(result_limit, bool) and result_limit > 0:
+        plan["result_limit"] = result_limit
     # 구조화 슬롯도 후보의 정식 슬롯으로 제출한다. 적용 여부와 충돌은 resolver 한 곳에서만 정한다.
     unsupported_resolvers: list[dict[str, str]] = []
     for name, value in _coerce_llm_structured_conditions(candidate).items():
@@ -3828,6 +3813,7 @@ def _purchase_membership_needs_own_predicate(membership: Any) -> bool:
 # '평생 구매 없음'(no_purchase)으로 바뀌거나 창이 통째로 사라졌다 — 둘 다 다른 집합을 뽑는다.
 # 이제는 IR 을 보존한 채 컴파일하거나, 컴파일 불가면 근거를 실은 미지원으로 고지한다(fail-close).
 
+AUDIENCE_REQUIREMENT_KEY = "audience_requirement"
 EVENT_EXPRESSION_KEY = "event_expression"
 # IR 이 대체하는 조건 kind. 이 밖의 팩트조인 조건이 있으면 그 전용 빌더가 소유하므로 개입하지 않는다
 # (소유권 판정 기준을 targeting_ir 레지스트리에서 파생 — 새 조건이 생겨도 이 목록을 손대지 않는다).
@@ -8555,6 +8541,10 @@ def _refresh_unresolved_source_conditions(
     바꾸지 않기 위한 fail-close 입력이다. 매 호출마다 최종 plan 기준으로 다시 계산하므로 앞 단계에서
     미해결이던 조건을 후속 원문 권위 단계가 복원하면 자동으로 해소된다.
     """
+    if isinstance(query_plan.get(AUDIENCE_REQUIREMENT_KEY), dict):
+        query_plan["unresolved_source_conditions"] = []
+        return []
+
     preserved = [
         copy.deepcopy(item)
         for item in (query_plan.get("unresolved_source_conditions") or [])
@@ -8685,10 +8675,15 @@ def _verify_sql_semantic_invariants(
     target_user = plan.get("target_user", {}) if isinstance(plan.get("target_user"), dict) else {}
     compact = query.replace(" ", "").casefold()
     aggregates = [c for c in (target_user.get("aggregate_conditions") or []) if isinstance(c, dict)]
+    canonical_audience = _has_canonical_audience_authority(plan)
 
     # (1) lifetime↔rolling 혼입 금지: 원문에 '누적/평생' 표지가 있는데 명시 롤링 창('최근 N일')은 전혀 없고,
     #     그런데도 집계 조건에 window_days 가 붙어 있으면 옆 도메인 조건(로그인 등)에서 창이 흘러든 것이다.
-    if _CUMULATIVE_WINDOW_MARKER_RE.search(compact) and _parse_recent_window_days(query) is None:
+    if (
+        not canonical_audience
+        and _CUMULATIVE_WINDOW_MARKER_RE.search(compact)
+        and _parse_recent_window_days(query) is None
+    ):
         for condition in aggregates:
             if condition.get("window_days"):
                 issues.append({
@@ -8712,7 +8707,7 @@ def _verify_sql_semantic_invariants(
         or _event_expression_covers(plan, "purchase", "not_exists")
     )
     warned = any(("구매" in w or "주문" in w) for w in (dropped_signal_warnings or []))
-    if purchase_absence_mentioned and not represented and not warned:
+    if not canonical_audience and purchase_absence_mentioned and not represented and not warned:
         issues.append({"type": "purchase_absence_dropped",
                        "detail": "구매 미발생 조건이 plan/SQL/경고 어디에도 반영되지 않음"})
 
@@ -10134,7 +10129,69 @@ def _semantic_reextractor(llm_model: str | None) -> Any:
 def _apply_semantic_plan_pipeline(
     query_plan: dict[str, Any], query: str, *, llm_model: str | None = None
 ) -> None:
-    """의미 → 실행 플랜 단일 경로. 실패는 삼키지 않고 내부 사고로 기록한다."""
+    """Lower meaning once, preferring the canonical Event IR boundary.
+
+    New plans already carry ``audience_requirement`` and its application-owned
+    ``event_expression`` projection, so the legacy slot compiler must not see
+    them.  Stored SemanticPlanV2 payloads get a one-way, all-or-nothing Event IR
+    lowering attempt; only unlowerable legacy payloads use the frozen bridge.
+    """
+    if isinstance(query_plan.get(AUDIENCE_REQUIREMENT_KEY), dict):
+        return
+    if _plan_event_expression(query_plan) is not None:
+        return
+
+    def has_value(value: Any) -> bool:
+        if isinstance(value, Mapping):
+            return any(has_value(item) for item in value.values())
+        if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            return any(has_value(item) for item in value)
+        return value not in (None, "")
+
+    raw_plan = query_plan.get(semantic_plan_bridge.PLAN_KEY)
+    has_legacy_audience = has_value(query_plan.get("target_user", {})) or has_value(
+        query_plan.get("exclude", {})
+    )
+    if isinstance(raw_plan, dict) and raw_plan.get("nodes") and not has_legacy_audience:
+        try:
+            plan = semantic_plan.plan_from_dict(raw_plan, source_query=query)
+            lowered = semantic_plan_event_lowering.lower_semantic_plan(
+                plan, audience_runtime.resolve_audience_catalog()
+            )
+        except Exception as exc:  # noqa: BLE001 - compatibility path remains available below.
+            plan_decisions.record(
+                query_plan,
+                filter_name="semantic_plan_event_lowering",
+                action=plan_decisions.REJECT,
+                slot=EVENT_EXPRESSION_KEY,
+                reason=f"canonical lowering error: {exc.__class__.__name__}: {exc}",
+            )
+        else:
+            if lowered.executable and lowered.expression is not None:
+                query_plan[EVENT_EXPRESSION_KEY] = {
+                    "expression": lowered.expression.to_dict(),
+                    "source": "semantic_plan",
+                    "receipts": [receipt.to_dict() for receipt in lowered.receipts],
+                }
+                plan_decisions.record(
+                    query_plan,
+                    filter_name="semantic_plan_event_lowering",
+                    action=plan_decisions.SELECT,
+                    slot=EVENT_EXPRESSION_KEY,
+                    reason="SemanticPlanV2 lowered losslessly to canonical Event IR",
+                )
+                return
+            plan_decisions.record(
+                query_plan,
+                filter_name="semantic_plan_event_lowering",
+                action=plan_decisions.REJECT,
+                slot=EVENT_EXPRESSION_KEY,
+                reason="; ".join(
+                    receipt.failure_code or receipt.message or "lowering_failed"
+                    for receipt in lowered.failures
+                ) or "semantic plan could not be represented by canonical Event IR",
+            )
+
     try:
         semantic_plan_bridge.apply(
             query_plan,
@@ -10791,10 +10848,18 @@ def build_sql_result(
             query_tuning = {"findings": [], "recommended_indexes": []}
 
     # ③ 놓침을 fail-close(결정론): 원문 신호가 plan 에 조용히 드롭됐으면 아래 의미 불변식에서 출고 차단.
-    try:
-        dropped_signal_warnings = _deterministic_dropped_conditions(original_query or query, query_plan)
-    except Exception:
+    if _has_canonical_audience_authority(query_plan):
+        # Evidence, symbol resolution, and lowering receipts already account for
+        # the canonical atoms.  Re-running slot-oriented regex coverage here is
+        # a second semantic parser and misclassifies catalog-only sources.
         dropped_signal_warnings = []
+    else:
+        try:
+            dropped_signal_warnings = _deterministic_dropped_conditions(
+                original_query or query, query_plan
+            )
+        except Exception:
+            dropped_signal_warnings = []
     # 미소비 리터럴 감사(비차단 자문): 결정론 드롭 감지기가 오탐 우려로 제외한 숫자/기간 family 의
     # 사각을 채운다. 차단으로 승격하려면 아래 invariants 인자에 넘기는 한 곳만 바꾸면 된다.
     try:
@@ -10905,13 +10970,14 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
     target_user = query_plan.get("target_user", {})
     campaign_constraints = query_plan.get("campaign_constraints", {})
     exclude = query_plan.get("exclude", {})
+    canonical_audience = _has_canonical_audience_authority(query_plan)
     intent = query_plan.get("intent")
 
     # 조건 IR: **원자 조건 하나가 검증 토큰 하나**다. 통째로 한 토큰으로 묶으면 두 조건 중 하나만
     # SQL 에 남아도 커버리지가 통과한다.
     event_expression = _plan_event_expression(query_plan)
     if event_expression is not None:
-        event_registry = event_compiler.resolve_registry(_event_registry_overrides())
+        event_registry = dict(audience_runtime.resolve_audience_catalog().compiler_events)
         event_context = _event_compile_context()
         for index, (atom, negated) in enumerate(event_ir.iter_signed_atoms(event_expression)):
             sources = sorted(event_ir.sources(atom))
@@ -11166,31 +11232,31 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
             segment = "price_sensitive" if price_sensitivity == "high" else "premium_buyer"
             _add_token(tokens, "campaign_constraints.target_segment", "target_segment", "=", segment, ["ts.target_segment = " + _sql_quote(segment)], ["target_segments"])
 
-    for category in campaign_constraints.get("category", []):
-        if category in CATEGORY_TERMS:
-            _add_token(tokens, "campaign_constraints.category", "campaign_category", "=", category, ["c.category = " + _sql_quote(category)], [])
+    if not canonical_audience:
+        for category in campaign_constraints.get("category", []):
+            if category in CATEGORY_TERMS:
+                _add_token(tokens, "campaign_constraints.category", "campaign_category", "=", category, ["c.category = " + _sql_quote(category)], [])
 
-    objective = campaign_constraints.get("objective")
-    if intent == "recommend_campaign" and objective in CAMPAIGN_OBJECTIVES:
-        _add_token(tokens, "campaign_constraints.objective", "campaign_objective", "=", objective, ["c.objective = " + _sql_quote(objective)], [])
+        objective = campaign_constraints.get("objective")
+        if intent == "recommend_campaign" and objective in CAMPAIGN_OBJECTIVES:
+            _add_token(tokens, "campaign_constraints.objective", "campaign_objective", "=", objective, ["c.objective = " + _sql_quote(objective)], [])
 
-    offer_type = campaign_constraints.get("offer_type")
-    if offer_type in OFFER_TERMS:
-        if offer_type == "coupon":
-            clauses = ["ck.keyword = '쿠폰'"]
-        elif offer_type == "free_shipping":
-            clauses = ["(ck.keyword = '무료배송' OR c.offer LIKE '%무료배송%')"]
-        else:
-            clauses = ["(ck.keyword = " + _sql_quote(offer_type) + " OR c.offer LIKE " + _sql_quote("%" + offer_type + "%") + ")"]
-        _add_token(tokens, "campaign_constraints.offer_type", "offer_type", "=", offer_type, clauses, ["campaign_keywords"])
+        offer_type = campaign_constraints.get("offer_type")
+        if offer_type in OFFER_TERMS:
+            if offer_type == "coupon":
+                clauses = ["ck.keyword = '쿠폰'"]
+            elif offer_type == "free_shipping":
+                clauses = ["(ck.keyword = '무료배송' OR c.offer LIKE '%무료배송%')"]
+            else:
+                clauses = ["(ck.keyword = " + _sql_quote(offer_type) + " OR c.offer LIKE " + _sql_quote("%" + offer_type + "%") + ")"]
+            _add_token(tokens, "campaign_constraints.offer_type", "offer_type", "=", offer_type, clauses, ["campaign_keywords"])
 
-    # objective/target_segment 와 동일하게 recommend_campaign 에서만 캠페인 채널 절을 낸다.
-    # find_user_segment 프롬프트에 "발송 채널: RCS" 같은 표기가 섞여 들어오면 campaign_channels
-    # JOIN 이 생겨 intent_scope 검증에 걸리고 sql=None("검증 SQL 없음")으로 빠지기 때문이다.
-    if intent == "recommend_campaign":
-        for channel in campaign_constraints.get("channels", []):
-            if channel in CHANNEL_TERMS:
-                _add_token(tokens, "campaign_constraints.channels", "campaign_channel", "=", channel, ["cc.channel = " + _sql_quote(channel)], ["campaign_channels"])
+        # Compatibility plans may still model campaign metadata as lookup-table
+        # conditions. Canonical audience plans keep it out of row selection.
+        if intent == "recommend_campaign":
+            for channel in campaign_constraints.get("channels", []):
+                if channel in CHANNEL_TERMS:
+                    _add_token(tokens, "campaign_constraints.channels", "campaign_channel", "=", channel, ["cc.channel = " + _sql_quote(channel)], ["campaign_channels"])
 
     # 디멘션 값 필터(예: 상품브랜드 포멜카멜리 -> C.BRAND_ID IN ('A')). 실제 CRMDW 테이블 대상
     # 전용 cart 템플릿(build_sql_template_candidate)이 이 절을 그대로 생성하므로 별칭 C 로 맞춘다.
@@ -12417,7 +12483,12 @@ def _compile_sql_template_candidate_validated(query_plan: dict[str, Any]) -> dic
             f"미지원 판정({query_plan['unsupported'].get('reason')}) — 어떤 빌더로도 폴백하지 않는다",
         )
         return None
-    for builder in _sql_target_builders():
+    builders = (
+        (build_event_expression_sql_candidate,)
+        if _plan_event_expression(query_plan) is not None
+        else _sql_target_builders()
+    )
+    for builder in builders:
         name = getattr(builder, "__name__", str(builder))
         candidate = builder(query_plan)
         # 의미 구성요소가 불완전하거나 지원 조합 검증에 실패한 경우, 다음의 더 단순한 빌더로
@@ -13739,101 +13810,13 @@ def build_member_column_selection_sql_candidate(query_plan: dict[str, Any]) -> d
     return candidate
 
 
-def _event_registry_overrides() -> dict[str, "event_compiler.EventSpec"]:
-    """사건 심볼 → 물리 바인딩을 **설정(member_target_filters.json)에서** 만든다.
-
-    event_compiler 의 코드 기본값은 설정 부재 시 폴백이고, 실제 테이블/컬럼/조인키의 단일 소스는
-    설정이다 — 주문 테이블을 바꾸면 조건 IR 도 같이 따라와야 한다(두 곳에 적으면 갈라진다).
-    새 사건은 여기 한 항목 + 사전의 ``event_alias_<event>`` 어휘로 열린다(IR 타입은 늘지 않는다)."""
-    order = _order_count_targets_config()
-    login = _MEMBER_TARGET_FILTERS.get("recent_login_target")
-    login = login if isinstance(login, dict) else _DEFAULT_MEMBER_TARGET_FILTERS["recent_login_target"]
-    signup = _MEMBER_TARGET_FILTERS.get("signup_target")
-    signup = signup if isinstance(signup, dict) else _DEFAULT_MEMBER_TARGET_FILTERS["signup_target"]
-    cart = _cart_targets_registry()
-    cart_join = cart.get("join") if isinstance(cart.get("join"), dict) else {}
-    cart_active = cart.get("active_condition") if isinstance(cart.get("active_condition"), dict) else {}
-    member_key = _member_key_column()
-    overrides = {
-        "purchase": event_compiler.EventSpec(
-            table=order.get("table", "CRM_SL_ORDERHEADERMALL"),
-            alias="EO",
-            subject_key=member_key,
-            event_subject_key=order.get("join_column", "MEMBER_NO"),
-            time_column=order.get("order_date_column", "ORDER_DATE"),
-            time_format="char8",
-            binding="fact_table",
-            label="구매",
-        ),
-        "login": event_compiler.EventSpec(
-            table=login.get("table", "CRM_MB_BASEINFO"),
-            alias=_member_alias(),
-            subject_key=member_key,
-            event_subject_key=member_key,
-            time_column=login.get("column", "LAST_LOGIN_DATE"),
-            time_format="char8",
-            binding="subject_column",
-            label="로그인",
-        ),
-        "signup": event_compiler.EventSpec(
-            table=signup.get("table", "CRM_MB_BASEINFO"),
-            alias=_member_alias(),
-            subject_key=member_key,
-            event_subject_key=member_key,
-            time_column=signup.get("column", "REG_DT"),
-            time_format="char8",
-            binding="subject_column",
-            label="가입",
-        ),
-    }
-    if cart:
-        keep_column = str(cart_active.get("column") or "C.KEEP_YN").split(".")[-1]
-        overrides["cart"] = event_compiler.EventSpec(
-            table=cart.get("table", "ODS_MALL_OMS_CART"),
-            alias="EC",
-            subject_key=str(cart_join.get("right") or "B.MEMBER_ID").split(".")[-1],
-            event_subject_key=str(cart_join.get("left") or "C.CART_ID").split(".")[-1],
-            time_column=str(cart.get("registered_date_column") or "C.UPD_DT").split(".")[-1],
-            time_format="char8",
-            binding="fact_table",
-            extra_predicates=(f"{{alias}}.{keep_column} = {_sql_quote(str(cart_active.get('value', 'Y')))}",),
-            label="장바구니 담기",
-        )
-    return overrides
-
-
-def _event_field_overrides() -> dict[str, "event_compiler.FieldSpec"]:
-    """필드 심볼 → 물리 컬럼(설정 파생). 새 업무 속성은 이 표 한 줄로 조건에 쓸 수 있다.
-
-    금액·주문키는 집계 레지스트리(aggregate_targets)가 이미 컬럼을 소유하므로 거기서 읽는다 —
-    같은 컬럼을 두 곳에 적으면 DB 스왑 때 한쪽만 따라간다."""
-    aggregate = _aggregate_targets_config()
-    metrics = aggregate.get("metrics") if isinstance(aggregate.get("metrics"), dict) else {}
-    amount = metrics.get("purchase_amount") if isinstance(metrics.get("purchase_amount"), dict) else {}
-    order_count = metrics.get("order_count") if isinstance(metrics.get("order_count"), dict) else {}
-    return {
-        "purchase.amount": event_compiler.FieldSpec(
-            source="purchase", column=str(amount.get("column") or "PAYMENT_AMT"), data_type="number",
-        ),
-        "purchase.order_id": event_compiler.FieldSpec(
-            source="purchase", column=str(order_count.get("column") or "ORDER_ID"), data_type="string",
-        ),
-        "subject.grade": event_compiler.FieldSpec(
-            # 등급 컬럼은 별칭 접두를 포함한 표기라 컬럼명만 취한다(별칭은 컴파일러가 붙인다).
-            source="subject", column=_member_grade_column().split(".")[-1], data_type="string",
-        ),
-    }
-
-
 def _event_compile_context() -> "event_compiler.CompileContext":
-    """조건 IR 컴파일 환경(주체=회원 기준 테이블, 방언·별칭은 기존 빌더 관례와 동일)."""
-    registry = event_compiler.resolve_registry(_event_registry_overrides())
-    return event_compiler.CompileContext(
+    """Build Event IR compilation from the single resolved Semantic Catalog."""
+    catalog = audience_runtime.resolve_audience_catalog()
+    return catalog.compile_context(
         subject=event_compiler.SubjectSpec(
             table=_member_table(), alias=_member_alias(), key=_member_key_column()
         ),
-        registry=registry,
-        fields=event_compiler.resolve_fields(registry, _event_field_overrides()),
         dialect=_member_dialect(),
         literals=True,
     )
@@ -13908,7 +13891,19 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
             unresolved.append(item)
         return None
 
-    compiled = compile_member_target_conditions(query_plan)
+    canonical_authority = payload.get("source") in {
+        AUDIENCE_REQUIREMENT_KEY,
+        "semantic_plan",
+    }
+    # Canonical producers encode member attributes in the same Event IR, so
+    # reading target_user/exclude here would execute a second audience model.
+    # Unmarked stored event payloads keep the old composition behavior during
+    # migration; plan validation rejects non-empty hybrid canonical payloads.
+    compiled = (
+        {"predicates": [], "labels": [], "forces_state": False, "unsupported": []}
+        if canonical_authority
+        else compile_member_target_conditions(query_plan)
+    )
     where_clauses = list(compiled["predicates"])
     if not compiled["forces_state"]:
         where_clauses.append(_member_active_state_predicate())
@@ -13962,7 +13957,7 @@ def _event_expression_label(expression: "event_ir.Condition") -> str:
 
     라벨은 **원자 조건 종류별**로 만든다 — 문장 유형별 분기가 아니라 노드 종류별 분기라, 새 문장이
     늘어도 여기 분기가 늘지 않는다."""
-    registry = event_compiler.resolve_registry(_event_registry_overrides())
+    registry = dict(audience_runtime.resolve_audience_catalog().compiler_events)
     existence_labels = {
         (view.source, view.negated, id(view.evidence)): (
             f"{_event_window_label(view.window)}{_event_source_label(view.source, registry)} "
@@ -15090,9 +15085,18 @@ def _attach_event_semantic_validation(query_plan: dict[str, Any]) -> None:
     # an otherwise identical plan.  A day-stable anchor preserves rolling-window
     # relations while keeping repeated planning/SQL entrypoints deterministic.
     anchor = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
+    semantic_domains = dict(aggregate_parser_config.rules().semantic_domains)
+    empty_domain = aggregate_parser_config.SemanticDomain(
+        presence_node_kinds=frozenset(),
+        absence_node_kinds=frozenset(),
+        event_dimensions=(),
+    )
+    for source_id in audience_runtime.resolve_audience_catalog().compiler_events:
+        semantic_domains.setdefault(source_id, empty_domain)
     result = aggregate_semantics.validate_boolean_expression(
         expression,
         lambda atom, negated: _event_predicate_factory(atom, negated, anchor),
+        domains=semantic_domains,
     )
     query_plan["event_semantic_validation"] = {
         "status": result.status,
@@ -16662,12 +16666,13 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     target_user = query_plan.get("target_user", {})
     campaign_constraints = query_plan.get("campaign_constraints", {})
     exclude = query_plan.get("exclude", {})
+    canonical_audience = _has_canonical_audience_authority(query_plan)
 
     # 조건 IR: 원자 조건마다 필수 SQL 토큰을 만든다 — 극성(EXISTS/NOT EXISTS)과 기간 경계가 SQL 에
     # 실제로 남았는지 개별로 확인해야 조건 하나만 조용히 빠지는 사고를 잡는다.
     event_expression = _plan_event_expression(query_plan)
     if event_expression is not None:
-        registry = event_compiler.resolve_registry(_event_registry_overrides())
+        registry = dict(audience_runtime.resolve_audience_catalog().compiler_events)
         for index, (atom, negated) in enumerate(event_ir.iter_signed_atoms(event_expression)):
             # 존재/부재 조건만 EXISTS 토큰을 요구한다 — 집계 비교는 스칼라 서브쿼리라 EXISTS 가 없다.
             terms = ["not exists" if negated else "exists"] if isinstance(atom, event_ir.Exists) else []
@@ -16931,13 +16936,18 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     if price_sensitivity:
         conditions.append(_condition("target_user.price_sensitivity", price_sensitivity, ["price_sensitive", "price_sensitivity", price_sensitivity]))
 
-    for value in campaign_constraints.get("category", []):
-        conditions.append(_condition("campaign_constraints.category", value, _condition_terms(value, "category")))
+    if not canonical_audience:
+        for value in campaign_constraints.get("category", []):
+            conditions.append(_condition("campaign_constraints.category", value, _condition_terms(value, "category")))
 
     # 채널도 생성부(build_verified_condition_tokens)와 동일하게 recommend_campaign 에서만 요구한다.
     # "발송 채널: RCS" 표기로 채널이 잡혀도 find_user_segment 에선 캠페인 채널 절을 만들지 않으므로,
     # 검증부가 이를 요구하면 커버리지가 깨져 sql=None("검증 SQL 없음")이 된다.
-    if query_plan.get("intent") == "recommend_campaign" and not _is_cart_dimension_targeting(query_plan):
+    if (
+        not canonical_audience
+        and query_plan.get("intent") == "recommend_campaign"
+        and not _is_cart_dimension_targeting(query_plan)
+    ):
         for value in campaign_constraints.get("channels", []):
             conditions.append(_condition("campaign_constraints.channels", value, _condition_terms(value, "channels")))
 
@@ -16947,7 +16957,12 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     # 커버리지 검증이 실패해 sql=None이 되고 "검증된 SQL 없음"으로 빠진다.
     # 장바구니 디멘션(브랜드) 타겟팅은 순수 오디언스 추출 SQL이라 캠페인 objective/채널 컬럼이 없다.
     # 이 모드에선 objective/채널 커버리지를 요구하지 않고 브랜드 코드 조건만 요구한다.
-    if query_plan.get("intent") == "recommend_campaign" and objective in CAMPAIGN_OBJECTIVES and not _is_cart_dimension_targeting(query_plan):
+    if (
+        not canonical_audience
+        and query_plan.get("intent") == "recommend_campaign"
+        and objective in CAMPAIGN_OBJECTIVES
+        and not _is_cart_dimension_targeting(query_plan)
+    ):
         conditions.append(_condition("campaign_constraints.objective", objective, [objective], all_terms=["objective"]))
 
     brand_filter = _cart_dimension_brand_filter(query_plan)
@@ -17074,7 +17089,7 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
                 )
 
     offer_type = campaign_constraints.get("offer_type")
-    if offer_type:
+    if offer_type and not canonical_audience:
         conditions.append(_condition("campaign_constraints.offer_type", offer_type, _condition_terms(offer_type, "offer_type")))
 
     for expression in query_plan.get("set_expressions", []):

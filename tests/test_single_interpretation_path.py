@@ -175,16 +175,19 @@ def test_llm_schema_exposes_no_execution_slot_or_verdict() -> None:
     from query_structurer.campaign_plan_v4 import CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA
 
     properties = CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"]
+    assert set(properties) == {
+        "intent", "campaign_constraints", "result_limit", "audience_requirement",
+    }
     assert "semantic_ir" not in properties, "LLM 이 다시 결핍/상태의 소유자가 됐다."
-    assert "semantic_plan" in properties, "LLM 의 의미 산출 통로가 사라졌다."
-    target_user = properties["target_user"]["properties"]
+    assert "semantic_plan" not in properties, "이행기 의미 계약이 다시 LLM 에 노출됐다."
+    assert "target_user" not in properties and "exclude" not in properties
+    rendered = json.dumps(properties, ensure_ascii=False)
     for slot in legacy_plan_compiler.COMPILER_OWNED_SLOTS:
         name = slot.rpartition(".")[2]
-        assert name not in target_user and name not in properties, (
+        assert f'"{name}"' not in rendered, (
             f"컴파일러 소유 슬롯 {slot} 이 LLM 에 다시 노출됐다."
         )
-    rendered = json.dumps(properties["semantic_plan"], ensure_ascii=False)
-    assert "SQL" not in rendered.upper() or "sql" not in rendered
+    assert "sql" not in rendered.casefold()
 
 
 # ── ⑤ 이행기 shadow mode 잔재가 없다 ────────────────────────────────────────────

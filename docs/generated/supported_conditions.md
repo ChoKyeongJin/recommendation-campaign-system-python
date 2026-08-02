@@ -1,32 +1,34 @@
 # 지원 타겟 조건 표
 
-> **자동 생성 문서 — 손으로 편집하지 마라.** 실행 자산(targeting_ir·V4 스키마·
+> **자동 생성 문서 — 손으로 편집하지 마라.** LLM은 고정 Event IR 대수인
+> `audience_requirement`만 만들며 아래 호환 슬롯을 직접 만들지 않는다.
+> 표는 실행 자산(targeting_ir·V4 스키마·
 > member_target_filters.json·requirement_capabilities.json)에서 파생되며,
 > `python tools/generate_supported_conditions.py` 로 재생성한다.
 > 최신성은 tests/test_supported_conditions_doc.py 가 CI 에서 강제한다.
 
-## 1. 구조화 슬롯 조건
+## 1. 호환 실행 슬롯 조건
 
-| 슬롯 | 라벨 | 컨테이너 | LLM 노출 | 조건부 지원 각주 |
+| 슬롯 | 라벨 | 컨테이너 | LLM 직접 노출 | 조건부 지원 각주 |
 |---|---|---|---|---|
-| `signup_target` | 가입일 조건 | target_user | O |  |
-| `recent_login` | 최근 로그인 기간 조건 | target_user | O |  |
-| `inactivity_period` | 미접속 기간 조건 | target_user | O |  |
-| `purchase_inactivity` | 미구매 기간 조건 | target_user | O |  |
-| `purchase_membership` | 구매 이력 존재 조건 | target_user | O |  |
-| `cart_retention` | 장바구니 보관 기간 조건 | target_user | O |  |
+| `signup_target` | 가입일 조건 | target_user | X |  |
+| `recent_login` | 최근 로그인 기간 조건 | target_user | X |  |
+| `inactivity_period` | 미접속 기간 조건 | target_user | X |  |
+| `purchase_inactivity` | 미구매 기간 조건 | target_user | X |  |
+| `purchase_membership` | 구매 이력 존재 조건 | target_user | X |  |
+| `cart_retention` | 장바구니 보관 기간 조건 | target_user | X |  |
 | `cart_aggregate` | 장바구니 집계 조건(담은 수량/금액) | target_user | X |  |
-| `cart_type` | 장바구니 유형 조건 | target_user | O |  |
-| `birthday_target` | 생일 조건 | target_user | O |  |
-| `campaign_responses` | 캠페인 반응 조건 | target_user | O |  |
+| `cart_type` | 장바구니 유형 조건 | target_user | X |  |
+| `birthday_target` | 생일 조건 | target_user | X |  |
+| `campaign_responses` | 캠페인 반응 조건 | target_user | X |  |
 | `campaign_response_frequency` | 캠페인 반응 횟수 조건 | target_user | X |  |
 | `campaign_buy_amount` | 캠페인 구매 금액 조건 | target_user | X |  |
-| `campaign_buy_count` | 캠페인 구매 건수 조건 | target_user | O |  |
-| `cell_rate_target` | 캠페인 셀 반응률 조건 | target_user | O |  |
-| `purchase_date` | 구매일 조건 | target_user | O |  |
+| `campaign_buy_count` | 캠페인 구매 건수 조건 | target_user | X |  |
+| `cell_rate_target` | 캠페인 셀 반응률 조건 | target_user | X |  |
+| `purchase_date` | 구매일 조건 | target_user | X |  |
 | `metric_trend` | 기간 대비 지표 증감 조건 | target_user | X | 수치 집계 지표만 지원(날짜·요약 지표의 기간 비교는 미지원 안내) |
-| `purchase_object` | 구매 상품 조건 | target_user | O |  |
-| `cart_absence` | 장바구니 미보유 조건 | target_user | O |  |
+| `purchase_object` | 구매 상품 조건 | target_user | X |  |
+| `cart_absence` | 장바구니 미보유 조건 | target_user | X |  |
 | `aggregate_conditions` | 집계 조건(구매 금액/횟수 임계값) | target_user | X |  |
 | `balance_conditions` | 잔액 조건 | target_user | X |  |
 | `profile_date_conditions` | 회원 프로필 날짜 조건 | target_user | X |  |

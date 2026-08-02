@@ -3,8 +3,13 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
+from datetime import date
 from typing import Any
 
+import audience_runtime
+import event_compiler
+import event_ir
 from aggregation_requirements import aggregation_request_json_schema
 from entity_set import derived_set_ast_error
 import semantic_plan as semantic_plan_module
@@ -25,6 +30,14 @@ def _semantic_plan_schema() -> dict[str, Any]:
 
 CAMPAIGN_QUERY_PLAN_V4_VERSION = "4.0"
 QUERY_IDENTITY_DIGEST_KEY = "query_identity_digest"
+AUDIENCE_REQUIREMENT_KEY = "audience_requirement"
+EVENT_EXPRESSION_KEY = "event_expression"
+AUDIENCE_REQUIREMENT_ISSUE_CODES = frozenset({
+    "missing_argument",
+    "ambiguous_requirement",
+    "unsupported_semantics",
+    "validation_mismatch",
+})
 CAMPAIGN_INTENTS = {
     "recommend_campaign",
     "find_user_segment",
@@ -405,6 +418,53 @@ _UNRESOLVED_ITEM_SCHEMA: dict[str, Any] = {
 }
 
 
+_AUDIENCE_ISSUE_EVIDENCE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["text", "start", "end"],
+    "properties": {
+        "text": {"type": "string", "minLength": 1},
+        "start": {"type": "integer", "minimum": 0},
+        "end": {"type": "integer", "minimum": 0},
+    },
+}
+
+_AUDIENCE_REQUIREMENT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "description": (
+        "오디언스 의미의 단일 입력 계약. expression은 고정 Event IR 대수이고, "
+        "원문 정보가 부족하면 뜻을 축소하지 말고 issues에 기록한다."
+    ),
+    "required": ["expression", "issues"],
+    "properties": {
+        "expression": {
+            "anyOf": [
+                audience_runtime.audience_expression_json_schema(depth=1),
+                {"type": "null"},
+            ]
+        },
+        "issues": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["code", "argument", "message", "evidence"],
+                "properties": {
+                    "code": {
+                        "type": "string",
+                        "enum": sorted(AUDIENCE_REQUIREMENT_ISSUE_CODES),
+                    },
+                    "argument": {"type": "string", "minLength": 1},
+                    "message": {"type": "string", "minLength": 1},
+                    "evidence": _AUDIENCE_ISSUE_EVIDENCE_SCHEMA,
+                },
+            },
+        },
+    },
+}
+
+
 CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA: dict[str, Any] = {
     "$id": "campaign-query-plan-v4",
     "type": "object",
@@ -577,9 +637,11 @@ CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA: dict[str, Any] = {
         "target_user",
         "exclude",
         "campaign_constraints",
+        AUDIENCE_REQUIREMENT_KEY,
         "semantic_evidence",
         "unresolved",
         "semantic_ir",
+        EVENT_EXPRESSION_KEY,
     ],
     "properties": {
         "schema_version": {"type": "string", "const": CAMPAIGN_QUERY_PLAN_V4_VERSION},
@@ -616,6 +678,17 @@ CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA: dict[str, Any] = {
                 "channels": {"type": "array", "items": {"type": "string"}},
                 "sell_object": _nullable({"type": "string"}),
             },
+        },
+        AUDIENCE_REQUIREMENT_KEY: copy.deepcopy(_AUDIENCE_REQUIREMENT_SCHEMA),
+        EVENT_EXPRESSION_KEY: {
+            "type": "object",
+            "description": "애플리케이션이 audience_requirement에서 검증 후 파생한 canonical 실행 IR.",
+            "properties": {
+                "expression": audience_runtime.audience_expression_json_schema(depth=1),
+                "source": {"type": "string"},
+                "receipts": {"type": "array", "items": {"type": "object"}},
+            },
+            "required": ["expression", "source", "receipts"],
         },
         "aggregation_request": _nullable(_aggregation_request_llm_schema()),
         # plan 컨테이너 구조화 슬롯. 노출/제외는 _PLAN_SLOT_EXPOSURE_EXCLUSIONS 가 사유와 함께
@@ -780,37 +853,33 @@ def _strictify(schema: Any, *, required_here: bool = True) -> Any:
     return out
 
 
-# LLM 에 노출하지 않는 target_user 하위 필드 = **SemanticPlan 컴파일러가 소유한 슬롯**.
-# 이 목록은 legacy_plan_compiler 가 단일 소유하고 여기서는 파생만 한다 — 두 곳에서 손으로
-# 관리하면 슬롯 하나가 양쪽에서 방출되는 이중 생산자가 조용히 되살아난다.
-# (이 슬롯들의 의미는 semantic_plan 노드로 표현되고, 값은 컴파일러가 쓴다.)
-def _compiler_owned_target_user_fields() -> frozenset[str]:
-    import legacy_plan_compiler  # 순환 없음(컴파일러는 v4 스키마를 모른다)
-
-    prefix = "target_user."
-    return frozenset(
-        slot[len(prefix):]
-        for slot in legacy_plan_compiler.COMPILER_OWNED_SLOTS
-        if slot.startswith(prefix)
-    )
-
-
-_APPLICATION_OWNED_TARGET_USER_FIELDS = _compiler_owned_target_user_fields()
-
-
 def _campaign_query_plan_v4_llm_schema() -> dict[str, Any]:
-    """Tool 호출에서 모델이 결정할 필드만 strict 형태로 노출한다."""
-    schema = copy.deepcopy(CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA)
-    schema.pop("$id", None)
-    schema["required"] = [
-        key for key in schema.get("required", []) if key not in _APPLICATION_OWNED_PLAN_FIELDS
+    """LLM 입력면: canonical audience requirement + 비오디언스 메타데이터.
+
+    내부 호환 스키마에서 필드를 하나씩 빼는 방식은 새 슬롯이 생길 때마다 LLM 입력면이 다시
+    늘어나는 구조였다. 허용 목록으로 작은 envelope를 새로 만들면 슬롯/빌더 수와 무관하게 계약
+    모양이 고정된다.
+    """
+    internal = CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA["properties"]
+    campaign_metadata = copy.deepcopy(internal["campaign_constraints"])
+    # 상품/category 범위는 오디언스 의미다. 캠페인 실행 메타데이터로 우회하지 않는다.
+    campaign_metadata.get("properties", {}).pop("category", None)
+    campaign_metadata["required"] = [
+        key for key in campaign_metadata.get("required", []) if key != "category"
     ]
-    properties = schema.get("properties", {})
-    for key in _APPLICATION_OWNED_PLAN_FIELDS:
-        properties.pop(key, None)
-    target_user_properties = (properties.get("target_user") or {}).get("properties", {})
-    for key in _APPLICATION_OWNED_TARGET_USER_FIELDS:
-        target_user_properties.pop(key, None)
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "intent", "campaign_constraints", "result_limit", AUDIENCE_REQUIREMENT_KEY,
+        ],
+        "properties": {
+            "intent": copy.deepcopy(internal["intent"]),
+            "campaign_constraints": campaign_metadata,
+            "result_limit": copy.deepcopy(internal["result_limit"]),
+            AUDIENCE_REQUIREMENT_KEY: copy.deepcopy(_AUDIENCE_REQUIREMENT_SCHEMA),
+        },
+    }
     return _strictify(schema)
 
 
@@ -859,19 +928,289 @@ def _normalize_unique_evidence_spans(payload: dict[str, Any], query: str) -> Non
             item["end"] = occurrences[0] + len(text)
 
 
+def _walk_evidence_payloads(value: Any) -> list[dict[str, Any]]:
+    """Canonical expression/issue tree에 들어 있는 evidence 객체 전부."""
+    found: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        evidence = value.get("evidence")
+        if isinstance(evidence, dict):
+            found.append(evidence)
+        for key, child in value.items():
+            if key != "evidence":
+                found.extend(_walk_evidence_payloads(child))
+    elif isinstance(value, list):
+        for child in value:
+            found.extend(_walk_evidence_payloads(child))
+    return found
+
+
+def _normalize_audience_evidence(payload: dict[str, Any], query: str) -> None:
+    requirement = payload.get(AUDIENCE_REQUIREMENT_KEY)
+    if not isinstance(requirement, dict):
+        return
+    for evidence in _walk_evidence_payloads(requirement):
+        text = evidence.get("text")
+        if not isinstance(text, str) or not text:
+            continue
+        start, end = evidence.get("start"), evidence.get("end")
+        if (
+            isinstance(start, int) and isinstance(end, int)
+            and 0 <= start <= end <= len(query) and query[start:end] == text
+        ):
+            continue
+        positions: list[int] = []
+        cursor = 0
+        while (position := query.find(text, cursor)) >= 0:
+            positions.append(position)
+            cursor = position + 1
+        if len(positions) == 1:
+            evidence["start"] = positions[0]
+            evidence["end"] = positions[0] + len(text)
+
+
+def _validated_audience_issue(item: Any, query: str) -> dict[str, Any]:
+    if not isinstance(item, dict):
+        raise CampaignQueryPlanValidationError("audience_requirement.issues items must be objects")
+    code = str(item.get("code") or "")
+    argument = str(item.get("argument") or "")
+    message = str(item.get("message") or "")
+    evidence = item.get("evidence")
+    if code not in AUDIENCE_REQUIREMENT_ISSUE_CODES:
+        raise CampaignQueryPlanValidationError(f"unknown audience issue code: {code!r}")
+    if not argument or not message or not isinstance(evidence, dict):
+        raise CampaignQueryPlanValidationError("audience issue needs argument/message/evidence")
+    text = evidence.get("text")
+    start, end = evidence.get("start"), evidence.get("end")
+    if not (
+        isinstance(text, str) and text
+        and isinstance(start, int) and not isinstance(start, bool)
+        and isinstance(end, int) and not isinstance(end, bool)
+        and 0 <= start < end <= len(query)
+        and query[start:end] == text
+    ):
+        raise CampaignQueryPlanValidationError("audience issue evidence does not match original_query")
+    return {
+        "code": code,
+        "argument": argument,
+        "message": message,
+        "evidence": {"text": text, "start": start, "end": end},
+    }
+
+
+_INCOMPLETE_RECENCY_RE = re.compile(r"최근(?!\s*\d)")
+
+
+def _temporal_requirement_issues(
+    query: str,
+    expression: event_ir.Condition,
+    *,
+    current_date: str | None,
+) -> list[dict[str, Any]]:
+    """원문 시간 한정이 IR에서 사라지거나 인자가 없으면 전체 이력 폴백을 막는다."""
+    issues: list[dict[str, Any]] = []
+    try:
+        import event_parser  # 순환 없는 language adapter; canonical IR은 이 모듈을 import하지 않는다.
+
+        today = date.fromisoformat(current_date) if current_date else None
+        expected = event_parser.source_time_span_count(query, today=today)
+    except (ImportError, ValueError):
+        expected = 0
+    actual = event_ir.count_time_constraints(expression)
+    if expected > actual:
+        issues.append({
+            "code": "validation_mismatch",
+            "argument": "period",
+            "message": "원문에 있는 기간 조건이 canonical audience expression에서 누락되었습니다.",
+            "evidence": {"text": query, "start": 0, "end": len(query)},
+        })
+
+    signed_atoms = list(event_ir.iter_signed_atoms(expression))
+    for match in _INCOMPLETE_RECENCY_RE.finditer(query):
+        covered_atom = next(
+            (
+                atom for atom, _negated in signed_atoms
+                if atom.evidence is not None
+                and atom.evidence.start <= match.start() < atom.evidence.end
+            ),
+            None,
+        )
+        if covered_atom is not None and event_ir.time_windows(covered_atom):
+            continue
+        issues.append({
+            "code": "missing_argument",
+            "argument": "period",
+            "message": "'최근'의 범위를 확정할 기간 값이 필요합니다.",
+            "evidence": {
+                "text": match.group(0), "start": match.start(), "end": match.end(),
+            },
+        })
+    return issues
+
+
+def _dedupe_audience_issues(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    unique: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for item in items:
+        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
+        key = (
+            item.get("code"), item.get("argument"),
+            evidence.get("start"), evidence.get("end"),
+        )
+        unique.setdefault(key, item)
+    return list(unique.values())
+
+
+def _audience_receipts(expression: event_ir.Condition) -> list[dict[str, Any]]:
+    receipts: list[dict[str, Any]] = []
+    for index, (atom, negated) in enumerate(event_ir.iter_signed_atoms(expression)):
+        semantic = atom.to_dict()
+        fingerprint = hashlib.sha256(
+            json.dumps(semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        receipts.append({
+            "node_id": f"audience-atom-{index}",
+            "fingerprint": fingerprint,
+            "status": "compiled",
+            "polarity": "negative" if negated else "positive",
+            "sources": sorted(event_ir.sources(atom)),
+        })
+    return receipts
+
+
+def _derive_audience_execution(
+    payload: dict[str, Any], query: str, *, current_date: str | None
+) -> bool:
+    """Requirement 계약을 검증해 canonical execution IR을 단방향으로 파생한다.
+
+    반환값은 새 계약이 존재했는지다. False면 기존 저장 플랜을 위한 SemanticPlan 호환 경로가
+    이어서 처리할 수 있다. canonical→legacy 슬롯 역투영은 하지 않는다.
+    """
+    requirement = payload.get(AUDIENCE_REQUIREMENT_KEY)
+    if not isinstance(requirement, dict):
+        return False
+    raw_issues = requirement.get("issues")
+    if not isinstance(raw_issues, list):
+        raise CampaignQueryPlanValidationError("audience_requirement.issues must be an array")
+    issues = [_validated_audience_issue(item, query) for item in raw_issues]
+    raw_expression = requirement.get("expression")
+    expression: event_ir.Condition | None = None
+    if isinstance(raw_expression, dict):
+        try:
+            expression = event_ir.condition_from_dict(raw_expression)
+            event_ir.validate_evidence(expression)
+        except (event_ir.IrSchemaError, event_ir.SemanticLossError) as exc:
+            raise CampaignQueryPlanValidationError(f"invalid audience expression: {exc}") from exc
+        for atom, _negated in event_ir.iter_signed_atoms(expression):
+            evidence = atom.evidence
+            if evidence is None or not (
+                0 <= evidence.start < evidence.end <= len(query)
+                and query[evidence.start:evidence.end] == evidence.text
+            ):
+                raise CampaignQueryPlanValidationError(
+                    "audience expression evidence does not match original_query"
+                )
+
+        catalog = audience_runtime.resolve_audience_catalog()
+        unknown_sources = event_compiler.unsupported_events(
+            expression, dict(catalog.compiler_events)
+        )
+        unknown_fields = event_compiler.unsupported_fields(
+            expression,
+            dict(catalog.compiler_events),
+            dict(catalog.compiler_fields),
+        )
+        for symbol in [*unknown_sources, *unknown_fields]:
+            issues.append({
+                "code": "unsupported_semantics",
+                "argument": symbol,
+                "message": f"Semantic Catalog에 등록되지 않은 심볼입니다: {symbol}",
+                "evidence": {"text": query, "start": 0, "end": len(query)},
+            })
+        capability = event_compiler.validate_compiler_capability(
+            expression, context=catalog.compile_context(literals=True)
+        )
+        if capability.status != event_compiler.CAPABILITY_SUPPORTED:
+            for issue in capability.issues or ():
+                issues.append({
+                    "code": "unsupported_semantics",
+                    "argument": str(issue.symbol or issue.code),
+                    "message": "Canonical Event IR을 현재 SQL compiler가 표현하지 못합니다.",
+                    "evidence": {"text": query, "start": 0, "end": len(query)},
+                })
+        issues.extend(
+            _temporal_requirement_issues(query, expression, current_date=current_date)
+        )
+    elif raw_expression is not None:
+        raise CampaignQueryPlanValidationError(
+            "audience_requirement.expression must be an object or null"
+        )
+
+    if expression is None and not issues:
+        issues.append({
+            "code": "missing_argument",
+            "argument": "audience_expression",
+            "message": "타겟 오디언스 조건을 canonical expression으로 확정하지 못했습니다.",
+            "evidence": {"text": query, "start": 0, "end": len(query)},
+        })
+    issues = _dedupe_audience_issues(issues)
+    requirement["expression"] = expression.to_dict() if expression is not None else None
+    requirement["issues"] = issues
+
+    if issues:
+        payload.pop(EVENT_EXPRESSION_KEY, None)
+        missing = sorted({
+            f"audience.{item['argument']}"
+            for item in issues if item.get("code") in {"missing_argument", "ambiguous_requirement"}
+        })
+        unsupported = [item for item in issues if item.get("code") == "unsupported_semantics"]
+        if unsupported and not missing:
+            payload["semantic_ir"] = empty_semantic_ir(
+                status="unsupported",
+                message=unsupported[0]["message"],
+                failure_kind="unsupported",
+            )
+            payload["semantic_ir"]["unsupported_operations"] = [
+                {"kind": item["argument"], "reason": item["message"],
+                 "evidence": item["evidence"]["text"]}
+                for item in unsupported
+            ]
+        else:
+            payload["semantic_ir"] = empty_semantic_ir(
+                status="needs_clarification",
+                missing_fields=missing or ["audience.requirement"],
+                message=issues[0]["message"],
+                failure_kind="user_clarification" if missing else "system_failure",
+            )
+        return True
+
+    assert expression is not None
+    payload[EVENT_EXPRESSION_KEY] = {
+        "expression": expression.to_dict(),
+        "source": AUDIENCE_REQUIREMENT_KEY,
+        "receipts": _audience_receipts(expression),
+    }
+    payload["semantic_ir"] = empty_semantic_ir(status="resolved")
+    return True
+
+
 # `_drop_campaign_constraint_requirements` 는 2026-08-02 SemanticPlanV2 이행으로 제거됐다.
 # 그 함수는 "LLM 이 낸 결핍 보고 중 캠페인 제약 항목"을 사후 삭제하는 sweep 이었다. 결핍의
 # 소유자가 LLM 이었기 때문에 필요했던 보정이고, 이제 결핍은 semantic_plan 노드 스키마에서
 # 계산된다 — 캠페인 채널·혜택은 애초에 노드 필드가 아니므로 결핍으로 생기지 않는다.
 
 
-def _derive_semantic_ir(payload: dict[str, Any], query: str) -> None:
-    """semantic_ir 을 semantic_plan 에서 파생한다(LLM 이 낸 semantic_ir 은 버린다).
+def _derive_semantic_ir(
+    payload: dict[str, Any], query: str, *, current_date: str | None = None
+) -> None:
+    """semantic_ir 을 단일 audience requirement에서 파생한다.
 
-    이 시점의 파생은 **스키마 축만** 본다(필수 필드 결핍). capability·coverage 축까지 반영한
-    최종 파생은 실행 직전 `semantic_pipeline` 이 같은 함수로 다시 계산해 덮어쓴다 —
-    두 번 계산해도 같은 함수라 갈라지지 않는다.
+    audience_requirement가 없는 저장/규칙 플랜만 SemanticPlanV2 호환 경로를 탄다. 새 LLM 계약은
+    두 표현을 동시에 만들 수 없고, canonical 경로는 실행 슬롯으로 역투영하지 않는다.
     """
+    if _derive_audience_execution(payload, query, current_date=current_date):
+        payload.setdefault("semantic_plan", {"nodes": []})
+        return
+
+    # Legacy ingress adapter — 신규 LLM schema에서는 노출되지 않는다.
     import semantic_plan as plan_module  # 순환 없음
     import semantic_pipeline  # 순환 없음(파이프라인은 v4 스키마를 모른다)
 
@@ -902,8 +1241,23 @@ def attach_campaign_query_plan_v4_identity(
     if not isinstance(payload, dict):
         return payload
     enriched = copy.deepcopy(payload)
+    # LLM 입력면에서 제거한 실행 호환 필드는 애플리케이션이 빈 값으로 소유한다. canonical
+    # expression을 이 슬롯들로 다시 투영하지 않는다(SQL 권위가 되살아나는 것을 막는다).
+    enriched.setdefault("target_user", {})
+    enriched.setdefault("exclude", {"gender": [], "interests": [], "lifecycle": []})
+    enriched.setdefault("campaign_constraints", {})
+    enriched.setdefault("aggregation_request", None)
+    enriched.setdefault("set_expressions", [])
+    enriched.setdefault("computed_metrics", [])
+    enriched.setdefault("external_conditions", [])
+    enriched.setdefault("compound_dimension_filters", [])
+    enriched.setdefault("result_limit", None)
+    enriched.setdefault("semantic_evidence", [])
+    enriched.setdefault("unresolved", [])
+    enriched.setdefault("semantic_plan", {"nodes": []})
     _normalize_unique_evidence_spans(enriched, query)
-    _derive_semantic_ir(enriched, query)
+    _normalize_audience_evidence(enriched, query)
+    _derive_semantic_ir(enriched, query, current_date=current_date)
     enriched.update(
         {
             "schema_version": CAMPAIGN_QUERY_PLAN_V4_VERSION,
@@ -944,6 +1298,15 @@ def build_campaign_query_plan_v4_fallback(
             "compound_dimension_filters": [],
             "result_limit": None,
             "semantic_evidence": [],
+            AUDIENCE_REQUIREMENT_KEY: {
+                "expression": None,
+                "issues": [{
+                    "code": "validation_mismatch",
+                    "argument": "semantic_interpretation",
+                    "message": "LLM 의미 구조화를 사용할 수 없습니다.",
+                    "evidence": {"text": query, "start": 0, "end": len(query)},
+                }],
+            },
             "semantic_plan": {"nodes": []},
             "unresolved": [
                 {
@@ -1066,6 +1429,48 @@ def validate_campaign_query_plan_v4(
 
 def _validate_semantic_layer(payload: dict[str, Any]) -> None:
     """의미 계층 계약: 모든 채택 값에 원문 근거, 값 리터럴은 애플리케이션 소유."""
+
+    audience_requirement = payload.get(AUDIENCE_REQUIREMENT_KEY)
+    if audience_requirement is not None:
+        if not isinstance(audience_requirement, dict):
+            raise CampaignQueryPlanValidationError("audience_requirement must be an object")
+        issues = audience_requirement.get("issues")
+        if not isinstance(issues, list):
+            raise CampaignQueryPlanValidationError("audience_requirement.issues must be an array")
+        normalized_issues = [
+            _validated_audience_issue(item, payload["original_query"]) for item in issues
+        ]
+        expression_raw = audience_requirement.get("expression")
+        if expression_raw is not None and not isinstance(expression_raw, dict):
+            raise CampaignQueryPlanValidationError(
+                "audience_requirement.expression must be an object or null"
+            )
+        if isinstance(expression_raw, dict):
+            try:
+                expression = event_ir.condition_from_dict(expression_raw)
+                event_ir.validate_evidence(expression)
+            except (event_ir.IrSchemaError, event_ir.SemanticLossError) as exc:
+                raise CampaignQueryPlanValidationError(str(exc)) from exc
+            for atom, _negated in event_ir.iter_signed_atoms(expression):
+                evidence_item = atom.evidence
+                if evidence_item is None or not (
+                    0 <= evidence_item.start < evidence_item.end <= len(payload["original_query"])
+                    and payload["original_query"][evidence_item.start:evidence_item.end]
+                    == evidence_item.text
+                ):
+                    raise CampaignQueryPlanValidationError(
+                        "audience expression evidence does not match original_query"
+                    )
+        execution = payload.get(EVENT_EXPRESSION_KEY)
+        if normalized_issues and execution is not None:
+            raise CampaignQueryPlanValidationError(
+                "audience issues and executable event_expression cannot coexist"
+            )
+        if not normalized_issues and isinstance(expression_raw, dict):
+            if not isinstance(execution, dict) or execution.get("expression") != expression_raw:
+                raise CampaignQueryPlanValidationError(
+                    "event_expression must be the exact application-owned audience projection"
+                )
 
     evidence = payload.get("semantic_evidence")
     if not isinstance(evidence, list):

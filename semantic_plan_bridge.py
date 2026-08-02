@@ -292,11 +292,19 @@ def _claims_cover(
     없으면 `all([])` 이 참이라 청구가 무엇이든 통과하는데, 그건 증명이 아니라 증명 대상의 부재다.
     타입 확정 실패에는 이 관대함이 안전하지만(그 노드는 어차피 폐기된다), 컴파일 실패에는 위험하다 —
     '이 연산은 지원하지 않는다'는 **명시적 판정**이 근거 없이 침묵으로 바뀐다.
+
+    다만 원자의 부재가 곧 근거의 부재는 아니다. 값 없는 범주 조건('구매반응이 없는 회원')은
+    셀 수 있는 원자를 하나도 갖지 않는데, 그런 구절이야말로 슬롯 계층이 통째로 소유한다.
+    그래서 원자가 없을 때는 요구를 **구간 포함**으로 바꾼다 — 청구가 이 구간 자체를 덮고
+    있는가. 공허참(청구가 무엇이든 통과)은 그대로 막히고, 슬롯이 같은 구절을 정확히 청구한
+    경우만 중복으로 인정된다.
     """
     start, end = bounds
     inside = [anchor for anchor in anchors if start <= anchor.start and anchor.end <= end]
-    if require_anchor and not inside:
-        return False
+    if not inside:
+        if not require_anchor:
+            return True
+        return any(low <= start and end <= high for low, high in claimed)
     return all(
         any(low <= anchor.start and anchor.end <= high for low, high in claimed)
         for anchor in inside
@@ -304,9 +312,13 @@ def _claims_cover(
 
 
 def supersede_slot_owned_failures(
-    plan: SemanticPlanV2, *, query: str, claimed: Sequence[tuple[int, int]]
+    plan: SemanticPlanV2,
+    *,
+    query: str,
+    claimed: Sequence[tuple[int, int]],
+    compiled: Any = None,
 ) -> list[dict[str, Any]]:
-    """슬롯 계층이 이미 그 구간을 소유한 **컴파일 실패**를 실패 목록에서 걷어낸다.
+    """슬롯 계층이 이미 그 구간을 소유한 **실패**를 실패 목록에서 걷어낸다.
 
     타입 확정 실패에는 이 판정이 이미 있었는데(:func:`_partition_by_slot_ownership`) 컴파일
     실패에는 없었다. 그래서 판정이 뒤집힌 채로 돌았다 — 같은 프롬프트에서 **LLM 이 노드를 잘
@@ -315,40 +327,96 @@ def supersede_slot_owned_failures(
     판정 기준은 한쪽만 고칠 이유가 없다: 같은 구간의 의미가 이미 실행 플랜에 있으면, 그것을 다시
     만든 노드는 유실된 의미가 아니라 중복 방출이다.
 
-    `semantic_ir` 를 고치지 않는다 — 파생의 **입력**(capability_verdicts)만 줄이고, 투영은
-    평소대로 다시 계산된다(파생값을 사후 수정하면 그때부터 상태와 근거가 어긋난다).
+    **채널은 셋이다.** capability 판정(미지원)과 값 검증 실패(`validation_errors`), 그리고 그
+    둘의 원천인 컴파일 실패 목록. 한 채널만 걷으면 다른 채널이 그대로 막는다 — 실측
+    (2026-08-02): 슬롯 계층이 '구매반응이 없는 회원'을 정확히 컴파일해 두었는데도, 같은 구간을
+    다시 수치 노드로 방출한 LLM 의 정규화 실패 하나가 `validation_errors` 에 남아 요청 전체가
+    `semantic_registry_gap`("실행 설정이 준비되지 않았습니다")으로 막혔다. 설정은 멀쩡했다.
+
+    `semantic_ir` 를 고치지 않는다 — 파생의 **입력**만 줄이고, 투영은 평소대로 다시 계산된다
+    (파생값을 사후 수정하면 그때부터 상태와 근거가 어긋난다).
     """
-    verdicts = plan.capability_verdicts
-    if not verdicts:
+    if not plan.capability_verdicts and not plan.validation_errors:
         return []
     anchors = semantic_coverage.source_anchors(query)
     spans_by_node = {
         node.id: (node.source_span or "", node.source_start, node.source_end)
         for node in plan.walk()
     }
-    kept: list[dict[str, Any]] = []
-    superseded: list[dict[str, Any]] = []
-    for verdict in verdicts:
-        node_id = verdict.get("node_id") if isinstance(verdict, Mapping) else None
+
+    def _slot_owned(item: Any) -> tuple[str, str, tuple[int, int]] | None:
+        """이 실패가 가리키는 노드의 구간을 슬롯 청구가 전부 덮는가."""
+        if isinstance(item, Mapping) and item.get("supersedable") is False:
+            # 생산자가 "이건 중복 방출이 아니다"라고 선언한 실패(슬롯 충돌 등)는 걷지 않는다.
+            return None
+        node_id = item.get("node_id") if isinstance(item, Mapping) else None
         located = spans_by_node.get(node_id) if node_id else None
         bounds = _resolve_bounds(query, *located) if located else None
         if bounds is None or not _claims_cover(
             bounds, anchors=anchors, claimed=claimed, require_anchor=True
         ):
-            kept.append(verdict)
-            continue
-        superseded.append({
-            "node_id": node_id,
-            "source_span": located[0],
-            "source_start": bounds[0],
-            "source_end": bounds[1],
-            "action": "compile_failure",
-            "reason": str(verdict.get("message") or verdict.get("failure_code") or ""),
-            "superseded_by": "slot_claim",
-        })
-    if superseded:
-        plan.capability_verdicts[:] = kept
+            return None
+        return str(node_id), located[0], bounds
+
+    superseded: list[dict[str, Any]] = []
+    owned_node_ids: set[str] = set()
+    channels = (
+        (plan.capability_verdicts, "compile_failure", "message"),
+        (plan.validation_errors, "validation_error", "reason"),
+    )
+    for channel, action, reason_key in channels:
+        kept: list[dict[str, Any]] = []
+        for item in channel:
+            owned = _slot_owned(item)
+            if owned is None:
+                kept.append(item)
+                continue
+            node_id, span, bounds = owned
+            owned_node_ids.add(node_id)
+            superseded.append({
+                "node_id": node_id,
+                "source_span": span,
+                "source_start": bounds[0],
+                "source_end": bounds[1],
+                "action": action,
+                "reason": str(item.get(reason_key) or item.get("failure_code") or ""),
+                "superseded_by": "slot_claim",
+            })
+        channel[:] = kept
+
+    # 컴파일 실패 목록도 함께 걷는다. 위 두 채널은 이 목록의 **파생**이고, 요구사항 원장은
+    # 원본을 다시 읽는다 — 원본을 남기면 요청은 통과하는데 원장만 실패를 말하는 모순이 된다.
+    failures = getattr(compiled, "failures", None)
+    if owned_node_ids and isinstance(failures, list):
+        failures[:] = [
+            failure for failure in failures
+            if not (
+                isinstance(failure, Mapping)
+                and str(failure.get("node_id") or "") in owned_node_ids
+            )
+        ]
     return superseded
+
+
+def _drop_superseded_requirements(
+    ledger: requirement_ledger.RequirementLedger, superseded: Sequence[Mapping[str, Any]]
+) -> None:
+    """슬롯 계층이 소유한 중복 방출은 요구사항 원장에서도 빠진다.
+
+    남겨 두면 원장이 "이 조건은 실행 계획으로 가지 못했다"고 말하는데 실제로는 슬롯이 이미
+    갖고 있다. 슬롯 계층이 단독으로 소유한 조건은 **원래부터 원장에 행이 없다**(원장은
+    semantic_plan 노드만 센다) — 중복 방출을 빼는 것은 그 표현을 원래대로 되돌리는 것이지
+    실패를 감추는 것이 아니다. 무엇을 왜 뺐는지는 파이프라인 감사(`superseded`)에 남는다.
+    """
+    owned = {
+        str(item.get("node_id")) for item in superseded
+        if isinstance(item, Mapping) and item.get("node_id")
+    }
+    if not owned:
+        return
+    ledger.requirements[:] = [
+        item for item in ledger.requirements if item.requirement_id not in owned
+    ]
 
 
 def _resolve_bounds(query: str, text: str, start: Any, end: Any) -> tuple[int, int] | None:
@@ -489,10 +557,13 @@ def apply(
     # 입력 시점의 청구 목록은 이미 낡았다. 컴파일 실패 소거는 최종 상태를 기준으로 판정해야 한다.
     final_claimed, _ = claimed_evidence_spans(query_plan, query=query)
     superseded.extend(
-        supersede_slot_owned_failures(result.plan, query=query, claimed=final_claimed)
+        supersede_slot_owned_failures(
+            result.plan, query=query, claimed=final_claimed, compiled=result.compiled
+        )
     )
     # 상태는 판정의 파생물이다 — 판정이 줄었으면 같은 규칙으로 다시 계산한다(고치는 것이 아니다).
     result.status = result.plan.status()
+    _drop_superseded_requirements(result.ledger, superseded)
     query_plan[PLAN_KEY] = result.plan.to_dict()
     query_plan["semantic_ir"] = semantic_pipeline.project_semantic_ir(result.plan)
     query_plan[REQUIREMENTS_KEY] = result.ledger.to_dict()

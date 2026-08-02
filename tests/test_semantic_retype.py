@@ -77,18 +77,21 @@ def test_variant_requires_its_own_required_fields() -> None:
         assert expected <= set(variant["required"]), node_type
 
 
-def test_llm_tool_schema_keeps_required_fields_non_nullable() -> None:
-    """strict 변환 후에도 필수 필드가 null 을 받으면 '전부 null 인 노드'가 다시 통과한다."""
+def test_llm_tool_schema_preserves_the_audience_nullability_contract() -> None:
+    """식이 없을 때는 명시적 issue가 필요하고, issue 자체는 null일 수 없다."""
     from query_structurer.campaign_plan_v4 import CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA
 
-    node = CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["$defs"]["semanticNode"]
-    for variant in node["anyOf"]:
-        node_type = variant["properties"]["type"]["enum"][0]
-        for name in semantic_plan.NODE_REQUIREMENTS[node_type]:
-            schema = variant["properties"][name]
-            types = schema.get("type")
-            listed = types if isinstance(types, list) else [types]
-            assert "null" not in listed, f"{node_type}.{name} 이 null 을 허용한다"
+    root = CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA
+    assert set(root["required"]) == set(root["properties"])
+    audience = root["properties"]["audience_requirement"]
+    assert set(audience["required"]) == {"expression", "issues"}
+    assert {branch.get("type") for branch in audience["properties"]["expression"]["anyOf"]} >= {
+        "null"
+    }
+    issue = audience["properties"]["issues"]["items"]
+    assert set(issue["required"]) == {"code", "argument", "message", "evidence"}
+    for name in issue["required"]:
+        assert issue["properties"][name].get("type") != "null", name
 
 
 # ── ② 결정론 재분류 ─────────────────────────────────────────────────────────────

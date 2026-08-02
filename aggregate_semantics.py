@@ -470,6 +470,7 @@ def validate_boolean_expression(
     expression: event_ir.Condition,
     predicate_factory: PredicateFactory,
     *,
+    domains: Mapping[str, aggregate_parser_config.SemanticDomain] | None = None,
     semantic_registry: event_semantic_registry.EventSemanticRegistry | None = None,
     max_branches: int = 64,
 ) -> BooleanValidationResult:
@@ -498,7 +499,11 @@ def validate_boolean_expression(
         return BooleanValidationResult(SEMANTIC_UNKNOWN, (issue,), ())
 
     registry = semantic_registry or event_semantic_registry.registry()
-    configured_domains = aggregate_parser_config.rules().semantic_domains
+    configured_domains = (
+        domains
+        if domains is not None
+        else aggregate_parser_config.rules().semantic_domains
+    )
     branches: list[BranchValidationResult] = []
     all_issues: list[SemanticValidationIssue] = []
     for predicates in raw_branches:

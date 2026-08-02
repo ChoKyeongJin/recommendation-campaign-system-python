@@ -122,6 +122,15 @@ class EventSpec:
     # 사건 정의에 항상 붙는 추가 술어(예: 보관 중인 카트만). 별칭은 ``{alias}`` 로 적는다.
     extra_predicates: tuple[str, ...] = ()
     label: str = ""
+    # 단순 ``table alias`` 로 끝나지 않는 물리 소스(검증된 조인을 포함한 relation)도
+    # 같은 Source 노드로 컴파일한다. ``{alias}`` 는 이 사건 인스턴스의 별칭이다.
+    # 비어 있으면 기존 ``table alias`` 바인딩을 그대로 사용한다.
+    from_sql: str = ""
+    # 회원키 타입 변환처럼 ``alias.column = subject.column`` 으로 표현할 수 없는 상관식.
+    # {alias}, {subject_alias}, {subject_key}, {event_subject_key} 를 사용할 수 있다.
+    correlation_sql: str = ""
+    # 발생 시각이 검증된 조인 대상에 있거나 계산식인 경우의 논리 시각 필드 바인딩.
+    time_expression: str = ""
 
 
 @dataclass(frozen=True)
@@ -131,6 +140,9 @@ class FieldSpec:
     source: str
     column: str
     data_type: str = "number"  # number | string | date | date_char8
+    # 계산 필드/조인 필드. ``{alias}`` 는 필드가 속한 Source 의 현재 별칭이다.
+    # 비어 있으면 기존 ``alias.column`` 바인딩을 사용한다.
+    expression: str = ""
 
 
 # 기본 사건 레지스트리 — 실CRM(CRMDW) 바인딩. graph_rag 가 member_target_filters.json 의 값으로
@@ -192,6 +204,7 @@ def resolve_fields(
         fields[f"{name}.{event_ir.TIME_FIELD_SUFFIX}"] = FieldSpec(
             source=name, column=spec.time_column,
             data_type=_TIME_FORMAT_DATA_TYPE.get(spec.time_format, "date"),
+            expression=spec.time_expression,
         )
     if overrides:
         fields.update(overrides)
@@ -309,8 +322,63 @@ class RelationPlan:
     params: dict[str, Any]
 
 
-def _correlation(spec: EventSpec, context: CompileContext) -> str:
-    return f"{spec.alias}.{spec.event_subject_key} = {context.subject.alias}.{spec.subject_key}"
+def _binding_tokens(
+    spec: EventSpec, context: CompileContext, *, alias: str | None = None
+) -> dict[str, str]:
+    """Catalog SQL 조각에 허용하는 닫힌 치환 변수.
+
+    업무 사건별 Python 분기를 만들지 않고 검증된 물리 선언을 재사용하기 위한 경계다.
+    임의 query 값은 들어오지 않으며, 리터럴은 catalog 적재 시점에 확정된 문자열만 사용한다.
+    """
+    return {
+        "alias": alias or spec.alias,
+        "subject_alias": context.subject.alias,
+        "subject_key": spec.subject_key,
+        "event_subject_key": spec.event_subject_key,
+    }
+
+
+def _render_binding(
+    template: str, spec: EventSpec, context: CompileContext, *, alias: str | None = None
+) -> str:
+    try:
+        return template.format(**_binding_tokens(spec, context, alias=alias))
+    except (KeyError, ValueError) as exc:
+        raise SqlCompileError(f"사건 '{spec.label or spec.table}' 물리 바인딩 형식이 잘못되었습니다") from exc
+
+
+def _source_sql(spec: EventSpec, context: CompileContext, *, alias: str | None = None) -> str:
+    active_alias = alias or spec.alias
+    if spec.from_sql:
+        return _render_binding(spec.from_sql, spec, context, alias=active_alias)
+    return f"{spec.table} {active_alias}"
+
+
+def _correlation(
+    spec: EventSpec, context: CompileContext, *, alias: str | None = None
+) -> str:
+    active_alias = alias or spec.alias
+    if spec.correlation_sql:
+        return _render_binding(spec.correlation_sql, spec, context, alias=active_alias)
+    return f"{active_alias}.{spec.event_subject_key} = {context.subject.alias}.{spec.subject_key}"
+
+
+def _extra_predicates(
+    spec: EventSpec, context: CompileContext, *, alias: str | None = None
+) -> list[str]:
+    return [
+        _render_binding(item, spec, context, alias=alias or spec.alias)
+        for item in spec.extra_predicates
+    ]
+
+
+def _event_time_sql(
+    spec: EventSpec, context: CompileContext, *, alias: str | None = None
+) -> str:
+    active_alias = alias or spec.alias
+    if spec.time_expression:
+        return _render_binding(spec.time_expression, spec, context, alias=active_alias)
+    return f"{active_alias}.{spec.time_column}"
 
 
 def compile_relation(relation: event_ir.Relation, context: CompileContext) -> RelationPlan:
@@ -323,8 +391,8 @@ def compile_relation(relation: event_ir.Relation, context: CompileContext) -> Re
                 root_source=relation.name, binding="subject_column", params={},
             )
         return RelationPlan(
-            from_sql=f"{spec.table} {spec.alias}",
-            where=[_correlation(spec, context), *(item.format(alias=spec.alias) for item in spec.extra_predicates)],
+            from_sql=_source_sql(spec, context),
+            where=[_correlation(spec, context), *_extra_predicates(spec, context)],
             group_by=[], scope={relation.name: spec.alias},
             root_source=relation.name, binding="fact_table", params={},
         )
@@ -341,10 +409,12 @@ def compile_relation(relation: event_ir.Relation, context: CompileContext) -> Re
         if plan.binding != "fact_table":
             raise SqlCompileError("주체 컬럼 사건은 조인할 수 없습니다")
         right_spec = context.event_spec(relation.right.name)
+        if right_spec.from_sql:
+            raise SqlCompileError("복합 물리 소스는 Join 오른쪽이 아니라 독립 Source 로 사용해야 합니다")
         plan.scope[relation.right.name] = right_spec.alias
         on_sql = compile_condition(relation.on, context.with_scope(plan.scope))
-        plan.from_sql += f" INNER JOIN {right_spec.table} {right_spec.alias} ON {on_sql.sql}"
-        plan.where.extend(item.format(alias=right_spec.alias) for item in right_spec.extra_predicates)
+        plan.from_sql += f" INNER JOIN {_source_sql(right_spec, context)} ON {on_sql.sql}"
+        plan.where.extend(_extra_predicates(right_spec, context))
         plan.params.update(on_sql.params)
         return plan
 
@@ -380,6 +450,15 @@ def compile_scalar(scalar: event_ir.Scalar, context: CompileContext) -> str:
         )
         if alias is None:
             raise SqlCompileError(f"'{scalar.name}' 을 참조할 관계가 현재 스코프에 없습니다")
+        if spec.expression:
+            try:
+                return spec.expression.format(
+                    alias=alias,
+                    subject_alias=context.subject.alias,
+                    subject_key=context.subject.key,
+                )
+            except (KeyError, ValueError) as exc:
+                raise SqlCompileError(f"필드 '{scalar.name}' 물리 바인딩 형식이 잘못되었습니다") from exc
         return f"{alias}.{spec.column}"
 
     if isinstance(scalar, Arithmetic):
@@ -460,7 +539,10 @@ def _compile_exists(condition: Exists, context: CompileContext) -> CompiledCondi
     if plan.binding == "subject_column":
         # 주체 컬럼 사건의 '존재'는 값이 있느냐다. 창이 붙었으면 Filter 가 이미 술어를 만들어 뒀다.
         spec = context.event_spec(plan.root_source)
-        predicates = [f"{context.subject.alias}.{spec.time_column} IS NOT NULL", *plan.where]
+        predicates = [
+            f"{_event_time_sql(spec, context, alias=context.subject.alias)} IS NOT NULL",
+            *plan.where,
+        ]
         return CompiledCondition(sql="(" + " AND ".join(predicates) + ")", params=plan.params)
     return CompiledCondition(sql=f"EXISTS ({_subquery(plan, '1')})", params=plan.params)
 
@@ -485,17 +567,18 @@ def _event_time_anchor(reference: EventReference, context: CompileContext) -> st
     """시간 관계의 기준 시점 — 팩트 테이블이면 MIN/MAX 상관 서브쿼리, 주체 컬럼이면 그 컬럼."""
     spec = context.event_spec(reference.source)
     if spec.binding == "subject_column":
-        return f"{context.subject.alias}.{spec.time_column}"
+        return _event_time_sql(spec, context, alias=context.subject.alias)
     aggregate = {"first": "MIN", "last": "MAX"}.get(reference.selector)
     if aggregate is None:
         raise SqlCompileError(f"시간 관계의 기준 시점은 first/last 여야 합니다(받은 값: {reference.selector})")
     alias = spec.alias + "1"
     predicates = [
-        f"{alias}.{spec.event_subject_key} = {context.subject.alias}.{spec.subject_key}",
-        *(item.format(alias=alias) for item in spec.extra_predicates),
+        _correlation(spec, context, alias=alias),
+        *_extra_predicates(spec, context, alias=alias),
     ]
     return (
-        f"(SELECT {aggregate}({alias}.{spec.time_column}) FROM {spec.table} {alias} "
+        f"(SELECT {aggregate}({_event_time_sql(spec, context, alias=alias)}) "
+        f"FROM {_source_sql(spec, context, alias=alias)} "
         f"WHERE {' AND '.join(predicates)})"
     )
 
@@ -523,13 +606,16 @@ def _compile_temporal_relation(condition: TemporalRelation, context: CompileCont
         else context.dialect.date_add_days(anchor, days)
     )
     predicates = [
-        f"{alias}.{target.event_subject_key} = {context.subject.alias}.{target.subject_key}",
-        *(item.format(alias=alias) for item in target.extra_predicates),
+        _correlation(target, context, alias=alias),
+        *_extra_predicates(target, context, alias=alias),
         # 기준 시점 **이후**부터(같은 사건이면 기준이 된 발생 자체를 다시 세지 않도록 초과 비교) 창 끝까지.
-        f"{alias}.{target.time_column} > {anchor}",
-        f"{alias}.{target.time_column} <= {upper}",
+        f"{_event_time_sql(target, context, alias=alias)} > {anchor}",
+        f"{_event_time_sql(target, context, alias=alias)} <= {upper}",
     ]
-    return CompiledCondition(sql=f"EXISTS (SELECT 1 FROM {target.table} {alias} WHERE {' AND '.join(predicates)})")
+    return CompiledCondition(
+        sql=f"EXISTS (SELECT 1 FROM {_source_sql(target, context, alias=alias)} "
+            f"WHERE {' AND '.join(predicates)})"
+    )
 
 
 # ── 진입점 ────────────────────────────────────────────────────────────────────────

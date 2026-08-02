@@ -68,6 +68,7 @@ _CONDITIONS = _keys(CONDITION, {
     "purchase_count_ranking": "구매 건수 랭킹",
     "entity_set": "지정 엔터티 집합",
     "retrieval_scope": "검색 범위",
+    "audience_requirement": "근거와 이슈를 포함한 canonical 오디언스 요구 계약",
     "event_expression": "사건 논리식 IR",
     "canonical_targeting_expression": "정규 타겟팅 표현식",
     "union_condition": "합집합 타겟(A 이거나 B)",

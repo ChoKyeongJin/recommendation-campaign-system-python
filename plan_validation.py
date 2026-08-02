@@ -681,19 +681,37 @@ def _collect_canonical_ownership_issues(
     claims_payload = plan.get("condition_claims")
 
     event_payload = plan.get("event_expression")
-    event_requires_canonical = (
+
+    def has_value(value: Any) -> bool:
+        if isinstance(value, Mapping):
+            return any(has_value(item) for item in value.values())
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return any(has_value(item) for item in value)
+        return value not in (None, "")
+
+    # The canonical audience producers use Event IR itself as the Boolean
+    # authority.  A populated legacy audience projection beside it would be a
+    # second executable interpretation, so reject that hybrid explicitly.
+    if (
         isinstance(event_payload, Mapping)
-        and isinstance(event_payload.get("expression"), Mapping)
-    )
+        and event_payload.get("source") in {"audience_requirement", "semantic_plan"}
+        and (has_value(plan.get("target_user", {})) or has_value(plan.get("exclude", {})))
+    ):
+        issues.append(_issue(
+            INTERNAL_INVALID,
+            "canonical_legacy_audience_conflict",
+            "event_expression",
+            event_payload,
+        ))
     set_requires_canonical = (
         reconciliation_complete
         and isinstance(plan.get("set_expressions"), list)
         and bool(plan.get("set_expressions"))
     )
 
-    # Compatibility policy: a legacy-only plan with no Event/Set Boolean source
-    # remains executable.  Once either source exists (or a canonical bundle has
-    # started), deleting the ownership metadata is an invalid hybrid plan.
+    # Compatibility policy: Event IR is now self-contained and does not require
+    # the older PredicateRef Boolean bundle.  Set expressions and an explicitly
+    # started old bundle retain their historical ownership invariants.
     if not expression_present:
         incomplete_bundle = (
             "canonical_targeting_version" in plan
@@ -703,7 +721,7 @@ def _collect_canonical_ownership_issues(
                 and plan["canonical_projection"].get("status") == "supported"
             )
         )
-        if event_requires_canonical or set_requires_canonical or incomplete_bundle:
+        if set_requires_canonical or incomplete_bundle:
             issues.append(_issue(
                 INTERNAL_INVALID,
                 "canonical_targeting_expression_missing",

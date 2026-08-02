@@ -1,30 +1,37 @@
-"""V4 strict 도구 스키마 표현 가능성 가드 — closed-empty 노드 0개 불변식.
+"""V4 strict 도구 스키마가 canonical Event IR 의미를 실제로 표현하는지 검증한다.
 
-strict 함수 호출은 properties 없는 object 를 ``additionalProperties: false`` 빈 객체로 닫는다.
-그런 노드는 LLM 이 ``{}`` 또는 ``null`` 로만 채울 수 있어, 그 슬롯이 필요한 프롬프트는 조용히
-오모델링되거나(가장 가까운 표현 가능한 슬롯으로 우회) junk unresolved 로 차단된다. 실제 사고
-3건이 전부 이 형태였다: 장바구니 이탈 → entity_set_condition 오모델링, entity_set window ``{}``
-→ invalid_derived_set_window 재시도 소진, 미접속 6개월 → purchase_inactivity(미구매) 둔갑.
-
-여기서 강제하는 계약:
-  1. LLM 에 노출되는 strict 스키마에 closed-empty 노드가 하나도 없어야 한다.
-     새 target_user 슬롯은 targeting_ir.SLOT_SHAPES 한 항목(설명 + properties + coerce)으로
-     추가하고 campaign_plan_v4 의 _slot_schema() 로 배선하라. LLM 이 채울 수 없는(물리 스키마
-     참조 등) 필드는 _APPLICATION_OWNED_* 로 노출 자체를 빼라 — 빈 껍데기로 광고하지 마라.
-  2. SLOT_SHAPES 의 target_user 슬롯은 전부 실제로 노출돼 있어야 한다(레지스트리에는 있는데
-     도구에는 없는 반대 방향 드리프트 차단).
-  3. SLOT_SHAPES 의 target_user object 조각은 properties 를 선언해야 한다(1의 근원 차단).
-
-여기서 실패하면 프로덕션 프롬프트가 아니라 CI 가 먼저 알려 준다.
+계약은 슬롯마다 필드를 늘리지 않는다. 고정된 논리·관계 대수와 Semantic Catalog 심볼만으로
+``기간 내 사건 집계 AND 다른 사건 부재`` 같은 조합을 표현할 수 있어야 한다.
 """
 
 from __future__ import annotations
 
-import targeting_ir
-from query_structurer.campaign_plan_v4 import (
-    _APPLICATION_OWNED_TARGET_USER_FIELDS,
-    CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA,
-)
+from typing import Any
+
+from jsonschema import Draft202012Validator
+
+import audience_runtime
+import event_ir
+from query_structurer.campaign_plan_v4 import CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA
+
+_LLM_ROOT = {"intent", "campaign_constraints", "result_limit", "audience_requirement"}
+_FORBIDDEN_LLM_ROOT = {
+    "target_user",
+    "exclude",
+    "semantic_plan",
+    "semantic_ir",
+    "semantic_evidence",
+    "unresolved",
+    "event_expression",
+    "aggregation_request",
+    "set_expressions",
+    "computed_metrics",
+    "external_conditions",
+    "condition_evaluations",
+    "member_metric_ranking",
+    "literal_bindings",
+    "source_requirements",
+}
 
 
 def _closed_empty(node: object) -> bool:
@@ -36,84 +43,164 @@ def _closed_empty(node: object) -> bool:
     )
 
 
-def _collect_closed_empty_paths(node: object, path: str, holes: list[str]) -> None:
+def _walk_schema(node: object, path: str = "$") -> list[tuple[str, dict[str, Any]]]:
     if not isinstance(node, dict):
-        return
-    if _closed_empty(node):
-        holes.append(path)
-        return
+        return []
+    found: list[tuple[str, dict[str, Any]]] = [(path, node)]
     for key, child in (node.get("properties") or {}).items():
-        _collect_closed_empty_paths(child, f"{path}.{key}", holes)
+        found.extend(_walk_schema(child, f"{path}.{key}"))
     if isinstance(node.get("items"), dict):
-        _collect_closed_empty_paths(node["items"], path + "[]", holes)
-    for branch in node.get("anyOf") or []:
-        if isinstance(branch, dict) and branch.get("type") != "null":
-            _collect_closed_empty_paths(branch, path, holes)
+        found.extend(_walk_schema(node["items"], path + "[]"))
+    for keyword in ("anyOf", "oneOf", "allOf"):
+        for index, branch in enumerate(node.get(keyword) or []):
+            found.extend(_walk_schema(branch, f"{path}.{keyword}[{index}]"))
     for name, child in (node.get("$defs") or {}).items():
-        _collect_closed_empty_paths(child, f"$defs.{name}", holes)
+        found.extend(_walk_schema(child, f"$defs.{name}"))
+    return found
 
 
-def test_llm_schema_has_no_inexpressible_nodes() -> None:
-    holes: list[str] = []
-    _collect_closed_empty_paths(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA, "$", holes)
-    assert not holes, (
-        "V4 strict 도구 스키마에 LLM 이 표현할 수 없는(빈 닫힌 객체) 노드가 있다: "
-        f"{holes}\n슬롯이면 targeting_ir.SLOT_SHAPES 조각에 properties 를 선언해 배선하고, "
-        "모델이 채우면 안 되는 필드면 _APPLICATION_OWNED_* 로 노출을 빼라."
-    )
+def _discriminators(schema: dict[str, Any]) -> set[str]:
+    values: set[str] = set()
+    for _, node in _walk_schema(schema):
+        type_property = (node.get("properties") or {}).get("type")
+        if isinstance(type_property, dict):
+            values.update(str(value) for value in type_property.get("enum") or [])
+    return values
 
 
-def test_every_target_user_slot_shape_is_exposed() -> None:
-    target_user = CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"]["target_user"]
-    exposed = set(target_user.get("properties") or {})
-    expected = {
-        shape.name
-        for shape in targeting_ir.structured_slot_shapes()
-        if shape.container == "target_user"
-    } - set(_APPLICATION_OWNED_TARGET_USER_FIELDS)
-    missing = expected - exposed
-    assert not missing, (
-        f"SLOT_SHAPES 에 선언된 target_user 슬롯이 V4 도구 스키마에 노출되지 않았다: {sorted(missing)}\n"
-        "campaign_plan_v4._TARGET_USER_SCHEMA 에 _slot_schema()로 배선하라."
-    )
+def _catalog_symbol_enums(schema: dict[str, Any], discriminator: str) -> set[frozenset[str]]:
+    enums: set[frozenset[str]] = set()
+    for _, node in _walk_schema(schema):
+        properties = node.get("properties") or {}
+        type_property = properties.get("type")
+        if not isinstance(type_property, dict) or discriminator not in (
+            type_property.get("enum") or []
+        ):
+            continue
+        name_property = properties.get("name")
+        if isinstance(name_property, dict) and name_property.get("enum"):
+            enums.add(frozenset(str(value) for value in name_property["enum"]))
+    return enums
 
 
-def test_target_user_slot_fragments_declare_properties() -> None:
-    undeclared = [
-        shape.name
-        for shape in targeting_ir.structured_slot_shapes()
-        if shape.container == "target_user"
-        and shape.schema.get("type") == "object"
-        and not shape.schema.get("properties")
-    ]
-    assert not undeclared, (
-        f"properties 없는 object 슬롯 조각은 strict 변환에서 빈 닫힌 객체가 된다: {undeclared}"
-    )
-
-
-def test_plan_container_slots_with_properties_have_a_producer() -> None:
-    """plan 컨테이너 슬롯도 properties 를 선언했다면 **생산 경로가 정확히 하나** 있어야 한다.
-
-    P4('누적 구매금액 상위 10%') 사고의 재발 차단 — member_metric_ranking 은 컴파일러(TOP N PERCENT)
-    까지 완비돼 있었지만 어떤 생산 경로에도 연결되지 않아 도달 불가였다. 2026-08-02 이행으로
-    생산 경로는 두 가지가 됐다: V4 도구 스키마 노출(LLM 직접 방출) 또는 SemanticPlan 컴파일러 소유.
-    둘 다 없으면 도달 불가고, 둘 다면 같은 의미의 이중 생산자다."""
-    import legacy_plan_compiler  # noqa: PLC0415
-
-    root = set(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"])
-    compiler_owned = {slot for slot in legacy_plan_compiler.COMPILER_OWNED_SLOTS if "." not in slot}
-    expected = {
-        shape.name
-        for shape in targeting_ir.structured_slot_shapes()
-        if shape.container == "plan" and shape.schema.get("properties")
+def _representative_payload() -> dict[str, Any]:
+    first_evidence = {"text": "최근 30일 캠페인 발송 성공 횟수가 3회 이상", "start": 0, "end": 29}
+    second_evidence = {"text": "구매반응이 없는", "start": 32, "end": 40}
+    expression = {
+        "type": "and",
+        "operands": [
+            {
+                "type": "comparison",
+                "operator": ">=",
+                "left": {
+                    "type": "aggregate",
+                    "function": "count",
+                    "relation": {
+                        "type": "filter",
+                        "relation": {
+                            "type": "source",
+                            "name": "campaign_contact_success",
+                        },
+                        "where": {
+                            "type": "time_filter",
+                            "field": {
+                                "type": "field",
+                                "name": "campaign_contact_success.occurred_at",
+                            },
+                            "window": {
+                                "type": "rolling",
+                                "start": None,
+                                "end_exclusive": None,
+                                "value": 30,
+                                "unit": "day",
+                            },
+                        },
+                    },
+                    "expression": {
+                        "type": "field",
+                        "name": "campaign_contact_success.execution_id",
+                    },
+                    "distinct": True,
+                },
+                "right": {"type": "literal", "value": 3},
+                "evidence": first_evidence,
+            },
+            {
+                "type": "not",
+                "operand": {
+                    "type": "exists",
+                    "relation": {
+                        "type": "source",
+                        "name": "campaign_purchase_response",
+                    },
+                    "evidence": second_evidence,
+                },
+            },
+        ],
     }
-    missing = expected - root - compiler_owned
-    assert not missing, (
-        f"properties 를 선언한 plan 슬롯에 생산 경로가 없다: {sorted(missing)}\n"
-        "V4 루트 properties 에 _slot_schema()로 노출하거나 legacy_plan_compiler 에 매핑하라."
+    return {
+        "intent": "find_user_segment",
+        "campaign_constraints": {
+            "objective": "재반응 유도",
+            "offer_type": None,
+            "channels": [],
+            "sell_object": None,
+        },
+        "result_limit": None,
+        "audience_requirement": {"expression": expression, "issues": []},
+    }
+
+
+def test_llm_schema_has_fixed_root_and_no_execution_or_legacy_slots() -> None:
+    root = set(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA.get("properties") or {})
+    assert root == _LLM_ROOT
+    assert set(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA.get("required") or []) == _LLM_ROOT
+    assert not (_FORBIDDEN_LLM_ROOT & root)
+
+
+def test_llm_schema_has_no_inexpressible_closed_empty_nodes() -> None:
+    holes = [
+        path
+        for path, node in _walk_schema(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA)
+        if _closed_empty(node)
+    ]
+    assert not holes, f"V4 strict 스키마에 표현 불가능한 빈 닫힌 객체가 있다: {holes}"
+
+
+def test_audience_requirement_exposes_the_complete_fixed_event_ir_algebra() -> None:
+    expression_schema = CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"][
+        "audience_requirement"
+    ]["properties"]["expression"]
+    discriminators = _discriminators(expression_schema)
+    assert event_ir.NODE_TYPES <= discriminators, (
+        f"LLM Event IR 스키마에서 빠진 고정 대수 노드: {sorted(event_ir.NODE_TYPES - discriminators)}"
     )
-    both = expected & root & compiler_owned
-    assert not both, f"plan 슬롯이 LLM 노출과 컴파일러 소유 양쪽에 있다(이중 생산자): {sorted(both)}."
-    assert "member_metric_ranking" in (root | compiler_owned), (
-        "P4 회귀: member_metric_ranking 의 생산 경로가 사라졌다."
+
+
+def test_event_ir_catalog_enums_come_from_the_resolved_catalog() -> None:
+    expression_schema = CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"][
+        "audience_requirement"
+    ]["properties"]["expression"]
+    catalog = audience_runtime.resolve_audience_catalog()
+    # ``subject`` is the correlated base row, not an event relation.  The LLM source
+    # enum therefore follows exactly the compiler-capable event/field projections.
+    assert frozenset(catalog.compiler_events) in _catalog_symbol_enums(
+        expression_schema, "source"
     )
+    assert frozenset(catalog.compiler_fields) in _catalog_symbol_enums(
+        expression_schema, "field"
+    )
+
+
+def test_schema_expresses_windowed_aggregate_and_negated_existence_composition() -> None:
+    payload = _representative_payload()
+    validator = Draft202012Validator(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA)
+    errors = sorted(validator.iter_errors(payload), key=lambda error: list(error.path))
+    assert not errors, "\n".join(error.message for error in errors)
+
+    # JSON Schema와 런타임 역직렬화기가 같은 표현을 받아야 한다.
+    expression = payload["audience_requirement"]["expression"]
+    parsed = event_ir.condition_from_dict(expression)
+    assert isinstance(parsed, event_ir.And)
+    assert isinstance(parsed.operands[0], event_ir.Comparison)
+    assert isinstance(parsed.operands[1], event_ir.Not)

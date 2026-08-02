@@ -257,17 +257,16 @@ def test_compilation_is_deterministic(context) -> None:
 
 # ── 슬롯 소유권: 컴파일러 소유 슬롯은 LLM 노출면에 없다 ─────────────────────────
 def test_compiler_owned_slots_are_not_exposed_to_the_llm() -> None:
+    import json
+
     from query_structurer.campaign_plan_v4 import CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA
 
-    exposed_plan = set(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"])
-    exposed_target_user = set(
-        CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"]["target_user"]["properties"]
-    )
+    properties = CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"]
+    assert "audience_requirement" in properties
+    assert "target_user" not in properties and "exclude" not in properties
+    rendered = json.dumps(properties, ensure_ascii=False)
     for slot in legacy_plan_compiler.COMPILER_OWNED_SLOTS:
-        if slot.startswith("target_user."):
-            assert slot[len("target_user."):] not in exposed_target_user, slot
-        else:
-            assert slot not in exposed_plan, slot
+        assert f'"{slot.rpartition(".")[2]}"' not in rendered, slot
 
 
 def test_every_node_type_has_a_declared_slot_mapping() -> None:

@@ -87,11 +87,10 @@ class LLMQueryStructurer(QueryStructurer):
 
 
 class LLMCampaignQueryPlanV4Structurer:
-    """Extract the evidence-bound plan the executor consumes unchanged.
+    """Extract one evidence-bound audience requirement plus campaign metadata.
 
-    V4 merges the two former structurers: the executor-shaped slot contract
-    (formerly v2) and the semantic contracts — evidence spans, unresolved
-    reporting, application-owned literals (formerly v3).
+    The model emits meaning in the canonical Event IR contract. The application
+    validates that requirement and owns all downstream execution projections.
     """
 
     def __init__(
@@ -111,30 +110,27 @@ class LLMCampaignQueryPlanV4Structurer:
     def structure(
         self, input: QueryStructuringInput, extra_instruction: str | None = None
     ) -> CampaignQueryPlanV4:
-        # extra_instruction: 표적 재방출(1회) 힌트 — 이전 제출에서 실행 슬롯으로 귀결되지 않은
-        # 원문 조건 목록을 알려 보완 제출을 요구한다. 원문(query)은 그대로라 evidence span
-        # 좌표계는 변하지 않는다.
+        # A retry hint may request a corrected canonical requirement. The query
+        # itself remains unchanged so evidence offsets keep the same coordinate system.
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "너는 캠페인 요청의 의미 구조화기다. 사용자 원문에서 확인되는 의미만 "
-                    "QueryPlan v4로 제출한다. 실행기가 그대로 소비할 snake_case 필드를 사용하고 "
-                    "SQL이나 물리 스키마를 만들지 않는다. 명시되지 않은 타겟 조건이나 혜택은 만들지 "
-                    "않는다. 부정, 기간의 "
-                    "소유 대상, AND/OR 범위를 보존하고 불확실한 내용은 unresolved로 반환한다. "
-                    "missing_fields에는 이 질문의 결과를 계산하는 데 실제로 필수인 값만 넣는다. 고객 "
-                    "리스트 요청에 사용자가 요구하지 않은 캠페인 채널·혜택·상품·목표를 추가로 요구하지 "
-                    "않는다. 증가/감소 가까이 있는 퍼센트는 증감률 임계값이며 할인 혜택이 아니다. "
-                    "폭염·한파·미세먼지처럼 현재 또는 미래의 실시간 외부 상태가 대상 범위를 정하면 "
-                    "external_conditions에는 조건 종류만 기록하고 실제 지역이나 수치를 생성하지 않는다. "
-                    "과거 캠페인명·상품명에 포함된 단어는 실시간 외부 조건으로 만들지 않는다. "
-                    "application-owned literal 두 날짜와 퍼센트·비교 연산자가 있으면 값을 다시 만들지 "
-                    "말고 period_over_period_change의 baseline/current/threshold/comparison으로 연결한다. "
-                    "'기간 내 상위 N개 상품 중 M개를 구매한 회원'처럼 계산으로 정해지는 대상을 "
-                    "리터럴 상품명이나 일반 구매횟수로 바꾸지 말고, entity_set_condition의 "
-                    "aggregation→ranking→member_set AST로 표현한다. 이때 N은 ranking.limit, "
-                    "M은 member_set.cardinality이며 'M개만'은 operator '='이다."
+                    "You structure campaign requests into one canonical audience contract. Return only the "
+                    "four fields accepted by the tool schema: intent, campaign_constraints, result_limit, "
+                    "and audience_requirement. audience_requirement.expression is the complete Event IR "
+                    "meaning; audience_requirement.issues records missing, ambiguous, unsupported, or invalid "
+                    "meaning. Use only the Event IR algebra and semantic-catalog identifiers supplied in the "
+                    "user message. Preserve negation, AND/OR grouping, comparison semantics, aggregation grain, "
+                    "and temporal scope. Every semantic atom and issue needs an exact evidence substring with "
+                    "zero-based [start,end) offsets into the unchanged query. Trust application-owned literal "
+                    "bindings and never invent a duration, threshold, date, identifier, or condition. In "
+                    "particular, bare '최근' without a duration means expression=null plus a missing_argument "
+                    "issue whose argument is 'period'. Keep campaign objective, channel, offer, and sell-object "
+                    "as campaign metadata only; never turn an objective into an audience predicate. Do not emit "
+                    "target_user, exclude, semantic_plan, semantic_ir, unresolved, event_expression, SQL, or "
+                    "physical schema names. If any material audience meaning cannot be represented faithfully, "
+                    "set expression to null and report the issue instead of narrowing or guessing."
                 ),
             },
             {"role": "user", "content": build_campaign_query_plan_v4_user_prompt(input)},

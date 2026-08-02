@@ -65,6 +65,13 @@ SLOT_MEMBER_METRIC_RANKING = "member_metric_ranking"
 SLOT_PURCHASE_MEMBERSHIP = "purchase_membership"
 SLOT_PURCHASE_INACTIVITY = "purchase_inactivity"
 
+# 캠페인 집계의 슬롯 분기 축 = **지표**. 실행 어휘 `campaign_frequency_events` 에 있으면 반응
+# 횟수, 금액 지표 하나면 귀속 금액 — 이 둘의 합집합이 LLM 에 노출되는 campaign_metric_id 다.
+# 금액 지표 id 가 슬롯 이름과 같은 것은 설정이 그렇게 선언했기 때문이고, 여기서 이름을 새로
+# 짓지 않는다(두 번째 권위를 만들면 어휘와 컴파일러가 갈라진다).
+CAMPAIGN_FREQUENCY_VOCAB = "campaign_frequency_events"
+CAMPAIGN_AMOUNT_METRIC = SLOT_CAMPAIGN_BUY_AMOUNT
+
 
 def member_container() -> str:
     """회원 조건 슬롯이 들어갈 실행 플랜 컨테이너 이름(도메인 선언이 권위)."""
@@ -247,6 +254,47 @@ class LegacyQueryPlanCompiler:
         bucket = result.target_user.setdefault(slot, [])
         bucket.extend(items)
         result.node_slots[node.id] = member_slot_path(slot)
+
+    @staticmethod
+    def _set_scalar_slot(
+        result: CompileResult,
+        node: SemanticNode,
+        slot: str,
+        value: Any,
+        *,
+        bucket: dict[str, Any] | None = None,
+        path: str | None = None,
+    ) -> None:
+        """스칼라 슬롯은 조건 **하나만** 담는다 — 두 번째 노드는 덮어쓰지 않고 충돌로 보고한다.
+
+        덮어쓰면 노드 순서가 곧 대상이 되고(마지막 노드가 이긴다) 사라진 조건의 근거가 어디에도
+        남지 않는다. 실측(2026-08-02): 캠페인 노드 둘이 같은 슬롯에 쓰여 앞 조건이 소실됐는데
+        요구사항 원장은 `compiled: 2` 로 보고했다 — 조용히 좁아진 오디언스가 가짜 성공으로 나간다.
+        같은 판정이 존재/부재 환원 경로에는 이미 있었고(:meth:`_compile_count_presence`),
+        나머지 스칼라 슬롯에는 없었다. 여기서 그 규칙을 한 곳으로 모은다.
+
+        값이 **같으면** 충돌이 아니다(같은 의미의 중복 방출) — 그때는 멱등하게 통과시킨다.
+        여러 조건을 담을 수 있는 슬롯은 이 함수가 아니라 :meth:`_append_list_slot` 소관이다.
+        """
+        target = result.target_user if bucket is None else bucket
+        slot_path = member_slot_path(slot) if path is None else path
+        existing = target.get(slot)
+        if slot in target and existing != value:
+            result.failures.append({
+                "node_id": node.id,
+                "failure_code": semantic_plan.VALIDATION_MISMATCH,
+                "reason": (
+                    f"'{slot_path}' 슬롯을 두 조건이 동시에 요구한다 — 이 슬롯은 조건 하나만 "
+                    f"담는다({existing} vs {value})"
+                ),
+                # 슬롯 소유 소거의 대상이 아니다. 소거의 전제는 "같은 의미가 이미 실행 플랜에
+                # 있다"인데, 충돌은 정반대다 — 슬롯을 **다른 조건**이 갖고 있어서 이 조건이
+                # 표현되지 못했다. 걷어내면 조용히 좁아진 오디언스가 그대로 나간다.
+                "supersedable": False,
+            })
+            return
+        target[slot] = value
+        result.node_slots[node.id] = slot_path
 
     # ── 노드별 컴파일 ────────────────────────────────────────────────────────────
     def _compile_aggregate_predicate(
@@ -503,42 +551,63 @@ class LegacyQueryPlanCompiler:
     def _compile_campaign_aggregate(
         self, node: SemanticNode, ctx: CompileContext, result: CompileResult
     ) -> None:
-        """캠페인 도메인은 지표에 따라 두 슬롯으로 갈린다(횟수 vs 귀속 금액)."""
-        value = AmountNormalizer.normalize(node.values.get("value"), unit_hint=node.values.get("unit"))
-        operator = self._operator(node)
-        if isinstance(value, Money):
-            slot: dict[str, Any] = {"operator": operator, "amount": value.amount}
-            if str(node.values.get("aggregation") or "").lower() == "avg":
-                slot["agg"] = "AVG"
-            coerced = self._coerce(ctx, SLOT_CAMPAIGN_BUY_AMOUNT, slot, None)
-            if coerced is None:
-                result.failures.append({
-                    "node_id": node.id,
-                    "failure_code": semantic_plan.VALIDATION_MISMATCH,
-                    "reason": (
-                        self._declared_rejection(ctx, SLOT_CAMPAIGN_BUY_AMOUNT, slot, None)
-                        or "캠페인 귀속 금액 슬롯 검증 실패"
-                    ),
-                })
-                return
-            result.target_user[SLOT_CAMPAIGN_BUY_AMOUNT] = coerced
-            result.node_slots[node.id] = member_slot_path(SLOT_CAMPAIGN_BUY_AMOUNT)
-            return
+        """캠페인 도메인은 **지표**에 따라 두 슬롯으로 갈린다(반응 횟수 vs 귀속 금액).
+
+        값의 모양으로 가르지 않는다. strict function calling 은 수량 객체의 키를 전부 채우므로
+        '3회'가 `{"amount": 3, "currency": null, "value": 3, "unit": "회"}` 로 오고, 금액 판별이
+        `amount` 키의 존재를 보는 순간 **횟수가 금액이 된다**. 실측(2026-08-02): '발송 성공 3회
+        이상'과 '구매반응 없음'이 둘 다 금액 슬롯으로 가서 뒤 노드가 앞 노드를 덮었고, 정작
+        반응 횟수 슬롯은 비어 있었다.
+
+        지표에는 그 모호성이 없다 — 캠페인 어휘는 '반응 이벤트들'과 '귀속 금액 하나'의
+        합집합(`campaign_metric_id`)이고, 어느 쪽인지는 지표 이름 하나로 결정된다.
+        """
         event = node.values.get("event") or ctx.resolve_metric("campaign_event", node.values.get("metric"))
-        slot = {"event": event, "operator": operator, "count": int(value.value)}
-        coerced = self._coerce(ctx, SLOT_CAMPAIGN_FREQUENCY, slot, "campaign_frequency_events")
+        frequency_events = ctx.allowed.get(CAMPAIGN_FREQUENCY_VOCAB) or ()
+        if event == CAMPAIGN_AMOUNT_METRIC and event not in frequency_events:
+            self._compile_campaign_buy_amount(node, ctx, result)
+            return
+        # 어휘 밖 지표도 횟수 쪽으로 보낸다 — 금액으로 넘겨 짐작하면 조용히 다른 조건이 되고,
+        # 이쪽에서는 슬롯이 "'X' 는 실행 어휘에 없다"고 사유를 대며 정직하게 막는다.
+        self._compile_campaign_frequency(node, event, ctx, result)
+
+    def _compile_campaign_buy_amount(
+        self, node: SemanticNode, ctx: CompileContext, result: CompileResult
+    ) -> None:
+        amount, _unit = self._threshold(node)
+        slot: dict[str, Any] = {"operator": self._operator(node), "amount": amount}
+        if str(node.values.get("aggregation") or "").lower() == "avg":
+            slot["agg"] = "AVG"
+        coerced = self._coerce(ctx, SLOT_CAMPAIGN_BUY_AMOUNT, slot, None)
+        if coerced is None:
+            result.failures.append({
+                "node_id": node.id,
+                "failure_code": semantic_plan.VALIDATION_MISMATCH,
+                "reason": (
+                    self._declared_rejection(ctx, SLOT_CAMPAIGN_BUY_AMOUNT, slot, None)
+                    or "캠페인 귀속 금액 슬롯 검증 실패"
+                ),
+            })
+            return
+        self._set_scalar_slot(result, node, SLOT_CAMPAIGN_BUY_AMOUNT, coerced)
+
+    def _compile_campaign_frequency(
+        self, node: SemanticNode, event: Any, ctx: CompileContext, result: CompileResult
+    ) -> None:
+        count, _unit = self._threshold(node)
+        slot: dict[str, Any] = {"event": event, "operator": self._operator(node), "count": int(count)}
+        coerced = self._coerce(ctx, SLOT_CAMPAIGN_FREQUENCY, slot, CAMPAIGN_FREQUENCY_VOCAB)
         if coerced is None:
             result.failures.append({
                 "node_id": node.id,
                 "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
                 "reason": (
-                    self._declared_rejection(ctx, SLOT_CAMPAIGN_FREQUENCY, slot, "campaign_frequency_events")
+                    self._declared_rejection(ctx, SLOT_CAMPAIGN_FREQUENCY, slot, CAMPAIGN_FREQUENCY_VOCAB)
                     or f"캠페인 이벤트 '{event}' 는 실행 어휘에 없다"
                 ),
             })
             return
-        result.target_user[SLOT_CAMPAIGN_FREQUENCY] = coerced
-        result.node_slots[node.id] = member_slot_path(SLOT_CAMPAIGN_FREQUENCY)
+        self._set_scalar_slot(result, node, SLOT_CAMPAIGN_FREQUENCY, coerced)
 
     def _compile_profile_aggregate(
         self, node: SemanticNode, ctx: CompileContext, result: CompileResult
@@ -631,8 +700,7 @@ class LegacyQueryPlanCompiler:
                 "reason": f"증감 지표 '{metric}' 는 실행 어휘에 없다",
             })
             return
-        result.target_user[SLOT_METRIC_TREND] = coerced
-        result.node_slots[node.id] = member_slot_path(SLOT_METRIC_TREND)
+        self._set_scalar_slot(result, node, SLOT_METRIC_TREND, coerced)
 
     def _compile_ranked_set(
         self, node: SemanticNode, ctx: CompileContext, result: CompileResult
@@ -663,8 +731,10 @@ class LegacyQueryPlanCompiler:
                 "reason": f"회원 지표 '{slot['metric_id']}' 는 랭킹 어휘에 없다",
             })
             return
-        result.plan[SLOT_MEMBER_METRIC_RANKING] = coerced
-        result.node_slots[node.id] = SLOT_MEMBER_METRIC_RANKING
+        self._set_scalar_slot(
+            result, node, SLOT_MEMBER_METRIC_RANKING, coerced,
+            bucket=result.plan, path=SLOT_MEMBER_METRIC_RANKING,
+        )
 
     def _compile_entity_set_membership(
         self, node: SemanticNode, ctx: CompileContext, result: CompileResult
@@ -708,8 +778,7 @@ class LegacyQueryPlanCompiler:
             }
         if node.source_span:
             slot["surface"] = node.source_span
-        result.target_user[SLOT_ENTITY_SET] = slot
-        result.node_slots[node.id] = member_slot_path(SLOT_ENTITY_SET)
+        self._set_scalar_slot(result, node, SLOT_ENTITY_SET, slot)
 
     def _compile_co_purchase(
         self, node: SemanticNode, ctx: CompileContext, result: CompileResult
@@ -811,8 +880,7 @@ class LegacyQueryPlanCompiler:
                 "reason": f"속성 이력 '{slot['attribute_id']}' 는 카탈로그에 없다",
             })
             return
-        result.target_user[SLOT_RELATIONAL_OPERATION] = coerced
-        result.node_slots[node.id] = member_slot_path(SLOT_RELATIONAL_OPERATION)
+        self._set_scalar_slot(result, node, SLOT_RELATIONAL_OPERATION, coerced)
 
     _DEFAULT_SCOPE_SLOTS: dict[str, str] = {
         "cart": SLOT_CART_AGGREGATE,
