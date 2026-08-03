@@ -748,6 +748,9 @@ RELATIONAL_OPERATORS = frozenset({
     "held_throughout", "stable", "changed_n_times",
     "ever", "never", "exists_every_month",
 })
+# 값 비교·횟수 비교로 **허용하는** 낱말형(도메인 선택). 표기 자체는 만들지 않는다 —
+# event_ir.COMPARISON_OPERATOR_ALIASES 에서 고른 부분집합이고, 그 표에 없는 표기를 여기
+# 적으면 tests/test_symbol_binding_parity.py 가 red 가 된다.
 _RELATIONAL_VALUE_COMPARISONS = frozenset({"eq", "gte", "lte"})
 _RELATIONAL_COUNT_OPERATORS = frozenset({"gte", "gt", "lte", "lt", "eq"})
 

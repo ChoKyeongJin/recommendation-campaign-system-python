@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from datetime import date
 from typing import Any
 
@@ -11,6 +12,7 @@ import audience_runtime
 import canonical_audience_claims
 import event_compiler
 import event_ir
+import execution_assets
 from aggregation_requirements import aggregation_request_json_schema
 from entity_set import derived_set_ast_error
 import semantic_plan as semantic_plan_module
@@ -1055,6 +1057,12 @@ def _validated_audience_issue(item: Any, query: str) -> dict[str, Any]:
     }
 
 
+def _audience_issue_key(item: Mapping[str, Any]) -> tuple[str, str, str]:
+    """issue 하나의 신원(코드·인자·근거 구간). 생산자를 가르는 데만 쓴다."""
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), Mapping) else {}
+    return (str(item.get("code")), str(item.get("argument")), str(evidence.get("text")))
+
+
 _INCOMPLETE_RECENCY_RE = re.compile(r"최근(?!\s*\d)")
 
 
@@ -1156,6 +1164,11 @@ def _derive_audience_execution(
     if not isinstance(raw_issues, list):
         raise CampaignQueryPlanValidationError("audience_requirement.issues must be an array")
     issues = [_validated_audience_issue(item, query) for item in raw_issues]
+    # 모델이 신고한 것과 애플리케이션이 계산한 것을 여기서 갈라 둔다. 아래 강등 판정은
+    # **모델 신고에만** 적용된다 — 애플리케이션이 append 하는 issue 의 근거 구간은 원문
+    # 전체(:1190, :1204)라, 표면어가 하나만 걸려도 event_compiler 의 권위 있는 판정까지
+    # 함께 강등된다. 그러면 '조용한 오답'을 막으려던 장치가 그것을 만드는 장치가 된다.
+    model_reported = {_audience_issue_key(item) for item in issues}
     raw_expression = requirement.get("expression")
     expression: event_ir.Condition | None = None
     if isinstance(raw_expression, dict):
@@ -1249,33 +1262,81 @@ def _derive_audience_execution(
             # 실측(2026-08-02): '이번 달 기준 골드 등급 회원'이 unsupported_semantics 로
             # 종결됐는데, 그 의미를 컴파일하는 as_of 컴파일러는 살아 있었고 호출조차 되지 않았다.
             #
-            # 다른 생산자가 같은 의미를 냈을 때만 미룬다 — 아무도 못 냈으면 사유를 실은 정직한
-            # 미지원이 여전히 최선의 응답이다(사유 없는 conditions_missing 으로 강등되면 후퇴다).
+            # 강등의 조건은 "**선언된 실행 자산 중 이 의미를 처리하는 것이 있는가**"다.
+            # 예전 조건은 "다른 생산자가 노드를 냈는가"였는데, 모델이 미지원을 선언할 때는
+            # 노드를 내지 않으므로 **보호가 필요한 경우에만 정확히 발동하지 않는** 자기무력화
+            # 가드였다. canonical 은 이미 자기 차례에 실패했으므로 묻는 것은 그 밖의 계층이다.
             plan_nodes = payload.get(SEMANTIC_PLAN_KEY)
             plan_nodes = plan_nodes.get("nodes") if isinstance(plan_nodes, dict) else None
-            if plan_nodes:
+            contradicted = [
+                (item, execution_assets.non_canonical_assets_for_text(item["evidence"]["text"]))
+                for item in unsupported
+                if _audience_issue_key(item) in model_reported
+            ]
+            contradicted = [(item, assets) for item, assets in contradicted if assets]
+            if contradicted and plan_nodes:
                 payload["audience_unsupported_hypotheses"] = [
                     {"kind": item["argument"], "reason": item["message"],
                      "evidence": item["evidence"]["text"]}
                     for item in unsupported
                 ]
                 return False
+            if contradicted:
+                # 자산은 선언돼 있는데 그 축을 낼 **생산자가 없다**. 이것은 '표현할 수 없다'가
+                # 아니라 레지스트리 구멍이고, 저장소에는 이미 그 이름(semantic_registry_gap)과
+                # 사용자 문구가 있다. 미지원으로 부르면 없는 한계를 있다고 말하는 것이 된다.
+                named = sorted({asset.symbol for _item, assets in contradicted for asset in assets})
+                payload["semantic_ir"] = empty_semantic_ir(
+                    status="needs_clarification",
+                    missing_fields=["audience.requirement"],
+                    message=(
+                        "요청한 조건을 처리할 실행 자산은 선언돼 있으나 이 경로로 낼 수 없습니다"
+                        f"(선언된 자산: {', '.join(named)})."
+                    ),
+                    failure_kind="system_failure",
+                )
+                payload["audience_execution_assets"] = [
+                    {"argument": item["argument"], "evidence": item["evidence"]["text"],
+                     "assets": [asset.to_dict() for asset in assets]}
+                    for item, assets in contradicted
+                ]
+                return True
             payload["semantic_ir"] = empty_semantic_ir(
                 status="unsupported",
-                message=unsupported[0]["message"],
+                # 사용자에게 나가는 문장은 **모델이 쓴 산문이 아니다**. 실측(2026-08-03) 30/30 이
+                # 모델 산문이었고 그 판정은 틀렸다 — 지어낸 kind 만 23종이었다.
+                message="요청한 조건을 현재 실행 자산으로 표현할 수 없습니다.",
                 failure_kind="unsupported",
             )
             payload["semantic_ir"]["unsupported_operations"] = [
-                {"kind": item["argument"], "reason": item["message"],
-                 "evidence": item["evidence"]["text"]}
+                {
+                    # kind 는 닫힌 코드다. 모델의 자유 텍스트(item["argument"])는 근거로 내린다.
+                    "kind": "unsupported_semantics",
+                    "reason": item["message"],
+                    "evidence": item["evidence"]["text"],
+                }
                 for item in unsupported
             ]
         else:
+            # 결핍의 원인을 리터럴 색인과 대조해 계산한다. 이것이 없으면 **시스템이 이미
+            # 결정론으로 추출해 정규화까지 마친 값을 사용자에게 되묻는다**(실측 #3: '10%').
+            causes = canonical_audience_claims.missing_field_cause_records(
+                query, issues, payload.get("literal_bindings") or []
+            )
+            model_omitted = any(
+                record.get("cause") == semantic_plan_module.CAUSE_MODEL_OMISSION
+                for record in causes
+            )
             payload["semantic_ir"] = empty_semantic_ir(
                 status="needs_clarification",
                 missing_fields=missing or ["audience.requirement"],
                 message=issues[0]["message"],
-                failure_kind="user_clarification" if missing else "system_failure",
+                # 모델이 놓친 값을 사용자에게 물으면 안 된다 — 그 결핍은 재방출로 고친다.
+                failure_kind=(
+                    "structurer_failure" if model_omitted
+                    else "user_clarification" if missing else "system_failure"
+                ),
+                missing_field_causes=causes,
             )
         return True
 

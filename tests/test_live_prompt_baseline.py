@@ -59,6 +59,28 @@ def test_corpus_is_well_formed() -> None:
             )
 
 
+def test_every_prompt_declares_what_its_sql_must_contain() -> None:
+    """required_clauses 커버리지는 뒷걸음질치지 않는다(P0-2).
+
+    이것이 없으면 P1~P5 의 개선이 **절이 사라진 SQL** 로 나타나도 `outcome == "sql"` 규칙에
+    걸려 improvement 로 오집계된다 — #26(`한 번도 VIP였던 적이 없는 회원`)이 실제로 그 상태로
+    '개선'에 실렸다. 5/77 이던 선언을 전 항목으로 넓힌 뒤, 새 항목이 선언 없이 들어오는 길을
+    이 테스트가 막는다.
+
+    선언 원칙: 프롬프트가 요구하는 **물리 축마다 하나씩**. 같은 축 안의 다중성(한 테이블에
+    창 두 개)은 문자열 포함으로 판별할 수 없으므로 적지 않는다 — 못 하는 것을 적으면
+    가드가 아니라 장식이 된다.
+    """
+    undeclared = [
+        entry["id"] for entry in _corpus()["prompts"] if not entry.get("required_clauses")
+    ]
+    assert not undeclared, (
+        f"required_clauses 가 없는 항목: {undeclared}. "
+        "SQL 이 나온다면 반드시 담아야 할 물리 조각(테이블/컬럼 이름)을 선언하라 — "
+        "선언이 없으면 그 항목에서는 '절이 사라진 SQL' 과 '옳은 SQL' 을 러너가 구분하지 못한다."
+    )
+
+
 def test_expectations_are_documented() -> None:
     """expectation 값마다 '무엇을 뜻하는가'가 파일 안에 적혀 있어야 한다."""
     corpus = _corpus()

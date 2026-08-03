@@ -1,0 +1,476 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://internal/schemas/capability_candidate.schema.json",
+  "title": "Offline canonical capability review candidate",
+  "description": "A non-executable proposal for human review. Validation never promotes or mutates an approved source.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "gap_id",
+    "candidate_type",
+    "canonical_id_candidate",
+    "generated_at_revision",
+    "status",
+    "policy",
+    "executable",
+    "mutation_allowed",
+    "proposal",
+    "field_changes",
+    "evidence",
+    "blocking_questions",
+    "conflicts",
+    "validation"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "capability-candidate/v1"
+    },
+    "candidate_id": {
+      "$ref": "#/$defs/stableId"
+    },
+    "gap_id": {
+      "$ref": "#/$defs/stableId"
+    },
+    "candidate_type": {
+      "enum": [
+        "new_capability",
+        "alias_addition",
+        "operator_alias_addition",
+        "physical_binding_addition",
+        "value_mapping_addition",
+        "lowering_required",
+        "compiler_required",
+        "expressible_false_declaration",
+        "conflict_resolution",
+        "stale_asset_removal"
+      ]
+    },
+    "canonical_id_candidate": {
+      "$ref": "#/$defs/canonicalSymbol"
+    },
+    "generated_at_revision": {
+      "oneOf": [
+        {"$ref": "#/$defs/gitRevision"},
+        {"type": "null"}
+      ]
+    },
+    "status": {
+      "const": "pending_review"
+    },
+    "policy": {
+      "$ref": "#/$defs/policy"
+    },
+    "executable": {
+      "const": false
+    },
+    "mutation_allowed": {
+      "const": false
+    },
+    "proposal": {
+      "$ref": "#/$defs/proposal"
+    },
+    "field_changes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/fieldChange"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/evidence"
+      }
+    },
+    "blocking_questions": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1},
+      "uniqueItems": true
+    },
+    "validation": {
+      "$ref": "#/$defs/validation"
+    }
+  },
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 512,
+      "pattern": "^[a-z][a-z0-9._-]*:\\S+$"
+    },
+    "canonicalSymbol": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "gitRevision": {
+      "type": "string",
+      "pattern": "^[a-fA-F0-9]{7,64}$"
+    },
+    "jsonValue": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "boolean"},
+        {"type": "number"},
+        {"type": "string"},
+        {
+          "type": "array",
+          "items": {"$ref": "#/$defs/jsonValue"}
+        },
+        {
+          "type": "object",
+          "additionalProperties": {"$ref": "#/$defs/jsonValue"}
+        }
+      ]
+    },
+    "snapshotRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "report_id",
+        "snapshot_id",
+        "git_revision",
+        "dirty",
+        "content_sha256"
+      ],
+      "properties": {
+        "report_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "snapshot_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "git_revision": {
+          "oneOf": [
+            {"$ref": "#/$defs/gitRevision"},
+            {"type": "null"}
+          ]
+        },
+        "dirty": {
+          "type": "boolean"
+        },
+        "content_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "data_availability_policy",
+        "discovery_only",
+        "executable",
+        "mutation_allowed",
+        "runtime_failure_codes_reused"
+      ],
+      "properties": {
+        "data_availability_policy": {
+          "const": "advise"
+        },
+        "discovery_only": {
+          "const": true
+        },
+        "executable": {
+          "const": false
+        },
+        "mutation_allowed": {
+          "const": false
+        },
+        "runtime_failure_codes_reused": {
+          "const": false
+        }
+      }
+    },
+    "targetRegistry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authority", "source_path", "source_pointer"],
+      "properties": {
+        "authority": {
+          "const": "existing_registry"
+        },
+        "source_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_pointer": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "classification",
+        "legacy_assets",
+        "details"
+      ],
+      "properties": {
+        "kind": {
+          "const": "legacy_capability_candidate"
+        },
+        "classification": {
+          "enum": [
+            "LEGACY_ONLY",
+            "CANONICAL_ONLY",
+            "ALIAS_MISSING",
+            "OPERATOR_MISMATCH",
+            "VALUE_MAPPING_MISSING",
+            "LOWERING_MISSING",
+            "COMPILER_MISSING",
+            "PHYSICAL_BINDING_MISSING",
+            "TEST_COVERAGE_MISSING",
+            "STALE_APPROVED_ASSET",
+            "EXPRESSIBILITY_UNDECLARED",
+            "CONFLICTING_DEFINITION"
+          ]
+        },
+        "legacy_assets": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/stableId"},
+          "uniqueItems": true
+        },
+        "details": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["axis", "missing_columns"],
+          "properties": {
+            "axis": {"type": "string", "minLength": 1},
+            "missing_columns": {
+              "type": "array",
+              "items": {"type": "string", "minLength": 1},
+              "uniqueItems": true
+            }
+          }
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_id",
+        "source_type",
+        "source_path",
+        "source_pointer",
+        "extraction_method",
+        "confidence",
+        "content_hash",
+        "revision",
+        "trust_state"
+      ],
+      "properties": {
+        "evidence_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "source_type": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]*$"
+        },
+        "source_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_pointer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content_hash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "revision": {
+          "oneOf": [
+            {"$ref": "#/$defs/gitRevision"},
+            {"type": "null"}
+          ]
+        },
+        "trust_state": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]*$"
+        },
+        "extraction_method": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]*$"
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "fieldChange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "field",
+        "proposed_value",
+        "evidence"
+      ],
+      "properties": {
+        "field": {
+          "type": "string",
+          "minLength": 1
+        },
+        "proposed_value": {
+          "$ref": "#/$defs/jsonValue"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/stableId"
+          },
+          "uniqueItems": true
+        }
+      }
+    },
+    "blockingQuestion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "question_id",
+        "question",
+        "status",
+        "blocks_application",
+        "evidence"
+      ],
+      "properties": {
+        "question_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "question": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "enum": ["open", "answered"]
+        },
+        "blocks_application": {
+          "type": "boolean"
+        },
+        "answer": {
+          "type": ["string", "null"]
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "conflictValue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "evidence"],
+      "properties": {
+        "value": {
+          "$ref": "#/$defs/jsonValue"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "conflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "conflict_id",
+        "field_path",
+        "values",
+        "status"
+      ],
+      "properties": {
+        "conflict_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "field_path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "values": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "$ref": "#/$defs/conflictValue"
+          }
+        },
+        "status": {
+          "enum": ["open", "resolved", "accepted_divergence"]
+        },
+        "resolution": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "validationCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id", "status", "message", "evidence"],
+      "properties": {
+        "check_id": {
+          "$ref": "#/$defs/stableId"
+        },
+        "status": {
+          "enum": ["passed", "failed", "not_run"]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "validation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_valid",
+        "provenance_complete",
+        "ready_for_promotion",
+        "issues"
+      ],
+      "properties": {
+        "schema_valid": {
+          "type": "boolean"
+        },
+        "provenance_complete": {
+          "type": "boolean"
+        },
+        "ready_for_promotion": {
+          "const": false
+        },
+        "issues": {
+          "type": "array",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

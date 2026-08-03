@@ -322,8 +322,34 @@ def window_from_dict(raw: Any) -> TimeWindow:
 # ── 스칼라 표현 ───────────────────────────────────────────────────────────────────
 
 COMPARISON_OPERATORS: frozenset[str] = frozenset({"=", "!=", ">", ">=", "<", "<="})
+
+# 낱말형 표기 → 정본 기호. **정본은 기호다** — IR 이 담는 값은 위 집합뿐이고 낱말형은 그 별칭이다.
+#
+# 이 표가 기호 집합 **바로 옆**에 있는 이유: 같은 사상이 저장소에 네 벌 따로 있었고
+# (semantic_normalizers 2벌 · compositional_targeting · targeting_ir), 그중 하나는 서로를
+# 반박했다 — LLM 스키마는 `eq|gte|lte` 를 허용값으로 **제시**하는데 카탈로그 해석기는
+# `= != > >= < <=` 만 등록해 두어, **모델이 스키마를 지키면 반드시 실패**했다
+# (실측 2026-08-03: eq/gte/lte 세 값 전부 `catalog_operator_unregistered`).
+# 별칭을 기호 집합에서 떼어 놓으면 그 모순이 다시 자란다.
+COMPARISON_OPERATOR_ALIASES: dict[str, str] = {
+    "eq": "=", "==": "=",
+    "ne": "!=", "neq": "!=",
+    "gt": ">", "gte": ">=",
+    "lt": "<", "lte": "<=",
+}
+
 ARITHMETIC_OPERATORS: frozenset[str] = frozenset({"+", "-", "*", "/"})
 AGGREGATE_FUNCTIONS: frozenset[str] = frozenset({"count", "sum", "avg", "min", "max"})
+
+
+def canonical_comparison_operator(value: Any) -> str | None:
+    """낱말형/기호 표기를 정본 기호로. 알 수 없으면 None(추측하지 않는다)."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if text in COMPARISON_OPERATORS:
+        return text
+    return COMPARISON_OPERATOR_ALIASES.get(text.lower())
 
 
 @dataclass(frozen=True)

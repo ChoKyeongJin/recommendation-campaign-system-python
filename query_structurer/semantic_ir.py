@@ -337,12 +337,15 @@ def empty_semantic_ir(
     missing_fields: list[str] | None = None,
     message: str | None = None,
     failure_kind: str | None = None,
+    # 결핍의 **원인**. 이 인자가 없던 동안 canonical 경로의 causes 는 구조적으로 항상 []
+    # 였고, 그래서 원문에 값이 있는 결핍까지 전부 '사용자에게 묻기'로 귀결됐다.
+    missing_field_causes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "status": status,
         "operations": [],
         "missing_fields": list(missing_fields or []),
-        "missing_field_causes": [],
+        "missing_field_causes": [dict(record) for record in (missing_field_causes or [])],
         "failure_kind": failure_kind,
         "policy_applications": [],
         "unsupported_operations": [],

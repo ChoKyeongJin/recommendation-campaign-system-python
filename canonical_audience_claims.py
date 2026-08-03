@@ -15,6 +15,8 @@ from typing import Any
 
 import event_ir
 import lexicon_patterns
+import semantic_domain_binding
+import semantic_plan
 import semantic_receipts
 import semantic_requirements
 
@@ -155,6 +157,79 @@ def literal_claim_issues(
             "evidence": evidence,
         })
     return issues
+
+
+def missing_field_cause_records(
+    query: str,
+    issues: Iterable[Mapping[str, Any]],
+    bindings: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """결핍 주장 → **원인**(사용자 누락인가, 모델 누락인가).
+
+    아키텍처가 정의한 원인 축(`user_omission`=물어봐야 함 / `model_omission`=재방출)이
+    라이브 경로에서 채워지지 않아 **모든 결핍이 되묻기로 귀결**됐다. 실측된 최악의 형태:
+
+        '누적 구매금액 상위 10% 회원을 추출해줘'
+        literal_bindings = [percentage_1 '10%' → {unit: percent, value: 10}]
+        semantic_ir.missing_fields = ['audience.percentage']
+        → 사용자에게 "몇 퍼센트인가요?" 되묻기
+
+    **시스템이 이미 결정론으로 뽑아 정규화까지 마친 값을 사용자에게 되묻는다.**
+
+    판정은 두 가지만 본다. 인자 이름 → 리터럴 종류의 손 매핑은 만들지 않는다(모델의
+    `argument` 는 닫힌 어휘가 아니라 그런 표가 곧 낡는다). 대신 **근거 구간**을 조인 키로 쓴다:
+
+      1. 자리표시자('특정 브랜드')면 어떤 추출값으로도 못 채운다 → `user_omission`.
+         판정 기계는 이미 있다(`semantic_domain_binding.user_omission_reason`).
+      2. 주장된 근거 구간 안에 애플리케이션이 추출한 리터럴이 있으면 → `model_omission`.
+         구간을 지목해 놓고 그 안의 값을 못 봤다는 뜻이므로 되묻지 말고 재방출한다.
+      3. 그 밖 → `user_omission`. 맨 '최근'처럼 원문에 정말 값이 없는 경우다.
+
+    구간 안팎을 따지는 것이 핵심이다. 구간을 보지 않으면 **다른 절의 값** 때문에 진짜 결핍이
+    재방출로 새고(실측: '최근 3개월 … 최근 구매가 없는' 의 맨 '최근'), 그러면 재시도만 소모하고
+    사용자는 답할 기회를 잃는다.
+    """
+    literal_spans: list[tuple[int, int]] = []
+    for binding in bindings or ():
+        if not isinstance(binding, Mapping):
+            continue
+        start, end = binding.get("start"), binding.get("end")
+        if isinstance(start, int) and isinstance(end, int) and start < end:
+            literal_spans.append((start, end))
+
+    records: list[dict[str, Any]] = []
+    for issue in issues or ():
+        if not isinstance(issue, Mapping):
+            continue
+        if issue.get("code") not in {"missing_argument", "ambiguous_requirement"}:
+            continue
+        evidence = issue.get("evidence") if isinstance(issue.get("evidence"), Mapping) else {}
+        span_text = str(evidence.get("text") or "")
+        start, end = evidence.get("start"), evidence.get("end")
+        whole_query = start == 0 and end == len(query)
+        record: dict[str, Any] = {
+            "field": f"audience.{issue.get('argument')}",
+            "path": f"audience_requirement.{issue.get('argument')}",
+            "source_span": span_text,
+            "node_type": None,
+            "cause": semantic_plan.CAUSE_USER_OMISSION,
+        }
+        omission = semantic_domain_binding.user_omission_reason(span_text)
+        if omission:
+            record["question"] = omission.get("question")
+            record["matched"] = omission.get("matched")
+        elif isinstance(start, int) and isinstance(end, int):
+            covered = [
+                (literal_start, literal_end)
+                for literal_start, literal_end in literal_spans
+                # 원문 전체를 근거로 든 주장은 구간이 아니라 '어디든'이라는 뜻이다.
+                if whole_query or (start <= literal_start and literal_end <= end)
+            ]
+            if covered:
+                record["cause"] = semantic_plan.CAUSE_MODEL_OMISSION
+                record["literal_spans"] = covered
+        records.append(record)
+    return records
 
 
 def _term_hits(query: str, terms: Iterable[Any]) -> list[tuple[int, int]]:
@@ -538,7 +613,14 @@ def refresh_canonical_unresolved(
                 else issue.get("argument") or "canonical audience"
             ),
             "source_text": query,
-            "reason": str(issue.get("message") or "원문 조건의 canonical 실행 의미가 검증되지 않았습니다."),
+            # 미지원 신고의 문장은 모델이 쓴 산문이다(실측 30/30, 그중 다수가 틀린 판정이었다).
+            # 그것이 그대로 사용자 화면에 도달하던 경로를 여기서 닫는다 — 표현 가능성 판정은
+            # 실행 자산을 아는 애플리케이션의 몫이므로, 모델 문장은 사유가 될 수 없다.
+            "reason": (
+                "요청한 조건이 canonical 실행 의미로 확정되지 않았습니다."
+                if str(issue.get("code")) == "unsupported_semantics"
+                else str(issue.get("message") or "원문 조건의 canonical 실행 의미가 검증되지 않았습니다.")
+            ),
             "code": str(issue.get("code") or "validation_mismatch"),
             "status": "unresolved",
             "source": "canonical_audience_contract",

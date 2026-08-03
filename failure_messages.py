@@ -10,6 +10,7 @@ semantic_ir 의 missing_fields 는 모델 내부 필드명(영문)이다. 응답
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import plan_validation
@@ -183,3 +184,91 @@ def plan_validation_issue_ko(issue: plan_validation.PlanValidationIssue) -> str:
     if issue.status == plan_validation.UNSUPPORTED or code.endswith("_unsupported"):
         return f"'{path}' 조건의 연산은 아직 지원되지 않습니다(코드: {code})."
     return f"'{path}' 조건을 실행 계획으로 확정하지 못했습니다(검증 코드: {code})."
+
+
+# ── 관문 거부 근거 보존 ────────────────────────────────────────────────────────
+# 실측(2026-08-03, campaign_query_failure_logs): 후보가 있는데 거부된 실패 행은
+# `generated_sql`·`error_detail` 두 **이름 있는 컬럼**이 전부 NULL 이었다. 근거 자체는
+# 사라지지 않았다 — `selected_candidate` JSONB 안에만 있어서 운영 조회로는 보이지 않았다.
+# 그래서 여기서 하는 일은 새 판정이 아니라 **투영**이다.
+#
+# 어느 하위 보고를 읽을지 이름으로 들지 않는다. 관문이 늘 때마다 목록을 고쳐야 하면
+# 새 관문의 거부는 다시 조용해진다. 하위 보고의 모양은 이미 닫혀 있다 —
+# 만족 여부 불리언 + 이름 있는 이슈 목록 — 그 **구조**로 수집한다.
+_REJECTION_VERDICT_KEYS = ("is_satisfied", "is_valid", "valid", "ok", "faithful")
+_REJECTION_ISSUE_KEYS = ("issues", "errors", "missing_conditions")
+_REJECTION_DETAIL_MAX = 4000
+# 후보 **선택 뒤에** 도는 관문들. 이들의 거부 사유는 후보 안이 아니라 결과 최상위에 있다
+# (실측: semantic_verification_failed 는 SQL 은 남는데 사유 컬럼이 비었다).
+_POST_SELECTION_GATES = (
+    "semantic_verification", "semantic_invariants", "delivery_validation",
+    "aggregation_validation", "condition_evaluation_validation", "intent_sql_contract",
+    "metric_profile_validation", "semantic_validation_v2",
+)
+
+
+def _rejection_issue_text(item: Any) -> str:
+    if isinstance(item, str):
+        return item.strip()
+    if not isinstance(item, Mapping):
+        return ""
+    code = str(item.get("code") or item.get("reason_code") or item.get("path") or "").strip()
+    message = str(item.get("message") or item.get("detail") or item.get("value") or "").strip()
+    return " ".join(part for part in (code, message) if part)
+
+
+def rejected_candidate_reasons(candidate: Any) -> list[str]:
+    """거부된 후보의 사유를 후보 자신의 하위 검증 보고에서 구조로 수집한다."""
+    if not isinstance(candidate, Mapping):
+        return []
+    reasons: list[str] = []
+    for name, report in candidate.items():
+        if not isinstance(report, Mapping):
+            continue
+        verdicts = [report.get(key) for key in _REJECTION_VERDICT_KEYS if key in report]
+        if not verdicts or all(verdict is not False for verdict in verdicts):
+            continue
+        rendered = [
+            f"{name}.{issue_key}: {text}"
+            for issue_key in _REJECTION_ISSUE_KEYS
+            for item in (report.get(issue_key) or ())
+            if (text := _rejection_issue_text(item))
+        ]
+        # 보고가 불만족을 선언했는데 이슈 항목이 없으면 그 사실 자체가 사유다 —
+        # 침묵보다 "어느 관문이 막았는지"가 언제나 낫다.
+        reasons.extend(rendered or [f"{name}: 불만족(사유 항목 없음)"])
+    return list(dict.fromkeys(reasons))
+
+
+def rejected_candidate_evidence(sql_result: Any) -> dict[str, Any]:
+    """실패 로그의 이름 있는 컬럼에 실을 (거부된 SQL, 거부 사유, 후보 수).
+
+    출고에 성공한 결과에는 아무것도 돌려주지 않는다 — 이것은 실패 경로의 투영이다.
+    """
+    empty: dict[str, Any] = {"sql": None, "detail": None, "candidate_count": 0, "reasons": []}
+    if not isinstance(sql_result, Mapping) or sql_result.get("is_success") is True:
+        return empty
+    candidates = sql_result.get("candidates")
+    count = sql_result.get("candidate_count")
+    if not isinstance(count, int):
+        count = len(candidates) if isinstance(candidates, (list, tuple)) else 0
+    candidate = sql_result.get("selected")
+    sql = sql_result.get("blocked_sql")
+    if not sql and isinstance(candidate, Mapping):
+        sql = candidate.get("sql")
+    reasons = rejected_candidate_reasons(candidate)
+    if candidate is not None or sql:
+        # 후보가 실제로 만들어졌다가 거부된 경우에만 최상위 관문을 읽는다. 결핍으로 후보가
+        # 아예 없었던 요청까지 훑으면 '거부 근거' 채널에 결핍 사유가 섞인다.
+        reasons.extend(
+            reason for reason in rejected_candidate_reasons(
+                {name: sql_result.get(name) for name in _POST_SELECTION_GATES}
+            ) if reason not in reasons
+        )
+    detail = "; ".join(reasons)[:_REJECTION_DETAIL_MAX] or None
+    return {
+        "sql": sql if isinstance(sql, str) and sql.strip() else None,
+        "detail": detail,
+        "candidate_count": count,
+        "reasons": reasons,
+    }

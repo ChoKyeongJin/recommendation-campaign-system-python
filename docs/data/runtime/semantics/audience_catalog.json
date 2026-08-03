@@ -18,6 +18,14 @@
     ],
     "gender": {"label": "성별", "source_category": "gender"},
     "grade": {"label": "회원 등급", "source_category": "grade", "ordered": true},
+    "consent_flag": {
+      "label": "수신 동의 여부",
+      "_comment": "순수 Y/N 플래그다. eq_filters 는 이 컬럼들을 '동의한 회원'이라는 **필터 정체성**으로 소유하지 그 자체가 값 사전은 아니므로, 여기서 인라인 값 도메인을 선언해도 이중 소유가 아니다.",
+      "values": {
+        "agreed": {"physical": "Y", "aliases": ["동의", "수신 동의", "동의함", "예"]},
+        "declined": {"physical": "N", "aliases": ["거부", "미동의", "동의하지 않음", "아니오"]}
+      }
+    },
     "worth_grade": {"label": "가치등급", "source_category": "worth_grade", "ordered": true}
   },
   "signal_coverage": {
@@ -37,7 +45,7 @@
     "offer_response": {"sources": ["campaign_offer_response", "campaign_response"]},
     "buy_response": {"sources": ["campaign_purchase_response", "campaign_response"]},
     "coupon_used": {"expressible": false, "note": "쿠폰 사용 사건 소스가 카탈로그에 없다. 슬롯 경로가 소유한다."},
-    "consent": {"expressible": false, "note": "수신동의(앱푸시/SMS/이메일/마케팅)는 회원 속성 플래그이며 Event IR 소스·필드가 없다. 이 축이 원문에 있으면 canonical 이어도 드롭 경고가 나야 한다."},
+    "consent": {"fields": ["subject.app_push_consent", "subject.sms_consent", "subject.email_consent", "subject.marketing_consent"], "note": "2026-08-03 P4: 수신동의 4축을 fields 선언 4줄로 열었다(코드 변경 0). 이전에는 expressible:false 였고, 그 상태가 R1 이 지목한 최대 군집(#47·#50·#56)의 미지원 사유였다."},
     "member_grade_history": {"expressible": false, "note": "등급·상태의 시점/이력 축. 흡수 전에는 Event IR 이 표현하지 못한다 — 소스가 선언되면 sources 로 바꾼다."}
   },
   "sources": {
@@ -218,6 +226,38 @@
       "value_domain": "grade",
       "label": "회원 등급",
       "aliases": ["등급", "회원 등급"]
+    },
+    "subject.app_push_consent": {
+      "source": "subject",
+      "column": "APP_PUSH_YN",
+      "data_type": "string",
+      "value_domain": "consent_flag",
+      "label": "앱푸시 수신 동의",
+      "aliases": ["앱푸시 수신 동의", "앱푸시 동의", "푸시 수신 동의", "알림 수신 동의"]
+    },
+    "subject.sms_consent": {
+      "source": "subject",
+      "column": "SMS_YN",
+      "data_type": "string",
+      "value_domain": "consent_flag",
+      "label": "문자 수신 동의",
+      "aliases": ["문자 수신 동의", "SMS 수신 동의", "문자 동의"]
+    },
+    "subject.email_consent": {
+      "source": "subject",
+      "column": "EMAIL_YN",
+      "data_type": "string",
+      "value_domain": "consent_flag",
+      "label": "이메일 수신 동의",
+      "aliases": ["이메일 수신 동의", "메일 수신 동의", "이메일 동의"]
+    },
+    "subject.marketing_consent": {
+      "source": "subject",
+      "column": "AGREE_YN",
+      "data_type": "string",
+      "value_domain": "consent_flag",
+      "label": "마케팅 수신 동의",
+      "aliases": ["마케팅 수신 동의", "마케팅 활용 동의", "정보 활용 동의"]
     },
     "member_month_snapshot.grade": {
       "source": "member_month_snapshot",
@@ -510,7 +550,7 @@
       "grain": "subject",
       "allowed_operators": ["=", "!=", ">", ">=", "<", "<="],
       "label": "캠페인 반응 횟수",
-      "aliases": ["캠페인 반응 횟수", "반응한 캠페인 수", "campaign_response"]
+      "aliases": ["캠페인 반응 횟수", "반응한 캠페인 수"]
     },
     "campaign_purchase_response_count": {
       "source": "campaign_purchase_response",

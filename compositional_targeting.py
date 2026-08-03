@@ -12,6 +12,7 @@ changed, and changed N times are shared by every compatible attribute.
 
 from __future__ import annotations
 
+import event_ir
 import sql_dialect
 
 import copy
@@ -35,7 +36,9 @@ _YYYYMM_RE = re.compile(r"^\d{6}$")
 # 원문을 읽던 감지기(정규식 원자 + 소량 수사 + 스팬 재구성 헬퍼)는 2026-08-02 계층 분리에서
 # 삭제됐다. 시간 한정어 감지는 도메인 계층(targeting_domain.temporal_lexicon)이 **범용 시간
 # 연산자**로 사상하고, 이 모듈은 검증된 슬롯만 받아 SQL 로 낮춘다(원문을 읽지 않는다).
-_SQL_COMPARISONS = {"eq": "=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}
+# 낱말형 → SQL 비교 기호. 표는 event_ir 이 단독 소유한다(기호 집합 바로 옆) — 여기서 다시
+# 쓰면 그 순간 두 벌이 되고, 두 벌이 어긋난 상태가 정확히 R3 의 결함이었다.
+_SQL_COMPARISONS = dict(event_ir.COMPARISON_OPERATOR_ALIASES)
 
 
 def compile_sql(

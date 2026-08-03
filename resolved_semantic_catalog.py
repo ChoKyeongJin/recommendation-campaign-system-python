@@ -73,8 +73,13 @@ def _date_or_none(value: Any, label: str) -> date | None:
         return None
     if isinstance(value, date):
         return value
+    text = str(value)
+    # 카탈로그는 날짜를 ISO(2017-01-01)로도, 압축형(20170101)으로도 적는다. 압축형을 거부하면
+    # 선언이 조용히 None 이 되고 — 실제로 그랬다 — 적재 구간 판정 자체가 사라진다.
+    if len(text) == 8 and text.isdigit():
+        text = f"{text[:4]}-{text[4:6]}-{text[6:]}"
     try:
-        return date.fromisoformat(str(value))
+        return date.fromisoformat(text)
     except ValueError as exc:
         raise CatalogError("invalid_catalog_declaration", f"{label} must be an ISO date") from exc
 
@@ -123,6 +128,9 @@ class SourceSpec:
     event: event_compiler.EventSpec
     time_field: str
     coverage: str = UNKNOWN_COVERAGE
+    # 이 소스를 부르는 원문 표면어. 카탈로그는 10/10 소스에 이미 선언해 두었는데 로더가 읽지
+    # 않아 죽어 있었다 — 지표의 aliases 와 같은 결함이다(선언은 맞고 배선이 없다).
+    aliases: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _non_empty(self.id, "source.id")
@@ -146,6 +154,8 @@ class FieldSpec:
     allowed_operators: tuple[str, ...] = ()
     value_domain: str | None = None
     coverage: str = UNKNOWN_COVERAGE
+    # 소스와 같은 이유로 살린다(22/22 필드가 선언하고 있었다).
+    aliases: tuple[str, ...] = ()
 
     @property
     def data_type(self) -> str:
@@ -250,6 +260,11 @@ class MetricSpec:
     id: str
     source: str
     kind: str
+    # 이 지표를 부르는 다른 이름. 카탈로그가 **이미 선언하고 있었는데** 로더가 읽지 않아
+    # 죽어 있던 필드다(실측: member_grade.aliases 에 'grade' 가 있는데도 라이브 모델이 낸
+    # 'grade' 가 catalog_metric_unregistered 로 죽었다). 별칭을 손 목록으로 따로 두지 않고
+    # 선언에서 파생하는 이유가 이것이다 — 선언은 이미 맞았고 배선만 없었다.
+    aliases: tuple[str, ...] = ()
     aggregate_function: str | None = None
     expression_field: str | None = None
     # transition 메트릭의 직전값 컬럼. 현재값(expression_field)과 **같은 행**에 있어야 한다.
@@ -339,11 +354,14 @@ class ResolvedSemanticCatalog:
     subject: event_compiler.SubjectSpec = field(default_factory=event_compiler.SubjectSpec)
     compiler_events: Mapping[str, event_compiler.EventSpec] = field(default_factory=dict)
     compiler_fields: Mapping[str, event_compiler.FieldSpec] = field(default_factory=dict)
+    # 별칭 → 정본 지표 id (선언에서 파생 — 손으로 채우지 않는다).
+    metric_aliases: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "metric_aliases", _metric_alias_index(self.metrics))
         for name in (
             "sources", "fields", "metrics", "joins", "grains", "operators", "times",
-            "data_coverage", "compiler_events", "compiler_fields",
+            "data_coverage", "compiler_events", "compiler_fields", "metric_aliases",
         ):
             object.__setattr__(self, name, _proxy(getattr(self, name)))
         self._validate_references()
@@ -413,6 +431,7 @@ class ResolvedSemanticCatalog:
                 event=compiler_spec,
                 time_field=f"{source_id}.{event_ir.TIME_FIELD_SUFFIX}",
                 coverage=str(declaration.get("coverage") or UNKNOWN_COVERAGE),
+                aliases=_string_tuple(declaration.get("aliases"), f"source {source_id}.aliases"),
             )
 
         # Subject is a relation scope for FieldRef even though it is not an EventSpec.
@@ -453,6 +472,7 @@ class ResolvedSemanticCatalog:
                     if declaration.get("value_domain") else None
                 ),
                 coverage=str(declaration.get("coverage") or UNKNOWN_COVERAGE),
+                aliases=_string_tuple(declaration.get("aliases"), f"field {field_id}.aliases"),
             )
 
         operators = {
@@ -690,7 +710,35 @@ class ResolvedSemanticCatalog:
         return self._required(self.fields, symbol, "field")
 
     def metric(self, symbol: str) -> MetricSpec:
+        direct = self.metrics.get(symbol)
+        if direct is not None:
+            return direct
+        aliased = self.metric_aliases.get(symbol)
+        if aliased is not None:
+            return self.metrics[aliased]
         return self._required(self.metrics, symbol, "metric")
+
+    def surface_terms(self) -> tuple[tuple[str, str], ...]:
+        """(심볼, 원문 표면어) 전부 — 소스·필드·지표의 선언된 별칭에서 파생.
+
+        "이 뜻을 canonical 이 아는가"를 묻는 소비자가 카탈로그 JSON 을 다시 읽지 않게 하려고
+        여기서 낸다. 두 번째 독자가 생기는 순간 선언과 소비가 갈라진다.
+        """
+        pairs: list[tuple[str, str]] = []
+        for registry in (self.sources, self.fields, self.metrics):
+            for symbol, spec in registry.items():
+                for alias in getattr(spec, "aliases", ()) or ():
+                    text = str(alias).strip()
+                    if text:
+                        pairs.append((symbol, text))
+        return tuple(dict.fromkeys(pairs))
+
+    def metric_symbols(self) -> tuple[str, ...]:
+        """모델에게 제시할 수 있는 지표 표기 전부(정본 id + 선언된 별칭).
+
+        어휘 결속의 단일 소스다 — 소비자가 손 목록을 만들면 카탈로그가 늘어도 안 열린다.
+        """
+        return tuple(sorted({*self.metrics, *self.metric_aliases}))
 
     def join(self, symbol: str) -> JoinSpec:
         return self._required(self.joins, symbol, "join")
@@ -722,6 +770,12 @@ class ResolvedSemanticCatalog:
         by_symbol = [item for item in self.operators.values() if item.symbol == symbol]
         if len(by_symbol) == 1:
             return by_symbol[0]
+        # 낱말형 별칭(eq/gte/lte …)은 **모델에게 우리가 제시한 표기**다. 그것을 여기서
+        # 거부하면 스키마를 지킨 산출이 실패한다 — 별칭 표는 event_ir 이 기호 집합 옆에서
+        # 단독 소유하고, 여기서는 그 표로 환원만 한다(두 번째 어휘를 만들지 않는다).
+        aliased = event_ir.canonical_comparison_operator(symbol)
+        if aliased is not None and aliased != symbol:
+            return self.resolve_operator(aliased)
         raise CatalogError(
             "catalog_operator_unregistered",
             f"canonical operator is not registered: {symbol!r}",
@@ -895,15 +949,70 @@ def _coverage_spec(item_id: str, declaration: Any) -> DataCoverageSpec:
     lookback = declaration.get("max_lookback_days")
     if lookback is not None and (not isinstance(lookback, int) or isinstance(lookback, bool)):
         raise CatalogError("invalid_catalog_declaration", f"coverage {item_id}.max_lookback_days must be int")
+    # 선언 키를 오타내면 경계가 조용히 None 이 되고 적재 구간 판정이 통째로 사라진다 —
+    # 실측(2026-08-03): monthly_attribute_snapshot 이 `from`/`to` 로 선언돼 있었는데 로더는
+    # `available_from`/`complete_through` 만 읽어, 카탈로그에 적힌 201701 구간이 **한 번도
+    # 적용된 적이 없었다**. 그래서 알 수 없는 키는 여기서 이름을 대고 막는다.
+    known = {"label", "note", "from", "to", "available_from", "complete_through",
+             "max_lookback_days", "timezone"}
+    unknown = sorted(set(declaration) - known)
+    if unknown:
+        raise CatalogError(
+            "invalid_catalog_declaration",
+            f"coverage {item_id!r} declares unknown keys {unknown}; known keys are {sorted(known)}",
+        )
     return DataCoverageSpec(
         id=item_id,
-        available_from=_date_or_none(declaration.get("available_from"), f"coverage {item_id}.available_from"),
+        available_from=_date_or_none(
+            declaration.get("available_from", declaration.get("from")),
+            f"coverage {item_id}.available_from",
+        ),
         complete_through=_date_or_none(
-            declaration.get("complete_through"), f"coverage {item_id}.complete_through"
+            declaration.get("complete_through", declaration.get("to")),
+            f"coverage {item_id}.complete_through",
         ),
         max_lookback_days=lookback,
         timezone=(str(declaration["timezone"]) if declaration.get("timezone") else None),
     )
+
+
+def shadowed_metric_aliases(metrics: Mapping[str, MetricSpec]) -> dict[str, str]:
+    """정본 id 를 가리는 별칭 선언(별칭 → 그것을 주장한 지표).
+
+    소스 id 는 존재(EXISTS) 지표로 자동 등록되므로, 같은 이름을 별칭으로 주장하면 그 심볼의
+    **뜻이 바뀐다**(존재 판정 → 집계). 런타임은 정본 id 를 이기게 두고, 이 선언 오류는
+    드리프트 테스트가 이름을 대며 잡는다.
+    """
+    return {
+        alias.strip(): metric_id
+        for metric_id, spec in metrics.items()
+        for alias in spec.aliases
+        if alias.strip() and alias.strip() != metric_id and alias.strip() in metrics
+    }
+
+
+def _metric_alias_index(metrics: Mapping[str, MetricSpec]) -> dict[str, str]:
+    """선언된 별칭 → 정본 id.
+
+    두 규칙만 있다: **정본 id 가 이긴다**(별칭은 기존 심볼의 뜻을 바꿀 수 없다), 그리고
+    **같은 별칭을 둘이 주장하면 뜨지 않는다**(어느 쪽으로 해석해도 조용한 오답이라
+    카탈로그가 아예 로딩되지 않는 편이 낫다).
+    """
+    index: dict[str, str] = {}
+    for metric_id, spec in metrics.items():
+        for alias in spec.aliases:
+            token = alias.strip()
+            if not token or token == metric_id or token in metrics:
+                continue
+            owner = index.get(token)
+            if owner is not None and owner != metric_id:
+                raise CatalogError(
+                    "invalid_catalog_declaration",
+                    f"alias {token!r} is claimed by both {owner!r} and {metric_id!r}",
+                    symbol=token,
+                )
+            index[token] = metric_id
+    return index
 
 
 def _operator_spec(item_id: str, declaration: Any) -> OperatorSpec:
@@ -1000,6 +1109,7 @@ def _metric_spec(item_id: str, declaration: Any) -> MetricSpec:
         id=item_id,
         source=_non_empty(declaration.get("source"), f"metric {item_id}.source"),
         kind=kind,
+        aliases=_string_tuple(declaration.get("aliases"), f"metric {item_id}.aliases"),
         aggregate_function=(str(function).casefold() if function is not None else None),
         expression_field=(str(field_id) if field_id else None),
         prev_expression_field=(

@@ -39,6 +39,7 @@ from graph_rag import (
 )
 from common_utils import elapsed_ms as _elapsed_ms
 from confidence import render_confidence_markdown, render_confidence_report
+import failure_messages
 import plan_decisions
 from sql_dialect import dialect_for_connection
 from sql_guard import DEFAULT_LIMIT, DEFAULT_SCHEMA_PATH
@@ -3322,7 +3323,12 @@ def _target_sql_failure_payload(
     if failure_stage is None or failure_reason is None:
         return None
 
-    sql = api_response.get("sql") or sql_result.get("sql")
+    # 관문이 후보를 거부했으면 거부된 SQL 과 사유가 **이름 있는 컬럼**에 남아야 한다.
+    # 근거는 지금도 selected_candidate JSONB 안에 있지만 컬럼이 비어 있어 운영 조회로는
+    # 보이지 않았다(실측: 후보 있는 실패 행 전부 generated_sql·error_detail NULL).
+    rejection = failure_messages.rejected_candidate_evidence(sql_result)
+    sql = api_response.get("sql") or sql_result.get("sql") or rejection["sql"]
+    error_detail = error_detail or rejection["detail"]
     return {
         "endpoint": "target_sql",
         "prompt": request.prompt,

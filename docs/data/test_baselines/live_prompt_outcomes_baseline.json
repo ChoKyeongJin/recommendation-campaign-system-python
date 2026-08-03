@@ -1,0 +1,322 @@
+{
+ "description": "라이브 코퍼스 77종의 커밋된 기준선. 러너는 --baseline 로 이 파일과 대조한다. expectation(합의된 귀결)과 다른 축이다 — 이것은 마지막으로 **실측된** 귀결이라, 재현할 수 없는 수치가 기준선 노릇을 하던 상태(14/26 vs 0/26 vs 12/26)로 돌아가지 않게 한다. 재현: docker restart ...-api-1 && python tools/live_prompt_baseline.py --base-url http://api:8000",
+ "recorded_at": "2026-08-03",
+ "reason": "P0-3 최초 기록. P1~P5 착수 직전 상태(API 컨테이너 재시작 후, required_clauses 확대 이전).",
+ "summary": {
+  "sql": 4,
+  "unsupported": 33,
+  "clarification": 33,
+  "failure": 7,
+  "error": 0
+ },
+ "rows": {
+  "1": {
+   "outcome": "clarification",
+   "reason": "semantic_ir_needs_clarification"
+  },
+  "2": {
+   "outcome": "clarification",
+   "reason": "semantic_verification_failed"
+  },
+  "3": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "4": {
+   "outcome": "failure",
+   "reason": "sql_guard_failed"
+  },
+  "5": {
+   "outcome": "clarification",
+   "reason": "semantic_ir_needs_clarification"
+  },
+  "6": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "7": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "8": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "9": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "10": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "11": {
+   "outcome": "failure",
+   "reason": "sql_guard_failed"
+  },
+  "12": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "13": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "14": {
+   "outcome": "clarification",
+   "reason": "query_plan_required_conditions_missing"
+  },
+  "15": {
+   "outcome": "clarification",
+   "reason": "query_plan_required_conditions_missing"
+  },
+  "16": {
+   "outcome": "failure",
+   "reason": "no_sql_candidates"
+  },
+  "17": {
+   "outcome": "clarification",
+   "reason": "relational_ir_needs_clarification"
+  },
+  "18": {
+   "outcome": "clarification",
+   "reason": "semantic_ir_needs_clarification"
+  },
+  "19": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "20": {
+   "outcome": "clarification",
+   "reason": "query_plan_required_conditions_missing"
+  },
+  "21": {
+   "outcome": "clarification",
+   "reason": "semantic_structurer_failure"
+  },
+  "22": {
+   "outcome": "sql",
+   "reason": ""
+  },
+  "23": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "24": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "25": {
+   "outcome": "clarification",
+   "reason": "query_plan_required_conditions_missing"
+  },
+  "26": {
+   "outcome": "clarification",
+   "reason": "semantic_ir_needs_clarification"
+  },
+  "27": {
+   "outcome": "clarification",
+   "reason": "semantic_structurer_failure"
+  },
+  "28": {
+   "outcome": "clarification",
+   "reason": "query_plan_required_conditions_missing"
+  },
+  "29": {
+   "outcome": "unsupported",
+   "reason": "relational_ir_unsupported"
+  },
+  "30": {
+   "outcome": "failure",
+   "reason": "no_sql_candidates"
+  },
+  "31": {
+   "outcome": "clarification",
+   "reason": "query_plan_required_conditions_missing"
+  },
+  "32": {
+   "outcome": "clarification",
+   "reason": "query_plan_required_conditions_missing"
+  },
+  "33": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "34": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "35": {
+   "outcome": "clarification",
+   "reason": "semantic_structurer_failure"
+  },
+  "36": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "37": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "38": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "39": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "40": {
+   "outcome": "clarification",
+   "reason": "semantic_structurer_failure"
+  },
+  "41": {
+   "outcome": "clarification",
+   "reason": "semantic_ir_needs_clarification"
+  },
+  "42": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "43": {
+   "outcome": "clarification",
+   "reason": "semantic_structurer_failure"
+  },
+  "44": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "45": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "46": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "47": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "48": {
+   "outcome": "failure",
+   "reason": "sql_guard_failed"
+  },
+  "49": {
+   "outcome": "sql",
+   "reason": ""
+  },
+  "50": {
+   "outcome": "clarification",
+   "reason": "semantic_verification_failed"
+  },
+  "51": {
+   "outcome": "clarification",
+   "reason": "semantic_structurer_failure"
+  },
+  "52": {
+   "outcome": "clarification",
+   "reason": "semantic_ir_needs_clarification"
+  },
+  "53": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "54": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "55": {
+   "outcome": "sql",
+   "reason": ""
+  },
+  "56": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "57": {
+   "outcome": "clarification",
+   "reason": "semantic_ir_needs_clarification"
+  },
+  "58": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "59": {
+   "outcome": "clarification",
+   "reason": "semantic_ir_needs_clarification"
+  },
+  "60": {
+   "outcome": "clarification",
+   "reason": "semantic_verification_failed"
+  },
+  "61": {
+   "outcome": "failure",
+   "reason": "presence_absence_conflict"
+  },
+  "62": {
+   "outcome": "clarification",
+   "reason": "semantic_ir_needs_clarification"
+  },
+  "63": {
+   "outcome": "sql",
+   "reason": ""
+  },
+  "64": {
+   "outcome": "clarification",
+   "reason": "semantic_ir_needs_clarification"
+  },
+  "65": {
+   "outcome": "clarification",
+   "reason": "semantic_ir_needs_clarification"
+  },
+  "66": {
+   "outcome": "clarification",
+   "reason": "semantic_verification_failed"
+  },
+  "67": {
+   "outcome": "failure",
+   "reason": "sql_guard_failed"
+  },
+  "68": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "69": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "70": {
+   "outcome": "clarification",
+   "reason": "semantic_ir_needs_clarification"
+  },
+  "71": {
+   "outcome": "clarification",
+   "reason": "semantic_ir_needs_clarification"
+  },
+  "72": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "73": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "74": {
+   "outcome": "clarification",
+   "reason": "semantic_verification_failed"
+  },
+  "75": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "76": {
+   "outcome": "unsupported",
+   "reason": "semantic_ir_unsupported"
+  },
+  "77": {
+   "outcome": "clarification",
+   "reason": "semantic_structurer_failure"
+  }
+ }
+}

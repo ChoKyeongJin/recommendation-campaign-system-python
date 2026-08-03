@@ -433,7 +433,11 @@ def _collect_unsupported_operations(
             for index, operation in items:
                 issues.append(_issue(
                     UNSUPPORTED,
-                    _marker(operation) or "semantic_operation_unsupported",
+                    # 미지원 '사유'는 판정 코드가 아니다. `_marker` 는 code/reason/kind 순으로
+                    # 자유 텍스트를 읽는데, 이 컬렉션의 그 값들은 모델이 쓴 산문이다 —
+                    # 실측(2026-08-03) 결과 이슈 코드가 '표현_불가' 같은 한국어 문장이 됐다.
+                    # 닫힌 집합이 깨지면 집계도 라우팅도 테스트도 불가능해진다.
+                    "semantic_operation_unsupported",
                     f"semantic_ir.unsupported_operations[{index}]",
                     operation,
                 ))

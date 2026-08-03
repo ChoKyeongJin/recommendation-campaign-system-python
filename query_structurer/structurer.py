@@ -36,6 +36,20 @@ def _is_non_retryable_tool_contract_error(exc: Exception) -> bool:
     )
 
 
+def _is_registered_canonical_symbol(symbol: Any) -> bool:
+    """이 이름이 canonical 카탈로그에 실제로 등록돼 있는가(소스·필드·지표)."""
+    if not isinstance(symbol, str) or not symbol.strip():
+        return False
+    import audience_runtime  # 지연 import — 구조화기는 카탈로그 로딩을 강제하지 않는다
+
+    try:
+        catalog = audience_runtime.resolve_audience_catalog()
+    except Exception:  # noqa: BLE001 — 카탈로그를 못 읽으면 반박하지 않는다(추측 금지).
+        return False
+    name = symbol.strip()
+    return name in catalog.sources or name in catalog.fields or name in catalog.metrics
+
+
 def _audience_repair_error(raw: dict[str, Any], enriched: dict[str, Any]) -> str | None:
     """Report application-derived failures without echoing model-authored issues."""
     raw_requirement = raw.get("audience_requirement")
@@ -45,21 +59,44 @@ def _audience_repair_error(raw: dict[str, Any], enriched: dict[str, Any]) -> str
         item for item in (raw_requirement.get("issues") or []) if isinstance(item, dict)
     ]
     if raw_requirement.get("expression") is None:
+        # **미지원 선언은 가설이지 판정이 아니다.** 모델이 "표현할 수 없다"며 지목한 심볼이
+        # 카탈로그에 **등록된 canonical 심볼**이면 그 주장은 스스로 반박된다 — 등록됐다는 것이
+        # 곧 표현할 수 있다는 뜻이기 때문이다. 실측(2026-08-03 라이브):
+        #   '여성 회원을 찾아줘' → unsupported_semantics / argument='subject.gender'
+        #   "The compiler cannot represent direct profile field comparison…"
+        # `subject.gender` 는 카탈로그 필드다. 이런 주장은 종결이 아니라 재시도 사유다.
+        refuted = sorted({
+            str(item.get("argument"))
+            for item in raw_issues
+            if item.get("code") == "unsupported_semantics"
+            and _is_registered_canonical_symbol(item.get("argument"))
+        })
+        if refuted:
+            return (
+                f"{', '.join(refuted)} is registered in the semantic catalog; capability is "
+                "decided by the application, not by you — emit the canonical expression instead "
+                "of an unsupported_semantics issue"
+            )
         if any(item.get("code") == "validation_mismatch" for item in raw_issues):
             return (
                 "validation_mismatch is application-owned; do not copy validation errors "
                 "into issues, and retry the canonical expression"
             )
-        has_period = any(
-            item.get("kind") in {"date_window", "duration"}
-            for item in (enriched.get("literal_bindings") or [])
-            if isinstance(item, dict)
-        )
-        if has_period and any(
-            item.get("code") == "missing_argument" and item.get("argument") == "period"
-            for item in raw_issues
-        ):
-            return "period is present in application-owned literal bindings; retry the expression"
+        # 예전에는 여기서 `argument == "period"` + date_window/duration 만 아는 손코딩 특례가
+        # 재방출을 결정했다. 종류 하나만 알아서 percentage(#3)를 놓쳤고, **스팬을 보지 않아**
+        # 다른 절의 '3개월' 때문에 진짜 결핍인 맨 '최근'(#2)까지 재방출로 보냈다.
+        # 이제 원인은 결정론으로 계산돼 semantic_ir 에 실려 온다 — 여기서는 읽기만 한다.
+        causes = (enriched.get("semantic_ir") or {}).get("missing_field_causes") or []
+        omitted = [
+            record for record in causes
+            if isinstance(record, dict) and record.get("cause") == "model_omission"
+        ]
+        if omitted:
+            fields = ", ".join(sorted({str(record.get("field")) for record in omitted}))
+            return (
+                f"{fields} is present in application-owned literal bindings; "
+                "retry the expression"
+            )
         return None
     if not isinstance(raw_requirement.get("expression"), dict):
         return None

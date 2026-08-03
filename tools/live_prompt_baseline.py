@@ -213,6 +213,33 @@ def run(
     return rows
 
 
+DEFAULT_BASELINE = ROOT / "docs" / "data" / "test_baselines" / "live_prompt_outcomes_baseline.json"
+
+
+def compare_to_baseline(
+    rows: list[dict[str, Any]], baseline: dict[str, Any]
+) -> list[dict[str, str]]:
+    """커밋된 **실측** 기준선과의 차이. expectation 대비 판정과는 다른 축이다.
+
+    expectation 은 '합의된 귀결'이라 오래 고정돼 있고, 그래서 "지금 무엇이 달라졌는가"를
+    말해 주지 못한다. 이 대조는 마지막 실측과의 차이만 본다 — 재현할 수 없는 수치가
+    기준선 노릇을 하던 상태로 돌아가지 않게 하는 것이 목적이다.
+    """
+    recorded = baseline.get("rows") or {}
+    changes: list[dict[str, str]] = []
+    for row in rows:
+        before = (recorded.get(str(row["id"])) or {}).get("outcome")
+        if before is None or before == row["outcome"]:
+            continue
+        direction = (
+            "better" if OUTCOMES.index(row["outcome"]) < OUTCOMES.index(before) else "worse"
+        )
+        changes.append({
+            "id": str(row["id"]), "from": before, "to": row["outcome"], "direction": direction,
+        })
+    return changes
+
+
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     counts = {outcome: 0 for outcome in OUTCOMES}
     verdicts = {"match": 0, "improvement": 0, "regression": 0, "unknown": 0}
@@ -237,6 +264,10 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=180)
     parser.add_argument("--only", default="", help="쉼표로 구분한 id 목록")
     parser.add_argument("--json", type=Path, default=None, help="결과 저장 경로")
+    parser.add_argument(
+        "--baseline", type=Path, default=DEFAULT_BASELINE,
+        help="커밋된 실측 기준선과 대조(항목별 귀결 변화)",
+    )
     args = parser.parse_args()
 
     corpus = _load_corpus(args.corpus)
@@ -259,6 +290,16 @@ def main() -> int:
         print(f"회귀: {summary['regressions']}")
     if summary["improvements"]:
         print(f"개선(기대치 갱신 후보): {summary['improvements']}")
+
+    if args.baseline and args.baseline.exists():
+        changes = compare_to_baseline(rows, json.loads(args.baseline.read_text(encoding="utf-8")))
+        if changes:
+            print(f"\n실측 기준선 대비 변화 {len(changes)}건:")
+            for change in changes:
+                mark = "+" if change["direction"] == "better" else "-"
+                print(f"  {mark} #{change['id']:>2} {change['from']} → {change['to']}")
+        else:
+            print("\n실측 기준선 대비 변화 없음")
 
     if args.json:
         args.json.write_text(
