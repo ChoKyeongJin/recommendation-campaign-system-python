@@ -618,7 +618,7 @@ class Summarize:
     def __post_init__(self) -> None:
         if not self.measures:
             raise IrSchemaError("summarize needs at least one measure")
-        names = [item.name for item in (*self.keys, *self.measures)]
+        names = [key.name for key in self.keys] + [measure.name for measure in self.measures]
         if len(names) != len(set(names)):
             raise IrSchemaError("summarize output names must be unique")
 
@@ -961,10 +961,15 @@ def condition_from_dict(raw: Any) -> Condition:
             operator=str(raw.get("operator")),
             left=_event_reference(raw.get("left")),
             right=_event_reference(raw.get("right")),
-            duration=Duration.from_dict(raw.get("duration") if isinstance(raw.get("duration"), dict) else {}),
+            duration=Duration.from_dict(_mapping_or_empty(raw.get("duration"))),
             evidence=_evidence_or_none(raw.get("evidence")),
         )
     raise IrSchemaError(f"unknown condition type: {kind!r}")
+
+
+def _mapping_or_empty(raw: Any) -> dict[str, Any]:
+    """객체가 아니면 빈 dict — 하위 from_dict 가 자기 스키마 오류로 말하게 한다."""
+    return dict(raw) if isinstance(raw, dict) else {}
 
 
 def _operands(raw: dict[str, Any]) -> list[Condition]:

@@ -1,0 +1,46 @@
+{
+ "summary": {
+  "total": 1,
+  "outcomes": {
+   "sql": 1,
+   "unsupported": 0,
+   "clarification": 0,
+   "failure": 0,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 1,
+   "improvement": 0,
+   "regression": 0,
+   "unknown": 0
+  },
+  "unstable": [],
+  "regressions": [],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 6,
+   "prompt": "캠페인별 구매반응 금액이 평균 10만 원 이상인 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 19.3
+    },
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 16.1
+    }
+   ],
+   "note": ""
+  }
+ ]
+}

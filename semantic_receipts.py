@@ -31,6 +31,7 @@ from typing import Any
 import plan_decisions
 import semantic_plan
 import semantic_plan_event_lowering
+import semantic_relation_ownership
 import semantic_requirements
 
 PLAN_NODES_KEY = "semantic_plan"
@@ -150,6 +151,11 @@ def discharge_attribute_obligations(query_plan: dict[str, Any], query: str, resu
         kinds={semantic_requirements.TEMPORAL_QUALIFIER_KIND},
         status="compiled", compiler="canonical_event_ir",
         evidence={"receipts": [receipt.to_dict() for receipt in result.receipts]},
+        requirement_filter=lambda requirement: (
+            semantic_relation_ownership.relation_requirement_owned_by_lowered_node(
+                requirement, query_plan, query
+            )
+        ),
     )
 
 
@@ -180,6 +186,45 @@ def merge_into_event_expression(
     if payload is not None:
         query_plan[expression_key] = payload
         discharge_attribute_obligations(query_plan, query, result)
+    elif result.failures:
+        # Preserve failed receipts beside the still-unmodified expression.
+        # They are never accepted by ``receipted_node_ids``, but make the
+        # fail-close reason observable and prevent a partial SQL from looking
+        # like a successful merge.
+        existing = query_plan.get(expression_key)
+        if isinstance(existing, dict):
+            existing.setdefault("receipts", []).extend(
+                receipt.to_dict() for receipt in result.failures
+            )
+        coverage = [
+            receipt for receipt in result.failures
+            if receipt.failure_code == semantic_plan_event_lowering.DATA_COVERAGE_GAP
+        ]
+        if coverage:
+            query_plan["semantic_ir"] = {
+                "status": "unsupported",
+                "operations": [],
+                "missing_fields": [],
+                "missing_field_causes": [],
+                "failure_kind": "unsupported",
+                "policy_applications": [],
+                "unsupported_operations": [
+                    {
+                        "kind": receipt.failure_code,
+                        "reason": receipt.message,
+                        "evidence": next(
+                            (
+                                str(node.get("source_span") or "")
+                                for node in _nodes(query_plan)
+                                if str(node.get("id")) == receipt.node_id
+                            ),
+                            "",
+                        ),
+                    }
+                    for receipt in coverage
+                ],
+                "message": "요청한 이력 기간이 현재 데이터 적재 구간을 벗어납니다.",
+            }
     plan_decisions.record(
         query_plan, filter_name="semantic_plan_event_merge",
         action=plan_decisions.SELECT if payload is not None else plan_decisions.REJECT,

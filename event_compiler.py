@@ -28,6 +28,8 @@ import sql_dialect
 
 import hashlib
 import json
+import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -162,6 +164,31 @@ class FieldSpec:
     value_order: tuple[str, ...] = ()
     # 값 표면어 → canonical. 표면어 목록의 소유자는 값 사전(eq_filters)이고 여기는 파생 사본이다.
     value_aliases: tuple[tuple[str, str], ...] = ()
+    # 자유 텍스트 이름/분류를 물리 식별자 컬럼에 직접 비교하지 않도록 하는 선언형 검색 바인딩.
+    # ``contains`` 필드는 ``=``/``!=`` 비교를 아래 SQL 표현식들의 안전한 LIKE 검색으로
+    # 컴파일한다. 표현식은 catalog 소유이고 사용자 리터럴은 절대 들어가지 않는다.
+    match_mode: str = "exact"  # exact | contains
+    search_expressions: tuple[str, ...] = ()
+    # 식별자 필드에 자연어 이름이 들어오는 것을 막는 catalog 소유 정규식. 비어 있으면 제한 없음.
+    literal_pattern: str = ""
+
+    def __post_init__(self) -> None:
+        if self.match_mode not in {"exact", "contains"}:
+            raise SqlCompileError(
+                f"필드 '{self.source}.{self.column}'의 match_mode가 올바르지 않습니다: "
+                f"{self.match_mode!r}"
+            )
+        if self.match_mode == "contains" and self.data_type != "string":
+            raise SqlCompileError(
+                f"부분 문자열 검색 필드 '{self.source}.{self.column}'는 string 타입이어야 합니다"
+            )
+        if self.literal_pattern:
+            try:
+                re.compile(self.literal_pattern)
+            except re.error as exc:
+                raise SqlCompileError(
+                    f"필드 '{self.source}.{self.column}'의 literal_pattern이 올바르지 않습니다"
+                ) from exc
 
     def canonicalize(self, value: Any) -> Any:
         """표면어를 canonical 로 바꾼다. 모르는 값은 **그대로 둔다** — 판정은 physical_value 가 한다."""
@@ -178,7 +205,7 @@ class FieldSpec:
                 f"필드 '{self.source}.{self.column}'의 순서 있는 값이 아닙니다: {canonical!r}"
             )
         index = self.value_order.index(canonical)
-        keep = {
+        keep: Callable[[int], bool] = {
             ">=": lambda position: position >= index,
             ">": lambda position: position > index,
             "<=": lambda position: position <= index,
@@ -188,6 +215,17 @@ class FieldSpec:
         return tuple(values[name] for position, name in enumerate(self.value_order) if keep(position))
 
     def physical_value(self, value: Any) -> Any:
+        if (
+            self.literal_pattern
+            and (
+                not isinstance(value, str)
+                or re.fullmatch(self.literal_pattern, value) is None
+            )
+        ):
+            raise SqlCompileError(
+                f"필드 '{self.source}.{self.column}'에는 식별자 형식의 값만 비교할 수 있습니다: "
+                f"{value!r}"
+            )
         if not self.value_map:
             return value
         if not isinstance(value, str):
@@ -409,6 +447,28 @@ def _sql_quote(value: Any) -> str:
     return sql_dialect.quote_literal(value)
 
 
+def _nlike_contains_literal(column: str, term: str) -> str:
+    """사용자 자유 텍스트 하나를 리터럴 부분일치 술어로 렌더한다.
+
+    홑따옴표뿐 아니라 LIKE 메타문자(``%``, ``_``, SQL Server의 ``[``)도 이스케이프한다.
+    따라서 상품명 ``100% 사료``나 ``A_B``는 와일드카드가 아니라 입력 그대로 검색되고,
+    자유 텍스트가 SQL 구조로 빠져나갈 수 없다.
+    """
+    pattern = "N" + _sql_quote(_like_contains_pattern(term))
+    return f"{column} LIKE {pattern} ESCAPE N'~'"
+
+
+def _like_contains_pattern(term: str) -> str:
+    """Return one escaped value shared by literal and bound LIKE renderers."""
+    escaped = (
+        term.replace("~", "~~")
+        .replace("%", "~%")
+        .replace("_", "~_")
+        .replace("[", "~[")
+    )
+    return f"%{escaped}%"
+
+
 # ── 시간 ──────────────────────────────────────────────────────────────────────────
 
 
@@ -549,6 +609,59 @@ def _event_time_sql(
     return f"{active_alias}.{spec.time_column}"
 
 
+def _validate_contains_filter_conjunction(
+    condition: event_ir.Condition, context: CompileContext
+) -> None:
+    """Fail closed on the impossible same-row shape for ``all products``.
+
+    ``Filter(Source(purchase_line), And(product_text = A, product_text = B))``
+    asks one physical product row to match both values.  Natural-language
+    "A와 B를 모두 구매" instead needs one correlated ``Exists`` per value and
+    an ``And`` above those independent existence predicates.
+
+    Keep this deliberately narrow: only positive equality comparisons that are
+    direct conjuncts (including nested ``And`` nodes) of one Filter participate.
+    ``Or`` branches, negation, different fields, and repeated identical values
+    retain their existing semantics.
+    """
+    if not isinstance(condition, And):
+        return
+
+    def conjuncts(item: event_ir.Condition) -> list[event_ir.Condition]:
+        if isinstance(item, And):
+            return [child for operand in item.operands for child in conjuncts(operand)]
+        return [item]
+
+    values_by_field: dict[str, set[str]] = {}
+    for item in conjuncts(condition):
+        if not isinstance(item, Comparison) or item.operator != "=":
+            continue
+        field_ref: FieldRef | None = None
+        literal: Literal | None = None
+        if isinstance(item.left, FieldRef) and isinstance(item.right, Literal):
+            field_ref, literal = item.left, item.right
+        elif isinstance(item.right, FieldRef) and isinstance(item.left, Literal):
+            field_ref, literal = item.right, item.left
+        if field_ref is None or literal is None or not isinstance(literal.value, str):
+            continue
+        spec = context.field_spec(field_ref.name)
+        if spec.match_mode != "contains":
+            continue
+        values_by_field.setdefault(field_ref.name, set()).add(
+            literal.value.strip().casefold()
+        )
+
+    conflicted = sorted(name for name, values in values_by_field.items() if len(values) > 1)
+    if conflicted:
+        raise SqlCompileError(
+            "부분검색 필드의 서로 다른 값들을 한 Filter AND로 비교하면 같은 상품 행에 "
+            "모두 일치하라는 뜻이 됩니다: "
+            + ", ".join(conflicted)
+            + ". '모두 구매'는 값마다 독립된 Exists(Filter(...))를 만들고 그 Exists들을 "
+            "And로 묶어야 합니다"
+        )
+
+
 def compile_relation(relation: event_ir.Relation, context: CompileContext) -> RelationPlan:
     if isinstance(relation, Source):
         spec = context.event_spec(relation.name)
@@ -572,7 +685,9 @@ def compile_relation(relation: event_ir.Relation, context: CompileContext) -> Re
 
     if isinstance(relation, Filter):
         plan = compile_relation(relation.relation, context)
-        compiled = compile_condition(relation.where, _relation_context(plan, context))
+        inner = _relation_context(plan, context)
+        _validate_contains_filter_conjunction(relation.where, inner)
+        compiled = compile_condition(relation.where, inner)
         plan.where.append(compiled.sql)
         plan.params.update(compiled.params)
         return plan
@@ -631,9 +746,9 @@ def compile_relation(relation: event_ir.Relation, context: CompileContext) -> Re
         if plan.group_by or plan.projection or plan.order_by or plan.limit is not None:
             raise SqlCompileError("summarize 입력은 아직 materialize 된 관계를 지원하지 않습니다")
         inner = _relation_context(plan, context)
-        projection: list[str] = []
-        aliases: dict[str, str] = {}
-        expressions: dict[str, str] = {}
+        projection = []
+        aliases = {}
+        expressions = {}
         group_by: list[str] = []
         for key in relation.keys:
             expression = compile_scalar(key.expression, inner)
@@ -659,13 +774,13 @@ def compile_relation(relation: event_ir.Relation, context: CompileContext) -> Re
         plan = compile_relation(relation.relation, context)
         inner = _relation_context(plan, context)
         order_by: list[str] = []
-        for key in relation.keys:
-            expression = plan.output_expressions.get(key.name)
-            if expression is None and "." in key.name:
-                expression = compile_scalar(FieldRef(key.name), inner)
-            if expression is None:
-                raise SqlCompileError(f"정렬 출력이 관계에 없습니다: {key.name}")
-            order_by.append(f"{expression} {key.direction.upper()}")
+        for sort_key in relation.keys:
+            sort_expression = plan.output_expressions.get(sort_key.name)
+            if sort_expression is None and "." in sort_key.name:
+                sort_expression = compile_scalar(FieldRef(sort_key.name), inner)
+            if sort_expression is None:
+                raise SqlCompileError(f"정렬 출력이 관계에 없습니다: {sort_key.name}")
+            order_by.append(f"{sort_expression} {sort_key.direction.upper()}")
         plan.order_by = order_by
         return plan
 
@@ -853,6 +968,23 @@ def compile_condition(condition: event_ir.Condition, context: CompileContext) ->
     if isinstance(condition, Or):
         return _combine(condition.operands, " OR ", context)
     if isinstance(condition, Not):
+        if isinstance(condition.operand, Comparison):
+            # contains 검색의 부정은 일반 2값 보수와 다르다. 상품마스터에 매핑되지 않아 모든
+            # 이름/카테고리가 NULL인 행을 '다른 상품'의 증거로 삼을 수 없으므로, 전용 !=
+            # 컴파일이 검색값 존재 가드를 함께 붙인다.
+            left, right = condition.operand.left, condition.operand.right
+            if isinstance(left, FieldRef) and isinstance(right, Literal):
+                inverted = {"=": "!=", "!=": "="}.get(condition.operand.operator)
+                if inverted is not None:
+                    text_search = _compile_text_search_comparison(left, right, inverted, context)
+                    if text_search is not None:
+                        return text_search
+            elif isinstance(right, FieldRef) and isinstance(left, Literal):
+                inverted = {"=": "!=", "!=": "="}.get(condition.operand.operator)
+                if inverted is not None:
+                    text_search = _compile_text_search_comparison(right, left, inverted, context)
+                    if text_search is not None:
+                        return text_search
         inner = compile_condition(condition.operand, context)
         # NOT EXISTS 는 SQL 이 직접 지원하는 형태라 NOT (EXISTS ...) 로 감싸지 않는다(플랜 동일, 가독성 우위).
         if inner.sql.startswith("EXISTS ("):
@@ -860,10 +992,18 @@ def compile_condition(condition: event_ir.Condition, context: CompileContext) ->
         # SQL's NOT UNKNOWN is still UNKNOWN, while an audience complement is
         # two-valued: members for whom the predicate is not true (including
         # NULL/unknown) must remain.  Fold the predicate to 1/0 before NOT.
-        return CompiledCondition(
-            sql=f"NOT (CASE WHEN ({inner.sql}) THEN 1 ELSE 0 END = 1)",
-            params=inner.params,
-        )
+        complement = f"NOT (CASE WHEN ({inner.sql}) THEN 1 ELSE 0 END = 1)"
+        # A compound product-text negation (for example ``NOT (A OR B)``) means
+        # "another known product", not "a purchase row whose dimension join is
+        # missing".  Direct Comparison negation is handled above; apply the same
+        # fail-closed searchability guard to compound Boolean shapes.  We stop at
+        # Exists boundaries so ``NOT EXISTS(product=A)`` keeps audience-absence
+        # semantics and does not require any matching product row to exist.
+        searchable = _contains_comparison_search_expressions(condition.operand, context)
+        if searchable:
+            present = " OR ".join(f"{column} IS NOT NULL" for column in searchable)
+            complement = f"({present}) AND {complement}"
+        return CompiledCondition(sql=complement, params=inner.params)
     if isinstance(condition, TimeFilter):
         spec = context.field_spec(condition.field.name)
         return compile_time_window(
@@ -939,6 +1079,112 @@ def _compile_ordinal_comparison(
     return CompiledCondition(sql=f"{column} IN ({rendered})")
 
 
+def _text_search_expressions(field: FieldRef, context: CompileContext) -> tuple[str, ...]:
+    """catalog의 contains 바인딩을 현재 relation alias에 맞춰 렌더한다."""
+    spec = context.field_spec(field.name)
+    if spec.match_mode != "contains":
+        return ()
+    if not spec.search_expressions:
+        return (compile_scalar(field, context),)
+    alias = context._scope.get(spec.source) or (
+        context.subject.alias if spec.source == context.subject.name else None
+    )
+    if alias is None:
+        raise SqlCompileError(f"'{field.name}' 을 참조할 관계가 현재 스코프에 없습니다")
+    rendered: list[str] = []
+    for template in spec.search_expressions:
+        try:
+            expression = template.format(
+                alias=alias,
+                subject_alias=context.subject.alias,
+                subject_key=context.subject.key,
+            )
+        except (KeyError, ValueError) as exc:
+            raise SqlCompileError(f"필드 '{field.name}' 검색 바인딩 형식이 잘못되었습니다") from exc
+        if expression not in rendered:
+            rendered.append(expression)
+    if not rendered:
+        raise SqlCompileError(f"필드 '{field.name}' 검색 바인딩이 비어 있습니다")
+    return tuple(rendered)
+
+
+def _contains_comparison_search_expressions(
+    condition: event_ir.Condition, context: CompileContext
+) -> tuple[str, ...]:
+    """Search columns used by contains comparisons in one Boolean row scope.
+
+    Relation-valued atoms deliberately form a boundary: their aliases live in
+    a subquery, and especially ``Not(Exists(...))`` represents member-level
+    absence rather than a negated property of an existing product row.
+    """
+    if isinstance(condition, (And, Or)):
+        expressions = [
+            expression
+            for operand in condition.operands
+            for expression in _contains_comparison_search_expressions(operand, context)
+        ]
+        return tuple(dict.fromkeys(expressions))
+    if isinstance(condition, Not):
+        return _contains_comparison_search_expressions(condition.operand, context)
+    if not isinstance(condition, Comparison) or condition.operator not in {"=", "!="}:
+        return ()
+    field_ref: FieldRef | None = None
+    if isinstance(condition.left, FieldRef) and isinstance(condition.right, Literal):
+        field_ref = condition.left
+    elif isinstance(condition.right, FieldRef) and isinstance(condition.left, Literal):
+        field_ref = condition.right
+    if field_ref is None or context.field_spec(field_ref.name).match_mode != "contains":
+        return ()
+    return _text_search_expressions(field_ref, context)
+
+
+def _compile_text_search_comparison(
+    field: FieldRef,
+    literal: Literal,
+    operator: str,
+    context: CompileContext,
+) -> CompiledCondition | None:
+    """contains 필드의 ``=``/``!=``를 상품마스터 LIKE 술어로 컴파일한다.
+
+    IR의 보편 비교 연산자를 늘리지 않고, 해당 필드의 물리 매칭 정책만 catalog가 바꾼다.
+    ``Not(Comparison('='))``도 기존 불리언 대수 그대로 동작하므로 미구매/제외/다른 상품을
+    위한 전용 노드를 만들 필요가 없다.
+    """
+    expressions = _text_search_expressions(field, context)
+    if not expressions:
+        return None
+    if operator not in {"=", "!="}:
+        raise SqlCompileError(
+            f"부분 문자열 검색 필드 '{field.name}'는 = 또는 != 비교만 지원합니다"
+        )
+    if not isinstance(literal.value, str) or not literal.value.strip():
+        raise SqlCompileError(f"부분 문자열 검색 필드 '{field.name}'에는 비어 있지 않은 문자열이 필요합니다")
+    term = literal.value.strip()
+    params: dict[str, Any] = {}
+    if context.literals:
+        matches = " OR ".join(
+            _nlike_contains_literal(column, term) for column in expressions
+        )
+    else:
+        parameter_name = f"text_search_{context.next_index()}"
+        placeholder = f":{parameter_name}"
+        matches = " OR ".join(
+            f"{column} LIKE {placeholder} ESCAPE N'~'" for column in expressions
+        )
+        params[parameter_name] = _like_contains_pattern(term)
+    predicate = f"({matches})"
+    if operator == "=":
+        return CompiledCondition(sql=predicate, params=params)
+    # SQL NULL의 3값 논리 때문에 단순 NOT LIKE/NOT(...)를 쓰지 않는다. 어떤 이름/카테고리도
+    # 일치하지 않는 행이라는 audience 보수를 CASE로 2값화한다. 동시에 상품마스터 미매핑으로
+    # 검색 표현이 전부 NULL인 행은 '다른 상품'이라고 증명할 수 없으므로 fail-close 한다.
+    searchable = " OR ".join(f"{column} IS NOT NULL" for column in expressions)
+    return CompiledCondition(
+        sql=f"({searchable}) AND NOT (CASE WHEN ({predicate}) THEN 1 ELSE 0 END = 1)",
+        params=params,
+    )
+
+
 def _compile_comparison(condition: Comparison, context: CompileContext) -> CompiledCondition:
     # 그룹 집계 비교('한 주문에 3개 이상')는 스칼라 서브쿼리로 표현할 수 없다 — grain 이 회원이 아니라
     # 그룹이므로 EXISTS + HAVING 이 정확한 번역이다.
@@ -955,11 +1201,21 @@ def _compile_comparison(condition: Comparison, context: CompileContext) -> Compi
             )
     left_scalar, right_scalar = condition.left, condition.right
     if isinstance(left_scalar, FieldRef) and isinstance(right_scalar, Literal):
+        text_search = _compile_text_search_comparison(
+            left_scalar, right_scalar, condition.operator, context
+        )
+        if text_search is not None:
+            return text_search
         ordinal = _compile_ordinal_comparison(left_scalar, right_scalar, condition.operator, context)
         if ordinal is not None:
             return ordinal
         right_scalar = Literal(context.field_spec(left_scalar.name).physical_value(right_scalar.value))
     elif isinstance(right_scalar, FieldRef) and isinstance(left_scalar, Literal):
+        text_search = _compile_text_search_comparison(
+            right_scalar, left_scalar, condition.operator, context
+        )
+        if text_search is not None:
+            return text_search
         ordinal = _compile_ordinal_comparison(
             right_scalar, left_scalar, _MIRRORED_OPERATORS.get(condition.operator, condition.operator), context
         )

@@ -140,21 +140,24 @@ def test_semantic_plan_compiles_all_the_way_to_sql(query, nodes, expected_sql_fr
         assert plan["semantic_ir"]["status"] == "resolved"
 
 
-def test_held_throughout_emits_sql_with_a_coverage_advisory() -> None:
-    """'최근 3개월 내내 VIP 유지' — 값 앵커 구간 판정으로 SQL 이 나가고, 0건 가능성만 고지된다.
+def test_held_throughout_beyond_complete_coverage_is_unsupported() -> None:
+    """'최근 3개월 내내 VIP 유지' needs three complete monthly snapshots.
 
-    적재 깊이는 차단 사유가 아니다(0건은 정직한 답이다). 그리고 이 문형의 컴파일러는
-    2026-08-02 에 신설됐다 — 그 전에는 '미구현'으로 막혔다.
+    The compiler can express the relation, but the declared dataset contains
+    only one complete snapshot month.  Emitting a three-month SQL predicate
+    would therefore pretend the requested observation window exists.
     """
-    result, _plan = _run("최근 3개월 내내 VIP 등급을 유지한 회원", [
+    result, plan = _run("최근 3개월 내내 VIP 등급을 유지한 회원", [
         {"id": "r1", "type": "relation_predicate", "source_span": "최근 3개월 내내 VIP 등급을 유지한",
          "subject": "member", "attribute": "member_grade", "relation": "held_throughout",
          "value": "VIP", "months": 3},
     ])
-    assert result["sql"], "값 앵커 구간 판정은 이제 SQL 을 낸다."
-    assert "SUM(CASE WHEN ATTRIBUTE_VALUE IN ('MEM_GRADE_CD.VIP')" in result["sql"]
-    advisories = result["data_availability_advisories"]
-    assert any(item["code"] == "data_coverage_shallow" for item in advisories)
+    assert not result["is_success"] and result["sql"] is None
+    assert result["failure_reason"] == "semantic_ir_unsupported"
+    assert result["interpretation_status"] == "unsupported"
+    unsupported = plan["semantic_ir"]["unsupported_operations"]
+    assert unsupported[0]["kind"] == "data_coverage_gap"
+    assert "requires 3 distinct monthly snapshots" in unsupported[0]["reason"]
 
 
 def test_state_history_without_a_source_still_blocks() -> None:

@@ -2,6 +2,8 @@ qdrant-client
 openai
 sqlglot
 jsonschema
+# query_pipeline/ 이 직접 쓴다(fastapi 의 전이 의존이 아니라 1차 의존이다).
+pydantic>=2
 fastapi
 uvicorn[standard]
 psycopg[binary]
@@ -18,6 +20,9 @@ tiktoken
 graphrag
 networkx
 pytest
+# Windows 에는 시스템 tz 데이터베이스가 없다 — zoneinfo("Asia/Seoul") 이 요구 계층의
+# 기간 정규화와 기존 테스트(test_legacy_audience_migration)에 모두 필요하다.
+tzdata; sys_platform == "win32"
 python-dotenv
 pandas
 numpy

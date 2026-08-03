@@ -938,6 +938,11 @@ def _compiler_field(
         value_map=value_map,
         value_order=value_order,
         value_aliases=value_aliases,
+        match_mode=str(declaration.get("match_mode") or "exact"),
+        search_expressions=_string_tuple(
+            declaration.get("search_expressions"), f"field {field_id}.search_expressions"
+        ),
+        literal_pattern=str(declaration.get("literal_pattern") or ""),
     )
 
 

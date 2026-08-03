@@ -370,6 +370,10 @@ class PeriodNormalizer:
     받는 형태(LLM 노출 스키마와 1:1):
       {type:'calendar_month', year, month} / {type:'absolute', from, to} /
       {type:'relative', value, unit} / '2026년 2월'(표면).
+
+    ``interval`` 은 LLM 노출형이 아니라 literal binding 계층이 만든 내부 canonical
+    창이다. ``end_exclusive`` 를 inclusive ``Period.end`` 로 바꿀 때만 받아, Event IR
+    날짜창과 기존 SQL 컴파일러의 기간 계약 사이 의미를 보존한다.
     """
 
     _MONTH_SURFACE_RE = re.compile(r"^(?P<year>\d{4})년\s*(?P<month>\d{1,2})월$")
@@ -415,6 +419,33 @@ class PeriodNormalizer:
             canonical = condition_normalizers.canonical_unit(unit) or "days"
             window = RelativeWindow(value=int(value), unit=canonical)
             return window.resolve(today) if today is not None else window
+        if kind == "interval":
+            start_raw, end_exclusive_raw = raw.get("start"), raw.get("end_exclusive")
+            if start_raw is None or end_exclusive_raw is None:
+                raise NormalizationError(
+                    "invalid_period",
+                    "interval 에 start/end_exclusive 가 필요하다",
+                    received=raw,
+                )
+            start = DateTimeNormalizer.normalize(start_raw)
+            end_exclusive = DateTimeNormalizer.normalize(end_exclusive_raw)
+            start_date = date(int(start[:4]), int(start[4:6]), int(start[6:8]))
+            end_exclusive_date = date(
+                int(end_exclusive[:4]),
+                int(end_exclusive[4:6]),
+                int(end_exclusive[6:8]),
+            )
+            if end_exclusive_date <= start_date:
+                raise NormalizationError(
+                    "invalid_period",
+                    "interval end_exclusive 는 start 보다 뒤여야 한다",
+                    received=raw,
+                )
+            return Period(
+                start=start,
+                end=(end_exclusive_date - timedelta(days=1)).strftime("%Y%m%d"),
+                label=str(raw["label"]) if raw.get("label") else None,
+            )
         raise NormalizationError("invalid_period", f"알 수 없는 기간 종류: {kind!r}", received=raw)
 
     # 기간 종류별 **필수 인자**. `_infer_kind` 와 같은 표를 두 번 쓰지 않도록 여기 하나만 둔다.
@@ -422,6 +453,7 @@ class PeriodNormalizer:
         "calendar_month": ("year", "month"),
         "absolute": ("from", "to"),
         "relative": ("value",),
+        "interval": ("start", "end_exclusive"),
     }
 
     @classmethod

@@ -143,7 +143,11 @@ def audience_catalog_guidance(
     path: str | Path = DEFAULT_AUDIENCE_CATALOG_PATH,
 ) -> str:
     """Human-readable, declaration-derived glossary for the structuring model."""
-    raw = load_audience_catalog_config(path)
+    # ``source_category`` domains (gender/grade/login_channel, …) keep their
+    # values in member_target_filters.json.  Render the resolved snapshot so
+    # the model sees those canonical values too; using the raw JSON here made
+    # every referenced domain silently disappear from the prompt glossary.
+    raw = catalog_snapshot(path)
     lines = [
         "[Canonical Audience IR]",
         "타겟 조건은 audience_requirement.expression 하나에 Event IR로 작성한다. target_user/exclude/SQL은 만들지 않는다.",
@@ -191,7 +195,36 @@ def audience_catalog_guidance(
             continue
         label = str(declaration.get("label") or field_id)
         unit = str(declaration.get("unit") or "")
-        lines.append(f"- {field_id}: {label}" + (f" [unit={unit}]" if unit else ""))
+        aliases = ", ".join(str(item) for item in declaration.get("aliases") or [])
+        match_mode = str(declaration.get("match_mode") or "")
+        details = []
+        if unit:
+            details.append(f"unit={unit}")
+        if match_mode:
+            details.append(f"match={match_mode}")
+        lines.append(
+            f"- {field_id}: {label}"
+            + (f" ({aliases})" if aliases else "")
+            + (f" [{', '.join(details)}]" if details else "")
+        )
+    text_search_fields = [
+        field_id
+        for field_id, declaration in sorted((raw.get("fields") or {}).items())
+        if isinstance(declaration, Mapping) and declaration.get("match_mode") == "contains"
+    ]
+    if text_search_fields:
+        lines.extend([
+            "",
+            "[Product text matching]",
+            "- 상품명·카테고리명 같은 자연어 값은 PRODUCT_ID와 비교하지 않는다. "
+            "구매는 purchase_line.product_text/product_name/product_category, 장바구니는 cart.product_text/product_name/product_category 중 맞는 필드에 = 비교를 사용한다. 컴파일러가 CRM_CM_PRODUCT의 안전한 LIKE 부분검색으로 바꾼다.",
+            "- 'A, B, C를 모두 구매'는 각 값마다 독립된 Exists(Filter(Source(purchase_line), Comparison))를 만들고 그 Exists들을 And로 묶는다. 한 상품 행에 A/B/C 비교를 모두 걸지 않는다.",
+            "- 'A, B, C 중 하나라도 구매'는 한 Exists의 Filter.where에서 비교들을 Or로 묶거나, 독립 Exists들을 Or로 묶는다.",
+            "- 'A를 구매하지 않은'은 Not(Exists(Filter(... A 비교 ...)))이다.",
+            "- 'A 외 상품을 구매'는 Exists(Filter(... Not(A 비교) ...))이다. 이는 A 미구매와 뜻이 다르다.",
+            "- 'A를 산 적은 없지만 다른 상품은 구매'는 And(Not(Exists(A 필터)), Exists(Not(A) 필터))이다.",
+            "- 자연어 검색 필드: " + ", ".join(text_search_fields),
+        ])
     lines.extend(["", "[Canonical value domains]"])
     for domain_id, declaration in sorted((raw.get("value_domains") or {}).items()):
         if not isinstance(declaration, Mapping):

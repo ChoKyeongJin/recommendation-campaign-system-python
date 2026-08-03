@@ -1,0 +1,91 @@
+{
+ "summary": {
+  "total": 4,
+  "outcomes": {
+   "sql": 4,
+   "unsupported": 0,
+   "clarification": 0,
+   "failure": 0,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 0,
+   "improvement": 0,
+   "regression": 0,
+   "unknown": 4
+  },
+  "unstable": [],
+  "regressions": [],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 59,
+   "prompt": "사료를 구매하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 29.8
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 60,
+   "prompt": "사료 외 상품을 구매한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 25.0
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 61,
+   "prompt": "사료를 구매한 적은 없지만 다른 상품은 구매한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 45.0
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: no_verified_sql (presence_absence_conflict)"
+  },
+  {
+   "id": 66,
+   "prompt": "최근 90일 동안 주문하지 않은 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 19.1
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  }
+ ]
+}

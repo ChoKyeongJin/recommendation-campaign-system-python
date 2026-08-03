@@ -1,0 +1,353 @@
+{
+ "summary": {
+  "total": 19,
+  "outcomes": {
+   "sql": 4,
+   "unsupported": 6,
+   "clarification": 8,
+   "failure": 1,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 2,
+   "improvement": 0,
+   "regression": 6,
+   "unknown": 11
+  },
+  "unstable": [],
+  "regressions": [
+   7,
+   15,
+   16,
+   17,
+   18,
+   21
+  ],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 2,
+   "prompt": "최근 3개월 내 주문한 적은 있지만 최근 30일간 구매가 없는 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 25.1
+    }
+   ],
+   "note": "이탈 문형(존재 창 + 부재 창)"
+  },
+  {
+   "id": 7,
+   "prompt": "구매주기가 30일 이하인 회원",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 29.8
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 15,
+   "prompt": "지난달 말 기준 VIP였던 회원을 찾아줘",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "query_plan_required_conditions_missing",
+     "status": "needs_clarification",
+     "elapsed_s": 21.3
+    }
+   ],
+   "note": "MONTHCRMINFO 단일월(201701) 적재 — 적재 구간 명시 미지원. 이력 감사 16종 #5 와 동일"
+  },
+  {
+   "id": 16,
+   "prompt": "이번 달 기준 골드 등급 회원",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "query_plan_required_conditions_missing",
+     "status": "needs_clarification",
+     "elapsed_s": 18.2
+    }
+   ],
+   "note": "as_of 스냅샷"
+  },
+  {
+   "id": 17,
+   "prompt": "최근에 등급이 승급한 회원",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "relational_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 16.3
+    }
+   ],
+   "note": "PREV_* 전이 컬럼"
+  },
+  {
+   "id": 18,
+   "prompt": "정상에서 휴면으로 바뀐 회원",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_registry_gap",
+     "status": "needs_clarification",
+     "elapsed_s": 18.2
+    }
+   ],
+   "note": "MEMBER_STATE_CD 이력 소스 부재(STATE_GRADE 는 활동등급, 무상관). 이력 감사 16종 #8 과 동일"
+  },
+  {
+   "id": 21,
+   "prompt": "6개월 이상 접속하지 않은 휴면 고객",
+   "expectation": "sql",
+   "outcome": "unsupported",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 23.5
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 28,
+   "prompt": "각 회원의 최신 기준월 구매등급을 기준으로 VIP 회원을 찾아줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "query_plan_required_conditions_missing",
+     "status": "needs_clarification",
+     "elapsed_s": 43.2
+    }
+   ],
+   "note": "이력 감사 #3. as_of_latest — 단일월 적재로도 표현 가능해야 한다"
+  },
+  {
+   "id": 34,
+   "prompt": "2026년 상반기 동안 한 번도 휴면 상태가 아니었던 회원을 추출해줘",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 24.7
+    }
+   ],
+   "note": "이력 감사 #13. never + member_state 소스 부재"
+  },
+  {
+   "id": 36,
+   "prompt": "최근 6개월 모든 월에 구매등급이 존재하는 회원을 찾아줘",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 31.8
+    }
+   ],
+   "note": "이력 감사 #15. exists_every_month — 컴파일러 배선됨, 적재만 부족"
+  },
+  {
+   "id": 37,
+   "prompt": "최근 12개월 동안 등급이 한 번도 바뀌지 않은 회원을 추출해줘",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 27.5
+    }
+   ],
+   "note": "이력 감사 #16. stable — 컴파일러 배선됨, 적재만 부족"
+  },
+  {
+   "id": 42,
+   "prompt": "최근 90일 동안 총 구매금액이 30만원 이상인 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 19.8
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_structurer_failure). 같은 배치의 '최근 90일 주문만 대상으로 총 구매금액이 30만원 이상인 회원을 찾아줘.'는 동의 표현이라 별도 추가하지 않음"
+  },
+  {
+   "id": 45,
+   "prompt": "최근 90일 동안 정확히 세 번 주문한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 20.7
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 56,
+   "prompt": "이메일, 문자, 앱푸시 중 하나 이상에 동의한 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 19.3
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 63,
+   "prompt": "모든 캠페인에 반응하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 27.9
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 64,
+   "prompt": "특정 상품을 구매하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 14.8
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 65,
+   "prompt": "특정 상품을 제외한 다른 상품을 구매한 회원이 아니라, 해당 상품을 한 번도 구매하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "presence_absence_conflict",
+     "status": "no_verified_sql",
+     "elapsed_s": 18.9
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 66,
+   "prompt": "최근 90일 동안 주문하지 않은 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 32.5
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  },
+  {
+   "id": 73,
+   "prompt": "여성이면서 정상에서 휴면으로 바뀐 회원",
+   "expectation": "unsupported",
+   "outcome": "unsupported",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 14.6
+    }
+   ],
+   "note": "혼합축(회원속성 + 상태 이력). 단독형 #18 과 같은 귀결이어야 한다 — member_state 는 binding:null(이력 소스 부재). 2026-08-02 실측: status=success + 성별 전용 SQL, 경고 0·clarification 0(graph_rag.py:9915 조기 반환으로 이력 절이 흔적 없이 사라짐). 게다가 기본 정상회원 필터 때문에 '휴면이 된 회원'을 요청했는데 '현재 정상인 회원'이 나오는 의미 반전이다. required_clauses 는 그 가짜 성공을 failure 로 강등한다 — 상태 전이 소스가 없으므로 어떤 SQL 도 PREV_ 를 담을 수 없고, SQL 출고 자체가 오답이다."
+  }
+ ]
+}

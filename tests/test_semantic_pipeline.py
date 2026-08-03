@@ -70,6 +70,42 @@ def test_period_normalizer_resolves_calendar_and_relative() -> None:
     assert (rolling.start, rolling.end) == ("20260302", "20260331")
 
 
+def test_period_normalizer_preserves_internal_exclusive_interval_semantics() -> None:
+    window = norm.PeriodNormalizer.normalize({
+        "type": "interval",
+        "start": "2026-08-01",
+        "end_exclusive": "2026-09-01",
+    })
+
+    assert (window.start, window.end) == ("20260801", "20260831")
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"type": "interval", "start": "2026-08-01"},
+        {
+            "type": "interval",
+            "start": "2026-08-01",
+            "end_exclusive": "2026-08-01",
+        },
+        {
+            "type": "interval",
+            "start": "2026-09-01",
+            "end_exclusive": "2026-08-01",
+        },
+        {
+            "type": "interval",
+            "start": "2026-02-30",
+            "end_exclusive": "2026-03-01",
+        },
+    ],
+)
+def test_period_normalizer_rejects_invalid_internal_intervals(raw: dict) -> None:
+    with pytest.raises(norm.NormalizationError, match=r"interval|날짜"):
+        norm.PeriodNormalizer.normalize(raw)
+
+
 def test_normalizers_do_not_know_destination_slots() -> None:
     """정규화기는 목적지 슬롯 이름을 몰라야 한다 — 알면 값 계층이 슬롯 계층으로 새어든다."""
     import ast

@@ -1,0 +1,52 @@
+{
+ "summary": {
+  "total": 1,
+  "outcomes": {
+   "sql": 0,
+   "unsupported": 1,
+   "clarification": 0,
+   "failure": 0,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 1,
+   "improvement": 0,
+   "regression": 0,
+   "unknown": 0
+  },
+  "unstable": [],
+  "regressions": [],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 16,
+   "prompt": "이번 달 기준 골드 등급 회원",
+   "expectation": "unsupported",
+   "outcome": "unsupported",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 7.1
+    },
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 5.4
+    },
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 5.1
+    }
+   ],
+   "note": "as_of 스냅샷. 현재 기준월(202608)은 선언된 적재 구간(201701) 밖이므로 data_coverage_gap; 해당 월 적재 후 SQL로 승격"
+  }
+ ]
+}

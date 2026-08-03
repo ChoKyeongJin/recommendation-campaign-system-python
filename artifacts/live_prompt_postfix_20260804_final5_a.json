@@ -1,0 +1,131 @@
+{
+ "summary": {
+  "total": 6,
+  "outcomes": {
+   "sql": 1,
+   "unsupported": 2,
+   "clarification": 2,
+   "failure": 1,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 1,
+   "improvement": 0,
+   "regression": 5,
+   "unknown": 0
+  },
+  "unstable": [],
+  "regressions": [
+   5,
+   6,
+   7,
+   10,
+   11
+  ],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 5,
+   "prompt": "최근 캠페인 발송 성공 횟수가 3회 이상인 회원",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 26.3
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 6,
+   "prompt": "캠페인별 구매반응 금액이 평균 10만 원 이상인 회원",
+   "expectation": "sql",
+   "outcome": "unsupported",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 21.8
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 7,
+   "prompt": "구매주기가 30일 이하인 회원",
+   "expectation": "sql",
+   "outcome": "unsupported",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 24.6
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 9,
+   "prompt": "2019년 가장 많이 팔린 상품 10개를 구매한 고객",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 39.6
+    }
+   ],
+   "note": "파생 엔터티 집합(랭킹→멤버십)"
+  },
+  {
+   "id": 10,
+   "prompt": "작년에 가장 많이 팔린 상품 5개 중 2개 이상 구매한 고객",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 23.0
+    }
+   ],
+   "note": "랭킹 집합 + 교집합 개수 임계"
+  },
+  {
+   "id": 11,
+   "prompt": "최근 30일 장바구니에 담아두고 결제하지 않은 회원",
+   "expectation": "sql",
+   "outcome": "failure",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 57.9
+    }
+   ],
+   "note": ""
+  }
+ ]
+}

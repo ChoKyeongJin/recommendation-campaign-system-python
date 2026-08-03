@@ -793,6 +793,8 @@ def _coerce_relational_operation(raw: Any, *, allowed: Any = None) -> dict[str, 
         out["months"] = months
     if raw.get("value_comparison") in _RELATIONAL_VALUE_COMPARISONS:
         out["value_comparison"] = raw["value_comparison"]
+    if raw.get("transition_direction") in {"ascending", "descending"}:
+        out["transition_direction"] = raw["transition_direction"]
     change_count = raw.get("change_count")
     if isinstance(change_count, int) and change_count >= 0:
         out["change_count"] = change_count
@@ -1065,6 +1067,9 @@ SLOT_SHAPES: dict[str, SlotShape] = {
              "value_comparison": {"type": "string", "enum": sorted(_RELATIONAL_VALUE_COMPARISONS)},
              "from_value": _STRING_PROP,
              "to_value": _STRING_PROP,
+             "transition_direction": {
+                 "type": "string", "enum": ["ascending", "descending"]
+             },
              "change_count": {"type": "integer", "minimum": 0},
              "change_count_operator": {"type": "string", "enum": sorted(_RELATIONAL_COUNT_OPERATORS)},
              "label": _STRING_PROP}),

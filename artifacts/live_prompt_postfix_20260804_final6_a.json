@@ -1,0 +1,129 @@
+{
+ "summary": {
+  "total": 6,
+  "outcomes": {
+   "sql": 3,
+   "unsupported": 0,
+   "clarification": 3,
+   "failure": 0,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 3,
+   "improvement": 0,
+   "regression": 3,
+   "unknown": 0
+  },
+  "unstable": [],
+  "regressions": [
+   5,
+   6,
+   10
+  ],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 5,
+   "prompt": "최근 캠페인 발송 성공 횟수가 3회 이상인 회원",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 20.3
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 6,
+   "prompt": "캠페인별 구매반응 금액이 평균 10만 원 이상인 회원",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 43.3
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 7,
+   "prompt": "구매주기가 30일 이하인 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 19.7
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 9,
+   "prompt": "2019년 가장 많이 팔린 상품 10개를 구매한 고객",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 30.3
+    }
+   ],
+   "note": "파생 엔터티 집합(랭킹→멤버십)"
+  },
+  {
+   "id": 10,
+   "prompt": "작년에 가장 많이 팔린 상품 5개 중 2개 이상 구매한 고객",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 17.1
+    }
+   ],
+   "note": "랭킹 집합 + 교집합 개수 임계"
+  },
+  {
+   "id": 11,
+   "prompt": "최근 30일 장바구니에 담아두고 결제하지 않은 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 9.6
+    }
+   ],
+   "note": "KEEP_YN='Y'인 보관 중 카트 자체가 동일 라인의 미결제를 뜻한다. 회원 전체 주문 부재 NOT EXISTS를 요구하면 다른 상품 구매자까지 제외하므로 오답이다."
+  }
+ ]
+}

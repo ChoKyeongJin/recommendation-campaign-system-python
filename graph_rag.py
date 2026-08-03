@@ -25,12 +25,15 @@ import aggregate_semantics
 import aggregate_spans
 import audience_authority
 import audience_runtime, canonical_audience_claims, canonical_signal_coverage
+import cart_abandonment_claims
 import conceptual_targeting
 import condition_reconciliation
 from external_conditions.models import ResolutionContext
 from external_conditions.service import ExternalConditionService
 import event_compiler
 import event_ir
+import event_relation_semantics
+import event_semantic_registry
 import lexicon_patterns
 import member_filters_config
 import metric_registry
@@ -38,12 +41,15 @@ import failure_messages
 import member_attribute_history
 import plan_validation
 import legacy_plan_compiler
+import query_pipeline
 import requirement_ledger
 import semantic_plan
 import semantic_plan_bridge
 import semantic_plan_event_lowering
 import semantic_receipts
 import semantic_reemission
+import semantic_relation_ownership
+import semantic_verification_receipts
 import targeting_domain
 import plan_semantic_ast
 import purchase_lexicon
@@ -2413,7 +2419,13 @@ def _event_expression_covers(plan: dict[str, Any], source: str, quantifier: str)
     expression = _plan_event_expression(plan)
     if expression is None:
         return False
-    return event_ir.covers_existence(expression, source, negated=quantifier == "not_exists")
+    semantic_registry = event_semantic_registry.registry()
+    expected_family = semantic_registry.coverage_family(source)
+    return any(
+        semantic_registry.coverage_family(view.source) == expected_family
+        and view.negated == (quantifier == "not_exists")
+        for view in event_ir.existence_views(expression)
+    )
 
 
 
@@ -7817,6 +7829,30 @@ def _build_llm_sql_fallback_candidate(
         return None
 
 
+def _consent_coverage_receipts(original_query: str, sql: str) -> list[dict[str, Any]]:
+    try:
+        values = (
+            audience_runtime.load_audience_catalog_config()
+            .get("value_domains", {})
+            .get("consent_flag", {})
+            .get("values", {})
+        )
+    except (audience_runtime.AudienceCatalogLoadError, AttributeError):
+        values = {}
+    declined = str(((values.get("declined") or {}).get("physical") or ""))
+    return semantic_verification_receipts.consent_coverage_receipts(
+        original_query,
+        sql,
+        requested_signals=_consent_context_signals(original_query),
+        bindings=MEMBER_EQ_FILTERS,
+        declined_value=declined,
+        labels=_CONSENT_SIGNAL_LABELS,
+        member_table=_member_table(),
+        member_alias=_member_alias(),
+        dialect=_member_dialect().name,
+    )
+
+
 # 의미 검증 게이트가 분류하는 불일치 유형 → 사람이 읽는 라벨.
 _SEMANTIC_ISSUE_LABELS = {
     "dropped": "누락(원문 조건이 SQL에 없음)",
@@ -7927,6 +7963,10 @@ def _sql_semantic_verify_system_prompt() -> str:
         "예를 들어 '같은 상품을 동시 구매'의 확정 계약이 동일 회원·동일 주문·동일 상품의 수량 합계 2개 이상이라면 "
         "SQL의 MEMBER_NO, ORDER_ID, PRODUCT_ID 그룹과 SUM(ORDER_QTY) >= 2는 유효한 해석이다. 다른 해석도 가능하다는 "
         "이유만으로 fail을 반환하면 안 된다. 단, 원문의 명시 조건이 확정 계약 또는 SQL과 직접 모순되면 fail이다.\n"
+        "함께 제공된 [결정론 검증 영수증]은 스키마 카탈로그와 등록형 필드 매핑을 실제 SQL에 대조한 결과다. "
+        "verified_relationships에 기록된 조인 관계를 일반적인 DB 관례나 컬럼명 추측으로 부정하지 말고, "
+        "consent_fields에서 status=covered인 채널은 해당 채널의 수신동의 필터가 반영된 것으로 보라. "
+        "이 영수증은 기록된 관계·필드만 증명하므로, 다른 필터의 실제 누락·반전은 계속 fail로 판정하라.\n"
         "판정 기준: pass는 명시 요구 또는 합리적인 확정 해석을 충족한 경우, review는 복수 해석이 가능하지만 "
         "명시적인 모순·누락 근거가 없는 경우, fail은 원문의 명시 조건이 누락·반전·다른 값으로 변경됐다는 구체적 "
         "근거가 있는 경우에만 사용한다. review는 확인 권장일 뿐 SQL 출고를 막는 실패가 아니다. "
@@ -7972,67 +8012,12 @@ def _semantic_verification_contract_context(query_plan: dict[str, Any] | None) -
 
 
 def _normalize_semantic_verification_verdict(data: Any) -> dict[str, Any] | None:
-    """Normalize tri-state and legacy Boolean LLM verdicts without making ``review`` blocking.
-
-    ``faithful`` remains a Boolean compatibility field for API/UI consumers.  It is false only for a
-    concrete ``fail``; an uncertain ``review`` is exposed through ``status`` and issues but is allowed to
-    continue through the legacy delivery gate.
-    """
-    if not isinstance(data, dict):
-        return None
-    raw_status = str(data.get("status") or "").strip().casefold()
-    if raw_status in {"pass", "review", "fail"}:
-        status = raw_status
-    elif isinstance(data.get("faithful"), bool):
-        status = "pass" if data["faithful"] else "fail"
-    else:
-        return None
-
-    raw_issues = data.get("issues") if isinstance(data.get("issues"), list) else []
-    issues = [
-        {
-            "type": issue.get("type") if issue.get("type") in _SEMANTIC_ISSUE_LABELS else (
-                "ambiguous" if status == "review" else "dropped"
-            ),
-            "condition": str(issue.get("condition") or "").strip(),
-            "detail": str(issue.get("detail") or "").strip(),
-        }
-        for issue in raw_issues
-        if isinstance(issue, dict)
-    ]
-    reason = str(data.get("reason") or "").strip()
-    if status == "pass":
-        issues = []
-    elif status == "review" and not issues:
-        issues = [{
-            "type": "ambiguous",
-            "condition": "복수 해석 가능한 요청",
-            "detail": reason or "생성 SQL이 합리적인 해석 중 하나를 충족하지만 의미를 하나로 확정하기 어렵습니다.",
-        }]
-    elif status == "fail" and not issues:
-        issues = [{
-            "type": "dropped",
-            "condition": "요청한 핵심 의도",
-            "detail": reason or "의미 검증기가 SQL과 원문의 불일치를 감지했지만 세부 항목을 반환하지 않았습니다.",
-        }]
-
-    return {
-        "ran": True,
-        "status": status,
-        "faithful": status != "fail",
-        "reason": reason,
-        "issues": issues,
-    }
+    return semantic_verification_receipts.normalize_verdict(
+        data, allowed_issue_types=frozenset(_SEMANTIC_ISSUE_LABELS)
+    )
 
 
-def _semantic_verification_is_failure(verification: dict[str, Any] | None) -> bool:
-    """Return true only for a concrete fail, with legacy Boolean fallback."""
-    if not isinstance(verification, dict) or not verification.get("ran"):
-        return False
-    status = str(verification.get("status") or "").strip().casefold()
-    if status in {"pass", "review", "fail"}:
-        return status == "fail"
-    return verification.get("faithful") is False
+_semantic_verification_is_failure = semantic_verification_receipts.is_failure
 
 
 def _verify_sql_semantics(
@@ -8041,6 +8026,7 @@ def _verify_sql_semantics(
     llm_model: str | None,
     prompt_dir: Path | None,
     query_plan: dict[str, Any] | None = None,
+    deterministic_receipts: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """최종 SQL 이 원문 의도를 충실히 반영했는지 LLM 으로 검증한다(원문↔SQL 직접 대조).
 
@@ -8071,6 +8057,10 @@ def _verify_sql_semantics(
             user_content += "\n\n[적용된 서비스 정책]\n" + json.dumps(
                 member_policy_context, ensure_ascii=False, indent=2
             )
+        if deterministic_receipts:
+            user_content += "\n\n[결정론 검증 영수증]\n" + json.dumps(
+                deterministic_receipts, ensure_ascii=False, indent=2
+            )
         user_content += f"\n\n[생성된 SQL]\n{sql.strip()}"
         response = _openai_chat_create(client,
             model=llm_model,
@@ -8093,36 +8083,8 @@ def _verify_sql_semantics(
         return {"ran": False}
 
 
-# 극성(긍정↔부정) 반전을 뜻하는 부정/제외 표지. inverted 판정이 '진짜 극성 반전'인지, 아니면 정상적인
-# 결정론 변환(연령대→범위·수치 임계·값 확장)에 대한 오판인지 가르는 신호다. 부정 표지가 전혀 없는
-# '양의 조건'(예: '20대 또는 30대', '구매 횟수 5회 이상')은 뒤집을 극성 자체가 없어 inverted 가 성립하지 않는다.
-_NEGATION_CUE_RE = re.compile(
-    r"없|않|못[한했하받]|아닌|아니|제외|미사용|미구매|미접속|미반응|미결제|미가입|미방문|비동의|취소|해지|중단|"
-    r"안\s*[한함했하샀]|\bNOT\b",
-    re.IGNORECASE,
-)
-
-
-def _is_noncredible_inverted_verdict(issue: dict[str, Any]) -> bool:
-    """LLM 의미검증의 inverted 판정이 '극성이 없는 양의 조건'을 가리키면 True(→ 차단 면제, 자문만).
-
-    inverted(의미 반전)는 긍정↔부정 극성이 뒤집힌 경우('구매 이력이 없는'인데 EXISTS 로 반영)에만 성립한다.
-    그런데 판정 모델(경량 LLM)이 값 산술·구조를 자주 틀려, 결정론적으로 '옳게' 컴파일된 양의 조건까지
-    inverted 로 오판한다: 연령대→AGE 범위('20대 또는 30대'→20~39), 수치 임계('5회 이상'→HAVING >=5),
-    등급/권역 값 확장 등. 이들은 뒤집을 부정 극성 자체가 없으므로 inverted 가 논리적으로 성립하지 않는다.
-    그래서 원문 표현에 부정/제외 표지(_NEGATION_CUE_RE)가 있을 때만 inverted 를 차단 사유로 인정하고,
-    없으면 비차단 자문으로 강등한다(값/구조 정확성은 결정론 컴파일러·커버리지 검증이 소유 — dropped/
-    wrong_value/spurious 를 비차단으로 두는 원칙의 연장). 진짜 반전('없는'→EXISTS)은 표지가 있어 계속 차단된다."""
-    condition = str(issue.get("condition") or "")
-    detail = str(issue.get("detail") or "")
-    # 원문 조건 표현에 부정/제외 표지가 있으면 진짜 극성 반전일 수 있어 차단 유지(신뢰). detail 은 판정
-    # 모델이 쓴 설명이라 '부정형으로 해석' 같은 표현이 섞여 오탐하므로, 원문 표현(condition)만 신뢰한다.
-    if _NEGATION_CUE_RE.search(condition):
-        return False
-    # condition 이 비었으면 detail 로라도 극성 단서를 본다(단, 여기 걸리면 보수적으로 차단 유지).
-    if not condition.strip() and _NEGATION_CUE_RE.search(detail):
-        return False
-    return True
+_NEGATION_CUE_RE = semantic_verification_receipts.NEGATION_CUE_RE
+_is_noncredible_inverted_verdict = semantic_verification_receipts.is_noncredible_inverted_verdict
 
 
 def _infer_requirement_base(query_plan: dict[str, Any], sql: str | None) -> tuple[str, str]:
@@ -8214,7 +8176,7 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
 
     optin_slots = set(target_user.get("lifecycle") or []) | set(exclude.get("lifecycle") or [])
     for consent in sorted(signature["consents"]):
-        if consent.split(":")[0] not in optin_slots:
+        if consent.split(":")[0] not in optin_slots and "consent" not in owned_slots:
             warnings.append(f"수신동의 조건 '{_CONSENT_SIGNAL_LABELS.get(consent, consent)}'")
 
     # 캠페인 반응: plan 이 긍정/부정 어느 트랙이든 잡았으면 보존(canonical 의 no_ 접두어 제거 후 비교).
@@ -8259,12 +8221,25 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
     purchase_absence_mentioned = bool(
         _PURCHASE_NEG_RE.search(compact) or _ZERO_PURCHASE_COUNT_PATTERN.search(compact)
     )
+    event_payload = query_plan.get("event_expression")
+    event_expression = (
+        event_payload.get("expression") if isinstance(event_payload, Mapping) else None
+    )
+    exact_active_cart_claim = cart_abandonment_claims.owns_recent_active_cart_claim(
+        text,
+        event_expression,
+        query_plan.get("literal_bindings"),
+    )
     if purchase_absence_mentioned and not (
         isinstance(target_user.get("purchase_inactivity"), dict)
         or isinstance(target_user.get("inactivity_period"), dict)
         or "no_purchase" in behaviors
         or "no_buy_response" in campaign_canonicals
         or target_user.get("cart_absence")
+        or "purchase_absence" in owned_slots
+        # KEEP_YN='Y'는 회원 전체 미구매가 아니다. 원문·기간·IR 전체가
+        # 닫힌 장바구니 미결제 문형과 일치할 때만 이 표면 부정어를 소유한다.
+        or exact_active_cart_claim
         # 사건 IR 이 구매 부재를 노드로 들고 있으면 드롭이 아니다(슬롯이 아니라 IR 이 소유).
         or _event_expression_covers(query_plan, "purchase", "not_exists")
     ):
@@ -8471,6 +8446,15 @@ def _verify_sql_semantic_invariants(
     purchase_absence_mentioned = bool(
         _PURCHASE_NEG_RE.search(compact) or _ZERO_PURCHASE_COUNT_PATTERN.search(compact)
     )
+    event_payload = plan.get("event_expression")
+    event_expression = (
+        event_payload.get("expression") if isinstance(event_payload, Mapping) else None
+    )
+    exact_active_cart_claim = cart_abandonment_claims.owns_recent_active_cart_claim(
+        query,
+        event_expression,
+        plan.get("literal_bindings"),
+    )
     represented = (
         isinstance(target_user.get("purchase_inactivity"), dict)
         or isinstance(target_user.get("inactivity_period"), dict)
@@ -8478,6 +8462,10 @@ def _verify_sql_semantic_invariants(
         or any(isinstance(r, dict) and r.get("canonical") == "no_buy_response"
                for r in (target_user.get("campaign_responses") or []))
         or target_user.get("cart_absence")
+        or "purchase_absence" in canonical_signal_coverage.covered_families(
+            plan, audience_runtime.load_audience_catalog_config()
+        )
+        or exact_active_cart_claim
         # 사건 IR 의 not_exists 노드도 '구매 미발생을 표현했다'에 해당한다(슬롯 대신 IR 이 소유).
         or _event_expression_covers(plan, "purchase", "not_exists")
     )
@@ -8917,19 +8905,31 @@ def _service_policy_issue_is_deterministically_covered(
 
 
 def _semantic_issue_exemption(
-    issue: dict[str, Any], sql: str, query_plan: dict[str, Any] | None = None,
+    issue: dict[str, Any], sql: str, query_plan: dict[str, Any] | None = None, *,
+    join_key_validation: dict[str, Any] | None = None,
+    consent_receipts: list[dict[str, Any]] | None = None,
 ) -> str | None:
     """LLM 의미검증 판정이 '회원 행 집합과 무관함'을 결정론으로 확인할 수 있으면 면제 사유를, 아니면 None.
 
-    두 부류만 면제한다(둘 다 SQL 구조로 확인 가능하며, 필터를 지목한 판정은 절대 면제되지 않는다):
+    SQL 구조나 등록형 카탈로그 영수증으로 반증할 수 있는 판정만 면제한다:
       ① 출력·요약 컬럼 요구('총액·평균·최종주문일을 함께 산출/보여줘') — 이 SQL 은 대상 회원 집합만 뽑고
          값 표시는 응답 계층 몫이라 SELECT 에 없어도 행 집합이 달라지지 않는다. 같은 지표가 임계 조건
          ('30만원 이상')으로 쓰였다면 임계 표지가 잡혀 면제되지 않는다.
       ② 상수 리터럴 프로젝션(`'...' AS segment_label` 등)만 지목한 spurious — 시스템 표식이라 행 수 불변.
-    나머지(inverted/wrong_value, 필터를 지목한 dropped/spurious)는 종전대로 차단 대상이다."""
+      ③ verified 관계의 정확한 조인키를 LLM이 일반 관례로 부정한 판정.
+      ④ 채널별 등록 컬럼·값·극성이 각각 covered인 수신동의 누락/반전 판정.
+    같은 도메인의 다른 조건이나 영수증이 없는 필드는 종전대로 차단 대상이다."""
     issue_type = str(issue.get("type") or "").casefold()
-    if issue_type not in {"dropped", "spurious", "wrong_value"}:
+    if issue_type not in {"dropped", "spurious", "wrong_value", "inverted"}:
         return None
+    if semantic_verification_receipts.catalog_join_issue_is_covered(issue, join_key_validation):
+        return "catalog_verified_relationship"
+    if semantic_verification_receipts.consent_issue_is_covered(
+        issue,
+        consent_receipts,
+        target_terms={canonical: terms for canonical, _channel, terms in _CHANNEL_CONSENT_TARGETS},
+    ):
+        return "registered_consent_predicate_present"
     condition = str(issue.get("condition") or "")
     detail = str(issue.get("detail") or "")
     non_filter_request = not (_THRESHOLD_CUE_RE.search(condition) or _NEGATION_CUE_RE.search(condition))
@@ -8998,6 +8998,7 @@ def _validate_sql_delivery_contract(
     dialect: str | None = None,
     semantic_verification: dict[str, Any] | None = None,
     dropped_conditions: list[str] | None = None,
+    join_key_validation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """최종 출고의 단일 fail-closed 불변식: evidence, polarity, grain, 결과 컬럼, critical drop."""
     output = query_plan.get("output_contract") if isinstance(query_plan.get("output_contract"), dict) else {}
@@ -9025,6 +9026,10 @@ def _validate_sql_delivery_contract(
     evidence = [_condition_evidence(condition, sql) for condition in extracted_conditions]
     missing = [item["condition"] for item in evidence if not item["satisfied"]]
     polarity_mismatches = [item["condition"] for item in evidence if item["actual_evidence"] and not item["polarity_match"]]
+    consent_receipts = _consent_coverage_receipts(query, sql)
+    missing_consent_receipts = [
+        receipt for receipt in consent_receipts if receipt.get("satisfied") is not True
+    ]
 
     enriched_issues: list[dict[str, Any]] = []
     critical_issues: list[dict[str, Any]] = []
@@ -9033,7 +9038,13 @@ def _validate_sql_delivery_contract(
         if not isinstance(raw_issue, dict):
             continue
         # 결과 집합(행 집합)과 무관함이 결정론으로 확인되는 판정은 차단에서 면제한다(자문으로만 남김).
-        exempt_reason = _semantic_issue_exemption(raw_issue, sql, query_plan)
+        exempt_reason = _semantic_issue_exemption(
+            raw_issue,
+            sql,
+            query_plan,
+            join_key_validation=join_key_validation,
+            consent_receipts=consent_receipts,
+        )
         # review는 관측용 경고다. 같은 issue 문구라도 검증기의 최종 판정이 fail일 때만 차단 후보가 된다.
         critical = (
             _semantic_verification_is_failure(verification)
@@ -9065,6 +9076,8 @@ def _validate_sql_delivery_contract(
         reasons.append("semantic_condition_polarity_mismatch")
     if missing:
         reasons.append("semantic_conditions_not_covered")
+    if missing_consent_receipts:
+        reasons.append("consent_conditions_not_covered")
     if not grain_match:
         reasons.append("query_result_grain_mismatch")
     if not member_id_match:
@@ -9078,9 +9091,10 @@ def _validate_sql_delivery_contract(
     # 유일한 예외: 모든 판정이 '결과 집합과 무관함'을 결정론으로 확인한 면제(_semantic_issue_exemption)인
     # 경우 — 출력 컬럼 요구·상수 라벨 프로젝션처럼 행 집합을 바꿀 수 없는 지적만 남았다면 차단하지 않는다.
     # 판정이 비었거나 하나라도 면제 불가면 종전대로 차단한다(오분류 통과 방지).
-    if _semantic_verification_is_failure(verification):
-        if not enriched_issues or any(not issue.get("exempt_reason") for issue in enriched_issues):
-            reasons.append("critical_semantic_issue")
+    if _semantic_verification_is_failure(verification) and (
+        not enriched_issues or any(not issue.get("exempt_reason") for issue in enriched_issues)
+    ):
+        reasons.append("critical_semantic_issue")
     return {
         "is_satisfied": not reasons,
         "expected_grain": expected_grain,
@@ -9094,11 +9108,20 @@ def _validate_sql_delivery_contract(
         "missing_conditions": missing,
         "polarity_mismatches": polarity_mismatches,
         "semantic_issues": enriched_issues,
+        "deterministic_receipts": {
+            "verified_relationships": list(
+                (join_key_validation or {}).get("verified_relationships") or []
+            ),
+            "consent_fields": consent_receipts,
+        },
         "sql_evidence": {str(index): item for index, item in enumerate(evidence, start=1)},
         "failure_reasons": _unique_strings(reasons),
         "failure_reason": reasons[0] if reasons else None,
         "sql_contract": actual,
     }
+
+
+_reconcile_semantic_verification_with_receipts = semantic_verification_receipts.reconcile_verification
 
 
 def _failed_sql_confidence(reason: str | None, *, execution_error: bool = False) -> dict[str, Any]:
@@ -9931,6 +9954,27 @@ def _apply_semantic_plan_pipeline(
     grade/state history axis: the working ``compositional_targeting`` compiler was
     never reachable because the pipeline returned before its input was written.
     """
+    if semantic_relation_ownership.project_relation_data_coverage(
+        query_plan, query, audience_runtime.catalog_snapshot()
+    ):
+        return
+    semantic_ir = query_plan.get("semantic_ir")
+    unsupported = (
+        semantic_ir.get("unsupported_operations")
+        if isinstance(semantic_ir, Mapping)
+        and semantic_ir.get("status") == "unsupported"
+        else None
+    )
+    if any(
+        isinstance(item, Mapping)
+        and item.get("kind") == semantic_plan_event_lowering.DATA_COVERAGE_GAP
+        for item in (unsupported or ())
+    ):
+        # Coverage is application-owned and monotonic for this request.  A
+        # fallback compiler cannot manufacture missing snapshot months, so
+        # letting it continue would replace an honest unsupported verdict with
+        # either a clarification or a deterministically empty success.
+        return
     raw_nodes = query_plan.get(semantic_plan_bridge.PLAN_KEY)
     raw_nodes = raw_nodes.get("nodes") if isinstance(raw_nodes, dict) else None
     if _plan_event_expression(query_plan) is not None:
@@ -10013,6 +10057,10 @@ def _apply_semantic_plan_pipeline(
             slot=semantic_plan_bridge.PLAN_KEY,
             reason=f"의미 파이프라인 내부 오류: {exc.__class__.__name__}: {exc}",
         )
+    if semantic_relation_ownership.project_relation_data_coverage(
+        query_plan, query, audience_runtime.catalog_snapshot()
+    ):
+        return
     # 등급/상태 이력 슬롯은 컴파일러가 쓰고, 실행 IR 로의 귀결은 전용 리졸버가 한다.
     member_attribute_history.apply(
         query_plan, query, catalog_loader=_attribute_history_catalog
@@ -10580,12 +10628,19 @@ def build_sql_result(
         dict(selected.get("delivery_validation") or {}) if selected else {"is_satisfied": False}
     )
     if selected_sql is not None:
+        deterministic_receipts = {
+            "verified_relationships": list(
+                (selected.get("join_keys") or {}).get("verified_relationships") or []
+            ),
+            "consent_fields": _consent_coverage_receipts(original_query or query, selected_sql),
+        }
         semantic_verification = _verify_sql_semantics(
             original_query or query,
             selected_sql,
             semantic_verification_model if semantic_verification_model is not None else llm_model,
             prompt_dir,
             query_plan,
+            deterministic_receipts,
         )
         verification_required = bool(query_plan.get("strict_source_coverage"))
         verification_unavailable = verification_required and not semantic_verification.get("ran")
@@ -10601,14 +10656,14 @@ def build_sql_result(
             dialect=target_dialect,
             semantic_verification=semantic_verification,
             dropped_conditions=selected.get("dropped_conditions") or [],
+            join_key_validation=selected.get("join_keys"),
         )
         delivery_validation["required_conditions"] = len(required_conditions)
         delivery_validation["condition_tokens"] = len(condition_tokens)
         if semantic_verification.get("ran"):
-            semantic_verification = {
-                **semantic_verification,
-                "issues": delivery_validation.get("semantic_issues", []),
-            }
+            semantic_verification = _reconcile_semantic_verification_with_receipts(
+                semantic_verification, delivery_validation
+            )
         # status=fail만 차단한다. review는 복수의 합리적 해석을 기록하지만 SQL 출고는 계속한다.
         # 구형 faithful Boolean 응답은 _semantic_verification_is_failure가 동일하게 지원한다.
         blocking_issues = []
@@ -10805,6 +10860,38 @@ def build_sql_result(
     }
 
 
+def _compiled_event_condition_receipts(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compile each signed Event IR atom once for token and coverage consumers."""
+    event_expression = _plan_event_expression(query_plan)
+    if event_expression is None:
+        return []
+    registry = dict(audience_runtime.resolve_audience_catalog().compiler_events)
+    context = _event_compile_context()
+    receipts: list[dict[str, Any]] = []
+    for index, (atom, negated) in enumerate(event_ir.iter_signed_atoms(event_expression)):
+        sources = sorted(event_ir.sources(atom))
+        node = event_ir.Not(operand=atom) if negated else atom
+        try:
+            condition_sql = event_compiler.compile_condition(node, context).sql
+            opposite_sql = (
+                event_compiler.compile_condition(event_ir.Not(operand=atom), context).sql
+                if not negated else None
+            )
+        except event_compiler.SqlCompileError:
+            continue
+        fact_tables = _unique_strings([
+            spec.table for spec in (registry.get(name) for name in sources)
+            if spec is not None and spec.binding == "fact_table"
+        ])
+        receipts.append({
+            "path": f"plan.{EVENT_EXPRESSION_KEY}[{index}]",
+            "atom": atom, "negated": negated, "sources": sources,
+            "condition_sql": condition_sql, "opposite_sql": opposite_sql,
+            "fact_tables": fact_tables,
+        })
+    return receipts
+
+
 def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     tokens: list[dict[str, Any]] = []
     target_user = query_plan.get("target_user", {})
@@ -10813,37 +10900,19 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
     canonical_audience = _has_canonical_audience_authority(query_plan)
     intent = query_plan.get("intent")
 
-    # 조건 IR: **원자 조건 하나가 검증 토큰 하나**다. 통째로 한 토큰으로 묶으면 두 조건 중 하나만
-    # SQL 에 남아도 커버리지가 통과한다.
-    event_expression = _plan_event_expression(query_plan)
-    if event_expression is not None:
-        event_registry = dict(audience_runtime.resolve_audience_catalog().compiler_events)
-        event_context = _event_compile_context()
-        for index, (atom, negated) in enumerate(event_ir.iter_signed_atoms(event_expression)):
-            sources = sorted(event_ir.sources(atom))
-            tables = [
-                spec.table
-                for spec in (event_registry.get(name) for name in sources)
-                if spec is not None and spec.binding == "fact_table"
-            ]
-            # 부정이 붙은 원자는 Not 을 씌워 컴파일한다 — 원자만 컴파일하면 토큰이 SQL 과 극성이 어긋난다.
-            node = event_ir.Not(operand=atom) if negated else atom
-            try:
-                condition_sql = event_compiler.compile_condition(node, event_context).sql
-            except event_compiler.SqlCompileError:
-                # 컴파일할 수 없는 원자(미등록 필드·사건)는 **검증 토큰을 만들지 않는다**. 토큰이 없으면
-                # 그 조건은 커버리지에서 미충족으로 남아 SQL 이 fail-close 된다 — 여기서 예외를 올리면
-                # 같은 상황이 500 이 되어 사용자에게 사유 대신 오류가 나간다(빌더 쪽은 이미 이 규칙이다).
-                continue
-            _add_token(
-                tokens,
-                f"plan.{EVENT_EXPRESSION_KEY}[{index}]",
-                atom.type,
-                getattr(atom, "operator", "not_exists" if negated else "exists"),
-                ":".join(sources) or atom.type,
-                [condition_sql],
-                _unique_strings(tables),
-            )
+    # 조건 IR: **원자 조건 하나가 검증 토큰 하나**다. 실제 compiler receipt를 공유해
+    # subject_column과 fact_table의 서로 다른 SQL 모양을 두 검증 경로가 따로 추측하지 않는다.
+    for receipt in _compiled_event_condition_receipts(query_plan):
+        atom, negated = receipt["atom"], receipt["negated"]
+        _add_token(
+            tokens,
+            receipt["path"],
+            atom.type,
+            getattr(atom, "operator", "not_exists" if negated else "exists"),
+            ":".join(receipt["sources"]) or atom.type,
+            [receipt["condition_sql"]],
+            receipt["fact_tables"],
+        )
 
     for index, evaluation in enumerate(query_plan.get(CONDITION_EVALUATIONS_KEY) or []):
         if not isinstance(evaluation, dict) or condition_evaluation_ir.validate_evaluation(evaluation):
@@ -13723,16 +13792,22 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
         }
         return None
 
+    # 술어 SQL 은 계층 파이프라인을 **통과해서** 나온다: 저장된 payload → 검증된
+    # EventQuerySpec → LogicalPlan → SqlCompiler. 예전에는 여기서 dict 를 그 자리에서
+    # 파싱해 컴파일러에 바로 넘겼고, 그 경로에는 '검증된 사양'이라는 단계가 없었다.
+    # 렌더링 자체는 여전히 event_compiler 가 소유하므로 SQL 은 바이트 동일하다.
     try:
-        condition_sql = event_compiler.compile_expression(
-            expression, context=_event_compile_context()
+        condition_sql = query_pipeline.compile_audience_predicate(
+            payload, compile_context_factory=_event_compile_context
         ).sql
-    except event_compiler.SqlCompileError as exc:
+    except query_pipeline.QueryPipelineError as exc:
         unresolved = query_plan.setdefault("unresolved_source_conditions", [])
         item = {
             "path": f"plan.{EVENT_EXPRESSION_KEY}",
             "condition": EVENT_EXPRESSION_KEY,
+            # 실패에 **단계 이름**을 붙인다 — "어디서 막혔는가"가 사유의 일부가 된다.
             "reason": f"조건을 실DB 술어로 컴파일하지 못했습니다: {exc}",
+            "stage": exc.stage,
             "source": "event_ir",
             "status": "unresolved",
         }
@@ -13755,7 +13830,7 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
     where_clauses = list(compiled["predicates"])
     if not compiled["forces_state"]:
         where_clauses.append(_member_active_state_predicate())
-    where_clauses.append(condition_sql)
+    where_clauses.append(f"({condition_sql})" if isinstance(expression, event_ir.Or) else condition_sql)
 
     select_columns = ["DISTINCT " + _member_key_select(), _member_grade_select()]
     labels = list(compiled["labels"]) + [_event_expression_label(expression)]
@@ -14732,82 +14807,6 @@ def _purchase_event_predicates(
     return predicates
 
 
-def _event_window_to_normalized(
-    window: Any, anchor: datetime,
-) -> "aggregate_semantics.NormalizedWindow | None":
-    """사건 IR 의 시간 창을 반개방 구간으로 정규화한다(확정 불가면 None).
-
-    달력 문법은 calendar_window/event_ir 이 소유하므로 여기서 다시 구현하지 않고 그 산출물만 받는다."""
-    if isinstance(window, event_ir.RollingWindow):
-        return aggregate_semantics.rolling_window(anchor, window.days)
-    interval = window
-    if isinstance(window, event_ir.RelativeWindow):
-        try:
-            interval = event_ir.resolve_relative_window(window, anchor.date())
-        except (event_ir.IrSchemaError, ValueError):
-            return None
-    if isinstance(interval, event_ir.AbsoluteInterval):
-        return aggregate_semantics.NormalizedWindow(
-            start=datetime.combine(interval.start, datetime.min.time()),
-            end=datetime.combine(interval.end_exclusive, datetime.min.time()),
-        )
-    return None
-
-
-def _event_relation_semantics(
-    relation: Any,
-    anchor: datetime,
-    source: str,
-    dimensions: tuple[str, ...],
-) -> tuple["aggregate_semantics.NormalizedWindow | None", dict[str, frozenset[str] | None]]:
-    """사건 관계의 기간과 registry 차원별 canonical scope를 보존한다."""
-    windows: list[aggregate_semantics.NormalizedWindow] = []
-    unresolved = False
-    values: dict[str, set[str]] = {dimension: set() for dimension in dimensions}
-    opaque_filters: list[str] = []
-    for node in event_ir.walk(relation):
-        if isinstance(node, event_ir.TimeFilter):
-            normalized = _event_window_to_normalized(node.window, anchor)
-            if normalized is None:
-                unresolved = True
-            else:
-                windows.append(normalized)
-        elif isinstance(node, event_ir.Comparison):
-            dimension = None
-            literal_value = None
-            if isinstance(node.left, event_ir.FieldRef) and isinstance(node.right, event_ir.Literal):
-                prefix = source + "."
-                if node.left.name.startswith(prefix):
-                    dimension = node.left.name[len(prefix):]
-                    literal_value = str(node.right.value)
-            if dimension in values and node.operator == "=" and literal_value is not None:
-                values[dimension].add(literal_value)
-            else:
-                opaque_filters.append(json.dumps(node.to_dict(), sort_keys=True, ensure_ascii=False))
-        elif isinstance(node, (event_ir.TemporalRelation, event_ir.Join, event_ir.Group)):
-            opaque_filters.append(json.dumps(node.to_dict(), sort_keys=True, ensure_ascii=False))
-    if unresolved:
-        window = None
-    else:
-        window = aggregate_semantics.lifetime_window(anchor)
-        for candidate in windows:
-            narrowed = aggregate_semantics.intersect(window, candidate)
-            if narrowed is None:
-                window = None
-                break
-            window = narrowed
-    if opaque_filters and dimensions:
-        fallback_dimension = "product_scope" if "product_scope" in values else dimensions[0]
-        values[fallback_dimension].add(
-            "opaque:" + hashlib.sha256("|".join(sorted(opaque_filters)).encode("utf-8")).hexdigest()
-        )
-    constraints = {
-        dimension: frozenset(dimension_values) if dimension_values else None
-        for dimension, dimension_values in values.items()
-    }
-    return window, constraints
-
-
 def _aggregate_comparison_event_polarity(
     comparison: event_ir.Comparison,
 ) -> str | None:
@@ -14893,8 +14892,13 @@ def _event_predicate_factory(
         )
     source = sources[0]
     domain = aggregate_parser_config.rules().semantic_domains.get(source)
-    dimensions = domain.event_dimensions if domain is not None else ()
-    window, constraints = _event_relation_semantics(relation, anchor, source, dimensions)
+    dimensions = (
+        event_semantic_registry.registry().domain_dimensions(source)
+        or (domain.event_dimensions if domain is not None else ())
+    )
+    window, constraints = event_relation_semantics.relation_semantics(
+        relation, anchor, source, dimensions
+    )
     semantic_payload = atom.to_dict()
     semantic_payload.pop("evidence", None)
     source_id = "event:" + hashlib.sha256(
@@ -14934,13 +14938,11 @@ def _attach_event_semantic_validation(query_plan: dict[str, Any]) -> None:
     # relations while keeping repeated planning/SQL entrypoints deterministic.
     anchor = datetime.combine(datetime.now(timezone.utc).date(), datetime.min.time())
     semantic_domains = dict(aggregate_parser_config.rules().semantic_domains)
-    empty_domain = aggregate_parser_config.SemanticDomain(
-        presence_node_kinds=frozenset(),
-        absence_node_kinds=frozenset(),
-        event_dimensions=(),
-    )
     for source_id in audience_runtime.resolve_audience_catalog().compiler_events:
-        semantic_domains.setdefault(source_id, empty_domain)
+        semantic_domains.setdefault(source_id, aggregate_parser_config.SemanticDomain(
+            presence_node_kinds=frozenset(), absence_node_kinds=frozenset(),
+            event_dimensions=event_semantic_registry.registry().domain_dimensions(source_id) or (),
+        ))
     result = aggregate_semantics.validate_boolean_expression(
         expression,
         lambda atom, negated: _event_predicate_factory(atom, negated, anchor),
@@ -16518,28 +16520,23 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
 
     # 조건 IR: 원자 조건마다 필수 SQL 토큰을 만든다 — 극성(EXISTS/NOT EXISTS)과 기간 경계가 SQL 에
     # 실제로 남았는지 개별로 확인해야 조건 하나만 조용히 빠지는 사고를 잡는다.
-    event_expression = _plan_event_expression(query_plan)
-    if event_expression is not None:
-        registry = dict(audience_runtime.resolve_audience_catalog().compiler_events)
-        for index, (atom, negated) in enumerate(event_ir.iter_signed_atoms(event_expression)):
-            # 존재/부재 조건만 EXISTS 토큰을 요구한다 — 집계 비교는 스칼라 서브쿼리라 EXISTS 가 없다.
-            terms = ["not exists" if negated else "exists"] if isinstance(atom, event_ir.Exists) else []
-            terms.extend(
-                spec.table
-                for spec in (registry.get(name) for name in sorted(event_ir.sources(atom)))
-                if spec is not None and spec.binding == "fact_table"
-            )
-            terms.extend(
-                window.start.strftime("%Y%m%d")
-                for window in event_ir.time_windows(atom)
-                if isinstance(window, event_ir.AbsoluteInterval)
-            )
-            conditions.append(_condition(
-                f"plan.{EVENT_EXPRESSION_KEY}[{index}]",
-                ":".join(sorted(event_ir.sources(atom))) or atom.type,
-                [],
-                all_terms=_unique_strings(terms),
-            ))
+    for receipt in _compiled_event_condition_receipts(query_plan):
+        atom, negated = receipt["atom"], receipt["negated"]
+        # The compiler receipt is the primary evidence.  Fact-table events keep
+        # explicit polarity + table guards as defence in depth; subject-column
+        # events intentionally do not require lexical EXISTS, because they
+        # compile to a CASE predicate over the member dimension.
+        terms = [receipt["condition_sql"]]
+        if isinstance(atom, event_ir.Exists) and receipt["fact_tables"]:
+            terms.append("not exists" if negated else "exists")
+        terms.extend(receipt["fact_tables"])
+        conditions.append(_condition(
+            receipt["path"],
+            ":".join(receipt["sources"]) or atom.type,
+            [],
+            all_terms=_unique_strings(terms),
+            none_terms=[receipt["opposite_sql"]] if receipt["opposite_sql"] else [],
+        ))
 
     for index, evaluation in enumerate(query_plan.get(CONDITION_EVALUATIONS_KEY) or []):
         if not isinstance(evaluation, dict):
@@ -17038,11 +17035,14 @@ def validate_sql_condition_coverage(sql: str, required_conditions: list[dict[str
         any_terms_matched = not condition["any_terms"] or any(
             term.casefold() in normalized_sql for term in condition["any_terms"]
         )
+        none_terms_matched = not any(
+            term.casefold() in normalized_sql for term in condition.get("none_terms", [])
+        )
         any_term_groups_matched = all(
             any(term.casefold() in normalized_sql for term in term_group)
             for term_group in condition.get("any_term_groups", [])
         )
-        if all_terms_matched and any_terms_matched and any_term_groups_matched:
+        if all_terms_matched and any_terms_matched and none_terms_matched and any_term_groups_matched:
             matched_conditions.append(condition)
         else:
             missing_conditions.append(condition)
@@ -17073,6 +17073,7 @@ def _condition(
     value: str,
     any_terms: list[str],
     all_terms: list[str] | None = None,
+    none_terms: list[str] | None = None,
     any_term_groups: list[list[str]] | None = None,
 ) -> dict[str, Any]:
     return {
@@ -17080,6 +17081,7 @@ def _condition(
         "value": value,
         "any_terms": _unique_strings([term for term in any_terms if term]),
         "all_terms": _unique_strings([term for term in (all_terms or []) if term]),
+        "none_terms": _unique_strings([term for term in (none_terms or []) if term]),
         "any_term_groups": [
             _unique_strings([term for term in term_group if term])
             for term_group in (any_term_groups or [])

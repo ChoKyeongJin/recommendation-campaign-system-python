@@ -1,0 +1,57 @@
+{
+ "summary": {
+  "total": 2,
+  "outcomes": {
+   "sql": 1,
+   "unsupported": 0,
+   "clarification": 1,
+   "failure": 0,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 1,
+   "improvement": 0,
+   "regression": 0,
+   "unknown": 1
+  },
+  "unstable": [],
+  "regressions": [],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 24,
+   "prompt": "골드 이상 등급인 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 22.3
+    }
+   ],
+   "note": "등급 서열(rank) 비교"
+  },
+  {
+   "id": 68,
+   "prompt": "앱으로 로그인하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 36.0
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  }
+ ]
+}

@@ -22,6 +22,8 @@ DISJOINT = "disjoint"
 OVERLAP_POSSIBLE = "overlap_possible"
 UNKNOWN = "unknown"
 
+_TYPED_PREDICATE_PREFIX = "typed-predicate:v1:"
+
 DEFAULT_REGISTRY_PATH = Path(
     os.getenv(
         "EVENT_SEMANTIC_REGISTRY",
@@ -50,9 +52,14 @@ class ScopeDimension:
     unrestricted_aliases: tuple[str, ...]
     qualifier_aliases: tuple[str, ...]
     values: Mapping[str, ScopeValue]
+    field_alias_templates: tuple[str, ...] = ()
 
     def field_for(self, domain: str) -> str:
         return self.field_template.format(domain=domain)
+
+    def matches_field(self, domain: str, field_name: str) -> bool:
+        templates = (self.field_template, *self.field_alias_templates)
+        return field_name in {template.format(domain=domain) for template in templates}
 
 
 @dataclass(frozen=True)
@@ -60,13 +67,46 @@ class EventSemanticRegistry:
     version: int
     domains: Mapping[str, tuple[str, ...]]
     dimensions: Mapping[str, ScopeDimension]
+    coverage_families: Mapping[str, str]
 
     def domain_dimensions(self, domain: str) -> tuple[str, ...] | None:
         return self.domains.get(domain)
 
+    def coverage_family(self, domain: str) -> str:
+        """Return the event family used only for source-coverage checks.
+
+        A line-grain source can prove that its parent event family was
+        represented without making the two relations interchangeable for
+        joins, aggregation, or scope comparison.  Keeping that weaker
+        relationship in the registry prevents graph-level drop detection from
+        hard-coding physical source aliases.
+        """
+
+        return self.coverage_families.get(domain, domain)
+
+    def dimension_for_field(self, domain: str, field_name: str) -> str | None:
+        for dimension_name in self.domains.get(domain, ()):
+            dimension = self.dimensions[dimension_name]
+            if dimension.matches_field(domain, field_name):
+                return dimension_name
+        return None
+
     def relation(self, dimension: str, left: str, right: str) -> str:
         if left == right:
             return EQUAL
+        left_predicate = parse_typed_predicate_value(left)
+        right_predicate = parse_typed_predicate_value(right)
+        if left_predicate is not None or right_predicate is not None:
+            if (
+                left_predicate is not None
+                and right_predicate is not None
+                and left_predicate[0] == right_predicate[0]
+                and left_predicate[1] != right_predicate[1]
+            ):
+                return DISJOINT
+            # Two arbitrary open-text predicates are not disjoint merely
+            # because their literal strings differ: LIKE scopes can overlap.
+            return UNKNOWN
         spec = self.dimensions.get(dimension)
         if spec is None:
             return UNKNOWN
@@ -145,9 +185,13 @@ def load_registry(path: Path | str = DEFAULT_REGISTRY_PATH) -> EventSemanticRegi
                 raw.get("qualifier_aliases", []), f"{name}.qualifier_aliases"
             ),
             values=MappingProxyType(values),
+            field_alias_templates=_strings(
+                raw.get("field_alias_templates", []), f"{name}.field_alias_templates"
+            ),
         )
 
     domains: dict[str, tuple[str, ...]] = {}
+    coverage_families: dict[str, str] = {}
     for domain, raw in raw_domains.items():
         if not isinstance(domain, str) or not isinstance(raw, dict):
             raise EventSemanticRegistryError("invalid event domain")
@@ -156,16 +200,47 @@ def load_registry(path: Path | str = DEFAULT_REGISTRY_PATH) -> EventSemanticRegi
         if unknown:
             raise EventSemanticRegistryError(f"domain {domain!r} references unknown dimensions: {sorted(unknown)}")
         domains[domain] = names
+        coverage_family = raw.get("coverage_family", domain)
+        if not isinstance(coverage_family, str) or not coverage_family:
+            raise EventSemanticRegistryError(
+                f"{domain}.coverage_family must be a non-empty string"
+            )
+        coverage_families[domain] = coverage_family
+    unknown_families = set(coverage_families.values()) - set(domains)
+    if unknown_families:
+        raise EventSemanticRegistryError(
+            f"coverage families reference unknown domains: {sorted(unknown_families)}"
+        )
     return EventSemanticRegistry(
         version=payload["version"],
         domains=MappingProxyType(domains),
         dimensions=MappingProxyType(dimensions),
+        coverage_families=MappingProxyType(coverage_families),
     )
 
 
 @lru_cache(maxsize=1)
 def registry() -> EventSemanticRegistry:
     return load_registry()
+
+
+def typed_predicate_value(fingerprint: str, *, complemented: bool = False) -> str:
+    """Encode a typed Event IR predicate without treating its literal as an enum value."""
+
+    if not isinstance(fingerprint, str) or not fingerprint:
+        raise ValueError("fingerprint must be a non-empty string")
+    polarity = "complement" if complemented else "match"
+    return f"{_TYPED_PREDICATE_PREFIX}{polarity}:{fingerprint}"
+
+
+def parse_typed_predicate_value(value: str) -> tuple[str, bool] | None:
+    if not isinstance(value, str) or not value.startswith(_TYPED_PREDICATE_PREFIX):
+        return None
+    payload = value[len(_TYPED_PREDICATE_PREFIX):]
+    polarity, separator, fingerprint = payload.partition(":")
+    if not separator or polarity not in {"match", "complement"} or not fingerprint:
+        return None
+    return fingerprint, polarity == "complement"
 
 
 __all__ = [
@@ -179,5 +254,7 @@ __all__ = [
     "ScopeDimension",
     "ScopeValue",
     "load_registry",
+    "parse_typed_predicate_value",
     "registry",
+    "typed_predicate_value",
 ]

@@ -1,9 +1,20 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from typing import Any
 
+from jsonschema import Draft202012Validator
+
+from .campaign_plan_v4 import (
+    CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA,
+    CampaignQueryPlanV4,
+    CampaignQueryPlanValidationError,
+    attach_campaign_query_plan_v4_identity,
+    build_campaign_query_plan_v4_fallback,
+    validate_campaign_query_plan_v4,
+)
 from .prompt import (
     COMPLEX_QUERY_STRUCTURER_SYSTEM_PROMPT,
     build_campaign_query_plan_v4_retry_prompt,
@@ -11,19 +22,64 @@ from .prompt import (
     build_retry_prompt,
     build_structuring_user_prompt,
 )
-from .campaign_plan_v4 import (
-    CampaignQueryPlanV4,
-    CampaignQueryPlanValidationError,
-    attach_campaign_query_plan_v4_identity,
-    build_campaign_query_plan_v4_fallback,
-    validate_campaign_query_plan_v4,
-)
 from .schema import StructuredQueryValidationError, build_fallback, validate_structured_query
 from .types import QueryStructurer, QueryStructuringInput, StructuredQuery
 
-
 Completion = Callable[[list[dict[str, str]]], str]
 EventSink = Callable[[str, dict[str, Any]], None]
+
+_CAMPAIGN_TOOL_PAYLOAD_VALIDATOR = Draft202012Validator(
+    CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA
+)
+
+
+def _decode_campaign_query_plan_v4_response(
+    response: str,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Decode one strict tool object, repairing one proven extra delimiter.
+
+    A sampled response can contain one surplus closing brace immediately
+    before ``audience_requirement.issues``.  Removing it is accepted only when
+    the resulting *whole* object validates against the strict provider schema.
+    Every other malformed JSON shape remains a retryable parse failure.
+    """
+
+    parse_error: json.JSONDecodeError
+    try:
+        payload = json.loads(response)
+        return payload, None
+    except json.JSONDecodeError as exc:
+        if exc.msg != "Extra data":
+            raise
+        parse_error = exc
+
+    candidates: dict[str, tuple[dict[str, Any], int]] = {}
+    for index, character in enumerate(response):
+        if character != "}" or re.match(
+            r'^\s*,\s*"issues"\s*:', response[index + 1:]
+        ) is None:
+            continue
+        repaired = response[:index] + response[index + 1:]
+        try:
+            candidate = json.loads(repaired)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(candidate, dict) or not _CAMPAIGN_TOOL_PAYLOAD_VALIDATOR.is_valid(
+            candidate
+        ):
+            continue
+        fingerprint = json.dumps(
+            candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        candidates[fingerprint] = (candidate, index)
+
+    if len(candidates) != 1:
+        raise parse_error
+    candidate, index = next(iter(candidates.values()))
+    return candidate, {
+        "kind": "remove_extra_closing_brace_before_audience_issues",
+        "removed_index": index,
+    }
 
 
 def _is_non_retryable_tool_contract_error(exc: Exception) -> bool:
@@ -250,7 +306,14 @@ class LLMCampaignQueryPlanV4Structurer:
             non_retryable = False
             try:
                 response = self._complete(messages)
-                raw_payload = json.loads(response)
+                raw_payload, syntax_repair = _decode_campaign_query_plan_v4_response(
+                    response
+                )
+                if syntax_repair is not None:
+                    self._emit(
+                        "campaign_query_plan_v4_syntax_repair",
+                        {"attempt": attempt + 1, **syntax_repair},
+                    )
                 payload = attach_campaign_query_plan_v4_identity(
                     raw_payload,
                     input.query,

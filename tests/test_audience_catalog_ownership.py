@@ -77,6 +77,32 @@ def test_resolved_catalog_shadows_the_code_fallback_at_runtime() -> None:
         assert name in resolved.fields, f"해석된 카탈로그에 필드 {name} 이 없다."
 
 
+def test_guidance_renders_inline_and_referenced_value_domains_once() -> None:
+    """모델 안내도 실행 카탈로그와 같은 materialized 값 사전을 읽어야 한다.
+
+    consent_flag 는 audience_catalog 안에 값이 있고, 나머지는
+    member_target_filters.eq_filters 를 source_category 로 참조한다. raw JSON을 그대로
+    렌더하면 후자만 조용히 빠져 앱 로그인 채널 같은 지원 필드를 모델이 미지원으로 신고한다.
+    """
+    guidance = audience_runtime.audience_catalog_guidance()
+
+    expected = {
+        "consent_flag": "agreed",
+        "gender": "female",
+        "grade": "vip",
+        "login_channel": "app_user",
+    }
+    for domain, canonical in expected.items():
+        marker = f"\n- {domain}:"
+        assert guidance.count(marker) == 1
+        line = next(
+            line
+            for line in guidance.splitlines()
+            if line.startswith(f"- {domain}:")
+        )
+        assert canonical in line
+
+
 @pytest.mark.parametrize("source", sorted(_raw_catalog()["sources"]))
 def test_catalog_sources_bind_to_real_schema(source: str) -> None:
     """카탈로그가 가리키는 테이블이 schema_catalog 에 실재하는가(유령 바인딩 차단)."""

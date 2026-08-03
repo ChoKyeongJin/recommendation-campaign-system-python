@@ -30,6 +30,7 @@ from typing import Any, Callable
 import compile_contract
 import semantic_domain_binding
 import semantic_plan
+import targeting_domain
 from compile_contract import PLAN_ROOT, CompileContext
 from semantic_normalizers import (
     COUNT_ABSENCE,
@@ -852,10 +853,22 @@ class LegacyQueryPlanCompiler:
             "attribute_id": ctx.resolve_metric("history_attribute", node.values.get("attribute")),
             "operator": operator,
         }
+        transition_direction = (
+            targeting_domain.transition_direction(node.values.get("value"))
+            if operator == "transition"
+            else None
+        )
         for source in ("value", "from_value", "to_value", "value_comparison"):
             raw = node.values.get(source)
+            # A bare directional cue (승급/강등) describes the relation, not an
+            # endpoint value.  Preserve it as an ordered transition and do not
+            # send it through the closed grade-value vocabulary.
+            if source == "value" and transition_direction is not None:
+                continue
             if isinstance(raw, str) and raw.strip():
                 slot[source] = raw.strip()
+        if transition_direction is not None:
+            slot["transition_direction"] = transition_direction
         if isinstance(window, Period):
             slot["month"] = window.start[:6]
         elif isinstance(window, RelativeWindow):

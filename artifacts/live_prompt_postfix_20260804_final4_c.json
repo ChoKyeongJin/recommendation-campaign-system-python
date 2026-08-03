@@ -1,0 +1,114 @@
+{
+ "summary": {
+  "total": 5,
+  "outcomes": {
+   "sql": 1,
+   "unsupported": 1,
+   "clarification": 3,
+   "failure": 0,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 1,
+   "improvement": 1,
+   "regression": 3,
+   "unknown": 0
+  },
+  "unstable": [],
+  "regressions": [
+   19,
+   23,
+   25
+  ],
+  "improvements": [
+   20
+  ]
+ },
+ "rows": [
+  {
+   "id": 18,
+   "prompt": "정상에서 휴면으로 바뀐 회원",
+   "expectation": "unsupported",
+   "outcome": "unsupported",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "relational_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 28.1
+    }
+   ],
+   "note": "MEMBER_STATE_CD 이력 소스 부재(STATE_GRADE 는 활동등급, 무상관). 이력 감사 16종 #8 과 동일"
+  },
+  {
+   "id": 19,
+   "prompt": "직전 등급이 골드였던 회원",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "query_plan_required_conditions_missing",
+     "status": "needs_clarification",
+     "elapsed_s": 26.9
+    }
+   ],
+   "note": "PREV_GRADE 직전값"
+  },
+  {
+   "id": 20,
+   "prompt": "3개월 내내 VIP를 유지한 회원",
+   "expectation": "unsupported",
+   "outcome": "sql",
+   "verdict": "improvement",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 48.6
+    }
+   ],
+   "note": "다월 연산 — snapshot_months_available 이 늘면 열린다"
+  },
+  {
+   "id": 23,
+   "prompt": "등급이 2회 이상 변경된 회원",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "query_plan_required_conditions_missing",
+     "status": "needs_clarification",
+     "elapsed_s": 25.5
+    }
+   ],
+   "note": "CHANGE_COUNT — 다월 적재 필요"
+  },
+  {
+   "id": 25,
+   "prompt": "최근 6개월 매월 존재한 회원",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 48.5
+    }
+   ],
+   "note": "EVERY_SUBINTERVAL — 다월 적재 필요"
+  }
+ ]
+}

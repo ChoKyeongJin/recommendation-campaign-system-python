@@ -1,0 +1,365 @@
+{
+ "summary": {
+  "total": 20,
+  "outcomes": {
+   "sql": 7,
+   "unsupported": 5,
+   "clarification": 7,
+   "failure": 1,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 7,
+   "improvement": 0,
+   "regression": 1,
+   "unknown": 12
+  },
+  "unstable": [],
+  "regressions": [
+   3
+  ],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 1,
+   "prompt": "최근 1년 동안 특정 브랜드를 2회 이상 구매한 회원을 대상으로 브랜드 재구매 캠페인을 만들어줘.",
+   "expectation": "clarification",
+   "outcome": "clarification",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 33.5
+    }
+   ],
+   "note": "'특정 브랜드'는 자리표시자 — 브랜드 이름을 되묻는 것이 정답"
+  },
+  {
+   "id": 3,
+   "prompt": "누적 구매금액 상위 10% 회원을 추출해줘",
+   "expectation": "sql",
+   "outcome": "unsupported",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 14.6
+    }
+   ],
+   "note": "TOP N PERCENT — LLM 방출 편차 관측됨"
+  },
+  {
+   "id": 4,
+   "prompt": "장바구니에 서로 다른 상품을 3개 이상 담아둔 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 17.0
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 8,
+   "prompt": "이십만원 이상 구매한 회원 중 남자는 제외해줘",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 25.2
+    }
+   ],
+   "note": "한글 수사 + 제외 — LLM 방출 편차 관측됨"
+  },
+  {
+   "id": 12,
+   "prompt": "2026년 2월과 3월의 구매금액이 증가한 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 30.5
+    }
+   ],
+   "note": "기간 대 기간 비교. 이력 감사 16종 #2 와 동일"
+  },
+  {
+   "id": 13,
+   "prompt": "현재 등급이 VIP인 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 9.6
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 27,
+   "prompt": "2026년 2월과 3월의 구매금액차이가 10% 이상 증가한 고객 리스트",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 32.4
+    }
+   ],
+   "note": "이력 감사 #1. 기간 대 기간 + 백분율 임계(Arithmetic). 창이 적재 밖이라 0건이 정상"
+  },
+  {
+   "id": 29,
+   "prompt": "2025년 12월 기준 휴면 상태였던 회원 수를 알려줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_registry_gap",
+     "status": "needs_clarification",
+     "elapsed_s": 16.5
+    }
+   ],
+   "note": "이력 감사 #6. as_of_month + member_state(소스 부재) + COUNT"
+  },
+  {
+   "id": 30,
+   "prompt": "지난 6개월 동안 골드에서 VIP로 승급한 회원을 찾아줘",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 37.2
+    }
+   ],
+   "note": "이력 감사 #7. 다월 transition — PREV_* 1스텝으로 접으면 의미가 바뀐다"
+  },
+  {
+   "id": 41,
+   "prompt": "최근 캠페인 발송 성공 횟수가 3회 이상이고 구매반응이 없는 회원을 대상으로 재반응 유도 캠페인을 만들어줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 20.9
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 43,
+   "prompt": "최근 90일 동안 구매금액이 30만원 이상인 주문을 한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 33.9
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 46,
+   "prompt": "서로 다른 브랜드를 정확히 두 개 구매한 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 16.1
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 49,
+   "prompt": "사료, 간식, 장난감을 모두 구매한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 22.2
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  },
+  {
+   "id": 50,
+   "prompt": "이메일, 문자, 앱푸시에 모두 동의한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 20.9
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  },
+  {
+   "id": 52,
+   "prompt": "지정한 세 개 캠페인에 모두 반응한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 17.8
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 61,
+   "prompt": "사료를 구매한 적은 없지만 다른 상품은 구매한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 29.3
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: no_verified_sql (presence_absence_conflict)"
+  },
+  {
+   "id": 69,
+   "prompt": "2026년 7월 1일 23시 59분 59초까지 주문한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 64.7
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 71,
+   "prompt": "어제 하루 동안 구매한 회원 수를 알려줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 7.7
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 74,
+   "prompt": "여성이면서 골드에서 VIP로 바뀐 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 19.7
+    }
+   ],
+   "note": "혼합축 전이형(등급). '등급'의 물리 축은 ZTS_GRADE 다(현재값 EMART_GRADE_CD 와 같은 코드 도메인). 두 절이 한 SQL 에 함께 있어야 한다. 2026-08-02 실측: 성별 전용 SQL(가짜 성공) → 강등되어 regression. 흡수가 성립하면 Event IR 내부의 And 하나가 된다. 실데이터(201701 단일 월)에서 ZTS 전이는 0건이라 결과 행수는 0 이지만, 0건은 문제가 아니라는 것이 이 저장소의 전제다 — 재는 것은 SQL 이 두 절을 담는가다."
+  },
+  {
+   "id": 76,
+   "prompt": "여성이면서 지난달 말 기준 VIP였던 회원",
+   "expectation": "unsupported",
+   "outcome": "unsupported",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 17.9
+    }
+   ],
+   "note": "혼합축 마커형. 단독형 #15 와 같은 귀결이어야 한다 — 월 스냅샷은 201701 단일 월이라 '지난달' as_of 는 적재 밖이다. 2026-08-02 실측: is_success=False / semantic_structurer_failure(사유 없는 실패) — 정직한 미지원이 아니다. 이 항목은 마커형이 조기 반환에 걸리지 않는다는 것도 함께 고정한다(event_expression 이 애초에 세워지지 않는다). 적재가 늘면 expectation 을 sql 로 승격하고 required_clauses 는 유지하라."
+  }
+ ]
+}

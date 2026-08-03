@@ -151,7 +151,7 @@
       "category": "login_channel",
       "column": "B.LAST_LOGIN_CHANNEL",
       "value": "DEVICE_TYPE_CD.APP",
-      "synonyms": ["앱 사용자", "앱 로그인 회원", "최근 앱으로 접속한 회원"]
+      "synonyms": ["앱 사용자", "앱 로그인 회원", "앱으로 로그인", "최근 앱으로 접속한 회원"]
     },
     {
       "canonical": "app_signup",
@@ -1296,7 +1296,9 @@
       "CELL",
       "CP",
       "D",
+      "EAC",
       "EC",
+      "EC_PRODUCT",
       "EC1",
       "EC2",
       "EO",
@@ -1306,6 +1308,7 @@
       "M2",
       "O",
       "OD",
+      "OD_PRODUCT",
       "OH",
       "P",
       "R",

@@ -10,7 +10,6 @@ from .schema import STRUCTURED_QUERY_JSON_SCHEMA
 from .semantic_ir import extract_literal_bindings
 from .types import QueryStructuringInput
 
-
 COMPLEX_QUERY_STRUCTURER_SYSTEM_PROMPT = """너는 RAG 시스템의 Complex Query Structurer다.
 
 사용자의 자연어 질문을 기존 Query Planner가 처리하기 쉬운 구조로 변환한다.
@@ -167,6 +166,14 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
                 "which condition owns each time window."
             ),
             (
+                "A concrete product or category phrase attached to a purchase is a required open-text scope, "
+                "not evidence for a bare purchase_line Source. Put it in a Filter using a catalog field whose "
+                "match_mode is contains (normally purchase_line.product_text). For 'X 외 상품' or '다른 상품', "
+                "use Exists(Filter(Source(purchase_line), Not(Comparison(product_text = X)))); for 'X를 구매한 "
+                "적이 없다', negate Exists around the positive X comparison. When several products are "
+                "explicitly quantified with '모두/전부/각각', use one independent filtered Exists per product."
+            ),
+            (
                 "Use the exact JSON property names shown under [Fixed wire shapes]. Aggregate never has "
                 "source/field keys: it has function, relation, expression, and distinct. FieldRef uses name, "
                 "not field. A date window is the literal binding's normalized.event_ir_window nested in "
@@ -236,6 +243,14 @@ def build_campaign_query_plan_v4_retry_prompt(
                 "a member-correlated left Source with the correlation key omitted. On the Source nested under "
                 "the right Summarize, correlation='none' is mandatory; omitting it changes the global rank "
                 "into a per-member aggregate."
+            ),
+            (
+                "Use the exact singular wire shapes: Not is "
+                "{\"type\":\"not\",\"operand\":<Condition>} and never has operands. Exists has only "
+                "type/relation/evidence; it never has where. A row predicate belongs in "
+                "{\"type\":\"filter\",\"relation\":<Relation>,\"where\":<Condition>}, and Filter never "
+                "has evidence. audience_requirement contains both expression and issues; semantic_plan is "
+                "its root-level sibling."
             ),
             (
                 "Summarize output names are local aliases used by Order.keys.name, not FieldRef names. Join.on "

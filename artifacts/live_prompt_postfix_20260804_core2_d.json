@@ -1,0 +1,94 @@
+{
+ "summary": {
+  "total": 4,
+  "outcomes": {
+   "sql": 1,
+   "unsupported": 1,
+   "clarification": 1,
+   "failure": 1,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 2,
+   "improvement": 0,
+   "regression": 2,
+   "unknown": 0
+  },
+  "unstable": [],
+  "regressions": [
+   75,
+   77
+  ],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 74,
+   "prompt": "여성이면서 골드에서 VIP로 바뀐 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 31.1
+    }
+   ],
+   "note": "혼합축 전이형(등급). '등급'의 물리 축은 ZTS_GRADE 다(현재값 EMART_GRADE_CD 와 같은 코드 도메인). 두 절이 한 SQL 에 함께 있어야 한다. 2026-08-02 실측: 성별 전용 SQL(가짜 성공) → 강등되어 regression. 흡수가 성립하면 Event IR 내부의 And 하나가 된다. 실데이터(201701 단일 월)에서 ZTS 전이는 0건이라 결과 행수는 0 이지만, 0건은 문제가 아니라는 것이 이 저장소의 전제다 — 재는 것은 SQL 이 두 절을 담는가다."
+  },
+  {
+   "id": 75,
+   "prompt": "여성이면서 가치등급이 골드에서 VIP로 바뀐 회원",
+   "expectation": "sql",
+   "outcome": "failure",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "event_compiler_partially_supported",
+     "status": "no_verified_sql",
+     "elapsed_s": 33.2
+    }
+   ],
+   "note": "혼합축 전이형(가치등급). '등급'(ZTS)과 별개 축이며 표면어로 구분한다. 실측 2026-08-03: WORTH 전이는 69,609행 중 22,409건으로 실재하므로 이 항목만이 전이 기능의 정확성을 실행 결과로 증명할 수 있다. PREV_WORTH_GRADE 에는 '~'(직전 없음) 센티널이 1,273행 있다."
+  },
+  {
+   "id": 76,
+   "prompt": "여성이면서 지난달 말 기준 VIP였던 회원",
+   "expectation": "unsupported",
+   "outcome": "unsupported",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 26.7
+    }
+   ],
+   "note": "혼합축 마커형. 단독형 #15 와 같은 귀결이어야 한다 — 월 스냅샷은 201701 단일 월이라 '지난달' as_of 는 적재 밖이다. 2026-08-02 실측: is_success=False / semantic_structurer_failure(사유 없는 실패) — 정직한 미지원이 아니다. 이 항목은 마커형이 조기 반환에 걸리지 않는다는 것도 함께 고정한다(event_expression 이 애초에 세워지지 않는다). 적재가 늘면 expectation 을 sql 로 승격하고 required_clauses 는 유지하라."
+  },
+  {
+   "id": 77,
+   "prompt": "최근 90일 동안 3회 이상 구매하고 골드에서 VIP로 승급한 회원",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 54.8
+    }
+   ],
+   "note": "혼합축 — canonical Event IR 이 이미 컴파일하는 구매 집계와 흡수 대상인 등급 전이가 한 문장. 두 조각이 같은 SQL 에 나오는지가 흡수안 성립의 최종 판정이다. 2026-08-02 미측정."
+  }
+ ]
+}

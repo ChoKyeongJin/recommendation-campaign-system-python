@@ -1,12 +1,13 @@
-"""적재 부족은 **차단이 아니라 고지**다 — 그 정책의 배선 계약.
+"""적재 범위 판정의 차단/고지 경계를 고정한다.
 
 기준은 "행이 나오는가"가 아니라 **"SQL 이 틀리는가"**다:
 
-  · 적재가 얕아 결과가 0건  → SQL 의 의미는 원문 그대로다. 내보내고 이름을 대며 고지한다.
+  · 요청 기간이 완전 적재 범위 밖 → 관측했다는 전제가 거짓이므로 SQL 을 막는다.
+  · 요청 기간이 완전 적재 범위 안 → SQL 을 내며 상시 경고를 붙이지 않는다.
   · 의미가 접히는 컴파일    → 다른 대상을 내는 오답이다. 여전히 막는다(컴파일러의 일).
 
-이 파일이 지키는 것은 그 구분이 **응답까지 살아서 도착하는가**이다. 판정 계층만 고쳐 놓고
-배선이 자문을 버리면 사용자에게는 "왜 0건인지 알 수 없는 SQL"이 나가고, 그건 조용한 실패다.
+완전 적재가 선언되지 않은 월에 0건이 나온 것은 "조건을 만족한 회원이 없음"과 구분할 수 없다.
+그래서 그 경우는 advisory 로 SQL 옆에 싣지 않고 ``data_coverage_gap`` 으로 정직하게 닫는다.
 """
 
 from __future__ import annotations
@@ -49,25 +50,23 @@ def _as_of_month_node() -> list[dict]:
     }]
 
 
-def test_out_of_range_month_still_emits_sql_with_a_named_advisory() -> None:
-    """적재 밖 기준월도 SQL 을 낸다 — 결과가 0건인 이유를 이름 대어 함께 싣는다."""
+def test_out_of_range_month_is_blocked_with_a_named_coverage_gap() -> None:
+    result, plan = _run(QUERY, _as_of_month_node())
+
+    assert not result["is_success"] and result["sql"] is None
+    assert result["failure_reason"] == "semantic_ir_unsupported"
+    assert result["interpretation_status"] == "unsupported"
+    unsupported = plan["semantic_ir"]["unsupported_operations"]
+    assert unsupported[0]["kind"] == "data_coverage_gap"
+    assert "2025-12-01..2025-12-31" in unsupported[0]["reason"]
+
+
+def test_out_of_range_coverage_never_downgrades_to_an_advisory() -> None:
     result, _plan = _run(QUERY, _as_of_month_node())
 
-    assert result["sql"], "적재 깊이는 차단 사유가 아니다 — SQL 은 나가야 한다."
-    advisories = result[RESPONSE_KEY]
-    assert advisories, "0건일 수 있다는 사실이 응답에서 사라지면 조용한 실패가 된다."
-    assert any("0건" in str(item.get("message")) for item in advisories)
-    assert {item.get("source") for item in advisories} <= {"capability", "attribute_history"}
-
-
-def test_advisories_never_travel_on_the_blocking_channel() -> None:
-    """`dropped_signal_warnings` 는 이름과 달리 **차단 채널**이다 — 고지를 실으면 SQL 이 막힌다."""
-    result, _plan = _run(QUERY, _as_of_month_node())
-
-    assert result["sql"]
-    blocking = " ".join(str(item) for item in result.get("dropped_signal_warnings") or [])
-    for item in result[RESPONSE_KEY]:
-        assert str(item.get("message")) not in blocking
+    assert result["sql"] is None
+    assert result["failure_reason"] == "semantic_ir_unsupported"
+    assert not result.get(RESPONSE_KEY)
 
 
 def test_advisory_is_absent_when_the_window_is_inside_coverage() -> None:

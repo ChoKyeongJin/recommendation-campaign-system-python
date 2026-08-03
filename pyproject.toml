@@ -1,0 +1,76 @@
+# 정적 검사 설정. pytest 설정은 여기 두지 않는다 — pytest.ini 가 rootdir 을 고정하는
+# 단일 소유자이고(그 파일 주석 참조), 같은 설정을 두 파일에 두면 어느 쪽이 이겼는지가
+# 실행마다 달라진다.
+#
+# 범위가 query_pipeline/ 과 그 테스트로 한정된 이유: 저장소의 나머지는 점진적으로 자란
+# 코드라 strict 검사를 한 번에 통과할 수 없고, 통과하지 못하는 검사는 곧 무시되는 검사가
+# 된다. 새 계층에서만 강제하고 범위를 넓혀 간다.
+
+[tool.mypy]
+python_version = "3.12"
+files = ["query_pipeline"]
+strict = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+disallow_any_generics = true
+plugins = ["pydantic.mypy"]
+
+# query_pipeline 이 실제로 의존하는 저장소 루트 모듈. 예전에는 여기 ``follow_imports = "skip"``
+# 이 있었고, 그 설정이 새 계층과 legacy IR 사이의 **실제 타입 불일치를 가리고 있었다**(경계를
+# 열자마자 `bindings.py` 의 루프 변수 가림이 드러났다). 이제 경계를 끊지 않고 함께 검사한다 —
+# ``ignore_missing_imports`` 만 남는다.
+[[tool.mypy.overrides]]
+module = ["event_ir", "event_compiler", "sql_dialect", "lexicon_patterns", "semantic_fields"]
+ignore_missing_imports = true
+
+# 기간 표면 문법의 단일 소유자와 **그 모듈의 의존 폐포**. 위 셋과 달리 여기서 경계를 끊는
+# 이유는 규모다: calendar_window 자체의 부채는 2개지만, 따라 들어가면 lexicon_patterns ·
+# targeting_ir · condition_normalizers 로 저장소 본체가 통째로 열린다(실측 20개). 그 범위를
+# strict 로 켜는 것은 Phase 3-B/C 의 일이고, 지금 켜면 통과하지 못하는 검사가 되어 곧 무시된다.
+[[tool.mypy.overrides]]
+module = ["calendar_window"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+include = [
+    "query_pipeline/**/*.py",
+    "tests/test_query_pipeline_*.py",
+    "tests/query_pipeline_fixtures.py",
+    # 새 계층에 붙는 도메인 쪽 구현(검증기·투영)과 그 테스트도 같은 기준으로 본다 —
+    # 경계를 사이에 두고 한쪽만 검사하면 그 경계가 곧 검사의 사각지대가 된다.
+    "audience_validators.py",
+    "query_structurer/audience_execution.py",
+    "tests/test_audience_validators.py",
+    "tests/test_audience_execution_projection.py",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = [
+    # 한국어 주석/메시지가 많아 줄 길이 규칙이 서술을 자른다. 서술이 이 저장소의 자산이다.
+    "E501",
+    # 전각 문장부호(—, ·)를 '헷갈리는 문자'로 보는 규칙. 한국어 서술의 정상 표기다.
+    "RUF001",
+    "RUF002",
+    "RUF003",
+    # PEP 695 `type X = ...`. pydantic 의 discriminated union 은 별칭이 **즉시 평가**될 때
+    # 판별자를 붙이므로, 지연 평가되는 PEP 695 별칭으로 바꾸면 검증 시점이 달라진다.
+    "UP040",
+    # `class X(str, Enum)` → `StrEnum`. 저장소의 기존 열거형(audience_authority 등)이 전부
+    # 앞의 형태라 여기만 바꾸면 직렬화 관례가 파일마다 달라진다.
+    "UP042",
+    # PEP 695 제네릭 함수 문법. 저장소 전체가 TypeVar 표기를 쓴다.
+    "UP047",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["query_pipeline"]

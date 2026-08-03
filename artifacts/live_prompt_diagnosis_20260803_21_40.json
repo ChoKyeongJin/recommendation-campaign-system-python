@@ -1,0 +1,370 @@
+{
+ "summary": {
+  "total": 20,
+  "outcomes": {
+   "sql": 0,
+   "unsupported": 0,
+   "clarification": 18,
+   "failure": 2,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 0,
+   "improvement": 0,
+   "regression": 6,
+   "unknown": 14
+  },
+  "unstable": [],
+  "regressions": [
+   21,
+   22,
+   23,
+   24,
+   25,
+   26
+  ],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 21,
+   "prompt": "6개월 이상 접속하지 않은 휴면 고객",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 63.7
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 22,
+   "prompt": "3개월 내내 VIP 등급을 유지한 회원",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 76.9
+    }
+   ],
+   "note": "#20 의 표현 변형 — 같은 귀결이어야 한다. 이력 감사 16종 #12 와 동일"
+  },
+  {
+   "id": 23,
+   "prompt": "등급이 2회 이상 변경된 회원",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 71.2
+    }
+   ],
+   "note": "CHANGE_COUNT — 다월 적재 필요"
+  },
+  {
+   "id": 24,
+   "prompt": "골드 이상 등급인 회원",
+   "expectation": "sql",
+   "outcome": "failure",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 16.0
+    }
+   ],
+   "note": "등급 서열(rank) 비교"
+  },
+  {
+   "id": 25,
+   "prompt": "최근 6개월 매월 존재한 회원",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 64.7
+    }
+   ],
+   "note": "EVERY_SUBINTERVAL — 다월 적재 필요"
+  },
+  {
+   "id": 26,
+   "prompt": "한 번도 VIP였던 적이 없는 회원",
+   "expectation": "unsupported",
+   "outcome": "failure",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 36.2
+    }
+   ],
+   "note": "NEVER_IN_INTERVAL — 다월 적재 필요"
+  },
+  {
+   "id": 27,
+   "prompt": "2026년 2월과 3월의 구매금액차이가 10% 이상 증가한 고객 리스트",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 52.2
+    }
+   ],
+   "note": "이력 감사 #1. 기간 대 기간 + 백분율 임계(Arithmetic). 창이 적재 밖이라 0건이 정상"
+  },
+  {
+   "id": 28,
+   "prompt": "각 회원의 최신 기준월 구매등급을 기준으로 VIP 회원을 찾아줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "query_plan_required_conditions_missing",
+     "status": "needs_clarification",
+     "elapsed_s": 41.1
+    }
+   ],
+   "note": "이력 감사 #3. as_of_latest — 단일월 적재로도 표현 가능해야 한다"
+  },
+  {
+   "id": 29,
+   "prompt": "2025년 12월 기준 휴면 상태였던 회원 수를 알려줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 108.0
+    }
+   ],
+   "note": "이력 감사 #6. as_of_month + member_state(소스 부재) + COUNT"
+  },
+  {
+   "id": 30,
+   "prompt": "지난 6개월 동안 골드에서 VIP로 승급한 회원을 찾아줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 87.7
+    }
+   ],
+   "note": "이력 감사 #7. 다월 transition — PREV_* 1스텝으로 접으면 의미가 바뀐다"
+  },
+  {
+   "id": 31,
+   "prompt": "최근 상태가 VIP이고 직전 상태는 골드였던 회원을 보여줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "query_plan_required_conditions_missing",
+     "status": "needs_clarification",
+     "elapsed_s": 74.7
+    }
+   ],
+   "note": "이력 감사 #9. transition(from+to). '상태' 표면어가 member_state 로 오라우팅될 위험"
+  },
+  {
+   "id": 32,
+   "prompt": "최근 3개월 동안 등급이 두 번 이상 변경된 회원을 찾아줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 85.2
+    }
+   ],
+   "note": "이력 감사 #10. changed_n_times — 컴파일러 배선됨, 적재만 부족"
+  },
+  {
+   "id": 33,
+   "prompt": "한 번이라도 휴면 상태였지만 현재는 정상인 회원을 추출해줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "query_plan_required_conditions_missing",
+     "status": "needs_clarification",
+     "elapsed_s": 47.6
+    }
+   ],
+   "note": "이력 감사 #11. ever(이력 소스 부재) + 현재 상태(표현 가능) 합성"
+  },
+  {
+   "id": 34,
+   "prompt": "2026년 상반기 동안 한 번도 휴면 상태가 아니었던 회원을 추출해줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 88.1
+    }
+   ],
+   "note": "이력 감사 #13. never + member_state 소스 부재"
+  },
+  {
+   "id": 35,
+   "prompt": "최근 6개월 중 적어도 한 달은 골드 이상이었던 회원을 보여줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 117.7
+    }
+   ],
+   "note": "이력 감사 #14. ever + 등급 서열(rank gte) — ever 컴파일러 미구현"
+  },
+  {
+   "id": 36,
+   "prompt": "최근 6개월 모든 월에 구매등급이 존재하는 회원을 찾아줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 91.0
+    }
+   ],
+   "note": "이력 감사 #15. exists_every_month — 컴파일러 배선됨, 적재만 부족"
+  },
+  {
+   "id": 37,
+   "prompt": "최근 12개월 동안 등급이 한 번도 바뀌지 않은 회원을 추출해줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 108.6
+    }
+   ],
+   "note": "이력 감사 #16. stable — 컴파일러 배선됨, 적재만 부족"
+  },
+  {
+   "id": 38,
+   "prompt": "최근 30일 장바구니 상품 종류가 2개 이상이고 총금액이 10만 원 이상인 회원을 대상으로 구매촉진 캠페인을 만들어줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 57.8
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 39,
+   "prompt": "회원별 평균 구매주기가 30일 이내이고 다음 구매예정일이 지난 고객을 대상으로 구매 알림 캠페인을 만들어줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 89.4
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 40,
+   "prompt": "2019년에 이십만원 이상을 구매한고객에서 남자는 제외해.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 67.8
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  }
+ ]
+}

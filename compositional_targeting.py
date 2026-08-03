@@ -12,16 +12,14 @@ changed, and changed N times are shared by every compatible attribute.
 
 from __future__ import annotations
 
-import event_ir
-import sql_dialect
-
 import copy
 import json
 import re
 from pathlib import Path
 from typing import Any, Mapping
 
-
+import event_ir
+import sql_dialect
 
 PLAN_IR_KEY = "relational_ir"
 PLAN_OPERATIONS_KEY = "relational_operations"
@@ -214,14 +212,41 @@ def _compile_snapshot_sql(
         prev_column = str(binding.get("prev_value_column") or "")
         if not _IDENTIFIER_RE.fullmatch(prev_column):
             raise ValueError("transition requires a safe prev_value_column")
+        raw_pairs = operation.get("transition_pairs")
+        transition_pairs: list[tuple[str, str]] = []
+        if raw_pairs is not None:
+            if not isinstance(raw_pairs, list) or not raw_pairs:
+                raise ValueError("directional transition requires ordered value pairs")
+            for pair in raw_pairs:
+                if not isinstance(pair, Mapping):
+                    raise ValueError("invalid directional transition pair")
+                previous, current = pair.get("from"), pair.get("to")
+                if (
+                    not isinstance(previous, str)
+                    or not previous
+                    or not isinstance(current, str)
+                    or not current
+                    or previous == current
+                ):
+                    raise ValueError("invalid directional transition pair")
+                transition_pairs.append((previous, current))
+            transition_pairs = list(dict.fromkeys(transition_pairs))
+            pair_clauses = [
+                "(" + " AND ".join((
+                    f"S.{prev_column} = {sql_dialect.quote_literal(previous)}",
+                    f"S.{value_column} = {sql_dialect.quote_literal(current)}",
+                )) + ")"
+                for previous, current in transition_pairs
+            ]
+            predicates.append("(" + " OR ".join(pair_clauses) + ")")
         prev_values = list((operation.get("prev_predicate") or {}).get("values") or [])
         if prev_values:
             predicates.append(_values_predicate(f"S.{prev_column}", prev_values))
-        else:
+        elif not transition_pairs:
             # 출발 값 미지정 전이('승급한')는 최소한 '직전과 값이 다름'을 강제한다 —
             # 이것마저 없으면 현재 값 필터로 조용히 축소되는 바로 그 오답이 된다.
             predicates.append(f"S.{prev_column} <> S.{value_column}")
-        if not values:
+        if not values and not transition_pairs:
             # 도착값 미지정('직전 등급이 골드였던')도 같은 이유로 '값이 바뀌었다'를 요구한다 —
             # 없으면 '직전이 골드'가 '지금도 골드'를 포함해 조용히 넓어진다.
             predicates.append(f"S.{prev_column} <> S.{value_column}")
@@ -432,6 +457,55 @@ def _expand_value_predicate(
     return sorted(selected) or None
 
 
+def _ordered_transition_pairs(
+    attribute: Mapping[str, Any], direction: str
+) -> list[dict[str, str]] | None:
+    """Materialize every valid previous/current pair from a complete order.
+
+    Physical grade codes are not lexically ordered.  Directional transitions
+    therefore compile only when every declared value has a unique integer
+    rank and physical value; the SQL receives concrete pairs rather than a
+    string inequality.
+    """
+
+    if direction not in {"ascending", "descending"}:
+        return None
+    values = attribute.get("values")
+    if not isinstance(values, Mapping) or len(values) < 2:
+        return None
+    ranked: list[tuple[int, str]] = []
+    for spec in values.values():
+        if not isinstance(spec, Mapping):
+            return None
+        rank = spec.get("rank")
+        physical = spec.get("value")
+        if (
+            not isinstance(rank, int)
+            or isinstance(rank, bool)
+            or not isinstance(physical, str)
+            or not physical
+        ):
+            return None
+        ranked.append((rank, physical))
+    if (
+        len({rank for rank, _physical in ranked}) != len(ranked)
+        or len({physical for _rank, physical in ranked}) != len(ranked)
+    ):
+        return None
+    ranked.sort()
+    pairs = [
+        {"from": previous, "to": current}
+        for previous_rank, previous in ranked
+        for current_rank, current in ranked
+        if (
+            previous_rank < current_rank
+            if direction == "ascending"
+            else previous_rank > current_rank
+        )
+    ]
+    return pairs or None
+
+
 def _value_examples(attribute: Mapping[str, Any], limit: int = 2) -> str:
     """확인 요청 문구에 넣을 값 예시 — 낱말을 코드에 박지 않고 값 사전에서 뽑는다."""
     samples: list[str] = []
@@ -552,6 +626,19 @@ def resolve_operation(
         prev_column = binding.get("prev_value_column")
         if not prev_column:
             return _blocked("unsupported", f"{label}의 직전 값 컬럼이 없어 전이 조건을 지원하지 않습니다.")
+        transition_direction = slot.get("transition_direction")
+        if transition_direction is not None and transition_direction not in {
+            "ascending", "descending",
+        }:
+            return _blocked("needs_clarification", f"{label} 전이 방향을 확정하지 못했습니다.")
+        transition_pairs = None
+        if isinstance(transition_direction, str):
+            transition_pairs = _ordered_transition_pairs(attribute, transition_direction)
+            if not transition_pairs:
+                return _blocked(
+                    "unsupported",
+                    f"{label}의 완전한 값 서열이 선언되어 있지 않아 방향 전이를 지원하지 않습니다.",
+                )
         to_values = _expand_value_predicate(attribute, str(slot.get("to_value") or ""), "eq")
         from_values = None
         if slot.get("from_value"):
@@ -563,7 +650,7 @@ def resolve_operation(
         # 전이는 **어느 한쪽 값만으로도 성립한다.** '직전 등급이 골드였던'은 출발값만 말하고
         # 도착값에는 아무 제약이 없다 — 도착값을 요구하면 이 문형이 통째로 막힌다(실측 #19).
         # 양쪽 다 없을 때만 되묻는다(그때는 전이라고 부를 것이 남지 않는다).
-        if not to_values and not from_values:
+        if not to_values and not from_values and not transition_pairs:
             return _blocked(
                 "needs_clarification",
                 f"{label} 전이의 값{_value_examples(attribute)}을 확정하지 못했습니다.",
@@ -573,6 +660,8 @@ def resolve_operation(
             "anchor": {"type": "latest"},
             "value_predicate": {"values": to_values} if to_values else None,
             "prev_predicate": {"values": from_values} if from_values else None,
+            "transition_direction": transition_direction,
+            "transition_pairs": transition_pairs,
         })
         return {key: value for key, value in base.items() if value is not None}
     # 다월 연산(가용 범위 내): 기존 창 CTE 컴파일러로 낮춘다.

@@ -3,21 +3,20 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import re
-from collections.abc import Mapping
-from datetime import date
 from typing import Any
 
 import audience_runtime
-import canonical_audience_claims
-import event_compiler
+import cart_abandonment_claims
 import event_ir
-import execution_assets
+import open_text_scope_claims
 import plan_decisions
+import rolling_absence_claims
+import semantic_plan as semantic_plan_module
+import semantic_relation_ownership
+import targeting_ir
 from aggregation_requirements import aggregation_request_json_schema
 from entity_set import derived_set_ast_error
-import semantic_plan as semantic_plan_module
-import targeting_ir
+from query_structurer import audience_execution
 
 from .semantic_ir import (
     SEMANTIC_IR_LLM_JSON_SCHEMA,
@@ -51,12 +50,8 @@ SEMANTIC_PLAN_KEY = "semantic_plan"
 # 이 목록은 **줄어드는 방향**이 목표다: Event IR 이 월별 스냅샷 축을 흡수하면 여기서 빠진다.
 # 새 타입을 늘리려면 "audience_requirement 로 표현할 수 없다"는 근거가 먼저 있어야 한다.
 LLM_SEMANTIC_PLAN_NODE_TYPES: tuple[str, ...] = ("relation_predicate",)
-AUDIENCE_REQUIREMENT_ISSUE_CODES = frozenset({
-    "missing_argument",
-    "ambiguous_requirement",
-    "unsupported_semantics",
-    "validation_mismatch",
-})
+# 오디언스 issue 코드의 소유자는 검증/투영 모듈이다(그쪽에서 code ↔ kind 표로 파생한다).
+AUDIENCE_REQUIREMENT_ISSUE_CODES = audience_execution.AUDIENCE_REQUIREMENT_ISSUE_CODES
 CAMPAIGN_INTENTS = {
     "recommend_campaign",
     "find_user_segment",
@@ -399,7 +394,7 @@ def _claimable_slot_paths() -> list[str]:
     """
     paths: list[str] = []
     for container, schema in _CLAIM_CONTAINERS:
-        for name in sorted((schema.get("properties") or {})):
+        for name in sorted(schema.get("properties") or {}):
             paths.append(f"{container}.{name}")
     return paths
 
@@ -1029,125 +1024,188 @@ def _normalize_audience_evidence(payload: dict[str, Any], query: str) -> None:
     inherit_container_evidence(expression)
 
 
-def _validated_audience_issue(item: Any, query: str) -> dict[str, Any]:
-    if not isinstance(item, dict):
-        raise CampaignQueryPlanValidationError("audience_requirement.issues items must be objects")
-    code = str(item.get("code") or "")
-    argument = str(item.get("argument") or "")
-    message = str(item.get("message") or "")
-    evidence = item.get("evidence")
-    if code not in AUDIENCE_REQUIREMENT_ISSUE_CODES:
-        raise CampaignQueryPlanValidationError(f"unknown audience issue code: {code!r}")
-    if not argument or not message or not isinstance(evidence, dict):
-        raise CampaignQueryPlanValidationError("audience issue needs argument/message/evidence")
-    text = evidence.get("text")
-    start, end = evidence.get("start"), evidence.get("end")
-    if not (
-        isinstance(text, str) and text
-        and isinstance(start, int) and not isinstance(start, bool)
-        and isinstance(end, int) and not isinstance(end, bool)
-        and 0 <= start < end <= len(query)
-        and query[start:end] == text
+def _normalize_audience_wire_shapes(payload: dict[str, Any]) -> list[dict[str, str]]:
+    """Repair only singleton, semantics-preserving Event IR wire mistakes.
+
+    Strict tool calling still occasionally returns two protobuf-like shapes:
+    ``Exists(..., where=condition)`` and ``Not(operands=[condition])``.  Both
+    have exactly one interpretation in the fixed algebra.  We normalize only
+    those closed key sets; collisions, multiple operands, and arbitrary extra
+    properties remain validation failures.
+    """
+
+    requirement = payload.get(AUDIENCE_REQUIREMENT_KEY)
+    expression = requirement.get("expression") if isinstance(requirement, dict) else None
+    normalizations: list[dict[str, str]] = []
+
+    def visit(value: Any, path: str) -> None:
+        if isinstance(value, dict):
+            node_type = value.get("type")
+            keys = set(value)
+            if (
+                node_type == "exists"
+                and "where" in value
+                and isinstance(value.get("where"), dict)
+                and isinstance(value.get("relation"), dict)
+                and value["relation"].get("type") == "source"
+                and keys <= {"type", "relation", "where", "evidence"}
+            ):
+                relation = value["relation"]
+                where = value.pop("where")
+                value["relation"] = {
+                    "type": "filter", "relation": relation, "where": where,
+                }
+                normalizations.append({"path": path, "from": "exists.where", "to": "filter.where"})
+            if (
+                node_type == "not"
+                and "operand" not in value
+                and keys == {"type", "operands"}
+                and isinstance(value.get("operands"), list)
+                and len(value["operands"]) == 1
+                and isinstance(value["operands"][0], dict)
+            ):
+                value["operand"] = value.pop("operands")[0]
+                normalizations.append({"path": path, "from": "not.operands[0]", "to": "not.operand"})
+            for key, child in list(value.items()):
+                if key != "evidence":
+                    visit(child, f"{path}.{key}")
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                visit(child, f"{path}[{index}]")
+
+    visit(expression, "audience_requirement.expression")
+    return normalizations
+
+
+_PRODUCT_COMPLEMENT_ISSUE_ARGUMENTS = frozenset({
+    "product_scope",
+    "audience.product_scope",
+    "purchase_line.product_text",
+    "catalog_scope.purchase_line.product_text",
+})
+_PRODUCT_COMPLEMENT_ISSUE_CODES = frozenset({
+    "ambiguous_requirement",
+    "unsupported_semantics",
+    "validation_mismatch",
+})
+
+
+def _synthesize_closed_product_complement(
+    payload: dict[str, Any], query: str
+) -> bool:
+    """Replace only a refutable product-scope issue for one closed phrase."""
+
+    requirement = payload.get(AUDIENCE_REQUIREMENT_KEY)
+    if not isinstance(requirement, dict) or requirement.get("expression") is not None:
+        return False
+    issues = requirement.get("issues")
+    if not isinstance(issues, list) or not issues or not all(
+        isinstance(issue, dict)
+        and issue.get("code") in _PRODUCT_COMPLEMENT_ISSUE_CODES
+        and issue.get("argument") in _PRODUCT_COMPLEMENT_ISSUE_ARGUMENTS
+        for issue in issues
     ):
-        raise CampaignQueryPlanValidationError("audience issue evidence does not match original_query")
-    return {
-        "code": code,
-        "argument": argument,
-        "message": message,
-        "evidence": {"text": text, "start": start, "end": end},
-    }
+        return False
+    if payload.get("intent") not in {"find_user_segment", "recommend_campaign"}:
+        return False
+    if payload.get("result_limit") is not None:
+        return False
+    constraints = payload.get("campaign_constraints")
+    if not isinstance(constraints, dict) or any(
+        value not in (None, [], {}) for value in constraints.values()
+    ):
+        return False
+    semantic_plan = payload.get(SEMANTIC_PLAN_KEY)
+    if not isinstance(semantic_plan, dict) or semantic_plan.get("nodes") != []:
+        return False
+
+    expression = open_text_scope_claims.synthesize_single_product_complement_purchase(
+        query
+    )
+    if expression is None:
+        return False
+    requirement["expression"] = expression.to_dict()
+    requirement["issues"] = []
+    plan_decisions.record(
+        payload,
+        filter_name="open_text_scope_claims.single_product_complement",
+        action=plan_decisions.UPDATE,
+        slot="audience_requirement.expression+issues",
+        reason=(
+            "단일 'X 외 상품 구매 회원' 문법을 positive Exists 안의 "
+            "purchase_line.product_text != X로 확정"
+        ),
+        value=expression.to_dict(),
+    )
+    return True
 
 
-def _audience_issue_key(item: Mapping[str, Any]) -> tuple[str, str, str]:
-    """issue 하나의 신원(코드·인자·근거 구간). 생산자를 가르는 데만 쓴다."""
-    evidence = item.get("evidence") if isinstance(item.get("evidence"), Mapping) else {}
-    return (str(item.get("code")), str(item.get("argument")), str(evidence.get("text")))
+_ACTIVE_CART_ISSUE_CODES = frozenset({"missing_argument", "validation_mismatch"})
+_ACTIVE_CART_ISSUE_ARGUMENTS = frozenset({"period", "audience.period"})
 
 
-_INCOMPLETE_RECENCY_RE = re.compile(r"최근(?!\s*\d)")
+def _synthesize_closed_recent_active_cart(
+    payload: dict[str, Any], query: str
+) -> bool:
+    """Resolve only the closed recent-cart-abandonment construction.
 
+    ``KEEP_YN='Y'`` is the catalog-owned unpaid state.  A member-wide purchase
+    anti-join is not equivalent: it would drop an active-cart member merely
+    because they bought some other item during the period.
+    """
 
-def _as_of_date(current_date: str | None) -> date | None:
-    """계획 시점 기준일. 파싱 불가면 None(컴파일러가 실행 시점으로 폴백)."""
-    try:
-        return date.fromisoformat(current_date) if current_date else None
-    except ValueError:
-        return None
-
-
-def _temporal_requirement_issues(
-    query: str,
-    expression: event_ir.Condition,
-    *,
-    current_date: str | None,
-) -> list[dict[str, Any]]:
-    """원문 시간 한정이 IR에서 사라지거나 인자가 없으면 전체 이력 폴백을 막는다."""
-    issues: list[dict[str, Any]] = []
-    try:
-        import event_parser  # 순환 없는 language adapter; canonical IR은 이 모듈을 import하지 않는다.
-
-        expected = event_parser.source_time_span_count(query, today=_as_of_date(current_date))
-    except (ImportError, ValueError):
-        expected = 0
-    actual = event_ir.count_time_constraints(expression)
-    if expected > actual:
-        issues.append({
-            "code": "validation_mismatch",
-            "argument": "period",
-            "message": "원문에 있는 기간 조건이 canonical audience expression에서 누락되었습니다.",
-            "evidence": {"text": query, "start": 0, "end": len(query)},
-        })
-
-    signed_atoms = list(event_ir.iter_signed_atoms(expression))
-    for match in _INCOMPLETE_RECENCY_RE.finditer(query):
-        covered_atom = next(
-            (
-                atom for atom, _negated in signed_atoms
-                if atom.evidence is not None
-                and atom.evidence.start <= match.start() < atom.evidence.end
-            ),
-            None,
-        )
-        if covered_atom is not None and event_ir.time_windows(covered_atom):
-            continue
-        issues.append({
-            "code": "missing_argument",
-            "argument": "period",
-            "message": "'최근'의 범위를 확정할 기간 값이 필요합니다.",
-            "evidence": {
-                "text": match.group(0), "start": match.start(), "end": match.end(),
-            },
-        })
-    return issues
-
-
-def _dedupe_audience_issues(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    unique: dict[tuple[Any, ...], dict[str, Any]] = {}
-    for item in items:
-        evidence = item.get("evidence") if isinstance(item.get("evidence"), dict) else {}
-        key = (
-            item.get("code"), item.get("argument"),
-            evidence.get("start"), evidence.get("end"),
-        )
-        unique.setdefault(key, item)
-    return list(unique.values())
-
-
-def _audience_receipts(expression: event_ir.Condition) -> list[dict[str, Any]]:
-    receipts: list[dict[str, Any]] = []
-    for index, (atom, negated) in enumerate(event_ir.iter_signed_atoms(expression)):
-        semantic = atom.to_dict()
-        fingerprint = hashlib.sha256(
-            json.dumps(semantic, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest()
-        receipts.append({
-            "node_id": f"audience-atom-{index}",
-            "fingerprint": fingerprint,
-            "status": "compiled",
-            "polarity": "negative" if negated else "positive",
-            "sources": sorted(event_ir.sources(atom)),
-        })
-    return receipts
+    requirement = payload.get(AUDIENCE_REQUIREMENT_KEY)
+    if not isinstance(requirement, dict):
+        return False
+    raw_expression = requirement.get("expression")
+    issues = requirement.get("issues")
+    if raw_expression is None:
+        if not isinstance(issues, list) or not issues or not all(
+            isinstance(issue, dict)
+            and issue.get("code") in _ACTIVE_CART_ISSUE_CODES
+            and issue.get("argument") in _ACTIVE_CART_ISSUE_ARGUMENTS
+            for issue in issues
+        ):
+            return False
+    elif not (
+        issues == []
+        and cart_abandonment_claims.is_refutable_model_shape(raw_expression)
+    ):
+        return False
+    if payload.get("intent") not in {"find_user_segment", "recommend_campaign"}:
+        return False
+    if payload.get("result_limit") is not None:
+        return False
+    constraints = payload.get("campaign_constraints")
+    if not isinstance(constraints, dict) or any(
+        value not in (None, [], {}) for value in constraints.values()
+    ):
+        return False
+    semantic_plan = payload.get(SEMANTIC_PLAN_KEY)
+    if not isinstance(semantic_plan, dict) or semantic_plan.get("nodes") != []:
+        return False
+    bindings = payload.get("literal_bindings")
+    if not isinstance(bindings, list):
+        return False
+    expression = cart_abandonment_claims.synthesize_recent_active_cart(
+        query, bindings
+    )
+    if expression is None:
+        return False
+    requirement["expression"] = expression.to_dict()
+    requirement["issues"] = []
+    plan_decisions.record(
+        payload,
+        filter_name="cart_abandonment_claims.recent_active_cart",
+        action=plan_decisions.UPDATE,
+        slot="audience_requirement.expression+issues",
+        reason=(
+            "완결된 최근 장바구니 미결제 문구를 INS_DT 기간 안의 "
+            "KEEP_YN='Y' cart 존재로 확정하고 회원 전체 구매 anti-join을 제거"
+        ),
+        value=expression.to_dict(),
+    )
+    return True
 
 
 def _derive_audience_execution(
@@ -1155,218 +1213,24 @@ def _derive_audience_execution(
 ) -> bool:
     """Requirement 계약을 검증해 canonical execution IR을 단방향으로 파생한다.
 
+    두 단계로 갈려 있다(`query_structurer/audience_execution.py`):
+
+        run_audience_resolver      요구 검증 → issue 판정(검증기는 요구 계층에 주입된다)
+        project_resolution_to_plan 그 결과를 legacy plan 키 6개로 투영
+
     반환값은 새 계약이 존재했는지다. False면 기존 저장 플랜을 위한 SemanticPlan 호환 경로가
     이어서 처리할 수 있다. canonical→legacy 슬롯 역투영은 하지 않는다.
     """
-    requirement = payload.get(AUDIENCE_REQUIREMENT_KEY)
-    if not isinstance(requirement, dict):
+    try:
+        resolution = audience_execution.run_audience_resolver(
+            payload, query, current_date=current_date
+        )
+    except audience_execution.AudienceValidationError as exc:
+        # 계약 위반은 이 모듈의 예외 어휘로 나간다 — 호출자가 읽는 이름을 바꾸지 않는다.
+        raise CampaignQueryPlanValidationError(str(exc)) from exc
+    if resolution is None:
         return False
-    raw_issues = requirement.get("issues")
-    if not isinstance(raw_issues, list):
-        raise CampaignQueryPlanValidationError("audience_requirement.issues must be an array")
-    issues = [_validated_audience_issue(item, query) for item in raw_issues]
-    # 모델이 신고한 것과 애플리케이션이 계산한 것을 여기서 갈라 둔다. 아래 강등 판정은
-    # **모델 신고에만** 적용된다 — 애플리케이션이 append 하는 issue 의 근거 구간은 원문
-    # 전체(:1190, :1204)라, 표면어가 하나만 걸려도 event_compiler 의 권위 있는 판정까지
-    # 함께 강등된다. 그러면 '조용한 오답'을 막으려던 장치가 그것을 만드는 장치가 된다.
-    model_reported = {_audience_issue_key(item) for item in issues}
-    raw_expression = requirement.get("expression")
-    expression: event_ir.Condition | None = None
-    if isinstance(raw_expression, dict):
-        # 창의 **종류**('최근 N일' 길이 / 'N단위 전' 시점)는 표면 문법을 읽은 애플리케이션이
-        # 소유한다. 파싱 전에 소유한 값으로 맞춰 넣는다 — 값·단위를 이미 그렇게 다루고,
-        # 여기서 반려로만 처리하면 옳은 조건을 만들 수 있는 요청이 재시도 예산을 태우고 실패한다.
-        for correction in canonical_audience_claims.apply_window_kinds(
-            raw_expression, payload.get("literal_bindings") or []
-        ):
-            plan_decisions.record(
-                payload,
-                filter_name="canonical_audience_claims.window_kind",
-                action=plan_decisions.UPDATE,
-                slot="audience_requirement.window.type",
-                reason=(
-                    f"기간 표현 종류는 애플리케이션 소유 — {correction['value']}"
-                    f"{correction['unit']} 창을 '{correction['from']}'에서 "
-                    f"'{correction['to']}'로 맞췄다"
-                ),
-                value=correction,
-            )
-        try:
-            expression = event_ir.condition_from_dict(raw_expression)
-            event_ir.validate_evidence(expression)
-        except (event_ir.IrSchemaError, event_ir.SemanticLossError) as exc:
-            raise CampaignQueryPlanValidationError(f"invalid audience expression: {exc}") from exc
-        for atom, _negated in event_ir.iter_signed_atoms(expression):
-            evidence = atom.evidence
-            if evidence is None or not (
-                0 <= evidence.start < evidence.end <= len(query)
-                and query[evidence.start:evidence.end] == evidence.text
-            ):
-                raise CampaignQueryPlanValidationError(
-                    "audience expression evidence does not match original_query"
-                )
-
-        catalog = audience_runtime.resolve_audience_catalog()
-        unknown_sources = event_compiler.unsupported_events(
-            expression, dict(catalog.compiler_events)
-        )
-        unknown_fields = event_compiler.unsupported_fields(
-            expression,
-            dict(catalog.compiler_events),
-            dict(catalog.compiler_fields),
-        )
-        for symbol in [*unknown_sources, *unknown_fields]:
-            issues.append({
-                "code": "unsupported_semantics",
-                "argument": symbol,
-                "message": f"Semantic Catalog에 등록되지 않은 심볼입니다: {symbol}",
-                "evidence": {"text": query, "start": 0, "end": len(query)},
-            })
-        # 기준일을 넘긴다 — 검증과 SQL 생성이 각자 date.today() 를 부르면 달 경계에서 서로 다른
-        # 달을 확정할 수 있고, 월 단위 컬럼에서는 그게 곧 다른 오디언스다.
-        capability = event_compiler.validate_compiler_capability(
-            expression, context=catalog.compile_context(literals=True, today=_as_of_date(current_date))
-        )
-        if capability.status != event_compiler.CAPABILITY_SUPPORTED:
-            for issue in capability.issues or ():
-                issues.append({
-                    "code": "unsupported_semantics",
-                    "argument": str(issue.symbol or issue.code),
-                    "message": "Canonical Event IR을 현재 SQL compiler가 표현하지 못합니다.",
-                    "evidence": {"text": query, "start": 0, "end": len(query)},
-                })
-        issues.extend(
-            _temporal_requirement_issues(query, expression, current_date=current_date)
-        )
-        literal_bindings = payload.get("literal_bindings")
-        if not isinstance(literal_bindings, list):
-            raise CampaignQueryPlanValidationError(
-                "application-owned literal_bindings must be attached before audience validation"
-            )
-        issues.extend(
-            canonical_audience_claims.canonical_claim_issues(
-                query,
-                expression,
-                literal_bindings,
-                audience_runtime.load_audience_catalog_config(),
-            )
-        )
-    elif raw_expression is not None:
-        raise CampaignQueryPlanValidationError(
-            "audience_requirement.expression must be an object or null"
-        )
-
-    if expression is None and not issues:
-        issues.append({
-            "code": "missing_argument",
-            "argument": "audience_expression",
-            "message": "타겟 오디언스 조건을 canonical expression으로 확정하지 못했습니다.",
-            "evidence": {"text": query, "start": 0, "end": len(query)},
-        })
-    issues = _dedupe_audience_issues(issues)
-    requirement["expression"] = expression.to_dict() if expression is not None else None
-    requirement["issues"] = issues
-
-    if issues:
-        payload.pop(EVENT_EXPRESSION_KEY, None)
-        missing = sorted({
-            f"audience.{item['argument']}"
-            for item in issues if item.get("code") in {"missing_argument", "ambiguous_requirement"}
-        })
-        unsupported = [item for item in issues if item.get("code") == "unsupported_semantics"]
-        if unsupported and not missing:
-            # **미지원 선언은 가설이지 판정이 아니다.** 원문 결핍(missing_argument/
-            # ambiguous_requirement)은 원문을 읽은 LLM 만 볼 수 있으므로 그대로 종결하지만,
-            # "표현할 수 없다"는 실행 자산(컴파일러·카탈로그)을 아는 애플리케이션의 몫이다.
-            # 실측(2026-08-02): '이번 달 기준 골드 등급 회원'이 unsupported_semantics 로
-            # 종결됐는데, 그 의미를 컴파일하는 as_of 컴파일러는 살아 있었고 호출조차 되지 않았다.
-            #
-            # 강등의 조건은 "**선언된 실행 자산 중 이 의미를 처리하는 것이 있는가**"다.
-            # 예전 조건은 "다른 생산자가 노드를 냈는가"였는데, 모델이 미지원을 선언할 때는
-            # 노드를 내지 않으므로 **보호가 필요한 경우에만 정확히 발동하지 않는** 자기무력화
-            # 가드였다. canonical 은 이미 자기 차례에 실패했으므로 묻는 것은 그 밖의 계층이다.
-            plan_nodes = payload.get(SEMANTIC_PLAN_KEY)
-            plan_nodes = plan_nodes.get("nodes") if isinstance(plan_nodes, dict) else None
-            contradicted = [
-                (item, execution_assets.non_canonical_assets_for_text(item["evidence"]["text"]))
-                for item in unsupported
-                if _audience_issue_key(item) in model_reported
-            ]
-            contradicted = [(item, assets) for item, assets in contradicted if assets]
-            if contradicted and plan_nodes:
-                payload["audience_unsupported_hypotheses"] = [
-                    {"kind": item["argument"], "reason": item["message"],
-                     "evidence": item["evidence"]["text"]}
-                    for item in unsupported
-                ]
-                return False
-            if contradicted:
-                # 자산은 선언돼 있는데 그 축을 낼 **생산자가 없다**. 이것은 '표현할 수 없다'가
-                # 아니라 레지스트리 구멍이고, 저장소에는 이미 그 이름(semantic_registry_gap)과
-                # 사용자 문구가 있다. 미지원으로 부르면 없는 한계를 있다고 말하는 것이 된다.
-                named = sorted({asset.symbol for _item, assets in contradicted for asset in assets})
-                payload["semantic_ir"] = empty_semantic_ir(
-                    status="needs_clarification",
-                    missing_fields=["audience.requirement"],
-                    message=(
-                        "요청한 조건을 처리할 실행 자산은 선언돼 있으나 이 경로로 낼 수 없습니다"
-                        f"(선언된 자산: {', '.join(named)})."
-                    ),
-                    failure_kind="system_failure",
-                )
-                payload["audience_execution_assets"] = [
-                    {"argument": item["argument"], "evidence": item["evidence"]["text"],
-                     "assets": [asset.to_dict() for asset in assets]}
-                    for item, assets in contradicted
-                ]
-                return True
-            payload["semantic_ir"] = empty_semantic_ir(
-                status="unsupported",
-                # 사용자에게 나가는 문장은 **모델이 쓴 산문이 아니다**. 실측(2026-08-03) 30/30 이
-                # 모델 산문이었고 그 판정은 틀렸다 — 지어낸 kind 만 23종이었다.
-                message="요청한 조건을 현재 실행 자산으로 표현할 수 없습니다.",
-                failure_kind="unsupported",
-            )
-            payload["semantic_ir"]["unsupported_operations"] = [
-                {
-                    # kind 는 닫힌 코드다. 모델의 자유 텍스트(item["argument"])는 근거로 내린다.
-                    "kind": "unsupported_semantics",
-                    "reason": item["message"],
-                    "evidence": item["evidence"]["text"],
-                }
-                for item in unsupported
-            ]
-        else:
-            # 결핍의 원인을 리터럴 색인과 대조해 계산한다. 이것이 없으면 **시스템이 이미
-            # 결정론으로 추출해 정규화까지 마친 값을 사용자에게 되묻는다**(실측 #3: '10%').
-            causes = canonical_audience_claims.missing_field_cause_records(
-                query, issues, payload.get("literal_bindings") or []
-            )
-            model_omitted = any(
-                record.get("cause") == semantic_plan_module.CAUSE_MODEL_OMISSION
-                for record in causes
-            )
-            payload["semantic_ir"] = empty_semantic_ir(
-                status="needs_clarification",
-                missing_fields=missing or ["audience.requirement"],
-                message=issues[0]["message"],
-                # 모델이 놓친 값을 사용자에게 물으면 안 된다 — 그 결핍은 재방출로 고친다.
-                failure_kind=(
-                    "structurer_failure" if model_omitted
-                    else "user_clarification" if missing else "system_failure"
-                ),
-                missing_field_causes=causes,
-            )
-        return True
-
-    assert expression is not None
-    payload[EVENT_EXPRESSION_KEY] = {
-        "expression": expression.to_dict(),
-        "source": AUDIENCE_REQUIREMENT_KEY,
-        "receipts": _audience_receipts(expression),
-    }
-    payload["semantic_ir"] = empty_semantic_ir(status="resolved")
-    return True
+    return audience_execution.project_resolution_to_plan(payload, resolution)
 
 
 # `_drop_campaign_constraint_requirements` 는 2026-08-02 SemanticPlanV2 이행으로 제거됐다.
@@ -1388,8 +1252,8 @@ def _derive_semantic_ir(
         return
 
     # Legacy ingress adapter — 신규 LLM schema에서는 노출되지 않는다.
-    import semantic_plan as plan_module  # 순환 없음
     import semantic_pipeline  # 순환 없음(파이프라인은 v4 스키마를 모른다)
+    import semantic_plan as plan_module  # 순환 없음
 
     raw_plan = payload.get("semantic_plan")
     if not isinstance(raw_plan, dict):
@@ -1446,9 +1310,61 @@ def attach_campaign_query_plan_v4_identity(
             ),
         }
     )
+    _synthesize_closed_product_complement(enriched, query)
+    _synthesize_closed_recent_active_cart(enriched, query)
+    _normalize_audience_wire_shapes(enriched)
     _normalize_unique_evidence_spans(enriched, query)
     _normalize_audience_evidence(enriched, query)
+    try:
+        import audience_runtime
+
+        catalog = audience_runtime.catalog_snapshot()
+        as_of_promotion = semantic_relation_ownership.promote_snapshot_as_of_expression(
+            enriched, query, catalog
+        )
+        promotions = semantic_relation_ownership.promote_snapshot_transition_expression(
+            enriched, query, catalog
+        )
+        semantic_relation_ownership.normalize_relation_node_spans(enriched, query)
+        semantic_relation_ownership.normalize_relation_node_claims(
+            enriched, query, catalog
+        )
+    except semantic_relation_ownership.RelationOwnershipError as exc:
+        raise CampaignQueryPlanValidationError(str(exc)) from exc
+    if as_of_promotion is not None:
+        plan_decisions.record(
+            enriched,
+            filter_name="semantic_relation_ownership.snapshot_as_of",
+            action=plan_decisions.UPDATE,
+            slot="audience_requirement.expression+semantic_plan.relation_predicate",
+            reason=(
+                "단일 스냅샷 필드 비교와 같은 절의 기준월 리터럴을 "
+                "카탈로그 소유 relation node로 이관"
+            ),
+            value=as_of_promotion,
+        )
+    for promotion in promotions:
+        plan_decisions.record(
+            enriched,
+            filter_name="semantic_relation_ownership.snapshot_transition",
+            action=plan_decisions.UPDATE,
+            slot="audience_requirement.expression+semantic_plan.relation_predicate",
+            reason="월 스냅샷 직전/현재 비교쌍을 단일 relation owner로 이동",
+            value=promotion,
+        )
     _derive_semantic_ir(enriched, query, current_date=current_date)
+    coverage_gaps = semantic_relation_ownership.project_relation_data_coverage(
+        enriched, query, catalog
+    )
+    for gap in coverage_gaps:
+        plan_decisions.record(
+            enriched,
+            filter_name="semantic_relation_ownership.data_coverage",
+            action=plan_decisions.REJECT,
+            slot="semantic_ir",
+            reason="월별 스냅샷 적재 범위로 실행 불가능함을 확정",
+            value=gap,
+        )
     enriched[QUERY_IDENTITY_DIGEST_KEY] = campaign_query_identity_digest(enriched)
     return enriched
 
@@ -1458,9 +1374,24 @@ def build_campaign_query_plan_v4_fallback(
     *,
     current_date: str | None = None,
 ) -> CampaignQueryPlanV4:
+    literal_bindings = extract_literal_bindings(query, current_date=current_date)
+    try:
+        closed_login_absence = (
+            rolling_absence_claims.synthesize_closed_dormant_login_absence(
+                query,
+                literal_bindings,
+                audience_runtime.catalog_snapshot(),
+            )
+        )
+    except audience_runtime.AudienceCatalogLoadError:
+        # The emergency path may only recover from declared catalog assets.
+        # If those assets are unavailable, preserve the ordinary system-failure
+        # fallback instead of guessing or letting fallback construction raise.
+        closed_login_absence = None
+    recovered = closed_login_absence is not None
     payload = attach_campaign_query_plan_v4_identity(
         {
-            "intent": "unknown",
+            "intent": "find_user_segment" if recovered else "unknown",
             "target_user": {},
             "exclude": {"gender": [], "interests": [], "lifecycle": []},
             "campaign_constraints": {
@@ -1478,16 +1409,22 @@ def build_campaign_query_plan_v4_fallback(
             "result_limit": None,
             "semantic_evidence": [],
             AUDIENCE_REQUIREMENT_KEY: {
-                "expression": None,
-                "issues": [{
-                    "code": "validation_mismatch",
-                    "argument": "semantic_interpretation",
-                    "message": "LLM 의미 구조화를 사용할 수 없습니다.",
-                    "evidence": {"text": query, "start": 0, "end": len(query)},
-                }],
+                "expression": (
+                    closed_login_absence.to_dict()
+                    if closed_login_absence is not None
+                    else None
+                ),
+                "issues": [] if recovered else [
+                    {
+                        "code": "validation_mismatch",
+                        "argument": "semantic_interpretation",
+                        "message": "LLM 의미 구조화를 사용할 수 없습니다.",
+                        "evidence": {"text": query, "start": 0, "end": len(query)},
+                    }
+                ],
             },
             "semantic_plan": {"nodes": []},
-            "unresolved": [
+            "unresolved": [] if recovered else [
                 {
                     "path": None,
                     "reason": "llm_structuring_unavailable",
@@ -1498,6 +1435,19 @@ def build_campaign_query_plan_v4_fallback(
         query,
         current_date=current_date,
     )
+    if recovered:
+        plan_decisions.record(
+            payload,
+            filter_name="rolling_absence.closed_structurer_fallback",
+            action=plan_decisions.SET,
+            slot="audience_requirement.expression",
+            reason=(
+                "LLM 구조화가 모두 실패했지만 완결된 휴면 로그인 부재 문형의 "
+                "기간·단위·부정 극성·카탈로그 소유권을 결정론적으로 검증했다"
+            ),
+            value=closed_login_absence.to_dict(),
+        )
+        return CampaignQueryPlanV4(payload)
     # 구조화기 자체를 못 쓴 것은 '조건이 없다'가 아니라 내부 사고다 — 파생 semantic_ir(노드 0개
     # → resolved)이 그것을 성공으로 오인하지 않도록 애플리케이션이 직접 선언한다.
     payload["semantic_ir"] = empty_semantic_ir(
@@ -1617,9 +1567,13 @@ def _validate_semantic_layer(payload: dict[str, Any]) -> None:
         issues = audience_requirement.get("issues")
         if not isinstance(issues, list):
             raise CampaignQueryPlanValidationError("audience_requirement.issues must be an array")
-        normalized_issues = [
-            _validated_audience_issue(item, payload["original_query"]) for item in issues
-        ]
+        try:
+            normalized_issues = [
+                audience_execution.validate_audience_issue(item, payload["original_query"])
+                for item in issues
+            ]
+        except audience_execution.AudienceValidationError as exc:
+            raise CampaignQueryPlanValidationError(str(exc)) from exc
         expression_raw = audience_requirement.get("expression")
         if expression_raw is not None and not isinstance(expression_raw, dict):
             raise CampaignQueryPlanValidationError(
@@ -1655,11 +1609,17 @@ def _validate_semantic_layer(payload: dict[str, Any]) -> None:
             raise CampaignQueryPlanValidationError(
                 "audience issues and executable event_expression cannot coexist"
             )
-        if not normalized_issues and isinstance(expression_raw, dict):
-            if not isinstance(execution, dict) or execution.get("expression") != expression_raw:
-                raise CampaignQueryPlanValidationError(
-                    "event_expression must be the exact application-owned audience projection"
-                )
+        if (
+            not normalized_issues
+            and isinstance(expression_raw, dict)
+            and (
+                not isinstance(execution, dict)
+                or execution.get("expression") != expression_raw
+            )
+        ):
+            raise CampaignQueryPlanValidationError(
+                "event_expression must be the exact application-owned audience projection"
+            )
 
     evidence = payload.get("semantic_evidence")
     if not isinstance(evidence, list):

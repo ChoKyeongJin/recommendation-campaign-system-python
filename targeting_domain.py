@@ -28,9 +28,10 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterable, Mapping, Sequence
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Pattern, Sequence
+from typing import Any
 
 import member_filters_config
 import temporal_semantics
@@ -332,8 +333,17 @@ def _alternation(terms: Sequence[str]) -> str:
 # ── 시간 한정어 마커 템플릿(정규식 원자 = 소스 소유) ────────────────────────────
 # `{values}` = 속성 값 표면형 교체, `{axis}` = 속성 축 표면형 교체.
 # 오른쪽은 **범용** 연산자다 — 낱말별 분기가 아니라 낱말→연산자 사상이다.
+_TRANSITION_DIRECTIONS: dict[str, str] = {
+    "승급": "ascending",
+    "강등": "descending",
+}
 _TEMPORAL_MARKER_TEMPLATES: tuple[tuple[str, str], ...] = (
-    (temporal_semantics.CHANGE_BETWEEN, r"승급|강등"),
+    (temporal_semantics.CHANGE_BETWEEN, r"{directions}"),
+    (
+        temporal_semantics.CHANGE_BETWEEN,
+        r"(?:{values})\s*(?:에서|부터)\s*(?:{values})\s*"
+        r"(?:으로|로)\s*(?:바뀐|바뀌|변하|변경|전환)",
+    ),
     (temporal_semantics.IMMEDIATELY_PRECEDING, r"직전\s*(?:{axis})"),
     (temporal_semantics.CHANGE_BETWEEN, r"(?:{values})[가-힣\s]{{0,6}}?(?:이었|였)다가"),
     (temporal_semantics.THROUGHOUT_INTERVAL, r"내내\s*(?:{values})"),
@@ -369,14 +379,34 @@ def temporal_lexicon() -> temporal_semantics.TemporalLexicon:
     """
     values = _alternation(attribute_value_terms())
     axis = _alternation(attribute_axis_terms())
+    directions = _alternation(tuple(_TRANSITION_DIRECTIONS))
     pairs = [
-        (operator, template.format(values=values, axis=axis))
+        (
+            operator,
+            template.format(values=values, axis=axis, directions=directions),
+        )
         for operator, template in _TEMPORAL_MARKER_TEMPLATES
     ]
     context = f"(?:{axis})|(?:{values})"
     return temporal_semantics.TemporalLexicon.from_pairs(
         pairs, context=context, flags=re.IGNORECASE
     )
+
+
+def transition_direction(value: Any) -> str | None:
+    """Directional transition cue -> ordered-domain direction.
+
+    The cue vocabulary and the temporal detector share the same table above,
+    so recognizing ``승급`` can never drift from its ``CHANGE_BETWEEN`` marker.
+    """
+
+    if not isinstance(value, str):
+        return None
+    compact = re.sub(r"\s+", "", value).casefold()
+    return {
+        re.sub(r"\s+", "", cue).casefold(): direction
+        for cue, direction in _TRANSITION_DIRECTIONS.items()
+    }.get(compact)
 
 
 # ── 자리표시자(= 사용자가 값을 말하지 않은 자리) ────────────────────────────────

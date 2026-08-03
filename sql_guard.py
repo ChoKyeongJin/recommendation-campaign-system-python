@@ -9,7 +9,6 @@ from typing import Any
 import sqlglot
 from sqlglot import exp
 
-
 DEFAULT_SCHEMA_PATH = Path("docs/data/generated/schema_catalog.json")
 DEFAULT_LIMIT = 100
 FORBIDDEN_KEYWORDS = {
@@ -196,6 +195,11 @@ def validate_join_keys(
     엉뚱한 컬럼에 붙인 조인(CART_ID = 다른 문자열 컬럼)을 잡는다 — CART_ID 의 상대는 MEMBER_ID 뿐이다.
     스키마에 타입/관계 정보가 없는 컬럼은 둘 다 판정을 보류한다(오탐으로 정상 SQL 을 막지 않기 위해)."""
     issues: list[dict[str, str]] = []
+    # 검증 통과 여부만 반환하면 후단 의미 검증기가 같은 관계를 다시 추측하게 된다. 실제로
+    # CART_ID=MEMBER_ID 가 카탈로그의 verified FK인데도 LLM이 "일반적으로 CART_ID는 회원키가
+    # 아닐 수 있다"고 뒤집어 정상 SQL을 차단했다. 어떤 등호 관계가 카탈로그로 증명됐는지도
+    # 구조화 영수증으로 내보내 후단이 이 결정을 권위 있게 재사용할 수 있게 한다.
+    verified_relationships: list[dict[str, Any]] = []
     aliases = _alias_map(sql, column_types)
     registry = join_registry or {}
     cast_pairs = getattr(join_registry, "cast_pairs", set()) if join_registry is not None else set()
@@ -240,6 +244,7 @@ def validate_join_keys(
         left_table, right_table = aliases.get(left_alias), aliases.get(right_alias)
         if not left_table or not right_table:
             continue
+        issue_count_before = len(issues)
         left_family = column_types.get(left_table, {}).get(left_column)
         right_family = column_types.get(right_table, {}).get(right_column)
         exact_pair = right_column in registry.get((left_table, left_column, right_table), set())
@@ -290,7 +295,22 @@ def validate_join_keys(
                 f"검증된 관계 그래프에 없는 조인: {left_table.upper()}.{left_column.upper()} = "
                 f"{right_table.upper()}.{right_column.upper()}",
             )
-    return {"is_valid": not issues, "issues": issues}
+        if (exact_pair or found_expected) and len(issues) == issue_count_before:
+            relationship = {
+                "left_table": left_table,
+                "left_column": left_column,
+                "right_table": right_table,
+                "right_column": right_column,
+                "evidence": "schema_catalog.foreign_keys:verified",
+                "cast_approved": bool(approved_cast),
+            }
+            if relationship not in verified_relationships:
+                verified_relationships.append(relationship)
+    return {
+        "is_valid": not issues,
+        "issues": issues,
+        "verified_relationships": verified_relationships,
+    }
 
 
 # 집계 함수(윈도 함수 OVER 절 없이 쓰이면 grain 을 접는다). 괄호 내용을 blank 처리한 뒤에는

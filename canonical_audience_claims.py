@@ -10,14 +10,20 @@ template and recognizes business vocabulary only through the semantic catalog.
 from __future__ import annotations
 
 import hashlib
+import unicodedata
 from collections.abc import Iterable, Mapping, MutableMapping
 from typing import Any
 
+import consent_cardinality
 import event_ir
 import lexicon_patterns
+import open_text_scope_claims
+import ordered_catalog_claims
+import rolling_absence_claims
 import semantic_domain_binding
 import semantic_plan
 import semantic_receipts
+import semantic_relation_ownership
 import semantic_requirements
 
 
@@ -105,6 +111,49 @@ def _evidence_spans(atom: event_ir.Condition) -> list[tuple[int, int]]:
     return spans
 
 
+def _node_at_path(root: Any, path: tuple[Any, ...]) -> Mapping[str, Any] | None:
+    value = root
+    for part in path:
+        addressable = (
+            isinstance(part, int) and isinstance(value, list) and part < len(value)
+        ) or (
+            isinstance(part, str) and isinstance(value, Mapping) and part in value
+        )
+        if not addressable:
+            return None
+        value = value[part]
+    return value if isinstance(value, Mapping) else None
+
+
+def _unscoped_duration_token_matches(
+    binding: Mapping[str, Any], atom: event_ir.Condition, path: tuple[Any, ...]
+) -> bool:
+    """Join a duration to one structurally exact nested window.
+
+    Aggregate evidence is often the comparison phrase (``3회 이상``), while
+    its time window is nested under the same atom and has no evidence field of
+    its own.  Application-owned value, unit, and temporal kind can still make
+    that join deterministic; callers additionally require a unique candidate.
+    """
+    if binding.get("kind") != "duration":
+        return False
+    normalized = binding.get("normalized")
+    if not isinstance(normalized, Mapping):
+        return False
+    node = _node_at_path(atom.to_dict(), path)
+    if not isinstance(node, Mapping) or node.get("type") not in {"rolling", "relative"}:
+        return False
+    expected_type = event_ir.CALENDAR_KIND_WINDOW_TYPES.get(
+        str(normalized.get("temporal_kind") or "")
+    )
+    return bool(
+        expected_type == node.get("type")
+        and event_ir.canonical_unit(normalized.get("semantic_unit"))
+        == event_ir.canonical_unit(node.get("unit"))
+        and normalized.get("value") == node.get("value")
+    )
+
+
 def literal_claim_issues(
     query: str,
     expression: event_ir.Condition,
@@ -131,21 +180,33 @@ def literal_claim_issues(
             continue
         target_kind, target_value = target
         start, end = binding.get("start"), binding.get("end")
-        candidates: list[tuple[int, tuple[Any, ...]]] = []
+        scoped_candidates: list[tuple[int, tuple[Any, ...]]] = []
+        structural_candidates: list[tuple[int, tuple[Any, ...]]] = []
         for atom_index, path, token_kind, token_value in token_rows:
             atom = atoms[atom_index][0]
             evidence_covers = any(
                 evidence_start <= start and end <= evidence_end
                 for evidence_start, evidence_end in _evidence_spans(atom)
             ) if isinstance(start, int) and isinstance(end, int) else False
-            if (
-                target_kind != "date_window"
-                and not evidence_covers
-            ):
+            if token_kind != target_kind or token_value != target_value:
                 continue
-            if token_kind == target_kind and token_value == target_value:
-                candidates.append((atom_index, path))
-        available = next((candidate for candidate in candidates if candidate not in consumed), None)
+            candidate = (atom_index, path)
+            if target_kind == "date_window" or evidence_covers:
+                scoped_candidates.append(candidate)
+            elif _unscoped_duration_token_matches(binding, atom, path):
+                structural_candidates.append(candidate)
+        available = next(
+            (candidate for candidate in scoped_candidates if candidate not in consumed),
+            None,
+        )
+        if available is None:
+            structural_available = [
+                candidate
+                for candidate in structural_candidates
+                if candidate not in consumed
+            ]
+            if len(structural_available) == 1:
+                available = structural_available[0]
         if available is not None:
             consumed.add(available)
             continue
@@ -262,6 +323,162 @@ def _atom_field_names(atom: event_ir.Condition) -> set[str]:
     }
 
 
+def catalog_issue_owned_by_relation_node(
+    issue: Mapping[str, Any],
+    node: Mapping[str, Any],
+    query: str,
+    catalog: Mapping[str, Any],
+) -> bool:
+    """Whether a relation node explicitly claims one catalog-value issue.
+
+    Span overlap alone is insufficient: a grade-history node spanning a whole
+    query must not hide a wrong login-channel or gender expression.  Ownership
+    therefore requires the catalog value domain, node attribute, and canonical
+    value to agree as well as exact source coordinates.
+    """
+    argument = str(issue.get("argument") or "")
+    if issue.get("code") != "validation_mismatch" or not argument.startswith(
+        "catalog_value."
+    ):
+        return False
+    evidence = issue.get("evidence")
+    if not isinstance(evidence, Mapping):
+        return False
+    start, end = evidence.get("start"), evidence.get("end")
+    if not (
+        isinstance(start, int)
+        and not isinstance(start, bool)
+        and isinstance(end, int)
+        and not isinstance(end, bool)
+        and 0 <= start < end <= len(query)
+    ):
+        return False
+
+    node_start, node_end = node.get("source_start"), node.get("source_end")
+    node_text = node.get("source_span")
+    if not (
+        node.get("id")
+        and node.get("type") == "relation_predicate"
+        and node.get("subject")
+        and node.get("relation")
+        and isinstance(node_start, int)
+        and isinstance(node_end, int)
+        and isinstance(node_text, str)
+        and 0 <= node_start < node_end <= len(query)
+        and query[node_start:node_end] == node_text
+        and node_start <= start
+        and end <= node_end
+    ):
+        return False
+
+    fields = catalog.get("fields")
+    fields = fields if isinstance(fields, Mapping) else {}
+    field = fields.get(argument.removeprefix("catalog_value."))
+    domain_id = field.get("value_domain") if isinstance(field, Mapping) else None
+    domains = catalog.get("value_domains")
+    domain = domains.get(domain_id) if isinstance(domains, Mapping) else None
+    values = domain.get("values") if isinstance(domain, Mapping) else None
+    if not isinstance(domain_id, str) or not isinstance(values, Mapping):
+        return False
+    if str(node.get("attribute") or "") not in {domain_id, f"member_{domain_id}"}:
+        return False
+
+    def canonicals(raw: Any) -> set[str]:
+        normalized = "".join(str(raw or "").split()).casefold()
+        if not normalized:
+            return set()
+        matched: set[str] = set()
+        for canonical, declaration in values.items():
+            aliases = declaration.get("aliases") if isinstance(declaration, Mapping) else []
+            terms = [canonical, *(aliases if isinstance(aliases, list) else [])]
+            if normalized in {"".join(str(term).split()).casefold() for term in terms}:
+                matched.add(str(canonical))
+        return matched
+
+    issue_values = canonicals(evidence.get("text"))
+    node_values = set().union(*(
+        canonicals(node.get(key)) for key in ("value", "from_value", "to_value")
+    ))
+    return bool(issue_values & node_values)
+
+
+def _normalized_open_text(value: str) -> str:
+    """Return the conservative normalization allowed for source grounding."""
+    return unicodedata.normalize("NFKC", value).casefold()
+
+
+def _open_text_literal_issues(
+    query: str,
+    expression: event_ir.Condition,
+    fields: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Ground catalog-declared ``contains`` literals in their source evidence.
+
+    Open text has no closed value domain that can correct a hallucinated model
+    value.  The catalog therefore opts a field into this check with
+    ``match_mode=contains``; no product vocabulary is inferred here.  A literal
+    must occur in the comparison's exact source span after only Unicode
+    compatibility normalization and case folding.
+    """
+    contains_fields = {
+        str(field_id)
+        for field_id, declaration in fields.items()
+        if isinstance(declaration, Mapping)
+        and str(declaration.get("match_mode") or "").casefold() == "contains"
+    }
+    if not contains_fields:
+        return []
+
+    issues: list[dict[str, Any]] = []
+    for comparison in _nodes(expression.to_dict(), "comparison"):
+        left, right = comparison.get("left"), comparison.get("right")
+        for field, literal in ((left, right), (right, left)):
+            field_name = _field_name(field)
+            if (
+                field_name not in contains_fields
+                or not isinstance(literal, Mapping)
+                or literal.get("type") != "literal"
+                or not isinstance(literal.get("value"), str)
+            ):
+                continue
+
+            value = str(literal["value"])
+            evidence = comparison.get("evidence")
+            evidence = evidence if isinstance(evidence, Mapping) else {}
+            start, end = evidence.get("start"), evidence.get("end")
+            valid_span = (
+                isinstance(start, int)
+                and not isinstance(start, bool)
+                and isinstance(end, int)
+                and not isinstance(end, bool)
+                and 0 <= start < end <= len(query)
+            )
+            source_span = query[start:end] if valid_span else query
+            evidence_matches = valid_span and evidence.get("text") == source_span
+            grounded = (
+                bool(value)
+                and evidence_matches
+                and _normalized_open_text(value) in _normalized_open_text(source_span)
+            )
+            if grounded:
+                continue
+            issues.append({
+                "code": "validation_mismatch",
+                "argument": f"catalog_literal.{field_name}",
+                "message": (
+                    "부분 문자열 검색 리터럴이 원문의 해당 evidence 구간에 "
+                    "근거하지 않습니다. Semantic Catalog의 match_mode=contains "
+                    "필드는 원문에 명시된 검색어만 사용할 수 있습니다."
+                ),
+                "evidence": {
+                    "text": source_span,
+                    "start": start if valid_span else 0,
+                    "end": end if valid_span else len(query),
+                },
+            })
+    return issues
+
+
 def catalog_claim_issues(
     query: str,
     expression: event_ir.Condition,
@@ -274,16 +491,24 @@ def catalog_claim_issues(
     operation here is generic polarity detection via the shared lexicon.
     """
     atoms = list(event_ir.iter_signed_atoms(expression))
+    binding_rows = list(bindings)
     issues: list[dict[str, Any]] = []
     fields = catalog.get("fields")
     fields = fields if isinstance(fields, Mapping) else {}
     domains = catalog.get("value_domains")
     domains = domains if isinstance(domains, Mapping) else {}
 
+    issues.extend(_open_text_literal_issues(query, expression, fields))
+    issues.extend(
+        open_text_scope_claims.omitted_open_text_scope_issues(
+            query, expression, fields
+        )
+    )
+
     # A unit-bearing source literal must be consumed by an atom that references
     # a field with the same declared unit.  This prevents money from being
     # attached to age/count merely because the numeric value happens to match.
-    for index, binding in enumerate(bindings):
+    for index, binding in enumerate(binding_rows):
         if binding.get("kind") != "money":
             continue
         normalized = binding.get("normalized")
@@ -314,7 +539,8 @@ def catalog_claim_issues(
             })
 
     negative_terms = lexicon_patterns.vocabulary("generic_negation")
-    seen_claims: set[tuple[str, str]] = set()
+    domain_fields: dict[str, list[str]] = {}
+    domain_values: dict[str, Mapping[str, Any]] = {}
     for field_id, field_declaration in fields.items():
         if not isinstance(field_declaration, Mapping):
             continue
@@ -323,46 +549,106 @@ def catalog_claim_issues(
         values = domain.get("values") if isinstance(domain, Mapping) else None
         if not isinstance(values, Mapping):
             continue
+        domain_fields.setdefault(domain_id, []).append(str(field_id))
+        domain_values[domain_id] = values
+
+    claims: list[dict[str, Any]] = []
+    for domain_id, values in domain_values.items():
         for canonical, value_declaration in values.items():
             aliases = (
                 value_declaration.get("aliases")
                 if isinstance(value_declaration, Mapping) else []
             )
             hits = _term_hits(query, [canonical, *(aliases if isinstance(aliases, list) else [])])
-            if not hits or (str(field_id), str(canonical)) in seen_claims:
+            if not hits:
                 continue
-            seen_claims.add((str(field_id), str(canonical)))
-            # Longest alias gives the most useful evidence while still keeping
-            # the comparison value claim singular.
-            start, end = max(hits, key=lambda hit: (hit[1] - hit[0], -hit[0]))
-            local = query[max(0, start - 8):min(len(query), end + 18)].casefold()
-            expected_negative = any(term.casefold() in local for term in negative_terms)
-            matched = False
-            for atom, negated in atoms:
-                evidence = atom.evidence
-                if evidence is None or not (evidence.start <= start and end <= evidence.end):
-                    continue
-                for comparison in _nodes(atom.to_dict(), "comparison"):
-                    left, right = comparison.get("left"), comparison.get("right")
-                    pairs = ((left, right), (right, left))
-                    if any(
-                        _field_name(field) == field_id
-                        and isinstance(literal, Mapping)
-                        and literal.get("type") == "literal"
-                        and literal.get("value") == canonical
-                        for field, literal in pairs
-                    ) and comparison.get("operator") == "=" and negated == expected_negative:
-                        matched = True
-                        break
-                if matched:
+            claims.append({
+                "domain": domain_id,
+                "canonical": str(canonical),
+                "fields": domain_fields[domain_id],
+                "hits": hits,
+            })
+
+    claims = semantic_relation_ownership.reconcile_axis_scoped_claims(
+        query, claims, catalog
+    )
+
+    # A specific cross-domain alias owns an overlapping generic value hit.  For
+    # example, ``가치등급 VIP`` is a worth-grade claim; the shorter ``VIP``
+    # substring must not independently create a current member-grade claim.
+    # Equal spans remain ambiguous and therefore both fail closed.
+    all_hits = [
+        (claim["domain"], start, end)
+        for claim in claims
+        for start, end in claim["hits"]
+    ]
+    for claim in claims:
+        hits = [
+            (start, end)
+            for start, end in claim["hits"]
+            if not any(
+                other_domain != claim["domain"]
+                and other_start < end
+                and start < other_end
+                and other_end - other_start > end - start
+                for other_domain, other_start, other_end in all_hits
+            )
+        ]
+        if not hits:
+            continue
+        # Longest alias gives the most useful evidence while still keeping
+        # the comparison value claim singular.
+        start, end = max(hits, key=lambda hit: (hit[1] - hit[0], -hit[0]))
+        local = query[max(0, start - 8):min(len(query), end + 18)].casefold()
+        expected_negative = any(term.casefold() in local for term in negative_terms)
+        matched = False
+        field_ids = frozenset(claim["fields"])
+        domain = domains.get(claim["domain"])
+        domain = domain if isinstance(domain, Mapping) else {}
+        for atom, negated in atoms:
+            evidence = atom.evidence
+            if evidence is None or not (evidence.start <= start and end <= evidence.end):
+                continue
+            for comparison in _nodes(atom.to_dict(), "comparison"):
+                left, right = comparison.get("left"), comparison.get("right")
+                pairs = ((left, right), (right, left))
+                equality_value_matches = any(
+                    _field_name(field) in field_ids
+                    and isinstance(literal, Mapping)
+                    and literal.get("type") == "literal"
+                    and literal.get("value") == claim["canonical"]
+                    for field, literal in pairs
+                )
+                comparison_operator = comparison.get("operator")
+                equality_matches = (
+                    comparison_operator in {"=", "!="}
+                    and equality_value_matches
+                    and (negated ^ (comparison_operator == "!=")) == expected_negative
+                )
+                ordered_matches = ordered_catalog_claims.ordered_comparison_consumes_claim(
+                    query,
+                    comparison,
+                    binding_rows,
+                    field_ids=field_ids,
+                    canonical=claim["canonical"],
+                    domain=domain,
+                    evidence_start=evidence.start,
+                    evidence_end=evidence.end,
+                    negated=negated,
+                    expected_negative=expected_negative,
+                )
+                if equality_matches or ordered_matches:
+                    matched = True
                     break
-            if not matched:
-                issues.append({
-                    "code": "validation_mismatch",
-                    "argument": f"catalog_value.{field_id}",
-                    "message": "원문의 카탈로그 값과 포함/제외 극성이 canonical expression에 보존되지 않았습니다.",
-                    "evidence": {"text": query[start:end], "start": start, "end": end},
-                })
+            if matched:
+                break
+        if not matched:
+            issues.append({
+                "code": "validation_mismatch",
+                "argument": f"catalog_value.{claim['fields'][0]}",
+                "message": "원문의 카탈로그 값과 포함/제외 극성이 canonical expression에 보존되지 않았습니다.",
+                "evidence": {"text": query[start:end], "start": start, "end": end},
+            })
     return issues
 
 
@@ -650,12 +936,69 @@ def canonical_claim_issues(
     catalog: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     bindings = list(literal_bindings)
-    return [
-        *literal_claim_issues(query, expression, bindings),
+    literal_issues = literal_claim_issues(query, expression, bindings)
+    catalog_issues = (
+        catalog_claim_issues(query, expression, bindings, catalog)
+        if catalog is not None else []
+    )
+    rolling_absence_consumed = (
+        rolling_absence_claims.consumed_literal_binding_indices(
+            query, expression, bindings, catalog
+        )
+        if catalog is not None else frozenset()
+    )
+    if rolling_absence_consumed:
+        consumed = {
+            f"literal_bindings[{index}]" for index in rolling_absence_consumed
+        }
+        literal_issues = [
+            issue for issue in literal_issues
+            if issue.get("argument") not in consumed
+        ]
+    cardinality = (
+        consent_cardinality.validate_consent_cardinality(
+            query, expression, bindings, catalog
+        )
+        if catalog is not None else None
+    )
+    if cardinality is not None and cardinality.equivalent:
+        consumed = {
+            f"literal_bindings[{index}]"
+            for index in cardinality.consumed_binding_indices
+        }
+        consent_arguments = {
+            f"catalog_value.{field_id}"
+            for field_id in cardinality.consent_field_ids
+        }
+        literal_issues = [
+            issue for issue in literal_issues
+            if issue.get("argument") not in consumed
+        ]
+        catalog_issues = [
+            issue for issue in catalog_issues
+            if issue.get("argument") not in consent_arguments
+        ]
+    issues = [
+        *literal_issues,
         *window_kind_issues(query, expression, bindings),
-        *(catalog_claim_issues(query, expression, bindings, catalog) if catalog is not None else []),
+        *catalog_issues,
         *semantic_obligation_issues(query, expression),
     ]
+    if cardinality is not None and not cardinality.equivalent:
+        issues.append({
+            "code": "validation_mismatch",
+            "argument": "consent_cardinality",
+            "message": (
+                "Canonical consent Boolean expression이 원문에서 요청한 채널 수 조건과 "
+                "모든 진리값 조합에서 동치가 아닙니다."
+            ),
+            "evidence": {
+                "text": cardinality.quantifier_text,
+                "start": cardinality.quantifier_start,
+                "end": cardinality.quantifier_end,
+            },
+        })
+    return issues
 
 
 def ranked_obligation_is_compiled(
@@ -667,7 +1010,10 @@ def ranked_obligation_is_compiled(
 
 
 def _issue_is_superseded_by_another_compiler(
-    issue: Mapping[str, Any], plan: Mapping[str, Any], query: str
+    issue: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    query: str,
+    catalog: Mapping[str, Any],
 ) -> bool:
     """다른 컴파일러가 이미 그 구절을 실행 IR 로 만들었으면 LLM 의 미지원 신고는 stale 이다.
 
@@ -682,6 +1028,11 @@ def _issue_is_superseded_by_another_compiler(
     귀속 판정은 **근거 스팬 겹침**으로만 한다 — 어휘 추정으로 걷으면 다른 절의 진짜 결핍까지
     삼킨다(동시구매 sweep 의 교훈).
     """
+    if semantic_relation_ownership.lowered_relation_receipt_owns_issue(
+        issue, plan, query, catalog
+    ):
+        return True
+
     import member_attribute_history  # 지연 import(순환 없음)
 
     evidence = issue.get("evidence")
@@ -690,8 +1041,19 @@ def _issue_is_superseded_by_another_compiler(
     start, end = evidence.get("start"), evidence.get("end")
     if not (isinstance(start, int) and isinstance(end, int) and start <= end):
         return False
-    return member_attribute_history.row_owned_by_compiled_operation(
+    compiled = member_attribute_history.row_owned_by_compiled_operation(
         {"source_span": {"start": start, "end": end}}, plan
+    )
+    if not compiled:
+        return False
+    if not str(issue.get("argument") or "").startswith("catalog_value."):
+        return True
+    raw_plan = plan.get("semantic_plan")
+    nodes = raw_plan.get("nodes") if isinstance(raw_plan, Mapping) else None
+    return any(
+        isinstance(node, Mapping)
+        and catalog_issue_owned_by_relation_node(issue, node, query, catalog)
+        for node in nodes or ()
     )
 
 
@@ -719,12 +1081,22 @@ def refresh_canonical_unresolved(
         )
         bindings = plan.get("literal_bindings")
         if isinstance(bindings, list):
-            issues.extend(canonical_claim_issues(query, expression, bindings, catalog))
+            issues.extend(
+                issue
+                for issue in canonical_claim_issues(
+                    query, expression, bindings, catalog
+                )
+                if not _issue_is_superseded_by_another_compiler(
+                    issue, plan, query, catalog
+                )
+            )
     elif isinstance(requirement, Mapping):
         issues.extend(
             issue for issue in (requirement.get("issues") or [])
             if isinstance(issue, dict)
-            and not _issue_is_superseded_by_another_compiler(issue, plan, query)
+            and not _issue_is_superseded_by_another_compiler(
+                issue, plan, query, catalog
+            )
         )
 
     unresolved = [
@@ -814,6 +1186,7 @@ def discharge_legacy_ranked_obligations(
 __all__ = [
     "canonical_claim_issues",
     "catalog_claim_issues",
+    "catalog_issue_owned_by_relation_node",
     "discharge_legacy_ranked_obligations",
     "literal_claim_issues",
     "ranked_obligation_is_compiled",

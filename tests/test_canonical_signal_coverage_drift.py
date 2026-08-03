@@ -111,6 +111,23 @@ def test_undeclared_family_is_not_covered() -> None:
     assert covered == frozenset()
 
 
+def test_login_channel_comparison_covers_login_without_a_login_source() -> None:
+    """LAST_LOGIN_CHANNEL은 subject 직접 필드라 Source("login") 노드가 생기지 않는다."""
+    expression = event_ir.Not(event_ir.Comparison(
+        operator="=",
+        left=event_ir.FieldRef(name="subject.last_login_channel"),
+        right=event_ir.Literal(value="app_user"),
+    ))
+    plan = {
+        "event_expression": {
+            "expression": expression.to_dict(),
+            "source": "audience_requirement",
+        }
+    }
+
+    assert "login" in canonical_signal_coverage.covered_families(plan, _catalog())
+
+
 def test_coverage_is_family_grained_not_span_grained() -> None:
     """알려진 한계를 이름으로 고정한다.
 

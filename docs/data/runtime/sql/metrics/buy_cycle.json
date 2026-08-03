@@ -17,6 +17,7 @@
       "구매 주기"
     ]
   },
+  "issue_arguments": ["purchase_cycle"],
   "units": {
     "canonical": "day",
     "expressions": ["일"]

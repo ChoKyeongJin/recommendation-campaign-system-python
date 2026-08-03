@@ -658,6 +658,33 @@ def parse_calendar_window(
     return min(scanned, key=lambda item: (item[1], item[2]))[0]  # (구체성 등급, 등장 위치)
 
 
+_RELATIVE_YEAR_ONLY_RE = re.compile(_YEAR_ANCHOR_PATTERN + r"\s*$")
+
+
+def parse_relative_year_window(
+    text: str, *, label_suffix: str = "", today: date | None = None
+) -> dict[str, Any] | None:
+    """'올해'/'작년'처럼 **연도 앵커 하나뿐인** 표현을 그 해 전체 창으로 읽는다(없으면 None).
+
+    :func:`parse_calendar_window` 는 앵커를 창으로 만들지 않는다 — '작년 상반기'에서 앵커는
+    한정자의 연도를 정할 뿐이다. 그런데 앵커만 있는 표현('작년')은 그 해 전체가 유일한 해석이고,
+    그 해석을 호출자가 각자 적으면 상대 연도 어휘(:data:`_RELATIVE_YEAR_OFFSETS`)의 두 번째
+    소유자가 생긴다. 그래서 앵커 → 창 변환도 여기서 한다.
+
+    앵커 **전체**가 표현이어야 한다('작년 매출'은 창이 아니다). 'N년 전'은 받지 않는다 —
+    그것은 창이 아니라 시점이고, 시점의 소유자는 :func:`relative_past_window` 다.
+    """
+    if not isinstance(text, str):
+        return None
+    match = _RELATIVE_YEAR_ONLY_RE.fullmatch(text.strip())
+    if match is None or match.group("rel") is None:
+        return None
+    window = calendar_window_from_parts(_anchor_year(match, today or date.today()))
+    if window is not None and label_suffix:
+        window["label"] = _base_label(window, label_suffix)
+    return window
+
+
 def calendar_window_from_parts(
     year: Any, month: Any = None, quarter: Any = None, half: Any = None
 ) -> dict[str, Any] | None:

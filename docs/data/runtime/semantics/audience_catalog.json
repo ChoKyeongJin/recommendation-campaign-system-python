@@ -18,6 +18,7 @@
     ],
     "gender": {"label": "성별", "source_category": "gender"},
     "grade": {"label": "회원 등급", "source_category": "grade", "ordered": true},
+    "login_channel": {"label": "마지막 로그인 채널", "source_category": "login_channel"},
     "consent_flag": {
       "label": "수신 동의 여부",
       "_comment": "순수 Y/N 플래그다. eq_filters 는 이 컬럼들을 '동의한 회원'이라는 **필터 정체성**으로 소유하지 그 자체가 값 사전은 아니므로, 여기서 인라인 값 도메인을 선언해도 이중 소유가 아니다.",
@@ -38,9 +39,12 @@
       "둘을 구분해야 드리프트 가드가 누락을 잡는다. family id 는 graph_rag 의 신호 서명 키를 그대로 쓴다."
     ],
     "gender": {"fields": ["subject.gender"]},
-    "cart": {"sources": ["cart"]},
-    "login": {"sources": ["login"]},
-    "purchase_absence": {"negated_sources": ["purchase"]},
+    "cart": {"sources": ["cart", "active_cart"]},
+    "login": {"sources": ["login"], "fields": ["subject.last_login_channel"]},
+    "purchase_absence": {
+      "negated_sources": ["purchase"],
+      "note": "회원 전체 구매 부재는 purchase의 부정 Exists로만 전역 커버한다. active_cart의 KEEP_YN='Y'는 해당 카트 라인의 미결제 상태일 뿐이며, 정확한 최근 N일 카트 미결제 문형은 cart_abandonment_claims가 원문과 IR을 재검증해 별도로 소유한다."
+    },
     "campaign_contact": {"sources": ["campaign_contact_success"]},
     "offer_response": {"sources": ["campaign_offer_response", "campaign_response"]},
     "buy_response": {"sources": ["campaign_purchase_response", "campaign_response"]},
@@ -64,6 +68,8 @@
     "purchase_line": {
       "table": "CRM_SL_ORDERDETAILMALL",
       "alias": "OD",
+      "_comment": "상품 자유텍스트는 PRODUCT_ID와 직접 비교하지 않는다. 구매상세 행을 보존하는 LEFT JOIN으로 상품마스터를 한 번 붙이고, 아래 purchase_line.product_* 필드가 이 검증된 별칭만 사용한다.",
+      "from_sql": "CRM_SL_ORDERDETAILMALL {alias} LEFT JOIN CRM_CM_PRODUCT {alias}_PRODUCT ON {alias}.PRODUCT_ID = {alias}_PRODUCT.PRODUCT_ID",
       "subject_key": "MEMBER_NO",
       "event_subject_key": "MEMBER_NO",
       "time_column": "ORDER_DATE",
@@ -101,6 +107,7 @@
       "_comment": "장바구니의 회원키는 CART_ID(로그인ID 문자열)이고 짝은 회원 테이블의 MEMBER_ID 다 — MEMBER_NO(bigint)가 아니다. schema_catalog 주석 'CART_ID = 회원의 MEMBER_ID'를 '이 테이블에 MEMBER_ID 가 있다'로 읽어 event_subject_key 를 MEMBER_ID 로 적었고, 그 컬럼은 존재하지 않아 장바구니 프롬프트 전체가 런타임 sql_guard(column_not_allowed)에서 죽었다(2026-08-03 실측). 실DB 대조: 장바구니 회원 14,797명 중 14,770명이 CART_ID↔MEMBER_ID 로 매칭된다. UPD_DT 는 datetime2 라 저장 포맷도 char8 이 아니라 date 다.",
       "table": "ODS_MALL_OMS_CART",
       "alias": "EC",
+      "from_sql": "ODS_MALL_OMS_CART {alias} LEFT JOIN CRM_CM_PRODUCT {alias}_PRODUCT ON {alias}.PRODUCT_ID = {alias}_PRODUCT.PRODUCT_ID",
       "subject_key": "MEMBER_ID",
       "event_subject_key": "CART_ID",
       "time_column": "UPD_DT",
@@ -109,6 +116,20 @@
       "grain": "event",
       "label": "장바구니 담기",
       "aliases": ["장바구니", "카트", "담기"]
+    },
+    "active_cart": {
+      "_comment": "미결제 장바구니 전용 사건. KEEP_YN='Y' 자체가 아직 결제되지 않고 보관 중인 동일 카트 라인을 뜻하며, 발생 시각은 담은 시점 INS_DT다. 별도 회원 전체 주문 NOT EXISTS를 붙이면 다른 상품 구매자까지 제외하므로 금지한다.",
+      "table": "ODS_MALL_OMS_CART",
+      "alias": "EAC",
+      "subject_key": "MEMBER_ID",
+      "event_subject_key": "CART_ID",
+      "time_column": "INS_DT",
+      "time_format": "date",
+      "binding": "fact_table",
+      "extra_predicates": ["{alias}.KEEP_YN = 'Y'"],
+      "grain": "event",
+      "label": "미결제 장바구니",
+      "aliases": ["보관 중 장바구니", "미결제 장바구니", "장바구니 이탈"]
     },
     "member_month_snapshot": {
       "table": "CRM_MB_MONTHCRMINFO",
@@ -228,6 +249,14 @@
       "label": "회원 등급",
       "aliases": ["등급", "회원 등급"]
     },
+    "subject.last_login_channel": {
+      "source": "subject",
+      "column": "LAST_LOGIN_CHANNEL",
+      "data_type": "string",
+      "value_domain": "login_channel",
+      "label": "마지막 로그인 채널",
+      "aliases": ["로그인 채널", "최근 로그인 채널", "마지막 로그인 채널", "앱 로그인 채널"]
+    },
     "subject.app_push_consent": {
       "source": "subject",
       "column": "APP_PUSH_YN",
@@ -312,8 +341,53 @@
       "column": "PRODUCT_ID",
       "data_type": "string",
       "nullable": false,
-      "label": "구매 상품",
-      "aliases": ["상품", "제품", "품목"]
+      "literal_pattern": "^(?=.{1,20}$)(?=.*[0-9])[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "label": "구매 상품 식별자",
+      "aliases": ["상품 ID", "제품 ID", "상품 코드", "제품 코드"]
+    },
+    "purchase_line.product_name": {
+      "source": "purchase_line",
+      "column": "PRODUCT_NAME",
+      "expression": "{alias}_PRODUCT.PRODUCT_NAME",
+      "data_type": "string",
+      "match_mode": "contains",
+      "search_expressions": ["{alias}_PRODUCT.PRODUCT_NAME"],
+      "allowed_operators": ["=", "!="],
+      "label": "구매 상품명 부분검색",
+      "aliases": ["상품명", "제품명", "품목명"]
+    },
+    "purchase_line.product_category": {
+      "source": "purchase_line",
+      "column": "CATEGORY",
+      "expression": "{alias}_PRODUCT.CATEGORY",
+      "data_type": "string",
+      "match_mode": "contains",
+      "search_expressions": [
+        "{alias}_PRODUCT.CATEGORY",
+        "{alias}_PRODUCT.CATEGORYL_NAME",
+        "{alias}_PRODUCT.CATEGORYM_NAME",
+        "{alias}_PRODUCT.CATEGORYS_NAME"
+      ],
+      "allowed_operators": ["=", "!="],
+      "label": "구매 상품 카테고리명 부분검색",
+      "aliases": ["상품 카테고리", "상품군", "대분류", "중분류", "소분류"]
+    },
+    "purchase_line.product_text": {
+      "source": "purchase_line",
+      "column": "PRODUCT_NAME",
+      "expression": "{alias}_PRODUCT.PRODUCT_NAME",
+      "data_type": "string",
+      "match_mode": "contains",
+      "search_expressions": [
+        "{alias}_PRODUCT.PRODUCT_NAME",
+        "{alias}_PRODUCT.CATEGORY",
+        "{alias}_PRODUCT.CATEGORYL_NAME",
+        "{alias}_PRODUCT.CATEGORYM_NAME",
+        "{alias}_PRODUCT.CATEGORYS_NAME"
+      ],
+      "allowed_operators": ["=", "!="],
+      "label": "구매 상품명 또는 카테고리명 부분검색",
+      "aliases": ["상품", "제품", "품목", "상품 또는 카테고리", "자유 상품어"]
     },
     "purchase_line.quantity": {
       "source": "purchase_line",
@@ -360,8 +434,53 @@
       "source": "cart",
       "column": "PRODUCT_ID",
       "data_type": "string",
-      "label": "장바구니 상품",
-      "aliases": ["장바구니 상품", "담은 상품"]
+      "literal_pattern": "^(?=.{1,20}$)(?=.*[0-9])[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "label": "장바구니 상품 식별자",
+      "aliases": ["장바구니 상품 ID", "담은 상품 ID", "장바구니 상품 코드"]
+    },
+    "cart.product_name": {
+      "source": "cart",
+      "column": "PRODUCT_NAME",
+      "expression": "{alias}_PRODUCT.PRODUCT_NAME",
+      "data_type": "string",
+      "match_mode": "contains",
+      "search_expressions": ["{alias}_PRODUCT.PRODUCT_NAME"],
+      "allowed_operators": ["=", "!="],
+      "label": "장바구니 상품명 부분검색",
+      "aliases": ["장바구니 상품명", "담은 상품명"]
+    },
+    "cart.product_category": {
+      "source": "cart",
+      "column": "CATEGORY",
+      "expression": "{alias}_PRODUCT.CATEGORY",
+      "data_type": "string",
+      "match_mode": "contains",
+      "search_expressions": [
+        "{alias}_PRODUCT.CATEGORY",
+        "{alias}_PRODUCT.CATEGORYL_NAME",
+        "{alias}_PRODUCT.CATEGORYM_NAME",
+        "{alias}_PRODUCT.CATEGORYS_NAME"
+      ],
+      "allowed_operators": ["=", "!="],
+      "label": "장바구니 상품 카테고리명 부분검색",
+      "aliases": ["장바구니 카테고리", "담은 상품군"]
+    },
+    "cart.product_text": {
+      "source": "cart",
+      "column": "PRODUCT_NAME",
+      "expression": "{alias}_PRODUCT.PRODUCT_NAME",
+      "data_type": "string",
+      "match_mode": "contains",
+      "search_expressions": [
+        "{alias}_PRODUCT.PRODUCT_NAME",
+        "{alias}_PRODUCT.CATEGORY",
+        "{alias}_PRODUCT.CATEGORYL_NAME",
+        "{alias}_PRODUCT.CATEGORYM_NAME",
+        "{alias}_PRODUCT.CATEGORYS_NAME"
+      ],
+      "allowed_operators": ["=", "!="],
+      "label": "장바구니 상품명 또는 카테고리명 부분검색",
+      "aliases": ["장바구니 상품", "담은 상품", "카트 상품"]
     },
     "campaign_contact_success.execution_id": {
       "source": "campaign_contact_success",
@@ -401,7 +520,12 @@
       "data_type": "number",
       "label": "캠페인 귀속 구매 금액",
       "unit": "KRW",
-      "aliases": ["캠페인 구매 금액", "반응 구매 금액"]
+      "aliases": [
+        "캠페인 구매 금액",
+        "반응 구매 금액",
+        "구매반응 금액",
+        "구매 반응 금액"
+      ]
     },
     "campaign_purchase_response.count": {
       "source": "campaign_purchase_response",
@@ -577,7 +701,30 @@
       "grain": "subject",
       "allowed_operators": ["=", "!=", ">", ">=", "<", "<="],
       "label": "캠페인 귀속 구매 금액",
-      "aliases": ["캠페인 구매 금액", "캠페인 귀속 구매 금액", "campaign_buy_amount"]
+      "aliases": [
+        "캠페인 구매 금액",
+        "캠페인 귀속 구매 금액",
+        "구매반응 금액",
+        "구매 반응 금액",
+        "campaign_buy_amount"
+      ],
+      "claim_synthesis": {
+        "semantic_plan_scope": "campaign",
+        "semantic_plan_metric": "campaign_buy_amount",
+        "issue_arguments": ["campaign_purchase_amount", "campaign_buy_amount"],
+        "average_per_campaign": {
+          "aggregation": "avg",
+          "grain_terms": ["캠페인별", "캠페인당"],
+          "aggregation_terms": ["평균"],
+          "denominator_field": "campaign_purchase_response.execution_id",
+          "denominator_distinct": true
+        },
+        "sql_asset": {
+          "section": "campaign_response_targets",
+          "aggregate_metric": "campaign_purchase_amount",
+          "response_metric": "purchase_response"
+        }
+      }
     }
   },
   "joins": [],

@@ -3,7 +3,12 @@
   "description": "이벤트 도메인별 의미 차원, 표면어, scope 관계를 함께 소유한다. 파서와 의미 검증기는 이 레지스트리에서 같은 canonical 값을 읽고, 물리 SQL 매핑은 event_compiler의 별도 registry가 소유한다.",
   "domains": {
     "purchase": {
-      "dimensions": ["channel", "order_status", "product_scope", "brand"]
+      "dimensions": ["channel", "order_status", "product_scope", "brand"],
+      "coverage_family": "purchase"
+    },
+    "purchase_line": {
+      "dimensions": ["channel", "order_status", "product_scope", "brand"],
+      "coverage_family": "purchase"
     },
     "login": {
       "dimensions": ["channel"]
@@ -13,6 +18,10 @@
     },
     "cart": {
       "dimensions": ["product_scope", "brand"]
+    },
+    "active_cart": {
+      "dimensions": ["product_scope", "brand"],
+      "coverage_family": "cart"
     }
   },
   "dimensions": {
@@ -46,12 +55,19 @@
     },
     "product_scope": {
       "field_template": "{domain}.product_scope",
+      "field_alias_templates": [
+        "{domain}.product_text",
+        "{domain}.product_name",
+        "{domain}.product_category",
+        "{domain}.product_id"
+      ],
       "unrestricted_aliases": ["전체 상품", "모든 상품"],
       "qualifier_aliases": ["상품", "제품", "품목", "카테고리"],
       "values": {}
     },
     "brand": {
       "field_template": "{domain}.brand",
+      "field_alias_templates": ["{domain}.brand_id"],
       "unrestricted_aliases": ["전체 브랜드", "모든 브랜드"],
       "qualifier_aliases": ["브랜드"],
       "values": {}

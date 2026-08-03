@@ -90,6 +90,18 @@ def aggregate_metrics(path: Path | None = None) -> dict[str, dict[str, Any]]:
     return {metric_id: json.loads(spec) for metric_id, spec in _aggregate_metrics_cached(target)}
 
 
+def campaign_response_targets(path: Path | None = None) -> dict[str, Any]:
+    """캠페인 반응 집계 SQL 자산 선언의 방어적 사본.
+
+    SemanticPlan 생산자는 이 접근자로 물리 집계·대상군·구매반응 조건이 모두
+    존재하는지 확인한다. 설정을 읽지 못하거나 섹션이 불완전하면 빈 dict를 돌려
+    주고, 호출자는 합성을 중단한다. 코드 기본값으로 조용히 메우지 않는다.
+    """
+
+    section = _load(path).get("campaign_response_targets")
+    return section if isinstance(section, dict) else {}
+
+
 @lru_cache(maxsize=4)
 def _eq_filters_cached(path_text: str) -> str:
     entries = _load(Path(path_text)).get("eq_filters")
@@ -175,6 +187,7 @@ __all__ = [
     "aggregate_metrics",
     "behavior_aggregate_equivalents",
     "behavior_spec",
+    "campaign_response_targets",
     "clear_cache",
     "eq_filter_values",
     "eq_filters",

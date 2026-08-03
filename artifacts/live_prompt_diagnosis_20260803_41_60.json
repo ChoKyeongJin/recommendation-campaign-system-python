@@ -1,0 +1,363 @@
+{
+ "summary": {
+  "total": 20,
+  "outcomes": {
+   "sql": 0,
+   "unsupported": 0,
+   "clarification": 10,
+   "failure": 10,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 0,
+   "improvement": 0,
+   "regression": 0,
+   "unknown": 20
+  },
+  "unstable": [],
+  "regressions": [],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 41,
+   "prompt": "최근 캠페인 발송 성공 횟수가 3회 이상이고 구매반응이 없는 회원을 대상으로 재반응 유도 캠페인을 만들어줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 55.4
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 42,
+   "prompt": "최근 90일 동안 총 구매금액이 30만원 이상인 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 69.3
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_structurer_failure). 같은 배치의 '최근 90일 주문만 대상으로 총 구매금액이 30만원 이상인 회원을 찾아줘.'는 동의 표현이라 별도 추가하지 않음"
+  },
+  {
+   "id": 43,
+   "prompt": "최근 90일 동안 구매금액이 30만원 이상인 주문을 한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 71.9
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 44,
+   "prompt": "구매 회원이 100명 이상인 브랜드를 알려줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 58.7
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 45,
+   "prompt": "최근 90일 동안 정확히 세 번 주문한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 51.7
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 46,
+   "prompt": "서로 다른 브랜드를 정확히 두 개 구매한 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 26.8
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 47,
+   "prompt": "이메일, 문자, 앱푸시 중 정확히 두 개 채널에 동의한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 41.0
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 48,
+   "prompt": "장바구니에 서로 다른 상품을 정확히 네 종류 담은 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_verification_failed",
+     "status": "needs_clarification",
+     "elapsed_s": 21.5
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (query_plan_required_conditions_missing)"
+  },
+  {
+   "id": 49,
+   "prompt": "사료, 간식, 장난감을 모두 구매한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "partial_sql:CRM_CM_PRODUCT",
+     "status": "success",
+     "elapsed_s": 47.5
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  },
+  {
+   "id": 50,
+   "prompt": "이메일, 문자, 앱푸시에 모두 동의한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_verification_failed",
+     "status": "needs_clarification",
+     "elapsed_s": 33.8
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  },
+  {
+   "id": 51,
+   "prompt": "최근 3개월 동안 매월 한 번 이상 구매한 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 89.7
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_structurer_failure)"
+  },
+  {
+   "id": 52,
+   "prompt": "지정한 세 개 캠페인에 모두 반응한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 29.5
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 53,
+   "prompt": "앱과 PC 양쪽 채널에서 모두 주문한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 23.5
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 54,
+   "prompt": "앱, 모바일웹, PC 중 하나의 채널로 주문한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 23.3
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 55,
+   "prompt": "사료, 간식, 장난감 중 하나라도 구매한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 33.5
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  },
+  {
+   "id": 56,
+   "prompt": "이메일, 문자, 앱푸시 중 하나 이상에 동의한 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 40.5
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 57,
+   "prompt": "최근 3개 캠페인 중 하나라도 구매 반응을 보인 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_structurer_failure",
+     "status": "needs_clarification",
+     "elapsed_s": 54.9
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 58,
+   "prompt": "서울, 경기, 인천 중 한 지역에 거주하는 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 20.1
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 59,
+   "prompt": "사료를 구매하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_verification_failed",
+     "status": "needs_clarification",
+     "elapsed_s": 26.6
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 60,
+   "prompt": "사료 외 상품을 구매한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 23.1
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  }
+ ]
+}

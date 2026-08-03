@@ -1,0 +1,108 @@
+{
+ "summary": {
+  "total": 5,
+  "outcomes": {
+   "sql": 0,
+   "unsupported": 1,
+   "clarification": 2,
+   "failure": 2,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 0,
+   "improvement": 0,
+   "regression": 0,
+   "unknown": 5
+  },
+  "unstable": [],
+  "regressions": [],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 55,
+   "prompt": "사료, 간식, 장난감 중 하나라도 구매한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_verification_failed",
+     "status": "needs_clarification",
+     "elapsed_s": 86.6
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  },
+  {
+   "id": 56,
+   "prompt": "이메일, 문자, 앱푸시 중 하나 이상에 동의한 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 42.9
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 59,
+   "prompt": "사료를 구매하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 64.2
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 60,
+   "prompt": "사료 외 상품을 구매한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 59.7
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 68,
+   "prompt": "앱으로 로그인하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 7.0
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  }
+ ]
+}

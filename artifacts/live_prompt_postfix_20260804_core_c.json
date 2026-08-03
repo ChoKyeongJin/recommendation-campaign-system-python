@@ -1,0 +1,113 @@
+{
+ "summary": {
+  "total": 5,
+  "outcomes": {
+   "sql": 1,
+   "unsupported": 3,
+   "clarification": 0,
+   "failure": 1,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 1,
+   "improvement": 0,
+   "regression": 4,
+   "unknown": 0
+  },
+  "unstable": [],
+  "regressions": [
+   3,
+   17,
+   21,
+   24
+  ],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 3,
+   "prompt": "누적 구매금액 상위 10% 회원을 추출해줘",
+   "expectation": "sql",
+   "outcome": "unsupported",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 20.0
+    }
+   ],
+   "note": "TOP N PERCENT — LLM 방출 편차 관측됨"
+  },
+  {
+   "id": 13,
+   "prompt": "현재 등급이 VIP인 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 11.2
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 17,
+   "prompt": "최근에 등급이 승급한 회원",
+   "expectation": "sql",
+   "outcome": "unsupported",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 25.7
+    }
+   ],
+   "note": "PREV_* 전이 컬럼"
+  },
+  {
+   "id": 21,
+   "prompt": "6개월 이상 접속하지 않은 휴면 고객",
+   "expectation": "sql",
+   "outcome": "unsupported",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 35.6
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 24,
+   "prompt": "골드 이상 등급인 회원",
+   "expectation": "sql",
+   "outcome": "failure",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 19.6
+    }
+   ],
+   "note": "등급 서열(rank) 비교"
+  }
+ ]
+}

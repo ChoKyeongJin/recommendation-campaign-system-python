@@ -1,0 +1,46 @@
+{
+ "summary": {
+  "total": 1,
+  "outcomes": {
+   "sql": 1,
+   "unsupported": 0,
+   "clarification": 0,
+   "failure": 0,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 1,
+   "improvement": 0,
+   "regression": 0,
+   "unknown": 0
+  },
+  "unstable": [],
+  "regressions": [],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 21,
+   "prompt": "6개월 이상 접속하지 않은 휴면 고객",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 21.8
+    },
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 19.6
+    }
+   ],
+   "note": ""
+  }
+ ]
+}

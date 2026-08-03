@@ -41,7 +41,7 @@ DEFAULT_LEXICON_PATH = Path(
 )
 
 # ── 코드 폴백(파일 부재/파손 시). 파일과 같은 스키마이며, 이관 시점의 값을 그대로 옮긴 것이다. ──
-_CODE_FALLBACK: dict[str, Any] = {
+_CODE_FALLBACK: dict[str, dict[str, Any]] = {
     "vocabularies": {
         # 논리 접속: AND 계열과 OR 계열. 절 경계 판정과 논리식 파싱이 공유한다.
         "and_connective": ["이면서", "면서", "이고", "이며", "그리고", "동시에"],
@@ -209,14 +209,14 @@ def _load(path_text: str) -> dict[str, Any]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return {}
-    return payload if isinstance(payload, dict) else {}
+    return dict(payload) if isinstance(payload, dict) else {}
 
 
 def _section(name: str) -> dict[str, Any]:
     """파일의 섹션(어휘/패턴). 없거나 비정형이면 코드 폴백."""
     section = _load(str(DEFAULT_LEXICON_PATH)).get(name)
     if isinstance(section, dict) and section:
-        return section
+        return dict(section)
     return _CODE_FALLBACK[name]
 
 
@@ -285,14 +285,14 @@ class LexiconPattern:
     def terms(self) -> tuple[str, ...]:
         return terms(self._name)
 
-    def search(self, *args: Any, **kwargs: Any): return self.compiled.search(*args, **kwargs)
-    def match(self, *args: Any, **kwargs: Any): return self.compiled.match(*args, **kwargs)
-    def fullmatch(self, *args: Any, **kwargs: Any): return self.compiled.fullmatch(*args, **kwargs)
-    def finditer(self, *args: Any, **kwargs: Any): return self.compiled.finditer(*args, **kwargs)
-    def findall(self, *args: Any, **kwargs: Any): return self.compiled.findall(*args, **kwargs)
-    def split(self, *args: Any, **kwargs: Any): return self.compiled.split(*args, **kwargs)
-    def sub(self, *args: Any, **kwargs: Any): return self.compiled.sub(*args, **kwargs)
-    def subn(self, *args: Any, **kwargs: Any): return self.compiled.subn(*args, **kwargs)
+    def search(self, *args: Any, **kwargs: Any) -> Any: return self.compiled.search(*args, **kwargs)
+    def match(self, *args: Any, **kwargs: Any) -> Any: return self.compiled.match(*args, **kwargs)
+    def fullmatch(self, *args: Any, **kwargs: Any) -> Any: return self.compiled.fullmatch(*args, **kwargs)
+    def finditer(self, *args: Any, **kwargs: Any) -> Any: return self.compiled.finditer(*args, **kwargs)
+    def findall(self, *args: Any, **kwargs: Any) -> Any: return self.compiled.findall(*args, **kwargs)
+    def split(self, *args: Any, **kwargs: Any) -> Any: return self.compiled.split(*args, **kwargs)
+    def sub(self, *args: Any, **kwargs: Any) -> Any: return self.compiled.sub(*args, **kwargs)
+    def subn(self, *args: Any, **kwargs: Any) -> Any: return self.compiled.subn(*args, **kwargs)
 
     def __repr__(self) -> str:  # pragma: no cover - 진단용
         return f"LexiconPattern({self._name!r}, terms={len(self.terms)})"
