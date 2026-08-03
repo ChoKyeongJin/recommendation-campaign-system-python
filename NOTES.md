@@ -188,6 +188,24 @@ SQL 출고가 2배가 됐고 미지원이 12건 줄었다. 되묻기 9건 증가
 `live_prompts.json` 77종을 `/target-sql` 로 전수 실행했다. 이 절은 **측정값**, **원인 5종**,
 **플랜**을 담는다. 원인은 전부 재현 실험이나 설정 대조로 확인한 것만 적었다 — 추정은 적지 않았다.
 
+## 0. 추가 통합 — Canonical Capability GraphRAG 진단 계층
+
+77종 실측과 P0~P5를 대체하지 않고, 반복 결함을 찾고 수리 순서를 정하는 **비실행 보조 계층**을
+연결했다. G0는 P4의 legacy↔canonical 차집합과 근거를 재현 가능한 typed graph로 만들고, G1은
+그 graph에서 먼저 찾은 닫힌 ID 집합만 LLM이 재정렬한다. 모델이 새 capability ID를 만들거나
+승인·실행 후보로 올릴 수는 없다.
+
+G3는 `campaign_query_failure_logs`에서 prompt·생성 SQL·결과행을 제외한 기술 필드만 read-only로
+읽어 동일 `(failure_code, subject)` 실패를 집계한다. `/target-sql` 연결은 **최종 실패가 확정된 뒤**
+정확한 allowlist 신호가 있을 때만 `capability_diagnostics`를 덧붙인다. status·failure reason·IR·SQL·
+실행 결과는 바꾸지 않고, 이 경로에서 LLM 검색도 호출하지 않는다. 따라서 이 계층은 P0/R5 관측과
+P1/R3 심볼 수리의 작업 큐를 보강하지만 P1~P5의 결정론 수리 자체를 대신하지 않는다.
+
+운영 중에는 `CAPABILITY_DISCOVERY_LLM_SEARCH_ENABLED=false`로 결정론 graph 검색만 남길 수 있고,
+`CAPABILITY_DISCOVERY_DIAGNOSTICS_ENABLED=false`로 전체 진단 연결을 제거할 수 있다. 어느 경우에도
+기존 canonical 파이프라인과 실패 귀결은 그대로다. 상세 계약과 API는
+`docs/architecture/graphrag_capability_discovery.md`를 권위 문서로 삼는다.
+
 ## 1. 실측 (2026-08-03, `query_parser=auto`)
 
 ```

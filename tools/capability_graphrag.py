@@ -1,8 +1,8 @@
-"""Offline deterministic capability inventory and review-candidate CLI.
+"""Read-only canonical capability discovery and review-candidate CLI.
 
-Despite the historical command name, G0 performs no LLM/vector retrieval and
-has no runtime integration.  It builds a typed local graph from repository
-sources, reports gaps, and emits non-executable review drafts.
+G0 builds the deterministic typed graph and gap inventory.  The optional G1
+``search --llm`` path may only rerank the closed set of graph-retrieved IDs;
+all outputs remain diagnostic-only and non-executable.
 """
 
 from __future__ import annotations
@@ -20,6 +20,10 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from capability_discovery.candidates import write_candidate
+from capability_discovery.llm_search import (
+    CapabilityGraphRAGSearch,
+    build_openai_capability_search,
+)
 from capability_discovery.service import CapabilityDiscoveryService
 
 
@@ -64,6 +68,24 @@ def _parser() -> argparse.ArgumentParser:
     aliases.add_argument("query")
     aliases.add_argument("--approved-only", action="store_true")
     aliases.add_argument("--limit", type=int, default=20)
+
+    search = commands.add_parser(
+        "search", help="graph-first capability search with optional closed-set LLM rerank"
+    )
+    _add_common(search)
+    search.add_argument("query")
+    search.add_argument("--approved-only", action="store_true")
+    search.add_argument("--limit", type=int, default=10)
+    search.add_argument(
+        "--llm",
+        action="store_true",
+        help="rerank only the retrieved graph IDs through the configured OpenAI model",
+    )
+    search.add_argument(
+        "--model",
+        help="LLM reranker model; defaults to CAPABILITY_DISCOVERY_LLM_MODEL, OPENAI_FAST_MODEL, then gpt-4o-mini",
+    )
+    search.add_argument("--timeout", type=float, default=12.0)
 
     candidate = commands.add_parser(
         "candidate", help="generate a review-only candidate"
@@ -207,6 +229,31 @@ def _run(args: argparse.Namespace) -> tuple[Any, int]:
             if result.kind in alias_kinds
         ][: args.limit]
         return {"query": args.query, "results": results, "executable": False}, 0
+
+    if args.command == "search":
+        if args.limit < 1:
+            raise ValueError("limit must be positive")
+        snapshot = service.snapshot()
+        if args.llm:
+            search_service = build_openai_capability_search(
+                snapshot,
+                args.repo_root,
+                model=args.model,
+                timeout=args.timeout,
+            )
+        else:
+            if args.model:
+                raise ValueError("--model requires --llm")
+            search_service = CapabilityGraphRAGSearch(
+                snapshot,
+                repository_root=args.repo_root,
+            )
+        result = search_service.search(
+            args.query,
+            approved_only=args.approved_only,
+            limit=args.limit,
+        )
+        return result.to_dict(), 0
 
     if args.command == "candidate":
         gap_id = _resolve_gap(service, args.gap)

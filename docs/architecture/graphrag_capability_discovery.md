@@ -1,14 +1,16 @@
-# Canonical Capability Discovery: offline G0 architecture
+# Canonical Capability Discovery: G0 inventory, G1 search, and G3 diagnostics
 
 ## Status and scope
 
-This document defines the first, offline capability-discovery layer. It measures differences between the project's approved canonical declarations, legacy assets, and observed implementation evidence. It produces reproducible gap reports and review candidates; it does not participate in request parsing, planning, SQL compilation, or execution.
+This document defines the canonical capability-discovery layer now implemented in three bounded stages. G0 measures differences between approved canonical declarations, legacy assets, and observed implementation evidence. G1 searches that typed graph and may use an LLM only to rerank a closed set of retrieved IDs. G3 aggregates technical failure evidence and appends a diagnostic annotation after a runtime outcome is final. None of the stages participates in request parsing, planning, SQL compilation, SQL selection, or execution.
 
-The G0 layer has three hard boundaries:
+The layer has five hard boundaries:
 
 1. Existing runtime registries remain the only sources of truth (SSOT).
 2. `ApprovedCapabilityProjection` is a read-only view derived from those registries, never a second writable registry.
-3. Discovery facts, gaps, and candidates are non-executable evidence. Runtime code must not read them to decide support, routing, lowering, SQL, or failure outcomes.
+3. Discovery facts, gaps, search hits, and candidates are non-executable evidence. Runtime code must not read them to decide support, routing, lowering, SQL, or failure outcomes.
+4. The LLM can reorder every ID in a graph-retrieved closed set exactly once. It cannot invent an ID, approve an observation, generate a promotion candidate, or make a runtime candidate.
+5. Runtime diagnostics are additive and fail-open. They run only after the final failure status and SQL/execution correction, preserve the original outcome, and disappear cleanly when disabled or unavailable.
 
 The current authorities and implementation evidence projected by G0 are:
 
@@ -31,17 +33,53 @@ approved registries + implementation evidence + P4 inventory
                          |
                          v
         isolated discovery MultiDiGraph / GraphStore
-                         |
-                         v
-             gap report -> review candidate
+              |                         |
+              v                         v
+   gap report -> review draft    lexical seeds + one-hop graph facts
+                                          |
+                          bounded evidence chunks + optional closed-set rerank
+                                          |
+                                          v
+                              diagnostic-only search result
 
-runtime request -> canonical pipeline -> compiler/builder
-        (never reads the discovery graph or its reports)
+runtime request -> canonical pipeline -> compiler/builder -> final outcome
+                                                             |
+                                      allowlisted exact failure signal only
+                                                             |
+                           technical failure history + exact alias evidence
+                                                             |
+                                                             v
+                                         additive capability_diagnostics
 ```
+
+The canonical pipeline never reads a discovery result. `api.py` is the sole composition and presentation boundary allowed to import this package: it initializes optional services and appends an annotation after the outcome is fixed. Planner, routing, lowering, compiler, and SQL modules remain dependency-barred by tests.
 
 Facts retain their authority class. An approved declaration, an observed code path, a legacy mapping, a test assertion, and an inference are different evidence even when they mention the same capability.
 
 Namespaced, typed identifiers prevent similarly named concepts from collapsing. Semantic-plan node types, query-plan slots, condition kinds, compiler lanes, builders, precedence rules, exclusive routes, grains, time and coverage policies, and validation gates remain distinct entity kinds. Symbol aliases, surface terms, operator aliases, and value aliases are also distinct.
+
+## G1 graph-first search and bounded LLM reranking
+
+`CapabilityGraphRAGSearch` always retrieves before it calls a model:
+
+1. Normalize and tokenize the query.
+2. Select deterministic lexical seed nodes from IDs, kinds, and bounded attributes.
+3. Expand at most one graph hop within fixed node and edge limits.
+4. Build bounded evidence chunks only from repository-relative, hash-matching text sources already referenced by those nodes or edges.
+5. Optionally ask one strict tool call to return every retrieved `candidate_id` exactly once in relevance order.
+6. Reject missing, duplicate, unknown, or extra IDs and fall back to the deterministic order on malformed output, timeout, SDK error, or provider absence.
+
+This is GraphRAG in the narrow retrieval-augmented sense: graph facts determine the candidate universe and source excerpts ground relevance ranking. It does not use embeddings or a vector database. Secret-like paths, traversal paths, binary files, oversized files, and stale content hashes are excluded from the evidence corpus. Runtime serialization removes excerpt text and node attributes while retaining bounded evidence references.
+
+Approved projection hits and discovery-only observations remain separate result lists. `candidate_generated=false`, `diagnostic_only=true`, and `executable=false` are enforced on the result and every nested hit. An observed or model-ranked item cannot become approved or executable through search.
+
+When LLM search is enabled, model resolution is:
+
+1. `CAPABILITY_DISCOVERY_LLM_MODEL`
+2. `OPENAI_FAST_MODEL`
+3. `gpt-4o-mini`
+
+The model is used as a latency-sensitive reranker, not as the project's reasoning or structuring model. The adapter forces a strict function schema, disables SDK retries, owns a single timeout budget, and uses deterministic graph order as its fallback.
 
 ## Reuse of the deterministic P4 inventory
 
@@ -113,6 +151,55 @@ Machine-readable contracts:
 - `docs/data/schemas/capability_gap_report.schema.json`
 - `docs/data/schemas/capability_candidate.schema.json`
 
+## G3 technical failure-log aggregation
+
+`PsycopgFailureLogProvider` opens a read-only PostgreSQL transaction and selects only these technical fields from `campaign_query_failure_logs`:
+
+- `failure_log_id`, `failure_reason`, and `created_at`;
+- `query_plan`, `missing_input_conditions`, and `clarification_questions`;
+- `stage_log` and `context_metadata`.
+
+The provider does not select the raw prompt, generated SQL, error detail, selected candidate, database result rows, or campaign output. It defensively projects the returned mappings a second time at the trust boundary. Read errors are sanitized and the optional diagnostic path fails open.
+
+The ingestor accepts only the closed failure-code allowlist maintained by `runtime_diagnostics.py`. It extracts exact structured subjects, groups equivalent `(failure_code, subject)` records, and reports repeated failures only when frequency is at least two. Review priority is deterministic:
+
+```text
+frequency × user-impact weight × evidence completeness × legacy-asset availability
+```
+
+This score prioritizes investigation; it does not change runtime support. Prompt text, free-form model prose, and generated SQL are neither matching keys nor evidence returned by the aggregation API.
+
+## G3 final-failure runtime annotation
+
+The `/target-sql` seam runs after SQL generation, optional database execution, and final status correction. It does nothing for success, non-allowlisted failures, failures without an exact structured subject, disabled diagnostics, or an unavailable adapter. For an eligible failure it may append `capability_diagnostics` to the response and to the failure row's detached `context_metadata`.
+
+Alias suggestions are stricter than general G1 search. They are produced only for exact `catalog_symbol_unresolved` signals from the deterministic approved/observed alias snapshot. The `/target-sql` path does not call the LLM search service. Other allowlisted failures may receive repeated-failure review evidence but never alias candidates.
+
+The annotation code snapshots protected response fields before invoking the adapter. It restores and discards the annotation if an injected adapter attempts to change status, failure reason, error code, SQL, blocked SQL, selected route, semantic IR, capability verdict, or clarification questions. Exceptions are logged by class name and never replace the original response.
+
+## Read-only runtime API
+
+The following router is mounted under `/api/capability-discovery`; all routes are GET-only:
+
+- `/status` — optional subsystem and snapshot readiness;
+- `/search` — graph-first search with approved and discovery results kept separate;
+- `/failures` — allowlisted technical failure aggregation;
+- `/diagnostics` — exact failure-code and received-symbol lookup.
+
+Unavailable and disabled states return HTTP 200 diagnostic envelopes instead of affecting the campaign API's availability. Every envelope is recursively sanitized so any accidental `executable` or `runtime_candidate` field is forced to `false`.
+
+Runtime configuration:
+
+| Variable | Default | Effect |
+|---|---:|---|
+| `CAPABILITY_DISCOVERY_DIAGNOSTICS_ENABLED` | `true` | Master switch for service initialization, diagnostic routes, and `/target-sql` annotation |
+| `CAPABILITY_DISCOVERY_LLM_SEARCH_ENABLED` | `true` | Enables the LLM reranker only when `OPENAI_API_KEY` is also present; otherwise search stays deterministic |
+| `CAPABILITY_DISCOVERY_LLM_MODEL` | unset | Capability reranker override; falls back to `OPENAI_FAST_MODEL`, then `gpt-4o-mini` |
+| `CAPABILITY_DISCOVERY_LLM_TIMEOUT_SECONDS` | `12.0` | One-shot runtime rerank timeout before deterministic fallback |
+| `CAPABILITY_DISCOVERY_BUILD_TIMEOUT_SECONDS` | `3.0` | Optional snapshot/adapter startup budget |
+
+The discovery startup block is isolated from the existing graph startup. Any snapshot, database, SDK, credential, or provider failure leaves the main graph health and `/target-sql` behavior unchanged.
+
 ## CLI
 
 ```bash
@@ -125,28 +212,33 @@ python -m tools.capability_graphrag index --repo-root . --output reports/capabil
 python -m tools.capability_graphrag gaps --repo-root . --format json
 python -m tools.capability_graphrag explain canonical:metric:member_grade --repo-root .
 python -m tools.capability_graphrag aliases grade --repo-root . --approved-only
+
+# deterministic graph-first search (default)
+python -m tools.capability_graphrag search grade --repo-root . --format json
+
+# explicit closed-set LLM rerank; provider failure falls back deterministically
+python -m tools.capability_graphrag search grade --repo-root . --llm --format json
+
 python -m tools.capability_graphrag candidate active_state --repo-root .
 python -m tools.capability_graphrag verify --repo-root . --fail-on-conflict
 
 python -m tools.capability_review show path/to/candidate.json --format json
 python -m tools.capability_review validate path/to/candidate.json --format json
-# always blocked in G0
+# promotion remains blocked
 python -m tools.capability_review promote path/to/candidate.json --format json
 ```
 
 `verify` fails only for approved/deterministic projection errors (or deterministic conflicts when requested). Newly observed legacy gaps remain warnings and do not change runtime support.
 
-## Optional GraphRAG decision
+The CLI never enables the LLM implicitly: `search --llm` is required. `--model` is rejected unless `--llm` is present. Full CLI output may include local bounded excerpts for review; the runtime API uses the sanitized serialization without excerpt text or node attributes.
 
-G0 uses no embeddings, vector database, or LLM. Deterministic inventory, typed traversal, exact search, and provenance are measured first. GraphRAG remains an optional later search layer over a separate discovery corpus.
+## Rollout, rollback, and evaluation
 
-A GraphRAG phase requires an explicit go/no-go review showing:
+Deployment can be reduced in two independent steps without code or schema changes:
 
-- representative questions deterministic traversal cannot answer adequately;
-- a versioned evaluation set and measurable relevance/recall improvement;
-- reproducible answers retaining source-level provenance;
-- no runtime parsing, planning, compilation, or execution dependency;
-- a separate index/collection and deletion/re-index lifecycle;
-- acceptable cost and absence behavior.
+1. Set `CAPABILITY_DISCOVERY_LLM_SEARCH_ENABLED=false` to retain deterministic graph search and all G0/G3 functions without provider calls.
+2. Set `CAPABILITY_DISCOVERY_DIAGNOSTICS_ENABLED=false` to disable initialization, search/failure diagnostics, and `/target-sql` annotations. Core parsing, support decisions, compilation, SQL, execution, and existing failure logging continue unchanged.
 
-Without that evidence, the MultiDiGraph and deterministic report are the complete implementation.
+There is no discovery-owned database schema or runtime registry to roll back. Persisted annotations are non-authoritative historical metadata and may be ignored by older code.
+
+Before expanding beyond closed-set reranking, a go/no-go review must still show a versioned evaluation set, measurable relevance or recall improvement over deterministic traversal, reproducible source provenance, acceptable latency and cost, deletion/re-index lifecycle, and continued absence from runtime decision paths. Embeddings, a vector store, model-generated capability IDs, and automatic promotion remain out of scope.

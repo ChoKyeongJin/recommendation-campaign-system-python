@@ -54,17 +54,36 @@ def _imports(path: Path) -> set[str]:
     return imported
 
 
-def test_runtime_pipeline_does_not_depend_on_discovery() -> None:
+def test_runtime_decision_pipeline_does_not_depend_on_discovery() -> None:
     runtime_files = list(ROOT.glob("*.py"))
     for directory in ("query_structurer", "graph", "rag"):
         runtime_files.extend((ROOT / directory).rglob("*.py"))
 
+    # ``api.py`` is the single composition/presentation boundary allowed to
+    # append non-executable diagnostics after the runtime outcome is final.
+    # Planning, routing, lowering, compilation, and SQL modules remain barred
+    # from importing discovery.
+    presentation_boundary = ROOT / "api.py"
     offenders = [
         str(path.relative_to(ROOT))
         for path in runtime_files
-        if "capability_discovery" in _imports(path)
+        if path != presentation_boundary
+        and "capability_discovery" in _imports(path)
     ]
     assert offenders == []
+
+
+def test_api_is_the_only_runtime_file_with_a_discovery_dependency() -> None:
+    runtime_files = list(ROOT.glob("*.py"))
+    for directory in ("query_structurer", "graph", "rag"):
+        runtime_files.extend((ROOT / directory).rglob("*.py"))
+
+    users = sorted(
+        str(path.relative_to(ROOT))
+        for path in runtime_files
+        if "capability_discovery" in _imports(path)
+    )
+    assert users == ["api.py"]
 
 
 def test_discovery_does_not_import_runtime_planner_or_sql_modules() -> None:

@@ -16,6 +16,16 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+from capability_discovery.runtime_api import (
+    as_diagnostic_payload,
+    diagnostics_enabled as capability_diagnostics_enabled,
+    router as capability_discovery_router,
+)
+from capability_discovery.runtime_diagnostics import (
+    OriginalRuntimeOutcome,
+    extract_failure_signal,
+)
+
 from graph_rag import (
     DEFAULT_COLLECTION,
     DEFAULT_DATA_PATH,
@@ -107,6 +117,26 @@ def _env_int(name: str, default: int) -> int:
         return int(value)
     except ValueError:
         return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _env_flag(name: str, default: bool = True) -> bool:
+    fallback = "true" if default else "false"
+    return os.getenv(name, fallback).strip().casefold() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
 
 
 class MessageGenerationOptions(BaseModel):
@@ -278,6 +308,7 @@ app = FastAPI(
     version="1.0.0",
     default_response_class=Utf8JSONResponse,
 )
+app.include_router(capability_discovery_router)
 
 
 @app.middleware("http")
@@ -317,6 +348,77 @@ def load_graph() -> None:
         app.state.graph = None
         app.state.data_path = data_path
         app.state.startup_error = f"{exc.__class__.__name__}: {exc}"
+    _initialize_capability_discovery()
+
+
+def _initialize_capability_discovery() -> None:
+    """Compose optional discovery services without affecting graph readiness."""
+
+    app.state.capability_diagnostic_adapter = None
+    app.state.capability_failure_log_provider = None
+    app.state.capability_search_service = None
+    app.state.capability_search_mode = "disabled"
+    app.state.capability_discovery_error = None
+    if not capability_diagnostics_enabled():
+        return
+
+    try:
+        from capability_discovery.llm_search import (
+            CapabilityGraphRAGSearch,
+            build_openai_capability_search,
+        )
+        from capability_discovery.postgres_failure_logs import (
+            PsycopgFailureLogProvider,
+        )
+        from capability_discovery.runtime_diagnostics import (
+            RuntimeDiagnosticAdapter,
+        )
+        from capability_discovery.service import CapabilityDiscoveryService
+
+        repository_root = Path(__file__).resolve().parent
+        discovery = CapabilityDiscoveryService(repository_root)
+        snapshot = discovery.snapshot()
+        provider = PsycopgFailureLogProvider(_metadata_conninfo())
+        adapter = RuntimeDiagnosticAdapter(
+            snapshot=snapshot,
+            failure_log_provider=provider,
+            build_timeout_seconds=max(
+                0.05,
+                _env_float("CAPABILITY_DISCOVERY_BUILD_TIMEOUT_SECONDS", 3.0),
+            ),
+        )
+        adapter.initialize()
+
+        llm_enabled = _env_flag(
+            "CAPABILITY_DISCOVERY_LLM_SEARCH_ENABLED", True
+        ) and bool(os.getenv("OPENAI_API_KEY", "").strip())
+        if llm_enabled:
+            search = build_openai_capability_search(
+                snapshot,
+                repository_root,
+                timeout=max(
+                    0.1,
+                    _env_float("CAPABILITY_DISCOVERY_LLM_TIMEOUT_SECONDS", 12.0),
+                ),
+            )
+            search_mode = "graph_llm_rerank"
+        else:
+            search = CapabilityGraphRAGSearch(
+                snapshot,
+                repository_root=repository_root,
+            )
+            search_mode = "graph_deterministic"
+
+        app.state.capability_failure_log_provider = provider
+        app.state.capability_diagnostic_adapter = adapter
+        app.state.capability_search_service = search
+        app.state.capability_search_mode = search_mode
+    except Exception as exc:  # noqa: BLE001 - optional subsystem is fail-open
+        app.state.capability_discovery_error = exc.__class__.__name__
+        api_logger.warning(
+            "capability_discovery_startup_unavailable error=%s",
+            exc.__class__.__name__,
+        )
 
 
 @app.get("/health")
@@ -471,6 +573,7 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
             "confidence_report": render_confidence_report(low_confidence),
             "confidence_markdown": render_confidence_markdown(low_confidence),
         })
+    _attach_capability_failure_diagnostics(result, api_response)
     failure_log = _save_target_sql_failure_log(request, result, api_response, database_execution)
     if failure_log:
         api_response["failure_log"] = failure_log
@@ -3296,6 +3399,69 @@ def _save_target_sql_failure_log(
     return _save_query_failure_log(failure)
 
 
+def _attach_capability_failure_diagnostics(
+    result: dict[str, Any],
+    api_response: dict[str, Any],
+) -> None:
+    """Attach a read-only annotation after the runtime outcome is final.
+
+    This seam intentionally runs after SQL generation/execution status correction.
+    It reads the structured plan and response only, never the raw prompt, and has
+    no path back into planning, semantic IR, SQL selection, or execution.
+    """
+
+    if not capability_diagnostics_enabled() or api_response.get("status") == "success":
+        return
+    adapter = getattr(app.state, "capability_diagnostic_adapter", None)
+    if adapter is None:
+        return
+    signal = extract_failure_signal(result.get("query_plan"), api_response)
+    if signal is None:
+        return
+
+    protected_before = {
+        key: api_response.get(key)
+        for key in (
+            "status",
+            "failure_reason",
+            "error_code",
+            "sql",
+            "blocked_sql",
+            "selected_route",
+            "semantic_ir",
+            "capability_check",
+            "clarification_questions",
+        )
+    }
+    try:
+        diagnostic = adapter.diagnose_failure(
+            signal.failure_code,
+            signal.received_symbol,
+            original_outcome=OriginalRuntimeOutcome(
+                failure_code=signal.failure_code,
+                status=api_response.get("status"),
+                sql=api_response.get("sql"),
+            ),
+            limit=5,
+        )
+        payload = as_diagnostic_payload(diagnostic)
+        payload.setdefault("failure_signal", signal.to_dict())
+    except Exception as exc:  # noqa: BLE001 - diagnostics never affect runtime
+        api_logger.warning(
+            "capability_failure_diagnostics_unavailable error=%s",
+            exc.__class__.__name__,
+        )
+        return
+
+    # Defensive invariant: an injected adapter cannot rewrite the final outcome.
+    if any(api_response.get(key) != value for key, value in protected_before.items()):
+        api_logger.error("capability_failure_diagnostics_outcome_mutation_blocked")
+        for key, value in protected_before.items():
+            api_response[key] = value
+        return
+    api_response["capability_diagnostics"] = payload
+
+
 def _target_sql_failure_payload(
     request: TargetSqlRequest,
     result: dict[str, Any],
@@ -3344,10 +3510,21 @@ def _target_sql_failure_payload(
         "clarification_questions": api_response.get("clarification_questions", []),
         "selected_candidate": sql_result.get("selected"),
         "stage_log": result.get("stage_log", []),
-        "context_metadata": result.get("context_assembly", {}).get("metadata", {}),
+        "context_metadata": _capability_failure_context_metadata(result, api_response),
         "database_execution": _failure_log_database_execution(database_execution),
         "message_generation": _failure_log_message_generation(message_generation),
     }
+
+
+def _capability_failure_context_metadata(
+    result: dict[str, Any], api_response: dict[str, Any]
+) -> dict[str, Any]:
+    metadata = result.get("context_assembly", {}).get("metadata", {})
+    detached = dict(metadata) if isinstance(metadata, dict) else {}
+    annotation = api_response.get("capability_diagnostics")
+    if isinstance(annotation, dict):
+        detached["capability_diagnostics"] = as_diagnostic_payload(annotation)
+    return detached
 
 
 def _failure_log_database_execution(database_execution: dict[str, Any]) -> dict[str, Any]:
