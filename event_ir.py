@@ -282,6 +282,15 @@ class Duration:
 
 TimeWindow = AbsoluteInterval | RollingWindow | RelativeWindow
 
+# 표면 문법이 판정한 기간 표현의 종류(calendar_window 의 ``_source_temporal_kind``) → 그 뜻을
+# 담는 창 타입. 표면어의 소유자는 calendar_window 이고, **어느 IR 창이 그 뜻인가**는 여기가
+# 소유한다. 이 표가 없으면 '최근 30일'(길이)과 '30일 전'(시점)이 같은 리터럴로 보이고, 창 타입은
+# 생산자마다 다시 추측된다 — 경계 표현(N단위 전부터/까지)은 단일 창으로 접히지 않으므로 뺀다.
+CALENDAR_KIND_WINDOW_TYPES: dict[str, str] = {
+    "rolling_duration": "rolling",
+    "past_point": "relative",
+}
+
 
 def resolve_relative_window(window: RelativeWindow, today: date | None = None) -> AbsoluteInterval:
     """'N단위 전'이 속한 달력 구간을 기준일로 확정한다(계획 시점 해석 — 기존 관례).

@@ -10,7 +10,7 @@ template and recognizes business vocabulary only through the semantic catalog.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, MutableMapping
 from typing import Any
 
 import event_ir
@@ -518,6 +518,131 @@ def semantic_obligation_issues(
     return issues
 
 
+def _expected_window_types(
+    bindings: Iterable[Mapping[str, Any]],
+) -> dict[tuple[int, str], set[str]]:
+    """앱이 판정한 기간 표현 → 그 뜻을 담는 창 타입 후보. 값·단위가 조인 키다.
+
+    한 (값, 단위)에 종류가 둘 이상 모이면 귀속할 수 없다는 뜻이다 — 호출자가 그때 물러선다.
+    """
+    expected: dict[tuple[int, str], set[str]] = {}
+    for binding in bindings:
+        if not isinstance(binding, Mapping) or binding.get("kind") != "duration":
+            continue
+        normalized = binding.get("normalized")
+        if not isinstance(normalized, Mapping):
+            continue
+        window_type = event_ir.CALENDAR_KIND_WINDOW_TYPES.get(
+            str(normalized.get("temporal_kind") or "")
+        )
+        unit = event_ir.canonical_unit(normalized.get("semantic_unit"))
+        value = normalized.get("value")
+        if window_type is None or unit is None or not isinstance(value, int) or isinstance(value, bool):
+            continue
+        expected.setdefault((value, unit), set()).add(window_type)
+    return expected
+
+
+def _window_nodes(root: Any) -> Iterable[MutableMapping[str, Any]]:
+    for node in _walk(root):
+        if node.get("type") in {"rolling", "relative"} and isinstance(node, MutableMapping):
+            yield node
+
+
+def apply_window_kinds(
+    raw_expression: Any, bindings: Iterable[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """앱이 판정한 종류로 창 타입을 **맞춰 넣고**, 무엇을 고쳤는지 돌려준다(반려보다 먼저).
+
+    종류의 소유자가 애플리케이션이면, 모델이 다른 값을 냈을 때 할 일은 되묻는 것이 아니라 소유한
+    값을 쓰는 것이다 — 값(30)과 단위(days→day)는 이미 그렇게 다룬다. 반려만 두면 요청마다 재시도
+    라운드를 태우고, 예산(3회)을 넘기면 옳은 조건을 만들 수 있는데도 실패로 끝난다(실측
+    2026-08-03: 반려만 켠 상태로 '최근 30일 …' 3회 실행 → 성공 0회, 되묻기·미지원 3회).
+
+    귀속할 수 없는 경우(같은 값·단위의 기간 표현이 종류까지 갈릴 때)에는 고치지 않는다 —
+    그 자리는 :func:`window_kind_issues` 가 지킨다. 고칠 수 있으면 고치고, 고칠 수 없으면 막는다.
+    """
+    expected = _expected_window_types(bindings)
+    corrections: list[dict[str, Any]] = []
+    for node in _window_nodes(raw_expression):
+        unit = event_ir.canonical_unit(node.get("unit"))
+        value = node.get("value")
+        if unit is None or not isinstance(value, int) or isinstance(value, bool):
+            continue
+        wanted = expected.get((value, unit)) or set()
+        if len(wanted) != 1:
+            continue
+        expected_type = next(iter(wanted))
+        was = str(node.get("type"))
+        if was == expected_type:
+            continue
+        node["type"] = expected_type
+        corrections.append(
+            {"value": value, "unit": unit, "from": was, "to": expected_type}
+        )
+    return corrections
+
+
+def window_kind_issues(
+    query: str,
+    expression: event_ir.Condition,
+    bindings: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """창의 **종류**가 애플리케이션 판정과 어긋나면 반려한다(값만 맞는 것으로는 부족하다).
+
+    '최근 30일'과 '30일 전'의 리터럴 원자는 같다 — value=30, unit=day. 종류를 모델이 고르게
+    두면 rolling 이어야 할 창이 relative 로 와서 30일 전 **하루**만 보게 되고, 값 검증·근거
+    구간 검증·SQL 가드가 모두 통과하므로 성공 응답으로 나간다(실측 2026-08-03).
+
+    판정 자체는 표면 문법의 소유자(:mod:`calendar_window`)가 이미 했고 literal binding 에
+    ``temporal_kind`` 로 실려 온다. 여기서는 대조만 한다 — 표면어를 다시 읽지 않는다.
+    """
+    bindings = list(bindings)
+    expected = _expected_window_types(bindings)
+    evidence_by_key: dict[tuple[int, str], dict[str, Any]] = {}
+    for binding in bindings:
+        if not isinstance(binding, Mapping) or binding.get("kind") != "duration":
+            continue
+        normalized = binding.get("normalized")
+        if not isinstance(normalized, Mapping):
+            continue
+        unit = event_ir.canonical_unit(normalized.get("semantic_unit"))
+        value = normalized.get("value")
+        if unit is None or not isinstance(value, int) or isinstance(value, bool):
+            continue
+        evidence_by_key.setdefault((value, unit), _binding_evidence(binding, query))
+
+    issues: list[dict[str, Any]] = []
+    reported: set[tuple[int, str]] = set()
+    for node in _walk(expression.to_dict()):
+        node_type = node.get("type")
+        if node_type not in {"rolling", "relative"}:
+            continue
+        unit = event_ir.canonical_unit(node.get("unit"))
+        value = node.get("value")
+        if unit is None or not isinstance(value, int) or isinstance(value, bool):
+            continue
+        wanted = expected.get((value, unit)) or set()
+        # 종류가 하나로 확정된 경우에만 대조한다. 같은 값의 기간 표현이 둘 이상이고 서로 종류가
+        # 다르면 어느 쪽이 이 창인지 여기서는 알 수 없다 — 억지 귀속은 멀쩡한 플랜을 반려한다.
+        if len(wanted) != 1 or node_type in wanted or (value, unit) in reported:
+            continue
+        reported.add((value, unit))
+        expected_type = next(iter(wanted))
+        issues.append({
+            "code": "validation_mismatch",
+            "argument": "period",
+            "message": (
+                f"기간 표현의 종류는 애플리케이션이 판정합니다: {value}{unit} 창은 "
+                f"'{expected_type}' 인데 expression 은 '{node_type}' 로 왔습니다. "
+                "literal_bindings.normalized.temporal_kind 를 그대로 따르세요."
+            ),
+            "evidence": evidence_by_key.get((value, unit))
+            or {"text": query, "start": 0, "end": len(query)},
+        })
+    return issues
+
+
 def canonical_claim_issues(
     query: str,
     expression: event_ir.Condition,
@@ -527,6 +652,7 @@ def canonical_claim_issues(
     bindings = list(literal_bindings)
     return [
         *literal_claim_issues(query, expression, bindings),
+        *window_kind_issues(query, expression, bindings),
         *(catalog_claim_issues(query, expression, bindings, catalog) if catalog is not None else []),
         *semantic_obligation_issues(query, expression),
     ]

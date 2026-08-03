@@ -13,6 +13,7 @@ import canonical_audience_claims
 import event_compiler
 import event_ir
 import execution_assets
+import plan_decisions
 from aggregation_requirements import aggregation_request_json_schema
 from entity_set import derived_set_ast_error
 import semantic_plan as semantic_plan_module
@@ -1172,6 +1173,24 @@ def _derive_audience_execution(
     raw_expression = requirement.get("expression")
     expression: event_ir.Condition | None = None
     if isinstance(raw_expression, dict):
+        # 창의 **종류**('최근 N일' 길이 / 'N단위 전' 시점)는 표면 문법을 읽은 애플리케이션이
+        # 소유한다. 파싱 전에 소유한 값으로 맞춰 넣는다 — 값·단위를 이미 그렇게 다루고,
+        # 여기서 반려로만 처리하면 옳은 조건을 만들 수 있는 요청이 재시도 예산을 태우고 실패한다.
+        for correction in canonical_audience_claims.apply_window_kinds(
+            raw_expression, payload.get("literal_bindings") or []
+        ):
+            plan_decisions.record(
+                payload,
+                filter_name="canonical_audience_claims.window_kind",
+                action=plan_decisions.UPDATE,
+                slot="audience_requirement.window.type",
+                reason=(
+                    f"기간 표현 종류는 애플리케이션 소유 — {correction['value']}"
+                    f"{correction['unit']} 창을 '{correction['from']}'에서 "
+                    f"'{correction['to']}'로 맞췄다"
+                ),
+                value=correction,
+            )
         try:
             expression = event_ir.condition_from_dict(raw_expression)
             event_ir.validate_evidence(expression)

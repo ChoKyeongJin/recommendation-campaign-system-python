@@ -5,7 +5,7 @@ import re
 from datetime import date, timedelta
 from typing import Any
 
-from calendar_window import parse_calendar_window_spans
+from calendar_window import duration_window_candidates, parse_calendar_window_spans
 from semantic_normalizers import AmountNormalizer, Money, NormalizationError
 
 
@@ -75,6 +75,28 @@ DURATION_UNIT_SEMANTICS = {
     "개월": "months", "달": "months", "년": "years", "년간": "years",
 }
 _NUMBER_RE = re.compile(r"(?<![\d.])\d+(?:\.\d+)?(?![\d.])")
+
+
+def _duration_temporal_kinds(query: str) -> list[tuple[int, int, str]]:
+    """기간 표현의 **의미 종류**(calendar_window 판정)를 원문 좌표계로 옮긴다.
+
+    '최근 30일'과 '30일 전'은 리터럴 원자가 완전히 같다(value=30, unit=days) — 값만 넘기고
+    종류를 창 생산자의 판단에 맡기면 두 뜻이 조용히 뒤바뀐다. 실측(2026-08-03): '최근 30일'이
+    relative 창으로 와서 30일 전 **하루**만 보는 조건이 됐고, 그 응답은 성공으로 나갔다.
+
+    종류를 정하는 표면 문법의 소유자는 :mod:`calendar_window` 다 — 여기서 '최근'/'전' 을 다시
+    읽지 않는다. 그 모듈의 후보 구간은 공백을 제거한 좌표계이므로 원문 좌표로 옮기기만 한다.
+    """
+    original_index = [index for index, char in enumerate(query) if not char.isspace()]
+    compact = "".join(query[index] for index in original_index)
+    spans: list[tuple[int, int, str]] = []
+    for candidate in duration_window_candidates(compact):
+        if not 0 <= candidate.start < candidate.end <= len(original_index):
+            continue
+        spans.append(
+            (original_index[candidate.start], original_index[candidate.end - 1] + 1, candidate.kind)
+        )
+    return spans
 
 
 SEMANTIC_IR_LLM_JSON_SCHEMA: dict[str, Any] = {
@@ -301,17 +323,29 @@ def extract_literal_bindings(
                 },
             )
 
+    temporal_kinds = _duration_temporal_kinds(query)
     for match in DURATION_LITERAL_RE.finditer(query):
         if not _overlaps(match.start(), match.end(), occupied):
             value = _number(match.group("value"))
             unit = match.group("unit")
-            append(
-                "duration",
-                match.start(),
-                match.end(),
-                value,
-                {"value": value, "surface_unit": unit, "semantic_unit": DURATION_UNIT_SEMANTICS[unit]},
+            normalized = {
+                "value": value,
+                "surface_unit": unit,
+                "semantic_unit": DURATION_UNIT_SEMANTICS[unit],
+            }
+            # 종류를 판정하는 단어('최근'/'전')는 이 원자 **밖**에 있다. 원자 구간은 그대로 두고
+            # (다른 소비자가 이 좌표로 소유권을 계산한다) 판정 결과만 실어 보낸다.
+            kind = next(
+                (
+                    kind
+                    for start, end, kind in temporal_kinds
+                    if start < match.end() and match.start() < end
+                ),
+                None,
             )
+            if kind is not None:
+                normalized["temporal_kind"] = kind
+            append("duration", match.start(), match.end(), value, normalized)
 
     comparison_map = dict(_COMPARISON_TERMS)
     for match in _COMPARISON_RE.finditer(query):

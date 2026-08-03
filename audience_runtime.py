@@ -161,6 +161,7 @@ def audience_catalog_guidance(
         '- FieldRef: {"type":"field","name":"<field_id>"}',
         '- Literal: {"type":"literal","value":<application literal value>}',
         '- TimeFilter: {"type":"time_filter","field":<FieldRef>,"window":<TimeWindow>}; 절대 기간은 literal_bindings.normalized.event_ir_window를 그대로 복사하고 rolling/relative 기간은 binding의 값·단위를 사용',
+        '- 창의 **종류도 애플리케이션 소유**다: binding.normalized.temporal_kind 가 "rolling_duration"이면 window.type="rolling"(기준일에서 거슬러 세는 길이), "past_point"이면 window.type="relative"(그 시점이 속한 달력 칸). 표면어를 다시 읽어 고르지 않는다',
         '- Filter: {"type":"filter","relation":<Relation>,"where":<Condition>}',
         '- Aggregate: {"type":"aggregate","function":"sum|count|avg|min|max","relation":<Relation>,"expression":<Scalar|null>,"distinct":false}',
         '- Comparison: {"type":"comparison","operator":"=|!=|>|>=|<|<=","left":<Scalar>,"right":<Scalar>,"evidence":{"text":"...","start":0,"end":1}}',
