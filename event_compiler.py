@@ -66,6 +66,11 @@ class SqlCompileError(Exception):
     """IR 은 유효하지만 이 스키마/방언으로는 표현할 수 없다. 의미를 줄이지 말고 여기서 멈춘다."""
 
 
+# 컴파일 규칙의 버전. **의미가 같아도 SQL 이 달라지는 변경**(경계 렌더·조인 형태·NULL 처리)이 있으면
+# 올린다. 이행 계층의 binding fingerprint 가 이 값을 포함하므로, 올리면 검증된 자산이 자동으로
+# '바인딩 변경'으로 표시되고 cut-over 전에 재검증을 요구한다.
+COMPILER_VERSION = "1.0.0"
+
 CAPABILITY_SUPPORTED = "supported"
 CAPABILITY_UNSUPPORTED = "unsupported"
 CAPABILITY_PARTIALLY_SUPPORTED = "partially_supported"

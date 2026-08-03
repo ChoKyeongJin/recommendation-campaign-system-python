@@ -1,0 +1,58 @@
+{
+  "description": "shadow 검증용 경계 회원 코퍼스. 운영 데이터에는 경계에 놓인 회원이 **없을 수도** 있으므로 경계를 직접 만든다. 날짜는 절대값이 아니라 기준일 상대(offset_days)로 적는다 — 절대값으로 적으면 오늘이 지날 때마다 경계가 이동해 검증이 조용히 무의미해진다.",
+  "member_notes": {
+    "1001": "롤링 경계 정확히 그날(-90) 주문 1건",
+    "1002": "롤링 경계 하루 전(-91) 주문 1건 — 창 밖",
+    "1003": "롤링 경계 다음날(-89) 주문 1건 — 창 안",
+    "1004": "주문 없음 + LAST_LOGIN_DATE NULL(관련 레코드 전무)",
+    "1005": "주문 1건(-10) — 최근 구매자",
+    "1006": "주문 5건(-5~-9) — 조인 증폭·DISTINCT 필요 확인",
+    "1007": "창 안(-30)과 창 밖(-400) 주문 동시 보유 — 긍정·부정 조건 동시 만족 데이터",
+    "1008": "LAST_LOGIN_DATE 가 형식 위반('9999') — 사전식 비교로 컷오프를 통과하는 이상치",
+    "1009": "LAST_LOGIN_DATE 가 컷오프 정확히 그날(-30)",
+    "1010": "절대 구간 경계: 20190301 / 20190331 / 20190401 주문",
+    "1011": "절대 구간 시작 하루 전(20190228) 주문만",
+    "1012": "주문 없음 + 로그인 있음(-1) — 무주문 회원의 집계 임계 평가 차이 확인"
+  },
+  "tables": {
+    "CRM_MB_BASEINFO": {
+      "columns": ["MEMBER_NO", "LAST_LOGIN_DATE", "MEMBER_STATE_CD"],
+      "rows": [
+        {"MEMBER_NO": 1001, "LAST_LOGIN_DATE": {"offset_days": -5}, "MEMBER_STATE_CD": "MEMBER_STATE_CD.NORMAL"},
+        {"MEMBER_NO": 1002, "LAST_LOGIN_DATE": {"offset_days": -200}, "MEMBER_STATE_CD": "MEMBER_STATE_CD.NORMAL"},
+        {"MEMBER_NO": 1003, "LAST_LOGIN_DATE": {"offset_days": -31}, "MEMBER_STATE_CD": "MEMBER_STATE_CD.NORMAL"},
+        {"MEMBER_NO": 1004, "LAST_LOGIN_DATE": null, "MEMBER_STATE_CD": "MEMBER_STATE_CD.NORMAL"},
+        {"MEMBER_NO": 1005, "LAST_LOGIN_DATE": {"offset_days": -3}, "MEMBER_STATE_CD": "MEMBER_STATE_CD.NORMAL"},
+        {"MEMBER_NO": 1006, "LAST_LOGIN_DATE": {"offset_days": -2}, "MEMBER_STATE_CD": "MEMBER_STATE_CD.NORMAL"},
+        {"MEMBER_NO": 1007, "LAST_LOGIN_DATE": {"offset_days": -60}, "MEMBER_STATE_CD": "MEMBER_STATE_CD.NORMAL"},
+        {"MEMBER_NO": 1008, "LAST_LOGIN_DATE": "9999", "MEMBER_STATE_CD": "MEMBER_STATE_CD.NORMAL"},
+        {"MEMBER_NO": 1009, "LAST_LOGIN_DATE": {"offset_days": -30}, "MEMBER_STATE_CD": "MEMBER_STATE_CD.NORMAL"},
+        {"MEMBER_NO": 1010, "LAST_LOGIN_DATE": {"offset_days": -400}, "MEMBER_STATE_CD": "MEMBER_STATE_CD.NORMAL"},
+        {"MEMBER_NO": 1011, "LAST_LOGIN_DATE": {"offset_days": -400}, "MEMBER_STATE_CD": "MEMBER_STATE_CD.NORMAL"},
+        {"MEMBER_NO": 1012, "LAST_LOGIN_DATE": {"offset_days": -1}, "MEMBER_STATE_CD": "MEMBER_STATE_CD.NORMAL"}
+      ]
+    },
+    "CRM_SL_ORDERHEADERMALL": {
+      "columns": ["MEMBER_NO", "ORDER_ID", "ORDER_DATE", "PAYMENT_AMT"],
+      "rows": [
+        {"MEMBER_NO": 1001, "ORDER_ID": "O-1001-1", "ORDER_DATE": {"offset_days": -90}, "PAYMENT_AMT": 10000},
+        {"MEMBER_NO": 1002, "ORDER_ID": "O-1002-1", "ORDER_DATE": {"offset_days": -91}, "PAYMENT_AMT": 10000},
+        {"MEMBER_NO": 1003, "ORDER_ID": "O-1003-1", "ORDER_DATE": {"offset_days": -89}, "PAYMENT_AMT": 10000},
+        {"MEMBER_NO": 1005, "ORDER_ID": "O-1005-1", "ORDER_DATE": {"offset_days": -10}, "PAYMENT_AMT": 50000},
+        {"MEMBER_NO": 1006, "ORDER_ID": "O-1006-1", "ORDER_DATE": {"offset_days": -5}, "PAYMENT_AMT": 1000},
+        {"MEMBER_NO": 1006, "ORDER_ID": "O-1006-2", "ORDER_DATE": {"offset_days": -6}, "PAYMENT_AMT": 1000},
+        {"MEMBER_NO": 1006, "ORDER_ID": "O-1006-3", "ORDER_DATE": {"offset_days": -7}, "PAYMENT_AMT": 1000},
+        {"MEMBER_NO": 1006, "ORDER_ID": "O-1006-4", "ORDER_DATE": {"offset_days": -8}, "PAYMENT_AMT": 1000},
+        {"MEMBER_NO": 1006, "ORDER_ID": "O-1006-5", "ORDER_DATE": {"offset_days": -9}, "PAYMENT_AMT": 1000},
+        {"MEMBER_NO": 1007, "ORDER_ID": "O-1007-1", "ORDER_DATE": {"offset_days": -30}, "PAYMENT_AMT": 20000},
+        {"MEMBER_NO": 1007, "ORDER_ID": "O-1007-2", "ORDER_DATE": {"offset_days": -400}, "PAYMENT_AMT": 20000},
+        {"MEMBER_NO": 1008, "ORDER_ID": "O-1008-1", "ORDER_DATE": {"offset_days": -15}, "PAYMENT_AMT": 3000},
+        {"MEMBER_NO": 1009, "ORDER_ID": "O-1009-1", "ORDER_DATE": {"offset_days": -45}, "PAYMENT_AMT": 3000},
+        {"MEMBER_NO": 1010, "ORDER_ID": "O-1010-1", "ORDER_DATE": "20190301", "PAYMENT_AMT": 7000},
+        {"MEMBER_NO": 1010, "ORDER_ID": "O-1010-2", "ORDER_DATE": "20190331", "PAYMENT_AMT": 7000},
+        {"MEMBER_NO": 1010, "ORDER_ID": "O-1010-3", "ORDER_DATE": "20190401", "PAYMENT_AMT": 7000},
+        {"MEMBER_NO": 1011, "ORDER_ID": "O-1011-1", "ORDER_DATE": "20190228", "PAYMENT_AMT": 7000}
+      ]
+    }
+  }
+}

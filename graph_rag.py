@@ -23,6 +23,7 @@ import networkx as nx
 import aggregate_parser_config
 import aggregate_semantics
 import aggregate_spans
+import audience_authority
 import audience_runtime, canonical_audience_claims, canonical_signal_coverage
 import conceptual_targeting
 import condition_reconciliation
@@ -2395,13 +2396,13 @@ def _plan_event_expression(plan: dict[str, Any]) -> "event_ir.Condition | None":
 
 
 def _has_canonical_audience_authority(plan: Mapping[str, Any]) -> bool:
-    """Whether Event IR, rather than compatibility slots, owns the audience."""
-    payload = plan.get(EVENT_EXPRESSION_KEY)
-    return bool(
-        isinstance(payload, Mapping)
-        and payload.get("source") in {AUDIENCE_REQUIREMENT_KEY, "semantic_plan"}
-        and isinstance(payload.get("expression"), Mapping)
-    )
+    """Event IR 이 오디언스를 소유하는가 — 판정은 :mod:`audience_authority` 가 단독으로 한다.
+
+    여기서 표현의 **존재**를 다시 보지 않는 이유: 이행기에는 변환만 되고 아직 검증되지 않은
+    ``event_expression`` 이 같은 플랜에 저장된다(dual-storage). 존재를 권위로 읽으면 저장이 곧
+    실행이 되어 검증 전 IR 이 사용자 요청을 처리하고, rollback 이 '표현을 지우는 일'로 변질된다.
+    """
+    return audience_authority.executes_event_ir(plan)
 
 
 def _event_expression_covers(plan: dict[str, Any], source: str, quantifier: str) -> bool:
@@ -13739,10 +13740,9 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
             unresolved.append(item)
         return None
 
-    canonical_authority = payload.get("source") in {
-        AUDIENCE_REQUIREMENT_KEY,
-        "semantic_plan",
-    }
+    # 권위 판정은 여기서 다시 하지 않는다 — 같은 사실을 두 곳이 각자 읽으면 한쪽만 고치는 드리프트가
+    # 생기고, 이 이행에서 그 드리프트의 값은 '검증 전 IR 이 회원 조건을 통째로 대체한다'이다.
+    canonical_authority = audience_authority.executes_event_ir(query_plan)
     # Canonical producers encode member attributes in the same Event IR, so
     # reading target_user/exclude here would execute a second audience model.
     # Unmarked stored event payloads keep the old composition behavior during

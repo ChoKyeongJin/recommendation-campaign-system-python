@@ -28,6 +28,25 @@ class SqlDialect:
         """현재 시각 앵커."""
         return "NOW()"
 
+    def clock_functions(self) -> tuple[str, ...]:
+        """이 방언에서 **값이 실행 시점에 정해지는** 시계 함수 어휘.
+
+        롤링 창('최근 90일')은 계획 시점 날짜로 굳히지 않고 이 함수들로 렌더된다. 그래서 두 산출물을
+        대조할 때는 "어디가 시계에 걸려 있는가"를 알아야 한다 — 두 번 실행하면 두 답이 나오는 자리이고,
+        그 차이를 의미 차이로 읽으면 검증이 거짓말을 한다. :meth:`now` 만 알면 자기 렌더러가 만든 것만
+        보이므로, **남이 만든 SQL 에 남아 있는 시계**까지 세도록 어휘 전체를 선언한다.
+        """
+        return ("NOW()", "CURRENT_TIMESTAMP")
+
+    def datetime_anchor(self, iso_timestamp: str) -> str:
+        """기준 시각 하나를 **타입 있는** datetime 식으로 — :meth:`now` 자리에 그대로 끼울 수 있어야 한다.
+
+        따옴표만 씌운 문자열을 쓰면 안 된다: ``DATEADD`` 자리에서는 암묵 변환으로 통하지만
+        ``to_char8(now())`` 자리에서는 문자열을 문자열로 자르는 다른 뜻이 되고, 그 차이는 오류가
+        아니라 **조용히 틀린 컷오프**로 나온다.
+        """
+        return f"CAST({quote_literal(iso_timestamp)} AS TIMESTAMP)"
+
     def date_sub_days(self, anchor: str, days: int) -> str:
         """anchor(날짜/시각 식)에서 days 일 전."""
         return f"({anchor} - INTERVAL '{int(days)} day')"
@@ -110,6 +129,12 @@ class TSqlDialect(SqlDialect):
     def now(self) -> str:
         return "GETDATE()"
 
+    def clock_functions(self) -> tuple[str, ...]:
+        return ("GETDATE()", "GETUTCDATE()", "SYSDATETIME()", "SYSUTCDATETIME()", "CURRENT_TIMESTAMP")
+
+    def datetime_anchor(self, iso_timestamp: str) -> str:
+        return f"CAST({quote_literal(iso_timestamp)} AS DATETIME)"
+
     def date_sub_days(self, anchor: str, days: int) -> str:
         return f"DATEADD(DAY, -{int(days)}, {anchor})"
 
@@ -147,6 +172,12 @@ class MySqlDialect(SqlDialect):
 
     name = "mysql"
 
+    def clock_functions(self) -> tuple[str, ...]:
+        return ("NOW()", "SYSDATE()", "CURRENT_TIMESTAMP", "UTC_TIMESTAMP()")
+
+    def datetime_anchor(self, iso_timestamp: str) -> str:
+        return f"CAST({quote_literal(iso_timestamp)} AS DATETIME)"
+
     def date_sub_days(self, anchor: str, days: int) -> str:
         return f"DATE_SUB({anchor}, INTERVAL {int(days)} DAY)"
 
@@ -170,6 +201,14 @@ class PostgresDialect(SqlDialect):
     """PostgreSQL(로컬 데모 DB). ANSI 기본과 동일 문법이라 이름만 구분한다."""
 
     name = "postgres"
+
+    def clock_functions(self) -> tuple[str, ...]:
+        # clock_timestamp() 는 같은 문장 안에서도 호출마다 다른 값을 낸다 — 문장 하나로 묶는 것만으로는
+        # 앵커가 고정되지 않는 유일한 항목이라 어휘에 반드시 있어야 한다.
+        return ("NOW()", "CURRENT_TIMESTAMP", "LOCALTIMESTAMP", "STATEMENT_TIMESTAMP()", "CLOCK_TIMESTAMP()")
+
+    def datetime_anchor(self, iso_timestamp: str) -> str:
+        return f"TIMESTAMP {quote_literal(iso_timestamp)}"
 
 
 _DIALECTS: dict[str, SqlDialect] = {
@@ -203,6 +242,16 @@ CONNECTION_DIALECTS: dict[str, str] = {
 def dialect_for_connection(connection: str | None, default: str = "ansi") -> SqlDialect:
     """커넥션명으로 방언 어댑터를 얻는다(미등록 커넥션은 default)."""
     return get_dialect(CONNECTION_DIALECTS.get(connection or "", default))
+
+
+def all_clock_functions() -> tuple[str, ...]:
+    """등록된 **모든** 방언의 실행 시점 시계 어휘.
+
+    한 방언의 어휘만으로 SQL 을 훑으면 다른 방언이 렌더한 시계를 '없다'고 세게 된다 — 그 SQL 은
+    실행하면 문법 오류로 죽지만, 그 전에 "고정할 시계가 없다 → 고정 없이 대조해도 된다"는 잘못된
+    판정을 통과한다. 잔여 검사는 아는 어휘 전부로 한다.
+    """
+    return tuple(sorted({token for dialect in _DIALECTS.values() for token in dialect.clock_functions()}))
 
 
 # ── SQL 리터럴 렌더(방언 무관) ────────────────────────────────────────────────────────

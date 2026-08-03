@@ -1,0 +1,149 @@
+{
+  "description": "이행 replay 용 adversarial legacy 오디언스 자산 코퍼스. 운영 데이터가 아니라 **의도적으로 만든 경계**다 — 자산 저장소가 비어 있어도 어댑터의 분류·경로 회계·fail-close 가 실측된다.",
+  "assets": [
+    {
+      "asset_id": "aud-convertible-window",
+      "revision": 1,
+      "payload": {
+        "intent": "find_user_segment",
+        "target_user": {
+          "purchase_date": {"from": "20190301", "to": "20190331", "label": "2019년 3월 구매"},
+          "aggregate_conditions": [
+            {"metric_id": "order_count", "operator": ">=", "threshold": 3, "window_days": null}
+          ],
+          "gender": null,
+          "behaviors": []
+        }
+      }
+    },
+    {
+      "asset_id": "aud-convertible-absence",
+      "revision": 2,
+      "payload": {
+        "intent": "recommend_campaign",
+        "target_user": {
+          "purchase_inactivity": {"value": 90, "unit": "days", "min_days": 90, "sql_interval": "90 days"},
+          "purchase_membership": {"operator": "exists", "window_days": 365}
+        }
+      }
+    },
+    {
+      "asset_id": "aud-convertible-lifetime-absence",
+      "revision": 1,
+      "payload": {"target_user": {"behaviors": ["no_purchase"]}}
+    },
+    {
+      "asset_id": "aud-convertible-aggregate-only",
+      "revision": 1,
+      "payload": {
+        "target_user": {
+          "aggregate_conditions": [
+            {"metric_id": "order_count", "operator": ">=", "threshold": 3, "window_days": null}
+          ]
+        }
+      }
+    },
+    {
+      "asset_id": "aud-multi-window",
+      "revision": 4,
+      "payload": {
+        "target_user": {
+          "purchase_date": {
+            "from": "20180101",
+            "to": "20191231",
+            "windows": [
+              {"from": "20190101", "to": "20191231"},
+              {"from": "20180101", "to": "20181231"}
+            ]
+          }
+        }
+      }
+    },
+    {
+      "asset_id": "aud-blocked-ir-extension",
+      "revision": 1,
+      "payload": {
+        "target_user": {
+          "purchase_membership": {"operator": "exists", "window_days": 30},
+          "metric_trend": {
+            "metric_id": "purchase_amount",
+            "direction": "increase",
+            "baseline": {"from": "20190201", "to": "20190228"},
+            "current": {"from": "20190301", "to": "20190331"}
+          }
+        }
+      }
+    },
+    {
+      "asset_id": "aud-blocked-login-family",
+      "revision": 1,
+      "payload": {
+        "target_user": {
+          "recent_login": {"value": 30, "unit": "days", "min_days": 30, "sql_interval": "30 days"},
+          "inactivity_period": {"value": 180, "unit": "days", "min_days": 180, "sql_interval": "180 days"}
+        }
+      }
+    },
+    {
+      "asset_id": "aud-blocked-zero-event-direction",
+      "revision": 1,
+      "payload": {
+        "target_user": {
+          "aggregate_conditions": [
+            {"metric_id": "order_count", "operator": "<=", "threshold": 2}
+          ]
+        }
+      }
+    },
+    {
+      "asset_id": "aud-blocked-time-of-day",
+      "revision": 1,
+      "payload": {
+        "target_user": {
+          "purchase_date": {
+            "from": "20190301", "to": "20190331",
+            "from_time": "090000", "to_time": "180000"
+          }
+        }
+      }
+    },
+    {
+      "asset_id": "aud-invalid-window-surface",
+      "revision": 1,
+      "payload": {
+        "target_user": {
+          "purchase_inactivity": {"value": 3, "unit": "months", "min_days": 45}
+        }
+      }
+    },
+    {
+      "asset_id": "aud-unknown-slot",
+      "revision": 1,
+      "payload": {
+        "target_user": {
+          "purchase_membership": {"operator": "exists", "window_days": 30},
+          "some_slot_nobody_declared": {"threshold": 1}
+        }
+      }
+    },
+    {
+      "asset_id": "aud-exclude-container",
+      "revision": 1,
+      "payload": {
+        "target_user": {"purchase_membership": {"operator": "exists", "window_days": null}},
+        "exclude": {"gender": ["male"], "interests": [], "lifecycle": []}
+      }
+    },
+    {
+      "asset_id": "aud-empty-audience",
+      "revision": 1,
+      "payload": {
+        "target_user": {
+          "gender": null, "age_min": null, "age_max": null, "behaviors": [],
+          "interests": [], "aggregate_conditions": []
+        },
+        "exclude": {"gender": [], "interests": [], "lifecycle": []}
+      }
+    }
+  ]
+}

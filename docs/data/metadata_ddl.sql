@@ -12,6 +12,8 @@
 -- PostgreSQL 14+
 -- ============================================================
 
+DROP TABLE IF EXISTS campaign_audience_migration_log CASCADE;
+DROP TABLE IF EXISTS campaign_audience_migration CASCADE;
 DROP TABLE IF EXISTS campaign_target_audience_members CASCADE;
 DROP TABLE IF EXISTS campaign_target_audiences CASCADE;
 DROP TABLE IF EXISTS campaign_query_failure_logs CASCADE;
@@ -89,6 +91,46 @@ CREATE TABLE campaign_prompt_templates (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- legacy 오디언스 슬롯 → Event IR 이행 상태입니다(자산 하나 + revision 하나 = 한 행).
+-- campaign_target_audiences 에 revision 컬럼이 없어 이행 상태는 여기서 소유하고, cut-over 는
+-- 아래 값 전부를 WHERE 로 거는 compare-and-swap 으로만 이뤄집니다(갱신 행 0 = stale/동시 수정 → 중단).
+-- 실행 권위 자체는 campaign_target_audiences.query_plan 의 audience_authority 필드에 있습니다.
+CREATE TABLE campaign_audience_migration (
+    asset_id                VARCHAR(200) NOT NULL,
+    revision                INTEGER      NOT NULL,
+    migration_status        VARCHAR(40)  NOT NULL,
+    source_fingerprint      VARCHAR(64)  NOT NULL,
+    source_schema_checksum  VARCHAR(64)  NOT NULL,
+    semantic_fingerprint    VARCHAR(64)  NOT NULL DEFAULT '',
+    binding_fingerprint     VARCHAR(64)  NOT NULL DEFAULT '',
+    legacy_payload          JSONB        NOT NULL,          -- rollback 의 유일한 재료(역변환 없음)
+    legacy_payload_checksum VARCHAR(64)  NOT NULL,          -- 저장 무결성(의미 지문과 다른 질문)
+    event_expression        JSONB,                          -- 검증을 통과한 산출물 그대로
+    verification_digest     VARCHAR(64)  NOT NULL DEFAULT '',
+    verified_at             TIMESTAMPTZ,
+    row_version             INTEGER      NOT NULL DEFAULT 1,
+    updated_at              TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_by              VARCHAR(120) NOT NULL DEFAULT '',
+
+    PRIMARY KEY (asset_id, revision)
+);
+
+-- 권위가 움직인 사건의 append-only 기록입니다. 상태 표는 '지금'만 말하고 여기가 '언제 누가 왜'를 답합니다.
+CREATE TABLE campaign_audience_migration_log (
+    log_id             BIGSERIAL PRIMARY KEY,
+    asset_id           VARCHAR(200) NOT NULL,
+    revision           INTEGER      NOT NULL,
+    action             VARCHAR(20)  NOT NULL,
+    from_status        VARCHAR(40),
+    to_status          VARCHAR(40),
+    audience_authority VARCHAR(20)  NOT NULL,
+    actor              VARCHAR(120) NOT NULL,
+    evidence_digest    VARCHAR(64)  NOT NULL DEFAULT '',
+    reasons            JSONB        NOT NULL DEFAULT '{}'::JSONB,
+    note               TEXT         NOT NULL DEFAULT '',
+    occurred_at        TIMESTAMPTZ  NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- 정책(JSON) 파일을 파일 대신 DB에서 관리합니다.
 CREATE TABLE campaign_policies (
     name        VARCHAR(120) PRIMARY KEY,
@@ -113,3 +155,5 @@ CREATE INDEX idx_campaign_query_failure_logs_reason
     ON campaign_query_failure_logs(failure_stage, failure_reason, created_at DESC);
 CREATE INDEX idx_campaign_query_failure_logs_status
     ON campaign_query_failure_logs(api_status, created_at DESC);
+CREATE INDEX idx_campaign_audience_migration_log_asset
+    ON campaign_audience_migration_log(asset_id, revision, occurred_at);
