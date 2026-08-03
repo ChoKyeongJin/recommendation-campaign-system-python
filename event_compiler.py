@@ -217,9 +217,11 @@ EVENT_REGISTRY: dict[str, EventSpec] = {
         time_column="REG_DT", time_format="char8", binding="subject_column", label="가입",
     ),
     "cart": EventSpec(
+        # 장바구니만 회원키가 다르다 — 팩트 쪽은 CART_ID(로그인ID 문자열)이고 짝은 회원 테이블의
+        # MEMBER_ID 다(MEMBER_NO 는 bigint 라 도메인이 다르다). UPD_DT 는 datetime2 라 char8 이 아니다.
         table="ODS_MALL_OMS_CART", alias="EC",
-        subject_key="MEMBER_NO", event_subject_key="MEMBER_ID",
-        time_column="UPD_DT", time_format="char8", binding="fact_table", label="장바구니 담기",
+        subject_key="MEMBER_ID", event_subject_key="CART_ID",
+        time_column="UPD_DT", time_format="date", binding="fact_table", label="장바구니 담기",
     ),
 }
 

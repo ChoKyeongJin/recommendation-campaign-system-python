@@ -15,6 +15,7 @@ run_preflight() 이 모듈 상수의 **상대경로**를 쓰므로 반드시 저
 
 from __future__ import annotations
 
+import copy
 import sys
 from pathlib import Path
 
@@ -147,3 +148,80 @@ def test_column_without_expression_is_still_attributed(at_repo_root: None) -> No
         {"sources": {"probe": {"table": "CRM_SL_ORDERHEADERMALL", "time_column": "ORDER_DATE"}}}
     )
     assert ("CRM_SL_ORDERHEADERMALL", "ORDER_DATE") in pairs
+
+
+# ── 회원 조인키: 틀리면 SQL 이 실행조차 못 하거나 0명이 된다 ─────────────────────────────
+
+
+def test_join_key_drift_is_reported(at_repo_root: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """사건의 회원 조인키가 카탈로그에 없는 컬럼이면 배포 전에 빨강이어야 한다.
+
+    실제 사고(2026-08-03): cart 소스가 ``event_subject_key='MEMBER_ID'`` 로 선언돼 있었지만
+    ODS_MALL_OMS_CART 에 그 컬럼은 없다(회원키는 CART_ID, 짝은 회원 테이블 MEMBER_ID).
+    게이트의 수집 어휘에 조인키가 없어 time_column 만 검사됐고, 장바구니 프롬프트 5건이
+    전부 런타임 sql_guard(column_not_allowed)에서 죽은 뒤에야 드러났다.
+    """
+    original = db_swap_preflight._load_json
+
+    def fake(path: Path):
+        data = original(path)
+        if path.name == "audience_catalog.json" and isinstance(data, dict):
+            data = copy.deepcopy(data)
+            data["sources"]["purchase"]["event_subject_key"] = "NO_SUCH_JOIN_KEY"
+        return data
+
+    monkeypatch.setattr(db_swap_preflight, "_load_json", fake)
+    result = db_swap_preflight.run_preflight()
+    assert not result["ok"]
+    assert any("NO_SUCH_JOIN_KEY" in problem for problem in result["problems"])
+
+
+def test_subject_key_is_attributed_to_the_subject_table(at_repo_root: None) -> None:
+    """``subject_key`` 는 소스 블록에 적히지만 소유자는 **주체(회원) 테이블**이다.
+
+    사건 테이블 소유로 읽으면 멀쩡한 선언(주문 테이블에 MEMBER_NO 가 있어도 회원키는 회원
+    테이블 것)이 빨강이 되고, 오탐이 나면 사람이 게이트를 끈다.
+    """
+    pairs = db_swap_preflight._configured_table_columns(
+        {
+            "subject": {"table": "CRM_MB_BASEINFO", "alias": "B", "key": "MEMBER_NO"},
+            "sources": {
+                "probe": {
+                    "table": "ODS_MALL_OMS_CART",
+                    "subject_key": "MEMBER_ID",
+                    "event_subject_key": "CART_ID",
+                    "time_column": "UPD_DT",
+                }
+            },
+        }
+    )
+    assert ("CRM_MB_BASEINFO", "MEMBER_ID") in pairs   # 주체 테이블 소유
+    assert ("ODS_MALL_OMS_CART", "CART_ID") in pairs   # 사건 테이블 소유
+    assert ("ODS_MALL_OMS_CART", "MEMBER_ID") not in pairs
+    assert ("CRM_MB_BASEINFO", "MEMBER_NO") in pairs   # subject.key 자신도 검사 대상
+
+
+def test_correlation_sql_releases_the_keys_it_does_not_use(at_repo_root: None) -> None:
+    """``correlation_sql`` 이 기본 상관식을 대신하면 그 식이 부르지 않는 키는 이름표다.
+
+    캠페인 사건들은 ``TRY_CAST({alias}.MBR_NO AS BIGINT) = {subject_alias}.{subject_key}`` 로
+    회원키 타입을 변환한다 — ``{subject_key}`` 는 실제로 쓰이므로 여전히 검사하고,
+    식이 부르지 않는 ``event_subject_key`` 는 소유로 읽지 않는다.
+    """
+    pairs = db_swap_preflight._configured_table_columns(
+        {
+            "subject": {"table": "CRM_MB_BASEINFO", "key": "MEMBER_NO"},
+            "sources": {
+                "probe": {
+                    "table": "MCS_CAMP_MBR_RSPN_FT",
+                    "subject_key": "MEMBER_NO",
+                    "event_subject_key": "PLACEHOLDER_NOT_USED",
+                    "correlation_sql": "TRY_CAST({alias}.MBR_NO AS BIGINT) = {subject_alias}.{subject_key}",
+                    "time_column": "CAMP_SDATE",
+                    "time_expression": "ZC.CAMP_SDATE",
+                }
+            },
+        }
+    )
+    assert ("MCS_CAMP_MBR_RSPN_FT", "PLACEHOLDER_NOT_USED") not in pairs
+    assert ("CRM_MB_BASEINFO", "MEMBER_NO") in pairs

@@ -51,7 +51,13 @@ SCHEMA_CATALOG_PATH = Path("docs/data/generated/schema_catalog.json")
 _TABLE_KEYS = {"table", "member_table", "value_table"}
 # alias.COLUMN 또는 bare COLUMN 형태(대문자+언더스코어). 스키마 컬럼 후보.
 _COLUMN_RE = re.compile(r"^(?:([A-Za-z]\w*)\.)?([A-Z][A-Z0-9_]{1,})$")
-_DIRECT_COLUMN_KEYS = {"column", "member_key", "login_id_key"}
+# ``event_subject_key`` 는 사건 테이블의 회원 조인키다. 이 어휘에 없으면 조인키만 검사 밖에 남는데,
+# 조인키가 틀리면 SQL 은 실행조차 못 하거나(없는 컬럼) 0명이 된다 — 실제로 cart 소스가
+# event_subject_key='MEMBER_ID'(실제 컬럼은 CART_ID)로 선언된 채 게이트를 통과했다(2026-08-03).
+_DIRECT_COLUMN_KEYS = {"column", "member_key", "login_id_key", "event_subject_key"}
+# 같은 블록에 적히지만 소유자가 **주체(회원) 테이블**인 키. 사건 테이블 소유로 읽으면 멀쩡한 선언이
+# 상시 빨강이 되고, 오탐이 나면 사람이 게이트를 끈다.
+_SUBJECT_COLUMN_KEYS = {"subject_key"}
 
 
 def _load_json(path: Path) -> Any:
@@ -132,6 +138,20 @@ def _base_entity_columns(registry: dict[str, Any]) -> tuple[str | None, str, set
     return (base_table, base_alias, columns)
 
 
+def _default_binding_overridden(node: dict[str, Any], key: str) -> bool:
+    """``correlation_sql`` 이 있으면 기본 상관식은 쓰이지 않는다 — 그때 조인키는 이름표일 뿐인가.
+
+    기본 상관식은 ``alias.event_subject_key = subject_alias.subject_key`` 다. 소스가
+    ``correlation_sql`` 을 선언하면 그 식이 대신 쓰이므로, 두 키는 템플릿이 ``{키}`` 토큰으로
+    **직접 부를 때만** 실컬럼이어야 한다(캠페인 소스들이 ``{subject_key}`` 를 그렇게 쓴다).
+    ``*_expression`` 이 있으면 나란한 ``*_column`` 을 소유로 읽지 않는 규칙과 같은 이유다.
+    """
+    correlation = node.get("correlation_sql")
+    if not isinstance(correlation, str) or not correlation.strip():
+        return False
+    return "{" + key + "}" not in correlation
+
+
 def _configured_table_columns(registry: dict[str, Any]) -> set[tuple[str, str]]:
     """`table`이 선언된 레지스트리 블록의 직접 컬럼 참조를 (테이블, 컬럼)으로 모은다.
 
@@ -140,6 +160,8 @@ def _configured_table_columns(registry: dict[str, Any]) -> set[tuple[str, str]]:
     유지한다.
     """
     result: set[tuple[str, str]] = set()
+    subject = registry.get("subject") if isinstance(registry.get("subject"), dict) else {}
+    subject_table = subject.get("table") if isinstance(subject.get("table"), str) else None
 
     def add_columns(table: str | None, value: Any) -> None:
         if not table:
@@ -164,7 +186,10 @@ def _configured_table_columns(registry: dict[str, Any]) -> set[tuple[str, str]]:
             )
             table = table_value.split(".")[-1] if isinstance(table_value, str) else None
             for key, value in node.items():
-                if (
+                if key in _SUBJECT_COLUMN_KEYS:
+                    if not _default_binding_overridden(node, key):
+                        add_columns(subject_table, value)
+                elif (
                     key in _DIRECT_COLUMN_KEYS
                     or key.endswith("_column")
                     or key.endswith("_columns")
@@ -186,6 +211,9 @@ def _configured_table_columns(registry: dict[str, Any]) -> set[tuple[str, str]]:
                         node.get(f"{key[:-len('_column')]}_expression"), str
                     ):
                         continue
+                    # 같은 이유로 ``correlation_sql`` 이 기본 상관식을 대신하면 조인키도 이름표다.
+                    if key == "event_subject_key" and _default_binding_overridden(node, key):
+                        continue
                     add_columns(owner_table if isinstance(owner_table, str) else table, value)
                 walk(value, table)
         elif isinstance(node, list):
@@ -193,6 +221,10 @@ def _configured_table_columns(registry: dict[str, Any]) -> set[tuple[str, str]]:
                 walk(item, inherited_table)
 
     walk(registry)
+    # 주체 블록 자신의 회원키(``subject.key``)도 같은 실패 축이다 — 이 컬럼이 없으면 모든 사건의
+    # 상관식이 한꺼번에 깨진다. 키 이름이 'key' 라 일반 어휘로는 잡히지 않아 여기서 명시한다.
+    if subject_table and isinstance(subject.get("key"), str):
+        add_columns(subject_table, subject["key"])
     return result
 
 

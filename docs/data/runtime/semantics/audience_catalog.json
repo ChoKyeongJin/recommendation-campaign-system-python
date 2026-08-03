@@ -98,12 +98,13 @@
       "aliases": ["가입", "등록"]
     },
     "cart": {
+      "_comment": "장바구니의 회원키는 CART_ID(로그인ID 문자열)이고 짝은 회원 테이블의 MEMBER_ID 다 — MEMBER_NO(bigint)가 아니다. schema_catalog 주석 'CART_ID = 회원의 MEMBER_ID'를 '이 테이블에 MEMBER_ID 가 있다'로 읽어 event_subject_key 를 MEMBER_ID 로 적었고, 그 컬럼은 존재하지 않아 장바구니 프롬프트 전체가 런타임 sql_guard(column_not_allowed)에서 죽었다(2026-08-03 실측). 실DB 대조: 장바구니 회원 14,797명 중 14,770명이 CART_ID↔MEMBER_ID 로 매칭된다. UPD_DT 는 datetime2 라 저장 포맷도 char8 이 아니라 date 다.",
       "table": "ODS_MALL_OMS_CART",
       "alias": "EC",
-      "subject_key": "MEMBER_NO",
-      "event_subject_key": "MEMBER_ID",
+      "subject_key": "MEMBER_ID",
+      "event_subject_key": "CART_ID",
       "time_column": "UPD_DT",
-      "time_format": "char8",
+      "time_format": "date",
       "binding": "fact_table",
       "grain": "event",
       "label": "장바구니 담기",
