@@ -901,6 +901,8 @@ def _event_spec(
             from_sql=str(declaration.get("from_sql") or ""),
             correlation_sql=str(declaration.get("correlation_sql") or ""),
             time_expression=str(declaration.get("time_expression") or ""),
+            # 컴파일러 전용 물리 바인딩(집합형 집계의 group key). Core IR 도 capability 도 아니다.
+            group_subject_expression=str(declaration.get("group_subject_expression") or ""),
         )
     except (TypeError, ValueError) as exc:
         if isinstance(exc, CatalogError):

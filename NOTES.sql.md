@@ -1,7 +1,8 @@
 # Campaign Event IR SQL 성능 진단 및 애플리케이션 측 최적화 인수인계
 
 작성일: 2026-08-04  
-상태: 진단 및 구현 계획만 완료. 제품 소스와 DB 스키마/인덱스/통계는 변경하지 않음.
+구현일: 2026-08-05 (§10 참조)  
+상태: 구현 완료. DB 스키마/인덱스/통계는 변경하지 않음.
 
 ## 1. 요청과 제약
 
@@ -490,3 +491,114 @@ SQL 구조 기준:
 - `tests/test_semantic_verification_receipts.py`
 
 다음 세션은 위 파일과 기존 테스트를 먼저 읽은 후, 테스트를 작성하고 lowering을 구현해야 한다. 원본 scalar subquery를 단순 삭제하거나 모든 aggregate를 일괄 join으로 바꾸지 않는다.
+
+## 10. 구현 결과 (2026-08-05)
+
+### 10.1 계획과 달라진 점
+
+계획은 §7.3에서 `COUNT >= N` 같은 **연산자 허용목록**으로 적용 범위를 정했다. 구현은 목록 대신 **판정식** 하나를 쓴다.
+
+```text
+임계값 0에서 비교가 거짓인가?
+```
+
+상관 스칼라와 집합형 GROUP BY가 갈리는 지점은 오직 "이벤트가 하나도 없는 회원" 하나다. 상관 스칼라는 그 회원에게 `COUNT = 0`을 주지만 GROUP BY 결과에는 그 회원의 그룹 자체가 없다. 따라서 `0 <operator> <threshold>`를 계산해 거짓일 때만 낮추면 의미 동치가 정의상 보장된다. 결과적으로 계획의 허용목록(`>= N (N>0)`, `> N (N>=0)`, `= N (N>0)`)은 물론 `!= 0`까지 자동으로 열리고, `= 0` · `<= 0` · `<= 1` · `< 5` · `>= 0` · `!= 3`은 자동으로 닫힌다. 새 연산자가 생겨도 목록을 고칠 필요가 없다.
+
+계획의 §7.3은 `OR`도 fallback 대상으로 뒀지만, 구현은 `OR` 아래에서도 낮춘다. 낮춘 술어는 회원별로 3값이 아니라 **2값**이기 때문이다(group key `IS NOT NULL` 가드로 서브쿼리에 NULL이 들어가지 않는다). `NOT`은 계획대로 낮추지 않고 기존 2값화 보수(`NOT (CASE WHEN … THEN 1 ELSE 0 END = 1)`)를 그대로 쓴다 — `NOT IN` + NULL 함정 계열을 아예 만들지 않기 위해서다(안쪽 `IN`은 낮춰진 채로 남으므로 성능 이득은 유지된다).
+
+§7.4의 `subject INNER JOIN (derived)` 대신 **비상관 `subject_key IN (…)`** 으로 낮췄다. 기존 컴파일러의 산출물은 SELECT/FROM이 아니라 **회원 술어 한 조각**이고(그 계약을 깨면 SQL 조립 계층 전체가 따라 바뀐다), SQL Server는 비상관 `IN (SELECT … GROUP BY … HAVING …)`를 semi-join으로 계획한다. 구조적 목표(팩트 스캔 1회·회원별 rebind 제거)는 동일하게 달성되고 계층 경계는 그대로다.
+
+§7.9의 shadow 모드(런타임 이중 실행 후 자동 대체)는 만들지 않았다. 대신 킬 스위치(`EVENT_AGGREGATE_MEMBERSHIP_LOWERING=off`)로 즉시 이전 SQL로 되돌릴 수 있고, 동치는 §10.4의 실DB 차집합 검증과 41개 계약 테스트로 고정했다. 요청마다 두 SQL을 실행하는 shadow는 지금 문제(느려서 timeout)를 그대로 재현하는 비용이라 얻는 것보다 잃는 것이 크다.
+
+### 10.2 변경한 파일
+
+| 파일 | 변경 |
+|---|---|
+| `event_compiler.py` | 물리 lowering 본체. 적용 판정(`_membership_skip_reason`)·렌더(`_aggregate_membership_predicate`)·receipt. `EventSpec.group_subject_expression`, `CompileContext.optimize_aggregate_membership`/`optimization_receipts` 추가. `COMPILER_VERSION` 1.1.0 → 1.2.0 |
+| `sql_guard.py` | `correlated_scalar_aggregates()` — 스칼라 위치 집계 + 주체 별칭 참조를 AST로 찾는 좁은 성능 구조 가드. 파싱 실패는 `None`(= 판정 불가) |
+| `graph_rag.py` | 합성 루트 배선만: 킬 스위치 env 리더, 컴파일 컨텍스트에 플래그·receipt 채널 주입, 후보에 `compiler_receipts` 부착, receipt가 `applied`일 때만 도는 가드 호출 |
+| `resolved_semantic_catalog.py` | `group_subject_expression` 선언 통과 |
+| `docs/data/runtime/semantics/audience_catalog.json` | 캠페인 계열 5개 소스에 `"group_subject_expression": "TRY_CAST({alias}.MBR_NO AS BIGINT)"` |
+| `tests/test_aggregate_membership_lowering.py` | 신규 40건 |
+| `tests/test_event_ir.py` | 기존 1건을 새 물리 모양으로 갱신(단언은 강화: GROUP BY/HAVING + 상관 술어 부재) |
+| `docs/data/test_baselines/module_size_baseline.json` | graph_rag 상한 17,330 → 17,370(사유 기록) |
+
+`correlation_sql`을 정규식으로 되짚지 않는다. 상관식이 선언돼 있는데 group key 선언이 없으면 추측하지 않고 기존 경로를 쓴다(`NO_GROUP_SUBJECT_BINDING`). 기본 상관식(`{alias}.{event_subject_key} = {subject_alias}.{subject_key}`)만 파생이 유일하므로 선언 없이 낮춘다 — 그래서 `purchase` 같은 기존 사건도 카탈로그 변경 없이 함께 빨라진다.
+
+### 10.3 생성되는 SQL
+
+```sql
+SELECT DISTINCT TOP 100
+    B.MEMBER_NO AS CUST_ID,
+    B.EMART_GRADE_CD AS member_grade,
+    '최근 5일 캠페인 발송 성공 count >= 3' AS segment_label,
+    'reactivation' AS objective
+FROM CRM_MB_BASEINFO B
+WHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'
+  AND B.MEMBER_NO IN (
+      SELECT TRY_CAST(M.MBR_NO AS BIGINT)
+      FROM Z_CAMP_MBR M
+      INNER JOIN Z_CAMPAIGN ZC
+          ON ZC.CAMP_ID = M.CAMP_ID
+         AND ZC.CAMP_EXEC_NO = M.CAMP_EXEC_NO
+      WHERE M.CELL_TYPE_CD = 'T'
+        AND M.CONTAC_SUCC_YN = 'Y'
+        AND ISNULL(ZC.CANCEL_YN, 'N') = 'N'
+        AND ZC.CAMP_SDATE >= CONVERT(CHAR(8), DATEADD(DAY, -5, GETDATE()), 112)
+        AND TRY_CAST(M.MBR_NO AS BIGINT) IS NOT NULL
+      GROUP BY TRY_CAST(M.MBR_NO AS BIGINT)
+      HAVING COUNT(DISTINCT CONCAT(M.CAMP_ID, ':', M.CAMP_EXEC_NO)) >= 3
+  );
+```
+
+§5의 비교용 집합형 SQL과 같은 계획 모양이다. `TRY_CAST`·`CONCAT` 복합 실행키·`CELL_TYPE_CD`·`CONTAC_SUCC_YN`·`CANCEL_YN`·기간 경계는 전부 보존됐고 임의 단순화가 없다. compiler receipt:
+
+```json
+{"optimization": "aggregate_membership_semi_join",
+ "status": "applied",
+ "source": "campaign_contact_success",
+ "preserved_expression_fingerprint": "event_node_5d4b4d20…"}
+```
+
+### 10.4 실DB 검증 (CRMDW, 읽기 전용, 고정 컷오프)
+
+`original EXCEPT optimized` 와 `optimized EXCEPT original` 이 모두 0건임을 실데이터로 확인했다.
+
+| 대조 | 모집단 | 원본 결과 | 차집합(양방향) |
+|---|---|---:|---:|
+| `purchase count >= 3` (`ORDER_DATE >= '20190101'`) | 회원 표본 `MEMBER_NO % 200 = 0` | 137명 | 0 / 0 |
+| 캠페인 접촉 성공 `count >= 2` (`Z_CAMP_MBR ⨝ Z_CAMPAIGN`, `TRY_CAST` group key, 대상군·성공·취소 제외 전부 포함) | 같은 표본 | 146명 | 0 / 0 |
+
+회원 표본으로 대조한 이유는 원본 모양이 전수로는 끝나지 않기 때문이다(그게 이 최적화의 이유다). 진리값은 회원별로 독립이므로 표본 일치가 그대로 회원 단위 동치 증거다.
+
+측정된 성능 차이:
+
+- 원본(상관 스칼라): 회원 348명 표본 1회에 약 11.6초 — 전수 69,308명으로 선형 환산하면 약 38분
+- 최적화(집합형): **전수** 모집단에서 37,026명 판정에 **0.40초**
+
+앱의 15초 timeout 안에 충분히 들어온다. timeout은 건드리지 않았다.
+
+한계 하나를 명시한다: MCP DB 클라이언트가 쿼리 문자열에 `EXEC`가 들어가면 거부하는데 컬럼명 `CAMP_EXEC_NO`가 그 substring을 포함한다. 그래서 캠페인 대조는 distinct 실행키를 `CONCAT(CAMP_ID, ':', CAMP_EXEC_NO)` 대신 `CAMP_ID`로 두고 실행했다. 집계 인자 자체가 그대로 `HAVING`으로 옮겨진다는 성질은 `purchase` 대조(`COUNT(DISTINCT ORDER_ID)`)가 실제 SQL 그대로 증명한다. 로컬 `pymssql` 직결은 이 환경에서 login 단계가 응답하지 않아(TCP는 도달) 쓰지 못했다.
+
+### 10.5 테스트
+
+`tests/test_aggregate_membership_lowering.py` 40건 + 갱신 1건. 커버:
+
+- 대상 사례(최근 5일 성공 발송 3회 이상)의 집합형 구조·pushdown·복합 실행키 보존
+- 임계값 경계 14종(0에서 거짓이면 lowering, 참이면 상관 유지 — `>` 0 과 `>=` 0 의 한 칸 차이 포함)
+- 미러 비교(`3 <= count`), 소수 임계값, `True` 임계값, `SUM` 집계
+- `AND` · `OR` · `NOT` 문맥, 그룹 grain(`EXISTS + HAVING`) 재lowering 금지
+- fast-path 3종(회원 속성 비교 · 주체 컬럼 사건 · 단순 존재)에서 receipt 0건 · SQL 무변화
+- 킬 스위치 off 시 이전 SQL 바이트 동일
+- IR·직렬화·노드 타입·capability·node id 불변, receipt의 JSON 직렬화 가능성
+- group key 선언 부재 시 추측 금지, 기본 상관식의 파생
+- 성능 구조 가드 4종(상관 스칼라 검출 · 집합형 통과 · 파싱 실패는 `None` · EXISTS 세미조인 무시)
+
+전체 스위트: 2,517 passed. 실패 5건은 전부 이 작업 이전부터 있던 것이다(`test_money_literal_bindings` 2건, `test_semantic_literal_characterization`, `test_canonical_event_ir_grounding`, `test_query_pipeline_type_contracts`; `test_aggregation_decimal` 2건은 deselect). mypy 오류 수는 3건으로 변경 전후 동일하다.
+
+### 10.6 남은 위험과 다음 단계
+
+- `= 0` · `<= N` 같은 0-sensitive 조건은 여전히 상관 스칼라다. `LEFT JOIN + COALESCE` 또는 anti-join으로 열려면 별도 동치 증명과 테스트가 필요하다(§7.3 후단 그대로).
+- `SUM`/`AVG` 임계값도 상관 스칼라로 남는다. 빈 집합의 NULL/0 의미와 음수 합을 따로 증명해야 한다.
+- `Join`이 낀 관계(예: `purchase_line`의 상품 조인은 `from_sql` 안이라 해당 없음, IR `Join` 노드를 쓰는 경우)는 `ALREADY_SET_BASED`로 스킵된다. 필요해지면 group key가 유일한지부터 확인해야 한다.
+- `COMPILER_VERSION` 1.2.0 이므로 이행 계층의 binding fingerprint가 바뀐다 — 검증 완료로 표시된 legacy 이행 자산은 cut-over 전에 재검증이 필요하다.

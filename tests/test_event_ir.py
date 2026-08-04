@@ -264,7 +264,13 @@ def test_count_threshold_uses_aggregate_and_comparison() -> None:
     assert expression.left.function == "count"
     assert expression.right == event_ir.Literal(value=3)
     sql = event_compiler.compile_expression_sql(expression)
-    assert "SELECT COUNT(DISTINCT EO.ORDER_ID)" in sql and ">= 3" in sql
+    # 같은 IR, 같은 의미, 다른 물리 모양이다(COMPILER_VERSION 1.2.0). 회원 상관 스칼라 집계는
+    # 바깥 회원 수만큼 팩트를 다시 집계하므로, 회원별 집계를 **한 번** 한 뒤 회원과 semi-join
+    # 한다. 임계값이 양수라 이벤트가 없는 회원은 두 모양 모두에서 거짓이다.
+    assert "HAVING COUNT(DISTINCT EO.ORDER_ID) >= 3" in sql
+    assert "GROUP BY EO.MEMBER_NO" in sql
+    assert sql.startswith("B.MEMBER_NO IN (SELECT EO.MEMBER_NO FROM CRM_SL_ORDERHEADERMALL EO")
+    assert "= B.MEMBER_NO" not in sql  # 상관 술어가 남아 있으면 최적화가 아니다
 
 
 def test_sum_threshold_uses_the_same_nodes_with_a_different_function() -> None:

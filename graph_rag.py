@@ -150,6 +150,7 @@ from sql_ast import SelectAst, render_select_ast, validate_select_ast
 from sql_guard import (
     DEFAULT_LIMIT,
     DEFAULT_SCHEMA_PATH,
+    correlated_scalar_aggregates,
     infer_target_connection,
     load_allowed_tables,
     load_column_types,
@@ -13468,7 +13469,18 @@ def build_member_column_selection_sql_candidate(query_plan: dict[str, Any]) -> d
     return candidate
 
 
-def _event_compile_context(today: date | None = None) -> "event_compiler.CompileContext":
+def _aggregate_membership_lowering_enabled() -> bool:
+    """집합형 집계 lowering 킬 스위치. 끄면 상관 스칼라 SQL 이 바이트 동일하게 돌아온다."""
+    return os.getenv("EVENT_AGGREGATE_MEMBERSHIP_LOWERING", "on").strip().casefold() not in {
+        "off", "0", "false", "no",
+    }
+
+
+def _event_compile_context(
+    today: date | None = None,
+    *,
+    optimization_receipts: list[dict[str, Any]] | None = None,
+) -> "event_compiler.CompileContext":
     """Build Event IR compilation from the single resolved Semantic Catalog."""
     catalog = audience_runtime.resolve_audience_catalog()
     return catalog.compile_context(
@@ -13478,6 +13490,9 @@ def _event_compile_context(today: date | None = None) -> "event_compiler.Compile
         dialect=_member_dialect(),
         literals=True,
         today=today,
+        # 물리 최적화는 여기(합성 루트)에서 주입한다 — 컴파일러 안에서 전역 설정을 읽지 않는다.
+        optimize_aggregate_membership=_aggregate_membership_lowering_enabled(),
+        optimization_receipts=optimization_receipts,
     )
 
 
@@ -13577,9 +13592,13 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
     # EventQuerySpec → LogicalPlan → SqlCompiler. 예전에는 여기서 dict 를 그 자리에서
     # 파싱해 컴파일러에 바로 넘겼고, 그 경로에는 '검증된 사양'이라는 단계가 없었다.
     # 렌더링 자체는 여전히 event_compiler 가 소유하므로 SQL 은 바이트 동일하다.
+    optimization_receipts: list[dict[str, Any]] = []
     try:
         condition_sql = query_pipeline.compile_audience_predicate(
-            payload, compile_context_factory=_event_compile_context
+            payload,
+            compile_context_factory=lambda: _event_compile_context(
+                optimization_receipts=optimization_receipts
+            ),
         ).sql
     except query_pipeline.QueryPipelineError as exc:
         # 실패에 **단계 이름**을 붙인다 — "어디서 막혔는가"가 사유의 일부가 된다.
@@ -13634,6 +13653,16 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
             "WHERE " + "\n  AND ".join(_unique_strings(where_clauses)),
         ]
     )
+    if any(item.get("status") == "applied" for item in optimization_receipts):
+        # 낮췄다고 선언한 계획에만 성능 구조 가드를 건다(일반 SQL 을 정규식으로 막지 않는다).
+        # 남아 있으면 차단이 아니라 진단이다 — 의미는 여전히 옳고 느릴 뿐이다.
+        residual = correlated_scalar_aggregates(sql, _member_alias())
+        if residual is None:
+            optimization_receipts.append({"status": "guard_unreadable"})
+        elif residual:
+            optimization_receipts.append(
+                {"status": "guard_warning", "residual_aggregates": residual}
+            )
     candidate = _sql_candidate(
         "sql_template:event_expression",
         "사건 논리식(기간별 발생/미발생) 타겟 추출 SQL 템플릿(CRMDW)",
@@ -13642,6 +13671,8 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
         _template_tables(sql),
         "sql_template",
     )
+    if optimization_receipts:
+        candidate["compiler_receipts"] = optimization_receipts
     candidate["dropped_conditions"] = compiled["unsupported"]
     candidate["dropped_condition_labels"] = [_unsupported_condition_label(path) for path in compiled["unsupported"]]
     return candidate

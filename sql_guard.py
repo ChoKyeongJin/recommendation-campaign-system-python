@@ -503,6 +503,43 @@ def _recommended_index_from_subquery(body: str) -> dict[str, Any] | None:
     return {"table": table.upper(), "columns": columns}
 
 
+def correlated_scalar_aggregates(
+    sql: str, subject_alias: str, *, dialect: str = "tsql"
+) -> list[str] | None:
+    """바깥 주체 행마다 다시 계산되는 **스칼라 집계 서브쿼리**를 AST 로 찾는다.
+
+    성능 구조 가드다. 광범위 정규식으로 남의 SQL 을 차단하지 않고, 판정 대상을 하나의 구조로
+    좁힌다: 스칼라 위치의 SELECT 안에 집계 함수가 있고 그 SELECT 가 바깥 주체 별칭을 참조하면,
+    그 계획은 회원 수만큼 rebind 된다(실측 약 69,286회). 집합형 lowering 이 적용됐다는
+    compiler receipt 가 있을 때만 호출해 "낮췄다고 했는데 상관이 남았다"를 잡는 용도다.
+
+    반환은 발견된 집계식의 SQL 문자열 목록이고, 빈 목록은 '그런 구조가 없다'다. 파싱하지 못하면
+    ``None`` — '깨끗하다'와 '읽지 못했다'를 같은 값으로 돌려주면 가드가 통과 도장이 된다.
+    """
+    try:
+        statement = sqlglot.parse_one(sql, read=dialect)
+    except sqlglot.errors.ParseError:
+        return None
+    alias = subject_alias.casefold()
+    found: list[str] = []
+    for subquery in statement.find_all(exp.Subquery):
+        select = subquery.this
+        if not isinstance(select, exp.Select):
+            continue
+        # 스칼라 위치인가 — IN/EXISTS 서브쿼리는 세미조인이라 행마다 반복되지 않는다.
+        if isinstance(subquery.parent, (exp.In, exp.Exists)):
+            continue
+        aggregates = [node for node in select.find_all(exp.AggFunc)]
+        if not aggregates:
+            continue
+        references_subject = any(
+            (column.table or "").casefold() == alias for column in select.find_all(exp.Column)
+        )
+        if references_subject:
+            found.extend(node.sql(dialect=dialect) for node in aggregates)
+    return found
+
+
 def analyze_query_performance(sql: str) -> dict[str, Any]:
     """생성 SQL 의 실행 성능 함정을 정적 진단하고 권장 인덱스를 제안한다(비차단 자문).
 

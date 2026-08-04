@@ -213,6 +213,7 @@
       "grain": "event",
       "from_sql": "Z_CAMP_MBR {alias} INNER JOIN Z_CAMPAIGN {alias}_ZC ON {alias}_ZC.CAMP_ID = {alias}.CAMP_ID AND {alias}_ZC.CAMP_EXEC_NO = {alias}.CAMP_EXEC_NO",
       "correlation_sql": "TRY_CAST({alias}.MBR_NO AS BIGINT) = {subject_alias}.{subject_key}",
+      "group_subject_expression": "TRY_CAST({alias}.MBR_NO AS BIGINT)",
       "time_expression": "{alias}_ZC.CAMP_SDATE",
       "extra_predicates": [
         "{alias}.CELL_TYPE_CD = 'T'",
@@ -232,6 +233,7 @@
       "grain": "event",
       "from_sql": "Z_CAMP_MBR {alias} INNER JOIN Z_CAMPAIGN ZC ON ZC.CAMP_ID = {alias}.CAMP_ID AND ZC.CAMP_EXEC_NO = {alias}.CAMP_EXEC_NO",
       "correlation_sql": "TRY_CAST({alias}.MBR_NO AS BIGINT) = {subject_alias}.{subject_key}",
+      "group_subject_expression": "TRY_CAST({alias}.MBR_NO AS BIGINT)",
       "time_expression": "ZC.CAMP_SDATE",
       "extra_predicates": [
         "{alias}.CELL_TYPE_CD = 'T'",
@@ -252,6 +254,7 @@
       "grain": "event",
       "from_sql": "MCS_CAMP_MBR_RSPN_FT {alias} INNER JOIN Z_CAMPAIGN ZC ON ZC.CAMP_ID = {alias}.CAMP_ID AND ZC.CAMP_EXEC_NO = {alias}.CAMP_EXEC_NO",
       "correlation_sql": "TRY_CAST({alias}.MBR_NO AS BIGINT) = {subject_alias}.{subject_key}",
+      "group_subject_expression": "TRY_CAST({alias}.MBR_NO AS BIGINT)",
       "time_expression": "ZC.CAMP_SDATE",
       "extra_predicates": [
         "{alias}.CGRP_TYPE_CD = 'T'",
@@ -272,6 +275,7 @@
       "grain": "event",
       "from_sql": "MCS_CAMP_MBR_RSPN_FT {alias} INNER JOIN Z_CAMPAIGN ZC ON ZC.CAMP_ID = {alias}.CAMP_ID AND ZC.CAMP_EXEC_NO = {alias}.CAMP_EXEC_NO",
       "correlation_sql": "TRY_CAST({alias}.MBR_NO AS BIGINT) = {subject_alias}.{subject_key}",
+      "group_subject_expression": "TRY_CAST({alias}.MBR_NO AS BIGINT)",
       "time_expression": "ZC.CAMP_SDATE",
       "extra_predicates": [
         "{alias}.CGRP_TYPE_CD = 'T'",
@@ -292,6 +296,7 @@
       "grain": "event",
       "from_sql": "MCS_CAMP_MBR_RSPN_FT {alias} INNER JOIN Z_CAMPAIGN ZC ON ZC.CAMP_ID = {alias}.CAMP_ID AND ZC.CAMP_EXEC_NO = {alias}.CAMP_EXEC_NO",
       "correlation_sql": "TRY_CAST({alias}.MBR_NO AS BIGINT) = {subject_alias}.{subject_key}",
+      "group_subject_expression": "TRY_CAST({alias}.MBR_NO AS BIGINT)",
       "time_expression": "ZC.CAMP_SDATE",
       "extra_predicates": [
         "{alias}.CGRP_TYPE_CD = 'T'",

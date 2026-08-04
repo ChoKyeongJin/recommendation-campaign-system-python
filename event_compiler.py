@@ -32,6 +32,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 import event_ir
@@ -76,7 +77,8 @@ class SqlCompileError(Exception):
 # 컴파일 규칙의 버전. **의미가 같아도 SQL 이 달라지는 변경**(경계 렌더·조인 형태·NULL 처리)이 있으면
 # 올린다. 이행 계층의 binding fingerprint 가 이 값을 포함하므로, 올리면 검증된 자산이 자동으로
 # '바인딩 변경'으로 표시되고 cut-over 전에 재검증을 요구한다.
-COMPILER_VERSION = "1.1.0"
+# 1.2.0: 회원 상관 스칼라 집계를 집합형 semi-join 으로 낮춘다(의미 동일, SQL 모양 변경).
+COMPILER_VERSION = "1.2.0"
 
 CAPABILITY_SUPPORTED = "supported"
 CAPABILITY_UNSUPPORTED = "unsupported"
@@ -145,6 +147,11 @@ class EventSpec:
     # 회원키 타입 변환처럼 ``alias.column = subject.column`` 으로 표현할 수 없는 상관식.
     # {alias}, {subject_alias}, {subject_key}, {event_subject_key} 를 사용할 수 있다.
     correlation_sql: str = ""
+    # 상관식의 **사건 쪽 절반**(집합형 집계의 group key). 컴파일러 전용 물리 바인딩이며 Core IR 이
+    # 아니다. ``correlation_sql`` 을 정규식으로 되짚어 집계키를 추측하지 않기 위해 따로 선언한다.
+    # 비어 있고 correlation_sql 도 없으면 기본 상관식의 왼쪽인 ``{alias}.{event_subject_key}`` 로
+    # 파생한다(선언과 파생이 어긋날 여지가 없는 유일한 경우).
+    group_subject_expression: str = ""
     # 발생 시각이 검증된 조인 대상에 있거나 계산식인 경우의 논리 시각 필드 바인딩.
     time_expression: str = ""
 
@@ -429,6 +436,12 @@ class CompileContext:
     literals: bool = False
     # 상대 창('3개월 전')을 절대 구간으로 확정하는 기준일. 계획 시점에 날짜가 드러나야 감사 가능하다.
     today: date | None = None
+    # 회원 상관 스칼라 집계 → 집합형 semi-join 물리 lowering 스위치. 전역 mutable state 가 아니라
+    # 컴파일 한 번의 환경으로 **주입**한다(끄면 기존 SQL 이 바이트 동일하게 나온다).
+    optimize_aggregate_membership: bool = True
+    # 최적화 적용/스킵 receipt 를 받는 선택적 채널. IR capabilities 도 query identity 도 아니다 —
+    # 컴파일러가 무엇을 했는지 운영에서 되짚기 위한 진단 전용이다.
+    optimization_receipts: list[dict[str, Any]] | None = None
     _counter: list[int] = field(default_factory=lambda: [0])
     # 컴파일 중인 관계 스코프: 소스 심볼 → 별칭. FieldRef 해석이 이걸 본다.
     _scope: dict[str, str] = field(default_factory=dict)
@@ -459,7 +472,10 @@ class CompileContext:
     def with_scope(self, scope: dict[str, str]) -> "CompileContext":
         return CompileContext(
             subject=self.subject, registry=self.registry, fields=self.fields, dialect=self.dialect,
-            literals=self.literals, today=self.today, _counter=self._counter,
+            literals=self.literals, today=self.today,
+            optimize_aggregate_membership=self.optimize_aggregate_membership,
+            optimization_receipts=self.optimization_receipts,
+            _counter=self._counter,
             _scope={**self._scope, **scope},
             _field_bindings=self._field_bindings,
         )
@@ -467,7 +483,10 @@ class CompileContext:
     def with_field_bindings(self, bindings: dict[str, str]) -> "CompileContext":
         return CompileContext(
             subject=self.subject, registry=self.registry, fields=self.fields, dialect=self.dialect,
-            literals=self.literals, today=self.today, _counter=self._counter,
+            literals=self.literals, today=self.today,
+            optimize_aggregate_membership=self.optimize_aggregate_membership,
+            optimization_receipts=self.optimization_receipts,
+            _counter=self._counter,
             _scope=self._scope,
             _field_bindings={**self._field_bindings, **bindings},
         )
@@ -632,6 +651,22 @@ def _correlation(
     if spec.correlation_sql:
         return _render_binding(spec.correlation_sql, spec, context, alias=active_alias)
     return f"{active_alias}.{spec.event_subject_key} = {context.subject.alias}.{spec.subject_key}"
+
+
+def _group_subject_sql(
+    spec: EventSpec, context: CompileContext, *, alias: str | None = None
+) -> str | None:
+    """상관식의 사건 쪽 절반 — 회원별 집합형 집계의 group key.
+
+    선언이 없고 상관식도 기본형이면 기본 상관식의 왼쪽을 그대로 파생한다. 상관식이 선언돼 있는데
+    group key 가 없으면 ``None`` 을 돌려준다 — 문자열을 되짚어 집계키를 **추측하지 않는다**.
+    """
+    active_alias = alias or spec.alias
+    if spec.group_subject_expression:
+        return _render_binding(spec.group_subject_expression, spec, context, alias=active_alias)
+    if spec.correlation_sql:
+        return None
+    return f"{active_alias}.{spec.event_subject_key}"
 
 
 def _extra_predicates(
@@ -1279,7 +1314,221 @@ def _compile_text_search_comparison(
     )
 
 
+# ── 집합형 집계 lowering(물리 최적화) ────────────────────────────────────────────
+#
+# 회원 상관 스칼라 집계는 바깥 회원 **수만큼** 팩트 집계를 반복한다. 실측(2026-08-04, CRMDW):
+# 회원 69,287행 × Z_CAMP_MBR 상관 집계 = 예상 비용 19118.6, rebind/rewind 약 69,286회로 앱의
+# 15초 timeout 을 넘겼다. 같은 의미를 한 번의 GROUP BY 로 낮추면 팩트 스캔이 한 번이 된다
+# (같은 DB·같은 통계에서 예상 비용 3.70648).
+#
+# 이 변환은 Event IR 의미 변경이 **아니다** — IR·지문·query identity 는 그대로이고 물리 SQL 만
+# 바뀐다. 의미 동치의 유일한 조건은 "이벤트가 하나도 없는 회원이 거짓"이다: 상관 스칼라는 그런
+# 회원에게 COUNT=0 을 주지만 GROUP BY 형태에는 그 회원의 그룹 자체가 없다. 그래서 연산자
+# 허용목록이 아니라 **임계값 0 에서 비교를 계산**해 거짓일 때만 낮춘다. 그러면 '>= 3' 뿐 아니라
+# '> 0' · '= 2' · '!= 0' 이 자동으로 열리고 '= 0' · '<= 1' · '< 5' 는 자동으로 닫힌다.
+AGGREGATE_MEMBERSHIP_OPTIMIZATION = "aggregate_membership_semi_join"
+
+# 스킵 사유 코드(안정 문자열 — 진단이 코드로 비교된다).
+SKIP_NO_CORRELATED_AGGREGATE = "NO_CORRELATED_AGGREGATE"
+SKIP_SUBJECT_COLUMN_FAST_PATH = "SUBJECT_COLUMN_FAST_PATH"
+SKIP_ALREADY_SET_BASED = "ALREADY_SET_BASED"
+SKIP_UNSUPPORTED_SCOPE = "UNSUPPORTED_OPTIMIZATION_SCOPE"
+SKIP_ZERO_SENSITIVE_COMPARISON = "ZERO_SENSITIVE_COMPARISON"
+SKIP_NO_GROUP_SUBJECT_BINDING = "NO_GROUP_SUBJECT_BINDING"
+SKIP_SUBJECT_REFERENCE_INSIDE_AGGREGATE = "SUBJECT_REFERENCE_INSIDE_AGGREGATE"
+SKIP_OPTIMIZATION_DISABLED = "OPTIMIZATION_DISABLED"
+SKIP_RESIDUAL_SUBJECT_CORRELATION = "RESIDUAL_SUBJECT_CORRELATION"
+
+# 임계값 0(=이벤트가 없는 회원)에서의 비교 진리값. 거짓이어야만 낮출 수 있다.
+_ZERO_COMPARISONS: dict[str, Callable[[Any], bool]] = {
+    "=": lambda threshold: 0 == threshold,
+    "!=": lambda threshold: 0 != threshold,
+    ">": lambda threshold: 0 > threshold,
+    ">=": lambda threshold: 0 >= threshold,
+    "<": lambda threshold: 0 < threshold,
+    "<=": lambda threshold: 0 <= threshold,
+}
+# 집계가 오른쪽에 온 비교('3 <= count')를 집계 기준으로 뒤집는다. =/!= 는 자기 자신이다.
+_MIRRORED_COMPARISONS = {**_MIRRORED_OPERATORS, "=": "=", "!=": "!="}
+# 빈 집합에서 0 을 돌려주는 집계만 대상이다. SUM/AVG 는 빈 집합에서 NULL 이고(SUM 은 COALESCE
+# 로 접히지만 음수 합이 가능하다) 0 판정이 임계값 의미와 일치한다는 증명이 따로 필요하다.
+_EMPTY_SET_ZERO_FUNCTIONS = frozenset({"count"})
+
+
+def _record_optimization(
+    context: CompileContext,
+    *,
+    status: str,
+    source: str | None,
+    reason: str | None = None,
+    node: event_ir.Condition | None = None,
+) -> None:
+    if context.optimization_receipts is None:
+        return
+    receipt: dict[str, Any] = {
+        "optimization": AGGREGATE_MEMBERSHIP_OPTIMIZATION,
+        "status": status,
+    }
+    if source is not None:
+        receipt["source"] = source
+    if reason is not None:
+        receipt["reason"] = reason
+    if node is not None:
+        # 표현 지문 — 최적화 전후 IR 이 같다는 증거이며 query identity 계산에는 들어가지 않는다.
+        receipt["preserved_expression_fingerprint"] = _capability_node_id(node)
+    if receipt not in context.optimization_receipts:
+        context.optimization_receipts.append(receipt)
+
+
+def _membership_operands(
+    condition: Comparison,
+) -> tuple[Aggregate | None, Literal | None, str]:
+    """집계-리터럴 비교를 **집계 기준**으로 정규화한다. 아니면 첫 값이 None."""
+    if isinstance(condition.left, Aggregate) and isinstance(condition.right, Literal):
+        return condition.left, condition.right, condition.operator
+    if isinstance(condition.right, Aggregate) and isinstance(condition.left, Literal):
+        mirrored = _MIRRORED_COMPARISONS.get(condition.operator)
+        if mirrored is None:
+            return None, None, condition.operator
+        return condition.right, condition.left, mirrored
+    return None, None, condition.operator
+
+
+def _uncorrelated_relation(relation: event_ir.Relation) -> event_ir.Relation | None:
+    """``Filter*(Source(correlation='subject'))`` 를 같은 필터의 **비상관** 관계로 다시 만든다.
+
+    원본 IR 객체는 건드리지 않는다(frozen dataclass 를 새로 만든다). 조인·그룹·정렬·제한이
+    끼어 있으면 None — 초기 적용 범위를 구조적으로 명백한 모양으로 좁힌다.
+    """
+    if isinstance(relation, Source):
+        if relation.correlation != "subject":
+            return None
+        return Source(name=relation.name, correlation="none")
+    if isinstance(relation, Filter):
+        inner = _uncorrelated_relation(relation.relation)
+        if inner is None:
+            return None
+        return Filter(relation=inner, where=relation.where)
+    return None
+
+
+def _relation_root_source(relation: event_ir.Relation) -> Source | None:
+    current = relation
+    while isinstance(current, Filter):
+        current = current.relation
+    return current if isinstance(current, Source) else None
+
+
+def _membership_skip_reason(
+    aggregate: Aggregate, literal: Literal, operator: str, context: CompileContext
+) -> str | None:
+    """DB 조회 없이 IR 한 번만 훑어 적용 가능성을 판정한다(없으면 None)."""
+    if not context.optimize_aggregate_membership:
+        return SKIP_OPTIMIZATION_DISABLED
+    if aggregate.function not in _EMPTY_SET_ZERO_FUNCTIONS:
+        return SKIP_UNSUPPORTED_SCOPE
+    zero_test = _ZERO_COMPARISONS.get(operator)
+    if zero_test is None or not isinstance(literal.value, (int, Decimal)) or isinstance(literal.value, bool):
+        return SKIP_UNSUPPORTED_SCOPE
+    if zero_test(literal.value):
+        # 이벤트가 없는 회원도 참이 되는 조건(COUNT = 0, <= 1, < 5 …). 집합형 semi-join 은 그런
+        # 회원을 표현하지 못하므로 낮추지 않는다 — LEFT JOIN/anti-join 은 별도 동치 증명이 필요하다.
+        return SKIP_ZERO_SENSITIVE_COMPARISON
+    if any(
+        isinstance(node, (Group, Join, Project, Summarize, Order, Limit))
+        for node in event_ir.walk(aggregate)
+    ):
+        # 이미 grain 이 회원이 아니거나 관계가 materialize 돼 있다 — 다시 낮추지 않는다.
+        return SKIP_ALREADY_SET_BASED
+    source = _relation_root_source(aggregate.relation)
+    if source is None or source.correlation != "subject":
+        return SKIP_NO_CORRELATED_AGGREGATE
+    spec = context.registry.get(source.name)
+    if spec is None:
+        return SKIP_UNSUPPORTED_SCOPE
+    if spec.binding != "fact_table":
+        return SKIP_SUBJECT_COLUMN_FAST_PATH
+    if _group_subject_sql(spec, context) is None:
+        return SKIP_NO_GROUP_SUBJECT_BINDING
+    for node in event_ir.walk(aggregate):
+        if isinstance(node, Aggregate) and node is not aggregate:
+            return SKIP_UNSUPPORTED_SCOPE
+        if isinstance(node, FieldRef):
+            referenced = (context.fields or {}).get(node.name)
+            if referenced is None or referenced.source != source.name:
+                # 바깥 주체(또는 다른 소스)를 참조하면 group key 로 묶는 순간 의미가 달라진다.
+                return SKIP_SUBJECT_REFERENCE_INSIDE_AGGREGATE
+    return None
+
+
+def _aggregate_membership_predicate(
+    aggregate: Aggregate, literal: Literal, operator: str, context: CompileContext
+) -> CompiledCondition | None:
+    """상관 스칼라 집계 비교 → 비상관 GROUP BY 서브쿼리에 대한 회원 semi-join."""
+    source = _relation_root_source(aggregate.relation)
+    relation = _uncorrelated_relation(aggregate.relation)
+    if source is None or relation is None:
+        return None
+    spec = context.event_spec(source.name)
+    plan = compile_relation(relation, context)
+    if plan.binding != "fact_table" or plan.group_by or plan.projection or plan.order_by or plan.limit is not None:
+        return None
+    group_key = _group_subject_sql(spec, context)
+    if group_key is None:
+        return None
+    expression = _aggregate_expression(aggregate, plan, context)
+    # 변환 실패(TRY_CAST → NULL) 회원키는 NULL 그룹으로 모인다. non-null 회원키와는 어차피
+    # 매칭되지 않지만, 명시적으로 제외해 IN 술어를 2값으로 유지한다.
+    plan.where.append(f"{group_key} IS NOT NULL")
+    plan.group_by = [group_key]
+    having = f"{expression} {operator} {compile_scalar(literal, context)}"
+    body = f"{_subquery(plan, group_key, context)} HAVING {having}"
+    if re.search(rf"\b{re.escape(context.subject.alias)}\.", body):
+        # 성능 구조 가드: 낮췄는데 바깥 주체 참조가 남았다면 상관이 사라지지 않은 것이다.
+        # 이런 계획은 최적화가 아니라 잠재적 오답이므로 기존 경로로 fail-safe 한다.
+        _record_optimization(
+            context,
+            status="skipped",
+            source=source.name,
+            reason=SKIP_RESIDUAL_SUBJECT_CORRELATION,
+        )
+        return None
+    subject_key = f"{context.subject.alias}.{spec.subject_key}"
+    return CompiledCondition(sql=f"{subject_key} IN ({body})", params=plan.params)
+
+
+def _lower_aggregate_membership(
+    condition: Comparison, context: CompileContext
+) -> CompiledCondition | None:
+    """저비용 fast-path: 집계 비교가 아니면 IR 한 노드만 보고 **즉시** 기존 경로로 돌려보낸다."""
+    aggregate, literal, operator = _membership_operands(condition)
+    if aggregate is None or literal is None:
+        return None
+    source = _relation_root_source(aggregate.relation)
+    source_name = source.name if source is not None else None
+    reason = _membership_skip_reason(aggregate, literal, operator, context)
+    if reason is not None:
+        _record_optimization(context, status="skipped", source=source_name, reason=reason)
+        return None
+    compiled = _aggregate_membership_predicate(aggregate, literal, operator, context)
+    if compiled is None:
+        _record_optimization(
+            context, status="skipped", source=source_name, reason=SKIP_UNSUPPORTED_SCOPE
+        )
+        return None
+    _record_optimization(
+        context, status="applied", source=source_name, node=condition
+    )
+    return compiled
+
+
 def _compile_comparison(condition: Comparison, context: CompileContext) -> CompiledCondition:
+    # 회원 상관 스칼라 집계는 회원마다 팩트를 다시 집계한다 — 의미가 보존되는 모양에서만 집합형
+    # semi-join 으로 낮춘다. 적용 불가면 아무 것도 컴파일하지 않고 즉시 기존 경로로 돌아간다
+    # (파라미터 카운터도 건드리지 않으므로 기존 SQL 은 바이트 동일하다).
+    lowered = _lower_aggregate_membership(condition, context)
+    if lowered is not None:
+        return lowered
     # 그룹 집계 비교('한 주문에 3개 이상')는 스칼라 서브쿼리로 표현할 수 없다 — grain 이 회원이 아니라
     # 그룹이므로 EXISTS + HAVING 이 정확한 번역이다.
     if isinstance(condition.left, Aggregate):
@@ -1499,6 +1748,10 @@ def _fresh_context(context: CompileContext) -> CompileContext:
         dialect=context.dialect,
         literals=context.literals,
         today=context.today,
+        optimize_aggregate_membership=context.optimize_aggregate_membership,
+        # capability 판정은 컴파일 **가능성**만 본다 — 진단 채널을 공유하면 같은 노드의 receipt 가
+        # 실제 컴파일 것과 섞인다.
+        optimization_receipts=None,
         _field_bindings=context._field_bindings,
     )
 
