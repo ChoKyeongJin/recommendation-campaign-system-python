@@ -7,16 +7,18 @@
 | ① | 문장 템플릿 정규식 4종 | 커버리지 단위가 **문장**이라 어미 하나만 달라져도 무효. 확장이 선형(케이스마다 정규식 추가) |
 | ② | `graph_rag` 2곳의 케이스 전용 예외 주입 | 드롭 경고 로직이 특정 어댑터 모듈을 직접 호출 — 결합이 감지기 밖으로 퍼짐 |
 
-**지금 어디까지 왔나.** 실측·설계까지 끝났고 **코드 변경은 0건**이다(§5). 작업 디렉터리는 깨끗하다.
-가장 값을 한 것은 실측이다 — 부채 ①과 ②가 서로 다른 문제가 아니라 **같은 원인**의 두 증상이라는
-것이 드러났고(§3-1), 부채 ②의 정답은 이미 저장소 안에 문서로 적혀 있었다(§2-2).
+**지금 어디까지 왔나.** 설계대로 **구현까지 끝났다**(§5의 17개 파일). 부채 ①·② 모두 종료됐고
+전량 검증(§8)은 그린이다. 가장 값을 한 것은 여전히 실측이다 — 부채 ①과 ②가 서로 다른 문제가
+아니라 **같은 원인**의 두 증상이라는 것이 드러났고(§3-1), 그래서 공용 모듈 하나가 둘을 함께
+갚았다. 부채 ②의 정답은 이미 저장소 안에 문서로 적혀 있었다(§2-2).
 
 | 찾는 것 | 어디 |
 |---|---|
 | 지금까지 한 작업 | §1(감사 범위) · §2(실측으로 알아낸 것) |
-| 내린 결정과 이유 | §3(설계 결정 7종) |
-| 수정·추가한 파일 | §5(현재 0건 + 계획 표) |
-| 남은 할 일 | §6(순서) · §7(깨면 안 되는 불변식) · §8(검증 명령) |
+| 내린 결정과 이유 | §3(설계 결정 7종) · §4(모듈 설계) |
+| 수정·추가한 파일 | §5(17개 + 계획과 갈린 것 2가지) |
+| 끝난 일과 남은 후속 | §6 |
+| 성패 기준과 검증 | §7(불변식 7줄) · §8(실행 결과) |
 
 ---
 
@@ -159,49 +161,75 @@ compact_to_source_span(query, start, end)              compact 좌표 → 원문
 
 ## 5. 수정·추가한 파일
 
-**현재 0건.** `git status` 깨끗하고 커밋도 없다. 아래는 **계획**이다.
+**17개(신설 3 · 삭제 1 · 수정 13).** 계획과 같고, 실행하며 갈린 두 가지는 표 아래에 적었다.
 
-| 파일 | 예정 작업 |
+| 파일 | 한 일 |
 |---|---|
-| `audience_frame.py` | **신설** — §4 의 4개 primitive |
-| `docs/data/runtime/language/parser_lexicon.json` | 어휘 3종 추가(`audience_frame_noun`·`request_directive`·`frame_particle`·`temporal_recency_marker`) |
+| `audience_frame.py` | **신설** — §4 의 primitive(+ `surface_spans`·`alias_stems`·`residue_pieces`) |
+| `docs/data/runtime/language/parser_lexicon.json` | 어휘 4종 추가(`audience_frame_noun`·`request_directive`·`frame_particle`·`temporal_recency_marker`) |
 | `lexicon_patterns.py` | `_CODE_FALLBACK` 동일 추가 |
 | `docs/data/runtime/semantics/audience_catalog.json` | `active_cart.selected_by`, `login.absence_restatement_terms` 선언 |
 | `event_state_selection.py` | **신설**(= `cart_abandonment_claims.py` 대체, 카탈로그 선언 구동) |
 | `cart_abandonment_claims.py` | **삭제** |
-| `canonical_signal_coverage.py` | 증거 스팬 단위 소유권 API 추가 |
-| `graph_rag.py` | 2곳의 어댑터 직접 호출 → 위 API 호출로 교체, import 제거 |
-| `query_structurer/campaign_plan_v4.py` | 3개 호출부를 새 모듈로 |
-| `rolling_absence_claims.py` | 닫힌 정규식·`login` 하드코딩 제거 → 프레임 잔여물 검사 |
-| `open_text_scope_claims.py` | 접미 정규식 제거 → 프레임 잔여물 검사 |
-| `campaign_metric_claims.py` | `_MEMBER_SUFFIX` 제거, 지표 id 하드코딩 → `claim_synthesis` 선언 지표 순회 |
-| `profile_metric_claims.py` | `_MEMBER_SUFFIX` 제거 |
-| `tests/test_audience_frame.py` | **신설** — primitive 단위 + 부정 케이스 |
-| `tests/test_cart_abandonment_replay.py` | 새 모듈명·API 로 갱신(불변식 assert 는 보존) |
-| `pyproject.toml` | 신규 모듈 2종을 ruff `include` 에 |
+| `canonical_signal_coverage.py` | 증거 스팬 단위 소유권 API(`covered_signal_spans`·`owns_signal_span`·`owns_all_signal_spans`) |
+| `graph_rag.py` | 어댑터 직접 호출 2곳 → 위 API 로 교체, import 제거, `_purchase_absence_source_spans` 추가 |
+| `query_structurer/campaign_plan_v4.py` | 카트 호출부 2곳을 새 모듈로, 폴백 호출부 1곳을 새 이름으로 |
+| `rolling_absence_claims.py` | 닫힌 정규식·`login` 하드코딩 제거, 국소 부정 스캔을 `audience_frame` 에 위임 |
+| `open_text_scope_claims.py` | 접미 정규식·접두 공백 강제 제거 → 프레임 잔여물 검사 |
+| `campaign_metric_claims.py` | `_MEMBER_SUFFIX`·문두 앵커 제거, 지표 id 하드코딩 → `claim_synthesis` 선언 지표 순회 |
+| `profile_metric_claims.py` | `_MEMBER_SUFFIX`·문두 앵커 제거 |
+| `tests/test_audience_frame.py` | **신설** — primitive 단위 + 부정 케이스 + 문형 복귀 래칫 |
+| `tests/test_cart_abandonment_replay.py` | 새 모듈명·API 로 갱신(§7 불변식 7줄 보존, 일반화 긍정 케이스 추가) |
+| `tests/test_rolling_absence_claims.py` | 새 이름으로 갱신 + 일반화 긍정 케이스(아래 참조) |
+| `pyproject.toml` | 신규 모듈 2종과 그 테스트를 ruff `include` 에 |
+
+**계획과 갈린 것 1 — 함수 이름.** `rolling_absence_claims.synthesize_closed_dormant_login_absence`
+를 `synthesize_closed_rolling_absence` 로 바꿨다. `login` 하드코딩을 뺀 뒤에도 이름이 login 을
+부르면 모듈명이 거짓이 되는 것과 같은 문제다(§3-2 #6 의 근거를 함수에도 적용).
+
+**계획과 갈린 것 2 — 의도한 동작 확대.** 문장 템플릿을 절 구조로 바꾸면 **같은 뜻의 변형이 함께
+열린다**. 그래서 기존 거절 케이스 하나가 수용으로 뒤집혔다.
+
+| 입력 | 전 | 후 | 왜 |
+|---|---|---|---|
+| `6개월 이상 접속하지 않은 고객` | 거절 | **수용** | 문형이 `휴면` 을 요구했을 뿐이다. 영수증(기간·단위·`>=`·소스·국소 부정·원장 전량 소비)은 이미 전부 증명돼 있고, 잔여물 `고객` 은 조건이 아니다 |
+
+같은 이유로 `6개월 이상 구매하지 않은 회원`(로그인이 아닌 소스)도 폴백이 복구한다. 반면
+`6개월 이상 구매하지 않은 휴면 고객` 은 계속 거절이다 — `휴면` 은 **login 의** 부재 동어반복으로만
+선언돼 있어서 구매 부재 옆에서는 프레임이 아니다(선언이 실제로 일을 한다는 증거).
 
 ---
 
-## 6. 남은 할 일 (이 순서로)
+## 6. 진행 — 전부 완료
 
-1. `audience_frame.py` 신설 + 어휘 3종(JSON·폴백 양쪽). **먼저 §7 표를 통과시키고** 배선한다.
-2. 카탈로그 선언 2종 추가(`selected_by`·`absence_restatement_terms`).
-3. `event_state_selection.py` 신설 → `campaign_plan_v4` 호출부 교체 → `cart_abandonment_claims.py` 삭제.
-4. `canonical_signal_coverage` 스팬 소유권 API → `graph_rag` 2곳 교체(부채 ② 종료).
-5. 나머지 문형 3종(휴면 로그인 · 단일 보완 상품 · 지표 2종) 프레임으로 일반화(부채 ① 종료).
-6. 드리프트 가드 추가 — "문장 전체 `fullmatch` 정규식이 소스에 다시 생기면 실패"하는 테스트.
-   부채가 같은 모양으로 되돌아오는 것을 막는 유일한 안전망이다.
-7. 전량 검증(§8).
+1. ✅ `audience_frame.py` 신설 + 어휘 4종(JSON·폴백 양쪽).
+2. ✅ 카탈로그 선언 2종(`selected_by`·`absence_restatement_terms`).
+3. ✅ `event_state_selection.py` 신설 → `campaign_plan_v4` 호출부 교체 → `cart_abandonment_claims.py` 삭제.
+4. ✅ `canonical_signal_coverage` 스팬 소유권 API → `graph_rag` 2곳 교체(**부채 ② 종료** — 이제
+   `graph_rag` 에 어댑터 모듈 import 가 없다).
+5. ✅ 나머지 문형 3종(휴면 로그인 · 단일 보완 상품 · 지표 2종) 프레임으로 일반화(**부채 ① 종료**).
+6. ✅ 래칫 — `tests/test_audience_frame.py::test_no_module_regex_matches_the_whole_request`.
+   6개 모듈을 AST 로 훑어 "모듈 상수 정규식을 원문(또는 그 접두/접미)에 `fullmatch`/`match`" 하는
+   자리가 생기면 실패한다. 인라인 `re.fullmatch(r"\s+", query[a:b])` 같은 절 **안쪽** 접착부는
+   대상이 아니다 — 문형과 구조 검사를 구분하는 선이 그것이다.
+7. ✅ 전량 검증(§8) 그린.
 
-**후속(이 작업 범위 밖).** `결제`가 구매 존재/부재 어휘에서 빠져 있는 것(§2-1)은 별건이다.
-지금 고치면 이 작업의 회귀 판정과 섞인다.
+**후속(이 작업 범위 밖).**
+
+- `결제`가 구매 존재/부재 어휘에서 빠져 있는 것(§2-1). 여전히 별건이다.
+- **띄어 쓴 부정 부사**(`결제 안 한`)를 `local_negation_spans` 가 못 읽는다. `generic_negation` 에
+  공백형이 없고(`event_negation_marker` 의 `안한` 은 공백 제거 문자열용이다), 그 어휘를 넓히면
+  구매 존재/부재 판정 전체가 흔들린다 — `결제` 와 같은 성격의 별건이다. 구조가 아니라 **어휘**의
+  한계라는 것을 드러내려고 `tests/test_cart_abandonment_replay.py` 의 거절 목록에
+  `spaced-negation-adverb-lexicon-gap` 으로 이름을 붙여 고정해 두었다.
 
 ---
 
 ## 7. 깨면 안 되는 불변식 — 범용화 뒤에도 전부 거절이어야 한다
 
-[tests/test_cart_abandonment_replay.py:257](tests/test_cart_abandonment_replay.py#L257)이 고정한 목록이고,
-**이 작업의 성패 기준**이다. 오른쪽이 새 구조에서 무엇이 막는지다.
+[tests/test_cart_abandonment_replay.py](tests/test_cart_abandonment_replay.py)가 고정한 목록이고,
+**이 작업의 성패 기준**이었다. 일곱 줄 모두 거절로 통과한다(각 케이스에 거절 사유를 이름으로 붙였다).
+오른쪽이 새 구조에서 무엇이 막는지다.
 
 | 입력 | 왜 거절인가 | 새 구조에서 막는 것 |
 |---|---|---|
@@ -222,16 +250,26 @@ compact_to_source_span(query, start, end)              compact 좌표 → 원문
 
 ---
 
-## 8. 검증 명령
+## 8. 검증 명령 — 실행 결과
+
+로컬에 파이썬이 없어 컨테이너에서 돈다(`docker compose exec -T python …`). `ruff`/`mypy` 는 이미지에
+없어 컨테이너에 임시 설치했다(CI 는 `ruff==0.16.1` 로 `F821` 만 본다).
 
 ```bash
-python -m pytest tests/test_cart_abandonment_replay.py tests/test_rolling_absence_claims.py \
-  tests/test_product_complement_replay.py tests/test_campaign_metric_claims.py \
-  tests/test_profile_metric_claims.py tests/test_canonical_signal_coverage_drift.py -q
-python -m pytest -q                     # 전량(기준: 1701 passed / 24 skipped)
-python -m mypy                          # query_pipeline strict, 기준 0
-python -m ruff check                    # pyproject include 범위
+python -m pytest tests/test_audience_frame.py tests/test_cart_abandonment_replay.py \
+  tests/test_rolling_absence_claims.py tests/test_product_complement_replay.py \
+  tests/test_campaign_metric_claims.py tests/test_profile_metric_claims.py \
+  tests/test_canonical_signal_coverage_drift.py tests/test_doc_claims.py -q
+                                        # → 140 passed
+python -m pytest -q                     # → 2024 passed / 24 skipped, 실패 0
+python -m mypy                          # → Success: no issues found in 28 source files
+python -m ruff check                    # → All checks passed!
 ```
+
+**기준선 주의.** 착수 시점 전량은 `1 failed, 1983 passed, 26 skipped` 였다. 그 하나는 코드가 아니라
+**이 문서**였다 — `test_doc_claims` 가 §5 의 `tests/test_audience_frame.py` 인용을 "없는 테스트를
+근거로 든 문장"으로 잡았다. 파일이 생기면서 함께 해소됐다. 노트 작성 시점의 옛 수치(`1701 passed`)는
+현재 값으로 갱신했다. skip 수는 실행마다 24~26으로 흔들린다(착수 전에도 그랬다) — 실패 0이 기준이다.
 
 라이브 코퍼스는 회귀 게이트가 아니다(같은 코드로 두 번 돌려 77종 중 43종이 갈린 실측이 있다).
 동치 증명은 `git stash` 차등으로 한다.

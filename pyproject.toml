@@ -51,6 +51,11 @@ include = [
     "query_structurer/audience_execution.py",
     "tests/test_audience_validators.py",
     "tests/test_audience_execution_projection.py",
+    # 언어 계층의 공용 원자와 그 카탈로그 소비자. 닫힌 문형 정규식을 대체한 자리라
+    # 새 어휘·새 선언이 계속 붙는다 — 자라는 자리부터 같은 기준으로 본다.
+    "audience_frame.py",
+    "event_state_selection.py",
+    "tests/test_audience_frame.py",
 ]
 
 [tool.ruff.lint]

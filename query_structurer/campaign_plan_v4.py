@@ -6,8 +6,8 @@ import json
 from typing import Any
 
 import audience_runtime
-import cart_abandonment_claims
 import event_ir
+import event_state_selection
 import open_text_scope_claims
 import plan_decisions
 import rolling_absence_claims
@@ -1140,36 +1140,42 @@ def _synthesize_closed_product_complement(
     return True
 
 
-_ACTIVE_CART_ISSUE_CODES = frozenset({"missing_argument", "validation_mismatch"})
-_ACTIVE_CART_ISSUE_ARGUMENTS = frozenset({"period", "audience.period"})
+_STATE_SELECTION_ISSUE_CODES = frozenset({"missing_argument", "validation_mismatch"})
+_STATE_SELECTION_ISSUE_ARGUMENTS = frozenset({"period", "audience.period"})
 
 
-def _synthesize_closed_recent_active_cart(
+def _synthesize_declared_state_selection(
     payload: dict[str, Any], query: str
 ) -> bool:
-    """Resolve only the closed recent-cart-abandonment construction.
+    """Resolve one catalog-declared event *state* selection.
 
     ``KEEP_YN='Y'`` is the catalog-owned unpaid state.  A member-wide purchase
     anti-join is not equivalent: it would drop an active-cart member merely
-    because they bought some other item during the period.
+    because they bought some other item during the period.  Which surfaces
+    select that state source is a catalog declaration, not a sentence template
+    (:mod:`event_state_selection`).
     """
 
     requirement = payload.get(AUDIENCE_REQUIREMENT_KEY)
     if not isinstance(requirement, dict):
+        return False
+    try:
+        catalog = audience_runtime.catalog_snapshot()
+    except audience_runtime.AudienceCatalogLoadError:
         return False
     raw_expression = requirement.get("expression")
     issues = requirement.get("issues")
     if raw_expression is None:
         if not isinstance(issues, list) or not issues or not all(
             isinstance(issue, dict)
-            and issue.get("code") in _ACTIVE_CART_ISSUE_CODES
-            and issue.get("argument") in _ACTIVE_CART_ISSUE_ARGUMENTS
+            and issue.get("code") in _STATE_SELECTION_ISSUE_CODES
+            and issue.get("argument") in _STATE_SELECTION_ISSUE_ARGUMENTS
             for issue in issues
         ):
             return False
     elif not (
         issues == []
-        and cart_abandonment_claims.is_refutable_model_shape(raw_expression)
+        and event_state_selection.is_refutable_model_shape(raw_expression, catalog)
     ):
         return False
     if payload.get("intent") not in {"find_user_segment", "recommend_campaign"}:
@@ -1187,21 +1193,21 @@ def _synthesize_closed_recent_active_cart(
     bindings = payload.get("literal_bindings")
     if not isinstance(bindings, list):
         return False
-    expression = cart_abandonment_claims.synthesize_recent_active_cart(
-        query, bindings
-    )
-    if expression is None:
+    claim = event_state_selection.synthesize_state_selection(query, bindings, catalog)
+    if claim is None:
         return False
+    expression = claim.expression
     requirement["expression"] = expression.to_dict()
     requirement["issues"] = []
     plan_decisions.record(
         payload,
-        filter_name="cart_abandonment_claims.recent_active_cart",
+        filter_name=claim.filter_name,
         action=plan_decisions.UPDATE,
         slot="audience_requirement.expression+issues",
         reason=(
-            "완결된 최근 장바구니 미결제 문구를 INS_DT 기간 안의 "
-            "KEEP_YN='Y' cart 존재로 확정하고 회원 전체 구매 anti-join을 제거"
+            f"'{claim.selection.base}' 표면과 '{claim.selection.negated_event}' 부정이 같은 절이므로 "
+            f"카탈로그 선언대로 '{claim.selection.selected}' 상태 소스로 확정하고 "
+            "회원 전체 anti-join을 제거"
         ),
         value=expression.to_dict(),
     )
@@ -1311,7 +1317,7 @@ def attach_campaign_query_plan_v4_identity(
         }
     )
     _synthesize_closed_product_complement(enriched, query)
-    _synthesize_closed_recent_active_cart(enriched, query)
+    _synthesize_declared_state_selection(enriched, query)
     _normalize_audience_wire_shapes(enriched)
     _normalize_unique_evidence_spans(enriched, query)
     _normalize_audience_evidence(enriched, query)
@@ -1376,19 +1382,17 @@ def build_campaign_query_plan_v4_fallback(
 ) -> CampaignQueryPlanV4:
     literal_bindings = extract_literal_bindings(query, current_date=current_date)
     try:
-        closed_login_absence = (
-            rolling_absence_claims.synthesize_closed_dormant_login_absence(
-                query,
-                literal_bindings,
-                audience_runtime.catalog_snapshot(),
-            )
+        closed_rolling_absence = rolling_absence_claims.synthesize_closed_rolling_absence(
+            query,
+            literal_bindings,
+            audience_runtime.catalog_snapshot(),
         )
     except audience_runtime.AudienceCatalogLoadError:
         # The emergency path may only recover from declared catalog assets.
         # If those assets are unavailable, preserve the ordinary system-failure
         # fallback instead of guessing or letting fallback construction raise.
-        closed_login_absence = None
-    recovered = closed_login_absence is not None
+        closed_rolling_absence = None
+    recovered = closed_rolling_absence is not None
     payload = attach_campaign_query_plan_v4_identity(
         {
             "intent": "find_user_segment" if recovered else "unknown",
@@ -1410,8 +1414,8 @@ def build_campaign_query_plan_v4_fallback(
             "semantic_evidence": [],
             AUDIENCE_REQUIREMENT_KEY: {
                 "expression": (
-                    closed_login_absence.to_dict()
-                    if closed_login_absence is not None
+                    closed_rolling_absence.to_dict()
+                    if closed_rolling_absence is not None
                     else None
                 ),
                 "issues": [] if recovered else [
@@ -1442,10 +1446,10 @@ def build_campaign_query_plan_v4_fallback(
             action=plan_decisions.SET,
             slot="audience_requirement.expression",
             reason=(
-                "LLM 구조화가 모두 실패했지만 완결된 휴면 로그인 부재 문형의 "
-                "기간·단위·부정 극성·카탈로그 소유권을 결정론적으로 검증했다"
+                "LLM 구조화가 모두 실패했지만 완결된 사건 부재 요청의 기간·단위·부정 극성· "
+                "카탈로그 소유권과 잔여물이 프레임뿐임을 결정론적으로 검증했다"
             ),
-            value=closed_login_absence.to_dict(),
+            value=closed_rolling_absence.to_dict(),
         )
         return CampaignQueryPlanV4(payload)
     # 구조화기 자체를 못 쓴 것은 '조건이 없다'가 아니라 내부 사고다 — 파생 semantic_ir(노드 0개

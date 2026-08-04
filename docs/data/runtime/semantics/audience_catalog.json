@@ -43,7 +43,7 @@
     "login": {"sources": ["login"], "fields": ["subject.last_login_channel"]},
     "purchase_absence": {
       "negated_sources": ["purchase"],
-      "note": "회원 전체 구매 부재는 purchase의 부정 Exists로만 전역 커버한다. active_cart의 KEEP_YN='Y'는 해당 카트 라인의 미결제 상태일 뿐이며, 정확한 최근 N일 카트 미결제 문형은 cart_abandonment_claims가 원문과 IR을 재검증해 별도로 소유한다."
+      "note": "회원 전체 구매 부재는 purchase의 부정 Exists로만 전역 커버한다. active_cart의 KEEP_YN='Y'는 해당 카트 라인의 미결제 상태일 뿐이다. 그 상태어가 원문의 구매 부정 표면을 소유하는 범위는 family가 아니라 근거 스팬 단위이며, 소스 선언 selected_by가 그 규칙을 갖는다(같은 절일 때만 소유)."
     },
     "campaign_contact": {"sources": ["campaign_contact_success"]},
     "offer_response": {"sources": ["campaign_offer_response", "campaign_response"]},
@@ -89,7 +89,9 @@
       "binding": "subject_column",
       "grain": "member",
       "label": "로그인",
-      "aliases": ["로그인", "접속"]
+      "aliases": ["로그인", "접속"],
+      "absence_restatement_terms": ["휴면"],
+      "_absence_restatement_comment": "이 사건의 부재를 다시 말하는 상태어. '6개월 이상 접속하지 않은 휴면 고객'의 '휴면'은 새 조건이 아니라 앞 절의 동어반복이므로 잔여물 검사에서 프레임으로 허용한다. 예전에는 문형 정규식이 이 낱말을 조용히 삼켰다 — 선언으로 드러내야 드리프트 가드가 볼 수 있다."
     },
     "signup": {
       "table": "CRM_MB_BASEINFO",
@@ -129,7 +131,13 @@
       "extra_predicates": ["{alias}.KEEP_YN = 'Y'"],
       "grain": "event",
       "label": "미결제 장바구니",
-      "aliases": ["보관 중 장바구니", "미결제 장바구니", "장바구니 이탈"]
+      "aliases": ["보관 중 장바구니", "미결제 장바구니", "장바구니 이탈"],
+      "selected_by": {
+        "source": "cart",
+        "negated_event": "purchase",
+        "window": "rolling_duration",
+        "note": "'장바구니 표면 + 구매 부정이 같은 절'이면 그 요청이 고르는 소스는 cart + 회원 전체 구매 NOT EXISTS가 아니라 이 KEEP_YN='Y' 상태 소스다. 이것은 파서 사정이 아니라 도메인 사실이라 카탈로그가 갖는다 — 유사 축(미사용 쿠폰 등)은 이 선언 한 항목으로 는다. 창 종류를 rolling_duration으로 못 박는 이유는 '30일 전'(past_point)이 롤링 창이 아니기 때문이다."
+      }
     },
     "member_month_snapshot": {
       "table": "CRM_MB_MONTHCRMINFO",

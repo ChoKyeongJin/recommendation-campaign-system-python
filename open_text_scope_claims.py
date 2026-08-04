@@ -15,6 +15,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+import audience_frame
 import event_ir
 import event_semantic_registry
 import lexicon_patterns
@@ -32,11 +33,6 @@ _ENUM_SEPARATOR_RE = re.compile(
 _QUANTITY_OR_MONEY_RE = re.compile(
     r"^(?:\d[\d,.]*|[일이삼사오육칠팔구십백천만억]+)"
     r"(?:개|회|번|건|명|종|가지|원|만원|천원|억원|일|주|개월|달|년)?$"
-)
-_SINGLE_COMPLEMENT_AUDIENCE_SUFFIX_RE = re.compile(
-    r"^\s*(?:한|했던|하는)\s*(?:회원|고객|사람)(?:을|를)?\s*"
-    r"(?:(?:찾아|추출해|선정해|뽑아|알려)\s*(?:줘|주세요))?[.!?]?\s*$",
-    re.IGNORECASE,
 )
 
 
@@ -260,15 +256,18 @@ def extract_purchase_product_claims(query: str) -> tuple[OpenTextScopeClaim, ...
 def synthesize_single_product_complement_purchase(
     query: str,
 ) -> event_ir.Exists | None:
-    """Synthesize only the closed ``X 외 상품 구매 회원`` construction.
+    """Synthesize only the request that is one ``X 외 상품 구매`` claim and nothing else.
 
-    This is deliberately not a general Korean parser.  The whole audience
-    clause must consist of one concrete complemented product claim followed by
-    a member noun and an optional request ending.  Prefix conditions,
-    conjunctions, multiple product claims, periods, thresholds, and arbitrary
-    trailing text all fail closed.  The resulting ``!=`` remains a row-level
-    predicate inside positive ``Exists``; it can never become member-level
-    ``Not(Exists(...))``.
+    This is deliberately not a general Korean parser.  Exactly one concrete
+    complemented product claim must be present, and everything the claim does
+    not own must be frame — audience nouns, particles, verb endings, request
+    verbs (:mod:`audience_frame`).  Prefix conditions, conjunctions, multiple
+    product claims, periods, thresholds, and arbitrary trailing text all fail
+    closed.  The judgement is by clause structure rather than by one sentence
+    template, so ``찾아줘`` / ``추출해 주세요`` / ``했던`` are the same answer.
+
+    The resulting ``!=`` remains a row-level predicate inside positive
+    ``Exists``; it can never become member-level ``Not(Exists(...))``.
     """
 
     claims = extract_purchase_product_claims(query)
@@ -277,9 +276,7 @@ def synthesize_single_product_complement_purchase(
     claim = claims[0]
     if not claim.complemented or claim.group is not None:
         return None
-    if query[:claim.start].strip() or not _SINGLE_COMPLEMENT_AUDIENCE_SUFFIX_RE.fullmatch(
-        query[claim.end:]
-    ):
+    if not audience_frame.is_frame_only(query, [(claim.start, claim.end)]):
         return None
 
     evidence = event_ir.Evidence(

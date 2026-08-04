@@ -97,7 +97,7 @@ def test_rolling_absence_expression_can_be_synthesized_from_owned_literals() -> 
 
 
 def test_closed_dormant_login_absence_is_recovered_for_structurer_fallback() -> None:
-    expression = rolling_absence_claims.synthesize_closed_dormant_login_absence(
+    expression = rolling_absence_claims.synthesize_closed_rolling_absence(
         QUERY,
         _bindings(),
         audience_runtime.catalog_snapshot(),
@@ -108,27 +108,56 @@ def test_closed_dormant_login_absence_is_recovered_for_structurer_fallback() -> 
 
 
 @pytest.mark.parametrize(
+    ("query", "source"),
+    [
+        # 판정 단위가 문장이 아니라 절 구조이므로, 조건이 하나뿐이면 상태어('휴면')가 없어도
+        # 같은 답이다 — 그 낱말은 앞 절의 동어반복이지 요청의 일부가 아니었다.
+        pytest.param("6개월 이상 접속하지 않은 고객", "login", id="no-restatement-word"),
+        pytest.param(
+            "6개월 이상 접속하지 않은 휴면 회원을 찾아줘.", "login", id="request-verb"
+        ),
+        # login 하드코딩이 사라져 같은 문법이 다른 사건에도 열린다.
+        pytest.param("6개월 이상 구매하지 않은 회원", "purchase", id="purchase-source"),
+    ],
+)
+def test_closed_rolling_absence_generalizes_beyond_one_sentence_template(
+    query: str, source: str
+) -> None:
+    expression = rolling_absence_claims.synthesize_closed_rolling_absence(
+        query,
+        _bindings(query),
+        audience_runtime.catalog_snapshot(),
+    )
+
+    assert expression is not None
+    assert [
+        (view.source, view.negated) for view in event_ir.existence_views(expression)
+    ] == [(source, True)]
+
+
+@pytest.mark.parametrize(
     "query",
     [
         pytest.param("6개월 이하 접속하지 않은 휴면 고객", id="wrong-operator"),
         pytest.param("6개월 이상 접속한 휴면 고객", id="positive-login"),
         pytest.param("6 이상 접속하지 않은 휴면 고객", id="ambiguous-unit"),
-        pytest.param("6개월 이상 접속하지 않은 고객", id="missing-dormant-audience"),
         pytest.param(
             "6개월 이상 접속하지 않은 휴면 고객 중 여성",
             id="additional-condition",
         ),
-        pytest.param("6개월 이상 구매하지 않은 휴면 고객", id="wrong-source"),
+        # '휴면'은 login 의 부재를 다시 말하는 낱말로만 선언돼 있다. 구매 부재 옆에서는
+        # 프레임이 아니므로 잔여물 검사가 막는다.
+        pytest.param("6개월 이상 구매하지 않은 휴면 고객", id="restatement-of-other-source"),
         pytest.param(
             "최근 90일 동안 주문하지 않은 회원을 추출해줘.",
             id="live-66-fact-purchase-absence",
         ),
     ],
 )
-def test_closed_dormant_login_absence_fallback_rejects_nearby_phrases(
+def test_closed_rolling_absence_fallback_rejects_nearby_phrases(
     query: str,
 ) -> None:
-    assert rolling_absence_claims.synthesize_closed_dormant_login_absence(
+    assert rolling_absence_claims.synthesize_closed_rolling_absence(
         query,
         _bindings(query),
         audience_runtime.catalog_snapshot(),

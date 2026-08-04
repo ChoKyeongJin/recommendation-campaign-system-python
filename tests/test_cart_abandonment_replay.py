@@ -7,8 +7,8 @@ import pytest
 
 import audience_runtime
 import canonical_signal_coverage
-import cart_abandonment_claims
 import event_ir
+import event_state_selection
 import graph_rag
 import sql_guard
 from query_structurer.campaign_plan_v4 import (
@@ -19,6 +19,11 @@ from query_structurer.structurer import LLMCampaignQueryPlanV4Structurer
 from query_structurer.types import QueryStructuringInput, StructuringContext
 
 QUERY = "최근 30일 장바구니에 담아두고 결제하지 않은 회원"
+STATE_SELECTION_FILTER = "event_state_selection.active_cart"
+
+
+def _catalog() -> dict:
+    return audience_runtime.catalog_snapshot()
 
 
 def _base_payload(requirement: dict) -> dict:
@@ -155,7 +160,7 @@ def test_live_11_missing_period_response_is_resolved_on_the_first_attempt() -> N
     assert isinstance(views[0].window, event_ir.RollingWindow)
     assert (views[0].window.value, views[0].window.unit) == (30, "day")
     assert any(
-        decision.get("filter") == "cart_abandonment_claims.recent_active_cart"
+        decision.get("filter") == STATE_SELECTION_FILTER
         for decision in plan.get("decisions", [])
     )
 
@@ -188,16 +193,17 @@ def test_live_11_two_source_model_shape_is_narrowed_to_active_cart() -> None:
     assert [(view.source, view.negated) for view in event_ir.existence_views(expression)] == [
         ("active_cart", False)
     ]
-    # active_cart is not a global proof of member-wide purchase absence.  The
-    # exact closed phrase is instead owned by the deterministic adapter after
-    # it rechecks both the source text and the complete IR.
+    # active_cart is not a global proof of member-wide purchase absence: the
+    # family stays uncovered.  The catalog-declared state selection owns this
+    # request only after rechecking the source text and the complete IR.
     assert "purchase_absence" not in canonical_signal_coverage.covered_families(
         plan, audience_runtime.load_audience_catalog_config()
     )
-    assert cart_abandonment_claims.owns_recent_active_cart_claim(
+    assert event_state_selection.owns_state_selection_claim(
         QUERY,
         plan["event_expression"]["expression"],
         plan["literal_bindings"],
+        _catalog(),
     )
 
 
@@ -255,23 +261,50 @@ def test_live_11_full_sql_result_keeps_candidate_through_all_guards(
 
 
 @pytest.mark.parametrize(
-    "query",
+    ("query", "why"),
     [
-        "30일 전 장바구니에 담아두고 결제하지 않은 회원",
-        "최근 30일 장바구니에 담은 회원",
-        "최근 30일 결제하지 않은 회원",
-        "최근 30일 장바구니에 담아두고 다른 상품을 결제하지 않은 회원",
-        "최근 30일 장바구니에 담아두고 결제하지 않은 여성 회원",
-        "최근 30일 장바구니에 담아두고 결제하지 않은 회원 또는 VIP 회원",
-        "최근 30일 장바구니에 담은 회원 중 구매 이력이 없는 회원",
+        ("30일 전 장바구니에 담아두고 결제하지 않은 회원", "past-point-not-rolling"),
+        ("최근 30일 장바구니에 담은 회원", "no-negation"),
+        ("최근 30일 결제하지 않은 회원", "no-cart-surface"),
+        ("최근 30일 장바구니에 담아두고 다른 상품을 결제하지 않은 회원", "scope-noun-between"),
+        ("최근 30일 장바구니에 담아두고 결제하지 않은 여성 회원", "non-frame-residue"),
+        ("최근 30일 장바구니에 담아두고 결제하지 않은 회원 또는 VIP 회원", "or-branch"),
+        ("최근 30일 장바구니에 담은 회원 중 구매 이력이 없는 회원", "different-clause"),
+        # 구조가 아니라 **어휘**의 한계다. 띄어 쓴 부정 부사('안 한')는 generic_negation 에 없고
+        # (event_negation_marker 의 '안한'은 공백을 지운 문자열용이다), 그 어휘를 넓히는 일은
+        # 구매 존재/부재 판정 전체를 흔들어 별건이다 — NOTES_fix §2-1 의 '결제'와 같은 성격.
+        ("최근 30일 장바구니에 담아두고 결제 안 한 회원", "spaced-negation-adverb-lexicon-gap"),
     ],
 )
 def test_active_cart_synthesis_refuses_nearby_but_distinct_meanings(
+    query: str, why: str
+) -> None:
+    assert event_state_selection.synthesize_state_selection(
+        query, extract_literal_bindings(query, current_date="2026-08-04"), _catalog()
+    ) is None, why
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        # 문형이 아니라 절 구조로 판정하므로, 뜻이 같은 어미·요청어·표기 변형은 같은 답이다.
+        "최근 30일 장바구니에 담아두고 구매하지 않은 회원을 찾아줘.",
+        "최근 30일 카트에 담아두고 결제하지 않은 고객 추출해 주세요",
+        "최근 30일 장바구니에 담아두고 결제하지 않은 고객님",
+        "최근 3개월 장바구니에 담아두고 결제하지 않은 회원",
+    ],
+)
+def test_active_cart_synthesis_generalizes_beyond_one_sentence_template(
     query: str,
 ) -> None:
-    assert cart_abandonment_claims.synthesize_recent_active_cart(
-        query, extract_literal_bindings(query, current_date="2026-08-04")
-    ) is None
+    claim = event_state_selection.synthesize_state_selection(
+        query, extract_literal_bindings(query, current_date="2026-08-04"), _catalog()
+    )
+
+    assert claim is not None
+    assert claim.selection.selected == "active_cart"
+    views = event_ir.existence_views(claim.expression)
+    assert [(view.source, view.negated) for view in views] == [("active_cart", False)]
 
 
 def test_generic_cart_source_does_not_claim_general_purchase_absence() -> None:
@@ -320,13 +353,24 @@ def test_active_cart_cannot_hide_a_distinct_member_wide_purchase_absence() -> No
         current_date="2026-08-04",
     )
 
-    assert not cart_abandonment_claims.owns_recent_active_cart_claim(
+    assert not event_state_selection.owns_state_selection_claim(
         query,
         plan["event_expression"]["expression"],
         plan["literal_bindings"],
+        _catalog(),
     )
     assert "purchase_absence" not in canonical_signal_coverage.covered_families(
         plan, audience_runtime.load_audience_catalog_config()
+    )
+    # 부채 ②의 핵심: IR 증거가 문장 전체라 "증거가 부정 표면을 덮는가"만 보면 통과한다.
+    # 소유 판정이 **같은 절인가**이므로 이 구간은 소유되지 않는다.
+    absence_span = (query.index("구매"), query.index("없는") + len("없는"))
+    assert not canonical_signal_coverage.owns_signal_span(
+        query,
+        plan,
+        audience_runtime.load_audience_catalog_config(),
+        "purchase_absence",
+        absence_span,
     )
     dropped = graph_rag._deterministic_dropped_conditions(query, plan)
     assert any("구매 미발생" in warning for warning in dropped)
@@ -366,6 +410,6 @@ def test_live_10_compound_ranked_set_stays_unsupported() -> None:
     assert plan["semantic_ir"]["status"] == "unsupported"
     assert plan.get("event_expression") is None
     assert not any(
-        decision.get("filter") == "cart_abandonment_claims.recent_active_cart"
+        decision.get("filter") == STATE_SELECTION_FILTER
         for decision in plan.get("decisions", [])
     )

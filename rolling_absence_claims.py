@@ -2,19 +2,12 @@
 
 from __future__ import annotations
 
-import re
 from collections.abc import Iterable, Mapping, MutableMapping
 from typing import Any
 
+import audience_frame
 import event_ir
 import lexicon_patterns
-
-
-_CLOSED_DORMANT_LOGIN_ABSENCE_RE = re.compile(
-    r"^\s*[1-9]\d*\s*(?:일|주|개월|달|년)\s*이상\s*"
-    r"(?:접속|로그인)\s*하지\s*않은\s*휴면\s*(?:고객|회원)\s*[.!?]?\s*$",
-    re.IGNORECASE,
-)
 
 
 def _compact(value: Any) -> str:
@@ -124,55 +117,38 @@ def consumed_literal_binding_indices(
     return frozenset({duration_index, operator_index})
 
 
+def _source_terms(declaration: Mapping[str, Any]) -> tuple[str, ...]:
+    aliases = declaration.get("aliases")
+    return tuple(
+        term
+        for term in (
+            declaration.get("label"),
+            *(aliases if isinstance(aliases, list) else []),
+        )
+        if isinstance(term, str) and term
+    )
+
+
 def _source_evidence_candidates(
     query: str, catalog: Mapping[str, Any]
 ) -> list[tuple[str, event_ir.Evidence]]:
+    """Every catalog time source that is locally negated in this request.
+
+    "Locally negated" — the negation prefixes the source alias or follows it
+    closely, and the span reaches the end of that word — is a shared language
+    judgement, not a fact about absence claims, so :mod:`audience_frame` owns it.
+    """
     sources = catalog.get("sources")
     if not isinstance(sources, Mapping):
         return []
-    negations = tuple(
-        str(term) for term in lexicon_patterns.vocabulary("generic_negation") if term
-    )
     candidates: set[tuple[str, int, int]] = set()
     for source_name, declaration in sources.items():
         if not isinstance(declaration, Mapping) or not declaration.get("time_column"):
             continue
-        aliases = declaration.get("aliases")
-        terms = [
-            declaration.get("label"),
-            *(aliases if isinstance(aliases, list) else []),
-        ]
-        source_spans = {
-            match.span()
-            for term in terms
-            if isinstance(term, str) and term
-            for match in re.finditer(re.escape(term), query, flags=re.IGNORECASE)
-        }
-        for source_start, source_end in source_spans:
-            for negative in negations:
-                for match in re.finditer(re.escape(negative), query, flags=re.IGNORECASE):
-                    negative_start, negative_end = match.span()
-                    overlaps_prefixed_source = (
-                        negative_start <= source_start and negative_end >= source_end
-                    )
-                    follows_source = (
-                        source_end <= negative_start
-                        and negative_start - source_end <= 8
-                    )
-                    if not (overlaps_prefixed_source or follows_source):
-                        continue
-                    evidence_start = min(source_start, negative_start)
-                    evidence_end = max(source_end, negative_end)
-                    # Include the Korean inflection attached to a short generic
-                    # negation stem (``않`` -> ``않은``), but stop at the next
-                    # word so evidence cannot absorb an unrelated condition.
-                    while (
-                        evidence_end < len(query)
-                        and not query[evidence_end].isspace()
-                        and query[evidence_end] not in ",.;:!?()[]{}"
-                    ):
-                        evidence_end += 1
-                    candidates.add((str(source_name), evidence_start, evidence_end))
+        for start, end in audience_frame.local_negation_spans(
+            query, _source_terms(declaration)
+        ):
+            candidates.add((str(source_name), start, end))
     return [
         (source_name, event_ir.Evidence(query[start:end], start, end))
         for source_name, start, end in sorted(candidates)
@@ -235,31 +211,80 @@ def synthesize_rolling_absence(
     return next(iter(expressions.values())) if len(expressions) == 1 else None
 
 
-def synthesize_closed_dormant_login_absence(
+def _absence_restatement_terms(
+    catalog: Mapping[str, Any], source_name: str
+) -> tuple[str, ...]:
+    """State words the catalog declares as a restatement of this very absence.
+
+    ``휴면`` in ``6개월 이상 접속하지 않은 휴면 고객`` adds no condition — it says
+    the preceding clause again.  A sentence template used to swallow it in
+    silence; declaring it makes the swallowing visible to the drift guards.
+    """
+    sources = catalog.get("sources")
+    declaration = sources.get(source_name) if isinstance(sources, Mapping) else None
+    declared = (
+        declaration.get("absence_restatement_terms")
+        if isinstance(declaration, Mapping)
+        else None
+    )
+    return tuple(
+        str(term) for term in declared or [] if isinstance(term, str) and term
+    )
+
+
+def synthesize_closed_rolling_absence(
     query: str,
     bindings: Iterable[Mapping[str, Any]],
     catalog: Mapping[str, Any],
 ) -> event_ir.Condition | None:
-    """Recover one complete dormant-login phrase after total LLM failure.
+    """Recover one complete absence request after total LLM failure.
 
-    The general synthesizer proves the duration, unit, ``>=`` polarity,
-    catalog source, local negation, and complete literal ledger.  This
-    fallback-only wrapper adds the missing whole-query proof: the request must
-    contain exactly that one login-absence condition and the dormant audience
-    noun.  Nearby wording, an extra condition, or an ambiguous unit therefore
-    stays on the ordinary fail-closed structurer path.
+    The general synthesizer proves the duration, unit, ``>=`` polarity, catalog
+    source, local negation, and complete literal ledger.  This fallback-only
+    wrapper adds the missing whole-request proof, and asks it by clause
+    structure instead of by one Korean sentence template: everything the receipt
+    does not own must be frame — audience nouns, particles, request verbs, plus
+    any state word the catalog declares as a restatement of this same absence.
+
+    An extra condition therefore still stays on the ordinary fail-closed
+    structurer path, but a different ending, request verb, or word order no
+    longer changes the answer — and the recovery is no longer login-only, since
+    nothing here names a source.
     """
-    if not isinstance(query, str) or not _CLOSED_DORMANT_LOGIN_ABSENCE_RE.fullmatch(
-        query
-    ):
+    if not isinstance(query, str):
         return None
-    expression = synthesize_rolling_absence(query, bindings, catalog)
+    rows = list(bindings)
+    expression = synthesize_rolling_absence(query, rows, catalog)
     if not (
         isinstance(expression, event_ir.Not)
         and isinstance(expression.operand, event_ir.Exists)
         and isinstance(expression.operand.relation, event_ir.Filter)
         and isinstance(expression.operand.relation.relation, event_ir.Source)
-        and expression.operand.relation.relation.name == "login"
+        and expression.operand.evidence is not None
+    ):
+        return None
+    evidence = expression.operand.evidence
+    owned: list[tuple[int, int]] = [(evidence.start, evidence.end)]
+    for binding in rows:
+        start, end = (
+            (binding.get("start"), binding.get("end"))
+            if isinstance(binding, Mapping)
+            else (None, None)
+        )
+        if not (
+            isinstance(start, int)
+            and not isinstance(start, bool)
+            and isinstance(end, int)
+            and not isinstance(end, bool)
+        ):
+            return None
+        owned.append((start, end))
+    if not audience_frame.is_frame_only(
+        query,
+        owned,
+        extra_terms=_absence_restatement_terms(
+            catalog, expression.operand.relation.relation.name
+        ),
     ):
         return None
     return expression
@@ -337,6 +362,6 @@ def normalize_rolling_absence_evidence(
 __all__ = [
     "consumed_literal_binding_indices",
     "normalize_rolling_absence_evidence",
-    "synthesize_closed_dormant_login_absence",
+    "synthesize_closed_rolling_absence",
     "synthesize_rolling_absence",
 ]

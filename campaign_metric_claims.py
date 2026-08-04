@@ -25,15 +25,11 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import audience_frame
 import audience_runtime
 import member_filters_config
 
 OWNER = "campaign_metric_claims.catalog_average_literal_operator"
-_MEMBER_SUFFIX = re.compile(
-    r"\s*(?:인\s*)?(?:회원|고객)(?:을|를)?"
-    r"(?:\s*(?:찾아\s*줘|찾아\s*주세요|추출해\s*줘|추출해\s*주세요|추출|조회해\s*줘|조회해\s*주세요))?"
-    r"\s*[.!]?\s*$"
-)
 
 
 @dataclass(frozen=True)
@@ -98,8 +94,15 @@ def _equals_predicate(column: Any, value: Any) -> str | None:
     return f"{column} = '{value.replace(chr(39), chr(39) * 2)}'"
 
 
-def _campaign_asset() -> dict[str, Any] | None:
-    """Cross-check the semantic declaration against the SQL asset."""
+def _campaign_assets() -> tuple[dict[str, Any], ...]:
+    """Every metric that *declares* a per-campaign average claim, fully verified.
+
+    The metric id used to be written here as a literal, which made a second
+    declared axis unreachable without a code change.  The catalog owns which
+    metrics carry a ``claim_synthesis.average_per_campaign`` contract; this
+    module only checks that each such declaration is complete and agrees with
+    the SQL asset.  An incomplete declaration is dropped, never guessed at.
+    """
 
     catalog = audience_runtime.catalog_snapshot()
     subject = catalog.get("subject")
@@ -110,19 +113,47 @@ def _campaign_asset() -> dict[str, Any] | None:
         isinstance(section, Mapping)
         for section in (subject, metrics, fields, sources)
     ):
-        return None
+        return ()
+    assert isinstance(metrics, Mapping)
 
-    semantic_metric_id = "campaign_purchase_amount"
-    metric = metrics.get(semantic_metric_id)
-    if not isinstance(metric, Mapping):
-        return None
-    claim = metric.get("claim_synthesis")
-    if not isinstance(claim, Mapping):
-        return None
-    average = claim.get("average_per_campaign")
-    sql_ref = claim.get("sql_asset")
-    if not isinstance(average, Mapping) or not isinstance(sql_ref, Mapping):
-        return None
+    assets: list[dict[str, Any]] = []
+    for metric_id, metric in metrics.items():
+        if not isinstance(metric, Mapping):
+            continue
+        claim = metric.get("claim_synthesis")
+        if not isinstance(claim, Mapping):
+            continue
+        average = claim.get("average_per_campaign")
+        sql_ref = claim.get("sql_asset")
+        if not isinstance(average, Mapping) or not isinstance(sql_ref, Mapping):
+            continue
+        asset = _verified_asset(
+            str(metric_id),
+            metric,
+            claim,
+            average,
+            sql_ref,
+            subject=subject,
+            fields=fields,
+            sources=sources,
+        )
+        if asset is not None:
+            assets.append(asset)
+    return tuple(assets)
+
+
+def _verified_asset(
+    semantic_metric_id: str,
+    metric: Mapping[str, Any],
+    claim: Mapping[str, Any],
+    average: Mapping[str, Any],
+    sql_ref: Mapping[str, Any],
+    *,
+    subject: Any,
+    fields: Any,
+    sources: Any,
+) -> dict[str, Any] | None:
+    """Cross-check one semantic declaration against the SQL asset."""
 
     source_id = metric.get("source")
     amount_field_id = metric.get("expression_field")
@@ -313,15 +344,22 @@ def _whole_phrase_matches(
     money_bounds: tuple[int, int],
     operator_bounds: tuple[int, int],
 ) -> bool:
-    """Require one closed claim; do not synthesize across an unknown remainder."""
+    """Require one closed claim; do not synthesize across an unknown remainder.
+
+    The five axes must appear in that order with nothing but whitespace and a
+    subject particle between them — that ordering is what binds each literal to
+    its role.  Everything *outside* the claim is judged by clause structure
+    instead of by a member-noun suffix template: it has to be frame
+    (:mod:`audience_frame`), which is the same answer for ``찾아줘`` /
+    ``조회해 주세요`` / no request verb at all, and still rejects one more
+    condition on either side.
+    """
 
     _grain_text, grain_start, grain_end = grain
     _metric_text, metric_start, metric_end = metric
     _aggregation_text, aggregation_start, aggregation_end = aggregation
     money_start, money_end = money_bounds
     operator_start, operator_end = operator_bounds
-    if grain_start != len(query) - len(query.lstrip()):
-        return False
     if not (
         grain_end <= metric_start < metric_end <= aggregation_start
         < aggregation_end <= money_start < money_end <= operator_start < operator_end
@@ -332,7 +370,7 @@ def _whole_phrase_matches(
         and re.fullmatch(r"(?:이|가|은|는)?\s+", query[metric_end:aggregation_start])
         and re.fullmatch(r"\s+", query[aggregation_end:money_start])
         and re.fullmatch(r"\s+", query[money_end:operator_start])
-        and _MEMBER_SUFFIX.fullmatch(query[operator_end:])
+        and audience_frame.is_frame_only(query, [(grain_start, operator_end)])
     )
 
 
@@ -428,45 +466,45 @@ def _validated_claim(
     ):
         return None
 
-    asset = _campaign_asset()
-    if asset is None:
-        return None
-    if (
-        normalized_money["currency"].upper() != str(asset["unit"]).upper()
-        or operator not in asset["allowed_operators"]
-    ):
-        return None
-
-    grain = _unique_term(query, asset["grain_terms"])
-    metric = _unique_term(query, asset["metric_terms"])
-    aggregation = _unique_term(query, asset["aggregation_terms"])
-    if grain is None or metric is None or aggregation is None:
-        return None
-    claim_bounds = (grain[1], operator_bounds[1])
-    if not _whole_phrase_matches(
-        query,
-        grain=grain,
-        metric=metric,
-        aggregation=aggregation,
-        money_bounds=money_bounds,
-        operator_bounds=operator_bounds,
-    ):
-        return None
-    return {
-        "asset": asset,
-        "money_index": money_index,
-        "operator_index": operator_index,
-        "money": money,
-        "comparison": comparison,
-        "money_bounds": money_bounds,
-        "operator_bounds": operator_bounds,
-        "normalized_money": normalized_money,
-        "operator": operator,
-        "grain": grain,
-        "metric": metric,
-        "aggregation": aggregation,
-        "claim_bounds": claim_bounds,
-    }
+    matched: list[dict[str, Any]] = []
+    for asset in _campaign_assets():
+        if (
+            normalized_money["currency"].upper() != str(asset["unit"]).upper()
+            or operator not in asset["allowed_operators"]
+        ):
+            continue
+        grain = _unique_term(query, asset["grain_terms"])
+        metric = _unique_term(query, asset["metric_terms"])
+        aggregation = _unique_term(query, asset["aggregation_terms"])
+        if grain is None or metric is None or aggregation is None:
+            continue
+        if not _whole_phrase_matches(
+            query,
+            grain=grain,
+            metric=metric,
+            aggregation=aggregation,
+            money_bounds=money_bounds,
+            operator_bounds=operator_bounds,
+        ):
+            continue
+        matched.append({
+            "asset": asset,
+            "money_index": money_index,
+            "operator_index": operator_index,
+            "money": money,
+            "comparison": comparison,
+            "money_bounds": money_bounds,
+            "operator_bounds": operator_bounds,
+            "normalized_money": normalized_money,
+            "operator": operator,
+            "grain": grain,
+            "metric": metric,
+            "aggregation": aggregation,
+            "claim_bounds": (grain[1], operator_bounds[1]),
+        })
+    # Two declared metrics claiming the same phrase means the phrase is
+    # ambiguous; the catalog, not this module, has to resolve that.
+    return matched[0] if len(matched) == 1 else None
 
 
 def _build_synthesis(

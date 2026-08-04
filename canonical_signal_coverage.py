@@ -13,19 +13,30 @@ plan 슬롯에 하나도 안 잡혔으면 경고를 낸다. canonical 경로는 
 언제나 '커버 아님'이다(fail-close). 표현 자체가 불가능한 family 는 ``expressible: false`` 로
 **명시 선언**한다 — 빠뜨린 것과 못 하는 것을 드리프트 가드가 구분할 수 있어야 하기 때문이다.
 
-입도 주의(알려진 한계): 판정은 **family 단위**다. 한 family 안에 절이 여럿인 원문
+입도: 기본 판정(:func:`covered_families`)은 **family 단위**다. 한 family 안에 절이 여럿인 원문
 ("장바구니에 3개 이상 그리고 미결제 유형")에서 IR 이 그중 하나만 표현했어도 커버로 읽힌다.
-정확한 최종형은 근거 스팬 단위(IR 원자의 Evidence 가 그 신호의 원문 구간을 덮는가)이지만,
-`_prompt_signal_signature` 의 신호 추출기 대부분이 스팬을 남기지 않아 선행 작업이 필요하다.
-`tests/test_canonical_signal_coverage_drift.py` 가 이 한계를 이름으로 고정한다.
+그 정밀형이 :func:`covered_signal_spans` — **근거 스팬 단위**로 "IR 원자의 Evidence 가 그 신호의
+원문 구간을 덮는가"를 답한다. 신호 추출기가 스팬을 주는 신호부터 이쪽으로 옮긴다(현재는 구매
+부재). 스팬을 남기지 않는 신호는 계속 family 단위이고, 그 한계는
+`tests/test_canonical_signal_coverage_drift.py` 가 이름으로 고정한다.
+
+스팬 판정이 필요한 이유는 하나의 실제 사고다. 어떤 소스는 별개 사건이 아니라 **같은 사건의 상태**라
+(KEEP_YN='Y' 미결제 장바구니), 그 상태어가 원문의 부정 표면을 소유하는 일이 정당하다. 그런데
+"IR 증거가 그 부정을 덮는가"만 보면 모델이 문장 전체를 증거로 적었을 때 **다른 절의 조건까지**
+삼킨다('장바구니에 담은 회원 중 구매 이력이 없는'). 그래서 소유 판정의 근거는 덮기가 아니라
+**같은 절인가**이고, 그 규칙은 카탈로그의 ``selected_by`` 선언이 갖는다
+(:mod:`event_state_selection`). 감지기는 케이스별 어댑터를 부르지 않는다.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 import event_ir
+import event_state_selection
+
+Span = tuple[int, int]
 
 CATALOG_SECTION = "signal_coverage"
 
@@ -92,6 +103,124 @@ def covered_families(
         ):
             covered.add(family)
     return frozenset(covered)
+
+
+def _evidence_span(query: str, evidence: event_ir.Evidence | None) -> Span | None:
+    """근거가 원문과 **글자까지 일치**할 때만 스팬으로 인정한다(어긋난 좌표는 소유가 아니다)."""
+    if evidence is None:
+        return None
+    start, end = evidence.start, evidence.end
+    if not (
+        isinstance(start, int)
+        and isinstance(end, int)
+        and 0 <= start < end <= len(query)
+        and query[start:end] == evidence.text
+    ):
+        return None
+    return start, end
+
+
+def _wanted(declaration: Mapping[str, Any], key: str) -> set[str]:
+    return {str(item) for item in declaration.get(key) or []}
+
+
+def covered_signal_spans(
+    query: str, plan: Mapping[str, Any], catalog: Mapping[str, Any] | None
+) -> dict[str, tuple[Span, ...]]:
+    """family → 이 플랜이 원문에서 **근거 스팬 단위로** 소유한 구간들.
+
+    소유 근거는 둘이다.
+
+    * IR 원자의 Evidence — 그 원자가 family 의 소스/필드/부정 소스를 담고 있을 때.
+    * 카탈로그 ``selected_by`` 선언 — IR 에 상태 소스가 실재하고, 그 상태가 대체하는 부정 사건의
+      표면이 기반 사건 표면과 **같은 절**에 있을 때(:mod:`event_state_selection`).
+
+    ``expressible: false`` family 는 여기서도 아무것도 소유하지 못한다.
+    """
+    if not isinstance(query, str) or not query:
+        return {}
+    expression = _expression(plan)
+    if expression is None:
+        return {}
+
+    atoms = [
+        (atom, _evidence_span(query, atom.evidence))
+        for atom, _negated in event_ir.iter_signed_atoms(expression)
+    ]
+    negated_views = [
+        view for view in event_ir.existence_views(expression) if view.negated
+    ]
+    state_owned = event_state_selection.owned_negation_spans(
+        query, event_ir.sources(expression), catalog
+    )
+
+    covered: dict[str, set[Span]] = {}
+    for family, declaration in _declarations(catalog).items():
+        if declaration.get("expressible") is False:
+            continue
+        wanted_sources = _wanted(declaration, "sources")
+        wanted_fields = _wanted(declaration, "fields")
+        wanted_negated = _wanted(declaration, "negated_sources")
+        spans: set[Span] = set()
+        if wanted_sources or wanted_fields:
+            for atom, span in atoms:
+                if span is None:
+                    continue
+                if (wanted_sources & event_ir.sources(atom)) or (
+                    wanted_fields & event_ir.field_names(atom)
+                ):
+                    spans.add(span)
+        for view in negated_views:
+            if view.source in wanted_negated:
+                span = _evidence_span(query, view.evidence)
+                if span is not None:
+                    spans.add(span)
+        for event, event_spans in state_owned.items():
+            if event in wanted_negated:
+                spans.update(event_spans)
+        if spans:
+            covered[family] = tuple(sorted(spans))
+    return covered
+
+
+def owns_signal_span(
+    query: str,
+    plan: Mapping[str, Any],
+    catalog: Mapping[str, Any] | None,
+    family: str,
+    span: Span | None,
+) -> bool:
+    """이 원문 구간을 그 family 가 소유하는가 — 소유 스팬 하나가 구간을 **덮어야** 한다."""
+    if span is None:
+        return False
+    start, end = span
+    return any(
+        owned_start <= start and end <= owned_end
+        for owned_start, owned_end in covered_signal_spans(query, plan, catalog).get(
+            str(family), ()
+        )
+    )
+
+
+def owns_all_signal_spans(
+    query: str,
+    plan: Mapping[str, Any],
+    catalog: Mapping[str, Any] | None,
+    family: str,
+    spans: Iterable[Span | None],
+) -> bool:
+    """감지기가 잡은 그 신호의 **모든** 표면 구간을 소유했는가.
+
+    'any' 가 아니라 'all' 인 것이 요점이다. 한 문장에 같은 신호가 두 절로 나오면
+    ('… 담아두고 구매하지 않은 회원 중 구매 이력도 없는 회원') 한 구간만 소유한 IR 이 나머지를
+    조용히 지운다. 구간을 못 읽은 표면(``None``)이 하나라도 있으면 소유가 아니다.
+    """
+    candidates = list(spans)
+    return (
+        bool(candidates)
+        and all(span is not None for span in candidates)
+        and all(owns_signal_span(query, plan, catalog, family, span) for span in candidates)
+    )
 
 
 def declared_families(catalog: Mapping[str, Any] | None) -> frozenset[str]:

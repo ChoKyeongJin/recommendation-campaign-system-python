@@ -28,16 +28,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+import audience_frame
 import event_ir
 import metric_registry
 from semantic_normalizers import NormalizationError, OperatorNormalizer
 
 OWNER = "profile_metric_claims.catalog_literal_operator"
-_MEMBER_SUFFIX = re.compile(
-    r"(?:인\s*)?(?:회원|고객)(?:을|를)?"
-    r"(?:\s*(?:찾아\s*줘|찾아\s*주세요|추출해\s*줘|추출해\s*주세요))?"
-    r"\s*[.!]?\s*$"
-)
 
 
 @dataclass(frozen=True)
@@ -147,10 +143,15 @@ def _whole_phrase_matches(
     operator_text: str,
     operator_bounds: tuple[int, int],
 ) -> bool:
-    """Accept one closed member predicate and no unowned prose remainder."""
+    """Accept one closed member predicate and no unowned prose remainder.
 
-    if alias_start != len(query) - len(query.lstrip()):
-        return False
+    Metric, threshold, and operator must be adjacent in that order — that is
+    what makes the duration a *scalar* here rather than a time window.  What
+    surrounds the predicate is judged by clause structure: it has to be frame
+    (:mod:`audience_frame`), so the request verb and the ending may vary while
+    one more condition on either side still fails closed.
+    """
+
     alias_end = alias_start + len(alias)
     value_start, value_end = value_bounds
     operator_start, operator_end = operator_bounds
@@ -166,7 +167,7 @@ def _whole_phrase_matches(
         return False
     if query[operator_start:operator_end] != operator_text:
         return False
-    return _MEMBER_SUFFIX.fullmatch(query[operator_end:]) is not None
+    return audience_frame.is_frame_only(query, [(alias_start, operator_end)])
 
 
 def synthesize_profile_metric_predicate(

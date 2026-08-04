@@ -24,8 +24,8 @@ import aggregate_parser_config
 import aggregate_semantics
 import aggregate_spans
 import audience_authority
+import audience_frame
 import audience_runtime, canonical_audience_claims, canonical_signal_coverage
-import cart_abandonment_claims
 import conceptual_targeting
 import condition_reconciliation
 from external_conditions.models import ResolutionContext
@@ -4482,6 +4482,23 @@ def _resolve_group_axis(axis: str, granularity: str | None = None) -> _GroupAxis
 _PURCHASE_NEG_RE = purchase_lexicon.NEGATIVE_MEMBERSHIP_RE
 
 
+def _purchase_absence_source_spans(text: str) -> list[tuple[int, int] | None]:
+    """구매 부재 표면이 **원문에서** 차지한 구간들.
+
+    표면 감지기는 조사·어미 결합을 보려고 공백을 지운 문자열 위에서 돈다. 그런데 "이 신호를 IR 이
+    소유했는가"는 원문 구간으로 따져야 하므로 좌표를 되돌린다(`audience_frame`). 되돌릴 수 없는
+    입력은 ``None`` 으로 남겨 소유 판정이 fail-close 하게 한다 — 구간을 모르면 소유도 모른다.
+
+    ``search`` 가 아니라 ``finditer`` 인 것이 요점이다. 한 문장에 구매 부재가 두 절로 나오면
+    한 구간만 소유한 IR 이 나머지를 조용히 지우기 때문이다.
+    """
+    source = text or ""
+    compact = source.replace(" ", "").casefold()
+    return [
+        audience_frame.compact_to_source_span(source, *match.span())
+        for pattern in (_PURCHASE_NEG_RE, _ZERO_PURCHASE_COUNT_PATTERN)
+        for match in pattern.finditer(compact)
+    ]
 
 
 
@@ -8168,8 +8185,9 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
     # 슬롯이 빈 이유가 '집계 계약이 모집단 필터로 가져갔기 때문'이면 조건은 사라진 게 아니라 옮겨간 것이다.
     # canonical Event IR 이 소유한 신호도 같은 이유로 슬롯이 빈다 — 판정 근거는 카탈로그 선언이다
     # (canonical_signal_coverage). '권위가 있으니 면제'가 아니라 '이 신호를 실제로 담았는가'.
+    catalog = audience_runtime.load_audience_catalog_config()
     owned_slots = _analytical_owned_audience_slots(query_plan) | canonical_signal_coverage.covered_families(
-        query_plan, audience_runtime.load_audience_catalog_config())
+        query_plan, catalog)
     if signature["genders"] and not (target_user.get("gender") or exclude.get("gender")) and "gender" not in owned_slots:
         for gender in sorted(signature["genders"]):
             warnings.append(f"성별 '{_GENDER_CANONICAL_KO.get(gender, gender)}'")
@@ -8218,18 +8236,8 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
     # 구매 미발생 표현: 부정어형('미구매/구매하지 않은')과 0-건형('구매건수 0건/주문 0건') 모두 본다 —
     # 후자는 창이 있으면 purchase_inactivity 로 컴파일되지만, 달력구간('올해 0건') 등 컴파일 불가 형태는
     # 어디에도 안 잡혀 조용히 사라진다. 어느 슬롯에도 반영 안 됐으면 시끄럽게 경고한다(silent drop 금지).
-    purchase_absence_mentioned = bool(
-        _PURCHASE_NEG_RE.search(compact) or _ZERO_PURCHASE_COUNT_PATTERN.search(compact)
-    )
-    event_payload = query_plan.get("event_expression")
-    event_expression = (
-        event_payload.get("expression") if isinstance(event_payload, Mapping) else None
-    )
-    exact_active_cart_claim = cart_abandonment_claims.owns_recent_active_cart_claim(
-        text,
-        event_expression,
-        query_plan.get("literal_bindings"),
-    )
+    purchase_absence_spans = _purchase_absence_source_spans(text)
+    purchase_absence_mentioned = bool(purchase_absence_spans)
     if purchase_absence_mentioned and not (
         isinstance(target_user.get("purchase_inactivity"), dict)
         or isinstance(target_user.get("inactivity_period"), dict)
@@ -8237,9 +8245,11 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
         or "no_buy_response" in campaign_canonicals
         or target_user.get("cart_absence")
         or "purchase_absence" in owned_slots
-        # KEEP_YN='Y'는 회원 전체 미구매가 아니다. 원문·기간·IR 전체가
-        # 닫힌 장바구니 미결제 문형과 일치할 때만 이 표면 부정어를 소유한다.
-        or exact_active_cart_claim
+        # KEEP_YN='Y'는 회원 전체 미구매가 아니다. 그 상태 소스가 이 부정 표면을 소유하는지는
+        # 근거 스팬 단위로 커버리지가 답한다(같은 절일 때만 소유) — 케이스별 어댑터를 부르지 않는다.
+        or canonical_signal_coverage.owns_all_signal_spans(
+            text, query_plan, catalog, "purchase_absence", purchase_absence_spans
+        )
         # 사건 IR 이 구매 부재를 노드로 들고 있으면 드롭이 아니다(슬롯이 아니라 IR 이 소유).
         or _event_expression_covers(query_plan, "purchase", "not_exists")
     ):
@@ -8443,18 +8453,9 @@ def _verify_sql_semantic_invariants(
                 })
 
     # (2) 구매 미발생 silent drop 금지: 표현은 있는데 어느 슬롯에도 없고 경고도 없으면 조용한 드롭이다.
-    purchase_absence_mentioned = bool(
-        _PURCHASE_NEG_RE.search(compact) or _ZERO_PURCHASE_COUNT_PATTERN.search(compact)
-    )
-    event_payload = plan.get("event_expression")
-    event_expression = (
-        event_payload.get("expression") if isinstance(event_payload, Mapping) else None
-    )
-    exact_active_cart_claim = cart_abandonment_claims.owns_recent_active_cart_claim(
-        query,
-        event_expression,
-        plan.get("literal_bindings"),
-    )
+    purchase_absence_spans = _purchase_absence_source_spans(query)
+    purchase_absence_mentioned = bool(purchase_absence_spans)
+    catalog = audience_runtime.load_audience_catalog_config()
     represented = (
         isinstance(target_user.get("purchase_inactivity"), dict)
         or isinstance(target_user.get("inactivity_period"), dict)
@@ -8462,10 +8463,10 @@ def _verify_sql_semantic_invariants(
         or any(isinstance(r, dict) and r.get("canonical") == "no_buy_response"
                for r in (target_user.get("campaign_responses") or []))
         or target_user.get("cart_absence")
-        or "purchase_absence" in canonical_signal_coverage.covered_families(
-            plan, audience_runtime.load_audience_catalog_config()
+        or "purchase_absence" in canonical_signal_coverage.covered_families(plan, catalog)
+        or canonical_signal_coverage.owns_all_signal_spans(
+            query, plan, catalog, "purchase_absence", purchase_absence_spans
         )
-        or exact_active_cart_claim
         # 사건 IR 의 not_exists 노드도 '구매 미발생을 표현했다'에 해당한다(슬롯 대신 IR 이 소유).
         or _event_expression_covers(plan, "purchase", "not_exists")
     )
