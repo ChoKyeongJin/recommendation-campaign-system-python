@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+import event_ir
 import semantic_plan
 import semantic_requirements
 
@@ -179,6 +180,16 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
                 "not field. A date window is the literal binding's normalized.event_ir_window nested in "
                 "TimeFilter, never a time_window sibling or a date_window node. Do not add unit/evidence/id "
                 "properties to Literal, FieldRef, Aggregate, Not, or the window object."
+            ),
+            (
+                # 사건의 발생 시각 필드는 소스 등록에서 **파생**되므로 이름 규칙이 곧 계약이다.
+                # 이 한 줄이 없던 동안 모델은 이름이 시간처럼 보이는 다른 필드를 골랐고('주문 시각'
+                # HHMMSS 컬럼), 기간 조건이 컴파일 불가로 떨어져 결국 기간이 통째로 빠진 SQL 이나
+                # 확인 질문으로 귀결됐다(2026-08-05 '오늘 주문한 회원' 실측).
+                "A TimeFilter always constrains the source's own event time field, and that field is named "
+                f"'<source>.{event_ir.TIME_FIELD_SUFFIX}' for every source (for example "
+                f"purchase.{event_ir.TIME_FIELD_SUFFIX}). Never point a TimeFilter at another field whose "
+                "name merely looks temporal; those are ordinary attributes and cannot carry a date window."
             ),
             (
                 "Every semantic atom and every issue must carry evidence whose text is an exact substring of "

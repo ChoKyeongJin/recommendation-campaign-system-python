@@ -143,6 +143,7 @@ _CAL_TOKEN_RE = re.compile(
 # 창 하나의 구체성 등급(작을수록 좁다). parse_calendar_window 가 '가장 좁은 표현' 하나를 고를 때 쓴다 —
 # 여러 창이 섞인 문장에서 위치가 아니라 구체성으로 뽑던 기존 계약을 그대로 보존한다.
 _GRAIN_RANK = {"ymd": 0, "ymdd": 0, "md": 0, "ym": 1, "ymd2": 1, "m": 1, "yq": 2, "q": 2, "yh": 3, "h": 3, "y": 4, "yb": 4}
+_DAY_GRAIN_RANK = _GRAIN_RANK["ymd"]
 _MONTH_GRAIN_RANK = _GRAIN_RANK["ym"]
 
 # 창 두 개 '사이'의 문구가 무슨 링크인지. 조사/연결어/구분자만 있으면 링크이고, 그 밖의 낱말(용언 등)이
@@ -481,6 +482,64 @@ def _shift_month(reference: date, offset: int) -> tuple[int, int]:
     return serial // 12, serial % 12 + 1
 
 
+def _scan_relative_calendar_days(
+    text: str, label_suffix: str, reference: date
+) -> list[_Scanned]:
+    """오늘/어제 계열을 기준일에 고정된 **하루짜리** 절대 창으로 스캔한다.
+
+    월 계열(:func:`_scan_relative_calendar_months`)과 같은 합성이고 단위만 일이다. 이 스캐너가
+    없던 동안 '오늘 주문한 회원'의 '오늘'은 어떤 창도 만들지 못했고, 애플리케이션이 소유해야 할
+    기간 바인딩이 비어 있으니 구조화 모델은 규칙대로 ``missing_argument(period)`` 를 냈다. 그
+    결과가 확인 질문이거나 — 더 나쁘게는 — 기간이 빠진 '구매 있음' SQL 이었다(전수 EXISTS).
+
+    실행 시점 ``GETDATE`` 로 미루지 않고 기준일에 고정하는 이유는 월 계열과 같다: 계획과 실행
+    사이에 날짜가 바뀌어도 요청 의미가 흔들리면 안 된다.
+
+    '오늘 기준'처럼 **앵커 표지**가 뒤따르면 창이 아니다 — 그때 이 낱말은 사건이 일어난 구간이
+    아니라 다른 조건을 읽을 기준 시점을 가리킨다('오늘 기준 휴면 회원'은 현재 상태 조건이지 오늘
+    하루의 사건이 아니다). 앵커를 창으로 만들면 아무도 소비하지 않는 기간 리터럴이 생기고, 그
+    미소비가 곧 확인 질문이 된다(실측 회귀).
+    """
+    found: list[_Scanned] = []
+    occupied: list[tuple[int, int]] = []
+    anchor_markers = sorted(
+        lexicon_patterns.vocabulary("as_of_anchor_marker"),
+        key=lambda value: (-len(value), value),
+    )
+    as_of_suffix = (
+        re.compile(r"\s*(?:은|는|이|가|으로|로)?\s*(?:" + "|".join(re.escape(word) for word in anchor_markers) + r")")
+        if anchor_markers
+        else None
+    )
+    for vocabulary_name, offset in (
+        ("calendar_today", 0),
+        ("calendar_yesterday", -1),
+        ("calendar_day_before_yesterday", -2),
+    ):
+        words = sorted(
+            lexicon_patterns.vocabulary(vocabulary_name),
+            key=lambda value: (-len(value), value),
+        )
+        if not words:
+            continue
+        pattern = re.compile("|".join(re.escape(word) for word in words))
+        for match in pattern.finditer(text):
+            if any(match.start() < end and start < match.end() for start, end in occupied):
+                continue
+            if as_of_suffix is not None and as_of_suffix.match(text, match.end()):
+                continue
+            day = reference + timedelta(days=offset)
+            stamp = ymd(day.year, day.month, day.day)
+            found.append((
+                _window(stamp, stamp, f"{day.year}년 {day.month}월 {day.day}일", label_suffix),
+                _DAY_GRAIN_RANK,
+                match.start(),
+                match.end(),
+            ))
+            occupied.append(match.span())
+    return sorted(found, key=lambda item: item[2])
+
+
 def _scan_relative_calendar_months(
     text: str, label_suffix: str, reference: date
 ) -> list[_Scanned]:
@@ -538,7 +597,10 @@ def _scan_calendar_windows(
     matches = list(_CAL_TOKEN_RE.finditer(text))
     fallback_year = next((y for y in (_token_year(m) for m in matches) if y is not None), None)
     out: list[tuple[dict[str, Any], int, int, int]] = (
-        _scan_relative_calendar_months(text, label_suffix, today)
+        [
+            *_scan_relative_calendar_days(text, label_suffix, today),
+            *_scan_relative_calendar_months(text, label_suffix, today),
+        ]
         if today is not None
         else []
     )

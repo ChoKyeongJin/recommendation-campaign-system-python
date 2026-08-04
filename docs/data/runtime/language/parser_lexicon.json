@@ -168,6 +168,22 @@
       "정확하게",
       "딱"
     ],
+    "as_of_anchor_marker": [
+      "기준",
+      "시점"
+    ],
+    "calendar_today": [
+      "오늘",
+      "금일"
+    ],
+    "calendar_yesterday": [
+      "어제",
+      "어저께"
+    ],
+    "calendar_day_before_yesterday": [
+      "그제",
+      "그저께"
+    ],
     "calendar_current_month": [
       "이번 달",
       "이번달",

@@ -384,6 +384,66 @@ def test_extra_brace_before_audience_issues_is_repaired_then_fully_validated() -
     assert "OD_PRODUCT.PRODUCT_NAME LIKE N'%사료%'" in candidate["sql"]
 
 
+def test_extra_brace_before_an_exists_evidence_is_repaired_by_the_same_rule() -> None:
+    """같은 결함(잉여 닫는 중괄호)의 다른 자리 — 수리 규칙이 이웃 키에 매이면 안 된다.
+
+    실측(2026-08-05, '오늘 주문한 회원'): 모델이 Exists 를 한 괄호 일찍 닫아 evidence 가 밖으로
+    나갔고, 그때 유일하게 스키마를 통과하는 수리는 evidence 를 Exists 안으로 되돌리는 것이었다.
+    수리 후보를 ``,"issues"`` 앞 중괄호로 한정했던 동안 이 표본은 파싱 실패로 버려졌고, 기간이
+    올바르게 들어 있던 표현이 통째로 사라져 확인 질문이나 기간 없는 SQL 로 귀결됐다.
+    """
+    query = "오늘 주문한 회원을 알려줘"
+    evidence = _evidence(query, "오늘 주문한")
+    # 모델이 실제로 내보내는 wire 형태 그대로 쓴다(앱이 덧붙이는 파생 키 없이).
+    expression = {
+        "type": "exists",
+        "relation": {
+            "type": "filter",
+            "relation": {"type": "source", "name": "purchase"},
+            "where": {
+                "type": "time_filter",
+                "field": {
+                    "type": "field",
+                    "name": f"purchase.{event_ir.TIME_FIELD_SUFFIX}",
+                },
+                "window": {
+                    "type": "interval",
+                    "start": "2026-08-05",
+                    "end_exclusive": "2026-08-06",
+                },
+            },
+        },
+        "evidence": {
+            "text": evidence.text,
+            "start": evidence.start,
+            "end": evidence.end,
+        },
+    }
+    payload = {
+        "intent": "find_user_segment",
+        "campaign_constraints": {
+            "objective": None,
+            "offer_type": None,
+            "channels": None,
+            "sell_object": None,
+        },
+        "result_limit": None,
+        "audience_requirement": {"expression": expression, "issues": []},
+        "semantic_plan": {"nodes": []},
+    }
+    valid = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    marker = ',"evidence":'
+    marker_index = valid.index(marker)
+    malformed = valid[:marker_index] + "}" + valid[marker_index:]
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(malformed)
+
+    repaired, repair = _decode_campaign_query_plan_v4_response(malformed)
+
+    assert repair is not None and repair["kind"] == "remove_extra_closing_brace"
+    assert repaired["audience_requirement"]["expression"] == expression
+
+
 def test_json_repair_refuses_an_arbitrary_trailing_object() -> None:
     with pytest.raises(json.JSONDecodeError):
         _decode_campaign_query_plan_v4_response('{"intent":"x"}{}')

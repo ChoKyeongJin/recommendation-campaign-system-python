@@ -36,12 +36,21 @@ _CAMPAIGN_TOOL_PAYLOAD_VALIDATOR = Draft202012Validator(
 def _decode_campaign_query_plan_v4_response(
     response: str,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Decode one strict tool object, repairing one proven extra delimiter.
+    """Decode one strict tool object, repairing one surplus closing brace.
 
-    A sampled response can contain one surplus closing brace immediately
-    before ``audience_requirement.issues``.  Removing it is accepted only when
-    the resulting *whole* object validates against the strict provider schema.
-    Every other malformed JSON shape remains a retryable parse failure.
+    A sampled response can close an object one brace too early, which makes the
+    document end before the remaining keys and json report ``Extra data``.  The
+    observed shapes differ only in *where* the surplus brace sits: before
+    ``audience_requirement.issues`` in one sample, and before an ``Exists``
+    node's own ``evidence`` in another (which drops a correct expression on the
+    floor).  Anchoring the repair on a particular neighbouring key therefore
+    fixes one sample and not the defect.
+
+    So the candidate set is every closing brace, and the *acceptance* rule
+    carries the safety instead of the search: the repaired document must parse,
+    the whole object must validate against the strict provider schema, and the
+    repair must be unique.  Any ambiguity or any other malformed shape stays a
+    retryable parse failure — a second plausible reading is never guessed at.
     """
 
     parse_error: json.JSONDecodeError
@@ -55,9 +64,7 @@ def _decode_campaign_query_plan_v4_response(
 
     candidates: dict[str, tuple[dict[str, Any], int]] = {}
     for index, character in enumerate(response):
-        if character != "}" or re.match(
-            r'^\s*,\s*"issues"\s*:', response[index + 1:]
-        ) is None:
+        if character != "}":
             continue
         repaired = response[:index] + response[index + 1:]
         try:
@@ -77,7 +84,7 @@ def _decode_campaign_query_plan_v4_response(
         raise parse_error
     candidate, index = next(iter(candidates.values()))
     return candidate, {
-        "kind": "remove_extra_closing_brace_before_audience_issues",
+        "kind": "remove_extra_closing_brace",
         "removed_index": index,
     }
 
