@@ -95,6 +95,22 @@ def test_windowed_exact_count_does_not_demote_first_purchase() -> None:
     """'창 안에서 정확히 1건'은 평생 1건(첫 구매)을 보장하지 않는다."""
     plan = _plan(["first_purchase"], [{"metric_id": "order_count", "operator": "=", "threshold": 1, "window_days": 90}])
     assert behavior_demotion.demote_aggregate_covered_behaviors(plan, source_text=_QUERY) == []
+    calendar_window = _plan(["first_purchase"], [{
+        "metric_id": "order_count",
+        "operator": "=",
+        "threshold": 1,
+        "window": {
+            "type": "relative",
+            "value": 3,
+            "unit": "months",
+            "from": "20260101",
+            "to": "20260331",
+        },
+    }])
+    assert behavior_demotion.demote_aggregate_covered_behaviors(
+        calendar_window,
+        source_text=_QUERY,
+    ) == []
     windowless = _plan(["first_purchase"], [{"metric_id": "order_count", "operator": "=", "threshold": 1}])
     assert behavior_demotion.demote_aggregate_covered_behaviors(windowless, source_text=_QUERY) == ["first_purchase"]
 

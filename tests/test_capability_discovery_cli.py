@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from capability_discovery.service import CapabilityDiscoveryService
 from tools import capability_graphrag, capability_review
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,10 +28,13 @@ def test_candidate_cli_writes_only_to_explicit_path_and_promotion_is_blocked(
     tmp_path: Path, capsys
 ) -> None:
     output = tmp_path / "candidate.json"
+    gaps = CapabilityDiscoveryService(ROOT).find_gaps().gaps
+    assert gaps, "candidate CLI 계약을 검사할 현재 capability gap이 없다."
+    gap_id = gaps[0].gap_id
     status = capability_graphrag.main(
         [
             "candidate",
-            "active_state",
+            gap_id,
             "--repo-root",
             str(ROOT),
             "--output",

@@ -28,6 +28,7 @@ import re
 from typing import Any
 
 import lexicon_patterns
+from reference_time import ReferenceDate, ReferenceTimeError, relative_day_char8
 
 
 # 랭킹으로 만든 유한 집합과 회원 행동 집합의 교집합 크기.
@@ -356,7 +357,12 @@ def _entity_column(entity: dict[str, Any], alias: str, product_alias: str | None
     return str(entity["column"]).format(alias=alias, product_alias=product_alias or "")
 
 
-def _window_predicate(window: dict[str, Any] | None, date_column: str) -> str | None:
+def _window_predicate(
+    window: dict[str, Any] | None,
+    date_column: str,
+    *,
+    reference_date: ReferenceDate | None = None,
+) -> str | None:
     if not isinstance(window, dict):
         return None
     start, end = window.get("from"), window.get("to")
@@ -364,7 +370,8 @@ def _window_predicate(window: dict[str, Any] | None, date_column: str) -> str | 
         return f"{date_column} BETWEEN '{start}' AND '{end}'"
     days = window.get("days")
     if isinstance(days, int) and days > 0:
-        return f"{date_column} >= CONVERT(CHAR(8), DATEADD(DAY, -{days}, GETDATE()), 112)"
+        cutoff = relative_day_char8(days, reference_date=reference_date)
+        return f"{date_column} >= {sql_dialect.quote_literal(cutoff)}"
     return None
 
 
@@ -373,6 +380,8 @@ def compile_entity_set_predicate(
     config: dict[str, Any],
     member_alias: str,
     member_key: str,
+    *,
+    reference_date: ReferenceDate | None = None,
 ) -> str | None:
     """엔터티 집합 조건을 회원 기준 EXISTS/NOT EXISTS 술어로 컴파일한다.
 
@@ -411,9 +420,16 @@ def compile_entity_set_predicate(
         str(condition).format(alias=inner, product_alias=inner_product)
         for condition in rank_relation.get("conditions", []) or []
     ]
-    window_predicate = _window_predicate(
-        node.get("window"), str(rank_relation.get("dateColumn", "")).format(alias=inner)
-    )
+    try:
+        window_predicate = _window_predicate(
+            node.get("window"),
+            str(rank_relation.get("dateColumn", "")).format(alias=inner),
+            reference_date=reference_date,
+        )
+    except ReferenceTimeError:
+        # This compiler's public failure contract is ``None``.  Omitting the
+        # unresolved relative predicate would silently widen the population.
+        return None
     if window_predicate:
         inner_where.append(window_predicate)
     inner_where.extend(

@@ -19,6 +19,7 @@ from __future__ import annotations
 import inspect
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,7 @@ import graph_rag  # noqa: E402
 import slot_ownership  # noqa: E402
 
 _LAPSED_PROMPT = "최근 3개월 주문은 있었지만 최근 30일간 구매가 없는 회원을 추출해서 이탈방지 캠페인을 만들어줘."
+_REFERENCE_DATE = date(2026, 3, 31)
 
 
 def _build_sql_result_source() -> str:
@@ -77,10 +79,31 @@ def test_compiler_dependent_demotions_stay_after_the_pipeline() -> None:
 def test_rescue_records_the_source_span_it_read() -> None:
     """구제는 자기가 읽은 구간을 남긴다 — 소유 판정이 '누가 이 어구를 읽었나'를 물을 곳."""
     plan: dict = {"target_user": {"behaviors": ["no_purchase", "cart_abandoner"]}}
-    changed = behavior_demotion.normalize_lapsed_purchase_pattern(plan, source_text=_LAPSED_PROMPT)
+    changed = behavior_demotion.normalize_lapsed_purchase_pattern(
+        plan,
+        source_text=_LAPSED_PROMPT,
+        reference_date=_REFERENCE_DATE,
+    )
     assert changed, "이탈 문형이 매치되지 않았다"
-    assert plan["target_user"]["purchase_membership"] == {"operator": "exists", "window_days": 90}
-    assert plan["target_user"]["purchase_inactivity"]["min_days"] == 30
+    assert plan["target_user"]["purchase_membership"] == {
+        "operator": "exists",
+        "window": {
+            "type": "relative",
+            "value": 3,
+            "unit": "months",
+            "from": "20260101",
+            "to": "20260331",
+        },
+    }
+    assert plan["target_user"]["purchase_inactivity"] == {
+        "window": {
+            "type": "relative",
+            "value": 30,
+            "unit": "days",
+            "from": "20260302",
+            "to": "20260331",
+        }
+    }
     assert plan["target_user"]["behaviors"] == ["cart_abandoner"], "평생 무구매는 창 조건과 모순이다"
 
     # 청구는 **절 단위**다 — 매치 전체를 청구하면 두 절 사이에 낀 무관한 조건까지 삼킨다.
@@ -99,12 +122,74 @@ def test_rescue_records_the_source_span_it_read() -> None:
 
 
 def test_rescue_does_not_overwrite_values_the_structurer_already_produced() -> None:
-    """fill-if-empty — 구조화기가 확정한 창을 정규식 근사치로 덮지 않는다."""
+    """fill-if-empty — 구조화기가 확정한 창을 결정론 창으로 덮지 않는다."""
     plan: dict = {
         "target_user": {
             "purchase_inactivity": {"value": 45, "unit": "days", "min_days": 45},
         }
     }
-    behavior_demotion.normalize_lapsed_purchase_pattern(plan, source_text=_LAPSED_PROMPT)
+    behavior_demotion.normalize_lapsed_purchase_pattern(
+        plan,
+        source_text=_LAPSED_PROMPT,
+        reference_date=_REFERENCE_DATE,
+    )
     assert plan["target_user"]["purchase_inactivity"]["min_days"] == 45
-    assert plan["target_user"]["purchase_membership"] == {"operator": "exists", "window_days": 90}
+    assert plan["target_user"]["purchase_membership"]["window"] == {
+        "type": "relative",
+        "value": 3,
+        "unit": "months",
+        "from": "20260101",
+        "to": "20260331",
+    }
+
+
+def test_calendar_rescue_fails_closed_without_an_injected_reference_date() -> None:
+    plan: dict = {"target_user": {"behaviors": ["no_purchase"]}}
+
+    changed = behavior_demotion.normalize_lapsed_purchase_pattern(
+        plan,
+        source_text=_LAPSED_PROMPT,
+    )
+
+    assert changed == []
+    assert plan == {"target_user": {"behaviors": ["no_purchase"]}}
+
+
+def test_six_calendar_months_are_not_flattened_to_180_days() -> None:
+    query = "최근 6개월 주문은 있었지만 최근 30일간 구매가 없는 회원"
+    plan: dict = {}
+
+    behavior_demotion.normalize_lapsed_purchase_pattern(
+        plan,
+        source_text=query,
+        reference_date=_REFERENCE_DATE,
+    )
+
+    window = plan["target_user"]["purchase_membership"]["window"]
+    assert window == {
+        "type": "relative",
+        "value": 6,
+        "unit": "months",
+        "from": "20251001",
+        "to": "20260331",
+    }
+
+
+def test_calendar_year_is_not_flattened_to_365_days_across_a_leap_day() -> None:
+    query = "최근 1년 주문은 있었지만 최근 30일간 구매가 없는 회원"
+    plan: dict = {}
+
+    behavior_demotion.normalize_lapsed_purchase_pattern(
+        plan,
+        source_text=query,
+        reference_date=date(2024, 2, 29),
+    )
+
+    window = plan["target_user"]["purchase_membership"]["window"]
+    assert window == {
+        "type": "relative",
+        "value": 1,
+        "unit": "years",
+        "from": "20230301",
+        "to": "20240229",
+    }

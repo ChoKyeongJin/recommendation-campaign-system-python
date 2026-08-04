@@ -50,13 +50,13 @@
         "state": "past",
         "terms": ["지난", "지났", "경과", "넘긴", "초과한"],
         "operator": "<",
-        "anchor_expression": "CONVERT(char(8), GETDATE(), 112)"
+        "anchor": "reference_date"
       },
       {
         "state": "not_due",
         "terms": ["아직 지나지 않은", "도래하지 않은", "예정인", "다가오는"],
         "operator": ">=",
-        "anchor_expression": "CONVERT(char(8), GETDATE(), 112)"
+        "anchor": "reference_date"
       }
     ]
   }

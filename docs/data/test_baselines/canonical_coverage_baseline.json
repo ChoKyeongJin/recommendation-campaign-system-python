@@ -1,19 +1,15 @@
 {
   "description": "canonical audience_catalog 이 못 닿고 legacy 실행 자산은 닿는 물리 컬럼의 차집합. P4(커버리지 패리티)의 작업 큐이자 진척 지표다 — 케이스가 아니라 차집합이 단위다. 하향 전용 래칫: 커지면(canonical 이 더 뒤처지면) 테스트가 red 다. 재현: python tools/canonical_coverage_inventory.py --json",
-  "recorded_at": "2026-08-03",
-  "reason": "최초 기록. 착수 시점 57컬럼/19축에서 수신동의 4축(APP_PUSH_YN, SMS_YN, EMAIL_YN, AGREE_YN)을 audience_catalog.json 의 fields 선언 4줄 + value_domain 1개로 닫아 53컬럼이 됐다(코드 변경 0). architecture_generic_core 8절의 약속('새 회원 속성 축 추가 = 항목 1개')이 실제로 성립함을 보인 첫 사례다. MEMBER_STATE_CD 는 의도적으로 남겼다 — canonical 경로가 기본 정상회원 필터를 무조건 AND 로 붙이므로 선언만 하면 '휴면 회원' 요청이 조용히 0명이 된다(동반 코드 변경이 선행돼야 한다).",
-  "canonical_columns": 28,
-  "legacy_columns": 77,
-  "missing_columns": 53,
-  "missing_axes": 19,
+  "recorded_at": "2026-08-04",
+  "reason": "scanner-corrected 후속 기준선. canonical catalog 확장과 오래된 legacy 축 제거를 반영해 차집합을 53→45컬럼, 19→18축으로 낮췄다. 장바구니 집계 물리 바인딩을 catalog로 이동하면서 노출된 TOTAL_SALE_PRICE는 cart.amount로 함께 선언해 축별 회귀 없이 닫았다.",
+  "canonical_columns": 39,
+  "legacy_columns": 79,
+  "missing_columns": 45,
+  "missing_axes": 18,
   "exempt_columns": 0,
   "by_axis": {
-    "active_state": [
-      "MEMBER_STATE_CD"
-    ],
     "aggregate_targets": [
       "BRAND_ID",
-      "CATEGORY",
       "CATEGORYL_NAME",
       "DC_AMT",
       "MEAN_BUY_AMT"
@@ -23,9 +19,7 @@
     ],
     "boolean_filters": [
       "ACTIVITY_MEMBER_YN",
-      "BLACKLIST_YN",
       "CHILDREN_YN",
-      "EMPLOYEE_YN",
       "MEMBERSHIP_YN",
       "PREMIUM_YN",
       "SLEEP_MEMBER_YN",
@@ -42,7 +36,6 @@
     "cart_targets": [
       "CART_PRODUCT_NO",
       "CART_TYPE_CD",
-      "INS_DT",
       "KEEP_YN"
     ],
     "cell_rate_targets": [
@@ -52,18 +45,12 @@
     ],
     "entity_set_targets": [
       "BRAND_ID",
-      "BRAND_NAME",
-      "CATEGORY",
-      "PRODUCT_NAME"
+      "BRAND_NAME"
     ],
     "eq_filters": [
       "ACTIVITY_MEMBER_YN",
-      "BLACKLIST_YN",
       "CHILDREN_YN",
-      "EMPLOYEE_YN",
-      "LAST_LOGIN_CHANNEL",
       "MEMBERSHIP_YN",
-      "MEMBER_STATE_CD",
       "PREMIUM_YN",
       "REG_CHANNEL_CD",
       "REG_OFFSHOP_ID",
@@ -100,11 +87,9 @@
     ],
     "purchase_product_target": [
       "BRAND_NAME",
-      "CATEGORY",
       "CATEGORYL_NAME",
       "CATEGORYM_NAME",
-      "CATEGORYS_NAME",
-      "PRODUCT_NAME"
+      "CATEGORYS_NAME"
     ],
     "ratio_filters": [
       "TOTAL_LOGIN_CNT",
@@ -112,13 +97,11 @@
     ],
     "region_density": [
       "DONG",
-      "SIDO",
       "SIGUNGU"
     ],
     "region_target": [
       "DONG",
       "ROAD_NAME_ADDRESS",
-      "SIDO",
       "SIGUNGU",
       "ZIP_CD"
     ]

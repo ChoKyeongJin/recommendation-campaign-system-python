@@ -10,7 +10,7 @@
 파서·LLM 라우트·구매일 타겟이 동시에 얻는다.
 
     절대 창 := {from, to, label[, from_time, to_time]}  # 달력상 확정된 구간. YYYYMMDD CHAR(8) 비교용.
-    상대 창 := {value, unit, min_days}                   # 기준일로부터 거슬러 세는 구간.
+    상대 창 := {value, unit[, min_days]}                 # 월/년은 일수로 근사하지 않는다.
 
     시각(from_time/to_time, HHMMSS)은 일 단위 창에 시각 한정자('9시부터')가 붙었을 때만 실린다 —
     날짜만 있는 창은 기존 shape 그대로라 시각을 모르는 소비자와 호환된다.
@@ -33,9 +33,9 @@ import re
 from datetime import date, timedelta
 from typing import Any, NamedTuple
 
+import condition_normalizers
 import lexicon_patterns
 import slot_ownership
-import targeting_ir
 
 
 # ── 절대 달력 창 ──────────────────────────────────────────────────────────────────
@@ -68,6 +68,37 @@ _RANGE_SEP_CHARS = r"~∼\-–"
 # 신호라 둘 다 받는다. 어느 쪽인지는 링크 판정(_link_kind)이 정한다.
 _YEAR_ENUM_SEP = rf"(?:\s*[{_ENUM_SEP_CHARS}{_RANGE_SEP_CHARS}]\s*|\s*(?:{_ENUM_CONNECTOR_ALT})\s*)"
 
+class MeridiemRule(NamedTuple):
+    """시각 한정어 하나의 12시간제 해석 규칙.
+
+    ``min_hour``/``max_hour`` 는 그 말이 실제로 가리키는 시각의 범위다. 범위를 선언하는 이유는
+    한국어 시각 한정어의 경계가 말마다 다르고 **바깥은 뜻이 확정되지 않기 때문**이다 — '밤 2시'는
+    다음 날 새벽을 뜻할 수도 있어 어느 날의 02시인지 창으로 확정할 수 없다. 선언 밖은 추측하지
+    않고 미해석으로 둔다(fail-close). ``hour12`` 는 12시가 접히는 값이고(자정 0 / 정오 12),
+    12가 범위 밖인 말에는 없다.
+    """
+
+    min_hour: int
+    max_hour: int
+    offset: int
+    hour12: int | None = None
+
+
+# 시각 한정어 → 해석 규칙. 새 표현('한밤중')은 이 표 한 줄이면 정규식과 변환이 함께 얻는다 —
+# 예전에는 낱말이 정규식 리터럴(`오전|오후`)에, 변환이 if 문에 따로 있어 한쪽만 늘 수 있었다.
+# '낮'은 일부러 없다: '낮 2시'(14시)와 '낮 12시'(정오)가 같은 말로 쓰이지만 '낮 1시'의 경계가
+# 화자마다 달라 결정론으로 확정할 수 없다(§12 — 정의 없이 구현하지 않는다).
+MERIDIEM_RULES: dict[str, MeridiemRule] = {
+    "오전": MeridiemRule(1, 12, 0, hour12=0),
+    "오후": MeridiemRule(1, 12, 12, hour12=12),
+    "새벽": MeridiemRule(1, 6, 0),
+    "아침": MeridiemRule(6, 11, 0),
+    "저녁": MeridiemRule(5, 9, 12),
+    "밤": MeridiemRule(7, 12, 12, hour12=0),
+}
+_MERIDIEM_ALTERNATION = "|".join(sorted(MERIDIEM_RULES, key=len, reverse=True))
+
+
 def _time_suffix_pattern(prefix: str) -> str:
     """일 단위 토큰 뒤에 붙는 시각 한정자('9시', '오후 6시 30분'). 통째로 선택적이다.
 
@@ -75,7 +106,7 @@ def _time_suffix_pattern(prefix: str) -> str:
     기간 표현이 반쪽 남는다). 시각은 일 단위 토큰에만 붙는다 — 날짜 없는 시각 단독('9시 이후 주문')은
     어느 날의 9시인지 창으로 확정할 수 없어 잡지 않는다(fail-close)."""
     return (
-        rf"(?:\s*(?:(?P<{prefix}_ap>오전|오후)\s*)?(?P<{prefix}_hh>\d{{1,2}})\s*시(?!간)"
+        rf"(?:\s*(?:(?P<{prefix}_ap>{_MERIDIEM_ALTERNATION})\s*)?(?P<{prefix}_hh>\d{{1,2}})\s*시(?!간)"
         rf"(?:\s*(?P<{prefix}_mi>\d{{1,2}})\s*분)?)?"
     )
 
@@ -230,15 +261,16 @@ def parse_half_or_quarter_window(
 ) -> dict[str, Any] | None:
     """명시/상대/생략 연도의 상·하반기와 N분기를 절대 창으로 읽는다.
 
-    연도가 없으면 현재 연도로 해석한다. '올해/금년'과 '작년/지난해/전년'은 기준일의 연도로
-    확정한다. 그냥 '반기'(상/하 없음)나 숫자 없는 '분기'는 어느 반/분기인지 모호하므로 잡지 않는다."""
-    reference = today or date.today()
+    명시 연도는 기준일 없이 확정한다. '올해/금년'과 '작년/지난해/전년', 연도 생략 표현은 주입된
+    기준일이 있을 때만 확정한다. 그냥 '반기'(상/하 없음)나 숫자 없는 '분기'는 어느 반/분기인지
+    모호하므로 잡지 않는다."""
     year_match = _ANY_YEAR_RE.search(text or "")
-    y = (
-        int(year_match.group(1))
-        if year_match is not None
-        else (_text_anchor_year(text or "", reference) or reference.year)
-    )
+    if year_match is not None:
+        y = int(year_match.group(1))
+    elif today is None:
+        return None
+    else:
+        y = _text_anchor_year(text or "", today) or today.year
     if "상반기" in text:
         return _window(ymd(y, 1, 1), ymd(y, 6, 30), f"{y}년 상반기", label_suffix)
     if "하반기" in text:
@@ -283,12 +315,15 @@ def _token_time(match: "re.Match[str]", prefix: str) -> tuple[str, str, str] | N
     minute_raw = match.group(f"{prefix}_mi")
     hour = int(hh)
     if meridiem is not None:
-        if not 1 <= hour <= 12:
+        rule = MERIDIEM_RULES[meridiem]
+        if not rule.min_hour <= hour <= rule.max_hour:
             return _INVALID_TIME
-        if meridiem == "오후":
-            hour = 12 if hour == 12 else hour + 12
+        if hour == 12:
+            if rule.hour12 is None:  # pragma: no cover - 범위 검사에서 이미 걸린다
+                return _INVALID_TIME
+            hour = rule.hour12
         else:
-            hour = 0 if hour == 12 else hour
+            hour += rule.offset
     elif hour > 23:
         return _INVALID_TIME
     minute = int(minute_raw) if minute_raw is not None else None
@@ -492,25 +527,31 @@ def _scan_calendar_windows(
     """텍스트의 모든 달력 토큰을 (창, 구체성등급, 시작위치, 끝위치) 로 스캔한다(등장 순).
 
     연도 생략 토큰('2019년 2월과 3월'의 '3월')은 앞서 나온 명시 연도를 상속한다. 바로 앞에
-    '올해/작년' 같은 상대 연도 표지가 있으면 그 연도를 쓴다. 반기·분기는 연도가 끝내 없으면 현재
-    연도로 확정한다. 월 단독은 숫자 오탐을 피하기 위해 기존처럼 연도 앵커가 있을 때만 창이 된다.
+    '올해/작년' 같은 상대 연도 표지가 있으면 주입된 기준일에서 그 연도를 구한다. 반기·분기는 연도가
+    끝내 없고 기준일도 없으면 호스트 날짜를 추측하지 않고 미검출로 닫는다. 월 단독은 숫자 오탐을
+    피하기 위해 기존처럼 연도 앵커가 있을 때만 창이 된다.
 
     마지막에 범위 링크를 접는다(_fold_range_links) — 축약된 오른쪽 창이 왼쪽 문맥(연도)을 상속한 **뒤**에
     합성해야 '2019년 3월부터 5월까지'의 끝이 2019년 5월로 확정된다."""
     if not isinstance(text, str) or not text:
         return []
-    reference = today or date.today()
     matches = list(_CAL_TOKEN_RE.finditer(text))
     fallback_year = next((y for y in (_token_year(m) for m in matches) if y is not None), None)
-    out: list[tuple[dict[str, Any], int, int, int]] = _scan_relative_calendar_months(
-        text, label_suffix, reference
+    out: list[tuple[dict[str, Any], int, int, int]] = (
+        _scan_relative_calendar_months(text, label_suffix, today)
+        if today is not None
+        else []
     )
     running_year: int | None = None
     for match in matches:
         explicit = _token_year(match)
         if explicit is not None:
             running_year = explicit
-        anchor = _adjacent_anchor_year(text, match.start(), reference)
+        anchor = (
+            _adjacent_anchor_year(text, match.start(), today)
+            if today is not None
+            else None
+        )
         relative = anchor[0] if anchor is not None else None
         if relative is not None:
             running_year = relative
@@ -519,10 +560,13 @@ def _scan_calendar_windows(
             and _is_quarter_duration(text, match.start(), match.end())
         )
         inferred_current = (
-            reference.year
+            today.year
             if (
-                match.group("h") is not None
-                or (match.group("q") is not None and not quarter_duration)
+                today is not None
+                and (
+                    match.group("h") is not None
+                    or (match.group("q") is not None and not quarter_duration)
+                )
             )
             else None
         )
@@ -643,8 +687,8 @@ def parse_calendar_window(
 
     지원: 'YYYY년 M월 D일'(하루), 'M월 D일'(연도 상속), 'YYYY년 M월'(그 달 전체), 'YYYY년'(그 해 전체),
           'YYYY-MM-DD'/'YYYY.MM.DD'/'YYYY/MM/DD'(하루), 'YYYY-MM'(그 달 전체),
-          'YYYY년/올해/작년 상반기·하반기'(6개월), 연도 생략 상·하반기(현재 연도),
-          'YYYY년/올해/작년 N분기'(3개월), 연도 생략 N분기(현재 연도).
+          'YYYY년/올해/작년 상반기·하반기'(6개월), 연도 생략 상·하반기(기준일 필요),
+          'YYYY년/올해/작년 N분기'(3개월), 연도 생략 N분기(기준일 필요).
     일 단위 표현에는 시각 한정자('9시', '오후 6시 30분')가 붙을 수 있고, 그때만 창에
     ``from_time``/``to_time``(HHMMSS) 키가 실린다.
 
@@ -674,12 +718,12 @@ def parse_relative_year_window(
     앵커 **전체**가 표현이어야 한다('작년 매출'은 창이 아니다). 'N년 전'은 받지 않는다 —
     그것은 창이 아니라 시점이고, 시점의 소유자는 :func:`relative_past_window` 다.
     """
-    if not isinstance(text, str):
+    if not isinstance(text, str) or today is None:
         return None
     match = _RELATIVE_YEAR_ONLY_RE.fullmatch(text.strip())
     if match is None or match.group("rel") is None:
         return None
-    window = calendar_window_from_parts(_anchor_year(match, today or date.today()))
+    window = calendar_window_from_parts(_anchor_year(match, today))
     if window is not None and label_suffix:
         window["label"] = _base_label(window, label_suffix)
     return window
@@ -713,27 +757,55 @@ def calendar_window_from_parts(
 
 # ── 상대 기간 창 ──────────────────────────────────────────────────────────────────
 
-# 한글 기간 단위 → 캐노니컬 영문 단위(슬롯 정규화용). 일수 환산은 targeting_ir.UNIT_DAYS 가 소유한다.
-KO_UNIT_TO_CANON = {"일": "days", "주": "weeks", "주일": "weeks", "개월": "months", "달": "months", "년": "years"}
+# 한글 기간 단위 → 캐노니컬 영문 단위(슬롯 정규화용). 표면 별칭의 소유자는
+# normalization lexicon이며 달력 파서는 숫자 기간 부분집합만 소비한다.
+KO_UNIT_TO_CANON = condition_normalizers.numeric_duration_unit_semantics()
 # 캐노니컬 단위 → 라벨용 한글 단위(파싱의 역방향. 단어형 '일주일'도 정규화 후 '7일'로 읽힌다).
 CANON_TO_KO_UNIT = {"days": "일", "weeks": "주", "months": "개월", "years": "년"}
-# 기간 표현 → 일수. 숫자형('7일', '2주')과 숫자 없는 한글 단어형('일주일', '보름', '한 달')을 모두 본다.
+# 기간 표현. 숫자형('7일', '2주')과 숫자 없는 한글 단어형('일주일', '보름', '한 달')을 모두 본다.
 # 단어형은 숫자가 없어서 재작성 가드의 숫자 서명에도, 기존 '최근 N일' 파서에도 안 잡혔다.
-# 한글토큰→일수는 토큰→canonical(KO_UNIT_TO_CANON)과 canonical→일수(targeting_ir.UNIT_DAYS)의 합성으로
-# 파생한다 — 별도 한글 일수표를 두지 않아, 새 단위는 KO_UNIT_TO_CANON(+targeting_ir.UNIT_DAYS)만 고치면 된다.
-DURATION_UNIT_DAYS = {ko: targeting_ir.UNIT_DAYS[canon] for ko, canon in KO_UNIT_TO_CANON.items()}
-NUMERIC_DURATION_PATTERN = re.compile(r"(?P<num>\d+)\s*(?P<unit>주일|개월|일|주|달|년)")
-WORD_DURATION_DAYS = {
-    "일주일": 7, "한주일": 7, "한주": 7, "일주": 7,
-    "이주일": 14, "두주일": 14, "두주": 14,
-    "삼주일": 21, "세주일": 21, "세주": 21,
-    "보름": 15,
-    "한달": 30, "한개월": 30,
-    "두달": 60, "두개월": 60,
-    "석달": 90, "세달": 90, "세개월": 90,
-    "반년": 180, "일년": 365, "한해": 365, "한햇": 365,
+# ``*_DAYS`` 와 공개 패턴은 아직 이를 import하는 레거시 신호 비교기의 호환 표면이다. 정확히 일수로
+# 환산되는 일/주만 노출한다. canonical 기간 파서는 별도 전체 패턴으로 월/년까지 읽고 단위를 보존한다.
+DURATION_UNIT_DAYS = {
+    surface: condition_normalizers.unit_days()[canonical]
+    for surface, canonical in KO_UNIT_TO_CANON.items()
+    if canonical in condition_normalizers.unit_days()
 }
-WORD_DURATION_PATTERN = re.compile("|".join(sorted(map(re.escape, WORD_DURATION_DAYS), key=len, reverse=True)))
+_FIXED_DURATION_UNIT_PATTERN = "|".join(
+    re.escape(unit)
+    for unit in sorted(DURATION_UNIT_DAYS, key=lambda item: (-len(item), item))
+)
+_CANONICAL_DURATION_UNIT_PATTERN = "|".join(
+    re.escape(unit)
+    for unit in sorted(KO_UNIT_TO_CANON, key=lambda item: (-len(item), item))
+)
+NUMERIC_DURATION_PATTERN = re.compile(
+    rf"(?P<num>\d+)\s*(?P<unit>{_FIXED_DURATION_UNIT_PATTERN})"
+)
+_CANONICAL_NUMERIC_DURATION_PATTERN = re.compile(
+    rf"(?P<num>\d+)\s*(?P<unit>{_CANONICAL_DURATION_UNIT_PATTERN})"
+)
+WORD_DURATION_SPECS: dict[str, tuple[int, str]] = {
+    "일주일": (7, "days"), "한주일": (7, "days"), "한주": (7, "days"), "일주": (7, "days"),
+    "이주일": (14, "days"), "두주일": (14, "days"), "두주": (14, "days"),
+    "삼주일": (21, "days"), "세주일": (21, "days"), "세주": (21, "days"),
+    "보름": (15, "days"),
+    "한달": (1, "months"), "한개월": (1, "months"),
+    "두달": (2, "months"), "두개월": (2, "months"),
+    "석달": (3, "months"), "세달": (3, "months"), "세개월": (3, "months"),
+    "반년": (6, "months"), "일년": (1, "years"), "한해": (1, "years"), "한햇": (1, "years"),
+}
+WORD_DURATION_DAYS = {
+    surface: value * ({"days": 1, "weeks": 7}[unit])
+    for surface, (value, unit) in WORD_DURATION_SPECS.items()
+    if unit in {"days", "weeks"}
+}
+WORD_DURATION_PATTERN = re.compile(
+    "|".join(sorted(map(re.escape, WORD_DURATION_DAYS), key=len, reverse=True))
+)
+_CANONICAL_WORD_DURATION_PATTERN = re.compile(
+    "|".join(sorted(map(re.escape, WORD_DURATION_SPECS), key=len, reverse=True))
+)
 
 # 앵커어와 기간 표현 사이 허용 간격(공백 제거 기준). '6개월동안로그인'(동안=2), '1년이내가입'(이내=2)은
 # 붙은 것으로 보고, 프롬프트 반대편의 다른 조건 창은 배제한다.
@@ -765,18 +837,19 @@ class DurationCandidate(NamedTuple):
 
 
 def _raw_duration_window_candidates(compact: str) -> list[DurationCandidate]:
-    """의미 종류 판정 전의 기간 표면형 후보(등장 순). 단어형은 unit=days."""
+    """의미 종류 판정 전의 기간 표면형 후보(등장 순)."""
     out: list[DurationCandidate] = []
-    for match in NUMERIC_DURATION_PATTERN.finditer(compact):
+    for match in _CANONICAL_NUMERIC_DURATION_PATTERN.finditer(compact):
         value = int(match.group("num"))
         # 2019년/2026년은 달력 연도이지 2019년 길이의 롤링 창이 아니다. 이를 기간으로 잡으면
         # DATEADD(DAY, -736935, ...) 같은 비정상 조건이 절대 날짜 범위와 함께 생성된다.
         if value > 0 and not (match.group("unit") == "년" and 1900 <= value <= 2199):
-            out.append(DurationCandidate(
-                match.start(), match.end(), value, KO_UNIT_TO_CANON.get(match.group("unit"), "days")
-            ))
-    for match in WORD_DURATION_PATTERN.finditer(compact):
-        out.append(DurationCandidate(match.start(), match.end(), WORD_DURATION_DAYS[match.group(0)], "days"))
+            unit = KO_UNIT_TO_CANON.get(match.group("unit"))
+            if unit is not None:
+                out.append(DurationCandidate(match.start(), match.end(), value, unit))
+    for match in _CANONICAL_WORD_DURATION_PATTERN.finditer(compact):
+        value, unit = WORD_DURATION_SPECS[match.group(0)]
+        out.append(DurationCandidate(match.start(), match.end(), value, unit))
     return sorted(out)
 
 
@@ -818,17 +891,20 @@ def duration_window_candidates(compact: str) -> list[DurationCandidate]:
 
 
 def duration_window_from_candidate(candidate: DurationCandidate) -> dict[str, Any]:
-    """기간 후보 → 상대 창 표기 {value, unit, min_days} + 출처(구간·의미 종류).
+    """기간 후보 → 상대 창 표기 {value, unit[, min_days]} + 출처(구간·의미 종류).
 
     창 shape 의 단일 소유자다 — 예전에는 graph_rag 가 같은 dict 을 따로 조립해, 출처를 붙이려면
-    두 곳을 고쳐야 했다."""
-    return {
+    두 곳을 고쳐야 했다. ``min_days`` 는 일/주만 정확히 파생하며 월/년은 원 단위를 보존한다."""
+    window: dict[str, Any] = {
         "value": candidate.value,
         "unit": candidate.unit,
-        "min_days": candidate.value * targeting_ir.UNIT_DAYS[candidate.unit],
         SOURCE_SPAN_KEY: (candidate.start, candidate.end),
         SOURCE_TEMPORAL_KIND_KEY: candidate.kind,
     }
+    fixed_unit_days = {"days": 1, "weeks": 7}.get(candidate.unit)
+    if fixed_unit_days is not None:
+        window["min_days"] = candidate.value * fixed_unit_days
+    return window
 
 
 # 과거 시점 표현을 만난 슬롯의 정책. 억제(suppress)는 **그 시점을 표현할 다른 소유자가 있을 때만**
@@ -850,7 +926,8 @@ def parse_duration_window(
 ) -> dict[str, Any] | None:
     """통합 기간 창 파서 — 숫자형(3개월/2주/1년)·단어형(일주일/반년/한달)을 모두 잡아 정규 shape로 돌려준다.
 
-    반환 {value, unit(∈days/weeks/months/years), min_days}. 파편화된 슬롯별 창 파서(가입/로그인/미구매/
+    반환 {value, unit(∈days/weeks/months/years)[, min_days]}. ``min_days`` 는 일/주에만 붙는다.
+    파편화된 슬롯별 창 파서(가입/로그인/미구매/
     미접속)가 각자 다른 단위 부분집합만 지원해 '1년 이내 가입'·'반년 미구매' 같은 표현을 놓치던 것을
     한 곳으로 모은다. 문맥 게이트(가입 신호/로그인 신호/부정어)는 호출자가 유지한다.
 
@@ -891,7 +968,8 @@ def parse_duration_window(
 
 def relative_window_label(window: dict[str, Any]) -> str:
     """상대 창의 한글 라벨('최근 3개월'). 단어형은 정규화된 일수로 적는다('일주일' → '최근 7일')."""
-    unit = CANON_TO_KO_UNIT.get(str(window.get("unit")), "일")
+    raw_unit = str(window.get("unit") or "")
+    unit = CANON_TO_KO_UNIT.get(raw_unit, raw_unit)
     return f"최근 {window.get('value')}{unit}"
 
 
@@ -970,10 +1048,9 @@ def relative_past_window(
     소비자가 '이 창이 시점에서 나왔는지'를 텍스트를 다시 읽어 판단하지 않게 하는 것이 목적이다."""
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         return None
-    if unit not in ("years", "months", "weeks", "days"):
+    if unit not in ("years", "months", "weeks", "days") or today is None:
         return None
-    anchor = today or date.today()
-    target = _relative_past_target(value, unit, anchor)
+    target = _relative_past_target(value, unit, today)
     if unit == "years":
         window = _window(ymd(target.year, 1, 1), ymd(target.year, 12, 31), f"{target.year}년", label_suffix)
     elif unit == "months":
@@ -1027,9 +1104,13 @@ def parse_relative_past_window(
 
 
 def parse_relative_past_window_span(text: str) -> tuple[int, int] | None:
-    """``parse_relative_past_window`` 가 읽은 표현의 원문 구간 (시작, 끝)."""
-    scanned = _scan_relative_past_windows(text, None, "")
-    return (scanned[0][1], scanned[0][2]) if scanned else None
+    """과거 시점 표현의 원문 구간(시작, 끝)을 날짜 계산 없이 찾는다.
+
+    구간 탐지는 실행 창 확정이 아니다. 실제 창은 :func:`parse_relative_past_window` 가
+    주입된 ``today`` 를 받았을 때만 만든다.
+    """
+    match = next(iter(past_point_matches(text)), None)
+    return match.span() if match is not None else None
 
 
 # ── 창 파싱 단일 진입점 ────────────────────────────────────────────────────────────
@@ -1056,7 +1137,8 @@ def parse_time_windows(
 
     ``allow_relative_past`` 는 호출자의 도메인 판단이다 — 문장에 다른 도메인의 날짜 앵커(가입·로그인
     …)가 있어 그 시점이 이 조건의 것이라고 단정할 수 없으면 False 로 닫는다.
-    ``include_duration=True`` 인 소비자만 롤링 기간을 받는다(반환 shape 이 {days,label} 로 다르다).
+    ``include_duration=True`` 인 소비자만 롤링 기간을 받는다. 기간은 ``{value, unit, label}`` 로
+    보존하고, 일/주처럼 정확히 환산되는 경우에만 호환용 ``days`` 를 함께 싣는다.
     """
     group = parse_calendar_window_group(text, label_suffix=label_suffix, today=today)
     if group:
@@ -1068,7 +1150,14 @@ def parse_time_windows(
     if include_duration:
         relative = parse_duration_window(text, anchor_terms=duration_anchor_terms)
         if relative is not None:
-            return [{"days": relative["min_days"], "label": relative_window_label(relative)}]
+            duration = {
+                "value": relative["value"],
+                "unit": relative["unit"],
+                "label": relative_window_label(relative),
+            }
+            if "min_days" in relative:
+                duration["days"] = relative["min_days"]
+            return [duration]
     return []
 
 
@@ -1098,11 +1187,16 @@ def parse_time_window_span(
 ) -> tuple[int, int] | None:
     """``parse_time_window`` 가 읽은 표현의 원문 구간. 롤링 기간은 위치를 단정하지 않는다(None).
 
-    절대 창의 구간은 앵커까지 포함한다 — '7년전 상반기'는 '상반기'가 아니라 표현 전체가 출처다."""
+    절대 창의 구간은 앵커까지 포함한다 — '7년전 상반기'는 '상반기'가 아니라 표현 전체가 출처다.
+    상대 과거 시점은 창과 마찬가지로 ``today`` 가 주입됐을 때만 소비된 구간으로 보고한다."""
     span = parse_calendar_window_span(text, today=today)
     if span is not None:
         return span
-    return parse_relative_past_window_span(text) if allow_relative_past else None
+    return (
+        parse_relative_past_window_span(text)
+        if allow_relative_past and today is not None
+        else None
+    )
 
 
 def parse_time_window_group_span(
@@ -1112,4 +1206,8 @@ def parse_time_window_group_span(
     span = parse_calendar_window_group_span(text, today=today)
     if span is not None:
         return span
-    return parse_relative_past_window_span(text) if allow_relative_past else None
+    return (
+        parse_relative_past_window_span(text)
+        if allow_relative_past and today is not None
+        else None
+    )

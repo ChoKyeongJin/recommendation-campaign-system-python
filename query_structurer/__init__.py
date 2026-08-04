@@ -26,12 +26,17 @@ from .structurer import (
 from .semantic_ir import (
     COUNTER_LITERAL_RE,
     COUNTER_UNIT_SEMANTICS,
+    SEMANTIC_FAILURE_KINDS,
     SEMANTIC_IR_LLM_JSON_SCHEMA,
     SEMANTIC_IR_STATUSES,
+    bind_counter_literals,
     empty_semantic_ir,
     extract_literal_bindings,
+    scan_literal_bindings,
     validate_semantic_ir,
+    write_semantic_ir,
 )
+from .semantic_outcome import FailureKind, SemanticOutcome, SemanticStatus
 from .types import (
     QueryStructurer,
     QueryStructuringInput,
@@ -68,8 +73,14 @@ __all__ = [
     "verify_campaign_query_identity",
     "SEMANTIC_IR_LLM_JSON_SCHEMA",
     "SEMANTIC_IR_STATUSES",
+    "SEMANTIC_FAILURE_KINDS",
+    "FailureKind",
+    "SemanticOutcome",
+    "SemanticStatus",
     "empty_semantic_ir",
+    "bind_counter_literals",
     "extract_literal_bindings",
-    "materialize_semantic_operations",
+    "scan_literal_bindings",
     "validate_semantic_ir",
+    "write_semantic_ir",
 ]

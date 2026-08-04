@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import copy
 from datetime import datetime, timedelta, timezone
 
 import networkx as nx
+import pytest
 
 import graph_rag
+import member_filters_config
 from external_conditions.classifier import classify_external_conditions
 from external_conditions.mappers.administrative_region_mapper import (
     AdministrativeRegionMapper,
     RegionMappingError,
+    region_target_binding,
 )
 from external_conditions.models import (
     AdministrativeRegion,
@@ -21,16 +25,28 @@ from external_conditions.resolvers.kma_weather_alert import (
     KmaWeatherAlertConfig,
     KmaWeatherAlertResolver,
 )
-from external_conditions.service import ExternalConditionService, ResolverResultCache
+from external_conditions.service import (
+    ExternalConditionService,
+    ResolverResultCache,
+    default_resolution_context,
+)
 
 
 NOW = datetime(2026, 7, 30, 5, 0, tzinfo=timezone.utc)
+
+
+def test_resolution_context_requires_an_explicit_aware_instant() -> None:
+    assert default_resolution_context(now=NOW).now is NOW
+
+    with pytest.raises(ValueError, match="timezone-aware"):
+        default_resolution_context(now=datetime(2026, 7, 30, 5, 0))
 
 
 def _mapper() -> AdministrativeRegionMapper:
     return AdministrativeRegionMapper(
         "docs/data/runtime/external/external_region_mapping.json",
         "docs/data/generated/member_value_index.json",
+        target_binding=region_target_binding(member_filters_config.load_config()),
     )
 
 
@@ -89,6 +105,53 @@ def test_mapper_preserves_sido_sigungu_hierarchy() -> None:
     assert "B.SIDO = '서울'" in sql
     assert "B.SIDO = '경기' AND B.SIGUNGU = '수원시" in sql
     assert "B.SIDO IN ('서울', '경기')" not in sql
+
+
+def test_mapper_uses_injected_region_target_binding() -> None:
+    config = member_filters_config.load_config()
+    region = copy.deepcopy(config["region_target"])
+    region.update({"table": "MEMBER_RESIDENCE_V2", "alias": "RB"})
+    region["columns"].update({"sido": "RB.SIDO", "sigungu": "RB.SIGUNGU"})
+    config["region_target"] = region
+    mapper = AdministrativeRegionMapper(
+        "docs/data/runtime/external/external_region_mapping.json",
+        "docs/data/generated/member_value_index.json",
+        target_binding=region_target_binding(config),
+    )
+    result = ResolverResult(
+        condition_id=_condition().id,
+        status="resolved",
+        provider="test",
+        resolver="test",
+        resolver_version="1",
+        observed_at=NOW,
+        expires_at=NOW + timedelta(minutes=10),
+        targets=(AdministrativeRegion(sido_code="11", sido_name="서울특별시"),),
+    )
+
+    compound, _mapped = mapper.to_compound_dimension_filter(_condition(), result)
+
+    assert compound["groups"][0]["filters"] == [
+        {
+            "table": "MEMBER_RESIDENCE_V2",
+            "column": "RB.SIDO",
+            "operator": "=",
+            "value": "서울",
+        }
+    ]
+
+
+def test_region_target_binding_rejects_missing_or_mismatched_columns() -> None:
+    config = member_filters_config.load_config()
+    del config["region_target"]["columns"]["sigungu"]
+    with pytest.raises(RegionMappingError, match="region_target.columns.sigungu") as exc:
+        region_target_binding(config)
+    assert exc.value.code == "target_binding_invalid"
+
+    config = member_filters_config.load_config()
+    config["region_target"]["columns"]["sido"] = "OTHER.SIDO"
+    with pytest.raises(RegionMappingError, match=r"qualified B\.column"):
+        region_target_binding(config)
 
 
 def test_mapper_fails_when_any_region_is_unmapped() -> None:

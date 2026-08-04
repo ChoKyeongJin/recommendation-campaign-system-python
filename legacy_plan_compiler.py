@@ -46,6 +46,7 @@ from semantic_normalizers import (
     Period,
     PeriodNormalizer,
     RankLimitNormalizer,
+    RatioNormalizer,
     RelativeWindow,
 )
 from semantic_plan import SemanticNode, SemanticPlanV2
@@ -340,38 +341,45 @@ class LegacyQueryPlanCompiler:
         self._append_list_slot(result, node, SLOT_CART_AGGREGATE, list(coerced))
 
     @staticmethod
-    def _rolling_window_days(
+    def _execution_window(
         window: Period | RelativeWindow | None, ctx: CompileContext
-    ) -> tuple[int | None, str]:
-        """집계 창을 롤링 일수로 확정한다. 반환: (일수|None, 확정 불가 사유|"").
+    ) -> tuple[dict[str, Any] | None, str]:
+        """기간을 SQL이 그대로 실행할 수 있는 inclusive 달력 구간으로 만든다.
 
-        상대 창('최근 3개월')은 그대로 일수다. 절대 구간은 **오늘로 끝나는 후행 창일 때만**
-        일수로 환산한다 — 달력 구간('2026년 5월')을 일수로 바꾸면 구간이 오늘 쪽으로 밀려
-        원문에 없는 기간이 된다. 확정할 수 없으면 사유를 돌려주고 호출자가 fail-close 한다:
-        조용히 창 없는(=평생) 집계로 내리면 '최근 3개월 5건'이 '평생 5건'이 되는 가짜 성공이다
-        (실측 2026-08-02: 절대 구간 분기가 set-then-pop no-op 이라 창이 통째로 사라졌다).
+        상대 기간은 반드시 요청 컨텍스트의 기준일로 한 번만 해석한다. ``months``/``years``를
+        30/365일로 바꾸거나, 계산된 일수를 DB ``GETDATE()``에 다시 붙이지 않는다. 원래 달력
+        단위도 함께 보존해 감사·round-trip에서 의미가 사라지지 않게 한다.
         """
-        if isinstance(window, RelativeWindow):
-            return window.days, ""
-        if not isinstance(window, Period):
+        if window is None:
             return None, ""
-        if ctx.today is None:
-            return None, "기준일이 주입되지 않아 기간을 확정할 수 없다"
-        try:
-            start = date(int(window.start[:4]), int(window.start[4:6]), int(window.start[6:8]))
-            end = date(int(window.end[:4]), int(window.end[4:6]), int(window.end[6:8]))
-        except (TypeError, ValueError):
-            return None, f"기간 '{window.start}~{window.end}' 을 날짜로 해석할 수 없다"
-        if end < ctx.today:
-            label = window.label or f"{window.start}~{window.end}"
-            return None, (
-                f"'{label}' 처럼 과거에서 끝나는 달력 구간의 집계는 아직 지원하지 않는다"
-                "(현재는 오늘로 끝나는 최근 N일 창만 컴파일된다)"
-            )
-        days = (ctx.today - start).days + 1
-        if days <= 0:
-            return None, f"기간 '{window.start}~{window.end}' 의 시작이 기준일보다 뒤에 있다"
-        return days, ""
+        if isinstance(window, RelativeWindow):
+            if ctx.today is None:
+                return None, "기준일이 주입되지 않아 상대 기간을 확정할 수 없다"
+            resolved = window.resolve(ctx.today)
+            return {
+                "type": "relative",
+                "value": window.value,
+                "unit": window.unit,
+                "from": resolved.start,
+                "to": resolved.end,
+            }, ""
+        if ctx.today is not None:
+            try:
+                window_end = date(
+                    int(window.end[:4]),
+                    int(window.end[4:6]),
+                    int(window.end[6:8]),
+                )
+            except (TypeError, ValueError):
+                return None, f"기간 '{window.start}~{window.end}' 을 날짜로 해석할 수 없다"
+            if window_end > ctx.today:
+                label = window.label or f"{window.start}~{window.end}"
+                return None, f"'{label}' 처럼 기준일 이후에 끝나는 달력 구간은 컴파일할 수 없다"
+        return {
+            "type": window.kind,
+            "from": window.start,
+            "to": window.end,
+        }, ""
 
     # 집계 도메인 → (존재 슬롯, 부재 슬롯). 카운트 대수가 임계 비교를 존재/부재로 환원했을 때만 쓴다.
     _SCOPE_PRESENCE_SLOTS: dict[str, tuple[str, str]] = {
@@ -401,7 +409,7 @@ class LegacyQueryPlanCompiler:
         metric: str | None,
         operator: str,
         threshold: int | float,
-        window_days: int | None,
+        window: dict[str, Any] | None,
         window_issue: str,
     ) -> bool:
         """카운트 임계 비교를 존재/부재로 환원한다. 이 노드를 여기서 처리했으면 True.
@@ -453,10 +461,12 @@ class LegacyQueryPlanCompiler:
             })
             return True
         if verdict == COUNT_EXISTENCE:
-            value: dict[str, Any] = {"operator": "exists", "window_days": window_days}
+            value: dict[str, Any] = {"operator": "exists"}
+            if window is not None:
+                value["window"] = window
             slot_name = existence_slot
         else:  # COUNT_ABSENCE
-            if window_days is None:
+            if window is None:
                 result.failures.append({
                     "node_id": node.id,
                     "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
@@ -466,7 +476,7 @@ class LegacyQueryPlanCompiler:
                     ),
                 })
                 return True
-            value = {"min_days": window_days}
+            value = {"window": window}
             slot_name = absence_slot
         coerced = self._coerce(ctx, slot_name, value, None)
         if coerced is None:
@@ -504,11 +514,11 @@ class LegacyQueryPlanCompiler:
         threshold, _unit = self._threshold(node)
         operator = self._operator(node)
         window = self._period(node, "period", ctx)
-        window_days, window_issue = self._rolling_window_days(window, ctx)
+        execution_window, window_issue = self._execution_window(window, ctx)
         if self._compile_count_presence(
             node, ctx, result,
             scope="order", domain="aggregate", metric=metric, operator=operator,
-            threshold=threshold, window_days=window_days, window_issue=window_issue,
+            threshold=threshold, window=execution_window, window_issue=window_issue,
         ):
             return
         item: dict[str, Any] = {
@@ -516,19 +526,15 @@ class LegacyQueryPlanCompiler:
             "operator": operator,
             "threshold": threshold,
         }
-        if isinstance(window, RelativeWindow):
-            item["window"] = {"value": window.value, "unit": window.unit}
-        elif isinstance(window, Period):
-            # 절대 구간은 오늘로 끝나는 후행 창일 때만 롤링 일수가 된다. 아니면 조용히 버리지 않고
-            # 여기서 끊는다 — 창이 사라진 집계는 '평생'이 되어 원문과 다른 대상을 낸다.
-            if window_issue:
+        if window is not None:
+            if window_issue or execution_window is None:
                 result.failures.append({
                     "node_id": node.id,
                     "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
-                    "reason": window_issue,
+                    "reason": window_issue or "집계 기간을 일수로 확정할 수 없다",
                 })
                 return
-            item["window_days"] = window_days
+            item["window"] = execution_window
         grain = node.values.get("grain")
         if isinstance(grain, str) and grain:
             item["aggregation_scope"] = grain
@@ -563,6 +569,13 @@ class LegacyQueryPlanCompiler:
         지표에는 그 모호성이 없다 — 캠페인 어휘는 '반응 이벤트들'과 '귀속 금액 하나'의
         합집합(`campaign_metric_id`)이고, 어느 쪽인지는 지표 이름 하나로 결정된다.
         """
+        if node.values.get("period") not in (None, "", {}, []):
+            result.failures.append({
+                "node_id": node.id,
+                "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                "reason": "캠페인 집계 기간은 현재 실행 슬롯이 보존하지 못하므로 컴파일할 수 없다",
+            })
+            return
         event = node.values.get("event") or ctx.resolve_metric("campaign_event", node.values.get("metric"))
         frequency_events = ctx.allowed.get(CAMPAIGN_FREQUENCY_VOCAB) or ()
         if event == CAMPAIGN_AMOUNT_METRIC and event not in frequency_events:
@@ -686,12 +699,12 @@ class LegacyQueryPlanCompiler:
         }
         threshold = node.values.get("threshold")
         if threshold not in (None, "", {}, []):
-            value = AmountNormalizer.normalize(threshold)
+            ratio = RatioNormalizer.normalize(threshold)
             operator = OperatorNormalizer.normalize_or_none(node.values.get("threshold_operator")) or ">="
             slot["relative_change"] = {
                 "unit": "percent",
                 "comparisons": [{"operator": operator,
-                                 "value": value.amount if isinstance(value, Money) else value.value}],
+                                 "value": ratio.to_dict()["value"]}],
             }
         coerced = self._coerce(ctx, SLOT_METRIC_TREND, slot, "aggregate_metrics")
         if coerced is None:
@@ -713,6 +726,13 @@ class LegacyQueryPlanCompiler:
                 "node_id": node.id,
                 "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
                 "reason": f"'{entity}' 랭킹은 단독 타겟 조건이 아니다(회원 집합과 연결해야 한다)",
+            })
+            return
+        if node.values.get("period") not in (None, "", {}, []):
+            result.failures.append({
+                "node_id": node.id,
+                "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                "reason": "회원 랭킹 기간은 현재 실행 슬롯이 보존하지 못하므로 컴파일할 수 없다",
             })
             return
         limit = RankLimitNormalizer.normalize(node.values.get("limit"))
@@ -766,10 +786,16 @@ class LegacyQueryPlanCompiler:
             "negated": bool(node.values.get("negated")),
         }
         window = self._period(ranking, "period", ctx)
-        if isinstance(window, Period):
-            slot["window"] = window.to_window()
-        elif isinstance(window, RelativeWindow):
-            slot["window"] = {"days": window.days}
+        if window is not None:
+            execution_window, window_issue = self._execution_window(window, ctx)
+            if window_issue or execution_window is None:
+                result.failures.append({
+                    "node_id": node.id,
+                    "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                    "reason": window_issue or "랭킹 기간을 일수로 확정할 수 없다",
+                })
+                return
+            slot["window"] = execution_window
         cardinality = node.values.get("cardinality")
         if cardinality not in (None, "", {}, []):
             quantity = AmountNormalizer.normalize(cardinality)
@@ -872,7 +898,17 @@ class LegacyQueryPlanCompiler:
         if isinstance(window, Period):
             slot["month"] = window.start[:6]
         elif isinstance(window, RelativeWindow):
-            slot["months"] = max(1, window.value if window.unit == "months" else window.days // 30)
+            if window.unit == "months":
+                slot["months"] = window.value
+            elif window.unit == "years":
+                slot["months"] = window.value * 12
+            else:
+                result.failures.append({
+                    "node_id": node.id,
+                    "failure_code": semantic_plan.UNSUPPORTED_DATA_GRAIN,
+                    "reason": "월별 속성 스냅샷은 일/주 단위 rolling 기간을 근사하지 않는다",
+                })
+                return
         months = node.values.get("months")
         if isinstance(months, (int, float)) and not isinstance(months, bool):
             slot["months"] = int(months)

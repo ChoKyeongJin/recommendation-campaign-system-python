@@ -25,9 +25,11 @@ confidence 조건 수집/라벨까지 서로 다른 곳에 손배선해야 했�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Any, Callable
 
 import condition_normalizers
+from semantic_normalizers import decimal_json_value, exact_decimal
 
 # 주문 횟수 행동(집계 기준은 member_target_filters.json 의 order_count_targets.behaviors 가 소유).
 # graph_rag 는 로드된 설정 키 집합을 주입하고, 이 기본값은 설정 부재 시 폴백이다.
@@ -75,6 +77,7 @@ class ConfidenceMeta:
 UNIT_DAYS: dict[str, int] = condition_normalizers.unit_days()
 # LLM/정규식이 낼 수 있는 단위 표기(한글·단수·복수)를 캐노니컬로 접는다.
 _UNIT_ALIASES: dict[str, str] = condition_normalizers.unit_aliases()
+_CANONICAL_DURATION_UNITS: frozenset[str] = frozenset(_UNIT_ALIASES.values())
 OPERATORS: frozenset[str] = frozenset({">=", ">", "<=", "<"})
 # 비교어 → 부등호 핵심 매핑(파생 재수출). graph_rag 의 표면 정규식 추출도 이 표를 재수출해 쓴다
 # (graph_rag._COMPARISON_OPERATORS). 순서(이상/초과/이하/미만)는 graph_rag 의 _OP_ALT_BASIC="|".join(...)
@@ -95,14 +98,25 @@ def _pos_int(raw: Any) -> int | None:
     return value if value > 0 else None
 
 
-def _pos_number(raw: Any) -> float | int | None:
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return None
-    if value <= 0:
-        return None
-    return int(value) if float(value).is_integer() else value
+def _pos_number(raw: Any) -> Decimal | None:
+    """Parse a positive semantic number without a binary-float round trip."""
+
+    value = exact_decimal(raw, allow_string=True)
+    return value if value is not None and value > 0 else None
+
+
+def _pos_decimal(raw: Any) -> Decimal | None:
+    """Parse an explicitly numeric ratio value without a float round trip."""
+
+    value = exact_decimal(raw, allow_string=True)
+    return value if value is not None and value > 0 else None
+
+
+def _pos_money_amount(raw: Any) -> Decimal | None:
+    """Parse a positive money amount, including the exact-string wire form."""
+
+    value = exact_decimal(raw, allow_string=True)
+    return value if value is not None and value > 0 else None
 
 
 # ── coerce 거부 사유(관측) ────────────────────────────────────────────────────────
@@ -165,16 +179,58 @@ def _window_days(raw: dict[str, Any]) -> tuple[int, str, int] | None:
     result = condition_normalizers.normalize_duration(raw)
     if result.ok:
         value = result.value
-        return value["value"], value["unit"], value["min_days"]
+        min_days = _pos_int(value.get("min_days"))
+        if min_days is not None:
+            return value["value"], value["unit"], min_days
+        # A calendar unit was valid but cannot be reduced to an invariant day
+        # count.  Do not let a stale caller-supplied ``min_days`` override it.
+        return None
     min_days = _pos_int(raw.get("min_days")) or _pos_int(raw.get("days"))
     if min_days:
         return min_days, "days", min_days
     return None
 
 
+def _execution_window(raw: Any) -> dict[str, Any] | None:
+    """Validate an inclusive request-anchored date interval.
+
+    ``type/value/unit`` are audit metadata for a relative calendar duration; the
+    executable meaning is always the validated ``from``/``to`` pair.  This lets
+    downstream SQL avoid re-anchoring a month/year duration to the database
+    clock while retaining the original calendar unit on the wire.
+    """
+
+    if not isinstance(raw, dict):
+        return None
+    normalized = condition_normalizers.normalize_date_window(raw)
+    if not normalized.ok:
+        return None
+    out = {
+        "from": normalized.value["from"],
+        "to": normalized.value["to"],
+    }
+    window_type = raw.get("type")
+    if window_type is not None:
+        if window_type not in {"relative", "absolute", "calendar_month", "interval"}:
+            return None
+        out["type"] = window_type
+    if window_type == "relative":
+        value = _pos_int(raw.get("value"))
+        unit = _canon_unit(raw.get("unit"))
+        if value is None or unit is None:
+            return None
+        out["value"] = value
+        out["unit"] = unit
+    return out
+
+
 def _reject_window(raw: Any, allowed: Any = None) -> str | None:
     if not isinstance(raw, dict):
         return _REJECT_NOT_OBJECT
+    if "window" in raw:
+        if _execution_window(raw.get("window")) is not None:
+            return None
+        return f"기간 {raw.get('window')!r} 는 유효한 from/to 달력 구간이 아니다"
     if _window_days(raw) is None:
         return (
             f"기간 {raw!r} 를 일수로 확정할 수 없다"
@@ -187,6 +243,9 @@ def _coerce_window(raw: Any, *, sql_interval: bool, allowed: Any = None) -> dict
     """recent_login/purchase_inactivity 창 슬롯: {value,unit,min_days[,sql_interval]}."""
     if _reject_window(raw, allowed) is not None:
         return None
+    execution_window = _execution_window(raw.get("window"))
+    if execution_window is not None:
+        return {"window": execution_window}
     parts = _window_days(raw)
     value, unit, min_days = parts
     out: dict[str, Any] = {"value": value, "unit": unit, "min_days": min_days}
@@ -203,6 +262,8 @@ def _reject_purchase_membership(raw: Any, allowed: Any = None) -> str | None:
     window = raw.get("window_days")
     if window is not None and _pos_int(window) is None:
         return f"구매 존재 창 {window!r} 는 양의 정수(일)여야 한다"
+    if raw.get("window") is not None and _execution_window(raw.get("window")) is None:
+        return f"구매 존재 창 {raw.get('window')!r} 는 유효한 from/to 달력 구간이어야 한다"
     return None
 
 
@@ -214,6 +275,9 @@ def _coerce_purchase_membership(raw: Any, *, allowed: Any = None) -> dict[str, A
     """
     if _reject_purchase_membership(raw, allowed) is not None:
         return None
+    window = _execution_window(raw.get("window"))
+    if window is not None:
+        return {"operator": "exists", "window": window}
     return {"operator": "exists", "window_days": _pos_int(raw.get("window_days"))}
 
 
@@ -239,11 +303,20 @@ def _reject_aggregate_threshold(item: Any, allowed: Any) -> str | None:
     """집계 임계 항목 하나의 수용 판정(단일 소스 — coerce 와 사유가 같은 함수를 쓴다)."""
     if not isinstance(item, dict):
         return _REJECT_NOT_OBJECT
-    return (
+    failure = (
         _reject_metric_vocabulary(item.get("metric_id"), allowed, kind="집계")
         or _reject_operator(item.get("operator"))
         or _reject_positive_threshold(item.get("threshold"))
     )
+    if failure is not None:
+        return failure
+    raw_window = item.get("window")
+    if raw_window is not None and (
+        _execution_window(raw_window) is None
+        and (not isinstance(raw_window, dict) or _window_days(raw_window) is None)
+    ):
+        return f"집계 기간 {raw_window!r} 를 확정할 수 없다"
+    return None
 
 
 def _coerce_threshold_list(raw: Any, *, allowed: Any = None) -> list[dict[str, Any]] | None:
@@ -263,12 +336,22 @@ def _coerce_threshold_list(raw: Any, *, allowed: Any = None) -> list[dict[str, A
         metric_id = item["metric_id"]
         operator = _canon_operator(item.get("operator"))
         threshold = _pos_number(item.get("threshold"))
-        cond: dict[str, Any] = {"metric_id": metric_id, "operator": operator, "threshold": threshold}
-        window = _pos_int(item.get("window_days"))
-        if window is None and isinstance(item.get("window"), dict):
-            window_parts = _window_days(item["window"])
-            window = window_parts[2] if window_parts is not None else None
-        cond["window_days"] = window
+        if threshold is None:
+            continue
+        cond: dict[str, Any] = {
+            "metric_id": metric_id,
+            "operator": operator,
+            "threshold": decimal_json_value(threshold),
+        }
+        execution_window = _execution_window(item.get("window"))
+        if execution_window is not None:
+            cond["window"] = execution_window
+        else:
+            window = _pos_int(item.get("window_days"))
+            if window is None and isinstance(item.get("window"), dict):
+                window_parts = _window_days(item["window"])
+                window = window_parts[2] if window_parts is not None else None
+            cond["window_days"] = window
         aggregation_scope = item.get("aggregation_scope")
         if aggregation_scope in {"per_member", "per_order", "per_product", "per_brand"}:
             if aggregation_scope != "per_member":
@@ -331,10 +414,14 @@ def _coerce_buy_amount(raw: Any, *, allowed: Any = None) -> dict[str, Any] | Non
     if not isinstance(raw, dict):
         return None
     operator = _canon_operator(raw.get("operator"))
-    amount = _pos_number(raw.get("amount"))
+    amount = _pos_money_amount(raw.get("amount"))
     if not (operator and amount is not None):
         return None
-    out: dict[str, Any] = {"operator": operator, "amount": amount, "window_days": _pos_int(raw.get("window_days"))}
+    out: dict[str, Any] = {
+        "operator": operator,
+        "amount": decimal_json_value(amount),
+        "window_days": _pos_int(raw.get("window_days")),
+    }
     agg = str(raw.get("agg") or "").strip().upper()
     if agg in {"SUM", "AVG"}:
         out["agg"] = agg
@@ -347,10 +434,14 @@ def _coerce_rate(raw: Any) -> dict[str, Any] | None:
     if not isinstance(raw, dict):
         return None
     operator = _canon_operator(raw.get("operator"))
-    value = _pos_number(raw.get("value"))
-    if not (operator and value is not None and 0 < value <= 100):
+    value = _pos_decimal(raw.get("value"))
+    if not (operator and value is not None and value <= Decimal("100")):
         return None
-    return {"operator": operator, "value": float(value), "inferred": bool(raw.get("inferred", False))}
+    return {
+        "operator": operator,
+        "value": decimal_json_value(value),
+        "inferred": bool(raw.get("inferred", False)),
+    }
 
 
 def _coerce_cell_rate(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
@@ -512,19 +603,19 @@ def _coerce_relative_change(raw: Any) -> dict[str, Any] | None:
     if not isinstance(candidates, list):
         candidates = [{"operator": raw.get("operator"), "value": raw.get("value")}]
     comparisons: list[dict[str, Any]] = []
-    seen: set[tuple[str, float | int]] = set()
+    seen: set[tuple[str, Decimal]] = set()
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
         operator = _canon_operator(candidate.get("operator"))
-        value = _pos_number(candidate.get("value"))
+        value = _pos_decimal(candidate.get("value"))
         if operator is None or value is None:
             continue
         key = (operator, value)
         if key in seen:
             continue
         seen.add(key)
-        comparisons.append({"operator": operator, "value": value})
+        comparisons.append({"operator": operator, "value": decimal_json_value(value)})
     return {"unit": "percent", "comparisons": comparisons} if comparisons else None
 
 
@@ -621,15 +712,11 @@ def _coerce_member_metric_ranking(raw: Any, *, allowed: Any = None) -> dict[str,
     if str(raw.get("direction") or "").strip().casefold() in ("high", "low"):
         out["direction"] = str(raw["direction"]).strip().casefold()
     if str(raw.get("limit_type") or "").strip().casefold() == "percent":
-        percent = raw.get("percent")
-        try:
-            percent = float(percent)
-        except (TypeError, ValueError):
-            return None
-        if not 0 < percent < 100:
+        percent = _pos_decimal(raw.get("percent"))
+        if percent is None or percent >= Decimal("100"):
             return None
         out["limit_type"] = "percent"
-        out["percent"] = int(percent) if percent.is_integer() else percent
+        out["percent"] = decimal_json_value(percent)
     else:
         top_n = _pos_int(raw.get("top_n"))
         if top_n:
@@ -680,11 +767,13 @@ def _coerce_profile_metric_conditions(raw: Any, *, allowed: Any = None) -> list[
         mapping = allowed[metric_id]
         operator = _canon_operator(item.get("operator"))
         threshold = _pos_number(item.get("threshold"))
+        if threshold is None:
+            continue
         entry: dict[str, Any] = {
             "metric_id": metric_id,
             "column": mapping["column"],
             "operator": operator,
-            "threshold": threshold,
+            "threshold": decimal_json_value(threshold),
             "label": mapping.get("label") or metric_id,
         }
         if isinstance(mapping.get("profile_source"), dict):
@@ -707,8 +796,11 @@ def _reject_profile_date_state(item: Any, allowed: Any) -> str | None:
     mapping = states.get(state) if isinstance(states, dict) and isinstance(state, str) else None
     if not isinstance(mapping, dict):
         return f"프로필 날짜 상태 '{state}' 는 지표 '{metric_id}' 의 실행 어휘에 없다"
-    if not (isinstance(mapping.get("operator"), str) and isinstance(mapping.get("anchor_expression"), str)):
-        return f"'{metric_id}:{state}' 에 부등호·앵커식 바인딩이 없다"
+    if not (
+        isinstance(mapping.get("operator"), str)
+        and mapping.get("anchor") == "reference_date"
+    ):
+        return f"'{metric_id}:{state}' 에 부등호·기준일 바인딩이 없다"
     return None
 
 
@@ -732,7 +824,7 @@ def _coerce_profile_date_states(raw: Any, *, allowed: Any = None) -> list[dict[s
             "metric_id": metric_id,
             "state": state,
             "operator": mapping["operator"],
-            "right_expression": mapping["anchor_expression"],
+            "anchor": mapping["anchor"],
             "label": mapping.get("label") or f"{metric_id}:{state}",
         }
         if isinstance(metric_map.get("profile_source"), dict):
@@ -844,12 +936,29 @@ def _list_schema(desc: str, item_properties: dict[str, Any] | None = None) -> di
 _POS_INT_PROP: dict[str, Any] = {"type": "integer", "minimum": 1}
 _NUMBER_PROP: dict[str, Any] = {"type": "number"}
 _STRING_PROP: dict[str, Any] = {"type": "string"}
-_UNIT_PROP: dict[str, Any] = {"type": "string", "enum": sorted(UNIT_DAYS)}
+_UNIT_PROP: dict[str, Any] = {
+    "type": "string",
+    "enum": sorted(_CANONICAL_DURATION_UNITS),
+}
 _OPERATOR_PROP: dict[str, Any] = {"type": "string", "enum": sorted(OPERATORS)}
+_EXECUTION_WINDOW_PROP: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "from": _STRING_PROP,
+        "to": _STRING_PROP,
+        "type": {
+            "type": "string",
+            "enum": ["relative", "absolute", "calendar_month", "interval"],
+        },
+        "value": _POS_INT_PROP,
+        "unit": _UNIT_PROP,
+    },
+}
 _WINDOW_PROPS: dict[str, Any] = {
     "value": _POS_INT_PROP,
     "unit": _UNIT_PROP,
     "min_days": _POS_INT_PROP,
+    "window": _EXECUTION_WINDOW_PROP,
 }
 _DATE_WINDOW_PROPS: dict[str, Any] = {
     "from": _STRING_PROP,
@@ -879,6 +988,12 @@ def _aggregate_condition_schema() -> dict[str, Any]:
                 "window": {
                     "type": "object",
                     "properties": {
+                        "from": {"type": "string"},
+                        "to": {"type": "string"},
+                        "type": {
+                            "type": "string",
+                            "enum": ["relative", "absolute", "calendar_month", "interval"],
+                        },
                         "value": {"type": "integer", "minimum": 1},
                         "unit": {"type": "string", "enum": ["days", "weeks", "months", "years"]},
                     },
@@ -929,11 +1044,12 @@ SLOT_SHAPES: dict[str, SlotShape] = {
     # (order_count > 0)으로 우회 방출됐고 양수 임계 도메인에 걸려 요청 전체가 막혔다(2026-08-02).
     "purchase_membership": SlotShape("purchase_membership", "target_user",
         _obj_schema(
-            "구매 이력 **존재**(주문 EXISTS). {operator:'exists', window_days?}. "
+            "구매 이력 **존재**(주문 EXISTS). {operator:'exists', window? 또는 window_days?}. "
             "'구매한 적 있는', '주문은 있었지만', '구매 이력이 있는' 처럼 **있음만** 말하는 조건이다. "
             "횟수·금액 임계가 붙으면 aggregate_conditions, '없음'이면 purchase_inactivity(창 있음)나 "
             "behaviors=no_purchase(평생)로 간다. window_days 가 없으면(null) 평생 구매 이력.",
-            {"operator": {"type": "string", "enum": ["exists"]}, "window_days": _POS_INT_PROP}),
+            {"operator": {"type": "string", "enum": ["exists"]},
+             "window_days": _POS_INT_PROP, "window": _EXECUTION_WINDOW_PROP}),
         _coerce_purchase_membership, reject=_reject_purchase_membership),
     "cart_retention": SlotShape("cart_retention", "target_user",
         _obj_schema(f"장바구니 기간. {{min_days}}(이상) 또는 {{max_days}}(이내), 또는 {{value,unit,direction}}. "
@@ -1399,7 +1515,7 @@ CONDITION_SPECS: tuple[ConditionSpec, ...] = (
             kind="campaign_response", category="purchase",
             key=lambda p: "campaign_buy_amount", value=lambda p: p.get("amount"),
             ko=lambda p: p.get("label") or f"캠페인 구매금액 {p.get('amount')} 조건",
-            applies=lambda p: isinstance(p.get("amount"), (int, float)),
+            applies=lambda p: _pos_money_amount(p.get("amount")) is not None,
         ),
     ),
     # 캠페인 '귀속 구매 건수'(반응 팩트에서 구매반응 캠페인 수) — 전 생애 주문 건수(order_count)와 다른

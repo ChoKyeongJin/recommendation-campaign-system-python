@@ -1,0 +1,132 @@
+........................................................................ [  3%]
+........................................................................ [  6%]
+........................................................................ [  9%]
+........................................................................ [ 12%]
+........................................................................ [ 15%]
+.s...................................................................... [ 18%]
+...................................F.................................... [ 22%]
+........................................................................ [ 25%]
+........................................................................ [ 28%]
+........................................................................ [ 31%]
+........................................................................ [ 34%]
+........................................................................ [ 37%]
+........................................................................ [ 41%]
+........................................................................ [ 44%]
+........................................................................ [ 47%]
+...................ssssssssssssssssssss................................. [ 50%]
+........................................................................ [ 53%]
+........................................................................ [ 56%]
+........................................................................ [ 60%]
+........................................................................ [ 63%]
+.......sss.............................................................F [ 66%]
+........................................................................ [ 69%]
+........................................................................ [ 72%]
+........................................................................ [ 75%]
+........................................................................ [ 79%]
+.......................ss............................................... [ 82%]
+........................................................................ [ 85%]
+........................................................................ [ 88%]
+........................................................................ [ 91%]
+........................................................................ [ 94%]
+........................................................................ [ 98%]
+...........................................                              [100%]
+=================================== FAILURES ===================================
+______ test_canonical_semantic_lowering_failure_never_calls_legacy_bridge ______
+
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x7c65abc53bf0>
+
+    def test_canonical_semantic_lowering_failure_never_calls_legacy_bridge(
+        monkeypatch: Any,
+    ) -> None:
+        plan: dict[str, Any] = {
+            "audience_requirement": {"expression": None, "issues": []},
+            "semantic_plan": {"nodes": [{"type": "unknown"}]},
+            "semantic_ir": empty_semantic_ir(status="resolved"),
+        }
+        monkeypatch.setattr(
+            graph_rag.semantic_relation_ownership,
+            "project_relation_data_coverage",
+            lambda *_args, **_kwargs: [],
+        )
+    
+        def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError("canonical lowering fell through to the legacy bridge")
+    
+        monkeypatch.setattr(graph_rag.semantic_plan_bridge, "apply", forbidden)
+        monkeypatch.setattr(graph_rag.member_attribute_history, "apply", forbidden)
+>       graph_rag._apply_semantic_plan_pipeline(plan, "여성 회원")
+
+tests/test_canonical_event_ir_grounding.py:620: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+graph_rag.py:10535: in _apply_semantic_plan_pipeline
+    member_attribute_history.apply(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+_args = ({'audience_requirement': {'expression': None, 'issues': []}, 'semantic_plan': {'nodes': [{'type': 'unknown'}]}, 'sema......}, {'seq': 1, 'filter': 'semantic_plan_pipeline', 'action': 'reject', 'slot': 'semantic_plan', ...}], ...}, '여성 회원')
+_kwargs = {'catalog_loader': <functools._lru_cache_wrapper object at 0x7c65b13614e0>}
+
+    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
+>       raise AssertionError("canonical lowering fell through to the legacy bridge")
+E       AssertionError: canonical lowering fell through to the legacy bridge
+
+tests/test_canonical_event_ir_grounding.py:616: AssertionError
+______________________ test_no_module_exceeds_its_ceiling ______________________
+
+    def test_no_module_exceeds_its_ceiling() -> None:
+        """상한 초과 = 분할이 되돌아가고 있다는 신호."""
+    
+        baseline = _baseline()
+        over = {
+            name: (ceiling, _line_count(name))
+            for name, ceiling in baseline.items()
+            if _line_count(name) > ceiling
+        }
+>       assert not over, (
+            "모듈이 상한을 넘었다(상한, 현재): "
+            + json.dumps(over, ensure_ascii=False)
+            + f"\n\n코드를 적절한 rag/ 하위 모듈로 옮기거나, 정말 필요하면 "
+            f"{BASELINE_PATH.name} 의 상한을 올리고 커밋 메시지에 사유를 남겨라."
+        )
+E       AssertionError: 모듈이 상한을 넘었다(상한, 현재): {"graph_rag.py": [17330, 18247]}
+E         
+E         코드를 적절한 rag/ 하위 모듈로 옮기거나, 정말 필요하면 module_size_baseline.json 의 상한을 올리고 커밋 메시지에 사유를 남겨라.
+E       assert not {'graph_rag.py': (17330, 18247)}
+
+tests/test_module_size_ratchet.py:68: AssertionError
+=============================== warnings summary ===============================
+api.py:218
+  /app/api.py:218: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
+    class ApiBaseModel(BaseModel):
+
+../usr/local/lib/python3.12/site-packages/pydantic/_internal/_config.py:386
+  /usr/local/lib/python3.12/site-packages/pydantic/_internal/_config.py:386: UserWarning: Valid config keys have changed in V2:
+  * 'allow_population_by_field_name' has been renamed to 'validate_by_name'
+    warnings.warn(message, UserWarning)
+
+api.py:341
+  /app/api.py:341: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("startup")
+
+../usr/local/lib/python3.12/site-packages/fastapi/applications.py:4675
+  /usr/local/lib/python3.12/site-packages/fastapi/applications.py:4675: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    return self.router.on_event(event_type)  # ty: ignore[deprecated]
+
+../usr/local/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /usr/local/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_canonical_event_ir_grounding.py::test_canonical_semantic_lowering_failure_never_calls_legacy_bridge
+FAILED tests/test_module_size_ratchet.py::test_no_module_exceeds_its_ceiling
+2 failed, 2247 passed, 26 skipped, 5 warnings in 562.60s (0:09:22)

@@ -27,11 +27,11 @@ CandidateProvider 프로토콜). 이 모듈은 graph_rag 를 import 하지 않�
 from __future__ import annotations
 
 import json
-import math
 import os
 import re
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -54,10 +54,10 @@ DEFAULT_NORMALIZATION_LEXICON_PATH = (
 # tests/test_condition_normalizers.py 의 parity 가드가 막는다.
 _CODE_FALLBACK: dict[str, Any] = {
     "units": {
-        "days": ["일", "하루", "day", "days"],
+        "days": ["일", "일간", "하루", "day", "days"],
         "weeks": ["주", "주일", "week", "weeks"],
         "months": ["개월", "달", "월", "month", "months"],
-        "years": ["년", "해", "year", "years"],
+        "years": ["년", "년간", "해", "year", "years"],
     },
     "unit_days": {"days": 1, "weeks": 7, "months": 30, "years": 365},
     "unit_conversions": {
@@ -79,6 +79,7 @@ _CODE_FALLBACK: dict[str, Any] = {
 }
 
 COMPARISON_SYMBOLS: frozenset[str] = frozenset({">=", ">", "<=", "<", "="})
+_FIXED_DURATION_UNIT_DAYS: dict[str, int] = {"days": 1, "weeks": 7}
 
 
 @lru_cache(maxsize=4)
@@ -108,9 +109,12 @@ def _section(name: str) -> Any:
 
 
 def unit_days() -> dict[str, int]:
-    """canonical 단위 → 일수."""
-    raw = _section("unit_days")
-    return {str(k): int(v) for k, v in raw.items()} if isinstance(raw, dict) else dict(_CODE_FALLBACK["unit_days"])
+    """일수로 의미 손실 없이 환산 가능한 canonical 단위만 돌려준다.
+
+    달과 해는 기준일에 따라 실제 일수가 달라진다. 어휘 파일의 과거 호환값(30/365)은
+    정규화 의미로 사용하지 않는다.
+    """
+    return dict(_FIXED_DURATION_UNIT_DAYS)
 
 
 def unit_aliases() -> dict[str, str]:
@@ -130,6 +134,46 @@ def comparison_word_operators() -> dict[str, str]:
     """비교어 → 부등호(닫힌 핵심 집합). 열거 순서가 graph_rag 표면 정규식에 들어가므로 보존된다."""
     raw = _section("comparison_word_operators")
     return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else dict(_CODE_FALLBACK["comparison_word_operators"])
+
+
+def comparison_literal_operators() -> dict[str, str]:
+    """Literal scanner가 소유할 닫힌 비교 표면 집합.
+
+    확장 별칭은 의미 정규화 단계에서만 사용하고, scanner는 기존 네 단어와 네
+    부등호만 인식한다. 이 경계를 한 선언에서 파생해 parser별 복제 표를 없앤다.
+    """
+
+    out = comparison_word_operators()
+    for symbol in (">=", "<=", ">", "<"):
+        out[symbol] = symbol
+    return out
+
+
+_NUMERIC_DURATION_SURFACES: tuple[str, ...] = (
+    "주일",
+    "개월",
+    "일간",
+    "년간",
+    "일",
+    "주",
+    "달",
+    "년",
+)
+
+
+def numeric_duration_unit_semantics() -> dict[str, str]:
+    """숫자 기간 scanner가 허용하는 한국어 표면 → canonical 단위.
+
+    언어 별칭의 소유자는 normalization lexicon이고 이 함수는 그중 숫자 바로 뒤에
+    붙을 수 있는 닫힌 부분집합만 선언한다.
+    """
+
+    aliases = unit_aliases()
+    return {
+        surface: aliases[surface]
+        for surface in _NUMERIC_DURATION_SURFACES
+        if surface in aliases
+    }
 
 
 def operator_aliases() -> dict[str, str]:
@@ -172,8 +216,11 @@ def canonical_operator(raw: Any) -> str | None:
 
 
 # ── 값 파싱 공통 ──────────────────────────────────────────────────────────────────────────
-def _parse_number(raw: Any, *, allow_string: bool, field: str) -> tuple[float | int | None, NormalizationError | None]:
-    """유한 숫자 하나. bool·비숫자 문자열·NaN/inf 는 구조화 오류로 돌려준다(SQL 문자열 삽입 차단)."""
+def _parse_number(
+    raw: Any, *, allow_string: bool, field: str
+) -> tuple[Decimal | int | None, NormalizationError | None]:
+    """유한 숫자 하나를 이진 부동소수점 왕복 없이 읽는다."""
+
     if raw is None:
         return None, NormalizationError("missing_value", field=field)
     if isinstance(raw, bool):
@@ -182,19 +229,25 @@ def _parse_number(raw: Any, *, allow_string: bool, field: str) -> tuple[float | 
         if not allow_string:
             return None, NormalizationError("invalid_type", field=field, received=raw)
         text = raw.strip().replace(",", "")
-        try:
-            value: float | int = float(text)
-        except ValueError:
+        if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", text) is None:
             return None, NormalizationError("invalid_number", field=field, received=raw)
+        try:
+            exact = Decimal(text)
+        except InvalidOperation:
+            return None, NormalizationError("invalid_number", field=field, received=raw)
+    elif isinstance(raw, Decimal):
+        exact = raw
     elif isinstance(raw, (int, float)):
-        value = raw
+        try:
+            exact = Decimal(str(raw))
+        except (InvalidOperation, ValueError):
+            return None, NormalizationError("invalid_number", field=field, received=raw)
     else:
         return None, NormalizationError("invalid_type", field=field, received=raw)
-    if not math.isfinite(float(value)):
+    if not exact.is_finite():
         return None, NormalizationError("invalid_number", field=field, received=raw)
-    if isinstance(value, float) and value.is_integer():
-        value = int(value)
-    return value, None
+    integral = exact.to_integral_value()
+    return (int(integral) if exact == integral else exact), None
 
 
 # ── Duration ──────────────────────────────────────────────────────────────────────────────
@@ -213,8 +266,11 @@ DEFAULT_DURATION_POLICY = DurationPolicy()
 
 
 def normalize_duration(raw: Any, *, policy: DurationPolicy = DEFAULT_DURATION_POLICY) -> NormalizationResult:
-    """{value, unit} 표준 후보 → {value, unit, min_days}. '한 분기'→3개월 같은 표현 변환은
-    의미 해석 계층의 일이다 — 여기는 표준 후보만 검증한다(요청 20번)."""
+    """{value, unit} 표준 후보를 검증한다.
+
+    ``min_days`` 는 일/주처럼 정확히 환산되는 단위에만 파생한다. 월/년을 30/365일로
+    근사하지 않으며, 그 단위는 원래 ``{value, unit}`` 의미를 그대로 보존한다.
+    """
     if not isinstance(raw, Mapping):
         return NormalizationResult.failure(
             STATUS_INVALID, NormalizationError("invalid_type", field="duration", received=raw))
@@ -245,8 +301,11 @@ def normalize_duration(raw: Any, *, policy: DurationPolicy = DEFAULT_DURATION_PO
             STATUS_NEEDS_REVIEW,
             NormalizationError("unsupported_unit", field="unit", received=unit_raw,
                                allowed_values=tuple(sorted(policy.allowed_units))))
-    return NormalizationResult.normalized(
-        {"value": value, "unit": unit, "min_days": value * unit_days()[unit]})
+    normalized: dict[str, Any] = {"value": value, "unit": unit}
+    fixed_days = unit_days().get(unit)
+    if fixed_days is not None:
+        normalized["min_days"] = value * fixed_days
+    return NormalizationResult.normalized(normalized)
 
 
 # ── Comparison ────────────────────────────────────────────────────────────────────────────
@@ -256,8 +315,8 @@ class ComparisonPolicy:
     allow_zero: bool = True
     allow_negative: bool = False
     allow_string_numbers: bool = True
-    min_value: float | None = None
-    max_value: float | None = None
+    min_value: int | Decimal | None = None
+    max_value: int | Decimal | None = None
 
 
 DEFAULT_COMPARISON_POLICY = ComparisonPolicy()
@@ -494,7 +553,8 @@ def normalize_generic_condition(raw: Any, *, catalog: Any) -> NormalizationResul
         if not window.ok:
             return NormalizationResult.failure(window.status, *window.errors, catalog_match=True)
         value["window"] = {"value": window.value["value"], "unit": window.value["unit"]}
-        value["window_days"] = window.value["min_days"]
+        if "min_days" in window.value:
+            value["window_days"] = window.value["min_days"]
 
     aggregation_raw = raw.get("aggregation")
     if aggregation_raw is not None:
@@ -543,6 +603,7 @@ __all__ = [
     "canonical_operator",
     "canonical_unit",
     "clear_lexicon_cache",
+    "comparison_literal_operators",
     "comparison_word_operators",
     "get_normalizer",
     "normalize_comparison",
@@ -551,6 +612,7 @@ __all__ = [
     "normalize_entity_reference",
     "normalize_generic_condition",
     "normalize_threshold",
+    "numeric_duration_unit_semantics",
     "operator_aliases",
     "unit_aliases",
     "unit_conversions",

@@ -11,19 +11,12 @@ import member_filters_config
 import sql_dialect
 
 import functools
-import json
-import os
 import re
 from pathlib import Path
 from typing import Any
 
 
-DEFAULT_MEMBER_POLICY_PATH = Path(
-    os.getenv(
-        "GRAPH_RAG_MEMBER_TARGET_FILTERS",
-        "docs/data/runtime/sql/member_target_filters.json",
-    )
-)
+DEFAULT_MEMBER_POLICY_PATH = member_filters_config.DEFAULT_PATH
 
 _ALL_MEMBER_RE = re.compile(r"(?:전체|모든|전부)\s*(?:회원|고객|사용자|가입자)")
 _INCLUDE_DORMANT_RE = re.compile(r"휴면\s*(?:회원\s*)?(?:도\s*)?(?:포함|포괄)")
@@ -32,20 +25,13 @@ _INCLUDE_WITHDRAWN_RE = re.compile(r"탈퇴\s*(?:회원\s*)?(?:도\s*)?(?:포함
 
 @functools.lru_cache(maxsize=4)
 def load_member_policy(path_text: str = str(DEFAULT_MEMBER_POLICY_PATH)) -> dict[str, Any]:
-    """정책 레지스트리를 **코드 미러 위에** 덮어 읽는다(graph_rag/confidence 와 같은 규약).
+    """정책 레지스트리를 단일 JSON 소스에서 엄격하게 읽는다.
 
-    예전에는 파일이 없으면 빈 dict 를 돌려줬고, 그래서 이 모듈은 물리 이름을 자기 인라인
-    기본값(`base.get("table") or "CRM_MB_BASEINFO"`)으로 또 들고 있었다. 미러를 공유하면
-    그 사본이 필요 없어지고, 값이 사라지면 조용한 구DB 이름 대신 빈 값으로 시끄럽게 드러난다.
+    회원 모집단 정책은 SQL 실행 의미를 바꾸므로 설정 오류를 빈 정책으로 낮추지 않는다.
+    :class:`member_filters_config.MemberFiltersConfigError`를 호출 경계까지 그대로 전달한다.
     """
-    merged = dict(member_filters_config.CODE_DEFAULTS)
-    try:
-        payload = json.loads(Path(path_text).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return merged
-    if isinstance(payload, dict):
-        merged.update(payload)
-    return merged
+
+    return member_filters_config.load_config(Path(path_text))
 
 
 def active_member_definition(path: Path = DEFAULT_MEMBER_POLICY_PATH) -> dict[str, str]:

@@ -189,6 +189,17 @@ _CODE_FALLBACK: dict[str, dict[str, Any]] = {
         "source_snapshot_grain": ["월", "월별", "월간"],
         "source_snapshot_system": ["crm"],
         "source_snapshot_noun": ["스냅샷", "snapshot"],
+        # ── 한정사·지시어 ────────────────────────────────────────────────────────────────
+        # '값 자리에 왔지만 값이 아닌' 말들. 네 곳(구매 스코프 비엔터티어·스코프 자리표시자·
+        # 상품명 sanitize·자유텍스트 스코프)에 각자 복제돼 있었고 서로 달랐다 — '해당'이 한 곳에만
+        # 있고, '여러/다양'이 다른 한 곳에만 있는 식이다. 뜻으로 쪼개 두면 사이트별 차이가
+        # exclude 로 드러난다.
+        "indefinite_determiner": ["특정", "어떤", "무슨", "어느", "임의"],
+        "deictic_determiner": ["해당", "그", "이", "저"],
+        "partitive_determiner": ["일부", "각"],
+        "variety_determiner": ["가지각색", "다양한", "각기", "각각", "다양", "여러", "서로"],
+        "universal_determiner": ["전체", "전부", "모든", "모두"],
+        "otherness_reference": ["외의", "다른", "외"],
     },
     # 이관 원칙: 낱말 **집합은 이관 전과 정확히 같다**. 어휘를 합치는 것(동작 변경)은 이관과 섞지
     # 않는다 — 골든 diff 가 "옮긴 것"과 "바꾼 것"을 구분할 수 없게 되기 때문이다. 그래서 역사적으로
@@ -213,6 +224,42 @@ _CODE_FALLBACK: dict[str, dict[str, Any]] = {
             "note": "축 행 랭킹의 '적은 쪽' 순위 표지. dimension_rank_high 와 대칭으로 크기 형용사를 제외한다.",
         },
         "exact_equals_marker": {"include": ["exact_marker"]},
+        "purchase_scope_nonspecific_determiner": {
+            "include": [
+                "indefinite_determiner", "deictic_determiner", "partitive_determiner",
+                "variety_determiner", "universal_determiner",
+            ],
+            "exclude": ["해당", "가지각색"],
+            "note": "구매 스코프 값이 될 수 없는 비특정 한정사. '해당'·'가지각색'은 이관 전 이 목록에 "
+                    "없었다 — 같은 뜻의 purchase_object_nonspecific_determiner 에는 '해당'이 있어 누락 의심.",
+        },
+        "purchase_object_nonspecific_determiner": {
+            "include": [
+                "indefinite_determiner", "deictic_determiner", "partitive_determiner",
+                "variety_determiner", "universal_determiner",
+            ],
+            "exclude": ["가지각색"],
+            "note": "상품명 후보 sanitize 가 버리는 비특정 한정사. '가지각색'만 이관 전에 없었다.",
+        },
+        "scope_placeholder_value": {
+            "include": [
+                "indefinite_determiner", "deictic_determiner",
+                "partitive_determiner", "universal_determiner",
+            ],
+            "exclude": ["전체", "전부", "모두"],
+            "note": "값이 지정되지 않은 스코프 자리표시자. 이관 전에는 전칭 한정사 중 '모든'만 있었다(누락 의심).",
+        },
+        "scope_distinct_modifier": {
+            "include": ["variety_determiner", "otherness_reference"],
+            "exclude": ["외", "외의"],
+            "note": "'서로 다른 브랜드'의 수식어 — 값이 아니라 가짓수 표지다. 배제 표현은 이관 전에도 없었다.",
+        },
+        "generic_scope_reference": {
+            "include": ["otherness_reference", "deictic_determiner", "indefinite_determiner"],
+            "exclude": ["그", "이", "저", "어떤", "무슨", "어느", "임의"],
+            "note": "자유텍스트 스코프에서 값이 아니라 참조·미지정을 뜻하는 말. 이관 전에는 "
+                    "event_scope_value_stopword 위에 '다른/해당/특정/외/외의' 다섯만 덧붙어 있었다(누락 의심).",
+        },
     },
 }
 

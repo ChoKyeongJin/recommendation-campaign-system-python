@@ -25,6 +25,7 @@ import re
 import threading
 from contextlib import contextmanager
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Iterator, Mapping
@@ -146,7 +147,9 @@ class AggregateParserRules:
 
     version: int
     span_binding: SpanBinding
-    number_multipliers: tuple[tuple[str, float], ...]
+    number_multipliers: tuple[tuple[str, Decimal], ...]
+    number_words: tuple[tuple[str, int], ...]
+    number_word_unit_kinds: frozenset[str]
     prefix_operators: tuple[PrefixOperator, ...]
     unit_kinds: frozenset[str]
     aggregate_threshold_unit_kinds: frozenset[str]
@@ -167,6 +170,21 @@ class AggregateParserRules:
 
     def unit_spec(self, surface: str) -> UnitTokenSpec | None:
         return _unit_index(self).get(surface)
+
+    def counter_unit_alternation(self) -> str:
+        """고유어 수관형사가 결속될 수 있는 **계수 단위**의 교체 문법.
+
+        '세/네' 같은 수관형사는 흔한 음절이라 홀로는 값이 아니다('세금', '하네'). 한국어에서
+        수관형사는 계수 단위를 요구하므로, 그 문법 사실을 결속 조건으로 쓴다 — 어느 단위가
+        계수 단위인지는 number_word_unit_kinds 가 선언한다."""
+        surfaces = sorted(
+            {token.surface for token in self.unit_tokens if token.kind in self.number_word_unit_kinds},
+            key=lambda s: (-len(s), s),
+        )
+        return "|".join(re.escape(surface) for surface in surfaces)
+
+    def number_word_value(self, surface: str) -> int | None:
+        return next((value for word, value in self.number_words if word == surface), None)
 
     def is_aggregate_threshold_unit(self, kind: str) -> bool:
         return kind in self.aggregate_threshold_unit_kinds
@@ -272,6 +290,14 @@ def load_rules(
             f"aggregate_threshold_unit_kinds 에 선언되지 않은 단위 종류가 있다: {', '.join(unknown_threshold)}"
         )
 
+    number_word_kinds = frozenset(payload["number_word_unit_kinds"])
+    unknown_number_word_kinds = sorted(number_word_kinds - unit_kinds)
+    if unknown_number_word_kinds:
+        raise AggregateParserConfigError(
+            "number_word_unit_kinds 에 선언되지 않은 단위 종류가 있다: "
+            f"{', '.join(unknown_number_word_kinds)}"
+        )
+
     hints = tuple(
         UnsupportedAttributeHint(
             key=entry["key"],
@@ -311,10 +337,25 @@ def load_rules(
                 f"의미 도메인 '{name}' 의 존재/부재 노드 종류가 겹친다: {', '.join(overlap)}"
             )
 
-    multipliers = tuple(
+    try:
+        multipliers = tuple(
+            sorted(
+                (
+                    (surface, Decimal(str(value)))
+                    for surface, value in payload["number_multipliers"].items()
+                ),
+                key=lambda item: (-len(item[0]), -item[1]),
+            )
+        )
+    except (InvalidOperation, ValueError) as exc:  # JSON Schema가 먼저 막지만 경계는 명시한다.
+        raise AggregateParserConfigError("number_multipliers 값은 유한한 십진수여야 한다") from exc
+    if any(not value.is_finite() for _, value in multipliers):
+        raise AggregateParserConfigError("number_multipliers 값은 유한한 십진수여야 한다")
+    # 수관형사도 긴 표면형 우선('다섯'이 '다'보다 앞) — 교대 순서 함정을 데이터가 아니라 로더가 없앤다.
+    number_words = tuple(
         sorted(
-            ((surface, float(value)) for surface, value in payload["number_multipliers"].items()),
-            key=lambda item: (-len(item[0]), -item[1]),
+            ((surface, int(value)) for surface, value in payload["number_words"].items()),
+            key=lambda item: (-len(item[0]), item[0]),
         )
     )
 
@@ -322,6 +363,8 @@ def load_rules(
         version=version,
         span_binding=binding,
         number_multipliers=multipliers,
+        number_words=number_words,
+        number_word_unit_kinds=number_word_kinds,
         prefix_operators=tuple(
             PrefixOperator(surface=entry["surface"], operator=entry["operator"])
             for entry in payload["prefix_operators"]
@@ -386,6 +429,39 @@ def magnitude_alternation(rules: AggregateParserRules) -> str:
     """배수 표현의 교체 문법(긴 표면형 우선) — '3천만'이 '3천'으로 잘리지 않게."""
     surfaces = sorted((surface for surface, _ in rules.number_multipliers), key=lambda s: (-len(s), s))
     return "|".join(re.escape(surface) for surface in surfaces)
+
+
+ARABIC_NUMBER = r"[\d,]+(?:\.\d+)?"
+
+
+def number_pattern(rules: AggregateParserRules) -> str:
+    """값 자리에 올 수 있는 숫자 표기 — 아라비아 숫자 또는 **계수 단위에 결속된** 고유어 수관형사.
+
+    수관형사를 무조건 값으로 읽으면 '세금'·'하네'의 음절이 값이 된다. 결속(lookahead)을 요구하면
+    '세 번'은 3, 홀로 선 '세'는 값이 아니다 — 무추측 원칙대로 반쪽 조건을 만들지 않는다.
+    선언이 비면 아라비아 숫자만 남는다(문법이 조용히 넓어지지 않는다).
+
+    수관형사가 연달아 오는 어림수('두세 개'=2~3, '서너 개'=3~4)는 값이 아니다. 뒤쪽 낱말만
+    읽으면 '두세 개 이상'이 조용히 '3개 이상'이 된다 — 어림수는 확정할 수 없으므로 잡지 않는다.
+    """
+    words = "|".join(re.escape(word) for word, _ in rules.number_words)
+    counters = rules.counter_unit_alternation()
+    if not words or not counters:
+        return ARABIC_NUMBER
+    # 파이썬 lookbehind 는 고정 폭만 허용하므로 길이별로 나눠 선언한다.
+    lengths: dict[int, list[str]] = {}
+    for word, _value in rules.number_words:
+        lengths.setdefault(len(word), []).append(word)
+    approximation_guard = "".join(
+        rf"(?<!{'|'.join(re.escape(word) for word in sorted(same_length))})"
+        for _length, same_length in sorted(lengths.items())
+    )
+    return rf"{ARABIC_NUMBER}|{approximation_guard}(?:{words})(?=\s*(?:{counters}))"
+
+
+def number_word_value(rules: AggregateParserRules, surface: str) -> int | None:
+    """수관형사 표면어 → 값. 표는 설정이 소유하고 파싱 계층은 조회만 한다."""
+    return rules.number_word_value(surface)
 
 
 def prefix_operator_alternation(rules: AggregateParserRules) -> str:

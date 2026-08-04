@@ -12,8 +12,9 @@
 
 어휘 소유권: 단위/비교어는 `condition_normalizers`(normalization_lexicon.json)가 소유하고,
 계수 단위의 **의미**와 엔터티 별칭은 도메인 선언이 소유한다(`semantic_domain_binding`).
-지표 어휘는 호출자가 카탈로그로 주입한다. 이 모듈은 도메인 낱말을 하드코딩하지 않는다
-(예외: 한국어 수 배수어 만/억/천 — 값 문법 자체라 정규식 원자에 해당한다).
+지표 어휘는 호출자가 카탈로그로 주입한다. 이 모듈은 도메인 낱말을 하드코딩하지 않는다.
+한국어 수사는 공통 리프 모듈 ``korean_number_normalizer``에서 가져오고, 금액 배수어
+만/억/천만 이 값 문법의 단위 원자로 이 모듈에 남는다.
 """
 
 from __future__ import annotations
@@ -22,9 +23,11 @@ import calendar
 import re
 from dataclasses import dataclass
 from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping
 
 import condition_normalizers
+import korean_number_normalizer
 import semantic_domain_binding
 
 DEFAULT_CURRENCY = "KRW"
@@ -43,12 +46,6 @@ _NUMBER_RE = re.compile(r"(?P<num>\d[\d,]*(?:\.\d+)?)")
 _MAGNITUDE_RE = re.compile(
     r"(?P<num>\d[\d,]*(?:\.\d+)?)?\s*(?P<mag>" + "|".join(mag for mag, _ in _MAGNITUDES) + r")"
 )
-_SINO_DIGITS = {"영": 0, "공": 0, "일": 1, "이": 2, "삼": 3, "사": 4, "오": 5,
-                "육": 6, "칠": 7, "팔": 8, "구": 9}
-_SINO_UNITS = {"십": 10, "백": 100, "천": 1000}
-_SINO_RE = re.compile(r"^[영공일이삼사오육칠팔구십백천]+$")
-
-
 class NormalizationError(ValueError):
     """값 정규화 실패 — 내부 불량이지 '미지원'이 아니다."""
 
@@ -61,20 +58,56 @@ class NormalizationError(ValueError):
 # ── 타입드 값 ────────────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class Money:
-    amount: int
+    amount: Decimal
     currency: str = DEFAULT_CURRENCY
 
+    def __post_init__(self) -> None:
+        if isinstance(self.amount, bool):
+            raise TypeError("money amount cannot be boolean")
+        try:
+            exact = self.amount if isinstance(self.amount, Decimal) else Decimal(str(self.amount))
+        except (InvalidOperation, ValueError) as exc:
+            raise TypeError("money amount must be decimal-compatible") from exc
+        if not exact.is_finite():
+            raise ValueError("money amount must be finite")
+        object.__setattr__(self, "amount", exact)
+
     def to_dict(self) -> dict[str, Any]:
-        return {"amount": self.amount, "currency": self.currency}
+        return {"amount": decimal_json_value(self.amount), "currency": self.currency}
 
 
 @dataclass(frozen=True)
 class Quantity:
-    value: int | float
+    value: int | Decimal
     unit: str | None = None
 
+    def __post_init__(self) -> None:
+        exact = exact_decimal(self.value)
+        if exact is None:
+            raise TypeError("quantity value must be a finite number")
+        integral = exact.to_integral_value()
+        object.__setattr__(self, "value", int(integral) if exact == integral else exact)
+
     def to_dict(self) -> dict[str, Any]:
-        return {"value": self.value, "unit": self.unit}
+        value = decimal_json_value(self.value) if isinstance(self.value, Decimal) else self.value
+        return {"value": value, "unit": self.unit}
+
+
+@dataclass(frozen=True)
+class Ratio:
+    value: Decimal
+    unit: str = "percent"
+
+    def __post_init__(self) -> None:
+        exact = exact_decimal(self.value)
+        if exact is None:
+            raise TypeError("ratio value must be a finite number")
+        if self.unit != "percent":
+            raise ValueError("ratio unit must be 'percent'")
+        object.__setattr__(self, "value", exact)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"value": decimal_json_value(self.value), "unit": self.unit}
 
 
 @dataclass(frozen=True)
@@ -117,11 +150,22 @@ class RelativeWindow:
 
     @property
     def days(self) -> int:
-        return self.value * condition_normalizers.unit_days().get(self.unit, 1)
+        if self.unit == "days":
+            return self.value
+        if self.unit == "weeks":
+            return self.value * 7
+        raise ValueError(f"{self.unit} requires a reference date before converting to days")
 
     def resolve(self, today: date) -> Period:
         end = today
-        start = today - timedelta(days=self.days - 1)
+        if self.unit == "months":
+            lower_exclusive = _shift_calendar_date(today, months=-self.value)
+            start = lower_exclusive + timedelta(days=1)
+        elif self.unit == "years":
+            lower_exclusive = _shift_calendar_date(today, years=-self.value)
+            start = lower_exclusive + timedelta(days=1)
+        else:
+            start = today - timedelta(days=self.days - 1)
         return Period(
             start=start.strftime("%Y%m%d"),
             end=end.strftime("%Y%m%d"),
@@ -130,43 +174,104 @@ class RelativeWindow:
         )
 
 
+def _shift_calendar_date(reference: date, *, months: int = 0, years: int = 0) -> date:
+    """Shift a date on calendar axes, clamping invalid month-end days."""
+
+    total_month = reference.year * 12 + reference.month - 1 + months + years * 12
+    year, zero_based_month = divmod(total_month, 12)
+    month = zero_based_month + 1
+    day = min(reference.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
 @dataclass(frozen=True)
 class RankLimit:
     type: str  # "percent" | "count"
-    value: int | float
+    value: int | Decimal
+
+    def __post_init__(self) -> None:
+        if self.type not in {"percent", "count"}:
+            raise ValueError("rank limit type must be 'percent' or 'count'")
+        exact = exact_decimal(self.value)
+        if exact is None:
+            raise TypeError("rank limit value must be a finite number")
+        if self.type == "count":
+            if exact != exact.to_integral_value() or exact <= 0:
+                raise ValueError("rank count must be a positive integer")
+            object.__setattr__(self, "value", int(exact))
+            return
+        if not Decimal("0") < exact < Decimal("100"):
+            raise ValueError("rank percent must be between 0 and 100")
+        object.__setattr__(self, "value", exact)
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": self.type, "value": self.value}
+        value = decimal_json_value(self.value) if isinstance(self.value, Decimal) else self.value
+        return {"type": self.type, "value": value}
 
 
 # ── Amount ───────────────────────────────────────────────────────────────────────
-def _sino_korean_number(text: str) -> int | None:
-    """'이십만' 계열 한자어 수사 → 정수. 값 문법이므로 정규화 계층 소유다."""
-    if not _SINO_RE.match(text):
-        return None
-    total = 0
-    section = 0
-    digit = 0
-    for char in text:
-        if char in _SINO_DIGITS:
-            digit = _SINO_DIGITS[char]
-        elif char in _SINO_UNITS:
-            section += (digit or 1) * _SINO_UNITS[char]
-            digit = 0
-        else:
-            return None
-    total = section + digit
-    return total or None
-
-
-def _scalar_number(text: str) -> float | None:
+def _scalar_decimal(text: str) -> Decimal | None:
     match = _NUMBER_RE.search(text)
     if match is None:
         return None
     try:
-        return float(match.group("num").replace(",", ""))
-    except ValueError:
+        return Decimal(match.group("num").replace(",", ""))
+    except InvalidOperation:
         return None
+
+
+def exact_decimal(value: Any, *, allow_string: bool = False) -> Decimal | None:
+    """Return a finite decimal without routing through binary floating point.
+
+    Numeric strings are accepted only at an explicitly declared compatibility
+    boundary.  Callers must opt in so ordinary domain normalization does not
+    silently equate arbitrary strings and numbers.
+    """
+
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, Decimal):
+        exact = value
+    elif isinstance(value, (int, float)):
+        try:
+            exact = Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+    elif allow_string and isinstance(value, str) and re.fullmatch(
+        r"[+-]?\d+(?:\.\d+)?", value.strip()
+    ):
+        try:
+            exact = Decimal(value.strip())
+        except InvalidOperation:
+            return None
+    else:
+        return None
+    return exact if exact.is_finite() else None
+
+
+def decimal_json_value(value: Decimal) -> int | float | str:
+    """Serialize exactly representable JSON numbers numerically, otherwise as text."""
+
+    if not value.is_finite():
+        raise ValueError("decimal JSON value must be finite")
+    integral = value.to_integral_value()
+    if value == integral:
+        return int(integral)
+    numeric = float(value)
+    if Decimal(str(numeric)) == value:
+        return numeric
+    return format(value, "f")
+
+
+def decimal_sql_text(value: Decimal) -> str:
+    """Render a finite Decimal as a plain SQL numeric literal."""
+
+    if not value.is_finite():
+        raise ValueError("SQL decimal value must be finite")
+    rendered = format(value, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return rendered or "0"
 
 
 class AmountNormalizer:
@@ -187,7 +292,7 @@ class AmountNormalizer:
             return raw
         if isinstance(raw, bool):
             raise NormalizationError("invalid_type", "수량 값이 boolean 이다", received=raw)
-        if isinstance(raw, (int, float)):
+        if isinstance(raw, (int, float, Decimal)):
             unit = UnitNormalizer.normalize(unit_hint) if unit_hint else None
             return Quantity(value=_as_number(raw), unit=unit)
         if isinstance(raw, Mapping):
@@ -198,16 +303,30 @@ class AmountNormalizer:
             if "amount" in raw:
                 amount = raw.get("amount")
                 if isinstance(amount, str):
-                    return cls.normalize(amount)
-                if not isinstance(amount, (int, float)) or isinstance(amount, bool):
+                    try:
+                        exact_amount = Decimal(amount.replace(",", "").strip())
+                    except InvalidOperation:
+                        parsed = cls.normalize(amount)
+                        if not isinstance(parsed, Money):
+                            raise NormalizationError(
+                                "invalid_amount",
+                                "amount 문자열이 통화 금액이 아니다",
+                                received=raw,
+                            )
+                        exact_amount = parsed.amount
+                    return Money(
+                        amount=exact_amount,
+                        currency=str(raw.get("currency") or DEFAULT_CURRENCY),
+                    )
+                if not isinstance(amount, (int, float, Decimal)) or isinstance(amount, bool):
                     raise NormalizationError("invalid_amount", "amount 가 숫자가 아니다", received=raw)
-                return Money(amount=int(amount), currency=str(raw.get("currency") or DEFAULT_CURRENCY))
+                return Money(amount=Decimal(str(amount)), currency=str(raw.get("currency") or DEFAULT_CURRENCY))
             if "value" in raw:
                 value = raw.get("value")
                 if isinstance(value, str):
                     parsed = cls.normalize(value, unit_hint=raw.get("unit") or unit_hint)
                     return parsed
-                if not isinstance(value, (int, float)) or isinstance(value, bool):
+                if not isinstance(value, (int, float, Decimal)) or isinstance(value, bool):
                     raise NormalizationError("invalid_value", "value 가 숫자가 아니다", received=raw)
                 unit = UnitNormalizer.normalize(raw.get("unit") or unit_hint)
                 return Quantity(value=_as_number(value), unit=unit)
@@ -223,33 +342,38 @@ class AmountNormalizer:
             raise NormalizationError("missing_value", "수량 표현이 비었다", received=surface)
         compact = re.sub(r"\s+", "", text)
         is_money = cls.is_money_surface(compact)
-        base: float | None = None
+        base: Decimal | None = None
 
         magnitude = _MAGNITUDE_RE.search(compact)
         if magnitude is not None:
             multiplier = dict(_MAGNITUDES)[magnitude.group("mag")]
             head = magnitude.group("num")
             if head:
-                base = float(head.replace(",", "")) * multiplier
+                base = Decimal(head.replace(",", "")) * multiplier
             else:
                 # '만원'처럼 수사가 없으면 앞의 한자어 수사를 본다('이십만원').
                 prefix = compact[: magnitude.start()]
-                sino = _sino_korean_number(prefix)
-                base = float((sino or 1) * multiplier)
+                sino = korean_number_normalizer.parse_sino_korean_number(prefix)
+                base = Decimal((sino or 1) * multiplier)
         if base is None:
-            sino_only = _sino_korean_number(re.sub(r"[^가-힣]", "", compact))
-            base = float(sino_only) if sino_only else _scalar_number(compact)
+            sino_only = korean_number_normalizer.parse_sino_korean_number(
+                re.sub(r"[^가-힣]", "", compact)
+            )
+            base = Decimal(sino_only) if sino_only else _scalar_decimal(compact)
         if base is None:
             raise NormalizationError("invalid_number", f"수량을 읽지 못했다: {surface!r}", received=surface)
         if is_money:
-            return Money(amount=int(round(base)), currency=DEFAULT_CURRENCY)
+            return Money(amount=base, currency=DEFAULT_CURRENCY)
         unit = UnitNormalizer.normalize(unit_hint) or UnitNormalizer.from_surface(compact)
         return Quantity(value=_as_number(base), unit=unit)
 
 
-def _as_number(value: float | int) -> int | float:
-    number = float(value)
-    return int(number) if number.is_integer() else number
+def _as_number(value: Decimal | float | int) -> int | Decimal:
+    exact = exact_decimal(value)
+    if exact is None:
+        raise NormalizationError("invalid_number", "수량 값이 유한 숫자가 아니다", received=value)
+    integral = exact.to_integral_value()
+    return int(integral) if exact == integral else exact
 
 
 def _is_int(value: Any) -> bool:
@@ -259,6 +383,8 @@ def _is_int(value: Any) -> bool:
         return True
     if isinstance(value, float):
         return value.is_integer()
+    if isinstance(value, Decimal):
+        return value.is_finite() and value == value.to_integral_value()
     if isinstance(value, str):
         return value.strip().isdigit()
     return False
@@ -416,7 +542,13 @@ class PeriodNormalizer:
             value, unit = raw.get("value"), raw.get("unit")
             if not _is_int(value) or int(value) < 1:
                 raise NormalizationError("invalid_period", "relative 기간에 양의 value 가 필요하다", received=raw)
-            canonical = condition_normalizers.canonical_unit(unit) or "days"
+            canonical = condition_normalizers.canonical_unit(unit)
+            if canonical is None:
+                raise NormalizationError(
+                    "invalid_period_unit",
+                    f"지원하지 않는 relative 기간 단위입니다: {unit!r}",
+                    received=raw,
+                )
             window = RelativeWindow(value=int(value), unit=canonical)
             return window.resolve(today) if today is not None else window
         if kind == "interval":
@@ -496,21 +628,74 @@ class RankLimitNormalizer:
     def normalize(cls, raw: Any) -> RankLimit:
         if isinstance(raw, RankLimit):
             return raw
-        if isinstance(raw, Mapping):
-            kind = str(raw.get("type") or "").strip()
-            value = raw.get("value")
-            if kind not in {"percent", "count"} or not isinstance(value, (int, float)) or isinstance(value, bool):
-                raise NormalizationError("invalid_rank_limit", "limit 은 {type:'percent'|'count', value}", received=raw)
-            return RankLimit(type=kind, value=_as_number(value))
-        if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-            return RankLimit(type="count", value=_as_number(raw))
-        if isinstance(raw, str):
-            match = cls._SURFACE_RE.search(raw)
-            if match is None:
-                raise NormalizationError("invalid_rank_limit", f"랭킹 제한을 읽지 못했다: {raw!r}", received=raw)
-            kind = "percent" if match.group("kind") in {"%", "퍼센트", "프로"} else "count"
-            return RankLimit(type=kind, value=_as_number(float(match.group("value"))))
+        try:
+            if isinstance(raw, Mapping):
+                kind = str(raw.get("type") or "").strip()
+                value = raw.get("value")
+                if kind not in {"percent", "count"}:
+                    raise ValueError("unknown rank limit type")
+                # Fractional percentages use the exact-string compatibility
+                # representation emitted by RankLimit.to_dict(). Count strings
+                # remain invalid to avoid broad implicit coercion.
+                if kind == "percent" and isinstance(value, str):
+                    exact = exact_decimal(value, allow_string=True)
+                    if exact is None:
+                        raise ValueError("invalid decimal percentage")
+                    value = exact
+                elif not isinstance(value, (int, float, Decimal)) or isinstance(value, bool):
+                    raise TypeError("rank limit value is not numeric")
+                return RankLimit(type=kind, value=value)
+            if isinstance(raw, (int, float, Decimal)) and not isinstance(raw, bool):
+                return RankLimit(type="count", value=raw)
+            if isinstance(raw, str):
+                match = cls._SURFACE_RE.search(raw)
+                if match is None:
+                    raise ValueError("rank limit surface did not match")
+                kind = "percent" if match.group("kind") in {"%", "퍼센트", "프로"} else "count"
+                return RankLimit(type=kind, value=Decimal(match.group("value")))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise NormalizationError(
+                "invalid_rank_limit",
+                f"랭킹 제한을 읽지 못했다: {raw!r}",
+                received=raw,
+            ) from exc
         raise NormalizationError("invalid_rank_limit", f"랭킹 제한 타입을 알 수 없다: {raw!r}", received=raw)
+
+
+class RatioNormalizer:
+    """Normalize an explicit percentage while retaining Decimal precision."""
+
+    _SURFACE_RE = re.compile(r"^\s*(?P<value>[+-]?\d+(?:\.\d+)?)\s*(?:%|퍼센트|프로)\s*$")
+
+    @classmethod
+    def normalize(cls, raw: Any) -> Ratio:
+        if isinstance(raw, Ratio):
+            return raw
+        value = raw
+        unit = "percent"
+        if isinstance(raw, Mapping):
+            value = raw.get("value")
+            unit = str(raw.get("unit") or "percent").strip().casefold()
+            if unit in {"%", "퍼센트", "프로"}:
+                unit = "percent"
+        elif isinstance(raw, str):
+            match = cls._SURFACE_RE.fullmatch(raw)
+            if match is None:
+                raise NormalizationError(
+                    "invalid_ratio",
+                    f"비율 값을 읽지 못했다: {raw!r}",
+                    received=raw,
+                )
+            value = match.group("value")
+
+        exact = exact_decimal(value, allow_string=True)
+        if exact is None or unit != "percent":
+            raise NormalizationError(
+                "invalid_ratio",
+                "비율은 명시적인 percent 값이어야 한다",
+                received=raw,
+            )
+        return Ratio(value=exact, unit="percent")
 
 
 # ── Metric / Entity ──────────────────────────────────────────────────────────────
@@ -644,13 +829,9 @@ class CountThresholdNormalizer:
     def classify(cls, operator: Any, threshold: Any) -> str:
         """(연산자, 임계값) → COUNT_* 분류. 판정 불가면 COUNT_THRESHOLD(기존 경로 유지)."""
         symbol = cls._STRICT_OPERATORS.get(str(operator).strip()) if operator is not None else None
-        try:
-            value = float(threshold)
-        except (TypeError, ValueError):
-            return COUNT_THRESHOLD
-        # NaN·무한대는 정수 카운트의 경계가 아니다. floor/ceil 이 OverflowError 를 던지는데 그것은
-        # 노드별 예외 처리(KeyError/TypeError/ValueError)를 빠져나가 파이프라인 전체를 죽인다.
-        if symbol is None or value != value or value in (float("inf"), float("-inf")):
+        value = exact_decimal(threshold, allow_string=True)
+        # NaN·무한대는 정수 카운트의 경계가 아니다.
+        if symbol is None or value is None:
             return COUNT_THRESHOLD
         # 정수 카운트 위의 하한/상한을 정수로 좁힌다: 'COUNT > 0.5' 는 'COUNT >= 1' 과 같다.
         if symbol == ">":
@@ -658,7 +839,7 @@ class CountThresholdNormalizer:
         if symbol == ">=":
             return cls._from_lower_bound(_ceil_int(value))
         if symbol == "=":
-            if value < 0 or value != int(value):
+            if value < 0 or value != value.to_integral_value():
                 return COUNT_CONTRADICTION
             return COUNT_ABSENCE if value == 0 else COUNT_THRESHOLD
         if symbol == "<":
@@ -686,13 +867,13 @@ class CountThresholdNormalizer:
         return COUNT_THRESHOLD
 
 
-def _floor_int(value: float) -> int:
+def _floor_int(value: Decimal) -> int:
     import math
 
     return int(math.floor(value))
 
 
-def _ceil_int(value: float) -> int:
+def _ceil_int(value: Decimal) -> int:
     import math
 
     return int(math.ceil(value))
@@ -709,7 +890,10 @@ __all__ = [
     "CountThresholdNormalizer",
     "DEFAULT_CURRENCY",
     "DateTimeNormalizer",
+    "decimal_json_value",
+    "decimal_sql_text",
     "EntityResolver",
+    "exact_decimal",
     "MetricCatalogEntry",
     "MetricResolver",
     "Money",
@@ -718,6 +902,8 @@ __all__ = [
     "Period",
     "PeriodNormalizer",
     "Quantity",
+    "Ratio",
+    "RatioNormalizer",
     "RankLimit",
     "RankLimitNormalizer",
     "RelativeWindow",

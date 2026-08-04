@@ -37,49 +37,88 @@ class PlanKey:
     name: str
     kind: str
     note: str = ""
+    # 이 키가 **오디언스(회원 집합)를 정하는 언어**인가. canonical Event IR 이 오디언스를
+    # 소유할 때 이런 키가 함께 채워져 있으면 같은 요청에 해석이 둘이라는 뜻이다.
+    # DERIVED 키는 정의상 오디언스 언어가 아니므로 None(=해당 없음)으로 둔다.
+    audience: bool | None = None
 
     def __post_init__(self) -> None:
         if self.kind not in KINDS:
             raise ValueError(f"{self.name}: 알 수 없는 분류 {self.kind!r}")
+        if self.kind != CONDITION and self.audience is not None:
+            raise ValueError(
+                f"{self.name}: audience 는 CONDITION 키에만 선언한다"
+                " (파생물은 오디언스 언어가 아니다)"
+            )
+        if self.kind == CONDITION and self.audience is None:
+            raise ValueError(
+                f"{self.name}: CONDITION 키는 audience 를 명시해야 한다"
+                " — 빠뜨리면 그 키가 오디언스 표면에서 조용히 빠진다"
+            )
 
 
-def _keys(kind: str, entries: dict[str, str]) -> tuple[PlanKey, ...]:
-    return tuple(PlanKey(name=name, kind=kind, note=note) for name, note in entries.items())
+# 오디언스 조건을 담는 **컨테이너**(최상위 키가 아니라 하위 슬롯 묶음). 키 분류와 축이 다르므로
+# 별도 상수다. 원래 legacy_audience_migration 이 소유했고, 이제 그 모듈이 여기서 재수출한다 —
+# 두 벌로 적으면 슬롯이 하나 늘어나는 날 한쪽만 갱신되고 그 순간 판정이 갈라진다.
+AUDIENCE_CONTAINERS: tuple[str, ...] = ("target_user", "exclude")
+
+
+def _keys(kind: str, entries: dict[str, str] | dict[str, tuple[str, bool]]) -> tuple[PlanKey, ...]:
+    keys: list[PlanKey] = []
+    for name, value in entries.items():
+        note, audience = value if isinstance(value, tuple) else (value, None)
+        keys.append(PlanKey(name=name, kind=kind, note=note, audience=audience))
+    return tuple(keys)
 
 
 # 사용자가 말한 조건. 새 조건 유형을 열면 여기 한 줄 추가하는 것이 곧 "이건 파생이 아니라
 # 사용자가 말한 조건이다" 라는 선언이다.
+#
+# 두 번째 값(audience)의 뜻: **오늘 게이트가 "두 번째 오디언스 언어"로 세는 키인가.**
+# 의미상 오디언스에 가까운 키가 더 있지만(`dimension_filters`, `member_metric_ranking`,
+# `union_condition`, `entity_set` …) 표면을 넓히는 것은 열린 결정이다
+# (docs/plans_event_ir_only.md §6-1) — 넓히는 순간 그 키를 가진 canonical 요청이 fail-close 되고,
+# 그 축은 Event IR 로 표현할 수도 없어서 기능이 그대로 줄어든다. 그래서 지금의 True 집합은
+# **현행 게이트 표면과 정확히 같다**. 넓히려면 여기 한 줄을 바꾸는 것이 곧 그 결정의 기록이다.
 _CONDITIONS = _keys(CONDITION, {
-    "intent": "질의 의도",
-    "condition_evaluations": "조건 판정 grain 이 분리된 무손실 실행 IR",
-    "result_limit": "상위 N 건 제한",
-    "dimension_filters": "디멘션 값 조건(브랜드명→코드)",
-    "compound_dimension_filters": "복합 디멘션 조건",
-    "external_conditions": "외부 의존 조건(날씨 등)",
-    "computed_metrics": "계산 지표 조건",
-    "member_metric_selection": "회원 지표 선택",
-    "member_metric_ranking": "회원 지표 랭킹",
-    "set_expressions": "집합식",
-    "semantic_conditions": "의미 조건",
-    "cart_context": "장바구니 문맥",
-    "unresolved_source_conditions": "해소되지 않은 원문 조건(fail-close 근거)",
-    "analytical_intent": "분석 의도",
-    "metric_trend": "기간 대비 지표 증감",
-    "purchase_count_ranking": "구매 건수 랭킹",
-    "entity_set": "지정 엔터티 집합",
-    "retrieval_scope": "검색 범위",
-    "audience_requirement": "근거와 이슈를 포함한 canonical 오디언스 요구 계약",
-    "event_expression": "사건 논리식 IR",
-    "canonical_targeting_expression": "정규 타겟팅 표현식",
-    "union_condition": "합집합 타겟(A 이거나 B)",
-    "group_ranking_target": "그룹별 상위 N",
-    "region_density_target": "회원 밀집 지역",
-    "aggregation_request": "사용자가 요청한 집계('회원수를 세어줘')",
-    "policy_constraints": "업무 정책으로 실체화되지만 촉발은 사용자 어구",
-    "relational_operations": "검증된 속성 시점·이력 연산(등급/상태 스냅샷)",
+    "intent": ("질의 의도", False),
+    "condition_evaluations": ("조건 판정 grain 이 분리된 무손실 실행 IR", True),
+    "result_limit": ("상위 N 건 제한", False),
+    "dimension_filters": ("디멘션 값 조건(브랜드명→코드)", False),
+    "compound_dimension_filters": ("복합 디멘션 조건", True),
+    "external_conditions": ("외부 의존 조건(날씨 등)", True),
+    "computed_metrics": ("계산 지표 조건", True),
+    "member_metric_selection": ("회원 지표 선택", False),
+    "member_metric_ranking": ("회원 지표 랭킹", False),
+    "set_expressions": ("집합식", True),
+    "semantic_conditions": ("의미 조건", False),
+    "cart_context": ("장바구니 문맥", False),
+    "unresolved_source_conditions": (
+        # Event IR 빌더 자신이 쓰는 좌표다. True 로 두면 canonical 실패가 자기참조로
+        # 또 하나의 오디언스 언어가 되어 사유가 뒤바뀐다.
+        "해소되지 않은 원문 조건(fail-close 근거)",
+        False,
+    ),
+    "analytical_intent": ("분석 의도", False),
+    "metric_trend": ("기간 대비 지표 증감", False),
+    "purchase_count_ranking": ("구매 건수 랭킹", False),
+    "entity_set": ("지정 엔터티 집합", False),
+    "retrieval_scope": ("검색 범위", False),
+    "audience_requirement": ("근거와 이슈를 포함한 canonical 오디언스 요구 계약", False),
+    "event_expression": ("사건 논리식 IR", False),
+    "canonical_targeting_expression": ("정규 타겟팅 표현식", False),
+    "union_condition": ("합집합 타겟(A 이거나 B)", False),
+    "group_ranking_target": ("그룹별 상위 N", False),
+    "region_density_target": ("회원 밀집 지역", False),
+    "aggregation_request": ("사용자가 요청한 집계('회원수를 세어줘')", False),
+    "policy_constraints": ("업무 정책으로 실체화되지만 촉발은 사용자 어구", False),
+    "relational_operations": ("검증된 속성 시점·이력 연산(등급/상태 스냅샷)", False),
     # 사용자 요구의 타입드 표현 그 자체(SemanticPlanV2). 표면 어구가 바뀌면 노드가 바뀐다 —
     # 실행 슬롯은 이 노드의 컴파일 산출물이므로, 조건의 원본은 여기다.
-    "semantic_plan": "의미 노드 집합(SemanticPlanV2 — 조건의 타입드 원본)",
+    # audience=False 인 이유: 이 키는 canonical 레인에 **상시 존재**한다. True 면 모든 canonical
+    # 요청이 충돌로 죽는다. 노드 유무를 보는 술어는 그 사실을 아는 곳에서 따로 판정한다
+    # (canonical_event_ir_grounding).
+    "semantic_plan": ("의미 노드 집합(SemanticPlanV2 — 조건의 타입드 원본)", False),
 })
 
 # 파서·검증·라우팅 산출물. 사용자가 말한 적 없다.
@@ -143,13 +182,24 @@ def is_condition(name: str) -> bool:
     return kind_of(name) == CONDITION
 
 
+def audience_keys() -> frozenset[str]:
+    """두 번째 오디언스 언어로 세는 **최상위 키** 집합.
+
+    컨테이너(:data:`AUDIENCE_CONTAINERS`)와 축이 다르므로 합치지 않는다 — 컨테이너는 하위
+    슬롯 묶음이고 이쪽은 키 자체가 조건이다. 소비자는 필요한 쪽을 골라 쓰거나 둘 다 쓴다.
+    """
+    return frozenset(key.name for key in ALL if key.audience)
+
+
 __all__ = [
     "ALL",
+    "AUDIENCE_CONTAINERS",
     "CONDITION",
     "DERIVED",
     "KINDS",
     "NON_CONDITION",
     "PlanKey",
+    "audience_keys",
     "is_condition",
     "kind_of",
     "names",

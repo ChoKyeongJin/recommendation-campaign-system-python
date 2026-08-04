@@ -125,8 +125,14 @@ def build_validated_plan_fragment(
     for condition in conditions:
         if not registry.has(condition.compiler):
             raise ExecutionGateError(f"{condition.concept}: 컴파일러 {condition.compiler!r} 미등록.")
-        emission: SlotEmission = registry.get(condition.compiler).compile(
-            condition.as_condition_payload(), context)
+        try:
+            emission: SlotEmission = registry.get(condition.compiler).compile(
+                condition.as_condition_payload(), context
+            )
+        except _compiler_registry.CompilerError as exc:
+            raise ExecutionGateError(
+                f"{condition.concept}: 실행 슬롯 컴파일에 실패했습니다: {exc}"
+            ) from exc
         holder = fragment.setdefault(emission.container, {})
         if emission.mode == "extend":
             existing = holder.get(emission.slot)

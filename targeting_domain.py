@@ -156,6 +156,67 @@ def counter_units() -> dict[str, str]:
     }
 
 
+def bind_counter_unit(
+    surface_unit: str,
+    *,
+    text: str | None = None,
+    start: int | None = None,
+    end: int | None = None,
+) -> str | None:
+    """계수 표면을 같은 절의 가장 가까운 업무 근거로 결속한다.
+
+    ``개/종``처럼 표면 자체가 뜻을 고정하는 단위는 ``counter_units`` 값을 그대로 쓴다.
+    ``회/번/건``처럼 여러 지표에 붙는 단위는 ``counter_contexts`` 선언이 있으며, 유일한
+    최단 근거를 찾지 못하면 일반 count로 남긴다. 임의의 order_count 추측은 하지 않는다.
+    """
+
+    unit = str(surface_unit or "").strip()
+    contexts = catalog().get("counter_contexts")
+    candidates = contexts.get(unit) if isinstance(contexts, Mapping) else None
+    if not isinstance(candidates, list):
+        return counter_units().get(unit)
+    if not isinstance(text, str) or not isinstance(start, int) or not isinstance(end, int):
+        return None
+    if not 0 <= start <= end <= len(text):
+        return None
+
+    clause_start = max(
+        (text.rfind(marker, 0, start) + 1 for marker in (".", "。", "!", "?", ";", "\n")),
+        default=0,
+    )
+    following = [
+        index
+        for marker in (".", "。", "!", "?", ";", "\n")
+        if (index := text.find(marker, end)) >= 0
+    ]
+    clause_end = min(following) if following else len(text)
+    clause = text[clause_start:clause_end].casefold()
+    local_start, local_end = start - clause_start, end - clause_start
+    distances: dict[str, int] = {}
+    for spec in candidates:
+        if not isinstance(spec, Mapping) or not isinstance(spec.get("semantic_unit"), str):
+            continue
+        semantic_unit = str(spec["semantic_unit"])
+        for term in spec.get("terms") or []:
+            if not isinstance(term, str) or not term.strip():
+                continue
+            pattern = re.compile(r"\s*".join(re.escape(part) for part in term.casefold().split()))
+            for match in pattern.finditer(clause):
+                distance = (
+                    local_start - match.end()
+                    if match.end() <= local_start
+                    else match.start() - local_end
+                    if match.start() >= local_end
+                    else 0
+                )
+                distances[semantic_unit] = min(distances.get(semantic_unit, distance), distance)
+    if not distances:
+        return None
+    nearest = min(distances.values())
+    winners = [unit_name for unit_name, distance in distances.items() if distance == nearest]
+    return winners[0] if len(winners) == 1 else None
+
+
 def condition_label(node_type: str) -> str:
     labels = _drop_comments(_section("condition_labels"))
     return str(labels.get(node_type) or node_type)
@@ -507,6 +568,7 @@ __all__ = [
     "catalog",
     "condition_label",
     "core_bindings",
+    "bind_counter_unit",
     "counter_units",
     "entity_aliases",
     "execution_operator",

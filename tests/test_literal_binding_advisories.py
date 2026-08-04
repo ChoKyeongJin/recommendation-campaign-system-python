@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import date
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +30,30 @@ def _number(literal_id: str, text: str, value: float, start: int = 0) -> dict:
     return {
         "id": literal_id, "kind": "number", "text": text,
         "start": start, "end": start + len(text), "value": value, "normalized": value,
+    }
+
+
+def _duration(
+    literal_id: str,
+    text: str,
+    value: int,
+    unit: str,
+    *,
+    start: int = 0,
+) -> dict:
+    return {
+        "id": literal_id,
+        "kind": "duration",
+        "text": text,
+        "start": start,
+        "end": start + len(text),
+        "value": value,
+        "normalized": {
+            "value": value,
+            "surface_unit": text.lstrip("0123456789 "),
+            "semantic_unit": unit,
+            "temporal_kind": "rolling_duration",
+        },
     }
 
 
@@ -88,27 +113,103 @@ def test_precise_requirement_span_consumes_but_whole_query_does_not() -> None:
     assert len(semantic_requirements.unconsumed_literal_advisories(plan_fallback)) == 1
 
 
-def test_unit_converted_number_is_consumed() -> None:
-    """'최근 6개월'의 '6'은 window_days=180 으로 소비된 것이다 — 환산을 모르면 정상 프롬프트마다
-    오탐 자문이 붙는다(비차단이지만 잡음이 감사의 신뢰를 갉는다)."""
+def test_calendar_duration_is_consumed_by_its_exact_execution_window() -> None:
+    """6개월은 180일이 아니라 주입 기준일에서 확정한 달력 구간으로 소비한다."""
+    from query_structurer.semantic_ir import scan_literal_bindings
+
+    query = "최근 6개월 주문 건수가 5건 이상인 회원"
+    literal_bindings = scan_literal_bindings(query, current_date=date(2026, 3, 31))
+    duration = next(item for item in literal_bindings if item["kind"] == "duration")
+    assert duration["normalized"] == {
+        "value": 6,
+        "surface_unit": "개월",
+        "semantic_unit": "months",
+        "temporal_kind": "rolling_duration",
+    }
+    plan = {
+        "literal_bindings": literal_bindings,
+        "target_user": {"aggregate_conditions": [
+            {
+                "metric_id": "order_count",
+                "operator": ">=",
+                "threshold": 5,
+                "window": {
+                    "type": "relative",
+                    "value": 6,
+                    "unit": "months",
+                    "from": "20251001",
+                    "to": "20260331",
+                },
+            }
+        ]},
+    }
+    assert semantic_requirements.unconsumed_literal_advisories(
+        plan,
+        query,
+        reference_date=date(2026, 3, 31),
+    ) == []
+
+
+def test_six_month_literal_is_not_consumed_by_the_old_180_day_approximation() -> None:
     query = "최근 6개월 주문 건수가 5건 이상인 회원"
     start = query.index("6")
-    plan = {
-        "literal_bindings": [_number("number_1", "6", 6, start=start)],
+    literal = _duration("duration_1", "6개월", 6, "months", start=start)
+    approximate = {
+        "literal_bindings": [literal],
         "target_user": {"aggregate_conditions": [
             {"metric_id": "order_count", "operator": ">=", "threshold": 5, "window_days": 180}
         ]},
     }
-    assert semantic_requirements.unconsumed_literal_advisories(plan, query) == []
-    # 환산 결과가 플랜에 없으면 여전히 보고된다(억제 과잉 방지).
-    plan_no_window = {
-        "literal_bindings": [_number("number_1", "6", 6, start=start)],
+    exact_legacy_days = {
+        "literal_bindings": [literal],
         "target_user": {"aggregate_conditions": [
-            {"metric_id": "order_count", "operator": ">=", "threshold": 5}
+            {"metric_id": "order_count", "operator": ">=", "threshold": 5, "window_days": 182}
         ]},
     }
-    advisories = semantic_requirements.unconsumed_literal_advisories(plan_no_window, query)
-    assert [entry["literal_id"] for entry in advisories] == ["number_1"]
+
+    assert [entry["literal_id"] for entry in semantic_requirements.unconsumed_literal_advisories(
+        approximate,
+        query,
+        reference_date=date(2026, 3, 31),
+    )] == ["duration_1"]
+    assert semantic_requirements.unconsumed_literal_advisories(
+        exact_legacy_days,
+        query,
+        reference_date=date(2026, 3, 31),
+    ) == []
+    assert [entry["literal_id"] for entry in semantic_requirements.unconsumed_literal_advisories(
+        exact_legacy_days,
+        query,
+    )] == ["duration_1"], "기준일 없이 우연히 같은 일수라는 이유로 소비하면 안 된다"
+
+
+def test_calendar_year_consumption_honors_a_leap_day() -> None:
+    query = "최근 1년 주문 건수가 5건 이상인 회원"
+    start = query.index("1")
+    literal = _duration("duration_1", "1년", 1, "years", start=start)
+    exact = {
+        "literal_bindings": [literal],
+        "target_user": {"aggregate_conditions": [
+            {"metric_id": "order_count", "operator": ">=", "threshold": 5, "window_days": 366}
+        ]},
+    }
+    approximate = {
+        "literal_bindings": [literal],
+        "target_user": {"aggregate_conditions": [
+            {"metric_id": "order_count", "operator": ">=", "threshold": 5, "window_days": 365}
+        ]},
+    }
+
+    assert semantic_requirements.unconsumed_literal_advisories(
+        exact,
+        query,
+        reference_date=date(2024, 2, 29),
+    ) == []
+    assert [entry["literal_id"] for entry in semantic_requirements.unconsumed_literal_advisories(
+        approximate,
+        query,
+        reference_date=date(2024, 2, 29),
+    )] == ["duration_1"]
 
 
 def test_comparison_operator_is_never_reported() -> None:

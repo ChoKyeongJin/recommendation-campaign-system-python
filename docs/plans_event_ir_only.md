@@ -194,12 +194,19 @@ status 를 파생했다(`unsupported`/`missing`/`unresolved` 포함 여부). 두
 계획을 그대로 집행하기 전에 현재 코드로 여섯 단계를 하나씩 대조했다. **위 표를 지우지 않고 남긴다** —
 무엇이 왜 바뀌었는지가 다음 사람에게 필요한 정보이기 때문이다. 실측 결과는 셋으로 갈린다.
 
-**① 3-5 는 이미 구현돼 있다(작업 없음).** `_admitted_sql_builder`(`graph_rag.py:12953-12993`)가 등록된
-모든 하위 빌더를 import 시점에 감싸고(`_install_sql_builder_admission_guards`, `18092-18107`),
+**① 3-5 는 이미 구현돼 있다(테스트만 추가하면 된다).** `graph_rag._admitted_sql_builder` 가 등록된
+모든 하위 빌더를 import 시점에 감싸고(`_install_sql_builder_admission_guards`),
 `requires_event_ir(query_plan)` 이면 **`build_event_expression_sql_candidate` 가 아닌 빌더는 무조건
-`None`** 이다(`12960-12962`). 응답 경로도 후보를 같은 id 하나로 이미 필터한다
-(`graph_rag.py:10826-10835`). 즉 "canonical 요청에서 legacy 빌더가 돈다"는 상태는 응답 경로·직접 호출
-**양쪽에서 이미 닫혀 있다.** 계획이 지목한 `14161-14163` 삼항(현재 `14486-14490`)도 유지가 맞다.
+`None`** 이다. 응답 경로도 후보를 같은 id 하나로 이미 필터한다(`build_sql_result` 의
+`canonical_event_ir_locked` 분기). 즉 "canonical 요청에서 legacy 빌더가 돈다"는 상태는 응답 경로·직접
+호출 **양쪽에서 이미 닫혀 있다.** 계획이 지목한 회원 컴파일러 삼항(`build_event_expression_sql_candidate`
+안, `canonical_authority` 로 분기)도 유지가 맞다. 계약은 `tests/test_event_ir_builder_fail_close.py`
+가 고정한다(2026-08-04 추가, 역검증 실행 확인 — 권위 분기를 제거하면 2건 red).
+
+> **`graph_rag.py` 좌표를 줄번호로 적지 마라.** 이 절의 초판은 줄번호를 적었는데 같은 날 안에 세 번
+> 밀렸다(18,081 → 18,059 → 18,064줄; 어휘 이관과 Decimal 이관이 파일 앞쪽을 건드렸다). 심볼 이름으로
+> 앵커한다 — 이 문서가 낡은 좌표를 들고 있으면 다음 사람이 "계획이 틀렸다"가 아니라 "코드가 없어졌다"로
+> 읽는다. 실제로 이 계획의 Phase 3 원안 좌표가 그렇게 낡아 있었다.
 
 **② 3-2 의 전제가 틀렸다 — 이사할 자산이 0건이고, 이사는 현행 계약과 정면 충돌한다.**
 `campaign_audience_migration` 실측 **0행**(2026-08-04, campaign_db). 그리고 `plan_after_cutover`
@@ -222,13 +229,43 @@ status 를 파생했다(`unsupported`/`missing`/`unresolved` 포함 여부). 두
 | 3-1 | `plan_schema.py` | 원안 유지(`PlanKey.audience`). 단 `AUDIENCE_CONTAINERS` 는 **신설이 아니라 이동**이다 — 이미 `legacy_audience_migration.py:48` 이 소유하고 `tools/cutover_legacy_audience.py:359` 가 그걸 읽는다. 두 벌로 적으면 그 순간 갈라진다 | S |
 | 3-2′ | `audience_cutover.py`, 테스트 1종 | 이사하지 않는다. `plan_after_cutover` 산출 플랜이 **실행 경로에 들어오지 않는다**는 한 줄 계약 + 테스트로 대체. 저장 자산 0건이 근거이므로, 자산이 생기는 날 이 계약이 먼저 red 가 되도록 `campaign_audience_migration` 비어 있음을 테스트가 함께 고정한다 | S |
 | 3-3 | `audience_admission.py`(신규) | 원안 유지. `canonical_event_ir_grounding.has_empty_legacy_audience_surface`(`:160-183`)는 **위임하지 않는다** — 그 술어는 `semantic_plan.nodes`·`set_expressions` 등 8개 표면을 함께 보고, admission 의 술어(컨테이너 2개)와 의미가 다르다 | M |
-| 3-4 | `plan_validation.py` | `704-714` 를 `execution_conflicts` 순회로 교체하고 리터럴 집합 제거. **Phase 3 의 유일한 판정 변경이다.** 표면을 비우는 선행 단계가 없어졌으므로, 이 단계가 red 를 만드는지는 3-2′ 의 계약 테스트가 먼저 답한다 | S |
-| 3-5 | — | **이미 구현됨(①).** 회귀 방지 테스트만 추가: 권위 `event_ir` 플랜에 legacy 빌더를 직접 호출하면 `None` | S |
+| 3-4 ✅ | `plan_validation.py`, `failure_messages.py`, 테스트 3종 | 리터럴 가드를 `audience_admission.execution_conflicts` 순회로 교체. **Phase 3 의 유일한 판정 변경.** 권위 술어는 `requires_event_ir`(아래 ①), status 는 리터럴 `INTERNAL_INVALID`(파생시키면 `_status_for_validation_code` 가 "conflict" 를 보고 SEMANTIC_CONFLICT 로 뒤집어 사유·UI 단계가 함께 바뀐다). 사용자 문구에서 내부 슬롯명을 빼는 분기를 함께 넣었다(아래 ③) | S |
+| 3-5 ✅ | `tests/test_event_ir_builder_fail_close.py`(신규) | **이미 구현됨(①).** 회귀 방지 테스트 6종 추가. 픽스처는 `event_expression.source` 를 canonical 집합 **밖**으로 둔다 — 안쪽이면 hybrid 가드가 먼저 걸려 빌더 게이트가 아니라 검증 게이트를 재게 된다. 대조군(같은 플랜 + `legacy` 권위 → 회원 SQL 출고)이 "None 이 픽스처 무능이 아니라 권위에서 온다"를 보인다 | S |
 | 3-6 | `audience_authority.py`, `audience_execution.py`, `graph_rag.py` | `declare_canonical_expression` 단일 진입점. 전환 대상은 3곳이 아니라 **4곳**이고, 그중 `graph_rag.py:3661` 은 권위를 안 남기는 호환 경로다 — 이 단계는 그 비대칭을 없애는 것이 목적이다. AST 가드는 tests/ 제외 | S |
 
 **수정된 종료 조건** — 위 종료 조건에서 "cut-over 자산은 표면이 비고" 를 뺀다(이사하지 않으므로).
 나머지는 그대로 두되, 다음을 추가한다: `canonical_legacy_audience_conflict` 에 테스트가 존재한다
 (현재 0건). 권위 `event_ir` 인데 legacy 표면이 남은 플랜이 **source 표식 유무와 무관하게** 차단된다.
+
+#### 3-4 집행 기록 (2026-08-04)
+
+**① 권위 술어로 `requires_event_ir` 을 골랐다.** `executes_event_ir` 가 아니다. 근거: 같은 함수가
+세 줄 아래에서 이미 `requires_event_ir` 을 쓰므로 한 함수 안에 권위 문이 둘이 되지 않고, 종료
+조건이 요구한 "표식 유무 무관"에는 표식 없는 canonical ingress(스탬프 이전 계약)가 포함된다.
+**대가**: `executes_event_ir` 로는 안 걸리던 갈래 — canonical 계약으로 들어왔지만 아직 실행 가능한
+표현이 없는 플랜 — 가 새로 걸린다. 사고가 아니라 선택임을 남기려고
+`tests/test_canonical_legacy_audience_conflict.py::test_declared_canonical_ingress_without_a_stamp_also_conflicts`
+가 그 갈래를 케이스로 고정한다.
+
+**② 뒤집힌 계약**: `tests/test_cutover_legacy_audience_cli.py` 의 "cut-over 산출 플랜은 EXECUTABLE"
+단언을 **반전**했다(약화가 아니라 반전 — 여전히 같은 것을 잰다). 그 단언의 원래 근거가
+"그렇게 판정하면 cut-over 한 자산이 통째로 실행 불가가 된다"였고, 지금은 그 상태가 맞다.
+허용 근거는 §6-3 하나뿐이다(저장 자산 0행 + 소유자 판단). 주석을 안 고치면 저장소에 서로 반대되는
+계약이 둘 남으므로 사유와 함께 교체했다.
+
+**③ 사용자 문구에서 내부 슬롯명을 뺐다.** `_issue` 의 path 가 `event_expression` 하나에서
+`target_user.<슬롯>` N개로 바뀌면서, `failure_messages.plan_validation_issue_ko` 의 기본 분기가
+그 경로를 한국어 문장에 그대로 실었다. §6-6 이 미결정으로 남긴 "내부 필드명 미노출" 계약을 조용히
+깨는 것이므로 이 코드 전용 분기를 넣어 좌표를 뺐다. 좌표는 운영자 채널(`audience_diagnosis` /
+`unresolved_source_conditions` / 이슈의 `path`)에 그대로 남는다.
+
+**④ 이 커밋이 달성하지 못한 것.** `graph_rag._apply_semantic_plan_pipeline` 안의 지역 `has_value` +
+`target_user`/`exclude` **리터럴**이 같은 표면을 여전히 독립 판정한다(semantic_plan → Event IR
+lowering 게이트). 즉 §4 불변식("표면의 소유자는 plan_schema 하나")은 이 커밋으로 충족되지 않았다.
+`plan_validation` 에서 리터럴이 사라진 것까지가 이 커밋의 범위이고, 남은 자리는 별건이다 —
+판정이 바뀌는 커밋에 무관한 리팩터링을 얹지 않는다(§55). 같은 정책의 재귀 empty 술어도 저장소에
+넷 남아 있다(grounding / graph_rag / admission / plan_decisions, 그중 `plan_decisions._is_empty` 는
+`False` 를 빈 값으로 보는 **다른 정책**이다).
 
 ---
 

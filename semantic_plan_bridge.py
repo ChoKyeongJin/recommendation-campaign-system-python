@@ -72,7 +72,10 @@ def build_context(
         slot_shapes=slot_shapes,
         allowed=allowed,
         node_vocabularies=dict(node_vocabularies or {}),
-        today=today or date.today(),
+        # Relative calendar semantics must receive a request-scoped date from
+        # the application boundary.  None is preserved so evaluators fail
+        # closed instead of consulting the host clock.
+        today=today,
         metric_resolvers=resolvers,
         count_metrics={"aggregate": _count_metric_ids(aggregate_metric_specs)},
     )

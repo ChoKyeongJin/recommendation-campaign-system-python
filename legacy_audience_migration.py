@@ -34,6 +34,7 @@ from zoneinfo import ZoneInfo
 
 import event_ir
 import migration_fingerprint
+import plan_schema
 from audience_authority import MigrationStatus
 
 ADAPTER_VERSION = "1.0.0"
@@ -45,7 +46,11 @@ MIGRATION_SOURCE = "legacy_migration"
 # 오디언스 조건이 사는 컨테이너. 이 밖의 플랜 키(intent/campaign_constraints/…)는 오디언스가 아니므로
 # 어댑터의 경로 회계 범위 밖이다 — '무시했다'가 아니라 '보지 않는다'이고, 그 구분을 흐리면
 # ignored_paths 가 의미를 잃는다.
-AUDIENCE_CONTAINERS: tuple[str, ...] = ("target_user", "exclude")
+#
+# 소유자는 plan_schema 다(2026-08-04 이동). 여기서 재수출하는 이유는 기존 소비자
+# (tools/cutover_legacy_audience.py) 를 깨지 않기 위해서이고, 값을 다시 적지 않는 이유는
+# 슬롯 묶음이 하나 늘어나는 날 한쪽만 갱신되면 그 순간 판정이 갈라지기 때문이다.
+AUDIENCE_CONTAINERS: tuple[str, ...] = plan_schema.AUDIENCE_CONTAINERS
 
 # 비의미 키 — 값이 달라져도 **대상 집합이 달라지지 않는** 것만 넣는다. 조건 필드·연산자·기간·값·
 # 부정 여부는 절대 들어오지 않는다(계약 테스트가 강제한다).

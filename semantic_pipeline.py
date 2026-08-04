@@ -43,6 +43,7 @@ from semantic_normalizers import (
     OperatorNormalizer,
     PeriodNormalizer,
     RankLimitNormalizer,
+    RatioNormalizer,
     UnitNormalizer,
 )
 from semantic_plan import SemanticPlanV2
@@ -52,6 +53,7 @@ _NORMALIZERS: dict[str, Callable[[Any], Any]] = {
     "operator": OperatorNormalizer.normalize,
     "quantity": AmountNormalizer.normalize,
     "rank_limit": RankLimitNormalizer.normalize,
+    "ratio": RatioNormalizer.normalize,
     "unit": UnitNormalizer.normalize,
 }
 
@@ -96,7 +98,12 @@ def normalize_plan(
             raw = node.values[spec.name]
             try:
                 if spec.kind == "period":
-                    window = PeriodNormalizer.normalize(raw, today=today)
+                    # Keep relative calendar units in the normalized plan.  The
+                    # execution compiler owns the request-scoped reference date
+                    # and resolves them into an exact inclusive interval.  If we
+                    # turn months/years into a day count here, the SQL layer can
+                    # only re-anchor that count to its own clock.
+                    window = PeriodNormalizer.normalize(raw, today=None)
                     node.values[spec.name] = (
                         window.to_window() if hasattr(window, "to_window")
                         else {"value": window.value, "unit": window.unit}

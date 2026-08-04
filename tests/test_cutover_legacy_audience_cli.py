@@ -25,6 +25,7 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+import audience_admission  # noqa: E402
 import audience_cutover as cutover  # noqa: E402
 import graph_rag  # noqa: E402
 import plan_validation  # noqa: E402
@@ -396,14 +397,29 @@ def test_cutover_moves_both_the_state_row_and_the_execution_authority(tmp_path: 
     plan = store.plans[ASSET_ID]
     # 권위가 옮겨졌다는 말은 **실행기가 그렇게 읽는다**는 뜻이다.
     assert graph_rag._has_canonical_audience_authority(plan) is True
-    candidate = graph_rag.build_event_expression_sql_candidate(dict(plan))
-    assert candidate is not None and "NOT EXISTS" in candidate["sql"].upper()
     # 되돌릴 재료(legacy 슬롯)는 그대로 남아 있다.
     assert plan["target_user"] == _payload(ASSET_ID)["target_user"]
     assert [entry.action for entry in store.log][-1] == "cutover"
-    # 보존된 슬롯이 옆에 있어도 플랜 검증이 이 모양을 실행 가능으로 읽는다 — 이행기 dual-storage
-    # 를 '두 해석이 동시에 산다'로 판정하면 cut-over 한 자산이 통째로 실행 불가가 된다.
-    assert plan_validation.validate_executable_plan(dict(plan)).status == plan_validation.EXECUTABLE
+
+    # 2026-08-04(Phase 3-4): 이 단언은 **반전됐다.** 예전에는 "보존된 슬롯이 옆에 있어도 플랜
+    # 검증이 이 모양을 실행 가능으로 읽는다"였고, 그 근거는 "그렇게 판정하면 cut-over 한 자산이
+    # 통째로 실행 불가가 된다"였다. 지금은 정확히 그 상태가 맞다.
+    #
+    # 뒤집은 이유는 dual-storage 를 금지해서가 아니라, 게이트가 '보존된 같은 조건'과 '두 번째
+    # 오디언스 언어'를 **구분할 수단이 없기 때문**이다. 구분 장치가 Phase 3-2 원안의
+    # preserved_legacy_audience(실행 위치 → 보존 위치 이사)였는데, §6-3 에서 저장 자산 0행 +
+    # 소유자 판단("자산이 legacy 에만 연결돼 있으면 쓰지 않는다")으로 만들지 않기로 했다.
+    # 그 결정의 대가가 여기다 — cut-over 산출 플랜은 실행 경로에 들어오지 않는다(3-2′).
+    #
+    # 결정이 뒤집히면 이 단언이 먼저 red 가 되고, 그때 선택지는 3-2 원안 복원 또는 cut-over 가
+    # 표면을 비우게 하는 것이다. **약화가 아니라 반전이므로 계약은 여전히 재고 있다.**
+    validation = plan_validation.validate_executable_plan(dict(plan))
+    assert validation.status == plan_validation.INTERNAL_INVALID
+    assert [issue.code for issue in validation.issues] == [
+        audience_admission.LEGACY_AUDIENCE_CONFLICT_CODE
+    ]
+    assert [issue.path for issue in validation.issues] == ["target_user.behaviors"]
+    assert graph_rag.build_event_expression_sql_candidate(dict(plan)) is None
 
 
 def test_cutover_without_promotion_is_blocked_by_the_state_machine(tmp_path: Path) -> None:

@@ -106,6 +106,24 @@ def test_cart_and_order_scopes_never_claim_the_same_slot(context) -> None:
     assert "aggregate_conditions" not in result.target_user
 
 
+# ── 캠페인 집계 기간 ──────────────────────────────────────────────────────────────
+def test_campaign_aggregate_period_fails_closed_instead_of_being_dropped(context) -> None:
+    plan = _plan(_node({
+        "id": "req-1", "type": "aggregate_predicate",
+        "source_span": "2026년 3월 캠페인 발송 성공 횟수가 3회 이상",
+        "scope": "campaign", "metric": "campaign_contact",
+        "operator": ">=", "value": 3,
+        "period": {"type": "absolute", "from": "2026-03-01", "to": "2026-03-31"},
+    }))
+
+    result = _compile(plan, context)
+
+    assert result.is_empty
+    assert result.failures[0]["failure_code"] == semantic_plan.UNSUPPORTED_SEMANTICS
+    assert "캠페인 집계 기간" in result.failures[0]["reason"]
+    assert "보존하지 못하므로" in result.failures[0]["reason"]
+
+
 # ── 기간 대 기간 증감(과거: numeric_condition_backfill ②) ────────────────────────
 def test_metric_comparison_owns_both_periods_and_compiles_to_metric_trend(context) -> None:
     plan = _plan(_node({
@@ -138,6 +156,31 @@ def test_metric_comparison_threshold_becomes_relative_change(context) -> None:
     assert trend["relative_change"]["comparisons"] == [{"operator": ">=", "value": 10}]
 
 
+def test_metric_comparison_fractional_ratio_reaches_sql_exactly(context) -> None:
+    exact = "10.123456789012345678901"
+    plan = _plan(_node({
+        "id": "req-1", "type": "metric_comparison",
+        "source_span": "두 기간의 구매금액이 정확한 비율 이상 증가한",
+        "metric": "purchase_amount",
+        "baseline": {"type": "calendar_month", "year": 2026, "month": 2},
+        "current": {"type": "calendar_month", "year": 2026, "month": 3},
+        "relation": "increase",
+        "threshold": {"value": exact, "unit": "percent"},
+        "threshold_operator": "이상",
+    }))
+
+    trend = _compile(plan, context).target_user["metric_trend"]
+    assert trend["relative_change"]["comparisons"] == [
+        {"operator": ">=", "value": exact}
+    ]
+    candidate = graph_rag.build_metric_trend_targets_sql_candidate(
+        {"target_user": {"metric_trend": trend}}
+    )
+    assert candidate is not None
+    assert exact in candidate["sql"]
+    assert "10.123456789012346" not in candidate["sql"]
+
+
 # ── 회원 지표 랭킹(과거: numeric_condition_backfill ②-α) ─────────────────────────
 def test_ranked_set_compiles_to_member_metric_ranking(context) -> None:
     plan = _plan(_node({
@@ -161,6 +204,23 @@ def test_ranked_set_count_limit_becomes_top_n(context) -> None:
     }))
     ranking = _compile(plan, context).plan["member_metric_ranking"]
     assert ranking["top_n"] == 100 and "percent" not in ranking
+
+
+def test_member_ranked_set_period_fails_closed_instead_of_being_dropped(context) -> None:
+    plan = _plan(_node({
+        "id": "req-1", "type": "ranked_set",
+        "source_span": "2026년 3월 누적 구매금액 상위 10%",
+        "entity": "member", "metric": "total_buy_amt", "direction": "descending",
+        "limit": {"type": "percent", "value": 10},
+        "period": {"type": "absolute", "from": "2026-03-01", "to": "2026-03-31"},
+    }))
+
+    result = _compile(plan, context)
+
+    assert result.is_empty
+    assert result.failures[0]["failure_code"] == semantic_plan.UNSUPPORTED_SEMANTICS
+    assert "회원 랭킹 기간" in result.failures[0]["reason"]
+    assert "보존하지 못하므로" in result.failures[0]["reason"]
 
 
 # ── 프로필 지표(과거: metric_registry.apply_profile_condition_backfill) ──────────
@@ -292,4 +352,98 @@ def test_relative_window_resolves_against_injected_today(context) -> None:
         }],
     }))
     node = LegacyQueryPlanCompiler().compile(plan, None, ctx).target_user["entity_set_condition"]
-    assert node["window"] == {"days": 30}
+    assert node["window"] == {
+        "type": "relative",
+        "value": 30,
+        "unit": "days",
+        "from": "20260302",
+        "to": "20260331",
+    }
+
+
+@pytest.mark.parametrize(
+    ("value", "unit", "expected_from"),
+    [(1, "months", "20260301"), (6, "months", "20251001"), (1, "years", "20250401")],
+)
+def test_calendar_relative_windows_compile_from_the_injected_date(
+    context, value: int, unit: str, expected_from: str
+) -> None:
+    ctx = legacy_plan_compiler.CompileContext(
+        slot_shapes=context.slot_shapes,
+        allowed=context.allowed,
+        node_vocabularies=context.node_vocabularies,
+        today=date(2026, 3, 31),
+        metric_resolvers=context.metric_resolvers,
+        scope_slots=context.scope_slots,
+        count_metrics=context.count_metrics,
+    )
+    result = _compile(
+        _plan(_node({
+            "id": "req-1",
+            "type": "aggregate_predicate",
+            "source_span": "달력 기준 주문",
+            "scope": "order",
+            "metric": "order_count",
+            "operator": ">=",
+            "value": 5,
+            "period": {"type": "relative", "value": value, "unit": unit},
+        })),
+        ctx,
+    )
+
+    assert result.failures == []
+    assert result.target_user["aggregate_conditions"][0]["window"] == {
+        "type": "relative",
+        "value": value,
+        "unit": unit,
+        "from": expected_from,
+        "to": "20260331",
+    }
+
+
+def test_absolute_window_ending_after_injected_today_fails_closed(context) -> None:
+    ctx = legacy_plan_compiler.CompileContext(
+        slot_shapes=context.slot_shapes,
+        allowed=context.allowed,
+        node_vocabularies=context.node_vocabularies,
+        today=date(2026, 3, 31),
+        metric_resolvers=context.metric_resolvers,
+        scope_slots=context.scope_slots,
+        count_metrics=context.count_metrics,
+    )
+    result = _compile(
+        _plan(_node({
+            "id": "req-1",
+            "type": "aggregate_predicate",
+            "source_span": "2026년 3월부터 4월까지 주문",
+            "scope": "order",
+            "metric": "order_count",
+            "operator": ">=",
+            "value": 5,
+            "period": {"type": "absolute", "from": "2026-03-01", "to": "2026-04-30"},
+        })),
+        ctx,
+    )
+
+    assert result.is_empty
+    assert result.failures[0]["failure_code"] == semantic_plan.UNSUPPORTED_SEMANTICS
+    assert "기준일 이후에 끝나는" in result.failures[0]["reason"]
+
+
+def test_calendar_relative_window_without_reference_date_fails_closed(context) -> None:
+    result = _compile(
+        _plan(_node({
+            "id": "req-1",
+            "type": "aggregate_predicate",
+            "source_span": "최근 한 달 주문",
+            "scope": "order",
+            "metric": "order_count",
+            "operator": ">=",
+            "value": 5,
+            "period": {"type": "relative", "value": 1, "unit": "months"},
+        })),
+        graph_rag._semantic_compile_context(),
+    )
+
+    assert result.is_empty
+    assert "기준일이 주입되지 않아" in result.failures[0]["reason"]

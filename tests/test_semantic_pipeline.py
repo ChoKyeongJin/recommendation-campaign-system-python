@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import sys
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -62,12 +63,72 @@ def test_operator_and_rank_normalizers() -> None:
     assert norm.RankLimitNormalizer.normalize("상위 100명") == norm.RankLimit("count", 100)
 
 
+def test_fractional_rank_percent_is_exact_and_json_compatible() -> None:
+    surface = "상위 10.123456789012345678901%"
+    limit = norm.RankLimitNormalizer.normalize(surface)
+
+    assert limit.value == Decimal("10.123456789012345678901")
+    assert limit.to_dict() == {
+        "type": "percent",
+        "value": "10.123456789012345678901",
+    }
+    wire = json.loads(json.dumps(limit.to_dict()))
+    assert norm.RankLimitNormalizer.normalize(wire) == limit
+
+
+def test_metric_comparison_ratio_normalization_is_exact() -> None:
+    exact = "10.123456789012345678901"
+    plan = _plan(
+        "x",
+        [{
+            "id": "req-1",
+            "type": "metric_comparison",
+            "source_span": "x",
+            "metric": "purchase_amount",
+            "baseline": {"type": "calendar_month", "year": 2026, "month": 2},
+            "current": {"type": "calendar_month", "year": 2026, "month": 3},
+            "relation": "increase",
+            "threshold": f"{exact}%",
+        }],
+    )
+
+    semantic_pipeline.normalize_plan(plan, today=date(2026, 8, 4))
+
+    assert plan.nodes[0].values["threshold"] == {"value": exact, "unit": "percent"}
+    assert json.loads(json.dumps(plan.to_dict()))["nodes"][0]["threshold"]["value"] == exact
+
+
+@pytest.mark.parametrize("raw", [{"type": "count", "value": 1.5}, {"type": "percent", "value": 100}])
+def test_rank_limit_rejects_invalid_numeric_domain(raw: dict) -> None:
+    with pytest.raises(norm.NormalizationError):
+        norm.RankLimitNormalizer.normalize(raw)
+
+
 def test_period_normalizer_resolves_calendar_and_relative() -> None:
     window = norm.PeriodNormalizer.normalize({"type": "calendar_month", "year": 2026, "month": 2})
     assert (window.start, window.end) == ("20260201", "20260228")
     rolling = norm.PeriodNormalizer.normalize({"type": "relative", "value": 30, "unit": "days"},
                                               today=date(2026, 3, 31))
     assert (rolling.start, rolling.end) == ("20260302", "20260331")
+
+
+def test_relative_month_and_year_windows_use_calendar_boundaries() -> None:
+    month = norm.RelativeWindow(value=1, unit="months").resolve(date(2026, 3, 31))
+    leap_year = norm.RelativeWindow(value=1, unit="years").resolve(date(2024, 2, 29))
+
+    assert (month.start, month.end) == ("20260301", "20260331")
+    assert (leap_year.start, leap_year.end) == ("20230301", "20240229")
+    with pytest.raises(ValueError, match="requires a reference date"):
+        _ = norm.RelativeWindow(value=1, unit="months").days
+
+
+def test_period_normalizer_rejects_unknown_relative_unit() -> None:
+    with pytest.raises(norm.NormalizationError) as exc_info:
+        norm.PeriodNormalizer.normalize(
+            {"type": "relative", "value": 3, "unit": "fortnights"}
+        )
+
+    assert exc_info.value.code == "invalid_period_unit"
 
 
 def test_period_normalizer_preserves_internal_exclusive_interval_semantics() -> None:

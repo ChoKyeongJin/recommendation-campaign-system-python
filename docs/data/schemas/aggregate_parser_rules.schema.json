@@ -9,6 +9,8 @@
     "version",
     "span_binding",
     "number_multipliers",
+    "number_words",
+    "number_word_unit_kinds",
     "prefix_operators",
     "unit_kinds",
     "aggregate_threshold_unit_kinds",
@@ -68,6 +70,17 @@
       "minProperties": 1,
       "additionalProperties": {"type": "number", "exclusiveMinimum": 0},
       "propertyNames": {"minLength": 1}
+    },
+    "number_words": {
+      "description": "고유어 수관형사 → 값('세 번'의 '세'=3). 아라비아 숫자와 달리 홀로 쓰이면 값이 아니므로(음절 '세/네'는 흔한 글자다) 반드시 계수 단위와 결속될 때만 값이 된다 — 결속 규칙은 number_word_unit_kinds 가 정한다. 한자어·고유어 수사 값 문법의 공통 선언은 korean_number_normalizer가 소유하며 이 설정은 파서용 호환 미러다.",
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "integer", "minimum": 1},
+      "propertyNames": {"minLength": 1}
+    },
+    "number_word_unit_kinds": {
+      "description": "고유어 수관형사가 결속될 수 있는 단위 종류. 세는 단위만 넣는다 — 금액('한 원')·기간('한 달')은 이 문법이 아니다(기간은 calendar_window 소유).",
+      "$ref": "#/$defs/surfaceList"
     },
     "prefix_operators": {
       "description": "숫자 **앞**에 오는 비교어('최소 10억'). 숫자 뒤 비교어는 targeting_ir 의 비교어 표가 소유한다.",

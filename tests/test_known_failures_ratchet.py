@@ -18,8 +18,8 @@ import pytest
 LEDGER_PATH = Path(__file__).resolve().parent / "known_failures.json"
 
 # 상한은 하향 전용이다. 올리려면 이 숫자와 함께 사유를 커밋 메시지에 남겨라.
-# 2026-07-31 기준 1건: 80fe0a4 에서 red 로 커밋된 conceptual targeting 테스트.
-MAX_KNOWN_FAILURES = 1
+# 2026-08-04 기준 0건. 현재 baseline을 다시 늘리지 못하게 고정한다.
+MAX_KNOWN_FAILURES = 0
 
 REQUIRED_FIELDS = ("nodeid", "reason", "found_at", "owner")
 

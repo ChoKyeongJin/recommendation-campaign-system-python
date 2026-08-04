@@ -20,6 +20,7 @@ import audience_authority
 import audience_runtime
 import event_compiler
 import event_ir
+import plan_schema
 from query_structurer import CampaignQueryPlanV4, validate_campaign_query_plan_v4
 from query_structurer.semantic_ir import empty_semantic_ir
 
@@ -158,7 +159,16 @@ def is_registry_gap_repair_candidate(plan: Mapping[str, Any]) -> bool:
 
 
 def has_empty_legacy_audience_surface(plan: Mapping[str, Any]) -> bool:
-    """Reject a repaired plan that also populated a second audience language."""
+    """Reject a repaired plan that also populated a second audience language.
+
+    표면 목록은 :mod:`plan_schema` 가 소유한다(2026-08-04) — 여기 리터럴로 적혀 있던 동안
+    같은 목록이 저장소에 둘이었고(다른 하나는 ``plan_validation`` 의 hybrid 가드), 한쪽만
+    넓히면 "무엇이 두 번째 오디언스 언어인가"의 답이 호출 지점마다 달라진다.
+
+    ``semantic_plan.nodes`` 만 여기서 직접 본다. 그 키는 canonical 레인에 **상시 존재**해서
+    분류표에서는 ``audience=False`` 여야 하고(True 면 모든 canonical 요청이 충돌로 죽는다),
+    "노드가 비었는가"는 키의 존재가 아니라 이 술어만의 판정이다.
+    """
 
     def empty(value: Any) -> bool:
         if isinstance(value, Mapping):
@@ -171,14 +181,9 @@ def has_empty_legacy_audience_surface(plan: Mapping[str, Any]) -> bool:
     semantic_nodes = (
         semantic_plan.get("nodes") if isinstance(semantic_plan, Mapping) else None
     )
+    surfaces = (*plan_schema.AUDIENCE_CONTAINERS, *sorted(plan_schema.audience_keys()))
     return bool(
-        empty(plan.get("target_user"))
-        and empty(plan.get("exclude"))
-        and empty(plan.get("set_expressions"))
-        and empty(plan.get("computed_metrics"))
-        and empty(plan.get("external_conditions"))
-        and empty(plan.get("compound_dimension_filters"))
-        and empty(plan.get("condition_evaluations"))
+        all(empty(plan.get(name)) for name in surfaces)
         and empty(semantic_nodes)
     )
 

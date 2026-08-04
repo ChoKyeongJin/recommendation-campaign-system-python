@@ -1303,19 +1303,19 @@ def project_relation_data_coverage(
     """Project a proven gap to the existing fail-closed semantic IR channel."""
     gaps = relation_data_coverage_gaps(payload, query, catalog)
     if gaps:
-        payload["semantic_ir"] = {
-            "status": "unsupported",
-            "operations": [],
-            "missing_fields": [],
-            "missing_field_causes": [],
-            "failure_kind": "unsupported",
-            "policy_applications": [],
-            "unsupported_operations": [
+        # Import at the application boundary to avoid a module-import cycle:
+        # campaign_plan_v4 imports this relation owner before semantic_ir.
+        from query_structurer.semantic_ir import write_semantic_ir
+        from query_structurer.semantic_outcome import SemanticOutcome
+
+        outcome = SemanticOutcome.unsupported(
+            operations=[
                 {key: gap[key] for key in ("kind", "reason", "evidence")}
                 for gap in gaps
             ],
-            "message": "요청한 이력 조건이 현재 월별 스냅샷 적재 범위를 벗어납니다.",
-        }
+            message="요청한 이력 조건이 현재 월별 스냅샷 적재 범위를 벗어납니다.",
+        )
+        write_semantic_ir(payload, outcome.to_legacy_dict())
     return gaps
 
 

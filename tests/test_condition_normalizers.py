@@ -40,12 +40,21 @@ def test_extended_operator_aliases_stay_out_of_core_words() -> None:
 def test_duration_normal_value() -> None:
     result = cn.normalize_duration({"value": 3, "unit": "months"})
     assert result.ok and result.status == "normalized"
-    assert result.value == {"value": 3, "unit": "months", "min_days": 90}
+    assert result.value == {"value": 3, "unit": "months"}
 
 
 def test_duration_korean_alias_and_string_number() -> None:
     result = cn.normalize_duration({"value": "3", "unit": "개월"})
-    assert result.ok and result.value["min_days"] == 90
+    assert result.ok and result.value == {"value": 3, "unit": "months"}
+
+
+def test_duration_fixed_unit_keeps_exact_min_days() -> None:
+    result = cn.normalize_duration({"value": 3, "unit": "weeks"})
+    assert result.ok and result.value == {"value": 3, "unit": "weeks", "min_days": 21}
+
+
+def test_unit_days_excludes_calendar_unit_approximations() -> None:
+    assert cn.unit_days() == {"days": 1, "weeks": 7}
 
 
 def test_duration_unsupported_unit_is_retryable_with_allowed_values() -> None:
@@ -171,6 +180,16 @@ def test_generic_condition_normal_with_window() -> None:
     assert result.catalog_match is True and result.execution_support is True
 
 
+def test_generic_condition_calendar_window_preserves_unit_without_window_days() -> None:
+    result = cn.normalize_generic_condition(
+        {"concept": "purchase_amount", "operator": "이상", "value": 100000,
+         "window": {"value": 1, "unit": "months"}},
+        catalog=_catalog())
+    assert result.ok
+    assert result.value["window"] == {"value": 1, "unit": "months"}
+    assert "window_days" not in result.value
+
+
 def test_generic_condition_window_unsupported_concept() -> None:
     result = cn.normalize_generic_condition(
         {"concept": "customer_score", "operator": ">", "value": 80, "window": {"value": 7, "unit": "days"}},
@@ -231,8 +250,7 @@ def test_normalizer_registry_is_closed_and_nonempty() -> None:
 # ── (3) targeting_ir 어댑터 회귀 — 창 계열 슬롯이 공유 정규화기를 실제로 쓴다 ────────────────
 @pytest.mark.parametrize("slot", ["purchase_inactivity", "inactivity_period", "recent_login"])
 def test_window_slots_share_duration_normalizer(slot: str) -> None:
-    coerced = SLOT_SHAPES[slot].coerce({"value": 2, "unit": "개월"})
-    assert coerced["value"] == 2 and coerced["unit"] == "months" and coerced["min_days"] == 60
+    assert SLOT_SHAPES[slot].coerce({"value": 2, "unit": "개월"}) is None
 
 
 def test_window_slot_fractional_value_drops_instead_of_truncating() -> None:
@@ -246,4 +264,4 @@ def test_window_slot_min_days_fallback_preserved() -> None:
 
 
 def test_signup_slot_uses_shared_window_normalization() -> None:
-    assert SLOT_SHAPES["signup_target"].coerce({"value": 1, "unit": "년"}) == {"days": 365}
+    assert SLOT_SHAPES["signup_target"].coerce({"value": 1, "unit": "년"}) is None

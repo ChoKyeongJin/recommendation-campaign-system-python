@@ -26,6 +26,10 @@ MetadataValue: TypeAlias = str | int | float | bool | list[str]
 class StructuringContext:
     current_date: str
     timezone: str | None = None
+    # Request execution requires this request-scoped aware instant together
+    # with ``timezone``.  The optional annotation keeps pure structurer callers
+    # source-compatible; the execution boundary rejects either value missing.
+    current_datetime: str | None = None
     conversation_context: str | None = None
     # 닫힌 어휘 슬롯의 canonical 값 목록(behaviors/cart_type 등). 어휘는 애플리케이션(graph_rag
     # 렉시콘)이 소유하고 여기로 주입한다 — 이 패키지는 낱말을 하드코딩하지 않는다.

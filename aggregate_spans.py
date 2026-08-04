@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, replace
+from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable, Mapping, Sequence
 
 import aggregate_parser_config
@@ -70,7 +71,7 @@ class ComparisonCandidate:
 
     candidate_id: str
     operator: str
-    normalized_value: float
+    normalized_value: Decimal
     value_span: TextSpan
     comparison_span: TextSpan
     attribute_ref: AttributeRef | None = None
@@ -90,12 +91,16 @@ class ComparisonCandidate:
 
 
 # ── 값 파싱 ────────────────────────────────────────────────────────────────────────────
-def normalize_amount(number_text: str, magnitude_text: str, rules: AggregateParserRules) -> float | None:
-    """'100'+'만' → 1000000. 배수 표현은 설정(number_multipliers)이 소유한다."""
+def normalize_amount(number_text: str, magnitude_text: str, rules: AggregateParserRules) -> Decimal | None:
+    """'100'+'만' → 1000000. 배수 표현·수관형사는 설정(number_multipliers/number_words)이 소유한다."""
     try:
-        value = float(number_text.replace(",", "").strip())
-    except (ValueError, AttributeError):
-        return None
+        value = Decimal(number_text.replace(",", "").strip())
+    except (InvalidOperation, ValueError, AttributeError):
+        # 아라비아 숫자가 아니면 고유어 수관형사('세 번'의 '세')로 조회한다. 표에 없으면 값이 아니다.
+        word_value = aggregate_parser_config.number_word_value(rules, (number_text or "").strip())
+        if word_value is None:
+            return None
+        value = Decimal(word_value)
     for surface, multiplier in rules.number_multipliers:
         if magnitude_text and magnitude_text.startswith(surface):
             return value * multiplier
@@ -179,7 +184,11 @@ def _number_pattern(rules: AggregateParserRules) -> "re.Pattern[str]":
     pattern = _NUMBER_PATTERN_CACHE.get(key)
     if pattern is None:
         magnitude_alternation = aggregate_parser_config.magnitude_alternation(rules)
-        pattern = re.compile(rf"(?P<num>[\d,]*\d)\s*(?P<mag>{magnitude_alternation})?")
+        # 숫자 표기의 문법은 모듈 안에서 하나다 — 비교 스캐너와 값·단위 쌍이 서로 다른 '숫자'를
+        # 알면 '세 개'가 한쪽에서만 값이 되어 소유권 판정이 어긋난다.
+        pattern = re.compile(
+            rf"(?P<num>{aggregate_parser_config.number_pattern(rules)})\s*(?P<mag>{magnitude_alternation})?"
+        )
         _NUMBER_PATTERN_CACHE[key] = pattern
     return pattern
 
@@ -203,7 +212,6 @@ def find_value_unit_pairs(
 
 # ── 비교 표현 스캔 ─────────────────────────────────────────────────────────────────────
 _COMPARISON_PATTERN_CACHE: dict[tuple[int, str], "re.Pattern[str]"] = {}
-_NUMBER = r"[\d,]+(?:\.\d+)?"
 
 
 def _comparison_pattern(rules: AggregateParserRules, operator_alternation: str) -> "re.Pattern[str]":
@@ -217,9 +225,10 @@ def _comparison_pattern(rules: AggregateParserRules, operator_alternation: str) 
         magnitudes = aggregate_parser_config.magnitude_alternation(rules)
         units = aggregate_parser_config.unit_alternation(rules)
         prefixes = aggregate_parser_config.prefix_operator_alternation(rules)
+        number = aggregate_parser_config.number_pattern(rules)
         pattern = re.compile(
-            rf"(?P<prefix_op>{prefixes})\s*(?P<pnum>{_NUMBER})\s*(?P<pmag>{magnitudes})?\s*(?:{units})?"
-            rf"|(?P<num>{_NUMBER})\s*(?P<mag>{magnitudes})?\s*(?:{units})?\s*(?:을|를|이|가)?\s*"
+            rf"(?P<prefix_op>{prefixes})\s*(?P<pnum>{number})\s*(?P<pmag>{magnitudes})?\s*(?:{units})?"
+            rf"|(?P<num>{number})\s*(?P<mag>{magnitudes})?\s*(?:{units})?\s*(?:을|를|이|가)?\s*"
             rf"(?P<op>{operator_alternation})"
         )
         _COMPARISON_PATTERN_CACHE[key] = pattern

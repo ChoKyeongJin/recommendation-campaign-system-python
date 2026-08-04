@@ -27,8 +27,8 @@ def _ref(text: str, matched: str) -> SourceRef:
 def _resolved_purchase_inactivity() -> dict:
     return resolve_condition(RawInterpretation(
         kind="special_slot", concept_query="미구매",
-        candidate={"value": 3, "unit": "months"},
-        source=_ref("석 달 동안 구매 안 한 고객", "석 달"), confidence=0.96))
+        candidate={"value": 3, "unit": "weeks"},
+        source=_ref("3주 동안 구매 안 한 고객", "3주"), confidence=0.96))
 
 
 def _resolved_purchase_amount() -> dict:
@@ -117,9 +117,22 @@ def test_validated_fragment_contains_only_slot_shape_validated_values() -> None:
     target_user = model.plan_fragment["target_user"]
     assert set(target_user) <= set(SLOT_SHAPES), "SLOT_SHAPES 에 없는 슬롯이 plan 조각에 들어갔다"
     assert target_user["purchase_inactivity"] == SLOT_SHAPES["purchase_inactivity"].coerce(
-        {"value": 3, "unit": "months"})
+        {"value": 3, "unit": "weeks"})
     assert target_user["aggregate_conditions"] == [
         {"metric_id": "purchase_amount", "operator": ">=", "threshold": 100000, "window_days": 30}]
+
+
+def test_calendar_duration_without_an_execution_window_is_blocked() -> None:
+    unresolved_calendar = resolve_condition(RawInterpretation(
+        kind="special_slot",
+        concept_query="미구매",
+        candidate={"value": 3, "unit": "months"},
+        source=_ref("석 달 동안 구매 안 한 고객", "석 달"),
+        confidence=0.96,
+    ))
+
+    with pytest.raises(ExecutionGateError):
+        build_validated_plan_fragment([unresolved_calendar], context=_context())
 
 
 def test_one_bad_condition_fails_the_whole_fragment() -> None:

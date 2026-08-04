@@ -57,7 +57,7 @@ def test_llm_invented_compiler_name_is_not_registered() -> None:
 def test_duration_emission_equals_slot_shape_coerce_output() -> None:
     """컴파일러 방출 값 == SLOT_SHAPES coerce 출력 — 새 계층이 별도 검증 표면을 만들지 않는다."""
     registry = default_registry()
-    normalized = {"value": 3, "unit": "months", "min_days": 90}
+    normalized = {"value": 3, "unit": "weeks", "min_days": 21}
     emission = registry.get("purchase_inactivity").compile(
         _normalized("purchase_inactivity", normalized), CompileContext())
     assert emission.container == "target_user" and emission.slot == "purchase_inactivity"
@@ -66,7 +66,16 @@ def test_duration_emission_equals_slot_shape_coerce_output() -> None:
     login = registry.get("recent_login").compile(
         {**_normalized("recent_login", normalized)}, CompileContext())
     assert login.value == SLOT_SHAPES["recent_login"].coerce(dict(normalized))
-    assert login.value["sql_interval"] == "3 months"
+    assert login.value["sql_interval"] == "3 weeks"
+
+
+def test_duration_emission_rejects_calendar_units_disguised_as_fixed_days() -> None:
+    normalized = {"value": 3, "unit": "months", "min_days": 90}
+
+    with pytest.raises(CompilerError):
+        default_registry().get("purchase_inactivity").compile(
+            _normalized("purchase_inactivity", normalized), CompileContext()
+        )
 
 
 def test_compile_refuses_non_normalized_status() -> None:

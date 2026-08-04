@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+import json
+from decimal import Decimal
+
 import pytest
 
-from query_structurer.semantic_ir import extract_literal_bindings
+from semantic_normalizers import AmountNormalizer, Money
+from query_structurer.semantic_ir import (
+    bind_counter_literals,
+    extract_literal_bindings,
+    scan_literal_bindings,
+)
 
 
 @pytest.mark.parametrize(
@@ -66,5 +74,88 @@ def test_counter_literal_keeps_particle_outside_exact_span() -> None:
     assert counter["normalized"] == {
         "value": 10,
         "surface_unit": "개",
-        "semantic_unit": "item_quantity",
+        "unit": "count",
     }
+
+
+def test_counter_scanner_does_not_guess_a_business_metric() -> None:
+    scanned = scan_literal_bindings("최근 3회 활동한 회원", current_date="2026-08-04")
+    counter = next(item for item in scanned if item["kind"] == "number_with_unit")
+
+    assert counter["normalized"] == {
+        "value": 3,
+        "surface_unit": "회",
+        "unit": "count",
+    }
+    assert "order_count" not in repr(scanned)
+
+
+def test_counter_binder_uses_injected_domain_context() -> None:
+    scanned = scan_literal_bindings("최근 3회 로그인한 회원", current_date="2026-08-04")
+
+    bound = bind_counter_literals(scanned, counter_units={"회": "login_count"})
+    counter = next(item for item in bound if item["kind"] == "number_with_unit")
+    assert counter["normalized"] == {
+        "value": 3,
+        "surface_unit": "회",
+        "semantic_unit": "login_count",
+    }
+    original = next(item for item in scanned if item["kind"] == "number_with_unit")
+    assert original["normalized"]["unit"] == "count"
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_unit"),
+    [
+        ("최근 3회 로그인한 회원", "login_count"),
+        ("최근 주문 3회 이상인 회원", "order_count"),
+        ("캠페인 메시지를 3회 발송한 회원", "campaign_contact_count"),
+        ("최근 3회 활동한 회원", None),
+    ],
+)
+def test_default_counter_binding_requires_nearby_domain_evidence(
+    query: str,
+    expected_unit: str | None,
+) -> None:
+    scanned = scan_literal_bindings(query, current_date="2026-08-04")
+    counter = next(
+        item
+        for item in bind_counter_literals(scanned, query=query)
+        if item["kind"] == "number_with_unit"
+    )
+
+    if expected_unit is None:
+        assert counter["normalized"] == {
+            "value": 3,
+            "surface_unit": "회",
+            "unit": "count",
+        }
+    else:
+        assert counter["normalized"]["semantic_unit"] == expected_unit
+        assert "unit" not in counter["normalized"]
+
+
+def test_fractional_money_is_exact_internally_and_json_round_trips_without_float() -> None:
+    money = AmountNormalizer.normalize("12,345.67원")
+
+    assert money == Money(Decimal("12345.67"), "KRW")
+    assert money.amount == Decimal("12345.67")
+    payload = money.to_dict()
+    assert payload == {"amount": "12345.67", "currency": "KRW"}
+    assert json.loads(json.dumps(payload, ensure_ascii=False)) == payload
+
+
+def test_fractional_money_literal_uses_the_compatible_exact_json_projection() -> None:
+    binding = extract_literal_bindings("12,345.67원 이상 구매한 고객")[0]
+
+    assert binding["kind"] == "money"
+    assert binding["value"] == "12345.67"
+    assert binding["normalized"] == {"amount": "12345.67", "currency": "KRW"}
+
+
+def test_money_exact_json_projection_parses_back_without_precision_loss() -> None:
+    original = Money(Decimal("12345.670000000000000000000001"), "KRW")
+
+    restored = AmountNormalizer.normalize(original.to_dict())
+    assert restored == original
+    assert restored.amount.as_tuple() == original.amount.as_tuple()

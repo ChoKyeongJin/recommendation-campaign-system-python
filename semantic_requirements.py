@@ -36,13 +36,16 @@ import hashlib
 import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
+import korean_number_normalizer
 import lexicon_patterns
 import member_filters_config
 from calendar_window import parse_calendar_window_spans
+from semantic_normalizers import RelativeWindow, decimal_json_value, exact_decimal
 
 
 # 기본 경로는 **모듈 기준 절대경로**다. 상대경로면 cwd 가 저장소 밖일 때 설정을 못 읽고
@@ -118,7 +121,7 @@ _RECURRENCE_BUCKET_ALT = lexicon_patterns.alternation("source_recurrence_bucket"
 _RECURRENCE_SUFFIX_ALT = lexicon_patterns.alternation("source_recurrence_suffix")
 _RECURRENCE_ACTION_ALT = lexicon_patterns.alternation("source_recurrence_action")
 _ENTITY_REFERENCE_ALT = lexicon_patterns.alternation("source_entity_reference")
-_KOREAN_COUNT_ALT = lexicon_patterns.alternation("source_korean_count")
+_KOREAN_COUNT_ALT = korean_number_normalizer.native_korean_number_alternation()
 _ENTITY_COUNTER_ALT = lexicon_patterns.alternation("source_entity_counter")
 _ENTITY_DOMAIN_ALT = lexicon_patterns.alternation("source_entity_domain")
 _ALL_QUANTIFIER_ALT = lexicon_patterns.alternation("source_all_quantifier")
@@ -151,13 +154,6 @@ _LATEST_SNAPSHOT_RE = re.compile(
     rf"(?:{_SNAPSHOT_SYSTEM_ALT}\s*)?(?:{_SNAPSHOT_NOUN_ALT})",
     re.IGNORECASE,
 )
-_KOREAN_COUNT_VALUES = {
-    "한": 1,
-    "두": 2,
-    "세": 3,
-    "네": 4,
-    "다섯": 5,
-}
 _BUCKET_VALUES = {
     "일": "day",
     "주": "week",
@@ -581,14 +577,15 @@ def _literal_binding_span(query: str, plan: dict[str, Any], value: Any) -> tuple
                     candidates.append(span)
         return _unique_span(candidates)
 
-    primary: Any = None
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        primary = value
+    primary: Decimal | None = exact_decimal(value, allow_string=True)
+    if isinstance(value, bool):
+        primary = None
     elif isinstance(value, Mapping):
         for key in ("threshold", "count", "amount", "value", "min_days", "max_days"):
             candidate = value.get(key)
-            if isinstance(candidate, (int, float)) and not isinstance(candidate, bool):
-                primary = candidate
+            exact = exact_decimal(candidate, allow_string=True)
+            if exact is not None:
+                primary = exact
                 break
     if primary is None:
         return None
@@ -598,11 +595,8 @@ def _literal_binding_span(query: str, plan: dict[str, Any], value: Any) -> tuple
             continue
         normalized = item.get("normalized")
         norm_value = normalized.get("value") if isinstance(normalized, Mapping) else normalized
-        if (
-            isinstance(norm_value, (int, float))
-            and not isinstance(norm_value, bool)
-            and float(norm_value) == float(primary)
-        ):
+        normalized_decimal = exact_decimal(norm_value, allow_string=True)
+        if normalized_decimal is not None and normalized_decimal == primary:
             span = span_of(item)
             if span is not None:
                 candidates.append(span)
@@ -806,7 +800,7 @@ def _entity_set_obligations(query: str) -> list[SourceRequirement]:
         cardinality = (
             int(raw_count)
             if isinstance(raw_count, str) and raw_count.isdigit()
-            else _KOREAN_COUNT_VALUES.get(raw_count or "")
+            else korean_number_normalizer.parse_native_korean_number(raw_count)
         )
         entity = match.group("entity")
         domain = {
@@ -1033,9 +1027,7 @@ def _ranking_limit_hits(
         if unit == "percent":
             if value >= 100:
                 continue
-            wire_value: int | float = (
-                int(value) if value == value.to_integral_value() else float(value)
-            )
+            wire_value: int | float | str = decimal_json_value(value)
         else:
             if value != value.to_integral_value():
                 continue
@@ -1355,13 +1347,127 @@ def unresolved_semantic_obligations(
 
 _ADVISORY_LITERAL_KIND_LABELS = {
     "date_window": "기간",
+    "duration": "기간",
     "percentage": "백분율",
     "number_with_unit": "수량",
     "number": "숫자",
 }
 
+_DURATION_UNIT_ALIASES = {
+    "day": "days",
+    "days": "days",
+    "week": "weeks",
+    "weeks": "weeks",
+    "month": "months",
+    "months": "months",
+    "year": "years",
+    "years": "years",
+    "일": "days",
+    "주": "weeks",
+    "주일": "weeks",
+    "개월": "months",
+    "달": "months",
+    "년": "years",
+}
+_DURATION_DAY_FIELDS = frozenset({"window_days", "min_days", "max_days"})
 
-def unconsumed_literal_advisories(plan: dict[str, Any], query: str | None = None) -> list[dict[str, Any]]:
+
+def _positive_duration_value(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, float) and value.is_integer() and value > 0:
+        return int(value)
+    return None
+
+
+def _duration_unit(value: Any) -> str | None:
+    return _DURATION_UNIT_ALIASES.get(str(value).strip().casefold()) if value is not None else None
+
+
+def _resolved_duration(
+    value: int,
+    unit: str,
+    reference_date: date,
+) -> tuple[str, str, int]:
+    period = RelativeWindow(value=value, unit=unit).resolve(reference_date)
+    start = date(int(period.start[:4]), int(period.start[4:6]), int(period.start[6:8]))
+    end = date(int(period.end[:4]), int(period.end[4:6]), int(period.end[6:8]))
+    return period.start, period.end, (end - start).days + 1
+
+
+def _duration_literal_parts(
+    item: Mapping[str, Any],
+    normalized: Any,
+    query: str | None,
+) -> tuple[int, str] | None:
+    kind = item.get("kind")
+    if kind == "duration" and isinstance(normalized, Mapping):
+        if normalized.get("temporal_kind") not in (None, "rolling_duration"):
+            return None
+        value = _positive_duration_value(normalized.get("value"))
+        unit = _duration_unit(normalized.get("semantic_unit") or normalized.get("unit"))
+        return (value, unit) if value is not None and unit is not None else None
+    # 이전 scanner의 맨 숫자 리터럴 호환. 단위는 원문 인접 표면에서만 읽고, 월/년을 고정
+    # 일수로 바꾸지 않는다.
+    if (
+        kind == "number"
+        and query
+        and isinstance(item.get("end"), int)
+        and 0 <= item["end"] <= len(query)
+    ):
+        value = _positive_duration_value(normalized)
+        tail = query[item["end"]:item["end"] + 2]
+        unit = next(
+            (_duration_unit(surface) for surface in ("개월", "달", "주", "년", "일") if tail.startswith(surface)),
+            None,
+        )
+        return (value, unit) if value is not None and unit is not None else None
+    return None
+
+
+def _duration_is_consumed(
+    value: int,
+    unit: str,
+    *,
+    reference_date: date | None,
+    relative_windows: set[tuple[int, str, str, str]],
+    absolute_windows: set[tuple[str, str]],
+    duration_days: set[int],
+) -> bool:
+    resolved = (
+        _resolved_duration(value, unit, reference_date)
+        if isinstance(reference_date, date)
+        else None
+    )
+    matching_relative = [
+        (start, end)
+        for candidate_value, candidate_unit, start, end in relative_windows
+        if candidate_value == value and candidate_unit == unit
+    ]
+    if matching_relative:
+        # value/unit/from/to 를 모두 보존해도 월/년 경계는 주입 기준일로 다시 계산해 일치해야 한다.
+        # 일/주는 고정 길이라 기준일 없이도 단위·구간을 구조적으로 대응할 수 있다.
+        if resolved is not None and (resolved[0], resolved[1]) in matching_relative:
+            return True
+        if resolved is None and unit in {"days", "weeks"}:
+            return True
+    if resolved is not None:
+        if (resolved[0], resolved[1]) in absolute_windows:
+            return True
+        return resolved[2] in duration_days
+    # 일/주는 기준일과 무관한 고정 길이다. 월/년은 기준일 없이는 일수로 비교하지 않는다.
+    fixed_days = value if unit == "days" else value * 7 if unit == "weeks" else None
+    return fixed_days in duration_days if fixed_days is not None else False
+
+
+def unconsumed_literal_advisories(
+    plan: dict[str, Any],
+    query: str | None = None,
+    *,
+    reference_date: date | None = None,
+) -> list[dict[str, Any]]:
     """원문에서 결정론 추출된 리터럴 중 어떤 실행 의미에도 소비되지 않은 것의 비차단 진단.
 
     배경: '최근 3개월 주문은 있었지만'의 '3', '상위 10%'의 '10%'가 literal_bindings 에 바인딩만
@@ -1373,7 +1479,7 @@ def unconsumed_literal_advisories(plan: dict[str, Any], query: str | None = None
 
     소비 판정 3축(하나라도 성립하면 소비됨):
       1. semantic_ir.operations[].bindings[].literal_id 명시 참조
-      2. 실행 슬롯 값과의 구조 동치(날짜창 from/to 일치, 숫자 정규화값 일치)
+      2. 실행 슬롯 값과의 구조 동치(날짜창 from/to, 숫자, 달력 duration 일치)
       3. 정밀 스팬(span_precision != whole_query)을 가진 source requirement 가 리터럴 스팬을 포함
     comparison_operator 리터럴은 항상 제외한다 — 연산자는 값 리터럴에 붙는 부속이라 단독 소비
     개념이 없고, 전부 잡으면 잡음만 는다.
@@ -1392,20 +1498,36 @@ def unconsumed_literal_advisories(plan: dict[str, Any], query: str | None = None
                 if isinstance(binding, Mapping) and isinstance(binding.get("literal_id"), str):
                     consumed_ids.add(binding["literal_id"])
 
-    numbers: set[float] = set()
+    numbers: set[Decimal] = set()
     windows: set[tuple[str, str]] = set()
+    relative_windows: set[tuple[int, str, str, str]] = set()
+    duration_days: set[int] = set()
 
     def collect(node: Any) -> None:
         if node is None or isinstance(node, bool) or isinstance(node, str):
             return
-        if isinstance(node, (int, float)):
-            numbers.add(float(node))
+        if isinstance(node, (int, float, Decimal)):
+            exact = exact_decimal(node)
+            if exact is not None:
+                numbers.add(exact)
             return
         if isinstance(node, Mapping):
             frm, to = node.get("from"), node.get("to")
             if isinstance(frm, str) and isinstance(to, str):
                 windows.add((frm, to))
-            for child in node.values():
+                duration_value = _positive_duration_value(node.get("value"))
+                duration_unit = _duration_unit(node.get("unit"))
+                if duration_value is not None and duration_unit is not None:
+                    relative_windows.add((duration_value, duration_unit, frm, to))
+            for key, child in node.items():
+                if key in _DURATION_DAY_FIELDS:
+                    duration_day = _positive_duration_value(child)
+                    if duration_day is not None:
+                        duration_days.add(duration_day)
+                if key in {"threshold", "count", "amount", "value", "percent", "top_n"}:
+                    exact = exact_decimal(child, allow_string=True)
+                    if exact is not None:
+                        numbers.add(exact)
                 collect(child)
         elif isinstance(node, (list, tuple)):
             for child in node:
@@ -1442,29 +1564,20 @@ def unconsumed_literal_advisories(plan: dict[str, Any], query: str | None = None
                 continue
         else:
             norm_value = normalized.get("value") if isinstance(normalized, Mapping) else normalized
-            if (
-                isinstance(norm_value, (int, float))
-                and not isinstance(norm_value, bool)
-                and float(norm_value) in numbers
+            duration_parts = _duration_literal_parts(item, normalized, query)
+            if duration_parts is not None and _duration_is_consumed(
+                *duration_parts,
+                reference_date=reference_date,
+                relative_windows=relative_windows,
+                absolute_windows=windows,
+                duration_days=duration_days,
             ):
                 continue
-            # 단위 환산 소비: '6개월'의 '6'은 window_days=180 으로, '2주'는 14 로 소비된다 —
-            # 환산을 모르면 정상 소비된 흔한 프롬프트마다 오탐 자문이 붙는다(비차단이지만 잡음).
-            if (
-                query
-                and kind == "number"
-                and isinstance(norm_value, (int, float))
-                and not isinstance(norm_value, bool)
-                and isinstance(item.get("end"), int)
-                and 0 <= item["end"] <= len(query)
-            ):
-                tail = query[item["end"]:item["end"] + 2]
-                factor = next(
-                    (mult for unit, mult in (("개월", 30), ("달", 30), ("주", 7), ("년", 365), ("일", 1)) if tail.startswith(unit)),
-                    None,
-                )
-                if factor is not None and float(norm_value) * factor in numbers:
-                    continue
+            if duration_parts is not None:
+                norm_value = None  # duration의 숫자 부분을 일반 숫자 동치로 소비하지 않는다.
+            normalized_decimal = exact_decimal(norm_value, allow_string=True)
+            if normalized_decimal is not None and normalized_decimal in numbers:
+                continue
         start, end = item.get("start"), item.get("end")
         spanned = isinstance(start, int) and isinstance(end, int)
         if spanned and any(s <= start and end <= e for s, e in precise_spans):

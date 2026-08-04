@@ -122,6 +122,7 @@ VALUE_KINDS: frozenset[str] = frozenset({
     "metric",        # 지표 라벨/canonical → metric_id (MetricResolver)
     "operator",      # 비교어/기호 → >=,>,<=,<,= (OperatorNormalizer)
     "quantity",      # 수량/금액 → Money 또는 수 (AmountNormalizer)
+    "ratio",         # 명시적 비율 → Decimal 기반 Ratio
     "period",        # 기간 표현 → Period(from,to) (PeriodNormalizer)
     "rank_limit",    # 상위 N/N% → RankLimit (PeriodNormalizer 와 별개)
     "entity",        # 대상 엔터티 → canonical entity (EntityResolver)
@@ -355,7 +356,7 @@ class MetricComparison(SemanticNode):
         FieldSpec("current", "period", required=True, description="비교 기간"),
         FieldSpec("relation", "relation", required=True,
                   description="변화 방향", vocabulary="trend_relation"),
-        FieldSpec("threshold", "quantity", required=False, description="변화율 임계값"),
+        FieldSpec("threshold", "ratio", required=False, description="변화율 임계값"),
         FieldSpec("threshold_operator", "operator", required=False, description="변화율 비교 연산자"),
         FieldSpec("scope", "scope", required=False,
                   description="집계 도메인", vocabulary="aggregate_scope"),
@@ -680,17 +681,46 @@ def node_from_dict(payload: Any, *, producer: str = "llm") -> SemanticNode:
 def plan_from_dict(payload: Any, *, source_query: str = "", producer: str = "llm") -> SemanticPlanV2:
     if not isinstance(payload, dict):
         raise SemanticPlanError("SemanticPlanV2 는 객체여야 한다")
+    version = str(payload.get("version") or SEMANTIC_PLAN_VERSION)
+    if version != SEMANTIC_PLAN_VERSION:
+        raise SemanticPlanError(
+            f"지원하지 않는 SemanticPlan 버전: {version!r} "
+            f"(expected {SEMANTIC_PLAN_VERSION!r})"
+        )
     raw_nodes = payload.get("nodes")
     if raw_nodes is None:
         raw_nodes = []
     if not isinstance(raw_nodes, list):
         raise SemanticPlanError("SemanticPlanV2.nodes 는 배열이어야 한다")
     plan = SemanticPlanV2(
+        version=version,
         source_query=source_query or str(payload.get("source_query") or ""),
         nodes=[node_from_dict(item, producer=producer) for item in raw_nodes],
+        conflicts=_mapping_records(payload, "conflicts"),
+        uncovered_requirements=_mapping_records(payload, "uncovered_requirements"),
+        capability_verdicts=_mapping_records(payload, "capability_verdicts"),
+        validation_errors=_mapping_records(payload, "validation_errors"),
+        structurer_issues=_mapping_records(payload, "structurer_issues"),
+        notes=_string_records(payload, "notes"),
     )
     _assign_unique_ids(plan)
     return plan
+
+
+def _mapping_records(payload: dict[str, Any], field_name: str) -> list[dict[str, Any]]:
+    """Restore one persisted diagnostic ledger without sharing mutable state."""
+
+    raw = payload.get(field_name, [])
+    if not isinstance(raw, list) or any(not isinstance(item, dict) for item in raw):
+        raise SemanticPlanError(f"SemanticPlanV2.{field_name} 는 객체 배열이어야 한다")
+    return copy.deepcopy(raw)
+
+
+def _string_records(payload: dict[str, Any], field_name: str) -> list[str]:
+    raw = payload.get(field_name, [])
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        raise SemanticPlanError(f"SemanticPlanV2.{field_name} 는 문자열 배열이어야 한다")
+    return list(raw)
 
 
 def _assign_unique_ids(plan: SemanticPlanV2) -> None:
@@ -733,6 +763,21 @@ _KIND_SCHEMA: dict[str, dict[str, Any]] = {
                     "currency": {"type": "string"},
                     "value": {"type": "number"},
                     "unit": {"type": "string"},
+                },
+            },
+        ]
+    },
+    "ratio": {
+        "anyOf": [
+            {"type": "number"},
+            {"type": "string", "description": "명시적 퍼센트 표면(예: 10.5%)"},
+            {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["value", "unit"],
+                "properties": {
+                    "value": {"type": ["number", "string"]},
+                    "unit": {"type": "string", "enum": ["percent"]},
                 },
             },
         ]

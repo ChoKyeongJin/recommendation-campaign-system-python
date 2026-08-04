@@ -44,6 +44,7 @@ from member_policy import (
     member_eq_filter,
     resolve_member_scope,
 )
+from reference_time import ReferenceDate, relative_day_char8
 
 
 DEFAULT_ANALYTICS_REGISTRY_PATH = Path("docs/data/runtime/semantics/analytics_registry.json")
@@ -1400,16 +1401,30 @@ def _sql_literal(value: Any) -> str:
     return sql_dialect.quote_literal(value)
 
 
-def _relative_date_expression(days: int) -> str:
-    return f"CONVERT(CHAR(8), DATEADD(DAY, -{int(days)}, GETDATE()), 112)"
+def _relative_date_expression(
+    days: int,
+    *,
+    reference_date: ReferenceDate | None,
+) -> str:
+    return sql_dialect.quote_literal(
+        relative_day_char8(days, reference_date=reference_date)
+    )
 
 
-def _filter_sql(item: dict[str, Any], expression: str) -> str:
+def _filter_sql(
+    item: dict[str, Any],
+    expression: str,
+    *,
+    reference_date: ReferenceDate | None = None,
+) -> str:
     operator = item.get("operator")
     value = item.get("value")
     if operator in {"gt", "gte", "lt", "lte"} and isinstance(value, str) and re.fullmatch(r"P\d+D", value, re.IGNORECASE):
         symbol = {"gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[str(operator)]
-        predicate = f"{expression} {symbol} {_relative_date_expression(int(value[1:-1]))}"
+        predicate = (
+            f"{expression} {symbol} "
+            f"{_relative_date_expression(int(value[1:-1]), reference_date=reference_date)}"
+        )
         # 미접속 조건은 '한 번도 로그인하지 않은 회원'을 포함한다(설정의 include_null).
         return f"({predicate} OR {expression} IS NULL)" if item.get("includeNull") else predicate
     if operator in {"in", "not_in"} and isinstance(value, (list, tuple)):
@@ -1432,7 +1447,13 @@ def _render_scope_template(template: str, *, host_alias: str, member_expression:
     )
 
 
-def _scope_sql(binding: dict[str, Any], source: dict[str, Any], window_days: int | None) -> str | None:
+def _scope_sql(
+    binding: dict[str, Any],
+    source: dict[str, Any],
+    window_days: int | None,
+    *,
+    reference_date: ReferenceDate | None = None,
+) -> str | None:
     """Compile one population scope against the selected source."""
     scope = binding["scope"]
     host_alias = str(source.get("alias") or "")
@@ -1455,7 +1476,10 @@ def _scope_sql(binding: dict[str, Any], source: dict[str, Any], window_days: int
             str(template or ""), host_alias=host_alias, member_expression=member_expression, scope_alias=scope_alias,
         )
         if window_days and scope.get("dateColumn") and not binding["negated"]:
-            predicate = f"{host_alias}.{scope['dateColumn']} >= {_relative_date_expression(window_days)}"
+            predicate = (
+                f"{host_alias}.{scope['dateColumn']} >= "
+                f"{_relative_date_expression(window_days, reference_date=reference_date)}"
+            )
         return predicate or None
 
     where = [
@@ -1466,7 +1490,10 @@ def _scope_sql(binding: dict[str, Any], source: dict[str, Any], window_days: int
         *conditions,
     ]
     if window_days and scope.get("dateColumn"):
-        where.append(f"{scope_alias}.{scope['dateColumn']} >= {_relative_date_expression(window_days)}")
+        where.append(
+            f"{scope_alias}.{scope['dateColumn']} >= "
+            f"{_relative_date_expression(window_days, reference_date=reference_date)}"
+        )
     keyword = "NOT EXISTS" if binding["negated"] else "EXISTS"
     return f"{keyword} (SELECT 1 FROM {scope['table']} {scope_alias} WHERE " + " AND ".join(part for part in where if part) + ")"
 
@@ -1480,17 +1507,23 @@ def compile_aggregation_ast(
     intent: dict[str, Any],
     request: dict[str, Any],
     registry_path: Path = DEFAULT_ANALYTICS_REGISTRY_PATH,
+    *,
+    reference_date: ReferenceDate | None = None,
 ) -> SelectAst:
     """Compile a registered aggregation contract to the project SelectAst."""
     registry = load_analytics_registry(str(registry_path))
     if intent.get("query_type") == "ranking":
-        return _compile_ranking_ast(intent, request, registry)
+        return _compile_ranking_ast(
+            intent, request, registry, reference_date=reference_date
+        )
 
     contract = resolve_analytical_contract(intent, registry)
     source, bindings = contract.source, contract.bindings
     function = str(intent["aggregate_function"]).upper()
     if source.get("grain") == "member":
-        return _compile_per_member_ast(contract, function)
+        return _compile_per_member_ast(
+            contract, function, reference_date=reference_date
+        )
 
     dependencies: set[str] = set()
     columns: list[str] = []
@@ -1504,7 +1537,9 @@ def compile_aggregation_ast(
     measure = source["measure"]
     columns.append(f"{_aggregate_expression(function, measure)} AS {measure.get('alias', 'AGGREGATE_VALUE')}")
 
-    where = _compile_where(contract, dependencies)
+    where = _compile_where(
+        contract, dependencies, reference_date=reference_date
+    )
     # 축 행 랭킹: 집계식으로 정렬하고 상위 N 행만 남긴다. 값이 없는 그룹(NULL/공백)은 '어느
     # 시군구인가'에 대한 답이 아니므로 순위 모집단에서 제외한다 — 빈 축 값이 1위를 차지하는
     # 그럴듯한 오답을 막는다. 공백이 결측인지는 축 선언(blankIsMissing)이 안다.
@@ -1537,32 +1572,58 @@ def compile_aggregation_ast(
     )
 
 
-def _compile_where(contract: AnalyticalContract, dependencies: set[str]) -> list[str]:
+def _compile_where(
+    contract: AnalyticalContract,
+    dependencies: set[str],
+    *,
+    reference_date: ReferenceDate | None = None,
+) -> list[str]:
     source, bindings = contract.source, contract.bindings
     where: list[str] = []
     for raw in source.get("fixedFilters", []) or []:
-        where.append(_filter_sql(raw, raw["expression"]))
+        where.append(
+            _filter_sql(raw, raw["expression"], reference_date=reference_date)
+        )
     for _filter_id, mapping in bindings.filters.items():
         dependencies.update(mapping.get("dependencies", []))
-        where.append(_filter_sql(mapping, mapping["expression"]))
+        where.append(
+            _filter_sql(mapping, mapping["expression"], reference_date=reference_date)
+        )
     if contract.window_days and bindings.window_target == "source":
         date_field = source["dateField"]
         dependencies.update(date_field.get("dependencies", []))
         where.append(
-            _filter_sql({"operator": "gte", "value": _relative_period(contract.window_days)}, date_field["expression"])
+            _filter_sql(
+                {"operator": "gte", "value": _relative_period(contract.window_days)},
+                date_field["expression"],
+                reference_date=reference_date,
+            )
         )
     if contract.policy_filter is not None:
         dependencies.update(contract.policy_filter.get("dependencies", []))
-        where.append(_filter_sql(contract.policy_filter, contract.policy_filter["expression"]))
+        where.append(
+            _filter_sql(
+                contract.policy_filter,
+                contract.policy_filter["expression"],
+                reference_date=reference_date,
+            )
+        )
     for binding in bindings.scopes:
         window = contract.window_days if bindings.window_scope_id == binding["id"] else None
-        predicate = _scope_sql(binding, source, window)
+        predicate = _scope_sql(
+            binding, source, window, reference_date=reference_date
+        )
         if predicate:
             where.append(predicate)
     return where
 
 
-def _compile_per_member_ast(contract: AnalyticalContract, function: str) -> SelectAst:
+def _compile_per_member_ast(
+    contract: AnalyticalContract,
+    function: str,
+    *,
+    reference_date: ReferenceDate | None = None,
+) -> SelectAst:
     """Compile a per-member two-level aggregate (``회원당 평균 구매횟수``).
 
     The inner query reduces rows to one row per member, the outer query applies
@@ -1592,7 +1653,9 @@ def _compile_per_member_ast(contract: AnalyticalContract, function: str) -> Sele
     inner_alias = str(inner.get("alias") or "METRIC_VALUE")
     inner_columns.append(f"{str(inner['function']).upper()}({inner_distinct}{inner['expression']}) AS {inner_alias}")
 
-    where = _compile_where(contract, dependencies)
+    where = _compile_where(
+        contract, dependencies, reference_date=reference_date
+    )
     joins = [
         f"     INNER JOIN {join['table']} {join['alias']} ON {join['on']}"
         for join in _source_joins(source) if join.get("id") in dependencies
@@ -1615,7 +1678,13 @@ def _compile_per_member_ast(contract: AnalyticalContract, function: str) -> Sele
     )
 
 
-def _compile_ranking_ast(intent: dict[str, Any], request: dict[str, Any], registry: dict[str, Any]) -> SelectAst:
+def _compile_ranking_ast(
+    intent: dict[str, Any],
+    request: dict[str, Any],
+    registry: dict[str, Any],
+    *,
+    reference_date: ReferenceDate | None = None,
+) -> SelectAst:
     _metric, source = _source_for_intent(intent, registry)
     member = source["member"]
     measure = source["measure"]
@@ -1623,9 +1692,15 @@ def _compile_ranking_ast(intent: dict[str, Any], request: dict[str, Any], regist
     function = str(intent["aggregate_function"]).upper()
     metric_expression = _aggregate_expression(function, measure)
     where = [
-        _filter_sql(item, next(
-            raw["expression"] for raw in source.get("fixedFilters", []) if raw.get("id") == item.get("id")
-        ))
+        _filter_sql(
+            item,
+            next(
+                raw["expression"]
+                for raw in source.get("fixedFilters", [])
+                if raw.get("id") == item.get("id")
+            ),
+            reference_date=reference_date,
+        )
         for item in request.get("filters", [])
     ]
     joins = [f"     INNER JOIN {join['table']} {join['alias']} ON {join['on']}" for join in source.get("joins", [])]

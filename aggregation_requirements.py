@@ -11,11 +11,13 @@ import json
 import os
 import re
 from dataclasses import asdict, dataclass, field, replace
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable
 
 import sqlglot
 from sqlglot import exp
+from semantic_normalizers import decimal_json_value, decimal_sql_text, exact_decimal
 
 
 AGGREGATION_FUNCTIONS = frozenset({
@@ -33,6 +35,8 @@ NUMERIC_TYPES = frozenset({
 })
 ZERO_DIVISION_POLICIES = frozenset({"null", "zero"})
 SORT_DIRECTIONS = frozenset({"asc", "desc"})
+_DECIMAL_STRING_PATTERN = r"^[+-]?\d+(?:\.\d+)?$"
+_DECIMAL_STRING_RE = re.compile(_DECIMAL_STRING_PATTERN)
 ROW_COUNT_FIELD = "*"  # COUNT(*) — 필드 참조가 없는 행 수 집계 표기
 
 
@@ -91,7 +95,7 @@ class DerivedMetricRequirement:
     denominator_metric_id: str | None = None
     current_metric_id: str | None = None
     previous_metric_id: str | None = None
-    multiply_by: float | None = None
+    multiply_by: Decimal | None = None
     zero_division_policy: str | None = None
 
 
@@ -356,7 +360,13 @@ def aggregation_request_json_schema() -> dict[str, Any]:
             "alias": {"type": "string"},
             "numeratorMetricId": {"type": "string"}, "denominatorMetricId": {"type": "string"},
             "currentMetricId": {"type": "string"}, "previousMetricId": {"type": "string"},
-            "multiplyBy": {"type": "number", "description": "백분율이면 100"},
+            "multiplyBy": {
+                "oneOf": [
+                    {"type": "number"},
+                    {"type": "string", "pattern": _DECIMAL_STRING_PATTERN},
+                ],
+                "description": "백분율이면 100. 소수 정밀도 보존이 필요하면 숫자 문자열을 사용한다.",
+            },
             "zeroDivisionPolicy": {"type": "string", "enum": sorted(ZERO_DIVISION_POLICIES)},
         },
         "required": ["id", "type", "alias"],
@@ -957,7 +967,7 @@ def _validate_derived_metrics(request: AggregationRequest, root: exp.Expression,
             elif req.zero_division_policy in {"null", "zero"} and "nullif" not in sql_text:
                 errors.append(ValidationError("MISSING_ZERO_DIVISION_GUARD", "0 나눗셈 처리가 없습니다.", req.id))
                 implemented = False
-            if req.multiply_by is not None and str(int(req.multiply_by) if req.multiply_by.is_integer() else req.multiply_by) not in sql_text:
+            if req.multiply_by is not None and decimal_sql_text(req.multiply_by) not in sql_text:
                 errors.append(ValidationError("INVALID_PERCENT_MULTIPLIER", "백분율 배수가 SQL에 반영되지 않았습니다.", req.id))
                 implemented = False
         if req.type == "cumulative" and not any(isinstance(w.this, exp.Sum) for w in root.find_all(exp.Window)):
@@ -1159,11 +1169,18 @@ def _derived(value: Any, path: str, errors: list[ValidationError]) -> DerivedMet
     if kind not in DERIVED_METRIC_TYPES:
         errors.append(ValidationError("INVALID_DERIVED_METRIC", f"지원하지 않는 파생 지표입니다: {kind}", path=path))
     multiply = value.get("multiplyBy")
+    multiply_by = _finite_decimal(multiply)
+    if "multiplyBy" in value and multiply_by is None:
+        errors.append(ValidationError(
+            "INVALID_DERIVED_METRIC_MULTIPLIER",
+            "multiplyBy는 유한한 숫자 또는 소수 문자열이어야 합니다.",
+            path=f"{path}.multiplyBy",
+        ))
     return DerivedMetricRequirement(
         _string(value.get("id")) or path, kind, _string(value.get("alias")) or (_string(value.get("id")) or path),
         _string(value.get("numeratorMetricId")), _string(value.get("denominatorMetricId")),
         _string(value.get("currentMetricId")), _string(value.get("previousMetricId")),
-        float(multiply) if isinstance(multiply, (int, float)) else None, _string(value.get("zeroDivisionPolicy")),
+        multiply_by, _string(value.get("zeroDivisionPolicy")),
     )
 
 
@@ -1274,6 +1291,20 @@ def _dialect(dialect: str | None) -> str | None:
     return {"mssql": "tsql", "sqlserver": "tsql", "mariadb": "mysql", "postgresql": "postgres"}.get((dialect or "").casefold(), dialect)
 
 
+def _finite_decimal(value: Any) -> Decimal | None:
+    """Convert an accepted number or decimal string to an exact finite value.
+
+    ``Decimal(str(value))`` intentionally uses the JSON-facing spelling of a
+    Python float instead of importing its binary expansion.  Decimal strings
+    use a narrow non-exponent form so the JSON schema and runtime parser accept
+    exactly the same textual representation.
+    """
+
+    if isinstance(value, str) and _DECIMAL_STRING_RE.fullmatch(value) is None:
+        return None
+    return exact_decimal(value, allow_string=True)
+
+
 def _camelize_nested(value: Any) -> Any:
     key_map = {
         "physical_name": "physicalName", "numerator_metric_id": "numeratorMetricId",
@@ -1290,4 +1321,6 @@ def _camelize_nested(value: Any) -> Any:
         return [_camelize_nested(v) for v in value]
     if isinstance(value, tuple):
         return [_camelize_nested(v) for v in value]
+    if isinstance(value, Decimal):
+        return decimal_json_value(value)
     return value

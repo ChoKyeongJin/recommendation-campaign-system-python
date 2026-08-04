@@ -32,12 +32,14 @@ from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
 import lexicon_patterns
+import sql_dialect
 from calendar_window import calendar_window_from_parts, parse_calendar_window
 from entity_set import (
     build_derived_set_ast,
     compile_entity_set_predicate,
     entity_set_capability,
 )
+from reference_time import ReferenceDate, ReferenceTimeError, relative_day_char8
 
 # ---------------------------------------------------------------------------
 # Canonical, typed targeting expression and condition-claim contracts.
@@ -644,8 +646,18 @@ class TargetingExpressionError(ValueError):
     """IR 이 문법·어휘·물리 매핑 중 하나를 위반했다(어느 것인지 메시지에 남긴다)."""
 
 
-def _relative_date(days: int) -> str:
-    return f"CONVERT(CHAR(8), DATEADD(DAY, -{int(days)}, GETDATE()), 112)"
+def _relative_date(
+    days: int,
+    *,
+    reference_date: ReferenceDate | None,
+) -> str:
+    try:
+        cutoff = relative_day_char8(days, reference_date=reference_date)
+    except ReferenceTimeError as exc:
+        raise TargetingExpressionError(
+            "relative targeting window requires a valid reference_date"
+        ) from exc
+    return sql_dialect.quote_literal(cutoff)
 
 
 # 기간의 자유 표현 슬롯. 연/월 이외의 달력 표현(분기·반기·특정일)과 시점 앵커('작년'·'7년전')까지 한
@@ -956,7 +968,7 @@ def compile_targeting_expression(
     member_alias: str,
     member_key: str,
     age_column: str,
-    relative_date: Callable[[int], str] = _relative_date,
+    reference_date: ReferenceDate | None = None,
 ) -> str:
     """IR 을 회원(B) 기준 단일 술어로 컴파일한다.
 
@@ -991,7 +1003,8 @@ def compile_targeting_expression(
         return "NOT (" + compile_targeting_expression(
             node["not"], entity_set_config, member_predicate=member_predicate,
             aggregate_predicate=aggregate_predicate,
-            member_alias=member_alias, member_key=member_key, age_column=age_column, relative_date=relative_date,
+            member_alias=member_alias, member_key=member_key, age_column=age_column,
+            reference_date=reference_date,
         ) + ")"
     if key in {"and", "or"}:
         joiner = " AND " if key == "and" else " OR "
@@ -999,14 +1012,16 @@ def compile_targeting_expression(
             compile_targeting_expression(
                 operand, entity_set_config, member_predicate=member_predicate,
                 aggregate_predicate=aggregate_predicate,
-                member_alias=member_alias, member_key=member_key, age_column=age_column, relative_date=relative_date,
+                member_alias=member_alias, member_key=member_key, age_column=age_column,
+                reference_date=reference_date,
             )
             for operand in node[key]
         ]
         return "(" + joiner.join(parts) + ")"
     return _compile_relation(
         node["relation"], entity_set_config,
-        member_alias=member_alias, member_key=member_key, relative_date=relative_date,
+        member_alias=member_alias, member_key=member_key,
+        reference_date=reference_date,
     )
 
 
@@ -1016,7 +1031,7 @@ def _compile_relation(
     *,
     member_alias: str,
     member_key: str,
-    relative_date: Callable[[int], str],
+    reference_date: ReferenceDate | None,
 ) -> str:
     name = str(relation.get("name"))
     spec = config["relations"][name]
@@ -1024,7 +1039,20 @@ def _compile_relation(
     entity_set = relation.get("entitySet")
     if isinstance(entity_set, dict) and entity_set:
         node = _entity_set_node(entity_set, name, config, negated=not exists)
-        predicate = compile_entity_set_predicate(node, config, member_alias=member_alias, member_key=member_key)
+        window = node.get("window")
+        if isinstance(window, dict) and isinstance(window.get("days"), int):
+            # Validate here as well as in the entity-set compiler so this
+            # exception-based API reports the actual missing execution input.
+            _relative_date(
+                int(window["days"]), reference_date=reference_date
+            )
+        predicate = compile_entity_set_predicate(
+            node,
+            config,
+            member_alias=member_alias,
+            member_key=member_key,
+            reference_date=reference_date,
+        )
         if predicate is None:
             raise TargetingExpressionError("엔터티 집합 술어를 컴파일하지 못했습니다.")
         return predicate
@@ -1038,7 +1066,10 @@ def _compile_relation(
         if window.get("from"):
             where.append(f"{date_column} BETWEEN '{window['from']}' AND '{window['to']}'")
         else:
-            where.append(f"{date_column} >= {relative_date(int(window['days']))}")
+            where.append(
+                f"{date_column} >= "
+                f"{_relative_date(int(window['days']), reference_date=reference_date)}"
+            )
     keyword = "EXISTS" if exists else "NOT EXISTS"
     body = "\n      AND ".join(where)
     return f"{keyword} (\n    SELECT 1\n    FROM {spec['table']} {alias}\n    WHERE {body}\n  )"

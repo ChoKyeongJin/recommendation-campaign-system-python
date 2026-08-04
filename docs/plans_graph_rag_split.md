@@ -86,7 +86,7 @@ graph_rag.py (26,307)          NL→SQL 타겟팅 컴파일러 + façade 재수�
 ### Phase 2 — 물리 스키마 리터럴 이관
 graph_rag 에 물리 테이블 리터럴 68회(고유 11개)가 남아 있다. 이는 크기 문제가 아니라
 [DB 이식성 제약](plans_ir_decoupling.md) 축이고, **W5-3 과 동일 작업**이므로 그쪽
-항목을 그대로 수행한다(중복 투자 금지). `physical_binding_baseline.json` 총 369건.
+항목을 그대로 수행한다(중복 투자 금지). `physical_binding_baseline.json`은 현재 총 31건이며, 모두 삭제 예정 Event IR 레거시에만 남아 있다(활성 비-Event 경로 0건).
 
 ### Phase 3 — SQL 빌더 계층 (착수 게이트 있음)
 약 5,400줄로 가장 큰 덩어리지만 **지금 손대면 안 된다**. 폐포는 4,791줄인데 공개

@@ -111,6 +111,26 @@ def counter_units() -> dict[str, str]:
     return {str(k): str(v) for k, v in values.items()} if isinstance(values, Mapping) else {}
 
 
+def bind_counter_unit(
+    surface_unit: str,
+    *,
+    text: str | None = None,
+    start: int | None = None,
+    end: int | None = None,
+) -> str | None:
+    """도메인 플러그인에 문맥 있는 계수 단위 결속을 위임한다."""
+
+    value = _call(
+        "bind_counter_unit",
+        surface_unit,
+        text=text,
+        start=start,
+        end=end,
+        default=None,
+    )
+    return str(value) if isinstance(value, str) and value else None
+
+
 def temporal_aliases() -> dict[str, str]:
     values = _call("temporal_relation_aliases", default={})
     return {str(k): str(v) for k, v in values.items()} if isinstance(values, Mapping) else {}
@@ -177,6 +197,7 @@ __all__ = [
     "DEFAULT_DOMAIN_PLUGIN",
     "DOMAIN_PLUGIN_ENV",
     "capability_axes",
+    "bind_counter_unit",
     "condition_label",
     "counter_units",
     "entity_aliases",

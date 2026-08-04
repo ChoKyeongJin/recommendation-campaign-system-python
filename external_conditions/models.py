@@ -202,6 +202,10 @@ class ResolutionContext:
     country_code: str = "KR"
     request_id: str | None = None
 
+    def __post_init__(self) -> None:
+        if self.now.tzinfo is None or self.now.utcoffset() is None:
+            raise ValueError("resolution context now must be timezone-aware")
+
 
 def validate_resolver_result(result: ResolverResult) -> list[str]:
     errors: list[str] = []

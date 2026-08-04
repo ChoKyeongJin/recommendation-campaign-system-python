@@ -28,6 +28,7 @@ ALL: frozenset[str] = frozenset({
     "metric_trend_multi_product_scope_unsupported",
     "metric_trend_relative_change_invalid",
     "missing_openai_api_key",
+    "reference_date_required",
     "unresolved_aggregate_column",
 })
 

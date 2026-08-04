@@ -39,10 +39,11 @@ from semantic_normalizers import (  # noqa: E402
 )
 
 _PROMPT = "최근 3개월 주문은 있었지만 최근 30일간 구매가 없는 회원을 추출해서 이탈방지 캠페인을 만들어줘."
+_FIXED_TODAY = date(2026, 3, 31)
 
 
 def _context():
-    return graph_rag._semantic_compile_context()
+    return graph_rag._semantic_compile_context(_FIXED_TODAY)
 
 
 def _compile(nodes: list[dict], query: str = _PROMPT):
@@ -91,7 +92,16 @@ def test_existence_node_lands_in_the_membership_slot_not_a_threshold() -> None:
     ])
     assert evaluation.compiled.failures == []
     target_user = evaluation.compiled.containers["target_user"]
-    assert target_user["purchase_membership"] == {"operator": "exists", "window_days": 90}
+    assert target_user["purchase_membership"] == {
+        "operator": "exists",
+        "window": {
+            "type": "relative",
+            "value": 3,
+            "unit": "months",
+            "from": "20260101",
+            "to": "20260331",
+        },
+    }
     assert "aggregate_conditions" not in target_user
 
 
@@ -102,7 +112,15 @@ def test_absence_node_with_a_window_lands_in_the_inactivity_slot() -> None:
                         span="최근 30일간 구매가 없는", start=14, end=27),
     ])
     assert evaluation.compiled.failures == []
-    assert evaluation.compiled.containers["target_user"]["purchase_inactivity"]["min_days"] == 30
+    assert evaluation.compiled.containers["target_user"]["purchase_inactivity"] == {
+        "window": {
+            "type": "relative",
+            "value": 30,
+            "unit": "days",
+            "from": "20260302",
+            "to": "20260331",
+        }
+    }
 
 
 def test_both_clauses_compile_from_nodes_alone_without_the_deterministic_rescue() -> None:
@@ -114,8 +132,10 @@ def test_both_clauses_compile_from_nodes_alone_without_the_deterministic_rescue(
                         span="최근 30일간 구매가 없는", start=14, end=27),
     ])
     target_user = evaluation.compiled.containers["target_user"]
-    assert target_user["purchase_membership"] == {"operator": "exists", "window_days": 90}
-    assert target_user["purchase_inactivity"]["min_days"] == 30
+    assert target_user["purchase_membership"]["window"]["from"] == "20260101"
+    assert target_user["purchase_membership"]["window"]["to"] == "20260331"
+    assert target_user["purchase_inactivity"]["window"]["from"] == "20260302"
+    assert target_user["purchase_inactivity"]["window"]["to"] == "20260331"
     assert evaluation.compiled.failures == []
 
 
@@ -126,9 +146,43 @@ def test_threshold_path_is_unchanged_for_real_thresholds() -> None:
                          span="최근 6개월 5건 이상", start=0, end=11)],
         query="최근 6개월 5건 이상 구매한 회원",
     )
-    assert evaluation.compiled.containers["target_user"]["aggregate_conditions"] == [
-        {"metric_id": "order_count", "operator": ">=", "threshold": 5, "window_days": 180}
-    ]
+    assert evaluation.compiled.containers["target_user"]["aggregate_conditions"] == [{
+        "metric_id": "order_count",
+        "operator": ">=",
+        "threshold": 5,
+        "window": {
+            "type": "relative",
+            "value": 6,
+            "unit": "months",
+            "from": "20251001",
+            "to": "20260331",
+        },
+    }]
+
+
+def test_calendar_window_reaches_sql_without_database_clock_reanchoring() -> None:
+    _plan, evaluation = _compile(
+        [_aggregate_node(
+            "n",
+            ">=",
+            5,
+            period={"value": 1, "unit": "months"},
+            span="최근 1개월 5건 이상",
+            start=0,
+            end=12,
+        )],
+        query="최근 1개월 5건 이상 구매한 회원",
+    )
+    query_plan = {
+        "intent": "find_user_segment",
+        "target_user": evaluation.compiled.containers["target_user"],
+    }
+
+    candidate = graph_rag.build_aggregate_targets_sql_candidate(query_plan)
+
+    assert candidate is not None
+    assert "ORDER_DATE BETWEEN '20260301' AND '20260331'" in candidate["sql"]
+    assert "GETDATE" not in candidate["sql"].upper()
 
 
 def test_tautology_and_contradiction_are_named_not_compiled() -> None:
@@ -170,27 +224,39 @@ def test_rejection_reason_names_the_value_domain_not_the_vocabulary() -> None:
 # ── C3. 기간 ───────────────────────────────────────────────────────────────────────
 def test_trailing_absolute_period_becomes_a_rolling_window() -> None:
     """LLM 이 상대 창을 날짜로 환산해 보내도 오늘로 끝나는 후행 창이면 정확히 되돌린다."""
-    today = date.today()
+    today = _FIXED_TODAY
     start = today - timedelta(days=89)
     _plan, evaluation = _compile([
         _aggregate_node("req-2", ">", 0,
                         period={"from": start.strftime("%Y%m%d"), "to": today.strftime("%Y%m%d")},
                         span="최근 3개월 주문은 있었지만", start=0, end=13),
     ])
-    assert evaluation.compiled.containers["target_user"]["purchase_membership"]["window_days"] == 90
+    assert evaluation.compiled.containers["target_user"]["purchase_membership"]["window"] == {
+        "type": "absolute",
+        "from": start.strftime("%Y%m%d"),
+        "to": today.strftime("%Y%m%d"),
+    }
 
 
-def test_past_calendar_period_fails_closed_instead_of_silently_becoming_lifetime() -> None:
-    """C3: 창이 사라진 집계는 '평생'이 되어 원문과 다른 대상을 낸다 — 조용히 넘기지 않는다."""
+def test_past_calendar_period_is_preserved_instead_of_becoming_lifetime() -> None:
+    """C3: 닫힌 과거 구간은 평생 조건으로 축소되지 않고 그대로 보존된다."""
     _plan, evaluation = _compile(
         [_aggregate_node("n", ">=", 5,
                          period={"from": "20200501", "to": "20200531", "label": "2020년 5월"},
                          span="2020년 5월 5건 이상", start=0, end=13)],
         query="2020년 5월 5건 이상 구매한 회원",
     )
-    assert evaluation.compiled.is_empty, "창이 확정되지 않았는데 조건이 만들어졌다"
-    reasons = " ".join(failure["reason"] for failure in evaluation.compiled.failures)
-    assert "2020년 5월" in reasons and "지원하지 않는다" in reasons, reasons
+    assert evaluation.compiled.failures == []
+    assert evaluation.compiled.containers["target_user"]["aggregate_conditions"] == [{
+        "metric_id": "order_count",
+        "operator": ">=",
+        "threshold": 5,
+        "window": {
+            "type": "absolute",
+            "from": "20200501",
+            "to": "20200531",
+        },
+    }]
 
 
 # ── C4. 컨테이너 커버리지 ───────────────────────────────────────────────────────────
@@ -324,8 +390,16 @@ def test_rescue_claim_flows_through_the_bridge_and_clears_the_gate() -> None:
             "source_span": "최근 3개월 주문은 있었지만", "source_start": 0, "source_end": 13,
         }]},
     }
-    behavior_demotion.normalize_lapsed_purchase_pattern(query_plan, source_text=query)
-    assert query_plan["target_user"]["purchase_membership"]["window_days"] == 90
+    behavior_demotion.normalize_lapsed_purchase_pattern(
+        query_plan, source_text=query, reference_date=_FIXED_TODAY
+    )
+    assert query_plan["target_user"]["purchase_membership"]["window"] == {
+        "type": "relative",
+        "value": 3,
+        "unit": "months",
+        "from": "20260101",
+        "to": "20260331",
+    }
 
     result = semantic_plan_bridge.apply(query_plan, query, context=_context())
 
@@ -378,7 +452,10 @@ def test_existence_reduction_never_drops_a_narrowing_qualifier() -> None:
     assert "purchase_membership" not in target_user, "브랜드 한정어가 사라졌다 — 대상이 넓어진다"
     assert target_user["aggregate_conditions"] == [
         {"metric_id": "order_count", "operator": ">=", "threshold": 1,
-         "window_days": 90, "scope": {"brand": "나이키"}}
+         "window": {
+             "type": "relative", "value": 3, "unit": "months",
+             "from": "20260101", "to": "20260331",
+         }, "scope": {"brand": "나이키"}}
     ]
 
 
@@ -419,7 +496,9 @@ def test_lapsed_claim_does_not_swallow_an_interposed_condition() -> None:
 
     query = "최근 3개월 주문은 있었지만 서울에 사는 30대 중 최근 30일간 구매가 없는 회원을 추출해줘"
     plan: dict = {}
-    assert behavior_demotion.normalize_lapsed_purchase_pattern(plan, source_text=query)
+    assert behavior_demotion.normalize_lapsed_purchase_pattern(
+        plan, source_text=query, reference_date=_FIXED_TODAY
+    )
     for slot in ("purchase_membership", "purchase_inactivity"):
         text = slot_ownership.slot_span(plan, slot)["text"]
         assert "서울" not in text and "30대" not in text, f"{slot} 청구가 남의 절을 삼켰다: {text!r}"

@@ -23,6 +23,7 @@ from .semantic_ir import (
     empty_semantic_ir,
     extract_literal_bindings,
     validate_semantic_ir,
+    write_semantic_ir,
 )
 
 
@@ -1370,13 +1371,16 @@ def _derive_semantic_ir(
         plan = plan_module.plan_from_dict(raw_plan, source_query=query)
     except plan_module.SemanticPlanError as exc:
         payload["semantic_plan"] = {"nodes": []}
-        payload["semantic_ir"] = empty_semantic_ir(
-            missing_fields=["semantic_plan"],
-            message=f"의미 노드를 해석하지 못했습니다: {exc}",
+        write_semantic_ir(
+            payload,
+            empty_semantic_ir(
+                missing_fields=["semantic_plan"],
+                message=f"의미 노드를 해석하지 못했습니다: {exc}",
+            ),
         )
         return
     payload["semantic_plan"] = plan.to_dict()
-    payload["semantic_ir"] = semantic_pipeline.project_semantic_ir(plan)
+    write_semantic_ir(payload, semantic_pipeline.project_semantic_ir(plan))
 
 
 def attach_campaign_query_plan_v4_identity(
@@ -1555,10 +1559,13 @@ def build_campaign_query_plan_v4_fallback(
         return CampaignQueryPlanV4(payload)
     # 구조화기 자체를 못 쓴 것은 '조건이 없다'가 아니라 내부 사고다 — 파생 semantic_ir(노드 0개
     # → resolved)이 그것을 성공으로 오인하지 않도록 애플리케이션이 직접 선언한다.
-    payload["semantic_ir"] = empty_semantic_ir(
-        missing_fields=["semantic_interpretation"],
-        message="LLM 의미 구조화를 사용할 수 없습니다.",
-        failure_kind="system_failure",
+    write_semantic_ir(
+        payload,
+        empty_semantic_ir(
+            missing_fields=["semantic_interpretation"],
+            message="LLM 의미 구조화를 사용할 수 없습니다.",
+            failure_kind="system_failure",
+        ),
     )
     return CampaignQueryPlanV4(payload)
 

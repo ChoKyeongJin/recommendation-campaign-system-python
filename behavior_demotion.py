@@ -30,10 +30,12 @@ reject 지만, 잘못 강등하면 조용히 틀린 오디언스가 출고된다
 from __future__ import annotations
 
 import re
+from datetime import date
 from typing import Any
 
 import member_filters_config
 import slot_ownership
+from semantic_normalizers import RelativeWindow
 
 
 def _member_grain(condition: dict[str, Any]) -> bool:
@@ -42,7 +44,11 @@ def _member_grain(condition: dict[str, Any]) -> bool:
 
 
 def _windowless(condition: dict[str, Any]) -> bool:
-    return not condition.get("window_days") and not condition.get("calendar_period")
+    return (
+        not condition.get("window")
+        and not condition.get("window_days")
+        and not condition.get("calendar_period")
+    )
 
 
 def _implies(condition: dict[str, Any], rule_operator: str, rule_count: int) -> bool:
@@ -162,31 +168,52 @@ def demote_unevidenced_cart_behavior(
 # 평생 무구매(no_purchase)+미접속(inactivity_period)으로 오배선하곤 한다(26종 감사 #2) —
 # 올바른 합성은 구매 존재(purchase_membership, N창) + 미구매 창(purchase_inactivity, M일)이다.
 _LAPSED_RE = re.compile(
-    r"(?P<exists_clause>최근\s*(?P<active>\d+)\s*(?P<unit>개월|주|일)\s*(?:동안|간|내)?\s*(?:주문|구매)"
+    r"(?P<exists_clause>최근\s*(?P<active>\d+)\s*(?P<unit>개월|주|일|년)\s*(?:동안|간|내)?\s*(?:주문|구매)"
     r"[은는이가도]?\s*있(?:었|던|는)?지만).{0,24}?"
     r"(?P<absent_clause>최근\s*(?P<inactive>\d+)\s*일\s*(?:간|동안|내)?\s*(?:구매|주문)[가는은이]?\s*없)"
 )
-_UNIT_DAYS = {"개월": 30, "주": 7, "일": 1}
+_LAPSED_UNITS = {"개월": "months", "주": "weeks", "일": "days", "년": "years"}
+
+
+def _lapsed_execution_window(value: int, unit: str, reference_date: date) -> dict[str, Any]:
+    """달력 단위를 주입 기준일의 inclusive 실행 구간으로 한 번만 확정한다."""
+    resolved = RelativeWindow(value=value, unit=unit).resolve(reference_date)
+    return {
+        "type": "relative",
+        "value": value,
+        "unit": unit,
+        "from": resolved.start,
+        "to": resolved.end,
+    }
 
 
 def normalize_lapsed_purchase_pattern(
-    plan: dict[str, Any], *, source_text: str
+    plan: dict[str, Any], *, source_text: str, reference_date: date | None = None
 ) -> list[str]:
     """이탈 위험 문형을 구매 존재+미구매 창 합성으로 정규화하고 오배선 슬롯을 회수한다.
 
     반환: 적용한 변경 라벨 목록(진단용). 접속/로그인이 원문에 실재하면 inactivity_period 는
-    남긴다(다른 절 소유 가능, fail-close)."""
+    남긴다(다른 절 소유 가능, fail-close). 상대 창을 새로 만들 때는 요청 기준일이 반드시 필요하며,
+    기준일이 없으면 30/365일 근사나 시스템 시계 폴백 없이 아무 슬롯도 바꾸지 않는다."""
     import plan_decisions
 
     match = _LAPSED_RE.search(source_text or "")
     if match is None:
         return []
-    target_user = plan.get("target_user")
-    if not isinstance(target_user, dict):
-        target_user = {}
+    existing_target_user = plan.get("target_user")
+    target_user = existing_target_user if isinstance(existing_target_user, dict) else {}
+    needs_membership = not isinstance(target_user.get("purchase_membership"), dict)
+    needs_inactivity = not isinstance(target_user.get("purchase_inactivity"), dict)
+    if (needs_membership or needs_inactivity) and not isinstance(reference_date, date):
+        return []
+    if existing_target_user is not target_user:
         plan["target_user"] = target_user
-    active_days = int(match.group("active")) * _UNIT_DAYS[match.group("unit")]
+
+    active_value = int(match.group("active"))
+    active_unit = _LAPSED_UNITS[match.group("unit")]
     inactive_days = int(match.group("inactive"))
+    if active_value <= 0 or inactive_days <= 0:
+        return []
     # 청구 구간은 **각 절의 구간**이지 매치 전체가 아니다. 두 절 사이에는 `.{0,24}?` 가 있고,
     # 거기에 무관한 조건이 낄 수 있다("…있었지만 **서울에 사는 30대 중** 최근 30일간 구매가 없는").
     # 매치 전체를 청구하면 그 조건까지 '이미 표현됨'으로 처리돼 조용히 사라진다.
@@ -195,14 +222,17 @@ def normalize_lapsed_purchase_pattern(
         "purchase_inactivity": match.span("absent_clause"),
     }
     changed: list[str] = []
-    if not isinstance(target_user.get("purchase_membership"), dict):
-        target_user["purchase_membership"] = {"operator": "exists", "window_days": active_days}
-        changed.append(f"purchase_membership:{active_days}d")
-    if not isinstance(target_user.get("purchase_inactivity"), dict):
-        target_user["purchase_inactivity"] = {
-            "value": inactive_days, "unit": "days", "min_days": inactive_days,
+    if needs_membership and reference_date is not None:
+        target_user["purchase_membership"] = {
+            "operator": "exists",
+            "window": _lapsed_execution_window(active_value, active_unit, reference_date),
         }
-        changed.append(f"purchase_inactivity:{inactive_days}d")
+        changed.append(f"purchase_membership:{active_value}{active_unit}")
+    if needs_inactivity and reference_date is not None:
+        target_user["purchase_inactivity"] = {
+            "window": _lapsed_execution_window(inactive_days, "days", reference_date),
+        }
+        changed.append(f"purchase_inactivity:{inactive_days}days")
     # 읽은 구간을 남긴다. 정규식 매치가 곧 근거 구간이므로 부산물로 이미 존재하고, 이것이 없으면
     # 같은 어구를 다시 방출한 노드가 '유실된 의미'로 보고돼 요청 전체가 막힌다(소유 판정의 입력).
     for label in changed:
@@ -230,7 +260,7 @@ def normalize_lapsed_purchase_pattern(
             filter_name="behavior_demotion:lapsed_purchase",
             action=plan_decisions.SET if label.startswith("purchase_") else plan_decisions.CLAIM,
             slot=label.split(":", 1)[0],
-            reason="이탈 위험 문형(주문 있었지만 최근 무구매)의 결정론 합성/오배선 회수",
+            reason="이탈 위험 문형의 달력 창을 주입 기준일로 확정하고 오배선을 회수",
             value=label,
         )
     return changed

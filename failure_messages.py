@@ -13,6 +13,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+import audience_admission
 import plan_validation
 import requirement_ledger
 
@@ -179,6 +180,15 @@ def plan_validation_issue_ko(issue: plan_validation.PlanValidationIssue) -> str:
         return f"'{path}' 조건이 실행 가능한 형식으로 변환되지 못했습니다(코드: {code})."
     if code.endswith("required_field_missing"):
         return f"'{path}' 값이 확정되지 않았습니다. 해당 값을 명시해 주세요."
+    if code == audience_admission.LEGACY_AUDIENCE_CONFLICT_CODE:
+        # 이 코드의 path 는 **내부 실행 슬롯**(`target_user.<슬롯>`)이다. 아래 기본 분기는 path 를
+        # 문장에 그대로 넣으므로, 그대로 두면 이 저장소가 계약으로 갖는 "내부 필드명 미노출"이
+        # 조용히 깨진다(docs/plans_event_ir_only.md §6-6). 좌표는 운영자용 채널
+        # (audience_diagnosis / unresolved_source_conditions)에 이미 남으므로 여기서는 뺀다.
+        return (
+            "요청하신 조건이 서로 다른 두 방식으로 해석돼 실행 계획을 확정하지 못했습니다"
+            f"(코드: {code}). 조건을 나눠서 다시 요청해 주세요."
+        )
     if issue.status == plan_validation.SEMANTIC_CONFLICT:
         return f"서로 모순되는 조건이 함께 요청됐습니다({path}, 코드: {code})."
     if issue.status == plan_validation.UNSUPPORTED or code.endswith("_unsupported"):

@@ -15,8 +15,10 @@ from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace as dataclass_replace
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Callable, Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import networkx as nx
 
@@ -37,6 +39,7 @@ import event_ir
 import event_relation_semantics
 import event_semantic_registry
 import lexicon_patterns
+import korean_number_normalizer
 import member_filters_config
 import metric_registry
 import failure_messages
@@ -52,9 +55,11 @@ import semantic_receipts
 import semantic_reemission
 import semantic_relation_ownership
 import semantic_verification_receipts
+from semantic_normalizers import decimal_sql_text, exact_decimal
 import targeting_domain
 import plan_semantic_ast
 import purchase_lexicon
+import reference_time
 import semantic_signal
 import surface_choices
 from common_utils import elapsed_ms as _elapsed_ms
@@ -86,6 +91,7 @@ from rag.trace import (  # noqa: F401 - façade 재수출
     build_stage_log,
 )
 from rag.plan_inspect import _generated_filter_is_attached
+from rag import member_conditions
 
 # 회원속성 토큰 승격 문법(선언형 스펙 + JSON 레지스트리 + 코드 폴백).
 from rag.attribute_tokens import _attribute_token_groups
@@ -183,6 +189,7 @@ from query_structurer import (
     QueryPlannerInput,
     QueryStructurer,
     QueryStructuringInput,
+    SemanticOutcome,
     StructuredQuery,
     StructuringContext,
     as_campaign_query_plan_v4,
@@ -193,7 +200,7 @@ from query_structurer import (
     call_query_planner,
 )
 from query_structurer.prompt import PLANNER_STRUCTURED_QUERY_RULES
-from query_structurer.semantic_ir import empty_semantic_ir, validate_semantic_ir
+from query_structurer.semantic_ir import empty_semantic_ir, validate_semantic_ir, write_semantic_ir
 from query_semantics import NON_ENTITY_TERMS, is_non_entity_candidate
 from data_quality import validate_metric_profile
 from member_policy import active_member_filter, active_member_predicate, member_condition_canonicals
@@ -635,35 +642,20 @@ def _grounded_canonical_event_ir_repair(
     return admitted if admitted is not None else original
 
 
-CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "subscription", "awareness"}
+CAMPAIGN_OBJECTIVES = set(targeting_domain.vocabulary("campaign_objective"))
 # ── 실회원 타겟 속성 레지스트리 ─────────────────────────────────────────────────
 # "조건 -> 실컬럼 술어" 매핑의 단일 출처는 docs/data/runtime/sql/member_target_filters.json 이다.
 # 새 속성/값 지원(등급·상태 추가 등)은 코드 수정이 아니라 그 파일에 항목만 추가하면 되고,
 # 조합은 compile_member_target_conditions 가 자동 처리한다(포함/제외/연령 등 임의 조합).
-# 파일 부재/파손 시 폴백이자 스키마 예시인 **코드 기본값 미러**는 member_filters_config.CODE_DEFAULTS
-# 가 소유한다(순수 설정 모듈 — graph_rag 를 import 하지 않으므로 하위 계층도 순환 없이 읽는다).
-# 각 섹션의 의미·실측 근거 주석도 그쪽에 있다.
-DEFAULT_MEMBER_TARGET_FILTERS_PATH = Path(
-    os.getenv("GRAPH_RAG_MEMBER_TARGET_FILTERS", "docs/data/runtime/sql/member_target_filters.json")
-)
-_DEFAULT_MEMBER_TARGET_FILTERS: dict[str, Any] = member_filters_config.CODE_DEFAULTS
+# 물리 바인딩은 배포 JSON 하나만 소유한다. 모듈 기준 절대 기본 경로를 써서 실행 cwd가 바뀌어도
+# 설정이 조용히 사라지지 않게 하고, 부재/파손은 아래 health 값으로 보존해 SQL 경계에서 차단한다.
+DEFAULT_MEMBER_TARGET_FILTERS_PATH = member_filters_config.DEFAULT_PATH
 
 
 def _load_member_target_filters(path: Path = DEFAULT_MEMBER_TARGET_FILTERS_PATH) -> dict[str, Any]:
-    """레지스트리 JSON 을 읽어 코드 기본값 위에 키 단위로 덮는다. 파일 부재/파손 시 기본값 그대로.
+    """레지스트리 JSON을 엄격하게 읽는다(코드 물리 바인딩 폴백 없음)."""
 
-    JSON 의 **모든** 최상위 키를 머지한다 — 예전엔 코드 기본값에 선언된 키만 골라 담아서,
-    base_entity/region_target/purchase_product_target 처럼 기본값 dict 에 없는 섹션이 파일에
-    있어도 조용히 버려지는 '죽은 설정' 함정이 있었다(boolean_filters 사례와 동일 원인).
-    단일 진실 소스는 JSON 이므로 전부 싣고, 소비 여부는 각 독자가 결정한다."""
-    merged = dict(_DEFAULT_MEMBER_TARGET_FILTERS)
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return merged
-    if isinstance(payload, dict):
-        merged.update(payload)
-    return merged
+    return member_filters_config.load_config(path)
 
 
 def _parse_eq_filters(entries: Any) -> dict[str, tuple[str, str, str]]:
@@ -691,7 +683,13 @@ def _parse_activity_filters(entries: Any) -> dict[str, int]:
     }
 
 
-_MEMBER_TARGET_FILTERS = _load_member_target_filters()
+try:
+    _MEMBER_TARGET_FILTERS = _load_member_target_filters()
+except member_filters_config.MemberFiltersConfigError as exc:
+    _MEMBER_TARGET_FILTERS = {}
+    _MEMBER_TARGET_FILTERS_ERROR: str | None = str(exc)
+else:
+    _MEMBER_TARGET_FILTERS_ERROR = None
 
 
 # 설정 레지스트리 강등 기록. 세 로더는 import 가 통째로 죽지 않게 실패를 삼키는데, 삼킨 사실이
@@ -699,18 +697,11 @@ _MEMBER_TARGET_FILTERS = _load_member_target_filters()
 # '조금 다른 답'(단위 소실, 회계 무동작)이라 눈에 띄지 않기 때문이다. 값이 None 이면 정상,
 # 문자열이면 강등 사유다. 전부 None 인지 확인하던 레지스트리 계약 테스트는 삭제됐다(현재 가드 없음).
 REGISTRY_HEALTH: dict[str, str | None] = {
+    "member_target_filters": _MEMBER_TARGET_FILTERS_ERROR,
     "metric": None,
     "segment_semantics": None,
     "requirement": None,
 }
-
-
-
-
-
-
-
-
 
 
 def _load_requirement_registry() -> "semantic_requirements.RequirementRegistry | None":
@@ -730,11 +721,9 @@ _REQUIREMENT_REGISTRY = _load_requirement_registry()
 # 파일 항목이 전부 비정형이어도 규칙 엔진이 죽지 않게 빈 결과는 코드 기본값으로 복원한다.
 MEMBER_EQ_FILTERS: dict[str, tuple[str, str, str]] = (
     _parse_eq_filters(_MEMBER_TARGET_FILTERS.get("eq_filters"))
-    or _parse_eq_filters(_DEFAULT_MEMBER_TARGET_FILTERS["eq_filters"])
 )
 MEMBER_ACTIVITY_FILTERS: dict[str, int] = (
     _parse_activity_filters(_MEMBER_TARGET_FILTERS.get("activity_filters"))
-    or _parse_activity_filters(_DEFAULT_MEMBER_TARGET_FILTERS["activity_filters"])
 )
 # 파서 어휘(성별/생애주기)는 레지스트리에서 파생한다 — 레지스트리에 항목을 추가하면 별도의
 # 어휘 셋 수정 없이 plan 병합(_merge_scalar/_merge_list)과 술어 컴파일이 함께 열린다.
@@ -747,19 +736,16 @@ LIFECYCLE_TERMS = (
 
 
 def _lifecycle_aliases() -> dict[str, str]:
-    """LLM 어휘 별칭 → 컴파일 가능한 lifecycle canonical 표(설정 lifecycle_aliases, 코드 폴백).
+    """Return configured aliases whose targets are actually compilable."""
 
-    플래너에 허용된 lifecycle 어휘(LIFECYCLE_TERMS)는 실컬럼 매핑(MEMBER_EQ_FILTERS/
-    MEMBER_ACTIVITY_FILTERS)보다 넓다. 그 간극에 떨어지는 별칭을 여기서 흡수하지 않으면 '미지원 조건'
-    으로 SQL 이 통째로 막힌다. 매핑 대상이 실제로 컴파일 가능한 canonical 일 때만 유효한 별칭으로 본다."""
     raw = _MEMBER_TARGET_FILTERS.get("lifecycle_aliases")
-    if not isinstance(raw, dict) or not raw:
-        raw = _DEFAULT_MEMBER_TARGET_FILTERS.get("lifecycle_aliases", {})
+    compilable = frozenset(MEMBER_EQ_FILTERS) | frozenset(MEMBER_ACTIVITY_FILTERS)
     return {
         alias: canonical
-        for alias, canonical in (raw or {}).items()
-        if isinstance(alias, str) and isinstance(canonical, str)
-        and (canonical in MEMBER_EQ_FILTERS or canonical in MEMBER_ACTIVITY_FILTERS)
+        for alias, canonical in (raw.items() if isinstance(raw, Mapping) else ())
+        if isinstance(alias, str)
+        and isinstance(canonical, str)
+        and canonical in compilable
     }
 
 
@@ -768,12 +754,8 @@ def _lifecycle_compilable(value: str) -> bool:
 
 
 def _resolve_lifecycle_value(value: str, aliases: dict[str, str]) -> str:
-    """lifecycle 값 하나를 컴파일 가능한 canonical 로. 못 맞추면 원값(= 오늘 동작).
+    """Resolve an alias, using the optional name resolver only for unknown values."""
 
-    '빈칸만 보완' 규약을 주석이 아니라 **조건문으로** 강제한다: 별칭표에 있으면 그대로, 이미
-    컴파일되는 값이면 손대지 않고, 둘 다 아닐 때(= 오늘이면 '미지원 조건'으로 SQL 이 통째로
-    막히는 값)만 LLM 에 묻는다. 돌아온 값도 기존 검증을 통과해야 채택한다.
-    """
     if value in aliases:
         return aliases[value]
     if _lifecycle_compilable(value):
@@ -783,18 +765,15 @@ def _resolve_lifecycle_value(value: str, aliases: dict[str, str]) -> str:
 
 
 def _resolve_plan_lifecycle_aliases(slots: dict[str, Any]) -> dict[str, Any]:
-    """plan 슬롯(target_user/exclude)의 lifecycle 값을 별칭 해석한 사본으로 돌려준다(원본 불변)."""
-    values = slots.get("lifecycle") if isinstance(slots, dict) else None
-    if not isinstance(values, list) or not values:
-        return slots if isinstance(slots, dict) else {}
-    aliases = _lifecycle_aliases()
-    mapped = [
-        _resolve_lifecycle_value(value, aliases) if isinstance(value, str) else value
-        for value in values
-    ]
-    if mapped == list(values):
-        return slots
-    return {**slots, "lifecycle": _unique_strings(mapped)}
+    """Resolve lifecycle aliases without mutating the source plan slots."""
+
+    return member_conditions.resolve_plan_lifecycle_aliases(
+        slots,
+        raw_aliases=_MEMBER_TARGET_FILTERS.get("lifecycle_aliases"),
+        member_eq_filters=MEMBER_EQ_FILTERS,
+        member_activity_filters=MEMBER_ACTIVITY_FILTERS,
+        resolve_name_choice=_resolve_name_choice,
+    )
 
 
 def _member_eq_predicate(canonical: str, negate: bool = False) -> str | None:
@@ -838,28 +817,23 @@ def _member_dialect() -> SqlDialect:
 
 
 def _member_base_entity() -> dict[str, Any]:
-    base = _MEMBER_TARGET_FILTERS.get("base_entity")
-    if isinstance(base, dict):
-        return base
-    default = _DEFAULT_MEMBER_TARGET_FILTERS.get("base_entity")
-    return default if isinstance(default, dict) else {}
+    return dict(_member_condition_binding("base_entity"))
 
 
 def _member_table() -> str:
-    return str(_member_base_entity().get("table") or "CRM_MB_BASEINFO")
+    return str(_member_base_entity()["table"])
 
 
 def _member_alias() -> str:
-    return str(_member_base_entity().get("alias") or "B")
+    return str(_member_base_entity()["alias"])
 
 
 def _member_key_column() -> str:
-    return str(_member_base_entity().get("member_key") or "MEMBER_NO")
+    return str(_member_base_entity()["member_key"])
 
 
 def _member_login_id_column() -> str:
-    return str(_member_base_entity().get("login_id_key") or "MEMBER_ID")
-
+    return str(_member_base_entity()["login_id_key"])
 
 
 def _member_from_clause(alias: str | None = None) -> str:
@@ -877,7 +851,7 @@ def _member_grade_column() -> str:
     for _canonical, (category, column, _value) in MEMBER_EQ_FILTERS.items():
         if category == "grade":
             return column
-    return f"{_member_alias()}.EMART_GRADE_CD"
+    return ""
 
 
 def _member_grade_select() -> str:
@@ -887,11 +861,9 @@ def _member_grade_select() -> str:
 
 def _member_region_short_columns() -> tuple[str, str]:
     """(시도, 시군구) 짧은 컬럼명 — region_target.columns 레지스트리 소유."""
-    config = _MEMBER_TARGET_FILTERS.get("region_target")
-    columns = (config or {}).get("columns") if isinstance(config, dict) else None
-    columns = columns if isinstance(columns, dict) else {}
-    sido = str(columns.get("sido") or "B.SIDO").split(".")[-1]
-    sigungu = str(columns.get("sigungu") or "B.SIGUNGU").split(".")[-1]
+    columns = _member_condition_binding("region_target")["columns"]
+    sido = str(columns["sido"]).split(".")[-1]
+    sigungu = str(columns["sigungu"]).split(".")[-1]
     return sido, sigungu
 
 
@@ -903,7 +875,7 @@ def _member_age_field() -> dict[str, str] | None:
     """
     entries = _MEMBER_TARGET_FILTERS.get("numeric_filters")
     if not isinstance(entries, list):
-        entries = _DEFAULT_MEMBER_TARGET_FILTERS.get("numeric_filters", [])
+        entries = []
     for entry in entries:
         if (
             not isinstance(entry, Mapping)
@@ -929,9 +901,22 @@ def _member_age_column(alias: str | None = None) -> str:
     return f"{alias or _member_alias()}.{column}"
 
 
+def _execution_reference_char8(days: int = 0) -> str | None:
+    reference_date = _EXECUTION_REFERENCE_DATE.get()
+    if reference_date is None:
+        return None
+    return _sql_quote(reference_time.relative_day_char8(days, reference_date=reference_date))
+
+
+def _execution_cutoff_or_db_clock(days: int) -> str:
+    return _execution_reference_char8(days) or _member_dialect().char8_cutoff(days)
+
+
 def _member_activity_predicate(days: int) -> str:
     d = _member_dialect()
-    return f"(B.LAST_LOGIN_DATE IS NOT NULL AND B.LAST_LOGIN_DATE <= {d.char8_cutoff(days)})"
+    column = str(_member_condition_binding("recent_login_target")["column"]).split(".")[-1]
+    qualified = f"{_member_alias()}.{column}"
+    return f"({qualified} IS NOT NULL AND {qualified} <= {_execution_cutoff_or_db_clock(days)})"
 
 
 def _member_active_state_predicate(alias: str = "B") -> str:
@@ -968,107 +953,75 @@ def _member_policy_predicates(query_plan: dict[str, Any], alias: str = "B") -> l
     return predicates
 
 
-def _member_birthday_predicate(granularity: str = "day", alias: str = "B") -> str:
-    """생일 타겟 술어. BIRTHDAY 는 nvarchar(8) 'YYYYMMDD' 문자열이라 년도까지 비교하면 안 되고,
-    월일(MMDD)만 오늘과 비교한다(day). '이달 생일'은 월(MM)만 비교(month). 컬럼은 birthday_target 설정."""
-    config = _MEMBER_TARGET_FILTERS.get("birthday_target")
-    if not isinstance(config, dict):
-        config = _DEFAULT_MEMBER_TARGET_FILTERS["birthday_target"]
-    column = config.get("column") or "BIRTHDAY"
-    length = 2 if granularity == "month" else 4  # month: MM(2자리), day: MMDD(4자리)
-    col = f"{alias}.{column}"
-    d = _member_dialect()
-    today = d.char8_today()  # 'YYYYMMDD'
-    # char8 가드로 8자리 정상값만 비교(널/이상치 제외).
-    return (
-        f"({d.char8_valid(col)} "
-        f"AND SUBSTRING({col}, 5, {length}) = SUBSTRING({today}, 5, {length}))"
+def _member_condition_binding(name: str) -> Mapping[str, Any]:
+    binding = _MEMBER_TARGET_FILTERS.get(name)
+    if not isinstance(binding, Mapping):
+        raise member_filters_config.MemberFiltersConfigError(
+            f"{name} binding is unavailable"
+        )
+    return binding
+
+
+def _member_birthday_predicate(
+    granularity: str = "day",
+    alias: str = "B",
+    reference_date: date | None = None,
+) -> str:
+    dialect = _member_dialect()
+    reference_sql = (
+        _sql_quote(reference_time.relative_day_char8(0, reference_date=reference_date))
+        if reference_date is not None
+        else _execution_reference_char8() or dialect.char8_today()
+    )
+    return member_conditions.member_birthday_predicate(
+        granularity,
+        alias=alias,
+        binding=_member_condition_binding("birthday_target"),
+        dialect=dialect,
+        reference_date_sql=reference_sql,
     )
 
 
-def _member_signup_predicate(days: int | None = None, alias: str = "B") -> str:
-    """신규 가입 타겟 술어. REG_DT(nvarchar(8) 'YYYYMMDD') 가 기준일로부터 최근 N일 이내인 회원.
-
-    기준일(anchor)은 signup_target.anchor 설정: 'getdate' 는 실제 오늘(운영 정합), 'data_max' 는
-    적재 데이터 최신일 MAX(REG_DT)(데모 데이터가 과거라 GETDATE 기준이면 0명이 되는 문제 회피).
-    REG_DT 는 문자열이라 날짜연산 전 CONVERT(DATE, ., 112)로 파싱하고, 경계값은 다시 CHAR(8) 로 바꿔
-    사전식(문자열) 비교한다(포맷이 고정 8자리라 문자열 대소 = 날짜 대소). LEN 가드로 이상치를 제외한다."""
-    config = _MEMBER_TARGET_FILTERS.get("signup_target")
-    if not isinstance(config, dict):
-        config = _DEFAULT_MEMBER_TARGET_FILTERS["signup_target"]
-    column = config.get("column") or "REG_DT"
-    table = config.get("table") or "CRM_MB_BASEINFO"
-    if not isinstance(days, int) or days <= 0:
-        default_days = config.get("default_days")
-        days = default_days if isinstance(default_days, int) and default_days > 0 else 90
-    col = f"{alias}.{column}"
-    d = _member_dialect()
-    if config.get("anchor") == "getdate":
-        anchor = d.now()
-    else:
-        # 적재 데이터 최신 가입일 기준(서브쿼리). MAX 는 널/공백을 무시하고, 포맷 고정이라 문자열 MAX = 최신일.
-        anchor = d.parse_char8(f"(SELECT MAX({column}) FROM {table} WHERE {d.str_len(column)} = 8)")
-    boundary = d.char8_cutoff(days, anchor)
-    return f"({d.char8_valid(col)} AND {col} >= {boundary})"
+def _member_signup_predicate(
+    days: int | None = None,
+    alias: str = "B",
+    reference_date: date | None = None,
+) -> str:
+    binding = _member_condition_binding("signup_target")
+    effective_days = days if isinstance(days, int) and days > 0 else int(binding["default_days"])
+    return member_conditions.member_signup_predicate(
+        days,
+        alias=alias,
+        binding=binding,
+        dialect=_member_dialect(),
+        cutoff_sql=(
+            _sql_quote(reference_time.relative_day_char8(effective_days, reference_date=reference_date))
+            if reference_date is not None
+            else _execution_cutoff_or_db_clock(effective_days)
+        ),
+    )
 
 
 def _member_recent_login_predicate(days: int, alias: str = "B") -> str:
-    """최근 로그인 타겟 술어(긍정형). LAST_LOGIN_DATE(nvarchar(8) 'YYYYMMDD') 가 기준일로부터
-    최근 N일 이내인 회원 — 미접속(_member_activity_predicate, `<=`)의 대칭(`>=`)이다.
-
-    기준일(anchor)은 recent_login_target.anchor 설정: 기본 'getdate'(실제 오늘) — 적재 데이터가
-    과거라 0명이 나올 수 있어도 조건 표현이 가능하면 요청 기간을 왜곡하지 않고 그대로 건다.
-    'data_max' 는 적재 데이터 최신 접속일(MAX(LAST_LOGIN_DATE)) 기준(데모 시연용 옵션).
-    포맷 고정 8자리라 문자열 대소 = 날짜 대소이고, LEN 가드로 이상치를 제외한다."""
-    config = _MEMBER_TARGET_FILTERS.get("recent_login_target")
-    if not isinstance(config, dict):
-        config = _DEFAULT_MEMBER_TARGET_FILTERS["recent_login_target"]
-    column = config.get("column") or "LAST_LOGIN_DATE"
-    table = config.get("table") or "CRM_MB_BASEINFO"
-    col = f"{alias}.{column}"
-    d = _member_dialect()
-    if config.get("anchor") == "data_max":
-        anchor = d.parse_char8(f"(SELECT MAX({column}) FROM {table} WHERE {d.str_len(column)} = 8)")
-    else:
-        anchor = d.now()
-    boundary = d.char8_cutoff(days, anchor)
-    return f"({d.char8_valid(col)} AND {col} >= {boundary})"
+    return member_conditions.member_recent_login_predicate(
+        days,
+        alias=alias,
+        binding=_member_condition_binding("recent_login_target"),
+        dialect=_member_dialect(),
+        cutoff_sql=_execution_cutoff_or_db_clock(days),
+    )
 
 
-# ── 타겟팅 신호어 사전(intent/objective/문맥) ─────────────────────────────────
-# 의도·목적 분류와 문맥 판정(판매 아웃리치/신제품 알림/재활성/장바구니 이탈 등)의 **표면어 소유권은
-# LLM 에 있다**(lexicon_llm.py + docs/data/runtime/semantics/surface_concepts.json). 새 말투("리텐션 캠페인", 처음 보는
-# 판매 동사)를 위해 낱말을 추가하는 일은 더 이상 없다 — 개념이 새로 필요할 때만 surface_concepts.json 에
-# 한 항목을 더한다.
-#
-# 아래 목록은 그 이관 시점의 낱말을 그대로 옮긴 **동결 백스톱**이다. OPENAI_API_KEY 가 없거나
-# SURFACE_LEXICON_LLM=off 일 때(테스트·오프라인 실행 포함) 기존 결정론 동작을 그대로 유지하는 것이
-# 유일한 역할이고, 손으로 늘리지 않는다 — 낱말 수를 고정하던 래칫 테스트는 삭제됐다.
-#
-# docs/data/runtime/language/targeting_lexicon.json 에는 **LLM 이 대체할 수 없는 것만** 남는다: 대상 지향 표지와
-# 장바구니 어휘처럼 문장 안의 '위치'로 판정하는(분리 지점 인덱스·인접성) 스팬 지역 어휘.
+# ── 타겟팅 신호어 사전 ───────────────────────────────────────────────────────
+# 표면 개념은 surface_concepts.json/LLM이 소유한다. 아래 사전은 오프라인 호환 백스톱이다.
 DEFAULT_TARGETING_LEXICON_PATH = Path(
     os.getenv("GRAPH_RAG_TARGETING_LEXICON", "docs/data/runtime/language/targeting_lexicon.json")
 )
 
 _DEFAULT_TARGETING_LEXICON: dict[str, Any] = {
-    # 대상 지향 표지: 이 뒤부터는 "누구에게 무엇을 한다"의 캠페인/채널·메시지 절로 본다.
-    # '곳에': "브랜드가 X인 곳에 쿠폰을 …" 같은 장소형 오디언스 표현('에게'가 아니라 '에'만 붙음).
     "audience_direction_markers": ["에게", "한테", "께", "대상으로", "타겟으로", "타깃으로", "곳에"],
-    # 표지가 다른 낱말의 꼬리로 들어간 경우(부사 '함께'의 '께' 등)는 대상 지향 표지가 아니다.
-    # 여기 걸린 매치는 분리 지점 후보에서 건너뛴다 — 오디언스 절이 채널 절로 잘려나가는 것을 막는다.
     "audience_direction_marker_exceptions": ["함께", "다함께", "언제", "이제", "그곳에", "이곳에", "저곳에"],
     "cart_terms": ["장바구니"],
-    # ── 아래부터는 동결 백스톱 ────────────────────────────────────────────────────────
-    # 표면어 소유권은 LLM 에 있다(surface_concepts.json + lexicon_llm). 이 목록은 이관 시점에
-    # targeting_lexicon.json 이 갖고 있던 낱말을 글자 그대로 옮긴 것이며, 키가 없는 환경에서 기존
-    # 결정론 동작을 재현하는 것이 유일한 역할이다. **손으로 늘리지 않는다.**
-    #
-    # 2026-08-01 정리: 여기 있던 12개 그룹(intent_*, objective_rules, awareness_*, sell_outreach_*,
-    # reactivation_goal_terms, cart_abandonment_terms, repurchase_*)은 소비자가 커밋 8ba50b6
-    # ('규칙삭제')에서 사라져 짝 없는 고아였다. 낱말만 남아 있으면 '개념은 없는데 백스톱은 있는'
-    # 상태로 다음 감사를 또 오도하므로 개념(surface_concepts.json)과 함께 지웠다.
-    # 남은 둘은 실제 호출부가 있다: purchase_history_signals(:1363), channel_signal_words(:2094).
     "channel_signal_words": [
         "홍보", "광고", "알림", "알리", "안내", "소식", "공지", "캠페인",
         "메시지", "발송", "보내", "판매", "팔", "프로모션", "쿠폰", "이벤트",
@@ -1101,8 +1054,6 @@ def _lexicon_terms(group: str) -> tuple[str, ...]:
         if terms:
             return terms
     return tuple(_DEFAULT_TARGETING_LEXICON[group])
-
-
 
 
 # ── 표면어 LLM 해석(질의당 1회) ────────────────────────────────────────────────────────────
@@ -1424,33 +1375,11 @@ def _purchase_semantics(text: str) -> semantic_signal.SemanticSignal:
     )
 
 
-BEHAVIOR_TERMS = {
-    "no_purchase",
-    "first_purchase",
-    "cart_abandoner",
-    "repeat_buyer",
-    "review_likely",
-    "office_worker",
-    "student",
-    "gift_buyer",
-}
-CATEGORY_TERMS = {
-    "fashion",
-    "beauty",
-    "electronics",
-    "food",
-    "home_living",
-    "travel",
-    "sports",
-    "outdoor",
-    "eco",
-    "health_food",
-    "digital_content",
-    "global_shopping",
-}
-INTEREST_TERMS = CATEGORY_TERMS | {"parent", "pet_owner"}
-CHANNEL_TERMS = {"app_push", "kakao", "email", "sms", "instagram", *MESSAGE_CHANNEL_TERMS}
-OFFER_TERMS = {"coupon", "free_shipping", "subscription"}
+BEHAVIOR_TERMS = set(targeting_domain.vocabulary("behavior"))
+CATEGORY_TERMS = set(targeting_domain.vocabulary("category"))
+INTEREST_TERMS = CATEGORY_TERMS | set(targeting_domain.vocabulary("interest_extension"))
+CHANNEL_TERMS = set(targeting_domain.vocabulary("channel")) | MESSAGE_CHANNEL_TERMS
+OFFER_TERMS = set(targeting_domain.vocabulary("offer"))
 
 def _prompt_normalize_system_prompt(prompt_dir: Path | None = DEFAULT_PROMPT_DIR) -> str:
     fallback = "\n".join(
@@ -1703,18 +1632,6 @@ def _sql_semantic_verify_enabled() -> bool:
     대조하는 결정론 검증(coverage/intent_scope)으로는 못 잡는다 — plan 자체가 틀렸기 때문. 이 게이트만
     유일하게 **원문 NL 과 최종 SQL 을 직접 대조**해(어느 계층이 원인이든) 틀린 SQL 의 조용한 출고를 막는다."""
     return os.getenv("SQL_SEMANTIC_VERIFY", "true").casefold() not in {"0", "false", "off", "no"}
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # 수신동의 신호(게이트 비교용) 사람이 읽는 라벨. canonical:극성(+동의/-거부) → 라벨.
@@ -2237,17 +2154,6 @@ def _attach_retrieval_scopes(plan: dict[str, Any], scopes: dict[str, str]) -> No
     plan["retrieval"]["channel_terms"] = _unique_strings(channel_terms)
 
 
-
-
-
-
-
-
-
-
-
-
-
 # Registration examples only — do not enable these until the corresponding
 # canonical sets, signature keys, and open-domain semantics are reviewed:
 # ExclusionReconciliationRule(
@@ -2276,22 +2182,6 @@ def _attach_retrieval_scopes(plan: dict[str, Any], scopes: dict[str, str]) -> No
 #     filter_name="deterministic_age_group_exclusion_reconciliation",
 #     reason="원문에 없는 포함 연령대를 제거하고 명시된 연령대 제외 조건을 우선",
 # )
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 _QUERY_PLAN_AUTHORITY_ENV = "QUERY_PLAN_AUTHORITY"
@@ -2559,30 +2449,12 @@ def _build_query_plan(
 # 불리므로, 그 안쪽 호출에서는 관찰을 건너뛴다(무한 재귀·이중 기록 방지).
 
 
-
-
-
-
 # 회원 명사는 이관된 어휘다(`member_noun_basic`). 인라인 정규식으로 다시 적으면 사전과 코드가 갈라진다.
-
-
 
 
 # 회원 단위 랭킹 트랙들. 이들이 잡혔다면 순위의 대상은 상품이 아니라 **회원**이고 이미 구조화됐다 —
 # '상품을 가장 많이 산 고객 100명'처럼 엔터티 명사·순위어·구매어·회원 명사가 한 문장에 다 있어도
 # 엔터티 순위(= 많이 팔린 상품 N개)가 아니다. 아래 가드는 이 트랙들에 양보한다.
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # 분석 계약이 소유하는 오디언스 슬롯. 스코프/필터로 컴파일된 조건은 회원 목록 요구사항에서 지워야
@@ -2619,32 +2491,6 @@ def _analytical_owned_audience_slots(plan: Mapping[str, Any]) -> frozenset[str]:
         for slot, _value in _ANALYTICAL_FILTER_OWNERSHIP.get(str(item.get("id")), ()):
             owned.add(slot)
     return frozenset(owned)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def classify_query_complexity(query_plan: dict[str, Any]) -> str:
@@ -2697,13 +2543,9 @@ def classify_query_complexity(query_plan: dict[str, Any]) -> str:
 # capability_validation 축 C·E 가 tests/test_capability_contract.py 로 같은 방식으로 지킨다).
 
 
-
-
 # ── 출처 구간(span) 위치추적기 ─────────────────────────────────────────────────────
 # 결정론 파서는 전부 원문 정규식이라 '어느 구간을 읽었는지'는 이미 부산물로 존재한다. 아래 함수들이
 # 그 부산물을 슬롯 옆에 남겨, 소유권 회수가 '조건의 종류'가 아니라 '문장의 같은 구간'으로 판정되게 한다.
-
-
 
 
 def _result_limit_span(query: str, _plan: dict[str, Any]) -> tuple[int, int] | None:
@@ -2750,34 +2592,12 @@ def _event_expression_covers(plan: dict[str, Any], source: str, quantifier: str)
     )
 
 
-
-
 # ── 범용 위치추적기 팩토리 ────────────────────────────────────────────────────────
 # 배경: 위 세 개는 필터마다 손으로 쓴 전용 함수다. 그래서 필터 33개 중 3개만 구간을 선언했고,
 # 나머지는 구간 미상 → slot_ownership.claim_slot 이 '종류 기준 회수'(옛 plan.pop 동작)로 퇴화했다.
 # 소유권이 걸린 슬롯인데 구간을 모르면, 같은 종류라는 이유로 **다른 절이 만든 조건까지** 지워진다.
 # 아래 팩토리는 '필터가 이미 쓰는 발동 근거(정규식·표면어)'를 그대로 재사용해 구간을 만들므로,
 # 필터당 전용 함수 없이 레지스트리 한 줄로 구간을 선언할 수 있다 — 전용 함수가 늘지 않으니 드리프트도 없다.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _member_surface_terms() -> dict[str, list[str]]:
@@ -2823,24 +2643,6 @@ def _attribute_terms(canonical: str, default: tuple[str, ...]) -> tuple[str, ...
 # '활동회원 중 최근 미구매 회원은 제외'처럼 다른 절의 제외까지 삼키는 과포획을 막는다.
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _attach_candidate_source_requirements(
     plan: dict[str, Any],
     query: str,
@@ -2860,10 +2662,6 @@ def _attach_candidate_source_requirements(
     )
 
 
-
-
-
-
 # ── 원문 권위(source-authoritative) 재확정 단계 ────────────────────────────────────
 # 배경: 계획 입력(plan_query)은 프롬프트 재작성(LLM) + 타겟/채널 절 분리(LLM)를 거친 문장이라
 # 비결정적으로 조건을 잃거나 값을 손상시킨다('알로루'→'알로&루', 'N명만'→'N명', '7년전' 통째 삭제).
@@ -2876,18 +2674,6 @@ def _attach_candidate_source_requirements(
 # 여기서 전부 같은 원문으로 실행해 그 구멍을 닫는다.
 #
 # 순서는 문서화된 의존성이다(항목 사유 참조). 새 조건은 이 목록에 한 줄 추가한다.
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _resolve_query_plan_candidates(
@@ -2908,9 +2694,6 @@ def _resolve_query_plan_candidates(
 # 집합식 operand 값 복원(_enrich_set_expression_operand_values)이 끼어드는 지점. 값 인덱스 계열
 # 필터가 전부 끝난 **뒤**, 랭킹 감지가 시작되기 **전**이어야 한다. 이름으로 선언해 두면 튜플에
 # 필터를 추가해도 경계가 따라 움직인다.
-
-
-
 
 
 def _empty_query_plan(query: str) -> dict[str, Any]:
@@ -3122,10 +2905,6 @@ def _build_single_query_plan(
     llm_plan["complexity"] = classify_query_complexity(llm_plan)
     _attach_retrieval_scopes(llm_plan, scopes)
     return llm_plan
-
-
-
-
 
 
 def _build_target_user_tool_schema() -> dict[str, Any]:
@@ -3551,8 +3330,6 @@ def _coerce_llm_structured_conditions(candidate: Any) -> dict[str, Any]:
     return out
 
 
-
-
 def _coerce_llm_query_plan_candidate(
     candidate: Any,
     reference_plan: dict[str, Any],
@@ -3650,15 +3427,27 @@ def _coerce_llm_query_plan_candidate(
         plan[semantic_plan_bridge.PLAN_KEY] = copy.deepcopy(semantic_plan_payload)
     semantic_ir = candidate.get("semantic_ir")
     literal_bindings = candidate.get("literal_bindings")
-    if isinstance(semantic_ir, dict) and isinstance(literal_bindings, list):
-        plan["semantic_ir"] = copy.deepcopy(semantic_ir)
-        plan["literal_bindings"] = copy.deepcopy(literal_bindings)
     audience_requirement = candidate.get("audience_requirement")
     event_expression = candidate.get(EVENT_EXPRESSION_KEY)
     if isinstance(audience_requirement, dict):
         plan["audience_requirement"] = copy.deepcopy(audience_requirement)
     if isinstance(event_expression, dict):
         plan[EVENT_EXPRESSION_KEY] = copy.deepcopy(event_expression)
+    if isinstance(semantic_ir, dict) and isinstance(literal_bindings, list):
+        projection = validate_semantic_ir(semantic_ir, literal_bindings, payload=plan)
+        if projection["operations"]:
+            raise ValueError("application-owned semantic_ir cannot contain legacy operations")
+        outcome = SemanticOutcome(
+            status=projection["status"],
+            missing_fields=tuple(projection["missing_fields"]),
+            missing_field_causes=tuple(projection["missing_field_causes"]),
+            failure_kind=projection["failure_kind"],
+            policy_applications=tuple(projection["policy_applications"]),
+            unsupported_operations=tuple(projection["unsupported_operations"]),
+            message=projection["message"],
+        )
+        write_semantic_ir(plan, outcome.to_legacy_dict())
+        plan["literal_bindings"] = copy.deepcopy(literal_bindings)
     # Execution authority is application-owned migration state.  This function
     # also consumes generic model JSON, so a candidate must never be able to
     # switch off the canonical fail-closed guards by emitting ``legacy``.
@@ -3832,22 +3621,14 @@ def _merge_list(target: dict[str, Any], source: dict[str, Any], key: str, allowe
         target[key] = _unique_strings([*target.get(key, []), *canonical_values])
 
 
-
-
 _COUNT_OUTPUT_SIGNAL_RE = re.compile(
     r"(?:몇\s*(?:명|건|개|곳)|(?:회원|고객|사용자|가입자|구매자|상품|제품|주문|구매|반응)\s*(?:수|인원|개수|건수))"
 )
 
 
-
-
 # 구매 존재/부재 표면 판정은 purchase_lexicon 이 단일 소스로 소유한다 — 동사 활용형(샀/산/사다),
 # 명사형 기록('구매 이력'), 부정 문맥 배제가 한 곳에서 정의돼야 같은 뜻의 표현형 하나가 한쪽
 # 극성에서만 새는 일이 없다. 여기서는 그 판정을 그대로 쓴다(별칭은 기존 호출부 이름 보존용).
-
-
-
-
 
 
 def _purchase_membership_needs_own_predicate(membership: Any) -> bool:
@@ -3868,8 +3649,6 @@ def _purchase_membership_needs_own_predicate(membership: Any) -> bool:
 # 뜻이므로 흡수하지 않는다 — 흡수는 SQL 중복을 지우는 장치이지 술어를 버리는 장치가 아니다.
 
 
-
-
 # ── 시간 표현 소유권 감사(경고 모드) ───────────────────────────────────────────────
 # 불변식: 하나의 원문 시간 표현은 기본적으로 **하나의 독립적인** 계획 시간 제약만 소유한다.
 # '7년 전 구매'가 절대 창(2019년)과 롤링 창(최근 2555일)을 동시에 만들면 두 조건이 AND 로 겹쳐
@@ -3878,28 +3657,6 @@ def _purchase_membership_needs_own_predicate(membership: Any) -> bool:
 # 이 감사는 **경고만** 남긴다(1차 도입). 조건을 드롭하지도, 환경에 따라 다르게 동작하지도 않는다 —
 # 테스트만 통과하고 운영에서 조용히 조건이 빠지는 조합을 만들지 않기 위해서다. 코퍼스 전수로 정당한
 # 1:N 확장을 모두 열거하고 명시 표시(``_expansion_of``)를 붙인 뒤에야 드롭/실패로 승격한다.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ── 범용 사건 IR 단계(event_expression) ────────────────────────────────────────────
@@ -3923,24 +3680,6 @@ EVENT_EXPRESSION_KEY = "event_expression"
 # 횟수를 세 칸으로 뭉갠 표기라, IR 이 같은 사건을 더 정확히(기간·시간 관계까지) 표현하면 그 표기는
 # 같은 사실의 그림자다 — 남겨 두면 같은 조건이 두 번, 그것도 서로 모순되게 컴파일된다
 # ('첫 구매 후 30일 이내 재구매' → first_purchase(=1건) AND repeat_buyer(>=2건) → 항상 공집합).
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def _preserve_count_output_query(effective_query: str, targeting_query: str) -> str:
@@ -4014,7 +3753,7 @@ def _normalize_purchase_aggregation_request(plan: dict[str, Any]) -> None:
 
     registry = _order_count_targets_config()
     member_column = str(registry.get("join_column") or _member_key_column())
-    date_column = str(registry.get("order_date_column") or "ORDER_DATE")
+    date_column = str(registry["order_date_column"])
     evidence_tables = {
         str(table).casefold(): str(table)
         for table in registry.get("evidence_tables", [])
@@ -4179,31 +3918,9 @@ def _query_plan_needs_llm_enrichment(query_plan: dict[str, Any]) -> bool:
     return False
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 # 연령 절 바로 뒤에 붙는 제외/부정 표지만 인식한다(회원/고객 등 목적어 + 조사 + 제외/빼/아닌). '이고/이며'
 # 같은 연결어미로 이어진 다른 절의 제외("18세 이상이고 블랙리스트는 제외")까지 삼키지 않도록 앵커(^)를 쓴다.
 # '아닌/아니'까지 봐서 "20대가 아닌"·"18세 미만이 아닌" 같은 부정형도 제외로 잡는다.
-
-
-
-
-
-
-
-
-
-
 
 
 def _extract_category_object(query: str) -> str | None:
@@ -4228,10 +3945,6 @@ def _extract_category_object(query: str) -> str | None:
     return None
 
 
-
-
-
-
 # ── 상품(구매이력/판매) 추출: LLM 단일 추출 → 결정론 원문 검증 ─────────────────────
 # 상품명 표현형의 재현율은 LLM이 담당하고, 정밀도(없는 상품·일반명사를 실행 조건으로 쓰지 않음)는
 # _validate_purchase_objects 의 원문 존재 검증이 담당한다. 구매/판매 신호 자체가 없으면 호출하지 않는다.
@@ -4244,8 +3957,6 @@ def _has_purchase_history_signal(query: str) -> bool:
     하나에서 두 정책 함수가 각자 답을 내는 것이 이 분리의 실질이다.
     """
     return _purchase_semantics(query).status in semantic_signal.CONTEXTUAL
-
-
 
 
 def _object_present_in_text(obj: str, text: str) -> bool:
@@ -4331,9 +4042,12 @@ _PURCHASE_SCOPE_NON_ENTITY_TERMS = frozenset({
     "인기", "베스트", "스테디셀러", "랭킹", "순위", "판매량", "판매수량", "매출", "매출액",
     "구매량", "구매수량", "주문량", "주문수량", "리스트", "목록", "결과", "추출", "조회",
     "중", "중에서", "내", "대상", "사람", "고객", "회원", "사용자", "유저",
-    "특정", "어떤", "일부", "각", "그", "이", "저", "무슨", "어느", "임의", "여러", "다양", "다양한",
-    "각기", "각각", "서로", "전체", "전부", "모든", "모두", "평균", "평균값",
-}) | frozenset(_PURCHASE_VALUE_QUALIFIERS) | frozenset(_PURCHASE_SIGNAL_STOPWORDS)
+    # 비특정 한정사('특정/여러/모든 …')는 어휘가 소유한다 — 같은 낱말 묶음이 상품명 sanitize 와
+    # 스코프 자리표시자에도 필요해 세 곳에 복제돼 있었다(그리고 서로 달랐다).
+    "평균", "평균값",
+}) | frozenset(lexicon_patterns.terms("purchase_scope_nonspecific_determiner")) | frozenset(
+    _PURCHASE_VALUE_QUALIFIERS
+) | frozenset(_PURCHASE_SIGNAL_STOPWORDS)
 _PURCHASE_SCOPE_GENERIC_SUFFIXES = tuple(sorted(
     {"상품명", "제품명", "품목명", "브랜드명", "카테고리명", "상품", "제품", "품목", "아이템", "굿즈"},
     key=len,
@@ -4384,14 +4098,6 @@ def _is_concrete_purchase_scope_phrase(value: str) -> bool:
     return bool(_concrete_purchase_scope_terms(value))
 
 
-
-
-
-
-
-
-
-
 # 상품 조건이 사는 슬롯 전체(복수 배열이 내부 표준, 단수 필드는 호환 투영). 한 곳에서 지워야
 # '값은 지웠는데 접지 결과만 남은' 어긋난 상태가 생기지 않는다.
 _PURCHASE_OBJECT_SLOTS = (
@@ -4401,8 +4107,6 @@ _PURCHASE_OBJECT_SLOTS = (
     "purchase_object_resolution",
     "purchase_object_resolutions",
 )
-
-
 
 
 def _store_purchase_objects(target_user: dict[str, Any], entries: list[dict[str, Any]]) -> None:
@@ -4423,8 +4127,6 @@ def _store_purchase_objects(target_user: dict[str, Any], entries: list[dict[str,
         target_user.pop("purchase_object_kind", None)
 
 
-
-
 def _purchase_object_resolution_for(target_user: dict[str, Any], value: str) -> dict[str, Any] | None:
     """상품 구절 하나의 접지 결과. 복수 배열을 먼저 보고 없으면 단수 슬롯(구 계약)을 본다.
 
@@ -4439,14 +4141,6 @@ def _purchase_object_resolution_for(target_user: dict[str, Any], value: str) -> 
     return None
 
 
-
-
-
-
-
-
-
-
 # ── 조건 슬롯 LLM 보완(표면어 사전이 못 읽은 말투) ────────────────────────────────────────
 # 어휘 사전(attribute_token_groups.json·segment_lexicon.json)은 표면 표현을 한 줄씩 쌓는 구조라 처음 보는
 # 말투('세 번 넘게 쓴', '블랙 처리된 분들')에는 조용히 침묵한다. 여기서 LLM 이 그 빈칸만 메운다.
@@ -4459,32 +4153,6 @@ def _purchase_object_resolution_for(target_user: dict[str, Any], value: str) -> 
 # 어휘 스캐너가 읽는 형태 — 아라비아 숫자 + 단위. 이게 있으면 임계는 어휘가 소유하므로 LLM 을 부르지 않는다.
 # 회원 신분을 가리키는 명사. LLM 이 채울 수 있는 것은 '회원 상태 플래그'뿐이므로, 부를 때도(트리거)
 # 받을 때도(근거 검증) 이 명사가 있어야 한다 — '가입한' 같은 동사만 보고 속성을 만들어내는 것을 막는다.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 _HANGUL_SYLLABLE = re.compile(r"[가-힣]")
@@ -4543,10 +4211,6 @@ def _value_token_spans(value: str, query: str) -> list[tuple[int, int]]:
         spans.append((idx, idx + len(needle)))
 
 
-
-
-
-
 DEFAULT_MEMBER_VALUE_INDEX_PATH = Path("docs/data/generated/member_value_index.json")
 
 
@@ -4559,8 +4223,6 @@ def _load_member_value_index(path_text: str) -> dict[str, Any] | None:
         return json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError):
         return None
-
-
 
 
 def _region_columns() -> set[str]:
@@ -4576,21 +4238,11 @@ def _region_columns() -> set[str]:
     return columns or {"SIGUNGU", "SIDO"}
 
 
-
-
-
-
-
-
-
-
 # "X가 많이 거주하는 동네/지역" 같은 밀집 지역(집계 랭킹) 표현 감지. 지역 단위 어휘와 단위→컬럼
 # 매핑(예: 시도 → SIDO, 그 외 → SIGUNGU)은 member_target_filters.json 의 region_density 가 소유한다.
 def _region_density_config() -> dict[str, Any]:
     config = _MEMBER_TARGET_FILTERS.get("region_density")
-    return config if isinstance(config, dict) else _DEFAULT_MEMBER_TARGET_FILTERS["region_density"]
-
-
+    return config if isinstance(config, dict) else {}
 
 
 def _region_column_bare(granularity: str) -> str:
@@ -4601,9 +4253,8 @@ def _region_column_bare(granularity: str) -> str:
     config = _region_density_config()
     cols = config.get("granularity_columns")
     cols = cols if isinstance(cols, dict) else {}
-    raw = cols.get(granularity) or config.get("default_column") or "SIGUNGU"
+    raw = cols.get(granularity) or config.get("default_column") or ""
     return str(raw).split(".")[-1]
-
 
 
 DEFAULT_MEMBER_METRICS_PATH = Path("docs/data/runtime/sql/member_metrics.json")
@@ -4620,27 +4271,11 @@ def _load_member_metrics(path_text: str) -> dict[str, Any] | None:
         return None
 
 
-
-
-
-
-
-
-
-
-
-
 # 공용 랭킹 지시 문법: '<지표>가 높은 고객'(관용 어순)뿐 아니라 지표어와 떨어진 '기준 상위 N명 / 상위
 # N명 / 높은 순 N명 / 낮은 순 N명 / 하위 N명 / TOP N' 도 랭킹으로 인식한다. 방향(고/저)과 개수(N)만
 # 뽑고, 지표 결합은 호출부가 한다. '높은 순/낮은 순'은 순위 방향 표현이라 관용 어순 패턴이 못 잡는다.
 # 개수는 [\d,]+ 로 받아 천 단위 콤마('1,000명')를 허용한다 — 뒤에서 콤마를 떼고 정수화한다(_parse_count).
 # 상위/하위 N% 퍼센트 지시(정수·소수). 방향(상위=high/하위=low)은 접두어로, 없으면 호출부가 지표 어순으로 판단.
-
-
-
-
-
-
 
 
 # ── 회원 지표 해석의 LLM 계층 ──────────────────────────────────────────────────────────
@@ -4657,28 +4292,6 @@ def _load_member_metrics(path_text: str) -> dict[str, Any] | None:
 #
 # 개수·퍼센트는 LLM 이 정하지 않는다. 문장에 숫자가 있으면 결정론 파서가 읽고 없으면 레지스트리
 # 기본값(default_top_n)이다 — 문장에 없는 빈 슬롯을 근거로 메우는 것이 곧 환각이기 때문이다.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # ── 그룹별 회원 Top-N('지역별로/성별로/연령대별 <지표> 높은 회원 N명씩') ────────────────────
@@ -4706,33 +4319,22 @@ class _GroupAxisSpec:
 
 
 def _group_ranking_axes_config() -> dict[str, Any]:
-    config = _MEMBER_TARGET_FILTERS.get("group_ranking_axes")
-    return config if isinstance(config, dict) else {}
+    return dict(_member_condition_binding("group_ranking_axes"))
 
 
-def _age_band_case_expr(band_config: dict[str, Any] | None) -> str:
+def _age_band_case_expr(band_config: dict[str, Any]) -> str:
     """연령대 CASE 식을 config(bands)에서 중앙 생성한다 — PARTITION BY 와 SELECT 가 동일 식을 쓴다.
 
     bands = [[상한(미만), 라벨], …] + else_label. 예: AGE<20→'10대 이하', <30→'20대' … ELSE '60대 이상'.
     구간·명칭은 코드 하드코딩이 아니라 member_target_filters.json(group_ranking_axes.age_group.age_band)이 소유한다."""
-    band_config = band_config if isinstance(band_config, dict) else {}
-    column = band_config.get("column") or "B.AGE"
-    bands = band_config.get("bands") if isinstance(band_config.get("bands"), list) else []
-    else_label = band_config.get("else_label") or "기타"
+    column = band_config["column"]
+    bands = band_config["bands"]
+    else_label = band_config["else_label"]
     whens = []
     for entry in bands:
         if isinstance(entry, (list, tuple)) and len(entry) == 2:
             upper, label = entry
             whens.append(f"WHEN {column} < {int(upper)} THEN {_sql_quote(str(label))}")
-    if not whens:  # 코드 폴백(config 파손 시): 표준 10년 밴드.
-        whens = [
-            f"WHEN {column} < 20 THEN {_sql_quote('10대 이하')}",
-            f"WHEN {column} < 30 THEN {_sql_quote('20대')}",
-            f"WHEN {column} < 40 THEN {_sql_quote('30대')}",
-            f"WHEN {column} < 50 THEN {_sql_quote('40대')}",
-            f"WHEN {column} < 60 THEN {_sql_quote('50대')}",
-        ]
-        else_label = "60대 이상"
     return "CASE " + " ".join(whens) + f" ELSE {_sql_quote(str(else_label))} END"
 
 
@@ -4748,29 +4350,29 @@ def _resolve_group_axis(axis: str, granularity: str | None = None) -> _GroupAxis
     axes = _group_ranking_axes_config()
     spec = axes.get(axis) if isinstance(axes.get(axis), dict) else None
     if axis == "gender":
-        column = (spec or {}).get("group_expr") or "B.GENDER_CD"
-        include_null = bool((spec or {}).get("include_null", False))
+        if spec is None:
+            return None
+        column = spec["group_expr"]
+        include_null = bool(spec.get("include_null", False))
         return _GroupAxisSpec(
-            axis="gender", group_expr=column, select_alias=(spec or {}).get("select_alias") or "gender",
-            coverage_token=(spec or {}).get("coverage_token") or "GENDER_CD",
+            axis="gender", group_expr=column, select_alias=spec["select_alias"],
+            coverage_token=spec["coverage_token"],
             null_predicates=() if include_null else (f"{column} IS NOT NULL",),
-            label=(spec or {}).get("label") or "성별",
+            label=spec["label"],
         )
     if axis == "age_group":
-        band_expr = _age_band_case_expr((spec or {}).get("age_band"))
-        age_column = ((spec or {}).get("age_band") or {}).get("column") or "B.AGE"
-        include_null = bool((spec or {}).get("include_null", False))
+        if spec is None:
+            return None
+        band_expr = _age_band_case_expr(spec["age_band"])
+        age_column = spec["age_band"]["column"]
+        include_null = bool(spec.get("include_null", False))
         return _GroupAxisSpec(
-            axis="age_group", group_expr=band_expr, select_alias=(spec or {}).get("select_alias") or "age_group",
-            coverage_token=(spec or {}).get("coverage_token") or "AGE",
+            axis="age_group", group_expr=band_expr, select_alias=spec["select_alias"],
+            coverage_token=spec["coverage_token"],
             null_predicates=() if include_null else (f"{age_column} IS NOT NULL",),
-            label=(spec or {}).get("label") or "연령대",
+            label=spec["label"],
         )
     return None
-
-
-
-
 
 
 # 그룹당 회원 수: 'N명씩'(가장 명시) | '상위/하위 N명' | 'N명'. 회원 단위(명)만 — 개/곳(지역 단위)은 제외.
@@ -4782,21 +4384,12 @@ def _resolve_group_axis(axis: str, granularity: str | None = None) -> _GroupAxis
 # 기간 스코프가 붙으면 스냅샷 랭킹으로 조용히 보내지 않고(오답 방지) 게이트가 명시 처리한다.
 
 
-
-
-
-
-
 # "많이/자주 구입한 사람" 처럼 수량·빈도 부사가 구매 동사 앞에 오는 '구매 많은 순 상위 N' 랭킹 신호.
 # member_metric_ranking('구매횟수가 많은 고객' — 지표 명사 랭킹)의 부사형 짝이다. 지표 명사 랭킹은 월
 # 스냅샷(CRM_MB_MONTHCRMINFO) 전 기간 누적 기준이라 '2019년 2월에 많이 산 사람' 같은 절대 기간 랭킹을
 # 표현 못 하므로, 이쪽은 실주문 집계를 기간 창으로 정렬해 상위 N 명을 뽑는다. '산(?!책)' 으로 산책 등
 # 오탐을 막고, 사용/사은 등과 겹치는 맨 '사'는 제외해 구매 의미만 잡는다.
 # 랭킹 대상이 '사람/회원'임을 확인한다(밀집 '지역' 랭킹과 구분 — 지역이면 region_density 가 이미 소비).
-
-
-
-
 
 
 # "최근 N일/개월 동안 구매하지 않은" 같은 구매 미발생 기간(구매 리센시) 신호. 구매 부정어 + 시간 창이
@@ -4826,8 +4419,6 @@ def _purchase_absence_source_spans(text: str) -> list[tuple[int, int] | None]:
     ]
 
 
-
-
 # 범용 집계 조건('<지표> <임계값> 이상/이하')의 값·기간·연산자 파서. 지표/컬럼 정의는 member_target_filters.json
 # 의 aggregate_targets 가 소유하고(코드-프리 레지스트리), 여기서는 프롬프트 텍스트에서 조건만 뽑는다.
 # 배수 단위는 긴 것부터(천만/백만이 만/천보다 먼저) 매칭한다. 목록 자체는 코드가 아니라
@@ -4852,8 +4443,6 @@ _AGG_OPERATOR_WORDS = _COMPARISON_OPERATORS  # 별칭(op→부등호 매핑; 기
 _COMPARISON_OP_ALT = rf"{_OP_ALT_BASIC}|이내|넘|미달|보다\s*(?:많|큰|높|적|작|낮|{_OP_ALT_BASIC})"
 
 
-
-
 # 숫자 고유어 수사(한~열) → 값. 순수 카운트('세 번 이상')용 — 금액/배수어와 구분한다.
 
 
@@ -4862,20 +4451,10 @@ def _percent_value(match: "re.Match[str]") -> float | None:
     return value if 0 < value <= 100 else None
 
 
-
-
-
-
 # 숫자 해석 '타입' — 정규식 조각(또는 measure 통짜)·배수어 여부·기본 값 추출기를 함께 선언한다(표면 파싱 +
 # 값 해석 결합). 새 타입은 여기 한 줄. 값 검증 실패(범위 밖 %·0 이하 등)면 None 을 돌려 도메인이 폴백하게 한다.
 # 대부분 pattern(숫자 조각) + 도메인 unit 으로 measure 를 조립하지만, 배수어가 단위와 융합되는 특수형은
 # measure(num+mag+unit 통짜)를 타입이 직접 소유한다(unit/mag/sep 조립 규칙 밖).
-
-
-
-
-
-
 
 
 def _comparison_operator(op_text: str) -> str | None:
@@ -4897,16 +4476,24 @@ def _comparison_patterns(unit: str, unit_required: bool = False) -> tuple["re.Pa
     # unit_required=True 면 단위를 필수로 요구한다 — 지표 명사(잔액 등)가 숫자 앞에 오는 도메인은 단위가
     # 선택이라 '30에서 49'(단위 없는 나이 범위)까지 잡지만, 장바구니 개수처럼 단위(개/종…)가 신호 그 자체인
     # 도메인은 단위 없는 숫자·범위를 흡수하면 안 된다(카트 질의에 섞인 '30~49세'·'6개월'을 배제).
-    num, mag = r"[\d,]+(?:\.\d+)?", r"억|천만|백만|만|천"
+    # 숫자 표기(아라비아 숫자 + 계수 단위에 결속된 고유어 수관형사)와 배수어는 집계 파서 설정이
+    # 소유한다 — 예전에는 이 두 조각이 여기·_EXACT_AMOUNT_PATTERN·aggregate_spans 에 각자 적혀
+    # 있어서 '정확히 세 번'이 경로마다 다르게 읽혔다(어느 쪽도 '세'를 값으로 읽지 못했다).
+    _agg_rules = aggregate_parser_config.rules()
+    num = aggregate_parser_config.number_pattern(_agg_rules)
+    mag = aggregate_parser_config.magnitude_alternation(_agg_rules)
     u = rf"(?:{unit})" if unit_required else rf"(?:{unit})?"
-    range_p = re.compile(rf"(?P<lo>{num})\s*(?P<lomag>{mag})?\s*{u}\s*(?:에서|부터|~|-)\s*(?P<hi>{num})\s*(?P<himag>{mag})?\s*{u}\s*(?:사이|까지)?")
+    # 범위형은 숫자만 본다 — '세에서 다섯'처럼 수관형사 범위는 실제 표현이 아니고, 결속 lookahead 가
+    # 범위 구분자 앞에서 성립하지 않아 조용히 반쪽만 잡힐 수 있다.
+    rnum = aggregate_parser_config.ARABIC_NUMBER
+    range_p = re.compile(rf"(?P<lo>{rnum})\s*(?P<lomag>{mag})?\s*{u}\s*(?:에서|부터|~|-)\s*(?P<hi>{rnum})\s*(?P<himag>{mag})?\s*{u}\s*(?:사이|까지)?")
     op_p = re.compile(rf"(?P<num>{num})\s*(?P<mag>{mag})?\s*{u}\s*(?:을|를|이|가)?\s*(?P<op>{_COMPARISON_OP_ALT})")
     eq_p = re.compile(rf"(?P<num>{num})\s*(?P<mag>{mag})?\s*(?:{unit})")
     return range_p, op_p, eq_p
 
 
 def _comparison_candidate(
-    window: str, match: "re.Match[str]", operator: str, value: float,
+    window: str, match: "re.Match[str]", operator: str, value: Decimal,
     *, number_group: str, magnitude_group: str, index: int,
 ) -> aggregate_spans.ComparisonCandidate:
     """정규식 매치에서 **숫자 스팬과 비교 스팬을 따로** 뜬다.
@@ -4997,7 +4584,7 @@ def _parse_amount_comparison_candidates(
     return None
 
 
-def _parse_amount_comparison(window: str, unit: str, *, bare_equals: bool = False, unit_required: bool = False) -> list[tuple[str, float]] | None:
+def _parse_amount_comparison(window: str, unit: str, *, bare_equals: bool = False, unit_required: bool = False) -> list[tuple[str, Decimal]] | None:
     """단위(unit) 뒤 비교 어구를 [(operator, value), ...] 로 정규화한다(범위=두 술어 >=lo,<=hi). 부등호
     (부사형·동사형·'보다 많은/적은')·정확값('정확히 N')·범위를 공통 처리한다. bare_equals=True 면 연산자 없는
     맨 'N<unit>'을 등호로 본다(잔액처럼 맥락상 정확값이 자연스러운 도메인용; 횟수처럼 모호하면 False).
@@ -5025,13 +4612,7 @@ def _parse_amount_comparison(window: str, unit: str, *, bare_equals: bool = Fals
 # 않는다(단위는 선택 — 잔액 뒤 조사 다음의 맨 '0'도 잡는다).
 
 
-
-
 # 잔액 '선택 전략'(랭킹/퍼센타일/평균) 감지 — WHERE 임계가 아니라 정렬·TOP·서브쿼리로 뽑는다.
-
-
-
-
 
 
 # '평균 대비' 비교 표지: '평균보다/평균 대비/평균 이상/이하/초과/미만'. 지표 명사('평균 주문 금액')나
@@ -5040,25 +4621,13 @@ def _parse_amount_comparison(window: str, unit: str, *, bare_equals: bool = Fals
 # 구매 금액 0원 표지: 정확히 0원(10원/100원의 끝 0 은 제외) + 구매/결제 문맥. '0원 결제/구매 금액 0원' 등.
 
 
-
-
-
-
 # 기간 대 기간 비교 감지용 달력 구간 토큰(전주=지역명 등 오탐 소지 있는 표현은 제외). 두 개 이상의 서로
 # 다른 구간이 '보다/대비' 비교와 함께 오면 기간 대 기간 비교로 본다('지난달 결제 금액이 이번 달보다 많은').
 # 롤링 기간 대 기간: '최근 N일 vs 이전/직전 N일'. 달력어가 아니라 상대 창 두 개를 비교한다.
 
 
-
-
 # 회원 내 시점 비교(E-2): 회원별 '첫 구매'값과 '최근 구매'값을 비교. '첫 구매'=order_count=1 로,
 # '구매 금액 큰'=랭킹으로 분해하면 안 되는(시점 기준 두 값 비교) 표현이다.
-
-
-
-
-
-
 
 
 # 쿠폰 '사용 건수' 임계('쿠폰 3개 이상 사용')·순위·지표 비교·파생(쿠폰당 구매금액)의 미지원 판정은 이제
@@ -5074,12 +4643,6 @@ def _parse_amount_comparison(window: str, unit: str, *, bare_equals: bool = Fals
 # 임계 조건이라는 뜻(AND 로 뒤에 붙은 임계는 경계 밖이라 제외 — '20대 또는 30대이면서 5회'의 5회 등).
 
 
-
-
-
-
-
-
 # ── 랭킹 정렬키 지표(ORDER BY 대상)의 구조적 판정 ─────────────────────────────────────
 # 게이트/랭킹 라우팅의 핵심 질문은 "'상위 N'이 지표 정렬 랭킹인가, 아니면 임계로 정의된 오디언스의 단순
 # result_limit 캡인가"이다. 예전엔 원문 키워드 공존(기간어+지표어+상위N)만으로 랭킹이라 단정해 오탐했다.
@@ -5087,60 +4650,64 @@ def _parse_amount_comparison(window: str, unit: str, *, bare_equals: bool = Fals
 # 정렬키가 아니고(HAVING 필터), '기준/순/많은/높은/큰/적은/낮은/상위/하위'에 결합된 지표만 정렬키다.
 
 
-
-
 # 지표어 바로 뒤가 '숫자[배수]단위 비교연산자'(예: '10회 이상', '5만원 이상')면 그 지표는 임계값에 결합된
 # HAVING 필터이지 정렬키가 아니다. _AGG_UNIT/_OP_ALT_BASIC 는 집계 임계 파서와 동일 어휘를 재사용한다.
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 _RECENT_WINDOW_PATTERN = re.compile(r"최근\s*(\d+)\s*(일|주|개월|달|년)")
-_WINDOW_UNIT_DAYS = {"일": 1, "주": 7, "개월": 30, "달": 30, "년": 365}
+_WINDOW_UNIT_DAYS = {"일": 1, "주": 7}
 # 명시적 등호 마커. 연산자어(이상/이하) 없는 임계값은 보통 모호("3회 구매"=정확히? 최소?)하지만,
 # '정확히/딱 N'은 등호 의도가 분명하므로 이때만 '='로 확정한다(무턱대고 등호 폴백하지 않는다).
 _EXACT_EQUALS_MARKER = lexicon_patterns.pattern("exact_equals_marker")
-_EXACT_AMOUNT_PATTERN = re.compile(r"(?P<num>[\d,]+(?:\.\d+)?)\s*(?P<mag>억|천만|백만|만|천)?\s*(?:원|건|회|명|개|장|번|건수|회수)?")
+_EXACT_AMOUNT_PATTERN = re.compile(
+    rf"(?P<num>{aggregate_parser_config.number_pattern(aggregate_parser_config.rules())})"
+    rf"\s*(?P<mag>{aggregate_parser_config.magnitude_alternation(aggregate_parser_config.rules())})?"
+    r"\s*(?:원|건|회|명|개|장|번|건수|회수)?"
+)
 
 
-def _parse_korean_amount(number_text: str, magnitude_text: str) -> float | None:
-    """'100'+'만' -> 1000000. 배수어 없으면 숫자 그대로. 콤마 제거."""
+def _parse_korean_amount(number_text: str, magnitude_text: str) -> Decimal | None:
+    """'100'+'만' -> 1000000. 배수어 없으면 숫자 그대로. 콤마 제거.
+
+    아라비아 숫자가 아니면 고유어 수관형사('세 번'의 '세')로 조회한다 — 표는
+    aggregate_parser_rules.json 이 소유하고, 표에 없으면 값이 아니다(추측하지 않는다)."""
     try:
-        value = float(number_text.replace(",", "").strip())
-    except (ValueError, AttributeError):
-        return None
+        value = exact_decimal(
+            number_text.replace(",", "").strip(),
+            allow_string=True,
+        )
+    except AttributeError:
+        value = None
+    if value is None:
+        word_value = aggregate_parser_config.number_word_value(
+            aggregate_parser_config.rules(), (number_text or "").strip()
+        )
+        if word_value is None:
+            return None
+        value = exact_decimal(word_value)
+        if value is None:
+            return None
     for unit, multiplier in _AMOUNT_MAGNITUDES:
         if magnitude_text and magnitude_text.startswith(unit):
-            return value * multiplier
+            exact_multiplier = exact_decimal(multiplier)
+            return value * exact_multiplier if exact_multiplier is not None else None
     return value
 
 
 def _parse_recent_window_days(query: str) -> int | None:
-    """'최근 90일' -> 90, '최근 3개월' -> 90, '최근 2주' -> 14 (없으면 None = 롤링 윈도우 아님).
+    """Parse only fixed-length rolling windows (days and weeks).
 
-    이건 '지금으로부터 N일 전까지'의 롤링 윈도우다. '올해'·'지난달' 같은 고정 달력 구간은 성격이
-    다르므로(_parse_calendar_period 소유) 여기서 잡지 않는다."""
+    Months and years need a request-scoped calendar anchor, so this legacy
+    helper leaves them to the SemanticPlan calendar-window path.
+    """
     match = _RECENT_WINDOW_PATTERN.search(query)
     if not match:
         return None
     count = int(match.group(1))
     if count <= 0:
         return None
-    return count * _WINDOW_UNIT_DAYS[match.group(2)]
+    multiplier = _WINDOW_UNIT_DAYS.get(match.group(2))
+    return count * multiplier if multiplier is not None else None
 
 
 # 달력 기간(올해/지난달 등): '지금으로부터 N일'의 롤링 윈도우(_parse_recent_window_days)와 구분되는
@@ -5157,8 +4724,6 @@ _CALENDAR_PERIOD_LABELS = {
 }
 
 
-
-
 # 한글 수사(한/두/세…) → 숫자: '두 번 이상'·'정확히 두 번' 같은 표현이 개수 임계값(숫자형) 파서에
 # 걸리도록 표면 정규화한다. 개수 단위(번/회/건/개) 바로 앞의 수사만 치환해 금액·연령 등과 갈린다.
 # 앞 음절이 한글이면(가세/치열 등 단어 일부) 치환하지 않는다(오탐 방지). 전역이 아니라 개수 임계값
@@ -5166,31 +4731,15 @@ _CALENDAR_PERIOD_LABELS = {
 # 미구매 매칭이 깨지는 것을 피하기 위해서다.
 
 
-
-
-_SINO_KOREAN_DIGITS = {"영": 0, "공": 0, "일": 1, "이": 2, "삼": 3, "사": 4, "오": 5,
-                       "육": 6, "칠": 7, "팔": 8, "구": 9}
-_SINO_KOREAN_SMALL_UNITS = {"십": 10, "백": 100, "천": 1000}
-_SINO_KOREAN_AMOUNT_RE = re.compile(
-    r"(?P<num>[영공일이삼사오육칠팔구십백천]+)(?P<mag>억|천만|백만|만)?원"
+_SINO_KOREAN_NUMBER_CHARS = re.escape(
+    "".join((
+        *korean_number_normalizer.SINO_KOREAN_DIGIT_VALUES,
+        *korean_number_normalizer.SINO_KOREAN_SMALL_UNIT_VALUES,
+    ))
 )
-
-
-def _parse_sino_korean_integer(text: str) -> int | None:
-    """일~구/십/백/천 조합을 양의 정수로 바꾼다('이십'→20, '삼백오'→305)."""
-    if not text:
-        return None
-    total, pending = 0, 0
-    for char in text:
-        if char in _SINO_KOREAN_DIGITS:
-            pending = _SINO_KOREAN_DIGITS[char]
-        elif char in _SINO_KOREAN_SMALL_UNITS:
-            total += (pending or 1) * _SINO_KOREAN_SMALL_UNITS[char]
-            pending = 0
-        else:
-            return None
-    value = total + pending
-    return value if value > 0 else None
+_SINO_KOREAN_AMOUNT_RE = re.compile(
+    rf"(?P<num>[{_SINO_KOREAN_NUMBER_CHARS}]+)(?P<mag>억|천만|백만|만)?원"
+)
 
 
 def _normalize_sino_korean_amounts(text: str) -> str:
@@ -5199,7 +4748,9 @@ def _normalize_sino_korean_amounts(text: str) -> str:
     반드시 `원`으로 끝나는 금액만 변환하므로 이십대/삼십일 같은 연령·날짜 표현에는 관여하지 않는다.
     """
     def replace(match: "re.Match[str]") -> str:
-        value = _parse_sino_korean_integer(match.group("num"))
+        value = korean_number_normalizer.parse_sino_korean_number(
+            match.group("num")
+        )
         return match.group(0) if value is None else f"{value}{match.group('mag') or ''}원"
 
     return _SINO_KOREAN_AMOUNT_RE.sub(replace, text)
@@ -5217,8 +4768,6 @@ def _normalize_sino_korean_amounts(text: str) -> str:
 # 500,000원 이상'이 한 절로 뭉쳐 같은 방향 임계 둘이 첫 값(5) 하나로 붕괴하고 500,000·주문수가 소실된다.
 
 
-
-
 # 도메인 문맥: 구매/상품/결제/할인 등이 있어야 집계 지표 후보로 본다('2회 방문'·'자녀 2명'은 제외).
 # 누적/평생 표지: 이 절의 집계는 전 생애(창 없음)로 본다 — 옆 절의 최근성 창('최근 180일 무주문')이 '누적
 # 구매액'에 새어 들어와 '최근 180일 구매 100만↑ AND 최근 180일 무주문'(공집합)이 되는 걸 막는다.
@@ -5229,8 +4778,8 @@ _CUMULATIVE_WINDOW_MARKER_RE = re.compile(r"누적|누계|평생|통산|역대|�
 # 집계 범위(grain): 한 주문 내 / 동일 상품별 / 회원 누적.
 # 동일성 표지·상품 명사는 렉시콘 어휘다(`identity_same` × `product_noun`) — 구조만 코드에 남기고
 # 낱말은 사전에서 끼워 넣는다. 손으로 나열하던 조합에는 빈칸이 있었다('동일한 제품'·'제품별'이 누락).
-# 범위(scope) 필터: 브랜드/카테고리. '특정/어떤/모든' 등은 값 미지정 자리표시자다.
-_SCOPE_PLACEHOLDER_VALUES = {"특정", "어떤", "모든", "해당", "일부", "각", "그", "이", "저", "무슨", "어느", "임의"}
+# 범위(scope) 필터: 브랜드/카테고리. '특정/어떤/모든' 등은 값 미지정 자리표시자이며 낱말은 어휘가 소유한다.
+_SCOPE_PLACEHOLDER_VALUES = frozenset(lexicon_patterns.terms("scope_placeholder_value"))
 # 자리표시자 중 '값을 물어야 답이 나오는' 명시 질문형만 조기 clarification 대상이다 —
 # '모든'(무필터)·'해당/그'(지시 참조)는 여기서 묻지 않는다.
 _SCOPE_PLACEHOLDER_QUESTION_RE = re.compile(
@@ -5239,40 +4788,18 @@ _SCOPE_PLACEHOLDER_QUESTION_RE = re.compile(
 # '서로 다른/여러/다양한 <디멘션>'의 수식어는 그 디멘션의 **값**이 아니라 '가짓수를 센다'는 표지다. 값
 # 자리에 이 수식어가 잡히면 scope 로 쓰지 않는다('서로 다른 브랜드' → BRAND_NAME='다른' 오필터 방지).
 # 자리표시자('특정 브랜드')와 달리 clarification 대상도 아니다 — 애초에 값을 묻는 표현이 아니기 때문이다.
-_SCOPE_DISTINCT_MODIFIERS = {"다른", "여러", "다양", "다양한", "각기", "각각", "가지각색", "서로"}
+_SCOPE_DISTINCT_MODIFIERS = frozenset(lexicon_patterns.terms("scope_distinct_modifier"))
 # 디멘션 '가짓수(distinct)' 의도 표지 — 지표 스펙의 distinct_of 게이트에 쓴다.
 # 가짓수를 셀 때 함께 쓰이는 일반 계수 단위. distinct 디멘션 지표는 이 단위들을 단위 불일치로 보지 않는다
 # ('브랜드 3개'의 '개'는 수량 단위가 아니라 가짓수 계수 단위다).
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # 집계 창(최근성) 앵커: 이 도메인어 근처(_DURATION_ANCHOR_GAP)의 기간만 그 절의 집계 창으로 귀속한다 —
 # 옆 조건(로그인/미접속 등)의 창이 구매/주문 집계로 새는 것을 막는다(전역 first-match 대신 앵커 게이트).
 
 
-
-
-
-
 # 선행 창 절이 뒤 지표 절로 창을 흘려보낼 수 있는 조건: 구매 도메인 + 긍정형. 다른 도메인(로그인/캠페인/
 # 장바구니)이나 부정형 창은 그 조건 고유의 창이라 상속하면 도메인 누수가 된다.
-
-
 
 
 # ── 임계값 숫자의 소유권(속성 결합) ──────────────────────────────────────────────────────
@@ -5283,22 +4810,6 @@ _SCOPE_DISTINCT_MODIFIERS = {"다른", "여러", "다양", "다양한", "각기"
 # 지원 속성 목록은 member_target_filters.json, 미지원 힌트·탐색 정책은 aggregate_parser_rules.json 소유.
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # 지표 명사('구매 횟수') 없이 구매 동사에 바로 붙는 개수 임계값("2개/3번/2회/2건 이상 구매/구입").
 # 지표 동의어가 없어 _apply_aggregate_condition_filter(지표명이 있어야 발동)가 못 잡는 간극을 메운다 —
 # 주문 건수(order_count) 지표로 컴파일해 회원별 COUNT(DISTINCT ORDER_ID) 임계값이 된다. 개수 단위
@@ -5306,8 +4817,6 @@ _SCOPE_DISTINCT_MODIFIERS = {"다른", "여러", "다양", "다양한", "각기"
 # 개수 단위(개/번/회/건)를 필수로 요구해 금액(원)·연령(세)·기간(개월)과 갈린다. 연산자는 공용 어휘를 써서
 # 부사형·동사형·'보다 많은'을 함께 잡는다('3회보다 많이 구매' 등). 방향 판정은 _comparison_operator 로 단일화.
 # 개수 임계값을 구매 조건으로 확정할 구매 동사 표지. 장바구니/반응 문맥은 각 전용 트랙에 양보한다.
-
-
 
 
 # 장바구니 개수/수량 임계값 단위: "N개 이상", "종류 3종 이상", "정확히 3개", "2개에서 5개 사이". 비교 자체
@@ -5327,16 +4836,8 @@ _SCOPE_DISTINCT_MODIFIERS = {"다른", "여러", "다양", "다양한", "각기"
 # 수량이 숫자로 안 나오는 표현('여러 개', '복수'). 이때 '여럿'의 하한은 2다.
 
 
-
-
-
-
-
-
 # 종류 수(distinct) 단위와 총 수량 단위 구분: '종/종류/종수/가지/품목'=상품 종류 수(COUNT DISTINCT),
 # '개/점'=낱개. '총 N개'·'수량' 신호가 붙은 낱개만 총 수량(SUM QTY)으로 본다(맨 '개'는 종류 수 기본 유지).
-
-
 
 
 # 카트 집계 지표 ↔ 같은 뜻의 일반 주문/상품 집계 지표(쌍둥이). 카트 문맥의 임계값은 두 파서가 각각
@@ -5345,22 +4846,6 @@ _SCOPE_DISTINCT_MODIFIERS = {"다른", "여러", "다양", "다양한", "각기"
 # 소유한 조건의 사본이 aggregate_conditions 에 남는다. 그 사본은 카트 빌더가 컴파일할 수 없어
 # dropped_conditions 로 남고, 커버리지 게이트가 정상 SQL 을 통째로 버린다(query_plan_conditions_missing).
 # 지표 대응표를 선언해 '카트가 소유자'임을 한 곳에서 못 박는다(금액/수량/종류 전 지표 공통).
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 # 기간 어휘(_KO_UNIT_TO_CANON/_DURATION_UNIT_DAYS/_WORD_DURATION_DAYS/패턴)와 통합 파서
@@ -5396,8 +4881,6 @@ def _duration_matches(compact: str) -> list[tuple[int, int, int]]:
 _RECENCY_MARKERS = ("최근", "요즘", "근래", "최근에")
 
 
-
-
 # 장바구니 보관 기간: "장바구니에 담아둔 지 일주일 이상", "일주일 이상 유지/담고 있는". 담은 시점
 # 에서 N일이 지나도록 KEEP_YN='Y' 인 회원 = 오래 방치된 장바구니.
 # 보관 표현은 어간으로 본다 — 재작성이 표현형을 자주 바꾼다('유지하고'→'담고 있는').
@@ -5418,14 +4901,6 @@ _RECENCY_MARKERS = ("최근", "요즘", "근래", "최근에")
 # 구매 미발생 표지: '최근 N일' 뒤에 이게 오면 보관 기간이 아니라 구매 미발생 기간(purchase_inactivity)이다.
 
 
-
-
-
-
-
-
-
-
 # 생일 타겟: BIRTHDAY(YYYYMMDD)의 월일만 오늘과 비교한다(년도 무시). '이달/이번 달'이면 월만 비교.
 # 생일 타겟 감지는 slot_setter(_detect_birthday_target)가 담당한다(레지스트리 "birthday").
 
@@ -5433,10 +4908,6 @@ _RECENCY_MARKERS = ("최근", "요즘", "근래", "최근에")
 # 구매 날짜 타겟: '2024년 3월에 구매한 고객'처럼 구매가 일어난 절대 날짜/기간을 ORDER_DATE 창으로
 # 해석한다. 상대 창('최근 N일 미구매')은 purchase_inactivity 가 담당하므로 여기선 연도가 명시된
 # 절대 날짜만 잡는다(연도 없는 'M월'은 어느 해인지 모호해 잡지 않는다 → 오탐 방지).
-
-
-
-
 
 
 # ── 고아 달력 창 귀속(calendar_window_claim) ────────────────────────────────────────
@@ -5451,7 +4922,9 @@ _RECENCY_MARKERS = ("최근", "요즘", "근래", "최근에")
 # 않는다(fail-close — 대신 _deterministic_dropped_conditions 가 드롭을 시끄럽게 고지한다).
 
 
-def _plan_calendar_ranges(plan: dict[str, Any]) -> list[tuple[str, str]]:
+def _plan_calendar_ranges(
+    plan: dict[str, Any], *, today: date | None = None
+) -> list[tuple[str, str]]:
     """plan 안에서 **이미 소유된** 절대 달력 구간(YYYYMMDD from/to)을 전부 모은다.
 
     슬롯 이름 목록이 아니라 구조(from/to 8자리 쌍)로 훑는다 — purchase_date·metric_trend 의
@@ -5481,8 +4954,11 @@ def _plan_calendar_ranges(plan: dict[str, Any]) -> list[tuple[str, str]]:
         and isinstance(target_user.get("birthday_target"), dict)
         else None
     )
-    if isinstance(birthday, dict) and birthday.get("granularity") == "month":
-        today = date.today()
+    if (
+        today is not None
+        and isinstance(birthday, dict)
+        and birthday.get("granularity") == "month"
+    ):
         found.append((
             _ymd(today.year, today.month, 1),
             _ymd(today.year, today.month, _month_last_day(today.year, today.month)),
@@ -5505,7 +4981,11 @@ def _semantic_plan_node_spans(plan: dict[str, Any]) -> list[tuple[int, int]]:
 
 
 def _unclaimed_calendar_windows(
-    windows: list[dict[str, Any]], plan: dict[str, Any], source_text: str | None = None
+    windows: list[dict[str, Any]],
+    plan: dict[str, Any],
+    source_text: str | None = None,
+    *,
+    today: date | None = None,
 ) -> list[dict[str, Any]]:
     """주어진 절대 달력 창 중 plan 의 어떤 창 슬롯도 포함하지 못한 것들(= 조용히 드롭될 구간).
 
@@ -5514,7 +4994,7 @@ def _unclaimed_calendar_windows(
       ② 근거 스팬 소유 — 시점 앵커를 절대 구간으로 저장하지 않는 조건('지난달 말 기준 VIP'의
          as-of 스냅샷)은 창을 값으로 갖지 않지만 그 어구를 **근거로 청구**한다. 노드가 그
          구간을 청구했으면 드롭이 아니다(청구 없이 사라진 창만 고지한다)."""
-    claimed = _plan_calendar_ranges(plan)
+    claimed = _plan_calendar_ranges(plan, today=today)
     node_spans = _semantic_plan_node_spans(plan)
     owned_ranges: set[tuple[str, str]] = set()
     if node_spans and isinstance(source_text, str) and source_text:
@@ -5522,7 +5002,7 @@ def _unclaimed_calendar_windows(
         # 좌표로 소유를 판정하고 구간(from/to)으로 대조한다.
         owned_ranges = {
             (str(window.get("from")), str(window.get("to")))
-            for window, start, end in parse_calendar_window_spans(source_text)
+            for window, start, end in parse_calendar_window_spans(source_text, today=today)
             if any(node_start <= start and end <= node_end for node_start, node_end in node_spans)
         }
     return [
@@ -5530,8 +5010,6 @@ def _unclaimed_calendar_windows(
         if not any(start <= window["from"] and window["to"] <= end for start, end in claimed)
         and (str(window.get("from")), str(window.get("to"))) not in owned_ranges
     ]
-
-
 
 
 # ── 기간 대 기간 지표 증감(metric_trend) ────────────────────────────────────────────
@@ -5544,24 +5022,6 @@ def _unclaimed_calendar_windows(
 # ('3월이 2월보다 증가' → 기준 2월).
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # 구매 날짜 타겟 감지는 slot_setter(_parse_purchase_date_period)가 담당한다(레지스트리 "purchase_date").
 
 
@@ -5569,8 +5029,6 @@ def _unclaimed_calendar_windows(
 # signup_target.default_days 이고, '최근 N일/N개월 (이내) 가입' 이 있으면 그 창으로 덮는다.
 # 가입 창은 통합 파서 _parse_duration_window 가 담당한다(예전 _SIGNUP_PERIOD_PATTERN 제거 — 일/개월/달만
 # 알아 '1년 이내 가입'을 놓쳤다).
-
-
 
 
 # 결과 행수 제한: "N명만 / N건만 / 상위 N명 / 최대 N명 / N명으로 제한" 처럼 명시적으로 개수를 못박은
@@ -5610,8 +5068,6 @@ def _parse_result_limit(query: str) -> int | None:
 # 결과 개수 제한('N명만')은 slot_setter(_parse_result_limit → plan.result_limit)가 담당한다(레지스트리 "result_limit").
 
 
-
-
 def _cart_dimension_brand_filter(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     # 큐레이션된 타겟 매핑(상품브랜드 -> CRM_CM_PRODUCT.BRAND_ID)이 잡히고 장바구니 맥락일 때만
     # 실제 테이블 cart 타겟팅 템플릿으로 라우팅한다.
@@ -5647,8 +5103,6 @@ def _cart_brand_name_qualifier(query_plan: dict[str, Any]) -> list[str] | None:
     return [brand] if isinstance(brand, str) and brand else None
 
 
-
-
 # 장바구니 '존재' 표현: "장바구니에 상품이 있는/담아둔/담은". 렉시콘 경로(_is_cart_abandonment_query)는
 # 이탈어(미결제/방치 등)가 필수라 존재 표현만으로는 카트 조건이 통째로 소실됐다. 담긴 상태는 그 자체가
 # KEEP_YN='Y' 보관 오디언스다. 부정형('담지 않은'/'있지 않은')은 lookahead 로 배제한다.
@@ -5660,33 +5114,38 @@ def _cart_brand_name_qualifier(query_plan: dict[str, Any]) -> list[str] | None:
 
 
 def _cart_targets_registry() -> dict[str, Any]:
-    config = _MEMBER_TARGET_FILTERS.get("cart_targets")
-    return config if isinstance(config, dict) else {}
+    return dict(_member_condition_binding("cart_targets"))
+
+
+def _campaign_response_registry() -> dict[str, Any]:
+    return dict(_member_condition_binding("campaign_response_targets"))
+
+
+def _cell_rate_registry() -> dict[str, Any]:
+    return dict(_member_condition_binding("cell_rate_targets"))
 
 
 def _cart_member_join_on(alias: str = "A") -> str:
     """카트→회원 조인식('A.CART_ID = B.MEMBER_ID'). 조인키는 cart_targets.join 레지스트리 소유."""
-    join = _cart_targets_registry().get("join")
-    join = join if isinstance(join, dict) else {}
-    left_column = str(join.get("left") or "C.CART_ID").split(".")[-1]
-    right = str(join.get("right") or "B.MEMBER_ID")
+    join = _cart_targets_registry()["join"]
+    left_column = str(join["left"]).split(".")[-1]
+    right = str(join["right"])
     return f"{alias}.{left_column} = {right}"
 
 
 def _cart_from_join_lines(alias: str = "A", product_alias: str | None = None) -> list[str]:
     """카트(→회원[→상품]) FROM/JOIN 절 — 테이블명·조인키는 레지스트리 소유, 별칭만 호출자 관례."""
     config = _cart_targets_registry()
-    table = config.get("table")
+    table = config["table"]
     lines = [
         f"FROM {table} {alias}",
         f"     INNER JOIN {_member_table()} {_member_alias()} ON {_cart_member_join_on(alias)}",
     ]
     if product_alias:
-        product_join = config.get("product_join")
-        product_join = product_join if isinstance(product_join, dict) else {}
-        product_table = product_join.get("table")
-        left_column = str(product_join.get("left") or "C.PRODUCT_ID").split(".")[-1]
-        right_column = str(product_join.get("right") or "CP.PRODUCT_ID").split(".")[-1]
+        product_join = config["product_join"]
+        product_table = product_join["table"]
+        left_column = str(product_join["left"]).split(".")[-1]
+        right_column = str(product_join["right"]).split(".")[-1]
         lines.append(f"     INNER JOIN {product_table} {product_alias} ON {alias}.{left_column} = {product_alias}.{right_column}")
     return lines
 
@@ -5694,10 +5153,10 @@ def _cart_from_join_lines(alias: str = "A", product_alias: str | None = None) ->
 def _cart_absence_predicate() -> str:
     """보관(KEEP_YN='Y') 카트 라인이 없는 회원의 NOT EXISTS 술어. cart_targets 레지스트리 소유값 사용."""
     config = _cart_targets_registry()
-    table = config.get("table")
-    active = config.get("active_condition", {}) if isinstance(config.get("active_condition"), dict) else {}
-    keep_column = (active.get("column") or "A.KEEP_YN").split(".")[-1]
-    keep_value = active.get("value", "Y")
+    table = config["table"]
+    active = config["active_condition"]
+    keep_column = active["column"].split(".")[-1]
+    keep_value = active["value"]
     return (
         f"NOT EXISTS (SELECT 1 FROM {table} A "
         f"WHERE {_cart_member_join_on('A')} AND A.{keep_column} = {_sql_quote(str(keep_value))})"
@@ -5708,14 +5167,19 @@ def _cart_quantity_missing_predicate() -> str:
     """담은 수량(QTY)이 입력되지 않은(NULL) 카트 라인이 있는 회원의 EXISTS 술어. '수량이 0'(=0)이 아니라
     '값 자체가 미기입(NULL)'을 뜻한다 — cart_absence 처럼 회원키 상관 서브쿼리라 어느 빌더에나 AND 결합된다."""
     config = _cart_targets_registry()
-    table = config.get("table")
+    table = config["table"]
+    quantity_column = str(config["quantity_column"]).split(".")[-1]
     return (
         f"EXISTS (SELECT 1 FROM {table} A "
-        f"WHERE {_cart_member_join_on('A')} AND A.QTY IS NULL)"
+        f"WHERE {_cart_member_join_on('A')} AND A.{quantity_column} IS NULL)"
     )
 
 
-def _purchase_inactivity_predicate(min_days: int) -> str:
+def _purchase_inactivity_predicate(
+    min_days: int | None = None,
+    *,
+    window: Mapping[str, Any] | None = None,
+) -> str:
     """'최근 N일 내 주문 없음'(구매 미발생 기간) 회원키 anti-join 술어.
 
     cart_absence/campaign_responses 처럼 회원키 상관 NOT EXISTS 라 어느 빌더에나 AND 결합된다 —
@@ -5726,34 +5190,53 @@ def _purchase_inactivity_predicate(min_days: int) -> str:
     table = config.get("table")
     join_column = config.get("join_column")
     order_date_column = config.get("order_date_column")
-    cutoff = _member_dialect().char8_cutoff(min_days)
+    date_predicate = None
+    if window is not None:
+        date_predicate = _purchase_date_predicate(
+            window,
+            alias="O",
+            column=str(order_date_column),
+            source_table=str(table),
+        )
+        if date_predicate is None:
+            raise ValueError("purchase inactivity window is not a valid date interval")
+    elif isinstance(min_days, int) and min_days > 0:
+        date_predicate = f"O.{order_date_column} >= {_execution_cutoff_or_db_clock(min_days)}"
+    else:
+        raise ValueError("purchase inactivity requires an execution window")
     return (
         f"NOT EXISTS (SELECT 1 FROM {table} O WHERE O.{join_column} = B.{join_column} "
-        f"AND O.{order_date_column} >= {cutoff})"
+        f"AND {date_predicate})"
     )
 
 
-def _purchase_membership_predicate(window_days: int | None = None) -> str:
+def _purchase_membership_predicate(
+    window_days: int | None = None,
+    *,
+    window: Mapping[str, Any] | None = None,
+) -> str:
     """구매 이력 존재를 주문 헤더 EXISTS로 증명한다. 기간이 있으면 그 창 안의 주문으로 한정."""
     config = _order_count_targets_config()
     table = config.get("table")
     join_column = config.get("join_column")
     order_date_column = config.get("order_date_column")
     date_clause = ""
-    if isinstance(window_days, int) and window_days > 0:
-        date_clause = f" AND O.{order_date_column} >= {_member_dialect().char8_cutoff(window_days)}"
+    if window is not None:
+        predicate = _purchase_date_predicate(
+            window,
+            alias="O",
+            column=str(order_date_column),
+            source_table=str(table),
+        )
+        if predicate is None:
+            raise ValueError("purchase membership window is not a valid date interval")
+        date_clause = f" AND {predicate}"
+    elif isinstance(window_days, int) and window_days > 0:
+        date_clause = f" AND O.{order_date_column} >= {_execution_cutoff_or_db_clock(window_days)}"
     return f"EXISTS (SELECT 1 FROM {table} O WHERE O.{join_column} = B.{join_column}{date_clause})"
 
 
-
-
 # 카트 '존재' 승격은 slot_setter(_detect_cart_presence → behaviors append)가 담당한다(레지스트리 "cart_presence").
-
-
-
-
-
-
 
 
 # 최근 로그인(긍정형 접속) 타겟: '최근 N개월/N일 (이내·동안) 로그인·접속한'. 부정형(미접속/로그인하지
@@ -5772,11 +5255,7 @@ _RECENT_LOGIN_NEG_SIGNALS = (
 # 이게 보이면 최근 로그인 감지를 양보한다(공백 지운 compact 프롬프트에 맞춘다).
 
 
-
-
 # 최근 로그인 타겟 감지는 slot_setter(_parse_recent_login_period → recent_login)가 담당한다(레지스트리 "recent_login").
-
-
 
 
 # 채널 수신동의 타겟: '<채널> 수신(에) 동의한' 은 발송 채널이 아니라 회원 속성(수신동의 Y/N 컬럼)
@@ -5802,7 +5281,7 @@ def _grade_threshold_registry() -> list[dict[str, Any]]:
     `_grade` 접미어 제거형. 원재료는 member_target_filters.json eq_filters(grade) 에 그대로 남아 있다."""
     raw = _MEMBER_TARGET_FILTERS.get("eq_filters")
     if not isinstance(raw, list):
-        raw = _DEFAULT_MEMBER_TARGET_FILTERS["eq_filters"]
+        raw = []
     grades: list[dict[str, Any]] = []
     for idx, entry in enumerate(raw):
         if not isinstance(entry, dict) or entry.get("category") != "grade":
@@ -5818,20 +5297,12 @@ def _grade_threshold_registry() -> list[dict[str, Any]]:
     return grades
 
 
-
-
-
-
-
-
 # 가입 채널(온라인/오프라인 매장) 타겟: '온라인 가입'·'오프라인 매장 가입'은 구매 채널(online_buyer/
 # offline_buyer)이 아니라 가입 경로 회원 속성이다. 실컬럼은 online_signup eq_filter(REG_OFFSHOP_ID='O',
 # 'O'=온라인/몰 가입, 그 외 값=오프라인 매장 가입)가 소유한다. 정규화 사전이 '온라인'/'오프라인' 단독
 # 토큰을 buyer 로 먼저 삼켜 가입 문맥을 놓치므로, '가입' 문맥이 붙은 경우만 결정론으로 승격한다.
 # 가입 뒤 부정(안 함) 표지. '오프라인 매장 가입 안 한' 같은 이중부정을 잡는다.
 # 채널어(+선택 매장 명사)+조사?+(회원)?+가입+부정? — 공백 제거 compact 기준.
-
-
 
 
 # 가입 디바이스(앱/PC/모바일웹) 승격은 attribute_token 실행기(그룹 "signup_device")가 담당한다.
@@ -5844,18 +5315,6 @@ def _grade_threshold_registry() -> list[dict[str, Any]]:
 # age 는 전용 파서(_apply_age_filters, 연대·배타경계 등 값 의미론 고유)가 담당하므로 제외한다.
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 # 동사형 지표 표현('로그인하지 않은 / 정확히 20번 로그인한 / 평균보다 많이 로그인')을 지표에 연결한다. 명사
 # 동의어(로그인 횟수)로는 안 잡히는 행위 표현을, numeric_filters 의 action_aliases 로 잡되 '로그인한 지 30일'
 # 같은 날짜/최근성 조건과의 충돌은 게이트로 막는다 — action 어 주변에 '숫자+기간단위'(날짜 조건 신호)가 있으면
@@ -5863,28 +5322,14 @@ def _grade_threshold_registry() -> list[dict[str, Any]]:
 # 부재(=0) 표지: '한 번도/전혀 … (안)한', '기록/이력/한 적이 없는'. zero_semantics 로 NULL 을 0 으로 본다.
 
 
-
-
-
-
-
-
 # 두 잔액 컬럼의 합계('예치금과 적립금의 합', '예치금+적립금'). '종합/결합/조합' 등 무관어에 오탐하지 않게
 # 합 어근을 조사/경계와 함께 제한한다.
-
-
-
-
 
 
 # 파생(비율) 지표: '하루 평균 로그인 횟수'처럼 두 수치 컬럼의 비(numerator/denominator)를 임계와 비교한다.
 # 원 컬럼 임계('로그인 횟수 3회 이상' → CNT>=3)와 의미가 달라(하루 평균은 CNT/DAYS>=3) 별도 파생으로 다룬다.
 # '하루/일/매일 + 평균' 접두어가 붙은 지표어만 비율로 보고, 그 접두어를 balance_condition 이 원 임계로 오탐하지
 # 않도록 억제한다(_apply_balance_condition_filter 에서 이 접두어가 앞에 오면 해당 동의어를 건너뛴다).
-
-
-
-
 
 
 # 캠페인 접촉/오퍼·구매 반응/쿠폰 사용: 캠페인 회원 반응 팩트(MCS_CAMP_MBR_RSPN_FT, 회원키 MBR_NO)로
@@ -5941,17 +5386,11 @@ _CAMPAIGN_RESPONSE_PATTERNS: tuple[tuple[str, str, re.Pattern[str]], ...] = tupl
 # 개념어(부정 탐색의 기준점) + 그 개념의 canonical. buy 는 전용 패턴이 담당하므로 제외.
 
 
-
-
-
-
 # "쿠폰 사용 후 추가(로) 구매(구입/주문) 없는/하지 않은" 처럼 '추가 구매가 일어나지 않음'을 뜻하는 표현.
 # 이를 '실주문 자체가 전혀 없음'(no_purchase, CRM_SL_ORDERHEADERMALL anti-join)으로 확정한다 — 캠페인
 # 반응(쿠폰 사용 등)과 함께 오면 campaign_response 빌더가 fact_join(order_count_behavior)에 양보하고,
 # order_count 빌더가 쿠폰 EXISTS + 주문 NOT EXISTS 를 하나의 SQL 로 AND 결합한다. 공백을 지운 프롬프트에
 # 맞춘다. '재구매/다시 구매하지 않은'(과거 구매는 있고 재구매만 없음)과는 어의가 달라 포함하지 않는다.
-
-
 
 
 # '구매/주문 횟수(건수)가 0회/0건 / 없는' = 주문 건수 0 = 평생 무주문. 집계 HAVING COUNT(...)=0 은 그룹에
@@ -5970,17 +5409,11 @@ _ZERO_PURCHASE_COUNT_PATTERN = re.compile(
 )
 
 
-
-
-
-
 # "구매(주문) 이력은 있지만 (결제/구매) 금액 합계가 0원" — 주문은 존재하되 결제 합계가 0. 무주문(no_purchase)이
 # 아니라 '주문 있고 SUM=0'이므로 결제금액 집계(purchase_amount = 0 → HAVING SUM(PAYMENT_AMT)=0)로 컴파일한다.
 # GROUP BY 서브쿼리는 주문행 있는 회원만 포함하므로 '구매 이력 있음'이 자동 보장된다(COUNT=0 공집합과 달리
 # SUM=0 은 표현 가능). '구매했지만/구매는 있으나/주문 이력은 있는데' 등 구매 존재 단언이 있을 때만 발동해
 # 모호한 '구매 금액 0원'(무주문 동일시 정책 필요)과 구분한다([[unsupported-intent-gate]]).
-
-
 
 
 # 캠페인 반응 '횟수' 임계값: "(최근 N개월 캠페인 중) 두 번/2회 이상 반응한". 캠페인 반응 EXISTS(≥1회)와
@@ -5989,10 +5422,6 @@ _ZERO_PURCHASE_COUNT_PATTERN = re.compile(
 # 있고 횟수 임계어가 있을 때만 발동해 '구매 2회 이상'(주문 집계 order_count) 과 갈린다.
 # 숫자 또는 고유어 수사(한~열) + 횟수 단위(번/회/차례/건) + 비교어. 배수어/금액과 달리 순수 횟수만 본다.
 # 고유어 수사→값·정규식은 native_count 타입(_THRESHOLD_NUMBER_KINDS)이 소유한다.
-
-
-
-
 
 
 # 캠페인 '귀속 구매금액' 임계값: "캠페인 구매금액 20만원 이상"/"캠페인을 통해 20만원 이상 구매한".
@@ -6006,13 +5435,9 @@ _ZERO_PURCHASE_COUNT_PATTERN = re.compile(
 # 문맥(통해/보고 … 구매) 사이에 같은 조각(_CAMPAIGN_BUY_AMOUNT.regex)을 임베드한다.
 
 
-
-
 # 캠페인 '구매 건수/횟수'(귀속 구매 건수) 임계값: "캠페인 구매건수 2건 이상". 반응 팩트에서 구매반응(BUY)
 # 캠페인 수(COUNT DISTINCT 캠페인)로, 전 생애 주문 건수(order_count, ORDERHEADERMALL)와 다르다 — 캠페인
 # 문맥이 붙은 '구매 건수/횟수'는 캠페인 팩트 집계로 걸어야 의미가 맞다. 단위(건/회/번)만 보고 금액과 갈린다.
-
-
 
 
 # 셀 단위 비율 타겟: "발송 성공률은 높지만 구매율이 낮은 셀의 회원". '성공률/구매율'은 회원 플래그가
@@ -6022,10 +5447,6 @@ _ZERO_PURCHASE_COUNT_PATTERN = re.compile(
 # (vague_high_default/vague_low_default)로 컴파일한다.
 # 명시 % 접미(지표어 뒤에 임베드): percent 타입 스펙으로 regex 조각 + 값 파서(0<v<=100 검증)를 함께 생성한다.
 # 단위(%)는 optional, 앞에 조사(이/가/은/는/도)가 올 수 있고 공백 없이 붙는다(sep="").
-
-
-
-
 
 
 # 자녀정보 등록 승격은 attribute_token 실행기(그룹 "children")가 담당한다.
@@ -6088,15 +5509,9 @@ def _consent_context_signals(text: str) -> dict[str, str]:
     return signals
 
 
-
-
 # 회원 Y/N 플래그(활동회원·블랙리스트 등) 승격은 attribute_token 실행기(그룹 "member_flag")가 담당한다.
 # 문법·표면어는 _attribute_token_groups()["member_flag"] + eq_filters surface_terms 가 소유한다(신호 감지는
 # _member_flag_signals 가 같은 표면어를 재사용). 긍정→target_user.lifecycle(='Y'), 부정→exclude.lifecycle(<>'Y').
-
-
-
-
 
 
 def _is_date_like_token(token: str) -> bool:
@@ -6159,6 +5574,11 @@ def _schema_retrieval_query(text: str) -> str:
 # 조사가 붙은 채 LIKE 에 들어가 0건이 된다. 어간이 1글자만 남으면 조사가 아닐 확률이 높아 떼지 않는다
 # ('제로'→'제', '카페'→'카'). 목적격(을/를)은 아래에서 무조건 뗀다(1글자 상품명 '빵을' 보존).
 _PURCHASE_OBJECT_PARTICLE_RE = re.compile(r"(?:으로부터|로부터|에서|에게|부터|으로|에|의|로)$")
+# 상품명 후보에서 버리는 비특정 한정사. 낱말은 사전이 소유한다(_PURCHASE_SCOPE_NON_ENTITY_TERMS 와
+# 같은 어휘를 쓰되 사이트별 누락은 패턴의 exclude 로 드러난다 — 이쪽에만 '해당'이 있었다).
+_PURCHASE_OBJECT_NONSPECIFIC_DETERMINERS = frozenset(
+    lexicon_patterns.terms("purchase_object_nonspecific_determiner")
+)
 
 
 def _sanitize_purchase_object(value: str) -> str | None:
@@ -6174,9 +5594,14 @@ def _sanitize_purchase_object(value: str) -> str | None:
         # 엉뚱한 LIKE(예: '많이 구입한' → PRODUCT_NAME LIKE N'%많이%')를 만들 수 있어 제외한다.
         # 장소·대상 지시어("이곳에서 구매한" — 앞 절의 브랜드/장소를 가리키는 조응 표현)도 상품명이 아니다
         # — 지시어를 걸러야 브랜드 계사절("브랜드가 X면서 … 이곳에서 구매한")이 브랜드 추출로 이어진다.
-        if not stripped_token or stripped_token in _PURCHASE_VALUE_QUALIFIERS or stripped_token in {
+        if (
+            not stripped_token
+            or stripped_token in _PURCHASE_VALUE_QUALIFIERS
+            # 비특정 한정사('특정/여러/모든/해당 …')는 어휘가 소유한다 — 같은 묶음이 구매 스코프
+            # 비엔터티어에도 필요해 두 곳에 복제돼 있었고, 그쪽에는 '해당'이 빠져 있었다.
+            or stripped_token in _PURCHASE_OBJECT_NONSPECIFIC_DETERMINERS
+        ) or stripped_token in {
             "사람", "고객", "회원", "사용자", "유저", "타겟", "대상", "조건",
-            "특정", "어떤", "일부", "각", "그", "이", "저", "무슨", "어느", "임의", "여러", "다양", "다양한", "각기", "각각", "서로",
             "첫", "재", "최근", "최초", "최초로", "반복", "자주", "많이", "많은", "다수", "대량", "처음", "처음으로", "미",
             # 구매 합성어의 접두 음절(다구매/총구매/무구매). 정규식(_PURCHASE_OBJECT_PATTERN)이 경계를
             # 요구해 1차로 막지만, 브랜드·계사·chain 패턴과 LLM 폴백도 이 sanitize 를 공유하므로 우회
@@ -6186,13 +5611,13 @@ def _sanitize_purchase_object(value: str) -> str | None:
             # 걸러지지만 홀로 남은 '전'은 상품명으로 새어 PRODUCT_NAME LIKE N'%전 기저귀%'(0건)를 만든다.
             # 시점을 뜻하는 의존 형태소지 상품이 아니다 — 그 '언제'는 purchase_date 가 소유한다.
             "전",
-            "이곳", "이곳에서", "그곳", "그곳에서", "저곳", "여기", "여기서", "여기에서", "거기", "거기서", "거기에서", "저기", "저기서", "해당", "동일", "같은",
+            "이곳", "이곳에서", "그곳", "그곳에서", "저곳", "여기", "여기서", "여기에서", "거기", "거기서", "거기에서", "저기", "저기서", "동일", "같은",
             # '캠페인 구매 이력'의 '캠페인'은 상품명이 아니라 캠페인 반응(구매 반응) 문맥어다. 상품 LIKE
             # 로 새면 PRODUCT_NAME LIKE N'%캠페인%' 같은 무의미 매칭이 되므로 상품 후보에서 제외한다.
             "캠페인",
-            # 전체/전부/모든/모두/평균 같은 전칭·집계 수식어는 상품명이 아니다. '전체 구매 회원 평균보다 높은'
-            # 의 '전체'가 PRODUCT_NAME LIKE N'%전체%' 로 새어 그럴듯한 오답 SQL 이 나오던 것을 막는다.
-            "전체", "전부", "모든", "모두", "평균", "평균값",
+            # 평균 같은 집계 수식어는 상품명이 아니다(전칭 한정사 '전체/모든'은 위 어휘가 소유한다).
+            # '전체 구매 회원 평균보다 높은'의 '전체'가 PRODUCT_NAME LIKE N'%전체%' 로 새는 것을 막는다.
+            "평균", "평균값",
             # 비교·최상급·정렬 표현은 상품/브랜드/카테고리명이 아니라 query semantics가 소유한다.
             "가장", "제일", "적게", "적은", "높게", "낮게", "높은", "낮은", "큰", "작은",
             "최대", "최소", "최고", "최저", "상위", "하위", "마지막",
@@ -6222,9 +5647,11 @@ def _purchase_brand_names() -> tuple[str, ...]:
     try:
         from db_connections import run_read_query
 
+        product = _purchase_product_registry()["product"]
+        table, column = product["table"], product["brand_name_column"]
         rows = run_read_query(
             "CRMDW",
-            "SELECT DISTINCT BRAND_NAME FROM CRM_CM_PRODUCT WHERE BRAND_NAME IS NOT NULL AND BRAND_NAME <> ''",
+            f"SELECT DISTINCT {column} FROM {table} WHERE {column} IS NOT NULL AND {column} <> ''",
         )
     except Exception:
         return ()
@@ -6396,26 +5823,6 @@ def _gender_polarity_signals(text: str) -> set[str]:
     return signals
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _unique_strings(values: list[str]) -> list[str]:
     unique_values = []
     for value in values:
@@ -6425,11 +5832,10 @@ def _unique_strings(values: list[str]) -> list[str]:
 
 
 def _mark_external_resolution_unavailable(
-    plan: dict[str, Any], *, error_code: str
+    plan: dict[str, Any], *, error_code: str, now: datetime
 ) -> None:
     """서비스 초기화 자체가 실패해도 외부 조건을 제거하지 않고 차단 상태로 보존한다."""
 
-    now = datetime.now(timezone.utc)
     failed_results = []
     for condition in plan.get("external_conditions") or []:
         if not isinstance(condition, dict):
@@ -6459,24 +5865,57 @@ def _mark_external_resolution_unavailable(
     }
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 def _pending_external_conditions(plan: Mapping[str, Any]) -> bool:
     return any(
         not isinstance(condition, Mapping)
         or condition.get("resolution_status") != "resolved"
         for condition in (plan.get("external_conditions") or [])
     )
+
+
+def _structuring_reference_date(context: StructuringContext) -> date:
+    """Validate and return the request-scoped calendar anchor."""
+
+    try:
+        return date.fromisoformat(context.current_date)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "structuring_context.current_date must be an ISO calendar date"
+        ) from exc
+
+
+def _structuring_reference_now(context: StructuringContext) -> datetime:
+    """Return an aware request instant without consulting the host clock."""
+
+    timezone_name = context.timezone
+    if not isinstance(timezone_name, str) or not timezone_name.strip():
+        raise ValueError("structuring_context.timezone is required")
+    try:
+        zone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError(
+            f"structuring_context.timezone is not a known IANA timezone: {timezone_name}"
+        ) from exc
+
+    current_datetime = context.current_datetime
+    if not isinstance(current_datetime, str) or not current_datetime.strip():
+        raise ValueError("structuring_context.current_datetime is required")
+    try:
+        instant = datetime.fromisoformat(current_datetime)
+    except ValueError as exc:
+        raise ValueError(
+            "structuring_context.current_datetime must be ISO-8601"
+        ) from exc
+    if instant.tzinfo is None or instant.utcoffset() is None:
+        raise ValueError("structuring_context.current_datetime must be timezone-aware")
+
+    localized = instant.astimezone(zone)
+    reference_date = _structuring_reference_date(context)
+    if localized.date() != reference_date:
+        raise ValueError(
+            "structuring_context.current_date must match current_datetime in timezone"
+        )
+    return localized
 
 
 def retrieve(
@@ -6512,6 +5951,11 @@ def retrieve(
 ) -> dict[str, Any]:
     # 계측 dict 을 호출자가 넘길 수 있게 한다. 트레이스 엔드포인트는 이 dict 을 소유해, retrieve() 가
     # 중간 단계에서 예외로 죽어도 그때까지 채워진 단계별 시간을 읽어 "오류 전까지" 부분 트레이스를 만든다.
+    if structuring_context is None:
+        raise ValueError("retrieve requires an explicit structuring_context")
+    context = structuring_context
+    _structuring_reference_date(context)
+    reference_now = _structuring_reference_now(context)
     timings_ms = timings_ms if timings_ms is not None else {}
     retrieve_started_at = time.perf_counter()
     # 다중 재구성 파싱 변이 수. 명시값이 없으면 환경변수로 전역 설정(기본 0=끔). LLM(파서 auto/llm) 필요.
@@ -6544,10 +5988,6 @@ def retrieve(
     # 사용자가 입력한 타겟팅 프롬프트만 사용한다. 원문 query는 감사 로그와 화면 표시용으로 보존한다.
     targeting_prompt = _targeting_prompt(query)
 
-    context = structuring_context or StructuringContext(
-        current_date=date.today().isoformat(),
-        timezone=os.getenv("GRAPH_RAG_TIMEZONE"),
-    )
     authority = _query_plan_authority(query_parser)
     campaign_query_plan: CampaignQueryPlanV4 = build_campaign_query_plan_v4_fallback(
         targeting_prompt, current_date=context.current_date
@@ -6674,13 +6114,15 @@ def retrieve(
             external_condition_service.resolve_plan(
                 query_plan,
                 ResolutionContext(
-                    now=datetime.now(timezone.utc),
+                    now=reference_now,
                     request_id=hashlib.sha256(query.encode("utf-8")).hexdigest()[:16],
                 ),
             )
         except Exception:
             _mark_external_resolution_unavailable(
-                query_plan, error_code="external_condition_service_unavailable"
+                query_plan,
+                error_code="external_condition_service_unavailable",
+                now=reference_now,
             )
     timings_ms["external_conditions"] = _elapsed_ms(external_started_at)
 
@@ -6690,7 +6132,9 @@ def retrieve(
     conceptual_started_at = time.perf_counter()
     if query_plan.get("external_conditions") and _pending_external_conditions(query_plan):
         _mark_external_resolution_unavailable(
-            query_plan, error_code="conceptual_targeting_disabled"
+            query_plan,
+            error_code="conceptual_targeting_disabled",
+            now=reference_now,
         )
     timings_ms["conceptual_targeting"] = _elapsed_ms(conceptual_started_at)
 
@@ -6775,6 +6219,7 @@ def retrieve(
         # 의미 검증 게이트는 가공된 keyword_query 가 아니라 사용자 원문과 SQL 을 직접 대조해야 한다.
         original_query=targeting_prompt,
         prompt_dir=prompt_dir,
+        structuring_context=context,
     )
     timings_ms["sql_generation"] = _elapsed_ms(stage_started_at)
 
@@ -7065,8 +6510,6 @@ def _query_plan_for_generation(query_plan: dict[str, Any]) -> dict[str, Any]:
         for key in _GENERATION_QUERY_PLAN_KEYS
         if key in query_plan and query_plan[key] not in (None, "", [], {})
     }
-
-
 
 
 @functools.lru_cache(maxsize=1)
@@ -7533,9 +6976,9 @@ def _targeting_fallback_schema_tables(
             tables.add(table)
     if target_user.get("purchase_date") or target_user.get("purchase_object"):
         order_config = _order_count_targets_config()
-        tables.add(str(order_config.get("table") or "CRM_SL_ORDERHEADERMALL"))
+        tables.add(str(order_config["table"]))
     if target_user.get("cart_aggregate") or query_plan.get("cart_context"):
-        tables.add(str(_cart_targets_registry().get("table") or "ODS_MALL_OMS_CART"))
+        tables.add(str(_cart_targets_registry()["table"]))
     return tables
 
 
@@ -7591,15 +7034,10 @@ def _targeting_aggregate_capabilities(
     metrics = config.get("metrics") if isinstance(config.get("metrics"), dict) else {}
     schema_columns = load_schema_columns(schema_path)
     column_types = load_column_types(schema_path)
-    join_column = str(config.get("join_column") or "MEMBER_NO")
-    date_column = str(config.get("date_column") or "ORDER_DATE")
+    join_column = str(config["join_column"])
+    date_column = str(config["date_column"])
     capabilities: dict[str, dict[str, Any]] = {}
-    grain_columns = {
-        "per_member": None,
-        "per_order": "ORDER_ID",
-        "per_product": "PRODUCT_ID",
-        "per_brand": "BRAND_ID",
-    }
+    grain_axes = {"per_member": None, **config["grain_axes"]}
     for metric_id, metric in metrics.items():
         if not isinstance(metric, dict) or _metric_column_on_product(metric):
             continue
@@ -7607,12 +7045,9 @@ def _targeting_aggregate_capabilities(
         if not isinstance(column, str) or not column or metric.get("expression"):
             continue
         scopes: dict[str, dict[str, str | None]] = {}
-        for scope, grain_column in grain_columns.items():
-            table = (
-                _PRODUCT_SCOPE_TABLE
-                if scope in {"per_product", "per_brand"}
-                else str(metric.get("table") or config.get("table") or "CRM_SL_ORDERHEADERMALL")
-            )
+        for scope, grain_axis in grain_axes.items():
+            grain_column = grain_axis["column"] if grain_axis else None
+            table = str(grain_axis["table"] if grain_axis else metric.get("table") or config["table"])
             catalog_columns = schema_columns.get(table.casefold(), set())
             required = {join_column.casefold(), column.casefold()}
             if grain_column:
@@ -7621,7 +7056,7 @@ def _targeting_aggregate_capabilities(
                 required.add(date_column.casefold())
             if not required <= catalog_columns:
                 continue
-            agg = str(metric.get("agg") or "SUM").upper()
+            agg = str(metric["agg"]).upper()
             if agg != "COUNT" and column_types.get(table.casefold(), {}).get(column.casefold()) != "numeric":
                 continue
             scopes[scope] = {
@@ -7897,7 +7332,7 @@ def _compile_targeting_ir_candidate(
             member_alias=_member_alias(),
             member_key=_member_key_column(),
             age_column=_member_age_column().split(".")[-1],
-            relative_date=_member_dialect().char8_cutoff,
+            reference_date=_EXECUTION_REFERENCE_DATE.get(),
         )
     except TargetingExpressionError:
         return None
@@ -8245,28 +7680,24 @@ def _sql_semantic_verify_system_prompt() -> str:
     이 함수도 고쳐야 한다(docs/operations/db_portability_audit.md §4-C). 검증 원칙 문구는 스키마
     무관이라 리터럴로 둔다."""
 
-    def _short_column(config_key: str, fallback: str) -> str:
-        config = _MEMBER_TARGET_FILTERS.get(config_key)
-        column = (config or {}).get("column") if isinstance(config, dict) else None
-        return str(column or fallback).split(".")[-1]
+    def _short_column(config_key: str) -> str:
+        return str(_member_condition_binding(config_key)["column"]).split(".")[-1]
 
     gender_example = next(
         (str(value) for _c, (cat, _col, value) in MEMBER_EQ_FILTERS.items() if cat == "gender"), "GENDER_CD.FEMALE"
     )
     grade_column = _member_grade_column().split(".")[-1]
-    login_column = _short_column("recent_login_target", "LAST_LOGIN_DATE")
-    signup_column = _short_column("signup_target", "REG_DT")
-    birthday_column = _short_column("birthday_target", "BIRTHDAY")
+    login_column = _short_column("recent_login_target")
+    signup_column = _short_column("signup_target")
+    birthday_column = _short_column("birthday_target")
     cart_config = _cart_targets_registry()
-    cart_table = cart_config.get("table")
-    cart_active = cart_config.get("active_condition") if isinstance(cart_config.get("active_condition"), dict) else {}
-    keep_column = str((cart_active or {}).get("column") or "C.KEEP_YN").split(".")[-1]
-    keep_value = str((cart_active or {}).get("value") or "Y")
+    cart_table = cart_config["table"]
+    cart_active = cart_config["active_condition"]
+    keep_column = str(cart_active["column"]).split(".")[-1]
+    keep_value = str(cart_active["value"])
     keep_predicate = f"{keep_column} = '{keep_value}'"
-    campaign_config = _MEMBER_TARGET_FILTERS.get("campaign_response_targets")
-    campaign_table = (campaign_config or {}).get("table") if isinstance(campaign_config, dict) else None
-    campaign_table = campaign_table or "MCS_CAMP_MBR_RSPN_FT"
-    date_format_label = str(_member_base_entity().get("date_format") or "yyyyMMdd").upper()
+    campaign_table = _campaign_response_registry()["table"]
+    date_format_label = str(_member_base_entity()["date_format"]).upper()
     # 지표 보정(반품 차감 등)의 인코딩을 설정에서 렌더한다 — 보정은 컬럼 산술로 들어가는데 판정 모델이
     # 이를 '차감 없음'으로 자주 오독한다. 새 보정을 설정에 추가하면 이 안내도 자동으로 따라온다.
     adjustment_hints = "".join(
@@ -8468,7 +7899,7 @@ def _infer_requirement_base(query_plan: dict[str, Any], sql: str | None) -> tupl
     지원 못 하고(unsupported) 구매는 지원(join_product_brand)하는 식으로 도메인 차이가 갈린다. SQL 이 카트
     테이블(KEEP_YN)을 쓰면 카트 문맥으로 확정(LLM plan 이 슬롯을 안 채워도 안전)하고, 아니면 plan 슬롯으로 본다."""
     cart_config = _cart_targets_registry()
-    cart_table = str(cart_config.get("table") or "ODS_MALL_OMS_CART")
+    cart_table = str(cart_config["table"])
     if sql and cart_table in sql:
         return ("cart_retention", "behavior")
     target_user = query_plan.get("target_user", {}) if isinstance(query_plan.get("target_user"), dict) else {}
@@ -8523,7 +7954,12 @@ def _semantic_verification_clarifications(issues: list[dict[str, Any]]) -> list[
     return questions
 
 
-def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str, Any]) -> list[str]:
+def _deterministic_dropped_conditions(
+    original_query: str,
+    query_plan: dict[str, Any],
+    *,
+    today: date | None = None,
+) -> list[str]:
     """③ 놓침을 시끄럽게: 원문에 정밀 추출된 신호가 최종 plan 슬롯에 하나도 안 잡혔으면(조용한 드롭)
     사람이 읽는 경고로 돌려준다. 결정론이라 rules/auto 양쪽에서 항상 돈다(LLM 의미검증 게이트의 보완재).
 
@@ -8627,7 +8063,12 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
     # 조용한 드롭이다('2018, 2019년 …'이 기간 필터 없는 전 기간 집계로 나가는 사고). 창 소속을 되찾는
     # 것은 calendar_window_claim 이 맡고, 되찾지 못한 창(소속 모호·해당 팩트 없음)은 여기서 고지한다 —
     # 연도 명시 절대 창만 보므로 상대 기간('최근 3개월')·숫자 오탐은 대상이 아니다.
-    for window in _unclaimed_calendar_windows(parse_calendar_windows(text), query_plan, text):
+    for window in _unclaimed_calendar_windows(
+        parse_calendar_windows(text, today=today),
+        query_plan,
+        text,
+        today=today,
+    ):
         warnings.append(f"기간 '{window['label']}' 조건")
 
     # 장바구니: 원문에 '장바구니'가 있는데 어떤 카트 슬롯도 안 잡혔으면 드롭(존재/부재/보관/유형/개수 전부).
@@ -8647,6 +8088,8 @@ def _deterministic_dropped_conditions(original_query: str, query_plan: dict[str,
 def _refresh_unresolved_source_conditions(
     original_query: str,
     query_plan: dict[str, Any],
+    *,
+    today: date | None = None,
 ) -> list[dict[str, Any]]:
     """원문에서 감지했지만 plan 슬롯으로 귀결하지 못한 조건을 실행 IR에 봉인한다.
 
@@ -8742,7 +8185,9 @@ def _refresh_unresolved_source_conditions(
         }
         for match in _SCOPE_PLACEHOLDER_QUESTION_RE.finditer(original_query or "")
     ]
-    labels = _deterministic_dropped_conditions(original_query, query_plan)
+    labels = _deterministic_dropped_conditions(
+        original_query, query_plan, today=today
+    )
     unresolved = [
         {
             "id": "usr_" + hashlib.sha256(
@@ -8847,7 +8292,8 @@ def _verify_sql_semantic_invariants(
     #     시각 컬럼이 전혀 없으면, 시각을 표현 못 하는 빌더가 날짜만 걸고 조건을 넓힌 것이다. 슬롯
     #     이름이 아니라 구조(from/to 창 + 시각 키)로 훑는다 — 새 창 슬롯도 자동으로 검사받게.
     dropped_time_labels = _plan_time_bounded_window_labels(plan)
-    if dropped_time_labels and _ORDER_TIME_COLUMN not in (sql or ""):
+    time_column = _purchase_product_registry()["order_header"]["time_column"]
+    if dropped_time_labels and time_column not in (sql or ""):
         issues.append({
             "type": "time_window_dropped",
             "detail": "시각 조건("
@@ -8888,23 +8334,18 @@ def _semantic_evidence_sources() -> dict[str, tuple[str, ...]]:
     """행동 도메인별 허용 SQL 근거 소스. 설정을 우선해 DB 스왑 시 검증도 함께 이동한다."""
     order_cfg = _order_count_targets_config()
     cart_cfg = _cart_targets_registry()
-    campaign_cfg = _MEMBER_TARGET_FILTERS.get("campaign_response_targets", {})
-    contact_cfg = campaign_cfg.get("contact_member_list", {}) if isinstance(campaign_cfg, dict) else {}
-    configured_purchase_tables = order_cfg.get("evidence_tables")
-    purchase_tables = (
-        [str(value) for value in configured_purchase_tables if isinstance(value, str) and value]
-        if isinstance(configured_purchase_tables, list)
-        else [str(order_cfg.get("table") or "CRM_SL_ORDERHEADERMALL"), "CRM_SL_ORDERDETAILMALL"]
-    )
+    campaign_cfg = _campaign_response_registry()
+    contact_cfg = campaign_cfg["contact_member_list"]
+    purchase_tables = [str(value) for value in order_cfg["evidence_tables"]]
     return {
         "purchase": tuple(_unique_strings(purchase_tables)),
-        "cart": (str(cart_cfg.get("table") or "ODS_MALL_OMS_CART"),),
+        "cart": (str(cart_cfg["table"]),),
         "campaign_response": tuple(_unique_strings([
-            str(campaign_cfg.get("table") or "MCS_CAMP_MBR_RSPN_FT") if isinstance(campaign_cfg, dict) else "MCS_CAMP_MBR_RSPN_FT",
-            str(contact_cfg.get("table") or "Z_CAMP_MBR") if isinstance(contact_cfg, dict) else "Z_CAMP_MBR",
+            str(campaign_cfg["table"]),
+            str(contact_cfg["table"]),
         ])),
         "coupon": tuple(_unique_strings([
-            str(campaign_cfg.get("table") or "MCS_CAMP_MBR_RSPN_FT") if isinstance(campaign_cfg, dict) else "MCS_CAMP_MBR_RSPN_FT",
+            str(campaign_cfg["table"]),
         ])),
         "login": (_member_table(),),
         "dormancy": (_member_table(),),
@@ -9194,6 +8635,7 @@ def _entity_set_issue_is_deterministically_covered(
         _entity_set_config(),
         member_alias=_member_alias(),
         member_key=_member_key_column(),
+        reference_date=_EXECUTION_REFERENCE_DATE.get(),
     )
     if not predicate:
         return False
@@ -9809,6 +9251,7 @@ def _compiled_entity_set_condition(query_plan: dict[str, Any]) -> dict[str, Any]
         config,
         member_alias=_member_alias(),
         member_key=_member_key_column(),
+        reference_date=_EXECUTION_REFERENCE_DATE.get(),
     )
     return entity_set if isinstance(predicate, str) and predicate.strip() else None
 
@@ -9981,8 +9424,6 @@ def _semantic_missing_field_resolution(
     if not requirement_id:
         return None
     return semantic_resolution.resolve_missing_field(requirement_id, evidence)
-
-
 
 
 def _common_sense_external_contract_errors(
@@ -10266,7 +9707,7 @@ def _plan_validation_blocking_sql_result(
     }
 
 
-def _semantic_compile_context() -> semantic_plan_bridge.CompileContext:
+def _semantic_compile_context(today: date | None = None) -> semantic_plan_bridge.CompileContext:
     """실행 레지스트리 → SemanticPlan 컴파일 컨텍스트(주입 지점 하나)."""
     profile_metrics, profile_date_states = metric_registry.profile_slot_vocab()
     return semantic_plan_bridge.build_context(
@@ -10286,13 +9727,19 @@ def _semantic_compile_context() -> semantic_plan_bridge.CompileContext:
         # 타입 판정(정규화 계층)이 쓰는 어휘는 **LLM 에 노출되는 것과 같은 이름**이어야 한다 —
         # 노출 어휘와 판정 어휘가 갈리면 "프롬프트엔 있는데 실행기는 모른다"가 다시 생긴다.
         node_vocabularies=_allowed_canonical_values(),
-        today=date.today(),
+        today=today,
     )
 
 
-def _semantic_reextractor(llm_model: str | None) -> Any:
+def _semantic_reextractor(
+    llm_model: str | None,
+    *,
+    current_date: str | None,
+    timezone_name: str | None,
+    current_datetime: str | None,
+) -> Any:
     """coverage 누락 구간만 다시 읽는 LLM 재추출기(없으면 None — 정직한 결핍 보고로 귀결)."""
-    if not llm_model:
+    if not llm_model or not current_date:
         return None
 
     def reextract(
@@ -10311,7 +9758,9 @@ def _semantic_reextractor(llm_model: str | None) -> Any:
         candidate = _structure_campaign_query_plan_v4(
             query,
             StructuringContext(
-                current_date=date.today().isoformat(), timezone=os.getenv("GRAPH_RAG_TIMEZONE")
+                current_date=current_date,
+                timezone=timezone_name,
+                current_datetime=current_datetime,
             ),
             llm_model,
             extra_instruction=instruction,
@@ -10364,7 +9813,11 @@ def _mark_canonical_event_ir_lowering_failure(
 
 
 def _apply_semantic_plan_pipeline(
-    query_plan: dict[str, Any], query: str, *, llm_model: str | None = None
+    query_plan: dict[str, Any],
+    query: str,
+    *,
+    llm_model: str | None = None,
+    structuring_context: StructuringContext | None = None,
 ) -> None:
     """Lower meaning once, preferring the canonical Event IR boundary.
 
@@ -10497,12 +9950,30 @@ def _apply_semantic_plan_pipeline(
         )
         return
 
+    reference_date: date | None = None
+    current_date = structuring_context.current_date if structuring_context is not None else None
+    if current_date:
+        try:
+            reference_date = date.fromisoformat(current_date)
+        except ValueError:
+            reference_date = None
     try:
         semantic_plan_bridge.apply(
             query_plan,
             query,
-            context=_semantic_compile_context(),
-            reextract=_semantic_reextractor(llm_model),
+            context=_semantic_compile_context(reference_date),
+            reextract=_semantic_reextractor(
+                llm_model,
+                current_date=current_date,
+                timezone_name=(
+                    structuring_context.timezone if structuring_context is not None else None
+                ),
+                current_datetime=(
+                    structuring_context.current_datetime
+                    if structuring_context is not None
+                    else None
+                ),
+            ),
             available_months=_attribute_snapshot_months(),
         )
     except Exception as exc:  # noqa: BLE001 — 배선 사고를 '미지원'으로 표시하면 거짓 선언이 된다.
@@ -10626,6 +10097,47 @@ def _audience_authority_blocking_sql_result(
     }
 
 
+def _member_target_filters_blocking_sql_result() -> dict[str, Any] | None:
+    """물리 회원 바인딩이 없으면 어떤 SQL 후보도 만들지 않는다."""
+
+    if _MEMBER_TARGET_FILTERS_ERROR is None:
+        return None
+    failure_reason = "member_target_filters_unavailable"
+    message = "회원 타겟 물리 바인딩 설정을 읽거나 검증하지 못했습니다. 운영 설정을 확인해 주세요."
+    missing = [_missing_input_condition(
+        "system.member_target_filters",
+        failure_reason,
+        message,
+    )]
+    return {
+        "sql": None,
+        "blocked_sql": None,
+        "target_connection": None,
+        "target_dialect": None,
+        "selected": None,
+        "candidates": [],
+        "candidate_count": 0,
+        "condition_tokens": [],
+        "required_conditions": [],
+        "input_validation": {
+            "is_satisfied": False,
+            "missing_conditions": missing,
+            "clarification_questions": [],
+        },
+        "missing_input_conditions": missing,
+        "clarification_questions": [],
+        "semantic_verification": {"ran": False},
+        "llm_fallback_used": False,
+        "generation_source": None,
+        "confidence": _failed_sql_confidence(failure_reason),
+        "is_success": False,
+        "failure_reason": failure_reason,
+        "unsupported_reason": failure_reason,
+        "interpretation_status": "unsupported",
+        "configuration_errors": [failure_reason],
+    }
+
+
 def build_sql_result(
     graph: nx.Graph,
     query: str,
@@ -10638,17 +10150,26 @@ def build_sql_result(
     original_query: str | None = None,
     prompt_dir: Path | None = None,
     semantic_verification_model: str | None = None,
+    structuring_context: StructuringContext | None = None,
 ) -> dict[str, Any]:
     # 권위 값 검사는 **어떤 소비자보다 먼저** 온다. 아래 의미 파이프라인이 권위를 읽으므로,
     # 이 자리를 지나치면 오타는 예외로 올라가 명명되지 않은 500 이 된다.
     authority_block = _audience_authority_blocking_sql_result(query_plan)
     if authority_block is not None:
         return authority_block
+    registry_block = _member_target_filters_blocking_sql_result()
+    if registry_block is not None:
+        return registry_block
     if isinstance(query_plan, CampaignQueryPlanV4):
         verify_campaign_query_identity(query_plan)
     external_condition_block = _external_condition_blocking_sql_result(query_plan)
     if external_condition_block is not None:
         return external_condition_block
+    reference_date = (
+        _structuring_reference_date(structuring_context)
+        if structuring_context is not None
+        else None
+    )
     # 의미 → 실행 플랜 단일 경로(2026-08-02). 원문을 다시 읽어 슬롯을 채우던 결정론 백필
     # 6종과 결핍 사후 삭제 4종이 여기로 대체됐다: LLM 이 낸 SemanticPlanV2 노드를 정규화 →
     # coverage 검증(+누락 구간만 재추출) → capability 판정 → 결정론 컴파일한다.
@@ -10657,8 +10178,17 @@ def build_sql_result(
     # 끝내므로 구제가 도달하지 못했고(실측 2026-08-02: 40줄 차이로 영영 도달 불가), 무엇보다 그
     # 슬롯 청구가 파이프라인의 소유 판정 입력이 되어야 같은 어구를 다시 방출한 노드가 '유실된 의미'가
     # 아니라 중복으로 판정된다. 슬롯은 fill-if-empty 라 구조화기가 이미 채운 값은 덮지 않는다.
-    behavior_demotion.normalize_lapsed_purchase_pattern(query_plan, source_text=original_query or query)
-    _apply_semantic_plan_pipeline(query_plan, original_query or query, llm_model=llm_model)
+    behavior_demotion.normalize_lapsed_purchase_pattern(
+        query_plan,
+        source_text=original_query or query,
+        reference_date=reference_date,
+    )
+    _apply_semantic_plan_pipeline(
+        query_plan,
+        original_query or query,
+        llm_model=llm_model,
+        structuring_context=structuring_context,
+    )
     # 이 지점은 **검증만** 한다 — 플랜을 바꾸지 않고, 컴파일 가능한지만 본다.
     relational_ir_block = _relational_ir_blocking_sql_result(query_plan)
     if relational_ir_block is not None:
@@ -10720,15 +10250,19 @@ def build_sql_result(
     # 미귀결 조건의 보완은 파이프라인의 coverage 재추출(원문 누락 구간만 1회)이 담당한다 —
     # 여기서 슬롯 재방출을 한 번 더 시도하던 배선(slot_reemission)은 삭제됐다.
     unresolved_source_conditions = _refresh_unresolved_source_conditions(
-        original_query or query, query_plan
+        original_query or query, query_plan, today=reference_date
     )
     if unresolved_source_conditions:
         # 미해결 조건 때문에 결정론 후보가 사라진 뒤 ``not candidates`` 분기로 자유 SQL이 다시
         # 호출되면 fail-close가 우회된다. 생성 후보를 만들기 전에 명시적으로 종료한다.
         return _unresolved_source_blocking_sql_result(unresolved_source_conditions)
-    condition_tokens = build_verified_condition_tokens(query_plan)
+    condition_tokens = build_verified_condition_tokens(
+        query_plan, reference_date=reference_date
+    )
     input_validation = validate_required_input_conditions(query_plan, condition_tokens)
-    required_conditions = required_sql_conditions(query_plan)
+    required_conditions = required_sql_conditions(
+        query_plan, reference_date=reference_date
+    )
     # 슬롯 파서가 조건을 구조화하지 못한 것과 '표현할 수 없는 요청'은 다르다. 닫힌 IR 로 요청 전체를
     # 표현할 수 있으면 그것이 더 정확한 근거이므로 확인 요청 대신 그 후보로 진행한다. IR 은 어휘가
     # 레지스트리로 검증되고 회원 투영이 컴파일러 소유라, 슬롯 없이도 임의 SQL 이 나올 수 없다.
@@ -10818,7 +10352,9 @@ def build_sql_result(
     if executable_validation.status != plan_validation.EXECUTABLE:
         return _plan_validation_blocking_sql_result(executable_validation, query_plan)
     template_candidate = compile_executable_plan(
-        query_plan, validation_result=executable_validation
+        query_plan,
+        validation_result=executable_validation,
+        reference_date=reference_date,
     )
     candidates = [template_candidate] if template_candidate is not None else []
     if structured_ir_candidate is not None:
@@ -11285,14 +10821,18 @@ def build_sql_result(
     # (canonical_signal_coverage). 권위를 이유로 통째로 끄면 IR 이 표현하지 못하는 축이 조용히 사라진다.
     try:
         dropped_signal_warnings = _deterministic_dropped_conditions(
-            original_query or query, query_plan
+            original_query or query, query_plan, today=reference_date
         )
     except Exception:
         dropped_signal_warnings = []
     # 미소비 리터럴 감사(비차단 자문): 결정론 드롭 감지기가 오탐 우려로 제외한 숫자/기간 family 의
     # 사각을 채운다. 차단으로 승격하려면 아래 invariants 인자에 넘기는 한 곳만 바꾸면 된다.
     try:
-        literal_binding_advisories = semantic_requirements.unconsumed_literal_advisories(query_plan, original_query or query)
+        literal_binding_advisories = semantic_requirements.unconsumed_literal_advisories(
+            query_plan,
+            original_query or query,
+            reference_date=reference_date,
+        )
     except Exception:
         literal_binding_advisories = []
     # 적재 부족 고지(비차단): "SQL 은 정확한데 실적재가 얕아 0건일 수 있다"를 사용자에게 알린다.
@@ -11437,7 +10977,9 @@ def _compiled_event_condition_receipts(query_plan: dict[str, Any]) -> list[dict[
     return receipts
 
 
-def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
+def build_verified_condition_tokens(
+    query_plan: dict[str, Any], *, reference_date: date | None = None
+) -> list[dict[str, Any]]:
     tokens: list[dict[str, Any]] = []
     target_user = query_plan.get("target_user", {})
     campaign_constraints = query_plan.get("campaign_constraints", {})
@@ -11532,7 +11074,7 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
         granularity = "month" if birthday_target.get("granularity") == "month" else "day"
         _add_token(
             tokens, "target_user.birthday_target", "birthday", "=", granularity,
-            [_member_birthday_predicate(granularity)], [],
+            [_member_birthday_predicate(granularity, reference_date=reference_date)], [],
         )
 
     for index, threshold in enumerate(target_user.get("coupon_usage_thresholds", []) or []):
@@ -11556,7 +11098,10 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
         _add_token(
             tokens, "target_user.signup_target", "signup", ">=",
             signup_days if isinstance(signup_days, int) else "default",
-            [_member_signup_predicate(signup_days if isinstance(signup_days, int) else None)], [],
+            [_member_signup_predicate(
+                signup_days if isinstance(signup_days, int) else None,
+                reference_date=reference_date,
+            )], [],
         )
 
     selection = query_plan.get("member_metric_selection")
@@ -11622,6 +11167,8 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
         source = condition.get("profile_source")
         operator = condition.get("operator")
         right = condition.get("right_expression")
+        if condition.get("anchor") == "reference_date" and reference_date is not None:
+            right = _sql_quote(reference_time.relative_day_char8(0, reference_date=reference_date))
         if not isinstance(source, dict) or operator not in {"=", ">", ">=", "<", "<="}:
             continue
         alias, column, table = source.get("alias"), source.get("column"), source.get("table")
@@ -11680,6 +11227,7 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
             _entity_set_config(),
             member_alias=_member_alias(),
             member_key=_member_key_column(),
+            reference_date=_EXECUTION_REFERENCE_DATE.get(),
         )
         if predicate:
             ast = entity_set.get("derived_set_ast")
@@ -11706,16 +11254,26 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
     ):
         _add_token(
             tokens, "target_user.purchase_membership", "purchase", "exists",
-            purchase_membership.get("window_days") or "any_time",
-            [_purchase_membership_predicate(purchase_membership.get("window_days"))],
+            purchase_membership.get("window") or purchase_membership.get("window_days") or "any_time",
+            [_purchase_membership_predicate(
+                purchase_membership.get("window_days"),
+                window=purchase_membership.get("window"),
+            )],
             [_order_count_targets_config().get("table")],
         )
 
     purchase_inactivity = target_user.get("purchase_inactivity")
-    if isinstance(purchase_inactivity, dict) and isinstance(purchase_inactivity.get("min_days"), int):
+    if isinstance(purchase_inactivity, dict) and (
+        isinstance(purchase_inactivity.get("min_days"), int)
+        or isinstance(purchase_inactivity.get("window"), Mapping)
+    ):
         _add_token(
             tokens, "target_user.purchase_inactivity", "purchase", "not_exists",
-            purchase_inactivity["min_days"], [_purchase_inactivity_predicate(purchase_inactivity["min_days"])],
+            purchase_inactivity.get("window") or purchase_inactivity.get("min_days"),
+            [_purchase_inactivity_predicate(
+                purchase_inactivity.get("min_days"),
+                window=purchase_inactivity.get("window"),
+            )],
             [_order_count_targets_config().get("table")],
         )
 
@@ -12048,61 +11606,13 @@ def _region_value_from_surface(operand: dict[str, Any], canonical: Any) -> str |
 # 여기 리스트는 집합식(데모 users.region) 경로 전용이다.
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # 집합 연산이 실제 의미를 갖는 '세그먼트류' 피연산자 canonical(행동/관심/채널/성향). 이 중 하나라도 있으면
 # operator-scan 집합식이라도 진짜 집합연산으로 보고 유지한다. 나머지(성별/연령/등급/지역/지표)는 결정론
 # dimension/속성/집계 필터가 소유하므로 operator-scan 집합식은 리던던트다.
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # 조건 소유권 정책 JSON(condition_ownership_policy.json)과 로더는 rules 계층 철거(ac924ff)로 삭제됐다.
 # 남은 소비: condition_reconciliation.conflict_clarifications(트레이스 기반 충돌 확인요청)·UNIVERSE_TYPE.
-
-
-
-
 
 
 def _compile_set_operand(operand: dict[str, Any]) -> dict[str, Any]:
@@ -12152,8 +11662,6 @@ def _set_expression_canonical_values(expressions: list[dict[str, Any]]) -> set[s
     return values
 
 
-
-
 def _set_ast_canonical_values(ast: Any) -> set[str]:
     if not isinstance(ast, dict):
         return set()
@@ -12164,8 +11672,6 @@ def _set_ast_canonical_values(ast: Any) -> set[str]:
     values.update(_set_ast_canonical_values(ast.get("left")))
     values.update(_set_ast_canonical_values(ast.get("right")))
     return values
-
-
 
 
 def _add_semantic_resolution_token(tokens: list[dict[str, Any]], resolution: dict[str, Any]) -> None:
@@ -12453,8 +11959,8 @@ def _cart_keep_predicates(query_plan: dict[str, Any], alias: str = "A") -> list[
         return []
     active = _cart_targets_registry().get("active_condition")
     active = active if isinstance(active, dict) else {}
-    column = str(active.get("column") or "C.KEEP_YN").split(".")[-1]
-    value = str(active.get("value") or "Y")
+    column = str(active["column"]).split(".")[-1]
+    value = str(active["value"])
     return [compiler_strategies.render_direct_column_predicate(column=column, operator="eq", values=(value,), alias=alias)]
 
 
@@ -12477,7 +11983,6 @@ def _entity_set_config() -> dict[str, Any]:
 # SemanticPlanV2 EntitySetMembership 노드를 LegacyQueryPlanCompiler 가 컴파일해서만 만들어진다.
 
 
-
 def build_entity_set_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     """파생 엔터티 집합 조건('가장 많이 팔린 상품 N개를 구매한 회원')을 실추출 SQL 로 컴파일한다.
 
@@ -12489,7 +11994,11 @@ def build_entity_set_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[s
     if not isinstance(node, dict):
         return None
     predicate = compile_entity_set_predicate(
-        node, _entity_set_config(), member_alias=_member_alias(), member_key=_member_key_column()
+        node,
+        _entity_set_config(),
+        member_alias=_member_alias(),
+        member_key=_member_key_column(),
+        reference_date=_EXECUTION_REFERENCE_DATE.get(),
     )
     if predicate is None:
         return None
@@ -12542,7 +12051,10 @@ def _build_cart_targets_candidate(query_plan: dict[str, Any]) -> dict[str, Any] 
         # 회원 속성(성별/연령/등급 등)이 함께 오면 형제 빌더와 동일하게 B 술어로 AND 결합하고,
         # 실DB 미지원 조건은 dropped 로 고지한다 — 장바구니 경로만 조건을 조용히 버리지 않게.
         compiled = compile_member_target_conditions(query_plan)
-        column_short = brand_filter.get("column", "CRM_CM_PRODUCT.BRAND_ID").split(".")[-1]
+        column = brand_filter.get("column")
+        if not isinstance(column, str) or not column:
+            return None
+        column_short = column.split(".")[-1]
         ir_operator = _dimension_filter_operator(brand_filter)
         if ir_operator is None:
             return None
@@ -12877,6 +12389,21 @@ def _guard_coupon_semantic_preservation(query_plan: dict[str, Any]) -> None:
 _SQL_VALIDATION_CONTEXT: contextvars.ContextVar[
     tuple[int, plan_validation.PlanValidationResult] | None
 ] = contextvars.ContextVar("sql_validation_context", default=None)
+_EXECUTION_REFERENCE_DATE: contextvars.ContextVar[date | None] = contextvars.ContextVar(
+    "execution_reference_date", default=None
+)
+
+
+def _plan_requires_reference_date(query_plan: Mapping[str, Any]) -> bool:
+    if reference_time.payload_requires_reference_date(query_plan):
+        return True
+    activity = frozenset(MEMBER_ACTIVITY_FILTERS)
+    return any(
+        value in activity
+        for container in (query_plan.get("target_user"), query_plan.get("exclude"))
+        if isinstance(container, Mapping)
+        for value in (container.get("lifecycle") or [])
+    )
 
 
 def project_executable_plan(query_plan: dict[str, Any]) -> dict[str, Any]:
@@ -12913,8 +12440,17 @@ def compile_executable_plan(
     query_plan: dict[str, Any],
     *,
     validation_result: plan_validation.PlanValidationResult | None = None,
+    reference_date: date | None = None,
 ) -> dict[str, Any] | None:
     """The single admission facade for executable SQL template compilation."""
+
+    if reference_date is None and _plan_requires_reference_date(query_plan):
+        query_plan.setdefault("unsupported", {
+            "reason": "reference_date_required",
+            "message": "상대 날짜 조건을 실행하려면 요청 기준일이 필요합니다.",
+            "clarification": "기준 시각과 timezone을 포함해 다시 요청해 주세요.",
+        })
+        return None
 
     current = plan_validation.validate_executable_plan(query_plan)
     if validation_result is not None and (
@@ -12930,12 +12466,12 @@ def compile_executable_plan(
         return None
     projected = project_executable_plan(query_plan)
     token = _SQL_VALIDATION_CONTEXT.set((id(projected), validation))
+    date_token = _EXECUTION_REFERENCE_DATE.set(reference_date)
     try:
         return _compile_sql_template_candidate_validated(projected)
     finally:
+        _EXECUTION_REFERENCE_DATE.reset(date_token)
         _SQL_VALIDATION_CONTEXT.reset(token)
-
-
 
 
 def _candidate_drops_conditions(candidate: Any) -> bool:
@@ -12954,6 +12490,8 @@ def _admitted_sql_builder(builder: Any) -> Any:
         return builder
 
     def admitted(query_plan: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
+        if _plan_requires_reference_date(query_plan) and _EXECUTION_REFERENCE_DATE.get() is None:
+            return None
         if audience_authority.requires_event_ir(query_plan):
             if getattr(builder, "__name__", "") != "build_event_expression_sql_candidate":
                 return None
@@ -13097,7 +12635,11 @@ def build_analytical_aggregation_sql_candidate(query_plan: dict[str, Any]) -> di
     if not isinstance(intent, dict) or not isinstance(request, dict):
         return None
     try:
-        ast = compile_aggregation_ast(intent, request)
+        ast = compile_aggregation_ast(
+            intent,
+            request,
+            reference_date=_EXECUTION_REFERENCE_DATE.get(),
+        )
     except (KeyError, TypeError, ValueError) as exc:
         query_plan["unsupported"] = {
             "reason": "analytical_sql_compilation_failed",
@@ -13164,15 +12706,11 @@ def _unsupported_condition_label(path: str) -> str:
     return f"{label}: {value}" if value else label
 
 
-_DIMENSION_OPERATOR_SQL_MAP: dict[str, str] = {"IN": "IN", "NOT_IN": "NOT IN"}
+_DIMENSION_OPERATOR_SQL_MAP = member_conditions.DIMENSION_OPERATOR_SQL_MAP
 
 
 def _dimension_filter_operator(dimension_filter: Mapping[str, Any]) -> str | None:
-    """IR operator를 닫힌 enum으로 검증한다. 누락은 기존 plan 호환을 위해 IN으로 본다."""
-
-    raw = dimension_filter.get("operator")
-    operator = "IN" if raw is None else str(raw).strip().upper()
-    return operator if operator in _DIMENSION_OPERATOR_SQL_MAP else None
+    return member_conditions.dimension_filter_operator(dimension_filter)
 
 
 def _semantic_ast_gate_enabled() -> bool:
@@ -13436,67 +12974,19 @@ def _validate_conceptual_resolution_receipts(
 def _validate_compound_dimension_filters(
     query_plan: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
-    """중첩 필터의 닫힌 문법을 검증해 컬럼/연산자 주입과 계층 유실을 막는다."""
-
-    errors: list[dict[str, Any]] = []
-    allowed_columns = {"SIDO", "SIGUNGU"}
-    for outer_index, compound in enumerate(query_plan.get("compound_dimension_filters") or []):
-        path = f"compound_dimension_filters.{outer_index}"
-        if not isinstance(compound, Mapping) or compound.get("logic") != "OR":
-            errors.append({"code": "COMPOUND_FILTER_INVALID", "path": path,
-                           "message": "compound filter must be an OR object"})
-            continue
-        groups = compound.get("groups")
-        if not isinstance(groups, list) or not groups:
-            errors.append({"code": "COMPOUND_FILTER_EMPTY", "path": path,
-                           "message": "compound filter must contain groups"})
-            continue
-        for group_index, group in enumerate(groups):
-            group_path = f"{path}.groups.{group_index}"
-            if not isinstance(group, Mapping) or group.get("logic") != "AND":
-                errors.append({"code": "COMPOUND_GROUP_INVALID", "path": group_path,
-                               "message": "compound group must be an AND object"})
-                continue
-            filters = group.get("filters")
-            if not isinstance(filters, list) or not filters:
-                errors.append({"code": "COMPOUND_GROUP_EMPTY", "path": group_path,
-                               "message": "compound group must contain filters"})
-                continue
-            seen_columns: set[str] = set()
-            for filter_index, item in enumerate(filters):
-                item_path = f"{group_path}.filters.{filter_index}"
-                if not isinstance(item, Mapping):
-                    errors.append({"code": "COMPOUND_ITEM_INVALID", "path": item_path,
-                                   "message": "compound filter item must be an object"})
-                    continue
-                table = str(item.get("table") or "")
-                column = str(item.get("column") or "").split(".")[-1].upper()
-                value = item.get("value")
-                if table != _member_table() or column not in allowed_columns:
-                    errors.append({"code": "COMPOUND_COLUMN_UNSUPPORTED", "path": item_path,
-                                   "message": "compound region filter must use CRM member region columns"})
-                if item.get("operator") != "=":
-                    errors.append({"code": "COMPOUND_OPERATOR_UNSUPPORTED", "path": item_path,
-                                   "message": "compound region filter only supports equality"})
-                if not isinstance(value, str) or not value:
-                    errors.append({"code": "COMPOUND_VALUE_INVALID", "path": item_path,
-                                   "message": "compound region filter value must be non-empty"})
-                if column in seen_columns:
-                    errors.append({"code": "COMPOUND_COLUMN_DUPLICATE", "path": item_path,
-                                   "message": "a compound group cannot repeat a region column"})
-                seen_columns.add(column)
-    return errors
+    return member_conditions.validate_compound_dimension_filters(
+        query_plan,
+        member_table=_member_table(),
+        allowed_columns=_member_region_short_columns(),
+    )
 
 
 def _compile_compound_dimension_filter(compound: Mapping[str, Any]) -> str:
-    groups: list[str] = []
-    for group in compound.get("groups") or []:
-        predicates = []
-        for item in group.get("filters") or []:
-            column = str(item["column"]).split(".")[-1].upper()
-            predicates.append(f"B.{column} = {_sql_quote(str(item['value']))}")
-        groups.append("(" + " AND ".join(predicates) + ")")
-    return "(" + " OR ".join(groups) + ")"
+    return member_conditions.compile_compound_dimension_filter(
+        compound,
+        base_alias=_member_alias(),
+        quote_literal=_sql_quote,
+    )
 
 
 def _invalid_dimension_filters_sql_result(errors: list[dict[str, Any]]) -> dict[str, Any]:
@@ -13523,431 +13013,81 @@ def _invalid_dimension_filters_sql_result(errors: list[dict[str, Any]]) -> dict[
     }
 
 
-def _member_region_predicates(region_codes: dict[str, list[str]]) -> list[str]:
-    """지역 컬럼(SIDO/SIGUNGU) 조건의 결합 방식을 행정 계층 데이터로 판별해 술어 목록을 만든다.
-
-    두 컬럼이 함께 잡혔을 때: 언급된 모든 시군구가 언급된 시도 소속이면 '인천 서구' 같은 수식
-    관계로 보고 AND(각각 별도 술어), 하나라도 소속이 아니면 '금천구랑 인천' 같은 지역 나열로 보고
-    OR(단일 괄호 술어)로 묶는다 — 나열을 AND 로 붙이면 존재하지 않는 조합(인천의 금천구)이 되어
-    조용히 0명이 추출되는 오류를 막는다. 소속 판별 근거는 member_value_index 의 region_hierarchy
-    (주소 마스터 스냅샷)이며, 계층 정보가 없으면 기존 동작(AND)을 유지한다.
-    """
-    if not region_codes:
-        return []
-
-    def _in_predicate(column: str) -> str:
-        return "B." + column + " IN (" + ", ".join(_sql_quote(code) for code in region_codes[column]) + ")"
-
-    sido_codes = region_codes.get("SIDO")
-    sigungu_codes = region_codes.get("SIGUNGU")
-    if not sido_codes or not sigungu_codes:
-        return [_in_predicate(column) for column in region_codes]
-
+def _member_region_predicates(
+    region_codes: dict[str, list[str]],
+) -> list[str]:
     index = _load_member_value_index(str(DEFAULT_MEMBER_VALUE_INDEX_PATH)) or {}
-    sigungu_to_sido = index.get("region_hierarchy", {}).get("sigungu_to_sido", {})
-    hierarchical = bool(sigungu_to_sido) and all(
-        any(sido in sido_codes for sido in sigungu_to_sido.get(sigungu, []))
-        for sigungu in sigungu_codes
+    hierarchy = index.get("region_hierarchy")
+    hierarchy = hierarchy if isinstance(hierarchy, Mapping) else {}
+    sigungu_to_sido = hierarchy.get("sigungu_to_sido")
+    sigungu_to_sido = (
+        sigungu_to_sido if isinstance(sigungu_to_sido, Mapping) else {}
     )
-    if hierarchical or not sigungu_to_sido:
-        return [_in_predicate("SIDO"), _in_predicate("SIGUNGU")]
-    return ["(" + _in_predicate("SIDO") + " OR " + _in_predicate("SIGUNGU") + ")"]
-
-
-def compile_member_target_conditions(query_plan: dict[str, Any]) -> dict[str, Any]:
-    """query_plan 의 타겟 조건을 실회원 테이블(CRM_MB_BASEINFO) 술어로 컴파일한다.
-
-    조건 -> 실컬럼 매핑을 한곳(MEMBER_EQ_FILTERS/MEMBER_ACTIVITY_FILTERS)에서 조회하므로 지원 속성의
-    어떤 조합(포함/제외/연령 …)도 자동으로 술어 목록이 된다. CRM_MB_BASEINFO 단독으로 표현할 수 없는
-    조건은 그 경로(path)를 unsupported 에 모은다. 호출부는 unsupported 가 비어있을 때만 실DB SQL 을 쓴다.
-
-    반환 dict: predicates(WHERE 술어), labels(세그먼트 라벨 canonical 값), forces_state(기본 상태필터
-    (NORMAL 한정) 해제 여부 — 회원상태 직접 지정 또는 미접속 재활성화 신호), has_signal(회원 대상 신호
-    존재), unsupported(미지원 조건 path 목록).
-    """
-    target_user = query_plan.get("target_user", {})
-    exclude = query_plan.get("exclude", {})
-    campaign = query_plan.get("campaign_constraints", {})
-    # LLM 어휘 별칭(withdrawn_user 등)을 컴파일 가능한 canonical(withdrawn)로 먼저 해석한다 — 플래너에
-    # 허용된 어휘가 컴파일러 매핑보다 넓어, 별칭이 나오면 '미지원 조건'으로 SQL 이 통째로 막혔다.
-    # 별칭 표는 설정(lifecycle_aliases)이 소유하므로 새 별칭은 한 줄 추가로 열린다.
-    target_user = _resolve_plan_lifecycle_aliases(target_user)
-    exclude = _resolve_plan_lifecycle_aliases(exclude)
-    eq_includes: dict[str, list[str]] = {}  # 실컬럼 -> 포함 저장값들(같은 컬럼은 IN 으로 OR)
-    include_categories: set[str] = set()
-    other_predicates: list[str] = []  # 제외(<>)/연령/활동 등은 그대로 AND
-    # 외부 회원 프로필 조건은 같은 table/alias/grain끼리 한 EXISTS로 묶는다. 서로 다른 월 행에
-    # 조건이 나뉘어 참이 되는 오류를 막고, 최신 스냅샷 필터도 한 번만 적용한다.
-    profile_predicates: dict[tuple[str, str, str, str, str | None], list[str]] = {}
-    labels: list[str] = []
-    unsupported: list[str] = []
-    unsupported.extend(
-        str(error.get("path") or "dimension_filters")
-        for error in _validate_dimension_filters(query_plan)
+    sido_column, sigungu_column = _member_region_short_columns()
+    return member_conditions.compile_member_region_filter(
+        region_codes,
+        base_alias=_member_alias(),
+        sido_column=sido_column,
+        sigungu_column=sigungu_column,
+        sigungu_to_sido=sigungu_to_sido,
+        quote_literal=_sql_quote,
     )
-    unsupported.extend(
-        str(error.get("path") or "compound_dimension_filters")
-        for error in _validate_compound_dimension_filters(query_plan)
+
+
+def _member_condition_context() -> member_conditions.MemberConditionContext:
+    return member_conditions.MemberConditionContext(
+        configuration_error=_MEMBER_TARGET_FILTERS_ERROR,
+        member_eq_filters=MEMBER_EQ_FILTERS,
+        member_activity_filters=MEMBER_ACTIVITY_FILTERS,
+        gender_terms=GENDER_TERMS,
+        dimension_operator_sql_map=_DIMENSION_OPERATOR_SQL_MAP,
+        member_table=_member_table(),
+        member_alias=_member_alias(),
+        member_age_column=_member_age_column(),
+        member_region_columns=_member_region_short_columns(),
+        reference_date_sql=_execution_reference_char8(),
+        resolve_plan_lifecycle_aliases=_resolve_plan_lifecycle_aliases,
+        validate_dimension_filters=_validate_dimension_filters,
+        validate_compound_dimension_filters=_validate_compound_dimension_filters,
+        compile_compound_dimension_filter=_compile_compound_dimension_filter,
+        dimension_filter_operator=_dimension_filter_operator,
+        member_eq_predicate=_member_eq_predicate,
+        member_activity_predicate=_member_activity_predicate,
+        member_recent_login_predicate=_member_recent_login_predicate,
+        member_birthday_predicate=_member_birthday_predicate,
+        format_threshold=_format_threshold,
+        campaign_response_exists_predicate=_campaign_response_exists_predicate,
+        coupon_usage_threshold_predicate=_coupon_usage_threshold_predicate,
+        cart_absence_predicate=_cart_absence_predicate,
+        cart_quantity_missing_predicate=_cart_quantity_missing_predicate,
+        purchase_membership_needs_own_predicate=(
+            _purchase_membership_needs_own_predicate
+        ),
+        purchase_membership_predicate=_purchase_membership_predicate,
+        purchase_inactivity_predicate=_purchase_inactivity_predicate,
+        member_signup_predicate=_member_signup_predicate,
+        member_region_predicates=_member_region_predicates,
+        sql_quote=_sql_quote,
+        unique_strings=_unique_strings,
     )
-    has_signal = False
-    # 장기 미접속(휴면 재활성화) 신호가 있으면 기본 상태필터(NORMAL 한정)를 해제한다 — "6개월 이상
-    # 접속하지 않은 휴면 고객"처럼 미접속=휴면으로 읽는 요청에서 NORMAL 이 붙으면 SLEEP/WITHDRAW 를
-    # 배제해 원문("휴면 고객")과 모순되고, 의미검증기가 이를 반전으로 오탐한다. forces_state 로 흡수한다.
-    suppresses_default_state = False
 
-    def _add_include(canonical: str) -> None:
-        category, column, value = MEMBER_EQ_FILTERS[canonical]
-        eq_includes.setdefault(column, [])
-        if value not in eq_includes[column]:
-            eq_includes[column].append(value)
-        include_categories.add(category)
 
-    def _add_profile_predicate(source: Any, predicate: str) -> bool:
-        if not isinstance(source, dict):
-            return False
-        table = source.get("table")
-        alias = source.get("alias")
-        member_column = source.get("member_column")
-        base_member_column = source.get("base_member_column")
-        grain_filter = source.get("grain_filter")
-        identifiers = (table, alias, member_column, base_member_column)
-        if not all(isinstance(value, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_\.]*", value) for value in identifiers):
-            return False
-        if grain_filter is not None and not isinstance(grain_filter, str):
-            return False
-        key = (table, alias, member_column, base_member_column, grain_filter)
-        profile_predicates.setdefault(key, []).append(predicate)
-        return True
-
-    # 성별(포함/제외)
-    gender = target_user.get("gender")
-    if gender in GENDER_TERMS:
-        _add_include(gender); labels.append(gender); has_signal = True
-    elif gender:
-        unsupported.append("target_user.gender")
-    for value in exclude.get("gender", []):
-        if value in GENDER_TERMS:
-            other_predicates.append(_member_eq_predicate(value, negate=True)); labels.append("non_" + value); has_signal = True
-        else:
-            unsupported.append("exclude.gender")
-
-    # 연령. 하·상한이 같으면(정확 연령 "30세인") >=N AND <=N 대신 = N 으로 방출한다 — 깔끔하고,
-    # 의미검증 게이트가 '>=N AND <=N'을 '=N'과 다르다고 오탐하는 것도 원천 차단한다.
-    age_min = target_user.get("age_min")
-    age_max = target_user.get("age_max")
-    age_column = _member_age_column()
-    if isinstance(age_min, int) and isinstance(age_max, int) and age_min == age_max:
-        other_predicates.append(f"{age_column} = {age_min}"); has_signal = True
-    else:
-        if isinstance(age_min, int):
-            other_predicates.append(f"{age_column} >= {age_min}"); has_signal = True
-        if isinstance(age_max, int):
-            other_predicates.append(f"{age_column} <= {age_max}"); has_signal = True
-    # 닫힌 연령 구간 제외("20대가 아닌"). 여집합이 분리 2구간이라 NOT BETWEEN 으로 뺀다(널은 BETWEEN 이 이미 거름).
-    for age_range in target_user.get("age_exclude_ranges", []):
-        if isinstance(age_range, (list, tuple)) and len(age_range) == 2 and all(isinstance(v, int) for v in age_range):
-            lo, hi = age_range
-            other_predicates.append(f"NOT ({age_column} BETWEEN {lo} AND {hi})"); has_signal = True
-
-    # lifecycle 포함(등가/활동). 같은 canonical 이 제외에도 있으면 제외가 이긴다 — 포함·제외를 둘 다
-    # 컴파일하면 `= 'Y' AND <> 'Y'` 같은 항상-거짓 술어가 되어 결과가 무조건 0명이 된다. 재작성·스코프
-    # 분리로 한 표현이 양쪽 슬롯에 들어가는 경우가 있어(예: '블랙리스트 … 아닌 고객') 결정론으로 정리한다.
-    excluded_lifecycles = {value for value in exclude.get("lifecycle", []) if isinstance(value, str)}
-    for lifecycle in target_user.get("lifecycle", []):
-        if lifecycle in excluded_lifecycles:
-            continue
-        if lifecycle == "new_user":
-            continue  # 신규 가입은 아래 signup_target 분기가 REG_DT 창 술어로 처리(미지원 아님)
-        if lifecycle in MEMBER_EQ_FILTERS:
-            _add_include(lifecycle); labels.append(lifecycle); has_signal = True
-        elif lifecycle in MEMBER_ACTIVITY_FILTERS:
-            other_predicates.append(_member_activity_predicate(MEMBER_ACTIVITY_FILTERS[lifecycle])); labels.append(lifecycle); has_signal = True; suppresses_default_state = True
-        else:
-            unsupported.append("target_user.lifecycle:" + lifecycle)
-
-    # lifecycle 제외: 등가 필터는 부정(<>), 미접속 활동 필터는 여집합(최근 N일 내 접속)으로 컴파일한다.
-    # '휴면(=N일 이상 미접속) 회원 제외'의 여집합은 '최근 N일 내 접속'으로 정확히 정의되므로
-    # (_member_recent_login_predicate 는 미접속 술어의 대칭), 등록된 모든 활동 필터에 같은 규칙이 적용된다.
-    for lifecycle in exclude.get("lifecycle", []):
-        if lifecycle in MEMBER_EQ_FILTERS:
-            _category, column, value = MEMBER_EQ_FILTERS[lifecycle]
-            # 같은 컬럼에 등가 포함이 이미 있고 그 값이 제외 값과 다르면 `<>` 는 그 등가 조건에 이미
-            # 함축된다(상태='NORMAL' 이면 <>'WITHDRAW' 는 자명). 중복 술어는 결과를 바꾸지 않으면서
-            # 의미검증기가 '요청하지 않은 추가 조건'으로 오탐하는 잡음이 되므로 라벨만 남기고 뺀다.
-            included_values = eq_includes.get(column) or []
-            if not (included_values and value not in included_values):
-                other_predicates.append(_member_eq_predicate(lifecycle, negate=True))
-            labels.append("non_" + lifecycle); has_signal = True
-        elif lifecycle in MEMBER_ACTIVITY_FILTERS:
-            other_predicates.append(_member_recent_login_predicate(MEMBER_ACTIVITY_FILTERS[lifecycle]))
-            labels.append("non_" + lifecycle); has_signal = True
-        else:
-            unsupported.append("exclude.lifecycle:" + lifecycle)
-
-    # 미접속 기간(휴면/장기 미접속): LAST_LOGIN_DATE(YYYYMMDD 문자열) 사전식 비교 술어로 컴파일한다.
-    # 미접속=휴면 재활성화 신호이므로 기본 상태필터(NORMAL 한정)를 해제한다(suppresses_default_state) —
-    # "6개월 이상 접속하지 않은 휴면 고객"에 NORMAL 을 붙이면 SLEEP/WITHDRAW 를 배제해 원문과 모순되고
-    # 의미검증기가 반전으로 오탐하기 때문. 오디언스는 LAST_LOGIN_DATE 창만으로 정의한다.
-    inactivity_period = target_user.get("inactivity_period")
-    if isinstance(inactivity_period, dict) and isinstance(inactivity_period.get("min_days"), int):
-        other_predicates.append(_member_activity_predicate(inactivity_period["min_days"])); has_signal = True; suppresses_default_state = True
-
-    # 최근 로그인 창(긍정형 접속): LAST_LOGIN_DATE >= (기준일-N일) 술어. 적재 데이터가 과거라 0명이
-    # 나올 수 있어도, 조건 표현이 가능하면 요청 기간을 왜곡하지 않고 무조건 그대로 건다.
-    recent_login = target_user.get("recent_login")
-    if isinstance(recent_login, dict) and isinstance(recent_login.get("min_days"), int):
-        other_predicates.append(_member_recent_login_predicate(recent_login["min_days"])); labels.append("recent_login"); has_signal = True
-
-    # 생일 타겟(BIRTHDAY 월일 비교; '이달 생일'은 월 비교). 년도는 비교하지 않는다.
-    birthday_target = target_user.get("birthday_target")
-    if isinstance(birthday_target, dict):
-        granularity = "month" if birthday_target.get("granularity") == "month" else "day"
-        other_predicates.append(_member_birthday_predicate(granularity)); labels.append("birthday_" + granularity); has_signal = True
-
-    # 잔액 임계값(적립금/예치금 N원 이상): 회원 테이블 잔액 컬럼 직접 비교. balance_conditions 는
-    # _apply_balance_condition_filter 가 numeric_filters(balance) 설정 기준으로 뽑는다.
-    for condition in target_user.get("balance_conditions", []):
-        if not isinstance(condition, dict):
-            continue
-        column = condition.get("column")
-        # NULL/0 구분 술어: '정보가 없는'(IS NULL, 0 과 구분)·'없거나 0원'(IS NULL OR = 0). 값이 0 인
-        # 회원과 값 자체가 없는(미기입) 회원을 다른 대상으로 취급한다([[deterministic-filter-registry]]).
-        null_mode = condition.get("null_mode")
-        if isinstance(column, str) and column and null_mode in {"is_null", "null_or_zero"}:
-            source = condition.get("profile_source")
-            if isinstance(source, dict):
-                alias = source.get("alias")
-                source_column = source.get("column") or column
-                if not (isinstance(alias, str) and isinstance(source_column, str)):
-                    continue
-                predicate = (
-                    f"{alias}.{source_column} IS NULL" if null_mode == "is_null"
-                    else f"({alias}.{source_column} IS NULL OR {alias}.{source_column} = 0)"
-                )
-                if _add_profile_predicate(source, predicate):
-                    labels.append(str(condition.get("label") or column)); has_signal = True
-                continue
-            if null_mode == "is_null":
-                other_predicates.append(f"B.{column} IS NULL")
-            else:
-                other_predicates.append(f"(B.{column} IS NULL OR B.{column} = 0)")
-            labels.append(str(condition.get("label") or column)); has_signal = True
-            continue
-        operator = condition.get("operator")
-        if not (isinstance(column, str) and column and operator in {"=", ">", ">=", "<", "<="}):
-            continue
-        threshold_expr = condition.get("threshold_expr")
-        threshold = condition.get("threshold")
-        if isinstance(threshold_expr, str) and threshold_expr:
-            right = threshold_expr  # 컬럼 대 컬럼 비교('적립금 > 예치금')
-        elif isinstance(threshold, (int, float)):
-            right = _format_threshold(threshold)
-        else:
-            continue
-        # 파생 비율 지표(하루 평균 = CNT/DAYS)는 좌변을 이미 조립된 식(column_expr)으로 쓴다.
-        column_expr = condition.get("column_expr")
-        if isinstance(column_expr, str) and column_expr:
-            left = column_expr
-        else:
-            source = condition.get("profile_source")
-            if isinstance(source, dict) and isinstance(source.get("alias"), str):
-                qualified = f"{source['alias']}.{source.get('column') or column}"
-            else:
-                qualified = f"B.{column}"
-            # zero_semantics(missing_as_zero): NULL 을 0 으로 봐야 '한 번도 …' 조건이 NULL 회원까지 포함한다.
-            left = f"COALESCE({qualified}, 0)" if condition.get("coalesce_zero") else qualified
-        predicate = f"{left} {operator} {right}"
-        source = condition.get("profile_source")
-        if isinstance(source, dict):
-            if not _add_profile_predicate(source, predicate):
-                unsupported.append("target_user.balance_conditions")
-                continue
-        else:
-            other_predicates.append(predicate)
-        labels.append(str(condition.get("label") or column)); has_signal = True
-
-    # 날짜 프로필의 현재일 상대 상태(지난/도래 전 등). 숫자 프로필과 같은 source key를 사용하므로
-    # BUY_CYCLE과 BUY_DUE_DATE처럼 한 스냅샷 행에서 동시에 만족해야 하는 조건은 하나의 EXISTS가 된다.
-    for condition in target_user.get("profile_date_conditions", []):
-        if not isinstance(condition, dict):
-            continue
-        source = condition.get("profile_source")
-        operator = condition.get("operator")
-        right = condition.get("right_expression")
-        if not isinstance(source, dict) or operator not in {"=", ">", ">=", "<", "<="}:
-            continue
-        alias = source.get("alias")
-        column = source.get("column") or condition.get("column")
-        if not (isinstance(alias, str) and isinstance(column, str) and isinstance(right, str) and right):
-            continue
-        if _add_profile_predicate(source, f"{alias}.{column} {operator} {right}"):
-            labels.append(str(condition.get("label") or condition.get("metric_id") or column)); has_signal = True
-
-    for (table, alias, member_column, base_member_column, grain_filter), predicates in profile_predicates.items():
-        clauses = [f"{alias}.{member_column} = B.{base_member_column}"]
-        if grain_filter:
-            clauses.append(grain_filter)
-        clauses.extend(_unique_strings(predicates))
-        other_predicates.append(
-            "EXISTS (SELECT 1 FROM " + table + " " + alias
-            + " WHERE " + " AND ".join(clauses) + ")"
+def compile_member_target_conditions(
+    query_plan: dict[str, Any], *, reference_date: date | None = None
+) -> dict[str, Any]:
+    date_token = (
+        _EXECUTION_REFERENCE_DATE.set(reference_date)
+        if reference_date is not None
+        else None
+    )
+    try:
+        return member_conditions.compile_member_target_conditions(
+            query_plan,
+            _member_condition_context(),
         )
-
-    # 캠페인 반응(접촉 성공/오퍼·구매 반응/쿠폰 사용): 회원키 EXISTS 서브쿼리라 회원 컬럼 술어와 똑같이
-    # AND 결합된다. 여기서 컴파일해야 어느 빌더를 타든 조건이 남는다 — 예전엔 전용 빌더만 이 조건을
-    # 알아서, '발송 성공했지만 구매하지 않은'처럼 다른 트랙(무구매 anti-join)이 이기는 프롬프트에서
-    # 캠페인 조건이 조용히 사라졌다.
-    for response in target_user.get("campaign_responses", []):
-        predicate = response.get("predicate") if isinstance(response, dict) else None
-        if not predicate:
-            continue
-        other_predicates.append(
-            _campaign_response_exists_predicate(
-                str(predicate),
-                negated=bool(response.get("negated")),
-                source=response.get("source"),
-            )
-        )
-        labels.append(str(response.get("canonical") or "campaign_response")); has_signal = True
-
-    # 쿠폰 사용 '건수' 임계(≥2·>5·범위 등): 회원별 SUM(USE_CPN_CNT) HAVING 집계를 회원키 IN 서브쿼리로
-    # 컴파일한다(사용 '여부'는 위 campaign_responses EXISTS 가 담당). 다른 회원 조건과 AND 결합된다.
-    for threshold in target_user.get("coupon_usage_thresholds", []) or []:
-        predicate = _coupon_usage_threshold_predicate(threshold) if isinstance(threshold, dict) else None
-        if predicate:
-            other_predicates.append(predicate)
-            labels.append("coupon_usage_count"); has_signal = True
-
-    # 장바구니 부재('장바구니 없는/생성 안 한'): 보관(KEEP_YN='Y') 카트 라인이 없는 회원. 회원키
-    # NOT EXISTS 라 캠페인 반응과 같이 어느 빌더에나 AND 결합된다. 구매 부재(no_purchase)와 함께 오면
-    # ("장바구니나 구매 이력 없는") 각각 NOT EXISTS/anti-join 으로 둘 다 남는다.
-    if target_user.get("cart_absence"):
-        other_predicates.append(_cart_absence_predicate())
-        labels.append("cart_absence"); has_signal = True
-
-    # 장바구니 수량 미입력('수량이 입력되지 않은'): 담은 수량(QTY)이 NULL 인 카트 라인이 있는 회원.
-    # '수량 0'(=0)이 아니라 값 자체가 미기입(NULL) — 회원키 EXISTS 라 어느 빌더에나 AND 결합된다.
-    if target_user.get("cart_quantity_missing"):
-        other_predicates.append(_cart_quantity_missing_predicate())
-        labels.append("cart_quantity_missing"); has_signal = True
-
-    # 구매 이력 존재(선택적으로 최근 N일 창). 단순 "구매한 회원"도 주문 근거 없이 회원 테이블 전체로
-    # 축약되지 않도록 반드시 주문 헤더 EXISTS로 컴파일한다.
-    purchase_membership = target_user.get("purchase_membership")
-    if _purchase_membership_needs_own_predicate(purchase_membership):
-        other_predicates.append(_purchase_membership_predicate(purchase_membership.get("window_days")))
-        labels.append("purchase_exists"); has_signal = True
-
-    # 구매 미발생 기간('최근 N일 미구매'): 회원키 NOT EXISTS anti-join 이라 cart_absence/캠페인 반응처럼
-    # 어느 빌더에나 AND 결합된다. 여기서 방출해야 '장바구니 보유 + 최근 90일 미구매'처럼 다른 팩트 빌더
-    # (카트)가 이기는 조합에서도 미구매 조건이 살아남는다. order_count 빌더와 동일 문자열이라 dedup 됨.
-    purchase_inactivity = target_user.get("purchase_inactivity")
-    if isinstance(purchase_inactivity, dict) and isinstance(purchase_inactivity.get("min_days"), int):
-        other_predicates.append(_purchase_inactivity_predicate(purchase_inactivity["min_days"]))
-        labels.append(f"purchase_inactive_{purchase_inactivity['min_days']}d"); has_signal = True
-
-    # 신규 가입 타겟(REG_DT 최근 N일 창). signup_target(창 파싱) 또는 lifecycle 'new_user'(LLM 라벨)
-    # 어느 쪽이든 트리거하고 하나의 술어로 합친다. 창은 signup_target.days > default_days 순으로 결정.
-    signup_target = target_user.get("signup_target")
-    if isinstance(signup_target, dict) or "new_user" in (target_user.get("lifecycle") or []):
-        days = signup_target.get("days") if isinstance(signup_target, dict) else None
-        other_predicates.append(_member_signup_predicate(days if isinstance(days, int) else None))
-        labels.append("new_user"); has_signal = True
-
-    # 회원 테이블 디멘션 필터(예: 시도 → CRM_MB_BASEINFO.SIDO IN ('서울')). dimension_catalog 로 값이
-    # 이미 코드로 해석돼 넘어오고, 회원 기본정보 단독 컬럼이라 조인 없이 술어로 AND 결합한다.
-    # 지역 컬럼(SIDO/SIGUNGU)은 같은 '거주 지역' 도메인이라 별도 수집 후 나열(OR)/수식(AND)을 판별한다.
-    # 보조 속성 테이블 필터(join_column 지정, 예: ODS_MALL_MMS_MEMBER_ZTS.JOB_CD)는 회원키 서브쿼리
-    # (B.<join> IN (SELECT <join> FROM <표> WHERE <컬럼> IN ...))로 결합한다 — 값 인덱스가 채워지면
-    # 코드 수정 없이 자동으로 이 경로를 탄다. (dimension_id 별 필터는 각각 술어가 되어 자동 조합.)
-    member_region_codes: dict[str, list[str]] = {}
-    member_region_excludes: dict[str, list[str]] = {}
-    for dimension_index, dimension_filter in enumerate(query_plan.get("dimension_filters", [])):
-        if not isinstance(dimension_filter, Mapping):
-            unsupported.append(f"dimension_filters.{dimension_index}")
-            continue
-        operator = _dimension_filter_operator(dimension_filter)
-        if operator is None:
-            unsupported.append(f"dimension_filters.{dimension_index}.operator")
-            continue
-        sql_operator = _DIMENSION_OPERATOR_SQL_MAP[operator]
-        table_name = dimension_filter.get("table")
-        join_column = dimension_filter.get("join_column")
-        if table_name != _member_table() and not join_column:
-            continue
-        column_short = (dimension_filter.get("column") or "").split(".")[-1].upper()
-        codes = [code for code in dimension_filter.get("codes", []) if isinstance(code, str) and code]
-        if not column_short or not codes:
-            continue
-        if table_name == _member_table() and column_short in _member_region_short_columns():
-            region_target = member_region_excludes if operator == "NOT_IN" else member_region_codes
-            region_target.setdefault(column_short, [])
-            region_target[column_short].extend(code for code in codes if code not in region_target[column_short])
-        else:
-            in_list = ", ".join(_sql_quote(code) for code in codes)
-            if table_name == _member_table():
-                other_predicates.append("B." + column_short + f" {sql_operator} (" + in_list + ")")
-            elif operator == "NOT_IN":
-                # 보조 테이블은 한 회원에 여러 행이 있을 수 있다. ``IN (SELECT ... WHERE value NOT IN)``은
-                # 제외값 행과 다른 행이 함께 있을 때 회원을 다시 포함하므로, 제외값 존재 자체를 anti-join 한다.
-                other_predicates.append(
-                    f"NOT EXISTS (SELECT 1 FROM {table_name} S WHERE S.{join_column} = B.{join_column} "
-                    f"AND S.{column_short} IN ({in_list}))"
-                )
-            else:
-                other_predicates.append(
-                    f"B.{join_column} IN (SELECT S.{join_column} FROM {table_name} S WHERE S.{column_short} IN ({in_list}))"
-                )
-        label_values = dimension_filter.get("names") or codes
-        labels.extend(["non_" + str(value) for value in label_values] if operator == "NOT_IN" else label_values)
-        has_signal = True
-    other_predicates.extend(_member_region_predicates(member_region_codes))
-    for column, codes in member_region_excludes.items():
-        in_list = ", ".join(_sql_quote(code) for code in codes)
-        other_predicates.append(f"B.{column} NOT IN ({in_list})")
-    if not _validate_compound_dimension_filters(query_plan):
-        for compound in query_plan.get("compound_dimension_filters") or []:
-            other_predicates.append(_compile_compound_dimension_filter(compound))
-            for group in compound.get("groups") or []:
-                labels.extend(
-                    str(item.get("value"))
-                    for item in group.get("filters") or []
-                    if isinstance(item, Mapping) and item.get("value")
-                )
-            has_signal = True
-
-    # CRM_MB_BASEINFO 단독으로 표현할 수 없는 조건(→ unsupported 로 모아 fallback 유도)
-    for field in ("interests", "preferred_channels", "behaviors", "purchase_object", "price_sensitivity"):
-        if target_user.get(field):
-            unsupported.append("target_user." + field)
-    if exclude.get("interests"):
-        unsupported.append("exclude.interests")
-    # 집계 조건은 build_aggregate_targets_sql_candidate 가 커버한다. 그 빌더가 dropped 에서 빼주므로,
-    # 여기선 일단 unsupported 로 표시해 (집계 빌더에 닿지 못하고) 회원 빌더로 빠질 때 조용한 누락을 막는다.
-    if target_user.get("aggregate_conditions"):
-        unsupported.append("target_user.aggregate_conditions")
-    for field in ("set_expressions", "computed_metrics", "policy_constraints", "semantic_resolutions"):
-        if query_plan.get(field):
-            unsupported.append(field)
-    for field in ("category", "offer_type", "channels"):
-        if campaign.get(field):
-            unsupported.append("campaign_constraints." + field)
-
-    # 같은 컬럼 포함값은 1개면 `=`, 2개 이상이면 `IN (...)` 으로 묶는다(예: 실버 OR 골드 등급).
-    include_predicates: list[str] = []
-    for column, values in eq_includes.items():
-        if len(values) == 1:
-            include_predicates.append(column + " = " + _sql_quote(values[0]))
-        else:
-            include_predicates.append(column + " IN (" + ", ".join(_sql_quote(value) for value in values) + ")")
-
-    return {
-        "predicates": _unique_strings([*include_predicates, *other_predicates]),
-        "labels": _unique_strings(labels),
-        "forces_state": ("state" in include_categories) or suppresses_default_state,
-        "has_signal": has_signal,
-        "unsupported": unsupported,
-    }
+    finally:
+        if date_token is not None:
+            _EXECUTION_REFERENCE_DATE.reset(date_token)
 
 
 def build_member_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
@@ -14116,10 +13256,10 @@ def build_member_metric_ranking_sql_candidate(query_plan: dict[str, Any]) -> dic
     # 개수(TOP N) vs 퍼센트(TOP N PERCENT) 랭킹. 퍼센트는 (0,100) 밖이면 후보 없음(파서 게이트가 이미
     # 걸러내지만 방어적으로 재확인). T-SQL 의 TOP N PERCENT 는 결과 행수를 올림(ceil)해 1 명 이상을 보장한다.
     if ranking.get("limit_type") == "percent":
-        pct = ranking.get("percent")
-        if not isinstance(pct, (int, float)) or not 0 < pct < 100:
+        pct = exact_decimal(ranking.get("percent"), allow_string=True)
+        if pct is None or not 0 < pct < 100:
             return None
-        top_clause = f"TOP {pct:g} PERCENT "
+        top_clause = f"TOP {decimal_sql_text(pct)} PERCENT "
     else:
         top_n = int(ranking.get("top_n", 100))
         top_clause = f"TOP {top_n} "
@@ -14303,19 +13443,19 @@ def build_member_column_selection_sql_candidate(query_plan: dict[str, Any]) -> d
         # 정상 회원 전체 — 성별/연령 등 코호트 조건은 바깥 WHERE 에만 걸어 '전체 평균 대비'로 읽는다.
         state = _MEMBER_TARGET_FILTERS.get("active_state")
         if not isinstance(state, dict):
-            state = _DEFAULT_MEMBER_TARGET_FILTERS["active_state"]
-        state_col = state.get("column") or "MEMBER_STATE_CD"
-        state_val = state.get("value") or "MEMBER_STATE_CD.NORMAL"
+            raise member_filters_config.MemberFiltersConfigError("active_state binding is unavailable")
+        state_col = state["column"]
+        state_val = state["value"]
         avg_sub = (
             f"(SELECT AVG({column}) FROM {_member_table()} "
             f"WHERE {state_col} = {_sql_quote(state_val)} AND {column} IS NOT NULL)"
         )
         where_clauses.append(f"{expr} {op} {avg_sub}")
     elif mode == "top_percent":
-        pct = selection.get("percent")
-        if not isinstance(pct, (int, float)) or not 0 < pct < 100:
+        pct = exact_decimal(selection.get("percent"), allow_string=True)
+        if pct is None or not 0 < pct < 100:
             return None
-        top_clause = f"TOP {pct:g} PERCENT "
+        top_clause = f"TOP {decimal_sql_text(pct)} PERCENT "
         order_by = f"ORDER BY {expr} {order_dir}"
     else:  # top_n
         n = selection.get("n")
@@ -14589,28 +13729,29 @@ _PURCHASE_PRODUCT_MATCH_COLUMNS = tuple(
     column
     for column in _MEMBER_TARGET_FILTERS.get("purchase_product_match_columns", [])
     if isinstance(column, str) and column
-) or tuple(_DEFAULT_MEMBER_TARGET_FILTERS["purchase_product_match_columns"])
+)
 
 
 def _purchase_product_registry() -> dict[str, Any]:
-    config = _MEMBER_TARGET_FILTERS.get("purchase_product_target")
-    return config if isinstance(config, dict) else {}
+    return dict(_member_condition_binding("purchase_product_target"))
+
+
+def _product_join_sql(detail_alias: str = "D", product_alias: str = "P") -> str:
+    config = _purchase_product_registry()
+    detail, product = config["order_detail"], config["product"]
+    join = str(product["join"])
+    join = join.replace(f"{product['alias']}.", f"{product_alias}.")
+    join = join.replace(f"{detail['alias']}.", f"{detail_alias}.")
+    return f"INNER JOIN {product['table']} {product_alias} ON {join}"
 
 
 def _order_detail_member_join_lines(alias: str = "D", product_alias: str | None = None) -> list[str]:
     """주문상세(→상품)→회원 FROM/JOIN 절 — 테이블·조인키는 purchase_product_target 레지스트리 소유,
     별칭만 호출자 관례. 회원 조인은 주문상세의 회원키 = 회원 기준 테이블 회원키(base_entity)."""
-    config = _purchase_product_registry()
-    detail = config.get("order_detail") if isinstance(config.get("order_detail"), dict) else {}
-    product = config.get("product") if isinstance(config.get("product"), dict) else {}
-    detail_table = detail.get("table")
-    product_table = product.get("table")
-    # 상품 조인키: 'P.PRODUCT_ID = OD.PRODUCT_ID' 선언에서 짧은 컬럼명만 취한다(별칭은 호출자 소유).
-    product_join = str(product.get("join") or "P.PRODUCT_ID = OD.PRODUCT_ID")
-    product_key = product_join.split("=")[0].strip().split(".")[-1] or "PRODUCT_ID"
-    lines = [f"FROM {detail_table} {alias}"]
+    detail = _purchase_product_registry()["order_detail"]
+    lines = [f"FROM {detail['table']} {alias}"]
     if product_alias:
-        lines.append(f"     INNER JOIN {product_table} {product_alias} ON {alias}.{product_key} = {product_alias}.{product_key}")
+        lines.append("     " + _product_join_sql(alias, product_alias))
     member_key = _member_key_column()
     lines.append(f"     INNER JOIN {_member_table()} {_member_alias()} ON {alias}.{member_key} = {_member_alias()}.{member_key}")
     return lines
@@ -14674,11 +13815,6 @@ def _next_day8(token: str) -> str:
 
 # 주문 시각의 물리 소유자. 시각(HHMMSS)은 주문 헤더에만 있다 — 상세(CRM_SL_ORDERDETAILMALL)에는
 # ORDER_DATE 만 있어, 상세 기반 쿼리의 시각 조건은 헤더 상관 EXISTS(ORDER_ID 조인)로만 표현된다.
-_ORDER_TIME_TABLE = "CRM_SL_ORDERHEADERMALL"
-_ORDER_TIME_COLUMN = "ORDER_TIME"
-_ORDER_TIME_JOIN_KEY = "ORDER_ID"
-
-
 def _order_time_refinement(
     prefix: str, column: str, start: str, end: str,
     from_time: str | None, to_time: str | None,
@@ -14690,33 +13826,38 @@ def _order_time_refinement(
     테이블(상세)이면 헤더 상관 EXISTS 로 표현한다. 둘 다 아니면 None — 시각을 조용히 버리고 날짜만
     걸면 조건이 넓어진 채 실행되므로, 호출부가 술어 전체를 미생성으로 처리하고 결정론 불변식
     (_verify_sql_semantic_invariants)이 출고를 막는다(fail-close)."""
+    header = _purchase_product_registry()["order_header"]
+    time_table = header["table"]
+    time_column = header["time_column"]
+    join_key = header["order_id_column"]
+
     def _bounds(date_prefix: str, date_column: str, time_prefix: str) -> str:
         parts: list[str] = []
         if from_time is not None:
             parts.append(
                 f"({date_prefix}{date_column} > {_sql_quote(start)}"
-                f" OR {time_prefix}{_ORDER_TIME_COLUMN} >= {_sql_quote(from_time)})"
+                f" OR {time_prefix}{time_column} >= {_sql_quote(from_time)})"
             )
         if to_time is not None:
             parts.append(
                 f"({date_prefix}{date_column} < {_sql_quote(end)}"
-                f" OR {time_prefix}{_ORDER_TIME_COLUMN} <= {_sql_quote(to_time)})"
+                f" OR {time_prefix}{time_column} <= {_sql_quote(to_time)})"
             )
         return " AND ".join(parts)
 
-    if source_table == _ORDER_TIME_TABLE:
+    if source_table == time_table:
         return _bounds(prefix, column, prefix)
     if alias:
-        inner = _bounds("OT.", "ORDER_DATE", "OT.")
+        inner = _bounds("OT.", header["date_column"], "OT.")
         return (
-            f"EXISTS (SELECT 1 FROM {_ORDER_TIME_TABLE} OT"
-            f" WHERE OT.{_ORDER_TIME_JOIN_KEY} = {prefix}{_ORDER_TIME_JOIN_KEY} AND {inner})"
+            f"EXISTS (SELECT 1 FROM {time_table} OT"
+            f" WHERE OT.{join_key} = {prefix}{join_key} AND {inner})"
         )
     return None
 
 
 def _purchase_date_predicate(
-    purchase_date: Any, alias: str | None = "D", column: str = "ORDER_DATE",
+    purchase_date: Any, *, alias: str | None = "D", column: str | None = None,
     source_table: str | None = None,
 ) -> str | None:
     """구매 날짜 창을 ORDER_DATE BETWEEN 술어로 만든다(날짜창 → SQL 술어의 단일 소유자).
@@ -14731,6 +13872,11 @@ def _purchase_date_predicate(
     시각 경계(from_time/to_time)가 걸린 구간은 날짜 BETWEEN(색인 활용) 위에 시각 조건을 AND 로 얹는다.
     ``source_table`` 은 호출 문맥의 실제 테이블 — 시각 컬럼 보유 여부(헤더 인라인 vs 상세 EXISTS)를
     이것으로 판정한다. 시각을 표현할 수 없는 문맥이면 술어 전체를 만들지 않는다(부분 표현 금지)."""
+    if column is None:
+        configured = _purchase_product_registry()["order_header"].get("date_column")
+        if not isinstance(configured, str) or not configured:
+            return None
+        column = configured
     ranges = _calendar_window_ranges(purchase_date)
     if not ranges:
         return None
@@ -14879,18 +14025,22 @@ def _valid_aggregate_conditions(target_user: dict[str, Any]) -> list[dict[str, A
 def _product_presence_member_subquery(product: dict[str, Any], purchase_date: Any, alias: str) -> str:
     """특정 상품을 (기간 내) 구매한 회원 id 집합 서브쿼리. 나열형 다중 상품을 상품별로 나눠 INNER JOIN(AND)
     하려는 용도 — 한 주문상세행은 상품 하나라 두 상품 LIKE 를 같은 행에 AND 하면 공집합이 되기 때문이다."""
-    where = ["D.MEMBER_NO IS NOT NULL", _purchase_scope_match_predicate(product, "P")]
-    date_between = _purchase_date_predicate(purchase_date, alias="D")
+    detail = _purchase_product_registry()["order_detail"]
+    member_key = _member_key_column()
+    where = [f"D.{member_key} IS NOT NULL", _purchase_scope_match_predicate(product, "P")]
+    date_between = _purchase_date_predicate(
+        purchase_date, alias="D", column=detail["date_column"], source_table=detail["table"]
+    )
     if date_between is not None:
         where.append(date_between)
     return "\n".join(
         [
             "(",
-            "    SELECT D.MEMBER_NO",
-            f"    FROM {_PRODUCT_SCOPE_TABLE} D",
-            "         INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID",
+            f"    SELECT D.{member_key}",
+            f"    FROM {detail['table']} D",
+            "         " + _product_join_sql(),
             f"    WHERE {' AND '.join(where)}",
-            "    GROUP BY D.MEMBER_NO",
+            f"    GROUP BY D.{member_key}",
             f") {alias}",
         ]
     )
@@ -14908,7 +14058,10 @@ def build_purchase_history_targets_sql_candidate(query_plan: dict[str, Any]) -> 
     product_objects = _target_purchase_objects(target_user)
     has_object = bool(product_objects)
     purchase_date = target_user.get("purchase_date")
-    date_predicate = _purchase_date_predicate(purchase_date)
+    detail = _purchase_product_registry()["order_detail"]
+    date_predicate = _purchase_date_predicate(
+        purchase_date, column=detail["date_column"], source_table=detail["table"]
+    )
     # 상품 구매 이력 조건(상품 LIKE)도, 구매 날짜 창 조건(ORDER_DATE BETWEEN)도 없으면 이 빌더 대상이 아니다.
     if not has_object and date_predicate is None:
         return None
@@ -14993,7 +14146,12 @@ def build_purchase_count_ranking_sql_candidate(query_plan: dict[str, Any]) -> di
     target_user = query_plan.get("target_user", {})
     product_scopes = _target_purchase_objects(target_user)
     has_object = bool(product_scopes)
-    date_predicate = _purchase_date_predicate(target_user.get("purchase_date"))
+    detail = _purchase_product_registry()["order_detail"]
+    date_predicate = _purchase_date_predicate(
+        target_user.get("purchase_date"),
+        column=detail["date_column"],
+        source_table=detail["table"],
+    )
 
     compiled = compile_member_target_conditions(query_plan)
     where_clauses: list[str] = []
@@ -15050,31 +14208,19 @@ def build_purchase_count_ranking_sql_candidate(query_plan: dict[str, Any]) -> di
 
 
 def _order_count_targets_config() -> dict[str, Any]:
-    config = _MEMBER_TARGET_FILTERS.get("order_count_targets")
-    if not isinstance(config, dict):
-        config = _DEFAULT_MEMBER_TARGET_FILTERS["order_count_targets"]
-    behaviors = config.get("behaviors")
-    return config if isinstance(behaviors, dict) else _DEFAULT_MEMBER_TARGET_FILTERS["order_count_targets"]
+    return dict(_member_condition_binding("order_count_targets"))
 
 
 def _aggregate_targets_config() -> dict[str, Any]:
-    config = _MEMBER_TARGET_FILTERS.get("aggregate_targets")
-    if not isinstance(config, dict) or not isinstance(config.get("metrics"), dict):
-        return _DEFAULT_MEMBER_TARGET_FILTERS["aggregate_targets"]
-    return config
-
-
+    return dict(_member_condition_binding("aggregate_targets"))
 
 
 def _aggregate_adjustments_config() -> dict[str, Any]:
-    """집계 지표 보정(adjustments) 선언 — aggregate_targets.adjustments(파일) → 코드 기본값 순."""
+    """집계 지표 보정(adjustments) 선언(배포 설정 단일 소스)."""
     adjustments = _aggregate_targets_config().get("adjustments")
     if isinstance(adjustments, dict) and adjustments:
         return adjustments
-    default = _DEFAULT_MEMBER_TARGET_FILTERS["aggregate_targets"].get("adjustments")
-    return default if isinstance(default, dict) else {}
-
-
+    return {}
 
 
 def _metric_accepts_adjustment(metric: dict[str, Any], spec: dict[str, Any]) -> bool:
@@ -15141,8 +14287,11 @@ def _adjusted_metric(metric: dict[str, Any], adjustments: Any) -> tuple[dict[str
     return adjusted, applied
 
 
-def _format_threshold(threshold: int | float) -> str:
-    return str(int(threshold)) if float(threshold).is_integer() else repr(float(threshold))
+def _format_threshold(threshold: Any) -> str:
+    exact = exact_decimal(threshold, allow_string=True)
+    if exact is None:
+        raise ValueError(f"threshold must be a finite decimal: {threshold!r}")
+    return decimal_sql_text(exact)
 
 
 def _render_aggregate_expression(expression: str, alias_prefix: str) -> str | None:
@@ -15195,21 +14344,12 @@ def _member_summary_threshold_subquery(
     )
 
 
-_PRODUCT_SCOPE_TABLE = "CRM_SL_ORDERDETAILMALL"  # 상품 단위 컬럼(PRODUCT_ID/ORDER_QTY/PAYMENT_AMT/DC_AMT) 보유
-_PRODUCT_MASTER_TABLE = "CRM_CM_PRODUCT"         # 상품 속성(BRAND_NAME/CATEGORY*) 보유
-_AGG_GRAIN_COLUMN = {
-    "per_order": "ORDER_ID",
-    "per_product": "PRODUCT_ID",
-    "per_brand": "BRAND_ID",
-}
-
-
 def _metric_column_on_product(metric: dict[str, Any]) -> bool:
     """지표의 집계 컬럼이 주문 상세가 아니라 상품 마스터(CRM_CM_PRODUCT)에 있는지 — 스펙 선언으로 판정한다
     (column_table: "product"). 브랜드명/카테고리명처럼 상품 속성을 집계하는 지표를 파이썬 분기 없이 얹기
     위한 스위치다. 주문 상세에 이미 있는 컬럼(BRAND_ID 등)은 선언하지 않아 조인 없이 계산된다."""
     declared = metric.get("column_table")
-    return isinstance(declared, str) and declared.strip().lower() in {"product", _PRODUCT_MASTER_TABLE.lower()}
+    return isinstance(declared, str) and declared.strip().lower() == "product"
 
 
 def _scope_predicates(scope: dict[str, Any], alias: str) -> list[str] | None:
@@ -15237,6 +14377,7 @@ def _scope_predicates(scope: dict[str, Any], alias: str) -> list[str] | None:
 def _aggregate_member_subquery(
     config: dict[str, Any], metric: dict[str, Any], operator: str, threshold: int | float,
     window_days: Any, alias: str, purchase_date: Any = None,
+    window: Mapping[str, Any] | None = None,
     aggregation_scope: str = "per_member", scope: dict[str, Any] | None = None,
     product_scope: dict[str, Any] | None = None,
 ) -> str | None:
@@ -15252,8 +14393,13 @@ def _aggregate_member_subquery(
     scope = scope or {}
     join_column = config.get("join_column")
     date_column = config.get("date_column")
-    has_window = (isinstance(window_days, int) and window_days > 0) or purchase_date is not None
-    needs_grain = aggregation_scope in _AGG_GRAIN_COLUMN
+    has_window = (
+        (isinstance(window_days, int) and window_days > 0)
+        or window is not None
+        or purchase_date is not None
+    )
+    grain_axes = config["grain_axes"]
+    needs_grain = aggregation_scope in grain_axes
     needs_scope = bool(scope) or bool(product_scope)
 
     # ① 회원 요약 컬럼: 기간창·grain·scope 가 없을 때만(스냅샷은 그 어느 것도 반영 불가).
@@ -15269,7 +14415,8 @@ def _aggregate_member_subquery(
     needs_product_join = needs_scope or metric_on_product
     # scope/grain 이 있으면 상품 단위 테이블(D)로 계산한다(PRODUCT_ID/ORDER_QTY 등 보유). 별칭 접두어 결정.
     detail_grain = aggregation_scope == "per_brand"
-    table = _PRODUCT_SCOPE_TABLE if (needs_product_join or aggregation_scope in {"per_product", "per_brand"}) else (metric.get("table") or config.get("table"))
+    detail_table = _purchase_product_registry()["order_detail"]["table"]
+    table = detail_table if (needs_product_join or aggregation_scope in {"per_product", "per_brand"}) else (metric.get("table") or config.get("table"))
     use_alias = needs_product_join or detail_grain
     tp = "D." if use_alias else ""
     # 회원키/기간/grain 은 주문 상세(D), 지표 컬럼만 상품 마스터(P) — 접두어를 분리해 소유 테이블을 지킨다.
@@ -15285,7 +14432,7 @@ def _aggregate_member_subquery(
         column = metric.get("column")
         if not (isinstance(column, str) and column):
             return None
-        agg = str(metric.get("agg", "SUM")).upper()
+        agg = str(metric["agg"]).upper()
         agg_expr = f"COUNT(DISTINCT {mp}{column})" if metric.get("distinct") else f"{agg}({mp}{column})"
 
     from_lines = [f"    FROM {table}" + (" D" if use_alias else "")]
@@ -15298,11 +14445,23 @@ def _aggregate_member_subquery(
         if product_scope and isinstance(product_scope.get("value"), str) and product_scope["value"]:
             scope_predicates.append(_purchase_scope_match_predicate(product_scope, "P"))
     if needs_product_join:
-        from_lines.append(f"         INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID")
+        from_lines.append("         " + _product_join_sql())
 
     where = [f"{tp}{join_column} IS NOT NULL"]
-    if isinstance(window_days, int) and window_days > 0 and date_column:
-        where.append(f"{tp}{date_column} >= {_member_dialect().char8_cutoff(window_days)}")
+    if window is not None:
+        if not date_column:
+            return None
+        exact_window_predicate = _purchase_date_predicate(
+            window,
+            alias=("D" if use_alias else None),
+            column=date_column,
+            source_table=table,
+        )
+        if exact_window_predicate is None:
+            return None
+        where.append(exact_window_predicate)
+    elif isinstance(window_days, int) and window_days > 0 and date_column:
+        where.append(f"{tp}{date_column} >= {_execution_cutoff_or_db_clock(window_days)}")
     date_between = (
         _purchase_date_predicate(
             purchase_date, alias=("D" if use_alias else None), column=date_column, source_table=table,
@@ -15314,7 +14473,8 @@ def _aggregate_member_subquery(
     where.extend(scope_predicates)
 
     group_columns = [f"{tp}{join_column}"]
-    grain_column = _AGG_GRAIN_COLUMN.get(aggregation_scope)
+    grain_axis = grain_axes.get(aggregation_scope)
+    grain_column = grain_axis["column"] if grain_axis else None
     if grain_column:
         group_columns.append(f"{tp}{grain_column}")
 
@@ -15359,7 +14519,7 @@ def _calendar_window_hull(purchase_date: Any, anchor: datetime) -> "aggregate_se
         end = max(datetime.strptime(finish, "%Y%m%d") for _begin, finish, _ft, _tt in ranges) + timedelta(days=1)
     except (TypeError, ValueError):
         return None
-    return aggregate_semantics.NormalizedWindow(start=start, end=min(end, anchor) if end > anchor else end)
+    return aggregate_semantics.NormalizedWindow(start=start, end=end)
 
 
 def _aggregate_condition_window(
@@ -15371,6 +14531,12 @@ def _aggregate_condition_window(
     if condition.get("calendar_period"):
         return None  # 달력 구간 표기는 구체 날짜로 확정되기 전이라 포함 관계를 증명할 수 없다
     windows: list[aggregate_semantics.NormalizedWindow] = []
+    execution_window = condition.get("window")
+    if execution_window is not None:
+        absolute = _calendar_window_hull(execution_window, anchor)
+        if absolute is None:
+            return None
+        windows.append(absolute)
     window_days = condition.get("window_days")
     if isinstance(window_days, int) and window_days > 0:
         windows.append(aggregate_semantics.rolling_window(anchor, window_days))
@@ -15401,8 +14567,12 @@ def _aggregate_requires_event_presence(
     source = metric.get("source") if isinstance(metric.get("source"), dict) else {}
     summary = metric.get("summary") if isinstance(metric.get("summary"), dict) else None
     window_days = condition.get("window_days")
-    has_window = (isinstance(window_days, int) and window_days > 0) or purchase_date is not None
-    needs_grain = condition.get("aggregation_scope", "per_member") in _AGG_GRAIN_COLUMN
+    has_window = (
+        (isinstance(window_days, int) and window_days > 0)
+        or condition.get("window") is not None
+        or purchase_date is not None
+    )
+    needs_grain = condition.get("aggregation_scope", "per_member") in _aggregate_targets_config()["grain_axes"]
     needs_scope = bool(condition.get("scope")) or has_product_scope
     if summary and source.get("preferred") == "member_summary_column" and not (has_window or needs_grain or needs_scope):
         return False
@@ -15421,11 +14591,21 @@ def _purchase_absence_predicates(
     target_user = query_plan.get("target_user", {})
     predicates: list[aggregate_semantics.EventPredicate] = []
     inactivity = target_user.get("purchase_inactivity")
-    if isinstance(inactivity, dict) and isinstance(inactivity.get("min_days"), int):
+    if isinstance(inactivity, dict) and (
+        isinstance(inactivity.get("min_days"), int)
+        or isinstance(inactivity.get("window"), Mapping)
+    ):
+        inactivity_window = (
+            _calendar_window_hull(inactivity.get("window"), anchor)
+            if isinstance(inactivity.get("window"), Mapping)
+            else aggregate_semantics.rolling_window(anchor, inactivity["min_days"])
+        )
+        if inactivity_window is None:
+            return []
         predicates.append(aggregate_semantics.EventPredicate(
             domain="purchase",
             polarity=aggregate_semantics.ABSENCE,
-            window=aggregate_semantics.rolling_window(anchor, inactivity["min_days"]),
+            window=inactivity_window,
             constraints={dimension: None for dimension in dimensions},
             source_kind="purchase_inactivity",
             source_id="target_user.purchase_inactivity",
@@ -15679,6 +14859,38 @@ def _guard_purchase_event_semantics(
     return False
 
 
+def _purchase_validation_anchor(
+    query_plan: Mapping[str, Any], conditions: Sequence[Mapping[str, Any]]
+) -> datetime:
+    """Choose one deterministic exclusive-end anchor for purchase reasoning."""
+
+    reference_date = _EXECUTION_REFERENCE_DATE.get()
+    if reference_date is not None:
+        return datetime.combine(
+            reference_date + timedelta(days=1), datetime.min.time()
+        )
+
+    target_user = query_plan.get("target_user")
+    target_user = target_user if isinstance(target_user, Mapping) else {}
+    window_values: list[Any] = [target_user.get("purchase_date")]
+    for slot_name in ("purchase_membership", "purchase_inactivity"):
+        slot = target_user.get(slot_name)
+        if isinstance(slot, Mapping):
+            window_values.append(slot.get("window"))
+    window_values.extend(condition.get("window") for condition in conditions)
+
+    ends: list[datetime] = []
+    for value in window_values:
+        for _start, finish, _from_time, _to_time in _calendar_window_ranges(value):
+            try:
+                ends.append(datetime.strptime(finish, "%Y%m%d") + timedelta(days=1))
+            except (TypeError, ValueError):
+                continue
+    # Pure legacy day windows are translation invariant for subset/conflict
+    # reasoning, so a fixed sentinel is sufficient when no request date exists.
+    return max(ends) if ends else datetime(2000, 1, 2)
+
+
 def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     """범용 집계 조건('최근 N일 누적 구매 금액 100만원 이상' 등)을 실주문 집계로 타겟 추출한다.
 
@@ -15736,6 +14948,7 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
             subquery = _aggregate_member_subquery(
                 config, metric, condition["operator"], condition["threshold"], condition.get("window_days"), alias,
                 purchase_date=purchase_date,
+                window=condition.get("window"),
                 aggregation_scope=condition_scope,
                 scope=condition.get("scope"),
                 product_scope=cond_product_scope,
@@ -15779,7 +14992,14 @@ def build_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
     # 같은 이벤트 범위·기간을 가리키면 그 SQL 은 정의상 공집합이다. 기간이 조금 겹치는 정상 조합
     # ('최근 6개월 구매 있고 최근 1개월 구매 없는')은 통과한다 — 포함 관계로만 판정하기 때문이다.
     if not _guard_purchase_event_semantics(
-        query_plan, _purchase_event_predicates(query_plan, valid, metrics, product_scopes, datetime.now()),
+        query_plan,
+        _purchase_event_predicates(
+            query_plan,
+            valid,
+            metrics,
+            product_scopes,
+            _purchase_validation_anchor(query_plan, valid),
+        ),
     ):
         return None
 
@@ -15822,7 +15042,7 @@ def _metric_trend_window_subquery(
     date_column = config.get("date_column")
     use_scope = bool(product_scope)
     # 상품 스코프가 있으면 상품 단위 테이블(D)+상품 마스터(P) 조인 위에서 집계한다(집계 빌더와 같은 표현).
-    table = _PRODUCT_SCOPE_TABLE if use_scope else (metric.get("table") or config.get("table"))
+    table = _purchase_product_registry()["order_detail"]["table"] if use_scope else (metric.get("table") or config.get("table"))
     tp = "D." if use_scope else ""
 
     expression = metric.get("expression")
@@ -15832,7 +15052,7 @@ def _metric_trend_window_subquery(
             return None
     else:
         column = metric.get("column")
-        agg = str(metric.get("agg", "SUM")).upper()
+        agg = str(metric["agg"]).upper()
         if not (isinstance(column, str) and column) or agg not in _METRIC_TREND_ELIGIBLE_AGGS:
             return None
         agg_expr = f"COUNT(DISTINCT {tp}{column})" if metric.get("distinct") else f"{agg}({tp}{column})"
@@ -15845,7 +15065,7 @@ def _metric_trend_window_subquery(
     where = [f"{tp}{join_column} IS NOT NULL", date_between]
     from_lines = [f"    FROM {table}" + (" D" if use_scope else "")]
     if use_scope:
-        from_lines.append("         INNER JOIN CRM_CM_PRODUCT P ON D.PRODUCT_ID = P.PRODUCT_ID")
+        from_lines.append("         " + _product_join_sql())
         where.append(_purchase_scope_match_predicate(product_scope, "P"))
     return "\n".join([
         "(",
@@ -15904,16 +15124,16 @@ def build_metric_trend_targets_sql_candidate(query_plan: dict[str, Any]) -> dict
     cur = f"{_METRIC_TREND_CURRENT_ALIAS}.{_METRIC_TREND_VALUE_COLUMN}"
     base = f"{_METRIC_TREND_BASELINE_ALIAS}.{_METRIC_TREND_VALUE_COLUMN}"
     relative_change = trend.get("relative_change")
-    relative_comparisons = [
-        comparison
-        for comparison in (relative_change.get("comparisons", []) if isinstance(relative_change, dict) else [])
-        if (
-            isinstance(comparison, dict)
-            and comparison.get("operator") in {">=", ">", "<=", "<"}
-            and isinstance(comparison.get("value"), (int, float))
-            and comparison["value"] > 0
-        )
-    ]
+    relative_comparisons: list[dict[str, Any]] = []
+    for comparison_item in (
+        relative_change.get("comparisons", []) if isinstance(relative_change, dict) else []
+    ):
+        if not isinstance(comparison_item, dict):
+            continue
+        value = exact_decimal(comparison_item.get("value"), allow_string=True)
+        if comparison_item.get("operator") not in {">=", ">", "<=", "<"} or value is None or value <= 0:
+            continue
+        relative_comparisons.append({"operator": comparison_item["operator"], "value": value})
     if isinstance(relative_change, dict) and not relative_comparisons:
         query_plan["unsupported"] = {
             "reason": "metric_trend_relative_change_invalid",
@@ -15983,17 +15203,52 @@ def build_metric_trend_targets_sql_candidate(query_plan: dict[str, Any]) -> dict
     return candidate
 
 
-# 장바구니 집계 지표 → HAVING 식. 새 지표는 여기 한 줄 + 파서 인식만 추가하면 된다.
+# 장바구니 집계 지표 → HAVING 식. 물리 컬럼과 지표 선언의 단일 출처는
+# member_target_filters.json 의 cart_targets.aggregate_metrics 이다.
 # 수량은 QTY('담은 수량', schema_catalog important=true)다 — SET_QTY 는 '세트 수량'(세트 상품 구성 수)이라
 # 담은 개수와 무관하고, 실데이터에서도 두 컬럼 값이 갈린다(SET_QTY=1·QTY=2 등).
 # TOTAL_SALE_PRICE 는 라인별 합계 금액(수량 반영)이라 장바구니 총액은 그 SUM 이다.
 # MAX(QTY) 는 '한 상품을 몇 개까지 담았나' = 동일 상품 복수 담기 판정용(SUM 은 서로 다른 상품 합이라 안 된다).
-_CART_AGGREGATE_METRIC_EXPRESSIONS = {
-    "cart_line_count": "COUNT(DISTINCT CART_PRODUCT_NO)",
-    "cart_quantity": "SUM(QTY)",
-    "cart_amount": "SUM(TOTAL_SALE_PRICE)",
-    "cart_same_product_quantity": "MAX(QTY)",
-}
+_CART_AGGREGATE_FUNCTIONS = frozenset({"COUNT", "SUM", "MAX"})
+_CART_AGGREGATE_COLUMN_PATTERN = re.compile(
+    r"(?:[A-Z][A-Z0-9_]*\.)?([A-Z][A-Z0-9_]*)\Z"
+)
+
+
+def _cart_aggregate_metric_expressions(
+    cart_config: Mapping[str, Any] | None = None,
+) -> dict[str, str]:
+    """검증된 카탈로그 선언만 alias 없는 HAVING 집계식으로 변환한다.
+
+    카트 집계 서브쿼리는 단일 테이블이라 기존 SQL 바이트와 동일하게 컬럼 alias 를 제거한다.
+    누락되거나 임의 SQL 조각이 섞인 선언은 지원 지표로 승격하지 않아 호출부가 fail-close 한다.
+    """
+    config = _cart_targets_registry() if cart_config is None else cart_config
+    raw_metrics = config.get("aggregate_metrics") if isinstance(config, Mapping) else None
+    if not isinstance(raw_metrics, Mapping):
+        return {}
+
+    expressions: dict[str, str] = {}
+    for metric_id, raw_spec in raw_metrics.items():
+        if not isinstance(metric_id, str) or not metric_id or not isinstance(raw_spec, Mapping):
+            continue
+        aggregate = raw_spec.get("agg")
+        column = raw_spec.get("column")
+        if aggregate not in _CART_AGGREGATE_FUNCTIONS or not isinstance(column, str):
+            continue
+        column_match = _CART_AGGREGATE_COLUMN_PATTERN.fullmatch(column)
+        if column_match is None:
+            continue
+        distinct = raw_spec.get("distinct", False)
+        if not isinstance(distinct, bool) or (distinct and aggregate != "COUNT"):
+            continue
+        column_name = column_match.group(1)
+        argument = f"DISTINCT {column_name}" if distinct else column_name
+        expressions[metric_id] = f"{aggregate}({argument})"
+    return expressions
+
+
+_CART_AGGREGATE_METRIC_EXPRESSIONS = _cart_aggregate_metric_expressions()
 
 
 def _no_purchase_anti_join_predicate() -> str:
@@ -16028,8 +15283,15 @@ def build_cart_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> di
         ]
         if not comparisons:
             continue
-        metric = condition.get("metric") if condition.get("metric") in _CART_AGGREGATE_METRIC_EXPRESSIONS else "cart_line_count"
-        agg_expr = _CART_AGGREGATE_METRIC_EXPRESSIONS[metric]
+        requested_metric = condition.get("metric")
+        metric = "cart_line_count" if requested_metric is None else requested_metric
+        agg_expr = (
+            _CART_AGGREGATE_METRIC_EXPRESSIONS.get(metric)
+            if isinstance(metric, str)
+            else None
+        )
+        if agg_expr is None:
+            return None
         having_parts.extend(f"{agg_expr} {op} {_format_threshold(th)}" for op, th in comparisons)
         label_parts.append(metric + "".join(op + _format_threshold(th) for op, th in comparisons))
     if not having_parts:
@@ -16047,10 +15309,10 @@ def build_cart_aggregate_targets_sql_candidate(query_plan: dict[str, Any]) -> di
         for predicate in (*_cart_keep_predicates(query_plan, alias=""), *direct_filters.predicates)
     )
     cart_config = _cart_targets_registry()
-    cart_table = cart_config.get("table")
-    cart_join = cart_config.get("join") if isinstance(cart_config.get("join"), dict) else {}
-    cart_key = str((cart_join or {}).get("left") or "C.CART_ID").split(".")[-1]
-    member_side = str((cart_join or {}).get("right") or "B.MEMBER_ID")
+    cart_table = cart_config["table"]
+    cart_join = cart_config["join"]
+    cart_key = str(cart_join["left"]).split(".")[-1]
+    member_side = str(cart_join["right"])
     inner = (
         f"SELECT {cart_key} FROM {cart_table} "
         f"WHERE {cart_key} IS NOT NULL{line_filters}{retention_filter} "
@@ -16101,19 +15363,15 @@ def _campaign_response_exists_predicate(predicate: str, negated: bool = False, s
     source='camp_member_list' 면 반응 팩트 대신 셀 발송 대상 명단(contact_member_list, Z_CAMP_MBR)에
     건다 — 접촉(발송) 성공은 반응자 중심 팩트가 아니라 발송 명단이 분모/소스다. source 없는 예전
     predicate(플랜에 저장된 R.* 형태)는 기존 팩트 EXISTS 그대로 동작한다."""
-    config = _MEMBER_TARGET_FILTERS.get("campaign_response_targets", {})
+    config = _campaign_response_registry()
     if source == "camp_member_list":
-        member_list = config.get("contact_member_list", {}) if isinstance(config.get("contact_member_list"), dict) else {}
-        table = member_list.get("table")
-        alias = member_list.get("alias", "M")
-        join = member_list.get("member_join", {}) if isinstance(member_list.get("member_join"), dict) else {}
-        left = join.get("left", _member_dialect().cast_bigint(f"{alias}.MBR_NO"))
+        member_list = config["contact_member_list"]
+        table, alias, join = member_list["table"], member_list["alias"], member_list["member_join"]
+        left = join["left"]
     else:
-        table = config.get("table")
-        alias = config.get("alias", "R")
-        join = config.get("member_join", {}) if isinstance(config.get("member_join"), dict) else {}
-        left = join.get("left", _member_dialect().cast_bigint("R.MBR_NO"))
-    right = join.get("right", "B.MEMBER_NO")
+        table, alias, join = config["table"], config["alias"], config["member_join"]
+        left = join["left"]
+    right = join["right"]
     prefix = "NOT " if negated else ""
     return f"{prefix}EXISTS (SELECT 1 FROM {table} {alias} WHERE {left} = {right} AND {predicate})"
 
@@ -16134,14 +15392,12 @@ def _coupon_usage_threshold_predicate(threshold: dict[str, Any]) -> str | None:
     USE_CPN_CNT 는 반응 팩트(MCS_CAMP_MBR_RSPN_FT)에 회원×캠페인 행 단위로 있어, 회원별 '총 사용 건수'는
     MBR_NO 로 묶어 SUM 해야 한다. 조인키 MBR_NO(varchar)↔MEMBER_NO(bigint)는 캐스트(TRY_CAST)로 타입
     불일치 가드를 통과한다. IN 서브쿼리라 다른 회원 조건과 그대로 AND 결합된다."""
-    config = _MEMBER_TARGET_FILTERS.get("campaign_response_targets", {})
-    table = config.get("table")
-    alias = config.get("alias", "R")
-    member_col = config.get("member_column")
-    join = config.get("member_join", {}) if isinstance(config.get("member_join"), dict) else {}
-    left = join.get("left", _member_dialect().cast_bigint(f"{alias}.{member_col}"))
-    right = join.get("right", "B.MEMBER_NO")
-    agg = f"SUM(COALESCE({alias}.USE_CPN_CNT, 0))"
+    config = _campaign_response_registry()
+    table, alias, member_col = config["table"], config["alias"], config["member_column"]
+    join = config["member_join"]
+    left, right = join["left"], join["right"]
+    coupon_metric = config["aggregate_metrics"]["used_coupon_count"]
+    agg = f"{coupon_metric['agg']}(COALESCE({coupon_metric['column']}, 0))"
     operator = threshold.get("operator")
     if operator == "between":
         lo, hi = threshold.get("min_value"), threshold.get("max_value")
@@ -16227,36 +15483,29 @@ def build_cell_rate_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[st
     def _valid_rate(condition: Any) -> dict[str, Any] | None:
         if not isinstance(condition, dict):
             return None
-        value = condition.get("value")
+        value = exact_decimal(condition.get("value"), allow_string=True)
         operator = condition.get("operator")
-        if not isinstance(value, (int, float)) or not 0 < value <= 100:
+        if value is None or not 0 < value <= 100:
             return None
         if operator not in _AGG_OPERATOR_WORDS.values():
             return None
-        return condition
+        return {**condition, "value": value}
 
     success = _valid_rate(cell_rate.get("success_rate"))
     buy = _valid_rate(cell_rate.get("buy_rate"))
     if success is None and buy is None:
         return None
 
-    config = _MEMBER_TARGET_FILTERS.get("cell_rate_targets", {})
-    member_table = config.get("member_table")
-    alias = config.get("alias", "M")
-    member_col = config.get("member_column")
-    join = config.get("member_join", {}) if isinstance(config.get("member_join"), dict) else {}
-    join_left = str(join.get("left", _member_dialect().cast_bigint(f"{alias}.{member_col}")))
-    join_right = str(join.get("right", "B.MEMBER_NO"))
-    cell_alias = config.get("cell_alias", "M2")
-    cell_subquery_alias = config.get("cell_subquery_alias", "CELL")
-    cell_keys = [key for key in config.get("cell_keys", []) if isinstance(key, str)] or [
-        "CAMP_ID", "CAMP_EXEC_NO", "CELL_NODE_ID",
-    ]
-    success_col = config.get("contact_success_column")
-    response_join = config.get("response_join", {}) if isinstance(config.get("response_join"), dict) else {}
-    response_table = response_join.get("table")
-    response_alias = response_join.get("alias", "R")
-    buy_predicate = response_join.get("buy_predicate", f"{response_alias}.BUY_RSPN_YN = 'Y'")
+    config = _cell_rate_registry()
+    member_table, alias, member_col = config["member_table"], config["alias"], config["member_column"]
+    join = config["member_join"]
+    join_left, join_right = str(join["left"]), str(join["right"])
+    cell_alias, cell_subquery_alias = config["cell_alias"], config["cell_subquery_alias"]
+    cell_keys = list(config["cell_keys"])
+    success_col = config["contact_success_column"]
+    response_join = config["response_join"]
+    response_table, response_alias = response_join["table"], response_join["alias"]
+    buy_predicate = response_join["buy_predicate"]
 
     having_clauses: list[str] = []
     if success is not None:
@@ -16355,10 +15604,12 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
         freq = None
     buy = target_user.get("campaign_buy_amount")
     if isinstance(buy, dict):
-        amount = buy.get("amount")
+        amount = exact_decimal(buy.get("amount"), allow_string=True)
         buy_operator = buy.get("operator")
-        if not isinstance(amount, (int, float)) or amount <= 0 or buy_operator not in _AGG_OPERATOR_WORDS.values():
+        if amount is None or amount <= 0 or buy_operator not in _AGG_OPERATOR_WORDS.values():
             buy = None
+        else:
+            buy = {**buy, "amount": amount}
     else:
         buy = None
     buy_count = target_user.get("campaign_buy_count")
@@ -16372,26 +15623,23 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
     if freq is None and buy is None and buy_count is None:
         return None
 
-    config = _MEMBER_TARGET_FILTERS.get("campaign_response_targets", {})
-    frequency_events = config.get("frequency_events", {}) if isinstance(config.get("frequency_events"), dict) else {}
+    config = _campaign_response_registry()
+    frequency_events = config["frequency_events"]
     freq_event = str(freq.get("event") or "campaign_response") if freq is not None else None
     freq_event_config = frequency_events.get(freq_event, {}) if freq_event else {}
     if freq is not None and not isinstance(freq_event_config, dict):
         return None
     # 귀속 구매금액 지표(BUY_AMT 합계)와 구매반응 플래그는 설정(aggregate_metrics/boolean_metrics)이 소유.
-    aggregate_metrics = config.get("aggregate_metrics", {}) if isinstance(config.get("aggregate_metrics"), dict) else {}
-    buy_metric = aggregate_metrics.get("campaign_purchase_amount", {}) if isinstance(aggregate_metrics.get("campaign_purchase_amount"), dict) else {}
-    response_alias = config.get("alias", "R")
-    buy_amount_column = buy_metric.get("column", f"{response_alias}.BUY_AMT")
-    buy_amount_agg = buy_metric.get("agg", "SUM")
-    boolean_metrics = config.get("boolean_metrics", {}) if isinstance(config.get("boolean_metrics"), dict) else {}
-    buy_flag = boolean_metrics.get("purchase_response", {}) if isinstance(boolean_metrics.get("purchase_response"), dict) else {}
-    buy_response_predicate = f"{buy_flag.get('column', response_alias + '.BUY_RSPN_YN')} = {_sql_quote(str(buy_flag.get('value', 'Y')))}"
+    aggregate_metrics = config["aggregate_metrics"]
+    buy_metric = aggregate_metrics["campaign_purchase_amount"]
+    response_alias = config["alias"]
+    buy_amount_column, buy_amount_agg = buy_metric["column"], buy_metric["agg"]
+    buy_flag = config["boolean_metrics"]["purchase_response"]
+    buy_response_predicate = f"{buy_flag['column']} = {_sql_quote(str(buy_flag['value']))}"
 
     def _source_config(source: str) -> dict[str, Any]:
         if source == "contact_member_list":
-            value = config.get("contact_member_list", {})
-            return value if isinstance(value, dict) else {}
+            return config["contact_member_list"]
         return config
 
     def _campaign_aggregate_join(
@@ -16403,26 +15651,20 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
         member_col = source_config.get("member_column")
         if not all(isinstance(value, str) and value for value in (table, alias, member_col)):
             return None
-        join = source_config.get("member_join", {}) if isinstance(source_config.get("member_join"), dict) else {}
-        campaign_join = source_config.get("campaign_join", {}) if isinstance(source_config.get("campaign_join"), dict) else {}
-        camp_table = campaign_join.get("table")
-        camp_alias = campaign_join.get("alias", "ZC")
-        camp_conditions = [c for c in campaign_join.get("conditions", []) if isinstance(c, str)] or [
-            f"{camp_alias}.CAMP_ID = {alias}.CAMP_ID",
-            f"{camp_alias}.CAMP_EXEC_NO = {alias}.CAMP_EXEC_NO",
-        ]
-        target_group = source_config.get("target_group_condition", {})
-        target_group = target_group if isinstance(target_group, dict) else {}
-        valid_campaign = source_config.get("valid_campaign_condition", {})
-        valid_campaign = valid_campaign if isinstance(valid_campaign, dict) else {}
-        date_column = source_config.get("campaign_date_column")
+        join = source_config["member_join"]
+        campaign_join = source_config["campaign_join"]
+        camp_table, camp_alias = campaign_join["table"], campaign_join["alias"]
+        camp_conditions = list(campaign_join["conditions"])
+        target_group = source_config["target_group_condition"]
+        valid_campaign = source_config["valid_campaign_condition"]
+        date_column = source_config["campaign_date_column"]
         inner_where: list[str] = []
         if target_group.get("column") and target_group.get("value"):
             inner_where.append(f"{target_group['column']} = {_sql_quote(str(target_group['value']))}")
         if valid_campaign.get("expression"):
             inner_where.append(str(valid_campaign["expression"]))
         if isinstance(window_days, int) and window_days > 0:
-            inner_where.append(f"{camp_alias}.{date_column} >= {_member_dialect().char8_cutoff(window_days)}")
+            inner_where.append(f"{camp_alias}.{date_column} >= {_execution_cutoff_or_db_clock(window_days)}")
         inner_where.append(predicate)
         subquery = "\n".join([
             "(",
@@ -16434,9 +15676,9 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
             "    HAVING " + "\n       AND ".join(having),
             f") {subquery_alias}",
         ])
-        left = str(join.get("left", _member_dialect().cast_bigint(f"{alias}.{member_col}")))
+        left = str(join["left"])
         left = left.replace(f"{alias}.", f"{subquery_alias}.")
-        right = str(join.get("right", "B.MEMBER_NO"))
+        right = str(join["right"])
         return f"     INNER JOIN {subquery} ON {left} = {right}"
 
     campaign_aggregate_joins: list[str] = []
@@ -16444,11 +15686,8 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
         source = str(freq_event_config.get("source") or "response_fact")
         source_config = _source_config(source)
         event_alias = str(source_config.get("alias") or response_alias)
-        key_expr = source_config.get(
-            "campaign_key_expression",
-            _member_dialect().concat(f"{event_alias}.CAMP_ID", "':'", f"{event_alias}.CAMP_EXEC_NO"),
-        )
-        predicate = str(freq_event_config.get("predicate") or config.get("response_predicate") or "")
+        key_expr = source_config["campaign_key_expression"]
+        predicate = str(freq_event_config.get("predicate") or config["response_predicate"])
         freq_join = _campaign_aggregate_join(
             source=source,
             predicate=predicate,
@@ -16461,10 +15700,7 @@ def build_campaign_response_frequency_targets_sql_candidate(query_plan: dict[str
         campaign_aggregate_joins.append(freq_join)
 
     if buy is not None or buy_count is not None:
-        key_expr = config.get(
-            "campaign_key_expression",
-            _member_dialect().concat(f"{response_alias}.CAMP_ID", "':'", f"{response_alias}.CAMP_EXEC_NO"),
-        )
+        key_expr = config["campaign_key_expression"]
         buy_having: list[str] = []
         if buy_count is not None:
             buy_having.append(f"COUNT(DISTINCT {key_expr}) {buy_count['operator']} {buy_count['count']}")
@@ -16666,12 +15902,12 @@ def _aggregate_in_predicate_from_plan(metric_id: str, query_plan: dict[str, Any]
     join_column = config.get("join_column")
     date_column = config.get("date_column")
     column = metric.get("column")
-    agg = str(metric.get("agg", "SUM")).upper()
+    agg = str(metric["agg"]).upper()
     agg_expr = f"COUNT(DISTINCT {column})" if metric.get("distinct") else f"{agg}({column})"
     where = [f"{join_column} IS NOT NULL"]
     window_days = condition.get("window_days")
     if isinstance(window_days, int) and window_days > 0 and date_column:
-        where.append(f"{date_column} >= {_member_dialect().char8_cutoff(window_days)}")
+        where.append(f"{date_column} >= {_execution_cutoff_or_db_clock(window_days)}")
     inner = (
         f"SELECT {join_column} FROM {table} WHERE {' AND '.join(where)} "
         f"GROUP BY {join_column} HAVING {agg_expr} {condition['operator']} {_format_threshold(condition['threshold'])}"
@@ -16773,8 +16009,6 @@ def build_union_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, A
     return candidate
 
 
-
-
 def build_order_count_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     """실주문 헤더(CRM_SL_ORDERHEADERMALL)를 회원별로 집계해 '주문 횟수' 행동 세그먼트를 추출한다.
 
@@ -16799,15 +16033,26 @@ def build_order_count_targets_sql_candidate(query_plan: dict[str, Any]) -> dict[
     # 단 집계 조건('누적 구매액 100만 이상')이 함께 오면 집계 빌더에 양보한다 — 그 빌더가 집계 INNER JOIN
     # 과 미구매 anti-join(compile_member_target_conditions 가 방출)을 한 SQL 에 합성한다. 여기서 잡으면
     # 집계 조건이 통째로 드롭된다('고액 구매했지만 최근 무주문' 휴면 고가치 세그먼트가 무주문만 남음).
-    if (isinstance(purchase_inactivity, dict) and isinstance(purchase_inactivity.get("min_days"), int)
+    if (isinstance(purchase_inactivity, dict)
+            and (
+                isinstance(purchase_inactivity.get("min_days"), int)
+                or isinstance(purchase_inactivity.get("window"), Mapping)
+            )
             and not (isinstance(target_user.get("aggregate_conditions"), list) and target_user["aggregate_conditions"])):
-        min_days = purchase_inactivity["min_days"]
+        min_days = purchase_inactivity.get("min_days")
         compiled = compile_member_target_conditions(query_plan)
         where_clauses = list(compiled["predicates"])
         if not compiled["forces_state"]:
             where_clauses.append(_member_active_state_predicate())
-        where_clauses.append(_purchase_inactivity_predicate(min_days))
-        segment = f"purchase_inactive_{min_days}d"
+        where_clauses.append(_purchase_inactivity_predicate(
+            min_days,
+            window=purchase_inactivity.get("window"),
+        ))
+        segment = (
+            f"purchase_inactive_{min_days}d"
+            if isinstance(min_days, int)
+            else "purchase_inactive_calendar_window"
+        )
         select_columns = [
             "DISTINCT " + _member_key_select(),
             _member_grade_select(),
@@ -17193,7 +16438,9 @@ def _allowed_target_segments(query_plan: dict[str, Any]) -> set[str]:
     return allowed_segments
 
 
-def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
+def required_sql_conditions(
+    query_plan: dict[str, Any], *, reference_date: date | None = None
+) -> list[dict[str, Any]]:
     conditions: list[dict[str, Any]] = []
     target_user = query_plan.get("target_user", {})
     campaign_constraints = query_plan.get("campaign_constraints", {})
@@ -17369,16 +16616,24 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
     ):
         order_table = _order_count_targets_config().get("table")
         terms = [str(order_table), "exists"]
-        if isinstance(purchase_membership.get("window_days"), int):
+        if (
+            isinstance(purchase_membership.get("window_days"), int)
+            or isinstance(purchase_membership.get("window"), Mapping)
+        ):
             terms.append(_order_count_targets_config().get("order_date_column"))
         conditions.append(_condition(
             "target_user.purchase_membership", "purchase_exists", [], all_terms=terms,
         ))
 
     purchase_inactivity = target_user.get("purchase_inactivity")
-    if isinstance(purchase_inactivity, dict) and isinstance(purchase_inactivity.get("min_days"), int):
+    if isinstance(purchase_inactivity, dict) and (
+        isinstance(purchase_inactivity.get("min_days"), int)
+        or isinstance(purchase_inactivity.get("window"), Mapping)
+    ):
         conditions.append(_condition(
-            "target_user.purchase_inactivity", str(purchase_inactivity["min_days"]), [],
+            "target_user.purchase_inactivity",
+            str(purchase_inactivity.get("window") or purchase_inactivity.get("min_days")),
+            [],
             all_terms=["not exists", str(_order_count_targets_config().get("table")),
                        str(_order_count_targets_config().get("order_date_column"))],
         ))
@@ -17418,8 +16673,11 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
         granularity = "month" if birthday_target.get("granularity") == "month" else "day"
         conditions.append(_condition(
             "target_user.birthday_target", "birthday_" + granularity, [],
-            all_terms=[_member_birthday_predicate(granularity)],
-            none_terms=[_member_birthday_predicate("day" if granularity == "month" else "month")],
+            all_terms=[_member_birthday_predicate(granularity, reference_date=reference_date)],
+            none_terms=[_member_birthday_predicate(
+                "day" if granularity == "month" else "month",
+                reference_date=reference_date,
+            )],
         ))
 
     # 쿠폰 사용 건수 임계: 술어를 못 만드는 항목(None)은 소비부도 방출하지 않으므로 요구하지 않는다.
@@ -17444,7 +16702,10 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
         signup_days = signup_target.get("days")
         conditions.append(_condition(
             "target_user.signup_target", "new_user", [],
-            all_terms=[_member_signup_predicate(signup_days if isinstance(signup_days, int) else None)],
+            all_terms=[_member_signup_predicate(
+                signup_days if isinstance(signup_days, int) else None,
+                reference_date=reference_date,
+            )],
         ))
 
     # 회원 컬럼 선택(상위 N/N%/평균 대비): 전용 빌더 소유라 다른 빌더가 이기면 통째로 사라진다.
@@ -17531,10 +16792,15 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         column, table = source.get("column"), source.get("table")
         if isinstance(column, str) and isinstance(table, str):
+            anchor_terms: list[str] = []
+            if condition.get("anchor") == "reference_date" and reference_date is not None:
+                anchor_terms.append(
+                    reference_time.relative_day_char8(0, reference_date=reference_date)
+                )
             conditions.append(_condition(
                 f"target_user.profile_date_conditions[{index}]",
                 str(condition.get("state") or "relative_date"), [],
-                all_terms=[table, column, operator, "getdate"],
+                all_terms=[table, column, operator, *anchor_terms],
             ))
 
     price_sensitivity = target_user.get("price_sensitivity")
@@ -17614,8 +16880,9 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
         metric = next((m for m in registry.get("metrics", []) if m.get("metric_id") == ranking.get("metric_id")), None)
         if metric:
             # 퍼센트 랭킹은 'TOP N PERCENT', 개수 랭킹은 'TOP N' 이 SQL 에 실제로 있어야 커버로 본다.
-            if ranking.get("limit_type") == "percent" and isinstance(ranking.get("percent"), (int, float)):
-                limit_terms = [f"top {ranking['percent']:g} percent"]
+            percent = exact_decimal(ranking.get("percent"), allow_string=True)
+            if ranking.get("limit_type") == "percent" and percent is not None:
+                limit_terms = [f"top {decimal_sql_text(percent)} percent"]
             else:
                 limit_terms = [f"top {ranking.get('top_n', 100)}"]
             conditions.append(
@@ -17881,7 +17148,7 @@ def _condition_terms(value: str, field_name: str) -> list[str]:
 def _sql_validation_config() -> dict[str, Any] | None:
     """Return validation policy plus aliases owned by the resolved catalog."""
     config = _MEMBER_TARGET_FILTERS.get("validation")
-    config = config if isinstance(config, dict) else _DEFAULT_MEMBER_TARGET_FILTERS.get("validation")
+    config = config if isinstance(config, dict) else None
     return audience_runtime.extend_sql_validation_aliases(config, _event_compile_context())
 
 
@@ -17977,6 +17244,13 @@ def main() -> None:
     if not args.query:
         raise SystemExit("query is required unless --stats is used.")
 
+    timezone_name = os.getenv("GRAPH_RAG_TIMEZONE", "Asia/Seoul")
+    request_now = datetime.now(ZoneInfo(timezone_name))
+    structuring_context = StructuringContext(
+        current_date=request_now.date().isoformat(),
+        timezone=timezone_name,
+        current_datetime=request_now.isoformat(),
+    )
     with rag_llm_run_scope():
         result = retrieve(
             query=args.query,
@@ -18000,6 +17274,7 @@ def main() -> None:
             message_channel=args.message_channel,
             message_policy=args.message_policy,
             prompt_dir=args.prompt_dir,
+            structuring_context=structuring_context,
         )
     if args.format == "json":
         print(json.dumps(result, ensure_ascii=False, indent=2))

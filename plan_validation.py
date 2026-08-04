@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import condition_evaluation_ir
+import audience_admission
 import audience_authority
 import event_ir
 import targeting_expression as canonical_targeting_ir
@@ -687,29 +688,25 @@ def _collect_canonical_ownership_issues(
 
     event_payload = plan.get("event_expression")
 
-    def has_value(value: Any) -> bool:
-        if isinstance(value, Mapping):
-            return any(has_value(item) for item in value.values())
-        if isinstance(value, (list, tuple, set, frozenset)):
-            return any(has_value(item) for item in value)
-        return value not in (None, "")
-
     # The canonical audience producers use Event IR itself as the Boolean
     # authority.  A populated legacy audience projection beside it would be a
     # second executable interpretation, so reject that hybrid explicitly.
+    #
+    # 판정은 audience_admission 이 소유한다(2026-08-04, Phase 3-4). 여기 있던 형태는
+    # `event_expression.source` 가 canonical 표식 집합에 있는지를 **리터럴로** 물었고, 그래서
+    # 표식 없는 페이로드(cut-over 산출물 등)는 권위가 Event IR 이어도 통과했다. 권위로 판정하는
+    # 술어가 이미 한 줄 아래(`canonical_required`)에 있는데 같은 사실을 두 방식으로 물으면
+    # 둘이 갈라진다.
+    #
+    # status 를 `_status_for_validation_code` 로 파생시키지 않는 것은 계약이다 — 그 함수는
+    # 코드에 "conflict" 가 들어 있으면 SEMANTIC_CONFLICT 로 뒤집고, 그러면 이 실패의
+    # failure_reason 과 UI 단계가 함께 바뀐다(rag/failure_stage 의 사유→단계 표).
     canonical_required = audience_authority.requires_event_ir(plan)
-    legacy_audience_present = has_value(plan.get("target_user", {})) or has_value(
-        plan.get("exclude", {})
-    )
-    if (
-        isinstance(event_payload, Mapping)
-        and event_payload.get("source") in {"audience_requirement", "semantic_plan"}
-        and legacy_audience_present
-    ):
+    for conflict in audience_admission.execution_conflicts(plan):
         issues.append(_issue(
             INTERNAL_INVALID,
-            "canonical_legacy_audience_conflict",
-            "event_expression",
+            conflict.code,
+            conflict.path,
             event_payload,
         ))
     if canonical_required and not (

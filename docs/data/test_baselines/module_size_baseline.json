@@ -8,6 +8,7 @@
     "rag/config.py": 245,
     "rag/failure_stage.py": 381,
     "rag/llm_io.py": 383,
+    "rag/member_conditions.py": 800,
     "rag/message.py": 1457,
     "rag/plan_inspect.py": 262,
     "rag/search.py": 768,

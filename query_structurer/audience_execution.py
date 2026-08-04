@@ -54,6 +54,7 @@ from query_pipeline.requirement.resolver import (
     StaticSchemaRegistry,
 )
 from query_pipeline.requirement.validation import ISSUE_CODE_KINDS, report_from_issue
+from query_structurer.semantic_ir import write_semantic_ir
 
 AUDIENCE_REQUIREMENT_KEY = "audience_requirement"
 EVENT_EXPRESSION_KEY = "event_expression"
@@ -854,14 +855,17 @@ def project_resolution_to_plan(
                 # 아니라 레지스트리 구멍이고, 저장소에는 이미 그 이름(semantic_registry_gap)과
                 # 사용자 문구가 있다. 미지원으로 부르면 없는 한계를 있다고 말하는 것이 된다.
                 named = sorted({asset.symbol for _item, assets in contradicted for asset in assets})
-                payload["semantic_ir"] = empty_semantic_ir(
-                    status="needs_clarification",
-                    missing_fields=["audience.requirement"],
-                    message=(
-                        "요청한 조건을 처리할 실행 자산은 선언돼 있으나 이 경로로 낼 수 없습니다"
-                        f"(선언된 자산: {', '.join(named)})."
+                write_semantic_ir(
+                    payload,
+                    empty_semantic_ir(
+                        status="needs_clarification",
+                        missing_fields=["audience.requirement"],
+                        message=(
+                            "요청한 조건을 처리할 실행 자산은 선언돼 있으나 이 경로로 낼 수 없습니다"
+                            f"(선언된 자산: {', '.join(named)})."
+                        ),
+                        failure_kind="system_failure",
                     ),
-                    failure_kind="system_failure",
                 )
                 payload["audience_execution_assets"] = [
                     {"argument": item["argument"], "evidence": item["evidence"]["text"],
@@ -869,22 +873,25 @@ def project_resolution_to_plan(
                     for item, assets in contradicted
                 ]
                 return True
-            payload["semantic_ir"] = empty_semantic_ir(
-                status="unsupported",
-                # 사용자에게 나가는 문장은 **모델이 쓴 산문이 아니다**. 실측(2026-08-03) 30/30 이
-                # 모델 산문이었고 그 판정은 틀렸다 — 지어낸 kind 만 23종이었다.
-                message="요청한 조건을 현재 실행 자산으로 표현할 수 없습니다.",
-                failure_kind="unsupported",
+            write_semantic_ir(
+                payload,
+                empty_semantic_ir(
+                    status="unsupported",
+                    # 사용자에게 나가는 문장은 **모델이 쓴 산문이 아니다**. 실측(2026-08-03) 30/30 이
+                    # 모델 산문이었고 그 판정은 틀렸다 — 지어낸 kind 만 23종이었다.
+                    message="요청한 조건을 현재 실행 자산으로 표현할 수 없습니다.",
+                    failure_kind="unsupported",
+                    unsupported_operations=[
+                        {
+                            # kind 는 닫힌 코드다. 모델의 자유 텍스트(item["argument"])는 근거로 내린다.
+                            "kind": "unsupported_semantics",
+                            "reason": item["message"],
+                            "evidence": item["evidence"]["text"],
+                        }
+                        for item in unsupported
+                    ],
+                ),
             )
-            payload["semantic_ir"]["unsupported_operations"] = [
-                {
-                    # kind 는 닫힌 코드다. 모델의 자유 텍스트(item["argument"])는 근거로 내린다.
-                    "kind": "unsupported_semantics",
-                    "reason": item["message"],
-                    "evidence": item["evidence"]["text"],
-                }
-                for item in unsupported
-            ]
         else:
             # 결핍의 원인을 리터럴 색인과 대조해 계산한다. 이것이 없으면 **시스템이 이미
             # 결정론으로 추출해 정규화까지 마친 값을 사용자에게 되묻는다**(실측 #3: '10%').
@@ -895,16 +902,22 @@ def project_resolution_to_plan(
                 record.get("cause") == semantic_plan_module.CAUSE_MODEL_OMISSION
                 for record in causes
             )
-            payload["semantic_ir"] = empty_semantic_ir(
-                status="needs_clarification",
-                missing_fields=missing or ["audience.requirement"],
-                message=issues[0]["message"],
-                # 모델이 놓친 값을 사용자에게 물으면 안 된다 — 그 결핍은 재방출로 고친다.
-                failure_kind=(
-                    "structurer_failure" if model_omitted
-                    else "user_clarification" if missing else "system_failure"
+            write_semantic_ir(
+                payload,
+                empty_semantic_ir(
+                    status="needs_clarification",
+                    missing_fields=missing or ["audience.requirement"],
+                    message=issues[0]["message"],
+                    # 모델이 놓친 값을 사용자에게 물으면 안 된다 — 그 결핍은 재방출로 고친다.
+                    failure_kind=(
+                        "structurer_failure"
+                        if model_omitted
+                        else "user_clarification"
+                        if missing
+                        else "system_failure"
+                    ),
+                    missing_field_causes=causes,
                 ),
-                missing_field_causes=causes,
             )
         return True
 
@@ -917,7 +930,7 @@ def project_resolution_to_plan(
     audience_authority.stamp_authority(
         payload, audience_authority.AudienceAuthority.EVENT_IR
     )
-    payload["semantic_ir"] = empty_semantic_ir(status="resolved")
+    write_semantic_ir(payload, empty_semantic_ir(status="resolved"))
     return True
 
 

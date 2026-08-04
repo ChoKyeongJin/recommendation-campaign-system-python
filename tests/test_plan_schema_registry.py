@@ -68,3 +68,79 @@ def test_requirement_slots_are_declared_conditions() -> None:
     assert not contradictions, f"요구 원장이 파생 키를 담고 있다: {contradictions}"
 
 
+# ── 오디언스 표면(Phase 3-1) ────────────────────────────────────────────────────────
+#
+# "무엇이 두 번째 오디언스 언어인가"의 답이 저장소에 하나여야 한다. 이 절이 없던 동안 같은
+# 목록이 canonical_event_ir_grounding 과 plan_validation 에 각각 리터럴로 있었다.
+
+
+def test_condition_keys_must_declare_whether_they_are_audience() -> None:
+    """CONDITION 키에서 audience 를 빠뜨리면 그 키가 표면에서 조용히 빠진다."""
+
+    with pytest.raises(ValueError, match="audience"):
+        plan_schema.PlanKey(name="x", kind=plan_schema.CONDITION, note="n")
+
+
+def test_derived_keys_cannot_claim_to_be_audience() -> None:
+    """파생물은 사용자가 말한 조건이 아니므로 오디언스 언어일 수 없다."""
+
+    with pytest.raises(ValueError, match="CONDITION"):
+        plan_schema.PlanKey(
+            name="x", kind=plan_schema.DERIVED, note="n", audience=False
+        )
+
+
+def test_audience_surface_is_exactly_todays_gate_surface() -> None:
+    """표면 확대는 **결정**이지 리팩터링이 아니다(docs/plans_event_ir_only.md §6-1).
+
+    넓히면 그 키를 가진 canonical 요청이 fail-close 되는데, 그 축은 Event IR 로 표현할 수도
+    없어서 기능이 그대로 줄어든다. 그래서 이 집합은 얼려 둔다 — 바꾸려면 이 테스트를 함께
+    고쳐야 하고, 그 편집이 곧 결정의 기록이다.
+    """
+
+    assert plan_schema.AUDIENCE_CONTAINERS == ("target_user", "exclude")
+    assert plan_schema.audience_keys() == frozenset({
+        "set_expressions",
+        "computed_metrics",
+        "external_conditions",
+        "compound_dimension_filters",
+        "condition_evaluations",
+    })
+
+
+@pytest.mark.parametrize(
+    ("name", "why"),
+    [
+        (
+            "semantic_plan",
+            "canonical 레인에 상시 존재한다 — True 면 모든 canonical 요청이 충돌로 죽는다.",
+        ),
+        (
+            "unresolved_source_conditions",
+            "Event IR 빌더 자신이 쓰는 좌표다 — True 면 canonical 실패가 자기참조 충돌이 된다.",
+        ),
+    ],
+)
+def test_self_referential_keys_are_never_audience(name: str, why: str) -> None:
+    key = next(item for item in plan_schema.ALL if item.name == name)
+    assert key.audience is False, f"{name} 은 audience=False 여야 한다: {why}"
+
+
+def test_grounding_predicate_derives_its_surface_from_the_registry() -> None:
+    """소비자가 리터럴 사본으로 되돌아가면 이 테스트가 잡는다."""
+
+    import canonical_event_ir_grounding as grounding
+
+    source = (REPO_ROOT / "canonical_event_ir_grounding.py").read_text(encoding="utf-8")
+    assert "plan_schema.audience_keys()" in source, (
+        "canonical_event_ir_grounding 이 다시 표면 목록을 리터럴로 들고 있다."
+    )
+
+    # 선언된 표면이 실제로 술어를 움직인다(공허한 파생 방지).
+    for name in (*plan_schema.AUDIENCE_CONTAINERS, *plan_schema.audience_keys()):
+        assert grounding.has_empty_legacy_audience_surface({}) is True
+        assert grounding.has_empty_legacy_audience_surface({name: {"any": "value"}}) is False, (
+            f"{name} 이 채워졌는데 표면이 비었다고 답한다."
+        )
+
+

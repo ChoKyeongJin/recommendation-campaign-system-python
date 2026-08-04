@@ -101,6 +101,43 @@
       "같은",
       "똑같은"
     ],
+    "indefinite_determiner": [
+      "특정",
+      "어떤",
+      "무슨",
+      "어느",
+      "임의"
+    ],
+    "deictic_determiner": [
+      "해당",
+      "그",
+      "이",
+      "저"
+    ],
+    "partitive_determiner": [
+      "일부",
+      "각"
+    ],
+    "variety_determiner": [
+      "가지각색",
+      "다양한",
+      "각기",
+      "각각",
+      "다양",
+      "여러",
+      "서로"
+    ],
+    "universal_determiner": [
+      "전체",
+      "전부",
+      "모든",
+      "모두"
+    ],
+    "otherness_reference": [
+      "외의",
+      "다른",
+      "외"
+    ],
     "simultaneity": [
       "동시",
       "동시에",
@@ -561,6 +598,75 @@
         "작은"
       ],
       "note": "축 행 랭킹의 '적은 쪽' 순위 표지. dimension_rank_high 와 대칭으로 크기 형용사 '작은'을 제외한다."
+    },
+    "purchase_scope_nonspecific_determiner": {
+      "include": [
+        "indefinite_determiner",
+        "deictic_determiner",
+        "partitive_determiner",
+        "variety_determiner",
+        "universal_determiner"
+      ],
+      "exclude": [
+        "해당",
+        "가지각색"
+      ],
+      "note": "구매 스코프 값이 될 수 없는 비특정 한정사(graph_rag._PURCHASE_SCOPE_NON_ENTITY_TERMS 이관). '해당'·'가지각색'은 이관 전 이 목록에 없었다 — 같은 뜻의 purchase_object_nonspecific_determiner 에는 '해당'이 있으므로 누락 의심이다."
+    },
+    "purchase_object_nonspecific_determiner": {
+      "include": [
+        "indefinite_determiner",
+        "deictic_determiner",
+        "partitive_determiner",
+        "variety_determiner",
+        "universal_determiner"
+      ],
+      "exclude": [
+        "가지각색"
+      ],
+      "note": "상품명 후보 sanitize 가 버리는 비특정 한정사(graph_rag._sanitize_purchase_object 이관). '가지각색'만 이관 전에 없었다."
+    },
+    "scope_placeholder_value": {
+      "include": [
+        "indefinite_determiner",
+        "deictic_determiner",
+        "partitive_determiner",
+        "universal_determiner"
+      ],
+      "exclude": [
+        "전체",
+        "전부",
+        "모두"
+      ],
+      "note": "값이 지정되지 않은 스코프 자리표시자('특정 브랜드'). 이관 전에는 전칭 한정사 중 '모든'만 있었다 — '전체/전부/모두'는 그때 없었으므로 동작 보존을 위해 제외한다(누락 의심)."
+    },
+    "scope_distinct_modifier": {
+      "include": [
+        "variety_determiner",
+        "otherness_reference"
+      ],
+      "exclude": [
+        "외",
+        "외의"
+      ],
+      "note": "'서로 다른 브랜드'의 수식어 — 값이 아니라 '가짓수를 센다'는 표지다. 배제 표현('외/외의')은 가짓수 표지가 아니라 이관 전에도 없었다."
+    },
+    "generic_scope_reference": {
+      "include": [
+        "otherness_reference",
+        "deictic_determiner",
+        "indefinite_determiner"
+      ],
+      "exclude": [
+        "그",
+        "이",
+        "저",
+        "어떤",
+        "무슨",
+        "어느",
+        "임의"
+      ],
+      "note": "자유텍스트 스코프에서 구체 값이 아니라 참조·미지정을 뜻하는 말(open_text_scope_claims 이관). 이관 전에는 event_scope_value_stopword 위에 '다른/해당/특정/외/외의' 다섯만 덧붙어 있었다 — 나머지 지시·비특정 한정사는 그때 없었으므로 제외한다(누락 의심)."
     }
   }
 }

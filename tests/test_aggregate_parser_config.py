@@ -67,6 +67,68 @@ def test_use_rules_injects_and_restores(tmp_path: Path) -> None:
     assert config.rules() is original
 
 
+def test_prefix_operators_agree_with_the_normalization_lexicon() -> None:
+    """같은 비교어에 두 파일이 다른 연산자를 주면 경로마다 다른 뜻이 된다.
+
+    선행 비교어는 이 파일이 소유하고(숫자 **앞**), 공통 정규화기의 확장 별칭은
+    normalization_lexicon.json 이 소유한다. 두 표가 겹치는 낱말에서 어긋나면 '최소 10건'이
+    파서 경로에서는 >= 로, 정규화 경로에서는 다른 뜻으로 읽힌다. 실제로 '적어도'가 한쪽에만
+    있어 같은 말이 경로마다 다르게 처리됐다(2026-08-04 이관).
+    """
+    import condition_normalizers
+
+    surface_to_operator = condition_normalizers.operator_aliases()
+    for prefix in config.rules().prefix_operators:
+        expected = surface_to_operator.get(prefix.surface)
+        assert expected is not None, (
+            f"선행 비교어 '{prefix.surface}' 가 normalization_lexicon 의 확장 별칭에 없다 — "
+            f"같은 낱말을 한쪽만 알면 경로마다 뜻이 갈린다."
+        )
+        assert expected == prefix.operator, (
+            f"'{prefix.surface}': aggregate_parser_rules={prefix.operator} vs "
+            f"normalization_lexicon={expected}"
+        )
+
+
+def test_number_words_agree_with_the_entity_count_vocabulary() -> None:
+    """같은 수사를 두 표가 각자 알면 한쪽만 늘어난다 — 실제로 그 상태였다.
+
+    표면어는 parser_lexicon 의 ``source_korean_count`` 가, 엔티티 개수 값은
+    ``korean_number_normalizer`` 가, 임계값은 이 파일이 안다. 세 곳이
+    갈라지면 '세 개 브랜드'는 3으로 읽히는데 '세 번 구매'는 값이 없는 상태가 된다.
+    공통 normalizer는 모르는 낱말에 ``None`` 을 주므로 사전에만
+    낱말을 추가하면 아무 말 없이 무시된다 — 그 함정을 여기서 닫는다.
+    """
+    import korean_number_normalizer
+    import lexicon_patterns
+
+    declared = dict(config.rules().number_words)
+    shared = dict(korean_number_normalizer.NATIVE_KOREAN_NUMBER_VALUES)
+    assert declared == shared, (
+        "수사 → 값 표가 갈라졌다(임계값 vs 엔티티 개수):\n"
+        f"  aggregate_parser_rules : {declared}\n"
+        f"  korean_number_normalizer: {shared}"
+    )
+    assert set(declared) == set(lexicon_patterns.vocabulary("source_korean_count")), (
+        "수사 표면어가 parser_lexicon 의 source_korean_count 와 어긋난다 — "
+        "사전에만 낱말을 추가하면 값이 없어 조용히 무시된다."
+    )
+
+
+def test_number_words_only_bind_to_declared_counter_units() -> None:
+    """결속 단위 선언이 실제 단위 토큰에서 파생돼야 한다 — 목록을 손으로 또 적으면 갈라진다."""
+    rules = config.rules()
+    counters = rules.counter_unit_alternation()
+    assert counters, "계수 단위가 하나도 없으면 수관형사는 영영 값이 되지 못한다"
+    declared_kinds = {
+        token.kind for token in rules.unit_tokens if token.surface in counters.split("|")
+    }
+    assert declared_kinds <= rules.number_word_unit_kinds
+    # 기간·금액은 수관형사 결속 대상이 아니다('한 달'의 창은 calendar_window 가 소유한다).
+    assert "duration" not in rules.number_word_unit_kinds
+    assert "currency" not in rules.number_word_unit_kinds
+
+
 # ── 2. fail-fast ───────────────────────────────────────────────────────────────────────
 def test_wrong_version_fails(tmp_path: Path) -> None:
     payload = _rules_payload()
@@ -128,6 +190,21 @@ def test_overlapping_domain_node_kinds_fail(tmp_path: Path) -> None:
     payload = _rules_payload()
     payload["semantic_domains"]["purchase"]["absence_node_kinds"].append("purchase_aggregate")
     with pytest.raises(config.AggregateParserConfigError, match="존재/부재 노드 종류가 겹친다"):
+        _load(tmp_path, payload)
+
+
+def test_unknown_number_word_unit_kind_fails(tmp_path: Path) -> None:
+    payload = _rules_payload()
+    payload["number_word_unit_kinds"].append("volume")
+    with pytest.raises(config.AggregateParserConfigError, match="number_word_unit_kinds"):
+        _load(tmp_path, payload)
+
+
+def test_zero_or_negative_number_word_value_fails(tmp_path: Path) -> None:
+    """'세'=0 같은 값은 임계값을 조용히 무력화한다(0회 이상 = 전원)."""
+    payload = _rules_payload()
+    payload["number_words"]["세"] = 0
+    with pytest.raises(config.AggregateParserConfigError, match="스키마를 위반"):
         _load(tmp_path, payload)
 
 

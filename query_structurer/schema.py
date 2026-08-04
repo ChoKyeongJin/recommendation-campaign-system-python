@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import Any
+from typing import Any, get_args
 
 from .types import (
+    Complexity as ComplexityType,
     Constraints,
     Dependency,
     InformationNeed,
+    Intent as IntentType,
     MetadataConstraint,
+    MetadataOperator as MetadataOperatorType,
+    Operation as OperationType,
     OutputPreference,
+    OutputFormat as OutputFormatType,
     PlannerHints,
     StructuredQuery,
     Subject,
@@ -16,21 +21,20 @@ from .types import (
 )
 
 
-INTENTS = {
-    "fact_lookup",
-    "comparison",
-    "aggregation",
-    "summary",
-    "causal_analysis",
-    "timeline",
-    "multi_hop",
-    "recommendation",
-    "unknown",
-}
-COMPLEXITIES = {"simple", "moderate", "complex"}
-METADATA_OPERATORS = {"eq", "neq", "gt", "gte", "lt", "lte", "in", "contains"}
-OPERATIONS = {"find", "filter", "compare", "aggregate", "rank", "summarize", "explain", "build_timeline"}
-OUTPUT_FORMATS = {"text", "table", "list", "json"}
+def _literal_values(alias: Any) -> set[str]:
+    values = get_args(alias)
+    if not values or not all(isinstance(value, str) for value in values):
+        raise TypeError(f"expected a string Literal alias, got {alias!r}")
+    return set(values)
+
+
+# 런타임 validator와 JSON Schema가 공개 타입 계약에서 파생된다. 값을 추가할 곳은 types.py의
+# Literal 선언 하나뿐이며, 이 모듈에 같은 문자열 목록을 다시 적지 않는다.
+INTENTS = _literal_values(IntentType)
+COMPLEXITIES = _literal_values(ComplexityType)
+METADATA_OPERATORS = _literal_values(MetadataOperatorType)
+OPERATIONS = _literal_values(OperationType)
+OUTPUT_FORMATS = _literal_values(OutputFormatType)
 
 
 def _nullable(schema: dict[str, Any]) -> dict[str, Any]:

@@ -154,6 +154,20 @@
       "synonyms": ["앱 사용자", "앱 로그인 회원", "앱으로 로그인", "최근 앱으로 접속한 회원"]
     },
     {
+      "canonical": "mobile_web_user",
+      "category": "login_channel",
+      "column": "B.LAST_LOGIN_CHANNEL",
+      "value": "DEVICE_TYPE_CD.MW",
+      "synonyms": ["모바일웹 사용자", "모바일웹 로그인 회원", "모바일웹으로 로그인", "최근 모바일웹으로 접속한 회원"]
+    },
+    {
+      "canonical": "pc_user",
+      "category": "login_channel",
+      "column": "B.LAST_LOGIN_CHANNEL",
+      "value": "DEVICE_TYPE_CD.PC",
+      "synonyms": ["PC 사용자", "PC 로그인 회원", "PC로 로그인", "최근 PC로 접속한 회원"]
+    },
+    {
       "canonical": "app_signup",
       "surface_terms": ["앱", "어플", "app", "어플리케이션"],
       "category": "signup_channel",
@@ -464,7 +478,7 @@
       "canonical": "inactive_30d",
       "days": 30,
       "column": "B.LAST_LOGIN_DATE",
-      "anchor": "getdate",
+      "anchor": "reference_date",
       "operator": "<",
       "include_null": true,
       "synonyms": ["30일 이상 미접속", "한 달 동안 접속하지 않은"]
@@ -473,7 +487,7 @@
       "canonical": "inactive_90d",
       "days": 90,
       "column": "B.LAST_LOGIN_DATE",
-      "anchor": "getdate",
+      "anchor": "reference_date",
       "operator": "<",
       "include_null": true,
       "synonyms": [
@@ -486,7 +500,7 @@
       "canonical": "inactive_180d",
       "days": 180,
       "column": "B.LAST_LOGIN_DATE",
-      "anchor": "getdate",
+      "anchor": "reference_date",
       "operator": "<",
       "include_null": true,
       "synonyms": [
@@ -498,7 +512,7 @@
     {
       "canonical": "recent_login",
       "column": "B.LAST_LOGIN_DATE",
-      "anchor": "getdate",
+      "anchor": "reference_date",
       "operator": ">=",
       "parameter": "days",
       "default_days": 30,
@@ -542,14 +556,14 @@
     "table": "CRM_MB_BASEINFO",
     "alias": "B",
     "default_days": 90,
-    "anchor": "data_max"
+    "anchor": "reference_date"
   },
 
   "recent_login_target": {
     "column": "LAST_LOGIN_DATE",
     "table": "CRM_MB_BASEINFO",
     "alias": "B",
-    "anchor": "getdate",
+    "anchor": "reference_date",
     "default_days": 30
   },
 
@@ -622,6 +636,11 @@
     "base_join_column": "B.MEMBER_NO",
     "date_column": "ORDER_DATE",
     "date_format": "yyyyMMdd",
+    "grain_axes": {
+      "per_order": {"table": "CRM_SL_ORDERHEADERMALL", "column": "ORDER_ID"},
+      "per_product": {"table": "CRM_SL_ORDERDETAILMALL", "column": "PRODUCT_ID"},
+      "per_brand": {"table": "CRM_SL_ORDERDETAILMALL", "column": "BRAND_ID"}
+    },
     "metrics": {
       "purchase_amount": {
         "semantic_type": "sum",
@@ -842,17 +861,22 @@
     "order_header": {
       "table": "CRM_SL_ORDERHEADERMALL",
       "alias": "OH",
-      "member_join": "OH.MEMBER_NO = B.MEMBER_NO"
+      "member_join": "OH.MEMBER_NO = B.MEMBER_NO",
+      "order_id_column": "ORDER_ID",
+      "date_column": "ORDER_DATE",
+      "time_column": "ORDER_TIME"
     },
     "order_detail": {
       "table": "CRM_SL_ORDERDETAILMALL",
       "alias": "OD",
-      "join": "OD.ORDER_ID = OH.ORDER_ID"
+      "join": "OD.ORDER_ID = OH.ORDER_ID",
+      "date_column": "ORDER_DATE"
     },
     "product": {
       "table": "CRM_CM_PRODUCT",
       "alias": "P",
-      "join": "P.PRODUCT_ID = OD.PRODUCT_ID"
+      "join": "P.PRODUCT_ID = OD.PRODUCT_ID",
+      "brand_name_column": "BRAND_NAME"
     },
     "match_columns": [
       "P.CATEGORY",
@@ -970,6 +994,16 @@
         "agg": "SUM",
         "column": "C.QTY",
         "synonyms": ["장바구니 수량", "담은 상품 개수"]
+      },
+      "cart_amount": {
+        "agg": "SUM",
+        "column": "C.TOTAL_SALE_PRICE",
+        "synonyms": ["장바구니 총액", "장바구니 금액"]
+      },
+      "cart_same_product_quantity": {
+        "agg": "MAX",
+        "column": "C.QTY",
+        "synonyms": ["동일 상품 수량", "한 상품 최대 수량"]
       }
     }
   },

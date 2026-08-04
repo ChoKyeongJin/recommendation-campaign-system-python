@@ -421,6 +421,13 @@
       "label": "주문 식별자",
       "aliases": ["주문", "구매 건"]
     },
+    "purchase.order_time": {
+      "source": "purchase",
+      "column": "ORDER_TIME",
+      "data_type": "string",
+      "label": "주문 시각",
+      "aliases": ["주문 시간", "구매 시간"]
+    },
     "purchase_line.product_id": {
       "source": "purchase_line",
       "column": "PRODUCT_ID",
@@ -514,6 +521,14 @@
       "label": "장바구니 수량",
       "unit": "item",
       "aliases": ["장바구니 수량", "담은 수량"]
+    },
+    "cart.amount": {
+      "source": "cart",
+      "column": "TOTAL_SALE_PRICE",
+      "data_type": "number",
+      "label": "장바구니 라인 합계금액",
+      "unit": "KRW",
+      "aliases": ["장바구니 총액", "장바구니 금액", "담은 상품 금액"]
     },
     "cart.product_id": {
       "source": "cart",

@@ -8,12 +8,18 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 import lexicon_llm
 import member_filters_config
 import surface_choices
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+MEMBER_FILTERS_PATH = (
+    REPO_ROOT / "docs" / "data" / "runtime" / "sql" / "member_target_filters.json"
+)
 
 
 @pytest.fixture
@@ -24,8 +30,10 @@ def fresh_choices():
 
 
 def _swap_member_filters(monkeypatch, tmp_path, payload: dict) -> None:
+    complete_payload = json.loads(MEMBER_FILTERS_PATH.read_text(encoding="utf-8"))
+    complete_payload.update(payload)
     path = tmp_path / "member_target_filters.json"
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    path.write_text(json.dumps(complete_payload, ensure_ascii=False), encoding="utf-8")
     monkeypatch.setattr(member_filters_config, "DEFAULT_PATH", path)
     surface_choices.invalidate()
 

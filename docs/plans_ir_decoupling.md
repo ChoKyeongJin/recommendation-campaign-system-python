@@ -11,7 +11,7 @@
 |---|---|---|
 | Wave 1 안전망 | 완료 | CI 신설, 죽은 참조 19곳 정정, 골든 정상화, 가드 5종, preflight green, env 격리 |
 | Wave 2 fail-close | 완료 | OR 게이트 fail-OPEN 수정, 안내 라벨 6종 침묵 제거, behaviors 단일 소스화, 레지스트리 강등 가시화·cwd 독립, 설정 교차참조 가드 |
-| Wave 3 계측 | 완료 | 멱등성 3축, auto 필터 순서 계약(매직 인덱스 제거), 물리 바인딩 인벤토리 369건 래칫, plan 키 AST 인벤토리, API 응답 계약 게이트 |
+| Wave 3 계측 | 완료 | 멱등성 3축, auto 필터 순서 계약(매직 인덱스 제거), 물리 바인딩 인벤토리 31건 래칫(활성 비-Event 0건, 삭제 예정 Event IR 레거시만 31건), plan 키 AST 인벤토리, API 응답 계약 게이트 |
 | Wave 4 단일소스화 | 완료 | plan_schema 레지스트리 신설 + ir_snapshot 파생 전환, 미분류 13→0, 분류 모순 0, SQL 리터럴 7→1, 정규화 2→1, unsupported reason 닫힌 집합 |
 | Wave 5 구조 이동 | 미착수 | 착수 게이트(W3-5)는 확보. 부채는 측정·고정됨 |
 
@@ -58,7 +58,7 @@
 | 소스 권위 번들 재실행 비멱등 | 1건 (`or_of_age_with_and_threshold`) | W5-2 |
 | `build_sql_result` 입력 변형 | 1건 (`co_purchase_same_product`) | W5-1 |
 | SQL 도 사유도 없이 끝나는 케이스 | 4건 | failure_stage 축 |
-| 소스 하드코딩 물리 바인딩 | 369건 (graph_rag 214) | W5-3 |
+| 소스 하드코딩 물리 바인딩 | 31건 (활성 비-Event 0, 삭제 예정 Event IR 레거시 31; 2026-08-04 컨텍스트 인지 AST 스캐너 기준) | W5-3 |
 
 **Wave 5 를 멈춘 이유**: W5-1(빌더 순수화)은 플랜이 "가장 조용한 실패 벡터"로 지목한 항목이고,
 계측 결과 위험이 구체적으로 확인됐다 — `capability_check`/`output_contract` 는 파생 키라 골든에서

@@ -371,14 +371,15 @@ class MetricRegistry:
                         continue
                     name = state.get("state")
                     operator = state.get("operator")
-                    anchor = state.get("anchor_expression")
+                    anchor = state.get("anchor")
                     if (
                         all(isinstance(value, str) and value for value in (name, operator, anchor))
                         and operator in {"=", ">", ">=", "<", "<="}
+                        and anchor == "reference_date"
                     ):
                         states[name] = {
                             "operator": operator,
-                            "anchor_expression": anchor,
+                            "anchor": anchor,
                             "label": f"{spec.name}({name})",
                         }
                 if states:

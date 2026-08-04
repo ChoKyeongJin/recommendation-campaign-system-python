@@ -2,26 +2,36 @@ from __future__ import annotations
 
 import copy
 import re
+from collections.abc import Mapping
 from datetime import date, timedelta
 from typing import Any
 
 from calendar_window import duration_window_candidates, parse_calendar_window_spans
-from semantic_normalizers import AmountNormalizer, Money, NormalizationError
-
-
-SEMANTIC_IR_STATUSES = frozenset(
-    {"resolved", "policy_applied", "needs_clarification", "unsupported"}
+import condition_normalizers
+import semantic_domain_binding
+from semantic_normalizers import (
+    AmountNormalizer,
+    Money,
+    NormalizationError,
+    decimal_json_value,
+    exact_decimal,
+)
+from .semantic_outcome import (
+    FAILURE_KINDS,
+    SEMANTIC_STATUSES,
+    FailureKind,
+    SemanticOutcome,
+    parse_semantic_outcome_projection,
+    semantic_outcome_json_schema,
+    validate_semantic_outcome_state,
 )
 
-_COMPARISON_TERMS: tuple[tuple[str, str], ...] = (
-    ("이상", ">="),
-    ("초과", ">"),
-    ("이하", "<="),
-    ("미만", "<"),
-    (">=", ">="),
-    ("<=", "<="),
-    (">", ">"),
-    ("<", "<"),
+
+SEMANTIC_IR_STATUSES = SEMANTIC_STATUSES
+SEMANTIC_FAILURE_KINDS = FAILURE_KINDS
+
+_COMPARISON_TERMS: tuple[tuple[str, str], ...] = tuple(
+    condition_normalizers.comparison_literal_operators().items()
 )
 _COMPARISON_RE = re.compile(
     "|".join(re.escape(surface) for surface, _canonical in _COMPARISON_TERMS)
@@ -48,32 +58,30 @@ MONEY_LITERAL_RE = re.compile(
     rf")(?![\d.,A-Za-z])",
     re.IGNORECASE,
 )
+COUNTER_UNIT_SEMANTICS = semantic_domain_binding.counter_units()
+_COUNTER_SURFACE_PATTERN = "|".join(
+    re.escape(unit)
+    for unit in sorted(COUNTER_UNIT_SEMANTICS, key=lambda item: (-len(item), item))
+) or r"(?!)"
 COUNTER_LITERAL_RE = re.compile(
     r"(?<![\d.])(?P<value>\d[\d,]*(?:\.\d+)?)\s*"
-    r"(?P<unit>종류|개|회|번|건|종)"
+    rf"(?P<unit>{_COUNTER_SURFACE_PATTERN})"
     # Korean counters normally carry a case/topic particle (``10개를``,
     # ``3회는``). Keep the particle outside the literal evidence span.
     r"(?=(?:을|를|이|가|은|는|의|만|중|에서|으로|로)?(?:\s|[,.;!?]|$))"
 )
-COUNTER_UNIT_SEMANTICS = {
-    "개": "item_quantity",
-    "회": "order_count",
-    "번": "order_count",
-    "건": "order_count",
-    "종": "distinct_product_count",
-    "종류": "distinct_product_count",
-}
 # 상대 기간 표면('6개월', '30일', '2주'). 이것이 없으면 '최근 6개월'의 '6' 이 **주인 없는 맨 숫자**
 # 원자로 남는다 — 그 절의 노드가 period 를 소유해도 커버리지는 그 사실을 모르므로 정상 요청이
 # 누락으로 오보고되고 재방출까지 돌게 된다(실측 2026-08-02: '최근 6개월 주문 5건 이상' 0/5 실패).
 # 달력 창(2019년 3월)은 위에서 date_window 로 이미 점유되므로 여기 걸리지 않는다.
+DURATION_UNIT_SEMANTICS = condition_normalizers.numeric_duration_unit_semantics()
+_DURATION_SURFACE_PATTERN = "|".join(
+    re.escape(unit)
+    for unit in sorted(DURATION_UNIT_SEMANTICS, key=lambda item: (-len(item), item))
+) or r"(?!)"
 DURATION_LITERAL_RE = re.compile(
-    r"(?<![\d.])(?P<value>\d+)\s*(?P<unit>개월|주일|주|일간|일|달|년간|년)(?![가-힣A-Za-z0-9])"
+    rf"(?<![\d.])(?P<value>\d+)\s*(?P<unit>{_DURATION_SURFACE_PATTERN})(?![가-힣A-Za-z0-9])"
 )
-DURATION_UNIT_SEMANTICS = {
-    "일": "days", "일간": "days", "주": "weeks", "주일": "weeks",
-    "개월": "months", "달": "months", "년": "years", "년간": "years",
-}
 # 평가 기준일은 일반 달력 창과 다르다. ``2026년 8월 3일 기준 최근 30일``의
 # 첫 날짜는 독립 사건 구간이 아니라 뒤 rolling window의 고정 anchor다. 이 역할은
 # 모델이 추측하지 않고 애플리케이션이 원문 표면에서만 부여한다.
@@ -82,6 +90,11 @@ AS_OF_DATE_LITERAL_RE = re.compile(
     r"(?P<day>\d{1,2})\s*일(?=\s*기준)"
 )
 _NUMBER_RE = re.compile(r"(?<![\d.])\d+(?:\.\d+)?(?![\d.])")
+
+# 기준일이 없는 호출에서 달력 파서의 시스템 시계 fallback 이 의미 결과로 새어 나오지 않게 한다.
+# 서로 멀리 떨어진 두 기준일에서도 **동일한** 창만 남기면 명시 연도 같은 절대 표현은 보존되고,
+# 지난달/올해/연도 없는 분기처럼 기준일에 의존하는 표현은 fail-close 된다.
+_REFERENCE_DATE_PROBES = (date(2000, 1, 15), date(2400, 7, 15))
 
 
 def _duration_temporal_kinds(query: str) -> list[tuple[int, int, str]]:
@@ -106,130 +119,54 @@ def _duration_temporal_kinds(query: str) -> list[tuple[int, int, str]]:
     return spans
 
 
-SEMANTIC_IR_LLM_JSON_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": False,
-    "required": [
-        "status",
-        "operations",
-        "missing_fields",
-        "policy_applications",
-        "unsupported_operations",
-        "message",
-    ],
-    "properties": {
-        "status": {
-            "type": "string",
-            "enum": sorted(SEMANTIC_IR_STATUSES),
-        },
-        # 결핍의 **원인**. status 만으로는 "사용자가 안 알려준 것"과 "우리가 못 만든 것"이
-        # 구분되지 않아 후자까지 사용자 확인 요청이 됐다(실측: req-1.member_entity 를 물어봄).
-        "missing_field_causes": {
-            "type": "array",
-            "items": {"type": "object"},
-        },
-        "failure_kind": {
-            "type": ["string", "null"],
-            "enum": [
-                "user_clarification", "structurer_failure", "system_failure", "unsupported", None
-            ],
-        },
-        "operations": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["kind", "metric_id", "direction", "bindings"],
-                "properties": {
-                    "kind": {
-                        "type": "string",
-                        "enum": ["period_over_period_change"],
-                    },
-                    "metric_id": {"type": "string", "minLength": 1},
-                    "direction": {
-                        "type": "string",
-                        "enum": ["increase", "decrease"],
-                    },
-                    "bindings": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": ["role", "literal_id"],
-                            "properties": {
-                                "role": {
-                                    "type": "string",
-                                    "enum": [
-                                        "baseline",
-                                        "current",
-                                        "threshold",
-                                        "comparison",
-                                    ],
-                                },
-                                "literal_id": {"type": "string", "minLength": 1},
-                            },
-                        },
-                    },
-                },
-            },
-        },
-        "missing_fields": {
-            "type": "array",
-            "items": {"type": "string", "minLength": 1},
-        },
-        "policy_applications": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["policy_id", "fields"],
-                "properties": {
-                    "policy_id": {"type": "string", "minLength": 1},
-                    "fields": {
-                        "type": "array",
-                        "items": {"type": "string", "minLength": 1},
-                    },
-                },
-            },
-        },
-        "unsupported_operations": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["kind", "reason", "evidence"],
-                "properties": {
-                    "kind": {"type": "string", "minLength": 1},
-                    "reason": {"type": "string", "minLength": 1},
-                    "evidence": {"type": "string"},
-                },
-            },
-        },
-        "message": {"type": ["string", "null"]},
-    },
-}
+SEMANTIC_IR_LLM_JSON_SCHEMA: dict[str, Any] = semantic_outcome_json_schema()
 
 
-def _number(value: str) -> int | float:
-    parsed = float(value)
-    return int(parsed) if parsed.is_integer() else parsed
+def _number(value: str) -> int | str:
+    """Project a numeric surface to JSON without a binary-float round trip."""
+
+    parsed = exact_decimal(value, allow_string=True)
+    if parsed is None:
+        raise ValueError(f"invalid finite numeric literal: {value!r}")
+    return decimal_json_value(parsed)
 
 
 def _overlaps(start: int, end: int, occupied: list[tuple[int, int]]) -> bool:
     return any(start < occupied_end and occupied_start < end for occupied_start, occupied_end in occupied)
 
 
-def extract_literal_bindings(
+def _deterministic_calendar_window_spans(
+    query: str,
+    reference_date: date | None,
+) -> list[tuple[dict[str, Any], int, int]]:
+    """Return only calendar windows whose value does not hide a system clock read."""
+
+    if reference_date is not None:
+        return parse_calendar_window_spans(query, today=reference_date)
+
+    probed = [
+        parse_calendar_window_spans(query, today=probe)
+        for probe in _REFERENCE_DATE_PROBES
+    ]
+    first_by_span = {(start, end): window for window, start, end in probed[0]}
+    second_by_span = {(start, end): window for window, start, end in probed[1]}
+    return [
+        (window, start, end)
+        for (start, end), window in sorted(first_by_span.items())
+        if second_by_span.get((start, end)) == window
+    ]
+
+
+def scan_literal_bindings(
     query: str,
     *,
     current_date: str | date | None = None,
 ) -> list[dict[str, Any]]:
-    """Extract value atoms without assigning business meaning between them.
+    """Extract surface evidence without choosing a domain metric.
 
     Dates, money, counter-bearing numbers, percentages, and comparison operators
-    are application-owned. Korean counters are semantic literals: ``개`` means
-    item quantity, ``회/번/건`` means order count, and ``종/종류`` means distinct
-    product count. The LLM may not rewrite one counter into another.
+    are application-owned. Counter literals retain their exact surface unit, but
+    this scanner does not decide whether ``3회`` means orders, logins, or sends.
     The LLM may only connect the returned IDs to semantic roles; it cannot submit
     replacement values in the semantic operation payload.
     """
@@ -288,7 +225,7 @@ def extract_literal_bindings(
                 {"date": anchor.isoformat(), "role": "rolling_anchor"},
             )
 
-    for window, start, end in parse_calendar_window_spans(query, today=reference_date):
+    for window, start, end in _deterministic_calendar_window_spans(query, reference_date):
         if _overlaps(start, end, occupied):
             continue
         start_date = date(
@@ -325,17 +262,21 @@ def extract_literal_bindings(
             continue
         if not isinstance(normalized_money, Money):
             continue
+        money_payload = normalized_money.to_dict()
         append(
             "money",
             match.start(),
             match.end(),
-            normalized_money.amount,
-            normalized_money.to_dict(),
+            money_payload["amount"],
+            money_payload,
         )
 
     for match in _PERCENT_RE.finditer(query):
         if not _overlaps(match.start(), match.end(), occupied):
-            value = _number(match.group("value"))
+            exact = exact_decimal(match.group("value"), allow_string=True)
+            if exact is None:
+                continue
+            value = decimal_json_value(exact)
             append("percentage", match.start(), match.end(), value, {"value": value, "unit": "percent"})
 
     for match in COUNTER_LITERAL_RE.finditer(query):
@@ -350,7 +291,7 @@ def extract_literal_bindings(
                 {
                     "value": value,
                     "surface_unit": unit,
-                    "semantic_unit": COUNTER_UNIT_SEMANTICS[unit],
+                    "unit": "count",
                 },
             )
 
@@ -395,26 +336,106 @@ def extract_literal_bindings(
     return sorted(literals, key=lambda item: (item["start"], item["end"], item["kind"]))
 
 
+def bind_counter_literals(
+    literals: list[dict[str, Any]],
+    *,
+    counter_units: Mapping[str, str] | None = None,
+    query: str | None = None,
+) -> list[dict[str, Any]]:
+    """확정 가능한 계수 표면만 도메인 지표에 결속한다.
+
+    명시적으로 ``counter_units``를 주입한 호출은 그 문맥 자체가 권위다. 기본 경로는 원문과
+    evidence span을 도메인 resolver에 전달하며, 모호한 ``회/번/건``은 결속하지 않는다.
+    """
+
+    bindings = copy.deepcopy(literals)
+    semantics = (
+        None
+        if counter_units is None
+        else {str(key): str(value) for key, value in counter_units.items()}
+    )
+    for binding in bindings:
+        if binding.get("kind") != "number_with_unit":
+            continue
+        normalized = binding.get("normalized")
+        if not isinstance(normalized, dict):
+            continue
+        surface_unit = normalized.get("surface_unit")
+        if not isinstance(surface_unit, str):
+            continue
+        semantic_unit = (
+            semantics.get(surface_unit)
+            if semantics is not None
+            else semantic_domain_binding.bind_counter_unit(
+                surface_unit,
+                text=query,
+                start=binding.get("start"),
+                end=binding.get("end"),
+            )
+        )
+        if semantic_unit:
+            normalized.pop("unit", None)
+            normalized["semantic_unit"] = semantic_unit
+    return bindings
+
+
+def extract_literal_bindings(
+    query: str,
+    *,
+    current_date: str | date | None = None,
+) -> list[dict[str, Any]]:
+    """Extract application-owned surface evidence without domain binding.
+
+    Domain metric selection belongs to a later binder after the semantic node
+    has established its source/metric.  Call :func:`bind_counter_literals`
+    explicitly when that context is available.
+    """
+
+    return scan_literal_bindings(query, current_date=current_date)
+
+
 def empty_semantic_ir(
     status: str = "needs_clarification",
     *,
     missing_fields: list[str] | None = None,
     message: str | None = None,
-    failure_kind: str | None = None,
+    failure_kind: FailureKind | None = None,
     # 결핍의 **원인**. 이 인자가 없던 동안 canonical 경로의 causes 는 구조적으로 항상 []
     # 였고, 그래서 원문에 값이 있는 결핍까지 전부 '사용자에게 묻기'로 귀결됐다.
     missing_field_causes: list[dict[str, Any]] | None = None,
+    unsupported_operations: list[dict[str, Any]] | None = None,
+    policy_applications: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    return {
-        "status": status,
-        "operations": [],
-        "missing_fields": list(missing_fields or []),
-        "missing_field_causes": [dict(record) for record in (missing_field_causes or [])],
-        "failure_kind": failure_kind,
-        "policy_applications": [],
-        "unsupported_operations": [],
-        "message": message,
-    }
+    if status == "resolved":
+        outcome = SemanticOutcome.resolved(message=message, failure_kind=failure_kind)
+    elif status == "unsupported":
+        outcome = SemanticOutcome.unsupported(
+            operations=unsupported_operations or [],
+            message=message,
+            failure_kind=failure_kind or "unsupported",
+        )
+    elif status == "policy_applied":
+        outcome = SemanticOutcome.policy_applied(
+            applications=policy_applications or [],
+            message=message,
+            failure_kind=failure_kind,
+        )
+    elif status == "needs_clarification":
+        outcome = SemanticOutcome.needs_clarification(
+            missing_fields=missing_fields or [],
+            missing_field_causes=missing_field_causes or [],
+            message=message,
+            failure_kind=failure_kind,
+        )
+    else:
+        raise ValueError(f"unknown semantic outcome status: {status!r}")
+    return outcome.to_legacy_dict()
+
+
+def write_semantic_ir(payload: dict[str, Any], projection: dict[str, Any]) -> None:
+    """The sole writer for the application-owned ``semantic_ir`` projection."""
+
+    payload["semantic_ir"] = copy.deepcopy(projection)
 
 
 def _has_plan_meaning(payload: dict[str, Any]) -> bool:
@@ -446,23 +467,10 @@ def validate_semantic_ir(
     *,
     payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    if not isinstance(semantic_ir, dict):
-        raise ValueError("semantic_ir must be an object")
-    # 필수 키는 반드시 있어야 하고, 선언되지 않은 키는 올 수 없다. 파생 진단 필드
-    # (missing_field_causes/failure_kind)는 **선택**이다 — 계산되지 않은 경로(빈 플랜·직접
-    # 조립한 payload)도 유효한 semantic_ir 이어야 하기 때문이다.
-    required_keys = set(SEMANTIC_IR_LLM_JSON_SCHEMA["required"])
-    declared_keys = set(SEMANTIC_IR_LLM_JSON_SCHEMA["properties"])
-    if not required_keys <= set(semantic_ir) or not set(semantic_ir) <= declared_keys:
-        raise ValueError("semantic_ir fields do not match the closed schema")
-    status = semantic_ir.get("status")
-    if status not in SEMANTIC_IR_STATUSES:
-        raise ValueError("semantic_ir.status is invalid")
-    for key in ("operations", "missing_fields", "policy_applications", "unsupported_operations"):
-        if not isinstance(semantic_ir.get(key), list):
-            raise ValueError(f"semantic_ir.{key} must be an array")
-    if semantic_ir.get("message") is not None and not isinstance(semantic_ir.get("message"), str):
-        raise ValueError("semantic_ir.message must be a string or null")
+    # 필드, 중첩 객체, enum, 타입은 wire 선언 한 곳에서 파싱한다. 이 함수는 그 뒤의
+    # literal 교차 참조와 상태 불변식만 검증한다.
+    semantic_ir = parse_semantic_outcome_projection(semantic_ir)
+    status = semantic_ir["status"]
 
     literal_items = literal_bindings if isinstance(literal_bindings, list) else []
     literal_by_id = {
@@ -474,24 +482,10 @@ def validate_semantic_ir(
         raise ValueError("literal_bindings must contain unique object IDs")
 
     for index, operation in enumerate(semantic_ir["operations"]):
-        if not isinstance(operation, dict):
-            raise ValueError(f"semantic_ir.operations[{index}] must be an object")
-        if set(operation) != {"kind", "metric_id", "direction", "bindings"}:
-            raise ValueError(f"semantic_ir.operations[{index}] fields are invalid")
-        if operation.get("kind") != "period_over_period_change":
-            raise ValueError(f"semantic_ir.operations[{index}].kind is unsupported")
-        if not isinstance(operation.get("metric_id"), str) or not operation["metric_id"].strip():
-            raise ValueError(f"semantic_ir.operations[{index}].metric_id is required")
-        if operation.get("direction") not in {"increase", "decrease"}:
-            raise ValueError(f"semantic_ir.operations[{index}].direction is invalid")
-        bindings = operation.get("bindings")
-        if not isinstance(bindings, list):
-            raise ValueError(f"semantic_ir.operations[{index}].bindings must be an array")
+        bindings = operation["bindings"]
         by_role: dict[str, dict[str, Any]] = {}
         for binding in bindings:
-            if not isinstance(binding, dict) or set(binding) != {"role", "literal_id"}:
-                raise ValueError(f"semantic_ir.operations[{index}] contains an invalid binding")
-            role, literal_id = binding.get("role"), binding.get("literal_id")
+            role, literal_id = binding["role"], binding["literal_id"]
             if role in by_role:
                 raise ValueError(f"semantic_ir.operations[{index}] contains duplicate role {role}")
             literal = literal_by_id.get(literal_id)
@@ -516,37 +510,13 @@ def validate_semantic_ir(
     missing_fields = semantic_ir["missing_fields"]
     policy_applications = semantic_ir["policy_applications"]
     unsupported = semantic_ir["unsupported_operations"]
-    if not all(isinstance(item, str) and item.strip() for item in missing_fields):
-        raise ValueError("semantic_ir.missing_fields must contain non-empty strings")
-    if status == "needs_clarification" and not missing_fields:
-        raise ValueError("needs_clarification requires missing_fields")
-    if status != "needs_clarification" and missing_fields:
-        raise ValueError("missing_fields is only valid for needs_clarification")
-    if status == "policy_applied" and not policy_applications:
-        raise ValueError("policy_applied requires policy_applications")
-    for index, application in enumerate(policy_applications):
-        if not isinstance(application, dict) or set(application) != {"policy_id", "fields"}:
-            raise ValueError(f"semantic_ir.policy_applications[{index}] is invalid")
-        if not isinstance(application.get("policy_id"), str) or not application["policy_id"].strip():
-            raise ValueError(f"semantic_ir.policy_applications[{index}].policy_id is required")
-        fields = application.get("fields")
-        if not isinstance(fields, list) or not fields or not all(
-            isinstance(field, str) and field.strip() for field in fields
-        ):
-            raise ValueError(f"semantic_ir.policy_applications[{index}].fields is invalid")
-    if status != "policy_applied" and policy_applications:
-        raise ValueError("policy_applications is only valid for policy_applied")
-    if status == "unsupported" and not unsupported:
-        raise ValueError("unsupported requires unsupported_operations")
-    for index, item in enumerate(unsupported):
-        if not isinstance(item, dict) or set(item) != {"kind", "reason", "evidence"}:
-            raise ValueError(f"semantic_ir.unsupported_operations[{index}] is invalid")
-        if not all(isinstance(item.get(key), str) for key in ("kind", "reason", "evidence")):
-            raise ValueError(f"semantic_ir.unsupported_operations[{index}] must contain strings")
-        if not item["kind"].strip() or not item["reason"].strip():
-            raise ValueError(f"semantic_ir.unsupported_operations[{index}] requires kind and reason")
-    if status != "unsupported" and unsupported:
-        raise ValueError("unsupported_operations is only valid for unsupported")
+    validate_semantic_outcome_state(
+        status=status,
+        missing_fields=missing_fields,
+        missing_field_causes=semantic_ir["missing_field_causes"],
+        policy_applications=policy_applications,
+        unsupported_operations=unsupported,
+    )
     if status in {"needs_clarification", "unsupported"} and semantic_ir["operations"]:
         raise ValueError(f"{status} cannot contain executable operations")
     if status in {"resolved", "policy_applied"} and not semantic_ir["operations"]:

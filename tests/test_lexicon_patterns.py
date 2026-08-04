@@ -21,6 +21,17 @@ MIGRATED_ORIGINALS: dict[str, str] = {
     "member_noun_core": r"회원|고객|사용자",
     "purchase_rank_target": r"고객님|고객|회원|유저|사람|구매자|소비자",
     "exact_equals_marker": r"정확히|정확하게|딱",
+    # 한정사·지시어 이관(2026-08-04). 네 곳의 인라인 집합이 원본이며 **서로 달랐다** — 그 차이가
+    # 이관 후에도 보존되는지가 여기서 걸린다. 넷을 하나로 합치는 것은 동작 변경이므로 별도 작업이다.
+    "purchase_scope_nonspecific_determiner": (
+        r"특정|어떤|일부|각|그|이|저|무슨|어느|임의|여러|다양|다양한|각기|각각|서로|전체|전부|모든|모두"
+    ),
+    "purchase_object_nonspecific_determiner": (
+        r"특정|어떤|일부|각|그|이|저|무슨|어느|임의|여러|다양|다양한|각기|각각|서로|해당|전체|전부|모든|모두"
+    ),
+    "scope_placeholder_value": r"특정|어떤|모든|해당|일부|각|그|이|저|무슨|어느|임의",
+    "scope_distinct_modifier": r"다른|여러|다양|다양한|각기|각각|가지각색|서로",
+    "generic_scope_reference": r"다른|해당|특정|외|외의",
 }
 
 
@@ -106,6 +117,29 @@ def test_every_declared_pattern_is_buildable() -> None:
     for name in lexicon_patterns.pattern_names():
         assert lexicon_patterns.terms(name), f"[{name}] 낱말이 하나도 없다"
         assert lexicon_patterns.pattern(name).compiled is not None
+
+
+def test_determiner_consumers_read_from_the_lexicon_not_their_own_literal() -> None:
+    """한정사 어휘의 소비자는 사전에서 읽는다 — 인라인 복제가 돌아오면 여기서 걸린다.
+
+    이관 전에는 같은 낱말 묶음이 graph_rag 세 곳과 open_text_scope_claims 한 곳에 각자 적혀
+    있었고 서로 달랐다('해당'이 한 곳에만 있는 식). 집합 동일성만 재면 누군가 다시 리터럴로
+    적어도 통과하므로, 사전이 바뀌면 소비자도 따라 바뀐다는 것까지 본다.
+    """
+    import graph_rag
+    import open_text_scope_claims
+
+    assert graph_rag._SCOPE_PLACEHOLDER_VALUES == set(lexicon_patterns.terms("scope_placeholder_value"))
+    assert graph_rag._SCOPE_DISTINCT_MODIFIERS == set(lexicon_patterns.terms("scope_distinct_modifier"))
+    assert graph_rag._PURCHASE_OBJECT_NONSPECIFIC_DETERMINERS == set(
+        lexicon_patterns.terms("purchase_object_nonspecific_determiner")
+    )
+    assert set(lexicon_patterns.terms("purchase_scope_nonspecific_determiner")) <= (
+        graph_rag._PURCHASE_SCOPE_NON_ENTITY_TERMS
+    )
+    assert set(lexicon_patterns.terms("generic_scope_reference")) <= (
+        open_text_scope_claims._generic_product_terms()
+    )
 
 
 def test_data_file_and_code_fallback_agree() -> None:

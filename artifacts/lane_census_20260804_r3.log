@@ -1,0 +1,140 @@
+[ 1]~failure        regression   semantic_ir_needs_clarification                최근 1년 동안 특정 브랜드를 2회 이상 구매한 회원을 대상으로 브랜
+[ 2] sql            match                                                       최근 3개월 내 주문한 적은 있지만 최근 30일간 구매가 없는 회원
+[ 3] sql            match                                                       누적 구매금액 상위 10% 회원을 추출해줘
+[ 4]~clarification  regression                                                  장바구니에 서로 다른 상품을 3개 이상 담아둔 회원
+[ 5] clarification  regression   semantic_ir_needs_clarification                최근 캠페인 발송 성공 횟수가 3회 이상인 회원
+[ 6]~clarification  regression                                                  캠페인별 구매반응 금액이 평균 10만 원 이상인 회원
+[ 7] clarification  regression   semantic_structurer_failure                    구매주기가 30일 이하인 회원
+[ 8]~clarification  regression   semantic_registry_gap                          이십만원 이상 구매한 회원 중 남자는 제외해줘
+[ 9] sql            match                                                       2019년 가장 많이 팔린 상품 10개를 구매한 고객
+[10] unsupported    regression   semantic_ir_unsupported                        작년에 가장 많이 팔린 상품 5개 중 2개 이상 구매한 고객
+[11]~unsupported    regression                                                  최근 30일 장바구니에 담아두고 결제하지 않은 회원
+[12]~clarification  regression                                                  2026년 2월과 3월의 구매금액이 증가한 회원
+[13] sql            match                                                       현재 등급이 VIP인 회원
+[14]~failure        regression   intent_sql_contract_failed                     최근 30일 구매한 회원 수를 알려줘
+[15] unsupported    match        semantic_ir_unsupported                        지난달 말 기준 VIP였던 회원을 찾아줘
+[16] unsupported    match        semantic_ir_unsupported                        이번 달 기준 골드 등급 회원
+[17]~clarification  regression   semantic_ir_needs_clarification                최근에 등급이 승급한 회원
+[18]~clarification  regression   semantic_ir_unsupported                        정상에서 휴면으로 바뀐 회원
+[19] sql            match                                                       직전 등급이 골드였던 회원
+[20] unsupported    match        semantic_ir_unsupported                        3개월 내내 VIP를 유지한 회원
+[21] sql            match                                                       6개월 이상 접속하지 않은 휴면 고객
+[22] unsupported    match        semantic_ir_unsupported                        3개월 내내 VIP 등급을 유지한 회원
+[23]~unsupported    match                                                       등급이 2회 이상 변경된 회원
+[24] sql            match                                                       골드 이상 등급인 회원
+[25]~clarification  regression   semantic_ir_unsupported                        최근 6개월 매월 존재한 회원
+[26] sql            improvement                                                 한 번도 VIP였던 적이 없는 회원
+[27]~clarification  unknown      semantic_registry_gap                          2026년 2월과 3월의 구매금액차이가 10% 이상 증가한 고객 리스
+[28]~clarification  unknown      semantic_ir_unsupported                        각 회원의 최신 기준월 구매등급을 기준으로 VIP 회원을 찾아줘
+[29] clarification  unknown      semantic_registry_gap                          2025년 12월 기준 휴면 상태였던 회원 수를 알려줘
+[30]~clarification  unknown      query_plan_required_conditions_missing         지난 6개월 동안 골드에서 VIP로 승급한 회원을 찾아줘
+[31] clarification  unknown      semantic_ir_needs_clarification                최근 상태가 VIP이고 직전 상태는 골드였던 회원을 보여줘
+[32] unsupported    unknown      semantic_ir_unsupported                        최근 3개월 동안 등급이 두 번 이상 변경된 회원을 찾아줘
+[33]~clarification  unknown      query_plan_required_conditions_missing         한 번이라도 휴면 상태였지만 현재는 정상인 회원을 추출해줘
+[34]~clarification  unknown      semantic_ir_unsupported                        2026년 상반기 동안 한 번도 휴면 상태가 아니었던 회원을 추출해줘
+[35]~clarification  unknown      semantic_registry_gap                          최근 6개월 중 적어도 한 달은 골드 이상이었던 회원을 보여줘
+[36] unsupported    unknown      semantic_ir_unsupported                        최근 6개월 모든 월에 구매등급이 존재하는 회원을 찾아줘
+[37] unsupported    unknown      semantic_ir_unsupported                        최근 12개월 동안 등급이 한 번도 바뀌지 않은 회원을 추출해줘
+[38] unsupported    unknown      semantic_ir_unsupported                        최근 30일 장바구니 상품 종류가 2개 이상이고 총금액이 10만 원 
+[39] clarification  unknown      semantic_registry_gap                          회원별 평균 구매주기가 30일 이내이고 다음 구매예정일이 지난 고객을
+[40]~clarification  unknown      semantic_registry_gap                          2019년에 이십만원 이상을 구매한고객에서 남자는 제외해.
+[41] clarification  unknown      semantic_ir_needs_clarification                최근 캠페인 발송 성공 횟수가 3회 이상이고 구매반응이 없는 회원을 
+[42]~clarification  unknown      semantic_registry_gap                          최근 90일 동안 총 구매금액이 30만원 이상인 회원을 찾아줘.
+[43]~unsupported    unknown                                                     최근 90일 동안 구매금액이 30만원 이상인 주문을 한 회원을 찾아줘
+[44]~clarification  unknown      semantic_ir_unsupported                        구매 회원이 100명 이상인 브랜드를 알려줘.
+[45]~error          unknown      semantic_verification_failed                   최근 90일 동안 정확히 세 번 주문한 회원을 추출해줘.
+[46] unsupported    unknown      semantic_ir_unsupported                        서로 다른 브랜드를 정확히 두 개 구매한 회원을 보여줘.
+[47]~failure        unknown      query_plan_conditions_missing                  이메일, 문자, 앱푸시 중 정확히 두 개 채널에 동의한 회원을 찾아줘
+[48]~clarification  unknown      semantic_registry_gap                          장바구니에 서로 다른 상품을 정확히 네 종류 담은 회원을 보여줘.
+[49] sql            unknown                                                     사료, 간식, 장난감을 모두 구매한 회원을 찾아줘.
+[50] sql            unknown                                                     이메일, 문자, 앱푸시에 모두 동의한 회원을 추출해줘.
+[51]~clarification  unknown      semantic_ir_unsupported                        최근 3개월 동안 매월 한 번 이상 구매한 회원을 보여줘.
+[52] clarification  unknown      semantic_ir_needs_clarification                지정한 세 개 캠페인에 모두 반응한 회원을 찾아줘.
+[53] clarification  unknown      semantic_registry_gap                          앱과 PC 양쪽 채널에서 모두 주문한 회원을 추출해줘.
+[54] clarification  unknown      semantic_verification_failed                   앱, 모바일웹, PC 중 하나의 채널로 주문한 회원을 찾아줘.
+[55] sql            unknown                                                     사료, 간식, 장난감 중 하나라도 구매한 회원을 추출해줘.
+[56] sql            unknown                                                     이메일, 문자, 앱푸시 중 하나 이상에 동의한 회원을 보여줘.
+[57]~clarification  unknown      semantic_ir_unsupported                        최근 3개 캠페인 중 하나라도 구매 반응을 보인 회원을 찾아줘.
+[58]~clarification  unknown                                                     서울, 경기, 인천 중 한 지역에 거주하는 회원을 추출해줘.
+[59]~clarification  unknown                                                     사료를 구매하지 않은 회원을 찾아줘.
+[60] sql            unknown                                                     사료 외 상품을 구매한 회원을 찾아줘.
+[61]~failure        unknown      no_sql_candidates                              사료를 구매한 적은 없지만 다른 상품은 구매한 회원을 찾아줘.
+[62] clarification  unknown      semantic_verification_failed                   최근 30일에는 구매하지 않았지만 과거 구매 이력은 있는 회원을 찾아
+[63] sql            unknown                                                     모든 캠페인에 반응하지 않은 회원을 찾아줘.
+[64]~clarification  unknown      semantic_ir_needs_clarification                특정 상품을 구매하지 않은 회원을 찾아줘.
+[65]~failure        unknown                                                     특정 상품을 제외한 다른 상품을 구매한 회원이 아니라, 해당 상품을 
+[66]~unsupported    unknown                                                     최근 90일 동안 주문하지 않은 회원을 추출해줘.
+[67] sql            unknown                                                     장바구니에는 상품이 있지만 한 번도 구매하지 않은 회원을 찾아줘.
+[68] sql            unknown                                                     앱으로 로그인하지 않은 회원을 찾아줘.
+[69]~clarification  unknown      semantic_structurer_failure                    2026년 7월 1일 23시 59분 59초까지 주문한 회원을 찾아줘.
+[70]~clarification  unknown      semantic_structurer_failure                    밤 11시부터 다음 날 새벽 2시 사이에 주문한 회원을 알려줘.
+[71]~failure        unknown      intent_sql_contract_failed                     어제 하루 동안 구매한 회원 수를 알려줘.
+[72] clarification  unknown      semantic_verification_failed                   오늘 주문한 회원을 알려줘.
+[73] clarification  regression   query_plan_required_conditions_missing         여성이면서 정상에서 휴면으로 바뀐 회원
+[74] sql            match                                                       여성이면서 골드에서 VIP로 바뀐 회원
+[75] sql            match                                                       여성이면서 가치등급이 골드에서 VIP로 바뀐 회원
+[76] unsupported    match        semantic_ir_unsupported                        여성이면서 지난달 말 기준 VIP였던 회원
+[77]~clarification  regression                                                  최근 90일 동안 3회 이상 구매하고 골드에서 VIP로 승급한 회원
+[78] sql            match                                                       최근 5일 동안 캠페인 발송 성공 횟수가 3회 이상인 회원
+
+========================================================================
+귀결: sql 19 / unsupported 15 / clarification 37 / failure 6 / error 1
+판정: match 16 / improvement 1 / regression 15 / unknown 46
+
+레인(어느 컴파일러가 SQL 을 냈나):
+   43건  sql_template:event_expression  [1, 2, 3, 4, 8, 9, 11, 12, 13, 14, 19, 21, 23, 24, 26, 40, 42, 43, 45, 47, 48, 49, 50, 54, 55, 56, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 71, 72, 74, 75, 77, 78]
+    1건  sql_template:campaign_buy_amount_targets  [6]
+방출 편차(반복 간 귀결 불일치): [1, 4, 6, 8, 11, 12, 14, 17, 18, 23, 25, 27, 28, 30, 33, 34, 35, 40, 42, 43, 44, 45, 47, 48, 51, 57, 58, 59, 61, 64, 65, 66, 69, 70, 71, 77]
+회귀: [1, 4, 5, 6, 7, 8, 10, 11, 12, 14, 17, 18, 25, 73, 77]
+개선(기대치 갱신 후보): [26]
+
+실측 기준선 대비 변화 48건:
+  - # 1 clarification → failure
+  + # 2 clarification → sql
+  + # 3 unsupported → sql
+  + # 4 failure → clarification
+  - # 6 unsupported → clarification
+  - # 7 unsupported → clarification
+  - # 8 unsupported → clarification
+  + # 9 unsupported → sql
+  + #11 failure → unsupported
+  - #12 unsupported → clarification
+  + #13 unsupported → sql
+  - #14 clarification → failure
+  + #15 clarification → unsupported
+  + #16 failure → unsupported
+  + #19 unsupported → sql
+  + #20 clarification → unsupported
+  + #21 clarification → sql
+  - #22 sql → unsupported
+  + #24 unsupported → sql
+  + #26 clarification → sql
+  - #29 unsupported → clarification
+  + #30 failure → clarification
+  + #32 clarification → unsupported
+  - #33 unsupported → clarification
+  - #34 unsupported → clarification
+  - #39 unsupported → clarification
+  - #42 unsupported → clarification
+  + #43 clarification → unsupported
+  - #44 unsupported → clarification
+  - #45 unsupported → error
+  - #47 unsupported → failure
+  + #48 failure → clarification
+  + #50 clarification → sql
+  - #53 unsupported → clarification
+  - #54 unsupported → clarification
+  + #56 unsupported → sql
+  - #58 unsupported → clarification
+  + #60 clarification → sql
+  - #65 clarification → failure
+  + #66 clarification → unsupported
+  + #67 failure → sql
+  + #68 unsupported → sql
+  - #69 unsupported → clarification
+  - #71 clarification → failure
+  - #72 unsupported → clarification
+  - #73 unsupported → clarification
+  + #74 clarification → sql
+  + #75 unsupported → sql
+결과 저장: artifacts/live_prompt_lane_census_20260804_r3.json

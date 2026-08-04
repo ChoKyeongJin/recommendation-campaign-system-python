@@ -320,7 +320,7 @@ def run_preflight(check_db: bool = False) -> dict[str, Any]:
         if path.exists():
             registries[path.name] = _load_json(path)
         else:
-            warnings.append(f"레지스트리 파일 없음(건너뜀): {path}")
+            problems.append(f"필수 레지스트리 파일 없음: {path}")
 
     # 논리 심볼 → 물리 테이블. 설정은 물리 테이블명 대신 심볼('product' 등)을 쓸 수 있고, 그 매핑은
     # 레지스트리의 table_symbols 가 소유한다. 심볼을 해석하지 못하면 멀쩡한 설정이 '카탈로그에 없는

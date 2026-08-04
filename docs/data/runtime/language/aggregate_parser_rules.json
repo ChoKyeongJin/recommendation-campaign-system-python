@@ -20,7 +20,16 @@
     "만": 10000,
     "천": 1000
   },
+  "number_words": {
+    "한": 1,
+    "두": 2,
+    "세": 3,
+    "네": 4,
+    "다섯": 5
+  },
+  "number_word_unit_kinds": ["count", "quantity", "variety", "person_count"],
   "prefix_operators": [
+    {"surface": "적어도", "operator": ">="},
     {"surface": "최소", "operator": ">="},
     {"surface": "최대", "operator": "<="}
   ],

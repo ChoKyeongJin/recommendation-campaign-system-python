@@ -78,6 +78,41 @@ def test_literal_binding_span_by_normalized_value() -> None:
     assert requirement.span_precision == "literal"
 
 
+def test_literal_binding_span_compares_decimal_strings_exactly() -> None:
+    query = "구매금액 0.1234567890123456789원 이상인 회원"
+    amount = "0.1234567890123456789"
+    start = query.index(amount)
+    plan = {
+        "target_user": {
+            "aggregate_conditions": [
+                {
+                    "metric_id": "purchase_amount",
+                    "operator": ">=",
+                    "threshold": amount,
+                }
+            ]
+        },
+        "literal_bindings": [
+            {
+                "id": "money_1",
+                "kind": "number_with_unit",
+                "text": f"{amount}원",
+                "start": start,
+                "end": start + len(amount) + 1,
+                "normalized": {"value": amount, "surface_unit": "원"},
+            }
+        ],
+    }
+
+    requirement = _capture_one(query, plan)
+
+    assert requirement.span_precision == "literal"
+    assert dict(requirement.source_span) == {
+        "start": start,
+        "end": start + len(amount) + 1,
+    }
+
+
 def test_ambiguous_literal_candidates_fall_back() -> None:
     """같은 정규화값의 리터럴이 둘이면 임의 선택하지 않는다(소유권 좌표 오염 방지)."""
     query = "5건 이상 구매했고 5회 방문한 회원"

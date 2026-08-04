@@ -75,7 +75,9 @@ def _generic_product_terms() -> frozenset[str]:
     declared = set(dimension.qualifier_aliases if dimension is not None else ())
     declared.update(dimension.unrestricted_aliases if dimension is not None else ())
     declared.update(lexicon_patterns.vocabulary("event_scope_value_stopword"))
-    declared.update({"다른", "해당", "특정", "외", "외의"})
+    # 값이 아니라 참조·미지정을 뜻하는 말('다른 상품', '특정 상품', '사료 외'). 예전에는 사전에서
+    # 읽은 바로 다음 줄에 손으로 다섯 낱말을 덧붙였다 — 사전이 소유해야 할 자리다.
+    declared.update(lexicon_patterns.terms("generic_scope_reference"))
     return frozenset(_normalized(term) for term in declared if term)
 
 

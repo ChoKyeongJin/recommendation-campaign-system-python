@@ -29,7 +29,7 @@ import member_filters_config
 from targeting_ir import BEHAVIOR_KO, extract_target_conditions
 
 DEFAULT_SCHEMA_PATH = Path("docs/data/generated/schema_catalog.json")
-DEFAULT_MEMBER_FILTERS_PATH = Path("docs/data/runtime/sql/member_target_filters.json")
+DEFAULT_MEMBER_FILTERS_PATH = member_filters_config.DEFAULT_PATH
 DEFAULT_NORMALIZATION_DOC = "normalization_rules.sample.json"
 
 # 5개 축 가중치(합 1.0). 조정 가능 — 근거 신호 자체는 결정론이고 이 가중치만 정책값이다.
@@ -69,19 +69,12 @@ def _schema_columns(schema_path_text: str) -> dict[str, set[str]]:
 
 @lru_cache(maxsize=4)
 def _member_filters(path_text: str) -> dict[str, Any]:
-    """회원 타겟 레지스트리를 graph_rag 와 **같은 규약**으로 읽는다(코드 미러 위에 파일을 덮는다).
+    """회원 타겟 레지스트리를 단일 JSON 소스에서 읽고, 오류 시 빈 근거로 fail-close한다."""
 
-    예전에는 파일이 없으면 빈 dict 를 돌려줬고, 그래서 이 모듈은 물리 이름을 자기 인라인
-    기본값(`cfg.get("column")`)으로 따로 들고 있었다 — 같은 값의 네 번째
-    사본이었다. 미러를 공유하면 그 사본이 필요 없어진다.
-    """
-    path = Path(path_text)
-    merged = dict(member_filters_config.CODE_DEFAULTS)
-    if path.exists():
-        payload = json.loads(path.read_text(encoding="utf-8"))
-        if isinstance(payload, dict):
-            merged.update(payload)
-    return merged
+    try:
+        return member_filters_config.load_config(Path(path_text))
+    except member_filters_config.MemberFiltersConfigError:
+        return {}
 
 
 def _level(score: int) -> str:

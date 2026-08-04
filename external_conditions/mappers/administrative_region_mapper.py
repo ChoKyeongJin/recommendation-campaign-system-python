@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from ..models import AdministrativeRegion, ExternalCondition, ResolverResult
 
@@ -13,6 +14,87 @@ class RegionMappingError(ValueError):
         super().__init__(message)
         self.code = code
         self.unmapped = unmapped
+
+
+@dataclass(frozen=True)
+class RegionTargetBinding:
+    """Validated physical binding for member-residence filters."""
+
+    table: str
+    alias: str
+    sido_column: str
+    sigungu_column: str
+    entity: str
+    attribute: str
+
+    @property
+    def sido_index_column(self) -> str:
+        return self.sido_column.rsplit(".", 1)[-1].upper()
+
+    @property
+    def sigungu_index_column(self) -> str:
+        return self.sigungu_column.rsplit(".", 1)[-1].upper()
+
+
+def _binding_mapping(value: Any, path: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise RegionMappingError(
+            "target_binding_invalid", f"{path} must be an object", []
+        )
+    return value
+
+
+def _binding_text(value: Any, path: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise RegionMappingError(
+            "target_binding_invalid", f"{path} must be a non-empty string", []
+        )
+    return value.strip()
+
+
+def _binding_column(value: Any, *, alias: str, path: str) -> str:
+    column = _binding_text(value, path)
+    parts = tuple(part.strip() for part in column.split("."))
+    if (
+        len(parts) != 2
+        or parts[0] != alias
+        or any(not part or not part.isidentifier() for part in parts)
+    ):
+        raise RegionMappingError(
+            "target_binding_invalid",
+            f"{path} must be a qualified {alias}.column identifier",
+            [],
+        )
+    return ".".join(parts)
+
+
+def region_target_binding(config: Mapping[str, Any]) -> RegionTargetBinding:
+    """Create a fail-closed region binding from the member-target registry."""
+
+    region = _binding_mapping(config.get("region_target"), "region_target")
+    target_basis = _binding_mapping(
+        region.get("target_basis"), "region_target.target_basis"
+    )
+    columns = _binding_mapping(region.get("columns"), "region_target.columns")
+    alias = _binding_text(region.get("alias"), "region_target.alias")
+    return RegionTargetBinding(
+        table=_binding_text(region.get("table"), "region_target.table"),
+        alias=alias,
+        sido_column=_binding_column(
+            columns.get("sido"), alias=alias, path="region_target.columns.sido"
+        ),
+        sigungu_column=_binding_column(
+            columns.get("sigungu"),
+            alias=alias,
+            path="region_target.columns.sigungu",
+        ),
+        entity=_binding_text(
+            target_basis.get("entity"), "region_target.target_basis.entity"
+        ),
+        attribute=_binding_text(
+            target_basis.get("attribute"), "region_target.target_basis.attribute"
+        ),
+    )
 
 
 @dataclass(frozen=True)
@@ -38,9 +120,16 @@ class AdministrativeRegionMapper:
     to the exact CRM children (``수원시 권선구`` etc.) when the CRM has no parent row.
     """
 
-    def __init__(self, mapping_path: Path | str, member_value_index_path: Path | str) -> None:
+    def __init__(
+        self,
+        mapping_path: Path | str,
+        member_value_index_path: Path | str,
+        *,
+        target_binding: RegionTargetBinding,
+    ) -> None:
         self.mapping_path = Path(mapping_path)
         self.member_value_index_path = Path(member_value_index_path)
+        self.target_binding = target_binding
         self._mapping = self._read_json(self.mapping_path)
         self._member_index = self._read_json(self.member_value_index_path)
         self.mapping_version = str(self._mapping.get("version") or "unknown")
@@ -152,7 +241,9 @@ class AdministrativeRegionMapper:
                 unmapped.append({**target.to_dict(), "reason": "sido_mapping_missing"})
                 continue
             crm_sido = str(entry.get("crm_value") or "")
-            if crm_sido not in self._crm_values.get("SIDO", set()):
+            if crm_sido not in self._crm_values.get(
+                self.target_binding.sido_index_column, set()
+            ):
                 unmapped.append({**target.to_dict(), "reason": "crm_sido_value_missing"})
                 continue
             if not target.sigungu_name:
@@ -174,7 +265,9 @@ class AdministrativeRegionMapper:
         return self._minimize(mapped)
 
     def _sigungu_candidates(self, external_name: str, crm_sido: str) -> list[str]:
-        values = self._crm_values.get("SIGUNGU", set())
+        values = self._crm_values.get(
+            self.target_binding.sigungu_index_column, set()
+        )
         exact_parents = self._sigungu_to_sido.get(external_name, [])
         if external_name in values and crm_sido in exact_parents:
             return [external_name]
@@ -206,7 +299,10 @@ class AdministrativeRegionMapper:
     ) -> tuple[dict[str, Any], list[MappedRegion]]:
         if result.status != "resolved":
             raise RegionMappingError("result_not_resolved", "only resolved results can be mapped", [])
-        if condition.target_basis.get("entity") != "member" or condition.target_basis.get("attribute") != "residence":
+        if (
+            condition.target_basis.get("entity") != self.target_binding.entity
+            or condition.target_basis.get("attribute") != self.target_binding.attribute
+        ):
             raise RegionMappingError(
                 "target_basis_unsupported",
                 "only member residence targeting is configured",
@@ -216,15 +312,15 @@ class AdministrativeRegionMapper:
         groups: list[dict[str, Any]] = []
         for region in mapped:
             filters = [{
-                "table": "CRM_MB_BASEINFO",
-                "column": "CRM_MB_BASEINFO.SIDO",
+                "table": self.target_binding.table,
+                "column": self.target_binding.sido_column,
                 "operator": "=",
                 "value": region.crm_sido_value,
             }]
             if region.crm_sigungu_value:
                 filters.append({
-                    "table": "CRM_MB_BASEINFO",
-                    "column": "CRM_MB_BASEINFO.SIGUNGU",
+                    "table": self.target_binding.table,
+                    "column": self.target_binding.sigungu_column,
                     "operator": "=",
                     "value": region.crm_sigungu_value,
                 })

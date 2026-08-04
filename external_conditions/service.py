@@ -4,13 +4,16 @@ import copy
 import logging
 import os
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+
+import member_filters_config
 
 from .mappers.administrative_region_mapper import (
     AdministrativeRegionMapper,
     RegionMappingError,
+    region_target_binding,
 )
 from .models import ExternalCondition, ResolutionContext, ResolverResult
 from .registry import ExternalConditionResolverRegistry
@@ -225,7 +228,11 @@ def build_default_service() -> ExternalConditionService:
     member_index_path = Path(
         os.getenv("EXTERNAL_MEMBER_VALUE_INDEX_PATH", str(DEFAULT_MEMBER_VALUE_INDEX_PATH))
     )
-    mapper = AdministrativeRegionMapper(mapping_path, member_index_path)
+    mapper = AdministrativeRegionMapper(
+        mapping_path,
+        member_index_path,
+        target_binding=region_target_binding(member_filters_config.load_config()),
+    )
     kma = KmaWeatherAlertResolver(KmaWeatherAlertConfig.from_environment(), mapper)
     enabled = os.getenv("EXTERNAL_CONDITIONS_ENABLED", "true").strip().casefold() not in {
         "0", "false", "no", "off",
@@ -253,5 +260,7 @@ def reset_default_service() -> None:
         _default_service = None
 
 
-def default_resolution_context(*, now: datetime | None = None) -> ResolutionContext:
-    return ResolutionContext(now=now or datetime.now(timezone.utc))
+def default_resolution_context(*, now: datetime) -> ResolutionContext:
+    """Build a resolver context from an explicit request-scoped instant."""
+
+    return ResolutionContext(now=now)

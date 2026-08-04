@@ -26,8 +26,11 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Protocol
+
+from semantic_normalizers import decimal_json_value, exact_decimal
 
 
 POLICY_VERSION = "1.2"
@@ -196,7 +199,7 @@ def _json_digest(value: Any) -> str:
 
 def _read_json(path: Path) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        value = json.loads(path.read_text(encoding="utf-8"), parse_float=Decimal)
     except (OSError, json.JSONDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
@@ -305,10 +308,20 @@ class Capability:
     aliases: tuple[str, ...] = ()
     semantic_roles: tuple[str, ...] = ()
     inference_mode: str = "common_sense"
-    minimum: float | None = None
-    maximum: float | None = None
+    minimum: Decimal | None = None
+    maximum: Decimal | None = None
     number_type: str | None = None
     profile_source: Mapping[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in ("minimum", "maximum"):
+            raw = getattr(self, field_name)
+            if raw is None:
+                continue
+            exact = exact_decimal(raw, allow_string=True)
+            if exact is None:
+                raise ValueError(f"capability {field_name} must be finite")
+            object.__setattr__(self, field_name, exact)
 
     @property
     def binding_key(self) -> tuple[str, str, str]:
@@ -336,8 +349,8 @@ class Capability:
             payload["values"] = [value.llm_view() for value in self.values]
         else:
             payload["range"] = {
-                "minimum": self.minimum,
-                "maximum": self.maximum,
+                "minimum": _number_wire(self.minimum),
+                "maximum": _number_wire(self.maximum),
                 "number_type": self.number_type or "number",
             }
         return payload
@@ -770,10 +783,8 @@ def discover_capabilities(
             continue
         synonyms = _unique_text(list(entry.get("synonyms") or []))
         note = notes.get((table.casefold(), column.casefold()), canonical)
-        minimum = entry.get("min")
-        maximum = entry.get("max")
-        minimum = float(minimum) if isinstance(minimum, (int, float)) and not isinstance(minimum, bool) else None
-        maximum = float(maximum) if isinstance(maximum, (int, float)) and not isinstance(maximum, bool) else None
+        minimum = exact_decimal(entry.get("min"), allow_string=True)
+        maximum = exact_decimal(entry.get("max"), allow_string=True)
         number_type = str(entry.get("type") or "number")
         materializer = (
             "age"
@@ -822,8 +833,8 @@ def discover_capabilities(
             "aliases": list(capability.aliases),
             "semantic_roles": list(capability.semantic_roles),
             "inference_mode": capability.inference_mode,
-            "minimum": capability.minimum,
-            "maximum": capability.maximum,
+            "minimum": _number_wire(capability.minimum),
+            "maximum": _number_wire(capability.maximum),
             "number_type": capability.number_type,
             "profile_source": (
                 copy.deepcopy(dict(capability.profile_source))
@@ -1019,14 +1030,26 @@ def _compact_match_range(source: str, value: str) -> tuple[int, int] | None:
     return source_positions[compact_start], source_positions[compact_end - 1] + 1
 
 
-def _number(value: Any) -> float | None:
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
+def _number(value: Any, *, allow_string: bool = False) -> Decimal | None:
+    """Return an exact finite semantic number.
+
+    Numeric strings are accepted only for already-normalized wire values. Raw
+    structured-model output remains constrained to JSON numbers.
+    """
+
+    return exact_decimal(value, allow_string=allow_string)
+
+
+def _number_wire(value: Any) -> int | str | None:
+    if value is None:
         return None
-    number = float(value)
-    return number if math.isfinite(number) else None
+    exact = exact_decimal(value, allow_string=True)
+    if exact is None:
+        raise ValueError("semantic number must be finite")
+    return decimal_json_value(exact)
 
 
-def _within_range(value: float, capability: Capability) -> bool:
+def _within_range(value: Decimal, capability: Capability) -> bool:
     if capability.minimum is not None and value < capability.minimum:
         return False
     if capability.maximum is not None and value > capability.maximum:
@@ -1034,7 +1057,7 @@ def _within_range(value: float, capability: Capability) -> bool:
     return True
 
 
-def _integer_threshold(operator: str, value: float) -> tuple[str, int] | None:
+def _integer_threshold(operator: str, value: Decimal) -> tuple[str, int] | None:
     """Return an exactly equivalent predicate over an integer-valued column."""
 
     if operator == ">":
@@ -1045,7 +1068,7 @@ def _integer_threshold(operator: str, value: float) -> tuple[str, int] | None:
         return "<=", math.ceil(value) - 1
     if operator == "<=":
         return "<=", math.floor(value)
-    if operator == "=" and float(value).is_integer():
+    if operator == "=" and value == value.to_integral_value():
         return "=", int(value)
     return None
 
@@ -1053,18 +1076,18 @@ def _integer_threshold(operator: str, value: float) -> tuple[str, int] | None:
 def _numeric_predicate_has_domain_value(
     capability: Capability,
     operator: str,
-    threshold: float,
+    threshold: Decimal,
 ) -> bool:
     """Whether a threshold can match at least one value in the declared domain."""
 
     normalized_operator = operator
-    normalized_threshold: float = threshold
+    normalized_threshold: Decimal = threshold
     if capability.number_type == "integer":
         converted = _integer_threshold(operator, threshold)
         if converted is None:
             return False
         normalized_operator, integer_threshold = converted
-        normalized_threshold = float(integer_threshold)
+        normalized_threshold = Decimal(integer_threshold)
     if normalized_operator in {">", ">="}:
         if capability.maximum is None:
             return True
@@ -1155,32 +1178,33 @@ def materialize_resolution(
     if capability.materializer == "age":
         age: dict[str, int] = {}
         if operator == "BETWEEN":
-            lower = int(math.ceil(float(resolution["lower_bound"])))
-            upper = int(math.floor(float(resolution["upper_bound"])))
+            lower_value = _number(resolution.get("lower_bound"), allow_string=True)
+            upper_value = _number(resolution.get("upper_bound"), allow_string=True)
+            if lower_value is None or upper_value is None:
+                return None, None
+            lower = int(math.ceil(lower_value))
+            upper = int(math.floor(upper_value))
             if lower > upper:
                 return None, None
             age["age_min"] = lower
             age["age_max"] = upper
         elif operator == "=":
-            converted = _integer_threshold(
-                operator, float(resolution["threshold"])
-            )
+            threshold = _number(resolution.get("threshold"), allow_string=True)
+            converted = _integer_threshold(operator, threshold) if threshold is not None else None
             if converted is None:
                 return None, None
             _operator, value = converted
             age.update({"age_min": value, "age_max": value})
         elif operator in {">", ">="}:
-            converted = _integer_threshold(
-                operator, float(resolution["threshold"])
-            )
+            threshold = _number(resolution.get("threshold"), allow_string=True)
+            converted = _integer_threshold(operator, threshold) if threshold is not None else None
             if converted is None:
                 return None, None
             _operator, value = converted
             age["age_min"] = value
         elif operator in {"<", "<="}:
-            converted = _integer_threshold(
-                operator, float(resolution["threshold"])
-            )
+            threshold = _number(resolution.get("threshold"), allow_string=True)
+            converted = _integer_threshold(operator, threshold) if threshold is not None else None
             if converted is None:
                 return None, None
             _operator, value = converted
@@ -1197,11 +1221,16 @@ def materialize_resolution(
         else [(operator, resolution["threshold"])]
     )
     for item_operator, threshold in pairs:
+        exact_threshold = _number(threshold, allow_string=True)
+        if exact_threshold is None:
+            return None, None
         if capability.number_type == "integer":
-            converted = _integer_threshold(item_operator, float(threshold))
+            converted = _integer_threshold(item_operator, exact_threshold)
             if converted is None:
                 return None, None
             item_operator, threshold = converted
+        else:
+            threshold = decimal_json_value(exact_threshold)
         condition: dict[str, Any] = {
             "column": capability.column,
             "operator": item_operator,
@@ -1850,7 +1879,7 @@ class ConceptualTargetingService:
     ]:
         if isinstance(raw, str):
             try:
-                raw = json.loads(raw)
+                raw = json.loads(raw, parse_float=Decimal)
             except json.JSONDecodeError as exc:
                 return [], [], [{"reason": "invalid_json", "detail": str(exc)}], []
         if not isinstance(raw, Mapping):
@@ -1995,7 +2024,8 @@ class ConceptualTargetingService:
             if confidence is None or not 0 <= confidence <= 1:
                 rejected.append({"evidence": evidence, "reason": "invalid_confidence"})
                 continue
-            if confidence < self.confidence_threshold:
+            confidence_threshold = exact_decimal(self.confidence_threshold)
+            if confidence_threshold is None or confidence < confidence_threshold:
                 rejected.append({"evidence": evidence, "reason": "confidence_below_threshold"})
                 continue
             if not isinstance(rationale, str) or not rationale.strip():
@@ -2022,7 +2052,9 @@ class ConceptualTargetingService:
                 "capability_kind": capability.kind,
                 "capability_label": capability.logical_name,
                 "operator": operator,
-                "confidence": confidence,
+                # Confidence is an approximate model score, not a domain
+                # literal. Keep its established JSON-number representation.
+                "confidence": float(confidence),
                 "rationale": rationale.strip(),
                 "source": "llm_common_sense",
                 "model": self.model,
@@ -2192,8 +2224,8 @@ class ConceptualTargetingService:
                             "reason": "numeric_full_domain_forbidden",
                         })
                         continue
-                    resolution["lower_bound"] = lower
-                    resolution["upper_bound"] = upper
+                    resolution["lower_bound"] = decimal_json_value(lower)
+                    resolution["upper_bound"] = decimal_json_value(upper)
                 else:
                     threshold = _number(item.get("threshold"))
                     if (
@@ -2207,7 +2239,7 @@ class ConceptualTargetingService:
                     if (
                         capability.number_type == "integer"
                         and operator == "="
-                        and not float(threshold).is_integer()
+                        and threshold != threshold.to_integral_value()
                     ):
                         rejected.append({
                             "evidence": evidence,
@@ -2239,7 +2271,7 @@ class ConceptualTargetingService:
                             "reason": "numeric_full_domain_forbidden",
                         })
                         continue
-                    resolution["threshold"] = threshold
+                    resolution["threshold"] = decimal_json_value(threshold)
                 if capability.inference_mode == "explicit_only":
                     normalized_evidence = re.sub(
                         r"\s+", "", evidence
@@ -3037,24 +3069,24 @@ def validate_grounded_resolution(
             operator == "BETWEEN"
             and capability.minimum is not None
             and capability.maximum is not None
-            and _number(value.get("lower_bound")) is not None
-            and _number(value.get("upper_bound")) is not None
-            and float(value["lower_bound"]) <= capability.minimum
-            and float(value["upper_bound"]) >= capability.maximum
+            and (lower := _number(value.get("lower_bound"), allow_string=True)) is not None
+            and (upper := _number(value.get("upper_bound"), allow_string=True)) is not None
+            and lower <= capability.minimum
+            and upper >= capability.maximum
         ):
             errors.append("resolution numeric predicate covers the full domain")
         if (
             operator == ">="
             and capability.minimum is not None
-            and _number(value.get("threshold")) is not None
-            and float(value["threshold"]) <= capability.minimum
+            and (threshold := _number(value.get("threshold"), allow_string=True)) is not None
+            and threshold <= capability.minimum
         ):
             errors.append("resolution numeric predicate covers the full domain")
         if (
             operator == "<="
             and capability.maximum is not None
-            and _number(value.get("threshold")) is not None
-            and float(value["threshold"]) >= capability.maximum
+            and (threshold := _number(value.get("threshold"), allow_string=True)) is not None
+            and threshold >= capability.maximum
         ):
             errors.append("resolution numeric predicate covers the full domain")
     try:

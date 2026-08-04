@@ -50,7 +50,7 @@ def test_three_phrasings_normalize_to_the_same_result() -> None:
     for result in results:
         assert result["status"] == "normalized", result["errors"]
         assert result["concept"] == "purchase_inactivity"
-        assert result["normalized"] == {"value": 3, "unit": "months", "min_days": 90}
+        assert result["normalized"] == {"value": 3, "unit": "months"}
         assert result["compiler"] == "purchase_inactivity"
         assert result["execution_support"] is True and result["sql_generation_allowed"]
 

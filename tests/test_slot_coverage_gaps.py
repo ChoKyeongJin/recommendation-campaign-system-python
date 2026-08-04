@@ -12,7 +12,11 @@
 
 from __future__ import annotations
 
+import json
+import re
 import sys
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -74,13 +78,42 @@ def test_campaign_buy_amount_avg_compiles_per_campaign_average() -> None:
         {"operator": "이상", "amount": 100000, "agg": "avg"}
     )
     assert coerced is not None and coerced["agg"] == "AVG"
+    assert type(coerced["amount"]) is int
+    assert coerced["amount"] == 100000
 
     candidate = graph_rag.build_campaign_response_frequency_targets_sql_candidate(
         {"target_user": {"campaign_buy_amount": coerced}}
     )
     assert candidate is not None
     assert "* 1.0 / COUNT(DISTINCT" in candidate["sql"]
-    assert "100000" in candidate["sql"]
+    assert re.search(r"HAVING .* >= 100000(?:\s|$)", candidate["sql"])
+
+
+def test_campaign_buy_amount_fraction_keeps_exact_wire_and_sql_text() -> None:
+    exact = "12345.670000000000000000000001"
+    shape = targeting_ir.SLOT_SHAPES["campaign_buy_amount"]
+    coerced = shape.coerce(
+        {"operator": ">=", "amount": Decimal(exact), "agg": "sum"}
+    )
+
+    assert coerced is not None
+    assert coerced["amount"] == exact
+    assert shape.coerce(coerced) == coerced
+    assert json.loads(json.dumps(coerced))["amount"] == exact
+    assert [
+        condition.kind
+        for condition in targeting_ir.extract_target_conditions(
+            {"target_user": {"campaign_buy_amount": coerced}}
+        )
+    ] == ["campaign_buy_amount"]
+
+    candidate = graph_rag.build_campaign_response_frequency_targets_sql_candidate(
+        {"target_user": {"campaign_buy_amount": coerced}}
+    )
+    assert candidate is not None
+    match = re.search(r"SUM\([^)]*BUY_AMT\)\s*>=\s*(\d+(?:\.\d+)?)", candidate["sql"])
+    assert match is not None
+    assert match.group(1) == exact
 
 
 def test_campaign_buy_amount_without_agg_stays_config_sum() -> None:
@@ -116,6 +149,29 @@ def test_member_metric_ranking_percent_produces_top_percent_sql() -> None:
     assert candidate is not None
     assert "TOP 10 PERCENT" in candidate["sql"]
     assert "TOTAL_BUY_AMT" in candidate["sql"]
+
+
+def test_member_metric_ranking_fractional_percent_never_rounds_through_float() -> None:
+    exact = "10.123456789012345678901"
+    allowed = graph_rag._llm_slot_allowed()["member_metrics"]
+    coerced = targeting_ir.SLOT_SHAPES["member_metric_ranking"].coerce(
+        {
+            "metric_id": "total_buy_amt",
+            "direction": "high",
+            "limit_type": "percent",
+            "percent": exact,
+        },
+        allowed=allowed,
+    )
+
+    assert coerced is not None
+    assert coerced["percent"] == exact
+    candidate = graph_rag.build_member_metric_ranking_sql_candidate(
+        {"member_metric_ranking": coerced, "target_user": {}}
+    )
+    assert candidate is not None
+    assert f"TOP {exact} PERCENT" in candidate["sql"]
+    assert "10.123456789012346" not in candidate["sql"]
 
 
 def test_member_metric_catalog_exposes_new_snapshot_rankings() -> None:
@@ -201,7 +257,8 @@ def test_buy_cycle_and_due_date_share_one_snapshot_exists() -> None:
     assert balance and dates
 
     compiled = graph_rag.compile_member_target_conditions(
-        {"target_user": {"balance_conditions": balance, "profile_date_conditions": dates}}
+        {"target_user": {"balance_conditions": balance, "profile_date_conditions": dates}},
+        reference_date=date(2026, 8, 4),
     )
     snapshot_exists = [p for p in compiled["predicates"] if "CRM_MB_MONTHCRMINFO" in p]
     # BUY_CYCLE(수치)과 BUY_DUE_DATE(날짜 상태)는 같은 최신월 스냅샷 행에서 동시에 만족해야
@@ -209,7 +266,8 @@ def test_buy_cycle_and_due_date_share_one_snapshot_exists() -> None:
     assert len(snapshot_exists) == 1
     predicate = snapshot_exists[0]
     assert "M.BUY_CYCLE <= 30" in predicate
-    assert "M.BUY_DUE_DATE < CONVERT(char(8), GETDATE(), 112)" in predicate
+    assert "M.BUY_DUE_DATE < '20260804'" in predicate
+    assert "GETDATE" not in predicate.upper()
     assert "MAX(YYYYMM)" in predicate
 
 

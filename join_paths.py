@@ -13,15 +13,22 @@ curated `foreign_keys`/`join_hints` 와 member_target_filters(cart_targets.produ
 purchase_product_target) 에서 온다. 그래서 조인 조건의 relation_type 은 기본 `logical_reference` 이며,
 evidence 에 출처를 적는다. 컬럼 이름 유사성만으로 조인을 추론하지 않는다.
 
-이 모듈은 graph_rag 를 import 하지 않는다(순수 dict/dataclass). 설계상 JOIN_PATHS[name] 이 조인 라인의
-단일 소스지만, 현재 실제 소비자는 capability_registry(대상 테이블 조회)와 compiler_strategies(경로 존재
-확인)뿐이고 graph_rag 빌더는 이 모듈을 import 하지 않는다 — render_join_line() 은 호출부 0건이다(TODO).
-선언된 경로가 카탈로그에 실재하는지는 tests/test_registry_ownership_guards.py 가 지킨다.
+이 모듈은 graph_rag 를 import 하지 않는다. 물리 테이블·컬럼은 코드에 복제하지 않고
+``member_target_filters.json``의 검증된 선언에서 :func:`load_join_paths`가 주입한다. 설계상
+JOIN_PATHS[name] 이 조인 라인의 단일 소스지만, 현재 실제 소비자는 capability_registry(대상 테이블 조회)와
+compiler_strategies(경로 존재 확인)뿐이고 graph_rag 빌더는 이 모듈을 import 하지 않는다 —
+render_join_line() 은 호출부 0건이다(TODO). 선언된 경로가 카탈로그에 실재하는지는 DB swap preflight와
+physical-binding ratchet이 지킨다.
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import member_filters_config
 
 
 # 상품 라인 PK(집계 전용) — 절대 상품 마스터 조인 키로 쓰면 안 되는 컬럼. 조인 경로 등록 시 가드로 검사한다.
@@ -87,42 +94,166 @@ class JoinPath:
         return f"     {self.join_type} {self.target_table} {tgt} ON {ons}"
 
 
+def _mapping(value: Any, path: str) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise JoinPathError(f"{path} must be an object")
+    return value
+
+
+def _text(value: Any, path: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise JoinPathError(f"{path} must be a non-empty string")
+    return value.strip()
+
+
+def _qualified(value: Any, path: str) -> tuple[str, str]:
+    expression = _text(value, path)
+    parts = expression.split(".")
+    if len(parts) != 2 or not all(part.strip() and part.strip().isidentifier() for part in parts):
+        raise JoinPathError(f"{path} must be a qualified alias.column identifier")
+    return parts[0].strip(), parts[1].strip()
+
+
+def _equality(value: Any, path: str) -> tuple[tuple[str, str], tuple[str, str]]:
+    expression = _text(value, path)
+    parts = expression.split("=")
+    if len(parts) != 2:
+        raise JoinPathError(f"{path} must contain one equality")
+    return _qualified(parts[0].strip(), path), _qualified(parts[1].strip(), path)
+
+
+def _oriented_condition(
+    left: tuple[str, str],
+    right: tuple[str, str],
+    *,
+    source_alias: str,
+    target_alias: str,
+    path: str,
+    evidence: str,
+) -> JoinCondition:
+    by_alias = {left[0]: left, right[0]: right}
+    if set(by_alias) != {source_alias, target_alias}:
+        raise JoinPathError(
+            f"{path} must join aliases {source_alias!r} and {target_alias!r}"
+        )
+    source = by_alias[source_alias]
+    target = by_alias[target_alias]
+    return JoinCondition(
+        left=f"{source[0]}.{source[1]}",
+        right=f"{target[0]}.{target[1]}",
+        relation_type="logical_reference",
+        evidence=evidence,
+    )
+
+
+def build_join_paths(config: Mapping[str, Any]) -> dict[str, JoinPath]:
+    """Build physical joins from the validated member-target registry.
+
+    The path names and relation semantics remain code-owned. Physical tables,
+    aliases, and columns must all be supplied by the registry; no legacy value
+    is substituted when a binding is missing.
+    """
+
+    cart = _mapping(config.get("cart_targets"), "cart_targets")
+    cart_product = _mapping(
+        cart.get("product_join"), "cart_targets.product_join"
+    )
+    cart_source_alias, cart_source_column = _qualified(
+        cart_product.get("left"), "cart_targets.product_join.left"
+    )
+    cart_target_alias, cart_target_column = _qualified(
+        cart_product.get("right"), "cart_targets.product_join.right"
+    )
+    declared_cart_target_alias = _text(
+        cart_product.get("alias"), "cart_targets.product_join.alias"
+    )
+    declared_cart_source_alias = _text(cart.get("alias"), "cart_targets.alias")
+    if cart_source_alias != declared_cart_source_alias:
+        raise JoinPathError(
+            "cart_targets.product_join.left alias does not match cart_targets.alias"
+        )
+    if cart_target_alias != declared_cart_target_alias:
+        raise JoinPathError(
+            "cart_targets.product_join.right alias does not match product_join.alias"
+        )
+
+    purchase = _mapping(
+        config.get("purchase_product_target"), "purchase_product_target"
+    )
+    order_detail = _mapping(
+        purchase.get("order_detail"), "purchase_product_target.order_detail"
+    )
+    product = _mapping(
+        purchase.get("product"), "purchase_product_target.product"
+    )
+    order_detail_alias = _text(
+        order_detail.get("alias"), "purchase_product_target.order_detail.alias"
+    )
+    product_alias = _text(
+        product.get("alias"), "purchase_product_target.product.alias"
+    )
+    purchase_left, purchase_right = _equality(
+        product.get("join"), "purchase_product_target.product.join"
+    )
+
+    return {
+        "cart_to_product": JoinPath(
+            name="cart_to_product",
+            source_table=_text(cart.get("table"), "cart_targets.table"),
+            source_alias=cart_source_alias,
+            target_table=_text(
+                cart_product.get("table"), "cart_targets.product_join.table"
+            ),
+            target_alias=cart_target_alias,
+            conditions=(
+                JoinCondition(
+                    left=f"{cart_source_alias}.{cart_source_column}",
+                    right=f"{cart_target_alias}.{cart_target_column}",
+                    relation_type="logical_reference",
+                    evidence=(
+                        "member_target_filters.cart_targets.product_join + "
+                        "schema_catalog verified foreign key"
+                    ),
+                ),
+            ),
+        ),
+        "purchase_to_product": JoinPath(
+            name="purchase_to_product",
+            source_table=_text(
+                order_detail.get("table"),
+                "purchase_product_target.order_detail.table",
+            ),
+            source_alias=order_detail_alias,
+            target_table=_text(
+                product.get("table"), "purchase_product_target.product.table"
+            ),
+            target_alias=product_alias,
+            conditions=(
+                _oriented_condition(
+                    purchase_left,
+                    purchase_right,
+                    source_alias=order_detail_alias,
+                    target_alias=product_alias,
+                    path="purchase_product_target.product.join",
+                    evidence=(
+                        "member_target_filters.purchase_product_target.product.join + "
+                        "schema_catalog column reference"
+                    ),
+                ),
+            ),
+        ),
+    }
+
+
+def load_join_paths(path: Path | None = None) -> dict[str, JoinPath]:
+    """Load the strict registry and derive join paths from it."""
+
+    return build_join_paths(member_filters_config.load_config(path))
+
+
 # ── 등록된 조인 경로 ─────────────────────────────────────────────────────────────────────────
-# 근거는 schema_catalog.json(foreign_keys, confidence=verified) + member_target_filters.json 이다.
-JOIN_PATHS: dict[str, JoinPath] = {
-    # 장바구니 라인 → 상품 마스터. 근거: cart_targets.product_join(C.PRODUCT_ID=CP.PRODUCT_ID),
-    # schema_catalog CART.foreign_keys(PRODUCT_ID→CRM_CM_PRODUCT.PRODUCT_ID, confidence=verified).
-    "cart_to_product": JoinPath(
-        name="cart_to_product",
-        source_table="ODS_MALL_OMS_CART",
-        source_alias="A",
-        target_table="CRM_CM_PRODUCT",
-        target_alias="C",
-        conditions=(
-            JoinCondition(
-                left="A.PRODUCT_ID", right="C.PRODUCT_ID",
-                relation_type="logical_reference",
-                evidence="member_target_filters.cart_targets.product_join + schema_catalog CART.foreign_keys(verified)",
-            ),
-        ),
-    ),
-    # 주문상세 → 상품 마스터. 근거: purchase_product_target.product.join(P.PRODUCT_ID=OD.PRODUCT_ID),
-    # schema_catalog CRM_SL_ORDERDETAILMALL.PRODUCT_ID 의 column-level references(CRM_CM_PRODUCT.PRODUCT_ID).
-    "purchase_to_product": JoinPath(
-        name="purchase_to_product",
-        source_table="CRM_SL_ORDERDETAILMALL",
-        source_alias="D",
-        target_table="CRM_CM_PRODUCT",
-        target_alias="P",
-        conditions=(
-            JoinCondition(
-                left="D.PRODUCT_ID", right="P.PRODUCT_ID",
-                relation_type="logical_reference",
-                evidence="member_target_filters.purchase_product_target.product.join + schema_catalog ORDERDETAILMALL.PRODUCT_ID.references",
-            ),
-        ),
-    ),
-}
+# 물리 좌표는 member_target_filters.json 에서 주입되고 schema catalog/preflight가 실재성을 검증한다.
+JOIN_PATHS: dict[str, JoinPath] = load_join_paths()
 
 
 def get_join_path(name: str) -> JoinPath | None:

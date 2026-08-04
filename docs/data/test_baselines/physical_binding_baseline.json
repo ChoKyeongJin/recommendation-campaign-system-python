@@ -1,20 +1,12 @@
 {
-  "description": "소스 하드코딩 물리 바인딩 기준선(하향 전용 래칫). tools/physical_binding_inventory.py --json 으로 재생성하되, 커밋 메시지에 사유를 남겨야 한다.",
-  "recorded_at": "2026-08-02",
-  "reason": "2026-08-02 Phase 2 물리 바인딩 이관: 343 → 184.\n  (1) 스캐너 정의 수정(-70, 이관 아님): build_table_relationships/build_dimension_catalog/build_rag_knowledge 는 카탈로그를 **만드는** 생산자다. 새 DB 를 향해 다시 실행할 대상이지 고쳐야 할 부채가 아니라 SKIP_FILES 로 옮겼다. 한 파일(build_table_relationships)이 전체의 20% 를 차지해 런타임 이관 진척을 가리고 있었다.\n  (2) 미러 이관(graph_rag -108, member_filters_config +48): 물리 이름이 세 곳(JSON / 코드 미러 / 접근자 인라인 기본값)에 살았다. 미러를 graph_rag 밖 순수 설정 모듈(member_filters_config.CODE_DEFAULTS)로 옮기고, 죽어 있던 인라인 기본값 64건을 걷었다. 미러는 JSON 의 사본이 아니라 **최소 폴백**이라는 것이 계약이다.\n  (3) 네 번째 사본 제거(confidence -11, member_policy -5): 두 모듈은 각자 JSON 을 직접 읽고 파일 부재 시 빈 dict 를 돌려줬기 때문에 인라인 물리 기본값이 **살아 있었다**. 같은 미러를 공유하도록 배선하고 리터럴을 걷었다.\n  (4) 죽은 기본 인자 제거(-3): entity_set/targeting_expression 의 member_key/age_column 기본값을 필수 인자로. AGE 는 base_entity.age_column 으로 설정화했다(JSON·미러 양쪽에 선언).\n드리프트 가드: tests/test_member_filters_defaults_drift.py — 배포 설정이 미러의 키를 전부 선언하는지(로더가 섹션을 통째로 대체하므로 누락은 폴백이 아니라 None 이 된다), 인라인 물리 기본값이 부활하지 않는지.",
-  "total": 184,
-  "tables": 57,
-  "columns": 127,
+  "description": "제품 소스의 물리 바인딩 하향 전용 래칫. tools/physical_binding_inventory.py --json으로 재생성하며, 상향에는 사유가 필요하다.",
+  "recorded_at": "2026-08-04",
+  "reason": "컨텍스트 인지 AST 스캐너로 설치물·docstring·생산기 오탐을 제거하고 활성 런타임의 물리 좌표를 검증된 설정/카탈로그 주입으로 이관했다. 현재 31건은 사용자 요청에 따라 수정 범위에서 제외한 Event IR 레거시(event_compiler 21, condition_evaluation_ir 10)에만 남아 있으며 해당 경로 삭제 시 함께 0으로 내린다. 활성 비-Event 경로는 0건이고 설정 누락은 readiness/preflight에서 fail-close한다.",
+  "total": 31,
+  "tables": 10,
+  "columns": 21,
   "per_file": {
-    "graph_rag.py": 79,
-    "member_filters_config.py": 48,
-    "event_compiler.py": 24,
-    "condition_evaluation_ir.py": 14,
-    "join_paths.py": 7,
-    "external_conditions/mappers/administrative_region_mapper.py": 4,
-    "api.py": 3,
-    "confidence.py": 3,
-    "analytical_intent.py": 1,
-    "rag/trace.py": 1
+    "event_compiler.py": 21,
+    "condition_evaluation_ir.py": 10
   }
 }

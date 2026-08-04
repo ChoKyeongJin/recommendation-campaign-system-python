@@ -11,10 +11,11 @@ import re
 import sys
 import time
 from typing import Annotated, Any, Literal
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 
 from capability_discovery.runtime_api import (
     as_diagnostic_payload,
@@ -35,6 +36,7 @@ from graph_rag import (
     DEFAULT_NORMALIZATION_PATH,
     DEFAULT_POLICY_PATH,
     DEFAULT_PROMPT_DIR,
+    REGISTRY_HEALTH,
     apply_execution_to_trace,
     build_message_context,
     build_message_response,
@@ -49,11 +51,14 @@ from graph_rag import (
 )
 from common_utils import elapsed_ms as _elapsed_ms
 from confidence import render_confidence_markdown, render_confidence_report
+import db_connections
 import failure_messages
 import plan_decisions
 from sql_dialect import dialect_for_connection
 from sql_guard import DEFAULT_LIMIT, DEFAULT_SCHEMA_PATH
 from data_quality import analyze_execution_result
+from query_structurer import StructuringContext
+from semantic_normalizers import decimal_json_value
 
 
 api_logger = logging.getLogger("campaign_api")
@@ -63,6 +68,22 @@ if not api_logger.handlers:
     api_logger.addHandler(handler)
 api_logger.propagate = False
 api_logger.setLevel(os.getenv("API_LOG_LEVEL", "INFO").upper())
+
+
+def _request_structuring_context(*, now: datetime | None = None) -> StructuringContext:
+    """Capture one timezone-aware instant at the request boundary."""
+
+    timezone_name = os.getenv("GRAPH_RAG_TIMEZONE", "Asia/Seoul")
+    zone = ZoneInfo(timezone_name)
+    instant = datetime.now(zone) if now is None else now
+    if instant.tzinfo is None or instant.utcoffset() is None:
+        raise ValueError("Request reference time must be timezone-aware")
+    localized = instant.astimezone(zone)
+    return StructuringContext(
+        current_date=localized.date().isoformat(),
+        timezone=timezone_name,
+        current_datetime=localized.isoformat(),
+    )
 
 
 POLICY_DIR = Path(__file__).resolve().parent / "docs" / "policies"
@@ -283,10 +304,10 @@ class MessageEventWebhookRequest(ApiBaseModel):
     provider_message_id: str | None = Field(default=None, alias="providerMessageId", max_length=100)
     provider_event_id: str | None = Field(default=None, alias="providerEventId", max_length=150)
     event_type: str = Field(..., alias="eventType", min_length=1, max_length=30)
-    event_at: datetime = Field(default_factory=lambda: datetime.now().astimezone(), alias="eventAt")
+    event_at: AwareDatetime = Field(..., alias="eventAt")
     click_url: str | None = Field(default=None, alias="clickUrl")
     conversion_type: str | None = Field(default=None, alias="conversionType", max_length=50)
-    conversion_value_krw: float | None = Field(default=None, alias="conversionValueKrw", ge=0)
+    conversion_value_krw: Decimal | None = Field(default=None, alias="conversionValueKrw", ge=0)
     device_type: str | None = Field(default=None, alias="deviceType", max_length=30)
     os_name: str | None = Field(default=None, alias="osName", max_length=50)
     browser_name: str | None = Field(default=None, alias="browserName", max_length=50)
@@ -424,11 +445,20 @@ def _initialize_capability_discovery() -> None:
 @app.get("/health")
 def health() -> dict[str, Any]:
     graph = getattr(app.state, "graph", None)
+    registry_health = {
+        name: "ok" if error is None else "error"
+        for name, error in REGISTRY_HEALTH.items()
+    }
     return {
-        "status": "ok" if graph is not None else "error",
+        "status": (
+            "ok"
+            if graph is not None and all(status == "ok" for status in registry_health.values())
+            else "error"
+        ),
         "data_path": str(getattr(app.state, "data_path", Path(os.getenv("GRAPH_RAG_DATA", DEFAULT_DATA_PATH)))),
         "startup_error": getattr(app.state, "startup_error", None),
         "graph": graph_stats(graph) if graph is not None else None,
+        "registry_health": registry_health,
     }
 
 
@@ -475,6 +505,7 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
                 prompt_dir=Path(os.getenv("GRAPH_RAG_PROMPT_DIR", DEFAULT_PROMPT_DIR)),
                 retrieval_scope=request.retrieval_scope,
                 multi_query_variants=request.multi_query_variants,
+                structuring_context=_request_structuring_context(),
             )
         retrieve_elapsed_ms = _elapsed_ms(retrieve_started_at)
     except ValueError as exc:
@@ -648,6 +679,7 @@ def target_sql_trace(request: RetrieveTraceRequest) -> dict[str, Any]:
                 generate_messages=False,
                 retrieval_scope=request.retrieval_scope,
                 timings_ms=timings_ms,
+                structuring_context=_request_structuring_context(),
             )
     except Exception as exc:  # noqa: BLE001
         # 어느 단계에서 막혔는지 timings_ms 로 좁혀 부분 트레이스를 반환한다(예외를 삼키지 않고 로깅).
@@ -3694,7 +3726,7 @@ def _json_default(value: Any) -> Any:
 
 # 외부 읽기전용 실DB. 이 커넥션들로 라우팅되는 타겟 SQL 은 psycopg(로컬 postgres)가 아니라
 # db_connections.run_read_query 로 실행한다.
-_EXTERNAL_TARGET_DBS = {"CRMAN", "CRMDW", "quadmax_sdz"}
+_EXTERNAL_TARGET_DBS = frozenset(db_connections.READ_ONLY_DBS)
 # 고객 수 집계에 쓸 식별자 컬럼 후보(대소문자 무시).
 _CUSTOMER_ID_COLUMNS = ("cust_id", "user_id", "customer_id", "member_no", "member_id")
 
@@ -4827,7 +4859,7 @@ def _jsonable_record(record: Any) -> dict[str, Any]:
 
 def _jsonable_value(value: Any) -> Any:
     if isinstance(value, Decimal):
-        return float(value)
+        return decimal_json_value(value)
     if isinstance(value, date | datetime):
         return value.isoformat()
     return value

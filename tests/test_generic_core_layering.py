@@ -110,7 +110,7 @@ def _domain_terms() -> list[str]:
         terms.update(values)
     # 너무 짧거나 코어의 일반 어휘와 겹치는 것은 뺀다(오탐 방지).
     generic = {"and", "or", "not", "count", "sum", "avg", "max", "min", "eq", "gte", "lte",
-               "member", "product", "brand", "category"}
+               "member", "product", "brand", "category", "parent"}
     return sorted(
         term for term in terms
         if term and len(term) >= 3 and term.casefold() not in generic

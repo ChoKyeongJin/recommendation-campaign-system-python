@@ -16,6 +16,14 @@
 from __future__ import annotations
 
 import graph_rag
+from query_structurer import StructuringContext
+
+
+_FIXED_CONTEXT = StructuringContext(
+    current_date="2026-08-04",
+    timezone="Asia/Seoul",
+    current_datetime="2026-08-04T09:00:00+09:00",
+)
 
 # 회원 컴파일러가 호출되지 **않은** SQL. 권위가 event_ir 인 경로가 실제로 내는 모양이다
 # (Event IR 술어만 있고 회원 술어는 없다).
@@ -166,13 +174,14 @@ def test_single_slot_requests_still_ship_sql_end_to_end() -> None:
     baseline = graph_rag.build_sql_result(
         graph_rag.nx.Graph(), "x", {**control, "target_user": {"gender": "female"}}, [],
         graph_rag.DEFAULT_SCHEMA_PATH, default_limit=100, original_query="x",
+        structuring_context=_FIXED_CONTEXT,
     )
     assert baseline["is_success"], "대조군이 실패한다 — 이 테스트의 전제가 깨졌다"
 
     for path, plan in _MEMBER_SLOT_PLANS.items():
         result = graph_rag.build_sql_result(
             graph_rag.nx.Graph(), "x", {**control, **plan}, [], graph_rag.DEFAULT_SCHEMA_PATH,
-            default_limit=100, original_query="x",
+            default_limit=100, original_query="x", structuring_context=_FIXED_CONTEXT,
         )
         assert result["is_success"], (
             f"{path}: 정상 요청이 실패로 뒤집혔다 — failure_reason={result.get('failure_reason')}"

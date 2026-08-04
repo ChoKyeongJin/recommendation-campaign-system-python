@@ -88,6 +88,9 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
     "entity_ranking_not_structured": "condition_recognition",
     "real_db_unsupported_conditions": "real_db_mapping",
     "external_condition_resolution_failed": "real_db_mapping",
+    # 배포 물리 바인딩 파일이 없거나 불완전한 경우. 조건 의미는 이미 알지만 실DB 좌표를
+    # 안전하게 정할 수 없으므로 자유 SQL/구 코드 기본값으로 우회하지 않고 매핑 단계에서 막는다.
+    "member_target_filters_unavailable": "real_db_mapping",
     # 명시적 미지원(쿠폰 건수/순위/비교/파생·의미보존 실패): 조건은 인식했으나 실DB 로 매핑 불가 —
     # SQL 안전 검증/의미 검증이 아니라 '실DB 조건 매핑' 단계에서 막힌 것으로 스텝퍼에 정직하게 표시한다.
     "coupon_usage_count_filter_unsupported": "real_db_mapping",
