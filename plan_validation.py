@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import condition_evaluation_ir
+import audience_authority
 import event_ir
 import targeting_expression as canonical_targeting_ir
 from query_structurer.semantic_ir import validate_semantic_ir
@@ -696,14 +697,28 @@ def _collect_canonical_ownership_issues(
     # The canonical audience producers use Event IR itself as the Boolean
     # authority.  A populated legacy audience projection beside it would be a
     # second executable interpretation, so reject that hybrid explicitly.
+    canonical_required = audience_authority.requires_event_ir(plan)
+    legacy_audience_present = has_value(plan.get("target_user", {})) or has_value(
+        plan.get("exclude", {})
+    )
     if (
         isinstance(event_payload, Mapping)
         and event_payload.get("source") in {"audience_requirement", "semantic_plan"}
-        and (has_value(plan.get("target_user", {})) or has_value(plan.get("exclude", {})))
+        and legacy_audience_present
     ):
         issues.append(_issue(
             INTERNAL_INVALID,
             "canonical_legacy_audience_conflict",
+            "event_expression",
+            event_payload,
+        ))
+    if canonical_required and not (
+        isinstance(event_payload, Mapping)
+        and isinstance(event_payload.get("expression"), Mapping)
+    ):
+        issues.append(_issue(
+            INTERNAL_INVALID,
+            "canonical_event_expression_missing",
             "event_expression",
             event_payload,
         ))

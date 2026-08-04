@@ -188,7 +188,8 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
             (
                 "Treat Application-owned Literal Bindings as authoritative for dates, durations, numbers, "
                 "units, percentages, and comparison operators. Reference or copy only values supported by "
-                "those bindings and the tool schema; never infer a missing value."
+                "those bindings and the tool schema; never infer a missing value except for the explicit "
+                "bare-'최근' default described below."
             ),
             (
                 "If a material audience requirement is ambiguous, unsupported, inconsistent with the catalog, "
@@ -199,8 +200,9 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
             ),
             (
                 "Special temporal rule: when the query says '최근' but gives no duration or bounded period, "
-                "do not interpret it as all history and do not choose a default. Return expression=null and "
-                "one missing_argument issue with argument='period' and evidence covering the exact word '최근'."
+                "do not interpret it as all history. Apply the application default of the most recent five "
+                "days by putting {\"type\": \"rolling\", \"value\": 5, \"unit\": \"day\"} in the "
+                "TimeFilter that owns the condition. Do not return a missing_argument issue for period."
             ),
             (
                 "campaign_constraints contains campaign-delivery metadata only. A campaign objective such as "
@@ -257,7 +259,9 @@ def build_campaign_query_plan_v4_retry_prompt(
                 "uses catalog FieldRefs on both sides; their left/right relation scopes disambiguate identical "
                 "canonical field IDs. For a ranked obligation, both Join.on sides use its entity_field, never "
                 "the member_id. If it has time_window, Filter the global right Source before Summarize. Internal "
-                "top-K belongs in Limit.count, not root result_limit."
+                "a ranked count belongs in Limit.count and a ranked percentage belongs in Limit.percent, "
+                "never root result_limit. Use desc for top and asc for bottom, followed by the entity key "
+                "ascending as the deterministic tie-break."
             ),
             (
                 "Comparison evidence must be the exact query slice containing the comparison's source value "

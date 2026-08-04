@@ -23,9 +23,10 @@ import json
 from collections.abc import Coroutine, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+import audience_authority
 import audience_issue_contract
 import campaign_metric_claims
 import canonical_audience_claims
@@ -163,6 +164,119 @@ def _parse_audience_expression(raw: dict[str, Any], query: str) -> event_ir.Cond
     return expression
 
 
+def _pin_explicit_as_of_rolling_windows(
+    expression: event_ir.Condition,
+    literals: list[Any],
+    query: str,
+) -> tuple[event_ir.Condition, list[dict[str, Any]], dict[str, Any] | None]:
+    """Resolve an explicitly anchored rolling window to an absolute interval.
+
+    Unanchored ``RollingWindow`` remains execution-clock based.  Only the
+    application-extracted ``as_of_date`` role can pin it; neither model output
+    nor ``StructuringContext.current_date`` is execution authority for this
+    conversion.
+    """
+
+    raw = expression.to_dict()
+    rolling_nodes: list[dict[str, Any]] = []
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "rolling":
+                rolling_nodes.append(value)
+                return
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(raw)
+    if not rolling_nodes:
+        return expression, [], None
+    anchors = [
+        item
+        for item in literals
+        if isinstance(item, Mapping) and item.get("kind") == "as_of_date"
+    ]
+    if not anchors:
+        return expression, [], None
+    if len(anchors) != 1:
+        return expression, [], {
+            "code": "ambiguous_requirement",
+            "argument": "as_of_date",
+            "message": "여러 기준일 중 rolling 기간에 적용할 하나의 기준일을 확정할 수 없습니다.",
+            "evidence": {"text": query, "start": 0, "end": len(query)},
+        }
+    normalized = anchors[0].get("normalized")
+    anchor_text = normalized.get("date") if isinstance(normalized, Mapping) else None
+    try:
+        anchor = date.fromisoformat(str(anchor_text))
+    except ValueError:
+        return expression, [], {
+            "code": "validation_mismatch",
+            "argument": "as_of_date",
+            "message": "애플리케이션이 추출한 기준일을 유효한 날짜로 해석할 수 없습니다.",
+            "evidence": _binding_evidence_for_issue(anchors[0], query),
+        }
+
+    records: list[dict[str, Any]] = []
+    for node in rolling_nodes:
+        try:
+            window = event_ir.RollingWindow.from_dict(node)
+        except event_ir.IrSchemaError:
+            continue
+        end_exclusive = anchor + timedelta(days=1)
+        interval = event_ir.AbsoluteInterval(
+            start=end_exclusive - timedelta(days=window.days),
+            end_exclusive=end_exclusive,
+        )
+        duration_bindings = [
+            item
+            for item in literals
+            if isinstance(item, Mapping)
+            and item.get("kind") == "duration"
+            and isinstance(item.get("normalized"), Mapping)
+            and item["normalized"].get("temporal_kind") == "rolling_duration"
+            and item["normalized"].get("value") == window.value
+            and event_ir.canonical_unit(item["normalized"].get("semantic_unit"))
+            == window.unit
+        ]
+        duration_literal_id = (
+            str(duration_bindings[0].get("id") or "")
+            if len(duration_bindings) == 1
+            else ""
+        )
+        node.clear()
+        node.update(interval.to_dict())
+        records.append({
+            "literal_id": str(anchors[0].get("id") or ""),
+            "anchor_literal_id": str(anchors[0].get("id") or ""),
+            "duration_literal_id": duration_literal_id,
+            "anchor_date": anchor.isoformat(),
+            "value": window.value,
+            "unit": window.unit,
+            "start": interval.start.isoformat(),
+            "end_exclusive": interval.end_exclusive.isoformat(),
+        })
+    if not records:
+        return expression, [], None
+    return _parse_audience_expression(raw, query), records, None
+
+
+def _binding_evidence_for_issue(binding: Mapping[str, Any], query: str) -> dict[str, Any]:
+    start, end = binding.get("start"), binding.get("end")
+    if (
+        isinstance(start, int)
+        and not isinstance(start, bool)
+        and isinstance(end, int)
+        and not isinstance(end, bool)
+        and 0 <= start < end <= len(query)
+    ):
+        return {"text": query[start:end], "start": start, "end": end}
+    return {"text": query, "start": 0, "end": len(query)}
+
+
 def _audience_receipts(expression: event_ir.Condition) -> list[dict[str, Any]]:
     receipts: list[dict[str, Any]] = []
     for index, (atom, negated) in enumerate(event_ir.iter_signed_atoms(expression)):
@@ -201,6 +315,8 @@ class AudienceResolution:
     # 구조가 완전히 증명된 rolling absence에서 기간/연산자까지 삼킨 모델 evidence를
     # 사건 부정 구절로 좁힌 기록. 값이나 조건은 바꾸지 않고 근거 소유권만 바로잡는다.
     evidence_normalizations: list[dict[str, Any]] = field(default_factory=list)
+    # 사용자 명시 기준일 + rolling duration을 고정 반개구간으로 바꾼 기록.
+    as_of_normalizations: list[dict[str, Any]] = field(default_factory=list)
     # A model-authored audience issue can be disproved by one structurally
     # owned SemanticPlan node.  In that case this path yields to the node
     # compiler instead of inventing a missing audience expression.
@@ -528,6 +644,7 @@ def run_audience_resolver(
     expression: event_ir.Condition | None = None
     normalizations: list[dict[str, Any]] = []
     evidence_normalizations: list[dict[str, Any]] = []
+    as_of_normalizations: list[dict[str, Any]] = []
     synthesis_owner: str | None = None
     if isinstance(raw_expression, dict):
         if not isinstance(literal_bindings, list):
@@ -559,6 +676,14 @@ def run_audience_resolver(
             for issue in calculated
             if not _semantic_plan_owns_catalog_issue(issue, payload, query)
         ]
+        if not calculated:
+            expression, as_of_normalizations, as_of_issue = (
+                _pin_explicit_as_of_rolling_windows(
+                    expression, literal_bindings, query
+                )
+            )
+            if as_of_issue is not None:
+                calculated.append(as_of_issue)
         if synthesis is not None and not calculated:
             issues = [
                 issue
@@ -604,6 +729,7 @@ def run_audience_resolver(
         query=query,
         normalizations=normalizations,
         evidence_normalizations=evidence_normalizations,
+        as_of_normalizations=as_of_normalizations,
         defer_to_semantic_plan=defer_to_semantic_plan,
         synthesis_owner=synthesis_owner,
         semantic_plan_synthesis=(
@@ -672,6 +798,17 @@ def project_resolution_to_plan(
                 f"기간 표현 종류는 애플리케이션 소유 — {correction['value']}"
                 f"{correction['unit']} 창을 '{correction['from']}'에서 "
                 f"'{correction['to']}'로 맞췄다"
+            ),
+            value=correction,
+        )
+    for correction in resolution.as_of_normalizations:
+        plan_decisions.record(
+            payload,
+            filter_name="canonical_audience_claims.explicit_as_of",
+            action=plan_decisions.UPDATE,
+            slot="audience_requirement.window",
+            reason=(
+                "사용자가 명시한 기준일을 rolling 창의 고정 반개구간으로 확정했다"
             ),
             value=correction,
         )
@@ -777,6 +914,9 @@ def project_resolution_to_plan(
         "source": AUDIENCE_REQUIREMENT_KEY,
         "receipts": _audience_receipts(expression),
     }
+    audience_authority.stamp_authority(
+        payload, audience_authority.AudienceAuthority.EVENT_IR
+    )
     payload["semantic_ir"] = empty_semantic_ir(status="resolved")
     return True
 

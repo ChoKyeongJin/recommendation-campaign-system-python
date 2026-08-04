@@ -17,8 +17,11 @@ A 가 코드로 가는 것이 원래 문제였다. C 가 코드인 것은 정상
 ### A 를 사람이 다 못 적을 때 — LLM 보완
 
 A(어휘)는 끝이 없다. 사전에 없는 말투는 규칙이 조용히 침묵하므로, 그 **빈칸만** LLM 이 채운다
-(`CONDITION_SLOT_LLM_FALLBACK`, `docs/prompts/condition_slot_extract_system.txt`). 대신 채우는
-범위가 묶여 있다 — 이 경계가 "LLM 이 스키마를 지어내지 않는다"의 실질이다.
+(`docs/prompts/condition_slot_extract_system.txt`). 대신 채우는 범위가 묶여 있다 — 이 경계가
+"LLM 이 스키마를 지어내지 않는다"의 실질이다.
+
+> 이 보완을 끄던 스위치 `CONDITION_SLOT_LLM_FALLBACK` 은 **더 이상 코드에서 읽히지 않는다**
+> (2026-08-04 실측). 끄고 싶으면 스위치가 아니라 호출부를 봐야 한다.
 
 | | LLM 이 정한다 | JSON 이 정한다 |
 |---|---|---|
@@ -39,8 +42,9 @@ A(어휘)는 끝이 없다. 사전에 없는 말투는 규칙이 조용히 침�
 
 채택 조건 셋: **닫힌 집합에서 고르기만**(목록 밖 값은 버림), **근거는 원문에 그대로**(회원 명사 포함,
 규칙이 이미 읽은 조각과 겹치면 거부), **빈칸만**(규칙이 채운 슬롯은 안 덮음). 채택분은
-`plan_decisions` 에 `source: llm` 으로 남는다. 계약은 `tests/test_condition_slot_llm.py` 와 (이 테스트는 규칙 계층 철거와 함께 삭제됨)
-`tests/test_surface_lexicon_llm.py` 가 강제한다. (이 테스트는 규칙 계층 철거와 함께 삭제됨)
+`plan_decisions` 에 `source: llm` 으로 남는다. 이 셋을 강제하던 두 계약 테스트
+(`test_condition_slot_llm` · `test_surface_lexicon_llm`)는 규칙 계층 철거와 함께 삭제됐다 —
+**지금 이 경계를 지키는 테스트는 없다.**
 
 ### 표면 신호는 이미 A 를 졸업했다
 
@@ -52,7 +56,8 @@ A(어휘)는 끝이 없다. 사전에 없는 말투는 규칙이 조용히 침�
 코드에 남은 낱말 목록(`graph_rag._DEFAULT_TARGETING_LEXICON` 의 LLM 소유 그룹,
 `analytical_intent._AGGREGATE_FUNCTION_BACKSTOP`)은 **동결 백스톱**이다. 키가 없거나
 `SURFACE_LEXICON_LLM=off` 인 환경(테스트 포함)에서 이관 전 결정론 동작을 재현하는 것이 유일한
-역할이고, 손으로 늘리지 않는다 — `tests/test_surface_lexicon_llm.py` 의 래칫이 강제한다. (이 테스트는 규칙 계층 철거와 함께 삭제됨)
+역할이고, 손으로 늘리지 않는다. 이것을 강제하던 래칫(`test_surface_lexicon_llm`)은 규칙 계층
+철거와 함께 삭제됐다 — **지금은 규약일 뿐 강제되지 않는다.**
 
 ### 불리언으로는 부족한 뜻 — 의미 신호(status)
 
@@ -78,7 +83,8 @@ A(어휘)는 끝이 없다. 사전에 없는 말투는 규칙이 조용히 침�
 4. **메타데이터는 의미가 아니다.** 출처·모델·소요시간은 `canonical_form` 에 들어가지 않는다.
 
 새 표현이 들어와도 여기는 고칠 것이 없다. 새 *뜻*이 필요할 때만 `semantic_signals.json` 에 항목
-하나와 그 뜻을 소비하는 코드를 더한다. 표현형 전수는 `tests/test_semantic_signal.py` 가 갖는다. (이 테스트는 규칙 계층 철거와 함께 삭제됨)
+하나와 그 뜻을 소비하는 코드를 더한다. 표현형 전수를 갖던 `test_semantic_signal` 은 규칙 계층
+철거와 함께 삭제됐다 — **지금 이 계층의 표현형을 재는 테스트는 없다.**
 
 대체되지 **않은** 어휘도 있다. 문장에 있는가가 아니라 **어디에 있는가**로 판정하는 것들이다:
 대상 지향 표지(절 분리 지점), 장바구니 어휘(금액·수량 인접성), `parser_lexicon.json` 어휘(교대
@@ -88,33 +94,78 @@ A(어휘)는 끝이 없다. 사전에 없는 말투는 규칙이 조용히 침�
 
 ## 주간 루틴 (15분)
 
-```bash
-docker compose exec -e PYTHONPATH=/app -w /app api \
-  python tools/weekly_triage.py --unresolved logs/unresolved.jsonl --shadow logs/parser_shadow.jsonl
+> **2026-08-04 재작성.** 이전 판은 `weekly_triage` 도구와 `unresolved.jsonl` 큐, 그리고
+> `weekly_triage`·`slot_policy` 문서를 현재형으로 안내했다. **넷 다 저장소에 없다.** 존재하지 않는 안전망을 현재형으로 광고하는 것이 이 저장소의 알려진 재발 사고 모드라,
+> 아래는 전부 실재하는 장치로만 적었고 `tests/test_runbook_paths_exist.py` 가 그것을 강제한다.
+
+실패는 이제 **한 곳에 쌓인다** — 메타데이터 DB 의 `campaign_query_failure_logs` 다. 요청마다 종착
+레인 좌표(`audience_diagnosis`)가 `context_metadata` JSONB 안에 함께 저장된다.
+
+### 1. 레인별 분포를 본다 (무엇이 제일 많이 막혔나)
+
+```sql
+SELECT context_metadata->'audience_diagnosis'->>'stage' AS lane,
+       context_metadata->'audience_diagnosis'->>'code'  AS code,
+       count(*)
+  FROM campaign_query_failure_logs
+ WHERE created_at >= now() - interval '7 days'
+ GROUP BY 1, 2 ORDER BY 3 DESC;
 ```
 
-`docs/weekly_triage.md` 를 열고 **`decision` 열만 채운다.**
+레인이 곧 **소유자**다. 어느 레인의 일인지와 첫 행동은
+`docs/operations/failure_diagnosis.md` §3 이 소유한다.
 
-1. **§1 이행 지표** — `조용한 소실 슬롯` 이 0 이 아니면 그것부터 본다. 그 슬롯은 값을 못 만들 때
-   아무 표시 없이 사라지므로, 미해석 큐에 잡히지 않는다. 즉 루프의 사각지대다.
-2. **§2 미해석 표현** — 빈도순. 초안(A/B/C)은 정렬용이지 판정이 아니다. 판정 후:
-   - A → 사전 어휘에 낱말 추가 → `pytest tests/` → 끝 (배포 불필요)
-   - B → 레지스트리 한 줄 + 골든 케이스 추가
-   - C → `cases.json` 에 `known_gap` 으로 먼저 기록하고 별도로 설계
-3. **§3 슬롯 승격 후보** — `막는 것` 이 비어 있는 슬롯만 `docs/data/slot_policy.json` 에서
-   `owner: llm` 으로 바꾼다. 문턱을 손으로 낮추지 않는다.
+- `structuring` 이 상위면 파서·어휘 문제가 아니라 **모델·인프라** 문제다. 사전에 낱말을 더해도
+  안 풀린다. `logs/rag_llm/<날짜>/` 의 해당 요청 로그부터 본다.
+- `unclassified` 가 하나라도 있으면 그것부터 본다. 요청의 결함이 아니라 **진단 배선의 결함**이고,
+  이 루프의 사각지대다(§5 of `docs/operations/failure_diagnosis.md`).
+- `execution_capability` 는 A/B/C 판정 대상이 아니다 — 컴파일러가 "못 한다"고 선언한 것이라
+  `docs/plans_event_ir_only.md` §5 의 분류로 나눈다.
+
+### 2. `source_coverage` 를 A/B/C 로 가른다
+
+이 레인만이 위 §원칙의 A/B/C 판정 대상이다. `evidence[].path` 가 원문의 어느 구절이 어디로 못
+갔는지를 말한다.
+
+```sql
+SELECT prompt,
+       jsonb_pretty(context_metadata->'audience_diagnosis'->'evidence')
+  FROM campaign_query_failure_logs
+ WHERE context_metadata->'audience_diagnosis'->>'stage' = 'source_coverage'
+   AND created_at >= now() - interval '7 days'
+ ORDER BY created_at DESC LIMIT 30;
+```
+
+판정 질문은 하나다 — **"이 낱말의 형제를 다 적을 수 있나?"**
+
+- 적을 수 있다(A) → `docs/data/runtime/language/parser_lexicon.json` 에 낱말 추가 → `pytest tests/` → 끝(배포 불필요)
+- 못 적는다(A′) → 사전이 아니라 개념이다. `docs/data/runtime/semantics/semantic_signals.json`
+  또는 `surface_concepts.json` 에 **뜻** 하나를 더한다
+- 조건 모양이 새것(B) → `targeting_ir.CONDITION_SPECS` 한 줄 + `tests/golden/cases.json` 케이스
+- 능력이 없다(C) → `tests/golden/cases.json` 에 `known_gap` 으로 **먼저 기록**하고 별도로 설계
+
+### 3. 회귀를 잰다
+
+```bash
+docker exec recommendation-campaign-system-python-python-1 python -m pytest tests -q
+docker exec recommendation-campaign-system-python-python-1 python tools/live_prompt_baseline.py --help
+```
+
+`tools/live_prompt_baseline.py` 는 라이브 응답을 `logs/live_baseline_*.json` 으로 떠 전후를
+비교한다. 어휘 한 줄을 더한 주에도 이 비교를 건너뛰지 않는다 — 어휘 추가가 다른 조건의 스팬을
+가져가는 것이 이 계층에서 가장 흔한 회귀다.
 
 ## 환경 변수
 
+실재하는 것만 적는다. 아래 표의 모든 변수가 코드에서 읽히는지는
+`tests/test_runbook_paths_exist.py` 가 강제한다 — 2026-08-04 재작성 시점에 여섯 개
+(`UNRESOLVED_LOG` · `PARSER_SHADOW_MODE` · `PARSER_SHADOW_LOG` · `SLOT_POLICY_PATH` ·
+`TARGET_OBJECT_LLM_FALLBACK` · `CONDITION_SLOT_LLM_FALLBACK`)가 **아무도 읽지 않는 상태**로
+남아 있었다. 끄고 켜도 아무 일이 안 생기는 스위치는 안내가 아니라 함정이다.
+
 | 변수 | 값 | 뜻 |
 |---|---|---|
-| `UNRESOLVED_LOG` | 경로 | 미해석 큐 적재 위치. **미설정이면 큐가 안 쌓여 루프가 돌지 않는다** |
-| `PARSER_SHADOW_MODE` | `off`(기본)/`shadow`/`enforce` | shadow 는 관찰만, enforce 는 LLM 소유 슬롯만 채택 |
-| `PARSER_SHADOW_LOG` | 경로 | shadow 관찰 누적 위치(승격 판단의 유일한 근거) |
 | `PARSER_LEXICON_PATH` | 경로 | 파서 표면어 사전 |
-| `SLOT_POLICY_PATH` | 경로 | 슬롯 소유권 정책 |
-| `TARGET_OBJECT_LLM_FALLBACK` | `true`(기본)/`false` | 상품명 LLM 후보. **끄면 상품 조건이 조용히 사라진다** |
-| `CONDITION_SLOT_LLM_FALLBACK` | `true`(기본)/`off` | 사전에 없는 말투를 조건 슬롯으로 채우는 LLM 보완(회원 상태 플래그·쿠폰 임계·**회원 지표 선택**). 끄면 동결 백스톱 표면어와 `segment_lexicon.json`·`member_metrics.json` 동의어만으로 동작한다(기존 동작). 켜져 있으면 회원 명사가 있고 규칙이 플래그를 못 올린 질의마다 빠른 모델 호출이 1회 추가되고, 지표 개념 신호가 참인 질의에 1회 더 추가된다 |
 | `SURFACE_LEXICON_LLM` | `true`(기본)/`off` | 표면 신호(의도·목적·문맥·집계 함수어)의 LLM 해석. **끄면 동결 백스톱 낱말만 읽으므로 처음 보는 말투가 조용히 침묵한다**(이관 전 동작). 켜져 있으면 질의당 빠른 모델 호출이 1회 추가되고, 그 결과는 질의 스코프 안에서 재사용된다(절 단위로 다시 부르지 않는다) |
 | `SURFACE_CONCEPTS_PATH` | 경로 | 표면 개념(닫힌 집합) 선언 파일 |
 | `SEMANTIC_SIGNAL_LLM` | `true`(기본)/`off` | 의미 신호(구매 등)의 구조화 판정. **끄면 형태 판정 폴백만 돌아 의향·가정·단순 언급이 발생과 구분되지 않는다**(이관 전 동작). 켜져 있으면 질의당 선언된 뜻 수만큼 빠른 모델 호출이 추가되고, 그 결과는 질의 스코프 안에서 재사용된다(절 단위로 다시 부르지 않는다) |
@@ -124,31 +175,33 @@ docker compose exec -e PYTHONPATH=/app -w /app api \
 
 ## 안전장치 (전부 `pytest tests/` 가 강제)
 
+**지금 존재하는 것만** 적는다. 규칙 계층 철거와 함께 사라진 장치 여덟은 "삭제됨" 꼬리표를 단 채
+표에 남아 있었는데, 꼬리표는 사람만 읽고 기계는 안 읽는다 — 그 사이 이 표는 "우리에겐 이런
+안전망이 있다"로 읽혔다. 목록에서 뺐고, 재발은
+`tests/test_runbook_paths_exist.py` 가 막는다(적힌 경로가 실재하지 않으면 red).
+
 | 장치 | 파일 | 막는 것 |
 |---|---|---|
 | 골든 IR 스냅샷 | `tests/golden/` | 파서 변경이 조건을 조용히 잃는 것 |
 | `known_gap` 마커 | `tests/golden/cases.json` | 결함을 스냅샷으로 축복하는 것 (고쳐지면 마커를 지우라고 실패) |
-| 코드 규칙 래칫 | `docs/data/regex_inventory_baseline.json` | 새 표면어를 또 코드로 받는 것 (어휘형·낱말집합·업무의미형 상한) |
-| 래칫 스캔 범위 | `tests/test_regex_inventory_ratchet.py` | 규칙이 **세지지 않는 형태**로 들어오는 것(묶음·인라인 정규식·낱말집합) | (이 테스트는 규칙 계층 철거와 함께 삭제됨)
-| rule 생산자 래칫 | `tests/golden/method_mix_baseline.json` | 조건 생산자가 정규식으로 늘어나는 것 |
-| 조용한 소실 상한 | `tests/test_slot_policy.py` | 백스톱도 fail-close 도 없는 슬롯이 느는 것 | (이 테스트는 규칙 계층 철거와 함께 삭제됨)
 | 이관 동등성 | `tests/test_lexicon_patterns.py` | 사전으로 옮기며 몰래 어휘를 넓히는 것 |
-| LLM 슬롯 경계 | `tests/test_condition_slot_llm.py` | LLM 이 목록 밖 값·근거 없는 조건을 만들어내는 것 | (이 테스트는 규칙 계층 철거와 함께 삭제됨)
-| 세그먼트 소유권 분리 | `tests/test_segment_semantics.py` | 표면어와 접지(소스·capability)가 한 파일로 다시 섞이는 것 | (이 테스트는 규칙 계층 철거와 함께 삭제됨)
-| 미해석 오탐 | `tests/test_ir_golden_corpus.py` | 탐지기가 정상 프롬프트를 잡아 큐를 잡음으로 덮는 것 | (이 테스트는 규칙 계층 철거와 함께 삭제됨)
 | 의미 AST 불변식 | `tests/test_semantic_ast.py` | 부정·AND/OR·owner 가 정규화 과정에서 뒤집히거나 사라지는 것 |
-| 의미 신호 계약 | `tests/test_semantic_signal.py` | 발생·의향·부정·동음이의가 한 boolean 으로 뭉쳐지는 것, 폴백이 OR 로 퇴화하는 것, 메타데이터가 의미 비교에 섞이는 것, 재작성이 뜻을 지우거나 지어내는 것 | (이 테스트는 규칙 계층 철거와 함께 삭제됨)
-| 의미 보존 계약 | `tests/test_plan_semantic_ast.py` | 제외가 포함으로 컴파일되는 것, OR 이 AND 로 축소되는 것, 포함/제외 충돌이 한쪽만 실행되는 것, rules/LLM 경로가 다른 의미로 갈라지는 것 | (이 테스트는 규칙 계층 철거와 함께 삭제됨)
+| 모듈 크기 래칫 | `tests/test_module_size_ratchet.py` | 분할해 놓은 모듈이 다시 한 파일로 자라는 것 |
+| 실패 단계 총체성 | `tests/test_failure_stage_totality.py` | 새 실패 사유가 UI 단계 없이 나가는 것 |
+| 종착 좌표 도달성 | `tests/test_audience_failure_coordinate.py` | 선언만 있고 도달 못 하는 진단 레인이 생기는 것 |
+| 진단 배선 | `tests/test_audience_diagnosis_wiring.py` | 좌표가 파생만 되고 응답·debug·실패로그로 안 나가는 것 |
+| 문서 경로 실재 | `tests/test_runbook_paths_exist.py` | 이 문서가 없는 도구·경로·env 를 현재형으로 광고하는 것 |
 
-## 재생성 명령
+### 철거된 장치 (되살릴 때 이 목록에서 지운다)
 
-```bash
-# 골든 스냅샷 + 방법 구성 기준선 (diff 를 눈으로 검토한 뒤 커밋)
-python tools/regen_ir_goldens.py
+`test_regex_inventory_ratchet` · `test_slot_policy` · `test_condition_slot_llm` ·
+`test_segment_semantics` · `test_ir_golden_corpus` · `test_semantic_signal` ·
+`test_plan_semantic_ast` · `regen_ir_goldens` · `regex_inventory`(도구·기준선·문서) ·
+`method_mix_baseline`.
 
-# 규칙 인벤토리 (--set-baseline 은 상한을 내릴 때. 올릴 때는 --reason 이 필수다)
-python tools/regex_inventory.py [--set-baseline] [--reason "..."]
-```
+규칙 계층을 걷어내면서 함께 사라졌다. **이 중 무엇도 지금 회귀를 막고 있지 않다.** 정규식 상한과
+방법 구성 기준선은 그 계층이 있을 때의 장치였고, 지금 같은 목적의 래칫은 위 표의 모듈 크기·단계
+총체성·좌표 도달성 셋이다.
 
 ### 래칫이 세는 것 (2026-07-30 확대)
 
@@ -233,8 +286,8 @@ LLM-first에서 원문 권위 규칙은 실행 플랜을 수정하지 않는다.
 3. `QUERY_PLAN_AUTHORITY=llm_first`로 전환한다.
 4. 장애 시 `QUERY_PLAN_AUTHORITY=rules_first` 또는 요청별 `query_parser=rules`로 되돌린다.
 
-(V2·V3 구현은 2026-08-01 V4로 통합되며 삭제됐다. 계약 테스트였던 `tests/test_campaign_plan_v3.py`는
-규칙 계층 철거와 함께 삭제됨.)
+(V2·V3 구현은 2026-08-01 V4로 통합되며 삭제됐다. 계약 테스트였던 `test_campaign_plan_v3` 도
+규칙 계층 철거와 함께 삭제됐다.)
 
 ## 남은 결함 (2026-07-29 기준)
 
@@ -244,6 +297,7 @@ LLM-first에서 원문 권위 규칙은 실행 플랜을 수정하지 않는다.
   처럼 일부만 빠지는 것은 shadow 비교의 `only_candidate` 판정이 담당하므로, shadow 를 켜야 보인다.
 - **어휘형 11개 / 낱말집합 46개 / 업무의미형 218개 / 조립형 5개** (2026-07-30 확대 스캔 기준). 어휘형은
   `_BALANCE_*` 3, `_THRESHOLD_CUE_RE`, `_OUTPUT_ACTION_RE`, `_MEMBER_METRIC_COMPARISON_RE`,
-  `_TREND_ORDER_MARKER_RE`, `_NOISE_LABEL`(빌드 스크립트) + 인라인 3. 우선순위는
-  `docs/regex_inventory.md` 의 교대수 순서다. 낱말집합 상위는 `_VALUE_TAIL_TOKENS`(45),
-  `query_semantics.NON_ENTITY_TERMS`(36), `_NOISE_OPERAND_TOKENS`(32).
+  `_TREND_ORDER_MARKER_RE`, `_NOISE_LABEL`(빌드 스크립트) + 인라인 3. 낱말집합 상위는
+  `_VALUE_TAIL_TOKENS`(45), `query_semantics.NON_ENTITY_TERMS`(36), `_NOISE_OPERAND_TOKENS`(32).
+  (우선순위를 교대수 순으로 적어 두던 `regex_inventory` 문서와 도구는 규칙 계층 철거와 함께
+  삭제됐다 — **이 수치는 2026-07-30 스냅샷이고 지금 갱신하는 장치가 없다.**)

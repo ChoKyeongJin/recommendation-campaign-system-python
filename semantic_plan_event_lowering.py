@@ -200,6 +200,8 @@ class SemanticPlanEventLowerer:
         try:
             if isinstance(node, semantic_plan.LogicalExpression):
                 expression, symbols = self._logical(node)
+            elif isinstance(node, semantic_plan.RankedSet):
+                expression, symbols = self._ranked_set(node)
             elif isinstance(node, semantic_plan.AggregatePredicate):
                 expression, symbols = self._aggregate(node)
             elif isinstance(node, semantic_plan.Predicate):
@@ -335,6 +337,142 @@ class SemanticPlanEventLowerer:
         if temporal.negate:
             expression = event_ir.Not(expression)
         return expression, (metric.id, metric.source, *symbols, operator)
+
+    def _ranked_set(
+        self, node: semantic_plan.RankedSet
+    ) -> tuple[event_ir.Condition, tuple[str, ...]]:
+        """Lower a catalog-declared ranked subject set to relational primitives."""
+        metric = self.catalog.metric(str(node.values.get("metric") or ""))
+        entity = str(node.values.get("entity") or "")
+        if metric.kind != "aggregate" or not (
+            metric.ranking_entity
+            and metric.ranking_entity_field
+            and metric.ranking_limit_units
+            and metric.ranking_tie_policy
+        ):
+            raise LoweringError(
+                OPERATION_UNSUPPORTED,
+                f"metric {metric.id!r} has no ranked-set recipe",
+                catalog_symbols=(metric.id,),
+            )
+        if entity != metric.ranking_entity:
+            raise LoweringError(
+                CATALOG_CONTRACT_MISMATCH,
+                f"rank entity {entity!r} conflicts with metric entity "
+                f"{metric.ranking_entity!r}",
+                catalog_symbols=(metric.id,),
+            )
+        if node.values.get("qualifier") not in (None, "", {}, []):
+            raise LoweringError(
+                OPERATION_UNSUPPORTED,
+                "ranked-set qualifiers need a separately declared population recipe",
+                catalog_symbols=(metric.id,),
+            )
+
+        direction = str(node.values.get("direction") or "")
+        sort_direction = {"descending": "desc", "ascending": "asc"}.get(direction)
+        if sort_direction is None:
+            raise LoweringError(
+                VALUE_NOT_NORMALIZED,
+                f"unknown rank direction: {direction!r}",
+                catalog_symbols=(metric.id,),
+            )
+        raw_limit = node.values.get("limit")
+        if not isinstance(raw_limit, Mapping):
+            raise LoweringError(VALUE_NOT_NORMALIZED, "rank limit must be an object")
+        limit_unit = str(raw_limit.get("type") or "")
+        limit_value = raw_limit.get("value")
+        if limit_unit not in metric.ranking_limit_units:
+            raise LoweringError(
+                OPERATION_UNSUPPORTED,
+                f"metric {metric.id!r} does not allow rank limit unit {limit_unit!r}",
+                catalog_symbols=(metric.id,),
+            )
+        if limit_unit == "count":
+            if (
+                not isinstance(limit_value, int)
+                or isinstance(limit_value, bool)
+                or limit_value < 1
+            ):
+                raise LoweringError(VALUE_NOT_NORMALIZED, "rank count must be a positive integer")
+        elif (
+            not isinstance(limit_value, (int, float))
+            or isinstance(limit_value, bool)
+        ):
+            raise LoweringError(VALUE_NOT_NORMALIZED, "rank percent must be numeric")
+
+        temporal = self._temporal(node, metric)
+        if temporal.negate:
+            raise LoweringError(
+                OPERATION_UNSUPPORTED,
+                "negated temporal ranking is not a ranked-set operation",
+                catalog_symbols=(metric.id,),
+            )
+        grain = self.catalog.grain(metric.grain)
+        if grain.keys:
+            raise LoweringError(
+                OPERATION_UNSUPPORTED,
+                "ranked-set metrics must declare a subject-grain relation",
+                catalog_symbols=(metric.id, grain.id),
+            )
+        left, left_symbols = self._relation(metric, temporal.window)
+        right, right_symbols = self._relation(
+            metric, temporal.window, correlation="none"
+        )
+        entity_alias = "entity_key"
+        measure_alias = "measure_value"
+        summary = event_ir.Summarize(
+            relation=right,
+            keys=(
+                event_ir.NamedExpression(
+                    entity_alias,
+                    event_ir.FieldRef(metric.ranking_entity_field),
+                ),
+            ),
+            measures=(
+                event_ir.NamedMeasure(
+                    measure_alias,
+                    str(metric.aggregate_function),
+                    (
+                        event_ir.FieldRef(metric.expression_field)
+                        if metric.expression_field
+                        else None
+                    ),
+                    metric.distinct,
+                ),
+            ),
+        )
+        ordered = event_ir.Order(
+            relation=summary,
+            keys=(
+                event_ir.SortKey(measure_alias, sort_direction),
+                event_ir.SortKey(entity_alias, "asc"),
+            ),
+        )
+        limited = event_ir.Limit(
+            relation=ordered,
+            count=limit_value if limit_unit == "count" else None,
+            percent=limit_value if limit_unit == "percent" else None,
+        )
+        joined = event_ir.Join(
+            left=left,
+            right=limited,
+            on=event_ir.Comparison(
+                "=",
+                event_ir.FieldRef(metric.ranking_entity_field),
+                event_ir.FieldRef(metric.ranking_entity_field),
+                evidence=self._evidence(node),
+            ),
+            kind="semi",
+        )
+        return event_ir.Exists(joined, evidence=self._evidence(node)), (
+            metric.id,
+            metric.source,
+            metric.ranking_entity_field,
+            str(metric.expression_field or ""),
+            *left_symbols,
+            *right_symbols,
+        )
 
     def _relation_predicate(
         self, node: semantic_plan.RelationPredicate
@@ -535,6 +673,7 @@ class SemanticPlanEventLowerer:
         window: event_ir.TimeWindow | None,
         *,
         predicate: event_ir.Condition | None = None,
+        correlation: str = "subject",
     ) -> tuple[event_ir.Relation, tuple[str, ...]]:
         if metric.source == self.catalog.subject.name:
             raise LoweringError(
@@ -542,7 +681,9 @@ class SemanticPlanEventLowerer:
                 "subject-column metrics do not form an event relation",
                 catalog_symbols=(metric.id, metric.source),
             )
-        relation: event_ir.Relation = event_ir.Source(metric.source)
+        relation: event_ir.Relation = event_ir.Source(
+            metric.source, correlation=correlation
+        )
         available_sources = {metric.source}
         symbols: list[str] = [metric.source]
         for join_id in metric.joins:

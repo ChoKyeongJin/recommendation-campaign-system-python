@@ -131,6 +131,21 @@ def _verdict(expectation: str, outcome: str) -> str:
     return "regression"
 
 
+def provenance(response: dict[str, Any]) -> dict[str, Any]:
+    """이 응답의 SQL 을 **어느 컴파일러가** 냈는가(debug.sql_provenance).
+
+    귀결 5종은 "무엇이 나왔는가"만 세고 "누가 냈는가"는 세지 않는다. legacy 실행 레인을
+    지울 수 있는지는 후자로만 답할 수 있다 — 후보 id 가 `sql_template:event_expression`
+    이면 canonical 레인이고, 그 밖이면 legacy 빌더가 아직 살아 있다는 뜻이다.
+    debug 블록이 없는 응답(구버전 API)에서는 빈 dict 이며, 그 경우 레인 집계는 `unknown` 이다.
+    """
+    debug = response.get("debug")
+    if not isinstance(debug, dict):
+        return {}
+    value = debug.get("sql_provenance")
+    return value if isinstance(value, dict) else {}
+
+
 def _reason(response: dict[str, Any]) -> str:
     for key in ("failure_reason", "unsupported_reason"):
         value = response.get(key)
@@ -188,6 +203,7 @@ def run(
                     "reason": reason,
                     "status": response.get("status"),
                     "elapsed_s": response.get("_elapsed_s"),
+                    "provenance": provenance(response),
                 }
             )
         outcomes = [observation["outcome"] for observation in observations]
@@ -240,16 +256,35 @@ def compare_to_baseline(
     return changes
 
 
+def _row_candidate(row: dict[str, Any]) -> str | None:
+    """이 항목에서 SQL 을 낸 후보 id(없으면 None). 반복 실행 시 첫 관측을 쓴다."""
+    for observation in row.get("observations", ()):
+        candidate = (observation.get("provenance") or {}).get("candidate_id")
+        if candidate:
+            return str(candidate)
+    return None
+
+
 def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
     counts = {outcome: 0 for outcome in OUTCOMES}
     verdicts = {"match": 0, "improvement": 0, "regression": 0, "unknown": 0}
+    # 레인 집계: 후보 id 별 항목 수. SQL 을 낸 항목만 센다(낸 적 없으면 레인이 없다).
+    lanes: dict[str, int] = {}
     for row in rows:
         counts[row["outcome"]] += 1
         verdicts[row["verdict"]] += 1
+        candidate = _row_candidate(row)
+        if candidate:
+            lanes[candidate] = lanes.get(candidate, 0) + 1
     return {
         "total": len(rows),
         "outcomes": counts,
         "verdicts": verdicts,
+        "lanes": dict(sorted(lanes.items(), key=lambda item: (-item[1], item[0]))),
+        "lane_ids": {
+            candidate: [row["id"] for row in rows if _row_candidate(row) == candidate]
+            for candidate in sorted(lanes)
+        },
         "unstable": [row["id"] for row in rows if row["unstable"]],
         "regressions": [row["id"] for row in rows if row["verdict"] == "regression"],
         "improvements": [row["id"] for row in rows if row["verdict"] == "improvement"],
@@ -284,6 +319,10 @@ def main() -> int:
         f"판정: match {summary['verdicts']['match']} / improvement {summary['verdicts']['improvement']}"
         f" / regression {summary['verdicts']['regression']} / unknown {summary['verdicts']['unknown']}"
     )
+    if summary["lanes"]:
+        print("\n레인(어느 컴파일러가 SQL 을 냈나):")
+        for candidate, count in summary["lanes"].items():
+            print(f"  {count:>3}건  {candidate}  {summary['lane_ids'][candidate]}")
     if summary["unstable"]:
         print(f"방출 편차(반복 간 귀결 불일치): {summary['unstable']}")
     if summary["regressions"]:

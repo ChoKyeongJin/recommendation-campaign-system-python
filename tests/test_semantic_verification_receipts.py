@@ -22,6 +22,22 @@ CART_SQL = (
     "WHERE EC.CART_ID = B.MEMBER_ID) >= 3"
 )
 CART_QUERY = "장바구니에 서로 다른 상품을 3개 이상 담아둔 회원"
+# 이벤트 컴파일러가 실제로 내보내는 형태(카탈로그 from_sql 의 상품 LEFT JOIN 포함).
+PRODUCTION_CART_SQL = (
+    "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, "
+    "'장바구니 담기 count >= 3' AS segment_label "
+    "FROM CRM_MB_BASEINFO B WHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL' "
+    "AND (SELECT COUNT(DISTINCT EC.PRODUCT_ID) FROM ODS_MALL_OMS_CART EC "
+    "LEFT JOIN CRM_CM_PRODUCT EC_PRODUCT ON EC.PRODUCT_ID = EC_PRODUCT.PRODUCT_ID "
+    "WHERE EC.CART_ID = B.MEMBER_ID) >= 3"
+)
+# 카탈로그로 증명된 조인(CART_ID=MEMBER_ID)과 증명되지 않은 조인이 섞인 SQL.
+MIXED_JOIN_SQL = (
+    "SELECT B.MEMBER_NO AS CUST_ID FROM CRM_MB_BASEINFO B "
+    "JOIN CRM_CM_PRODUCT P ON B.MEMBER_ID = P.PRODUCT_NM "
+    "WHERE (SELECT COUNT(DISTINCT EC.PRODUCT_ID) FROM ODS_MALL_OMS_CART EC "
+    "WHERE EC.CART_ID = B.MEMBER_ID) >= 3"
+)
 ALL_CONSENT_QUERY = "이메일, 문자, 앱푸시에 모두 동의한 회원을 추출해줘."
 ALL_CONSENT_SQL = (
     "SELECT B.MEMBER_NO AS CUST_ID FROM CRM_MB_BASEINFO B "
@@ -108,6 +124,77 @@ def test_unregistered_cart_join_has_no_authority_receipt() -> None:
 
     assert not validation["is_valid"]
     assert validation["verified_relationships"] == []
+
+
+def test_receipt_lists_every_equality_join_left_unproven() -> None:
+    """is_valid 만으로는 '조인이 전부 증명됐는지'를 알 수 없다 — 미증명 조인도 목록으로 나와야 한다."""
+    assert _join_validation(PRODUCTION_CART_SQL)["unverified_relationships"] == []
+
+    mixed = _join_validation(MIXED_JOIN_SQL)
+
+    assert mixed["is_valid"]  # 미등록 관계는 error 가 아니라 '증명 안 됨'이다.
+    assert mixed["unverified_relationships"] == [
+        {
+            "left_table": "crm_mb_baseinfo",
+            "left_column": "member_id",
+            "right_table": "crm_cm_product",
+            "right_column": "product_nm",
+        }
+    ]
+
+
+def test_catalog_receipt_overrides_a_join_dispute_that_names_no_column() -> None:
+    """실제 오탐 문구: 검증기가 CART_ID/MEMBER_ID 를 부르지 않고 조인을 뭉뚱그려 부정했다.
+
+    컬럼명 매칭에만 의존하면 이런 표현에서 영수증이 새고 정상 SQL 이 차단된다.
+    """
+    abstract_dispute = {
+        "type": "dropped",
+        "condition": "장바구니-회원 관계의 올바른 조인",
+        "detail": (
+            "원문은 '회원의 장바구니에 담긴 서로 다른 상품 수 >=3'를 요구하나, SQL은 잘못된 "
+            "컬럼 매칭으로 인해 실제 회원별 카트 라인이 집계되지 않을 가능성이 있음."
+        ),
+    }
+
+    assert graph_rag._semantic_issue_exemption(
+        abstract_dispute,
+        PRODUCTION_CART_SQL,
+        MEMBER_PLAN,
+        join_key_validation=_join_validation(PRODUCTION_CART_SQL),
+    ) == "catalog_verified_relationship"
+
+
+def test_abstract_join_dispute_is_not_exempted_when_a_join_is_unproven() -> None:
+    """증명되지 않은 조인이 하나라도 있으면 그 조인을 가리킨 판정일 수 있으므로 면제하지 않는다."""
+    abstract_dispute = {
+        "type": "dropped",
+        "condition": "장바구니-회원 관계의 올바른 조인",
+        "detail": "잘못된 컬럼 매칭으로 회원별 라인이 집계되지 않음.",
+    }
+
+    assert graph_rag._semantic_issue_exemption(
+        abstract_dispute,
+        MIXED_JOIN_SQL,
+        MEMBER_PLAN,
+        join_key_validation=_join_validation(MIXED_JOIN_SQL),
+    ) is None
+
+
+def test_non_join_dispute_is_not_exempted_by_a_join_receipt() -> None:
+    """'매칭'·'키' 같은 단어가 섞여도 조인 판정이 아니면 영수증으로 반증되지 않는다."""
+    threshold_drop = {
+        "type": "dropped",
+        "condition": "서로 다른 상품 3개 이상",
+        "detail": "상품 수 임계값 매칭이 SQL에 없습니다.",
+    }
+
+    assert graph_rag._semantic_issue_exemption(
+        threshold_drop,
+        PRODUCTION_CART_SQL,
+        MEMBER_PLAN,
+        join_key_validation=_join_validation(PRODUCTION_CART_SQL),
+    ) is None
 
 
 @pytest.mark.parametrize(

@@ -1024,6 +1024,66 @@ def _normalize_audience_evidence(payload: dict[str, Any], query: str) -> None:
     inherit_container_evidence(expression)
 
 
+def _declared_rank_membership_binding(
+    node: dict[str, Any], catalog: dict[str, Any]
+) -> tuple[str, str] | None:
+    """Resolve an exact ranked-membership algebra shape to its catalog binding."""
+    if node.get("type") != "join" or node.get("kind") != "semi":
+        return None
+    right = node.get("right")
+    order = right.get("relation") if isinstance(right, dict) else None
+    summary = order.get("relation") if isinstance(order, dict) else None
+    source = summary.get("relation") if isinstance(summary, dict) else None
+    if not (
+        isinstance(right, dict)
+        and right.get("type") == "limit"
+        and ("count" in right) != ("percent" in right)
+        and isinstance(order, dict)
+        and order.get("type") == "order"
+        and isinstance(summary, dict)
+        and summary.get("type") == "summarize"
+        and isinstance(source, dict)
+        and source.get("type") == "source"
+        and source.get("correlation") == "none"
+    ):
+        return None
+    keys = summary.get("keys")
+    measures = summary.get("measures")
+    if not (
+        isinstance(keys, list)
+        and len(keys) == 1
+        and isinstance(keys[0], dict)
+        and isinstance(keys[0].get("expression"), dict)
+        and isinstance(measures, list)
+        and len(measures) == 1
+        and isinstance(measures[0], dict)
+        and isinstance(measures[0].get("expression"), dict)
+    ):
+        return None
+    source_id = str(source.get("name") or "")
+    entity_field = str(keys[0]["expression"].get("name") or "")
+    measure_field = str(measures[0]["expression"].get("name") or "")
+    measure_function = str(measures[0].get("function") or "")
+    recipes = catalog.get("relation_recipes")
+    if not isinstance(recipes, dict):
+        return None
+    for recipe in recipes.values():
+        metrics = recipe.get("metrics") if isinstance(recipe, dict) else None
+        if not isinstance(metrics, dict):
+            continue
+        for declaration in metrics.values():
+            if not isinstance(declaration, dict):
+                continue
+            if (
+                declaration.get("source") == source_id
+                and declaration.get("entity_field") == entity_field
+                and declaration.get("measure_field") == measure_field
+                and declaration.get("measure_function") == measure_function
+            ):
+                return source_id, entity_field
+    return None
+
+
 def _normalize_audience_wire_shapes(payload: dict[str, Any]) -> list[dict[str, str]]:
     """Repair only singleton, semantics-preserving Event IR wire mistakes.
 
@@ -1037,6 +1097,10 @@ def _normalize_audience_wire_shapes(payload: dict[str, Any]) -> list[dict[str, s
     requirement = payload.get(AUDIENCE_REQUIREMENT_KEY)
     expression = requirement.get("expression") if isinstance(requirement, dict) else None
     normalizations: list[dict[str, str]] = []
+    try:
+        catalog = audience_runtime.catalog_snapshot()
+    except audience_runtime.AudienceCatalogLoadError:
+        catalog = {}
 
     def visit(value: Any, path: str) -> None:
         if isinstance(value, dict):
@@ -1066,6 +1130,43 @@ def _normalize_audience_wire_shapes(payload: dict[str, Any]) -> list[dict[str, s
             ):
                 value["operand"] = value.pop("operands")[0]
                 normalizations.append({"path": path, "from": "not.operands[0]", "to": "not.operand"})
+            binding = _declared_rank_membership_binding(value, catalog)
+            left = value.get("left")
+            on = value.get("on")
+            if (
+                binding is not None
+                and isinstance(left, dict)
+                and left.get("type") == "source"
+                and set(left) <= {"type", "name", "correlation"}
+                and left.get("correlation") in (None, "subject")
+                and isinstance(on, dict)
+                and on.get("type") == "comparison"
+                and on.get("operator") == "="
+                and isinstance(on.get("left"), dict)
+                and isinstance(on.get("right"), dict)
+                and (
+                    on["left"].get("name") == binding[1]
+                    or on["right"].get("name") == binding[1]
+                )
+            ):
+                source_id, entity_field = binding
+                canonical_left = {"type": "source", "name": source_id}
+                canonical_field = {"type": "field", "name": entity_field}
+                if (
+                    left != canonical_left
+                    or on.get("left") != canonical_field
+                    or on.get("right") != canonical_field
+                ):
+                    value["left"] = canonical_left
+                    on["left"] = copy.deepcopy(canonical_field)
+                    on["right"] = copy.deepcopy(canonical_field)
+                    normalizations.append(
+                        {
+                            "path": path,
+                            "from": "bare member source alias",
+                            "to": "catalog ranked membership scope",
+                        }
+                    )
             for key, child in list(value.items()):
                 if key != "evidence":
                     visit(child, f"{path}.{key}")

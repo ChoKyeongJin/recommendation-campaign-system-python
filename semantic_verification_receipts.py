@@ -28,6 +28,9 @@ _JOIN_ISSUE_CUE_RE = re.compile(
     r"join|relationship|matching|mapping|association|조인|연결|연관|매칭|매핑|식별자|키",
     re.IGNORECASE,
 )
+# 조인 자체를 지목한 판정만 고르는 좁은 단서. '매칭'·'키'는 임계값 누락 같은 다른 판정문에도
+# 섞이므로, 컬럼명 없는 판정을 통째로 면제할 때는 관계어(조인/관계)까지 있어야 한다.
+_JOIN_RELATION_CUE_RE = re.compile(r"join|relationship|조인|관계", re.IGNORECASE)
 _CONSENT_ISSUE_CUE_RE = re.compile(
     r"consent|opt[ -]?in|수신\s*동의|동의\s*(?:여부|조건|필터)?",
     re.IGNORECASE,
@@ -269,7 +272,15 @@ def is_noncredible_inverted_verdict(issue: Mapping[str, Any]) -> bool:
 def catalog_join_issue_is_covered(
     issue: Mapping[str, Any], join_key_validation: Mapping[str, Any] | None,
 ) -> bool:
-    """Return true when an LLM disputes the exact join pair already verified by the catalog."""
+    """Return true when an LLM disputes a join relationship the catalog has already verified.
+
+    Two discharge paths, both requiring the catalog receipt:
+      ① 판정문이 verified 관계의 두 컬럼을 이름으로 지목한 경우 — 그 짝만 반증한다.
+      ② 판정문이 컬럼명을 대지 않고 조인을 뭉뚱그려 의심한 경우("장바구니-회원 관계의 올바른 조인",
+         "잘못된 컬럼 매칭") — 이 SQL 의 등호 조인이 **하나도 빠짐없이** 카탈로그로 증명됐을 때만
+         반증한다. 미증명 조인이 하나라도 있으면 그 조인을 가리킨 판정일 수 있으므로 면제하지 않는다.
+    ②가 없으면 검증기가 컬럼명을 말해줄 때만 영수증이 작동해, 표현이 추상적일 때 정상 SQL 이 막힌다.
+    """
     if not isinstance(join_key_validation, Mapping) or not join_key_validation.get("is_valid"):
         return False
     issue_text = " ".join(
@@ -277,16 +288,24 @@ def catalog_join_issue_is_covered(
     ).casefold()
     if not _JOIN_ISSUE_CUE_RE.search(issue_text):
         return False
-    for relationship in join_key_validation.get("verified_relationships") or []:
-        if not isinstance(relationship, Mapping):
-            continue
+    verified = [
+        relationship
+        for relationship in (join_key_validation.get("verified_relationships") or [])
+        if isinstance(relationship, Mapping)
+    ]
+    for relationship in verified:
         columns = [
             str(relationship.get(key) or "").casefold()
             for key in ("left_column", "right_column")
         ]
         if all(columns) and all(re.search(rf"\b{re.escape(column)}\b", issue_text) for column in columns):
             return True
-    return False
+    unverified = [
+        relationship
+        for relationship in (join_key_validation.get("unverified_relationships") or [])
+        if isinstance(relationship, Mapping)
+    ]
+    return bool(verified) and not unverified and bool(_JOIN_RELATION_CUE_RE.search(issue_text))
 
 
 def consent_issue_is_covered(

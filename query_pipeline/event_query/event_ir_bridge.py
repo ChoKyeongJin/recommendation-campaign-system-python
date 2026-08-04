@@ -224,7 +224,9 @@ def _relation_to_ir(relation: expr.EventRelation) -> event_ir.Relation:
         )
     if isinstance(relation, expr.LimitedRelation):
         return event_ir.Limit(
-            relation=_relation_to_ir(relation.relation), count=relation.count
+            relation=_relation_to_ir(relation.relation),
+            count=relation.count,
+            percent=relation.percent,
         )
     raise ExpressionBridgeError(f"알 수 없는 관계 노드입니다: {relation!r}")
 
@@ -305,7 +307,9 @@ def _relation_from_ir(relation: event_ir.Relation) -> expr.EventRelation:
         )
     if isinstance(relation, event_ir.Limit):
         return expr.LimitedRelation(
-            relation=_relation_from_ir(relation.relation), count=relation.count
+            relation=_relation_from_ir(relation.relation),
+            count=relation.count,
+            percent=relation.percent,
         )
     raise ExpressionBridgeError(f"알 수 없는 관계 노드입니다: {relation!r}")
 

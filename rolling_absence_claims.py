@@ -232,6 +232,39 @@ def _absence_restatement_terms(
     )
 
 
+def absence_restatement_spans(
+    query: str,
+    expression: event_ir.Condition,
+    catalog: Mapping[str, Any],
+) -> frozenset[tuple[int, int]]:
+    """Catalog state words discharged by a grounded rolling-absence atom."""
+
+    spans: set[tuple[int, int]] = set()
+    for atom, negated in event_ir.iter_signed_atoms(expression):
+        if not negated or not isinstance(atom, event_ir.Exists) or atom.evidence is None:
+            continue
+        if not any(
+            isinstance(window, event_ir.RollingWindow)
+            for window in event_ir.time_windows(atom)
+        ):
+            continue
+        sources = [
+            node for node in event_ir.walk(atom) if isinstance(node, event_ir.Source)
+        ]
+        for source in sources:
+            if not _source_is_grounded(query, source, atom.evidence, catalog):
+                continue
+            for term in _absence_restatement_terms(catalog, source.name):
+                start = 0
+                while True:
+                    start = query.find(term, start)
+                    if start < 0:
+                        break
+                    spans.add((start, start + len(term)))
+                    start += len(term)
+    return frozenset(spans)
+
+
 def synthesize_closed_rolling_absence(
     query: str,
     bindings: Iterable[Mapping[str, Any]],
@@ -360,6 +393,7 @@ def normalize_rolling_absence_evidence(
 
 
 __all__ = [
+    "absence_restatement_spans",
     "consumed_literal_binding_indices",
     "normalize_rolling_absence_evidence",
     "synthesize_closed_rolling_absence",

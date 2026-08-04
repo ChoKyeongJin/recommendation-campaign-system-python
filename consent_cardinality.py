@@ -45,6 +45,7 @@ _EN_AT_LEAST_RE = re.compile(
     r"(?:one\s*or\s*more|at\s*least\s*(?P<count>one|two|three|four|\d+))",
     re.IGNORECASE,
 )
+_ALL_RE = re.compile(r"(?:모두|전부|전체)\s*(?:동의|수신|허용)?|\ball\b", re.IGNORECASE)
 _COUNT_VALUES = {
     "한": 1, "하나": 1, "one": 1,
     "두": 2, "둘": 2, "two": 2,
@@ -80,8 +81,9 @@ def _count(raw: str | None) -> int | None:
     return _COUNT_VALUES.get(token)
 
 
-def _quantifier(query: str) -> tuple[str, int, re.Match[str]] | None:
-    if not CONSENT_CARDINALITY_QUANTIFIER_RE.search(_compact(query)):
+def _quantifier(query: str) -> tuple[str, int | None, re.Match[str]] | None:
+    all_match = _ALL_RE.search(query)
+    if not CONSENT_CARDINALITY_QUANTIFIER_RE.search(_compact(query)) and all_match is None:
         return None
     for mode, pattern in (
         ("exact", _EXACT_RE),
@@ -97,6 +99,11 @@ def _quantifier(query: str) -> tuple[str, int, re.Match[str]] | None:
         count = 1 if mode == "at_least" and raw_count is None else _count(raw_count)
         if count is not None:
             return mode, count, match
+    if all_match is not None:
+        # The numeric value is catalog-dependent: "all" means exactly the
+        # number of consent fields named by this clause, not every consent field
+        # that happens to exist in the registry.
+        return "all", None, all_match
     return None
 
 
@@ -188,6 +195,58 @@ class _InvalidConsentExpression(ValueError):
     pass
 
 
+def _comparison_field(
+    expression: event_ir.Condition,
+) -> str | None:
+    if not isinstance(expression, event_ir.Comparison):
+        return None
+    for field, literal in (
+        (expression.left, expression.right),
+        (expression.right, expression.left),
+    ):
+        if isinstance(field, event_ir.FieldRef) and isinstance(literal, event_ir.Literal):
+            return field.name
+    return None
+
+
+def _project_consent_expression(
+    expression: event_ir.Condition,
+    *,
+    consent_fields: frozenset[str],
+) -> event_ir.Condition | None:
+    """Remove unrelated audience atoms while preserving consent topology.
+
+    A full audience is normally ``AND(other filters, consent formula)``.  Those
+    unrelated conjuncts are neutral for the consent truth table.  An unrelated
+    disjunct is not neutral—it would let a row bypass consent—so a mixed OR is
+    rejected instead of being projected optimistically.
+    """
+
+    if isinstance(expression, event_ir.Comparison):
+        return expression if _comparison_field(expression) in consent_fields else None
+    if isinstance(expression, event_ir.Not):
+        operand = _project_consent_expression(
+            expression.operand, consent_fields=consent_fields
+        )
+        return event_ir.Not(operand) if operand is not None else None
+    if isinstance(expression, (event_ir.And, event_ir.Or)):
+        projected = [
+            _project_consent_expression(operand, consent_fields=consent_fields)
+            for operand in expression.operands
+        ]
+        present = [operand for operand in projected if operand is not None]
+        if isinstance(expression, event_ir.Or) and present and len(present) != len(projected):
+            raise _InvalidConsentExpression(
+                "consent condition is mixed with an unrelated OR branch"
+            )
+        if not present:
+            return None
+        if len(present) == 1:
+            return present[0]
+        return type(expression)(tuple(present))
+    return None
+
+
 def _evaluate(
     expression: event_ir.Condition,
     assignment: Mapping[str, bool],
@@ -248,6 +307,10 @@ def validate_consent_cardinality(
     target_value = _target_value(query, values)
     if len(fields) < 2 or target_value is None:
         return None
+    if mode == "all":
+        mode, count = "exact", len(fields)
+    if not isinstance(count, int):
+        return None
     binding_indices = frozenset(
         index
         for index, binding in enumerate(bindings)
@@ -264,10 +327,18 @@ def validate_consent_cardinality(
     referenced: set[str] = set()
     if equivalent:
         try:
+            projected_expression = _project_consent_expression(
+                expression,
+                consent_fields=frozenset(consent_fields),
+            )
+            if projected_expression is None:
+                raise _InvalidConsentExpression(
+                    "requested consent fields are absent from the Boolean expression"
+                )
             for bits in itertools.product((False, True), repeat=len(fields)):
                 assignment = dict(zip(fields, bits, strict=True))
                 actual = _evaluate(
-                    expression,
+                    projected_expression,
                     assignment,
                     selected_fields=frozenset(fields),
                     target_value=target_value,
@@ -320,13 +391,14 @@ def synthesize_exact_consent_cardinality(
     rows = list(bindings)
     if quantifier is None or contract is None:
         return None
-    mode, count, _match = quantifier
-    if mode != "exact":
-        return None
-
     consent_fields, values = contract
     fields = _requested_fields(query, consent_fields, values)
     target_value = _target_value(query, values)
+    mode, count, _match = quantifier
+    if mode == "all":
+        mode, count = "exact", len(fields)
+    if mode != "exact" or not isinstance(count, int):
+        return None
     if not (0 < count <= len(fields)) or len(fields) < 2 or target_value is None:
         return None
     complements = tuple(str(value) for value in values if str(value) != target_value)

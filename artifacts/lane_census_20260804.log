@@ -1,0 +1,13 @@
+[ 1] clarification  match        semantic_ir_needs_clarification                최근 1년 동안 특정 브랜드를 2회 이상 구매한 회원을 대상으로 브랜
+[ 2] sql            match                                                       최근 3개월 내 주문한 적은 있지만 최근 30일간 구매가 없는 회원
+[ 3] sql            match                                                       누적 구매금액 상위 10% 회원을 추출해줘
+[ 4] clarification  regression   semantic_structurer_failure                    장바구니에 서로 다른 상품을 3개 이상 담아둔 회원
+[ 5] clarification  regression   semantic_ir_needs_clarification                최근 캠페인 발송 성공 횟수가 3회 이상인 회원
+[ 6] clarification  regression   semantic_ir_needs_clarification                캠페인별 구매반응 금액이 평균 10만 원 이상인 회원
+[ 7] unsupported    regression   semantic_ir_unsupported                        구매주기가 30일 이하인 회원
+[ 8] clarification  regression   semantic_structurer_failure                    이십만원 이상 구매한 회원 중 남자는 제외해줘
+[ 9] sql            match                                                       2019년 가장 많이 팔린 상품 10개를 구매한 고객
+[10] unsupported    regression   semantic_ir_unsupported                        작년에 가장 많이 팔린 상품 5개 중 2개 이상 구매한 고객
+[11] sql            match                                                       최근 30일 장바구니에 담아두고 결제하지 않은 회원
+[12] sql            match                                                       2026년 2월과 3월의 구매금액이 증가한 회원
+[13] sql            match                                                       현재 등급이 VIP인 회원

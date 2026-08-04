@@ -74,6 +74,13 @@ DURATION_UNIT_SEMANTICS = {
     "일": "days", "일간": "days", "주": "weeks", "주일": "weeks",
     "개월": "months", "달": "months", "년": "years", "년간": "years",
 }
+# 평가 기준일은 일반 달력 창과 다르다. ``2026년 8월 3일 기준 최근 30일``의
+# 첫 날짜는 독립 사건 구간이 아니라 뒤 rolling window의 고정 anchor다. 이 역할은
+# 모델이 추측하지 않고 애플리케이션이 원문 표면에서만 부여한다.
+AS_OF_DATE_LITERAL_RE = re.compile(
+    r"(?P<year>\d{4})\s*년\s*(?P<month>\d{1,2})\s*월\s*"
+    r"(?P<day>\d{1,2})\s*일(?=\s*기준)"
+)
 _NUMBER_RE = re.compile(r"(?<![\d.])\d+(?:\.\d+)?(?![\d.])")
 
 
@@ -243,6 +250,7 @@ def extract_literal_bindings(
     literals: list[dict[str, Any]] = []
     occupied: list[tuple[int, int]] = []
     counters: dict[str, int] = {}
+    temporal_kinds = _duration_temporal_kinds(query)
 
     def append(kind: str, start: int, end: int, value: Any, normalized: Any) -> None:
         counters[kind] = counters.get(kind, 0) + 1
@@ -259,7 +267,30 @@ def extract_literal_bindings(
         )
         occupied.append((start, end))
 
+    # An explicit ``<date> 기준`` becomes an anchor only when this query also
+    # contains a rolling-duration surface.  Otherwise the ordinary calendar
+    # parser retains ownership (for snapshot/as-of relation semantics).
+    if any(kind == "rolling_duration" for _start, _end, kind in temporal_kinds):
+        for match in AS_OF_DATE_LITERAL_RE.finditer(query):
+            try:
+                anchor = date(
+                    int(match.group("year")),
+                    int(match.group("month")),
+                    int(match.group("day")),
+                )
+            except ValueError:
+                continue
+            append(
+                "as_of_date",
+                match.start(),
+                match.end(),
+                match.group(0),
+                {"date": anchor.isoformat(), "role": "rolling_anchor"},
+            )
+
     for window, start, end in parse_calendar_window_spans(query, today=reference_date):
+        if _overlaps(start, end, occupied):
+            continue
         start_date = date(
             int(window["from"][:4]), int(window["from"][4:6]), int(window["from"][6:8])
         )
@@ -323,7 +354,6 @@ def extract_literal_bindings(
                 },
             )
 
-    temporal_kinds = _duration_temporal_kinds(query)
     for match in DURATION_LITERAL_RE.finditer(query):
         if not _overlaps(match.start(), match.end(), occupied):
             value = _number(match.group("value"))

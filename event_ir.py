@@ -47,6 +47,7 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 import lexicon_patterns
@@ -650,15 +651,74 @@ class Order:
 @dataclass(frozen=True)
 class Limit:
     relation: "Relation"
-    count: int
+    # ``count`` is kept in the second position so every historical
+    # ``Limit(relation, 10)`` call and serialized count payload remains valid.
+    # A percentage is a different cardinality unit and must never be inferred
+    # from the same bare number.
+    count: int | None = None
+    percent: Decimal | None = None
     type: str = "limit"
 
     def __post_init__(self) -> None:
-        if not isinstance(self.count, int) or isinstance(self.count, bool) or self.count <= 0:
-            raise IrSchemaError(f"limit count must be a positive int: {self.count!r}")
+        has_count = self.count is not None
+        has_percent = self.percent is not None
+        if has_count == has_percent:
+            raise IrSchemaError("limit needs exactly one of count or percent")
+        if has_count:
+            if (
+                not isinstance(self.count, int)
+                or isinstance(self.count, bool)
+                or self.count <= 0
+            ):
+                raise IrSchemaError(
+                    f"limit count must be a positive int: {self.count!r}"
+                )
+            return
+        object.__setattr__(self, "percent", _limit_percent(self.percent))
 
     def to_dict(self) -> dict[str, Any]:
-        return {"type": "limit", "relation": self.relation.to_dict(), "count": self.count}
+        payload: dict[str, Any] = {
+            "type": "limit",
+            "relation": self.relation.to_dict(),
+        }
+        if self.count is not None:
+            payload["count"] = self.count
+        else:
+            assert isinstance(self.percent, Decimal)
+            payload["percent"] = _limit_percent_wire_value(self.percent)
+        return payload
+
+
+def _limit_percent(value: Any) -> Decimal:
+    """Validate a JSON percentage number and keep exact arithmetic internally."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float, Decimal)):
+        raise IrSchemaError(f"limit percent must be a number: {value!r}")
+    try:
+        percent = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        raise IrSchemaError(f"limit percent must be a number: {value!r}") from exc
+    if not percent.is_finite() or not Decimal("0") < percent < Decimal("100"):
+        raise IrSchemaError(
+            f"limit percent must be greater than 0 and less than 100: {value!r}"
+        )
+    # The wire contract is a JSON number.  Reject a Decimal that cannot survive
+    # that boundary exactly instead of silently rounding it in ``to_dict``.
+    _limit_percent_wire_value(percent)
+    return percent
+
+
+def _limit_percent_wire_value(value: Decimal) -> int | float:
+    """Serialize Decimal as a JSON number only when the round-trip is exact."""
+
+    if value == value.to_integral_value():
+        return int(value)
+    wire = float(value)
+    if Decimal(str(wire)) != value:
+        raise IrSchemaError(
+            f"limit percent cannot be represented exactly as a JSON number: {value!r}"
+        )
+    return wire
 
 
 Relation = Source | Filter | Join | Group | Project | Summarize | Order | Limit
@@ -895,10 +955,17 @@ def relation_from_dict(raw: Any) -> Relation:
             keys=tuple(_sort_key(item) for item in keys),
         )
     if kind == "limit":
-        count = raw.get("count")
-        if not isinstance(count, int) or isinstance(count, bool):
-            raise IrSchemaError("limit count must be an integer")
-        return Limit(relation=relation_from_dict(raw.get("relation")), count=count)
+        has_count = "count" in raw
+        has_percent = "percent" in raw
+        if has_count == has_percent:
+            raise IrSchemaError("limit needs exactly one of count or percent")
+        relation = relation_from_dict(raw.get("relation"))
+        if has_count:
+            count = raw.get("count")
+            if not isinstance(count, int) or isinstance(count, bool):
+                raise IrSchemaError("limit count must be an integer")
+            return Limit(relation=relation, count=count)
+        return Limit(relation=relation, percent=_limit_percent(raw.get("percent")))
     raise IrSchemaError(f"unknown relation type: {kind!r}")
 
 
@@ -1164,6 +1231,55 @@ class ExistenceView:
     negated: bool
     window: TimeWindow | None
     evidence: Evidence | None
+
+
+@dataclass(frozen=True)
+class RankedMembershipView:
+    """Read-only projection of a generic ranked-set membership relation."""
+
+    source: str
+    direction: str
+    unit: str
+    value: int | float
+    negated: bool
+    evidence: Evidence | None
+
+
+def ranked_membership_views(
+    expression: Condition, negated: bool = False
+) -> list[RankedMembershipView]:
+    """Read ``Exists(semi Join(..., Limit(Order(Summarize(...)))))`` shapes."""
+    if isinstance(expression, Not):
+        return ranked_membership_views(expression.operand, not negated)
+    if isinstance(expression, (And, Or)):
+        return [
+            view
+            for operand in expression.operands
+            for view in ranked_membership_views(operand, negated)
+        ]
+    if not isinstance(expression, Exists):
+        return []
+    join = expression.relation
+    if not isinstance(join, Join) or join.kind != "semi" or not isinstance(join.right, Limit):
+        return []
+    order = join.right.relation
+    if not isinstance(order, Order) or not isinstance(order.relation, Summarize) or not order.keys:
+        return []
+    ranked_sources = sources(order.relation)
+    if len(ranked_sources) != 1 or len(sources(join)) != 1:
+        return []
+    wire = join.right.to_dict()
+    unit = "percent" if join.right.percent is not None else "count"
+    return [
+        RankedMembershipView(
+            source=next(iter(ranked_sources)),
+            direction=order.keys[0].direction,
+            unit=unit,
+            value=wire[unit],
+            negated=negated,
+            evidence=expression.evidence,
+        )
+    ]
 
 
 def existence_views(expression: Condition, negated: bool = False) -> list[ExistenceView]:

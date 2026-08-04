@@ -200,6 +200,11 @@ def validate_join_keys(
     # 아닐 수 있다"고 뒤집어 정상 SQL을 차단했다. 어떤 등호 관계가 카탈로그로 증명됐는지도
     # 구조화 영수증으로 내보내 후단이 이 결정을 권위 있게 재사용할 수 있게 한다.
     verified_relationships: list[dict[str, Any]] = []
+    # 증명되지 않은 등호 조인도 함께 기록한다. "이 SQL 의 조인이 전부 카탈로그로 증명됐는가"는
+    # is_valid 로 알 수 없다 — strict_relationships=False 면 미등록 관계가 조용히 통과하기 때문이다.
+    # 후단 의미 검증기가 컬럼명을 지목하지 않고 조인을 통째로 의심할 때(예: "잘못된 컬럼 매칭"),
+    # 이 목록이 비어 있어야만 그 판정을 결정론으로 반증할 수 있다.
+    unverified_relationships: list[dict[str, Any]] = []
     aliases = _alias_map(sql, column_types)
     registry = join_registry or {}
     cast_pairs = getattr(join_registry, "cast_pairs", set()) if join_registry is not None else set()
@@ -306,10 +311,20 @@ def validate_join_keys(
             }
             if relationship not in verified_relationships:
                 verified_relationships.append(relationship)
+        else:
+            unproven = {
+                "left_table": left_table,
+                "left_column": left_column,
+                "right_table": right_table,
+                "right_column": right_column,
+            }
+            if unproven not in unverified_relationships:
+                unverified_relationships.append(unproven)
     return {
         "is_valid": not issues,
         "issues": issues,
         "verified_relationships": verified_relationships,
+        "unverified_relationships": unverified_relationships,
     }
 
 
@@ -975,15 +990,31 @@ def _ensure_top(sql: str, default_limit: int) -> str:
 
     이미 TOP 또는 OFFSET/FETCH 로 제한돼 있으면 그대로 둔다. LIMIT 은 T-SQL 에서 무효라 붙이지 않는다.
     """
-    if re.search(r"\btop\s*\(?\s*\d+", sql, re.IGNORECASE):
-        return sql
-    if re.search(r"\boffset\b\s+\d+\s+rows?\b", sql, re.IGNORECASE):
-        return sql
     span = _outer_select_span(sql)
     if span is None:
         return sql
     end = span[1]
+    # 서브쿼리의 TOP/OFFSET은 외곽 결과 제한이 아니다. 외곽 SELECT 바로 뒤의 TOP만
+    # 기존 제한으로 인정한다. 그렇지 않으면 내부 TOP n PERCENT 때문에 전체 결과 가드가
+    # 조용히 사라질 수 있다.
+    if re.match(r"\s+top\s*\(?\s*\d+", sql[end:], re.IGNORECASE):
+        return sql
+    if _has_depth_zero_token(sql[end:], r"\boffset\b\s+\d+\s+rows?\b"):
+        return sql
     return sql[:end] + f" TOP {default_limit}" + sql[end:]
+
+
+def _has_depth_zero_token(sql: str, pattern: str) -> bool:
+    depth = 0
+    for match in re.finditer(r"[()]|" + pattern, sql, re.IGNORECASE):
+        token = match.group(0)
+        if token == "(":
+            depth += 1
+        elif token == ")":
+            depth = max(0, depth - 1)
+        elif depth == 0:
+            return True
+    return False
 
 
 def _outer_select_span(sql: str) -> tuple[int, int] | None:

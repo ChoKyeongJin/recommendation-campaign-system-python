@@ -24,8 +24,10 @@ import aggregate_parser_config
 import aggregate_semantics
 import aggregate_spans
 import audience_authority
+import audience_failure
 import audience_frame
 import audience_runtime, canonical_audience_claims, canonical_signal_coverage
+import canonical_event_ir_grounding
 import conceptual_targeting
 import condition_reconciliation
 from external_conditions.models import ResolutionContext
@@ -187,10 +189,11 @@ from query_structurer import (
     build_campaign_query_plan_v4_fallback,
     build_fallback,
     verify_campaign_query_identity,
+    validate_campaign_query_plan_v4,
     call_query_planner,
 )
 from query_structurer.prompt import PLANNER_STRUCTURED_QUERY_RULES
-from query_structurer.semantic_ir import validate_semantic_ir
+from query_structurer.semantic_ir import empty_semantic_ir, validate_semantic_ir
 from query_semantics import NON_ENTITY_TERMS, is_non_entity_candidate
 from data_quality import validate_metric_profile
 from member_policy import active_member_filter, active_member_predicate, member_condition_canonicals
@@ -344,6 +347,292 @@ def _structure_campaign_query_plan_v4(
         return build_campaign_query_plan_v4_fallback(
             query, current_date=context.current_date
         )
+
+
+def _admit_grounded_canonical_event_ir_repair(
+    original: Mapping[str, Any],
+    candidate: Any,
+    *,
+    projection: Mapping[str, Any],
+    query: str,
+    current_date: str | None,
+) -> tuple[CampaignQueryPlanV4 | None, str]:
+    """Admit only one complete, validated replacement plan.
+
+    Graph grounding is not a patch language.  In particular, this gate never
+    copies individual fields from a second response into the first response and
+    never accepts a legacy audience side channel.  The replacement must already
+    be a fully application-projected Canonical Event IR plan.
+    """
+
+    try:
+        validated = validate_campaign_query_plan_v4(
+            candidate,
+            query=query,
+            raw_query=query,
+            require_semantic=True,
+        )
+    except Exception as exc:  # noqa: BLE001 - admission is fail-closed.
+        return None, f"campaign_plan_validation_failed:{exc.__class__.__name__}"
+
+    for key in ("intent", "campaign_constraints", "result_limit"):
+        if validated.get(key) != original.get(key):
+            return None, f"non_audience_field_changed:{key}"
+    for key in (
+        "raw_query",
+        "original_query",
+        "planning_query",
+        "normalized_query",
+        "literal_bindings",
+    ):
+        if validated.get(key) != original.get(key):
+            return None, f"application_owned_field_changed:{key}"
+
+    requirement = validated.get(AUDIENCE_REQUIREMENT_KEY)
+    execution = validated.get(EVENT_EXPRESSION_KEY)
+    semantic_ir = validated.get("semantic_ir")
+    if not isinstance(requirement, Mapping):
+        return None, "canonical_requirement_missing"
+    if requirement.get("issues") != [] or not isinstance(
+        requirement.get("expression"), Mapping
+    ):
+        return None, "canonical_requirement_not_complete"
+    if not isinstance(execution, Mapping):
+        return None, "event_expression_missing"
+    if (
+        execution.get("source") != AUDIENCE_REQUIREMENT_KEY
+        or execution.get("expression") != requirement.get("expression")
+    ):
+        return None, "event_expression_projection_mismatch"
+    receipts = execution.get("receipts")
+    if not isinstance(receipts, list) or not receipts or any(
+        not isinstance(receipt, Mapping) or receipt.get("status") != "compiled"
+        for receipt in receipts
+    ):
+        return None, "event_expression_receipts_missing"
+    if not (
+        isinstance(semantic_ir, Mapping)
+        and semantic_ir.get("status") in {"resolved", "policy_applied"}
+        and semantic_ir.get("failure_kind") in (None, "")
+    ):
+        return None, "semantic_ir_not_resolved"
+    if validated.get("unresolved") or validated.get("unresolved_source_conditions"):
+        return None, "unresolved_conditions_remain"
+    if validated.get("unsupported") or validated.get("audience_execution_assets"):
+        return None, "failure_marker_remains"
+    if not canonical_event_ir_grounding.has_empty_legacy_audience_surface(validated):
+        return None, "second_audience_language_populated"
+    if not audience_authority.executes_event_ir(validated):
+        return None, "event_ir_authority_missing"
+
+    try:
+        expression = event_ir.condition_from_dict(dict(requirement["expression"]))
+        projected_fields = {
+            str(item) for item in projection.get("canonical_fields", [])
+        }
+        projected_sources = {
+            str(item) for item in projection.get("canonical_sources", [])
+        }
+        projected_values = projection.get("canonical_values")
+        projected_values = (
+            projected_values if isinstance(projected_values, Mapping) else {}
+        )
+        expression_fields = event_ir.field_names(expression)
+        automatic_time_fields = {
+            f"{source}.occurred_at" for source in projected_sources
+        }
+        unexpected_fields = expression_fields - projected_fields - automatic_time_fields
+        if unexpected_fields:
+            return None, "event_ir_field_outside_graph_projection"
+        unexpected_sources = event_ir.sources(expression) - projected_sources - {"subject"}
+        if unexpected_sources:
+            return None, "event_ir_source_outside_graph_projection"
+        for atom, _negated in event_ir.iter_signed_atoms(expression):
+            if not isinstance(atom, event_ir.Comparison):
+                continue
+            pairs = ((atom.left, atom.right), (atom.right, atom.left))
+            pair = next(
+                (
+                    (field, literal)
+                    for field, literal in pairs
+                    if isinstance(field, event_ir.FieldRef)
+                    and isinstance(literal, event_ir.Literal)
+                ),
+                None,
+            )
+            if pair is None:
+                continue
+            field, literal = pair
+            allowed_values = projected_values.get(field.name)
+            if (
+                isinstance(allowed_values, Sequence)
+                and not isinstance(allowed_values, (str, bytes, bytearray))
+                and allowed_values
+                and isinstance(literal.value, str)
+                and literal.value not in {str(value) for value in allowed_values}
+            ):
+                return None, "event_ir_value_outside_graph_projection"
+
+        # Every original registry-gap span must be discharged by at least one
+        # admitted atom.  Overlap (rather than exact equality) allows a repaired
+        # producer to use a tighter source span than the original issue.
+        atom_evidence = [
+            atom.evidence
+            for atom, _negated in event_ir.iter_signed_atoms(expression)
+            if atom.evidence is not None
+        ]
+        original_requirement = original.get(AUDIENCE_REQUIREMENT_KEY)
+        original_issues = (
+            original_requirement.get("issues")
+            if isinstance(original_requirement, Mapping)
+            else []
+        )
+        for issue in original_issues or []:
+            evidence = issue.get("evidence") if isinstance(issue, Mapping) else None
+            if not isinstance(evidence, Mapping):
+                return None, "registry_gap_issue_evidence_missing"
+            start, end = evidence.get("start"), evidence.get("end")
+            if not isinstance(start, int) or not isinstance(end, int) or start >= end:
+                return None, "registry_gap_issue_evidence_invalid"
+            if not any(item.start < end and start < item.end for item in atom_evidence):
+                return None, "registry_gap_issue_not_discharged"
+
+        catalog = audience_runtime.resolve_audience_catalog()
+        today = date.fromisoformat(current_date) if current_date else None
+        capability = event_compiler.validate_compiler_capability(
+            expression,
+            context=catalog.compile_context(literals=True, today=today),
+        )
+    except Exception as exc:  # noqa: BLE001 - compiler admission is fail-closed.
+        return None, f"event_ir_capability_check_failed:{exc.__class__.__name__}"
+    if capability.status != event_compiler.CAPABILITY_SUPPORTED:
+        return None, "event_ir_compiler_capability_unsupported"
+    return validated, "accepted"
+
+
+def _grounded_canonical_event_ir_repair(
+    original: CampaignQueryPlanV4,
+    *,
+    query: str,
+    context: StructuringContext,
+    graph: nx.Graph,
+    collection: str,
+    url: str,
+    api_key: str | None,
+    embedding_model_name: str,
+    vector_top_k: int,
+    keyword_top_k: int,
+    graph_top_k: int,
+    hops: int,
+    llm_model: str,
+    query_structurer: QueryStructurer | None,
+) -> CampaignQueryPlanV4:
+    """Use GraphRAG only to ground one retry of the same Event IR producer."""
+
+    if not (
+        audience_authority.requires_event_ir(original)
+        and canonical_event_ir_grounding.is_registry_gap_repair_candidate(original)
+    ):
+        return original
+    # Injected structurers expose only ``structure(input)`` and have no safe
+    # channel for the bounded canonical projection.  Calling one again without
+    # that projection would not be a Graph-grounded repair.
+    if query_structurer is not None:
+        _write_rag_llm_log(
+            "canonical_event_ir_grounding_skipped",
+            {"query": query, "detail": "injected_structurer_has_no_grounding_channel"},
+        )
+        return original
+
+    schema_query = _schema_retrieval_query(query)
+    vector_hits: list[SearchHit] = []
+    keyword_hits: list[SearchHit] = []
+    retrieval_errors: list[str] = []
+    try:
+        vector_hits = vector_search(
+            query=schema_query,
+            collection=collection,
+            url=url,
+            api_key=api_key,
+            embedding_model_name=embedding_model_name,
+            limit=max(1, vector_top_k),
+        )
+    except Exception as exc:  # noqa: BLE001 - keyword grounding may still work.
+        retrieval_errors.append(f"vector:{exc.__class__.__name__}")
+    try:
+        keyword_hits = keyword_search(
+            graph=graph,
+            query=query,
+            limit=max(1, keyword_top_k),
+        )
+    except Exception as exc:  # noqa: BLE001 - vector grounding may still work.
+        retrieval_errors.append(f"keyword:{exc.__class__.__name__}")
+    try:
+        hits = merge_hits([*vector_hits, *keyword_hits])
+        context_nodes = expand_context(
+            graph=graph,
+            hits=hits,
+            hops=hops,
+            limit=max(1, graph_top_k),
+        )
+        catalog_snapshot = audience_runtime.catalog_snapshot()
+        catalog = audience_runtime.resolve_audience_catalog()
+        projection = canonical_event_ir_grounding.project_canonical_event_ir_grounding(
+            query,
+            context_nodes,
+            catalog_snapshot,
+            allowed_fields=catalog.compiler_fields,
+            allowed_sources=catalog.compiler_events,
+        )
+        instruction = (
+            canonical_event_ir_grounding.render_canonical_event_ir_grounding_instruction(
+                projection
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - preserve the honest registry gap.
+        _write_rag_llm_log(
+            "canonical_event_ir_grounding_failed",
+            {
+                "query": query,
+                "reason": f"projection_failed:{exc.__class__.__name__}",
+                "retrieval_errors": retrieval_errors,
+            },
+        )
+        return original
+
+    _write_rag_llm_log(
+        "canonical_event_ir_grounding_projected",
+        {
+            "query": query,
+            "canonical_fields": projection.get("canonical_fields", []),
+            "canonical_sources": projection.get("canonical_sources", []),
+            "canonical_values": projection.get("canonical_values", {}),
+            "provenance_node_ids": projection.get("provenance_node_ids", []),
+            "retrieval_errors": retrieval_errors,
+        },
+    )
+    if instruction is None:
+        return original
+
+    candidate = _structure_campaign_query_plan_v4(
+        query,
+        context,
+        llm_model,
+        extra_instruction=instruction,
+        model_override=_repair_llm_model(llm_model),
+    )
+    admitted, reason = _admit_grounded_canonical_event_ir_repair(
+        original,
+        candidate,
+        projection=projection,
+        query=query,
+        current_date=context.current_date,
+    )
+    _write_rag_llm_log(
+        "canonical_event_ir_grounding_admission",
+        {"query": query, "accepted": admitted is not None, "reason": reason},
+    )
+    return admitted if admitted is not None else original
 
 
 CAMPAIGN_OBJECTIVES = {"purchase", "repurchase", "retention", "reactivation", "subscription", "awareness"}
@@ -2007,6 +2296,11 @@ def _attach_retrieval_scopes(plan: dict[str, Any], scopes: dict[str, str]) -> No
 
 _QUERY_PLAN_AUTHORITY_ENV = "QUERY_PLAN_AUTHORITY"
 _QUERY_PLAN_AUTHORITIES = frozenset({"rules_first", "shadow", "llm_first"})
+_MEMBER_NUMBER_DISTINCT_OUTPUT_RE = re.compile(
+    r"회원\s*번호(?:는|를|만)?[^.\n]{0,20}?(?:중복\s*없이|고유하게)|"
+    r"(?:중복\s*없이|고유하게)[^.\n]{0,20}?회원\s*번호",
+    re.IGNORECASE,
+)
 
 
 def _query_plan_authority(parser: str) -> str:
@@ -2016,6 +2310,27 @@ def _query_plan_authority(parser: str) -> str:
         return "rules_first"
     configured = os.getenv(_QUERY_PLAN_AUTHORITY_ENV, "rules_first").strip().casefold()
     return configured if configured in _QUERY_PLAN_AUTHORITIES else "rules_first"
+
+
+def _explicit_member_number_output_contract(query: str) -> dict[str, Any] | None:
+    """Capture the app-owned projection request separately from audience IR."""
+
+    match = _MEMBER_NUMBER_DISTINCT_OUTPUT_RE.search(query or "")
+    if match is None:
+        return None
+    return {
+        "expected_grain": "member",
+        "requires_member_id": True,
+        "requires_member_no_as_cust_id": True,
+        "member_id_only": True,
+        "distinct_member_id": True,
+        "source": "explicit_member_number_distinct",
+        "evidence": {
+            "text": match.group(0),
+            "start": match.start(),
+            "end": match.end(),
+        },
+    }
 
 
 def build_query_plan(
@@ -2220,6 +2535,13 @@ def _build_query_plan(
     # 미해결 요구로 남긴다. build_sql_result가 같은 검사를 다시 수행하므로 이후 보강 단계의 변경도 반영된다.
     _refresh_unresolved_source_conditions(source_query, base)
     semantic_requirements.verify_source_requirements(base)
+    explicit_output = _explicit_member_number_output_contract(source_query)
+    if (
+        explicit_output is not None
+        and base.get("intent") in {"recommend_campaign", "find_user_segment"}
+        and not isinstance(base.get("aggregation_request"), Mapping)
+    ):
+        base["output_contract"] = explicit_output
     result = as_campaign_query_plan_v4(
         base,
         raw_query=preserved_raw_query,
@@ -3337,6 +3659,9 @@ def _coerce_llm_query_plan_candidate(
         plan["audience_requirement"] = copy.deepcopy(audience_requirement)
     if isinstance(event_expression, dict):
         plan[EVENT_EXPRESSION_KEY] = copy.deepcopy(event_expression)
+    # Execution authority is application-owned migration state.  This function
+    # also consumes generic model JSON, so a candidate must never be able to
+    # switch off the canonical fail-closed guards by emitting ``legacy``.
     result_limit = candidate.get("result_limit")
     if isinstance(result_limit, int) and not isinstance(result_limit, bool) and result_limit > 0:
         plan["result_limit"] = result_limit
@@ -6227,30 +6552,45 @@ def retrieve(
     campaign_query_plan: CampaignQueryPlanV4 = build_campaign_query_plan_v4_fallback(
         targeting_prompt, current_date=context.current_date
     )
+    campaign_plan_structured = False
     timings_ms["query_structuring"] = 0.0
-    if authority == "llm_first" and query_parser.casefold() in {"auto", "llm"}:
-        # The model sees the untouched targeting prompt before rewrite/scope
-        # splitting.  Later stages consume this plan; they do not provide hints
-        # back into semantic extraction.
-        structuring_started_at = time.perf_counter()
-        campaign_query_plan = _structure_campaign_query_plan_v4(
-            targeting_prompt, context, llm_model, query_structurer
-        )
-        timings_ms["query_structuring"] = _elapsed_ms(structuring_started_at)
 
-    def lazy_campaign_query_plan(_rules_plan: dict[str, Any]) -> CampaignQueryPlanV4:
-        nonlocal campaign_query_plan
-        if (
-            authority == "llm_first"
-            and campaign_query_plan.get("schema_version") == CAMPAIGN_QUERY_PLAN_V4_VERSION
-        ):
+    def structure_campaign_query_plan_once() -> CampaignQueryPlanV4:
+        nonlocal campaign_query_plan, campaign_plan_structured
+        if campaign_plan_structured:
             return campaign_query_plan
         structuring_started_at = time.perf_counter()
         campaign_query_plan = _structure_campaign_query_plan_v4(
             targeting_prompt, context, llm_model, query_structurer
         )
+        campaign_query_plan = _grounded_canonical_event_ir_repair(
+            campaign_query_plan,
+            query=targeting_prompt,
+            context=context,
+            graph=graph,
+            collection=collection,
+            url=url,
+            api_key=api_key,
+            embedding_model_name=embedding_model_name,
+            vector_top_k=vector_top_k,
+            keyword_top_k=keyword_top_k,
+            graph_top_k=graph_top_k,
+            hops=hops,
+            llm_model=llm_model,
+            query_structurer=query_structurer,
+        )
+        campaign_plan_structured = True
         timings_ms["query_structuring"] = _elapsed_ms(structuring_started_at)
         return campaign_query_plan
+
+    if authority == "llm_first" and query_parser.casefold() in {"auto", "llm"}:
+        # The model sees the untouched targeting prompt before rewrite/scope
+        # splitting.  A registry-gap-only Graph lookup may ground one retry of
+        # that same canonical producer before the planner consumes the plan.
+        structure_campaign_query_plan_once()
+
+    def lazy_campaign_query_plan(_rules_plan: dict[str, Any]) -> CampaignQueryPlanV4:
+        return structure_campaign_query_plan_once()
 
     # 파싱 전에 사용자 프롬프트를 타겟 조건 중심으로 재작성(룰/LLM)한다. 재작성본으로 파싱하되 원문은 보존한다.
     stage_started_at = time.perf_counter()
@@ -6816,6 +7156,15 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
     if reason == "external_condition_resolution_failed":
         return "현재 외부 조건의 대상 지역을 확인하지 못했습니다. 직접 대상 지역을 지정해 주세요."
 
+    if reason == "audience_authority_invalid":
+        # 조건을 **읽기 전에** 막힌 실패다. 기본 문구("조건을 만족하는 검증된 SQL 이 없습니다")는
+        # 사용자를 조건 쪽으로 보내는데, 고칠 곳은 저장된 실행 설정이라 아무리 고쳐 써도 안 풀린다.
+        # 게이트가 이미 만든 문구가 유일하게 정직한 안내다.
+        questions = sql_result.get("clarification_questions") or []
+        return str(questions[0]) if questions else (
+            "요청의 실행 경로를 확정하지 못했습니다. 저장된 실행 설정을 확인해 주세요."
+        )
+
     if reason in {
         "semantic_ir_needs_clarification",
         "semantic_ir_unsupported",
@@ -7045,6 +7394,10 @@ def build_recommendation_api_response(
         # 실패가 발생한 파이프라인 단계(어디서 막혔는지). {code,label,order,total,reason,pipeline}.
         # 성공이면 None — 프론트는 이 값이 있을 때만 "실패 단계" 배지·스텝퍼를 노출한다.
         "failure_stage": _classify_failure_stage(sql_result.get("failure_reason"), sql_result),
+        # 종착 **레인** 좌표(코드의 어느 소유자가 이 요청을 끝냈나). failure_stage 와 다른 축이다 —
+        # 전자는 "사용자에게 어디까지 갔다고 보여줄까", 이쪽은 "누가 끝냈나"다. 성공이면 None.
+        # 사유가 없거나 어느 종착 상태에도 안 걸리면 code='unclassified' 로 그 사실이 남는다.
+        "audience_diagnosis": audience_failure.diagnose(query_plan, sql_result),
         # 의미 검증 게이트 판정. status=review는 비차단이며 faithful은 기존 소비자 호환 필드다.
         "semantic_verification": sql_result.get("semantic_verification", {"ran": False}),
         "delivery_validation": sql_result.get("delivery_validation", {"is_satisfied": False}),
@@ -7409,6 +7762,8 @@ def _build_llm_targeting_ir_candidate(
     **결정자**가 될 수 없다 — 근거는 원문 표현을 그 어휘로 옮기고(사전에 없는 표현), 값의 실제 표기를
     맞추는 **제안자** 역할만 한다. 잘못된 제안은 ``validate_targeting_expression`` 에서 죽는다.
     """
+    if audience_authority.requires_event_ir(query_plan):
+        return None
     if not os.getenv("OPENAI_API_KEY"):
         return None
     config = _entity_set_config()
@@ -7584,6 +7939,8 @@ def _build_llm_sql_fallback_candidate(
     집계 등)은 못 잡으므로, 생성 SQL 은 source=llm_generated 로 명시 라벨링해 응답에 노출하고
     로그를 남겨 반복 성공 형태의 템플릿 승격 근거로 쓴다.
     """
+    if audience_authority.requires_event_ir(query_plan):
+        return None
     if not os.getenv("OPENAI_API_KEY"):
         return None
     try:
@@ -8297,7 +8654,7 @@ def _refresh_unresolved_source_conditions(
     바꾸지 않기 위한 fail-close 입력이다. 매 호출마다 최종 plan 기준으로 다시 계산하므로 앞 단계에서
     미해결이던 조건을 후속 원문 권위 단계가 복원하면 자동으로 해소된다.
     """
-    if isinstance(query_plan.get(AUDIENCE_REQUIREMENT_KEY), dict):
+    if isinstance(query_plan.get(AUDIENCE_REQUIREMENT_KEY), dict) or _plan_event_expression(query_plan) is not None:
         return canonical_audience_claims.refresh_canonical_unresolved(original_query, query_plan, _plan_event_expression(query_plan), audience_runtime.load_audience_catalog_config())
 
     preserved = [
@@ -9021,7 +9378,23 @@ def _validate_sql_delivery_contract(
     member_projection_match = (
         (not requires_member_projection) or bool(actual.get("has_member_no_as_cust_id"))
     )
-    api_contract_match = member_id_match and member_projection_match
+    member_id_only_required = output.get("member_id_only") is True
+    selected_columns = actual.get("selected_columns") or []
+    member_id_only_match = (not member_id_only_required) or bool(
+        len(selected_columns) == 1
+        and str(selected_columns[0]).rsplit(".", 1)[-1].casefold()
+        == _member_key_column().casefold()
+    )
+    distinct_member_id_required = output.get("distinct_member_id") is True
+    distinct_member_id_match = (not distinct_member_id_required) or bool(
+        re.match(r"^\s*SELECT\s+DISTINCT\b", sql or "", flags=re.IGNORECASE)
+    )
+    api_contract_match = (
+        member_id_match
+        and member_projection_match
+        and member_id_only_match
+        and distinct_member_id_match
+    )
 
     extracted_conditions = [c for c in query_plan.get("semantic_conditions") or [] if isinstance(c, dict)]
     evidence = [_condition_evidence(condition, sql) for condition in extracted_conditions]
@@ -9085,6 +9458,10 @@ def _validate_sql_delivery_contract(
         reasons.append("targeting_result_member_id_missing")
     if not member_projection_match:
         reasons.append("targeting_result_member_projection_missing")
+    if not member_id_only_match:
+        reasons.append("targeting_result_extra_projection")
+    if not distinct_member_id_match:
+        reasons.append("targeting_result_member_uniqueness_missing")
     if dropped_conditions:
         reasons.append("critical_conditions_dropped")
     # status=fail(구형 응답은 faithful=false) 자체가 최종 출고 불가 조건이다. issue 분류는 안내 품질을 위한
@@ -9103,6 +9480,8 @@ def _validate_sql_delivery_contract(
         "grain_match": grain_match,
         "api_contract_match": api_contract_match,
         "member_projection_match": member_projection_match,
+        "member_id_only_match": member_id_only_match,
+        "distinct_member_id_match": distinct_member_id_match,
         "required_conditions": len(extracted_conditions),
         "condition_tokens": None,
         "extracted_conditions": extracted_conditions,
@@ -9285,6 +9664,12 @@ def _semantic_ir_blocking_sql_result(
         },
         "missing_input_conditions": missing,
         "clarification_questions": clarifications,
+        # 빌더가 남긴 실패 좌표(어느 조건이·어느 단계에서·무슨 코드로). canonical 레인에서 조건이
+        # 읽히지 않으면 이 게이트가 먼저 닫히므로, 좌표를 여기 싣지 않으면 "어디서 막혔는가"는
+        # 저장된 query_plan JSONB 를 직접 파야만 나온다.
+        "unresolved_source_conditions": copy.deepcopy(
+            query_plan.get("unresolved_source_conditions") or []
+        ),
         "semantic_verification": {"ran": False},
         "llm_fallback_used": False,
         "generation_source": None,
@@ -9805,7 +10190,15 @@ def _external_condition_blocking_sql_result(
 
 def _plan_validation_blocking_sql_result(
     validation: plan_validation.PlanValidationResult,
+    query_plan: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """검증 차단 결과. ``query_plan`` 을 주면 빌더가 남긴 실패 좌표를 함께 싣는다.
+
+    좌표를 여기서 실어야 하는 이유: Event IR 컴파일 실패는 좌표를 남기는 순간
+    plan_validation 이 internal_invalid 로 막으므로, 최종 반환 dict 는 그 항목을 볼 일이 없다.
+    좌표가 plan 안에서만 살면 "어디서 막혔는가"는 저장된 JSONB 를 직접 파야만 나온다.
+    인자를 선택으로 둔 것은 기존 직접 호출(계약 테스트)을 깨지 않기 위해서다.
+    """
     issue_payloads = [
         {
             "code": issue.code,
@@ -9845,6 +10238,9 @@ def _plan_validation_blocking_sql_result(
         },
         "missing_input_conditions": missing_conditions,
         "clarification_questions": clarification_questions,
+        "unresolved_source_conditions": copy.deepcopy(
+            (query_plan or {}).get("unresolved_source_conditions") or []
+        ),
         "semantic_verification": {"ran": False},
         "delivery_validation": {"is_satisfied": False},
         "llm_fallback_used": False,
@@ -9939,6 +10335,34 @@ def _merge_semantic_plan_into_event_expression(query_plan: dict[str, Any], query
     )
 
 
+def _mark_canonical_event_ir_lowering_failure(
+    query_plan: dict[str, Any], reason: str
+) -> None:
+    """End canonical ingress without opening a second audience language."""
+
+    # A partially lowered expression is not executable: retaining it beside a
+    # blocking semantic result makes the plan internally contradictory and can
+    # tempt a later stage to compile the partial audience.
+    query_plan.pop(EVENT_EXPRESSION_KEY, None)
+    current = query_plan.get("semantic_ir")
+    if isinstance(current, Mapping) and current.get("status") in {
+        "needs_clarification",
+        "unsupported",
+    }:
+        # Preserve the original owner and reason.  In particular, a genuine
+        # user clarification must not be relabelled as an application failure.
+        return
+    query_plan["semantic_ir"] = empty_semantic_ir(
+        status="needs_clarification",
+        missing_fields=["audience.event_ir"],
+        message=(
+            "요청 조건을 Canonical Event IR로 완전하게 표현하지 못해 실행을 중단했습니다. "
+            + reason
+        ),
+        failure_kind="system_failure",
+    )
+
+
 def _apply_semantic_plan_pipeline(
     query_plan: dict[str, Any], query: str, *, llm_model: str | None = None
 ) -> None:
@@ -9976,6 +10400,7 @@ def _apply_semantic_plan_pipeline(
         # letting it continue would replace an honest unsupported verdict with
         # either a clarification or a deterministically empty success.
         return
+    canonical_only = audience_authority.requires_event_ir(query_plan)
     raw_nodes = query_plan.get(semantic_plan_bridge.PLAN_KEY)
     raw_nodes = raw_nodes.get("nodes") if isinstance(raw_nodes, dict) else None
     if _plan_event_expression(query_plan) is not None:
@@ -9983,6 +10408,14 @@ def _apply_semantic_plan_pipeline(
         # 여기서 반환하면 그 절이 흔적 없이 사라진 SQL 이 성공으로 나간다(2026-08-02 실측).
         if raw_nodes:
             _merge_semantic_plan_into_event_expression(query_plan, query)
+            if canonical_only and semantic_receipts.unreceipted_nodes(query_plan, query):
+                _mark_canonical_event_ir_lowering_failure(
+                    query_plan, "남은 의미 노드를 Event IR에 무손실로 합류시키지 못했습니다."
+                )
+        if canonical_only:
+            audience_authority.stamp_authority(
+                query_plan, audience_authority.AudienceAuthority.EVENT_IR
+            )
         return
 
     def has_value(value: Any) -> bool:
@@ -9999,6 +10432,15 @@ def _apply_semantic_plan_pipeline(
     if isinstance(query_plan.get(AUDIENCE_REQUIREMENT_KEY), dict) and not (
         isinstance(raw_plan, dict) and raw_plan.get("nodes")
     ):
+        if (
+            audience_authority.requires_event_ir(query_plan)
+            and _plan_event_expression(query_plan) is None
+            and isinstance(query_plan.get("semantic_ir"), Mapping)
+            and query_plan["semantic_ir"].get("status") in {"resolved", "policy_applied"}
+        ):
+            _mark_canonical_event_ir_lowering_failure(
+                query_plan, "Canonical audience 계약에 실행 가능한 Event IR이 없습니다."
+            )
         return
     has_legacy_audience = has_value(query_plan.get("target_user", {})) or has_value(
         query_plan.get("exclude", {})
@@ -10024,6 +10466,10 @@ def _apply_semantic_plan_pipeline(
                     "source": "semantic_plan",
                     "receipts": [receipt.to_dict() for receipt in lowered.receipts],
                 }
+                if canonical_only:
+                    audience_authority.stamp_authority(
+                        query_plan, audience_authority.AudienceAuthority.EVENT_IR
+                    )
                 semantic_receipts.discharge_attribute_obligations(query_plan, query, lowered)
                 plan_decisions.record(
                     query_plan,
@@ -10043,6 +10489,13 @@ def _apply_semantic_plan_pipeline(
                     for receipt in lowered.failures
                 ) or "semantic plan could not be represented by canonical Event IR",
             )
+
+    if canonical_only:
+        _mark_canonical_event_ir_lowering_failure(
+            query_plan,
+            "SemanticPlan을 legacy 슬롯이나 targeting IR로 우회하지 않습니다.",
+        )
+        return
 
     try:
         semantic_plan_bridge.apply(
@@ -10114,6 +10567,65 @@ def _attribute_snapshot_months() -> dict[str, int]:
     return {"monthly_attribute_snapshot": max(months) if months else 0}
 
 
+def _audience_authority_blocking_sql_result(
+    query_plan: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """권위 값이 닫힌 어휘 밖이면 예외가 아니라 **명명된 실패**로 끝낸다.
+
+    권위를 읽는 첫 지점은 plan_validation 이 아니라 그보다 앞선 의미 파이프라인이라,
+    검증기 안에서 예외를 접는 설계로는 이 경로를 막지 못한다. 오타 하나가
+    ``AudienceAuthorityError``(ValueError) 로 올라가 generic except 에 흡수되면
+    '구조화 실패'로 뭉개져 HTTP 500 이 되고, 운영자는 원인을 요청 문장에서 찾는다.
+
+    **판정자는 늘리지 않는다** — 여기서는 값의 유효성만 보고, 권위 자체는 여전히
+    :func:`audience_authority.resolve_authority` 가 단독으로 읽는다.
+    """
+    declared = query_plan.get(audience_authority.PLAN_AUTHORITY_KEY)
+    if declared is None:
+        return None
+    try:
+        audience_authority.coerce_authority(declared)
+    except audience_authority.AudienceAuthorityError:
+        pass
+    else:
+        return None
+
+    failure_reason = "audience_authority_invalid"
+    message = "요청의 실행 경로를 확정하지 못했습니다. 저장된 실행 설정을 확인해 주세요."
+    missing = [_missing_input_condition(
+        audience_authority.PLAN_AUTHORITY_KEY, failure_reason, message,
+    )]
+    return {
+        "sql": None,
+        "blocked_sql": None,
+        "target_connection": None,
+        "target_dialect": None,
+        "selected": None,
+        "candidates": [],
+        "candidate_count": 0,
+        "condition_tokens": [],
+        "required_conditions": [],
+        "input_validation": {
+            "is_satisfied": False,
+            "missing_conditions": missing,
+            "clarification_questions": [message],
+        },
+        "missing_input_conditions": missing,
+        "clarification_questions": [message],
+        "unresolved_source_conditions": copy.deepcopy(
+            query_plan.get("unresolved_source_conditions") or []
+        ),
+        "semantic_verification": {"ran": False},
+        "llm_fallback_used": False,
+        "generation_source": None,
+        "confidence": _failed_sql_confidence(failure_reason),
+        "is_success": False,
+        "failure_reason": failure_reason,
+        # 저장·생산 산출물의 내부 불량이지 능력의 부재가 아니다 — '미지원'으로 뭉개지 않는다.
+        "interpretation_status": "needs_clarification",
+    }
+
+
 def build_sql_result(
     graph: nx.Graph,
     query: str,
@@ -10127,6 +10639,11 @@ def build_sql_result(
     prompt_dir: Path | None = None,
     semantic_verification_model: str | None = None,
 ) -> dict[str, Any]:
+    # 권위 값 검사는 **어떤 소비자보다 먼저** 온다. 아래 의미 파이프라인이 권위를 읽으므로,
+    # 이 자리를 지나치면 오타는 예외로 올라가 명명되지 않은 500 이 된다.
+    authority_block = _audience_authority_blocking_sql_result(query_plan)
+    if authority_block is not None:
+        return authority_block
     if isinstance(query_plan, CampaignQueryPlanV4):
         verify_campaign_query_identity(query_plan)
     external_condition_block = _external_condition_blocking_sql_result(query_plan)
@@ -10220,10 +10737,12 @@ def build_sql_result(
     # 미충족이더라도 자유 IR 후보로 우회하지 않는다 — 그 후보는 2단계 구조를 만들지 못해 어차피
     # 탈락하고, 미충족은 IR 이 담지 못한 조건(회원 속성 등)이 있다는 뜻이라 fail-close 가 정답이다.
     evaluation_locked = condition_evaluation_locked(query_plan)
+    canonical_event_ir_locked = audience_authority.requires_event_ir(query_plan)
     structured_ir_candidate = None
     if (
         not input_validation["is_satisfied"]
         and not evaluation_locked
+        and not canonical_event_ir_locked
         and llm_model
         and not query_plan.get("unsupported")
         and query_plan.get("intent") in ("recommend_campaign", "find_user_segment")
@@ -10255,7 +10774,10 @@ def build_sql_result(
 
     # 필수조건이 있는데 검증 토큰이 하나도 없으면 비교 대상이 없어 coverage=0/0으로 통과하던 구멍을
     # 후보 생성 전에 닫는다. 명시적 전체 대상은 required_conditions 자체가 0이므로 정상 통과한다.
-    if required_conditions and not condition_tokens and not query_plan["output_contract"].get("whole_target"):
+    # output_contract 는 조건부로만 세팅되는 키다. 대괄호 인덱싱이면 그 키가 없는 평범한 플랜에서
+    # KeyError → 처리되지 않는 500 이 된다(이 줄은 오래 도달 불가였다가 필수조건이 늘면서 드러났다).
+    output_contract = query_plan.get("output_contract") or {}
+    if required_conditions and not condition_tokens and not output_contract.get("whole_target"):
         missing = [
             _missing_input_condition(
                 str(condition.get("path") or "query_plan.conditions"),
@@ -10275,7 +10797,7 @@ def build_sql_result(
             "semantic_verification": {"ran": False},
             "delivery_validation": {
                 "is_satisfied": False,
-                "expected_grain": query_plan["output_contract"].get("expected_grain"),
+                "expected_grain": output_contract.get("expected_grain"),
                 "actual_grain": "unknown", "required_conditions": len(required_conditions),
                 "condition_tokens": 0, "extracted_conditions": query_plan.get("semantic_conditions", []),
                 "missing_conditions": required_conditions, "semantic_issues": [], "sql_evidence": {},
@@ -10294,13 +10816,23 @@ def build_sql_result(
     join_key_registry = load_join_key_registry(schema_path)
     executable_validation = plan_validation.validate_executable_plan(query_plan)
     if executable_validation.status != plan_validation.EXECUTABLE:
-        return _plan_validation_blocking_sql_result(executable_validation)
+        return _plan_validation_blocking_sql_result(executable_validation, query_plan)
     template_candidate = compile_executable_plan(
         query_plan, validation_result=executable_validation
     )
     candidates = [template_candidate] if template_candidate is not None else []
     if structured_ir_candidate is not None:
         candidates.append(structured_ir_candidate)
+    if canonical_event_ir_locked:
+        # Canonical ingress has exactly one audience compiler.  Even when that
+        # compiler yields no candidate, a closed targeting IR or free SQL is not
+        # an alternative interpretation; the result must remain candidate-less.
+        candidates = [
+            candidate
+            for candidate in candidates
+            if candidate.get("id") == "sql_template:event_expression"
+        ]
+        structured_ir_candidate = None
 
     # 2티어 폴백: 결정론 템플릿/조합 빌더가 후보를 못 만든 타겟팅 질의만 LLM 생성으로 시도한다.
     # 생성 SQL 도 아래 루프에서 템플릿과 동일한 가드 스택으로 검증되며, 실패하면 기존 거절 흐름 유지.
@@ -10314,6 +10846,7 @@ def build_sql_result(
     # 결정론 후보를 먼저 고르므로 기존 동작은 바뀌지 않고, 탈락할 때만 IR 이 대안이 된다.
     member_unsupported = bool(
         targeting_intent
+        and not canonical_event_ir_locked
         and candidates
         and not query_plan.get("unsupported")
         and compile_member_target_conditions(query_plan)["unsupported"]
@@ -10323,6 +10856,7 @@ def build_sql_result(
         # 조건 판정 IR 잠금: 집계 요청이 함께 있어도 자유 SQL 을 경쟁시키지 않는다. 자유 SQL 은
         # 조건 판정 grain(주문·상품 단위 HAVING)을 회원 COUNT 로 평탄화하면서도 그럴듯해 보인다.
         and not evaluation_locked
+        and not canonical_event_ir_locked
         and not query_plan.get("unsupported")
         and llm_model
         and query_plan.get("intent") in ("recommend_campaign", "find_user_segment", "analyze_aggregation")
@@ -10592,7 +11126,11 @@ def build_sql_result(
     # 제네릭 sql_guard_failed 대신 "어떤 조건이 실DB 추출 미지원인지"를 구체적으로 알린다.
     unsupported_conditions: list[str] = []
     unsupported_condition_labels: list[str] = []
-    if selected_sql is None and query_plan.get("intent") in ("recommend_campaign", "find_user_segment"):
+    if (
+        selected_sql is None
+        and not canonical_event_ir_locked
+        and query_plan.get("intent") in ("recommend_campaign", "find_user_segment")
+    ):
         raw_unsupported = compile_member_target_conditions(query_plan)["unsupported"]
         # 선택 후보는 자신이 처리한 팩트 조건(cart_abandoner 등)을 dropped 에서 이미 제외한다. 실패 응답에서
         # 회원 단독 컴파일러의 원시 unsupported 를 다시 쓰면 실제로는 반영된 행동까지 '미지원'으로 오진한다.
@@ -10812,6 +11350,12 @@ def build_sql_result(
         "input_validation": input_validation,
         "missing_input_conditions": [],
         "clarification_questions": clarification_questions,
+        # 빌더가 남긴 실패 좌표(어느 조건이, 어느 단계에서, 무슨 코드로 막혔는가). 지금까지 이 값은
+        # query_plan 안에서만 살아서 응답·debug·실패로그 어디에도 "어디서 막혔는지"가 없었다 —
+        # Event IR 컴파일 실패의 stage 는 여기 실려야 진단 좌표가 fixture 가 아닌 실행에서 나온다.
+        "unresolved_source_conditions": copy.deepcopy(
+            query_plan.get("unresolved_source_conditions") or []
+        ),
         # 의미 검증 게이트 판정: {ran, status, faithful, issues}. ran=False면 게이트 미실행.
         "semantic_verification": semantic_verification,
         # 공통 semantic requirement 회계(트레이스/디버깅용): 원문 조건별 귀결(compiled/unsupported/clarification).
@@ -10975,6 +11519,63 @@ def build_verified_condition_tokens(query_plan: dict[str, Any]) -> list[dict[str
             _add_token(
                 tokens, f"target_user.age_exclude_ranges[{index}]", "age", "not_between",
                 f"{lo}-{hi}", [f"NOT (u.age BETWEEN {lo} AND {hi})"], [],
+            )
+
+    # ── required_sql_conditions 와 **같은 슬롯 집합** ────────────────────────────────
+    # 이 둘은 한 표에서 파생돼야 한다. 아래 게이트가 그 불변식을 이미 강제하고 있다:
+    #   "필수조건이 있는데 검증 토큰이 하나도 없으면" → semantic_conditions_not_extracted.
+    # 필수조건만 늘리면 그 게이트가 **정상 요청**을 막는다 — 실측(구현 중): 필수조건을 먼저
+    # 넣었더니 '이번 달 생일인 고객'이 KeyError('output_contract') 로 500 이 됐다.
+    # 토큰의 sql_clauses 는 진단 표면이므로 술어 생성부와 같은 함수로 만든다(문자열 두 벌 금지).
+    birthday_target = target_user.get("birthday_target")
+    if isinstance(birthday_target, dict):
+        granularity = "month" if birthday_target.get("granularity") == "month" else "day"
+        _add_token(
+            tokens, "target_user.birthday_target", "birthday", "=", granularity,
+            [_member_birthday_predicate(granularity)], [],
+        )
+
+    for index, threshold in enumerate(target_user.get("coupon_usage_thresholds", []) or []):
+        coupon_predicate = _coupon_usage_threshold_predicate(threshold) if isinstance(threshold, dict) else None
+        if coupon_predicate:
+            _add_token(
+                tokens, f"target_user.coupon_usage_thresholds[{index}]", "coupon_usage_count",
+                str(threshold.get("operator") or "gte"), threshold.get("value", ""),
+                [coupon_predicate], [],
+            )
+
+    if target_user.get("cart_quantity_missing"):
+        _add_token(
+            tokens, "target_user.cart_quantity_missing", "cart_quantity", "is_null",
+            "cart_quantity_missing", [_cart_quantity_missing_predicate()], [],
+        )
+
+    signup_target = target_user.get("signup_target")
+    if isinstance(signup_target, dict):
+        signup_days = signup_target.get("days")
+        _add_token(
+            tokens, "target_user.signup_target", "signup", ">=",
+            signup_days if isinstance(signup_days, int) else "default",
+            [_member_signup_predicate(signup_days if isinstance(signup_days, int) else None)], [],
+        )
+
+    selection = query_plan.get("member_metric_selection")
+    if isinstance(selection, dict):
+        selection_column = selection.get("column")
+        selection_mode = selection.get("mode")
+        if (
+            isinstance(selection_column, str)
+            and selection_column
+            and selection_mode in {"top_n", "top_percent", "vs_average"}
+        ):
+            _add_token(
+                tokens, "member_metric_selection", "member_metric_selection", selection_mode,
+                selection_column,
+                [
+                    f"{_member_alias()}.{selection_column} IS NOT NULL",
+                    f"member_selection:balance_{selection_mode}",
+                ],
+                [],
             )
 
     inactivity_period = target_user.get("inactivity_period")
@@ -12353,6 +12954,16 @@ def _admitted_sql_builder(builder: Any) -> Any:
         return builder
 
     def admitted(query_plan: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
+        if audience_authority.requires_event_ir(query_plan):
+            if getattr(builder, "__name__", "") != "build_event_expression_sql_candidate":
+                return None
+            if _plan_event_expression(query_plan) is None:
+                # 여기서 좌표를 남기지 않는 것은 계약이다. 읽을 수 없는 저장 표현의 소유자는
+                # plan_validation 이고(event_expression_schema_invalid / 표현 부재는
+                # canonical_event_expression_missing), 빌더가 같은 사실을 한 번 더 기록하면
+                # 같은 실패에 소유자가 둘이 된다 — tests/test_query_pipeline_legacy_adapter.py 의
+                # "빌더까지 내려가지 않는다"가 그 계약을 고정한다.
+                return None
         context = _SQL_VALIDATION_CONTEXT.get()
         if context is not None and context[0] == id(query_plan):
             return builder(query_plan, *args, **kwargs)
@@ -12393,6 +13004,14 @@ def _compile_sql_template_candidate_validated(query_plan: dict[str, Any]) -> dic
             f"미지원 판정({query_plan['unsupported'].get('reason')}) — 어떤 빌더로도 폴백하지 않는다",
         )
         return None
+    if audience_authority.requires_event_ir(query_plan) and _plan_event_expression(query_plan) is None:
+        _record_sql_builder_decision(
+            query_plan,
+            "sql_template:event_expression",
+            plan_decisions.REJECT,
+            "canonical audience 계약에 실행 가능한 Event IR이 없어 legacy builder를 열지 않음",
+        )
+        return None
     # 배타 라우팅(어떤 컴파일러는 경쟁시키면 안 된다)은 capability_validation.EXCLUSIVE_ROUTES 가
     # 사유와 함께 선언한다 — 여기 if 문으로 두면 "왜 여기만 예외인가"가 사라진다. 슬롯이 실제로
     # 쓸 수 있는 상태인지(파손 IR 이 아닌지)는 그 슬롯을 소유한 계층이 판정한다.
@@ -12406,6 +13025,12 @@ def _compile_sql_template_candidate_validated(query_plan: dict[str, Any]) -> dic
         if exclusive
         else all_builders
     ) or all_builders
+    if audience_authority.requires_event_ir(query_plan):
+        builders = tuple(
+            builder
+            for builder in builders
+            if builder.__name__ == "build_event_expression_sql_candidate"
+        )
     for builder in builders:
         name = getattr(builder, "__name__", str(builder))
         candidate = builder(query_plan)
@@ -13741,6 +14366,50 @@ def _event_compile_context(today: date | None = None) -> "event_compiler.Compile
     )
 
 
+def _event_expression_declares_member_state(
+    expression: event_ir.Condition,
+) -> bool:
+    """Whether a direct positive state comparison owns the member-state policy.
+
+    ``NOT(state = dormant)`` alone does not replace the default active-member
+    policy.  A direct comparison (including ``state != dormant``), however,
+    already states the requested state and must not be contradicted by an
+    additional hidden ``NORMAL`` predicate.
+    """
+
+    return any(
+        not negated
+        and isinstance(atom, event_ir.Comparison)
+        and "subject.member_state" in event_ir.field_names(atom)
+        for atom, negated in event_ir.iter_signed_atoms(expression)
+    )
+
+
+def _record_event_ir_unresolved(
+    query_plan: dict[str, Any], *, stage: str, code: str, reason: str
+) -> None:
+    """Event IR 컴파일 실패의 **좌표**를 플랜에 남긴다(중복 append 는 하지 않는다).
+
+    빌더 안에서 실패하든 진입 가드에서 걸리든 항목 모양이 같아야 한다. 모양이 두 벌이면
+    진단 좌표가 경로마다 달라지고, 그때 "어디서 막혔는가"는 다시 추측이 된다.
+    """
+    unresolved = query_plan.setdefault("unresolved_source_conditions", [])
+    item = {
+        "path": f"plan.{EVENT_EXPRESSION_KEY}",
+        "condition": EVENT_EXPRESSION_KEY,
+        "reason": reason,
+        # 단계는 파이프라인의 어디인지를, 코드는 무엇이 실패했는지를 말한다. 코드가 없으면
+        # plan_validation._marker 가 위 한국어 **문장**을 정규화해 issue code 로 승격한다
+        # (닫힌 집합 밖의 코드가 사용자 문구까지 흘러간다).
+        "stage": stage,
+        "code": code,
+        "source": "event_ir",
+        "status": "unresolved",
+    }
+    if item not in unresolved:
+        unresolved.append(item)
+
+
 def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
     """사건 논리식(event_expression) → 회원 추출 SQL.
 
@@ -13755,16 +14424,12 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
         expression = event_ir.condition_from_dict(payload["expression"])
     except event_ir.IrSchemaError as exc:
         # 컴파일 불가를 다른 빌더로의 축소 폴백으로 바꾸지 않는다 — 의미를 보존한 미해결로 남긴다.
-        unresolved = query_plan.setdefault("unresolved_source_conditions", [])
-        item = {
-            "path": f"plan.{EVENT_EXPRESSION_KEY}",
-            "condition": EVENT_EXPRESSION_KEY,
-            "reason": f"조건을 실DB 술어로 컴파일하지 못했습니다: {exc}",
-            "source": "event_ir",
-            "status": "unresolved",
-        }
-        if item not in unresolved:
-            unresolved.append(item)
+        _record_event_ir_unresolved(
+            query_plan,
+            stage="ir_schema",
+            code="event_ir_schema_invalid",
+            reason=f"조건을 실DB 술어로 컴파일하지 못했습니다: {exc}",
+        )
         return None
 
     _attach_event_semantic_validation(query_plan)
@@ -13802,18 +14467,13 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
             payload, compile_context_factory=_event_compile_context
         ).sql
     except query_pipeline.QueryPipelineError as exc:
-        unresolved = query_plan.setdefault("unresolved_source_conditions", [])
-        item = {
-            "path": f"plan.{EVENT_EXPRESSION_KEY}",
-            "condition": EVENT_EXPRESSION_KEY,
-            # 실패에 **단계 이름**을 붙인다 — "어디서 막혔는가"가 사유의 일부가 된다.
-            "reason": f"조건을 실DB 술어로 컴파일하지 못했습니다: {exc}",
-            "stage": exc.stage,
-            "source": "event_ir",
-            "status": "unresolved",
-        }
-        if item not in unresolved:
-            unresolved.append(item)
+        # 실패에 **단계 이름**을 붙인다 — "어디서 막혔는가"가 사유의 일부가 된다.
+        _record_event_ir_unresolved(
+            query_plan,
+            stage=exc.stage,
+            code="event_ir_compile_failed",
+            reason=f"조건을 실DB 술어로 컴파일하지 못했습니다: {exc}",
+        )
         return None
 
     # 권위 판정은 여기서 다시 하지 않는다 — 같은 사실을 두 곳이 각자 읽으면 한쪽만 고치는 드리프트가
@@ -13829,16 +14489,28 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
         else compile_member_target_conditions(query_plan)
     )
     where_clauses = list(compiled["predicates"])
-    if not compiled["forces_state"]:
+    if not compiled["forces_state"] and not _event_expression_declares_member_state(
+        expression
+    ):
         where_clauses.append(_member_active_state_predicate())
     where_clauses.append(f"({condition_sql})" if isinstance(expression, event_ir.Or) else condition_sql)
 
-    select_columns = ["DISTINCT " + _member_key_select(), _member_grade_select()]
-    labels = list(compiled["labels"]) + [_event_expression_label(expression)]
-    select_columns.append(_sql_quote(",".join(label for label in labels if label)) + " AS segment_label")
-    objective = query_plan.get("campaign_constraints", {}).get("objective")
-    if objective:
-        select_columns.append(_sql_quote(objective) + " AS objective")
+    output_contract = (
+        query_plan.get("output_contract")
+        if isinstance(query_plan.get("output_contract"), Mapping)
+        else {}
+    )
+    select_columns = ["DISTINCT " + _member_key_select()]
+    if output_contract.get("member_id_only") is not True:
+        select_columns.append(_member_grade_select())
+        labels = list(compiled["labels"]) + [_event_expression_label(expression)]
+        select_columns.append(
+            _sql_quote(",".join(label for label in labels if label))
+            + " AS segment_label"
+        )
+        objective = query_plan.get("campaign_constraints", {}).get("objective")
+        if objective:
+            select_columns.append(_sql_quote(objective) + " AS objective")
 
     sql = "\n".join(
         [
@@ -13882,14 +14554,16 @@ def _event_expression_label(expression: "event_ir.Condition") -> str:
     라벨은 **원자 조건 종류별**로 만든다 — 문장 유형별 분기가 아니라 노드 종류별 분기라, 새 문장이
     늘어도 여기 분기가 늘지 않는다."""
     registry = dict(audience_runtime.resolve_audience_catalog().compiler_events)
+    ranked_labels = audience_runtime.ranked_membership_labels(expression, registry)
     existence_labels = {
         (view.source, view.negated, id(view.evidence)): (
             f"{_event_window_label(view.window)}{_event_source_label(view.source, registry)} "
             f"{'없음' if view.negated else '있음'}"
         )
         for view in event_ir.existence_views(expression)
+        if (view.source, view.negated, id(view.evidence)) not in ranked_labels
     }
-    parts: list[str] = list(existence_labels.values())
+    parts: list[str] = [*ranked_labels.values(), *existence_labels.values()]
     for atom in event_ir.iter_atoms(expression):
         if isinstance(atom, event_ir.Comparison) and isinstance(atom.left, event_ir.Aggregate):
             aggregate = atom.left
@@ -16425,6 +17099,13 @@ def _missing_input_condition(path: str, label: str, question: str) -> dict[str, 
 
 
 def validate_unmentioned_sql_conditions(sql: str, query_plan: dict[str, Any]) -> dict[str, Any]:
+    if _has_canonical_audience_authority(query_plan):
+        # The only admitted canonical candidate is emitted by the deterministic
+        # Event IR compiler.  Every compiled atom is checked below by receipt-
+        # based coverage, while this older guard infers intent solely from
+        # legacy target_user/exclude slots and therefore mislabels valid Event
+        # IR predicates (for example subject.age) as model-added SQL.
+        return {"is_satisfied": True, "unexpected_conditions": []}
     normalized_sql = sql.casefold()
     target_user = query_plan.get("target_user", {})
     exclude = query_plan.get("exclude", {})
@@ -16707,6 +17388,84 @@ def required_sql_conditions(query_plan: dict[str, Any]) -> list[dict[str, Any]]:
             "target_user.cart_absence", "cart_absence", [],
             all_terms=["not exists", str(_cart_targets_registry().get("table"))],
         ))
+
+    # ── 필수조건이 없던 회원 슬롯들 ────────────────────────────────────────────────────
+    # 아래 슬롯들은 compile_member_target_conditions(또는 전용 빌더)가 소비하는데 필수조건이 없어서,
+    # 그 컴파일러가 호출되지 않는 경로에서 **아무 표시 없이** 사라졌다. 권위가 event_ir 이면
+    # build_event_expression_sql_candidate 가 회원 컴파일러를 통째로 건너뛰므로(같은 파일의 삼항),
+    # 조건이 빠진 SQL 이 커버리지 게이트까지 통과해 '성공'으로 출고된다 — 조건이 사라진 사실이
+    # SQL 모양에도 응답에도 남지 않는 유일한 부류였다.
+    # 토큰은 전부 **생성부와 같은 함수**가 만든다. 두 벌로 적으면 그 순간부터 갈라지고,
+    # 갈라진 검증부는 옳은 SQL 을 '조건 누락'으로 되돌린다(이 함수의 기존 주석들이 같은 사고를 기록한다).
+
+    # 연령 구간 제외("20대가 아닌"): 소비부가 구간마다 술어를 하나씩 내므로 조건도 구간마다 하나다.
+    for index, age_range in enumerate(target_user.get("age_exclude_ranges", [])):
+        if (
+            isinstance(age_range, (list, tuple))
+            and len(age_range) == 2
+            and all(isinstance(value, int) for value in age_range)
+        ):
+            lo, hi = age_range
+            conditions.append(_condition(
+                f"target_user.age_exclude_ranges[{index}]", f"{lo}-{hi}", [],
+                all_terms=[f"NOT ({_member_age_column()} BETWEEN {lo} AND {hi})"],
+            ))
+
+    # 생일: 월/일 분기가 SUBSTRING 자릿수(2 vs 4)로만 갈린다 — 반대 분기를 none_terms 로 막아
+    # '이달 생일'이 '오늘 생일'로 컴파일된 SQL 을 커버로 세지 않는다(두 문자열은 상호 배타다).
+    birthday_target = target_user.get("birthday_target")
+    if isinstance(birthday_target, dict):
+        granularity = "month" if birthday_target.get("granularity") == "month" else "day"
+        conditions.append(_condition(
+            "target_user.birthday_target", "birthday_" + granularity, [],
+            all_terms=[_member_birthday_predicate(granularity)],
+            none_terms=[_member_birthday_predicate("day" if granularity == "month" else "month")],
+        ))
+
+    # 쿠폰 사용 건수 임계: 술어를 못 만드는 항목(None)은 소비부도 방출하지 않으므로 요구하지 않는다.
+    for index, threshold in enumerate(target_user.get("coupon_usage_thresholds", []) or []):
+        coupon_predicate = _coupon_usage_threshold_predicate(threshold) if isinstance(threshold, dict) else None
+        if coupon_predicate:
+            conditions.append(_condition(
+                f"target_user.coupon_usage_thresholds[{index}]", "coupon_usage_count", [],
+                all_terms=[coupon_predicate],
+            ))
+
+    if target_user.get("cart_quantity_missing"):
+        conditions.append(_condition(
+            "target_user.cart_quantity_missing", "cart_quantity_missing", [],
+            all_terms=[_cart_quantity_missing_predicate()],
+        ))
+
+    # 신규 가입: 슬롯이 있는 경우만 여기서 요구한다. lifecycle 'new_user' 로만 들어온 경우는 위
+    # lifecycle 루프가 이미 조건을 만든다 — 같은 술어를 두 조건이 요구하게 만들지 않는다.
+    signup_target = target_user.get("signup_target")
+    if isinstance(signup_target, dict):
+        signup_days = signup_target.get("days")
+        conditions.append(_condition(
+            "target_user.signup_target", "new_user", [],
+            all_terms=[_member_signup_predicate(signup_days if isinstance(signup_days, int) else None)],
+        ))
+
+    # 회원 컬럼 선택(상위 N/N%/평균 대비): 전용 빌더 소유라 다른 빌더가 이기면 통째로 사라진다.
+    # 모드별 구문(TOP/ORDER BY/AVG 서브쿼리)이 아니라 **세 모드에 공통인** 두 토큰을 요구한다 —
+    # 빌더가 모드 파라미터 불량으로 후보를 못 내고 다른 빌더가 이긴 경우까지 같은 사유로 잡힌다.
+    selection = query_plan.get("member_metric_selection")
+    if isinstance(selection, dict):
+        selection_column = selection.get("column")
+        selection_mode = selection.get("mode")
+        if (
+            isinstance(selection_column, str)
+            and selection_column
+            and selection_mode in {"top_n", "top_percent", "vs_average"}
+        ):
+            conditions.append(_condition(
+                "member_metric_selection", selection_column, [],
+                all_terms=[
+                    f"{_member_alias()}.{selection_column} IS NOT NULL",
+                    f"member_selection:balance_{selection_mode}",
+                ],
+            ))
 
     for index, response in enumerate(target_user.get("campaign_responses") or []):
         if not isinstance(response, dict) or not response.get("predicate"):
@@ -17120,12 +17879,10 @@ def _condition_terms(value: str, field_name: str) -> list[str]:
 
 
 def _sql_validation_config() -> dict[str, Any] | None:
-    """AST/SQL 검증 설정(member_target_filters.json "validation"). 없으면 코드 기본값."""
+    """Return validation policy plus aliases owned by the resolved catalog."""
     config = _MEMBER_TARGET_FILTERS.get("validation")
-    if isinstance(config, dict):
-        return config
-    fallback = _DEFAULT_MEMBER_TARGET_FILTERS.get("validation")
-    return fallback if isinstance(fallback, dict) else None
+    config = config if isinstance(config, dict) else _DEFAULT_MEMBER_TARGET_FILTERS.get("validation")
+    return audience_runtime.extend_sql_validation_aliases(config, _event_compile_context())
 
 
 def _sql_candidate(

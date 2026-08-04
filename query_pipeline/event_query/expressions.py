@@ -20,6 +20,7 @@ event_ir 로의 왕복은 :mod:`query_pipeline.event_query.event_ir_bridge` 가 
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from enum import Enum
 from typing import Annotated, Literal, TypeAlias
 
@@ -327,7 +328,14 @@ class OrderedRelation(StrictModel):
 class LimitedRelation(StrictModel):
     kind: Literal["limit"] = "limit"
     relation: EventRelation
-    count: int = Field(ge=1)
+    count: int | None = Field(default=None, ge=1)
+    percent: Decimal | None = Field(default=None, gt=0, lt=100)
+
+    @model_validator(mode="after")
+    def _exactly_one_limit_unit(self) -> LimitedRelation:
+        if (self.count is None) == (self.percent is None):
+            raise ValueError("limit requires exactly one of count or percent")
+        return self
 
 
 EventRelation: TypeAlias = Annotated[

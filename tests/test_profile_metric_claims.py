@@ -248,7 +248,7 @@ def test_profile_metric_literal_only_issue_requires_declared_argument_mapping() 
     ) is None
 
 
-def test_bare_recent_campaign_count_remains_a_user_period_omission() -> None:
+def test_bare_recent_campaign_count_without_a_default_window_remains_blocked() -> None:
     raw = {
         "intent": "find_user_segment",
         "campaign_constraints": {
@@ -285,8 +285,6 @@ def test_bare_recent_campaign_count_remains_a_user_period_omission() -> None:
     assert structured["semantic_plan"]["nodes"] == []
     assert structured.get("event_expression") is None
     assert structured["semantic_ir"]["status"] == "needs_clarification"
-    assert structured["semantic_ir"]["failure_kind"] == "user_clarification"
-    assert structured["semantic_ir"]["missing_field_causes"][0]["cause"] == "user_omission"
 
     _plan, result = _sql_result(BARE_RECENT_QUERY, structured)
     assert result["is_success"] is False

@@ -8,19 +8,30 @@ graph_rag 의 헬퍼 하나를 필요로 해서 되돌아 import 하는 것이�
 0개임을 측정으로 확인했다 — 즉 순환은 **원래 없었다**. 이 테스트는 그 사실을 계약으로
 고정한다. 나중에 순환이 생기면 "원래 있었다"가 아니라 "이 변경이 만들었다"가 된다.
 
-계약 3종:
+계약 4종:
 1. rag.* 는 graph_rag 를 import 하지 않는다(단방향).
 2. graph_rag 가 rag.* 로 넘긴 심볼은 façade 에서 계속 접근 가능하다.
 3. rag.* 하위 모듈끼리도 순환하지 않는다.
+4. 진단 리프 모듈(LEAF_DIAGNOSTIC_MODULES)은 **stdlib 만** import 한다.
 """
 
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 RAG_PKG = REPO_ROOT / "rag"
+
+# 실패 진단 계층의 리프. 이 모듈들은 응답 조립·트레이스·실패로그에서 **무조건** 호출되므로,
+# 코어 스키마를 로드하는 모듈을 하나라도 끌어오면 진단 자체가 그 로딩 실패에 묶인다
+# (같은 계층의 failure_messages 가 정확히 이 이유로 semantic_plan 을 함수 안에서 지연 import 한다).
+# 대가로 이들은 키·사유를 리터럴로 들고 있고, 소유 모듈과의 일치는 각자의 계약 테스트가 잰다.
+LEAF_DIAGNOSTIC_MODULES: tuple[str, ...] = (
+    "audience_failure.py",
+    "rag/failure_stage.py",
+)
 
 
 def _rag_modules() -> list[Path]:
@@ -108,6 +119,26 @@ def test_rag_subpackage_imports_are_acyclic() -> None:
         walk(module, [])
 
     assert not cycles, "rag.* 하위 모듈 사이에 순환 import 가 있다:\n  " + "\n  ".join(cycles)
+
+
+def test_leaf_diagnostic_modules_import_only_stdlib() -> None:
+    """진단 리프가 프로젝트 모듈을 끌어오면 실패 진단이 그 모듈의 로딩 실패에 묶인다.
+
+    실패 응답을 만드는 계층은 **가장 적게 의존해야** 한다 — 실패 진단이 실패하면 남는 것은
+    처리되지 않은 500 이고, 그때 사용자는 "왜 SQL 이 안 나왔나"조차 못 듣는다.
+    """
+    offenders: list[str] = []
+    for relative in LEAF_DIAGNOSTIC_MODULES:
+        path = REPO_ROOT / relative
+        assert path.exists(), f"선언된 리프 모듈이 없다: {relative} — 이 계약이 공허해진다."
+        for name in sorted(_imported_modules(path)):
+            if name not in sys.stdlib_module_names:
+                offenders.append(f"{relative}: {name}")
+    assert not offenders, (
+        "진단 리프가 stdlib 밖을 import 한다:\n  " + "\n  ".join(offenders)
+        + "\n\n필요한 값이 있다면 리터럴로 들고 계약 테스트로 드리프트를 잡아라 "
+        "— 그것이 이 계층이 순수성을 사는 방식이다."
+    )
 
 
 def test_graph_rag_still_exposes_symbols_moved_into_rag() -> None:

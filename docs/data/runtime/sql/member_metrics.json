@@ -4,6 +4,31 @@
   "value_table": "CRM_MB_MONTHCRMINFO",
   "join_column": "MEMBER_NO",
   "grain_filter": "C.YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)",
+  "canonical_event_ir": {
+    "label": "회원 지표 전역 순위",
+    "source_prefix": "member_metric_",
+    "source_alias": "C",
+    "time_column": "YYYYMM",
+    "time_format": "char6",
+    "relation_recipe": "member_metric_ranking",
+    "limit_units": ["count", "percent"],
+    "directions": {
+      "top": ["상위", "높은", "많은", "최고"],
+      "bottom": ["하위", "낮은", "적은", "최저"]
+    },
+    "entities": {
+      "member": {
+        "terms": ["회원", "고객"]
+      }
+    },
+    "policy": {
+      "population": "active_members",
+      "tie_policy": "exact_count",
+      "null_policy": "exclude",
+      "missing_policy": "exclude",
+      "small_population_policy": "ceil"
+    }
+  },
   "metrics": [
     {
       "metric_id": "total_buy_amt",

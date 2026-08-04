@@ -16,13 +16,18 @@ from typing import Any, Mapping
 
 import audience_schema
 import event_compiler
+import event_ir
 import member_filters_config
+import member_policy
 import resolved_semantic_catalog
 
 
 REPO_ROOT = Path(__file__).resolve().parent
 DEFAULT_AUDIENCE_CATALOG_PATH = (
     REPO_ROOT / "docs" / "data" / "runtime" / "semantics" / "audience_catalog.json"
+)
+DEFAULT_EXTERNAL_REGION_MAPPING_PATH = (
+    REPO_ROOT / "docs" / "data" / "runtime" / "external" / "external_region_mapping.json"
 )
 
 
@@ -62,6 +67,56 @@ def materialize_value_domains(raw: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(declaration, Mapping):
             continue
         category = declaration.get("source_category")
+        region_group = declaration.get("source_external_region_mapping")
+        if category and region_group:
+            raise AudienceCatalogLoadError(
+                f"value domain {name!r} cannot declare two value sources"
+            )
+        if region_group:
+            try:
+                region_payload = json.loads(
+                    DEFAULT_EXTERNAL_REGION_MAPPING_PATH.read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                raise AudienceCatalogLoadError(
+                    f"external region mapping load failed: {exc}"
+                ) from exc
+            entries = region_payload.get(str(region_group))
+            if not isinstance(entries, list) or not entries:
+                raise AudienceCatalogLoadError(
+                    f"value domain {name!r} references empty external region group "
+                    f"{region_group!r}"
+                )
+            values: dict[str, dict[str, Any]] = {}
+            for entry in entries:
+                if not isinstance(entry, Mapping):
+                    continue
+                code = str(entry.get("external_code") or "").strip()
+                physical = str(entry.get("crm_value") or "").strip()
+                external_name = str(entry.get("external_name") or "").strip()
+                if not code or not physical:
+                    continue
+                aliases = [
+                    external_name,
+                    *(
+                        [str(item) for item in entry.get("aliases")]
+                        if isinstance(entry.get("aliases"), list)
+                        else []
+                    ),
+                    physical,
+                ]
+                values[f"sido_{code}"] = {
+                    "physical": physical,
+                    "aliases": list(dict.fromkeys(item for item in aliases if item)),
+                }
+            if not values:
+                raise AudienceCatalogLoadError(
+                    f"value domain {name!r} resolved no usable external region values"
+                )
+            resolved = dict(declaration)
+            resolved["values"] = values
+            materialized[name] = resolved
+            continue
         if not category:
             materialized[name] = declaration
             continue
@@ -91,11 +146,249 @@ def materialize_value_domains(raw: Mapping[str, Any]) -> dict[str, Any]:
     return materialized
 
 
+def _member_metric_registry_path(
+    raw: Mapping[str, Any], catalog_path: str | Path
+) -> Path | None:
+    imports = raw.get("imports")
+    declaration = (
+        imports.get("member_metric_rankings")
+        if isinstance(imports, Mapping)
+        else None
+    )
+    if declaration is None:
+        return None
+    if isinstance(declaration, Mapping):
+        declared_path = declaration.get("path")
+        relative_to = declaration.get("relative_to")
+        if (
+            not isinstance(declared_path, str)
+            or not declared_path.strip()
+            or relative_to not in {"repository", "catalog"}
+        ):
+            raise AudienceCatalogLoadError(
+                "imports.member_metric_rankings needs path and "
+                "relative_to='repository'|'catalog'"
+            )
+        base = REPO_ROOT if relative_to == "repository" else Path(catalog_path).resolve().parent
+        return (base / declared_path).resolve()
+    if not isinstance(declaration, str) or not declaration.strip():
+        raise AudienceCatalogLoadError(
+            "imports.member_metric_rankings must be a path or import object"
+        )
+    return (Path(catalog_path).resolve().parent / declaration).resolve()
+
+
+def materialize_member_metric_rankings(
+    raw: Mapping[str, Any], *, catalog_path: str | Path
+) -> dict[str, Any]:
+    """Materialize generic ranking assets from the member metric registry.
+
+    The metric file owns metric vocabulary and physical columns.  The audience
+    catalog only imports that registry; adding another metric therefore does
+    not require a Python branch or a second catalog declaration.
+    """
+    registry_path = _member_metric_registry_path(raw, catalog_path)
+    if registry_path is None:
+        return copy.deepcopy(dict(raw))
+    try:
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AudienceCatalogLoadError(
+            f"member metric registry load failed: {registry_path}: {exc}"
+        ) from exc
+    if not isinstance(registry, Mapping):
+        raise AudienceCatalogLoadError("member metric registry root must be an object")
+    canonical = registry.get("canonical_event_ir")
+    metrics = registry.get("metrics")
+    if not isinstance(canonical, Mapping) or not isinstance(metrics, list):
+        raise AudienceCatalogLoadError(
+            "member metric registry needs canonical_event_ir and metrics"
+        )
+
+    result = copy.deepcopy(dict(raw))
+    # The returned catalog is a self-contained resolved snapshot.  Keeping the
+    # relative import after materialization makes a copied snapshot try to load
+    # the registry relative to its new location and duplicates generated IDs.
+    resolved_imports = result.get("imports")
+    if isinstance(resolved_imports, dict):
+        resolved_imports.pop("member_metric_rankings", None)
+        if not resolved_imports:
+            result.pop("imports", None)
+    sources = result.setdefault("sources", {})
+    fields = result.setdefault("fields", {})
+    catalog_metrics = result.setdefault("metrics", {})
+    recipes = result.setdefault("relation_recipes", {})
+    if not all(isinstance(item, dict) for item in (sources, fields, catalog_metrics, recipes)):
+        raise AudienceCatalogLoadError(
+            "audience catalog sources/fields/metrics/relation_recipes must be objects"
+        )
+
+    subject = result.get("subject")
+    if not isinstance(subject, Mapping):
+        raise AudienceCatalogLoadError("audience catalog subject must be an object")
+    subject_table = str(subject.get("table") or "")
+    subject_key = str(subject.get("key") or "")
+    value_table = str(registry.get("value_table") or "")
+    join_column = str(registry.get("join_column") or "")
+    grain_filter = str(registry.get("grain_filter") or "")
+    source_alias = str(canonical.get("source_alias") or "")
+    source_prefix = str(canonical.get("source_prefix") or "")
+    time_column = str(canonical.get("time_column") or "")
+    time_format = str(canonical.get("time_format") or "char6")
+    if not all(
+        (subject_table, subject_key, value_table, join_column, grain_filter,
+         source_alias, source_prefix, time_column)
+    ):
+        raise AudienceCatalogLoadError(
+            "member metric canonical binding contains an empty required value"
+        )
+    templated_grain = grain_filter.replace(f"{source_alias}.", "{alias}.")
+    active_predicate = member_policy.active_member_predicate("{alias}_MEMBER")
+    ranking_entities = canonical.get("entities")
+    if not isinstance(ranking_entities, Mapping) or len(ranking_entities) != 1:
+        raise AudienceCatalogLoadError(
+            "member metric canonical_event_ir.entities must declare exactly one entity"
+        )
+    ranking_entity = str(next(iter(ranking_entities)))
+    ranking_limit_units = copy.deepcopy(canonical.get("limit_units") or [])
+    policy = canonical.get("policy")
+    if not isinstance(policy, Mapping):
+        raise AudienceCatalogLoadError("member metric ranking policy must be an object")
+    if (
+        not isinstance(ranking_limit_units, list)
+        or not ranking_limit_units
+        or any(not isinstance(unit, str) for unit in ranking_limit_units)
+        or len(set(ranking_limit_units)) != len(ranking_limit_units)
+        or not set(ranking_limit_units).issubset({"count", "percent"})
+    ):
+        raise AudienceCatalogLoadError(
+            "member metric ranking limit_units must be a non-empty unique subset "
+            "of count and percent"
+        )
+    supported_policy = {
+        "population": "active_members",
+        "tie_policy": "exact_count",
+        "null_policy": "exclude",
+        "missing_policy": "exclude",
+        "small_population_policy": "ceil",
+    }
+    if dict(policy) != supported_policy:
+        raise AudienceCatalogLoadError(
+            "member metric ranking policy is not supported by the generated "
+            f"physical relation: expected {supported_policy!r}"
+        )
+
+    recipe_id = str(canonical.get("relation_recipe") or "member_metric_ranking")
+    if recipe_id in recipes:
+        raise AudienceCatalogLoadError(
+            f"generated relation recipe collides with {recipe_id!r}"
+        )
+    recipes[recipe_id] = {
+        "label": str(canonical.get("label") or "회원 지표 전역 순위"),
+        "directions": copy.deepcopy(canonical.get("directions") or {}),
+        "entities": copy.deepcopy(canonical.get("entities") or {}),
+        "metrics": {},
+        "limit_units": ranking_limit_units,
+        "policy": copy.deepcopy(policy),
+    }
+
+    for declaration in metrics:
+        if not isinstance(declaration, Mapping):
+            raise AudienceCatalogLoadError("member metric entries must be objects")
+        metric_id = str(declaration.get("metric_id") or "")
+        column = str(declaration.get("column") or "")
+        function = str(declaration.get("agg") or "").lower()
+        label = str(declaration.get("ko_label") or metric_id)
+        aliases = [str(item) for item in declaration.get("synonyms") or []]
+        if not metric_id or not column or function not in {"sum", "avg", "min", "max", "count"}:
+            raise AudienceCatalogLoadError(
+                f"invalid member metric declaration: {metric_id or '<missing id>'}"
+            )
+        source_id = f"{source_prefix}{metric_id}"
+        member_field = f"{source_id}.member_id"
+        value_field = f"{source_id}.value"
+        collisions = [
+            identifier
+            for section, identifier in (
+                (sources, source_id),
+                (fields, member_field),
+                (fields, value_field),
+                (catalog_metrics, metric_id),
+            )
+            if identifier in section
+        ]
+        if collisions:
+            raise AudienceCatalogLoadError(
+                "generated member metric symbols collide: " + ", ".join(collisions)
+            )
+        sources[source_id] = {
+            "table": value_table,
+            "alias": source_alias,
+            "from_sql": (
+                f"{value_table} {{alias}} INNER JOIN {subject_table} {{alias}}_MEMBER "
+                f"ON {{alias}}_MEMBER.{subject_key} = {{alias}}.{join_column}"
+            ),
+            "subject_key": subject_key,
+            "event_subject_key": join_column,
+            "time_column": time_column,
+            "time_format": time_format,
+            "binding": "fact_table",
+            "grain": "subject",
+            "extra_predicates": [
+                templated_grain,
+                active_predicate,
+                f"{{alias}}.{column} IS NOT NULL",
+            ],
+            "label": label,
+            "aliases": aliases,
+        }
+        fields[member_field] = {
+            "source": source_id,
+            "column": join_column,
+            "data_type": "number",
+            "nullable": False,
+            "label": "회원 식별자",
+        }
+        fields[value_field] = {
+            "source": source_id,
+            "column": column,
+            "data_type": "number",
+            "nullable": False,
+            "label": label,
+            "aliases": aliases,
+        }
+        catalog_metrics[metric_id] = {
+            "source": source_id,
+            "kind": "aggregate",
+            "function": function,
+            "expression_field": value_field,
+            "data_type": "number",
+            "grain": "subject",
+            "relation_recipe": recipe_id,
+            "ranking_entity": ranking_entity,
+            "ranking_entity_field": member_field,
+            "ranking_limit_units": ranking_limit_units,
+            "ranking_tie_policy": policy.get("tie_policy"),
+            "label": label,
+            "aliases": aliases,
+        }
+        recipes[recipe_id]["metrics"][metric_id] = {
+            "terms": aliases,
+            "source": source_id,
+            "entity_field": member_field,
+            "measure_function": function,
+            "measure_field": value_field,
+        }
+    return result
+
+
 @functools.lru_cache(maxsize=4)
 def resolve_audience_catalog(
     path: str | Path = DEFAULT_AUDIENCE_CATALOG_PATH,
 ) -> resolved_semantic_catalog.ResolvedSemanticCatalog:
-    raw = dict(load_audience_catalog_config(path))
+    raw = materialize_member_metric_rankings(
+        load_audience_catalog_config(path), catalog_path=path
+    )
     materialized = materialize_value_domains(raw)
     if materialized:
         raw["value_domains"] = materialized
@@ -172,11 +465,13 @@ def audience_catalog_guidance(
         '- Exists: {"type":"exists","relation":<Relation>,"evidence":{"text":"...","start":0,"end":1}}',
         '- Not/And/Or: {"type":"not","operand":<Condition>} / {"type":"and|or","operands":[<Condition>,...]}',
         '- Summarize: {"type":"summarize","relation":<Relation>,"keys":[{"name":"entity_key","expression":<FieldRef>}],"measures":[{"name":"measure_value","function":"sum","expression":<FieldRef>,"distinct":false}]}',
-        '- Order/Limit: {"type":"limit","relation":{"type":"order","relation":<Summarize>,"keys":[{"name":"measure_value","direction":"desc"},{"name":"entity_key","direction":"asc"}]},"count":<N>}',
+        '- Order + count Limit: {"type":"limit","relation":{"type":"order","relation":<Summarize>,"keys":[{"name":"measure_value","direction":"desc"},{"name":"entity_key","direction":"asc"}]},"count":<N>}',
+        '- Order + percent Limit: {"type":"limit","relation":{"type":"order","relation":<Summarize>,"keys":[{"name":"measure_value","direction":"desc"},{"name":"entity_key","direction":"asc"}]},"percent":<P>}; 0<P<100',
         '- semi Join: {"type":"join","kind":"semi","left":<member-correlated Relation>,"right":<Limit>,"on":{"type":"comparison","operator":"=","left":<member entity FieldRef>,"right":<rank entity FieldRef>,"evidence":<exact evidence object>}}',
         '- 순위 회원 조건: expression = Exists(semi Join). Join 자체는 Relation이므로 expression 루트에 직접 둘 수 없음. Join.left 회원 Source는 correlation 생략, Join.right의 Summarize 아래 전역 Source는 correlation:"none" 필수',
         '- Summarize의 name은 Order.keys.name에서만 쓰는 로컬 alias다. Join.on 양쪽은 catalog FieldRef를 쓰며 같은 field id라도 left/right relation scope로 구분됨',
-        '- 내부 상위 N은 Limit.count이고 최종 회원 반환 수만 root result_limit이다.',
+        '- 순위 회원 조건의 Join.left.name과 Join.on 양쪽 field name은 relation recipe metrics의 source/entity_field를 그대로 재사용한다. "member"/"subject" Source나 member.member_id 같은 새 심볼을 만들지 않는다.',
+        '- 내부 상/하위 N명은 Limit.count, 상/하위 N%는 Limit.percent다. 상위는 첫 정렬키 desc, 하위는 asc이며 회원키 asc를 두 번째 키로 둔다. 둘 다 최종 회원 반환 수인 root result_limit과 별개다.',
         '- 기간 집계: Aggregate.relation = Filter(Source, TimeFilter(<source>.occurred_at, event_ir_window))',
         '- 프로필 값: Comparison(FieldRef("subject.<field>"), Literal); subject Source나 프로필 Exists를 만들지 않음',
         '- evidence 객체는 Comparison/Exists/TemporalRelation에만 둔다. 문자열 evidence나 임의 키는 금지한다.',
@@ -253,13 +548,23 @@ def audience_catalog_guidance(
             f"default_relation={recipe.get('defaultRankRelation')}; "
             "Exists(semi/anti Join(member Source, Limit(Order(Summarize(global Source)))))"
         )
-        for vocabulary_key in ("directions", "entities", "measures"):
+        for vocabulary_key in ("directions", "entities", "measures", "metrics"):
             vocabulary = recipe.get(vocabulary_key)
             if isinstance(vocabulary, Mapping):
                 lines.append(
                     f"  - {vocabulary_key}="
                     + json.dumps(vocabulary, ensure_ascii=False, sort_keys=True)
                 )
+        if isinstance(recipe.get("policy"), Mapping):
+            lines.append(
+                "  - policy="
+                + json.dumps(recipe["policy"], ensure_ascii=False, sort_keys=True)
+            )
+        if isinstance(recipe.get("limit_units"), list):
+            lines.append(
+                "  - limit_units="
+                + json.dumps(recipe["limit_units"], ensure_ascii=False)
+            )
         relations = recipe.get("relations")
         if not isinstance(relations, Mapping):
             continue
@@ -316,19 +621,78 @@ def catalog_snapshot(
     "이 필드가 어떤 값을 갖는가"이고, 그 값의 소유자가 eq_filters 라는 사실은 로딩 상세다.
     원본을 그대로 주면 source_category 참조만 보이고 값 어휘가 통째로 사라진다.
     """
-    snapshot = copy.deepcopy(load_audience_catalog_config(path))
+    snapshot = materialize_member_metric_rankings(
+        load_audience_catalog_config(path), catalog_path=path
+    )
     materialized = materialize_value_domains(snapshot)
     if materialized:
         snapshot["value_domains"] = materialized
     return snapshot
 
 
+def compiler_source_aliases(context: event_compiler.CompileContext) -> set[str]:
+    """Derive aliases owned by trusted catalog source bindings."""
+    from sql_ast import SelectAst, collect_aliases
+
+    aliases = {context.subject.alias}
+    for spec in context.registry.values():
+        source_sql = event_compiler.render_source_binding(spec, context)
+        aliases.update(
+            collect_aliases(SelectAst(columns=[], from_lines=[f"FROM {source_sql}"]))
+        )
+    return aliases
+
+
+def extend_sql_validation_aliases(
+    config: Any, context: event_compiler.CompileContext
+) -> dict[str, Any] | None:
+    """Defensively add only aliases rendered from trusted catalog bindings."""
+    if not isinstance(config, dict):
+        return None
+    resolved = copy.deepcopy(config)
+    allowed = resolved.get("allowed_table_aliases")
+    if not isinstance(allowed, list) or not allowed:
+        return resolved
+    try:
+        catalog_aliases = compiler_source_aliases(context)
+    except Exception:  # noqa: BLE001 - retain the static fail-closed set.
+        catalog_aliases = set()
+    resolved["allowed_table_aliases"] = sorted(
+        {str(alias) for alias in allowed} | catalog_aliases,
+        key=lambda alias: alias.upper(),
+    )
+    return resolved
+
+
+def ranked_membership_labels(
+    expression: event_ir.Condition,
+    registry: Mapping[str, event_compiler.EventSpec],
+) -> dict[tuple[str, bool, int], str]:
+    """Render catalog-aware labels from the generic ranked-membership view."""
+    labels: dict[tuple[str, bool, int], str] = {}
+    for view in event_ir.ranked_membership_views(expression):
+        spec = registry.get(view.source)
+        source_label = spec.label if spec is not None and spec.label else view.source
+        direction = "상위" if view.direction == "desc" else "하위"
+        unit = "%" if view.unit == "percent" else "개"
+        excluded = " 제외" if view.negated else ""
+        labels[(view.source, view.negated, id(view.evidence))] = (
+            f"{source_label} {direction} {view.value}{unit}{excluded}"
+        )
+    return labels
+
+
 __all__ = [
     "AudienceCatalogLoadError",
     "DEFAULT_AUDIENCE_CATALOG_PATH",
+    "DEFAULT_EXTERNAL_REGION_MAPPING_PATH",
     "audience_catalog_guidance",
     "audience_expression_json_schema",
     "catalog_snapshot",
+    "compiler_source_aliases",
+    "extend_sql_validation_aliases",
+    "ranked_membership_labels",
     "load_audience_catalog_config",
+    "materialize_member_metric_rankings",
     "resolve_audience_catalog",
 ]

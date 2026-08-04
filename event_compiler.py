@@ -61,7 +61,12 @@ from event_ir import (
     TemporalRelation,
     TimeFilter,
 )
-from sql_dialect import SqlDialect, get_dialect
+from sql_dialect import (
+    RowLimit,
+    SqlDialect,
+    UnsupportedDialectFeatureError,
+    get_dialect,
+)
 
 
 class SqlCompileError(Exception):
@@ -71,7 +76,7 @@ class SqlCompileError(Exception):
 # 컴파일 규칙의 버전. **의미가 같아도 SQL 이 달라지는 변경**(경계 렌더·조인 형태·NULL 처리)이 있으면
 # 올린다. 이행 계층의 binding fingerprint 가 이 값을 포함하므로, 올리면 검증된 자산이 자동으로
 # '바인딩 변경'으로 표시되고 cut-over 전에 재검증을 요구한다.
-COMPILER_VERSION = "1.0.0"
+COMPILER_VERSION = "1.1.0"
 
 CAPABILITY_SUPPORTED = "supported"
 CAPABILITY_UNSUPPORTED = "unsupported"
@@ -171,6 +176,14 @@ class FieldSpec:
     search_expressions: tuple[str, ...] = ()
     # 식별자 필드에 자연어 이름이 들어오는 것을 막는 catalog 소유 정규식. 비어 있으면 제한 없음.
     literal_pattern: str = ""
+    # ``Not(field = value)`` 에서 물리 NULL 행을 포함할지 여부. 오디언스 보수의 기본은
+    # include_unknown 이지만, SITE_MEMBER_YN처럼 승인된 업무 SQL이 명시적 N만 허용하는
+    # 필드는 exclude_unknown을 선언한다. 모델이나 GraphRAG가 이 정책을 고르지 않는다.
+    negative_null_policy: str = "include_unknown"  # include_unknown | exclude_unknown
+    # Distinguish a catalog-owned policy from the compatibility default.  A
+    # direct ``!=`` keeps historical SQL semantics unless the field explicitly
+    # opted into one of the two audience-complement policies.
+    negative_null_policy_declared: bool = False
 
     def __post_init__(self) -> None:
         if self.match_mode not in {"exact", "contains"}:
@@ -178,6 +191,13 @@ class FieldSpec:
                 f"필드 '{self.source}.{self.column}'의 match_mode가 올바르지 않습니다: "
                 f"{self.match_mode!r}"
             )
+        if self.negative_null_policy not in {"include_unknown", "exclude_unknown"}:
+            raise SqlCompileError(
+                f"필드 '{self.source}.{self.column}'의 negative_null_policy가 올바르지 않습니다: "
+                f"{self.negative_null_policy!r}"
+            )
+        if not isinstance(self.negative_null_policy_declared, bool):
+            raise SqlCompileError("negative_null_policy_declared must be boolean")
         if self.match_mode == "contains" and self.data_type != "string":
             raise SqlCompileError(
                 f"부분 문자열 검색 필드 '{self.source}.{self.column}'는 string 타입이어야 합니다"
@@ -197,6 +217,17 @@ class FieldSpec:
         if any(canonical == value for canonical, _ in self.value_map):
             return value
         return dict(self.value_aliases).get(value.strip().casefold(), value)
+
+    def complementary_physical_value(self, value: Any) -> Any | None:
+        """Return the one catalog-declared opposite value, when it is unique."""
+
+        canonical = self.canonicalize(value)
+        candidates = {
+            physical
+            for candidate, physical in self.value_map
+            if candidate != canonical
+        }
+        return next(iter(candidates)) if len(candidates) == 1 else None
 
     def ordered_values(self, operator: str, canonical: Any) -> tuple[Any, ...]:
         """서열 비교를 만족하는 **물리값 집합**. 부등호를 값 집합으로 바꿔 collation 의존을 없앤다."""
@@ -546,7 +577,7 @@ class RelationPlan:
     output_aliases: dict[str, str] = field(default_factory=dict)
     output_expressions: dict[str, str] = field(default_factory=dict)
     order_by: list[str] = field(default_factory=list)
-    limit: int | None = None
+    limit: RowLimit | None = None
     field_bindings: dict[str, str] = field(default_factory=dict)
 
 
@@ -580,6 +611,18 @@ def _source_sql(spec: EventSpec, context: CompileContext, *, alias: str | None =
     if spec.from_sql:
         return _render_binding(spec.from_sql, spec, context, alias=active_alias)
     return f"{spec.table} {active_alias}"
+
+
+def render_source_binding(
+    spec: EventSpec, context: CompileContext, *, alias: str | None = None
+) -> str:
+    """Render a trusted catalog source through the compiler's canonical binder.
+
+    SQL validation uses this public boundary to derive aliases owned by the
+    same catalog that owns compilation.  Keeping template expansion here avoids
+    a second, potentially divergent formatter in the orchestration layer.
+    """
+    return _source_sql(spec, context, alias=alias)
 
 
 def _correlation(
@@ -786,7 +829,19 @@ def compile_relation(relation: event_ir.Relation, context: CompileContext) -> Re
 
     if isinstance(relation, Limit):
         plan = compile_relation(relation.relation, context)
-        plan.limit = min(plan.limit, relation.count) if plan.limit is not None else relation.count
+        requested = (
+            RowLimit("count", relation.count)
+            if relation.count is not None
+            else RowLimit("percent", relation.percent)
+        )
+        if plan.limit is None:
+            plan.limit = requested
+        elif plan.limit.unit == requested.unit == "count":
+            plan.limit = RowLimit("count", min(plan.limit.value, requested.value))
+        else:
+            raise SqlCompileError(
+                "중첩 percent 제한은 모집단이 달라질 수 있어 정확히 컴파일할 수 없습니다"
+            )
         return plan
 
     raise SqlCompileError(f"지원하지 않는 관계입니다: {relation!r}")
@@ -887,18 +942,23 @@ def _subquery(
     plan: RelationPlan, projection: str | None, context: CompileContext
 ) -> str:
     selected = projection if projection is not None else ", ".join(plan.projection or ["*"])
-    prefix = context.dialect.row_limit_prefix(plan.limit) if plan.limit is not None else ""
-    parts = [f"SELECT {prefix}{selected} FROM {plan.from_sql}"]
+    try:
+        rendered_limit = (
+            context.dialect.render_row_limit(plan.limit)
+            if plan.limit is not None
+            else sql_dialect.RenderedRowLimit()
+        )
+    except UnsupportedDialectFeatureError as exc:
+        raise SqlCompileError(str(exc)) from exc
+    parts = [f"SELECT {rendered_limit.prefix}{selected} FROM {plan.from_sql}"]
     if plan.where:
         parts.append("WHERE " + " AND ".join(plan.where))
     if plan.group_by:
         parts.append("GROUP BY " + ", ".join(plan.group_by))
     if plan.order_by:
         parts.append("ORDER BY " + ", ".join(plan.order_by))
-    if plan.limit is not None:
-        suffix = context.dialect.row_limit_suffix(plan.limit)
-        if suffix:
-            parts.append(suffix)
+    if rendered_limit.suffix:
+        parts.append(rendered_limit.suffix)
     return " ".join(parts)
 
 
@@ -979,16 +1039,50 @@ def compile_condition(condition: event_ir.Condition, context: CompileContext) ->
                     text_search = _compile_text_search_comparison(left, right, inverted, context)
                     if text_search is not None:
                         return text_search
+                    if context.field_spec(left.name).negative_null_policy_declared:
+                        return _compile_comparison(
+                            Comparison(
+                                inverted,
+                                condition.operand.left,
+                                condition.operand.right,
+                                condition.operand.evidence,
+                            ),
+                            context,
+                        )
             elif isinstance(right, FieldRef) and isinstance(left, Literal):
                 inverted = {"=": "!=", "!=": "="}.get(condition.operand.operator)
                 if inverted is not None:
                     text_search = _compile_text_search_comparison(right, left, inverted, context)
                     if text_search is not None:
                         return text_search
+                    if context.field_spec(right.name).negative_null_policy_declared:
+                        return _compile_comparison(
+                            Comparison(
+                                inverted,
+                                condition.operand.left,
+                                condition.operand.right,
+                                condition.operand.evidence,
+                            ),
+                            context,
+                        )
         inner = compile_condition(condition.operand, context)
         # NOT EXISTS 는 SQL 이 직접 지원하는 형태라 NOT (EXISTS ...) 로 감싸지 않는다(플랜 동일, 가독성 우위).
         if inner.sql.startswith("EXISTS ("):
             return CompiledCondition(sql="NOT " + inner.sql, params=inner.params)
+        # 일부 nullable Y/N 필드는 승인된 업무 정책상 'Y가 아닌 모든 값'이 아니라 **명시적 N**만
+        # 대상이다. 그런 필드의 직접 부정은 SQL 3값 논리를 보존해 NULL을 제외한다. 정책은 catalog
+        # FieldSpec이 소유하며, 복합식이나 미등록 필드에 추론으로 확장하지 않는다.
+        if isinstance(condition.operand, Comparison):
+            comparison_fields = [
+                scalar.name
+                for scalar in (condition.operand.left, condition.operand.right)
+                if isinstance(scalar, FieldRef)
+            ]
+            if any(
+                context.field_spec(field_name).negative_null_policy == "exclude_unknown"
+                for field_name in comparison_fields
+            ):
+                return CompiledCondition(sql=f"NOT ({inner.sql})", params=inner.params)
         # SQL's NOT UNKNOWN is still UNKNOWN, while an audience complement is
         # two-valued: members for whom the predicate is not true (including
         # NULL/unknown) must remain.  Fold the predicate to 1/0 before NOT.
@@ -1209,7 +1303,25 @@ def _compile_comparison(condition: Comparison, context: CompileContext) -> Compi
         ordinal = _compile_ordinal_comparison(left_scalar, right_scalar, condition.operator, context)
         if ordinal is not None:
             return ordinal
-        right_scalar = Literal(context.field_spec(left_scalar.name).physical_value(right_scalar.value))
+        spec = context.field_spec(left_scalar.name)
+        if condition.operator == "!=" and spec.negative_null_policy_declared:
+            field_sql = compile_scalar(left_scalar, context)
+            target_sql = compile_scalar(
+                Literal(spec.physical_value(right_scalar.value)), context
+            )
+            if spec.negative_null_policy == "exclude_unknown":
+                complement = spec.complementary_physical_value(right_scalar.value)
+                if complement is None:
+                    raise SqlCompileError(
+                        f"'{left_scalar.name}'의 명시적 반대값이 catalog에 없습니다"
+                    )
+                return CompiledCondition(
+                    sql=f"{field_sql} = {compile_scalar(Literal(complement), context)}"
+                )
+            return CompiledCondition(
+                sql=f"NOT (CASE WHEN ({field_sql} = {target_sql}) THEN 1 ELSE 0 END = 1)"
+            )
+        right_scalar = Literal(spec.physical_value(right_scalar.value))
     elif isinstance(right_scalar, FieldRef) and isinstance(left_scalar, Literal):
         text_search = _compile_text_search_comparison(
             right_scalar, left_scalar, condition.operator, context
@@ -1221,7 +1333,25 @@ def _compile_comparison(condition: Comparison, context: CompileContext) -> Compi
         )
         if ordinal is not None:
             return ordinal
-        left_scalar = Literal(context.field_spec(right_scalar.name).physical_value(left_scalar.value))
+        spec = context.field_spec(right_scalar.name)
+        if condition.operator == "!=" and spec.negative_null_policy_declared:
+            field_sql = compile_scalar(right_scalar, context)
+            target_sql = compile_scalar(
+                Literal(spec.physical_value(left_scalar.value)), context
+            )
+            if spec.negative_null_policy == "exclude_unknown":
+                complement = spec.complementary_physical_value(left_scalar.value)
+                if complement is None:
+                    raise SqlCompileError(
+                        f"'{right_scalar.name}'의 명시적 반대값이 catalog에 없습니다"
+                    )
+                return CompiledCondition(
+                    sql=f"{field_sql} = {compile_scalar(Literal(complement), context)}"
+                )
+            return CompiledCondition(
+                sql=f"NOT (CASE WHEN ({field_sql} = {target_sql}) THEN 1 ELSE 0 END = 1)"
+            )
+        left_scalar = Literal(spec.physical_value(left_scalar.value))
     left = compile_scalar(left_scalar, context)
     right = compile_scalar(right_scalar, context)
     return CompiledCondition(sql=f"{left} {condition.operator} {right}")

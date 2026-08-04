@@ -1,5 +1,11 @@
 {
   "version": "1.0",
+  "imports": {
+    "member_metric_rankings": {
+      "path": "docs/data/runtime/sql/member_metrics.json",
+      "relative_to": "repository"
+    }
+  },
   "subject": {
     "name": "subject",
     "table": "CRM_MB_BASEINFO",
@@ -18,6 +24,31 @@
     ],
     "gender": {"label": "성별", "source_category": "gender"},
     "grade": {"label": "회원 등급", "source_category": "grade", "ordered": true},
+    "member_state": {"label": "현재 회원 상태", "source_category": "state"},
+    "residence_sido": {
+      "label": "거주 시도",
+      "source_external_region_mapping": "sido",
+      "_comment": "공식 시도명→CRM 저장값의 단일 소유자인 external_region_mapping.json을 런타임 조인한다."
+    },
+    "blacklist_flag": {
+      "label": "블랙리스트 여부",
+      "values": {
+        "blacklisted": {"physical": "Y", "aliases": ["블랙리스트", "발송 제외 고객", "차단 회원"]}
+      }
+    },
+    "site_only_flag": {
+      "label": "사이트 전용회원 여부",
+      "values": {
+        "site_only": {"physical": "Y", "aliases": ["사이트 전용회원", "사이트 전용 회원", "쇼핑몰 전용회원", "쇼핑몰 회원"]},
+        "not_site_only": {"physical": "N", "aliases": ["사이트 전용 아님"]}
+      }
+    },
+    "employee_flag": {
+      "label": "임직원 여부",
+      "values": {
+        "employee": {"physical": "Y", "aliases": ["임직원", "직원 회원"]}
+      }
+    },
     "login_channel": {"label": "마지막 로그인 채널", "source_category": "login_channel"},
     "consent_flag": {
       "label": "수신 동의 여부",
@@ -39,6 +70,9 @@
       "둘을 구분해야 드리프트 가드가 누락을 잡는다. family id 는 graph_rag 의 신호 서명 키를 그대로 쓴다."
     ],
     "gender": {"fields": ["subject.gender"]},
+    "member_state": {"fields": ["subject.member_state"]},
+    "residence": {"fields": ["subject.residence_sido"]},
+    "member_exclusion": {"fields": ["subject.blacklisted", "subject.site_only", "subject.employee"]},
     "cart": {"sources": ["cart", "active_cart"]},
     "login": {"sources": ["login"], "fields": ["subject.last_login_channel"]},
     "purchase_absence": {
@@ -247,7 +281,7 @@
       "data_type": "number",
       "label": "나이",
       "unit": "year",
-      "aliases": ["나이", "연령"]
+      "aliases": ["나이", "연령", "세"]
     },
     "subject.grade": {
       "source": "subject",
@@ -256,6 +290,49 @@
       "value_domain": "grade",
       "label": "회원 등급",
       "aliases": ["등급", "회원 등급"]
+    },
+    "subject.member_state": {
+      "source": "subject",
+      "column": "MEMBER_STATE_CD",
+      "data_type": "string",
+      "value_domain": "member_state",
+      "label": "현재 회원 상태",
+      "aliases": ["정상 회원", "정상 상태", "휴면", "휴면 회원", "탈퇴 회원"]
+    },
+    "subject.residence_sido": {
+      "source": "subject",
+      "column": "SIDO",
+      "data_type": "string",
+      "value_domain": "residence_sido",
+      "label": "거주 시도",
+      "aliases": ["거주", "거주지", "주소", "시도"]
+    },
+    "subject.blacklisted": {
+      "source": "subject",
+      "column": "BLACKLIST_YN",
+      "data_type": "string",
+      "value_domain": "blacklist_flag",
+      "negative_null_policy": "include_unknown",
+      "label": "블랙리스트 여부",
+      "aliases": ["블랙리스트", "발송 제외 고객", "차단 회원"]
+    },
+    "subject.site_only": {
+      "source": "subject",
+      "column": "SITE_MEMBER_YN",
+      "data_type": "string",
+      "value_domain": "site_only_flag",
+      "negative_null_policy": "exclude_unknown",
+      "label": "사이트 전용회원 여부",
+      "aliases": ["사이트 전용회원", "쇼핑몰 전용회원"]
+    },
+    "subject.employee": {
+      "source": "subject",
+      "column": "EMPLOYEE_YN",
+      "data_type": "string",
+      "value_domain": "employee_flag",
+      "negative_null_policy": "include_unknown",
+      "label": "임직원 여부",
+      "aliases": ["임직원", "직원 회원"]
     },
     "subject.last_login_channel": {
       "source": "subject",
@@ -271,7 +348,7 @@
       "data_type": "string",
       "value_domain": "consent_flag",
       "label": "앱푸시 수신 동의",
-      "aliases": ["앱푸시 수신 동의", "앱푸시 동의", "푸시 수신 동의", "알림 수신 동의"]
+      "aliases": ["앱푸시", "앱푸시 수신 동의", "앱푸시 동의", "푸시 수신 동의", "알림 수신 동의"]
     },
     "subject.sms_consent": {
       "source": "subject",
@@ -279,7 +356,7 @@
       "data_type": "string",
       "value_domain": "consent_flag",
       "label": "문자 수신 동의",
-      "aliases": ["문자 수신 동의", "SMS 수신 동의", "문자 동의"]
+      "aliases": ["SMS", "문자 수신 동의", "SMS 수신 동의", "문자 동의"]
     },
     "subject.email_consent": {
       "source": "subject",
@@ -295,7 +372,7 @@
       "data_type": "string",
       "value_domain": "consent_flag",
       "label": "마케팅 수신 동의",
-      "aliases": ["마케팅 수신 동의", "마케팅 활용 동의", "정보 활용 동의"]
+      "aliases": ["마케팅 활용", "마케팅 수신 동의", "마케팅 활용 동의", "정보 활용 동의"]
     },
     "member_month_snapshot.grade": {
       "source": "member_month_snapshot",

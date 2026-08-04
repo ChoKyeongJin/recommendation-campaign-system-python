@@ -579,7 +579,19 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
         api_response["failure_log"] = failure_log
     if request.include_debug:
         query_plan = result.get("query_plan") or {}
+        sql_result = result.get("sql_result") or {}
+        selected_candidate = sql_result.get("selected") or {}
         api_response["debug"] = {
+            # 어느 컴파일러가 이 SQL 을 냈는가. 지금까지 후보 id 는 **실패로그에만** 남아
+            # (api.py:3515) 성공 응답의 레인을 아무도 셀 수 없었다 — "legacy 빌더 19개 중
+            # 무엇이 아직 살아 있나"가 관측 불가였다는 뜻이다. sql 은 싣지 않는다(최상위에 이미 있다).
+            "sql_provenance": {
+                "candidate_id": selected_candidate.get("id"),
+                "candidate_source": selected_candidate.get("source"),
+                "candidate_count": sql_result.get("candidate_count"),
+                "generation_source": sql_result.get("generation_source"),
+                "audience_authority": query_plan.get("audience_authority"),
+            },
             "stage_log": result["stage_log"],
             "context_assembly": result["context_assembly"],
             "vector_matches": result["vector_matches"],
@@ -592,6 +604,10 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
             "decisions_truncated": bool(query_plan.get(plan_decisions.TRUNCATED_KEY)),
             "plan_resolution": query_plan.get("plan_resolution", {}),
             "superseded_conditions": query_plan.get("superseded_conditions", []),
+            # 실패 좌표의 **원본 항목**(어느 조건이·어느 단계에서·무슨 코드로). 응답 최상위의
+            # audience_diagnosis 는 이것을 한 줄로 요약하므로, 항목이 여럿일 때 전량은 여기서만 보인다.
+            # 내부 경로·코드가 그대로 들어 있어 debug 블록 밖으로는 내보내지 않는다.
+            "unresolved_source_conditions": query_plan.get("unresolved_source_conditions", []),
             # 의미 파이프라인의 판정 입력/출력(정규화 재분류·청구 구간·커버리지·재방출).
             # "왜 이 타입이 됐고 왜 커버리지가 저렇게 나왔나"가 응답에서 보여야 회귀를 관측한다.
             "semantic_pipeline": query_plan.get("semantic_pipeline", {}),
@@ -3524,6 +3540,14 @@ def _capability_failure_context_metadata(
     annotation = api_response.get("capability_diagnostics")
     if isinstance(annotation, dict):
         detached["capability_diagnostics"] = as_diagnostic_payload(annotation)
+    # 종착 레인 좌표를 실패로그의 **JSONB 안에** 넣는다 — 새 컬럼(DDL)도 새 로그 파일도 만들지
+    # 않는다. 요청별 흔적은 logs/rag_llm/<날짜>/ 가 이미 갖고 있고, 소비자 없는 세 번째 로그가
+    # 생기면 운영자가 볼 곳이 다시 흩어진다.
+    #   SELECT context_metadata->'audience_diagnosis'->>'stage', count(*)
+    #     FROM campaign_query_failure_logs GROUP BY 1 ORDER BY 2 DESC;
+    diagnosis = api_response.get("audience_diagnosis")
+    if isinstance(diagnosis, dict):
+        detached["audience_diagnosis"] = diagnosis
     return detached
 
 

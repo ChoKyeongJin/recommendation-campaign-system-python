@@ -36,6 +36,7 @@ import hashlib
 import re
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -884,7 +885,11 @@ def _ranked_entity_set_obligations(query: str) -> list[SourceRequirement]:
     # particular Top-N case.
     number_hits = [
         (match.start(), match.end(), int(match.group("value").replace(",", "")))
-        for match in re.finditer(r"(?<![\d.])(?P<value>\d[\d,]*)\s*(?:개|종류|종)?", query)
+        for match in re.finditer(
+            r"(?<![\d.])(?P<value>\d[\d,]*)(?![\d,])"
+            r"(?!\s*(?:%|퍼센트|프로))\s*(?:개|종류|종)?",
+            query,
+        )
     ]
     candidates: list[tuple[int, int, int, str, str]] = []
     for direction_start, direction_end, direction in directions:
@@ -1003,6 +1008,165 @@ def _ranked_entity_set_obligations(query: str) -> list[SourceRequirement]:
     return requirements
 
 
+_RANKING_LIMIT_RE = re.compile(
+    r"(?<![\d.])(?P<value>\d[\d,]*(?:\.\d+)?)\s*"
+    r"(?P<unit>%|\ud37c\uc13c\ud2b8|\ud504\ub85c|\uba85|\uac1c)"
+)
+_RANKING_PERCENT_UNITS = frozenset({"%", "\ud37c\uc13c\ud2b8", "\ud504\ub85c"})
+
+
+def _ranking_limit_hits(
+    query: str, allowed_units: frozenset[str]
+) -> list[tuple[int, int, dict[str, Any]]]:
+    """Parse count/percentage rank sizes without turning units into thresholds."""
+    hits: list[tuple[int, int, dict[str, Any]]] = []
+    for match in _RANKING_LIMIT_RE.finditer(query):
+        unit = "percent" if match.group("unit") in _RANKING_PERCENT_UNITS else "count"
+        if unit not in allowed_units:
+            continue
+        try:
+            value = Decimal(match.group("value").replace(",", ""))
+        except InvalidOperation:
+            continue
+        if not value.is_finite() or value <= 0:
+            continue
+        if unit == "percent":
+            if value >= 100:
+                continue
+            wire_value: int | float = (
+                int(value) if value == value.to_integral_value() else float(value)
+            )
+        else:
+            if value != value.to_integral_value():
+                continue
+            wire_value = int(value)
+        hits.append(
+            (match.start(), match.end(), {"type": unit, "value": wire_value})
+        )
+    return hits
+
+
+def _ranking_clause_bounds_at(query: str, position: int, end: int) -> tuple[int, int]:
+    """Find a ranking clause while keeping decimal points inside the clause."""
+    boundaries = [
+        match.start()
+        for match in re.finditer(r"(?<!\d),(?!\d)|;|(?<!\d)\.(?!\d)", query)
+    ]
+    starts = [index for index in boundaries if index < position]
+    ends = [index for index in boundaries if index >= end]
+    return (max(starts) + 1 if starts else 0), (min(ends) if ends else len(query))
+
+
+def _member_metric_ranking_obligations(query: str) -> list[SourceRequirement]:
+    """Capture member ranking semantics from the materialized catalog recipe."""
+    import audience_runtime
+
+    catalog = audience_runtime.catalog_snapshot()
+    recipes = catalog.get("relation_recipes")
+    config = (
+        recipes.get("member_metric_ranking")
+        if isinstance(recipes, Mapping)
+        else None
+    )
+    if not isinstance(config, Mapping):
+        return []
+    directions = _configured_term_hits(query, config.get("directions") or {})
+    entities = _configured_term_hits(query, config.get("entities") or {})
+    metric_hits = _configured_term_hits(query, config.get("metrics") or {})
+    if not directions or not entities or not metric_hits:
+        return []
+
+    # Prefer the longest catalog phrase at an overlapping position.  Thus
+    # "최대 구매금액" resolves to that metric rather than its shorter
+    # "구매금액" suffix, without hard-coding either phrase here.
+    longest_metric_hits = [
+        hit
+        for hit in metric_hits
+        if not any(
+            other[0] <= hit[0]
+            and hit[1] <= other[1]
+            and (other[1] - other[0]) > (hit[1] - hit[0])
+            for other in metric_hits
+        )
+    ]
+    declared_units = config.get("limit_units")
+    if (
+        not isinstance(declared_units, list)
+        or any(unit not in {"count", "percent"} for unit in declared_units)
+    ):
+        return []
+    limit_hits = _ranking_limit_hits(query, frozenset(declared_units))
+    if not limit_hits:
+        return []
+
+    metric_declarations = config.get("metrics")
+    policy = config.get("policy")
+    if not isinstance(metric_declarations, Mapping) or not isinstance(policy, Mapping):
+        return []
+    requirements: list[SourceRequirement] = []
+    seen: set[tuple[Any, ...]] = set()
+    for metric_start, metric_end, metric_id in longest_metric_hits:
+        clause_start, clause_end = _ranking_clause_bounds_at(
+            query, metric_start, metric_end
+        )
+        clause_directions = [
+            item for item in directions if clause_start <= item[0] and item[1] <= clause_end
+        ]
+        clause_entities = [
+            item for item in entities if clause_start <= item[0] and item[1] <= clause_end
+        ]
+        clause_limits = [
+            item for item in limit_hits if clause_start <= item[0] and item[1] <= clause_end
+        ]
+        if not clause_directions or not clause_entities or not clause_limits:
+            continue
+        direction_start, direction_end, direction = min(
+            clause_directions,
+            key=lambda item: min(abs(item[0] - metric_end), abs(metric_start - item[1])),
+        )
+        entity_start, entity_end, _entity = min(
+            clause_entities,
+            key=lambda item: min(abs(item[0] - direction_end), abs(direction_start - item[1])),
+        )
+        limit_start, limit_end, limit = min(
+            clause_limits,
+            key=lambda item: min(abs(item[0] - direction_end), abs(direction_start - item[1])),
+        )
+        if min(abs(limit_start - direction_end), abs(direction_start - limit_end)) > 16:
+            continue
+        declaration = metric_declarations.get(metric_id)
+        if not isinstance(declaration, Mapping):
+            continue
+        key = (metric_id, direction, limit["type"], limit["value"])
+        if key in seen:
+            continue
+        seen.add(key)
+        span_start = min(metric_start, direction_start, entity_start, limit_start)
+        span_end = max(metric_end, direction_end, entity_end, limit_end)
+        requirements.append(
+            _semantic_obligation(
+                query,
+                kind="member_metric_ranking",
+                span=(span_start, span_end),
+                value={
+                    "direction": direction,
+                    "limit": limit,
+                    "metric_id": metric_id,
+                    "source": declaration.get("source"),
+                    "entity_field": declaration.get("entity_field"),
+                    "measure_function": declaration.get("measure_function"),
+                    "measure_field": declaration.get("measure_field"),
+                    "population": policy.get("population"),
+                    "tie_policy": policy.get("tie_policy"),
+                    "null_policy": policy.get("null_policy"),
+                    "missing_policy": policy.get("missing_policy"),
+                    "small_population_policy": policy.get("small_population_policy"),
+                },
+            )
+        )
+    return requirements
+
+
 def _snapshot_obligations(query: str) -> list[SourceRequirement]:
     requirements: list[SourceRequirement] = []
     for match in _LATEST_SNAPSHOT_RE.finditer(query):
@@ -1082,6 +1246,7 @@ def capture_source_semantic_obligations(
     captured = [
         *_recurrence_obligations(query),
         *_entity_set_obligations(query),
+        *_member_metric_ranking_obligations(query),
         *_ranked_entity_set_obligations(query),
         *_snapshot_obligations(query),
         *_member_state_history_obligations(query),

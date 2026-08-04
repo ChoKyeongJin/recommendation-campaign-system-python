@@ -109,6 +109,31 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
     "critical_conditions_dropped": "semantic_verification",
     "critical_semantic_issue": "semantic_verification",
     "semantic_verification_unavailable": "semantic_verification",
+    # ── canonical Event IR 레인 ────────────────────────────────────────────────────
+    # 이 레인의 사유는 접두어+상태로 **조립**된다("plan_validation_" + status 등). 조립형은
+    # 닫힌 집합 밖이라 매핑에서 통째로 빠져 있었고, 그 결과 프론트는 이 레인의 실패에
+    # 단계 배지를 아예 그리지 않았다. 상태가 하나 늘면 사유도 하나 느는 구조라
+    # tests/test_failure_stage_totality.py 가 곱집합으로 강제한다.
+    #
+    # 플랜 검증: 조건을 확정 못 한 것과 능력이 없는 것은 고칠 곳이 다르다.
+    "plan_validation_clarification_required": "condition_recognition",
+    # 내부 불량(해석 산출물의 결함)도 사용자에게는 '확인 필요'로 안내한다 — 표적 재방출·재시도의
+    # 대상이지 능력 부재 선언이 아니다(graph_rag 의 interpretation_status 판정과 같은 결).
+    "plan_validation_internal_invalid": "condition_recognition",
+    "plan_validation_unsupported": "real_db_mapping",
+    "plan_validation_semantic_conflict": "semantic_verification",
+    # 의미 IR: 값을 못 확정한 것 ↔ 실행 자산으로 표현 못 하는 것.
+    "semantic_ir_needs_clarification": "condition_recognition",
+    "semantic_ir_unsupported": "real_db_mapping",
+    # Event IR 컴파일러 능력: 조건은 인식했고 의미도 일관되지만 실DB 술어로 못 낸다.
+    "event_compiler_unsupported": "real_db_mapping",
+    "event_compiler_partially_supported": "real_db_mapping",
+    # 오디언스 실행 권위 값이 닫힌 어휘 밖(저장·생산 산출물의 불량). 조건을 읽기 **전에**
+    # 막히므로 파이프라인의 첫 단계로 사상한다.
+    "audience_authority_invalid": "condition_recognition",
+    # 디멘션 IR 자체가 잘못됐거나 서로 충돌한다 — 값 해석이 아니라 조건 인식의 결함이다.
+    "invalid_dimension_filters": "condition_recognition",
+    "semantic_condition_conflict": "semantic_verification",
     "query_result_grain_mismatch": "intent_scope",
     "targeting_result_member_id_missing": "intent_scope",
     "targeting_result_member_projection_missing": "intent_scope",

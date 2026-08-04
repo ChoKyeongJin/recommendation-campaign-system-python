@@ -280,6 +280,13 @@ class MetricSpec:
     time: str | None = None
     coverage: str = UNKNOWN_COVERAGE
     where: event_ir.Condition | None = None
+    # Optional generic recipe for turning this aggregate into a ranked subject
+    # set.  Presence, rather than a metric id or domain branch, enables the
+    # RankedSet frontend to lower into core Event IR primitives.
+    ranking_entity: str | None = None
+    ranking_entity_field: str | None = None
+    ranking_limit_units: tuple[str, ...] = ()
+    ranking_tie_policy: str | None = None
 
     def __post_init__(self) -> None:
         _non_empty(self.id, "metric.id")
@@ -321,6 +328,40 @@ class MetricSpec:
                 f"existence metric {self.id!r} cannot declare aggregate_function",
                 symbol=self.id,
             )
+        ranking_declared = any(
+            (
+                self.ranking_entity,
+                self.ranking_entity_field,
+                self.ranking_limit_units,
+                self.ranking_tie_policy,
+            )
+        )
+        if ranking_declared:
+            if self.kind != "aggregate" or not (
+                self.ranking_entity
+                and self.ranking_entity_field
+                and self.ranking_limit_units
+                and self.ranking_tie_policy
+            ):
+                raise CatalogError(
+                    "invalid_catalog_declaration",
+                    f"metric {self.id!r} has an incomplete aggregate ranking recipe",
+                    symbol=self.id,
+                )
+            unknown_units = set(self.ranking_limit_units) - {"count", "percent"}
+            if unknown_units:
+                raise CatalogError(
+                    "invalid_catalog_declaration",
+                    f"metric {self.id!r} has unknown ranking limit units {sorted(unknown_units)}",
+                    symbol=self.id,
+                )
+            if self.ranking_tie_policy != "exact_count":
+                raise CatalogError(
+                    "invalid_catalog_declaration",
+                    f"metric {self.id!r} has unsupported ranking tie policy "
+                    f"{self.ranking_tie_policy!r}",
+                    symbol=self.id,
+                )
         if self.kind == "existence" and self.expression_field is not None:
             raise CatalogError(
                 "invalid_catalog_declaration",
@@ -634,6 +675,13 @@ class ResolvedSemanticCatalog:
                 )
             if metric.expression_field:
                 require(self.fields, metric.expression_field, f"metric {metric.id!r}", "field")
+            if metric.ranking_entity_field:
+                require(
+                    self.fields,
+                    metric.ranking_entity_field,
+                    f"metric {metric.id!r} ranking",
+                    "field",
+                )
             if metric.transition_metric:
                 require(self.metrics, metric.transition_metric, f"metric {metric.id!r}", "metric")
                 if self.metrics[metric.transition_metric].kind != "transition":
@@ -677,6 +725,15 @@ class ResolvedSemanticCatalog:
                     "catalog_reference_mismatch",
                     f"metric {metric.id!r} expression field is outside its relation scope",
                     symbol=metric.expression_field,
+                )
+            if (
+                metric.ranking_entity_field
+                and self.fields[metric.ranking_entity_field].source not in available_sources
+            ):
+                raise CatalogError(
+                    "catalog_reference_mismatch",
+                    f"metric {metric.id!r} ranking entity field is outside its relation scope",
+                    symbol=metric.ranking_entity_field,
                 )
             for key in self.grains[metric.grain].keys:
                 if self.fields[key].source not in available_sources:
@@ -943,6 +1000,10 @@ def _compiler_field(
             declaration.get("search_expressions"), f"field {field_id}.search_expressions"
         ),
         literal_pattern=str(declaration.get("literal_pattern") or ""),
+        negative_null_policy=str(
+            declaration.get("negative_null_policy") or "include_unknown"
+        ),
+        negative_null_policy_declared="negative_null_policy" in declaration,
     )
 
 
@@ -1131,6 +1192,25 @@ def _metric_spec(item_id: str, declaration: Any) -> MetricSpec:
         time=(str(declaration["time"]) if declaration.get("time") else None),
         coverage=str(declaration.get("coverage") or UNKNOWN_COVERAGE),
         where=where,
+        ranking_entity=(
+            str(declaration["ranking_entity"])
+            if declaration.get("ranking_entity")
+            else None
+        ),
+        ranking_entity_field=(
+            str(declaration["ranking_entity_field"])
+            if declaration.get("ranking_entity_field")
+            else None
+        ),
+        ranking_limit_units=_string_tuple(
+            declaration.get("ranking_limit_units"),
+            f"metric {item_id}.ranking_limit_units",
+        ),
+        ranking_tie_policy=(
+            str(declaration["ranking_tie_policy"])
+            if declaration.get("ranking_tie_policy")
+            else None
+        ),
     )
 
 

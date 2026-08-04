@@ -243,3 +243,71 @@ def test_no_candidate_means_no_fabricated_rejection() -> None:
     })
     assert evidence["detail"] is None
     assert evidence["sql"] is None
+
+
+# 4) 오디언스 실행 권위가 닫힌 어휘 밖일 때 예외(HTTP 500)로 뭉개지던 결함.
+#    권위를 읽는 첫 지점이 plan_validation 보다 앞이라, 검증기 안에서 접는 설계로는 못 막는다.
+
+
+def test_invalid_audience_authority_is_a_named_failure_not_an_exception() -> None:
+    plan = {
+        "intent": "find_user_segment",
+        "target_user": {},
+        "exclude": {},
+        "campaign_constraints": {},
+        "audience_authority": "event-ir",  # 오타(하이픈)
+    }
+    result = graph_rag._audience_authority_blocking_sql_result(plan)
+
+    assert result is not None
+    assert result["failure_reason"] == "audience_authority_invalid"
+    # 내부/저장 산출물의 불량이지 능력의 부재가 아니다.
+    assert result["interpretation_status"] == "needs_clarification"
+    assert api_status_of(result) == "needs_clarification"
+    # 사유 없는 침묵 금지: 어느 값이 문제인지 운영자가 볼 수 있어야 한다.
+    assert result["missing_input_conditions"][0]["path"] == "audience_authority"
+    assert result["missing_input_conditions"][0]["label"] == "audience_authority_invalid"
+    assert result["clarification_questions"]
+
+
+def test_valid_audience_authority_values_are_not_blocked() -> None:
+    for value in ("event_ir", "legacy"):
+        plan = {"audience_authority": value}
+        assert graph_rag._audience_authority_blocking_sql_result(plan) is None
+    # 권위 미선언은 호환 경로가 읽는다 — 여기서 막지 않는다.
+    assert graph_rag._audience_authority_blocking_sql_result({}) is None
+
+
+def test_build_sql_result_does_not_raise_on_an_invalid_authority() -> None:
+    query = "여성 회원"
+    plan = {
+        "intent": "find_user_segment",
+        "target_user": {},
+        "exclude": {},
+        "campaign_constraints": {},
+        "audience_authority": "EVENT-IR",
+    }
+    result = graph_rag.build_sql_result(
+        graph_rag.nx.Graph(), query, plan, [], graph_rag.DEFAULT_SCHEMA_PATH,
+        default_limit=100, original_query=query,
+    )
+    assert result["failure_reason"] == "audience_authority_invalid"
+    assert result["sql"] is None
+
+
+def test_the_user_message_does_not_send_them_back_to_their_conditions() -> None:
+    """화면의 1차 표면은 message 다 — 배지가 정직해도 본문이 거짓이면 사용자는 본문을 따른다.
+
+    이 실패는 조건을 **읽기 전에** 막힌다. 기본 문구("조건을 만족하는 검증된 SQL 이 없습니다")는
+    사용자를 조건 쪽으로 보내는데, 고칠 곳은 저장된 실행 설정이라 아무리 고쳐 써도 안 풀린다.
+    """
+    plan = {"intent": "find_user_segment", "audience_authority": "event-ir"}
+    result = graph_rag._audience_authority_blocking_sql_result(plan)
+    message = graph_rag._describe_sql_failure(plan, result)
+
+    assert message == result["clarification_questions"][0]
+    assert "검증된 SQL" not in message, "조건 쪽으로 보내는 기본 문구가 그대로 나간다."
+
+
+def api_status_of(sql_result: dict) -> str:
+    return graph_rag._api_status(sql_result)

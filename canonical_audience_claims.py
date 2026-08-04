@@ -10,8 +10,10 @@ template and recognizes business vocabulary only through the semantic catalog.
 from __future__ import annotations
 
 import hashlib
+import re
 import unicodedata
 from collections.abc import Iterable, Mapping, MutableMapping
+from datetime import date, timedelta
 from typing import Any
 
 import consent_cardinality
@@ -25,6 +27,12 @@ import semantic_plan
 import semantic_receipts
 import semantic_relation_ownership
 import semantic_requirements
+
+
+_DISJUNCTION_CONNECTOR_RE = re.compile(
+    r"^\s*(?:[,·/]\s*)?(?:또는|혹은|OR)(?:\s*[,·/])?\s*$",
+    re.IGNORECASE,
+)
 
 
 def _walk(value: Any) -> Iterable[Mapping[str, Any]]:
@@ -49,6 +57,8 @@ def _semantic_tokens(atom: event_ir.Condition) -> list[tuple[tuple[Any, ...], st
                 tokens.append((path, "number", value["value"]))
             elif node_type == "limit" and isinstance(value.get("count"), int):
                 tokens.append((path, "number", value["count"]))
+            elif node_type == "limit" and isinstance(value.get("percent"), (int, float)):
+                tokens.append((path, "percentage", value["percent"]))
             elif node_type in {"rolling", "relative", "duration"} and isinstance(
                 value.get("value"), int
             ):
@@ -77,7 +87,11 @@ def _binding_target(binding: Mapping[str, Any]) -> tuple[str, Any] | None:
         return "comparison_operator", normalized
     if kind == "money" and isinstance(normalized, Mapping):
         return "number", normalized.get("amount")
-    if kind in {"number", "number_with_unit", "duration", "percentage"}:
+    if kind == "percentage":
+        if isinstance(normalized, Mapping):
+            return "percentage", normalized.get("value")
+        return "percentage", normalized
+    if kind in {"number", "number_with_unit", "duration"}:
         if isinstance(normalized, Mapping):
             return "number", normalized.get("value")
         return "number", normalized
@@ -154,6 +168,66 @@ def _unscoped_duration_token_matches(
     )
 
 
+def _anchored_interval_duration_candidates(
+    binding: Mapping[str, Any],
+    atoms: list[tuple[event_ir.Condition, bool]],
+    token_rows: list[tuple[int, tuple[Any, ...], str, Any]],
+    bindings: list[Mapping[str, Any]],
+) -> list[tuple[int, tuple[Any, ...]]]:
+    """Match one app-owned ``as_of_date + rolling duration`` interval receipt."""
+
+    if binding.get("kind") != "duration":
+        return []
+    normalized = binding.get("normalized")
+    if not isinstance(normalized, Mapping) or normalized.get("temporal_kind") != "rolling_duration":
+        return []
+    unit = event_ir.canonical_unit(normalized.get("semantic_unit"))
+    value = normalized.get("value")
+    if (
+        unit not in event_ir.WINDOW_UNITS
+        or not isinstance(value, int)
+        or isinstance(value, bool)
+    ):
+        return []
+    anchors = [
+        item.get("normalized")
+        for item in bindings
+        if isinstance(item, Mapping) and item.get("kind") == "as_of_date"
+    ]
+    if len(anchors) != 1 or not isinstance(anchors[0], Mapping):
+        return []
+    try:
+        anchor = date.fromisoformat(str(anchors[0].get("date")))
+    except ValueError:
+        return []
+    expected_end = anchor + timedelta(days=1)
+    expected_start = expected_end - timedelta(days=value * event_ir.UNIT_DAYS[unit])
+    binding_start, binding_end = binding.get("start"), binding.get("end")
+    scoped: list[tuple[int, tuple[Any, ...]]] = []
+    structural: list[tuple[int, tuple[Any, ...]]] = []
+    for atom_index, path, token_kind, _token_value in token_rows:
+        if token_kind != "date_window":
+            continue
+        atom = atoms[atom_index][0]
+        node = _node_at_path(atom.to_dict(), path)
+        if not isinstance(node, Mapping) or node.get("type") != "interval":
+            continue
+        try:
+            start = date.fromisoformat(str(node.get("start")))
+            end_exclusive = date.fromisoformat(str(node.get("end_exclusive")))
+        except ValueError:
+            continue
+        if (start, end_exclusive) != (expected_start, expected_end):
+            continue
+        candidate = (atom_index, path)
+        evidence_covers = any(
+            evidence_start <= binding_start and binding_end <= evidence_end
+            for evidence_start, evidence_end in _evidence_spans(atom)
+        ) if isinstance(binding_start, int) and isinstance(binding_end, int) else False
+        (scoped if evidence_covers else structural).append(candidate)
+    return scoped or structural
+
+
 def literal_claim_issues(
     query: str,
     expression: event_ir.Condition,
@@ -166,6 +240,7 @@ def literal_claim_issues(
     mistaken for business numbers.
     """
     atoms = list(event_ir.iter_signed_atoms(expression))
+    binding_rows = [item for item in bindings if isinstance(item, Mapping)]
     token_rows: list[tuple[int, tuple[Any, ...], str, Any]] = []
     for atom_index, (atom, _negated) in enumerate(atoms):
         token_rows.extend(
@@ -174,7 +249,7 @@ def literal_claim_issues(
         )
     consumed: set[tuple[int, tuple[Any, ...]]] = set()
     issues: list[dict[str, Any]] = []
-    for index, binding in enumerate(bindings):
+    for index, binding in enumerate(binding_rows):
         target = _binding_target(binding)
         if target is None:
             continue
@@ -207,6 +282,16 @@ def literal_claim_issues(
             ]
             if len(structural_available) == 1:
                 available = structural_available[0]
+        if available is None:
+            anchored_available = [
+                candidate
+                for candidate in _anchored_interval_duration_candidates(
+                    binding, atoms, token_rows, binding_rows
+                )
+                if candidate not in consumed
+            ]
+            if len(anchored_available) == 1:
+                available = anchored_available[0]
         if available is not None:
             consumed.add(available)
             continue
@@ -539,6 +624,9 @@ def catalog_claim_issues(
             })
 
     negative_terms = lexicon_patterns.vocabulary("generic_negation")
+    absence_restatements = rolling_absence_claims.absence_restatement_spans(
+        query, expression, catalog
+    )
     domain_fields: dict[str, list[str]] = {}
     domain_values: dict[str, Mapping[str, Any]] = {}
     for field_id, field_declaration in fields.items():
@@ -560,6 +648,7 @@ def catalog_claim_issues(
                 if isinstance(value_declaration, Mapping) else []
             )
             hits = _term_hits(query, [canonical, *(aliases if isinstance(aliases, list) else [])])
+            hits = [hit for hit in hits if hit not in absence_restatements]
             if not hits:
                 continue
             claims.append({
@@ -572,6 +661,7 @@ def catalog_claim_issues(
     claims = semantic_relation_ownership.reconcile_axis_scoped_claims(
         query, claims, catalog
     )
+    issues.extend(_catalog_disjunction_issues(query, expression, claims, negative_terms))
 
     # A specific cross-domain alias owns an overlapping generic value hit.  For
     # example, ``가치등급 VIP`` is a worth-grade claim; the shorter ``VIP``
@@ -609,6 +699,28 @@ def catalog_claim_issues(
             evidence = atom.evidence
             if evidence is None or not (evidence.start <= start and end <= evidence.end):
                 continue
+            # A coordinated exclusion commonly places one negation marker at
+            # the end of the whole list (``블랙리스트, 휴면, 임직원은 제외``).
+            # The fixed +/- character window above cannot reach that marker for
+            # early items.  Exact atom evidence is already source-validated, so
+            # a marker inside that evidence is legitimate shared list polarity.
+            evidence_text = evidence.text.casefold()
+            shared_list_polarity = bool(
+                evidence.end - evidence.start <= 64
+                and end - start <= 32
+                and not re.search(r"[.!?。\n]", evidence_text)
+                and any(
+                    (
+                        marker := evidence_text.find(term.casefold())
+                    ) >= 0
+                    and marker >= end - evidence.start
+                    and marker - (end - evidence.start) <= 48
+                    for term in negative_terms
+                )
+            )
+            atom_expected_negative = expected_negative or any(
+                term.casefold() in evidence_text for term in negative_terms
+            ) and shared_list_polarity
             for comparison in _nodes(atom.to_dict(), "comparison"):
                 left, right = comparison.get("left"), comparison.get("right")
                 pairs = ((left, right), (right, left))
@@ -623,7 +735,8 @@ def catalog_claim_issues(
                 equality_matches = (
                     comparison_operator in {"=", "!="}
                     and equality_value_matches
-                    and (negated ^ (comparison_operator == "!=")) == expected_negative
+                    and (negated ^ (comparison_operator == "!="))
+                    == atom_expected_negative
                 )
                 ordered_matches = ordered_catalog_claims.ordered_comparison_consumes_claim(
                     query,
@@ -635,7 +748,7 @@ def catalog_claim_issues(
                     evidence_start=evidence.start,
                     evidence_end=evidence.end,
                     negated=negated,
-                    expected_negative=expected_negative,
+                    expected_negative=atom_expected_negative,
                 )
                 if equality_matches or ordered_matches:
                     matched = True
@@ -649,6 +762,106 @@ def catalog_claim_issues(
                 "message": "원문의 카탈로그 값과 포함/제외 극성이 canonical expression에 보존되지 않았습니다.",
                 "evidence": {"text": query[start:end], "start": start, "end": end},
             })
+    return issues
+
+
+def _catalog_disjunction_issues(
+    query: str,
+    expression: event_ir.Condition,
+    claims: list[dict[str, Any]],
+    negative_terms: Iterable[str],
+) -> list[dict[str, Any]]:
+    """Prove that catalog values joined by an explicit OR share an IR Or ancestor."""
+
+    atom_rows: list[
+        tuple[event_ir.Condition, bool, tuple[tuple[int, str], ...]]
+    ] = []
+
+    def visit(
+        node: event_ir.Condition,
+        negated: bool = False,
+        path: tuple[tuple[int, str], ...] = (),
+    ) -> None:
+        if isinstance(node, event_ir.Not):
+            visit(node.operand, not negated, path)
+            return
+        if isinstance(node, (event_ir.And, event_ir.Or)):
+            branch_path = (*path, (id(node), node.type))
+            for operand in node.operands:
+                visit(operand, negated, branch_path)
+            return
+        atom_rows.append((node, negated, path))
+
+    visit(expression)
+
+    def paths_for(claim: Mapping[str, Any], hit: tuple[int, int]) -> list[tuple[tuple[int, str], ...]]:
+        field_ids = frozenset(str(item) for item in claim.get("fields", []))
+        canonical = claim.get("canonical")
+        start, end = hit
+        paths: list[tuple[tuple[int, str], ...]] = []
+        for atom, negated, path in atom_rows:
+            if not isinstance(atom, event_ir.Comparison) or atom.evidence is None:
+                continue
+            if not (atom.evidence.start <= start and end <= atom.evidence.end):
+                continue
+            pairs = ((atom.left, atom.right), (atom.right, atom.left))
+            if not any(
+                isinstance(field, event_ir.FieldRef)
+                and field.name in field_ids
+                and isinstance(literal, event_ir.Literal)
+                and literal.value == canonical
+                for field, literal in pairs
+            ):
+                continue
+            if negated ^ (atom.operator == "!="):
+                continue
+            paths.append(path)
+        return paths
+
+    def common_boolean(paths: tuple[tuple[int, str], ...], other: tuple[tuple[int, str], ...]) -> str | None:
+        shared: str | None = None
+        for left, right in zip(paths, other):
+            if left[0] != right[0]:
+                break
+            shared = left[1]
+        return shared
+
+    issues: list[dict[str, Any]] = []
+    for index, left_claim in enumerate(claims):
+        for right_claim in claims[index + 1 :]:
+            if left_claim.get("domain") != right_claim.get("domain"):
+                continue
+            for left_hit in left_claim.get("hits", []):
+                for right_hit in right_claim.get("hits", []):
+                    first_claim, first_hit, second_claim, second_hit = (
+                        (left_claim, left_hit, right_claim, right_hit)
+                        if left_hit[0] <= right_hit[0]
+                        else (right_claim, right_hit, left_claim, left_hit)
+                    )
+                    between = query[first_hit[1] : second_hit[0]]
+                    if not _DISJUNCTION_CONNECTOR_RE.fullmatch(between):
+                        continue
+                    clause = query[first_hit[0] : second_hit[1]]
+                    if any(term.casefold() in clause.casefold() for term in negative_terms):
+                        continue
+                    left_paths = paths_for(first_claim, first_hit)
+                    right_paths = paths_for(second_claim, second_hit)
+                    if any(
+                        common_boolean(left_path, right_path) == "or"
+                        for left_path in left_paths
+                        for right_path in right_paths
+                    ):
+                        continue
+                    issues.append({
+                        "code": "validation_mismatch",
+                        "argument": f"catalog_boolean.{left_claim['domain']}",
+                        "message": "원문의 '또는' 값 연결이 canonical Event IR의 Or로 보존되지 않았습니다.",
+                        "evidence": {
+                            "text": clause,
+                            "start": first_hit[0],
+                            "end": second_hit[1],
+                        },
+                    })
     return issues
 
 
@@ -724,7 +937,13 @@ def _ranked_membership_matches(expression: event_ir.Condition, value: Mapping[st
             ):
                 continue
         for limit in _nodes(right, "limit"):
-            if limit.get("count") != expected_limit:
+            if isinstance(expected_limit, Mapping):
+                limit_type = expected_limit.get("type")
+                if limit_type not in {"count", "percent"}:
+                    continue
+                if limit.get(str(limit_type)) != expected_limit.get("value"):
+                    continue
+            elif limit.get("count") != expected_limit:
                 continue
             ranked_input = limit.get("relation")
             for order in _nodes(ranked_input, "order"):
@@ -744,19 +963,37 @@ def _ranked_membership_matches(expression: event_ir.Condition, value: Mapping[st
                         break
                     if measure_name is None:
                         continue
+                    order_keys = [
+                        key for key in order.get("keys") or [] if isinstance(key, Mapping)
+                    ]
                     if not any(
-                        isinstance(key, Mapping)
-                        and key.get("name") == measure_name
+                        key.get("name") == measure_name
                         and key.get("direction", "asc") == expected_direction
-                        for key in order.get("keys") or []
+                        for key in order_keys
                     ):
                         continue
-                    if expected_entity and not any(
-                        isinstance(key, Mapping)
-                        and _field_name(key.get("expression")) == expected_entity
+                    entity_key_names = [
+                        str(key.get("name"))
                         for key in summary.get("keys") or []
-                    ):
+                        if isinstance(key, Mapping)
+                        and isinstance(key.get("name"), str)
+                        and (
+                            not expected_entity
+                            or _field_name(key.get("expression")) == expected_entity
+                        )
+                    ]
+                    if expected_entity and not entity_key_names:
                         continue
+                    if value.get("tie_policy") == "exact_count":
+                        if len(order_keys) < 2:
+                            continue
+                        if not (
+                            order_keys[0].get("name") == measure_name
+                            and order_keys[0].get("direction", "asc") == expected_direction
+                            and order_keys[1].get("name") in entity_key_names
+                            and order_keys[1].get("direction", "asc") == "asc"
+                        ):
+                            continue
                     if not _window_matches(summary, expected_window):
                         continue
                     return True
@@ -771,7 +1008,7 @@ def semantic_obligation_issues(
     for requirement in semantic_requirements.capture_source_semantic_obligations(query):
         kind = str(requirement.base.get("name") or "")
         value = requirement.value if isinstance(requirement.value, Mapping) else {}
-        if kind == "ranked_entity_set" and _ranked_membership_matches(expression, value):
+        if kind in {"ranked_entity_set", "member_metric_ranking"} and _ranked_membership_matches(expression, value):
             continue
         span = requirement.source_span
         start = span.get("start") if isinstance(span, Mapping) else None
@@ -786,7 +1023,7 @@ def semantic_obligation_issues(
             )
             if value.get(key) is not None
         )
-        if kind == "ranked_entity_set":
+        if kind in {"ranked_entity_set", "member_metric_ranking"}:
             expected = (
                 "expression=Exists(semi Join), member_source_correlation=subject"
                 "(omit correlation key), rank_source_correlation=none, "
@@ -1067,10 +1304,19 @@ def refresh_canonical_unresolved(
     requirement = plan.get("audience_requirement")
     issues: list[dict[str, Any]] = []
     if expression is not None:
+        # Normal ingress seals this ledger before compilation.  Programmatic
+        # canonical callers (migration/tests) may enter directly at this graph
+        # boundary; create the immutable source-only ledger once, before issuing
+        # any receipt.  An existing—even empty—ledger is never rewritten.
+        if semantic_requirements.SOURCE_REQUIREMENTS_KEY not in plan:
+            semantic_requirements.attach_source_requirements(
+                plan,
+                semantic_requirements.capture_source_semantic_obligations(query),
+            )
         semantic_requirements.discharge_source_semantic_obligations(
             plan,
             query,
-            kinds={"ranked_entity_set"},
+            kinds={"ranked_entity_set", "member_metric_ranking"},
             status="compiled",
             compiler="canonical_event_ir",
             evidence=expression.to_dict(),

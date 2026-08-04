@@ -21,6 +21,8 @@ from query_structurer.campaign_plan_v4 import (  # noqa: E402
     EVENT_EXPRESSION_KEY,
     attach_campaign_query_plan_v4_identity,
 )
+from query_structurer.prompt import build_campaign_query_plan_v4_user_prompt  # noqa: E402
+from query_structurer.types import QueryStructuringInput, StructuringContext  # noqa: E402
 
 
 CURRENT_DATE = "2026-08-02"
@@ -142,6 +144,18 @@ def test_llm_contract_exposes_only_one_audience_requirement() -> None:
     }
 
 
+def test_bare_recent_prompt_uses_the_five_day_rolling_default() -> None:
+    prompt = build_campaign_query_plan_v4_user_prompt(
+        QueryStructuringInput(
+            query=BARE_RECENT_QUERY,
+            context=StructuringContext(current_date=CURRENT_DATE),
+        )
+    )
+
+    assert '"type": "rolling", "value": 5, "unit": "day"' in prompt
+    assert "Do not return a missing_argument issue for period." in prompt
+
+
 def test_runtime_catalog_extension_uses_the_same_ir_and_compiler(tmp_path: Path) -> None:
     config = audience_runtime.catalog_snapshot()
     config["sources"]["synthetic_signal"] = {
@@ -220,25 +234,17 @@ def test_exists_inherits_exact_provenance_from_its_relation_predicate() -> None:
     }
 
 
-def test_bare_recent_is_a_missing_period_and_blocks_sql() -> None:
+def test_bare_recent_uses_the_default_five_day_window_and_compiles() -> None:
     expression = _campaign_audience_expression(
         BARE_RECENT_QUERY,
         contact_evidence="최근 캠페인 발송 성공 횟수가 3회 이상",
-        window=None,
+        window=event_ir.RollingWindow(value=5, unit="day"),
     )
     structured = _canonical_payload(BARE_RECENT_QUERY, expression)
 
-    assert structured.get(EVENT_EXPRESSION_KEY) is None
-    assert structured[AUDIENCE_REQUIREMENT_KEY]["issues"] == [
-        {
-            "code": "missing_argument",
-            "argument": "period",
-            "message": "'최근'의 범위를 확정할 기간 값이 필요합니다.",
-            "evidence": {"text": "최근", "start": 0, "end": 2},
-        }
-    ]
-    assert structured["semantic_ir"]["status"] == "needs_clarification"
-    assert structured["semantic_ir"]["missing_fields"] == ["audience.period"]
+    assert structured[EVENT_EXPRESSION_KEY]["expression"] == expression.to_dict()
+    assert structured[AUDIENCE_REQUIREMENT_KEY]["issues"] == []
+    assert structured["semantic_ir"]["status"] == "resolved"
 
     plan = graph_rag.build_query_plan(
         BARE_RECENT_QUERY,
@@ -255,9 +261,8 @@ def test_bare_recent_is_a_missing_period_and_blocks_sql() -> None:
         original_query=BARE_RECENT_QUERY,
     )
 
-    assert plan.get(EVENT_EXPRESSION_KEY) is None
-    assert result["sql"] is None
-    assert result["failure_reason"] == "semantic_ir_needs_clarification"
+    assert plan[EVENT_EXPRESSION_KEY]["expression"] == expression.to_dict()
+    assert result["sql"] is not None
 
 
 def test_canonical_campaign_expression_is_the_only_sql_authority() -> None:

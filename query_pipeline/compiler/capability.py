@@ -43,6 +43,8 @@ _EVENT_IR_NODES: frozenset[str] = frozenset(
         "node.summarize",
         "node.order",
         "node.limit",
+        "node.limit.count",
+        "node.limit.percent",
         "node.occurrence",
         "node.duration",
         # 창 노드는 두 이름으로 보고된다: 노드 종류(node.*)와 창의 종류(window.*).
@@ -81,6 +83,7 @@ GENERIC_SQL_CAPABILITIES: frozenset[str] = (
     | frozenset(f"operator.{operator.value}" for operator in SET_COMPARISON_OPERATORS)
 ) - (
     frozenset({"node.temporal_relation"})
+    | frozenset({"node.limit.percent"})
     | frozenset(f"node.{kind}" for kind in _UNRENDERED_WINDOWS)
     | frozenset(f"window.{kind}" for kind in _UNRENDERED_WINDOWS)
 )

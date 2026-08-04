@@ -41,6 +41,7 @@ from query_pipeline.event_query.expressions import (
     EventExpression,
     LiteralOperand,
     LiteralValue,
+    LimitedRelation,
     RelativeWindow,
     RollingWindow,
     TimeWindow,
@@ -375,6 +376,10 @@ def required_capabilities(expression: EventExpression) -> tuple[str, ...]:
             capabilities.add(f"operator.{node.operator.value}")
         if isinstance(node, TimeWindowExpression):
             capabilities.add(f"window.{node.window.kind}")
+        if isinstance(node, LimitedRelation):
+            capabilities.add(
+                "node.limit.percent" if node.percent is not None else "node.limit.count"
+            )
     return tuple(sorted(capabilities))
 
 

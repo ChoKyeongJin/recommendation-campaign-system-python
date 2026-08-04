@@ -267,14 +267,26 @@ _DEFINITIONS: dict[str, Any] = {
         },
         description="Deterministically orders a derived relation; measure rank key precedes entity tie-break keys.",
     ),
-    "limit": _object(
+    "limit_count": _object(
         {
             "type": _tag("limit"),
             "relation": _ref("relation"),
             "count": {"type": "integer", "minimum": 1},
         },
-        description="Limits an internal ordered relation (for example top-K); this is not the root member result_limit.",
+        description="Limits an internal ordered relation to an absolute row count; this is not the root member result_limit.",
     ),
+    "limit_percent": _object(
+        {
+            "type": _tag("limit"),
+            "relation": _ref("relation"),
+            "percent": {"type": "number", "minimum": 0, "maximum": 100},
+        },
+        description="Limits an internal ordered relation to a percentage of its declared population. Runtime validation enforces the open interval 0 < percent < 100.",
+    ),
+    # Two closed wire shapes survive provider strictification.  A single object
+    # with optional count/percent fields would become required-and-nullable and
+    # lose the exactly-one invariant at the LLM boundary.
+    "limit": {"anyOf": [_ref("limit_count"), _ref("limit_percent")]},
     "relation": {
         "anyOf": [
             _ref("source"),

@@ -17,6 +17,47 @@ base_entity.date_format 이 선언하는 스키마 사실이고, 여기는 그 �
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from decimal import Decimal
+from typing import Literal
+
+
+class UnsupportedDialectFeatureError(ValueError):
+    """요청 의미를 이 방언이 정확히 렌더할 수 없을 때의 fail-close 신호."""
+
+
+@dataclass(frozen=True)
+class RowLimit:
+    """관계 행 제한의 값과 단위. count와 percent를 문자열로 섞지 않는다."""
+
+    unit: Literal["count", "percent"]
+    value: int | Decimal
+
+    def __post_init__(self) -> None:
+        if self.unit == "count":
+            if isinstance(self.value, bool) or not isinstance(self.value, int) or self.value < 1:
+                raise ValueError("count row limit must be a positive integer")
+            return
+        if self.unit == "percent":
+            if not isinstance(self.value, Decimal) or not self.value.is_finite():
+                raise ValueError("percent row limit must be a finite Decimal")
+            if not Decimal("0") < self.value < Decimal("100"):
+                raise ValueError("percent row limit must be between 0 and 100")
+            return
+        raise ValueError(f"unknown row limit unit: {self.unit!r}")
+
+
+@dataclass(frozen=True)
+class RenderedRowLimit:
+    prefix: str = ""
+    suffix: str = ""
+
+
+def _decimal_sql(value: Decimal) -> str:
+    rendered = format(value, "f")
+    if "." in rendered:
+        rendered = rendered.rstrip("0").rstrip(".")
+    return rendered
 
 class SqlDialect:
     """ANSI/PostgreSQL 지향 기본 방언. 서브클래스가 엔진별 문법만 오버라이드한다."""
@@ -115,6 +156,18 @@ class SqlDialect:
         """문장 끝에 붙는 제한 구문(없으면 빈 문자열)."""
         return f"LIMIT {int(limit)}"
 
+    def render_row_limit(self, limit: RowLimit) -> RenderedRowLimit:
+        """단위가 보존된 행 제한을 렌더한다. 미지원 단위는 조용히 근사하지 않는다."""
+        if limit.unit == "count":
+            count = int(limit.value)
+            return RenderedRowLimit(
+                prefix=self.row_limit_prefix(count),
+                suffix=self.row_limit_suffix(count),
+            )
+        raise UnsupportedDialectFeatureError(
+            f"{self.name} dialect does not support percent row limits"
+        )
+
     # ── 힌트 ───────────────────────────────────────────────────────
     def nolock_hint(self) -> str:
         """더티리드 허용 테이블 힌트(진단용 COUNT 등). 지원 안 하는 엔진은 빈 문자열."""
@@ -162,6 +215,18 @@ class TSqlDialect(SqlDialect):
 
     def row_limit_suffix(self, limit: int) -> str:
         return ""
+
+    def render_row_limit(self, limit: RowLimit) -> RenderedRowLimit:
+        if limit.unit == "percent":
+            assert isinstance(limit.value, Decimal)
+            rendered = _decimal_sql(limit.value)
+            # T-SQL permits the legacy parenthesis-free TOP form only for an
+            # integer constant.  Preserve existing integer SQL while emitting
+            # the required expression form for fractional percentages.
+            if limit.value != limit.value.to_integral_value():
+                rendered = f"({rendered})"
+            return RenderedRowLimit(prefix=f"TOP {rendered} PERCENT ")
+        return super().render_row_limit(limit)
 
     def nolock_hint(self) -> str:
         return " WITH(NOLOCK)"

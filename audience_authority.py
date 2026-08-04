@@ -214,6 +214,51 @@ def executes_event_ir(plan: Any) -> bool:
     return resolve_authority(plan) is AudienceAuthority.EVENT_IR
 
 
+def declares_canonical_audience(plan: Any) -> bool:
+    """Whether the request entered through the canonical audience contract.
+
+    This is intentionally different from :func:`executes_event_ir`: a failed
+    canonical request has no executable expression yet, but it still must not
+    fall through to a second audience language.  An explicitly stamped legacy
+    authority is the only rollback escape hatch for stored migration assets.
+    """
+
+    if not isinstance(plan, Mapping):
+        return False
+    requirement = plan.get("audience_requirement")
+    if not isinstance(requirement, Mapping):
+        return False
+    semantic_plan = plan.get("semantic_plan")
+    semantic_nodes = (
+        semantic_plan.get("nodes") if isinstance(semantic_plan, Mapping) else None
+    )
+    # CampaignPlan V4 carries an empty audience placeholder even when a
+    # non-audience SemanticPlan node owns the request (metric/history flows).
+    # That placeholder is not an audience language.  A real expression, an
+    # explicit issue, or an otherwise empty semantic plan is canonical ingress.
+    return bool(
+        isinstance(requirement.get("expression"), Mapping)
+        or requirement.get("issues")
+        or not semantic_nodes
+    )
+
+
+def requires_event_ir(plan: Any) -> bool:
+    """True when canonical ingress must resolve to Event IR or fail closed."""
+
+    if not isinstance(plan, Mapping):
+        return False
+    # An explicit authority is application-owned migration state.  In
+    # particular, ``legacy`` is the only rollback escape hatch; a model must
+    # not be able to infer or manufacture it.
+    if plan.get(PLAN_AUTHORITY_KEY) is not None:
+        return resolve_authority(plan) is AudienceAuthority.EVENT_IR
+    # Fresh canonical ingress can fail before an executable expression exists,
+    # while cut-over/stored payloads can contain only the authority-compatible
+    # expression marker.  Both cases must stay on the one Event IR route.
+    return declares_canonical_audience(plan) or executes_event_ir(plan)
+
+
 def stamp_authority(plan: MutableMapping[str, Any], authority: AudienceAuthority) -> None:
     """명시 권위를 플랜에 남긴다(생산자용). 값은 문자열로 저장한다 — 직렬화 경계를 넘어야 한다."""
     plan[PLAN_AUTHORITY_KEY] = coerce_authority(authority).value
@@ -233,9 +278,11 @@ __all__ = [
     "can_transition",
     "coerce_authority",
     "coerce_status",
+    "declares_canonical_audience",
     "executes_event_ir",
     "is_blocked",
     "resolve_authority",
+    "requires_event_ir",
     "stamp_authority",
     "transition",
 ]
