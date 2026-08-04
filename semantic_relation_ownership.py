@@ -1298,25 +1298,18 @@ def relation_data_coverage_gaps(
 
 
 def project_relation_data_coverage(
-    payload: MutableMapping[str, Any], query: str, catalog: Mapping[str, Any]
+    payload: Mapping[str, Any], query: str, catalog: Mapping[str, Any]
 ) -> list[dict[str, Any]]:
-    """Project a proven gap to the existing fail-closed semantic IR channel."""
-    gaps = relation_data_coverage_gaps(payload, query, catalog)
-    if gaps:
-        # Import at the application boundary to avoid a module-import cycle:
-        # campaign_plan_v4 imports this relation owner before semantic_ir.
-        from query_structurer.semantic_ir import write_semantic_ir
-        from query_structurer.semantic_outcome import SemanticOutcome
+    """Return declared coverage diagnostics without changing executability.
 
-        outcome = SemanticOutcome.unsupported(
-            operations=[
-                {key: gap[key] for key in ("kind", "reason", "evidence")}
-                for gap in gaps
-            ],
-            message="요청한 이력 조건이 현재 월별 스냅샷 적재 범위를 벗어납니다.",
-        )
-        write_semantic_ir(payload, outcome.to_legacy_dict())
-    return gaps
+    Snapshot coverage describes the data currently loaded in one deployment;
+    it does not decide whether a requested SQL statement can be generated or
+    run in another deployment.  The history compiler preserves the requested
+    period in SQL and exposes shallow/missing data as a non-blocking advisory.
+    Consequently this diagnostic must never replace a resolved semantic
+    outcome with ``unsupported``.
+    """
+    return relation_data_coverage_gaps(payload, query, catalog)
 
 
 def _text_hits(query: str, term: str) -> list[tuple[int, int]]:

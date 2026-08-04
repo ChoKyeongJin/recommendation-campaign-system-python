@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any
 
 import event_compiler
 import event_ir
@@ -23,13 +24,7 @@ import semantic_domain_binding
 import semantic_fields
 import semantic_plan
 import temporal_semantics
-from resolved_semantic_catalog import (
-    CatalogError,
-    DataCoverageSpec,
-    MetricSpec,
-    ResolvedSemanticCatalog,
-)
-
+from resolved_semantic_catalog import CatalogError, MetricSpec, ResolvedSemanticCatalog
 
 LOWERED = "lowered"
 FAILED = "failed"
@@ -42,7 +37,6 @@ CATALOG_SYMBOL_UNRESOLVED = "catalog_symbol_unresolved"
 CATALOG_CONTRACT_MISMATCH = "catalog_contract_mismatch"
 VALUE_NOT_NORMALIZED = "value_not_normalized"
 OPERATION_UNSUPPORTED = "operation_unsupported"
-DATA_COVERAGE_GAP = "data_coverage_gap"
 CHILD_LOWERING_FAILED = "child_lowering_failed"
 
 
@@ -723,7 +717,6 @@ class SemanticPlanEventLowerer:
                     f"time binding {time.id!r} does not allow {getattr(window, 'type', '')!r}",
                     catalog_symbols=(metric.id, time.id),
                 )
-            self._check_coverage(metric, time.coverage, window)
             filters.append(event_ir.TimeFilter(field=event_ir.FieldRef(time.field), window=window))
             symbols.extend((time.id, time.field))
         if predicate is not None:
@@ -840,44 +833,6 @@ class SemanticPlanEventLowerer:
                 raise LoweringError(VALUE_NOT_NORMALIZED, f"invalid rolling window: {raw!r}") from exc
         raise LoweringError(VALUE_NOT_NORMALIZED, f"unknown normalized time window: {raw!r}")
 
-    def _check_coverage(
-        self, metric: MetricSpec, time_coverage: str, window: event_ir.TimeWindow
-    ) -> None:
-        coverage_id = metric.coverage
-        if coverage_id == "unknown":
-            coverage_id = time_coverage
-        if coverage_id == "unknown":
-            coverage_id = self.catalog.source(metric.source).coverage
-        coverage = self.catalog.coverage(coverage_id)
-        issue = self._coverage_issue(coverage, window)
-        if issue:
-            raise LoweringError(
-                DATA_COVERAGE_GAP,
-                issue,
-                catalog_symbols=(metric.id, coverage.id),
-            )
-
-    @staticmethod
-    def _coverage_issue(coverage: DataCoverageSpec, window: event_ir.TimeWindow) -> str:
-        if isinstance(window, event_ir.AbsoluteInterval):
-            if coverage.available_from and window.start < coverage.available_from:
-                return (
-                    f"window starts at {window.start.isoformat()}, before coverage "
-                    f"{coverage.available_from.isoformat()}"
-                )
-            if coverage.complete_through and window.inclusive_end > coverage.complete_through:
-                return (
-                    f"window ends at {window.inclusive_end.isoformat()}, after complete coverage "
-                    f"{coverage.complete_through.isoformat()}"
-                )
-        elif coverage.max_lookback_days is not None:
-            days = window.days if isinstance(window, event_ir.RollingWindow) else (
-                window.value * event_ir.UNIT_DAYS[window.unit]
-            )
-            if days > coverage.max_lookback_days:
-                return f"window needs {days} days, coverage allows {coverage.max_lookback_days}"
-        return ""
-
     @staticmethod
     def _literal(raw: Any, value_type: str) -> int | float | str | bool:
         if isinstance(raw, Mapping):
@@ -989,18 +944,17 @@ __all__ = [
     "CATALOG_CONTRACT_MISMATCH",
     "CATALOG_SYMBOL_UNRESOLVED",
     "CHILD_LOWERING_FAILED",
-    "DATA_COVERAGE_GAP",
     "FAILED",
     "LOWERED",
-    "LoweringReceipt",
-    "LoweringResult",
     "MISSING_ARGUMENT",
     "OPERATION_UNSUPPORTED",
     "PARTIALLY_SUPPORTED",
     "SUPPORTED",
-    "SemanticPlanEventLowerer",
     "UNSUPPORTED",
     "VALUE_NOT_NORMALIZED",
+    "LoweringReceipt",
+    "LoweringResult",
+    "SemanticPlanEventLowerer",
     "expression_fingerprint",
     "lower_semantic_plan",
 ]

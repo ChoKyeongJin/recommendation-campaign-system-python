@@ -1471,9 +1471,12 @@ def attach_campaign_query_plan_v4_identity(
         plan_decisions.record(
             enriched,
             filter_name="semantic_relation_ownership.data_coverage",
-            action=plan_decisions.REJECT,
-            slot="semantic_ir",
-            reason="월별 스냅샷 적재 범위로 실행 불가능함을 확정",
+            action=plan_decisions.KEEP,
+            slot="semantic_plan",
+            reason=(
+                "월별 스냅샷 적재 범위 진단은 SQL 생성 가능 여부를 제한하지 않으므로 "
+                "요청 의미를 보존"
+            ),
             value=gap,
         )
     enriched[QUERY_IDENTITY_DIGEST_KEY] = campaign_query_identity_digest(enriched)

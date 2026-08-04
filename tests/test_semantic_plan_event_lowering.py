@@ -11,7 +11,6 @@ import event_ir  # noqa: E402
 import semantic_plan  # noqa: E402
 from resolved_semantic_catalog import resolve_semantic_catalog  # noqa: E402
 from semantic_plan_event_lowering import (  # noqa: E402
-    DATA_COVERAGE_GAP,
     FAILED,
     LOWERED,
     MISSING_ARGUMENT,
@@ -238,7 +237,7 @@ def test_one_unknown_metric_blocks_the_whole_plan_instead_of_narrowing_it() -> N
     ]
 
 
-def test_declared_data_coverage_rejects_an_unanswerable_window() -> None:
+def test_declared_data_coverage_does_not_restrict_sql_lowering() -> None:
     node = _node({
         "id": "history",
         "type": "aggregate_predicate",
@@ -252,7 +251,15 @@ def test_declared_data_coverage_rejects_an_unanswerable_window() -> None:
 
     result = lower_semantic_plan(_plan(node), _catalog())
 
-    assert result.failures[0].failure_code == DATA_COVERAGE_GAP
+    assert result.status == SUPPORTED
+    assert result.executable and result.expression is not None
+    assert result.failures == ()
+    assert any(
+        isinstance(node, event_ir.RollingWindow)
+        and node.value == 500
+        and node.unit == "day"
+        for node in event_ir.walk(result.expression)
+    )
 
 
 def test_lowering_fingerprint_is_deterministic_and_ignores_evidence_offsets() -> None:
@@ -272,4 +279,3 @@ def test_lowering_fingerprint_is_deterministic_and_ignores_evidence_offsets() ->
 
     assert left.expression_fingerprint == right.expression_fingerprint
     assert left.receipts[0].expression_fingerprint == right.receipts[0].expression_fingerprint
-

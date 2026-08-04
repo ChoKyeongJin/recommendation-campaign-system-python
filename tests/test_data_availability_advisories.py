@@ -1,13 +1,13 @@
-"""적재 범위 판정의 차단/고지 경계를 고정한다.
+"""적재 범위 판정의 SQL 생성/고지 경계를 고정한다.
 
-기준은 "행이 나오는가"가 아니라 **"SQL 이 틀리는가"**다:
+이 프로젝트의 산출물은 SQL 이다. 스냅샷 적재 여부는 SQL 생성 capability가 아니므로:
 
-  · 요청 기간이 완전 적재 범위 밖 → 관측했다는 전제가 거짓이므로 SQL 을 막는다.
-  · 요청 기간이 완전 적재 범위 안 → SQL 을 내며 상시 경고를 붙이지 않는다.
+  · 요청 기간이 현재 적재 범위 밖 → 요청 기간을 보존한 SQL 을 낸다.
+  · 요청 기간이 현재 적재 범위 안 → SQL 을 내며 상시 경고를 붙이지 않는다.
   · 의미가 접히는 컴파일    → 다른 대상을 내는 오답이다. 여전히 막는다(컴파일러의 일).
 
-완전 적재가 선언되지 않은 월에 0건이 나온 것은 "조건을 만족한 회원이 없음"과 구분할 수 없다.
-그래서 그 경우는 advisory 로 SQL 옆에 싣지 않고 ``data_coverage_gap`` 으로 정직하게 닫는다.
+적재 범위 선언은 운영 데이터에 대한 관찰일 뿐, 미래·다른 환경에서 실행할 SQL의 유효성을
+제한하지 않는다. 데이터 가용성 고지는 실행 경로가 제공하는 경우에만 부가 정보로 취급한다.
 """
 
 from __future__ import annotations
@@ -50,23 +50,21 @@ def _as_of_month_node() -> list[dict]:
     }]
 
 
-def test_out_of_range_month_is_blocked_with_a_named_coverage_gap() -> None:
-    result, plan = _run(QUERY, _as_of_month_node())
-
-    assert not result["is_success"] and result["sql"] is None
-    assert result["failure_reason"] == "semantic_ir_unsupported"
-    assert result["interpretation_status"] == "unsupported"
-    unsupported = plan["semantic_ir"]["unsupported_operations"]
-    assert unsupported[0]["kind"] == "data_coverage_gap"
-    assert "2025-12-01..2025-12-31" in unsupported[0]["reason"]
-
-
-def test_out_of_range_coverage_never_downgrades_to_an_advisory() -> None:
+def test_out_of_range_month_still_generates_sql_with_exact_requested_month() -> None:
     result, _plan = _run(QUERY, _as_of_month_node())
 
-    assert result["sql"] is None
-    assert result["failure_reason"] == "semantic_ir_unsupported"
-    assert not result.get(RESPONSE_KEY)
+    assert result["is_success"] and result["sql"] is not None
+    assert "MS.YYYYMM >= '202512'" in result["sql"]
+    assert "MS.YYYYMM < '202601'" in result["sql"]
+    assert result.get("failure_reason") is None
+
+
+def test_out_of_range_coverage_does_not_block_sql() -> None:
+    result, _plan = _run(QUERY, _as_of_month_node())
+
+    assert result["sql"] is not None
+    assert result["is_success"]
+    assert result.get("failure_reason") is None
 
 
 def test_advisory_is_absent_when_the_window_is_inside_coverage() -> None:

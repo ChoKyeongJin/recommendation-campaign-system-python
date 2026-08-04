@@ -412,7 +412,7 @@ def test_lowered_history_receipt_discharges_only_its_source_obligation() -> None
     assert not plan.get("unresolved_source_conditions")
 
 
-def test_as_of_literal_is_deferred_then_coverage_gap_is_unsupported() -> None:
+def test_as_of_literal_is_deferred_then_requested_month_is_compiled() -> None:
     query = "여성이면서 지난달 말 기준 VIP였던 회원"
     payload = _attach(
         query,
@@ -426,9 +426,10 @@ def test_as_of_literal_is_deferred_then_coverage_gap_is_unsupported() -> None:
     assert payload["audience_requirement"]["issues"] == []
     assert payload["semantic_plan"]["nodes"][0]["period"]["type"] == "interval"
     plan, result = _sql_result(query, payload)
-    assert not result["is_success"] and result.get("sql") is None
-    assert result["failure_reason"] == "semantic_ir_unsupported"
-    assert plan["semantic_ir"]["unsupported_operations"][0]["kind"] == "data_coverage_gap"
+    assert result["is_success"] and result.get("sql") is not None
+    assert "MS.YYYYMM >= '202607'" in result["sql"]
+    assert "MS.YYYYMM < '202608'" in result["sql"]
+    assert plan["semantic_ir"]["status"] == "resolved"
 
 
 def test_empty_as_of_period_does_not_promote_physical_snapshot_field() -> None:
@@ -522,14 +523,10 @@ def test_live_physical_grade_field_uses_declared_as_of_coverage_owner() -> None:
         "end_exclusive": "2026-08-01",
     }
     plan, result = _sql_result(query, payload)
-    assert not result["is_success"] and result.get("sql") is None
-    assert result["failure_reason"] == "semantic_ir_unsupported"
-    assert result["interpretation_status"] == "unsupported"
-    unsupported = plan["semantic_ir"]["unsupported_operations"]
-    assert unsupported[0]["kind"] == "data_coverage_gap"
-    assert unsupported[0]["evidence"] == "지난달 말 기준 VIP였던"
-    assert "2026-07-31" in unsupported[0]["reason"]
-    assert "2017-01-31" in unsupported[0]["reason"]
+    assert result["is_success"] and result.get("sql") is not None
+    assert "MS.YYYYMM >= '202607'" in result["sql"]
+    assert "MS.YYYYMM < '202608'" in result["sql"]
+    assert plan["semantic_ir"]["status"] == "resolved"
 
 
 def test_physical_grade_field_as_of_inside_declared_coverage_still_compiles() -> None:

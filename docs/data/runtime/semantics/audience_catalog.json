@@ -834,8 +834,8 @@
         "temporal_operators 는 이 시간 바인딩이 받을 수 있는 범용 연산자다. 여기 없는 연산자를",
         "요구하는 노드는 lowering 이 fail-close 한다 — 다월 연산(내내 유지/N회 변경/모든 월 존재)이",
         "빠져 있는 것은 누락이 아니라 선언이다: CRM_MB_MONTHCRMINFO 는 단일 월 + 직전값 컬럼뿐이라",
-        "다월 연산은 옳은 SQL 이 존재하지 않는다. 적재가 늘면 이 목록에 연산자를 더하고",
-        "data_coverage 의 창을 넓히면 열린다(코드 변경 없음)."
+        "다월 연산은 옳은 SQL 이 존재하지 않는다. 지원 연산자는 컴파일러와 바인딩이",
+        "정확한 SQL 을 만들 수 있을 때만 추가한다. data_coverage 는 비차단 진단 정보다."
       ],
       "field": "member_month_snapshot.occurred_at",
       "window_types": ["interval", "relative"],

@@ -82,7 +82,7 @@ def _result(query: str, payload: dict) -> tuple[dict, dict]:
         ("이번 달 기준 골드 등급 회원", "member_month_snapshot.grade", 8, None),
     ],
 )
-def test_live_as_of_month_outside_declared_snapshot_coverage_is_unsupported(
+def test_live_as_of_month_outside_declared_snapshot_coverage_is_not_a_failure(
     query: str, attribute: str, month: int, issue_text: str | None
 ) -> None:
     value = "vip" if month == 7 else "gold_grade"
@@ -122,18 +122,26 @@ def test_live_as_of_month_outside_declared_snapshot_coverage_is_unsupported(
     )
 
     assert payload["semantic_plan"]["nodes"][0]["attribute"] == "member_grade"
-    assert payload["semantic_ir"]["status"] == "unsupported"
-    assert payload["semantic_ir"]["unsupported_operations"][0]["kind"] == (
-        "data_coverage_gap"
-    )
+    unsupported = payload["semantic_ir"]["unsupported_operations"]
+    assert all(item["kind"] != "data_coverage_gap" for item in unsupported)
     plan, result = _result(query, payload)
-    assert not result["is_success"] and result.get("sql") is None
-    assert result["failure_reason"] == "semantic_ir_unsupported"
-    assert result["interpretation_status"] == "unsupported"
-    assert plan["semantic_ir"]["status"] == "unsupported"
+    if issue_text is None:
+        assert payload["semantic_ir"]["status"] == "resolved"
+        assert result["is_success"] and result.get("sql") is not None
+        assert f"MS.YYYYMM >= '2026{month:02d}'" in result["sql"]
+        assert f"MS.YYYYMM < '2026{month + 1:02d}'" in result["sql"]
+    else:
+        # The explicit model-authored unsupported issue remains a failure; the
+        # snapshot date itself is no longer the reason.
+        assert payload["semantic_ir"]["status"] == "unsupported"
+        assert not result["is_success"] and result.get("sql") is None
+        assert result["failure_reason"] == "semantic_ir_unsupported"
+        assert plan["semantic_ir"]["unsupported_operations"][0]["kind"] != (
+            "data_coverage_gap"
+        )
 
 
-def test_live_this_month_interval_reprojects_coverage_when_derived_ir_is_lost() -> None:
+def test_live_this_month_interval_still_compiles_when_derived_ir_is_lost() -> None:
     """Replay #16's strict raw node and the candidate-coercion loss boundary."""
     query = "이번 달 기준 골드 등급 회원"
     value_start = query.index("골드 등급")
@@ -172,17 +180,15 @@ def test_live_this_month_interval_reprojects_coverage_when_derived_ir_is_lost() 
         "start": "2026-08-01",
         "end_exclusive": "2026-09-01",
     }
-    # Re-emission/candidate reconstruction carries source nodes, not the
-    # derived semantic_ir verdict.  SQL delivery must re-derive coverage.
+    # Re-emission/candidate reconstruction carries source nodes, not derived
+    # diagnostics. SQL delivery must still compile the requested month.
     payload.pop("semantic_ir")
     plan, result = _result(query, payload)
 
-    assert not result["is_success"] and result.get("sql") is None
-    assert result["failure_reason"] == "semantic_ir_unsupported"
-    assert result["interpretation_status"] == "unsupported"
-    unsupported = plan["semantic_ir"]["unsupported_operations"]
-    assert unsupported[0]["kind"] == "data_coverage_gap"
-    assert "2026-08-31" in unsupported[0]["reason"]
+    assert result["is_success"] and result.get("sql") is not None
+    assert "MS.YYYYMM >= '202608'" in result["sql"]
+    assert "MS.YYYYMM < '202609'" in result["sql"]
+    assert plan.get("semantic_ir", {}).get("status") in (None, "resolved")
 
 
 def test_live_this_month_snapshot_comparison_is_promoted_before_retry() -> None:
@@ -233,17 +239,15 @@ def test_live_this_month_snapshot_comparison_is_promoted_before_retry() -> None:
         "start": "2026-08-01",
         "end_exclusive": "2026-09-01",
     }
-    assert payload["semantic_ir"]["status"] == "unsupported"
-    assert payload["semantic_ir"]["unsupported_operations"][0]["kind"] == (
-        "data_coverage_gap"
-    )
+    assert payload["semantic_ir"]["status"] == "resolved"
+    assert payload["semantic_ir"]["unsupported_operations"] == []
     assert payload["decisions"][0]["filter"] == (
         "semantic_relation_ownership.snapshot_as_of"
     )
     _, result = _result(query, payload)
-    assert not result["is_success"] and result.get("sql") is None
-    assert result["failure_reason"] == "semantic_ir_unsupported"
-    assert result["interpretation_status"] == "unsupported"
+    assert result["is_success"] and result.get("sql") is not None
+    assert "MS.YYYYMM >= '202608'" in result["sql"]
+    assert "MS.YYYYMM < '202609'" in result["sql"]
 
 
 def test_live_snapshot_value_only_evidence_is_promoted_with_verified_member_tail() -> None:
@@ -276,9 +280,8 @@ def test_live_snapshot_value_only_evidence_is_promoted_with_verified_member_tail
     node = payload["semantic_plan"]["nodes"][0]
     assert node["source_span"] == query
     assert node["attribute"] == "member_grade"
-    assert payload["semantic_ir"]["unsupported_operations"][0]["kind"] == (
-        "data_coverage_gap"
-    )
+    assert payload["semantic_ir"]["status"] == "resolved"
+    assert payload["semantic_ir"]["unsupported_operations"] == []
 
 
 def test_this_month_as_of_bridge_is_not_added_to_shared_history_lexicon() -> None:
@@ -457,10 +460,10 @@ def test_snapshot_comparison_requires_explicit_empty_issue_list() -> None:
     assert payload["semantic_plan"]["nodes"] == []
 
 
-def test_rebuilt_normalized_period_reprojects_coverage_before_history_compile(
+def test_rebuilt_normalized_period_reaches_history_compile_despite_coverage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A re-emitted typed plan cannot discard its candidate coverage verdict."""
+    """A re-emitted typed plan keeps compiling regardless of local snapshot depth."""
     query = "이번 달 기준 골드 등급 회원"
     raw_node = _node(
         query,
@@ -488,20 +491,18 @@ def test_rebuilt_normalized_period_reprojects_coverage_before_history_compile(
         }
 
     monkeypatch.setattr(graph_rag.semantic_plan_bridge, "apply", rebuild)
-    monkeypatch.setattr(
-        graph_rag.member_attribute_history,
-        "apply",
-        lambda *_args, **_kwargs: pytest.fail(
-            "history compiler must not run after a rebuilt coverage gap"
-        ),
-    )
+    calls: list[str] = []
+
+    def record_history_compile(*_args: object, **_kwargs: object) -> None:
+        calls.append("called")
+
+    monkeypatch.setattr(graph_rag.member_attribute_history, "apply", record_history_compile)
 
     graph_rag._apply_semantic_plan_pipeline(plan, query)
 
-    assert plan["semantic_ir"]["status"] == "unsupported"
-    unsupported = plan["semantic_ir"]["unsupported_operations"]
-    assert unsupported[0]["kind"] == "data_coverage_gap"
-    assert "2026-08-31" in unsupported[0]["reason"]
+    assert calls == ["called"]
+    assert plan["semantic_ir"]["status"] == "resolved"
+    assert plan["semantic_ir"]["unsupported_operations"] == []
 
 
 def test_live_previous_grade_field_reaches_prev_snapshot_sql() -> None:
@@ -659,7 +660,7 @@ def test_previous_grade_short_leaf_with_duplicate_source_candidates_stays_unowne
         ),
     ],
 )
-def test_live_multi_month_history_is_blocked_before_empty_sql(
+def test_live_multi_month_history_is_not_blocked_by_snapshot_depth(
     query: str,
     node: dict,
     expression: dict | None,
@@ -673,14 +674,22 @@ def test_live_multi_month_history_is_blocked_before_empty_sql(
         issues=[_issue(query, *issues)] if issues is not None else [],
     )
 
+    gaps = semantic_relation_ownership.relation_data_coverage_gaps(
+        payload, query, audience_runtime.catalog_snapshot()
+    )
+    assert f"requires {required_months} distinct monthly snapshots" in gaps[0]["reason"]
     unsupported = payload["semantic_ir"]["unsupported_operations"]
-    assert payload["semantic_ir"]["status"] == "unsupported"
-    assert unsupported[0]["kind"] == "data_coverage_gap"
-    assert f"requires {required_months} distinct monthly snapshots" in unsupported[0]["reason"]
-    _, result = _result(query, payload)
-    assert not result["is_success"] and result.get("sql") is None
-    assert result["failure_reason"] == "semantic_ir_unsupported"
-    assert result["interpretation_status"] == "unsupported"
+    assert all(item["kind"] != "data_coverage_gap" for item in unsupported)
+    plan, result = _result(query, payload)
+    # These replay payloads may still fail for an explicit model issue or an
+    # Event IR expressibility gap. Neither failure may be attributed to local
+    # snapshot depth.
+    if not result["is_success"]:
+        assert result["failure_reason"] != "data_coverage_gap"
+        assert all(
+            item.get("kind") != "data_coverage_gap"
+            for item in plan.get("semantic_ir", {}).get("unsupported_operations", [])
+        )
 
 
 @pytest.mark.parametrize("operator", ["<", "<=", "lt", "lte"])

@@ -140,24 +140,18 @@ def test_semantic_plan_compiles_all_the_way_to_sql(query, nodes, expected_sql_fr
         assert plan["semantic_ir"]["status"] == "resolved"
 
 
-def test_held_throughout_beyond_complete_coverage_is_unsupported() -> None:
-    """'최근 3개월 내내 VIP 유지' needs three complete monthly snapshots.
-
-    The compiler can express the relation, but the declared dataset contains
-    only one complete snapshot month.  Emitting a three-month SQL predicate
-    would therefore pretend the requested observation window exists.
-    """
+def test_held_throughout_beyond_local_coverage_still_generates_sql() -> None:
+    """Local snapshot depth is not part of SQL generation capability."""
     result, plan = _run("최근 3개월 내내 VIP 등급을 유지한 회원", [
         {"id": "r1", "type": "relation_predicate", "source_span": "최근 3개월 내내 VIP 등급을 유지한",
          "subject": "member", "attribute": "member_grade", "relation": "held_throughout",
          "value": "VIP", "months": 3},
     ])
-    assert not result["is_success"] and result["sql"] is None
-    assert result["failure_reason"] == "semantic_ir_unsupported"
-    assert result["interpretation_status"] == "unsupported"
-    unsupported = plan["semantic_ir"]["unsupported_operations"]
-    assert unsupported[0]["kind"] == "data_coverage_gap"
-    assert "requires 3 distinct monthly snapshots" in unsupported[0]["reason"]
+    assert result["is_success"] and result["sql"] is not None
+    assert "TOP (3)" in result["sql"]
+    assert "COUNT(DISTINCT SNAPSHOT_TIME) = 3" in result["sql"]
+    assert plan["semantic_ir"]["status"] == "resolved"
+    assert result["data_availability_advisories"][0]["code"] == "data_coverage_shallow"
 
 
 def test_state_history_without_a_source_still_blocks() -> None:

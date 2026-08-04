@@ -9832,27 +9832,6 @@ def _apply_semantic_plan_pipeline(
     grade/state history axis: the working ``compositional_targeting`` compiler was
     never reachable because the pipeline returned before its input was written.
     """
-    if semantic_relation_ownership.project_relation_data_coverage(
-        query_plan, query, audience_runtime.catalog_snapshot()
-    ):
-        return
-    semantic_ir = query_plan.get("semantic_ir")
-    unsupported = (
-        semantic_ir.get("unsupported_operations")
-        if isinstance(semantic_ir, Mapping)
-        and semantic_ir.get("status") == "unsupported"
-        else None
-    )
-    if any(
-        isinstance(item, Mapping)
-        and item.get("kind") == semantic_plan_event_lowering.DATA_COVERAGE_GAP
-        for item in (unsupported or ())
-    ):
-        # Coverage is application-owned and monotonic for this request.  A
-        # fallback compiler cannot manufacture missing snapshot months, so
-        # letting it continue would replace an honest unsupported verdict with
-        # either a clarification or a deterministically empty success.
-        return
     canonical_only = audience_authority.requires_event_ir(query_plan)
     raw_nodes = query_plan.get(semantic_plan_bridge.PLAN_KEY)
     raw_nodes = raw_nodes.get("nodes") if isinstance(raw_nodes, dict) else None
@@ -9982,10 +9961,6 @@ def _apply_semantic_plan_pipeline(
             slot=semantic_plan_bridge.PLAN_KEY,
             reason=f"의미 파이프라인 내부 오류: {exc.__class__.__name__}: {exc}",
         )
-    if semantic_relation_ownership.project_relation_data_coverage(
-        query_plan, query, audience_runtime.catalog_snapshot()
-    ):
-        return
     # 등급/상태 이력 슬롯은 컴파일러가 쓰고, 실행 IR 로의 귀결은 전용 리졸버가 한다.
     member_attribute_history.apply(
         query_plan, query, catalog_loader=_attribute_history_catalog

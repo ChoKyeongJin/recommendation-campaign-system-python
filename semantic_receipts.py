@@ -196,35 +196,6 @@ def merge_into_event_expression(
             existing.setdefault("receipts", []).extend(
                 receipt.to_dict() for receipt in result.failures
             )
-        coverage = [
-            receipt for receipt in result.failures
-            if receipt.failure_code == semantic_plan_event_lowering.DATA_COVERAGE_GAP
-        ]
-        if coverage:
-            query_plan["semantic_ir"] = {
-                "status": "unsupported",
-                "operations": [],
-                "missing_fields": [],
-                "missing_field_causes": [],
-                "failure_kind": "unsupported",
-                "policy_applications": [],
-                "unsupported_operations": [
-                    {
-                        "kind": receipt.failure_code,
-                        "reason": receipt.message,
-                        "evidence": next(
-                            (
-                                str(node.get("source_span") or "")
-                                for node in _nodes(query_plan)
-                                if str(node.get("id")) == receipt.node_id
-                            ),
-                            "",
-                        ),
-                    }
-                    for receipt in coverage
-                ],
-                "message": "요청한 이력 기간이 현재 데이터 적재 구간을 벗어납니다.",
-            }
     plan_decisions.record(
         query_plan, filter_name="semantic_plan_event_merge",
         action=plan_decisions.SELECT if payload is not None else plan_decisions.REJECT,
