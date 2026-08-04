@@ -75,6 +75,39 @@ CAMPAIGN_FREQUENCY_VOCAB = "campaign_frequency_events"
 CAMPAIGN_AMOUNT_METRIC = SLOT_CAMPAIGN_BUY_AMOUNT
 
 
+# 구조화기가 방출하는 정렬 방향의 canonical 값. 여기 없는 값은 '반대 방향'이 아니라 **모름**이다.
+_DESCENDING = "descending"
+_ASCENDING = "ascending"
+
+
+def ranking_direction(raw: Any, *, high: str, low: str) -> str | None:
+    """정렬 방향 표면 → 슬롯 값. 읽을 수 없으면 ``None``.
+
+    예전에는 ``high if raw == "descending" else low`` 였다. 그러면 오타·대소문자·누락이 전부
+    ``low`` 로 떨어져 **상위 요청이 하위로 조용히 뒤집힌다**. 0건이 나오는 것은 이 시스템에서
+    문제가 아니지만 정반대 모집단이 나오는 것은 문제라, 모름을 방향으로 덮지 않는다.
+    """
+    if raw is _ASCENDING or raw is _DESCENDING or isinstance(raw, str):
+        text = str(raw)
+        if text == _DESCENDING:
+            return high
+        if text == _ASCENDING:
+            return low
+    return None
+
+
+def comparison_operator_or_none(raw: Any, *, default: str) -> str | None:
+    """비교 연산자 표면 → canonical 연산자. **값이 없으면** 기본값, **못 읽으면** ``None``.
+
+    이 구분이 핵심이다. 값이 없는 것은 정보 손실이 아니라 생략이므로 기본값이 옳다. 반대로 값이
+    있는데 못 읽는 것은 사용자가 방향을 말했다는 뜻이라, 기본값으로 덮으면 ``넘지 않는``(≤)이
+    ``>=`` 가 되는 식으로 모집단이 뒤집힌다.
+    """
+    if raw in (None, "", {}, []):
+        return default
+    return OperatorNormalizer.normalize_or_none(raw)
+
+
 def member_container() -> str:
     """회원 조건 슬롯이 들어갈 실행 플랜 컨테이너 이름(도메인 선언이 권위)."""
     return semantic_domain_binding.plan_container("member_condition") or "target_user"
@@ -700,7 +733,14 @@ class LegacyQueryPlanCompiler:
         threshold = node.values.get("threshold")
         if threshold not in (None, "", {}, []):
             ratio = RatioNormalizer.normalize(threshold)
-            operator = OperatorNormalizer.normalize_or_none(node.values.get("threshold_operator")) or ">="
+            operator = comparison_operator_or_none(node.values.get("threshold_operator"), default=">=")
+            if operator is None:
+                result.failures.append({
+                    "node_id": node.id,
+                    "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                    "reason": "변화율 임계의 비교 방향을 읽을 수 없다",
+                })
+                return
             slot["relative_change"] = {
                 "unit": "percent",
                 "comparisons": [{"operator": operator,
@@ -736,9 +776,17 @@ class LegacyQueryPlanCompiler:
             })
             return
         limit = RankLimitNormalizer.normalize(node.values.get("limit"))
+        direction = ranking_direction(node.values.get("direction"), high="high", low="low")
+        if direction is None:
+            result.failures.append({
+                "node_id": node.id,
+                "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                "reason": "회원 랭킹의 정렬 방향(상위/하위)을 읽을 수 없다",
+            })
+            return
         slot: dict[str, Any] = {
             "metric_id": ctx.resolve_metric("member_metric", node.values.get("metric")),
-            "direction": "high" if str(node.values.get("direction")) == "descending" else "low",
+            "direction": direction,
         }
         if limit.type == "percent":
             slot.update({"limit_type": "percent", "percent": limit.value})
@@ -777,10 +825,18 @@ class LegacyQueryPlanCompiler:
                 "reason": "파생 집합의 랭킹 제한은 개수만 지원한다",
             })
             return
+        direction = ranking_direction(ranking.values.get("direction"), high="top", low="bottom")
+        if direction is None:
+            result.failures.append({
+                "node_id": node.id,
+                "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                "reason": "파생 집합 랭킹의 정렬 방향(상위/하위)을 읽을 수 없다",
+            })
+            return
         slot: dict[str, Any] = {
             "entity": str(ranking.values.get("entity")),
             "measure": ctx.resolve_metric("entity_set_measure", ranking.values.get("metric")),
-            "direction": "top" if str(ranking.values.get("direction")) == "descending" else "bottom",
+            "direction": direction,
             "limit": int(limit.value),
             "relation": str(node.values.get("relation")),
             "negated": bool(node.values.get("negated")),
@@ -799,8 +855,16 @@ class LegacyQueryPlanCompiler:
         cardinality = node.values.get("cardinality")
         if cardinality not in (None, "", {}, []):
             quantity = AmountNormalizer.normalize(cardinality)
+            operator = comparison_operator_or_none(node.values.get("cardinality_operator"), default=">=")
+            if operator is None:
+                result.failures.append({
+                    "node_id": node.id,
+                    "failure_code": semantic_plan.UNSUPPORTED_SEMANTICS,
+                    "reason": "집합 개수 조건의 비교 방향을 읽을 수 없다",
+                })
+                return
             slot["cardinality"] = {
-                "operator": OperatorNormalizer.normalize_or_none(node.values.get("cardinality_operator")) or ">=",
+                "operator": operator,
                 "value": int(quantity.amount if isinstance(quantity, Money) else quantity.value),
             }
         if node.source_span:

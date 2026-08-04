@@ -36,7 +36,13 @@ _COMPARISON_TERMS: tuple[tuple[str, str], ...] = tuple(
 _COMPARISON_RE = re.compile(
     "|".join(re.escape(surface) for surface, _canonical in _COMPARISON_TERMS)
 )
-_PERCENT_RE = re.compile(r"(?<![\d.])(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>%|퍼센트|프로)")
+# 퍼센트포인트는 퍼센트가 아니다. 꼬리를 버리고 값만 가져오면 '비중 차이 10%포인트'가 '10%'라는
+# **다른 뜻**의 리터럴이 된다(차이 vs 값). 지금 이 시스템에는 %p 를 받을 지표가 없으므로 여기서는
+# 리터럴로 주장하지 않는 데까지만 한다 — 지표가 생기면 percentage_point 종류를 따로 추가한다.
+_PERCENTAGE_POINT_TAIL = r"(?!\s*(?:포인트|p(?![a-z])))"
+_PERCENT_RE = re.compile(
+    rf"(?<![\d.])(?P<value>\d+(?:\.\d+)?)\s*(?P<unit>%|퍼센트|프로){_PERCENTAGE_POINT_TAIL}"
+)
 # 문장 안에서 AmountNormalizer 에 넘길 금액 표면의 경계만 찾는다. 배수 계산과 한글 수사
 # 해석은 이 정규식이 아니라 AmountNormalizer 가 소유한다. 통화 표식이 필수이므로 기간이나
 # 단순 수량을 금액으로 추측하지 않는다.

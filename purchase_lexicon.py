@@ -73,6 +73,34 @@ def _no_negation_ahead_alt() -> str:
     return rf"(?!(?:{BOUND_PARTICLE_ALT})*(?:{NEGATION_ALT}))"
 
 
+# 완료 어미와 부정 사이에 낄 수 있는 글자 수. compact(공백 제거) 좌표라서 원문 기준 감각보다 짧다 —
+# ``audience_frame.DEFAULT_NEGATION_GAP`` (원문 8) 을 그대로 옮기면 안 된다(원문 8 ≈ compact 5이고,
+# compact 8 은 '구매 후 리뷰가 없는' 류를 부재로 뒤집는 지대다). 2 는 '한 건도 없는'의 '건도'를 딱
+# 넘고 그 이상은 안 넘는 폭이다.
+_COMPLETION_NEGATION_GAP = 2
+
+
+def _no_nearby_negation_alt() -> str:
+    """완료 어미 바로 뒤에 부정이 따라오면 긍정이 아니다.
+
+    갈래 1 에만 건다. 이 갈래는 완료 어미를 **소비**하고 끝나므로 :func:`_no_negation_ahead_alt`
+    의 '조사* + 부정' 모양으로는 막지 못한다 — ``주문이 한 건도 없는`` 에서 수사 '한'이 완료 어미
+    '한'과 표면이 같아 ``주문이한`` 까지 매치된 뒤, 남은 ``건도없는`` 이 조사가 아니라서 기존
+    가드를 그냥 통과한다. 글자 수로 잇는 이유가 그것이다(조사가 아닌 것이 사이에 낀다).
+    """
+    return rf"(?!.{{0,{_COMPLETION_NEGATION_GAP}}}(?:{NEGATION_ALT}))"
+
+
+def _not_double_negation_alt() -> str:
+    """부정 표지 뒤에 다시 부정이 오면 부재 주장이 아니다(``전혀 없지 않다``).
+
+    이중부정을 존재로 복원하지는 못한다 — 여기서 하는 일은 **부재로 뒤집히는 것을 막는 것**뿐이다.
+    존재를 되살리려면 부정 스코프를 절 단위로 세어야 하고 그건 이 표면 계층의 일이 아니다.
+    무주장(신호 없음)이 반전보다 낫다는 판단으로 남긴다.
+    """
+    return r"(?!.{0,2}(?:않|아니))"
+
+
 def positive_membership_alt() -> str:
     """구매 **존재** 표면형(compact 텍스트용 정규식 소스).
 
@@ -88,9 +116,10 @@ def positive_membership_alt() -> str:
     같은 자리를 존재로도 읽으면 '미구매 고객'이 두 극성을 동시에 갖는다.
     """
     guard = _no_negation_ahead_alt()
+    nearby_guard = _no_nearby_negation_alt()
     unprefixed = rf"(?<!(?:{NEGATION_PREFIX_ALT}))"
     return "|".join((
-        rf"{unprefixed}(?:{VERB_ALT})(?:{RECORD_ALT})?(?:{BOUND_PARTICLE_ALT})*(?:{COMPLETION_ALT})",
+        rf"{unprefixed}(?:{VERB_ALT})(?:{RECORD_ALT})?(?:{BOUND_PARTICLE_ALT})*(?:{COMPLETION_ALT}){nearby_guard}",
         rf"{unprefixed}(?:{VERB_ALT})(?:{RECORD_ALT}){guard}",
         rf"(?:{PRODUCT_NOUN_ALT})(?:{VERB_ALT}){guard}",
         rf"(?<!(?:{NEGATION_ADVERB_ALT}))(?:{COMPLETED_STEM_ALT}){guard}",
@@ -101,7 +130,8 @@ def positive_membership_alt() -> str:
 def negative_membership_alt() -> str:
     """구매 **부재** 표면형(compact 텍스트용 정규식 소스). 긍정형과 같은 동사·기록 명사 어휘를 쓴다."""
     return "|".join((
-        rf"(?:{VERB_ALT})(?:{RECORD_ALT})?(?:{BOUND_PARTICLE_ALT})*(?:{NEGATION_ALT})",
+        rf"(?:{VERB_ALT})(?:{RECORD_ALT})?(?:{BOUND_PARTICLE_ALT})*(?:{NEGATION_ALT})"
+        rf"{_not_double_negation_alt()}",
         rf"미(?:{VERB_ALT})",
     ))
 

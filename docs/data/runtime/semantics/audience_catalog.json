@@ -49,6 +49,22 @@
         "employee": {"physical": "Y", "aliases": ["임직원", "직원 회원"]}
       }
     },
+    "marriage_flag": {
+      "_comment": "순수 Y/N 플래그라 consent_flag 와 같은 근거로 여기서 인라인 선언한다(이중 소유 아님). 별칭에 맨 '결혼'을 넣지 않는다 — WEDDING_DAY(결혼기념일) 를 묻는 문장이 결혼 상태 조건으로 오발화한다.",
+      "label": "결혼 여부",
+      "values": {
+        "married": {"physical": "Y", "aliases": ["기혼", "기혼 회원", "결혼한", "결혼한 회원"]},
+        "unmarried": {"physical": "N", "aliases": ["미혼", "미혼 회원", "결혼 안 한"]}
+      }
+    },
+    "newproduct_favor_flag": {
+      "_comment": "ordered 를 켜지 않는다 — Y/N 한 글자에 부등호를 허용하면 사전식 순서로 조용히 틀린 SQL 이 된다.",
+      "label": "신제품 선호 여부",
+      "values": {
+        "favors_new_product": {"physical": "Y", "aliases": ["신제품 선호", "신상품 선호", "신제품 선호함"]},
+        "not_favors_new_product": {"physical": "N", "aliases": ["신제품 비선호", "신제품 선호하지 않음"]}
+      }
+    },
     "login_channel": {"label": "마지막 로그인 채널", "source_category": "login_channel"},
     "consent_flag": {
       "label": "수신 동의 여부",
@@ -79,7 +95,7 @@
       "negated_sources": ["purchase"],
       "note": "회원 전체 구매 부재는 purchase의 부정 Exists로만 전역 커버한다. active_cart의 KEEP_YN='Y'는 해당 카트 라인의 미결제 상태일 뿐이다. 그 상태어가 원문의 구매 부정 표면을 소유하는 범위는 family가 아니라 근거 스팬 단위이며, 소스 선언 selected_by가 그 규칙을 갖는다(같은 절일 때만 소유)."
     },
-    "campaign_contact": {"sources": ["campaign_contact_success"]},
+    "campaign_contact": {"sources": ["campaign_contact_success", "campaign_target"]},
     "offer_response": {"sources": ["campaign_offer_response", "campaign_response"]},
     "buy_response": {"sources": ["campaign_purchase_response", "campaign_response"]},
     "coupon_used": {"expressible": false, "note": "쿠폰 사용 사건 소스가 카탈로그에 없다. 슬롯 경로가 소유한다."},
@@ -184,6 +200,26 @@
       "grain": "event",
       "label": "회원 월별 스냅샷",
       "aliases": ["월별 스냅샷", "기준월 스냅샷"]
+    },
+    "campaign_target": {
+      "_comment": "캠페인 대상군 포함(발송 성공 여부 무관). 대상군 ⊇ 접촉 성공이므로 별칭에 '캠페인'·'발송' 같은 일반어를 넣지 않는다 — 접촉 요청을 가로채면 모집단이 조용히 넓어진다. 별칭 MT 와 조인 별칭 {alias}_ZC 는 campaign_contact_success 의 M/ZC 와 반드시 달라야 한다: 같으면 캠페인 단위 상관식이 ZC.x = ZC.x 항진명제로 무너지는데 별칭이 전부 허용목록에 있어 검증기가 통과시킨다. 회원 단위 판정임에 유의 — '캠페인 A 는 접촉 성공, B 는 미접촉'인 회원은 표현하지 못한다(캠페인별 의미는 CAMP_ID 조인 필드가 필요).",
+      "table": "Z_CAMP_MBR",
+      "alias": "MT",
+      "subject_key": "MEMBER_NO",
+      "event_subject_key": "MBR_NO",
+      "time_column": "CAMP_SDATE",
+      "time_format": "char8",
+      "binding": "fact_table",
+      "grain": "event",
+      "from_sql": "Z_CAMP_MBR {alias} INNER JOIN Z_CAMPAIGN {alias}_ZC ON {alias}_ZC.CAMP_ID = {alias}.CAMP_ID AND {alias}_ZC.CAMP_EXEC_NO = {alias}.CAMP_EXEC_NO",
+      "correlation_sql": "TRY_CAST({alias}.MBR_NO AS BIGINT) = {subject_alias}.{subject_key}",
+      "time_expression": "{alias}_ZC.CAMP_SDATE",
+      "extra_predicates": [
+        "{alias}.CELL_TYPE_CD = 'T'",
+        "ISNULL({alias}_ZC.CANCEL_YN, 'N') = 'N'"
+      ],
+      "label": "캠페인 대상군 포함",
+      "aliases": ["캠페인 대상군", "대상군에 포함", "캠페인 대상 고객군"]
     },
     "campaign_contact_success": {
       "table": "Z_CAMP_MBR",
@@ -334,6 +370,31 @@
       "label": "임직원 여부",
       "aliases": ["임직원", "직원 회원"]
     },
+    "subject.married": {
+      "source": "subject",
+      "column": "MARRIAGE_YN",
+      "data_type": "string",
+      "value_domain": "marriage_flag",
+      "negative_null_policy": "exclude_unknown",
+      "label": "결혼 여부",
+      "aliases": ["결혼 여부", "기혼", "기혼 회원", "결혼한 회원"]
+    },
+    "subject.deposit_balance": {
+      "source": "subject",
+      "column": "DEPOSIT_BALANCE_AMT",
+      "data_type": "number",
+      "unit": "currency",
+      "label": "예치금 잔액",
+      "aliases": ["예치금", "예치금 잔액"]
+    },
+    "subject.carrot_balance": {
+      "source": "subject",
+      "column": "CARROT_BALANCE_AMT",
+      "data_type": "number",
+      "unit": "currency",
+      "label": "적립금 잔액",
+      "aliases": ["적립금", "적립금 잔액", "당근 잔액"]
+    },
     "subject.last_login_channel": {
       "source": "subject",
       "column": "LAST_LOGIN_CHANNEL",
@@ -389,6 +450,14 @@
       "value_domain": "grade",
       "label": "직전 회원 등급",
       "aliases": ["직전 등급", "이전 등급"]
+    },
+    "member_month_snapshot.newproduct_favor": {
+      "source": "member_month_snapshot",
+      "column": "NEWPRODUCT_FAVOR_YN",
+      "data_type": "string",
+      "value_domain": "newproduct_favor_flag",
+      "label": "신제품 선호 여부",
+      "aliases": ["신제품 선호 여부", "신상품 선호 여부"]
     },
     "member_month_snapshot.worth_grade": {
       "source": "member_month_snapshot",
@@ -698,6 +767,19 @@
       "allowed_operators": ["=", "!="],
       "label": "회원 등급 전이",
       "aliases": ["등급 전이", "등급 변경", "승급", "강등"]
+    },
+    "member_newproduct_favor": {
+      "_comment": "allowed_operators 를 = 와 != 로만 둔다. Y/N 한 글자에 부등호를 허용하면 사전식 순서로 조용히 틀린 SQL 이 나오고, 이 축에는 서열이 없다. transition_metric 도 두지 않는다 — PREV_NEWPRODUCT_FAVOR_YN 컬럼이 없어 전이를 만들 수 없다.",
+      "source": "member_month_snapshot",
+      "kind": "field",
+      "expression_field": "member_month_snapshot.newproduct_favor",
+      "data_type": "string",
+      "grain": "subject",
+      "time": "snapshot_month",
+      "coverage": "monthly_attribute_snapshot",
+      "allowed_operators": ["=", "!="],
+      "label": "신제품 선호 여부(기준월)",
+      "aliases": ["신제품 선호 여부", "신상품 선호 여부"]
     },
     "member_worth_grade": {
       "source": "member_month_snapshot",
