@@ -316,20 +316,20 @@ def describe_transition(
     }
 
 
-def lower_transition_metric(
+def validate_transition_request(
     catalog: resolved_semantic_catalog.ResolvedSemanticCatalog,
     metric_id: str,
     *,
     from_value: str,
     to_value: str,
     direction: str | None = None,
-    evidence: event_ir.Evidence | None = None,
     dialect: sql_dialect.SqlDialect | None = None,
-) -> LoweredTransition:
-    """검증된 전이 요청을 canonical Event IR 조건으로 낮춘다.
+) -> tuple[resolved_semantic_catalog.MetricSpec, str, tuple[str, ...]]:
+    """전이 요청(지표 + 값 쌍 + 방향)의 계약 검증. 낮추지 않는다.
 
-    ``from_value``/``to_value`` 는 **canonical 값**이다. 표면어→canonical 은 원문을 읽는 계층
-    (:mod:`transition_claims`)의 일이고, canonical→물리는 컴파일러의 일이다.
+    낮춤과 분리해 두는 이유는 소비자가 둘이기 때문이다 — 이 저장소의 전이 실행 IR 을
+    :mod:`transition_metrics` 가 만들 때도, :mod:`temporal_ir` 의 전이 술어로 옮길 때도
+    **같은** 계약이 적용돼야 한다. 검증을 복사하면 한쪽만 방향 모순을 잡는 상태가 생긴다.
     """
 
     metric = validate_transition_contract(catalog, metric_id, dialect=dialect)
@@ -352,7 +352,37 @@ def lower_transition_metric(
             symbol=metric.id,
         )
 
-    order = _verified_direction_order(catalog, metric, domain, direction, from_value, to_value)
+    order = _verified_direction_order(
+        catalog, metric, domain, direction, from_value, to_value
+    )
+    return metric, domain, order
+
+
+def lower_transition_metric(
+    catalog: resolved_semantic_catalog.ResolvedSemanticCatalog,
+    metric_id: str,
+    *,
+    from_value: str,
+    to_value: str,
+    direction: str | None = None,
+    evidence: event_ir.Evidence | None = None,
+    dialect: sql_dialect.SqlDialect | None = None,
+) -> LoweredTransition:
+    """검증된 전이 요청을 canonical Event IR 조건으로 낮춘다.
+
+    ``from_value``/``to_value`` 는 **canonical 값**이다. 표면어→canonical 은 원문을 읽는 계층
+    (:mod:`transition_claims`)의 일이고, canonical→물리는 컴파일러의 일이다.
+    """
+
+    metric, domain, order = validate_transition_request(
+        catalog,
+        metric_id,
+        from_value=from_value,
+        to_value=to_value,
+        direction=direction,
+        dialect=dialect,
+    )
+    values = declared_values(catalog, metric)
 
     current_comparison = event_ir.Comparison(
         operator=EQUALITY,
@@ -488,6 +518,7 @@ __all__ = [
     "transition_metric_declarations",
     "transition_metric_for_domain",
     "transition_metric_ids",
+    "validate_transition_request",
     "transition_value_domain",
     "validate_transition_contract",
 ]

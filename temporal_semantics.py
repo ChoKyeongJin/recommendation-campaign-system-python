@@ -16,6 +16,7 @@
     UNCHANGED_THROUGHOUT       구간 내내 값이 바뀌지 않음
     CHANGE_BETWEEN             두 관측 시점 사이의 값 전이
     CHANGE_COUNT               구간 내 값 변경 횟수
+    CONSECUTIVE_SUBINTERVALS   구간의 하위 칸이 끊기지 않고 이어서 성립
 
 이 모듈이 **모르는 것**(도메인 계층 소유):
   - 한국어 표면형('기준'·'내내')과 그 정규식. 도메인이 `TemporalLexicon` 으로 주입한다.
@@ -47,6 +48,7 @@ EVERY_SUBINTERVAL = "EVERY_SUBINTERVAL"
 UNCHANGED_THROUGHOUT = "UNCHANGED_THROUGHOUT"
 CHANGE_BETWEEN = "CHANGE_BETWEEN"
 CHANGE_COUNT = "CHANGE_COUNT"
+CONSECUTIVE_SUBINTERVALS = "CONSECUTIVE_SUBINTERVALS"
 
 # 인자 이름(닫힌 집합) — 노드 필드 이름이 아니라 시간 연산의 인자다.
 ARG_ANCHOR = "anchor"                    # 시점 하나
@@ -142,6 +144,12 @@ _SPECS: tuple[TemporalOperatorSpec, ...] = (
         requires=frozenset({ARG_INTERVAL, ARG_COUNT}),
         multi_point=True,
         description="구간 안에서 값이 바뀐 횟수.",
+    ),
+    TemporalOperatorSpec(
+        CONSECUTIVE_SUBINTERVALS,
+        requires=frozenset({ARG_INTERVAL, ARG_SUBINTERVAL_UNIT}),
+        multi_point=True,
+        description="구간의 하위 칸들이 **끊기지 않고** 이어서 성립함.",
     ),
 )
 
@@ -403,6 +411,7 @@ __all__ = [
     "AT_LEAST_ONCE_IN_INTERVAL",
     "CHANGE_BETWEEN",
     "CHANGE_COUNT",
+    "CONSECUTIVE_SUBINTERVALS",
     "EVERY_SUBINTERVAL",
     "IMMEDIATELY_PRECEDING",
     "MULTI_POINT_OPERATORS",

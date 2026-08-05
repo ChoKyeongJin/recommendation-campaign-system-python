@@ -4,9 +4,11 @@
 실행되던 세 축이 함께 폐기됐다. 그중 **둘은 되살아났고 하나는 폐기 상태 그대로다** —
 되살아난 근거는 "옛 코드를 복원했다"가 아니라 "canonical Event IR 이 그 뜻을 표현하게 됐다"다.
 
-* 축1 등급/상태 이력·전이(월 스냅샷 as_of / transition) — **폐기 유지**.
-  Event IR 로 표현할 수 있어도 컴파일 영수증을 발급하는 경로가 없어 의무가 해소되지 않는다.
-  되살리려면 그 경로가 먼저 서야 하므로 이 파일의 축1 계약은 그대로 남는다.
+* 축1 등급 이력·전이(월 스냅샷 as_of / previous / transition / 전칭) — **복귀**(2026-08-05).
+  마지막까지 남았던 선행 조건은 "의무에 컴파일 영수증을 발급하는 경로"였고, 원문 →
+  canonical Temporal IR 생산자(:mod:`temporal_claims`)가 그 경로를 만들었다. 값·축 어휘는
+  카탈로그가, 연산자→조합 사상은 선언표가 소유하므로 문형별 분기는 늘지 않는다.
+  **상태(정상/휴면) 축은 그대로 닫혀 있다** — 전이 지표도 이력 소스도 선언이 없다.
 * 축2 프로필 스칼라 지표(구매주기 등) — **복귀**. 카탈로그에 회원별 스칼라 metric kind
   (``member_scalar``)를 선언하고 :mod:`member_scalar_metrics` 가 기존 IR 노드 조합으로 낮춘다.
 * 축3 캠페인당 평균 구매금액 — **복귀**. Event IR 에 행 값(tuple)과 0 값 가드(null_if)가
@@ -155,13 +157,16 @@ def test_monthly_snapshot_grade_comparison_never_reaches_sql() -> None:
     assert result["failure_reason"] == "semantic_ir_unsupported"
 
 
-def test_grade_transition_request_never_reaches_sql() -> None:
-    """축1-b: 등급 전이는 이제 선언된 실행 자산조차 없다 — 미지원으로 닫힌다.
+def test_grade_transition_request_compiles_both_halves_into_one_row_comparison() -> None:
+    """축1-b **복귀**: 등급 전이는 한 행의 현재값·직전값 비교로 낮아진다.
 
-    2026-08-05 이전에는 `execution_assets` 의 HISTORY 계층(PREV_* 스냅샷 바인딩)이 자산을
-    선언하고 있어 이 요청이 '자산은 있는데 생산자가 없다'(semantic_registry_gap)로 끝났다.
-    그 계층이 축과 함께 폐기됐으므로 이제는 "표현할 수 없다"가 참이다. 두 경우 모두 SQL 은
-    나가지 않는다 — 고정하는 것은 사유 문자열이 아니라 **부분 SQL 부재**다.
+    2026-08-05 이행 시점에는 이 축이 폐기 상태였고 이 테스트는 '어떤 SQL 도 나가지 않는다'를
+    고정했다. 복귀의 근거는 옛 코드의 복원이 아니라 **원문 → canonical Temporal IR 생산자**
+    (:mod:`temporal_claims`)가 생겨 의무에 컴파일 영수증을 발급할 수 있게 된 것이다.
+
+    고정하는 것은 여전히 '부분 SQL 부재'다. 뒤집힌 것은 결말이 아니라 전제다 — 예전에는
+    두 절 중 하나(전이)를 아무도 컴파일하지 못해 문장 전체가 막혔고, 이제는 그 절이
+    **두 비교를 한 EXISTS 안에** 담아 나간다. 한쪽만 나가는 SQL 은 여전히 실패다.
     """
 
     structured = _structure(
@@ -179,14 +184,48 @@ def test_grade_transition_request_never_reaches_sql() -> None:
         ),
     )
 
-    assert structured["semantic_ir"]["status"] == "unsupported"
-    assert structured["semantic_ir"]["unsupported_operations"]
-    # 없는 실행 자산을 있다고 말하지 않는다(HISTORY 계층 폐기).
-    assert structured.get("audience_execution_assets") is None
+    # 모델의 미지원 신고를 애플리케이션이 반박했다 — 표현이 생기고 신고는 해소된다.
+    assert structured["semantic_ir"]["status"] == "resolved"
+    assert structured["audience_requirement"]["issues"] == []
+    assert structured["audience_requirement"]["expression"] is not None
+
     _plan, result = _sql_result(TRANSITION_QUERY, structured)
+    sql = result["sql"] or ""
+    assert result["is_success"] is True, result.get("failure_reason")
+    # 두 비교가 **같은 EXISTS 안에** 있어야 한다. 나뉘면 '지금 VIP' AND '언젠가 직전이 골드'가
+    # 되어 전이가 아닌 다른 집합이 나간다.
+    assert "MS.ZTS_GRADE = 'MEM_GRADE_CD.VIP'" in sql
+    assert "MS.PREV_ZTS_GRADE = 'MEM_GRADE_CD.GOLD'" in sql
+    assert sql.count("EXISTS (SELECT 1 FROM CRM_MB_MONTHCRMINFO") == 1
+
+
+def test_a_direction_contradicting_the_declared_ranking_still_reaches_no_sql() -> None:
+    """복귀가 모순 문장까지 열지는 않는다 — '승급'이 서열과 어긋나면 SQL 은 없다.
+
+    이 계약이 없으면 축을 여는 순간 'VIP에서 골드로 승급'이 그대로 컴파일돼, 문장의 모순이
+    조용히 사라진 채 사용자가 말하지 않은 집합이 나간다(실측된 회귀 후보).
+    """
+
+    query = "VIP에서 골드로 승급한 회원"
+    structured = _structure(
+        query,
+        _raw(
+            query,
+            issues=[
+                _unsupported_issue(
+                    query,
+                    "VIP에서 골드로 승급",
+                    argument="grade_transition",
+                    message="등급 전이 조건을 표현할 수 없습니다.",
+                )
+            ],
+        ),
+    )
+
+    assert structured["semantic_ir"]["status"] == "unsupported"
+    _plan, result = _sql_result(query, structured)
     assert result["is_success"] is False
-    assert result["sql"] is None
-    assert result["failure_reason"] == "semantic_ir_unsupported"
+    assert not result["sql"]
 
 
 def test_profile_scalar_metric_request_compiles_to_the_snapshot_row() -> None:
@@ -364,24 +403,26 @@ def test_campaign_average_guard_fails_closed_when_the_catalog_cannot_be_read() -
         audience_runtime.catalog_snapshot = original  # type: ignore[assignment]
 
 
-def test_retired_axis_issues_preserve_exact_original_evidence() -> None:
-    """폐기 축의 issue 는 원문 구간을 손실 없이 보존한다(원문 삭제·근사 금지).
+def test_still_closed_axis_issues_preserve_exact_original_evidence() -> None:
+    """닫혀 있는 축의 issue 는 원문 구간을 손실 없이 보존한다(원문 삭제·근사 금지).
 
-    복귀한 축2·축3 은 더 이상 issue 를 내지 않으므로 여기서 빠졌다 — 그 둘의 근거 보존은
-    합성된 표현의 evidence 가 담당하고, 아래
-    :func:`test_revived_axis_expressions_preserve_exact_original_evidence` 가 고정한다.
+    예시를 등급 전이에서 **상태 전이**로 옮겼다. 등급 축은 2026-08-05 이후 컴파일되므로
+    더 이상 issue 를 남기지 않고(그 근거 보존은 합성된 표현의 evidence 가 담당한다),
+    상태 축은 전이 지표도 이력 소스도 선언이 없어 여전히 닫혀 있다 — 고정하려는 계약
+    ('닫힌 축은 원문을 손실 없이 남긴다')이 살아 있는 자리가 그쪽이다.
     """
 
+    span = "정상에서 휴면으로 바뀐"
     structured = _structure(
-        TRANSITION_QUERY,
+        STATE_TRANSITION_QUERY,
         _raw(
-            TRANSITION_QUERY,
+            STATE_TRANSITION_QUERY,
             issues=[
                 _unsupported_issue(
-                    TRANSITION_QUERY,
-                    "골드에서 VIP로 바뀐",
-                    argument="grade_transition",
-                    message="등급 전이 조건을 표현할 수 없습니다.",
+                    STATE_TRANSITION_QUERY,
+                    span,
+                    argument="state_transition",
+                    message="상태 전이 조건을 표현할 수 없습니다.",
                 )
             ],
         ),
@@ -391,8 +432,11 @@ def test_retired_axis_issues_preserve_exact_original_evidence() -> None:
     assert issues
     for issue in issues:
         evidence = issue["evidence"]
-        assert TRANSITION_QUERY[evidence["start"] : evidence["end"]] == evidence["text"]
-        assert evidence["text"] in TRANSITION_QUERY
+        assert (
+            STATE_TRANSITION_QUERY[evidence["start"] : evidence["end"]]
+            == evidence["text"]
+        )
+        assert evidence["text"] in STATE_TRANSITION_QUERY
         assert issue["message"].strip()
 
 

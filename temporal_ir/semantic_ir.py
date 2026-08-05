@@ -652,6 +652,38 @@ class EveryBucketQuantifier:
 
 
 @dataclass(frozen=True, slots=True)
+class ConsecutiveBucketsQuantifier:
+    """성립하는 칸이 **끊기지 않고 이어서** 나타난다.
+
+    ``EveryBucketQuantifier`` 와 다르다. 저쪽은 요청한 구간이 덮는 칸이 **전부** 성립하는지를
+    묻고(구간이 곧 답의 범위), 이쪽은 구간 **안 어딘가**에 길이 ``bucket_count`` 의 이어진
+    구간이 있는지를 묻는다. 앵커가 있는 '최근 3개월 연속'은 앞의 질문이고, 앵커가 없는
+    '아무 3개월이나 연속'은 뒤의 질문이다 — 두 집합이 다르므로 합치지 않는다.
+
+    뒤의 질문은 주체별 정렬과 칸 사이 간격 판정(gap-and-island)이 필요하고, 실행 IR 에
+    그 primitive(PartitionBy/OrderBy/Lag)가 없다. 그래서 이 quantifier 는 **의미는 정의되고
+    낮춤은 거절**되는 상태로 선언된다 — 총 칸 수 비교로 근사하면 다른 집합이 조용히 나간다.
+    """
+
+    bucket_count: int
+    kind: str = "consecutive_buckets"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.bucket_count, int) or isinstance(self.bucket_count, bool):
+            raise TemporalIrError("consecutive_buckets: bucket_count 는 정수여야 한다")
+        if self.bucket_count < 2:
+            # 1칸 '연속'은 연속이 아니라 존재다. 그 뜻은 다른 quantifier 가 이미 갖고 있으므로
+            # 여기서 받으면 같은 집합을 두 이름이 말하게 된다.
+            raise TemporalIrError(
+                "consecutive_buckets: bucket_count 는 2 이상이어야 한다"
+                "(1칸은 연속이 아니라 존재 조건이다)"
+            )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": "consecutive_buckets", "bucket_count": self.bucket_count}
+
+
+@dataclass(frozen=True, slots=True)
 class ThroughoutQuantifier:
     """구간 **내내**(관측 사이 포함) 성립 — 연속 유효성을 아는 표현에서만 답할 수 있다."""
 
@@ -682,6 +714,7 @@ Quantifier: TypeAlias = (
     | NoneQuantifier
     | AllObservationsQuantifier
     | EveryBucketQuantifier
+    | ConsecutiveBucketsQuantifier
     | ThroughoutQuantifier
     | LatestObservationQuantifier
 )
@@ -694,12 +727,23 @@ _QUANTIFIERS: dict[str, Callable[[], "Quantifier"]] = {
     "throughout": ThroughoutQuantifier,
     "latest_observation": LatestObservationQuantifier,
 }
+# 인자를 갖는 quantifier 는 무인자 생성자로 복원할 수 없다 — 복원 규칙을 따로 둔다.
+_PARAMETERIZED_QUANTIFIERS: dict[str, Callable[[dict[str, Any]], "Quantifier"]] = {
+    "consecutive_buckets": lambda raw: ConsecutiveBucketsQuantifier(
+        bucket_count=raw.get("bucket_count")  # type: ignore[arg-type]
+    ),
+}
 
 
 def quantifier_from_dict(raw: Any) -> Quantifier:
-    if not isinstance(raw, dict) or str(raw.get("kind")) not in _QUANTIFIERS:
+    if not isinstance(raw, dict):
         raise TemporalIrError(f"알 수 없는 quantifier: {raw!r}")
-    return _QUANTIFIERS[str(raw["kind"])]()
+    kind = str(raw.get("kind"))
+    if kind in _PARAMETERIZED_QUANTIFIERS:
+        return _PARAMETERIZED_QUANTIFIERS[kind](raw)
+    if kind not in _QUANTIFIERS:
+        raise TemporalIrError(f"알 수 없는 quantifier: {raw!r}")
+    return _QUANTIFIERS[kind]()
 
 
 # ── 비교와 술어 ───────────────────────────────────────────────────────────────────
@@ -1133,6 +1177,7 @@ __all__ = [
     "Duration",
     "EmptyWindowPolicy",
     "Evidence",
+    "ConsecutiveBucketsQuantifier",
     "EveryBucketQuantifier",
     "ExactBucket",
     "ExistsQuantifier",

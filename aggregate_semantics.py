@@ -80,6 +80,10 @@ class EventPredicate:
     source_kind: str
     source_id: str
     requires_event_presence: bool = True
+    # 이 원자가 나온 **원문 조건**의 식별자(근거 구간). 전칭 같은 의미는 한 조건이
+    # ``Exists ∧ ¬Exists`` 두 원자로 낮아지는데, 그 두 반쪽을 서로 짝지어 판정하면
+    # '존재와 부재를 동시에 요구했다'는 결론이 나온다 — 사용자는 조건을 하나만 말했다.
+    condition_key: str | None = None
 
 
 @dataclass(frozen=True)
@@ -310,6 +314,12 @@ def classify_pair_detail(
     semantic_registry: event_semantic_registry.EventSemanticRegistry | None = None,
 ) -> tuple[str, str | None]:
     if not positive.requires_event_presence:
+        return PROVEN_SAFE, None
+    if (
+        positive.condition_key is not None
+        and positive.condition_key == negative.condition_key
+    ):
+        # 한 조건의 두 반쪽이다(전칭 = 관측 있음 ∧ 위반 없음). 스스로와 모순일 수 없다.
         return PROVEN_SAFE, None
     if positive.window is None or negative.window is None:
         return UNKNOWN, "semantic_period_unresolved"

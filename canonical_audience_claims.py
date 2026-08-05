@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import re
 import unicodedata
-from collections.abc import Iterable, Mapping, MutableMapping
+from collections.abc import Iterable, Mapping, MutableMapping, Sequence
 from datetime import date, timedelta
 from typing import Any
 
@@ -1077,15 +1077,72 @@ def _ranked_membership_matches(expression: event_ir.Condition, value: Mapping[st
     return False
 
 
+def _span_covered(
+    source_span: Any, owned: Sequence[tuple[int, int]]
+) -> bool:
+    """의무의 원문 구간이 컴파일된 구간 안에 들어 있는가."""
+
+    if not isinstance(source_span, Mapping):
+        return False
+    start, end = source_span.get("start"), source_span.get("end")
+    if not (isinstance(start, int) and isinstance(end, int)):
+        return False
+    return any(
+        owned_start <= start and end <= owned_end for owned_start, owned_end in owned
+    )
+
+
+def _issue_span_covered(
+    issue: Mapping[str, Any], owned: Sequence[tuple[int, int]]
+) -> bool:
+    """청구 issue 의 근거 구간이 컴파일된 시간 조건 구간 안에 들어 있는가."""
+
+    evidence = issue.get("evidence")
+    return _span_covered(evidence, owned)
+
+
+def temporal_obligation_compiled_spans(
+    query: str, expression: event_ir.Condition | None
+) -> tuple[tuple[int, int], ...]:
+    """시간 의무를 방면할 수 있는 구간 — 이 표현에서 시간 조건이 실제로 컴파일된 자리.
+
+    판정의 소유자는 :mod:`temporal_claims` 다(순환을 피해 지연 import 한다). 선언을 읽지
+    못하면 **빈 튜플**을 돌려준다 — 근거 부재는 통과가 아니라 fail-close 다.
+    """
+
+    if expression is None:
+        return ()
+    try:
+        import audience_runtime  # noqa: PLC0415 - 지연 import(순환 방지)
+        import temporal_claims  # noqa: PLC0415
+        import temporal_ir  # noqa: PLC0415
+
+        catalog = audience_runtime.resolve_audience_catalog()
+        return temporal_claims.compiled_obligation_spans(
+            query,
+            expression,
+            snapshot=audience_runtime.catalog_snapshot(),
+            catalog=catalog,
+            runtime=temporal_ir.create_temporal_runtime(catalog),
+        )
+    except (ImportError, ValueError, KeyError, TypeError):
+        return ()
+
+
 def semantic_obligation_issues(
     query: str,
     expression: event_ir.Condition,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
+    temporal_spans = temporal_obligation_compiled_spans(query, expression)
     for requirement in semantic_requirements.capture_source_semantic_obligations(query):
         kind = str(requirement.base.get("name") or "")
         value = requirement.value if isinstance(requirement.value, Mapping) else {}
         if kind in {"ranked_entity_set", "member_metric_ranking"} and _ranked_membership_matches(expression, value):
+            continue
+        if kind == semantic_requirements.TEMPORAL_QUALIFIER_KIND and _span_covered(
+            requirement.source_span, temporal_spans
+        ):
             continue
         span = requirement.source_span
         start = span.get("start") if isinstance(span, Mapping) else None
@@ -1269,6 +1326,21 @@ def canonical_claim_issues(
             issue for issue in literal_issues
             if issue.get("argument") not in consumed
         ]
+    # 시간 조건이 컴파일한 구간의 리터럴·값은 **이미 증명된** 소비다. temporal 영수증은
+    # 낮춘 트리를 되읽어 소스·시간 조건·값 비교가 전부 있는지 확인한 뒤에만 발급되므로
+    # (temporal_ir.lowering._composition_gaps) 일반 청구 검사보다 강하다. 그 구간까지
+    # 미소비로 세면 '6개월'이 절대 구간으로 확정된 사실과 '내내'가 전칭으로 낮아진 사실이
+    # 리터럴 표면에 남지 않았다는 이유만으로 SQL 이 막힌다.
+    temporal_spans = temporal_obligation_compiled_spans(query, expression)
+    if temporal_spans:
+        literal_issues = [
+            issue for issue in literal_issues
+            if not _issue_span_covered(issue, temporal_spans)
+        ]
+        catalog_issues = [
+            issue for issue in catalog_issues
+            if not _issue_span_covered(issue, temporal_spans)
+        ]
     cardinality = (
         consent_cardinality.validate_consent_cardinality(
             query, expression, bindings, catalog
@@ -1360,6 +1432,22 @@ def refresh_canonical_unresolved(
                 and ranked_obligation_is_compiled(expression, value)
             ),
         )
+        # 시간·이력 의무는 **그 구간이 실제로 컴파일됐을 때만** 방면한다. 종류만 보고
+        # 통째로 면제하면 as_of·직전값·유지·변경횟수 마커가 만든 의무까지 함께 풀려,
+        # 낮춰지지 않은 표현이 검증을 통과한다.
+        temporal_spans = temporal_obligation_compiled_spans(query, expression)
+        if temporal_spans:
+            semantic_requirements.discharge_source_semantic_obligations(
+                plan,
+                query,
+                kinds={semantic_requirements.TEMPORAL_QUALIFIER_KIND},
+                status="compiled",
+                compiler="temporal_ir",
+                evidence=expression.to_dict(),
+                requirement_filter=lambda requirement: _span_covered(
+                    requirement.source_span, temporal_spans
+                ),
+            )
         bindings = plan.get("literal_bindings")
         if isinstance(bindings, list):
             issues.extend(

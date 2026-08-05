@@ -397,6 +397,19 @@ _TRANSITION_DIRECTIONS: dict[str, str] = {
     "승급": "ascending",
     "강등": "descending",
 }
+# 하위 구간 표면어 → 칸 단위(temporal_ir 의 닫힌 TimeUnit 어휘). 방향어와 같은 규약이다 —
+# 마커 어휘와 단위 해석이 같은 표를 읽어야 '매월'이 마커로는 잡히는데 단위는 못 읽는 조합이
+# 생기지 않는다.
+_SUBINTERVAL_UNITS: dict[str, str] = {
+    "매월": "month",
+    "매달": "month",
+    "달마다": "month",
+    "모든 달": "month",
+    "매주": "week",
+    "주마다": "week",
+    "매년": "year",
+    "해마다": "year",
+}
 _TEMPORAL_MARKER_TEMPLATES: tuple[tuple[str, str], ...] = (
     (temporal_semantics.CHANGE_BETWEEN, r"{directions}"),
     (
@@ -420,8 +433,10 @@ _TEMPORAL_MARKER_TEMPLATES: tuple[tuple[str, str], ...] = (
         r"(?:{axis})이?\s*한\s*번도[가-힣\s]{{0,10}}?(?:바뀌|변하|변경)",
     ),
     (
+        # 횟수는 숫자로 온다 — 사이 글자에 숫자를 허용하지 않으면 '등급이 3회 이상 변경'이
+        # 통째로 감지되지 않는다(실측). 감지되지 않으면 미지원 사유조차 남지 않는다.
         temporal_semantics.CHANGE_COUNT,
-        r"(?:{axis})이?[가-힣\s]{{0,8}}?(?:번|회)\s*이상\s*변경",
+        r"(?:{axis})이?[가-힣\d\s]{{0,8}}?(?:번|회)\s*이상\s*변경",
     ),
     (
         temporal_semantics.AS_OF,
@@ -430,6 +445,13 @@ _TEMPORAL_MARKER_TEMPLATES: tuple[tuple[str, str], ...] = (
     (
         temporal_semantics.THROUGHOUT_INTERVAL,
         r"(?:{values})[가-힣\s]{{0,6}}?(?:{axis})?[을를]?\s*유지",
+    ),
+    # 하위 구간 전칭·연속. 단위 표면어를 마커 구간 **안에** 두는 이유는 근거 스팬이다 —
+    # 단위를 마커 밖에서 찾으면 같은 문장의 다른 기간 표현('최근 6개월')을 칸 단위로 오해한다.
+    (temporal_semantics.EVERY_SUBINTERVAL, r"(?:{subintervals})"),
+    (
+        temporal_semantics.CONSECUTIVE_SUBINTERVALS,
+        r"(?:\d+\s*(?:개월|달|주|년)|{subintervals})\s*(?:연속|연달아|잇달아)",
     ),
 )
 
@@ -443,10 +465,16 @@ def temporal_lexicon() -> temporal_semantics.TemporalLexicon:
     values = _alternation(attribute_value_terms())
     axis = _alternation(attribute_axis_terms())
     directions = _alternation(tuple(_TRANSITION_DIRECTIONS))
+    subintervals = _alternation(tuple(_SUBINTERVAL_UNITS))
     pairs = [
         (
             operator,
-            template.format(values=values, axis=axis, directions=directions),
+            template.format(
+                values=values,
+                axis=axis,
+                directions=directions,
+                subintervals=subintervals,
+            ),
         )
         for operator, template in _TEMPORAL_MARKER_TEMPLATES
     ]
@@ -466,6 +494,19 @@ def transition_direction_cues() -> dict[str, str]:
     return {
         re.sub(r"\s+", "", cue).casefold(): direction
         for cue, direction in _TRANSITION_DIRECTIONS.items()
+    }
+
+
+def subinterval_unit_cues() -> dict[str, str]:
+    """하위 구간 표면어 → 칸 단위(compact 키). 어휘의 단일 소유자는 위 표 하나다.
+
+    :func:`transition_direction_cues` 와 같은 규약이다 — 마커 정규식과 단위 해석이 같은
+    선언에서 파생되므로 '매월'이 마커로만 잡히고 단위는 못 읽는 상태가 생기지 않는다.
+    """
+
+    return {
+        re.sub(r"\s+", "", cue).casefold(): unit
+        for cue, unit in _SUBINTERVAL_UNITS.items()
     }
 
 

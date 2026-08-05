@@ -40,6 +40,7 @@ LATEST_IN_WINDOW = "temporal.latest_in_window"
 NONE_IN_WINDOW = "temporal.none"
 ALL_OBSERVATIONS = "temporal.all"
 EVERY_BUCKET = "temporal.every_bucket"
+CONSECUTIVE_BUCKETS = "temporal.consecutive_buckets"
 THROUGHOUT = "temporal.throughout"
 CHANGED_BETWEEN_ENDPOINTS = "temporal.changed_between_endpoints"
 CHANGED_WITHIN_WINDOW = "temporal.changed_within_window"
@@ -63,6 +64,7 @@ LEGACY_OPERATOR_ALIASES: dict[str, str] = {
     "UNCHANGED_THROUGHOUT": UNCHANGED_OBSERVATIONS,
     "CHANGE_BETWEEN": DIRECT_TRANSITION,
     "CHANGE_COUNT": CHANGE_COUNT,
+    "CONSECUTIVE_SUBINTERVALS": CONSECUTIVE_BUCKETS,
     # 같은 뜻의 축약 표기.
     "temporal.any": IN_WINDOW,
 }
@@ -81,8 +83,8 @@ def canonical_operator_name(value: Any) -> str | None:
 _ALL_NAMES: frozenset[str] = frozenset({
     IN_WINDOW, BEFORE, AFTER, AS_OF, PREVIOUS_BUCKET, PREVIOUS_OBSERVATION,
     PREVIOUS_DISTINCT_VALUE, LATEST_IN_WINDOW, NONE_IN_WINDOW, ALL_OBSERVATIONS, EVERY_BUCKET,
-    THROUGHOUT, CHANGED_BETWEEN_ENDPOINTS, CHANGED_WITHIN_WINDOW, DIRECT_TRANSITION, CHANGE_COUNT,
-    UNCHANGED_OBSERVATIONS, WITHIN_AFTER, WITHIN_BEFORE,
+    CONSECUTIVE_BUCKETS, THROUGHOUT, CHANGED_BETWEEN_ENDPOINTS, CHANGED_WITHIN_WINDOW,
+    DIRECT_TRANSITION, CHANGE_COUNT, UNCHANGED_OBSERVATIONS, WITHIN_AFTER, WITHIN_BEFORE,
 })
 
 OPERATOR_NAMES: frozenset[str] = _ALL_NAMES
@@ -113,6 +115,7 @@ _WINDOW_QUANTIFIER_NAMES: dict[type, str] = {
     sir.NoneQuantifier: NONE_IN_WINDOW,
     sir.AllObservationsQuantifier: ALL_OBSERVATIONS,
     sir.EveryBucketQuantifier: EVERY_BUCKET,
+    sir.ConsecutiveBucketsQuantifier: CONSECUTIVE_BUCKETS,
     sir.ThroughoutQuantifier: THROUGHOUT,
     sir.LatestObservationQuantifier: LATEST_IN_WINDOW,
 }
@@ -316,7 +319,12 @@ class TemporalOperatorDefinition:
             ))
         if isinstance(selector, sir.WindowSelector) and isinstance(
             condition.quantifier,
-            (sir.AllObservationsQuantifier, sir.EveryBucketQuantifier, sir.ThroughoutQuantifier),
+            (
+                sir.AllObservationsQuantifier,
+                sir.EveryBucketQuantifier,
+                sir.ConsecutiveBucketsQuantifier,
+                sir.ThroughoutQuantifier,
+            ),
         ):
             if selector.empty_window_policy not in self.accepted_empty_window_policies:
                 issues.append(ValidationIssue(

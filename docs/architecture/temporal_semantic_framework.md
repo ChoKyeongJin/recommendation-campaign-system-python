@@ -66,6 +66,7 @@ TemporalCondition(
 | `temporal.none` | O | event_log, periodic_snapshot, singleton, validity_interval | – |
 | `temporal.all` | O | event_log, periodic_snapshot, validity_interval | supports_ordered_observations |
 | `temporal.every_bucket` | O | periodic_snapshot, validity_interval | supports_complete_bucket_enumeration |
+| `temporal.consecutive_buckets` | X | periodic_snapshot, event_log, validity_interval | supports_ordered_observations |
 | `temporal.unchanged_observations` | O | event_log, periodic_snapshot, validity_interval | supports_ordered_observations |
 | `temporal.direct_transition` | O | periodic_snapshot | supports_ordered_observations |
 | `temporal.latest_in_window` | O | latest_only, singleton | supports_point_state |
@@ -79,8 +80,13 @@ TemporalCondition(
 | `temporal.change_count` | X | 이력 표현 전부 | supports_intra_bucket_changes |
 | `temporal.throughout` | X | validity_interval | supports_continuous_validity |
 
-미지원 다섯은 같은 뿌리를 갖는다: **주체별 정렬과 행 선택**(PartitionBy/OrderBy/LimitPerEntity/Lag)
+미지원 여섯은 같은 뿌리를 갖는다: **주체별 정렬과 행 선택**(PartitionBy/OrderBy/LimitPerEntity/Lag)
 primitive 가 실행 IR 에 없다. 그것을 추가하면 lowerer 만 채우면 된다(계약은 이미 선언되어 있다).
+
+`temporal.consecutive_buckets`('3개월 연속')가 여섯 번째다. 앵커가 있는 '최근 N칸 연속'은
+그 구간의 칸 전칭(`temporal.every_bucket`)과 **같은 집합**이므로 그쪽으로 정확히 표현되고,
+앵커가 없는 '아무 N칸이나 연속'만 이 연산자로 닫힌다. 성립한 칸의 총 개수 비교로 근사하면
+흩어진 칸도 통과해 다른 집합이 나가므로 근사하지 않는다.
 
 기존 대문자 qualifier(`temporal_semantics.AS_OF` 등)는 **입력 호환 별칭**으로만 유지한다
 (`registry.LEGACY_OPERATOR_ALIASES`). 새 직렬화는 namespace 이름만 내보낸다.
@@ -206,9 +212,43 @@ selector/quantifier/predicate, 선택 전략, **정규화된 절대 구간**, �
 | 열린 구간이 quantifier 를 잃어 '이전에 한 번도 없음' 표현 불가 | `lower_open_window` 가 극성 유지 |
 | 합성 경계가 다른 컴파일러 조건의 근거를 요구하지 않음 | 합성 트리 전체에 `validate_evidence` |
 
+## 자연어 생산자 (`temporal_claims`)
+
+2026-08-05 에 생산자가 생겼고, 그것으로 이 계층이 라이브 경로에 배선됐다. 생산자는 **판정을
+새로 하지 않는다** — 표면형→범용 연산자는 `targeting_domain.temporal_lexicon()`(닫힌 집합은
+`temporal_semantics`)이, 값 표면어→canonical 값은 `canonical_audience_claims`가, 전이 값 쌍의
+어순·방향 검증은 `transition_claims`/`transition_metrics`가 이미 소유한다. 남은 일은 그
+연산자를 `selector × quantifier × predicate` 조합으로 옮기는 것이고, 그 사상은
+`temporal_claims._OPERATOR_PLANS` **선언표 한 곳**이다(문형별 분기 없음).
+
+| 범용 연산자 | 조합 | 파생 이름 |
+| --- | --- | --- |
+| `AS_OF` | AsOf + Exists + State | `temporal.as_of` |
+| `IMMEDIATELY_PRECEDING` | Previous(bucket) + Exists + State | `temporal.previous_bucket` |
+| `WITHIN_INTERVAL` · `AT_LEAST_ONCE_IN_INTERVAL` | Window + Exists + State | `temporal.in_window` |
+| `NEVER_IN_INTERVAL` | Window + None + State | `temporal.none` |
+| `THROUGHOUT_INTERVAL` | Window + AllObservations + State | `temporal.all` |
+| `EVERY_SUBINTERVAL` | Window(bucket) + EveryBucket + State | `temporal.every_bucket` |
+| `UNCHANGED_THROUGHOUT` | Window + AllObservations + Unchanged | `temporal.unchanged_observations` |
+| `CHANGE_BETWEEN` | AsOf\|Window + Exists + Transition | `temporal.direct_transition` |
+| `CHANGE_COUNT` | Window + Exists + ChangeCount | `temporal.change_count` |
+| `CONSECUTIVE_SUBINTERVALS` | Window(bucket) + ConsecutiveBuckets + State | `temporal.consecutive_buckets` |
+
+기간이 붙은 전이는 selector 가 window 로 **승격**될 뿐 술어는 그대로다 — 기간 전이를 위한
+별도 노드나 별도 연산자를 만들지 않는다.
+
+배선의 네 게이트(합성 라우터 · 청구 커버리지 · 의무 영수증 · 의미 불변식)는
+`tests/test_temporal_claims_wiring.py` 가 고정한다. 의무 방면의 조인 키는 근거 구간이 아니라
+**낮춘 원자의 일치**다 — 구간만 보면 다른 컴파일러의 조건에 그 구간을 붙여 방면을 위조할 수
+있고(실측), 그때 이력 조건이 현재값 조건으로 조용히 바뀐다.
+
 ## 아직 하지 않은 것
 
-- 자연어 → `TemporalCondition` 생산자. 표면어의 소유자는 도메인 계층(`targeting_domain`)이고,
-  이 패키지는 그 낱말을 모른다. 기존 생산자(`transition_claims` 등)의 이관은 별도 작업이다.
 - 주체별 정렬·행 선택 primitive(PartitionBy/OrderBy/LimitPerEntity/Lag). 이것이 들어오면
-  위 표의 `X` 다섯 개가 lowerer 만 채워 열린다.
+  위 표의 `X` 여섯 개가 lowerer 만 채워 열린다.
+- 이벤트 로그의 칸 전칭('최근 3개월 매월 구매'). `temporal.every_bucket` 은 현재
+  periodic_snapshot 계열만 받는다 — 이벤트 로그에서 빈 칸이 '무발생'을 뜻하는지는 capability
+  가 아니라 **적재 선언(coverage)** 의 책임이고, 그 선언 없이 열면 적재 공백이 '그 달 구매
+  없음'으로 조용히 바뀐다.
+- 상태(정상/휴면) 축. 전이 지표도 이력 소스도 선언이 없어 `temporal_metric_not_declared` 로
+  닫힌다. 어휘 문제가 아니라 선언 문제이므로 카탈로그가 먼저 서야 한다.

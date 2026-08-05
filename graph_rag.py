@@ -14160,6 +14160,11 @@ def _event_predicate_factory(
         constraints=constraints,
         source_kind=f"{source}_{source_kind_suffix}",
         source_id=source_id,
+        condition_key=(
+            f"{atom.evidence.start}:{atom.evidence.end}"
+            if atom.evidence is not None
+            else None
+        ),
     )
 
 

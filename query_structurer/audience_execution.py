@@ -24,7 +24,9 @@ from collections.abc import Coroutine, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from datetime import time as dtime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import audience_authority
 import audience_issue_contract
@@ -428,6 +430,8 @@ def _application_owned_synthesis(
     query: str,
     issues: list[dict[str, Any]],
     literal_bindings: list[Any],
+    *,
+    current_date: str | None = None,
 ) -> _ApplicationOwnedSynthesis | None:
     """Resolve one false model issue through a complete structural contract.
 
@@ -500,7 +504,94 @@ def _application_owned_synthesis(
         synthesis = _member_scalar_synthesis(query, issue, literal_bindings)
         if synthesis is not None:
             return synthesis
+        # 시간·이력 조건(시점 값·전이·기간 전칭 …). 같은 이유로 인자 문자열을 보지 않고,
+        # 합성이 성립하는 조건은 **원문 근거가 issue 근거 안에 있을 것**뿐이다.
+        synthesis = _temporal_synthesis(query, issue, current_date=current_date)
+        if synthesis is not None:
+            return synthesis
     return None
+
+
+def _temporal_synthesis(
+    query: str, issue: Mapping[str, Any], *, current_date: str | None = None
+) -> _ApplicationOwnedSynthesis | None:
+    """모델이 표현하지 못한 시간·이력 절을 canonical Temporal IR 로 되살린다.
+
+    ``None`` 을 돌려주는 세 경우를 구분하지 않는 것은 의도다 — 시간 조건이 없거나, 근거가
+    어긋나거나, 낮출 수 없으면 **모델의 미지원 신고가 그대로 남는다**. 그래야 절이 조용히
+    사라진 성공이 생기지 않는다(부분 SQL 금지).
+    """
+
+    import audience_runtime  # noqa: PLC0415 - 지연 import(순환 방지)
+    import temporal_claims  # noqa: PLC0415
+    import temporal_ir  # noqa: PLC0415
+    from temporal_ir import semantic_ir as sir  # noqa: PLC0415
+
+    catalog = audience_runtime.resolve_audience_catalog()
+    snapshot = audience_runtime.catalog_snapshot()
+    try:
+        runtime = temporal_ir.create_temporal_runtime(catalog)
+    except temporal_ir.TemporalCatalogError:
+        # 선언을 읽지 못하는 것은 '해당 없음'이 아니다. 그러나 이 경로의 결말은 어차피
+        # 모델 신고 유지(SQL 없음)이므로, 판정 불가를 통과로 바꾸지 않고 그대로 둔다.
+        return None
+
+    context = sir.TemporalRequestContext(now=_request_now(current_date))
+    outcome = temporal_claims.synthesize_temporal_claim(
+        query,
+        snapshot=snapshot,
+        catalog=catalog,
+        runtime=runtime,
+        context=context,
+    )
+    if not isinstance(outcome, temporal_claims.TemporalClaimSynthesis):
+        return None
+    # 합성의 근거가 모델이 신고한 구간 안에 있어야 그 신고를 반박할 수 있다.
+    if not any(
+        _issue_evidence_contains(issue, start, end) for start, end in outcome.spans
+    ):
+        return None
+    return _ApplicationOwnedSynthesis(
+        outcome.expression,
+        temporal_claims.OWNER,
+        _audience_issue_key(issue),
+        scalar_literal_spans=outcome.spans,
+    )
+
+
+def _conjoinable_synthesis(
+    query: str,
+    issues: list[dict[str, Any]],
+    *,
+    current_date: str | None = None,
+) -> _ApplicationOwnedSynthesis | None:
+    """모델 표현과 **결합할 수 있는** 합성 하나. 없으면 ``None``(신고가 그대로 남는다).
+
+    결합을 시간 축으로 제한하는 것은 의도다. 시간 조건은 자기 근거 구간을 정확히 소유하고
+    (낮춘 원자가 그 구간을 그대로 들고 있다) 낮춤이 전부-또는-아무것도이므로, 결합해도
+    '어느 절이 어디서 왔는가'가 흐려지지 않는다. 다른 축까지 한꺼번에 열면 그 성질이
+    보장되지 않는 합성이 모델 표현과 섞인다.
+    """
+
+    unsupported = [item for item in issues if item.get("code") == "unsupported_semantics"]
+    if len(unsupported) != 1:
+        return None
+    return _temporal_synthesis(query, unsupported[0], current_date=current_date)
+
+
+def _request_now(current_date: str | None = None) -> datetime:
+    """합성 기준 시각 — 플랜이 확정한 기준일을 쓰고, 없을 때만 요청 시점을 쓴다.
+
+    시계를 직접 읽으면 같은 입력이 실행 시각에 따라 다른 창으로 낮아진다. 이 저장소의
+    시간 계층은 기준 시각을 주입받는 것이 규약이고(:class:`sir.TemporalRequestContext`),
+    구조화기가 이미 ``current_date`` 를 확정해 두므로 그것이 유일한 권위다.
+    """
+
+    zone = ZoneInfo("Asia/Seoul")
+    anchor = as_of_date(current_date)
+    if anchor is None:
+        return datetime.now(zone)
+    return datetime.combine(anchor, dtime(9, 0), tzinfo=zone)
 
 
 def _member_scalar_synthesis(
@@ -605,9 +696,26 @@ def run_audience_resolver(
             ]
     synthesis: _ApplicationOwnedSynthesis | None = None
     if raw_expression is None and issues and isinstance(literal_bindings, list):
-        synthesis = _application_owned_synthesis(query, issues, literal_bindings)
+        synthesis = _application_owned_synthesis(
+            query, issues, literal_bindings, current_date=current_date
+        )
         if synthesis is not None:
             raw_expression = synthesis.expression.to_dict()
+    elif isinstance(raw_expression, dict) and issues:
+        # **혼합 문장**: 모델이 일부 절만 표현하고 나머지를 미지원으로 신고한 모양.
+        # 표현이 있다는 이유로 합성을 건너뛰면 그 문장은 영원히 막히고(전 절이 컴파일
+        # 가능한데도), 반대로 신고를 무시하면 절이 조용히 사라진 SQL 이 나간다.
+        # 그래서 신고된 절을 합성해 **결합**하고, 결합 결과는 이후의 모든 검증을 그대로
+        # 통과해야 한다 — 합성이 실패하면 신고가 남아 문장 전체가 막힌다.
+        conjunct = _conjoinable_synthesis(query, issues, current_date=current_date)
+        if conjunct is not None:
+            synthesis = conjunct
+            raw_expression = event_ir.And(
+                operands=(
+                    _parse_audience_expression(raw_expression, query),
+                    conjunct.expression,
+                )
+            ).to_dict()
     expression: event_ir.Condition | None = None
     normalizations: list[dict[str, Any]] = []
     evidence_normalizations: list[dict[str, Any]] = []

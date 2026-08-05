@@ -120,16 +120,39 @@ def _blocked_with_a_named_reason(result: dict[str, Any]) -> None:
     assert spoken.strip(), "차단은 됐지만 사용자에게 사유를 말하지 않는다(무언 실패)."
 
 
-@pytest.mark.parametrize("query", [STATE_TRANSITION_QUERY, GRADE_TRANSITION_QUERY])
 @pytest.mark.parametrize("report_issue", [True, False])
-def test_history_mix_never_emits_partial_sql(query: str, report_issue: bool) -> None:
-    """상태·등급 이력 절이 빠진 채로 SQL 이 나가면 안 된다.
+def test_state_history_mix_never_emits_partial_sql(report_issue: bool) -> None:
+    """상태 이력 절이 빠진 채로 SQL 이 나가면 안 된다.
 
     실측된 실패 모양: ``WHERE B.MEMBER_STATE_CD = '...NORMAL' AND B.GENDER_CD = '...FEMALE'``
     — '휴면이 된 회원'을 요청했는데 '현재 정상인 회원'이 나오는 의미 반전.
+
+    상태 축은 전이 지표도 이력 소스도 선언이 없어 여전히 컴파일되지 않는다. 그래서 이 문장의
+    계약은 그대로 '차단'이다 — 등급 축이 열렸다는 이유로 함께 열리면 안 된다.
     """
-    _plan, result = _mixed_result(query, report_issue=report_issue)
+    _plan, result = _mixed_result(STATE_TRANSITION_QUERY, report_issue=report_issue)
     _blocked_with_a_named_reason(result)
+
+
+@pytest.mark.parametrize("report_issue", [True, False])
+def test_grade_history_mix_emits_both_clauses_or_nothing(report_issue: bool) -> None:
+    """등급 이력 절은 컴파일된다 — 그러면 **두 절이 모두** SQL 에 있어야 한다.
+
+    고정하는 것은 예나 지금이나 같다: 절이 조용히 사라진 성공은 없다. 바뀐 것은 결말이
+    아니라 전제다 — 예전에는 이 절을 아무도 컴파일하지 못해 문장 전체가 막혔고, 이제는
+    생산자(:mod:`temporal_claims`)가 컴파일하므로 성별 절과 함께 나간다.
+
+    ``report_issue=False`` 는 구조화기가 신고조차 없이 성별만 담은 표현을 낸 경우다. 그때는
+    합성할 근거(issue)가 없으므로 전이 절을 되살릴 수 없고, 원문의 카탈로그 값이 미소비로
+    잡혀 차단돼야 한다 — 조용한 절 소실 금지가 그 자리에서 유효하다.
+    """
+    _plan, result = _mixed_result(GRADE_TRANSITION_QUERY, report_issue=report_issue)
+    if not result["is_success"]:
+        assert not result.get("sql")
+        return
+    sql = result["sql"]
+    assert "GENDER_CD" in sql, f"성별 절이 사라졌다:\n{sql}"
+    assert "PREV_ZTS_GRADE" in sql, f"전이 절이 사라졌다:\n{sql}"
 
 
 def test_no_success_while_a_clause_is_silently_dropped() -> None:

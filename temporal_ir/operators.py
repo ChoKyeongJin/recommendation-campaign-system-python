@@ -595,6 +595,25 @@ def operator_definitions() -> tuple[treg.TemporalOperatorDefinition, ...]:
             lower=lower_every_bucket,
         ),
         treg.TemporalOperatorDefinition(
+            name=treg.CONSECUTIVE_BUCKETS,
+            selector_types=frozenset({sir.WindowSelector}),
+            quantifier_types=frozenset({sir.ConsecutiveBucketsQuantifier}),
+            predicate_types=_STATE_LIKE,
+            accepted_representations=frozenset({
+                Representation.PERIODIC_SNAPSHOT,
+                Representation.EVENT_LOG,
+                Representation.VALIDITY_INTERVAL,
+            }),
+            required_capabilities=frozenset({"supports_ordered_observations"}),
+            unsupported_reason=(
+                "'끊기지 않고 이어진 N칸'은 주체별로 칸을 정렬해 이웃 칸의 간격을 봐야 합니다"
+                "(PartitionBy/OrderBy/Lag). 실행 IR 에 그 primitive 가 없고, 성립한 칸의 "
+                "총 개수 비교로 대신하면 흩어진 칸도 통과해 다른 집합이 나갑니다. "
+                "구간이 명시된 '최근 N칸 연속'은 그 구간의 칸 전칭(temporal.every_bucket)으로 "
+                "정확히 표현되므로 그쪽으로 요청하십시오."
+            ),
+        ),
+        treg.TemporalOperatorDefinition(
             name=treg.THROUGHOUT,
             selector_types=frozenset({sir.WindowSelector}),
             quantifier_types=frozenset({sir.ThroughoutQuantifier}),
