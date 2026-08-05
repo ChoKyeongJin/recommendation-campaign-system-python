@@ -277,5 +277,9 @@
 | ~~`tests/test_semantic_reemission.py`~~ | (삭제됨 2026-08-05) 재방출 계층과 함께 사라졌다 — 전체 재생성·보호 집합 훼손을 막던 가드는 이제 **없다**(재방출 자체가 없다) |
 | ~~`tests/test_semantic_pipeline.py`~~ | (삭제됨 2026-08-05) 파이프라인과 함께 사라졌다. '가짜 성공' 차단은 `tests/test_audience_admission.py` 와 `tests/test_retired_axes_fail_close.py` 로 옮겨 살아 있다 |
 | `tests/test_single_interpretation_path.py` | 원문 재해석 계층(정규식 백필·결핍 사후 삭제)의 부활 |
-| `tests/test_retired_axes_fail_close.py` | 폐기 3축(등급/상태 이력·전이, 프로필 스칼라 지표, 캠페인당 평균)이 다시 SQL 을 내거나 조용히 다른 뜻으로 바뀌는 것 |
+| `tests/test_retired_axes_fail_close.py` | 폐기 축(등급/상태 이력·전이)이 다시 SQL 을 내는 것 + 복귀 축(프로필 스칼라 지표·캠페인당 평균)이 조용히 다른 뜻으로 바뀌는 것 |
+| `tests/test_revived_axes_event_ir_only.py` | 복귀 축이 Event IR 말고 두 번째 경로(옛 슬롯·폴백)를 얻는 것 |
+| `tests/test_member_scalar_metric_contract.py` | 전역 순위 지표가 회원별 스칼라 자리에 들어와 모집단 정책이 사라지는 것 |
+| `tests/test_composite_aggregate_lowering.py` | 복합 집계식이 `AVG`로 접히거나 다중 컬럼 키가 구분자 결합으로 되돌아가는 것 |
+| `tests/test_composite_aggregate_sql_results.py` | 위 두 축의 SQL 이 문법은 맞고 **값이 다른** 상태로 나가는 것(픽스처 DB 실행) |
 | `tests/test_no_semantic_plan_residue.py` | 삭제된 SemanticPlan 모듈·플랜 키·LLM 스키마 표면의 부활 |

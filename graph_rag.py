@@ -8080,7 +8080,12 @@ def _refresh_unresolved_source_conditions(
     미해결이던 조건을 후속 원문 권위 단계가 복원하면 자동으로 해소된다.
     """
     if isinstance(query_plan.get(AUDIENCE_REQUIREMENT_KEY), dict) or _plan_event_expression(query_plan) is not None:
-        return canonical_audience_claims.refresh_canonical_unresolved(original_query, query_plan, _plan_event_expression(query_plan), audience_runtime.load_audience_catalog_config())
+        # **해석된 스냅샷**을 준다. 원본 설정에는 import 로 파생되는 심볼(회원 지표 순위 소스·
+        # 회원별 스칼라 소스)과 값 도메인이 아직 없어서, 그 필드를 참조하는 표현이 여기서만
+        # '카탈로그에 없는 필드'로 보였다 — 같은 함수를 부르는 audience_validators 쪽은
+        # 이미 스냅샷을 쓰고 있어 두 판정이 갈라져 있었다(실측: 금액 단위 커버리지가
+        # 검증기에서는 통과하고 이 경로에서만 미해결로 남았다).
+        return canonical_audience_claims.refresh_canonical_unresolved(original_query, query_plan, _plan_event_expression(query_plan), audience_runtime.catalog_snapshot())
 
     preserved = [
         copy.deepcopy(item)

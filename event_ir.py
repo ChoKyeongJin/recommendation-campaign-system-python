@@ -15,7 +15,7 @@
 연산자를 **조합**한다 — 새 문장은 새 조합이지 새 타입이 아니다.
 
     논리   And · Or · Not
-    스칼라 Literal · FieldRef · Arithmetic · Aggregate
+    스칼라 Literal · FieldRef · Arithmetic · Tuple · NullIf · Aggregate
     관계   Source · Filter · Join · Group · Project · Summarize · Order · Limit
     조건   Comparison · Exists · TimeFilter · TemporalRelation
     시간   AbsoluteInterval · RollingWindow · RelativeWindow · Duration
@@ -413,6 +413,53 @@ class Arithmetic:
 
 
 @dataclass(frozen=True)
+class Tuple:
+    """여러 스칼라를 **하나의 행 값**으로 묶는다. 문장 하나를 위한 타입이 아니라 범용 행 값이다.
+
+    존재 이유는 다중 컬럼 식별자다. ``COUNT(DISTINCT CONCAT(a, ':', b))`` 처럼 구분자로 이어
+    붙인 문자열은 값 안에 구분자가 있거나 한쪽이 NULL 이면 서로 다른 키가 같은 문자열이 된다
+    (``('a:b', '')`` 과 ``('a', 'b:')`` 이 둘 다 ``'a:b:'``). 키가 몇 개의 값으로 이루어지는가는
+    **의미**이므로 IR 이 구조로 들고, 그 구조를 방언이 안전하게 렌더한다.
+
+    스칼라 위치 어디에나 놓을 수 있는 값이 아니다 — 행 값을 받는 자리(현재는
+    ``Aggregate(distinct=True)`` 의 인자)에서만 컴파일된다. 그 밖에서는 컴파일러가 fail-close 한다.
+    """
+
+    items: tuple["Scalar", ...]
+    type: str = "tuple"
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.items, tuple) or len(self.items) < 2:
+            raise IrSchemaError("tuple needs at least two items")
+        if any(isinstance(item, Tuple) for item in self.items):
+            raise IrSchemaError("tuple items cannot be tuples")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "tuple", "items": [item.to_dict() for item in self.items]}
+
+
+@dataclass(frozen=True)
+class NullIf:
+    """``expression`` 이 ``value`` 와 같으면 NULL. 0 분모를 NULL 로 접는 안전 나눗셈의 절반이다.
+
+    전용 ``SafeDivide`` 노드를 두지 않는 이유: 안전 나눗셈은 ``Arithmetic('/')`` 와 이 노드의
+    **조합**이고, 조합으로 표현되는 것에 타입을 주면 같은 뜻이 두 모양을 갖는다(모듈 규칙 1).
+    이 노드 자체는 나눗셈 전용이 아니다 — '이 값이면 없는 값으로 본다'는 범용 값 가드다.
+    """
+
+    expression: "Scalar"
+    value: "Scalar"
+    type: str = "null_if"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "null_if",
+            "expression": self.expression.to_dict(),
+            "value": self.value.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
 class Aggregate:
     """관계에 대한 집계. 횟수·합계·평균·최소·최대가 **같은 노드**다(지표마다 타입을 만들지 않는다)."""
 
@@ -427,6 +474,14 @@ class Aggregate:
             raise IrSchemaError(f"unsupported aggregate function: {self.function!r}")
         if self.function != "count" and self.expression is None:
             raise IrSchemaError(f"aggregate '{self.function}' needs an expression")
+        # 행 값은 '몇 개의 서로 다른 키인가'를 세는 자리에서만 뜻이 있다. SUM/AVG/MIN/MAX 나
+        # 비-distinct COUNT 에 행 값을 넣으면 방언마다 다른 것을 계산한다 — 여기서 막는다.
+        if isinstance(self.expression, Tuple) and not (
+            self.function == "count" and self.distinct
+        ):
+            raise IrSchemaError(
+                "tuple expressions are only valid for count(distinct ...) aggregates"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -436,7 +491,7 @@ class Aggregate:
         }
 
 
-Scalar = Literal | FieldRef | Arithmetic | Aggregate
+Scalar = Literal | FieldRef | Arithmetic | Tuple | NullIf | Aggregate
 
 
 # ── 관계 표현 ─────────────────────────────────────────────────────────────────────
@@ -862,11 +917,80 @@ ATOM_TYPES = (Comparison, Exists, TemporalRelation)
 # 노드 타입 목록(닫힌 집합). 계약 테스트가 '문장이 늘어도 이 목록은 늘지 않는다'를 강제한다.
 NODE_TYPES: frozenset[str] = frozenset({
     "and", "or", "not",
-    "literal", "field", "arithmetic", "aggregate",
+    "literal", "field", "arithmetic", "tuple", "null_if", "aggregate",
     "source", "filter", "join", "group", "project", "summarize", "order", "limit",
     "comparison", "exists", "time_filter", "temporal_relation", "event_reference",
     "interval", "rolling", "relative", "duration",
 })
+
+
+# ── 표현 capability(선언 어휘) ────────────────────────────────────────────────────
+#
+# capability 는 "이 표현이 **어떤 종류의 계산**을 요구하는가"의 닫힌 이름표다. 카탈로그가
+# 지표별로 필요한 capability 를 선언하고, 컴파일러가 방언별로 제공 가능한 capability 를
+# 선언한다. 그러면 "SQL 을 만들다가 터진다"가 아니라 **lowering 전에** 계약 오류로 답할 수 있다.
+#
+# 이름은 operator namespace 관례(`<영역>.<기능>`)를 따른다. 트리에서 파생되지 않는 항목
+# (`metric.member_scalar`)도 같은 어휘에 두는 이유는 소비자가 하나이기 때문이다 — 카탈로그
+# 선언 검증이 이 집합 하나만 알면 된다.
+CAPABILITIES: frozenset[str] = frozenset({
+    # 표현 트리에서 파생되는 것들
+    "scalar.arithmetic",
+    "scalar.tuple",
+    "scalar.null_if",
+    "scalar.safe_divide",
+    "aggregate.scalar",
+    "aggregate.count_distinct",
+    "aggregate.multi_column_count_distinct",
+    "aggregate.derived_expression",
+    "relation.membership_join",
+    "relation.ranked_limit",
+    # 카탈로그 계약에서만 쓰이는 것(트리 모양이 아니라 지표의 grain·cardinality 계약)
+    "metric.member_scalar",
+})
+
+
+def expression_capabilities(node: Any) -> frozenset[str]:
+    """트리가 **실제로 사용하는** capability 집합(선언이 아니라 파생).
+
+    카탈로그 선언과 대조해 "선언은 A 인데 표현은 B 를 쓴다"를 잡고, 방언 지원 집합과 대조해
+    lowering 전에 미지원을 답한다. 여기서 세는 것은 모양뿐이며 의미를 추측하지 않는다.
+    """
+
+    used: set[str] = set()
+    for item in walk(node):
+        if isinstance(item, Arithmetic):
+            used.add("scalar.arithmetic")
+            if item.operator == "/" and isinstance(item.right, NullIf):
+                used.add("scalar.safe_divide")
+        elif isinstance(item, Tuple):
+            used.add("scalar.tuple")
+        elif isinstance(item, NullIf):
+            used.add("scalar.null_if")
+        elif isinstance(item, Aggregate):
+            used.add("aggregate.scalar")
+            if item.distinct and item.expression is not None:
+                used.add("aggregate.count_distinct")
+                if isinstance(item.expression, Tuple):
+                    used.add("aggregate.multi_column_count_distinct")
+            if not isinstance(item.expression, (type(None), FieldRef, Tuple)):
+                used.add("aggregate.derived_expression")
+        elif isinstance(item, Join) and item.kind in {"semi", "anti"}:
+            used.add("relation.membership_join")
+        elif isinstance(item, Limit):
+            used.add("relation.ranked_limit")
+    # 집계 결과끼리의 산술(분자/분모 조합)은 '집계 위의 파생식'이다 — 집계 인자 안의 산술과
+    # 구분해서 세지 않으면 카탈로그가 둘 중 무엇을 요구하는지 선언할 수 없다.
+    for item in walk(node):
+        if isinstance(item, Arithmetic) and any(
+            isinstance(child, Aggregate) for child in walk(item)
+        ):
+            used.add("aggregate.derived_expression")
+            break
+    unknown = used - CAPABILITIES
+    if unknown:  # pragma: no cover - 어휘와 파생이 어긋나면 즉시 드러나야 한다.
+        raise IrSchemaError(f"undeclared capabilities derived: {sorted(unknown)}")
+    return frozenset(used)
 
 
 # ── 역직렬화(닫힌 판별자) ─────────────────────────────────────────────────────────
@@ -888,6 +1012,16 @@ def scalar_from_dict(raw: Any) -> Scalar:
             operator=str(raw.get("operator")),
             left=scalar_from_dict(raw.get("left")),
             right=scalar_from_dict(raw.get("right")),
+        )
+    if kind == "tuple":
+        items = raw.get("items")
+        if not isinstance(items, list):
+            raise IrSchemaError("tuple needs an items array")
+        return Tuple(items=tuple(scalar_from_dict(item) for item in items))
+    if kind == "null_if":
+        return NullIf(
+            expression=scalar_from_dict(raw.get("expression")),
+            value=scalar_from_dict(raw.get("value")),
         )
     if kind == "aggregate":
         expression = raw.get("expression")
@@ -1146,6 +1280,10 @@ def _children(node: Any) -> list[Any]:
         return [node.relation] + ([node.expression] if node.expression is not None else [])
     if isinstance(node, Arithmetic):
         return [node.left, node.right]
+    if isinstance(node, Tuple):
+        return list(node.items)
+    if isinstance(node, NullIf):
+        return [node.expression, node.value]
     return []
 
 

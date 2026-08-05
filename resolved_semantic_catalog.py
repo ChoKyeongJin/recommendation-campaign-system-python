@@ -33,7 +33,29 @@ import temporal_semantics
 # 두 컬럼을 각각 field 메트릭으로 쪼개면 서로 다른 행에서 만족되어도 통과한다("1월에 G→S,
 # 3월에 X→V" 인 회원이 '골드에서 VIP로'에 걸린다) — 적재가 늘면 조용히 뒤바뀌는 오답이라
 # 전이는 한 메트릭이 두 컬럼을 **함께 소유**한다.
-METRIC_KINDS = frozenset({"field", "aggregate", "existence", "transition"})
+# member_scalar = 회원 한 명당 **0개 또는 1개**의 값이 이미 물리적으로 존재하는 지표(월 스냅샷
+# 컬럼 등). aggregate 와 겹쳐 보이지만 계약이 다르다:
+#
+#   aggregate      여러 이벤트 행을 접어서 값을 만든다. 전역 순위(Limit/Order/Summarize)의
+#                  모집단 재료가 될 수 있고, 그때 ranking_* 레시피를 함께 선언한다.
+#   member_scalar  회원 행에 이미 있는 값을 **읽는다**. 접을 것이 없으므로 집계 함수가 없고,
+#                  순위 의미도 없다(순위는 모집단 개념인데 이 계약은 회원 한 명만 말한다).
+#
+# 이 둘을 한 kind 로 두면 전역 순위용 선언이 회원별 임계값 자리에 그대로 들어가고, 그 자리에서
+# 순위 정책(모집단·동점자·최소 표본)이 조용히 사라진다. 계약을 나누면 그 오용이 선언 검증에서
+# 이름과 함께 막힌다.
+METRIC_KINDS = frozenset({"field", "aggregate", "existence", "transition", "member_scalar"})
+# 지표 결과의 개수 계약. scalar = 회원당 0..1 행(임계 비교의 좌변으로 쓸 수 있다),
+# set = 여러 행(집계·순위의 재료다).
+METRIC_CARDINALITIES = frozenset({"set", "scalar"})
+# 값이 NULL 인 회원의 처리. `exclude` 는 3값 논리 그대로 — NULL 비교는 UNKNOWN 이므로 그
+# 회원은 대상에서 빠진다(기존 프로필 지표 SQL 의 동작이다).
+#
+# `include_as_zero`(COALESCE(col, 0))는 아직 없다. 그 뜻을 표현하려면 IR 에 COALESCE 스칼라가
+# 먼저 있어야 하고, 없는 정책을 어휘에만 올리면 선언은 통과하는데 SQL 이 다른 뜻이 된다.
+METRIC_NULL_BEHAVIORS = frozenset({"exclude"})
+# 그 회원의 행 자체가 없을 때의 처리. `exclude` = EXISTS 가 거짓이므로 대상에서 빠진다.
+METRIC_ZERO_ROW_BEHAVIORS = frozenset({"exclude"})
 JOIN_CARDINALITIES = frozenset({"one_to_one", "many_to_one", "one_to_many", "many_to_many"})
 WINDOW_TYPES = frozenset({"interval", "rolling", "relative"})
 UNKNOWN_COVERAGE = "unknown"
@@ -255,6 +277,7 @@ class MetricSpec:
     * ``field`` -> a field comparison (wrapped in ``Exists`` for fact sources)
     * ``aggregate`` -> ``Comparison(Aggregate(...), Literal(...))``
     * ``existence`` -> ``Exists(relation)`` compared to a boolean requirement
+    * ``member_scalar`` -> ``Exists(Filter(Source, Comparison(FieldRef, Literal)))``
     """
 
     id: str
@@ -287,6 +310,14 @@ class MetricSpec:
     ranking_entity_field: str | None = None
     ranking_limit_units: tuple[str, ...] = ()
     ranking_tie_policy: str | None = None
+    # 회원당 결과 개수 계약. 기본이 ``set`` 인 이유는 기존 선언 전부가 그 뜻이기 때문이다 —
+    # ``scalar`` 는 명시적으로 선언해야 한다(조용한 승격 금지).
+    cardinality: str = "set"
+    null_behavior: str = "exclude"
+    zero_row_behavior: str = "exclude"
+    # 이 지표를 낮추는 데 필요한 Event IR capability. 어휘의 소유자는 :mod:`event_ir` 이고
+    # 여기서는 참조만 한다. 선언이 있으면 lowering 전에 제공 가능 여부를 답할 수 있다.
+    required_capabilities: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _non_empty(self.id, "metric.id")
@@ -295,6 +326,35 @@ class MetricSpec:
             raise CatalogError(
                 "invalid_catalog_declaration",
                 f"metric {self.id!r} has unknown kind {self.kind!r}",
+                symbol=self.id,
+            )
+        for value, vocabulary, label in (
+            (self.cardinality, METRIC_CARDINALITIES, "cardinality"),
+            (self.null_behavior, METRIC_NULL_BEHAVIORS, "null_behavior"),
+            (self.zero_row_behavior, METRIC_ZERO_ROW_BEHAVIORS, "zero_row_behavior"),
+        ):
+            if value not in vocabulary:
+                raise CatalogError(
+                    "invalid_catalog_declaration",
+                    f"metric {self.id!r} has unknown {label} {value!r}; "
+                    f"declared values are {sorted(vocabulary)}",
+                    symbol=self.id,
+                )
+        unknown_capabilities = set(self.required_capabilities) - event_ir.CAPABILITIES
+        if unknown_capabilities:
+            raise CatalogError(
+                "invalid_catalog_declaration",
+                f"metric {self.id!r} requires undeclared capabilities "
+                f"{sorted(unknown_capabilities)}",
+                symbol=self.id,
+            )
+        if self.kind == "member_scalar":
+            self._validate_member_scalar()
+        elif self.cardinality == "scalar":
+            raise CatalogError(
+                "invalid_catalog_declaration",
+                f"metric {self.id!r} is {self.kind!r} but declares scalar cardinality; "
+                "only member_scalar metrics return one value per member",
                 symbol=self.id,
             )
         if self.kind == "aggregate":
@@ -372,6 +432,64 @@ class MetricSpec:
             raise CatalogError(
                 "invalid_catalog_declaration",
                 f"distinct metric {self.id!r} needs expression_field",
+                symbol=self.id,
+            )
+
+    def _validate_member_scalar(self) -> None:
+        """회원별 스칼라 계약 — 전역 순위 선언이 이 자리에 들어오지 못하게 한다."""
+
+        if not self.expression_field:
+            raise CatalogError(
+                "invalid_catalog_declaration",
+                f"member scalar metric {self.id!r} needs expression_field",
+                symbol=self.id,
+            )
+        if self.cardinality != "scalar":
+            raise CatalogError(
+                "invalid_catalog_declaration",
+                f"member scalar metric {self.id!r} must declare cardinality 'scalar', "
+                f"not {self.cardinality!r}",
+                symbol=self.id,
+            )
+        if self.grain != SUBJECT_GRAIN:
+            raise CatalogError(
+                "invalid_catalog_declaration",
+                f"member scalar metric {self.id!r} must be grained on {SUBJECT_GRAIN!r}, "
+                f"not {self.grain!r}",
+                symbol=self.id,
+            )
+        if self.aggregate_function is not None:
+            raise CatalogError(
+                "invalid_catalog_declaration",
+                f"member scalar metric {self.id!r} cannot declare aggregate_function "
+                f"{self.aggregate_function!r}; the value already exists per member",
+                symbol=self.id,
+            )
+        if self.distinct:
+            raise CatalogError(
+                "invalid_catalog_declaration",
+                f"member scalar metric {self.id!r} cannot declare distinct",
+                symbol=self.id,
+            )
+        if any(
+            (
+                self.ranking_entity,
+                self.ranking_entity_field,
+                self.ranking_limit_units,
+                self.ranking_tie_policy,
+            )
+        ):
+            raise CatalogError(
+                "invalid_catalog_declaration",
+                f"member scalar metric {self.id!r} cannot declare a ranking recipe; "
+                "ranking is a population concept and this contract describes one member",
+                symbol=self.id,
+            )
+        if "metric.member_scalar" not in self.required_capabilities:
+            raise CatalogError(
+                "invalid_catalog_declaration",
+                f"member scalar metric {self.id!r} must require the "
+                "'metric.member_scalar' capability",
                 symbol=self.id,
             )
 
@@ -665,14 +783,23 @@ class ResolvedSemanticCatalog:
             require(self.grains, metric.grain, f"metric {metric.id!r}", "grain")
             require(self.data_coverage, metric.coverage, f"metric {metric.id!r}", "coverage")
             if (
-                metric.kind == "aggregate"
+                metric.kind in {"aggregate", "member_scalar"}
                 and self.sources[metric.source].event.binding != "fact_table"
             ):
                 raise CatalogError(
                     "catalog_reference_mismatch",
-                    f"aggregate metric {metric.id!r} requires a fact_table source",
+                    f"{metric.kind} metric {metric.id!r} requires a fact_table source",
                     symbol=metric.source,
                 )
+            if metric.kind == "member_scalar" and metric.expression_field:
+                # 값 필드가 다른 소스에 있으면 '회원 행 하나를 읽는다'가 성립하지 않는다.
+                if self.fields[metric.expression_field].source != metric.source:
+                    raise CatalogError(
+                        "catalog_reference_mismatch",
+                        f"member scalar metric {metric.id!r} reads {metric.expression_field!r} "
+                        f"from another source",
+                        symbol=metric.expression_field,
+                    )
             if metric.expression_field:
                 require(self.fields, metric.expression_field, f"metric {metric.id!r}", "field")
             if metric.ranking_entity_field:
@@ -1212,6 +1339,13 @@ def _metric_spec(item_id: str, declaration: Any) -> MetricSpec:
             str(declaration["ranking_tie_policy"])
             if declaration.get("ranking_tie_policy")
             else None
+        ),
+        cardinality=str(declaration.get("cardinality") or "set"),
+        null_behavior=str(declaration.get("null_behavior") or "exclude"),
+        zero_row_behavior=str(declaration.get("zero_row_behavior") or "exclude"),
+        required_capabilities=_string_tuple(
+            declaration.get("required_capabilities"),
+            f"metric {item_id}.required_capabilities",
         ),
     )
 

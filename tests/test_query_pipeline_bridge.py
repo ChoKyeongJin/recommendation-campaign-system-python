@@ -198,8 +198,51 @@ RELATIVE = {
     "evidence": EVIDENCE,
 }
 
+# 복합 집계식(분자 SUM / 분모 다중 컬럼 COUNT DISTINCT). 행 값(tuple)과 0 분모 가드(null_if)가
+# 등장하는 유일한 왕복 표본이다.
+RATIO_AGGREGATE = {
+    "type": "comparison",
+    "operator": ">=",
+    "left": {
+        "type": "arithmetic",
+        "operator": "/",
+        "left": {
+            "type": "arithmetic",
+            "operator": "*",
+            "left": {
+                "type": "aggregate",
+                "function": "sum",
+                "distinct": False,
+                "expression": {"type": "field", "name": "purchase.amount"},
+                "relation": {"type": "source", "name": "purchase"},
+            },
+            "right": {"type": "literal", "value": 1.0},
+        },
+        "right": {
+            "type": "null_if",
+            "expression": {
+                "type": "aggregate",
+                "function": "count",
+                "distinct": True,
+                "expression": {
+                    "type": "tuple",
+                    "items": [
+                        {"type": "field", "name": "purchase.order_id"},
+                        {"type": "field", "name": "purchase.occurred_at"},
+                    ],
+                },
+                "relation": {"type": "source", "name": "purchase"},
+            },
+            "value": {"type": "literal", "value": 0},
+        },
+    },
+    "right": {"type": "literal", "value": 100000},
+    "evidence": EVIDENCE,
+}
+
 WIRES: dict[str, dict] = {
     "comparison": COMPARISON,
+    "ratio_aggregate": RATIO_AGGREGATE,
     "time_filter": TIME_FILTER,
     "exists": EXISTS,
     "aggregate": AGGREGATE_COMPARISON,

@@ -20,7 +20,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Coroutine, Mapping
+from collections.abc import Coroutine, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -318,8 +318,11 @@ class AudienceResolution:
     # 모델이 null 로 돌려준 표현을 애플리케이션 소유 계약이 완전히 증명해 채운 경우의
     # 소유자. 투영 시 결정 로그에 남기며, 검증 issue 가 하나라도 남으면 설정하지 않는다.
     synthesis_owner: str | None = None
-    # 폐기된 '캠페인당 평균 구매금액' 축을 fail-close 시킨 판정 근거(있으면 표현을 버렸다).
-    retired_axis_receipt: dict[str, Any] | None = None
+    # '캠페인당 평균 구매금액' 판정 근거. 합성이 성립하면 모델의 행당 평균 집계를 캠페인 분모
+    # 복합식으로 **바꾼** 기록이고, 성립하지 않으면 표현을 버린 기록이다(둘은 receipt 에
+    # numerator/denominator 가 있는지로 구분된다).
+    campaign_average_receipt: dict[str, Any] | None = None
+    campaign_average_rewritten: bool = False
 
 
 def _requirement_from_payload(
@@ -362,10 +365,13 @@ def _validation_issues(
     literals: list[Any],
     *,
     current_date: str | None,
+    scalar_literal_spans: Sequence[tuple[int, int]] = (),
 ) -> list[dict[str, Any]]:
     """요구 계층에 검증기를 주입해 돌리고, 결과를 기존 issue 표기로 되돌린다."""
     resolver = DefaultRequirementResolver(
-        validators=audience_validators(as_of=as_of_date(current_date))
+        validators=audience_validators(
+            as_of=as_of_date(current_date), scalar_literal_spans=scalar_literal_spans
+        )
     )
     context = RequirementResolutionContext(
         timezone=_TIMEZONE,
@@ -401,6 +407,9 @@ class _ApplicationOwnedSynthesis:
     expression: event_ir.Condition
     owner: str
     issue_key: tuple[str, str, str]
+    # 합성이 **스칼라 임계값으로** 소비한 원문 구간. 기간처럼 보이지만 창이 아닌 리터럴
+    # ('구매주기가 30일 이하'의 '30일')을 시간 검증기가 소실된 창으로 세지 않게 한다.
+    scalar_literal_spans: tuple[tuple[int, int], ...] = ()
 
 
 def _issue_evidence_contains(
@@ -482,29 +491,76 @@ def _application_owned_synthesis(
                     "rolling_absence.not_exists_window",
                     _audience_issue_key(issue),
                 )
+
+    if code == "unsupported_semantics":
+        # 회원별 스칼라 지표 임계(구매주기·누적 구매금액 …). issue 인자 문자열로 라우팅하지
+        # 않는 이유: 그 문자열은 모델 산문이라 지표마다 달라지고, 실제 안전장치는 합성기가
+        # 요구하는 **닫힌 문형 + 카탈로그 계약 + 근거 구간 포함**이다. 라우팅을 인자에 걸면
+        # 표현할 수 있는 요청이 모델 어휘 때문에 닫힌다.
+        synthesis = _member_scalar_synthesis(query, issue, literal_bindings)
+        if synthesis is not None:
+            return synthesis
     return None
 
 
-def _retired_campaign_average_issue(
+def _member_scalar_synthesis(
+    query: str, issue: Mapping[str, Any], literal_bindings: list[Any]
+) -> _ApplicationOwnedSynthesis | None:
+    import audience_runtime
+    import member_scalar_metric_claims
+
+    registry_path = audience_runtime.member_metric_registry_snapshot()
+    if registry_path is None:
+        return None
+    result = member_scalar_metric_claims.synthesize_member_scalar_predicate(
+        query,
+        issue,
+        literal_bindings,
+        registry_path,
+        audience_runtime.resolve_audience_catalog(),
+    )
+    if result is None:
+        return None
+    consumed = {
+        str(binding_id)
+        for binding_id in result.receipt.get("consumed_literal_binding_ids") or ()
+    }
+    spans = tuple(
+        (int(binding["start"]), int(binding["end"]))
+        for binding in literal_bindings
+        if isinstance(binding, Mapping)
+        and str(binding.get("id")) in consumed
+        and isinstance(binding.get("start"), int)
+        and isinstance(binding.get("end"), int)
+    )
+    return _ApplicationOwnedSynthesis(
+        result.expression,
+        member_scalar_metric_claims.OWNER,
+        _audience_issue_key(issue),
+        scalar_literal_spans=spans,
+    )
+
+
+def _campaign_average_claim(
     query: str, raw_expression: Any, literal_bindings: Any
 ) -> dict[str, Any] | None:
-    """폐기된 '캠페인당 평균 구매금액' 축을 표현으로 위장한 요청을 잡는다.
+    """'캠페인당 평균 구매금액'을 행당 평균으로 위장한 표현을 잡아 정확한 식으로 바꾼다.
 
-    이 축의 합성을 지우면 같은 문장이 **반응 행당 평균**(``AVG(BUY_AMT)``)으로 조용히
-    바뀐다 — 캠페인 수로 나눈 평균과 값이 다른데 둘 다 성공으로 보인다. 판정은 카탈로그
-    선언(:mod:`campaign_metric_claims`)이 하고, 여기서는 그 결과를 issue 로 바꿔 표현을
-    버린다(뜻이 다른 SQL 을 내느니 막는다).
+    바꾸지 않고 그대로 두면 같은 문장이 **반응 행당 평균**(``AVG(BUY_AMT)``)으로 조용히
+    실행된다 — 캠페인 수로 나눈 평균과 값이 다른데 둘 다 성공으로 보인다. 판정과 합성은
+    카탈로그 선언(:mod:`campaign_metric_claims`)이 하고, 여기서는 그 결과를 표현 교체 또는
+    fail-close 로 옮긴다.
 
-    카탈로그를 읽지 못하면 판정을 할 수 없고, **판정 불가는 '폐기 축이 아니다'가 아니다**.
+    카탈로그를 읽지 못하면 판정을 할 수 없고, **판정 불가는 '해당 없음'이 아니다**.
     예전에는 :class:`audience_runtime.AudienceCatalogLoadError` 를 삼키고 ``None`` 을 돌려줬는데
-    (실측 2026-08-05: 주입 시 통과), 그러면 근거 부재가 곧 통과가 되어 뜻이 다른 SQL 이 나간다.
+    (실측 2026-08-05: 주입 시 행당 평균 SQL 출고), 그러면 근거 부재가 곧 통과가 된다.
     그래서 예외를 전파한다 — 이 모듈의 다른 카탈로그 소비자(합성 판정·근거 정규화)도 같은
     예외를 전파하므로 실패 표면이 하나로 유지된다.
     """
 
     import audience_runtime
 
-    return campaign_metric_claims.detect_retired_campaign_average_claim(
+    return campaign_metric_claims.detect_campaign_average_claim(
         query, raw_expression, literal_bindings, audience_runtime.catalog_snapshot()
     )
 
@@ -524,22 +580,29 @@ def run_audience_resolver(
 
     raw_expression = requirement.get("expression")
     literal_bindings = payload.get("literal_bindings")
-    # 폐기 축(캠페인당 평균 구매금액)은 표현을 버리고 fail-close 한다. 이 판정을 먼저 하는
-    # 이유는 하나다 — 그대로 두면 뜻이 다른 SQL(행당 평균)이 성공으로 나간다.
-    retired_axis = _retired_campaign_average_issue(query, raw_expression, literal_bindings)
-    retired_axis_receipt: dict[str, Any] | None = None
-    if retired_axis is not None:
-        retired_axis_receipt = dict(retired_axis["receipt"])
-        raw_expression = None
-        issues = [
-            *issues,
-            {
-                "code": "unsupported_semantics",
-                "argument": str(retired_axis["argument"]),
-                "message": str(retired_axis["message"]),
-                "evidence": dict(retired_axis["evidence"]),
-            },
-        ]
+    # 캠페인 분모 평균 판정을 **먼저** 하는 이유는 하나다 — 그대로 두면 뜻이 다른 SQL(행당
+    # 평균)이 성공으로 나간다. 합성이 성립하면 그 자리를 정확한 복합식으로 바꾸고, 성립하지
+    # 않으면 표현을 버린다(조용한 대체 금지).
+    campaign_average = _campaign_average_claim(query, raw_expression, literal_bindings)
+    campaign_average_receipt: dict[str, Any] | None = None
+    campaign_average_rewritten = False
+    if campaign_average is not None:
+        campaign_average_receipt = dict(campaign_average["receipt"])
+        synthesized = campaign_average.get("expression")
+        if isinstance(synthesized, dict):
+            raw_expression = synthesized
+            campaign_average_rewritten = True
+        else:
+            raw_expression = None
+            issues = [
+                *issues,
+                {
+                    "code": "unsupported_semantics",
+                    "argument": str(campaign_average["argument"]),
+                    "message": str(campaign_average["message"]),
+                    "evidence": dict(campaign_average["evidence"]),
+                },
+            ]
     synthesis: _ApplicationOwnedSynthesis | None = None
     if raw_expression is None and issues and isinstance(literal_bindings, list):
         synthesis = _application_owned_synthesis(query, issues, literal_bindings)
@@ -573,7 +636,13 @@ def run_audience_resolver(
             evidence_normalizations.append(evidence_correction)
         expression = _parse_audience_expression(raw_expression, query)
         calculated = _validation_issues(
-            expression, query, literal_bindings, current_date=current_date
+            expression,
+            query,
+            literal_bindings,
+            current_date=current_date,
+            scalar_literal_spans=(
+                synthesis.scalar_literal_spans if synthesis is not None else ()
+            ),
         )
         if not calculated:
             expression, as_of_normalizations, as_of_issue = (
@@ -615,7 +684,8 @@ def run_audience_resolver(
         evidence_normalizations=evidence_normalizations,
         as_of_normalizations=as_of_normalizations,
         synthesis_owner=synthesis_owner,
-        retired_axis_receipt=retired_axis_receipt,
+        campaign_average_receipt=campaign_average_receipt,
+        campaign_average_rewritten=campaign_average_rewritten,
     )
 
 
@@ -640,17 +710,24 @@ def project_resolution_to_plan(
             ),
             value=resolution.expression.to_dict(),
         )
-    if resolution.retired_axis_receipt is not None:
+    if resolution.campaign_average_receipt is not None:
+        rewritten = resolution.campaign_average_rewritten
         plan_decisions.record(
             payload,
-            filter_name="campaign_metric_claims.retired_average_per_campaign",
-            action=plan_decisions.DROP,
+            filter_name=campaign_metric_claims.SYNTHESIS_OWNER,
+            action=plan_decisions.UPDATE if rewritten else plan_decisions.DROP,
             slot="audience_requirement.expression",
             reason=(
                 "카탈로그가 캠페인 분모 평균으로 선언한 절인데 모델 표현은 반응 행당 "
-                "평균이라 뜻이 다르다 — 폐기된 축이므로 표현을 버리고 미지원으로 닫았다"
+                "평균이라 뜻이 다르다 — "
+                + (
+                    "선언된 분자(SUM)와 분모(서로 다른 캠페인 실행 수)로 복합 집계식을 "
+                    "만들어 그 자리를 바꿨다"
+                    if rewritten
+                    else "합성에 필요한 선언이 불완전해 표현을 버리고 미지원으로 닫았다"
+                )
             ),
-            value=resolution.retired_axis_receipt,
+            value=resolution.campaign_average_receipt,
         )
     for correction in resolution.evidence_normalizations:
         plan_decisions.record(

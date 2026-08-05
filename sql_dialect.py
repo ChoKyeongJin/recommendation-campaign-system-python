@@ -142,8 +142,29 @@ class SqlDialect:
     def coalesce(self, expr: str, default_sql: str) -> str:
         return f"COALESCE({expr}, {default_sql})"
 
+    def null_if(self, expr: str, value_sql: str) -> str:
+        """``expr`` 이 ``value_sql`` 과 같으면 NULL. 0 분모를 NULL 로 접는 안전 나눗셈의 절반이다.
+
+        방언마다 0 나눗셈의 결말이 다르다(T-SQL/MySQL 은 NULL 또는 경고, PostgreSQL 은
+        ``division_by_zero`` 오류). 분모를 미리 NULL 로 접으면 어느 엔진에서도 결과가 NULL 이 되고,
+        비교는 UNKNOWN → 그 회원은 대상에서 빠진다 — 엔진에 따라 결말이 갈리지 않는다.
+        """
+        return f"NULLIF({expr}, {value_sql})"
+
     def concat(self, *parts: str) -> str:
         return f"CONCAT({', '.join(parts)})"
+
+    # ── 다중 컬럼 DISTINCT ─────────────────────────────────────────
+    # 여기에 렌더 메서드를 두지 않는 것이 **결정**이다. 네이티브 문법의 NULL 규칙이 엔진마다
+    # 다르기 때문이다:
+    #
+    #   MySQL/MariaDB  COUNT(DISTINCT a, b)    인자 중 하나라도 NULL 인 행은 **세지 않는다**
+    #   PostgreSQL     COUNT(DISTINCT (a, b))  행 값 자체는 NULL 이 아니므로 **센다**
+    #   T-SQL/ANSI     문법 없음
+    #
+    # 같은 IR 이 방언에 따라 다른 수를 세면 그것은 최적화가 아니라 조용한 오답이다. 그래서
+    # :mod:`event_compiler` 가 **모든 방언에서** DISTINCT 서브쿼리로 낮춘다(세 엔진 모두
+    # NULL 조합을 하나의 키로 센다 = 기존 T-SQL CONCAT 렌더와 같은 결말).
 
     # ── 행 수 제한(상위 N) ─────────────────────────────────────────
     # 엔진이 제한을 앞(SELECT TOP n)에 두느냐 뒤(LIMIT n)에 두느냐만 다르다. 두 자리를 모두

@@ -89,6 +89,13 @@ def _operand_to_ir(operand: expr.EventOperand) -> event_ir.Scalar:
             left=_operand_to_ir(operand.left),
             right=_operand_to_ir(operand.right),
         )
+    if isinstance(operand, expr.TupleOperand):
+        return event_ir.Tuple(items=tuple(_operand_to_ir(item) for item in operand.items))
+    if isinstance(operand, expr.NullIfOperand):
+        return event_ir.NullIf(
+            expression=_operand_to_ir(operand.expression),
+            value=_operand_to_ir(operand.value),
+        )
     if isinstance(operand, expr.AggregateOperand):
         return event_ir.Aggregate(
             function=operand.function.value,
@@ -115,6 +122,15 @@ def _operand_from_ir(scalar: event_ir.Scalar) -> expr.EventOperand:
             operator=operator,
             left=_operand_from_ir(scalar.left),
             right=_operand_from_ir(scalar.right),
+        )
+    if isinstance(scalar, event_ir.Tuple):
+        return expr.TupleOperand(
+            items=tuple(_operand_from_ir(item) for item in scalar.items)
+        )
+    if isinstance(scalar, event_ir.NullIf):
+        return expr.NullIfOperand(
+            expression=_operand_from_ir(scalar.expression),
+            value=_operand_from_ir(scalar.value),
         )
     if isinstance(scalar, event_ir.Aggregate):
         return expr.AggregateOperand(

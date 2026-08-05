@@ -53,7 +53,10 @@ def existence_shape(expression: event_ir.Condition) -> list[tuple[str, bool, Any
 # 이 목록이 곧 "허용된 범용 연산자"다. 문장 유형을 위해 여기 항목을 늘리는 변경은 설계 거부다.
 EXPECTED_NODE_TYPES = {
     "and", "or", "not",
-    "literal", "field", "arithmetic", "aggregate",
+    # tuple/null_if 는 2026-08-05 이후 추가됐다. 둘 다 **문장 하나를 위한 타입이 아니라**
+    # 범용 값 노드다: tuple 은 다중 컬럼 키(구분자 CONCAT 의 충돌을 구조적으로 없앤다),
+    # null_if 는 '이 값이면 없는 값' 가드(0 분모 안전 나눗셈의 절반)다.
+    "literal", "field", "arithmetic", "tuple", "null_if", "aggregate",
     "source", "filter", "join", "group", "project", "summarize", "order", "limit",
     "comparison", "exists", "time_filter", "temporal_relation", "event_reference",
     "interval", "rolling", "relative", "duration",

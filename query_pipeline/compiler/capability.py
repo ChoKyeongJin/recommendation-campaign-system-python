@@ -34,6 +34,10 @@ _EVENT_IR_NODES: frozenset[str] = frozenset(
         "node.attribute",
         "node.literal",
         "node.arithmetic",
+        # 행 값(다중 컬럼 distinct 키)과 0 값 가드. 둘 다 event_compiler 가 낮춘다 —
+        # tuple 은 DISTINCT 서브쿼리로, null_if 는 방언의 NULLIF 로.
+        "node.tuple",
+        "node.null_if",
         "node.aggregate",
         "node.entity",
         "node.filter",

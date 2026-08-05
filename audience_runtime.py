@@ -379,7 +379,174 @@ def materialize_member_metric_rankings(
             "measure_function": function,
             "measure_field": value_field,
         }
+
+    _materialize_member_scalar_metrics(
+        registry,
+        sources=sources,
+        fields=fields,
+        catalog_metrics=catalog_metrics,
+        value_table=value_table,
+        join_column=join_column,
+        templated_grain=templated_grain,
+    )
     return result
+
+
+def _materialize_member_scalar_metrics(
+    registry: Mapping[str, Any],
+    *,
+    sources: dict[str, Any],
+    fields: dict[str, Any],
+    catalog_metrics: dict[str, Any],
+    value_table: str,
+    join_column: str,
+    templated_grain: str,
+) -> None:
+    """같은 지표 목록에서 **회원별 스칼라** 계약을 파생한다(선언 없으면 아무것도 하지 않는다).
+
+    순위 계약(:func:`materialize_member_metric_rankings` 본문)과 같은 지표 줄을 읽지만 만드는
+    것이 다르다: 모집단이 아니라 회원 한 명의 값이므로 active_members 조인도, 값 NOT NULL
+    술어도 붙이지 않는다. 최신 월 스냅샷 고정(``grain_filter``)만 공유한다.
+
+    지표 id 와 소스 id 가 같은 이름(``member_scalar_<metric_id>``)인 것은 의도다 — 그 소스에서
+    자동 파생되는 존재(EXISTS) 지표를 이 명시 선언이 덮는다. '스냅샷 행이 있는가'는 회원별
+    스칼라 계약이 말하려는 것이 아니고, 같은 심볼이 두 뜻을 갖는 편이 더 위험하다.
+    """
+
+    declaration = registry.get("canonical_member_scalar")
+    if declaration is None:
+        return
+    if not isinstance(declaration, Mapping):
+        raise AudienceCatalogLoadError("canonical_member_scalar must be an object")
+    metrics = registry.get("metrics")
+    if not isinstance(metrics, list):
+        raise AudienceCatalogLoadError("member metric registry needs metrics")
+
+    source_prefix = str(declaration.get("source_prefix") or "")
+    source_alias = str(declaration.get("source_alias") or "")
+    time_column = str(declaration.get("time_column") or "")
+    time_format = str(declaration.get("time_format") or "char6")
+    value_type = str(declaration.get("value_type") or "")
+    if not all((source_prefix, source_alias, time_column, value_type)):
+        raise AudienceCatalogLoadError(
+            "canonical_member_scalar needs source_prefix, source_alias, time_column and value_type"
+        )
+    allowed_operators = copy.deepcopy(declaration.get("allowed_operators") or [])
+    required_capabilities = copy.deepcopy(declaration.get("required_capabilities") or [])
+    if not (
+        isinstance(allowed_operators, list)
+        and allowed_operators
+        and all(isinstance(item, str) for item in allowed_operators)
+        and isinstance(required_capabilities, list)
+        and all(isinstance(item, str) for item in required_capabilities)
+    ):
+        raise AudienceCatalogLoadError(
+            "canonical_member_scalar allowed_operators/required_capabilities must be string lists"
+        )
+    null_behavior = str(declaration.get("null_behavior") or "exclude")
+    zero_row_behavior = str(declaration.get("zero_row_behavior") or "exclude")
+    threshold_units = declaration.get("threshold_units")
+    if not (
+        isinstance(threshold_units, list)
+        and threshold_units
+        and all(isinstance(item, str) and item for item in threshold_units)
+    ):
+        raise AudienceCatalogLoadError(
+            "canonical_member_scalar needs a non-empty threshold_units vocabulary"
+        )
+    allowed_units = set(threshold_units)
+
+    for entry in metrics:
+        if not isinstance(entry, Mapping):
+            raise AudienceCatalogLoadError("member metric entries must be objects")
+        metric_id = str(entry.get("metric_id") or "")
+        column = str(entry.get("column") or "")
+        label = str(entry.get("ko_label") or metric_id)
+        # 단위는 선언에서만 온다. 선언이 없는 지표는 **회원별 스칼라 계약을 갖지 않는다**
+        # (순위 계약은 그대로다) — 없는 선언을 오류로 만들면 순위만 쓰는 지표를 등록할 때
+        # 쓰지도 않을 단위를 지어내야 하고, 지어낸 단위는 곧 틀린 임계 비교가 된다.
+        threshold_unit = entry.get("threshold_unit")
+        if not metric_id or not column:
+            raise AudienceCatalogLoadError(
+                f"invalid member metric declaration: {metric_id or '<missing id>'}"
+            )
+        if not (isinstance(threshold_unit, str) and threshold_unit in allowed_units):
+            continue
+        source_id = f"{source_prefix}{metric_id}"
+        value_field = f"{source_id}.value"
+        collisions = [
+            identifier
+            for section, identifier in (
+                (sources, source_id),
+                (fields, value_field),
+                (catalog_metrics, source_id),
+            )
+            if identifier in section
+        ]
+        if collisions:
+            raise AudienceCatalogLoadError(
+                "generated member scalar symbols collide: " + ", ".join(collisions)
+            )
+        sources[source_id] = {
+            "table": value_table,
+            "alias": source_alias,
+            "subject_key": join_column,
+            "event_subject_key": join_column,
+            "time_column": time_column,
+            "time_format": time_format,
+            "binding": "fact_table",
+            "grain": "subject",
+            "extra_predicates": [templated_grain],
+            "label": label,
+        }
+        fields[value_field] = {
+            "source": source_id,
+            "column": column,
+            "data_type": value_type,
+            "nullable": True,
+            "unit": threshold_unit,
+            "label": label,
+        }
+        catalog_metrics[source_id] = {
+            "source": source_id,
+            "kind": "member_scalar",
+            "cardinality": "scalar",
+            "grain": "subject",
+            "expression_field": value_field,
+            "value_type": value_type,
+            "unit": threshold_unit,
+            "allowed_operators": list(allowed_operators),
+            "null_behavior": null_behavior,
+            "zero_row_behavior": zero_row_behavior,
+            "required_capabilities": list(required_capabilities),
+            "label": label,
+        }
+
+
+@functools.lru_cache(maxsize=4)
+def member_metric_registry_snapshot(
+    path: str | Path = DEFAULT_AUDIENCE_CATALOG_PATH,
+) -> dict[str, Any] | None:
+    """카탈로그가 import 하는 회원 지표 레지스트리 원본(없으면 ``None``).
+
+    회원별 스칼라 임계의 표면어·단위 선언(``synonyms``/``threshold_unit``)은 이 파일이 소유한다.
+    소비자가 경로를 다시 계산하지 않도록 여기서 한 번만 읽는다 — 두 번째 독자가 생기는 순간
+    "어느 파일이 지표 어휘의 주인인가"의 답이 호출 지점마다 달라진다.
+    """
+
+    raw = load_audience_catalog_config(path)
+    registry_path = _member_metric_registry_path(raw, path)
+    if registry_path is None:
+        return None
+    try:
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AudienceCatalogLoadError(
+            f"member metric registry load failed: {registry_path}: {exc}"
+        ) from exc
+    if not isinstance(registry, dict):
+        raise AudienceCatalogLoadError("member metric registry root must be an object")
+    return copy.deepcopy(registry)
 
 
 @functools.lru_cache(maxsize=4)
@@ -694,5 +861,6 @@ __all__ = [
     "ranked_membership_labels",
     "load_audience_catalog_config",
     "materialize_member_metric_rankings",
+    "member_metric_registry_snapshot",
     "resolve_audience_catalog",
 ]

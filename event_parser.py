@@ -33,6 +33,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date
 from typing import Any
@@ -547,18 +548,40 @@ def event_clause_text(text: str) -> str:
     return " ".join(clause.text for clause in _event_clauses(text))
 
 
-def source_time_span_count(text: str, *, today: date | None = None) -> int:
+def source_time_span_count(
+    text: str,
+    *,
+    today: date | None = None,
+    masked_spans: Iterable[tuple[int, int]] = (),
+) -> int:
     """원문의 사건 절이 담은 기간 표현 수(시간 소실 탐지의 기준값).
 
     IR 이 아니라 **달력 파서**가 직접 센다 — 같은 코드로 세면 놓친 창을 둘 다 못 본다. 시간 관계 절
     ('A 후 30일 이내 B')의 기간은 창이 아니라 관계의 폭이므로 세지 않는다(IR 에도 TimeFilter 가 없다).
+
+    ``masked_spans`` 는 **애플리케이션 소유 계약이 시간이 아니라 스칼라 임계값임을 증명한**
+    원문 구간이다. '구매주기가 30일 이하'의 ``30일`` 이 그것이다 — 이 구간은 창이 아니므로
+    표현에 TimeFilter 가 없는 것이 정상이고, 세면 멀쩡한 조건이 '기간 소실'로 닫힌다. 구간은
+    공백으로 덮어 오프셋을 보존한 뒤 세므로, 마스킹은 그 구간 **하나만** 지운다(절 전체를
+    면제하지 않는다 — 같은 절의 진짜 창은 그대로 세어야 한다).
     """
+    masked = _mask_spans(text or "", masked_spans)
     event_terms = _event_term_patterns()
     return sum(
         len(_clause_windows(clause, today))
-        for clause in _event_clauses(text)
+        for clause in _event_clauses(masked)
         if _temporal_condition(clause, event_terms) is None
     )
+
+
+def _mask_spans(text: str, spans: Iterable[tuple[int, int]]) -> str:
+    characters = list(text)
+    for start, end in spans:
+        if not (isinstance(start, int) and isinstance(end, int)):
+            continue
+        for index in range(max(0, start), min(len(characters), end)):
+            characters[index] = " "
+    return "".join(characters)
 
 
 # ── LLM 경로(같은 스키마 강제) ─────────────────────────────────────────────────────

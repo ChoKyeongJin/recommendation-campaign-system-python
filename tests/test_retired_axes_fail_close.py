@@ -1,15 +1,19 @@
-"""폐기된 3축이 SQL 을 내지 않는다는 고정 계약.
+"""폐기된 축이 SQL 을 내지 않는다는 고정 계약.
 
 2026-08-05 이행에서 오디언스 IR 은 canonical Event IR 하나가 됐고, SemanticPlanV2 노드로만
-실행되던 세 축이 폐기됐다.
+실행되던 세 축이 함께 폐기됐다. 그중 **둘은 되살아났고 하나는 폐기 상태 그대로다** —
+되살아난 근거는 "옛 코드를 복원했다"가 아니라 "canonical Event IR 이 그 뜻을 표현하게 됐다"다.
 
-* 축1 등급/상태 이력·전이(월 스냅샷 as_of / transition)
-* 축2 프로필 스칼라 지표(구매주기 등)
-* 축3 캠페인당 평균 구매금액
+* 축1 등급/상태 이력·전이(월 스냅샷 as_of / transition) — **폐기 유지**.
+  Event IR 로 표현할 수 있어도 컴파일 영수증을 발급하는 경로가 없어 의무가 해소되지 않는다.
+  되살리려면 그 경로가 먼저 서야 하므로 이 파일의 축1 계약은 그대로 남는다.
+* 축2 프로필 스칼라 지표(구매주기 등) — **복귀**. 카탈로그에 회원별 스칼라 metric kind
+  (``member_scalar``)를 선언하고 :mod:`member_scalar_metrics` 가 기존 IR 노드 조합으로 낮춘다.
+* 축3 캠페인당 평균 구매금액 — **복귀**. Event IR 에 행 값(tuple)과 0 값 가드(null_if)가
+  생겨 ``SUM / COUNT(DISTINCT (CAMP_ID, CAMP_EXEC_NO))`` 를 구조로 표현할 수 있게 됐다.
 
-폐기의 뜻은 "조용히 비슷한 것으로 바꾼다"가 아니라 **fail-close** 다. 특히 축3 은 그냥
-지우면 같은 문장이 캠페인 분모 평균에서 **반응 행당 평균**(``AVG(BUY_AMT)``)으로 조용히
-바뀌므로, 그 SQL 이 다시 나오지 않는 것까지 여기서 고정한다.
+복귀한 두 축에서 고정하는 것은 **뜻이다**: 축3 은 여전히 ``AVG(BUY_AMT)`` 로 나가면 안 되고
+(그것은 반응 행당 평균이라 값이 다르다), 축2 는 여전히 최신 월 스냅샷 한 행만 읽어야 한다.
 """
 
 from __future__ import annotations
@@ -185,8 +189,13 @@ def test_grade_transition_request_never_reaches_sql() -> None:
     assert result["failure_reason"] == "semantic_ir_unsupported"
 
 
-def test_profile_scalar_metric_request_never_reaches_sql() -> None:
-    """축2: 프로필 스칼라 지표(구매주기)는 합성 없이 정직하게 막힌다."""
+def test_profile_scalar_metric_request_compiles_to_the_snapshot_row() -> None:
+    """축2 복귀: 구매주기 임계가 최신 월 스냅샷 **한 행**을 읽는 SQL 로 나간다.
+
+    고정하는 것은 SQL 문자열이 아니라 뜻이다 — 회원 상관, 최신 월 고정, 그 회원의 값과 임계값의
+    비교. 스냅샷 고정이 빠지면 같은 회원의 과거 월 행이 조건을 만족시켜 대상이 부풀고, 그것은
+    오류가 아니라 조용히 다른 오디언스다.
+    """
 
     structured = _structure(
         BUY_CYCLE_QUERY,
@@ -206,22 +215,29 @@ def test_profile_scalar_metric_request_never_reaches_sql() -> None:
         ),
     )
 
-    assert structured["audience_requirement"]["expression"] is None
-    assert structured["semantic_ir"]["status"] == "needs_clarification"
-    # 선언 자산 이름을 그대로 안내한다(없는 한계를 있다고 말하지 않는다).
-    assert "buy_cycle" in structured["semantic_ir"]["message"]
+    expression = structured["audience_requirement"]["expression"]
+    assert expression is not None
+    assert structured["audience_requirement"]["issues"] == []
+    assert structured["semantic_ir"]["status"] == "resolved"
+
     _plan, result = _sql_result(BUY_CYCLE_QUERY, structured)
-    assert result["is_success"] is False
-    assert result["sql"] is None
-    assert result["failure_reason"] == "semantic_registry_gap"
-    assert "BUY_CYCLE" not in (result["sql"] or "")
+    sql = result["sql"] or ""
+    assert result["is_success"] is True, result.get("failure_reason")
+    assert "MS.BUY_CYCLE <= 30" in sql
+    assert "MS.MEMBER_NO = B.MEMBER_NO" in sql
+    assert "MS.YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)" in sql
 
 
 @pytest.mark.parametrize("empty_filter", [True, False])
 def test_campaign_average_amount_never_degrades_into_a_row_average(
     empty_filter: bool,
 ) -> None:
-    """축3: 캠페인 분모 평균 요청이 행당 평균 SQL 로 조용히 바뀌지 않는다."""
+    """축3 복귀: 캠페인 분모 평균 요청이 행당 평균 SQL 로 **바뀌지 않은 채** 실행된다.
+
+    모델이 내는 것은 여전히 ``Aggregate(avg)``(행당 평균)이다. 카탈로그 선언이 그 자리를
+    분자 SUM / 분모 서로 다른 캠페인 실행 수로 바꾼다 — 원래의 F5 회귀 가드(행당 평균 금지)는
+    그대로이고, 결말만 fail-close 에서 재작성으로 바뀌었다.
+    """
 
     structured = _structure(
         CAMPAIGN_AVERAGE_QUERY,
@@ -234,20 +250,20 @@ def test_campaign_average_amount_never_degrades_into_a_row_average(
     )
 
     requirement = structured["audience_requirement"]
-    assert requirement["expression"] is None
-    assert [issue["argument"] for issue in requirement["issues"]] == [
-        campaign_metric_claims.RETIRED_AXIS_ARGUMENT
-    ]
-    assert structured.get("event_expression") is None
-    assert structured["semantic_ir"]["status"] == "unsupported"
+    assert requirement["issues"] == []
+    assert requirement["expression"] is not None
+    assert structured["semantic_ir"]["status"] == "resolved"
 
     _plan, result = _sql_result(CAMPAIGN_AVERAGE_QUERY, structured)
     sql = result["sql"] or ""
-    assert result["is_success"] is False
-    assert result["sql"] is None
+    assert result["is_success"] is True, result.get("failure_reason")
     # F5 회귀 가드: 캠페인 수로 나눈 평균 대신 반응 행당 평균이 나가면 뜻이 다르다.
     assert "AVG(R.BUY_AMT)" not in sql
-    assert "BUY_AMT" not in sql
+    assert "ISNULL(SUM(R.BUY_AMT), 0)" in sql
+    assert "SELECT DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO" in sql
+    assert "NULLIF(" in sql
+    # 구분자 결합 키는 값 안의 ':' 나 NULL 로 서로 다른 키가 충돌할 수 있어 쓰지 않는다.
+    assert "CONCAT(R.CAMP_ID" not in sql
 
 
 # 실측(2026-08-05)으로 가드를 통째로 우회했던 표면 변형들. 예전 판정은 grain → 지표어 →
@@ -272,7 +288,7 @@ CAMPAIGN_AVERAGE_SURFACE_VARIANTS = (
     ids=[name for name, _query in CAMPAIGN_AVERAGE_SURFACE_VARIANTS],
 )
 def test_campaign_average_guard_holds_across_surface_variants(query: str) -> None:
-    """어순·조사·띄어쓰기·수식어가 달라져도 같은 뜻이면 같이 닫힌다."""
+    """어순·조사·띄어쓰기·수식어가 달라져도 같은 뜻이면 같이 재작성된다."""
 
     structured = _structure(
         query,
@@ -280,18 +296,16 @@ def test_campaign_average_guard_holds_across_surface_variants(query: str) -> Non
     )
 
     requirement = structured["audience_requirement"]
-    assert requirement["expression"] is None
-    assert [issue["argument"] for issue in requirement["issues"]] == [
-        campaign_metric_claims.RETIRED_AXIS_ARGUMENT
-    ]
-    assert structured["semantic_ir"]["status"] == "unsupported"
+    assert requirement["issues"] == []
+    assert requirement["expression"] is not None
+    assert structured["semantic_ir"]["status"] == "resolved"
 
     _plan, result = _sql_result(query, structured)
     sql = result["sql"] or ""
-    assert result["is_success"] is False
-    assert result["sql"] is None
+    assert result["is_success"] is True, result.get("failure_reason")
     assert "AVG(R.BUY_AMT)" not in sql
-    assert "BUY_AMT" not in sql
+    assert "ISNULL(SUM(R.BUY_AMT), 0)" in sql
+    assert "SELECT DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO" in sql
 
 
 @pytest.mark.parametrize(
@@ -350,6 +364,38 @@ def test_campaign_average_guard_fails_closed_when_the_catalog_cannot_be_read() -
         audience_runtime.catalog_snapshot = original  # type: ignore[assignment]
 
 
+def test_retired_axis_issues_preserve_exact_original_evidence() -> None:
+    """폐기 축의 issue 는 원문 구간을 손실 없이 보존한다(원문 삭제·근사 금지).
+
+    복귀한 축2·축3 은 더 이상 issue 를 내지 않으므로 여기서 빠졌다 — 그 둘의 근거 보존은
+    합성된 표현의 evidence 가 담당하고, 아래
+    :func:`test_revived_axis_expressions_preserve_exact_original_evidence` 가 고정한다.
+    """
+
+    structured = _structure(
+        TRANSITION_QUERY,
+        _raw(
+            TRANSITION_QUERY,
+            issues=[
+                _unsupported_issue(
+                    TRANSITION_QUERY,
+                    "골드에서 VIP로 바뀐",
+                    argument="grade_transition",
+                    message="등급 전이 조건을 표현할 수 없습니다.",
+                )
+            ],
+        ),
+    )
+    issues = structured["audience_requirement"]["issues"]
+
+    assert issues
+    for issue in issues:
+        evidence = issue["evidence"]
+        assert TRANSITION_QUERY[evidence["start"] : evidence["end"]] == evidence["text"]
+        assert evidence["text"] in TRANSITION_QUERY
+        assert issue["message"].strip()
+
+
 @pytest.mark.parametrize(
     ("query", "raw_factory"),
     [
@@ -374,36 +420,28 @@ def test_campaign_average_guard_fails_closed_when_the_catalog_cannot_be_read() -
                 ],
             ),
         ),
-        (
-            TRANSITION_QUERY,
-            lambda query: _raw(
-                query,
-                issues=[
-                    _unsupported_issue(
-                        query,
-                        "골드에서 VIP로 바뀐",
-                        argument="grade_transition",
-                        message="등급 전이 조건을 표현할 수 없습니다.",
-                    )
-                ],
-            ),
-        ),
     ],
 )
-def test_retired_axis_issues_preserve_exact_original_evidence(
+def test_revived_axis_expressions_preserve_exact_original_evidence(
     query: str, raw_factory
 ) -> None:
-    """폐기 축의 issue 는 원문 구간을 손실 없이 보존한다(원문 삭제·근사 금지)."""
+    """복귀한 축의 표현은 원문 구간을 정확히 가리킨다(합성이 근거를 지어내지 않는다)."""
+
+    import event_ir  # noqa: PLC0415 — 계약 확인용 지역 import
 
     structured = _structure(query, raw_factory(query))
-    issues = structured["audience_requirement"]["issues"]
+    requirement = structured["audience_requirement"]
+    assert requirement["issues"] == []
 
-    assert issues
-    for issue in issues:
-        evidence = issue["evidence"]
-        assert query[evidence["start"] : evidence["end"]] == evidence["text"]
-        assert evidence["text"] in query
-        assert issue["message"].strip()
+    expression = event_ir.condition_from_dict(requirement["expression"])
+    evidences = [
+        atom.evidence
+        for atom, _negated in event_ir.iter_signed_atoms(expression)
+        if atom.evidence is not None
+    ]
+    assert evidences
+    for evidence in evidences:
+        assert query[evidence.start : evidence.end] == evidence.text
 
 
 STATE_TRANSITION_QUERY = "여성이면서 정상에서 휴면으로 바뀐 회원"

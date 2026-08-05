@@ -212,6 +212,25 @@ class ArithmeticOperand(StrictModel):
     right: EventOperand
 
 
+class TupleOperand(StrictModel):
+    """둘 이상의 스칼라를 하나의 행 값으로 묶는다(다중 컬럼 distinct 키).
+
+    구분자로 이어 붙인 문자열과 다르다 — 값 안의 구분자나 NULL 이 서로 다른 키를 같은
+    문자열로 만드는 충돌이 구조적으로 불가능하다.
+    """
+
+    kind: Literal["tuple"] = "tuple"
+    items: tuple[EventOperand, ...] = Field(min_length=2)
+
+
+class NullIfOperand(StrictModel):
+    """``expression`` 이 ``value`` 와 같으면 NULL(0 분모를 접는 안전 나눗셈의 절반)."""
+
+    kind: Literal["null_if"] = "null_if"
+    expression: EventOperand
+    value: EventOperand
+
+
 class AggregateOperand(StrictModel):
     """관계에 대한 집계 스칼라. ``expression=None`` 은 ``count(*)`` 뿐이다."""
 
@@ -225,11 +244,22 @@ class AggregateOperand(StrictModel):
     def _expression_required(self) -> AggregateOperand:
         if self.function is not AggregateFunction.COUNT and self.expression is None:
             raise ValueError(f"aggregate '{self.function.value}' needs an expression")
+        if isinstance(self.expression, TupleOperand) and not (
+            self.function is AggregateFunction.COUNT and self.distinct
+        ):
+            raise ValueError(
+                "tuple expressions are only valid for count(distinct ...) aggregates"
+            )
         return self
 
 
 EventOperand: TypeAlias = Annotated[
-    LiteralOperand | AttributeOperand | ArithmeticOperand | AggregateOperand,
+    LiteralOperand
+    | AttributeOperand
+    | ArithmeticOperand
+    | TupleOperand
+    | NullIfOperand
+    | AggregateOperand,
     Field(discriminator="kind"),
 ]
 
@@ -444,6 +474,8 @@ EventExpression: TypeAlias = Annotated[
 
 for _model in (
     ArithmeticOperand,
+    TupleOperand,
+    NullIfOperand,
     AggregateOperand,
     NamedOperand,
     NamedMeasure,
@@ -590,6 +622,7 @@ __all__ = [
     "NamedMeasure",
     "NamedOperand",
     "NotExpression",
+    "NullIfOperand",
     "OrExpression",
     "OrderedRelation",
     "ProjectedRelation",
@@ -605,6 +638,7 @@ __all__ = [
     "TemporalRelationExpression",
     "TimeWindow",
     "TimeWindowExpression",
+    "TupleOperand",
     "WindowUnit",
     "atoms",
     "attribute_operands",

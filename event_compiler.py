@@ -52,6 +52,7 @@ from event_ir import (
     Limit,
     Literal,
     Not,
+    NullIf,
     Order,
     Or,
     Project,
@@ -61,6 +62,7 @@ from event_ir import (
     Summarize,
     TemporalRelation,
     TimeFilter,
+    Tuple,
 )
 from sql_dialect import (
     RowLimit,
@@ -889,6 +891,12 @@ def _relation_context(plan: RelationPlan, context: CompileContext) -> CompileCon
 def _named_measure_expression(
     measure: event_ir.NamedMeasure, context: CompileContext
 ) -> str:
+    if isinstance(measure.expression, Tuple):
+        # Summarize 측정치는 GROUP BY 결과 행의 스칼라다 — 행 값 distinct 는 이 자리에서
+        # 방언 독립으로 낮출 수 없다(서브쿼리 재작성이 그룹 경계를 넘는다).
+        raise SqlCompileError(
+            "요약 측정치에는 행 값 distinct 집계를 사용할 수 없습니다"
+        )
     argument = "*" if measure.expression is None else compile_scalar(measure.expression, context)
     distinct = "DISTINCT " if measure.distinct and argument != "*" else ""
     return f"{measure.function.upper()}({distinct}{argument})"
@@ -1028,6 +1036,19 @@ def compile_scalar(scalar: event_ir.Scalar, context: CompileContext) -> str:
     if isinstance(scalar, Arithmetic):
         return f"({compile_scalar(scalar.left, context)} {scalar.operator} {compile_scalar(scalar.right, context)})"
 
+    if isinstance(scalar, NullIf):
+        return context.dialect.null_if(
+            compile_scalar(scalar.expression, context),
+            compile_scalar(scalar.value, context),
+        )
+
+    if isinstance(scalar, Tuple):
+        # 행 값은 자기 자리가 정해져 있다(집계 distinct 인자). 여기까지 왔다는 것은 그 밖의
+        # 자리에 놓였다는 뜻이므로 조용히 이어 붙이지 않고 멈춘다.
+        raise SqlCompileError(
+            "행 값(tuple)은 count(distinct ...) 인자 자리에서만 컴파일됩니다"
+        )
+
     if isinstance(scalar, Aggregate):
         plan = compile_relation(scalar.relation, context)
         if plan.binding != "fact_table":
@@ -1039,14 +1060,43 @@ def compile_scalar(scalar: event_ir.Scalar, context: CompileContext) -> str:
     raise SqlCompileError(f"지원하지 않는 스칼라입니다: {scalar!r}")
 
 
+def _tuple_parts(expression: Tuple, plan: RelationPlan, context: CompileContext) -> tuple[str, ...]:
+    inner = context.with_scope(plan.scope)
+    return tuple(compile_scalar(item, inner) for item in expression.items)
+
+
+def _distinct_tuple_count_subquery(
+    aggregate: Aggregate, plan: RelationPlan, context: CompileContext
+) -> str:
+    """``COUNT(DISTINCT (a, b, …))`` → DISTINCT 서브쿼리 위의 ``COUNT(*)``.
+
+    네이티브 다중 컬럼 문법을 쓰지 않는 이유는 :mod:`sql_dialect` 의 주석에 있다 — MySQL 은
+    NULL 인자를 가진 행을 세지 않고 PostgreSQL 은 세므로, 같은 IR 이 방언에 따라 다른 수를
+    센다. 구분자 CONCAT 도 쓰지 않는다: 값 안의 구분자나 NULL 이 서로 다른 키를 같은 문자열로
+    만든다. 이 모양은 네 방언 모두에서 '서로 다른 값 조합의 개수' 하나만 뜻한다.
+    """
+
+    assert isinstance(aggregate.expression, Tuple)
+    parts = _tuple_parts(aggregate.expression, plan, context)
+    alias = f"ED{context.next_index()}"
+    inner = _subquery(plan, "DISTINCT " + ", ".join(parts), context)
+    return f"(SELECT COUNT(*) FROM ({inner}) AS {alias})"
+
+
 def _aggregate_expression(aggregate: Aggregate, plan: RelationPlan, context: CompileContext) -> str:
     inner = context.with_scope(plan.scope)
+    if isinstance(aggregate.expression, Tuple):
+        raise SqlCompileError(
+            "행 값 distinct 집계는 스칼라 식이 아니라 DISTINCT 서브쿼리로 낮춥니다"
+        )
     argument = "*" if aggregate.expression is None else compile_scalar(aggregate.expression, inner)
     distinct = "DISTINCT " if aggregate.distinct and argument != "*" else ""
     return f"{aggregate.function.upper()}({distinct}{argument})"
 
 
 def _aggregate_subquery(aggregate: Aggregate, plan: RelationPlan, context: CompileContext) -> str:
+    if isinstance(aggregate.expression, Tuple):
+        return _distinct_tuple_count_subquery(aggregate, plan, context)
     expression = _aggregate_expression(aggregate, plan, context)
     # 행이 없을 때 SUM 은 NULL 을 돌려줘 '0원 이상' 같은 조건이 조용히 거짓이 된다 — 0 으로 접는다.
     # COUNT 는 0 을 돌려주므로 감싸지 않는다(불필요한 함수 중첩은 인덱스 판단만 흐린다).
@@ -1427,6 +1477,10 @@ def _membership_skip_reason(
         return SKIP_OPTIMIZATION_DISABLED
     if aggregate.function not in _EMPTY_SET_ZERO_FUNCTIONS:
         return SKIP_UNSUPPORTED_SCOPE
+    if isinstance(aggregate.expression, Tuple):
+        # 행 값 distinct 는 HAVING 절의 스칼라 집계식으로 표현할 수 없다(그 자리가 정확히
+        # 네이티브 다중 컬럼 문법이 필요한 곳이다). 상관 서브쿼리 경로가 정확한 번역이다.
+        return SKIP_UNSUPPORTED_SCOPE
     zero_test = _ZERO_COMPARISONS.get(operator)
     if zero_test is None or not isinstance(literal.value, (int, Decimal)) or isinstance(literal.value, bool):
         return SKIP_UNSUPPORTED_SCOPE
@@ -1696,6 +1750,44 @@ def compile_expression_sql(
     return compile_expression(expression, context=context).sql
 
 
+# 이 컴파일러가 SQL 로 낮출 수 있는 표현 capability. 어휘의 소유자는 :mod:`event_ir` 이고
+# 여기서는 **제공 가능 집합**만 선언한다. 방언 인자를 받는 이유는 이 집합이 방언에 따라 달라질
+# 수 있기 때문이다 — 지금은 네 방언이 같지만(다중 컬럼 distinct 를 전부 DISTINCT 서브쿼리로
+# 낮춘다), 방언별 차이가 생기면 이 함수 하나가 갈라진다.
+#
+# `metric.member_scalar` 는 여기 없다 — 그것은 표현 모양이 아니라 카탈로그 지표 계약이고,
+# 제공자는 :mod:`member_scalar_metrics` 다.
+_COMPILER_CAPABILITIES: frozenset[str] = frozenset({
+    "scalar.arithmetic",
+    "scalar.tuple",
+    "scalar.null_if",
+    "scalar.safe_divide",
+    "aggregate.scalar",
+    "aggregate.count_distinct",
+    "aggregate.multi_column_count_distinct",
+    "aggregate.derived_expression",
+    "relation.membership_join",
+    "relation.ranked_limit",
+})
+
+
+def compiler_capabilities(dialect: SqlDialect | None = None) -> frozenset[str]:
+    """이 방언으로 낮출 수 있는 표현 capability 집합."""
+
+    del dialect  # 현재는 방언과 무관하다(위 주석의 이유). 시그니처가 그 사실을 드러낸다.
+    return _COMPILER_CAPABILITIES
+
+
+def unsupported_capabilities(
+    expression: event_ir.Condition, dialect: SqlDialect | None = None
+) -> tuple[str, ...]:
+    """표현이 요구하는데 컴파일러가 제공하지 못하는 capability(없으면 빈 튜플)."""
+
+    return tuple(
+        sorted(event_ir.expression_capabilities(expression) - compiler_capabilities(dialect))
+    )
+
+
 def supported_events(registry: dict[str, EventSpec] | None = None) -> frozenset[str]:
     return frozenset(registry or EVENT_REGISTRY)
 
@@ -1779,6 +1871,12 @@ def validate_compiler_capability(
             leaf_issues.append(CompilerCapabilityIssue("compiler_event_unregistered", node_id, symbol))
         for symbol in unsupported_fields(leaf, active.registry, active.fields):
             leaf_issues.append(CompilerCapabilityIssue("compiler_field_unregistered", node_id, symbol))
+        # capability 는 컴파일을 시도하기 **전에** 답한다. 시도해서 터진 예외로만 판정하면
+        # 사용자에게 나가는 사유가 '알 수 없는 연산'으로 뭉개진다.
+        for symbol in unsupported_capabilities(leaf, active.dialect):
+            leaf_issues.append(
+                CompilerCapabilityIssue("compiler_capability_unsupported", node_id, symbol)
+            )
         if not leaf_issues:
             try:
                 compile_expression(leaf, context=_fresh_context(active))

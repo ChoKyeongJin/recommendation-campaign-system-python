@@ -137,6 +137,25 @@ _DEFINITIONS: dict[str, Any] = {
             "right": _ref("scalar"),
         }
     ),
+    "tuple": _object(
+        {
+            "type": _tag("tuple"),
+            "items": {
+                "type": "array",
+                "items": _ref("scalar"),
+                "minItems": 2,
+            },
+        },
+        description="Row value made of two or more scalars. Valid only as the expression of a count aggregate with distinct=true; use it instead of string concatenation so delimiter or null values cannot collide two different keys.",
+    ),
+    "null_if": _object(
+        {
+            "type": _tag("null_if"),
+            "expression": _ref("scalar"),
+            "value": _ref("scalar"),
+        },
+        description="Yields null when expression equals value. Combine with an arithmetic division to divide safely by a possibly zero denominator.",
+    ),
     "aggregate": _object(
         {
             "type": _tag("aggregate"),
@@ -155,6 +174,8 @@ _DEFINITIONS: dict[str, Any] = {
             _ref("literal"),
             _ref("field"),
             _ref("arithmetic"),
+            _ref("tuple"),
+            _ref("null_if"),
             _ref("aggregate"),
         ]
     },

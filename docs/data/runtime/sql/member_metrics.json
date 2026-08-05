@@ -4,6 +4,41 @@
   "value_table": "CRM_MB_MONTHCRMINFO",
   "join_column": "MEMBER_NO",
   "grain_filter": "C.YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)",
+  "canonical_member_scalar": {
+    "_comment": [
+      "같은 물리 컬럼의 **두 번째 계약**이다. canonical_event_ir 이 '전체에서 상위 N 명'(모집단·정렬·",
+      "동점자 정책이 있는 순위)을 말한다면, 여기는 '이 회원의 값이 얼마인가'(회원당 0..1 개)를 말한다.",
+      "지표 목록은 아래 metrics 하나가 소유하고 두 계약이 그것을 각자 읽는다 — 지표를 두 번 적지 않는다.",
+      "순위 계약과 달리 active_members 조인도, 값 IS NOT NULL 술어도 붙이지 않는다: 전자는 순위 모집단",
+      "정책이고 후자는 null_behavior 선언이 3값 논리로 이미 표현한다(EXISTS 안의 NULL 비교는 UNKNOWN).",
+      "aliases 를 싣지 않는 이유는 어휘 이중 소유 금지다 — 같은 표면어를 두 지표가 주장하면 카탈로그가",
+      "로딩되지 않는다. 표면어의 소유자는 순위 계약 쪽 synonyms 이고, 이 계약의 지표는 canonical id 로만",
+      "지목된다(생산자가 synonyms 로 metric_id 를 찾아 member_scalar_<metric_id> 를 부른다).",
+      "metrics[*].threshold_unit 은 이 계약에서만 쓴다: 임계값 리터럴의 단위가 지표 단위와 맞는지",
+      "확인해 '구매주기가 10만 원 이하'처럼 단위가 어긋난 요청을 fail-close 시킨다. 순위에는 임계값이",
+      "없으므로(정렬만 한다) 순위 계약은 이 키를 읽지 않는다."
+    ],
+    "threshold_units": ["KRW", "count", "day", "month"],
+    "label": "회원 지표 스칼라",
+    "source_prefix": "member_scalar_",
+    "source_alias": "MS",
+    "time_column": "YYYYMM",
+    "time_format": "char6",
+    "value_type": "number",
+    "allowed_operators": [
+      "=",
+      "!=",
+      ">",
+      ">=",
+      "<",
+      "<="
+    ],
+    "null_behavior": "exclude",
+    "zero_row_behavior": "exclude",
+    "required_capabilities": [
+      "metric.member_scalar"
+    ]
+  },
   "canonical_event_ir": {
     "label": "회원 지표 전역 순위",
     "source_prefix": "member_metric_",
@@ -11,14 +46,30 @@
     "time_column": "YYYYMM",
     "time_format": "char6",
     "relation_recipe": "member_metric_ranking",
-    "limit_units": ["count", "percent"],
+    "limit_units": [
+      "count",
+      "percent"
+    ],
     "directions": {
-      "top": ["상위", "높은", "많은", "최고"],
-      "bottom": ["하위", "낮은", "적은", "최저"]
+      "top": [
+        "상위",
+        "높은",
+        "많은",
+        "최고"
+      ],
+      "bottom": [
+        "하위",
+        "낮은",
+        "적은",
+        "최저"
+      ]
     },
     "entities": {
       "member": {
-        "terms": ["회원", "고객"]
+        "terms": [
+          "회원",
+          "고객"
+        ]
       }
     },
     "policy": {
@@ -35,6 +86,7 @@
       "agg": "SUM",
       "column": "TOTAL_BUY_AMT",
       "ko_label": "누적 구매금액",
+      "threshold_unit": "KRW",
       "synonyms": [
         "누적 구매금액",
         "누적 구매 금액",
@@ -49,6 +101,7 @@
       "agg": "SUM",
       "column": "TOTAL_BUY_CNT",
       "ko_label": "누적 구매건수",
+      "threshold_unit": "count",
       "synonyms": [
         "누적 구매건수",
         "총 구매건수",
@@ -61,6 +114,7 @@
       "agg": "AVG",
       "column": "MEAN_BUY_AMT",
       "ko_label": "평균 구매금액",
+      "threshold_unit": "KRW",
       "synonyms": [
         "평균 구매금액",
         "평균 구매 금액",
@@ -72,6 +126,7 @@
       "agg": "MAX",
       "column": "MAX_BUY_AMT",
       "ko_label": "최대 구매금액",
+      "threshold_unit": "KRW",
       "synonyms": [
         "최대 구매금액",
         "최대 구매 금액",
@@ -83,6 +138,7 @@
       "agg": "SUM",
       "column": "TOTAL_BUY_QTY",
       "ko_label": "누적 구매수량",
+      "threshold_unit": "count",
       "synonyms": [
         "누적 구매수량",
         "총 구매수량",
@@ -94,6 +150,7 @@
       "agg": "AVG",
       "column": "BUY_CYCLE",
       "ko_label": "구매주기",
+      "threshold_unit": "day",
       "synonyms": [
         "구매주기",
         "구매 주기",
@@ -107,6 +164,7 @@
       "agg": "SUM",
       "column": "ACTIVITY_MONTH_CNT",
       "ko_label": "활동 개월 수",
+      "threshold_unit": "month",
       "synonyms": [
         "활동 개월 수",
         "활동개월수",
@@ -119,6 +177,7 @@
       "agg": "SUM",
       "column": "BUY_PRODUCT_CNT",
       "ko_label": "구매 상품 수",
+      "threshold_unit": "count",
       "synonyms": [
         "구매 상품 수",
         "구매상품수",
@@ -132,6 +191,7 @@
       "agg": "MIN",
       "column": "MIN_BUY_AMT",
       "ko_label": "최소 구매금액",
+      "threshold_unit": "KRW",
       "synonyms": [
         "최소 구매금액",
         "최소 구매 금액",

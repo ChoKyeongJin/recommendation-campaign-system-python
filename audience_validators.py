@@ -127,8 +127,17 @@ class TemporalSpanValidator:
     사라진 채 성공하면 '최근 30일 구매'가 **전체 이력 구매**가 된다.
     """
 
-    def __init__(self, *, as_of: date | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        as_of: date | None = None,
+        scalar_literal_spans: Sequence[tuple[int, int]] = (),
+    ) -> None:
         self._as_of = as_of
+        # 애플리케이션 소유 계약이 **시간이 아니라 스칼라 임계값임을 증명한** 원문 구간.
+        # '구매주기가 30일 이하'의 '30일' 이 그것이다 — 그 구간에 TimeFilter 가 없는 것은
+        # 소실이 아니라 정상이다. 비어 있는 것이 기본이므로 기존 판정은 그대로다.
+        self._scalar_literal_spans = tuple(scalar_literal_spans)
 
     def validate(
         self,
@@ -145,7 +154,7 @@ class TemporalSpanValidator:
             import event_parser  # 순환 없는 language adapter
 
             expected = event_parser.source_time_span_count(
-                query, today=self._as_of
+                query, today=self._as_of, masked_spans=self._scalar_literal_spans
             )
         except (ImportError, ValueError):
             expected = 0
@@ -229,12 +238,16 @@ def _issue_from_legacy_report(report: dict[str, Any]) -> RequirementIssue:
     )
 
 
-def audience_validators(*, as_of: date | None = None) -> tuple[ExpressionValidator, ...]:
+def audience_validators(
+    *,
+    as_of: date | None = None,
+    scalar_literal_spans: Sequence[tuple[int, int]] = (),
+) -> tuple[ExpressionValidator, ...]:
     """오디언스 경로가 쓰는 검증기 묶음. **순서가 계약이다**(모듈 docstring 참조)."""
     return (
         CatalogSymbolValidator(),
         CompilerCapabilityValidator(as_of=as_of),
-        TemporalSpanValidator(as_of=as_of),
+        TemporalSpanValidator(as_of=as_of, scalar_literal_spans=scalar_literal_spans),
         CanonicalClaimValidator(),
     )
 

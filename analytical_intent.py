@@ -981,6 +981,22 @@ def _analyze_analytical_intent(
     if function == "MAX" and metric is None and "최근" in query and "가장 최근" not in query:
         function = None
 
+    # 최상급 낱말이 **지표 이름의 일부**인 경우. '최소 구매금액이 1000원 이상인 회원'은
+    # 임계 선택이지 argmin 이 아니다 — arg-extreme 요청에는 임계 비교가 없고(가장 낮은 하나를
+    # 고르는데 하한을 둘 이유가 없다), 실제로 이 문장의 '최소'는 스냅샷 지표 이름
+    # ``최소 구매금액``(MIN_BUY_AMT)의 첫 낱말이다. 임계 비교가 있으면 순위 판정을 거두어
+    # 아래 회원 선택 방어가 정상 동작하게 한다.
+    #
+    # 명시적 행 수('가장 적게 산 회원 10명')는 위에서 이미 처리됐고, 축 랭킹은
+    # member_selection_guard 가 이 블록 전체를 면제하므로 여기 판정은 회원 행 랭킹에만 걸린다.
+    if (
+        member_selection_guard
+        and ranking_direction is not None
+        and _MEMBER_TARGET_RE.search(query)
+        and _MEMBER_METRIC_COMPARISON_RE.search(query)
+    ):
+        ranking_direction = None
+
     # Member-valued thresholds are selection predicates.  Ranking is checked
     # first because ``가장 많은 회원`` is genuinely analytical.
     if member_selection_guard and ranking_direction is None and _MEMBER_TARGET_RE.search(query) and _MEMBER_VALUE_PREDICATE_RE.search(query):

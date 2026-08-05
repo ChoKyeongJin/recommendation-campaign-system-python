@@ -1,19 +1,20 @@
-"""폐기된 '캠페인당 평균 구매금액' 축의 **모순 탐지기**(생성기가 아니다).
+"""'캠페인당 평균 구매금액'의 **모순 탐지기 + 복합 집계 합성기**.
 
-이 축은 2026-08-05 폐기됐다. 예전에는 이 모듈이 SemanticPlan ``aggregate_predicate``
-노드를 합성했고, 그 노드만이 캠페인 분모(``COUNT(DISTINCT CAMP_ID:CAMP_EXEC_NO)``)로
-나누는 실행 경로를 갖고 있었다. 그 노드를 컴파일하는 경로가 사라졌으므로 합성도 함께
-사라진다.
-
-문제는 **그냥 지우면 뜻이 조용히 바뀐다**는 것이다. 실측(2026-08-05):
+무엇이 문제인가
+---------------
+실측(2026-08-05):
 
     "캠페인별 구매반응 금액이 평균 10만 원 이상인 회원"
 
-    합성 있음: SUM(BUY_AMT) / COUNT(DISTINCT CAMP_ID:CAMP_EXEC_NO) >= 100000  (캠페인당 평균)
-    합성 없음: AVG(BUY_AMT) >= 100000                                        (반응 **행당** 평균)
+    캠페인 분모 평균: SUM(BUY_AMT) * 1.0 / COUNT(DISTINCT (CAMP_ID, CAMP_EXEC_NO)) >= 100000
+    반응 행당 평균:   AVG(BUY_AMT) >= 100000
 
-둘 다 SQL 이 나오고 둘 다 성공으로 보이지만 뜻이 다르다. 그래서 이 모듈은 "모델이 낸 Event IR
-집계식이 실은 캠페인 분모 평균을 뜻한다"만 판정하고, 호출자가 그 요청을 fail-close 시킨다.
+둘 다 SQL 이 나오고 둘 다 성공으로 보이지만 뜻이 다르다. 모델은 후자를 낸다 — Event IR 의
+``Aggregate(avg)`` 가 행 단위 평균이기 때문이다. 그래서 이 모듈이 "모델이 낸 집계식이 실은
+캠페인 분모 평균을 뜻한다"를 판정하고, 그 자리를 **정확한 복합 집계식으로 바꿔 넣는다**.
+
+    2026-08-05 ~ : 표현할 대수가 없어 fail-close 했다(축 폐기).
+    현재         : Event IR 이 행 값(tuple)과 0 분모 가드(null_if)를 갖게 되어 합성으로 끝난다.
 
 **판정 축은 표면 어순이 아니다.** 2026-08-05 실측: '<캠페인별> <지표어> <평균>' 이 그 순서로
 인접해야 한다고 보던 판정은 같은 뜻의 흔한 변형에서 통째로 우회됐다(7종 중 1종만 닫혔다) —
@@ -26,9 +27,22 @@
     (b) 원문에 카탈로그가 선언한 **grain 표면어가 등장한다**(어순·인접·조사 무관, 공백을 지운
         문자열에서 찾는다).
 
-판정 근거는 전부 카탈로그 선언에서 온다(``metrics[*].claim_synthesis.average_per_campaign``의
-``grain_terms`` / ``denominator_field`` / ``aggregation``). 이 모듈에 새 어휘를
-하드코딩하지 않는다 — 선언이 불완전하면 그 지표는 후보에서 빠진다.
+합성하는 식
+-----------
+::
+
+    Arithmetic('/',
+        Arithmetic('*', Aggregate(sum, <numerator_field>), Literal(<decimal_multiplier>)),
+        NullIf(Aggregate(count, distinct, Tuple(<denominator_key_fields>)),
+               Literal(<zero_denominator_value>)))
+
+``Aggregate(avg)`` 로 바꾸지 않는다 — 분모가 행 수가 아니라 **서로 다른 캠페인 실행의 수**다.
+분자와 분모는 같은 관계(모델이 낸 ``Aggregate.relation``, 기간 필터 포함)를 그대로 물려받으므로
+기간 한정이 한쪽에만 걸리는 일이 없다.
+
+판정·합성 근거는 전부 카탈로그 선언에서 온다
+(``metrics[*].claim_synthesis.average_per_campaign``). 이 모듈에 새 어휘도 물리 이름도
+하드코딩하지 않는다 — 선언이 불완전하면 그 지표는 후보에서 빠지고, 후보가 없으면 판정도 없다.
 """
 
 from __future__ import annotations
@@ -37,11 +51,16 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 import audience_frame
+import event_ir
 
-# 폐기 축의 고정 issue 인자·문구. 사용자에게 나가는 문장은 모델 산문이 아니라 이 상수다.
-RETIRED_AXIS_ARGUMENT = "campaign_metric.average_amount"
-RETIRED_AXIS_MESSAGE = (
-    "캠페인당 평균 구매금액 조건은 현재 실행 경로에서 지원하지 않습니다. "
+# 합성 소유자 표기(감사 로그의 filter_name 과 issue 인자에서 같은 이름을 쓴다).
+SYNTHESIS_OWNER = "campaign_metric_claims.average_per_campaign"
+AVERAGE_AXIS_ARGUMENT = "campaign_metric.average_amount"
+
+# 합성이 성립하지 않을 때의 고정 문구. 사용자에게 나가는 문장은 모델 산문이 아니라 이 상수다.
+# 뜻이 다른 SQL(행당 평균)을 내느니 막는다 — 판정은 됐는데 선언이 불완전한 경우가 여기 온다.
+UNSYNTHESIZABLE_MESSAGE = (
+    "캠페인당 평균 구매금액 조건을 실행식으로 확정하지 못했습니다. "
     "캠페인 수로 나눈 평균과 반응 건당 평균은 서로 다른 값이므로 임의로 대체하지 않습니다."
 )
 
@@ -99,8 +118,22 @@ def _grain_match(
     return term, audience_frame.compact_to_source_span(query, start, start + length)
 
 
+def _number(value: Any) -> int | float | None:
+    """JSON 수치(불리언 제외). 리터럴 어휘 밖의 값이면 None — 선언이 불완전한 것으로 본다."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return value
+
+
 def _declared_average_axes(catalog: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
-    """캠페인 분모 평균을 **선언한** 지표만, 선언이 완전한 것만 반환한다."""
+    """캠페인 분모 평균을 **선언한** 지표만, 선언이 완전한 것만 반환한다.
+
+    '완전하다'는 판정과 합성 **둘 다** 가능하다는 뜻이다: 판정에 필요한 grain 표면어·집계 함수·
+    금액 필드에 더해, 합성에 필요한 분모 키 필드(행 값 구성 요소)·소수 승수·0 분모 값까지
+    같은 소스에 속한 채로 선언돼야 한다. 하나라도 빠지면 그 지표는 후보에서 빠진다 —
+    부분 선언으로 절반만 합성하면 뜻이 조용히 달라진다.
+    """
 
     metrics = catalog.get("metrics")
     fields = catalog.get("fields")
@@ -153,8 +186,49 @@ def _declared_average_axes(catalog: Mapping[str, Any]) -> tuple[dict[str, Any], 
             "denominator_field": denominator_field_id,
             "aggregation": aggregation,
             "grain_terms": grain_terms,
+            # 합성 바인딩은 **별도 단계**다(아래 _synthesis_binding). 판정에 필요한 키와 합성에
+            # 필요한 키를 한 관문으로 묶으면, 합성 키 하나가 빠지는 순간 판정 자체가 조용히
+            # 사라지고 뜻이 다른 행당 평균 SQL 이 그대로 나간다(fail-open).
+            "synthesis": _synthesis_binding(average, fields, source_id, amount_field_id),
         })
     return tuple(axes)
+
+
+def _synthesis_binding(
+    average: Mapping[str, Any],
+    fields: Mapping[str, Any],
+    source_id: str,
+    amount_field_id: Any,
+) -> dict[str, Any] | None:
+    """복합 집계식을 만들 수 있을 만큼 선언이 완전하면 그 바인딩, 아니면 ``None``."""
+
+    # 분자는 선언이 있으면 그것을, 없으면 지표의 금액 필드를 쓴다. 둘이 어긋나면 판정한
+    # 집계와 합성한 분자가 다른 컬럼이 되므로 같은 필드여야 한다.
+    numerator_field_id = average.get("numerator_field", amount_field_id)
+    key_field_ids = _strings(average.get("denominator_key_fields"))
+    multiplier = _number(average.get("decimal_multiplier"))
+    zero_value = _number(average.get("zero_denominator_value"))
+    if not (
+        numerator_field_id == amount_field_id
+        and bool(average.get("denominator_distinct"))
+        # 행 값은 둘 이상이어야 뜻이 있다. 하나짜리 키는 그냥 단일 컬럼 distinct 다.
+        and len(key_field_ids) >= 2
+        and all(
+            isinstance(fields.get(field_id), Mapping)
+            and fields[field_id].get("source") == source_id
+            for field_id in key_field_ids
+        )
+        and multiplier is not None
+        and zero_value is not None
+    ):
+        return None
+    return {
+        "numerator_field": str(numerator_field_id),
+        "denominator_key_fields": key_field_ids,
+        "decimal_multiplier": multiplier,
+        "zero_denominator_value": zero_value,
+        "required_capabilities": _strings(average.get("required_capabilities")),
+    }
 
 
 def _iter_nodes(value: Any) -> Any:
@@ -227,16 +301,99 @@ def _money_span(literal_bindings: Any, query: str) -> tuple[int, int] | None:
     return _span(money[0], query)
 
 
-def detect_retired_campaign_average_claim(
+def _executable_relation(relation: Any) -> Any:
+    """조건 없는 Filter 한 겹을 벗긴다(:func:`_source_name` 과 같은 규칙).
+
+    모델은 같은 관계를 ``{"type":"filter","relation":…,"where":null}`` 로도 낸다. 판정은 그것을
+    같은 관계로 보면서 합성만 그대로 물려받으면, 대수적으로 **조건이 없는 Filter** 라 IR
+    스키마가 거부하고 표현할 수 있는 요청이 닫힌다. 벗기는 것은 빈 겹뿐이므로 기간 필터 같은
+    실제 조건은 그대로 남는다.
+    """
+
+    if (
+        isinstance(relation, Mapping)
+        and relation.get("type") == "filter"
+        and relation.get("where") is None
+    ):
+        return _executable_relation(relation.get("relation"))
+    return relation
+
+
+def _campaign_average_scalar(
+    aggregate: Mapping[str, Any], synthesis: Mapping[str, Any]
+) -> dict[str, Any]:
+    """행당 평균 집계 노드 → 캠페인 분모 평균 복합식(wire dict).
+
+    분자와 분모가 모델이 낸 **같은 관계**를 물려받는 것이 계약이다. 기간 필터가 그 관계 안에
+    있으므로, 새 관계를 만들면 한쪽에만 기간이 걸리거나 창이 통째로 사라진다.
+    """
+
+    relation = _executable_relation(aggregate.get("relation"))
+    numerator = {
+        "type": "aggregate",
+        "function": "sum",
+        "relation": relation,
+        "expression": {"type": "field", "name": synthesis["numerator_field"]},
+        "distinct": False,
+    }
+    denominator = {
+        "type": "aggregate",
+        "function": "count",
+        "relation": relation,
+        "expression": {
+            "type": "tuple",
+            "items": [
+                {"type": "field", "name": field_id}
+                for field_id in synthesis["denominator_key_fields"]
+            ],
+        },
+        "distinct": True,
+    }
+    return {
+        "type": "arithmetic",
+        "operator": "/",
+        # 정수 나눗셈 방지는 기존 SQL 과 같은 방식(× 1.0)이다. CAST 로 바꾸면 결과 타입과
+        # 정밀도가 기존 산출물과 달라진다 — 같은 값을 내는 것이 이 합성의 목적이다.
+        "left": {
+            "type": "arithmetic",
+            "operator": "*",
+            "left": numerator,
+            "right": {"type": "literal", "value": synthesis["decimal_multiplier"]},
+        },
+        "right": {
+            "type": "null_if",
+            "expression": denominator,
+            "value": {"type": "literal", "value": synthesis["zero_denominator_value"]},
+        },
+    }
+
+
+def _replace_node(value: Any, target: Mapping[str, Any], replacement: Any) -> Any:
+    """트리에서 ``target`` **그 객체**를 ``replacement`` 로 바꾼 새 트리(원본 불변)."""
+
+    if value is target:
+        return replacement
+    if isinstance(value, Mapping):
+        return {key: _replace_node(item, target, replacement) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_replace_node(item, target, replacement) for item in value]
+    return value
+
+
+def detect_campaign_average_claim(
     query: str,
     expression: Any,
     literal_bindings: Any,
     catalog: Mapping[str, Any],
 ) -> dict[str, Any] | None:
-    """모델 표현이 실은 '캠페인당 평균'을 뜻하는지 판정한다. 아니면 ``None``.
+    """모델 표현이 실은 '캠페인당 평균'을 뜻하는지 판정하고, 맞으면 정확한 식으로 바꾼다.
 
-    반환 dict 는 호출자가 그대로 오디언스 issue 로 만들 수 있는 근거다 — 원문 구간
-    (``evidence``)과 어떤 선언 지표·표면어가 판정을 만들었는지(``receipt``)를 담는다.
+    반환 dict 는 호출자가 그대로 쓸 수 있는 결과다.
+
+    * ``expression``  합성된 표현(wire dict). ``None`` 이면 합성 불가 — 호출자는 표현을 버리고
+      ``message`` 로 fail-close 한다(뜻이 다른 행당 평균 SQL 을 내보내지 않는다).
+    * ``receipt``     어떤 선언이 판정·합성을 만들었는지.
+    * ``evidence``    원문 구간(판정이 소비한 grain 표면어·비교 근거·금액 리터럴의 외곽).
     """
 
     if not isinstance(expression, Mapping) or not isinstance(catalog, Mapping):
@@ -254,13 +411,14 @@ def detect_retired_campaign_average_claim(
     if len(matched) != 1:
         return None
     axis = matched[0]["axis"]
+    aggregate = matched[0]["aggregate"]
     grain_term, grain_span = matched[0]["grain"]
 
     spans = [
         span
         for span in (
             grain_span,
-            _comparison_evidence(expression, matched[0]["aggregate"], query),
+            _comparison_evidence(expression, aggregate, query),
             _money_span(literal_bindings, query),
         )
         if span is not None
@@ -279,23 +437,53 @@ def detect_retired_campaign_average_claim(
             "start": grain_span[0],
             "end": grain_span[1],
         })
+
+    synthesis = axis["synthesis"]
+    receipt: dict[str, Any] = {
+        "owner": SYNTHESIS_OWNER,
+        "metric_id": axis["metric_id"],
+        "source": axis["source"],
+        "amount_field": axis["amount_field"],
+        "denominator_field": axis["denominator_field"],
+        "aggregation": axis["aggregation"],
+        "grain_term": receipt_grain,
+    }
+    synthesized: dict[str, Any] | None = None
+    if synthesis is not None:
+        replacement = _campaign_average_scalar(aggregate, synthesis)
+        candidate = _replace_node(expression, aggregate, replacement)
+        # 만든 식이 실제로 이 IR 대수의 값인지 여기서 확인한다. 검증되지 않은 wire dict 를
+        # 하류로 흘리면 파싱 실패가 '모델이 이상한 것을 냈다'로 잘못 귀속된다.
+        try:
+            parsed = event_ir.condition_from_dict(candidate)
+        except event_ir.IrSchemaError:
+            synthesized = None
+        else:
+            synthesized = parsed.to_dict()
+            receipt.update({
+                "numerator": {"function": "sum", "field": synthesis["numerator_field"]},
+                "denominator": {
+                    "function": "count",
+                    "distinct": True,
+                    "key_fields": list(synthesis["denominator_key_fields"]),
+                    "zero_value": synthesis["zero_denominator_value"],
+                },
+                "decimal_multiplier": synthesis["decimal_multiplier"],
+                "declared_capabilities": list(synthesis["required_capabilities"]),
+                "used_capabilities": sorted(event_ir.expression_capabilities(parsed)),
+            })
     return {
-        "argument": RETIRED_AXIS_ARGUMENT,
-        "message": RETIRED_AXIS_MESSAGE,
+        "argument": AVERAGE_AXIS_ARGUMENT,
+        "message": UNSYNTHESIZABLE_MESSAGE,
         "evidence": {"text": query[start:end], "start": start, "end": end},
-        "receipt": {
-            "metric_id": axis["metric_id"],
-            "source": axis["source"],
-            "amount_field": axis["amount_field"],
-            "denominator_field": axis["denominator_field"],
-            "aggregation": axis["aggregation"],
-            "grain_term": receipt_grain,
-        },
+        "expression": synthesized,
+        "receipt": receipt,
     }
 
 
 __all__ = [
-    "RETIRED_AXIS_ARGUMENT",
-    "RETIRED_AXIS_MESSAGE",
-    "detect_retired_campaign_average_claim",
+    "AVERAGE_AXIS_ARGUMENT",
+    "SYNTHESIS_OWNER",
+    "UNSYNTHESIZABLE_MESSAGE",
+    "detect_campaign_average_claim",
 ]
