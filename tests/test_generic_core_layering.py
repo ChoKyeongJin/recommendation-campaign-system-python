@@ -27,31 +27,23 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import semantic_domain_binding  # noqa: E402
-import semantic_plan  # noqa: E402
 import targeting_domain  # noqa: E402
 import temporal_semantics  # noqa: E402
 
 # 범용 코어 — 도메인 지식이 있으면 안 되는 모듈들.
+# 2026-08-05 SemanticPlanV2 스택(semantic_plan / semantic_capability / semantic_coverage /
+# semantic_candidates / semantic_pipeline / semantic_reemission / semantic_retype /
+# requirement_ledger / compile_contract)이 폐기되면서 목록에서 빠졌다. 남은 셋은 오디언스
+# 언어가 canonical Event IR 하나가 된 뒤에도 살아 있는 범용 코어다.
 CORE_MODULES: tuple[str, ...] = (
-    "semantic_plan.py",
-    "semantic_capability.py",
-    "semantic_coverage.py",
-    "semantic_candidates.py",
     "semantic_normalizers.py",
-    "semantic_pipeline.py",
-    "semantic_reemission.py",
-    "semantic_retype.py",
-    "requirement_ledger.py",
     "temporal_semantics.py",
-    "compile_contract.py",
     "semantic_domain_binding.py",
 )
 
 # 도메인 계층 — 여기서는 이 이름들을 알아도 된다(오히려 알아야 한다).
 DOMAIN_MODULES: tuple[str, ...] = (
     "targeting_domain.py",
-    "legacy_plan_compiler.py",
-    "semantic_plan_bridge.py",
 )
 
 
@@ -94,12 +86,19 @@ def _mentions(haystack: str, term: str) -> bool:
 
 
 def _domain_terms() -> list[str]:
-    """금지 낱말 목록 — **파생**이다(손 목록을 두면 새 슬롯·새 등급이 조용히 빠진다)."""
-    import legacy_plan_compiler
-    import member_filters_config
+    """금지 낱말 목록 — **파생**이다(손 목록을 두면 새 슬롯·새 등급이 조용히 빠진다).
 
-    terms = {legacy_plan_compiler.member_container()}
-    terms |= {slot.rpartition(".")[2] for slot in legacy_plan_compiler.COMPILER_OWNED_SLOTS}
+    파생원은 2026-08-05 SemanticPlan 컴파일러(`legacy_plan_compiler.member_container` /
+    `COMPILER_OWNED_SLOTS`)에서 **살아 있는 선언 두 곳**으로 옮겼다: 실행 플랜 컨테이너 이름은
+    도메인 카탈로그(`targeting_domain.plan_container`)가, 실행 슬롯 이름은 실행 IR
+    (`targeting_ir.SLOT_SHAPES`)이 소유한다. 컴파일러는 그 둘의 소비자였을 뿐이라 파생 범위는
+    좁아지지 않는다 — 오히려 컴파일러가 소유하지 않던 슬롯까지 포함되어 넓어진다.
+    """
+    import member_filters_config
+    import targeting_ir
+
+    terms = {targeting_domain.plan_container("member_condition") or ""}
+    terms |= {slot.rpartition(".")[2] for slot in targeting_ir.SLOT_SHAPES}
     for entry in member_filters_config.eq_filters():
         if entry.get("category") in {"grade", "state"}:
             terms.update(str(term) for term in entry.get("synonyms") or [])
@@ -156,29 +155,24 @@ def test_core_module_does_not_import_domain_modules(module_name: str) -> None:
 
 
 def test_core_survives_without_a_domain_plugin(monkeypatch) -> None:
-    """플러그인이 없으면 코어는 죽지 않고 '제약 없음'으로 강등된다."""
+    """플러그인이 없으면 코어는 죽지 않고 '제약 없음'으로 강등된다.
+
+    노드 스키마 생성(`semantic_plan.semantic_node_json_schema`)으로 강등을 관측하던 절은
+    2026-08-05 빠졌다 — SemanticPlanV2 가 폐기되어 그 스키마가 존재하지 않는다. 강등 자체는
+    바인딩 접근자로 그대로 관측한다.
+    """
     monkeypatch.setenv(semantic_domain_binding.DOMAIN_PLUGIN_ENV, "no_such_domain_plugin")
     semantic_domain_binding.reset()
     try:
         assert semantic_domain_binding.plugin() is None
         assert semantic_domain_binding.vocabulary("aggregate_scope") == ()
         assert semantic_domain_binding.plan_container() is None
-        # 어휘가 없으면 enum 이 사라질 뿐, 스키마 생성은 계속 동작한다.
-        # (스키마는 타입 판별 union 이므로 scope 를 선언한 변형에서 확인한다.)
-        schema = semantic_plan.semantic_node_json_schema()
-        scoped = [
-            variant for variant in schema["anyOf"]
-            if "scope" in variant["properties"]
-        ]
-        assert scoped, "scope 를 선언한 노드 변형이 없다"
-        for variant in scoped:
-            assert "enum" not in json.dumps(variant["properties"]["scope"])
     finally:
         semantic_domain_binding.reset()
 
 
 def test_new_vocabulary_value_opens_by_declaration_only(monkeypatch, tmp_path) -> None:
-    """카탈로그 선언 한 줄로 새 값이 노드 스키마·검증에 반영된다(코드 변경 없음)."""
+    """카탈로그 선언 한 줄로 새 값이 코어 어휘에 반영된다(코드 변경 없음)."""
     catalog = json.loads(targeting_domain.DEFAULT_DOMAIN_PATH.read_text(encoding="utf-8"))
     catalog["vocabularies"]["aggregate_scope"] = [
         *catalog["vocabularies"]["aggregate_scope"], "subscription",
@@ -189,23 +183,8 @@ def test_new_vocabulary_value_opens_by_declaration_only(monkeypatch, tmp_path) -
     targeting_domain.reset_cache()
     try:
         assert "subscription" in semantic_domain_binding.vocabulary("aggregate_scope")
-        node = semantic_plan.node_from_dict({
-            "id": "req-1", "type": "aggregate_predicate", "source_span": "x",
-            "scope": "subscription", "metric": "m", "operator": ">=", "value": 1,
-        })
-        assert node.invalid_values() == (), "선언된 새 값이 어휘 위반으로 잡혔다"
     finally:
         targeting_domain.reset_cache()
-
-
-def test_value_outside_the_declared_vocabulary_is_a_producer_fault() -> None:
-    """선언 밖 값은 '미지원'이 아니라 생산자 계약 위반이다(내부 불량으로 분류)."""
-    node = semantic_plan.node_from_dict({
-        "id": "req-1", "type": "aggregate_predicate", "source_span": "x",
-        "scope": "made_up_scope", "metric": "m", "operator": ">=", "value": 1,
-    })
-    offenders = node.invalid_values()
-    assert offenders and offenders[0][0] == "scope"
 
 
 def test_attribute_vocabulary_is_derived_not_listed() -> None:

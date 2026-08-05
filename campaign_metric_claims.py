@@ -1,43 +1,56 @@
-"""Closed campaign-average amount claim -> application-owned SemanticPlan.
+"""폐기된 '캠페인당 평균 구매금액' 축의 **모순 탐지기**(생성기가 아니다).
 
-The model occasionally reports that the money/operator literals in a fully
-declared campaign purchase-response average cannot be represented.  This
-module may contradict that report only when three independent contracts agree:
+이 축은 2026-08-05 폐기됐다. 예전에는 이 모듈이 SemanticPlan ``aggregate_predicate``
+노드를 합성했고, 그 노드만이 캠페인 분모(``COUNT(DISTINCT CAMP_ID:CAMP_EXEC_NO)``)로
+나누는 실행 경로를 갖고 있었다. 그 노드를 컴파일하는 경로가 사라졌으므로 합성도 함께
+사라진다.
 
-* the whole query is one closed ``per campaign / purchase-response amount /
-  average / money / comparison`` member predicate;
-* every model issue is owned by the exact application literal bindings (or one
-  declared metric issue owns the entire predicate);
-* the canonical audience catalog and SQL registry agree on member correlation,
-  campaign denominator, amount column, target-group filter, and purchase-
-  response filter.
+문제는 **그냥 지우면 뜻이 조용히 바뀐다**는 것이다. 실측(2026-08-05):
 
-No value, time window, response predicate, or physical name is inferred from
-model prose.  Any incomplete declaration makes synthesis fail closed.
+    "캠페인별 구매반응 금액이 평균 10만 원 이상인 회원"
+
+    합성 있음: SUM(BUY_AMT) / COUNT(DISTINCT CAMP_ID:CAMP_EXEC_NO) >= 100000  (캠페인당 평균)
+    합성 없음: AVG(BUY_AMT) >= 100000                                        (반응 **행당** 평균)
+
+둘 다 SQL 이 나오고 둘 다 성공으로 보이지만 뜻이 다르다. 그래서 이 모듈은 "모델이 낸 Event IR
+집계식이 실은 캠페인 분모 평균을 뜻한다"만 판정하고, 호출자가 그 요청을 fail-close 시킨다.
+
+**판정 축은 표면 어순이 아니다.** 2026-08-05 실측: '<캠페인별> <지표어> <평균>' 이 그 순서로
+인접해야 한다고 보던 판정은 같은 뜻의 흔한 변형에서 통째로 우회됐다(7종 중 1종만 닫혔다) —
+'캠페인별 **평균** 구매반응 금액'(평균이 앞), '캠페인별**로**'(조사), '캠페인 별'(띄어쓰기),
+'캠페인당 평균 …', '… 대략 평균 …'(수식어 삽입). 어순은 뜻이 아니므로 판정은 두 가지의
+논리곱으로만 한다.
+
+    (a) 모델 표현 트리에 **선언된 분모 필드가 속한 소스**의 금액 필드를 행 단위로 평균 내는
+        집계(``avg``)가 있다.
+    (b) 원문에 카탈로그가 선언한 **grain 표면어가 등장한다**(어순·인접·조사 무관, 공백을 지운
+        문자열에서 찾는다).
+
+판정 근거는 전부 카탈로그 선언에서 온다(``metrics[*].claim_synthesis.average_per_campaign``의
+``grain_terms`` / ``denominator_field`` / ``aggregation``). 이 모듈에 새 어휘를
+하드코딩하지 않는다 — 선언이 불완전하면 그 지표는 후보에서 빠진다.
 """
 
 from __future__ import annotations
 
-import hashlib
-import re
-from collections import Counter
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
 from typing import Any
 
 import audience_frame
-import audience_runtime
-import member_filters_config
 
-OWNER = "campaign_metric_claims.catalog_average_literal_operator"
+# 폐기 축의 고정 issue 인자·문구. 사용자에게 나가는 문장은 모델 산문이 아니라 이 상수다.
+RETIRED_AXIS_ARGUMENT = "campaign_metric.average_amount"
+RETIRED_AXIS_MESSAGE = (
+    "캠페인당 평균 구매금액 조건은 현재 실행 경로에서 지원하지 않습니다. "
+    "캠페인 수로 나눈 평균과 반응 건당 평균은 서로 다른 값이므로 임의로 대체하지 않습니다."
+)
 
-
-@dataclass(frozen=True)
-class CampaignMetricSynthesis:
-    """One aggregate predicate plus its catalog/SQL/literal proof receipt."""
-
-    node: dict[str, Any]
-    receipt: dict[str, Any]
+def _strings(value: Any) -> tuple[str, ...]:
+    return tuple(
+        item.strip()
+        for item in value or []
+        if isinstance(item, str) and item.strip()
+    )
 
 
 def _span(row: Mapping[str, Any], query: str) -> tuple[int, int] | None:
@@ -55,68 +68,50 @@ def _span(row: Mapping[str, Any], query: str) -> tuple[int, int] | None:
     return start, end
 
 
-def _issue_span(issue: Mapping[str, Any], query: str) -> tuple[int, int] | None:
-    evidence = issue.get("evidence")
-    return _span(evidence, query) if isinstance(evidence, Mapping) else None
-
-
-def _strings(value: Any) -> tuple[str, ...]:
-    return tuple(
-        item.strip()
-        for item in value or []
-        if isinstance(item, str) and item.strip()
-    )
-
-
-def _unique_term(
+def _grain_match(
     query: str, terms: Sequence[str]
-) -> tuple[str, int, int] | None:
-    matches: set[tuple[str, int, int]] = set()
-    for term in sorted(set(terms), key=lambda item: (-len(item), item)):
-        cursor = 0
-        while (start := query.find(term, cursor)) >= 0:
-            end = start + len(term)
-            matches.add((term, start, end))
-            cursor = end
-    if not matches:
-        return None
-    longest = max(end - start for _term, start, end in matches)
-    winners = [item for item in matches if item[2] - item[1] == longest]
-    spans = {(start, end) for _term, start, end in winners}
-    if len(spans) != 1:
-        return None
-    return min(winners, key=lambda item: item[0])
+) -> tuple[str, tuple[int, int] | None] | None:
+    """선언된 grain 표면어가 원문에 **등장하는가**(어순·인접·조사 무관).
 
+    공백을 지운 문자열에서 찾으므로 '캠페인별'과 '캠페인 별'은 같은 표면어다 — 띄어쓰기는
+    뜻이 아니다. 여러 표면어가 걸리면 가장 긴 것, 같으면 가장 앞선 것을 근거로 고른다
+    (재현 가능한 선택이며, 판정 자체는 '하나라도 있는가'다).
 
-def _equals_predicate(column: Any, value: Any) -> str | None:
-    if not isinstance(column, str) or not column or not isinstance(value, str) or not value:
-        return None
-    return f"{column} = '{value.replace(chr(39), chr(39) * 2)}'"
-
-
-def _campaign_assets() -> tuple[dict[str, Any], ...]:
-    """Every metric that *declares* a per-campaign average claim, fully verified.
-
-    The metric id used to be written here as a literal, which made a second
-    declared axis unreachable without a code change.  The catalog owns which
-    metrics carry a ``claim_synthesis.average_per_campaign`` contract; this
-    module only checks that each such declaration is complete and agrees with
-    the SQL asset.  An incomplete declaration is dropped, never guessed at.
+    돌려주는 스팬은 근거 표시용이다. 접기로 좌표를 1:1로 되돌릴 수 없는 입력에서는 ``None``
+    이지만 판정은 그대로 성립한다 — 근거 구간을 못 그린다고 통과시키면 그것이 fail-open 이다.
     """
 
-    catalog = audience_runtime.catalog_snapshot()
-    subject = catalog.get("subject")
+    compact = query.replace(" ", "").casefold()
+    best: tuple[int, int, str] | None = None
+    for term in terms:
+        needle = term.replace(" ", "").casefold()
+        if not needle:
+            continue
+        cursor = 0
+        while (start := compact.find(needle, cursor)) >= 0:
+            candidate = (-len(needle), start, term)
+            if best is None or candidate < best:
+                best = candidate
+            cursor = start + 1
+    if best is None:
+        return None
+    length, start, term = -best[0], best[1], best[2]
+    return term, audience_frame.compact_to_source_span(query, start, start + length)
+
+
+def _declared_average_axes(catalog: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+    """캠페인 분모 평균을 **선언한** 지표만, 선언이 완전한 것만 반환한다."""
+
     metrics = catalog.get("metrics")
     fields = catalog.get("fields")
     sources = catalog.get("sources")
-    if not all(
-        isinstance(section, Mapping)
-        for section in (subject, metrics, fields, sources)
-    ):
+    if not all(isinstance(section, Mapping) for section in (metrics, fields, sources)):
         return ()
     assert isinstance(metrics, Mapping)
+    assert isinstance(fields, Mapping)
+    assert isinstance(sources, Mapping)
 
-    assets: list[dict[str, Any]] = []
+    axes: list[dict[str, Any]] = []
     for metric_id, metric in metrics.items():
         if not isinstance(metric, Mapping):
             continue
@@ -124,626 +119,183 @@ def _campaign_assets() -> tuple[dict[str, Any], ...]:
         if not isinstance(claim, Mapping):
             continue
         average = claim.get("average_per_campaign")
-        sql_ref = claim.get("sql_asset")
-        if not isinstance(average, Mapping) or not isinstance(sql_ref, Mapping):
+        if not isinstance(average, Mapping):
             continue
-        asset = _verified_asset(
-            str(metric_id),
-            metric,
-            claim,
-            average,
-            sql_ref,
-            subject=subject,
-            fields=fields,
-            sources=sources,
+        source_id = metric.get("source")
+        amount_field_id = metric.get("expression_field")
+        denominator_field_id = average.get("denominator_field")
+        amount_field = (
+            fields.get(amount_field_id) if isinstance(amount_field_id, str) else None
         )
-        if asset is not None:
-            assets.append(asset)
-    return tuple(assets)
-
-
-def _verified_asset(
-    semantic_metric_id: str,
-    metric: Mapping[str, Any],
-    claim: Mapping[str, Any],
-    average: Mapping[str, Any],
-    sql_ref: Mapping[str, Any],
-    *,
-    subject: Any,
-    fields: Any,
-    sources: Any,
-) -> dict[str, Any] | None:
-    """Cross-check one semantic declaration against the SQL asset."""
-
-    source_id = metric.get("source")
-    amount_field_id = metric.get("expression_field")
-    denominator_field_id = average.get("denominator_field")
-    source = sources.get(source_id) if isinstance(source_id, str) else None
-    amount_field = fields.get(amount_field_id) if isinstance(amount_field_id, str) else None
-    denominator_field = (
-        fields.get(denominator_field_id)
-        if isinstance(denominator_field_id, str)
-        else None
-    )
-    if not all(
-        isinstance(item, Mapping)
-        for item in (source, amount_field, denominator_field)
-    ):
-        return None
-
-    execution_metric = claim.get("semantic_plan_metric")
-    scope = claim.get("semantic_plan_scope")
-    aggregation = average.get("aggregation")
-    unit = metric.get("unit")
-    metric_aliases = _strings(metric.get("aliases"))
-    metric_terms = (
-        *_strings(amount_field.get("aliases")),
-        str(amount_field.get("label") or ""),
-    )
-    grain_terms = _strings(average.get("grain_terms"))
-    aggregation_terms = _strings(average.get("aggregation_terms"))
-    if not (
-        source_id == amount_field.get("source") == denominator_field.get("source")
-        and metric.get("kind") == "aggregate"
-        and str(metric.get("function") or "").casefold() == "sum"
-        and metric.get("data_type") == "number"
-        and isinstance(unit, str)
-        and unit
-        and unit == amount_field.get("unit")
-        and scope == "campaign"
-        and isinstance(execution_metric, str)
-        and execution_metric in metric_aliases
-        and aggregation == "avg"
-        and average.get("denominator_distinct") is True
-        and grain_terms
-        and aggregation_terms
-        and metric_terms
-    ):
-        return None
-
-    sql_section = sql_ref.get("section")
-    if sql_section != "campaign_response_targets":
-        return None
-    sql_asset = member_filters_config.campaign_response_targets()
-    aggregate_metrics = sql_asset.get("aggregate_metrics")
-    boolean_metrics = sql_asset.get("boolean_metrics")
-    campaign_join = sql_asset.get("campaign_join")
-    member_join = sql_asset.get("member_join")
-    target_group = sql_asset.get("target_group_condition")
-    valid_campaign = sql_asset.get("valid_campaign_condition")
-    if not all(
-        isinstance(item, Mapping)
-        for item in (
-            aggregate_metrics,
-            boolean_metrics,
-            campaign_join,
-            member_join,
-            target_group,
-            valid_campaign,
+        denominator_field = (
+            fields.get(denominator_field_id)
+            if isinstance(denominator_field_id, str)
+            else None
         )
-    ):
-        return None
-    aggregate_metric = aggregate_metrics.get(sql_ref.get("aggregate_metric"))
-    response_metric = boolean_metrics.get(sql_ref.get("response_metric"))
-    if not isinstance(aggregate_metric, Mapping) or not isinstance(response_metric, Mapping):
-        return None
-
-    alias = source.get("alias")
-    amount_column = amount_field.get("column")
-    denominator_expression = denominator_field.get("expression")
-    if not all(
-        isinstance(value, str) and value
-        for value in (
-            alias,
-            source.get("table"),
-            source.get("event_subject_key"),
-            source.get("correlation_sql"),
-            source.get("from_sql"),
-            amount_column,
-            denominator_expression,
-            sql_asset.get("table"),
-            sql_asset.get("alias"),
-            sql_asset.get("member_column"),
-            sql_asset.get("campaign_key_expression"),
-            member_join.get("left"),
-            member_join.get("right"),
-            campaign_join.get("table"),
-            valid_campaign.get("expression"),
-        )
-    ):
-        return None
-
-    target_predicate = _equals_predicate(
-        target_group.get("column"), target_group.get("value")
-    )
-    response_predicate = _equals_predicate(
-        response_metric.get("column"), response_metric.get("value")
-    )
-    if target_predicate is None or response_predicate is None:
-        return None
-    catalog_predicates = {
-        str(item).replace("{alias}", str(alias))
-        for item in source.get("extra_predicates") or []
-        if isinstance(item, str)
-    }
-    valid_predicate = str(valid_campaign["expression"])
-    qualified_amount = f"{alias}.{amount_column}"
-    rendered_denominator = str(denominator_expression).replace("{alias}", str(alias))
-    campaign_conditions = _strings(campaign_join.get("conditions"))
-    rendered_from = str(source["from_sql"]).replace("{alias}", str(alias))
-    rendered_correlation = (
-        str(source["correlation_sql"])
-        .replace("{alias}", str(alias))
-        .replace("{subject_alias}", str(subject.get("alias")))
-        .replace("{subject_key}", str(subject.get("key")))
-    )
-    sql_correlation = f"{member_join['left']} = {member_join['right']}"
-    if not (
-        sql_asset.get("table") == source.get("table")
-        and sql_asset.get("alias") == alias
-        and sql_asset.get("member_column") == source.get("event_subject_key")
-        and source.get("subject_key") == subject.get("key")
-        and rendered_correlation == sql_correlation
-        and str(aggregate_metric.get("agg") or "").casefold() == "sum"
-        and aggregate_metric.get("column") == qualified_amount
-        and sql_asset.get("campaign_key_expression") == rendered_denominator
-        and len(campaign_conditions) >= 2
-        and all(condition in rendered_from for condition in campaign_conditions)
-        and {target_predicate, response_predicate, valid_predicate} <= catalog_predicates
-    ):
-        return None
-
-    return {
-        "semantic_metric_id": semantic_metric_id,
-        "execution_metric": execution_metric,
-        "scope": scope,
-        "aggregation": aggregation,
-        "unit": unit,
-        "allowed_operators": frozenset(_strings(metric.get("allowed_operators"))),
-        "metric_terms": tuple(term for term in metric_terms if term),
-        "grain_terms": grain_terms,
-        "aggregation_terms": aggregation_terms,
-        "generic_issue_arguments": frozenset(_strings(claim.get("issue_arguments"))),
-        "source": {
-            "id": source_id,
-            "table": source.get("table"),
-            "member_column": sql_asset.get("member_column"),
-            "member_join": {
-                "left": member_join.get("left"),
-                "right": member_join.get("right"),
-            },
-            "campaign_join": {
-                "table": campaign_join.get("table"),
-                "conditions": list(campaign_conditions),
-            },
-        },
-        "amount": {
-            "field": amount_field_id,
-            "column": qualified_amount,
-            "base_aggregation": "SUM",
-        },
-        "per_campaign": {
+        aggregation = average.get("aggregation")
+        grain_terms = _strings(average.get("grain_terms"))
+        if not (
+            isinstance(source_id, str)
+            and isinstance(sources.get(source_id), Mapping)
+            and isinstance(amount_field, Mapping)
+            and isinstance(denominator_field, Mapping)
+            and amount_field.get("source") == source_id
+            and denominator_field.get("source") == source_id
+            and isinstance(aggregation, str)
+            and aggregation
+            and grain_terms
+        ):
+            continue
+        axes.append({
+            "metric_id": str(metric_id),
+            "source": source_id,
+            "amount_field": amount_field_id,
             "denominator_field": denominator_field_id,
-            "denominator_expression": rendered_denominator,
-            "denominator_distinct": True,
-        },
-        "response_filters": {
-            "target_group": target_predicate,
-            "purchase_response": response_predicate,
-            "valid_campaign": valid_predicate,
-        },
-    }
+            "aggregation": aggregation,
+            "grain_terms": grain_terms,
+        })
+    return tuple(axes)
 
 
-def _whole_phrase_matches(
-    query: str,
-    *,
-    grain: tuple[str, int, int],
-    metric: tuple[str, int, int],
-    aggregation: tuple[str, int, int],
-    money_bounds: tuple[int, int],
-    operator_bounds: tuple[int, int],
-) -> bool:
-    """Require one closed claim; do not synthesize across an unknown remainder.
+def _iter_nodes(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        yield value
+        for child in value.values():
+            yield from _iter_nodes(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _iter_nodes(child)
 
-    The five axes must appear in that order with nothing but whitespace and a
-    subject particle between them — that ordering is what binds each literal to
-    its role.  Everything *outside* the claim is judged by clause structure
-    instead of by a member-noun suffix template: it has to be frame
-    (:mod:`audience_frame`), which is the same answer for ``찾아줘`` /
-    ``조회해 주세요`` / no request verb at all, and still rejects one more
-    condition on either side.
+
+def _source_name(relation: Any) -> str | None:
+    """Source 이름을 얻는다(빈 Filter 한 겹은 같은 관계로 본다)."""
+
+    if not isinstance(relation, Mapping):
+        return None
+    if relation.get("type") == "filter":
+        return _source_name(relation.get("relation"))
+    if relation.get("type") == "source" and isinstance(relation.get("name"), str):
+        return str(relation["name"])
+    return None
+
+
+def _row_average_aggregate(
+    expression: Any, axis: Mapping[str, Any]
+) -> Mapping[str, Any] | None:
+    """선언 지표의 금액 필드를 **행 단위**로 평균 내는 집계 노드를 찾는다.
+
+    소스는 선언된 분모 필드가 속한 소스다(``_declared_average_axes`` 가 금액 필드·분모 필드가
+    같은 소스임을 이미 확인했다) — 캠페인 분모로 나눠야 할 값을 행 수로 나눈 자리가 곧 모순이다.
     """
 
-    _grain_text, grain_start, grain_end = grain
-    _metric_text, metric_start, metric_end = metric
-    _aggregation_text, aggregation_start, aggregation_end = aggregation
-    money_start, money_end = money_bounds
-    operator_start, operator_end = operator_bounds
-    if not (
-        grain_end <= metric_start < metric_end <= aggregation_start
-        < aggregation_end <= money_start < money_end <= operator_start < operator_end
-    ):
-        return False
-    return bool(
-        re.fullmatch(r"\s+", query[grain_end:metric_start])
-        and re.fullmatch(r"(?:이|가|은|는)?\s+", query[metric_end:aggregation_start])
-        and re.fullmatch(r"\s+", query[aggregation_end:money_start])
-        and re.fullmatch(r"\s+", query[money_end:operator_start])
-        and audience_frame.is_frame_only(query, [(grain_start, operator_end)])
-    )
+    for node in _iter_nodes(expression):
+        field = node.get("expression")
+        if not (
+            node.get("type") == "aggregate"
+            and node.get("function") == axis["aggregation"]
+            and isinstance(field, Mapping)
+            and field.get("type") == "field"
+            and field.get("name") == axis["amount_field"]
+            and _source_name(node.get("relation")) == axis["source"]
+        ):
+            continue
+        return node
+    return None
 
 
-def _issues_own_claim(
-    issues: list[Mapping[str, Any]],
-    query: str,
-    *,
-    money_index: int,
-    operator_index: int,
-    money_bounds: tuple[int, int],
-    operator_bounds: tuple[int, int],
-    claim_bounds: tuple[int, int],
-    generic_arguments: frozenset[str],
-) -> bool:
-    if not issues or any(issue.get("code") != "unsupported_semantics" for issue in issues):
-        return False
-    bounds = [_issue_span(issue, query) for issue in issues]
-    if any(item is None for item in bounds):
-        return False
-
-    if len(issues) == 1:
-        issue_bounds = bounds[0]
-        assert issue_bounds is not None
-        return bool(
-            str(issues[0].get("argument") or "") in generic_arguments
-            and issue_bounds[0] <= claim_bounds[0]
-            and claim_bounds[1] <= issue_bounds[1]
-        )
-
-    expected = Counter(
-        {
-            f"literal_bindings[{money_index}]": 1,
-            f"literal_bindings[{money_index}].unit": 1,
-            f"literal_bindings[{operator_index}]": 1,
-        }
-    )
-    actual = Counter(str(issue.get("argument") or "") for issue in issues)
-    if len(issues) != 3 or actual != expected:
-        return False
-    expected_span = {
-        f"literal_bindings[{money_index}]": money_bounds,
-        f"literal_bindings[{money_index}].unit": money_bounds,
-        f"literal_bindings[{operator_index}]": operator_bounds,
-    }
-    for issue, issue_bounds in zip(issues, bounds, strict=True):
-        assert issue_bounds is not None
-        owned = expected_span[str(issue["argument"])]
-        if not (issue_bounds[0] <= owned[0] and owned[1] <= issue_bounds[1]):
-            return False
-    return True
+def _comparison_evidence(
+    expression: Any, aggregate: Mapping[str, Any], query: str
+) -> tuple[int, int] | None:
+    for node in _iter_nodes(expression):
+        if node.get("type") != "comparison" or node.get("left") is not aggregate:
+            continue
+        evidence = node.get("evidence")
+        return _span(evidence, query) if isinstance(evidence, Mapping) else None
+    return None
 
 
-def _validated_claim(
-    query: str,
-    literal_bindings: list[Any],
-    semantic_plan: Any,
-) -> dict[str, Any] | None:
-    """Return the catalog/literal proof shared by both model wire shapes."""
-
-    nodes = semantic_plan.get("nodes") if isinstance(semantic_plan, Mapping) else None
-    if nodes != [] or len(literal_bindings) != 2:
+def _money_span(literal_bindings: Any, query: str) -> tuple[int, int] | None:
+    if not isinstance(literal_bindings, list):
         return None
-    bindings = [binding for binding in literal_bindings if isinstance(binding, Mapping)]
-    if len(bindings) != 2:
-        return None
-
-    money_items = [
-        (index, binding)
-        for index, binding in enumerate(literal_bindings)
+    money = [
+        binding
+        for binding in literal_bindings
         if isinstance(binding, Mapping) and binding.get("kind") == "money"
     ]
-    operator_items = [
-        (index, binding)
-        for index, binding in enumerate(literal_bindings)
-        if isinstance(binding, Mapping) and binding.get("kind") == "comparison_operator"
-    ]
-    if len(money_items) != 1 or len(operator_items) != 1:
+    if len(money) != 1:
         return None
-    money_index, money = money_items[0]
-    operator_index, comparison = operator_items[0]
-    money_bounds, operator_bounds = _span(money, query), _span(comparison, query)
-    normalized_money = money.get("normalized")
-    operator = comparison.get("normalized")
-    if not (
-        money_bounds is not None
-        and operator_bounds is not None
-        and isinstance(normalized_money, Mapping)
-        and isinstance(normalized_money.get("amount"), (int, float))
-        and not isinstance(normalized_money.get("amount"), bool)
-        and normalized_money.get("amount") > 0
-        and isinstance(normalized_money.get("currency"), str)
-        and isinstance(operator, str)
-    ):
-        return None
-
-    matched: list[dict[str, Any]] = []
-    for asset in _campaign_assets():
-        if (
-            normalized_money["currency"].upper() != str(asset["unit"]).upper()
-            or operator not in asset["allowed_operators"]
-        ):
-            continue
-        grain = _unique_term(query, asset["grain_terms"])
-        metric = _unique_term(query, asset["metric_terms"])
-        aggregation = _unique_term(query, asset["aggregation_terms"])
-        if grain is None or metric is None or aggregation is None:
-            continue
-        if not _whole_phrase_matches(
-            query,
-            grain=grain,
-            metric=metric,
-            aggregation=aggregation,
-            money_bounds=money_bounds,
-            operator_bounds=operator_bounds,
-        ):
-            continue
-        matched.append({
-            "asset": asset,
-            "money_index": money_index,
-            "operator_index": operator_index,
-            "money": money,
-            "comparison": comparison,
-            "money_bounds": money_bounds,
-            "operator_bounds": operator_bounds,
-            "normalized_money": normalized_money,
-            "operator": operator,
-            "grain": grain,
-            "metric": metric,
-            "aggregation": aggregation,
-            "claim_bounds": (grain[1], operator_bounds[1]),
-        })
-    # Two declared metrics claiming the same phrase means the phrase is
-    # ambiguous; the catalog, not this module, has to resolve that.
-    return matched[0] if len(matched) == 1 else None
+    return _span(money[0], query)
 
 
-def _build_synthesis(
-    query: str,
-    claim: Mapping[str, Any],
-    *,
-    issues: Sequence[Mapping[str, Any]],
-    model_expression_receipt: Mapping[str, Any] | None = None,
-) -> CampaignMetricSynthesis:
-    asset = claim["asset"]
-    money = claim["money"]
-    comparison = claim["comparison"]
-    money_bounds = claim["money_bounds"]
-    operator_bounds = claim["operator_bounds"]
-    normalized_money = claim["normalized_money"]
-    operator = claim["operator"]
-    grain = claim["grain"]
-    metric = claim["metric"]
-    aggregation = claim["aggregation"]
-    claim_bounds = claim["claim_bounds"]
-    amount = normalized_money["amount"]
-    digest_material = "\0".join(
-        (
-            query,
-            asset["semantic_metric_id"],
-            asset["execution_metric"],
-            str(money.get("id") or ""),
-            str(comparison.get("id") or ""),
-            str(amount),
-            operator,
-        )
-    )
-    node_id = "campaign-metric-" + hashlib.sha256(
-        digest_material.encode("utf-8")
-    ).hexdigest()[:12]
-    node = {
-        "id": node_id,
-        "type": "aggregate_predicate",
-        "source_span": query[claim_bounds[0] : claim_bounds[1]],
-        "source_start": claim_bounds[0],
-        "source_end": claim_bounds[1],
-        "scope": asset["scope"],
-        "metric": asset["execution_metric"],
-        "operator": operator,
-        "value": amount,
-        "aggregation": asset["aggregation"],
-        "unit": asset["unit"],
-        "producer": OWNER,
-    }
-    receipt = {
-        "owner": OWNER,
-        "node_id": node_id,
-        "semantic_metric_id": asset["semantic_metric_id"],
-        "execution_metric": asset["execution_metric"],
-        "scope": asset["scope"],
-        "metric_alias": {
-            "text": metric[0],
-            "start": metric[1],
-            "end": metric[2],
-        },
-        "per_campaign": {
-            "text": grain[0],
-            "start": grain[1],
-            "end": grain[2],
-            **asset["per_campaign"],
-        },
-        "aggregation": {
-            "text": aggregation[0],
-            "start": aggregation[1],
-            "end": aggregation[2],
-            "function": asset["aggregation"],
-            "base_amount_aggregation": asset["amount"]["base_aggregation"],
-        },
-        "threshold": {
-            "binding_id": money.get("id"),
-            "amount": amount,
-            "currency": normalized_money["currency"],
-            "start": money_bounds[0],
-            "end": money_bounds[1],
-        },
-        "comparison": {
-            "binding_id": comparison.get("id"),
-            "operator": operator,
-            "start": operator_bounds[0],
-            "end": operator_bounds[1],
-        },
-        "source": asset["source"],
-        "amount_asset": asset["amount"],
-        "response_filters": asset["response_filters"],
-        "consumed_literal_binding_ids": [money.get("id"), comparison.get("id")],
-        "discharged_issues": [
-            {
-                "code": issue.get("code"),
-                "argument": issue.get("argument"),
-                "start": bounds[0],
-                "end": bounds[1],
-            }
-            for issue in issues
-            if (bounds := _issue_span(issue, query)) is not None
-        ],
-    }
-    if model_expression_receipt is not None:
-        receipt["model_expression"] = dict(model_expression_receipt)
-    return CampaignMetricSynthesis(node=node, receipt=receipt)
-
-
-def synthesize_campaign_average_amount_predicate(
-    query: str,
-    issues: list[Any],
-    literal_bindings: list[Any],
-    semantic_plan: Any,
-) -> CampaignMetricSynthesis | None:
-    """Synthesize one declared per-campaign average amount predicate."""
-
-    typed_issues = [issue for issue in issues if isinstance(issue, Mapping)]
-    if len(typed_issues) != len(issues):
-        return None
-    claim = _validated_claim(query, literal_bindings, semantic_plan)
-    if claim is None:
-        return None
-    if not _issues_own_claim(
-        typed_issues,
-        query,
-        money_index=claim["money_index"],
-        operator_index=claim["operator_index"],
-        money_bounds=claim["money_bounds"],
-        operator_bounds=claim["operator_bounds"],
-        claim_bounds=claim["claim_bounds"],
-        generic_arguments=claim["asset"]["generic_issue_arguments"],
-    ):
-        return None
-    return _build_synthesis(query, claim, issues=typed_issues)
-
-
-def synthesize_campaign_average_amount_expression(
+def detect_retired_campaign_average_claim(
     query: str,
     expression: Any,
-    literal_bindings: list[Any],
-    semantic_plan: Any,
-) -> CampaignMetricSynthesis | None:
-    """Retype the one exact model-owned aggregate wire shape.
+    literal_bindings: Any,
+    catalog: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """모델 표현이 실은 '캠페인당 평균'을 뜻하는지 판정한다. 아니면 ``None``.
 
-    Event IR can carry a generic aggregate expression, but this campaign
-    average has a more specific execution contract: base ``SUM(BUY_AMT)`` per
-    distinct campaign execution, plus target/purchase-response/valid-campaign
-    filters.  Only a byte-for-byte closed algebra shape that agrees with the
-    application literals and those catalog assets may cross that boundary.
+    반환 dict 는 호출자가 그대로 오디언스 issue 로 만들 수 있는 근거다 — 원문 구간
+    (``evidence``)과 어떤 선언 지표·표면어가 판정을 만들었는지(``receipt``)를 담는다.
     """
 
-    claim = _validated_claim(query, literal_bindings, semantic_plan)
-    if claim is None or not isinstance(expression, Mapping):
+    if not isinstance(expression, Mapping) or not isinstance(catalog, Mapping):
         return None
-    if set(expression) != {"type", "operator", "left", "right", "evidence"}:
+    matched: list[dict[str, Any]] = []
+    for axis in _declared_average_axes(catalog):
+        grain = _grain_match(query, axis["grain_terms"])
+        if grain is None:
+            continue
+        aggregate = _row_average_aggregate(expression, axis)
+        if aggregate is None:
+            continue
+        matched.append({"axis": axis, "grain": grain, "aggregate": aggregate})
+    # 두 지표가 같은 문장을 주장하면 그 문장은 모호하다 — 카탈로그가 풀 문제다.
+    if len(matched) != 1:
         return None
-    left, right, evidence = (
-        expression.get("left"),
-        expression.get("right"),
-        expression.get("evidence"),
+    axis = matched[0]["axis"]
+    grain_term, grain_span = matched[0]["grain"]
+
+    spans = [
+        span
+        for span in (
+            grain_span,
+            _comparison_evidence(expression, matched[0]["aggregate"], query),
+            _money_span(literal_bindings, query),
+        )
+        if span is not None
+    ]
+    # 근거 구간은 grain 표면어·비교 근거·금액 리터럴의 외곽이다. 하나도 그릴 수 없으면 원문
+    # 전체를 근거로 삼는다(구간을 못 그린다고 판정을 버리지 않는다).
+    start, end = (
+        (min(span[0] for span in spans), max(span[1] for span in spans))
+        if spans
+        else (0, len(query))
     )
-    if not all(isinstance(item, Mapping) for item in (left, right, evidence)):
-        return None
-    assert isinstance(left, Mapping)
-    assert isinstance(right, Mapping)
-    assert isinstance(evidence, Mapping)
-    if (
-        set(left)
-        != {"type", "function", "relation", "expression", "distinct"}
-        or set(right) != {"type", "value"}
-        or set(evidence) != {"text", "start", "end"}
-    ):
-        return None
-    field = left.get("expression")
-    relation = left.get("relation")
-    if not isinstance(field, Mapping) or not isinstance(relation, Mapping):
-        return None
-    if set(field) != {"type", "name"}:
-        return None
-
-    source_id = claim["asset"]["source"]["id"]
-    relation_wrapper = "source"
-    source = relation
-    if relation.get("type") == "filter":
-        if set(relation) != {"type", "relation", "where"} or relation.get("where") is not None:
-            return None
-        source = relation.get("relation")
-        relation_wrapper = "empty_filter"
-    if not (
-        isinstance(source, Mapping)
-        and set(source) == {"type", "name"}
-        and source.get("type") == "source"
-        and source.get("name") == source_id
-    ):
-        return None
-
-    amount = claim["normalized_money"]["amount"]
-    operator = claim["operator"]
-    evidence_bounds = _span(evidence, query)
-    expected_evidence_bounds = (
-        claim["money_bounds"][0],
-        claim["operator_bounds"][1],
-    )
-    if not (
-        expression.get("type") == "comparison"
-        and expression.get("operator") == operator
-        and left.get("type") == "aggregate"
-        and left.get("function") == claim["asset"]["aggregation"]
-        and left.get("distinct") is False
-        and field.get("type") == "field"
-        and field.get("name") == claim["asset"]["amount"]["field"]
-        and right.get("type") == "literal"
-        and isinstance(right.get("value"), (int, float))
-        and not isinstance(right.get("value"), bool)
-        and right.get("value") == amount
-        and evidence_bounds == expected_evidence_bounds
-    ):
-        return None
-
-    return _build_synthesis(
-        query,
-        claim,
-        issues=(),
-        model_expression_receipt={
-            "type": "comparison.aggregate",
-            "relation_wrapper": relation_wrapper,
-            "source": source_id,
-            "field": claim["asset"]["amount"]["field"],
-            "function": claim["asset"]["aggregation"],
-            "distinct": False,
-            "operator": operator,
-            "value": amount,
-            "evidence_start": evidence_bounds[0],
-            "evidence_end": evidence_bounds[1],
+    receipt_grain: dict[str, Any] = {"declared": grain_term}
+    if grain_span is not None:
+        receipt_grain.update({
+            "text": query[grain_span[0] : grain_span[1]],
+            "start": grain_span[0],
+            "end": grain_span[1],
+        })
+    return {
+        "argument": RETIRED_AXIS_ARGUMENT,
+        "message": RETIRED_AXIS_MESSAGE,
+        "evidence": {"text": query[start:end], "start": start, "end": end},
+        "receipt": {
+            "metric_id": axis["metric_id"],
+            "source": axis["source"],
+            "amount_field": axis["amount_field"],
+            "denominator_field": axis["denominator_field"],
+            "aggregation": axis["aggregation"],
+            "grain_term": receipt_grain,
         },
-    )
+    }
 
 
 __all__ = [
-    "OWNER",
-    "CampaignMetricSynthesis",
-    "synthesize_campaign_average_amount_predicate",
-    "synthesize_campaign_average_amount_expression",
+    "RETIRED_AXIS_ARGUMENT",
+    "RETIRED_AXIS_MESSAGE",
+    "detect_retired_campaign_average_claim",
 ]

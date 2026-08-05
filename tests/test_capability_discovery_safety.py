@@ -87,13 +87,15 @@ def test_api_is_the_only_runtime_file_with_a_discovery_dependency() -> None:
 
 
 def test_discovery_does_not_import_runtime_planner_or_sql_modules() -> None:
+    # ``semantic_plan_event_lowering`` 은 2026-08-05 목록에서 빠졌다 — SemanticPlanV2 폐기로
+    # 모듈 자체가 사라지므로 없는 이름을 지키는 줄이 된다. canonical Event IR 의 lowering·
+    # 컴파일 경계는 ``event_compiler`` 가 같은 자리에서 계속 막는다.
     forbidden = {
         "event_compiler",
         "graph_rag",
         "query_structurer",
         "resolved_semantic_catalog",
         "semantic_capability",
-        "semantic_plan_event_lowering",
         "targeting_ir",
     }
     offenders = {

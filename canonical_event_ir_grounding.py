@@ -165,9 +165,9 @@ def has_empty_legacy_audience_surface(plan: Mapping[str, Any]) -> bool:
     같은 목록이 저장소에 둘이었고(다른 하나는 ``plan_validation`` 의 hybrid 가드), 한쪽만
     넓히면 "무엇이 두 번째 오디언스 언어인가"의 답이 호출 지점마다 달라진다.
 
-    ``semantic_plan.nodes`` 만 여기서 직접 본다. 그 키는 canonical 레인에 **상시 존재**해서
-    분류표에서는 ``audience=False`` 여야 하고(True 면 모든 canonical 요청이 충돌로 죽는다),
-    "노드가 비었는가"는 키의 존재가 아니라 이 술어만의 판정이다.
+    2026-08-05 이후 표면은 **레지스트리 파생 하나뿐**이다. 예전에는 ``semantic_plan.nodes``
+    를 여기서 직접 하나 더 봤다 — 그 키는 canonical 레인에 상시 존재해서 분류표에 넣을 수
+    없었기 때문이다. SemanticPlan 이 폐기되면서 그 예외의 대상이 사라졌으므로 항을 지웠다.
     """
 
     def empty(value: Any) -> bool:
@@ -177,15 +177,8 @@ def has_empty_legacy_audience_surface(plan: Mapping[str, Any]) -> bool:
             return all(empty(item) for item in value)
         return value in (None, "")
 
-    semantic_plan = plan.get("semantic_plan")
-    semantic_nodes = (
-        semantic_plan.get("nodes") if isinstance(semantic_plan, Mapping) else None
-    )
     surfaces = (*plan_schema.AUDIENCE_CONTAINERS, *sorted(plan_schema.audience_keys()))
-    return bool(
-        all(empty(plan.get(name)) for name in surfaces)
-        and empty(semantic_nodes)
-    )
+    return all(empty(plan.get(name)) for name in surfaces)
 
 
 def project_canonical_event_ir_grounding(

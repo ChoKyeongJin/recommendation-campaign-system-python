@@ -21,7 +21,7 @@
 얼려 둔다.
 
 **`canonical_event_ir_grounding.has_empty_legacy_audience_surface` 와 다른 술어다.** 그쪽은
-컨테이너 2개 + `audience_keys()` + `semantic_plan.nodes` 를 보고 "복구된 플랜이 두 번째 언어를
+컨테이너 2개 + `audience_keys()` 를 보고 "복구된 플랜이 두 번째 언어를
 세웠는가"를 답한다. 이쪽은 컨테이너 2개만 보고 "지금 실행하면 해석이 둘인가"를 답한다. 한쪽을
 다른 쪽에 위임하면 둘 중 하나가 조용히 바뀐다 — 그래서 위임하지 않고, 같은 이름의 함수도 두지
 않는다.

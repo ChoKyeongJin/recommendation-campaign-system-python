@@ -1,3 +1,15 @@
+> **2026-08-05 폐기 고지 (이 파일 전체에 적용).**
+> 이 노트는 날짜순 작업 기록이고, 아래 여러 절이 **SemanticPlanV2** 중간표현과 그 스택
+> (`semantic_plan` / `semantic_plan_llm` / `semantic_plan_bridge` / `semantic_plan_event_lowering` /
+> `semantic_pipeline` / `semantic_capability` / `semantic_coverage` / `semantic_candidates` /
+> `semantic_reemission` / `semantic_retype` / `semantic_receipts` / `semantic_relation_ownership` /
+> `requirement_ledger` / `compile_contract` / `legacy_plan_compiler` / `member_attribute_history` /
+> `profile_metric_claims`)을 **현재 존재하는 것처럼** 서술한다. 그 전부가 2026-08-05 모듈 파일까지
+> 삭제됐다. 오디언스 IR 은 canonical Event IR 하나이고(`audience_requirement` → `event_ir` →
+> `event_compiler`), 함께 폐기된 축이 셋이다: 등급/상태 이력·전이, 프로필 스칼라 지표,
+> 캠페인당 평균 구매금액. 세 축은 fail-close 로 닫히며 `tests/test_retired_axes_fail_close.py` 가
+> 그것을 고정한다. **아래 문장을 오늘의 구조로 읽지 마라 — 당시 상태의 기록이다.**
+
 # 작업 노트 — 범용 수리 플랜 P0~P5 구현 (2026-08-03)
 
 바로 아래 절의 플랜을 구현했다. 착수 전 명세를 6갈래로 나눠 각각 **반증 검증**을 붙였고

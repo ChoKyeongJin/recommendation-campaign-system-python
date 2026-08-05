@@ -3,10 +3,8 @@ from __future__ import annotations
 import json
 
 import event_ir
-import semantic_plan
 import semantic_requirements
 
-from . import campaign_plan_v4
 from .schema import STRUCTURED_QUERY_JSON_SCHEMA
 from .semantic_ir import extract_literal_bindings
 from .types import QueryStructuringInput
@@ -143,21 +141,13 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
                 "physical tables, or physical columns."
             ),
             (
-                "semantic_plan is the narrow second surface for the one axis the Event IR algebra cannot "
-                "state: a member attribute read from a **past or per-month snapshot**. Use it only when the "
-                "query names a past reference month ('지난달 말 기준', '2025년 12월 기준'), a change relative "
-                "to the previous snapshot ('직전 등급', '승급'), or a multi-month pattern ('3개월 내내', "
-                "'2번 이상 변경', '매월', '한 번이라도').\n"
-                "A condition on the member's CURRENT attribute value is NOT this axis. '현재 등급이 VIP', "
-                "'골드 이상 등급', '휴면 회원' are ordinary profile predicates: put them in "
-                "audience_requirement.expression as a subject field Comparison and leave semantic_plan empty. "
-                "'최신 기준월 기준' also means the current value.\n"
-                "A condition belongs to exactly one surface — never state it in both. When the query has no "
-                "past/per-month snapshot condition, return semantic_plan={\"nodes\": []}. Never put a "
-                "purchase, cart, campaign, or login condition into semantic_plan.\n"
-                + semantic_plan.node_type_guidance(
-                    node_types=campaign_plan_v4.LLM_SEMANTIC_PLAN_NODE_TYPES
-                )
+                # 오디언스 의미의 노출면은 audience_requirement 하나다. 두 번째 표면(semantic_plan)은
+                # 2026-08-05 폐기됐다 — 그 노드를 컴파일하는 실행 경로가 남아 있지 않았다.
+                "audience_requirement.expression is the ONLY surface for audience meaning. There is no "
+                "second semantic surface: if the Event IR algebra and the Audience Semantic Catalog cannot "
+                "state a material condition faithfully, set expression to null and report it in "
+                "audience_requirement.issues. Never approximate it with a different field, drop it, or move "
+                "it into campaign metadata."
             ),
             (
                 "Build the expression only with the Event IR algebra allowed by the tool schema, such as "
@@ -262,8 +252,8 @@ def build_campaign_query_plan_v4_retry_prompt(
                 "{\"type\":\"not\",\"operand\":<Condition>} and never has operands. Exists has only "
                 "type/relation/evidence; it never has where. A row predicate belongs in "
                 "{\"type\":\"filter\",\"relation\":<Relation>,\"where\":<Condition>}, and Filter never "
-                "has evidence. audience_requirement contains both expression and issues; semantic_plan is "
-                "its root-level sibling."
+                "has evidence. audience_requirement contains exactly two properties, expression and "
+                "issues, and it is the only place audience meaning may appear."
             ),
             (
                 "Summarize output names are local aliases used by Order.keys.name, not FieldRef names. Join.on "

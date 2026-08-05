@@ -3,20 +3,26 @@
 이 파일이 있는 이유는 하나다. **72종 라이브 코퍼스에 혼합축 프롬프트가 0건이었고, 그래서
 아래 결함이 전수 감사를 통과했다.**
 
-2026-08-02 실측(재현 완료): `audience_requirement`(canonical Event IR)와
-`semantic_plan`(등급/상태 이력)이 **함께** 있는 플랜은 `graph_rag._apply_semantic_plan_pipeline`
-의 조기 반환 때문에 이력 컴파일 경로 전체를 건너뛰고도 ``is_success=True`` 로 SQL 을 냈다.
+2026-08-02 실측(재현 완료): `audience_requirement`(canonical Event IR)와 등급/상태 이력 절이
+**함께** 있는 플랜이 이력 컴파일 경로 전체를 건너뛰고도 ``is_success=True`` 로 SQL 을 냈다.
 경고 0, 되묻기 0. 게다가 상태 축에서는 기본 정상회원 필터 때문에 "휴면이 된 회원"을 요청했는데
 "현재 정상인 회원"이 나오는 **의미 반전**이었다.
 
-하네스 주의: `parser="rules"` 로는 이 회귀를 재현할 수 없다 — rules 플랜에는
-``event_expression`` 이 애초에 존재하지 않아 조기 반환이 발동하지 않는다. 반드시 V4 페이로드 +
-``parser="llm"`` 이어야 한다(`tests/test_canonical_audience_path.py` 와 같은 방식).
+2026-08-05 이행에서 등급/상태 이력 축 자체가 폐기됐다(fail-close). 그래도 이 파일은 남긴다 —
+고정하는 것은 이력 컴파일의 존재가 아니라 "절이 조용히 사라진 성공은 없다"이기 때문이다.
 
-대표 프롬프트 선정도 함정이다. "지난달 말 기준 VIP였던"처럼 **시간 마커**가 있는 문형은
-구조화 단계에서 semantic obligation 이 생겨 ``event_expression`` 이 통째로 버려지므로 조기 반환에
-닿지도 않는다. 마커를 남기지 않는 **'A에서 B로 바뀐' 전이 문형만** 샌다 — 마커형으로 테스트를
-쓰면 통과하는 테스트를 만들고 버그는 남는다.
+**재현 형태가 바뀌었다.** 예전에는 이력 절을 `semantic_plan` relation 노드로 실어 재현했지만
+그 노출면이 폐기돼 오늘의 유일한 경로는 canonical ingress 다. 그래서 두 모양을 모두 태운다.
+
+1. 구조화기가 이력 절을 **미지원으로 신고**한 경우(신고가 있으면 표현은 통째로 버려진다).
+2. 구조화기가 신고조차 없이 **일반 조건만 담은 표현**을 낸 경우 — 조용한 절 소실. 이때는
+   원문의 카탈로그 값('정상'·'휴면'·'골드'·'VIP')이 표현에서 소비되지 않았다는 사실을
+   canonical 청구 커버리지가 잡아 SQL 출고를 막아야 한다.
+
+마커형 함정 주의: "지난달 말 기준 VIP였던"처럼 **시간 마커**가 있는 문형은 구조화 단계에서
+semantic obligation 이 먼저 생겨 다른 경로로 끝난다. 마커를 남기지 않는 **'A에서 B로 바뀐'
+전이 문형만** 이 결함을 재현한다 — 마커형으로 테스트를 쓰면 통과하는 테스트를 만들고 버그는
+남는다.
 """
 
 from __future__ import annotations
@@ -40,6 +46,13 @@ from query_structurer.campaign_plan_v4 import (  # noqa: E402
 
 CURRENT_DATE = "2026-08-02"
 
+STATE_TRANSITION_QUERY = "여성이면서 정상에서 휴면으로 바뀐 회원"
+GRADE_TRANSITION_QUERY = "여성이면서 골드에서 VIP로 바뀐 회원"
+TRANSITION_SPANS = {
+    STATE_TRANSITION_QUERY: "정상에서 휴면으로 바뀐",
+    GRADE_TRANSITION_QUERY: "골드에서 VIP로 바뀐",
+}
+
 
 def _evidence(query: str, text: str) -> event_ir.Evidence:
     start = query.index(text)
@@ -47,6 +60,7 @@ def _evidence(query: str, text: str) -> event_ir.Evidence:
 
 
 def _female(query: str) -> event_ir.Condition:
+    """이력 절을 **빼고** 성별만 담은 표현 — 조용한 절 소실의 실제 모양이다."""
     return event_ir.Comparison(
         operator="=",
         left=event_ir.FieldRef(name="subject.gender"),
@@ -55,28 +69,33 @@ def _female(query: str) -> event_ir.Condition:
     )
 
 
-def _history_node(query: str, span: str, **payload: Any) -> dict[str, Any]:
+def _unsupported_issue(query: str, span: str) -> dict[str, Any]:
     start = query.index(span)
     return {
-        "id": "r1",
-        "type": "relation_predicate",
-        "subject": "member",
-        "source_span": span,
-        "source_start": start,
-        "source_end": start + len(span),
-        **payload,
+        "code": "unsupported_semantics",
+        "argument": "grade_transition_values",
+        "message": "model-authored issue",
+        "evidence": {"text": span, "start": start, "end": start + len(span)},
     }
 
 
-def _mixed_result(query: str, node: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-    """일반 조건(성별)과 이력 조건을 동시에 실은 V4 페이로드를 실제 경로로 태운다."""
+def _mixed_result(
+    query: str, *, report_issue: bool
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """일반 조건(성별)만 담은 표현을 실제 canonical 경로로 태운다."""
     payload = attach_campaign_query_plan_v4_identity(
         {
             "intent": "find_user_segment",
             "campaign_constraints": {},
             "result_limit": None,
-            AUDIENCE_REQUIREMENT_KEY: {"expression": _female(query).to_dict(), "issues": []},
-            "semantic_plan": {"nodes": [node]},
+            AUDIENCE_REQUIREMENT_KEY: {
+                "expression": _female(query).to_dict(),
+                "issues": (
+                    [_unsupported_issue(query, TRANSITION_SPANS[query])]
+                    if report_issue
+                    else []
+                ),
+            },
         },
         query,
         current_date=CURRENT_DATE,
@@ -101,50 +120,16 @@ def _blocked_with_a_named_reason(result: dict[str, Any]) -> None:
     assert spoken.strip(), "차단은 됐지만 사용자에게 사유를 말하지 않는다(무언 실패)."
 
 
-STATE_TRANSITION_QUERY = "여성이면서 정상에서 휴면으로 바뀐 회원"
-GRADE_TRANSITION_QUERY = "여성이면서 골드에서 VIP로 바뀐 회원"
-
-
-def test_state_history_mix_never_emits_partial_sql() -> None:
-    """상태 이력은 소스 자체가 없다(적재 부재). 그러면 SQL 이 나가면 안 된다.
+@pytest.mark.parametrize("query", [STATE_TRANSITION_QUERY, GRADE_TRANSITION_QUERY])
+@pytest.mark.parametrize("report_issue", [True, False])
+def test_history_mix_never_emits_partial_sql(query: str, report_issue: bool) -> None:
+    """상태·등급 이력 절이 빠진 채로 SQL 이 나가면 안 된다.
 
     실측된 실패 모양: ``WHERE B.MEMBER_STATE_CD = '...NORMAL' AND B.GENDER_CD = '...FEMALE'``
     — '휴면이 된 회원'을 요청했는데 '현재 정상인 회원'이 나오는 의미 반전.
     """
-    _, result = _mixed_result(
-        STATE_TRANSITION_QUERY,
-        _history_node(
-            STATE_TRANSITION_QUERY,
-            "정상에서 휴면으로 바뀐",
-            attribute="member_state",
-            relation="transition",
-            from_value="정상",
-            to_value="휴면",
-        ),
-    )
+    _plan, result = _mixed_result(query, report_issue=report_issue)
     _blocked_with_a_named_reason(result)
-
-
-def test_grade_transition_mix_puts_both_clauses_in_one_sql() -> None:
-    """등급 전이는 표현 가능한 의미다(직전값 컬럼이 있다). 두 절이 한 SQL 에 있어야 한다."""
-    _, result = _mixed_result(
-        GRADE_TRANSITION_QUERY,
-        _history_node(
-            GRADE_TRANSITION_QUERY,
-            "골드에서 VIP로 바뀐",
-            attribute="member_grade",
-            relation="transition",
-            from_value="골드",
-            to_value="VIP",
-        ),
-    )
-    assert result["is_success"], (
-        "등급 전이 + 성별 혼합이 SQL 을 내지 못했다: "
-        f"{result.get('failure_reason')} / {result.get('clarification_questions')}"
-    )
-    sql = result["sql"]
-    assert "GENDER_CD" in sql, f"성별 절이 사라졌다:\n{sql}"
-    assert "PREV_" in sql, f"등급 전이 절이 사라졌다:\n{sql}"
 
 
 def test_no_success_while_a_clause_is_silently_dropped() -> None:
@@ -152,23 +137,8 @@ def test_no_success_while_a_clause_is_silently_dropped() -> None:
 
     canonical 권위가 있다는 이유로 결정론 드롭 감지기를 통째로 면제하면 정확히 이 상태가 된다.
     """
-    for query, node in (
-        (
-            STATE_TRANSITION_QUERY,
-            _history_node(
-                STATE_TRANSITION_QUERY, "정상에서 휴면으로 바뀐",
-                attribute="member_state", relation="transition", from_value="정상", to_value="휴면",
-            ),
-        ),
-        (
-            GRADE_TRANSITION_QUERY,
-            _history_node(
-                GRADE_TRANSITION_QUERY, "골드에서 VIP로 바뀐",
-                attribute="member_grade", relation="transition", from_value="골드", to_value="VIP",
-            ),
-        ),
-    ):
-        _, result = _mixed_result(query, node)
+    for query in (STATE_TRANSITION_QUERY, GRADE_TRANSITION_QUERY):
+        _plan, result = _mixed_result(query, report_issue=False)
         if not result["is_success"]:
             continue
         sql = result["sql"]
@@ -178,39 +148,21 @@ def test_no_success_while_a_clause_is_silently_dropped() -> None:
         )
 
 
-@pytest.mark.parametrize(
-    ("query", "node"),
-    [
-        pytest.param(
-            "정상에서 휴면으로 바뀐 회원",
-            {"attribute": "member_state", "relation": "transition", "from_value": "정상", "to_value": "휴면"},
-            id="state-only",
-        ),
-        pytest.param(
-            "골드에서 VIP로 바뀐 회원",
-            {"attribute": "member_grade", "relation": "transition", "from_value": "골드", "to_value": "VIP"},
-            id="grade-only",
-        ),
-    ],
-)
-def test_history_only_path_is_unaffected(query: str, node: dict[str, Any]) -> None:
-    """단독 이력 경로(일반 조건 없음)는 이번 변경으로 흔들리면 안 된다 — 회귀 기준선."""
-    span = query.replace(" 회원", "")
-    payload = attach_campaign_query_plan_v4_identity(
-        {
-            "intent": "find_user_segment",
-            "campaign_constraints": {},
-            "result_limit": None,
-            "semantic_plan": {"nodes": [_history_node(query, span, **node)]},
-        },
-        query,
-        current_date=CURRENT_DATE,
+def test_silently_dropped_history_clause_is_named_in_unresolved_coverage() -> None:
+    """무엇이 소실됐는지까지 남는다 — 원문의 카탈로그 값이 미소비로 잡혀야 한다.
+
+    차단 사유만 있고 '어느 구절이 문제인가'가 없으면 운영자는 원인을 찾지 못한다.
+    """
+    plan, _result = _mixed_result(STATE_TRANSITION_QUERY, report_issue=False)
+    unresolved = plan.get("unresolved_source_conditions") or []
+    assert unresolved, "절이 소실됐는데 미해결 목록이 비었다."
+    labels = " ".join(str(item.get("label") or "") for item in unresolved)
+    assert "휴면" in labels or "정상" in labels, (
+        f"소실된 이력 절의 근거 낱말이 미해결 목록에 없다: {unresolved}"
     )
-    plan = graph_rag.build_query_plan(query, parser="llm", query_plan_v4=payload)
-    result = graph_rag.build_sql_result(
-        nx.Graph(), query, plan, [], graph_rag.DEFAULT_SCHEMA_PATH, 100, original_query=query
-    )
-    if result["is_success"]:
-        assert "PREV_" in result["sql"] or "YYYYMM" in result["sql"]
-    else:
-        _blocked_with_a_named_reason(result)
+
+
+# `test_history_only_path_is_unaffected` 는 2026-08-05 삭제됐다 — 의미 노드 하나만 실은
+# 페이로드(단독 이력 경로)가 흔들리지 않는지를 본 회귀 기준선이다. 그 페이로드 모양은 폐기된
+# 표현이라 실행 플랜에 실리지 않는다. 폐기 축1 의 fail-close 는
+# `tests/test_retired_axes_fail_close.py` 가 canonical ingress 에서 고정한다.

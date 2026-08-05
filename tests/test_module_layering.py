@@ -26,11 +26,14 @@ RAG_PKG = REPO_ROOT / "rag"
 
 # 실패 진단 계층의 리프. 이 모듈들은 응답 조립·트레이스·실패로그에서 **무조건** 호출되므로,
 # 코어 스키마를 로드하는 모듈을 하나라도 끌어오면 진단 자체가 그 로딩 실패에 묶인다
-# (같은 계층의 failure_messages 가 정확히 이 이유로 semantic_plan 을 함수 안에서 지연 import 한다).
+# (같은 계층의 failure_messages 가 정확히 이 이유로 semantic_outcome 을 함수 안에서 지연 import 한다).
 # 대가로 이들은 키·사유를 리터럴로 들고 있고, 소유 모듈과의 일치는 각자의 계약 테스트가 잰다.
 LEAF_DIAGNOSTIC_MODULES: tuple[str, ...] = (
     "audience_failure.py",
     "rag/failure_stage.py",
+    # 결핍 원인·실패 성격 어휘. SemanticPlanV2 폐기(2026-08-05) 때 그 모듈에서 떼어냈고,
+    # 리터럴 선언만 갖는다 — 진단이 스키마 로딩에 묶이지 않는다는 같은 이유의 같은 계약이다.
+    "semantic_outcome.py",
 )
 
 

@@ -25,15 +25,16 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import audience_runtime  # noqa: E402
-import compositional_targeting  # noqa: E402
+import audience_schema  # noqa: E402
 import event_ir  # noqa: E402
 import resolved_semantic_catalog  # noqa: E402
 import semantic_normalizers  # noqa: E402
-import semantic_plan  # noqa: E402
-import targeting_ir  # noqa: E402
 
-# 연산자 의미를 가진 필드만 카탈로그 연산자 레지스트리로 검사한다. 어휘 이름이 곧 의미다.
-_OPERATOR_VOCABULARIES = frozenset({"value_comparison"})
+# **값 비교** 의미를 가진 스키마 정의만 카탈로그 연산자 레지스트리로 검사한다. 정의 이름이
+# 곧 의미다 — 같은 `operator` 필드라도 `arithmetic`(사칙연산)·`temporal_relation`(시간 관계)은
+# 비교 연산자 레지스트리가 아니라 각자의 실행 계층이 해석한다.
+_COMPARISON_DEFINITIONS = frozenset({"comparison"})
+_OPERATOR_FIELDS = frozenset({"operator"})
 
 
 def _catalog() -> resolved_semantic_catalog.ResolvedSemanticCatalog:
@@ -41,22 +42,35 @@ def _catalog() -> resolved_semantic_catalog.ResolvedSemanticCatalog:
 
 
 def _declared_operator_values() -> list[tuple[str, str, str]]:
-    """(노드 타입, 필드, 값) — 노드 스키마가 모델에게 제시하는 연산자 어휘 전부."""
+    """(정의 이름, 필드, 값) — 오디언스 스키마가 모델에게 제시하는 연산자 어휘 전부.
+
+    파생원은 2026-08-05 SemanticPlanV2 노드 스키마에서 canonical Event IR 의 오디언스
+    표현 스키마(`audience_schema`)로 옮겼다. SemanticPlan 이 폐기되면서 모델에게 연산자
+    어휘를 제시하는 표면이 이 스키마 하나만 남았기 때문이다 — 계약(제시한 어휘는 실행
+    계층이 해석한다)은 그대로다.
+    """
     declared: list[tuple[str, str, str]] = []
-    for node_type, node_class in sorted(semantic_plan.NODE_CLASS_BY_TYPE.items()):
-        for spec in node_class.FIELDS:
-            if spec.vocabulary not in _OPERATOR_VOCABULARIES:
+    definitions = audience_schema.audience_expression_json_schema().get("$defs", {})
+    for name, definition in sorted(definitions.items()):
+        if name not in _COMPARISON_DEFINITIONS:
+            continue
+        properties = definition.get("properties")
+        if not isinstance(properties, dict):
+            continue
+        for field, spec in sorted(properties.items()):
+            if field not in _OPERATOR_FIELDS or not isinstance(spec, dict):
                 continue
-            for value in spec.allowed_values():
-                declared.append((node_type, spec.name, value))
+            for value in spec.get("enum") or ():
+                declared.append((name, field, str(value)))
     return declared
 
 
 def test_the_declaration_is_not_empty() -> None:
     """공허한 통과 방지 — 검사 대상이 없으면 green 이 아무것도 뜻하지 않는다."""
     assert _declared_operator_values(), (
-        "연산자 어휘를 선언한 노드 필드가 하나도 없다. "
-        f"_OPERATOR_VOCABULARIES={sorted(_OPERATOR_VOCABULARIES)} 가 낡았는지 확인하라."
+        "연산자 어휘를 선언한 스키마 필드가 하나도 없다. "
+        f"_COMPARISON_DEFINITIONS={sorted(_COMPARISON_DEFINITIONS)} / "
+        f"_OPERATOR_FIELDS={sorted(_OPERATOR_FIELDS)} 가 낡았는지 확인하라."
     )
 
 
@@ -133,15 +147,11 @@ def test_no_second_word_to_symbol_table_survives() -> None:
     """
     source = event_ir.COMPARISON_OPERATOR_ALIASES
 
-    # 파생: 값까지 같아야 한다.
-    assert compositional_targeting._SQL_COMPARISONS == dict(source), (
-        "compositional_targeting 이 별칭 표를 다시 선언했다 — event_ir 에서 파생하라."
-    )
-
-    # 부분집합: 도메인이 '무엇을 허용할지'는 고를 수 있으나 표기를 새로 만들 수는 없다.
+    # `compositional_targeting._SQL_COMPARISONS`(파생 사본)과 targeting_ir 의
+    # `_RELATIONAL_VALUE_COMPARISONS` / `_RELATIONAL_COUNT_OPERATORS`(부분집합 선택)는
+    # 2026-08-05 삭제됐다 — 축1(등급/상태 이력·전이) 폐기로 그 표들의 소비자가 사라졌다.
+    # 남은 두 번째 표는 정규화기의 별칭 확장 하나뿐이고, 계약(부분집합)은 그대로다.
     for name, chosen in (
-        ("_RELATIONAL_VALUE_COMPARISONS", targeting_ir._RELATIONAL_VALUE_COMPARISONS),
-        ("_RELATIONAL_COUNT_OPERATORS", targeting_ir._RELATIONAL_COUNT_OPERATORS),
         ("OperatorNormalizer._EXTRA_ALIASES", set(semantic_normalizers.OperatorNormalizer._EXTRA_ALIASES)),
     ):
         unknown = set(chosen) - set(source) - event_ir.COMPARISON_OPERATORS

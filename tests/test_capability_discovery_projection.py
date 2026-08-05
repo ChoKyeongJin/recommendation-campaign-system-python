@@ -79,25 +79,25 @@ def test_projection_reuses_p4_inventory_without_promoting_legacy_facts() -> None
 
 
 def test_code_contracts_are_extracted_by_ast_with_bounded_proof() -> None:
+    """AST 로 뽑는 코드 계약은 이제 빌더 라우팅(capability_validation)과 슬롯(targeting_ir) 둘이다.
+
+    SemanticPlan 노드 클래스와 lowering isinstance 디스패치 투영은 2026-08-05 삭제됐다 —
+    두 소스(`semantic_plan.py` / `semantic_plan_event_lowering.py`)가 폐기되므로,
+    남겨 두면 존재하지 않는 파일을 증거로 광고하게 된다.
+    """
     projection = build_repository_projection(ROOT)
     nodes = _by_id(projection)
     edges = projection.edges
 
-    expected_handlers = {
-        "_logical",
-        "_aggregate",
-        "_predicate",
-        "_relation_predicate",
-    }
-    lowerers = {
-        str(node.attributes["symbol"]).rpartition(".")[2]: node
+    assert not [node for node in projection.nodes if node.kind == "LoweringFunction"]
+    assert not [
+        node
         for node in projection.nodes
-        if node.kind == "LoweringFunction"
-    }
-    assert expected_handlers <= set(lowerers)
+        if node.kind == "SemanticPlanNodeTypeImplementation"
+    ]
     assert all(
-        lowerers[name].attributes["evidence_scope"] == "explicit_isinstance_dispatch"
-        for name in expected_handlers
+        "semantic_plan" not in str(path)
+        for path in projection.metadata["approved_authorities"]
     )
     assert any(edge.relation == "PRECEDES" for edge in edges)
     assert any(edge.relation == "EXCLUSIVE_ROUTE" for edge in edges)

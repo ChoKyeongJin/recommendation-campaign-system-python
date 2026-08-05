@@ -1,8 +1,7 @@
 """도메인 플러그인 바인딩 — 범용 코어가 도메인 지식을 **이름으로만** 참조하는 지점.
 
-코어 모듈(semantic_plan / semantic_capability / semantic_coverage / semantic_candidates /
-semantic_normalizers / semantic_pipeline / semantic_reemission / requirement_ledger)은
-도메인 값을 하드코딩하지도, 도메인 모듈을 직접 import 하지도 않는다. 대신 여기서 얻는다:
+코어 모듈(semantic_normalizers / temporal_semantics)은 도메인 값을 하드코딩하지도,
+도메인 모듈을 직접 import 하지도 않는다. 대신 여기서 얻는다:
 
     binding.vocabulary("<어휘 키>")          → 그 어휘의 닫힌 값 목록      [도메인 선언]
     binding.plan_container("member_condition") → 실행 플랜 컨테이너 이름   [도메인 선언]

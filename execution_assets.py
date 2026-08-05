@@ -11,7 +11,9 @@
     member_filter  member_target_filters.json eq_filters synonyms (회원 속성 축)
     metric         docs/data/runtime/sql/metrics/*.json aliases    (프로필 지표 축)
     concept        concept_catalog 의 실행 가능 개념              (개념 축)
-    history        attribute_catalog 의 PREV_* 스냅샷 바인딩       (속성 이력 축)
+
+``history``(attribute_catalog 의 PREV_* 스냅샷 바인딩) 계층은 2026-08-05 폐기됐다 — 등급/상태
+이력·전이 축의 실행 경로가 통째로 사라져 "처리할 자산이 있다"가 더 이상 참이 아니다.
 
 새 축이 선언되면 코드 변경 없이 여기 들어온다. 그것이 P4(커버리지 패리티)의 차집합이 줄면
 이 모듈의 답이 저절로 정확해지는 방식이다.
@@ -30,10 +32,9 @@ CANONICAL = "canonical"
 MEMBER_FILTER = "member_filter"
 METRIC = "metric"
 CONCEPT = "concept"
-HISTORY = "history"
 
 # 실행 계층 이름(닫힌 집합). canonical 은 Event IR 경로, 나머지는 그 밖의 선언된 실행 자산이다.
-LAYERS: tuple[str, ...] = (CANONICAL, MEMBER_FILTER, METRIC, CONCEPT, HISTORY)
+LAYERS: tuple[str, ...] = (CANONICAL, MEMBER_FILTER, METRIC, CONCEPT)
 
 # 표면어 최소 길이. 한 글자 토큰은 아무 문장에나 걸려 판정을 무의미하게 만든다.
 _MIN_SURFACE_LEN = 2
@@ -131,38 +132,13 @@ def _concept_surfaces() -> list[tuple[str, str]]:
     return pairs
 
 
-def _history_surfaces() -> list[tuple[str, str]]:
-    """Surface index for executable previous/current snapshot bindings."""
-
-    import targeting_domain
-
-    try:
-        catalog = targeting_domain.attribute_catalog()
-    except Exception:  # noqa: BLE001
-        return []
-    pairs: list[tuple[str, str]] = []
-    for attribute_id, spec in (catalog.get("attributes") or {}).items():
-        if not isinstance(spec, Mapping):
-            continue
-        binding = spec.get("binding")
-        if not isinstance(binding, Mapping) or not binding.get("prev_value_column"):
-            continue
-        surfaces = [*(spec.get("surface_terms") or ())]
-        for canonical, value_spec in (spec.get("values") or {}).items():
-            if not isinstance(value_spec, Mapping):
-                continue
-            surfaces.extend([canonical, *(value_spec.get("synonyms") or ())])
-        for surface in _clean(surfaces):
-            pairs.append((str(attribute_id), surface))
-    return pairs
-
+# `_history_surfaces`(PREV_* 스냅샷 바인딩 색인)는 2026-08-05 삭제됐다 — 그 계층이 폐기됐다.
 
 _PROVIDERS: tuple[tuple[str, Any], ...] = (
     (CANONICAL, _canonical_surfaces),
     (MEMBER_FILTER, _member_filter_surfaces),
     (METRIC, _metric_surfaces),
     (CONCEPT, _concept_surfaces),
-    (HISTORY, _history_surfaces),
 )
 
 _HISTORY_ARGUMENT_RE = re.compile(
@@ -255,8 +231,9 @@ def non_canonical_assets_for_issue(issue: Mapping[str, Any]) -> tuple[ExecutionA
     """Return only assets capable of the issue's semantic relation.
 
     A current-value asset for ``휴면`` does not implement ``정상→휴면`` history.
-    Transition/history issues therefore consult only declared snapshot-history
-    bindings; ordinary unsupported claims retain the existing surface index.
+    이력·전이 축은 2026-08-05 폐기돼 그 의미를 처리하는 자산이 **하나도 없다** — 그러므로
+    이력 신고는 자산 없음(빈 튜플)으로 답한다. 이 판정을 빼면 현재값 자산('휴면' 필터)이
+    이력 미지원 신고를 반박해 조용히 '지금 휴면인 회원'으로 뜻이 바뀐다(실측된 의미 반전).
     """
 
     evidence = issue.get("evidence")
@@ -266,16 +243,14 @@ def non_canonical_assets_for_issue(issue: Mapping[str, Any]) -> tuple[ExecutionA
         _HISTORY_ARGUMENT_RE.search(argument)
         or (isinstance(text, str) and _HISTORY_EVIDENCE_RE.search(text))
     )
-    layers = [HISTORY] if requires_history else [
-        layer for layer in LAYERS if layer != CANONICAL
-    ]
-    return assets_for_text(text, layers=layers)
+    if requires_history:
+        return ()
+    return assets_for_text(text, layers=[layer for layer in LAYERS if layer != CANONICAL])
 
 
 __all__ = [
     "CANONICAL",
     "CONCEPT",
-    "HISTORY",
     "LAYERS",
     "MEMBER_FILTER",
     "METRIC",

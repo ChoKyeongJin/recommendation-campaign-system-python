@@ -8,7 +8,7 @@
   4. LLM 과 결정론 파서의 이중 최종 해석 경로: 0건
 
 '이름만 바꾼 부활'을 막는 것이 요점이다 — 함수명이 아니라 **구조**를 본다:
-컴파일러 소유 슬롯에 대입하는 모듈이 legacy_plan_compiler / semantic_pipeline 뿐인가,
+폐기된 컴파일러 소유 슬롯에 대입하는 모듈이 하나도 없는가,
 semantic_ir 의 missing_fields/status 를 쓰는 곳이 파생 함수 하나뿐인가.
 """
 
@@ -22,8 +22,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-import legacy_plan_compiler  # noqa: E402
-import semantic_plan  # noqa: E402
+import graph_rag  # noqa: E402
 
 # 검사 대상: 저장소 루트 + query_structurer 패키지의 프로덕션 소스.
 SOURCES = sorted(
@@ -32,11 +31,13 @@ SOURCES = sorted(
     + [path for path in (REPO_ROOT / "rag").glob("*.py")]
 )
 
-# 슬롯을 쓸 자격이 있는 모듈(컴파일러와 그 배선). 그 외 모듈이 쓰면 이중 생산자다.
-SLOT_WRITERS = {"legacy_plan_compiler.py", "semantic_pipeline.py"}
+# 슬롯을 쓸 자격이 있는 모듈. 2026-08-05 SemanticPlan 스택 폐기로 **아무도 없다** —
+# 이 슬롯들의 유일한 생산자였던 legacy_plan_compiler / semantic_pipeline 이 삭제됐고,
+# 그 자리에 새 생산자가 들어서면 아무도 검증하지 않은 값이 실행 플랜에 실린다.
+SLOT_WRITERS: set[str] = set()
 
 # 파생 semantic_ir 을 만드는 유일한 지점.
-SEMANTIC_IR_PRODUCERS = {"semantic_pipeline.py", "campaign_plan_v4.py", "semantic_ir.py"}
+SEMANTIC_IR_PRODUCERS = {"campaign_plan_v4.py", "semantic_ir.py"}
 
 
 def _module_text(path: Path) -> str:
@@ -59,7 +60,30 @@ def _executable_strings(tree: ast.AST) -> set[str]:
 
 
 # ── ① 삭제된 모듈·함수가 되살아나지 않았다 ──────────────────────────────────────
-DELETED_MODULES = ("numeric_condition_backfill", "campaign_condition_backfill", "slot_reemission")
+DELETED_MODULES = (
+    "numeric_condition_backfill",
+    "campaign_condition_backfill",
+    "slot_reemission",
+    # 2026-08-05 축1(등급/상태 이력·전이) 폐기로 삭제된 전용 모듈 3종.
+    "member_attribute_history",
+    "semantic_receipts",
+    "semantic_relation_ownership",
+    # 2026-08-05 SemanticPlanV2 중간표현 폐기로 삭제된 스택 13종. 오디언스 IR 은 canonical
+    # Event IR 하나이고, 두 번째 의미 표면이 이름만 바꿔 돌아오는 것을 여기서 막는다.
+    "compile_contract",
+    "legacy_plan_compiler",
+    "requirement_ledger",
+    "semantic_candidates",
+    "semantic_capability",
+    "semantic_coverage",
+    "semantic_pipeline",
+    "semantic_plan",
+    "semantic_plan_bridge",
+    "semantic_plan_event_lowering",
+    "semantic_plan_llm",
+    "semantic_reemission",
+    "semantic_retype",
+)
 DELETED_FUNCTIONS = (
     "_drop_trend_owned_missing_fields",
     "_drop_history_owned_missing_fields",
@@ -107,8 +131,14 @@ def test_deleted_functions_are_not_defined_anywhere() -> None:
 
 # ── ② 컴파일러 소유 슬롯의 단일 생산자 ──────────────────────────────────────────
 def test_only_the_compiler_writes_compiler_owned_slots() -> None:
-    """`x["cart_aggregate"] = ...` 형태의 대입이 컴파일러/배선 밖에 있으면 이중 생산자다."""
-    slot_names = {slot.rpartition(".")[2] for slot in legacy_plan_compiler.COMPILER_OWNED_SLOTS}
+    """`x["cart_aggregate"] = ...` 형태의 대입이 남아 있으면 새 생산자가 들어선 것이다.
+
+    파생원은 삭제된 `legacy_plan_compiler.COMPILER_OWNED_SLOTS` 에서 그 실측본을 그대로
+    보존한 `graph_rag._RETIRED_COMPILER_OWNED_SLOTS` 로 옮겼다.
+    """
+    slot_names = {
+        slot.rpartition(".")[2] for slot in graph_rag._RETIRED_COMPILER_OWNED_SLOTS
+    }
     offenders: list[str] = []
     for path in SOURCES:
         if path.name in SLOT_WRITERS:
@@ -120,13 +150,13 @@ def test_only_the_compiler_writes_compiler_owned_slots() -> None:
                 line = text.count("\n", 0, match.start()) + 1
                 offenders.append(f"{path.name}:{line} -> {name}")
     assert not offenders, (
-        "컴파일러 소유 슬롯을 다른 모듈이 직접 쓴다(이중 생산자):\n" + "\n".join(offenders)
+        "생산자가 폐기된 슬롯을 다른 모듈이 직접 쓴다(새 생산자):\n" + "\n".join(offenders)
     )
 
 
 def test_slot_writing_modules_are_a_closed_set() -> None:
     """슬롯을 쓸 자격이 있는 모듈 목록은 늘어나면 안 된다 — 늘리려면 여기 사유와 함께."""
-    assert SLOT_WRITERS == {"legacy_plan_compiler.py", "semantic_pipeline.py"}
+    assert SLOT_WRITERS == set()
 
 
 # ── ③ missing_fields 사후 삭제 0건 ─────────────────────────────────────────────
@@ -150,46 +180,26 @@ def test_no_module_mutates_semantic_ir_missing_fields() -> None:
     )
 
 
-def test_semantic_ir_is_derived_from_the_semantic_plan() -> None:
-    """semantic_ir 을 만드는 함수는 하나이고, 그 입력은 SemanticPlanV2 다."""
-    import inspect
-
-    import semantic_pipeline
-
-    signature = inspect.signature(semantic_pipeline.project_semantic_ir)
-    assert list(signature.parameters) == ["plan"]
-    plan = semantic_plan.SemanticPlanV2()
-    projected = semantic_pipeline.project_semantic_ir(plan)
-    # 결핍에는 **원인**이 붙는다 — 원인 없는 결핍은 전부 사용자 확인 요청이 되고, 사용자는
-    # 답할 수 없는 내부 필드를 요구받는다(2026-08-02 실측).
-    assert set(projected) == {
-        "status", "operations", "missing_fields", "missing_field_causes", "failure_kind",
-        "policy_applications", "unsupported_operations", "message",
-    }
+# `test_semantic_ir_is_derived_from_the_semantic_plan` 은 2026-08-05 삭제됐다 —
+# `semantic_pipeline.project_semantic_ir(SemanticPlanV2)` 라는 계약 자체가 사라졌다.
+# semantic_ir 의 모양은 `query_structurer.semantic_outcome.SemanticOutcome` 이 소유하고,
+# 그 wire 계약은 `tests/test_semantic_ir_writer_contract.py` 가 계속 잰다.
 
 
 # ── ④ LLM 이 최종 플랜/판정을 만들지 않는다 ─────────────────────────────────────
 def test_llm_schema_exposes_no_execution_slot_or_verdict() -> None:
     import json
 
-    from query_structurer import campaign_plan_v4
     from query_structurer.campaign_plan_v4 import CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA
 
     properties = CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"]
     assert set(properties) == {
         "intent", "campaign_constraints", "result_limit", "audience_requirement",
-        "semantic_plan",
     }
     assert "semantic_ir" not in properties, "LLM 이 다시 결핍/상태의 소유자가 됐다."
-    # semantic_plan 은 **좁은 노출면**으로만 허용된다. 여기서 이중 해석이 되살아나는 경로는
-    # "타입이 늘어나는 것"이므로, 금지 대상은 키의 존재가 아니라 **폭**이다.
-    exposed_node_types = {
-        branch["properties"]["type"]["enum"][0]
-        for branch in properties["semantic_plan"]["properties"]["nodes"]["items"]["anyOf"]
-    }
-    assert exposed_node_types == set(campaign_plan_v4.LLM_SEMANTIC_PLAN_NODE_TYPES), (
-        "이행기 의미 계약이 좁은 노출면을 넘어 다시 LLM 에 열렸다."
-    )
+    # 의미 표면은 audience_requirement 하나다(2026-08-05 SemanticPlan 폐기). 두 번째
+    # 표면이 다시 열리면 같은 문장을 두 계약이 동시에 해석한다.
+    assert "semantic_plan" not in properties, "이중 해석 계층이 되살아났다."
     assert "target_user" not in properties and "exclude" not in properties
 
     # **구조만** 훑는다(필드명·enum). description 은 모델에게 주는 지시문이라 금지어가
@@ -207,10 +217,10 @@ def test_llm_schema_exposes_no_execution_slot_or_verdict() -> None:
         return node
 
     rendered = json.dumps(_structural(properties), ensure_ascii=False)
-    for slot in legacy_plan_compiler.COMPILER_OWNED_SLOTS:
+    for slot in graph_rag._RETIRED_COMPILER_OWNED_SLOTS:
         name = slot.rpartition(".")[2]
         assert f'"{name}"' not in rendered, (
-            f"컴파일러 소유 슬롯 {slot} 이 LLM 에 다시 노출됐다."
+            f"생산자가 폐기된 슬롯 {slot} 이 LLM 에 다시 노출됐다."
         )
     assert "sql" not in rendered.casefold()
 
@@ -230,15 +240,8 @@ def test_no_permanent_shadow_mode_or_feature_flag_fallback() -> None:
     assert not offenders, f"shadow mode/폴백 잔재: {offenders}"
 
 
-# ── ⑥ 확장 계약: 새 조건 = 노드 + 매핑, 백필 함수 아님 ──────────────────────────
-def test_adding_a_condition_needs_no_backfill_or_sweep_function() -> None:
-    """확장 지점이 선언 3곳(노드 클래스 / capability JSON / 컴파일러 매핑)뿐임을 고정한다."""
-    import semantic_capability
-
-    registry_types = set(semantic_capability.registry()._node_types)
-    assert set(semantic_plan.NODE_CLASS_BY_TYPE) == registry_types
-    assert set(legacy_plan_compiler.NODE_SLOT_MAP) == set(semantic_plan.NODE_CLASS_BY_TYPE)
-    # 노드 타입별 필수 필드는 선언에서 파생된다(별도 목록 없음).
-    for node_type, required in semantic_plan.NODE_REQUIREMENTS.items():
-        declared = semantic_plan.NODE_CLASS_BY_TYPE[node_type].required_field_names()
-        assert required == declared
+# ── ⑥ 확장 계약 ────────────────────────────────────────────────────────────────
+# `test_adding_a_condition_needs_no_backfill_or_sweep_function` 은 2026-08-05 삭제됐다 —
+# 확장 지점 3곳(SemanticPlan 노드 클래스 / capability JSON / 컴파일러 매핑)이 통째로
+# 사라졌다. 새 조건의 확장 지점은 이제 canonical Event IR 카탈로그 선언이고, 그 계약은
+# `tests/test_symbol_binding_parity.py` 와 `tests/test_audience_catalog_ownership.py` 가 잰다.

@@ -38,85 +38,14 @@ class ValidationIssue:
 _DATE_RE = re.compile(r"^\d{8}$")
 # 동시구매 어구를 원문 정규식으로 감지하던 문법(_SAME/_SIMULTANEOUS/_MEMBER_COUNT_RE 등)과
 # `detects_same_product_co_purchase`/`requests_member_count`/`same_product_co_purchase_source_span`
-# 은 2026-08-02 삭제됐다. 그 판정은 SemanticPlanV2 RelationPredicate(relation='co_purchase')
-# 노드가 소유하고, 이 모듈에는 **검증된 capability 서명의 IR 빌더와 컴파일러**만 남는다.
+# 은 2026-08-02 삭제됐다.
 
 
-def build_same_product_co_purchase_evaluation(
-    query: str,
-    purchase_date: dict[str, Any] | None,
-) -> dict[str, Any]:
-    """같은 주문에서 같은 상품 수량 합계가 2 이상인 조건의 완전한 IR을 만든다.
-
-    ``동시 구매``의 실행 정의는 검증된 capability에 고정한다: 동일 MEMBER_NO/ORDER_ID/
-    PRODUCT_ID 그룹에서 SUM(ORDER_QTY) >= 2. 이 정의를 다른 grain이나 COUNT(라인)로
-    축소하지 않는다.
-    """
-
-    time_range = None
-    if isinstance(purchase_date, dict):
-        time_range = {
-            "field": "order_date",
-            "from": purchase_date.get("from"),
-            "to": purchase_date.get("to"),
-        }
-    evaluation = {
-        "id": "same_product_co_purchase",
-        "capability": SAME_PRODUCT_CAPABILITY,
-        "source_text": query,
-        "decision_target": {"entity": "member", "key": "member_no"},
-        "evaluation_scope": {
-            "entity": "purchase_order_detail",
-            "time_range": time_range,
-        },
-        "grouping_unit": {
-            "entity": "order_product",
-            "keys": ["member_no", "order_id", "product_id"],
-        },
-        "measure": {
-            "entity": "purchase_order_detail",
-            "field": "order_quantity",
-        },
-        "aggregation": {
-            "function": "sum",
-            "measure": "order_quantity",
-        },
-        "comparison": {"operator": "gte", "value": 2},
-        "condition_result": {
-            "entity": "member",
-            "key": "member_no",
-            "distinct": True,
-        },
-        "final_result": {
-            "unit": "scalar",
-            "aggregation": {
-                "function": "count_distinct",
-                "field": "member_no",
-                "alias": "CUSTOMER_COUNT",
-            },
-        },
-        "bindings": {
-            "fact_table": "CRM_SL_ORDERDETAILMALL",
-            "fact_alias": "D",
-            "member_table": "CRM_MB_BASEINFO",
-            "member_alias": "B",
-            "columns": {
-                "member_no": "MEMBER_NO",
-                "order_id": "ORDER_ID",
-                "product_id": "PRODUCT_ID",
-                "order_quantity": "ORDER_QTY",
-                "order_date": "ORDER_DATE",
-            },
-        },
-    }
-    # source_span 은 호출자(SemanticPlan 컴파일러)가 노드 근거로 채운다 — 여기서 원문을
-    # 다시 파싱하지 않는다.
-    return evaluation
-
-
-# `apply_same_product_co_purchase_backfill` 은 2026-08-02 삭제됐다 — 원문을 감지해
-# condition_evaluations 를 채우던 결정론 생산자다. 이제 이 IR 은 SemanticPlanV2
-# RelationPredicate(co_purchase) 를 LegacyQueryPlanCompiler 가 컴파일해서만 만들어진다.
+# `build_same_product_co_purchase_evaluation`(동시구매 IR 빌더)는 2026-08-05 삭제됐다.
+# 유일한 호출자가 SemanticPlanV2 RelationPredicate(co_purchase) 컴파일러였고 그 노드 축이
+# 폐기됐다. 동시구매 요청은 오늘도 ingress 에서 missing_argument(audience_expression) 로 막힌다.
+# `apply_same_product_co_purchase_backfill`(원문 감지 백필)은 2026-08-02 이미 삭제됐다.
+# 이 모듈에 남는 것은 PLAN_KEY·capability 서명 검증기·출력 계약 파생이다.
 
 
 def scalar_count_output_contract(query_plan: dict[str, Any]) -> dict[str, Any] | None:

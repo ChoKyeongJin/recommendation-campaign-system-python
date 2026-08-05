@@ -23,7 +23,6 @@ sys.path.insert(0, str(REPO_ROOT))
 import event_compiler  # noqa: E402
 import event_ir  # noqa: E402
 import resolved_semantic_catalog  # noqa: E402
-import semantic_plan_event_lowering  # noqa: E402
 
 MONTH_COLUMN = "MS.SNAPSHOT_MONTH"
 
@@ -47,20 +46,19 @@ def test_registered_formats_keep_their_data_types() -> None:
 
 
 def test_date_type_vocabulary_has_no_second_copy() -> None:
-    """같은 어휘가 세 곳에 손으로 적혀 있으면 grain 을 늘릴 때 반드시 어긋난다.
+    """같은 어휘가 여러 곳에 손으로 적혀 있으면 grain 을 늘릴 때 반드시 어긋난다.
 
     이 저장소에서 반복된 함정이라 파생 관계를 테스트로 고정한다.
+    세 번째 사본이던 `semantic_plan_event_lowering` 은 2026-08-05 SemanticPlanV2 폐기로
+    사라지므로 여기서 검사하지 않는다(그 파일과 함께 사본도 없어진다).
     """
     grains = event_compiler.DATE_DATA_TYPES
     assert grains == {grain.data_type for grain in event_compiler.TIME_GRAINS.values()}
 
     catalog_source = (REPO_ROOT / "resolved_semantic_catalog.py").read_text(encoding="utf-8")
-    lowering_source = (REPO_ROOT / "semantic_plan_event_lowering.py").read_text(encoding="utf-8")
     assert "event_compiler.DATE_DATA_TYPES" in catalog_source
-    assert "event_compiler.DATE_DATA_TYPES" in lowering_source
     # 손 목록이 되살아나면 즉시 잡는다.
     assert '{"date", "date_char8", "date_string"}' not in catalog_source
-    assert '{"string", "date", "date_char8", "date_string"}' not in lowering_source
 
 
 def test_month_window_renders_as_month_literals() -> None:
@@ -164,6 +162,12 @@ def test_bad_time_format_in_a_catalog_surfaces_as_a_catalog_error() -> None:
         resolved_semantic_catalog.ResolvedSemanticCatalog.from_compiler(runtime_config=catalog)
 
 
-def test_lowering_accepts_month_typed_literals() -> None:
-    """세 목록 패리티의 실질 확인 — 새 grain 이 값 비교 경로에서 막히지 않는다."""
-    assert "date_char6" in semantic_plan_event_lowering.event_compiler.DATE_DATA_TYPES
+def test_value_comparison_path_accepts_month_typed_literals() -> None:
+    """목록 패리티의 실질 확인 — 새 grain 이 값 비교 경로에서 막히지 않는다.
+
+    확인 지점은 `semantic_plan_event_lowering`(2026-08-05 폐기) 이 아니라 파생의 원본이다.
+    """
+    assert "date_char6" in event_compiler.DATE_DATA_TYPES
+    assert "date_char6" in {
+        grain.data_type for grain in event_compiler.TIME_GRAINS.values()
+    }

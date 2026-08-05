@@ -96,7 +96,9 @@ FORBIDDEN_DOMAIN_MODULES: frozenset[str] = frozenset(
         "graph_rag",
         "plan_decisions",
         "query_structurer",
-        "semantic_plan",
+        # `semantic_plan` 은 2026-08-05 여기서 빠졌다 — SemanticPlanV2 중간표현이 폐기되어
+        # import 할 모듈 자체가 없다. 오디언스 의미의 도메인 소유자는 위 목록의
+        # `canonical_audience_claims` / `audience_validators` 로 남는다.
     }
 )
 

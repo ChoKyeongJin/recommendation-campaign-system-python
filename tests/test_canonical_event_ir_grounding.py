@@ -598,29 +598,24 @@ def test_negative_comparison_shapes_share_catalog_null_policy() -> None:
             assert "CASE WHEN" in direct_sql
 
 
-def test_canonical_semantic_lowering_failure_never_calls_legacy_bridge(
-    monkeypatch: Any,
-) -> None:
+def test_canonical_contract_without_an_expression_fails_closed() -> None:
+    """계약은 섰는데 표현이 없으면 종결한다 — 두 번째 오디언스 언어로 우회하지 않는다.
+
+    2026-08-05 이전에는 이 자리에서 SemanticPlan 노드를 legacy 슬롯으로 컴파일하는 bridge 로
+    떨어질 수 있었고, 그래서 '절대 bridge 를 부르지 않는다'가 계약이었다. bridge 는 폐기됐다 —
+    남은 계약은 **결과**다: 표현 없는 canonical 요청은 조용한 성공이 아니라 정직한 차단이다.
+    """
     plan: dict[str, Any] = {
         "audience_requirement": {"expression": None, "issues": []},
-        "semantic_plan": {"nodes": [{"type": "unknown"}]},
         "semantic_ir": empty_semantic_ir(status="resolved"),
     }
-    monkeypatch.setattr(
-        graph_rag.semantic_relation_ownership,
-        "project_relation_data_coverage",
-        lambda *_args, **_kwargs: [],
-    )
+    assert audience_authority.requires_event_ir(plan)
 
-    def forbidden(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("canonical lowering fell through to the legacy bridge")
-
-    monkeypatch.setattr(graph_rag.semantic_plan_bridge, "apply", forbidden)
-    monkeypatch.setattr(graph_rag.member_attribute_history, "apply", forbidden)
-    graph_rag._apply_semantic_plan_pipeline(plan, "여성 회원")
+    graph_rag._settle_canonical_audience_authority(plan)
 
     assert plan["semantic_ir"]["status"] == "needs_clarification"
     assert plan["semantic_ir"]["failure_kind"] == "system_failure"
+    assert plan["semantic_ir"]["missing_fields"] == ["audience.event_ir"]
     assert plan.get("event_expression") is None
 
 
@@ -695,9 +690,13 @@ def test_projector_rejects_short_alias_false_positive_and_disallowed_source() ->
     assert projection["canonical_fields"] == []
 
 
-def test_lowering_failure_preserves_user_clarification_and_quarantines_expression(
-    monkeypatch: Any,
-) -> None:
+def test_lowering_failure_preserves_user_clarification_and_quarantines_expression() -> None:
+    """종결은 두 가지를 지킨다: 부분 표현 격리와 **원래 사유의 소유자**.
+
+    부분적으로만 내려간 표현을 차단 사유 옆에 남겨 두면 플랜이 자기모순이고, 뒤 단계가 그
+    부분 오디언스를 컴파일할 여지가 생긴다. 반대로 사용자에게 물어야 할 확인 요청을
+    애플리케이션 실패로 다시 라벨링하면 사용자는 답할 수 없는 것을 요구받는다.
+    """
     query = "여성 회원"
     expression = _comparison(query, "subject.gender", "=", "female", query)
     plan: dict[str, Any] = {
@@ -706,7 +705,6 @@ def test_lowering_failure_preserves_user_clarification_and_quarantines_expressio
             "source": "audience_requirement",
             "expression": expression.to_dict(),
         },
-        "semantic_plan": {"nodes": [{"type": "unknown"}]},
         "semantic_ir": empty_semantic_ir(
             status="needs_clarification",
             missing_fields=["audience.user_choice"],
@@ -714,17 +712,8 @@ def test_lowering_failure_preserves_user_clarification_and_quarantines_expressio
             failure_kind="user_clarification",
         ),
     }
-    monkeypatch.setattr(
-        graph_rag.semantic_relation_ownership,
-        "project_relation_data_coverage",
-        lambda *_args, **_kwargs: [],
-    )
-    monkeypatch.setattr(
-        graph_rag.semantic_receipts,
-        "unreceipted_nodes",
-        lambda *_args, **_kwargs: [{"type": "unknown"}],
-    )
-    graph_rag._apply_semantic_plan_pipeline(plan, query)
+
+    graph_rag._mark_canonical_event_ir_lowering_failure(plan, "표현을 완성하지 못했습니다.")
 
     assert plan["semantic_ir"]["failure_kind"] == "user_clarification"
     assert plan["semantic_ir"]["message"] == "사용자 선택이 필요합니다."

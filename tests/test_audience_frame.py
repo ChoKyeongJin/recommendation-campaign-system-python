@@ -228,8 +228,8 @@ GUARDED_MODULES = (
     "event_state_selection.py",
     "rolling_absence_claims.py",
     "open_text_scope_claims.py",
+    # profile_metric_claims.py 는 2026-08-05 폐기 축 이행에서 삭제됐다.
     "campaign_metric_claims.py",
-    "profile_metric_claims.py",
 )
 _QUERY_NAMES = frozenset({"query", "text", "prompt", "source_text"})
 

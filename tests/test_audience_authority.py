@@ -57,6 +57,28 @@ def test_ingress_marker_keeps_working_for_stored_canonical_payloads() -> None:
         assert graph_rag._has_canonical_audience_authority(plan) is True
 
 
+def test_canonical_ingress_is_declared_by_the_audience_requirement_contract_alone() -> None:
+    """`declares_canonical_audience` 는 2026-08-05 접혔다 — 접기 전후의 뜻이 같아야 한다.
+
+    원래 술어는 ``expression 이 있거나 / issues 가 있거나 / semantic_plan.nodes 가 비었으면
+    canonical`` 이었다. SemanticPlan 이 폐기되어 세 번째 항이 항상 참이므로, 계약 키 하나만
+    남는다. 계약이 **없는** 플랜(rules 레인·저장 페이로드)이 canonical 로 승격되면 그 순간
+    모든 rules 플랜이 Event IR 레인으로 끌려간다 — 그 경계를 여기서 얼린다.
+    """
+
+    for requirement in ({"expression": {"kind": "x"}, "issues": []}, {"issues": [{"code": "c"}]}, {}):
+        assert audience_authority.declares_canonical_audience(
+            {"audience_requirement": requirement}
+        ) is True
+
+    assert audience_authority.declares_canonical_audience({}) is False
+    assert audience_authority.declares_canonical_audience({"target_user": {"gender": "F"}}) is False
+    assert audience_authority.declares_canonical_audience(
+        {"audience_requirement": None}
+    ) is False
+    assert audience_authority.declares_canonical_audience(None) is False
+
+
 def test_explicit_declaration_wins_over_the_compatibility_marker() -> None:
     plan = {
         "audience_authority": "legacy",

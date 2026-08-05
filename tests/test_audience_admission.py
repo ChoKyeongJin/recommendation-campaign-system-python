@@ -150,9 +150,9 @@ def test_admission_surface_is_the_two_containers_and_widening_is_a_decision() ->
             "canonical 요청이 fail-close 된다."
         )
 
-    assert audience_admission.execution_conflicts(
-        _canonical(semantic_plan={"nodes": [{"type": "predicate"}]})
-    ) == ()
+    # ``semantic_plan`` 노드가 입장 판정 표면 밖이라는 단언은 2026-08-05 삭제됐다 — 그 키
+    # 자체가 plan 계약에서 폐기되어 지킬 계약이 없다(tests/test_plan_schema_registry.py 가
+    # "되살아나지 않았는가"를 대신 지킨다).
 
     for container in plan_schema.AUDIENCE_CONTAINERS:
         assert audience_admission.execution_conflicts(_canonical(**{container: {"slot": ["v"]}}))

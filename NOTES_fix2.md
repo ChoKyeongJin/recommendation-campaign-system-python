@@ -99,7 +99,7 @@ generic except 에 흡수돼 '구조화 실패'로 뭉개졌다. 이제 `failure
 | **`member_metric_selection` 은 모드 무관 고정 2토큰을 요구한다** | 모드별 구문(TOP/ORDER BY/AVG)으로 요구하면 빌더가 파라미터 불량으로 후보를 못 내고 다른 빌더가 이긴 경우를 놓친다. `IS NOT NULL` + `member_selection:balance_{mode}` 는 세 모드 공통이다 |
 | **읽을 수 없는 저장 표현의 좌표는 빌더가 남기지 않는다** | 그 실패의 소유자는 이미 `plan_validation` 이다(`event_expression_schema_invalid`, 표현 부재는 `canonical_event_expression_missing`). 빌더가 한 번 더 기록하면 한 실패에 소유자가 둘이 된다 — 그렇게 고쳤다가 `tests/test_query_pipeline_legacy_adapter.py` 의 "파손된 저장 표현은 빌더까지 내려가지 않는다"가 red 가 되어 되돌렸다(§3) |
 | **좌표는 최종 dict 가 아니라 차단 결과에 실어야 한다** | 좌표가 남는 순간 `plan_validation` 이 internal_invalid 를 내므로, 정상 흐름에서 최종 반환 dict 는 그 항목을 볼 일이 거의 없다 |
-| **권위 게이트를 `build_sql_result` 첫 문장에 둔다** | 권위를 읽는 첫 소비자(`_apply_semantic_plan_pipeline`)보다 앞이어야 그 안의 예외가 사라진다. 다만 이 게이트의 실효 범위는 `build_sql_result` 로 들어오는 플랜뿐이다(§5-1) |
+| **권위 게이트를 `build_sql_result` 첫 문장에 둔다** | 권위를 읽는 첫 소비자(당시 `_apply_semantic_plan_pipeline` — 2026-08-05 SemanticPlanV2 폐기와 함께 삭제됨)보다 앞이어야 그 안의 예외가 사라진다. 게이트 위치 결정은 그대로 유효하다. 다만 이 게이트의 실효 범위는 `build_sql_result` 로 들어오는 플랜뿐이다(§5-1) |
 | **런타임 매핑 표는 리터럴로 두고 총체성은 테스트가 강제한다** | `rag/failure_stage.py` 는 "plain dict 입력만 받는다"는 순수 모듈 불변식을 스스로 선언한다. 곱집합을 런타임에서 계산하려면 `plan_validation`/`event_compiler` 를 끌어와야 하고, 그러면 렌더링 계층이 코어 스키마 로딩 실패에 묶인다(같은 계층의 `failure_messages` 가 정확히 이 이유로 지연 import 한다) |
 | **집계 경로에서 조건이 빠진 성공을 실패로 바꾸는 것을 유지한다** | `build_analytical_aggregation_sql_candidate` 는 회원 컴파일러를 호출하지 않아 '이번 달 생일인 여성 회원 수' 류가 지금까지 **생일 조건을 흘린 채 성공**했다. 조용한 오답보다 시끄러운 실패가 낫다는 것이 이 작업의 전제다. 근본 해결(집계 계약이 이 슬롯들을 실제로 컴파일)은 §7-1 |
 | **`output_contract` 인덱싱을 `.get(...) or {}` 로 바꾼다** | 그 줄은 오래 도달 불가였다가 필수조건이 늘면서 드러났다. KeyError → 처리되지 않는 500 은 어떤 명명된 실패보다 나쁘다 |

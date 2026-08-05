@@ -176,8 +176,8 @@ compact_to_source_span(query, start, end)              compact 좌표 → 원문
 | `query_structurer/campaign_plan_v4.py` | 카트 호출부 2곳을 새 모듈로, 폴백 호출부 1곳을 새 이름으로 |
 | `rolling_absence_claims.py` | 닫힌 정규식·`login` 하드코딩 제거, 국소 부정 스캔을 `audience_frame` 에 위임 |
 | `open_text_scope_claims.py` | 접미 정규식·접두 공백 강제 제거 → 프레임 잔여물 검사 |
-| `campaign_metric_claims.py` | `_MEMBER_SUFFIX`·문두 앵커 제거, 지표 id 하드코딩 → `claim_synthesis` 선언 지표 순회 |
-| `profile_metric_claims.py` | `_MEMBER_SUFFIX`·문두 앵커 제거 |
+| `campaign_metric_claims.py` | `_MEMBER_SUFFIX`·문두 앵커 제거, 지표 id 하드코딩 → `claim_synthesis` 선언 지표 순회. 2026-08-05 이후 이 모듈은 **합성기가 아니라 모순 탐지기**다(캠페인당 평균 축 폐기 — 같은 문장이 조용히 행당 평균으로 바뀌는 것을 fail-close 시킨다) |
+| ~~`profile_metric_claims.py`~~ | `_MEMBER_SUFFIX`·문두 앵커 제거 — **파일은 2026-08-05 삭제됨**(프로필 스칼라 지표 축 폐기). 아래 §1 표의 링크도 같은 이유로 실재하지 않는 경로다 |
 | `tests/test_audience_frame.py` | **신설** — primitive 단위 + 부정 케이스 + 문형 복귀 래칫 |
 | `tests/test_cart_abandonment_replay.py` | 새 모듈명·API 로 갱신(§7 불변식 7줄 보존, 일반화 긍정 케이스 추가) |
 | `tests/test_rolling_absence_claims.py` | 새 이름으로 갱신 + 일반화 긍정 케이스(아래 참조) |
@@ -256,9 +256,10 @@ compact_to_source_span(query, start, end)              compact 좌표 → 원문
 없어 컨테이너에 임시 설치했다(CI 는 `ruff==0.16.1` 로 `F821` 만 본다).
 
 ```bash
+# 당시 목록에 있던 캠페인/프로필 지표 합성 테스트 2건은 2026-08-05 폐기 축 이행에서
+# 삭제됐다(그 계약이 사라졌다). 아래는 그 이전 시점의 실행 기록이다.
 python -m pytest tests/test_audience_frame.py tests/test_cart_abandonment_replay.py \
   tests/test_rolling_absence_claims.py tests/test_product_complement_replay.py \
-  tests/test_campaign_metric_claims.py tests/test_profile_metric_claims.py \
   tests/test_canonical_signal_coverage_drift.py tests/test_doc_claims.py -q
                                         # → 140 passed
 python -m pytest -q                     # → 2024 passed / 24 skipped, 실패 0

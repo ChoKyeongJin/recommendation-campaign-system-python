@@ -100,7 +100,7 @@
     "buy_response": {"sources": ["campaign_purchase_response", "campaign_response"]},
     "coupon_used": {"expressible": false, "note": "쿠폰 사용 사건 소스가 카탈로그에 없다. 슬롯 경로가 소유한다."},
     "consent": {"fields": ["subject.app_push_consent", "subject.sms_consent", "subject.email_consent", "subject.marketing_consent"], "note": "2026-08-03 P4: 수신동의 4축을 fields 선언 4줄로 열었다(코드 변경 0). 이전에는 expressible:false 였고, 그 상태가 R1 이 지목한 최대 군집(#47·#50·#56)의 미지원 사유였다."},
-    "member_grade_history": {"expressible": false, "note": "등급·상태의 시점/이력 축. 흡수 전에는 Event IR 이 표현하지 못한다 — 소스가 선언되면 sources 로 바꾼다."}
+    "member_grade_history": {"expressible": false, "note": "등급·상태의 시점/이력 축. 2026-08-05 실측 둘을 함께 적는다. (1) 이 family id 를 내는 감지기가 저장소에 없다 — 신호를 만들던 이력 슬롯 경로가 축1 폐기와 함께 삭제됐으므로 이 선언은 현재 아무 판정도 만들지 않는다(선언만 남은 상태). (2) 그럼에도 expressible:false 를 유지하는 이유는 fail-close 방향이기 때문이다(과잉 커버는 조용한 오답, 과소 커버는 시끄러운 오탐). 등급 스냅샷 자체는 sources.member_month_snapshot + fields.member_month_snapshot.* 로 이제 표현되므로, 이 family 를 다시 감지기에 붙이는 날에만 sources 선언으로 바꾼다 — 붙이기 전에 바꾸면 그 순간 과잉 커버가 된다."}
   },
   "sources": {
     "purchase": {
@@ -896,20 +896,27 @@
         "campaign_buy_amount"
       ],
       "claim_synthesis": {
-        "semantic_plan_scope": "campaign",
-        "semantic_plan_metric": "campaign_buy_amount",
-        "issue_arguments": ["campaign_purchase_amount", "campaign_buy_amount"],
+        "_comment": [
+          "이 블록은 이제 **합성 선언이 아니라 모순 탐지 선언**이다. 캠페인당 평균 구매금액 축은",
+          "2026-08-05 폐기됐고(유일한 생산자였던 SemanticPlanV2 aggregate_predicate 합성이 사라졌다),",
+          "campaign_metric_claims.detect_retired_campaign_average_claim 이 남은 유일한 소비자로서",
+          "average_per_campaign 만 읽는다 — 원문에 grain 표면어가 있는데 모델이 행당 평균(AVG)을",
+          "냈을 때 fail-close 시키는 근거다.",
+          "grain_terms 는 어순·인접·조사와 무관한 **등장 여부**로만 쓰이고 공백을 지운 뒤 찾으므로",
+          "'캠페인 별'은 '캠페인별' 선언에 이미 포함된다(2026-08-05 재현 확인). '캠페인 단위'·'각 캠페인'은",
+          "어떤 기존 선언으로도 걸리지 않아 표면어를 추가했다 — 확장은 코드가 아니라 이 목록 한 줄이다.",
+          "aggregation_terms 는 판정에서 빠졌다: 평균이라는 뜻은 원문 부사가 아니라 모델 표현의",
+          "aggregation(avg)이 말하고, 표면어를 요구하면 '캠페인별 평균 …'처럼 자리만 바뀐 문장에서",
+          "가드가 통째로 우회됐다(실측 7종 중 5종).",
+          "같이 있던 semantic_plan_scope / semantic_plan_metric(폐기된 노드 필드 값), issue_arguments",
+          "(폐기된 지표 issue 화이트리스트), sql_asset(폐기된 슬롯 SQL 자산 지목)은 소비자가 하나도",
+          "남지 않아 2026-08-05 삭제했다."
+        ],
         "average_per_campaign": {
           "aggregation": "avg",
-          "grain_terms": ["캠페인별", "캠페인당"],
-          "aggregation_terms": ["평균"],
+          "grain_terms": ["캠페인별", "캠페인당", "캠페인 단위", "각 캠페인"],
           "denominator_field": "campaign_purchase_response.execution_id",
           "denominator_distinct": true
-        },
-        "sql_asset": {
-          "section": "campaign_response_targets",
-          "aggregate_metric": "campaign_purchase_amount",
-          "response_metric": "purchase_response"
         }
       }
     }

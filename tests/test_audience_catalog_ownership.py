@@ -2,9 +2,10 @@
 
 이 저장소에는 SQL 로 가는 길이 둘 있다:
 
-  canonical  SemanticPlanV2 → semantic_plan_event_lowering → **Event IR** → event_compiler → SQL
+  canonical  원문 → **Event IR** → event_compiler → SQL
              바인딩은 `docs/data/runtime/semantics/audience_catalog.json` 이 선언한다.
-             새 사건·필드·지표는 **JSON 한 항목**이고 lowering 코드는 손대지 않는다.
+             새 사건·필드·지표는 **JSON 한 항목**이고 컴파일 코드는 손대지 않는다.
+             (SemanticPlanV2 중간표현과 `semantic_plan_event_lowering` 은 2026-08-05 폐기)
   legacy     query_plan 슬롯 → 20개 빌더 레지스트리 → SQL
              빌더 몸통이 SQL 모양을 코드로 들고 있다.
 
@@ -135,22 +136,11 @@ def test_catalog_fields_bind_to_real_columns(field: str) -> None:
     )
 
 
-def test_lowering_has_no_business_event_branches() -> None:
-    """lowering 은 사건별 분기를 갖지 않는다 — 새 사건이 코드 변경을 요구하면 범용이 아니다.
-
-    `semantic_plan_event_lowering` 의 선언된 계약이기도 하다(모듈 docstring).
-    """
-    source = (REPO_ROOT / "semantic_plan_event_lowering.py").read_text(encoding="utf-8")
-    for business_symbol in ("purchase", "cart", "login", "signup", "campaign"):
-        # 식별자·문자열 리터럴로 등장하면 사건별 분기다. 주석·docstring 은 허용.
-        code_lines = [
-            line for line in source.splitlines()
-            if not line.lstrip().startswith("#") and f'"{business_symbol}"' in line
-        ]
-        assert not code_lines, (
-            f"lowering 에 사건별 리터럴 {business_symbol!r} 이 들어왔다 — "
-            f"카탈로그 선언으로 옮겨라:\n  " + "\n  ".join(code_lines[:3])
-        )
+# `test_lowering_has_no_business_event_branches` 는 2026-08-05 삭제됐다. 검사 대상이던
+# `semantic_plan_event_lowering.py` 는 SemanticPlanV2 중간표현과 함께 폐기되며, 그 모듈의
+# "사건별 분기 없음" 계약도 모듈과 함께 사라진다(현재 canonical 경로에는 그 파일이 없다).
+# 사건 지식이 카탈로그 소유라는 계약 자체는 위의 미러 대조 3종과 아래 확장 경계 테스트가
+# 계속 지킨다 — 대상 없는 소스 스캔만 없앴다.
 
 
 def test_adding_a_source_is_json_only(tmp_path: Path) -> None:

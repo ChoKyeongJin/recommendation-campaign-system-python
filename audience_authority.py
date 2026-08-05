@@ -68,6 +68,9 @@ PLAN_AUTHORITY_KEY = "audience_authority"
 # 이행 전 ingress 가 canonical 표현을 세울 때 쓰던 표식. 명시 권위 필드가 없는 **기존 저장 페이로드**
 # 를 읽기 위한 호환 인코딩이며, 새 생산자는 :func:`stamp_authority` 로 명시 필드를 남긴다.
 # 이 집합을 넓히는 것은 "이 표식이 곧 실행 권위다"라는 선언이므로 사유 없이 늘리지 않는다.
+# ``semantic_plan`` 표식의 **생산자는 2026-08-05 폐기됐다**. 새 페이로드에는 절대 붙지 않지만
+# 저장 페이로드 호환으로만 남긴다 — 여기서 빼는 순간 그 저장분의 라우팅이 canonical→legacy 로
+# 조용히 뒤집힌다(`query_pipeline/compatibility/legacy_event_expression.py` 의 사본과 일치가 계약).
 CANONICAL_EVENT_EXPRESSION_SOURCES: frozenset[str] = frozenset({"audience_requirement", "semantic_plan"})
 EVENT_EXPRESSION_KEY = "event_expression"
 
@@ -221,26 +224,19 @@ def declares_canonical_audience(plan: Any) -> bool:
     canonical request has no executable expression yet, but it still must not
     fall through to a second audience language.  An explicitly stamped legacy
     authority is the only rollback escape hatch for stored migration assets.
+
+    이 술어는 2026-08-05 접혔다. 원래 형태는 ``expression 이 있거나 / issues 가 있거나 /
+    semantic_plan.nodes 가 비었으면 canonical`` 이었고, 세 번째 항만이 "V4 가 실은 빈 오디언스
+    자리표시자를 들고 있고 실제 소유자는 비-오디언스 SemanticPlan 노드다"라는 예외를 걸러
+    냈다. SemanticPlan 이 폐기되어 ``semantic_plan.nodes`` 가 존재할 수 없으므로 그 항은 항상
+    참으로 접히고, 남는 뜻은 **audience_requirement 계약이 있으면 canonical ingress** 하나다.
+    ``audience_requirement`` 가 없는 플랜(rules 레인·저장 페이로드)이 False 로 남는 것도 접기
+    전과 같다 — 그 갈래는 조기 반환이 그대로 소유한다.
     """
 
     if not isinstance(plan, Mapping):
         return False
-    requirement = plan.get("audience_requirement")
-    if not isinstance(requirement, Mapping):
-        return False
-    semantic_plan = plan.get("semantic_plan")
-    semantic_nodes = (
-        semantic_plan.get("nodes") if isinstance(semantic_plan, Mapping) else None
-    )
-    # CampaignPlan V4 carries an empty audience placeholder even when a
-    # non-audience SemanticPlan node owns the request (metric/history flows).
-    # That placeholder is not an audience language.  A real expression, an
-    # explicit issue, or an otherwise empty semantic plan is canonical ingress.
-    return bool(
-        isinstance(requirement.get("expression"), Mapping)
-        or requirement.get("issues")
-        or not semantic_nodes
-    )
+    return isinstance(plan.get("audience_requirement"), Mapping)
 
 
 def requires_event_ir(plan: Any) -> bool:

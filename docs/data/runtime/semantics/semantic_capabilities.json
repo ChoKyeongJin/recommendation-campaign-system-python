@@ -1,28 +1,25 @@
 {
   "_comment": [
-    "SemanticPlanV2 노드의 실행 가능성 선언(semantic_capability.py 소유).",
-    "왜 축이 여러 개인가: 'supported: true/false' 하나로는 '연산은 있는데 컴파일러가 없다'와",
-    "'컴파일러는 있는데 데이터 그레인이 부족하다'와 '우리 쪽이 터졌다'가 구분되지 않는다.",
-    "구분이 없으면 내부 사고가 사용자에게 '미지원'으로 표시된다(=능력에 대한 거짓말).",
+    "**이 파일이 오늘 소유하는 것은 데이터 적재 선언뿐이다** — `data_availability_policy` 와",
+    "`grains.*.coverage`. 그 둘만 살아 있는 소비자가 있다:",
+    "  · capability_discovery/projection.py 가 정책·그레인을 G0 투영 노드로 만든다.",
+    "  · tests/test_snapshot_coverage_drift.py 가 attribute_catalog.snapshot_months_available 와",
+    "    적재 구간이 어긋나지 않는지 잰다(어긋나면 사용자에게 틀린 안내를 한다).",
     "",
-    "축:",
-    "  semantic_supported  — 의미 연산자 자체를 이 시스템이 정의하는가",
-    "  compiler_supported  — SemanticPlan → 실행 플랜 컴파일러가 있는가",
-    "  executor_supported  — 컴파일된 플랜을 실제로 실행하는 빌더가 있는가",
-    "  required_grain      — 이 연산에 필요한 데이터 그레인",
-    "  available_grain     — 실DB에 실제로 있는 그레인",
-    "  coverage            — 그 그레인의 적재 구간(from/to/complete)",
-    "",
-    "실패 코드는 semantic_plan.FAILURE_CODES 닫힌 집합에서만 고른다.",
-    "확장 규약: 새 지표/이벤트는 metrics 항목 한 줄, 새 노드 종류는 node_types 항목 한 줄.",
-    "코드 변경 없이 판정이 바뀌는 범위가 이 파일이다.",
+    "원래 이 파일은 SemanticPlanV2 노드의 실행 가능성 5축 선언이었고 semantic_capability.py 가",
+    "읽었다. 그 모듈과 SemanticPlanV2 중간표현 전체가 2026-08-05 폐기됐으므로, 노드 종류별",
+    "지원 축(semantic_supported / compiler_supported / executor_supported)을 읽는 코드는 없다.",
+    "`node_types` 를 값 채운 채로 두면 없는 컴파일러·실행기를 있다고 광고하게 되므로 비웠다",
+    "(_retired_node_types 참고). 섹션 자체는 남긴다 — 투영기가 없으면 CATALOG_SECTION_MISSING",
+    "이슈를 낸다.",
     "",
     "data_availability_policy — 적재 부족(요청 구간이 적재 밖 / 다월 요구를 실적재가 못 채움)을",
     "  'advise': 차단하지 않고 고지만 한다(기본). SQL 은 의미 그대로 나가고 결과가 0건일 뿐이다.",
     "  'block' : 예전 동작. 정직한 미지원으로 막는다.",
     "차단/고지의 기준은 '행이 나오는가'가 아니라 **'SQL 이 틀리는가'**다. 적재가 얕아 결과가 비는 것은",
-    "정직한 답이지만, 의미가 접히는 것(예: 다월 전이를 PREV_* 1스텝으로 축소)은 다른 대상을 내는 오답이다 —",
-    "후자는 여기가 아니라 컴파일러가 막는다(compositional_targeting.transition)."
+    "정직한 답이지만, 의미가 접히는 것(예: 다월 전이를 PREV_* 1스텝으로 축소)은 다른 대상을 내는 오답이다.",
+    "후자를 막던 컴파일러(compositional_targeting.transition)는 등급/상태 이력 축과 함께 삭제됐고,",
+    "지금 그 문장은 canonical Event IR 로 표현할 수 없어 미지원으로 닫힌다."
   ],
   "data_availability_policy": "advise",
   "version": "1.0",
@@ -49,85 +46,23 @@
       "note": "2026-08-02 실측 단일 월. attribute_catalog.snapshot_months_available 와 함께 관리한다."
     }
   },
-  "node_types": {
-    "predicate": {
-      "semantic_supported": true,
-      "compiler_supported": true,
-      "executor_supported": true,
-      "required_grain": "member_profile"
-    },
-    "aggregate_predicate": {
-      "semantic_supported": true,
-      "compiler_supported": true,
-      "executor_supported": true,
-      "required_grain": "order_transaction",
-      "scopes": {
-        "cart": {"required_grain": "cart_snapshot"},
-        "order": {"required_grain": "order_transaction"},
-        "campaign": {"required_grain": "campaign_response"},
-        "profile": {"required_grain": "member_profile"}
-      }
-    },
-    "metric_comparison": {
-      "semantic_supported": true,
-      "compiler_supported": true,
-      "executor_supported": true,
-      "required_grain": "order_transaction"
-    },
-    "ranked_set": {
-      "semantic_supported": true,
-      "compiler_supported": true,
-      "executor_supported": true,
-      "required_grain": "order_transaction",
-      "entities": {
-        "member": {"compiler_supported": true, "executor_supported": true},
-        "product": {
-          "compiler_supported": true,
-          "executor_supported": true,
-          "note": "상품 랭킹 단독은 entity_set_membership 안에서만 회원 집합으로 귀결된다."
-        },
-        "brand": {
-          "compiler_supported": false,
-          "unsupported_message": "브랜드 랭킹 타겟은 아직 실행 컴파일러가 없습니다."
-        }
-      }
-    },
-    "entity_set_membership": {
-      "semantic_supported": true,
-      "compiler_supported": true,
-      "executor_supported": true,
-      "required_grain": "order_transaction"
-    },
-    "relation_predicate": {
-      "semantic_supported": true,
-      "compiler_supported": true,
-      "executor_supported": true,
-      "required_grain": "monthly_attribute_snapshot",
-      "relations": {
-        "as_of": {"required_grain": "monthly_attribute_snapshot", "requires_months": 1},
-        "transition": {"required_grain": "monthly_attribute_snapshot", "requires_months": 1},
-        "change_count": {"required_grain": "monthly_attribute_snapshot", "requires_months": 2},
-        "count_distinct": {"required_grain": "monthly_attribute_snapshot", "requires_months": 2},
-        "co_purchase": {
-          "required_grain": "order_transaction",
-          "note": "같은 주문의 같은 상품 수량 합계 조건 — condition_evaluations 실행 IR 로 컴파일된다."
-        }
-      }
-    },
-    "logical_expression": {
-      "semantic_supported": true,
-      "compiler_supported": true,
-      "executor_supported": true,
-      "required_grain": null,
-      "operators": {
-        "and": {"compiler_supported": true},
-        "or": {"compiler_supported": true},
-        "not": {"compiler_supported": true}
-      }
-    }
-  },
+  "node_types": {},
+  "_retired_node_types": [
+    "2026-08-05 이전에는 여기에 SemanticPlanV2 노드 7종(predicate / aggregate_predicate /",
+    "metric_comparison / ranked_set / entity_set_membership / relation_predicate /",
+    "logical_expression)의 지원 축이 선언돼 있었고, 전부 compiler_supported=true 였다.",
+    "그 값을 읽던 판정기(semantic_capability.py)와 그 노드를 컴파일하던 계층",
+    "(legacy_plan_compiler.py / semantic_plan_event_lowering.py)이 SemanticPlanV2 폐기와 함께",
+    "삭제됐다 — 남겨 두면 '컴파일러가 있다'는 거짓 광고가 되고, capability discovery 투영이",
+    "그 거짓을 approved trust 로 그래프에 싣는다.",
+    "",
+    "오디언스 표현의 실행 가능 여부는 이제 선언이 아니라 컴파일러가 직접 답한다:",
+    "event_compiler.validate_compiler_capability(canonical Event IR 표현) — 실제로 컴파일해 보고",
+    "지원/미지원과 사유를 돌려주므로 선언과 구현이 어긋날 자리가 없다.",
+    "새 표현 종류를 열 때 여기 한 줄을 추가하는 확장 규약도 함께 사라졌다."
+  ],
   "metrics": {
-    "_comment": "지표별 예외만 적는다. 여기 없는 지표는 node_types 판정을 그대로 따른다.",
+    "_comment": "지표 → 데이터 그레인 결속. 예전에는 node_types 판정의 지표별 예외였고, 지금은 capability discovery 투영이 지표와 그레인을 잇는 근거로만 쓴다(적재 구간 추적).",
     "cart_line_count": {"grain": "cart_snapshot"},
     "cart_amount": {"grain": "cart_snapshot"},
     "purchase_amount": {"grain": "order_transaction"},

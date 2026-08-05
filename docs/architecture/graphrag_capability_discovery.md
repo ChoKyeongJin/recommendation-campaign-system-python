@@ -17,9 +17,16 @@ The current authorities and implementation evidence projected by G0 are:
 - `docs/data/runtime/semantics/audience_catalog.json`;
 - `docs/data/runtime/semantics/semantic_capabilities.json`;
 - `docs/data/runtime/sql/member_target_filters.json` and metric registries;
-- `semantic_plan.py` and `semantic_plan_event_lowering.py`;
 - `targeting_ir.py` and `capability_validation.py`;
 - `tools/canonical_coverage_inventory.py` (the existing P4 difference measurement).
+
+`semantic_plan.py` and `semantic_plan_event_lowering.py` were removed from this list on
+2026-08-05: the SemanticPlanV2 intermediate representation was retired and both files were
+deleted, so the AST extractors that projected their node classes and lowering dispatch were
+deleted with them. Projecting a file that does not exist is not evidence — it is advertising.
+The node-kind declaration in `semantic_capabilities.json` (`node_types`) was emptied for the
+same reason; audience expressibility is now answered by the compiler itself
+(`event_compiler.validate_compiler_capability`), not by a declaration.
 
 No ingestor imports `graph_rag.py`. Builder declarations extracted from `capability_validation.py` prove only the declared routing contract; a symbol hit never proves an end-to-end binding, lowering, compiler, and SQL-builder path.
 
@@ -132,7 +139,7 @@ The offline taxonomy is:
 - `CONFLICTING_DEFINITION`
 - `STALE_APPROVED_ASSET`
 
-These classifications are deliberately separate from `semantic_plan.FAILURE_CODES` and must never be returned as runtime failure codes. The initial analyzer emits only the subset supported by deterministic evidence: P4 axes currently become `LEGACY_ONLY` records with the missing physical columns, provenance, and blocking questions. It does not manufacture the other classifications merely to populate the taxonomy.
+These classifications are deliberately separate from runtime failure codes and must never be returned as one. (They were originally contrasted with `semantic_plan.FAILURE_CODES`; that module was deleted on 2026-08-05 and the runtime failure vocabulary now lives in `semantic_outcome.py` and `failure_messages.py`.) The initial analyzer emits only the subset supported by deterministic evidence: P4 axes currently become `LEGACY_ONLY` records with the missing physical columns, provenance, and blocking questions. It does not manufacture the other classifications merely to populate the taxonomy.
 
 The current `data_availability_policy` is `advise`. Discovery reports unavailable or incomplete coverage as advice and evidence; it does not convert it into an unconditional runtime block.
 

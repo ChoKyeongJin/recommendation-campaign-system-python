@@ -112,13 +112,13 @@ _CONDITIONS = _keys(CONDITION, {
     "region_density_target": ("회원 밀집 지역", False),
     "aggregation_request": ("사용자가 요청한 집계('회원수를 세어줘')", False),
     "policy_constraints": ("업무 정책으로 실체화되지만 촉발은 사용자 어구", False),
-    "relational_operations": ("검증된 속성 시점·이력 연산(등급/상태 스냅샷)", False),
-    # 사용자 요구의 타입드 표현 그 자체(SemanticPlanV2). 표면 어구가 바뀌면 노드가 바뀐다 —
-    # 실행 슬롯은 이 노드의 컴파일 산출물이므로, 조건의 원본은 여기다.
-    # audience=False 인 이유: 이 키는 canonical 레인에 **상시 존재**한다. True 면 모든 canonical
-    # 요청이 충돌로 죽는다. 노드 유무를 보는 술어는 그 사실을 아는 곳에서 따로 판정한다
-    # (canonical_event_ir_grounding).
-    "semantic_plan": ("의미 노드 집합(SemanticPlanV2 — 조건의 타입드 원본)", False),
+    # ``relational_operations``(검증된 속성 시점·이력 연산)는 2026-08-05 폐기됐다. 등급/상태
+    # 이력·전이 축은 SemanticPlanV2 relation_predicate 노드로만 생산됐고, 그 노드가 사라지면서
+    # 생산자도 컴파일러도 남지 않았다. 생산자 없는 조건 키는 거짓 광고다.
+    # ``semantic_plan``(SemanticPlanV2 의미 노드 집합)은 2026-08-05 폐기됐다. 오디언스 의미의
+    # 노출면은 ``audience_requirement`` 하나이고, 그 노드를 슬롯으로 컴파일하는 실행 경로가
+    # 남아 있지 않았다. 생산자가 없는 키를 조건으로 선언해 두면 "두 번째 해석 계층이 아직
+    # 계약에 있다"는 거짓 광고가 된다.
 })
 
 # 파서·검증·라우팅 산출물. 사용자가 말한 적 없다.
@@ -151,12 +151,13 @@ _DERIVED = _keys(DERIVED, {
     "unsupported": "미지원 판정 목록",
     "unmatched_source_conditions": "슬롯에 못 담은 원문 항목",
     "validation_errors": "플랜 검증 오류",
-    "semantic_ir": "의미 판정 투영(semantic_plan 파생 — status/missing/unsupported)",
-    "semantic_pipeline": "의미 파이프라인 감사 영수증(coverage·재방출·컴파일 산출)",
-    "requirements": "요구사항 원장(조건별 라벨·스팬·술어·시간 한정어·capability·슬롯·검증 결과)",
+    "semantic_ir": "의미 판정 투영(애플리케이션 소유 — status/missing/unsupported)",
+    # ``semantic_pipeline``(파이프라인 감사 영수증)과 ``requirements``(요구 원장)는 2026-08-05
+    # 폐기됐다. 둘 다 SemanticPlan 컴파일 산출물이었고, 그 컴파일 경로가 사라지면서 생산자가
+    # 없어졌다. 파생 키로 남겨 두면 스냅샷·감사가 "있다가 비었다"를 계속 구분하려 든다.
     "semantic_ir_reconciliation": "그 계층과 실행 플랜의 대조 결과",
     "literal_bindings": "원문 값 원자 봉인",
-    "relational_ir": "속성 이력 조건의 정직한 차단 판정(리졸버 산출물)",
+    # ``relational_ir``(속성 이력 조건의 차단 판정)은 2026-08-05 폐기됐다 — 그 리졸버가 사라졌다.
 })
 
 ALL: tuple[PlanKey, ...] = _CONDITIONS + _DERIVED

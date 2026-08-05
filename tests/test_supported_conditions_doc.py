@@ -16,7 +16,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
+import targeting_ir  # noqa: E402
+
 import generate_supported_conditions as gen  # noqa: E402
+
+
+def _slot_row(content: str, slot: str) -> str:
+    """§1 표에서 이 슬롯의 행 한 줄(없으면 실패)."""
+    prefix = f"| `{slot}` |"
+    rows = [line for line in content.splitlines() if line.startswith(prefix)]
+    assert len(rows) == 1, f"슬롯 {slot} 행이 표에 {len(rows)}개다(1개여야 한다)."
+    return rows[0]
 
 
 def test_generated_doc_is_fresh() -> None:
@@ -32,8 +42,56 @@ def test_generated_doc_is_fresh() -> None:
 
 
 def test_doc_declares_conditional_supports() -> None:
-    """장기 과제 '문서/기억 동기화'의 핵심 3건이 표에 실재하는지 — 공허한 표 방지."""
+    """조건부 지원·미지원 선언이 표에 실재하는지 — 공허한 표 방지.
+
+    2026-08-05 이전에는 `metric_trend` 조건부 지원 각주의 실재만 봤다. 그 각주는 이제
+    거짓이다 — 슬롯의 생산자가 폐기돼 아무도 채울 수 없다(§1 에서 미지원으로 내려갔다).
+    그래서 슬롯 이름을 고정하는 대신 **도달 가능한 각주 집합**을 실행 자산에서 파생해
+    §4 와 대조한다: 각주가 되살아나면 문서에도 반드시 나타나야 하고, 비었으면 비었다고
+    적혀 있어야 한다(침묵한 빈 절 금지).
+    """
     content = gen.OUTPUT_PATH.read_text(encoding="utf-8")
-    assert "metric_trend" in content and "수치 집계 지표만" in content, "기간비교 조건부 지원 누락"
-    assert "same_product_same_order_quantity_v1" in content, "동시구매 서명 조건 누락"
+    retired = gen.retired_slot_names()
+    reachable = {
+        name: note
+        for name, note in targeting_ir.SLOT_SUPPORT_NOTES.items()
+        if name not in retired
+    }
+    for name, note in reachable.items():
+        assert f"(`{name}`)**: {note}." in content, f"조건부 지원 각주가 표에서 빠졌다: {name}"
+    if not reachable:
+        assert "조건부로 지원되는 슬롯이 현재 없다" in content, "빈 §4 가 아무 말도 하지 않는다"
     assert "lapsed_buyer" in content and "미지원" in content, "lapsed_buyer 미지원 명시 누락"
+
+
+def test_retired_slots_are_never_listed_as_supported() -> None:
+    """생산자가 폐기된 슬롯은 §1 에서 지원으로 표기되지 않는다.
+
+    `graph_rag._RETIRED_COMPILER_OWNED_SLOTS` 슬롯은 LLM 후보에서 드롭되고 rules 레인도
+    채우지 않으므로 생산자가 0이다. 그런데도 표가 '지원'으로 실으면 §2 의 `lapsed_buyer`
+    미지원 표기와 자가모순이 된다(이 문서가 애초에 없애려던 그 모순).
+    """
+    content = gen.OUTPUT_PATH.read_text(encoding="utf-8")
+    retired = gen.retired_slot_names() & set(targeting_ir.SLOT_SHAPES)
+    assert retired, (
+        "폐기 슬롯 파생원이 비었다 — graph_rag._RETIRED_COMPILER_OWNED_SLOTS 를 확인하라."
+    )
+    for slot in sorted(retired):
+        row = _slot_row(content, slot)
+        assert "**미지원**" in row, f"생산자가 폐기된 슬롯이 지원으로 광고된다: {slot}\n{row}"
+        label = targeting_ir.SLOT_KO_LABELS[slot]
+        assert f"- **{label}(`{slot}`)**" not in content, (
+            f"생산자가 폐기된 슬롯이 §4 조건부 지원으로 남아 있다: {slot}"
+        )
+
+
+def test_doc_never_advertises_a_retired_axis() -> None:
+    """폐기 축을 '조건부 지원'으로 광고하지 않는다.
+
+    2026-08-05 이전 표는 동시구매를 `same_product_same_order_quantity_v1` 서명으로 조건부
+    지원한다고 적었지만, 그 IR 을 만드는 생산자는 이미 없었다(요청은 ingress 에서 막힌다).
+    등급/상태 시점·이력(`relational_operation`)도 같은 이유로 표에서 사라졌다.
+    """
+    content = gen.OUTPUT_PATH.read_text(encoding="utf-8")
+    for retired in ("same_product_same_order_quantity_v1", "relational_operation"):
+        assert retired not in content, f"폐기된 축이 지원 조건 표에 남아 있다: {retired}"

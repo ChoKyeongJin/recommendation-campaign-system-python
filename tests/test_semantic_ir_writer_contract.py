@@ -17,9 +17,9 @@ EVENT_IR_OR_LEGACY_FILES = {
     "cutover_legacy_audience.py",
     "event_ir.py",
     "legacy_audience_migration.py",
-    "legacy_plan_compiler.py",
-    "semantic_plan_bridge.py",
-    "semantic_receipts.py",
+    # `semantic_receipts.py` 는 2026-08-05 삭제됐다(축1 폐기) — 면제 대상 자체가 없다.
+    # `legacy_plan_compiler.py` / `semantic_plan_bridge.py` 도 같은 날 삭제됐다
+    # (SemanticPlanV2 중간표현 폐기) — 마찬가지로 면제할 파일이 없다.
 }
 EVENT_IR_FUNCTION_EXEMPTIONS = {
     ("graph_rag.py", "_mark_canonical_event_ir_lowering_failure"),

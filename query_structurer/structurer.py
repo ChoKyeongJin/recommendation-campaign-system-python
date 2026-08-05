@@ -282,12 +282,11 @@ class LLMCampaignQueryPlanV4Structurer:
                 "role": "system",
                 "content": (
                     "You structure campaign requests into one canonical audience contract. Return only the "
-                    "five fields accepted by the tool schema: intent, campaign_constraints, result_limit, "
-                    "audience_requirement, and semantic_plan. audience_requirement.expression is the complete "
+                    "four fields accepted by the tool schema: intent, campaign_constraints, result_limit, "
+                    "and audience_requirement. audience_requirement.expression is the complete "
                     "Event IR meaning; audience_requirement.issues records missing, ambiguous, unsupported, or "
-                    "invalid meaning. semantic_plan carries only the point-in-time or monthly-snapshot member "
-                    "attribute conditions that the Event IR algebra cannot state, and stays {\"nodes\": []} "
-                    "otherwise. Each condition belongs to exactly one of the two — never both. "
+                    "invalid meaning. There is no second audience surface: a condition the algebra cannot "
+                    "state faithfully becomes an issue, never an approximation. "
                     "Use only the Event IR algebra and semantic-catalog identifiers supplied in the "
                     "user message. Preserve negation, AND/OR grouping, comparison semantics, aggregation grain, "
                     "and temporal scope. Every semantic atom and issue needs an exact evidence substring with "

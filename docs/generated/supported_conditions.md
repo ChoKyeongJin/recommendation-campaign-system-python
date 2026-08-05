@@ -2,40 +2,39 @@
 
 > **자동 생성 문서 — 손으로 편집하지 마라.** LLM은 고정 Event IR 대수인
 > `audience_requirement`만 만들며 아래 호환 슬롯을 직접 만들지 않는다.
-> 표는 실행 자산(targeting_ir·V4 스키마·
+> 표는 실행 자산(targeting_ir·V4 스키마·폐기 슬롯 목록·
 > member_target_filters.json·requirement_capabilities.json)에서 파생되며,
 > `python tools/generate_supported_conditions.py` 로 재생성한다.
 > 최신성은 tests/test_supported_conditions_doc.py 가 CI 에서 강제한다.
 
 ## 1. 호환 실행 슬롯 조건
 
-| 슬롯 | 라벨 | 컨테이너 | LLM 직접 노출 | 조건부 지원 각주 |
-|---|---|---|---|---|
-| `signup_target` | 가입일 조건 | target_user | X |  |
-| `recent_login` | 최근 로그인 기간 조건 | target_user | X |  |
-| `inactivity_period` | 미접속 기간 조건 | target_user | X |  |
-| `purchase_inactivity` | 미구매 기간 조건 | target_user | X |  |
-| `purchase_membership` | 구매 이력 존재 조건 | target_user | X |  |
-| `cart_retention` | 장바구니 보관 기간 조건 | target_user | X |  |
-| `cart_aggregate` | 장바구니 집계 조건(담은 수량/금액) | target_user | X |  |
-| `cart_type` | 장바구니 유형 조건 | target_user | X |  |
-| `birthday_target` | 생일 조건 | target_user | X |  |
-| `campaign_responses` | 캠페인 반응 조건 | target_user | X |  |
-| `campaign_response_frequency` | 캠페인 반응 횟수 조건 | target_user | X |  |
-| `campaign_buy_amount` | 캠페인 구매 금액 조건 | target_user | X |  |
-| `campaign_buy_count` | 캠페인 구매 건수 조건 | target_user | X |  |
-| `cell_rate_target` | 캠페인 셀 반응률 조건 | target_user | X |  |
-| `purchase_date` | 구매일 조건 | target_user | X |  |
-| `metric_trend` | 기간 대비 지표 증감 조건 | target_user | X | 수치 집계 지표만 지원(날짜·요약 지표의 기간 비교는 미지원 안내) |
-| `purchase_object` | 구매 상품 조건 | target_user | X |  |
-| `cart_absence` | 장바구니 미보유 조건 | target_user | X |  |
-| `aggregate_conditions` | 집계 조건(구매 금액/횟수 임계값) | target_user | X |  |
-| `balance_conditions` | 잔액 조건 | target_user | X |  |
-| `profile_date_conditions` | 회원 프로필 날짜 조건 | target_user | X |  |
-| `relational_operation` | 등급·상태 시점/이력 조건 | target_user | X | 기준월(as-of) 값·직전 스냅샷 대비 전이만 컴파일. 다월 연산(내내 유지/변경 횟수/모든 월 존재)은 월별 스냅샷 적재 범위 내에서만 지원하며, 부족하면 적재 현황과 함께 미지원 안내 |
-| `region_density_target` | 지역 밀집 랭킹 조건 | plan | X(제외 선언) |  |
-| `member_metric_ranking` | 회원 지표 랭킹 조건 | plan | X(제외 선언) |  |
-| `purchase_count_ranking` | 구매 건수 랭킹 조건 | plan | X(제외 선언) |  |
+| 슬롯 | 라벨 | 컨테이너 | 지원 | LLM 직접 노출 | 비고 |
+|---|---|---|---|---|---|
+| `signup_target` | 가입일 조건 | target_user | 지원 | X |  |
+| `recent_login` | 최근 로그인 기간 조건 | target_user | 지원 | X |  |
+| `inactivity_period` | 미접속 기간 조건 | target_user | 지원 | X |  |
+| `purchase_inactivity` | 미구매 기간 조건 | target_user | 지원 | X |  |
+| `purchase_membership` | 구매 이력 존재 조건 | target_user | 지원 | X |  |
+| `cart_retention` | 장바구니 보관 기간 조건 | target_user | 지원 | X |  |
+| `cart_aggregate` | 장바구니 집계 조건(담은 수량/금액) | target_user | **미지원** | X(후보 드롭) | 선언만 있고 생산자(슬롯 컴파일러)가 폐기돼 채우는 경로가 없다. |
+| `cart_type` | 장바구니 유형 조건 | target_user | 지원 | X |  |
+| `birthday_target` | 생일 조건 | target_user | 지원 | X |  |
+| `campaign_responses` | 캠페인 반응 조건 | target_user | 지원 | X |  |
+| `campaign_response_frequency` | 캠페인 반응 횟수 조건 | target_user | **미지원** | X(후보 드롭) | 선언만 있고 생산자(슬롯 컴파일러)가 폐기돼 채우는 경로가 없다. |
+| `campaign_buy_amount` | 캠페인 구매 금액 조건 | target_user | **미지원** | X(후보 드롭) | 선언만 있고 생산자(슬롯 컴파일러)가 폐기돼 채우는 경로가 없다. |
+| `campaign_buy_count` | 캠페인 구매 건수 조건 | target_user | 지원 | X |  |
+| `cell_rate_target` | 캠페인 셀 반응률 조건 | target_user | 지원 | X |  |
+| `purchase_date` | 구매일 조건 | target_user | 지원 | X |  |
+| `metric_trend` | 기간 대비 지표 증감 조건 | target_user | **미지원** | X(후보 드롭) | 선언만 있고 생산자(슬롯 컴파일러)가 폐기돼 채우는 경로가 없다. |
+| `purchase_object` | 구매 상품 조건 | target_user | 지원 | X |  |
+| `cart_absence` | 장바구니 미보유 조건 | target_user | 지원 | X |  |
+| `aggregate_conditions` | 집계 조건(구매 금액/횟수 임계값) | target_user | **미지원** | X(후보 드롭) | 선언만 있고 생산자(슬롯 컴파일러)가 폐기돼 채우는 경로가 없다. |
+| `balance_conditions` | 잔액 조건 | target_user | **미지원** | X(후보 드롭) | 선언만 있고 생산자(슬롯 컴파일러)가 폐기돼 채우는 경로가 없다. |
+| `profile_date_conditions` | 회원 프로필 날짜 조건 | target_user | **미지원** | X(후보 드롭) | 선언만 있고 생산자(슬롯 컴파일러)가 폐기돼 채우는 경로가 없다. |
+| `region_density_target` | 지역 밀집 랭킹 조건 | plan | 지원 | X(제외 선언) |  |
+| `member_metric_ranking` | 회원 지표 랭킹 조건 | plan | **미지원** | X(후보 드롭) | 선언만 있고 생산자(슬롯 컴파일러)가 폐기돼 채우는 경로가 없다. |
+| `purchase_count_ranking` | 구매 건수 랭킹 조건 | plan | 지원 | X(제외 선언) |  |
 
 ## 2. 주문 행동(behaviors)
 
@@ -68,6 +67,4 @@
 
 ## 4. 특수 조건부 지원
 
-- **동시구매(condition_evaluation)**: 검증된 구성 서명 `same_product_same_order_quantity_v1` 만 컴파일한다 — 동일 주문 내 동일 상품 수량 집계 외의 조합(주문 횡단·상이 상품 등)은 fail-close 로 명시 차단된다.
-- **기간 대비 지표 증감 조건(`metric_trend`)**: 수치 집계 지표만 지원(날짜·요약 지표의 기간 비교는 미지원 안내).
-- **등급·상태 시점/이력 조건(`relational_operation`)**: 기준월(as-of) 값·직전 스냅샷 대비 전이만 컴파일. 다월 연산(내내 유지/변경 횟수/모든 월 존재)은 월별 스냅샷 적재 범위 내에서만 지원하며, 부족하면 적재 현황과 함께 미지원 안내.
+- 조건부로 지원되는 슬롯이 현재 없다 — 선언된 각주는 모두 생산자가 폐기된 슬롯의 것이라 §1 에서 미지원으로 내렸다.

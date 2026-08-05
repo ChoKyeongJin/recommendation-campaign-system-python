@@ -22,7 +22,6 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import execution_assets  # noqa: E402
-import semantic_plan  # noqa: E402
 from query_structurer import campaign_plan_v4  # noqa: E402
 
 CORPUS = REPO_ROOT / "docs" / "data" / "test_baselines" / "live_prompts.json"
@@ -80,13 +79,12 @@ def test_canonical_layer_is_excluded_from_the_demotion_question() -> None:
         assert asset.layer != execution_assets.CANONICAL
 
 
-def _payload_with_model_unsupported(query: str, span: str, *, nodes: list | None = None) -> dict:
+def _payload_with_model_unsupported(query: str, span: str) -> dict:
     start = query.index(span)
     return {
         "intent": "find_user_segment",
         "original_query": query,
         "literal_bindings": [],
-        "semantic_plan": {"nodes": list(nodes or [])},
         "audience_requirement": {
             "expression": None,
             "issues": [{
@@ -111,8 +109,11 @@ def test_model_prose_never_becomes_the_kind_or_the_user_sentence() -> None:
     semantic_ir = payload["semantic_ir"]
     if semantic_ir["status"] == "unsupported":
         kinds = {item["kind"] for item in semantic_ir["unsupported_operations"]}
-        assert kinds <= semantic_plan.FAILURE_CODES, (
-            f"닫힌 어휘 밖의 kind 가 나갔다: {sorted(kinds - semantic_plan.FAILURE_CODES)}"
+        # 닫힌 어휘의 권위는 issue code ↔ kind 표(query_pipeline.requirement.validation)다.
+        # SemanticPlanV2 의 FAILURE_CODES 를 읽던 자리인데, 그 중간표현은 2026-08-05 폐기됐다.
+        allowed = campaign_plan_v4.AUDIENCE_REQUIREMENT_ISSUE_CODES
+        assert kinds <= allowed, (
+            f"닫힌 어휘 밖의 kind 가 나갔다: {sorted(kinds - allowed)}"
         )
         assert "email_consent_flag" not in kinds, "모델의 자유 텍스트가 kind 가 됐다."
         assert semantic_ir["message"] != (
@@ -151,7 +152,6 @@ def test_application_computed_verdicts_are_not_demoted() -> None:
         "intent": "find_user_segment",
         "original_query": query,
         "literal_bindings": [],
-        "semantic_plan": {"nodes": []},
         "audience_requirement": {
             "expression": {
                 "type": "exists",

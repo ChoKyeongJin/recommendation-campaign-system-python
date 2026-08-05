@@ -5,11 +5,11 @@
 "동치"인데 **지금은 동치를 증명할 수단이 없다**. 그래서 이관 **전에** 현재 산출을 전량
 고정한다(`docs/plans_query_pipeline_debt.md` Phase 0-1).
 
-고정하는 것은 그 함수가 쓰는 plan 키 6개 + 결정 로그다.
+고정하는 것은 그 함수가 쓰는 plan 키 5개 + 결정 로그다. ``audience_unsupported_hypotheses``
+는 2026-08-05 SemanticPlan 폐기로 생산자가 사라져 목록에서 빠졌다.
 
     event_expression                  성공 시 기록 / 미해결 시 pop
     semantic_ir                       status · failure_kind · missing_fields · 사용자 문구
-    audience_unsupported_hypotheses   미지원 선언이 실행 자산에 반박당했고 SemanticPlan 이 이어받음
     audience_execution_assets         자산은 선언됐는데 그 축을 낼 생산자가 없음(registry gap)
     audience_requirement.expression   정규화(창 종류 보정 등)를 거친 뒤의 표현
     audience_requirement.issues       모델 신고 + 애플리케이션 계산의 합
@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import copy
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -43,7 +43,6 @@ CURRENT_DATE = "2026-08-03"
 PROJECTED_KEYS = (
     "event_expression",
     "semantic_ir",
-    "audience_unsupported_hypotheses",
     "audience_execution_assets",
     "audience_requirement.expression",
     "audience_requirement.issues",
@@ -63,7 +62,6 @@ class Case:
     name: str
     query: str
     requirement: dict[str, Any]
-    nodes: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _run(case: Case) -> dict[str, Any]:
@@ -78,7 +76,6 @@ def _run(case: Case) -> dict[str, Any]:
             },
             "result_limit": None,
             "audience_requirement": copy.deepcopy(case.requirement),
-            "semantic_plan": {"nodes": copy.deepcopy(case.nodes)},
         },
         case.query,
         current_date=CURRENT_DATE,
@@ -86,13 +83,12 @@ def _run(case: Case) -> dict[str, Any]:
 
 
 def projection(case: Case) -> dict[str, Any]:
-    """plan 에서 투영 6키(+결정 로그)만 뽑는다. 없는 키는 ``None`` 으로 자리를 남긴다."""
+    """plan 에서 투영 5키(+결정 로그)만 뽑는다. 없는 키는 ``None`` 으로 자리를 남긴다."""
     plan = _run(case)
     requirement = plan.get("audience_requirement") or {}
     return {
         "event_expression": plan.get("event_expression"),
         "semantic_ir": plan.get("semantic_ir"),
-        "audience_unsupported_hypotheses": plan.get("audience_unsupported_hypotheses"),
         "audience_execution_assets": plan.get("audience_execution_assets"),
         "audience_requirement.expression": requirement.get("expression"),
         "audience_requirement.issues": requirement.get("issues"),
@@ -100,12 +96,11 @@ def projection(case: Case) -> dict[str, Any]:
     }
 
 
-# ── 대표 6종 ──────────────────────────────────────────────────────────────────────
+# ── 대표 5종 ──────────────────────────────────────────────────────────────────────
 
 READY_QUERY = "최근 30일 동안 구매한 회원을 찾아줘"
 MISSING_QUERY = "최근 구매한 회원을 찾아줘"
 AMBIGUOUS_QUERY = "구매를 많이 한 회원을 찾아줘"
-CONTRADICTED_QUERY = "골드에서 VIP로 바뀌고 이메일 수신에 동의한 회원을 찾아줘"
 GAP_QUERY = "이메일 수신에 동의한 회원을 찾아줘"
 MODEL_OMISSION_QUERY = "누적 구매금액 상위 10% 회원을 추출해줘"
 
@@ -128,22 +123,6 @@ _READY_EXPRESSION: dict[str, Any] = {
         },
     },
     "evidence": _evidence(READY_QUERY, "최근 30일 동안 구매한"),
-}
-
-_GRADE_TRANSITION_NODE: dict[str, Any] = {
-    "id": "r1",
-    "type": "relation_predicate",
-    "subject": "member",
-    "attribute": "member_grade",
-    "relation": "transition",
-    "from_value": "골드",
-    "to_value": "VIP",
-    **{
-        "source_span": "골드에서 VIP로 바뀌고",
-        "source_start": CONTRADICTED_QUERY.index("골드에서 VIP로 바뀌고"),
-        "source_end": CONTRADICTED_QUERY.index("골드에서 VIP로 바뀌고")
-        + len("골드에서 VIP로 바뀌고"),
-    },
 }
 
 _CONSENT_ISSUE_MESSAGE = "이메일 수신 동의 조건은 Canonical Event IR로 표현할 수 없습니다."
@@ -184,25 +163,10 @@ CASES: tuple[Case, ...] = (
             ],
         },
     ),
-    # 미지원 선언이 실행 자산에 반박당했고, 그 축을 낼 SemanticPlan 노드가 **있다**
-    # → 가설로 내리고 False 를 돌려줘 SemanticPlan 경로가 이어받는다.
-    Case(
-        name="unsupported-contradicted",
-        query=CONTRADICTED_QUERY,
-        requirement={
-            "expression": None,
-            "issues": [
-                {
-                    "code": "unsupported_semantics",
-                    "argument": "email_consent_flag",
-                    "message": _CONSENT_ISSUE_MESSAGE,
-                    "evidence": _evidence(CONTRADICTED_QUERY, "이메일 수신에 동의한"),
-                }
-            ],
-        },
-        nodes=[_GRADE_TRANSITION_NODE],
-    ),
-    # 같은 반박인데 그 축을 낼 **생산자가 없다** → 미지원이 아니라 레지스트리 구멍
+    # 미지원 선언이 실행 자산에 반박당하면 **항상** 레지스트리 구멍이다. 예전에는 그 축을
+    # 낼 SemanticPlan 노드가 있으면 가설로 내리고 노드 경로가 이어받는 갈래가 하나 더
+    # 있었는데, 2026-08-05 그 경로가 폐기되면서 갈래 자체가 사라졌다.
+    # 그 축을 낼 **생산자가 없다** → 미지원이 아니라 레지스트리 구멍
     # (`failure_kind="system_failure"`).
     Case(
         name="unsupported-registry-gap",
@@ -290,7 +254,6 @@ EXPECTED: dict[str, dict[str, Any]] = {
             ],
         },
         "semantic_ir": _RESOLVED_SEMANTIC_IR,
-        "audience_unsupported_hypotheses": None,
         "audience_execution_assets": None,
         "audience_requirement.expression": _NORMALIZED_READY_EXPRESSION,
         "audience_requirement.issues": [],
@@ -327,7 +290,6 @@ EXPECTED: dict[str, dict[str, Any]] = {
             "unsupported_operations": [],
             "message": "'최근'의 범위를 확정할 기간 값이 필요합니다.",
         },
-        "audience_unsupported_hypotheses": None,
         "audience_execution_assets": None,
         "audience_requirement.expression": None,
         "audience_requirement.issues": [
@@ -360,7 +322,6 @@ EXPECTED: dict[str, dict[str, Any]] = {
             "unsupported_operations": [],
             "message": "'많이'의 기준이 확정되지 않았습니다.",
         },
-        "audience_unsupported_hypotheses": None,
         "audience_execution_assets": None,
         "audience_requirement.expression": None,
         "audience_requirement.issues": [
@@ -370,25 +331,6 @@ EXPECTED: dict[str, dict[str, Any]] = {
                 "message": "'많이'의 기준이 확정되지 않았습니다.",
                 "evidence": {"text": "많이", "start": 4, "end": 6},
             }
-        ],
-        "decisions": None,
-    },
-    # `semantic_ir` 이 resolved 인 이유: 이 갈래는 `False` 를 돌려주고 SemanticPlan 경로가
-    # 이어받는다. 즉 미지원 선언은 **가설로만** 남고 결말은 등급 전이 노드가 낸다.
-    "unsupported-contradicted": {
-        "event_expression": None,
-        "semantic_ir": _RESOLVED_SEMANTIC_IR,
-        "audience_unsupported_hypotheses": [
-            {
-                "kind": "email_consent_flag",
-                "reason": _CONSENT_ISSUE_MESSAGE,
-                "evidence": "이메일 수신에 동의한",
-            }
-        ],
-        "audience_execution_assets": None,
-        "audience_requirement.expression": None,
-        "audience_requirement.issues": [
-            {**_CONSENT_ISSUE, "evidence": {"text": "이메일 수신에 동의한", "start": 14, "end": 25}}
         ],
         "decisions": None,
     },
@@ -407,7 +349,6 @@ EXPECTED: dict[str, dict[str, Any]] = {
                 "(선언된 자산: email_optin)."
             ),
         },
-        "audience_unsupported_hypotheses": None,
         "audience_execution_assets": [
             {
                 "argument": "email_consent_flag",
@@ -448,7 +389,6 @@ EXPECTED: dict[str, dict[str, Any]] = {
             "unsupported_operations": [],
             "message": "percentage 값을 확정하지 못했습니다.",
         },
-        "audience_unsupported_hypotheses": None,
         "audience_execution_assets": None,
         "audience_requirement.expression": None,
         "audience_requirement.issues": [

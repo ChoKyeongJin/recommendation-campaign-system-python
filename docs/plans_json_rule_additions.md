@@ -11,6 +11,12 @@
 Phase 1·2·3·5 와 Phase 4 축소분을 구현했다. 기준선 `19dca5f` 대비 **NEW FAILURES 0 / FIXED 0**,
 가드 5종 상태 동일(선재 RED 3종 그대로), 수집 2468 → 2519(새 테스트 순증).
 
+> **후속 고지(같은 날, 이 문서보다 나중)**: 이 표의 `legacy_plan_compiler.py` 변경분은
+> 그날 늦게 **모듈째 삭제**됐다. SemanticPlanV2 중간표현이 폐기되면서 그 컴파일러의 유일한
+> 입력(의미 노드)이 사라졌기 때문이다. 아래 본문에서 그 파일의 줄 번호를 인용한 진단은
+> **당시 실측의 기록**이며, 지금 그 코드는 없다. 무언 기본값(fail-open) 재발 방지는 이제
+> canonical Event IR 레인의 검증기와 `tests/test_retired_axes_fail_close.py` 가 맡는다.
+
 | 변경 | 파일 |
 |---|---|
 | 부재 어휘 2개 + 긍정 갈래 1 가드 + 이중부정 가드 | `parser_lexicon.json`, `lexicon_patterns.py`, `purchase_lexicon.py` |

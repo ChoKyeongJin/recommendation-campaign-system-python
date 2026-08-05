@@ -8,15 +8,11 @@ from collections.abc import Mapping
 from typing import Any
 
 import lexicon_patterns
-import targeting_domain
 
 _DURATION_RE = re.compile(
     r"(?:\d+(?:\.\d+)?|한|두|세|네|반)\s*(?:시간|일|주일|주|개월|달|분기|년)"
 )
 _EXTRA_TEMPORAL_QUALIFIERS = ("지난", "동안", "오랫동안", "장기", "예전", "과거")
-_LATEST_TRANSITION_BRIDGE_RE = re.compile(
-    r"^\s*(?:(?:에|의)|기준(?:으로)?)?\s*$"
-)
 
 
 def _term_pattern(term: str) -> re.Pattern[str] | None:
@@ -101,65 +97,11 @@ def fabricated_period_issue_for_current_catalog_value(
     return bool(claim_spans) and not _has_external_temporal_qualifier(query, claim_spans)
 
 
-def latest_transition_owns_period_issue(
-    query: str,
-    issue: Mapping[str, Any],
-    semantic_plan: Any,
-) -> bool:
-    """Prove that ``최근`` selects the latest snapshot, not a duration.
-
-    This receipt is intentionally narrow: the latest-selector evidence must be
-    immediately attached to one unanchored directional transition node in the
-    same clause.  A purchase phrase between ``최근`` and that node, multiple
-    candidate nodes, or an unknown direction leaves the clarification intact.
-    """
-
-    if issue.get("code") != "missing_argument" or issue.get("argument") != "period":
-        return False
-    evidence = issue.get("evidence")
-    if not isinstance(evidence, Mapping):
-        return False
-    start, end, text = evidence.get("start"), evidence.get("end"), evidence.get("text")
-    latest_terms = set(lexicon_patterns.vocabulary("source_latest_selector"))
-    if not (
-        isinstance(start, int)
-        and not isinstance(start, bool)
-        and isinstance(end, int)
-        and not isinstance(end, bool)
-        and 0 <= start < end <= len(query)
-        and isinstance(text, str)
-        and query[start:end] == text
-        and text.strip() in latest_terms
-    ):
-        return False
-    nodes = semantic_plan.get("nodes") if isinstance(semantic_plan, Mapping) else None
-    candidates: list[Mapping[str, Any]] = []
-    for node in nodes or ():
-        if not (
-            isinstance(node, Mapping)
-            and node.get("type") == "relation_predicate"
-            and node.get("relation") == "transition"
-            and targeting_domain.transition_direction(node.get("value")) is not None
-            and node.get("period") in (None, "")
-            and node.get("months") in (None, "")
-        ):
-            continue
-        node_start, node_end = node.get("source_start"), node.get("source_end")
-        if not (
-            isinstance(node_start, int)
-            and not isinstance(node_start, bool)
-            and isinstance(node_end, int)
-            and not isinstance(node_end, bool)
-            and end <= node_start < node_end <= len(query)
-            and node.get("source_span") == query[node_start:node_end]
-            and _LATEST_TRANSITION_BRIDGE_RE.fullmatch(query[end:node_start])
-        ):
-            continue
-        candidates.append(node)
-    return len(candidates) == 1
+# `latest_transition_owns_period_issue` 는 2026-08-05 제거됐다. 그 함수는 '최근'이 기간이
+# 아니라 최신 스냅샷 선택임을 증명해 SemanticPlan 전이 노드에 기간 결핍 issue 를 유예하는
+# 영수증이었고, 그 노드를 컴파일하는 경로가 폐기되면서 유예받을 소비자가 사라졌다.
 
 
 __all__ = [
     "fabricated_period_issue_for_current_catalog_value",
-    "latest_transition_owns_period_issue",
 ]

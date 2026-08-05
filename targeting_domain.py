@@ -1,8 +1,7 @@
 """회원 타기팅 **도메인 계층** — 범용 코어에 주입하는 지식의 단일 소유자.
 
-코어(semantic_plan / semantic_capability / semantic_coverage / semantic_candidates /
-semantic_normalizers / semantic_pipeline / semantic_reemission / requirement_ledger /
-temporal_semantics)는 이 모듈을 **import 하지 않는다**. 반대 방향이다:
+코어(semantic_normalizers / temporal_semantics / semantic_domain_binding)는 이 모듈을
+**import 하지 않는다**. 반대 방향이다:
 
     targeting_domain  ──주입──▶  core
     (도메인 낱말·축·값·슬롯)      (requirement / expression tree / capability / validation)
@@ -14,7 +13,7 @@ temporal_semantics)는 이 모듈을 **import 하지 않는다**. 반대 방향�
 
 없는 것:
   - SQL·컬럼(→ member_target_filters.json / attribute_catalog.json)
-  - 실행 슬롯 이름(→ legacy_plan_compiler)
+  - 실행 슬롯 이름(→ targeting_ir SLOT_SHAPES)
   - 시간 연산자의 **의미**(→ temporal_semantics 의 닫힌 집합)
 
 확장 경계:
@@ -510,31 +509,9 @@ def core_bindings() -> dict[str, Any]:
     }
 
 
-# ── 코어에 앵커 공급자 등록(조립) ───────────────────────────────────────────────
-def _literal_anchor_provider(query: str) -> list[Any]:
-    """값 원자(날짜창·수량·퍼센트 …) 앵커. 추출기는 도메인 구조화 계층 소유."""
-    import semantic_coverage  # 순환 없음(코어는 도메인을 모른다)
-    from query_structurer.semantic_ir import extract_literal_bindings
-
-    return semantic_coverage.literal_anchors_from(extract_literal_bindings(query))
-
-
-def _obligation_anchor_provider(query: str) -> list[Any]:
-    """값 없는 의미 연산자(반복·집합·스냅샷·시간 한정어)의 요구 원장 앵커."""
-    import semantic_coverage  # 순환 없음
-    import semantic_requirements
-
-    return semantic_coverage.obligation_anchors_from(
-        query, semantic_requirements.capture_source_semantic_obligations(query)
-    )
-
-
-def install() -> None:
-    """도메인 지식을 코어에 등록한다(조립 지점 — 여러 번 호출해도 멱등)."""
-    import semantic_coverage  # 순환 없음
-
-    semantic_coverage.register_anchor_provider("literal", _literal_anchor_provider)
-    semantic_coverage.register_anchor_provider("obligation", _obligation_anchor_provider)
+# 앵커 공급자 등록(`install()`)은 2026-08-05 삭제됐다. 그 공급자를 소비하던 coverage 검증기
+# (`semantic_coverage`)는 SemanticPlanV2 파이프라인 전용이었고, 파이프라인과 함께 폐기됐다.
+# 이 모듈은 그 뒤로 코어에 등록할 것이 없다 — 도메인 지식은 `core_bindings()` 로만 나간다.
 
 
 def extension_boundary() -> dict[str, list[str]]:
@@ -550,9 +527,9 @@ def extension_boundary() -> dict[str, list[str]]:
         ],
         "code_required": [
             "새로운 시간 연산 의미(temporal_semantics 닫힌 집합 + 컴파일러 + 검증기)",
-            "새 의미 노드 종류(semantic_plan 클래스 + capability 선언 + 컴파일러 핸들러)",
+            "새 오디언스 표현 종류(audience_schema 대수 + event_ir 노드 + event_compiler lowering)",
             "새 값 종류(kind)와 그 정규화기(semantic_normalizers)",
-            "새 실행 슬롯(legacy_plan_compiler + targeting_ir SLOT_SHAPES + 빌더)",
+            "새 실행 슬롯(targeting_ir SLOT_SHAPES + 빌더)",
             "새 표면 표현 패턴(targeting_domain 마커 템플릿 — 같은 연산자면 한 줄)",
         ],
     }
@@ -574,7 +551,6 @@ __all__ = [
     "execution_operator",
     "extension_boundary",
     "identity_fields",
-    "install",
     "node_field_vocabularies",
     "node_field_vocabulary_guidance",
     "plan_container",
@@ -589,8 +565,3 @@ __all__ = [
     "vocabulary",
     "vocabulary_glossary",
 ]
-
-
-# 이 모듈이 import 되는 순간 코어에 도메인 지식이 붙는다. 등록 자체는 지연 클로저라
-# 무거운 의존을 끌어오지 않고, 순환도 만들지 않는다.
-install()

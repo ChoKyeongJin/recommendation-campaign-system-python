@@ -17,7 +17,6 @@ import ast
 import hashlib
 import importlib.util
 import json
-import re
 import subprocess
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -38,8 +37,9 @@ _MEMBER_TARGET_FILTERS = Path("docs/data/runtime/sql/member_target_filters.json"
 _MEMBER_METRICS = Path("docs/data/runtime/sql/member_metrics.json")
 _METRIC_DIRECTORY = Path("docs/data/runtime/sql/metrics")
 _COVERAGE_INVENTORY = Path("tools/canonical_coverage_inventory.py")
-_SEMANTIC_PLAN = Path("semantic_plan.py")
-_EVENT_LOWERING = Path("semantic_plan_event_lowering.py")
+# `semantic_plan.py` / `semantic_plan_event_lowering.py` 를 AST 로 훑던 소스 2종은
+# 2026-08-05 삭제됐다 — SemanticPlanV2 중간표현이 폐기되면서 두 파일 자체가 사라진다.
+# 없는 파일을 required 소스로 두면 투영이 통째로 ok=False 가 되어 기동/도구가 죽는다.
 _CAPABILITY_VALIDATION = Path("capability_validation.py")
 _TARGETING_IR = Path("targeting_ir.py")
 _DISCOVERY_SCHEMAS = (
@@ -91,10 +91,6 @@ def _content_hash(path: Path) -> str:
 
 def _bare_column(value: Any) -> str:
     return str(value or "").strip().rpartition(".")[2].upper()
-
-
-def _snake_case(value: str) -> str:
-    return re.sub(r"(?<!^)(?=[A-Z])", "_", value).lower()
 
 
 @dataclass(frozen=True)
@@ -1618,188 +1614,13 @@ def _literal_assignment(tree: ast.Module, name: str) -> Any:
     return ast.literal_eval(value)
 
 
-def _semantic_plan_types(
-    collector: _Collector,
-    root: Path,
-    revision: str | None,
-) -> dict[str, str]:
-    parsed = _python_source(collector, root, _SEMANTIC_PLAN, revision)
-    if parsed is None:
-        return {}
-    source, tree = parsed
-    class_to_type: dict[str, str] = {}
-    for class_node in (node for node in tree.body if isinstance(node, ast.ClassDef)):
-        node_type: str | None = None
-        for child in class_node.body:
-            value: ast.AST | None = None
-            if (
-                isinstance(child, ast.Assign)
-                and any(
-                    isinstance(target, ast.Name) and target.id == "TYPE"
-                    for target in child.targets
-                )
-                or (
-                    isinstance(child, ast.AnnAssign)
-                    and isinstance(child.target, ast.Name)
-                    and child.target.id == "TYPE"
-                )
-            ):
-                value = child.value
-            if (
-                isinstance(value, ast.Constant)
-                and isinstance(value.value, str)
-                and value.value
-            ):
-                node_type = value.value
-                break
-        if node_type is None:
-            continue
-        class_to_type[class_node.name] = node_type
-        pointer = f"symbol:{class_node.name}.TYPE"
-        evidence = source.evidence(
-            pointer,
-            line_start=class_node.lineno,
-            line_end=getattr(class_node, "end_lineno", class_node.lineno),
-        )
-        implementation_id = f"code:semantic-plan-class:{_token(class_node.name)}"
-        canonical_id = f"canonical:semantic-plan-node-type:{_token(node_type)}"
-        collector.node(
-            implementation_id,
-            "SemanticPlanNodeTypeImplementation",
-            {
-                "symbol": class_node.name,
-                "node_type": node_type,
-                "trust_state": APPROVED_TRUST,
-            },
-            evidence,
-        )
-        if canonical_id not in collector.nodes:
-            collector.issue(
-                "CODE_CATALOG_DRIFT",
-                f"semantic plan class {class_node.name} declares undeclared node type {node_type!r}",
-                source_path=source.relative_path,
-                source_pointer=pointer,
-            )
-            collector.node(
-                canonical_id,
-                "SemanticPlanNodeType",
-                {
-                    "canonical_id": node_type,
-                    "declared_in_catalog": False,
-                    "trust_state": APPROVED_TRUST,
-                },
-                evidence,
-            )
-        collector.edge(canonical_id, implementation_id, "IMPLEMENTED_BY", evidence)
-    return class_to_type
-
-
-def _handler_name(if_node: ast.If) -> str | None:
-    for child in if_node.body:
-        for node in ast.walk(child):
-            if not isinstance(node, ast.Call) or not isinstance(
-                node.func, ast.Attribute
-            ):
-                continue
-            if isinstance(node.func.value, ast.Name) and node.func.value.id == "self":
-                return node.func.attr
-    return None
-
-
-def _isinstance_class(if_node: ast.If) -> str | None:
-    test = if_node.test
-    if not isinstance(test, ast.Call):
-        return None
-    if not isinstance(test.func, ast.Name) or test.func.id != "isinstance":
-        return None
-    if len(test.args) != 2 or not isinstance(test.args[1], ast.Attribute):
-        return None
-    attribute = test.args[1]
-    if (
-        not isinstance(attribute.value, ast.Name)
-        or attribute.value.id != "semantic_plan"
-    ):
-        return None
-    return attribute.attr
-
-
-def _extract_lowering_contract(
-    collector: _Collector,
-    root: Path,
-    revision: str | None,
-    class_to_type: Mapping[str, str],
-) -> None:
-    parsed = _python_source(collector, root, _EVENT_LOWERING, revision)
-    if parsed is None:
-        return
-    source, tree = parsed
-    discovered = 0
-    for class_node in (node for node in tree.body if isinstance(node, ast.ClassDef)):
-        for function in (
-            node
-            for node in class_node.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ):
-            for if_node in (
-                node for node in ast.walk(function) if isinstance(node, ast.If)
-            ):
-                class_name = _isinstance_class(if_node)
-                if not class_name:
-                    continue
-                handler = _handler_name(if_node)
-                if not handler:
-                    continue
-                discovered += 1
-                node_type = class_to_type.get(class_name) or _snake_case(class_name)
-                pointer = f"symbol:{class_node.name}.{function.name}/{class_name}"
-                evidence = source.evidence(
-                    pointer,
-                    line_start=if_node.lineno,
-                    line_end=getattr(if_node, "end_lineno", if_node.lineno),
-                )
-                lowerer_id = f"code:lowering-function:{_token(class_node.name)}.{_token(handler)}"
-                collector.node(
-                    lowerer_id,
-                    "LoweringFunction",
-                    {
-                        "symbol": f"{class_node.name}.{handler}",
-                        "dispatch_symbol": f"semantic_plan.{class_name}",
-                        "evidence_scope": "explicit_isinstance_dispatch",
-                        "trust_state": APPROVED_TRUST,
-                    },
-                    evidence,
-                )
-                semantic_id = f"canonical:semantic-plan-node-type:{_token(node_type)}"
-                if semantic_id not in collector.nodes:
-                    collector.node(
-                        semantic_id,
-                        "SemanticPlanNodeType",
-                        {
-                            "canonical_id": node_type,
-                            "declared_in_catalog": False,
-                            "trust_state": APPROVED_TRUST,
-                        },
-                        evidence,
-                    )
-                    collector.issue(
-                        "LOWERING_CATALOG_DRIFT",
-                        f"lowering dispatch refers to undeclared node type {node_type!r}",
-                        source_path=source.relative_path,
-                        source_pointer=pointer,
-                    )
-                collector.edge(
-                    semantic_id,
-                    lowerer_id,
-                    "IMPLEMENTED_BY",
-                    evidence,
-                    {"stage": "event_ir_lowering", "proof": "dispatch"},
-                )
-    if discovered == 0:
-        collector.issue(
-            "LOWERING_DISPATCH_NOT_FOUND",
-            "no explicit semantic_plan isinstance dispatch was found in event lowering",
-            source_path=source.relative_path,
-        )
+# `_semantic_plan_types` / `_extract_lowering_contract`(그리고 그 AST 보조 `_isinstance_class`·
+# `_handler_name`)는 2026-08-05 삭제됐다. 둘은 `semantic_plan.py` 의 노드 클래스와
+# `semantic_plan_event_lowering.py` 의 isinstance 디스패치를 코드 증거로 투영했는데,
+# SemanticPlanV2 폐기로 두 소스가 사라진다 — 없는 파일을 훑는 투영은 증거가 아니라 거짓 광고다.
+# 노드 종류 선언(`semantic_capabilities.json` 의 node_types)을 읽는 투영 **경로**는 남아 있지만,
+# 그 선언 자체가 2026-08-05 비워졌다(읽는 판정기도 컴파일러도 없어졌다). 따라서 이 투영은
+# 현재 SemanticPlanNodeType 노드를 하나도 만들지 않는다 — 다시 채우려면 실행 근거가 먼저 필요하다.
 
 
 def _compiler_node(
@@ -2034,8 +1855,6 @@ def build_repository_projection(
         git_revision,
         coverage_scan,
     )
-    class_to_type = _semantic_plan_types(collector, root, git_revision)
-    _extract_lowering_contract(collector, root, git_revision, class_to_type)
     _extract_builder_contracts(collector, root, git_revision)
     _extract_targeting_contracts(collector, root, git_revision)
 
@@ -2082,8 +1901,6 @@ def build_repository_projection(
             "approved_authorities": [
                 _AUDIENCE_CATALOG.as_posix(),
                 _SEMANTIC_CAPABILITIES.as_posix(),
-                _SEMANTIC_PLAN.as_posix(),
-                _EVENT_LOWERING.as_posix(),
                 _CAPABILITY_VALIDATION.as_posix(),
                 _TARGETING_IR.as_posix(),
             ],
@@ -2101,10 +1918,8 @@ def build_repository_projection(
             },
             "edge_count": len(edges),
             "proof_limits": {
-                "lowering": (
-                    "explicit dispatch proves a routing hook only; it does not by itself "
-                    "prove end-to-end binding, compilation, or SQL execution"
-                ),
+                # `lowering` 한계 문구는 그 증거(SemanticPlan isinstance 디스패치 투영)와 함께
+                # 2026-08-05 삭제됐다 — 만들지 않는 증거의 한계를 광고하지 않는다.
                 "compiler": (
                     "capability_validation declarations prove precedence and exclusive "
                     "routing contracts without importing graph_rag"

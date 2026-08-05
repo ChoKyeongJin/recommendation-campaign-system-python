@@ -54,6 +54,8 @@ from query_pipeline.requirement.resolver import (
 )
 
 # 저장된 payload 가 canonical 생산자에서 나왔음을 나타내는 표식(기존 계약 그대로).
+# ``semantic_plan`` 은 생산자가 폐기된 뒤에도 **저장 페이로드 호환**으로 남는다.
+# `audience_authority.CANONICAL_EVENT_EXPRESSION_SOURCES` 와 값이 같아야 한다.
 CANONICAL_SOURCES: frozenset[str] = frozenset({"audience_requirement", "semantic_plan"})
 
 DEPRECATION_MESSAGE = (

@@ -46,8 +46,10 @@ import 방향은 `requirement → event_query → planning → compiler` 로 고
 `compiler` 를 import 하지 않는다 — capability 판정은 프로토콜로 주입된다.
 
 같은 파일이 **바깥 방향**도 막는다: 패키지 어느 모듈도 이 배포의 오디언스 도메인
-(`audience_runtime`·`canonical_audience_claims`·`execution_assets`·`event_parser`·
-`plan_decisions`·`semantic_plan`·`graph_rag`·`query_structurer`)을 import 하지 않는다.
+(`audience_runtime`·`audience_validators`·`canonical_audience_claims`·`execution_assets`·
+`event_parser`·`plan_decisions`·`graph_rag`·`query_structurer`)을 import 하지 않는다.
+(`semantic_plan` 은 2026-08-05 이 목록에서 빠졌다 — SemanticPlanV2 중간표현이 폐기되어
+import 할 모듈 자체가 없다.)
 패키지 내부 방향만 보는 가드로는 "범용 계층이 도메인 계층이 되는" 경로를 막지 못한다 —
 검증기를 요구 계층에 그대로 옮겼다면 정확히 그 경로로 샜을 것이다.
 

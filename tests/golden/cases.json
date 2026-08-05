@@ -182,15 +182,6 @@
       "note": "명시적 개수만 result_limit 로 잡는다."
     },
     {
-      "id": "co_purchase_same_product",
-      "prompt": "2019년 3월에 같은 상품을 동시 구매한 고객 수",
-      "expect_slots": [
-        "target_user.purchase_date",
-        "plan.condition_evaluations"
-      ],
-      "note": "주문·상품 단위 조건 판정과 고유 회원 수 최종 집계를 서로 다른 grain으로 보존한다."
-    },
-    {
       "id": "no_purchase_prefix",
       "prompt": "미구매 고객",
       "expect_slots": [

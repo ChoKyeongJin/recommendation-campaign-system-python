@@ -2,6 +2,12 @@
 
 최종 갱신: 2026-08-04
 
+> **2026-08-05 폐기 고지.** 이 메모가 `SemanticPlanV2` / `semantic_pipeline` /
+> `semantic_plan_bridge` 를 현재형으로 적은 곳은 전부 과거다 — 그 중간표현과 스택은
+> 2026-08-05 모듈 파일까지 삭제됐다. 아래 "canonical 의미 소유 경로" 도식에서
+> `SemanticPlanV2` 단계는 빠지고, LLM 이 `audience_requirement.expression`(canonical Event IR)을
+> 직접 낸 뒤 도메인·카탈로그 결속 → 컴파일로 이어진다.
+
 이 문서는 현재 작업 트리의 변경 내용과 저장소 전체 하드코딩 감사 결과를 다음 작업자가 이어서 진행할 수 있도록 정리한 인수인계 메모다. 정식 구조 이동 계획은 `docs/plans_ir_decoupling.md`와 `docs/plans_event_ir_only.md`를 기준으로 한다.
 
 ## 1. 지금까지 한 작업

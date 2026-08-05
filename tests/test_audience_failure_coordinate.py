@@ -256,11 +256,11 @@ def test_literal_keys_match_their_owning_modules() -> None:
         ("system", "semantic_registry_gap"),
         (None, "semantic_ir_unsupported"),
     ):
-        import semantic_plan
+        import semantic_outcome
 
         failure_kind = {
-            "structurer": semantic_plan.FAILURE_KIND_STRUCTURER,
-            "system": semantic_plan.FAILURE_KIND_SYSTEM,
+            "structurer": semantic_outcome.FAILURE_KIND_STRUCTURER,
+            "system": semantic_outcome.FAILURE_KIND_SYSTEM,
             None: None,
         }[kind]
         reason = failure_messages.semantic_failure_reason("unsupported", failure_kind)

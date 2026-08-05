@@ -639,9 +639,10 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
             # audience_diagnosis 는 이것을 한 줄로 요약하므로, 항목이 여럿일 때 전량은 여기서만 보인다.
             # 내부 경로·코드가 그대로 들어 있어 debug 블록 밖으로는 내보내지 않는다.
             "unresolved_source_conditions": query_plan.get("unresolved_source_conditions", []),
-            # 의미 파이프라인의 판정 입력/출력(정규화 재분류·청구 구간·커버리지·재방출).
-            # "왜 이 타입이 됐고 왜 커버리지가 저렇게 나왔나"가 응답에서 보여야 회귀를 관측한다.
-            "semantic_pipeline": query_plan.get("semantic_pipeline", {}),
+            # ``semantic_pipeline``(의미 파이프라인 판정 입력/출력)은 2026-08-05 여기서 빠졌다.
+            # 그 영수증의 생산자(SemanticPlan 컴파일 경로)가 폐기되어 값이 **영구히 빈 dict** 로
+            # 고정됐고, 빈 값을 계속 실어 보내면 "파이프라인이 돌았는데 아무것도 안 나왔다"는
+            # 거짓 진단이 된다. 진단 블록에서는 없는 것이 비어 있는 것보다 정직하다.
         }
 
     return api_response

@@ -11,8 +11,6 @@ import event_state_selection
 import open_text_scope_claims
 import plan_decisions
 import rolling_absence_claims
-import semantic_plan as semantic_plan_module
-import semantic_relation_ownership
 import targeting_ir
 from aggregation_requirements import aggregation_request_json_schema
 from entity_set import derived_set_ast_error
@@ -27,30 +25,15 @@ from .semantic_ir import (
 )
 
 
-def _semantic_plan_schema() -> dict[str, Any]:
-    """SemanticPlanV2 노출면(노드 선언에서 파생 — 여기에 두 번째 권위를 만들지 않는다)."""
-    return semantic_plan_module.semantic_plan_json_schema()
-
-
 CAMPAIGN_QUERY_PLAN_V4_VERSION = "4.0"
 QUERY_IDENTITY_DIGEST_KEY = "query_identity_digest"
 AUDIENCE_REQUIREMENT_KEY = "audience_requirement"
 EVENT_EXPRESSION_KEY = "event_expression"
-SEMANTIC_PLAN_KEY = "semantic_plan"
 
-# LLM 노출면에 남기는 SemanticPlan 노드 타입. **Event IR 대수가 표현하지 못하는 축만** 여기 온다.
-#
-# 2026-08-02 canonical audience 이행에서 semantic_plan 을 LLM 노출면에서 통째로 뺐는데, 그 결과
-# 등급/상태 시점·이력 조건이 **생산자를 잃었다** — `compositional_targeting` 의 as_of/transition/
-# stable/changed_n_times 컴파일러는 그대로 살아 있는데, 그 입력인 `target_user.relational_operation`
-# 을 만드는 유일한 경로가 `legacy_plan_compiler._compile_relation_predicate`(= relation_predicate
-# 노드)였기 때문이다. 실측(2026-08-02 라이브): '이번 달 기준 골드 등급 회원'의 query_plan 은
-# semantic_plan.nodes=[] + audience_requirement.issues=[unsupported_semantics] 로, 작동하는
-# 컴파일러가 한 번도 호출되지 않았다.
-#
-# 이 목록은 **줄어드는 방향**이 목표다: Event IR 이 월별 스냅샷 축을 흡수하면 여기서 빠진다.
-# 새 타입을 늘리려면 "audience_requirement 로 표현할 수 없다"는 근거가 먼저 있어야 한다.
-LLM_SEMANTIC_PLAN_NODE_TYPES: tuple[str, ...] = ("relation_predicate",)
+# SemanticPlanV2 는 LLM 노출면에서 제거됐다(2026-08-05). 오디언스 의미의 유일한 입력 계약은
+# `audience_requirement.expression`(canonical Event IR)이다 — 등급/상태 이력·전이 축,
+# 프로필 스칼라 지표 축, 캠페인 평균 구매금액 축은 생산자가 없는 상태로 광고만 남아 있었고
+# 폐기됐다. 표현할 수 없는 의미는 issue 로 fail-close 한다(조용한 축소·추측 금지).
 # 오디언스 issue 코드의 소유자는 검증/투영 모듈이다(그쪽에서 code ↔ kind 표로 파생한다).
 AUDIENCE_REQUIREMENT_ISSUE_CODES = audience_execution.AUDIENCE_REQUIREMENT_ISSUE_CODES
 CAMPAIGN_INTENTS = {
@@ -266,8 +249,10 @@ _BARE_ARRAY_SLOTS: frozenset[str] = frozenset({
 # 등재해야 한다 — 계약 테스트가 '노출 ∨ 선언된 제외' 전수를 강제한다(조용한 미노출 금지).
 _PLAN_SLOT_EXPOSURE_EXCLUSIONS: dict[str, str] = {
     "member_metric_ranking": (
-        "SemanticPlanV2 RankedSet 소유 — LegacyQueryPlanCompiler 만 이 슬롯을 쓴다. "
-        "LLM 에 노출하면 같은 의미를 노드와 슬롯 두 곳에서 방출하는 이중 생산자가 된다."
+        "애플리케이션 소유 슬롯인데 2026-08-05 이후 생산자가 없다(유일한 생산자였던 "
+        "SemanticPlanV2 RankedSet 컴파일 계층이 폐기됐다). LLM 에 노출하면 LLM 이 그 유일한 "
+        "생산자가 되는데, 값의 정합성을 검증할 결정론 산출물이 없어 랭킹 조건을 검증 없이 "
+        "SQL 로 흘리게 된다. 다시 노출하려면 애플리케이션 쪽 생산자를 먼저 세워야 한다."
     ),
     "region_density_target": (
         "properties 없는 조각이라 strict 에서 표현 불가 — 노출하려면 targeting_ir.SLOT_SHAPES "
@@ -485,10 +470,6 @@ CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": True,
     "$defs": {
-        # SemanticPlanV2 의미 노드(재귀 — logical_expression.children / entity_set.ranked_set).
-        "semanticNode": semantic_plan_module.semantic_node_json_schema(
-            node_ref="#/$defs/semanticNode"
-        ),
         "derivedSetDimensionFilter": {
             "type": "object",
             "additionalProperties": False,
@@ -758,9 +739,6 @@ CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA: dict[str, Any] = {
         "result_limit": _nullable({"type": "integer", "minimum": 1}),
         "semantic_evidence": {"type": "array", "items": _EVIDENCE_ITEM_SCHEMA},
         "unresolved": {"type": "array", "items": _UNRESOLVED_ITEM_SCHEMA},
-        # 의미 계층의 단일 소유자. LLM 은 여기에만 의미를 쓴다 — 실행 슬롯도, 결핍 목록도,
-        # 최종 status 도 만들지 않는다(semantic_ir 은 이 노드들에서 파생되는 애플리케이션 소유물).
-        "semantic_plan": _semantic_plan_schema(),
         "semantic_ir": copy.deepcopy(SEMANTIC_IR_LLM_JSON_SCHEMA),
         "literal_bindings": {
             "type": "array",
@@ -777,8 +755,9 @@ CAMPAIGN_QUERY_PLAN_V4_JSON_SCHEMA: dict[str, Any] = {
 
 
 # LLM 이 만들지 않는 plan 필드. semantic_ir 이 여기 있는 것이 이번 이행의 핵심이다 —
-# 결핍·미지원·최종 status 의 소유자를 LLM 에서 시스템(semantic_pipeline)으로 옮겼다.
-# member_metric_ranking 은 SemanticPlan RankedSet 의 컴파일 산출물이라 역시 LLM 소관이 아니다.
+# 결핍·미지원·최종 status 의 소유자를 LLM 에서 애플리케이션으로 옮겼다. 지금 그 유일한 writer 는
+# query_structurer.semantic_ir.write_semantic_ir 이다(옛 소유자 semantic_pipeline 은 폐기됐다).
+# member_metric_ranking 도 애플리케이션 소유다 — 위 _PLAN_SLOT_EXPOSURE_EXCLUSIONS 참고.
 _APPLICATION_OWNED_PLAN_FIELDS = frozenset(
     {
         "semantic_ir",
@@ -887,16 +866,12 @@ def _campaign_query_plan_v4_llm_schema() -> dict[str, Any]:
         "additionalProperties": False,
         "required": [
             "intent", "campaign_constraints", "result_limit", AUDIENCE_REQUIREMENT_KEY,
-            SEMANTIC_PLAN_KEY,
         ],
         "properties": {
             "intent": copy.deepcopy(internal["intent"]),
             "campaign_constraints": campaign_metadata,
             "result_limit": copy.deepcopy(internal["result_limit"]),
             AUDIENCE_REQUIREMENT_KEY: copy.deepcopy(_AUDIENCE_REQUIREMENT_SCHEMA),
-            SEMANTIC_PLAN_KEY: semantic_plan_module.semantic_plan_json_schema(
-                node_types=LLM_SEMANTIC_PLAN_NODE_TYPES
-            ),
         },
     }
     # ``#/$defs`` always resolves from the function-parameters document for the
@@ -1217,9 +1192,6 @@ def _synthesize_closed_product_complement(
         value not in (None, [], {}) for value in constraints.values()
     ):
         return False
-    semantic_plan = payload.get(SEMANTIC_PLAN_KEY)
-    if not isinstance(semantic_plan, dict) or semantic_plan.get("nodes") != []:
-        return False
 
     expression = open_text_scope_claims.synthesize_single_product_complement_purchase(
         query
@@ -1289,9 +1261,6 @@ def _synthesize_declared_state_selection(
         value not in (None, [], {}) for value in constraints.values()
     ):
         return False
-    semantic_plan = payload.get(SEMANTIC_PLAN_KEY)
-    if not isinstance(semantic_plan, dict) or semantic_plan.get("nodes") != []:
-        return False
     bindings = payload.get("literal_bindings")
     if not isinstance(bindings, list):
         return False
@@ -1326,8 +1295,9 @@ def _derive_audience_execution(
         run_audience_resolver      요구 검증 → issue 판정(검증기는 요구 계층에 주입된다)
         project_resolution_to_plan 그 결과를 legacy plan 키 6개로 투영
 
-    반환값은 새 계약이 존재했는지다. False면 기존 저장 플랜을 위한 SemanticPlan 호환 경로가
-    이어서 처리할 수 있다. canonical→legacy 슬롯 역투영은 하지 않는다.
+    반환값은 새 계약이 존재했는지다. False면 이 계층이 의미를 청구하지 않았다는 뜻이다
+    (audience_requirement 계약이 아예 없는 저장 페이로드·rules 레인). canonical→legacy
+    슬롯 역투영은 하지 않는다.
     """
     try:
         resolution = audience_execution.run_audience_resolver(
@@ -1343,8 +1313,8 @@ def _derive_audience_execution(
 
 # `_drop_campaign_constraint_requirements` 는 2026-08-02 SemanticPlanV2 이행으로 제거됐다.
 # 그 함수는 "LLM 이 낸 결핍 보고 중 캠페인 제약 항목"을 사후 삭제하는 sweep 이었다. 결핍의
-# 소유자가 LLM 이었기 때문에 필요했던 보정이고, 이제 결핍은 semantic_plan 노드 스키마에서
-# 계산된다 — 캠페인 채널·혜택은 애초에 노드 필드가 아니므로 결핍으로 생기지 않는다.
+# 소유자가 LLM 이었기 때문에 필요했던 보정이고, 이제 결핍은 오디언스 요구 계약의 검증
+# 결과에서 계산된다 — 캠페인 채널·혜택은 애초에 오디언스 의미가 아니므로 결핍으로 생기지 않는다.
 
 
 def _derive_semantic_ir(
@@ -1352,35 +1322,14 @@ def _derive_semantic_ir(
 ) -> None:
     """semantic_ir 을 단일 audience requirement에서 파생한다.
 
-    audience_requirement가 없는 저장/규칙 플랜만 SemanticPlanV2 호환 경로를 탄다. 새 LLM 계약은
-    두 표현을 동시에 만들 수 없고, canonical 경로는 실행 슬롯으로 역투영하지 않는다.
+    audience_requirement 계약이 없는 플랜(저장 페이로드·rules 레인)은 이 계층이 의미를
+    청구하지 않았다는 뜻이며, 조건 유무는 SQL 게이트가 따로 잰다. 그래서 그 갈래에는
+    중립 투영(status="resolved")만 쓴다 — 여기서 needs_clarification 을 쓰면 이 계층을
+    거치지 않는 모든 플랜이 새로 차단된다.
     """
     if _derive_audience_execution(payload, query, current_date=current_date):
-        payload.setdefault("semantic_plan", {"nodes": []})
         return
-
-    # Legacy ingress adapter — 신규 LLM schema에서는 노출되지 않는다.
-    import semantic_pipeline  # 순환 없음(파이프라인은 v4 스키마를 모른다)
-    import semantic_plan as plan_module  # 순환 없음
-
-    raw_plan = payload.get("semantic_plan")
-    if not isinstance(raw_plan, dict):
-        raw_plan = {"nodes": []}
-        payload["semantic_plan"] = raw_plan
-    try:
-        plan = plan_module.plan_from_dict(raw_plan, source_query=query)
-    except plan_module.SemanticPlanError as exc:
-        payload["semantic_plan"] = {"nodes": []}
-        write_semantic_ir(
-            payload,
-            empty_semantic_ir(
-                missing_fields=["semantic_plan"],
-                message=f"의미 노드를 해석하지 못했습니다: {exc}",
-            ),
-        )
-        return
-    payload["semantic_plan"] = plan.to_dict()
-    write_semantic_ir(payload, semantic_pipeline.project_semantic_ir(plan))
+    write_semantic_ir(payload, empty_semantic_ir(status="resolved"))
 
 
 def attach_campaign_query_plan_v4_identity(
@@ -1406,7 +1355,6 @@ def attach_campaign_query_plan_v4_identity(
     enriched.setdefault("result_limit", None)
     enriched.setdefault("semantic_evidence", [])
     enriched.setdefault("unresolved", [])
-    enriched.setdefault("semantic_plan", {"nodes": []})
     # Literal extraction is application-owned input to canonical validation,
     # not a model output and not a post-validation decoration.
     enriched.update(
@@ -1426,59 +1374,10 @@ def attach_campaign_query_plan_v4_identity(
     _normalize_audience_wire_shapes(enriched)
     _normalize_unique_evidence_spans(enriched, query)
     _normalize_audience_evidence(enriched, query)
-    try:
-        import audience_runtime
-
-        catalog = audience_runtime.catalog_snapshot()
-        as_of_promotion = semantic_relation_ownership.promote_snapshot_as_of_expression(
-            enriched, query, catalog
-        )
-        promotions = semantic_relation_ownership.promote_snapshot_transition_expression(
-            enriched, query, catalog
-        )
-        semantic_relation_ownership.normalize_relation_node_spans(enriched, query)
-        semantic_relation_ownership.normalize_relation_node_claims(
-            enriched, query, catalog
-        )
-    except semantic_relation_ownership.RelationOwnershipError as exc:
-        raise CampaignQueryPlanValidationError(str(exc)) from exc
-    if as_of_promotion is not None:
-        plan_decisions.record(
-            enriched,
-            filter_name="semantic_relation_ownership.snapshot_as_of",
-            action=plan_decisions.UPDATE,
-            slot="audience_requirement.expression+semantic_plan.relation_predicate",
-            reason=(
-                "단일 스냅샷 필드 비교와 같은 절의 기준월 리터럴을 "
-                "카탈로그 소유 relation node로 이관"
-            ),
-            value=as_of_promotion,
-        )
-    for promotion in promotions:
-        plan_decisions.record(
-            enriched,
-            filter_name="semantic_relation_ownership.snapshot_transition",
-            action=plan_decisions.UPDATE,
-            slot="audience_requirement.expression+semantic_plan.relation_predicate",
-            reason="월 스냅샷 직전/현재 비교쌍을 단일 relation owner로 이동",
-            value=promotion,
-        )
+    # 등급/상태 스냅샷 축의 relation 승격·정규화는 2026-08-05 폐기됐다. 그 축의 유일한
+    # 소비자가 SemanticPlan relation_predicate 였고, 표현을 그 노드로 옮기면 이제 아무도
+    # 컴파일하지 않는다. 스냅샷 필드 비교는 그대로 두고 canonical 검증이 판정한다.
     _derive_semantic_ir(enriched, query, current_date=current_date)
-    coverage_gaps = semantic_relation_ownership.project_relation_data_coverage(
-        enriched, query, catalog
-    )
-    for gap in coverage_gaps:
-        plan_decisions.record(
-            enriched,
-            filter_name="semantic_relation_ownership.data_coverage",
-            action=plan_decisions.KEEP,
-            slot="semantic_plan",
-            reason=(
-                "월별 스냅샷 적재 범위 진단은 SQL 생성 가능 여부를 제한하지 않으므로 "
-                "요청 의미를 보존"
-            ),
-            value=gap,
-        )
     enriched[QUERY_IDENTITY_DIGEST_KEY] = campaign_query_identity_digest(enriched)
     return enriched
 
@@ -1535,7 +1434,6 @@ def build_campaign_query_plan_v4_fallback(
                     }
                 ],
             },
-            "semantic_plan": {"nodes": []},
             "unresolved": [] if recovered else [
                 {
                     "path": None,

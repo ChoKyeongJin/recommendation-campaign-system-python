@@ -112,10 +112,6 @@ def test_audience_surface_is_exactly_todays_gate_surface() -> None:
     ("name", "why"),
     [
         (
-            "semantic_plan",
-            "canonical 레인에 상시 존재한다 — True 면 모든 canonical 요청이 충돌로 죽는다.",
-        ),
-        (
             "unresolved_source_conditions",
             "Event IR 빌더 자신이 쓰는 좌표다 — True 면 canonical 실패가 자기참조 충돌이 된다.",
         ),
@@ -124,6 +120,23 @@ def test_audience_surface_is_exactly_todays_gate_surface() -> None:
 def test_self_referential_keys_are_never_audience(name: str, why: str) -> None:
     key = next(item for item in plan_schema.ALL if item.name == name)
     assert key.audience is False, f"{name} 은 audience=False 여야 한다: {why}"
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        # 2026-08-05 폐기. 되살아나면 "두 번째 오디언스 해석 계층"이 계약에 다시 선언된다.
+        "semantic_plan",
+        # 그 계층의 컴파일 산출물이었다 — 생산자가 없는데 파생 키로 남아 있으면 스냅샷·감사가
+        # "있다가 비었다"를 계속 구분하려 든다.
+        "semantic_pipeline",
+        "requirements",
+    ],
+)
+def test_retired_semantic_plan_keys_are_not_declared(name: str) -> None:
+    assert name not in {key.name for key in plan_schema.ALL}, (
+        f"{name} 이 plan 계약에 되살아났다 — 그 키의 생산자는 2026-08-05 폐기됐다."
+    )
 
 
 def test_grounding_predicate_derives_its_surface_from_the_registry() -> None:

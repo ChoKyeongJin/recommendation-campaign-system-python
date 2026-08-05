@@ -323,10 +323,9 @@ def test_signal_extractor_uses_structured_priority_and_ignores_missing_paths() -
             ]
         },
         "missing_fields": ["audience_requirement.member_entity"],
-        "semantic_plan": {
-            "capability_verdicts": [{"metric": "later", "node_id": "n1"}],
-            "nodes": [{"id": "n1", "source_span": "later span"}],
-        },
+        # 우선순위 대조군. 예전에는 `semantic_plan.capability_verdicts` 가 이 자리에 있었으나
+        # 그 구조는 2026-08-05 폐기됐다 — 이제 후순위 구조는 semantic_ir 미지원 연산이다.
+        "semantic_ir": {"unsupported_operations": [{"symbol": "later"}]},
     }
     response = {"failure_code": "catalog_symbol_unresolved"}
 
@@ -339,18 +338,14 @@ def test_signal_extractor_uses_structured_priority_and_ignores_missing_paths() -
     assert signal.executable is False
 
 
-def test_signal_extractor_joins_capability_verdict_to_recursive_node() -> None:
+def test_signal_extractor_reads_unsupported_semantic_operations() -> None:
+    """후순위 구조가 실제로 신호를 낸다(공허한 우선순위 대조군 방지)."""
+
     plan = {
-        "semantic_plan": {
-            "capability_verdicts": [{"metric": "purchase_cycle", "node_id": "n2"}],
-            "nodes": [
-                {
-                    "id": "root",
-                    "children": [
-                        {"id": "n2", "source_span": "purchase cycle"}
-                    ],
-                }
-            ],
+        "semantic_ir": {
+            "unsupported_operations": [
+                {"symbol": "purchase_cycle", "source_span": "purchase cycle"}
+            ]
         }
     }
 
@@ -360,7 +355,7 @@ def test_signal_extractor_joins_capability_verdict_to_recursive_node() -> None:
 
     assert signal is not None
     assert signal.received_symbol == "purchase_cycle"
-    assert signal.node_id == "n2"
+    assert signal.source == "query_plan.semantic_ir.unsupported_operations"
     assert signal.source_span == "purchase cycle"
 
 

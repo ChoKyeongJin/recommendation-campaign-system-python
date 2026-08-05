@@ -290,63 +290,11 @@ def test_allowed_canonical_values_advertise_profile_and_ranking_vocab() -> None:
     assert "total_buy_amt" in values["member_metric_id"]
 
 
-# ── P12: 동시구매(고객수) 조건 판정 IR 백필 ─────────────────────────────────────────────
-
-
-def _co_purchase_plan(query: str, span: str, period: dict | None = None) -> dict:
-    """동시구매 RelationPredicate 노드를 실은 플랜(파이프라인 입력 형태)."""
-    start = query.index(span)
-    node: dict = {
-        "id": "req-1", "type": "relation_predicate", "source_span": span,
-        "source_start": start, "source_end": start + len(span),
-        "subject": "member", "attribute": "product", "relation": "co_purchase",
-    }
-    if period is not None:
-        node["period"] = period
-    return {"target_user": {}, "semantic_plan": {"nodes": [node]}}
-
-
-def test_co_purchase_node_compiles_to_valid_ir_with_window() -> None:
-    """'2026년 3월 같은 상품을 동시 구매한 고객수'
-
-    과거에는 `apply_same_product_co_purchase_backfill` 이 원문을 정규식으로 감지해
-    condition_evaluations 를 채웠다. 이제 그 IR 은 SemanticPlan 노드의 컴파일 산출물이다 —
-    빌더(검증된 capability 서명)와 검증 체인은 그대로다."""
-    import semantic_plan_bridge
-
-    query = "2026년 3월 같은 상품을 동시 구매한 고객수"
-    plan = _co_purchase_plan(
-        query, "같은 상품을 동시 구매한 고객수",
-        {"type": "absolute", "from": "2026-03-01", "to": "2026-03-31"},
-    )
-    semantic_plan_bridge.apply(plan, query, context=graph_rag._semantic_compile_context())
-
-    evaluations = plan.get(graph_rag.CONDITION_EVALUATIONS_KEY)
-    assert isinstance(evaluations, list) and len(evaluations) == 1
-    assert graph_rag.validate_condition_evaluations(evaluations) == []
-    time_range = evaluations[0]["evaluation_scope"]["time_range"]
-    assert (time_range["from"], time_range["to"]) == ("20260301", "20260331")
-
-
-def test_co_purchase_ir_is_not_produced_without_a_node() -> None:
-    """노드가 없으면 IR 도 없다 — 원문에 동시구매 어구가 있어도 마찬가지(fail-close).
-
-    과거 백필의 '카운트 출력이 아니면 만들지 않는다' 가드가 여기로 이전됐다: 출력 형태를
-    포함한 요구 해석 전체가 LLM 의 노드 방출에 달려 있고, 결정론 감지 경로는 없다."""
-    import semantic_plan_bridge
-
-    query = "2026년 3월 같은 상품을 동시 구매한 고객 리스트"
-    plan: dict = {"target_user": {}, "semantic_plan": {"nodes": []}}
-    semantic_plan_bridge.apply(plan, query, context=graph_rag._semantic_compile_context())
-    assert graph_rag.CONDITION_EVALUATIONS_KEY not in plan
-
-
-def test_co_purchase_compile_does_not_overwrite_existing_ir() -> None:
-    import semantic_plan_bridge
-
-    query = "같은 상품을 동시 구매한 고객수"
-    sentinel = [{"id": "existing"}]
-    plan = _co_purchase_plan(query, query)
-    plan[graph_rag.CONDITION_EVALUATIONS_KEY] = sentinel
-    semantic_plan_bridge.apply(plan, query, context=graph_rag._semantic_compile_context())
-    assert plan[graph_rag.CONDITION_EVALUATIONS_KEY] is sentinel
+# ── P12: 동시구매(고객수) 조건 판정 IR ────────────────────────────────────────────────
+# 동시구매 테스트 3종은 2026-08-05 삭제됐다. 그 IR 의 유일한 생산자는 SemanticPlan 노드를
+# 슬롯으로 컴파일하는 계층이었고, 그 계층이 폐기됐다. 동시구매는 그 전에 이미 도달 불가였다 —
+# `targeting_domain.temporal_operator_of("co_purchase")` 가 None 이라 의미 노드가 오디언스
+# 전체를 소유할 수 없었고, 순수 동시구매 요청은 ingress 에서
+# missing_argument(audience_expression) 로 막힌다. IR 빌더
+# (`condition_evaluation_ir.build_same_product_co_purchase_evaluation`)와 지원 조건 표의
+# '조건부 지원' 광고도 같은 날 삭제됐다.

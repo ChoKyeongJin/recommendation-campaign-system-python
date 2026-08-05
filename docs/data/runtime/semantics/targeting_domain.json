@@ -1,8 +1,10 @@
 {
   "_comment": [
-    "회원 타기팅 **도메인 선언** — 범용 코어(semantic_plan / semantic_capability / semantic_coverage /",
-    "semantic_candidates / semantic_normalizers / semantic_pipeline / requirement_ledger /",
-    "temporal_semantics)가 도메인 낱말을 하나도 모르게 하기 위한 단일 주입원이다.",
+    "회원 타기팅 **도메인 선언** — 범용 코어(semantic_normalizers / temporal_semantics /",
+    "semantic_domain_binding)가 도메인 낱말을 하나도 모르게 하기 위한 단일 주입원이다.",
+    "2026-08-05 이전에는 SemanticPlanV2 스택(semantic_plan / semantic_capability /",
+    "semantic_coverage / semantic_candidates / semantic_pipeline / requirement_ledger)도",
+    "이 선언의 소비자였으나, 그 스택은 모듈 파일까지 폐기됐다. 남은 소비자 기준으로 읽어라.",
     "",
     "코어는 이 파일을 직접 읽지 않는다. targeting_domain.py 가 읽어서 코어에 주입한다.",
     "",
@@ -14,8 +16,9 @@
     "JSON 만으로 열리는 것: 새 속성 축, 새 집계 도메인(scope), 새 엔터티, 새 단위,",
     "                        기존 시간 연산자에 붙는 새 속성/새 실행 연산자 이름.",
     "코드가 필요한 것:       **새로운 시간 연산 의미**(temporal_semantics 의 닫힌 집합 확장),",
-    "                        새 노드 종류, 새 값 종류(kind), 새 컴파일 대상 슬롯.",
-    "                        경계 상세는 docs/architecture_generic_core.md 참고."
+    "                        새 오디언스 표현 종류(event_ir 노드 + event_compiler lowering),",
+    "                        새 값 종류(kind), 새 실행 슬롯(targeting_ir SLOT_SHAPES + 빌더).",
+    "                        기계 판독본은 targeting_domain.extension_boundary() 다."
   ],
   "version": "1.0",
 
@@ -31,8 +34,11 @@
 
   "vocabularies": {
     "_comment": [
-      "노드 필드의 닫힌 값 목록. semantic_plan.FieldSpec.vocabulary 가 이 키를 가리킨다.",
-      "새 값(예: 새 집계 도메인)은 여기 한 줄로 열리고, LLM 노출 스키마·검증이 함께 파생된다."
+      "도메인 필드의 닫힌 값 목록. 코어는 semantic_domain_binding.vocabulary(<키>) 로만 읽는다.",
+      "2026-08-05 이전에는 semantic_plan.FieldSpec.vocabulary 가 이 키를 가리켰고, LLM 노출",
+      "스키마와 노드 검증이 여기서 파생됐다 — 그 스택은 폐기됐다. 지금 남은 소비자는 값 정규화와",
+      "시간 한정어 어휘 파생이며, 아래 attribute_relation 처럼 폐기 축의 관계명도 함께 남아 있다",
+      "(어휘 자체는 무해하고, 그 관계를 실행하는 컴파일러가 없다는 것이 폐기의 내용이다)."
     ],
     "aggregate_scope": ["cart", "order", "campaign", "profile"],
     "aggregation_function": ["sum", "avg", "count", "max", "min"],
@@ -121,9 +127,13 @@
       "값 목록 자체는 실행 레지스트리(_allowed_canonical_values)가 소유하고, 여기서는",
       "'노드 타입.필드 → 어휘 키' 결속만 한다(이중 소유 금지).",
       "",
-      "왜 필요한가: 노드의 metric 은 자유 문자열이라 LLM 이 그럴듯한 id 를 지어낸다",
+      "왜 필요했나: SemanticPlan 노드의 metric 은 자유 문자열이라 LLM 이 그럴듯한 id 를 지어냈다",
       "(실측: 장바구니 지표에 'total_amount'). 어느 목록에서 골라야 하는지를 discriminator",
-      "(예: scope)와 함께 알려 주면 그 지어내기가 사라진다. 새 결속은 여기 한 줄이다."
+      "(예: scope)와 함께 알려 주면 그 지어내기가 사라졌다.",
+      "",
+      "**2026-08-05 현재 이 결속을 LLM 안내로 바꾸는 소비자는 없다** — 그 안내를 프롬프트에 넣던",
+      "SemanticPlanV2 구조화기가 폐기됐다. 키의 노드 타입 이름도 그 시절 어휘다. 선언과 접근자",
+      "(targeting_domain.node_field_vocabularies)는 어휘 키 목록의 기록으로 남겨 둔다."
     ],
     "aggregate_predicate.metric": {
       "discriminator": "scope",
@@ -146,23 +156,11 @@
         "category": "entity_set_measure"
       }
     },
-    "relation_predicate.attribute": {
-      "_comment": [
-        "속성 이력 연산만 이력 속성 어휘로 묶인다. 여기 없는 관계(동시구매 등)는 이 필드를",
-        "다른 뜻으로 쓰므로 제약하지 않는다 — 선언에 없는 분기는 '제약 없음'이다."
-      ],
-      "discriminator": "relation",
-      "by_value": {
-        "as_of": "history_attribute_id",
-        "transition": "history_attribute_id",
-        "held_throughout": "history_attribute_id",
-        "stable": "history_attribute_id",
-        "changed_n_times": "history_attribute_id",
-        "ever": "history_attribute_id",
-        "never": "history_attribute_id",
-        "exists_every_month": "history_attribute_id"
-      }
-    }
+    "_retired_relation_predicate_attribute": [
+      "`relation_predicate.attribute` → history_attribute_id 결속은 2026-08-05 삭제됐다.",
+      "등급/상태 이력·전이 축(축1)이 폐기되면서 그 어휘를 만드는 실행 레지스트리 항목이",
+      "사라졌고, 남겨 두면 죽은 어휘 키를 가리키는 결속이 된다."
+    ]
   },
 
   "capability_axes": [
@@ -241,9 +239,13 @@
     },
     "execution_operators": {
       "_comment": [
-        "범용 연산자 → 실행 컴파일러(compositional_targeting.OPERATORS) 이름.",
-        "anchored/unanchored 는 시점 앵커 유무로 갈리는 연산자용이다.",
-        "여기 없는 연산자는 '실행 컴파일러 없음'이며, 그것은 미지원 판정의 근거가 된다."
+        "범용 연산자 → 실행 컴파일러 연산자 이름. anchored/unanchored 는 시점 앵커 유무로",
+        "갈리는 연산자용이다.",
+        "**2026-08-05 현재 이 표를 소비하는 실행 컴파일러는 없다.** 가리키던 대상",
+        "(compositional_targeting.OPERATORS)은 등급/상태 이력·전이 축과 함께 삭제됐고, 남은 것은",
+        "이름 사상 선언뿐이다(targeting_domain.execution_operator 접근자가 그대로 읽는다).",
+        "여기 이름이 있다고 그 연산이 실행된다는 뜻이 아니다 — 실행 가능 여부는 canonical Event IR",
+        "컴파일러가 직접 답한다."
       ],
       "AS_OF": {"anchored": "as_of_month", "unanchored": "as_of_latest"},
       "IMMEDIATELY_PRECEDING": {"unanchored": "transition"},
@@ -266,7 +268,7 @@
   },
 
   "condition_labels": {
-    "_comment": "요구사항 원장이 사용자에게 보여 주는 조건 종류 라벨(노드 타입별).",
+    "_comment": "조건 종류의 한국어 라벨(옛 SemanticPlan 노드 타입 키). 이 라벨을 사용자에게 보여 주던 요구사항 원장(requirement_ledger)은 2026-08-05 폐기됐고, 남은 것은 targeting_domain.condition_label 접근자와 코어 주입 번들이다 — 키 이름이 옛 노드 타입인 것은 역사적 이유다.",
     "predicate": "회원 속성 조건",
     "aggregate_predicate": "집계 임계 조건",
     "metric_comparison": "기간 대비 증감 조건",

@@ -12,7 +12,7 @@
 검증기(:mod:`audience_validators`)로 한다.
 
 **여기서 동작을 개선하지 않는다.** 이관과 개선을 섞으면 회귀의 원인을 가릴 수 없다 —
-산출은 ``tests/test_audience_execution_projection.py`` 가 6갈래로 고정한 그대로여야 한다.
+산출은 ``tests/test_audience_execution_projection.py`` 가 갈래별로 고정한 그대로여야 한다.
 """
 
 from __future__ import annotations
@@ -34,10 +34,8 @@ import consent_cardinality
 import event_ir
 import execution_assets
 import plan_decisions
-import profile_metric_claims
 import rolling_absence_claims
-import semantic_plan as semantic_plan_module
-import semantic_relation_ownership
+import semantic_outcome
 from audience_validators import audience_validators
 from query_pipeline.compiler.capability import event_ir_capability_profile
 from query_pipeline.requirement.models import (
@@ -58,7 +56,6 @@ from query_structurer.semantic_ir import write_semantic_ir
 
 AUDIENCE_REQUIREMENT_KEY = "audience_requirement"
 EVENT_EXPRESSION_KEY = "event_expression"
-SEMANTIC_PLAN_KEY = "semantic_plan"
 
 # LLM 계약이 쓸 수 있는 issue 코드. 손 목록이 아니라 code ↔ kind 표에서 **파생**한다 —
 # 예전에는 이 집합과 그 표가 각자 적혀 있었고, 그러면 한쪽만 늘어난 상태가 조용히 생긴다.
@@ -318,16 +315,11 @@ class AudienceResolution:
     evidence_normalizations: list[dict[str, Any]] = field(default_factory=list)
     # 사용자 명시 기준일 + rolling duration을 고정 반개구간으로 바꾼 기록.
     as_of_normalizations: list[dict[str, Any]] = field(default_factory=list)
-    # A model-authored audience issue can be disproved by one structurally
-    # owned SemanticPlan node.  In that case this path yields to the node
-    # compiler instead of inventing a missing audience expression.
-    defer_to_semantic_plan: bool = False
     # 모델이 null 로 돌려준 표현을 애플리케이션 소유 계약이 완전히 증명해 채운 경우의
     # 소유자. 투영 시 결정 로그에 남기며, 검증 issue 가 하나라도 남으면 설정하지 않는다.
     synthesis_owner: str | None = None
-    # Event IR 밖의 최신 스냅샷 축을 선언 자산+리터럴로 완전히 증명해 SemanticPlan 에 넘긴 경우.
-    # 모델의 unsupported 산문을 지운 근거를 attach 단계 로그에 남긴다.
-    semantic_plan_synthesis: dict[str, Any] | None = None
+    # 폐기된 '캠페인당 평균 구매금액' 축을 fail-close 시킨 판정 근거(있으면 표현을 버렸다).
+    retired_axis_receipt: dict[str, Any] | None = None
 
 
 def _requirement_from_payload(
@@ -402,23 +394,6 @@ def _validation_issues(
             ),
         })
     return issues
-
-
-def _semantic_plan_owns_catalog_issue(
-    issue: Mapping[str, Any], payload: Mapping[str, Any], query: str
-) -> bool:
-    """Defer a catalog value claim explicitly owned by a relation node.
-
-    This is only an early-stage deferral.  The graph-level receipt gate still
-    requires that node to compile; an unsupported or malformed node therefore
-    continues to block the whole query.
-    """
-    import audience_runtime
-
-    catalog = audience_runtime.catalog_snapshot()
-    return semantic_relation_ownership.semantic_plan_owns_issue(
-        issue, payload, query, catalog
-    )
 
 
 @dataclass(frozen=True)
@@ -510,53 +485,34 @@ def _application_owned_synthesis(
     return None
 
 
-def _closed_audience_synthesis_envelope(payload: Mapping[str, Any]) -> bool:
-    """Require a closed audience-only envelope before replacing model issues.
+def _retired_campaign_average_issue(
+    query: str, raw_expression: Any, literal_bindings: Any
+) -> dict[str, Any] | None:
+    """폐기된 '캠페인당 평균 구매금액' 축을 표현으로 위장한 요청을 잡는다.
 
-    The claim synthesizers prove the complete *query text* belongs to one
-    audience predicate.  A hallucinated intent, campaign metadata, or result
-    limit lives outside that predicate and would otherwise survive issue
-    discharge as an invented execution constraint.
+    이 축의 합성을 지우면 같은 문장이 **반응 행당 평균**(``AVG(BUY_AMT)``)으로 조용히
+    바뀐다 — 캠페인 수로 나눈 평균과 값이 다른데 둘 다 성공으로 보인다. 판정은 카탈로그
+    선언(:mod:`campaign_metric_claims`)이 하고, 여기서는 그 결과를 issue 로 바꿔 표현을
+    버린다(뜻이 다른 SQL 을 내느니 막는다).
+
+    카탈로그를 읽지 못하면 판정을 할 수 없고, **판정 불가는 '폐기 축이 아니다'가 아니다**.
+    예전에는 :class:`audience_runtime.AudienceCatalogLoadError` 를 삼키고 ``None`` 을 돌려줬는데
+    (실측 2026-08-05: 주입 시 통과), 그러면 근거 부재가 곧 통과가 되어 뜻이 다른 SQL 이 나간다.
+    그래서 예외를 전파한다 — 이 모듈의 다른 카탈로그 소비자(합성 판정·근거 정규화)도 같은
+    예외를 전파하므로 실패 표면이 하나로 유지된다.
     """
 
-    constraints = payload.get("campaign_constraints")
-    return bool(
-        payload.get("intent") in {"find_user_segment", "recommend_campaign"}
-        and payload.get("result_limit") is None
-        and isinstance(constraints, Mapping)
-        and all(value in (None, [], {}) for value in constraints.values())
-    )
+    import audience_runtime
 
-
-def _closed_model_expression_envelope(payload: Mapping[str, Any]) -> bool:
-    """Exclude every legacy execution side channel from model-expression retyping."""
-
-    exclude = payload.get("exclude")
-    return bool(
-        _closed_audience_synthesis_envelope(payload)
-        and payload.get("target_user") == {}
-        and isinstance(exclude, Mapping)
-        and set(exclude) <= {"gender", "interests", "lifecycle"}
-        and all(value in (None, [], {}) for value in exclude.values())
-        and payload.get("aggregation_request") is None
-        and all(
-            payload.get(key) == []
-            for key in (
-                "set_expressions",
-                "computed_metrics",
-                "external_conditions",
-                "compound_dimension_filters",
-                "semantic_evidence",
-                "unresolved",
-            )
-        )
+    return campaign_metric_claims.detect_retired_campaign_average_claim(
+        query, raw_expression, literal_bindings, audience_runtime.catalog_snapshot()
     )
 
 
 def run_audience_resolver(
     payload: dict[str, Any], query: str, *, current_date: str | None
 ) -> AudienceResolution | None:
-    """오디언스 계약을 검증한다. 계약 자체가 없으면 ``None``(SemanticPlan 경로가 이어받는다)."""
+    """오디언스 계약을 검증한다. 계약 자체가 없으면 ``None``(이 계층은 의미를 청구하지 않는다)."""
     requirement = payload.get(AUDIENCE_REQUIREMENT_KEY)
     if not isinstance(requirement, dict):
         return None
@@ -568,75 +524,22 @@ def run_audience_resolver(
 
     raw_expression = requirement.get("expression")
     literal_bindings = payload.get("literal_bindings")
-    deferred_period_issue = False
-    if raw_expression is None and issues:
-        retained: list[dict[str, Any]] = []
-        for issue in issues:
-            if audience_issue_contract.latest_transition_owns_period_issue(
-                query, issue, payload.get(SEMANTIC_PLAN_KEY)
-            ):
-                deferred_period_issue = True
-            else:
-                retained.append(issue)
-        issues = retained
-    semantic_plan_synthesis: (
-        profile_metric_claims.ProfileMetricSynthesis
-        | campaign_metric_claims.CampaignMetricSynthesis
-        | None
-    ) = None
-    closed_synthesis_envelope = _closed_audience_synthesis_envelope(payload)
-    if (
-        _closed_model_expression_envelope(payload)
-        and isinstance(raw_expression, dict)
-        and not issues
-        and isinstance(literal_bindings, list)
-    ):
-        semantic_plan_synthesis = (
-            campaign_metric_claims.synthesize_campaign_average_amount_expression(
-                query,
-                raw_expression,
-                literal_bindings,
-                payload.get(SEMANTIC_PLAN_KEY),
-            )
-        )
-        if semantic_plan_synthesis is not None:
-            # The aggregate has moved to the one execution path that owns its
-            # campaign denominator and fixed response predicates.  Do not also
-            # project the generic Event IR comparison.
-            raw_expression = None
-    if (
-        semantic_plan_synthesis is None
-        and closed_synthesis_envelope
-        and raw_expression is None
-        and issues
-        and isinstance(literal_bindings, list)
-    ):
-        semantic_plan_synthesis = (
-            campaign_metric_claims.synthesize_campaign_average_amount_predicate(
-                query,
-                issues,
-                literal_bindings,
-                payload.get(SEMANTIC_PLAN_KEY),
-            )
-        )
-    if (
-        semantic_plan_synthesis is None
-        and closed_synthesis_envelope
-        and raw_expression is None
-        and len(issues) == 1
-        and isinstance(literal_bindings, list)
-    ):
-        semantic_plan_synthesis = profile_metric_claims.synthesize_profile_metric_predicate(
-            query,
-            issues[0],
-            literal_bindings,
-            payload.get(SEMANTIC_PLAN_KEY),
-        )
-    if semantic_plan_synthesis is not None:
-        raw_plan = payload.get(SEMANTIC_PLAN_KEY)
-        assert isinstance(raw_plan, dict)  # synthesis requires the exact empty-node contract
-        raw_plan["nodes"] = [semantic_plan_synthesis.node]
-        issues = []
+    # 폐기 축(캠페인당 평균 구매금액)은 표현을 버리고 fail-close 한다. 이 판정을 먼저 하는
+    # 이유는 하나다 — 그대로 두면 뜻이 다른 SQL(행당 평균)이 성공으로 나간다.
+    retired_axis = _retired_campaign_average_issue(query, raw_expression, literal_bindings)
+    retired_axis_receipt: dict[str, Any] | None = None
+    if retired_axis is not None:
+        retired_axis_receipt = dict(retired_axis["receipt"])
+        raw_expression = None
+        issues = [
+            *issues,
+            {
+                "code": "unsupported_semantics",
+                "argument": str(retired_axis["argument"]),
+                "message": str(retired_axis["message"]),
+                "evidence": dict(retired_axis["evidence"]),
+            },
+        ]
     synthesis: _ApplicationOwnedSynthesis | None = None
     if raw_expression is None and issues and isinstance(literal_bindings, list):
         synthesis = _application_owned_synthesis(query, issues, literal_bindings)
@@ -672,11 +575,6 @@ def run_audience_resolver(
         calculated = _validation_issues(
             expression, query, literal_bindings, current_date=current_date
         )
-        calculated = [
-            issue
-            for issue in calculated
-            if not _semantic_plan_owns_catalog_issue(issue, payload, query)
-        ]
         if not calculated:
             expression, as_of_normalizations, as_of_issue = (
                 _pin_explicit_as_of_rolling_windows(
@@ -698,25 +596,10 @@ def run_audience_resolver(
             "audience_requirement.expression must be an object or null"
         )
 
-    relation_owns_entire_audience = False
+    # §3-D 백스톱. 표현도 없고 issue 도 없는 resolution 은 하류에서 assert 로 떨어진다 —
+    # 예전에는 SemanticPlan 으로 유예하는 갈래가 있었지만 그 소비자가 사라졌으므로 무조건
+    # 결핍을 선언한다(조용히 빈 오디언스로 SQL 이 나가는 것을 막는 마지막 문이다).
     if expression is None and not issues:
-        import audience_runtime
-
-        relation_owns_entire_audience = (
-            semantic_relation_ownership.semantic_plan_owns_entire_audience(
-                payload, query, audience_runtime.catalog_snapshot()
-            )
-        )
-    defer_to_semantic_plan = bool(
-        expression is None
-        and not issues
-        and (
-            deferred_period_issue
-            or semantic_plan_synthesis is not None
-            or relation_owns_entire_audience
-        )
-    )
-    if expression is None and not issues and not defer_to_semantic_plan:
         issues.append({
             "code": "missing_argument",
             "argument": "audience_expression",
@@ -731,13 +614,8 @@ def run_audience_resolver(
         normalizations=normalizations,
         evidence_normalizations=evidence_normalizations,
         as_of_normalizations=as_of_normalizations,
-        defer_to_semantic_plan=defer_to_semantic_plan,
         synthesis_owner=synthesis_owner,
-        semantic_plan_synthesis=(
-            semantic_plan_synthesis.receipt
-            if semantic_plan_synthesis is not None
-            else None
-        ),
+        retired_axis_receipt=retired_axis_receipt,
     )
 
 
@@ -762,20 +640,17 @@ def project_resolution_to_plan(
             ),
             value=resolution.expression.to_dict(),
         )
-    if resolution.semantic_plan_synthesis is not None:
+    if resolution.retired_axis_receipt is not None:
         plan_decisions.record(
             payload,
-            filter_name=str(
-                resolution.semantic_plan_synthesis.get("owner")
-                or "application_metric_claims"
-            ),
-            action=plan_decisions.SET,
-            slot="semantic_plan.nodes",
+            filter_name="campaign_metric_claims.retired_average_per_campaign",
+            action=plan_decisions.DROP,
+            slot="audience_requirement.expression",
             reason=(
-                "모델의 미지원 신고를 선언된 지표·물리 실행 자산·"
-                "문형/숫자/단위/비교 리터럴 영수증으로 반박해 SemanticPlan 노드를 채웠다"
+                "카탈로그가 캠페인 분모 평균으로 선언한 절인데 모델 표현은 반응 행당 "
+                "평균이라 뜻이 다르다 — 폐기된 축이므로 표현을 버리고 미지원으로 닫았다"
             ),
-            value=resolution.semantic_plan_synthesis,
+            value=resolution.retired_axis_receipt,
         )
     for correction in resolution.evidence_normalizations:
         plan_decisions.record(
@@ -819,10 +694,6 @@ def project_resolution_to_plan(
     requirement["expression"] = expression.to_dict() if expression is not None else None
     requirement["issues"] = issues
 
-    if resolution.defer_to_semantic_plan:
-        payload.pop(EVENT_EXPRESSION_KEY, None)
-        return False
-
     if issues:
         payload.pop(EVENT_EXPRESSION_KEY, None)
         missing = sorted({
@@ -835,21 +706,12 @@ def project_resolution_to_plan(
             # ambiguous_requirement)은 원문을 읽은 LLM 만 볼 수 있으므로 그대로 종결하지만,
             # "표현할 수 없다"는 실행 자산(컴파일러·카탈로그)을 아는 애플리케이션의 몫이다.
             # 강등의 조건은 "**선언된 실행 자산 중 이 의미를 처리하는 것이 있는가**"다.
-            plan_nodes = payload.get(SEMANTIC_PLAN_KEY)
-            plan_nodes = plan_nodes.get("nodes") if isinstance(plan_nodes, dict) else None
             contradicted = [
                 (item, execution_assets.non_canonical_assets_for_issue(item))
                 for item in unsupported
                 if _audience_issue_key(item) in resolution.model_reported
             ]
             contradicted = [(item, assets) for item, assets in contradicted if assets]
-            if contradicted and plan_nodes:
-                payload["audience_unsupported_hypotheses"] = [
-                    {"kind": item["argument"], "reason": item["message"],
-                     "evidence": item["evidence"]["text"]}
-                    for item in unsupported
-                ]
-                return False
             if contradicted:
                 # 자산은 선언돼 있는데 그 축을 낼 **생산자가 없다**. 이것은 '표현할 수 없다'가
                 # 아니라 레지스트리 구멍이고, 저장소에는 이미 그 이름(semantic_registry_gap)과
@@ -899,7 +761,7 @@ def project_resolution_to_plan(
                 resolution.query, issues, payload.get("literal_bindings") or []
             )
             model_omitted = any(
-                record.get("cause") == semantic_plan_module.CAUSE_MODEL_OMISSION
+                record.get("cause") == semantic_outcome.CAUSE_MODEL_OMISSION
                 for record in causes
             )
             write_semantic_ir(

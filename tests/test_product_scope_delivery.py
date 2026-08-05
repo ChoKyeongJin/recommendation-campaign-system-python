@@ -294,7 +294,6 @@ def test_missing_product_filters_trigger_structurer_retry_and_accept_the_repair(
             "sell_object": None,
         },
         "result_limit": None,
-        "semantic_plan": {"nodes": []},
     }
     responses = iter((
         json.dumps({
@@ -352,7 +351,6 @@ def test_extra_brace_before_audience_issues_is_repaired_then_fully_validated() -
             "expression": expression.to_dict(),
             "issues": [],
         },
-        "semantic_plan": {"nodes": []},
     }
     valid = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     marker = ',"issues":[]'
@@ -429,7 +427,6 @@ def test_extra_brace_before_an_exists_evidence_is_repaired_by_the_same_rule() ->
         },
         "result_limit": None,
         "audience_requirement": {"expression": expression, "issues": []},
-        "semantic_plan": {"nodes": []},
     }
     valid = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
     marker = ',"evidence":'
@@ -496,7 +493,6 @@ def test_misplaced_exists_where_and_singleton_not_operands_are_normalized() -> N
         },
         "result_limit": None,
         "audience_requirement": {"expression": misplaced, "issues": []},
-        "semantic_plan": {"nodes": []},
     }, ensure_ascii=False)
 
     result = LLMCampaignQueryPlanV4Structurer(

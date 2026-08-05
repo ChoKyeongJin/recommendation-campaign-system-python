@@ -27,7 +27,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import canonical_audience_claims  # noqa: E402
-import semantic_plan  # noqa: E402
+import semantic_outcome  # noqa: E402
 from query_structurer import structurer  # noqa: E402
 from query_structurer.campaign_plan_v4 import (  # noqa: E402
     attach_campaign_query_plan_v4_identity,
@@ -51,7 +51,6 @@ def _plan_with_missing(query: str, argument: str, span: str) -> dict:
                 "evidence": {"text": span, "start": start, "end": start + len(span)},
             }],
         },
-        "semantic_plan": {"nodes": []},
     }
     return attach_campaign_query_plan_v4_identity(raw, query, current_date="2026-08-03")
 
@@ -75,7 +74,7 @@ def test_extracted_percentage_is_not_asked_back() -> None:
     assert extracted, "전제 확인: 추출기가 '10%' 를 이미 원자로 뽑는다."
 
     causes = _causes(plan)
-    assert [record["cause"] for record in causes] == [semantic_plan.CAUSE_MODEL_OMISSION], (
+    assert [record["cause"] for record in causes] == [semantic_outcome.CAUSE_MODEL_OMISSION], (
         f"추출된 값이 있는 결핍이 사용자 누락으로 분류됐다: {causes}"
     )
     assert plan["semantic_ir"]["failure_kind"] != "user_clarification", (
@@ -93,7 +92,7 @@ def test_bare_recency_is_still_a_user_question() -> None:
     plan = _plan_with_missing(query, "period", "최근")
 
     causes = _causes(plan)
-    assert [record["cause"] for record in causes] == [semantic_plan.CAUSE_USER_OMISSION], (
+    assert [record["cause"] for record in causes] == [semantic_outcome.CAUSE_USER_OMISSION], (
         f"다른 절의 기간 때문에 진짜 결핍이 재방출로 샜다: {causes}"
     )
     assert plan["semantic_ir"]["failure_kind"] == "user_clarification"
@@ -103,7 +102,7 @@ def test_placeholder_is_always_a_user_question() -> None:
     """'특정 브랜드'는 어떤 추출값으로도 못 채운다 — 오직 사용자만 값을 줄 수 있다."""
     plan = _plan_with_missing("특정 브랜드를 2회 이상 구매한 회원", "brand", "특정 브랜드")
     causes = _causes(plan)
-    assert causes[0]["cause"] == semantic_plan.CAUSE_USER_OMISSION
+    assert causes[0]["cause"] == semantic_outcome.CAUSE_USER_OMISSION
     assert plan["semantic_ir"]["failure_kind"] == "user_clarification"
 
 
@@ -111,9 +110,9 @@ def test_placeholder_is_always_a_user_question() -> None:
     ("query", "argument", "span", "expected"),
     [
         # 구간 안에 값이 있다 → 모델이 지목해 놓고 못 본 것이다.
-        ("최근 30일 동안 구매한 회원", "period", "최근 30일", semantic_plan.CAUSE_MODEL_OMISSION),
+        ("최근 30일 동안 구매한 회원", "period", "최근 30일", semantic_outcome.CAUSE_MODEL_OMISSION),
         # 구간 안에 값이 없다 → 사용자만 답할 수 있다.
-        ("최근 구매한 회원", "period", "최근", semantic_plan.CAUSE_USER_OMISSION),
+        ("최근 구매한 회원", "period", "최근", semantic_outcome.CAUSE_USER_OMISSION),
     ],
 )
 def test_the_span_is_the_join_key(query: str, argument: str, span: str, expected: str) -> None:
@@ -153,7 +152,7 @@ def test_cause_records_are_pure_and_need_no_llm() -> None:
     }]
     bindings = [{"id": "percentage_1", "kind": "percentage", "start": 3, "end": 6}]
     records = canonical_audience_claims.missing_field_cause_records(query, issues, bindings)
-    assert [record["cause"] for record in records] == [semantic_plan.CAUSE_MODEL_OMISSION]
+    assert [record["cause"] for record in records] == [semantic_outcome.CAUSE_MODEL_OMISSION]
 
     without = canonical_audience_claims.missing_field_cause_records(query, issues, [])
-    assert [record["cause"] for record in without] == [semantic_plan.CAUSE_USER_OMISSION]
+    assert [record["cause"] for record in without] == [semantic_outcome.CAUSE_USER_OMISSION]

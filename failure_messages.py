@@ -15,7 +15,6 @@ from typing import Any
 
 import audience_admission
 import plan_validation
-import requirement_ledger
 
 # semantic_ir missing_fields 의 첫 경로 세그먼트 → 한국어 라벨.
 SEMANTIC_IR_FIELD_KO_LABELS: dict[str, str] = {
@@ -33,7 +32,7 @@ SEMANTIC_IR_FIELD_KO_LABELS: dict[str, str] = {
 }
 
 
-# SemanticPlan 파생 결핍의 접두어별 렌더링. 파생 결핍은 `<node_id>.<field>` 또는
+# 파생 결핍의 접두어별 렌더링. 파생 결핍은 `<node_id>.<field>` 또는
 # `uncovered:<원문 구절>` / `conflict:<원문 구절>` 형태다 — 앞의 둘은 필드 라벨로, 뒤의 둘은
 # 원문 구절 자체로 말해야 사용자가 무엇을 다시 적어야 할지 안다.
 _SPAN_PREFIXES = ("uncovered:", "conflict:", "invalid:")
@@ -45,11 +44,11 @@ def semantic_failure_reason(status: str, failure_kind: Any) -> str:
     `semantic_ir_needs_clarification` 하나로 뭉치면 "사용자가 안 알려준 것", "구조화기가 못
     만든 것", "실행 설정이 비어 있는 것"이 같은 코드로 보인다 — 셋의 고칠 곳이 다 다르다.
     """
-    import semantic_plan  # 지연 import — 렌더링 계층은 코어 스키마에 의존하지 않는다
+    import semantic_outcome  # 지연 import — 렌더링 계층은 코어 스키마에 의존하지 않는다
 
-    if failure_kind == semantic_plan.FAILURE_KIND_STRUCTURER:
+    if failure_kind == semantic_outcome.FAILURE_KIND_STRUCTURER:
         return "semantic_structurer_failure"
-    if failure_kind == semantic_plan.FAILURE_KIND_SYSTEM:
+    if failure_kind == semantic_outcome.FAILURE_KIND_SYSTEM:
         return "semantic_registry_gap"
     return f"semantic_ir_{status}"
 
@@ -110,59 +109,9 @@ def semantic_ir_clarification_message(
     return "요청한 연산은 현재 지원하지 않습니다."
 
 
-def requirement_failure_report(
-    ledger_payload: Any,
-) -> tuple[list[dict[str, str]], dict[str, Any]]:
-    """요구사항 원장(직렬화본) → (미충족 조건 목록, 실패 분류 보고).
-
-    분류를 그대로 실어 보내는 것이 요점이다: 내부 사고(failed)와 능력 부재(unsupported)를
-    한 덩어리로 뭉개면 사용자가 '이 서비스는 이걸 못 한다'로 오해한다. 소비자는
-    `has_internal_failure` / `has_unsupported` 로 분기하고, 조건별 근거는 by_outcome 에 남는다.
-    """
-    requirements = ledger_payload.get("requirements") if isinstance(ledger_payload, dict) else None
-    if not isinstance(requirements, list) or not requirements:
-        return [], {}
-
-    missing: list[dict[str, str]] = []
-    questions: list[str] = []
-    by_outcome: dict[str, list[dict[str, Any]]] = {}
-    for item in requirements:
-        if not isinstance(item, dict):
-            continue
-        validation = item.get("validation") if isinstance(item.get("validation"), dict) else {}
-        outcome = str(validation.get("outcome") or "")
-        if outcome == requirement_ledger.COMPILED:
-            continue
-        label = str(item.get("label") or "조건")
-        span = str(item.get("source_span") or "").strip()
-        reason = str(validation.get("reason") or "").strip()
-        by_outcome.setdefault(outcome, []).append({
-            "requirement_id": item.get("requirement_id"),
-            "label": label,
-            "source_span": span,
-            "failure_code": validation.get("failure_code"),
-            "reason": reason,
-            "capability": item.get("capability"),
-            "candidate_slots": item.get("candidate_slots"),
-        })
-        question = (
-            f"'{span}' — {reason}" if span and reason
-            else (reason or f"'{label}' 을 확정하지 못했습니다.")
-        )
-        if question not in questions:
-            questions.append(question)
-        missing.append({
-            "path": f"requirements.{item.get('requirement_id')}",
-            "label": label,
-            "question": question,
-        })
-    return missing, {
-        "by_outcome": by_outcome,
-        "summary": ledger_payload.get("summary") or {},
-        "clarification_questions": questions,
-        "has_internal_failure": bool(by_outcome.get(requirement_ledger.FAILED)),
-        "has_unsupported": bool(by_outcome.get(requirement_ledger.UNSUPPORTED)),
-    }
+# `requirement_failure_report` 는 2026-08-05 삭제됐다 — 요구사항 원장(`requirement_ledger`)은
+# SemanticPlanV2 파이프라인의 산출물이었고 생산자가 폐기되면서 렌더링할 입력이 사라졌다.
+# 응답 계약(`requirement_report`)은 graph_rag 가 빈 값으로 유지한다(호출자 분기는 그대로다).
 
 
 def plan_validation_issue_ko(issue: plan_validation.PlanValidationIssue) -> str:

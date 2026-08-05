@@ -951,10 +951,9 @@ def extract_failure_signal(
     """Extract the first exact structured failure signal, or ``None``.
 
     The raw request/prompt is never accepted.  Signal priority follows the
-    runtime's durable structures: audience issues, semantic capability
-    verdicts joined to nodes, structurer/normalization issues, and failed Event
-    IR receipts.  Missing-field and clarification path names are deliberately
-    ignored.
+    runtime's durable structures: audience issues, unsupported semantic
+    operations, an explicitly reported symbol, and failed Event IR receipts.
+    Missing-field and clarification path names are deliberately ignored.
     """
 
     plan = query_plan if isinstance(query_plan, Mapping) else {}
@@ -1021,66 +1020,10 @@ def extract_failure_signal(
                     node_id=_clean_text(operation.get("node_id")),
                 )
 
-    semantic_plan = plan.get("semantic_plan")
-    semantic_plan = semantic_plan if isinstance(semantic_plan, Mapping) else {}
-    nodes_by_id = _semantic_nodes_by_id(semantic_plan.get("nodes"))
-    verdicts = semantic_plan.get("capability_verdicts")
-    if _is_sequence(verdicts):
-        for verdict in verdicts:
-            if not isinstance(verdict, Mapping):
-                continue
-            metric = _clean_text(verdict.get("metric"))
-            if not metric:
-                continue
-            node_id = _clean_text(verdict.get("node_id"))
-            node = nodes_by_id.get(node_id or "", {})
-            return FailureSignal(
-                failure_code=failure_code,
-                received_symbol=metric,
-                source="semantic_plan.capability_verdicts",
-                source_span=_clean_text(node.get("source_span")),
-                node_id=node_id,
-            )
-
-    structurer_issues = semantic_plan.get("structurer_issues")
-    if _is_sequence(structurer_issues):
-        for issue in structurer_issues:
-            if not isinstance(issue, Mapping):
-                continue
-            source_span = _span_text(issue.get("source_span"))
-            if source_span:
-                return FailureSignal(
-                    failure_code=failure_code,
-                    received_symbol=source_span,
-                    source="semantic_plan.structurer_issues",
-                    source_span=source_span,
-                    node_id=_clean_text(issue.get("node_id")),
-                )
-
-    for payload_name, payload in (("query_plan", plan), ("api_response", response)):
-        semantic_pipeline = payload.get("semantic_pipeline")
-        if not isinstance(semantic_pipeline, Mapping):
-            continue
-        normalization = semantic_pipeline.get("normalization")
-        if not isinstance(normalization, Mapping):
-            continue
-        outcomes = normalization.get("outcomes")
-        if not _is_sequence(outcomes):
-            continue
-        for outcome in outcomes:
-            if not isinstance(outcome, Mapping):
-                continue
-            action = str(outcome.get("action") or "").strip().casefold()
-            if "unresolved" not in action and "ambiguous" not in action:
-                continue
-            source_span = _span_text(outcome.get("source_span"))
-            if source_span:
-                return FailureSignal(
-                    failure_code=failure_code,
-                    received_symbol=source_span,
-                    source=f"{payload_name}.semantic_pipeline.normalization",
-                    source_span=source_span,
-                )
+    # ``semantic_plan.capability_verdicts`` / ``semantic_plan.structurer_issues`` /
+    # ``semantic_pipeline.normalization.outcomes`` 를 읽던 세 갈래는 2026-08-05 삭제됐다.
+    # SemanticPlanV2 와 그 파이프라인 영수증이 폐기되어 세 구조 모두 플랜에 생길 수 없고,
+    # 도달 불가능한 판독을 남겨 두면 진단 우선순위가 실제보다 넓어 보인다.
 
     explicit_symbol = _first_text(
         response,
@@ -1276,25 +1219,6 @@ def _first_allowlisted_code(*values: Any) -> str | None:
         if candidate in FAILURE_ANALYSIS_ALLOWLIST:
             return candidate
     return None
-
-
-def _semantic_nodes_by_id(value: Any) -> dict[str, Mapping[str, Any]]:
-    result: dict[str, Mapping[str, Any]] = {}
-
-    def visit(current: Any) -> None:
-        if isinstance(current, Mapping):
-            node_id = _clean_text(current.get("id"))
-            if node_id:
-                result[node_id] = current
-            for key, child in current.items():
-                if key not in {"values", "metadata"}:
-                    visit(child)
-        elif _is_sequence(current):
-            for child in current:
-                visit(child)
-
-    visit(value)
-    return result
 
 
 def _span_text(value: Any) -> str | None:

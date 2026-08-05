@@ -12,7 +12,6 @@ import json
 from decimal import Decimal
 from pathlib import Path
 
-import networkx as nx
 import pytest
 from jsonschema import Draft202012Validator
 
@@ -470,48 +469,7 @@ def test_v4_normalizes_rank_membership_scope_from_catalog_recipe() -> None:
     assert normalized_join["on"]["right"]["name"] == MEMBER_FIELD
 
 
-@pytest.mark.parametrize(
-    ("query", "semantic_direction", "sql_direction"),
-    [
-        (QUERY, "descending", "DESC"),
-        (LOWER_QUERY, "ascending", "ASC"),
-    ],
-)
-def test_member_percent_ranking_reaches_sql_through_semantic_plan(
-    query: str, semantic_direction: str, sql_direction: str
-) -> None:
-    source_span = query[: query.index(" 회원")]
-    plan = graph_rag.build_query_plan(query, parser="rules")
-    plan["intent"] = "find_user_segment"
-    plan["semantic_plan"] = {
-        "nodes": [
-            {
-                "id": "rank-1",
-                "type": "ranked_set",
-                "source_span": source_span,
-                "source_start": 0,
-                "source_end": len(source_span),
-                "entity": "member",
-                "metric": "누적 구매금액",
-                "direction": semantic_direction,
-                "limit": {"type": "percent", "value": 10},
-            }
-        ]
-    }
-
-    result = graph_rag.build_sql_result(
-        nx.Graph(),
-        query,
-        plan,
-        [],
-        graph_rag.DEFAULT_SCHEMA_PATH,
-        100,
-        original_query=query,
-    )
-
-    assert result["is_success"] is True, result
-    assert "TOP 10 PERCENT" in result["sql"]
-    assert f"ORDER BY SUM(C.TOTAL_BUY_AMT) {sql_direction}" in result["sql"]
-    rank_label = "상위" if semantic_direction == "descending" else "하위"
-    assert f"'누적 구매금액 {rank_label} 10%' AS segment_label" in result["sql"]
-    assert "누적 구매금액 있음" not in result["sql"]
+# `test_member_percent_ranking_reaches_sql_through_semantic_plan` 은 2026-08-05 삭제됐다 —
+# ranked_set 노드를 플랜에 직접 심어 상위 N% SQL 까지 가는지를 고정하던 테스트다. 그 노드
+# 타입은 비테스트 생산자가 처음부터 0 이었고, 노드를 실행 플랜에 싣던 경로도 폐기됐다.
+# canonical Event IR 로 들어온 같은 요청의 퍼센트 한정 계약은 이 파일의 나머지가 고정한다.

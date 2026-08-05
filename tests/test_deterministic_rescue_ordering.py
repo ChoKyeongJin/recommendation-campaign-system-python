@@ -9,9 +9,11 @@
 불변식으로 고정한다:
 
   1. 원문만 읽어 슬롯을 채우는 결정론 정규화기는 게이트보다 먼저 호출된다.
-  2. 그 정규화기는 자기가 읽은 원문 구간을 남긴다(소유 판정의 입력 — 남기지 않으면 같은 어구를
-     다시 방출한 노드가 '유실된 의미'로 보고돼 요청 전체가 막힌다).
-  3. 컴파일 결과에 의존하는 강등기는 반대로 파이프라인 **뒤**에 남는다(입력이 아직 없으므로).
+  2. 그 정규화기는 자기가 읽은 원문 구간을 남긴다(누가 이 어구를 읽었는지 묻는 감사 입력).
+
+2026-08-05 삭제된 순서 불변식 2개가 있었다: '구제가 의미 파이프라인보다 먼저'와 '집계 강등은
+파이프라인 뒤'. 둘 다 SemanticPlanV2 파이프라인의 존재를 전제했고, 그 파이프라인과 그것이
+쓰던 슬롯(aggregate_conditions 등)의 생산자가 폐기되면서 고정할 순서 자체가 사라졌다.
 """
 
 from __future__ import annotations
@@ -51,28 +53,6 @@ def test_source_only_rescue_runs_before_the_fail_close_gate() -> None:
     assert rescue < gate, (
         "결정론 구제가 fail-close 게이트 뒤에 있다 — 게이트가 먼저 return 하므로 구제는 "
         f"영영 실행되지 않는다(구제 {rescue}행, 게이트 {gate}행)."
-    )
-
-
-def test_rescue_runs_before_the_semantic_pipeline_so_its_claim_is_an_input() -> None:
-    """구제의 슬롯 청구는 파이프라인 소유 판정의 **입력**이어야 한다(뒤에 두면 판정이 못 본다)."""
-    source = _build_sql_result_source()
-    rescue = _line_of(r"normalize_lapsed_purchase_pattern\(", source)
-    pipeline = _line_of(r"_apply_semantic_plan_pipeline\(", source)
-    assert rescue < pipeline, (
-        "구제가 의미 파이프라인 뒤에 있다 — 그러면 구제가 채운 슬롯이 소유 판정에 보이지 않아, "
-        "같은 어구를 다시 방출한 노드가 '유실된 의미'로 보고돼 요청 전체가 막힌다."
-    )
-
-
-def test_compiler_dependent_demotions_stay_after_the_pipeline() -> None:
-    """집계 강등은 컴파일러가 만든 aggregate_conditions 를 읽는다 — 앞으로 옮기면 무증상 no-op 이 된다."""
-    source = _build_sql_result_source()
-    pipeline = _line_of(r"_apply_semantic_plan_pipeline\(", source)
-    demotion = _line_of(r"demote_aggregate_covered_behaviors\(", source)
-    assert demotion > pipeline, (
-        "집계 강등이 파이프라인보다 앞에 있다 — 읽을 aggregate_conditions 가 아직 없어 "
-        "조용히 아무 일도 하지 않는다."
     )
 
 

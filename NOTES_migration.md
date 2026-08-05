@@ -1,3 +1,9 @@
+> **2026-08-05 폐기 고지.** 아래에서 legacy 슬롯 writer 로 열거된 `legacy_plan_compiler` ·
+> `semantic_pipeline` · `requirement_ledger` 는 SemanticPlanV2 중간표현과 함께 **삭제**됐다
+> (writer 목록에서 셋이 빠진다). `event_expression.source` 표식 집합
+> `{audience_requirement, semantic_plan}` 은 **그대로 유지**된다 — `semantic_plan` 은 생산자 없는
+> 저장 페이로드 호환 값이고, 빼면 그 표식을 가진 저장분의 라우팅이 조용히 뒤집힌다.
+
 # 작업 노트 — legacy 오디언스 슬롯 → Event IR strangler 이행 (2026-08-03)
 
 목표는 legacy 슬롯을 한 번에 걷어내는 것이 **아니다**. Event IR 을 오디언스 조건의 단일 실행 권위로

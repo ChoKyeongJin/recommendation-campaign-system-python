@@ -23,9 +23,7 @@ import open_text_scope_claims
 import ordered_catalog_claims
 import rolling_absence_claims
 import semantic_domain_binding
-import semantic_plan
-import semantic_receipts
-import semantic_relation_ownership
+import semantic_outcome
 import semantic_requirements
 
 
@@ -358,7 +356,7 @@ def missing_field_cause_records(
             "path": f"audience_requirement.{issue.get('argument')}",
             "source_span": span_text,
             "node_type": None,
-            "cause": semantic_plan.CAUSE_USER_OMISSION,
+            "cause": semantic_outcome.CAUSE_USER_OMISSION,
         }
         omission = semantic_domain_binding.user_omission_reason(span_text)
         if omission:
@@ -372,7 +370,7 @@ def missing_field_cause_records(
                 if whole_query or (start <= literal_start and literal_end <= end)
             ]
             if covered:
-                record["cause"] = semantic_plan.CAUSE_MODEL_OMISSION
+                record["cause"] = semantic_outcome.CAUSE_MODEL_OMISSION
                 record["literal_spans"] = covered
         records.append(record)
     return records
@@ -408,83 +406,110 @@ def _atom_field_names(atom: event_ir.Condition) -> set[str]:
     }
 
 
-def catalog_issue_owned_by_relation_node(
-    issue: Mapping[str, Any],
-    node: Mapping[str, Any],
-    query: str,
-    catalog: Mapping[str, Any],
-) -> bool:
-    """Whether a relation node explicitly claims one catalog-value issue.
+# `catalog_issue_owned_by_relation_node`(카탈로그 값 issue 의 relation 노드 귀속)는
+# 2026-08-05 삭제됐다 — 축1(등급/상태 이력·전이) 폐기로 relation 노드의 생산자가 사라졌다.
 
-    Span overlap alone is insufficient: a grade-history node spanning a whole
-    query must not hide a wrong login-channel or gender expression.  Ownership
-    therefore requires the catalog value domain, node attribute, and canonical
-    value to agree as well as exact source coordinates.
+
+def _reconcile_axis_scoped_claims(
+    query: str, claims: Iterable[Mapping[str, Any]], catalog: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Attribute an unqualified value to a nearby catalog-declared axis.
+
+    Korean particles commonly appear between an axis alias and its values
+    (``가치등급이 골드에서 VIP``), while the value dictionary deliberately
+    stores the reusable aliases ``가치등급 골드`` / ``가치등급 VIP``.  A
+    longest, nearby axis cue selects the domain; value identities are still
+    derived exclusively from that domain's declared aliases.
+
+    2026-08-05 `semantic_relation_ownership` 에서 이 파일로 옮겼다. relation 노드를 읽지
+    않는 **순수 카탈로그 판정**이고, canonical 레인의 `catalog_claim_issues` 가 유일한
+    소비자다(옮기지 않고 지우면 '가치등급 VIP' 류가 일반 등급 청구로 잘못 갈린다).
     """
-    argument = str(issue.get("argument") or "")
-    if issue.get("code") != "validation_mismatch" or not argument.startswith(
-        "catalog_value."
-    ):
-        return False
-    evidence = issue.get("evidence")
-    if not isinstance(evidence, Mapping):
-        return False
-    start, end = evidence.get("start"), evidence.get("end")
-    if not (
-        isinstance(start, int)
-        and not isinstance(start, bool)
-        and isinstance(end, int)
-        and not isinstance(end, bool)
-        and 0 <= start < end <= len(query)
-    ):
-        return False
-
-    node_start, node_end = node.get("source_start"), node.get("source_end")
-    node_text = node.get("source_span")
-    if not (
-        node.get("id")
-        and node.get("type") == "relation_predicate"
-        and node.get("subject")
-        and node.get("relation")
-        and isinstance(node_start, int)
-        and isinstance(node_end, int)
-        and isinstance(node_text, str)
-        and 0 <= node_start < node_end <= len(query)
-        and query[node_start:node_end] == node_text
-        and node_start <= start
-        and end <= node_end
-    ):
-        return False
-
     fields = catalog.get("fields")
     fields = fields if isinstance(fields, Mapping) else {}
-    field = fields.get(argument.removeprefix("catalog_value."))
-    domain_id = field.get("value_domain") if isinstance(field, Mapping) else None
     domains = catalog.get("value_domains")
-    domain = domains.get(domain_id) if isinstance(domains, Mapping) else None
-    values = domain.get("values") if isinstance(domain, Mapping) else None
-    if not isinstance(domain_id, str) or not isinstance(values, Mapping):
-        return False
-    if str(node.get("attribute") or "") not in {domain_id, f"member_{domain_id}"}:
-        return False
+    domains = domains if isinstance(domains, Mapping) else {}
+    domain_fields: dict[str, list[str]] = {}
+    cues: list[tuple[str, int, int]] = []
+    for field_id, declaration in fields.items():
+        if not isinstance(declaration, Mapping):
+            continue
+        domain_id = declaration.get("value_domain")
+        if not isinstance(domain_id, str) or domain_id not in domains:
+            continue
+        domain_fields.setdefault(domain_id, []).append(str(field_id))
+        aliases = declaration.get("aliases")
+        terms = [declaration.get("label"), *(aliases if isinstance(aliases, list) else [])]
+        for term in terms:
+            if not isinstance(term, str) or len(term.strip()) < 2:
+                continue
+            cues.extend((domain_id, start, end) for start, end in _term_hits(query, [term]))
+    # A specific cue (가치등급) owns a contained generic cue (등급).
+    cues = [
+        cue for cue in cues
+        if not any(
+            other[0] != cue[0] and other[1] <= cue[1] and cue[2] <= other[2]
+            and other[2] - other[1] > cue[2] - cue[1]
+            for other in cues
+        )
+    ]
 
-    def canonicals(raw: Any) -> set[str]:
-        normalized = "".join(str(raw or "").split()).casefold()
-        if not normalized:
-            return set()
-        matched: set[str] = set()
+    def clause_bounds(position: int) -> tuple[int, int]:
+        start = max(query.rfind(token, 0, position) for token in (",", ".", ";")) + 1
+        ends = [index for token in (",", ".", ";") if (index := query.find(token, position)) >= 0]
+        return start, min(ends) if ends else len(query)
+
+    def target_canonical(domain_id: str, text: str) -> str | None:
+        domain = domains.get(domain_id)
+        values = domain.get("values") if isinstance(domain, Mapping) else None
+        if not isinstance(values, Mapping):
+            return None
+        surface = "".join(text.split()).casefold()
+        matches: set[str] = set()
         for canonical, declaration in values.items():
             aliases = declaration.get("aliases") if isinstance(declaration, Mapping) else []
             terms = [canonical, *(aliases if isinstance(aliases, list) else [])]
-            if normalized in {"".join(str(term).split()).casefold() for term in terms}:
-                matched.add(str(canonical))
-        return matched
+            normalized = ["".join(str(term).split()).casefold() for term in terms]
+            if any(
+                term == surface or term.startswith(surface) or term.endswith(surface)
+                for term in normalized
+            ):
+                matches.add(str(canonical))
+        return next(iter(matches)) if len(matches) == 1 else None
 
-    issue_values = canonicals(evidence.get("text"))
-    node_values = set().union(*(
-        canonicals(node.get(key)) for key in ("value", "from_value", "to_value")
-    ))
-    return bool(issue_values & node_values)
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw in claims:
+        claim = dict(raw)
+        for start, end in claim.get("hits") or ():
+            clause_start, clause_end = clause_bounds(start)
+            nearby = [
+                cue for cue in cues
+                if clause_start <= cue[1] < clause_end
+                and min(abs(start - cue[2]), abs(cue[1] - end)) <= 32
+            ]
+            cue = min(
+                nearby,
+                key=lambda item: (
+                    min(abs(start - item[2]), abs(item[1] - end)),
+                    -(item[2] - item[1]),
+                ),
+                default=None,
+            )
+            domain_id, canonical = str(claim.get("domain")), str(claim.get("canonical"))
+            if cue is not None and cue[0] != domain_id:
+                redirected = target_canonical(cue[0], query[start:end])
+                if redirected is not None:
+                    domain_id, canonical = cue[0], redirected
+            key = domain_id, canonical
+            row = merged.setdefault(key, {
+                "domain": domain_id,
+                "canonical": canonical,
+                "fields": domain_fields.get(domain_id, list(claim.get("fields") or ())),
+                "hits": [],
+            })
+            if (start, end) not in row["hits"]:
+                row["hits"].append((start, end))
+    return list(merged.values())
 
 
 def _normalized_open_text(value: str) -> str:
@@ -658,9 +683,7 @@ def catalog_claim_issues(
                 "hits": hits,
             })
 
-    claims = semantic_relation_ownership.reconcile_axis_scoped_claims(
-        query, claims, catalog
-    )
+    claims = _reconcile_axis_scoped_claims(query, claims, catalog)
     issues.extend(_catalog_disjunction_issues(query, expression, claims, negative_terms))
 
     # A specific cross-domain alias owns an overlapping generic value hit.  For
@@ -1246,52 +1269,10 @@ def ranked_obligation_is_compiled(
     return _ranked_membership_matches(expression, requirement_value)
 
 
-def _issue_is_superseded_by_another_compiler(
-    issue: Mapping[str, Any],
-    plan: Mapping[str, Any],
-    query: str,
-    catalog: Mapping[str, Any],
-) -> bool:
-    """다른 컴파일러가 이미 그 구절을 실행 IR 로 만들었으면 LLM 의 미지원 신고는 stale 이다.
-
-    `audience_requirement.issues` 는 **Event IR 대수로 표현할 수 있는가**에 대한 LLM 의 보고다.
-    Event IR 이 표현하지 못하는 축(등급/상태 시점·이력)은 semantic_plan 노드가 다른 컴파일러로
-    가고, 그쪽이 성공하면 같은 구절에 대한 "표현할 수 없다"는 더 이상 참이 아니다.
-
-    이 회수가 없으면 판정 계층에서 미지원을 강등해도 소용이 없다 — 같은 신고가
-    `unresolved_source_conditions`(차단 채널)로 다시 들어와 SQL 생성 경로를 전부 닫는다
-    (실측 2026-08-02: 이력 연산이 resolved 인데 query_plan_required_conditions_missing).
-
-    귀속 판정은 **근거 스팬 겹침**으로만 한다 — 어휘 추정으로 걷으면 다른 절의 진짜 결핍까지
-    삼킨다(동시구매 sweep 의 교훈).
-    """
-    if semantic_relation_ownership.lowered_relation_receipt_owns_issue(
-        issue, plan, query, catalog
-    ):
-        return True
-
-    import member_attribute_history  # 지연 import(순환 없음)
-
-    evidence = issue.get("evidence")
-    if not isinstance(evidence, Mapping):
-        return False
-    start, end = evidence.get("start"), evidence.get("end")
-    if not (isinstance(start, int) and isinstance(end, int) and start <= end):
-        return False
-    compiled = member_attribute_history.row_owned_by_compiled_operation(
-        {"source_span": {"start": start, "end": end}}, plan
-    )
-    if not compiled:
-        return False
-    if not str(issue.get("argument") or "").startswith("catalog_value."):
-        return True
-    raw_plan = plan.get("semantic_plan")
-    nodes = raw_plan.get("nodes") if isinstance(raw_plan, Mapping) else None
-    return any(
-        isinstance(node, Mapping)
-        and catalog_issue_owned_by_relation_node(issue, node, query, catalog)
-        for node in nodes or ()
-    )
+# `_issue_is_superseded_by_another_compiler`(다른 컴파일러가 이미 컴파일한 구절의 미지원
+# 신고 회수)는 2026-08-05 삭제됐다. 회수의 근거는 둘뿐이었고 — lowered relation 영수증과
+# 컴파일된 relational_operation — 축1 폐기로 둘 다 생산자가 사라졌다. 남겨 두면 항상
+# False 를 돌려주는 분기가 되어, 없는 두 번째 컴파일 경로를 광고하게 된다.
 
 
 def refresh_canonical_unresolved(
@@ -1332,17 +1313,11 @@ def refresh_canonical_unresolved(
                 for issue in canonical_claim_issues(
                     query, expression, bindings, catalog
                 )
-                if not _issue_is_superseded_by_another_compiler(
-                    issue, plan, query, catalog
-                )
             )
     elif isinstance(requirement, Mapping):
         issues.extend(
             issue for issue in (requirement.get("issues") or [])
             if isinstance(issue, dict)
-            and not _issue_is_superseded_by_another_compiler(
-                issue, plan, query, catalog
-            )
         )
 
     unresolved = [
@@ -1377,14 +1352,10 @@ def refresh_canonical_unresolved(
         for item in semantic_requirements.unresolved_semantic_obligations(plan, query)
         if str(item.get("id") or "") not in known
     )
-    # canonical 표현이 섰다고 해서 **다른 축의 노드**까지 귀결된 것은 아니다. 영수증 없는 노드는
-    # 여기서 미해결로 남아 SQL 출고를 막는다 — 그러지 않으면 그 절이 빠진 SQL 이 성공으로 나간다.
-    known.update(str(item.get("id") or "") for item in unresolved)
-    unresolved.extend(
-        item
-        for item in semantic_receipts.unreceipted_nodes(plan, query)
-        if str(item.get("id") or "") not in known
-    )
+    # 영수증 없는 의미 노드를 미해결로 남기던 게이트(`semantic_receipts.unreceipted_nodes`)는
+    # 2026-08-05 삭제됐다 — 노드를 만드는 축이 전부 폐기돼 게이트에 들어올 노드가 없다.
+    # "절이 조용히 사라진 성공은 없다"는 계약은 그대로다: 그 절의 카탈로그 값·리터럴이
+    # 위 `canonical_claim_issues` 커버리지 검사에서 미소비로 잡혀 SQL 출고를 막는다(실측 재현).
     plan["unresolved_source_conditions"] = unresolved
     return unresolved
 
@@ -1432,7 +1403,6 @@ def discharge_legacy_ranked_obligations(
 __all__ = [
     "canonical_claim_issues",
     "catalog_claim_issues",
-    "catalog_issue_owned_by_relation_node",
     "discharge_legacy_ranked_obligations",
     "literal_claim_issues",
     "ranked_obligation_is_compiled",

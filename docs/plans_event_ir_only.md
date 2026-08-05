@@ -1,5 +1,23 @@
 # canonical Event IR 단일 권위 — 배선 계획
 
+> **2026-08-05 후속 고지 (§ 번호는 그대로 둔다 — 다른 문서와 코드가 인용한다).**
+>
+> 이 계획이 전제하던 **SemanticPlanV2 중간표현은 폐기**됐고 모듈 파일까지 삭제됐다. 그래서
+> 본문에서 `semantic_plan` 을 **현재 존재하는 것처럼** 설명하는 문장은 더 이상 사실이 아니다.
+> 특히:
+>
+> - `plan_schema` 에 `semantic_plan` 키는 **없다**(§3-1 의 `audience=False` 지정은 그 키가
+>   있던 시절의 결정이다).
+> - `graph_rag._apply_semantic_plan_pipeline` 은 **없다**(§3-4 ④가 "남은 자리"로 적어 둔
+>   리터럴 판정은 그 함수와 함께 사라졌다).
+> - `canonical_event_ir_grounding` 의 표면 술어는 이제 레지스트리 파생 하나뿐이고
+>   `semantic_plan.nodes` 를 보지 않는다(§3-3·§6 의 "위임하지 않는다" 근거 중 그 항은 소멸).
+> - 반대로 **살아 있는** 것 하나: `audience_authority.CANONICAL_EVENT_EXPRESSION_SOURCES` 의
+>   `"semantic_plan"` 문자열(§3-4 ①). 생산자는 폐기됐지만 **저장된 페이로드 호환**으로 남긴다 —
+>   빼는 순간 그 표식을 가진 저장분의 라우팅이 canonical → legacy 로 조용히 뒤집힌다.
+>   `query_pipeline/compatibility/legacy_event_expression.py` 의 두 번째 사본도 같은 이유로
+>   유지되며, **두 사본이 일치한다**가 계약이다(`tests/test_no_semantic_plan_residue.py`).
+
 목표는 legacy 슬롯을 걷어내는 것이 아니다. **"누가 오디언스를 실행하는가"의 판정자를 하나로 만들고,
 그 판정이 `event_ir` 일 때 조건이 조용히 사라지는 경로를 전부 없애는 것**이다.
 
@@ -175,7 +193,7 @@ status 를 파생했다(`unsupported`/`missing`/`unresolved` 포함 여부). 두
 
 | 단계 | 파일 | 변경 | 크기 |
 |---|---|---|---|
-| 3-1 | `plan_schema.py` | `PlanKey` 에 `audience: bool \| None` 추가, 모든 CONDITION 키에 사유와 함께 채운다. **`semantic_plan` 과 `unresolved_source_conditions` 는 반드시 `audience=False`** — 전자는 canonical 레인에 상시 존재해 `True` 면 모든 canonical 요청이 충돌로 죽고, 후자는 Event IR 빌더 자신이 써서 자기참조 fail-close 가 된다. 컨테이너는 별도 상수 `AUDIENCE_CONTAINERS`. import 시점 assert | S |
+| 3-1 | `plan_schema.py` | `PlanKey` 에 `audience: bool \| None` 추가, 모든 CONDITION 키에 사유와 함께 채운다. **`semantic_plan` 과 `unresolved_source_conditions` 는 반드시 `audience=False`** — 전자는 canonical 레인에 상시 존재해 `True` 면 모든 canonical 요청이 충돌로 죽고, 후자는 Event IR 빌더 자신이 써서 자기참조 fail-close 가 된다. (2026-08-05: `semantic_plan` 플랜 키는 중간표현과 함께 **삭제**됐다. 지정 자체가 사라졌으므로 이 항은 기록이다) 컨테이너는 별도 상수 `AUDIENCE_CONTAINERS`. import 시점 assert | S |
 | 3-2 | `plan_schema.py`, `audience_cutover.py`, `tools/cutover_legacy_audience.py`, 테스트 2종, `NOTES_migration.md` | DERIVED 키 `preserved_legacy_audience` 신설. `plan_after_cutover` 가 표면을 **실행 위치 → 보존 위치**로 이사. `plan_after_rollback(plan)` **시그니처 유지**하고 preserved 를 실행 위치로 복원. `audience_view(plan)` 을 모든 지문 계산 호출부가 쓴다. `rag/trace.py:308·401·798` 도 함께 옮긴다 | **L** |
 | 3-3 | `audience_admission.py`(신규) | 순수 모듈(`plan_schema` + `audience_authority` + stdlib). API 3개: `legacy_audience_paths` / `has_empty_legacy_audience_surface` / `execution_conflicts`. `AudienceAuthorityError` 는 전파하지 않고 `('audience_authority',)` 경로로 접는다. `canonical_event_ir_grounding.has_empty_legacy_audience_surface` 는 **위임하지 않는다**(의미가 다른 술어다) | M |
 | 3-4 | `plan_validation.py` | `699-709` 를 `execution_conflicts` 순회로 교체하고 리터럴 집합 제거. **이 한 줄이 축 A 의 원인이다.** 앞 단계에서 표면을 이미 비웠으므로 red 가 되는 테스트는 없다 | S |
@@ -216,8 +234,9 @@ status 를 파생했다(`unsupported`/`missing`/`unresolved` 포함 여부). 두
 "저장 자산 없음"으로 실측됐으므로 **L → S 축소가 성립한다.**
 
 **③ 남은 실질은 3-4·3-6 과 그 테스트다.** 지금 `plan_validation.py:704-714` 의 hybrid 가드는 여전히
-`event_expression.source ∈ {audience_requirement, semantic_plan}` **리터럴**로 걸린다. 권위로 걸리지
-않으므로 표식 없는 페이로드(= cut-over 산출물, 지금은 0건)에서는 hybrid 가 안 걸리고,
+`event_expression.source ∈ {audience_requirement, semantic_plan}` **리터럴**로 걸린다(그 집합은
+2026-08-05 이후에도 두 값을 유지한다 — `semantic_plan` 은 생산자 없는 **저장 페이로드 호환** 값이다).
+권위로 걸리지 않으므로 표식 없는 페이로드(= cut-over 산출물, 지금은 0건)에서는 hybrid 가 안 걸리고,
 `canonical_legacy_audience_conflict` 는 저장소 전체에서 **정의 1줄·테스트 0건**(재확인)이다.
 표현 생산자는 4곳인데(`audience_execution.py:912`, `graph_rag.py:10467`·`3661`, `audience_cutover.py:712`)
 그중 `graph_rag.py:3661` 은 표현만 쓰고 권위를 남기지 않는다.
@@ -228,7 +247,7 @@ status 를 파생했다(`unsupported`/`missing`/`unresolved` 포함 여부). 두
 |---|---|---|---|
 | 3-1 | `plan_schema.py` | 원안 유지(`PlanKey.audience`). 단 `AUDIENCE_CONTAINERS` 는 **신설이 아니라 이동**이다 — 이미 `legacy_audience_migration.py:48` 이 소유하고 `tools/cutover_legacy_audience.py:359` 가 그걸 읽는다. 두 벌로 적으면 그 순간 갈라진다 | S |
 | 3-2′ | `audience_cutover.py`, 테스트 1종 | 이사하지 않는다. `plan_after_cutover` 산출 플랜이 **실행 경로에 들어오지 않는다**는 한 줄 계약 + 테스트로 대체. 저장 자산 0건이 근거이므로, 자산이 생기는 날 이 계약이 먼저 red 가 되도록 `campaign_audience_migration` 비어 있음을 테스트가 함께 고정한다 | S |
-| 3-3 | `audience_admission.py`(신규) | 원안 유지. `canonical_event_ir_grounding.has_empty_legacy_audience_surface`(`:160-183`)는 **위임하지 않는다** — 그 술어는 `semantic_plan.nodes`·`set_expressions` 등 8개 표면을 함께 보고, admission 의 술어(컨테이너 2개)와 의미가 다르다 | M |
+| 3-3 | `audience_admission.py`(신규) | 원안 유지. `canonical_event_ir_grounding.has_empty_legacy_audience_surface`(`:160-183`)는 **위임하지 않는다** — 그 술어는 `semantic_plan.nodes`·`set_expressions` 등 8개 표면을 함께 봤고, admission 의 술어(컨테이너 2개)와 의미가 달랐다. (2026-08-05: 그 술어의 표면은 레지스트리 파생 하나로 줄었고 `semantic_plan.nodes` 항은 사라졌다. 위임 여부는 여전히 미결이며, 근거는 이제 "8개 표면"이 아니라 파생 범위 차이다) | M |
 | 3-4 ✅ | `plan_validation.py`, `failure_messages.py`, 테스트 3종 | 리터럴 가드를 `audience_admission.execution_conflicts` 순회로 교체. **Phase 3 의 유일한 판정 변경.** 권위 술어는 `requires_event_ir`(아래 ①), status 는 리터럴 `INTERNAL_INVALID`(파생시키면 `_status_for_validation_code` 가 "conflict" 를 보고 SEMANTIC_CONFLICT 로 뒤집어 사유·UI 단계가 함께 바뀐다). 사용자 문구에서 내부 슬롯명을 빼는 분기를 함께 넣었다(아래 ③) | S |
 | 3-5 ✅ | `tests/test_event_ir_builder_fail_close.py`(신규) | **이미 구현됨(①).** 회귀 방지 테스트 6종 추가. 픽스처는 `event_expression.source` 를 canonical 집합 **밖**으로 둔다 — 안쪽이면 hybrid 가드가 먼저 걸려 빌더 게이트가 아니라 검증 게이트를 재게 된다. 대조군(같은 플랜 + `legacy` 권위 → 회원 SQL 출고)이 "None 이 픽스처 무능이 아니라 권위에서 온다"를 보인다 | S |
 | 3-6 | `audience_authority.py`, `audience_execution.py`, `graph_rag.py` | `declare_canonical_expression` 단일 진입점. 전환 대상은 3곳이 아니라 **4곳**이고, 그중 `graph_rag.py:3661` 은 권위를 안 남기는 호환 경로다 — 이 단계는 그 비대칭을 없애는 것이 목적이다. AST 가드는 tests/ 제외 | S |
@@ -259,8 +278,10 @@ status 를 파생했다(`unsupported`/`missing`/`unresolved` 포함 여부). 두
 깨는 것이므로 이 코드 전용 분기를 넣어 좌표를 뺐다. 좌표는 운영자 채널(`audience_diagnosis` /
 `unresolved_source_conditions` / 이슈의 `path`)에 그대로 남는다.
 
-**④ 이 커밋이 달성하지 못한 것.** `graph_rag._apply_semantic_plan_pipeline` 안의 지역 `has_value` +
-`target_user`/`exclude` **리터럴**이 같은 표면을 여전히 독립 판정한다(semantic_plan → Event IR
+**④ 이 커밋이 달성하지 못한 것.**(2026-08-05 해소 — 아래는 당시 상태의 기록이다. 그 함수는
+SemanticPlanV2 폐기와 함께 삭제됐고, 남아 있던 리터럴 판정도 함께 사라졌다.)
+`graph_rag._apply_semantic_plan_pipeline` 안의 지역 `has_value` +
+`target_user`/`exclude` **리터럴**이 같은 표면을 여전히 독립 판정했다(semantic_plan → Event IR
 lowering 게이트). 즉 §4 불변식("표면의 소유자는 plan_schema 하나")은 이 커밋으로 충족되지 않았다.
 `plan_validation` 에서 리터럴이 사라진 것까지가 이 커밋의 범위이고, 남은 자리는 별건이다 —
 판정이 바뀌는 커밋에 무관한 리팩터링을 얹지 않는다(§55). 같은 정책의 재귀 empty 술어도 저장소에
@@ -409,7 +430,7 @@ Event IR 단일 권위로 가면 아래는 여전히 안 된다. **분류를 숨
 | 확인 안 된 unsupported 를 `structurer_failure` 로 강등해 재시도 | 원장은 정의상 불완전하다. **원천이 실제로 없는** 축이 정직한 미지원 대신 구조화 실패로 강등돼 "조건을 찾지 못했습니다"로 도착 — 없애려던 것과 같은 모양의 새 오귀속 |
 | 종착 상태 자체를 통합(`plan['unsupported']` 폐기) | 소비자가 최소 5계층이고 `unresolved_source_conditions` 는 공유 채널이다. 독립 커밋으로 못 쪼개고 회귀 원인이 "좌표 통합"인지 "게이트 변경"인지 안 갈린다 |
 | 회원 속성을 전부 Event IR 로 흡수(축을 먼저 다 연다) | 이 축의 **목적지**이지 수단이 될 수 없다. 차집합이 45컬럼/18축이고 IR_EXTENSION·DOMAIN_DECISION 항목은 선언으로 안 열린다 |
-| `canonical_event_ir_grounding` 를 `audience_admission` 으로 위임 | 두 술어의 의미가 다르다(`semantic_plan.nodes` 요구 / `dimension_filters` 미검사). 위임하면 둘 중 하나가 조용히 바뀐다 |
+| `canonical_event_ir_grounding` 를 `audience_admission` 으로 위임 | 두 술어의 의미가 다르다(당시 근거: `semantic_plan.nodes` 요구 / `dimension_filters` 미검사. 2026-08-05 이후 앞 항은 소멸했고 뒤 항만 남는다). 위임하면 둘 중 하나가 조용히 바뀐다 |
 | projection error 를 import 시점 강제 | 런타임 fail-close 가 이미 있고, projection 은 전 저장소 ast 스캔 + git subprocess 라 부팅 실패 모드가 된다 |
 | `legacy_audience_migration` 정비 | 사용자 목표 밖이다. 라이브 canonical 레인은 그 표를 읽지 않는다 |
 | 골든 코퍼스로 표면 확대 영향 측정 | `parser='rules'` 코퍼스라 EVENT_IR 플랜을 못 만든다. 기준선이 0 으로 기록돼 "영향 0건"이라는 **거짓 근거**가 된다 |
