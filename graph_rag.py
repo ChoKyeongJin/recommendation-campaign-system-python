@@ -188,7 +188,6 @@ from query_structurer import (
     build_campaign_query_plan_v4_fallback,
     build_fallback,
     verify_campaign_query_identity,
-    validate_campaign_query_plan_v4,
     call_query_planner,
 )
 from query_structurer.prompt import PLANNER_STRUCTURED_QUERY_RULES
@@ -348,167 +347,6 @@ def _structure_campaign_query_plan_v4(
         )
 
 
-def _admit_grounded_canonical_event_ir_repair(
-    original: Mapping[str, Any],
-    candidate: Any,
-    *,
-    projection: Mapping[str, Any],
-    query: str,
-    current_date: str | None,
-) -> tuple[CampaignQueryPlanV4 | None, str]:
-    """Admit only one complete, validated replacement plan.
-
-    Graph grounding is not a patch language.  In particular, this gate never
-    copies individual fields from a second response into the first response and
-    never accepts a legacy audience side channel.  The replacement must already
-    be a fully application-projected Canonical Event IR plan.
-    """
-
-    try:
-        validated = validate_campaign_query_plan_v4(
-            candidate,
-            query=query,
-            raw_query=query,
-            require_semantic=True,
-        )
-    except Exception as exc:  # noqa: BLE001 - admission is fail-closed.
-        return None, f"campaign_plan_validation_failed:{exc.__class__.__name__}"
-
-    for key in ("intent", "campaign_constraints", "result_limit"):
-        if validated.get(key) != original.get(key):
-            return None, f"non_audience_field_changed:{key}"
-    for key in (
-        "raw_query",
-        "original_query",
-        "planning_query",
-        "normalized_query",
-        "literal_bindings",
-    ):
-        if validated.get(key) != original.get(key):
-            return None, f"application_owned_field_changed:{key}"
-
-    requirement = validated.get(AUDIENCE_REQUIREMENT_KEY)
-    execution = validated.get(EVENT_EXPRESSION_KEY)
-    semantic_ir = validated.get("semantic_ir")
-    if not isinstance(requirement, Mapping):
-        return None, "canonical_requirement_missing"
-    if requirement.get("issues") != [] or not isinstance(
-        requirement.get("expression"), Mapping
-    ):
-        return None, "canonical_requirement_not_complete"
-    if not isinstance(execution, Mapping):
-        return None, "event_expression_missing"
-    if (
-        execution.get("source") != AUDIENCE_REQUIREMENT_KEY
-        or execution.get("expression") != requirement.get("expression")
-    ):
-        return None, "event_expression_projection_mismatch"
-    receipts = execution.get("receipts")
-    if not isinstance(receipts, list) or not receipts or any(
-        not isinstance(receipt, Mapping) or receipt.get("status") != "compiled"
-        for receipt in receipts
-    ):
-        return None, "event_expression_receipts_missing"
-    if not (
-        isinstance(semantic_ir, Mapping)
-        and semantic_ir.get("status") in {"resolved", "policy_applied"}
-        and semantic_ir.get("failure_kind") in (None, "")
-    ):
-        return None, "semantic_ir_not_resolved"
-    if validated.get("unresolved") or validated.get("unresolved_source_conditions"):
-        return None, "unresolved_conditions_remain"
-    if validated.get("unsupported") or validated.get("audience_execution_assets"):
-        return None, "failure_marker_remains"
-    if not canonical_event_ir_grounding.has_empty_legacy_audience_surface(validated):
-        return None, "second_audience_language_populated"
-    if not audience_authority.executes_event_ir(validated):
-        return None, "event_ir_authority_missing"
-
-    try:
-        expression = event_ir.condition_from_dict(dict(requirement["expression"]))
-        projected_fields = {
-            str(item) for item in projection.get("canonical_fields", [])
-        }
-        projected_sources = {
-            str(item) for item in projection.get("canonical_sources", [])
-        }
-        projected_values = projection.get("canonical_values")
-        projected_values = (
-            projected_values if isinstance(projected_values, Mapping) else {}
-        )
-        expression_fields = event_ir.field_names(expression)
-        automatic_time_fields = {
-            f"{source}.occurred_at" for source in projected_sources
-        }
-        unexpected_fields = expression_fields - projected_fields - automatic_time_fields
-        if unexpected_fields:
-            return None, "event_ir_field_outside_graph_projection"
-        unexpected_sources = event_ir.sources(expression) - projected_sources - {"subject"}
-        if unexpected_sources:
-            return None, "event_ir_source_outside_graph_projection"
-        for atom, _negated in event_ir.iter_signed_atoms(expression):
-            if not isinstance(atom, event_ir.Comparison):
-                continue
-            pairs = ((atom.left, atom.right), (atom.right, atom.left))
-            pair = next(
-                (
-                    (field, literal)
-                    for field, literal in pairs
-                    if isinstance(field, event_ir.FieldRef)
-                    and isinstance(literal, event_ir.Literal)
-                ),
-                None,
-            )
-            if pair is None:
-                continue
-            field, literal = pair
-            allowed_values = projected_values.get(field.name)
-            if (
-                isinstance(allowed_values, Sequence)
-                and not isinstance(allowed_values, (str, bytes, bytearray))
-                and allowed_values
-                and isinstance(literal.value, str)
-                and literal.value not in {str(value) for value in allowed_values}
-            ):
-                return None, "event_ir_value_outside_graph_projection"
-
-        # Every original registry-gap span must be discharged by at least one
-        # admitted atom.  Overlap (rather than exact equality) allows a repaired
-        # producer to use a tighter source span than the original issue.
-        atom_evidence = [
-            atom.evidence
-            for atom, _negated in event_ir.iter_signed_atoms(expression)
-            if atom.evidence is not None
-        ]
-        original_requirement = original.get(AUDIENCE_REQUIREMENT_KEY)
-        original_issues = (
-            original_requirement.get("issues")
-            if isinstance(original_requirement, Mapping)
-            else []
-        )
-        for issue in original_issues or []:
-            evidence = issue.get("evidence") if isinstance(issue, Mapping) else None
-            if not isinstance(evidence, Mapping):
-                return None, "registry_gap_issue_evidence_missing"
-            start, end = evidence.get("start"), evidence.get("end")
-            if not isinstance(start, int) or not isinstance(end, int) or start >= end:
-                return None, "registry_gap_issue_evidence_invalid"
-            if not any(item.start < end and start < item.end for item in atom_evidence):
-                return None, "registry_gap_issue_not_discharged"
-
-        catalog = audience_runtime.resolve_audience_catalog()
-        today = date.fromisoformat(current_date) if current_date else None
-        capability = event_compiler.validate_compiler_capability(
-            expression,
-            context=catalog.compile_context(literals=True, today=today),
-        )
-    except Exception as exc:  # noqa: BLE001 - compiler admission is fail-closed.
-        return None, f"event_ir_capability_check_failed:{exc.__class__.__name__}"
-    if capability.status != event_compiler.CAPABILITY_SUPPORTED:
-        return None, "event_ir_compiler_capability_unsupported"
-    return validated, "accepted"
-
-
 def _grounded_canonical_event_ir_repair(
     original: CampaignQueryPlanV4,
     *,
@@ -526,112 +364,41 @@ def _grounded_canonical_event_ir_repair(
     llm_model: str,
     query_structurer: QueryStructurer | None,
 ) -> CampaignQueryPlanV4:
-    """Use GraphRAG only to ground one retry of the same Event IR producer."""
+    """Use GraphRAG only to ground one retry of the same Event IR producer.
 
-    if not (
-        audience_authority.requires_event_ir(original)
-        and canonical_event_ir_grounding.is_registry_gap_repair_candidate(original)
-    ):
-        return original
-    # Injected structurers expose only ``structure(input)`` and have no safe
-    # channel for the bounded canonical projection.  Calling one again without
-    # that projection would not be a Graph-grounded repair.
-    if query_structurer is not None:
-        _write_rag_llm_log(
-            "canonical_event_ir_grounding_skipped",
-            {"query": query, "detail": "injected_structurer_has_no_grounding_channel"},
-        )
-        return original
+    검색·LLM 어댑터만 여기서 묶고, **채택 정책은** :mod:`canonical_event_ir_grounding`
+    이 혼자 소유한다. 같은 게이트가 두 벌 있던 동안(2026-08-05 이전) 실행되는 쪽은
+    이 파일의 사본이었고 모듈 쪽 한 쌍은 아무도 부르지 않았다 — 그 상태에서는 한쪽만
+    조여진 것을 아무도 알 수 없다.
+    """
 
-    schema_query = _schema_retrieval_query(query)
-    vector_hits: list[SearchHit] = []
-    keyword_hits: list[SearchHit] = []
-    retrieval_errors: list[str] = []
-    try:
-        vector_hits = vector_search(
-            query=schema_query,
-            collection=collection,
-            url=url,
-            api_key=api_key,
-            embedding_model_name=embedding_model_name,
-            limit=max(1, vector_top_k),
-        )
-    except Exception as exc:  # noqa: BLE001 - keyword grounding may still work.
-        retrieval_errors.append(f"vector:{exc.__class__.__name__}")
-    try:
-        keyword_hits = keyword_search(
-            graph=graph,
-            query=query,
-            limit=max(1, keyword_top_k),
-        )
-    except Exception as exc:  # noqa: BLE001 - vector grounding may still work.
-        retrieval_errors.append(f"keyword:{exc.__class__.__name__}")
-    try:
-        hits = merge_hits([*vector_hits, *keyword_hits])
-        context_nodes = expand_context(
-            graph=graph,
-            hits=hits,
-            hops=hops,
-            limit=max(1, graph_top_k),
-        )
-        catalog_snapshot = audience_runtime.catalog_snapshot()
-        catalog = audience_runtime.resolve_audience_catalog()
-        projection = canonical_event_ir_grounding.project_canonical_event_ir_grounding(
-            query,
-            context_nodes,
-            catalog_snapshot,
-            allowed_fields=catalog.compiler_fields,
-            allowed_sources=catalog.compiler_events,
-        )
-        instruction = (
-            canonical_event_ir_grounding.render_canonical_event_ir_grounding_instruction(
-                projection
-            )
-        )
-    except Exception as exc:  # noqa: BLE001 - preserve the honest registry gap.
-        _write_rag_llm_log(
-            "canonical_event_ir_grounding_failed",
-            {
-                "query": query,
-                "reason": f"projection_failed:{exc.__class__.__name__}",
-                "retrieval_errors": retrieval_errors,
-            },
-        )
-        return original
-
-    _write_rag_llm_log(
-        "canonical_event_ir_grounding_projected",
-        {
-            "query": query,
-            "canonical_fields": projection.get("canonical_fields", []),
-            "canonical_sources": projection.get("canonical_sources", []),
-            "canonical_values": projection.get("canonical_values", {}),
-            "provenance_node_ids": projection.get("provenance_node_ids", []),
-            "retrieval_errors": retrieval_errors,
-        },
+    services = canonical_event_ir_grounding.GroundingServices(
+        schema_retrieval_query=_schema_retrieval_query,
+        vector_search=vector_search,
+        keyword_search=keyword_search,
+        merge_hits=merge_hits,
+        expand_context=expand_context,
+        structure_plan=_structure_campaign_query_plan_v4,
+        repair_model=_repair_llm_model,
+        write_log=_write_rag_llm_log,
     )
-    if instruction is None:
-        return original
-
-    candidate = _structure_campaign_query_plan_v4(
-        query,
-        context,
-        llm_model,
-        extra_instruction=instruction,
-        model_override=_repair_llm_model(llm_model),
-    )
-    admitted, reason = _admit_grounded_canonical_event_ir_repair(
+    return canonical_event_ir_grounding.repair_grounded_canonical_event_ir(
         original,
-        candidate,
-        projection=projection,
         query=query,
-        current_date=context.current_date,
+        context=context,
+        graph=graph,
+        collection=collection,
+        url=url,
+        api_key=api_key,
+        embedding_model_name=embedding_model_name,
+        vector_top_k=vector_top_k,
+        keyword_top_k=keyword_top_k,
+        graph_top_k=graph_top_k,
+        hops=hops,
+        llm_model=llm_model,
+        query_structurer=query_structurer,
+        services=services,
     )
-    _write_rag_llm_log(
-        "canonical_event_ir_grounding_admission",
-        {"query": query, "accepted": admitted is not None, "reason": reason},
-    )
-    return admitted if admitted is not None else original
 
 
 CAMPAIGN_OBJECTIVES = set(targeting_domain.vocabulary("campaign_objective"))

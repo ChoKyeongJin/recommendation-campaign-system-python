@@ -352,7 +352,7 @@ def test_graph_grounding_retries_same_structurer_once_and_adopts_whole_plan(
 
     hybrid = copy.deepcopy(success)
     hybrid["target_user"] = {"gender": "female"}
-    rejected, reason = graph_rag._admit_grounded_canonical_event_ir_repair(
+    rejected, reason = canonical_event_ir_grounding.admit_grounded_canonical_event_ir_repair(
         gap,
         hybrid,
         projection={
@@ -383,7 +383,7 @@ def test_graph_grounding_retries_same_structurer_once_and_adopts_whole_plan(
     ).to_dict()
     injected["audience_requirement"]["expression"] = injected_expression
     injected["event_expression"]["expression"] = copy.deepcopy(injected_expression)
-    rejected, reason = graph_rag._admit_grounded_canonical_event_ir_repair(
+    rejected, reason = canonical_event_ir_grounding.admit_grounded_canonical_event_ir_repair(
         gap,
         injected,
         projection={
