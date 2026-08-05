@@ -400,9 +400,12 @@ _TRANSITION_DIRECTIONS: dict[str, str] = {
 _TEMPORAL_MARKER_TEMPLATES: tuple[tuple[str, str], ...] = (
     (temporal_semantics.CHANGE_BETWEEN, r"{directions}"),
     (
+        # 'A에서 B로 …' 한 구절이 마커가 되는 형태. 서술어에 방향어({directions})와 '되다'
+        # 계열을 함께 두는 이유는 근거 구간이다 — 방향어만 마커가 되면('승급') 값 두 개가
+        # 마커 밖에 남아 근거 스팬이 전이 구절을 덮지 못한다. 뜻은 같고 구간만 정확해진다.
         temporal_semantics.CHANGE_BETWEEN,
         r"(?:{values})\s*(?:에서|부터)\s*(?:{values})\s*"
-        r"(?:으로|로)\s*(?:바뀐|바뀌|변하|변경|전환)",
+        r"(?:으로|로|이|가)\s*(?:바뀐|바뀌|변하|변경|전환|되었|됐|된|{directions})",
     ),
     (temporal_semantics.IMMEDIATELY_PRECEDING, r"직전\s*(?:{axis})"),
     (temporal_semantics.CHANGE_BETWEEN, r"(?:{values})[가-힣\s]{{0,6}}?(?:이었|였)다가"),
@@ -453,6 +456,19 @@ def temporal_lexicon() -> temporal_semantics.TemporalLexicon:
     )
 
 
+def transition_direction_cues() -> dict[str, str]:
+    """방향 표면어 → 서열 방향(compact 키). 어휘의 단일 소유자는 위 표 하나다.
+
+    원문에서 방향어를 **찾아야 하는** 소비자(전이 청구)가 손 목록을 만들면 마커 어휘와 갈라지고,
+    그 순간 '승급'은 마커로 잡히는데 방향 검증에는 안 걸리는 조합이 생긴다.
+    """
+
+    return {
+        re.sub(r"\s+", "", cue).casefold(): direction
+        for cue, direction in _TRANSITION_DIRECTIONS.items()
+    }
+
+
 def transition_direction(value: Any) -> str | None:
     """Directional transition cue -> ordered-domain direction.
 
@@ -463,10 +479,7 @@ def transition_direction(value: Any) -> str | None:
     if not isinstance(value, str):
         return None
     compact = re.sub(r"\s+", "", value).casefold()
-    return {
-        re.sub(r"\s+", "", cue).casefold(): direction
-        for cue, direction in _TRANSITION_DIRECTIONS.items()
-    }.get(compact)
+    return transition_direction_cues().get(compact)
 
 
 # ── 자리표시자(= 사용자가 값을 말하지 않은 자리) ────────────────────────────────

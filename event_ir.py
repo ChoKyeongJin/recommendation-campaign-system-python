@@ -947,6 +947,9 @@ CAPABILITIES: frozenset[str] = frozenset({
     "relation.ranked_limit",
     # 카탈로그 계약에서만 쓰이는 것(트리 모양이 아니라 지표의 grain·cardinality 계약)
     "metric.member_scalar",
+    # 전이 지표 계약. 표현은 기존 조합(Exists/Filter/And/Comparison)뿐이므로 트리에서 파생되지
+    # 않는다 — 요구하는 것은 '현재값과 직전값을 같은 행에서 함께 읽는 선언'이다.
+    "metric.transition",
 })
 
 

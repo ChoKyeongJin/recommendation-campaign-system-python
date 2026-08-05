@@ -376,6 +376,18 @@ def missing_field_cause_records(
     return records
 
 
+def _continues_ascii_word(char: str) -> bool:
+    """ASCII 낱말이 이 글자로 **이어지는가**.
+
+    한글은 이어지지 않는다 — 'VIP로'의 '로'는 조사이지 낱말의 일부가 아니다. 예전에는
+    ``isalnum()`` 만 봤는데 한글도 alnum 이라 ``VIP로``·``VIP인`` 이 통째로 히트에서 빠졌고,
+    그래서 값 사전에 선언된 ``VIP`` 가 원문에 있어도 카탈로그 값 청구가 서지 않았다(실측).
+    라틴 낱말 안의 부분 일치(``gold`` in ``goldman``)를 막는 원래 목적은 그대로다.
+    """
+
+    return bool(char) and char.isascii() and char.isalnum()
+
+
 def _term_hits(query: str, terms: Iterable[Any]) -> list[tuple[int, int]]:
     folded = query.casefold()
     hits: set[tuple[int, int]] = set()
@@ -390,8 +402,8 @@ def _term_hits(query: str, terms: Iterable[Any]) -> list[tuple[int, int]]:
             after_index = start + len(needle)
             after = folded[after_index] if after_index < len(folded) else ""
             if (
-                (not needle[0].isascii() or not before.isalnum())
-                and (not needle[-1].isascii() or not after.isalnum())
+                (not needle[0].isascii() or not _continues_ascii_word(before))
+                and (not needle[-1].isascii() or not _continues_ascii_word(after))
             ):
                 hits.add((start, after_index))
             cursor = start + max(1, len(needle))
@@ -430,6 +442,7 @@ def _reconcile_axis_scoped_claims(
     domains = catalog.get("value_domains")
     domains = domains if isinstance(domains, Mapping) else {}
     domain_fields: dict[str, list[str]] = {}
+    domain_axis_terms: dict[str, set[str]] = {}
     cues: list[tuple[str, int, int]] = []
     for field_id, declaration in fields.items():
         if not isinstance(declaration, Mapping):
@@ -443,6 +456,9 @@ def _reconcile_axis_scoped_claims(
         for term in terms:
             if not isinstance(term, str) or len(term.strip()) < 2:
                 continue
+            domain_axis_terms.setdefault(domain_id, set()).add(
+                "".join(term.split()).casefold()
+            )
             cues.extend((domain_id, start, end) for start, end in _term_hits(query, [term]))
     # A specific cue (가치등급) owns a contained generic cue (등급).
     cues = [
@@ -465,16 +481,28 @@ def _reconcile_axis_scoped_claims(
         if not isinstance(values, Mapping):
             return None
         surface = "".join(text.split()).casefold()
+        axis_terms = domain_axis_terms.get(domain_id, set())
+        composed: set[str] = set()
         matches: set[str] = set()
         for canonical, declaration in values.items():
             aliases = declaration.get("aliases") if isinstance(declaration, Mapping) else []
             terms = [canonical, *(aliases if isinstance(aliases, list) else [])]
             normalized = ["".join(str(term).split()).casefold() for term in terms]
+            # 축 표면어 + 값 표면어의 **정확한 합성**('가치등급'+'vip'). 접미 일치만 보면
+            # '가치등급vvip' 도 'vip' 로 끝나므로 VIP 요청이 VVIP 와 함께 모호해진다.
+            if any(
+                term in {axis + surface, surface + axis}
+                for term in normalized
+                for axis in axis_terms
+            ):
+                composed.add(str(canonical))
             if any(
                 term == surface or term.startswith(surface) or term.endswith(surface)
                 for term in normalized
             ):
                 matches.add(str(canonical))
+        if len(composed) == 1:
+            return next(iter(composed))
         return next(iter(matches)) if len(matches) == 1 else None
 
     merged: dict[tuple[str, str], dict[str, Any]] = {}
@@ -589,6 +617,61 @@ def _open_text_literal_issues(
     return issues
 
 
+def catalog_value_claims(
+    query: str,
+    catalog: Mapping[str, Any],
+    *,
+    excluded_spans: Iterable[tuple[int, int]] = (),
+) -> list[dict[str, Any]]:
+    """원문에 등장한 카탈로그 값 청구 ``(domain, canonical, fields, hits)``.
+
+    "이 문장이 어떤 선언된 값을 말했는가"의 단일 소유자다. 값 사전(별칭)에서만 정체를 얻고,
+    조사가 끼어든 축 한정('가치등급이 골드에서')은 :func:`_reconcile_axis_scoped_claims` 가
+    가까운 축 표지로 도메인을 고른다. 두 소비자가 각자 이 조립을 다시 쓰면 같은 문장이 서로
+    다른 값 집합으로 읽히므로 함수 하나로 둔다.
+
+    ``excluded_spans`` 는 **이미 다른 근거로 소비된** 구간이다(부재 조건의 동어반복 등).
+    """
+
+    fields = catalog.get("fields")
+    fields = fields if isinstance(fields, Mapping) else {}
+    domains = catalog.get("value_domains")
+    domains = domains if isinstance(domains, Mapping) else {}
+    excluded = set(excluded_spans)
+
+    domain_fields: dict[str, list[str]] = {}
+    domain_values: dict[str, Mapping[str, Any]] = {}
+    for field_id, field_declaration in fields.items():
+        if not isinstance(field_declaration, Mapping):
+            continue
+        domain_id = field_declaration.get("value_domain")
+        domain = domains.get(domain_id) if isinstance(domain_id, str) else None
+        values = domain.get("values") if isinstance(domain, Mapping) else None
+        if not isinstance(values, Mapping):
+            continue
+        domain_fields.setdefault(domain_id, []).append(str(field_id))
+        domain_values[domain_id] = values
+
+    claims: list[dict[str, Any]] = []
+    for domain_id, values in domain_values.items():
+        for canonical, value_declaration in values.items():
+            aliases = (
+                value_declaration.get("aliases")
+                if isinstance(value_declaration, Mapping) else []
+            )
+            hits = _term_hits(query, [canonical, *(aliases if isinstance(aliases, list) else [])])
+            hits = [hit for hit in hits if hit not in excluded]
+            if not hits:
+                continue
+            claims.append({
+                "domain": domain_id,
+                "canonical": str(canonical),
+                "fields": domain_fields[domain_id],
+                "hits": hits,
+            })
+    return _reconcile_axis_scoped_claims(query, claims, catalog)
+
+
 def catalog_claim_issues(
     query: str,
     expression: event_ir.Condition,
@@ -652,38 +735,9 @@ def catalog_claim_issues(
     absence_restatements = rolling_absence_claims.absence_restatement_spans(
         query, expression, catalog
     )
-    domain_fields: dict[str, list[str]] = {}
-    domain_values: dict[str, Mapping[str, Any]] = {}
-    for field_id, field_declaration in fields.items():
-        if not isinstance(field_declaration, Mapping):
-            continue
-        domain_id = field_declaration.get("value_domain")
-        domain = domains.get(domain_id) if isinstance(domain_id, str) else None
-        values = domain.get("values") if isinstance(domain, Mapping) else None
-        if not isinstance(values, Mapping):
-            continue
-        domain_fields.setdefault(domain_id, []).append(str(field_id))
-        domain_values[domain_id] = values
-
-    claims: list[dict[str, Any]] = []
-    for domain_id, values in domain_values.items():
-        for canonical, value_declaration in values.items():
-            aliases = (
-                value_declaration.get("aliases")
-                if isinstance(value_declaration, Mapping) else []
-            )
-            hits = _term_hits(query, [canonical, *(aliases if isinstance(aliases, list) else [])])
-            hits = [hit for hit in hits if hit not in absence_restatements]
-            if not hits:
-                continue
-            claims.append({
-                "domain": domain_id,
-                "canonical": str(canonical),
-                "fields": domain_fields[domain_id],
-                "hits": hits,
-            })
-
-    claims = _reconcile_axis_scoped_claims(query, claims, catalog)
+    claims = catalog_value_claims(
+        query, catalog, excluded_spans=absence_restatements
+    )
     issues.extend(_catalog_disjunction_issues(query, expression, claims, negative_terms))
 
     # A specific cross-domain alias owns an overlapping generic value hit.  For
@@ -1403,6 +1457,7 @@ def discharge_legacy_ranked_obligations(
 __all__ = [
     "canonical_claim_issues",
     "catalog_claim_issues",
+    "catalog_value_claims",
     "discharge_legacy_ranked_obligations",
     "literal_claim_issues",
     "ranked_obligation_is_compiled",

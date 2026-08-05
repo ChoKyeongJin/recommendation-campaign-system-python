@@ -45,6 +45,22 @@ import temporal_semantics
 # 순위 정책(모집단·동점자·최소 표본)이 조용히 사라진다. 계약을 나누면 그 오용이 선언 검증에서
 # 이름과 함께 막힌다.
 METRIC_KINDS = frozenset({"field", "aggregate", "existence", "transition", "member_scalar"})
+TRANSITION_KIND = "transition"
+# 전이 지표가 **두 시점의 값을 어떤 물리 모양에서 얻는가**의 선언 어휘.
+#
+#   current_previous_columns  한 행에 현재값 컬럼과 이전값 컬럼이 함께 있다.
+#   history_rows              시점별 이력 행을 시간순으로 비교한다.
+#   event                     값 변경 이벤트 레코드를 읽는다.
+#
+# 어휘(선언 가능)와 구현(낮출 수 있음)을 나누는 이유는 사유의 정확성이다 — 오타(`grade_pair`)와
+# 아직 없는 구현(`history_rows`)은 다른 결말이어야 한다. 전자는 카탈로그 문법 오류이고
+# 후자는 미지원이다. 어느 전략을 실제로 낮출 수 있는지는 lowering 소유자
+# (:mod:`transition_metrics`)가 알고, 이 파일은 이름의 유효성만 판정한다.
+TRANSITION_STRATEGIES = frozenset({
+    "current_previous_columns",
+    "history_rows",
+    "event",
+})
 # 지표 결과의 개수 계약. scalar = 회원당 0..1 행(임계 비교의 좌변으로 쓸 수 있다),
 # set = 여러 행(집계·순위의 재료다).
 METRIC_CARDINALITIES = frozenset({"set", "scalar"})
@@ -292,6 +308,10 @@ class MetricSpec:
     expression_field: str | None = None
     # transition 메트릭의 직전값 컬럼. 현재값(expression_field)과 **같은 행**에 있어야 한다.
     prev_expression_field: str | None = None
+    # transition 메트릭이 두 시점의 값을 얻는 물리 모양(:data:`TRANSITION_STRATEGIES`).
+    # 기본값을 두지 않는 이유는 추측 금지다 — 선언하지 않은 전이는 낮출 모양이 정해지지 않은
+    # 것이지 '아마 같은 행일 것'이 아니다.
+    strategy: str | None = None
     # 이 속성의 '값 변화' 를 표현하는 메트릭. 같은 속성을 두 이름으로 부르지 않기 위한 선언이며,
     # 생산자는 속성 이름 하나만 내고 시간 연산자(CHANGE_BETWEEN)가 어느 메트릭인지 정한다.
     transition_metric: str | None = None
@@ -348,6 +368,15 @@ class MetricSpec:
                 f"{sorted(unknown_capabilities)}",
                 symbol=self.id,
             )
+        if self.strategy is not None and self.kind != TRANSITION_KIND:
+            # 전략은 '두 시점의 값을 어떻게 얻는가'의 선언이다. 전이가 아닌 지표에 붙으면
+            # 아무도 읽지 않는 선언이 되고, 읽히지 않는 선언은 곧 사실과 어긋난다.
+            raise CatalogError(
+                "invalid_catalog_declaration",
+                f"metric {self.id!r} is {self.kind!r} but declares transition strategy "
+                f"{self.strategy!r}; only {TRANSITION_KIND!r} metrics carry a strategy",
+                symbol=self.id,
+            )
         if self.kind == "member_scalar":
             self._validate_member_scalar()
         elif self.cardinality == "scalar":
@@ -376,12 +405,8 @@ class MetricSpec:
                 f"field metric {self.id!r} needs expression_field",
                 symbol=self.id,
             )
-        elif self.kind == "transition" and not (self.expression_field and self.prev_expression_field):
-            raise CatalogError(
-                "invalid_catalog_declaration",
-                f"transition metric {self.id!r} needs expression_field and prev_expression_field",
-                symbol=self.id,
-            )
+        elif self.kind == TRANSITION_KIND:
+            self._validate_transition()
         elif self.kind == "existence" and self.aggregate_function is not None:
             raise CatalogError(
                 "invalid_catalog_declaration",
@@ -432,6 +457,34 @@ class MetricSpec:
             raise CatalogError(
                 "invalid_catalog_declaration",
                 f"distinct metric {self.id!r} needs expression_field",
+                symbol=self.id,
+            )
+
+    def _validate_transition(self) -> None:
+        """전이 계약 — 두 시점의 값과 그 값을 얻는 모양이 **선언에** 있어야 한다.
+
+        `strategy` 를 필수로 두는 이유는 기본값의 위험이다. 같은 행의 두 컬럼과 이력 행은 서로
+        다른 SQL 이고, 선언이 비었을 때 앞의 것을 고르면 이력 축이 조용히 한 행 비교로 낮아진다.
+        """
+
+        if not (self.expression_field and self.prev_expression_field):
+            raise CatalogError(
+                "invalid_catalog_declaration",
+                f"transition metric {self.id!r} needs expression_field and prev_expression_field",
+                symbol=self.id,
+            )
+        if self.strategy is None:
+            raise CatalogError(
+                "transition_strategy_missing",
+                f"transition metric {self.id!r} must declare a strategy; "
+                f"declared strategies are {sorted(TRANSITION_STRATEGIES)}",
+                symbol=self.id,
+            )
+        if self.strategy not in TRANSITION_STRATEGIES:
+            raise CatalogError(
+                "invalid_catalog_declaration",
+                f"transition metric {self.id!r} declares unknown strategy {self.strategy!r}; "
+                f"declared strategies are {sorted(TRANSITION_STRATEGIES)}",
                 symbol=self.id,
             )
 
@@ -1310,6 +1363,7 @@ def _metric_spec(item_id: str, declaration: Any) -> MetricSpec:
         prev_expression_field=(
             str(declaration["prev_expression_field"]) if declaration.get("prev_expression_field") else None
         ),
+        strategy=(str(declaration["strategy"]) if declaration.get("strategy") else None),
         transition_metric=(
             str(declaration["transition_metric"]) if declaration.get("transition_metric") else None
         ),
@@ -1378,5 +1432,7 @@ __all__ = [
     "ResolvedSemanticCatalog",
     "SourceSpec",
     "TimeSpec",
+    "TRANSITION_KIND",
+    "TRANSITION_STRATEGIES",
     "resolve_semantic_catalog",
 ]

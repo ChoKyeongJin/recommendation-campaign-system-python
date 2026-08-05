@@ -212,11 +212,34 @@ lowering 전의 판정 결과**로 나온다(`compiler_capability_unsupported` /
 
 ## 4. 지원하지 않는 것(폐기 유지)
 
-* **등급/상태 이력·전이**(`member_grade_transition` 등). 카탈로그 선언은 남아 있지만
-  `member_state_history` 의무에 컴파일 영수증을 발급하는 경로가 없어 어떤 요청도 해소되지 않는다.
-  되살리려면 (1) 그 경로가 먼저 서야 하고, (2) '승급'은 등급 서열 비교이므로 코드값 사전순 비교로
-  컴파일되지 않는지 따로 확인해야 한다. `tests/test_retired_axes_fail_close.py` 가 이 축의 fail-close 를
-  고정하고, `tests/test_revived_axes_event_ir_only.py` 가 이번 복귀 작업이 그 축까지 열지 않았음을 잰다.
+* **등급/상태 이력·전이의 종단 출고**. 2026-08-05 이후 **전이 조건의 SQL 생성 자체는 선다** —
+  `transition_metrics`(선언 검증 + IR 조립)와 `transition_claims`(원문에서 값 쌍 선택)가 그것을
+  소유하고, 두 축(회원등급 `ZTS_*` / 가치등급 `WORTH_*`)이 **같은 코드**로 낮아진다. 위에서 말한
+  두 선행 조건 중 **(2)는 해소됐다**: '승급'은 방향어이고, 값 순서(`value_order`, eq_filters rank
+  파생)와 모순되면 `transition_direction_contradicted` 로 닫힌다 — 저장 코드값을 사전순으로
+  비교하지 않는다.
+
+  남은 것은 **(1)** 이다. `member_state_history` 의무에 컴파일 영수증을 발급하는 경로가 아직 없어
+  종단 파이프라인은 그대로 막혀 있고, 그래서 `tests/test_retired_axes_fail_close.py` 와
+  `tests/test_revived_axes_event_ir_only.py` 의 고정은 **바뀌지 않았다**(둘 다 통과한다). 이번
+  작업이 만든 것은 그 영수증이 생기는 날 발급할 **대상**이다.
+
+  전략 어휘(`resolved_semantic_catalog.TRANSITION_STRATEGIES`)가 무엇을 열고 무엇을 닫는지도
+  선언으로 드러난다.
+
+  | strategy | 뜻 | 상태 |
+  |---|---|---|
+  | `current_previous_columns` | 한 행의 현재값 컬럼과 직전값 컬럼 | **구현됨** |
+  | `history_rows` | 시점별 이력 행 비교 | 예약 어휘 — `transition_strategy_unsupported` |
+  | `event` | 값 변경 이벤트 레코드 | 예약 어휘 — `transition_strategy_unsupported` |
+
+  상태(`member_state`) 전이가 닫히는 이유는 전략이 아니라 **선언 부재**다 — 그 축에는 전이 지표도
+  이력 소스도 없어서 `transition_metric_not_declared` 로 끝난다. `history_rows` 를 구현해도 소스가
+  먼저 서지 않으면 열리지 않는다.
+
+  기간이 붙은 전이('최근 3개월 동안 골드에서 VIP로')는 `transition_period_unsupported` 로 닫는다.
+  한 행의 현재값/직전값 비교로 접으면 다월 전이가 1스텝 전이로 **뜻이 바뀌기** 때문이고, 다른 조건이
+  이미 그 기간을 소유했다면 호출자가 `consumed_spans` 로 알려 준다.
 * **Event IR 실패 시의 폴백 경로**. 없다. 계약이 어긋나면 합성하지 않고 모델의 미지원 신고가 그대로
   남아 fail-close 한다 — 비슷한 지표로 갈아타지 않는다.
 * **`include_as_zero` null 정책**, **소수 임계값의 Decimal 통과**. 둘 다 선언 어휘 밖이고, 필요해지면

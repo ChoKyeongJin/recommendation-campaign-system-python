@@ -774,15 +774,18 @@
       "aliases": ["등급", "회원 등급", "구매등급", "member_grade", "grade"]
     },
     "member_grade_transition": {
+      "_comment": "strategy 는 '두 시점의 값을 어떤 물리 모양에서 얻는가'다. 이 축은 한 스냅샷 행에 현재값(ZTS_GRADE)과 직전값(PREV_ZTS_GRADE)이 함께 비정규화돼 있으므로 current_previous_columns 다. 기본값이 없는 것은 의도다 — 선언이 비면 이력 축이 조용히 한 행 비교로 낮아진다.",
       "source": "member_month_snapshot",
       "kind": "transition",
       "expression_field": "member_month_snapshot.grade",
       "prev_expression_field": "member_month_snapshot.prev_grade",
+      "strategy": "current_previous_columns",
       "data_type": "string",
       "grain": "subject",
       "time": "snapshot_month",
       "coverage": "monthly_attribute_snapshot",
       "allowed_operators": ["=", "!="],
+      "required_capabilities": ["metric.transition"],
       "label": "회원 등급 전이",
       "aliases": ["등급 전이", "등급 변경", "승급", "강등"]
     },
@@ -813,15 +816,18 @@
       "aliases": ["가치등급", "가치 등급", "worth_grade"]
     },
     "member_worth_grade_transition": {
+      "_comment": "등급 전이와 같은 전략·같은 lowering 을 쓴다. 두 축이 다른 것은 컬럼과 값 사전뿐이고(가치등급 코드에는 'MEM_GRADE_CD.' 접두어가 없다), 그 차이는 전부 선언 안에 있으므로 공통 코드는 어느 축인지 알 필요가 없다.",
       "source": "member_month_snapshot",
       "kind": "transition",
       "expression_field": "member_month_snapshot.worth_grade",
       "prev_expression_field": "member_month_snapshot.prev_worth_grade",
+      "strategy": "current_previous_columns",
       "data_type": "string",
       "grain": "subject",
       "time": "snapshot_month",
       "coverage": "monthly_attribute_snapshot",
       "allowed_operators": ["=", "!="],
+      "required_capabilities": ["metric.transition"],
       "label": "가치등급 전이",
       "aliases": ["가치등급 전이", "가치등급 변경"]
     },
