@@ -1,0 +1,421 @@
+{
+  "version": 1,
+
+  "_comment": [
+    "시간 의미 카탈로그. metric 은 '무엇을'이고 binding 은 '어떻게 관측하는가'다.",
+    "새 시간 속성은 여기 항목 하나로 늘어난다 — temporal_ir 의 Python 코드는 바뀌지 않는다.",
+    "물리 바인딩(테이블·컬럼·값 코드)의 권위는 audience_catalog.json 에 있고, 여기서 다시 적는",
+    "storage_codec·correlation_keys·row_identity 는 사본이 아니라 교차검증 선언이다. 두 선언이",
+    "어긋나면 load_temporal_catalog 가 이름을 대며 실패한다.",
+    "observation_capabilities 는 여덟 항목 전부를 요구한다. representation 이름에서 추론하지",
+    "않는 이유는 §8 이다 — 같은 이름의 표현이라도 적재 방식에 따라 답할 수 있는 것이 다르다."
+  ],
+
+  "metrics": {
+    "member.grade": {
+      "label": "회원 등급",
+      "value_type": "string",
+      "value_domain": "grade",
+      "supported_comparisons": ["=", "!=", ">", ">=", "<", "<="],
+      "temporal_bindings": ["member.grade.current", "member.grade.monthly_snapshot"],
+      "_comment": "우선순위는 '둘 다 답할 수 있을 때'에만 쓰인다. lowering 이 먼저 계약 검증으로 후보를 거르므로, 과거 시점을 물으면 현재값 관측은 후보에서 탈락하고 스냅샷이 남는다. 반대로 현재 시점은 둘 다 답할 수 있고 그때는 현재값 컬럼이 정확하다(스냅샷은 이번 달 적재를 기다려야 한다).",
+      "binding_priority": ["member.grade.current", "member.grade.monthly_snapshot"]
+    },
+    "member.worth_grade": {
+      "label": "가치등급",
+      "value_type": "string",
+      "value_domain": "worth_grade",
+      "supported_comparisons": ["=", "!=", ">", ">=", "<", "<="],
+      "temporal_bindings": ["member.worth_grade.monthly_snapshot"]
+    },
+    "member.newproduct_favor": {
+      "label": "신제품 선호 여부",
+      "value_type": "string",
+      "value_domain": "newproduct_favor_flag",
+      "_comment": "Y/N 한 글자에는 부등호를 허용하지 않는다(사전식 순서로 조용히 틀린다).",
+      "supported_comparisons": ["=", "!="],
+      "temporal_bindings": ["member.newproduct_favor.monthly_snapshot"]
+    },
+    "member.purchase": {
+      "label": "구매",
+      "value_type": "event",
+      "supported_comparisons": ["=", "!="],
+      "temporal_bindings": ["member.purchase.events"]
+    },
+    "member.login": {
+      "label": "로그인",
+      "value_type": "event",
+      "supported_comparisons": ["=", "!="],
+      "temporal_bindings": ["member.login.latest"]
+    },
+    "member.signup": {
+      "label": "가입",
+      "value_type": "event",
+      "supported_comparisons": ["=", "!="],
+      "temporal_bindings": ["member.signup.event"]
+    },
+    "member.cart_add": {
+      "label": "장바구니 담기",
+      "value_type": "event",
+      "supported_comparisons": ["=", "!="],
+      "temporal_bindings": ["member.cart_add.events"]
+    },
+    "member.campaign_contact": {
+      "label": "캠페인 접촉 성공",
+      "value_type": "event",
+      "supported_comparisons": ["=", "!="],
+      "temporal_bindings": ["member.campaign_contact.events"]
+    }
+  },
+
+  "bindings": {
+    "member.grade.current": {
+      "label": "현재 회원 등급",
+      "metric_id": "member.grade",
+      "source": "subject",
+      "subject_entity": "member",
+      "representation": "current_only",
+      "role": "snapshot_time",
+      "value_field": "subject.grade",
+      "semantic_grain": "day",
+      "timezone": "Asia/Seoul",
+      "bucket_semantics": "point_in_time",
+      "selection_strategies": ["exact_bucket"],
+      "supported_operators": ["temporal.as_of"],
+      "unique_per_time_point": true,
+      "observation_capabilities": {
+        "supports_point_state": true,
+        "supports_ordered_observations": false,
+        "supports_exact_transition_time": false,
+        "supports_intra_bucket_changes": false,
+        "supports_continuous_validity": false,
+        "supports_complete_bucket_enumeration": false,
+        "supports_event_count": false,
+        "supports_all_occurrences": false
+      }
+    },
+
+    "member.grade.monthly_snapshot": {
+      "label": "월별 스냅샷의 회원 등급",
+      "metric_id": "member.grade",
+      "source": "member_month_snapshot",
+      "subject_entity": "member",
+      "representation": "periodic_snapshot",
+      "role": "snapshot_time",
+      "value_field": "member_month_snapshot.grade",
+      "prev_value_field": "member_month_snapshot.prev_grade",
+      "time_field": "member_month_snapshot.occurred_at",
+      "semantic_grain": "month",
+      "storage_codec": "char6",
+      "timezone": "Asia/Seoul",
+      "calendar": "gregorian",
+      "_bucket_semantics_comment": "한 행이 그 달의 월말 상태를 대표한다는 데이터 계약. 이 선언이 없으면 '지난달 말 기준' 요청은 답할 수 없다(그 달 아무 시점의 상태는 다른 집합이다).",
+      "bucket_semantics": "period_end_state",
+      "correlation_keys": {"subject": "MEMBER_NO", "source": "MEMBER_NO"},
+      "row_identity": ["MEMBER_NO", "YYYYMM"],
+      "ordering": ["YYYYMM"],
+      "unique_per_time_point": true,
+      "selection_strategies": ["exact_bucket"],
+      "supported_operators": [
+        "temporal.as_of",
+        "temporal.previous_bucket",
+        "temporal.previous_observation",
+        "temporal.previous_distinct_value",
+        "temporal.in_window",
+        "temporal.before",
+        "temporal.after",
+        "temporal.none",
+        "temporal.all",
+        "temporal.every_bucket",
+        "temporal.unchanged_observations",
+        "temporal.direct_transition",
+        "temporal.changed_between_endpoints",
+        "temporal.changed_within_window"
+      ],
+      "_capabilities_comment": "월 스냅샷은 관측된 달의 상태와 관측 사이의 값 변화는 알지만, 월중 실제 변경 시각과 횟수는 모른다. supports_event_count=false 인 이유도 같다 — 스냅샷 행 수는 업무 사건 수가 아니다.",
+      "observation_capabilities": {
+        "supports_point_state": true,
+        "supports_ordered_observations": true,
+        "supports_exact_transition_time": false,
+        "supports_intra_bucket_changes": false,
+        "supports_continuous_validity": false,
+        "supports_complete_bucket_enumeration": true,
+        "supports_event_count": false,
+        "supports_all_occurrences": true
+      },
+      "coverage": {
+        "label": "회원 월별 스냅샷 적재 구간",
+        "available_from": "20170101",
+        "available_through": "20170131",
+        "expected_cadence": "month",
+        "completeness": "complete",
+        "freshness_through": "20170131",
+        "backfill_status": "unknown"
+      }
+    },
+
+    "member.worth_grade.monthly_snapshot": {
+      "label": "월별 스냅샷의 가치등급",
+      "metric_id": "member.worth_grade",
+      "source": "member_month_snapshot",
+      "subject_entity": "member",
+      "representation": "periodic_snapshot",
+      "role": "snapshot_time",
+      "value_field": "member_month_snapshot.worth_grade",
+      "prev_value_field": "member_month_snapshot.prev_worth_grade",
+      "time_field": "member_month_snapshot.occurred_at",
+      "semantic_grain": "month",
+      "storage_codec": "char6",
+      "timezone": "Asia/Seoul",
+      "bucket_semantics": "period_end_state",
+      "correlation_keys": {"subject": "MEMBER_NO", "source": "MEMBER_NO"},
+      "row_identity": ["MEMBER_NO", "YYYYMM"],
+      "ordering": ["YYYYMM"],
+      "unique_per_time_point": true,
+      "selection_strategies": ["exact_bucket"],
+      "supported_operators": [
+        "temporal.as_of",
+        "temporal.previous_bucket",
+        "temporal.in_window",
+        "temporal.none",
+        "temporal.all",
+        "temporal.every_bucket",
+        "temporal.unchanged_observations",
+        "temporal.direct_transition"
+      ],
+      "observation_capabilities": {
+        "supports_point_state": true,
+        "supports_ordered_observations": true,
+        "supports_exact_transition_time": false,
+        "supports_intra_bucket_changes": false,
+        "supports_continuous_validity": false,
+        "supports_complete_bucket_enumeration": true,
+        "supports_event_count": false,
+        "supports_all_occurrences": true
+      },
+      "coverage": {
+        "available_from": "20170101",
+        "available_through": "20170131",
+        "expected_cadence": "month",
+        "completeness": "complete",
+        "freshness_through": "20170131"
+      }
+    },
+
+    "member.newproduct_favor.monthly_snapshot": {
+      "label": "월별 스냅샷의 신제품 선호 여부",
+      "metric_id": "member.newproduct_favor",
+      "source": "member_month_snapshot",
+      "subject_entity": "member",
+      "representation": "periodic_snapshot",
+      "role": "snapshot_time",
+      "value_field": "member_month_snapshot.newproduct_favor",
+      "time_field": "member_month_snapshot.occurred_at",
+      "semantic_grain": "month",
+      "storage_codec": "char6",
+      "timezone": "Asia/Seoul",
+      "bucket_semantics": "period_end_state",
+      "correlation_keys": {"subject": "MEMBER_NO", "source": "MEMBER_NO"},
+      "row_identity": ["MEMBER_NO", "YYYYMM"],
+      "ordering": ["YYYYMM"],
+      "unique_per_time_point": true,
+      "selection_strategies": ["exact_bucket"],
+      "supported_operators": [
+        "temporal.as_of",
+        "temporal.previous_bucket",
+        "temporal.in_window",
+        "temporal.none",
+        "temporal.all",
+        "temporal.every_bucket",
+        "temporal.unchanged_observations"
+      ],
+      "observation_capabilities": {
+        "supports_point_state": true,
+        "supports_ordered_observations": true,
+        "supports_exact_transition_time": false,
+        "supports_intra_bucket_changes": false,
+        "supports_continuous_validity": false,
+        "supports_complete_bucket_enumeration": true,
+        "supports_event_count": false,
+        "supports_all_occurrences": true
+      },
+      "coverage": {
+        "available_from": "20170101",
+        "available_through": "20170131",
+        "expected_cadence": "month",
+        "completeness": "complete"
+      }
+    },
+
+    "member.purchase.events": {
+      "label": "구매 이벤트",
+      "metric_id": "member.purchase",
+      "source": "purchase",
+      "subject_entity": "member",
+      "representation": "event_log",
+      "role": "event_time",
+      "time_field": "purchase.occurred_at",
+      "semantic_grain": "day",
+      "storage_codec": "char8",
+      "timezone": "Asia/Seoul",
+      "bucket_semantics": "point_in_time",
+      "correlation_keys": {"subject": "MEMBER_NO", "source": "MEMBER_NO"},
+      "row_identity": ["ORDER_ID"],
+      "ordering": ["ORDER_DATE", "ORDER_ID"],
+      "unique_per_time_point": false,
+      "supported_operators": [
+        "temporal.in_window",
+        "temporal.none",
+        "temporal.all",
+        "temporal.within_after",
+        "temporal.within_before"
+      ],
+      "_capabilities_comment": "이벤트 로그는 발생을 전부 보관하므로 존재·횟수·순서를 답한다. 시점 '상태'는 없다 — 그래서 supports_point_state=false 이고, as_of 계열은 이 관측 방식을 받지 않는다.",
+      "observation_capabilities": {
+        "supports_point_state": false,
+        "supports_ordered_observations": true,
+        "supports_exact_transition_time": false,
+        "supports_intra_bucket_changes": false,
+        "supports_continuous_validity": false,
+        "supports_complete_bucket_enumeration": false,
+        "supports_event_count": true,
+        "supports_all_occurrences": true
+      }
+    },
+
+    "member.login.latest": {
+      "label": "마지막 로그인",
+      "metric_id": "member.login",
+      "source": "login",
+      "subject_entity": "member",
+      "representation": "latest_only",
+      "role": "event_time",
+      "time_field": "login.occurred_at",
+      "semantic_grain": "day",
+      "storage_codec": "char8",
+      "timezone": "Asia/Seoul",
+      "bucket_semantics": "point_in_time",
+      "correlation_keys": {"subject": "MEMBER_NO", "source": "MEMBER_NO"},
+      "row_identity": ["MEMBER_NO"],
+      "ordering": ["LAST_LOGIN_DATE"],
+      "unique_per_time_point": true,
+      "_operators_comment": "temporal.in_window 를 선언하지 않는 것이 이 항목의 요점이다(§13). 실CRM 에는 로그인 이력 테이블이 없고 마지막 접속일 컬럼만 있으므로 '구간에 로그인이 있었는가'에는 답할 수 없다. 답할 수 있는 것은 '마지막 로그인이 그 구간인가'뿐이다.",
+      "supported_operators": ["temporal.latest_in_window"],
+      "observation_capabilities": {
+        "supports_point_state": true,
+        "supports_ordered_observations": false,
+        "supports_exact_transition_time": false,
+        "supports_intra_bucket_changes": false,
+        "supports_continuous_validity": false,
+        "supports_complete_bucket_enumeration": false,
+        "supports_event_count": false,
+        "supports_all_occurrences": false
+      }
+    },
+
+    "member.signup.event": {
+      "label": "가입",
+      "metric_id": "member.signup",
+      "source": "signup",
+      "subject_entity": "member",
+      "representation": "singleton",
+      "role": "event_time",
+      "time_field": "signup.occurred_at",
+      "semantic_grain": "day",
+      "storage_codec": "char8",
+      "timezone": "Asia/Seoul",
+      "bucket_semantics": "point_in_time",
+      "correlation_keys": {"subject": "MEMBER_NO", "source": "MEMBER_NO"},
+      "row_identity": ["MEMBER_NO"],
+      "ordering": ["REG_DT"],
+      "unique_per_time_point": true,
+      "supported_operators": [
+        "temporal.in_window",
+        "temporal.none",
+        "temporal.latest_in_window",
+        "temporal.within_after",
+        "temporal.within_before"
+      ],
+      "observation_capabilities": {
+        "supports_point_state": true,
+        "supports_ordered_observations": false,
+        "supports_exact_transition_time": false,
+        "supports_intra_bucket_changes": false,
+        "supports_continuous_validity": false,
+        "supports_complete_bucket_enumeration": false,
+        "supports_event_count": false,
+        "supports_all_occurrences": true
+      }
+    },
+
+    "member.cart_add.events": {
+      "label": "장바구니 담기 이벤트",
+      "metric_id": "member.cart_add",
+      "source": "cart",
+      "subject_entity": "member",
+      "representation": "event_log",
+      "role": "event_time",
+      "time_field": "cart.occurred_at",
+      "semantic_grain": "day",
+      "storage_codec": "date",
+      "timezone": "Asia/Seoul",
+      "bucket_semantics": "point_in_time",
+      "_correlation_comment": "장바구니만 회원키가 다르다 — 팩트 쪽은 CART_ID(로그인ID)이고 짝은 회원 테이블의 MEMBER_ID 다. 그 사실을 lowerer 가 아니라 여기서 소유한다.",
+      "correlation_keys": {"subject": "MEMBER_ID", "source": "CART_ID"},
+      "row_identity": ["CART_ID", "PRODUCT_ID"],
+      "ordering": ["UPD_DT"],
+      "unique_per_time_point": false,
+      "supported_operators": [
+        "temporal.in_window",
+        "temporal.none",
+        "temporal.all",
+        "temporal.within_after",
+        "temporal.within_before"
+      ],
+      "observation_capabilities": {
+        "supports_point_state": false,
+        "supports_ordered_observations": true,
+        "supports_exact_transition_time": false,
+        "supports_intra_bucket_changes": false,
+        "supports_continuous_validity": false,
+        "supports_complete_bucket_enumeration": false,
+        "supports_event_count": true,
+        "supports_all_occurrences": true
+      }
+    },
+
+    "member.campaign_contact.events": {
+      "label": "캠페인 접촉 성공 이벤트",
+      "metric_id": "member.campaign_contact",
+      "source": "campaign_contact_success",
+      "subject_entity": "member",
+      "representation": "event_log",
+      "role": "event_time",
+      "time_field": "campaign_contact_success.occurred_at",
+      "semantic_grain": "day",
+      "storage_codec": "char8",
+      "timezone": "Asia/Seoul",
+      "bucket_semantics": "point_in_time",
+      "correlation_keys": {"subject": "MEMBER_NO", "source": "MBR_NO"},
+      "row_identity": ["MBR_NO", "CAMP_SDATE", "CAMP_ID"],
+      "ordering": ["CAMP_SDATE"],
+      "unique_per_time_point": false,
+      "supported_operators": [
+        "temporal.in_window",
+        "temporal.none",
+        "temporal.within_after",
+        "temporal.within_before"
+      ],
+      "observation_capabilities": {
+        "supports_point_state": false,
+        "supports_ordered_observations": true,
+        "supports_exact_transition_time": false,
+        "supports_intra_bucket_changes": false,
+        "supports_continuous_validity": false,
+        "supports_complete_bucket_enumeration": false,
+        "supports_event_count": true,
+        "supports_all_occurrences": true
+      }
+    }
+  }
+}
