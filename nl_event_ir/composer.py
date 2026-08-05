@@ -274,8 +274,8 @@ class EventIRComposer:
         path = f"condition[{index}]"
 
         time_window = self._select_time_window(draft, path, issues)
-        metric = self._select_metric(draft, path, issues)
-        if metric is _CONFLICT:
+        metric, metric_conflicted = self._select_metric(draft, path, issues)
+        if metric_conflicted:
             return None
 
         scopes = self._build_scopes(draft, path, issues, unresolved, all_tokens)
@@ -335,14 +335,21 @@ class EventIRComposer:
         draft: _EventDraft,
         path: str,
         issues: list[ValidationIssue],
-    ) -> MetricCondition | None | object:
+    ) -> tuple[MetricCondition | None, bool]:
+        """``(집계, 충돌 여부)``.
+
+        충돌을 sentinel 객체로 돌려주던 예전 시그니처(``MetricCondition | None | object``)는
+        '집계 없음'과 '충돌'을 같은 반환 타입에 섞어 두어, 호출부에서 타입이 좁혀지지 않았다.
+        두 상태는 뜻이 다르므로 자리를 나눈다.
+        """
+
         metrics = [
             token.value
             for token in draft.metric_tokens
             if isinstance(token.value, MetricCondition)
         ]
         if not metrics:
-            return None
+            return None, False
 
         distinct = {(metric.metric_type, metric.operator, metric.value) for metric in metrics}
         if len(distinct) > 1:
@@ -359,7 +366,7 @@ class EventIRComposer:
                     severity=IssueSeverity.ERROR,
                 )
             )
-            return _CONFLICT
+            return None, True
 
         for token in draft.metric_tokens:
             if token.kind is TokenKind.AGGREGATE and token.confidence < 1.0:
@@ -374,7 +381,7 @@ class EventIRComposer:
                         severity=IssueSeverity.WARNING,
                     )
                 )
-        return metrics[0]
+        return metrics[0], False
 
     def _build_scopes(
         self,
@@ -486,9 +493,6 @@ class EventIRComposer:
         operator = _connective_between(drafts, all_tokens)
         return ConditionGroup(operator=operator, children=tuple(conditions))
 
-
-# 집계 충돌을 나타내는 sentinel. ``None``(집계 없음)과 구분해야 하므로 별도 객체를 쓴다.
-_CONFLICT: object = object()
 
 # 배제 표지가 값에 붙어 있다고 볼 최대 거리(글자). ``나이키를 제외한`` 처럼 조사 한두 자만
 # 사이에 오는 경우를 포섭하되, 문장 반대편의 배제어를 끌어오지 않을 만큼 좁게 잡는다.

@@ -138,10 +138,10 @@ class EventParser:
 
         if self._entity_resolver is not None:
             tokens = self._entity_resolver.resolve(working, tokens)
-        tokens = sort_tokens(tokens)
-        stages.append(_Stage("resolve", len(tokens)))
+        ordered_tokens = sort_tokens(tokens)
+        stages.append(_Stage("resolve", len(ordered_tokens)))
 
-        outcome = self._composer.compose(working, tokens)
+        outcome = self._composer.compose(working, ordered_tokens)
         issues = list(outcome.issues)
 
         if outcome.ir is not None:
@@ -154,11 +154,13 @@ class EventParser:
         diagnostics: dict[str, Any] = {
             "stages": [{"name": stage.name, "tokens": stage.token_count} for stage in stages],
             "unresolved_values": list(outcome.unresolved_values),
-            "legacy_token_count": sum(1 for token in tokens if token.source == "legacy"),
+            "legacy_token_count": sum(
+                1 for token in ordered_tokens if token.source == "legacy"
+            ),
         }
 
         if ir is None:
-            recovered = self._fallback.parse(text, tokens)
+            recovered = self._fallback.parse(text, ordered_tokens)
             if recovered is not None:
                 # fallback 산출물도 **반드시** 같은 검증을 통과해야 한다. 검증을 건너뛰면
                 # 규칙 경로보다 느슨한 뒷문이 생겨, 규칙이 막아 둔 잘못된 IR 이 fallback 을
@@ -172,7 +174,7 @@ class EventParser:
                     return ParseResult(
                         original_text=text,
                         normalized_text=working,
-                        tokens=tuple(tokens),
+                        tokens=ordered_tokens,
                         ir=None,
                         issues=tuple(issues) + tuple(fallback_issues),
                         fallback_required=True,
@@ -184,7 +186,7 @@ class EventParser:
                 return ParseResult(
                     original_text=text,
                     normalized_text=working,
-                    tokens=tuple(tokens),
+                    tokens=ordered_tokens,
                     ir=recovered,
                     issues=tuple(issues) + tuple(fallback_issues),
                     fallback_required=False,
@@ -196,7 +198,7 @@ class EventParser:
         return ParseResult(
             original_text=text,
             normalized_text=working,
-            tokens=tuple(tokens),
+            tokens=ordered_tokens,
             ir=ir,
             issues=tuple(issues),
             fallback_required=ir is None,

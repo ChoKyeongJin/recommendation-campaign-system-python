@@ -14,6 +14,7 @@ from __future__ import annotations
 import calendar
 import logging
 import re
+from collections.abc import Callable
 from datetime import date, timedelta
 
 from nl_event_ir.aliases import AliasRegistry, AliasSection
@@ -219,7 +220,9 @@ def _month_range(reference: date, *, offset_months: int) -> AbsoluteDateRange:
 
 
 # 표면어마다 계산식을 선언으로 둔다. 새 직시 표현은 여기 한 줄이지 새 분기가 아니다.
-_DEICTIC_BUILDERS = {
+# 타입을 명시해야 호출부가 타입 검사를 통과한다 — 주석 없는 lambda 는 strict 모드에서
+# '알 수 없는 함수 호출'이 되어 반환값이 Any 로 새어 나간다.
+_DEICTIC_BUILDERS: dict[str, Callable[[date], AbsoluteDateRange]] = {
     "오늘": lambda reference: _day_range(reference, offset_days=0),
     "금일": lambda reference: _day_range(reference, offset_days=0),
     "어제": lambda reference: _day_range(reference, offset_days=-1),

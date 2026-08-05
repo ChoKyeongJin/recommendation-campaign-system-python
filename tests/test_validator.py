@@ -14,6 +14,7 @@ from nl_event_ir.enums import (
     IssueSeverity,
     LogicOperator,
     MetricType,
+    SortDirection,
     TimeUnit,
 )
 from nl_event_ir.models import (
@@ -26,7 +27,6 @@ from nl_event_ir.models import (
     RelativeTimeWindow,
     ScopeFilter,
 )
-from nl_event_ir.enums import SortDirection
 from nl_event_ir.validator import EventIRValidator
 
 
