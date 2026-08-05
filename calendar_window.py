@@ -99,16 +99,29 @@ MERIDIEM_RULES: dict[str, MeridiemRule] = {
 _MERIDIEM_ALTERNATION = "|".join(sorted(MERIDIEM_RULES, key=len, reverse=True))
 
 
-def _time_suffix_pattern(prefix: str) -> str:
-    """일 단위 토큰 뒤에 붙는 시각 한정자('9시', '오후 6시 30분'). 통째로 선택적이다.
+# 시각 한정자의 본체(시·분·초). 일 단위 토큰 뒤에 붙는 형태와 날짜 없는 반복 시각
+# (:func:`parse_time_of_day_window`)이 **같은 문법**을 써야 한다 — 두 벌이면 '9시 30분 15초'가
+# 한쪽에서만 초까지 읽히고 다른 쪽에서는 분까지만 읽혀 같은 어구가 경로마다 다른 구간이 된다.
+def _time_body_pattern(prefix: str) -> str:
+    """'오후 6시 30분 15초' 본체. 분·초는 각각 선택적이고 그 **정밀도가 곧 구간의 단위**다.
 
-    '시간'은 시각이 아니라 기간이므로 lookahead 로 배제한다('3시간 이내'의 '3시'를 시각으로 오인하면
-    기간 표현이 반쪽 남는다). 시각은 일 단위 토큰에만 붙는다 — 날짜 없는 시각 단독('9시 이후 주문')은
-    어느 날의 9시인지 창으로 확정할 수 없어 잡지 않는다(fail-close)."""
+    '시간'은 시각이 아니라 기간이므로 lookahead 로 배제한다('3시간 이내'의 '3시'를 시각으로
+    오인하면 기간 표현이 반쪽 남는다)."""
     return (
-        rf"(?:\s*(?:(?P<{prefix}_ap>{_MERIDIEM_ALTERNATION})\s*)?(?P<{prefix}_hh>\d{{1,2}})\s*시(?!간)"
-        rf"(?:\s*(?P<{prefix}_mi>\d{{1,2}})\s*분)?)?"
+        rf"(?:(?P<{prefix}_ap>{_MERIDIEM_ALTERNATION})\s*)?(?P<{prefix}_hh>\d{{1,2}})\s*시(?!간)"
+        rf"(?:\s*(?P<{prefix}_mi>\d{{1,2}})\s*분)?"
+        rf"(?:\s*(?P<{prefix}_ss>\d{{1,2}})\s*초)?"
     )
+
+
+def _time_suffix_pattern(prefix: str) -> str:
+    """일 단위 토큰 뒤에 붙는 시각 한정자('9시', '오후 6시 30분', '23시 59분 59초'). 통째로 선택적이다.
+
+    날짜에 붙지 않은 시각 단독('9시 이후 주문')은 어느 날의 9시인지 **하루짜리 창**으로 확정할 수
+    없어 여기서는 잡지 않는다(fail-close). 다만 시각 범위('밤 11시부터 새벽 2시 사이')는 날짜가
+    아니라 **매일 반복되는 시각대**라는 확정된 뜻이 있으므로 :func:`parse_time_of_day_window` 가
+    따로 소유한다 — 창이 아니라 시각 조건이라 shape 부터 다르다."""
+    return rf"(?:\s*{_time_body_pattern(prefix)})?"
 
 
 # 달력 토큰 스캐너(단일 정규식, 좁은 표현 우선 순서). 파이썬 정규식은 같은 시작 위치에서 앞선 대안을
@@ -142,8 +155,11 @@ _CAL_TOKEN_RE = re.compile(
 )
 # 창 하나의 구체성 등급(작을수록 좁다). parse_calendar_window 가 '가장 좁은 표현' 하나를 고를 때 쓴다 —
 # 여러 창이 섞인 문장에서 위치가 아니라 구체성으로 뽑던 기존 계약을 그대로 보존한다.
-_GRAIN_RANK = {"ymd": 0, "ymdd": 0, "md": 0, "ym": 1, "ymd2": 1, "m": 1, "yq": 2, "q": 2, "yh": 3, "h": 3, "y": 4, "yb": 4}
+# 주 단위는 달력 토큰이 아니라 상대 표현('지난주')으로만 들어오지만 등급 축에는 자리가 있어야 한다 —
+# 일과 월 사이다. 등급은 서로 간의 **순서**만 뜻하므로 절대값에 의미는 없다.
+_GRAIN_RANK = {"ymd": 0, "ymdd": 0, "md": 0, "ym": 2, "ymd2": 2, "m": 2, "yq": 3, "q": 3, "yh": 4, "h": 4, "y": 5, "yb": 5}
 _DAY_GRAIN_RANK = _GRAIN_RANK["ymd"]
+_WEEK_GRAIN_RANK = 1
 _MONTH_GRAIN_RANK = _GRAIN_RANK["ym"]
 
 # 창 두 개 '사이'의 문구가 무슨 링크인지. 조사/연결어/구분자만 있으면 링크이고, 그 밖의 낱말(용언 등)이
@@ -303,17 +319,21 @@ def _token_year(match: "re.Match[str]") -> int | None:
 _INVALID_TIME = object()
 
 
-def _token_time(match: "re.Match[str]", prefix: str) -> tuple[str, str, str] | None | object:
-    """일 단위 토큰에 붙은 시각 한정자 → (구간 시작 HHMMSS, 구간 끝 HHMMSS, 라벨 조각).
+def _time_bounds(
+    meridiem: str | None, hh: str, minute_raw: str | None, second_raw: str | None
+) -> tuple[str, str, str] | object:
+    """시·분·초 조각 → (구간 시작 HHMMSS, 구간 끝 HHMMSS, 라벨 조각). 달력상 불가능하면 _INVALID_TIME.
 
-    시각 토큰은 그 단위 전체 구간을 뜻한다 — '9시'는 09:00:00~09:59:59, '9시 30분'은 09:30:00~09:30:59.
-    날짜의 '7월까지'가 7월 말일까지를 포함하는 것과 같은 단위 의미론이다. 범위 합성(_merge_range)이
-    왼쪽 창의 시작 시각과 오른쪽 창의 끝 시각만 취하므로 '9시부터 18시까지'는 09:00:00~18:59:59 가 된다."""
-    hh = match.group(f"{prefix}_hh")
-    if hh is None:
-        return None
-    meridiem = match.group(f"{prefix}_ap")
-    minute_raw = match.group(f"{prefix}_mi")
+    시각 토큰은 **말한 정밀도의 단위 전체 구간**을 뜻한다 — '9시'는 09:00:00~09:59:59, '9시 30분'은
+    09:30:00~09:30:59, '23시 59분 59초'는 그 1초다. 날짜의 '7월까지'가 7월 말일까지를 포함하는 것과
+    같은 단위 의미론이고, 그래서 '23시 59분 59초까지'의 끝은 정확히 235959 가 된다(초를 읽지 못하던
+    동안에는 '23시 59분'까지만 읽고 끝이 우연히 같아 맞아 보였을 뿐이다).
+
+    범위 합성(_merge_range)이 왼쪽 창의 시작 시각과 오른쪽 창의 끝 시각만 취하므로
+    '9시부터 18시까지'는 09:00:00~18:59:59 가 된다.
+
+    범위 검증은 여기서 닫는다 — 시(0~23, 한정어가 있으면 그 한정어의 선언 범위)·분(0~59)·초(0~59)를
+    벗어난 값은 시각만 조용히 버리지 않고 표현 전체를 미해석으로 남긴다(fail-close)."""
     hour = int(hh)
     if meridiem is not None:
         rule = MERIDIEM_RULES[meridiem]
@@ -328,12 +348,34 @@ def _token_time(match: "re.Match[str]", prefix: str) -> tuple[str, str, str] | N
     elif hour > 23:
         return _INVALID_TIME
     minute = int(minute_raw) if minute_raw is not None else None
-    if minute is not None and minute > 59:
+    second = int(second_raw) if second_raw is not None else None
+    if (minute is not None and minute > 59) or (second is not None and second > 59):
         return _INVALID_TIME
-    label = f"{meridiem + ' ' if meridiem else ''}{int(hh)}시" + (f" {minute}분" if minute is not None else "")
+    label = (
+        f"{meridiem + ' ' if meridiem else ''}{int(hh)}시"
+        + (f" {minute}분" if minute is not None else "")
+        + (f" {second}초" if second is not None else "")
+    )
+    if second is not None:
+        # 초까지 말했으면 구간이 아니라 그 한 초다. 분이 생략된 '9시 30초'는 09:00:30 이다.
+        stamp = f"{hour:02d}{(minute or 0):02d}{second:02d}"
+        return (stamp, stamp, label)
     if minute is not None:
         return (f"{hour:02d}{minute:02d}00", f"{hour:02d}{minute:02d}59", label)
     return (f"{hour:02d}0000", f"{hour:02d}5959", label)
+
+
+def _token_time(match: "re.Match[str]", prefix: str) -> tuple[str, str, str] | None | object:
+    """일 단위 토큰에 붙은 시각 한정자 → :func:`_time_bounds` 결과(한정자가 없으면 None)."""
+    hh = match.group(f"{prefix}_hh")
+    if hh is None:
+        return None
+    return _time_bounds(
+        match.group(f"{prefix}_ap"),
+        hh,
+        match.group(f"{prefix}_mi"),
+        match.group(f"{prefix}_ss"),
+    )
 
 
 def _token_window(match: "re.Match[str]", year: int | None, label_suffix: str) -> dict[str, Any] | None:
@@ -456,6 +498,99 @@ def _merge_range(left: _Scanned, right: _Scanned, text: str, label_suffix: str) 
     )
 
 
+# ── 방향성 열린 구간('X까지' · 'X 이후') ────────────────────────────────────────────
+# 'X까지 주문한 회원'의 X 는 사건이 일어난 **칸**이 아니라 **끝 경계**다. 그런데 경계 낱말을 읽지
+# 않으면 남는 것은 X 라는 칸 하나뿐이고, 그 순간 '2026년 7월 1일 23시 59분 59초까지'가 '그날 그 1초에
+# 주문한 회원'이 된다 — 요청한 집합의 아주 작은 부분집합이라 결과가 조용히 비는 종류의 오답이다.
+#
+# 열린 쪽은 '모든 과거/모든 미래'를 뜻하는 센티널 날짜로 닫는다. 창 shape 을 바꾸지 않는 것이 목적이다:
+# 모든 소비자(BETWEEN 술어·구간 병합·plan 감사)가 이미 {from,to} 를 읽으므로, 센티널로 닫으면 새 배선
+# 없이 곧바로 옳은 SQL 이 된다. 방향은 ``open_start``/``open_end`` 표지로 함께 남긴다 — 센티널을 모르는
+# 소비자가 '이 경계는 원문이 말한 것이 아니다'를 판정할 수 있어야 한다.
+#
+# 값은 **표현 가능한 최대 구간**이어야 한다. 끝을 9999-12-31 로 두면, 이 구간을 반개구간으로 바꾸는
+# 소비자(event_ir.AbsoluteInterval, 구간 인접 판정 _next_day8)가 계산하는 '끝 + 하루'가 연도 10000 이라
+# 표현되지 않는다(실측: 라이브 '… 이후' 프롬프트가 OverflowError 로 500). 9999-12-30 을 포함 끝으로
+# 두면 그 다음 날이 date.max 라 어느 소비자도 넘치지 않는다 — 소비자마다 방어 코드를 다는 대신
+# 우리가 고르는 값을 한계 안에 둔다.
+OPEN_WINDOW_MIN_DATE = "19000101"
+OPEN_WINDOW_MAX_DATE = "99991230"
+OPEN_START_KEY = "open_start"
+OPEN_END_KEY = "open_end"
+
+# 경계 낱말 → 열리는 쪽. 'N단위 전부터/까지'의 경계 어휘(:data:`PAST_BOUNDARY_KINDS`)와 같은 구분이며,
+# 그쪽은 상대 시점에, 이쪽은 절대 달력 표현에 붙는다.
+OPEN_BOUNDARY_WORDS: dict[str, str] = {
+    "까지": OPEN_START_KEY,
+    "이전": OPEN_START_KEY,
+    "부터": OPEN_END_KEY,
+    "이후": OPEN_END_KEY,
+    "이래": OPEN_END_KEY,
+}
+_OPEN_BOUNDARY_RE = re.compile(
+    r"\s*(?:에)?\s*(?P<word>"
+    + "|".join(sorted(OPEN_BOUNDARY_WORDS, key=len, reverse=True))
+    + r")"
+)
+
+
+def _linked_indexes(scanned: list[_Scanned], text: str) -> set[int]:
+    """이웃 창과 링크(나열·범위)로 이어진 창의 인덱스.
+
+    링크에 낀 창에는 열린 경계를 적용하지 않는다 — 'A부터 B까지'의 '까지'는 범위를 닫는 말이지
+    B 를 열린 구간으로 만드는 말이 아니고, 범위 합성이 거부된 자리(구체성 불일치 등)에서 한쪽만
+    열어 주면 fail-close 하기로 한 판단이 추측으로 바뀐다."""
+    linked: set[int] = set()
+    for index in range(len(scanned) - 1):
+        if _link_kind(text, scanned[index], scanned[index + 1]) is not None:
+            linked.update((index, index + 1))
+    return linked
+
+
+def _open_window(
+    window: dict[str, Any], direction: str, word: str, label_suffix: str
+) -> dict[str, Any]:
+    """닫힌 창 하나 + 경계 낱말 → 한쪽이 센티널로 열린 창."""
+    # 조사형('까지'·'부터')은 붙여 쓰고 부사형('이전'·'이후'·'이래')은 띄어 쓴다 — 라벨은 사람이 읽는다.
+    separator = "" if word in ("까지", "부터") else " "
+    base = f"{_base_label(window, label_suffix)}{separator}{word}".strip()
+    if direction == OPEN_START_KEY:
+        opened = _window(
+            OPEN_WINDOW_MIN_DATE, window["to"], base, label_suffix,
+            None, window.get("to_time"),
+        )
+    else:
+        opened = _window(
+            window["from"], OPEN_WINDOW_MAX_DATE, base, label_suffix,
+            window.get("from_time"), None,
+        )
+    opened[direction] = True
+    return opened
+
+
+def _apply_open_boundaries(
+    scanned: list[_Scanned], text: str, label_suffix: str
+) -> list[_Scanned]:
+    """범위 접기 뒤 남은 단독 창에 방향성 경계 낱말을 적용한다.
+
+    접기 **뒤**에 하는 이유는 'A부터 B까지'가 이미 한 창으로 접히면서 닫는 말까지 원문 구간에
+    삼켰기 때문이다 — 그 자리에는 경계 낱말이 남아 있지 않으므로 범위와 열린 구간이 서로를
+    가로채지 않는다."""
+    linked = _linked_indexes(scanned, text)
+    out: list[_Scanned] = []
+    for index, item in enumerate(scanned):
+        window, rank, start, end = item
+        match = None if index in linked else _OPEN_BOUNDARY_RE.match(text, end)
+        if match is None:
+            out.append(item)
+            continue
+        word = match.group("word")
+        out.append(
+            (_open_window(window, OPEN_BOUNDARY_WORDS[word], word, label_suffix), rank, start, match.end())
+        )
+    return out
+
+
 def _fold_range_links(scanned: list[_Scanned], text: str, label_suffix: str) -> list[_Scanned]:
     """범위 링크를 스캔 단계에서 접는다 — 소비자는 창이 원래 몇 개였는지 알 필요가 없다.
 
@@ -540,6 +675,52 @@ def _scan_relative_calendar_days(
     return sorted(found, key=lambda item: item[2])
 
 
+def _scan_relative_calendar_weeks(
+    text: str, label_suffix: str, reference: date
+) -> list[_Scanned]:
+    """이번 주/지난주 계열을 기준일에 고정된 절대 주 창으로 스캔한다.
+
+    주의 경계는 **월요일 00:00 부터 다음 월요일 00:00 전까지**다(ISO 관례이고, 'N주 전'이 이미
+    같은 경계를 쓴다 — :func:`relative_past_window` 의 weeks 분기). 정책을 두 곳이 각자 고르면
+    '지난주'와 '1주 전'이 다른 이레를 가리킨다.
+
+    이 스캐너가 없던 동안 '지난 주에 주문한 회원'의 '지난 주'는 어떤 창도 만들지 못했고, 기간이
+    빠진 채 '구매 있음'으로 컴파일될 수 있었다(전수 EXISTS) — 오늘/어제 계열이 같은 이유로 생긴
+    스캐너의 주 단위 대칭이다.
+    """
+    found: list[_Scanned] = []
+    occupied: list[tuple[int, int]] = []
+    for vocabulary_name, offset in (
+        ("calendar_current_week", 0),
+        ("calendar_previous_week", -1),
+    ):
+        words = sorted(
+            lexicon_patterns.vocabulary(vocabulary_name),
+            key=lambda value: (-len(value), value),
+        )
+        if not words:
+            continue
+        pattern = re.compile("|".join(re.escape(word) for word in words))
+        for match in pattern.finditer(text):
+            if any(match.start() < end and start < match.end() for start, end in occupied):
+                continue
+            monday = reference - timedelta(days=reference.weekday()) + timedelta(weeks=offset)
+            sunday = monday + timedelta(days=6)
+            found.append((
+                _window(
+                    ymd(monday.year, monday.month, monday.day),
+                    ymd(sunday.year, sunday.month, sunday.day),
+                    f"{monday.year}년 {monday.month}월 {monday.day}일~{sunday.month}월 {sunday.day}일",
+                    label_suffix,
+                ),
+                _WEEK_GRAIN_RANK,
+                match.start(),
+                match.end(),
+            ))
+            occupied.append(match.span())
+    return sorted(found, key=lambda item: item[2])
+
+
 def _scan_relative_calendar_months(
     text: str, label_suffix: str, reference: date
 ) -> list[_Scanned]:
@@ -599,6 +780,7 @@ def _scan_calendar_windows(
     out: list[tuple[dict[str, Any], int, int, int]] = (
         [
             *_scan_relative_calendar_days(text, label_suffix, today),
+            *_scan_relative_calendar_weeks(text, label_suffix, today),
             *_scan_relative_calendar_months(text, label_suffix, today),
         ]
         if today is not None
@@ -643,7 +825,7 @@ def _scan_calendar_windows(
             start = anchor[1] if (explicit is None and anchor is not None) else match.start()
             out.append((window, rank, start, match.end()))
     out.sort(key=lambda item: item[2])
-    return _fold_range_links(out, text, label_suffix)
+    return _apply_open_boundaries(_fold_range_links(out, text, label_suffix), text, label_suffix)
 
 
 def parse_calendar_window_spans(
@@ -762,6 +944,112 @@ def parse_calendar_window(
     if not scanned:
         return None
     return min(scanned, key=lambda item: (item[1], item[2]))[0]  # (구체성 등급, 등장 위치)
+
+
+# ── 반복 시각대(날짜 없는 시각 범위) ────────────────────────────────────────────────
+# '밤 11시부터 다음 날 새벽 2시 사이에 주문한 회원'의 시각은 **어느 하루의** 23시가 아니라 매일
+# 되풀이되는 시각대다. 날짜가 없으므로 절대 창(YYYYMMDD)으로는 표현할 수 없고, 그렇다고 미해석으로
+# 두면 시각 조건이 통째로 사라진 '전 기간 구매'가 된다 — 창이 아니라 **시각 조건**이라는 별도 shape 이
+# 있어야 하는 이유다. 날짜 창과 직교하므로 둘은 AND 로 함께 쓸 수 있다('7월에 밤 11시~새벽 2시').
+#
+# 단독 시각('9시 이후 주문')은 여전히 잡지 않는다 — 하루의 시각대인지 특정일의 시점인지 확정할 수
+# 없다(fail-close). 확정할 수 있는 것은 **두 시각이 범위로 묶인** 형태뿐이다.
+TIME_OF_DAY_FROM_KEY = "from_time"
+TIME_OF_DAY_TO_KEY = "to_time"
+
+_TIME_OF_DAY_TOKEN_RE = re.compile(_time_body_pattern("tod"))
+# 자정을 넘긴다는 표지. 표지가 없어도 시작 > 끝이면 자정 횡단이지만, 표지가 있는 표현을 링크로
+# 인정하지 않으면 '부터 다음 날 …'이 통째로 미해석이 된다.
+_NEXT_DAY_ALT = r"다음\s*날|다음날|익일|이튿날"
+_TOD_SEP_LINK_RE = re.compile(
+    rf"\s*[{_RANGE_SEP_CHARS}]\s*(?:{_RANGE_OPENER_ALT})?\s*(?:(?:{_NEXT_DAY_ALT})\s*)?"
+)
+_TOD_OPEN_LINK_RE = re.compile(
+    rf"\s*(?:{_RANGE_OPENER_ALT})\s*(?:(?:{_NEXT_DAY_ALT})\s*)?"
+)
+
+
+def time_of_day_crosses_midnight(time_of_day: dict[str, Any]) -> bool:
+    """시작이 끝보다 늦으면 자정을 넘는 시각대다('23시~02시'). 저장하지 않고 파생한다 —
+    같은 사실을 두 곳에 두면 한쪽만 갱신된 상태가 생긴다."""
+    start = str(time_of_day.get(TIME_OF_DAY_FROM_KEY) or "")
+    end = str(time_of_day.get(TIME_OF_DAY_TO_KEY) or "")
+    return bool(start and end and start > end)
+
+
+def _scan_time_of_day_tokens(text: str) -> list[tuple[tuple[str, str, str], int, int]] | None:
+    """날짜 토큰에 딸리지 않은 시각 토큰 목록. 달력상 불가능한 시각이 섞이면 None(전체 미해석)."""
+    occupied = [match.span() for match in _CAL_TOKEN_RE.finditer(text)]
+    found: list[tuple[tuple[str, str, str], int, int]] = []
+    for match in _TIME_OF_DAY_TOKEN_RE.finditer(text):
+        if any(match.start() < end and start < match.end() for start, end in occupied):
+            continue
+        bounds = _time_bounds(
+            match.group("tod_ap"), match.group("tod_hh"), match.group("tod_mi"), match.group("tod_ss")
+        )
+        if bounds is _INVALID_TIME:
+            return None
+        if isinstance(bounds, tuple):
+            found.append((bounds, match.start(), match.end()))
+    return found
+
+
+def _time_of_day_pairs(text: str) -> list[tuple[dict[str, Any], int, int]]:
+    """범위로 묶인 시각 토큰 쌍 → (시각대, 시작위치, 끝위치) 목록(등장 순).
+
+    링크 판정은 날짜 범위와 같은 규칙이다: 구분자형('9시~18시')은 그대로 범위이고, 여는 말형
+    ('9시부터 …')은 닫는 말('까지'/'사이')이 뒤에 실제로 있을 때만 범위다(반쪽이면 미해석)."""
+    tokens = _scan_time_of_day_tokens(text)
+    if not tokens:
+        return []
+    out: list[tuple[dict[str, Any], int, int]] = []
+    index = 0
+    while index + 1 < len(tokens):
+        (left, _left_start, left_end), (right, right_start, right_end) = tokens[index], tokens[index + 1]
+        link = text[left_end:right_start]
+        if _TOD_SEP_LINK_RE.fullmatch(link) is not None:
+            end = right_end
+        elif _TOD_OPEN_LINK_RE.fullmatch(link) is not None:
+            closer = _RANGE_CLOSER_RE.match(text, right_end)
+            if closer is None:
+                index += 1
+                continue
+            end = closer.end()
+        else:
+            index += 1
+            continue
+        out.append((
+            {
+                TIME_OF_DAY_FROM_KEY: left[0],
+                TIME_OF_DAY_TO_KEY: right[1],
+                "label": f"{left[2]}~{right[2]}",
+            },
+            tokens[index][1],
+            end,
+        ))
+        index += 2
+    return out
+
+
+def parse_time_of_day_window(text: str) -> dict[str, Any] | None:
+    """날짜 없는 반복 시각대 하나를 ``{from_time, to_time, label}``(HHMMSS)로 읽는다(없으면 None).
+
+    '오전 9시부터 오후 6시 사이'는 090000~185959, '밤 11시부터 다음 날 새벽 2시 사이'는
+    230000~025959 다(끝 경계는 날짜 창의 '18시까지'와 같은 단위 의미론 — 말한 정밀도의 단위
+    전체를 포함한다). 뒤쪽이 앞쪽보다 이르면 자정을 넘는 시각대이며
+    (:func:`time_of_day_crosses_midnight`), 그 구분은 SQL 에서 AND 와 OR 를 가른다."""
+    if not isinstance(text, str) or not text:
+        return None
+    pairs = _time_of_day_pairs(text)
+    return dict(pairs[0][0]) if pairs else None
+
+
+def parse_time_of_day_window_span(text: str) -> tuple[int, int] | None:
+    """:func:`parse_time_of_day_window` 가 읽은 표현의 원문 구간(슬롯 소유권 기록용)."""
+    if not isinstance(text, str) or not text:
+        return None
+    pairs = _time_of_day_pairs(text)
+    return (pairs[0][1], pairs[0][2]) if pairs else None
 
 
 _RELATIVE_YEAR_ONLY_RE = re.compile(_YEAR_ANCHOR_PATTERN + r"\s*$")

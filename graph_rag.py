@@ -128,6 +128,7 @@ from aggregation_requirements import (
     validate_aggregation_sql,
 )
 from analytical_intent import (analyze_analytical_intent, build_aggregation_request as build_deterministic_aggregation_request, compile_aggregation_ast, validate_intent_sql_contract)
+import calendar_window
 from calendar_window import (DURATION_UNIT_DAYS as _DURATION_UNIT_DAYS, NUMERIC_DURATION_PATTERN as _NUMERIC_DURATION_PATTERN, WORD_DURATION_DAYS as _WORD_DURATION_DAYS, WORD_DURATION_PATTERN as _WORD_DURATION_PATTERN, month_last_day as _month_last_day, parse_calendar_window, parse_calendar_windows, calendar_window_from_parts, ymd as _ymd)
 from entity_set import (compile_entity_set_predicate, entity_set_capability)
 from formula_engine import compile_formula_ast, validate_formula_ast
@@ -7820,6 +7821,14 @@ def _deterministic_dropped_conditions(
     ):
         warnings.append(f"기간 '{window['label']}' 조건")
 
+    # 반복 시각대('밤 11시부터 다음 날 새벽 2시 사이'): 날짜 창이 아니라 **시각 조건**이라 바로 위의
+    # 절대 창 검사가 보지 못한다. 그런데 시각이 사라진 결과는 '그 시간대 주문'이 '아무 때나 주문'이
+    # 되는 것이라 조용한 확대다 — plan 어디에도 time_of_day 가 없으면 여기서 이름을 대고 고지한다.
+    recurring = calendar_window.parse_time_of_day_window(text)
+    if recurring is not None and not _plan_time_of_day_bounds(query_plan):
+        label = str(recurring.get("label") or "").strip()
+        warnings.append(f"시각대 '{label}' 조건" if label else "시각대 조건")
+
     # 장바구니: 원문에 '장바구니'가 있는데 어떤 카트 슬롯도 안 잡혔으면 드롭(존재/부재/보관/유형/개수 전부).
     if "장바구니" in compact and not (
         "cart_abandoner" in behaviors
@@ -8059,9 +8068,43 @@ def _verify_sql_semantic_invariants(
     return {"ran": True, "ok": not issues, "issues": issues}
 
 
+def _plan_time_of_day_bounds(plan: Any) -> list[dict[str, str]]:
+    """plan 구조 안의 반복 시각대(time_of_day) 노드. 슬롯 이름이 아니라 구조로 훑는다."""
+    found: list[dict[str, str]] = []
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            recurring = node.get("time_of_day")
+            if isinstance(recurring, dict) and all(
+                isinstance(recurring.get(key), str)
+                and re.fullmatch(r"\d{6}", recurring[key]) is not None
+                for key in ("from_time", "to_time")
+            ):
+                found.append({key: recurring[key] for key in ("from_time", "to_time")})
+            for value in node.values():
+                _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(plan)
+    return found
+
+
 def _plan_time_bounded_window_labels(plan: Any) -> list[str]:
-    """plan 구조 안에서 시각 경계(from_time/to_time)를 들고 있는 절대 창의 라벨을 전부 모은다."""
+    """plan 구조 안에서 시각 조건을 들고 있는 노드의 라벨을 전부 모은다.
+
+    두 모양이 있다. (1) 절대 창에 걸린 시각 경계({from,to} + from_time/to_time), (2) 날짜와 직교하는
+    반복 시각대(time_of_day: {from_time, to_time}). 슬롯 이름이 아니라 **구조**로 훑으므로 새 창
+    슬롯도 자동으로 검사받는다 — 시각 조건이 어떤 모양으로 실리든 SQL 에 시각 컬럼이 없으면 그것은
+    조건이 날짜(또는 하루 전체)로 넓어진 채 실행됐다는 뜻이다."""
     found: list[str] = []
+
+    def _time_keys(node: dict[str, Any]) -> bool:
+        return any(
+            isinstance(node.get(key), str) and re.fullmatch(r"\d{6}", node[key]) is not None
+            for key in ("from_time", "to_time")
+        )
 
     def _walk(node: Any) -> None:
         if isinstance(node, dict):
@@ -8069,12 +8112,15 @@ def _plan_time_bounded_window_labels(plan: Any) -> list[str]:
                 isinstance(node.get("from"), str) and re.fullmatch(r"\d{8}", node["from"]) is not None
                 and isinstance(node.get("to"), str) and re.fullmatch(r"\d{8}", node["to"]) is not None
             )
-            has_time = any(
-                isinstance(node.get(key), str) and re.fullmatch(r"\d{6}", node[key]) is not None
-                for key in ("from_time", "to_time")
-            )
-            if has_window and has_time:
+            if has_window and _time_keys(node):
                 found.append(str(node.get("label") or f"{node['from']}~{node['to']}"))
+            recurring = node.get("time_of_day")
+            if isinstance(recurring, dict) and _time_keys(recurring):
+                found.append(str(
+                    recurring.get("label")
+                    or node.get("label")
+                    or f"{recurring.get('from_time')}~{recurring.get('to_time')}"
+                ))
             for value in node.values():
                 _walk(value)
         elif isinstance(node, list):
@@ -13199,8 +13245,12 @@ def _calendar_window_ranges(window_slot: Any) -> list[tuple[str, str, str | None
 
 
 def _next_day8(token: str) -> str:
-    """YYYYMMDD 의 다음 날(구간 인접 판정용). 'YYYY1231' + 1 = 'YYYY+1 0101'."""
-    return (date(int(token[:4]), int(token[4:6]), int(token[6:8])) + timedelta(days=1)).strftime("%Y%m%d")
+    """YYYYMMDD 의 다음 날(구간 인접 판정용). 'YYYY1231' + 1 = 'YYYY+1 0101'.
+
+    date.max(99991231) 의 다음 날은 표현할 수 없으므로 자기 자신을 돌려준다 — 인접 판정에서만
+    쓰이고, 이미 최대인 끝에는 이어 붙일 다음 구간이 없다."""
+    day = date(int(token[:4]), int(token[4:6]), int(token[6:8]))
+    return (day if day == date.max else day + timedelta(days=1)).strftime("%Y%m%d")
 
 
 # 주문 시각의 물리 소유자. 시각(HHMMSS)은 주문 헤더에만 있다 — 상세(CRM_SL_ORDERDETAILMALL)에는
@@ -13246,6 +13296,46 @@ def _order_time_refinement(
     return None
 
 
+def _time_of_day_refinement(
+    prefix: str, time_of_day: Any, source_table: str | None, alias: str | None,
+) -> str | None:
+    """날짜와 직교하는 **반복 시각대** 술어('밤 11시부터 새벽 2시 사이에 주문').
+
+    자정을 넘는지가 AND 와 OR 를 가른다. 23시~02시를 AND 로 쓰면 항상 거짓이고(한 값이 두 조건을
+    동시에 만족할 수 없다), 09시~18시를 OR 로 쓰면 하루 전체가 되어 조건이 사라진다 — 같은 두 경계로
+    정반대 실수를 만들 수 있는 자리라 판정을 한 곳(:func:`calendar_window.time_of_day_crosses_midnight`)이
+    소유한다.
+
+    시각 컬럼을 갖지 않는 문맥(주문 상세)은 헤더 상관 EXISTS 로 표현하고, 그것도 못 하면 None 이다 —
+    시각을 조용히 버리면 조건이 하루 전체로 넓어진 채 실행된다(_purchase_date_predicate 가 술어 전체를
+    미생성으로 처리하고 결정론 불변식이 출고를 막는다)."""
+    if not isinstance(time_of_day, dict):
+        return None
+    start = _window_time_token(time_of_day, "from_time")
+    end = _window_time_token(time_of_day, "to_time")
+    if start is None or end is None:
+        return None
+    header = _purchase_product_registry()["order_header"]
+    time_table = header["table"]
+    time_column = header["time_column"]
+    join_key = header["order_id_column"]
+    crosses = calendar_window.time_of_day_crosses_midnight(time_of_day)
+
+    def _bounds(time_prefix: str) -> str:
+        low = f"{time_prefix}{time_column} >= {_sql_quote(start)}"
+        high = f"{time_prefix}{time_column} <= {_sql_quote(end)}"
+        return f"({low} OR {high})" if crosses else f"({low} AND {high})"
+
+    if source_table == time_table:
+        return _bounds(prefix)
+    if alias:
+        return (
+            f"EXISTS (SELECT 1 FROM {time_table} OT"
+            f" WHERE OT.{join_key} = {prefix}{join_key} AND {_bounds('OT.')})"
+        )
+    return None
+
+
 def _purchase_date_predicate(
     purchase_date: Any, *, alias: str | None = "D", column: str | None = None,
     source_table: str | None = None,
@@ -13268,7 +13358,8 @@ def _purchase_date_predicate(
             return None
         column = configured
     ranges = _calendar_window_ranges(purchase_date)
-    if not ranges:
+    time_of_day = purchase_date.get("time_of_day") if isinstance(purchase_date, dict) else None
+    if not ranges and not time_of_day:
         return None
     prefix = f"{alias}." if alias else ""
     terms: list[str] = []
@@ -13281,7 +13372,19 @@ def _purchase_date_predicate(
         if refinement is None:
             return None
         terms.append(f"({base} AND {refinement})")
-    return terms[0] if len(terms) == 1 else "(" + " OR ".join(terms) + ")"
+    if not terms:
+        date_predicate = None
+    elif len(terms) == 1:
+        date_predicate = terms[0]
+    else:
+        date_predicate = "(" + " OR ".join(terms) + ")"
+    if not time_of_day:
+        return date_predicate
+    # 반복 시각대는 날짜 구간과 **직교**한다 — 날짜별 OR 나열 전체에 AND 로 얹는다.
+    recurring = _time_of_day_refinement(prefix, time_of_day, source_table, alias)
+    if recurring is None:
+        return None
+    return recurring if date_predicate is None else f"({date_predicate} AND {recurring})"
 
 
 # 상품 스코프로 쓰기엔 너무 일반적인 상품 지시어(구체적 상품/브랜드가 아님). 이런 값이 상품 스코프

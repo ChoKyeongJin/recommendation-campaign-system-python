@@ -58,6 +58,11 @@ if hasattr(sys.stdout, "reconfigure"):
 
 OUTCOMES = ("sql", "unsupported", "clarification", "failure", "error")
 
+# 기준선 전용 값. 코퍼스에 항목이 들어왔지만 아직 종단 실측을 하지 않은 상태다. 행을 아예 비워 두는
+# 것과 다르다 — 비어 있으면 러너가 그 항목의 대조를 **조용히** 건너뛰고, 그 침묵이 곧 "코퍼스는 늘었는데
+# 기준선은 그대로"라는 드리프트다(실측: 코퍼스 78종 vs 기준선 77행). 이 값은 그 침묵에 이름을 준다.
+UNMEASURED = "unmeasured"
+
 
 def _load_corpus(path: Path) -> list[dict[str, Any]]:
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -240,6 +245,9 @@ def compare_to_baseline(
     expectation 은 '합의된 귀결'이라 오래 고정돼 있고, 그래서 "지금 무엇이 달라졌는가"를
     말해 주지 못한다. 이 대조는 마지막 실측과의 차이만 본다 — 재현할 수 없는 수치가
     기준선 노릇을 하던 상태로 돌아가지 않게 하는 것이 목적이다.
+
+    :data:`UNMEASURED` 행은 비교 대상이 아니라 **최초 실측**이다. 방향(better/worse)이 없는
+    자리라 ``direction="first"`` 로 표시해 개선/회귀 집계에 섞이지 않게 한다.
     """
     recorded = baseline.get("rows") or {}
     changes: list[dict[str, str]] = []
@@ -247,13 +255,25 @@ def compare_to_baseline(
         before = (recorded.get(str(row["id"])) or {}).get("outcome")
         if before is None or before == row["outcome"]:
             continue
-        direction = (
-            "better" if OUTCOMES.index(row["outcome"]) < OUTCOMES.index(before) else "worse"
-        )
+        if before == UNMEASURED:
+            direction = "first"
+        else:
+            direction = (
+                "better" if OUTCOMES.index(row["outcome"]) < OUTCOMES.index(before) else "worse"
+            )
         changes.append({
             "id": str(row["id"]), "from": before, "to": row["outcome"], "direction": direction,
         })
     return changes
+
+
+def unmeasured_ids(baseline: dict[str, Any]) -> list[str]:
+    """아직 실측되지 않은 기준선 행. 조용히 지나가면 안 되므로 러너가 매번 출력한다."""
+    recorded = baseline.get("rows") or {}
+    return sorted(
+        (key for key, value in recorded.items() if (value or {}).get("outcome") == UNMEASURED),
+        key=lambda key: (len(key), key),
+    )
 
 
 def _row_candidate(row: dict[str, Any]) -> str | None:
@@ -331,14 +351,18 @@ def main() -> int:
         print(f"개선(기대치 갱신 후보): {summary['improvements']}")
 
     if args.baseline and args.baseline.exists():
-        changes = compare_to_baseline(rows, json.loads(args.baseline.read_text(encoding="utf-8")))
+        baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
+        changes = compare_to_baseline(rows, baseline)
         if changes:
             print(f"\n실측 기준선 대비 변화 {len(changes)}건:")
             for change in changes:
-                mark = "+" if change["direction"] == "better" else "-"
+                mark = {"better": "+", "worse": "-"}.get(change["direction"], "*")
                 print(f"  {mark} #{change['id']:>2} {change['from']} → {change['to']}")
         else:
             print("\n실측 기준선 대비 변화 없음")
+        pending = unmeasured_ids(baseline)
+        if pending:
+            print(f"미실측 기준선 행 {len(pending)}건: {', '.join('#' + key for key in pending)}")
 
     if args.json:
         args.json.write_text(

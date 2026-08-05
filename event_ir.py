@@ -115,38 +115,85 @@ def canonical_unit(raw: Any) -> str | None:
     return _UNIT_ALIASES.get(str(raw).strip().casefold()) if raw is not None else None
 
 
+_HMS6 = re.compile(r"^([01]\d|2[0-3])[0-5]\d[0-5]\d$")
+
+
+def _time_bound(raw: Any, field_name: str) -> str | None:
+    if raw is None:
+        return None
+    text = str(raw)
+    if not _HMS6.match(text):
+        raise IrSchemaError(f"{field_name} must be HHMMSS within 00:00:00~23:59:59: {raw!r}")
+    return text
+
+
 @dataclass(frozen=True)
 class AbsoluteInterval:
-    """달력상 확정된 반개구간 [start, end_exclusive)."""
+    """달력상 확정된 반개구간 [start, end_exclusive).
+
+    경계일에만 걸리는 **시각 경계**(``start_time``/``end_time``, HHMMSS)는 선택적으로 함께 실린다.
+    시작 시각은 첫날에, 끝 시각은 마지막 날에 적용되고 그 사이 날은 전일이 포함된다 — 달력 문법
+    (:mod:`calendar_window`)의 ``from_time``/``to_time`` 과 같은 뜻이며 끝은 **포함**이다(그 단위의
+    마지막 순간). 반개구간 규칙과 모순되지 않는다: 초 해상도에서 ``<= '185959'`` 는 ``< '190000'`` 이다.
+
+    이 필드가 여기 있는 이유는 하나다 — 없으면 시각이 **조용히** 사라진다. 달력 문법은 시각을 읽었는데
+    IR 이 담지 못하면 그 조건은 '그날 하루 전체'로 넓어진 채 실행되고, plan 에 시각 흔적이 남지 않아
+    silent-drop 가드조차 볼 것이 없다(실측 결함).
+    """
 
     start: date
     end_exclusive: date
     type: str = "interval"
+    start_time: str | None = None
+    end_time: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.start, date) or not isinstance(self.end_exclusive, date):
             raise IrSchemaError("interval bounds must be dates")
         if self.start >= self.end_exclusive:
             raise IrSchemaError(f"empty interval: {self.start} >= {self.end_exclusive}")
+        object.__setattr__(self, "start_time", _time_bound(self.start_time, "interval start_time"))
+        object.__setattr__(self, "end_time", _time_bound(self.end_time, "interval end_time"))
+        if (
+            self.start_time is not None
+            and self.end_time is not None
+            and self.start == self.inclusive_end
+            and self.start_time > self.end_time
+        ):
+            raise IrSchemaError(
+                f"empty interval: {self.start} {self.start_time} > {self.end_time}"
+            )
 
     @property
     def inclusive_end(self) -> date:
         """포함 끝일(YYYYMMDD 문자열 비교 관례를 쓰는 컬럼용)."""
         return self.end_exclusive - timedelta(days=1)
 
+    @property
+    def has_time_bounds(self) -> bool:
+        """시각 경계가 걸린 구간인가 — 날짜 컬럼만으로는 표현할 수 없다는 뜻이다."""
+        return self.start_time is not None or self.end_time is not None
+
     def to_dict(self) -> dict[str, Any]:
         """직렬화. ``from``/``to``(YYYYMMDD 포함 구간)는 기존 달력 슬롯 소비자와의 **파생 호환 표기**다.
 
         캐노니컬은 ``start``/``end_exclusive`` 이고 :meth:`from_dict` 는 캐노니컬만 읽는다 — 호환 표기를
         입력으로 신뢰하면 두 진실이 생긴다. 이 표기가 필요한 이유는 plan 전체를 구조로 훑어 '이미 주인
-        있는 달력 구간'을 세는 소비자(graph_rag 의 고아 창 판정)가 있기 때문이다."""
-        return {
+        있는 달력 구간'을 세는 소비자(graph_rag 의 고아 창 판정)가 있기 때문이다.
+
+        시각 경계는 **있을 때만** 실린다 — 없으면 기존 표기와 바이트 동일이라 스냅샷이 흔들리지 않는다."""
+        payload = {
             "type": "interval",
             "start": self.start.isoformat(),
             "end_exclusive": self.end_exclusive.isoformat(),
             "from": self.start.strftime("%Y%m%d"),
             "to": self.inclusive_end.strftime("%Y%m%d"),
         }
+        if self.start_time is not None:
+            payload["start_time"] = payload["from_time"] = self.start_time
+        if self.end_time is not None:
+            payload["end_time"] = payload["to_time"] = self.end_time
+        return payload
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any]) -> "AbsoluteInterval":
@@ -154,27 +201,47 @@ class AbsoluteInterval:
             return cls(
                 start=date.fromisoformat(str(raw["start"])),
                 end_exclusive=date.fromisoformat(str(raw["end_exclusive"])),
+                start_time=raw.get("start_time"),
+                end_time=raw.get("end_time"),
             )
         except (KeyError, ValueError) as exc:
             raise IrSchemaError(f"invalid interval: {raw}") from exc
 
     @classmethod
     def from_calendar_window(cls, window: dict[str, Any]) -> "AbsoluteInterval | None":
-        """기존 달력 창 표기 ``{from, to}``(YYYYMMDD 포함 구간) → 반개구간.
+        """기존 달력 창 표기 ``{from, to[, from_time, to_time]}`` → 반개구간.
 
         :mod:`calendar_window` 가 달력 문법의 단일 소유자이므로 이 IR 은 그 산출물을 받아 경계 규칙만
-        바꾼다 — 달력을 여기서 다시 구현하지 않는다."""
+        바꾼다 — 달력을 여기서 다시 구현하지 않는다. 시각 경계도 그대로 옮긴다(버리면 조건이 넓어진다)."""
         start_raw, end_raw = str(window.get("from") or ""), str(window.get("to") or "")
         if not (_YMD8.match(start_raw) and _YMD8.match(end_raw)):
             return None
         start = date(int(start_raw[:4]), int(start_raw[4:6]), int(start_raw[6:]))
         end = date(int(end_raw[:4]), int(end_raw[4:6]), int(end_raw[6:]))
+        start_time, end_time = window.get("from_time"), window.get("to_time")
         if end < start:
             start, end = end, start
-        return cls(start=start, end_exclusive=end + timedelta(days=1))
+            start_time, end_time = end_time, start_time
+        try:
+            return cls(
+                start=start, end_exclusive=end + timedelta(days=1),
+                start_time=start_time, end_time=end_time,
+            )
+        except IrSchemaError:
+            # 형식이 어긋난 시각은 버리지 않는다 — 창 전체를 미해석으로 남긴다(fail-close).
+            return None
+        except OverflowError:
+            # 끝이 date.max 인 창은 반개구간으로 바꿀 수 없다(그 다음 날이 연도 10000). 문법이 내는
+            # 열린 구간 센티널은 이 한계 안에 있지만, 손으로 적은 plan 은 그렇지 않을 수 있다.
+            return None
 
     def to_calendar_window(self) -> dict[str, str]:
-        return {"from": self.start.strftime("%Y%m%d"), "to": self.inclusive_end.strftime("%Y%m%d")}
+        window = {"from": self.start.strftime("%Y%m%d"), "to": self.inclusive_end.strftime("%Y%m%d")}
+        if self.start_time is not None:
+            window["from_time"] = self.start_time
+        if self.end_time is not None:
+            window["to_time"] = self.end_time
+        return window
 
 
 @dataclass(frozen=True)
@@ -1569,11 +1636,14 @@ def condition_json_schema(
         "type": "object",
         "description": (
             "기간. {type:'interval', start:'YYYY-MM-DD', end_exclusive:'YYYY-MM-DD'}(끝 미포함) | "
-            "{type:'rolling'|'relative', value:int, unit:'day'|'week'|'month'|'year'}"
+            "{type:'rolling'|'relative', value:int, unit:'day'|'week'|'month'|'year'}. "
+            "시각이 명시된 구간은 경계일에만 걸리는 start_time/end_time:'HHMMSS' 를 함께 적는다"
+            "(end_time 은 그 단위의 마지막 순간 — '18시까지'=185959, '23시 59분 59초까지'=235959)."
         ),
         "properties": {
             "type": {"type": "string", "enum": ["interval", "rolling", "relative"]},
             "start": {"type": "string"}, "end_exclusive": {"type": "string"},
+            "start_time": {"type": "string"}, "end_time": {"type": "string"},
             "value": {"type": "integer"}, "unit": {"type": "string", "enum": list(WINDOW_UNITS)},
         },
         "required": ["type"],

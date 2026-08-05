@@ -184,6 +184,18 @@
       "그제",
       "그저께"
     ],
+    "calendar_current_week": [
+      "이번 주",
+      "이번주",
+      "금주"
+    ],
+    "calendar_previous_week": [
+      "지난 주",
+      "지난주",
+      "저번 주",
+      "저번주",
+      "전주"
+    ],
     "calendar_current_month": [
       "이번 달",
       "이번달",

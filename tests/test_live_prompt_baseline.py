@@ -25,10 +25,15 @@ sys.path.insert(0, str(REPO_ROOT / "tools"))
 import live_prompt_baseline as runner  # noqa: E402
 
 CORPUS_PATH = REPO_ROOT / "docs" / "data" / "test_baselines" / "live_prompts.json"
+BASELINE_PATH = REPO_ROOT / "docs" / "data" / "test_baselines" / "live_prompt_outcomes_baseline.json"
 
 
 def _corpus() -> dict:
     return json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
+
+
+def _baseline() -> dict:
+    return json.loads(BASELINE_PATH.read_text(encoding="utf-8"))
 
 
 def test_corpus_is_well_formed() -> None:
@@ -79,6 +84,63 @@ def test_every_prompt_declares_what_its_sql_must_contain() -> None:
         "SQL 이 나온다면 반드시 담아야 할 물리 조각(테이블/컬럼 이름)을 선언하라 — "
         "선언이 없으면 그 항목에서는 '절이 사라진 SQL' 과 '옳은 SQL' 을 러너가 구분하지 못한다."
     )
+
+
+def test_baseline_rows_and_corpus_ids_are_the_same_set() -> None:
+    """기준선 행 id 집합 == 코퍼스 id 집합.
+
+    이 테스트가 없던 동안 코퍼스는 78종인데 기준선은 77행이었다. 러너의 대조는
+    ``before is None`` 이면 그 항목을 **조용히 건너뛰므로**, 빠진 행은 '변화 없음'과 구분되지
+    않는다 — 새 항목을 아무리 넣어도 기준선이 초록으로 남는다는 뜻이다. 반대 방향(코퍼스에서
+    지운 항목의 유령 행)도 같은 이유로 막는다: 대조 대상이 없는 행은 다음 사람에게 '이건 아직도
+    이렇다'는 거짓 사실을 남긴다.
+
+    실측하지 않은 항목을 넣는 정당한 방법은 행을 비우는 것이 아니라 ``outcome="unmeasured"`` 로
+    이름을 대는 것이다(:data:`live_prompt_baseline.UNMEASURED`).
+    """
+    corpus_ids = {str(entry["id"]) for entry in _corpus()["prompts"]}
+    baseline_ids = set(_baseline()["rows"])
+
+    assert corpus_ids == baseline_ids, (
+        f"기준선에 없는 코퍼스 항목: {sorted(corpus_ids - baseline_ids, key=int)} / "
+        f"코퍼스에 없는 기준선 행: {sorted(baseline_ids - corpus_ids, key=int)}. "
+        "실측 전이라면 outcome=\"unmeasured\" 로 행을 남겨라 — 행을 비우면 그 항목의 대조가 "
+        "조용히 꺼진 채 초록이 된다."
+    )
+
+
+def test_baseline_outcomes_use_the_closed_vocabulary() -> None:
+    """기준선 값은 러너의 닫힌 5종 + 미실측뿐이다. 오타 하나가 대조를 죽이면 안 된다."""
+    allowed = {*runner.OUTCOMES, runner.UNMEASURED}
+    unknown = {
+        key: row.get("outcome")
+        for key, row in _baseline()["rows"].items()
+        if row.get("outcome") not in allowed
+    }
+    assert not unknown, f"닫힌 어휘 밖의 기준선 값: {unknown}. 허용: {sorted(allowed)}"
+
+
+def test_baseline_summary_counts_match_the_rows() -> None:
+    """요약이 행과 어긋나면 사람이 읽는 숫자와 도구가 세는 숫자가 갈라진다."""
+    baseline = _baseline()
+    counted: dict[str, int] = {}
+    for row in baseline["rows"].values():
+        counted[row["outcome"]] = counted.get(row["outcome"], 0) + 1
+    declared = {name: count for name, count in baseline["summary"].items() if count}
+    assert declared == {name: count for name, count in counted.items() if count}
+    assert sum(baseline["summary"].values()) == len(baseline["rows"])
+
+
+def test_unmeasured_rows_are_a_first_measurement_not_an_improvement() -> None:
+    """미실측 행은 개선/회귀 축에 섞이지 않는다 — 잰 적 없는 값과의 '차이'는 방향이 없다."""
+    baseline = {"rows": {"79": {"outcome": runner.UNMEASURED}, "3": {"outcome": "failure"}}}
+    rows = [
+        {"id": 79, "outcome": "sql"},
+        {"id": 3, "outcome": "sql"},
+    ]
+    changes = {change["id"]: change["direction"] for change in runner.compare_to_baseline(rows, baseline)}
+    assert changes == {"79": "first", "3": "better"}
+    assert runner.unmeasured_ids(baseline) == ["79"]
 
 
 def test_expectations_are_documented() -> None:

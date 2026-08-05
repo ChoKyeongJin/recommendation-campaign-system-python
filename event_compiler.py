@@ -548,6 +548,15 @@ def compile_time_window(
         window = event_ir.resolve_relative_window(window, context.today)
 
     if isinstance(window, AbsoluteInterval):
+        if window.has_time_bounds:
+            # 시각 컬럼은 이 계층의 시간 바인딩(날짜 컬럼 하나)에 선언되어 있지 않다. 날짜만 걸면
+            # '23시 59분 59초까지'가 '그날 하루 전체'가 되므로 근사하지 않고 미지원으로 닫는다 —
+            # 시각을 표현할 수 있는 경로(주문 헤더 ORDER_TIME 술어)가 따로 있고, 그쪽으로 가야 한다.
+            raise SqlCompileError(
+                "시각 경계가 걸린 기간은 이 시간 바인딩(날짜 단위 컬럼)으로 표현할 수 없습니다"
+                f"(요청 구간: {window.start.isoformat()} {window.start_time or ''}"
+                f" ~ {window.inclusive_end.isoformat()} {window.end_time or ''})"
+            )
         if not (grain.aligned(window.start) and grain.aligned(window.end_exclusive)):
             raise SqlCompileError(
                 f"{grain.unit} 단위로 적재된 컬럼에는 그 경계에 맞는 기간만 걸 수 있습니다"

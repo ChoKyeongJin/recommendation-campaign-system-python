@@ -552,15 +552,36 @@ def _window_time_bounds(item: Any) -> dict[str, str]:
     return out
 
 
+def _coerce_time_of_day(raw: Any) -> dict[str, str] | None:
+    """반복 시각대 {from_time, to_time}(둘 다 필수, HHMMSS). 날짜와 직교하는 **시각 조건**이다.
+
+    한쪽만 있으면 버린다 — 열린 시각대('9시 이후')는 그것이 그날의 시점인지 매일의 시각대인지
+    원문에서 확정되지 않아 문법도 만들지 않는다(calendar_window.parse_time_of_day_window)."""
+    if not isinstance(raw, dict):
+        return None
+    bounds = _window_time_bounds(raw)
+    return bounds if len(bounds) == 2 else None
+
+
+# 열린 경계 표지. 센티널 날짜(calendar_window.OPEN_WINDOW_MIN/MAX_DATE)로 이미 SQL 은 옳게 나오지만, '이 경계는 원문이
+# 말한 것이 아니라 열림을 뜻한다'를 감사에서 읽을 수 있어야 한다(calendar_window 가 소유하는 표지).
+_OPEN_BOUNDARY_KEYS = ("open_start", "open_end")
+
+
 def _coerce_purchase_date(raw: Any, *, allowed: Any = None) -> dict[str, Any] | None:
-    """purchase_date: {from, to, label?, windows?, from_time?, to_time?}. from/to 는 YYYY 이상 날짜 토큰.
+    """purchase_date: {from, to, label?, windows?, from_time?, to_time?, time_of_day?}.
 
     windows 는 한 조건이 여러 구간을 가리키는 표현('2018, 2019년', '1월과 3월')용 나열이다. 규칙 경로가
     만드는 shape 와 같다 — 구간을 하나로 뭉개면 나열의 나머지가 조용히 사라지고, 사이 기간까지 포함하는
     넓은 한 구간으로 합치면 없는 기간이 딸려 들어온다. from/to 는 전체 범위(min~max)로 함께 채워
-    이 슬롯을 {from,to} 로만 읽는 소비자와의 호환을 유지한다. 시각 경계(HHMMSS)는 있을 때만 실린다."""
+    이 슬롯을 {from,to} 로만 읽는 소비자와의 호환을 유지한다. 시각 경계(HHMMSS)는 있을 때만 실린다.
+
+    ``time_of_day`` 는 날짜가 아니라 **매일 되풀이되는 시각대**('밤 11시부터 새벽 2시 사이')다. 날짜
+    창과 직교하므로 날짜 없이 단독으로도, 날짜와 함께도 실릴 수 있다 — 그래서 이 슬롯은 날짜가 없어도
+    시각대만으로 성립한다(예전에는 from/to 가 없으면 통째로 버려져 시각 조건이 사라졌다)."""
     if not isinstance(raw, dict):
         return None
+    time_of_day = _coerce_time_of_day(raw.get("time_of_day"))
     windows: list[dict[str, str]] = []
     for item in raw.get("windows") or []:
         if not isinstance(item, dict):
@@ -572,15 +593,22 @@ def _coerce_purchase_date(raw: Any, *, allowed: Any = None) -> dict[str, Any] | 
             windows.append(entry)
     frm = str(raw.get("from", "")).strip()
     to = str(raw.get("to", "")).strip()
+    out: dict[str, Any] = {}
     if not (_has_window_year(frm) and _has_window_year(to)):
         if not windows:
-            return None
+            # 날짜가 없어도 시각대만으로 성립한다(반복 시각대 단독). 둘 다 없으면 조건이 아니다.
+            return {"time_of_day": time_of_day} if time_of_day else None
         frm = min(window["from"] for window in windows)
         to = max(window["to"] for window in windows)
-    out: dict[str, Any] = {"from": frm, "to": to}
+    out.update({"from": frm, "to": to})
     if len(windows) <= 1:
         # 단일 구간은 top-level 로 평탄화되므로 시각 경계도 top-level 로 올린다(없으면 창 항목 것).
         out.update(_window_time_bounds(raw) or (_window_time_bounds(windows[0]) if windows else {}))
+    for key in _OPEN_BOUNDARY_KEYS:
+        if raw.get(key) is True:
+            out[key] = True
+    if time_of_day:
+        out["time_of_day"] = time_of_day
     if isinstance(raw.get("label"), str) and raw["label"]:
         out["label"] = raw["label"]
     if len(windows) > 1:
@@ -1050,8 +1078,14 @@ SLOT_SHAPES: dict[str, SlotShape] = {
                     "('2018, 2019년', '1월과 3월') windows:[{from,to},…] 에 구간을 전부 적는다 —"
                     "하나만 적거나 사이 기간까지 포함하는 한 구간으로 합치지 않는다."
                     " 시각이 명시되면('9시부터 18시까지') from_time/to_time:'HHMMSS' 를 함께 적는다"
-                    "(시각 단위 전체 구간: '18시까지'=to_time '185959').",
+                    "(시각 단위 전체 구간: '18시까지'=to_time '185959', '23시 59분 59초까지'=to_time '235959')."
+                    " 한쪽만 말한 경계는 열린 구간이다: 'X까지/X 이전'이면 from='19000101', 'X 이후/X부터'면"
+                    " to='99991230' 로 적고 말한 쪽 경계만 X 로 둔다 — X 하루짜리 창으로 적지 않는다."
+                    " 날짜 없이 매일 되풀이되는 시각대만 말했으면('밤 11시부터 다음 날 새벽 2시 사이')"
+                    " from/to 를 비우고 time_of_day:{from_time,to_time} 에 적는다(자정을 넘으면 from_time>to_time).",
                     {**_DATE_WINDOW_PROPS, "label": _STRING_PROP,
+                     "time_of_day": _obj_schema("매일 반복되는 시각대. {from_time:'HHMMSS', to_time:'HHMMSS'}",
+                                                {"from_time": _STRING_PROP, "to_time": _STRING_PROP}),
                      "windows": {"type": "array",
                                  "items": {"type": "object", "properties": dict(_DATE_WINDOW_PROPS)}}}),
         _coerce_purchase_date),
