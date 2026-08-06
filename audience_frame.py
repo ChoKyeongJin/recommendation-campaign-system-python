@@ -184,6 +184,46 @@ def is_frame_only(
     return True
 
 
+def spans_are_locally_adjacent(
+    query: str,
+    spans: Sequence[Span],
+    *,
+    gaps: Sequence[re.Pattern[str]],
+) -> bool:
+    """스팬들이 **그 순서로 겹치지 않게** 이어지고, 각 사이가 대응 ``gaps`` 뿐인가.
+
+    :func:`in_same_clause` 와 묻는 것이 다르다. 저쪽은 "사이에 절 경계가 없는가"라 임의의
+    내용어를 통과시키지만, 여기는 "사이에 **이것 말고는 없는가**"다. 국소 인접이 어떤 표면어를
+    **다른 뜻으로 만드는** 근거일 때는 후자여야 한다 — '구매주기가 30일 이하'의 ``30일`` 을
+    스칼라 임계값으로 만드는 것은 그 자리뿐이고, 같은 문장의 ``최근 30일`` 은 그 자리가 아니다.
+
+    허용 어휘는 여기 두지 않는다. 구조(순서·겹침 없음·사이 전량 일치)만 이 모듈이 갖고
+    ``gaps`` 는 호출자가 준다 — 조사 하나를 더 받아들이는 결정은 그 판정을 소유한 모듈의
+    것이고, 여기에 조사 목록을 심으면 서로 다른 문법의 소비자들이 한 목록을 공유하게 된다.
+
+    폭이 0인 스팬은 **위치 앵커**다(표면어의 끝처럼 한쪽 경계만 아는 경우). ``gaps`` 개수가
+    스팬 사이 개수와 다르면 판정할 수 없으므로 거짓이다 — 남는 사이를 조용히 통과시키지 않는다.
+    """
+    if not isinstance(query, str) or len(spans) < 2 or len(gaps) != len(spans) - 1:
+        return False
+    bounds: list[Span] = []
+    for item in spans:
+        try:
+            start, end = int(item[0]), int(item[1])
+        except (TypeError, ValueError, IndexError):
+            return False
+        if not 0 <= start <= end <= len(query):
+            return False
+        bounds.append((start, end))
+    for index, gap in enumerate(gaps):
+        left_end, right_start = bounds[index][1], bounds[index + 1][0]
+        if left_end > right_start:
+            return False
+        if gap.fullmatch(query[left_end:right_start]) is None:
+            return False
+    return True
+
+
 def alias_stems(aliases: Iterable[str]) -> tuple[str, ...]:
     """별칭에서 용언 어간을 파생한다('담기'→'담').
 
@@ -384,6 +424,7 @@ __all__ = [
     "is_frame_only",
     "local_negation_spans",
     "residue_pieces",
+    "spans_are_locally_adjacent",
     "stem_inflection_spans",
     "surface_spans",
 ]

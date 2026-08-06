@@ -29,6 +29,7 @@ from typing import Any
 import audience_frame
 import event_ir
 import member_scalar_metrics
+import metric_recipe_selection
 import resolved_semantic_catalog
 
 OWNER = "member_scalar_metrics.catalog_literal_operator"
@@ -151,12 +152,19 @@ def _declared_metrics(registry: Mapping[str, Any]) -> tuple[dict[str, Any], ...]
 def _alias_candidates(
     query: str, declarations: Sequence[Mapping[str, Any]]
 ) -> list[tuple[Mapping[str, Any], str, int, int]]:
-    """원문에 등장한 (지표, 표면어, 구간) 후보 — **더 긴 이름 안에 든 짧은 이름은 뺀다**.
+    """원문에 등장한 (지표, 표면어, 구간) 후보 — **같은 자리를 주장하는 것끼리는 하나만 남긴다**.
 
     '평균 구매금액'에는 '구매금액'(다른 지표의 표면어)이 통째로 들어 있다. 포함된 쪽을 독립된
     지표 언급으로 세면 한 문장이 두 지표를 주장하는 것으로 보여 모호로 닫히고, 표현할 수 있는
     요청이 전부 막힌다. 포함 관계는 어휘가 아니라 구간이 판정하므로 새 표면어가 늘어도
     이 규칙은 그대로다.
+
+    포함은 겹침의 한 경우일 뿐이다. 어느 후보를 남길지는
+    :func:`metric_recipe_selection.resolve_overlapping_candidates` 가 정한다 — 첫 기준이 매칭
+    구간 길이라 포함 관계에서는 **긴 쪽이 이겨** 종전과 같은 답이 나오고, 길이까지 같은 겹침도
+    후보를 지우는 대신 결정론적으로 하나를 고른다(마지막 기준이 recipe id 라 동률이 없다).
+    구간이 겹치지 않는 후보는 서로 다른 자리를 말하므로 그대로 남는다 — 거기서 줄이면 한 문장의
+    다른 조건이 조용히 사라진다.
     """
 
     candidates: list[tuple[Mapping[str, Any], str, int, int]] = []
@@ -170,17 +178,22 @@ def _alias_candidates(
                 end = start + len(alias)
                 cursor = end
                 candidates.append((declaration, alias, start, end))
-    return [
-        candidate
-        for candidate in candidates
-        if not any(
-            other is not candidate
-            and other[2] <= candidate[2]
-            and candidate[3] <= other[3]
-            and (other[3] - other[2]) > (candidate[3] - candidate[2])
-            for other in candidates
+    # recipe_id 는 후보 집합 안에서만 유일하면 된다. 같은 지표의 표면어가 여러 번 등장할 수
+    # 있으므로 (지표, 표면어, 구간)을 함께 넣어 서로 다른 등장이 하나로 접히지 않게 한다.
+    keyed = {
+        f"{declaration['metric_id']}|{alias}|{start}|{end}": (declaration, alias, start, end)
+        for declaration, alias, start, end in candidates
+    }
+    resolved = metric_recipe_selection.resolve_overlapping_candidates([
+        metric_recipe_selection.RecipeCandidate(
+            recipe_id=recipe_id,
+            kind=member_scalar_metrics.MEMBER_SCALAR_KIND,
+            span=(item[2], item[3]),
+            surface=item[1],
         )
-    ]
+        for recipe_id, item in sorted(keyed.items())
+    ])
+    return [keyed[candidate.recipe_id] for candidate in resolved]
 
 
 def _threshold_phrase_is_adjacent(
@@ -200,15 +213,22 @@ def _threshold_phrase_is_adjacent(
     문장 전역 판정(:func:`audience_frame.is_frame_only`)은 일부러 여기 두지 않는다. 그것은
     '문장 전체가 이 술어 하나인가'라는 **다른 질문**이고, 술어 하나를 합성해도 되는지를 묻는
     :func:`_whole_phrase_matches` 만 그 답을 요구한다.
+
+    순서·겹침·사이 전량 일치라는 **구조**는 :func:`audience_frame.spans_are_locally_adjacent`
+    가 갖고, 사이에 무엇을 허용할지는 여기 남는다. 이 문형이 받아들이는 조사를 넓히는 결정은
+    이 판정의 소유자인 이 모듈의 것이고, 공용 헬퍼에 조사 목록을 심으면 다른 문법을 쓰는
+    소비자들이 한 목록을 공유하게 된다.
     """
 
     value_start, value_end = value_bounds
     operator_start, operator_end = operator_bounds
-    if not (alias_end <= value_start < value_end <= operator_start < operator_end):
+    if not (value_start < value_end and operator_start < operator_end):
         return False
-    if _METRIC_TO_VALUE_RE.fullmatch(query[alias_end:value_start]) is None:
-        return False
-    return _VALUE_TO_OPERATOR_RE.fullmatch(query[value_end:operator_start]) is not None
+    return audience_frame.spans_are_locally_adjacent(
+        query,
+        ((alias_end, alias_end), value_bounds, operator_bounds),
+        gaps=(_METRIC_TO_VALUE_RE, _VALUE_TO_OPERATOR_RE),
+    )
 
 
 def _whole_phrase_matches(

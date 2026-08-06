@@ -11,7 +11,10 @@ from __future__ import annotations
 import copy
 import functools
 import json
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Mapping
 
 import audience_schema
@@ -20,6 +23,7 @@ import event_ir
 import member_filters_config
 import member_policy
 import member_scalar_metrics
+import metric_recipe_selection
 import resolved_semantic_catalog
 
 
@@ -644,6 +648,157 @@ def _member_row_exists_wire(source: str, where: Mapping[str, Any]) -> dict[str, 
     }
 
 
+def _recipe_function(declaration: Mapping[str, Any]) -> str:
+    return str(declaration.get("function") or declaration.get("aggregate_function") or "")
+
+
+def _recipe_symbols(declaration: Mapping[str, Any]) -> tuple[str, str]:
+    """(소스 심볼, 값 표현). 값 표현이 선언되지 않았으면 ``"*"`` — 관계 전체를 뜻한다."""
+    return (
+        str(declaration.get("source") or ""),
+        str(declaration.get("expression") or declaration.get("expression_field") or "*"),
+    )
+
+
+def _member_row_symbols(declaration: Mapping[str, Any]) -> tuple[str, str] | None:
+    """회원 행 recipe 가 요구하는 (소스, 값 필드). 둘 중 하나라도 없으면 ``None``.
+
+    이 요구를 kind 별 builder 안에 두는 이유는 **kind 마다 요구가 다르기 때문**이다. aggregate
+    ``count`` 는 값 표현 없이도(``expression=None``) 성립하고 existence 는 값 필드를 선언하는
+    것이 오히려 금지다(:mod:`resolved_semantic_catalog`). 공통 전제로 끌어올리면 그 둘이 조용히
+    'recipe 없음'이 된다.
+    """
+    source, expression = _recipe_symbols(declaration)
+    if not source or expression == "*":
+        return None
+    return source, expression
+
+
+def _aggregate_recipe_wire(declaration: Mapping[str, Any]) -> dict[str, Any] | None:
+    """모집단 집계 — Condition 이 아니라 **Scalar** 다(비교로 감싸야 조건이 된다)."""
+    source, expression = _recipe_symbols(declaration)
+    return {
+        "type": "aggregate",
+        "function": _recipe_function(declaration),
+        "relation": {"type": "source", "name": source},
+        "expression": (
+            {"type": "field", "name": expression} if expression != "*" else None
+        ),
+        "distinct": bool(declaration.get("distinct")),
+    }
+
+
+def _existence_recipe_wire(declaration: Mapping[str, Any]) -> dict[str, Any] | None:
+    """행이 하나라도 있는가 — 값 비교가 없으므로 Filter 도 없다."""
+    source, _expression = _recipe_symbols(declaration)
+    return {
+        "type": "exists",
+        "relation": {"type": "source", "name": source},
+        "evidence": _metric_recipe_evidence(),
+    }
+
+
+def _member_scalar_recipe_wire(declaration: Mapping[str, Any]) -> dict[str, Any] | None:
+    """회원 한 명의 값 ↔ 숫자 임계값 비교."""
+    symbols = _member_row_symbols(declaration)
+    if symbols is None:
+        return None
+    source, expression = symbols
+    return _member_row_exists_wire(
+        source,
+        _metric_comparison_wire(
+            expression,
+            METRIC_RECIPE_OPERATOR_PLACEHOLDER,
+            METRIC_RECIPE_THRESHOLD_PLACEHOLDER,
+        ),
+    )
+
+
+def _field_value_recipe_wire(declaration: Mapping[str, Any]) -> dict[str, Any] | None:
+    """기준월 스냅샷의 값 하나 ↔ canonical 값 일치."""
+    symbols = _member_row_symbols(declaration)
+    if symbols is None:
+        return None
+    source, expression = symbols
+    return _member_row_exists_wire(
+        source,
+        _metric_comparison_wire(expression, "=", METRIC_RECIPE_VALUE_PLACEHOLDER),
+    )
+
+
+def _transition_recipe_wire(declaration: Mapping[str, Any]) -> dict[str, Any] | None:
+    """도착값과 출발값을 **함께** 비교하는 한 Exists.
+
+    ``prev_expression_field`` 가 없으면 출발값을 표현할 방법이 없다. 현재 시점 비교 하나로
+    낮추지 않고 recipe 자체를 내지 않는다 — 낮추면 전이 요청이 조용히 다른 뜻이 된다(규칙 11).
+    """
+    symbols = _member_row_symbols(declaration)
+    if symbols is None:
+        return None
+    source, expression = symbols
+    previous_field = str(declaration.get("prev_expression_field") or "")
+    if not previous_field:
+        return None
+    return _member_row_exists_wire(
+        source,
+        {
+            "type": "and",
+            "operands": [
+                _metric_comparison_wire(expression, "=", METRIC_RECIPE_VALUE_PLACEHOLDER),
+                _metric_comparison_wire(
+                    previous_field, "=", METRIC_RECIPE_PREVIOUS_VALUE_PLACEHOLDER
+                ),
+            ],
+        },
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class MetricRecipeBuilder:
+    """kind 하나가 컴파일되는 모양과, 그 모양을 채우는 데 필요한 선언."""
+
+    build: Callable[[Mapping[str, Any]], dict[str, Any] | None]
+    # 자리표시자를 채우는 근거가 되는 선언 키. 안내의 세부 줄(_metric_recipe_detail_line)과
+    # 경쟁 후보 선택(metric_recipe_selection 의 constraint_count)이 같은 목록을 읽는다 —
+    # 두 곳이 서로 다른 목록을 들면 "안내는 채울 수 있다는데 고르지는 못한다"가 된다.
+    constraint_keys: tuple[str, ...] = ()
+
+
+# kind → builder. 새 kind 는 여기 한 줄이고, 분기문을 여러 파일에 흩지 않는다(규칙 9).
+METRIC_RECIPE_BUILDERS: Mapping[str, MetricRecipeBuilder] = MappingProxyType({
+    "aggregate": MetricRecipeBuilder(
+        build=_aggregate_recipe_wire,
+        constraint_keys=("function", "distinct"),
+    ),
+    "existence": MetricRecipeBuilder(build=_existence_recipe_wire),
+    member_scalar_metrics.MEMBER_SCALAR_KIND: MetricRecipeBuilder(
+        build=_member_scalar_recipe_wire,
+        constraint_keys=("allowed_operators", "unit"),
+    ),
+    "field": MetricRecipeBuilder(
+        build=_field_value_recipe_wire,
+        constraint_keys=("allowed_operators",),
+    ),
+    "transition": MetricRecipeBuilder(
+        build=_transition_recipe_wire,
+        constraint_keys=("allowed_operators", "prev_expression_field"),
+    ),
+})
+
+
+def metric_recipe_builder_kind(declaration: Mapping[str, Any]) -> str:
+    """이 선언이 어느 builder 로 가는가.
+
+    ``kind`` 를 그대로 쓰지 않는 이유는 집계 함수 선언이 **kind 추론 규칙**이기 때문이다:
+    ``function``/``aggregate_function`` 이 있으면 kind 표기와 무관하게 집계 recipe 다. 이 우선
+    순위는 registry 이전의 분기 순서 그대로다 — 바꾸면 같은 선언이 다른 모양을 안내받는다.
+    """
+    kind = str(declaration.get("kind") or declaration.get("semantic_type") or "")
+    if kind == "aggregate" or _recipe_function(declaration):
+        return "aggregate"
+    return kind
+
+
 def metric_recipe_wire(declaration: Mapping[str, Any]) -> dict[str, Any] | None:
     """지표 선언 하나를 모델에게 보여줄 wire recipe 로 조립한다.
 
@@ -653,68 +808,16 @@ def metric_recipe_wire(declaration: Mapping[str, Any]) -> dict[str, Any] | None:
     ``Exists(Filter(Source, Comparison))`` 골격을 지시한다 — ``member_scalar_metrics`` 의
     lowering 산출과 같은 모양이다.
 
-    지표별 차이는 전부 **선언 데이터**에서 읽는다. 지표 이름으로 분기하지 않는다.
+    모양 자체는 kind 별 builder(:data:`METRIC_RECIPE_BUILDERS`)가 갖는다. 지표별 차이는 전부
+    **선언 데이터**에서 읽고 지표 이름으로 분기하지 않는다.
 
-    선언이 그 kind 에 필요한 필드를 갖추지 못하면 ``None`` 을 돌려준다. 예를 들어 전이 지표에
-    ``prev_expression_field`` 가 없으면 출발값을 표현할 방법이 없고, 현재 시점 비교 하나로 낮추면
-    전이 요청이 조용히 다른 뜻이 된다.
+    선언이 그 kind 에 필요한 필드를 갖추지 못하면 ``None`` 을 돌려준다. 등록되지 않은 kind 도
+    같다 — 가장 비슷해 보이는 모양으로 대신 채우지 않는다(규칙 11).
     """
-    kind = str(declaration.get("kind") or declaration.get("semantic_type") or "")
-    function = str(declaration.get("function") or declaration.get("aggregate_function") or "")
-    source = str(declaration.get("source") or "")
-    expression = str(declaration.get("expression") or declaration.get("expression_field") or "*")
-    if kind == "aggregate" or function:
-        return {
-            "type": "aggregate",
-            "function": function,
-            "relation": {"type": "source", "name": source},
-            "expression": (
-                {"type": "field", "name": expression}
-                if expression != "*" else None
-            ),
-            "distinct": bool(declaration.get("distinct")),
-        }
-    if kind == "existence":
-        return {
-            "type": "exists",
-            "relation": {"type": "source", "name": source},
-            "evidence": _metric_recipe_evidence(),
-        }
-    if not source or expression == "*":
+    builder = METRIC_RECIPE_BUILDERS.get(metric_recipe_builder_kind(declaration))
+    if builder is None:
         return None
-    if kind == member_scalar_metrics.MEMBER_SCALAR_KIND:
-        return _member_row_exists_wire(
-            source,
-            _metric_comparison_wire(
-                expression,
-                METRIC_RECIPE_OPERATOR_PLACEHOLDER,
-                METRIC_RECIPE_THRESHOLD_PLACEHOLDER,
-            ),
-        )
-    if kind == "field":
-        return _member_row_exists_wire(
-            source,
-            _metric_comparison_wire(expression, "=", METRIC_RECIPE_VALUE_PLACEHOLDER),
-        )
-    if kind == "transition":
-        previous_field = str(declaration.get("prev_expression_field") or "")
-        if not previous_field:
-            return None
-        return _member_row_exists_wire(
-            source,
-            {
-                "type": "and",
-                "operands": [
-                    _metric_comparison_wire(
-                        expression, "=", METRIC_RECIPE_VALUE_PLACEHOLDER
-                    ),
-                    _metric_comparison_wire(
-                        previous_field, "=", METRIC_RECIPE_PREVIOUS_VALUE_PLACEHOLDER
-                    ),
-                ],
-            },
-        )
-    return None
+    return builder.build(declaration)
 
 
 def _metric_recipe_detail_line(
@@ -725,8 +828,11 @@ def _metric_recipe_detail_line(
 
     aggregate/existence 는 자리표시자가 없으므로 줄을 붙이지 않는다 — 기존 안내 문자열을
     그대로 유지한다.
+
+    kind 는 recipe 를 실제로 만든 builder 기준(:func:`metric_recipe_builder_kind`)으로 읽는다.
+    선언 표기만 보면 집계 recipe 를 받은 선언에 회원 행 세부 줄이 붙어 안내가 서로 어긋난다.
     """
-    kind = str(declaration.get("kind") or declaration.get("semantic_type") or "")
+    kind = metric_recipe_builder_kind(declaration)
     if kind not in (member_scalar_metrics.MEMBER_SCALAR_KIND, "field", "transition"):
         return None
     details: list[str] = []
@@ -761,12 +867,42 @@ def _metric_recipe_detail_line(
     return "  - " + ", ".join(details)
 
 
+def metric_recipe_candidate(
+    metric_id: str, declaration: Mapping[str, Any]
+) -> metric_recipe_selection.RecipeCandidate:
+    """지표 선언 하나 → 경쟁 후보. 점수 재료는 전부 **선언에서** 읽는다.
+
+    ``constraint_count`` 는 그 kind 의 builder 가 요구하는 선언(:attr:`MetricRecipeBuilder.
+    constraint_keys`) 중 실제로 채워진 개수다. 자리표시자를 채울 근거를 더 많이 선언한 recipe 가
+    더 구체적이라는 뜻이며, kind 이름이나 지표 이름을 읽지 않는다.
+    """
+    kind = metric_recipe_builder_kind(declaration)
+    builder = METRIC_RECIPE_BUILDERS.get(kind)
+    keys = builder.constraint_keys if builder is not None else ()
+    priority = declaration.get("recipe_priority")
+    return metric_recipe_selection.RecipeCandidate(
+        recipe_id=str(metric_id),
+        kind=kind,
+        # 카탈로그가 우선순위를 선언하면 계산된 근거보다 앞선다. 지금은 아무 지표도 선언하지
+        # 않으므로 전부 0 이고, 선택은 아래 계산 기준이 정한다.
+        priority=priority if isinstance(priority, int) and not isinstance(priority, bool) else 0,
+        constraint_count=sum(1 for key in keys if declaration.get(key)),
+        # recipe 를 만들지 못하는 선언은 후보이긴 하되 다른 후보가 있으면 지는 자리다 —
+        # 목록에서 지우면 모델은 그 지표를 계속 지어낸다(규칙 11).
+        fallback=metric_recipe_wire(declaration) is None,
+        declaration=declaration,
+    )
+
+
 def _competing_metric_kind_lines(metrics: Mapping[str, Any]) -> list[str]:
     """같은 표면어를 두 kind 가 나눠 갖는 지표 쌍을 **카탈로그에서 파생**해 안내한다.
 
     둘 다 컴파일되지만 뜻이 다른 SQL 이라 어느 쪽도 지울 수 없다(회원 1인의 스냅샷 한 행 vs
     모집단 집계). 지우는 대신 "언제 어느 쪽인가"를 알려준다. 지표 이름을 코드에 적지 않으므로
     카탈로그에서 쌍이 사라지면 이 절도 함께 사라진다.
+
+    쌍마다 붙는 기본값과 그 근거는 문구를 심지 않고 :mod:`metric_recipe_selection` 이 실제로
+    계산한 기준에서 만든다 — 기준이 바뀌면 안내도 함께 바뀐다.
     """
     by_label: dict[str, dict[str, list[str]]] = {}
     for metric_id, declaration in sorted(metrics.items()):
@@ -777,15 +913,27 @@ def _competing_metric_kind_lines(metrics: Mapping[str, Any]) -> list[str]:
             continue
         label = str(declaration.get("label") or metric_id)
         by_label.setdefault(label, {}).setdefault(kind, []).append(str(metric_id))
-    pairs = [
-        f'- "{label}": '
-        + ", ".join(
-            f"{kind}={'/'.join(sorted(ids))}"
-            for kind, ids in sorted(by_label[label].items())
+    pairs: list[str] = []
+    for label in sorted(by_label):
+        owners = by_label[label]
+        if len(owners) < 2:
+            continue
+        listing = ", ".join(
+            f"{kind}={'/'.join(sorted(ids))}" for kind, ids in sorted(owners.items())
         )
-        for label in sorted(by_label)
-        if len(by_label[label]) > 1
-    ]
+        selection = metric_recipe_selection.select_recipe(
+            metric_recipe_candidate(metric_id, metrics[metric_id])
+            for ids in owners.values()
+            for metric_id in ids
+            if isinstance(metrics.get(metric_id), Mapping)
+        )
+        default = (
+            ""
+            if selection is None
+            else "; 원문이 가르지 않으면 "
+            + metric_recipe_selection.describe_selection(selection)
+        )
+        pairs.append(f'- "{label}": {listing}{default}')
     if not pairs:
         return []
     return [
@@ -1046,6 +1194,7 @@ __all__ = [
     "AudienceCatalogLoadError",
     "DEFAULT_AUDIENCE_CATALOG_PATH",
     "DEFAULT_EXTERNAL_REGION_MAPPING_PATH",
+    "METRIC_RECIPE_BUILDERS",
     "METRIC_RECIPE_EVIDENCE_TEXT",
     "METRIC_RECIPE_OPERATOR_PLACEHOLDER",
     "METRIC_RECIPE_PREVIOUS_VALUE_PLACEHOLDER",
@@ -1061,6 +1210,9 @@ __all__ = [
     "load_audience_catalog_config",
     "materialize_member_metric_rankings",
     "member_metric_registry_snapshot",
+    "MetricRecipeBuilder",
+    "metric_recipe_builder_kind",
+    "metric_recipe_candidate",
     "metric_recipe_wire",
     "resolve_audience_catalog",
 ]

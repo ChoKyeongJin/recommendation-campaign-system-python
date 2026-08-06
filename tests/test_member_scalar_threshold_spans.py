@@ -27,12 +27,14 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+import audience_frame  # noqa: E402
 import audience_runtime  # noqa: E402
 import condition_normalizers  # noqa: E402
 import event_ir  # noqa: E402
 import event_parser  # noqa: E402
 import member_scalar_metric_claims  # noqa: E402
 import member_scalar_metrics  # noqa: E402
+import metric_recipe_selection  # noqa: E402
 import semantic_domain_binding  # noqa: E402
 from query_structurer.semantic_ir import extract_literal_bindings  # noqa: E402
 
@@ -587,3 +589,489 @@ def test_an_expression_without_literal_bindings_claims_nothing() -> None:
         declaration, query=sentence.query, symbol="<=", value=sentence.value
     )
     assert _claim(sentence.query, expression, []) == ()
+
+
+# ── 5. 고정 좌표 회귀: 어느 구간을 청구했는지 자체를 못 박는다 ─────────────────────
+#
+# 위 절들은 문장을 레지스트리에서 파생하므로 "무엇이 청구됐는가"를 파생 기대값과 대조한다.
+# 그 방식은 어휘를 코드에 심지 않는 대신 **좌표 자체를 눈으로 볼 수 없다** — 청구 함수와 기대값
+# 계산이 같은 방향으로 함께 틀어지면 초록이다. 그래서 여기서는 반대로 문장과 좌표를 손으로
+# 적어 고정한다. 손으로 적은 것이 레지스트리와 어긋나면 조용히 통과하지 않도록
+# :func:`test_the_anchored_sentences_still_match_the_registry_declarations` 가 먼저 잰다.
+#
+# ``issues == []`` 를 재지 않는 이유는 파일 첫 docstring 그대로다: 시간 검증기는 단방향이라
+# 과도한 청구를 검출하지 못하므로, 회귀는 **좌표**여야 한다.
+
+
+@dataclass(frozen=True)
+class _AnchoredClaim:
+    """문장 하나 + 그 문장에서 청구돼야 하는 정확한 좌표."""
+
+    metric_id: str
+    alias: str
+    query: str
+    operator: str
+    value: Any
+    char_spans: tuple[tuple[int, int], ...]
+    texts: tuple[str, ...]
+    word_spans: tuple[tuple[int, int], ...]
+    remaining_windows: int
+
+
+ANCHORED_CLAIMS: tuple[_AnchoredClaim, ...] = (
+    # 조사 문서 Q1. 청구 ((6,9),(10,12)) — 창 1 → 0.
+    _AnchoredClaim(
+        metric_id="buy_cycle",
+        alias="구매주기",
+        query="구매주기가 30일 이하인 회원",
+        operator="<=",
+        value=30,
+        char_spans=((6, 9), (10, 12)),
+        texts=("30일", "이하"),
+        word_spans=((1, 2), (2, 3)),
+        remaining_windows=0,
+    ),
+    # 조사 문서 Q3(혼합문). 앞의 '30일'만 임계값이고 뒤의 '30일'(18,21)은 진짜 창이다.
+    _AnchoredClaim(
+        metric_id="buy_cycle",
+        alias="구매주기",
+        query="구매주기가 30일 이하이고 최근 30일 이내 구매한 회원",
+        operator="<=",
+        value=30,
+        char_spans=((6, 9), (10, 12)),
+        texts=("30일", "이하"),
+        word_spans=((1, 2), (2, 3)),
+        remaining_windows=1,
+    ),
+    # 금액 단위. 임계 리터럴이 숫자+통화 표면어 전체다('100000' 이 아니라 '100000원').
+    _AnchoredClaim(
+        metric_id="total_buy_amt",
+        alias="누적 구매금액",
+        query="누적 구매금액이 100000원 이상인 회원",
+        operator=">=",
+        value=100000,
+        char_spans=((9, 16), (17, 19)),
+        texts=("100000원", "이상"),
+        word_spans=((2, 3), (3, 4)),
+        remaining_windows=0,
+    ),
+    # 표면어가 다른 지표의 표면어('구매금액')를 품은 문장. 긴 쪽이 이겨 mean_buy_amt 로 간다.
+    _AnchoredClaim(
+        metric_id="mean_buy_amt",
+        alias="평균 구매금액",
+        query="평균 구매금액이 50000원 이상인 회원",
+        operator=">=",
+        value=50000,
+        char_spans=((9, 15), (16, 18)),
+        texts=("50000원", "이상"),
+        word_spans=((2, 3), (3, 4)),
+        remaining_windows=0,
+    ),
+)
+
+_ANCHOR_IDS: tuple[str, ...] = tuple(
+    f"{anchor.metric_id}:{index}" for index, anchor in enumerate(ANCHORED_CLAIMS)
+)
+
+
+def _anchor_declaration(anchor: _AnchoredClaim) -> dict[str, Any]:
+    matched = [item for item in _DECLARATIONS if item["metric_id"] == anchor.metric_id]
+    assert matched, f"레지스트리에 {anchor.metric_id} 선언이 없다."
+    return matched[0]
+
+
+def _word_span(query: str, span: tuple[int, int]) -> tuple[int, int]:
+    """문자 구간이 걸치는 **어절 색인** 구간(반열림).
+
+    저장소의 좌표계는 전부 문자 오프셋이라 토큰 좌표라는 생산 개념이 없다. 그래서 여기서는
+    공백으로 끊은 어절을 토큰으로 보고 그 색인을 잰다 — 청구가 '30일'을 넘어 '이하인'까지
+    삼키면 문자 좌표보다 이쪽이 먼저 눈에 띈다.
+    """
+
+    cursor = 0
+    bounds: list[tuple[int, int]] = []
+    for word in query.split(" "):
+        bounds.append((cursor, cursor + len(word)))
+        cursor += len(word) + 1
+    covered = [
+        index
+        for index, (start, end) in enumerate(bounds)
+        if start < span[1] and span[0] < end
+    ]
+    assert covered, f"구간 {span} 이 어느 어절에도 걸치지 않는다."
+    return covered[0], covered[-1] + 1
+
+
+def test_the_anchored_sentences_still_match_the_registry_declarations() -> None:
+    """손으로 적은 문장이 레지스트리와 어긋나면 좌표 회귀가 엉뚱한 것을 잰다."""
+
+    assert ANCHORED_CLAIMS, "고정 좌표 회귀가 하나도 없다."
+    for anchor in ANCHORED_CLAIMS:
+        declaration = _anchor_declaration(anchor)
+        assert anchor.alias in declaration["synonyms"], (
+            f"{anchor.alias!r} 가 {anchor.metric_id} 의 선언 표면어가 아니다 — "
+            "레지스트리가 바뀌었으면 문장과 좌표를 함께 고쳐라."
+        )
+        assert anchor.query.startswith(anchor.alias)
+        for span, text in zip(anchor.char_spans, anchor.texts):
+            assert anchor.query[span[0] : span[1]] == text, (
+                f"{anchor.query!r} 의 {span} 은 {anchor.query[span[0]:span[1]]!r} 다."
+            )
+
+
+@pytest.mark.parametrize("anchor", ANCHORED_CLAIMS, ids=_ANCHOR_IDS)
+def test_the_claim_pins_exact_character_and_word_spans(anchor: _AnchoredClaim) -> None:
+    """청구 좌표 · 그 좌표로 잘라 낸 문자열 · 어절 색인을 모두 고정한다."""
+
+    declaration = _anchor_declaration(anchor)
+    bindings = _bindings(anchor.query)
+    expression = _expression(
+        declaration, query=anchor.query, symbol=anchor.operator, value=anchor.value
+    )
+    claimed = _claim(anchor.query, expression, bindings)
+
+    assert claimed == anchor.char_spans
+    assert tuple(anchor.query[start:end] for start, end in claimed) == anchor.texts
+    assert tuple(_word_span(anchor.query, span) for span in claimed) == anchor.word_spans
+
+
+@pytest.mark.parametrize("anchor", ANCHORED_CLAIMS, ids=_ANCHOR_IDS)
+def test_the_claim_selects_the_recipe_the_sentence_names(anchor: _AnchoredClaim) -> None:
+    """겹치는 표면어가 있어도 문장이 말한 recipe 하나만 후보로 남는다.
+
+    '평균 구매금액'에는 다른 지표의 표면어 '구매금액'이 통째로 들어 있다. 둘 다 후보로 만들어진
+    뒤 겹침 해석이 하나를 고르므로, 여기서 재는 것은 **고른 결과**다.
+    """
+
+    resolved = member_scalar_metric_claims._alias_candidates(anchor.query, _DECLARATIONS)
+    assert [item[0]["metric_id"] for item in resolved] == [anchor.metric_id]
+    assert [(item[1], item[2], item[3]) for item in resolved] == [
+        (anchor.alias, 0, len(anchor.alias))
+    ]
+
+
+def _raw_surface_candidates(query: str) -> tuple[metric_recipe_selection.RecipeCandidate, ...]:
+    """겹침 해석 **전** 후보 전량. 선언된 표면어가 원문에 등장한 자리를 모두 만든다."""
+
+    return tuple(
+        metric_recipe_selection.RecipeCandidate(
+            recipe_id=f"{declaration['metric_id']}|{alias}|{start}",
+            kind=member_scalar_metrics.MEMBER_SCALAR_KIND,
+            span=(start, start + len(alias)),
+            surface=alias,
+        )
+        for declaration in _DECLARATIONS
+        for alias in sorted(set(declaration["synonyms"]))
+        for start in [query.find(alias)]
+        if start >= 0
+    )
+
+
+def test_two_recipes_can_both_claim_one_surface_and_the_resolver_keeps_one() -> None:
+    """경쟁 후보를 지우지 않는다 — 둘 다 만들어지고 겹침 해석이 하나를 고른다.
+
+    '평균 구매금액'에는 다른 지표의 표면어 '구매금액'이 통째로 들어 있다. 어느 쪽도 삭제하거나
+    비활성화하지 않으므로, 남는 문제는 "겹칠 때 무엇을 고르는가"뿐이다.
+    """
+
+    anchor = next(item for item in ANCHORED_CLAIMS if item.metric_id == "mean_buy_amt")
+    raw = _raw_surface_candidates(anchor.query)
+    competing = [
+        candidate
+        for candidate in raw
+        if candidate.span is not None and candidate.span[0] < len(anchor.alias)
+    ]
+    assert len({candidate.recipe_id.split("|")[0] for candidate in competing}) >= 2, (
+        "이 문장에서 표면어가 겹치는 지표가 둘이어야 이 테스트가 의미를 갖는다."
+    )
+
+    resolved = metric_recipe_selection.resolve_overlapping_candidates(list(raw))
+    assert [candidate.surface for candidate in resolved] == [anchor.alias]
+    assert (
+        metric_recipe_selection.resolve_overlapping_candidates(list(reversed(raw))) == resolved
+    )
+
+
+@pytest.mark.parametrize("anchor", ANCHORED_CLAIMS, ids=_ANCHOR_IDS)
+def test_the_claim_covers_only_the_two_literals_and_nothing_between(
+    anchor: _AnchoredClaim,
+) -> None:
+    """필요한 최소 범위만 청구한다 — 절이나 사이 글자를 삼키지 않는다."""
+
+    declaration = _anchor_declaration(anchor)
+    claimed = _claim(
+        anchor.query,
+        _expression(
+            declaration, query=anchor.query, symbol=anchor.operator, value=anchor.value
+        ),
+        _bindings(anchor.query),
+    )
+
+    assert len(claimed) == 2
+    assert sum(end - start for start, end in claimed) == sum(map(len, anchor.texts))
+    (_first_start, first_end), (second_start, _second_end) = claimed
+    assert first_end < second_start, "두 청구가 붙어 있으면 사이 글자도 삼킨 것이다."
+    assert anchor.query[first_end:second_start] not in anchor.texts
+
+
+@pytest.mark.parametrize("anchor", ANCHORED_CLAIMS, ids=_ANCHOR_IDS)
+def test_the_claim_leaves_every_window_it_did_not_prove(anchor: _AnchoredClaim) -> None:
+    """마스킹 후 남는 창 수를 문장별로 고정한다(혼합문에서 진짜 창이 지워지지 않는다)."""
+
+    declaration = _anchor_declaration(anchor)
+    claimed = _claim(
+        anchor.query,
+        _expression(
+            declaration, query=anchor.query, symbol=anchor.operator, value=anchor.value
+        ),
+        _bindings(anchor.query),
+    )
+    assert (
+        event_parser.source_time_span_count(
+            anchor.query, today=None, masked_spans=claimed
+        )
+        == anchor.remaining_windows
+    )
+
+
+@dataclass(frozen=True)
+class _NonAdjacentClaim:
+    """지표 표면어 · 그 단위의 임계값 · 비교 기호가 **모두** 있지만 셋이 이어지지 않는 문장.
+
+    값·단위·기호 대조만으로는 전부 통과하므로, 청구를 막는 것은 국소 인접 하나뿐이다.
+    ``would_be_spans`` 는 인접 규칙이 느슨해졌을 때 나올 좌표다 — 그 좌표가 나오면 같은 문장의
+    진짜 시간 창이 지워져 뜻이 조용히 바뀐다(검증기는 창의 개수만 세므로 잡아 주지 않는다).
+    """
+
+    metric_id: str
+    query: str
+    operator: str
+    value: Any
+    would_be_spans: tuple[tuple[int, int], ...]
+    gap: str
+
+
+NON_ADJACENT_CLAIMS: tuple[_NonAdjacentClaim, ...] = (
+    # 임계값 ↔ 비교어 사이에 절이 통째로 끼어 있다('30일'(6,9) … '이상'(25,27)).
+    _NonAdjacentClaim(
+        metric_id="buy_cycle",
+        query="구매주기가 30일 이내 구매한 회원 중 5회 이상 구매한 회원",
+        operator=">=",
+        value=30,
+        would_be_spans=((6, 9), (25, 27)),
+        gap="value_to_operator",
+    ),
+    # 지표 표면어 ↔ 임계값 사이에 절이 통째로 끼어 있다('구매주기'(0,4) … '30일'(16,19)).
+    _NonAdjacentClaim(
+        metric_id="buy_cycle",
+        query="구매주기가 긴 회원 중 최근 30일 이상 로그인한 회원",
+        operator=">=",
+        value=30,
+        would_be_spans=((16, 19), (20, 22)),
+        gap="metric_to_value",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "case", NON_ADJACENT_CLAIMS, ids=[item.gap for item in NON_ADJACENT_CLAIMS]
+)
+def test_expressions_that_are_not_adjacent_are_not_joined_into_one_claim(
+    case: _NonAdjacentClaim,
+) -> None:
+    """이어지지 않은 표현을 한 청구로 합치지 않는다 — 값·단위·기호가 다 맞아도 그렇다."""
+
+    declaration = next(
+        item for item in _DECLARATIONS if item["metric_id"] == case.metric_id
+    )
+    bindings = _bindings(case.query)
+    spans = {(row["start"], row["end"]) for row in bindings}
+    assert set(case.would_be_spans) <= spans, (
+        "원장이 바뀌었다 — 이 회귀가 재려는 두 리터럴이 더 이상 추출되지 않는다."
+    )
+    assert case.query[case.would_be_spans[1][0] : case.would_be_spans[1][1]] == (
+        _operator_surface(case.operator)
+    )
+    assert member_scalar_metric_claims._alias_candidates(case.query, _DECLARATIONS), (
+        "표면어가 없으면 인접이 아니라 조건 4(표면어 등장)가 막는 것이라 이 회귀가 무의미하다."
+    )
+
+    expression = _expression(
+        declaration, query=case.query, symbol=case.operator, value=case.value
+    )
+    claimed = _claim(case.query, expression, bindings)
+
+    assert claimed == ()
+    assert claimed != case.would_be_spans
+    assert (
+        event_parser.source_time_span_count(case.query, today=None, masked_spans=claimed) == 1
+    ), "청구가 없으므로 진짜 창은 그대로 남아야 한다."
+
+
+def test_a_second_metric_mention_far_from_the_operator_is_not_merged_into_one_claim() -> None:
+    """인접하지 않은 표현을 한 청구로 합치지 않는다.
+
+    같은 임계 표면어가 문장에 둘 있고 그중 비교어 **앞에 붙은** 것만 임계값이다. 뒤의 것을 함께
+    청구하면 같은 문장의 진짜 창이 사라진다 — 검증기는 창의 개수만 세므로 그것을 잡지 못한다.
+    """
+
+    anchor = ANCHORED_CLAIMS[1]
+    declaration = _anchor_declaration(anchor)
+    bindings = _bindings(anchor.query)
+    claimed = _claim(
+        anchor.query,
+        _expression(
+            declaration, query=anchor.query, symbol=anchor.operator, value=anchor.value
+        ),
+        bindings,
+    )
+
+    later = [
+        (row["start"], row["end"])
+        for row in bindings
+        if member_scalar_metric_claims._threshold_unit_and_value(row) is not None
+        and row["start"] > anchor.char_spans[-1][1]
+    ]
+    assert later, "혼합문 뒤쪽에 같은 모양의 임계값 후보가 있어야 한다."
+    assert all(span not in claimed for span in later)
+    assert max(end for _start, end in claimed) < min(start for start, _end in later)
+
+
+@pytest.mark.parametrize("anchor", ANCHORED_CLAIMS, ids=_ANCHOR_IDS)
+def test_reversing_the_declaration_order_does_not_change_the_claim(
+    anchor: _AnchoredClaim,
+) -> None:
+    """recipe 등록 순서를 뒤집어도 같은 좌표를 청구한다."""
+
+    declaration = _anchor_declaration(anchor)
+    expression = _expression(
+        declaration, query=anchor.query, symbol=anchor.operator, value=anchor.value
+    )
+    bindings = _bindings(anchor.query)
+    reversed_registry = {
+        **_REGISTRY,
+        "metrics": list(reversed(list(_REGISTRY["metrics"]))),
+    }
+
+    assert _claim(anchor.query, expression, bindings) == anchor.char_spans
+    assert (
+        _claim(anchor.query, expression, bindings, registry=reversed_registry)
+        == anchor.char_spans
+    )
+    assert [
+        item[0]["metric_id"]
+        for item in member_scalar_metric_claims._alias_candidates(
+            anchor.query, tuple(reversed(_DECLARATIONS))
+        )
+    ] == [anchor.metric_id]
+
+
+# ── 6. 공용 인접 헬퍼: 두 소비자가 같은 답을 낸다 ──────────────────────────────────
+
+
+def test_both_adjacency_consumers_read_the_same_shared_helper() -> None:
+    """합성 문형 판정과 청구 판정이 같은 국소 인접 헬퍼를 쓴다.
+
+    두 판정이 각자 인접 규칙을 들면 "합성은 되는데 청구는 안 된다"가 조용히 생긴다. 여기서는
+    :func:`audience_frame.spans_are_locally_adjacent` 를 직접 호출한 결과가
+    :func:`member_scalar_metric_claims._threshold_phrase_is_adjacent` 와 일치하는지 잰다.
+    """
+
+    anchor = ANCHORED_CLAIMS[0]
+    alias_end = len(anchor.alias)
+    threshold, operator = anchor.char_spans
+
+    for value_bounds, operator_bounds in (
+        (threshold, operator),
+        (operator, threshold),
+        (threshold, threshold),
+        ((0, len(anchor.alias)), operator),
+    ):
+        local = member_scalar_metric_claims._threshold_phrase_is_adjacent(
+            anchor.query,
+            alias_end=alias_end,
+            value_bounds=value_bounds,
+            operator_bounds=operator_bounds,
+        )
+        shared = audience_frame.spans_are_locally_adjacent(
+            anchor.query,
+            ((alias_end, alias_end), value_bounds, operator_bounds),
+            gaps=(
+                member_scalar_metric_claims._METRIC_TO_VALUE_RE,
+                member_scalar_metric_claims._VALUE_TO_OPERATOR_RE,
+            ),
+        )
+        assert local == shared, (value_bounds, operator_bounds)
+
+    assert member_scalar_metric_claims._threshold_phrase_is_adjacent(
+        anchor.query, alias_end=alias_end, value_bounds=threshold, operator_bounds=operator
+    )
+
+
+def test_the_shared_helper_requires_the_declared_order_not_just_empty_gaps() -> None:
+    """지표 → 임계값 → 비교는 **그 순서**여야 한다.
+
+    순서 검사가 빠지면 뒤집힌 좌표의 '사이'가 빈 문자열이 되어 모든 gap 패턴을 통과한다. 그러면
+    비교어 앞의 임계값과 뒤의 임계값이 구별되지 않아 같은 문장의 진짜 창까지 청구된다.
+    """
+
+    anchor = ANCHORED_CLAIMS[0]
+    threshold, operator = anchor.char_spans
+
+    # 뒤집힌 좌표: 사이 문자열은 전부 빈 문자열이지만 순서가 어긋난다.
+    assert not member_scalar_metric_claims._threshold_phrase_is_adjacent(
+        anchor.query,
+        alias_end=threshold[1],
+        value_bounds=operator,
+        operator_bounds=threshold,
+    )
+    assert not audience_frame.spans_are_locally_adjacent(
+        anchor.query,
+        ((threshold[1], threshold[1]), operator, threshold),
+        gaps=(
+            member_scalar_metric_claims._METRIC_TO_VALUE_RE,
+            member_scalar_metric_claims._VALUE_TO_OPERATOR_RE,
+        ),
+    )
+    # gap 개수가 스팬 사이 개수와 다르면 남는 사이를 **검사하지 않은 채** 통과시키지 않는다.
+    # 여기 첫 gap 은 통과하므로, 개수 검사가 빠지면 두 번째 사이가 조용히 무검사로 넘어간다.
+    assert (
+        member_scalar_metric_claims._METRIC_TO_VALUE_RE.fullmatch(
+            anchor.query[len(anchor.alias) : threshold[0]]
+        )
+        is not None
+    )
+    assert not audience_frame.spans_are_locally_adjacent(
+        anchor.query,
+        ((0, len(anchor.alias)), threshold, operator),
+        gaps=(member_scalar_metric_claims._METRIC_TO_VALUE_RE,),
+    )
+
+
+def test_the_whole_phrase_gate_keeps_its_sentence_wide_judgement() -> None:
+    """``_whole_phrase_matches`` 는 국소 인접 **더하기** 문장 전역 판정이다(완화하지 않았다).
+
+    혼합문은 국소 인접을 통과하지만 문장 전역 판정에서 닫힌다 — 이 차이가 사라지면
+    ``구매주기가 30일 이하이고 여성인 회원`` 이 조용히 합성된다.
+    """
+
+    closed, mixed = ANCHORED_CLAIMS[0], ANCHORED_CLAIMS[1]
+    for anchor, expected in ((closed, True), (mixed, False)):
+        alias_end = len(anchor.alias)
+        threshold, operator = anchor.char_spans
+        assert member_scalar_metric_claims._threshold_phrase_is_adjacent(
+            anchor.query,
+            alias_end=alias_end,
+            value_bounds=threshold,
+            operator_bounds=operator,
+        )
+        assert (
+            member_scalar_metric_claims._whole_phrase_matches(
+                anchor.query,
+                alias_start=0,
+                alias_end=alias_end,
+                value_bounds=threshold,
+                operator_bounds=operator,
+            )
+            is expected
+        )
