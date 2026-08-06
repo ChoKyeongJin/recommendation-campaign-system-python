@@ -35,6 +35,31 @@ _CONSENT_ISSUE_CUE_RE = re.compile(
     r"consent|opt[ -]?in|수신\s*동의|동의\s*(?:여부|조건|필터)?",
     re.IGNORECASE,
 )
+# 관측 창을 지목한 판정만 고르는 단서. 기간 이야기가 아닌 판정까지 기본 기간 영수증으로 면제하면
+# 정말 원문에 없는 필터가 조용히 통과한다. 영문 단서는 단어 경계로 묶는다 — CAMP_SDATE 같은
+# 컬럼명이 'date' 로 걸리면 안 된다('_' 는 단어 문자라 경계가 서지 않는다).
+_PERIOD_ISSUE_CUE_RE = re.compile(
+    r"기간|기준일|최근|관측\s*창|시간\s*창|날짜|일자|\b(?:window|period|date|recent)\b",
+    re.IGNORECASE,
+)
+# 판정문이 **이름 붙여 지목한 창**. 단위가 붙은 수만 본다 — 임계값('3회')이나 렌더된 날짜
+# 리터럴('20260802')은 창 크기 주장이 아니라서 비교 대상이 아니다.
+_ISSUE_DURATION_RE = re.compile(
+    r"(\d+)\s*(일|주일|주|개월|달|년|days?|weeks?|months?|years?)", re.IGNORECASE
+)
+_ISSUE_DURATION_UNITS = {
+    "일": "day", "day": "day", "days": "day",
+    "주": "week", "주일": "week", "week": "week", "weeks": "week",
+    "개월": "month", "달": "month", "month": "month", "months": "month",
+    "년": "year", "year": "year", "years": "year",
+}
+
+
+def _window_in_days(value: int, unit: str) -> int | None:
+    """창을 일수로 환산한다. 달·해는 달력 길이가 고정이 아니라 환산하지 않는다(CLAUDE.md §16)."""
+    if unit == "day":
+        return value
+    return value * 7 if unit == "week" else None
 
 
 def consent_coverage_receipts(
@@ -339,6 +364,55 @@ def consent_issue_is_covered(
     return bool(relevant) and all(receipt.get("satisfied") is True for receipt in relevant)
 
 
+def applied_period_issue_is_covered(
+    issue: Mapping[str, Any], applied_period: Mapping[str, Any] | None,
+) -> bool:
+    """Return true when a '원문에 없는 기간' allegation names the window the caller's policy chose.
+
+    원문이 기간을 말하지 않은 '최근'을 배포 설정이 창 하나로 해석하면, 그 창은 **원문에 없는
+    것이 맞다** — 검증기가 spurious 로 부르는 것은 관측으로는 정확하지만 결함이 아니다. 여기서
+    반증하지 않으면 정책이 켜진 배포는 정책이 적용될 때마다 자기 SQL 을 막는다. 호출자가 넘기는
+    영수증은 이미 결정론이다(``default_period_policy.applied_period_receipt``) — 재구조화 결과가
+    그 창을 실제로 들고 있고 원문이 말한 기간을 하나도 잃지 않았을 때만 기록된다.
+
+    좁게 면제한다. (1) 기간을 지목한 판정이어야 하고, (2) 판정문이 **단위가 붙은 창**을 이름으로
+    들면 그중 하나가 정책이 고른 창이어야 한다. 원문이 직접 말한 다른 기간을 두고 다투는 판정은
+    창이 어긋나 그대로 차단된다. 주(week)를 일수로 부른 표기는 같은 창으로 받는다.
+    """
+    if not isinstance(applied_period, Mapping):
+        return False
+    if str(issue.get("type") or "").casefold() not in {"spurious", "wrong_value"}:
+        return False
+    value, unit = applied_period.get("value"), str(applied_period.get("unit") or "")
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0 or not unit:
+        return False
+
+    issue_text = " ".join(
+        str(issue.get(key) or "") for key in ("condition", "detail", "expected", "actual")
+    )
+    evidence_spans = [
+        str(span.get("text") or "")
+        for span in (applied_period.get("evidence") or [])
+        if isinstance(span, Mapping) and str(span.get("text") or "").strip()
+    ]
+    named = bool(_PERIOD_ISSUE_CUE_RE.search(issue_text)) or any(
+        span in issue_text for span in evidence_spans
+    )
+    if not named:
+        return False
+
+    policy_days = _window_in_days(value, unit)
+    named_windows = [
+        (int(count), _ISSUE_DURATION_UNITS[label.casefold()])
+        for count, label in _ISSUE_DURATION_RE.findall(issue_text)
+    ]
+    return not named_windows or any(
+        (count, window_unit) == (value, unit)
+        or (policy_days is not None and _window_in_days(count, window_unit) == policy_days)
+        for count, window_unit in named_windows
+    )
+
+
 def reconcile_verification(
     verification: Mapping[str, Any], delivery_validation: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -363,6 +437,7 @@ def reconcile_verification(
 
 __all__ = [
     "NEGATION_CUE_RE",
+    "applied_period_issue_is_covered",
     "catalog_join_issue_is_covered",
     "consent_coverage_receipts",
     "consent_issue_is_covered",

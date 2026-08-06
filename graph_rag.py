@@ -7634,6 +7634,7 @@ def _sql_semantic_verify_system_prompt() -> str:
         "원문과 계약 모두에 없는 기간·주문상태 조건이 SQL에도 없는 것은 dropped가 아니라 정상이다. "
         "구조화 집계 계약의 businessRules.appliedPolicyFilters 또는 별도로 제공된 [적용된 서비스 정책]의 "
         "appliedPolicyFilters에 기록된 조건은 서비스 정책이므로 원문에 없어도 spurious가 아니다. "
+        + default_period_policy.verifier_instruction() +
         "반대로 dimensions의 컬럼은 SELECT와 GROUP BY에 모두 있어야 하며, 다른 의미의 컬럼으로 바꾸면 dropped로 판정하라.\n"
         "함께 제공된 [확정 의미 해석]은 앞 단계가 선택한 구조화 의미 계약이다. 원문이 그 해석을 명백히 "
         "배제하지 않고 여러 합리적 해석 중 하나로 허용한다면, SQL이 그 계약을 구현한 것을 불일치로 보지 마라. "
@@ -7734,6 +7735,7 @@ def _verify_sql_semantics(
             user_content += "\n\n[적용된 서비스 정책]\n" + json.dumps(
                 member_policy_context, ensure_ascii=False, indent=2
             )
+        user_content += default_period_policy.render_verifier_context(query_plan)
         if deterministic_receipts:
             user_content += "\n\n[결정론 검증 영수증]\n" + json.dumps(
                 deterministic_receipts, ensure_ascii=False, indent=2
@@ -8640,6 +8642,8 @@ def _semantic_issue_exemption(
       ② 상수 리터럴 프로젝션(`'...' AS segment_label` 등)만 지목한 spurious — 시스템 표식이라 행 수 불변.
       ③ verified 관계의 정확한 조인키를 LLM이 일반 관례로 부정한 판정.
       ④ 채널별 등록 컬럼·값·극성이 각각 covered인 수신동의 누락/반전 판정.
+      ⑤ 기본 기간 정책이 채운 창을 '원문에 없다'고 지적한 판정 — 원문에 없는 게 맞고 그 사실은
+         이미 영수증(audience_default_period)에 있다. 다른 기간을 다투면 숫자가 어긋나 남는다.
     같은 도메인의 다른 조건이나 영수증이 없는 필드는 종전대로 차단 대상이다."""
     issue_type = str(issue.get("type") or "").casefold()
     if issue_type not in {"dropped", "spurious", "wrong_value", "inverted"}:
@@ -8652,6 +8656,10 @@ def _semantic_issue_exemption(
         target_terms={canonical: terms for canonical, _channel, terms in _CHANNEL_CONSENT_TARGETS},
     ):
         return "registered_consent_predicate_present"
+    if semantic_verification_receipts.applied_period_issue_is_covered(
+        issue, default_period_policy.applied_period_receipt(query_plan)
+    ):
+        return "applied_default_period_policy"
     condition = str(issue.get("condition") or "")
     detail = str(issue.get("detail") or "")
     non_filter_request = not (_THRESHOLD_CUE_RE.search(condition) or _NEGATION_CUE_RE.search(condition))

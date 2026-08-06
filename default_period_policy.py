@@ -51,6 +51,9 @@ POLICY_OWNER = "default_period_policy"
 # 기본값이 채운 의미 슬롯(semantic_ir.policy_applications[].fields).
 _POLICY_FIELD = "audience.period"
 
+# 최종 SQL↔원문 의미 검증 게이트에 이 정책을 알리는 블록 제목(지시문과 user content 가 함께 쓴다).
+VERIFIER_CONTEXT_HEADING = "[적용된 기본 기간 정책]"
+
 _PERIOD_ARGUMENT = "period"
 _MISSING_ARGUMENT = "missing_argument"
 # 설정 형식은 "<양수> <단위>" 하나다(예: "5 day", "5days", "2 weeks"). 단위 어휘의 소유자는
@@ -191,6 +194,46 @@ def render_default_period_instruction(
                 "value may be inferred."
             ),
         ]
+    )
+
+
+def applied_period_receipt(plan: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """이 플랜에서 **정책이 채운** 기간의 영수증(정책이 돌지 않았으면 ``None``).
+
+    영수증은 :func:`apply_default_period` 가 채택한 뒤에만 남는다 — 즉 재구조화 결과가 그 창을
+    실제로 들고 있고 원문이 말한 기간을 하나도 잃지 않았음이 이미 확인된 상태다.
+    """
+
+    receipt = plan.get(DEFAULT_PERIOD_KEY) if isinstance(plan, Mapping) else None
+    if isinstance(receipt, Mapping) and receipt.get("source") == POLICY_SOURCE:
+        return dict(receipt)
+    return None
+
+
+def verifier_instruction() -> str:
+    """정책이 채운 창을 의미 검증기가 결함으로 부르지 않게 하는 지시문.
+
+    검증기는 원문만 보면 정확히 관측한다 — "원문에 기간이 없는데 SQL 은 최근 5일이다". 관측이
+    맞기 때문에 더 나쁘다: 알려 주지 않으면 정책이 켜진 배포는 정책이 적용될 때마다 자기 SQL 을
+    '원문에 없는 조건'으로 막는다.
+    """
+
+    return (
+        f"같은 이유로 {VERIFIER_CONTEXT_HEADING} 블록이 함께 제공되면, 원문이 기간을 말하지 않은 "
+        "'최근'류 표현을 이 배포가 그 블록의 창(예: 최근 5일)으로 해석한 것이다 — SQL 에 그 창이 "
+        "있는 것은 정상이며 원문에 기간이 없다는 이유로 spurious/wrong_value 로 판정하지 말라. "
+        "다만 원문이 **직접 말한** 기간을 SQL 이 다른 값으로 바꿨다면 그건 여전히 불일치다. "
+    )
+
+
+def render_verifier_context(plan: Mapping[str, Any] | None) -> str:
+    """검증기 user content 에 붙일 정책 블록(정책이 돌지 않았으면 빈 문자열)."""
+
+    receipt = applied_period_receipt(plan)
+    if receipt is None:
+        return ""
+    return f"\n\n{VERIFIER_CONTEXT_HEADING}\n" + json.dumps(
+        receipt, ensure_ascii=False, indent=2, default=str
     )
 
 
@@ -357,10 +400,14 @@ __all__ = [
     "DEFAULT_PERIOD_KEY",
     "POLICY_OWNER",
     "POLICY_SOURCE",
+    "VERIFIER_CONTEXT_HEADING",
     "DefaultPeriod",
+    "applied_period_receipt",
     "apply_default_period",
     "missing_period_issues",
     "render_default_period_instruction",
+    "render_verifier_context",
     "resolve_catalog_period",
     "resolve_default_period",
+    "verifier_instruction",
 ]

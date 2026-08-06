@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+import default_period_policy
 import event_ir
 import graph_rag
+import qualitative_defaults
+import semantic_verification_receipts
 import sql_guard
 
 MEMBER_PLAN = {
@@ -413,3 +418,233 @@ def test_llm_join_false_positive_is_downgraded_but_real_join_error_is_not() -> N
     assert delivery["is_satisfied"]
     assert delivery["semantic_issues"][0]["exempt_reason"] == "catalog_verified_relationship"
     assert reconciled["status"] == "review"
+
+
+# --- 호출 계층 기본 기간 정책이 채운 창 --------------------------------------------------------
+# 원문이 기간을 말하지 않은 '최근'은 카탈로그 기본값(qualitative_defaults: 최근 → 최근 5일)으로
+# 채워진다. 그 창은 **원문에 없는 것이 맞아서** 검증기가 spurious 로 부르고, 그대로 두면 정책이
+# 켜진 배포가 정책을 적용할 때마다 자기 SQL 을 막는다.
+RECENT_CAMPAIGN_QUERY = "최근 캠페인 발송 성공 횟수가 3회 이상인 회원"
+RECENT_CAMPAIGN_SQL = (
+    "SELECT DISTINCT B.MEMBER_NO AS CUST_ID FROM CRM_MB_BASEINFO B "
+    "WHERE (SELECT COUNT(*) FROM MCS_CAMP_MBR_RSPN_FT ZC "
+    "WHERE ZC.MEMBER_NO = B.MEMBER_NO AND ZC.SEND_RSLT_CD = 'SUCCESS' "
+    "AND ZC.CAMP_SDATE >= '20260802') >= 3"
+)
+
+
+def _applied_default_period(value: int = 5, unit: str = "day") -> dict:
+    """default_period_policy 가 채택 후에만 남기는 영수증 모양."""
+    return {
+        "source": default_period_policy.POLICY_SOURCE,
+        "value": value,
+        "unit": unit,
+        "window": {"type": "rolling", "value": value, "unit": unit},
+        "origin": f"{qualitative_defaults.ENABLED_ENV}:recent",
+        "expression": "최근",
+        "evidence": [{"text": "최근 캠페인 발송 성공 횟수가 3회 이상", "start": 0, "end": 23}],
+    }
+
+
+def _spurious_window_verdict() -> dict:
+    """실제로 관측된 판정 문구(원문에 없는 5일 창 지적)."""
+    return {
+        "ran": True,
+        "status": "fail",
+        "faithful": False,
+        "issues": [{
+            "type": "spurious",
+            "condition": "최근 기간(기간 미지정)",
+            "detail": (
+                "원문은 기간을 명시하지 않았으나 SQL은 최근 5일(ZC.CAMP_SDATE >= 기준일-5일)로 "
+                "기간 조건을 추가해 원문에 없던 시간창 제한을 적용함."
+            ),
+        }],
+    }
+
+
+def _covered(issue: dict, applied_period: dict | None) -> bool:
+    return semantic_verification_receipts.applied_period_issue_is_covered(
+        issue, applied_period
+    )
+
+
+def test_policy_applied_window_is_not_a_spurious_defect() -> None:
+    verification = _spurious_window_verdict()
+    plan = {
+        **MEMBER_PLAN,
+        default_period_policy.DEFAULT_PERIOD_KEY: _applied_default_period(),
+    }
+
+    delivery = graph_rag._validate_sql_delivery_contract(
+        RECENT_CAMPAIGN_QUERY,
+        plan,
+        RECENT_CAMPAIGN_SQL,
+        semantic_verification=verification,
+    )
+    reconciled = graph_rag._reconcile_semantic_verification_with_receipts(
+        verification, delivery
+    )
+
+    assert delivery["semantic_issues"][0]["exempt_reason"] == "applied_default_period_policy"
+    assert delivery["semantic_issues"][0]["severity"] == "warning"
+    assert "critical_semantic_issue" not in delivery["failure_reasons"]
+    assert delivery["is_satisfied"]
+    # 판정은 지워지지 않는다 — 관측은 남기고 차단만 푼다(어떤 창이 왜 들어갔는지의 근거).
+    assert reconciled["status"] == "review"
+    assert reconciled["original_status"] == "fail"
+
+
+def test_an_unexplained_window_still_blocks() -> None:
+    """영수증이 없으면 같은 판정이 그대로 차단이다 — 면제의 근거는 정책 기록뿐이다."""
+    verification = _spurious_window_verdict()
+
+    delivery = graph_rag._validate_sql_delivery_contract(
+        RECENT_CAMPAIGN_QUERY,
+        MEMBER_PLAN,
+        RECENT_CAMPAIGN_SQL,
+        semantic_verification=verification,
+    )
+
+    assert delivery["semantic_issues"][0].get("exempt_reason") is None
+    assert delivery["semantic_issues"][0]["severity"] == "critical"
+    assert not delivery["is_satisfied"]
+    assert "critical_semantic_issue" in delivery["failure_reasons"]
+
+
+def test_a_dispute_over_another_period_is_not_covered() -> None:
+    """정책이 고른 값이 아닌 기간을 다투는 판정은 면제되지 않는다(사용자 명시값 보호)."""
+    assert not _covered(
+        {
+            "type": "spurious",
+            "condition": "최근 30일",
+            "detail": "원문에 없는 최근 30일 창이 SQL 에 있음.",
+        },
+        _applied_default_period(),
+    )
+
+
+@pytest.mark.parametrize(
+    "detail",
+    [
+        "원문에 기간이 없는데 SQL 은 ZC.CAMP_SDATE >= '20260802' 로 제한함.",
+        "원문에 없는 기간 제한이 SQL 에 있음(3회 이상 임계값은 원문대로 반영됨).",
+    ],
+    ids=("rendered-date-literal", "unrelated-threshold-number"),
+)
+def test_numbers_that_are_not_windows_do_not_break_the_receipt(detail: str) -> None:
+    """창이 아닌 수(렌더된 날짜 리터럴·임계값)는 창 주장이 아니므로 비교 대상이 아니다."""
+    assert _covered(
+        {"type": "spurious", "condition": "최근 기간(기간 미지정)", "detail": detail},
+        _applied_default_period(),
+    )
+
+
+def test_a_non_period_filter_is_not_covered_by_the_period_receipt() -> None:
+    assert not _covered(
+        {
+            "type": "spurious",
+            "condition": "지역 조건",
+            "detail": "원문에 없는 B.SIDO = '서울' 필터가 SQL 에 있음.",
+        },
+        _applied_default_period(),
+    )
+
+
+def test_a_column_named_date_is_not_a_period_dispute() -> None:
+    """영문 단서는 단어 경계로 본다 — CAMP_SDATE 가 'date' 로 걸리면 면제가 새어 나간다."""
+    assert not _covered(
+        {
+            "type": "spurious",
+            "condition": "발송 상태 조건",
+            "detail": "원문에 없는 ZC.SEND_RSLT_CD 필터가 SQL 에 있음(ZC.CAMP_SDATE 기준 집계).",
+        },
+        _applied_default_period(),
+    )
+
+
+@pytest.mark.parametrize("issue_type", ["dropped", "inverted"])
+def test_the_period_receipt_never_excuses_a_missing_or_inverted_condition(
+    issue_type: str,
+) -> None:
+    assert not _covered(
+        {
+            "type": issue_type,
+            "condition": "최근 기간",
+            "detail": "최근 5일 창이 SQL 에 반영되지 않았습니다.",
+        },
+        _applied_default_period(),
+    )
+
+
+def test_a_week_scale_default_is_recognized_in_day_wording() -> None:
+    """주 단위 정책값을 검증기가 일수로 부를 수 있다(같은 창이다). 달·해는 환산하지 않는다."""
+    issue = {
+        "type": "spurious",
+        "condition": "최근 기간(기간 미지정)",
+        "detail": "원문에 없는 최근 14일 창이 SQL 에 있음.",
+    }
+
+    assert _covered(issue, _applied_default_period(2, "week"))
+    assert not _covered(issue, _applied_default_period(2, "month"))
+
+
+def test_only_the_policys_own_receipt_can_excuse_a_window() -> None:
+    """면제의 근거는 '정책이 채웠다'는 기록뿐이다 — 다른 출처의 기간 기록은 영수증이 아니다."""
+    plan = {**MEMBER_PLAN, default_period_policy.DEFAULT_PERIOD_KEY: _applied_default_period()}
+    foreign = {
+        **MEMBER_PLAN,
+        default_period_policy.DEFAULT_PERIOD_KEY: {**_applied_default_period(), "source": "user"},
+    }
+
+    assert default_period_policy.applied_period_receipt(plan) is not None
+    assert default_period_policy.applied_period_receipt(foreign) is None
+    assert default_period_policy.applied_period_receipt(MEMBER_PLAN) is None
+    assert not _covered(_spurious_window_verdict()["issues"][0], None)
+
+
+def _stub_verifier_call(monkeypatch, captured: dict) -> None:
+    """의미 검증 게이트가 실제로 보낸 messages 를 잡아 둔다(LLM 호출은 하지 않는다)."""
+
+    def _capture(_client, **kwargs):
+        captured.update(kwargs)
+        message = SimpleNamespace(content='{"status": "pass", "reason": "ok", "issues": []}')
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr(graph_rag, "_sql_semantic_verify_enabled", lambda: True)
+    monkeypatch.setattr(graph_rag, "_semantic_verify_model", lambda _model: "test-model")
+    monkeypatch.setattr(graph_rag, "_openai_chat_create", _capture)
+    monkeypatch.setattr(graph_rag, "_write_rag_llm_log", lambda *_args, **_kwargs: None)
+
+
+def test_the_verifier_is_told_which_window_the_policy_chose(monkeypatch) -> None:
+    """면제는 마지막 안전망이다. 검증기에 정책을 알려 애초에 지적하지 않게 한다."""
+    captured: dict = {}
+    _stub_verifier_call(monkeypatch, captured)
+
+    verdict = graph_rag._verify_sql_semantics(
+        RECENT_CAMPAIGN_QUERY,
+        RECENT_CAMPAIGN_SQL,
+        "test-model",
+        None,
+        {**MEMBER_PLAN, default_period_policy.DEFAULT_PERIOD_KEY: _applied_default_period()},
+    )
+
+    assert verdict["status"] == "pass"
+    system_prompt, user_prompt = (message["content"] for message in captured["messages"])
+    assert "[적용된 기본 기간 정책]" in user_prompt
+    assert '"value": 5' in user_prompt and '"unit": "day"' in user_prompt
+    assert "[적용된 기본 기간 정책]" in system_prompt
+
+
+def test_the_policy_block_is_absent_when_no_default_was_applied(monkeypatch) -> None:
+    captured: dict = {}
+    _stub_verifier_call(monkeypatch, captured)
+
+    graph_rag._verify_sql_semantics(
+        RECENT_CAMPAIGN_QUERY, RECENT_CAMPAIGN_SQL, "test-model", None, MEMBER_PLAN
+    )
+
+    _system_prompt, user_prompt = (message["content"] for message in captured["messages"])
+    assert "[적용된 기본 기간 정책]" not in user_prompt
