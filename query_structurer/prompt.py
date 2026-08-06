@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 import event_ir
 import semantic_requirements
@@ -88,6 +90,74 @@ def build_retry_prompt(previous_response: str, error: str) -> str:
     )
 
 
+def _ranked_entity_set_obligations(query: str) -> list[dict[str, Any]]:
+    """랭킹 계열 의무만. 종류 선언의 소유자는 영수증을 발행하는 쪽이다."""
+    import canonical_audience_claims
+
+    return [
+        requirement.to_dict()
+        for requirement in semantic_requirements.capture_source_semantic_obligations(query)
+        if semantic_requirements.obligation_kind(requirement)
+        in canonical_audience_claims.CANONICAL_COMPILED_OBLIGATION_KINDS
+    ]
+
+
+def render_ranked_entity_set_recipe(obligations: Sequence[Mapping[str, Any]]) -> str | None:
+    """랭킹 의무의 canonical 형상 계약. **최초 요청과 재시도가 같은 문장을 쓴다.**
+
+    예전에는 이 규칙이 재시도 프롬프트에만 있었다. 그런데 모델이 1차에서 미지원을 선언하면
+    재시도 자체가 걸리지 않으므로, 이 안내는 **필요한 경우에 정확히 도달하지 않았다**.
+
+    값(개수·임계·엔터티 필드·측정·기간)은 전부 의무에서 읽는다 — 특정 질의의 숫자나 필드
+    이름을 여기에 적으면 그 질의에만 맞는 프롬프트가 된다. 규칙의 대상이 없으면(랭킹 의무
+    없음) 아무것도 내지 않는다.
+    """
+    if not obligations:
+        return None
+    lines = [
+        "[Ranked Entity Set Recipe]",
+        "The obligations above include a ranking whose fixed canonical shape is:",
+        "  Exists(Join(kind='semi', left=<member-correlated Source, correlation key omitted>,",
+        "              right=Limit(Order(Summarize(Filter(<same Source with correlation='none'>,",
+        "                                                 <TimeFilter on <source>."
+        + event_ir.TIME_FIELD_SUFFIX
+        + " when the obligation has a time_window>),",
+        "                                          keys=[<entity_field>], measures=[<function>(<measure_field>)]),",
+        "                                keys=[<measure alias> desc for top / asc for bottom,",
+        "                                      <entity alias> asc as the deterministic tie-break]),",
+        "                          count=<limit>),",
+        "              on=Comparison('=', <entity_field>, <entity_field>)))",
+        "correlation='none' on the ranked Source is mandatory: omitting it turns the global rank "
+        "into a per-member aggregate. Both Join.on sides use the obligation's entity_field, never "
+        "the member id. Summarize output names are relation-local aliases that Order.keys.name "
+        "refers to; they are not catalog FieldRef names. A ranked size belongs in Limit.count "
+        "(or Limit.percent), never in the root result_limit.",
+        "When an obligation carries a cardinality, the membership Exists is NOT the requested "
+        "meaning: 'top N ... M or more of them' counts the distinct entities in the intersection. "
+        "Use instead:",
+        "  Comparison(Aggregate(function='count', distinct=true, expression=<entity_field>,",
+        "                       relation=<the same semi Join above>), <operator>, <value>)",
+        "Exists would mean 'at least one', which is a wider audience than the request.",
+        "Required contract per obligation:",
+    ]
+    for obligation in obligations:
+        value = obligation.get("value")
+        value = value if isinstance(value, Mapping) else {}
+        contract = {
+            key: value.get(key)
+            for key in (
+                "source", "entity_field", "measure_function", "measure_field",
+                "measure_distinct", "direction", "limit", "time_window", "cardinality",
+            )
+            if value.get(key) is not None
+        }
+        lines.append(
+            f"  - {obligation.get('source_text')!r}: "
+            + json.dumps(contract, ensure_ascii=False, sort_keys=True)
+        )
+    return "\n".join(lines)
+
+
 def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> str:
     context = {
         "current_date": input.context.current_date,
@@ -104,6 +174,11 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
         )
     ]
     knowledge_sections: list[str] = []
+    ranked_recipe = render_ranked_entity_set_recipe(
+        _ranked_entity_set_obligations(input.query)
+    )
+    if ranked_recipe:
+        knowledge_sections.append(ranked_recipe)
     if input.context.slot_vocabulary:
         knowledge_sections.append(
             "[Allowed Canonical Values]\n"
@@ -225,11 +300,22 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
 
 
 def build_campaign_query_plan_v4_retry_prompt(
-    previous_response: str, error: str
+    previous_response: str, error: str, query: str | None = None
 ) -> str:
-    """Retry instructions for the fixed canonical audience algebra."""
+    """Retry instructions for the fixed canonical audience algebra.
+
+    랭킹 형상 규칙은 :func:`render_ranked_entity_set_recipe` 하나가 소유한다 — 최초 요청과
+    재시도가 같은 계약을 봐야 하고, 같은 문장을 두 곳에 적으면 한쪽만 고쳐진 상태가 생긴다.
+    재시도에만 있는 것은 **이전 출력이 실패한 이유**뿐이다.
+    """
+    ranked_recipe = (
+        render_ranked_entity_set_recipe(_ranked_entity_set_obligations(query))
+        if isinstance(query, str) and query.strip()
+        else None
+    )
     return "\n\n".join(
-        [
+        section
+        for section in [
             "The previous campaign tool arguments failed canonical validation.",
             "[Validation Error]\n" + error,
             "[Previous Tool Arguments]\n" + previous_response,
@@ -245,10 +331,7 @@ def build_campaign_query_plan_v4_retry_prompt(
             ),
             (
                 "The audience expression root must be a Condition. Join, Limit, Order, Summarize, Filter, "
-                "and Source are Relations, so wrap a membership Join in Exists. For ranked membership, use "
-                "a member-correlated left Source with the correlation key omitted. On the Source nested under "
-                "the right Summarize, correlation='none' is mandatory; omitting it changes the global rank "
-                "into a per-member aggregate."
+                "and Source are Relations, so wrap a membership Join in Exists."
             ),
             (
                 "Use the exact singular wire shapes: Not is "
@@ -259,14 +342,10 @@ def build_campaign_query_plan_v4_retry_prompt(
                 "issues, and it is the only place audience meaning may appear."
             ),
             (
-                "Summarize output names are local aliases used by Order.keys.name, not FieldRef names. Join.on "
-                "uses catalog FieldRefs on both sides; their left/right relation scopes disambiguate identical "
-                "canonical field IDs. For a ranked obligation, both Join.on sides use its entity_field, never "
-                "the member_id. If it has time_window, Filter the global right Source before Summarize. Internal "
-                "a ranked count belongs in Limit.count and a ranked percentage belongs in Limit.percent, "
-                "never root result_limit. Use desc for top and asc for bottom, followed by the entity key "
-                "ascending as the deterministic tie-break."
+                "Join.on uses catalog FieldRefs on both sides; their left/right relation scopes disambiguate "
+                "identical canonical field IDs."
             ),
+            ranked_recipe,
             (
                 "Comparison evidence must be the exact query slice containing the comparison's source value "
                 "and comparison-operator wording. Use only catalog source/field IDs and preserve every "
@@ -277,4 +356,5 @@ def build_campaign_query_plan_v4_retry_prompt(
                 "Never return a non-null expression together with issues."
             ),
         ]
+        if section
     )

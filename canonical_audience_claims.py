@@ -976,8 +976,68 @@ def _window_matches(value: Any, expected: Mapping[str, Any] | None) -> bool:
     )
 
 
-def _ranked_membership_matches(expression: event_ir.Condition, value: Mapping[str, Any]) -> bool:
-    payload = expression.to_dict()
+# canonical Event IR 컴파일러가 **영수증으로 방면할 수 있는** 의무 종류. 이 집합이 곧
+# "애플리케이션이 이 의미를 낼 수 있다"의 정의다 — 영수증 발행(refresh_canonical_unresolved)과
+# 미지원 신고 반박(query_structurer.structurer)이 같은 답을 써야 하므로 선언은 하나뿐이다.
+#
+# 여기 **없는** 의무(주기 반복·외부 지정 집합·스냅샷 선택·등급 이력)는 감지는 되지만 그 뜻을
+# 낼 표현이 없다. 그것을 '지원됨'으로 읽으면 없는 능력을 광고하게 되고, 모델의 옳은 미지원
+# 신고까지 반박해 재시도만 반복한다.
+CANONICAL_COMPILED_OBLIGATION_KINDS: frozenset[str] = frozenset({
+    "ranked_entity_set",
+    "member_metric_ranking",
+})
+
+
+def supported_obligations_for_query(
+    query: str,
+) -> tuple[semantic_requirements.SourceRequirement, ...]:
+    """원문의 의무 중 **canonical 컴파일러가 방면할 수 있는 종류**만.
+
+    의무는 지원 여부와 무관하게 감지의 기록으로 만들어진다. 그러므로 '애플리케이션이 이
+    의미를 낼 수 있다'의 답은 의무의 존재가 아니라 그 종류다.
+    """
+    if not isinstance(query, str) or not query.strip():
+        return ()
+    return tuple(
+        requirement
+        for requirement in semantic_requirements.capture_source_semantic_obligations(query)
+        if semantic_requirements.obligation_kind(requirement)
+        in CANONICAL_COMPILED_OBLIGATION_KINDS
+    )
+
+
+def obligation_conflicting_with_claim(
+    claim: Mapping[str, Any],
+    obligations: Sequence[semantic_requirements.SourceRequirement],
+) -> semantic_requirements.SourceRequirement | None:
+    """'표현할 수 없다'는 신고와 **같은 원문 자리**를 차지한 지원 의무. 없으면 None.
+
+    판정 축은 이름이 아니라 좌표다 — 모델이 그 계산을 뭐라고 부르든, 애플리케이션이 이미
+    실행 계약으로 계산해 둔 구간이라면 그 주장은 스스로 반박된다. 근거 구간이 없으면 겹침을
+    판정할 수 없으므로 개입하지 않는다(fail-safe).
+    """
+    evidence = claim.get("evidence")
+    if not isinstance(evidence, Mapping):
+        return None
+    return next(
+        (
+            obligation
+            for obligation in obligations
+            if semantic_requirements.spans_overlap(evidence, obligation.source_span)
+        ),
+        None,
+    )
+
+
+def _ranked_membership_relation_matches(
+    join: Mapping[str, Any], value: Mapping[str, Any]
+) -> bool:
+    """semi Join 하나가 랭킹 계약(소스·엔터티·측정·방향·개수·기간)을 만족하는가.
+
+    **관계** 판정만 한다 — 교집합의 크기(카디널리티)는 이 함수의 소관이 아니다. 둘을 한
+    함수에 섞으면 '관계는 맞지만 개수 임계가 빠졌다'를 구별할 수 없다.
+    """
     expected_limit = value.get("limit")
     expected_direction = "desc" if value.get("direction") == "top" else "asc"
     expected_source = value.get("source") if isinstance(value.get("source"), str) else None
@@ -995,86 +1055,156 @@ def _ranked_membership_matches(expression: event_ir.Condition, value: Mapping[st
     expected_window = value.get("time_window")
     expected_window = expected_window if isinstance(expected_window, Mapping) else None
 
-    for join in _nodes(payload, "join"):
-        if join.get("kind", "inner") != "semi":
-            continue
-        left, right = join.get("left"), join.get("right")
-        if not _has_source(left, expected_source, "subject"):
-            continue
-        if not _has_source(right, expected_source, "none"):
-            continue
-        if expected_entity:
-            on = join.get("on")
-            if not (
-                isinstance(on, Mapping)
-                and on.get("type") == "comparison"
-                and on.get("operator") == "="
-                and _field_name(on.get("left")) == expected_entity
-                and _field_name(on.get("right")) == expected_entity
-            ):
+    if join.get("kind", "inner") != "semi":
+        return False
+    left, right = join.get("left"), join.get("right")
+    if not _has_source(left, expected_source, "subject"):
+        return False
+    if not _has_source(right, expected_source, "none"):
+        return False
+    if expected_entity:
+        on = join.get("on")
+        if not (
+            isinstance(on, Mapping)
+            and on.get("type") == "comparison"
+            and on.get("operator") == "="
+            and _field_name(on.get("left")) == expected_entity
+            and _field_name(on.get("right")) == expected_entity
+        ):
+            return False
+    for limit in _nodes(right, "limit"):
+        if isinstance(expected_limit, Mapping):
+            limit_type = expected_limit.get("type")
+            if limit_type not in {"count", "percent"}:
                 continue
-        for limit in _nodes(right, "limit"):
-            if isinstance(expected_limit, Mapping):
-                limit_type = expected_limit.get("type")
-                if limit_type not in {"count", "percent"}:
-                    continue
-                if limit.get(str(limit_type)) != expected_limit.get("value"):
-                    continue
-            elif limit.get("count") != expected_limit:
+            if limit.get(str(limit_type)) != expected_limit.get("value"):
                 continue
-            ranked_input = limit.get("relation")
-            for order in _nodes(ranked_input, "order"):
-                summarized_input = order.get("relation")
-                for summary in _nodes(summarized_input, "summarize"):
-                    measure_name: str | None = None
-                    for measure in summary.get("measures") or []:
-                        if not isinstance(measure, Mapping):
-                            continue
-                        if expected_function and measure.get("function") != expected_function:
-                            continue
-                        if bool(measure.get("distinct", False)) != expected_distinct:
-                            continue
-                        if expected_measure_field and _field_name(measure.get("expression")) != expected_measure_field:
-                            continue
-                        measure_name = str(measure.get("name") or "") or None
-                        break
-                    if measure_name is None:
+        elif limit.get("count") != expected_limit:
+            continue
+        ranked_input = limit.get("relation")
+        for order in _nodes(ranked_input, "order"):
+            summarized_input = order.get("relation")
+            for summary in _nodes(summarized_input, "summarize"):
+                measure_name: str | None = None
+                for measure in summary.get("measures") or []:
+                    if not isinstance(measure, Mapping):
                         continue
-                    order_keys = [
-                        key for key in order.get("keys") or [] if isinstance(key, Mapping)
-                    ]
-                    if not any(
-                        key.get("name") == measure_name
-                        and key.get("direction", "asc") == expected_direction
-                        for key in order_keys
+                    if expected_function and measure.get("function") != expected_function:
+                        continue
+                    if bool(measure.get("distinct", False)) != expected_distinct:
+                        continue
+                    if expected_measure_field and _field_name(measure.get("expression")) != expected_measure_field:
+                        continue
+                    measure_name = str(measure.get("name") or "") or None
+                    break
+                if measure_name is None:
+                    continue
+                order_keys = [
+                    key for key in order.get("keys") or [] if isinstance(key, Mapping)
+                ]
+                if not any(
+                    key.get("name") == measure_name
+                    and key.get("direction", "asc") == expected_direction
+                    for key in order_keys
+                ):
+                    continue
+                entity_key_names = [
+                    str(key.get("name"))
+                    for key in summary.get("keys") or []
+                    if isinstance(key, Mapping)
+                    and isinstance(key.get("name"), str)
+                    and (
+                        not expected_entity
+                        or _field_name(key.get("expression")) == expected_entity
+                    )
+                ]
+                if expected_entity and not entity_key_names:
+                    continue
+                if value.get("tie_policy") == "exact_count":
+                    if len(order_keys) < 2:
+                        continue
+                    if not (
+                        order_keys[0].get("name") == measure_name
+                        and order_keys[0].get("direction", "asc") == expected_direction
+                        and order_keys[1].get("name") in entity_key_names
+                        and order_keys[1].get("direction", "asc") == "asc"
                     ):
                         continue
-                    entity_key_names = [
-                        str(key.get("name"))
-                        for key in summary.get("keys") or []
-                        if isinstance(key, Mapping)
-                        and isinstance(key.get("name"), str)
-                        and (
-                            not expected_entity
-                            or _field_name(key.get("expression")) == expected_entity
-                        )
-                    ]
-                    if expected_entity and not entity_key_names:
-                        continue
-                    if value.get("tie_policy") == "exact_count":
-                        if len(order_keys) < 2:
-                            continue
-                        if not (
-                            order_keys[0].get("name") == measure_name
-                            and order_keys[0].get("direction", "asc") == expected_direction
-                            and order_keys[1].get("name") in entity_key_names
-                            and order_keys[1].get("direction", "asc") == "asc"
-                        ):
-                            continue
-                    if not _window_matches(summary, expected_window):
-                        continue
-                    return True
+                if not _window_matches(summary, expected_window):
+                    continue
+                return True
     return False
+
+
+def _ranked_cardinality_matches(
+    payload: Mapping[str, Any],
+    value: Mapping[str, Any],
+    cardinality: Mapping[str, Any],
+    joins: Sequence[Mapping[str, Any]],
+) -> bool:
+    """'상위 N개 중 M개 이상' 이 실제로 **교집합의 distinct 엔터티 수** 비교로 서 있는가.
+
+    허용하는 형상은 하나다::
+
+        Comparison(Aggregate(count, distinct, <entity_field>, relation=<랭킹 semi Join>),
+                   <operator>, M)
+
+    ``Exists(<랭킹 semi Join>)`` 는 이 의무를 방면하지 못한다 — 그것은 '1개 이상'이라서
+    요청보다 넓은 집합을 낸다(같은 SQL 이 조용히 다른 오디언스를 만든다).
+    """
+    expected_operator = cardinality.get("operator")
+    expected_value = cardinality.get("value")
+    expected_distinct = bool(cardinality.get("distinct", True))
+    expected_entity = (
+        value.get("entity_field") if isinstance(value.get("entity_field"), str) else None
+    )
+    if not isinstance(expected_value, int) or isinstance(expected_value, bool):
+        return False
+
+    for comparison in _nodes(payload, "comparison"):
+        if comparison.get("operator") != expected_operator:
+            continue
+        threshold = comparison.get("right")
+        if not (
+            isinstance(threshold, Mapping)
+            and threshold.get("type") == "literal"
+            and isinstance(threshold.get("value"), int)
+            and not isinstance(threshold.get("value"), bool)
+            and threshold["value"] == expected_value
+        ):
+            continue
+        counted = comparison.get("left")
+        if not (
+            isinstance(counted, Mapping)
+            and counted.get("type") == "aggregate"
+            and counted.get("function") == "count"
+            and bool(counted.get("distinct", False)) == expected_distinct
+        ):
+            continue
+        if expected_entity and _field_name(counted.get("expression")) != expected_entity:
+            continue
+        # 세는 대상이 **그 랭킹 집합과의 교집합**이어야 한다. 다른 관계 위의 같은 모양 집계는
+        # 우연히 같은 숫자를 셀 뿐 이 의무를 방면하지 않는다.
+        counted_joins = _nodes(counted.get("relation"), "join")
+        if any(candidate is join for candidate in counted_joins for join in joins):
+            return True
+    return False
+
+
+def _ranked_membership_matches(expression: event_ir.Condition, value: Mapping[str, Any]) -> bool:
+    """랭킹 의무 하나를 이 표현이 방면하는가(관계 + 선택적 개수 임계)."""
+    payload = expression.to_dict()
+    joins = [
+        join
+        for join in _nodes(payload, "join")
+        if _ranked_membership_relation_matches(join, value)
+    ]
+    if not joins:
+        return False
+    cardinality = value.get("cardinality")
+    if not isinstance(cardinality, Mapping):
+        return True
+    return _ranked_cardinality_matches(payload, value, cardinality, joins)
 
 
 def _span_covered(
@@ -1136,9 +1266,11 @@ def semantic_obligation_issues(
     issues: list[dict[str, Any]] = []
     temporal_spans = temporal_obligation_compiled_spans(query, expression)
     for requirement in semantic_requirements.capture_source_semantic_obligations(query):
-        kind = str(requirement.base.get("name") or "")
+        kind = semantic_requirements.obligation_kind(requirement)
         value = requirement.value if isinstance(requirement.value, Mapping) else {}
-        if kind in {"ranked_entity_set", "member_metric_ranking"} and _ranked_membership_matches(expression, value):
+        if kind in CANONICAL_COMPILED_OBLIGATION_KINDS and _ranked_membership_matches(
+            expression, value
+        ):
             continue
         if kind == semantic_requirements.TEMPORAL_QUALIFIER_KIND and _span_covered(
             requirement.source_span, temporal_spans
@@ -1157,7 +1289,7 @@ def semantic_obligation_issues(
             )
             if value.get(key) is not None
         )
-        if kind in {"ranked_entity_set", "member_metric_ranking"}:
+        if kind in CANONICAL_COMPILED_OBLIGATION_KINDS:
             expected = (
                 "expression=Exists(semi Join), member_source_correlation=subject"
                 "(omit correlation key), rank_source_correlation=none, "
@@ -1423,7 +1555,7 @@ def refresh_canonical_unresolved(
         semantic_requirements.discharge_source_semantic_obligations(
             plan,
             query,
-            kinds={"ranked_entity_set", "member_metric_ranking"},
+            kinds=set(CANONICAL_COMPILED_OBLIGATION_KINDS),
             status="compiled",
             compiler="canonical_event_ir",
             evidence=expression.to_dict(),

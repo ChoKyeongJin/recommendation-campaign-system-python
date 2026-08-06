@@ -38,14 +38,22 @@ SEMANTIC_IR_FIELD_KO_LABELS: dict[str, str] = {
 _SPAN_PREFIXES = ("uncovered:", "conflict:", "invalid:")
 
 
-def semantic_failure_reason(status: str, failure_kind: Any) -> str:
+def semantic_failure_reason(
+    status: str, failure_kind: Any, declared_reason: Any = None
+) -> str:
     """failure_reason 도 원인을 말한다 — 운영자가 로그만 보고 어느 계층인지 알 수 있어야 한다.
 
     `semantic_ir_needs_clarification` 하나로 뭉치면 "사용자가 안 알려준 것", "구조화기가 못
     만든 것", "실행 설정이 비어 있는 것"이 같은 코드로 보인다 — 셋의 고칠 곳이 다 다르다.
+
+    kind 로 갈리지 않는 실패는 판정한 계층이 ``semantic_ir.failure_reason`` 에 **명시**한다.
+    system_failure 안에는 성격이 다른 둘이 들어 있다 — 실행 자산이 없는 것(레지스트리 구멍)과,
+    자산도 컴파일러도 있는데 표현이 방출되지 않은 것. 파생만 쓰면 후자가 전자로 보고된다.
     """
     import semantic_outcome  # 지연 import — 렌더링 계층은 코어 스키마에 의존하지 않는다
 
+    if isinstance(declared_reason, str) and declared_reason.strip():
+        return declared_reason
     if failure_kind == semantic_outcome.FAILURE_KIND_STRUCTURER:
         return "semantic_structurer_failure"
     if failure_kind == semantic_outcome.FAILURE_KIND_SYSTEM:

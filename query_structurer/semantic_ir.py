@@ -20,6 +20,7 @@ from .semantic_outcome import (
     FAILURE_KINDS,
     SEMANTIC_STATUSES,
     FailureKind,
+    FailureReason,
     SemanticOutcome,
     parse_semantic_outcome_projection,
     semantic_outcome_json_schema,
@@ -411,6 +412,9 @@ def empty_semantic_ir(
     missing_field_causes: list[dict[str, Any]] | None = None,
     unsupported_operations: list[dict[str, Any]] | None = None,
     policy_applications: list[dict[str, Any]] | None = None,
+    # 파생 사유(kind → reason)로 구별되지 않는 실패의 **명시 선언**. needs_clarification 에서만
+    # 쓴다 — 다른 상태에는 그 구별이 필요한 실패가 아직 없다.
+    failure_reason: FailureReason | None = None,
 ) -> dict[str, Any]:
     if status == "resolved":
         outcome = SemanticOutcome.resolved(message=message, failure_kind=failure_kind)
@@ -432,6 +436,7 @@ def empty_semantic_ir(
             missing_field_causes=missing_field_causes or [],
             message=message,
             failure_kind=failure_kind,
+            failure_reason=failure_reason,
         )
     else:
         raise ValueError(f"unknown semantic outcome status: {status!r}")

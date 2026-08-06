@@ -30,6 +30,7 @@ parse_calendar_windows 가 등장 순서대로 전부 돌려주고, parse_calend
 from __future__ import annotations
 
 import re
+from collections.abc import Sequence
 from datetime import date, timedelta
 from typing import Any, NamedTuple
 
@@ -761,6 +762,59 @@ def _scan_relative_calendar_months(
     return sorted(found, key=lambda item: item[2])
 
 
+# 앵커로만 쓰는 상대 연도 어휘. '전년'은 단독으로 거의 항상 비교 관용구('전년 대비',
+# '전년 동기')의 앞자리라, 단독 필터 창으로 읽으면 요청에 없는 기간 조건이 생긴다. 한정자
+# 앵커로는 그대로 쓴다('전년 3월' = 작년 3월) — 그 자리에서는 뜻이 흔들리지 않는다.
+_ANCHOR_ONLY_RELATIVE_YEARS = frozenset({"전년"})
+_STANDALONE_YEAR_ALTERNATION = "|".join(
+    sorted(
+        (word for word in _RELATIVE_YEAR_OFFSETS if word not in _ANCHOR_ONLY_RELATIVE_YEARS),
+        key=len,
+        reverse=True,
+    )
+)
+# 낱말 내부 매칭 방지(한글은 \b 가 성립하지 않는다). '작년도'처럼 뒤에 '도'가 붙는 형태는
+# 같은 뜻이라 앵커 문법(_YEAR_ANCHOR_PATTERN)과 똑같이 받아들인다.
+_STANDALONE_YEAR_RE = re.compile(
+    rf"(?<![가-힣])(?P<rel>{_STANDALONE_YEAR_ALTERNATION})(?:도)?"
+)
+# 비교 관용구의 앞자리인 상대 연도는 기간 필터가 아니라 **비교 기준**이다('작년 대비 …').
+# 그 의미의 소유자는 기간 대 기간 비교 축이고, 여기서 창을 만들면 요청에 없는 필터가 생긴다.
+_YEAR_COMPARISON_SUFFIX_RE = re.compile(r"\s*(?:대비|동기|대조)")
+_YEAR_GRAIN_RANK = _GRAIN_RANK["y"]
+
+
+def _scan_standalone_relative_years(
+    text: str,
+    label_suffix: str,
+    reference: date,
+    occupied: Sequence[tuple[int, int]],
+) -> list[_Scanned]:
+    """어떤 한정자도 소비하지 않은 단독 '작년/올해'를 절대 연 창으로 스캔한다.
+
+    상대 연도 어휘는 이미 **앵커**로 쓰이고 있었다('작년 상반기' → 2025년 상반기). 없던 것은
+    한정자가 없는 자리의 뜻이다 — '작년에 가장 많이 팔린' 의 '작년'은 어떤 창도 만들지 못했고,
+    그래서 그 기간이 통째로 빠진 채 전 기간 랭킹으로 컴파일될 수 있었다(실측).
+
+    ``occupied`` 는 앞선 스캐너가 이미 만든 창의 구간이다. 겹치면 건너뛴다 — 그러지 않으면
+    '작년 상반기'가 연 전체와 반기 두 창을 동시에 만들어 한 어구가 조건 둘이 된다.
+    """
+    found: list[_Scanned] = []
+    for match in _STANDALONE_YEAR_RE.finditer(text):
+        if any(match.start() < end and start < match.end() for start, end in occupied):
+            continue
+        if _YEAR_COMPARISON_SUFFIX_RE.match(text, match.end()) is not None:
+            continue
+        year = reference.year + _RELATIVE_YEAR_OFFSETS[match.group("rel")]
+        found.append((
+            _window(ymd(year, 1, 1), ymd(year, 12, 31), f"{year}년", label_suffix),
+            _YEAR_GRAIN_RANK,
+            match.start(),
+            match.end(),
+        ))
+    return found
+
+
 def _scan_calendar_windows(
     text: str, label_suffix: str, today: date | None = None
 ) -> list[tuple[dict[str, Any], int, int, int]]:
@@ -824,6 +878,14 @@ def _scan_calendar_windows(
             # 앵커에서 연도를 받은 토큰의 구간은 앵커까지다('7년전 상반기' 전체가 한 창의 출처).
             start = anchor[1] if (explicit is None and anchor is not None) else match.start()
             out.append((window, rank, start, match.end()))
+    # 구체 한정자(월·분기·반기·주·일)를 **먼저** 소비한 뒤에야 남은 단독 상대 연도를 읽는다 —
+    # 순서를 뒤집으면 '작년 3월'의 '작년'이 연 전체 창을 먼저 만들어 조건이 둘로 갈린다.
+    if today is not None:
+        out.extend(
+            _scan_standalone_relative_years(
+                text, label_suffix, today, [(start, end) for _w, _r, start, end in out]
+            )
+        )
     out.sort(key=lambda item: item[2])
     return _apply_open_boundaries(_fold_range_links(out, text, label_suffix), text, label_suffix)
 

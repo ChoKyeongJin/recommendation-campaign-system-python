@@ -38,9 +38,11 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import condition_normalizers
 import korean_number_normalizer
 import lexicon_patterns
 import member_filters_config
@@ -131,6 +133,7 @@ _SNAPSHOT_GRAIN_ALT = lexicon_patterns.alternation("source_snapshot_grain")
 _SNAPSHOT_SYSTEM_ALT = lexicon_patterns.alternation("source_snapshot_system")
 _SNAPSHOT_NOUN_ALT = lexicon_patterns.alternation("source_snapshot_noun")
 _MEMBER_NOUN_ALT = lexicon_patterns.alternation("member_noun")
+_SET_SCOPE_ALT = lexicon_patterns.alternation("clause_scope_marker")
 _RECURRENCE_RE = re.compile(
     # 한글은 \b 단어 경계가 성립하지 않아 접두 표지('매')가 낱말 내부에서 매칭될 수 있다:
     # '구매주기'의 '매주', '구매일'의 '매일'. 앞 글자가 한글 음절이면 낱말 내부로 보고 배제한다.
@@ -756,6 +759,56 @@ def _semantic_obligation(
     )
 
 
+SEMANTIC_OBLIGATION_TYPE = "semantic_obligation"
+
+
+def obligation_kind(requirement: Any) -> str:
+    """semantic obligation 의 종류 이름(``base.name``). 의무가 아니면 빈 문자열.
+
+    캡처 직후의 :class:`SourceRequirement` 와 원장에 실린 dict 를 **둘 다** 읽는다. 같은
+    판정을 소비자마다 다시 적으면 한쪽만 고쳐진 상태가 조용히 생긴다(원장/영수증/프롬프트/
+    반박이 각각 이 값을 본다).
+    """
+
+    if isinstance(requirement, SourceRequirement):
+        requirement_type, base = requirement.type, requirement.base
+    elif isinstance(requirement, Mapping):
+        requirement_type, base = requirement.get("type"), requirement.get("base")
+    else:
+        return ""
+    if requirement_type != SEMANTIC_OBLIGATION_TYPE or not isinstance(base, Mapping):
+        return ""
+    name = base.get("name")
+    return str(name) if isinstance(name, str) and name else ""
+
+
+def _span_bounds(span: Any) -> tuple[int, int] | None:
+    """source span 을 (start, end) 로 읽는다. 좌표가 없거나 빈 구간이면 None."""
+
+    if isinstance(span, Mapping):
+        start, end = span.get("start"), span.get("end")
+    elif isinstance(span, (list, tuple)) and len(span) == 2:
+        start, end = span
+    else:
+        return None
+    if not all(isinstance(value, int) and not isinstance(value, bool) for value in (start, end)):
+        return None
+    return (start, end) if start < end else None
+
+
+def spans_overlap(left: Any, right: Any) -> bool:
+    """두 원문 구간이 실제로 겹치는가.
+
+    비교할 수 없는 좌표(없음·빈 구간)는 **False** 다 — 이 술어의 소비자는 '겹치면 개입한다'
+    이므로, 모르는 것을 참으로 답하면 근거 없는 개입이 된다.
+    """
+
+    left_bounds, right_bounds = _span_bounds(left), _span_bounds(right)
+    if left_bounds is None or right_bounds is None:
+        return False
+    return left_bounds[0] < right_bounds[1] and right_bounds[0] < left_bounds[1]
+
+
 def _recurrence_obligations(query: str) -> list[SourceRequirement]:
     requirements: list[SourceRequirement] = []
     for match in _RECURRENCE_RE.finditer(query):
@@ -846,6 +899,47 @@ def _configured_term_hits(query: str, values: Mapping[str, Any]) -> list[tuple[i
                 hits.append((start, start + len(term), str(canonical)))
                 cursor = start + max(1, len(term))
     return sorted(set(hits))
+
+
+@lru_cache(maxsize=1)
+def _ranked_cardinality_pattern() -> re.Pattern[str]:
+    """'중 2개 이상' — 랭킹 집합과 회원 행동의 **교집합 개수** 임계 문법.
+
+    비교어 어휘는 공용 비교 문법(:mod:`condition_normalizers`)이 소유하고, 집합 범위 표지와
+    계수 단위는 어휘 사전이 소유한다 — 여기에 낱말을 다시 적지 않는다. 계수 단위를 필수로 둬
+    '중 3년 이상' 같은 기간 표현이 개수로 오포착되는 것을 막는다.
+    """
+    words = sorted(
+        condition_normalizers.comparison_word_operators(), key=lambda word: (-len(word), word)
+    )
+    comparison_alt = "|".join(re.escape(word) for word in words)
+    return re.compile(
+        rf"\s*(?:{_SET_SCOPE_ALT})\s*(?P<value>\d[\d,]*)\s*(?:{_ENTITY_COUNTER_ALT})"
+        rf"(?:\s*(?P<operator>{comparison_alt}|만))?"
+    )
+
+
+def _ranked_cardinality_at(query: str, position: int) -> tuple[dict[str, Any], int] | None:
+    """랭킹 구절 **바로 뒤**의 교집합 개수 임계. (값, 구절 끝 위치) 또는 None.
+
+    ``상위 5개 중 2개 이상`` 의 '2개'는 랭킹 집합 크기(5)도, 같은 상품을 산 횟수도 아니다 —
+    회원이 산 상품과 상위 5개 집합의 **교집합에 들어가는 서로 다른 엔터티 수**다.
+
+    비교 표지가 없거나 '만'이면 정확히 그 개수(``=``)다. 같은 표면형에 대한 이 저장소의 기존
+    판정(:mod:`entity_set` 카디널리티 표)과 같은 답을 쓴다 — 여기서 다른 규칙을 고르면 한
+    어구의 뜻이 경로마다 달라진다.
+    """
+    match = _ranked_cardinality_pattern().match(query, position)
+    if match is None:
+        return None
+    return (
+        {
+            "operator": condition_normalizers.canonical_operator(match.group("operator")) or "=",
+            "value": int(match.group("value").replace(",", "")),
+            "distinct": True,
+        },
+        match.end(),
+    )
 
 
 def _ranked_entity_set_obligations(query: str) -> list[SourceRequirement]:
@@ -980,24 +1074,31 @@ def _ranked_entity_set_obligations(query: str) -> list[SourceRequirement]:
             }
         else:
             time_window = None
+        value: dict[str, Any] = {
+            "direction": direction,
+            "limit": limit,
+            "entity_domain": entity,
+            "measure": measure,
+            "rank_relation": relation,
+            "membership_relation": relation,
+            "source": source,
+            "entity_field": entity_field,
+            "measure_function": measure_function,
+            "measure_field": measure_field,
+            "measure_distinct": measure_distinct,
+            "time_window": time_window,
+        }
+        # 개수 임계는 **선택 항목**이다. 없는 요청(‘상위 5개를 구매한 회원’)의 의무는 예전과
+        # 바이트 동일해야 한다 — 키를 항상 실으면 모든 랭킹 의무의 id 가 한꺼번에 바뀐다.
+        cardinality_hit = _ranked_cardinality_at(query, span_end)
+        if cardinality_hit is not None:
+            cardinality, span_end = cardinality_hit
+            value["cardinality"] = cardinality
         requirements.append(_semantic_obligation(
             query,
             kind="ranked_entity_set",
             span=(span_start, span_end),
-            value={
-                "direction": direction,
-                "limit": limit,
-                "entity_domain": entity,
-                "measure": measure,
-                "rank_relation": relation,
-                "membership_relation": relation,
-                "source": source,
-                "entity_field": entity_field,
-                "measure_function": measure_function,
-                "measure_field": measure_field,
-                "measure_distinct": measure_distinct,
-                "time_window": time_window,
-            },
+            value=value,
         ))
     return requirements
 
@@ -1291,19 +1392,14 @@ def unresolved_semantic_obligations(
     for requirement in ledger_requirements:
         if (
             not isinstance(requirement, Mapping)
-            or requirement.get("type") != "semantic_obligation"
+            or requirement.get("type") != SEMANTIC_OBLIGATION_TYPE
         ):
             continue
         requirement_id = str(requirement.get("id") or "")
         receipt = receipts.get(requirement_id)
         if receipt is not None and receipt.get("status") == "compiled":
             continue
-        base = requirement.get("base")
-        kind = (
-            str(base.get("name"))
-            if isinstance(base, Mapping) and base.get("name")
-            else "semantic_obligation"
-        )
+        kind = obligation_kind(requirement) or SEMANTIC_OBLIGATION_TYPE
         default_reason = {
             "temporal_recurrence": (
                 "주기별 반복 조건을 총 기간 집계로 축소하지 않고 컴파일했다는 근거가 없습니다."

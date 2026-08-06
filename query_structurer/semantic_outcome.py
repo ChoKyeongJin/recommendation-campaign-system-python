@@ -19,8 +19,20 @@ FailureKind = Literal[
     "system_failure",
     "unsupported",
 ]
+# 실패 **사유**의 명시 선언(닫힌 어휘). 보통 사유는 failure_kind 에서 파생되지만
+# (`failure_messages.semantic_failure_reason`), 한 kind 안에 서로 다른 고칠 곳이 섞이면
+# 파생만으로는 구별할 수 없다:
+#
+#   semantic_registry_gap      실행 자산/레지스트리가 그 축을 낼 수 없다 → 설정·컴파일러 작업
+#   semantic_emission_failure  자산도 컴파일러도 있는데 구조화기가 표현을 못 냈다 → 방출 품질
+#
+# 둘 다 운영상 system_failure(사용자가 답할 수 없는 실패)지만 고칠 사람이 다르다. 파생 사유를
+# 그대로 쓰면 후자가 '레지스트리 구멍'으로 보고돼 없는 결함을 찾게 된다.
+FailureReason = Literal["semantic_emission_failure"]
+FAILURE_REASON_EMISSION: FailureReason = "semantic_emission_failure"
 SEMANTIC_STATUSES = frozenset(get_args(SemanticStatus))
 FAILURE_KINDS = frozenset(get_args(FailureKind))
+FAILURE_REASONS = frozenset(get_args(FailureReason))
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,6 +183,15 @@ SEMANTIC_OUTCOME_WIRE_SPEC = ClosedObjectSpec((
         default=None,
         emit_default=True,
     ),
+    # 파생 사유로는 구별되지 않는 실패에만 실린다. 기본값을 내보내지 않는 이유는 기존 투영이
+    # 바이트 동일해야 하기 때문이다 — 이 키가 없으면 사유는 예전처럼 kind 에서 파생된다.
+    WireFieldSpec(
+        "failure_reason",
+        WireValueSpec("string", nullable=True, enum=tuple(sorted(FAILURE_REASONS))),
+        required_on_input=False,
+        default=None,
+        emit_default=False,
+    ),
     WireFieldSpec("policy_applications", WireValueSpec("array", items=_POLICY_SPEC)),
     WireFieldSpec("unsupported_operations", WireValueSpec("array", items=_UNSUPPORTED_SPEC)),
     WireFieldSpec("message", WireValueSpec("string", nullable=True)),
@@ -225,12 +246,17 @@ class SemanticOutcome:
     policy_applications: tuple[Mapping[str, Any], ...] = ()
     unsupported_operations: tuple[Mapping[str, Any], ...] = ()
     message: str | None = None
+    failure_reason: FailureReason | None = None
 
     def __post_init__(self) -> None:
         if self.status not in SEMANTIC_STATUSES:
             raise ValueError(f"invalid SemanticOutcome status: {self.status!r}")
         if self.failure_kind is not None and self.failure_kind not in FAILURE_KINDS:
             raise ValueError(f"invalid SemanticOutcome failure_kind: {self.failure_kind!r}")
+        if self.failure_reason is not None and self.failure_reason not in FAILURE_REASONS:
+            raise ValueError(
+                f"invalid SemanticOutcome failure_reason: {self.failure_reason!r}"
+            )
         if self.message is not None and not isinstance(self.message, str):
             raise TypeError("SemanticOutcome message must be a string or None")
 
@@ -280,6 +306,7 @@ class SemanticOutcome:
         missing_field_causes: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...] = (),
         message: str | None = None,
         failure_kind: FailureKind | None = None,
+        failure_reason: FailureReason | None = None,
     ) -> SemanticOutcome:
         return cls(
             status="needs_clarification",
@@ -287,6 +314,7 @@ class SemanticOutcome:
             missing_field_causes=tuple(copy.deepcopy(list(missing_field_causes))),
             message=message,
             failure_kind=failure_kind,
+            failure_reason=failure_reason,
         )
 
     @classmethod
@@ -324,7 +352,7 @@ class SemanticOutcome:
         )
 
     def to_legacy_dict(self) -> dict[str, Any]:
-        return {
+        projection: dict[str, Any] = {
             "status": self.status,
             # 신규 outcome은 실행 operation을 생산하지 않는다. 이 필드는 wire 호환 projection이다.
             "operations": [],
@@ -335,14 +363,21 @@ class SemanticOutcome:
             "unsupported_operations": copy.deepcopy(list(self.unsupported_operations)),
             "message": self.message,
         }
+        # 명시 사유가 없으면 키 자체를 싣지 않는다 — 기존 투영과 바이트 동일하게 남긴다.
+        if self.failure_reason is not None:
+            projection["failure_reason"] = self.failure_reason
+        return projection
 
 
 __all__ = [
     "FAILURE_KINDS",
+    "FAILURE_REASONS",
+    "FAILURE_REASON_EMISSION",
     "SEMANTIC_OUTCOME_WIRE_SPEC",
     "SEMANTIC_STATUSES",
     "ClosedObjectSpec",
     "FailureKind",
+    "FailureReason",
     "SemanticOutcome",
     "SemanticStatus",
     "WireFieldSpec",

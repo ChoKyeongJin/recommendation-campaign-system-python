@@ -387,7 +387,18 @@ def test_active_cart_cannot_hide_a_distinct_member_wide_purchase_absence() -> No
     )
 
 
-def test_live_10_compound_ranked_set_stays_unsupported() -> None:
+def test_live_10_compound_ranked_set_is_not_declared_unsupported() -> None:
+    """이 조합은 미지원이 아니다 — 방출 실패다.
+
+    **기대값 변경(2026-08-07).** 예전 이름은 `..._stays_unsupported` 였고 이 payload 가
+    `semantic_ir.status == "unsupported"` 로 끝나는 것을 고정했다. 그 고정이 틀렸다는 근거는
+    `tests/test_ranked_set_cardinality.py` 다 — 같은 의미의 canonical Event IR 이 지금 코드에서
+    그대로 SQL 로 컴파일된다(COUNT(DISTINCT …) >= 2 over TOP 5). 즉 실패의 위치는 실행 계층이
+    아니라 방출 계층이고, 그것을 '표현할 수 없습니다'로 부르면 없는 한계를 있다고 말하게 된다.
+
+    바뀌지 않은 것: 표현이 없으므로 SQL 은 여전히 나가지 않는다(fail-close). 바뀐 것은 그
+    실패를 **무엇이라고 부르는가** 하나다.
+    """
     query = "작년에 가장 많이 팔린 상품 5개 중 2개 이상 구매한 고객"
     payload = _base_payload({
         "expression": None,
@@ -407,7 +418,13 @@ def test_live_10_compound_ranked_set_stays_unsupported() -> None:
         payload, query, current_date="2026-08-04"
     )
 
-    assert plan["semantic_ir"]["status"] == "unsupported"
+    semantic_ir = plan["semantic_ir"]
+    assert semantic_ir["status"] != "unsupported", (
+        "canonical 경로가 컴파일하는 의미가 '표현할 수 없다'로 종결됐다"
+    )
+    assert semantic_ir["failure_kind"] == "system_failure"
+    assert semantic_ir["failure_reason"] == "semantic_emission_failure"
+    assert plan["audience_emission_failures"][0]["obligation_kind"] == "ranked_entity_set"
     assert plan.get("event_expression") is None
     assert not any(
         decision.get("filter") == STATE_SELECTION_FILTER

@@ -38,6 +38,7 @@ import execution_assets
 import plan_decisions
 import rolling_absence_claims
 import semantic_outcome
+import semantic_requirements
 from audience_validators import audience_validators
 from query_pipeline.compiler.capability import event_ir_capability_profile
 from query_pipeline.requirement.models import (
@@ -55,6 +56,7 @@ from query_pipeline.requirement.resolver import (
 )
 from query_pipeline.requirement.validation import ISSUE_CODE_KINDS, report_from_issue
 from query_structurer.semantic_ir import write_semantic_ir
+from query_structurer.semantic_outcome import FAILURE_REASON_EMISSION
 
 AUDIENCE_REQUIREMENT_KEY = "audience_requirement"
 EVENT_EXPRESSION_KEY = "event_expression"
@@ -123,6 +125,34 @@ def _audience_issue_key(item: Mapping[str, Any]) -> tuple[str, str, str]:
     """issue 하나의 신원(코드·인자·근거 구간). 생산자를 가르는 데만 쓴다."""
     evidence = item.get("evidence") if isinstance(item.get("evidence"), Mapping) else {}
     return (str(item.get("code")), str(item.get("argument")), str(evidence.get("text")))
+
+
+def _supported_obligation_conflicts(
+    query: str, unsupported: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """'표현 불가' 신고 중 **애플리케이션이 낼 수 있다고 계산해 둔** 자리의 것들.
+
+    반박의 축과 판정의 축은 같아야 한다 — 구조화기의 재방출 요구
+    (:func:`query_structurer.structurer._audience_repair_error`)와 이 종결 판정이 서로 다른
+    기준을 쓰면, 재시도를 거는 조건과 미지원으로 닫는 조건이 갈라진다.
+    """
+    obligations = canonical_audience_claims.supported_obligations_for_query(query)
+    if not obligations:
+        return []
+    conflicts: list[dict[str, Any]] = []
+    for item in unsupported:
+        obligation = canonical_audience_claims.obligation_conflicting_with_claim(
+            item, obligations
+        )
+        if obligation is None:
+            continue
+        conflicts.append({
+            "argument": str(item.get("argument") or ""),
+            "evidence": str((item.get("evidence") or {}).get("text") or ""),
+            "obligation_kind": semantic_requirements.obligation_kind(obligation),
+            "source_span": dict(obligation.source_span),
+        })
+    return conflicts
 
 
 def _dedupe_audience_issues(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -995,6 +1025,27 @@ def project_resolution_to_plan(
                      "assets": [asset.to_dict() for asset in assets]}
                     for item, assets in contradicted
                 ]
+                return True
+            # 실행 자산도 컴파일러도 이 의미를 낼 수 있는데(= 애플리케이션이 그 구간을 이미
+            # 의무로 계산해 두었는데) 표현이 서지 않았다면, 그것은 '표현할 수 없다'가 아니라
+            # **방출 실패**다. 재시도까지 소진한 뒤에도 미지원으로 종결하면 없는 한계를 있다고
+            # 말하게 되고, 운영에서는 레지스트리 구멍을 찾게 된다(고칠 곳이 다르다).
+            emission_failures = _supported_obligation_conflicts(resolution.query, unsupported)
+            if emission_failures:
+                write_semantic_ir(
+                    payload,
+                    empty_semantic_ir(
+                        status="needs_clarification",
+                        missing_fields=["audience.requirement"],
+                        message=(
+                            "요청한 조건은 지원되는 의미이지만 실행 표현으로 확정되지 "
+                            "않았습니다."
+                        ),
+                        failure_kind="system_failure",
+                        failure_reason=FAILURE_REASON_EMISSION,
+                    ),
+                )
+                payload["audience_emission_failures"] = emission_failures
                 return True
             write_semantic_ir(
                 payload,

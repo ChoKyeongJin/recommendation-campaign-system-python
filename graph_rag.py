@@ -9010,7 +9010,9 @@ def _semantic_ir_blocking_sql_result(
         clarifications: list[str] = []
     else:
         clarifications = [message]
-    failure_reason = failure_messages.semantic_failure_reason(status, failure_kind)
+    failure_reason = failure_messages.semantic_failure_reason(
+        status, failure_kind, semantic_ir.get("failure_reason")
+    )
     return {
         # 응답 payload 계약으로만 남은 키다(생산자 폐기 후 값은 항상 빈 보고). 키를 지우면
         # 저장된 응답을 읽는 쪽이 KeyError 를 보므로 빈 dict 로 유지한다.

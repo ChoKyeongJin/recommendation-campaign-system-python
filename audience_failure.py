@@ -159,9 +159,14 @@ INPUTS: tuple[str, ...] = (
     "sql_result.failure_reason",
 )
 
-# 의미 게이트가 내는 사유. `semantic_ir_<status>` 외에 두 개가 더 있다 —
-# failure_messages.semantic_failure_reason 이 failure_kind 로 갈라 만든다(구조화기/실행설정).
-_SEMANTIC_GATE_REASONS = frozenset({"semantic_structurer_failure", "semantic_registry_gap"})
+# 의미 게이트가 내는 사유. `semantic_ir_<status>` 외에 세 개가 더 있다 —
+# failure_messages.semantic_failure_reason 이 failure_kind 로 갈라 만들거나(구조화기/실행설정),
+# 판정한 계층이 semantic_ir.failure_reason 으로 명시한다(방출 실패).
+_SEMANTIC_GATE_REASONS = frozenset({
+    "semantic_structurer_failure",
+    "semantic_registry_gap",
+    "semantic_emission_failure",
+})
 _SEMANTIC_REASON_PREFIX = "semantic_ir_"
 
 _PLAN_VALIDATION_PREFIX = "plan_validation_"

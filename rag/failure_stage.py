@@ -84,6 +84,9 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
     # 둘 다 '조건 인식' 단계지만 사유 코드로 갈려야 운영자가 어디를 고칠지 안다.
     "semantic_structurer_failure": "condition_recognition",
     "semantic_registry_gap": "condition_recognition",
+    # 자산도 컴파일러도 이 의미를 낼 수 있는데 구조화기가 표현을 방출하지 못한 경우.
+    # 레지스트리 구멍과 같은 단계지만 고칠 곳이 다르므로 사유 코드를 분리한다.
+    "semantic_emission_failure": "condition_recognition",
     "semantic_conditions_not_extracted": "condition_recognition",
     "entity_ranking_not_structured": "condition_recognition",
     "real_db_unsupported_conditions": "real_db_mapping",

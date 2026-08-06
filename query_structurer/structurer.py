@@ -148,6 +148,21 @@ def _registered_canonical_symbol(symbol: Any) -> str | None:
     return None
 
 
+def _application_supported_obligations(query: Any) -> tuple[Any, ...]:
+    """원문에서 애플리케이션이 계산한 의무 중 **canonical 컴파일러가 방면할 수 있는** 것들.
+
+    판정과 종류 선언의 소유자는 영수증을 발행하는 쪽(:mod:`canonical_audience_claims`)이다 —
+    여기서 그 목록을 다시 적으면 반박과 방면이 서로 다른 답을 쓰게 된다. 이 함수가 하는 일은
+    **카탈로그를 못 읽는 상황을 반박하지 않음으로 접는 것**뿐이다.
+    """
+    import canonical_audience_claims  # 지연 import — 구조화기는 카탈로그 로딩을 강제하지 않는다
+
+    try:
+        return canonical_audience_claims.supported_obligations_for_query(query)
+    except Exception:  # noqa: BLE001 — 의무를 못 읽으면 반박하지 않는다(추측 금지).
+        return ()
+
+
 def _audience_repair_error(raw: dict[str, Any], enriched: dict[str, Any]) -> str | None:
     """Report application-derived failures without echoing model-authored issues."""
     raw_requirement = raw.get("audience_requirement")
@@ -167,9 +182,18 @@ def _audience_repair_error(raw: dict[str, Any], enriched: dict[str, Any]) -> str
         #                        → argument='distinct_products' / "…count distinct…표현 불가"
         #                        `aggregate.count_distinct` 는 IR 이 선언한 capability 이고,
         #                        컴파일러가 그 자리에서 HAVING COUNT(DISTINCT …) 를 만든다.
+        #   의무 축 (2026-08-07) '작년에 가장 많이 팔린 상품 5개 중 2개 이상 구매한 고객'
+        #                        → argument='ranked_set_cardinality' / "…지원하지 않습니다"
+        #                        그 구간은 애플리케이션이 이미 `ranked_entity_set` 의무로
+        #                        계산해 둔 자리이고, canonical 컴파일러가 그것을 방면한다.
         #
-        # 심볼 축만 있던 동안 계산 축의 거짓 신고는 그대로 '표현할 수 없습니다'로 나갔다.
-        # 둘 다 종결이 아니라 재시도 사유다.
+        # 앞의 두 축은 모델이 **이름**을 어떻게 적었는지에 걸린다. 세 번째 축은 이름을 보지
+        # 않고 **좌표**를 본다 — 그래서 새 표면어가 생겨도 목록을 늘릴 필요가 없다.
+        # 셋 다 종결이 아니라 재시도 사유다.
+        import canonical_audience_claims  # 지연 import — 카탈로그 로딩을 강제하지 않는다
+        import semantic_requirements
+
+        obligations = _application_supported_obligations(enriched.get("original_query"))
         refuted: list[str] = []
         for item in raw_issues:
             if item.get("code") != "unsupported_semantics":
@@ -183,6 +207,16 @@ def _audience_repair_error(raw: dict[str, Any], enriched: dict[str, Any]) -> str
             )
             if capability is not None:
                 refuted.append(f"{capability} is a declared Event IR capability")
+                continue
+            obligation = canonical_audience_claims.obligation_conflicting_with_claim(
+                item, obligations
+            )
+            if obligation is not None:
+                refuted.append(
+                    f"'{obligation.source_text}' is an application-owned "
+                    f"{semantic_requirements.obligation_kind(obligation)} obligation that the "
+                    "canonical compiler discharges"
+                )
         if refuted:
             return (
                 f"{'; '.join(sorted(set(refuted)))}; capability is decided by the application, "
@@ -358,6 +392,10 @@ class LLMCampaignQueryPlanV4Structurer:
             messages.append({"role": "user", "content": extra_instruction})
         last_error = "unknown"
         attempts_made = 0
+        # 재시도를 소진했을 때 쓸 **정직한 종결**. 애플리케이션이 "이 의미는 낼 수 있다"고
+        # 판정해 둔 경우에만 채워진다 — 그 외의 반박(심볼·capability 축)은 예전처럼 폴백으로
+        # 간다. 이 구분이 없으면 모델이 쓴 미지원 판정이 그대로 사용자에게 도달한다.
+        emission_failure: dict[str, Any] | None = None
         for attempt in range(self._max_retries + 1):
             attempts_made = attempt + 1
             response = ""
@@ -379,6 +417,8 @@ class LLMCampaignQueryPlanV4Structurer:
                 )
                 repair_error = _audience_repair_error(raw_payload, payload)
                 if repair_error:
+                    if payload.get("audience_emission_failures"):
+                        emission_failure = payload
                     raise CampaignQueryPlanValidationError(repair_error)
                 result = validate_campaign_query_plan_v4(
                     payload, query=input.query, require_semantic=True
@@ -411,11 +451,22 @@ class LLMCampaignQueryPlanV4Structurer:
                         {
                             "role": "user",
                             "content": build_campaign_query_plan_v4_retry_prompt(
-                                response, last_error
+                                response, last_error, input.query
                             ),
                         },
                     ]
                 )
+        # 방출 실패는 'LLM 구조화를 쓸 수 없음' 폴백으로 덮지 않는다 — 그 폴백은 원인을
+        # llm_structuring_unavailable 로 바꿔 적어, 고칠 곳이 방출 품질인 실패를 가용성/
+        # 레지스트리 문제로 오보고한다. 실패의 이름을 지키는 것이 이 분기의 전부다.
+        if emission_failure is not None:
+            self._emit(
+                "campaign_query_plan_v4_emission_failure",
+                {"attempts": attempts_made, "last_error": last_error},
+            )
+            return validate_campaign_query_plan_v4(
+                emission_failure, query=input.query, require_semantic=True
+            )
         self._emit(
             "campaign_query_plan_v4_fallback",
             {"attempts": attempts_made, "last_error": last_error},
