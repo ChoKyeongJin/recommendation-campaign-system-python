@@ -5876,8 +5876,8 @@ def retrieve(
         )
         campaign_query_plan = default_period_policy.apply_default_period(
             campaign_query_plan, query=targeting_prompt, current_date=context.current_date,
-            period=default_period_policy.resolve_default_period(),
-            restructure=_restructure, write_log=_write_rag_llm_log,
+            period=default_period_policy.resolve_default_period(), write_log=_write_rag_llm_log,
+            marker_resolver=default_period_policy.resolve_catalog_period, restructure=_restructure,
         )
         campaign_plan_structured = True
         timings_ms["query_structuring"] = _elapsed_ms(structuring_started_at)

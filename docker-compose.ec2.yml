@@ -70,6 +70,10 @@ services:
       POSTGRES_PASSWORD: "1234"
       # 최종 SQL↔원문 의미검증(9단계) 전용 모델. OPENAI_FAST_MODEL(재작성·분리·추출)과 분리 지정.
       OPENAI_SEMANTIC_VERIFY_MODEL: "gpt-5-mini"
+      # 기간 없는 '최근'·'요즘'을 되묻지 않고 기본값 카탈로그
+      # (docs/data/runtime/policies/qualitative_defaults.sample.json)의 표현별 창으로 읽는다.
+      # 끄면(값 삭제) 구조화기의 fail-close 가 그대로 결말이 된다. 사용자가 말한 기간은 언제나 이긴다.
+      AUDIENCE_QUALITATIVE_DEFAULTS: "1"
       # fastembed 모델 캐시 공용 볼륨(python 적재 때 받은 모델을 재사용).
       FASTEMBED_CACHE_PATH: /fastembed_cache
     volumes:

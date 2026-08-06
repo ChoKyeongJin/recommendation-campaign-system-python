@@ -31,6 +31,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import event_ir
+import qualitative_defaults
 from query_structurer import CampaignQueryPlanV4
 from query_structurer.campaign_plan_v4 import AUDIENCE_REQUIREMENT_KEY
 from query_structurer.semantic_ir import (
@@ -60,11 +61,18 @@ _PERIOD_RE = re.compile(r"^\s*(\d+)\s*([A-Za-z]+)\s*$")
 
 @dataclass(frozen=True, slots=True)
 class DefaultPeriod:
-    """제품이 선택한 기본 기간 하나(값·단위·출처)."""
+    """제품이 선택한 기본 기간 하나(값·단위·출처).
+
+    ``expression`` 은 이 기간을 고르게 만든 표면어다(카탈로그 해석일 때만 채워진다). 설정
+    한 값을 모든 표현에 똑같이 적용하는 env 경로에서는 ``None`` 이고, 그 차이가 응답 문구와
+    감사 로그에 그대로 드러난다 — '요즘'이 14일이 된 것과 아무 '최근'이나 5일이 된 것은
+    같은 사건이 아니다.
+    """
 
     value: int
     unit: str
     origin: str
+    expression: str | None = None
 
     @property
     def window(self) -> dict[str, Any]:
@@ -98,6 +106,32 @@ def resolve_default_period(
     if value <= 0:
         return None
     return DefaultPeriod(value=value, unit=str(unit), origin=source)
+
+
+def resolve_catalog_period(
+    issues: Sequence[Mapping[str, Any]], *, catalog_path: Any = None
+) -> DefaultPeriod | None:
+    """결핍이 **지목한 표면어**를 카탈로그에서 찾아 그 표현의 기본 창을 준다.
+
+    env 경로(:func:`resolve_default_period`)는 배포마다 값 하나만 받으므로 '요즘'과 '최근
+    한 달'이 같은 창이 된다. 구조화기는 결핍을 신고할 때 어떤 말이 기간을 요구하는지 evidence
+    스팬으로 알려 주므로, 그 말 자체를 카탈로그에 물어보면 표현마다 다른 창을 줄 수 있다.
+
+    카탈로그가 답하지 못하면 ``None`` 이고, 그때 결말을 정하는 것은 호출 계층이다(env 기본값
+    또는 코어 fail-close). 여기서 비슷한 항목으로 대신하지 않는다.
+    """
+
+    for span in _issue_evidence(issues):
+        found = qualitative_defaults.resolve_recency_marker(span["text"], catalog_path)
+        if found is None:
+            continue
+        return DefaultPeriod(
+            value=found.value,
+            unit=found.unit,
+            origin=f"{qualitative_defaults.ENABLED_ENV}:{found.canonical}",
+            expression=found.expression,
+        )
+    return None
 
 
 def missing_period_issues(plan: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -243,22 +277,29 @@ def apply_default_period(
     period: DefaultPeriod | None,
     restructure: Callable[[str], CampaignQueryPlanV4],
     write_log: Callable[[str, dict[str, Any]], None] | None = None,
+    marker_resolver: Callable[[Sequence[Mapping[str, Any]]], DefaultPeriod | None] | None = None,
 ) -> CampaignQueryPlanV4:
     """기간 결핍 하나를 설정된 기본 기간으로 채운다(설정이 없으면 원본 그대로).
 
     ``restructure`` 는 애플리케이션 소유 지시문 하나를 받아 **같은 구조화기**를 다시 부르는
     호출자의 클로저다. 모델이 표현을 ``null`` 로 닫아 놓았으므로 여기서 트리를 기워 넣을 수는
     없다 — 창을 어느 조건이 소유하는지는 표현을 만든 쪽만 안다.
+
+    ``marker_resolver`` 는 결핍이 지목한 표면어를 보고 **그 표현에 맞는** 기간을 고르는 선택적
+    해석기다(:func:`resolve_catalog_period`). 표현별 값이 배포 전역 값보다 구체적이므로 답을
+    내면 그쪽이 이긴다. 답하지 못하면 ``period`` 로 물러서고, 둘 다 없으면 정책은 돌지 않는다.
     """
 
     def log(event: str, payload: dict[str, Any]) -> None:
         if write_log is not None:
             write_log(event, {"query": query, **payload})
 
-    if period is None:
-        return plan
     issues = missing_period_issues(plan)
     if not issues:
+        return plan
+    if marker_resolver is not None:
+        period = marker_resolver(issues) or period
+    if period is None:
         return plan
 
     stated = _stated_rolling_durations(query, current_date)
@@ -284,6 +325,7 @@ def apply_default_period(
         "unit": period.unit,
         "window": period.window,
         "origin": period.origin,
+        "expression": period.expression,
         "evidence": _issue_evidence(issues),
     }
     # 의미 판정도 'resolved'(사용자 문장만으로 확정)가 아니라 **정책이 채운 성공**이다. 이 상태는
@@ -297,8 +339,13 @@ def apply_default_period(
                 {"policy_id": POLICY_OWNER, "fields": [_POLICY_FIELD]}
             ],
             message=(
-                f"기간을 말하지 않은 '최근'을 배포 설정의 기본 기간"
+                f"기간을 말하지 않은 '{period.expression}'을(를) 기본 기간"
                 f"(최근 {period.value} {period.unit})으로 해석했습니다."
+                if period.expression
+                else (
+                    f"기간을 말하지 않은 '최근'을 배포 설정의 기본 기간"
+                    f"(최근 {period.value} {period.unit})으로 해석했습니다."
+                )
             ),
         ),
     )
@@ -314,5 +361,6 @@ __all__ = [
     "apply_default_period",
     "missing_period_issues",
     "render_default_period_instruction",
+    "resolve_catalog_period",
     "resolve_default_period",
 ]

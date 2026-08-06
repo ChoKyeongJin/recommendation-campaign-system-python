@@ -1,0 +1,469 @@
+{
+  "version": "1.1",
+  "status": "partially_wired",
+  "description": "'최근', '대부분', '자주', '크게 증가'처럼 수치가 없는 마케팅·CRM 표현의 기본 해석값 카탈로그. 업종별 실데이터가 없을 때 쓰는 초기 규칙이며, 확정된 업무 정책이 아니라 대체 가능한 예시본이다(.sample). 이 중 time_expression 그룹만 자연어→SQL 경로가 실제로 읽는다(consumption 참조). 나머지 그룹은 참조 전용이다.",
+
+  "consumption": {
+    "_comment": [
+      "'카탈로그에 적혀 있다'와 'SQL 을 바꾼다'는 다르다. 어느 그룹이 실행 경로에 닿는지를 여기 적어",
+      "두지 않으면, 읽는 사람은 236항목 전부가 동작한다고 오해한다.",
+      "배선된 그룹도 기본으로 꺼져 있다. 되묻기와 기본값 중 무엇이 옳은지는 원문이 아니라 제품 설정이",
+      "정한다는 default_period_policy 의 계층 결정을 그대로 따른다."
+    ],
+    "wired": [
+      {
+        "group_id": "time_expression",
+        "consumer": "qualitative_defaults.resolve_recency_marker → default_period_policy.resolve_catalog_period → graph_rag.structure_campaign_query_plan_once",
+        "stage": "구조화 직후 결핍 보정(missing_argument(period) 가 신고된 경우에만)",
+        "enabled_by": "AUDIENCE_QUALITATIVE_DEFAULTS (미설정이면 구조화기 fail-close 가 결말)",
+        "scope": "kind=relative_window · direction=past · 단위가 event_ir.WINDOW_UNITS(day/week/month/year) 인 항목만",
+        "excluded": [
+          "방금(PT1H) — RollingWindow 는 hour 를 받지 않는다",
+          "오늘·어제·지난주·이번 주·현재(calendar_window) — 롤링 창이 아니다",
+          "단기간·일정 기간·한동안·장기간(duration) — 창이 아니라 길이다",
+          "당분간(direction=future) — 오디언스 관측 창이 아니다"
+        ],
+        "invariants": [
+          "사용자가 말한 기간이 언제나 이긴다(재구조화가 명시 기간을 잃으면 채택하지 않는다)",
+          "적용되면 audience_default_period.origin 에 어느 항목이 정했는지 남는다"
+        ]
+      }
+    ],
+    "reference_only": [
+      {
+        "group_ids": ["customer_type"],
+        "reason": "표면어 소유자가 이미 있다. 'VIP 고객'·'우수 고객'·'신규 고객'은 normalization_rules.sample.json 이 회원 등급 코드(EMART_GRADE_CD)로 매핑하고 실 CRM 에 그 컬럼이 실재한다. 여기의 행동 기반 정의('VIP = 최근 180일 구매액 상위 5%')를 함께 내보내면 같은 말에 두 해석이 생긴다. 어느 쪽이 옳은지는 배포가 정할 문제이며 이 파일이 가로채지 않는다."
+      },
+      {
+        "group_ids": ["audience_size"],
+        "reason": "'N의 10%'는 SQL 로 표현 가능하지만(TOP N PERCENT), 모집단·동점자·최소 표본 정책이 정해지지 않아 배선하지 않았다. member_metric_selection 의 퍼센트 랭킹 경로와 합의가 먼저 필요하다."
+      },
+      {
+        "group_ids": [
+          "send_frequency",
+          "performance_change",
+          "engagement_rate",
+          "campaign_success",
+          "budget",
+          "channel_allocation",
+          "content",
+          "design",
+          "operation",
+          "magnitude"
+        ],
+        "reason": "타겟 오디언스 SQL 이 표현할 수 있는 대상이 아니다. 발송 빈도·예산·소재·운영 조건은 SQL 생성 이후 단계(메시지 생성·집행)나 시스템 밖의 관심사다."
+      }
+    ]
+  },
+
+  "_comment": [
+    "이 파일은 '표현 → 기본값'을 기록만 한다. 컴파일러에 연결하려면 표현별로 모집단·기준시각·동점자·null 정책을",
+    "먼저 확정해야 한다(CLAUDE.md §7·§8·§17·§18). 특히 rank kind 항목은 percent 와 window 만 고정하고",
+    "population·tie_policy·null_policy·minimum_population 을 requires_definition 으로 비워 둔다 — 이 값 없이",
+    "'상위 20%'를 숫자 비교로 환원하면 의미가 달라진다.",
+    "default_text 는 원문 표기를 손실 없이 보존한다. default 는 기계 판독이 가능한 경우에만 구조화하고,",
+    "불가능하면 kind=unstructured 로 남겨 requires_definition 에 무엇이 더 필요한지 적는다(§11·§12).",
+    "표현이 여러 그룹에 중복되면 문맥 그룹이 우선하고 magnitude 그룹은 폴백이다(conventions.precedence)."
+  ],
+
+  "conventions": {
+    "number_policy": "정수 크기는 JSON 숫자로, 소수는 부동소수 오차를 피하려고 문자열로 적는다(Decimal 로 읽는다). value 가 있는 원자는 unit 을 반드시 함께 적는다(§13·§14).",
+    "duration_format": "기간은 ISO-8601 duration(P30D, PT24H, P1M, P1W)으로 적는다. 달·영업일·달력일은 서로 다르므로 timedelta 로 일괄 환산하지 않는다(§16).",
+    "timezone_policy": "calendar_window 의 시각은 벽시계 표기이며 timezone 을 정의하지 않는다. 실제 평가 시 EvaluationContext 의 timezone·now 를 주입해 해석한다(§15).",
+    "precedence": ["문맥 그룹(time_expression·audience_size·budget 등)", "magnitude 그룹(폴백)"],
+    "comparators": {
+      "eq": "정확히 그 값",
+      "lt": "미만",
+      "lte": "이하",
+      "gt": "초과",
+      "gte": "이상",
+      "between": "min 이상 max 이하",
+      "within": "기준 대비 ±value 이내",
+      "none": "비교가 아니라 서술"
+    },
+    "value_kinds": {
+      "relative_window": "기준 시각에서 direction 방향으로 duration 만큼의 구간",
+      "calendar_window": "달력 경계에 붙는 구간(anchor, start, end)",
+      "relative_point": "기준 시각/앵커에서 offset 만큼 떨어진 한 시점",
+      "duration": "구간이 아니라 길이 자체(comparator 로 이상/이하 표현)",
+      "deadline": "anchor 시점부터 within 안에 수행",
+      "campaign_phase": "캠페인 전체 기간을 100 으로 봤을 때의 구간 비율",
+      "schedule": "anchor 기준 offsets 시점마다 1회",
+      "frequency": "per 기간당 count 회, caps 로 상한 추가",
+      "rank": "모집단 내 순위·상위 비율(추가 정책 필요)",
+      "criteria": "criteria 원자들의 AND 결합",
+      "unstructured": "기본값이 서술로만 정의됨. requires_definition 을 채우기 전에는 자동 해석하지 않는다"
+    },
+    "criteria_atom": {
+      "subject": "무엇을 재는가",
+      "comparator": "comparators 중 하나",
+      "value|min|max": "크기",
+      "unit": "percent, percentage_point, day, hour, person, count, character, px, contrast_ratio, multiple 등",
+      "base": "비율의 분모(bases 참조)",
+      "direction": "increase | decrease (변화량일 때)",
+      "window": "관측 구간(ISO-8601 duration)",
+      "note": "구조화되지 않은 단서"
+    }
+  },
+
+  "bases": {
+    "N": "발송 가능 고객 수(전체 발송 대상 모집단)",
+    "matched_audience": "타겟 조건을 충족하는 고객 수",
+    "B": "전체 캠페인 예산",
+    "comparison_baseline": "직전 동일 유형 캠페인 또는 최근 30일 평균",
+    "target_kpi": "캠페인에 설정한 핵심 KPI 목표값",
+    "control_group": "통제군",
+    "campaign_duration": "캠페인 전체 기간",
+    "expected_cost": "목표 도달에 필요한 예상 비용",
+    "target_cpa": "목표 CPA",
+    "all_channels": "운영 가능한 전체 채널",
+    "allowed_range": "운영상 허용된 값의 범위",
+    "planned_audience": "발송·노출이 예정된 대상 수",
+    "target_visitor_count": "목표 방문자 수",
+    "member_buy_cycle": "회원의 평소 구매 주기",
+    "previous_day": "전일 값",
+    "context_dependent": "분모가 문장 문맥에서 정해진다(고정하지 않는다)"
+  },
+
+  "groups": [
+    {
+      "group_id": "time_expression",
+      "ko_label": "기간·시간 표현",
+      "note": "기준 시각은 평가 컨텍스트에서 주입한다. '최근 N일'은 기준 시각 포함 과거 구간이다.",
+      "entries": [
+        {"expression": "방금", "canonical": "just_now", "default_text": "최근 1시간", "default": {"kind": "relative_window", "direction": "past", "duration": "PT1H"}},
+        {"expression": "최근", "canonical": "recent", "default_text": "최근 5일", "default": {"kind": "relative_window", "direction": "past", "duration": "P5D"}},
+        {"expression": "요즘", "canonical": "these_days", "default_text": "최근 14일", "default": {"kind": "relative_window", "direction": "past", "duration": "P14D"}},
+        {"expression": "현재", "canonical": "now", "default_text": "오늘 00시부터 현재까지", "default": {"kind": "calendar_window", "anchor": "today", "start": "00:00", "end": "now"}},
+        {"expression": "오늘", "canonical": "today", "default_text": "당일 00:00~23:59", "default": {"kind": "calendar_window", "anchor": "today", "start": "00:00", "end": "23:59"}},
+        {"expression": "어제", "canonical": "yesterday", "default_text": "전일 00:00~23:59", "default": {"kind": "calendar_window", "anchor": "yesterday", "start": "00:00", "end": "23:59"}},
+        {"expression": "며칠 전", "canonical": "few_days_ago", "default_text": "3일 전", "default": {"kind": "relative_point", "direction": "past", "offset": "P3D"}},
+        {"expression": "지난 며칠", "canonical": "past_few_days", "default_text": "최근 5일", "default": {"kind": "relative_window", "direction": "past", "duration": "P5D"}},
+        {"expression": "지난주", "canonical": "last_week", "default_text": "직전 월요일~일요일", "default": {"kind": "calendar_window", "anchor": "last_week", "week_start": "monday", "start": "monday", "end": "sunday"}},
+        {"expression": "이번 주", "canonical": "this_week", "default_text": "이번 주 월요일~현재", "default": {"kind": "calendar_window", "anchor": "this_week", "week_start": "monday", "start": "monday", "end": "now"}},
+        {"expression": "최근 일주일", "canonical": "last_seven_days", "default_text": "최근 7일", "default": {"kind": "relative_window", "direction": "past", "duration": "P7D"}},
+        {"expression": "최근 한 달", "canonical": "last_thirty_days", "default_text": "최근 30일", "default": {"kind": "relative_window", "direction": "past", "duration": "P30D"}},
+        {"expression": "최근 분기", "canonical": "last_quarter", "default_text": "최근 90일", "default": {"kind": "relative_window", "direction": "past", "duration": "P90D"}},
+        {"expression": "단기간", "canonical": "short_period", "default_text": "7일", "default": {"kind": "duration", "comparator": "eq", "duration": "P7D"}},
+        {"expression": "일정 기간", "canonical": "fixed_period", "default_text": "14일", "default": {"kind": "duration", "comparator": "eq", "duration": "P14D"}},
+        {"expression": "한동안", "canonical": "for_a_while", "default_text": "30일", "default": {"kind": "duration", "comparator": "eq", "duration": "P30D"}},
+        {"expression": "당분간", "canonical": "for_the_time_being", "default_text": "향후 30일", "default": {"kind": "relative_window", "direction": "future", "duration": "P30D"}},
+        {"expression": "장기간", "canonical": "long_period", "default_text": "90일 이상", "default": {"kind": "duration", "comparator": "gte", "duration": "P90D"}},
+        {"expression": "곧", "canonical": "soon", "default_text": "24시간 이내", "default": {"kind": "deadline", "anchor": "now", "within": "PT24H", "calendar": "gregorian"}},
+        {"expression": "조만간", "canonical": "shortly", "default_text": "3일 이내", "default": {"kind": "deadline", "anchor": "now", "within": "P3D", "calendar": "gregorian"}},
+        {"expression": "빠른 시일 내에", "canonical": "asap_business_days", "default_text": "2영업일 이내", "default": {"kind": "deadline", "anchor": "now", "within": "P2D", "calendar": "business_days"}},
+        {"expression": "최대한 빨리", "canonical": "asap", "default_text": "24시간 이내", "default": {"kind": "deadline", "anchor": "now", "within": "PT24H", "calendar": "gregorian"}},
+        {"expression": "준비되는 대로", "canonical": "when_ready", "default_text": "조건 충족 후 1시간 이내", "default": {"kind": "deadline", "anchor": "condition_met", "within": "PT1H", "calendar": "gregorian"}},
+        {"expression": "캠페인 초반", "canonical": "campaign_early", "default_text": "전체 기간의 첫 30%", "default": {"kind": "campaign_phase", "base": "campaign_duration", "from_percent": 0, "to_percent": 30}},
+        {"expression": "캠페인 중반", "canonical": "campaign_mid", "default_text": "전체 기간의 30~70%", "default": {"kind": "campaign_phase", "base": "campaign_duration", "from_percent": 30, "to_percent": 70}},
+        {"expression": "캠페인 후반", "canonical": "campaign_late", "default_text": "전체 기간의 마지막 30%", "default": {"kind": "campaign_phase", "base": "campaign_duration", "from_percent": 70, "to_percent": 100}},
+        {"expression": "캠페인 종료 직전", "canonical": "campaign_just_before_end", "default_text": "종료 24시간 전", "default": {"kind": "relative_point", "anchor": "campaign_end", "direction": "past", "offset": "PT24H"}},
+        {"expression": "장기 미접속", "canonical": "long_inactive", "default_text": "최근 90일간 접속 없음", "default": {"kind": "criteria", "criteria": [{"subject": "access_event", "comparator": "eq", "value": 0, "unit": "count", "window": "P90D"}]}},
+        {"expression": "최근 구매 고객", "canonical": "recent_purchaser", "default_text": "최근 30일 내 구매", "default": {"kind": "criteria", "criteria": [{"subject": "purchase_event", "comparator": "gte", "value": 1, "unit": "count", "window": "P30D"}]}},
+        {"expression": "최근 가입 고객", "canonical": "recent_signup", "default_text": "최근 5일 내 가입", "default": {"kind": "criteria", "criteria": [{"subject": "signup_event", "comparator": "gte", "value": 1, "unit": "count", "window": "P5D"}]}}
+      ]
+    },
+
+    {
+      "group_id": "audience_size",
+      "ko_label": "고객 수·대상 규모",
+      "note": "비율의 분모는 발송 가능 고객 수 N 이다. N 이 작으면 비율만 쓰지 말고 최소 표본 조건을 함께 둔다(§18 작은 모집단 정책).",
+      "entries": [
+        {"expression": "극소수", "canonical": "very_few", "default_text": "N의 1% 이하", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "lte", "value": 1, "unit": "percent", "base": "N"}]}},
+        {"expression": "소수", "canonical": "few", "default_text": "N의 5%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 5, "unit": "percent", "base": "N"}]}},
+        {"expression": "일부", "canonical": "some_audience", "default_text": "N의 10%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 10, "unit": "percent", "base": "N"}]}},
+        {"expression": "몇몇 고객", "canonical": "a_few_customers", "default_text": "최대 100명 또는 N의 1%", "default": {"kind": "criteria", "combine": "unspecified", "criteria": [{"subject": "audience_size", "comparator": "lte", "value": 100, "unit": "person"}, {"subject": "audience_size", "comparator": "eq", "value": 1, "unit": "percent", "base": "N"}], "requires_definition": ["두 값이 min 결합인지 max 결합인지"]}},
+        {"expression": "적은 수", "canonical": "small_number", "default_text": "N의 10%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 10, "unit": "percent", "base": "N"}]}},
+        {"expression": "일정 수", "canonical": "certain_number", "default_text": "N의 20%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 20, "unit": "percent", "base": "N"}]}},
+        {"expression": "상당수", "canonical": "considerable_number", "default_text": "N의 40%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 40, "unit": "percent", "base": "N"}]}},
+        {"expression": "절반가량", "canonical": "about_half", "default_text": "N의 50%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 50, "unit": "percent", "base": "N"}]}},
+        {"expression": "다수", "canonical": "majority", "default_text": "N의 60%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 60, "unit": "percent", "base": "N"}]}},
+        {"expression": "많은 고객", "canonical": "many_customers", "default_text": "N의 70%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 70, "unit": "percent", "base": "N"}]}},
+        {"expression": "대부분", "canonical": "most_audience", "default_text": "N의 80%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 80, "unit": "percent", "base": "N"}]}},
+        {"expression": "대다수", "canonical": "vast_majority", "default_text": "N의 90%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 90, "unit": "percent", "base": "N"}]}},
+        {"expression": "거의 모든 고객", "canonical": "almost_all_customers", "default_text": "N의 95%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 95, "unit": "percent", "base": "N"}]}},
+        {"expression": "전체 고객", "canonical": "all_matched_customers", "default_text": "조건을 충족하는 고객 100%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 100, "unit": "percent", "base": "matched_audience"}]}},
+        {"expression": "가능한 만큼", "canonical": "as_many_as_possible", "default_text": "발송 가능 고객의 100%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 100, "unit": "percent", "base": "N"}]}},
+        {"expression": "최대한 많이", "canonical": "as_many_as_possible_capped", "default_text": "발송 가능 고객의 90%, 채널 제한 준수", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 90, "unit": "percent", "base": "N"}, {"subject": "channel_send_cap", "comparator": "none", "note": "채널별 발송 상한을 초과하지 않는다"}]}},
+        {"expression": "소규모 테스트", "canonical": "small_test", "default_text": "최소 1,000명 또는 N의 5%", "default": {"kind": "criteria", "combine": "unspecified", "criteria": [{"subject": "audience_size", "comparator": "gte", "value": 1000, "unit": "person"}, {"subject": "audience_size", "comparator": "eq", "value": 5, "unit": "percent", "base": "N"}], "requires_definition": ["두 값이 min 결합인지 max 결합인지"]}},
+        {"expression": "중간 규모 테스트", "canonical": "medium_test", "default_text": "N의 20%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 20, "unit": "percent", "base": "N"}]}},
+        {"expression": "대규모 캠페인", "canonical": "large_campaign", "default_text": "N의 70% 이상", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "gte", "value": 70, "unit": "percent", "base": "N"}]}}
+      ]
+    },
+
+    {
+      "group_id": "customer_type",
+      "ko_label": "고객 유형",
+      "note": "'활동'의 구성 이벤트(로그인·방문·구매 등)는 조직마다 다르므로 activity_definition 을 확정한 뒤 사용한다. rank 항목은 상위 비율만 정하고 모집단·동점자·null 정책은 비워 둔다.",
+      "entries": [
+        {"expression": "신규 고객", "canonical": "new_customer", "default_text": "가입 후 30일 이내", "default": {"kind": "criteria", "criteria": [{"subject": "days_since_signup", "comparator": "lte", "value": 30, "unit": "day"}]}},
+        {"expression": "아주 최근 가입자", "canonical": "very_recent_signup", "default_text": "가입 후 5일 이내", "default": {"kind": "criteria", "criteria": [{"subject": "days_since_signup", "comparator": "lte", "value": 5, "unit": "day"}]}},
+        {"expression": "기존 고객", "canonical": "existing_customer", "default_text": "가입 후 30일 초과", "default": {"kind": "criteria", "criteria": [{"subject": "days_since_signup", "comparator": "gt", "value": 30, "unit": "day"}]}},
+        {"expression": "활성 고객", "canonical": "active_customer", "default_text": "최근 30일 내 로그인·방문·구매 중 하나 이상", "default": {"kind": "criteria", "criteria": [{"subject": "activity_event", "comparator": "gte", "value": 1, "unit": "count", "window": "P30D", "note": "로그인·방문·구매 합집합"}]}},
+        {"expression": "매우 활성적인 고객", "canonical": "highly_active_customer", "default_text": "최근 7일 내 3회 이상 활동", "default": {"kind": "criteria", "criteria": [{"subject": "activity_event", "comparator": "gte", "value": 3, "unit": "count", "window": "P7D"}]}},
+        {"expression": "비활성 고객", "canonical": "inactive_customer", "default_text": "최근 30일간 활동 없음", "default": {"kind": "criteria", "criteria": [{"subject": "activity_event", "comparator": "eq", "value": 0, "unit": "count", "window": "P30D"}]}},
+        {"expression": "휴면 고객", "canonical": "dormant_customer", "default_text": "최근 90일간 활동 없음", "default": {"kind": "criteria", "criteria": [{"subject": "activity_event", "comparator": "eq", "value": 0, "unit": "count", "window": "P90D"}]}},
+        {"expression": "이탈 고객", "canonical": "churned_customer", "default_text": "최근 180일간 활동 없음", "default": {"kind": "criteria", "criteria": [{"subject": "activity_event", "comparator": "eq", "value": 0, "unit": "count", "window": "P180D"}]}},
+        {"expression": "충성 고객", "canonical": "loyal_customer", "default_text": "최근 90일간 3회 이상 구매", "default": {"kind": "criteria", "criteria": [{"subject": "purchase_event", "comparator": "gte", "value": 3, "unit": "count", "window": "P90D"}]}},
+        {"expression": "우수 고객", "canonical": "high_value_customer", "default_text": "최근 180일 구매액 상위 20%", "default": {"kind": "rank", "metric": "purchase_amount", "aggregate": "sum", "window": "P180D", "percent": 20, "order": "desc", "requires_definition": ["population", "tie_policy", "null_policy", "minimum_population", "percentile_rank 방식 vs percentile threshold 방식"]}},
+        {"expression": "VIP 고객", "canonical": "vip_customer", "default_text": "최근 180일 구매액 상위 5%", "default": {"kind": "rank", "metric": "purchase_amount", "aggregate": "sum", "window": "P180D", "percent": 5, "order": "desc", "requires_definition": ["population", "tie_policy", "null_policy", "minimum_population", "percentile_rank 방식 vs percentile threshold 방식"]}},
+        {"expression": "잠재 고객", "canonical": "prospect", "default_text": "방문 또는 가입했지만 구매 이력 없음", "default": {"kind": "criteria", "criteria": [{"subject": "visit_or_signup_event", "comparator": "gte", "value": 1, "unit": "count"}, {"subject": "purchase_event", "comparator": "eq", "value": 0, "unit": "count", "note": "전 기간 기준"}]}},
+        {"expression": "관심 고객", "canonical": "interested_customer", "default_text": "최근 30일 내 동일 상품·카테고리 2회 이상 조회", "default": {"kind": "criteria", "criteria": [{"subject": "product_view_event", "comparator": "gte", "value": 2, "unit": "count", "window": "P30D", "note": "동일 상품 또는 동일 카테고리 기준으로 집계"}]}},
+        {"expression": "구매 가능성이 높은 고객", "canonical": "high_purchase_intent", "default_text": "최근 14일 내 상품 조회 후 장바구니 또는 찜 수행", "default": {"kind": "criteria", "criteria": [{"subject": "product_view_event", "comparator": "gte", "value": 1, "unit": "count", "window": "P14D"}, {"subject": "cart_or_wishlist_event", "comparator": "gte", "value": 1, "unit": "count", "window": "P14D", "note": "조회 이후 발생해야 한다(순서 조건)"}]}},
+        {"expression": "반응이 좋은 고객", "canonical": "responsive_customer", "default_text": "최근 5개 캠페인 중 2개 이상 클릭", "default": {"kind": "criteria", "criteria": [{"subject": "campaign_click", "comparator": "gte", "value": 2, "unit": "count", "note": "최근 수신 캠페인 5개를 모집단으로 본다"}]}},
+        {"expression": "반응이 없는 고객", "canonical": "unresponsive_customer", "default_text": "최근 5개 캠페인 모두 미클릭", "default": {"kind": "criteria", "criteria": [{"subject": "campaign_click", "comparator": "eq", "value": 0, "unit": "count", "note": "최근 수신 캠페인 5개를 모집단으로 본다"}]}},
+        {"expression": "이탈 가능성이 높은 고객", "canonical": "churn_risk_customer", "default_text": "평소 구매 주기의 1.5배 이상 구매 없음", "default": {"kind": "criteria", "criteria": [{"subject": "days_since_last_purchase", "comparator": "gte", "value": "1.5", "unit": "multiple", "base": "member_buy_cycle"}], "requires_definition": ["'평소 구매 주기'의 산출 기간과 최소 구매 건수"]}},
+        {"expression": "유사 고객", "canonical": "lookalike_customer", "default_text": "핵심 고객 행동 특성과 70% 이상 일치", "default": {"kind": "unstructured", "requires_definition": ["'핵심 고객' 시드 집합", "행동 특성 벡터 구성", "유사도 산식과 70% 의 의미"]}}
+      ]
+    },
+
+    {
+      "group_id": "send_frequency",
+      "ko_label": "발송·노출 빈도",
+      "note": "빈도는 사용자 1인 기준이다. caps 는 상한이고 count/per 는 목표 빈도다.",
+      "entries": [
+        {"expression": "한 번만", "canonical": "once_only", "default_text": "캠페인 기간 중 1회", "default": {"kind": "frequency", "count": 1, "scope": "campaign_period"}},
+        {"expression": "가끔", "canonical": "occasionally", "default_text": "월 1회", "default": {"kind": "frequency", "count": 1, "per": "P1M"}},
+        {"expression": "때때로", "canonical": "sometimes", "default_text": "월 2회", "default": {"kind": "frequency", "count": 2, "per": "P1M"}},
+        {"expression": "종종", "canonical": "often", "default_text": "주 1회", "default": {"kind": "frequency", "count": 1, "per": "P1W"}},
+        {"expression": "자주", "canonical": "frequently", "default_text": "주 3회", "default": {"kind": "frequency", "count": 3, "per": "P1W"}},
+        {"expression": "매우 자주", "canonical": "very_frequently", "default_text": "하루 1회", "default": {"kind": "frequency", "count": 1, "per": "P1D"}},
+        {"expression": "수시로", "canonical": "event_driven", "default_text": "이벤트 발생 시, 하루 최대 2회", "default": {"kind": "frequency", "trigger": "event", "caps": [{"count": 2, "per": "P1D"}]}},
+        {"expression": "정기적으로", "canonical": "regularly", "default_text": "주 1회", "default": {"kind": "frequency", "count": 1, "per": "P1W"}},
+        {"expression": "주기적으로", "canonical": "periodically", "default_text": "7일마다 1회", "default": {"kind": "frequency", "count": 1, "per": "P7D"}},
+        {"expression": "지속적으로", "canonical": "continuously", "default_text": "캠페인 기간 내 매주 1회", "default": {"kind": "frequency", "count": 1, "per": "P1W", "scope": "campaign_period"}},
+        {"expression": "반복적으로", "canonical": "repeatedly", "default_text": "최대 3회", "default": {"kind": "frequency", "comparator": "lte", "count": 3, "scope": "campaign_period"}},
+        {"expression": "여러 차례", "canonical": "several_times", "default_text": "3회", "default": {"kind": "frequency", "count": 3, "scope": "campaign_period"}},
+        {"expression": "충분히 노출", "canonical": "sufficient_exposure", "default_text": "사용자당 3회", "default": {"kind": "frequency", "count": 3, "scope": "per_user"}},
+        {"expression": "많이 노출", "canonical": "heavy_exposure", "default_text": "사용자당 5회", "default": {"kind": "frequency", "count": 5, "scope": "per_user"}},
+        {"expression": "과도한 노출", "canonical": "excessive_exposure", "default_text": "주 7회 초과", "default": {"kind": "frequency", "comparator": "gt", "count": 7, "per": "P1W"}},
+        {"expression": "너무 자주 노출하지 않게", "canonical": "avoid_over_exposure", "default_text": "동일 채널 하루 최대 1회", "default": {"kind": "frequency", "caps": [{"count": 1, "per": "P1D", "scope": "per_channel"}]}},
+        {"expression": "재발송", "canonical": "resend", "default_text": "최초 발송 48시간 후 1회", "default": {"kind": "schedule", "anchor": "first_send", "direction": "after", "offsets": ["PT48H"]}},
+        {"expression": "미열람자 재발송", "canonical": "resend_to_unopened", "default_text": "48시간 후 1회", "default": {"kind": "schedule", "anchor": "first_send", "direction": "after", "offsets": ["PT48H"], "condition": "최초 발송분 미열람"}},
+        {"expression": "장바구니 리마인드", "canonical": "cart_reminder", "default_text": "이탈 1시간 후, 24시간 후 총 2회", "default": {"kind": "schedule", "anchor": "cart_abandon", "direction": "after", "offsets": ["PT1H", "PT24H"]}},
+        {"expression": "종료 임박 알림", "canonical": "ending_soon_notice", "default_text": "종료 24시간 전 1회", "default": {"kind": "schedule", "anchor": "campaign_end", "direction": "before", "offsets": ["PT24H"]}},
+        {"expression": "푸시 발송 제한", "canonical": "push_send_cap", "default_text": "하루 최대 2회, 주 최대 5회", "default": {"kind": "frequency", "channel": "push", "caps": [{"count": 2, "per": "P1D"}, {"count": 5, "per": "P1W"}]}},
+        {"expression": "문자 발송 제한", "canonical": "sms_send_cap", "default_text": "주 최대 2회", "default": {"kind": "frequency", "channel": "sms", "caps": [{"count": 2, "per": "P1W"}]}},
+        {"expression": "이메일 발송 제한", "canonical": "email_send_cap", "default_text": "주 최대 3회", "default": {"kind": "frequency", "channel": "email", "caps": [{"count": 3, "per": "P1W"}]}},
+        {"expression": "광고 노출 제한", "canonical": "ad_impression_cap", "default_text": "사용자당 하루 3회, 주 10회", "default": {"kind": "frequency", "channel": "ad", "scope": "per_user", "caps": [{"count": 3, "per": "P1D"}, {"count": 10, "per": "P1W"}]}}
+      ]
+    },
+
+    {
+      "group_id": "performance_change",
+      "ko_label": "성과 정도",
+      "note": "비교 대상은 기본적으로 직전 동일 유형 캠페인 또는 최근 30일 평균(base=comparison_baseline)이다.",
+      "entries": [
+        {"expression": "소폭 증가", "canonical": "slight_increase", "default_text": "5% 이상 증가", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 5, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "증가", "canonical": "increase", "default_text": "10% 이상 증가", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 10, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "눈에 띄게 증가", "canonical": "noticeable_increase", "default_text": "15% 이상 증가", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 15, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "크게 증가", "canonical": "large_increase", "default_text": "20% 이상 증가", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 20, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "많이 증가", "canonical": "big_increase", "default_text": "30% 이상 증가", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 30, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "대폭 증가", "canonical": "major_increase", "default_text": "50% 이상 증가", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 50, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "급격히 증가", "canonical": "sharp_increase", "default_text": "100% 이상 증가", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 100, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "소폭 감소", "canonical": "slight_decrease", "default_text": "5% 이상 감소", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 5, "unit": "percent", "direction": "decrease", "base": "comparison_baseline"}]}},
+        {"expression": "크게 감소", "canonical": "large_decrease", "default_text": "20% 이상 감소", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 20, "unit": "percent", "direction": "decrease", "base": "comparison_baseline"}]}},
+        {"expression": "급감", "canonical": "sharp_decrease", "default_text": "50% 이상 감소", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 50, "unit": "percent", "direction": "decrease", "base": "comparison_baseline"}]}},
+        {"expression": "비슷한 수준", "canonical": "similar_level", "default_text": "차이 ±5% 이내", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "within", "value": 5, "unit": "percent", "base": "comparison_baseline"}]}},
+        {"expression": "의미 있는 개선", "canonical": "meaningful_improvement", "default_text": "10% 이상 개선", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 10, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "상당한 개선", "canonical": "substantial_improvement", "default_text": "20% 이상 개선", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 20, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "획기적인 개선", "canonical": "breakthrough_improvement", "default_text": "50% 이상 개선", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 50, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "성과 유지", "canonical": "performance_maintained", "default_text": "기존 대비 ±5% 이내", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "within", "value": 5, "unit": "percent", "base": "comparison_baseline"}]}},
+        {"expression": "성과 악화", "canonical": "performance_degraded", "default_text": "기존 대비 10% 이상 감소", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 10, "unit": "percent", "direction": "decrease", "base": "comparison_baseline"}]}},
+        {"expression": "성과가 좋다", "canonical": "good_performance", "default_text": "기준 대비 20% 이상 높음", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 20, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "성과가 매우 좋다", "canonical": "excellent_performance", "default_text": "기준 대비 50% 이상 높음", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 50, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "성과가 낮다", "canonical": "poor_performance", "default_text": "기준 대비 20% 이상 낮음", "default": {"kind": "criteria", "criteria": [{"subject": "metric_change", "comparator": "gte", "value": 20, "unit": "percent", "direction": "decrease", "base": "comparison_baseline"}]}},
+        {"expression": "반응이 좋다", "canonical": "good_response", "default_text": "클릭률이 기준 대비 20% 이상 높음", "default": {"kind": "criteria", "criteria": [{"subject": "click_rate_change", "comparator": "gte", "value": 20, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "효과가 있다", "canonical": "effective", "default_text": "통제군 대비 핵심 지표 10% 이상 증가", "default": {"kind": "criteria", "criteria": [{"subject": "primary_metric_change", "comparator": "gte", "value": 10, "unit": "percent", "direction": "increase", "base": "control_group"}]}},
+        {"expression": "유의미한 결과", "canonical": "significant_result", "default_text": "통계적 유의수준 95% 또는 핵심 지표 10% 이상 개선", "default": {"kind": "criteria", "combine": "or", "criteria": [{"subject": "confidence_level", "comparator": "gte", "value": 95, "unit": "percent"}, {"subject": "primary_metric_change", "comparator": "gte", "value": 10, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}}
+      ]
+    },
+
+    {
+      "group_id": "engagement_rate",
+      "ko_label": "클릭·전환·참여 기준",
+      "note": "업종 데이터가 없을 때 쓰는 임시 절대 기준이다. 가능하면 회사의 최근 3개월 중앙값과 비교하는 상대 기준으로 대체한다.",
+      "entries": [
+        {"expression": "낮은 클릭률", "canonical": "low_click_rate", "default_text": "1% 미만", "default": {"kind": "criteria", "criteria": [{"subject": "click_rate", "comparator": "lt", "value": 1, "unit": "percent"}]}},
+        {"expression": "보통 클릭률", "canonical": "normal_click_rate", "default_text": "1~3%", "default": {"kind": "criteria", "criteria": [{"subject": "click_rate", "comparator": "between", "min": 1, "max": 3, "unit": "percent"}]}},
+        {"expression": "높은 클릭률", "canonical": "high_click_rate", "default_text": "3% 이상", "default": {"kind": "criteria", "criteria": [{"subject": "click_rate", "comparator": "gte", "value": 3, "unit": "percent"}]}},
+        {"expression": "매우 높은 클릭률", "canonical": "very_high_click_rate", "default_text": "5% 이상", "default": {"kind": "criteria", "criteria": [{"subject": "click_rate", "comparator": "gte", "value": 5, "unit": "percent"}]}},
+        {"expression": "낮은 전환율", "canonical": "low_conversion_rate", "default_text": "1% 미만", "default": {"kind": "criteria", "criteria": [{"subject": "conversion_rate", "comparator": "lt", "value": 1, "unit": "percent"}]}},
+        {"expression": "보통 전환율", "canonical": "normal_conversion_rate", "default_text": "1~3%", "default": {"kind": "criteria", "criteria": [{"subject": "conversion_rate", "comparator": "between", "min": 1, "max": 3, "unit": "percent"}]}},
+        {"expression": "높은 전환율", "canonical": "high_conversion_rate", "default_text": "3% 이상", "default": {"kind": "criteria", "criteria": [{"subject": "conversion_rate", "comparator": "gte", "value": 3, "unit": "percent"}]}},
+        {"expression": "매우 높은 전환율", "canonical": "very_high_conversion_rate", "default_text": "5% 이상", "default": {"kind": "criteria", "criteria": [{"subject": "conversion_rate", "comparator": "gte", "value": 5, "unit": "percent"}]}},
+        {"expression": "많은 참여", "canonical": "high_participation", "default_text": "대상 고객의 10% 이상 참여", "default": {"kind": "criteria", "criteria": [{"subject": "participation_rate", "comparator": "gte", "value": 10, "unit": "percent", "base": "matched_audience"}]}},
+        {"expression": "활발한 참여", "canonical": "very_high_participation", "default_text": "대상 고객의 20% 이상 참여", "default": {"kind": "criteria", "criteria": [{"subject": "participation_rate", "comparator": "gte", "value": 20, "unit": "percent", "base": "matched_audience"}]}},
+        {"expression": "충분한 유입", "canonical": "sufficient_traffic", "default_text": "목표 방문자 수의 90% 이상", "default": {"kind": "criteria", "criteria": [{"subject": "visitor_count", "comparator": "gte", "value": 90, "unit": "percent", "base": "target_visitor_count"}]}},
+        {"expression": "높은 열람률", "canonical": "high_open_rate", "default_text": "이메일 열람률 30% 이상", "default": {"kind": "criteria", "criteria": [{"subject": "email_open_rate", "comparator": "gte", "value": 30, "unit": "percent"}]}},
+        {"expression": "낮은 이탈률", "canonical": "low_bounce_rate", "default_text": "랜딩 페이지 이탈률 40% 이하", "default": {"kind": "criteria", "criteria": [{"subject": "landing_bounce_rate", "comparator": "lte", "value": 40, "unit": "percent"}]}},
+        {"expression": "좋은 반응", "canonical": "good_engagement", "default_text": "열람·클릭·전환 중 하나가 기준 대비 20% 이상 높음", "default": {"kind": "criteria", "combine": "or", "criteria": [{"subject": "open_rate_change", "comparator": "gte", "value": 20, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}, {"subject": "click_rate_change", "comparator": "gte", "value": 20, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}, {"subject": "conversion_rate_change", "comparator": "gte", "value": 20, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "반응 없음", "canonical": "no_engagement", "default_text": "노출 후 7일 내 열람·클릭·구매 없음", "default": {"kind": "criteria", "criteria": [{"subject": "open_event", "comparator": "eq", "value": 0, "unit": "count", "window": "P7D"}, {"subject": "click_event", "comparator": "eq", "value": 0, "unit": "count", "window": "P7D"}, {"subject": "purchase_event", "comparator": "eq", "value": 0, "unit": "count", "window": "P7D"}], "note": "관측 창의 기준 시각은 노출 시점이다"}},
+        {"expression": "관심을 보임", "canonical": "showed_interest", "default_text": "클릭, 찜, 장바구니 중 하나 이상", "default": {"kind": "criteria", "combine": "or", "criteria": [{"subject": "click_event", "comparator": "gte", "value": 1, "unit": "count"}, {"subject": "wishlist_event", "comparator": "gte", "value": 1, "unit": "count"}, {"subject": "cart_event", "comparator": "gte", "value": 1, "unit": "count"}]}},
+        {"expression": "적극적 반응", "canonical": "active_engagement", "default_text": "클릭 후 전환 행동까지 수행", "default": {"kind": "criteria", "criteria": [{"subject": "click_event", "comparator": "gte", "value": 1, "unit": "count"}, {"subject": "conversion_event", "comparator": "gte", "value": 1, "unit": "count", "note": "클릭 이후 발생해야 한다(순서 조건)"}]}}
+      ]
+    },
+
+    {
+      "group_id": "campaign_success",
+      "ko_label": "캠페인 성공 기준",
+      "note": "달성률의 분모는 캠페인에 설정한 핵심 KPI 목표값(target_kpi)이다.",
+      "entries": [
+        {"expression": "성공적인 캠페인", "canonical": "successful_campaign", "default_text": "목표 KPI 100% 이상 달성", "default": {"kind": "criteria", "criteria": [{"subject": "kpi_attainment", "comparator": "gte", "value": 100, "unit": "percent", "base": "target_kpi"}]}},
+        {"expression": "대체로 성공", "canonical": "mostly_successful", "default_text": "목표 KPI 90% 이상 달성", "default": {"kind": "criteria", "criteria": [{"subject": "kpi_attainment", "comparator": "gte", "value": 90, "unit": "percent", "base": "target_kpi"}]}},
+        {"expression": "부분적으로 성공", "canonical": "partially_successful", "default_text": "목표 KPI 70~90% 달성", "default": {"kind": "criteria", "criteria": [{"subject": "kpi_attainment", "comparator": "between", "min": 70, "max": 90, "unit": "percent", "base": "target_kpi"}]}},
+        {"expression": "기대 이상의 성과", "canonical": "exceeded_expectation", "default_text": "목표 KPI 120% 이상 달성", "default": {"kind": "criteria", "criteria": [{"subject": "kpi_attainment", "comparator": "gte", "value": 120, "unit": "percent", "base": "target_kpi"}]}},
+        {"expression": "목표 달성", "canonical": "goal_achieved", "default_text": "설정한 핵심 KPI 100% 이상", "default": {"kind": "criteria", "criteria": [{"subject": "kpi_attainment", "comparator": "gte", "value": 100, "unit": "percent", "base": "target_kpi"}]}},
+        {"expression": "충분한 성과", "canonical": "sufficient_result", "default_text": "목표 KPI 90% 이상이며 손실 기준 미초과", "default": {"kind": "criteria", "criteria": [{"subject": "kpi_attainment", "comparator": "gte", "value": 90, "unit": "percent", "base": "target_kpi"}, {"subject": "loss_limit", "comparator": "none", "note": "손실 한도를 초과하지 않는다"}]}},
+        {"expression": "성과 부족", "canonical": "underperformed", "default_text": "목표 KPI 70% 미만", "default": {"kind": "criteria", "criteria": [{"subject": "kpi_attainment", "comparator": "lt", "value": 70, "unit": "percent", "base": "target_kpi"}]}},
+        {"expression": "실패한 캠페인", "canonical": "failed_campaign", "default_text": "목표 KPI 50% 미만 또는 손실 제한 초과", "default": {"kind": "criteria", "combine": "or", "criteria": [{"subject": "kpi_attainment", "comparator": "lt", "value": 50, "unit": "percent", "base": "target_kpi"}, {"subject": "loss_limit", "comparator": "none", "note": "손실 한도를 초과한다"}]}},
+        {"expression": "정상 집행", "canonical": "executed_normally", "default_text": "예정 대상의 95% 이상 발송·노출", "default": {"kind": "criteria", "criteria": [{"subject": "delivered_audience_ratio", "comparator": "gte", "value": 95, "unit": "percent", "base": "planned_audience"}]}},
+        {"expression": "성공적으로 발송", "canonical": "delivered_successfully", "default_text": "발송 성공률 98% 이상", "default": {"kind": "criteria", "criteria": [{"subject": "send_success_rate", "comparator": "gte", "value": 98, "unit": "percent"}]}},
+        {"expression": "문제없이 노출", "canonical": "exposed_without_error", "default_text": "노출 오류율 1% 미만", "default": {"kind": "criteria", "criteria": [{"subject": "impression_error_rate", "comparator": "lt", "value": 1, "unit": "percent"}]}},
+        {"expression": "충분한 데이터 확보", "canonical": "sufficient_data", "default_text": "실험군별 전환 100건 이상", "default": {"kind": "criteria", "criteria": [{"subject": "conversion_count", "comparator": "gte", "value": 100, "unit": "count", "scope": "per_variant"}]}},
+        {"expression": "초기 데이터 확보", "canonical": "initial_data", "default_text": "실험군별 클릭 100건 이상", "default": {"kind": "criteria", "criteria": [{"subject": "click_count", "comparator": "gte", "value": 100, "unit": "count", "scope": "per_variant"}]}},
+        {"expression": "테스트 완료", "canonical": "test_completed", "default_text": "각 안 1,000회 이상 노출, 최소 7일 진행", "default": {"kind": "criteria", "criteria": [{"subject": "impression_count", "comparator": "gte", "value": 1000, "unit": "count", "scope": "per_variant"}, {"subject": "test_duration", "comparator": "gte", "value": 7, "unit": "day"}]}},
+        {"expression": "캠페인 완료", "canonical": "campaign_completed", "default_text": "예정 발송 종료 및 성과 데이터 집계 완료", "default": {"kind": "unstructured", "requires_definition": ["'집계 완료'로 판정할 데이터 지연(lag) 기준"]}}
+      ]
+    },
+
+    {
+      "group_id": "budget",
+      "ko_label": "예산·비용 표현",
+      "note": "비율의 분모는 전체 캠페인 예산 B 다. 금액은 Decimal 로 다루고 통화를 함께 적는다(§14).",
+      "entries": [
+        {"expression": "소액 테스트", "canonical": "small_budget_test", "default_text": "B의 5%", "default": {"kind": "criteria", "criteria": [{"subject": "budget", "comparator": "eq", "value": 5, "unit": "percent", "base": "B"}]}},
+        {"expression": "적은 예산", "canonical": "small_budget", "default_text": "B의 10%", "default": {"kind": "criteria", "criteria": [{"subject": "budget", "comparator": "eq", "value": 10, "unit": "percent", "base": "B"}]}},
+        {"expression": "제한된 예산", "canonical": "limited_budget", "default_text": "B의 20%", "default": {"kind": "criteria", "criteria": [{"subject": "budget", "comparator": "eq", "value": 20, "unit": "percent", "base": "B"}]}},
+        {"expression": "적정 예산", "canonical": "moderate_budget", "default_text": "B의 50%", "default": {"kind": "criteria", "criteria": [{"subject": "budget", "comparator": "eq", "value": 50, "unit": "percent", "base": "B"}]}},
+        {"expression": "상당한 예산", "canonical": "considerable_budget", "default_text": "B의 70%", "default": {"kind": "criteria", "criteria": [{"subject": "budget", "comparator": "eq", "value": 70, "unit": "percent", "base": "B"}]}},
+        {"expression": "대부분의 예산", "canonical": "most_of_budget", "default_text": "B의 80%", "default": {"kind": "criteria", "criteria": [{"subject": "budget", "comparator": "eq", "value": 80, "unit": "percent", "base": "B"}]}},
+        {"expression": "최대한 투자", "canonical": "maximum_investment", "default_text": "B의 90%", "default": {"kind": "criteria", "criteria": [{"subject": "budget", "comparator": "eq", "value": 90, "unit": "percent", "base": "B"}]}},
+        {"expression": "예산 내에서", "canonical": "within_budget", "default_text": "B의 100%를 초과하지 않음", "default": {"kind": "criteria", "criteria": [{"subject": "budget", "comparator": "lte", "value": 100, "unit": "percent", "base": "B"}]}},
+        {"expression": "예산 여유분", "canonical": "budget_buffer", "default_text": "B의 10%", "default": {"kind": "criteria", "criteria": [{"subject": "budget_reserve", "comparator": "eq", "value": 10, "unit": "percent", "base": "B"}]}},
+        {"expression": "최소 비용", "canonical": "minimum_cost", "default_text": "목표 도달에 필요한 예상비용의 80%", "default": {"kind": "criteria", "criteria": [{"subject": "budget", "comparator": "eq", "value": 80, "unit": "percent", "base": "expected_cost"}]}},
+        {"expression": "비용 효율적", "canonical": "cost_efficient", "default_text": "목표 CPA 이하", "default": {"kind": "criteria", "criteria": [{"subject": "cpa", "comparator": "lte", "value": 100, "unit": "percent", "base": "target_cpa"}]}},
+        {"expression": "가성비가 좋다", "canonical": "good_value", "default_text": "기준 대비 CPA 20% 이상 낮음", "default": {"kind": "criteria", "criteria": [{"subject": "cpa_change", "comparator": "gte", "value": 20, "unit": "percent", "direction": "decrease", "base": "comparison_baseline"}]}},
+        {"expression": "경쟁력 있는 비용", "canonical": "competitive_cost", "default_text": "최근 30일 평균 CPA 이하", "default": {"kind": "criteria", "criteria": [{"subject": "cpa", "comparator": "lte", "value": 100, "unit": "percent", "base": "comparison_baseline", "window": "P30D"}]}},
+        {"expression": "예산을 집중한다", "canonical": "concentrate_budget", "default_text": "선택 채널에 B의 70% 배정", "default": {"kind": "criteria", "criteria": [{"subject": "budget_allocation", "comparator": "eq", "value": 70, "unit": "percent", "base": "B", "scope": "selected_channels"}]}},
+        {"expression": "예산을 분산한다", "canonical": "spread_budget", "default_text": "채널별 차이가 20%p 이내", "default": {"kind": "criteria", "criteria": [{"subject": "budget_allocation_spread", "comparator": "lte", "value": 20, "unit": "percentage_point"}]}},
+        {"expression": "소폭 증액", "canonical": "slight_budget_increase", "default_text": "기존 대비 10% 증가", "default": {"kind": "criteria", "criteria": [{"subject": "budget_change", "comparator": "eq", "value": 10, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "크게 증액", "canonical": "large_budget_increase", "default_text": "기존 대비 30% 증가", "default": {"kind": "criteria", "criteria": [{"subject": "budget_change", "comparator": "eq", "value": 30, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}},
+        {"expression": "대폭 증액", "canonical": "major_budget_increase", "default_text": "기존 대비 50% 증가", "default": {"kind": "criteria", "criteria": [{"subject": "budget_change", "comparator": "eq", "value": 50, "unit": "percent", "direction": "increase", "base": "comparison_baseline"}]}}
+      ]
+    },
+
+    {
+      "group_id": "channel_allocation",
+      "ko_label": "채널 우선순위와 예산 배분",
+      "note": "채널 순위도 모집단·동점자 정책이 필요하다. rank 항목의 requires_definition 을 채우기 전에는 자동 선택에 쓰지 않는다.",
+      "entries": [
+        {"expression": "주요 채널", "canonical": "primary_channels", "default_text": "최근 30일 전환 기여도 상위 3개", "default": {"kind": "rank", "metric": "conversion_contribution", "window": "P30D", "top_n": 3, "order": "desc", "requires_definition": ["기여도 모델(라스트클릭/멀티터치)", "population(집행 중인 채널만인가 운영 가능한 전체 채널인가)", "tie_policy"]}},
+        {"expression": "핵심 채널", "canonical": "core_channel", "default_text": "전환 기여도 1위 채널", "default": {"kind": "rank", "metric": "conversion_contribution", "top_n": 1, "order": "desc", "requires_definition": ["기여도 모델(라스트클릭/멀티터치)", "집계 기간", "population(집행 중인 채널만인가 운영 가능한 전체 채널인가)", "tie_policy"]}},
+        {"expression": "성과가 좋은 채널", "canonical": "high_performing_channels", "default_text": "ROAS 또는 전환율 상위 25%", "default": {"kind": "rank", "metric": "roas_or_conversion_rate", "percent": 25, "order": "desc", "requires_definition": ["ROAS 와 전환율 중 어느 지표를 쓰는가", "population", "tie_policy", "minimum_population"]}},
+        {"expression": "성과가 낮은 채널", "canonical": "low_performing_channels", "default_text": "ROAS 또는 전환율 하위 25%", "default": {"kind": "rank", "metric": "roas_or_conversion_rate", "percent": 25, "order": "asc", "requires_definition": ["ROAS 와 전환율 중 어느 지표를 쓰는가", "population", "tie_policy", "minimum_population"]}},
+        {"expression": "주요 채널에 집중", "canonical": "focus_on_primary_channels", "default_text": "상위 2개 채널에 예산 70%", "default": {"kind": "criteria", "criteria": [{"subject": "channel_count", "comparator": "eq", "value": 2, "unit": "count"}, {"subject": "budget_allocation", "comparator": "eq", "value": 70, "unit": "percent", "base": "B"}]}},
+        {"expression": "여러 채널에 분산", "canonical": "spread_across_channels", "default_text": "최소 3개 채널에 각각 20% 이상", "default": {"kind": "criteria", "criteria": [{"subject": "channel_count", "comparator": "gte", "value": 3, "unit": "count"}, {"subject": "budget_allocation", "comparator": "gte", "value": 20, "unit": "percent", "base": "B", "scope": "per_channel"}]}},
+        {"expression": "다양한 채널", "canonical": "diverse_channels", "default_text": "서로 다른 유형의 채널 3개 이상", "default": {"kind": "criteria", "criteria": [{"subject": "channel_type_count", "comparator": "gte", "value": 3, "unit": "count"}]}},
+        {"expression": "일부 채널", "canonical": "some_channels", "default_text": "전체 채널의 30%", "default": {"kind": "criteria", "criteria": [{"subject": "channel_count", "comparator": "eq", "value": 30, "unit": "percent", "base": "all_channels"}]}},
+        {"expression": "대부분의 채널", "canonical": "most_channels", "default_text": "전체 채널의 80%", "default": {"kind": "criteria", "criteria": [{"subject": "channel_count", "comparator": "eq", "value": 80, "unit": "percent", "base": "all_channels"}]}},
+        {"expression": "모든 채널", "canonical": "all_channels", "default_text": "운영 가능한 채널 100%", "default": {"kind": "criteria", "criteria": [{"subject": "channel_count", "comparator": "eq", "value": 100, "unit": "percent", "base": "all_channels"}]}},
+        {"expression": "우선적으로 집행", "canonical": "execute_first", "default_text": "전체 예산의 50%를 먼저 배정", "default": {"kind": "criteria", "criteria": [{"subject": "budget_allocation", "comparator": "eq", "value": 50, "unit": "percent", "base": "B", "note": "선집행분"}]}},
+        {"expression": "테스트 채널", "canonical": "test_channel", "default_text": "전체 예산의 10% 배정", "default": {"kind": "criteria", "criteria": [{"subject": "budget_allocation", "comparator": "eq", "value": 10, "unit": "percent", "base": "B"}]}}
+      ]
+    },
+
+    {
+      "group_id": "content",
+      "ko_label": "콘텐츠·소재 표현",
+      "note": "글자 수는 공백 포함 한글 기준이다. 채널별 최대 길이는 business_policies 의 channel_limits 가 우선한다.",
+      "entries": [
+        {"expression": "간결한 문구", "canonical": "concise_copy", "default_text": "제목 20자 이내, 본문 50자 이내", "default": {"kind": "criteria", "criteria": [{"subject": "title_length", "comparator": "lte", "value": 20, "unit": "character"}, {"subject": "body_length", "comparator": "lte", "value": 50, "unit": "character"}]}},
+        {"expression": "짧은 문구", "canonical": "short_copy", "default_text": "30자 이내", "default": {"kind": "criteria", "criteria": [{"subject": "copy_length", "comparator": "lte", "value": 30, "unit": "character"}]}},
+        {"expression": "긴 문구", "canonical": "long_copy", "default_text": "100자 이상", "default": {"kind": "criteria", "criteria": [{"subject": "copy_length", "comparator": "gte", "value": 100, "unit": "character"}]}},
+        {"expression": "눈에 띄는 문구", "canonical": "attention_grabbing_copy", "default_text": "제목에 핵심 혜택·숫자·기한 중 2개 이상 포함", "default": {"kind": "criteria", "criteria": [{"subject": "title_element_count", "comparator": "gte", "value": 2, "unit": "count", "note": "요소 후보: 핵심 혜택, 숫자, 기한"}]}},
+        {"expression": "매력적인 문구", "canonical": "compelling_copy", "default_text": "A/B 테스트 클릭률이 기존 대비 10% 이상 높음", "default": {"kind": "criteria", "criteria": [{"subject": "click_rate_change", "comparator": "gte", "value": 10, "unit": "percent", "direction": "increase", "base": "comparison_baseline", "note": "A/B 테스트 결과 기준"}]}},
+        {"expression": "구매를 유도하는 문구", "canonical": "conversion_oriented_copy", "default_text": "명확한 행동 유도 문구 1개 포함", "default": {"kind": "criteria", "criteria": [{"subject": "cta_count", "comparator": "gte", "value": 1, "unit": "count"}]}},
+        {"expression": "부담스럽지 않은 문구", "canonical": "non_pushy_copy", "default_text": "과도한 느낌표·긴급 표현을 각각 1회 이하 사용", "default": {"kind": "criteria", "criteria": [{"subject": "exclamation_count", "comparator": "lte", "value": 1, "unit": "count"}, {"subject": "urgency_phrase_count", "comparator": "lte", "value": 1, "unit": "count"}]}},
+        {"expression": "너무 광고 같지 않게", "canonical": "less_promotional", "default_text": "혜택 설명보다 정보·효용 설명 비중 50% 이상", "default": {"kind": "criteria", "criteria": [{"subject": "informational_content_ratio", "comparator": "gte", "value": 50, "unit": "percent"}]}},
+        {"expression": "적당히 강조", "canonical": "moderate_emphasis", "default_text": "강조 요소 1~2개 사용", "default": {"kind": "criteria", "criteria": [{"subject": "emphasis_element_count", "comparator": "between", "min": 1, "max": 2, "unit": "count"}]}},
+        {"expression": "강하게 강조", "canonical": "strong_emphasis", "default_text": "할인율, 기한, CTA를 모두 노출", "default": {"kind": "criteria", "criteria": [{"subject": "discount_rate_shown", "comparator": "none", "note": "노출 필수"}, {"subject": "deadline_shown", "comparator": "none", "note": "노출 필수"}, {"subject": "cta_shown", "comparator": "none", "note": "노출 필수"}]}},
+        {"expression": "브랜드다운", "canonical": "on_brand", "default_text": "브랜드 가이드 필수 항목 90% 이상 준수", "default": {"kind": "criteria", "criteria": [{"subject": "brand_guideline_compliance", "comparator": "gte", "value": 90, "unit": "percent"}]}},
+        {"expression": "개인화된 메시지", "canonical": "personalized_message", "default_text": "고객명·관심 상품·최근 행동 중 1개 이상 반영", "default": {"kind": "criteria", "criteria": [{"subject": "personalization_element_count", "comparator": "gte", "value": 1, "unit": "count", "note": "요소 후보: 고객명, 관심 상품, 최근 행동"}]}},
+        {"expression": "충분히 다양한 소재", "canonical": "sufficient_creative_variety", "default_text": "최소 3개 버전", "default": {"kind": "criteria", "criteria": [{"subject": "creative_variant_count", "comparator": "gte", "value": 3, "unit": "count"}]}},
+        {"expression": "여러 버전", "canonical": "multiple_variants", "default_text": "3개 버전", "default": {"kind": "criteria", "criteria": [{"subject": "creative_variant_count", "comparator": "eq", "value": 3, "unit": "count"}]}},
+        {"expression": "많은 버전", "canonical": "many_variants", "default_text": "5개 이상", "default": {"kind": "criteria", "criteria": [{"subject": "creative_variant_count", "comparator": "gte", "value": 5, "unit": "count"}]}}
+      ]
+    },
+
+    {
+      "group_id": "design",
+      "ko_label": "디자인 표현",
+      "note": "px 값은 모바일(360px 폭) 기준이다.",
+      "entries": [
+        {"expression": "눈에 띄게", "canonical": "visually_prominent", "default_text": "첫 화면 내 배치, 핵심 CTA 대비 4.5:1 이상", "default": {"kind": "criteria", "criteria": [{"subject": "placement", "comparator": "none", "note": "첫 화면(above the fold) 안에 배치"}, {"subject": "cta_contrast", "comparator": "gte", "value": "4.5", "unit": "contrast_ratio"}]}},
+        {"expression": "충분한 여백", "canonical": "generous_spacing", "default_text": "주요 요소 간 16px 이상", "default": {"kind": "criteria", "criteria": [{"subject": "element_spacing", "comparator": "gte", "value": 16, "unit": "px"}]}},
+        {"expression": "적절한 여백", "canonical": "adequate_spacing", "default_text": "12~24px", "default": {"kind": "criteria", "criteria": [{"subject": "element_spacing", "comparator": "between", "min": 12, "max": 24, "unit": "px"}]}},
+        {"expression": "큰 버튼", "canonical": "large_button", "default_text": "최소 44×44px", "default": {"kind": "criteria", "criteria": [{"subject": "button_width", "comparator": "gte", "value": 44, "unit": "px"}, {"subject": "button_height", "comparator": "gte", "value": 44, "unit": "px"}]}},
+        {"expression": "적절한 크기", "canonical": "adequate_size", "default_text": "모바일 기준 버튼 높이 44~52px", "default": {"kind": "criteria", "criteria": [{"subject": "button_height", "comparator": "between", "min": 44, "max": 52, "unit": "px"}]}},
+        {"expression": "간결한 디자인", "canonical": "concise_design", "default_text": "핵심 메시지 1개, CTA 1개", "default": {"kind": "criteria", "criteria": [{"subject": "key_message_count", "comparator": "eq", "value": 1, "unit": "count"}, {"subject": "cta_count", "comparator": "eq", "value": 1, "unit": "count"}]}},
+        {"expression": "심플한 디자인", "canonical": "simple_design", "default_text": "주요 색상 3개 이하", "default": {"kind": "criteria", "criteria": [{"subject": "primary_color_count", "comparator": "lte", "value": 3, "unit": "count"}]}},
+        {"expression": "화려한 디자인", "canonical": "rich_design", "default_text": "강조 색상·이미지·애니메이션 중 2개 이상", "default": {"kind": "criteria", "criteria": [{"subject": "visual_device_count", "comparator": "gte", "value": 2, "unit": "count", "note": "요소 후보: 강조 색상, 이미지, 애니메이션"}]}},
+        {"expression": "너무 튀지 않게", "canonical": "understated_design", "default_text": "강조 색상 1개, 애니메이션 1개 이하", "default": {"kind": "criteria", "criteria": [{"subject": "accent_color_count", "comparator": "lte", "value": 1, "unit": "count"}, {"subject": "animation_count", "comparator": "lte", "value": 1, "unit": "count"}]}},
+        {"expression": "모바일에서도 잘 보이게", "canonical": "mobile_friendly", "default_text": "360px 화면에서 가로 스크롤 없음", "default": {"kind": "criteria", "criteria": [{"subject": "viewport_width", "comparator": "eq", "value": 360, "unit": "px"}, {"subject": "horizontal_scroll", "comparator": "eq", "value": 0, "unit": "count"}]}},
+        {"expression": "한눈에 보이게", "canonical": "above_the_fold", "default_text": "핵심 혜택과 CTA가 첫 화면에 모두 표시", "default": {"kind": "criteria", "criteria": [{"subject": "key_benefit_placement", "comparator": "none", "note": "첫 화면 안에 표시"}, {"subject": "cta_placement", "comparator": "none", "note": "첫 화면 안에 표시"}]}}
+      ]
+    },
+
+    {
+      "group_id": "operation",
+      "ko_label": "운영·중단·최적화 조건",
+      "note": "중단·확대 조건은 최소 집행량(기간·클릭 수)을 함께 충족해야 한다. 표본이 모이기 전 판단을 막기 위한 조건이다.",
+      "entries": [
+        {"expression": "성과가 낮으면 중단", "canonical": "stop_on_low_performance", "default_text": "최소 3일·1,000클릭 집행 후 목표 KPI의 70% 미만", "default": {"kind": "criteria", "criteria": [{"subject": "run_duration", "comparator": "gte", "value": 3, "unit": "day"}, {"subject": "click_count", "comparator": "gte", "value": 1000, "unit": "count"}, {"subject": "kpi_attainment", "comparator": "lt", "value": 70, "unit": "percent", "base": "target_kpi"}]}},
+        {"expression": "성과가 좋으면 확대", "canonical": "scale_on_good_performance", "default_text": "최소 3일 후 목표 KPI의 120% 이상", "default": {"kind": "criteria", "criteria": [{"subject": "run_duration", "comparator": "gte", "value": 3, "unit": "day"}, {"subject": "kpi_attainment", "comparator": "gte", "value": 120, "unit": "percent", "base": "target_kpi"}]}},
+        {"expression": "예산이 남으면 확대", "canonical": "scale_on_remaining_budget", "default_text": "잔여 예산이 전체의 10% 이상", "default": {"kind": "criteria", "criteria": [{"subject": "remaining_budget", "comparator": "gte", "value": 10, "unit": "percent", "base": "B"}]}},
+        {"expression": "적절히 조정", "canonical": "moderate_adjustment", "default_text": "기존 값의 ±20% 범위", "default": {"kind": "criteria", "criteria": [{"subject": "adjustment", "comparator": "within", "value": 20, "unit": "percent", "base": "comparison_baseline"}]}},
+        {"expression": "소폭 조정", "canonical": "slight_adjustment", "default_text": "±10%", "default": {"kind": "criteria", "criteria": [{"subject": "adjustment", "comparator": "within", "value": 10, "unit": "percent", "base": "comparison_baseline"}]}},
+        {"expression": "크게 조정", "canonical": "large_adjustment", "default_text": "±30%", "default": {"kind": "criteria", "criteria": [{"subject": "adjustment", "comparator": "within", "value": 30, "unit": "percent", "base": "comparison_baseline"}]}},
+        {"expression": "유연하게 운영", "canonical": "flexible_operation", "default_text": "하루 1회 범위 내 예산·타깃 변경", "default": {"kind": "frequency", "count": 1, "per": "P1D", "subject": "budget_or_target_change"}},
+        {"expression": "실시간 최적화", "canonical": "realtime_optimization", "default_text": "1시간마다 성과 확인", "default": {"kind": "frequency", "count": 1, "per": "PT1H", "subject": "performance_check"}},
+        {"expression": "지속적으로 최적화", "canonical": "continuous_optimization", "default_text": "하루 1회 성과 기반 조정", "default": {"kind": "frequency", "count": 1, "per": "P1D", "subject": "performance_based_adjustment"}},
+        {"expression": "필요 시 중단", "canonical": "stop_if_needed", "default_text": "오류율 5% 초과 또는 비용 한도 초과", "default": {"kind": "criteria", "combine": "or", "criteria": [{"subject": "error_rate", "comparator": "gt", "value": 5, "unit": "percent"}, {"subject": "cost_limit", "comparator": "none", "note": "비용 한도를 초과한다"}]}},
+        {"expression": "문제가 있으면 중단", "canonical": "stop_on_failure", "default_text": "발송 실패율 5% 이상", "default": {"kind": "criteria", "criteria": [{"subject": "send_failure_rate", "comparator": "gte", "value": 5, "unit": "percent"}]}},
+        {"expression": "일부 고객에게 먼저 적용", "canonical": "phased_rollout", "default_text": "전체 대상의 10%", "default": {"kind": "criteria", "criteria": [{"subject": "audience_size", "comparator": "eq", "value": 10, "unit": "percent", "base": "matched_audience"}]}},
+        {"expression": "충분히 테스트", "canonical": "test_enough", "default_text": "최소 7일 또는 전환 100건 확보", "default": {"kind": "criteria", "combine": "or", "criteria": [{"subject": "test_duration", "comparator": "gte", "value": 7, "unit": "day"}, {"subject": "conversion_count", "comparator": "gte", "value": 100, "unit": "count"}]}},
+        {"expression": "성과가 좋은 안 선택", "canonical": "select_winning_variant", "default_text": "표본 조건 충족 후 핵심 KPI 1위 안", "default": {"kind": "rank", "metric": "primary_kpi", "top_n": 1, "order": "desc", "requires_definition": ["표본 조건(최소 노출·전환 수)", "population(비교 대상 실험군 집합)", "tie_policy"]}},
+        {"expression": "의미 있는 차이", "canonical": "meaningful_difference", "default_text": "상대 차이 10% 이상이며 신뢰수준 95%", "default": {"kind": "criteria", "criteria": [{"subject": "relative_difference", "comparator": "gte", "value": 10, "unit": "percent"}, {"subject": "confidence_level", "comparator": "gte", "value": 95, "unit": "percent"}]}},
+        {"expression": "자동 조정", "canonical": "auto_adjustment", "default_text": "일일 예산을 전일 대비 최대 ±20% 조정", "default": {"kind": "criteria", "criteria": [{"subject": "daily_budget_adjustment", "comparator": "within", "value": 20, "unit": "percent", "base": "previous_day"}]}}
+      ]
+    },
+
+    {
+      "group_id": "magnitude",
+      "ko_label": "많이·적게·적당히 통합 기본값",
+      "note": "문맥 그룹에 같은 표현이 있으면 그쪽이 우선한다. 이 그룹은 문맥을 특정할 수 없을 때의 폴백이며, 비율의 분모(base)는 문장에서 정해진다.",
+      "entries": [
+        {"expression": "매우 적게", "canonical": "very_little", "default_text": "5%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "eq", "value": 5, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "적게", "canonical": "little", "default_text": "10%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "eq", "value": 10, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "조금", "canonical": "a_little", "default_text": "10%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "eq", "value": 10, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "약간", "canonical": "slightly", "default_text": "10%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "eq", "value": 10, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "일부", "canonical": "some_quantity", "default_text": "10%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "eq", "value": 10, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "적당히", "canonical": "moderately", "default_text": "30%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "eq", "value": 30, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "어느 정도", "canonical": "to_some_extent", "default_text": "30%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "eq", "value": 30, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "꽤", "canonical": "quite", "default_text": "40%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "eq", "value": 40, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "상당히", "canonical": "considerably", "default_text": "50%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "eq", "value": 50, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "많이", "canonical": "a_lot", "default_text": "70%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "eq", "value": 70, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "매우 많이", "canonical": "very_much", "default_text": "85%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "eq", "value": 85, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "대부분", "canonical": "most_quantity", "default_text": "80%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "eq", "value": 80, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "거의 전부", "canonical": "almost_all", "default_text": "95%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "eq", "value": 95, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "전부", "canonical": "all_quantity", "default_text": "100%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "eq", "value": 100, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "소폭", "canonical": "slight_delta", "default_text": "±10%", "default": {"kind": "criteria", "criteria": [{"subject": "change", "comparator": "within", "value": 10, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "중간 정도", "canonical": "moderate_delta", "default_text": "±20%", "default": {"kind": "criteria", "criteria": [{"subject": "change", "comparator": "within", "value": 20, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "대폭", "canonical": "major_delta", "default_text": "±50%", "default": {"kind": "criteria", "criteria": [{"subject": "change", "comparator": "within", "value": 50, "unit": "percent", "base": "context_dependent"}]}},
+        {"expression": "최소한", "canonical": "at_minimum", "default_text": "허용 범위의 하위 10%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "lte", "value": 10, "unit": "percent", "base": "allowed_range"}]}},
+        {"expression": "최대한", "canonical": "at_maximum", "default_text": "허용 범위의 상위 90%", "default": {"kind": "criteria", "criteria": [{"subject": "quantity", "comparator": "gte", "value": 90, "unit": "percent", "base": "allowed_range"}]}}
+      ]
+    }
+  ]
+}

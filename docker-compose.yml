@@ -68,6 +68,10 @@ services:
       POSTGRES_PASSWORD: "1234"
       # 최종 SQL↔원문 의미검증(9단계) 전용 모델. 재작성·타겟분리·상품추출(OPENAI_FAST_MODEL)과 분리.
       OPENAI_SEMANTIC_VERIFY_MODEL: "gpt-5-mini"
+      # 기간 없는 '최근'·'요즘'을 되묻지 않고 기본값 카탈로그
+      # (docs/data/runtime/policies/qualitative_defaults.sample.json)의 표현별 창으로 읽는다.
+      # 끄면(값 삭제) 구조화기의 fail-close 가 그대로 결말이 된다. 사용자가 말한 기간은 언제나 이긴다.
+      AUDIENCE_QUALITATIVE_DEFAULTS: "1"
       # 실제 business DB(SELECT 전용)와 전용 메타데이터 DB는 .env 의 BUSINESS_DB_* /
       # METADATA_DB_* 로 지정한다(env_file 로 자동 주입, 미지정 시 POSTGRES_* 폴백).
     volumes:

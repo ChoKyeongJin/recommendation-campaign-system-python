@@ -43,6 +43,7 @@ DESCRIPTIONS: dict[str, str] = {
     "member_value_index.json": "라벨 없이 값만 언급될 때(예: 라벨 없이 브랜드명만) 값→컬럼을 찾아주는 인덱스. build_member_value_index.py 로 생성.",
     "member_metrics.json": "회원 지표(구매액·방문수 등)의 정의와 랭킹용 메타데이터.",
     "business_policies.sample.json": "캠페인 비즈니스 정책(임계값·규칙) 정의. RAG 지식으로 적재되어 정책 유사도·근거 제시에 쓰인다. (.sample = 예시본)",
+    "qualitative_defaults.sample.json": "'최근', '대부분', '자주', '크게 증가'처럼 수치가 없는 표현의 기본 해석값 카탈로그(기간·규모·고객유형·빈도·성과·예산 등 13개 그룹). 이 중 time_expression 그룹만 SQL 경로가 읽는다 — 기간 없는 '최근'·'요즘'을 되묻는 대신 표현별 창(5일·14일·30일)으로 채운다(AUDIENCE_QUALITATIVE_DEFAULTS 로 켠다). 나머지 그룹은 참조 전용이며 어느 그룹이 실행에 닿는지는 파일의 consumption 절에 적혀 있다. (.sample = 예시본)",
     "rag_knowledge_base.json": "RAG 지식 그래프 본체(노드·엣지). 정책·SQL 예시·스키마 등 검색 대상 지식이 모두 들어있다. build_rag_knowledge.py 산출물.",
     "sql_examples.sample.sql": "예시 SQL 모음. 검색 근거·LLM SQL 폴백의 참고 자료. (.sample = 예시본)",
     "table_relationships.md": "테이블 간 관계(조인 경로)를 정리한 문서. build_table_relationships.py 로 스키마에서 생성.",
