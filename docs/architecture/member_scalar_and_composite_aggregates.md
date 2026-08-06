@@ -103,6 +103,10 @@ member_scalar_metrics.validate_member_scalar_contract(catalog, "buy_cycle", ...)
 반응한 회원의 금액 합이 600 이면 앞은 600, 뒤는 200 이다. 둘 다 SQL 이 나오고 둘 다 성공으로
 보이므로, 조용히 바뀌면 아무도 눈치채지 못한다.
 
+앞이 이 저장소의 뜻이고, 2026-08-06 사용자 확인도 같았다 — *캠페인별로 사람들이 반응한 평균*,
+즉 **회원이 반응한 캠페인들에 대한 평균**이다(모수는 반응한 회원). 그 뜻은 카탈로그 선언 한 곳
+(`metrics.campaign_purchase_amount.claim_synthesis.average_per_campaign`)이 소유한다.
+
 모델은 뒤를 낸다(Event IR 의 `Aggregate(avg)` 가 행 단위 평균이므로). `campaign_metric_claims` 가
 카탈로그 선언 두 가지의 논리곱으로 그 모순을 판정하고 — (a) 선언 소스의 금액 필드를 행 단위로
 평균 내는 집계가 표현에 있다, (b) 선언된 grain 표면어가 원문에 등장한다(어순·조사·띄어쓰기 무관) —
@@ -148,6 +152,38 @@ T-SQL `CONCAT`(NULL 을 빈 문자열로 접는다)의 결말과 같다.
 
 모델이 낸 `Aggregate.relation`(기간 필터 포함)을 둘 다 그대로 쓴다. 새 관계를 만들면 기간이 한쪽에만
 걸리거나 창이 통째로 사라지고, 그 오류는 값의 차이로만 드러난다.
+
+### 모델이 표현을 아예 내지 않는 갈래(2026-08-06)
+
+실측에서 같은 문장이 재작성에 도달하지 못했다. 모델이 낸 것은 표현이 아니라 신고였다.
+
+```text
+expression: null
+issues: [{"code": "ambiguous_requirement", "argument": "grouping",
+          "evidence": {"text": "캠페인별"}}]   → semantic_ir_needs_clarification
+```
+
+바꿔 넣을 자리가 없으니 재작성은 성립하지 않지만, **그 모호는 이미 풀려 있다** — 위 선언이
+이 grain 의 뜻을 하나로 정해 두었다. 그래서 `synthesize_campaign_average_predicate` 가 같은
+선언으로 술어를 **처음부터** 세우고(`_ApplicationOwnedSynthesis`, 소유자
+`campaign_metric_claims.average_per_campaign.from_declaration`), 그 신고를 해소한다. 두 갈래는
+같은 `_campaign_average_scalar` 를 쓰므로 IR 도 SQL 도 한 글자까지 같다.
+
+성립 조건은 전부 선언과 원문 구조다. 하나라도 어긋나면 세우지 않고 모델의 신고가 그대로 남는다.
+
+| 조건 | 왜 |
+|---|---|
+| 신고 근거가 grain 또는 평균 표면어를 덮는다 | 그 자리를 가리키지 않는 신고는 이 합성이 푸는 모호가 아니다 |
+| `average_terms` 가 원문에 있다 | 모델 표현이 없으므로 '평균'이라는 뜻을 말하는 것은 원문 부사뿐이다 — 없으면 합계 임계일 수도 있다 |
+| 지표 `aliases`·`grain_terms` 가 원문에 있다 | 어떤 금액을 어떤 분모로 나누는지가 선언에서 온다 |
+| 리터럴 원장이 금액 하나 + 비교어 하나뿐 | 기간이 하나 더 있는 문장을 세우면 그 창이 통째로 사라진다 |
+| 금액 통화 = 지표 `unit`, 비교어 ∈ `allowed_operators` | 단위와 연산자를 추측하지 않는다 |
+| 나머지 잔여물이 프레임뿐(`audience_frame.is_frame_only`) | 절이 하나 더 있는데 세우면 그 절이 조용히 사라진 SQL 이 나간다 |
+
+마지막 줄이 이 갈래의 성격을 정한다 — 여기서 세우는 것은 절 하나가 아니라 **문장 전체의 뜻**이다.
+그래서 '캠페인별 … 평균 10만 원 이상인 **여성** 회원'은 열리지 않고 되묻기로 남는다. 재작성
+갈래는 모델이 나머지 절을 표현했으므로 그 제약이 없다(`… 대략 평균 …` 이 그쪽에서만 통과하는
+이유도 같다).
 
 ---
 

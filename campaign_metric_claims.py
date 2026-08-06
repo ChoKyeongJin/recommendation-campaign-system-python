@@ -16,6 +16,24 @@
     2026-08-05 ~ : 표현할 대수가 없어 fail-close 했다(축 폐기).
     현재         : Event IR 이 행 값(tuple)과 0 분모 가드(null_if)를 갖게 되어 합성으로 끝난다.
 
+모델이 표현을 아예 내지 않는 경우
+---------------------------------
+실측(2026-08-06): 같은 문장에서 모델은 표현 대신 모호 신고를 낸다.
+
+    expression: null
+    issues: [{"code": "ambiguous_requirement", "argument": "grouping",
+              "evidence": {"text": "캠페인별", …}}]
+
+바꿔 넣을 자리가 없으니 재작성 경로는 성립하지 않고 문장은 되묻기로 닫힌다. 그런데 그 모호는
+**이미 풀려 있다** — 카탈로그가 이 grain 의 뜻을 하나로 선언하고 있고(분자 SUM / 분모 서로 다른
+캠페인 실행 수), 사용자 확인(2026-08-06)도 같은 뜻이었다: *회원이 반응한 캠페인들에 대한 평균*.
+그래서 :func:`synthesize_campaign_average_predicate` 가 같은 선언으로 술어를 **처음부터** 만든다.
+
+재작성 경로와 달리 모델 표현이 없으므로 '평균'이라는 뜻을 말하는 것은 원문 부사뿐이다. 그래서
+이 경로만 ``average_terms`` 를 읽고, 임계값·비교 연산자는 리터럴 원장에서, 지표는 ``aliases`` 로
+고른다. 그리고 **문장이 이 조건 하나뿐일 때만** 합성한다(:func:`audience_frame.is_frame_only`) —
+다른 절이 남아 있는데 합성하면 그 절이 조용히 사라진 SQL 이 나간다.
+
 **판정 축은 표면 어순이 아니다.** 2026-08-05 실측: '<캠페인별> <지표어> <평균>' 이 그 순서로
 인접해야 한다고 보던 판정은 같은 뜻의 흔한 변형에서 통째로 우회됐다(7종 중 1종만 닫혔다) —
 '캠페인별 **평균** 구매반응 금액'(평균이 앞), '캠페인별**로**'(조사), '캠페인 별'(띄어쓰기),
@@ -48,6 +66,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import audience_frame
@@ -55,6 +74,9 @@ import event_ir
 
 # 합성 소유자 표기(감사 로그의 filter_name 과 issue 인자에서 같은 이름을 쓴다).
 SYNTHESIS_OWNER = "campaign_metric_claims.average_per_campaign"
+# 모델 표현 없이 선언만으로 세운 술어의 소유자. 재작성과 이름을 나누는 이유는 감사 로그가
+# "무엇을 고쳤는가"와 "무엇을 세웠는가"를 구분해야 하기 때문이다.
+DECLARED_SYNTHESIS_OWNER = "campaign_metric_claims.average_per_campaign.from_declaration"
 AVERAGE_AXIS_ARGUMENT = "campaign_metric.average_amount"
 
 # 합성이 성립하지 않을 때의 고정 문구. 사용자에게 나가는 문장은 모델 산문이 아니라 이 상수다.
@@ -186,6 +208,13 @@ def _declared_average_axes(catalog: Mapping[str, Any]) -> tuple[dict[str, Any], 
             "denominator_field": denominator_field_id,
             "aggregation": aggregation,
             "grain_terms": grain_terms,
+            # 아래 넷은 **재작성 판정에 쓰지 않는다**(그래서 위 관문에 넣지 않았다). 모델
+            # 표현이 없을 때만 필요한 선언이므로, 여기서 필수로 만들면 선언 한 줄이 빠지는
+            # 순간 재작성 판정까지 조용히 사라지고 뜻이 다른 행당 평균 SQL 이 나간다.
+            "aliases": _strings(metric.get("aliases")),
+            "average_terms": _strings(average.get("average_terms")),
+            "unit": metric.get("unit"),
+            "allowed_operators": _strings(metric.get("allowed_operators")),
             # 합성 바인딩은 **별도 단계**다(아래 _synthesis_binding). 판정에 필요한 키와 합성에
             # 필요한 키를 한 관문으로 묶으면, 합성 키 하나가 빠지는 순간 판정 자체가 조용히
             # 사라지고 뜻이 다른 행당 평균 SQL 이 그대로 나간다(fail-open).
@@ -320,15 +349,15 @@ def _executable_relation(relation: Any) -> Any:
 
 
 def _campaign_average_scalar(
-    aggregate: Mapping[str, Any], synthesis: Mapping[str, Any]
+    relation: Any, synthesis: Mapping[str, Any]
 ) -> dict[str, Any]:
-    """행당 평균 집계 노드 → 캠페인 분모 평균 복합식(wire dict).
+    """관계 하나 → 캠페인 분모 평균 복합식(wire dict).
 
-    분자와 분모가 모델이 낸 **같은 관계**를 물려받는 것이 계약이다. 기간 필터가 그 관계 안에
-    있으므로, 새 관계를 만들면 한쪽에만 기간이 걸리거나 창이 통째로 사라진다.
+    분자와 분모가 **같은 관계**를 물려받는 것이 계약이다. 재작성 경로에서 그 관계는 모델이 낸
+    집계의 관계(기간 필터 포함)이고, 선언 합성 경로에서는 선언 소스 그 자체다. 새 관계를
+    따로 만들면 기간이 한쪽에만 걸리거나 창이 통째로 사라진다.
     """
 
-    relation = _executable_relation(aggregate.get("relation"))
     numerator = {
         "type": "aggregate",
         "function": "sum",
@@ -450,7 +479,9 @@ def detect_campaign_average_claim(
     }
     synthesized: dict[str, Any] | None = None
     if synthesis is not None:
-        replacement = _campaign_average_scalar(aggregate, synthesis)
+        replacement = _campaign_average_scalar(
+            _executable_relation(aggregate.get("relation")), synthesis
+        )
         candidate = _replace_node(expression, aggregate, replacement)
         # 만든 식이 실제로 이 IR 대수의 값인지 여기서 확인한다. 검증되지 않은 wire dict 를
         # 하류로 흘리면 파싱 실패가 '모델이 이상한 것을 냈다'로 잘못 귀속된다.
@@ -481,9 +512,198 @@ def detect_campaign_average_claim(
     }
 
 
+@dataclass(frozen=True)
+class CampaignAverageSynthesis:
+    """선언만으로 세운 술어 하나 + 그것을 증명한 카탈로그·리터럴 영수증."""
+
+    expression: event_ir.Condition
+    receipt: dict[str, Any]
+    # 합성이 **스칼라 임계값으로** 소비한 원문 구간(임계 금액·비교어). 시간 검증기가 이
+    # 구간을 소실된 창으로 세지 않게 한다.
+    consumed_spans: tuple[tuple[int, int], ...]
+
+
+def _money_amount(binding: Mapping[str, Any]) -> tuple[str, int | float] | None:
+    """금액 리터럴의 (통화, 값). 통화나 값을 읽지 못하면 ``None`` — 단위를 추측하지 않는다."""
+
+    normalized = binding.get("normalized")
+    if not isinstance(normalized, Mapping):
+        return None
+    currency, amount = normalized.get("currency"), normalized.get("amount")
+    if not (isinstance(currency, str) and currency):
+        return None
+    value = _number(amount)
+    return None if value is None else (currency, value)
+
+
+def _contains(outer: tuple[int, int], inner: tuple[int, int]) -> bool:
+    return outer[0] <= inner[0] and inner[1] <= outer[1]
+
+
+def _surface_receipt(
+    query: str, declared: str, span: tuple[int, int]
+) -> dict[str, Any]:
+    """선언 표면어와 그것이 걸린 원문 구간. 둘이 다를 수 있어서(띄어쓰기·조사) 함께 남긴다."""
+
+    return {
+        "declared": declared,
+        "text": query[span[0] : span[1]],
+        "start": span[0],
+        "end": span[1],
+    }
+
+
+def synthesize_campaign_average_predicate(
+    query: str,
+    issue: Mapping[str, Any],
+    literal_bindings: Sequence[Any],
+    catalog: Mapping[str, Any],
+) -> CampaignAverageSynthesis | None:
+    """모델이 표현을 내지 않은 캠페인 분모 평균 문장 하나를 세우거나, 아니면 닫는다.
+
+    성립 조건은 전부 선언과 원문 구조다 — 산문을 훑거나 임계값·기간을 지어내지 않는다.
+
+    * 모델 issue 하나가 이 문장의 모호/미지원을 신고했고, 그 근거가 grain 또는 평균 표면어를 덮는다;
+    * 카탈로그에 캠페인 분모 평균을 **선언한** 지표가 하나뿐이고 그 선언이 합성까지 완전하다;
+    * 원문에 그 지표의 표면어·grain 표면어·평균 표면어가 모두 있다;
+    * 리터럴 원장이 임계 금액 하나와 비교 연산자 하나뿐이고 그 순서가 '금액 → 비교어'다;
+    * 금액의 통화가 지표 선언 단위와 같고 비교 연산자가 허용 목록 안에 있다;
+    * 그 구간들 밖의 잔여물이 조건을 담지 않는 프레임뿐이다.
+
+    마지막 조건이 이 경로의 안전장치다. 기간이든 성별이든 절이 하나라도 더 있으면 합성하지
+    않는다 — 여기서 세우는 것은 문장 전체의 뜻이지 절 하나가 아니기 때문이다.
+    """
+
+    if not isinstance(query, str) or not isinstance(catalog, Mapping):
+        return None
+    if not isinstance(issue, Mapping) or issue.get("code") not in {
+        "ambiguous_requirement",
+        "unsupported_semantics",
+    }:
+        return None
+    issue_evidence = issue.get("evidence")
+    issue_span = _span(issue_evidence, query) if isinstance(issue_evidence, Mapping) else None
+    if issue_span is None:
+        return None
+
+    bindings = [item for item in literal_bindings if isinstance(item, Mapping)]
+    # 원장 전량 소비. 리터럴이 하나라도 더 있으면 이 문장은 이 조건 하나가 아니다.
+    if len(bindings) != 2 or len(literal_bindings) != 2:
+        return None
+    amounts = [item for item in bindings if item.get("kind") == "money"]
+    operators = [item for item in bindings if item.get("kind") == "comparison_operator"]
+    if len(amounts) != 1 or len(operators) != 1:
+        return None
+    threshold, comparison = amounts[0], operators[0]
+    threshold_span = _span(threshold, query)
+    operator_span = _span(comparison, query)
+    money = _money_amount(threshold)
+    operator = comparison.get("normalized")
+    if not (
+        threshold_span is not None
+        and operator_span is not None
+        and money is not None
+        and isinstance(operator, str)
+        # 한국어 비교는 후치다('10만 원 이상'). 뒤집힌 배치는 이 문형이 아니므로 닫는다.
+        and threshold_span[1] <= operator_span[0]
+    ):
+        return None
+    currency, value = money
+
+    matched: list[dict[str, Any]] = []
+    for axis in _declared_average_axes(catalog):
+        synthesis = axis["synthesis"]
+        grain = _grain_match(query, axis["grain_terms"])
+        average = _grain_match(query, axis["average_terms"])
+        alias = _grain_match(query, axis["aliases"])
+        if synthesis is None or grain is None or average is None or alias is None:
+            continue
+        # 근거 구간을 그리지 못하면 잔여물 검사를 할 수 없다 — 못 그린 채 통과시키면 fail-open.
+        if grain[1] is None or average[1] is None or alias[1] is None:
+            continue
+        if axis["unit"] != currency or operator not in axis["allowed_operators"]:
+            continue
+        matched.append({
+            "axis": axis,
+            "grain": grain,
+            "average": average,
+            "alias": alias,
+        })
+    # 두 지표가 같은 문장을 주장하면 그 문장은 모호하다 — 카탈로그가 풀 문제다.
+    if len(matched) != 1:
+        return None
+    axis = matched[0]["axis"]
+    grain_term, grain_span = matched[0]["grain"]
+    average_term, average_span = matched[0]["average"]
+    alias_term, alias_span = matched[0]["alias"]
+
+    owned = (grain_span, alias_span, average_span, threshold_span, operator_span)
+    if not audience_frame.is_frame_only(query, owned):
+        return None
+    # 모델이 신고한 구간이 **이 합성이 푸는 모호**를 가리켜야 반박이 성립한다. 그 모호는
+    # 집계 수준(grain)이거나 평균이라는 뜻이므로 둘 중 하나를 덮어야 한다.
+    if not (_contains(issue_span, grain_span) or _contains(issue_span, average_span)):
+        return None
+
+    start, end = min(span[0] for span in owned), max(span[1] for span in owned)
+    synthesis = axis["synthesis"]
+    candidate = {
+        "type": "comparison",
+        "operator": operator,
+        "left": _campaign_average_scalar(
+            {"type": "source", "name": axis["source"]}, synthesis
+        ),
+        "right": {"type": "literal", "value": value},
+        "evidence": {"text": query[start:end], "start": start, "end": end},
+    }
+    try:
+        parsed = event_ir.condition_from_dict(candidate)
+    except event_ir.IrSchemaError:
+        # 만든 식이 이 IR 대수의 값이 아니면 합성하지 않는다. 검증되지 않은 wire dict 를
+        # 하류로 흘리면 파싱 실패가 '모델이 이상한 것을 냈다'로 잘못 귀속된다.
+        return None
+    return CampaignAverageSynthesis(
+        expression=parsed,
+        receipt={
+            "owner": DECLARED_SYNTHESIS_OWNER,
+            "metric_id": axis["metric_id"],
+            "source": axis["source"],
+            "grain_term": _surface_receipt(query, grain_term, grain_span),
+            "average_term": _surface_receipt(query, average_term, average_span),
+            "metric_alias": _surface_receipt(query, alias_term, alias_span),
+            "threshold_unit": currency,
+            "operator": operator,
+            "numerator": {"function": "sum", "field": synthesis["numerator_field"]},
+            "denominator": {
+                "function": "count",
+                "distinct": True,
+                "key_fields": list(synthesis["denominator_key_fields"]),
+                "zero_value": synthesis["zero_denominator_value"],
+            },
+            "decimal_multiplier": synthesis["decimal_multiplier"],
+            "declared_capabilities": list(synthesis["required_capabilities"]),
+            "used_capabilities": sorted(event_ir.expression_capabilities(parsed)),
+            "consumed_literal_binding_ids": [
+                threshold.get("id"),
+                comparison.get("id"),
+            ],
+            "issue": {
+                "code": issue.get("code"),
+                "argument": issue.get("argument"),
+                "start": issue_span[0],
+                "end": issue_span[1],
+            },
+        },
+        consumed_spans=(threshold_span, operator_span),
+    )
+
+
 __all__ = [
     "AVERAGE_AXIS_ARGUMENT",
+    "DECLARED_SYNTHESIS_OWNER",
     "SYNTHESIS_OWNER",
     "UNSYNTHESIZABLE_MESSAGE",
+    "CampaignAverageSynthesis",
     "detect_campaign_average_claim",
+    "synthesize_campaign_average_predicate",
 ]

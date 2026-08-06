@@ -347,6 +347,72 @@ def test_campaign_average_guard_holds_across_surface_variants(query: str) -> Non
     assert "SELECT DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO" in sql
 
 
+def _grouping_ambiguity(query: str, span: str = "캠페인별") -> dict:
+    """모델이 실제로 내는 신고(실측 2026-08-06): 표현 없이 '캠페인별'을 모호로 신고한다."""
+
+    return {
+        "code": "ambiguous_requirement",
+        "argument": "grouping",
+        "message": (
+            "'캠페인별'의 의미(어떤 집계 수준으로 평균을 계산할지)가 불명확합니다: "
+            "캠페인별로 각각 평균이 10만 원 이상을 요구하는지, 전체 캠페인에 걸친 평균을 "
+            "요구하는지 명확하지 않습니다."
+        ),
+        "evidence": _evidence(query, span),
+    }
+
+
+def test_campaign_average_ambiguity_is_answered_by_the_declaration() -> None:
+    """축3 두 번째 갈래: 모델이 표현을 비우고 모호를 신고해도 선언이 그 뜻을 확정한다.
+
+    실측(2026-08-06)에서 이 문장은 ``expression=null`` + ``ambiguous_requirement(grouping)``
+    으로 돌아와 되묻기로 닫혔다. 그런데 그 모호는 카탈로그가 이미 하나로 풀어 놓은 것이고
+    (분자 SUM / 분모 서로 다른 캠페인 실행 수), 사용자 확인도 같은 뜻이었다 — 회원이 반응한
+    캠페인들에 대한 평균. 그래서 애플리케이션이 같은 선언으로 술어를 세우고 신고를 해소한다.
+
+    고정하는 것은 여전히 **뜻**이다. 세운 식이 행당 평균으로 나가면 값이 다르므로, 재작성
+    경로와 똑같은 분자·분모·0 분모 가드를 여기서도 잰다.
+    """
+
+    structured = _structure(
+        CAMPAIGN_AVERAGE_QUERY,
+        _raw(CAMPAIGN_AVERAGE_QUERY, issues=[_grouping_ambiguity(CAMPAIGN_AVERAGE_QUERY)]),
+    )
+
+    requirement = structured["audience_requirement"]
+    assert requirement["issues"] == []
+    assert requirement["expression"] is not None
+    assert structured["semantic_ir"]["status"] == "resolved"
+
+    _plan, result = _sql_result(CAMPAIGN_AVERAGE_QUERY, structured)
+    sql = result["sql"] or ""
+    assert result["is_success"] is True, result.get("failure_reason")
+    assert "AVG(R.BUY_AMT)" not in sql
+    assert "ISNULL(SUM(R.BUY_AMT), 0)" in sql
+    assert "SELECT DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO" in sql
+    assert "NULLIF(" in sql
+
+
+def test_campaign_average_ambiguity_stays_closed_when_a_clause_is_left_over() -> None:
+    """선언 합성은 **문장 전체**를 세운다 — 절이 하나 더 있으면 세우지 않고 신고가 남는다.
+
+    이 계약이 없으면 '여성'이 조용히 사라진 SQL 이 성공으로 나간다(모델은 표현을 내지 않았고
+    합성기는 그 절을 모른다).
+    """
+
+    query = "캠페인별 구매반응 금액이 평균 10만 원 이상인 여성 회원"
+    structured = _structure(query, _raw(query, issues=[_grouping_ambiguity(query)]))
+
+    assert structured["audience_requirement"]["expression"] is None
+    assert [item["code"] for item in structured["audience_requirement"]["issues"]] == [
+        "ambiguous_requirement"
+    ]
+    assert structured["semantic_ir"]["status"] == "needs_clarification"
+    _plan, result = _sql_result(query, structured)
+    assert result["is_success"] is False
+    assert not result["sql"]
+
+
 @pytest.mark.parametrize(
     "query",
     [

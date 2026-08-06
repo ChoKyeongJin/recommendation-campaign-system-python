@@ -468,6 +468,15 @@ def _application_owned_synthesis(
                     _audience_issue_key(issue),
                 )
 
+    if code in {"ambiguous_requirement", "unsupported_semantics"}:
+        # 캠페인 분모 평균. 모델은 '캠페인별'을 모호로 신고하지만(실측 2026-08-06) 그 집계
+        # 수준은 카탈로그가 하나로 선언하고 있으므로, 선언이 완전하고 문장이 이 조건
+        # 하나뿐이면 애플리케이션이 그 신고를 반박한다. 인자 문자열로 라우팅하지 않는
+        # 이유는 다른 합성기와 같다 — 그 문자열은 모델 산문이다.
+        synthesis = _campaign_average_synthesis(query, issue, literal_bindings)
+        if synthesis is not None:
+            return synthesis
+
     if code == "unsupported_semantics" and argument == "comparison_operator":
         expression = rolling_absence_claims.synthesize_rolling_absence(
             query, literal_bindings, catalog
@@ -629,6 +638,31 @@ def _member_scalar_synthesis(
         member_scalar_metric_claims.OWNER,
         _audience_issue_key(issue),
         scalar_literal_spans=spans,
+    )
+
+
+def _campaign_average_synthesis(
+    query: str, issue: Mapping[str, Any], literal_bindings: list[Any]
+) -> _ApplicationOwnedSynthesis | None:
+    """모델이 표현을 비운 캠페인 분모 평균 문장을 카탈로그 선언만으로 세운다.
+
+    :func:`_campaign_average_claim` 과 짝이다 — 저쪽은 모델이 낸 행당 평균을 **고치고**,
+    이쪽은 모델이 아무것도 내지 않았을 때 같은 선언으로 **세운다**. 성립하지 않으면 ``None``
+    이고 모델의 신고가 그대로 남아 fail-close 한다(비슷한 지표로 갈아타지 않는다).
+    """
+
+    import audience_runtime
+
+    result = campaign_metric_claims.synthesize_campaign_average_predicate(
+        query, issue, literal_bindings, audience_runtime.catalog_snapshot()
+    )
+    if result is None:
+        return None
+    return _ApplicationOwnedSynthesis(
+        result.expression,
+        campaign_metric_claims.DECLARED_SYNTHESIS_OWNER,
+        _audience_issue_key(issue),
+        scalar_literal_spans=result.consumed_spans,
     )
 
 

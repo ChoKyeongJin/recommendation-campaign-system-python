@@ -332,6 +332,205 @@ def test_row_average_request_without_a_grain_term_is_left_alone() -> None:
     )
 
 
+# ── 모델 표현이 없을 때의 선언 합성 ───────────────────────────────────────────────
+#
+# 실측(2026-08-06): 모델은 이 문장에서 표현 대신 모호를 신고한다(expression=null,
+# ambiguous_requirement(grouping) @ '캠페인별'). 바꿔 넣을 자리가 없으니 재작성 경로는
+# 성립하지 않는데, 그 모호는 카탈로그 선언이 이미 풀어 놓았다 — 사용자 확인(2026-08-06)도
+# 같은 뜻이었다: 회원이 반응한 캠페인들에 대한 평균. 그래서 같은 선언으로 처음부터 세운다.
+
+
+def _ambiguity(query: str, span: str = "캠페인별") -> dict:
+    start = query.index(span)
+    return {
+        "code": "ambiguous_requirement",
+        "argument": "grouping",
+        "message": "'캠페인별'의 집계 수준이 불명확합니다.",
+        "evidence": {"text": span, "start": start, "end": start + len(span)},
+    }
+
+
+def _money(query: str, span: str = "10만 원", amount: int = 100000) -> dict:
+    start = query.index(span)
+    return {
+        "id": "money_1",
+        "kind": "money",
+        "text": span,
+        "start": start,
+        "end": start + len(span),
+        "value": amount,
+        "normalized": {"amount": amount, "currency": "KRW"},
+    }
+
+
+def _operator(query: str, span: str = "이상", normalized: str = ">=") -> dict:
+    start = query.index(span)
+    return {
+        "id": "comparison_operator_1",
+        "kind": "comparison_operator",
+        "text": span,
+        "start": start,
+        "end": start + len(span),
+        "value": span,
+        "normalized": normalized,
+    }
+
+
+def _synthesize(query: str, issue: dict | None = None, bindings: list | None = None):
+    return campaign_metric_claims.synthesize_campaign_average_predicate(
+        query,
+        issue if issue is not None else _ambiguity(query),
+        bindings if bindings is not None else [_money(query), _operator(query)],
+        audience_runtime.catalog_snapshot(),
+    )
+
+
+def test_declared_synthesis_matches_the_rewrite_result_exactly(catalog) -> None:
+    """모델이 표현을 냈든 안 냈든 **같은 뜻**이어야 한다 — 두 경로의 IR 이 같다."""
+
+    synthesis = _synthesize(CAMPAIGN_AVERAGE_QUERY)
+    assert synthesis is not None
+    rewritten = _campaign_average_expression(catalog)
+    # 근거 구간만 다르다(재작성은 모델 비교의 근거를, 합성은 소비한 구간 전체를 갖는다).
+    assert synthesis.expression.to_dict()["left"] == rewritten.to_dict()["left"]
+    assert synthesis.expression.to_dict()["right"] == rewritten.to_dict()["right"]
+    assert synthesis.expression.to_dict()["operator"] == ">="
+    assert event_ir.expression_capabilities(synthesis.expression) == (
+        event_ir.expression_capabilities(rewritten)
+    )
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+def test_declared_synthesis_sql_is_the_campaign_denominator_average(
+    dialect: str, catalog
+) -> None:
+    """합성 경로의 SQL 도 행당 평균이 아니라 캠페인 분모 평균이다."""
+
+    synthesis = _synthesize(CAMPAIGN_AVERAGE_QUERY)
+    assert synthesis is not None
+    sql = _sql(synthesis.expression, catalog, dialect)
+    assert sql == _sql(_campaign_average_expression(catalog), catalog, dialect)
+    assert "AVG(R.BUY_AMT)" not in sql
+    assert "SUM(R.BUY_AMT)" in sql
+    assert "SELECT DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO" in sql
+
+
+def test_declared_synthesis_receipt_names_its_evidence() -> None:
+    """무엇이 이 술어를 세웠는지 — 선언 표면어·리터럴·신고가 영수증에 남는다."""
+
+    synthesis = _synthesize(CAMPAIGN_AVERAGE_QUERY)
+    assert synthesis is not None
+    receipt = synthesis.receipt
+    assert receipt["owner"] == campaign_metric_claims.DECLARED_SYNTHESIS_OWNER
+    assert receipt["metric_id"] == "campaign_purchase_amount"
+    assert receipt["grain_term"]["text"] == "캠페인별"
+    assert receipt["average_term"]["text"] == "평균"
+    assert receipt["metric_alias"]["text"] == "구매반응 금액"
+    assert receipt["threshold_unit"] == "KRW"
+    assert receipt["consumed_literal_binding_ids"] == ["money_1", "comparison_operator_1"]
+    assert receipt["issue"]["code"] == "ambiguous_requirement"
+    # 임계 리터럴 구간은 스칼라로 소비됐다(시간 검증기가 소실된 창으로 세지 않게 한다).
+    assert synthesis.consumed_spans == (
+        (CAMPAIGN_AVERAGE_QUERY.index("10만 원"), CAMPAIGN_AVERAGE_QUERY.index("10만 원") + 5),
+        (CAMPAIGN_AVERAGE_QUERY.index("이상"), CAMPAIGN_AVERAGE_QUERY.index("이상") + 2),
+    )
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "캠페인별 평균 구매반응 금액이 10만 원 이상인 회원",
+        "캠페인별로 구매반응 금액이 평균 10만 원 이상인 회원",
+        "캠페인 별 구매반응 금액이 평균 10만 원 이상인 회원",
+        "캠페인당 평균 구매반응 금액이 10만 원 이상인 회원",
+        "캠페인 단위 평균 구매반응 금액이 10만 원 이상인 회원",
+        "각 캠페인 평균 구매반응 금액이 10만 원 이상인 회원",
+    ],
+)
+def test_declared_synthesis_holds_across_surface_variants(query: str, catalog) -> None:
+    """어순·조사·띄어쓰기는 뜻이 아니다 — 같은 뜻이면 같은 식이 나온다."""
+
+    span = "캠페인별" if "캠페인별" in query else query[: query.index("평균")].strip()
+    synthesis = _synthesize(query, issue=_ambiguity(query, span))
+    assert synthesis is not None, query
+    assert _sql(synthesis.expression, catalog, "tsql") == _sql(
+        _campaign_average_expression(catalog), catalog, "tsql"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "query"),
+    [
+        # 평균 부사가 없으면 합계 임계일 수도 있다 — 모델 표현이 없으므로 뜻을 정할 근거가 없다.
+        ("no_average_term", "캠페인별 구매반응 금액이 10만 원 이상인 회원"),
+        # grain 이 없으면 캠페인 분모가 아니라 회원 전체 평균 요청이다.
+        ("no_grain_term", "구매반응 금액이 평균 10만 원 이상인 회원"),
+        # 지표 표면어가 없으면 어떤 금액인지 선언이 말하지 않는다.
+        ("no_metric_alias", "캠페인별 평균 10만 원 이상인 회원"),
+        # 조건이 하나 더 있는 문장을 이 술어 하나로 세우면 나머지 절이 조용히 사라진다.
+        ("another_condition", "캠페인별 구매반응 금액이 평균 10만 원 이상인 여성 회원"),
+        ("undeclared_hedge", "캠페인별 구매반응 금액이 대략 평균 10만 원 이상인 회원"),
+    ],
+)
+def test_declared_synthesis_fails_closed(name: str, query: str) -> None:
+    """선언이 덮지 못하는 문장은 세우지 않는다 — 모델의 신고가 그대로 남는다."""
+
+    span = "캠페인별" if "캠페인별" in query else "평균"
+    assert _synthesize(query, issue=_ambiguity(query, span)) is None, name
+
+
+def test_declared_synthesis_rejects_an_unconsumed_literal() -> None:
+    """원장에 기간이 하나 더 있으면 세우지 않는다 — 세우면 그 창이 통째로 사라진다."""
+
+    query = "최근 3개월 캠페인별 구매반응 금액이 평균 10만 원 이상인 회원"
+    period = {
+        "id": "duration_1",
+        "kind": "duration",
+        "text": "3개월",
+        "start": query.index("3개월"),
+        "end": query.index("3개월") + 3,
+        "value": 3,
+        "normalized": {"value": 3, "semantic_unit": "months"},
+    }
+    assert (
+        _synthesize(
+            query,
+            issue=_ambiguity(query),
+            bindings=[period, _money(query), _operator(query)],
+        )
+        is None
+    )
+
+
+def test_declared_synthesis_requires_the_issue_to_point_at_the_ambiguity() -> None:
+    """신고 근거가 이 합성이 푸는 모호(집계 수준·평균)를 가리키지 않으면 반박하지 않는다."""
+
+    issue = _ambiguity(CAMPAIGN_AVERAGE_QUERY, "구매반응 금액")
+    assert _synthesize(CAMPAIGN_AVERAGE_QUERY, issue=issue) is None
+
+
+def test_declared_synthesis_rejects_a_currency_mismatch() -> None:
+    """임계 단위가 지표 선언 단위와 다르면 세우지 않는다(단위를 추측하지 않는다)."""
+
+    binding = _money(CAMPAIGN_AVERAGE_QUERY)
+    binding["normalized"] = {"amount": 100000, "currency": "USD"}
+    assert (
+        _synthesize(
+            CAMPAIGN_AVERAGE_QUERY,
+            bindings=[binding, _operator(CAMPAIGN_AVERAGE_QUERY)],
+        )
+        is None
+    )
+
+
+def test_declared_synthesis_ignores_issues_it_does_not_own() -> None:
+    """결핍 신고(missing_argument)는 이 경로가 반박할 대상이 아니다."""
+
+    issue = _ambiguity(CAMPAIGN_AVERAGE_QUERY)
+    issue["code"] = "missing_argument"
+    assert _synthesize(CAMPAIGN_AVERAGE_QUERY, issue=issue) is None
+
+
 # ── IR 대수 자체의 계약 ────────────────────────────────────────────────────────────
 
 
