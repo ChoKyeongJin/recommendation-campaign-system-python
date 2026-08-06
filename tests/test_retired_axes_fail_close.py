@@ -656,3 +656,152 @@ def test_bare_recent_campaign_count_without_a_default_window_remains_blocked() -
     assert result["is_success"] is False
     assert result["sql"] is None
     assert result["failure_reason"] == "semantic_ir_needs_clarification"
+
+
+# 축2 의 **라이브 갈래**. 위 `test_profile_scalar_metric_request_compiles_to_the_snapshot_row`
+# 는 모델이 표현을 비우고 미지원을 신고한 합성 갈래만 고정한다. 실측(2026-08-06)에서 모델이
+# 같은 조건을 스스로 표현하면 결말이 달랐다 — '구매주기가 30일 이하'의 `30일` 이 **소실된
+# 기간 창**으로 세어져 `validation_mismatch[period]` 로 반려됐다. `30일` 자체에는 고정된 뜻이
+# 없고 무엇인지는 최종 표현의 구조가 정하므로, 두 갈래를 따로 고정한다.
+MIXED_SCALAR_AND_WINDOW_QUERY = "구매주기가 30일 이하이고 최근 30일 이내 구매한 회원"
+
+
+def _member_scalar_threshold_expression(query: str) -> dict:
+    """원문 + 지표 레지스트리 선언 + 리터럴 원장에서 회원별 스칼라 임계 표현을 역산한다.
+
+    지표 id·표면어·임계값·비교 기호를 이 파일에 손으로 심지 않는다. 그것들은 카탈로그와
+    회원 지표 레지스트리가 소유하는 지식이고, 선언이 바뀌면 픽스처도 함께 따라가야 한다 —
+    손으로 적어 두면 선언과 어긋난 모양을 라이브 계약으로 고정하게 된다.
+    """
+
+    import audience_runtime  # noqa: PLC0415 — 선언 소유자
+    import event_ir  # noqa: PLC0415
+    import member_scalar_metric_claims  # noqa: PLC0415
+    import member_scalar_metrics  # noqa: PLC0415
+    from query_structurer.semantic_ir import (  # noqa: PLC0415
+        extract_literal_bindings,
+    )
+
+    registry = audience_runtime.member_metric_registry_snapshot()
+    assert registry is not None, "회원 지표 레지스트리 선언이 없다"
+    declarations = member_scalar_metric_claims._declared_metrics(registry)
+    candidates = member_scalar_metric_claims._alias_candidates(query, declarations)
+    assert len(candidates) == 1, candidates
+    declaration, _alias, alias_start, _alias_end = candidates[0]
+
+    bindings = extract_literal_bindings(query, current_date=CURRENT_DATE)
+    operators = [row for row in bindings if row.get("kind") == "comparison_operator"]
+    assert len(operators) == 1, bindings
+    thresholds = []
+    for row in bindings:
+        unit_and_value = member_scalar_metric_claims._threshold_unit_and_value(row)
+        if unit_and_value is not None and unit_and_value[0] == declaration["threshold_unit"]:
+            thresholds.append(unit_and_value[1])
+    assert thresholds, bindings
+
+    operator_end = int(operators[0]["end"])
+    predicate = member_scalar_metrics.lower_member_scalar_metric(
+        audience_runtime.resolve_audience_catalog(),
+        declaration["catalog_metric_id"],
+        operator=str(operators[0]["normalized"]),
+        value=thresholds[0],
+        evidence=event_ir.Evidence(
+            text=query[alias_start:operator_end],
+            start=alias_start,
+            end=operator_end,
+        ),
+    )
+    return predicate.expression.to_dict()
+
+
+def _rolling_purchase_expression(query: str, span: str) -> dict:
+    """사용자가 **실제로 말한** 최근 30일 구매 창 — 스칼라 임계와 구별되는 진짜 시간 조건."""
+
+    return {
+        "type": "exists",
+        "relation": {
+            "type": "filter",
+            "relation": {"type": "source", "name": "purchase"},
+            "where": {
+                "type": "time_filter",
+                "field": {"type": "field", "name": "purchase.occurred_at"},
+                "window": {"type": "rolling", "value": 30, "unit": "day"},
+            },
+        },
+        "evidence": _evidence(query, span),
+    }
+
+
+def test_a_model_authored_scalar_threshold_is_not_read_as_a_lost_time_window() -> None:
+    """축2 라이브 갈래: 모델이 스스로 낸 스칼라 임계 표현이 그대로 스냅샷 SQL 로 나간다.
+
+    합성 갈래에서만 초록이면 래칫이 라이브를 지키지 못한다 — 합성은 모델이 표현을 비웠을
+    때만 돌고, 그 부산물(소비한 리터럴 구간)이 없으면 같은 문장이 기간 검증에서 반려됐다.
+    고정하는 것은 SQL 문자열이 아니라 뜻이다: 최신 월 스냅샷 한 행, 그 회원의 값과 임계값의
+    비교, 그리고 **사용자가 말하지 않은 시간 창이 붙지 않았다**는 것.
+    """
+
+    query = BUY_CYCLE_QUERY
+    structured = _structure(
+        query, _raw(query, expression=_member_scalar_threshold_expression(query))
+    )
+
+    requirement = structured["audience_requirement"]
+    assert requirement["issues"] == []
+    assert requirement["expression"] is not None
+    assert structured["semantic_ir"]["status"] == "resolved"
+
+    _plan, result = _sql_result(query, structured)
+    sql = result["sql"] or ""
+    assert result["is_success"] is True, result.get("failure_reason")
+    assert "MS.BUY_CYCLE <= 30" in sql
+    assert "MS.MEMBER_NO = B.MEMBER_NO" in sql
+    assert "MS.YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)" in sql
+    # '30일' 을 기간으로 되읽어 구매 이력 창을 덧붙이면 조용히 다른 오디언스가 된다.
+    assert "CRM_SL_ORDERHEADERMALL" not in sql
+    assert "DATEADD(" not in sql
+
+
+def test_a_scalar_threshold_beside_a_real_window_keeps_both_clauses_in_one_sql() -> None:
+    """혼합문: 임계값 ``30일`` 을 소비하고도 뒤의 **진짜 창이 살아서** 한 SQL 에 함께 나간다.
+
+    같은 문장에 값·단위가 완전히 같은 ``30일`` 이 둘 있다. 앞의 것은 지표 임계값이고 뒤의
+    것은 시간 창이며, 리터럴 원장에서 둘은 구별되지 않는다. 소비 구간을 하나도 청구하지
+    않으면 이 옳은 요청이 기간 불일치로 반려되므로(실측), 그 반려가 돌아오지 않는 것을
+    여기서 고정한다.
+
+    반대 방향(청구가 진짜 창까지 삼키는 과도 소비)은 **이 층에서는 보이지 않는다** — 표현은
+    이미 주어져 있고 마스킹은 검증기만 건드리므로 SQL 이 달라지지 않는다. 그 계약은 소비
+    구간 자체를 재는 청구 함수의 단위 테스트가 소유한다(기간 검증기는 창의 개수만 비교해
+    과도한 소비를 스스로 검출하지 못한다).
+    """
+
+    query = MIXED_SCALAR_AND_WINDOW_QUERY
+    structured = _structure(
+        query,
+        _raw(
+            query,
+            expression={
+                "type": "and",
+                "operands": [
+                    _member_scalar_threshold_expression(query),
+                    _rolling_purchase_expression(query, "최근 30일 이내 구매한"),
+                ],
+            },
+        ),
+    )
+
+    requirement = structured["audience_requirement"]
+    assert requirement["issues"] == []
+    assert structured["semantic_ir"]["status"] == "resolved"
+
+    _plan, result = _sql_result(query, structured)
+    sql = result["sql"] or ""
+    assert result["is_success"] is True, result.get("failure_reason")
+    # 스칼라 절: 최신 월 스냅샷 한 행 비교.
+    assert "MS.BUY_CYCLE <= 30" in sql
+    assert "MS.YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)" in sql
+    assert sql.count("EXISTS (SELECT 1 FROM CRM_MB_MONTHCRMINFO") == 1
+    # 시간 절: 사용자가 말한 최근 30일 구매 창이 그대로 남아 있다.
+    assert "CRM_SL_ORDERHEADERMALL" in sql
+    assert "DATEADD(DAY, -30, GETDATE())" in sql

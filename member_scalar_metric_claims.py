@@ -183,6 +183,34 @@ def _alias_candidates(
     ]
 
 
+def _threshold_phrase_is_adjacent(
+    query: str,
+    *,
+    alias_end: int,
+    value_bounds: tuple[int, int],
+    operator_bounds: tuple[int, int],
+) -> bool:
+    """지표 → 임계값 → 비교가 그 순서로 **국소 인접**한가(사이에 조사·공백만).
+
+    이 순서 규칙이 기간 표면어를 **스칼라 임계값**으로 만드는 근거다. 한 문장에 같은 ``30일``
+    이 둘 있어도('구매주기가 30일 이하이고 최근 30일 이내 구매한') 비교어 앞에 붙은 쪽만
+    여기를 통과하므로 뒤에 남은 진짜 창은 지워지지 않는다 — 값·단위만 대조하면 둘이 구별되지
+    않는다.
+
+    문장 전역 판정(:func:`audience_frame.is_frame_only`)은 일부러 여기 두지 않는다. 그것은
+    '문장 전체가 이 술어 하나인가'라는 **다른 질문**이고, 술어 하나를 합성해도 되는지를 묻는
+    :func:`_whole_phrase_matches` 만 그 답을 요구한다.
+    """
+
+    value_start, value_end = value_bounds
+    operator_start, operator_end = operator_bounds
+    if not (alias_end <= value_start < value_end <= operator_start < operator_end):
+        return False
+    if _METRIC_TO_VALUE_RE.fullmatch(query[alias_end:value_start]) is None:
+        return False
+    return _VALUE_TO_OPERATOR_RE.fullmatch(query[value_end:operator_start]) is not None
+
+
 def _whole_phrase_matches(
     query: str,
     *,
@@ -193,20 +221,20 @@ def _whole_phrase_matches(
 ) -> bool:
     """닫힌 회원 술어 하나이고 주인 없는 산문 잔여물이 없는가.
 
-    지표 → 임계값 → 비교가 그 순서로 인접해야 한다 — 그것이 기간 표현을 **스칼라**로 만드는
-    근거다. 술어 바깥은 절 구조로 판정한다(:mod:`audience_frame`): 요청 동사와 어미는 달라도
-    되지만 양쪽에 조건이 하나만 더 있어도 닫힌다.
+    지표 → 임계값 → 비교가 그 순서로 인접해야 한다(:func:`_threshold_phrase_is_adjacent`) —
+    그것이 기간 표현을 **스칼라**로 만드는 근거다. 술어 바깥은 절 구조로 판정한다
+    (:mod:`audience_frame`): 요청 동사와 어미는 달라도 되지만 양쪽에 조건이 하나만 더 있어도
+    닫힌다.
     """
 
-    value_start, value_end = value_bounds
-    operator_start, operator_end = operator_bounds
-    if not (alias_end <= value_start < value_end <= operator_start < operator_end):
+    if not _threshold_phrase_is_adjacent(
+        query,
+        alias_end=alias_end,
+        value_bounds=value_bounds,
+        operator_bounds=operator_bounds,
+    ):
         return False
-    if _METRIC_TO_VALUE_RE.fullmatch(query[alias_end:value_start]) is None:
-        return False
-    if _VALUE_TO_OPERATOR_RE.fullmatch(query[value_end:operator_start]) is None:
-        return False
-    return audience_frame.is_frame_only(query, [(alias_start, operator_end)])
+    return audience_frame.is_frame_only(query, [(alias_start, operator_bounds[1])])
 
 
 def synthesize_member_scalar_predicate(
@@ -313,8 +341,177 @@ def synthesize_member_scalar_predicate(
     return MemberScalarSynthesis(expression=predicate.expression, receipt=receipt)
 
 
+def _member_scalar_threshold_atoms(
+    expression: event_ir.Condition,
+) -> tuple[tuple[event_ir.Source, event_ir.Comparison], ...]:
+    """``Exists(Filter(Source, Comparison(FieldRef, Literal)))`` 원자만 (소스, 비교)로.
+
+    :func:`event_ir.iter_atoms` 를 쓰지 않는 이유는 그것이 같은 술어에서 ``Exists`` 와 그 안의
+    ``Comparison`` 을 **둘 다** 내기 때문이다 — 한 술어를 두 번 세게 된다.
+    :func:`event_ir.existence_views` 도 쓸 수 없다: 비교를 버리므로 임계값이 사라진다.
+    """
+
+    atoms: list[tuple[event_ir.Source, event_ir.Comparison]] = []
+    for node in event_ir.walk(expression):
+        if not isinstance(node, event_ir.Exists):
+            continue
+        relation = node.relation
+        if not isinstance(relation, event_ir.Filter):
+            continue
+        source, comparison = relation.relation, relation.where
+        if (
+            isinstance(source, event_ir.Source)
+            and isinstance(comparison, event_ir.Comparison)
+            and isinstance(comparison.left, event_ir.FieldRef)
+            and isinstance(comparison.right, event_ir.Literal)
+        ):
+            atoms.append((source, comparison))
+    return tuple(atoms)
+
+
+def _member_scalar_metric(
+    catalog: resolved_semantic_catalog.ResolvedSemanticCatalog,
+    source_name: str,
+    field_name: str,
+) -> resolved_semantic_catalog.MetricSpec | None:
+    """소스 심볼이 가리키는 회원별 스칼라 지표(아니면 ``None``).
+
+    회원별 스칼라는 지표 id 와 소스 id 를 같게 선언한다. 비교 좌변이 그 지표가 선언한
+    ``expression_field`` 인지까지 확인하는 이유는, 같은 소스의 다른 필드를 비교한 식이
+    임계값 청구를 얻어 가지 않게 하기 위해서다.
+
+    모델이 낸 표현에는 카탈로그에 없는 심볼이 들어올 수 있다. 그때 카탈로그가 내는
+    :class:`resolved_semantic_catalog.CatalogError` **하나만** 국소적으로 받아 '해당 없음'으로
+    접는다 — 청구가 없으면 마스킹도 없으므로 이 방향의 실패는 더 엄격한 쪽이다.
+    """
+
+    try:
+        metric = catalog.metric(source_name)
+    except resolved_semantic_catalog.CatalogError:
+        return None
+    if metric.kind != member_scalar_metrics.MEMBER_SCALAR_KIND:
+        return None
+    if metric.source != source_name or metric.expression_field != field_name:
+        return None
+    return metric
+
+
+def _threshold_literal_rows(
+    query: str, literal_bindings: Sequence[Any]
+) -> tuple[tuple[tuple[tuple[int, int], str, Any], ...], tuple[tuple[tuple[int, int], str], ...]]:
+    """원장에서 (임계값 후보, 비교어 후보)를 각각 (구간, 단위, 값) / (구간, 기호)로."""
+
+    thresholds: list[tuple[tuple[int, int], str, Any]] = []
+    operators: list[tuple[tuple[int, int], str]] = []
+    for row in literal_bindings:
+        if not isinstance(row, Mapping):
+            continue
+        bounds = _span(row, query)
+        if bounds is None:
+            continue
+        kind = row.get("kind")
+        if kind in _THRESHOLD_KINDS:
+            unit_value = _threshold_unit_and_value(row)
+            if unit_value is not None:
+                thresholds.append((bounds, unit_value[0], unit_value[1]))
+        elif kind == "comparison_operator":
+            symbol = event_ir.canonical_comparison_operator(row.get("normalized"))
+            if symbol is not None:
+                operators.append((bounds, symbol))
+    return tuple(thresholds), tuple(operators)
+
+
+def consumed_scalar_threshold_spans(
+    query: str,
+    expression: event_ir.Condition,
+    literal_bindings: Sequence[Any],
+    registry: Mapping[str, Any],
+    catalog: resolved_semantic_catalog.ResolvedSemanticCatalog,
+) -> tuple[tuple[int, int], ...]:
+    """최종 표현이 **스칼라 임계값으로 소비한** 원문 구간(임계값 + 비교어).
+
+    ``30일`` 자체에는 고정된 뜻이 없다 — '구매주기가 30일 이하'의 ``30일`` 과 '최근 30일
+    구매'의 ``30일`` 은 원장 원자가 완전히 같다. 무엇인지는 **최종 표현의 구조**와 원문의
+    지표 표면어·비교어가 함께 정한다. 그래서 이 함수는 표현의 생산자(모델인지 합성기인지)를
+    묻지 않고 식을 역산한다 — 그 지식이 합성 부산물에만 있으면 모델이 식을 내는 순간 사라진다.
+
+    :func:`synthesize_member_scalar_predicate` 를 재사용하지 않는 이유는 그쪽이 **다른 질문**에
+    답하기 때문이다: 리터럴 두 개뿐인 닫힌 한 문장을 애플리케이션이 세워도 되는가. 혼합문은
+    거기서 즉시 닫히지만, 소비 구간 청구는 혼합문에서도 나와야 한다.
+
+    성립 조건은 전부 필요하고 하나라도 증명하지 못하면 그 원자는 청구하지 않는다(fail-close):
+    지표 kind, 레지스트리의 ``threshold_unit`` 선언, 원문의 지표 표면어 등장, 지표 → 임계값 →
+    비교어의 국소 인접, (값·단위) 일치, 비교 기호 일치. 표면어 등장과 국소 인접이 특히
+    중요하다 — 그 둘이 '최근 30일 구매한 회원'에 환각 ``buy_cycle <= 30`` 이 붙었을 때 뜻이
+    조용히 바뀌는 것을 막는 **유일한** 방어선이다(검증기는 창의 개수만 비교하므로 과도한
+    마스킹을 스스로 검출하지 못한다).
+
+    청구는 절이나 문장이 아니라 **정확한 리터럴 구간**만 낸다. 절 단위로 넓히면 같은 문장의
+    진짜 시간 창까지 지운다.
+    """
+
+    declarations = _declared_metrics(registry)
+    if not declarations:
+        return ()
+    candidates = _alias_candidates(query, declarations)
+    if not candidates:
+        return ()
+    thresholds, operators = _threshold_literal_rows(query, literal_bindings)
+    if not (thresholds and operators):
+        return ()
+
+    claimed: set[tuple[int, int]] = set()
+    for source, comparison in _member_scalar_threshold_atoms(expression):
+        metric = _member_scalar_metric(
+            catalog, source.name, str(comparison.left.name)
+        )
+        if metric is None:
+            continue
+        alias_ends = {
+            end
+            for declaration, _alias, _start, end in candidates
+            if declaration["catalog_metric_id"] == metric.id
+        }
+        declared_units = {
+            str(declaration["threshold_unit"])
+            for declaration, _alias, _start, _end in candidates
+            if declaration["catalog_metric_id"] == metric.id
+        }
+        # 표면어가 원문에 없으면 이 지표를 주장할 근거가 없다. 단위 선언이 갈리면 어느 쪽으로
+        # 대조해야 하는지 증명되지 않은 것이다 — 둘 다 청구하지 않는다.
+        if not alias_ends or len(declared_units) != 1:
+            continue
+        declared_unit = next(iter(declared_units))
+        literal_value = comparison.right.value
+        if isinstance(literal_value, bool):
+            continue
+        matches = {
+            (threshold_bounds, operator_bounds)
+            for alias_end in alias_ends
+            for threshold_bounds, unit, value in thresholds
+            for operator_bounds, symbol in operators
+            if unit == declared_unit
+            and value == literal_value
+            and symbol == comparison.operator
+            and _threshold_phrase_is_adjacent(
+                query,
+                alias_end=alias_end,
+                value_bounds=threshold_bounds,
+                operator_bounds=operator_bounds,
+            )
+        }
+        # 두 조합이 같은 원자를 주장하면 어느 구간이 임계값인지 증명되지 않았다. 과도한 청구는
+        # 같은 문장의 진짜 창을 지우고 검증기가 그것을 잡아 주지 않으므로 여기서 닫는다.
+        if len(matches) != 1:
+            continue
+        threshold_bounds, operator_bounds = next(iter(matches))
+        claimed.update((threshold_bounds, operator_bounds))
+    return tuple(sorted(claimed))
+
+
 __all__ = [
     "OWNER",
     "MemberScalarSynthesis",
+    "consumed_scalar_threshold_spans",
     "synthesize_member_scalar_predicate",
 ]

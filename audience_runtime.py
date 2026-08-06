@@ -19,6 +19,7 @@ import event_compiler
 import event_ir
 import member_filters_config
 import member_policy
+import member_scalar_metrics
 import resolved_semantic_catalog
 
 
@@ -599,6 +600,205 @@ def audience_expression_json_schema(
     return audience_schema.audience_expression_json_schema()
 
 
+# ``[Metric recipes]`` 자리표시자. 연산자·임계값·canonical 값은 요청마다 달라지므로 안내에는
+# 토큰만 남기고 모델이 원문에서 채운다. 토큰을 **모듈 상수로** 노출하는 이유는 recipe 가 실제로
+# 컴파일되는지 재는 테스트가 같은 문자열을 손으로 다시 적지 않게 하기 위해서다 — 안내와 검증이
+# 갈라지면 "안내는 고쳤는데 컴파일은 여전히 불가" 상태가 조용히 남는다.
+METRIC_RECIPE_EVIDENCE_TEXT = "<exact source phrase>"
+METRIC_RECIPE_OPERATOR_PLACEHOLDER = "<operator>"
+METRIC_RECIPE_THRESHOLD_PLACEHOLDER = "<threshold number>"
+METRIC_RECIPE_VALUE_PLACEHOLDER = "<canonical value>"
+METRIC_RECIPE_PREVIOUS_VALUE_PLACEHOLDER = "<canonical value before transition>"
+# 선언이 불완전해 컴파일 가능한 모양을 만들 수 없을 때 그 자리에 남기는 문구. 빈 줄로 지우거나
+# 아무 모양이나 채우지 않는다(규칙 11) — 모델에게 "이 지표는 쓰지 말라"고 말해야 한다.
+METRIC_RECIPE_UNAVAILABLE = (
+    "recipe 없음 — 선언이 불완전해 컴파일 가능한 모양이 없다. 이 지표를 사용하지 않는다."
+)
+
+
+def _metric_recipe_evidence() -> dict[str, Any]:
+    """자리표시자 evidence. 호출마다 새 dict 를 만든다(전역 mutable 공유 금지)."""
+    return {"text": METRIC_RECIPE_EVIDENCE_TEXT, "start": 0, "end": 1}
+
+
+def _metric_comparison_wire(field: str, operator: str, value: Any) -> dict[str, Any]:
+    return {
+        "type": "comparison",
+        "operator": operator,
+        "left": {"type": "field", "name": field},
+        "right": {"type": "literal", "value": value},
+        "evidence": _metric_recipe_evidence(),
+    }
+
+
+def _member_row_exists_wire(source: str, where: Mapping[str, Any]) -> dict[str, Any]:
+    """회원당 0..1 행을 읽는 지표의 유일한 컴파일 가능 골격."""
+    return {
+        "type": "exists",
+        "relation": {
+            "type": "filter",
+            "relation": {"type": "source", "name": source},
+            "where": dict(where),
+        },
+        "evidence": _metric_recipe_evidence(),
+    }
+
+
+def metric_recipe_wire(declaration: Mapping[str, Any]) -> dict[str, Any] | None:
+    """지표 선언 하나를 모델에게 보여줄 wire recipe 로 조립한다.
+
+    kind 마다 **컴파일되는 모양이 다르다.** 회원별 값(member_scalar/field/transition)은 스칼라
+    하나가 아니라 회원당 0..1 행을 읽는 관계이므로 bare FieldRef 를 참조할 관계가 스코프에 없고,
+    그대로 안내하면 모델이 낸 식이 전부 ``compiler_operation_unsupported`` 로 죽는다. 그래서
+    ``Exists(Filter(Source, Comparison))`` 골격을 지시한다 — ``member_scalar_metrics`` 의
+    lowering 산출과 같은 모양이다.
+
+    지표별 차이는 전부 **선언 데이터**에서 읽는다. 지표 이름으로 분기하지 않는다.
+
+    선언이 그 kind 에 필요한 필드를 갖추지 못하면 ``None`` 을 돌려준다. 예를 들어 전이 지표에
+    ``prev_expression_field`` 가 없으면 출발값을 표현할 방법이 없고, 현재 시점 비교 하나로 낮추면
+    전이 요청이 조용히 다른 뜻이 된다.
+    """
+    kind = str(declaration.get("kind") or declaration.get("semantic_type") or "")
+    function = str(declaration.get("function") or declaration.get("aggregate_function") or "")
+    source = str(declaration.get("source") or "")
+    expression = str(declaration.get("expression") or declaration.get("expression_field") or "*")
+    if kind == "aggregate" or function:
+        return {
+            "type": "aggregate",
+            "function": function,
+            "relation": {"type": "source", "name": source},
+            "expression": (
+                {"type": "field", "name": expression}
+                if expression != "*" else None
+            ),
+            "distinct": bool(declaration.get("distinct")),
+        }
+    if kind == "existence":
+        return {
+            "type": "exists",
+            "relation": {"type": "source", "name": source},
+            "evidence": _metric_recipe_evidence(),
+        }
+    if not source or expression == "*":
+        return None
+    if kind == member_scalar_metrics.MEMBER_SCALAR_KIND:
+        return _member_row_exists_wire(
+            source,
+            _metric_comparison_wire(
+                expression,
+                METRIC_RECIPE_OPERATOR_PLACEHOLDER,
+                METRIC_RECIPE_THRESHOLD_PLACEHOLDER,
+            ),
+        )
+    if kind == "field":
+        return _member_row_exists_wire(
+            source,
+            _metric_comparison_wire(expression, "=", METRIC_RECIPE_VALUE_PLACEHOLDER),
+        )
+    if kind == "transition":
+        previous_field = str(declaration.get("prev_expression_field") or "")
+        if not previous_field:
+            return None
+        return _member_row_exists_wire(
+            source,
+            {
+                "type": "and",
+                "operands": [
+                    _metric_comparison_wire(
+                        expression, "=", METRIC_RECIPE_VALUE_PLACEHOLDER
+                    ),
+                    _metric_comparison_wire(
+                        previous_field, "=", METRIC_RECIPE_PREVIOUS_VALUE_PLACEHOLDER
+                    ),
+                ],
+            },
+        )
+    return None
+
+
+def _metric_recipe_detail_line(
+    declaration: Mapping[str, Any],
+    fields: Mapping[str, Any],
+) -> str | None:
+    """자리표시자를 채우는 데 필요한 선언 값(허용 연산자·단위·값 도메인)을 한 줄로 붙인다.
+
+    aggregate/existence 는 자리표시자가 없으므로 줄을 붙이지 않는다 — 기존 안내 문자열을
+    그대로 유지한다.
+    """
+    kind = str(declaration.get("kind") or declaration.get("semantic_type") or "")
+    if kind not in (member_scalar_metrics.MEMBER_SCALAR_KIND, "field", "transition"):
+        return None
+    details: list[str] = []
+    operators = declaration.get("allowed_operators")
+    if isinstance(operators, list) and operators:
+        details.append(
+            "allowed_operators="
+            + json.dumps(
+                [str(item) for item in operators],
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+        )
+    if kind == member_scalar_metrics.MEMBER_SCALAR_KIND:
+        unit = str(declaration.get("unit") or "")
+        if unit:
+            details.append(f"unit={json.dumps(unit, ensure_ascii=False)}")
+    else:
+        field_declaration = fields.get(
+            str(declaration.get("expression_field") or "")
+        )
+        domain = (
+            field_declaration.get("value_domain")
+            if isinstance(field_declaration, Mapping) else None
+        )
+        if domain:
+            details.append(
+                f"value_domain={json.dumps(str(domain), ensure_ascii=False)}"
+            )
+    if not details:
+        return None
+    return "  - " + ", ".join(details)
+
+
+def _competing_metric_kind_lines(metrics: Mapping[str, Any]) -> list[str]:
+    """같은 표면어를 두 kind 가 나눠 갖는 지표 쌍을 **카탈로그에서 파생**해 안내한다.
+
+    둘 다 컴파일되지만 뜻이 다른 SQL 이라 어느 쪽도 지울 수 없다(회원 1인의 스냅샷 한 행 vs
+    모집단 집계). 지우는 대신 "언제 어느 쪽인가"를 알려준다. 지표 이름을 코드에 적지 않으므로
+    카탈로그에서 쌍이 사라지면 이 절도 함께 사라진다.
+    """
+    by_label: dict[str, dict[str, list[str]]] = {}
+    for metric_id, declaration in sorted(metrics.items()):
+        if not isinstance(declaration, Mapping):
+            continue
+        kind = str(declaration.get("kind") or declaration.get("semantic_type") or "")
+        if not kind:
+            continue
+        label = str(declaration.get("label") or metric_id)
+        by_label.setdefault(label, {}).setdefault(kind, []).append(str(metric_id))
+    pairs = [
+        f'- "{label}": '
+        + ", ".join(
+            f"{kind}={'/'.join(sorted(ids))}"
+            for kind, ids in sorted(by_label[label].items())
+        )
+        for label in sorted(by_label)
+        if len(by_label[label]) > 1
+    ]
+    if not pairs:
+        return []
+    return [
+        "",
+        "[Metric kind selection]",
+        "같은 표면어에 kind가 다른 지표가 함께 걸려 있다. 회원 한 명의 값을 임계와 비교하는 "
+        "조건이면 회원별 지표(member_scalar/field/transition)의 Exists recipe를, 모집단 전체의 "
+        "집계·평균·순위·상위 N%면 aggregate 지표를 쓴다.",
+        "둘은 모집단과 NULL 정책이 다른 별개의 SQL이다. 한 조건 안에서 둘을 섞거나 번갈아 쓰지 않는다.",
+        *pairs,
+    ]
+
+
 def audience_catalog_guidance(
     path: str | Path = DEFAULT_AUDIENCE_CATALOG_PATH,
 ) -> str:
@@ -640,6 +840,10 @@ def audience_catalog_guidance(
         '- 순위 회원 조건의 Join.left.name과 Join.on 양쪽 field name은 relation recipe metrics의 source/entity_field를 그대로 재사용한다. "member"/"subject" Source나 member.member_id 같은 새 심볼을 만들지 않는다.',
         '- 내부 상/하위 N명은 Limit.count, 상/하위 N%는 Limit.percent다. 상위는 첫 정렬키 desc, 하위는 asc이며 회원키 asc를 두 번째 키로 둔다. 둘 다 최종 회원 반환 수인 root result_limit과 별개다.',
         '- 기간 집계: Aggregate.relation = Filter(Source, TimeFilter(<source>.occurred_at, event_ir_window))',
+        '- 회원별 지표(member_scalar_*, 기준월 스냅샷 field/transition)는 회원당 0..1행을 읽는 관계다. bare FieldRef나 Comparison 단독으로 쓰면 참조할 관계가 없어 컴파일되지 않는다. [Metric recipes]의 Exists(Filter(Source, Comparison)) 골격을 그대로 쓴다',
+        '- member_scalar_*의 Literal은 숫자 임계값이고 operator는 그 지표의 allowed_operators 중 하나다. 값의 단위는 지표 선언의 unit이며 원문의 단위를 그대로 옮긴다',
+        '- 기준월 스냅샷 field/transition 지표의 Literal은 [Canonical value domains]의 canonical 값이다. 물리코드나 원문 표기를 그대로 넣지 않는다',
+        '- 전이 지표는 도착값(expression_field)과 출발값(prev_expression_field) 비교를 And로 묶은 한 Exists다. 현재 시점 비교 하나로 낮추면 전이가 아니다',
         '- 프로필 값: Comparison(FieldRef("subject.<field>"), Literal); subject Source나 프로필 Exists를 만들지 않음',
         '- evidence 객체는 Comparison/Exists/TemporalRelation에만 둔다. 문자열 evidence나 임의 키는 금지한다.',
         "",
@@ -747,35 +951,24 @@ def audience_catalog_guidance(
                 f"measures={json.dumps(measures, ensure_ascii=False, sort_keys=True)}"
             )
     lines.extend(["", "[Metric recipes]"])
-    for metric_id, declaration in sorted((raw.get("metrics") or {}).items()):
+    metrics = raw.get("metrics") or {}
+    fields = raw.get("fields") or {}
+    for metric_id, declaration in sorted(metrics.items()):
         if not isinstance(declaration, Mapping):
             continue
         label = str(declaration.get("label") or metric_id)
-        kind = str(declaration.get("kind") or declaration.get("semantic_type") or "")
-        function = str(declaration.get("function") or declaration.get("aggregate_function") or "")
-        source = str(declaration.get("source") or "")
-        expression = str(declaration.get("expression") or declaration.get("expression_field") or "*")
-        distinct = " distinct" if declaration.get("distinct") else ""
-        if kind == "aggregate" or function:
-            recipe = json.dumps({
-                "type": "aggregate",
-                "function": function,
-                "relation": {"type": "source", "name": source},
-                "expression": (
-                    {"type": "field", "name": expression}
-                    if expression != "*" else None
-                ),
-                "distinct": bool(declaration.get("distinct")),
-            }, ensure_ascii=False, separators=(",", ":"))
-        elif kind == "existence":
-            recipe = json.dumps({
-                "type": "exists",
-                "relation": {"type": "source", "name": source},
-                "evidence": {"text": "<exact source phrase>", "start": 0, "end": 1},
-            }, ensure_ascii=False, separators=(",", ":"))
-        else:
-            recipe = json.dumps({"type": "field", "name": expression}, ensure_ascii=False)
-        lines.append(f"- {metric_id} ({label}): {recipe}")
+        wire = metric_recipe_wire(declaration)
+        if wire is None:
+            lines.append(f"- {metric_id} ({label}): {METRIC_RECIPE_UNAVAILABLE}")
+            continue
+        lines.append(
+            f"- {metric_id} ({label}): "
+            + json.dumps(wire, ensure_ascii=False, separators=(",", ":"))
+        )
+        detail = _metric_recipe_detail_line(declaration, fields)
+        if detail is not None:
+            lines.append(detail)
+    lines.extend(_competing_metric_kind_lines(metrics))
     return "\n".join(lines)
 
 
@@ -853,6 +1046,12 @@ __all__ = [
     "AudienceCatalogLoadError",
     "DEFAULT_AUDIENCE_CATALOG_PATH",
     "DEFAULT_EXTERNAL_REGION_MAPPING_PATH",
+    "METRIC_RECIPE_EVIDENCE_TEXT",
+    "METRIC_RECIPE_OPERATOR_PLACEHOLDER",
+    "METRIC_RECIPE_PREVIOUS_VALUE_PLACEHOLDER",
+    "METRIC_RECIPE_THRESHOLD_PLACEHOLDER",
+    "METRIC_RECIPE_UNAVAILABLE",
+    "METRIC_RECIPE_VALUE_PLACEHOLDER",
     "audience_catalog_guidance",
     "audience_expression_json_schema",
     "catalog_snapshot",
@@ -862,5 +1061,6 @@ __all__ = [
     "load_audience_catalog_config",
     "materialize_member_metric_rankings",
     "member_metric_registry_snapshot",
+    "metric_recipe_wire",
     "resolve_audience_catalog",
 ]

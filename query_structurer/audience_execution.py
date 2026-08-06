@@ -641,6 +641,37 @@ def _member_scalar_synthesis(
     )
 
 
+def _claimed_scalar_threshold_spans(
+    query: str, expression: event_ir.Condition, literal_bindings: list[Any]
+) -> tuple[tuple[int, int], ...]:
+    """최종 표현에서 역산한 스칼라 임계 구간 — **표현의 생산자와 무관하다**.
+
+    합성기가 넘겨주는 :attr:`_ApplicationOwnedSynthesis.scalar_literal_spans` 는 합성이 실제로
+    일어난 갈래에만 있다. 모델이 같은 조건을 스스로 표현하면(``expression≠None, issues=[]``)
+    그 지식이 통째로 사라지고, '구매주기가 30일 이하'의 ``30일`` 이 소실된 기간 창으로 세어져
+    옳은 요청이 반려된다. 그래서 여기서 다시 계산한다.
+
+    카탈로그·레지스트리 적재 실패(:class:`audience_runtime.AudienceCatalogLoadError`)는 잡지
+    않는다 — 같은 경로의 다른 소비자(:func:`_campaign_average_claim`, 근거 정규화, 카탈로그
+    검증기)가 모두 전파하므로 실패 표면을 하나로 유지한다. 레지스트리 선언 자체가 없는
+    배포는 예외가 아니라 ``None`` 이고, 그때는 청구하지 않는다(fail-close).
+    """
+
+    import audience_runtime
+    import member_scalar_metric_claims
+
+    registry = audience_runtime.member_metric_registry_snapshot()
+    if registry is None:
+        return ()
+    return member_scalar_metric_claims.consumed_scalar_threshold_spans(
+        query,
+        expression,
+        literal_bindings,
+        registry,
+        audience_runtime.resolve_audience_catalog(),
+    )
+
+
 def _campaign_average_synthesis(
     query: str, issue: Mapping[str, Any], literal_bindings: list[Any]
 ) -> _ApplicationOwnedSynthesis | None:
@@ -777,14 +808,25 @@ def run_audience_resolver(
         if evidence_correction is not None:
             evidence_normalizations.append(evidence_correction)
         expression = _parse_audience_expression(raw_expression, query)
+        # 합성 부산물과 식 역산을 **합집합**으로 쓴다. 치환하면 합성 갈래가 이미 증명해 둔
+        # 구간이 사라질 수 있고(역산이 닫는 문형이 더 좁다), 역산만 빼면 모델이 표현을 낸
+        # 갈래에서 스칼라 임계값이 다시 소실된 창으로 세어진다.
+        scalar_literal_spans = tuple(
+            sorted(
+                {
+                    *(synthesis.scalar_literal_spans if synthesis is not None else ()),
+                    *_claimed_scalar_threshold_spans(
+                        query, expression, literal_bindings
+                    ),
+                }
+            )
+        )
         calculated = _validation_issues(
             expression,
             query,
             literal_bindings,
             current_date=current_date,
-            scalar_literal_spans=(
-                synthesis.scalar_literal_spans if synthesis is not None else ()
-            ),
+            scalar_literal_spans=scalar_literal_spans,
         )
         if not calculated:
             expression, as_of_normalizations, as_of_issue = (
