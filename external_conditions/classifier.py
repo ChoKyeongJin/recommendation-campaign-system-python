@@ -141,17 +141,6 @@ def classify_external_conditions(
     return results
 
 
-def mask_external_condition_spans(text: str, conditions: list[dict[str, Any]]) -> str:
-    """Mask classifier-owned spans while preserving offsets and product tokens."""
-
-    chars = list(text)
-    for condition in conditions:
-        span = condition.get("source_span") if isinstance(condition, dict) else None
-        if not isinstance(span, dict):
-            continue
-        start, end = span.get("start"), span.get("end")
-        if not isinstance(start, int) or not isinstance(end, int):
-            continue
-        for index in range(max(0, start), min(len(chars), end)):
-            chars[index] = " "
-    return "".join(chars)
+# ``mask_external_condition_spans`` 는 2026-08-06 삭제됐다. 분류기가 소유한 구간을 공백으로
+# 가려 다른 파서가 그 낱말을 다시 집지 않게 하려던 함수인데, 부르는 곳이 한 번도 없었다
+# (외부 조건 산출은 LLM 플랜의 ``external_conditions`` 가 소유한다).

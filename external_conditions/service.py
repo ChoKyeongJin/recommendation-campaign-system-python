@@ -242,22 +242,9 @@ def build_default_service() -> ExternalConditionService:
     )
 
 
-_default_service: ExternalConditionService | None = None
-_default_service_lock = threading.Lock()
-
-
-def get_default_service() -> ExternalConditionService:
-    global _default_service
-    with _default_service_lock:
-        if _default_service is None:
-            _default_service = build_default_service()
-        return _default_service
-
-
-def reset_default_service() -> None:
-    global _default_service
-    with _default_service_lock:
-        _default_service = None
+# 프로세스 전역 싱글턴(``get_default_service``/``reset_default_service``)은 2026-08-06 삭제됐다.
+# 호출자가 없었고(기본 ``retrieve()`` 는 이 서비스를 만들지 않는다 — docs/guides/external_conditions.md),
+# 전역 mutable state 는 테스트 간 상태 공유를 만든다. 주입 지점은 ``build_default_service`` 하나다.
 
 
 def default_resolution_context(*, now: datetime) -> ResolutionContext:

@@ -225,3 +225,61 @@ def test_correlation_sql_releases_the_keys_it_does_not_use(at_repo_root: None) -
     )
     assert ("MCS_CAMP_MBR_RSPN_FT", "PLACEHOLDER_NOT_USED") not in pairs
     assert ("CRM_MB_BASEINFO", "MEMBER_NO") in pairs
+
+
+def test_metric_specs_are_inside_the_db_swap_gate(at_repo_root: None) -> None:
+    """지표 스펙(metrics/*.json)의 물리 컬럼도 카탈로그와 대조된다.
+
+    이 스펙들은 REGISTRY_PATHS 밖이라 게이트에 걸리지 않았다 — BUY_CYCLE·LAST_LOGIN_DATE 가
+    실DB 에서 사라져도 preflight 는 통과했다. metric_registry 는 대조 함수를 처음부터 갖고
+    있었고 부르는 곳만 없었다(선언은 맞았는데 배선이 없는 상태).
+    """
+    import metric_registry
+
+    catalog = db_swap_preflight._load_json(db_swap_preflight.SCHEMA_CATALOG_PATH)
+    columns_by_table, _ = db_swap_preflight._catalog_index(catalog)
+    registry = metric_registry.MetricRegistry.load()
+
+    assert registry.specs, "지표 스펙이 하나도 없으면 이 검사는 공허하다."
+    assert registry.lint_against_catalog(columns_by_table) == [], (
+        "지표 스펙이 참조하는 컬럼이 schema_catalog 에 없다."
+    )
+
+
+def test_metric_spec_drift_is_actually_reported(at_repo_root: None) -> None:
+    """탐지력 확인 — 어긋난 컬럼을 넣으면 경고가 나와야 한다(no-op 배선 방지)."""
+
+    import dataclasses
+
+    import metric_registry
+
+    catalog = db_swap_preflight._load_json(db_swap_preflight.SCHEMA_CATALOG_PATH)
+    columns_by_table, _ = db_swap_preflight._catalog_index(catalog)
+    original = metric_registry.MetricRegistry.load().specs[0]
+    drifted = dataclasses.replace(
+        original,
+        source=metric_registry.ColumnRef(
+            table=original.source.table, alias=original.source.alias, column="NO_SUCH_COLUMN"
+        ),
+    )
+    warnings = metric_registry.MetricRegistry(specs=(drifted,)).lint_against_catalog(columns_by_table)
+    assert warnings and "NO_SUCH_COLUMN" in warnings[0]
+
+
+def test_preflight_reports_metric_spec_warnings(
+    at_repo_root: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_preflight 이 그 경고를 실제로 실어 나른다(배선의 종착점)."""
+
+    class _Drifted:
+        def lint_against_catalog(self, columns_by_table: dict) -> list[str]:
+            return ["[probe] source: 컬럼 X.Y 이 카탈로그에 없음"]
+
+    monkeypatch.setattr(
+        db_swap_preflight.metric_registry.MetricRegistry, "load", classmethod(lambda cls: _Drifted())
+    )
+    result = db_swap_preflight.run_preflight()
+    assert any(warning.startswith("[metric-spec]") for warning in result["warnings"]), (
+        f"지표 스펙 경고가 preflight 결과에 실리지 않았다: {result['warnings']}"
+    )
+    assert result["ok"], "카탈로그 불일치는 경고이지 게이트 차단이 아니다(lint 자체 정책)."

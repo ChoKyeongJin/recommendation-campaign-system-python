@@ -195,6 +195,9 @@ _CODE_FALLBACK: dict[str, dict[str, Any]] = {
         "source_entity_reference": ["지정한", "선택한", "고른", "해당", "이들", "위", "위의"],
         "source_korean_count": ["한", "두", "세", "네", "다섯"],
         "source_entity_counter": ["개", "종", "가지"],
+        # 수식어 없이 그 자체로 '가짓수'를 뜻하는 명사. 계수 단위(source_entity_counter)와 다르다 —
+        # '3개'의 '개'는 세는 단위이고, '종류가 3개'의 '종류'는 무엇을 세는지(중복 제거)를 말한다.
+        "distinct_count_noun": ["종류", "가짓수", "가지수", "종수"],
         "source_entity_domain": ["브랜드", "상품", "제품", "품목", "카테고리"],
         "source_all_quantifier": ["모두", "전부", "각각", "빠짐없이"],
         "source_superlative": ["가장"],
@@ -266,6 +269,12 @@ _CODE_FALLBACK: dict[str, dict[str, Any]] = {
             "include": ["variety_determiner", "otherness_reference"],
             "exclude": ["외", "외의"],
             "note": "'서로 다른 브랜드'의 수식어 — 값이 아니라 가짓수 표지다. 배제 표현은 이관 전에도 없었다.",
+        },
+        "distinct_count_marker": {
+            "include": ["variety_determiner", "otherness_reference", "distinct_count_noun"],
+            "exclude": ["외", "외의"],
+            "note": "'가짓수를 센다'는 표지 전체. 수식어 자리만 보는 scope_distinct_modifier 보다 넓다 — "
+                    "수식어 없이 명사만으로 같은 뜻이 되는 '상품 종류가 2개 이상'을 함께 잡는다.",
         },
         "generic_scope_reference": {
             "include": ["otherness_reference", "deictic_determiner", "indefinite_determiner"],

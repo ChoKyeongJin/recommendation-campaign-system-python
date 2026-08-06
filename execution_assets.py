@@ -163,6 +163,7 @@ def declared_surfaces() -> tuple[ExecutionAsset, ...]:
 
 def clear_cache() -> None:
     declared_surfaces.cache_clear()
+    _capability_claim_surfaces.cache_clear()
 
 
 def _matches(surface: str, haystack: str) -> bool:
@@ -227,6 +228,76 @@ def non_canonical_assets_for_text(text: Any) -> tuple[ExecutionAsset, ...]:
     return assets_for_text(text, layers=[layer for layer in LAYERS if layer != CANONICAL])
 
 
+# ── 모델의 '이 계산은 불가능하다' 주장 대조 ──────────────────────────────────────────────
+#
+# 위의 표면어 색인은 **원문 구절**을 카탈로그 자산과 맞춘다. 여기서 재는 것은 다른 축이다 —
+# 모델이 "이런 **종류의 계산**을 표현할 수 없다"고 말할 때, 그 계산이 IR 이 이미 선언한
+# capability 인가. 실측(2026-08-06)의 거짓 신고 둘이 이 축에 걸린다::
+#
+#     argument='distinct_products'            message="… 중복 제거한 상품 수(count distinct) … 표현 불가"
+#     argument='distinct_count_of_cart.product_id'  message="… (제품별 distinct count) … 표현할 수 없습니다"
+#
+# `aggregate.count_distinct` 는 event_ir.CAPABILITIES 에 선언돼 있고 컴파일러가 그 자리에서
+# SQL 을 만든다. 선언된 것을 못 한다는 주장은 스스로 반박된다.
+#
+# 표는 **닫혀** 있다: 키는 반드시 선언된 capability 이름이어야 하고(아니면 로드 시 실패),
+# 새 capability 가 생기면 여기 한 줄이 그 표면어를 얻는다. 낱말을 늘려 의미를 만드는 표가
+# 아니라, 이미 있는 의미를 사람이 부르는 방식을 적는 표다.
+_CAPABILITY_CLAIM_SURFACES: dict[str, tuple[str, ...]] = {
+    "aggregate.count_distinct": (
+        "count distinct",
+        "count_distinct",
+        "countdistinct",
+        "distinct count",
+        "distinct_count",
+        "중복 제거",
+        "중복제거",
+        "가짓수",
+        "종류 수",
+        "종류수",
+    ),
+    "relation.ranked_limit": (
+        "top n",
+        "top_n",
+        "상위 n",
+    ),
+}
+
+
+@functools.lru_cache(maxsize=1)
+def _capability_claim_surfaces() -> tuple[tuple[str, str], ...]:
+    """(capability, 표면어) 목록. 선언되지 않은 capability 를 키로 쓰면 즉시 실패한다."""
+    import event_ir  # 지연 import — 판정자는 IR 스키마 로딩을 import 부작용으로 만들지 않는다
+
+    undeclared = sorted(set(_CAPABILITY_CLAIM_SURFACES) - event_ir.CAPABILITIES)
+    if undeclared:
+        raise ValueError(
+            f"capability claim surfaces name undeclared capabilities: {undeclared}"
+        )
+    return tuple(
+        (capability, surface.casefold())
+        for capability, surfaces in _CAPABILITY_CLAIM_SURFACES.items()
+        for surface in surfaces
+    )
+
+
+def declared_capability_in_claim(*texts: Any) -> str | None:
+    """주장이 지목한 **선언된** capability 이름. 없으면 None.
+
+    argument 와 message 를 함께 받는다 — 모델은 둘 중 아무 쪽에나 계산 종류를 적는다
+    (실측: 하나는 argument 에, 하나는 message 괄호 안에 있었다).
+    """
+    haystack = " ".join(
+        text.strip().casefold() for text in texts if isinstance(text, str) and text.strip()
+    )
+    if not haystack:
+        return None
+    for capability, surface in _capability_claim_surfaces():
+        if surface in haystack:
+            return capability
+    return None
+
+
 def non_canonical_assets_for_issue(issue: Mapping[str, Any]) -> tuple[ExecutionAsset, ...]:
     """Return only assets capable of the issue's semantic relation.
 
@@ -257,6 +328,7 @@ __all__ = [
     "ExecutionAsset",
     "assets_for_text",
     "clear_cache",
+    "declared_capability_in_claim",
     "declared_surfaces",
     "has_execution_asset",
     "non_canonical_assets_for_text",

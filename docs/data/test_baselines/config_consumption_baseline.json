@@ -1,0 +1,304 @@
+{
+ "note": "설정에 선언됐는데 프로덕션 소스가 이름으로 읽지 않는 키의 기준선. kind=generic 은 부모를 순회·조회해 소비하므로 결함이 아니고, kind=unbuilt 는 선언만 있고 구현이 없는 축이다. unbuilt 는 늘 수 없다(하향 전용 래칫) — 배선하거나 선언을 지우면 이 파일에서 해당 항목을 뺀다.",
+ "generated_by": "tools/config_consumption_inventory.py",
+ "unbuilt_total": 65,
+ "generic_total": 9,
+ "entries": {
+  "docs/data/runtime/sql/member_target_filters.json::activity_filters.parameter": {
+   "kind": "unbuilt",
+   "reason": "활동 필터 파라미터 선언. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.adjustments.net_of_returns": {
+   "kind": "unbuilt",
+   "reason": "반품 차감 축(트리거 정규식 + 컬럼식) 선언. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.base_join_column": {
+   "kind": "unbuilt",
+   "reason": "회원 조인 컬럼 선언. 빌더는 base_entity.member_key 로 조인한다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.average_order_amount.anti_hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.average_order_amount.hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.discount_amount.anti_hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.discount_amount.hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.discount_amount.null_as": {
+   "kind": "unbuilt",
+   "reason": "NULL 표현 정책 선언. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.distinct_brand_count.anti_hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.distinct_brand_count.distinct_of.implicit": {
+   "kind": "unbuilt",
+   "reason": "distinct 집계 범위 선언. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.distinct_brand_count.distinct_of.scope_key": {
+   "kind": "unbuilt",
+   "reason": "distinct 집계 범위 선언. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.distinct_brand_count.hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.distinct_category_count.anti_hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.distinct_category_count.distinct_of.implicit": {
+   "kind": "unbuilt",
+   "reason": "distinct 집계 범위 선언. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.distinct_category_count.distinct_of.scope_key": {
+   "kind": "unbuilt",
+   "reason": "distinct 집계 범위 선언. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.distinct_category_count.hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.distinct_product_count.anti_hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.distinct_product_count.hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.order_count.anti_hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.order_count.hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.order_count.null_as": {
+   "kind": "unbuilt",
+   "reason": "NULL 표현 정책 선언. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.purchase_amount.anti_hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.purchase_amount.default_for_units": {
+   "kind": "unbuilt",
+   "reason": "단위별 기본 지표 선언. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.purchase_amount.hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.purchase_amount.null_as": {
+   "kind": "unbuilt",
+   "reason": "NULL 표현 정책 선언. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.total_item_quantity.anti_hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.total_item_quantity.hint_terms": {
+   "kind": "unbuilt",
+   "reason": "지표 점수화 힌트. 이 힌트로 지표를 고르던 스코어링 리졸버가 사라져 선언만 남았다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::aggregate_targets.metrics.total_item_quantity.null_as": {
+   "kind": "unbuilt",
+   "reason": "NULL 표현 정책 선언. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::birthday_target.default_upcoming_days": {
+   "kind": "unbuilt",
+   "reason": "생일 매칭 모드 4종 선언. 구현된 것은 month/day 둘뿐이고 exact_date·upcoming_days 는 없다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::birthday_target.match_modes": {
+   "kind": "unbuilt",
+   "reason": "생일 매칭 모드 4종 선언. 구현된 것은 month/day 둘뿐이고 exact_date·upcoming_days 는 없다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::boolean_filters.null_as": {
+   "kind": "unbuilt",
+   "reason": "NULL 표현 정책 선언. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::campaign_response_targets.aggregate_metrics.campaign_response_count.distinct_expression": {
+   "kind": "unbuilt",
+   "reason": "캠페인 반응 distinct 식 선언. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::campaign_response_targets.campaign_date_table": {
+   "kind": "unbuilt",
+   "reason": "캠페인 일자 테이블 선언. 빌더는 campaign_join.table 을 쓴다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::campaign_response_targets.contact_member_list.campaign_date_table": {
+   "kind": "unbuilt",
+   "reason": "캠페인 일자 테이블 선언. 빌더는 campaign_join.table 을 쓴다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::cart_targets.line_id_column": {
+   "kind": "unbuilt",
+   "reason": "장바구니 라인/상품 컬럼 선언. 빌더가 읽지 않는다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::cart_targets.product_id_column": {
+   "kind": "unbuilt",
+   "reason": "장바구니 라인/상품 컬럼 선언. 빌더가 읽지 않는다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::cell_rate_targets.vague_high_default": {
+   "kind": "unbuilt",
+   "reason": "'높은/낮은' 막연어의 기본 임계. 이 값을 읽던 결정론 파서가 사라졌다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::cell_rate_targets.vague_low_default": {
+   "kind": "unbuilt",
+   "reason": "'높은/낮은' 막연어의 기본 임계. 이 값을 읽던 결정론 파서가 사라졌다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::entity_set_targets.relations.cart.measures.buyer_count": {
+   "kind": "generic",
+   "reason": "entity_set 이 measures[<측정 id>] 로 조회한다(키가 데이터)."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::entity_set_targets.relations.cart.measures.sales_quantity": {
+   "kind": "generic",
+   "reason": "entity_set 이 measures[<측정 id>] 로 조회한다(키가 데이터)."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::entity_set_targets.relations.purchase.measures.buyer_count": {
+   "kind": "generic",
+   "reason": "entity_set 이 measures[<측정 id>] 로 조회한다(키가 데이터)."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::entity_set_targets.relations.purchase.measures.sales_amount": {
+   "kind": "generic",
+   "reason": "entity_set 이 measures[<측정 id>] 로 조회한다(키가 데이터)."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::entity_set_targets.relations.purchase.measures.sales_quantity": {
+   "kind": "generic",
+   "reason": "entity_set 이 measures[<측정 id>] 로 조회한다(키가 데이터)."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::lifecycle_aliases.active_user": {
+   "kind": "generic",
+   "reason": "graph_rag._lifecycle_aliases 가 dict 전체를 읽어 별칭→캐노니컬로 매핑한다(키가 데이터)."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::lifecycle_aliases.dormant_user": {
+   "kind": "generic",
+   "reason": "graph_rag._lifecycle_aliases 가 dict 전체를 읽어 별칭→캐노니컬로 매핑한다(키가 데이터)."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::lifecycle_aliases.inactive_user": {
+   "kind": "generic",
+   "reason": "graph_rag._lifecycle_aliases 가 dict 전체를 읽어 별칭→캐노니컬로 매핑한다(키가 데이터)."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::lifecycle_aliases.withdrawn_user": {
+   "kind": "generic",
+   "reason": "graph_rag._lifecycle_aliases 가 dict 전체를 읽어 별칭→캐노니컬로 매핑한다(키가 데이터)."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::numeric_filters.action_aliases": {
+   "kind": "unbuilt",
+   "reason": "동사형 행위 표면어 별칭. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::numeric_filters.zero_semantics.missing_as_zero": {
+   "kind": "unbuilt",
+   "reason": "NULL→0 취급 정책. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::order_count_targets.base_join_column": {
+   "kind": "unbuilt",
+   "reason": "회원 조인 컬럼 선언. 빌더는 base_entity.member_key 로 조인한다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::order_count_targets.behaviors.lapsed_buyer.exists_before_period": {
+   "kind": "unbuilt",
+   "reason": "_supported:false 로 막아 둔 행동의 의도 기록. 컴파일 경로가 없다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::order_count_targets.behaviors.lapsed_buyer.not_exists_in_period": {
+   "kind": "unbuilt",
+   "reason": "_supported:false 로 막아 둔 행동의 의도 기록. 컴파일 경로가 없다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::order_count_targets.default_period_days": {
+   "kind": "unbuilt",
+   "reason": "주문 횟수 기본 기간. 읽는 코드 없고 값도 null 이다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::purchase_product_target.default_case_insensitive": {
+   "kind": "unbuilt",
+   "reason": "상품명 대소문자 무시 기본값. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::ratio_filters": {
+   "kind": "unbuilt",
+   "reason": "파생 비율 지표(daily_avg_login_count) 선언. 분자·분모·동의어까지 있으나 읽는 코드가 없다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::ratio_filters.denominator_column": {
+   "kind": "unbuilt",
+   "reason": "파생 비율 지표(daily_avg_login_count) 선언. 분자·분모·동의어까지 있으나 읽는 코드가 없다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::ratio_filters.numerator_column": {
+   "kind": "unbuilt",
+   "reason": "파생 비율 지표(daily_avg_login_count) 선언. 분자·분모·동의어까지 있으나 읽는 코드가 없다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::region_target.columns.dong": {
+   "kind": "unbuilt",
+   "reason": "지역 컬럼 선언. 빌더가 읽는 것은 sido·sigungu 둘뿐이다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::region_target.columns.road_address": {
+   "kind": "unbuilt",
+   "reason": "지역 컬럼 선언. 빌더가 읽는 것은 sido·sigungu 둘뿐이다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::region_target.columns.zip_code": {
+   "kind": "unbuilt",
+   "reason": "지역 컬럼 선언. 빌더가 읽는 것은 sido·sigungu 둘뿐이다."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::validation.require_parameter_binding": {
+   "kind": "unbuilt",
+   "reason": "검증 정책 선언. 이 정책을 강제하는 코드가 없다(같은 섹션의 allow_raw_sql·allowed_table_aliases 는 읽힌다)."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::validation.unknown_canonical_policy": {
+   "kind": "unbuilt",
+   "reason": "검증 정책 선언. 이 정책을 강제하는 코드가 없다(같은 섹션의 allow_raw_sql·allowed_table_aliases 는 읽힌다)."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::validation.unknown_column_policy": {
+   "kind": "unbuilt",
+   "reason": "검증 정책 선언. 이 정책을 강제하는 코드가 없다(같은 섹션의 allow_raw_sql·allowed_table_aliases 는 읽힌다)."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::zero_amount_semantics": {
+   "kind": "unbuilt",
+   "reason": "0원 ↔ 무구매 매핑 정책. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/member_target_filters.json::zero_amount_semantics.maps_to_no_purchase": {
+   "kind": "unbuilt",
+   "reason": "0원 ↔ 무구매 매핑 정책. 읽는 코드 없음."
+  },
+  "docs/data/runtime/sql/metrics/buy_cycle.json::issue_arguments": {
+   "kind": "unbuilt",
+   "reason": "metric_registry 가 파싱·검증만 하고 소비자가 없다(모듈 docstring 의 P0 격리 상태 그대로)."
+  },
+  "docs/data/runtime/sql/metrics/last_login_at.json::priority_hints.prefer_when_terms": {
+   "kind": "unbuilt",
+   "reason": "metric_registry 가 파싱·검증만 하고 소비자가 없다(모듈 docstring 의 P0 격리 상태 그대로)."
+  },
+  "docs/data/runtime/sql/metrics/last_login_at.json::priority_hints.yields_to_cumulative_days": {
+   "kind": "unbuilt",
+   "reason": "metric_registry 가 파싱·검증만 하고 소비자가 없다(모듈 docstring 의 P0 격리 상태 그대로)."
+  },
+  "docs/data/runtime/sql/metrics/total_login_count.json::priority_hints.prefer_when_terms": {
+   "kind": "unbuilt",
+   "reason": "metric_registry 가 파싱·검증만 하고 소비자가 없다(모듈 docstring 의 P0 격리 상태 그대로)."
+  },
+  "docs/data/runtime/sql/metrics/total_login_count.json::zero_semantics.comparison_strategy": {
+   "kind": "unbuilt",
+   "reason": "metric_registry 가 파싱·검증만 하고 소비자가 없다(모듈 docstring 의 P0 격리 상태 그대로)."
+  },
+  "docs/data/runtime/sql/metrics/total_login_count.json::zero_semantics.missing_as_zero": {
+   "kind": "unbuilt",
+   "reason": "metric_registry 가 파싱·검증만 하고 소비자가 없다(모듈 docstring 의 P0 격리 상태 그대로)."
+  },
+  "docs/data/runtime/sql/metrics/total_login_days.json::priority_hints.prefer_when_terms": {
+   "kind": "unbuilt",
+   "reason": "metric_registry 가 파싱·검증만 하고 소비자가 없다(모듈 docstring 의 P0 격리 상태 그대로)."
+  },
+  "docs/data/runtime/sql/metrics/total_login_days.json::zero_semantics.comparison_strategy": {
+   "kind": "unbuilt",
+   "reason": "metric_registry 가 파싱·검증만 하고 소비자가 없다(모듈 docstring 의 P0 격리 상태 그대로)."
+  },
+  "docs/data/runtime/sql/metrics/total_login_days.json::zero_semantics.missing_as_zero": {
+   "kind": "unbuilt",
+   "reason": "metric_registry 가 파싱·검증만 하고 소비자가 없다(모듈 docstring 의 P0 격리 상태 그대로)."
+  }
+ }
+}

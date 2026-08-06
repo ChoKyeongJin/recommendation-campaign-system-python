@@ -240,3 +240,80 @@ def test_unregistered_symbol_claims_are_still_honoured() -> None:
         "evidence": {"text": "비 오는 날 구매한 회원", "start": 0, "end": 11},
     }]}}
     assert structurer._audience_repair_error(raw, {}) is None
+
+
+def test_unsupported_claim_naming_a_declared_capability_is_self_refuting() -> None:
+    """계산 축의 자기반박 — IR 이 선언한 capability 를 못 한다는 주장은 종결이 아니다.
+
+    실측(2026-08-06 라이브, `logs/rag_llm/2026-08-06/004249-1ddb98.jsonl`):
+
+        '장바구니에 서로 다른 상품을 3개 이상 담아둔 회원'
+        → unsupported_semantics / argument='distinct_products'
+          "…회원별로 중복 제거한 상품 수(count distinct)를 정확히 표현할 수 없어…"
+
+    같은 뜻을 컴파일러는 그 자리에서 만든다(`HAVING COUNT(DISTINCT EC.PRODUCT_ID) >= 3`,
+    실DB 2,788명). 심볼 축만 보던 동안 이 신고는 '표현할 수 없습니다'로 사용자에게 나갔다.
+    """
+    from query_structurer import structurer
+
+    raw = {"audience_requirement": {"expression": None, "issues": [{
+        "code": "unsupported_semantics",
+        "argument": "distinct_products",
+        "message": (
+            "'서로 다른' (distinct products) 조건은 Event IR 카탈로그에서 회원별로 중복 제거한 "
+            "상품 수(count distinct)를 정확히 표현할 수 없어 표현 불가합니다."
+        ),
+        "evidence": {"text": "서로 다른 상품", "start": 6, "end": 14},
+    }]}}
+
+    repair = structurer._audience_repair_error(raw, {})
+    assert repair and "aggregate.count_distinct" in repair, (
+        f"선언된 capability 를 지목한 미지원 주장이 그대로 종결됐다: {repair!r}"
+    )
+
+
+def test_unsupported_claim_wrapping_a_registered_symbol_is_self_refuting() -> None:
+    """모델은 카탈로그 심볼에 자기 설명을 접두어로 붙여 온다 — 정확 일치만 보면 놓친다.
+
+    실측(2026-08-06, `011705-8e8b58.jsonl`): argument='distinct_count_of_cart.product_id'.
+    안쪽 `cart.product_id` 는 등록된 카탈로그 필드이고, 주장의 대상도 그 필드다.
+    """
+    from query_structurer import structurer
+
+    raw = {"audience_requirement": {"expression": None, "issues": [{
+        "code": "unsupported_semantics",
+        "argument": "distinct_count_of_cart.product_id",
+        "message": "장바구니에서 '서로 다른 상품'의 개수를 세는 집계 의미를 표현할 수 없습니다.",
+        "evidence": {"text": "서로 다른 상품을 3개 이상", "start": 6, "end": 21},
+    }]}}
+
+    repair = structurer._audience_repair_error(raw, {})
+    assert repair and "cart.product_id" in repair, (
+        f"등록된 필드를 감싼 미지원 주장이 그대로 종결됐다: {repair!r}"
+    )
+
+
+def test_claims_outside_the_declared_algebra_are_still_honoured() -> None:
+    """반대 방향(계산 축) — 선언되지 않은 계산이면 재시도로 몰아붙이지 않는다.
+
+    capability 표가 닫혀 있다는 것의 실질이 이것이다: 표에 없는 계산은 반박 근거가 없다.
+    """
+    from query_structurer import structurer
+
+    raw = {"audience_requirement": {"expression": None, "issues": [{
+        "code": "unsupported_semantics",
+        "argument": "median_of_purchase_amount",
+        "message": "The algebra cannot express a per-member median.",
+        "evidence": {"text": "구매금액 중앙값이 높은 회원", "start": 0, "end": 14},
+    }]}}
+    assert structurer._audience_repair_error(raw, {}) is None
+
+
+def test_capability_claim_surfaces_name_only_declared_capabilities() -> None:
+    """표의 키는 IR 이 선언한 capability 이름이어야 한다 — 오타나 폐기가 조용히 남지 않는다."""
+    import event_ir
+    import execution_assets
+
+    assert set(execution_assets._CAPABILITY_CLAIM_SURFACES) <= event_ir.CAPABILITIES
+    # 표를 실제로 만들 때도 같은 계약을 강제한다(로드 시 실패).
+    assert execution_assets._capability_claim_surfaces()

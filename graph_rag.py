@@ -7,6 +7,7 @@ import contextvars
 import copy
 import functools
 import hashlib
+import inspect
 import json
 import os
 import re
@@ -32,6 +33,7 @@ import audience_runtime, canonical_audience_claims, canonical_signal_coverage
 import canonical_event_ir_grounding
 import conceptual_targeting
 import condition_reconciliation
+import default_period_policy
 from external_conditions.models import ResolutionContext
 from external_conditions.service import ExternalConditionService
 import event_compiler
@@ -168,6 +170,7 @@ import plan_resolver
 import lexicon_llm
 import semantic_requirements
 import semantic_resolution
+import structuring_risk
 import compiler_strategies
 import behavior_demotion
 import condition_evaluation_ir
@@ -246,6 +249,16 @@ def _v4_slot_guidance(vocabulary: dict[str, Any]) -> str:
     return audience_runtime.audience_catalog_guidance()
 
 
+def _accepts_extra_instruction(query_structurer: QueryStructurer) -> bool:
+    """주입된 구조화기가 애플리케이션 지시문을 받는가(Protocol 은 선언하지 않는다)."""
+
+    try:
+        parameters = inspect.signature(query_structurer.structure).parameters
+    except (TypeError, ValueError):
+        return False
+    return "extra_instruction" in parameters
+
+
 def _structure_campaign_query_plan_v4(
     query: str,
     context: StructuringContext,
@@ -264,7 +277,14 @@ def _structure_campaign_query_plan_v4(
     input = QueryStructuringInput(query=query, context=context)
     if query_structurer is not None:
         try:
-            structured = query_structurer.structure(input)
+            # 애플리케이션 소유 지시문(기본 기간 정책 등)은 주입된 구조화기에도 전달한다.
+            # 조용히 떨어뜨리면 정책이 켜져 있는데 아무 일도 일어나지 않고, 증상은 예외가
+            # 아니라 '되묻기가 그대로'라 설정이 무시된 사실이 드러나지 않는다.
+            structured = (
+                query_structurer.structure(input, extra_instruction)
+                if extra_instruction and _accepts_extra_instruction(query_structurer)
+                else query_structurer.structure(input)
+            )
             if isinstance(structured, CampaignQueryPlanV4):
                 return structured
         except Exception as exc:  # noqa: BLE001 - safe deterministic fallback.
@@ -291,11 +311,17 @@ def _structure_campaign_query_plan_v4(
         client = OpenAI()
         call_count = 0
 
+        # 1차부터 복구 등급 모델을 쓸 문장인가. 공급자는 둘이고 결말이 다르다 — 손실 의무
+        # (원장, receipt 없으면 응답 차단)와 구조화 난이도(라우팅만, 뜻은 그대로).
+        prefer_repair = bool(
+            semantic_requirements.capture_source_semantic_obligations(query)
+        ) or structuring_risk.prefers_repair_grade_structuring(query)
+
         def complete(messages: list[dict[str, str]]) -> str:
             nonlocal call_count
             call_count += 1
             model, routing_reason = _campaign_structuring_route(
-                llm_model, attempt=call_count, override=model_override, prefer_repair=bool(semantic_requirements.capture_source_semantic_obligations(query))
+                llm_model, attempt=call_count, override=model_override, prefer_repair=prefer_repair
             )
             response = _openai_chat_create(
                 client,
@@ -2191,6 +2217,20 @@ def _build_query_plan(
         and not isinstance(base.get("aggregation_request"), Mapping)
     ):
         base["output_contract"] = explicit_output
+    applied_default_period = base.get(default_period_policy.DEFAULT_PERIOD_KEY)
+    if isinstance(applied_default_period, Mapping):
+        plan_decisions.record(
+            base,
+            filter_name=default_period_policy.POLICY_OWNER,
+            action=plan_decisions.SET,
+            slot="audience_requirement.window",
+            reason=(
+                "원문이 기간을 말하지 않은 '최근'을 구조화기가 되물었고, 호출 계층에 설정된 "
+                f"기본 기간({applied_default_period.get('value')}"
+                f"{applied_default_period.get('unit')})으로 채웠다 — 사용자 명시값이 아니다"
+            ),
+            value=dict(applied_default_period),
+        )
     result = as_campaign_query_plan_v4(
         base,
         raw_query=preserved_raw_query,
@@ -3208,6 +3248,13 @@ def _coerce_llm_query_plan_candidate(
         plan["audience_requirement"] = copy.deepcopy(audience_requirement)
     if isinstance(event_expression, dict):
         plan[EVENT_EXPRESSION_KEY] = copy.deepcopy(event_expression)
+    # 호출 계층 기본 기간 정책이 채운 창이면 그 출처 표식을 플랜까지 나른다. 여기서 떨어뜨리면
+    # 응답을 읽는 쪽은 그 기간이 사용자의 말인지 제품 설정인지 구분할 수 없다.
+    applied_default_period = candidate.get(default_period_policy.DEFAULT_PERIOD_KEY)
+    if isinstance(applied_default_period, dict):
+        plan[default_period_policy.DEFAULT_PERIOD_KEY] = copy.deepcopy(
+            applied_default_period
+        )
     if isinstance(semantic_ir, dict) and isinstance(literal_bindings, list):
         projection = validate_semantic_ir(semantic_ir, literal_bindings, payload=plan)
         if projection["operations"]:
@@ -4020,6 +4067,31 @@ def _region_density_config() -> dict[str, Any]:
     return config if isinstance(config, dict) else {}
 
 
+def _region_density_top_n(requested: Any) -> int:
+    """밀집 지역 랭킹의 상위 N. 문장에 숫자가 없으면 설정의 ``default_top_n``, 있으면 ``max_top_n``
+    으로 자른다. 코드에 5·30 을 다시 박으면 설정이 이중 소유가 되고, 설정만 고친 사람은 아무 일도
+    일어나지 않는 것을 보게 된다(선언은 살아 있는데 배선이 없는 상태)."""
+    config = _region_density_config()
+
+    def _positive_int(value: Any) -> int | None:
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            return None
+        return value
+
+    default_top_n = _positive_int(config.get("default_top_n")) or 5
+    top_n = _positive_int(requested) or default_top_n
+    max_top_n = _positive_int(config.get("max_top_n"))
+    if max_top_n is not None:
+        top_n = min(top_n, max_top_n)
+    return top_n
+
+
+def _region_density_excludes_empty() -> bool:
+    """지역 랭킹에서 NULL/빈 문자열 지역을 뺄지. 설정 미선언이면 기존 동작(뺀다)을 유지한다."""
+    value = _region_density_config().get("exclude_null_or_empty")
+    return True if value is None else bool(value)
+
+
 def _region_column_bare(granularity: str) -> str:
     """지역 단위어(지역/시군구/시도/동…)를 실컬럼명(SIGUNGU/SIDO/DONG)으로. 매핑에 없으면 기본 컬럼.
 
@@ -4532,8 +4604,11 @@ def _normalize_sino_korean_amounts(text: str) -> str:
 
 
 # ── 상품/주문 집계 조건 리졸버(스펙 기반·점수화) ─────────────────────────────────
-# 지표는 aggregate_targets.metrics 스펙(semantic_type/agg/column/distinct/table/units/hint_terms/
-# anti_hint_terms/synonyms)으로만 등록한다 — 문장별 파이썬 분기 없이 스펙만으로 신규 지표를 추가한다.
+# 지표는 aggregate_targets.metrics 스펙(semantic_type/agg/column/distinct/table/units/synonyms)으로만
+# 등록한다 — 문장별 파이썬 분기 없이 스펙만으로 신규 지표를 추가한다.
+# 주의: 같은 스펙의 hint_terms/anti_hint_terms/default_for_units/null_as 는 **읽는 코드가 없다.**
+# 그 힌트로 지표를 고르던 스코어링 리졸버가 사라졌고 선언만 남았다. 새 지표에 그 키를 적어도
+# 아무 일도 일어나지 않는다(현황은 docs/data/test_baselines/config_consumption_baseline.json).
 # 절 경계 접속어: 서로 다른 조건을 가르는 접속어. 단일 지표 범위('10만 이상이지만 50만 미만')는 뒷 절에
 # 지표가 없어 '고아 bound'로 앞 지표에 병합되므로, 접속어로 끊어도 범위가 안 깨진다.
 # 쉼표는 숫자 천단위 구분(100,000) 안에서는 절 경계로 쓰지 않는다(숫자 사이가 아닌 쉼표만 분리).
@@ -5067,7 +5142,8 @@ def _grade_threshold_registry() -> list[dict[str, Any]]:
 
 
 # 동사형 지표 표현('로그인하지 않은 / 정확히 20번 로그인한 / 평균보다 많이 로그인')을 지표에 연결한다. 명사
-# 동의어(로그인 횟수)로는 안 잡히는 행위 표현을, numeric_filters 의 action_aliases 로 잡되 '로그인한 지 30일'
+# 동의어(로그인 횟수)로는 안 잡히는 행위 표현을 어휘로 잡되 — 설정의 numeric_filters.action_aliases 는
+# **읽는 코드가 없다**(선언만 남은 상태, config_consumption_baseline.json 참조) — '로그인한 지 30일'
 # 같은 날짜/최근성 조건과의 충돌은 게이트로 막는다 — action 어 주변에 '숫자+기간단위'(날짜 조건 신호)가 있으면
 # 지표가 아니라 날짜 조건으로 보고 건너뛴다. 부재(=0)·비교·선택은 기존 분류기를 그대로 재사용한다.
 # 부재(=0) 표지: '한 번도/전혀 … (안)한', '기록/이력/한 적이 없는'. zero_semantics 로 NULL 을 0 으로 본다.
@@ -5194,8 +5270,9 @@ _ZERO_PURCHASE_COUNT_PATTERN = re.compile(
 # 셀 단위 비율 타겟: "발송 성공률은 높지만 구매율이 낮은 셀의 회원". '성공률/구매율'은 회원 플래그가
 # 아니라 캠페인 셀 단위 비율 지표다 — 접촉성공 정규식('발송성공')이 '발송 성공률'의 부분문자열에 걸려
 # 회원 EXISTS 로 강등되고, LLM 재작성은 '구매율 낮음'을 '미구매'(평생 무주문)로 극단화하는 오배정을
-# 여기서 바로잡는다. 명시 %("성공률 90% 이상")는 그대로, '높은/낮은' 막연어는 설정 기본 임계
-# (vague_high_default/vague_low_default)로 컴파일한다.
+# 여기서 바로잡는다. 명시 %("성공률 90% 이상")만 컴파일된다 — '높은/낮은' 막연어를 설정 기본 임계
+# (cell_rate_targets.vague_high_default/vague_low_default)로 채우던 결정론 파서는 사라졌고 그 두 키를
+# 읽는 코드가 지금은 없다. 막연어만 있는 문장은 슬롯이 비어 이 빌더에 닿지 않는다.
 # 명시 % 접미(지표어 뒤에 임베드): percent 타입 스펙으로 regex 조각 + 값 파서(0<v<=100 검증)를 함께 생성한다.
 # 단위(%)는 optional, 앞에 조사(이/가/은/는/도)가 올 수 있고 공백 없이 붙는다(sep="").
 
@@ -5769,6 +5846,22 @@ def retrieve(
             hops=hops,
             llm_model=llm_model,
             query_structurer=query_structurer,
+        )
+        # 기간 없는 '최근'의 기본값은 **호출 계층 정책**이다. 설정되지 않은 배포에서는 이
+        # 호출이 무동작이고 구조화기의 fail-close(missing_argument(period))가 그대로 결말이다.
+        campaign_query_plan = default_period_policy.apply_default_period(
+            campaign_query_plan,
+            query=targeting_prompt,
+            current_date=context.current_date,
+            period=default_period_policy.resolve_default_period(),
+            restructure=lambda instruction: _structure_campaign_query_plan_v4(
+                targeting_prompt,
+                context,
+                llm_model,
+                query_structurer,
+                extra_instruction=instruction,
+            ),
+            write_log=_write_rag_llm_log,
         )
         campaign_plan_structured = True
         timings_ms["query_structuring"] = _elapsed_ms(structuring_started_at)
@@ -12566,7 +12659,7 @@ def _build_dense_region_targets_candidate(
     그 지역에 거주하는 정상 회원 전체를 타겟한다(외부). "X가 많이 거주하는 동네에 판촉" 은 지역
     단위 캠페인이므로 외부는 코호트로 다시 좁히지 않는다(지역 선정 기준 ≠ 발송 대상 조건)."""
     column = density.get("column")
-    top_n = int(density.get("top_n", 5))
+    top_n = _region_density_top_n(density.get("top_n"))
 
     # 랭킹 기준: 기본은 거주 회원 수(COUNT). metric_id 가 있으면 지표 레지스트리(member_metrics.json)
     # 의 집계식(예: SUM(TOTAL_BUY_AMT))으로 랭킹한다 — 지표 테이블은 회원키로 조인, 월 스냅샷
@@ -12591,7 +12684,8 @@ def _build_dense_region_targets_candidate(
     if not compiled["forces_state"]:
         inner_where.append(_member_active_state_predicate())
     inner_where.extend(metric_where)
-    inner_where.extend([f"B.{column} IS NOT NULL", f"B.{column} <> ''"])
+    if _region_density_excludes_empty():
+        inner_where.extend([f"B.{column} IS NOT NULL", f"B.{column} <> ''"])
     inner_where = _unique_strings(inner_where)
     inner_sql = "\n".join(
         [

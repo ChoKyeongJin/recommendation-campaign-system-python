@@ -138,7 +138,16 @@ def test_llm_contract_exposes_only_one_audience_requirement() -> None:
     }.isdisjoint(properties)
 
 
-def test_bare_recent_prompt_uses_the_five_day_rolling_default() -> None:
+def test_the_structuring_prompt_agrees_with_the_fail_close_policy() -> None:
+    """한 프롬프트 안의 세 지시가 같은 말을 한다(예전에는 갈라져 있었다).
+
+    시스템 메시지(:mod:`query_structurer.structurer`)와 카탈로그 안내
+    (:func:`audience_runtime.audience_catalog_guidance`)는 기간 없는 '최근'을 되묻으라고
+    했는데, 사용자 프롬프트만 '최근 5일로 채우라'고 말하고 있었다. 기본 기간의 소유자는
+    호출 계층(:mod:`default_period_policy`)이고, 계층별 계약은
+    ``tests/test_default_period_policy.py`` 가 고정한다.
+    """
+
     prompt = build_campaign_query_plan_v4_user_prompt(
         QueryStructuringInput(
             query=BARE_RECENT_QUERY,
@@ -146,8 +155,9 @@ def test_bare_recent_prompt_uses_the_five_day_rolling_default() -> None:
         )
     )
 
-    assert '"type": "rolling", "value": 5, "unit": "day"' in prompt
-    assert "Do not return a missing_argument issue for period." in prompt
+    assert "do not substitute a default window" in prompt
+    assert "missing_argument with argument='period'" in prompt
+    assert '"type": "rolling", "value": 5, "unit": "day"' not in prompt
 
 
 def test_runtime_catalog_extension_uses_the_same_ir_and_compiler(tmp_path: Path) -> None:
@@ -228,35 +238,10 @@ def test_exists_inherits_exact_provenance_from_its_relation_predicate() -> None:
     }
 
 
-def test_bare_recent_uses_the_default_five_day_window_and_compiles() -> None:
-    expression = _campaign_audience_expression(
-        BARE_RECENT_QUERY,
-        contact_evidence="최근 캠페인 발송 성공 횟수가 3회 이상",
-        window=event_ir.RollingWindow(value=5, unit="day"),
-    )
-    structured = _canonical_payload(BARE_RECENT_QUERY, expression)
-
-    assert structured[EVENT_EXPRESSION_KEY]["expression"] == expression.to_dict()
-    assert structured[AUDIENCE_REQUIREMENT_KEY]["issues"] == []
-    assert structured["semantic_ir"]["status"] == "resolved"
-
-    plan = graph_rag.build_query_plan(
-        BARE_RECENT_QUERY,
-        parser="llm",
-        query_plan_v4=structured,
-    )
-    result = graph_rag.build_sql_result(
-        graph_rag.nx.Graph(),
-        BARE_RECENT_QUERY,
-        plan,
-        [],
-        graph_rag.DEFAULT_SCHEMA_PATH,
-        default_limit=100,
-        original_query=BARE_RECENT_QUERY,
-    )
-
-    assert plan[EVENT_EXPRESSION_KEY]["expression"] == expression.to_dict()
-    assert result["sql"] is not None
+# 기간이 채워진 맨 '최근'이 SQL 까지 가는 계약은 계층이 갈렸다 — 그 창을 **누가 골랐는가**를
+# 함께 고정해야 의미가 있기 때문이다. 통합 판은
+# ``tests/test_default_period_policy.py::test_configured_default_period_fills_the_window_and_compiles``
+# 이 소유한다(기본 기간 정책을 통과시키고 source=default_policy 영수증까지 확인한다).
 
 
 def test_canonical_campaign_expression_is_the_only_sql_authority() -> None:

@@ -7,6 +7,8 @@ from typing import Any
 
 from jsonschema import Draft202012Validator
 
+import execution_assets
+
 from .campaign_plan_v4 import (
     CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA,
     CampaignQueryPlanV4,
@@ -99,18 +101,51 @@ def _is_non_retryable_tool_contract_error(exc: Exception) -> bool:
     )
 
 
-def _is_registered_canonical_symbol(symbol: Any) -> bool:
-    """이 이름이 canonical 카탈로그에 실제로 등록돼 있는가(소스·필드·지표)."""
+# 모델이 지목한 심볼에서 카탈로그 이름을 떼어낼 때 쓰는 경계. 자기가 만든 접두어를 붙여
+# 오기 때문에(`distinct_count_of_cart.product_id`) 정확 일치만 보면 반박을 놓친다.
+_SYMBOL_TOKEN_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_.]*")
+
+
+def _registered_canonical_symbol(symbol: Any) -> str | None:
+    """이 이름이 지목하는 canonical 카탈로그 심볼(소스·필드·지표). 없으면 None.
+
+    정확 일치가 먼저다. 실패하면 이름 안의 **점 있는 토큰**만 다시 본다 — 모델은 카탈로그
+    심볼에 자기 설명을 접두어로 붙여 오는데(실측 2026-08-06:
+    ``distinct_count_of_cart.product_id``, 안쪽 ``cart.product_id`` 는 등록된 필드),
+    그때도 주장의 대상은 여전히 그 등록된 심볼이다. 점이 없는 토큰은 보지 않는다 —
+    ``count``·``distinct`` 같은 일반어가 우연히 카탈로그 이름과 겹치는 것을 막는다.
+    """
     if not isinstance(symbol, str) or not symbol.strip():
-        return False
+        return None
     import audience_runtime  # 지연 import — 구조화기는 카탈로그 로딩을 강제하지 않는다
 
     try:
         catalog = audience_runtime.resolve_audience_catalog()
     except Exception:  # noqa: BLE001 — 카탈로그를 못 읽으면 반박하지 않는다(추측 금지).
-        return False
+        return None
+
+    def registered(name: str) -> bool:
+        return name in catalog.sources or name in catalog.fields or name in catalog.metrics
+
     name = symbol.strip()
-    return name in catalog.sources or name in catalog.fields or name in catalog.metrics
+    if registered(name):
+        return name
+    for token in _SYMBOL_TOKEN_RE.findall(name):
+        if "." not in token:
+            continue
+        # 접두어는 왼쪽에서 한 마디씩 벗긴다('distinct_count_of_cart.product_id' → 'cart.product_id').
+        parts = token.split(".")
+        for start in range(len(parts) - 1):
+            candidate = ".".join(parts[start:])
+            if registered(candidate):
+                return candidate
+            head, _, tail = parts[start].rpartition("_")
+            if not head or not tail:
+                continue
+            stripped = ".".join((tail, *parts[start + 1:]))
+            if registered(stripped):
+                return stripped
+    return None
 
 
 def _audience_repair_error(raw: dict[str, Any], enriched: dict[str, Any]) -> str | None:
@@ -122,23 +157,37 @@ def _audience_repair_error(raw: dict[str, Any], enriched: dict[str, Any]) -> str
         item for item in (raw_requirement.get("issues") or []) if isinstance(item, dict)
     ]
     if raw_requirement.get("expression") is None:
-        # **미지원 선언은 가설이지 판정이 아니다.** 모델이 "표현할 수 없다"며 지목한 심볼이
-        # 카탈로그에 **등록된 canonical 심볼**이면 그 주장은 스스로 반박된다 — 등록됐다는 것이
-        # 곧 표현할 수 있다는 뜻이기 때문이다. 실측(2026-08-03 라이브):
-        #   '여성 회원을 찾아줘' → unsupported_semantics / argument='subject.gender'
-        #   "The compiler cannot represent direct profile field comparison…"
-        # `subject.gender` 는 카탈로그 필드다. 이런 주장은 종결이 아니라 재시도 사유다.
-        refuted = sorted({
-            str(item.get("argument"))
-            for item in raw_issues
-            if item.get("code") == "unsupported_semantics"
-            and _is_registered_canonical_symbol(item.get("argument"))
-        })
+        # **미지원 선언은 가설이지 판정이 아니다.** 애플리케이션이 이미 선언해 둔 것을 못 한다는
+        # 주장은 스스로 반박된다. 반박의 축은 둘이고, 각각 다른 실측에서 나왔다.
+        #
+        #   심볼 축 (2026-08-03) '여성 회원을 찾아줘' → argument='subject.gender'
+        #                        "The compiler cannot represent direct profile field comparison…"
+        #                        `subject.gender` 는 카탈로그 필드다.
+        #   계산 축 (2026-08-06) '장바구니에 서로 다른 상품을 3개 이상 담아둔 회원'
+        #                        → argument='distinct_products' / "…count distinct…표현 불가"
+        #                        `aggregate.count_distinct` 는 IR 이 선언한 capability 이고,
+        #                        컴파일러가 그 자리에서 HAVING COUNT(DISTINCT …) 를 만든다.
+        #
+        # 심볼 축만 있던 동안 계산 축의 거짓 신고는 그대로 '표현할 수 없습니다'로 나갔다.
+        # 둘 다 종결이 아니라 재시도 사유다.
+        refuted: list[str] = []
+        for item in raw_issues:
+            if item.get("code") != "unsupported_semantics":
+                continue
+            symbol = _registered_canonical_symbol(item.get("argument"))
+            if symbol is not None:
+                refuted.append(f"{symbol} is registered in the semantic catalog")
+                continue
+            capability = execution_assets.declared_capability_in_claim(
+                item.get("argument"), item.get("message")
+            )
+            if capability is not None:
+                refuted.append(f"{capability} is a declared Event IR capability")
         if refuted:
             return (
-                f"{', '.join(refuted)} is registered in the semantic catalog; capability is "
-                "decided by the application, not by you — emit the canonical expression instead "
-                "of an unsupported_semantics issue"
+                f"{'; '.join(sorted(set(refuted)))}; capability is decided by the application, "
+                "not by you — emit the canonical expression instead of an unsupported_semantics "
+                "issue"
             )
         if any(item.get("code") == "validation_mismatch" for item in raw_issues):
             return (

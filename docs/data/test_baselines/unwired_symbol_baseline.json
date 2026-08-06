@@ -1,0 +1,236 @@
+{
+ "note": "정의됐지만 프로덕션이 부르지 않는 최상위 공개 심볼의 기준선. kind=dead 는 테스트조차 부르지 않는 것, kind=test_only 는 테스트만 부르는 것이다. 둘 다 늘 수 없다(하향 전용 래칫) — 배선하거나 지우면 이 파일에서 항목을 뺀다.",
+ "generated_by": "tools/unwired_symbol_inventory.py",
+ "dead_total": 29,
+ "test_only_total": 28,
+ "entries": {
+  "analytical_intent.py::SUPPORTED_QUERY_TYPES": {
+   "kind": "dead",
+   "reason": "질의 의도·토큰 분류 표면. 호출자 없음."
+  },
+  "analytical_intent.py::SUPPORTED_RESULT_SHAPES": {
+   "kind": "dead",
+   "reason": "질의 의도·토큰 분류 표면. 호출자 없음."
+  },
+  "analytical_intent.py::member_condition_filter": {
+   "kind": "dead",
+   "reason": "질의 의도·토큰 분류 표면. 호출자 없음."
+  },
+  "calendar_window.py::TEMPORAL_KINDS": {
+   "kind": "dead",
+   "reason": "달력 창 문법의 공개 파서 표면. 진입점은 parse_time_windows 하나이고 나머지는 호출자가 없다."
+  },
+  "calendar_window.py::parse_half_or_quarter_window": {
+   "kind": "test_only",
+   "reason": "달력 창 문법의 공개 파서 표면. 진입점은 parse_time_windows 하나이고 나머지는 호출자가 없다."
+  },
+  "calendar_window.py::parse_time_of_day_window_span": {
+   "kind": "test_only",
+   "reason": "달력 창 문법의 공개 파서 표면. 진입점은 parse_time_windows 하나이고 나머지는 호출자가 없다."
+  },
+  "calendar_window.py::parse_time_window": {
+   "kind": "dead",
+   "reason": "달력 창 문법의 공개 파서 표면. 진입점은 parse_time_windows 하나이고 나머지는 호출자가 없다."
+  },
+  "calendar_window.py::parse_time_window_span": {
+   "kind": "test_only",
+   "reason": "달력 창 문법의 공개 파서 표면. 진입점은 parse_time_windows 하나이고 나머지는 호출자가 없다."
+  },
+  "calendar_window.py::past_point_spans": {
+   "kind": "dead",
+   "reason": "달력 창 문법의 공개 파서 표면. 진입점은 parse_time_windows 하나이고 나머지는 호출자가 없다."
+  },
+  "canonical_signal_coverage.py::DECLARATION_KEYS": {
+   "kind": "dead",
+   "reason": "신호 커버리지 선언 조회 표면. 계약 테스트만 부른다."
+  },
+  "canonical_signal_coverage.py::declaration_symbols": {
+   "kind": "test_only",
+   "reason": "신호 커버리지 선언 조회 표면. 계약 테스트만 부른다."
+  },
+  "canonical_signal_coverage.py::declared_families": {
+   "kind": "test_only",
+   "reason": "신호 커버리지 선언 조회 표면. 계약 테스트만 부른다."
+  },
+  "canonical_signal_coverage.py::inexpressible_families": {
+   "kind": "test_only",
+   "reason": "신호 커버리지 선언 조회 표면. 계약 테스트만 부른다."
+  },
+  "capability_discovery/service.py::projection_issues_by_severity": {
+   "kind": "dead",
+   "reason": "capability 진단 계층의 조회 표면. 호출자 없음."
+  },
+  "capability_validation.py::derive_builder_order": {
+   "kind": "test_only",
+   "reason": "빌더 순서 파생. 계약 테스트(test_builder_order_contract)만 부른다."
+  },
+  "compiler_strategies.py::has_strategy": {
+   "kind": "dead",
+   "reason": "컴파일러 전략·조인 경로 조회 표면. 호출자 없음."
+  },
+  "compiler_strategies.py::join_path_exists": {
+   "kind": "dead",
+   "reason": "컴파일러 전략·조인 경로 조회 표면. 호출자 없음."
+  },
+  "condition_reconciliation.py::ClarificationEvaluator": {
+   "kind": "dead",
+   "reason": "조건 소유권 재조정 파이프라인의 진입점. 정책 JSON 과 이를 배선하던 호출자가 rules 계층 철거(ac924ff)와 함께 삭제됐고 모듈 docstring 이 그 사실을 적고 있다. 프로덕션이 소비하는 것은 conflict_clarifications 와 UNIVERSE_TYPE 뿐이다."
+  },
+  "condition_reconciliation.py::ConditionOwnershipResolver": {
+   "kind": "dead",
+   "reason": "조건 소유권 재조정 파이프라인의 진입점. 정책 JSON 과 이를 배선하던 호출자가 rules 계층 철거(ac924ff)와 함께 삭제됐고 모듈 docstring 이 그 사실을 적고 있다. 프로덕션이 소비하는 것은 conflict_clarifications 와 UNIVERSE_TYPE 뿐이다."
+  },
+  "condition_reconciliation.py::SetExpressionReconciler": {
+   "kind": "dead",
+   "reason": "조건 소유권 재조정 파이프라인의 진입점. 정책 JSON 과 이를 배선하던 호출자가 rules 계층 철거(ac924ff)와 함께 삭제됐고 모듈 docstring 이 그 사실을 적고 있다. 프로덕션이 소비하는 것은 conflict_clarifications 와 UNIVERSE_TYPE 뿐이다."
+  },
+  "condition_reconciliation.py::collect_condition_candidates": {
+   "kind": "dead",
+   "reason": "조건 소유권 재조정 파이프라인의 진입점. 정책 JSON 과 이를 배선하던 호출자가 rules 계층 철거(ac924ff)와 함께 삭제됐고 모듈 docstring 이 그 사실을 적고 있다. 프로덕션이 소비하는 것은 conflict_clarifications 와 UNIVERSE_TYPE 뿐이다."
+  },
+  "db_connections.py::run_set_targeting": {
+   "kind": "dead",
+   "reason": "집합 타겟팅 실행 헬퍼. 호출자 없음."
+  },
+  "entity_set.py::entity_set_label": {
+   "kind": "dead",
+   "reason": "엔터티 집합 라벨 생성. 호출자 없음."
+  },
+  "event_compiler.py::compile_expression_sql": {
+   "kind": "test_only",
+   "reason": "Event IR 표현식 단독 SQL 컴파일 진입점. 프로덕션은 상위 컴파일 경로를 탄다."
+  },
+  "event_ir.py::NODE_TYPES": {
+   "kind": "test_only",
+   "reason": "Event IR 검증·변환 표면. 프로덕션 호출자가 없다(컴파일 경로는 event_compiler 가 직접 탄다)."
+  },
+  "event_ir.py::covers_existence": {
+   "kind": "test_only",
+   "reason": "Event IR 검증·변환 표면. 프로덕션 호출자가 없다(컴파일 경로는 event_compiler 가 직접 탄다)."
+  },
+  "event_ir.py::node_type_names": {
+   "kind": "test_only",
+   "reason": "Event IR 검증·변환 표면. 프로덕션 호출자가 없다(컴파일 경로는 event_compiler 가 직접 탄다)."
+  },
+  "event_ir.py::try_convert_to_legacy_slots": {
+   "kind": "test_only",
+   "reason": "Event IR 검증·변환 표면. 프로덕션 호출자가 없다(컴파일 경로는 event_compiler 가 직접 탄다)."
+  },
+  "event_ir.py::unsupported_payload": {
+   "kind": "test_only",
+   "reason": "Event IR 검증·변환 표면. 프로덕션 호출자가 없다(컴파일 경로는 event_compiler 가 직접 탄다)."
+  },
+  "event_ir.py::validate_expression": {
+   "kind": "test_only",
+   "reason": "Event IR 검증·변환 표면. 프로덕션 호출자가 없다(컴파일 경로는 event_compiler 가 직접 탄다)."
+  },
+  "event_parser.py::event_clause_text": {
+   "kind": "test_only",
+   "reason": "NL→Event IR 규칙 파서 표면. 프로덕션 경로는 LLM 구조화기(campaign_plan_v4)이고 이 모듈에서 실행 경로가 쓰는 것은 source_time_span_count 하나뿐이다."
+  },
+  "event_parser.py::llm_tool_schema": {
+   "kind": "test_only",
+   "reason": "NL→Event IR 규칙 파서 표면. 프로덕션 경로는 LLM 구조화기(campaign_plan_v4)이고 이 모듈에서 실행 경로가 쓰는 것은 source_time_span_count 하나뿐이다."
+  },
+  "event_parser.py::parse_expression": {
+   "kind": "test_only",
+   "reason": "NL→Event IR 규칙 파서 표면. 프로덕션 경로는 LLM 구조화기(campaign_plan_v4)이고 이 모듈에서 실행 경로가 쓰는 것은 source_time_span_count 하나뿐이다."
+  },
+  "event_parser.py::parse_llm_expression": {
+   "kind": "test_only",
+   "reason": "NL→Event IR 규칙 파서 표면. 프로덕션 경로는 LLM 구조화기(campaign_plan_v4)이고 이 모듈에서 실행 경로가 쓰는 것은 source_time_span_count 하나뿐이다."
+  },
+  "external_conditions/classifier.py::classify_external_conditions": {
+   "kind": "test_only",
+   "reason": "외부 조건 계층. 기본 retrieve() 는 이 서비스를 만들지 않는다(docs/guides/external_conditions.md) — 주입 경로 전용이라 프로덕션 호출자가 없다."
+  },
+  "external_conditions/service.py::default_resolution_context": {
+   "kind": "test_only",
+   "reason": "외부 조건 계층. 기본 retrieve() 는 이 서비스를 만들지 않는다(docs/guides/external_conditions.md) — 주입 경로 전용이라 프로덕션 호출자가 없다."
+  },
+  "ir_snapshot.py::condition_slots": {
+   "kind": "test_only",
+   "reason": "IR 스냅샷 조회 표면. 커버리지 드리프트 테스트만 부른다."
+  },
+  "ir_snapshot.py::unclassified_plan_keys": {
+   "kind": "test_only",
+   "reason": "IR 스냅샷 조회 표면. 커버리지 드리프트 테스트만 부른다."
+  },
+  "join_paths.py::get_join_path": {
+   "kind": "dead",
+   "reason": "컴파일러 전략·조인 경로 조회 표면. 호출자 없음."
+  },
+  "lexicon_llm.py::split_namespace": {
+   "kind": "test_only",
+   "reason": "어휘 계층의 조회 헬퍼. 테스트만 부른다."
+  },
+  "lexicon_patterns.py::exclusions": {
+   "kind": "test_only",
+   "reason": "어휘 계층의 조회 헬퍼. 테스트만 부른다."
+  },
+  "plan_decisions.py::drop_slots": {
+   "kind": "dead",
+   "reason": "슬롯 삭제의 '사유 붙은' 판. @_audited_stage 는 record_changes 가 삭제를 CLEAR 로 이미 기록하므로 감사 공백은 없고, 이 함수는 사유를 슬롯별로 다는 정밀판이라 호출자가 아직 없다."
+  },
+  "purchase_lexicon.py::colloquial_spans": {
+   "kind": "dead",
+   "reason": "구매 표면어 어휘 헬퍼. 의미 판정은 semantic_signal 이 1순위로 가져갔고 이 표면은 호출자가 없다."
+  },
+  "purchase_lexicon.py::has_purchase_expression": {
+   "kind": "dead",
+   "reason": "구매 표면어 어휘 헬퍼. 의미 판정은 semantic_signal 이 1순위로 가져갔고 이 표면은 호출자가 없다."
+  },
+  "query_semantics.py::TOKEN_ROLES": {
+   "kind": "dead",
+   "reason": "질의 의도·토큰 분류 표면. 호출자 없음."
+  },
+  "query_semantics.py::classify_query_tokens": {
+   "kind": "dead",
+   "reason": "질의 의도·토큰 분류 표면. 호출자 없음."
+  },
+  "rag/config.py::DEFAULT_DIMENSION_CATALOG_PATH": {
+   "kind": "dead",
+   "reason": "디멘션 카탈로그 기본 경로 상수. 읽는 코드 없음."
+  },
+  "resolved_semantic_catalog.py::shadowed_metric_aliases": {
+   "kind": "test_only",
+   "reason": "가려진 지표 별칭 조회. 드리프트 테스트만 부른다."
+  },
+  "semantic_ast.py::predicate_key": {
+   "kind": "test_only",
+   "reason": "술어 키 생성. 테스트만 부른다."
+  },
+  "semantic_requirements.py::QUALIFIER_TYPES": {
+   "kind": "dead",
+   "reason": "한정자 종류 상수. 읽는 코드 없음."
+  },
+  "slot_ownership.py::claim_slots": {
+   "kind": "dead",
+   "reason": "슬롯 소유권 API 중 호출자가 붙지 않은 표면."
+  },
+  "slot_ownership.py::owns_exact_span": {
+   "kind": "dead",
+   "reason": "슬롯 소유권 API 중 호출자가 붙지 않은 표면."
+  },
+  "slot_ownership.py::slot_span": {
+   "kind": "test_only",
+   "reason": "슬롯 소유권 API 중 호출자가 붙지 않은 표면."
+  },
+  "targeting_domain.py::transition_direction": {
+   "kind": "dead",
+   "reason": "전이 방향 조회. 등급 전이 축이 폐기되면서 호출자가 사라졌다."
+  },
+  "targeting_expression.py::expression_fingerprint": {
+   "kind": "dead",
+   "reason": "타겟 표현식 직렬화·지문 헬퍼. 호출자 없음."
+  },
+  "targeting_expression.py::targeting_expression_to_dict": {
+   "kind": "dead",
+   "reason": "타겟 표현식 직렬화·지문 헬퍼. 호출자 없음."
+  },
+  "targeting_ir.py::slot_rejection_reason": {
+   "kind": "test_only",
+   "reason": "슬롯 거절 사유 조회. 테스트만 부른다."
+  }
+ }
+}

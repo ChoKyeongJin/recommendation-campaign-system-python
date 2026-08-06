@@ -66,6 +66,9 @@ NON_CONDITION_PLAN_KEYS = frozenset({
     # independently executable audience conditions. Canonical/event
     # expressions intentionally remain outside this set.
     "canonical_projection",
+    # 호출 계층 기본 기간 정책이 남긴 출처 표식(default_period_policy). 그 기간을 **실행하는**
+    # 것은 오디언스 표현 안의 창이고 이 키는 "누가 골랐는가"의 영수증이라 조건이 아니다.
+    "audience_default_period",
     "canonical_targeting_validation",
     "canonical_targeting_version",
     "condition_claims",

@@ -189,8 +189,7 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
             (
                 "Treat Application-owned Literal Bindings as authoritative for dates, durations, numbers, "
                 "units, percentages, and comparison operators. Reference or copy only values supported by "
-                "those bindings and the tool schema; never infer a missing value except for the explicit "
-                "bare-'최근' default described below."
+                "those bindings and the tool schema; never infer a value the query does not state."
             ),
             (
                 "If a material audience requirement is ambiguous, unsupported, inconsistent with the catalog, "
@@ -200,10 +199,14 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
                 "missing/invalid semantic argument in issue.argument."
             ),
             (
+                # 기본 기간 정책은 **호출 계층**이 소유한다(:mod:`default_period_policy`). 예전에는
+                # 이 자리에서 맨 '최근'에 5일을 지어내라고 지시했고, 그러면 구조화기는 사용자가 말한
+                # 기간과 애플리케이션이 고른 기간을 구분할 수 없는 하나의 창으로 섞어 내보냈다 —
+                # 되묻기와 기본값 중 무엇이 옳은지는 원문이 아니라 제품 설정이 정하는 문제다.
                 "Special temporal rule: when the query says '최근' but gives no duration or bounded period, "
-                "do not interpret it as all history. Apply the application default of the most recent five "
-                "days by putting {\"type\": \"rolling\", \"value\": 5, \"unit\": \"day\"} in the "
-                "TimeFilter that owns the condition. Do not return a missing_argument issue for period."
+                "do not interpret it as all history and do not substitute a default window. Set expression "
+                "to null and report missing_argument with argument='period', evidence anchored on the bare "
+                "'최근' span. Only an explicit application instruction may supply that duration."
             ),
             (
                 "campaign_constraints contains campaign-delivery metadata only. A campaign objective such as "

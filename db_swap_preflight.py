@@ -30,6 +30,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# 순수 설정 모듈만 import 한다(경량 게이트 원칙). metric_registry 는 표준 라이브러리만 쓰고
+# 스펙 디렉터리를 모듈 기준 절대경로로 잡으므로 cwd 와 무관하게 안전하다.
+import metric_registry
+
 # 결과 줄에 한글·기호(✅/❌)가 들어간다. Windows 레거시 콘솔(cp949)에서는 print 가
 # UnicodeEncodeError 로 죽어 **ok 여부와 무관하게 종료코드가 1** 이 된다 — 게이트 도구가
 # 통과를 실패로 보고하는 최악의 오작동이라 인코딩을 먼저 고정한다.
@@ -368,6 +372,20 @@ def run_preflight(check_db: bool = False) -> dict[str, Any]:
             continue  # 테이블 참조 검사가 위에서 더 정확한 원인을 이미 보고한다.
         if column not in present:
             problems.append(f"[registry] 컬럼 '{table}.{column}' 이 카탈로그 테이블에 없음")
+
+    # 3-b) 지표 스펙(docs/data/runtime/sql/metrics/*.json)의 물리 컬럼 ↔ 카탈로그.
+    # 이 스펙들은 REGISTRY_PATHS 밖이라 지금까지 DB 스왑 게이트에 걸리지 않았다 — BUY_CYCLE·
+    # LAST_LOGIN_DATE 같은 물리 바인딩이 실DB 에서 사라져도 preflight 는 통과했다.
+    # metric_registry 는 이 대조를 lint_against_catalog 로 이미 갖고 있었고 부르는 곳만 없었다.
+    # 스펙이 스키마를 위반하면 problems(레지스트리를 못 읽는 상태), 카탈로그와 어긋나면
+    # warnings(카탈로그 주입식이라 강제하지 않는다는 lint 자체의 정책)로 나눈다.
+    try:
+        metric_specs = metric_registry.MetricRegistry.load()
+    except metric_registry.MetricSpecError as exc:
+        problems.append(f"[metric-spec] 지표 스펙이 스키마를 위반한다: {exc}")
+    else:
+        for warning in metric_specs.lint_against_catalog(columns_by_table):
+            warnings.append(f"[metric-spec] {warning}")
 
     # 4) 커넥션 방언 등록
     try:

@@ -172,6 +172,7 @@ docker exec recommendation-campaign-system-python-python-1 python tools/live_pro
 | `SEMANTIC_SIGNALS_PATH` | 경로 | 의미 신호(뜻 + detected 정책) 선언 파일 |
 | `SEMANTIC_SIGNAL_LOG_EVIDENCE` | `off`(기본)/`on` | 관측 로그에 판정 근거(원문 조각)를 남길지. 원문은 개인정보일 수 있어 기본은 끔 |
 | `SEMANTIC_AST_GATE` | `on`(기본)/`off` | 의미 AST 게이트(포함·제외 충돌 검사 + 생성 SQL 극성/구조 역검증). 조건을 만들지 않고 '조용한 의미 변형'만 차단하므로 켠 상태가 기본이다. `off` 는 이관 비교·사고 대응용 비상구 |
+| `AUDIENCE_DEFAULT_PERIOD` | 미설정(기본) / `"<양수> <단위>"`(예: `5 day`) | 기간을 말하지 않은 '최근'에 적용할 기본 기간. **미설정이 기본이고 그때는 구조화기의 fail-close(되묻기)가 그대로 결말이다.** 설정하면 그 결핍에 한해 애플리케이션 지시문으로 한 번 더 구조화해 창을 채우고, 결과에 `audience_default_period.source=default_policy` 와 `semantic_ir.status=policy_applied` 를 남겨 사용자가 말한 기간과 구분한다. 단위 어휘는 `event_ir` 소유(`day`/`week`/`month`/`year`)이고, 읽을 수 없는 값은 조용한 기본값이 되지 않고 정책 꺼짐으로 떨어진다. 사용자가 명시한 기간은 언제나 이긴다 |
 
 ## 안전장치 (전부 `pytest tests/` 가 강제)
 
@@ -191,6 +192,8 @@ docker exec recommendation-campaign-system-python-python-1 python tools/live_pro
 | 종착 좌표 도달성 | `tests/test_audience_failure_coordinate.py` | 선언만 있고 도달 못 하는 진단 레인이 생기는 것 |
 | 진단 배선 | `tests/test_audience_diagnosis_wiring.py` | 좌표가 파생만 되고 응답·debug·실패로그로 안 나가는 것 |
 | 문서 경로 실재 | `tests/test_runbook_paths_exist.py` | 이 문서가 없는 도구·경로·env 를 현재형으로 광고하는 것 |
+| 설정 소비 래칫 | `tests/test_config_consumption_ratchet.py` | 설정에 키를 선언하고 읽는 코드를 안 붙이는 것(로드 ≠ 소비) |
+| 미배선 심볼 래칫 | `tests/test_unwired_symbol_ratchet.py` | 공개 함수·클래스·상수를 만들고 부르는 곳을 안 붙이는 것 |
 
 ### 철거된 장치 (되살릴 때 이 목록에서 지운다)
 
