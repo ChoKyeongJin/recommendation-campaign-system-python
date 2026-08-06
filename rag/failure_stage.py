@@ -140,7 +140,38 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
     "query_plan_unmentioned_conditions_added": "condition_coverage",
     "intent_scope_mismatch": "intent_scope",
     "semantic_verification_failed": "semantic_verification",
+    # 요구 커버리지 게이트: 의미 요구가 terminal 로 귀결되지 못한 채 SQL 이 만들어졌다.
+    # 조건이 SQL 에 반영됐는지를 보는 판정이므로 '조건 반영 검증' 단계다.
+    "partial_sql": "condition_coverage",
+    "untraceable_compiled_requirement": "condition_coverage",
 }
+
+
+# 조립형 사유 ``<compile_stage>:<code>`` 의 단계 사상.
+#
+# ``no_sql_candidates`` 는 사유가 아니라 증상이다 — "후보가 0개"라는 말은 어느 단계에서 어떤
+# 의미 요구가 막혔는지 아무것도 알려 주지 않는다. :mod:`compile_outcome` 원장이 그 좌표를
+# 알고 있으면 사유는 ``audience_lowering:event_ir_compile_failed`` 처럼 조립된다. 조립형은
+# 닫힌 리터럴 표에 넣을 수 없으므로(코드 부분이 열려 있다) **접두어**로 사상한다.
+#
+# 이 표의 키는 compile_outcome.STAGES 와 같아야 한다 —
+# tests/test_failure_stage_totality.py 가 그 일치를 강제한다.
+_COMPILE_STAGE_TO_STAGE: dict[str, str] = {
+    "ir_schema": "condition_recognition",
+    "semantic_lowering": "condition_recognition",
+    "rules_fallback": "condition_recognition",
+    "capability": "real_db_mapping",
+    "audience_lowering": "real_db_mapping",
+    "projection_lowering": "intent_scope",
+}
+
+
+def _composed_stage(failure_reason: str) -> str | None:
+    """``<compile_stage>:<code>`` 조립형 사유의 단계(해당 없으면 None)."""
+    head, separator, tail = failure_reason.partition(":")
+    if not separator or not tail:
+        return None
+    return _COMPILE_STAGE_TO_STAGE.get(head)
 
 
 # 미확정 required 조건(query_plan_required_conditions_missing)의 종류별 세부 라벨.
@@ -191,7 +222,7 @@ def _classify_failure_stage(
     """
     if not failure_reason:
         return None
-    stage_code = _FAILURE_REASON_TO_STAGE.get(failure_reason)
+    stage_code = _FAILURE_REASON_TO_STAGE.get(failure_reason) or _composed_stage(failure_reason)
     if stage_code is None:
         return None
     # 세부 라벨: 같은 순번(단계) 안에서 무엇이 막혔는지 더 구체적으로 짚어준다(예: '타겟 조건 인식' → '집합식 파싱').

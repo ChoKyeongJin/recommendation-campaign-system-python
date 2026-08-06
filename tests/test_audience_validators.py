@@ -132,6 +132,112 @@ def test_temporal_validator_is_silent_when_the_window_is_present() -> None:
     )
 
 
+# ── 값 없는 '최근' × 배포 기본 기간 ───────────────────────────────────────────────
+#
+# 기본 기간이 설정된 배포에서는 `default_period_policy` 가 구조화기에게 "그 창을 넣어라"를
+# 지시하고 모델은 실제로 넣는다. 그런데 모델이 다는 근거 구간은 임계값 쪽('3회 이상')이라
+# 표지 '최근'을 덮지 않는다 — 그 이유만으로 정확히 옳은 표현이 거부되면 정책은 영원히
+# `candidate_has_no_expression` 으로 끝난다(2026-08-06 실측).
+
+_BARE_RECENT_QUERY = "최근 캠페인 발송 성공 횟수가 3회 이상인 회원"
+
+
+def _campaign_count_expression(window_days: int | None) -> EventExpression:
+    """모델이 실제로 낸 모양: 근거 구간이 '3회 이상'이고 표지를 덮지 않는다."""
+    relation: dict[str, Any] = {"type": "source", "name": "campaign_contact_success"}
+    if window_days is not None:
+        relation = {
+            "type": "filter",
+            "relation": relation,
+            "where": {
+                "type": "time_filter",
+                "field": {"type": "field", "name": "campaign_contact_success.occurred_at"},
+                "window": {"type": "rolling", "value": window_days, "unit": "day"},
+            },
+        }
+    span = "3회 이상"
+    start = _BARE_RECENT_QUERY.index(span)
+    return from_wire({
+        "type": "comparison",
+        "operator": ">=",
+        "left": {
+            "type": "aggregate",
+            "function": "count",
+            "relation": relation,
+            "expression": {"type": "field", "name": "campaign_contact_success.execution_id"},
+            "distinct": True,
+        },
+        "right": {"type": "literal", "value": 3},
+        "evidence": {"text": span, "start": start, "end": start + len(span)},
+    })
+
+
+def test_bare_recency_stays_a_deficiency_when_no_default_period_is_configured() -> None:
+    """정책이 꺼진 배포의 판정은 종전 그대로다 — 창이 있어도 원문이 말하지 않은 값이다."""
+    issues = audience_validators.TemporalSpanValidator().validate(
+        _campaign_count_expression(3), query=_BARE_RECENT_QUERY, literals=[]
+    )
+    assert "missing_argument" in {report_from_issue(issue)[0] for issue in issues}
+
+
+def test_the_configured_default_period_satisfies_a_bare_recency_marker() -> None:
+    """설정된 기본 기간을 실제로 들고 있으면 결핍이 아니다(근거 구간 위치와 무관)."""
+    assert (
+        audience_validators.TemporalSpanValidator(default_period=(3, "day")).validate(
+            _campaign_count_expression(3), query=_BARE_RECENT_QUERY, literals=[]
+        )
+        == ()
+    )
+
+
+def test_a_window_other_than_the_configured_default_is_still_a_deficiency() -> None:
+    """모델이 지어낸 창은 기본 기간이 아니다 — 설정을 켰다고 아무 창이나 통과하지 않는다."""
+    issues = audience_validators.TemporalSpanValidator(default_period=(3, "day")).validate(
+        _campaign_count_expression(30), query=_BARE_RECENT_QUERY, literals=[]
+    )
+    assert "missing_argument" in {report_from_issue(issue)[0] for issue in issues}
+
+
+def test_a_dropped_window_is_still_a_deficiency_under_the_default_policy() -> None:
+    """창이 아예 사라진 표현은 정책이 켜져 있어도 결핍이다(전체 이력 폴백 방지)."""
+    issues = audience_validators.TemporalSpanValidator(default_period=(3, "day")).validate(
+        _campaign_count_expression(None), query=_BARE_RECENT_QUERY, literals=[]
+    )
+    assert "missing_argument" in {report_from_issue(issue)[0] for issue in issues}
+
+
+def test_two_bare_markers_consume_two_windows() -> None:
+    """표지 하나가 창 하나를 소비한다 — 창 하나로 표지 둘을 덮지 않는다."""
+    query = "최근 구매하고 최근 로그인한 회원"
+    wire = {
+        "type": "and",
+        "operands": [
+            {
+                "type": "exists",
+                "relation": {
+                    "type": "filter",
+                    "relation": {"type": "source", "name": "purchase"},
+                    "where": {
+                        "type": "time_filter",
+                        "field": {"type": "field", "name": "purchase.occurred_at"},
+                        "window": {"type": "rolling", "value": 3, "unit": "day"},
+                    },
+                },
+                "evidence": {"text": "최근 구매", "start": 0, "end": 5},
+            },
+            {
+                "type": "exists",
+                "relation": {"type": "source", "name": "app_login"},
+                "evidence": {"text": "로그인한", "start": 9, "end": 14},
+            },
+        ],
+    }
+    issues = audience_validators.TemporalSpanValidator(default_period=(3, "day")).validate(
+        from_wire(wire), query=query, literals=[]
+    )
+    assert "missing_argument" in {report_from_issue(issue)[0] for issue in issues}
+
+
 def test_compiler_capability_validator_asks_the_real_compiler() -> None:
     """컴파일러가 낼 수 있다고 답하면 이 검증기는 조용하다(모델 산문이 아니라 자산이 판정한다)."""
     assert (

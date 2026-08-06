@@ -1,0 +1,874 @@
+{
+ "summary": {
+  "total": 7,
+  "outcomes": {
+   "sql": 5,
+   "unsupported": 1,
+   "clarification": 1,
+   "failure": 0,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 6,
+   "improvement": 0,
+   "regression": 1,
+   "unknown": 0
+  },
+  "lanes": {
+   "sql_template:event_expression": 6
+  },
+  "lane_ids": {
+   "sql_template:event_expression": [
+    2,
+    14,
+    16,
+    19,
+    71,
+    78
+   ]
+  },
+  "unstable": [
+   2
+  ],
+  "semantic_unstable": [
+   14
+  ],
+  "regressions": [
+   2
+  ],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 2,
+   "prompt": "최근 3개월 내 주문한 적은 있지만 최근 30일간 구매가 없는 회원",
+   "expectation": "sql",
+   "outcome": "unsupported",
+   "verdict": "regression",
+   "unstable": true,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    null,
+    "sem_35b8a3743b5a0671a7e0"
+   ],
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 34.8,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     },
+     "diagnostics": {
+      "status": "unsupported",
+      "failure_reason": "semantic_ir_unsupported",
+      "failure_stage": "real_db_mapping",
+      "audience_diagnosis": "semantic_ir_unsupported",
+      "interpretation_status": "unsupported",
+      "semantic_fingerprint": null,
+      "execution_fingerprint": null,
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": null,
+      "coverage_verdict": null,
+      "unresolved_source_conditions": [
+       {
+        "code": "unsupported_semantics",
+        "stage": null
+       },
+       {
+        "code": "unsupported_semantics",
+        "stage": null
+       }
+      ],
+      "sql_provenance": {
+       "candidate_id": null,
+       "candidate_source": null,
+       "candidate_count": 0,
+       "generation_source": null,
+       "audience_authority": null
+      },
+      "blocked_sql": null,
+      "sql": null
+     }
+    },
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 20.1,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_35b8a3743b5a0671a7e0",
+      "execution_fingerprint": "exe_80d22b39236ea921ad91",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 3,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '최근 90일 구매 상세 있음, 최근 30일 구매 상세 없음' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND (EXISTS (SELECT 1 FROM CRM_SL_ORDERDETAILMALL OD LEFT JOIN CRM_CM_PRODUCT OD_PRODUCT ON OD.PRODUCT_ID = OD_PRODUCT.PRODUCT_ID WHERE OD.MEMBER_NO = B.MEMBER_NO AND OD.ORDER_DATE >= CONVERT(CHAR(8), DATEADD(DAY, -90, GETDATE()), 112))) AND (NOT EXISTS (SELECT 1 FROM CRM_SL_ORDERDETAILMALL OD LEFT JOIN CRM_CM_PRODUCT OD_PRODUCT ON OD.PRODUCT_ID = OD_PRODUCT.PRODUCT_ID WHERE OD.MEMBER_NO = B.MEMBER_NO AND OD.ORDER_DATE >= CONVERT(CHAR(8), DATEADD(DAY, -30, GETDATE()), 112)))"
+     }
+    }
+   ],
+   "note": "이탈 문형(존재 창 + 부재 창). 조각은 **대안 묶음**이다 — '구매했다'의 물리 구현은 주문 헤더와 주문 상세 둘 다이고(analytics_registry.memberScopes[purchase].equivalentTables), 어느 쪽으로 낮출지는 lowering 이 정한다. 하나만 정답으로 적으면 정상 SQL 이 가짜 회귀가 된다."
+  },
+  {
+   "id": 5,
+   "prompt": "최근 캠페인 발송 성공 횟수가 3회 이상인 회원",
+   "expectation": "clarification",
+   "outcome": "clarification",
+   "verdict": "match",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    null,
+    null
+   ],
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 7.2,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     },
+     "diagnostics": {
+      "status": "needs_clarification",
+      "failure_reason": "semantic_ir_needs_clarification",
+      "failure_stage": "condition_recognition",
+      "audience_diagnosis": "semantic_ir_needs_clarification",
+      "interpretation_status": "needs_clarification",
+      "semantic_fingerprint": null,
+      "execution_fingerprint": null,
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [
+       {
+        "policy_id": "period_binding",
+        "decision": "allow",
+        "reason_code": "bare_recency_without_duration"
+       }
+      ],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": null,
+      "coverage_verdict": null,
+      "unresolved_source_conditions": [
+       {
+        "code": "missing_argument",
+        "stage": null
+       }
+      ],
+      "sql_provenance": {
+       "candidate_id": null,
+       "candidate_source": null,
+       "candidate_count": 0,
+       "generation_source": null,
+       "audience_authority": null
+      },
+      "blocked_sql": null,
+      "sql": null
+     }
+    },
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 6.9,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     },
+     "diagnostics": {
+      "status": "needs_clarification",
+      "failure_reason": "semantic_ir_needs_clarification",
+      "failure_stage": "condition_recognition",
+      "audience_diagnosis": "semantic_ir_needs_clarification",
+      "interpretation_status": "needs_clarification",
+      "semantic_fingerprint": null,
+      "execution_fingerprint": null,
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [
+       {
+        "policy_id": "period_binding",
+        "decision": "allow",
+        "reason_code": "bare_recency_without_duration"
+       }
+      ],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": null,
+      "coverage_verdict": null,
+      "unresolved_source_conditions": [
+       {
+        "code": "missing_argument",
+        "stage": null
+       }
+      ],
+      "sql_provenance": {
+       "candidate_id": null,
+       "candidate_source": null,
+       "candidate_count": 0,
+       "generation_source": null,
+       "audience_authority": null
+      },
+      "blocked_sql": null,
+      "sql": null
+     }
+    }
+   ],
+   "note": "정책 충돌을 **정책 쪽으로** 정리한 항목이다(2026-08-06). 이 코퍼스는 sql 을 기대했지만, 기간을 말하지 않은 맨 '최근'에 기본 창을 지어내지 않는 것이 확정된 런타임 정책이고(targeting_policy.PERIOD_POLICY_ID, 배포가 AUDIENCE_DEFAULT_PERIOD 를 명시하지 않는 한 fail-close) tests/test_retired_axes_fail_close.py::test_bare_recent_campaign_count_without_a_default_window_remains_blocked 가 그것을 고정한다. 개별 항목에 예외를 넣는 대신 기대를 정책 버전에 맞춘다. 기간을 말한 형태는 #78 이 잰다."
+  },
+  {
+   "id": 14,
+   "prompt": "최근 30일 구매한 회원 수를 알려줘",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "semantic_unstable": true,
+   "semantic_fingerprints": [
+    "sem_39cac969edee8d02d5fc",
+    "sem_d911841534fe75f30f35"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 37.0,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_39cac969edee8d02d5fc",
+      "execution_fingerprint": "exe_0a4dd3266dea4d5d4dcc",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [
+       {
+        "policy_id": "period_binding",
+        "decision": "allow",
+        "reason_code": "stated_period_contradicts_missing_argument"
+       }
+      ],
+      "compile_outcomes": [],
+      "result_shape": "scalar",
+      "requirement_counts": {
+       "compiled": 2,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT COUNT(DISTINCT B.MEMBER_NO) AS MEMBER_COUNT\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND EXISTS (SELECT 1 FROM CRM_SL_ORDERDETAILMALL OD LEFT JOIN CRM_CM_PRODUCT OD_PRODUCT ON OD.PRODUCT_ID = OD_PRODUCT.PRODUCT_ID WHERE OD.MEMBER_NO = B.MEMBER_NO AND OD.ORDER_DATE >= CONVERT(CHAR(8), DATEADD(DAY, -30, GETDATE()), 112))"
+     }
+    },
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 31.9,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_d911841534fe75f30f35",
+      "execution_fingerprint": "exe_0a4dd3266dea4d5d4dcc",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [
+       {
+        "policy_id": "period_binding",
+        "decision": "allow",
+        "reason_code": "stated_period_contradicts_missing_argument"
+       }
+      ],
+      "compile_outcomes": [],
+      "result_shape": "scalar",
+      "requirement_counts": {
+       "compiled": 2,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT COUNT(DISTINCT B.MEMBER_NO) AS MEMBER_COUNT\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND EXISTS (SELECT 1 FROM CRM_SL_ORDERDETAILMALL OD LEFT JOIN CRM_CM_PRODUCT OD_PRODUCT ON OD.PRODUCT_ID = OD_PRODUCT.PRODUCT_ID WHERE OD.MEMBER_NO = B.MEMBER_NO AND OD.ORDER_DATE >= CONVERT(CHAR(8), DATEADD(DAY, -30, GETDATE()), 112))"
+     }
+    }
+   ],
+   "note": "분석 의도(COUNT 출력 계약). 이력 감사 16종 #4 와 동일. 2026-08-06: 물리 테이블 하나 대신 **의미 계약**으로 잰다 — expected_result_shape=scalar 가 '회원 목록을 답인 척 내보내지 않는다'를 직접 고정하고, 구매 증거는 헤더/상세 대안 묶음이다. '최근'과 '30일'이 하나의 시간 절이라는 판정(temporal_clause)이 없던 동안 이 항목은 missing_argument(period)로 닫혔다."
+  },
+  {
+   "id": 16,
+   "prompt": "이번 달 기준 골드 등급 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_9a11c8bed3a0f878dc2d",
+    "sem_9a11c8bed3a0f878dc2d"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 21.5,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_9a11c8bed3a0f878dc2d",
+      "execution_fingerprint": "exe_4f3ce2a803c856c0aa35",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '20260801~20260831 회원 월별 스냅샷 있음' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND EXISTS (SELECT 1 FROM CRM_MB_MONTHCRMINFO MS WHERE MS.MEMBER_NO = B.MEMBER_NO AND (MS.YYYYMM >= '202608' AND MS.YYYYMM < '202609') AND (MS.ZTS_GRADE = 'MEM_GRADE_CD.GOLD'))"
+     }
+    },
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 18.3,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_9a11c8bed3a0f878dc2d",
+      "execution_fingerprint": "exe_4f3ce2a803c856c0aa35",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '20260801~20260831 회원 월별 스냅샷 있음' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND EXISTS (SELECT 1 FROM CRM_MB_MONTHCRMINFO MS WHERE MS.MEMBER_NO = B.MEMBER_NO AND (MS.YYYYMM >= '202608' AND MS.YYYYMM < '202609') AND (MS.ZTS_GRADE = 'MEM_GRADE_CD.GOLD'))"
+     }
+    }
+   ],
+   "note": "정책 충돌을 **정책 쪽으로** 정리한 항목이다(2026-08-06). 이전 기대(unsupported)는 적재 구간 밖 조건을 막던 시절의 것이고, 지금 런타임 정책은 semantic_capabilities.data_availability_policy='advise' 다 — 적재가 얕아 결과가 0건인 것은 정직한 답이고 SQL 자체는 틀리지 않는다는 판정이다(차단 기준은 '행이 나오는가'가 아니라 'SQL 이 틀리는가'). 정책이 'block' 으로 바뀌면 이 기대도 함께 바뀐다. required_clauses 는 뗐다 — 스냅샷 테이블 이름 하나를 정답으로 삼으면 §5 를 어긴다."
+  },
+  {
+   "id": 19,
+   "prompt": "직전 등급이 골드였던 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_3c9c7b3694b009dfc144",
+    "sem_3c9c7b3694b009dfc144"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 23.2,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_3c9c7b3694b009dfc144",
+      "execution_fingerprint": "exe_d3e5a886781d5e59920d",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '20260701~20260731 회원 월별 스냅샷 있음' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND EXISTS (SELECT 1 FROM CRM_MB_MONTHCRMINFO MS WHERE MS.MEMBER_NO = B.MEMBER_NO AND (MS.YYYYMM >= '202607' AND MS.YYYYMM < '202608') AND (MS.ZTS_GRADE = 'MEM_GRADE_CD.GOLD'))"
+     }
+    },
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 29.1,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_3c9c7b3694b009dfc144",
+      "execution_fingerprint": "exe_d3e5a886781d5e59920d",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '20260701~20260731 회원 월별 스냅샷 있음' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND EXISTS (SELECT 1 FROM CRM_MB_MONTHCRMINFO MS WHERE MS.MEMBER_NO = B.MEMBER_NO AND (MS.YYYYMM >= '202607' AND MS.YYYYMM < '202608') AND (MS.ZTS_GRADE = 'MEM_GRADE_CD.GOLD'))"
+     }
+    }
+   ],
+   "note": "정답은 물리 컬럼 이름이 아니라 **의미**다(§5): '직전 기준 기간의 회원 등급이 GOLD'. 물리 구현은 PREV_* 컬럼일 수도, 직전 월 스냅샷 조인일 수도 있고 그 선택은 lowering 과 카탈로그가 한다 — 그래서 조각은 대안 묶음이고 expected_ir 이 실제 계약이다. 이 의미가 IR/SQL 어디에도 없으면 커버리지 게이트가 partial_sql 로 막는다. 2026-08-06 실측: 직전 월 스냅샷(CRM_MB_MONTHCRMINFO.YYYYMM >= '202607' AND < '202608' AND ZTS_GRADE = 'MEM_GRADE_CD.GOLD')으로 컴파일돼 SQL 이 나왔다 — 이전 기대(unsupported)는 PREV_* 컬럼 하나를 정답으로 삼던 시절의 것이다. 적재는 201701 한 달뿐이라 결과는 0건이고, 그것은 data_availability_policy='advise' 아래에서 정직한 답이다. 이전 기록: #17 과 **같은 게이트**에 막힌다(source_semantics.member_state_history 의무가 영수증을 받을 수 있는 종류가 아니다). '폐기된 것은 이 뜻이 아니라 그 뜻을 만들던 중간표현'이라는 이전 선언은 오프라인 컴파일만 근거로 삼은 것이라 지운다 — 오프라인에서 Event IR 이 SQL 조각을 만들어 보이는 것과 종단 파이프라인이 SQL 을 출고하는 것은 다른 사실이다. 재현 2026-08-05(in-process 종단 3회): is_success=False 3/3 · failure_reason=semantic_ir_unsupported 3/3 · SQL 0건 · PREV_ 컬럼 0건 · 미해소 의무 kind=member_state_history 3/3. 되살리는 선행 조건은 #17 과 같다(의무 해소 경로 신설)."
+  },
+  {
+   "id": 71,
+   "prompt": "어제 하루 동안 구매한 회원 수를 알려줘.",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_96d9eb61e4c3b8c0d542",
+    "sem_96d9eb61e4c3b8c0d542"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 24.9,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_96d9eb61e4c3b8c0d542",
+      "execution_fingerprint": "exe_5f0f6990a5f5444e91d4",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "scalar",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT COUNT(DISTINCT B.MEMBER_NO) AS MEMBER_COUNT\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND EXISTS (SELECT 1 FROM CRM_SL_ORDERHEADERMALL EO WHERE EO.MEMBER_NO = B.MEMBER_NO AND EO.ORDER_DATE >= '20260805' AND EO.ORDER_DATE < '20260806')"
+     }
+    },
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 22.6,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_96d9eb61e4c3b8c0d542",
+      "execution_fingerprint": "exe_5f0f6990a5f5444e91d4",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "scalar",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT COUNT(DISTINCT B.MEMBER_NO) AS MEMBER_COUNT\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND EXISTS (SELECT 1 FROM CRM_SL_ORDERHEADERMALL EO WHERE EO.MEMBER_NO = B.MEMBER_NO AND EO.ORDER_DATE >= '20260805' AND EO.ORDER_DATE < '20260806')"
+     }
+    }
+   ],
+   "note": "회원 **수** 요청이다. 2026-08-06 이전에는 오디언스 필터만 컴파일하고 스칼라 투영 단계가 없어 intent_sql_contract_failed 로 닫혔다(회원 목록 SQL 을 성공 처리하지 않은 것은 옳았고, 없던 것은 형태를 만드는 단계였다). result_shape 를 canonical 계약으로 올리고 Projection/Aggregation Plan 을 컴파일 순서에 넣어 COUNT(DISTINCT MEMBER_NO) 로 귀결한다. expected_result_shape 가 '목록을 답인 척 내보내지 않는다'를 직접 고정한다."
+  },
+  {
+   "id": 78,
+   "prompt": "최근 5일 동안 캠페인 발송 성공 횟수가 3회 이상인 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_7e72931d3e992ac9e59e",
+    "sem_7e72931d3e992ac9e59e"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 36.0,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_7e72931d3e992ac9e59e",
+      "execution_fingerprint": "exe_b21ae7a1ad1ea406a553",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [
+       {
+        "policy_id": "period_binding",
+        "decision": "allow",
+        "reason_code": "stated_period_contradicts_missing_argument"
+       }
+      ],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 2,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '최근 5일 캠페인 발송 성공 count >= 3' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND B.MEMBER_NO IN (SELECT TRY_CAST(M.MBR_NO AS BIGINT) FROM Z_CAMP_MBR M INNER JOIN Z_CAMPAIGN ZC ON ZC.CAMP_ID = M.CAMP_ID AND ZC.CAMP_EXEC_NO = M.CAMP_EXEC_NO WHERE M.CELL_TYPE_CD = 'T' AND M.CONTAC_SUCC_YN = 'Y' AND ISNULL(ZC.CANCEL_YN, 'N') = 'N' AND ZC.CAMP_SDATE >= CONVERT(CHAR(8), DATEADD(DAY, -5, GETDATE()), 112) AND TRY_CAST(M.MBR_NO AS BIGINT) IS NOT NULL GROUP BY TRY_CAST(M.MBR_NO AS BIGINT) HAVING COUNT(DISTINCT CONCAT(M.CAMP_ID, ':', M.CAMP_EXEC_NO)) >= 3)"
+     }
+    },
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 23.1,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_7e72931d3e992ac9e59e",
+      "execution_fingerprint": "exe_b21ae7a1ad1ea406a553",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [
+       {
+        "policy_id": "period_binding",
+        "decision": "allow",
+        "reason_code": "stated_period_contradicts_missing_argument"
+       }
+      ],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 2,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '최근 5일 캠페인 발송 성공 count >= 3' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND B.MEMBER_NO IN (SELECT TRY_CAST(M.MBR_NO AS BIGINT) FROM Z_CAMP_MBR M INNER JOIN Z_CAMPAIGN ZC ON ZC.CAMP_ID = M.CAMP_ID AND ZC.CAMP_EXEC_NO = M.CAMP_EXEC_NO WHERE M.CELL_TYPE_CD = 'T' AND M.CONTAC_SUCC_YN = 'Y' AND ISNULL(ZC.CANCEL_YN, 'N') = 'N' AND ZC.CAMP_SDATE >= CONVERT(CHAR(8), DATEADD(DAY, -5, GETDATE()), 112) AND TRY_CAST(M.MBR_NO AS BIGINT) IS NOT NULL GROUP BY TRY_CAST(M.MBR_NO AS BIGINT) HAVING COUNT(DISTINCT CONCAT(M.CAMP_ID, ':', M.CAMP_EXEC_NO)) >= 3)"
+     }
+    }
+   ],
+   "note": "#5 의 기간 명시형. 맨 '최근'은 기본 창을 지어내지 않고 되묻는 것이 확정 정책이므로(tests/test_retired_axes_fail_close.py::test_bare_recent_campaign_count_without_a_default_window_remains_blocked) #5 를 고치지 않고 별도 항목으로 둔다. 기간은 2026-08-04 사용자 지정 5일. required_clauses 는 접촉 팩트 경로(Event IR Z_CAMP_MBR.CONTAC_SUCC_YN / 슬롯 MCS_CAMP_MBR_RSPN_FT.CNCT_SCS_YN)에 중립이도록 창 컬럼과 집계만 고정한다 — 창이 조용히 사라진 SQL 은 가짜 성공이다. 2026-08-04 실측: sql_template:event_expression 이 상관 스칼라 서브쿼리 (SELECT COUNT(DISTINCT ...) ... AND ZC.CAMP_SDATE >= DATEADD(DAY,-5,GETDATE())) >= 3 으로 컴파일한다. 최초 선언은 'HAVING' 이었는데 이 컴파일러는 GROUP BY/HAVING 을 쓰지 않아 **정상 SQL 이 partial_sql 로 강등**됐다 — 선언이 못 하는 것을 적으면 가드가 아니라 가짜 회귀 장치가 된다."
+  }
+ ]
+}

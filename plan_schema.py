@@ -157,6 +157,14 @@ _DERIVED = _keys(DERIVED, {
     # 없어졌다. 파생 키로 남겨 두면 스냅샷·감사가 "있다가 비었다"를 계속 구분하려 든다.
     "semantic_ir_reconciliation": "그 계층과 실행 플랜의 대조 결과",
     "literal_bindings": "원문 값 원자 봉인",
+    # ── 의미 완전성 계층(2026-08-06) ─────────────────────────────────────────────
+    # 넷 다 '해석의 결과'다. 사용자가 말한 적 없고, 조건이 바뀌면 따라 바뀐다.
+    "policy_decisions": "정책 결정 영수증(policy_id/version/decision/reason_code)",
+    "semantic_requirements_ledger": "의미 요구사항 원장(요구별 terminal disposition)",
+    "result_shape": "요청된 결과 형태(entity_list | scalar | grouped_table …)",
+    "compile_outcomes": "컴파일 단계별 총체적 귀결(candidate | unsupported | failure)",
+    "semantic_fingerprint": "의미 지문(같은 뜻이면 같은 값)",
+    "execution_fingerprint": "실행 지문(모델·스키마·정책·기준시각)",
     # ``relational_ir``(속성 이력 조건의 차단 판정)은 2026-08-05 폐기됐다 — 그 리졸버가 사라졌다.
 })
 

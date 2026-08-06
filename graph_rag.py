@@ -50,7 +50,14 @@ import query_pipeline
 import semantic_outcome
 import semantic_verification_receipts
 from semantic_normalizers import decimal_sql_text, exact_decimal
+import compile_outcome
+import coverage_gate
+import event_ir_diagnostics
+import execution_assets
+import result_shape
+import semantic_fingerprint
 import targeting_domain
+import targeting_policy
 import plan_semantic_ast
 import purchase_lexicon
 import reference_time
@@ -3255,6 +3262,13 @@ def _coerce_llm_query_plan_candidate(
         plan[default_period_policy.DEFAULT_PERIOD_KEY] = copy.deepcopy(
             applied_default_period
         )
+    # 정책 결정 영수증도 함께 나른다 — 떨어뜨리면 "왜 이 귀결인가"의 근거가 구조화 단계에서 끊긴다.
+    _decisions = candidate.get(targeting_policy.POLICY_DECISIONS_KEY)
+    if isinstance(_decisions, list) and _decisions:
+        plan[targeting_policy.POLICY_DECISIONS_KEY] = [
+            *(plan.get(targeting_policy.POLICY_DECISIONS_KEY) or []),
+            *copy.deepcopy(_decisions),
+        ]
     if isinstance(semantic_ir, dict) and isinstance(literal_bindings, list):
         projection = validate_semantic_ir(semantic_ir, literal_bindings, payload=plan)
         if projection["operations"]:
@@ -5847,21 +5861,23 @@ def retrieve(
             llm_model=llm_model,
             query_structurer=query_structurer,
         )
-        # 기간 없는 '최근'의 기본값은 **호출 계층 정책**이다. 설정되지 않은 배포에서는 이
-        # 호출이 무동작이고 구조화기의 fail-close(missing_argument(period))가 그대로 결말이다.
-        campaign_query_plan = default_period_policy.apply_default_period(
-            campaign_query_plan,
-            query=targeting_prompt,
-            current_date=context.current_date,
-            period=default_period_policy.resolve_default_period(),
-            restructure=lambda instruction: _structure_campaign_query_plan_v4(
-                targeting_prompt,
-                context,
-                llm_model,
-                query_structurer,
-                extra_instruction=instruction,
-            ),
+        # 기간 결핍 신고를 다루는 순서는 **교정 → 기본값**이다. (1) 원문이 이미 말한 기간을
+        # 결핍으로 신고했다면 그 신고가 원문과 모순이므로 애플리케이션이 아는 값으로 한 번 다시
+        # 세우고, (2) 정말 말하지 않은 기간만 배포 설정의 기본값 정책이 이어받는다. 순서가
+        # 반대이거나 (1)이 없으면 '최근 30일'이 '최근' 하나 때문에 되묻기로 닫힌다(#14·#78 실측).
+        _restructure = lambda instruction: _structure_campaign_query_plan_v4(  # noqa: E731
+            targeting_prompt, context, llm_model, query_structurer, extra_instruction=instruction
+        )
+        campaign_query_plan = targeting_policy.resolve_stated_period(
+            campaign_query_plan, query=targeting_prompt, current_date=context.current_date,
+            restructure=_restructure, requirement_key=AUDIENCE_REQUIREMENT_KEY,
+            missing_period_issues=default_period_policy.missing_period_issues,
             write_log=_write_rag_llm_log,
+        )
+        campaign_query_plan = default_period_policy.apply_default_period(
+            campaign_query_plan, query=targeting_prompt, current_date=context.current_date,
+            period=default_period_policy.resolve_default_period(),
+            restructure=_restructure, write_log=_write_rag_llm_log,
         )
         campaign_plan_structured = True
         timings_ms["query_structuring"] = _elapsed_ms(structuring_started_at)
@@ -6506,10 +6522,21 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
             "의미 검증기 설정과 연결 상태를 확인한 뒤 다시 시도해 주세요."
         )
 
+    if reason in {"partial_sql", "untraceable_compiled_requirement"}:
+        _verdict = (sql_result.get("coverage_gate") or {}).get("verdict") or {}
+        return failure_messages.partial_sql_message(
+            _verdict.get("missing_canonical_kinds"), sql_result.get("clarification_questions")
+        )
+
     if unsupported_labels:
         # 요청 조건 중 실DB 타겟 추출로 아직 매핑되지 않은 것(관심사·행동·가격민감도 등)이 원인.
         return ("요청하신 조건 중 다음은 아직 실DB 타겟 추출로 지원되지 않아 검증 SQL을 만들지 못했습니다: "
                 + ", ".join(unsupported_labels) + f". 지원되는 조건({_supported_condition_hint()})으로 바꾸거나 조합해 주세요.")
+
+    if isinstance(reason, str) and ":" in reason and compile_outcome.blocking_outcome(query_plan):
+        return failure_messages.compile_outcome_message(
+            compile_outcome.blocking_outcome(query_plan),
+            query_plan.get("unresolved_source_conditions"))
 
     if reason in ("no_sql_candidates", "recognized_domain_unsupported"):
         recognized = _recognized_domains(query_plan)
@@ -6699,6 +6726,7 @@ def build_recommendation_api_response(
         "literal_binding_advisories": sql_result.get("literal_binding_advisories", []),
         # 적재 부족 고지(비차단 자문): SQL 은 의미대로 나갔지만 실적재가 얕아 0건일 수 있는 조건.
         "data_availability_advisories": sql_result.get("data_availability_advisories", []),
+        **coverage_gate.response_fields(query_plan, sql_result),  # 의미 완전성 계층(§1·§2·§4·§6·§9)
     }
     if message_generation is not None:
         response.update(
@@ -9776,6 +9804,10 @@ def build_sql_result(
         _active_policy_filter = active_member_filter(original_query or query, path=DEFAULT_MEMBER_TARGET_FILTERS_PATH)
         if _active_policy_filter is not None:
             query_plan["member_policy"] = {"appliedPolicyFilters": [_active_policy_filter]}
+    # 결과 형태는 canonical 계약이다 — 되묻기·미지원으로 일찍 닫히는 경로에서도 응답이 형태를
+    # 들고 있어야 하므로 게이트보다 **먼저** 확정한다.
+    _shape = result_shape.resolve_result_shape(query_plan, query=original_query or query)
+    result_shape.write_result_shape(query_plan, _shape)
     semantic_ir_block = _semantic_ir_blocking_sql_result(query_plan)
     if semantic_ir_block is not None:
         return semantic_ir_block
@@ -10260,6 +10292,19 @@ def build_sql_result(
             # 원인을 구분해 둬야 안내 문구도, 다음에 무엇을 구현해야 하는지도 정확해진다.
             failure_reason = "recognized_domain_unsupported"
 
+    # "후보가 0개다"는 사유가 아니라 증상이다(§6). 어느 단계에서 무엇이 실패했는지 아는 컴파일
+    # 귀결 원장이 있으면 그것이 사유다. 위의 승격 규칙들이 거친 코드를 입력으로 보므로 마지막에
+    # 굳힌다. 아무 귀결도 없다면 그 침묵 자체가 좌표다 — 원문이 지목한 실행 자산과 함께 이름을 붙인다.
+    if failure_reason == "no_sql_candidates":
+        compile_outcome.record_silent_absence(
+            query_plan,
+            recognized_symbols=[
+                item.symbol for item in execution_assets.assets_for_text(original_query or query)
+            ],
+            audience_expression_present=_plan_event_expression(query_plan) is not None,
+        )
+        failure_reason = compile_outcome.failure_reason(query_plan, "no_sql_candidates")
+
     # 최종 SQL↔원문 의미 검증 게이트: plan 을 신뢰하는 결정론 검증(coverage/intent_scope)과 달리, 원문 NL 과
     # SQL 을 직접 대조해 정규식 파서의 조용한 드롭·의미 반전(예: '구매 이력이 없는'을 EXISTS 구매로 뒤집음)을
     # 잡는다. 불일치를 확신해 status=fail이면 틀린 SQL을 조용히 출고하는 대신 clarification으로 전환한다.
@@ -10268,7 +10313,11 @@ def build_sql_result(
     clarification_questions: list[str] = []
     # 의미 검증에서 차단돼 출고(sql=None)되지 않더라도, "무엇이 생성됐는지" 확인용으로 원본 SQL 을 보존한다.
     # 실행은 sql(=None)로만 하므로 blocked_sql 은 화면 표시 전용 — 차단된 SQL 이 자동 실행되는 일은 없다.
-    blocked_sql: str | None = None
+    # 검증에서 탈락한 후보의 SQL 도 보존한다. 이 자리가 의미 검증 차단에서만 채워지던 동안은
+    # "집계 검증이 무엇을 보고 막았나"에 응답이 답하지 못했다(§10).
+    blocked_sql: str | None = (
+        selected.get("sql") if selected is not None and not selected.get("is_eligible") else None
+    )
     sql_result_requirements: list[dict[str, Any]] = []  # 공통 requirement 회계 결과(트레이스·디버깅 노출)
     delivery_validation: dict[str, Any] = (
         dict(selected.get("delivery_validation") or {}) if selected else {"is_satisfied": False}
@@ -10438,11 +10487,38 @@ def build_sql_result(
     # LLM 의미 검증(_verify_sql_semantics)과 source requirement 검증이 담당한다.
     semantic_validation_v2: dict[str, Any] = {"ran": False}
 
+    # 요구 커버리지 게이트(§1·§8): 미해결 의미 요구가 하나라도 있으면 그 SQL 은 **부분 SQL**
+    # 이고 HTTP 성공으로 나가지 않는다. 판정 근거는 차단하지 않을 때도 응답에 남는다.
+    coverage_gate_result: dict[str, Any] = {"ran": False}
+    if selected_sql is not None:
+        coverage_gate_result, gate_block = coverage_gate.evaluate_for_plan(
+            query_plan, query=original_query or query, sql=selected_sql,
+            expression=_plan_event_expression(query_plan),
+            shape=result_shape.read_result_shape(query_plan),
+            accounted_requirements=sql_result_requirements,
+            dialect=target_dialect or _member_dialect().name,
+        )
+        if gate_block is not None:
+            failure_reason = gate_block["failure_reason"]
+            clarification_questions = _unique_strings(
+                [*clarification_questions, *gate_block["clarification_questions"]]
+            )
+            blocked_sql, selected_sql = selected_sql, None
+            target_connection = target_dialect = None
+
     # 신뢰도는 모든 의미/스키마/집계 검증이 끝난 뒤 최종 상태로 보정한다. 중간 후보 점수가 높았어도
     # SQL이 차단됐으면 높음으로 노출하지 않는다.
     if selected_sql is None:
         confidence = _failed_sql_confidence(failure_reason)
 
+    # 지문 두 축(§9). 재료 조립은 semantic_fingerprint 가 소유한다 — 호출자가 고르면 지문
+    # 정의가 호출자 수만큼 갈라지고, 그 순간 "같은 뜻이면 같은 지문"이 성립하지 않는다.
+    semantic_fingerprint.write_request_fingerprints(
+        query_plan, prompt=original_query or query, llm_model=llm_model,
+        schema_path=schema_path, reference_time=reference_date,
+        timezone=os.getenv("GRAPH_RAG_TIMEZONE", "Asia/Seoul"),
+        compiler_version=str(getattr(event_ir, "SCHEMA_VERSION", "")) or None,
+    )
     # SQL 후보 생성·검증 전체 과정에서도 최초 원문 요구 스냅샷이 건드려지지 않았음을 마지막에 확인한다.
     semantic_requirements.verify_source_requirements(query_plan)
     if isinstance(query_plan, CampaignQueryPlanV4):
@@ -10488,6 +10564,8 @@ def build_sql_result(
         # QueryIntent의 기대 결과 shape·집계 함수·지표 컬럼·랭킹 방향/TOP 1 계약 검증.
         "intent_sql_contract": (selected or {}).get("intent_sql_contract", {"ran": False}),
         "metric_profile_validation": (selected or {}).get("metric_profile_validation", {"ran": False, "valid": True}),
+        # 요구 커버리지 게이트: 원장 · provenance · 판정. ran=False 면 SQL 이 없어 안 돌았다는 뜻.
+        "coverage_gate": coverage_gate_result,
         # 쿼리 성능 튜닝 자문(비차단): {findings, recommended_indexes}. 출고 SQL 이 없으면 빈 결과.
         "query_tuning": query_tuning,
         # ③ 결정론 드롭 진단: 원문 신호가 plan 에 안 잡힌 조건 목록(존재하면 SQL 출고 차단).
@@ -13039,29 +13117,8 @@ def _event_expression_declares_member_state(
     )
 
 
-def _record_event_ir_unresolved(
-    query_plan: dict[str, Any], *, stage: str, code: str, reason: str
-) -> None:
-    """Event IR 컴파일 실패의 **좌표**를 플랜에 남긴다(중복 append 는 하지 않는다).
-
-    빌더 안에서 실패하든 진입 가드에서 걸리든 항목 모양이 같아야 한다. 모양이 두 벌이면
-    진단 좌표가 경로마다 달라지고, 그때 "어디서 막혔는가"는 다시 추측이 된다.
-    """
-    unresolved = query_plan.setdefault("unresolved_source_conditions", [])
-    item = {
-        "path": f"plan.{EVENT_EXPRESSION_KEY}",
-        "condition": EVENT_EXPRESSION_KEY,
-        "reason": reason,
-        # 단계는 파이프라인의 어디인지를, 코드는 무엇이 실패했는지를 말한다. 코드가 없으면
-        # plan_validation._marker 가 위 한국어 **문장**을 정규화해 issue code 로 승격한다
-        # (닫힌 집합 밖의 코드가 사용자 문구까지 흘러간다).
-        "stage": stage,
-        "code": code,
-        "source": "event_ir",
-        "status": "unresolved",
-    }
-    if item not in unresolved:
-        unresolved.append(item)
+# 실패 좌표 기록의 소유자는 :mod:`event_ir_diagnostics` 다(빌더·게이트가 같은 모양을 쓴다).
+_record_event_ir_unresolved = event_ir_diagnostics.record_unresolved
 
 
 def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str, Any] | None:
@@ -13096,20 +13153,20 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
             if aggregate_parser_config.rules().messages.has(reason)
             else "이벤트 조건의 분기 의미를 확정할 수 없습니다. 조건을 분리해서 입력해 주세요."
         )
-        query_plan["unsupported"] = {
-            "reason": reason,
-            "message": text,
-            "clarification": text,
-        }
+        event_ir_diagnostics.record_unsupported(
+            query_plan, stage=compile_outcome.STAGE_SEMANTIC_LOWERING,
+            code=str(reason), message=text, clarification=text,
+        )
         return None
 
     capability = query_plan.get("event_compiler_capability") or {}
     if capability.get("status") != event_compiler.CAPABILITY_SUPPORTED:
-        query_plan["unsupported"] = {
-            "reason": "event_compiler_" + str(capability.get("status") or "unsupported"),
-            "message": "이벤트 의미는 일관되지만 일부 조건을 현재 SQL 컴파일러가 지원하지 않습니다.",
-            "clarification": "지원되지 않은 이벤트 범위나 필터를 제거하거나 조건을 나눠 입력해 주세요.",
-        }
+        event_ir_diagnostics.record_unsupported(
+            query_plan, stage=compile_outcome.STAGE_CAPABILITY,
+            code="event_compiler_" + str(capability.get("status") or "unsupported"),
+            message="이벤트 의미는 일관되지만 일부 조건을 현재 SQL 컴파일러가 지원하지 않습니다.",
+            clarification="지원되지 않은 이벤트 범위나 필터를 제거하거나 조건을 나눠 입력해 주세요.",
+        )
         return None
 
     # 술어 SQL 은 계층 파이프라인을 **통과해서** 나온다: 저장된 payload → 검증된
@@ -13158,17 +13215,28 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
         if isinstance(query_plan.get("output_contract"), Mapping)
         else {}
     )
-    select_columns = ["DISTINCT " + _member_key_select()]
-    if output_contract.get("member_id_only") is not True:
-        select_columns.append(_member_grade_select())
-        labels = list(compiled["labels"]) + [_event_expression_label(expression)]
-        select_columns.append(
-            _sql_quote(",".join(label for label in labels if label))
-            + " AS segment_label"
-        )
-        objective = query_plan.get("campaign_constraints", {}).get("objective")
-        if objective:
-            select_columns.append(_sql_quote(objective) + " AS objective")
+    # 결과 형태는 SQL 생성 **뒤의** 선택지가 아니라 컴파일 순서의 한 단계다:
+    # Audience Filter IR → Relational Plan → Projection/Aggregation Plan → SQL.
+    # 투영을 걸지 못한 채 형태를 요구한 SQL 은 출고 전 커버리지 게이트가 막는다 — 판정자를
+    # 여기 하나 더 두면 같은 사실에 답이 둘이 된다.
+    projection = result_shape.plan_projection(
+        result_shape.resolve_result_shape(query_plan),
+        entity_expression=f"{_member_alias()}.{_member_key_column()}",
+    )
+    if projection.applied:
+        select_columns = list(projection.select_columns)
+    else:
+        select_columns = ["DISTINCT " + _member_key_select()]
+        if output_contract.get("member_id_only") is not True:
+            select_columns.append(_member_grade_select())
+            labels = list(compiled["labels"]) + [_event_expression_label(expression)]
+            select_columns.append(
+                _sql_quote(",".join(label for label in labels if label))
+                + " AS segment_label"
+            )
+            objective = query_plan.get("campaign_constraints", {}).get("objective")
+            if objective:
+                select_columns.append(_sql_quote(objective) + " AS objective")
 
     sql = "\n".join(
         [

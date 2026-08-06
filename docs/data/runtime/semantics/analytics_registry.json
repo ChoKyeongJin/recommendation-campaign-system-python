@@ -14,7 +14,9 @@
       "alias": "OH",
       "join": "{alias}.MEMBER_NO = {member}",
       "dateColumn": "ORDER_DATE",
-      "hostTables": ["CRM_MB_BASEINFO"]
+      "hostTables": ["CRM_MB_BASEINFO"],
+      "equivalentTablesNote": "같은 도메인 의미('이 회원은 구매했다')의 다른 물리 구현. 주문 헤더와 주문 상세는 회원의 구매 사실을 동등하게 증명하고, 어느 쪽으로 낮출지는 lowering 이 정한다. 이 선언이 없으면 계약 검증이 '의미'가 아니라 '테이블 이름 하나'를 정답으로 삼아 정상 SQL 을 막는다(2026-08-06 실측: Event IR 이 purchase_line 으로 낮춘 회원수 질의가 MISSING_SCOPE_PREDICATE 로 차단됐다).",
+      "equivalentTables": ["CRM_SL_ORDERDETAILMALL"]
     },
     {
       "id": "login",

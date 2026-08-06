@@ -1,0 +1,20 @@
+[ 2]~unsupported    regression   semantic_ir_unsupported                        최근 3개월 내 주문한 적은 있지만 최근 30일간 구매가 없는 회원
+[ 5] clarification  match        semantic_ir_needs_clarification                최근 캠페인 발송 성공 횟수가 3회 이상인 회원
+[14] sql            match                                                       최근 30일 구매한 회원 수를 알려줘
+[16] sql            match                                                       이번 달 기준 골드 등급 회원
+[19] sql            match                                                       직전 등급이 골드였던 회원
+[71] sql            match                                                       어제 하루 동안 구매한 회원 수를 알려줘.
+[78] sql            match                                                       최근 5일 동안 캠페인 발송 성공 횟수가 3회 이상인 회원
+
+========================================================================
+귀결: sql 5 / unsupported 1 / clarification 1 / failure 0 / error 0
+판정: match 6 / improvement 0 / regression 1 / unknown 0
+
+레인(어느 컴파일러가 SQL 을 냈나):
+    6건  sql_template:event_expression  [2, 14, 16, 19, 71, 78]
+방출 편차(반복 간 귀결 불일치): [2]
+의미 편차(반복 간 semantic fingerprint 불일치): [14]
+회귀: [2]
+
+실측 기준선 대비 변화 없음
+결과 저장: /app/artifacts/measure/determinism.json

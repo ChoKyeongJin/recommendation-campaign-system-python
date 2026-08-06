@@ -1,0 +1,218 @@
+........................................................................ [  2%]
+.............................................................FF......... [  4%]
+........................................................................ [  6%]
+........................................................................ [  9%]
+........................................................................ [ 11%]
+........................................................................ [ 13%]
+..................................................................s..... [ 15%]
+........................................................................ [ 18%]
+........................................................................ [ 20%]
+........................................................................ [ 22%]
+........................................................................ [ 25%]
+........................................................................ [ 27%]
+........................................................................ [ 29%]
+........................................................................ [ 31%]
+........................................................................ [ 34%]
+........................................................................ [ 36%]
+........................................................................ [ 38%]
+........................................................................ [ 41%]
+........................................................................ [ 43%]
+........................................................................ [ 45%]
+........sssssssssssssssssss............................................. [ 47%]
+........................................................................ [ 50%]
+........................................................................ [ 52%]
+........................................................................ [ 54%]
+.........sssssss........................................................ [ 56%]
+........................................................................ [ 59%]
+..........................FF............................................ [ 61%]
+........................................................................ [ 63%]
+........................................................................ [ 66%]
+........................................................................ [ 68%]
+........................................................................ [ 70%]
+........................................................................ [ 72%]
+...............ss....................................................... [ 75%]
+........................................................................ [ 77%]
+........................................................................ [ 79%]
+.F...................................................................... [ 82%]
+........................................................................ [ 84%]
+........................................................................ [ 86%]
+........................................................................ [ 88%]
+........................................................................ [ 91%]
+........................................................................ [ 93%]
+........................................................................ [ 95%]
+........................................................................ [ 97%]
+................................................................         [100%]
+=================================== FAILURES ===================================
+_ test_multiply_by_is_decimal_internally_and_uses_the_exact_wire_projection[0.1-expected0-0.1] _
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-20/test_multiply_by_is_decimal_in0')
+raw = 0.1, expected = Decimal('0.1'), wire_value = '0.1'
+
+    @pytest.mark.parametrize(
+        ("raw", "expected", "wire_value"),
+        [
+            (0.1, Decimal("0.1"), "0.1"),
+            ("0.1", Decimal("0.1"), "0.1"),
+            (100, Decimal("100"), 100),
+            ("100", Decimal("100"), 100),
+        ],
+    )
+    def test_multiply_by_is_decimal_internally_and_uses_the_exact_wire_projection(
+        tmp_path: Path,
+        raw: int | float | str,
+        expected: Decimal,
+        wire_value: int | str,
+    ) -> None:
+        request = _parse(_payload(raw), _schema(tmp_path))
+    
+        assert request.derived_metrics[0].multiply_by == expected
+>       assert request.to_dict()["derivedMetrics"][0]["multiplyBy"] == wire_value
+E       AssertionError: assert 0.1 == '0.1'
+
+tests/test_aggregation_decimal.py:106: AssertionError
+_ test_multiply_by_is_decimal_internally_and_uses_the_exact_wire_projection[0.1-expected1-0.1] _
+
+tmp_path = PosixPath('/tmp/pytest-of-root/pytest-20/test_multiply_by_is_decimal_in1')
+raw = '0.1', expected = Decimal('0.1'), wire_value = '0.1'
+
+    @pytest.mark.parametrize(
+        ("raw", "expected", "wire_value"),
+        [
+            (0.1, Decimal("0.1"), "0.1"),
+            ("0.1", Decimal("0.1"), "0.1"),
+            (100, Decimal("100"), 100),
+            ("100", Decimal("100"), 100),
+        ],
+    )
+    def test_multiply_by_is_decimal_internally_and_uses_the_exact_wire_projection(
+        tmp_path: Path,
+        raw: int | float | str,
+        expected: Decimal,
+        wire_value: int | str,
+    ) -> None:
+        request = _parse(_payload(raw), _schema(tmp_path))
+    
+        assert request.derived_metrics[0].multiply_by == expected
+>       assert request.to_dict()["derivedMetrics"][0]["multiplyBy"] == wire_value
+E       AssertionError: assert 0.1 == '0.1'
+
+tests/test_aggregation_decimal.py:106: AssertionError
+_ test_fractional_money_is_exact_internally_and_json_round_trips_without_float _
+
+    def test_fractional_money_is_exact_internally_and_json_round_trips_without_float() -> None:
+        money = AmountNormalizer.normalize("12,345.67원")
+    
+        assert money == Money(Decimal("12345.67"), "KRW")
+        assert money.amount == Decimal("12345.67")
+        payload = money.to_dict()
+>       assert payload == {"amount": "12345.67", "currency": "KRW"}
+E       AssertionError: assert {'amount': 12...rency': 'KRW'} == {'amount': '1...rency': 'KRW'}
+E         
+E         Omitting 1 identical items, use -vv to show
+E         Differing items:
+E         {'amount': 12345.67} != {'amount': '12345.67'}
+E         Use -v to get more diff
+
+tests/test_money_literal_bindings.py:144: AssertionError
+___ test_fractional_money_literal_uses_the_compatible_exact_json_projection ____
+
+    def test_fractional_money_literal_uses_the_compatible_exact_json_projection() -> None:
+        binding = extract_literal_bindings("12,345.67원 이상 구매한 고객")[0]
+    
+        assert binding["kind"] == "money"
+>       assert binding["value"] == "12345.67"
+E       AssertionError: assert 12345.67 == '12345.67'
+
+tests/test_money_literal_bindings.py:152: AssertionError
+_________ test_literal_kinds_values_and_exact_spans_are_characterized __________
+
+    def test_literal_kinds_values_and_exact_spans_are_characterized() -> None:
+        bindings = extract_literal_bindings(GOLDEN_QUERY, current_date=FIXED_DATE)
+    
+        assert [item["kind"] for item in bindings] == [
+            "date_window",
+            "money",
+            "comparison_operator",
+            "percentage",
+            "number_with_unit",
+            "duration",
+        ]
+        assert [item["text"] for item in bindings] == [
+            "2019년",
+            "200,000원",
+            "이상",
+            "10.5%",
+            "5건",
+            "2개월",
+        ]
+        assert [GOLDEN_QUERY[item["start"] : item["end"]] for item in bindings] == [
+            item["text"] for item in bindings
+        ]
+>       assert [item["normalized"] for item in bindings] == [
+            {
+                "from": "20190101",
+                "to": "20191231",
+                "label": "2019년",
+                "event_ir_window": {
+                    "type": "interval",
+                    "start": "2019-01-01",
+                    "end_exclusive": "2020-01-01",
+                },
+            },
+            {"amount": 200000, "currency": "KRW"},
+            ">=",
+            {"value": "10.5", "unit": "percent"},
+            {"value": 5, "surface_unit": "건", "unit": "count"},
+            {
+                "value": 2,
+                "surface_unit": "개월",
+                "semantic_unit": "months",
+                "temporal_kind": "rolling_duration",
+            },
+        ]
+E       AssertionError: assert [{'from': '20...ng_duration'}] == [{'from': '20...ng_duration'}]
+E         
+E         At index 3 diff: {'value': 10.5, 'unit': 'percent'} != {'value': '10.5', 'unit': 'percent'}
+E         Use -v to get more diff
+
+tests/test_semantic_literal_characterization.py:38: AssertionError
+=============================== warnings summary ===============================
+api.py:242
+  /app/api.py:242: PydanticDeprecatedSince20: Support for class-based `config` is deprecated, use ConfigDict instead. Deprecated in Pydantic V2.0 to be removed in V3.0. See Pydantic V2 Migration Guide at https://errors.pydantic.dev/2.13/migration/
+    class ApiBaseModel(BaseModel):
+
+../usr/local/lib/python3.12/site-packages/pydantic/_internal/_config.py:386
+  /usr/local/lib/python3.12/site-packages/pydantic/_internal/_config.py:386: UserWarning: Valid config keys have changed in V2:
+  * 'allow_population_by_field_name' has been renamed to 'validate_by_name'
+    warnings.warn(message, UserWarning)
+
+api.py:365
+  /app/api.py:365: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    @app.on_event("startup")
+
+../usr/local/lib/python3.12/site-packages/fastapi/applications.py:4681
+  /usr/local/lib/python3.12/site-packages/fastapi/applications.py:4681: DeprecationWarning: 
+          on_event is deprecated, use lifespan event handlers instead.
+  
+          Read more about it in the
+          [FastAPI docs for Lifespan Events](https://fastapi.tiangolo.com/advanced/events/).
+          
+    return self.router.on_event(event_type)  # ty: ignore[deprecated]
+
+../usr/local/lib/python3.12/site-packages/fastapi/testclient.py:1
+  /usr/local/lib/python3.12/site-packages/fastapi/testclient.py:1: StarletteDeprecationWarning: Using `httpx` with `starlette.testclient` is deprecated; install `httpx2` instead.
+    from starlette.testclient import TestClient as TestClient  # noqa
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+FAILED tests/test_aggregation_decimal.py::test_multiply_by_is_decimal_internally_and_uses_the_exact_wire_projection[0.1-expected0-0.1]
+FAILED tests/test_aggregation_decimal.py::test_multiply_by_is_decimal_internally_and_uses_the_exact_wire_projection[0.1-expected1-0.1]
+FAILED tests/test_money_literal_bindings.py::test_fractional_money_is_exact_internally_and_json_round_trips_without_float
+FAILED tests/test_money_literal_bindings.py::test_fractional_money_literal_uses_the_compatible_exact_json_projection
+FAILED tests/test_semantic_literal_characterization.py::test_literal_kinds_values_and_exact_spans_are_characterized
+5 failed, 3126 passed, 29 skipped, 5 warnings in 673.08s (0:11:13)

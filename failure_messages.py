@@ -80,6 +80,51 @@ def cause_missing_conditions(
     return conditions
 
 
+def partial_sql_message(missing_kinds: Any, questions: Any) -> str:
+    """일부 의미가 빠진 SQL 을 막았을 때의 안내.
+
+    "조건을 다시 써 보라"만으로는 사용자가 무엇을 고쳐야 할지 모른다 — **어떤 종류의 의미**가
+    빠졌는지까지 말한다. 내부 코드는 진단 필드(coverage_gate)에 그대로 남는다.
+    """
+    labels = {
+        "result_shape": "결과 형태",
+        "temporal_window": "기간",
+        "source_condition": "조건",
+    }
+    named = ", ".join(
+        labels.get(str(kind), str(kind)) for kind in (missing_kinds or ()) if kind
+    )
+    lead = (
+        f"생성된 SQL 에 요청하신 {named} 의미가 반영되지 않아 출고를 막았습니다."
+        if named
+        else "생성된 SQL 에 요청 의미 일부가 반영되지 않아 출고를 막았습니다."
+    )
+    listed = " / ".join(str(item) for item in (questions or ()) if item)
+    return lead + (f" {listed}" if listed else "")
+
+
+def compile_outcome_message(blocking: Any, unresolved: Any) -> str:
+    """조립형 사유(``<단계>:<코드>``)의 사용자 안내.
+
+    사용자에게는 코드가 아니라 **어느 의미를 못 다뤘는지**를 말한다.
+    """
+    blocking = blocking if isinstance(blocking, dict) else {}
+    honest = (
+        "요청한 조건 중 일부를 현재 실행 자산으로 표현하지 못했습니다"
+        if blocking.get("status") == "explicit_unsupported"
+        else "요청한 조건을 실DB 술어로 컴파일하지 못했습니다"
+    )
+    detail = next(
+        (
+            str(item.get("reason"))
+            for item in unresolved or ()
+            if isinstance(item, dict) and item.get("code") == blocking.get("code")
+        ),
+        "",
+    )
+    return honest + (f": {detail}" if detail else ".")
+
+
 def semantic_ir_field_label(field: str) -> str:
     for prefix in _SPAN_PREFIXES:
         if field.startswith(prefix):

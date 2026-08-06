@@ -132,12 +132,32 @@ class TemporalSpanValidator:
         *,
         as_of: date | None = None,
         scalar_literal_spans: Sequence[tuple[int, int]] = (),
+        default_period: tuple[int, str] | None = None,
     ) -> None:
         self._as_of = as_of
         # 애플리케이션 소유 계약이 **시간이 아니라 스칼라 임계값임을 증명한** 원문 구간.
         # '구매주기가 30일 이하'의 '30일' 이 그것이다 — 그 구간에 TimeFilter 가 없는 것은
         # 소실이 아니라 정상이다. 비어 있는 것이 기본이므로 기존 판정은 그대로다.
         self._scalar_literal_spans = tuple(scalar_literal_spans)
+        # 이 배포가 기간 없는 '최근'에 부여한 기본 기간(값·단위). ``None`` 이면 정책이 꺼져
+        # 있다는 뜻이고 판정은 종전과 **완전히 같다**. 값이 있으면 그 창 하나만 결핍을 메울 수
+        # 있다 — 모델이 지어낸 다른 창(30일)은 여전히 결핍이다.
+        self._default_period = default_period
+
+    def _default_windows(self, condition: Any) -> list[Any]:
+        """이 표현이 들고 있는 창 중 **배포 기본 기간과 같은 값**만(정책이 꺼져 있으면 빈 목록)."""
+        if self._default_period is None:
+            return []
+        import event_ir
+
+        value, unit = self._default_period
+        return [
+            window
+            for window in event_ir.time_windows(condition)
+            if isinstance(window, event_ir.RollingWindow)
+            and window.value == value
+            and event_ir.canonical_unit(window.unit) == unit
+        ]
 
     def validate(
         self,
@@ -172,6 +192,9 @@ class TemporalSpanValidator:
             )
 
         signed_atoms = list(event_ir.iter_signed_atoms(condition))
+        # 이 배포의 기본 기간과 **정확히 같은** 창들. 표지 하나가 하나씩만 소비하므로,
+        # 창이 조용히 사라진 표현은 여전히 결핍으로 남는다.
+        default_windows = self._default_windows(condition)
         for match in _INCOMPLETE_RECENCY_RE.finditer(query):
             covered_atom = next(
                 (
@@ -183,6 +206,16 @@ class TemporalSpanValidator:
                 None,
             )
             if covered_atom is not None and event_ir.time_windows(covered_atom):
+                # 이 표지를 덮은 원자가 스스로 창을 들고 있다. 그 창이 기본 기간과 같다면
+                # 여기서 이미 쓰인 것이므로 다른 표지가 재사용하지 못하게 뺀다.
+                for window in self._default_windows(covered_atom):
+                    if window in default_windows:
+                        default_windows.remove(window)
+                continue
+            if default_windows:
+                # 근거 구간이 이 표지를 덮지 않아도 표현은 기본 기간을 실제로 들고 있다.
+                # 모델의 evidence 배치는 신뢰할 수 없지만 **창의 존재**는 사실이다.
+                default_windows.pop()
                 continue
             issues.append(
                 issue_from_report(
@@ -238,16 +271,41 @@ def _issue_from_legacy_report(report: dict[str, Any]) -> RequirementIssue:
     )
 
 
+def configured_default_period() -> tuple[int, str] | None:
+    """이 배포가 기간 없는 '최근'에 부여한 기본 기간. 설정이 없으면 ``None``(정책 꺼짐).
+
+    값을 여기서 만들지 않고 :mod:`default_period_policy` 에 묻는 이유는 **단일 소유**다.
+    검증기가 자기 기본값을 들고 있으면 "구조화기가 채운 창"과 "검증기가 인정하는 창"이
+    서로 다른 말을 할 수 있고, 그 어긋남은 정확히 옳은 재구조화가 거부되는 모양으로 나타난다.
+    """
+    import default_period_policy  # 지연 import: 정책 모듈이 query_structurer 를 끌어온다.
+
+    period = default_period_policy.resolve_default_period()
+    return None if period is None else (period.value, period.unit)
+
+
 def audience_validators(
     *,
     as_of: date | None = None,
     scalar_literal_spans: Sequence[tuple[int, int]] = (),
+    default_period: tuple[int, str] | None = None,
 ) -> tuple[ExpressionValidator, ...]:
-    """오디언스 경로가 쓰는 검증기 묶음. **순서가 계약이다**(모듈 docstring 참조)."""
+    """오디언스 경로가 쓰는 검증기 묶음. **순서가 계약이다**(모듈 docstring 참조).
+
+    ``default_period`` 를 주지 않으면 배포 설정을 그대로 따른다 — 설정이 없는 배포에서는
+    ``None`` 이므로 판정이 종전과 같다.
+    """
+    resolved_period = (
+        default_period if default_period is not None else configured_default_period()
+    )
     return (
         CatalogSymbolValidator(),
         CompilerCapabilityValidator(as_of=as_of),
-        TemporalSpanValidator(as_of=as_of, scalar_literal_spans=scalar_literal_spans),
+        TemporalSpanValidator(
+            as_of=as_of,
+            scalar_literal_spans=scalar_literal_spans,
+            default_period=resolved_period,
+        ),
         CanonicalClaimValidator(),
     )
 
@@ -259,4 +317,5 @@ __all__ = [
     "CompilerCapabilityValidator",
     "TemporalSpanValidator",
     "audience_validators",
+    "configured_default_period",
 ]

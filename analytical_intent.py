@@ -1269,6 +1269,13 @@ def build_aggregation_request(
             # 내재(inherent) 스코프의 증거는 스코프 테이블이 아니라 소스 테이블 자체다
             # (주문 상세에서 회원을 세는 것이 곧 구매자 모집단이다).
             "targetTable": source.get("table") if binding["mode"] == "inherent" else scope.get("table"),
+            # 같은 도메인 의미의 다른 물리 구현(카탈로그 선언). 하류 검증기가 테이블 이름 하나를
+            # 정답으로 삼지 않게 하는 재료다 — 목록의 소유자는 레지스트리다.
+            "equivalentTargetTables": (
+                []
+                if binding["mode"] == "inherent"
+                else [str(item) for item in scope.get("equivalentTables") or ()]
+            ),
             "binding": binding["mode"],
             "predicateColumns": (
                 _template_columns([str(template or ""), f"{{host}}.{scope.get('dateColumn', '')}"])
@@ -1921,11 +1928,21 @@ def _check_scopes(contract: AnalyticalContract, root: exp.Expression, issues: li
                     "message": f"Population scope {scope_id} is not applied in the SQL.",
                 })
             continue
-        table = str(scope.get("table") or "").casefold()
-        if table and table not in sql_text:
+        # 증거는 **도메인 의미**이지 테이블 이름 하나가 아니다. 같은 뜻의 다른 물리 구현
+        # (주문 헤더 ↔ 주문 상세)을 카탈로그가 선언하면 그중 무엇이 나와도 그 scope 는 증명된다.
+        # 목록의 소유자는 레지스트리이고 여기서는 대조만 한다 — 코드에 테이블 이름을 적지 않는다.
+        tables = [
+            str(scope.get("table") or "").casefold(),
+            *(str(item).casefold() for item in scope.get("equivalentTables") or ()),
+        ]
+        declared = [table for table in tables if table]
+        if declared and not any(table in sql_text for table in declared):
             issues.append({
                 "code": "MISSING_SCOPE_PREDICATE",
-                "message": f"Population scope {scope_id} requires {table.upper()} evidence in the SQL.",
+                "message": (
+                    f"Population scope {scope_id} requires "
+                    f"{' or '.join(table.upper() for table in declared)} evidence in the SQL."
+                ),
             })
             continue
         if binding["negated"] and "not exists" not in sql_text and "not in" not in sql_text:

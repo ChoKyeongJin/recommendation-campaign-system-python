@@ -6,11 +6,14 @@
     "query_prompt_table": "quadmax_sdz.t_xlig_query_prompt",
     "filter": "ML_DS_DIV_CD='DS' AND DEL_F='N'"
   },
+  "value_resolution": "dynamic",
+  "value_column_convention": "DS_SQL 결과의 첫 컬럼=코드, 둘째 컬럼=이름",
   "dbms_connection_map": {
     "CRMDW": "CRMDW",
     "CRMAN": "CRMAN",
     "QUADMAX_SDZ": "quadmax_sdz"
   },
+  "dimension_count": 141,
   "dimensions": [
     {
       "dimension_id": "moon_test",

@@ -23,9 +23,30 @@ sys.path.insert(0, str(REPO_ROOT))
 sys.path.insert(0, str(REPO_ROOT / "tools"))
 
 import live_prompt_baseline as runner  # noqa: E402
+import result_shape  # noqa: E402
+import targeting_policy  # noqa: E402
 
 CORPUS_PATH = REPO_ROOT / "docs" / "data" / "test_baselines" / "live_prompts.json"
 BASELINE_PATH = REPO_ROOT / "docs" / "data" / "test_baselines" / "live_prompt_outcomes_baseline.json"
+
+
+# 코퍼스 항목이 쓸 수 있는 키. 오타 하나가 그 항목의 게이트를 조용히 끄므로 닫힌 집합이다.
+# 의미 계약 키(expected_*·policy_version)는 2026-08-06 에 열렸다 — 물리 조각 문자열만으로는
+# "이 요청이 무엇을 뜻했나"를 적을 수 없고, 그 한계가 #14·#19·#71 에서 가짜 회귀와 가짜 성공을
+# 동시에 만들었다.
+_KNOWN_ENTRY_KEYS = {
+    "id",
+    "text",
+    "expectation",
+    "note",
+    "required_clauses",
+    "expected_result_shape",
+    "expected_ir",
+    "expected_terminal_requirements",
+    "policy_version",
+}
+
+_RESULT_SHAPE_KINDS = frozenset(result_shape.KINDS)
 
 
 def _corpus() -> dict:
@@ -53,14 +74,29 @@ def test_corpus_is_well_formed() -> None:
         )
         # 러너는 항목을 entry.get(...) 으로만 읽는다. 키를 오타내면 그 항목의 게이트가
         # 조용히 꺼진 채 초록이 된다 — required_clauses 처럼 '없으면 무동작'인 필드에서 특히.
-        assert set(entry) <= {"id", "text", "expectation", "note", "required_clauses"}, (
-            f"id={entry['id']} 에 알 수 없는 키: {sorted(set(entry) - {'id', 'text', 'expectation', 'note', 'required_clauses'})}"
-        )
+        unknown = set(entry) - _KNOWN_ENTRY_KEYS
+        assert not unknown, f"id={entry['id']} 에 알 수 없는 키: {sorted(unknown)}"
         clauses = entry.get("required_clauses")
         if clauses is not None:
             assert isinstance(clauses, list) and clauses, f"id={entry['id']} 의 required_clauses 가 비었다."
-            assert all(isinstance(item, str) and item.strip() for item in clauses), (
-                f"id={entry['id']} 의 required_clauses 원소는 비지 않은 문자열이어야 한다."
+            for item in clauses:
+                # 원소는 문자열 하나이거나 **대안 묶음**이다. 같은 도메인 의미의 다른 물리
+                # 구현(주문 헤더 ↔ 주문 상세)을 하나만 정답으로 적으면, lowering 이 다른 쪽을
+                # 고른 정상 SQL 이 가짜 회귀가 된다(2026-08-06 실측 #14).
+                alternatives = item if isinstance(item, list) else [item]
+                assert alternatives and all(
+                    isinstance(alt, str) and alt.strip() for alt in alternatives
+                ), f"id={entry['id']} 의 required_clauses 원소는 문자열 또는 문자열 목록이어야 한다."
+        shape = entry.get("expected_result_shape")
+        if shape is not None:
+            assert shape in _RESULT_SHAPE_KINDS, (
+                f"id={entry['id']} 의 expected_result_shape={shape!r} 이 선언된 형태가 아니다."
+            )
+        policy_version = entry.get("policy_version")
+        if policy_version is not None:
+            assert policy_version == targeting_policy.POLICY_VERSION, (
+                f"id={entry['id']} 의 policy_version={policy_version!r} 이 현재 정책 버전"
+                f"({targeting_policy.POLICY_VERSION})과 다르다 — 기대와 런타임이 다른 정책을 본다."
             )
 
 
@@ -75,13 +111,23 @@ def test_every_prompt_declares_what_its_sql_must_contain() -> None:
     선언 원칙: 프롬프트가 요구하는 **물리 축마다 하나씩**. 같은 축 안의 다중성(한 테이블에
     창 두 개)은 문자열 포함으로 판별할 수 없으므로 적지 않는다 — 못 하는 것을 적으면
     가드가 아니라 장식이 된다.
+
+    2026-08-06: 선언은 물리 조각 **또는 의미 계약**이다. 물리 이름 하나를 정답으로 삼는 것이
+    §5 위반이자 실측된 가짜 회귀의 원인이었으므로(#14: 주문 상세로 낮춘 정상 SQL 이 주문 헤더를
+    요구하는 선언에 걸렸다), ``expected_result_shape``·``expected_ir`` 같은 의미 선언도 같은
+    자격의 게이트로 인정한다. 둘 다 없는 항목만 '선언 없음'이다.
     """
+    semantic_keys = ("expected_result_shape", "expected_ir", "expected_terminal_requirements")
     undeclared = [
-        entry["id"] for entry in _corpus()["prompts"] if not entry.get("required_clauses")
+        entry["id"]
+        for entry in _corpus()["prompts"]
+        if not entry.get("required_clauses")
+        and not any(entry.get(key) for key in semantic_keys)
     ]
     assert not undeclared, (
-        f"required_clauses 가 없는 항목: {undeclared}. "
-        "SQL 이 나온다면 반드시 담아야 할 물리 조각(테이블/컬럼 이름)을 선언하라 — "
+        f"게이트 선언이 없는 항목: {undeclared}. "
+        "SQL 이 나온다면 반드시 담아야 할 물리 조각(required_clauses) 또는 의미 계약"
+        f"({', '.join(semantic_keys)})을 선언하라 — "
         "선언이 없으면 그 항목에서는 '절이 사라진 SQL' 과 '옳은 SQL' 을 러너가 구분하지 못한다."
     )
 

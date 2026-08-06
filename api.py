@@ -202,6 +202,10 @@ class TargetSqlRequest(BaseModel):
     # 한 표현형이 조건을 놓쳐 후보가 안 생기던 케이스를 다른 표현형 파싱으로 살린다.
     multi_query_variants: int = Field(default=_env_int("GRAPH_RAG_MULTI_QUERY_VARIANTS", 0), ge=0, le=5)
     include_debug: bool = False
+    # 측정 실행 식별자(§10). 회귀 러너처럼 진단 목적으로 도는 호출을 운영 트래픽과 구분한다 —
+    # 이 값이 있으면 실패로그 행에 함께 남아, 나중에 "이 진단 행은 사람이 쓴 요청이 아니다"를
+    # 로그만 보고 알 수 있다. 값 자체는 실행 경로를 바꾸지 않는다.
+    diagnostic_run_id: str | None = Field(default=None, max_length=64)
 
 
 class RetrieveTraceRequest(BaseModel):
@@ -369,7 +373,36 @@ def load_graph() -> None:
         app.state.graph = None
         app.state.data_path = data_path
         app.state.startup_error = f"{exc.__class__.__name__}: {exc}"
+    _audit_execution_capabilities()
     _initialize_capability_discovery()
+
+
+def _audit_execution_capabilities() -> None:
+    """실행 자산 배선을 **프롬프트 실행 전에** 전수 검사한다(§7).
+
+    선언은 있는데 lowering·컴파일러·물리 바인딩 중 하나가 없는 심볼은 사용자 요청이 그 심볼을
+    건드리는 순간에야 ``semantic_registry_gap`` 으로 드러났다 — 그 시점에는 어느 고리가
+    끊겼는지 로그를 파야 나온다. 여기서 미리 이름을 대게 한다.
+
+    프로덕션(``CAPABILITY_AUDIT_STRICT``)에서는 치명적 gap 이 기동을 실패시키고, 그 밖에서는
+    ``/health`` 에 남는다 — 조용히 지나가지는 않는다.
+    """
+
+    import capability_audit
+
+    try:
+        report = capability_audit.enforce(capability_audit.audit_event_sources())
+        app.state.capability_audit = report.to_dict()
+        if not report.is_clean:
+            api_logger.warning("capability_audit_gap %s", report.summary())
+    except capability_audit.CapabilityAuditError:
+        # strict 배포에서는 기동 실패가 정답이다 — 광고한 능력이 없는 채로 뜨지 않는다.
+        raise
+    except Exception as exc:  # noqa: BLE001 — 감사 자체의 실패도 감사 결과다
+        app.state.capability_audit = {
+            "catalog_error": f"{exc.__class__.__name__}: {exc}"[:160],
+            "gap_count": None,
+        }
 
 
 def _initialize_capability_discovery() -> None:
@@ -459,6 +492,8 @@ def health() -> dict[str, Any]:
         "startup_error": getattr(app.state, "startup_error", None),
         "graph": graph_stats(graph) if graph is not None else None,
         "registry_health": registry_health,
+        # 실행 자산 총체성 검사 결과(§7). gap_count>0 이면 선언은 있는데 배선이 끊긴 심볼이 있다.
+        "capability_audit": getattr(app.state, "capability_audit", None),
     }
 
 
@@ -3376,6 +3411,11 @@ def _target_sql_request_options(request: TargetSqlRequest) -> dict[str, Any]:
         "generate_answer": request.generate_answer,
         "generate_messages": request.generate_messages,
         "message_generation_options": _message_generation_options_payload(request.message_generation_options),
+        # 측정 실행 표식. 실패로그 행이 진단 실행인지 운영 요청인지 구분되지 않으면, 회귀 러너를
+        # 한 번 돌릴 때마다 운영 실패 통계가 그만큼 오염된다(§10).
+        "diagnostic_run_id": request.diagnostic_run_id,
+        "execute_sql": request.execute_sql,
+        "persist_targeting": request.persist_targeting,
     }
 
 

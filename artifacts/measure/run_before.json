@@ -1,0 +1,2151 @@
+{
+ "summary": {
+  "total": 86,
+  "outcomes": {
+   "sql": 29,
+   "unsupported": 14,
+   "clarification": 37,
+   "failure": 6,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 11,
+   "improvement": 3,
+   "regression": 18,
+   "unknown": 54
+  },
+  "lanes": {
+   "sql_template:event_expression": 34
+  },
+  "lane_ids": {
+   "sql_template:event_expression": [
+    2,
+    3,
+    8,
+    9,
+    11,
+    13,
+    16,
+    19,
+    20,
+    24,
+    26,
+    30,
+    37,
+    40,
+    43,
+    47,
+    48,
+    49,
+    50,
+    56,
+    58,
+    59,
+    60,
+    63,
+    67,
+    68,
+    69,
+    71,
+    72,
+    78,
+    79,
+    80,
+    83,
+    84
+   ]
+  },
+  "unstable": [],
+  "regressions": [
+   4,
+   5,
+   6,
+   7,
+   10,
+   12,
+   14,
+   15,
+   17,
+   19,
+   21,
+   22,
+   25,
+   73,
+   74,
+   75,
+   76,
+   77
+  ],
+  "improvements": [
+   16,
+   20,
+   26
+  ]
+ },
+ "rows": [
+  {
+   "id": 1,
+   "prompt": "최근 1년 동안 특정 브랜드를 2회 이상 구매한 회원을 대상으로 브랜드 재구매 캠페인을 만들어줘.",
+   "expectation": "clarification",
+   "outcome": "clarification",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 7.0,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "'특정 브랜드'는 자리표시자 — 브랜드 이름을 되묻는 것이 정답"
+  },
+  {
+   "id": 2,
+   "prompt": "최근 3개월 내 주문한 적은 있지만 최근 30일간 구매가 없는 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 29.9,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "이탈 문형(존재 창 + 부재 창)"
+  },
+  {
+   "id": 3,
+   "prompt": "누적 구매금액 상위 10% 회원을 추출해줘",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 13.1,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "TOP N PERCENT — LLM 방출 편차 관측됨"
+  },
+  {
+   "id": 4,
+   "prompt": "장바구니에 서로 다른 상품을 3개 이상 담아둔 회원",
+   "expectation": "sql",
+   "outcome": "unsupported",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 16.5,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 5,
+   "prompt": "최근 캠페인 발송 성공 횟수가 3회 이상인 회원",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 6.4,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 6,
+   "prompt": "캠페인별 구매반응 금액이 평균 10만 원 이상인 회원",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_registry_gap",
+     "status": "needs_clarification",
+     "elapsed_s": 37.5,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "축3(캠페인당 평균 구매금액) **복귀**. 2026-08-05 폐기 사유는 'Event IR 대수가 SUM/COUNT(DISTINCT 다중 컬럼)을 표현하지 못한다'였고, 그 전제가 IR 확장(tuple 행 값 + null_if 0 값 가드)으로 사라졌다. campaign_metric_claims 는 이제 탐지기이자 합성기다 — 모델이 낸 행당 평균(AVG(BUY_AMT))을 카탈로그 선언대로 SUM(BUY_AMT)*1.0 / NULLIF(COUNT(DISTINCT (CAMP_ID, CAMP_EXEC_NO)), 0) 으로 바꾼다. required_clauses 를 CAMP_EXEC_NO 로 둔 이유는 그대로다 — 캠페인 분모가 없는 SQL 은 이 문장의 답이 아니므로, 분모를 담지 못한 SQL 은 improvement 가 아니라 regression 이다. 고정: tests/test_retired_axes_fail_close.py::test_campaign_average_amount_never_degrades_into_a_row_average, tests/test_composite_aggregate_lowering.py, tests/test_composite_aggregate_sql_results.py."
+  },
+  {
+   "id": 7,
+   "prompt": "구매주기가 30일 이하인 회원",
+   "expectation": "sql",
+   "outcome": "failure",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 24.8,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "축2(프로필 스칼라 지표) **복귀**. 카탈로그에 회원별 스칼라 metric kind(member_scalar, cardinality=scalar, grain=subject)를 선언하고 member_scalar_metrics 가 기존 IR 조합 Exists(Filter(Source, Comparison))으로 낮춘다 — 전역 순위용 member_metric_* 를 재사용하지 않는다(모집단·정렬·동점자 정책이 없는 자리이고, 그 재사용이 폐기 당시의 catalog_contract_mismatch 원인이었다). SQL 은 최신 월 스냅샷 한 행만 읽는다. required_clauses (BUY_CYCLE)는 그대로 — 그 컬럼이 없으면 다른 뜻이다. 고정: tests/test_retired_axes_fail_close.py::test_profile_scalar_metric_compiles_to_the_snapshot_row."
+  },
+  {
+   "id": 8,
+   "prompt": "이십만원 이상 구매한 회원 중 남자는 제외해줘",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 19.0,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "한글 수사 + 제외 — LLM 방출 편차 관측됨"
+  },
+  {
+   "id": 9,
+   "prompt": "2019년 가장 많이 팔린 상품 10개를 구매한 고객",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 24.5,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "파생 엔터티 집합(랭킹→멤버십)"
+  },
+  {
+   "id": 10,
+   "prompt": "작년에 가장 많이 팔린 상품 5개 중 2개 이상 구매한 고객",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 11.8,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "랭킹 집합 + 교집합 개수 임계"
+  },
+  {
+   "id": 11,
+   "prompt": "최근 30일 장바구니에 담아두고 결제하지 않은 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 8.7,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "KEEP_YN='Y'인 보관 중 카트 자체가 동일 라인의 미결제를 뜻한다. 회원 전체 주문 부재 NOT EXISTS를 요구하면 다른 상품 구매자까지 제외하므로 오답이다."
+  },
+  {
+   "id": 12,
+   "prompt": "2026년 2월과 3월의 구매금액이 증가한 회원",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "query_plan_required_conditions_missing",
+     "status": "needs_clarification",
+     "elapsed_s": 29.9,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "기간 대 기간 비교. 이력 감사 16종 #2 와 동일"
+  },
+  {
+   "id": 13,
+   "prompt": "현재 등급이 VIP인 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 15.2,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 14,
+   "prompt": "최근 30일 구매한 회원 수를 알려줘",
+   "expectation": "sql",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 6.9,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "분석 의도(COUNT 출력 계약). 이력 감사 16종 #4 와 동일"
+  },
+  {
+   "id": 15,
+   "prompt": "지난달 말 기준 VIP였던 회원을 찾아줘",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "query_plan_required_conditions_missing",
+     "status": "needs_clarification",
+     "elapsed_s": 27.9,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "MONTHCRMINFO 단일월(201701) 적재 — 적재 구간 명시 미지원. 이력 감사 16종 #5 와 동일"
+  },
+  {
+   "id": 16,
+   "prompt": "이번 달 기준 골드 등급 회원",
+   "expectation": "unsupported",
+   "outcome": "sql",
+   "verdict": "improvement",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 23.2,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "as_of 스냅샷. 현재 기준월(202608)은 선언된 적재 구간(201701) 밖이므로 data_coverage_gap; 해당 월 적재 후 SQL로 승격"
+  },
+  {
+   "id": 17,
+   "prompt": "최근에 등급이 승급한 회원",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 12.2,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "PREV_* 전이 컬럼. 2026-08-05 축1(등급/상태 이력·전이) 폐기의 귀결은 '생산자 교체'가 아니라 **차단**이다. 이전 선언('폐기된 것은 뜻이 아니라 중간표현이며 canonical Event IR 이 그대로 표현한다')은 오프라인 컴파일만 보고 쓴 것이라 틀렸으므로 지운다 — 막는 것은 표현의 모양이 아니라 게이트 구조다. 의무는 원문 마커에서 생기고(semantic_requirements.TEMPORAL_QUALIFIER_KIND = 'member_state_history'), 컴파일 영수증을 받을 수 있는 종류는 ranked_entity_set·member_metric_ranking 둘뿐이라(canonical_audience_claims 의 discharge_source_semantic_obligations 호출부) member_state_history 의무는 어떤 경로로도 해소되지 않고 validation_mismatch(argument=source_semantics.member_state_history)로 남는다. 재현 2026-08-05(in-process 종단: LLM 의미 구조화 → build_query_plan(parser='llm') → build_sql_result, 3회): is_success=False 3/3 · SQL 0건 · PREV_ 컬럼 0건 · 미해소 의무 kind=member_state_history 3/3. failure_reason 은 semantic_ir_unsupported 2회 / semantic_ir_needs_clarification 1회로 구조화기 방출 편차가 있으나 귀결은 둘 다 차단이다. 되살리는 선행 조건: (1) member_state_history 의무에 컴파일 영수증을 발급하는 경로가 먼저 서야 하고, (2) 그 뒤에도 '승급'은 등급 서열(rank) 비교이므로 코드값 사전순 비교로 컴파일되지 않는지 따로 확인해야 한다."
+  },
+  {
+   "id": 18,
+   "prompt": "정상에서 휴면으로 바뀐 회원",
+   "expectation": "unsupported",
+   "outcome": "unsupported",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 9.0,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "MEMBER_STATE_CD 이력 소스 부재(STATE_GRADE 는 활동등급, 무상관). 이력 감사 16종 #8 과 동일"
+  },
+  {
+   "id": 19,
+   "prompt": "직전 등급이 골드였던 회원",
+   "expectation": "unsupported",
+   "outcome": "failure",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "partial_sql:PREV_ZTS_GRADE",
+     "status": "success",
+     "elapsed_s": 26.3,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "PREV_GRADE 직전값. #17 과 **같은 게이트**에 막힌다(source_semantics.member_state_history 의무가 영수증을 받을 수 있는 종류가 아니다). '폐기된 것은 이 뜻이 아니라 그 뜻을 만들던 중간표현'이라는 이전 선언은 오프라인 컴파일만 근거로 삼은 것이라 지운다 — 오프라인에서 Event IR 이 SQL 조각을 만들어 보이는 것과 종단 파이프라인이 SQL 을 출고하는 것은 다른 사실이다. 재현 2026-08-05(in-process 종단 3회): is_success=False 3/3 · failure_reason=semantic_ir_unsupported 3/3 · SQL 0건 · PREV_ 컬럼 0건 · 미해소 의무 kind=member_state_history 3/3. 되살리는 선행 조건은 #17 과 같다(의무 해소 경로 신설)."
+  },
+  {
+   "id": 20,
+   "prompt": "3개월 내내 VIP를 유지한 회원",
+   "expectation": "unsupported",
+   "outcome": "sql",
+   "verdict": "improvement",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 22.0,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "다월 연산 — snapshot_months_available 이 늘면 열린다"
+  },
+  {
+   "id": 21,
+   "prompt": "6개월 이상 접속하지 않은 휴면 고객",
+   "expectation": "sql",
+   "outcome": "unsupported",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 24.9,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": ""
+  },
+  {
+   "id": 22,
+   "prompt": "3개월 내내 VIP 등급을 유지한 회원",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "query_plan_required_conditions_missing",
+     "status": "needs_clarification",
+     "elapsed_s": 48.5,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "#20 의 표현 변형 — 같은 귀결이어야 한다. 이력 감사 16종 #12 와 동일"
+  },
+  {
+   "id": 23,
+   "prompt": "등급이 2회 이상 변경된 회원",
+   "expectation": "unsupported",
+   "outcome": "unsupported",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 9.0,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "CHANGE_COUNT — 다월 적재 필요"
+  },
+  {
+   "id": 24,
+   "prompt": "골드 이상 등급인 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 15.0,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "등급 서열(rank) 비교"
+  },
+  {
+   "id": 25,
+   "prompt": "최근 6개월 매월 존재한 회원",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 6.2,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "EVERY_SUBINTERVAL — 다월 적재 필요"
+  },
+  {
+   "id": 26,
+   "prompt": "한 번도 VIP였던 적이 없는 회원",
+   "expectation": "unsupported",
+   "outcome": "sql",
+   "verdict": "improvement",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 21.4,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "NEVER_IN_INTERVAL — 다월 적재 필요"
+  },
+  {
+   "id": 27,
+   "prompt": "2026년 2월과 3월의 구매금액차이가 10% 이상 증가한 고객 리스트",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_registry_gap",
+     "status": "needs_clarification",
+     "elapsed_s": 22.9,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "이력 감사 #1. 기간 대 기간 + 백분율 임계(Arithmetic). 창이 적재 밖이라 0건이 정상"
+  },
+  {
+   "id": 28,
+   "prompt": "각 회원의 최신 기준월 구매등급을 기준으로 VIP 회원을 찾아줘",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 12.3,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "이력 감사 #3. as_of_latest — 단일월 적재로도 표현 가능해야 한다"
+  },
+  {
+   "id": 29,
+   "prompt": "2025년 12월 기준 휴면 상태였던 회원 수를 알려줘",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 23.2,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "이력 감사 #6. as_of_month + member_state(소스 부재) + COUNT"
+  },
+  {
+   "id": 30,
+   "prompt": "지난 6개월 동안 골드에서 VIP로 승급한 회원을 찾아줘",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 25.4,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "이력 감사 #7. 다월 transition — PREV_* 1스텝으로 접으면 의미가 바뀐다"
+  },
+  {
+   "id": 31,
+   "prompt": "최근 상태가 VIP이고 직전 상태는 골드였던 회원을 보여줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 12.8,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "이력 감사 #9. transition(from+to). '상태' 표면어가 member_state 로 오라우팅될 위험"
+  },
+  {
+   "id": 32,
+   "prompt": "최근 3개월 동안 등급이 두 번 이상 변경된 회원을 찾아줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "query_plan_required_conditions_missing",
+     "status": "needs_clarification",
+     "elapsed_s": 36.0,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "이력 감사 #10. changed_n_times — 컴파일러 배선됨, 적재만 부족"
+  },
+  {
+   "id": 33,
+   "prompt": "한 번이라도 휴면 상태였지만 현재는 정상인 회원을 추출해줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 12.8,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "이력 감사 #11. ever(이력 소스 부재) + 현재 상태(표현 가능) 합성"
+  },
+  {
+   "id": 34,
+   "prompt": "2026년 상반기 동안 한 번도 휴면 상태가 아니었던 회원을 추출해줘",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 10.5,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "이력 감사 #13. never + member_state 소스 부재"
+  },
+  {
+   "id": 35,
+   "prompt": "최근 6개월 중 적어도 한 달은 골드 이상이었던 회원을 보여줘",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 6.1,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "이력 감사 #14. ever + 등급 서열(rank gte) — ever 컴파일러 미구현"
+  },
+  {
+   "id": 36,
+   "prompt": "최근 6개월 모든 월에 구매등급이 존재하는 회원을 찾아줘",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 11.7,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "이력 감사 #15. exists_every_month — 컴파일러 배선됨, 적재만 부족"
+  },
+  {
+   "id": 37,
+   "prompt": "최근 12개월 동안 등급이 한 번도 바뀌지 않은 회원을 추출해줘",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 12.8,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "이력 감사 #16. stable — 컴파일러 배선됨, 적재만 부족"
+  },
+  {
+   "id": 38,
+   "prompt": "최근 30일 장바구니 상품 종류가 2개 이상이고 총금액이 10만 원 이상인 회원을 대상으로 구매촉진 캠페인을 만들어줘.",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 27.4,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 39,
+   "prompt": "회원별 평균 구매주기가 30일 이내이고 다음 구매예정일이 지난 고객을 대상으로 구매 알림 캠페인을 만들어줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 25.6,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 40,
+   "prompt": "2019년에 이십만원 이상을 구매한고객에서 남자는 제외해.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 20.6,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 41,
+   "prompt": "최근 캠페인 발송 성공 횟수가 3회 이상이고 구매반응이 없는 회원을 대상으로 재반응 유도 캠페인을 만들어줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 5.3,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 42,
+   "prompt": "최근 90일 동안 총 구매금액이 30만원 이상인 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_registry_gap",
+     "status": "needs_clarification",
+     "elapsed_s": 50.5,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_structurer_failure). 같은 배치의 '최근 90일 주문만 대상으로 총 구매금액이 30만원 이상인 회원을 찾아줘.'는 동의 표현이라 별도 추가하지 않음"
+  },
+  {
+   "id": 43,
+   "prompt": "최근 90일 동안 구매금액이 30만원 이상인 주문을 한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 17.8,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 44,
+   "prompt": "구매 회원이 100명 이상인 브랜드를 알려줘.",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 18.6,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 45,
+   "prompt": "최근 90일 동안 정확히 세 번 주문한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 6.9,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 46,
+   "prompt": "서로 다른 브랜드를 정확히 두 개 구매한 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 14.5,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 47,
+   "prompt": "이메일, 문자, 앱푸시 중 정확히 두 개 채널에 동의한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 27.0,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 48,
+   "prompt": "장바구니에 서로 다른 상품을 정확히 네 종류 담은 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 24.6,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (query_plan_required_conditions_missing)"
+  },
+  {
+   "id": 49,
+   "prompt": "사료, 간식, 장난감을 모두 구매한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 30.2,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  },
+  {
+   "id": 50,
+   "prompt": "이메일, 문자, 앱푸시에 모두 동의한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 20.8,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  },
+  {
+   "id": 51,
+   "prompt": "최근 3개월 동안 매월 한 번 이상 구매한 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 24.7,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_structurer_failure)"
+  },
+  {
+   "id": 52,
+   "prompt": "지정한 세 개 캠페인에 모두 반응한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 11.7,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 53,
+   "prompt": "앱과 PC 양쪽 채널에서 모두 주문한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_registry_gap",
+     "status": "needs_clarification",
+     "elapsed_s": 19.2,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 54,
+   "prompt": "앱, 모바일웹, PC 중 하나의 채널로 주문한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_registry_gap",
+     "status": "needs_clarification",
+     "elapsed_s": 31.0,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 55,
+   "prompt": "사료, 간식, 장난감 중 하나라도 구매한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 16.6,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  },
+  {
+   "id": 56,
+   "prompt": "이메일, 문자, 앱푸시 중 하나 이상에 동의한 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 26.1,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 57,
+   "prompt": "최근 3개 캠페인 중 하나라도 구매 반응을 보인 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 6.1,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 58,
+   "prompt": "서울, 경기, 인천 중 한 지역에 거주하는 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 19.2,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 59,
+   "prompt": "사료를 구매하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 19.5,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 60,
+   "prompt": "사료 외 상품을 구매한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 16.2,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 61,
+   "prompt": "사료를 구매한 적은 없지만 다른 상품은 구매한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 27.1,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: no_verified_sql (presence_absence_conflict)"
+  },
+  {
+   "id": 62,
+   "prompt": "최근 30일에는 구매하지 않았지만 과거 구매 이력은 있는 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 8.0,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 63,
+   "prompt": "모든 캠페인에 반응하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 17.3,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 64,
+   "prompt": "특정 상품을 구매하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 15.1,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 65,
+   "prompt": "특정 상품을 제외한 다른 상품을 구매한 회원이 아니라, 해당 상품을 한 번도 구매하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "presence_absence_conflict",
+     "status": "no_verified_sql",
+     "elapsed_s": 15.2,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 66,
+   "prompt": "최근 90일 동안 주문하지 않은 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 5.8,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  },
+  {
+   "id": 67,
+   "prompt": "장바구니에는 상품이 있지만 한 번도 구매하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 22.6,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: no_verified_sql (sql_guard_failed)"
+  },
+  {
+   "id": 68,
+   "prompt": "앱으로 로그인하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 19.2,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 69,
+   "prompt": "2026년 7월 1일 23시 59분 59초까지 주문한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_verification_failed",
+     "status": "needs_clarification",
+     "elapsed_s": 18.1,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 70,
+   "prompt": "밤 11시부터 다음 날 새벽 2시 사이에 주문한 회원을 알려줘.",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 17.0,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 71,
+   "prompt": "어제 하루 동안 구매한 회원 수를 알려줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "intent_sql_contract_failed",
+     "status": "no_verified_sql",
+     "elapsed_s": 20.4,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 72,
+   "prompt": "오늘 주문한 회원을 알려줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 20.5,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 73,
+   "prompt": "여성이면서 정상에서 휴면으로 바뀐 회원",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 12.9,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "혼합축(회원속성 + 상태 이력). 단독형 #18 과 같은 귀결이어야 한다 — member_state 는 binding:null(이력 소스 부재). 2026-08-02 실측: status=success + 성별 전용 SQL, 경고 0·clarification 0(당시 이력 축 조기 반환으로 이력 절이 흔적 없이 사라짐 — 그 분기는 2026-08-05 축1 폐기와 함께 삭제됐다. 상태 축은 attribute_catalog 에서 binding=null 이고 canonical 카탈로그에도 상태 이력 필드가 없으므로 폐기 후에도 표현할 방법이 없다). 게다가 기본 정상회원 필터 때문에 '휴면이 된 회원'을 요청했는데 '현재 정상인 회원'이 나오는 의미 반전이다. required_clauses 는 그 가짜 성공을 failure 로 강등한다 — 상태 전이 소스가 없으므로 어떤 SQL 도 PREV_ 를 담을 수 없고, SQL 출고 자체가 오답이다."
+  },
+  {
+   "id": 74,
+   "prompt": "여성이면서 골드에서 VIP로 바뀐 회원",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 25.4,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "혼합축 전이형(등급). '등급'의 물리 축은 ZTS_GRADE 다(현재값 EMART_GRADE_CD 와 같은 코드 도메인). 2026-08-02 실측: 성별 전용 SQL(가짜 성공) → required_clauses 로 강등되어 regression. 2026-08-05 축1 폐기 후 정정: 이전 선언('폐기된 것은 생산 경로뿐이고 뜻은 canonical Event IR 이 표현한다 → 기대 sql')은 오프라인 컴파일만 보고 쓴 것이라 틀렸으므로 지운다. 종단에서는 #17·#19 와 같은 게이트(source_semantics.member_state_history 의무에 영수증을 발급하는 컴파일러가 없음)에 막혀 SQL 자체가 나오지 않는다. 재현 2026-08-05(in-process 종단 3회): is_success=False 3/3 · failure_reason=semantic_ir_unsupported 3/3 · SQL 0건 · PREV_ 컬럼 0건 · 미해소 의무 kind=member_state_history 3/3. required_clauses 는 유지한다 — 의무 해소 경로가 생겨 SQL 이 다시 나오는 날, 두 절이 한 SQL 에 함께 있는지가 흡수 성립의 판정이다(실데이터 201701 단일 월에서 ZTS 전이는 0건이라 행수는 0 이지만, 재는 것은 행수가 아니라 절의 존재다)."
+  },
+  {
+   "id": 75,
+   "prompt": "여성이면서 가치등급이 골드에서 VIP로 바뀐 회원",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "query_plan_required_conditions_missing",
+     "status": "needs_clarification",
+     "elapsed_s": 37.2,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "혼합축 전이형(가치등급). '등급'(ZTS)과 별개 축이며 표면어로 구분한다. 실측 2026-08-03: WORTH 전이는 69,609행 중 22,409건으로 실재하므로, 축1 이 되살아나면 이 항목만이 전이 기능의 정확성을 실행 결과로 증명할 수 있다(PREV_WORTH_GRADE 에는 '~'(직전 없음) 센티널이 1,273행). 2026-08-05 축1 폐기 후 정정: #74 와 같은 근거로 기대를 sql → unsupported 로 내린다. 데이터가 있어도 종단은 데이터 앞에서 막히는 것이 아니라 게이트에서 막힌다 — source_semantics.member_state_history 의무를 해소할 컴파일러가 없다. 재현 2026-08-05(in-process 종단 3회): is_success=False 3/3 · failure_reason=semantic_ir_unsupported 3/3 · SQL 0건 · PREV_ 컬럼 0건 · 미해소 의무 kind=member_state_history 3/3."
+  },
+  {
+   "id": 76,
+   "prompt": "여성이면서 지난달 말 기준 VIP였던 회원",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 25.5,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "혼합축 마커형. 단독형 #15 와 같은 귀결이어야 한다 — 월 스냅샷은 201701 단일 월이라 '지난달' as_of 는 적재 밖이다. 2026-08-02 실측: is_success=False / semantic_structurer_failure(사유 없는 실패) — 정직한 미지원이 아니다. 이 항목은 마커형이 조기 반환에 걸리지 않는다는 것도 함께 고정한다(event_expression 이 애초에 세워지지 않는다). 적재가 늘면 expectation 을 sql 로 승격하고 required_clauses 는 유지하라."
+  },
+  {
+   "id": 77,
+   "prompt": "최근 90일 동안 3회 이상 구매하고 골드에서 VIP로 승급한 회원",
+   "expectation": "unsupported",
+   "outcome": "clarification",
+   "verdict": "regression",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "query_plan_required_conditions_missing",
+     "status": "needs_clarification",
+     "elapsed_s": 29.5,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "혼합축 — canonical Event IR 이 이미 컴파일하는 구매 집계와 폐기된 등급 전이가 한 문장. 2026-08-05 축1 폐기 후 정정: 이전 선언('승급 절도 canonical Event IR 로 컴파일된다 → 기대 sql')은 #17 의 오프라인 컴파일을 근거로 삼은 것이라 틀렸으므로 지운다. 한 문장에 표현 가능한 절이 섞여 있어도 member_state_history 의무가 미해소로 남는 한 문장 전체가 막히며, 구매 집계만 담은 SQL 이 나온다면 그것은 절이 사라진 가짜 성공이라 required_clauses 가 강등한다. 재현 2026-08-05(in-process 종단 3회): is_success=False 3/3 · SQL 0건 · PREV_ 컬럼 0건 · 미해소 의무 kind=member_state_history 3/3. 방출 편차 관측 — semantic_ir_unsupported 1회 / semantic_ir_needs_clarification 1회 / 구조화기 validation_mismatch(argument=source_semantics.member_state_history) 후 폴백 → query_plan_required_conditions_missing 1회. 되살리는 선행 조건은 #17 과 같다."
+  },
+  {
+   "id": 78,
+   "prompt": "최근 5일 동안 캠페인 발송 성공 횟수가 3회 이상인 회원",
+   "expectation": "sql",
+   "outcome": "sql",
+   "verdict": "match",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 18.5,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "#5 의 기간 명시형. 맨 '최근'은 기본 창을 지어내지 않고 되묻는 것이 확정 정책이므로(tests/test_retired_axes_fail_close.py::test_bare_recent_campaign_count_without_a_default_window_remains_blocked) #5 를 고치지 않고 별도 항목으로 둔다. 기간은 2026-08-04 사용자 지정 5일. required_clauses 는 접촉 팩트 경로(Event IR Z_CAMP_MBR.CONTAC_SUCC_YN / 슬롯 MCS_CAMP_MBR_RSPN_FT.CNCT_SCS_YN)에 중립이도록 창 컬럼과 집계만 고정한다 — 창이 조용히 사라진 SQL 은 가짜 성공이다. 2026-08-04 실측: sql_template:event_expression 이 상관 스칼라 서브쿼리 (SELECT COUNT(DISTINCT ...) ... AND ZC.CAMP_SDATE >= DATEADD(DAY,-5,GETDATE())) >= 3 으로 컴파일한다. 최초 선언은 'HAVING' 이었는데 이 컴파일러는 GROUP BY/HAVING 을 쓰지 않아 **정상 SQL 이 partial_sql 로 강등**됐다 — 선언이 못 하는 것을 적으면 가드가 아니라 가짜 회귀 장치가 된다."
+  },
+  {
+   "id": 79,
+   "prompt": "2026년 7월 1일 23시 59분 30초 이후 주문한 회원",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_verification_failed",
+     "status": "needs_clarification",
+     "elapsed_s": 15.4,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "날짜 시각 축 P0. 초 단위 + **열린 이후 구간**. 2026-08-06 문법 계층 고정: calendar_window 가 {from:'20260701', to:'99991230', from_time:'235930', open_end:true} 를 읽고 _purchase_date_predicate 가 (ORDER_DATE BETWEEN … AND (ORDER_DATE > '20260701' OR ORDER_TIME >= '235930')) 로 컴파일한다(오프라인 고정: tests/test_time_of_day_semantics.py). 종단은 아직 SQL 을 내지 않는다 — 구조화기가 이 슬롯을 채우지 않고 canonical 레인의 시간 바인딩에 시각 컬럼 선언이 없어서다(2026-08-06 실측: clarification). 최초 실행에서는 열린 끝 센티널이 99991231 이라 '끝 + 하루'가 연도 10000 이 되어 OverflowError 로 500 이 났고, 센티널을 99991230 으로 내려 닫았다."
+  },
+  {
+   "id": 80,
+   "prompt": "2026년 7월 1일 오전 9시부터 7월 2일 오후 6시 30분까지 주문한 회원",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_verification_failed",
+     "status": "needs_clarification",
+     "elapsed_s": 15.1,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "날짜 시각 축 P0. 날짜를 넘는 절대 시각 범위 — 경계일에만 시각을 비교하고 가운데 날은 전일 포함이어야 한다(양 경계에 시각을 걸면 7월 1일 18:30 이후 주문이 사라진다)."
+  },
+  {
+   "id": 81,
+   "prompt": "오전 9시부터 오후 6시 사이에 주문한 회원",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 23.6,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "날짜 시각 축 P0. 같은 날 **반복 시각대**(#70 의 대조군) — 자정을 넘지 않으므로 AND 여야 한다. #70 과 이 항목이 함께 있어야 AND/OR 를 뒤집는 실수가 드러난다(같은 두 경계로 정반대 오답이 나온다)."
+  },
+  {
+   "id": 82,
+   "prompt": "최근 24시간 동안 주문한 회원",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 10.1,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "날짜 시각 축 P0. 롤링 24시간과 '오늘'(달력 하루)의 구분. 2026-08-06 현재 '시간'은 기간 단위 어휘가 아니라 창이 만들어지지 않는다 — 맨 '최근'과 같은 자리(기본 창을 지어내지 않고 되묻는다)로 귀결하는 것이 현재 정책이고, 시각 해상도 롤링 창은 미구현이다."
+  },
+  {
+   "id": 83,
+   "prompt": "지난 주에 주문한 회원",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 15.4,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "날짜 축 P1. 주간 달력 경계 정책(월요일 00:00 ~ 다음 월요일 00:00 전). 2026-08-06 이전에는 '지난 주'가 어떤 창도 만들지 못해 기간이 통째로 사라질 수 있었다 — calendar_previous_week 어휘 + 주 단위 스캐너로 닫았다."
+  },
+  {
+   "id": 84,
+   "prompt": "지난달 주문한 회원",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 19.4,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     }
+    }
+   ],
+   "note": "날짜 축 P1. 사건이 일어난 **기간**으로서의 '지난달' — #15('지난달 말 기준 VIP')의 as-of 앵커와 같은 표면어가 다른 뜻이라는 대조군이다. 이 항목이 스냅샷 미지원으로 귀결하면 앵커 판정이 기간까지 삼킨 것이다."
+  },
+  {
+   "id": 85,
+   "prompt": "3개월 전부터 1개월 전까지 주문한 회원",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "no_sql_candidates",
+     "status": "no_verified_sql",
+     "elapsed_s": 33.7,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "날짜 축 P1. 상대 앵커 **두 개**로 만든 범위. 2026-08-06 현재 'N단위 전부터/까지'는 경계 종류(boundary_from/boundary_until)로 분류만 되고 두 경계를 한 구간으로 접는 문법은 없다 — 미구현이며, 한쪽만 창으로 읽어 반쪽 구간을 내는 것이 최악이라 그쪽으로 열지 않았다."
+  },
+  {
+   "id": 86,
+   "prompt": "향후 7일 안에 구매예정일이 도래하는 회원",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_registry_gap",
+     "status": "needs_clarification",
+     "elapsed_s": 20.5,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     }
+    }
+   ],
+   "note": "날짜 축 P1. **미래 방향** 창 — 지금까지의 창 문법은 전부 과거 방향이다(relative_past·rolling). 미구현이며, 미래 창을 과거 창으로 읽으면 정반대 집합이 나오므로 열기 전에 방향을 창 표기에 실어야 한다."
+  }
+ ]
+}

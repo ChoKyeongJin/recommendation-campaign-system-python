@@ -72,7 +72,7 @@ def _load_corpus(path: Path) -> list[dict[str, Any]]:
     return prompts
 
 
-def _call(base_url: str, prompt: str, timeout: int) -> dict[str, Any]:
+def _call(base_url: str, prompt: str, timeout: int, run_id: str = "") -> dict[str, Any]:
     payload = json.dumps(
         {
             "prompt": prompt,
@@ -82,6 +82,8 @@ def _call(base_url: str, prompt: str, timeout: int) -> dict[str, Any]:
             "persist_targeting": False,
             "generate_messages": False,
             "include_debug": True,
+            # 이 호출이 측정이라는 표식. 저장되는 진단 행이 운영 실패 통계에 섞이지 않게 한다.
+            "diagnostic_run_id": run_id or None,
         }
     ).encode("utf-8")
     request = urllib.request.Request(
@@ -170,12 +172,94 @@ def missing_clauses(entry: dict[str, Any], response: dict[str, Any]) -> list[str
     `classify` 를 건드리지 않는 이유: 저 함수는 응답 하나만 보는 순수 분류기이고
     그 계약을 테스트가 고정한다. '기대되는 조각'은 응답이 아니라 **코퍼스 항목**의
     지식이므로 분류 다음 단계에서 합성한다.
+
+    항목은 조각을 **대안 묶음**으로 적을 수 있다(리스트 안의 리스트). 같은 도메인 의미의
+    다른 물리 구현(주문 헤더 ↔ 주문 상세)을 하나만 정답으로 적으면, lowering 이 다른 쪽을
+    고른 정상 SQL 이 가짜 회귀가 된다 — 실측(2026-08-06)에서 회원수 질의가 정확히 그랬다.
     """
     required = entry.get("required_clauses") or []
     sql = response.get("sql")
     if not required or not isinstance(sql, str) or not sql:
         return []
-    return [clause for clause in required if clause not in sql]
+    missing: list[str] = []
+    for clause in required:
+        alternatives = clause if isinstance(clause, list) else [clause]
+        if not any(str(item) in sql for item in alternatives):
+            missing.append(" | ".join(str(item) for item in alternatives))
+    return missing
+
+
+def semantic_contract_violations(
+    entry: dict[str, Any], response: dict[str, Any]
+) -> list[str]:
+    """항목이 선언한 **의미 계약**과 응답이 어긋난 지점.
+
+    SQL 문자열 전체 일치나 물리 컬럼 포함 여부보다 이쪽을 먼저 본다(§12). 별칭·술어 순서·
+    포매팅 차이로 실패하지 않고, 대신 "이 요청이 무엇을 뜻했는가"만 대조한다.
+    """
+    violations: list[str] = []
+    expected_shape = entry.get("expected_result_shape")
+    if expected_shape:
+        actual = (response.get("result_shape") or {}).get("kind")
+        if actual != expected_shape:
+            violations.append(f"result_shape:{expected_shape}!={actual}")
+    expected_policy = entry.get("policy_version")
+    if expected_policy:
+        actual_policy = response.get("policy_version")
+        if actual_policy and actual_policy != expected_policy:
+            violations.append(f"policy_version:{expected_policy}!={actual_policy}")
+    expected_terminal = entry.get("expected_terminal_requirements")
+    if isinstance(expected_terminal, dict):
+        counts = (
+            ((response.get("coverage_gate") or {}).get("ledger") or {}).get("counts") or {}
+        )
+        for disposition, minimum in expected_terminal.items():
+            if not isinstance(minimum, int):
+                continue
+            if int(counts.get(disposition, 0)) < minimum:
+                violations.append(
+                    f"requirements.{disposition}:{counts.get(disposition, 0)}<{minimum}"
+                )
+    return violations
+
+
+def _diagnostics(response: dict[str, Any]) -> dict[str, Any]:
+    """한 실행의 진단 좌표 전부. 최종 상태 문자열만 남기면 재현·원인 추적이 불가능하다(§10).
+
+    원문 payload 나 개인정보는 싣지 않는다 — 여기 들어가는 것은 판정과 그 근거뿐이다.
+    """
+    coverage = response.get("coverage_gate") or {}
+    return {
+        "status": response.get("status"),
+        "failure_reason": response.get("failure_reason"),
+        "failure_stage": (response.get("failure_stage") or {}).get("code"),
+        "audience_diagnosis": (response.get("audience_diagnosis") or {}).get("code"),
+        "interpretation_status": response.get("interpretation_status"),
+        "semantic_fingerprint": response.get("semantic_fingerprint"),
+        "execution_fingerprint": response.get("execution_fingerprint"),
+        "policy_version": response.get("policy_version"),
+        "policy_decisions": [
+            {
+                "policy_id": item.get("policy_id"),
+                "decision": item.get("decision"),
+                "reason_code": item.get("reason_code"),
+            }
+            for item in response.get("policy_decisions") or []
+            if isinstance(item, dict)
+        ],
+        "compile_outcomes": response.get("compile_outcomes") or [],
+        "result_shape": (response.get("result_shape") or {}).get("kind"),
+        "requirement_counts": (coverage.get("ledger") or {}).get("counts"),
+        "coverage_verdict": coverage.get("verdict"),
+        "unresolved_source_conditions": [
+            {"code": item.get("code"), "stage": item.get("stage")}
+            for item in (response.get("debug") or {}).get("unresolved_source_conditions") or []
+            if isinstance(item, dict)
+        ],
+        "sql_provenance": (response.get("debug") or {}).get("sql_provenance") or {},
+        "blocked_sql": response.get("blocked_sql"),
+        "sql": response.get("sql"),
+    }
 
 
 def run(
@@ -183,6 +267,7 @@ def run(
     base_url: str,
     repeat: int,
     timeout: int,
+    run_id: str = "",
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for entry in corpus:
@@ -191,14 +276,19 @@ def run(
         observations: list[dict[str, Any]] = []
         for attempt in range(repeat):
             try:
-                response = _call(base_url, prompt, timeout)
+                response = _call(base_url, prompt, timeout, run_id)
             except (urllib.error.URLError, TimeoutError, OSError) as exc:
                 observations.append({"outcome": "error", "reason": str(exc)[:120], "elapsed_s": None})
                 continue
             outcome = classify(response)
             reason = _reason(response)
+            violations = semantic_contract_violations(entry, response)
             missing = missing_clauses(entry, response)
-            if missing:
+            if violations:
+                # 의미 계약 위반이 먼저다 — 물리 조각보다 상위 판정이고, 사유도 더 정확하다.
+                outcome = "failure"
+                reason = "semantic_contract:" + ",".join(violations)
+            elif missing:
                 # 절이 사라진 SQL 은 출고가 아니다. 강등하지 않으면 improvement 로 오집계된다.
                 outcome = "failure"
                 reason = "partial_sql:" + ",".join(missing)
@@ -209,11 +299,17 @@ def run(
                     "status": response.get("status"),
                     "elapsed_s": response.get("_elapsed_s"),
                     "provenance": provenance(response),
+                    # 최종 상태 문자열만 남기면 "왜 그렇게 됐나"를 다시 실행해야만 알 수 있다.
+                    "diagnostics": _diagnostics(response),
                 }
             )
         outcomes = [observation["outcome"] for observation in observations]
         # 편차가 있으면 **가장 나쁜** 귀결로 센다 — 3번 중 1번만 나오는 SQL 은 출고가 아니다.
         worst = max(outcomes, key=OUTCOMES.index)
+        fingerprints = [
+            (observation.get("diagnostics") or {}).get("semantic_fingerprint")
+            for observation in observations
+        ]
         row = {
             "id": entry.get("id"),
             "prompt": prompt,
@@ -221,6 +317,10 @@ def run(
             "outcome": worst,
             "verdict": _verdict(expectation, worst),
             "unstable": len(set(outcomes)) > 1,
+            # 의미 편차는 귀결 편차와 **다른 축**이다. 같은 귀결(clarification)로 수렴해도
+            # 뜻이 달랐을 수 있고, 반대로 뜻이 같은데 검증 단계에서 갈렸을 수도 있다.
+            "semantic_unstable": len({item for item in fingerprints if item}) > 1,
+            "semantic_fingerprints": fingerprints,
             "observations": observations,
             "note": entry.get("note", ""),
         }
@@ -306,6 +406,8 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, Any]:
             for candidate in sorted(lanes)
         },
         "unstable": [row["id"] for row in rows if row["unstable"]],
+        # 반복 실행에서 **의미**가 흔들린 항목. 귀결 편차와 별개로 센다(§9).
+        "semantic_unstable": [row["id"] for row in rows if row.get("semantic_unstable")],
         "regressions": [row["id"] for row in rows if row["verdict"] == "regression"],
         "improvements": [row["id"] for row in rows if row["verdict"] == "improvement"],
     }
@@ -320,6 +422,9 @@ def main() -> int:
     parser.add_argument("--only", default="", help="쉼표로 구분한 id 목록")
     parser.add_argument("--json", type=Path, default=None, help="결과 저장 경로")
     parser.add_argument(
+        "--run-id", default="", help="측정 실행 식별자(저장되는 진단 행을 운영 요청과 구분)"
+    )
+    parser.add_argument(
         "--baseline", type=Path, default=DEFAULT_BASELINE,
         help="커밋된 실측 기준선과 대조(항목별 귀결 변화)",
     )
@@ -330,7 +435,7 @@ def main() -> int:
         wanted = {int(token) for token in args.only.split(",") if token.strip()}
         corpus = [entry for entry in corpus if entry.get("id") in wanted]
 
-    rows = run(corpus, args.base_url, max(1, args.repeat), args.timeout)
+    rows = run(corpus, args.base_url, max(1, args.repeat), args.timeout, args.run_id)
     summary = summarize(rows)
 
     print("\n" + "=" * 72)
@@ -345,6 +450,8 @@ def main() -> int:
             print(f"  {count:>3}건  {candidate}  {summary['lane_ids'][candidate]}")
     if summary["unstable"]:
         print(f"방출 편차(반복 간 귀결 불일치): {summary['unstable']}")
+    if summary["semantic_unstable"]:
+        print(f"의미 편차(반복 간 semantic fingerprint 불일치): {summary['semantic_unstable']}")
     if summary["regressions"]:
         print(f"회귀: {summary['regressions']}")
     if summary["improvements"]:

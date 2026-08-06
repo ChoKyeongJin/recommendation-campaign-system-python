@@ -137,6 +137,9 @@ class RelationCondition:
     target_table: str | None = None
     binding: str | None = None
     predicate_columns: tuple[str, ...] = ()
+    # 같은 도메인 의미의 다른 물리 구현(주문 헤더 ↔ 주문 상세). 카탈로그가 선언하고 여기서는
+    # 대조만 한다 — 하나의 테이블 이름을 정답으로 삼으면 lowering 이 고른 다른 구현이 '누락'이 된다.
+    equivalent_target_tables: tuple[str, ...] = ()
 
 
 @dataclass
@@ -991,7 +994,14 @@ def _validate_relations(request: AggregationRequest, root: exp.Expression, error
             implemented = any(str(column).casefold() in sql_text for column in req.predicate_columns)
             clause = "WHERE"
         elif req.target_table:
-            implemented = str(req.target_table).casefold() in sql_text
+            # 증거는 도메인 의미이지 테이블 이름 하나가 아니다 — 카탈로그가 선언한 동등 구현 중
+            # 무엇이 나와도 그 관계는 구현된 것이다(2026-08-06: 주문 상세로 낮춘 회원수 질의가
+            # 주문 헤더를 요구하는 이 검사에 걸려 차단됐다).
+            implemented = any(
+                str(table).casefold() in sql_text
+                for table in (req.target_table, *req.equivalent_target_tables)
+                if table
+            )
             if implemented and req.binding == "exists":
                 implemented = "exists" in sql_text
             if implemented and req.mode == "none":
@@ -1230,6 +1240,11 @@ def _relation(value: Any, path: str, errors: list[ValidationError]) -> RelationC
         str(value.get("targetEntity", "")), mode, minimum if isinstance(minimum, int) else None,
         _string(value.get("targetTable")), _string(value.get("binding")),
         tuple(str(item) for item in columns if isinstance(item, str)) if isinstance(columns, list) else (),
+        tuple(
+            str(item)
+            for item in (value.get("equivalentTargetTables") or [])
+            if isinstance(item, str) and item.strip()
+        ),
     )
 
 
@@ -1314,6 +1329,10 @@ def _camelize_nested(value: Any) -> Any:
         "partition_by": "partitionBy", "order_by_metric_id": "orderByMetricId",
         "tie_policy": "tiePolicy", "source_entity": "sourceEntity", "target_entity": "targetEntity",
         "minimum_count": "minimumCount", "target_table": "targetTable", "predicate_columns": "predicateColumns",
+        # 이 표에서 빠지면 왕복(parse → serialize → parse)에서 필드가 **조용히 사라진다**.
+        # 실측(2026-08-06): 동등 물리 구현 선언이 두 번째 파싱에서 없어져, 첫 검증은 통과하고
+        # 재검증은 MISSING_RELATION_JOIN 으로 떨어지는 비대칭이 생겼다.
+        "equivalent_target_tables": "equivalentTargetTables",
     }
     if isinstance(value, dict):
         return {key_map.get(k, k): _camelize_nested(v) for k, v in value.items()}
