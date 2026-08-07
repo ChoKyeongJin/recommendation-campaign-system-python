@@ -1606,11 +1606,408 @@ def _lower_aggregate_membership(
     return compiled
 
 
+# ── 비율형 집계 lowering(물리 최적화) ───────────────────────────────────────────
+#
+# 위 semi-join 은 '집계 하나 vs 리터럴' 비교만 낮춘다. 캠페인 분모 평균처럼 **같은 관계를
+# 공유하는 집계 여럿의 산술식**(``SUM * 1.0 / NULLIF(COUNT(DISTINCT (a, b)), 0)``)은 비교 좌변이
+# Aggregate 가 아니라 Arithmetic 이라 그 fast-path 를 그대로 지나가고, 결과적으로 회원 1행마다
+# 상관 스칼라 서브쿼리가 **집계 개수만큼** 열린다. 실측(2026-08-07, CRMDW): 회원 69,308행 ×
+# 팩트 10,272행 × 서브쿼리 2개 → 회원 1행당 9.5~11.8ms, 전수 환산 11~14분(15초 timeout 초과).
+#
+# 여기서도 바뀌는 것은 물리 SQL 뿐이다 — IR·지문·query identity 는 그대로다. 동치 조건은 둘이다.
+#
+# 1. **이벤트가 없는 회원이 거짓**이어야 한다. 상관 스칼라는 그런 회원에게도 값을 주지만 집합형
+#    에는 그 회원의 그룹 자체가 없다. 연산자 허용목록 대신 빈 집합에서 식을 **상징 평가**해
+#    판정한다(위 ``_ZERO_COMPARISONS`` 의 트리 버전). 캠페인 평균은
+#    ``(0 * 1.0) / NULLIF(0, 0)`` = ``0 / NULL`` = NULL 이고 NULL 비교는 UNKNOWN 이라 거짓이다.
+# 2. 다중 컬럼 ``COUNT(DISTINCT (a, b))`` 는 HAVING 의 스칼라 집계식으로 쓸 수 없다. 구분자
+#    CONCAT 은 서로 다른 키를 충돌시키므로 대안이 아니다(카탈로그가 금지한다). 대신 **2단 집계**
+#    로 낮춘다 — 안쪽에서 ``(회원키, 키조합)`` 으로 묶어 부분집계를 내고 바깥에서 회원키로 다시
+#    묶는다.
+#
+#      분모  COUNT(DISTINCT (a, b))  = 바깥 COUNT(*)          (안쪽 그룹 하나 = 서로 다른 키 하나)
+#      분자  SUM(x)                  = 바깥 SUM(안쪽 SUM(x))  (합은 분할에 대해 분해된다)
+#
+#    안쪽 GROUP BY 의 NULL 취급은 ``SELECT DISTINCT`` 와 같으므로 'NULL 조합도 하나의 키' 라는
+#    기존 뜻이 그대로 보존된다.
+AGGREGATE_RATIO_MEMBERSHIP_OPTIMIZATION = "aggregate_ratio_membership_semi_join"
+
+SKIP_MIXED_AGGREGATE_RELATIONS = "MIXED_AGGREGATE_RELATIONS"
+SKIP_NON_DECOMPOSABLE_AGGREGATE = "NON_DECOMPOSABLE_AGGREGATE"
+SKIP_EMPTY_SET_UNDECIDABLE = "EMPTY_SET_VALUE_UNDECIDABLE"
+
+
+class _SqlNullValue:
+    """상징 평가에서의 SQL NULL. 파이썬 ``None`` 과 구분한다."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - 진단 표시용
+        return "SQL NULL"
+
+
+class _UndecidableValue:
+    """빈 집합 값을 정할 수 없음. 이 값이 나오면 동치를 증명 못 한 것이므로 낮추지 않는다."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - 진단 표시용
+        return "UNDECIDABLE"
+
+
+_SQL_NULL = _SqlNullValue()
+_UNDECIDABLE = _UndecidableValue()
+
+_ARITHMETIC_OPERATIONS: dict[str, Callable[[Any, Any], Any]] = {
+    "+": lambda left, right: left + right,
+    "-": lambda left, right: left - right,
+    "*": lambda left, right: left * right,
+    "/": lambda left, right: left / right,
+}
+_SCALAR_COMPARISONS: dict[str, Callable[[Any, Any], bool]] = {
+    "=": lambda left, right: left == right,
+    "!=": lambda left, right: left != right,
+    ">": lambda left, right: left > right,
+    ">=": lambda left, right: left >= right,
+    "<": lambda left, right: left < right,
+    "<=": lambda left, right: left <= right,
+}
+# 2단 집계에서 바깥이 안쪽 부분집계를 다시 접는 방법. 여기 없는 집계(avg 등)는 분해되지 않는다 —
+# 부분평균의 평균은 전체 평균이 아니다.
+_PARTIAL_AGGREGATE_ROLLUP = {"sum": "SUM", "count": "SUM", "min": "MIN", "max": "MAX"}
+
+
+def _is_sql_number(value: Any) -> bool:
+    return isinstance(value, (int, float, Decimal)) and not isinstance(value, bool)
+
+
+def _empty_set_value(scalar: event_ir.Scalar) -> Any:
+    """팩트 행이 하나도 없는 회원에서 이 스칼라가 갖는 값(정할 수 없으면 ``_UNDECIDABLE``)."""
+    if isinstance(scalar, Literal):
+        return scalar.value if _is_sql_number(scalar.value) else _UNDECIDABLE
+    if isinstance(scalar, Aggregate):
+        # 낮춘 형태도 상관 형태와 같은 접기를 쓴다(:func:`_membership_aggregate_sql`):
+        # COUNT 는 빈 집합에서 0, SUM 은 COALESCE(..., 0) 으로 0, 나머지는 NULL 이다.
+        if scalar.function in ("count", "sum"):
+            return 0
+        if scalar.function in ("avg", "min", "max"):
+            return _SQL_NULL
+        return _UNDECIDABLE
+    if isinstance(scalar, NullIf):
+        left = _empty_set_value(scalar.expression)
+        right = _empty_set_value(scalar.value)
+        if left is _UNDECIDABLE or right is _UNDECIDABLE:
+            return _UNDECIDABLE
+        if left is _SQL_NULL:
+            return _SQL_NULL
+        if right is _SQL_NULL:
+            # NULLIF(x, NULL) 은 x = NULL 이 UNKNOWN 이라 ELSE 로 빠져 x 를 그대로 돌려준다.
+            return left
+        return _SQL_NULL if left == right else left
+    if isinstance(scalar, Arithmetic):
+        left = _empty_set_value(scalar.left)
+        right = _empty_set_value(scalar.right)
+        if left is _UNDECIDABLE or right is _UNDECIDABLE:
+            return _UNDECIDABLE
+        if left is _SQL_NULL or right is _SQL_NULL:
+            return _SQL_NULL
+        if scalar.operator == "/" and right == 0:
+            # 0 나눗셈은 값이 아니라 런타임 오류다 — 빈 집합의 뜻을 단정할 수 없으므로 낮추지 않는다.
+            return _UNDECIDABLE
+        operation = _ARITHMETIC_OPERATIONS.get(scalar.operator)
+        if operation is None:
+            return _UNDECIDABLE
+        try:
+            return operation(left, right)
+        except (TypeError, ArithmeticError):
+            # Decimal × float 처럼 파이썬에서 섞이지 않는 조합 — 값을 지어내지 않는다.
+            return _UNDECIDABLE
+    return _UNDECIDABLE
+
+
+def _empty_set_comparison_is_false(condition: Comparison) -> bool | None:
+    """빈 집합에서 이 비교가 확실히 거짓/UNKNOWN 이면 True, 참이면 False, 못 정하면 None."""
+    left = _empty_set_value(condition.left)
+    right = _empty_set_value(condition.right)
+    if left is _UNDECIDABLE or right is _UNDECIDABLE:
+        return None
+    if left is _SQL_NULL or right is _SQL_NULL:
+        # NULL 비교는 UNKNOWN 이고 WHERE 는 UNKNOWN 을 걸러낸다 — 그 회원은 대상이 아니다.
+        return True
+    test = _SCALAR_COMPARISONS.get(condition.operator)
+    if test is None:
+        return None
+    try:
+        return not test(left, right)
+    except TypeError:
+        return None
+
+
+def _is_membership_scalar_tree(scalar: Any) -> bool:
+    """리터럴·산술·NULLIF·집계로만 이뤄진 스칼라인가(집계 안쪽은 따로 검사한다)."""
+    if isinstance(scalar, (Literal, Aggregate)):
+        return True
+    if isinstance(scalar, Arithmetic):
+        return _is_membership_scalar_tree(scalar.left) and _is_membership_scalar_tree(
+            scalar.right
+        )
+    if isinstance(scalar, NullIf):
+        return _is_membership_scalar_tree(scalar.expression) and _is_membership_scalar_tree(
+            scalar.value
+        )
+    return False
+
+
+def _ratio_membership_aggregates(condition: Comparison) -> tuple[Aggregate, ...] | None:
+    """비교에서 집계를 모은다. 이 lowering 이 볼 모양이 아니면 None(영수증도 남기지 않는다).
+
+    '집계 하나 vs 리터럴' 은 위 :func:`_lower_aggregate_membership` 이 이미 소유한다 — 두
+    최적화가 같은 비교를 두고 경쟁하지 않도록 여기서는 보지 않는다.
+    """
+    if isinstance(condition.left, Aggregate) or isinstance(condition.right, Aggregate):
+        return None
+    aggregates = tuple(
+        node for node in event_ir.walk(condition) if isinstance(node, Aggregate)
+    )
+    return aggregates or None
+
+
+def _ratio_membership_skip_reason(
+    condition: Comparison, aggregates: tuple[Aggregate, ...], context: CompileContext
+) -> str | None:
+    """DB 조회 없이 IR 한 번만 훑어 적용 가능성을 판정한다(없으면 None)."""
+    if not context.optimize_aggregate_membership:
+        return SKIP_OPTIMIZATION_DISABLED
+    for side in (condition.left, condition.right):
+        if not _is_membership_scalar_tree(side):
+            # 주체 컬럼 참조 같은 다른 노드가 섞이면 회원키로 묶는 순간 뜻이 달라진다.
+            return SKIP_UNSUPPORTED_SCOPE
+    relation = aggregates[0].relation
+    if any(item.relation != relation for item in aggregates[1:]):
+        # 관계가 다르면 한 번의 GROUP BY 로 셀 수 없다(기간이 한쪽에만 걸린 식이 여기 걸린다).
+        return SKIP_MIXED_AGGREGATE_RELATIONS
+    if any(
+        isinstance(node, (Group, Join, Project, Summarize, Order, Limit))
+        for node in event_ir.walk(relation)
+    ):
+        # 이미 grain 이 회원이 아니거나 관계가 materialize 돼 있다 — 다시 낮추지 않는다.
+        return SKIP_ALREADY_SET_BASED
+    source = _relation_root_source(relation)
+    if source is None or source.correlation != "subject":
+        return SKIP_NO_CORRELATED_AGGREGATE
+    spec = context.registry.get(source.name)
+    if spec is None:
+        return SKIP_UNSUPPORTED_SCOPE
+    if spec.binding != "fact_table":
+        return SKIP_SUBJECT_COLUMN_FAST_PATH
+    if _group_subject_sql(spec, context) is None:
+        return SKIP_NO_GROUP_SUBJECT_BINDING
+    tuple_aggregates = [item for item in aggregates if isinstance(item.expression, Tuple)]
+    if len(tuple_aggregates) > 1:
+        # 서로 다른 키 조합 둘을 한 번의 2단 집계로 셀 수 없다(안쪽 분할이 하나뿐이다).
+        return SKIP_UNSUPPORTED_SCOPE
+    two_level = bool(tuple_aggregates)
+    for item in aggregates:
+        for node in event_ir.walk(item):
+            if isinstance(node, Aggregate) and node is not item:
+                return SKIP_UNSUPPORTED_SCOPE
+            if isinstance(node, FieldRef):
+                referenced = (context.fields or {}).get(node.name)
+                if referenced is None or referenced.source != source.name:
+                    # 바깥 주체(또는 다른 소스)를 참조하면 group key 로 묶는 순간 의미가 달라진다.
+                    return SKIP_SUBJECT_REFERENCE_INSIDE_AGGREGATE
+        if isinstance(item.expression, Tuple):
+            continue
+        if two_level and (item.distinct or item.function not in _PARTIAL_AGGREGATE_ROLLUP):
+            # 2단 집계에서는 바깥이 안쪽 부분집계를 다시 접을 수 있어야 한다. distinct 는
+            # 분할 경계를 넘어 중복을 제거해야 하므로 부분집계로 분해되지 않는다.
+            return SKIP_NON_DECOMPOSABLE_AGGREGATE
+    decided = _empty_set_comparison_is_false(condition)
+    if decided is None:
+        return SKIP_EMPTY_SET_UNDECIDABLE
+    if not decided:
+        # 이벤트가 없는 회원도 참이 되는 조건. 집합형 semi-join 은 그런 회원을 표현하지 못한다.
+        return SKIP_ZERO_SENSITIVE_COMPARISON
+    return None
+
+
+def _membership_aggregate_sql(
+    aggregate: Aggregate, plan: RelationPlan, context: CompileContext
+) -> str:
+    """HAVING 자리의 집계식. 접기는 상관 스칼라 경로(:func:`_aggregate_subquery`)와 같다."""
+    expression = _aggregate_expression(aggregate, plan, context)
+    return (
+        context.dialect.coalesce(expression, "0")
+        if aggregate.function == "sum"
+        else expression
+    )
+
+
+def _membership_scalar_sql(
+    scalar: event_ir.Scalar, aggregate_sql: dict[int, str], context: CompileContext
+) -> str:
+    """스칼라 트리를 HAVING 식으로 렌더한다 — 집계 자리에는 미리 계산한 SQL 을 꽂는다."""
+    if isinstance(scalar, Aggregate):
+        rendered = aggregate_sql.get(id(scalar))
+        if rendered is None:
+            raise SqlCompileError("집합형 집계 lowering 이 집계 하나를 놓쳤습니다")
+        return rendered
+    if isinstance(scalar, Literal):
+        return compile_scalar(scalar, context)
+    if isinstance(scalar, Arithmetic):
+        left = _membership_scalar_sql(scalar.left, aggregate_sql, context)
+        right = _membership_scalar_sql(scalar.right, aggregate_sql, context)
+        return f"({left} {scalar.operator} {right})"
+    if isinstance(scalar, NullIf):
+        return context.dialect.null_if(
+            _membership_scalar_sql(scalar.expression, aggregate_sql, context),
+            _membership_scalar_sql(scalar.value, aggregate_sql, context),
+        )
+    raise SqlCompileError(f"집합형 집계 lowering 이 지원하지 않는 스칼라입니다: {scalar!r}")
+
+
+def _ratio_membership_body(
+    condition: Comparison,
+    aggregates: tuple[Aggregate, ...],
+    plan: RelationPlan,
+    group_key: str,
+    context: CompileContext,
+) -> str:
+    """회원키를 돌려주는 비상관 집합 쿼리(1단 GROUP BY 또는 2단 집계)."""
+    tuple_aggregate = next(
+        (item for item in aggregates if isinstance(item.expression, Tuple)), None
+    )
+    aggregate_sql: dict[int, str] = {}
+    if tuple_aggregate is None:
+        plan.group_by = [group_key]
+        aggregate_sql = {
+            id(item): _membership_aggregate_sql(item, plan, context) for item in aggregates
+        }
+        having = _membership_comparison_sql(condition, aggregate_sql, context)
+        return f"{_subquery(plan, group_key, context)} HAVING {having}"
+
+    # 2단 집계. 안쪽은 (회원키, 키조합) 분할의 부분집계, 바깥은 그 분할을 회원키로 다시 접는다.
+    member_alias = f"EM{context.next_index()}"
+    projections = [f"{group_key} AS {member_alias}"]
+    for item in aggregates:
+        if item is tuple_aggregate:
+            # 안쪽 그룹 하나가 곧 서로 다른 키 조합 하나다 — 바깥에서 그 개수를 센다.
+            aggregate_sql[id(item)] = "COUNT(*)"
+            continue
+        partial_alias = f"EP{context.next_index()}"
+        projections.append(
+            f"{_aggregate_expression(item, plan, context)} AS {partial_alias}"
+        )
+        rolled = f"{_PARTIAL_AGGREGATE_ROLLUP[item.function]}({partial_alias})"
+        aggregate_sql[id(item)] = (
+            context.dialect.coalesce(rolled, "0") if item.function == "sum" else rolled
+        )
+    plan.group_by = [group_key, *_tuple_parts(tuple_aggregate.expression, plan, context)]
+    inner = _subquery(plan, ", ".join(projections), context)
+    derived_alias = f"EG{context.next_index()}"
+    having = _membership_comparison_sql(condition, aggregate_sql, context)
+    return (
+        f"SELECT {member_alias} FROM ({inner}) AS {derived_alias} "
+        f"GROUP BY {member_alias} HAVING {having}"
+    )
+
+
+def _membership_comparison_sql(
+    condition: Comparison, aggregate_sql: dict[int, str], context: CompileContext
+) -> str:
+    left = _membership_scalar_sql(condition.left, aggregate_sql, context)
+    right = _membership_scalar_sql(condition.right, aggregate_sql, context)
+    return f"{left} {condition.operator} {right}"
+
+
+def _ratio_membership_predicate(
+    condition: Comparison, aggregates: tuple[Aggregate, ...], context: CompileContext
+) -> CompiledCondition | None:
+    """같은 관계를 공유하는 집계 산술 비교 → 비상관 집합 쿼리에 대한 회원 semi-join."""
+    relation = aggregates[0].relation
+    source = _relation_root_source(relation)
+    uncorrelated = _uncorrelated_relation(relation)
+    if source is None or uncorrelated is None:
+        return None
+    spec = context.event_spec(source.name)
+    plan = compile_relation(uncorrelated, context)
+    if (
+        plan.binding != "fact_table"
+        or plan.group_by
+        or plan.projection
+        or plan.order_by
+        or plan.limit is not None
+    ):
+        return None
+    group_key = _group_subject_sql(spec, context)
+    if group_key is None:
+        return None
+    # 변환 실패(TRY_CAST → NULL) 회원키는 NULL 그룹으로 모인다. non-null 회원키와는 어차피
+    # 매칭되지 않지만, 명시적으로 제외해 IN 술어를 2값으로 유지한다.
+    plan.where.append(f"{group_key} IS NOT NULL")
+    body = _ratio_membership_body(condition, aggregates, plan, group_key, context)
+    if re.search(rf"\b{re.escape(context.subject.alias)}\.", body):
+        # 성능 구조 가드: 낮췄는데 바깥 주체 참조가 남았다면 상관이 사라지지 않은 것이다.
+        _record_optimization(
+            context,
+            status="skipped",
+            source=source.name,
+            reason=SKIP_RESIDUAL_SUBJECT_CORRELATION,
+            optimization=AGGREGATE_RATIO_MEMBERSHIP_OPTIMIZATION,
+        )
+        return None
+    subject_key = f"{context.subject.alias}.{spec.subject_key}"
+    return CompiledCondition(sql=f"{subject_key} IN ({body})", params=plan.params)
+
+
+def _lower_aggregate_ratio_membership(
+    condition: Comparison, context: CompileContext
+) -> CompiledCondition | None:
+    """저비용 fast-path: 집계가 섞인 산술 비교가 아니면 **즉시** 기존 경로로 돌려보낸다."""
+    aggregates = _ratio_membership_aggregates(condition)
+    if aggregates is None:
+        return None
+    source = _relation_root_source(aggregates[0].relation)
+    source_name = source.name if source is not None else None
+    reason = _ratio_membership_skip_reason(condition, aggregates, context)
+    if reason is not None:
+        _record_optimization(
+            context,
+            status="skipped",
+            source=source_name,
+            reason=reason,
+            optimization=AGGREGATE_RATIO_MEMBERSHIP_OPTIMIZATION,
+        )
+        return None
+    compiled = _ratio_membership_predicate(condition, aggregates, context)
+    if compiled is None:
+        _record_optimization(
+            context,
+            status="skipped",
+            source=source_name,
+            reason=SKIP_UNSUPPORTED_SCOPE,
+            optimization=AGGREGATE_RATIO_MEMBERSHIP_OPTIMIZATION,
+        )
+        return None
+    _record_optimization(
+        context,
+        status="applied",
+        source=source_name,
+        node=condition,
+        optimization=AGGREGATE_RATIO_MEMBERSHIP_OPTIMIZATION,
+    )
+    return compiled
+
+
 def _compile_comparison(condition: Comparison, context: CompileContext) -> CompiledCondition:
     # 회원 상관 스칼라 집계는 회원마다 팩트를 다시 집계한다 — 의미가 보존되는 모양에서만 집합형
     # semi-join 으로 낮춘다. 적용 불가면 아무 것도 컴파일하지 않고 즉시 기존 경로로 돌아간다
     # (파라미터 카운터도 건드리지 않으므로 기존 SQL 은 바이트 동일하다).
     lowered = _lower_aggregate_membership(condition, context)
+    if lowered is None:
+        # 집계 여럿의 산술식(캠페인 분모 평균)은 좌변이 Aggregate 가 아니라 Arithmetic 이라 위
+        # fast-path 를 그대로 지나간다 — 2단 집계 semi-join 이 그 모양을 맡는다.
+        lowered = _lower_aggregate_ratio_membership(condition, context)
     if lowered is not None:
         return lowered
     # 그룹 집계 비교('한 주문에 3개 이상')는 스칼라 서브쿼리로 표현할 수 없다 — grain 이 회원이 아니라

@@ -209,9 +209,11 @@ def connection() -> sqlite3.Connection:
         database.close()
 
 
-def _compile(expression: event_ir.Condition, catalog) -> str:
+def _compile(expression: event_ir.Condition, catalog, *, optimize: bool = True) -> str:
     context = catalog.compile_context(
-        literals=True, dialect=sql_dialect.get_dialect("ansi")
+        literals=True,
+        dialect=sql_dialect.get_dialect("ansi"),
+        optimize_aggregate_membership=optimize,
     )
     return event_compiler.compile_expression(expression, context=context).sql
 
@@ -435,6 +437,150 @@ def test_period_window_does_not_split_numerator_from_denominator(
         f"SELECT {sql} FROM MEMBER B WHERE B.MEMBER_NO = 13"
     ).fetchone()[0]
     assert value == 900.0  # 4월 행 하나만: 900 / 1
+
+
+# ── 물리 lowering 동치(상관 스칼라 ↔ 2단 집계 semi-join) ──────────────────────────
+#
+# 낮춘 SQL 은 팩트를 한 번만 읽는다. 그 대가로 두 가지를 증명해야 한다.
+#
+#   1. 이벤트가 없는 회원 — 상관 모양은 값을 주지만(0/NULL) 집합형에는 그 그룹이 없다.
+#   2. SUM 의 NULL — 안쪽 부분합이 NULL 인 분할이 섞여도 바깥 합이 전체 합과 같아야 한다.
+#
+# 아래는 그 둘을 **같은 데이터에서 두 SQL 을 돌려** 잰다. 문자열 비교로는 잡히지 않는 축이다.
+
+
+def _campaign_average_condition(operator: str, threshold: float) -> event_ir.Condition:
+    return event_ir.Comparison(
+        operator=operator,
+        left=_campaign_average_scalar(),
+        right=event_ir.Literal(value=threshold),
+    )
+
+
+@pytest.mark.parametrize("threshold", [0, 100, 150, 200, 300, 600, 1000])
+def test_lowering_selects_exactly_the_same_members(
+    threshold: int, connection, catalog
+) -> None:
+    """임계값을 훑어도 두 물리 계획이 같은 회원 집합을 뜻한다."""
+
+    condition = _campaign_average_condition(">=", threshold)
+    lowered = _compile(condition, catalog)
+    correlated = _compile(condition, catalog, optimize=False)
+
+    # 정말 다른 두 계획을 재고 있는지부터 확인한다(둘 다 상관이면 이 대조는 공허하다).
+    assert " IN (" in lowered and "GROUP BY" in lowered
+    assert "R.MBR_NO = B.MEMBER_NO" not in lowered
+    assert "R.MBR_NO = B.MEMBER_NO" in correlated
+
+    assert _members(connection, lowered) == _members(connection, correlated)
+
+
+@pytest.mark.parametrize("operator", [">=", ">", "<=", "<", "=", "!="])
+def test_lowering_is_equivalent_for_every_comparison_operator(
+    operator: str, connection, catalog
+) -> None:
+    """0 분모 NULL 가드 덕분에 반응이 없는 회원은 **어느 연산자에서도** 참이 아니다.
+
+    그래서 이 식은 ``<=`` · ``!=`` 처럼 보통은 집합형으로 낮출 수 없는 연산자에서도 낮출 수
+    있다. 낮출 수 있다는 판정과 실제 결과가 어긋나지 않는지 결과집합으로 잰다.
+    """
+
+    condition = _campaign_average_condition(operator, 200)
+    lowered = _compile(condition, catalog)
+    assert " IN (" in lowered
+    assert _members(connection, lowered) == _members(
+        connection, _compile(condition, catalog, optimize=False)
+    )
+    assert 1 not in _members(connection, lowered)  # 반응 행이 없는 회원
+
+
+def test_lowering_keeps_the_multi_column_distinct_key_apart(connection, catalog) -> None:
+    """m11 의 ``('A:B','C')`` 와 ``('A','B:C')`` 는 낮춘 뒤에도 서로 다른 키다(분모 2).
+
+    안쪽 ``GROUP BY`` 가 구분자 결합으로 바뀌면 분모가 1 이 되어 평균이 200 → 400 으로 부푼다.
+    그러면 임계 300 에서 m11 이 조용히 대상에 들어온다.
+    """
+
+    assert 11 in _members(connection, _compile(_campaign_average_condition(">=", 200), catalog))
+    assert 11 not in _members(connection, _compile(_campaign_average_condition(">=", 300), catalog))
+
+
+# (회원, 캠페인, 실행회차, 금액) — 금액 NULL 이 섞인 분할을 만든다.
+NULL_AMOUNT_RESPONSES: tuple[tuple[int, str, str, float | None], ...] = (
+    # m1 한 캠페인의 모든 금액이 NULL → 안쪽 부분합이 NULL 인 분할 하나뿐
+    (1, "C1", "1", None),
+    (1, "C1", "1", None),
+    # m2 한 캠페인은 값이 있고 다른 캠페인은 전부 NULL → 바깥 SUM 이 NULL 분할을 건너뛴다
+    (2, "C1", "1", 100.0),
+    (2, "C1", "1", None),
+    (2, "C2", "1", None),
+    # m3 모든 분할이 NULL → COALESCE 가 0 으로 접는다
+    (3, "C1", "1", None),
+    (3, "C2", "1", None),
+    # m4 NULL 없음(대조군)
+    (4, "C1", "1", 100.0),
+    (4, "C2", "1", 300.0),
+)
+
+
+@pytest.fixture()
+def null_amount_connection() -> sqlite3.Connection:
+    database = sqlite3.connect(":memory:")
+    database.executescript(SCHEMA)
+    database.executemany(
+        "INSERT INTO MEMBER (MEMBER_NO) VALUES (?)", [(index,) for index in range(1, 6)]
+    )
+    database.executemany(
+        "INSERT INTO RESPONSE "
+        "(MBR_NO, CAMP_ID, CAMP_EXEC_NO, BUY_AMT, BUY_RSPN_YN, CANCEL_YN, ORDER_DATE) "
+        "VALUES (?, ?, ?, ?, 'Y', 'N', '20260301')",
+        NULL_AMOUNT_RESPONSES,
+    )
+    database.commit()
+    try:
+        yield database
+    finally:
+        database.close()
+
+
+def test_null_amounts_survive_the_two_level_sum_decomposition(
+    null_amount_connection, catalog
+) -> None:
+    """SUM 분해의 동치 조건 — 부분합이 NULL 인 분할이 섞여도 전체 합이 달라지지 않는다.
+
+    바깥 ``SUM`` 은 NULL 부분합을 건너뛰고, 원래 ``SUM`` 도 NULL 행을 건너뛴다. 두 결과가
+    같다는 것이 2단 집계로 낮출 수 있는 이유이며, 여기서 값 자체로 확인한다.
+    """
+
+    context = catalog.compile_context(
+        literals=True, dialect=sql_dialect.get_dialect("ansi")
+    )
+    scalar = event_compiler.compile_scalar(_campaign_average_scalar(), context)
+    values = {
+        row[0]: row[1]
+        for row in null_amount_connection.execute(
+            f"SELECT B.MEMBER_NO, {scalar} FROM MEMBER B ORDER BY B.MEMBER_NO"
+        ).fetchall()
+    }
+    assert values == {
+        1: 0.0,     # 금액이 전부 NULL → COALESCE 0, 분모 1
+        2: 50.0,    # 100 / 2  (NULL 분할도 서로 다른 키로 센다)
+        3: 0.0,     # 전부 NULL → 0 / 2
+        4: 200.0,   # (100+300) / 2
+        5: None,    # 반응 행 없음 → 분모 0 → NULL
+    }
+
+
+@pytest.mark.parametrize("threshold", [0, 50, 200])
+def test_lowering_matches_the_correlated_shape_when_amounts_are_null(
+    threshold: int, null_amount_connection, catalog
+) -> None:
+    condition = _campaign_average_condition(">=", threshold)
+    lowered = _compile(condition, catalog)
+    assert " IN (" in lowered
+    assert _members(null_amount_connection, lowered) == _members(
+        null_amount_connection, _compile(condition, catalog, optimize=False)
+    )
 
 
 # ── 회원별 스칼라 지표 ─────────────────────────────────────────────────────────────

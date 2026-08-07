@@ -49,11 +49,54 @@ def catalog():
     return audience_runtime.resolve_audience_catalog()
 
 
-def _sql(expression: event_ir.Condition, catalog, dialect: str) -> str:
+# 캠페인 반응 팩트의 물리 바인딩 조각 — golden 을 두 모양(상관/집합형)에서 함께 쓴다.
+FACT = (
+    "MCS_CAMP_MBR_RSPN_FT R "
+    "INNER JOIN Z_CAMPAIGN ZC ON ZC.CAMP_ID = R.CAMP_ID "
+    "AND ZC.CAMP_EXEC_NO = R.CAMP_EXEC_NO"
+)
+MEMBER_KEY = "TRY_CAST(R.MBR_NO AS BIGINT)"
+CORRELATION = f"{MEMBER_KEY} = B.MEMBER_NO"
+SOURCE_PREDICATES = (
+    "R.CGRP_TYPE_CD = 'T' AND R.BUY_RSPN_YN = 'Y' AND ISNULL(ZC.CANCEL_YN, 'N') = 'N'"
+)
+
+
+def _sql(
+    expression: event_ir.Condition, catalog, dialect: str, *, optimize: bool = True
+) -> str:
     context = catalog.compile_context(
-        literals=True, dialect=sql_dialect.get_dialect(dialect)
+        literals=True,
+        dialect=sql_dialect.get_dialect(dialect),
+        optimize_aggregate_membership=optimize,
     )
     return event_compiler.compile_expression(expression, context=context).sql
+
+
+def _correlated_sql(dialect: str) -> str:
+    """물리 lowering 을 끈 모양 — 회원 1행마다 상관 스칼라 서브쿼리 2개."""
+
+    coalesce = "ISNULL" if dialect == "tsql" else "COALESCE"
+    return (
+        f"(((SELECT {coalesce}(SUM(R.BUY_AMT), 0) FROM {FACT} "
+        f"WHERE {CORRELATION} AND {SOURCE_PREDICATES}) * 1.0) "
+        f"/ NULLIF((SELECT COUNT(*) FROM (SELECT DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO "
+        f"FROM {FACT} WHERE {CORRELATION} AND {SOURCE_PREDICATES}) AS ED0), 0)) >= 100000"
+    )
+
+
+def _lowered_sql(dialect: str) -> str:
+    """물리 lowering 을 켠 모양 — 팩트 한 번 스캔하는 2단 집계 semi-join."""
+
+    coalesce = "ISNULL" if dialect == "tsql" else "COALESCE"
+    return (
+        f"B.MEMBER_NO IN (SELECT EM0 FROM (SELECT {MEMBER_KEY} AS EM0, "
+        f"SUM(R.BUY_AMT) AS EP1 FROM {FACT} "
+        f"WHERE {SOURCE_PREDICATES} AND {MEMBER_KEY} IS NOT NULL "
+        f"GROUP BY {MEMBER_KEY}, R.CAMP_ID, R.CAMP_EXEC_NO) AS EG2 "
+        f"GROUP BY EM0 "
+        f"HAVING (({coalesce}(SUM(EP1), 0) * 1.0) / NULLIF(COUNT(*), 0)) >= 100000)"
+    )
 
 
 def _campaign_average_expression(catalog) -> event_ir.Condition:
@@ -251,46 +294,114 @@ def test_campaign_average_declares_the_capabilities_it_uses(catalog) -> None:
 
 @pytest.mark.parametrize("dialect", DIALECTS)
 def test_campaign_average_sql_per_dialect(dialect: str, catalog) -> None:
-    """방언별 golden SQL. 다중 컬럼 distinct 는 **네 방언 모두** DISTINCT 서브쿼리로 낮춘다.
+    """방언별 golden SQL — 팩트를 한 번만 스캔하는 2단 집계 semi-join.
 
-    네이티브 문법을 쓰지 않는 것이 결정이다 — MySQL 의 ``COUNT(DISTINCT a, b)`` 는 인자 중
-    하나라도 NULL 인 행을 세지 않고 PostgreSQL 의 행 값은 센다. 같은 IR 이 방언에 따라 다른
-    수를 세면 그것은 최적화가 아니라 조용한 오답이다.
+    안쪽은 ``(회원키, 캠페인 실행키)`` 로 묶어 부분합을 내고 바깥은 회원키로 다시 묶는다.
+    분모는 안쪽 그룹 수(``COUNT(*)``)이고 분자는 부분합의 합이다. 방언별로 갈리는 것은 SUM 을
+    감싸는 COALESCE 뿐이며, 나머지 물리 조각은 카탈로그가 T-SQL 문자열로 소유한다.
     """
 
-    sql = _sql(_campaign_average_expression(catalog), catalog, dialect)
-    coalesce = "ISNULL" if dialect == "tsql" else "COALESCE"
-    fact = (
-        "MCS_CAMP_MBR_RSPN_FT R "
-        "INNER JOIN Z_CAMPAIGN ZC ON ZC.CAMP_ID = R.CAMP_ID "
-        "AND ZC.CAMP_EXEC_NO = R.CAMP_EXEC_NO"
-    )
-    predicates = (
-        "TRY_CAST(R.MBR_NO AS BIGINT) = B.MEMBER_NO "
-        "AND R.CGRP_TYPE_CD = 'T' AND R.BUY_RSPN_YN = 'Y' "
-        "AND ISNULL(ZC.CANCEL_YN, 'N') = 'N'"
-    )
-    assert sql == (
-        f"(((SELECT {coalesce}(SUM(R.BUY_AMT), 0) FROM {fact} WHERE {predicates}) * 1.0) "
-        f"/ NULLIF((SELECT COUNT(*) FROM (SELECT DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO "
-        f"FROM {fact} WHERE {predicates}) AS ED0), 0)) >= 100000"
+    assert _sql(_campaign_average_expression(catalog), catalog, dialect) == _lowered_sql(
+        dialect
     )
 
 
 @pytest.mark.parametrize("dialect", DIALECTS)
-def test_campaign_average_sql_meaning_guards(dialect: str, catalog) -> None:
-    """뜻 단위 가드 — 분자·분모·0 분모·정수 나눗셈·구분자 결합 금지."""
+def test_campaign_average_correlated_shape_is_unchanged_when_optimization_is_off(
+    dialect: str, catalog
+) -> None:
+    """물리 lowering 은 스위치다 — 끄면 이전 상관 스칼라 SQL 이 **바이트 동일**하게 나온다.
 
-    sql = _sql(_campaign_average_expression(catalog), catalog, dialect)
-    assert "AVG(R.BUY_AMT)" not in sql
-    assert "SUM(R.BUY_AMT)" in sql
-    assert "SELECT DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO" in sql
-    assert "NULLIF(" in sql and ", 0)" in sql
-    assert "* 1.0" in sql
-    # 구분자 결합 키는 값 안의 구분자·NULL 로 서로 다른 키가 충돌한다.
-    assert "CONCAT(R.CAMP_ID" not in sql
-    # 네이티브 다중 컬럼 문법은 NULL 규칙이 방언마다 달라 쓰지 않는다.
-    assert "COUNT(DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO)" not in sql
+    이것이 'IR 은 그대로이고 물리 SQL 만 바뀐다' 는 주장의 계약이다. 끈 모양이 곧 이 최적화가
+    보존해야 할 기준 의미이며, 아래 sqlite 실행 대조가 두 모양의 결과집합이 같음을 잰다.
+    """
+
+    assert _sql(
+        _campaign_average_expression(catalog), catalog, dialect, optimize=False
+    ) == _correlated_sql(dialect)
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+def test_campaign_average_sql_meaning_guards(dialect: str, catalog) -> None:
+    """뜻 단위 가드 — 분자·분모·0 분모·정수 나눗셈·구분자 결합 금지.
+
+    모양이 상관에서 집합형으로 바뀌어도 **뜻은 그대로**여야 한다: 분자는 여전히 행 합계이고
+    분모는 여전히 서로 다른 ``(CAMP_ID, CAMP_EXEC_NO)`` 조합의 개수다.
+    """
+
+    for optimize in (True, False):
+        sql = _sql(_campaign_average_expression(catalog), catalog, dialect, optimize=optimize)
+        # 분자는 행당 평균이 아니라 금액 합계다.
+        assert "AVG(R.BUY_AMT)" not in sql
+        assert "SUM(R.BUY_AMT)" in sql
+        # 0 분모 가드와 정수 나눗셈 방지가 남아 있다.
+        assert "NULLIF(" in sql and ", 0)" in sql
+        assert "* 1.0" in sql
+        # 구분자 결합 키는 값 안의 구분자·NULL 로 서로 다른 키가 충돌한다.
+        assert "CONCAT(R.CAMP_ID" not in sql
+        # 네이티브 다중 컬럼 문법은 NULL 규칙이 방언마다 달라 쓰지 않는다.
+        assert "COUNT(DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO)" not in sql
+
+    lowered = _sql(_campaign_average_expression(catalog), catalog, dialect)
+    correlated = _sql(
+        _campaign_average_expression(catalog), catalog, dialect, optimize=False
+    )
+    # 분모 키 조합은 상관 모양에서 DISTINCT 서브쿼리, 집합형에서 안쪽 GROUP BY 가 만든다.
+    # 두 문법의 NULL 취급이 같으므로('NULL 조합도 하나의 키') 세는 수가 같다.
+    assert "SELECT DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO" in correlated
+    assert f"GROUP BY {MEMBER_KEY}, R.CAMP_ID, R.CAMP_EXEC_NO" in lowered
+    assert "NULLIF(COUNT(*), 0)" in lowered
+    # 회원 상관 술어가 남아 있으면 낮춘 것이 아니다.
+    assert CORRELATION in correlated
+    assert CORRELATION not in lowered
+    assert f"{MEMBER_KEY} IS NOT NULL" in lowered
+
+
+@pytest.mark.parametrize("dialect", DIALECTS)
+def test_campaign_average_scans_the_fact_once(dialect: str, catalog) -> None:
+    """상관 모양은 회원 1행마다 팩트를 2번 집계한다 — 낮춘 모양은 한 번만 읽는다."""
+
+    lowered = _sql(_campaign_average_expression(catalog), catalog, dialect)
+    correlated = _sql(
+        _campaign_average_expression(catalog), catalog, dialect, optimize=False
+    )
+    assert correlated.count("MCS_CAMP_MBR_RSPN_FT") == 2
+    assert lowered.count("MCS_CAMP_MBR_RSPN_FT") == 1
+
+
+def test_campaign_average_lowering_leaves_a_receipt(catalog) -> None:
+    """무엇을 낮췄는지 영수증에 남는다 — 지문이 IR 이 그대로임을 증언한다."""
+
+    expression = _campaign_average_expression(catalog)
+    receipts: list[dict] = []
+    context = catalog.compile_context(
+        literals=True,
+        dialect=sql_dialect.get_dialect("tsql"),
+        optimization_receipts=receipts,
+    )
+    event_compiler.compile_expression(expression, context=context)
+    assert receipts == [
+        {
+            "optimization": event_compiler.AGGREGATE_RATIO_MEMBERSHIP_OPTIMIZATION,
+            "status": "applied",
+            "source": "campaign_purchase_response",
+            "preserved_expression_fingerprint": event_compiler._capability_node_id(
+                expression
+            ),
+        }
+    ]
+
+
+def test_campaign_average_lowering_does_not_change_the_ir(catalog) -> None:
+    """물리 lowering 은 IR 을 건드리지 않는다 — 컴파일 전후 직렬화가 같다."""
+
+    expression = _campaign_average_expression(catalog)
+    before = expression.to_dict()
+    _sql(expression, catalog, "tsql")
+    assert expression.to_dict() == before
+    assert event_ir.expression_capabilities(expression) == (
+        event_ir.expression_capabilities(_campaign_average_expression(catalog))
+    )
 
 
 def test_campaign_average_numerator_and_denominator_share_one_relation(catalog) -> None:
@@ -412,7 +523,11 @@ def test_declared_synthesis_sql_is_the_campaign_denominator_average(
     assert sql == _sql(_campaign_average_expression(catalog), catalog, dialect)
     assert "AVG(R.BUY_AMT)" not in sql
     assert "SUM(R.BUY_AMT)" in sql
-    assert "SELECT DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO" in sql
+    assert f"GROUP BY {MEMBER_KEY}, R.CAMP_ID, R.CAMP_EXEC_NO" in sql
+    # 물리 lowering 을 꺼도 두 경로가 같은 SQL 이어야 한다(뜻이 같다는 증거는 모양과 무관하다).
+    assert _sql(synthesis.expression, catalog, dialect, optimize=False) == _sql(
+        _campaign_average_expression(catalog), catalog, dialect, optimize=False
+    )
 
 
 def test_declared_synthesis_receipt_names_its_evidence() -> None:

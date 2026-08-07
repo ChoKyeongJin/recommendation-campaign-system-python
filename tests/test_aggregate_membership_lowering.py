@@ -208,7 +208,11 @@ def test_boolean_threshold_is_not_treated_as_a_number() -> None:
 
 
 def test_sum_aggregate_is_not_lowered_without_its_own_equivalence_proof() -> None:
-    """빈 집합에서 SUM 은 NULL(→COALESCE 0)이고 음수 합도 가능하다 — 별도 증명 전까지 제외."""
+    """빈 집합에서 SUM 은 NULL(→COALESCE 0)이고 음수 합도 가능하다 — 별도 증명 전까지 제외.
+
+    아래 8절의 비율형 lowering 은 그 증명을 0 분모 NULL 가드가 있는 **비율식**에 한해 갖는다.
+    임계값과 직접 비교되는 맨 SUM 은 여전히 이 경로가 소유하고, 여전히 낮추지 않는다.
+    """
     expression = event_ir.Comparison(
         operator=">=",
         left=event_ir.Aggregate(
@@ -495,3 +499,207 @@ def test_performance_guard_ignores_semi_join_subqueries() -> None:
     )
 
     assert sql_guard.correlated_scalar_aggregates(semi, "B") == []
+
+
+# ── 8. 비율형: 같은 관계를 공유하는 집계 여럿을 2단 집계로 낮춘다 ────────────────
+#
+# 위 경로는 '집계 하나 vs 리터럴' 만 본다. 캠페인 분모 평균은 비교 좌변이 Arithmetic 이라 그
+# fast-path 를 그대로 지나가고, 회원 1행마다 상관 스칼라 서브쿼리가 집계 개수만큼 열린다.
+# 여기서 고정하는 것은 그 모양을 낮출 수 있는 **경계**다.
+
+RESPONSE = "campaign_purchase_response"
+
+
+def _campaign_average(
+    operator: str = ">=",
+    threshold: object = 100000,
+    *,
+    relation: event_ir.Relation | None = None,
+    numerator: event_ir.Aggregate | None = None,
+    denominator: event_ir.Scalar | None = None,
+) -> event_ir.Comparison:
+    """``SUM(금액) * 1.0 / NULLIF(COUNT(DISTINCT (캠페인, 실행회차)), 0) <operator> 임계``."""
+    shared: event_ir.Relation = relation or event_ir.Source(name=RESPONSE)
+    return event_ir.Comparison(
+        operator=operator,
+        left=event_ir.Arithmetic(
+            operator="/",
+            left=event_ir.Arithmetic(
+                operator="*",
+                left=numerator
+                or event_ir.Aggregate(
+                    function="sum",
+                    relation=shared,
+                    expression=event_ir.FieldRef(name=f"{RESPONSE}.amount"),
+                ),
+                right=event_ir.Literal(value=1.0),
+            ),
+            right=denominator
+            if denominator is not None
+            else event_ir.NullIf(
+                expression=event_ir.Aggregate(
+                    function="count",
+                    relation=shared,
+                    expression=event_ir.Tuple(
+                        items=(
+                            event_ir.FieldRef(name=f"{RESPONSE}.campaign_id"),
+                            event_ir.FieldRef(name=f"{RESPONSE}.execution_no"),
+                        )
+                    ),
+                    distinct=True,
+                ),
+                value=event_ir.Literal(value=0),
+            ),
+        ),
+        right=event_ir.Literal(value=threshold),
+    )
+
+
+def _skip_reasons(expression: event_ir.Condition) -> list[str]:
+    receipts: list[dict] = []
+    _compile(expression, optimization_receipts=receipts)
+    return [item["reason"] for item in receipts if "reason" in item]
+
+
+def test_ratio_comparison_becomes_a_two_level_grouped_semi_join() -> None:
+    """분모가 다중 컬럼 distinct 여도 낮춘다 — 안쪽 분할의 개수가 곧 그 distinct 수다."""
+    sql = _compile(_campaign_average())
+
+    assert sql.startswith("B.MEMBER_NO IN (SELECT EM0 FROM (")
+    # 안쪽: (회원키, 캠페인 실행키) 분할의 부분합
+    assert "GROUP BY TRY_CAST(R.MBR_NO AS BIGINT), R.CAMP_ID, R.CAMP_EXEC_NO" in sql
+    assert "SUM(R.BUY_AMT) AS EP1" in sql
+    # 바깥: 회원키로 다시 접는다. 분모는 안쪽 그룹 수다.
+    assert "GROUP BY EM0 HAVING ((ISNULL(SUM(EP1), 0) * 1.0) / NULLIF(COUNT(*), 0)) >= 100000" in sql
+    # 팩트를 한 번만 읽고, 상관 술어는 남지 않는다.
+    assert sql.count("MCS_CAMP_MBR_RSPN_FT") == 1
+    assert "= B.MEMBER_NO" not in sql
+    # 구분자 결합 키로 바꾸지 않는다(서로 다른 키가 충돌한다).
+    assert "CONCAT(" not in sql
+
+
+def test_ratio_lowering_leaves_a_receipt_naming_its_own_optimization() -> None:
+    """두 lowering 이 같은 이름으로 섞이지 않는다 — 어느 쪽이 걸렸는지 영수증이 말한다."""
+    receipts: list[dict] = []
+    _compile(_campaign_average(), optimization_receipts=receipts)
+
+    assert [item["optimization"] for item in receipts] == [
+        event_compiler.AGGREGATE_RATIO_MEMBERSHIP_OPTIMIZATION
+    ]
+    assert [item["status"] for item in receipts] == ["applied"]
+
+
+def test_single_aggregate_comparison_still_belongs_to_the_original_lowering() -> None:
+    """'집계 하나 vs 리터럴' 의 소유자는 그대로다 — 비율 경로가 가로채지 않는다."""
+    receipts: list[dict] = []
+    _compile(_contact_count(), optimization_receipts=receipts)
+
+    assert [item["optimization"] for item in receipts] == [
+        event_compiler.AGGREGATE_MEMBERSHIP_OPTIMIZATION
+    ]
+
+
+def test_ratio_without_a_zero_denominator_guard_is_lowered_only_when_false_at_empty() -> None:
+    """0 분모 NULL 가드가 없으면 빈 집합 값이 0 이다 — 그때는 0 에서 거짓인 비교만 낮춘다."""
+    plain = event_ir.Literal(value=2)
+
+    assert _compile(_campaign_average(">", 0, denominator=plain)).startswith("B.MEMBER_NO IN (")
+    assert _skip_reasons(_campaign_average(">=", 0, denominator=plain)) == [
+        event_compiler.SKIP_ZERO_SENSITIVE_COMPARISON
+    ]
+
+
+def test_zero_denominator_guard_makes_every_operator_false_at_empty() -> None:
+    """``NULLIF(0, 0)`` 은 NULL 이고 NULL 비교는 UNKNOWN 이다 — 반응 없는 회원은 늘 거짓이다."""
+    for operator in (">=", ">", "<=", "<", "=", "!="):
+        assert _compile(_campaign_average(operator, 100000)).startswith("B.MEMBER_NO IN ("), operator
+
+
+def test_mixed_relations_are_not_lowered() -> None:
+    """분자에만 기간이 걸리면 한 번의 GROUP BY 로 셀 수 없다 — 조용히 합치지 않는다."""
+    windowed = event_ir.Filter(
+        relation=event_ir.Source(name=RESPONSE),
+        where=event_ir.TimeFilter(
+            field=event_ir.FieldRef(name=f"{RESPONSE}.occurred_at"),
+            window=event_ir.RollingWindow(value=30, unit="day"),
+        ),
+    )
+    numerator = event_ir.Aggregate(
+        function="sum",
+        relation=windowed,
+        expression=event_ir.FieldRef(name=f"{RESPONSE}.amount"),
+    )
+
+    assert _skip_reasons(_campaign_average(numerator=numerator)) == [
+        event_compiler.SKIP_MIXED_AGGREGATE_RELATIONS
+    ]
+
+
+def test_non_decomposable_partial_aggregate_is_not_lowered() -> None:
+    """2단 집계에서는 바깥이 안쪽 부분집계를 다시 접을 수 있어야 한다.
+
+    ``AVG`` 는 부분평균의 평균이 전체 평균이 아니고, ``DISTINCT`` 는 분할 경계를 넘어 중복을
+    제거해야 한다. 둘 다 분해되지 않으므로 상관 모양을 유지한다.
+    """
+    average = event_ir.Aggregate(
+        function="avg",
+        relation=event_ir.Source(name=RESPONSE),
+        expression=event_ir.FieldRef(name=f"{RESPONSE}.amount"),
+    )
+    distinct_count = event_ir.Aggregate(
+        function="count",
+        relation=event_ir.Source(name=RESPONSE),
+        expression=event_ir.FieldRef(name=f"{RESPONSE}.amount"),
+        distinct=True,
+    )
+
+    assert _skip_reasons(_campaign_average(numerator=average)) == [
+        event_compiler.SKIP_NON_DECOMPOSABLE_AGGREGATE
+    ]
+    assert _skip_reasons(_campaign_average(numerator=distinct_count)) == [
+        event_compiler.SKIP_NON_DECOMPOSABLE_AGGREGATE
+    ]
+
+
+def test_undecidable_empty_set_value_is_not_lowered() -> None:
+    """리터럴 0 으로 나누는 식은 빈 집합에서 값이 아니라 런타임 오류다 — 증명할 수 없다."""
+    assert _skip_reasons(_campaign_average(denominator=event_ir.Literal(value=0))) == [
+        event_compiler.SKIP_EMPTY_SET_UNDECIDABLE
+    ]
+
+
+def test_ratio_lowering_is_a_switch_not_a_rewrite() -> None:
+    """끄면 이전 상관 스칼라 SQL 이 그대로 나오고, IR 은 어느 쪽에서도 변하지 않는다."""
+    expression = _campaign_average()
+    before = json.dumps(expression.to_dict(), sort_keys=True, ensure_ascii=False)
+    snapshot = copy.deepcopy(expression.to_dict())
+
+    correlated = _correlated(expression)
+    lowered = _compile(expression)
+
+    assert correlated.startswith("(((SELECT ISNULL(SUM(R.BUY_AMT), 0)")
+    assert "TRY_CAST(R.MBR_NO AS BIGINT) = B.MEMBER_NO" in correlated
+    assert correlated.count("MCS_CAMP_MBR_RSPN_FT") == 2
+    assert lowered != correlated
+    assert json.dumps(expression.to_dict(), sort_keys=True, ensure_ascii=False) == before
+    assert expression.to_dict() == snapshot
+    assert event_ir.expression_capabilities(expression) == event_ir.expression_capabilities(
+        _campaign_average()
+    )
+
+
+def test_ratio_lowering_passes_the_performance_structure_guard() -> None:
+    """낮춘 결과에 상관 스칼라 집계가 남아 있지 않다 — 가드가 그것을 읽어 확인한다."""
+    lowered = (
+        "SELECT B.MEMBER_NO FROM CRM_MB_BASEINFO B WHERE " + _compile(_campaign_average())
+    )
+    correlated = (
+        "SELECT B.MEMBER_NO FROM CRM_MB_BASEINFO B WHERE "
+        + _correlated(_campaign_average())
+    )
+
+    assert sql_guard.correlated_scalar_aggregates(correlated, "B") == [
+        "COUNT(*)",
+        "SUM(R.BUY_AMT)",
+    ]
+    assert sql_guard.correlated_scalar_aggregates(lowered, "B") == []

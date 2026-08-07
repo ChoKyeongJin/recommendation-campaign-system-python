@@ -153,6 +153,45 @@ T-SQL `CONCAT`(NULL 을 빈 문자열로 접는다)의 결말과 같다.
 모델이 낸 `Aggregate.relation`(기간 필터 포함)을 둘 다 그대로 쓴다. 새 관계를 만들면 기간이 한쪽에만
 걸리거나 창이 통째로 사라지고, 그 오류는 값의 차이로만 드러난다.
 
+### 물리 실행: 2단 집계 semi-join (2026-08-07)
+
+위 정의는 **뜻**이고, 그 뜻을 그대로 상관 스칼라 서브쿼리로 내면 회원 1행마다 팩트를 집계 개수만큼
+다시 읽는다. 실측(CRMDW): 회원 69,308행 × 팩트 10,272행 × 서브쿼리 2개 → 회원 1행당 9.5~11.8ms,
+전수 환산 **11~14분**(앱 타임아웃 초과). `TRY_CAST(R.MBR_NO AS BIGINT)` 가 팩트 쪽 좌변에 걸려
+있어 옵티마이저가 해시 조인으로 바꾸지도 못한다.
+
+그래서 `event_compiler` 가 이 비교를 **비상관 2단 집계 semi-join** 으로 낮춘다
+(`aggregate_ratio_membership_semi_join`). 안쪽은 `(회원키, 캠페인 실행키)` 로 묶어 부분합을 내고,
+바깥은 그 분할을 회원키로 다시 접는다.
+
+```text
+분모  COUNT(DISTINCT (CAMP_ID, CAMP_EXEC_NO))  = 바깥 COUNT(*)
+분자  SUM(BUY_AMT)                             = 바깥 SUM(안쪽 SUM(BUY_AMT))
+```
+
+동치의 근거는 셋이다.
+
+* **분할이 곧 키다.** 안쪽 그룹 하나가 서로 다른 키 조합 하나이므로 그 개수가 distinct 수다.
+  `GROUP BY` 의 NULL 취급은 `SELECT DISTINCT` 와 같으므로 위 '키 일부가 NULL 인 행은 센다' 가
+  그대로 보존된다. 구분자 결합은 여전히 쓰지 않는다.
+* **합은 분할에 대해 분해된다.** 바깥 `SUM` 은 NULL 부분합을 건너뛰고 원래 `SUM` 도 NULL 행을
+  건너뛰므로 두 결과가 같다(`test_null_amounts_survive_the_two_level_sum_decomposition`).
+* **반응이 없는 회원은 어느 연산자에서도 거짓이다.** 상관 모양은 그런 회원에게도 값을 주지만
+  집합형에는 그 그룹이 없다. 컴파일러는 연산자 허용목록이 아니라 **빈 집합에서 식을 상징 평가**해
+  판정한다 — `(0 * 1.0) / NULLIF(0, 0)` = `0 / NULL` = NULL 이고 NULL 비교는 UNKNOWN 이다.
+  그래서 0 분모 가드가 있는 이 식은 `<=` · `!=` 에서도 낮출 수 있다.
+
+낮추지 않는 경우는 영수증에 사유로 남는다 — 분자·분모의 관계가 다르거나
+(`MIXED_AGGREGATE_RELATIONS`), 부분집계로 분해되지 않는 집계(`AVG`, `DISTINCT`)가 섞이거나
+(`NON_DECOMPOSABLE_AGGREGATE`), 빈 집합 값을 정할 수 없을 때(`EMPTY_SET_VALUE_UNDECIDABLE`)다.
+
+물리 lowering 은 **스위치**다. `EVENT_AGGREGATE_MEMBERSHIP_LOWERING=off` 로 끄면 이전 상관 스칼라
+SQL 이 바이트 동일하게 나오고, IR·지문·query identity 는 어느 쪽에서도 같다. 두 모양이 같은 회원
+집합을 뜻한다는 것은 `tests/test_composite_aggregate_sql_results.py` 가 같은 데이터에서 두 SQL 을
+**실제로 돌려** 잰다.
+
+실측 결과(CRMDW, 2026-08-07): 978명 / **0.17초** — 상관 모양의 11~14분 대비 약 4,000배.
+
 ### 모델이 표현을 아예 내지 않는 갈래(2026-08-06)
 
 실측에서 같은 문장이 재작성에 도달하지 못했다. 모델이 낸 것은 표현이 아니라 신고였다.

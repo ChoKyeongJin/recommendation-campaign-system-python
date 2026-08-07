@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import sys
 from pathlib import Path
 
@@ -267,6 +268,37 @@ def test_profile_scalar_metric_request_compiles_to_the_snapshot_row() -> None:
     assert "MS.YYYYMM = (SELECT MAX(YYYYMM) FROM CRM_MB_MONTHCRMINFO)" in sql
 
 
+def _assert_campaign_denominator_average(sql: str) -> None:
+    """캠페인 분모 평균의 **뜻** 가드 — 물리 모양과 무관하게 잰다.
+
+    같은 뜻이 두 물리 모양으로 나온다. 회원 상관 스칼라(``ISNULL(SUM(R.BUY_AMT), 0)`` +
+    ``SELECT DISTINCT`` 서브쿼리)와, 그것을 낮춘 2단 집계 semi-join(안쪽 ``SUM(R.BUY_AMT)``
+    부분합 + 안쪽 ``GROUP BY`` 키 + 바깥 ``ISNULL(SUM(EPn), 0)`` / ``COUNT(*)``)이다. 어느 쪽이든
+    **분자는 행당 평균이 아닌 금액 합계**이고 **분모는 서로 다른 (CAMP_ID, CAMP_EXEC_NO) 조합의
+    수**여야 한다. 정확한 문자열 golden 은 tests/test_composite_aggregate_lowering.py 가 두 모양
+    모두에 대해 따로 고정한다.
+    """
+
+    # 분자: 반응 행당 평균이 아니라 금액 합계다(F5 회귀 가드).
+    assert "AVG(R.BUY_AMT)" not in sql
+    assert "SUM(R.BUY_AMT)" in sql
+    # 행이 없을 때 SUM 이 NULL 이 되어 조건이 조용히 거짓이 되지 않도록 0 으로 접는다.
+    assert re.search(r"ISNULL\(SUM\((?:R\.BUY_AMT|EP\d+)\), 0\)", sql), sql
+    # 분모: (CAMP_ID, CAMP_EXEC_NO) 두 컬럼의 조합이 하나의 키다. 두 컬럼이 `,` 로 나란히
+    # 오는 자리는 DISTINCT 투영과 GROUP BY 키 목록뿐이다(조인 ON 절은 `AND` 로 잇는다).
+    assert re.search(
+        r"(?:SELECT DISTINCT|GROUP BY)[^\n]*?R\.CAMP_ID, R\.CAMP_EXEC_NO", sql
+    ), sql
+    # 0 분모 가드(반응이 없는 회원은 NULL 비교로 빠진다).
+    assert "NULLIF(" in sql
+    # 정수 나눗셈 방지.
+    assert "* 1.0" in sql
+    # 구분자 결합 키는 값 안의 ':' 나 NULL 로 서로 다른 키가 충돌할 수 있어 쓰지 않는다.
+    assert "CONCAT(R.CAMP_ID" not in sql
+    # 네이티브 다중 컬럼 distinct 는 NULL 규칙이 방언마다 달라 쓰지 않는다.
+    assert "COUNT(DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO)" not in sql
+
+
 @pytest.mark.parametrize("empty_filter", [True, False])
 def test_campaign_average_amount_never_degrades_into_a_row_average(
     empty_filter: bool,
@@ -297,12 +329,7 @@ def test_campaign_average_amount_never_degrades_into_a_row_average(
     sql = result["sql"] or ""
     assert result["is_success"] is True, result.get("failure_reason")
     # F5 회귀 가드: 캠페인 수로 나눈 평균 대신 반응 행당 평균이 나가면 뜻이 다르다.
-    assert "AVG(R.BUY_AMT)" not in sql
-    assert "ISNULL(SUM(R.BUY_AMT), 0)" in sql
-    assert "SELECT DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO" in sql
-    assert "NULLIF(" in sql
-    # 구분자 결합 키는 값 안의 ':' 나 NULL 로 서로 다른 키가 충돌할 수 있어 쓰지 않는다.
-    assert "CONCAT(R.CAMP_ID" not in sql
+    _assert_campaign_denominator_average(sql)
 
 
 # 실측(2026-08-05)으로 가드를 통째로 우회했던 표면 변형들. 예전 판정은 grain → 지표어 →
@@ -342,9 +369,7 @@ def test_campaign_average_guard_holds_across_surface_variants(query: str) -> Non
     _plan, result = _sql_result(query, structured)
     sql = result["sql"] or ""
     assert result["is_success"] is True, result.get("failure_reason")
-    assert "AVG(R.BUY_AMT)" not in sql
-    assert "ISNULL(SUM(R.BUY_AMT), 0)" in sql
-    assert "SELECT DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO" in sql
+    _assert_campaign_denominator_average(sql)
 
 
 def _grouping_ambiguity(query: str, span: str = "캠페인별") -> dict:
@@ -387,10 +412,7 @@ def test_campaign_average_ambiguity_is_answered_by_the_declaration() -> None:
     _plan, result = _sql_result(CAMPAIGN_AVERAGE_QUERY, structured)
     sql = result["sql"] or ""
     assert result["is_success"] is True, result.get("failure_reason")
-    assert "AVG(R.BUY_AMT)" not in sql
-    assert "ISNULL(SUM(R.BUY_AMT), 0)" in sql
-    assert "SELECT DISTINCT R.CAMP_ID, R.CAMP_EXEC_NO" in sql
-    assert "NULLIF(" in sql
+    _assert_campaign_denominator_average(sql)
 
 
 def test_campaign_average_ambiguity_stays_closed_when_a_clause_is_left_over() -> None:
