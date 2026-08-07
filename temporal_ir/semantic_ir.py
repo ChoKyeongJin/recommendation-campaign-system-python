@@ -128,6 +128,18 @@ class TransitionMode(StrEnum):
     ANY_CHANGE = "any_change"  # 구간 안 어딘가에서 A→B
 
 
+class TransitionDirection(StrEnum):
+    """서열 있는 값 도메인에서 전이가 **어느 쪽으로** 움직였는가.
+
+    문자열 값은 :mod:`transition_metrics` 의 방향 이름과 같아야 한다 — 값 쌍이 있는 요청의
+    방향 **검증**과 값이 없는 요청의 방향 **생성**이 같은 축을 말한다는 사실이 두 이름이
+    같다는 데서 나온다(어긋나면 드리프트 가드가 이름을 대며 실패한다).
+    """
+
+    ASCENDING = "ascending"
+    DESCENDING = "descending"
+
+
 class ObservationSemantics(StrEnum):
     """'바뀌지 않았다'의 뜻."""
 
@@ -879,6 +891,39 @@ class TransitionPredicate:
 
 
 @dataclass(frozen=True, slots=True)
+class DirectionalTransitionPredicate:
+    """값이 서열을 따라 **위로/아래로** 바뀌었다('승급'·'강등').
+
+    :class:`TransitionPredicate` 와 같은 사건을 말하지만 값 쌍을 지정하지 않는다 — 원문이
+    "골드에서 VIP로"가 아니라 "승급"이라고만 말했을 때의 술어다. 어느 값 쌍들이 이 방향에
+    해당하는지는 **값 도메인의 선언된 순서**가 정하므로 여기 값이 없는 것이 정확하다.
+
+    ``transition_mode`` 를 :class:`TransitionPredicate` 와 공유하는 것도 같은 이유다. 방향은
+    '무엇이 바뀌었나'를 좁힐 뿐 '바뀜'의 뜻을 바꾸지 않으므로, 같은 연산자(그리고 같은 관측
+    계약)가 두 술어를 받는다.
+    """
+
+    direction: TransitionDirection
+    transition_mode: TransitionMode
+    kind: str = "directional_transition"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "direction", _enum(self.direction, TransitionDirection, "transition direction")
+        )
+        object.__setattr__(
+            self, "transition_mode", _enum(self.transition_mode, TransitionMode, "transition_mode")
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "directional_transition",
+            "direction": str(self.direction),
+            "transition_mode": str(self.transition_mode),
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class ChangeCountPredicate:
     """구간 안의 값 변경 횟수."""
 
@@ -977,6 +1022,7 @@ Predicate: TypeAlias = (
     StatePredicate
     | OccurrencePredicate
     | TransitionPredicate
+    | DirectionalTransitionPredicate
     | ChangeCountPredicate
     | UnchangedPredicate
     | TemporalRelationPredicate
@@ -1000,6 +1046,11 @@ def predicate_from_dict(raw: Any) -> Predicate:
         return TransitionPredicate(
             from_value=str(raw.get("from_value") or ""),
             to_value=str(raw.get("to_value") or ""),
+            transition_mode=_enum(raw.get("transition_mode"), TransitionMode, "transition_mode"),
+        )
+    if kind == "directional_transition":
+        return DirectionalTransitionPredicate(
+            direction=_enum(raw.get("direction"), TransitionDirection, "transition direction"),
             transition_mode=_enum(raw.get("transition_mode"), TransitionMode, "transition_mode"),
         )
     if kind == "change_count":
@@ -1174,6 +1225,7 @@ __all__ = [
     "CoveragePolicy",
     "DEFAULT_TIMEZONE",
     "Direction",
+    "DirectionalTransitionPredicate",
     "Duration",
     "EmptyWindowPolicy",
     "Evidence",
@@ -1210,6 +1262,7 @@ __all__ = [
     "TemporalWindow",
     "ThroughoutQuantifier",
     "TimeUnit",
+    "TransitionDirection",
     "TransitionMode",
     "TransitionPredicate",
     "UNIT_RANK",

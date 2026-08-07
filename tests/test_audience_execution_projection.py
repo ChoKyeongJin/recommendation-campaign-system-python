@@ -348,6 +348,9 @@ EXPECTED: dict[str, dict[str, Any]] = {
                 "요청한 조건을 처리할 실행 자산은 선언돼 있으나 이 경로로 낼 수 없습니다"
                 "(선언된 자산: email_optin)."
             ),
+            # 2026-08-07: 사유를 이 분기가 **명시**한다. 예전에는 하류가 failure_kind 에서
+            # 파생했고, 그래서 성격이 다른 system_failure 까지 같은 이름으로 보고됐다.
+            "failure_reason": "semantic_registry_gap",
         },
         "audience_execution_assets": [
             {

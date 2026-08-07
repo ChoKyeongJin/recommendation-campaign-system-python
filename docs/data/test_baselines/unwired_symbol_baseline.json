@@ -1,7 +1,7 @@
 {
  "note": "정의됐지만 프로덕션이 부르지 않는 최상위 공개 심볼의 기준선. kind=dead 는 테스트조차 부르지 않는 것, kind=test_only 는 테스트만 부르는 것이다. 둘 다 늘 수 없다(하향 전용 래칫) — 배선하거나 지우면 이 파일에서 항목을 뺀다.",
  "generated_by": "tools/unwired_symbol_inventory.py",
- "dead_total": 29,
+ "dead_total": 28,
  "test_only_total": 27,
  "entries": {
   "analytical_intent.py::SUPPORTED_QUERY_TYPES": {
@@ -211,10 +211,6 @@
   "slot_ownership.py::slot_span": {
    "kind": "test_only",
    "reason": "슬롯 소유권 API 중 호출자가 붙지 않은 표면."
-  },
-  "targeting_domain.py::transition_direction": {
-   "kind": "dead",
-   "reason": "전이 방향 조회. 등급 전이 축이 폐기되면서 호출자가 사라졌다."
   },
   "targeting_expression.py::expression_fingerprint": {
    "kind": "dead",

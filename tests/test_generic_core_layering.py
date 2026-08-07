@@ -85,6 +85,16 @@ def _mentions(haystack: str, term: str) -> bool:
     return term in haystack
 
 
+def _attribute_catalog_specs() -> list[dict]:
+    """속성 카탈로그의 **원본** 선언들(런타임 조인 전이라 value_category 가 살아 있다)."""
+    import compositional_targeting
+
+    raw = json.loads(
+        Path(compositional_targeting.DEFAULT_ATTRIBUTE_CATALOG_PATH).read_text(encoding="utf-8")
+    )
+    return [spec for spec in (raw.get("attributes") or {}).values() if isinstance(spec, dict)]
+
+
 def _domain_terms() -> list[str]:
     """금지 낱말 목록 — **파생**이다(손 목록을 두면 새 슬롯·새 등급이 조용히 빠진다).
 
@@ -193,10 +203,18 @@ def test_attribute_vocabulary_is_derived_not_listed() -> None:
 
     derived = set(targeting_domain.attribute_value_terms())
     assert derived, "속성 값 어휘 파생이 비었다"
+    # 값 범주도 **선언에서** 읽는다. 손으로 적어 두면 속성 축이 하나 늘 때마다 이 테스트가
+    # 파생을 미선언으로 잘못 신고한다(2026-08-08: 가치등급 축 추가에서 실제로 그랬다).
+    categories = {
+        str(spec.get("value_category"))
+        for spec in _attribute_catalog_specs()
+        if spec.get("value_category")
+    }
+    assert categories, "속성 카탈로그가 값 범주를 선언하지 않았다"
     declared = {
         term
         for entry in member_filters_config.eq_filters()
-        if entry.get("category") in {"grade", "state"}
+        if entry.get("category") in categories
         for term in entry.get("synonyms") or []
     }
     # 파생 집합의 모든 항목은 선언에서 왔거나(동의어), 감지 전용 보조 표면형이다.

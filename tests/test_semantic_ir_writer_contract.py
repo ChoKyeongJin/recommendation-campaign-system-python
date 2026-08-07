@@ -196,6 +196,9 @@ def test_graph_rag_reprojects_application_outcome_through_typed_writer(
             "policy_applications": (),
             "unsupported_operations": (unsupported,),
             "message": None,
+            # 2026-08-07 추가. 이 재조립이 사유를 떨어뜨리면 하류의 파생이 대신 답해 방출
+            # 실패가 '레지스트리 구멍'으로 보고된다 — 그래서 필드가 전달되는지까지 잰다.
+            "failure_reason": None,
         }
     ]
     assert writer_calls == [projection]

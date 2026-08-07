@@ -141,12 +141,22 @@ _PROVIDERS: tuple[tuple[str, Any], ...] = (
     (CONCEPT, _concept_surfaces),
 )
 
-_HISTORY_ARGUMENT_RE = re.compile(
-    r"(?:transition|history|previous|prior|prev(?:ious)?|as[_-]?of)", re.IGNORECASE
-)
+# 이력·전이 **관계**의 원문 표지(구조 감지기가 놓치는 표현형의 보조 신호). 읽는 것은 언제나
+# **원문**이지 모델이 지어낸 이름이 아니다 — 예전에는 argument 문자열에 ``transition`` 이
+# 들어갔는지도 함께 봤는데, 그 이름은 요청마다 달라져서(실측 2026-08-07: 같은 원문 12회에
+# 6가지 이름) 같은 요청이 회차마다 다른 사용자 문구로 끝났다. 이름은 판정 근거가 아니다.
 _HISTORY_EVIDENCE_RE = re.compile(
-    r"(?:승급|강등|직전|이력|(?:에서|부터).{0,20}(?:으로|로).{0,12}(?:바뀌|변경|전환))"
+    r"(?:승급|강등|직전|이력|(?:에서|부터).{0,20}(?:으로|로).{0,12}(?:바뀌|바뀐|바뀜|변경|전환))"
 )
+
+# 현재값 자산(회원 속성 필터·지표 개념)이 **구현하지 않는** 관계들. 각 항목은 원문에서 좌표로
+# 감지되며, 감지의 소유자는 이 모듈이 아니다 — 여기서는 그 판정을 모아 쓰기만 한다.
+#
+# 새 관계가 이 목록에 들어오는 조건은 하나다: 그 관계를 내는 실행 경로가 canonical 밖에 없다.
+_UNIMPLEMENTED_BY_CURRENT_VALUE_ASSETS: frozenset[str] = frozenset({
+    # 등급·상태 이력 축은 2026-08-05 폐기돼 이 의미를 내는 자산이 하나도 없다.
+    "member_state_history",
+})
 
 
 @functools.lru_cache(maxsize=1)
@@ -298,25 +308,73 @@ def declared_capability_in_claim(*texts: Any) -> str | None:
     return None
 
 
-def non_canonical_assets_for_issue(issue: Mapping[str, Any]) -> tuple[ExecutionAsset, ...]:
-    """Return only assets capable of the issue's semantic relation.
+def assets_compatible_with_issue(
+    issue: Mapping[str, Any], *, query: str | None = None
+) -> tuple[ExecutionAsset, ...]:
+    """신고된 **관계**를 실제로 구현하는 자산들. 표면어가 겹치는 것만으로는 자격이 없다.
 
-    A current-value asset for ``휴면`` does not implement ``정상→휴면`` history.
-    이력·전이 축은 2026-08-05 폐기돼 그 의미를 처리하는 자산이 **하나도 없다** — 그러므로
-    이력 신고는 자산 없음(빈 튜플)으로 답한다. 이 판정을 빼면 현재값 자산('휴면' 필터)이
-    이력 미지원 신고를 반박해 조용히 '지금 휴면인 회원'으로 뜻이 바뀐다(실측된 의미 반전).
+    자산 하나가 어떤 낱말을 안다는 사실은 그 낱말이 등장하는 **모든 관계**를 구현한다는 뜻이
+    아니다. 판정은 두 단계다 — 원문이 요구하는 관계 모양을 정하고, 그 모양을 내는 계층만 남긴다.
+
+    현재 걸러내는 관계는 둘이고, 둘 다 원문 구조에서 나온다(모델이 붙인 이름은 읽지 않는다).
+
+    이력·전이 (``정상에서 휴면으로 바뀐``)
+        현재값 자산('휴면' 필터)은 이력을 구현하지 않는다. 그 축은 2026-08-05 폐기돼 이 의미를
+        내는 자산이 **하나도 없다**. 반박을 허용하면 '휴면이 된 회원'이 조용히 '지금 휴면인
+        회원'으로 바뀐다(실측된 의미 반전).
+
+    기간 대 기간 집계 비교 (``2026년 2월과 3월의 구매금액이 증가한``)
+        ``purchase_amount`` 라는 **현재값 지표 개념**이 선언돼 있다는 사실은 '두 창에서 각각
+        집계해 비교하는 관계'가 선언돼 있다는 증거가 아니다. 그 비교를 내는 것은 canonical
+        Event IR 경로뿐이고, 그 경로는 이미 자기 차례에 실패했다. 이 구별이 없으면 표면어
+        ``구매금액`` 하나 때문에 registry gap 으로 잘못 종결된다(실측 2026-08-07: 12회 중 3회).
+
+    ``query`` 는 관계 판정에 필요한 문맥이다 — 근거 구간만으로는 두 창이 보이지 않을 수 있다.
     """
 
     evidence = issue.get("evidence")
     text = evidence.get("text") if isinstance(evidence, Mapping) else ""
-    argument = str(issue.get("argument") or "")
-    requires_history = bool(
-        _HISTORY_ARGUMENT_RE.search(argument)
-        or (isinstance(text, str) and _HISTORY_EVIDENCE_RE.search(text))
-    )
-    if requires_history:
+    if isinstance(text, str) and _HISTORY_EVIDENCE_RE.search(text):
+        return ()
+    context = query if isinstance(query, str) and query.strip() else text
+    if _occupies_unimplemented_relation(evidence, context):
         return ()
     return assets_for_text(text, layers=[layer for layer in LAYERS if layer != CANONICAL])
+
+
+def _occupies_unimplemented_relation(evidence: Any, query: Any) -> bool:
+    """이 근거 구간이 **현재값 자산이 구현하지 않는 관계**의 자리인가.
+
+    판정 축은 좌표다. 두 감지기가 각각 자기 관계를 원문에서 구조로 잡고, 여기서는 겹침만 본다 —
+    모델이 그 자리를 무엇이라 불렀는지는 어느 쪽도 읽지 않는다.
+
+    기간 대 기간 비교는 **낮출 수 있는지와 무관하게** 여기서 걸린다. 낮출 수 있든 없든 현재값
+    지표 개념(``purchase_amount``)이 '두 창에서 각각 집계해 비교하는 관계'를 구현하지 않는다는
+    사실은 같기 때문이다.
+    """
+    if not isinstance(query, str) or not query.strip():
+        return False
+    import lowering_planner  # 지연 import — 판정자는 카탈로그·달력 로딩을 import 부작용으로 만들지 않는다
+    import semantic_requirements
+
+    spans: list[Any] = []
+    try:
+        spans.extend(
+            obligation.source_span
+            for obligation in lowering_planner.detect_comparison_obligations(query)
+        )
+    except Exception:  # noqa: BLE001 — 캡처가 안 되면 개입하지 않는다(기존 판정 유지).
+        pass
+    try:
+        spans.extend(
+            obligation.source_span
+            for obligation in semantic_requirements.capture_source_semantic_obligations(query)
+            if semantic_requirements.obligation_kind(obligation)
+            in _UNIMPLEMENTED_BY_CURRENT_VALUE_ASSETS
+        )
+    except Exception:  # noqa: BLE001
+        pass
+    return any(semantic_requirements.spans_overlap(evidence, span) for span in spans)
 
 
 __all__ = [
@@ -326,11 +384,11 @@ __all__ = [
     "MEMBER_FILTER",
     "METRIC",
     "ExecutionAsset",
+    "assets_compatible_with_issue",
     "assets_for_text",
     "clear_cache",
     "declared_capability_in_claim",
     "declared_surfaces",
     "has_execution_asset",
     "non_canonical_assets_for_text",
-    "non_canonical_assets_for_issue",
 ]

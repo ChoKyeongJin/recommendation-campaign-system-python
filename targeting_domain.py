@@ -368,7 +368,11 @@ def attribute_value_terms() -> tuple[str, ...]:
 
 
 def attribute_axis_terms() -> tuple[str, ...]:
-    """시간 한정어가 붙는 **속성 축**의 표면형(등급·상태 등)."""
+    """시간 한정어가 붙는 **속성 축**의 표면형(등급·상태 등).
+
+    최소 어간이므로 **감지**용이다 — 어느 축인지 가리는 데 쓰면 안 된다(:func:`attribute_axis_
+    identifying_terms` 참고). '가치등급'이 '등급'에 흡수돼 사라지는 것이 여기서는 옳다.
+    """
     terms: list[str] = []
     for spec in (attribute_catalog().get("attributes") or {}).values():
         terms.extend(spec.get("surface_terms") or [])
@@ -377,6 +381,23 @@ def attribute_axis_terms() -> tuple[str, ...]:
         return stems
     fallback = (_temporal().get("attribute_axis_terms") or {}).get("fallback")
     return _minimal_stems(fallback) if isinstance(fallback, list) else ()
+
+
+def attribute_axis_identifying_terms() -> tuple[str, ...]:
+    """축을 **가리기 위한** 표면형 전량(긴 것 먼저).
+
+    감지 어휘(:func:`attribute_axis_terms`)와 다른 목록인 것이 요점이다. 감지는 "여기 속성
+    축이 있다"만 알면 되므로 최소 어간이 낫지만, 식별은 "어느 축인가"를 답해야 하므로 짧은
+    어간에 흡수된 표면어('가치등급')가 살아 있어야 한다. 두 목록을 하나로 합치면 둘 중 하나가
+    반드시 틀린다 — 합쳐 두던 동안 '가치등급이 승급한'이 ZTS 축으로 해석됐다(2026-08-08 실측).
+    """
+    terms = {
+        str(term)
+        for spec in (attribute_catalog().get("attributes") or {}).values()
+        for term in spec.get("surface_terms") or []
+        if str(term).strip()
+    }
+    return tuple(sorted(terms, key=lambda item: (-len(item), item)))
 
 
 def _alternation(terms: Sequence[str]) -> str:
@@ -592,6 +613,7 @@ def extension_boundary() -> dict[str, list[str]]:
 __all__ = [
     "DEFAULT_DOMAIN_PATH",
     "TargetingDomainError",
+    "attribute_axis_identifying_terms",
     "attribute_axis_terms",
     "attribute_catalog",
     "attribute_value_terms",

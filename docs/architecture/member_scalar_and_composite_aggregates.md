@@ -1,11 +1,12 @@
 # 회원별 스칼라 지표와 복합 집계 (canonical Event IR)
 
-2026-08-05 SemanticPlanV2 폐기 때 함께 죽은 세 축 중 **둘이 돌아왔다**. 돌아온 근거는 옛 계층의
+2026-08-05 SemanticPlanV2 폐기 때 함께 죽은 세 축이 **모두 돌아왔다**. 돌아온 근거는 옛 계층의
 복원이 아니라 **canonical Event IR 이 그 뜻을 표현하게 됐다**는 것이다. 그 구분이 이 문서의 전부다.
 
 | 축 | 상태 | 근거 |
 |---|---|---|
-| 등급/상태 이력·전이 | **폐기 유지** | 표현은 되지만 `member_state_history` 의무에 컴파일 영수증을 발급하는 경로가 없다 |
+| 등급 이력·전이(월 스냅샷) | 복귀 | `temporal_claims` 가 원문 → Temporal IR 생산자이자 `member_state_history` 의무의 영수증 발급 경로다 |
+| 상태(정상/휴면) 이력·전이 | **폐기 유지** | 그 축에는 전이 지표도 이력 소스도 **선언이 없다**(`transition_metric_not_declared`) |
 | 프로필 스칼라 지표(9종) | 복귀 | 카탈로그에 회원별 스칼라 metric kind 를 추가했다(코드 확장 아님) |
 | 캠페인당 평균 구매금액 | 복귀 | Event IR 에 행 값(`tuple`)과 0 값 가드(`null_if`)를 추가했다 |
 
@@ -285,19 +286,74 @@ lowering 전의 판정 결과**로 나온다(`compiler_capability_unsupported` /
 
 ---
 
-## 4. 지원하지 않는 것(폐기 유지)
+## 4. 시점·이력 축의 소유권과 지원 범위
 
-* **등급/상태 이력·전이의 종단 출고**. 2026-08-05 이후 **전이 조건의 SQL 생성 자체는 선다** —
-  `transition_metrics`(선언 검증 + IR 조립)와 `transition_claims`(원문에서 값 쌍 선택)가 그것을
-  소유하고, 두 축(회원등급 `ZTS_*` / 가치등급 `WORTH_*`)이 **같은 코드**로 낮아진다. 위에서 말한
-  두 선행 조건 중 **(2)는 해소됐다**: '승급'은 방향어이고, 값 순서(`value_order`, eq_filters rank
-  파생)와 모순되면 `transition_direction_contradicted` 로 닫힌다 — 저장 코드값을 사전순으로
-  비교하지 않는다.
+### 4.1 지금 종단 출고되는 형상
 
-  남은 것은 **(1)** 이다. `member_state_history` 의무에 컴파일 영수증을 발급하는 경로가 아직 없어
-  종단 파이프라인은 그대로 막혀 있고, 그래서 `tests/test_retired_axes_fail_close.py` 와
-  `tests/test_revived_axes_event_ir_only.py` 의 고정은 **바뀌지 않았다**(둘 다 통과한다). 이번
-  작업이 만든 것은 그 영수증이 생기는 날 발급할 **대상**이다.
+`member_state_history` 의무의 낮춤은 `temporal_claims.synthesize_temporal_claim` 하나가 소유하고,
+그 결과에 `compiler="temporal_ir"` 영수증이 발급되면서 종단 파이프라인이 열린다. 형상은 문형별
+분기가 아니라 `selector × quantifier × predicate` 세 축의 값이며(§`temporal_claims` 선언표),
+`tests/test_temporal_claims_wiring.py` 가 **모델 payload → 플랜 → SQL** 전 구간으로 고정한다.
+
+| 형상 | 예시 | 낮춤 |
+|---|---|---|
+| 시점 값(as-of) | `2026년 3월 기준 골드 등급` | `AsOfSelector + Exists + StatePredicate` |
+| 직전 값 | `직전 등급이 골드였던` | `PreviousSelector + Exists + StatePredicate` |
+| 값 전이 | `골드에서 VIP로 승급한` | `AsOfSelector + Exists + TransitionPredicate` |
+| 구간 내 전이 | `최근 6개월 동안 골드에서 VIP로 승급` | `WindowSelector + Exists + TransitionPredicate` |
+| 구간 유지 | `최근 6개월 내내 골드 등급을 유지` | `WindowSelector + AllObservations + StatePredicate` |
+| 매 칸 존재 | `지난 6개월 매월 골드 등급` | `WindowSelector + EveryBucket + StatePredicate` |
+
+### 4.2 provenance 와 semantic validation 의 역할 구분
+
+이 축에서 가장 오래 걸린 결함은 표현력이 아니라 **판정 축의 혼동**이었다(실측 2026-08-08).
+
+* **의미(semantic)** — 필드·연산자·창·값. 의무 방면의 판정은 이것만 본다
+  (`temporal_claims._atom_keys` 는 `evidence` 를 벗긴 뒤 비교한다).
+* **출처(provenance)** — 그 조건이 원문 어느 구간에서 왔는지. 같은 조건을 두 생산자가 서로 다른
+  구간을 인용해 적을 수 있으므로 **동일성의 구성요소가 아니다**. 방면에 쓰는 구간은 대상 표현이
+  주장한 것이 아니라 애플리케이션 소유 낮춤이 계산한 `request.condition.evidence` 다.
+
+둘을 한 비교로 묶었을 때: 구조가 완전히 같은 표현이 인용 구간 하나 때문에 반려되고, 모델은 통과할
+수 없는 요구를 받아 재시도 예산을 태운 뒤 회차마다 다른 귀결로 끝났다(같은 원문 5회에
+sql 1 / clarification 3 / system_failure 1). 위조(`gender=female` 에 전이 구절 구간을 붙이는 것)를
+막는 것은 근거 비교가 아니라 **구조 비교**이므로, provenance 를 빼도 그 문은 그대로 닫혀 있다.
+
+지원 여부의 판정자도 이름이 아니라 낮춤이다 — `lowering_planner` 가 이 의무를 같은 probe 로
+낮춰 보고 답하며, 그 답이 (a) 미지원 신고 반박, (b) 프롬프트의 canonical 형상 안내
+(`render_temporal_state_recipe`) 두 소비자에 함께 쓰인다. 낮출 수 없는 형상에는 계획이 없고,
+계획이 없으면 안내도 나가지 않는다.
+
+### 4.3 여전히 지원하지 않는 것
+
+* **상태(정상/휴면) 축의 이력·전이**. 등급 축과 달리 이 축에는 전이 지표도 이력 소스도 선언이
+  없어 `transition_metric_not_declared` 로 닫힌다. 전략을 구현해도 소스가 먼저 서지 않으면
+  열리지 않는다.
+* **변경 횟수**(`등급이 3회 이상 변경된`). 월 스냅샷은 칸 안에서 일어난 변경을 관측하지 못한다.
+* **연속 N칸**(`3개월 연속 골드 등급`). 주체별 정렬·간격 판정이 필요하다.
+* **방향어가 값 순서와 모순되는 요청**(`VIP에서 골드로 승급`) — `transition_direction_contradicted`.
+
+### 4.4 '표현할 수 없다'와 '데이터가 아직 없다'는 다른 축이다
+
+`CRM_MB_MONTHCRMINFO` 는 현재 201701 한 달만 적재돼 있다. 그래서 `지난달 말 기준 …` 이나
+`3개월 내내 …` 는 **적재 구간 밖**을 가리키고, 실행하면 0건이 나온다. 그것은 미지원이 아니다 —
+`sir.CoveragePolicy` 의 기본이 `ADVISE` 인 이유가 이것이고(적재 범위는 결과 해석의 정보이지 SQL 을
+만들지 못할 이유가 아니다), 적재가 늘면 같은 SQL 이 같은 뜻으로 행을 돌려준다.
+
+두 축을 한 결말로 묶으면 표현할 수 있는 질의가 "데이터가 아직 없어서" 거절된다. 그래서 이 축의
+귀결은 이렇게 갈린다.
+
+| 상황 | 귀결 |
+|---|---|
+| 낮출 수 있고 적재도 있다 | SQL |
+| 낮출 수 있으나 적재 구간 밖이다 | SQL + 커버리지 advisory(0건) |
+| 낮출 수 없다(§4.3) | `unsupported` — 사유와 근거 구간을 남긴다 |
+
+넷 다 `tests/test_temporal_claims_wiring.py::BLOCKED_CASES` 가 "SQL 이 나가지 않되 침묵하지도
+않는다"로 고정한다. 전이 조건의 IR 조립 자체는 `transition_metrics`(선언 검증 + IR 조립)와
+`transition_claims`(원문에서 값 쌍 선택)가 소유하고, 두 축(회원등급 `ZTS_*` / 가치등급
+`WORTH_*`)이 **같은 코드**로 낮아진다. '승급'은 방향어이고, 값 순서(`value_order`, eq_filters rank
+파생)와 모순되면 닫힌다 — 저장 코드값을 사전순으로 비교하지 않는다.
 
   전략 어휘(`resolved_semantic_catalog.TRANSITION_STRATEGIES`)가 무엇을 열고 무엇을 닫는지도
   선언으로 드러난다.
@@ -312,9 +368,11 @@ lowering 전의 판정 결과**로 나온다(`compiler_capability_unsupported` /
   이력 소스도 없어서 `transition_metric_not_declared` 로 끝난다. `history_rows` 를 구현해도 소스가
   먼저 서지 않으면 열리지 않는다.
 
-  기간이 붙은 전이('최근 3개월 동안 골드에서 VIP로')는 `transition_period_unsupported` 로 닫는다.
-  한 행의 현재값/직전값 비교로 접으면 다월 전이가 1스텝 전이로 **뜻이 바뀌기** 때문이고, 다른 조건이
-  이미 그 기간을 소유했다면 호출자가 `consumed_spans` 로 알려 준다.
+  기간이 붙은 전이('최근 6개월 동안 골드에서 VIP로')를 `transition_metrics` 혼자서는 닫는다
+  (`transition_period_unsupported`) — 한 행의 현재값/직전값 비교로 접으면 다월 전이가 1스텝
+  전이로 **뜻이 바뀌기** 때문이다. 그 문형은 상위 계층이 소유한다: `temporal_claims` 가 기간이
+  같은 절에 있으면 selector 를 `window` 로 승격해 '그 구간 안의 전이'로 낮추고, 기간 구간은
+  `consumed_spans` 로 넘겨 준다. 그래서 종단에서는 지원되는 형상이다(§4.1 표).
 * **Event IR 실패 시의 폴백 경로**. 없다. 계약이 어긋나면 합성하지 않고 모델의 미지원 신고가 그대로
   남아 fail-close 한다 — 비슷한 지표로 갈아타지 않는다.
 * **`include_as_zero` null 정책**, **소수 임계값의 Decimal 통과**. 둘 다 선언 어휘 밖이고, 필요해지면

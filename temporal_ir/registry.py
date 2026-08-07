@@ -143,7 +143,7 @@ def resolve_operator_name(condition: sir.TemporalCondition) -> str:
     predicate = condition.predicate
     if isinstance(predicate, sir.TemporalRelationPredicate):
         return _RELATION_NAMES[predicate.relation]
-    if isinstance(predicate, sir.TransitionPredicate):
+    if isinstance(predicate, sir.TransitionPredicate | sir.DirectionalTransitionPredicate):
         return _TRANSITION_NAMES[predicate.transition_mode]
     if isinstance(predicate, sir.ChangeCountPredicate):
         return CHANGE_COUNT

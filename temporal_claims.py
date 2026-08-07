@@ -106,6 +106,9 @@ class _OperatorPlan:
     ``values`` 는 술어가 요구하는 **원문 값의 개수**다(전이는 2, 상태는 1, 변경 횟수는 0).
     ``interval`` 은 구간 요구('required'/'optional'/'forbidden')이며, 요구가 어긋나면
     조용히 기본값을 넣지 않고 사유와 함께 닫는다.
+
+    ``direction`` 은 방향 전이('승급'·'강등')에서만 채워진다. 값 쌍 대신 서열 방향이 술어를
+    확정하므로, 그 방향은 원문에서 읽은 뒤 **계획에 실려** 술어 조립까지 간다.
     """
 
     selector: str
@@ -116,6 +119,7 @@ class _OperatorPlan:
     bucket: bool = False
     count: bool = False
     null_policy: str = "exclude"
+    direction: str | None = None
 
 
 # 범용 연산자 → IR 조합. 왼쪽은 :mod:`temporal_semantics` 의 닫힌 집합이고 오른쪽은
@@ -464,6 +468,15 @@ def _predicate(
             to_value=values[1],
             transition_mode="direct_observed_transition",
         )
+    if plan.predicate == "directional_transition":
+        if plan.direction is None:  # pragma: no cover - 계획 생성이 먼저 막는다
+            raise ValueError("directional transition predicate requires a direction")
+        return sir.DirectionalTransitionPredicate(
+            # 방향 이름은 도메인 표(:mod:`targeting_domain`)에서 온 문자열이다. 여기서 닫힌
+            # 어휘로 세워 두면 표가 어긋난 날 SQL 이 아니라 이 자리에서 이름을 대며 터진다.
+            direction=sir.TransitionDirection(plan.direction),
+            transition_mode=sir.TransitionMode.DIRECT_OBSERVED_TRANSITION,
+        )
     if plan.predicate == "unchanged":
         return sir.UnchangedPredicate(observation_semantics="observed_values_equal")
     if count is None:  # pragma: no cover - 호출자가 먼저 막는다
@@ -566,6 +579,32 @@ def detect_temporal_claims(
     return tuple(requests)
 
 
+def _directional_plan(
+    query: str,
+    marker_span: Span,
+    plan: _OperatorPlan,
+    clause_hits: Sequence[_ValueHit],
+) -> _OperatorPlan | None:
+    """마커가 **방향어 하나뿐**인 전이 요청이면 방향 전이 계획으로 바꾼다.
+
+    '골드에서 VIP로 승급'은 여기 오지 않는다 — 그 문장은 절에 값이 둘 있고, 값 쌍이 있으면
+    방향은 검증의 대상이지 술어의 근거가 아니다(:mod:`transition_metrics` 가 어순 모순을 잡는다).
+    값이 하나뿐인 'VIP로 승급'도 바꾸지 않는다: 도착값만 있고 출발 쪽이 비어 있는 요청을
+    방향으로 덮으면 사용자가 말한 값이 조용히 사라진다. 그러므로 조건은 **값 0개**다.
+
+    방향어 판정에 원문을 다시 훑지 않고 마커 구간만 보는 이유는 소유권이다 — 이 마커를 만든
+    표가 방향어 표와 같으므로(:func:`targeting_domain.transition_direction`), 마커로 잡혔는데
+    방향은 못 읽는 조합이 생기지 않는다.
+    """
+
+    if plan.predicate != "transition" or clause_hits:
+        return None
+    direction = targeting_domain.transition_direction(query[marker_span[0] : marker_span[1]])
+    if direction is None:
+        return None
+    return replace(plan, predicate="directional_transition", values=0, direction=direction)
+
+
 def _plan_request(
     query: str,
     *,
@@ -584,6 +623,8 @@ def _plan_request(
     spans: list[Span] = [marker_span]
     values: list[str] = []
     domain: str | None = None
+
+    plan = _directional_plan(query, marker_span, plan, clause_hits) or plan
 
     if plan.values:
         if len(clause_hits) != plan.values:
@@ -689,7 +730,7 @@ def _plan_request(
     # 전이는 기간이 붙는 순간 '그 구간 안의 전이'가 된다 — 같은 술어, 다른 관측 범위.
     # 승격을 **구간을 읽기 전에** 해야 기간 표현을 시점으로 잘못 읽지 않는다.
     effective = plan
-    if plan.predicate == "transition" and period is not None:
+    if plan.predicate in {"transition", "directional_transition"} and period is not None:
         effective = replace(plan, selector="window")
 
     window: sir.TemporalWindow | None = None
@@ -812,9 +853,20 @@ def _axis_domain(
 
     clause_axis = [
         (term, span)
-        for term in targeting_domain.attribute_axis_terms()
+        for term in targeting_domain.attribute_axis_identifying_terms()
         for span in audience_frame.surface_spans(query, (term,))
         if audience_frame.in_same_clause(query, span, marker_span)
+    ]
+    # 축 표면어는 서로를 포함한다('가치등급' ⊃ '등급'). 포함된 쪽을 그대로 두면 한 절이 두
+    # 도메인을 가리키게 되어 옳은 요청이 '확정 불가'로 닫히고, 한쪽만 선언돼 있으면 **조용히
+    # 다른 축**으로 해석된다. 그러므로 더 긴 표면어가 덮은 짧은 표면어는 그 자리의 주인이 아니다.
+    clause_axis = [
+        (term, span)
+        for term, span in clause_axis
+        if not any(
+            other_span != span and other_span[0] <= span[0] and span[1] <= other_span[1]
+            for _other_term, other_span in clause_axis
+        )
     ]
     if not clause_axis:
         return None
@@ -931,11 +983,68 @@ def _rejection_from(
     )
 
 
+# 원자에서 **뜻이 아닌 것**. 근거 표기는 이 조건이 원문 어디에서 왔는지를 적은 출처이지
+# 조건의 의미가 아니다 — 같은 조건을 두 사람이 서로 다른 구간을 인용해 적을 수 있다.
+_PROVENANCE_FIELDS = frozenset({"evidence"})
+
+
+def _semantic_shape(value: Any) -> Any:
+    """출처 표기를 벗긴 의미 구조. 중첩 dict/list/tuple 어디에 있어도 재귀로 벗긴다."""
+
+    if isinstance(value, Mapping):
+        return {
+            key: _semantic_shape(item)
+            for key, item in value.items()
+            if key not in _PROVENANCE_FIELDS
+        }
+    if isinstance(value, (list, tuple)):
+        return [_semantic_shape(item) for item in value]
+    return value
+
+
 def _atom_keys(expression: event_ir.Condition) -> set[str]:
+    """원자별 **의미** 지문. provenance 는 지문의 구성요소가 아니다.
+
+    예전에는 ``to_dict()`` 를 통째로 직렬화해서, 필드·연산자·창·값이 모두 같아도 인용 구간이
+    다르면 다른 조건으로 세어졌다. 그 비교를 통과하려면 표현을 만든 쪽이 애플리케이션 낮춤이
+    고른 구간을 글자 단위로 맞혀야 하는데, 그것은 뜻과 무관한 요구다(실측 2026-08-08:
+    구조가 완전히 같은 표현이 근거 표기 하나 때문에 반려되어 재시도 예산을 태웠다).
+    """
+
     return {
-        json.dumps(atom.to_dict(), sort_keys=True, ensure_ascii=False)
+        json.dumps(
+            _semantic_shape(atom.to_dict()), sort_keys=True, ensure_ascii=False
+        )
         for atom, _negated in event_ir.iter_signed_atoms(expression)
     }
+
+
+def request_context_for(
+    current_date: str | date | None, *, timezone: str = sir.DEFAULT_TIMEZONE
+) -> sir.TemporalRequestContext:
+    """계획이 확정한 기준일 → 요청 기준 시각. **낮춤과 재판정이 같은 것을 써야 한다.**
+
+    기준 시각을 만드는 자리가 둘이면 같은 표현이 낮출 때와 다시 볼 때 서로 다른 창으로
+    읽힌다(상대 시점 표현에서 원자가 어긋난다). 그래서 변환은 여기 하나뿐이고, 기준일을
+    읽을 수 없을 때만 실행 시점을 쓴다.
+    """
+
+    zone = ZoneInfo(timezone)
+    anchor: date | None
+    if isinstance(current_date, date):
+        anchor = current_date
+    elif isinstance(current_date, str) and current_date.strip():
+        try:
+            anchor = date.fromisoformat(current_date)
+        except ValueError:
+            anchor = None
+    else:
+        anchor = None
+    if anchor is None:
+        return sir.TemporalRequestContext(now=datetime.now(zone), timezone=timezone)
+    return sir.TemporalRequestContext(
+        now=datetime.combine(anchor, time(9, 0), tzinfo=zone), timezone=timezone
+    )
 
 
 def compiled_obligation_spans(
@@ -951,19 +1060,25 @@ def compiled_obligation_spans(
 ) -> tuple[Span, ...]:
     """이 표현 안에서 시간 조건이 **실제로 컴파일된** 원문 구간.
 
-    판정 규칙은 근거 구간이 아니라 **낮춘 원자의 일치**다. 원문에서 시간 조건을 다시 골라
-    같은 선언으로 낮춘 뒤, 그 원자들이 대상 표현 안에 그대로 있을 때만 컴파일로 인정한다.
+    계약은 두 축으로 나뉜다.
 
-    근거 구간만 보면 방면이 위조된다(실측: `Comparison(subject.gender = female)` 에 전이
-    구절의 구간을 붙이면 통과했다). 그때 사라지는 것은 이력 조건이고, 남는 것은 현재값
-    조건이다 — '휴면이 된 회원'이 '지금 휴면인 회원'으로 바뀌는 그 사고다.
+    * **판정**은 provenance 를 제외한 :func:`_atom_keys` 의 의미 일치다. 원문에서 시간
+      조건을 다시 골라 같은 선언으로 낮춘 뒤, 그 원자들이 대상 표현 안에 그대로 있을
+      때만 컴파일로 인정한다.
+    * **방면에 쓰는 구간**은 애플리케이션 소유 낮춤이 계산한 근거
+      (``request.condition.evidence``)다. 대상 표현이 주장한 근거는 판정에도 방면에도
+      쓰지 않는다.
+
+    근거 구간으로 판정하면 방면이 위조된다(실측: `Comparison(subject.gender = female)` 에
+    전이 구절의 구간을 붙이면 통과했다). 그때 사라지는 것은 이력 조건이고, 남는 것은
+    현재값 조건이다 — '휴면이 된 회원'이 '지금 휴면인 회원'으로 바뀌는 그 사고다.
+    위조를 막는 것은 근거 비교가 아니라 **구조 비교**이므로, provenance 를 빼도 그 문은
+    그대로 닫혀 있다.
     """
 
     if expression is None:
         return ()
-    request_context = context or sir.TemporalRequestContext(
-        now=datetime.now(ZoneInfo(timezone))
-    )
+    request_context = context or request_context_for(today, timezone=timezone)
     # 재판정의 기준일은 낮춤의 기준 시각과 **같아야** 한다. 다르면 절대 달력 표현
     # ('2026년 3월 기준')이 다른 상대 시점으로 다시 읽혀 원자가 어긋나고, 컴파일된 조건이
     # 컴파일되지 않은 것으로 보인다(실측: 탐지 기준일이 SPAN_PROBE_DATE 로 새던 결함).
@@ -1011,6 +1126,7 @@ __all__ = [
     "VALUE_DOMAIN_UNRESOLVED",
     "compiled_obligation_spans",
     "detect_temporal_claims",
+    "request_context_for",
     "synthesize_temporal_claim",
     "temporal_metric_for_domain",
 ]

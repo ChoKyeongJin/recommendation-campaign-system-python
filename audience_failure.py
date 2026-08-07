@@ -166,6 +166,7 @@ _SEMANTIC_GATE_REASONS = frozenset({
     "semantic_structurer_failure",
     "semantic_registry_gap",
     "semantic_emission_failure",
+    "semantic_system_failure",
 })
 _SEMANTIC_REASON_PREFIX = "semantic_ir_"
 

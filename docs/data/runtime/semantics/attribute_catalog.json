@@ -42,6 +42,20 @@
       "value_category": "grade",
       "surface_terms": ["등급", "구매등급", "회원등급", "구매 등급", "회원 등급", "grade", "member_grade", "purchase_grade", "구매 등급 스냅샷"]
     },
+    "member_worth_grade": {
+      "label": "가치등급(월별 스냅샷)",
+      "_comment": "member_grade(ZTS)와 **별개 축**이고 값 사전도 다르다(가치등급 코드에는 'MEM_GRADE_CD.' 접두어가 없다). 표면어 '가치등급'은 '등급'을 포함하므로 축 해석은 최장 표면어가 이긴다 — 이 선언이 없던 동안 '가치등급이 승급한'이 ZTS 축으로 해석됐다(2026-08-08 실측).",
+      "binding": {
+        "table": "CRM_MB_MONTHCRMINFO",
+        "entity_key": "MEMBER_NO",
+        "time_column": "YYYYMM",
+        "value_column": "WORTH_GRADE",
+        "prev_value_column": "PREV_WORTH_GRADE"
+      },
+      "snapshot_months_available": 1,
+      "value_category": "worth_grade",
+      "surface_terms": ["가치등급", "가치 등급", "worth_grade"]
+    },
     "member_state": {
       "label": "회원 상태(정상/휴면/탈퇴)",
       "binding": null,

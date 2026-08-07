@@ -3282,6 +3282,10 @@ def _coerce_llm_query_plan_candidate(
             policy_applications=tuple(projection["policy_applications"]),
             unsupported_operations=tuple(projection["unsupported_operations"]),
             message=projection["message"],
+            # 사유는 판정한 계층만 아는 사실이라 여기서 복원할 수 없다 — 떨어뜨리면 하류의
+            # 파생이 대신 답하고, 방출 실패가 '레지스트리 구멍'으로 보고된다(실측 2026-08-07:
+            # 이 한 필드가 빠져 낮출 수 있는 요구가 registry gap 으로 종결됐다).
+            failure_reason=projection.get("failure_reason"),
         )
         write_semantic_ir(plan, outcome.to_legacy_dict())
         plan["literal_bindings"] = copy.deepcopy(literal_bindings)
@@ -6476,25 +6480,12 @@ def _describe_sql_failure(query_plan: dict[str, Any], sql_result: dict[str, Any]
             "요청의 실행 경로를 확정하지 못했습니다. 저장된 실행 설정을 확인해 주세요."
         )
 
-    if reason in {
-        "semantic_ir_needs_clarification",
-        "semantic_ir_unsupported",
-        "semantic_structurer_failure",
-        "semantic_registry_gap",
-    }:
+    if failure_messages.is_semantic_gate_reason(reason):
         semantic_ir = sql_result.get("semantic_ir") or query_plan.get("semantic_ir") or {}
         message = semantic_ir.get("message") if isinstance(semantic_ir, dict) else None
         if isinstance(message, str) and message.strip():
             return message.strip()
-        return {
-            "semantic_ir_unsupported": "요청한 연산은 현재 지원하지 않습니다.",
-            "semantic_structurer_failure": (
-                "요청을 실행 가능한 형태로 해석하지 못했습니다. 표현을 바꿔 다시 요청해 주세요."
-            ),
-            "semantic_registry_gap": (
-                "이 조건을 처리할 실행 설정이 준비되지 않았습니다. 담당자에게 문의해 주세요."
-            ),
-        }.get(reason, "필수 의미 조건을 확인해 주세요.")
+        return failure_messages.semantic_gate_message(reason)
 
     # 명시적 미지원(쿠폰 건수/순위/비교/파생 등): 게이트가 만든 구체적 안내를 그대로 노출한다 — 무관한
     # 일반 조건 라벨('혜택 유형 조건')로 덮어쓰지 않는다(_UNSUPPORTED_INTENT_REASONS).
@@ -7993,7 +7984,7 @@ def _refresh_unresolved_source_conditions(
         # '카탈로그에 없는 필드'로 보였다 — 같은 함수를 부르는 audience_validators 쪽은
         # 이미 스냅샷을 쓰고 있어 두 판정이 갈라져 있었다(실측: 금액 단위 커버리지가
         # 검증기에서는 통과하고 이 경로에서만 미해결로 남았다).
-        return canonical_audience_claims.refresh_canonical_unresolved(original_query, query_plan, _plan_event_expression(query_plan), audience_runtime.catalog_snapshot())
+        return canonical_audience_claims.refresh_canonical_unresolved(original_query, query_plan, _plan_event_expression(query_plan), audience_runtime.catalog_snapshot(), today=today)
 
     preserved = [
         copy.deepcopy(item)

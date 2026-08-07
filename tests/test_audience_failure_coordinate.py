@@ -251,9 +251,14 @@ def test_literal_keys_match_their_owning_modules() -> None:
     """순수성 대가로 리터럴을 들고 있다 — 드리프트는 이 테스트가 잡는다."""
     assert audience_failure.PLAN_AUTHORITY_KEY == audience_authority.PLAN_AUTHORITY_KEY
     # 의미 게이트가 실제로 내는 사유 3종이 전부 semantic_resolution 으로 간다.
+    #
+    # ``system`` 의 파생은 2026-08-07 부터 **중립 사유**다. 예전에는 사유를 적지 않은
+    # system_failure 를 registry gap 으로 파생했는데, 레지스트리 불일치는 자산 목록을 대조해 본
+    # 경로만 주장할 수 있는 사실이라 파생으로 만들면 성격이 다른 실패까지 '설정을 고치라'고
+    # 보고한다. 진짜 registry gap 은 그 분기가 failure_reason 으로 명시한다.
     for kind, expected in (
         ("structurer", "semantic_structurer_failure"),
-        ("system", "semantic_registry_gap"),
+        ("system", "semantic_system_failure"),
         (None, "semantic_ir_unsupported"),
     ):
         import semantic_outcome

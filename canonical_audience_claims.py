@@ -1265,12 +1265,19 @@ def _issue_span_covered(
 
 
 def temporal_obligation_compiled_spans(
-    query: str, expression: event_ir.Condition | None
+    query: str,
+    expression: event_ir.Condition | None,
+    *,
+    today: date | None = None,
 ) -> tuple[tuple[int, int], ...]:
     """시간 의무를 방면할 수 있는 구간 — 이 표현에서 시간 조건이 실제로 컴파일된 자리.
 
     판정의 소유자는 :mod:`temporal_claims` 다(순환을 피해 지연 import 한다). 선언을 읽지
     못하면 **빈 튜플**을 돌려준다 — 근거 부재는 통과가 아니라 fail-close 다.
+
+    ``today`` 는 낮춤이 쓴 기준일이다. 주지 않으면 실행 시점으로 떨어지는데, 그때 상대
+    시점 표현('지난달 말 기준')이 다른 달로 다시 읽혀 **컴파일된 조건이 컴파일되지 않은
+    것으로 보인다**. 호출자가 이미 들고 있는 기준일을 그대로 넘긴다.
     """
 
     if expression is None:
@@ -1287,6 +1294,8 @@ def temporal_obligation_compiled_spans(
             snapshot=audience_runtime.catalog_snapshot(),
             catalog=catalog,
             runtime=temporal_ir.create_temporal_runtime(catalog),
+            context=temporal_claims.request_context_for(today),
+            today=today,
         )
     except (ImportError, ValueError, KeyError, TypeError):
         return ()
@@ -1295,9 +1304,11 @@ def temporal_obligation_compiled_spans(
 def semantic_obligation_issues(
     query: str,
     expression: event_ir.Condition,
+    *,
+    today: date | None = None,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
-    temporal_spans = temporal_obligation_compiled_spans(query, expression)
+    temporal_spans = temporal_obligation_compiled_spans(query, expression, today=today)
     for requirement in semantic_requirements.capture_source_semantic_obligations(query):
         kind = semantic_requirements.obligation_kind(requirement)
         value = requirement.value if isinstance(requirement.value, Mapping) else {}
@@ -1584,6 +1595,8 @@ def canonical_claim_issues(
     expression: event_ir.Condition,
     literal_bindings: Iterable[Mapping[str, Any]],
     catalog: Mapping[str, Any] | None = None,
+    *,
+    today: date | None = None,
 ) -> list[dict[str, Any]]:
     bindings = list(literal_bindings)
     literal_issues = literal_claim_issues(query, expression, bindings)
@@ -1648,7 +1661,7 @@ def canonical_claim_issues(
         *window_kind_issues(query, expression, bindings),
         *ranked_window_scope_issues(query, expression, bindings),
         *catalog_issues,
-        *semantic_obligation_issues(query, expression),
+        *semantic_obligation_issues(query, expression, today=today),
     ]
     if cardinality is not None and not cardinality.equivalent:
         issues.append({
@@ -1686,8 +1699,13 @@ def refresh_canonical_unresolved(
     plan: dict[str, Any],
     expression: event_ir.Condition | None,
     catalog: Mapping[str, Any],
+    *,
+    today: date | None = None,
 ) -> list[dict[str, Any]]:
-    """Refresh graph-level canonical coverage and immutable receipts."""
+    """Refresh graph-level canonical coverage and immutable receipts.
+
+    ``today`` 는 시간 의무 재판정의 기준일이다 — 낮춤이 쓴 것과 같아야 한다.
+    """
     requirement = plan.get("audience_requirement")
     issues: list[dict[str, Any]] = []
     if expression is not None:
@@ -1715,7 +1733,9 @@ def refresh_canonical_unresolved(
         # 시간·이력 의무는 **그 구간이 실제로 컴파일됐을 때만** 방면한다. 종류만 보고
         # 통째로 면제하면 as_of·직전값·유지·변경횟수 마커가 만든 의무까지 함께 풀려,
         # 낮춰지지 않은 표현이 검증을 통과한다.
-        temporal_spans = temporal_obligation_compiled_spans(query, expression)
+        temporal_spans = temporal_obligation_compiled_spans(
+            query, expression, today=today
+        )
         if temporal_spans:
             semantic_requirements.discharge_source_semantic_obligations(
                 plan,
@@ -1733,7 +1753,7 @@ def refresh_canonical_unresolved(
             issues.extend(
                 issue
                 for issue in canonical_claim_issues(
-                    query, expression, bindings, catalog
+                    query, expression, bindings, catalog, today=today
                 )
             )
     elif isinstance(requirement, Mapping):

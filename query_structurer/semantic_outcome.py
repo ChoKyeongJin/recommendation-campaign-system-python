@@ -19,17 +19,27 @@ FailureKind = Literal[
     "system_failure",
     "unsupported",
 ]
-# 실패 **사유**의 명시 선언(닫힌 어휘). 보통 사유는 failure_kind 에서 파생되지만
-# (`failure_messages.semantic_failure_reason`), 한 kind 안에 서로 다른 고칠 곳이 섞이면
-# 파생만으로는 구별할 수 없다:
+# 실패 **사유**의 닫힌 어휘. ``system_failure`` 라는 kind 안에는 고칠 곳이 서로 다른 실패가
+# 여럿 들어 있고, 그 구별은 **판정한 계층만** 안다:
 #
 #   semantic_registry_gap      실행 자산/레지스트리가 그 축을 낼 수 없다 → 설정·컴파일러 작업
 #   semantic_emission_failure  자산도 컴파일러도 있는데 구조화기가 표현을 못 냈다 → 방출 품질
+#   semantic_system_failure    그 외의 내부 실패(부분 표현 격리·구조화기 가용성 등)
 #
-# 둘 다 운영상 system_failure(사용자가 답할 수 없는 실패)지만 고칠 사람이 다르다. 파생 사유를
-# 그대로 쓰면 후자가 '레지스트리 구멍'으로 보고돼 없는 결함을 찾게 된다.
-FailureReason = Literal["semantic_emission_failure"]
+# **사유는 추론하지 않는다.** 예전에는 사유를 적지 않은 system_failure 를 전부
+# `semantic_registry_gap` 으로 파생했는데(`failure_messages.semantic_failure_reason`), 그 결과
+# 방출 실패와 부분 표현 격리까지 '레지스트리 구멍'으로 보고돼 운영에서 없는 설정 결함을 찾게
+# 됐다(실측 2026-08-07: 낮출 수 있는 요구가 registry gap 으로 종결). 이제 registry gap 은 실제로
+# 레지스트리 불일치를 확인한 경로만 **명시 선언**하고, 선언이 없으면 중립 사유로 남는다.
+FailureReason = Literal[
+    "semantic_emission_failure",
+    "semantic_registry_gap",
+    "semantic_system_failure",
+]
 FAILURE_REASON_EMISSION: FailureReason = "semantic_emission_failure"
+FAILURE_REASON_REGISTRY_GAP: FailureReason = "semantic_registry_gap"
+# 사유를 선언하지 않은 system_failure 의 중립 귀결. 특정 고칠 곳을 주장하지 않는다.
+FAILURE_REASON_SYSTEM: FailureReason = "semantic_system_failure"
 SEMANTIC_STATUSES = frozenset(get_args(SemanticStatus))
 FAILURE_KINDS = frozenset(get_args(FailureKind))
 FAILURE_REASONS = frozenset(get_args(FailureReason))
@@ -373,6 +383,8 @@ __all__ = [
     "FAILURE_KINDS",
     "FAILURE_REASONS",
     "FAILURE_REASON_EMISSION",
+    "FAILURE_REASON_REGISTRY_GAP",
+    "FAILURE_REASON_SYSTEM",
     "SEMANTIC_OUTCOME_WIRE_SPEC",
     "SEMANTIC_STATUSES",
     "ClosedObjectSpec",

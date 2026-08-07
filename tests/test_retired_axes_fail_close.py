@@ -602,7 +602,9 @@ def test_current_state_asset_never_rebuts_an_unsupported_state_history_claim() -
         for asset in execution_assets.non_canonical_assets_for_text(span)
     )
     # 그러나 **이력 신고**에는 그 자산이 답이 될 수 없다.
-    assert execution_assets.non_canonical_assets_for_issue(issue) == ()
+    assert execution_assets.assets_compatible_with_issue(
+        issue, query=STATE_TRANSITION_QUERY
+    ) == ()
 
     structured = _structure(
         STATE_TRANSITION_QUERY, _raw(STATE_TRANSITION_QUERY, issues=[issue])

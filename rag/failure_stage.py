@@ -87,6 +87,9 @@ _FAILURE_REASON_TO_STAGE: dict[str, str] = {
     # 자산도 컴파일러도 이 의미를 낼 수 있는데 구조화기가 표현을 방출하지 못한 경우.
     # 레지스트리 구멍과 같은 단계지만 고칠 곳이 다르므로 사유 코드를 분리한다.
     "semantic_emission_failure": "condition_recognition",
+    # 사유를 선언하지 않은 내부 실패(부분 표현 격리·구조화기 가용성). 예전에는 이것까지
+    # registry gap 으로 파생됐다 — 같은 단계지만 '설정을 고치라'고 말하지 않는다.
+    "semantic_system_failure": "condition_recognition",
     "semantic_conditions_not_extracted": "condition_recognition",
     "entity_ranking_not_structured": "condition_recognition",
     "real_db_unsupported_conditions": "real_db_mapping",

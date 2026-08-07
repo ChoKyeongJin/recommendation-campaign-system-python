@@ -47,6 +47,24 @@ FAILURE_KIND_BY_CAUSE: dict[str, str] = {
 }
 
 
+# ── system_failure 안의 실패 사유(닫힌 집합) ────────────────────────────────────
+# 한 kind 안에 고칠 곳이 서로 다른 실패가 셋 들어 있다. 이 구별은 **판정한 계층만** 알 수
+# 있으므로 사유는 선언되는 값이지 파생되는 값이 아니다.
+#
+# 예전에는 사유를 적지 않은 system_failure 를 전부 registry gap 으로 파생했고, 그래서 실제로
+# 낮출 수 있는 요구까지 '실행 설정이 준비되지 않았다'로 종결됐다(실측 2026-08-07). 레지스트리
+# 불일치는 자산 목록을 대조해 본 경로만 주장할 수 있는 사실이다.
+FAILURE_REASON_REGISTRY_GAP = "semantic_registry_gap"    # 실행 자산이 그 축을 못 낸다 → 설정
+FAILURE_REASON_EMISSION = "semantic_emission_failure"    # 낼 수 있는데 표현이 안 나왔다 → 방출
+FAILURE_REASON_SYSTEM = "semantic_system_failure"        # 그 외 내부 실패(선언 없음의 중립 귀결)
+
+SYSTEM_FAILURE_REASONS: frozenset[str] = frozenset({
+    FAILURE_REASON_REGISTRY_GAP,
+    FAILURE_REASON_EMISSION,
+    FAILURE_REASON_SYSTEM,
+})
+
+
 __all__ = [
     "CAUSE_MODEL_OMISSION",
     "CAUSE_REGISTRY_GAP",
@@ -57,5 +75,9 @@ __all__ = [
     "FAILURE_KIND_SYSTEM",
     "FAILURE_KIND_UNSUPPORTED",
     "FAILURE_KIND_USER",
+    "FAILURE_REASON_EMISSION",
+    "FAILURE_REASON_REGISTRY_GAP",
+    "FAILURE_REASON_SYSTEM",
     "MISSING_CAUSES",
+    "SYSTEM_FAILURE_REASONS",
 ]

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping, Sequence
+from datetime import date
 from typing import Any
 
 import event_ir
@@ -235,6 +236,68 @@ def render_ranked_entity_set_recipe(
     return "\n".join(lines)
 
 
+def render_temporal_state_recipe(
+    query: str, *, current_date: str | None = None
+) -> str | None:
+    """시점·이력 의무의 canonical 형상 계약. 형상은 **낮춤이 실제로 만든 것**을 그대로 보여준다.
+
+    이 안내를 손으로 적지 않는 이유가 이 함수의 요점이다. 이 축의 canonical 형상은 카탈로그가
+    선언한 관측 소스·시간 필드·값 필드·값 도메인에서 나오고, 그 조립은 이미
+    :mod:`temporal_claims` 가 소유한다. 여기서 형상을 다시 서술하면 카탈로그가 바뀔 때
+    프롬프트만 옛 모양을 가르치게 된다(그리고 그 거짓말은 검증기가 반려로만 드러낸다).
+
+    그래서 :mod:`lowering_planner` 의 **같은 낮춤 probe** 를 부르고, 낮춰진 표현을 그대로
+    싣는다. 낮출 수 없는 요청에는 아무것도 내지 않는다 — 지원하지 않는 형상을 지원한다고
+    가르치지 않기 위해서다.
+
+    이것은 안내이지 정확성 경계가 아니다. 모델이 이 형상을 따르든 아니든 표현은 그대로 모든
+    오디언스 검증기를 통과해야 하고, 따르지 않아도 애플리케이션 합성이 같은 자리를 낸다.
+    """
+
+    import lowering_planner  # 지연 import — 프롬프트 조립이 카탈로그 로딩을 강제하지 않는다
+
+    try:
+        plans = [
+            plan
+            for plan in lowering_planner.plans_for_query(
+                query, today=_as_of(current_date)
+            )
+            if plan.obligation.kind == lowering_planner.MEMBER_STATE_HISTORY
+        ]
+    # 계획을 못 세우면 안내하지 않는다(추측 금지).
+    except Exception:
+        return None
+    if not plans:
+        return None
+    lines = [
+        "[Member State History Recipe]",
+        "The obligations above include an attribute-state condition over time. The application "
+        "lowers each one to exactly this canonical Event IR — emit it verbatim in "
+        "audience_requirement.expression (evidence spans may cite any correct source range; "
+        "they are provenance, not meaning):",
+    ]
+    for plan in plans:
+        lines.append(
+            f"  - {plan.obligation.source_text!r}: "
+            + json.dumps(
+                plan.expression.to_dict(), ensure_ascii=False, sort_keys=True, default=str
+            )
+        )
+    lines.append(
+        "Do not replace this with a current-value filter on the member profile: 'was X at that "
+        "time' and 'is X now' are different audiences. If you cannot restate the shape, return "
+        "expression=null with one unsupported_semantics issue whose evidence covers the clause."
+    )
+    return "\n".join(lines)
+
+
+def _as_of(current_date: str | None) -> date | None:
+    try:
+        return date.fromisoformat(current_date) if current_date else None
+    except ValueError:
+        return None
+
+
 def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> str:
     context = {
         "current_date": input.context.current_date,
@@ -258,6 +321,11 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
     )
     if ranked_recipe:
         knowledge_sections.append(ranked_recipe)
+    temporal_recipe = render_temporal_state_recipe(
+        input.query, current_date=input.context.current_date
+    )
+    if temporal_recipe:
+        knowledge_sections.append(temporal_recipe)
     if input.context.slot_vocabulary:
         knowledge_sections.append(
             "[Allowed Canonical Values]\n"
@@ -391,13 +459,19 @@ def build_campaign_query_plan_v4_retry_prompt(
     재시도가 같은 계약을 봐야 하고, 같은 문장을 두 곳에 적으면 한쪽만 고쳐진 상태가 생긴다.
     재시도에만 있는 것은 **이전 출력이 실패한 이유**뿐이다.
     """
+    has_query = isinstance(query, str) and bool(query.strip())
     ranked_recipe = (
         render_ranked_entity_set_recipe(
             _ranked_entity_set_obligations(query),
             query=query,
             current_date=current_date,
         )
-        if isinstance(query, str) and query.strip()
+        if has_query
+        else None
+    )
+    temporal_recipe = (
+        render_temporal_state_recipe(query, current_date=current_date)
+        if has_query and isinstance(query, str)
         else None
     )
     return "\n\n".join(
@@ -433,6 +507,7 @@ def build_campaign_query_plan_v4_retry_prompt(
                 "identical canonical field IDs."
             ),
             ranked_recipe,
+            temporal_recipe,
             (
                 "Comparison evidence must be the exact query slice containing the comparison's source value "
                 "and comparison-operator wording. Use only catalog source/field IDs and preserve every "

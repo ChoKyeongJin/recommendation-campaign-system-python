@@ -22,11 +22,9 @@ import hashlib
 import json
 from collections.abc import Coroutine, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
-from datetime import time as dtime
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import audience_authority
 import audience_issue_contract
@@ -35,6 +33,7 @@ import canonical_audience_claims
 import consent_cardinality
 import event_ir
 import execution_assets
+import lowering_planner
 import plan_decisions
 import rolling_absence_claims
 import semantic_outcome
@@ -56,7 +55,10 @@ from query_pipeline.requirement.resolver import (
 )
 from query_pipeline.requirement.validation import ISSUE_CODE_KINDS, report_from_issue
 from query_structurer.semantic_ir import write_semantic_ir
-from query_structurer.semantic_outcome import FAILURE_REASON_EMISSION
+from query_structurer.semantic_outcome import (
+    FAILURE_REASON_EMISSION,
+    FAILURE_REASON_REGISTRY_GAP,
+)
 
 AUDIENCE_REQUIREMENT_KEY = "audience_requirement"
 EVENT_EXPRESSION_KEY = "event_expression"
@@ -153,6 +155,78 @@ def _supported_obligation_conflicts(
             "source_span": dict(obligation.source_span),
         })
     return conflicts
+
+
+def _lowering_plan_conflicts(
+    query: str, unsupported: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """'표현 불가' 신고 중 **실제로 낮출 수 있는** 자리의 것들.
+
+    지원 여부의 authoritative source 다. 의무 종류 allowlist(:data:`canonical_audience_claims.
+    CANONICAL_COMPILED_OBLIGATION_KINDS`)와 달리 이 판정은 목록을 조회하지 않는다 —
+    :mod:`lowering_planner` 가 canonical 표현을 실제로 만들어 컴파일해 보고 답한다. 그러므로 새
+    지표·새 기간 문법이 카탈로그에 들어오면 여기 한 줄도 고치지 않고 함께 판정된다.
+    """
+    if not isinstance(query, str) or not query.strip():
+        return []
+    try:
+        plans = lowering_planner.plans_for_query(query)
+    # 계획을 못 세우면 반박하지 않는다(추측 금지) — 카탈로그·달력 로딩 실패는 지원 없음의 근거가
+    # 아니라 판정 불가다.
+    except Exception:
+        return []
+    if not plans:
+        return []
+    conflicts: list[dict[str, Any]] = []
+    for item in unsupported:
+        evidence = item.get("evidence")
+        plan = next(
+            (
+                candidate
+                for candidate in plans
+                if semantic_requirements.spans_overlap(
+                    evidence, candidate.obligation.source_span
+                )
+            ),
+            None,
+        )
+        if plan is None:
+            continue
+        conflicts.append({
+            "argument": str(item.get("argument") or ""),
+            "evidence": str((evidence or {}).get("text") or ""),
+            "obligation_kind": plan.obligation.kind,
+            "source_span": {
+                "start": plan.obligation.source_span[0],
+                "end": plan.obligation.source_span[1],
+            },
+            "capabilities": sorted(plan.capabilities),
+        })
+    return conflicts
+
+
+def _write_emission_failure(
+    payload: dict[str, Any], failures: list[dict[str, Any]]
+) -> None:
+    """지원되는 의미인데 표현이 서지 않은 자리의 종결. 문구는 **내부 상태에서** 나온다.
+
+    사용자 문구를 여기 한 곳에서만 만드는 이유는, 예전에 같은 요청이 모델이 지어낸 argument
+    문자열에 따라 서로 다른 문구로 끝났기 때문이다(실측 2026-08-07).
+    """
+    # 지연 import — 순환 import 를 피하는 기존 관례를 그대로 따른다(project_resolution_to_plan 과 동일).
+    from query_structurer.campaign_plan_v4 import empty_semantic_ir
+
+    write_semantic_ir(
+        payload,
+        empty_semantic_ir(
+            status="needs_clarification",
+            missing_fields=["audience.requirement"],
+            message="요청한 조건은 지원되는 의미이지만 실행 표현으로 확정되지 않았습니다.",
+            failure_kind="system_failure",
+            failure_reason=FAILURE_REASON_EMISSION,
+        ),
+    )
+    payload["audience_emission_failures"] = failures
 
 
 def _dedupe_audience_issues(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -438,10 +512,15 @@ def _validation_issues(
 class _ApplicationOwnedSynthesis:
     expression: event_ir.Condition
     owner: str
-    issue_key: tuple[str, str, str]
+    # 이 합성이 방면하는 신고들. 첫 항목이 앵커(합성기가 자기 규칙으로 검증한 신고)이고,
+    # 나머지는 합성 구간으로 설명된 신고다.
+    issue_keys: tuple[tuple[str, str, str], ...]
     # 합성이 **스칼라 임계값으로** 소비한 원문 구간. 기간처럼 보이지만 창이 아닌 리터럴
     # ('구매주기가 30일 이하'의 '30일')을 시간 검증기가 소실된 창으로 세지 않게 한다.
     scalar_literal_spans: tuple[tuple[int, int], ...] = ()
+    # 이 합성이 **원문에서 소유했다고 선언하는** 구간. 앵커 밖의 신고를 설명할 수 있는 근거는
+    # 이것뿐이다. 선언하지 않는 합성기는 앵커 하나만 방면한다(종전 동작).
+    accounted_spans: tuple[tuple[int, int], ...] = ()
 
 
 def _issue_evidence_contains(
@@ -456,6 +535,38 @@ def _issue_evidence_contains(
     )
 
 
+def _accounted_issue_keys(
+    issues: Sequence[Mapping[str, Any]],
+    anchor: Mapping[str, Any],
+    synthesis: _ApplicationOwnedSynthesis,
+) -> tuple[tuple[str, str, str], ...] | None:
+    """앵커 밖의 신고가 **전부** 합성 구간으로 설명되면 그 신고들의 신원. 아니면 ``None``.
+
+    모델은 같은 의미 실패를 자주 여러 신고로 쪼갠다(실측 2026-08-08: 시간 절 하나에 대해
+    ``unsupported_semantics(member_state_history)`` + ``ambiguous_requirement(subject.grade)``).
+    구제 여부를 신고 **개수**로 정하면 그 쪼갬이 곧 실패가 되어, 같은 요청이 회차마다
+    다른 귀결로 끝난다. 기준은 개수가 아니라 "합성이 신고된 자리를 설명하는가"다.
+
+    설명의 정의는 앵커에 쓰는 것과 같다(:func:`_issue_evidence_contains`) — 신고가 가리킨
+    구간 안에 합성이 소유한 구간이 있어야 한다. 하나라도 설명되지 않으면 부분 방면 대신
+    전부 포기한다: 설명되지 않은 절이 남은 채 표현이 서면 그 절이 사라진 SQL 이 나간다.
+    """
+
+    anchor_key = _audience_issue_key(anchor)
+    accounted: list[tuple[str, str, str]] = [anchor_key]
+    for issue in issues:
+        key = _audience_issue_key(issue)
+        if key == anchor_key:
+            continue
+        if not any(
+            _issue_evidence_contains(issue, start, end)
+            for start, end in synthesis.accounted_spans
+        ):
+            return None
+        accounted.append(key)
+    return tuple(accounted)
+
+
 def _application_owned_synthesis(
     query: str,
     issues: list[dict[str, Any]],
@@ -463,16 +574,39 @@ def _application_owned_synthesis(
     *,
     current_date: str | None = None,
 ) -> _ApplicationOwnedSynthesis | None:
-    """Resolve one false model issue through a complete structural contract.
+    """Resolve the model's false issues through a complete structural contract.
 
     This path never combines a synthesized atom with an unknown remainder: one
-    model issue must account for the null expression, its evidence must contain
+    synthesis must account for every reported issue, its evidence must contain
     the owned literal, and the generated expression still goes through all
-    ordinary audience validators before that issue can be discharged.
+    ordinary audience validators before those issues can be discharged.
+
+    합성기 우선순위는 :func:`_synthesis_for_issue` 가 소유하고, 여기서는 어느 신고를
+    앵커로 볼지만 원문 순서대로 시도한다 — 둘 다 결정론이라 같은 입력은 같은 합성을 고른다.
     """
-    if len(issues) != 1:
-        return None
-    issue = issues[0]
+
+    for anchor in issues:
+        synthesis = _synthesis_for_issue(
+            query, anchor, literal_bindings, current_date=current_date
+        )
+        if synthesis is None:
+            continue
+        issue_keys = _accounted_issue_keys(issues, anchor, synthesis)
+        if issue_keys is None:
+            continue
+        return replace(synthesis, issue_keys=issue_keys)
+    return None
+
+
+def _synthesis_for_issue(
+    query: str,
+    issue: Mapping[str, Any],
+    literal_bindings: list[Any],
+    *,
+    current_date: str | None = None,
+) -> _ApplicationOwnedSynthesis | None:
+    """이 신고 하나를 앵커로 삼는 합성. 합성기 순서가 계약이다(바꾸지 않는다)."""
+
     code, argument = issue.get("code"), issue.get("argument")
 
     import audience_runtime
@@ -495,7 +629,7 @@ def _application_owned_synthesis(
                 return _ApplicationOwnedSynthesis(
                     expression,
                     "consent_cardinality.exact_truth_table",
-                    _audience_issue_key(issue),
+                    (_audience_issue_key(issue),),
                 )
 
     if code in {"ambiguous_requirement", "unsupported_semantics"}:
@@ -532,7 +666,7 @@ def _application_owned_synthesis(
                 return _ApplicationOwnedSynthesis(
                     expression,
                     "rolling_absence.not_exists_window",
-                    _audience_issue_key(issue),
+                    (_audience_issue_key(issue),),
                 )
 
     if code == "unsupported_semantics":
@@ -545,6 +679,17 @@ def _application_owned_synthesis(
             return synthesis
         # 시간·이력 조건(시점 값·전이·기간 전칭 …). 같은 이유로 인자 문자열을 보지 않고,
         # 합성이 성립하는 조건은 **원문 근거가 issue 근거 안에 있을 것**뿐이다.
+        synthesis = _temporal_synthesis(query, issue, current_date=current_date)
+        if synthesis is not None:
+            return synthesis
+
+    if code == "missing_argument" and argument == "period":
+        # 맨 '최근'에 대한 기간 결핍 신고. 구조화기는 규칙대로 신고했지만, 그 절이 스스로 창을
+        # 확정하는 조건('등급이 승급한')이면 결핍이 아니다 — 판정은 합성이 한다.
+        #
+        # 이 갈래가 없던 동안, 같은 문장이 모델의 신고 코드에 따라 갈렸다(실측 #17:
+        # unsupported_semantics 로 신고되면 되살아나고 missing_argument(period) 로 신고되면
+        # 되묻기). 귀결이 방출 편차를 따라가면 안 되므로 두 코드가 같은 합성에 도달한다.
         synthesis = _temporal_synthesis(query, issue, current_date=current_date)
         if synthesis is not None:
             return synthesis
@@ -564,7 +709,6 @@ def _temporal_synthesis(
     import audience_runtime  # noqa: PLC0415 - 지연 import(순환 방지)
     import temporal_claims  # noqa: PLC0415
     import temporal_ir  # noqa: PLC0415
-    from temporal_ir import semantic_ir as sir  # noqa: PLC0415
 
     catalog = audience_runtime.resolve_audience_catalog()
     snapshot = audience_runtime.catalog_snapshot()
@@ -575,7 +719,7 @@ def _temporal_synthesis(
         # 모델 신고 유지(SQL 없음)이므로, 판정 불가를 통과로 바꾸지 않고 그대로 둔다.
         return None
 
-    context = sir.TemporalRequestContext(now=_request_now(current_date))
+    context = temporal_claims.request_context_for(current_date, timezone=_TIMEZONE)
     outcome = temporal_claims.synthesize_temporal_claim(
         query,
         snapshot=snapshot,
@@ -586,15 +730,55 @@ def _temporal_synthesis(
     if not isinstance(outcome, temporal_claims.TemporalClaimSynthesis):
         return None
     # 합성의 근거가 모델이 신고한 구간 안에 있어야 그 신고를 반박할 수 있다.
+    #
+    # 기간 결핍 신고만 예외다. 그 신고는 조건 절이 아니라 **그 옆의 시간 낱말**('최근')에
+    # 붙으므로 포함 관계로는 영원히 만나지 않는다 — 같은 절인지로 묻고, 그 절이 실제로
+    # 낮춰졌다는 사실(이 합성)이 곧 "기간은 결핍이 아니다"의 근거다.
     if not any(
         _issue_evidence_contains(issue, start, end) for start, end in outcome.spans
+    ) and not audience_issue_contract.bare_period_issue_owned_by_spans(
+        query, issue, outcome.spans
     ):
         return None
     return _ApplicationOwnedSynthesis(
         outcome.expression,
         temporal_claims.OWNER,
-        _audience_issue_key(issue),
+        (_audience_issue_key(issue),),
         scalar_literal_spans=outcome.spans,
+        # 시간 합성은 자기가 읽은 원문 구간(표지·값·기간)을 전부 안다 — 그래서 같은 절을
+        # 두고 쪼개진 다른 신고도 이 구간으로 설명할 수 있다.
+        accounted_spans=outcome.spans,
+    )
+
+
+def _temporal_clause_already_compiled(
+    query: str,
+    expression: event_ir.Condition,
+    synthesis: _ApplicationOwnedSynthesis,
+    *,
+    current_date: str | None,
+) -> bool:
+    """모델 표현이 이 합성의 절을 **이미** 낮춰 두었는가.
+
+    모델이 canonical 형상을 스스로 내면서 같은 절을 미지원으로도 신고하는 모양이 있다.
+    그 신고만 보고 결합하면 같은 조건이 두 번 들어가고(``A ∧ A``), 조건 커버리지가 그 중복을
+    미귀결로 읽어 **옳은 SQL 이 막힌다**(실측 2026-08-08 라이브 #20: 3회 중 2회 차단).
+    뜻은 같으므로 결합하지 않고 신고만 방면하는 것이 정확하다.
+
+    판정은 여기서도 낮춤이 한다 — 표현이 실제로 그 구간을 컴파일했는지 물어보고, 합성이
+    읽은 구간이 전부 그 안에 들어 있을 때만 '이미 있다'로 본다(부분 겹침은 결합한다).
+    """
+
+    if not synthesis.accounted_spans:
+        return False
+    compiled = canonical_audience_claims.temporal_obligation_compiled_spans(
+        query, expression, today=as_of_date(current_date)
+    )
+    if not compiled:
+        return False
+    return all(
+        any(start <= span_start and span_end <= end for start, end in compiled)
+        for span_start, span_end in synthesis.accounted_spans
     )
 
 
@@ -612,25 +796,19 @@ def _conjoinable_synthesis(
     보장되지 않는 합성이 모델 표현과 섞인다.
     """
 
-    unsupported = [item for item in issues if item.get("code") == "unsupported_semantics"]
-    if len(unsupported) != 1:
-        return None
-    return _temporal_synthesis(query, unsupported[0], current_date=current_date)
-
-
-def _request_now(current_date: str | None = None) -> datetime:
-    """합성 기준 시각 — 플랜이 확정한 기준일을 쓰고, 없을 때만 요청 시점을 쓴다.
-
-    시계를 직접 읽으면 같은 입력이 실행 시각에 따라 다른 창으로 낮아진다. 이 저장소의
-    시간 계층은 기준 시각을 주입받는 것이 규약이고(:class:`sir.TemporalRequestContext`),
-    구조화기가 이미 ``current_date`` 를 확정해 두므로 그것이 유일한 권위다.
-    """
-
-    zone = ZoneInfo("Asia/Seoul")
-    anchor = as_of_date(current_date)
-    if anchor is None:
-        return datetime.now(zone)
-    return datetime.combine(anchor, dtime(9, 0), tzinfo=zone)
+    for anchor in issues:
+        if anchor.get("code") != "unsupported_semantics":
+            continue
+        synthesis = _temporal_synthesis(query, anchor, current_date=current_date)
+        if synthesis is None:
+            continue
+        # 결합 갈래에서도 규칙은 같다 — 남은 신고가 전부 이 합성으로 설명돼야 한다.
+        # 하나라도 남으면 결합해서는 안 된다(설명되지 않은 절이 사라진 SQL 이 나간다).
+        issue_keys = _accounted_issue_keys(issues, anchor, synthesis)
+        if issue_keys is None:
+            continue
+        return replace(synthesis, issue_keys=issue_keys)
+    return None
 
 
 def _member_scalar_synthesis(
@@ -666,7 +844,7 @@ def _member_scalar_synthesis(
     return _ApplicationOwnedSynthesis(
         result.expression,
         member_scalar_metric_claims.OWNER,
-        _audience_issue_key(issue),
+        (_audience_issue_key(issue),),
         scalar_literal_spans=spans,
     )
 
@@ -722,7 +900,7 @@ def _campaign_average_synthesis(
     return _ApplicationOwnedSynthesis(
         result.expression,
         campaign_metric_claims.DECLARED_SYNTHESIS_OWNER,
-        _audience_issue_key(issue),
+        (_audience_issue_key(issue),),
         scalar_literal_spans=result.consumed_spans,
     )
 
@@ -805,12 +983,15 @@ def run_audience_resolver(
         conjunct = _conjoinable_synthesis(query, issues, current_date=current_date)
         if conjunct is not None:
             synthesis = conjunct
-            raw_expression = event_ir.And(
-                operands=(
-                    _parse_audience_expression(raw_expression, query),
-                    conjunct.expression,
-                )
-            ).to_dict()
+            model_expression = _parse_audience_expression(raw_expression, query)
+            # 결합은 **없는 절을 더할 때만** 한다. 모델이 그 절을 이미 낮춰 놨으면 같은
+            # 조건이 두 번 들어가고, 그 중복이 조건 커버리지에서 미귀결로 읽힌다.
+            if not _temporal_clause_already_compiled(
+                query, model_expression, conjunct, current_date=current_date
+            ):
+                raw_expression = event_ir.And(
+                    operands=(model_expression, conjunct.expression)
+                ).to_dict()
     expression: event_ir.Condition | None = None
     normalizations: list[dict[str, Any]] = []
     evidence_normalizations: list[dict[str, Any]] = []
@@ -867,10 +1048,13 @@ def run_audience_resolver(
             if as_of_issue is not None:
                 calculated.append(as_of_issue)
         if synthesis is not None and not calculated:
+            # 합성이 설명한 신고를 **전부** 방면한다. 앵커 하나만 지우면 같은 절을 두고
+            # 쪼개진 나머지 신고가 남아, 표현이 섰는데도 문장이 결핍으로 닫힌다.
+            discharged = set(synthesis.issue_keys)
             issues = [
                 issue
                 for issue in issues
-                if _audience_issue_key(issue) != synthesis.issue_key
+                if _audience_issue_key(issue) not in discharged
             ]
             synthesis_owner = synthesis.owner
         issues.extend(calculated)
@@ -996,9 +1180,22 @@ def project_resolution_to_plan(
             # **미지원 선언은 가설이지 판정이 아니다.** 원문 결핍(missing_argument/
             # ambiguous_requirement)은 원문을 읽은 LLM 만 볼 수 있으므로 그대로 종결하지만,
             # "표현할 수 없다"는 실행 자산(컴파일러·카탈로그)을 아는 애플리케이션의 몫이다.
-            # 강등의 조건은 "**선언된 실행 자산 중 이 의미를 처리하는 것이 있는가**"다.
+            #
+            # 판정 순서가 곧 권위의 순서다. **실제로 낮출 수 있는가**가 가장 강한 근거이므로
+            # 먼저 묻는다 — 계획이 서면 그 신고는 종류를 따질 것도 없이 거짓이고, 자산 표면어나
+            # 의무 allowlist 를 보기 전에 방출 실패로 확정된다.
+            lowering_conflicts = _lowering_plan_conflicts(resolution.query, unsupported)
+            if lowering_conflicts:
+                _write_emission_failure(payload, lowering_conflicts)
+                return True
+            # 계획이 서지 않는다면 그다음 질문은 "**이 관계를 구현하는 자산이 선언돼 있는가**"다.
             contradicted = [
-                (item, execution_assets.non_canonical_assets_for_issue(item))
+                (
+                    item,
+                    execution_assets.assets_compatible_with_issue(
+                        item, query=resolution.query
+                    ),
+                )
                 for item in unsupported
                 if _audience_issue_key(item) in resolution.model_reported
             ]
@@ -1007,6 +1204,10 @@ def project_resolution_to_plan(
                 # 자산은 선언돼 있는데 그 축을 낼 **생산자가 없다**. 이것은 '표현할 수 없다'가
                 # 아니라 레지스트리 구멍이고, 저장소에는 이미 그 이름(semantic_registry_gap)과
                 # 사용자 문구가 있다. 미지원으로 부르면 없는 한계를 있다고 말하는 것이 된다.
+                #
+                # 사유를 **여기서 명시**하는 것이 이 분기의 계약이다. 레지스트리 불일치는 자산
+                # 목록을 대조해 본 이 경로만 아는 사실이라, 하류의 파생에 맡기면 성격이 다른
+                # system_failure 까지 같은 이름으로 보고된다.
                 named = sorted({asset.symbol for _item, assets in contradicted for asset in assets})
                 write_semantic_ir(
                     payload,
@@ -1018,6 +1219,7 @@ def project_resolution_to_plan(
                             f"(선언된 자산: {', '.join(named)})."
                         ),
                         failure_kind="system_failure",
+                        failure_reason=FAILURE_REASON_REGISTRY_GAP,
                     ),
                 )
                 payload["audience_execution_assets"] = [
@@ -1032,20 +1234,7 @@ def project_resolution_to_plan(
             # 말하게 되고, 운영에서는 레지스트리 구멍을 찾게 된다(고칠 곳이 다르다).
             emission_failures = _supported_obligation_conflicts(resolution.query, unsupported)
             if emission_failures:
-                write_semantic_ir(
-                    payload,
-                    empty_semantic_ir(
-                        status="needs_clarification",
-                        missing_fields=["audience.requirement"],
-                        message=(
-                            "요청한 조건은 지원되는 의미이지만 실행 표현으로 확정되지 "
-                            "않았습니다."
-                        ),
-                        failure_kind="system_failure",
-                        failure_reason=FAILURE_REASON_EMISSION,
-                    ),
-                )
-                payload["audience_emission_failures"] = emission_failures
+                _write_emission_failure(payload, emission_failures)
                 return True
             write_semantic_ir(
                 payload,

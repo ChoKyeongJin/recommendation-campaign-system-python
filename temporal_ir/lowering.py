@@ -611,6 +611,13 @@ def _value_issues(
     elif isinstance(predicate, sir.TransitionPredicate):
         values.extend((predicate.from_value, predicate.to_value))
         operator = "="
+    elif isinstance(predicate, sir.DirectionalTransitionPredicate):
+        # 방향 전이는 값을 이름으로 말하지 않지만 **서열 비교**다. 그 사실을 여기서 연산자로
+        # 드러내야 두 선언(지표의 supported_comparisons, 도메인의 서열)이 그대로 게이트가 된다 —
+        # 서열 없는 축('정상→휴면')에 '승급'이 붙으면 낮추기 전에 이름을 대며 막힌다.
+        operator = (
+            "<" if predicate.direction is sir.TransitionDirection.ASCENDING else ">"
+        )
     if operator is not None and operator not in metric.supported_comparisons:
         issues.append(treg.ValidationIssue(
             "temporal_comparison_unsupported",
@@ -618,7 +625,12 @@ def _value_issues(
             f"(선언된 연산자: {sorted(metric.supported_comparisons)})",
             "predicate.comparison.operator",
         ))
-    if values and binding.value_field is None:
+    # 방향 전이는 이름 붙은 값이 없어도 값 필드와 서열을 읽어야 한다 — 값 목록이 비었다는
+    # 이유로 검사를 건너뛰면 서열 없는 축이 검증을 통과해 컴파일러 예외로 터진다.
+    needs_value_field = bool(values) or isinstance(
+        predicate, sir.DirectionalTransitionPredicate
+    )
+    if needs_value_field and binding.value_field is None:
         # 값 필드가 없는 관측(사건 로그 등)에 값 조건이 오면 낮출 대상이 없다. 예전에는 그대로
         # 조립을 시도해 event_ir 스키마 예외가 합성 전체를 죽였다(리뷰 실측).
         issues.append(treg.ValidationIssue(
@@ -627,7 +639,7 @@ def _value_issues(
             "값 조건을 걸 수 없습니다(사건의 존재만 판정할 수 있습니다).",
             "predicate",
         ))
-    if not values or binding.value_field is None:
+    if not needs_value_field or binding.value_field is None:
         return tuple(issues)
     field_spec = semantic_catalog.field(binding.value_field)
     value_map = dict(field_spec.compiler_field.value_map)
@@ -770,6 +782,24 @@ def _composition_gaps(
         ):
             gaps.append(f"시간 조건({binding.time_field} [{start}, {end}))")
 
+    if isinstance(predicate, sir.DirectionalTransitionPredicate) and binding.value_field:
+        # 방향 전이에는 확정된 값 쌍이 없으므로 값 하나하나가 아니라 **모양**을 확인한다:
+        # 현재값 등호 비교와 직전값 부등호 비교가 둘 다 있어야 한다. 부등호가 빠지면 그냥
+        # '그 값이 된 회원'이 되고, 부등호가 뒤집히면 승급이 강등이 된다.
+        ordinal = "<" if predicate.direction is sir.TransitionDirection.ASCENDING else ">"
+        for field_id, operator in (
+            (binding.value_field, "="),
+            (str(binding.prev_value_field), ordinal),
+        ):
+            if not any(
+                isinstance(node, event_ir.Comparison)
+                and isinstance(node.left, event_ir.FieldRef)
+                and node.left.name == field_id
+                and node.operator == operator
+                for node in nodes
+            ):
+                gaps.append(f"방향 전이 비교({field_id} {operator} …)")
+
     for field_id, value in _expected_value_bindings(condition, binding):
         if not any(
             isinstance(node, event_ir.Comparison)
@@ -824,6 +854,14 @@ def _build_receipt(
         comparison_operator = condition.predicate.comparison.operator
     elif isinstance(condition.predicate, sir.TransitionPredicate):
         comparison_operator = "="
+    elif isinstance(condition.predicate, sir.DirectionalTransitionPredicate):
+        # 영수증에 남는 것은 '어느 쪽으로'를 결정한 서열 비교다. '='로 적으면 승급과 강등이
+        # 영수증에서 구별되지 않는다.
+        comparison_operator = (
+            "<"
+            if condition.predicate.direction is sir.TransitionDirection.ASCENDING
+            else ">"
+        )
     source = semantic_catalog.source(binding.source)
     return TemporalLoweringReceipt(
         evidence_id=_evidence_id(metric.id, definition.name, evidence),

@@ -84,9 +84,44 @@ def _predicate_conditions(data: treg.LoweringInput) -> tuple[event_ir.Condition,
             _comparison(data, str(binding.value_field), "=", predicate.to_value),
             _comparison(data, str(binding.prev_value_field), "=", predicate.from_value),
         )
+    if isinstance(predicate, sir.DirectionalTransitionPredicate):
+        return (_directional_transition(data, predicate),)
     raise treg.TemporalRegistryError(  # pragma: no cover - 계약 검증이 먼저 막는다
         f"낮출 수 없는 술어입니다: {predicate.kind}"
     )
+
+
+def _directional_transition(
+    data: treg.LoweringInput, predicate: sir.DirectionalTransitionPredicate
+) -> event_ir.Condition:
+    """'승급'·'강등' → 선언된 순서로 전개한 값 쌍 조건.
+
+    한 행에 현재값과 직전값이 함께 있으므로 방향은 ``rank(현재) > rank(직전)`` 이고, 그것을
+    실행 IR 로 옮기면 도착값마다 "현재 = v ∧ 직전 <(>) v" 하나씩이다. 부등호를 물리 IN 목록으로
+    바꾸는 것은 :mod:`event_compiler` 의 순서 도메인 전개이므로 여기에 순위 산술도 CASE 도 없다.
+
+    값 쌍을 모두 나열하지 않고 **도착값 기준**으로 접는 이유는 항 수다 — 쌍 열거는 값 개수의
+    제곱이지만 이 모양은 값 개수-1 개다(뜻은 같다).
+    """
+    binding = data.binding
+    order = tuple(data.semantic_catalog.field(str(binding.value_field)).compiler_field.value_order)
+    if len(order) < 2:  # pragma: no cover - _value_issues 가 먼저 막는다
+        raise treg.TemporalRegistryError(
+            f"필드 {binding.value_field!r} 에 선언된 값 순서가 없어 방향 전이를 낮출 수 없습니다"
+        )
+    ascending = predicate.direction is sir.TransitionDirection.ASCENDING
+    operator = "<" if ascending else ">"
+    # 서열 끝의 값은 그 방향의 **도착값이 될 수 없다**(최하위로 승급·최상위로 강등). 남겨 두면
+    # 만족하는 값이 없는 항이 생겨 컴파일이 fail-close 한다.
+    arrivals = order[1:] if ascending else order[:-1]
+    terms = tuple(
+        event_ir.And(operands=(
+            _comparison(data, str(binding.value_field), "=", value),
+            _comparison(data, str(binding.prev_value_field), operator, value),
+        ))
+        for value in arrivals
+    )
+    return terms[0] if len(terms) == 1 else event_ir.Or(operands=terms)
 
 
 def _relation(
@@ -644,7 +679,10 @@ def operator_definitions() -> tuple[treg.TemporalOperatorDefinition, ...]:
             name=treg.DIRECT_TRANSITION,
             selector_types=frozenset({sir.AsOfSelector, sir.WindowSelector}),
             quantifier_types=frozenset({sir.ExistsQuantifier}),
-            predicate_types=frozenset({sir.TransitionPredicate}),
+            # 방향 전이도 같은 연산자다 — 값 쌍을 지정했는지 방향만 말했는지는 '무엇이
+            # 바뀌었나'의 차이이고, 관측 계약(한 행에 직전 값이 있어야 한다)은 똑같다.
+            # 그래서 binding 의 supported_operators 선언은 손대지 않는다.
+            predicate_types=frozenset({sir.TransitionPredicate, sir.DirectionalTransitionPredicate}),
             accepted_representations=frozenset({Representation.PERIODIC_SNAPSHOT}),
             required_capabilities=frozenset({"supports_ordered_observations"}),
             accepted_strategies=frozenset({"exact_bucket"}),

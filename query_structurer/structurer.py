@@ -163,6 +163,22 @@ def _application_supported_obligations(query: Any) -> tuple[Any, ...]:
         return ()
 
 
+def _lowering_plans(query: Any) -> tuple[Any, ...]:
+    """원문에서 **실제로 낮출 수 있다고 증명된** 계획들. 증명은 :mod:`lowering_planner` 가 한다.
+
+    여기서 목록을 다시 적지 않는 이유는 :func:`_application_supported_obligations` 와 같다 —
+    판정의 소유자는 하나여야 재시도를 거는 조건과 미지원으로 닫는 조건이 갈라지지 않는다.
+    """
+    import lowering_planner  # 지연 import — 구조화기는 카탈로그 로딩을 강제하지 않는다
+
+    if not isinstance(query, str) or not query.strip():
+        return ()
+    try:
+        return lowering_planner.plans_for_query(query)
+    except Exception:  # noqa: BLE001 — 계획을 못 세우면 반박하지 않는다(추측 금지).
+        return ()
+
+
 def _audience_repair_error(raw: dict[str, Any], enriched: dict[str, Any]) -> str | None:
     """Report application-derived failures without echoing model-authored issues."""
     raw_requirement = raw.get("audience_requirement")
@@ -171,6 +187,18 @@ def _audience_repair_error(raw: dict[str, Any], enriched: dict[str, Any]) -> str
     raw_issues = [
         item for item in (raw_requirement.get("issues") or []) if isinstance(item, dict)
     ]
+    enriched_requirement = enriched.get("audience_requirement")
+    if (
+        raw_requirement.get("expression") is None
+        and isinstance(enriched_requirement, dict)
+        and isinstance(enriched_requirement.get("expression"), dict)
+        and not enriched_requirement.get("issues")
+    ):
+        # 애플리케이션이 그 자리를 **이미 낮췄고** 신고도 전부 방면됐다(합성 갈래). 여기서
+        # 재방출을 요구하면 검증을 통과한 표현을 버리고 모델에게 같은 것을 다시 그리라고
+        # 시키는 것이라, 예산만 태우고 같은 요청이 회차마다 다른 귀결로 끝난다. 반박은
+        # 표현이 서지 않았을 때의 수단이지, 이미 선 표현을 되돌리는 수단이 아니다.
+        return None
     if raw_requirement.get("expression") is None:
         # **미지원 선언은 가설이지 판정이 아니다.** 애플리케이션이 이미 선언해 둔 것을 못 한다는
         # 주장은 스스로 반박된다. 반박의 축은 둘이고, 각각 다른 실측에서 나왔다.
@@ -187,16 +215,48 @@ def _audience_repair_error(raw: dict[str, Any], enriched: dict[str, Any]) -> str
         #                        그 구간은 애플리케이션이 이미 `ranked_entity_set` 의무로
         #                        계산해 둔 자리이고, canonical 컴파일러가 그것을 방면한다.
         #
-        # 앞의 두 축은 모델이 **이름**을 어떻게 적었는지에 걸린다. 세 번째 축은 이름을 보지
-        # 않고 **좌표**를 본다 — 그래서 새 표면어가 생겨도 목록을 늘릴 필요가 없다.
-        # 셋 다 종결이 아니라 재시도 사유다.
+        #   lowering 축 (2026-08-07) '2026년 2월과 3월의 구매금액이 증가한 회원'
+        #                        → argument 가 회차마다 달랐다(같은 원문 12회에 6가지 이름:
+        #                        `metric_transition`·`month_to_month_change`·
+        #                        `temporal_comparison_between_monthly_metrics` …).
+        #                        그 요구는 `aggregate.scalar` 둘과 비교 하나로 컴파일된다 —
+        #                        12회 중 3회는 실제로 정확한 SQL 이 나왔다.
+        #
+        # 앞의 두 축은 모델이 **이름**을 어떻게 적었는지에 걸린다. 뒤의 둘은 이름을 보지 않고
+        # **좌표**를 본다 — 그래서 새 표면어가 생겨도 목록을 늘릴 필요가 없다. 그중 lowering
+        # 축은 종류 목록조차 보지 않고 표현을 실제로 만들어 컴파일해 보므로 가장 강하다.
+        # 넷 다 종결이 아니라 재시도 사유다.
         import canonical_audience_claims  # 지연 import — 카탈로그 로딩을 강제하지 않는다
         import semantic_requirements
 
-        obligations = _application_supported_obligations(enriched.get("original_query"))
+        query = enriched.get("original_query")
+        obligations = _application_supported_obligations(query)
+        plans = _lowering_plans(query)
         refuted: list[str] = []
         for item in raw_issues:
             if item.get("code") != "unsupported_semantics":
+                continue
+            # **가장 강한 반박이 먼저다.** 아래 세 축은 모델이 무엇을 적었는지(이름·계산 종류)
+            # 또는 의무 종류 allowlist 에 걸리지만, 이 축은 그 자리의 canonical 표현을 실제로
+            # 만들어 컴파일해 본 결과다 — 낮출 수 있다면 그 신고는 종류를 따질 것도 없이 틀렸다.
+            plan = next(
+                (
+                    candidate
+                    for candidate in plans
+                    if semantic_requirements.spans_overlap(
+                        item.get("evidence"), candidate.obligation.source_span
+                    )
+                ),
+                None,
+            )
+            if plan is not None:
+                # capabilities 가 비는 형상이 있다(기본 대수만 쓰는 낮춤). 그때 빈 괄호를
+                # 붙이면 "선언된 primitive 가 없다"로 읽혀 반박이 스스로를 부정한다.
+                named = ", ".join(sorted(plan.capabilities))
+                refuted.append(
+                    f"'{plan.obligation.source_text}' lowers to declared execution primitives"
+                    + (f" ({named})" if named else "")
+                )
                 continue
             symbol = _registered_canonical_symbol(item.get("argument"))
             if symbol is not None:

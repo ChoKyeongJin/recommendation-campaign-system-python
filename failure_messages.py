@@ -47,8 +47,14 @@ def semantic_failure_reason(
     만든 것", "실행 설정이 비어 있는 것"이 같은 코드로 보인다 — 셋의 고칠 곳이 다 다르다.
 
     kind 로 갈리지 않는 실패는 판정한 계층이 ``semantic_ir.failure_reason`` 에 **명시**한다.
-    system_failure 안에는 성격이 다른 둘이 들어 있다 — 실행 자산이 없는 것(레지스트리 구멍)과,
-    자산도 컴파일러도 있는데 표현이 방출되지 않은 것. 파생만 쓰면 후자가 전자로 보고된다.
+    system_failure 안에는 성격이 다른 셋이 들어 있다 — 실행 자산이 없는 것(레지스트리 구멍),
+    자산도 컴파일러도 있는데 표현이 방출되지 않은 것, 그리고 그 외의 내부 실패(부분 표현 격리·
+    구조화기 가용성)다. 고칠 사람이 셋 다 다르다.
+
+    **``semantic_registry_gap`` 은 여기서 파생하지 않는다.** 예전에는 사유를 적지 않은
+    system_failure 를 전부 레지스트리 구멍으로 불렀고, 그래서 실제로 낮출 수 있는 요구가
+    '실행 설정이 준비되지 않았다'로 종결됐다(실측 2026-08-07). 레지스트리 불일치는 그것을
+    **확인한 경로만** 선언할 수 있는 사실이므로, 선언이 없으면 중립 사유로 남긴다.
     """
     import semantic_outcome  # 지연 import — 렌더링 계층은 코어 스키마에 의존하지 않는다
 
@@ -57,8 +63,48 @@ def semantic_failure_reason(
     if failure_kind == semantic_outcome.FAILURE_KIND_STRUCTURER:
         return "semantic_structurer_failure"
     if failure_kind == semantic_outcome.FAILURE_KIND_SYSTEM:
-        return "semantic_registry_gap"
+        return semantic_outcome.FAILURE_REASON_SYSTEM
     return f"semantic_ir_{status}"
+
+
+# 의미 게이트가 내는 사유 → 사용자 문구. semantic_ir 이 자기 문구를 들고 있으면 그것이 우선이고,
+# 여기 값은 문구가 비었을 때의 기본형이다.
+#
+# **문구가 고칠 곳을 말한다.** registry gap 만 '실행 설정'을 지목한다 — 나머지는 설정 결함을
+# 주장하지 않는다. 사유를 추론하던 시절에는 방출 실패도 이 문구를 받아, 운영에서 없는 설정
+# 결함을 찾게 됐다(실측 2026-08-07).
+_SEMANTIC_GATE_MESSAGES: dict[str, str] = {
+    "semantic_ir_unsupported": "요청한 연산은 현재 지원하지 않습니다.",
+    "semantic_structurer_failure": (
+        "요청을 실행 가능한 형태로 해석하지 못했습니다. 표현을 바꿔 다시 요청해 주세요."
+    ),
+    "semantic_registry_gap": (
+        "이 조건을 처리할 실행 설정이 준비되지 않았습니다. 담당자에게 문의해 주세요."
+    ),
+    "semantic_emission_failure": (
+        "요청한 조건은 지원되는 의미이지만 실행 표현으로 확정되지 않았습니다. "
+        "표현을 바꿔 다시 요청해 주세요."
+    ),
+    "semantic_system_failure": (
+        "요청을 처리하는 중 내부 오류로 실행을 중단했습니다. 잠시 후 다시 시도해 주세요."
+    ),
+}
+# 문구를 semantic_ir 에서 가져오는 사유 전부. `audience_failure._SEMANTIC_GATE_REASONS`(진단
+# 좌표용 system_failure 사유 집합)와 이름이 비슷하지만 다른 목적의 집합이다 — 이쪽은 렌더링,
+# 저쪽은 좌표 분류다.
+_MESSAGE_FROM_SEMANTIC_IR = frozenset({
+    "semantic_ir_needs_clarification", *_SEMANTIC_GATE_MESSAGES
+})
+
+
+def is_semantic_gate_reason(reason: Any) -> bool:
+    """이 사유가 의미 게이트에서 나온 것인가(= semantic_ir 의 문구를 우선 노출할 자리인가)."""
+    return isinstance(reason, str) and reason in _MESSAGE_FROM_SEMANTIC_IR
+
+
+def semantic_gate_message(reason: Any) -> str:
+    """의미 게이트 사유의 기본 사용자 문구. semantic_ir 이 문구를 들고 있으면 그쪽이 우선이다."""
+    return _SEMANTIC_GATE_MESSAGES.get(str(reason), "필수 의미 조건을 확인해 주세요.")
 
 
 def cause_missing_conditions(

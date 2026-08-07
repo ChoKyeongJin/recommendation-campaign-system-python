@@ -253,6 +253,11 @@ class TemporalSpanValidator:
 class CanonicalClaimValidator:
     """표현이 주장하는 값이 원문에서 뽑은 리터럴 색인과 맞는가."""
 
+    def __init__(self, *, as_of: date | None = None) -> None:
+        # 시간 의무 재판정이 낮춤과 **같은 기준일**을 써야 한다. 주지 않으면 실행 시점으로
+        # 떨어져 상대 시점 표현이 다른 달로 읽히고, 컴파일된 조건이 미컴파일로 보인다.
+        self._as_of = as_of
+
     def validate(
         self,
         expression: EventExpression,
@@ -268,6 +273,7 @@ class CanonicalClaimValidator:
             to_event_ir(expression),
             list(literals),
             audience_runtime.catalog_snapshot(),
+            today=self._as_of,
         )
         return tuple(_issue_from_legacy_report(report) for report in reports)
 
@@ -326,7 +332,7 @@ def audience_validators(
             scalar_literal_spans=scalar_literal_spans,
             default_period=resolved_period,
         ),
-        CanonicalClaimValidator(),
+        CanonicalClaimValidator(as_of=as_of),
     )
 
 

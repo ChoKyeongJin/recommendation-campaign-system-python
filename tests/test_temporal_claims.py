@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from datetime import date, datetime
 from pathlib import Path
@@ -110,6 +111,22 @@ PARSE_CASES: tuple[tuple[str, str, type, type, type], ...] = (
         sir.AsOfSelector,
         sir.ExistsQuantifier,
         sir.TransitionPredicate,
+    ),
+    (
+        # 값 없이 방향만 말한 전이. **같은 연산자**이고 술어만 다르다 — 방향은 '무엇이
+        # 바뀌었나'를 좁힐 뿐 '바뀜'의 뜻을 바꾸지 않는다.
+        "최근에 등급이 승급한 회원",
+        treg.DIRECT_TRANSITION,
+        sir.AsOfSelector,
+        sir.ExistsQuantifier,
+        sir.DirectionalTransitionPredicate,
+    ),
+    (
+        "최근 6개월 동안 등급이 강등된 회원",
+        treg.DIRECT_TRANSITION,
+        sir.WindowSelector,
+        sir.ExistsQuantifier,
+        sir.DirectionalTransitionPredicate,
     ),
     (
         "최근 6개월 동안 골드에서 VIP로 승급한 회원",
@@ -275,6 +292,26 @@ COMPILE_CASES: tuple[tuple[str, tuple[str, ...]], ...] = (
          "MS.PREV_ZTS_GRADE = 'MEM_GRADE_CD.GOLD'"),
     ),
     (
+        # 승급 = rank(현재) > rank(직전). 도착값마다 "현재 = v ∧ 직전 < v" 한 항이고,
+        # 부등호는 순서 도메인 전개로 물리값 IN 목록이 된다. 서열 최하위는 도착값이 될 수 없다.
+        "최근에 등급이 승급한 회원",
+        ("MS.ZTS_GRADE = 'MEM_GRADE_CD.VIP'",
+         "MS.PREV_ZTS_GRADE IN ('MEM_GRADE_CD.WELCOME', 'MEM_GRADE_CD.FAMILY', "
+         "'MEM_GRADE_CD.SILVER', 'MEM_GRADE_CD.GOLD')",
+         "MS.ZTS_GRADE = 'MEM_GRADE_CD.FAMILY'"),
+    ),
+    (
+        "등급이 강등된 회원",
+        ("MS.ZTS_GRADE = 'MEM_GRADE_CD.GOLD'",
+         "MS.PREV_ZTS_GRADE IN ('MEM_GRADE_CD.VIP')"),
+    ),
+    (
+        # 축이 다르면 컬럼도 값 사전도 다르다. 이 항목이 '가치등급' 이 '등급' 에 흡수되는
+        # 오축 해석의 회귀 가드다(2026-08-08).
+        "가치등급이 승급한 회원",
+        ("MS.WORTH_GRADE = 'VVIP'", "MS.PREV_WORTH_GRADE IN ("),
+    ),
+    (
         "지난 6개월 매월 골드 등급이었던 회원",
         ("COUNT(DISTINCT MS.YYYYMM) = 6", "MS.ZTS_GRADE = 'MEM_GRADE_CD.GOLD'"),
     ),
@@ -384,6 +421,163 @@ def test_the_consecutive_quantifier_round_trips() -> None:
 
     quantifier = sir.ConsecutiveBucketsQuantifier(bucket_count=3)
     assert sir.quantifier_from_dict(quantifier.to_dict()) == quantifier
+
+
+# ── 4-1. 방향 전이: 값 없이 방향만 말한 요청 ────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_metric", "expected_direction"),
+    [
+        ("최근에 등급이 승급한 회원", "member.grade", sir.TransitionDirection.ASCENDING),
+        ("등급이 강등된 회원", "member.grade", sir.TransitionDirection.DESCENDING),
+        ("가치등급이 승급한 회원", "member.worth_grade", sir.TransitionDirection.ASCENDING),
+        ("가치등급이 강등된 회원", "member.worth_grade", sir.TransitionDirection.DESCENDING),
+    ],
+)
+def test_a_direction_word_alone_picks_the_axis_and_the_direction(
+    query, expected_metric, expected_direction, snapshot, semantic_catalog, runtime
+) -> None:
+    """방향어 하나가 축(어느 값 사전인가)과 방향(어느 쪽인가)을 모두 확정한다.
+
+    축을 표면어 **최장 일치**로 가리는 것이 이 테스트의 절반이다 — '가치등급'은 '등급'을
+    포함하므로, 짧은 쪽이 이기면 가치등급 요청이 조용히 ZTS 축으로 컴파일된다.
+    """
+
+    detected = _detect(query, snapshot, semantic_catalog, runtime)
+    assert isinstance(detected, tuple) and len(detected) == 1, detected
+    predicate = detected[0].condition.predicate
+    assert isinstance(predicate, sir.DirectionalTransitionPredicate)
+    assert detected[0].metric_id == expected_metric
+    assert predicate.direction is expected_direction
+
+
+def test_the_direction_only_transition_never_leaves_the_declared_values(
+    snapshot, semantic_catalog, runtime, context
+) -> None:
+    """전개된 값은 전부 **선언된 값**이다 — '직전 없음' 센티널은 어느 쪽에도 오지 않는다.
+
+    PREV_WORTH_GRADE 에는 직전 값이 없다는 뜻의 ``'~'`` 가 실제로 1,273 행 있다(2026-08-03
+    실측). 그 행은 승급도 강등도 아니므로 IN 목록에 들어오면 안 되고, 목록을 선언된 순서에서
+    만드는 한 자연히 빠진다 — 그 성질을 여기서 고정한다.
+    """
+
+    outcome = _synthesize("가치등급이 승급한 회원", snapshot, semantic_catalog, runtime, context)
+    assert isinstance(outcome, temporal_claims.TemporalClaimSynthesis), outcome
+    sql = _sql(semantic_catalog, outcome.expression)
+    assert "~" not in sql
+    declared = {
+        str(payload.get("physical"))
+        for payload in snapshot["value_domains"]["worth_grade"]["values"].values()
+    }
+    compared = {
+        value
+        for fragment in re.findall(r"(?:PREV_)?WORTH_GRADE\s*(?:=|IN)\s*(\([^)]*\)|'[^']*')", sql)
+        for value in re.findall(r"'([^']*)'", fragment)
+    }
+    assert compared, f"가치등급 비교가 하나도 없다:\n{sql}"
+    assert compared <= declared, sorted(compared - declared)
+
+
+def test_the_direction_only_transition_keeps_its_own_observation_window(
+    snapshot, semantic_catalog, runtime, context
+) -> None:
+    """기간이 없으면 최신 관측(as_of), 있으면 그 구간 — 값 쌍 전이와 **같은 규칙**이다.
+
+    '최근'만으로는 기간이 되지 않는다는 것이 요점이다. 그 낱말이 창을 넓히면 조용히 다른
+    집합이 나가고, 결핍으로 읽히면 답할 수 있는 요청이 되묻기로 닫힌다.
+    """
+
+    bare = _synthesize("최근에 등급이 승급한 회원", snapshot, semantic_catalog, runtime, context)
+    windowed = _synthesize(
+        "최근 6개월 동안 등급이 승급한 회원", snapshot, semantic_catalog, runtime, context
+    )
+    assert isinstance(bare, temporal_claims.TemporalClaimSynthesis), bare
+    assert isinstance(windowed, temporal_claims.TemporalClaimSynthesis), windowed
+    assert "MS.YYYYMM >= '202608'" in _sql(semantic_catalog, bare.expression)
+    assert "MS.YYYYMM >= '202603'" in _sql(semantic_catalog, windowed.expression)
+
+
+def test_an_unordered_axis_cannot_be_given_a_direction(semantic_catalog, runtime) -> None:
+    """서열이 선언되지 않은 축에는 방향이 없다 — 낮추기 전에 이름을 대며 막힌다.
+
+    이 판정의 근거는 낱말이 아니라 선언이다(지표의 supported_comparisons). 서열 없는 코드
+    도메인에 부등호를 허용하면 저장 문자열 순서로 조용히 틀린 집합이 나온다.
+    """
+
+    condition = sir.TemporalCondition(
+        metric="member.newproduct_favor",
+        binding=None,
+        selector=sir.AsOfSelector(anchor=sir.ReferenceAnchor(), strategy=sir.ExactBucket()),
+        quantifier=sir.ExistsQuantifier(),
+        predicate=sir.DirectionalTransitionPredicate(
+            direction=sir.TransitionDirection.ASCENDING,
+            transition_mode=sir.TransitionMode.DIRECT_OBSERVED_TRANSITION,
+        ),
+        evidence=sir.Evidence(text="승급", start=0, end=2),
+    )
+    outcome = runtime.lower(condition, sir.TemporalRequestContext(now=NOW))
+    assert not isinstance(outcome, temporal_ir.TemporalLoweringReceipt), outcome
+    assert outcome.code in {
+        "temporal_comparison_unsupported",
+        "temporal_value_order_undeclared",
+        "temporal_operator_unsupported_by_metric",
+    }, outcome
+
+
+def test_every_transition_axis_declares_an_order(snapshot, runtime) -> None:
+    """전이를 받는 축은 **서열이 선언돼 있다** — 방향 전이가 성립할 수 있는 조건이다.
+
+    위 테스트가 재는 것은 '지금 카탈로그에서 막힌다'이고, 이 테스트가 재는 것은 '앞으로도
+    어긋날 수 없다'이다. 서열 없는 도메인에 전이 관측을 배선하면 여기서 먼저 걸린다 —
+    걸리지 않으면 '승급'이 저장 문자열 순서로 조용히 틀린 집합을 만든다.
+    """
+
+    domains = snapshot["value_domains"]
+    axes = [
+        (metric_id, metric.value_domain)
+        for metric_id, metric in runtime.temporal_catalog.metrics.items()
+        if metric.value_domain
+        and any(
+            treg.DIRECT_TRANSITION in runtime.temporal_catalog.bindings[binding_id].supported_operators
+            for binding_id in metric.temporal_bindings
+        )
+    ]
+    assert axes, "전이를 받는 축이 하나도 없다(배선이 끊겼다)."
+    for metric_id, domain in axes:
+        declaration = domains.get(domain) or {}
+        assert declaration.get("ordered") and declaration.get("order"), (
+            f"{metric_id!r} 은 전이를 받지만 값 도메인 {domain!r} 에 서열 선언이 없다."
+        )
+
+
+def test_the_directional_predicate_round_trips() -> None:
+    """방향 전이도 직렬화가 대칭이다(방향과 전이 모드가 모두 남는다)."""
+
+    predicate = sir.DirectionalTransitionPredicate(
+        direction=sir.TransitionDirection.DESCENDING,
+        transition_mode=sir.TransitionMode.DIRECT_OBSERVED_TRANSITION,
+    )
+    assert sir.predicate_from_dict(predicate.to_dict()) == predicate
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        # 도착값만 말한 요청. 출발 쪽을 방향으로 덮으면 사용자가 말한 값이 조용히 사라진다.
+        "VIP로 승급한 회원",
+        # 상태 축에는 전이 지표도 이력 소스도 선언이 없다(방향어도 없다).
+        "정상에서 휴면으로 바뀐 회원",
+    ],
+)
+def test_a_partial_transition_request_stays_closed(
+    query, snapshot, semantic_catalog, runtime, context
+) -> None:
+    """방향 전이가 열려도 **값이 반만 있는** 요청은 그대로 닫힌다."""
+
+    outcome = _synthesize(query, snapshot, semantic_catalog, runtime, context)
+    assert isinstance(outcome, temporal_claims.TemporalClaimRejection), outcome
+    assert outcome.code == temporal_claims.VALUE_COUNT_MISMATCH
 
 
 # ── 5. 코퍼스 커버리지: 문장이 아니라 연산으로 센다 ─────────────────────────────
