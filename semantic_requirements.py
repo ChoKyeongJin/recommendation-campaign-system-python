@@ -34,7 +34,7 @@ import common_utils
 import json
 import hashlib
 import re
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -46,6 +46,7 @@ import condition_normalizers
 import korean_number_normalizer
 import lexicon_patterns
 import member_filters_config
+import temporal_clause
 from calendar_window import parse_calendar_window_spans
 from semantic_normalizers import RelativeWindow, decimal_json_value, exact_decimal
 
@@ -942,13 +943,27 @@ def _ranked_cardinality_at(query: str, position: int) -> tuple[dict[str, Any], i
     )
 
 
-def _ranked_entity_set_obligations(query: str) -> list[SourceRequirement]:
-    """Capture catalog-declared rank -> entity-set -> membership composition.
+def _obligation_window(
+    binding: temporal_clause.ScopeWindowBinding | None,
+) -> dict[str, Any] | None:
+    """결속된 창을 의무 값의 창 표기로. 결속이 없으면 ``None`` (기간을 지어내지 않는다)."""
+    if binding is None:
+        return None
+    return {
+        "from": binding.window.get("from"),
+        "to": binding.window.get("to"),
+        "label": binding.window.get("label"),
+    }
 
-    This is a loss guard, not a query builder.  It records the fixed relational
-    operators implied by a sentence so an incomplete model expression cannot
-    silently degrade to a plain event-existence filter.  Business vocabulary
-    and defaults come exclusively from ``entity_set_targets``.
+
+def _ranked_entity_set_candidates(
+    query: str,
+) -> tuple[dict[tuple[Any, ...], tuple[int, int]], list[tuple[int, int, str]]]:
+    """랭킹 구절의 **기하와 계약**만 (기준일도, 창도 보지 않는다).
+
+    창 결속(:func:`ranked_window_scope_bindings`)과 의무 기록이 같은 앵커를 써야 하므로 이
+    계산은 한 곳에만 있다 — 둘이 각자 구절을 찾으면 같은 문장에서 다른 절 경계를 갖게 된다.
+    반환: ``{랭킹 계약 키: (구절 시작, 구절 끝)}`` 와 관계 표면어 히트.
     """
     # Canonical relation vocabulary and bindings share the exact same catalog
     # snapshot as schema validation and SQL compilation.  The legacy SQL target
@@ -962,11 +977,11 @@ def _ranked_entity_set_obligations(query: str) -> list[SourceRequirement]:
         if isinstance(recipes, Mapping) else None
     )
     if not config:
-        return []
+        return {}, []
     directions = _configured_term_hits(query, config.get("directions") or {})
     entities = _configured_term_hits(query, config.get("entities") or {})
     if not directions or not entities:
-        return []
+        return {}, []
 
     # A rank cardinality must be adjacent to the entity phrase.  The grammar is
     # deliberately domain-neutral: it does not know products, brands, or a
@@ -997,7 +1012,7 @@ def _ranked_entity_set_obligations(query: str) -> list[SourceRequirement]:
             span_end = max(direction_end, entity_end, number_end)
             candidates.append((span_start, span_end, limit, direction, entity))
     if not candidates:
-        return []
+        return {}, []
 
     measure_hits = _configured_term_hits(query, config.get("measures") or {})
     relation_hits = _configured_term_hits(query, config.get("relations") or {})
@@ -1050,30 +1065,90 @@ def _ranked_entity_set_obligations(query: str) -> list[SourceRequirement]:
             min(span_start, previous[0]) if previous else span_start,
             max(span_end, previous[1]) if previous else span_end,
         )
+    return resolved_candidates, relation_hits
 
+
+def _ranked_scope_anchors(
+    ranking_span: tuple[int, int],
+    relation: Any,
+    relation_hits: Sequence[tuple[int, int, str]],
+) -> tuple[tuple[str, int, int], ...]:
+    """랭킹 구절 하나의 창 결속 앵커. 행동 앵커는 구절 **뒤**의 같은 관계 표면어만 쓴다.
+
+    어순 제약(구절 뒤)이 있어야 구절 안의 지표 낱말('구매 건수'의 '구매')이 행동 앵커로 오인되지
+    않는다 — 그렇게 되면 랭킹 창이 회원 행동 창으로 조용히 옮겨 붙는다.
+    """
+    span_start, span_end = ranking_span
+    return (
+        (temporal_clause.SCOPE_RANKING, span_start, span_end),
+        *(
+            (temporal_clause.SCOPE_MEMBERSHIP, hit_start, hit_end)
+            for hit_start, hit_end, canonical in relation_hits
+            if canonical == relation and hit_start >= span_end
+        ),
+    )
+
+
+def ranked_window_scope_bindings(
+    query: str,
+    windows: Sequence[tuple[Mapping[str, Any], int, int]],
+) -> list[temporal_clause.ScopeWindowBinding]:
+    """이 문장의 달력 창들이 랭킹 요청의 **어느 절**에 결속되는가.
+
+    창의 *값*은 호출자가 준다 — 상대 연도('작년')는 기준일을 가진 계층(리터럴 바인딩)만 풀 수
+    있고, 이 원장은 기준일을 받지 않기 때문이다(같은 질의가 지점마다 다른 의무를 만들면 유령
+    미해결이 생긴다). 여기서 정하는 것은 값이 아니라 **소속**이며 그 판정은 순수 기하다.
+
+    반환은 결속된 것만이다. 결속되지 않은 창은 이 요청의 절 어디에도 붙지 않는다는 뜻이고,
+    그 처리는 호출자가 정한다(추측해서 아무 절에나 붙이지 않는다).
+    """
+    if not windows:
+        return []
+    resolved_candidates, relation_hits = _ranked_entity_set_candidates(query)
+    bindings: list[temporal_clause.ScopeWindowBinding] = []
+    for key, ranking_span in resolved_candidates.items():
+        relation = key[4]
+        bindings.extend(temporal_clause.bind_window_scopes(
+            query,
+            windows=windows,
+            anchors=_ranked_scope_anchors(ranking_span, relation, relation_hits),
+        ))
+    return bindings
+
+
+def _ranked_entity_set_obligations(query: str) -> list[SourceRequirement]:
+    """Capture catalog-declared rank -> entity-set -> membership composition.
+
+    This is a loss guard, not a query builder.  It records the fixed relational
+    operators implied by a sentence so an incomplete model expression cannot
+    silently degrade to a plain event-existence filter.  Business vocabulary
+    and defaults come exclusively from ``entity_set_targets``.
+
+    기간은 절마다 다르다: 랭킹 구절 앞의 창은 모집단의 기간(``time_window``)이고, 행동 동사
+    앞의 창은 회원이 그 행동을 한 기간(``membership_time_window``)이다. 상대 연도는 기준일이
+    필요해 이 원장이 풀 수 없으므로 여기 실리는 것은 절대 창뿐이다 — 상대 창의 결속은 같은
+    판정기(:func:`ranked_window_scope_bindings`)를 기준일 있는 계층이 호출해 얻는다.
+    """
+    resolved_candidates, relation_hits = _ranked_entity_set_candidates(query)
     requirements: list[SourceRequirement] = []
     for (
         limit, direction, entity, measure, relation, source,
         entity_field, measure_function, measure_field, measure_distinct,
     ), (span_start, span_end) in resolved_candidates.items():
-        adjacent_windows = [
-            (window, start, end)
-            for window, start, end in parse_calendar_window_spans(query)
-            if end <= span_start
-            and span_start - end <= 6
-            and not re.search(r"[,.;!?]", query[end:span_start])
-        ]
-        scoped_window = max(adjacent_windows, key=lambda item: item[2], default=None)
-        if scoped_window is not None:
-            window, window_start, _window_end = scoped_window
-            span_start = window_start
-            time_window = {
-                "from": window.get("from"),
-                "to": window.get("to"),
-                "label": window.get("label"),
-            }
-        else:
-            time_window = None
+        bindings = temporal_clause.bind_window_scopes(
+            query,
+            windows=parse_calendar_window_spans(query),
+            anchors=_ranked_scope_anchors((span_start, span_end), relation, relation_hits),
+        )
+        scoped_windows: dict[str, temporal_clause.ScopeWindowBinding] = {}
+        for binding in bindings:
+            scoped_windows.setdefault(binding.scope, binding)
+        ranking_binding = scoped_windows.get(temporal_clause.SCOPE_RANKING)
+        membership_binding = scoped_windows.get(temporal_clause.SCOPE_MEMBERSHIP)
+        if ranking_binding is not None:
+            span_start = ranking_binding.window_span[0]
+        time_window = _obligation_window(ranking_binding)
+        membership_time_window = _obligation_window(membership_binding)
         value: dict[str, Any] = {
             "direction": direction,
             "limit": limit,
@@ -1094,6 +1169,15 @@ def _ranked_entity_set_obligations(query: str) -> list[SourceRequirement]:
         if cardinality_hit is not None:
             cardinality, span_end = cardinality_hit
             value["cardinality"] = cardinality
+        # 회원 행동 기간도 같은 이유로 **있을 때만** 싣는다. 기본 결속(랭킹 전용)의 의무 id 와
+        # 직렬화는 이 변경 전과 바이트 동일해야 한다.
+        if membership_time_window is not None:
+            value["membership_time_window"] = membership_time_window
+            # 그 창의 원문 구간도 이 의무가 소유한다 — 소유자를 밝히지 않으면 다른 파서가 같은
+            # 글자를 다시 읽거나(이중 소유) 주인 없는 창으로 남는다.
+            window_start, window_end = membership_binding.window_span
+            if window_start >= span_end:
+                span_end = max(span_end, window_end)
         requirements.append(_semantic_obligation(
             query,
             kind="ranked_entity_set",

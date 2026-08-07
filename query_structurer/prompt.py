@@ -102,7 +102,71 @@ def _ranked_entity_set_obligations(query: str) -> list[dict[str, Any]]:
     ]
 
 
-def render_ranked_entity_set_recipe(obligations: Sequence[Mapping[str, Any]]) -> str | None:
+def _obligation_span(obligation: Mapping[str, Any]) -> tuple[int, int]:
+    span = obligation.get("source_span")
+    if isinstance(span, Mapping):
+        start, end = span.get("start"), span.get("end")
+        if isinstance(start, int) and isinstance(end, int):
+            return start, end
+    return 0, 0
+
+
+def _ranked_scope_window_contracts(
+    query: str | None,
+    current_date: str | None,
+    obligations: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """의무별 절 창 계약. 의무 값 우선, 없으면 기준일이 푼 상대 창(작년/올해)으로 채운다.
+
+    의무 원장은 기준일을 받지 않으므로 상대 연도의 창을 값으로 갖지 못한다. 그렇다고 그 창의
+    **소속**까지 모르는 것은 아니다 — 소속 판정은 순수 기하라 같은 판정기를 여기서 호출한다.
+    """
+    contracts: list[dict[str, Any]] = [
+        {
+            key: (obligation.get("value") or {}).get(key)
+            for key in ("time_window", "membership_time_window")
+        }
+        for obligation in obligations
+    ]
+    if not query or not current_date:
+        return contracts
+    windows = [
+        (binding["normalized"], binding["start"], binding["end"])
+        for binding in extract_literal_bindings(query, current_date=current_date)
+        if binding.get("kind") == "date_window"
+        and isinstance(binding.get("normalized"), Mapping)
+    ]
+    scope_key = {
+        "ranking": "time_window",
+        "membership": "membership_time_window",
+    }
+    spans = [_obligation_span(obligation) for obligation in obligations]
+    for binding in semantic_requirements.ranked_window_scope_bindings(query, windows):
+        key = scope_key.get(binding.scope)
+        if key is None or not spans:
+            continue
+        anchor_start, anchor_end = binding.anchor_span
+        index = min(
+            range(len(spans)),
+            key=lambda position: min(
+                abs(spans[position][0] - anchor_end), abs(anchor_start - spans[position][1])
+            ),
+        )
+        if contracts[index].get(key) is None:
+            contracts[index][key] = {
+                "from": binding.window.get("from"),
+                "to": binding.window.get("to"),
+                "label": binding.window.get("label"),
+            }
+    return contracts
+
+
+def render_ranked_entity_set_recipe(
+    obligations: Sequence[Mapping[str, Any]],
+    *,
+    query: str | None = None,
+    current_date: str | None = None,
+) -> str | None:
     """랭킹 의무의 canonical 형상 계약. **최초 요청과 재시도가 같은 문장을 쓴다.**
 
     예전에는 이 규칙이 재시도 프롬프트에만 있었다. 그런데 모델이 1차에서 미지원을 선언하면
@@ -132,6 +196,16 @@ def render_ranked_entity_set_recipe(obligations: Sequence[Mapping[str, Any]]) ->
         "the member id. Summarize output names are relation-local aliases that Order.keys.name "
         "refers to; they are not catalog FieldRef names. A ranked size belongs in Limit.count "
         "(or Limit.percent), never in the root result_limit.",
+        # 한 문장의 두 절은 기간도 둘이다. 어느 쪽에 거는지가 정해지지 않으면 같은 요청이
+        # 실행마다 다른 오디언스를 낸다 — 그래서 두 자리를 각각 **명시적으로** 지시한다.
+        "The two time scopes are separate and each has exactly one home:",
+        "  · time_window scopes the RANKED population only -> TimeFilter inside the Filter under "
+        "Summarize (the right side).",
+        "  · membership_time_window scopes WHEN THE MEMBER ACTED -> wrap the member-correlated left "
+        "side as Filter(<left Source>, TimeFilter(<source>." + event_ir.TIME_FIELD_SUFFIX + ", <window>)).",
+        "Never move one to the other's place, and never reuse a single window for both. When an "
+        "obligation has no membership_time_window the left side carries NO TimeFilter at all: the "
+        "ranking window says when the entities sold, not when this member bought them.",
         "When an obligation carries a cardinality, the membership Exists is NOT the requested "
         "meaning: 'top N ... M or more of them' counts the distinct entities in the intersection. "
         "Use instead:",
@@ -140,16 +214,19 @@ def render_ranked_entity_set_recipe(obligations: Sequence[Mapping[str, Any]]) ->
         "Exists would mean 'at least one', which is a wider audience than the request.",
         "Required contract per obligation:",
     ]
-    for obligation in obligations:
+    scope_windows = _ranked_scope_window_contracts(query, current_date, obligations)
+    for obligation, windows in zip(obligations, scope_windows):
         value = obligation.get("value")
         value = value if isinstance(value, Mapping) else {}
+        merged = {**value, **{key: item for key, item in windows.items() if item is not None}}
         contract = {
-            key: value.get(key)
+            key: merged.get(key)
             for key in (
                 "source", "entity_field", "measure_function", "measure_field",
-                "measure_distinct", "direction", "limit", "time_window", "cardinality",
+                "measure_distinct", "direction", "limit", "time_window",
+                "membership_time_window", "cardinality",
             )
-            if value.get(key) is not None
+            if merged.get(key) is not None
         }
         lines.append(
             f"  - {obligation.get('source_text')!r}: "
@@ -175,7 +252,9 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
     ]
     knowledge_sections: list[str] = []
     ranked_recipe = render_ranked_entity_set_recipe(
-        _ranked_entity_set_obligations(input.query)
+        _ranked_entity_set_obligations(input.query),
+        query=input.query,
+        current_date=input.context.current_date,
     )
     if ranked_recipe:
         knowledge_sections.append(ranked_recipe)
@@ -300,7 +379,11 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
 
 
 def build_campaign_query_plan_v4_retry_prompt(
-    previous_response: str, error: str, query: str | None = None
+    previous_response: str,
+    error: str,
+    query: str | None = None,
+    *,
+    current_date: str | None = None,
 ) -> str:
     """Retry instructions for the fixed canonical audience algebra.
 
@@ -309,7 +392,11 @@ def build_campaign_query_plan_v4_retry_prompt(
     재시도에만 있는 것은 **이전 출력이 실패한 이유**뿐이다.
     """
     ranked_recipe = (
-        render_ranked_entity_set_recipe(_ranked_entity_set_obligations(query))
+        render_ranked_entity_set_recipe(
+            _ranked_entity_set_obligations(query),
+            query=query,
+            current_date=current_date,
+        )
         if isinstance(query, str) and query.strip()
         else None
     )

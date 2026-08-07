@@ -65,6 +65,7 @@ def build_derived_set_ast(
     direction: str,
     limit: int,
     window: dict[str, Any] | None = None,
+    member_window: dict[str, Any] | None = None,
     filters: list[dict[str, Any]] | None = None,
     cardinality: dict[str, Any] | None = None,
     negated: bool = False,
@@ -72,7 +73,9 @@ def build_derived_set_ast(
     """평면 파싱 결과를 ``집계 → 랭킹 → 회원 집합`` AST로 만든다.
 
     단계별 책임을 섞지 않는다. 특히 순위를 계산하는 관계와 그 결과 엔터티를 회원에게 연결하는
-    관계가 다를 수 있으므로 두 관계는 각각 aggregation/member_set 노드가 소유한다.
+    관계가 다를 수 있으므로 두 관계는 각각 aggregation/member_set 노드가 소유한다. 기간도
+    마찬가지다 — ``window`` 는 랭킹 모집단의 기간이고 ``member_window`` 는 회원이 그 행동을
+    한 기간이다.
     """
     aggregation: dict[str, Any] = {
         "type": AGGREGATION_NODE,
@@ -95,12 +98,27 @@ def build_derived_set_ast(
             "source": aggregation,
         },
     }
+    # 회원이 **언제** 그 행동을 했는가. 랭킹 창(aggregation.window)과 다른 절의 기간이므로 다른
+    # 노드가 소유한다 — 한 슬롯에 뭉치면 '작년에 팔린 상품을 올해 산 회원' 같은 요청에서 둘 중
+    # 하나가 조용히 사라진다. 없으면 키도 없다(기간을 지어내지 않는다).
+    if isinstance(member_window, dict):
+        member_set["window"] = dict(member_window)
     if isinstance(cardinality, dict):
         member_set["cardinality"] = {
             "operator": cardinality.get("operator"),
             "value": cardinality.get("value"),
         }
     return member_set
+
+
+def _window_is_valid(window: Any) -> bool:
+    """창 표기 하나의 닫힌 문법(절대 구간 또는 상대 일수). 두 창이 같은 규칙을 쓴다."""
+    if not isinstance(window, dict):
+        return False
+    if isinstance(window.get("from"), str) and isinstance(window.get("to"), str):
+        return True
+    days = window.get("days")
+    return isinstance(days, int) and not isinstance(days, bool) and days > 0
 
 
 def derived_set_ast_error(ast: Any) -> str | None:
@@ -111,6 +129,8 @@ def derived_set_ast_error(ast: Any) -> str | None:
         return "invalid_derived_set_member_relation"
     if not isinstance(ast.get("exists"), bool):
         return "invalid_derived_set_membership"
+    if ast.get("window") is not None and not _window_is_valid(ast.get("window")):
+        return "invalid_derived_set_member_window"
     cardinality = ast.get("cardinality")
     if cardinality is not None:
         if not isinstance(cardinality, dict):
@@ -144,15 +164,8 @@ def derived_set_ast_error(ast: Any) -> str | None:
     ):
         if not isinstance(aggregation.get(field), str) or not aggregation[field]:
             return error
-    window = aggregation.get("window")
-    if window is not None:
-        if not isinstance(window, dict):
-            return "invalid_derived_set_window"
-        absolute = isinstance(window.get("from"), str) and isinstance(window.get("to"), str)
-        days = window.get("days")
-        relative = isinstance(days, int) and not isinstance(days, bool) and days > 0
-        if not absolute and not relative:
-            return "invalid_derived_set_window"
+    if aggregation.get("window") is not None and not _window_is_valid(aggregation.get("window")):
+        return "invalid_derived_set_window"
     filters = aggregation.get("filters")
     if filters is not None:
         if not isinstance(filters, list):
@@ -183,6 +196,7 @@ def entity_set_node_from_ast(ast: Any) -> dict[str, Any] | None:
         "direction": ranking["direction"],
         "limit": ranking["limit"],
         "window": aggregation.get("window"),
+        "memberWindow": ast.get("window"),
         "filters": [dict(item) for item in aggregation.get("filters", [])],
         "cardinality": dict(ast["cardinality"]) if isinstance(ast.get("cardinality"), dict) else None,
         "negated": not ast["exists"],
@@ -286,6 +300,8 @@ def entity_set_capability(node: dict[str, Any], config: dict[str, Any]) -> str |
         return "unsupported_entity_set_measure"
     if node.get("window") and not rank_relation.get("dateColumn"):
         return "unsupported_entity_set_period"
+    if node.get("memberWindow") and not member_relation.get("dateColumn"):
+        return "unsupported_entity_set_member_period"
     filter_mappings = config.get("filters") if isinstance(config.get("filters"), dict) else {}
     for item in node.get("filters") or []:
         spec = filter_mappings.get(item.get("dimension")) if isinstance(item, dict) else None
@@ -335,7 +351,10 @@ def entity_set_label(node: dict[str, Any], config: dict[str, Any]) -> str:
             f"{node.get('limit')}개 {entity.get('label', node.get('entity'))}",
         ) if part
     ]
+    member_window = (node.get("memberWindow") or {}).get("label")
     action = relation.get("label", node.get("relation"))
+    if member_window:
+        action = f"{member_window} {action}"
     cardinality = node.get("cardinality")
     if isinstance(cardinality, dict):
         operator_label = {
@@ -464,6 +483,18 @@ def compile_entity_set_predicate(
         str(condition).format(alias=outer, product_alias=outer_product)
         for condition in relation.get("conditions", []) or []
     )
+    # 회원 행동 기간은 **바깥** 스코프에 건다. 안쪽(랭킹) 창과 같은 자리에 두면 '작년에 팔린
+    # 상품을 올해 산 회원'이 '작년 판매 상위 + 아무 때나 구매'로 넓어진다.
+    try:
+        member_window_predicate = _window_predicate(
+            node.get("memberWindow"),
+            str(relation.get("dateColumn", "")).format(alias=outer),
+            reference_date=reference_date,
+        )
+    except ReferenceTimeError:
+        return None
+    if member_window_predicate:
+        outer_where.append(member_window_predicate)
     indented_inner = "\n".join("          " + line for line in inner_lines).lstrip()
     outer_where.append(f"{_entity_column(entity, outer, outer_product)} IN (\n          {indented_inner}\n      )")
     outer_lines.append("WHERE " + "\n      AND ".join(outer_where))

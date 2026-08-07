@@ -35,6 +35,11 @@ _MAX_MARKS = 500
 TRUNCATED_KEY = "decisions_truncated"
 MAX_DECISIONS = 400
 
+# 감사 로그가 사는 plan 최상위 키들. 로그는 판정의 **기록**이지 조건 슬롯이 아니므로, plan 을
+# 구조로 훑어 소유·커버리지를 세는 소비자는 이 키들을 빼고 봐야 한다 — 그러지 않으면 기록해
+# 두었다는 사실만으로 커버리지가 충족돼 조용한 드롭 고지가 사라진다.
+AUDIT_LOG_KEYS = frozenset({DECISIONS_KEY, _MARKS_KEY, TRUNCATED_KEY})
+
 # 액션 어휘. 새 값을 늘리기 전에 기존 액션으로 표현되는지 먼저 본다(진단이 목적이지 분류가 목적이 아니다).
 SET = "set"                  # 빈 슬롯을 채웠다
 UPDATE = "update"            # 이미 있던 값을 다른 값으로 바꿨다

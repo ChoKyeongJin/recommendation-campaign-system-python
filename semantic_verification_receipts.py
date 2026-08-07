@@ -7,6 +7,7 @@ application boundary while making AST coverage and verdict reconciliation determ
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any
@@ -15,6 +16,8 @@ import sqlglot
 from sqlglot import exp
 
 import consent_cardinality
+import plan_decisions
+import temporal_clause
 
 CONSENT_CARDINALITY_QUANTIFIER_RE = (
     consent_cardinality.CONSENT_CARDINALITY_QUANTIFIER_RE
@@ -411,6 +414,91 @@ def applied_period_issue_is_covered(
         or (policy_days is not None and _window_in_days(count, window_unit) == policy_days)
         for count, window_unit in named_windows
     )
+
+
+def _recorded_window_scopes(plan: Mapping[str, Any] | None) -> list[dict[str, Any]]:
+    """플랜의 결정 로그에서 시간 범위 결속 기록만 추린다(없으면 빈 목록).
+
+    결속은 애플리케이션이 내린 **결정**이라 로그가 유일한 진실원천이다 — SQL 이나 원문을 다시
+    읽어 추정하면 기록과 다른 답이 나올 수 있고, 그러면 검증기에게 알린 내용과 면제 근거가
+    어긋난다.
+    """
+    if not isinstance(plan, Mapping):
+        return []
+    return [
+        {
+            "scope": (entry.get("value") or {}).get("scope"),
+            "text": (entry.get("value") or {}).get("text"),
+            "window": (entry.get("value") or {}).get("window"),
+            "reason": entry.get("reason"),
+        }
+        for entry in plan_decisions.decisions(dict(plan))
+        if isinstance(entry, Mapping)
+        and entry.get("filter") == temporal_clause.SCOPE_BINDING_FILTER
+    ]
+
+
+def render_window_scope_context(plan: Mapping[str, Any] | None) -> str:
+    """검증기 user content 에 붙일 '기간의 결속 절' 블록(결정이 없으면 빈 문자열).
+
+    이 블록이 없으면 검증기는 원문의 '작년'과 SQL 회원측 무기간을 보고 '기간 누락'으로 판정한다.
+    실제로는 애플리케이션이 그 창을 랭킹 모집단에 결속한 것이고, 그 사실은 결정 로그에 있다 —
+    판정의 **근거**를 주는 것이지 판정을 막는 것이 아니다. 회원 기간이 명시된 요청에서는 이
+    블록이 그 기간을 싣고, SQL 에 없으면 검증기는 그대로 누락을 잡아야 한다.
+    """
+    listed = _recorded_window_scopes(plan)
+    if not listed:
+        return ""
+    return "\n\n[기간의 결속 절]\n" + json.dumps(listed, ensure_ascii=False, indent=2) + (
+        "\n랭킹(모집단) 기간은 '그 상품들이 언제 많이 팔렸나'이고 회원 행동 기간은 "
+        "'이 회원이 언제 샀나'다. window 가 null 인 절에는 SQL 에 날짜 필터가 없는 것이 "
+        "정상이며 누락(dropped)이 아니다."
+    )
+
+
+def window_scope_issue_is_covered(
+    issue: Mapping[str, Any],
+    plan: Mapping[str, Any] | None,
+    sql: str,
+) -> bool:
+    """'기간 누락' 판정이 호출자가 기록한 **결속 결정**과 모순인가.
+
+    좁게 면제한다. ① 랭킹 절에 결속된 창이 실제로 SQL 에 있고, ② 회원 절에 결속된 창이 있다면
+    그것도 SQL 에 있고, ③ 판정문이 그 랭킹 창을 이름으로 들 때만이다. 회원 기간이 정말 빠진
+    SQL 은 ②에서 걸려 그대로 차단된다 — 이 반증은 '자리를 옳게 골랐다'만 말한다.
+    """
+    if str(issue.get("type") or "").casefold() not in {"dropped", "wrong_value"}:
+        return False
+    scopes = {
+        str(item.get("scope")): item for item in _recorded_window_scopes(plan)
+    }
+    ranking = (scopes.get(temporal_clause.SCOPE_RANKING) or {}).get("window")
+    membership = (scopes.get(temporal_clause.SCOPE_MEMBERSHIP) or {}).get("window")
+    if not isinstance(ranking, Mapping):
+        return False
+    compact_sql = re.sub(r"\s+", "", str(sql))
+    for window in (ranking, membership):
+        if isinstance(window, Mapping) and not all(
+            str(window.get(bound) or "") in compact_sql for bound in ("from", "to")
+        ):
+            return False
+    issue_text = re.sub(
+        r"\s+",
+        "",
+        " ".join(str(issue.get(key) or "") for key in ("condition", "detail", "expected", "actual")),
+    )
+    # 판정문은 **원문 어휘**로 쓰인다('작년'). 해석된 라벨('2025년')만 대조하면 같은 창을 두고
+    # 다투는 판정을 알아보지 못한다 — 표면어·라벨·경계값을 모두 받는다.
+    names = [
+        re.sub(r"\s+", "", str(name or ""))
+        for name in (
+            (scopes.get(temporal_clause.SCOPE_RANKING) or {}).get("text"),
+            ranking.get("label"),
+            ranking.get("from"),
+            ranking.get("to"),
+        )
+    ]
+    return any(name and name in issue_text for name in names)
 
 
 def reconcile_verification(

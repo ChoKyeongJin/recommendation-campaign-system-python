@@ -1497,11 +1497,18 @@ def existence_views(expression: Condition, negated: bool = False) -> list[Existe
     if isinstance(expression, (And, Or)):
         return [view for operand in expression.operands for view in existence_views(operand, negated)]
     if isinstance(expression, Exists):
+        relation = expression.relation
+        # 랭킹 멤버십(semi Join)의 창은 **모집단**의 기간이지 이 회원이 언제 행동했는지가 아니다.
+        # 두 소스가 같은 이름이라 구조를 보지 않으면 구별되지 않는다 — 그대로 읽으면 '작년에 많이
+        # 팔린 상품을 산 회원'이 '작년에 산 회원'으로 보고돼 라벨·커버리지가 요청과 달라진다.
+        # 회원 쪽(left)만 본다: 랭킹 절의 기간은 ranked_membership_views 가 소유한다.
+        if isinstance(relation, Join) and relation.kind == "semi":
+            relation = relation.left
         relation_sources = {
-            node.name for node in walk(expression.relation) if isinstance(node, Source)
+            node.name for node in walk(relation) if isinstance(node, Source)
         }
         windows = [
-            node.window for node in walk(expression.relation) if isinstance(node, TimeFilter)
+            node.window for node in walk(relation) if isinstance(node, TimeFilter)
         ]
         if len(relation_sources) == 1 and len(windows) <= 1:
             return [ExistenceView(

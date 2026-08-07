@@ -25,6 +25,7 @@ import rolling_absence_claims
 import semantic_domain_binding
 import semantic_outcome
 import semantic_requirements
+import temporal_clause
 
 
 _DISJUNCTION_CONNECTOR_RE = re.compile(
@@ -1054,11 +1055,22 @@ def _ranked_membership_relation_matches(
     expected_distinct = bool(value.get("measure_distinct", False))
     expected_window = value.get("time_window")
     expected_window = expected_window if isinstance(expected_window, Mapping) else None
+    # 회원 행동 기간은 랭킹 기간과 **다른 자리**에 걸린다. 여기서는 있어야 할 것이 있는지만
+    # 본다 — 없어야 할 것이 없는지(왼쪽에 창이 붙어 요청보다 좁아졌는지)는 기준일을 가진
+    # 청구 계층(:func:`ranked_window_scope_issues`)이 판정한다. 이 원장은 기준일이 없어
+    # 상대 연도('올해')로 결속된 창을 값으로 갖지 못하므로, 여기서 배제까지 하면 옳은
+    # 표현을 반려한다.
+    expected_membership_window = value.get("membership_time_window")
+    expected_membership_window = (
+        expected_membership_window if isinstance(expected_membership_window, Mapping) else None
+    )
 
     if join.get("kind", "inner") != "semi":
         return False
     left, right = join.get("left"), join.get("right")
     if not _has_source(left, expected_source, "subject"):
+        return False
+    if not _window_matches(left, expected_membership_window):
         return False
     if not _has_source(right, expected_source, "none"):
         return False
@@ -1432,6 +1444,120 @@ def window_kind_issues(
     return issues
 
 
+def _is_ranked_semi_join(join: Mapping[str, Any]) -> bool:
+    """``semi Join(…, Limit(Order(Summarize(…))))`` — 랭킹 집합과의 교집합 관계인가."""
+    if join.get("kind", "inner") != "semi":
+        return False
+    return any(
+        _nodes(limit.get("relation"), "order")
+        and _nodes(limit.get("relation"), "summarize")
+        for limit in _nodes(join.get("right"), "limit")
+    )
+
+
+def _scope_window_pair(window: Mapping[str, Any]) -> tuple[Any, Any]:
+    return window.get("from"), window.get("to")
+
+
+def ranked_window_scope_issues(
+    query: str,
+    expression: event_ir.Condition,
+    literal_bindings: Iterable[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """랭킹 요청의 각 달력 창이 **결속된 절**에 걸렸는가(양방향).
+
+    한 문장의 두 절은 기간도 둘이다. 랭킹 창은 모집단을, 회원 행동 창은 그 회원이 언제 샀는지를
+    좁힌다 — 자리를 바꾸면 SQL 은 유효한 채 다른 오디언스를 낸다. 그래서 두 방향을 다 본다:
+
+      · 결속된 창이 그 절에 **없으면** 조건이 사라진 것이다(요청보다 넓다).
+      · 결속되지 않았는데 회원 쪽에 창이 **있으면** 랭킹 기간을 회원 행동에 잘못 옮긴 것이다
+        (요청보다 좁다). 기본 결속이 랭킹 전용이므로 이 방향이 훨씬 흔하다.
+
+    기준일이 필요한 상대 연도('작년'·'올해')까지 보려면 창의 값을 가진 계층에서 호출해야 한다 —
+    그래서 입력이 리터럴 바인딩이다.
+    """
+    windows = [
+        (binding["normalized"], binding["start"], binding["end"])
+        for binding in literal_bindings
+        if binding.get("kind") == "date_window"
+        and isinstance(binding.get("normalized"), Mapping)
+        and isinstance(binding.get("start"), int)
+        and isinstance(binding.get("end"), int)
+    ]
+    if not windows:
+        return []
+    payload = expression.to_dict()
+    joins = [join for join in _nodes(payload, "join") if _is_ranked_semi_join(join)]
+    scoped = semantic_requirements.ranked_window_scope_bindings(query, windows)
+    # 랭킹 관계가 둘 이상이면 어느 창이 어느 관계의 것인지 이 계층에서 확정할 수 없다.
+    # 억지 귀속은 멀쩡한 플랜을 반려하므로 판정하지 않는다(의무 원장의 대조는 그대로 돈다).
+    if len(joins) != 1 or not scoped:
+        return []
+    join = joins[0]
+    by_scope: dict[str, list[Any]] = {}
+    for binding in scoped:
+        by_scope.setdefault(binding.scope, []).append(binding)
+    if any(len(items) > 1 for items in by_scope.values()):
+        return []
+    # 어느 절에도 결속되지 않은 창이 남아 있으면 **배제 판정을 하지 않는다**. 그 창의 소속을
+    # 모르는 채 '회원 쪽에 창이 있으면 틀렸다'고 하면, 결속 문법이 아직 읽지 못하는 어순
+    # ('올해 들어서 처음 구매한')에서 옳은 표현을 반려한다. 있어야 할 창이 있는지(양의 방향)는
+    # 그대로 본다 — 그쪽은 결속이 확정된 창만 근거로 삼기 때문이다.
+    all_windows_bound = len(scoped) == len(windows)
+
+    issues: list[dict[str, Any]] = []
+    sides = {
+        temporal_clause.SCOPE_RANKING: ("right", "랭킹 모집단"),
+        temporal_clause.SCOPE_MEMBERSHIP: ("left", "회원 행동"),
+    }
+    for scope, (side, label) in sides.items():
+        binding = (by_scope.get(scope) or [None])[0]
+        intervals = [
+            _scope_window_pair(node) for node in _nodes(join.get(side), "interval")
+        ]
+        if binding is not None:
+            if _scope_window_pair(binding.window) in intervals:
+                continue
+            message = (
+                f"'{query[binding.window_span[0]:binding.window_span[1]]}' 는 {label}의 기간입니다. "
+                f"그 창({binding.window.get('label') or binding.window.get('from')})을 semi Join 의 "
+                f"{side} 쪽 TimeFilter 로 두세요."
+            )
+            evidence = {
+                "text": query[binding.window_span[0]:binding.window_span[1]],
+                "start": binding.window_span[0],
+                "end": binding.window_span[1],
+            }
+        elif scope == temporal_clause.SCOPE_MEMBERSHIP and intervals and all_windows_bound:
+            other = by_scope.get(temporal_clause.SCOPE_RANKING) or []
+            message = (
+                "원문은 회원이 언제 그 행동을 했는지 말하지 않았습니다. "
+                f"{label} 쪽(semi Join 의 {side})에는 TimeFilter 를 두지 마세요"
+                + (
+                    f" — '{query[other[0].window_span[0]:other[0].window_span[1]]}' 는 "
+                    "랭킹 모집단의 기간입니다."
+                    if other else "."
+                )
+            )
+            evidence = (
+                {
+                    "text": query[other[0].window_span[0]:other[0].window_span[1]],
+                    "start": other[0].window_span[0],
+                    "end": other[0].window_span[1],
+                }
+                if other else {"text": query, "start": 0, "end": len(query)}
+            )
+        else:
+            continue
+        issues.append({
+            "code": "validation_mismatch",
+            "argument": f"ranked_window_scope.{scope}",
+            "message": message,
+            "evidence": evidence,
+        })
+    return issues
+
+
 def canonical_claim_issues(
     query: str,
     expression: event_ir.Condition,
@@ -1499,6 +1625,7 @@ def canonical_claim_issues(
     issues = [
         *literal_issues,
         *window_kind_issues(query, expression, bindings),
+        *ranked_window_scope_issues(query, expression, bindings),
         *catalog_issues,
         *semantic_obligation_issues(query, expression),
     ]
@@ -1681,6 +1808,7 @@ __all__ = [
     "discharge_legacy_ranked_obligations",
     "literal_claim_issues",
     "ranked_obligation_is_compiled",
+    "ranked_window_scope_issues",
     "refresh_canonical_unresolved",
     "semantic_obligation_issues",
 ]

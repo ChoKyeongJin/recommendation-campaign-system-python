@@ -141,6 +141,103 @@ class TemporalClause:
         }
 
 
+# ── 시간 표현의 결속 범위(scope binding) ──────────────────────────────────────────
+# 한 문장에 절이 둘 있으면 기간도 둘일 수 있다. ``작년에 가장 많이 팔린 상품 5개를 올해 구매한 고객``
+# 의 ``작년``은 **랭킹 모집단**의 기간이고 ``올해``는 **회원 행동**의 기간이다 — 같은 문법으로 읽으면
+# 서로 다른 술어가 된다. 결속 대상이 표현되지 않으면 둘 중 하나는 조용히 사라지거나(누락), 다른 절의
+# 창을 빌려 쓴다(확대). 그래서 "이 창은 어느 절의 것인가"를 여기서 **명시적으로** 판정한다.
+#
+# 규칙은 한국어 어순 하나다: 시간 수식어는 자기 머리말 **앞**에 온다. 그래서 창은 자기 뒤에 있는
+# 앵커 중 가장 가까운 것에 붙고, 사이에 절 경계가 있거나 예산을 넘으면 붙지 않는다. 앵커의 어휘
+# (랭킹 구절·행동 동사)는 호출자가 준다 — 이 모듈에 도메인 낱말을 적지 않는다.
+SCOPE_RANKING = "ranking"        # 순위를 계산하는 모집단의 기간
+SCOPE_MEMBERSHIP = "membership"  # 회원이 그 행동을 한 기간
+
+# 결속 결정의 감사 로그 이름과 기본 정책. 기록하는 쪽(플랜 조립)과 읽는 쪽(의미 검증 게이트)이
+# 같은 이름을 써야 하므로 선언은 여기 하나뿐이다.
+SCOPE_BINDING_FILTER = "temporal_scope_binding.ranked_entity_set"
+# 문장이 회원 행동의 기간을 말하지 않았을 때의 기본값. 한국어 어순에서 ``작년에 가장 많이 팔린``
+# 의 ``작년``은 관형절(팔린) 안에 갇히므로 회원의 구매 시점까지 제한하지 않는다. 이 기본은
+# **명시된 회원 기간을 이기지 못한다** — 원문이 말한 기간이 언제나 우선한다.
+DEFAULT_SCOPE_BINDING = "ranking_only"
+
+
+@dataclass(frozen=True, slots=True)
+class ScopeWindowBinding:
+    """창 하나가 어느 절에 결속됐는가. 판정의 근거(간격·앵커 위치)를 함께 남긴다."""
+
+    scope: str
+    window: Mapping[str, Any]
+    window_span: tuple[int, int]
+    anchor_span: tuple[int, int]
+    gap: int
+    # 결속된 창의 **원문 표면어**('작년'). 해석된 라벨('2025년')과 다른 글자라, 원문 어휘로
+    # 말하는 소비자(검증기 판정문 대조 등)는 이것이 없으면 같은 창을 알아보지 못한다.
+    text: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "scope": self.scope,
+            "text": self.text,
+            "window": dict(self.window),
+            "window_span": list(self.window_span),
+            "anchor_span": list(self.anchor_span),
+            "gap": self.gap,
+        }
+
+
+def bind_window_scopes(
+    query: str,
+    *,
+    windows: Sequence[tuple[Mapping[str, Any], int, int]],
+    anchors: Sequence[tuple[str, int, int]],
+    budget: int = _ADJACENCY_BUDGET,
+) -> tuple[ScopeWindowBinding, ...]:
+    """달력 창들을 앵커(절)에 결속한다. 붙일 앵커가 없는 창은 **결속하지 않는다**.
+
+    ``windows`` 는 :func:`calendar_window.parse_calendar_window_spans` 의 산출물이고
+    ``anchors`` 는 ``(scope, start, end)`` 다. 한 창은 한 앵커에, 한 앵커는 한 창에만 붙는다 —
+    같은 창을 두 절이 나눠 갖는 해석은 만들지 않는다(그것이 필요하면 호출자가 결속 결과를 보고
+    명시적으로 공유를 선언해야 한다).
+
+    추측하지 않는다: 결속되지 않은 창은 결과에 없다. 그 창의 처리(다른 파서가 가져가거나,
+    미해결로 남거나)는 호출자의 몫이다.
+    """
+    if not isinstance(query, str) or not query or not windows or not anchors:
+        return ()
+
+    candidates: list[tuple[int, int, int, int, int]] = []
+    for window_index, (_window, window_start, window_end) in enumerate(windows):
+        for anchor_index, (_scope, anchor_start, anchor_end) in enumerate(anchors):
+            if anchor_end <= anchor_start or window_end > anchor_start:
+                # 수식어가 머리말 뒤에 오는 결속은 만들지 않는다(어순 규칙).
+                continue
+            gap = anchor_start - window_end
+            if gap > budget or _separated_by_clause_boundary(query, window_end, anchor_start):
+                continue
+            candidates.append((gap, window_start, anchor_start, window_index, anchor_index))
+
+    bound: list[ScopeWindowBinding] = []
+    used_windows: set[int] = set()
+    used_anchors: set[int] = set()
+    for gap, _window_start, _anchor_start, window_index, anchor_index in sorted(candidates):
+        if window_index in used_windows or anchor_index in used_anchors:
+            continue
+        used_windows.add(window_index)
+        used_anchors.add(anchor_index)
+        window, window_start, window_end = windows[window_index]
+        scope, anchor_start, anchor_end = anchors[anchor_index]
+        bound.append(ScopeWindowBinding(
+            scope=str(scope),
+            window=window,
+            window_span=(window_start, window_end),
+            anchor_span=(anchor_start, anchor_end),
+            gap=gap,
+            text=query[window_start:window_end],
+        ))
+    return tuple(sorted(bound, key=lambda item: item.window_span))
+
+
 def _recency_marker_spans(query: str) -> list[tuple[int, int, str]]:
     """recency 표지(``최근``·``지난``…)의 원문 구간. 어휘는 렉시콘이 소유한다."""
     spans: list[tuple[int, int, str]] = []

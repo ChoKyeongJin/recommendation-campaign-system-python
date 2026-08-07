@@ -451,7 +451,10 @@ class LLMCampaignQueryPlanV4Structurer:
                         {
                             "role": "user",
                             "content": build_campaign_query_plan_v4_retry_prompt(
-                                response, last_error, input.query
+                                response,
+                                last_error,
+                                input.query,
+                                current_date=input.context.current_date,
                             ),
                         },
                     ]

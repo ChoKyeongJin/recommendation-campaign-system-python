@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+from collections.abc import Mapping
 from typing import Any
 
 import audience_runtime
@@ -11,7 +12,9 @@ import event_state_selection
 import open_text_scope_claims
 import plan_decisions
 import rolling_absence_claims
+import semantic_requirements
 import targeting_ir
+import temporal_clause
 from aggregation_requirements import aggregation_request_json_schema
 from entity_set import derived_set_ast_error
 from query_structurer import audience_execution
@@ -1332,6 +1335,62 @@ def _derive_semantic_ir(
     write_semantic_ir(payload, empty_semantic_ir(status="resolved"))
 
 
+def _record_temporal_scope_bindings(payload: dict[str, Any], query: str) -> None:
+    """랭킹 요청의 창이 어느 절에 결속됐는지를 **결정**으로 남긴다(기본값도 기록한다).
+
+    기록이 없으면 '랭킹 전용으로 결속했다'와 '회원 기간을 잃어버렸다'를 아무도 구별하지 못한다 —
+    의미 검증 게이트가 뒤에서 그 구별을 필요로 하고, 사람이 트레이스를 볼 때도 마찬가지다.
+    """
+    bindings = payload.get("literal_bindings")
+    if not isinstance(bindings, list) or not isinstance(query, str) or not query:
+        return
+    windows = [
+        (binding["normalized"], binding["start"], binding["end"])
+        for binding in bindings
+        if isinstance(binding, Mapping)
+        and binding.get("kind") == "date_window"
+        and isinstance(binding.get("normalized"), Mapping)
+        and isinstance(binding.get("start"), int)
+        and isinstance(binding.get("end"), int)
+    ]
+    if not windows:
+        return
+    scoped = semantic_requirements.ranked_window_scope_bindings(query, windows)
+    if not scoped:
+        return
+    for binding in scoped:
+        plan_decisions.record(
+            payload,
+            filter_name=temporal_clause.SCOPE_BINDING_FILTER,
+            action=plan_decisions.SELECT,
+            slot=f"audience_requirement.window_scope.{binding.scope}",
+            reason=(
+                f"'{binding.text}' 는 어순상 "
+                + (
+                    "랭킹 구절 앞이므로 모집단의 기간"
+                    if binding.scope == temporal_clause.SCOPE_RANKING
+                    else "행동 동사 앞이므로 회원이 그 행동을 한 기간"
+                )
+            ),
+            value=binding.to_dict(),
+        )
+    if not any(
+        binding.scope == temporal_clause.SCOPE_MEMBERSHIP for binding in scoped
+    ):
+        plan_decisions.record(
+            payload,
+            filter_name=temporal_clause.SCOPE_BINDING_FILTER,
+            action=plan_decisions.SELECT,
+            slot="audience_requirement.window_scope.membership",
+            reason=(
+                "원문이 회원 행동의 기간을 말하지 않아 기본 결속을 적용한다"
+                f"({temporal_clause.DEFAULT_SCOPE_BINDING}: 랭킹 기간은 회원 구매 시점을 제한하지 않는다)"
+            ),
+            value={"scope": temporal_clause.SCOPE_MEMBERSHIP, "window": None,
+                   "binding": temporal_clause.DEFAULT_SCOPE_BINDING},
+        )
+
+
 def attach_campaign_query_plan_v4_identity(
     payload: Any,
     query: str,
@@ -1369,6 +1428,7 @@ def attach_campaign_query_plan_v4_identity(
             ),
         }
     )
+    _record_temporal_scope_bindings(enriched, query)
     _synthesize_closed_product_complement(enriched, query)
     _synthesize_declared_state_selection(enriched, query)
     _normalize_audience_wire_shapes(enriched)

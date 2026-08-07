@@ -699,7 +699,10 @@ def targeting_expression_json_schema(
     })
     entity_set = {
         "type": "object",
-        "description": "순위로 정의되는 엔터티 집합(예: 2019년 판매수량 상위 10개 상품).",
+        "description": (
+            "순위로 정의되는 엔터티 집합(예: 2019년 판매수량 상위 10개 상품). "
+            "여기의 기간은 **모집단**의 기간이다 — 회원이 그것을 언제 샀는지는 바깥 relation 의 기간이다."
+        ),
         "properties": {
             "entity": {"type": "string", "enum": entities},
             "measure": {"type": "string", "enum": measures},
@@ -756,7 +759,12 @@ def targeting_expression_json_schema(
             },
             "relation": {
                 "type": "object",
-                "description": "행동 관계의 존재/부재. entitySet 을 주면 그 집합에 한정한다.",
+                "description": (
+                    "행동 관계의 존재/부재. entitySet 을 주면 그 집합에 한정한다. "
+                    "여기의 기간(period/year/month/windowDays)은 **회원이 언제 그 행동을 했는가**이고, "
+                    "entitySet 안의 기간은 순위를 매길 모집단의 기간이다 — 서로 다른 절이므로 "
+                    "문장이 두 기간을 말하면 각각에 넣고, 하나만 말하면 그 자리에만 넣는다."
+                ),
                 "properties": {
                     "name": {"type": "string", "enum": relations},
                     "exists": {"type": "boolean"},
@@ -870,7 +878,13 @@ def validate_targeting_expression(
         entity_set = relation.get("entitySet")
         if entity_set is not None:
             reason = entity_set_capability(
-                _entity_set_node(entity_set, str(relation.get("name")), entity_set_config), entity_set_config
+                _entity_set_node(
+                    entity_set,
+                    str(relation.get("name")),
+                    entity_set_config,
+                    member_window=_window(relation),
+                ),
+                entity_set_config,
             )
             if reason:
                 raise TargetingExpressionError(f"엔터티 집합을 컴파일할 수 없습니다: {reason}")
@@ -925,8 +939,14 @@ def _entity_set_node(
     config: dict[str, Any],
     *,
     negated: bool = False,
+    member_window: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """LLM 이 준 엔터티 집합 조각을 1단계 노드 형태로 정규화한다(같은 컴파일러를 그대로 쓴다)."""
+    """LLM 이 준 엔터티 집합 조각을 1단계 노드 형태로 정규화한다(같은 컴파일러를 그대로 쓴다).
+
+    ``member_window`` 는 이 엔터티 집합을 감싼 **relation 노드**의 기간이다 — 회원이 언제 그
+    행동을 했는가. entitySet 안의 기간(``payload``)은 랭킹 모집단의 기간이라 서로 다른 자리에
+    걸린다. 예전에는 이 인자가 없어서 relation 기간이 컴파일 단계에서 조용히 사라졌다.
+    """
     if not isinstance(payload, dict):
         return {}
     node = {
@@ -937,6 +957,7 @@ def _entity_set_node(
         "direction": "bottom" if str(payload.get("direction")) == "bottom" else "top",
         "limit": int(payload.get("limit") or 10),
         "window": _window(payload),
+        "memberWindow": member_window,
         "cardinality": (
             dict(payload.get("cardinality"))
             if isinstance(payload.get("cardinality"), dict)
@@ -952,6 +973,7 @@ def _entity_set_node(
         direction=node["direction"],
         limit=node["limit"],
         window=node["window"],
+        member_window=node["memberWindow"],
         filters=payload.get("filters") if isinstance(payload.get("filters"), list) else None,
         cardinality=node["cardinality"],
         negated=negated,
@@ -1038,14 +1060,19 @@ def _compile_relation(
     exists = bool(relation.get("exists", True))
     entity_set = relation.get("entitySet")
     if isinstance(entity_set, dict) and entity_set:
-        node = _entity_set_node(entity_set, name, config, negated=not exists)
-        window = node.get("window")
-        if isinstance(window, dict) and isinstance(window.get("days"), int):
-            # Validate here as well as in the entity-set compiler so this
-            # exception-based API reports the actual missing execution input.
-            _relative_date(
-                int(window["days"]), reference_date=reference_date
-            )
+        # relation 의 기간은 **회원이 언제 그 행동을 했는가**다. entitySet 이 있다고 이 창을
+        # 버리면(2026-08-07 이전 동작) 조건 하나가 조용히 사라진 SQL 이 나간다 — 검증
+        # (validate_targeting_expression)은 이미 이 창을 받아들였으므로 더욱 그렇다.
+        node = _entity_set_node(
+            entity_set, name, config, negated=not exists, member_window=_window(relation),
+        )
+        for scope_window in (node.get("window"), node.get("memberWindow")):
+            if isinstance(scope_window, dict) and isinstance(scope_window.get("days"), int):
+                # Validate here as well as in the entity-set compiler so this
+                # exception-based API reports the actual missing execution input.
+                _relative_date(
+                    int(scope_window["days"]), reference_date=reference_date
+                )
         predicate = compile_entity_set_predicate(
             node,
             config,

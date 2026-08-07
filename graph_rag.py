@@ -4793,7 +4793,11 @@ def _plan_calendar_ranges(
     """plan 안에서 **이미 소유된** 절대 달력 구간(YYYYMMDD from/to)을 전부 모은다.
 
     슬롯 이름 목록이 아니라 구조(from/to 8자리 쌍)로 훑는다 — purchase_date·metric_trend 의
-    baseline/current 처럼 중첩된 창도, 앞으로 생길 새 창 슬롯도 자동으로 포함되기 때문이다."""
+    baseline/current 처럼 중첩된 창도, 앞으로 생길 새 창 슬롯도 자동으로 포함되기 때문이다.
+
+    다만 **결정 감사 로그는 조건 슬롯이 아니다**. 로그는 '무엇을 왜 그렇게 판정했나'를 값째로
+    싣기 때문에, 그것을 소유로 세면 컴파일되지 않은 창도 소유된 것으로 읽혀 조용한 드롭 고지가
+    사라진다(감사 기록이 커버리지를 만족시키는 형국)."""
     found: list[tuple[str, str]] = []
 
     def walk(node: Any) -> None:
@@ -4808,7 +4812,10 @@ def _plan_calendar_ranges(
             for value in node:
                 walk(value)
 
-    walk(plan)
+    walk({
+        key: value for key, value in plan.items()
+        if key not in plan_decisions.AUDIT_LOG_KEYS
+    })
     # 생일 월 타겟은 연도 범위를 저장하지 않고 현재 월의 MM만 비교한다. 따라서 구조 안에
     # from/to가 없어도 현재 월 창은 이미 이 슬롯이 소유한다. 이를 범위 목록에 합치면
     # ``이번 달 생일``의 기간이 고아 창으로 다시 차단되지 않으며, 과거 생일 월은 여전히 미해결이다.
@@ -7737,6 +7744,7 @@ def _verify_sql_semantics(
                 member_policy_context, ensure_ascii=False, indent=2
             )
         user_content += default_period_policy.render_verifier_context(query_plan)
+        user_content += semantic_verification_receipts.render_window_scope_context(query_plan)
         if deterministic_receipts:
             user_content += "\n\n[결정론 검증 영수증]\n" + json.dumps(
                 deterministic_receipts, ensure_ascii=False, indent=2
@@ -8674,6 +8682,8 @@ def _semantic_issue_exemption(
         return "adjustment_present_in_sql"
     if _entity_set_issue_is_deterministically_covered(issue, query_plan, sql):
         return "entity_set_predicate_present"
+    if semantic_verification_receipts.window_scope_issue_is_covered(issue, query_plan, sql):
+        return "ranked_window_scope_binding"
     if _service_policy_issue_is_deterministically_covered(issue, query_plan, sql):
         return "contracted_service_policy_present"
     return None
