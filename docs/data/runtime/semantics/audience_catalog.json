@@ -167,7 +167,8 @@
       "binding": "fact_table",
       "grain": "event",
       "label": "장바구니 담기",
-      "aliases": ["장바구니", "카트", "담기"]
+      "aliases": ["장바구니", "카트", "담기"],
+      "selection_note": "장바구니 담기 **이력**이다. 구매됐거나 지운 라인도 남아 있다. '담은 적 있는'·'과거에 담았던'처럼 **과거 이력임을 명시**한 요청만 이 소스이며, 그 표지가 없으면(맨 '담은' 포함) 기본은 active_cart 다 — 이력 소스가 기본이 되면 이미 사고 지운 카트까지 세어 '지금 장바구니에 있는 회원'이 아닌 집합이 나간다(실측 '정확히 4종': 이 소스 653명, active_cart 1명). 예외로 상품명·카테고리 텍스트 검색이 필요한 장바구니 요청은 이 소스를 쓴다: 그 필드는 상품 마스터 조인에서 오는데 active_cart 에는 그 조인이 없다."
     },
     "active_cart": {
       "_comment": "미결제 장바구니 전용 사건. KEEP_YN='Y' 자체가 아직 결제되지 않고 보관 중인 동일 카트 라인을 뜻하며, 발생 시각은 담은 시점 INS_DT다. 별도 회원 전체 주문 NOT EXISTS를 붙이면 다른 상품 구매자까지 제외하므로 금지한다.",
@@ -182,6 +183,15 @@
       "grain": "event",
       "label": "미결제 장바구니",
       "aliases": ["보관 중 장바구니", "미결제 장바구니", "장바구니 이탈"],
+      "_selection_surfaces_comment": "모델에게 '이 소스를 고르라'고 알리는 표면어. aliases 와 **반드시 구분한다** — aliases 는 rolling_absence_claims 가 '이 사건의 국소 부정'을 접지하는 어휘로도 쓰이므로, 긍정 상태 표면어를 거기 넣으면 '6개월 이상 장바구니에 담겨 있는 상품이 없는 회원' 이 '최근 6개월 안에 담은 적이 없다'로 합성된다(실측 2026-08-07: 별칭에 넣었을 때 부등호가 뒤집힌 IR 이 조용히 생겼고, 넣기 전에는 후보 0개로 fail-close 였다). 여기 있는 항목은 안내문 렌더에만 쓰인다.",
+      "selection_surfaces": [
+        "현재 장바구니",
+        "장바구니에 담아둔",
+        "장바구니에 담겨 있는",
+        "아직 장바구니에 남아 있는",
+        "현재 보관 중인"
+      ],
+      "selection_note": "지금 유지 중인 장바구니 **상태**다(KEEP_YN='Y'). '담아둔'·'담겨 있는'·'현재 장바구니'·'아직 남아 있는'처럼 현재 보관을 뜻하는 요청은 물론, 맨 '담은'처럼 시제 표지가 없는 장바구니 요청도 **기본으로 이 소스**다 — 집계 대상 field 도 active_cart.* 를 쓴다. cart 로 가는 경우는 둘뿐이다: 과거 이력임을 명시했거나('담은 적 있는'), 상품명·카테고리 텍스트 검색이 필요한 경우다.",
       "selected_by": {
         "source": "cart",
         "negated_event": "purchase",
@@ -655,6 +665,31 @@
       "allowed_operators": ["=", "!="],
       "label": "장바구니 상품명 또는 카테고리명 부분검색",
       "aliases": ["장바구니 상품", "담은 상품", "카트 상품"]
+    },
+    "active_cart.quantity": {
+      "_comment": "active_cart 는 cart 와 같은 물리 테이블의 KEEP_YN='Y' 상태 소스인데 필드 선언이 하나도 없었다. 그래서 '장바구니에 서로 다른 상품 3개 이상'처럼 **보관 중 카트를 집계**하는 요청은 셀 필드가 없어, 모델이 형제 소스의 cart.product_id 를 참조하고 컴파일러가 관계 스코프 밖이라고 거절했다(실측 2026-08-07). 이 3개는 cart 의 같은 물리 컬럼을 active_cart 스코프로 다시 선언한 것이다 — 상품명·카테고리는 넣지 않는다: 그 필드들은 {alias}_PRODUCT 조인을 쓰는데 active_cart 에는 from_sql 이 없어 선언만 추가하면 컴파일 시점에 깨진다.",
+      "source": "active_cart",
+      "column": "QTY",
+      "data_type": "number",
+      "label": "미결제 장바구니 수량",
+      "unit": "item",
+      "aliases": ["담아둔 수량", "장바구니에 담겨 있는 수량"]
+    },
+    "active_cart.amount": {
+      "source": "active_cart",
+      "column": "TOTAL_SALE_PRICE",
+      "data_type": "number",
+      "label": "미결제 장바구니 라인 합계금액",
+      "unit": "KRW",
+      "aliases": ["담아둔 상품 금액", "장바구니에 담겨 있는 금액"]
+    },
+    "active_cart.product_id": {
+      "source": "active_cart",
+      "column": "PRODUCT_ID",
+      "data_type": "string",
+      "literal_pattern": "^(?=.{1,20}$)(?=.*[0-9])[A-Za-z0-9][A-Za-z0-9._:-]*$",
+      "label": "미결제 장바구니 상품 식별자",
+      "aliases": ["담아둔 상품 ID", "장바구니에 담겨 있는 상품 코드"]
     },
     "campaign_contact_success.execution_id": {
       "source": "campaign_contact_success",

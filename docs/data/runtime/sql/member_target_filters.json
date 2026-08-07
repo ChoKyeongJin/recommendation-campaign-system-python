@@ -985,10 +985,11 @@
     ],
     "aggregate_metrics": {
       "cart_line_count": {
+        "_comment": "CART_PRODUCT_NO 는 카트 **라인 고유키**다(CRMDW 실측: KEEP_YN='Y' 114행에 CART_PRODUCT_NO 114개, PRODUCT_ID 33개). 따라서 이 지표는 라인 수이지 상품 종류 수가 아니다 — 한때 synonyms 에 '장바구니 상품 종류'가 달려 있었고, 그 표면어는 ≥3 기준으로 4,929명(라인) vs 2,793명(상품 종류)의 다른 집합을 뜻한다. 상품 종류 수는 Canonical Event IR 의 Aggregate(count, distinct, <cart 소스>.product_id) 가 소유한다.",
         "agg": "COUNT",
         "column": "C.CART_PRODUCT_NO",
         "distinct": true,
-        "synonyms": ["장바구니 상품 종류", "장바구니 라인 수"]
+        "synonyms": ["장바구니 라인 수"]
       },
       "cart_quantity": {
         "agg": "SUM",

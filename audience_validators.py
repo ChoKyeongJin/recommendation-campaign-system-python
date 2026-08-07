@@ -24,9 +24,14 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from datetime import date
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import JsonValue
+
+if TYPE_CHECKING:
+    # 런타임 import 는 검증기 안에서 지연시킨다(모듈 결합 회피, 아래 validate 참고).
+    # 타입만 여기서 받으므로 `from __future__ import annotations` 와 함께 런타임 비용은 0이다.
+    from event_compiler import CompilerCapabilityIssue
 
 from query_pipeline.event_query.event_ir_bridge import to_event_ir
 from query_pipeline.event_query.expressions import EventExpression, SourceEvidence
@@ -82,6 +87,21 @@ class CatalogSymbolValidator:
         )
 
 
+def _capability_message(issue: CompilerCapabilityIssue) -> str:
+    """컴파일 불가 사유를 모델이 읽는 문장까지 옮긴다.
+
+    고정 문장만 돌려주면 '무엇을 고쳐야 하는가'가 사라진다 — 실측(2026-08-07)에서 관계 스코프
+    위반이 이 지점에서 지워져, 모델이 같은 식을 한 번 더 낸 뒤 '표현 불가'로 후퇴했다.
+    """
+
+    parts = ["Canonical Event IR을 현재 SQL compiler가 표현하지 못합니다."]
+    if issue.reason:
+        parts.append(f"reason={issue.reason}")
+    if issue.detail:
+        parts.append(issue.detail)
+    return " ".join(parts)
+
+
 class CompilerCapabilityValidator:
     """SQL 컴파일러가 이 표현을 실제로 낼 수 있는가.
 
@@ -113,7 +133,7 @@ class CompilerCapabilityValidator:
             issue_from_report(
                 code=UNSUPPORTED,
                 argument=str(issue.symbol or issue.code),
-                message="Canonical Event IR을 현재 SQL compiler가 표현하지 못합니다.",
+                message=_capability_message(issue),
                 evidence=_whole_query(query),
             )
             for issue in capability.issues or ()

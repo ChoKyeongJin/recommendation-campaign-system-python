@@ -73,7 +73,15 @@ from sql_dialect import (
 
 
 class SqlCompileError(Exception):
-    """IR 은 유효하지만 이 스키마/방언으로는 표현할 수 없다. 의미를 줄이지 말고 여기서 멈춘다."""
+    """IR 은 유효하지만 이 스키마/방언으로는 표현할 수 없다. 의미를 줄이지 말고 여기서 멈춘다.
+
+    ``reason`` 은 이 실패의 **분류 코드**다. capability 층이 예외 문구를 다시 읽지 않고
+    사유를 옮길 수 있게 하려고 둔다 — 문구는 사람이 읽고, 코드는 기계가 읽는다.
+    """
+
+    def __init__(self, message: str, *, reason: str | None = None) -> None:
+        super().__init__(message)
+        self.reason = reason
 
 
 # 컴파일 규칙의 버전. **의미가 같아도 SQL 이 달라지는 변경**(경계 렌더·조인 형태·NULL 처리)이 있으면
@@ -92,6 +100,11 @@ class CompilerCapabilityIssue:
     code: str
     node_id: str
     symbol: str | None = None
+    # 컴파일 시도가 남긴 구체 사유. ``code`` 는 '컴파일 못 함'까지만 말하므로, 무엇을 고쳐야
+    # 하는지는 여기 없으면 사라진다(실측: 관계 스코프 위반이 '알 수 없는 연산'으로 뭉개져
+    # 모델이 같은 식을 두 번 낸 뒤 '미지원'으로 후퇴했다). ``reason`` 은 그 사유의 분류 코드다.
+    reason: str | None = None
+    detail: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1030,7 +1043,15 @@ def compile_scalar(scalar: event_ir.Scalar, context: CompileContext) -> str:
             context.subject.alias if spec.source == context.subject.name else None
         )
         if alias is None:
-            raise SqlCompileError(f"'{scalar.name}' 을 참조할 관계가 현재 스코프에 없습니다")
+            # 어떤 소스가 스코프에 있는지까지 말한다 — 같은 물리 테이블을 쓰는 형제 소스
+            # (cart ↔ active_cart)를 섞어 쓴 경우가 이 실패의 대부분이고, 그때 고칠 것은
+            # '집계를 포기하는 것'이 아니라 '같은 소스에 선언된 field 를 고르는 것'이다.
+            in_scope = ", ".join(sorted(context._scope)) or "(없음)"
+            raise SqlCompileError(
+                f"'{scalar.name}' 을 참조할 관계가 현재 스코프에 없습니다"
+                f" (필드 소속 소스={spec.source}, 스코프 소스={in_scope})",
+                reason="field_out_of_relation_scope",
+            )
         if spec.expression:
             try:
                 return spec.expression.format(
@@ -1889,8 +1910,17 @@ def validate_compiler_capability(
         if not leaf_issues:
             try:
                 compile_expression(leaf, context=_fresh_context(active))
-            except (SqlCompileError, event_ir.IrSchemaError, ValueError):
-                leaf_issues.append(CompilerCapabilityIssue("compiler_operation_unsupported", node_id))
+            except (SqlCompileError, event_ir.IrSchemaError, ValueError) as exc:
+                leaf_issues.append(
+                    CompilerCapabilityIssue(
+                        "compiler_operation_unsupported",
+                        node_id,
+                        # 분류 코드를 갖는 것은 SqlCompileError 뿐이다. getattr 로 훑으면 나중에
+                        # 다른 뜻의 ``.reason`` 을 가진 예외가 조용히 같은 자리에 섞인다.
+                        reason=exc.reason if isinstance(exc, SqlCompileError) else None,
+                        detail=str(exc) or None,
+                    )
+                )
         if leaf_issues:
             unsupported.append(node_id)
             issues.extend(leaf_issues)

@@ -988,6 +988,9 @@ def audience_catalog_guidance(
         '- 순위 회원 조건의 Join.left.name과 Join.on 양쪽 field name은 relation recipe metrics의 source/entity_field를 그대로 재사용한다. "member"/"subject" Source나 member.member_id 같은 새 심볼을 만들지 않는다.',
         '- 내부 상/하위 N명은 Limit.count, 상/하위 N%는 Limit.percent다. 상위는 첫 정렬키 desc, 하위는 asc이며 회원키 asc를 두 번째 키로 둔다. 둘 다 최종 회원 반환 수인 root result_limit과 별개다.',
         '- 기간 집계: Aggregate.relation = Filter(Source, TimeFilter(<source>.occurred_at, event_ir_window))',
+        '- 회원별 건수·종류 임계: Comparison(Aggregate(count, distinct, <source>.<field>, relation=Source 또는 Filter), <operator>, Literal(N)). 이 비교가 곧 회원 조건이므로 Exists로 감싸지 않는다 — Exists 안에 Aggregate 임계를 넣으면 같은 판정이 두 번 붙거나 컴파일되지 않는다',
+        '- "서로 다른 N개"·"N종"·"상품 종류 수"는 distinct:true(세는 대상은 상품 식별자 field)이고, "라인 수"·"건수"·"총 개수"는 distinct:false다. 둘은 같은 카트에서 값이 다르다',
+        '- Aggregate.expression의 field는 Aggregate.relation이 제공하는 소스에 선언된 field여야 한다. 같은 테이블을 쓰는 형제 소스라도 다른 소스의 field를 참조하면 관계 스코프 밖이라 컴파일되지 않는다 — 세려는 field가 [Fields]에 선언된 소스를 relation으로 고른다',
         '- 회원별 지표(member_scalar_*, 기준월 스냅샷 field/transition)는 회원당 0..1행을 읽는 관계다. bare FieldRef나 Comparison 단독으로 쓰면 참조할 관계가 없어 컴파일되지 않는다. [Metric recipes]의 Exists(Filter(Source, Comparison)) 골격을 그대로 쓴다',
         '- member_scalar_*의 Literal은 숫자 임계값이고 operator는 그 지표의 allowed_operators 중 하나다. 값의 단위는 지표 선언의 unit이며 원문의 단위를 그대로 옮긴다',
         '- 기준월 스냅샷 field/transition 지표의 Literal은 [Canonical value domains]의 canonical 값이다. 물리코드나 원문 표기를 그대로 넣지 않는다',
@@ -1001,8 +1004,24 @@ def audience_catalog_guidance(
         if not isinstance(declaration, Mapping):
             continue
         label = str(declaration.get("label") or source_id)
-        aliases = ", ".join(str(item) for item in declaration.get("aliases") or [])
-        lines.append(f"- {source_id}: {label}" + (f" ({aliases})" if aliases else ""))
+        # 같은 물리 테이블을 상태로 나눠 가진 소스끼리는 별칭만으로 구분되지 않는다
+        # (cart 이력 ↔ active_cart 현재 보관). 어느 쪽을 고르는지는 도메인 사실이라
+        # 카탈로그가 선언하고, 여기서는 그 선언을 그대로 옮기기만 한다.
+        #
+        # selection_surfaces 를 aliases 와 **따로** 읽는 이유는 aliases 가 겸용 어휘이기
+        # 때문이다 — rolling_absence_claims 가 같은 목록으로 '이 사건의 국소 부정'을
+        # 접지한다. 모델에게 소스를 알려주려고 긍정 상태 표면어를 aliases 에 넣으면 그쪽
+        # 판정이 함께 넓어져 창 방향이 뒤집힌 부재식이 생긴다(실측 2026-08-07).
+        surfaces = ", ".join(
+            str(item)
+            for item in (*(declaration.get("aliases") or []), *(declaration.get("selection_surfaces") or []))
+        )
+        note = str(declaration.get("selection_note") or "").strip()
+        lines.append(
+            f"- {source_id}: {label}"
+            + (f" ({surfaces})" if surfaces else "")
+            + (f" — {note}" if note else "")
+        )
     lines.extend(["", "[Fields]"])
     for field_id, declaration in sorted((raw.get("fields") or {}).items()):
         if not isinstance(declaration, Mapping):
@@ -1032,6 +1051,9 @@ def audience_catalog_guidance(
             "[Product text matching]",
             "- 상품명·카테고리명 같은 자연어 값은 PRODUCT_ID와 비교하지 않는다. "
             "구매는 purchase_line.product_text/product_name/product_category, 장바구니는 cart.product_text/product_name/product_category 중 맞는 필드에 = 비교를 사용한다. 컴파일러가 CRM_CM_PRODUCT의 안전한 LIKE 부분검색으로 바꾼다.",
+            "- 상품 텍스트 검색 필드는 상품 마스터 조인이 있는 소스에만 있다. active_cart에는 없으므로, "
+            "'담아둔 <상품명>'처럼 현재 보관 + 상품명이 함께 오면 cart의 product_text 계열을 쓴다 — "
+            "active_cart 관계에 cart.* 필드를 거는 것은 관계 스코프 밖이라 컴파일되지 않는다.",
             "- 'A, B, C를 모두 구매'는 각 값마다 독립된 Exists(Filter(Source(purchase_line), Comparison))를 만들고 그 Exists들을 And로 묶는다. 한 상품 행에 A/B/C 비교를 모두 걸지 않는다.",
             "- 'A, B, C 중 하나라도 구매'는 한 Exists의 Filter.where에서 비교들을 Or로 묶거나, 독립 Exists들을 Or로 묶는다.",
             "- 'A를 구매하지 않은'은 Not(Exists(Filter(... A 비교 ...)))이다.",
