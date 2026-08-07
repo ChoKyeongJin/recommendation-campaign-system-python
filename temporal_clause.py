@@ -19,6 +19,13 @@
 결핍이 아니다. 이 판정은 프롬프트별 예외가 아니라 문법 규칙이다: 근접성 + 절 경계 +
 타입이 맞는 리터럴. 새 문장이 늘어도 여기 분기가 늘지 않는다.
 
+같은 결함이 **달력 창**에도 있었다(실측 2026-08-07). ``지난달 구매한 회원`` 은 기간을 확정해
+말한 문장인데, 이 모듈이 duration 리터럴만 읽어 절을 만들었으므로 ``지난달`` 을 지목한
+"기간이 없다" 신고를 반박할 재료가 없었다 — 사용자의 달력 창이 되묻기 또는 배포 기본 창에
+덮였다. 그래서 달력 리터럴(``date_window``)도 같은 결합 경로를 통해 절이 된다. 표면 문법의
+소유자는 여전히 :mod:`calendar_window` 이고, 이 모듈은 그 판정 결과(``event_ir_window``)만
+읽는다.
+
 **추측하지 않는다.** 숫자가 없는 ``최근`` 은 이 모듈에서 ``amount=None`` 인 절로 남고,
 기본값을 지어내지 않는다 — 그 결정은 정책 계층(:mod:`targeting_policy` ·
 :mod:`default_period_policy`)이 소유한다. 이 모듈은 "원문이 무엇을 말했나"만 답한다.
@@ -33,6 +40,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+import event_ir
 import lexicon_patterns
 
 # 시간 절의 관계(닫힌 집합). 표면어가 아니라 **연산자**다.
@@ -47,13 +55,26 @@ ANCHOR_REQUEST_REFERENCE_TIME = "request_reference_time"
 OWNERSHIP_QUERY = "query"        # 원문이 말했다
 OWNERSHIP_POLICY = "policy"      # 배포 설정이 채웠다
 
-# 근접 결합 예산. ``최근`` 과 duration 사이에 낄 수 있는 조사·수식어의 글자 수다.
-# 넉넉하면 다른 절의 숫자를 끌어오고, 좁으면 '최근 약 30일' 같은 정상 표현을 놓친다.
+# 근접 결합 예산. ``최근`` 과 **그 뒤에 오는** duration 사이에 낄 수 있는 조사·수식어의 글자
+# 수다. 넉넉하면 다른 절의 숫자를 끌어오고, 좁으면 '최근 약 30일' 같은 정상 표현을 놓친다.
 _ADJACENCY_BUDGET = 6
 # 절 경계. 이 문자가 사이에 있으면 같은 시간 절이 아니다.
 _CLAUSE_BOUNDARY_RE = re.compile(r"[,.;!?\n]")
 # duration 리터럴의 시간 종류(리터럴 추출기 소유 어휘).
 _ROLLING_DURATION = "rolling_duration"
+# 달력 리터럴의 kind(리터럴 추출기 소유 어휘). '지난달'·'2026년 3월'·'작년 1월'·'올해 상반기'가
+# 모두 여기로 온다 — 표면 문법의 소유자는 :mod:`calendar_window` 이고, 이 모듈은 그 판정 결과만
+# 읽는다(표면어를 다시 읽지 않는다).
+_DATE_WINDOW = "date_window"
+# 달력 리터럴이 실어 오는 wire 창 타입 → 이 절의 관계. 종류의 판정은 이미 문법 계층이 했고
+# 결과가 ``normalized.event_ir_window.type`` 으로 실려 온다. 표에 없는 타입은 **절을 만들지
+# 않는다** — 모르는 창을 아는 척 분류하면 되묻어야 할 자리가 조용히 확정된다.
+#
+# ``RELATION_CALENDAR_PERIOD`` 에 생산자가 없는 이유도 같다. 지금 바인딩이 싣는 모양은 이미
+# 기준일로 확정된 구간 하나뿐이라("지난달" → 2026-07-01~2026-08-01), '이름 붙은 달력 칸'과
+# '원문이 직접 적은 절대 구간'을 **바인딩 모양만으로는 가를 수 없다**. 표면어를 다시 읽어
+# 가르는 것이 곧 두 번째 문법 사전이므로 하지 않는다.
+_WINDOW_TYPE_RELATIONS: dict[str, str] = {"interval": RELATION_ABSOLUTE}
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +104,8 @@ class TemporalClause:
     unit: str | None = None
     calendar_period: str | None = None
     anchor: str = ANCHOR_REQUEST_REFERENCE_TIME
+    # 확정된 구간의 경계(ISO date). ``end`` 는 **배타**(exclusive)다 — IR 창의 경계 규칙이
+    # 반개구간이므로 여기서 다른 규칙을 쓰면 하루가 조용히 늘거나 준다.
     start: str | None = None
     end: str | None = None
     ownership: str = OWNERSHIP_QUERY
@@ -108,6 +131,30 @@ class TemporalClause:
         if self.relation == RELATION_ABSOLUTE:
             return bool(self.start and self.end)
         return False
+
+    @property
+    def wire_window(self) -> dict[str, Any] | None:
+        """이 절이 요구하는 **wire 창**. 표현할 수 없으면 ``None``(지어내지 않는다).
+
+        구조화 툴 스키마가 받는 모양 그대로다. 단위는 IR 어휘로 접는다 — 리터럴 추출기는
+        복수형(``days``)을 쓰고 스키마 enum 은 단수형(``day``)만 받으므로, 접지 않은 값을
+        지시문에 실으면 **스키마를 지키는 모델이 반드시 틀린다**(실측: 모델이 지시문의
+        ``"days"`` 를 그대로 복사한 응답이 교정 라운드를 실패시켰다).
+
+        절대 구간은 리터럴 바인딩의 ``normalized.event_ir_window`` 와 같은 dict 다 —
+        '그대로 복사'가 이미 구조화 안내의 계약이므로 여기서 다른 모양을 만들지 않는다.
+        """
+
+        if self.relation == RELATION_LOOKBACK:
+            unit = event_ir.canonical_unit(self.unit)
+            if self.amount is None or unit not in event_ir.WINDOW_UNITS:
+                return None
+            return {"type": "rolling", "value": self.amount, "unit": unit}
+        if self.relation == RELATION_ABSOLUTE:
+            if not (self.start and self.end):
+                return None
+            return {"type": "interval", "start": self.start, "end_exclusive": self.end}
+        return None
 
     @property
     def span(self) -> tuple[int, int] | None:
@@ -137,6 +184,7 @@ class TemporalClause:
             "ownership": self.ownership,
             "quantified": self.is_quantified,
             "marker_bound": self.marker_bound,
+            "wire_window": self.wire_window,
             "source_spans": [item.to_dict() for item in self.source_spans],
         }
 
@@ -258,12 +306,38 @@ def _recency_marker_spans(query: str) -> list[tuple[int, int, str]]:
     return kept
 
 
-def _rolling_duration_literals(
-    literal_bindings: Sequence[Mapping[str, Any]] | None,
-) -> list[tuple[int, int, str, int, str]]:
-    """리터럴 바인딩에서 ``rolling_duration`` 만 뽑는다 → (start, end, text, value, unit)."""
-    found: list[tuple[int, int, str, int, str]] = []
-    for binding in literal_bindings or ():
+@dataclass(frozen=True, slots=True)
+class _TemporalAtom:
+    """원문이 **기간을 말한** 구간 하나. 표지와 결합할 후보다.
+
+    두 종류가 같은 타입으로 들어온다: 길이를 말한 duration 리터럴(``최근 30일`` 의 ``30일``)과
+    구간을 말한 달력 리터럴(``지난달``·``2026년 3월``). 종류를 나눠 두 벌의 결합 루프를 만들면
+    근접·절 경계·어순 규칙이 곧 갈라지므로 결합 경로는 하나로 유지한다.
+
+    ``self_quantifying`` 은 "이 구간이 표지 없이도 창인가"다. 달력 토큰은 스스로 구간을
+    확정하므로 참이고, 그때 결합된 표지는 절이 **삼키기만** 한다(근거 구간으로 적지 않는다).
+    표지 구간을 적으면 :attr:`TemporalClause.marker_bound` 가 참이 되는데, 그 속성이 답하는
+    질문은 "이 duration 리터럴이 임계값이 아니라 창임이 증명됐는가"이고 달력 토큰에는 증명이
+    필요 없다. 두 질문을 한 플래그로 합치면 그 값을 읽는 하류가 다른 사실을 보게 된다.
+    """
+
+    start: int
+    end: int
+    text: str
+    relation: str
+    amount: int | None = None
+    unit: str | None = None
+    window_start: str | None = None
+    window_end: str | None = None
+    self_quantifying: bool = False
+
+
+def _rolling_duration_atoms(
+    literal_bindings: Sequence[Mapping[str, Any]],
+) -> list[_TemporalAtom]:
+    """리터럴 바인딩에서 ``rolling_duration`` 만 뽑는다(길이를 말한 구간)."""
+    found: list[_TemporalAtom] = []
+    for binding in literal_bindings:
         if not isinstance(binding, Mapping) or binding.get("kind") != "duration":
             continue
         normalized = binding.get("normalized")
@@ -280,14 +354,105 @@ def _rolling_duration_literals(
             continue
         if not (isinstance(start, int) and isinstance(end, int) and start < end):
             continue
-        found.append((start, end, str(binding.get("text") or ""), value, unit))
-    return sorted(found)
+        found.append(
+            _TemporalAtom(
+                start=start,
+                end=end,
+                text=str(binding.get("text") or ""),
+                relation=RELATION_LOOKBACK,
+                amount=value,
+                unit=unit,
+            )
+        )
+    return found
+
+
+def _calendar_window_atoms(
+    literal_bindings: Sequence[Mapping[str, Any]],
+) -> list[_TemporalAtom]:
+    """리터럴 바인딩에서 달력 창을 뽑는다(구간을 말한 토큰).
+
+    ``지난달`` 처럼 원문이 기간을 **확정해** 말했는데도 모델이 '기간이 없다'를 신고하면, 이
+    재료가 없던 동안에는 그 신고를 반박할 방법이 없어 사용자의 달력 창이 되묻기나 배포 기본
+    창에 덮였다. 종류·경계의 판정은 문법 계층이 이미 했으므로 여기서는 그 결과만 옮긴다.
+    """
+    found: list[_TemporalAtom] = []
+    for binding in literal_bindings:
+        if not isinstance(binding, Mapping) or binding.get("kind") != _DATE_WINDOW:
+            continue
+        normalized = binding.get("normalized")
+        if not isinstance(normalized, Mapping):
+            continue
+        window = normalized.get("event_ir_window")
+        if not isinstance(window, Mapping):
+            continue
+        relation = _WINDOW_TYPE_RELATIONS.get(str(window.get("type")))
+        window_start, window_end = window.get("start"), window.get("end_exclusive")
+        start, end = binding.get("start"), binding.get("end")
+        if relation is None:
+            continue
+        if not (isinstance(window_start, str) and isinstance(window_end, str)):
+            continue
+        if not (window_start and window_end):
+            continue
+        if not (isinstance(start, int) and isinstance(end, int) and start < end):
+            continue
+        found.append(
+            _TemporalAtom(
+                start=start,
+                end=end,
+                text=str(binding.get("text") or ""),
+                relation=relation,
+                window_start=window_start,
+                window_end=window_end,
+                self_quantifying=True,
+            )
+        )
+    return found
+
+
+def _temporal_atoms(
+    literal_bindings: Sequence[Mapping[str, Any]] | None,
+) -> list[_TemporalAtom]:
+    """원문이 기간을 말한 구간 전부(원문 좌표 순)."""
+    rows = list(literal_bindings or ())
+    atoms = _rolling_duration_atoms(rows) + _calendar_window_atoms(rows)
+    return sorted(atoms, key=lambda atom: (atom.start, atom.end))
 
 
 def _separated_by_clause_boundary(query: str, left: int, right: int) -> bool:
     if left >= right:
         return False
     return _CLAUSE_BOUNDARY_RE.search(query[left:right]) is not None
+
+
+def _assign_markers(
+    query: str,
+    atoms: Sequence[_TemporalAtom],
+    markers: Sequence[tuple[int, int, str]],
+) -> dict[int, int]:
+    """각 구간에 **그 구간을 소유하는 표지**를 붙인다 → {atom index: marker index}.
+
+    결합 규칙은 종류와 무관하게 하나다(어순 → 근접 → 절 경계 → 가장 가까운 표지). 롤링 길이와
+    달력 구간이 각자 규칙을 갖게 되면 같은 문장에서 서로 다른 소유권이 나온다.
+    """
+
+    assignment: dict[int, int] = {}
+    for atom_index, atom in enumerate(atoms):
+        best: tuple[int, int] | None = None
+        for marker_index, (_marker_start, marker_end, _marker) in enumerate(markers):
+            if marker_end > atom.start:
+                # 어순 규칙. 표지보다 앞선 구간은 이 표지의 것이 아니다.
+                continue
+            gap = atom.start - marker_end
+            boundary = _separated_by_clause_boundary(query, marker_end, atom.start)
+            if boundary or gap > _ADJACENCY_BUDGET:
+                continue
+            if best is None or gap < best[1]:
+                best = (marker_index, gap)
+        if best is not None:
+            assignment[atom_index] = best[0]
+    return assignment
 
 
 def combine_temporal_clauses(
@@ -298,54 +463,64 @@ def combine_temporal_clauses(
 
     결합 규칙(문장별 예외가 아니라 문법):
 
-    1. recency 표지 하나에 duration 리터럴 **하나**가 근접(예산 내)하고,
-    2. 그 사이에 절 경계 문자가 없고,
-    3. 그 리터럴이 다른 표지에 더 가깝지 않으면
+    1. duration 리터럴이 표지 **뒤**에 오고(한국어 어순: ``최근 30일``),
+    2. 그 리터럴이 표지에 근접(예산 내)하고,
+    3. 그 사이에 절 경계 문자가 없고,
+    4. 그 리터럴이 다른 표지에 더 가깝지 않으면
 
     → 표지와 리터럴은 같은 시간 절이다. 그 밖의 duration 리터럴은 표지 없는 lookback 절로,
     숫자를 못 얻은 표지는 ``amount=None`` 인 미정 절로 남는다(추측하지 않는다).
+
+    1번이 없으면 근접성만 남고, 그러면 **앞 절의 임계값**이 뒤의 맨 표지를 수량화한다 —
+    ``구매주기가 30일 이하이고 최근 구매가 없는 회원`` 의 ``30일`` 은 창이 아니라 임계값이고
+    (``유효기간 30일``·``환불까지 7일`` 도 같다), 그것을 ``최근`` 의 창으로 읽으면 진짜 결핍이
+    '원문이 이미 말했다'로 뒤집혀 되묻기가 재방출로 샌다(실측 형태). 어순 규칙은 이 모듈이
+    :func:`bind_window_scopes` 에서 이미 선언한 것과 같다 — 시간 수식어는 자기 머리말 앞에
+    오고, 그 수식어 안에서 수량은 표지 뒤에 온다.
+
+    달력 구간(``지난달``·``2026년 3월``)도 **같은 규칙**을 받는다. 다른 점은 하나뿐이다:
+    달력 토큰은 스스로 구간을 확정하므로 결합된 표지를 근거 구간으로 적지 않고 삼키기만 한다
+    (:class:`_TemporalAtom` 의 ``self_quantifying`` 주석 참조).
     """
 
     if not isinstance(query, str) or not query:
         return ()
-    markers = _recency_marker_spans(query)
-    durations = _rolling_duration_literals(literal_bindings)
+    atoms = _temporal_atoms(literal_bindings)
+    # 달력 토큰 **안**에 있는 표지는 독립된 표지가 아니라 그 토큰의 글자다(``지난달`` 의
+    # ``지난``). 홀로 남기면 원문이 이미 확정한 기간을 '맨 표지'로 다시 신고하는 유령 절이 되고,
+    # 그 절을 읽는 쪽에는 그것이 유령임을 알 재료가 없다.
+    markers = [
+        span
+        for span in _recency_marker_spans(query)
+        if not any(
+            atom.self_quantifying and span[0] < atom.end and atom.start < span[1]
+            for atom in atoms
+        )
+    ]
 
-    # 리터럴 → 가장 가까운 표지. 한 리터럴이 두 표지에 붙는 것을 막는다
+    # 구간 → 가장 가까운 표지. 한 구간이 두 표지에 붙는 것을 막는다
     # ('최근 3개월 … 최근 30일' 처럼 표지가 여럿인 문장이 실제로 있다).
-    assignment: dict[int, int] = {}
-    for literal_index, (literal_start, literal_end, _text, _value, _unit) in enumerate(durations):
-        best: tuple[int, int] | None = None
-        for marker_index, (marker_start, marker_end, _marker) in enumerate(markers):
-            if marker_end <= literal_start:
-                gap = literal_start - marker_end
-                boundary = _separated_by_clause_boundary(query, marker_end, literal_start)
-            elif literal_end <= marker_start:
-                gap = marker_start - literal_end
-                boundary = _separated_by_clause_boundary(query, literal_end, marker_start)
-            else:
-                gap, boundary = 0, False
-            if boundary or gap > _ADJACENCY_BUDGET:
-                continue
-            if best is None or gap < best[1]:
-                best = (marker_index, gap)
-        if best is not None:
-            assignment[literal_index] = best[0]
+    assignment = _assign_markers(query, atoms, markers)
 
     clauses: list[TemporalClause] = []
     used_markers: set[int] = set()
-    for literal_index, (literal_start, literal_end, text, value, unit) in enumerate(durations):
-        marker_index = assignment.get(literal_index)
-        spans = [EvidenceSpan(literal_start, literal_end, text, role="amount")]
+    for atom_index, atom in enumerate(atoms):
+        spans = [EvidenceSpan(atom.start, atom.end, atom.text, role="amount")]
+        marker_index = assignment.get(atom_index)
         if marker_index is not None:
-            marker_start, marker_end, marker_text = markers[marker_index]
-            spans.insert(0, EvidenceSpan(marker_start, marker_end, marker_text, role="marker"))
             used_markers.add(marker_index)
+            if not atom.self_quantifying:
+                marker_start, marker_end, marker_text = markers[marker_index]
+                spans.insert(
+                    0, EvidenceSpan(marker_start, marker_end, marker_text, role="marker")
+                )
         clauses.append(
             TemporalClause(
-                relation=RELATION_LOOKBACK,
-                amount=value,
-                unit=unit,
+                relation=atom.relation,
+                amount=atom.amount,
+                unit=atom.unit,
+                start=atom.window_start,
+                end=atom.window_end,
                 source_spans=tuple(sorted(spans, key=lambda item: item.start)),
             )
         )

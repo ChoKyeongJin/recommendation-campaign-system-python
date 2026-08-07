@@ -321,23 +321,34 @@ def missing_field_cause_records(
 
     **시스템이 이미 결정론으로 뽑아 정규화까지 마친 값을 사용자에게 되묻는다.**
 
-    판정은 두 가지만 본다. 인자 이름 → 리터럴 종류의 손 매핑은 만들지 않는다(모델의
-    `argument` 는 닫힌 어휘가 아니라 그런 표가 곧 낡는다). 대신 **근거 구간**을 조인 키로 쓴다:
+    인자 이름 → 리터럴 종류의 손 매핑은 만들지 않는다(모델의 `argument` 는 닫힌 어휘가
+    아니라 그런 표가 곧 낡는다). 대신 **근거 구간**을 조인 키로 쓴다:
 
       1. 자리표시자('특정 브랜드')면 어떤 추출값으로도 못 채운다 → `user_omission`.
          판정 기계는 이미 있다(`semantic_domain_binding.user_omission_reason`).
       2. 주장된 근거 구간 안에 애플리케이션이 추출한 리터럴이 있으면 → `model_omission`.
          구간을 지목해 놓고 그 안의 값을 못 봤다는 뜻이므로 되묻지 말고 재방출한다.
-      3. 그 밖 → `user_omission`. 맨 '최근'처럼 원문에 정말 값이 없는 경우다.
+      3. 기간(`missing_argument(period)`)은 구간 **하나**로 끝나지 않는다. '최근 30일' 은
+         표면 구간 둘('최근'·'30일')이 시간 절 하나를 이루므로, 모델이 표지만 지목하면
+         수량 구간이 신고 구간 밖에 있어 2번이 실패한다. 그래서 포함 관계가 실패했을 때
+         절 판정자(:func:`temporal_clause.stated_period_for_issue`)에게 한 번 더 묻는다.
+         수량화된 절이 나오면 그 신고는 **원문과 모순**이므로 → `model_omission`.
+      4. 그 밖 → `user_omission`. 맨 '최근'처럼 원문에 정말 값이 없는 경우다.
 
     구간 안팎을 따지는 것이 핵심이다. 구간을 보지 않으면 **다른 절의 값** 때문에 진짜 결핍이
-    재방출로 새고(실측: '최근 3개월 … 최근 구매가 없는' 의 맨 '최근'), 그러면 재시도만 소모하고
-    사용자는 답할 기회를 잃는다.
+    재방출로 새고(실측: '최근 3개월 … 최근 구매가 없는' 의 뒤쪽 맨 '최근'), 그러면 재시도만
+    소모하고 사용자는 답할 기회를 잃는다. 3번이 그 보호를 깨지 않는 이유는 절 판정자가
+    **절 단위**로 답하기 때문이다 — 뒤쪽 '최근' 은 수량을 얻지 못한 별개의 절이라
+    `is_quantified=False` 이고, 앞 절의 '3개월' 을 빌려오지 않는다.
+
+    3번은 프롬프트별 예외가 아니다. 판정 재료는 recency 표지 어휘와 애플리케이션이 뽑은
+    duration 리터럴뿐이라, 단위(일/주/개월/년)나 문장이 늘어도 여기 분기가 늘지 않는다.
     """
+    # `bindings` 는 Iterable 계약이다. 아래에서 두 번 읽으므로(구간 색인 + 시간 절 판정)
+    # 제너레이터가 들어오면 두 번째 소비가 조용히 빈 목록이 된다 — 한 번만 소비해 고정한다.
+    binding_rows = [item for item in bindings or () if isinstance(item, Mapping)]
     literal_spans: list[tuple[int, int]] = []
-    for binding in bindings or ():
-        if not isinstance(binding, Mapping):
-            continue
+    for binding in binding_rows:
         start, end = binding.get("start"), binding.get("end")
         if isinstance(start, int) and isinstance(end, int) and start < end:
             literal_spans.append((start, end))
@@ -370,6 +381,16 @@ def missing_field_cause_records(
                 # 원문 전체를 근거로 든 주장은 구간이 아니라 '어디든'이라는 뜻이다.
                 if whole_query or (start <= literal_start and literal_end <= end)
             ]
+            if not covered:
+                # 시간 절은 떨어진 구간 둘이 하나의 의미다. 신고 구간이 그 절의 **일부**면
+                # 원문은 이미 기간을 말한 것이므로 되묻지 말고 재방출한다(실측 2026-08-06:
+                # '최근 30일 구매한 회원 수를 알려줘' 가 '최근'[0,2] 만 지목당해 닫혔다).
+                # 명시 기간의 단일 판정자는 temporal_clause 다 — 여기에 두 번째 판정 로직을
+                # 만들지 않는다. 근거 구간은 리터럴 구간과 같은 좌표계·같은 모양으로 남겨
+                # 하류(재방출 트리거·감사 로그)가 한 가지 형태만 읽게 한다.
+                clause = temporal_clause.stated_period_for_issue(query, issue, binding_rows)
+                if clause is not None:
+                    covered = [(span.start, span.end) for span in clause.source_spans]
             if covered:
                 record["cause"] = semantic_outcome.CAUSE_MODEL_OMISSION
                 record["literal_spans"] = covered

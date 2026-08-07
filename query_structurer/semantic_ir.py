@@ -6,7 +6,12 @@ from collections.abc import Mapping
 from datetime import date, timedelta
 from typing import Any
 
-from calendar_window import duration_window_candidates, parse_calendar_window_spans
+import calendar_window
+from calendar_window import (
+    DurationCandidate,
+    duration_window_candidates,
+    parse_calendar_window_spans,
+)
 import condition_normalizers
 import semantic_domain_binding
 from semantic_normalizers import (
@@ -104,26 +109,35 @@ _NUMBER_RE = re.compile(r"(?<![\d.])\d+(?:\.\d+)?(?![\d.])")
 _REFERENCE_DATE_PROBES = (date(2000, 1, 15), date(2400, 7, 15))
 
 
+def _source_duration_candidates(query: str) -> list[tuple[int, int, DurationCandidate]]:
+    """기간 표현 후보(calendar_window 판정)를 **원문 좌표계**로 옮긴다 → (start, end, candidate).
+
+    종류를 정하는 표면 문법의 소유자는 :mod:`calendar_window` 다 — 여기서 '최근'/'전' 을 다시
+    읽지 않는다. 그 모듈의 후보 구간은 공백을 제거한 좌표계이므로 원문 좌표로 옮기기만 한다.
+    대응표를 그쪽에 함께 넘겨야 단어형 후보의 낱말 경계 판정이 돈다(원문에만 남아 있는 정보다).
+    """
+    original_index = [index for index, char in enumerate(query) if not char.isspace()]
+    compact = "".join(query[index] for index in original_index)
+    rows: list[tuple[int, int, DurationCandidate]] = []
+    for candidate in duration_window_candidates(
+        compact, source=query, source_offsets=original_index
+    ):
+        if not 0 <= candidate.start < candidate.end <= len(original_index):
+            continue
+        rows.append(
+            (original_index[candidate.start], original_index[candidate.end - 1] + 1, candidate)
+        )
+    return rows
+
+
 def _duration_temporal_kinds(query: str) -> list[tuple[int, int, str]]:
     """기간 표현의 **의미 종류**(calendar_window 판정)를 원문 좌표계로 옮긴다.
 
     '최근 30일'과 '30일 전'은 리터럴 원자가 완전히 같다(value=30, unit=days) — 값만 넘기고
     종류를 창 생산자의 판단에 맡기면 두 뜻이 조용히 뒤바뀐다. 실측(2026-08-03): '최근 30일'이
     relative 창으로 와서 30일 전 **하루**만 보는 조건이 됐고, 그 응답은 성공으로 나갔다.
-
-    종류를 정하는 표면 문법의 소유자는 :mod:`calendar_window` 다 — 여기서 '최근'/'전' 을 다시
-    읽지 않는다. 그 모듈의 후보 구간은 공백을 제거한 좌표계이므로 원문 좌표로 옮기기만 한다.
     """
-    original_index = [index for index, char in enumerate(query) if not char.isspace()]
-    compact = "".join(query[index] for index in original_index)
-    spans: list[tuple[int, int, str]] = []
-    for candidate in duration_window_candidates(compact):
-        if not 0 <= candidate.start < candidate.end <= len(original_index):
-            continue
-        spans.append(
-            (original_index[candidate.start], original_index[candidate.end - 1] + 1, candidate.kind)
-        )
-    return spans
+    return [(start, end, candidate.kind) for start, end, candidate in _source_duration_candidates(query)]
 
 
 SEMANTIC_IR_LLM_JSON_SCHEMA: dict[str, Any] = semantic_outcome_json_schema()
@@ -194,7 +208,8 @@ def scan_literal_bindings(
     literals: list[dict[str, Any]] = []
     occupied: list[tuple[int, int]] = []
     counters: dict[str, int] = {}
-    temporal_kinds = _duration_temporal_kinds(query)
+    duration_candidates = _source_duration_candidates(query)
+    temporal_kinds = [(start, end, candidate.kind) for start, end, candidate in duration_candidates]
 
     def append(kind: str, start: int, end: int, value: Any, normalized: Any) -> None:
         counters[kind] = counters.get(kind, 0) + 1
@@ -324,6 +339,38 @@ def scan_literal_bindings(
             if kind is not None:
                 normalized["temporal_kind"] = kind
             append("duration", match.start(), match.end(), value, normalized)
+
+    # 숫자 없는 단어형 기간('일주일', '한 달', '반년', '보름', '석달', '한해'). 값·단위 선언과
+    # 낱말 경계 판정의 소유자는 :mod:`calendar_window` 하나다 — 여기서는 그 후보를 숫자형과
+    # **같은 모양**의 원자로 옮기기만 한다. 이 원자가 없던 동안 사용자가 분명히 말한 기간이
+    # 리터럴 근거에 남지 않아, '기간을 말했는가' 판정이 거짓 결핍(되묻기)으로 닫혔다.
+    #
+    # ``surface_unit`` 은 canonical 한국어 단위다(days→일, weeks→주, months→개월, years→년).
+    # 단어형은 값과 단위가 한 낱말에 붙어 있어 떼어낼 단위 표면이 없는데, 이 필드는 숫자형에서
+    # **단위**를 담는 자리이고(:func:`condition_normalizers.numeric_duration_unit_semantics` 의
+    # 키), 실제로 읽는 코드는 계수 결속(number_with_unit)뿐이라 기간에서는 표시·대조용이다.
+    # 원문 표면은 binding["text"] 가 그대로 보존하므로 근거는 잃지 않는다. 같은 투영을
+    # :func:`calendar_window.relative_window_label` 이 이미 쓴다('일주일' → '최근 7일').
+    for start, end, candidate in duration_candidates:
+        if not calendar_window.is_word_duration_surface(query[start:end]):
+            continue
+        if _overlaps(start, end, occupied):
+            continue
+        surface_unit = calendar_window.CANON_TO_KO_UNIT.get(candidate.unit)
+        if surface_unit is None:
+            continue
+        append(
+            "duration",
+            start,
+            end,
+            candidate.value,
+            {
+                "value": candidate.value,
+                "surface_unit": surface_unit,
+                "semantic_unit": candidate.unit,
+                "temporal_kind": candidate.kind,
+            },
+        )
 
     comparison_map = dict(_COMPARISON_TERMS)
     for match in _COMPARISON_RE.finditer(query):

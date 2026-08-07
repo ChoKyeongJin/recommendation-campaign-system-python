@@ -149,31 +149,42 @@ def comparison_literal_operators() -> dict[str, str]:
     return out
 
 
-_NUMERIC_DURATION_SURFACES: tuple[str, ...] = (
+# 숫자 바로 뒤에 붙을 수 있는 기간 단위의 **어간**. ``-간`` 접미형은 여기서 파생한다.
+_NUMERIC_DURATION_BASE_SURFACES: tuple[str, ...] = (
     "주일",
     "개월",
-    "일간",
-    "년간",
     "일",
     "주",
     "달",
     "년",
 )
+# 기간 접미 ``-간``('30일간', '3개월간'). 표면을 손으로 나열하던 동안 '일간/년간'만 있고
+# '개월간/주간/달간/주일간'은 없었다 — 같은 문법인데 단위에 따라 기간이 보이기도, 안 보이기도
+# 했다('3개월간 구매' → 기간 결핍으로 되묻기). 파생으로 바꿔 그 불균일이 재발하지 않게 한다.
+_DURATION_SPAN_SUFFIX = "간"
 
 
 def numeric_duration_unit_semantics() -> dict[str, str]:
     """숫자 기간 scanner가 허용하는 한국어 표면 → canonical 단위.
 
     언어 별칭의 소유자는 normalization lexicon이고 이 함수는 그중 숫자 바로 뒤에
-    붙을 수 있는 닫힌 부분집합만 선언한다.
+    붙을 수 있는 닫힌 부분집합만 선언한다. ``-간`` 접미형은 어간에서 **파생**하므로
+    단위마다 표면을 다시 적지 않는다.
+
+    ``주간``은 '주간 리포트'(weekly)로도 쓰이지만 이 표면 목록은 숫자가 바로 앞에 붙은
+    자리에서만 소비된다(scanner의 ``\\d+`` 선행 조건). 숫자 없는 '주간'은 여기 걸리지 않는다.
     """
 
     aliases = unit_aliases()
-    return {
+    base = {
         surface: aliases[surface]
-        for surface in _NUMERIC_DURATION_SURFACES
+        for surface in _NUMERIC_DURATION_BASE_SURFACES
         if surface in aliases
     }
+    derived = dict(base)
+    for surface, canonical in base.items():
+        derived.setdefault(surface + _DURATION_SPAN_SUFFIX, canonical)
+    return derived
 
 
 def operator_aliases() -> dict[str, str]:

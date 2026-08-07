@@ -19,6 +19,20 @@
 2. **기본값은 사용자가 말한 값과 구분된다.** 채택하면 결과에
    ``audience_default_period.source = "default_policy"`` 를 남긴다 — 이 표식이 없으면 응답을
    읽는 쪽은 5일이 사용자의 말인지 제품 설정인지 알 수 없다.
+
+신고된 결핍이 **거짓**일 수 있다(실측 2026-08-07)
+------------------------------------------------
+``최근 30일 구매한 회원 수를 알려줘`` 에서 모델이 ``최근`` 만 근거로 "기간이 없다"를 신고했다.
+원문은 기간을 말했다 — 그 신고는 결핍이 아니라 오신고다. 그때 이 모듈이 기본 창(5일)을
+지시하면 두 번 틀린다: 지시문이 **사용자가 말한 값을 덮으라**는 뜻이 되고, 정확히 옳게
+해결한 재구조화 결과마저 "기본 창이 없다"는 이유로 폐기돼 되묻기로 되돌아간다(실측).
+
+그래서 이 모듈은 결핍을 먼저 두 갈래로 가른다. 가르는 자리는 교정 단계와 공유한다
+(:func:`targeting_policy.split_period_issues`) — 그 안의 판정자는 하나뿐이다
+(``temporal_clause.stated_period_for_issue``). 절이 나오면 거짓 결핍이고, 그 라운드는
+기본 창을 지시하지도 요구하지도 않는다(값의 출처가 사용자이므로 영수증도 남기지 않는다).
+절이 나오지 않는 **진짜 결핍**의 처리는 예전 그대로다 — 기본 창을 지시하고, 그 창이 결과에
+있을 때만 채택한다.
 """
 
 from __future__ import annotations
@@ -32,6 +46,7 @@ from typing import Any
 
 import event_ir
 import qualitative_defaults
+import targeting_policy
 from query_structurer import CampaignQueryPlanV4
 from query_structurer.campaign_plan_v4 import AUDIENCE_REQUIREMENT_KEY
 from query_structurer.semantic_ir import (
@@ -168,6 +183,21 @@ def _issue_evidence(issues: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]
     return spans
 
 
+def _quote_spans(spans: Sequence[Mapping[str, Any]]) -> str:
+    """근거 구간들을 ``'최근' [0, 2)`` 모양으로 인용한다(좌표는 원문 좌표계다).
+
+    같은 표면어가 여러 번 나오는 문장에서 표면어만으로는 구간이 특정되지 않는다. 좌표는
+    모델이 이미 evidence 로 쓰는 값이라 새 어휘를 만들지 않는다.
+    """
+
+    quoted = [
+        f"'{span['text']}' [{span['start']}, {span['end']})"
+        for span in spans
+        if isinstance(span.get("text"), str)
+    ]
+    return ", ".join(dict.fromkeys(quoted))
+
+
 def render_default_period_instruction(
     period: DefaultPeriod, issues: Sequence[Mapping[str, Any]]
 ) -> str:
@@ -175,10 +205,13 @@ def render_default_period_instruction(
 
     프롬프트 본문이 아니라 이 지시문이 기본값을 나른다 — 정책이 꺼진 배포의 구조화기는 이
     문장을 아예 보지 않으므로, 기본 창을 아는 경로가 설정과 정확히 일치한다.
+
+    구간은 표면어와 **좌표**로 함께 지목한다. 표면어만 인용하면 한 문장에 같은 표지가 둘일 때
+    (가장 흔한 '최근') 이 지시문과 명시 기간 교정문이 같은 문자열을 놓고 서로 다른 창을
+    요구하게 되고, 모델에게는 어느 쪽이 어느 쪽인지 가릴 재료가 없다.
     """
 
-    spans = sorted({span["text"] for span in _issue_evidence(issues)})
-    quoted = ", ".join(f"'{span}'" for span in spans) if spans else "the bare recency marker"
+    quoted = _quote_spans(_issue_evidence(issues)) or "the bare recency marker"
     return "\n".join(
         [
             "[Application-owned Default Period Policy]",
@@ -262,14 +295,19 @@ def _rolling_windows(plan: Mapping[str, Any]) -> set[tuple[int, str]]:
     return found
 
 
-def _stated_rolling_durations(query: str, current_date: str | None) -> set[tuple[int, str]]:
+def _stated_rolling_durations(
+    literal_bindings: Sequence[Mapping[str, Any]],
+) -> set[tuple[int, str]]:
     """원문이 **직접 말한** 롤링 기간들(리터럴 추출기 소유).
 
     재구조화가 이 중 하나라도 잃으면 기본값이 사용자 명시값을 덮은 것이므로 채택하지 않는다.
+
+    바인딩을 인자로 받는 이유는 같은 원문에서 리터럴 목록이 두 벌 생기지 않게 하기 위해서다 —
+    '무엇을 말했나'(결핍 갈래 판정)와 '무엇을 잃었나'(채택 판정)가 다른 사실을 보면 안 된다.
     """
 
     stated: set[tuple[int, str]] = set()
-    for binding in extract_literal_bindings(query, current_date=current_date):
+    for binding in literal_bindings:
         if not isinstance(binding, Mapping) or binding.get("kind") != "duration":
             continue
         normalized = binding.get("normalized")
@@ -287,10 +325,27 @@ def _stated_rolling_durations(query: str, current_date: str | None) -> set[tuple
 def _admit(
     candidate: Any,
     *,
-    period: DefaultPeriod,
+    required_window: DefaultPeriod | None,
     stated: set[tuple[int, str]],
+    instructed_windows: frozenset[tuple[Any, ...]] = frozenset(),
 ) -> str | None:
-    """채택 사유 없음이면 ``None``, 거부면 그 사유 문자열."""
+    """채택 사유 없음이면 ``None``, 거부면 그 사유 문자열.
+
+    ``required_window`` 가 ``None`` 이면 이 라운드는 기본 창을 **지시하지 않았다**(신고된 결핍이
+    전부 거짓이었다). 그때까지 기본 창 포함을 요구하면 사용자가 말한 값으로 정확히 해결한
+    후보가 폐기된다 — 실측에서 '최근 30일'을 rolling 30 day 로 옳게 세운 재구조화 결과가
+    ``candidate_ignored_the_default_window`` 로 버려지고 되묻기로 되돌아갔다. 나머지 검사
+    (표현 존재·결핍 없음·다른 issue 없음·명시 기간 보존)는 두 갈래가 똑같이 받는다.
+
+    명시 기간 보존 검사는 재료가 둘이고 범위가 다르다.
+
+    * ``stated`` — 원문의 **롤링 기간 전부**(리터럴 원장). 종류를 여기서 넓히지 않는다:
+      달력 창은 랭킹 모집단처럼 회원 조건이 아닌 절에도 붙으므로, 원문에 있다는 이유만으로
+      결과에 있으라고 요구하면 지시문이 요구한 적 없는 창 때문에 정상 후보가 거부된다.
+    * ``instructed_windows`` — **이 라운드의 교정 지시문이 실제로 요구한 창들**(거짓 결핍으로
+      판정된 절에서만 나온다). 달력 구간은 여기로 들어온다. 지시문이 ``event_ir_window`` 를
+      그대로 복사하라고 요구했으므로 그 창을 잃은 결과는 요구를 지키지 않은 것이다.
+    """
 
     if not isinstance(candidate, Mapping):
         return "candidate_not_a_plan"
@@ -303,12 +358,20 @@ def _admit(
     if isinstance(issues, Sequence) and not isinstance(issues, (str, bytes)) and list(issues):
         return "candidate_reports_other_issues"
     windows = _rolling_windows(candidate)
-    if period.key not in windows:
+    if required_window is not None and required_window.key not in windows:
         return "candidate_ignored_the_default_window"
     lost = sorted(stated - windows)
     if lost:
         # 사용자가 말한 기간이 사라졌다 — 기본값이 명시값을 덮은 것이므로 원래 결핍을 지킨다.
         return f"candidate_dropped_stated_period:{lost}"
+    present = targeting_policy.window_keys(candidate)
+    lost_instructed = sorted(
+        targeting_policy.window_label(key)
+        for key in instructed_windows
+        if key not in present
+    )
+    if lost_instructed:
+        return f"candidate_dropped_stated_period:{lost_instructed}"
     return None
 
 
@@ -331,6 +394,12 @@ def apply_default_period(
     ``marker_resolver`` 는 결핍이 지목한 표면어를 보고 **그 표현에 맞는** 기간을 고르는 선택적
     해석기다(:func:`resolve_catalog_period`). 표현별 값이 배포 전역 값보다 구체적이므로 답을
     내면 그쪽이 이긴다. 답하지 못하면 ``period`` 로 물러서고, 둘 다 없으면 정책은 돌지 않는다.
+
+    신고된 결핍이 전부 거짓이면(원문이 이미 다 말했으면) 이 라운드는 기본 창을 지시하지 않고
+    :func:`targeting_policy.stated_period_instruction` 의 교정만 지시한다. 그 갈래에서도 정책이
+    꺼진 배포는 아무 것도 하지 않는다 — 거짓 결핍 교정의 1차 소유자는 앞 단계
+    (:func:`targeting_policy.resolve_stated_period`)이고, 여기서는 **이미 쓰기로 한 라운드**를
+    사용자가 말한 값을 덮는 데 쓰지 않는 것이 목적이다.
     """
 
     def log(event: str, payload: dict[str, Any]) -> None:
@@ -340,27 +409,102 @@ def apply_default_period(
     issues = missing_period_issues(plan)
     if not issues:
         return plan
+    literal_bindings = extract_literal_bindings(query, current_date=current_date)
+    # 갈래를 가르는 자리도 하나다(:func:`targeting_policy.split_period_issues`). 교정 단계와
+    # 이 단계가 각자 같은 루프를 들고 있으면 같은 문장을 다르게 갈라 지시문이 어긋난다.
+    stated_issues, unstated_issues = targeting_policy.split_period_issues(
+        query, issues, literal_bindings
+    )
     if marker_resolver is not None:
-        period = marker_resolver(issues) or period
+        # 기본 창을 고를 근거는 **진짜 결핍**의 표면어뿐이다. 원문이 이미 수량화한 스팬을
+        # 해석기에 넘기면 그 스팬에 기본값을 붙이라는 지시가 만들어진다.
+        period = marker_resolver(unstated_issues) or period
     if period is None:
         return plan
 
-    stated = _stated_rolling_durations(query, current_date)
-    instruction = render_default_period_instruction(period, issues)
+    stated = _stated_rolling_durations(literal_bindings)
+    # 교정 지시문이 실제로 요구할 창들. 창을 wire 로 적을 수 없는 절은 지시문이 언급하지
+    # 않으므로 요구 목록에도 없다 — 지시하지 않은 것을 채택 조건으로 삼지 않는다.
+    instructed_windows = frozenset(
+        key
+        for _issue, clause in stated_issues
+        if (key := targeting_policy.window_key(clause.wire_window)) is not None
+    )
+    if not unstated_issues and not instructed_windows:
+        # 이 라운드가 요구할 것이 없다. 내용 없는 지시문으로 재구조화 예산을 태우지 않는다.
+        return plan
+    if unstated_issues:
+        required_window: DefaultPeriod | None = period
+        instruction = render_default_period_instruction(period, unstated_issues)
+        if stated_issues:
+            # 한 문장에 두 갈래가 함께 있다. 기본 창은 말하지 않은 스팬에만, 원문이 말한 값은
+            # 그 값 그대로 — 두 지시를 함께 넘겨야 모델이 어느 쪽이 어느 쪽인지 구분한다.
+            instruction = "\n\n".join(
+                [instruction, targeting_policy.stated_period_instruction(stated_issues)]
+            )
+    else:
+        required_window = None
+        instruction = targeting_policy.stated_period_instruction(stated_issues)
     candidate = restructure(instruction)
-    rejected = _admit(candidate, period=period, stated=stated)
+    rejected = _admit(
+        candidate,
+        required_window=required_window,
+        stated=stated,
+        instructed_windows=instructed_windows,
+    )
     log(
         "audience_default_period_policy",
         {
-            "applied": rejected is None,
+            # ``applied`` 의 뜻은 예나 지금이나 '기본값이 적용됐는가'다. 거짓 결핍만 있던
+            # 라운드는 후보를 채택해도 기본값을 쓰지 않으므로 ``adopted`` 로만 참이 된다.
+            "applied": rejected is None and required_window is not None,
+            "adopted": rejected is None,
             "reason": rejected,
             "period": period.window,
             "origin": period.origin,
             "stated_periods": sorted(stated),
+            "stated_period_issues": len(stated_issues),
         },
     )
     if rejected is not None:
         return plan
+    if required_window is None:
+        # 이 창의 출처는 제품 설정이 아니라 사용자다. 기본값 영수증도 policy_applied 도 붙이지
+        # 않는다 — 붙이면 사용자가 말한 30일이 배포가 고른 값처럼 보고된다.
+        #
+        # 다만 **결정 자체는 기록한다**. 이 라운드는 플랜을 바꿔서 채택하므로, 앞 단계가 버려질
+        # 플랜에 적어 둔 영수증(교정 실패 → CLARIFY)이 함께 사라진다. 아무것도 남기지 않으면
+        # 배송된 플랜만 보는 감사에는 기간을 무엇으로 확정했는지가 존재하지 않게 된다.
+        # 사유 코드는 같은 교정이 앞 단계에서 성공했을 때와 같은 것을 쓴다 — 성공한 단계가
+        # 어디냐에 따라 원장이 달라지면 원장으로는 같은 결말을 알아볼 수 없다.
+        targeting_policy.record_decision(
+            candidate if isinstance(candidate, dict) else None,
+            targeting_policy.PolicyDecision(
+                policy_id=targeting_policy.PERIOD_POLICY_ID,
+                stage="ambiguity",
+                decision=targeting_policy.DECISION_ALLOW,
+                reason_code=targeting_policy.REASON_PERIOD_STATED,
+                input_facts=("period_stated=true", "repair=accepted_in_default_round"),
+                # 이 라운드가 확정한 창을 적는다. 롤링 원장(``stated``)만 적으면 달력 구간으로
+                # 해결된 요청의 영수증이 빈 목록이 되어, 무엇으로 확정했는지가 사라진다.
+                detail={
+                    "windows": [
+                        {"value": key[1], "unit": key[2]}
+                        for key in sorted(
+                            (key for key in instructed_windows if key[0] == "rolling"),
+                            key=lambda item: (item[2], item[1]),
+                        )
+                    ],
+                    "intervals": [
+                        {"start": key[1], "end_exclusive": key[2]}
+                        for key in sorted(
+                            key for key in instructed_windows if key[0] == "interval"
+                        )
+                    ],
+                },
+            ),
+        )
+        return candidate
 
     candidate[DEFAULT_PERIOD_KEY] = {
         "source": POLICY_SOURCE,
@@ -369,7 +513,9 @@ def apply_default_period(
         "window": period.window,
         "origin": period.origin,
         "expression": period.expression,
-        "evidence": _issue_evidence(issues),
+        # 기본값이 실제로 채운 구간만 남긴다 — 원문이 이미 말한 스팬까지 적으면 영수증이
+        # 사용자의 말을 제품 설정의 값으로 보고하게 된다.
+        "evidence": _issue_evidence(unstated_issues),
     }
     # 의미 판정도 'resolved'(사용자 문장만으로 확정)가 아니라 **정책이 채운 성공**이다. 이 상태는
     # 이미 선언돼 있었고(SemanticStatus.policy_applied) 하류 게이트도 중립 성공으로 받는다 —

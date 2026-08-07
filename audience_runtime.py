@@ -894,6 +894,99 @@ def metric_recipe_candidate(
     )
 
 
+EVENT_TIME_FIELD_HEADING = "[Event time fields]"
+
+
+def _pins_its_own_time_column(declaration: Mapping[str, Any], time_column: str) -> bool:
+    """이 소스 선언이 **자기 시각 컬럼을 이미 한 값으로 고정**하는가.
+
+    회원 지표 소스들은 월 스냅샷 테이블을 최신 달 한 칸에 고정한다
+    (``extra_predicates`` 의 ``{alias}.YYYYMM = (SELECT MAX(YYYYMM) …)``). 그 컬럼에 기간
+    창을 더 걸면 컴파일러는 두 술어를 AND 로 붙일 뿐이라 **예외도 경고도 없이** 최신 칸이
+    아닌 모든 기간이 공집합이 된다(실측: ``MAX(YYYYMM)=201701`` 인 배포에서 다른 달은 0명).
+
+    판정 재료는 선언뿐이다 — 소스 이름이나 컬럼 이름을 여기 적지 않는다. 술어가 자기
+    ``time_column`` 을 별칭과 함께 지목하면 그 컬럼은 자유롭게 필터할 수 있는 축이 아니다.
+    """
+
+    if not time_column:
+        return False
+    predicates = declaration.get("extra_predicates")
+    if not isinstance(predicates, (list, tuple)):
+        return False
+    needle = f"{{alias}}.{time_column}"
+    return any(isinstance(item, str) and needle in item for item in predicates)
+
+
+def _source_time_field_lines(sources: Mapping[str, Any]) -> list[str]:
+    """소스 선언에서 **파생되는** ``<source>.occurred_at`` 목록.
+
+    :func:`event_compiler.resolve_fields` 는 사건마다 이 시각 필드를 자동으로 파생한다
+    (원본은 소스 선언의 ``time_column``/``time_format``). 그런데 안내의 ``[Fields]`` 는
+    카탈로그의 ``fields`` 선언만 렌더하므로, **기간 창을 걸 수 있는 유일한 필드가 프롬프트에
+    한 번도 등장하지 않았다**. 그 결과 모델은 '최근 30일 구매' 같은 요청에서 문자열로 적재된
+    시각 컬럼(purchase.order_time, data_type="string")에 TimeFilter 를 걸었고 컴파일이
+    "시간 컬럼이 아닌 타입에 기간 조건을 걸 수 없습니다" 로 죽었다(실측 2026-08-07).
+    광고하지 않은 심볼을 모델이 알아낼 방법은 없으므로, 선언에서 파생해 그대로 보여준다.
+
+    grain 은 :data:`event_compiler.TIME_GRAINS` **한 곳에서만** 읽는다 — 여기에 포맷별 표를
+    다시 적으면 grain 지식이 두 벌이 되어 곧 어긋난다(``time_format_data_type`` 도 같은
+    레지스트리로 판정한다). 월 단위 컬럼은 ``rolling_cutoff`` 가 없어 '최근 N일' 롤링 창을
+    표현할 수 없으므로, 그 사실도 같은 선언에서 파생해 함께 보여준다.
+
+    등록되지 않은 ``time_format`` 은 조용히 빠뜨리지 않는다(규칙 11). 그 소스는 심볼을
+    광고하는 대신 "기간 창을 걸 수 없다"고 명시해, 모델이 다른 컬럼으로 우회하지 않게 한다.
+
+    선언이 **자기 시각 컬럼을 고정한** 소스도 같은 취급이다
+    (:func:`_pins_its_own_time_column`). 그 컬럼에 기간 창을 더 걸면 컴파일은 성공하고 술어만
+    자기모순이 되어 조용히 0명이 된다 — fail-close 가 아니라 왜곡이므로, 걸 수 있다고
+    광고하는 것이 가장 나쁘다.
+    """
+    entries: list[str] = []
+    for source_id, declaration in sorted(sources.items()):
+        if not isinstance(declaration, Mapping):
+            continue
+        time_column = str(declaration.get("time_column") or "")
+        if not time_column:
+            # 시각 컬럼을 선언하지 않은 소스에는 파생될 시각 필드 자체가 없다.
+            continue
+        if _pins_its_own_time_column(declaration, time_column):
+            entries.append(
+                f"- (기간 창 불가) {source_id}: 선언이 {time_column} 을(를) 한 값으로 고정한 "
+                "스냅샷이다 — 기간 창을 걸면 서로 모순된 술어가 되어 결과가 조용히 비어 있다"
+            )
+            continue
+        time_format = str(declaration.get("time_format") or "")
+        grain = event_compiler.TIME_GRAINS.get(time_format)
+        if grain is None:
+            entries.append(
+                f"- (기간 창 불가) {source_id}: 등록되지 않은 시간 저장 포맷 "
+                f"{time_format!r} — 이 소스에는 TimeFilter 를 걸 수 없다"
+            )
+            continue
+        details = [f"grain={grain.unit}"]
+        if grain.rolling_cutoff is None:
+            details.append(f"롤링 창 불가({grain.unit} 칸 경계 기간만 가능)")
+        label = str(declaration.get("label") or source_id)
+        entries.append(
+            f"- {source_id}.{event_ir.TIME_FIELD_SUFFIX}: {label} 발생 시각"
+            f" [{', '.join(details)}]"
+        )
+    if not entries:
+        return []
+    return [
+        "",
+        EVENT_TIME_FIELD_HEADING,
+        "기간 창(TimeFilter)을 걸 수 있는 필드는 소스마다 아래 하나뿐이다. 소스 선언의 "
+        "time_column 에서 파생되므로 [Fields] 목록에는 나오지 않는다.",
+        "grain=day 소스에만 '최근 N일' 같은 롤링 창을 걸 수 있고, grain=month 소스는 달 칸 "
+        "경계에 맞는 기간만 걸 수 있다.",
+        "'(기간 창 불가)' 로 시작하는 줄의 소스에는 어떤 기간 창도 걸 수 없다. 다른 컬럼으로 "
+        "우회하지 말고, 기간이 꼭 필요하면 그 뜻을 표현할 수 없다고 답한다.",
+        *entries,
+    ]
+
+
 def _competing_metric_kind_lines(metrics: Mapping[str, Any]) -> list[str]:
     """같은 표면어를 두 kind 가 나눠 갖는 지표 쌍을 **카탈로그에서 파생**해 안내한다.
 
@@ -988,6 +1081,8 @@ def audience_catalog_guidance(
         '- 순위 회원 조건의 Join.left.name과 Join.on 양쪽 field name은 relation recipe metrics의 source/entity_field를 그대로 재사용한다. "member"/"subject" Source나 member.member_id 같은 새 심볼을 만들지 않는다.',
         '- 내부 상/하위 N명은 Limit.count, 상/하위 N%는 Limit.percent다. 상위는 첫 정렬키 desc, 하위는 asc이며 회원키 asc를 두 번째 키로 둔다. 둘 다 최종 회원 반환 수인 root result_limit과 별개다.',
         '- 기간 집계: Aggregate.relation = Filter(Source, TimeFilter(<source>.occurred_at, event_ir_window))',
+        '- TimeFilter.field 는 언제나 그 소스의 <source>.occurred_at 이다(소스별 목록과 grain은 아래 [Event time fields]). '
+        '문자열로 적재된 시각 컬럼처럼 그 밖의 field 에는 기간 창을 걸 수 없다 — 시간 컬럼이 아니라 컴파일되지 않는다',
         '- 회원별 건수·종류 임계: Comparison(Aggregate(count, distinct, <source>.<field>, relation=Source 또는 Filter), <operator>, Literal(N)). 이 비교가 곧 회원 조건이므로 Exists로 감싸지 않는다 — Exists 안에 Aggregate 임계를 넣으면 같은 판정이 두 번 붙거나 컴파일되지 않는다',
         '- "서로 다른 N개"·"N종"·"상품 종류 수"는 distinct:true(세는 대상은 상품 식별자 field)이고, "라인 수"·"건수"·"총 개수"는 distinct:false다. 둘은 같은 카트에서 값이 다르다',
         '- Aggregate.expression의 field는 Aggregate.relation이 제공하는 소스에 선언된 field여야 한다. 같은 테이블을 쓰는 형제 소스라도 다른 소스의 field를 참조하면 관계 스코프 밖이라 컴파일되지 않는다 — 세려는 field가 [Fields]에 선언된 소스를 relation으로 고른다',
@@ -1022,6 +1117,7 @@ def audience_catalog_guidance(
             + (f" ({surfaces})" if surfaces else "")
             + (f" — {note}" if note else "")
         )
+    lines.extend(_source_time_field_lines(raw.get("sources") or {}))
     lines.extend(["", "[Fields]"])
     for field_id, declaration in sorted((raw.get("fields") or {}).items()):
         if not isinstance(declaration, Mapping):
@@ -1216,6 +1312,9 @@ __all__ = [
     "AudienceCatalogLoadError",
     "DEFAULT_AUDIENCE_CATALOG_PATH",
     "DEFAULT_EXTERNAL_REGION_MAPPING_PATH",
+    # 프롬프트 절 제목은 모듈 밖(안내를 읽는 쪽·테스트)에서 절을 잘라내는 좌표다.
+    # METRIC_RECIPE_* 와 같은 성격이므로 같은 자리에 노출한다.
+    "EVENT_TIME_FIELD_HEADING",
     "METRIC_RECIPE_BUILDERS",
     "METRIC_RECIPE_EVIDENCE_TEXT",
     "METRIC_RECIPE_OPERATOR_PLACEHOLDER",

@@ -264,13 +264,20 @@ def _text_anchor_year(text: str, today: date) -> int | None:
     return _anchor_year(match, today) if match is not None else None
 
 
+# 기간 표현에 **붙여 쓸 수 있는** 앞뒤 표지. 분기 판정(:func:`_is_quarter_duration`)과 단어형
+# 기간의 낱말 경계 판정(:func:`is_standalone_word_duration`)이 같은 표를 본다 — 두 곳이 각자
+# 목록을 들고 있으면 '최근 2분기'와 '최근 일주일'의 같은 '최근'이 경로마다 다르게 읽힌다.
+RELATIVE_LEADING_MARKERS: tuple[str, ...] = ("최근", "지난", "향후", "앞으로")
+DURATION_TRAILING_MARKERS: tuple[str, ...] = ("동안", "간", "연속")
+_LEADING_MARKER_RE = re.compile(rf"(?:{'|'.join(RELATIVE_LEADING_MARKERS)})\s*$")
+_TRAILING_MARKER_RE = re.compile(rf"\s*(?:{'|'.join(DURATION_TRAILING_MARKERS)})")
+
+
 def _is_quarter_duration(text: str, start: int, end: int) -> bool:
     """'최근/지난 2분기', '2분기 연속'의 2를 달력상 제2분기로 오인하지 않는다."""
-    prefix = text[:start]
-    suffix = text[end:]
     return (
-        re.search(r"(?:최근|지난|향후|앞으로)\s*$", prefix) is not None
-        or re.match(r"\s*(?:동안|간|연속)", suffix) is not None
+        _LEADING_MARKER_RE.search(text[:start]) is not None
+        or _TRAILING_MARKER_RE.match(text[end:]) is not None
     )
 
 
@@ -1219,6 +1226,72 @@ _CANONICAL_WORD_DURATION_PATTERN = re.compile(
     "|".join(sorted(map(re.escape, WORD_DURATION_SPECS), key=len, reverse=True))
 )
 
+# ── 단어형 기간의 낱말 경계 ──────────────────────────────────────────────────────
+# 단어형 기간은 낱말 하나인데 스캔은 **공백을 제거한** 좌표계에서 돈다. 그래서 원문에서 서로 다른
+# 낱말의 조각이 이어 붙은 것('모두 주문한' → '두주' = 2주!)이나 더 긴 낱말의 앞부분('일년생',
+# 'VIP에 한해서' → '한해' = 1년!, '세달째')이 같은 표면으로 보인다(전부 실측). 지금까지는 소비자가
+# 문맥으로 걸러 무해했지만, 이 표면이 리터럴 근거가 되면 그대로 새어 나가 없던 기간 조건이 된다.
+#
+# 판정은 원문 좌표에서만 가능하므로(압축 텍스트에는 경계가 남아 있지 않다) 원문을 가진 호출자가
+# 좌표 대응표와 함께 넘겨 준다. 규칙은 두 가지다:
+#   왼쪽 — 앞 글자가 한글이면 안 된다(다른 낱말에 붙어 있다). 단, 이 모듈이 이미 소유한 상대 표지
+#          (:data:`RELATIVE_LEADING_MARKERS`) 바로 뒤는 붙여 써도 그 기간이다('최근일주일').
+#   오른쪽 — 뒷 글자가 한글이면 안 된다. 단, 기간에 직접 붙는 표현이면 허용한다: 이 모듈의 시간
+#          접미(:data:`DURATION_TRAILING_MARKERS`), 시점 표지 '전'과 그 경계 어휘
+#          (:data:`PAST_BOUNDARY_KINDS`), 정규화 어휘가 소유한 비교·범위 표기(이상/이내/넘게 …).
+# 조사('한 달은', '일주일이')는 일부러 허용하지 않는다 — 라이브 코퍼스의 '적어도 한 달은 골드
+# 이상'처럼 조사가 붙은 기간 명사는 창이 아니라 **세는 수**인 사례가 실재한다. 애매하면 만들지
+# 않는다(추측 금지) — 잘못된 기간을 지어내는 쪽이 되묻기보다 나쁘다.
+_HANGUL_SYLLABLE_RE = re.compile(r"[가-힣]")
+_WORD_DURATION_TRAILING_TERMS: tuple[str, ...] = tuple(
+    sorted(
+        {
+            *DURATION_TRAILING_MARKERS,
+            "전",
+            *PAST_BOUNDARY_KINDS,
+            *(
+                term
+                for term in condition_normalizers.operator_aliases()
+                if not term.isascii()
+            ),
+        },
+        key=lambda term: (-len(term), term),
+    )
+)
+_WORD_DURATION_TRAILING_RE = re.compile(
+    "|".join(re.escape(term) for term in _WORD_DURATION_TRAILING_TERMS)
+)
+
+
+def is_word_duration_surface(surface: str) -> bool:
+    """공백을 뺀 표면이 단어형 기간 선언에 있는가(숫자형과 구분하는 단일 판정)."""
+    return surface.replace(" ", "") in WORD_DURATION_SPECS
+
+
+def is_standalone_word_duration(text: str, start: int, end: int) -> bool:
+    """원문 좌표 ``[start, end)`` 의 단어형 기간이 **낱말 하나로 서 있는가**."""
+    before = text[:start]
+    if (
+        before
+        and _HANGUL_SYLLABLE_RE.fullmatch(before[-1]) is not None
+        and _LEADING_MARKER_RE.search(before) is None
+    ):
+        return False
+    after = text[end:]
+    return not (
+        after
+        and _HANGUL_SYLLABLE_RE.fullmatch(after[0]) is not None
+        and _WORD_DURATION_TRAILING_RE.match(after) is None
+    )
+
+
+# '보름 전'도 '15일 전'과 같은 과거 시점이다. 창을 만드는 :data:`RELATIVE_PAST_PATTERN` 은 숫자
+# 그룹을 전제하는 소비자가 있어(``int(match.group("num"))``) 그대로 두고, **종류 판정**만 단어형
+# 까지 넓힌다 — 판정 규칙 자체(:func:`past_expression_kind`)와 경계 어휘는 그대로 재사용한다.
+_WORD_PAST_PATTERN = re.compile(
+    rf"(?:{_CANONICAL_WORD_DURATION_PATTERN.pattern})\s*전\s*(?P<boundary>{_PAST_BOUNDARY_ALT})?"
+)
+
 # 앵커어와 기간 표현 사이 허용 간격(공백 제거 기준). '6개월동안로그인'(동안=2), '1년이내가입'(이내=2)은
 # 붙은 것으로 보고, 프롬프트 반대편의 다른 조건 창은 배제한다.
 DURATION_ANCHOR_GAP = 8
@@ -1284,8 +1357,45 @@ def _classified_duration_candidate(
     return candidate
 
 
-def duration_window_candidates(compact: str) -> list[DurationCandidate]:
+def _duration_past_expressions(text: str) -> list[tuple[tuple[int, int], str]]:
+    """기간 후보의 **종류**를 정하는 '…전' 표현 — 숫자형과 단어형을 같은 규칙으로 읽는다."""
+    found = [(match.span(), kind) for match, kind in _past_expressions(text)]
+    found += [
+        (match.span(), past_expression_kind(match))
+        for match in _WORD_PAST_PATTERN.finditer(text or "")
+    ]
+    return found
+
+
+def _passes_word_boundary(
+    candidate: DurationCandidate,
+    compact: str,
+    source: str | None,
+    source_offsets: Sequence[int] | None,
+) -> bool:
+    """단어형 후보만 원문 낱말 경계로 거른다(숫자형·원문 미제공 호출은 그대로 통과)."""
+    if source is None or source_offsets is None:
+        return True
+    if not is_word_duration_surface(compact[candidate.start : candidate.end]):
+        return True
+    if not 0 <= candidate.start < candidate.end <= len(source_offsets):
+        return True
+    return is_standalone_word_duration(
+        source, source_offsets[candidate.start], source_offsets[candidate.end - 1] + 1
+    )
+
+
+def duration_window_candidates(
+    compact: str,
+    *,
+    source: str | None = None,
+    source_offsets: Sequence[int] | None = None,
+) -> list[DurationCandidate]:
     """공백 제거 텍스트의 기간 표현 후보(등장 순) — 각 후보에 의미 종류와 억제 표시가 붙어 나온다.
+
+    ``source``/``source_offsets``(압축 좌표 → 원문 좌표 대응표)를 함께 주면 단어형 후보에
+    낱말 경계 가드(:func:`is_standalone_word_duration`)를 적용한다. 원문을 모르는 호출자는
+    경계를 판정할 근거가 없으므로 예전 그대로 동작한다.
 
     과거 시점('7년 전') 안의 기간 표면형('7년')은 롤링 기간이 아니므로 ``suppressed_by="past_point"``
     로 표시된다. 목록에서 지우지 않는 이유는 진단이다 — 지우면 오작동해도 흔적이 없다. 표시를 실제로
@@ -1295,10 +1405,11 @@ def duration_window_candidates(compact: str) -> list[DurationCandidate]:
     전제: 입력은 공백 제거 텍스트다(:data:`NUMERIC_DURATION_PATTERN` 이 공백을 건너뛰지 않는다).
     시점 구간도 같은 문자열에서 계산하므로 좌표계가 섞일 자리가 없다.
     """
-    past_expressions = [(match.span(), kind) for match, kind in _past_expressions(compact)]
+    past_expressions = _duration_past_expressions(compact)
     return [
         _classified_duration_candidate(candidate, past_expressions)
         for candidate in _raw_duration_window_candidates(compact)
+        if _passes_word_boundary(candidate, compact, source, source_offsets)
     ]
 
 
@@ -1353,7 +1464,16 @@ def parse_duration_window(
     전까지' 경계든) 이 슬롯의 창으로 보지 않는다. 두 정책 모두 후보의 **의미 종류**로 판정하며 '전'
     문자 검사로 되돌아가지 않는다."""
     compact = query.replace(" ", "").casefold()
-    candidates = list(duration_window_candidates(compact))
+    # 낱말 경계는 원문에서만 보인다 — 압축 좌표 대응표를 함께 넘겨 단어형 후보를 거른다.
+    # casefold 가 길이를 바꾸는 문자가 섞이면(비한글) 대응이 깨지므로 그때는 가드를 끈다.
+    offsets = tuple(index for index, char in enumerate(query) if char != " ")
+    candidates = list(
+        duration_window_candidates(
+            compact,
+            source=query,
+            source_offsets=offsets if len(offsets) == len(compact) else None,
+        )
+    )
     if past_point == PAST_POINT_SUPPRESS:
         candidates = [c for c in candidates if c.suppressed_by is None]
     if exclude_past:

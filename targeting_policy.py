@@ -152,31 +152,97 @@ REASON_PERIOD_REPAIR_UNSUPPORTED = "stated_period_repair_unsupported"
 REASON_PERIOD_ABSENT = "bare_recency_without_duration"
 
 
-def _stated_period_instruction(
+def split_period_issues(
+    query: str,
+    issues: Sequence[Mapping[str, Any]],
+    literal_bindings: Sequence[Mapping[str, Any]] | None = None,
+) -> tuple[
+    list[tuple[Mapping[str, Any], temporal_clause.TemporalClause]],
+    list[dict[str, Any]],
+]:
+    """신고된 기간 결핍을 (a) 거짓 결핍과 (b) 진짜 결핍으로 가른다.
+
+    판정자는 :func:`temporal_clause.stated_period_for_issue` 하나이고, **그 판정을 목록에
+    적용하는 자리도 하나**여야 한다. 교정 단계와 기본값 단계가 각자 같은 루프를 들고 있으면
+    같은 문장을 서로 다르게 갈라 서로 다른 지시문을 만들 수 있고, 그 어긋남은 모델 응답이
+    섞인 뒤에야 드러난다.
+
+    ``stated`` 는 :func:`stated_period_instruction` 이 요구하는 (issue, clause) 쌍이고,
+    ``unstated`` 는 뒤 단계가 자기 사실(기본 창 지시·영수증 근거)로 쓰도록 복사본으로 준다.
+    """
+
+    # 바인딩은 결핍 **하나마다** 다시 읽는다. 제너레이터가 들어오면 두 번째 결핍부터 빈 목록을
+    # 보게 되고, 그러면 원문이 말한 기간이 결핍 순서에 따라 조용히 사라진다 — 한 번만 소비해
+    # 고정한다(:func:`canonical_audience_claims.missing_field_cause_records` 와 같은 계약).
+    rows = list(literal_bindings or ())
+    stated: list[tuple[Mapping[str, Any], temporal_clause.TemporalClause]] = []
+    unstated: list[dict[str, Any]] = []
+    for issue in issues:
+        clause = temporal_clause.stated_period_for_issue(query, issue, rows)
+        if clause is None:
+            unstated.append(dict(issue))
+        else:
+            stated.append((issue, clause))
+    return stated, unstated
+
+
+def stated_period_instruction(
     clauses: Sequence[tuple[Mapping[str, Any], temporal_clause.TemporalClause]],
 ) -> str:
     """구조화기에 넘길 **애플리케이션 소유** 교정 지시문.
 
     모델에게 새 의미를 주는 것이 아니라, **원문이 이미 말한 값**을 어느 구간이 소유하는지
     알려 준다. 값의 출처는 원문 리터럴이므로 이 경로에는 기본값 표식이 붙지 않는다.
+
+    이 문구의 소유자는 이 모듈 하나다. 기본 기간 정책(:mod:`default_period_policy`)도 자기
+    라운드에서 같은 거짓 결핍을 만나면 이 함수를 부른다 — 두 벌이 되면 같은 상황에서 서로
+    다른 말을 하는 지시문이 생긴다.
+
+    구간은 표면어와 **좌표**로 함께 지목한다. 한 문장에 같은 표지가 둘 있을 때(가장 흔한
+    '최근') 표면어만 인용하면 이 교정문과 기본 창 지시문이 같은 문자열을 놓고 서로 다른 창을
+    요구하게 되고, 모델에게는 어느 쪽이 어느 쪽인지 가릴 재료가 없다.
+
+    창은 절이 스스로 계산한 wire 모양(:attr:`TemporalClause.wire_window`)을 그대로 싣는다.
+    여기서 dict 를 손으로 조립하면 두 가지가 어긋난다 — 단위 표기(리터럴 추출기의 ``days`` 는
+    툴 스키마 enum 에 없다. 실측에서 모델이 그 값을 그대로 복사해 교정 라운드가 실패했다)와
+    창의 종류(달력 구간을 rolling 으로 적으면 사용자의 달력 창이 길이로 바뀐다).
+
+    창을 wire 로 표현할 수 없는 절(예: 시간 단위)은 **줄을 만들지 않는다**. 표현 못 하는 값을
+    적느니 이 라운드가 그 구간을 언급하지 않는 편이 낫다 — 지어낸 창을 요구하지 않는다.
     """
 
     lines = [
         "[Application-owned Stated Period Correction]",
         (
-            "A deterministic scan of original_query found an explicit duration bound to the "
+            "A deterministic scan of original_query found an explicit period bound to the "
             "recency marker you reported as missing. The period is stated, not missing."
         ),
     ]
     for issue, clause in clauses:
+        window = clause.wire_window
+        if window is None:
+            continue
         evidence = issue.get("evidence") if isinstance(issue, Mapping) else None
         marker = ""
         if isinstance(evidence, Mapping) and isinstance(evidence.get("text"), str):
-            marker = evidence["text"]
-        window = {"type": "rolling", "value": clause.amount, "unit": clause.unit}
-        spans = ", ".join(f"'{span.text}'" for span in clause.source_spans)
+            marker = f"'{evidence['text']}' [{evidence.get('start')}, {evidence.get('end')})"
+        # 수량화의 근거는 수량 구간이다 — 표지 자신을 근거로 다시 나열하지 않는다.
+        spans = ", ".join(
+            f"'{span.text}' [{span.start}, {span.end})"
+            for span in clause.source_spans
+            if span.role != "marker"
+        )
+        if window.get("type") == "interval":
+            # 절대 구간의 계약은 구조화 안내에 이미 있다 — literal_bindings 의
+            # normalized.event_ir_window 를 그대로 복사한다. 같은 문장을 여기서 반복한다.
+            lines.append(
+                f"- The marker {marker} names the calendar period {spans}. Copy "
+                f"{json.dumps(window)} verbatim (this is that binding's "
+                f"normalized.event_ir_window) into the TimeFilter that owns that clause."
+            )
+            continue
         lines.append(
-            f"- The marker '{marker}' is quantified by {spans}. Put {json.dumps(window)} in the "
+            f"- The marker {marker} is quantified by {spans}. Put {json.dumps(window)} in the "
             f"TimeFilter that owns that clause."
         )
     lines.append(
@@ -187,19 +253,49 @@ def _stated_period_instruction(
     return "\n".join(lines)
 
 
-def _rolling_windows(payload: Any) -> set[tuple[int, str]]:
-    """표현 트리가 실제로 들고 있는 롤링 창들(값·단위)."""
+def window_key(window: Any) -> tuple[Any, ...] | None:
+    """wire 창 하나의 **비교 키**. 모양을 모르면 ``None``(추측하지 않는다).
+
+    같은 뜻을 두 표기로 적을 수 있는 자리가 단위 하나뿐이므로(``days``/``day``) 거기만 접는다.
+    rolling 과 interval 을 한 키 공간에 두는 이유는, 채택 검사가 "원문이 말한 창이 결과에
+    남아 있는가"를 **창의 종류와 무관하게** 물어야 하기 때문이다 — 종류마다 검사를 따로 두면
+    새 종류가 늘 때마다 검사되지 않는 창이 하나씩 생긴다.
+    """
     import event_ir
 
-    found: set[tuple[int, str]] = set()
+    if not isinstance(window, Mapping):
+        return None
+    kind = window.get("type")
+    if kind == "rolling":
+        unit = event_ir.canonical_unit(window.get("unit"))
+        raw = window.get("value")
+        if unit in event_ir.WINDOW_UNITS and isinstance(raw, int) and not isinstance(raw, bool):
+            return ("rolling", raw, unit)
+        return None
+    if kind == "interval":
+        start, end = window.get("start"), window.get("end_exclusive")
+        if isinstance(start, str) and start and isinstance(end, str) and end:
+            return ("interval", start, end)
+        return None
+    return None
+
+
+def window_label(key: tuple[Any, ...]) -> str:
+    """거부 사유에 실을 짧은 창 이름(``30day`` · ``2026-07-01~2026-08-01``)."""
+    if key and key[0] == "interval":
+        return f"{key[1]}~{key[2]}"
+    return f"{key[1]}{key[2]}"
+
+
+def window_keys(payload: Any) -> set[tuple[Any, ...]]:
+    """이 payload 가 실제로 들고 있는 창들의 비교 키."""
+    found: set[tuple[Any, ...]] = set()
 
     def visit(value: Any) -> None:
         if isinstance(value, Mapping):
-            if value.get("type") == "rolling":
-                unit = event_ir.canonical_unit(value.get("unit"))
-                raw = value.get("value")
-                if unit is not None and isinstance(raw, int) and not isinstance(raw, bool):
-                    found.add((raw, unit))
+            key = window_key(value)
+            if key is not None:
+                found.add(key)
                 return
             for child in value.values():
                 visit(child)
@@ -241,12 +337,7 @@ def resolve_stated_period(
     from query_structurer.semantic_ir import extract_literal_bindings
 
     literal_bindings = extract_literal_bindings(query, current_date=current_date)
-    refuted = [
-        (issue, clause)
-        for issue in issues
-        if (clause := temporal_clause.stated_period_for_issue(query, issue, literal_bindings))
-        is not None
-    ]
+    refuted, _unstated = split_period_issues(query, issues, literal_bindings)
     if not refuted:
         # 신고가 유효하다. 기본값/되묻기 판정은 default_binding 단계가 이어받는다.
         record_decision(
@@ -261,14 +352,14 @@ def resolve_stated_period(
         )
         return plan
 
-    # 단위 표기를 IR 어휘로 접는다. 리터럴 추출기는 복수형('days')을, IR 은 단수형('day')을 쓴다 —
-    # 접지 않으면 정확히 옳은 재구조화가 ``candidate_dropped_stated_period`` 로 거부된다(실측).
-    import event_ir
-
+    # 절이 계산한 wire 창을 그대로 비교 키로 쓴다. 단위 표기(리터럴 추출기의 복수형 'days' ↔
+    # IR 단수형 'day')를 접는 자리는 그 계산 안에 하나뿐이다 — 접지 않으면 정확히 옳은
+    # 재구조화가 ``candidate_dropped_stated_period`` 로 거부된다(실측). 지시문이 제시하는 창과
+    # 채택 검사가 요구하는 창이 같은 함수에서 나오므로 둘이 어긋날 자리가 없다.
     stated = {
-        (clause.amount, event_ir.canonical_unit(clause.unit))
+        key
         for _issue, clause in refuted
-        if event_ir.canonical_unit(clause.unit) is not None
+        if (key := window_key(clause.wire_window)) is not None
     }
     if not stated:
         record_decision(
@@ -278,23 +369,35 @@ def resolve_stated_period(
                 stage="ambiguity",
                 decision=DECISION_ALLOW,
                 reason_code=REASON_PERIOD_ABSENT,
-                input_facts=("period_stated=true", "unit_not_expressible_in_ir"),
+                # 절은 나왔지만 그 창을 wire 로 적을 수 없다(예: 시간 단위, 알 수 없는 창
+                # 타입). 지어낸 창을 요구하느니 결핍을 그대로 둔다.
+                input_facts=("period_stated=true", "window_not_expressible_in_ir"),
             ),
         )
         return plan
-    candidate = restructure(_stated_period_instruction(refuted))
+    candidate = restructure(stated_period_instruction(refuted))
     rejected = _admit_stated_period(
         candidate,
         stated=stated,
         requirement_key=requirement_key,
         missing_period_issues=missing_period_issues,
     )
+    # 롤링 창의 로그·영수증 모양은 그대로 둔다(읽는 쪽이 이미 있다). 달력 구간은 종류가 다르므로
+    # 같은 칸에 우겨넣지 않고 자기 칸에 싣는다 — 섞으면 '30 day' 와 '2026-07-01~' 이 한 목록에서
+    # 같은 것처럼 보인다.
+    rolling_stated = sorted((key[1], key[2]) for key in stated if key[0] == "rolling")
+    interval_stated = sorted(key for key in stated if key[0] == "interval")
     log(
         "stated_period_correction",
         {
             "applied": rejected is None,
             "reason": rejected,
-            "stated": sorted((f"{value}", unit) for value, unit in stated),
+            "stated": [(f"{value}", unit) for value, unit in rolling_stated],
+            **(
+                {"stated_intervals": [window_label(key) for key in interval_stated]}
+                if interval_stated
+                else {}
+            ),
         },
     )
     if rejected == "candidate_declared_unsupported":
@@ -332,10 +435,20 @@ def resolve_stated_period(
             reason_code=REASON_PERIOD_STATED,
             input_facts=("period_stated=true", "repair=accepted"),
             detail={
-                "windows": sorted(
-                    [{"value": value, "unit": unit} for value, unit in stated],
-                    key=lambda item: (item["unit"], item["value"]),
-                )
+                "windows": [
+                    {"value": value, "unit": unit}
+                    for value, unit in sorted(rolling_stated, key=lambda item: item[::-1])
+                ],
+                **(
+                    {
+                        "intervals": [
+                            {"start": key[1], "end_exclusive": key[2]}
+                            for key in interval_stated
+                        ]
+                    }
+                    if interval_stated
+                    else {}
+                ),
             },
         ),
     )
@@ -359,11 +472,17 @@ def declares_unsupported(candidate: Any) -> bool:
 def _admit_stated_period(
     candidate: Any,
     *,
-    stated: set[tuple[int | None, str | None]],
+    stated: set[tuple[Any, ...]],
     requirement_key: str,
     missing_period_issues: Callable[[Any], list[dict[str, Any]]],
 ) -> str | None:
-    """채택 가능하면 ``None``, 아니면 거부 사유."""
+    """채택 가능하면 ``None``, 아니면 거부 사유.
+
+    ``stated`` 는 **이 라운드의 지시문이 요구한 창들**이다(거짓 결핍으로 판정된 절에서만
+    나온다). 결과가 그 창을 하나라도 잃었으면 채택하지 않는다 — 그 검사가 없으면 모델이 다른
+    창을 지어내도 통과한다. 달력 구간도 같은 검사를 받는다: 지시문이 ``event_ir_window`` 를
+    그대로 복사하라고 요구했으므로, 다른 모양으로 바꿔 온 결과는 요구를 지키지 않은 것이다.
+    """
     if not isinstance(candidate, Mapping):
         return "candidate_not_a_plan"
     requirement = candidate.get(requirement_key)
@@ -375,10 +494,8 @@ def _admit_stated_period(
         return "candidate_has_no_expression"
     if missing_period_issues(candidate):
         return "candidate_still_missing_period"
-    windows = _rolling_windows(requirement.get("expression"))
-    missing = sorted(
-        f"{value}{unit}" for value, unit in stated if (value, unit) not in windows
-    )
+    windows = window_keys(requirement.get("expression"))
+    missing = sorted(window_label(key) for key in stated if key not in windows)
     if missing:
         return f"candidate_dropped_stated_period:{missing}"
     return None
@@ -449,4 +566,9 @@ __all__ = [
     "digest",
     "record_decision",
     "resolve_stated_period",
+    "split_period_issues",
+    "stated_period_instruction",
+    "window_key",
+    "window_keys",
+    "window_label",
 ]
