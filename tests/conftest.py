@@ -131,3 +131,33 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
             "known_failures 대장에 수집되지 않는 nodeid 가 있다(테스트 이름 변경/삭제 또는 이스케이프 오타):\n  "
             + "\n  ".join(stale)
         )
+
+
+@pytest.fixture
+def member_slot_gate_lifted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """폐쇄된 회원 슬롯 빌더를 **이 테스트 안에서만** 연다.
+
+    2026-08-07 legacy 오디언스 실행 레인이 닫혔다. 채워진 ``target_user``/``exclude`` 를 가진
+    플랜은 `audience_admission` 이 "오디언스를 말했다"로 판정하고, 그 순간 실행자는
+    ``build_event_expression_sql_candidate`` 하나로 좁혀지며 `plan_validation` 이
+    ``canonical_legacy_audience_conflict`` 를 낸다. 회원 슬롯 빌더 **코드는 남아 있지만
+    프로덕션에서 도달하지 않는다**.
+
+    그래서 그 빌더들의 컴파일 계약(어떤 슬롯이 어떤 SQL 바이트가 되는가)을 재던 단위 테스트는
+    폐쇄 후 전부 ``None`` 을 받는다. 이 픽스처는 그 테스트들이 **무엇을 재는지**를 바꾸지 않고
+    유지하기 위한 것이다 — 단언을 지우면 축을 다시 열 때 되돌아갈 근거가 사라진다.
+
+    **재는 것이 달라진다는 점은 숨기지 않는다.** 이 픽스처를 쓰는 테스트는 "제품이 이 SQL 을
+    낸다"가 아니라 "게이트를 걷으면 빌더가 이 SQL 을 낸다"를 잰다. 게이트가 실제로 걸린다는 것은
+    ``tests/test_event_ir_builder_fail_close.py`` 와
+    ``tests/test_canonical_legacy_audience_conflict.py`` 가 따로 고정한다 — 그 둘이 없으면 이
+    픽스처는 폐쇄를 통째로 무효화하는 뒷문이 된다.
+
+    두 술어를 함께 끄는 이유: `declares_audience` 만 끄면 `plan_validation` 이 여전히
+    `execution_conflicts` 로 막아 빌더가 검증 게이트에서 죽는다(그러면 이 픽스처가 아무것도
+    열지 못한 채 통과한 것처럼 보인다).
+    """
+    import audience_admission
+
+    monkeypatch.setattr(audience_admission, "declares_audience", lambda _plan: False)
+    monkeypatch.setattr(audience_admission, "execution_conflicts", lambda _plan: ())

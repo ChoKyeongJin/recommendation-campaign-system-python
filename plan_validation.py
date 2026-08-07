@@ -701,7 +701,11 @@ def _collect_canonical_ownership_issues(
     # status 를 `_status_for_validation_code` 로 파생시키지 않는 것은 계약이다 — 그 함수는
     # 코드에 "conflict" 가 들어 있으면 SEMANTIC_CONFLICT 로 뒤집고, 그러면 이 실패의
     # failure_reason 과 UI 단계가 함께 바뀐다(rag/failure_stage 의 사유→단계 표).
-    canonical_required = audience_authority.requires_event_ir(plan)
+    # 2026-08-07 legacy 실행 레인 폐쇄: `requires_event_ir` 은 이제 모든 플랜에서 참이다.
+    # 그래서 표현 부재 검사의 범위를 권위가 아니라 **오디언스를 말했는가**로 잡는다 —
+    # 권위로 잡으면 회원 조건이 0개인 집계·분석 질의까지 "표현이 없다"로 죽는다
+    # (audience_admission.declares_audience 가 그 범위를 사유와 함께 소유한다).
+    canonical_required = audience_admission.declares_audience(plan)
     for conflict in audience_admission.execution_conflicts(plan):
         issues.append(_issue(
             INTERNAL_INVALID,

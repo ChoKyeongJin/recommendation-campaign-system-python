@@ -33,7 +33,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 import audience_authority  # noqa: E402
 import plan_schema  # noqa: E402
-from query_pipeline.compatibility import legacy_event_expression  # noqa: E402
+from query_pipeline.plan_payload import event_expression_payload  # noqa: E402
 from query_structurer.campaign_plan_v4 import (  # noqa: E402
     CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA,
 )
@@ -162,24 +162,23 @@ def test_the_llm_schema_has_no_semantic_plan_surface() -> None:
     assert "semantic_plan" not in set(required)
 
 
-# ── ③ canonical 표식 두 사본이 일치한다 ───────────────────────────────────────────
+# ── ③ canonical 표식은 더 이상 라우팅을 정하지 않는다 ─────────────────────────────
 
 
-def test_canonical_source_markers_stay_identical_in_both_copies() -> None:
-    """한쪽만 정리하면 저장 페이로드의 라우팅이 조용히 뒤집힌다(canonical → legacy)."""
-    assert (
-        audience_authority.CANONICAL_EVENT_EXPRESSION_SOURCES
-        == legacy_event_expression.CANONICAL_SOURCES
-    ), (
-        "canonical 표식 집합 두 사본이 갈라졌다: "
-        f"{sorted(audience_authority.CANONICAL_EVENT_EXPRESSION_SOURCES)} vs "
-        f"{sorted(legacy_event_expression.CANONICAL_SOURCES)}"
+def test_the_source_marker_no_longer_decides_the_execution_lane() -> None:
+    """표식은 출처 라벨로만 남는다 — 경로를 가르던 사본이 사라졌다.
+
+    폐쇄 전에는 이 표식 집합이 `audience_authority` 와 페이로드 어댑터 **양쪽**에 있었고,
+    한쪽만 정리하면 그 표식을 가진 저장분의 라우팅이 canonical → legacy 로 조용히 뒤집혔다.
+    legacy 레인이 닫힌 지금 라우팅 갈래 자체가 없으므로 `audience_authority` 쪽 사본을
+    지웠다. 다시 만들면 두 번째 판정자가 부활한다.
+    """
+    assert not hasattr(audience_authority, "CANONICAL_EVENT_EXPRESSION_SOURCES"), (
+        "라우팅을 정하던 표식 사본이 되살아났다 — 권위 판정은 audience_authority 하나다."
     )
-    # 생산자는 폐기됐지만 값은 남는다 — 저장된 페이로드 호환이 이유다.
-    assert "semantic_plan" in audience_authority.CANONICAL_EVENT_EXPRESSION_SOURCES, (
-        "표식 값을 빼면 그 표식을 가진 **저장분**이 legacy 로 라우팅된다. "
-        "빼려면 저장 페이로드의 source 분포를 먼저 실측하라."
-    )
+    # 어댑터 쪽 사본은 출처 라벨(`EventExpressionPayload.is_canonical`)로 계속 쓰인다.
+    assert "semantic_plan" in event_expression_payload.CANONICAL_SOURCES
+    assert "audience_requirement" in event_expression_payload.CANONICAL_SOURCES
 
 
 # ── ④ 폐기된 플랜 키가 없다 ───────────────────────────────────────────────────────

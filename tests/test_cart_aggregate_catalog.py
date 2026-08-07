@@ -77,7 +77,9 @@ def test_shipped_catalog_derives_every_cart_aggregate_expression() -> None:
         ),
     ],
 )
-def test_catalog_derived_metric_preserves_sql_bytes(metric: str, expected_sql: str) -> None:
+def test_catalog_derived_metric_preserves_sql_bytes(
+    metric: str, expected_sql: str, member_slot_gate_lifted: None
+) -> None:
     candidate = graph_rag.build_cart_aggregate_targets_sql_candidate(
         {
             "target_user": {

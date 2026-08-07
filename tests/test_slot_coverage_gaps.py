@@ -30,7 +30,9 @@ import targeting_ir  # noqa: E402
 # ── P5: cart_aggregate 다중 조건 ─────────────────────────────────────────────────────────
 
 
-def test_cart_aggregate_list_coerces_and_compiles_both_conditions() -> None:
+def test_cart_aggregate_list_coerces_and_compiles_both_conditions(
+    member_slot_gate_lifted: None,
+) -> None:
     allowed = graph_rag._llm_slot_allowed()["cart_aggregate_metrics"]
     coerced = targeting_ir.SLOT_SHAPES["cart_aggregate"].coerce(
         [
@@ -73,7 +75,9 @@ def test_cart_aggregate_list_extracts_one_ir_node_per_condition() -> None:
 # ── P7: campaign_buy_amount 집계함수(캠페인당 평균) ──────────────────────────────────────
 
 
-def test_campaign_buy_amount_avg_compiles_per_campaign_average() -> None:
+def test_campaign_buy_amount_avg_compiles_per_campaign_average(
+    member_slot_gate_lifted: None,
+) -> None:
     coerced = targeting_ir.SLOT_SHAPES["campaign_buy_amount"].coerce(
         {"operator": "이상", "amount": 100000, "agg": "avg"}
     )
@@ -89,7 +93,9 @@ def test_campaign_buy_amount_avg_compiles_per_campaign_average() -> None:
     assert re.search(r"HAVING .* >= 100000(?:\s|$)", candidate["sql"])
 
 
-def test_campaign_buy_amount_fraction_keeps_exact_wire_and_sql_text() -> None:
+def test_campaign_buy_amount_fraction_keeps_exact_wire_and_sql_text(
+    member_slot_gate_lifted: None,
+) -> None:
     exact = "12345.670000000000000000000001"
     shape = targeting_ir.SLOT_SHAPES["campaign_buy_amount"]
     coerced = shape.coerce(
@@ -116,7 +122,9 @@ def test_campaign_buy_amount_fraction_keeps_exact_wire_and_sql_text() -> None:
     assert match.group(1) == exact
 
 
-def test_campaign_buy_amount_without_agg_stays_config_sum() -> None:
+def test_campaign_buy_amount_without_agg_stays_config_sum(
+    member_slot_gate_lifted: None,
+) -> None:
     candidate = graph_rag.build_campaign_response_frequency_targets_sql_candidate(
         {"target_user": {"campaign_buy_amount": {"operator": ">=", "amount": 100000}}}
     )

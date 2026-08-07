@@ -11,7 +11,8 @@
 **소유권 경계**: 읽을 수 없는 저장 표현과 표현 부재는 빌더가 아니라 plan_validation 이 소유한다
 (각각 ``event_expression_schema_invalid`` / ``canonical_event_expression_missing``). 빌더가 같은
 사실을 한 번 더 기록하면 한 실패에 소유자가 둘이 된다 —
-``tests/test_query_pipeline_legacy_adapter.py`` 의 "빌더까지 내려가지 않는다"가 그 계약이고,
+``tests/test_query_pipeline_legacy_adapter.py`` 의 "빌더까지 내려가지 않는다"가 그 계약이었고
+(그 파일명은 부재한다 — 2026-08-07 ``tests/test_event_expression_payload_adapter.py`` 로 개명),
 아래 첫 테스트가 좌표 쪽에서 같은 경계를 고정한다.
 """
 

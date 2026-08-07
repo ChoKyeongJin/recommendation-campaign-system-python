@@ -21,9 +21,9 @@ ALLOWED: dict[str, frozenset[str]] = {
     "requirement": frozenset({"base", "event_query"}),
     "planning": frozenset({"base", "event_query"}),
     "compiler": frozenset({"base", "event_query", "planning"}),
-    # 조립 지점과 호환 어댑터는 아래 네 계층을 전부 안다(그것이 존재 이유다).
+    # 조립 지점과 페이로드 어댑터는 아래 네 계층을 전부 안다(그것이 존재 이유다).
     "pipeline": frozenset({"base", "event_query", "requirement", "planning", "compiler"}),
-    "compatibility": frozenset(
+    "plan_payload": frozenset(
         {"base", "event_query", "requirement", "planning", "compiler"}
     ),
 }

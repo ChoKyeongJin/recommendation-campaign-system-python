@@ -162,11 +162,15 @@ def test_coupon_threshold_without_a_compilable_predicate_is_not_required() -> No
         assert not _conditions_for(plan, "target_user.coupon_usage_thresholds")
 
 
-def test_single_slot_requests_still_ship_sql_end_to_end() -> None:
-    """가장 중요한 회귀 방어: 슬롯 하나짜리 평범한 요청이 **여전히 SQL 을 낸다**.
+def test_single_slot_requests_still_ship_sql_end_to_end(member_slot_gate_lifted: None) -> None:
+    """회귀 방어: 슬롯 하나짜리 요청이 **게이트를 걷으면 여전히 SQL 을 낸다**.
 
     필수조건을 새로 요구하는 변경은 성격상 오탐 위험이 있다 — 지금 성공하던 요청을 실패로
     뒤집을 수 있다. 위 단위 테스트들은 커버리지 계산만 재므로 그 뒤집힘을 못 본다.
+
+    2026-08-07 legacy 레인 폐쇄 이후 이 테스트가 재는 것은 "제품이 SQL 을 낸다"가 아니라
+    "회원 슬롯 컴파일이 온전하다"이다(픽스처 docstring 참조). 폐쇄된 상태에서 같은 플랜이
+    실제로 막힌다는 것은 `tests/test_canonical_legacy_audience_conflict.py` 가 고정한다.
     """
     # 실행 가능한 플랜 골격을 채운다 — intent 가 없으면 어떤 슬롯이든(대조군 gender 포함)
     # no_sql_candidates 로 끝나므로, 골격 없이 재면 이 테스트는 항상 red 인 채 아무것도 못 잰다.

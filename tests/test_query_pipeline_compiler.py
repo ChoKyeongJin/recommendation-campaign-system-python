@@ -434,7 +434,7 @@ def test_audience_predicate_reports_the_failing_stage() -> None:
             {"expression": {"type": "unknown_node"}},
             compile_context_factory=graph_rag._event_compile_context,
         )
-    assert excinfo.value.stage == "legacy_event_expression_adapter"
+    assert excinfo.value.stage == "event_expression_payload_adapter"
 
 
 def test_schema_bindings_are_derived_from_the_resolved_catalog() -> None:
@@ -500,7 +500,7 @@ def test_audience_path_declares_its_bindings() -> None:
         "relation": {"type": "source", "name": "not_a_declared_event"},
     }
     plan = AudienceLogicalPlanner().create_plan(
-        query_pipeline.audience_spec_from_legacy_payload(
+        query_pipeline.audience_spec_from_plan_payload(
             {"expression": unknown, "source": "audience_requirement", "receipts": []}
         )
     )

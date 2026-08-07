@@ -330,14 +330,11 @@ def dialect_for_connection(connection: str | None, default: str = "ansi") -> Sql
     return get_dialect(CONNECTION_DIALECTS.get(connection or "", default))
 
 
-def all_clock_functions() -> tuple[str, ...]:
-    """등록된 **모든** 방언의 실행 시점 시계 어휘.
-
-    한 방언의 어휘만으로 SQL 을 훑으면 다른 방언이 렌더한 시계를 '없다'고 세게 된다 — 그 SQL 은
-    실행하면 문법 오류로 죽지만, 그 전에 "고정할 시계가 없다 → 고정 없이 대조해도 된다"는 잘못된
-    판정을 통과한다. 잔여 검사는 아는 어휘 전부로 한다.
-    """
-    return tuple(sorted({token for dialect in _DIALECTS.values() for token in dialect.clock_functions()}))
+# ``all_clock_functions()``(등록된 모든 방언의 실행 시점 시계 어휘 합집합)는 2026-08-07
+# 삭제됐다. 유일한 소비자가 legacy shadow 대조기의 잔여 시계 검사였다 — 한 방언 어휘만으로
+# 훑으면 다른 방언이 렌더한 시계를 '없다'고 세어 "고정할 시계가 없다"는 잘못된 판정을 통과했기
+# 때문이다. 그 대조기가 사라지면서 호출자가 남지 않았다. 방언별 어휘는
+# ``SqlDialect.clock_functions()`` 로 그대로 있다.
 
 
 # ── SQL 리터럴 렌더(방언 무관) ────────────────────────────────────────────────────────

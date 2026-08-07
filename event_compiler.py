@@ -84,11 +84,10 @@ class SqlCompileError(Exception):
         self.reason = reason
 
 
-# 컴파일 규칙의 버전. **의미가 같아도 SQL 이 달라지는 변경**(경계 렌더·조인 형태·NULL 처리)이 있으면
-# 올린다. 이행 계층의 binding fingerprint 가 이 값을 포함하므로, 올리면 검증된 자산이 자동으로
-# '바인딩 변경'으로 표시되고 cut-over 전에 재검증을 요구한다.
-# 1.2.0: 회원 상관 스칼라 집계를 집합형 semi-join 으로 낮춘다(의미 동일, SQL 모양 변경).
-COMPILER_VERSION = "1.2.0"
+# ``COMPILER_VERSION``("1.2.0")은 2026-08-07 삭제됐다. 유일한 소비자가 이행 계층의 binding
+# fingerprint 였고 — 값을 올리면 검증된 자산이 '바인딩 변경'으로 표시돼 cut-over 전 재검증을
+# 요구했다 — legacy 레인 폐쇄로 그 계층(shadow/cutover/fingerprint)이 통째로 사라졌다.
+# 컴파일 규칙이 SQL 모양을 바꿔도 지금은 그것을 읽는 자산 대장이 없다.
 
 CAPABILITY_SUPPORTED = "supported"
 CAPABILITY_UNSUPPORTED = "unsupported"
@@ -1442,11 +1441,12 @@ def _record_optimization(
     source: str | None,
     reason: str | None = None,
     node: event_ir.Condition | None = None,
+    optimization: str = AGGREGATE_MEMBERSHIP_OPTIMIZATION,
 ) -> None:
     if context.optimization_receipts is None:
         return
     receipt: dict[str, Any] = {
-        "optimization": AGGREGATE_MEMBERSHIP_OPTIMIZATION,
+        "optimization": optimization,
         "status": status,
     }
     if source is not None:

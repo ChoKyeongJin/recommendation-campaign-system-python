@@ -39,6 +39,10 @@ import plan_schema
 # 사유코드. `plan_validation` 이 issue 로 옮겨 실을 때 이름을 다시 적지 않도록 여기서 소유한다.
 LEGACY_AUDIENCE_CONFLICT_CODE = "canonical_legacy_audience_conflict"
 
+# canonical 오디언스 계약 키. `plan_schema` 는 이 키를 CONDITION 으로 분류하지만 오디언스
+# **컨테이너**는 아니라서 `AUDIENCE_CONTAINERS` 에 없다 — 여기서 이름으로 읽는다.
+CANONICAL_AUDIENCE_CONTRACT_KEY = "audience_requirement"
+
 
 @dataclass(frozen=True, slots=True)
 class ExecutionConflict:
@@ -96,6 +100,29 @@ def legacy_audience_paths(plan: Any) -> tuple[str, ...]:
     return tuple(paths)
 
 
+def declares_audience(plan: Any) -> bool:
+    """이 플랜이 **오디언스를 말하는가** — 어떤 언어로 말했든.
+
+    legacy 레인 폐쇄(2026-08-07)가 만든 술어다. 폐쇄 전에는 "Event IR 표현이 있어야 한다"의
+    범위를 canonical 계약(``audience_requirement``)의 존재가 정했고, 계약이 없는 플랜은 legacy
+    레인이 받아 갔다. 지금 그 레인이 없으므로 범위를 다시 정해야 하는데, 여기서 **모든 플랜**을
+    범위에 넣으면 오디언스를 아예 말하지 않는 요청(집계·분석처럼 회원 조건이 0개인 질의)까지
+    "Event IR 표현이 없다"로 죽는다. 그것은 legacy 레인과 아무 상관이 없는 기능 손실이다.
+
+    그래서 범위는 **오디언스를 말한 플랜**이다. 말했다는 증거는 둘 중 하나로 충분하다.
+
+      · canonical 계약이 있다(``audience_requirement``) — 실행 가능한 표현이 아직 없어도.
+      · legacy 오디언스 표면이 채워져 있다 — 그 표면이 곧 두 번째 언어로 말한 증거다.
+
+    두 번째 항이 폐쇄의 실질이다. 그 표면을 가진 플랜은 표현이 없으면 SQL 을 못 낸다.
+    """
+    if not isinstance(plan, Mapping):
+        return False
+    if isinstance(plan.get(CANONICAL_AUDIENCE_CONTRACT_KEY), Mapping):
+        return True
+    return bool(legacy_audience_paths(plan))
+
+
 def execution_conflicts(plan: Any) -> tuple[ExecutionConflict, ...]:
     """이 플랜을 지금 실행하면 성립하는 '해석이 둘' 지점들(없으면 빈 튜플).
 
@@ -113,8 +140,10 @@ def execution_conflicts(plan: Any) -> tuple[ExecutionConflict, ...]:
 
 
 __all__ = [
+    "CANONICAL_AUDIENCE_CONTRACT_KEY",
     "LEGACY_AUDIENCE_CONFLICT_CODE",
     "ExecutionConflict",
+    "declares_audience",
     "execution_conflicts",
     "legacy_audience_paths",
 ]

@@ -46,7 +46,8 @@ SELECT = "select"            # 후보(빌더/SQL)를 채택했다
 REJECT = "reject"            # 후보를 거부했다
 UNSUPPORTED = "unsupported"  # 표현은 인식했으나 물리 매핑이 없어 fail-close 했다
 
-ACTIONS = frozenset({SET, UPDATE, CLEAR, CLAIM, KEEP, DROP, SELECT, REJECT, UNSUPPORTED})
+# ``ACTIONS``(위 아홉 값의 frozenset)는 2026-08-07 삭제됐다 — 유일한 소비자가 legacy 이행
+# 도구의 액션 어휘 검증이었고, 그 도구가 사라졌다. 값 자체는 위 상수로 그대로 쓴다.
 
 # 조건 슬롯이 사는 컨테이너. 이 dict 들은 슬롯 단위로 펼쳐 감사한다.
 AUDITED_CONTAINERS = ("target_user", "exclude", "campaign_constraints")

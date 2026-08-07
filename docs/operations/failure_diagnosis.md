@@ -19,8 +19,12 @@ SQL 이 안 나온 요청 앞에서 운영자가 답해야 하는 질문은 둘�
 | **UI 스텝퍼 단계** | `rag/failure_stage.py` `_FAILURE_STAGE_SEQUENCE` | `condition_recognition` · `real_db_mapping` · `sql_safety_validation` | 사용자에게 "어디까지 갔다"고 보여줄까 | `api_response.failure_stage` (BFF 가 배지·스텝퍼로 렌더) |
 | **종착 레인** | `audience_failure.py` `LANE_STAGES` | `event_ir_compile` · `semantic_resolution` · `plan_validation` | **코드의 어느 소유자가** 이 요청을 끝냈나 | `api_response.audience_diagnosis.stage` |
 | **엔드포인트 단계** | `api.py` `_target_sql_failure_payload` | `sql_generation` · `database_execution` · `message_generation` | 요청의 어느 구간에서 실패했나(SQL 생성 / 실행 / 메시지) | 실패로그 컬럼 `failure_stage` |
-| **Event IR 컴파일 내부 단계** | `query_pipeline.QueryPipelineError.stage` | `ir_schema` · `legacy_event_expression_adapter` · `sql_compilation` | 컴파일 계층 안 어디서 터졌나 | 좌표 항목의 `stage` → `audience_diagnosis.stage_detail` |
+| **Event IR 컴파일 내부 단계** | `query_pipeline.QueryPipelineError.stage` | `ir_schema` · `event_expression_payload_adapter` · `sql_compilation` | 컴파일 계층 안 어디서 터졌나 | 좌표 항목의 `stage` → `audience_diagnosis.stage_detail` |
 | **검색 트레이스 단계** | `rag/trace.build_stage_log` | `1. Query Planning` · `6. SQL Template / Guard` | 시연·디버깅용 파이프라인 진행 로그 | `debug.stage_log[].stage` |
+
+> **2026-08-07 이전 실패로그를 조회할 때.** 네 번째 줄의 `event_expression_payload_adapter` 는
+> 그날 이름이 바뀌었다(옛 값 `legacy_event_expression_adapter`). 같은 단계이고 판정도 같지만,
+> 그 이전에 기록된 행은 옛 문자열을 들고 있으므로 기간을 걸쳐 조회하면 둘 다 넣어야 한다.
 
 가장 흔한 혼동은 위 두 줄이다. 예를 들어 `audience_authority_invalid` 는
 

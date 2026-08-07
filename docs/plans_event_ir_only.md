@@ -1,5 +1,29 @@
 # canonical Event IR 단일 권위 — 배선 계획
 
+> **2026-08-07 종결 고지 — legacy 실행 레인이 닫혔다. 본문의 전제 하나가 바뀌었다.**
+>
+> 본문은 21행에서 "목표는 legacy 슬롯을 걷어내는 것이 아니다"라고 적는다. 그 목표는 이날
+> 확대됐다. 지금 성립하는 상태는 다음과 같다.
+>
+> - `audience_authority` 의 어휘에 `legacy` 가 **없다**. 권위 미선언 플랜(rules 레인·표식 없는
+>   저장 페이로드)이 legacy 로 읽히던 기본값이 사라졌고, 명시 `legacy` 스탬프는 rollback
+>   탈출구가 아니라 **어휘 오류**(`audience_authority_invalid`)다.
+> - 채워진 `target_user`/`exclude` 를 가진 플랜은 표식·권위와 무관하게
+>   `canonical_legacy_audience_conflict` 로 실행 불가다. 회원 슬롯 SQL 빌더 코드는 남아 있지만
+>   **도달하지 않는다**.
+> - 폐쇄의 범위는 권위가 아니라 `audience_admission.declares_audience` 다 — 회원 조건이 0개인
+>   집계·분석 요청은 오디언스를 말하지 않았으므로 범위 밖이고, 기존 경로를 유지한다.
+> - 이행 장치가 **전부 삭제**됐다: 상태 기계(`MigrationStatus`·전이표)·cut-over·shadow·
+>   migration store·지문 모듈과 CLI 셋, 그리고 그 계약 테스트 여덟. §6-3 결정(저장 자산 0행,
+>   소유자가 cut-over 를 쓰지 않기로 함)이 그 삭제의 근거다.
+> - `query_pipeline/compatibility/legacy_event_expression.py` 는 삭제가 아니라 **개명**됐다
+>   (`query_pipeline/plan_payload/event_expression_payload.py`). 그 모듈은 legacy 잔재가 아니라
+>   Event IR 레인의 유일한 진입점이고, 이름이 그 반대를 광고하고 있었다.
+>
+> 아래 Phase 1~2 기록은 그대로 둔다. Phase 3 의 "권위 단일화"는 이 고지로 종결됐고, §5(표현 못
+> 하는 축)와 §6-1·§6-5 는 **여전히 열려 있다** — 폐쇄는 그 축들을 연 것이 아니라, 그 축을
+> 그럴듯한 다른 오디언스로 대신 답하지 않게 만든 것이다.
+
 > **2026-08-05 후속 고지 (§ 번호는 그대로 둔다 — 다른 문서와 코드가 인용한다).**
 >
 > 이 계획이 전제하던 **SemanticPlanV2 중간표현은 폐기**됐고 모듈 파일까지 삭제됐다. 그래서
@@ -68,7 +92,7 @@
 | 단계 | 파일 | 변경 | 크기 |
 |---|---|---|---|
 | 1-1 | `graph_rag.py`, `tests/test_member_slot_sql_coverage.py` | `required_sql_conditions` 에 무방비 슬롯 6개의 필수조건 추가. 토큰은 **생성부와 같은 함수**가 만든다(`_member_birthday_predicate` / `_member_signup_predicate` / `_coupon_usage_threshold_predicate` / `_cart_quantity_missing_predicate`) — 두 벌로 적으면 그 순간 갈라진다. 생일은 반대 분기를 `none_terms` 로 막아 월/일 뒤바뀜까지 잡는다 | S |
-| 1-2 | `graph_rag.py`, `tests/test_query_pipeline_legacy_adapter.py` | (a) `IrSchemaError` 분기(14086-14098)에 `stage:"ir_schema"`, `code:"event_ir_schema_invalid"` (b) `QueryPipelineError` 분기(14131-14149)에 `code:"event_ir_compile_failed"` (c) 최종 `sql_result` 반환 dict(11101-11125)에 `unresolved_source_conditions` **추가**. `11113` 의 `missing_input_conditions: []` 는 손대지 않는다(사용자 문구 계약) | S |
+| 1-2 | `graph_rag.py`, `tests/test_query_pipeline_legacy_adapter.py`(2026-08-07 `tests/test_event_expression_payload_adapter.py` 로 개명 — 옛 이름은 부재) | (a) `IrSchemaError` 분기(14086-14098)에 `stage:"ir_schema"`, `code:"event_ir_schema_invalid"` (b) `QueryPipelineError` 분기(14131-14149)에 `code:"event_ir_compile_failed"` (c) 최종 `sql_result` 반환 dict(11101-11125)에 `unresolved_source_conditions` **추가**. `11113` 의 `missing_input_conditions: []` 는 손대지 않는다(사용자 문구 계약) | S |
 | 1-3 | `graph_rag.py`, `tests/test_failure_honesty.py` | `build_sql_result` 진입부(10491 이전)에서 `coerce_authority` 를 한 번 시도하고 실패면 `failure_reason='audience_authority_invalid'` 로 즉시 종결. **판정자는 늘리지 않는다** — 값의 유효성만 보고 권위 자체는 여전히 `executes_event_ir` 가 읽는다 | S |
 
 1-2 가 1-3 보다 먼저인 이유: Phase 2 의 진단 좌표가 `unresolved_source_conditions` 를 1순위 입력으로
@@ -90,7 +114,8 @@
 **① 좌표의 소유자를 잘못 짚었다.** 계획은 "읽을 수 없는 저장 표현이 진입 가드에서 조용히
 사라진다"고 적었지만, 그 실패의 소유자는 이미 `plan_validation` 이다
 (`event_expression_schema_invalid`, 표현 부재는 `canonical_event_expression_missing`).
-빌더가 좌표를 한 번 더 남기게 고쳤다가 `tests/test_query_pipeline_legacy_adapter.py` 의
+빌더가 좌표를 한 번 더 남기게 고쳤다가 `tests/test_query_pipeline_legacy_adapter.py`(그 이름은 이제
+없다 — `tests/test_event_expression_payload_adapter.py` 로 개명됐다) 의
 "파손된 저장 표현은 빌더까지 내려가지 않는다"가 red 가 되어 되돌렸다 — 그 테스트가 계약이었고,
 같은 실패에 소유자를 둘로 만드는 변경이었다. 경계는
 `tests/test_event_ir_unresolved_coordinate.py` 가 좌표 쪽에서 함께 고정한다.
@@ -266,7 +291,8 @@ status 를 파생했다(`unsupported`/`missing`/`unresolved` 포함 여부). 두
 `tests/test_canonical_legacy_audience_conflict.py::test_declared_canonical_ingress_without_a_stamp_also_conflicts`
 가 그 갈래를 케이스로 고정한다.
 
-**② 뒤집힌 계약**: `tests/test_cutover_legacy_audience_cli.py` 의 "cut-over 산출 플랜은 EXECUTABLE"
+**② 뒤집힌 계약**(그 파일은 2026-08-07 cut-over 도구와 함께 **삭제**됐다 — 아래는 당시 기록이다):
+`tests/test_cutover_legacy_audience_cli.py` 의 "cut-over 산출 플랜은 EXECUTABLE"
 단언을 **반전**했다(약화가 아니라 반전 — 여전히 같은 것을 잰다). 그 단언의 원래 근거가
 "그렇게 판정하면 cut-over 한 자산이 통째로 실행 불가가 된다"였고, 지금은 그 상태가 맞다.
 허용 근거는 §6-3 하나뿐이다(저장 자산 0행 + 소유자 판단). 주석을 안 고치면 저장소에 서로 반대되는

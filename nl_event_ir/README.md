@@ -186,7 +186,7 @@ parser = build_default_parser(repository, fallback=LlmFallback())
 # 테스트 (이 머신은 asyncio DLL 이 차단돼 있어 -p no:debugging 이 필요하다)
 .\.venv\Scripts\python.exe -m pytest tests/test_normalizer.py tests/test_extractors.py `
   tests/test_entity_resolver.py tests/test_composer.py tests/test_validator.py `
-  tests/test_parser.py tests/test_legacy_compatibility.py -q -p no:debugging
+  tests/test_parser.py tests/test_nl_event_ir_module_integrity.py -q -p no:debugging
 
 # 데모
 $env:PYTHONIOENCODING="utf-8"; .\.venv\Scripts\python.exe -m nl_event_ir.demo
@@ -199,17 +199,17 @@ $env:PYTHONIOENCODING="utf-8"; .\.venv\Scripts\python.exe -m nl_event_ir.demo
 기존 파서를 지우지 않는다. 순서는 다음과 같다.
 
 1. **병행 실행.** 새 파서를 붙이고 기존 경로와 결과를 비교(shadow)한다. 아직 아무것도 바꾸지 않는다.
-2. **레거시 보완 켜기.** `build_default_parser(..., use_legacy_adapter=True)`.
-   새 규칙이 읽지 못한 자리에서만 기존 사전이 동작하고, 그 토큰은 `confidence=0.6`·`source="legacy"` 다.
-3. **진척 측정.** `result.diagnostics["legacy_token_count"]` 가 이행 진척도다. 이 값이 큰 문장 유형이
-   다음에 규칙으로 옮길 대상이다.
-4. **어휘 이관.** `parser_lexicon.json` 의 항목을 하나씩 판정한다.
+2. **어휘 이관.** `parser_lexicon.json` 의 항목을 하나씩 판정한다.
    - 같은 뜻의 다른 말 → `canonical_aliases.json` 으로
    - 활용형 → `normalizer.py` 규칙으로
    - 데이터 값 → repository 로
    - 문맥 판정 → extractor 구조로
-5. **레거시 제거.** `legacy_token_count` 가 0 으로 수렴하면 `legacy_adapter.py` 와
-   `resources/legacy_lexicon_patterns.json` 을 함께 지운다. 원본 사전은 그때까지 남긴다.
+
+> **철거된 장치.** 2단계와 3단계에는 원래 *레거시 보완 어댑터*가 있었다 — 새 규칙이 읽지 못한
+> 잔여 구간을 기존 사전으로 메우고 그 토큰을 `confidence=0.6`·`source="legacy"` 로 표시했으며,
+> 진척도는 `legacy_token_count` 진단값으로 셌다. 어댑터 모듈과 그 포인터 파일, `use_legacy_adapter`
+> 스위치, `legacy_token_count` 진단값은 legacy 오디언스 레인 폐쇄와 함께 **삭제됐다**. 켜는 호출자가
+> 테스트뿐이었고, 같은 어휘를 읽는 두 번째 경로였기 때문이다. 지금 이관은 4단계 하나로 직행한다.
 
 ---
 

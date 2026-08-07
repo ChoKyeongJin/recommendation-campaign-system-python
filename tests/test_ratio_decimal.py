@@ -19,7 +19,9 @@ def test_ratio_normalizer_preserves_fractional_percent_round_trip() -> None:
     assert RatioNormalizer.normalize(wire) == ratio
 
 
-def test_cell_rate_fraction_reaches_sql_without_float_rounding() -> None:
+def test_cell_rate_fraction_reaches_sql_without_float_rounding(
+    member_slot_gate_lifted: None,
+) -> None:
     exact = "12.345678901234567890123"
     shape = targeting_ir.SLOT_SHAPES["cell_rate_target"]
 

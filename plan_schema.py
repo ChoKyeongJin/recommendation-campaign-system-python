@@ -123,9 +123,10 @@ _CONDITIONS = _keys(CONDITION, {
 
 # 파서·검증·라우팅 산출물. 사용자가 말한 적 없다.
 _DERIVED = _keys(DERIVED, {
-    # 오디언스를 실행하는 계층(legacy 슬롯 vs Event IR). 사용자가 말한 조건이 아니라 이행 라우팅
-    # 판정이므로 파생이다. 존재 대신 이 값으로 경로를 고르는 것이 dual-storage ≠ dual-execution 계약.
-    "audience_authority": "오디언스 실행 권위(legacy | event_ir)",
+    # 오디언스를 실행하는 계층. 사용자가 말한 조건이 아니므로 파생이다. 2026-08-07 legacy 레인
+    # 폐쇄로 성립하는 값은 ``event_ir`` 하나이고, 이 키를 계속 읽는 이유는 저장된 ``legacy``
+    # 표식을 조용히 삼키지 않고 명명된 실패로 드러내기 위해서다(audience_authority 참조).
+    "audience_authority": "오디언스 실행 권위(event_ir 하나 — legacy 레인은 폐쇄)",
     "capability_check": "능력 점검 결과(plan 생산자 없음 — 응답 조립이 capability_validation 요약으로 파생)",
     "detected_intent": "입력 조건에서 계산된 라우팅 힌트",
     "member_policy": "회원 정책 판정",

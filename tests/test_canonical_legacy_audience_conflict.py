@@ -7,16 +7,15 @@
 이 파일이 고정하는 것 넷:
 
   ① 표식(`event_expression.source`) 유무와 **무관하게** 차단된다 — 판정 기준은 권위다.
-  ② canonical 계약으로 들어왔지만 아직 스탬프가 없는 플랜도 같은 레인이다
-     (`requires_event_ir` 선택의 기록. `executes_event_ir` 였다면 이 갈래가 샌다).
-  ③ 명시 `legacy` 스탬프는 **의도한 탈출구**다(rollback). 이것이 "의도한 완화"와 "실수로 뚫린
-     구멍"을 가른다.
+  ② canonical 계약으로 들어왔지만 아직 스탬프가 없는 플랜도 같은 레인이다.
+  ③ 2026-08-07 legacy 실행 레인 폐쇄로 **탈출구가 사라졌다**. 명시 `legacy` 스탬프는 통과가
+     아니라 어휘 오류이고, 권위를 선언하지 않은 플랜(rules 레인)도 같은 판정을 받는다.
   ④ 사용자 문구에 내부 슬롯명이 실리지 않는다(§6-6 계약). 좌표는 운영자 채널에만 남는다.
 
-**대가**: cut-over 산출 플랜(표현 + 보존된 legacy 슬롯 + Event IR 권위)은 이제 실행 불가다.
-그 모양을 실행 가능으로 읽던 계약이 `tests/test_cutover_legacy_audience_cli.py` 에 있었고 같은
-커밋에서 반전했다. 근거는 §6-3 결정(저장 자산 0행, 소유자가 cut-over 를 쓰지 않기로 함)이며,
-결정이 뒤집히면 그 파일과 `tests/test_cutover_execution_isolation.py` 가 먼저 red 가 된다.
+**대가**: 채워진 `target_user`/`exclude` 를 가진 모든 플랜이 실행 불가다. 폐쇄 전에는 그 대가가
+cut-over 산출 플랜 하나에만 걸렸고, 그 모양을 실행 가능으로 읽던 계약이
+`tests/test_cutover_legacy_audience_cli.py` 에 있었다 — 그 파일은 cut-over 도구와 함께 **삭제**됐고
+지금은 부재한다(이행 상태 기계·shadow·rollback 전부 없음).
 """
 
 from __future__ import annotations
@@ -24,6 +23,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -72,9 +73,15 @@ def test_conflict_is_named_without_any_source_marker() -> None:
 
 
 def test_conflict_is_still_named_with_the_canonical_marker() -> None:
-    """옛 리터럴 가드가 잡던 모양은 계속 잡힌다(판정 축소가 아니다)."""
+    """옛 리터럴 가드가 잡던 모양은 계속 잡힌다(판정 축소가 아니다).
 
-    for source in audience_authority.CANONICAL_EVENT_EXPRESSION_SOURCES:
+    표식 집합은 이제 페이로드 어댑터만 소유한다 — `audience_authority` 쪽 사본은 라우팅
+    갈래와 함께 사라졌다(`tests/test_no_semantic_plan_residue.py` 가 그 부재를 고정한다).
+    """
+
+    from query_pipeline.plan_payload import event_expression_payload
+
+    for source in event_expression_payload.CANONICAL_SOURCES:
         assert CODE in _codes(_plan(source=source, authority=None)), source
 
 
@@ -87,17 +94,33 @@ def test_declared_canonical_ingress_without_a_stamp_also_conflicts() -> None:
         "target_user": {"gender": "female"},
     }
     assert audience_authority.requires_event_ir(plan) is True
-    assert audience_authority.executes_event_ir(plan) is False
+    assert audience_admission.declares_audience(plan) is True
     assert CODE in _codes(plan)
 
 
-def test_explicit_legacy_authority_is_the_rollback_escape_hatch() -> None:
-    """명시 legacy 는 통과한다. 이 테스트가 '의도한 완화'와 '뚫린 구멍'을 가른다."""
+def test_a_plan_that_never_declared_an_authority_conflicts_too() -> None:
+    """폐쇄의 실질 — rules 레인(권위 미선언 + 채워진 회원 슬롯)이 더 이상 새지 않는다."""
+
+    plan = {
+        "intent": "find_user_segment",
+        "target_user": {"gender": "female", "grades": ["VIP"]},
+    }
+    result = plan_validation.validate_executable_plan(dict(plan))
+    assert result.status == plan_validation.INTERNAL_INVALID
+    assert CODE in [issue.code for issue in result.issues]
+
+
+def test_the_explicit_legacy_stamp_is_no_longer_an_escape_hatch() -> None:
+    """폐쇄된 값은 통과가 아니라 어휘 오류다 — 조용히 삼키면 다른 오디언스가 추출된다."""
 
     plan = _plan(source="audience_requirement", authority="legacy")
-    result = plan_validation.validate_executable_plan(dict(plan))
-    assert CODE not in [issue.code for issue in result.issues]
-    assert result.status == plan_validation.EXECUTABLE
+    with pytest.raises(audience_authority.AudienceAuthorityError, match="legacy"):
+        plan_validation.validate_executable_plan(dict(plan))
+
+    # 응답 경로는 그 예외를 500 이 아니라 명명된 실패로 끝낸다.
+    blocked = graph_rag._audience_authority_blocking_sql_result(dict(plan))
+    assert blocked is not None
+    assert blocked["failure_reason"] == "audience_authority_invalid"
 
 
 def test_gate_surface_is_exactly_the_declared_containers() -> None:

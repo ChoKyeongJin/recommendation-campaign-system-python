@@ -59,7 +59,9 @@ def test_aggregate_condition_window_is_a_declared_slot_field() -> None:
     assert "window_days" in item_properties, item_properties.keys()
 
 
-def test_calendar_window_reaches_sql_without_database_clock_reanchoring() -> None:
+def test_calendar_window_reaches_sql_without_database_clock_reanchoring(
+    member_slot_gate_lifted: None,
+) -> None:
     """절대 달력 창은 그대로 렌더되고 DB 시계(GETDATE)로 재앵커되지 않는다."""
     query_plan = _order_count_query_plan(
         {

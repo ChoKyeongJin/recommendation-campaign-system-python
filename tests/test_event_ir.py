@@ -397,52 +397,30 @@ def test_temporal_relation_fails_closed_on_an_unrepresentable_unit() -> None:
 # ── 8. 의미 왜곡 방지: 특정 기간 부재를 평생 부재로 바꾸지 않는다 ──────────────────
 
 def test_windowed_absence_never_becomes_lifetime_absence() -> None:
+    """특정 기간 부재는 평생 부재와 **다른 집합**이다 — IR 이 그 구분을 들고 있어야 한다."""
     expression = parse("하반기 구매 기록이 없는 고객")
     assert existence_shape(expression) == [("purchase", True, H2)]
-    assert event_ir.try_convert_to_legacy_slots(expression) is None
-    assert event_ir.requires_general_ir(expression) is True
 
 
-def test_lifetime_absence_still_maps_to_the_legacy_slot() -> None:
-    assert event_ir.try_convert_to_legacy_slots(parse("구매 이력이 없는 고객")) == {
-        "target_user": {"behaviors": ["no_purchase"]}
-    }
+def test_the_reverse_projection_to_legacy_slots_is_gone() -> None:
+    """Event IR → legacy 슬롯 **역투영**은 2026-08-07 삭제됐다.
 
+    이 절의 원래 테스트 다섯은 그 역투영이 의미를 보존할 때만 변환한다는 계약이었다
+    (`try_convert_to_legacy_slots` / `requires_general_ir` / `LEGACY_SLOT_BINDINGS`).
+    legacy 실행 레인이 닫히면서 그 함수들은 **프로덕션 호출자도, 갈 곳도** 없어졌다.
 
-def test_rolling_absence_maps_to_the_legacy_inactivity_slot() -> None:
-    assert event_ir.try_convert_to_legacy_slots(parse("최근 180일 미구매 고객")) == {
-        "target_user": {"purchase_inactivity": {"value": 180, "unit": "days", "min_days": 180}}
-    }
-
-
-def test_rolling_aggregate_maps_to_the_legacy_aggregate_slot() -> None:
-    assert event_ir.try_convert_to_legacy_slots(parse("최근 30일 동안 3회 이상 구매한 고객")) == {
-        "target_user": {"aggregate_conditions": [
-            {"metric_id": "order_count", "operator": ">=", "threshold": 3, "window_days": 30}
-        ]}
-    }
-
-
-@pytest.mark.parametrize(
-    "text, expected",
-    [
-        ("최근 180일 미구매 고객", False),
-        ("2026년 상반기에 구매한 고객", False),
-        ("최근 30일 로그인한 고객", False),
-        ("최근 30일 동안 3회 이상 구매한 고객", False),
-        ("3년 전에 구매한 고객", False),
-        ("하반기 구매 기록이 없는 고객", True),
-        ("올해 상반기 구매 금액 합계가 100000원 이상인 고객", True),
-        ("첫 구매 후 30일 이내 재구매한 고객", True),
-        (REFERENCE, True),
-    ],
-)
-def test_routing_authority_matches_slot_expressibility(text: str, expected: bool) -> None:
-    """호환 계층의 방향: 슬롯이 담을 수 있으면 IR 은 실행 모델이 되지 않는다."""
-    expression = parse(text)
-    assert event_ir.requires_general_ir(expression) is expected
-    # 두 함수의 답이 갈라지면 라우팅과 감사 로그가 서로 다른 이야기를 하게 된다.
-    assert (event_ir.try_convert_to_legacy_slots(expression, today=TODAY) is None) is expected
+    되살리면 안 되는 이유는 이름이 말해 준다: 사양 → 슬롯 역방향이 곧 두 번째 실행 모델이다.
+    한 방향(저장 페이로드 → 사양)만 남긴다는 계약은
+    `query_pipeline/plan_payload/event_expression_payload.py` 가 소유한다.
+    """
+    for removed in (
+        "try_convert_to_legacy_slots",
+        "requires_general_ir",
+        "LEGACY_SLOT_BINDINGS",
+    ):
+        assert not hasattr(event_ir, removed), (
+            f"{removed} 가 되살아났다 — IR 을 슬롯으로 되돌리는 경로는 두 번째 실행 모델이다."
+        )
 
 
 # ── 9. 근거(evidence) ─────────────────────────────────────────────────────────────

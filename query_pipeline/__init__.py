@@ -28,9 +28,9 @@ from query_pipeline.base import (
     SystemClock,
     UuidIdFactory,
 )
-from query_pipeline.compatibility import (
-    LegacyAdapterError,
-    LegacyEventExpressionAdapter,
+from query_pipeline.plan_payload import (
+    EventExpressionPayloadAdapter,
+    PayloadAdapterError,
 )
 from query_pipeline.compiler import (
     AudiencePredicateCompiler,
@@ -76,7 +76,7 @@ class QueryPipelineError(Exception):
 
 
 def compile_audience_predicate(
-    legacy_payload: object,
+    event_expression_payload: object,
     *,
     compile_context_factory: CompileContextFactory,
     dialect: SqlDialect = SqlDialect.TSQL,
@@ -87,20 +87,19 @@ def compile_audience_predicate(
 ) -> CompiledSql:
     """저장된 canonical 표현 → 회원 술어 SQL, **계층을 전부 통과해서**.
 
-    기존 빌더(:func:`graph_rag.build_event_expression_sql_candidate`)의 진입점이다. 예전에는
-    저장된 dict 를 그 자리에서 파싱해 컴파일러에 바로 넘겼다 — 그 경로에는 "검증된 사양"이라는
-    단계가 아예 없었다. 이제 같은 SQL 이 어댑터 → 사양 → 계획 → 컴파일러를 지나 나온다.
-    실패는 단계 이름을 달고 :class:`QueryPipelineError` 로 나간다.
+    :func:`graph_rag.build_event_expression_sql_candidate` 의 진입점이다. 예전에는 저장된 dict 를
+    그 자리에서 파싱해 컴파일러에 바로 넘겼다 — 그 경로에는 "검증된 사양"이라는 단계가 아예
+    없었다. 이제 같은 SQL 이 어댑터 → 사양 → 계획 → 컴파일러를 지나 나온다. 실패는 단계 이름을
+    달고 :class:`QueryPipelineError` 로 나간다.
     """
     try:
-        spec = LegacyEventExpressionAdapter.to_event_query_spec(
-            legacy_payload,
+        spec = EventExpressionPayloadAdapter.to_event_query_spec(
+            event_expression_payload,
             clock=clock,
             id_factory=id_factory,
             subject_entity=subject_entity,
-            warn=False,
         )
-    except LegacyAdapterError as exc:
+    except PayloadAdapterError as exc:
         raise QueryPipelineError(exc.stage, str(exc)) from exc
 
     plan = AudienceLogicalPlanner().create_plan(spec)
@@ -123,20 +122,19 @@ def compile_audience_predicate(
         raise QueryPipelineError(exc.stage, str(exc)) from exc
 
 
-def audience_spec_from_legacy_payload(
-    legacy_payload: object,
+def audience_spec_from_plan_payload(
+    event_expression_payload: object,
     *,
     clock: Clock | None = None,
     id_factory: IdFactory | None = None,
     subject_entity: str = "subject",
 ) -> EventQuerySpec:
-    """저장된 payload → 검증된 사양(진단·이행 도구용)."""
-    return LegacyEventExpressionAdapter.to_event_query_spec(
-        legacy_payload,
+    """저장된 payload → 검증된 사양(진단용)."""
+    return EventExpressionPayloadAdapter.to_event_query_spec(
+        event_expression_payload,
         clock=clock,
         id_factory=id_factory,
         subject_entity=subject_entity,
-        warn=False,
     )
 
 
@@ -148,15 +146,15 @@ __all__ = [
     "CompileContextFactory",
     "CompiledSql",
     "DefaultRequirementResolver",
+    "EventExpressionPayloadAdapter",
     "EventQuerySpec",
     "EventQuerySpecError",
     "FixedClock",
     "IdFactory",
-    "LegacyAdapterError",
-    "LegacyEventExpressionAdapter",
     "LogicalPlan",
     "MissingBindingError",
     "ParameterStyle",
+    "PayloadAdapterError",
     "QueryExecutionContext",
     "QueryPipeline",
     "QueryPipelineError",
@@ -175,6 +173,6 @@ __all__ = [
     "UnresolvedResolution",
     "UnsupportedPlanError",
     "UuidIdFactory",
-    "audience_spec_from_legacy_payload",
+    "audience_spec_from_plan_payload",
     "compile_audience_predicate",
 ]

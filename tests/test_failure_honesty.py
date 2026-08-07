@@ -271,11 +271,27 @@ def test_invalid_audience_authority_is_a_named_failure_not_an_exception() -> Non
 
 
 def test_valid_audience_authority_values_are_not_blocked() -> None:
-    for value in ("event_ir", "legacy"):
-        plan = {"audience_authority": value}
-        assert graph_rag._audience_authority_blocking_sql_result(plan) is None
-    # 권위 미선언은 호환 경로가 읽는다 — 여기서 막지 않는다.
+    assert graph_rag._audience_authority_blocking_sql_result(
+        {"audience_authority": "event_ir"}
+    ) is None
+    # 권위 미선언은 그대로 Event IR 이다 — 여기서 막지 않는다.
     assert graph_rag._audience_authority_blocking_sql_result({}) is None
+
+
+def test_a_stored_legacy_authority_is_blocked_with_a_named_failure() -> None:
+    """2026-08-07 폐쇄 — ``legacy`` 는 유효 값이 아니라 명명된 실패다.
+
+    폐쇄 전 이 값은 rollback 탈출구였고 위 테스트가 "막지 않는다"로 고정하고 있었다. 조용히
+    통과시키면 legacy 실행을 기대하고 저장된 플랜이 다른 오디언스를 추출한다 — 그래서 통과가
+    아니라 `audience_authority_invalid` 로 끝낸다(500 이 아니라 명명된 실패라는 점이 요지다).
+    """
+
+    result = graph_rag._audience_authority_blocking_sql_result(
+        {"audience_authority": "legacy"}
+    )
+    assert result is not None
+    assert result["failure_reason"] == "audience_authority_invalid"
+    assert result["missing_input_conditions"][0]["path"] == "audience_authority"
 
 
 def test_build_sql_result_does_not_raise_on_an_invalid_authority() -> None:

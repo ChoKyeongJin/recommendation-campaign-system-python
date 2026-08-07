@@ -5,7 +5,6 @@
     → 의미 토큰 추출             (extractors)
     → 스팬 중재                  (여기)
     → 잔여 구간 엔티티 후보       (ScopeExtractor.extract_residual)
-    → 레거시 보완                (legacy_adapter, 선택)
     → 엔티티 해석                (resolver)
     → 의미 토큰 조합             (composer)
     → IR 검증                    (validator)
@@ -42,7 +41,6 @@ from nl_event_ir.extractors import (
     TemporalExtractor,
 )
 from nl_event_ir.fallback import FallbackReason, NullSemanticFallback, SemanticFallback
-from nl_event_ir.legacy_adapter import LegacyPatternAdapter
 from nl_event_ir.models import ParseResult, ValidationIssue
 from nl_event_ir.normalizer import RuleBasedKoreanNormalizer, TextNormalizer
 from nl_event_ir.resolver.base import EntityRepository
@@ -97,7 +95,6 @@ class EventParser:
         composer: EventIRComposer | None = None,
         validator: EventIRValidator | None = None,
         fallback: SemanticFallback | None = None,
-        legacy_adapter: LegacyPatternAdapter | None = None,
     ) -> None:
         self._normalizer = normalizer
         self._extractors = tuple(extractors)
@@ -115,7 +112,6 @@ class EventParser:
         self._composer = composer if composer is not None else EventIRComposer()
         self._validator = validator if validator is not None else EventIRValidator()
         self._fallback = fallback if fallback is not None else NullSemanticFallback()
-        self._legacy_adapter = legacy_adapter
 
     # ── 진입점 ──────────────────────────────────────────────────────────────────
 
@@ -132,9 +128,6 @@ class EventParser:
 
         tokens = self._run_residual(working, tokens)
         stages.append(_Stage("residual", len(tokens)))
-
-        tokens = self._run_legacy(working, tokens)
-        stages.append(_Stage("legacy", len(tokens)))
 
         if self._entity_resolver is not None:
             tokens = self._entity_resolver.resolve(working, tokens)
@@ -154,9 +147,6 @@ class EventParser:
         diagnostics: dict[str, Any] = {
             "stages": [{"name": stage.name, "tokens": stage.token_count} for stage in stages],
             "unresolved_values": list(outcome.unresolved_values),
-            "legacy_token_count": sum(
-                1 for token in ordered_tokens if token.source == "legacy"
-            ),
         }
 
         if ir is None:
@@ -229,29 +219,6 @@ class EventParser:
             collected.extend(extract_residual(text, collected))
         return collected
 
-    def _run_legacy(self, text: str, tokens: list[SemanticToken]) -> list[SemanticToken]:
-        if self._legacy_adapter is None:
-            return tokens
-        # 레거시 토큰은 **엔티티 값 후보를 뺀** 상태의 잔여 구간에서 찾는다. 후보가 자리를
-        # 차지한 채로 보면 레거시가 볼 수 있는 자리가 사라져 보완 효과가 없어진다.
-        rule_tokens = [token for token in tokens if token.source != "residual"]
-        recovered = self._legacy_adapter.extract_residual(text, rule_tokens)
-        if not recovered:
-            return tokens
-        # 레거시 토큰이 후보와 겹치면 후보를 버린다 — 낮은 신뢰도라도 '무엇인지 아는' 쪽이
-        # '무엇인지 모르는 후보'보다 구체적이다.
-        kept = [
-            token
-            for token in tokens
-            if not (
-                token.source == "residual"
-                and any(
-                    token.start < other.end and other.start < token.end for other in recovered
-                )
-            )
-        ]
-        return kept + recovered
-
 
 # ── 스팬 중재 ────────────────────────────────────────────────────────────────────
 
@@ -310,7 +277,6 @@ def build_default_parser(
     *,
     registry: AliasRegistry | None = None,
     reference_date: date | None = None,
-    use_legacy_adapter: bool = False,
     fallback: SemanticFallback | None = None,
 ) -> EventParser:
     """표준 구성의 파서를 만든다.
@@ -337,5 +303,4 @@ def build_default_parser(
         composer=EventIRComposer(),
         validator=EventIRValidator(),
         fallback=fallback,
-        legacy_adapter=LegacyPatternAdapter() if use_legacy_adapter else None,
     )

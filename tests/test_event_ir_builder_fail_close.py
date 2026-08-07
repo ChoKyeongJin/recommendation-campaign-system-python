@@ -166,17 +166,34 @@ def test_canonical_authority_blocks_every_non_exempt_builder_and_leaves_the_plan
     assert plan == before, "차단된 빌더가 플랜을 변형했다(부작용 없는 차단이어야 한다)."
 
 
-def test_the_same_plan_under_legacy_authority_still_builds_legacy_sql() -> None:
-    """대조군 — 위의 None 이 픽스처 무능이 아니라 **권위**에서 온다는 증거."""
+def test_the_same_plan_builds_member_sql_once_the_gate_is_lifted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """대조군 — 위의 None 이 픽스처 무능이 아니라 **게이트**에서 온다는 증거.
 
-    plan = _plan("legacy")
-    assert audience_authority.requires_event_ir(plan) is False
-    assert plan_validation.validate_executable_plan(copy.deepcopy(plan)).status == (
-        plan_validation.EXECUTABLE
+    폐쇄 전에는 이 대조군을 ``audience_authority: "legacy"`` 로 만들었다. 그 권위 값이
+    어휘에서 사라졌으므로(2026-08-07), 같은 것을 재려면 게이트 술어 자체를 끄는 수밖에 없다.
+    검증 결과도 EXECUTABLE 로 고정해 남는 변수를 게이트 하나로 줄인다 — 그러지 않으면
+    채워진 ``target_user`` 가 `canonical_legacy_audience_conflict` 로 먼저 막혀서, 이 테스트가
+    게이트가 아니라 검증을 재게 된다.
+    """
+
+    plan = _plan("event_ir")
+    executable = plan_validation.PlanValidationResult(
+        status=plan_validation.EXECUTABLE,
+        issues=(),
+        blocking_claim_ids=(),
+        unresolved_span_ids=(),
+    )
+    monkeypatch.setattr(
+        graph_rag.plan_validation, "validate_executable_plan", lambda _plan: executable
+    )
+    monkeypatch.setattr(
+        graph_rag.audience_admission, "declares_audience", lambda _plan: False
     )
 
     candidate = graph_rag.build_member_targets_sql_candidate(copy.deepcopy(plan))
-    assert candidate is not None, "legacy 권위에서는 회원 빌더가 SQL 을 내야 한다."
+    assert candidate is not None, "게이트를 끄면 회원 빌더는 여전히 SQL 을 낸다(코드는 살아 있다)."
     assert candidate["id"] == "sql_template:member_targets"
     assert "GENDER_CD" in candidate["sql"]
 

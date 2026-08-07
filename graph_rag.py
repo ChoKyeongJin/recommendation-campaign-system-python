@@ -26,6 +26,7 @@ import networkx as nx
 import aggregate_parser_config
 import aggregate_semantics
 import aggregate_spans
+import audience_admission
 import audience_authority
 import audience_failure
 import audience_frame
@@ -2374,9 +2375,9 @@ def _plan_event_expression(plan: dict[str, Any]) -> "event_ir.Condition | None":
 def _has_canonical_audience_authority(plan: Mapping[str, Any]) -> bool:
     """Event IR 이 오디언스를 소유하는가 — 판정은 :mod:`audience_authority` 가 단독으로 한다.
 
-    여기서 표현의 **존재**를 다시 보지 않는 이유: 이행기에는 변환만 되고 아직 검증되지 않은
-    ``event_expression`` 이 같은 플랜에 저장된다(dual-storage). 존재를 권위로 읽으면 저장이 곧
-    실행이 되어 검증 전 IR 이 사용자 요청을 처리하고, rollback 이 '표현을 지우는 일'로 변질된다.
+    legacy 레인 폐쇄(2026-08-07) 이후 답은 **항상 참**이다(폐쇄된 권위 값이 저장돼 있으면 예외).
+    그래도 술어를 남기는 이유는 여기서 표현의 **존재**를 다시 보지 않기 위해서다 — 존재를 권위로
+    읽으면 저장이 곧 실행이 되어, 검증되지 않은 ``event_expression`` 이 사용자 요청을 처리한다.
     """
     return audience_authority.executes_event_ir(plan)
 
@@ -9619,17 +9620,17 @@ def _settle_canonical_audience_authority(query_plan: dict[str, Any]) -> None:
     2026-08-05 이전에는 이 자리에서 SemanticPlanV2 노드를 Event IR 로 낮추거나 실행 슬롯으로
     컴파일했다. 그 중간 표현은 모듈째 폐기됐고 노드의 생산자도 없다 — 낮출 것이 없으므로
     배선도 남기지 않는다(죽은 분기를 남기면 '지원된다'는 거짓 광고가 된다).
+
+    2026-08-07 legacy 레인 폐쇄로 "권위가 legacy 라 이 함수 소관이 아닌 플랜"(rules 레인·표식
+    없는 저장 페이로드)이라는 갈래가 사라졌다 — 오디언스를 말한 플랜은 전부 이 판정을 받는다.
     """
-    canonical_only = audience_authority.requires_event_ir(query_plan)
     if _plan_event_expression(query_plan) is not None:
-        if canonical_only:
-            audience_authority.stamp_authority(
-                query_plan, audience_authority.AudienceAuthority.EVENT_IR
-            )
+        audience_authority.stamp_authority(
+            query_plan, audience_authority.AudienceAuthority.EVENT_IR
+        )
         return
-    if not canonical_only:
-        # legacy 권위 플랜(rules 레인·저장 페이로드)의 오디언스는 이 함수 소관이 아니다.
-        return
+    if not audience_admission.declares_audience(query_plan):
+        return  # 오디언스를 말하지 않은 요청(집계·분석)은 확정할 것이 없다 — 폐쇄 범위 밖.
     if isinstance(query_plan.get(AUDIENCE_REQUIREMENT_KEY), dict):
         # 계약은 있는데 표현이 없다. semantic_ir 이 중립(resolved/policy_applied)이면 조건이
         # 사라진 SQL 이 성공으로 나가므로 여기서 막는다. 이미 정직한 사유가 서 있으면 그
@@ -9884,7 +9885,9 @@ def build_sql_result(
     # 미충족이더라도 자유 IR 후보로 우회하지 않는다 — 그 후보는 2단계 구조를 만들지 못해 어차피
     # 탈락하고, 미충족은 IR 이 담지 못한 조건(회원 속성 등)이 있다는 뜻이라 fail-close 가 정답이다.
     evaluation_locked = condition_evaluation_locked(query_plan)
-    canonical_event_ir_locked = audience_authority.requires_event_ir(query_plan)
+    # 오디언스를 말한 요청에는 LLM 타겟팅 IR·자유 SQL 폴백을 포함해 두 번째 오디언스 트랙을
+    # 경쟁시키지 않는다(오디언스 없는 집계·분석에는 이 잠금이 걸리지 않는다).
+    canonical_event_ir_locked = audience_admission.declares_audience(query_plan)
     structured_ir_candidate = None
     if (
         not input_validation["is_satisfied"]
@@ -12079,14 +12082,16 @@ def _admitted_sql_builder(builder: Any) -> Any:
     def admitted(query_plan: dict[str, Any], *args: Any, **kwargs: Any) -> Any:
         if _plan_requires_reference_date(query_plan) and _EXECUTION_REFERENCE_DATE.get() is None:
             return None
-        if audience_authority.requires_event_ir(query_plan):
+        # 게이트 범위는 권위가 아니라 **오디언스를 말했는가**다(권위로 잡으면 회원 조건이
+        # 0개인 집계·분석 빌더까지 막힌다). 폐쇄 사유는 audience_admission.declares_audience.
+        if audience_admission.declares_audience(query_plan):
             if getattr(builder, "__name__", "") != "build_event_expression_sql_candidate":
                 return None
             if _plan_event_expression(query_plan) is None:
                 # 여기서 좌표를 남기지 않는 것은 계약이다. 읽을 수 없는 저장 표현의 소유자는
                 # plan_validation 이고(event_expression_schema_invalid / 표현 부재는
                 # canonical_event_expression_missing), 빌더가 같은 사실을 한 번 더 기록하면
-                # 같은 실패에 소유자가 둘이 된다 — tests/test_query_pipeline_legacy_adapter.py 의
+                # 같은 실패에 소유자가 둘이 된다 — tests/test_event_expression_payload_adapter.py 의
                 # "빌더까지 내려가지 않는다"가 그 계약을 고정한다.
                 return None
         context = _SQL_VALIDATION_CONTEXT.get()
@@ -12129,12 +12134,12 @@ def _compile_sql_template_candidate_validated(query_plan: dict[str, Any]) -> dic
             f"미지원 판정({query_plan['unsupported'].get('reason')}) — 어떤 빌더로도 폴백하지 않는다",
         )
         return None
-    if audience_authority.requires_event_ir(query_plan) and _plan_event_expression(query_plan) is None:
+    if audience_admission.declares_audience(query_plan) and _plan_event_expression(query_plan) is None:
         _record_sql_builder_decision(
             query_plan,
             "sql_template:event_expression",
             plan_decisions.REJECT,
-            "canonical audience 계약에 실행 가능한 Event IR이 없어 legacy builder를 열지 않음",
+            "오디언스를 말한 요청에 실행 가능한 Event IR이 없어 회원 슬롯 빌더를 열지 않음",
         )
         return None
     # 배타 라우팅(어떤 컴파일러는 경쟁시키면 안 된다)은 capability_validation.EXCLUSIVE_ROUTES 가
@@ -12150,7 +12155,9 @@ def _compile_sql_template_candidate_validated(query_plan: dict[str, Any]) -> dic
         if exclusive
         else all_builders
     ) or all_builders
-    if audience_authority.requires_event_ir(query_plan):
+    if audience_admission.declares_audience(query_plan):
+        # 오디언스를 말한 요청의 실행자는 Event IR 빌더 하나다(2026-08-07 폐쇄). 회원 슬롯
+        # 빌더들은 코드로는 남아 있지만 이 필터 때문에 도달하지 않는다.
         builders = tuple(
             builder
             for builder in builders
@@ -13201,18 +13208,11 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
         )
         return None
 
-    # 권위 판정은 여기서 다시 하지 않는다 — 같은 사실을 두 곳이 각자 읽으면 한쪽만 고치는 드리프트가
-    # 생기고, 이 이행에서 그 드리프트의 값은 '검증 전 IR 이 회원 조건을 통째로 대체한다'이다.
-    canonical_authority = audience_authority.executes_event_ir(query_plan)
-    # Canonical producers encode member attributes in the same Event IR, so
-    # reading target_user/exclude here would execute a second audience model.
-    # Unmarked stored event payloads keep the old composition behavior during
-    # migration; plan validation rejects non-empty hybrid canonical payloads.
-    compiled = (
-        {"predicates": [], "labels": [], "forces_state": False, "unsupported": []}
-        if canonical_authority
-        else compile_member_target_conditions(query_plan)
-    )
+    # 회원 속성은 같은 Event IR 안에 인코딩된다. 여기서 target_user/exclude 를 읽으면 두 번째
+    # 오디언스 모델이 함께 실행된다. 폐쇄(2026-08-07) 전에는 **표식 없는 저장 페이로드**만
+    # 예외적으로 그 조합을 유지했고, 그것이 legacy 슬롯이 실행에 닿는 마지막 경로였다. 지금은
+    # 예외가 없다 — 채워진 legacy 표면은 plan_validation 이 conflict 로 먼저 막는다.
+    compiled: dict[str, Any] = {"predicates": [], "labels": [], "forces_state": False, "unsupported": []}
     where_clauses = list(compiled["predicates"])
     if not compiled["forces_state"] and not _event_expression_declares_member_state(
         expression

@@ -209,7 +209,7 @@ CART_TYPE_NODE = {
 }
 
 
-def test_cart_type_only_template_matches_previous_sql() -> None:
+def test_cart_type_only_template_matches_previous_sql(member_slot_gate_lifted: None) -> None:
     graph_rag = _graph_rag()
     candidate = graph_rag._build_cart_targets_candidate(
         {"target_user": {"cart_type": dict(CART_TYPE_NODE), "behaviors": []}, "campaign_constraints": {}}
@@ -220,7 +220,7 @@ def test_cart_type_only_template_matches_previous_sql() -> None:
     assert "target_user.cart_type" not in candidate["dropped_conditions"]
 
 
-def test_cart_abandoner_with_type_keeps_both_predicates() -> None:
+def test_cart_abandoner_with_type_keeps_both_predicates(member_slot_gate_lifted: None) -> None:
     graph_rag = _graph_rag()
     node = dict(CART_TYPE_NODE, unpaid_only=True)
     candidate = graph_rag._build_cart_targets_candidate(
@@ -235,7 +235,7 @@ def test_cart_abandoner_with_type_keeps_both_predicates() -> None:
     assert candidate["dropped_conditions"] == []
 
 
-def test_cart_aggregate_builder_narrows_lines_by_type() -> None:
+def test_cart_aggregate_builder_narrows_lines_by_type(member_slot_gate_lifted: None) -> None:
     graph_rag = _graph_rag()
     candidate = graph_rag.build_cart_aggregate_targets_sql_candidate(
         {

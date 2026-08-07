@@ -152,6 +152,7 @@ def test_birthday_month_ownership_uses_only_the_injected_date() -> None:
 def test_member_calendar_sql_uses_the_request_reference_date(
     target_user: dict,
     expected_sql: str,
+    member_slot_gate_lifted: None,
 ) -> None:
     result = _build_member_sql_result(target_user, context=_FIXED_CONTEXT)
 
@@ -188,6 +189,7 @@ def test_member_calendar_sql_uses_the_request_reference_date(
 )
 def test_member_calendar_sql_fails_closed_without_a_reference_date(
     target_user: dict,
+    member_slot_gate_lifted: None,
 ) -> None:
     result = _build_member_sql_result(target_user, context=None)
 

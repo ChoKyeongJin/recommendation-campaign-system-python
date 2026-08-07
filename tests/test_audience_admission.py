@@ -14,6 +14,8 @@ import ast
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -92,22 +94,32 @@ def test_non_mapping_container_is_reported_as_the_container_path() -> None:
     ) == ("target_user",)
 
 
-def test_legacy_authority_plans_have_no_conflicts() -> None:
-    """권위 미선언, 그리고 **명시 legacy**(rollback 탈출구) 둘 다 충돌이 아니다."""
+def test_unstamped_plans_now_conflict_too() -> None:
+    """폐쇄 전 이 플랜은 legacy 레인이라 충돌이 아니었다 — 그 면제가 사라졌다.
+
+    권위 미선언(rules 레인·표식 없는 저장 페이로드)이 legacy 로 읽히던 것이 회원 슬롯이
+    실행에 닿는 마지막 통로였다. 지금은 같은 플랜이 채워진 표면 수만큼 충돌을 낸다.
+    """
 
     unstamped = {"target_user": {"grades": ["VIP"]}}
-    assert audience_admission.execution_conflicts(unstamped) == ()
+    assert [c.path for c in audience_admission.execution_conflicts(unstamped)] == [
+        "target_user.grades"
+    ]
+
+
+def test_a_stored_legacy_stamp_is_no_longer_an_escape_hatch() -> None:
+    """rollback 탈출구는 폐쇄됐다 — 조용히 통과시키지 않고 어휘 오류로 드러낸다."""
 
     rollback = {
         audience_authority.PLAN_AUTHORITY_KEY: "legacy",
-        # canonical 표식이 남아 있어도 명시 legacy 가 이긴다 — 이것이 탈출구의 정의다.
         audience_authority.EVENT_EXPRESSION_KEY: {
             "expression": CANONICAL_EXPRESSION,
             "source": "audience_requirement",
         },
         "target_user": {"grades": ["VIP"]},
     }
-    assert audience_admission.execution_conflicts(rollback) == ()
+    with pytest.raises(audience_authority.AudienceAuthorityError, match="legacy"):
+        audience_admission.execution_conflicts(rollback)
 
 
 def test_explicit_event_ir_authority_without_any_source_marker_conflicts() -> None:
@@ -122,15 +134,32 @@ def test_explicit_event_ir_authority_without_any_source_marker_conflicts() -> No
 
 
 def test_declared_canonical_ingress_without_a_stamp_also_conflicts() -> None:
-    """스탬프 이전의 canonical 계약도 같은 레인이다(`requires_event_ir` 선택의 기록)."""
+    """스탬프 이전의 canonical 계약도 같은 레인이다(폐쇄 전부터의 계약)."""
 
     plan = {
         "audience_requirement": {"expression": {"kind": "x"}, "issues": []},
         "target_user": {"gender": "F"},
     }
     assert audience_authority.requires_event_ir(plan) is True
-    assert audience_authority.executes_event_ir(plan) is False
+    assert audience_admission.declares_audience(plan) is True
     assert [c.path for c in audience_admission.execution_conflicts(plan)] == ["target_user.gender"]
+
+
+def test_declares_audience_scopes_the_closure_to_requests_that_have_an_audience() -> None:
+    """회원 조건이 0개인 요청(집계·분석)은 폐쇄 범위 밖이다.
+
+    범위를 권위로 잡으면 legacy 레인과 아무 상관 없는 집계 질의까지 "Event IR 표현이 없다"로
+    죽는다. 그 경계가 여기서 얼어 있다.
+    """
+
+    assert audience_admission.declares_audience({}) is False
+    assert audience_admission.declares_audience({"aggregation_request": {"x": 1}}) is False
+    assert audience_admission.declares_audience({"target_user": {}}) is False
+    assert audience_admission.declares_audience({"target_user": {"gender": "F"}}) is True
+    assert audience_admission.declares_audience({"exclude": {"interests": ["golf"]}}) is True
+    assert audience_admission.declares_audience(
+        {"audience_requirement": {"expression": None, "issues": []}}
+    ) is True
 
 
 def test_both_containers_yield_one_conflict_per_slot() -> None:

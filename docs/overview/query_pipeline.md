@@ -39,7 +39,7 @@ CompiledSql                  query_pipeline/compiler/
 | planning | `planning/models.py`, `logical_planner.py` | `LogicalPlan`(scan/filter/aggregate/sort/limit/project) |
 | compiler | `compiler/models.py`, `base.py`, `sql_compiler.py`, `postgresql.py`, `audience.py`, `bindings.py`, `capability.py` | `CompiledSql`, `SqlParameter`, `SchemaBindings`, `SqlCompilationContext` |
 | pipeline | `pipeline/query_pipeline.py` | `QueryPipeline`, `QueryPipelineReady`, `QueryPipelineNeedsResolution` |
-| compatibility | `compatibility/legacy_event_expression.py` | `LegacyEventExpressionAdapter`(deprecated) |
+| plan_payload | `plan_payload/event_expression_payload.py` | `EventExpressionPayloadAdapter` |
 
 import 방향은 `requirement → event_query → planning → compiler` 로 고정되고
 `tests/test_query_pipeline_layering.py` 가 모듈 전수로 강제한다. `requirement` 는
@@ -170,13 +170,15 @@ return audience_execution.project_resolution_to_plan(payload, resolution)
 문자열을 검사하는 기존 파이프라인(`sql_guard`·커버리지 검증)과의 호환을 위해 존재한다.
 식별자는 파라미터로 묶을 수 없으므로 `SchemaBinding` 이 안전한 형태만 통과시킨다.
 
-## 8. deprecated 와 다음 단계
+## 8. 다음 단계
 
-`compatibility/legacy_event_expression.py` 는 3단계에서 삭제한다. 조건은 두 가지다.
-
-1. `plan["event_expression"]` 의 생산자가 남지 않는다(구조화기·lowering·cutover 전부가
-   `EventQuerySpec` 를 직접 저장한다).
-2. 저장된 플랜 재생 경로(shadow/rollback)가 사양 스냅샷으로 재생된다.
+**철거된 계획 하나.** 이 절은 원래 `compatibility/legacy_event_expression.py` 를 "3단계에서
+삭제할 deprecated 다리"로 소개했고, 삭제 조건 둘을 걸어 두었다(생산자 소멸 + shadow/rollback
+재생의 사양 스냅샷화). 그 계획은 **폐기됐다**. 2026-08-07 legacy 오디언스 레인이 닫히면서
+`plan["event_expression"]` 은 폐기 대상 슬롯이 아니라 오디언스 의미의 **유일한 직렬화 표기**가
+됐고, 삭제 조건 ②가 전제하던 shadow/rollback 도구는 통째로 사라졌다. 모듈은 남되 이름이
+`plan_payload/event_expression_payload.py` 로 바뀌었다 — "임시 호환 코드"라는 오해가 이름에서
+왔기 때문이다.
 
 아직 남은 것:
 

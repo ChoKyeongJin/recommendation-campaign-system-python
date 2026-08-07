@@ -31,6 +31,11 @@ from sql_guard import load_allowed_tables, validate_sql
 READ_ONLY_DBS = ("quadmax_sdz", "CRMAN", "CRMDW")
 ALL_DBS = ("postgres",) + READ_ONLY_DBS
 
+# SQL Server 쿼리 타임아웃(초). pymssql 은 0 을 '무제한 대기'로 해석하므로 0 이하를 허용하지
+# 않는다. 한 요청이 이 SQL 을 두 번 이상 실행할 수 있어(본 실행 + 세그먼트 구성) 벽시계
+# 상한은 이 값의 배수가 된다 — 늘릴 때는 그 점을 감안한다.
+DEFAULT_MSSQL_QUERY_TIMEOUT_SECONDS = 60
+
 
 def _env(*names_then_default: str | None) -> str | None:
     # 여러 환경변수 후보를 순서대로 확인해 첫 번째 비어있지 않은 값을 반환한다.
@@ -41,6 +46,18 @@ def _env(*names_then_default: str | None) -> str | None:
         if value:
             return value
     return default
+
+
+def mssql_query_timeout_seconds() -> int:
+    # 초 단위 쿼리 타임아웃. 미설정/형식오류/0 이하는 기본값으로 되돌린다(무제한 대기 금지).
+    raw = os.getenv("MSSQL_QUERY_TIMEOUT_SECONDS")
+    if not raw:
+        return DEFAULT_MSSQL_QUERY_TIMEOUT_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_MSSQL_QUERY_TIMEOUT_SECONDS
+    return value if value > 0 else DEFAULT_MSSQL_QUERY_TIMEOUT_SECONDS
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +169,7 @@ def _mssql_connection(cfg: dict[str, Any], name: str) -> Iterator[Any]:
         password=cfg["password"],
         database=cfg["dbname"],
         login_timeout=5,
-        timeout=15,
+        timeout=mssql_query_timeout_seconds(),
         autocommit=True,  # DML 을 하지 않으므로 트랜잭션 상태를 남기지 않는다.
         as_dict=True,
     )

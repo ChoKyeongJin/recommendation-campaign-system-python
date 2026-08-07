@@ -134,7 +134,7 @@ def test_builder_skips_unsupported_lapsed_buyer() -> None:
     assert candidate is None
 
 
-def test_builder_still_compiles_supported_repeat_buyer() -> None:
+def test_builder_still_compiles_supported_repeat_buyer(member_slot_gate_lifted: None) -> None:
     import graph_rag
 
     candidate = graph_rag.build_order_count_targets_sql_candidate(

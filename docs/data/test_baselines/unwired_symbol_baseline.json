@@ -2,7 +2,7 @@
  "note": "정의됐지만 프로덕션이 부르지 않는 최상위 공개 심볼의 기준선. kind=dead 는 테스트조차 부르지 않는 것, kind=test_only 는 테스트만 부르는 것이다. 둘 다 늘 수 없다(하향 전용 래칫) — 배선하거나 지우면 이 파일에서 항목을 뺀다.",
  "generated_by": "tools/unwired_symbol_inventory.py",
  "dead_total": 29,
- "test_only_total": 28,
+ "test_only_total": 27,
  "entries": {
   "analytical_intent.py::SUPPORTED_QUERY_TYPES": {
    "kind": "dead",
@@ -109,10 +109,6 @@
    "reason": "Event IR 검증·변환 표면. 프로덕션 호출자가 없다(컴파일 경로는 event_compiler 가 직접 탄다)."
   },
   "event_ir.py::node_type_names": {
-   "kind": "test_only",
-   "reason": "Event IR 검증·변환 표면. 프로덕션 호출자가 없다(컴파일 경로는 event_compiler 가 직접 탄다)."
-  },
-  "event_ir.py::try_convert_to_legacy_slots": {
    "kind": "test_only",
    "reason": "Event IR 검증·변환 표면. 프로덕션 호출자가 없다(컴파일 경로는 event_compiler 가 직접 탄다)."
   },
