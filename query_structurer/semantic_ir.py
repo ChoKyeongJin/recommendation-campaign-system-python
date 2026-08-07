@@ -7,6 +7,7 @@ from datetime import date, timedelta
 from typing import Any
 
 import calendar_window
+import event_ir
 from calendar_window import (
     DurationCandidate,
     duration_window_candidates,
@@ -154,6 +155,41 @@ def _number(value: str) -> int | str:
 
 def _overlaps(start: int, end: int, occupied: list[tuple[int, int]]) -> bool:
     return any(start < occupied_end and occupied_start < end for occupied_start, occupied_end in occupied)
+
+
+# 기간 리터럴이 **창이 될 때**의 wire 모양. 종류는 이미 판정돼 있고(``temporal_kind``) 창의
+# 타입·값·단위 표기는 IR 이 소유하므로 여기서 dict 을 손으로 조립하지 않는다.
+#
+# 이 투영이 없던 동안 구조화 안내는 모델에게 "binding 의 값·단위를 사용"하라고 시켰는데, 이
+# 추출기의 단위 표기는 복수형('days')이고 툴 스키마 enum 은 단수형(day|week|month|year)이다.
+# 실측(2026-08-07)에서 모델이 그 'days' 를 그대로 복사한 응답이 스키마 검증에서 떨어져 교정
+# 라운드가 실패했다. 이제 모델이 옮기는 것은 값이 아니라 **객체 하나**이므로 옮기다 틀릴 자리가
+# 없다 — 절대 구간(``date_window``)이 이미 쓰던 계약과 같다.
+_TEMPORAL_KIND_WINDOW_TYPES: dict[str, Any] = {
+    "rolling_duration": event_ir.RollingWindow,  # 기준일에서 거슬러 세는 길이
+    "past_point": event_ir.RelativeWindow,       # 그 시점이 속한 달력 칸
+}
+
+
+def _duration_event_ir_window(
+    value: Any, unit: Any, temporal_kind: Any, *, future_directed: bool = False
+) -> dict[str, Any] | None:
+    """기간 리터럴 → wire 창. 창으로 표현할 수 없으면 ``None`` (지어내지 않는다).
+
+    표현할 수 없는 경우가 실제로 있다: 종류가 판정되지 않은 리터럴, IR 어휘 밖의 단위(시간),
+    정수가 아닌 값, 그리고 **미래를 보는 기간**('향후 7일'). IR 의 창은 둘 다 과거를 보므로
+    미래 기간을 창으로 옮기면 방향이 뒤집힌다. 그때 빈 창을 짓느니 이 리터럴은 창 후보로
+    제시되지 않는다 — 결핍으로 남는 편이 지어낸 창보다 낫다(CLAUDE.md §11·§12).
+    """
+
+    window_type = _TEMPORAL_KIND_WINDOW_TYPES.get(str(temporal_kind))
+    canonical = event_ir.canonical_unit(unit)
+    if window_type is None or canonical is None or future_directed:
+        return None
+    try:
+        return window_type(value=value, unit=canonical).to_dict()
+    except event_ir.IrSchemaError:
+        return None
 
 
 def _deterministic_calendar_window_spans(
@@ -338,6 +374,16 @@ def scan_literal_bindings(
             )
             if kind is not None:
                 normalized["temporal_kind"] = kind
+            window = _duration_event_ir_window(
+                value,
+                DURATION_UNIT_SEMANTICS[unit],
+                kind,
+                future_directed=calendar_window.is_future_directed_duration(
+                    query, match.start()
+                ),
+            )
+            if window is not None:
+                normalized["event_ir_window"] = window
             append("duration", match.start(), match.end(), value, normalized)
 
     # 숫자 없는 단어형 기간('일주일', '한 달', '반년', '보름', '석달', '한해'). 값·단위 선언과
@@ -359,18 +405,21 @@ def scan_literal_bindings(
         surface_unit = calendar_window.CANON_TO_KO_UNIT.get(candidate.unit)
         if surface_unit is None:
             continue
-        append(
-            "duration",
-            start,
-            end,
+        normalized = {
+            "value": candidate.value,
+            "surface_unit": surface_unit,
+            "semantic_unit": candidate.unit,
+            "temporal_kind": candidate.kind,
+        }
+        window = _duration_event_ir_window(
             candidate.value,
-            {
-                "value": candidate.value,
-                "surface_unit": surface_unit,
-                "semantic_unit": candidate.unit,
-                "temporal_kind": candidate.kind,
-            },
+            candidate.unit,
+            candidate.kind,
+            future_directed=calendar_window.is_future_directed_duration(query, start),
         )
+        if window is not None:
+            normalized["event_ir_window"] = window
+        append("duration", start, end, candidate.value, normalized)
 
     comparison_map = dict(_COMPARISON_TERMS)
     for match in _COMPARISON_RE.finditer(query):

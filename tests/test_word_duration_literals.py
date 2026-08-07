@@ -14,6 +14,11 @@
      리터럴 근거로 새어 나가지 않는다.
   3. ``-간`` 접미형은 어간에서 **파생**한다(단위마다 표면을 손으로 적지 않는다).
   4. 종류 판정('보름 전' vs '최근 보름')은 숫자형과 같은 경로를 쓴다.
+
+2026-08-07 기준 모양 변경: 기간 원자가 ``event_ir_window``(창의 wire 모양)를 함께 싣는다.
+숫자형·단어형·``-간`` 접미형이 모두 같은 자리에 같은 모양을 받으므로 위 계약 1·3 의 기대 dict 에
+그 키가 추가됐다(삭제·완화가 아니라 추가다). 이유와 단일 계약은
+``tests/test_duration_binding_wire_window.py`` 가 소유한다.
 """
 
 from __future__ import annotations
@@ -38,6 +43,17 @@ def _durations(query: str) -> list[dict]:
     ]
 
 
+# 기간 원자는 창의 **wire 모양**까지 싣는다(2026-08-07). 모델에게 값·단위를 옮겨 적게 하면
+# 이 추출기의 복수형 표기('days')가 툴 스키마 enum(day|week|month|year) 밖이라 그대로 복사한
+# 응답이 검증에서 떨어지기 때문이다. 계약의 소유자는 tests/test_duration_binding_wire_window.py
+# 이고, 여기서는 단어형·``-간`` 접미형도 같은 모양을 받는다는 사실만 함께 고정한다.
+_CANONICAL_WIRE_UNITS = {"days": "day", "weeks": "week", "months": "month", "years": "year"}
+
+
+def _wire_window(value: int, semantic_unit: str) -> dict:
+    return {"type": "rolling", "value": value, "unit": _CANONICAL_WIRE_UNITS[semantic_unit]}
+
+
 # ── 1) 단어형 전 항목이 선언대로 바인딩된다 ──────────────────────────────────────
 
 
@@ -58,6 +74,7 @@ def test_every_declared_word_duration_becomes_a_literal_binding(surface: str) ->
         "surface_unit": calendar_window.CANON_TO_KO_UNIT[unit],
         "semantic_unit": unit,
         "temporal_kind": calendar_window.KIND_ROLLING,
+        "event_ir_window": _wire_window(value, unit),
     }
 
 
@@ -185,6 +202,7 @@ def test_every_span_suffix_surface_binds_a_period(surface: str) -> None:
         "surface_unit": surface,
         "semantic_unit": canonical,
         "temporal_kind": calendar_window.KIND_ROLLING,
+        "event_ir_window": _wire_window(3, canonical),
     }
 
 

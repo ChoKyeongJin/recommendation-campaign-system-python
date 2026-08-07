@@ -125,6 +125,9 @@ def test_calendar_duration_is_consumed_by_its_exact_execution_window() -> None:
         "surface_unit": "개월",
         "semantic_unit": "months",
         "temporal_kind": "rolling_duration",
+        # 2026-08-07: 창의 wire 모양을 애플리케이션이 실어 보낸다(모델이 값·단위를 옮겨 적지
+        # 않는다). 여전히 180일이 아니라 **달 단위**라는 이 테스트의 요지는 그대로다.
+        "event_ir_window": {"type": "rolling", "value": 6, "unit": "month"},
     }
     plan = {
         "literal_bindings": literal_bindings,

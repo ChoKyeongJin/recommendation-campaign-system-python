@@ -1065,8 +1065,11 @@ def audience_catalog_guidance(
         '- Source: {"type":"source","name":"<source_id>"}; 전역이면 correlation:"none"만 추가',
         '- FieldRef: {"type":"field","name":"<field_id>"}',
         '- Literal: {"type":"literal","value":<application literal value>}',
-        '- TimeFilter: {"type":"time_filter","field":<FieldRef>,"window":<TimeWindow>}; 절대 기간은 literal_bindings.normalized.event_ir_window를 그대로 복사하고 rolling/relative 기간은 binding의 값·단위를 사용',
-        '- 창의 **종류도 애플리케이션 소유**다: binding.normalized.temporal_kind 가 "rolling_duration"이면 window.type="rolling"(기준일에서 거슬러 세는 길이), "past_point"이면 window.type="relative"(그 시점이 속한 달력 칸). 표면어를 다시 읽어 고르지 않는다',
+        '- TimeFilter: {"type":"time_filter","field":<FieldRef>,"window":<TimeWindow>}; window는 그 기간을 말한 literal binding의 normalized.event_ir_window를 **그대로 복사**한다. 절대 구간·rolling·relative가 모두 같은 계약이다',
+        # 창의 값·단위·종류를 모델이 옮겨 적게 하던 동안, 이 추출기의 단위 표기(복수형 'days')가
+        # 툴 스키마 enum(day|week|month|year) 밖이라 그대로 복사한 응답이 검증에서 떨어졌다
+        # (실측 2026-08-07). 지금은 옮길 것이 객체 하나뿐이라 옮기다 틀릴 자리가 없다.
+        '- 창의 값·단위·종류는 전부 애플리케이션 소유다: semantic_unit(내부 표기)이나 표면어를 읽어 window를 조립하지 않는다. binding에 event_ir_window가 없으면 그 리터럴은 기간 창이 아니므로(임계값 등) 창을 지어내지 않는다',
         '- Filter: {"type":"filter","relation":<Relation>,"where":<Condition>}',
         '- Aggregate: {"type":"aggregate","function":"sum|count|avg|min|max","relation":<Relation>,"expression":<Scalar|null>,"distinct":false}',
         '- Comparison: {"type":"comparison","operator":"=|!=|>|>=|<|<=","left":<Scalar>,"right":<Scalar>,"evidence":{"text":"...","start":0,"end":1}}',

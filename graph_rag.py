@@ -139,7 +139,7 @@ from aggregation_requirements import (
 )
 from analytical_intent import (analyze_analytical_intent, build_aggregation_request as build_deterministic_aggregation_request, compile_aggregation_ast, validate_intent_sql_contract)
 import calendar_window
-from calendar_window import (DURATION_UNIT_DAYS as _DURATION_UNIT_DAYS, NUMERIC_DURATION_PATTERN as _NUMERIC_DURATION_PATTERN, WORD_DURATION_DAYS as _WORD_DURATION_DAYS, WORD_DURATION_PATTERN as _WORD_DURATION_PATTERN, month_last_day as _month_last_day, parse_calendar_window, parse_calendar_windows, calendar_window_from_parts, ymd as _ymd)
+from calendar_window import (month_last_day as _month_last_day, parse_calendar_window, parse_calendar_windows, calendar_window_from_parts, ymd as _ymd)
 from entity_set import (compile_entity_set_predicate, entity_set_capability)
 from formula_engine import compile_formula_ast, validate_formula_ast
 from targeting_expression import (
@@ -4713,33 +4713,33 @@ _SCOPE_DISTINCT_MODIFIERS = frozenset(lexicon_patterns.terms("scope_distinct_mod
 # 지표 대응표를 선언해 '카트가 소유자'임을 한 곳에서 못 박는다(금액/수량/종류 전 지표 공통).
 
 
-# 기간 어휘(_KO_UNIT_TO_CANON/_DURATION_UNIT_DAYS/_WORD_DURATION_DAYS/패턴)와 통합 파서
-# (_parse_duration_window/_duration_window_candidates)는 calendar_window 가 소유한다 — 이름은 여기서
-# 그대로 재노출한다(호출부 다수). 창 문법이 이 모듈 안에만 있어 순수 파서(entity_set 등)가 재사용하지
+# 기간 어휘(단위 표·단어형 표·패턴)와 통합 파서(parse_duration_window/duration_window_candidates)는
+# calendar_window 가 소유한다. 창 문법이 이 모듈 안에만 있어 순수 파서(entity_set 등)가 재사용하지
 # 못하고 각자 빈약한 정규식을 따로 갖던 것이 '2019년 3월 → 2019년 전체' 류 결함의 원인이었다.
+# 이 모듈은 그 패턴을 직접 돌리지 않고 파서를 부른다 — 패턴을 직접 돌리면 원문 좌표가 없어
+# 단어형의 낱말 경계 가드가 빠진다(그 자리가 아래 _duration_days_signals 였다).
 
 
 def _duration_days_signals(text: str) -> set[int]:
     """텍스트에 나온 모든 기간 표현을 일수 집합으로 돌려준다('일주일'과 '7일'은 같은 7로 정규화).
 
     재작성 가드가 '일주일 이상 유지' 같은 기간 조건 소실을 잡을 때 쓴다. 숫자 서명만으로는
-    숫자 없는 단어형('일주일')이 사라져도 알 수 없었다."""
-    return {days for _, _, days in _duration_matches((text or "").replace(" ", ""))}
+    숫자 없는 단어형('일주일')이 사라져도 알 수 없었다.
 
-
-def _duration_matches(compact: str) -> list[tuple[int, int, int]]:
-    """공백 제거 텍스트에서 (시작, 끝, 일수) 목록을 위치와 함께 돌려준다(등장 순)."""
-    found = [
-        (match.start(), match.end(), int(match.group("num")) * _DURATION_UNIT_DAYS[match.group("unit")])
-        for match in _NUMERIC_DURATION_PATTERN.finditer(compact)
-        if int(match.group("num")) > 0
-        and not (match.group("unit") == "년" and 1900 <= int(match.group("num")) <= 2199)
-    ]
-    found += [
-        (match.start(), match.end(), _WORD_DURATION_DAYS[match.group(0)])
-        for match in _WORD_DURATION_PATTERN.finditer(compact)
-    ]
-    return sorted(found)
+    후보 판정은 :mod:`calendar_window` 가 소유하며 **원문과 좌표 대응표를 함께** 넘긴다 —
+    단어형의 낱말 경계는 원문에만 남아 있기 때문이다. 압축 텍스트만 보던 동안 서로 다른 낱말의
+    조각이 기간으로 읽혔고('모두 주문' → '두주' = 14일), 그 유령 신호가 사라졌다는 이유로
+    정상 재작성이 '기간 소실'로 폐기됐다(실측: 라이브 코퍼스 53번)."""
+    source = text or ""
+    offsets = [index for index, char in enumerate(source) if not char.isspace()]
+    compact = "".join(source[index] for index in offsets)
+    return {
+        days
+        for candidate in calendar_window.duration_window_candidates(
+            compact, source=source, source_offsets=offsets
+        )
+        if (days := calendar_window.duration_candidate_days(candidate)) is not None
+    }
 
 
 # 최근성 표지(기간 숫자 없는 '최근 로그인'류에 기본 창을 줄지 판정). 레지스트리 recently.synonyms 미러.

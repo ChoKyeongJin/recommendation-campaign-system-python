@@ -118,11 +118,19 @@ def test_daily_and_yearly_numeric_duration_regression(
         )
         if item["kind"] == "duration"
     )
+    # 2026-08-07: 기간 원자는 창의 wire 모양(``event_ir_window``)도 함께 싣는다 — 모델이
+    # 값·단위를 옮겨 적다 스키마 enum 밖의 복수형을 복사하던 결함을 없앤다. 계약의 소유자는
+    # tests/test_duration_binding_wire_window.py 이고 여기서는 키가 붙는다는 사실만 반영한다.
     assert scanner_duration["normalized"] == {
         "value": 2,
         "surface_unit": surface,
         "semantic_unit": canonical,
         "temporal_kind": "rolling_duration",
+        "event_ir_window": {
+            "type": "rolling",
+            "value": 2,
+            "unit": {"days": "day", "years": "year"}[canonical],
+        },
     }
 
     calendar_duration = calendar_window.parse_duration_window(text)
@@ -133,3 +141,48 @@ def test_daily_and_yearly_numeric_duration_regression(
         assert "min_days" not in calendar_duration
     else:
         assert calendar_duration["min_days"] == min_days
+
+
+# ── 세 번째 표면 목록을 두지 않는다 ─────────────────────────────────────────────
+# 같은 문법(숫자 + 기간 단위)을 읽는 자리가 늘 때마다 손 목록을 하나씩 더 두면, 그 목록만 낡아서
+# **같은 문장이 어느 경로로 오느냐에 따라** 기간이 보이기도 하고 안 보이기도 한다. 실측:
+# ``-간`` 접미형이 리터럴 추출기에는 파생으로 들어갔는데 기간 정규화기에는 '일간/년간'만 손으로
+# 적혀 있어 '최근 3개월간'이 그쪽에서만 읽히지 않았다.
+
+
+@pytest.mark.parametrize(
+    "surface", sorted(condition_normalizers.numeric_duration_unit_semantics())
+)
+def test_the_period_normalizer_reads_every_declared_numeric_duration_surface(
+    surface: str,
+) -> None:
+    from semantic_normalizers import PeriodNormalizer
+
+    canonical = condition_normalizers.numeric_duration_unit_semantics()[surface]
+    window = PeriodNormalizer.normalize(f"최근 3{surface}")
+
+    assert (window.value, window.unit) == (3, canonical), surface
+
+
+def test_the_period_normalizer_never_guesses_a_unit_it_could_not_read() -> None:
+    """읽지 못한 단위를 'days' 로 물러서면 '3개월'이 조용히 3일이 된다(§20)."""
+    from semantic_normalizers import NormalizationError, PeriodNormalizer
+
+    with pytest.raises(NormalizationError):
+        PeriodNormalizer.normalize("최근 24시간")
+
+
+def test_the_rewrite_duration_signature_uses_the_guarded_parser() -> None:
+    """재작성 가드의 기간 신호도 낱말 경계 가드를 받는다(압축 텍스트만 보지 않는다).
+
+    ``'모두 주문'`` 의 압축 표면 ``'두주'`` 가 14일 기간 신호로 읽히면, 그 유령 신호가 재작성본
+    에서 사라졌다는 이유로 **정상 재작성이 폐기된다**(실측: 라이브 코퍼스 53번).
+    """
+    import graph_rag
+
+    assert graph_rag._duration_days_signals("앱과 PC 양쪽 채널에서 모두 주문한 회원") == set()
+    assert graph_rag._duration_days_signals("VIP에 한해서 발송한 회원") == set()
+    # 정상 표현은 그대로 잡힌다 — 가드가 기능을 잃지 않았다.
+    assert graph_rag._duration_days_signals("일주일 이상 장바구니에 담아둔 회원") == {7}
+    assert graph_rag._duration_days_signals("최근 7일 구매한 회원") == {7}
+    assert graph_rag._duration_days_signals("3주간 유지한 회원") == {21}

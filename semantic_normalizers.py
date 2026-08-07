@@ -503,7 +503,19 @@ class PeriodNormalizer:
     """
 
     _MONTH_SURFACE_RE = re.compile(r"^(?P<year>\d{4})년\s*(?P<month>\d{1,2})월$")
-    _RELATIVE_SURFACE_RE = re.compile(r"^최근\s*(?P<value>\d+)\s*(?P<unit>일|주|주일|개월|달|년|년간)$")
+    # 숫자 뒤 기간 단위 표면의 소유자는 :func:`condition_normalizers.numeric_duration_unit_semantics`
+    # 하나다. 여기 손 목록이 따로 있던 동안 그 목록만 낡아서, 다른 계층이 이미 읽는 표면
+    # ('3개월간')을 이 계층은 못 읽었다 — 같은 문장이 어느 경로로 오느냐에 따라 기간이
+    # 보이기도, 안 보이기도 했다.
+    _RELATIVE_DURATION_UNITS: dict[str, str] = condition_normalizers.numeric_duration_unit_semantics()
+    _RELATIVE_SURFACE_RE = re.compile(
+        r"^최근\s*(?P<value>\d+)\s*(?P<unit>"
+        + "|".join(
+            re.escape(surface)
+            for surface in sorted(_RELATIVE_DURATION_UNITS, key=lambda item: (-len(item), item))
+        )
+        + r")$"
+    )
 
     @classmethod
     def normalize(cls, raw: Any, *, today: date | None = None) -> Period | RelativeWindow:
@@ -613,7 +625,16 @@ class PeriodNormalizer:
             return CalendarMonth(year=int(month.group("year")), month=int(month.group("month"))).window()
         relative = cls._RELATIVE_SURFACE_RE.match(re.sub(r"\s+", "", text))
         if relative:
-            unit = condition_normalizers.canonical_unit(relative.group("unit")) or "days"
+            # 단위를 읽은 표와 canonical 단위를 얻는 표가 같아야 한다. 예전에는 매칭은 손 목록으로
+            # 하고 canonical 은 다른 표에서 얻은 뒤 ``or "days"`` 로 물러섰는데, 그 폴백은 표가
+            # 어긋나는 순간 '3개월'을 조용히 3일로 바꾼다(§20 암묵적 변환 금지).
+            unit = cls._RELATIVE_DURATION_UNITS.get(relative.group("unit"))
+            if unit is None:  # pragma: no cover - 매칭 표와 같은 표라 도달하지 않는다
+                raise NormalizationError(
+                    "invalid_period_unit",
+                    f"지원하지 않는 relative 기간 단위입니다: {relative.group('unit')!r}",
+                    received=surface,
+                )
             window = RelativeWindow(value=int(relative.group("value")), unit=unit)
             return window.resolve(today) if today is not None else window
         raise NormalizationError("invalid_period", f"기간 표현을 읽지 못했다: {surface!r}", received=surface)

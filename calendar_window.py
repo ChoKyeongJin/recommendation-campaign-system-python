@@ -267,10 +267,27 @@ def _text_anchor_year(text: str, today: date) -> int | None:
 # 기간 표현에 **붙여 쓸 수 있는** 앞뒤 표지. 분기 판정(:func:`_is_quarter_duration`)과 단어형
 # 기간의 낱말 경계 판정(:func:`is_standalone_word_duration`)이 같은 표를 본다 — 두 곳이 각자
 # 목록을 들고 있으면 '최근 2분기'와 '최근 일주일'의 같은 '최근'이 경로마다 다르게 읽힌다.
-RELATIVE_LEADING_MARKERS: tuple[str, ...] = ("최근", "지난", "향후", "앞으로")
+#
+# 표지는 **방향**이 갈린다. '최근/지난'은 기준 시각에서 과거로, '향후/앞으로'는 미래로 센다.
+# 두 방향을 한 목록으로만 두면 붙여쓰기 판정에는 문제가 없지만, 그 판정 결과를 창으로 옮기는
+# 소비자가 미래 표현을 과거 창으로 뒤집는다 — 그래서 방향별 부분집합을 함께 선언한다.
+FUTURE_LEADING_MARKERS: tuple[str, ...] = ("향후", "앞으로")
+PAST_LEADING_MARKERS: tuple[str, ...] = ("최근", "지난")
+RELATIVE_LEADING_MARKERS: tuple[str, ...] = (*PAST_LEADING_MARKERS, *FUTURE_LEADING_MARKERS)
 DURATION_TRAILING_MARKERS: tuple[str, ...] = ("동안", "간", "연속")
 _LEADING_MARKER_RE = re.compile(rf"(?:{'|'.join(RELATIVE_LEADING_MARKERS)})\s*$")
+_FUTURE_LEADING_MARKER_RE = re.compile(rf"(?:{'|'.join(FUTURE_LEADING_MARKERS)})\s*$")
 _TRAILING_MARKER_RE = re.compile(rf"\s*(?:{'|'.join(DURATION_TRAILING_MARKERS)})")
+
+
+def is_future_directed_duration(text: str, start: int) -> bool:
+    """원문 좌표 ``start`` 의 기간 표면 **바로 앞**이 앞을 보는 표지인가('향후 7일').
+
+    Event IR 의 창은 둘 다 과거를 본다(``rolling`` = 기준일에서 거슬러 센 길이, ``relative`` =
+    지나간 달력 칸). 그래서 미래 기간은 **표현할 수 없다**. 표현할 수 없는 것을 표현 가능한
+    가장 비슷한 모양으로 옮기면 뜻이 뒤집히므로(§11), 이 판정을 보는 쪽은 창을 만들지 않는다.
+    """
+    return _FUTURE_LEADING_MARKER_RE.search(text[:start]) is not None
 
 
 def _is_quarter_duration(text: str, start: int, end: int) -> bool:
@@ -1183,8 +1200,15 @@ KO_UNIT_TO_CANON = condition_normalizers.numeric_duration_unit_semantics()
 CANON_TO_KO_UNIT = {"days": "일", "weeks": "주", "months": "개월", "years": "년"}
 # 기간 표현. 숫자형('7일', '2주')과 숫자 없는 한글 단어형('일주일', '보름', '한 달')을 모두 본다.
 # 단어형은 숫자가 없어서 재작성 가드의 숫자 서명에도, 기존 '최근 N일' 파서에도 안 잡혔다.
-# ``*_DAYS`` 와 공개 패턴은 아직 이를 import하는 레거시 신호 비교기의 호환 표면이다. 정확히 일수로
-# 환산되는 일/주만 노출한다. canonical 기간 파서는 별도 전체 패턴으로 월/년까지 읽고 단위를 보존한다.
+# ``DURATION_UNIT_DAYS`` 는 정확히 일수로 환산되는 일/주만 노출한다(:func:`event_parser` 의 숫자
+# 기간 스캔이 이 부분집합을 쓴다). canonical 기간 파서는 별도 전체 패턴으로 월/년까지 읽고 단위를
+# 보존한다.
+#
+# 단어형의 **일수 환산표와 그 패턴**(``WORD_DURATION_DAYS``/``WORD_DURATION_PATTERN``)은 2026-08-07
+# 에 삭제됐다. 유일한 소비자였던 재작성 신호 비교기가 압축 텍스트에 그 패턴을 직접 돌렸고, 원문
+# 좌표가 없어 낱말 경계 가드가 빠져 있었다('모두 주문' → '두주' = 14일). 그 호출부는 이제
+# :func:`duration_window_candidates` + :func:`duration_candidate_days` 를 쓴다 — 같은 판정이 한
+# 경로에서만 나온다.
 DURATION_UNIT_DAYS = {
     surface: condition_normalizers.unit_days()[canonical]
     for surface, canonical in KO_UNIT_TO_CANON.items()
@@ -1214,14 +1238,6 @@ WORD_DURATION_SPECS: dict[str, tuple[int, str]] = {
     "석달": (3, "months"), "세달": (3, "months"), "세개월": (3, "months"),
     "반년": (6, "months"), "일년": (1, "years"), "한해": (1, "years"), "한햇": (1, "years"),
 }
-WORD_DURATION_DAYS = {
-    surface: value * ({"days": 1, "weeks": 7}[unit])
-    for surface, (value, unit) in WORD_DURATION_SPECS.items()
-    if unit in {"days", "weeks"}
-}
-WORD_DURATION_PATTERN = re.compile(
-    "|".join(sorted(map(re.escape, WORD_DURATION_DAYS), key=len, reverse=True))
-)
 _CANONICAL_WORD_DURATION_PATTERN = re.compile(
     "|".join(sorted(map(re.escape, WORD_DURATION_SPECS), key=len, reverse=True))
 )
@@ -1411,6 +1427,18 @@ def duration_window_candidates(
         for candidate in _raw_duration_window_candidates(compact)
         if _passes_word_boundary(candidate, compact, source, source_offsets)
     ]
+
+
+def duration_candidate_days(candidate: DurationCandidate) -> int | None:
+    """후보를 **정확히 환산되는** 일수로 옮긴다(달·년은 달력에 따라 길이가 달라 ``None``).
+
+    환산표의 소유자는 :func:`condition_normalizers.unit_days` 다 — 호출부가 ``{"days": 1,
+    "weeks": 7}`` 을 각자 적으면 단위가 늘 때 한쪽만 낡는다.
+    """
+    unit_days = condition_normalizers.unit_days()
+    if candidate.unit not in unit_days:
+        return None
+    return candidate.value * unit_days[candidate.unit]
 
 
 def duration_window_from_candidate(candidate: DurationCandidate) -> dict[str, Any]:

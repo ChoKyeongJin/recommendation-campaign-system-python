@@ -1,8 +1,11 @@
 # 명시 기간이 '기간 결핍'으로 닫히던 결함 — 작업 인계
 
-작성 2026-08-07. **미커밋 상태로 작업 트리에 남아 있는 변경**의 인계 문서다.
+작성 2026-08-07. 갱신 2026-08-07(2차 세션).
 다음 세션이 이 파일 하나로 이어받을 수 있게 쓴다: 무엇이 왜 들어갔는가, 무엇이 검증됐는가,
 무엇이 남았는가, 어디서부터 손대야 하는가.
+
+> **1차 세션의 A~F 는 커밋됐다**(`f0fe174`). 2차 세션은 §5.1 의 중단된 검증 3단계를 마치고
+> §5.2 의 (1)(2)(3) 을 고쳤다. 그 결과는 §5.1-a · §5.2 · §8 에 있다.
 
 ---
 
@@ -60,6 +63,10 @@
 - **목록 단위 판정**은 `targeting_policy.split_period_issues` 하나다(B·C 가 각자 루프를 만들지 않게 통합).
 - **교정 지시문 문구**는 `targeting_policy.stated_period_instruction` 하나다(공개 승격).
 - **기간 표현 문법**은 `calendar_window.py` 하나다. 두 번째 사전을 만들지 말 것.
+- (2차 세션 추가) **창의 wire 모양**을 만드는 자리는 `event_ir` 의 창 타입 하나다. 바인딩도
+  시간 절도 그 타입에서 나온 dict 을 나르기만 한다 — 손으로 `{"type": …}` 을 조립하지 말 것.
+- (2차 세션 추가) **숫자 뒤 기간 단위 표면**의 소유자는
+  `condition_normalizers.numeric_duration_unit_semantics()` 하나다. 네 번째 손 목록을 만들지 말 것.
 
 ---
 
@@ -70,8 +77,16 @@
 | pristine(변경 전, 컨테이너 `/tmp/baseline`) | **5 failed / 3353 passed / 29 skipped** |
 | A·B·C·D 완료 시점 | **5 failed / 3445 passed / 29 skipped** (`matches_baseline: true`) |
 | **E·F 반영 후, 최종 트리 (확정)** | **5 failed / 3536 passed / 29 skipped** (11:27, 실패 집합 동일 → 회귀 0) |
+| 커밋 `f0fe174` 재확인(2차 세션 시작 시) | **5 failed / 3536 passed / 29 skipped** — 위 값 재현됨 |
+| **2차 세션 수정 반영 후 (확정)** | **5 failed / 3577 passed / 29 skipped** (실패 집합 동일 → 회귀 0) |
 
-pristine 대비 통과 **+183**, skipped 동일, 실패 집합 동일.
+pristine 대비 통과 **+224**, skipped 동일, 실패 집합 동일.
+
+> 2차 세션 중간에 `7 failed` 가 한 번 나왔다. 이번엔 **진짜 지적**이었다 —
+> `graph_rag._duration_matches` 를 지우자 그 함수만 쓰던 `calendar_window.WORD_DURATION_PATTERN`
+> 이 소비자 없는 공개 심볼이 되어 `test_unwired_symbol_ratchet` 두 건이 걸렸다(`test_no_new_unwired_symbol`
+> + `test_totals_do_not_grow`, 57 > 29+27). 죽은 표면을 지워 해소했다. §3 의 `.baseline_head/` 사례와
+> 달리 이건 코드 문제였다 — **실패 항목의 경로 접두어를 먼저 보면 둘을 즉시 가를 수 있다.**
 
 > **중간에 한 번 `10 failed / 3531 passed` 가 나왔던 건에 대해.** 코드 회귀가 아니었다. 서브에이전트가
 > 라이브 코퍼스 대조용으로 저장소 루트에 만든 13MB HEAD 사본 `.baseline_head/` 를 지우지 않아서,
@@ -92,10 +107,17 @@ tests/test_money_literal_bindings.py::test_fractional_money_literal_uses_the_com
 tests/test_semantic_literal_characterization.py::test_literal_kinds_values_and_exact_spans_are_characterized
 ```
 
-테스트는 **컨테이너에서만** 돈다(호스트 venv 는 asyncio DLL 문제로 수집 불가):
+pytest 는 컨테이너에서 돈다(아래 수치는 전부 컨테이너 기준, Python 3.12). 정적 검사
+(`ruff`·`mypy`)는 **호스트에서만** 돈다 — 컨테이너 이미지에 그 패키지가 없다.
+
+> 1차 세션의 "호스트 venv 는 asyncio DLL 문제로 수집 불가"는 **더 이상 사실이 아니다**
+> (2026-08-07 재확인: 호스트 Python 3.14 로 `pytest --collect-only` 가 3611건을 수집한다).
+> 다만 인터프리터 버전이 다르므로(호스트 3.14 / 컨테이너 3.12) **기준선 비교는 한쪽에서만** 한다.
 
 ```
 docker exec recommendation-campaign-system-python-api-1 python -m pytest -q -p no:cacheprovider
+python -m ruff check .   # 기준선 7 errors (범위가 pyproject 로 좁혀져 있다)
+python -m mypy           # 기준선 4 errors
 ```
 
 ### 라이브 코퍼스 파급 (E 측정)
@@ -118,6 +140,18 @@ docker exec recommendation-campaign-system-python-api-1 python -m pytest -q -p n
 | `tests/test_default_period_policy.py` (+) | 거짓 결핍 채택, 명시 기간 보존 거부, 혼합 라운드, 정책 꺼진 배포 불변 |
 | `tests/test_temporal_clause.py` / `tests/test_targeting_policy.py` (+) | 어순 규칙, 달력 절 생산, 지시문 window dict 의 **스키마 유효성**(스키마를 손으로 베끼지 않고 `audience_schema.audience_expression_json_schema()` 에서 enum 을 읽어 대조) |
 
+2차 세션 추가분:
+
+| 파일 | 내용 |
+|---|---|
+| `tests/test_duration_binding_wire_window.py` (신규) | 기간 리터럴이 싣는 wire 창의 단일 계약 — 스키마 유효성(스키마 객체에서 enum 을 읽어 대조), rolling/relative 종류, IR 왕복, **바인딩 창과 시간 절 창의 일치**, 표현 불가(시간 단위·미래 방향)일 때 창을 만들지 않음, 구조화 안내가 '복사'만 지시하는지 |
+| `tests/test_literal_lexicon_ownership.py` (+) | 기간 정규화기가 **선언된 표면 전 항목**을 읽는지 순회, 읽지 못한 단위를 추측하지 않는지, 재작성 가드의 기간 신호가 낱말 경계 가드를 받는지 |
+
+`normalized` dict 을 통째로 고정한 특성화 테스트 4곳(`test_word_duration_literals` ·
+`test_semantic_literal_characterization` · `test_literal_lexicon_ownership` ·
+`test_literal_binding_advisories`)은 **키가 하나 늘었다**(`event_ir_window`). 단언을 지우거나 약화한
+것이 아니라 의도한 모양 변경을 반영한 것이며, 각 자리에 이유와 계약 소유자를 주석으로 남겼다.
+
 기존 단언의 삭제·skip·xfail·완화는 없다. `tests/test_missing_field_causes.py:118` 의 fixture 가
 `'최근'` 1번째→2번째 등장으로 옮겨진 것 하나가 있는데, 원래 자리는 원문이 `'최근 3개월'` 로 기간을
 실제로 말한 절이라 **옛 라벨이 오라벨**이었다. 형제 테스트가 새 계약을 명시적으로 고정한다.
@@ -126,40 +160,69 @@ docker exec recommendation-campaign-system-python-api-1 python -m pytest -q -p n
 
 ## 5. 남은 작업 — 다음 세션은 여기서 시작
 
-### 5.1 즉시 해야 할 것: 중단된 검증 단계
+### 5.1 중단됐던 검증 단계 — **완료**(2026-08-07 2차 세션)
 
-워크플로를 **F 완료 직후 중단**했다. 아래가 실행되지 않았다:
+1. **통합 + 라이브 코퍼스 파급 측정** — 완료. 아래 §5.1-a.
+2. **적대적 검토 3렌즈** — 완료. 오탐/파급/가드 약화 프로브를 코퍼스 밖 문형까지 돌렸다. 결과는
+   §5.2 의 상태 갱신과 §5.2-신규 항목.
+3. **확정 결함 수정 + 전수 재검증** — 완료. §5.2 (1)(2)(3) 수정, 전수는 §8.
 
-1. **통합 + 라이브 코퍼스 파급 측정** — E/F 결합 후 `combine_temporal_clauses` /
-   `stated_period_for_issue` 판정이 달라지는 프롬프트를 코퍼스 전체로 재측정 (E 는 바인딩만,
-   F 는 절 판정까지 바뀌었으므로 결합 후 측정이 아직 없다)
-2. **적대적 검토 3렌즈** — 오탐 / 파급 / 가드 약화. 앞선 두 워크플로에서 이 단계가 매번 **진짜 결함을
-   찾아냈다**(워크플로 2에서 4건). E/F 는 이 검증을 아직 받지 않았다.
-3. **확정 결함 수정 + 전수 재검증**
+### 5.1-a E/F 결합 파급 측정 결과 (라이브 코퍼스 86종)
 
-> **E/F 는 각자 단위 테스트와 전수는 통과했지만 적대적 검토를 받지 않았다.** 커밋 전에 2번을 돌리는
-> 것을 권장한다. 스크립트가 남아 있다:
-> `~/.claude/projects/.../workflows/scripts/stated-period-surface-coverage-wf_c4e5f341-022.js`
+방법: 같은 측정 스크립트를 변경 전 트리(`f0fe174^` 를 컨테이너 `/tmp/before` 로 풀어)와 변경 후
+트리(`/app`)에서 돌려 프롬프트별로 (duration/date_window 바인딩, `combine_temporal_clauses` 결과,
+recency 표지 전부를 결핍 근거로 삼았을 때의 `stated_period_for_issue` 판정)을 대조했다.
+LLM·DB 를 부르지 않는다.
+
+| 항목 | 결과 |
+|---|---|
+| 리터럴 바인딩이 달라진 프롬프트 | **0** (E 가 1차 세션에 측정한 값과 같다) |
+| 시간 절이 달라진 프롬프트 | **17** — 전부 F 가 만든 달력 절이 **새로 생긴** 것(없던 절이 생김) |
+| 표지 판정이 뒤집힌 자리 | **4**, 전부 `deficit stands → REFUTED` 방향 (live:14 · 75 · 82 · 83, 모두 `지난달`/`지난 주`) |
+| `REFUTED → deficit stands` (회귀 모양) | **0** |
+
+즉 결합 후에도 **잃는 판정은 없고 얻는 판정만 있다**. 나머지 32개 프롬프트의 "차이"는
+`TemporalClause.to_dict()` 에 `wire_window` 키가 추가된 표시상의 차이였다(그 키를 빼고 대조하면
+위 17건만 남는다).
+
+같은 방식으로 2차 세션의 수정도 재측정했다 — HEAD 대비 달라진 프롬프트 23종, **전부 duration
+바인딩에 `event_ir_window` 키가 추가된 것뿐**이고 절·판정·단어형 신호 변화는 0이다.
 
 ### 5.2 알려진 결함 — 우선순위 순
 
-**(1) 프롬프트가 아직 모델에게 비legal 단위를 보여 준다 [높음, 작음]**
-F 가 지시문 경로는 막았지만 프롬프트 경로가 남았다. `query_structurer/prompt.py:277` 이
-`literal_bindings` 를 통째로 `json.dumps` 하므로 `normalized.semantic_unit="days"` 가 프롬프트에 그대로
-있고, `audience_runtime.py:1069` 는 "rolling/relative 기간은 binding의 값·단위를 사용" 이라고 지시한다.
-→ 고칠 자리: (a) 바인딩에 canonical 단위를 함께 싣거나 (b) 그 지시 문장을 "binding 의 값 + event_ir
-canonical 단위"로 바꾼다. **1번과 같은 결함의 두 번째 인스턴스이므로 값이 크다.**
+**(1) 프롬프트가 아직 모델에게 비legal 단위를 보여 준다 [높음, 작음] — 2026-08-07 수정됨**
+증상은 실제였다. 툴 스키마 검증기에 직접 넣어 확인했다: `{"type":"rolling","value":30,"unit":"days"}`
+는 enum 위반 1건을 내고 `"day"` 는 통과한다.
+**고친 방법은 (a)(b) 어느 쪽도 아니라 그 선택지 자체를 없애는 것이다** — 모델이 값·단위를 옮겨
+적을 일이 없게 **바인딩이 창 객체를 통째로 싣는다**.
+- `query_structurer/semantic_ir.py` — duration 리터럴의 `normalized` 에 `event_ir_window` 를 넣는다.
+  모양의 소유자는 `event_ir.RollingWindow`/`RelativeWindow` 다(직접 dict 을 조립하지 않는다).
+  종류는 이미 판정된 `temporal_kind` 에서 온다(`rolling_duration`→rolling, `past_point`→relative).
+- `audience_runtime.py` — `[Fixed wire shapes]` 의 TimeFilter 줄이 "절대·rolling·relative 모두
+  `normalized.event_ir_window` 를 그대로 복사" 하나로 통일됐다. 종류를 모델이 파생하라던 줄은
+  "값·단위·종류는 애플리케이션 소유, 조립하지 말 것"으로 바뀌었다.
+- 표현할 수 없는 기간은 **창을 만들지 않는다**: IR 단위 밖(시간), 정수가 아닌 값, 그리고
+  **미래 방향**('향후 7일' — 아래 신규 (8) 참조).
+- 계약: `tests/test_duration_binding_wire_window.py`(신규). 스키마 enum 은 손으로 베끼지 않고
+  `audience_schema.audience_expression_json_schema()` 에서 읽어 대조한다.
 
-**(2) `graph_rag._duration_days_signals` 의 단어형 오탐 [중간]**
-`WORD_DURATION_PATTERN` 을 압축 텍스트에 직접 돌려 원문 경계를 볼 수 없다. `live:53` 의
-`"모두 주문"` → 14일 신호가 그 경로에는 **그대로 남아 있다**. E 가 리터럴 경로는 가드로 막았지만
-`graph_rag.py` 는 소유 밖이라 손대지 않았다. 고치려면 그 호출부를 `calendar_window` 의 원문 인자
-경로로 옮겨야 한다.
+**(2) `graph_rag._duration_days_signals` 의 단어형 오탐 [중간] — 2026-08-07 수정됨**
+호출부를 `calendar_window.duration_window_candidates(compact, source=…, source_offsets=…)` 로
+옮겼다(원문과 좌표 대응표를 함께 넘겨야 낱말 경계 가드가 돈다). 일수 환산은
+`calendar_window.duration_candidate_days` 가 `condition_normalizers.unit_days()` 에서 파생한다 —
+`{"days":1,"weeks":7}` 를 호출부가 다시 적지 않는다.
+같은 패턴을 직접 돌리던 `_duration_matches` 와 그것만 쓰던 4개 별칭 import 는 함께 지웠다(다른
+소비자 없음, façade 계약 목록에도 없음).
+파급 실측: 코퍼스 86종 중 신호가 달라진 프롬프트는 **1종**(live 인덱스 52 `"모두 주문"` 의 14일
+유령 신호 제거)이고 나머지는 동일하다.
 
-**(3) `semantic_normalizers.py:506` 의 세 번째 기간 표면 목록 [중간]**
-`_RELATIVE_SURFACE_RE = ^최근\s*(\d+)\s*(일|주|주일|개월|달|년|년간)$` 가
-`numeric_duration_unit_semantics()` 에서 파생하지 않는 자기 목록이다. E 가 없앤 `-간` 불균일이
-이 계층에는 그대로 남아 있다(`최근 3개월간` 문자열이 그쪽으로 오면 못 읽는다).
+**(3) `semantic_normalizers` 의 세 번째 기간 표면 목록 [중간] — 2026-08-07 수정됨**
+`PeriodNormalizer._RELATIVE_SURFACE_RE` 의 단위 대안을 `numeric_duration_unit_semantics()` 에서
+파생시켰다. 함께 고친 것이 하나 더 있다: 단위를 읽은 표(손 목록)와 canonical 을 얻는 표
+(`canonical_unit`)가 달라서 `... or "days"` 폴백이 있었는데, 그 폴백은 두 표가 어긋나는 순간
+**'3개월'을 조용히 3일로 바꾼다**. 이제 매칭과 canonical 이 같은 표에서 나오고, 읽지 못한 단위는
+추측 대신 `NormalizationError` 다.
+계약: `tests/test_literal_lexicon_ownership.py` — 선언된 표면 **전 항목**을 순회한다.
 
 **(4) 관형절을 건너뛰는 결합 [낮음, 상수 조정 위험]**
 `최근 접속한 30일 이내 신규 가입 회원`(gap 5) 처럼 표지와 duration 사이에 관형형 어미로 끝나는
@@ -183,6 +246,33 @@ canonical 단위"로 바꾼다. **1번과 같은 결함의 두 번째 인스턴�
 (`작년` → `{"type":"relative","value":1,"unit":"year","direction":"past"}`)로 답하면
 `candidate_dropped_stated_period` 로 거부되고 되묻기로 간다. 실사용 로그에서 relative 로 답하는
 빈도가 높으면 `window_key` 에 등가 판정을 넣는 편이 낫다.
+
+#### 2차 세션 적대적 검토가 새로 찾은 것
+
+**(8) 후치 미래 표지('7일 후')는 아직 과거 창으로 읽힌다 [중간]**
+IR 의 창은 둘 다 과거를 본다(rolling = 거슬러 센 길이, relative = 지나간 달력 칸). 그래서 미래
+기간은 표현할 수 없는데, `향후 7일`·`앞으로 3개월` 의 duration 은 `temporal_kind="rolling_duration"`
+으로 판정된다. (1) 수정이 그 리터럴에 **과거 창을 실어 모델에게 복사시킬 뻔했다** — 선행 표지
+(`calendar_window.FUTURE_LEADING_MARKERS`)를 보고 창을 만들지 않도록 막았다(리터럴 자체는 보존).
+남은 노출은 **후치 표지**다: `7일 후 만료되는 쿠폰` 의 `7일` 은 지금도 rolling 7 day 를 싣는다.
+표지 어휘를 늘리는 일이므로 근거(실사용 문형) 없이 추가하지 않았다 — §5.4 와 같은 기준이다.
+표지 목록은 `calendar_window` 하나가 소유한다(방향별 부분집합 `PAST_LEADING_MARKERS` /
+`FUTURE_LEADING_MARKERS` 로 선언돼 있다).
+
+**(9) IR 단위 밖 기간을 기본 창이 조용히 덮는다 [중간, 선행 결함]**
+`최근 24시간 이내 주문한 회원` 은 `시간` 이 IR 창 단위가 아니라 duration 리터럴 자체가 생기지
+않는다. 그러면 `split_period_issues` 가 **진짜 결핍**으로 갈라 기본 창(5일)을 지시하고, 사용자가
+말한 24시간이 배포 기본값으로 바뀐 채 `audience_default_period` 영수증까지 붙는다. 되묻기보다
+나쁜 조용한 왜곡이다. 고치려면 "원문이 기간을 말했지만 표현할 수 없다"를 결핍과 구분하는 상태가
+필요하다(= 시간 단위를 `WINDOW_UNITS` 에 넣거나, 표현 불가를 unsupported 로 돌리거나). 어느 쪽도
+설계 결정이라 이번 세션에서 임의로 정하지 않았다.
+
+**(10) 달력 토큰에 인접한 표지는 근거 없이 삼켜진다 [낮음]**
+`최근 지난달 주문한 회원` 에서 `최근` 은 `지난달` 절에 배정되지만 달력 원자는 `self_quantifying`
+이라 표지 구간을 근거로 적지 않는다. 결과적으로 그 표지는 **어떤 절에도 남지 않는다**(맨 표지
+절조차 생기지 않는다). 현재 소비자에는 영향이 없다 — `coverage_gate` 는 `marker_bound` 를
+요구하고, 결핍 판정은 그 표지를 여전히 '진짜 결핍'으로 본다(변경 전과 같다). 표지 절을 세는
+소비자가 새로 생기면 그때 문제가 된다.
 
 ### 5.3 의도적으로 고치지 않기로 한 것
 
@@ -215,12 +305,18 @@ E 가 근거를 대고 **의도적으로 제외**한 것들이다. 다시 넣으
 # 전수 (컨테이너 필수)
 docker exec recommendation-campaign-system-python-api-1 python -m pytest -q -p no:cacheprovider
 
-# pristine 기준선을 다시 만들려면
-docker exec recommendation-campaign-system-python-api-1 sh -c \
-  "rm -rf /tmp/baseline && mkdir -p /tmp/baseline && \
-   tar -C /app -cf - --exclude=.git --exclude=logs --exclude=__pycache__ --exclude=artifacts . \
-   | tar -C /tmp/baseline -xf -"
-# (그 뒤 /tmp/baseline 에서 git 없이 변경분만 되돌려 비교)
+# 정적 검사는 **호스트**에서 돈다(범위가 pyproject 로 좁혀져 있다). 기준선은 ruff 7 / mypy 4.
+python -m ruff check . ; python -m mypy
+
+# 변경 전 트리를 저장소 **밖**에 만드는 법(§3 의 교훈: 사본을 저장소 안에 두면 래칫이 깨진다)
+git archive --format=tar -o /tmp/before.tar <commit>
+docker cp /tmp/before.tar <api-container>:/tmp/before.tar
+docker exec <api-container> sh -c "rm -rf /tmp/before && mkdir -p /tmp/before && \
+  tar -C /tmp/before -xf /tmp/before.tar && rm /tmp/before.tar"
+# 그 뒤 같은 측정 스크립트를 양쪽에서 돌린다(컨테이너에 git 은 없다).
+docker exec -w /tmp/before -e PYTHONPATH=/tmp/before <api-container> python /tmp/measure.py
+docker exec -w /app        -e PYTHONPATH=/app        <api-container> python /tmp/measure.py
+# Git Bash 에서 -w /app 이 Windows 경로로 변환되면 MSYS_NO_PATHCONV=1 을 붙인다.
 
 # 실측 로그 — 요청 하나가 파일 하나
 ls logs/rag_llm/<YYYY-MM-DD>/
@@ -245,3 +341,55 @@ docker restart recommendation-campaign-system-python-api-1
 - 카탈로그: `docs/data/runtime/semantics/audience_catalog.json`
 - 파이프라인 배선: `graph_rag.py` 의 `structure_campaign_query_plan_once`
   (`resolve_stated_period` → `apply_default_period` 순서를 여기서 읽는다)
+
+---
+
+## 8. 2차 세션(2026-08-07) 요약
+
+### 변경한 파일
+
+| 파일 | 핵심 변경 |
+|---|---|
+| `query_structurer/semantic_ir.py` | duration 리터럴의 `normalized` 에 `event_ir_window` 추가(`event_ir` 창 타입이 모양을 소유). 표현 불가(단위·값·미래 방향)면 키를 만들지 않는다 |
+| `audience_runtime.py` | `[Fixed wire shapes]` TimeFilter 계약을 '창 객체 그대로 복사' 하나로 통일. 모델이 값·단위·종류를 조립하지 않는다 |
+| `calendar_window.py` | 방향별 표지 부분집합(`PAST_LEADING_MARKERS`/`FUTURE_LEADING_MARKERS`) 선언 + `is_future_directed_duration` · `duration_candidate_days` |
+| `semantic_normalizers.py` | `PeriodNormalizer` 의 기간 표면 목록을 `numeric_duration_unit_semantics()` 에서 파생. `or "days"` 추측 폴백 제거 |
+| `graph_rag.py` | 재작성 가드의 기간 신호를 `calendar_window` 의 원문 인자 경로로 이관. 죽은 `_duration_matches` 와 그 전용 import 제거 |
+| `calendar_window.py` (삭제) | `WORD_DURATION_DAYS`·`WORD_DURATION_PATTERN` — 유일한 소비자였던 위 신호 비교기가 사라져 죽은 표면이 됐다. `test_unwired_symbol_ratchet` 가 이 사실을 정확히 잡았다(그대로 두면 미배선 공개 심볼 총량이 기준선을 넘는다) |
+| 테스트 6개 | 신규 1(`test_duration_binding_wire_window.py`) + 확장 1(`test_literal_lexicon_ownership.py`) + 특성화 4곳의 기대 dict 갱신 |
+
+### 선택한 정책
+
+- **창의 wire 모양은 애플리케이션이 만들고 모델은 복사만 한다.** 모델이 옮겨 적을 값이 없으면
+  옮기다 틀릴 자리도 없다. 절대 구간이 이미 쓰던 계약을 rolling/relative 로 넓힌 것이다.
+- **표현할 수 없으면 창을 만들지 않는다.** 시간 단위·정수 아닌 값·미래 방향이 여기 해당한다.
+  가장 비슷한 모양으로 옮기는 것이 곧 의미 반전이다(CLAUDE.md §11·§12).
+- **표면 목록은 파생한다.** 같은 문법을 읽는 두 번째 손 목록을 만들지 않는다.
+
+### 하위 호환성
+
+`event_ir_window` 는 duration 바인딩에 **추가**된 키다. 기존 소비자는 전부
+`normalized["semantic_unit"]` 을 `event_ir.canonical_unit` 으로 접어 읽으므로 영향이 없고,
+`temporal_clause._calendar_window_atoms` 는 `kind == "date_window"` 로 걸러 이 키를 보지 않는다
+(달력 절이 중복 생성되지 않는다). `duration_window_candidates` 의 새 인자는 기본값이 있어 원문을
+모르는 호출자는 예전 그대로 동작한다.
+
+### 실행한 검사
+
+| 검사 | 결과 |
+|---|---|
+| 전수 pytest(컨테이너) | **5 failed / 3577 passed / 29 skipped** — 실패 집합이 기준선과 동일(회귀 0) |
+| `ruff check .`(호스트) | 7 errors — HEAD 기준선과 동일 |
+| `mypy`(호스트) | 4 errors — HEAD 기준선과 동일 |
+| 라이브 코퍼스 대조(86종) | E/F 결합: §5.1-a. 2차 세션 수정: 바인딩 키 추가 23종 외 변화 없음 |
+| 기간 신호 대조(86종) | 재작성 가드 신호가 달라진 프롬프트 1종(의도한 오탐 제거) |
+
+### 남은 위험
+
+- §5.2 (4)(5)(6)(7)(8)(9)(10) 은 그대로 남아 있다. 특히 **(9)** 는 조용한 왜곡이라 값이 크다.
+- **라이브 측정은 여전히 안 했다.** §6 의 마지막 문단 그대로다 — 오프라인 replay 로 각 고리가
+  끊어진 것만 증명돼 있고, 되묻기 비율이 실제로 떨어지는지는 수치로 말할 수 없다. 이번 세션의
+  수정은 그 위에 하나를 더한다: **구조화 프롬프트의 문구가 바뀌었으므로** 모델이 실제로 창을
+  그대로 복사하는지는 라이브에서만 확인된다(오프라인으로는 '틀릴 값을 주지 않는다'까지만 증명됨).
+- 변경은 **미커밋**이다. 커밋 전에 `docker restart recommendation-campaign-system-python-api-1`
+  로 API 를 재기동해야 프롬프트 변경이 실사용 경로에 반영된다.

@@ -55,6 +55,10 @@ def test_literal_kinds_values_and_exact_spans_are_characterized() -> None:
             "surface_unit": "개월",
             "semantic_unit": "months",
             "temporal_kind": "rolling_duration",
+            # 2026-08-07: 기간 원자도 달력 창처럼 자기 wire 창을 싣는다. 모델에게 값·단위를
+            # 옮겨 적게 하던 동안 이 추출기의 복수형('months')이 툴 스키마 enum 밖이라 그대로
+            # 복사한 응답이 검증에서 떨어졌다(계약: tests/test_duration_binding_wire_window.py).
+            "event_ir_window": {"type": "rolling", "value": 2, "unit": "month"},
         },
     ]
 
