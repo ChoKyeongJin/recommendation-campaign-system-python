@@ -59,6 +59,24 @@ def _current_subject_value_spans(
     return sorted(spans, key=lambda span: (span[0], -(span[1] - span[0])))
 
 
+def observation_selector_spans(query: str) -> tuple[tuple[int, int], ...]:
+    """기간이 아니라 **관측 선택자**로 해석된 시간 낱말들의 구간.
+
+    판정의 소유자는 :func:`targeting_domain.observation_selector_tokens` 하나다 — '최근'이
+    기간인지 관측 선택자인지는 낱말이 아니라 그 낱말이 수식하는 머리가 정하고, 그 표는
+    도메인 어휘와 같은 자리에 있다.
+    """
+
+    import targeting_domain  # 지연 import(순환 방지)
+
+    try:
+        tokens = targeting_domain.observation_selector_tokens(query)
+    # 판정 불가는 주장 없음이다 — 종전 판정을 그대로 둔다(추측 금지).
+    except Exception:
+        return ()
+    return tuple(token.span for token in tokens if token.observation)
+
+
 def _has_external_temporal_qualifier(
     query: str, claim_spans: list[tuple[int, int]]
 ) -> bool:
@@ -73,8 +91,14 @@ def _has_external_temporal_qualifier(
     temporal_spans.extend(
         (match.start(), match.end()) for match in _DURATION_RE.finditer(query)
     )
+    # 관측 선택자로 해석된 낱말은 기간 한정어가 아니다. 이 한 줄이 없던 동안 '최근 상태'의
+    # '최근'이 **자기 자신**을 반증 근거로 삼아, 이 가드는 자기가 다루려던 표지에서 한 번도
+    # 발화하지 못했다(2026-08-08 실측). 해석되지 않은 '최근'·'최신'과 주변의 진짜 기간
+    # 표현은 그대로 한정어로 센다 — 종류가 아니라 **해석 결과**로 가른다.
+    selectors = observation_selector_spans(query)
     return any(
         not any(start >= claim_start and end <= claim_end for claim_start, claim_end in claim_spans)
+        and not any(start >= owned[0] and end <= owned[1] for owned in selectors)
         for start, end in temporal_spans
     )
 
@@ -95,6 +119,27 @@ def fabricated_period_issue_for_current_catalog_value(
         return False
     claim_spans = _current_subject_value_spans(query, catalog)
     return bool(claim_spans) and not _has_external_temporal_qualifier(query, claim_spans)
+
+
+def period_span_is_observation_selector(query: str, span: tuple[int, int]) -> bool:
+    """이 시간 낱말이 **기간을 요구하지 않는** 관측 선택자로 해석됐는가.
+
+    기간 결핍을 신고하려는 쪽이 신고를 **만들기 전에** 묻는 질문이다. 신고한 뒤 겹침으로
+    취소하는 구조가 아니라는 점이 요점이다 — 취소는 판정이 두 벌이라는 뜻이고, 두 벌은
+    곧 서로 다른 답을 낸다(I4).
+    """
+
+    return any(
+        owned[0] <= span[0] and span[1] <= owned[1]
+        for owned in observation_selector_spans(query)
+    )
+
+
+def period_issue_is_observation_selector(query: str, issue: Mapping[str, Any]) -> bool:
+    """모델이 신고한 기간 결핍이 관측 선택자 낱말에 붙었는가(그러면 신고가 계약 위반이다)."""
+
+    span = _bare_period_issue_span(query, issue)
+    return span is not None and period_span_is_observation_selector(query, span)
 
 
 def _bare_period_issue_span(query: str, issue: Mapping[str, Any]) -> tuple[int, int] | None:
@@ -247,6 +292,9 @@ __all__ = [
     "bare_period_issue_owned_by_spans",
     "bare_period_span_owned_by_spans",
     "fabricated_period_issue_for_current_catalog_value",
+    "observation_selector_spans",
+    "period_issue_is_observation_selector",
     "period_issue_owned_by_lowered_clause",
+    "period_span_is_observation_selector",
     "period_span_owned_by_lowered_clause",
 ]

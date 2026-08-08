@@ -108,14 +108,23 @@ COMPILED_CASES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ("MS.YYYYMM >= '202607'", "MS.YYYYMM < '202608'", "MS.ZTS_GRADE = 'MEM_GRADE_CD.VIP'"),
     ),
     (
+        # 2026-08-08: '직전 등급' = 직전 **관측**(같은 칸의 PREV_* 컬럼). 근거는
+        # tests/test_temporal_claims.py 의 같은 사례 주석 참조.
         "직전 등급이 골드였던 회원",
         "직전 등급이 골드였던",
-        ("MS.YYYYMM >= '202607'", "MS.ZTS_GRADE = 'MEM_GRADE_CD.GOLD'"),
+        ("MS.YYYYMM >= '202608'", "MS.PREV_ZTS_GRADE = 'MEM_GRADE_CD.GOLD'"),
     ),
     (
         "2026년 3월 기준 골드 등급 회원",
         "2026년 3월 기준 골드 등급",
         ("MS.YYYYMM >= '202603'", "MS.YYYYMM < '202604'"),
+    ),
+    (
+        # 두 절('지금 값' + '직전 값')이 전이 하나로 정규화돼 라이브 경로를 통과한다.
+        # 문형 감지기를 더한 것이 아니라 같은 축의 두 청구를 정규화한 결과다.
+        "최근 상태가 VIP이고 직전 상태는 골드였던 회원",
+        "최근 상태가 VIP이고 직전 상태는 골드였던",
+        ("MS.ZTS_GRADE = 'MEM_GRADE_CD.VIP'", "MS.PREV_ZTS_GRADE = 'MEM_GRADE_CD.GOLD'"),
     ),
     (
         "최근 6개월 동안 골드에서 VIP로 승급한 회원",
@@ -145,7 +154,107 @@ COMPILED_CASES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         "등급이 2회 이상 변경",
         ("MS.ZTS_GRADE != MS.PREV_ZTS_GRADE", "HAVING COUNT(*) >= 2"),
     ),
+    # ── 존재/부재 한정(2026-08-08) ────────────────────────────────────────────
+    (
+        # A. 기본 ever. 창 + ∃관측 + 등호.
+        "최근 6개월 동안 한 번이라도 골드였던 회원",
+        "한 번이라도 골드였던",
+        (
+            "MS.YYYYMM >= '202603'",
+            "MS.YYYYMM < '202609'",
+            "MS.ZTS_GRADE = 'MEM_GRADE_CD.GOLD'",
+        ),
+    ),
+    (
+        # B. 조사 '중'. A 와 **같은 창**이어야 한다 — '중'은 혼자서 절을 가르지 않는다.
+        "최근 6개월 중 한 번이라도 골드였던 회원",
+        "한 번이라도 골드였던",
+        (
+            "MS.YYYYMM >= '202603'",
+            "MS.YYYYMM < '202609'",
+            "MS.ZTS_GRADE = 'MEM_GRADE_CD.GOLD'",
+        ),
+    ),
+    (
+        # C. 서열 비교. '이상'이 등호로 좁아지면 VIP 가 빠진다(실측된 조용한 누락).
+        "최근 6개월 중 한 번이라도 골드 이상이었던 회원",
+        "한 번이라도 골드 이상이었던",
+        (
+            "MS.YYYYMM >= '202603'",
+            "MS.YYYYMM < '202609'",
+            "MS.ZTS_GRADE IN ('MEM_GRADE_CD.GOLD', 'MEM_GRADE_CD.VIP')",
+        ),
+    ),
+    (
+        # D. 부재의 어형 변이. '없' 계열이 꼬리 어휘에 없던 동안 마커가 0이었다.
+        "최근 6개월 동안 한 번도 VIP였던 적이 없는 회원",
+        "한 번도 VIP였던 적이 없는",
+        (
+            "NOT EXISTS",
+            "MS.YYYYMM >= '202603'",
+            "MS.ZTS_GRADE = 'MEM_GRADE_CD.VIP'",
+        ),
+    ),
 )
+
+
+def test_scope_particle_does_not_change_the_window() -> None:
+    """'6개월 중'과 '6개월 동안'은 같은 창이다 — 조사 하나로 조회 범위가 달라지지 않는다.
+
+    '중'을 단독 절 경계로 세던 동안 앞 문장만 창을 잃어 전체 적재 범위로 넓어졌다
+    (2026-08-08 실측). 조각 비교가 아니라 **두 SQL 의 동일성**으로 고정한다.
+    """
+
+    _s1, _p1, scoped = _run("최근 6개월 중 한 번이라도 골드였던 회원", "한 번이라도 골드였던")
+    _s2, _p2, during = _run("최근 6개월 동안 한 번이라도 골드였던 회원", "한 번이라도 골드였던")
+
+    assert scoped["is_success"] is True and during["is_success"] is True
+    assert scoped["sql"] == during["sql"]
+
+
+def test_ordered_comparison_does_not_steal_another_clause_operator() -> None:
+    """같은 문장에 '이상'이 둘이면 등급은 자기 것만 가져간다(F).
+
+    등급 절은 서열 비교어가 붙어 있지 않으므로 등호를 유지해야 하고, 금액 절의 '이상'은
+    그 절의 소유로 남아야 한다. 두 절이 함께 SQL 에 있어야 절이 사라진 성공이 아니다.
+    """
+
+    query = "최근 6개월 중 한 번이라도 골드였고 10만원 이상 구매한 회원"
+    span = "한 번이라도 골드였고"
+    start = query.index(span)
+    money = query.index("10만원")
+    payload = _payload(
+        query,
+        expression={
+            "type": "comparison",
+            "operator": ">=",
+            "left": {"type": "field", "name": "order.amount"},
+            "right": {"type": "literal", "value": 100000},
+            "evidence": {
+                "text": "10만원 이상 구매",
+                "start": money,
+                "end": money + len("10만원 이상 구매"),
+            },
+        },
+        issues=[
+            {
+                "code": "unsupported_semantics",
+                "argument": "temporal_condition",
+                "message": "cannot represent",
+                "evidence": {"text": span, "start": start, "end": start + len(span)},
+            }
+        ],
+    )
+    _structured, _plan, result = _run_payload(query, payload)
+
+    if not result["is_success"]:
+        # 합성이 성립하지 않으면 아무것도 나가지 않는다 — 그것도 계약이다.
+        assert not result["sql"]
+        return
+    sql = result["sql"]
+    # 금액 절의 '이상'이 등급으로 샜다면 여기 서열 IN 목록이 나타난다.
+    assert "MS.ZTS_GRADE = 'MEM_GRADE_CD.GOLD'" in sql
+    assert "MEM_GRADE_CD.VIP" not in sql
 
 
 @pytest.mark.parametrize(
@@ -164,6 +273,43 @@ def test_a_temporal_clause_reaches_sql_through_the_live_path(
     sql = result["sql"] or ""
     for fragment in fragments:
         assert fragment in sql, f"{fragment!r} 가 없다:\n{sql}"
+
+
+def test_a_period_report_on_a_selector_word_is_a_contract_violation() -> None:
+    """'최근 상태'의 '최근'에 붙은 기간 결핍 신고는 **계약 위반**으로 반려된다.
+
+    판정의 source of truth 는 프롬프트가 아니라 애플리케이션이다(I4). 반려는 재방출을 부르고,
+    같은 문장은 다음 라운드에서 관측 선택자로 표현된다 — 신고를 받아들인 뒤 겹침으로 취소하는
+    구조가 아니다.
+    """
+
+    from query_structurer.audience_execution import (
+        AudienceValidationError,
+        validate_audience_issue,
+    )
+
+    query = "최근 상태가 VIP이고 직전 상태는 골드였던 회원"
+    issue = _issue(query, "missing_argument", "period", "최근")
+    with pytest.raises(AudienceValidationError, match="observation selector"):
+        validate_audience_issue(issue, query)
+
+    # 기간을 진짜로 요구하는 자리의 같은 신고는 그대로 유효하다.
+    behavioural = "최근 구매한 VIP 회원"
+    assert validate_audience_issue(
+        _issue(behavioural, "missing_argument", "period", "최근"), behavioural
+    )["argument"] == "period"
+
+
+def test_the_coverage_warning_reaches_the_plan() -> None:
+    """적재 범위 밖이라는 사실이 응답까지 간다 — SQL 은 나가되 이유가 남는다."""
+
+    from query_structurer.audience_execution import COVERAGE_WARNINGS_KEY
+
+    query = "최근 상태가 VIP이고 직전 상태는 골드였던 회원"
+    structured, _plan, result = _run(query, "최근 상태가 VIP이고 직전 상태는 골드였던")
+
+    assert result["is_success"] is True, result.get("failure_reason")
+    assert structured.get(COVERAGE_WARNINGS_KEY) == ["out_of_coverage"]
 
 
 def test_the_temporal_obligation_is_discharged_by_a_compile_receipt() -> None:

@@ -690,6 +690,11 @@ def _resolve_interval(
     if isinstance(selector, sir.PreviousSelector):
         instant = tcal.resolve_anchor(selector.anchor, context)
         current = tcal.bucket_containing(instant, binding.semantic_grain, binding.timezone)
+        if selector.previous_kind is not sir.PreviousKind.BUCKET:
+            # '직전 관측'은 **기준 관측 행이 들고 있는 직전 값**이다. 앞 칸으로 옮기면 그
+            # 행의 현재값을 읽게 되어, 적재가 한 칸뿐인 배포에서는 조건이 통째로 빈다.
+            # 어느 컬럼을 읽을지는 연산자 정의가 정한다(:mod:`temporal_ir.operators`).
+            return instant, current
         return instant, tcal.shift_bucket(current, binding.semantic_grain, -1, binding.timezone)
 
     instant = tcal.resolve_anchor(selector.anchor, context)
@@ -828,8 +833,10 @@ def _expected_value_bindings(
     condition: sir.TemporalCondition, binding: tcat.TemporalBindingSpec
 ) -> tuple[tuple[str, str], ...]:
     predicate = condition.predicate
-    if isinstance(predicate, sir.StatePredicate) and binding.value_field:
-        return ((binding.value_field, predicate.comparison.value),)
+    if isinstance(predicate, sir.StatePredicate):
+        # 어느 필드를 읽는지는 낮춤과 **같은 함수**에 물어본다(둘이 갈리면 정상 낮춤이 막힌다).
+        field_id = treg.state_value_field(condition, binding)
+        return () if field_id is None else ((field_id, predicate.comparison.value),)
     if isinstance(predicate, sir.TransitionPredicate) and binding.value_field:
         return (
             (binding.value_field, predicate.to_value),

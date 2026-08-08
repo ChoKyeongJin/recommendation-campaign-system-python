@@ -52,11 +52,24 @@ FRAME_VOCABULARIES: tuple[str, ...] = (
 # 오타가 아니라 계약이다(위 docstring 의 '같은 낱말, 다른 자리, 다른 뜻').
 CLAUSE_BOUNDARY_VOCABULARIES: tuple[str, ...] = (
     "audience_frame_noun",
-    "clause_scope_marker",
     "and_connective",
     "or_connective",
     "enum_connective",
 )
+
+# 범위 표지('중·가운데·내에서')는 **혼자서는** 절 경계가 아니다. 어휘 선언 자신이 그 계약을
+# 적어 두었고("앞의 회원 명사와 함께 올 때만 절 경계다", lexicon_patterns 의
+# ``clause_scope_marker``), :data:`event_parser._AND_BOUNDARY_RE` 도 회원 명사 인접을 요구한다.
+# 이 모듈만 낱말 하나로 끊던 동안 '최근 6개월 **중** 한 번이라도 골드였던'의 기간이 조건에서
+# 떨어져 나가 창 없는 SQL 이 됐다(2026-08-08 실측). '동안'으로 바꾸면 창이 살아났다 —
+# 같은 뜻인데 조사 하나로 답이 달라지는 것은 어휘가 아니라 결합이 경계라는 증거다.
+CLAUSE_BOUNDARY_NOUN_VOCABULARIES: tuple[str, ...] = (
+    "audience_frame_noun",
+    "member_noun",
+    "member_noun_informal",
+    "member_noun_role",
+)
+CLAUSE_SCOPE_VOCABULARY = "clause_scope_marker"
 
 # 절을 가르는 구두점. 마침표(.!?)는 문장 끝 장식이라 잔여물에서 무시하지만, 쉼표는 나열이므로
 # 절 경계다 — 둘을 한 집합에 두면 'A, B 회원'이 조용히 한 절이 된다.
@@ -93,6 +106,23 @@ def _terms_of(vocabularies: tuple[str, ...], extra: tuple[str, ...]) -> tuple[st
     collected.update(_compact(term) for term in extra)
     return tuple(
         sorted((term for term in collected if term), key=lambda item: (-len(item), item))
+    )
+
+
+@functools.lru_cache(maxsize=1)
+def scoped_boundary_terms() -> tuple[str, ...]:
+    """'회원 중'처럼 **명사 + 범위 표지**로 결합했을 때만 성립하는 절 경계(긴 것 우선).
+
+    범위 표지 단독을 경계로 세지 않는 대신, 그 표지가 실제로 절을 가르는 결합형을 선언에서
+    파생한다. 새 회원 명사나 새 범위 표지가 어휘에 들어오면 여기 곱집합이 자동으로 늘어난다.
+    """
+    nouns = _terms_of(CLAUSE_BOUNDARY_NOUN_VOCABULARIES, ())
+    scopes = _terms_of((CLAUSE_SCOPE_VOCABULARY,), ())
+    return tuple(
+        sorted(
+            {f"{noun}{scope}" for noun in nouns for scope in scopes},
+            key=lambda item: (-len(item), item),
+        )
     )
 
 
@@ -308,7 +338,7 @@ def in_same_clause(
     haystack = _compact(between)
     if not haystack:
         return True
-    boundary = _terms_of(CLAUSE_BOUNDARY_VOCABULARIES, ())
+    boundary = _terms_of(CLAUSE_BOUNDARY_VOCABULARIES, scoped_boundary_terms())
     if any(term in haystack for term in boundary):
         return False
     return not any(
@@ -413,8 +443,10 @@ def compact_to_source_span(query: str, start: int, end: int) -> Span | None:
 
 
 __all__ = [
+    "CLAUSE_BOUNDARY_NOUN_VOCABULARIES",
     "CLAUSE_BOUNDARY_PUNCTUATION",
     "CLAUSE_BOUNDARY_VOCABULARIES",
+    "CLAUSE_SCOPE_VOCABULARY",
     "FRAME_VOCABULARIES",
     "Span",
     "alias_stems",
@@ -424,6 +456,7 @@ __all__ = [
     "is_frame_only",
     "local_negation_spans",
     "residue_pieces",
+    "scoped_boundary_terms",
     "spans_are_locally_adjacent",
     "stem_inflection_spans",
     "surface_spans",

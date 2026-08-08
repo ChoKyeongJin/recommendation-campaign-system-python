@@ -65,6 +65,8 @@ EVENT_EXPRESSION_KEY = "event_expression"
 # 시간·이력 절의 **선언된** 반려(코드·문장·근거·귀결 종류). 사용자 문구는 semantic_ir.message 가
 # 나르지만, 운영이 읽을 구조화 진단은 문장 하나로 뭉개지 않고 이 키에 그대로 남긴다.
 TEMPORAL_REJECTION_KEY = "audience_temporal_rejection"
+# 적재 범위 경고(의미 지원 여부와 **다른 축**). 조건은 그대로 나가되 그 사실이 응답에 남는다.
+COVERAGE_WARNINGS_KEY = "audience_coverage_warnings"
 
 # LLM 계약이 쓸 수 있는 issue 코드. 손 목록이 아니라 code ↔ kind 표에서 **파생**한다 —
 # 예전에는 이 집합과 그 표가 각자 적혀 있었고, 그러면 한쪽만 늘어난 상태가 조용히 생긴다.
@@ -112,6 +114,14 @@ def validate_audience_issue(item: Any, query: str) -> dict[str, Any]:
     if code == "missing_argument" and argument == "period":
         import audience_runtime
 
+        # 그 낱말이 기간을 요구하지 않는 **관측 선택자**로 해석됐다면 이 신고는 계약 위반이다.
+        # 판정은 애플리케이션이 소유하고(:mod:`targeting_domain`), 모델의 신고는 그 판정을
+        # 뒤집지 못한다 — 프롬프트가 아니라 여기가 source of truth 다.
+        if audience_issue_contract.period_issue_is_observation_selector(query, item):
+            raise AudienceValidationError(
+                "missing_argument(period) targets an observation selector, not a period: "
+                "'최근/현재/직전 + 속성 축'은 관측 시점 선택이며 기간을 요구하지 않는다"
+            )
         if audience_issue_contract.fabricated_period_issue_for_current_catalog_value(
             query, item, audience_runtime.catalog_snapshot()
         ):
@@ -433,6 +443,9 @@ class AudienceResolution:
     # numerator/denominator 가 있는지로 구분된다).
     campaign_average_receipt: dict[str, Any] | None = None
     campaign_average_rewritten: bool = False
+    # 적재 범위 판정 경고(예: 요청한 관측 칸이 적재 구간 밖). **의미 지원 여부와 다른 축**이라
+    # SQL 을 막지 않지만, 남기지 않으면 "SQL 은 나왔는데 0건"의 이유가 응답에 존재하지 않는다.
+    coverage_warnings: tuple[str, ...] = ()
 
 
 def _requirement_from_payload(
@@ -525,6 +538,8 @@ class _ApplicationOwnedSynthesis:
     # 이 합성이 **원문에서 소유했다고 선언하는** 구간. 앵커 밖의 신고를 설명할 수 있는 근거는
     # 이것뿐이다. 선언하지 않는 합성기는 앵커 하나만 방면한다(종전 동작).
     accounted_spans: tuple[tuple[int, int], ...] = ()
+    # 낮춤이 낸 적재 범위 경고. 조건을 막지는 않지만 응답까지 나가야 한다.
+    coverage_warnings: tuple[str, ...] = ()
 
 
 def _issue_evidence_contains(
@@ -803,6 +818,7 @@ def _temporal_synthesis(
         # 시간 합성은 자기가 읽은 원문 구간(표지·값·기간)을 전부 안다 — 그래서 같은 절을
         # 두고 쪼개진 다른 신고도 이 구간으로 설명할 수 있다.
         accounted_spans=outcome.spans,
+        coverage_warnings=tuple(outcome.warnings or ()),
     )
 
 
@@ -1192,6 +1208,13 @@ def run_audience_resolver(
         synthesis_owner=synthesis_owner,
         campaign_average_receipt=campaign_average_receipt,
         campaign_average_rewritten=campaign_average_rewritten,
+        # 경고는 표현이 실제로 채택됐을 때만 뜻이 있다(버려진 합성의 경고는 이 응답의 사실이
+        # 아니다). 그 판정은 위에서 이미 났다 — ``synthesis_owner`` 가 그 영수증이다.
+        coverage_warnings=(
+            synthesis.coverage_warnings
+            if synthesis is not None and synthesis_owner is not None
+            else ()
+        ),
     )
 
 
@@ -1216,6 +1239,10 @@ def project_resolution_to_plan(
             ),
             value=resolution.expression.to_dict(),
         )
+    if resolution.coverage_warnings:
+        # 적재 범위 경고는 조건을 막지 않는다(정책 축이 다르다). 다만 응답에 남지 않으면
+        # "SQL 은 나왔는데 0건"의 이유가 어디에도 없게 된다 — 그래서 결말과 함께 싣는다.
+        payload[COVERAGE_WARNINGS_KEY] = list(resolution.coverage_warnings)
     if resolution.campaign_average_receipt is not None:
         rewritten = resolution.campaign_average_rewritten
         plan_decisions.record(

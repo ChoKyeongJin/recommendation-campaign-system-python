@@ -177,9 +177,11 @@
       "ordering": ["YYYYMM"],
       "unique_per_time_point": true,
       "selection_strategies": ["exact_bucket"],
+      "_previous_observation_comment": "'직전 가치등급' 을 등급 축과 같은 근거로 연다 — 한 행에 PREV_WORTH_GRADE 가 함께 있으므로 직전 관측값을 정렬 없이 읽는다(prev_value_field 선언이 그 계약이다). 두 축의 선언이 달라지면 같은 문장이 축에 따라 지원/미지원으로 갈린다.",
       "supported_operators": [
         "temporal.as_of",
         "temporal.previous_bucket",
+        "temporal.previous_observation",
         "temporal.in_window",
         "temporal.none",
         "temporal.all",

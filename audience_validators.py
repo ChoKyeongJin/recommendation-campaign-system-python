@@ -215,7 +215,16 @@ class TemporalSpanValidator:
         # 이 배포의 기본 기간과 **정확히 같은** 창들. 표지 하나가 하나씩만 소비하므로,
         # 창이 조용히 사라진 표현은 여전히 결핍으로 남는다.
         default_windows = self._default_windows(condition)
+        import audience_issue_contract  # 지연 import(모듈 결합 회피 — 위 규약)
+
         for match in _INCOMPLETE_RECENCY_RE.finditer(query):
+            if audience_issue_contract.period_span_is_observation_selector(
+                query, (match.start(), match.end())
+            ):
+                # 이 '최근'은 기간이 아니라 **관측 선택자**로 해석됐다('최근 상태' = 최신 관측의
+                # 값). 기간을 요구하지 않는 낱말에 결핍을 만들지 않는다 — 만든 뒤 취소하지
+                # 않는 것이 계약이다(I4).
+                continue
             covered_atom = next(
                 (
                     atom
@@ -237,8 +246,6 @@ class TemporalSpanValidator:
                 # 모델의 evidence 배치는 신뢰할 수 없지만 **창의 존재**는 사실이다.
                 default_windows.pop()
                 continue
-            import audience_issue_contract  # 지연 import(모듈 결합 회피 — 위 규약)
-
             if audience_issue_contract.period_span_owned_by_lowered_clause(
                 query, (match.start(), match.end()), today=self._as_of
             ):

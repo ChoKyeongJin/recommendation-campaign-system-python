@@ -99,8 +99,11 @@ PARSE_CASES: tuple[tuple[str, str, type, type, type], ...] = (
         sir.StatePredicate,
     ),
     (
+        # 2026-08-08 의미 교정: '직전 <속성 축>' 은 직전 **관측**이지 직전 달력 **칸**이 아니다.
+        # 두 뜻은 이 데이터 계약에서 서로 다른 컬럼을 읽는다(PREV_* ↔ 앞 칸 행의 현재값).
+        # 낱말이 아니라 머리가 뜻을 정한다 — '직전 달'이 오면 그때가 previous_bucket 이다.
         "직전 등급이 골드였던 회원",
-        treg.PREVIOUS_BUCKET,
+        treg.PREVIOUS_OBSERVATION,
         sir.PreviousSelector,
         sir.ExistsQuantifier,
         sir.StatePredicate,
@@ -275,8 +278,11 @@ COMPILE_CASES: tuple[tuple[str, tuple[str, ...]], ...] = (
          "MS.ZTS_GRADE = 'MEM_GRADE_CD.VIP'"),
     ),
     (
+        # 직전 관측값은 **기준 관측 행이 들고 있는** 값이다(같은 칸, PREV_* 컬럼). 앞 칸으로
+        # 옮겨 현재값 컬럼을 읽던 것이 2026-08-08 이전 동작이고, 그것은 적재가 한 칸뿐인
+        # 이 배포에서 조건이 통째로 비는 결과를 냈다.
         "직전 등급이 골드였던 회원",
-        ("MS.YYYYMM >= '202607'", "MS.ZTS_GRADE = 'MEM_GRADE_CD.GOLD'"),
+        ("MS.YYYYMM >= '202608'", "MS.PREV_ZTS_GRADE = 'MEM_GRADE_CD.GOLD'"),
     ),
     (
         "골드에서 VIP로 승급한 회원",

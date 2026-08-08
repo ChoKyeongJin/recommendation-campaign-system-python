@@ -388,8 +388,14 @@ class TemporalLexicon:
 
 
 def _dedupe_overlaps(markers: Sequence[TemporalMarker]) -> list[TemporalMarker]:
-    """겹치는 마커는 더 긴 것 하나만 남긴다 — 같은 어구가 두 연산자로 세어지는 것을 막는다."""
-    ordered = sorted(markers, key=lambda item: (item.start, -(item.end - item.start)))
+    """겹치는 마커는 더 긴 것 하나만 남긴다 — 같은 어구가 두 연산자로 세어지는 것을 막는다.
+
+    비교의 1순위는 **길이**다(시작 위치가 아니다). 앞선 짧은 마커를 먼저 집으면 그 뒤의 더
+    긴 마커가 통째로 사라진다 — '최근에 골드에서 VIP로 바뀐'에서 앞의 짧은 선택자 마커가
+    전이 구절을 삼켜 문장의 뜻이 '지금 골드'로 바뀌었다(구현 중 실측). 같은 길이면 앞선
+    것이 이긴다(결정론).
+    """
+    ordered = sorted(markers, key=lambda item: (-(item.end - item.start), item.start))
     kept: list[TemporalMarker] = []
     for marker in ordered:
         if any(

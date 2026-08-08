@@ -168,6 +168,58 @@ def test_a_boundary_between_two_surfaces_means_two_clauses(
     ), why
 
 
+@pytest.mark.parametrize(
+    ("query", "left_text", "right_text", "why"),
+    [
+        pytest.param(
+            "최근 6개월 중 한 번이라도 골드였던 회원",
+            "6개월",
+            "한 번이라도 골드",
+            "'중'은 혼자서 절을 가르지 않는다 — 기간과 조건은 한 절이다",
+            id="scope-marker-alone",
+        ),
+        pytest.param(
+            "최근 6개월 동안 한 번이라도 골드였던 회원",
+            "6개월",
+            "한 번이라도 골드",
+            "'동안'과 같은 판정이어야 한다(대조군)",
+            id="duration-particle",
+        ),
+        pytest.param(
+            "최근 6개월 가운데 한 번이라도 골드였던 회원",
+            "6개월",
+            "한 번이라도 골드",
+            "다른 범위 표지도 같은 계약을 따른다",
+            id="scope-marker-gaunde",
+        ),
+    ],
+)
+def test_a_scope_marker_alone_does_not_split_a_clause(
+    query: str, left_text: str, right_text: str, why: str
+) -> None:
+    """범위 표지는 **회원 명사와 결합할 때만** 절 경계다(어휘 선언이 적어 둔 계약).
+
+    이 모듈만 낱말 하나로 끊던 동안 '6개월 중 …' 의 기간이 조건에서 떨어져 나가, 같은 뜻의
+    '6개월 동안 …' 과 다른 SQL 이 나갔다(2026-08-08 실측).
+    """
+    left = (query.index(left_text), query.index(left_text) + len(left_text))
+    right = (query.index(right_text), query.index(right_text) + len(right_text))
+
+    assert audience_frame.in_same_clause(query, left, right), why
+
+
+def test_scoped_boundary_terms_are_derived_from_the_declared_vocabularies() -> None:
+    """결합형 경계는 손 목록이 아니라 (회원 명사 × 범위 표지) 곱집합이다."""
+    terms = audience_frame.scoped_boundary_terms()
+
+    assert "회원중" in terms and "고객중에서" in terms
+    # 범위 표지 단독은 더 이상 경계 어휘가 아니다.
+    assert "중" not in terms
+    assert (
+        "clause_scope_marker" not in audience_frame.CLAUSE_BOUNDARY_VOCABULARIES
+    )
+
+
 # ── 국소 부정 · 어간 활용 · 좌표 변환 ────────────────────────────────────────────────
 
 

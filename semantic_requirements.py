@@ -1420,6 +1420,10 @@ def _member_state_history_obligations(query: str) -> list[SourceRequirement]:
             value={"marker": marker.text, "temporal_operator": marker.operator},
         )
         for marker in markers
+        # 이 원장이 기록하는 것은 '이 절이 **이력 관측**을 요구한다'이다. '현재 등급이 VIP'는
+        # 그 요구가 아니므로(현재값 자산이 그대로 답한다) 기록하지 않는다 — 기록하면 아무도
+        # 방면할 수 없는 의무가 남아 이력이 필요 없는 문장이 미귀결로 막힌다.
+        if not targeting_domain.selects_current_value(marker.operator, marker.text)
     ]
 
 

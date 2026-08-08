@@ -68,7 +68,9 @@ import aggregate_parser_config
 import audience_frame
 import calendar_window
 import canonical_audience_claims
+import condition_normalizers
 import event_ir
+import ordered_catalog_claims
 import resolved_semantic_catalog
 import targeting_domain
 import temporal_ir
@@ -152,6 +154,10 @@ class _OperatorPlan:
     count: bool = False
     null_policy: str = "exclude"
     direction: str | None = None
+    # '직전'의 세 뜻 중 어느 것인가(:class:`sir.PreviousKind`). 선언의 기본값은 달력 칸이고,
+    # 머리가 속성 축이면 :func:`_observation_plan` 이 관측으로 바꾼다 — 낱말이 아니라 머리가
+    # 뜻을 정한다는 규칙이 코드로 있는 자리다.
+    previous_kind: str = "bucket"
 
     def __post_init__(self) -> None:
         if self.missing_window not in MISSING_WINDOW_POLICIES:
@@ -237,6 +243,11 @@ class TemporalClaimRequest:
     ``window_source`` 는 이 조건의 구간을 **누가 골랐는가**다. 정책이 채운 구간을 사용자가 말한
     구간과 같게 보고하면 두 가지가 깨진다: 응답을 읽는 쪽이 "원문에 없는 조건"을 설명할 수 없고,
     의미 검증기가 자기 SQL 을 spurious 로 막는다.
+
+    ``current_value`` 는 이 청구가 **지금의 값**만 말한다는 표시다('현재 등급이 VIP'). 그런
+    조건의 소유자는 이력 관측이 아니라 현재값 자산이므로, 직전 값과 짝을 이루지 못하면 이
+    계층은 손을 뗀다(:func:`_merge_state_transitions`). 표시를 들고 다니는 이유는 그 판단이
+    청구를 만든 자리에서만 가능하기 때문이다 — 낮춘 뒤에는 두 AS_OF 가 구분되지 않는다.
     """
 
     operator: str
@@ -244,6 +255,7 @@ class TemporalClaimRequest:
     value_domain: str | None
     condition: sir.TemporalCondition
     spans: tuple[Span, ...]
+    current_value: bool = False
 
     @property
     def window_source(self) -> sir.WindowSource:
@@ -347,7 +359,16 @@ def _period_candidates(
     ):
         found.append(((start, end), dict(window), "calendar"))
     compact = query.replace(" ", "").casefold()
-    for candidate in calendar_window.duration_window_candidates(compact):
+    # 낱말 경계는 원문에서만 보인다 — 압축 좌표 대응표를 함께 넘겨야 단어형 기간 가드가 돈다
+    # (:func:`calendar_window.is_standalone_word_duration`). 이 두 인자가 없던 동안 가드는
+    # **선언만 되고 한 번도 돌지 않았고**, '적어도 한 달은 골드'의 '한 달'이 1개월 창이 됐다
+    # (2026-08-08 실측). 판정 규칙은 :func:`calendar_window.parse_duration_window` 와 같다.
+    offsets = tuple(index for index, char in enumerate(query) if char != " ")
+    for candidate in calendar_window.duration_window_candidates(
+        compact,
+        source=query,
+        source_offsets=offsets if len(offsets) == len(compact) else None,
+    ):
         span = audience_frame.compact_to_source_span(query, candidate.start, candidate.end)
         if span is None:
             continue
@@ -361,6 +382,48 @@ def _period_candidates(
 
 def _covered(span: Span, owned: Iterable[Span]) -> bool:
     return any(start <= span[0] and span[1] <= end for start, end in owned)
+
+
+# ── 서열 비교('골드 **이상**') ──────────────────────────────────────────────────
+# 비교어 → 부등호 표의 단일 소유자는 :func:`condition_normalizers.comparison_literal_operators`
+# 다. 같은 표에서 같은 방식으로 정규식을 만들기 때문에 여기서 잡는 구간은 리터럴 정산이 보는
+# 구간(`query_structurer.semantic_ir.extract_literal_bindings`)과 **글자 단위로 같다** — 그
+# 동일성이 깨지면 소유 신고가 미소비 리터럴을 덮지 못하므로 계약 테스트로 고정한다.
+_COMPARISON_OPERATOR_RE = re.compile(
+    "|".join(
+        re.escape(surface)
+        for surface in condition_normalizers.comparison_literal_operators()
+    )
+)
+
+
+def _ordered_comparison(
+    query: str, hit: _ValueHit, domain: str, snapshot: Mapping[str, Any]
+) -> tuple[str, Span] | None:
+    """값 바로 뒤에 붙은 **서열 비교어**와 그 구간. 없으면 None.
+
+    조건은 셋이고 하나라도 어긋나면 등호를 유지한다(추측하지 않는다).
+
+    1. 값 도메인이 **순서를 선언**했다(``ordered: true``). 순서 없는 축('정상/휴면')에
+       부등호를 만들면 사전식 비교라는 다른 뜻이 조용히 들어온다.
+    2. 비교어가 값에 **직접 붙어** 있다(사이에 공백만). 이 인접 조건이 이 함수의 존재
+       이유다 — '골드였고 10만원 이상 구매한' 의 '이상'은 금액의 것이지 등급의 것이 아니다.
+    3. 정규화된 연산자가 서열 비교다(:data:`ordered_catalog_claims.ORDERED_OPERATORS`).
+
+    돌려주는 구간은 **소유 신고**에 쓴다. 연산자만 바꾸고 구간을 신고하지 않으면 '이상'이
+    미소비 리터럴로 남아 정산 게이트가 문장 전체를 막는다(fail-close 는 옳지만 답은 아니다).
+    """
+
+    declared = (snapshot.get("value_domains") or {}).get(domain)
+    if not isinstance(declared, Mapping) or declared.get("ordered") is not True:
+        return None
+    match = _COMPARISON_OPERATOR_RE.search(query, hit.end)
+    if match is None or query[hit.end : match.start()].strip():
+        return None
+    operator = condition_normalizers.comparison_literal_operators().get(match.group(0))
+    if operator not in ordered_catalog_claims.ORDERED_OPERATORS:
+        return None
+    return operator, (match.start(), match.end())
 
 
 # ── 원문 조각 → IR 인자 ──────────────────────────────────────────────────────────
@@ -500,7 +563,7 @@ def _selector(
     if plan.selector == "as_of":
         return sir.AsOfSelector(anchor=anchor, strategy=sir.ExactBucket())
     if plan.selector == "previous":
-        return sir.PreviousSelector(anchor=anchor, previous_kind="bucket")
+        return sir.PreviousSelector(anchor=anchor, previous_kind=plan.previous_kind)
     if window is None:  # pragma: no cover - 호출자가 먼저 막는다
         raise ValueError("window selector requires a window")
     return sir.WindowSelector(window=window, bucket=bucket, anchor=anchor)
@@ -525,10 +588,14 @@ def _predicate(
     *,
     values: Sequence[str],
     count: Decimal | None,
+    comparison_operator: str = "=",
 ) -> sir.Predicate:
     if plan.predicate == "state":
+        # 연산자는 인자로 받는다. 여기서 '=' 를 박아 두던 동안 '골드 **이상**'이 경고 없이
+        # '골드'로 좁아졌다(VIP 누락, 2026-08-08 실측) — 부등호를 물리값 IN 목록으로 펴는
+        # 일반 로직은 event_compiler 에 이미 있었고, 그 자리까지 뜻이 오지 못했을 뿐이다.
         return sir.StatePredicate(
-            comparison=sir.Comparison(operator="=", value=values[0]),
+            comparison=sir.Comparison(operator=comparison_operator, value=values[0]),
             null_policy=plan.null_policy,
         )
     if plan.predicate == "transition":
@@ -616,6 +683,7 @@ def detect_temporal_claims(
                 f"시간 연산자 '{marker.operator}' 를 IR 조합으로 옮기는 선언이 없습니다.",
                 _evidence_dict(query, *marker_span),
             )
+        plan = _observation_plan(plan, marker)
 
         clause_periods = [
             (span, window, kind)
@@ -628,7 +696,20 @@ def detect_temporal_claims(
             for hit in hits
             if audience_frame.in_same_clause(query, (hit.start, hit.end), marker_span)
         ]
+        # 마커가 자기 머리를 품고 있으면(‘직전에는 골드’) 그 값이 이 조건의 값이다. 절 전체를
+        # 보면 접속사 없이 이어진 문장('직전에는 골드였는데 지금은 VIP')에서 두 조건의 값이
+        # 서로의 절에 섞여 둘 다 '값이 2개'로 닫힌다 — 근거 구간이 있는 쪽이 소유자다.
+        inside = [
+            hit for hit in clause_hits if marker.start <= hit.start and hit.end <= marker.end
+        ]
+        clause_hits = inside or clause_hits
         clause_hits.sort(key=lambda hit: (hit.start, hit.end))
+
+        if _states_current_value(plan, marker) and not clause_hits:
+            # '최근에 등급이 승급한' 의 '최근에 등급'. 값이 없으므로 상태 조건이 아니다 —
+            # 이 낱말은 같은 절의 다른 조건이 고르는 관측을 다시 말한 것뿐이다. 조건을
+            # 만들지 않되 선택자로는 소비된 상태로 남는다(기간 결핍이 생기지 않는다).
+            continue
 
         outcome = _plan_request(
             query,
@@ -645,9 +726,172 @@ def detect_temporal_claims(
         )
         if isinstance(outcome, TemporalClaimRejection):
             return outcome
-        requests.append(outcome)
+        requests.append(
+            replace(outcome, current_value=_states_current_value(plan, marker))
+        )
 
-    return tuple(requests)
+    # 같은 축의 '지금 값'과 '직전 값'은 두 조건이 아니라 하나의 전이다. 문형으로 찾지 않고
+    # **이미 만들어진 청구**를 정규화하는 것이 이 순서의 요점이다(I5).
+    settled = _merge_state_transitions(query, tuple(requests))
+    # 짝을 이루지 못한 '지금 값' 청구는 이 계층이 소유하지 않는다 — 그 뜻은 현재값 자산이
+    # 그대로 답한다('현재 등급이 VIP' = '등급이 VIP'). 여기서 관측 조건을 내면 같은 조건에
+    # 주인이 둘 생기고, 스냅샷 적재 월이 앵커와 다른 배포에서는 답까지 달라진다.
+    materialized = tuple(item for item in settled if not item.current_value)
+    return materialized or None
+
+
+def _observation_plan(
+    plan: _OperatorPlan, marker: temporal_semantics.TemporalMarker
+) -> _OperatorPlan:
+    """선택자 낱말의 뜻을 **머리**로 확정한다(I1).
+
+    '직전'은 낱말 하나에 세 뜻이 있다(:class:`sir.PreviousKind`) — 직전 달력 칸, 직전 관측,
+    현재값과 다른 마지막 값. 어느 것인지는 그 낱말이 무엇을 수식하는지가 정한다. 속성 축을
+    수식하면 관측이고('직전 상태'), 달력 단위를 수식하면 칸이다('직전 달').
+
+    판정은 :func:`targeting_domain.temporal_head_kind` 하나가 소유한다 — 여기서 낱말을 다시
+    읽으면 마커를 만든 표와 뜻을 정하는 표가 갈라진다.
+    """
+
+    if plan.selector != "previous":
+        return plan
+    if targeting_domain.temporal_head_kind(marker.text) != targeting_domain.HEAD_ATTRIBUTE:
+        return plan
+    return replace(plan, previous_kind="observation")
+
+
+def _states_current_value(
+    plan: _OperatorPlan, marker: temporal_semantics.TemporalMarker
+) -> bool:
+    """이 청구가 속성 축의 **지금 값**만 말하는가(판정의 소유자는 도메인 계층 하나다).
+
+    ``plan`` 도 함께 보는 이유는 술어 모양 때문이다 — 같은 마커라도 값 없는 조합(전이·변경
+    횟수)으로 승격됐다면 그것은 '지금 값'이 아니다.
+    """
+
+    return (
+        plan.selector == "as_of"
+        and plan.predicate == "state"
+        and targeting_domain.selects_current_value(marker.operator, marker.text)
+    )
+
+
+def _merge_state_transitions(
+    query: str, requests: tuple[TemporalClaimRequest, ...]
+) -> tuple[TemporalClaimRequest, ...]:
+    """같은 축의 (지금 값 · 직전 값) 청구 쌍을 전이 하나로 정규화한다(I5).
+
+    전이를 문형으로 찾지 않는 것이 이 함수의 존재 이유다. '골드에서 VIP로 승급'과
+    '현재 등급이 VIP이고 직전 등급이 골드'는 서로 다른 문형이지만 같은 뜻이고, 문형마다
+    감지기를 만들면 문형이 늘 때마다 같은 뜻이 새로 미지원이 된다.
+
+    결합 조건은 절 위치도 텍스트 거리도 아니다 — **같은 지표(=같은 엔터티의 같은 축)**,
+    같은 시점(anchor), 같은 모양의 상태 술어. 축이 다르면 합치지 않는다('현재 등급이 VIP이고
+    직전 구매 상품은 골드 패키지'는 전이가 아니다).
+
+    두 조건을 한 관측 행에서 함께 읽는 것이 전이의 존재 이유다(:mod:`transition_metrics` 의
+    같은 계약). 따로 두면 서로 다른 행에서 만족돼도 통과한다.
+    """
+
+    if len(requests) < 2:
+        return requests
+    merged: list[TemporalClaimRequest] = []
+    consumed: set[int] = set()
+    for index, current in enumerate(requests):
+        if index in consumed:
+            continue
+        partner = next(
+            (
+                other
+                for other, candidate in enumerate(requests)
+                if other not in consumed
+                and other != index
+                and _pairs_into_transition(current, candidate)
+            ),
+            None,
+        )
+        if partner is None:
+            merged.append(current)
+            continue
+        consumed.update({index, partner})
+        latest, earlier = (
+            (current, requests[partner])
+            if current.current_value
+            else (requests[partner], current)
+        )
+        merged.append(_merged_transition(query, latest, earlier))
+    return tuple(merged)
+
+
+def _pairs_into_transition(
+    one: TemporalClaimRequest, other: TemporalClaimRequest
+) -> bool:
+    """이 둘이 같은 축의 (지금 값 · 직전 값) 쌍인가."""
+
+    if one.current_value == other.current_value:
+        return False
+    latest, earlier = (one, other) if one.current_value else (other, one)
+    if earlier.operator != temporal_semantics.IMMEDIATELY_PRECEDING:
+        return False
+    # 같은 지표 = 같은 엔터티의 같은 의미 축. 이름이 아니라 선언에서 온 id 로 묻는다.
+    if latest.metric_id != earlier.metric_id:
+        return False
+    selector, earlier_selector = latest.condition.selector, earlier.condition.selector
+    if not isinstance(selector, sir.AsOfSelector) or not isinstance(
+        earlier_selector, sir.PreviousSelector
+    ):
+        return False
+    # 같은 관측을 고른 두 조건만 한 행으로 접을 수 있다. 시점이 다르면 서로 다른 관측이고,
+    # 그때 한 행으로 접으면 사용자가 말하지 않은 집합이 된다.
+    if selector.anchor != earlier_selector.anchor:
+        return False
+    if earlier_selector.previous_kind is not sir.PreviousKind.OBSERVATION:
+        return False
+    to_value = _state_value(latest.condition.predicate)
+    from_value = _state_value(earlier.condition.predicate)
+    return to_value is not None and from_value is not None and to_value != from_value
+
+
+def _merged_transition(
+    query: str, latest: TemporalClaimRequest, earlier: TemporalClaimRequest
+) -> TemporalClaimRequest:
+    """(지금 값 · 직전 값) 쌍 → 전이 청구 하나(한 관측 행의 두 비교)."""
+
+    selector = latest.condition.selector
+    to_value = _state_value(latest.condition.predicate)
+    from_value = _state_value(earlier.condition.predicate)
+    spans = tuple(sorted(set(latest.spans) | set(earlier.spans)))
+    start = min(span[0] for span in spans)
+    end = max(span[1] for span in spans)
+    condition = sir.TemporalCondition(
+        metric=latest.metric_id,
+        binding=None,
+        selector=selector,
+        quantifier=sir.ExistsQuantifier(),
+        predicate=sir.TransitionPredicate(
+            from_value=str(from_value),
+            to_value=str(to_value),
+            transition_mode="direct_observed_transition",
+        ),
+        evidence=_evidence(query, start, end),
+    )
+    return TemporalClaimRequest(
+        operator=temporal_semantics.CHANGE_BETWEEN,
+        metric_id=latest.metric_id,
+        value_domain=latest.value_domain,
+        condition=condition,
+        spans=spans,
+    )
+
+
+def _state_value(predicate: sir.Predicate) -> str | None:
+    """동등 비교 상태 술어의 값(그 모양이 아니면 ``None``)."""
+
+    if not isinstance(predicate, sir.StatePredicate):
+        return None
+    if predicate.comparison.operator != "=":
+        return None
+    return str(predicate.comparison.value)
 
 
 def _directional_plan(
@@ -694,6 +938,9 @@ def _plan_request(
     spans: list[Span] = [marker_span]
     values: list[str] = []
     domain: str | None = None
+    # 상태 술어의 비교 연산자. 기본은 등호이고, 값 바로 뒤에 서열 비교어가 붙어 있을 때만
+    # 바뀐다(:func:`_ordered_comparison`).
+    comparison_operator = "="
 
     plan = _directional_plan(query, marker_span, plan, clause_hits) or plan
 
@@ -723,6 +970,11 @@ def _plan_request(
         domain = next(iter(domains))
         values = [hit.canonical for hit in clause_hits]
         spans.extend((hit.start, hit.end) for hit in clause_hits)
+        if plan.predicate == "state" and len(clause_hits) == 1:
+            ordered = _ordered_comparison(query, clause_hits[0], domain, snapshot)
+            if ordered is not None:
+                comparison_operator, comparison_span = ordered
+                spans.append(comparison_span)
     else:
         # 값이 없는 연산('한 번도 바뀌지 않은'·'3회 이상 변경')은 축에서 도메인을 찾는다.
         domain = _axis_domain(query, marker_span, snapshot)
@@ -902,7 +1154,12 @@ def _plan_request(
         binding=None,
         selector=_selector(effective, anchor=anchor, window=window, bucket=bucket),
         quantifier=_quantifier(effective, bucket_count=bucket_count),
-        predicate=_predicate(effective, values=values, count=count),
+        predicate=_predicate(
+            effective,
+            values=values,
+            count=count,
+            comparison_operator=comparison_operator,
+        ),
         evidence=_evidence(query, span_start, span_end),
     )
     return TemporalClaimRequest(

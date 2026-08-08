@@ -502,10 +502,19 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
                 # 이 자리에서 맨 '최근'에 5일을 지어내라고 지시했고, 그러면 구조화기는 사용자가 말한
                 # 기간과 애플리케이션이 고른 기간을 구분할 수 없는 하나의 창으로 섞어 내보냈다 —
                 # 되묻기와 기본값 중 무엇이 옳은지는 원문이 아니라 제품 설정이 정하는 문제다.
-                "Special temporal rule: when the query says '최근' but gives no duration or bounded period, "
-                "do not interpret it as all history and do not substitute a default window. Set expression "
-                "to null and report missing_argument with argument='period', evidence anchored on the bare "
-                "'최근' span. Only an explicit application instruction may supply that duration."
+                # '최근'은 항상 기간이 아니다. 무엇을 수식하는지가 뜻을 정하고, 그 판정의
+                # source of truth 는 프롬프트가 아니라 애플리케이션이다
+                # (:func:`targeting_domain.observation_selector_tokens` — 선택자로 해석된
+                # 낱말에 붙은 기간 결핍 신고는 계약 위반으로 반려된다).
+                "Special temporal rule: '최근'/'현재'/'최신'/'직전' do not always mean a period. When such "
+                "a word directly qualifies a state or attribute axis (등급·가치등급·상태), it selects an "
+                "observation (latest/current/previous), not a duration: express it with the snapshot fields "
+                "(for example member_month_snapshot.grade and member_month_snapshot.prev_grade) and do NOT "
+                "report missing_argument(period) for it. Only when the word qualifies behaviour over time "
+                "('최근 구매한', '최근 접속') and the query gives no duration or bounded period, set "
+                "expression to null and report missing_argument with argument='period', evidence anchored on "
+                "the bare marker. In that case do not interpret it as all history and do not substitute a "
+                "default window; only an explicit application instruction may supply that duration."
             ),
             (
                 "campaign_constraints contains campaign-delivery metadata only. A campaign objective such as "

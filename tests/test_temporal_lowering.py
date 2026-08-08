@@ -267,12 +267,17 @@ def test_observed_values_equal_is_not_promoted_to_never_changed(runtime, semanti
     ("kind", "expected_status", "expected_operator"),
     [
         (sir.PreviousKind.BUCKET, "compiled", "temporal.previous_bucket"),
-        (sir.PreviousKind.OBSERVATION, "unsupported", "temporal.previous_observation"),
+        # 2026-08-08 변경: 직전 **관측**은 이 선언(한 행에 PREV_* 컬럼)으로 낮출 수 있다.
+        # 예전에는 '주체별 정렬이 필요하다'를 이유로 미지원이었는데, 그 이유는 정렬로만
+        # 직전 행을 고를 수 있는 선언에만 해당한다 — 판정 근거를 capability 문자열에서
+        # 스키마 모양(prev_value_field)으로 옮겼다. 정렬이 필요한 선언은
+        # test_previous_observation_without_prev_column_is_unsupported 가 고정한다.
+        (sir.PreviousKind.OBSERVATION, "compiled", "temporal.previous_observation"),
         (sir.PreviousKind.DISTINCT_VALUE, "unsupported", "temporal.previous_distinct_value"),
     ],
 )
 def test_previous_kinds_are_three_different_questions(
-    runtime, context, kind, expected_status, expected_operator
+    runtime, semantic_catalog, context, kind, expected_status, expected_operator
 ) -> None:
     """누락된 달과 값 반복에서 세 의미는 서로 다른 답을 낸다 — 하나로 합치지 않는다."""
     condition = _as_of(
@@ -283,6 +288,36 @@ def test_previous_kinds_are_three_different_questions(
     assert outcome.status == expected_status
     if expected_status == "unsupported":
         assert expected_operator in outcome.message
+
+
+def test_previous_bucket_and_observation_ask_different_questions(
+    runtime, semantic_catalog, context
+) -> None:
+    """둘 다 낮춰지더라도 **같은 SQL 이 되면 안 된다** — 이 시험이 그 합쳐짐을 막는다.
+
+    직전 칸은 '앞 칸 행의 현재값'이고 직전 관측은 '이 행이 들고 있는 직전값'이다. 적재가
+    한 칸뿐인 배포에서 두 뜻은 서로 다른 답을 낸다(앞 칸은 아예 없다).
+    """
+
+    def sql(kind: sir.PreviousKind) -> str:
+        outcome = runtime.lower(
+            _as_of(
+                sir.ReferenceAnchor(),
+                selector=sir.PreviousSelector(
+                    anchor=sir.ReferenceAnchor(), previous_kind=kind
+                ),
+            ),
+            context,
+        )
+        assert outcome.status == "compiled"
+        return _sql(semantic_catalog, outcome.expression)
+
+    bucket = sql(sir.PreviousKind.BUCKET)
+    observation = sql(sir.PreviousKind.OBSERVATION)
+    assert bucket != observation
+    # 칸은 현재값 컬럼을 앞 칸에서, 관측은 직전값 컬럼을 같은 칸에서 읽는다.
+    assert "PREV_ZTS_GRADE" not in bucket
+    assert "PREV_ZTS_GRADE" in observation
 
 
 # ── 전칭과 전이 ───────────────────────────────────────────────────────────────────

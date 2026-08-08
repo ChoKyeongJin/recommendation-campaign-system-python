@@ -163,6 +163,26 @@ def resolve_operator_name(condition: sir.TemporalCondition) -> str:
     return name
 
 
+def state_value_field(
+    condition: sir.TemporalCondition, binding: tcat.TemporalBindingSpec
+) -> str | None:
+    """상태 술어가 읽는 값 필드 — **논리 선택자 × 선언된 저장 계약**.
+
+    사용자 의미('직전 관측의 값')와 저장소 조회 방식(같은 행의 직전 값 컬럼)은 별개의 문제다.
+    앞의 것은 :class:`sir.PreviousSelector` 가, 뒤의 것은 binding 선언이 말한다. 이 함수가 그
+    둘을 잇는 **유일한** 자리다 — 낮춤과 합성 검사가 각자 답을 고르면, 한쪽은 직전 값을 읽고
+    다른 쪽은 현재 값을 기대해 정상 낮춤이 '부분 합성'으로 막힌다(구현 중 실측).
+    """
+    selector = condition.selector
+    if (
+        isinstance(selector, sir.PreviousSelector)
+        and selector.previous_kind is not sir.PreviousKind.BUCKET
+        and binding.prev_value_field is not None
+    ):
+        return str(binding.prev_value_field)
+    return None if binding.value_field is None else str(binding.value_field)
+
+
 # ── lowering 입력 ────────────────────────────────────────────────────────────────
 
 

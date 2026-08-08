@@ -74,7 +74,7 @@ def _predicate_conditions(data: treg.LoweringInput) -> tuple[event_ir.Condition,
     if isinstance(predicate, sir.StatePredicate):
         return (
             _comparison(
-                data, str(binding.value_field), predicate.comparison.operator, predicate.comparison.value
+                data, _state_field(data), predicate.comparison.operator, predicate.comparison.value
             ),
         )
     if isinstance(predicate, sir.TransitionPredicate):
@@ -89,6 +89,34 @@ def _predicate_conditions(data: treg.LoweringInput) -> tuple[event_ir.Condition,
     raise treg.TemporalRegistryError(  # pragma: no cover - 계약 검증이 먼저 막는다
         f"낮출 수 없는 술어입니다: {predicate.kind}"
     )
+
+
+def _state_field(data: treg.LoweringInput) -> str:
+    """상태 술어가 읽을 필드(판정의 소유자는 :func:`treg.state_value_field` 하나다)."""
+    return str(treg.state_value_field(data.condition, data.binding))
+
+
+def _previous_observation_issues(
+    condition: sir.TemporalCondition, binding: tcat.TemporalBindingSpec
+) -> tuple[Issue, ...]:
+    """'직전 관측의 값'을 이 선언으로 읽을 수 있는가.
+
+    판정 근거는 capability 문자열이 아니라 **스키마 모양**이다 — 한 행에 직전 값이 함께
+    적재되면(``prev_value_field``) 정렬 없이 읽을 수 있고, 없으면 주체별 정렬과 행 선택
+    primitive 가 필요한데 실행 IR 에 그것이 없다. 그 경우는 조용히 버리지 않고 축 이름을
+    대며 미지원으로 남긴다.
+    """
+    issues: list[Issue] = list(_point_state_issues(condition, binding))
+    if binding.prev_value_field is None:
+        issues.append(Issue(
+            "temporal_previous_value_unavailable",
+            f"binding {binding.id!r} 은 한 관측 행에서 직전 값을 함께 읽을 수 있다고 선언하지 "
+            "않았습니다(prev_value_field 없음). 이 축의 '직전 값' 조건은 관측을 주체별로 "
+            "정렬해 행을 고르는 실행 primitive 를 요구하며 그것은 아직 없습니다 — 직전 "
+            "**칸**(temporal.previous_bucket)은 다른 의미이며 그것은 낮출 수 있습니다.",
+            "binding.prev_value_field",
+        ))
+    return tuple(issues)
 
 
 def _directional_transition(
@@ -673,13 +701,12 @@ def operator_definitions() -> tuple[treg.TemporalOperatorDefinition, ...]:
             quantifier_types=frozenset({sir.ExistsQuantifier}),
             predicate_types=_STATE_LIKE,
             accepted_representations=_HISTORY_REPRESENTATIONS,
-            required_capabilities=frozenset({"supports_ordered_observations"}),
-            unsupported_reason=(
-                "실제로 존재하는 이전 관측 행을 고르려면 주체별 정렬과 행 선택"
-                "(PartitionBy/OrderBy/LimitPerEntity)이 필요한데 실행 IR 에 그 primitive 가 "
-                "없습니다. 직전 **칸**(temporal.previous_bucket)은 다른 의미이며 그것은 낮출 수 "
-                "있습니다."
-            ),
+            accepted_null_policies=frozenset({sir.NullPolicy.EXCLUDE}),
+            # capability 문자열을 요구하지 않는 이유는 그것이 이 연산의 실제 전제가 아니기
+            # 때문이다. 전제는 스키마 모양 하나다 — 한 행에 직전 값이 함께 있는가. 그 판정은
+            # 검증이 하고(:func:`_previous_observation_issues`), 없으면 이름을 대며 닫힌다.
+            validate=_previous_observation_issues,
+            lower=lower_point_state,
         ),
         treg.TemporalOperatorDefinition(
             name=treg.PREVIOUS_DISTINCT_VALUE,

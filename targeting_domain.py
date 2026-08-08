@@ -28,10 +28,12 @@ import json
 import os
 import re
 from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import lexicon_patterns
 import member_filters_config
 import temporal_semantics
 
@@ -431,6 +433,89 @@ _SUBINTERVAL_UNITS: dict[str, str] = {
     "매년": "year",
     "해마다": "year",
 }
+# 관측 선택자 표면어 → **선택자 후보** 연산자. 이 표가 뜻하는 것은 "이 낱말이 어느 관측을
+# 고르라는 말인가" 하나뿐이고, **그 말이 기간인지 관측인지는 여기서 정하지 않는다** — 그것은
+# 이 낱말이 수식하는 머리(head)가 정한다(:func:`temporal_head_kind`).
+#
+# '최근'을 무조건 기간으로 읽던 동안 '최근 상태'가 기간 결핍으로 닫혔다(2026-08-08 실측).
+# 반대로 여기서 '최근'을 무조건 관측 선택자로 바꾸면 '최근 30일 구매'가 망가진다. 그래서
+# 아래 템플릿은 **머리가 속성 축이거나 그 축의 값일 때만** 마커를 만든다 — 머리가 달력 단위나
+# 사건이면 이 템플릿은 아예 물지 않고 기존 기간 문법이 그대로 읽는다.
+_OBSERVATION_SELECTOR_CUES: dict[str, str] = {
+    "최근": temporal_semantics.AS_OF,
+    "최신": temporal_semantics.AS_OF,
+    "현재": temporal_semantics.AS_OF,
+    "지금": temporal_semantics.AS_OF,
+    "직전": temporal_semantics.IMMEDIATELY_PRECEDING,
+    "이전": temporal_semantics.IMMEDIATELY_PRECEDING,
+}
+
+# ── 존재/부재 한정어 어휘(선언형) ────────────────────────────────────────────────
+# '한 번이라도'·'적어도 한 달은'·'한 번도 … 없는' 은 서로 다른 낱말이지만 **같은 축의 값**
+# 이다(∃ / ¬∃). 어형마다 정규식을 하나씩 늘리면 같은 뜻이 열 곳에 흩어지므로, 여기서는
+# 구성 요소만 선언하고 조합은 아래 템플릿 **두 줄**이 한다. 새 어형은 이 표 한 줄이다.
+#
+# 수(number)를 어휘로 두지 않는 것이 이 표의 핵심 계약이다 — 받는 수는 관형사 '한' 하나뿐이고
+# 숫자형('3번')은 어디에도 없다. `적어도`·`최소`·`이상` 이 이미 **수치 비교 축의 소유어**라
+# (:func:`condition_normalizers.comparison_literal_operators`), 수를 열어 두면 '적어도 3번
+# 구매'가 시간 존재 한정으로 오탐된다. 뜻이 '최소 하나'로 고정될 때만 이 축이 발화한다.
+
+# 한 번의 발생/관측을 세는 단위. 사건('번·차례·회')과 달력 칸('달·개월·주·년·해')이 같은
+# 자리에 오는 이유는 둘 다 "관측 하나"를 세기 때문이다 — 스냅샷 축에서 ∃관측 ≡ ∃칸이다.
+_OCCURRENCE_UNITS: tuple[str, ...] = (
+    "번",
+    "차례",
+    "회",
+    "달",
+    "개월",
+    "주",
+    "년",
+    "해",
+)
+# '한 <단위>' **앞**에 와서 그것을 최소성으로 만드는 표지.
+_AT_LEAST_PREFIXES: tuple[str, ...] = ("적어도", "최소한", "최소")
+# '한 <단위>' **뒤**에 와서 그것을 최소성으로 만드는 표지. 접두가 없을 때는 이 중 하나가
+# 반드시 있어야 한다 — 없으면 '최근 한 달'(창)과 구분되지 않는다.
+_AT_LEAST_SUFFIXES: tuple[str, ...] = ("이라도", "라도", "이상")
+# 접두가 이미 최소성을 말했을 때 뒤에 붙을 수 있는 잉여 조사('적어도 한 달은').
+_OCCURRENCE_PARTICLES: tuple[str, ...] = (*_AT_LEAST_SUFFIXES, "은", "는", "만")
+# 부재 표지('한 번도'). 접두는 받지 않는다 — '최소 한 번도'는 한국어가 아니다.
+_NEVER_SUFFIXES: tuple[str, ...] = ("도",)
+# 값 뒤에서 그 값의 성립을 부정하는 꼬리. '없'이 빠져 있던 동안 '한 번도 VIP였던 적이
+# 없는'이 마커를 내지 못했다(2026-08-08 실측).
+_EXISTENCE_NEGATION_TAILS: tuple[str, ...] = ("아니", "않", "없")
+# 값 뒤에서 그 값의 성립을 긍정하는 꼬리('…였던 적이 있는').
+_EXISTENCE_AFFIRMATION_TAILS: tuple[str, ...] = ("있",)
+# 경험 명사 — 이 낱말이 있어야 꼬리가 그 값의 것이다('골드였던 **적**이 없는'). 없으면
+# 같은 절의 다른 서술어('… 구매한 적이 없는')가 값의 꼬리 행세를 한다.
+_EXPERIENCE_NOUNS: tuple[str, ...] = ("적", "경험")
+
+# 값과 그 꼬리 사이에 허용하는 글자 수. 활용형('이었던'·'등급이었던')은 통과시키되 다른 절의
+# 서술어는 배제한다 — 절 경계 어휘가 끼면 아예 물지 않는다(아래 `_boundary_free`).
+_EXPERIENCE_GAP = 8
+
+
+def _boundary_free(length: int) -> str:
+    """절 경계 낱말을 만나지 않는 한글/공백 구간 정규식(최대 ``length`` 글자).
+
+    경계 어휘의 소유자는 :mod:`lexicon_patterns` 다 — 여기서 낱말을 다시 적지 않는다.
+    이 가드가 없으면 '골드 회원 중 구매한 적이 없는'의 '적이 없는'이 골드의 꼬리가 된다.
+    """
+
+    boundary = lexicon_patterns.alternation(
+        "audience_frame_noun", "clause_scope_marker", "and_connective", "or_connective"
+    )
+    if not boundary:
+        return rf"[가-힣\s]{{0,{length}}}?"
+    return rf"(?:(?!{boundary})[가-힣\s]){{0,{length}}}?"
+# 선택자 낱말과 머리 사이에 올 수 있는 조사. 뜻을 바꾸지 않으므로 마커 구간에 함께 넣는다
+# ('지금은 VIP'의 머리는 값이고 '직전에는 골드'도 같은 모양이다).
+_SELECTOR_PARTICLES = r"(?:에는|엔|은|는|의|에|이|가)?"
+
+# 머리의 종류. 값은 선택자 낱말의 뜻을 확정하는 **유일한** 근거다(I1).
+HEAD_ATTRIBUTE = "attribute"  # 속성 축 또는 그 축의 값 → 관측 선택자
+HEAD_OTHER = "other"          # 달력 단위·사건 등 → 기존 기간/칸 문법
+
 _TEMPORAL_MARKER_TEMPLATES: tuple[tuple[str, str], ...] = (
     (temporal_semantics.CHANGE_BETWEEN, r"{directions}"),
     (
@@ -441,13 +526,38 @@ _TEMPORAL_MARKER_TEMPLATES: tuple[tuple[str, str], ...] = (
         r"(?:{values})\s*(?:에서|부터)\s*(?:{values})\s*"
         r"(?:으로|로|이|가)\s*(?:바뀐|바뀌|변하|변경|전환|되었|됐|된|{directions})",
     ),
-    (temporal_semantics.IMMEDIATELY_PRECEDING, r"직전\s*(?:{axis})"),
+    # 관측 선택자(선택자 낱말 + 머리). 머리를 패턴 안에 두는 것이 이 두 줄의 요점이다 —
+    # 낱말만으로 마커를 만들면 '최근 30일 구매'까지 관측 선택자가 되고, 머리를 마커 밖에서
+    # 찾으면 같은 절의 다른 낱말이 머리 행세를 한다.
+    (
+        temporal_semantics.AS_OF,
+        r"(?:{as_of_cues})\s*{particles}\s*(?:{axis}|{values})",
+    ),
+    (
+        temporal_semantics.IMMEDIATELY_PRECEDING,
+        r"(?:{previous_cues})\s*{particles}\s*(?:{axis}|{values})",
+    ),
     (temporal_semantics.CHANGE_BETWEEN, r"(?:{values})[가-힣\s]{{0,6}}?(?:이었|였)다가"),
     (temporal_semantics.THROUGHOUT_INTERVAL, r"내내\s*(?:{values})"),
-    (temporal_semantics.AT_LEAST_ONCE_IN_INTERVAL, r"한\s*번이라도\s*(?:{values})"),
+    # 존재/부재 한정. 낱말은 위 어휘 표가 소유하고 여기 있는 것은 **결합 구조**뿐이다:
+    # (최소성 표지 + 한 <단위>) + 값, 그리고 값 + (경험 명사 + 긍정/부정 꼬리).
+    (
+        temporal_semantics.AT_LEAST_ONCE_IN_INTERVAL,
+        r"(?:{at_least_cues})\s*(?:{values})",
+    ),
     (
         temporal_semantics.NEVER_IN_INTERVAL,
-        r"한\s*번도\s*(?:{values})[가-힣\s]{{0,10}}?(?:아니|않)",
+        r"(?:{never_cues})\s*(?:{values}){boundary_free}(?:{negation_tails})",
+    ),
+    # 꼬리만으로 서는 경험형('골드였던 적이 있는' / '… 적이 없는'). 최소성 표지가 없어도
+    # '적'이 그 값의 **과거 성립**을 말하므로 같은 두 연산자로 간다.
+    (
+        temporal_semantics.AT_LEAST_ONCE_IN_INTERVAL,
+        r"(?:{values}){boundary_free}(?:{experience_nouns})\s*이?\s*(?:{affirmation_tails})",
+    ),
+    (
+        temporal_semantics.NEVER_IN_INTERVAL,
+        r"(?:{values}){boundary_free}(?:{experience_nouns})\s*이?\s*(?:{negation_tails})",
     ),
     (
         temporal_semantics.UNCHANGED_THROUGHOUT,
@@ -477,6 +587,31 @@ _TEMPORAL_MARKER_TEMPLATES: tuple[tuple[str, str], ...] = (
 )
 
 
+def _at_least_once_cues() -> str:
+    """'최소 하나'를 뜻하는 표면 구절의 정규식(어휘는 위 표들이 소유).
+
+    갈래가 둘인 이유는 최소성이 어디에 실리느냐가 다르기 때문이다. 어느 쪽도 없는 맨
+    ``한 <단위>`` 는 **창**이므로('최근 한 달') 여기서 발화하지 않는다.
+    """
+
+    units = _alternation(_OCCURRENCE_UNITS)
+    prefixed = (
+        rf"(?:{_alternation(_AT_LEAST_PREFIXES)})\s*한\s*(?:{units})"
+        rf"\s*(?:{_alternation(_OCCURRENCE_PARTICLES)})?"
+    )
+    suffixed = rf"한\s*(?:{units})\s*(?:{_alternation(_AT_LEAST_SUFFIXES)})"
+    return f"(?:{prefixed})|(?:{suffixed})"
+
+
+def _never_cues() -> str:
+    """'한 번도'류 부재 표지의 정규식."""
+
+    return (
+        rf"한\s*(?:{_alternation(_OCCURRENCE_UNITS)})"
+        rf"\s*(?:{_alternation(_NEVER_SUFFIXES)})"
+    )
+
+
 def temporal_lexicon() -> temporal_semantics.TemporalLexicon:
     """도메인 표면형 → 범용 시간 연산자 어휘(코어가 소비하는 형태로 조립).
 
@@ -495,6 +630,17 @@ def temporal_lexicon() -> temporal_semantics.TemporalLexicon:
                 axis=axis,
                 directions=directions,
                 subintervals=subintervals,
+                as_of_cues=_alternation(_selector_cues(temporal_semantics.AS_OF)),
+                previous_cues=_alternation(
+                    _selector_cues(temporal_semantics.IMMEDIATELY_PRECEDING)
+                ),
+                particles=_SELECTOR_PARTICLES,
+                at_least_cues=_at_least_once_cues(),
+                never_cues=_never_cues(),
+                negation_tails=_alternation(_EXISTENCE_NEGATION_TAILS),
+                affirmation_tails=_alternation(_EXISTENCE_AFFIRMATION_TAILS),
+                experience_nouns=_alternation(_EXPERIENCE_NOUNS),
+                boundary_free=_boundary_free(_EXPERIENCE_GAP),
             ),
         )
         for operator, template in _TEMPORAL_MARKER_TEMPLATES
@@ -503,6 +649,121 @@ def temporal_lexicon() -> temporal_semantics.TemporalLexicon:
     return temporal_semantics.TemporalLexicon.from_pairs(
         pairs, context=context, flags=re.IGNORECASE
     )
+
+
+def _selector_cues(operator: str) -> tuple[str, ...]:
+    """그 선택자 연산자를 뜻하는 표면어들(어휘의 단일 소유자는 위 표 하나다)."""
+
+    return tuple(
+        cue for cue, mapped in _OBSERVATION_SELECTOR_CUES.items() if mapped == operator
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationSelectorToken:
+    """선택자 낱말 하나와 그 낱말이 **무엇을 수식하는지**의 판정.
+
+    ``span`` 은 낱말('최근')이고 ``marker_span`` 은 머리까지 포함한 구간('최근 상태')이다.
+    둘을 함께 들고 다니는 이유는 소비자가 다르기 때문이다 — 기간 결핍을 신고하는 쪽은 낱말
+    좌표로 묻고, 조건을 세우는 쪽은 마커 구간으로 묻는다.
+    """
+
+    operator: str
+    head_kind: str
+    span: tuple[int, int]
+    marker_span: tuple[int, int]
+
+    @property
+    def observation(self) -> bool:
+        """이 낱말이 기간이 아니라 **관측 선택자**로 해석됐는가."""
+
+        return self.head_kind == HEAD_ATTRIBUTE
+
+
+def temporal_head_kind(text: str) -> str:
+    """마커 구절의 머리 종류. 선언된 축·값 어휘에서 파생한다(손 목록 없음).
+
+    낱말이 아니라 **머리**가 뜻을 정한다는 규칙(I1)이 코드로 있는 자리다. 속성 축이나 그
+    축의 값이 머리면 관측 선택자이고, 그 밖(달력 단위·사건·기간)이면 기존 기간/칸 문법이
+    그대로 소유한다.
+    """
+
+    if not isinstance(text, str) or not text.strip():
+        return HEAD_OTHER
+    body = text
+    for cue in sorted(_OBSERVATION_SELECTOR_CUES, key=len, reverse=True):
+        index = body.find(cue)
+        if index >= 0:
+            body = body[index + len(cue) :]
+            break
+    folded = body.casefold()
+    heads = (*attribute_axis_terms(), *attribute_value_terms())
+    if any(term.casefold().replace(" ", "") in folded.replace(" ", "") for term in heads):
+        return HEAD_ATTRIBUTE
+    return HEAD_OTHER
+
+
+def selects_current_value(operator: str, text: str) -> bool:
+    """이 마커가 속성 축의 **지금 값**을 고르는가 — 그러면 이력 요구가 아니다.
+
+    소비자가 둘이다: 청구 계층은 이 조건의 소유권을 현재값 자산에 두고(짝을 이루지 못하면
+    조건을 만들지 않는다), 요구 원장은 이력 의무를 기록하지 않는다. 둘이 각자 판단하면 한쪽은
+    소유를 포기했는데 다른 쪽은 이력을 요구하는 상태가 되고, 그 문장은 아무도 방면할 수 없는
+    의무로 막힌다(구현 중 실측).
+
+    달력 시점을 말한 as_of('지난달 말 기준')는 여기 들지 않는다 — 그 조건은 과거 관측을
+    골라야 하므로 이력 관측이 소유한다.
+    """
+
+    return operator == temporal_semantics.AS_OF and (
+        temporal_head_kind(text) == HEAD_ATTRIBUTE
+    )
+
+
+def observation_selector_tokens(query: str) -> tuple[ObservationSelectorToken, ...]:
+    """원문의 선택자 낱말 중 **관측 선택자로 해석된** 것들.
+
+    기간 결핍을 신고하는 계층이 이 판정을 보고 신고를 **만들지 않는다**(I4). 신고한 뒤
+    겹침으로 취소하는 구조가 아니라는 점이 중요하다 — 취소는 판정이 두 벌이라는 뜻이고,
+    두 벌은 곧 서로 다른 답을 낸다.
+    """
+
+    try:
+        markers = temporal_lexicon().detect(query)
+    # 어휘를 못 만들면 아무것도 주장하지 않는다(추측 금지) — 소비자는 종전 판정을 그대로 쓴다.
+    except Exception:
+        return ()
+    tokens: list[ObservationSelectorToken] = []
+    for marker in markers:
+        if marker.operator not in set(_OBSERVATION_SELECTOR_CUES.values()):
+            continue
+        cue_span = _cue_span(query, marker.start, marker.end)
+        if cue_span is None:
+            continue
+        tokens.append(
+            ObservationSelectorToken(
+                operator=marker.operator,
+                head_kind=temporal_head_kind(marker.text),
+                span=cue_span,
+                marker_span=(marker.start, marker.end),
+            )
+        )
+    return tuple(tokens)
+
+
+def _cue_span(query: str, start: int, end: int) -> tuple[int, int] | None:
+    """마커 구간 안에서 선택자 낱말이 차지한 구간(없으면 ``None``)."""
+
+    fragment = query[start:end]
+    best: tuple[int, int] | None = None
+    for cue in _OBSERVATION_SELECTOR_CUES:
+        index = fragment.find(cue)
+        if index < 0:
+            continue
+        candidate = (start + index, start + index + len(cue))
+        if best is None or candidate[0] < best[0]:
+            best = candidate
+    return best
 
 
 def transition_direction_cues() -> dict[str, str]:
