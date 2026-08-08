@@ -242,6 +242,20 @@ def regrain_to_row(condition: Any) -> Any | None:
     return _regrain_comparison(condition)
 
 
+def regrainable_thresholds(condition: Any) -> tuple[Any, ...]:
+    """row 로 낮출 수 있는 **주체 집계 임계** 비교들(등장 순서).
+
+    :func:`regrain_to_row` 이 "낮출 수 있는가"에 답한다면 이쪽은 "어느 자리인가"에 답한다.
+    모호성 감지기(:mod:`resolution.detection`)가 근거 구간을 이 자리에서 읽는다 — 같은 판정을
+    두 번 구현하지 않기 위해 소유자인 이 모듈이 좌표를 내놓는다.
+    """
+    found: list[Any] = []
+    for node in event_ir.walk(condition):
+        if isinstance(node, event_ir.Comparison) and _regrain_comparison(node) is not None:
+            found.append(node)
+    return tuple(found)
+
+
 def _regrain_comparison(condition: Any) -> Any | None:
     if not isinstance(condition, event_ir.Comparison):
         return None

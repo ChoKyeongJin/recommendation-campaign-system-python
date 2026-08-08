@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections.abc import Coroutine, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
@@ -1547,6 +1548,86 @@ def run_audience_resolver(
     )
 
 
+# ── (a-2) 확정 ────────────────────────────────────────────────────────────────────
+
+def _settle_resolution(
+    payload: dict[str, Any], resolution: AudienceResolution
+) -> tuple[event_ir.Condition | None, list[dict[str, Any]]] | None:
+    """확정 계층을 돌려 표현·신고를 갱신한다. 돌지 않았으면 ``None``(기존 동작 유지).
+
+    확정이 표현을 깨뜨리면(계약 위반) 원본을 지킨다 — 정책이 만든 값 때문에 지금까지 나가던
+    SQL 이 사라지는 것이 가장 나쁜 회귀다.
+    """
+    from resolution import integration  # 지연 import: 순환 방지(정책이 이 패키지를 다시 부른다)
+
+    result = integration.run_for_plan(
+        payload,
+        query=resolution.query,
+        expression=(
+            resolution.expression.to_dict() if resolution.expression is not None else None
+        ),
+        reported_issues=resolution.issues,
+    )
+    if not result.ran:
+        return None
+    expression: event_ir.Condition | None = None
+    if result.expression is not None:
+        try:
+            expression = _parse_audience_expression(
+                dict(result.expression), resolution.query
+            )
+        except AudienceValidationError as exc:
+            logging.getLogger("resolution.integration").error(
+                "resolution_patch_rejected error=%s", exc
+            )
+            return None
+    issues = _dedupe_audience_issues([dict(item) for item in result.reported_issues])
+    if expression is None and not issues:
+        # 표현도 없고 신고도 없는 상태는 하류가 다룰 수 없다(§3-D 백스톱이 노리는 바로 그 구멍).
+        # 엔터티 결속처럼 **아직 자리를 만들 수 없는** 확정이 신고만 방면했을 때 생긴다. 이
+        # 라운드는 원래 신고를 지키고, 결속은 플랜의 resolution 블록에 남아 다음 구조화가
+        # 그 값을 실제 표현으로 세운다(:func:`resolution.integration.realize_entity_bindings`).
+        return None
+    return expression, issues
+
+
+def _resolution_clarification_projection(
+    payload: dict[str, Any], resolution: AudienceResolution
+) -> bool:
+    """확정 계층이 만든 되묻기를 legacy semantic_ir 로 투영한다(닫았으면 ``True``).
+
+    legacy 신고가 이미 남아 있으면 이 자리는 아무것도 하지 않는다 — 그 갈래에는 원인별로 갈린
+    기존 진단(방출 실패·능력 부재·레지스트리 구멍)이 있고, 그것을 이 범용 문구로 덮으면 운영이
+    고칠 곳을 잃는다. 여기서 닫는 것은 **legacy 신고가 없는데도 확정되지 않은** 모호성뿐이다.
+    """
+    from query_structurer.campaign_plan_v4 import empty_semantic_ir
+    from resolution.projection import RESOLUTION_KEY
+
+    block = payload.get(RESOLUTION_KEY)
+    if not isinstance(block, dict):
+        return False
+    questions = block.get("questions")
+    if block.get("status") != "needs_clarification" or not isinstance(questions, list):
+        return False
+    questions = [item for item in questions if isinstance(item, dict)]
+    if not questions:
+        return False
+    payload.pop(EVENT_EXPRESSION_KEY, None)
+    write_semantic_ir(
+        payload,
+        empty_semantic_ir(
+            status="needs_clarification",
+            missing_fields=sorted(
+                {str(item.get("slot") or "audience.requirement") for item in questions}
+            ),
+            message=str(questions[0].get("text") or ""),
+            # 사용자가 답하면 없어지는 결핍이다 — 구조화기·설정 실패가 아니다.
+            failure_kind="user_clarification",
+        ),
+    )
+    return True
+
+
 # ── (b) 투영 ──────────────────────────────────────────────────────────────────────
 
 
@@ -1629,6 +1710,15 @@ def project_resolution_to_plan(
         )
 
     expression, issues = resolution.expression, resolution.issues
+    # ── 확정 계층(Resolution) ────────────────────────────────────────────────────
+    # 여기가 canonical IR 과 lowering 판정 사이의 유일한 확정 지점이다. 운영 정책으로 안전하게
+    # 채울 수 있는 결핍은 여기서 채워져 아래 갈래에 도달하지 않고, 결과가 크게 달라지는
+    # 모호성(grain·엔터티 식별자)은 **여기서만** 되묻기가 된다. 판정은 이 함수가 하지 않는다 —
+    # `resolution.policy` 가 이미 정했고 이 자리는 그 결과를 플랜에 옮길 뿐이다.
+    settlement = _settle_resolution(payload, resolution)
+    if settlement is not None:
+        expression, issues = settlement
+
     requirement = payload[AUDIENCE_REQUIREMENT_KEY]
     requirement["expression"] = expression.to_dict() if expression is not None else None
     requirement["issues"] = issues
@@ -1640,6 +1730,10 @@ def project_resolution_to_plan(
     subject_diagnostic = _requested_subject_diagnostic(resolution.query)
     if subject_diagnostic is not None:
         write_diagnostic(payload, subject_diagnostic)
+        return True
+
+    # 확정 계층이 남긴 되묻기는 legacy 신고가 **없을 때만** 결말이 된다(위 함수의 계약 참조).
+    if not issues and _resolution_clarification_projection(payload, resolution):
         return True
 
     if issues:

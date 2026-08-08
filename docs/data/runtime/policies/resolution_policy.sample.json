@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "description": "Resolution Policy — 어떤 의미 결핍을 정책이 대신 확정하고 어떤 것을 사용자에게 묻는가. 값(기간 등)은 여기 적지 않는다: 기간 기본값의 소유자는 default_period_policy(AUDIENCE_DEFAULT_PERIOD / qualitative_defaults 카탈로그)이고, 이 파일은 판정만 선언한다.",
+  "mode": "safe_defaults",
+  "max_questions": 3,
+  "allowed_auto_resolution": {
+    "missing_recent_period": true
+  },
+  "require_clarification": {
+    "missing_entity_value": true,
+    "ambiguous_comparison_grain": true,
+    "ambiguous_requirement": true
+  },
+  "entity_arguments": {
+    "brand": { "entity_type": "brand", "label": "브랜드" },
+    "product": { "entity_type": "product", "label": "상품" },
+    "product_name": { "entity_type": "product", "label": "상품" },
+    "category": { "entity_type": "category", "label": "카테고리" },
+    "campaign": { "entity_type": "campaign", "label": "캠페인" },
+    "campaign_id": { "entity_type": "campaign", "label": "캠페인" },
+    "campaign_name": { "entity_type": "campaign", "label": "캠페인" },
+    "coupon": { "entity_type": "coupon", "label": "쿠폰" },
+    "store": { "entity_type": "store", "label": "점포" },
+    "region": { "entity_type": "region", "label": "지역" },
+    "grade": { "entity_type": "grade", "label": "등급" }
+  }
+}

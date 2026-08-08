@@ -58,6 +58,10 @@ include = [
     "audience_frame.py",
     "event_state_selection.py",
     "tests/test_audience_frame.py",
+    # Canonical IR ↔ Lowering Planner 사이의 확정 계층. 새로 만든 경계라 처음부터 같은 기준을
+    # 건다 — 나중에 켜면 그때까지 쌓인 위반을 한꺼번에 고치거나 규칙을 낮추게 된다.
+    "resolution/**/*.py",
+    "tests/test_resolution_*.py",
 ]
 
 [tool.ruff.lint]

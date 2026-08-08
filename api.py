@@ -54,6 +54,7 @@ from confidence import render_confidence_markdown, render_confidence_report
 import db_connections
 import failure_messages
 import plan_decisions
+import resolution
 from sql_dialect import dialect_for_connection
 from sql_guard import DEFAULT_LIMIT, DEFAULT_SCHEMA_PATH
 from data_quality import analyze_execution_result
@@ -178,6 +179,18 @@ class PolicyUpsertRequest(BaseModel):
     description: str | None = Field(default=None, description="정책 용도를 설명하는 선택 메모.")
 
 
+class ClarificationAnswerInput(BaseModel):
+    """되묻기 답 하나. **어느 결핍에 대한 답인지**가 계약의 전부다.
+
+    답을 원문에 이어 붙여 다시 파싱하지 않는다 — ``issue_id`` 가 가리키는 의미 슬롯 하나만
+    확정된다. 선택지 질문에는 ``option_id``, 자유 입력 질문에는 ``text`` 를 준다.
+    """
+
+    issue_id: str = Field(..., min_length=1, max_length=64)
+    option_id: str | None = Field(default=None, max_length=200)
+    text: str | None = Field(default=None, max_length=500)
+
+
 class TargetSqlRequest(BaseModel):
     prompt: str = Field(..., min_length=1, description="Natural language prompt used to generate targeting SQL.")
     query_parser: Literal["rules", "auto", "llm"] = Field(default=os.getenv("QUERY_PARSER", "auto"))
@@ -206,6 +219,9 @@ class TargetSqlRequest(BaseModel):
     # 이 값이 있으면 실패로그 행에 함께 남아, 나중에 "이 진단 행은 사람이 쓴 요청이 아니다"를
     # 로그만 보고 알 수 있다. 값 자체는 실행 경로를 바꾸지 않는다.
     diagnostic_run_id: str | None = Field(default=None, max_length=64)
+    # 되묻기 답변(§15). 답은 **원문에 이어 붙이지 않는다** — 확정 계층이 issue_id 가 가리키는
+    # 의미 슬롯 하나만 고친다. 앞선 응답의 `resolution.questions[].issue_id` 를 그대로 돌려준다.
+    clarification_answers: list[ClarificationAnswerInput] = Field(default_factory=list)
 
 
 class RetrieveTraceRequest(BaseModel):
@@ -514,7 +530,11 @@ def target_sql(request: TargetSqlRequest) -> dict[str, Any]:
 
     try:
         retrieve_started_at = time.perf_counter()
-        with rag_llm_run_scope():
+        # 되묻기 답변은 요청 범위의 사실이다. 여기서 한 번 감싸면 오디언스 확정 계층이 꺼내
+        # 쓰고, 스코프를 벗어나면 반드시 사라진다(전역 상태 아님).
+        with rag_llm_run_scope(), resolution.clarification_scope(
+            resolution.parse_answers([item.model_dump() for item in request.clarification_answers])
+        ):
             result = retrieve(
                 query=request.prompt,
                 graph=graph,

@@ -49,6 +49,8 @@ import failure_messages
 import plan_validation
 import query_pipeline
 import semantic_outcome
+from resolution import integration as resolution_integration
+from resolution.projection import RESOLUTION_KEY, legacy_questions_from_payload
 import semantic_verification_receipts
 from semantic_normalizers import decimal_sql_text, exact_decimal
 import compile_outcome
@@ -5891,6 +5893,8 @@ def retrieve(
             period=default_period_policy.resolve_default_period(), write_log=_write_rag_llm_log,
             marker_resolver=default_period_policy.resolve_catalog_period, restructure=_restructure,
         )
+        campaign_query_plan = resolution_integration.realize_entity_bindings(
+            campaign_query_plan, restructure=_restructure, write_log=_write_rag_llm_log)
         campaign_plan_structured = True
         timings_ms["query_structuring"] = _elapsed_ms(structuring_started_at)
         return campaign_query_plan
@@ -6676,6 +6680,7 @@ def build_recommendation_api_response(
             sql_result.get("missing_input_conditions", [])
         ),
         "clarification_questions": sql_result.get("clarification_questions", []),
+        RESOLUTION_KEY: copy.deepcopy(query_plan.get(RESOLUTION_KEY) or {}),
         "unsupported_conditions": sql_result.get("unsupported_conditions", []),
         "unsupported_condition_labels": unsupported_labels,
         "dropped_conditions": sql_result.get("dropped_conditions", []),
@@ -9011,7 +9016,7 @@ def _semantic_ir_blocking_sql_result(
     }:
         clarifications: list[str] = []
     else:
-        clarifications = [message]
+        clarifications = legacy_questions_from_payload(query_plan.get(RESOLUTION_KEY)) or [message]
     failure_reason = failure_messages.semantic_failure_reason(
         status, failure_kind, semantic_ir.get("failure_reason")
     )
