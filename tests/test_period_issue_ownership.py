@@ -115,6 +115,25 @@ def test_a_real_period_gap_still_closes(query: str) -> None:
     assert _synthesis(query, _issue(query, "최근")) is None
 
 
+def test_the_application_side_recency_check_uses_the_same_judgment() -> None:
+    """검증기가 원문에서 **직접 검출한** 결핍도 같은 판정을 쓴다.
+
+    생산자가 둘이라는 것이 이 테스트의 이유다. 모델이 신고한 기간 결핍과, 표현이 있어도
+    :mod:`audience_validators` 가 원문의 맨 '최근'을 보고 스스로 만드는 결핍은 같은 질문인데
+    코드가 다른 자리에 있다. 한쪽만 열면 다른 쪽이 닫는다 — 실측 2026-08-08 라이브에서
+    모델이 옳은 방향 전이 표현(현재=v ∧ 직전<v 전개)을 냈는데도 검증기가 같은 자리에 기간을
+    요구해 3회 재시도가 모두 반려됐다.
+    """
+
+    owned = audience_issue_contract.period_span_owned_by_lowered_clause(
+        "최근에 등급이 승급한 회원", (0, 2)
+    )
+    assert owned, "전이 절의 '최근'이 검증기 쪽 판정에서 결핍으로 남았다"
+    assert not audience_issue_contract.period_span_owned_by_lowered_clause(
+        "최근에 3회 이상 구매한 회원", (0, 2)
+    )
+
+
 def test_the_outcome_does_not_depend_on_which_code_the_model_reported() -> None:
     """같은 문장이 신고 코드에 따라 갈리지 않는다.
 

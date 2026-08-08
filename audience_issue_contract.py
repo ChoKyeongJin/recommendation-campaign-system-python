@@ -123,6 +123,48 @@ def _bare_period_issue_span(query: str, issue: Mapping[str, Any]) -> tuple[int, 
     return start, end
 
 
+def bare_period_span_owned_by_spans(
+    query: str,
+    span: tuple[int, int],
+    spans: Iterable[tuple[int, int]],
+) -> bool:
+    """시간 낱말 구간이 **이미 컴파일된 절**과 같은 절에 있는가.
+
+    :func:`bare_period_issue_owned_by_spans` 의 알맹이다. 좌표로 묻는 갈래를 따로 두는 이유는
+    생산자가 둘이기 때문이다 — 모델이 신고한 기간 결핍(issue)과 애플리케이션이 원문에서
+    직접 검출한 결핍(:mod:`audience_validators`)은 같은 질문을 하지만 들고 오는 것이 다르다.
+    판정이 갈리면 한쪽이 연 것을 다른 쪽이 닫는다(실측 2026-08-08: 모델이 옳은 전이 표현을
+    냈는데도 검증기가 같은 자리에 기간을 요구해 재시도가 소진됐다).
+    """
+
+    import audience_frame  # 지연 import(순환 방지)
+
+    return any(
+        audience_frame.in_same_clause(query, span, (int(start), int(end)))
+        for start, end in spans or ()
+    )
+
+
+def period_span_owned_by_lowered_clause(
+    query: str,
+    span: tuple[int, int],
+    *,
+    today: Any = None,
+) -> bool:
+    """그 시간 낱말이 붙은 절이 **지금 이대로 낮춰지는가**(그러면 기간은 결핍이 아니다)."""
+
+    import lowering_planner  # 지연 import(순환 방지)
+
+    try:
+        plans = lowering_planner.plans_for_query(query, today=today)
+    # 계획을 못 세우면 반박하지 않는다(추측 금지) — 판정 불가는 결핍의 근거가 아니다.
+    except Exception:
+        return False
+    return bare_period_span_owned_by_spans(
+        query, span, (plan.obligation.source_span for plan in plans)
+    )
+
+
 def bare_period_issue_owned_by_spans(
     query: str,
     issue: Mapping[str, Any],
@@ -146,13 +188,7 @@ def bare_period_issue_owned_by_spans(
     span = _bare_period_issue_span(query, issue)
     if span is None:
         return False
-
-    import audience_frame  # 지연 import(순환 방지)
-
-    return any(
-        audience_frame.in_same_clause(query, span, (int(start), int(end)))
-        for start, end in spans or ()
-    )
+    return bare_period_span_owned_by_spans(query, span, spans)
 
 
 def period_issue_owned_by_lowered_clause(
@@ -197,6 +233,8 @@ def period_issue_owned_by_lowered_clause(
 
 __all__ = [
     "bare_period_issue_owned_by_spans",
+    "bare_period_span_owned_by_spans",
     "fabricated_period_issue_for_current_catalog_value",
     "period_issue_owned_by_lowered_clause",
+    "period_span_owned_by_lowered_clause",
 ]

@@ -125,13 +125,19 @@ def _directional_transition(
 
 
 def _relation(
-    data: treg.LoweringInput, *, extra: Sequence[event_ir.Condition] = (), with_time: bool = True
+    data: treg.LoweringInput,
+    *,
+    extra: Sequence[event_ir.Condition] = (),
+    with_time: bool = True,
+    correlation: str = "subject",
 ) -> event_ir.Relation:
     conditions: list[event_ir.Condition] = []
     if with_time and data.binding.time_field is not None and data.interval is not None:
         conditions.append(_time_filter(data))
     conditions.extend(extra)
-    relation: event_ir.Relation = event_ir.Source(name=data.binding.source)
+    relation: event_ir.Relation = event_ir.Source(
+        name=data.binding.source, correlation=correlation
+    )
     if not conditions:
         return relation
     where = conditions[0] if len(conditions) == 1 else event_ir.And(operands=tuple(conditions))
@@ -270,7 +276,7 @@ def _every_bucket_issues(
     selector = condition.selector
     if not isinstance(selector, sir.WindowSelector):  # pragma: no cover - 타입 검증이 먼저 막는다
         return tuple(issues)
-    if isinstance(selector.window, sir.LifetimeWindow):
+    if isinstance(selector.window, sir.AllAvailableDataWindow):
         # 기대 칸 수가 정의되지 않는 구간에서는 '모든 칸'이 셀 수 있는 수가 아니다.
         # 예전에는 여기서 걸리지 않아 lowerer 가 예외를 던져 결과 타입 계약을 깼다(리뷰 실측).
         issues.append(Issue(
@@ -338,6 +344,59 @@ def _transition_issues(
     return tuple(issues)
 
 
+def _change_count_issues(
+    condition: sir.TemporalCondition, binding: tcat.TemporalBindingSpec
+) -> tuple[Issue, ...]:
+    """변경 횟수를 **표현할 수 있는가** — 선언된 스키마 모양만 본다.
+
+    보지 않는 것: 적재 행 수, 적재된 칸 수, 실제 변경 행 수, 임계값을 만족할 가능성. 그것들은
+    질의의 **답**이지 질의를 만들 수 있는지의 근거가 아니다(같은 선언이면 데이터가 비어 있어도
+    같은 SQL 이 나와야 한다).
+
+    보는 것: 값 필드가 있는가, 그리고 직전 값을 (a) 같은 행에서 읽을 수 있는가
+    (``prev_value_field``) 또는 (b) 주체별로 정렬해 만들 수 있는가(``entity_key_field`` +
+    ``time_field``). 둘 다 없으면 이 의미를 SQL 로 옮길 방법이 없으므로 그때가 미지원이다.
+    """
+
+    issues: list[Issue] = []
+    predicate = condition.predicate
+    if isinstance(predicate, sir.ChangeCountPredicate):
+        threshold = predicate.comparison.value
+        if threshold != threshold.to_integral_value():
+            issues.append(Issue(
+                "temporal_change_count_not_integral",
+                f"변경 횟수 임계값은 정수여야 합니다(받은 값: {threshold}). 관측 사이의 변화는 "
+                "세는 값이므로 소수 임계값은 뜻이 정해지지 않습니다.",
+                "predicate.comparison.value",
+            ))
+    if binding.value_field is None:
+        issues.append(Issue(
+            "temporal_value_field_missing",
+            f"binding {binding.id!r} 에 값 필드 선언이 없어 값의 변화를 볼 수 없습니다.",
+            "binding.value_field",
+        ))
+        return tuple(issues)
+    if binding.prev_value_field is None and not (
+        binding.entity_key_field and binding.time_field
+    ):
+        missing = [
+            name
+            for name, declared in (
+                ("entity_key_field", binding.entity_key_field),
+                ("time_field", binding.time_field),
+            )
+            if not declared
+        ]
+        issues.append(Issue(
+            "temporal_change_count_shape_unavailable",
+            f"binding {binding.id!r} 은 한 행에서 직전 값을 읽을 수도 없고"
+            f"(prev_value_field 없음) 관측을 주체별로 정렬할 수도 없습니다(누락: {missing}). "
+            "두 방법 중 하나가 선언돼야 값 변화를 SQL 로 표현할 수 있습니다.",
+            "binding",
+        ))
+    return tuple(issues)
+
+
 def _relation_issues(
     condition: sir.TemporalCondition, binding: tcat.TemporalBindingSpec
 ) -> tuple[Issue, ...]:
@@ -362,7 +421,7 @@ def _relation_issues(
         ),)
     selector = condition.selector
     if isinstance(selector, sir.WindowSelector) and not isinstance(
-        selector.window, sir.LifetimeWindow
+        selector.window, sir.AllAvailableDataWindow
     ):
         # 관계는 두 사건 시각의 차이로 낮아지고, 그 노드에는 바깥 구간을 걸 자리가 없다.
         # 구간을 따로 EXISTS 로 덧붙이면 '같은 사건 쌍'이라는 보장이 사라져 다른 집합이 된다.
@@ -448,6 +507,98 @@ def lower_unchanged_observations(data: treg.LoweringInput) -> event_ir.Condition
             distinct=True,
         ),
         right=event_ir.Literal(value=1),
+        evidence=_evidence(data),
+    )
+
+
+# 파생 관계가 내보내는 출력 이름. 도메인 낱말이 아니라 **역할** 이름이므로 어느 값 축에서나
+# 같다 — 등급이든 상태든 금액이든 '관측된 값'과 '직전 관측값'과 '주체 키'다.
+_CHANGE_ENTITY_KEY = "entity_key"
+_CHANGE_OBSERVED_VALUE = "observed_value"
+_CHANGE_PREVIOUS_VALUE = "previous_value"
+
+
+def _observed_change_relation(data: treg.LoweringInput) -> event_ir.Relation:
+    """값이 **바뀐 관측 행들**의 관계. 전략은 binding 이 선언한 모양이 정한다.
+
+    A. ``prev_value_field`` 가 있다(한 행에 직전 값이 함께 적재된다)
+       → 같은 행의 두 컬럼 비교. 상관 집계이므로 회원별 semi-join 으로 낮아진다.
+
+    B. 없지만 주체 키와 정렬 필드가 있다
+       → 정렬된 관측에 ``LAG`` 를 걸어 직전 값을 만든 **파생 테이블** 위의 비교.
+
+    두 전략은 같은 것을 센다: *관측 사이에 값이 달라진 횟수*. NULL 비교가 UNKNOWN 이므로
+    직전 값이 없는 첫 관측은 변화로 세지 않는다 — 값을 모르는 것을 변화로 세면 모든 회원이
+    최소 1회 변경으로 잡힌다.
+
+    어느 전략도 적재량을 보지 않는다. 관측이 한 칸뿐이면 세어진 변화가 0 이 되는 것이 정답이고,
+    그 사실은 SQL 을 만들지 않을 이유가 아니다.
+    """
+
+    binding = data.binding
+    value_field = str(binding.value_field)
+    if binding.prev_value_field is not None:
+        changed = event_ir.Comparison(
+            operator="!=",
+            left=event_ir.FieldRef(name=value_field),
+            right=event_ir.FieldRef(name=str(binding.prev_value_field)),
+            evidence=_evidence(data),
+        )
+        return _relation(data, extra=(changed,))
+
+    lagged = event_ir.WindowExpression(
+        function="lag",
+        expression=event_ir.FieldRef(name=value_field),
+        partition_by=(event_ir.FieldRef(name=str(binding.entity_key_field)),),
+        order_by=(event_ir.SortKey(name=str(binding.time_field)),),
+    )
+    # 파생 테이블 안은 **비상관**이다(주체 상관식이 파생 테이블 안으로 들어가면 바깥 참조가 되어
+    # 엔진에 따라 아예 컴파일되지 않는다). 회원 맞춤은 파생 테이블 **밖의** 조건이 한다.
+    observations = _relation(data, correlation="none")
+    projected = event_ir.Project(
+        relation=observations,
+        items=(
+            event_ir.NamedExpression(
+                name=_CHANGE_ENTITY_KEY,
+                expression=event_ir.FieldRef(name=str(binding.entity_key_field)),
+            ),
+            event_ir.NamedExpression(
+                name=_CHANGE_OBSERVED_VALUE, expression=event_ir.FieldRef(name=value_field)
+            ),
+            event_ir.NamedExpression(name=_CHANGE_PREVIOUS_VALUE, expression=lagged),
+        ),
+    )
+    return event_ir.Filter(
+        relation=event_ir.Materialize(relation=projected),
+        where=event_ir.And(operands=(
+            event_ir.Comparison(
+                operator="!=",
+                left=event_ir.OutputRef(name=_CHANGE_OBSERVED_VALUE),
+                right=event_ir.OutputRef(name=_CHANGE_PREVIOUS_VALUE),
+                evidence=_evidence(data),
+            ),
+            event_ir.Comparison(
+                operator="=",
+                left=event_ir.OutputRef(name=_CHANGE_ENTITY_KEY),
+                right=event_ir.FieldRef(name=data.subject_key_field),
+                evidence=_evidence(data),
+            ),
+        )),
+    )
+
+
+def lower_change_count(data: treg.LoweringInput) -> event_ir.Condition:
+    """관측 사이에 값이 달라진 횟수 비교. 값 축·도메인과 무관하다."""
+
+    predicate = data.condition.predicate
+    if not isinstance(predicate, sir.ChangeCountPredicate):  # pragma: no cover - 계약 검증이 먼저
+        raise treg.TemporalRegistryError("변경 횟수 술어가 아닙니다")
+    return event_ir.Comparison(
+        operator=predicate.comparison.operator,
+        left=event_ir.Aggregate(
+            function="count", relation=_observed_change_relation(data)
+        ),
+        right=event_ir.Literal(value=int(predicate.comparison.value)),
         evidence=_evidence(data),
     )
 
@@ -720,12 +871,14 @@ def operator_definitions() -> tuple[treg.TemporalOperatorDefinition, ...]:
             quantifier_types=frozenset({sir.ExistsQuantifier}),
             predicate_types=frozenset({sir.ChangeCountPredicate}),
             accepted_representations=_HISTORY_REPRESENTATIONS,
-            required_capabilities=frozenset({"supports_intra_bucket_changes"}),
-            unsupported_reason=(
-                "값 변경 **횟수**는 관측 사이의 변화를 세는 것이라 Lag 와 집계가 필요합니다. "
-                "덧붙여 주기적 스냅샷에서 센 변화는 실제 업무 변경 횟수가 아니라 "
-                "'관측된 변화 수'이며, 두 수를 같은 이름으로 부르지 않습니다(§8)."
-            ),
+            # 요구하는 것은 **정렬된 관측**이다(어느 관측이 어느 관측의 다음인가). 예전에는
+            # supports_intra_bucket_changes(칸 안의 변경까지 아는가)를 요구했는데, 그것은
+            # 스키마 모양이 아니라 적재 밀도에 대한 진술이라 답할 수 있는 질문까지 막았다.
+            # 세는 것이 '관측된 변화'라는 사실은 영수증의 measurement 가 말한다.
+            required_capabilities=frozenset({"supports_ordered_observations"}),
+            validate=_change_count_issues,
+            lower=lower_change_count,
+            measurement="observed_value_changes",
         ),
         treg.TemporalOperatorDefinition(
             name=treg.WITHIN_AFTER,

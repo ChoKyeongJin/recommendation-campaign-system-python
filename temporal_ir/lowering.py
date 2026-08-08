@@ -67,6 +67,10 @@ UNSUPPORTED_CODES: frozenset[str] = frozenset({
     "temporal_relation_duration_unit_unsupported",
     "temporal_unbounded_bucket_count",
     "temporal_value_field_unavailable",
+    # 선언된 스키마로 이 의미를 **표현할 방법이 없다**(요청이 잘못된 것이 아니다). 값 필드가
+    # 없거나, 직전 값을 같은 행에서 읽지도 못하고 주체별 정렬로 만들지도 못하는 관측이다.
+    "temporal_value_field_missing",
+    "temporal_change_count_shape_unavailable",
 })
 
 
@@ -99,6 +103,11 @@ class TemporalLoweringReceipt:
     binding_version: int
     lowered_ir_hash: str
     coverage_status: str
+    # 이 조건이 **무엇을 측정했는가**. 지원 여부를 정하는 값이 아니라 결과를 읽는 사람에게
+    # 필요한 사실이다 — 주기적 스냅샷에서 센 변화는 '관측된 값 변화'이고, 업무 시스템에서
+    # 실제로 몇 번 바뀌었는지와 같다는 보장은 적재 밀도에 달려 있다. 그 차이를 여기 남기고
+    # SQL 은 낸다(측정 의미를 이유로 컴파일을 막지 않는다).
+    measurement: str | None = None
     missing_buckets: tuple[str, ...] = ()
     warnings: tuple[str, ...] = ()
 
@@ -129,6 +138,7 @@ class TemporalLoweringReceipt:
             "binding_version": self.binding_version,
             "lowered_ir_hash": self.lowered_ir_hash,
             "coverage_status": self.coverage_status,
+            "measurement": self.measurement,
             "missing_buckets": list(self.missing_buckets),
             "warnings": list(self.warnings),
         }
@@ -683,7 +693,7 @@ def _resolve_interval(
         return instant, tcal.shift_bucket(current, binding.semantic_grain, -1, binding.timezone)
 
     instant = tcal.resolve_anchor(selector.anchor, context)
-    if isinstance(selector.window, sir.LifetimeWindow):
+    if isinstance(selector.window, sir.AllAvailableDataWindow):
         # '평생'은 구간의 부재가 아니라 구간 제한이 없다는 뜻이다 — 시간 필터를 만들지 않는다.
         return instant, None
     open_bound: Any = None
@@ -894,6 +904,7 @@ def _build_receipt(
         binding_version=binding.version,
         lowered_ir_hash=lowered_ir_hash(expression),
         coverage_status=str(coverage.status),
+        measurement=definition.measurement or None,
         missing_buckets=coverage.missing_buckets,
         warnings=tuple(dict.fromkeys((*warnings, *coverage.warnings))),
     )

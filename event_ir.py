@@ -417,6 +417,9 @@ COMPARISON_OPERATOR_ALIASES: dict[str, str] = {
 
 ARITHMETIC_OPERATORS: frozenset[str] = frozenset({"+", "-", "*", "/"})
 AGGREGATE_FUNCTIONS: frozenset[str] = frozenset({"count", "sum", "avg", "min", "max"})
+# 정렬된 관측 사이를 보는 함수. 어휘를 닫아 두는 이유는 방언 렌더가 함수마다 다르기 때문이다 —
+# 이름을 문자열로 열어 두면 카탈로그가 방언이 모르는 함수를 요구할 수 있다.
+WINDOW_FUNCTIONS: frozenset[str] = frozenset({"lag"})
 
 
 def canonical_comparison_operator(value: Any) -> str | None:
@@ -558,7 +561,116 @@ class Aggregate:
         }
 
 
-Scalar = Literal | FieldRef | Arithmetic | Tuple | NullIf | Aggregate
+_OUTPUT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_output_name(value: str, owner: str) -> None:
+    if not isinstance(value, str) or not _OUTPUT_NAME_RE.fullmatch(value):
+        raise IrSchemaError(f"{owner} needs a safe output name: {value!r}")
+
+
+@dataclass(frozen=True)
+class SortKey:
+    """Order by a named output of Project/Summarize, or by a canonical field id.
+
+    스칼라(윈도 함수)와 관계(Order) 둘 다 정렬을 말하므로 두 절 사이에 둔다 — 정렬의 문법이
+    두 곳에 따로 생기면 '어느 순서로 본 직전인가'가 노드마다 달라진다.
+    """
+
+    name: str
+    direction: str = "asc"
+
+    def __post_init__(self) -> None:
+        # Canonical field ids are also accepted, so a preserved input field can
+        # be used as a deterministic tie breaker without inventing an alias.
+        if not isinstance(self.name, str) or not self.name:
+            raise IrSchemaError("sort key needs a name")
+        if "." not in self.name:
+            _validate_output_name(self.name, "sort key")
+        if self.direction not in {"asc", "desc"}:
+            raise IrSchemaError(f"unsupported sort direction: {self.direction!r}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"name": self.name, "direction": self.direction}
+
+
+@dataclass(frozen=True)
+class OutputRef:
+    """관계가 **내보낸 출력**(:class:`NamedExpression`/:class:`NamedMeasure`)을 부르는 참조.
+
+    :class:`FieldRef` 는 카탈로그 필드 심볼(``<source>.<field>``)을 부르고, 이것은 관계 지역
+    별칭을 부른다. 둘을 한 타입으로 합치지 않는 이유는 이름의 **출처**가 다르기 때문이다 —
+    앞의 것은 카탈로그가 보증하고 뒤의 것은 바로 아래 관계가 만든다. 합치면 카탈로그에 없는
+    이름이 '등록되지 않은 필드'로 신고되거나, 반대로 오타가 파생 별칭으로 조용히 통과한다.
+
+    ``SortKey`` 가 이미 두 이름을 모두 받는다는 사실이 이 노드가 빠져 있었다는 증거다 —
+    이름 있는 출력을 만들 수는 있는데 조건에서 부를 수는 없는 상태였다.
+    """
+
+    name: str
+    type: str = "output"
+
+    def __post_init__(self) -> None:
+        _validate_output_name(self.name, "output reference")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "output", "name": self.name}
+
+
+@dataclass(frozen=True)
+class WindowExpression:
+    """주체별로 정렬된 관측 사이를 보는 **윈도 함수** 스칼라(현재는 ``lag``).
+
+    문장 하나를 위한 타입이 아니다 — '직전 관측의 값'은 등급·상태·금액 어느 축에서나 같은
+    계산이고, 그 계산을 표현할 primitive 가 없다는 사실이 지금까지 여러 시간 연산자의
+    미지원 사유였다(직전 관측·구간 내 변화·변경 횟수·연속 칸).
+
+    ``order_by`` 를 **요구**하는 이유는 재현성이다. 순서가 없으면 '직전'이 적재 순서에 좌우되고,
+    같은 데이터에서 같은 질의가 다른 답을 낸다. 정렬 키는 관계 지역 별칭이 아니라 카탈로그
+    필드 id 여야 한다(파생 별칭은 이 스칼라가 계산되는 SELECT 안에서 아직 존재하지 않는다).
+    """
+
+    function: str
+    expression: "Scalar"
+    partition_by: tuple["Scalar", ...] = ()
+    order_by: tuple["SortKey", ...] = ()
+    offset: int = 1
+    type: str = "window"
+
+    def __post_init__(self) -> None:
+        if self.function not in WINDOW_FUNCTIONS:
+            raise IrSchemaError(f"unsupported window function: {self.function!r}")
+        if isinstance(self.offset, bool) or not isinstance(self.offset, int) or self.offset < 1:
+            raise IrSchemaError(f"window offset must be a positive int: {self.offset!r}")
+        if not self.order_by:
+            raise IrSchemaError("window expression needs an explicit order_by")
+        for key in self.order_by:
+            if "." not in key.name:
+                raise IrSchemaError(
+                    "window order_by must use catalog field ids, not relation aliases:"
+                    f" {key.name!r}"
+                )
+        for node in (self.expression, *self.partition_by):
+            if isinstance(node, (Aggregate, Tuple, WindowExpression)):
+                raise IrSchemaError(
+                    "window expression arguments cannot contain aggregates, row values,"
+                    " or nested window functions"
+                )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "type": "window",
+            "function": self.function,
+            "expression": self.expression.to_dict(),
+            "partition_by": [item.to_dict() for item in self.partition_by],
+            "order_by": [key.to_dict() for key in self.order_by],
+            "offset": self.offset,
+        }
+
+
+Scalar = (
+    Literal | FieldRef | OutputRef | Arithmetic | Tuple | NullIf | Aggregate | WindowExpression
+)
 
 
 # ── 관계 표현 ─────────────────────────────────────────────────────────────────────
@@ -641,14 +753,6 @@ class Group:
         return {"type": "group", "relation": self.relation.to_dict(), "keys": [key.to_dict() for key in self.keys]}
 
 
-_OUTPUT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-
-
-def _validate_output_name(value: str, owner: str) -> None:
-    if not isinstance(value, str) or not _OUTPUT_NAME_RE.fullmatch(value):
-        raise IrSchemaError(f"{owner} needs a safe output name: {value!r}")
-
-
 @dataclass(frozen=True)
 class NamedExpression:
     """A row expression with a stable relation-output name."""
@@ -686,27 +790,6 @@ class NamedMeasure:
             "expression": self.expression.to_dict() if self.expression is not None else None,
             "distinct": self.distinct,
         }
-
-
-@dataclass(frozen=True)
-class SortKey:
-    """Order by a named output of Project/Summarize."""
-
-    name: str
-    direction: str = "asc"
-
-    def __post_init__(self) -> None:
-        # Canonical field ids are also accepted, so a preserved input field can
-        # be used as a deterministic tie breaker without inventing an alias.
-        if not isinstance(self.name, str) or not self.name:
-            raise IrSchemaError("sort key needs a name")
-        if "." not in self.name:
-            _validate_output_name(self.name, "sort key")
-        if self.direction not in {"asc", "desc"}:
-            raise IrSchemaError(f"unsupported sort direction: {self.direction!r}")
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "direction": self.direction}
 
 
 @dataclass(frozen=True)
@@ -843,7 +926,27 @@ def _limit_percent_wire_value(value: Decimal) -> int | float:
     return wire
 
 
-Relation = Source | Filter | Join | Group | Project | Summarize | Order | Limit
+@dataclass(frozen=True)
+class Materialize:
+    """파생 테이블 경계 — 안쪽 관계의 **출력**만 바깥에서 컬럼으로 보인다.
+
+    ``Filter(Project(...))`` 는 같은 SELECT 에 WHERE 를 더한다(그것이 옳다 — 대부분의 조건은
+    행 필터다). 그러나 윈도 함수처럼 **행 집합이 정해진 뒤에** 계산되는 값은 그 SELECT 의
+    WHERE 에서 참조할 수 없다. 그 차이는 최적화가 아니라 SQL 의 평가 순서이므로, 경계를
+    노드로 세운다 — 어디서 서브쿼리가 생기는지가 IR 에 드러나고 컴파일러가 추측하지 않는다.
+
+    안쪽 관계는 이름 있는 출력(:class:`Project`/:class:`Summarize`)이어야 한다. 이름 없는
+    파생 테이블의 컬럼을 바깥에서 부르는 방법이 없기 때문이다.
+    """
+
+    relation: "Relation"
+    type: str = "materialize"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"type": "materialize", "relation": self.relation.to_dict()}
+
+
+Relation = Source | Filter | Join | Group | Project | Summarize | Order | Limit | Materialize
 
 
 # ── 조건(불리언) ──────────────────────────────────────────────────────────────────
@@ -984,11 +1087,18 @@ ATOM_TYPES = (Comparison, Exists, TemporalRelation)
 # 노드 타입 목록(닫힌 집합). 계약 테스트가 '문장이 늘어도 이 목록은 늘지 않는다'를 강제한다.
 NODE_TYPES: frozenset[str] = frozenset({
     "and", "or", "not",
-    "literal", "field", "arithmetic", "tuple", "null_if", "aggregate",
+    "literal", "field", "output", "arithmetic", "tuple", "null_if", "aggregate", "window",
     "source", "filter", "join", "group", "project", "summarize", "order", "limit",
+    "materialize",
     "comparison", "exists", "time_filter", "temporal_relation", "event_reference",
     "interval", "rolling", "relative", "duration",
 })
+
+# 낮춤(lowering)만 만드는 노드. 요청 **의미**가 아니라 그 의미를 실행 SQL 로 옮기는 방법에
+# 속하므로 LLM 계약 표면(V4 스키마)에 노출하지 않는다 — 모델이 파생 테이블이나 윈도 함수를
+# 직접 짜야 할 이유가 없고, 노출하면 검증할 수 없는 실행 계획이 모델 출력으로 들어온다.
+# 이 목록은 "덜 지원한다"가 아니라 **누가 만드는가**의 선언이다.
+LOWERING_ONLY_NODE_TYPES: frozenset[str] = frozenset({"window", "materialize", "output"})
 
 
 # ── 표현 capability(선언 어휘) ────────────────────────────────────────────────────
@@ -1012,6 +1122,9 @@ CAPABILITIES: frozenset[str] = frozenset({
     "aggregate.derived_expression",
     "relation.membership_join",
     "relation.ranked_limit",
+    "relation.materialized_derived_table",
+    "scalar.relation_output",
+    "scalar.window_lag",
     # 카탈로그 계약에서만 쓰이는 것(트리 모양이 아니라 지표의 grain·cardinality 계약)
     "metric.member_scalar",
     # 전이 지표 계약. 표현은 기존 조합(Exists/Filter/And/Comparison)뿐이므로 트리에서 파생되지
@@ -1045,10 +1158,16 @@ def expression_capabilities(node: Any) -> frozenset[str]:
                     used.add("aggregate.multi_column_count_distinct")
             if not isinstance(item.expression, (type(None), FieldRef, Tuple)):
                 used.add("aggregate.derived_expression")
+        elif isinstance(item, WindowExpression):
+            used.add(f"scalar.window_{item.function}")
+        elif isinstance(item, OutputRef):
+            used.add("scalar.relation_output")
         elif isinstance(item, Join) and item.kind in {"semi", "anti"}:
             used.add("relation.membership_join")
         elif isinstance(item, Limit):
             used.add("relation.ranked_limit")
+        elif isinstance(item, Materialize):
+            used.add("relation.materialized_derived_table")
     # 집계 결과끼리의 산술(분자/분모 조합)은 '집계 위의 파생식'이다 — 집계 인자 안의 산술과
     # 구분해서 세지 않으면 카탈로그가 둘 중 무엇을 요구하는지 선언할 수 없다.
     for item in walk(node):
@@ -1077,6 +1196,8 @@ def scalar_from_dict(raw: Any) -> Scalar:
         return Literal(value=raw.get("value"))
     if kind == "field":
         return FieldRef(name=str(raw.get("name") or ""))
+    if kind == "output":
+        return OutputRef(name=str(raw.get("name") or ""))
     if kind == "arithmetic":
         return Arithmetic(
             operator=str(raw.get("operator")),
@@ -1100,6 +1221,21 @@ def scalar_from_dict(raw: Any) -> Scalar:
             relation=relation_from_dict(raw.get("relation")),
             expression=scalar_from_dict(expression) if isinstance(expression, dict) else None,
             distinct=bool(raw.get("distinct")),
+        )
+    if kind == "window":
+        partition_by = raw.get("partition_by") or []
+        order_by = raw.get("order_by") or []
+        if not isinstance(partition_by, list) or not isinstance(order_by, list):
+            raise IrSchemaError("window partition_by/order_by must be arrays")
+        offset = raw.get("offset", 1)
+        if not isinstance(offset, int) or isinstance(offset, bool):
+            raise IrSchemaError("window offset must be an integer")
+        return WindowExpression(
+            function=str(raw.get("function") or ""),
+            expression=scalar_from_dict(raw.get("expression")),
+            partition_by=tuple(scalar_from_dict(item) for item in partition_by),
+            order_by=tuple(_sort_key(item) for item in order_by),
+            offset=offset,
         )
     raise IrSchemaError(f"unknown scalar type: {kind!r}")
 
@@ -1158,6 +1294,8 @@ def relation_from_dict(raw: Any) -> Relation:
             relation=relation_from_dict(raw.get("relation")),
             keys=tuple(_sort_key(item) for item in keys),
         )
+    if kind == "materialize":
+        return Materialize(relation=relation_from_dict(raw.get("relation")))
     if kind == "limit":
         has_count = "count" in raw
         has_percent = "percent" in raw
@@ -1346,8 +1484,12 @@ def _children(node: Any) -> list[Any]:
         return [node.relation]
     if isinstance(node, Limit):
         return [node.relation]
+    if isinstance(node, Materialize):
+        return [node.relation]
     if isinstance(node, Aggregate):
         return [node.relation] + ([node.expression] if node.expression is not None else [])
+    if isinstance(node, WindowExpression):
+        return [node.expression, *node.partition_by]
     if isinstance(node, Arithmetic):
         return [node.left, node.right]
     if isinstance(node, Tuple):
@@ -1380,6 +1522,27 @@ def iter_signed_atoms(
         return
     if isinstance(expression, ATOM_TYPES):
         yield expression, negated
+
+
+def lowering_only_nodes(expression: Any) -> tuple[str, ...]:
+    """이 표현이 담고 있는 **낮춤 전용** 노드 이름(없으면 빈 튜플).
+
+    모델이 만든 표현을 받는 경계에서 부른다. 파생 테이블·윈도 함수·관계 출력 참조는 요청
+    의미가 아니라 실행 계획이므로, 모델이 그것을 손으로 짜서 건네면 검증할 수 없는 SQL 모양이
+    검증된 의미인 척 들어온다. 계약 표면(V4 스키마)이 노출하지 않는다는 사실만으로는 저장된
+    plan·수동 payload 경로가 남으므로, 경계에서 한 번 더 이름을 대며 막는다.
+    """
+
+    return tuple(
+        sorted(
+            {
+                node_type
+                for node in walk(expression)
+                if isinstance(node_type := getattr(node, "type", None), str)
+                and node_type in LOWERING_ONLY_NODE_TYPES
+            }
+        )
+    )
 
 
 def node_type_names(expression: Condition) -> set[str]:

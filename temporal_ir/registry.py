@@ -190,6 +190,22 @@ class LoweringInput:
     def evidence(self) -> sir.Evidence | None:
         return self.condition.evidence
 
+    @property
+    def subject_key_field(self) -> str:
+        """주체 키 필드 심볼. 파생 관계를 회원 행과 맞추는 조건에만 필요하다.
+
+        선언에서 찾으므로 이 계층은 테이블·컬럼 이름을 모른다. 확정할 수 없으면 카탈로그
+        적재가 이미 이름을 대며 실패했어야 하므로(:func:`catalog.validate_catalog`) 여기까지
+        왔다면 계약 위반이다.
+        """
+
+        symbol = tcat.subject_key_field(self.semantic_catalog)
+        if symbol is None:  # pragma: no cover - 카탈로그 적재가 먼저 막는다
+            raise TemporalRegistryError(
+                "주체 키를 가리키는 필드 심볼이 카탈로그에 하나로 확정되지 않습니다"
+            )
+        return symbol
+
 
 Lowerer = Callable[[LoweringInput], event_ir.Condition]
 Validator = Callable[[sir.TemporalCondition, tcat.TemporalBindingSpec], Sequence[ValidationIssue]]
@@ -220,6 +236,10 @@ class TemporalOperatorDefinition:
     validate: Validator = _no_extra_validation
     lower: Lowerer | None = None
     unsupported_reason: str = ""
+    # 이 연산이 실제로 **무엇을 측정하는가**(영수증에 그대로 실린다). 지원/미지원 판정에는
+    # 쓰이지 않는다 — 측정 의미의 한계는 결과를 읽을 때 필요한 사실이지 SQL 을 만들지 않을
+    # 이유가 아니다.
+    measurement: str = ""
     version: int = 1
 
     def __post_init__(self) -> None:

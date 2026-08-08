@@ -51,10 +51,12 @@ from event_ir import (
     Join,
     Limit,
     Literal,
+    Materialize,
     Not,
     NullIf,
     Order,
     Or,
+    OutputRef,
     Project,
     RelativeWindow,
     RollingWindow,
@@ -63,6 +65,7 @@ from event_ir import (
     TemporalRelation,
     TimeFilter,
     Tuple,
+    WindowExpression,
 )
 from sql_dialect import (
     RowLimit,
@@ -871,6 +874,30 @@ def compile_relation(relation: event_ir.Relation, context: CompileContext) -> Re
         plan.group_by = group_by
         return plan
 
+    if isinstance(relation, Materialize):
+        inner_plan = compile_relation(relation.relation, context)
+        if not inner_plan.projection:
+            raise SqlCompileError(
+                "파생 테이블에는 이름 있는 출력이 필요합니다(Project/Summarize 를 감싸야 합니다)"
+            )
+        if inner_plan.binding != "fact_table":
+            raise SqlCompileError("주체 컬럼 사건은 파생 테이블로 만들 수 없습니다")
+        alias = f"EM{context.next_index()}"
+        body = _subquery(inner_plan, None, context)
+        # 안쪽 소스 별칭은 파생 테이블 밖에서 보이지 않는다 — 그래서 scope 는 비우고, 안쪽이
+        # 이름 붙여 내보낸 출력만 field_bindings 로 노출한다. 바깥 Filter 가 참조할 수 있는 것이
+        # 정확히 '내보낸 것'뿐이라는 사실이 이 자리에서 구조적으로 보장된다.
+        return RelationPlan(
+            from_sql=f"({body}) AS {alias}",
+            where=[],
+            group_by=[],
+            scope={},
+            root_source=inner_plan.root_source,
+            binding="fact_table",
+            params=dict(inner_plan.params),
+            field_bindings=_derived_field_bindings(inner_plan, alias),
+        )
+
     if isinstance(relation, Order):
         plan = compile_relation(relation.relation, context)
         inner = _relation_context(plan, context)
@@ -931,10 +958,15 @@ def _merge_params(target: dict[str, Any], incoming: dict[str, Any]) -> None:
 
 
 def _derived_field_bindings(plan: RelationPlan, alias: str) -> dict[str, str]:
+    """파생 관계의 출력을 바깥에서 부를 수 있는 이름으로 노출한다.
+
+    두 이름이 함께 나가는 것은 두 참조 노드가 있기 때문이다 — 보존된 카탈로그 필드는
+    ``FieldRef``(점이 있는 심볼)로, 관계가 만든 별칭은 ``OutputRef``(점 없는 이름)로 부른다.
+    두 문법이 겹치지 않으므로 한 사전에 담아도 서로를 덮지 않는다.
+    """
+
     return {
-        symbol: f"{alias}.{column}"
-        for symbol, column in plan.output_aliases.items()
-        if "." in symbol
+        symbol: f"{alias}.{column}" for symbol, column in plan.output_aliases.items()
     }
 
 
@@ -1062,6 +1094,16 @@ def compile_scalar(scalar: event_ir.Scalar, context: CompileContext) -> str:
                 raise SqlCompileError(f"필드 '{scalar.name}' 물리 바인딩 형식이 잘못되었습니다") from exc
         return f"{alias}.{spec.column}"
 
+    if isinstance(scalar, OutputRef):
+        bound = context._field_bindings.get(scalar.name)
+        if bound is None:
+            raise SqlCompileError(
+                f"파생 관계 출력 '{scalar.name}' 을 현재 스코프에서 찾을 수 없습니다"
+                " (파생 테이블(Materialize) 안에서 그 이름으로 내보내야 합니다)",
+                reason="relation_output_out_of_scope",
+            )
+        return bound
+
     if isinstance(scalar, Arithmetic):
         return f"({compile_scalar(scalar.left, context)} {scalar.operator} {compile_scalar(scalar.right, context)})"
 
@@ -1085,6 +1127,25 @@ def compile_scalar(scalar: event_ir.Scalar, context: CompileContext) -> str:
         if plan.group_by:
             raise SqlCompileError("그룹 집계는 비교 조건에서만 컴파일됩니다(EXISTS + HAVING)")
         return _aggregate_subquery(scalar, plan, context)
+
+    if isinstance(scalar, WindowExpression):
+        try:
+            return context.dialect.window_function(
+                scalar.function,
+                compile_scalar(scalar.expression, context),
+                partition_by=[
+                    compile_scalar(item, context) for item in scalar.partition_by
+                ],
+                # 정렬 키는 카탈로그 필드 id 다(event_ir 이 그 모양을 강제한다) — 이 스칼라가
+                # 계산되는 SELECT 안에서는 파생 별칭이 아직 존재하지 않는다.
+                order_by=[
+                    f"{compile_scalar(FieldRef(key.name), context)} {key.direction.upper()}"
+                    for key in scalar.order_by
+                ],
+                offset=scalar.offset,
+            )
+        except UnsupportedDialectFeatureError as exc:
+            raise SqlCompileError(str(exc)) from exc
 
     raise SqlCompileError(f"지원하지 않는 스칼라입니다: {scalar!r}")
 
@@ -2195,6 +2256,9 @@ _COMPILER_CAPABILITIES: frozenset[str] = frozenset({
     "aggregate.derived_expression",
     "relation.membership_join",
     "relation.ranked_limit",
+    "relation.materialized_derived_table",
+    "scalar.relation_output",
+    "scalar.window_lag",
 })
 
 

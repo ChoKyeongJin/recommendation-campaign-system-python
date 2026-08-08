@@ -237,6 +237,19 @@ class TemporalSpanValidator:
                 # 모델의 evidence 배치는 신뢰할 수 없지만 **창의 존재**는 사실이다.
                 default_windows.pop()
                 continue
+            import audience_issue_contract  # 지연 import(모듈 결합 회피 — 위 규약)
+
+            if audience_issue_contract.period_span_owned_by_lowered_clause(
+                query, (match.start(), match.end()), today=self._as_of
+            ):
+                # 이 표지가 붙은 절이 **스스로 창을 확정**한다(월 스냅샷 전이의 관측 칸 같은).
+                # 그런 자리의 '최근'은 결핍이 아니라 그 선택의 동어반복이다.
+                #
+                # 근거를 '표지를 덮는 evidence'로만 보던 동안 이 자리는 통과할 수 없었다 —
+                # 전이의 근거는 '승급'이라 문장 앞의 '최근'을 덮을 수 없기 때문이다. 그래서
+                # 모델이 옳은 전이 표현을 내도 같은 결핍이 다시 붙어 재시도가 소진됐다
+                # (실측 2026-08-08 라이브: 3회 시도 전부 이 자리에서 반려).
+                continue
             issues.append(
                 issue_from_report(
                     code="missing_argument",

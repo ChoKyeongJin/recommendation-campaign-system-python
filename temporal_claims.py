@@ -28,6 +28,18 @@ capability 검증을 두 벌 유지해야 한다(CLAUDE.md §4). 아래 선언�
     ChangeCount          WindowSelector + Exists          + ChangeCountPredicate
     ConsecutivePeriods   WindowSelector + ConsecutiveBuckets + StatePredicate
 
+요청 하나의 다섯 축은 어디에 있는가
+-----------------------------------
+'도메인 · 연산 · 비교 · 임계값 · 구간'은 이 계층이 따로 담지 않는다. 그 다섯은 이미
+:class:`sir.TemporalCondition` 의 필드이고, 여기서 새 dataclass 로 한 번 더 담으면 같은 뜻을
+두 모델이 말하게 된다(위 §4 와 같은 이유). 대응은 이렇게 읽는다::
+
+    domain      condition.metric / TemporalClaimRequest.value_domain
+    operation   marker.operator → resolve_operator_name(condition)
+    comparator  condition.predicate.comparison.operator
+    threshold   condition.predicate.comparison.value
+    window      condition.selector.window (+ TemporalClaimRequest.window_source)
+
 전이 값 쌍의 소유자
 -------------------
 'A에서 B로'의 값 쌍 선택·어순·방향 검증은 :mod:`transition_claims` 가 이미 소유하므로 다시
@@ -52,6 +64,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import aggregate_parser_config
 import audience_frame
 import calendar_window
 import canonical_audience_claims
@@ -74,6 +87,7 @@ METRIC_AMBIGUOUS = "temporal_metric_ambiguous"
 DOMAIN_MIXED = "temporal_domain_mixed"
 VALUE_COUNT_MISMATCH = "temporal_value_count_mismatch"
 INTERVAL_MISSING = "temporal_interval_missing"
+INTERVAL_NOT_EXPRESSIBLE = "temporal_interval_required_not_expressible"
 INTERVAL_FORBIDDEN = "temporal_interval_forbidden"
 ANCHOR_SHAPE_UNSUPPORTED = "temporal_anchor_shape_unsupported"
 BUCKET_UNIT_MISSING = "temporal_bucket_unit_missing"
@@ -99,13 +113,30 @@ _WINDOW_UNITS: dict[str, str] = {
 _CALENDAR_UNITS = frozenset({"month", "year"})
 
 
+# 원문이 기간을 말하지 않았을 때 그 연산자가 하는 일. **연산자 선언이 소유한다** —
+# 코드에서 연산자 이름을 나열해 특별 처리하면 같은 판단이 두 곳에 생기고, 새 연산자는
+# 어느 쪽 목록에 들어가야 하는지 알 수 없게 된다.
+ALL_AVAILABLE_DATA = "all_available_data"  # 전체 가용 데이터 범위로 읽는다(시간 필터 없음)
+CLARIFICATION = "clarification"  # 사용자에게 기간을 묻는다(고칠 수 있는 결핍)
+UNSUPPORTED_WITHOUT_INTERVAL = "unsupported"  # 구간 없이는 이 의미를 표현할 수 없다
+
+MISSING_WINDOW_POLICIES: frozenset[str] = frozenset(
+    {ALL_AVAILABLE_DATA, CLARIFICATION, UNSUPPORTED_WITHOUT_INTERVAL}
+)
+
+
 @dataclass(frozen=True)
 class _OperatorPlan:
     """범용 시간 연산자 하나를 IR 조합으로 옮기는 선언.
 
     ``values`` 는 술어가 요구하는 **원문 값의 개수**다(전이는 2, 상태는 1, 변경 횟수는 0).
-    ``interval`` 은 구간 요구('required'/'optional'/'forbidden')이며, 요구가 어긋나면
-    조용히 기본값을 넣지 않고 사유와 함께 닫는다.
+    ``interval`` 은 구간을 받을 수 있는지다('optional'/'required'/'forbidden'). ``forbidden``
+    인 연산에 구간이 붙으면 조용히 무시하지 않고 사유와 함께 닫는다.
+
+    ``missing_window`` 는 원문이 구간을 **말하지 않았을 때** 무엇을 할지의 선언이다
+    (:data:`MISSING_WINDOW_POLICIES`). 구간이 의미의 핵심인 연산(하위 구간 전칭·연속 칸)은
+    칸 수가 정해지지 않으면 판정 자체가 성립하지 않으므로 되묻고, 나머지는 전체 가용 범위로
+    읽는다 — '등급이 2회 이상 변경된 회원'에 기간이 없다는 것은 결핍이 아니라 전체를 뜻한다.
 
     ``direction`` 은 방향 전이('승급'·'강등')에서만 채워진다. 값 쌍 대신 서열 방향이 술어를
     확정하므로, 그 방향은 원문에서 읽은 뒤 **계획에 실려** 술어 조립까지 간다.
@@ -116,10 +147,18 @@ class _OperatorPlan:
     predicate: str
     values: int
     interval: str = "forbidden"
+    missing_window: str = CLARIFICATION
     bucket: bool = False
     count: bool = False
     null_policy: str = "exclude"
     direction: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.missing_window not in MISSING_WINDOW_POLICIES:
+            raise ValueError(
+                f"알 수 없는 missing_window 정책: {self.missing_window!r}"
+                f" (허용: {sorted(MISSING_WINDOW_POLICIES)})"
+            )
 
 
 # 범용 연산자 → IR 조합. 왼쪽은 :mod:`temporal_semantics` 의 닫힌 집합이고 오른쪽은
@@ -135,31 +174,34 @@ _OPERATOR_PLANS: dict[str, _OperatorPlan] = {
     ),
     temporal_semantics.WITHIN_INTERVAL: _OperatorPlan(
         selector="window", quantifier="exists", predicate="state",
-        values=1, interval="required",
+        values=1, interval="optional", missing_window=ALL_AVAILABLE_DATA,
     ),
     temporal_semantics.AT_LEAST_ONCE_IN_INTERVAL: _OperatorPlan(
         selector="window", quantifier="exists", predicate="state",
-        values=1, interval="required",
+        values=1, interval="optional", missing_window=ALL_AVAILABLE_DATA,
     ),
     temporal_semantics.NEVER_IN_INTERVAL: _OperatorPlan(
         selector="window", quantifier="none", predicate="state",
-        values=1, interval="required",
+        values=1, interval="optional", missing_window=ALL_AVAILABLE_DATA,
     ),
     temporal_semantics.THROUGHOUT_INTERVAL: _OperatorPlan(
         # '내내'는 관측 전칭이다. null 정책이 exclude 면 값이 빈 관측이 조용히 통과하므로
         # temporal.all 은 treat_as_mismatch 만 받는다(계약이 그렇게 좁혀져 있다).
         selector="window", quantifier="all_observations", predicate="state",
-        values=1, interval="required", null_policy="treat_as_mismatch",
+        values=1, interval="optional", missing_window=ALL_AVAILABLE_DATA,
+        null_policy="treat_as_mismatch",
     ),
     temporal_semantics.EVERY_SUBINTERVAL: _OperatorPlan(
+        # 칸 전칭은 '몇 칸이어야 하는가'가 판정의 재료다. 경계 없는 구간에는 기대 칸 수가
+        # 없으므로 전체 범위로 읽을 수 없다 — 되묻는 것이 유일하게 정직한 결말이다.
         selector="window", quantifier="every_bucket", predicate="state",
-        values=1, interval="required", bucket=True,
+        values=1, interval="required", missing_window=CLARIFICATION, bucket=True,
     ),
     temporal_semantics.UNCHANGED_THROUGHOUT: _OperatorPlan(
         # '한 번도 바뀌지 않았다'는 관측 전체에 대한 진술이다. exists 로 두면 "안 바뀐 관측이
         # 하나라도 있다"가 되어 정반대에 가까운 집합이 나온다.
         selector="window", quantifier="all_observations", predicate="unchanged",
-        values=0, interval="required",
+        values=0, interval="optional", missing_window=ALL_AVAILABLE_DATA,
     ),
     temporal_semantics.CHANGE_BETWEEN: _OperatorPlan(
         # 기간이 없으면 '가장 최근 관측에서의 전이'(as_of), 있으면 '그 구간 안의 전이'(window).
@@ -167,12 +209,15 @@ _OPERATOR_PLANS: dict[str, _OperatorPlan] = {
         values=2, interval="optional",
     ),
     temporal_semantics.CHANGE_COUNT: _OperatorPlan(
+        # '등급이 2회 이상 변경된 회원'에 기간이 없으면 전체 가용 범위에서 센다. 적재가 한 달인지
+        # 백 달인지는 그 SQL 의 **답**을 바꾸지만 SQL 을 만들 수 있는지는 바꾸지 않는다.
         selector="window", quantifier="exists", predicate="change_count",
-        values=0, interval="required", count=True,
+        values=0, interval="optional", missing_window=ALL_AVAILABLE_DATA, count=True,
     ),
     temporal_semantics.CONSECUTIVE_SUBINTERVALS: _OperatorPlan(
+        # '연속 N칸'도 칸 수가 재료다(EVERY_SUBINTERVAL 과 같은 이유).
         selector="window", quantifier="consecutive_buckets", predicate="state",
-        values=1, interval="required", bucket=True,
+        values=1, interval="required", missing_window=CLARIFICATION, bucket=True,
     ),
 }
 
@@ -187,13 +232,25 @@ _QUANTIFIERS: dict[str, Any] = {
 
 @dataclass(frozen=True)
 class TemporalClaimRequest:
-    """원문이 고른 시간 조건 하나 — 아직 낮추지 않은 상태."""
+    """원문이 고른 시간 조건 하나 — 아직 낮추지 않은 상태.
+
+    ``window_source`` 는 이 조건의 구간을 **누가 골랐는가**다. 정책이 채운 구간을 사용자가 말한
+    구간과 같게 보고하면 두 가지가 깨진다: 응답을 읽는 쪽이 "원문에 없는 조건"을 설명할 수 없고,
+    의미 검증기가 자기 SQL 을 spurious 로 막는다.
+    """
 
     operator: str
     metric_id: str
     value_domain: str | None
     condition: sir.TemporalCondition
     spans: tuple[Span, ...]
+
+    @property
+    def window_source(self) -> sir.WindowSource:
+        window = getattr(self.condition.selector, "window", None)
+        if window is None:
+            return sir.WindowSource.USER
+        return sir.window_source(window)
 
 
 @dataclass(frozen=True)
@@ -207,13 +264,25 @@ class TemporalClaimSynthesis:
     warnings: tuple[str, ...] = ()
 
 
+# 반려의 **귀결 종류**. 사용자가 문장을 고쳐 해결할 수 있는 결핍/모호는 되묻기이고, 선언과
+# 표현의 한계는 미지원이다. 코드에서 사유를 추론하지 않고 반려를 만든 자리가 선언한다.
+CLARIFICATION = "clarification"
+UNSUPPORTED = "unsupported"
+
+
 @dataclass(frozen=True)
 class TemporalClaimRejection:
-    """시간 조건을 말했지만 만들 수 없다 — 사유와 근거를 남긴다."""
+    """시간 조건을 말했지만 만들 수 없다 — 사유와 근거, 그리고 **귀결 종류**를 남긴다.
+
+    ``disposition`` 을 코드에서 되짚지 않고 반려 지점이 선언하는 이유: 같은 문장이 어느
+    계층에서 막혔는지에 따라 사용자에게 줄 다음 행동이 다르고(기간을 말해 달라 / 이 데이터
+    표현으로는 답할 수 없다), 그 판단은 반려를 만든 쪽만 안다.
+    """
 
     code: str
     message: str
     evidence: dict[str, Any]
+    disposition: str = UNSUPPORTED
 
 
 @dataclass(frozen=True)
@@ -488,12 +557,14 @@ def _predicate(
 
 
 def _leading_number(query: str, span: Span) -> Decimal | None:
-    """마커가 품은 수. 한글 수사는 읽지 않는다(못 읽으면 사유와 함께 닫는다)."""
+    """마커가 품은 수. 아라비아 숫자와 한글 수관형사를 **같은 문법**으로 읽는다.
 
-    match = re.search(r"\d+", query[span[0] : span[1]])
-    if match is None:
-        return None
-    return Decimal(match.group(0))
+    수사 어휘를 이 모듈에 두지 않는 이유는 소유권이다 — '두 번'을 2로 읽는 표는 이미
+    :mod:`aggregate_parser_config` 가 소유하고(결속 규칙과 어림수 가드까지 포함), 여기서 두 번째
+    표를 만들면 '두 번 이상 구매'와 '두 번 이상 변경'이 서로 다른 문법으로 읽힌다.
+    """
+
+    return aggregate_parser_config.read_count_value(query[span[0] : span[1]])
 
 
 def _bucket_unit(query: str, span: Span) -> str | None:
@@ -635,6 +706,7 @@ def _plan_request(
                 f"이 시간 조건은 선언된 값 {plan.values}개를 요구하지만 "
                 f"문장에서 확인된 값은 {len(clause_hits)}개입니다.",
                 _evidence_dict(query, start, end),
+                disposition=CLARIFICATION,
             )
         domains = {hit.domain for hit in clause_hits}
         if len(domains) != 1:
@@ -646,6 +718,7 @@ def _plan_request(
                     min(marker.start, clause_hits[0].start),
                     max(marker.end, clause_hits[-1].end),
                 ),
+                disposition=CLARIFICATION,
             )
         domain = next(iter(domains))
         values = [hit.canonical for hit in clause_hits]
@@ -658,6 +731,7 @@ def _plan_request(
                 VALUE_DOMAIN_UNRESOLVED,
                 "이 시간 조건이 어떤 값 축을 말하는지 문장에서 확정할 수 없습니다.",
                 _evidence_dict(query, *marker_span),
+                disposition=CLARIFICATION,
             )
 
     # 전이는 값 쌍의 어순·방향까지 봐야 한다 — 그 판정의 소유자는 transition_claims 다.
@@ -679,6 +753,7 @@ def _plan_request(
                 VALUE_COUNT_MISMATCH,
                 "값 전이를 말했지만 바뀌기 전 값과 바뀐 뒤 값을 확정할 수 없습니다.",
                 _evidence_dict(query, *marker_span),
+                disposition=CLARIFICATION,
             )
         # 방향어('승급'/'강등')가 값 순서와 모순되는지까지 검증한다. 이 검사가 빠지면
         # 'VIP에서 골드로 승급'이 그대로 SQL 로 나가 문장의 모순이 조용히 사라진다(실측).
@@ -704,6 +779,7 @@ def _plan_request(
         return TemporalClaimRejection(
             VALUE_DOMAIN_UNRESOLVED, "값 축을 확정할 수 없습니다.",
             _evidence_dict(query, *marker_span),
+            disposition=CLARIFICATION,
         )
 
     metric_id = temporal_metric_for_domain(runtime, domain)
@@ -745,6 +821,7 @@ def _plan_request(
                     INTERVAL_MISSING,
                     "구간 조건의 기간을 이 표현에서 확정할 수 없습니다.",
                     _evidence_dict(query, span[0], span[1]),
+                    disposition=CLARIFICATION,
                 )
         else:
             anchor = _calendar_anchor(raw, kind, today)
@@ -754,13 +831,25 @@ def _plan_request(
                     "시점 조건의 기준 시점을 이 표현에서 확정할 수 없습니다"
                     "(기간은 시점이 아닙니다).",
                     _evidence_dict(query, span[0], span[1]),
+                    disposition=CLARIFICATION,
                 )
     if effective.selector == "window" and window is None:
-        return TemporalClaimRejection(
-            INTERVAL_MISSING,
-            "이 시간 연산은 구간이 있어야 성립합니다. 기간을 명시해 주세요.",
-            _evidence_dict(query, *marker_span),
-        )
+        # 원문이 구간을 말하지 않았다. 무엇을 할지는 **연산자 선언**이 정한다(이름 분기 금지).
+        if effective.missing_window == ALL_AVAILABLE_DATA:
+            window = sir.AllAvailableDataWindow(source=sir.WindowSource.POLICY_DEFAULT)
+        elif effective.missing_window == UNSUPPORTED_WITHOUT_INTERVAL:
+            return TemporalClaimRejection(
+                INTERVAL_NOT_EXPRESSIBLE,
+                "이 시간 연산은 구간 없이는 표현할 수 없습니다.",
+                _evidence_dict(query, *marker_span),
+            )
+        else:
+            return TemporalClaimRejection(
+                INTERVAL_MISSING,
+                "이 시간 연산은 구간이 있어야 성립합니다. 기간을 명시해 주세요.",
+                _evidence_dict(query, *marker_span),
+                disposition=CLARIFICATION,
+            )
 
     if anchor is None:
         grain = _coarsest_grain(runtime, metric_id, _expected_operator(effective))
@@ -778,6 +867,7 @@ def _plan_request(
                 BUCKET_UNIT_MISSING,
                 "하위 구간 조건의 단위(달·주 …)를 확정할 수 없습니다.",
                 _evidence_dict(query, *marker_span),
+                disposition=CLARIFICATION,
             )
 
     count: Decimal | None = None
@@ -787,8 +877,9 @@ def _plan_request(
             return TemporalClaimRejection(
                 CHANGE_COUNT_VALUE_MISSING,
                 "변경 횟수 조건의 횟수를 문장에서 읽을 수 없습니다"
-                "(한글 수사는 아직 읽지 않습니다).",
+                "(아라비아 숫자 또는 수관형사 하나가 필요합니다).",
                 _evidence_dict(query, *marker_span),
+                disposition=CLARIFICATION,
             )
 
     bucket_count: int | None = None
@@ -800,6 +891,7 @@ def _plan_request(
                 "연속 조건의 칸 수를 문장에서 읽을 수 없습니다"
                 "(2 이상의 수가 있어야 '연속'이 성립합니다).",
                 _evidence_dict(query, *marker_span),
+                disposition=CLARIFICATION,
             )
         bucket_count = int(raw_count)
 

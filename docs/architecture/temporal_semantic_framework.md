@@ -77,11 +77,24 @@ TemporalCondition(
 | `temporal.previous_distinct_value` | X | 이력 표현 전부 | supports_ordered_observations |
 | `temporal.changed_between_endpoints` | X | 이력 표현 전부 | supports_ordered_observations |
 | `temporal.changed_within_window` | X | 이력 표현 전부 | supports_ordered_observations |
-| `temporal.change_count` | X | 이력 표현 전부 | supports_intra_bucket_changes |
+| `temporal.change_count` | O | 이력 표현 전부 | supports_ordered_observations + (prev_value_field \| entity_key_field+time_field) |
 | `temporal.throughout` | X | validity_interval | supports_continuous_validity |
 
-미지원 여섯은 같은 뿌리를 갖는다: **주체별 정렬과 행 선택**(PartitionBy/OrderBy/LimitPerEntity/Lag)
+미지원 다섯은 같은 뿌리를 갖는다: **주체별 행 선택**(LimitPerEntity/이웃 칸 간격 판정)
 primitive 가 실행 IR 에 없다. 그것을 추가하면 lowerer 만 채우면 된다(계약은 이미 선언되어 있다).
+
+2026-08-08 에 `temporal.change_count` 가 그 목록에서 빠졌다. 이유는 두 가지다.
+
+1. **primitive 가 생겼다.** 실행 IR 에 윈도 함수(`WindowExpression`, 현재 `lag`)와 파생 테이블
+   경계(`Materialize`), 그리고 그 파생 관계의 출력을 부르는 참조(`OutputRef`)가 추가됐다.
+   그래서 직전 값 컬럼이 없는 관측도 `LAG(값) OVER (PARTITION BY 주체 ORDER BY 시각)` 으로
+   직전 값을 만들 수 있다.
+2. **요구 능력이 스키마 모양으로 바뀌었다.** 예전 요구는 `supports_intra_bucket_changes`
+   (칸 **안에서** 몇 번 바뀌었는지 아는가)였는데, 그것은 스키마 모양이 아니라 적재 밀도에
+   대한 진술이다. 그 플래그를 요구하는 동안 답할 수 있는 질문("관측 사이에 값이 몇 번
+   달라졌는가")까지 함께 막혔다. 지금 요구하는 것은 정렬된 관측과, 직전 값을 얻는 두 방법 중
+   하나다. 세는 대상이 '관측된 값 변화'라는 사실은 영수증의 `measurement` 가 말한다 —
+   **측정 의미의 한계는 SQL 을 만들지 않을 이유가 아니다**(적재량도 마찬가지다).
 
 `temporal.consecutive_buckets`('3개월 연속')가 여섯 번째다. 앵커가 있는 '최근 N칸 연속'은
 그 구간의 칸 전칭(`temporal.every_bucket`)과 **같은 집합**이므로 그쪽으로 정확히 표현되고,
@@ -102,9 +115,17 @@ primitive 가 실행 IR 에 없다. 그것을 추가하면 lowerer 만 채우면
 | 구간 부재 | `Not(Exists(...))` |
 | 관측 전칭 | `And(Exists(구간), Not(Exists(구간 ∧ ¬술어)))` |
 | 칸 전칭 | `Comparison(Aggregate(count distinct 시각), '=', 기대 칸 수)` |
+| 값 변화 수(직전 값 컬럼) | `Comparison(Aggregate(count, Filter(Source, 값 != 직전값)), 연산자, 임계값)` |
+| 값 변화 수(정렬 관측) | 같은 비교 + 관계가 `Filter(Materialize(Project(Source, [주체키, 값, lag(값)])), …)` |
 
 `current_only` 관측은 시간 조건 없이 주체 행을 직접 비교하고, `latest_only` 관측은
 `binding="subject_column"` 이라 컴파일러가 EXISTS 없이 컬럼 비교로 렌더한다.
+
+마지막 두 모양이 2026-08-08 에 추가됐고, 그때 실행 IR 에 범용 노드 셋이 함께 생겼다:
+`WindowExpression`(정렬된 관측 사이를 보는 함수, 현재 `lag`), `Materialize`(파생 테이블 경계 —
+윈도 값은 같은 SELECT 의 WHERE 에서 참조할 수 없다), `OutputRef`(그 파생 관계가 내보낸 별칭
+참조). 셋 다 문장이 아니라 **SQL 대수의 빠진 조각**이며, 모델 계약 표면(V4 스키마)에는
+노출하지 않는다(`event_ir.LOWERING_ONLY_NODE_TYPES`).
 
 ## 선언 카탈로그
 
@@ -189,6 +210,17 @@ selector/quantifier/predicate, 선택 전략, **정규화된 절대 구간**, �
   '관측 없음'을 '조건 불성립'으로 조용히 바꾸지 않겠다는 요청이기 때문이다.
 - 낮출 수 없는 정책은 계약에서 거절한다. 예: `temporal.all` 은 `null_policy=treat_as_mismatch`
   만, 나머지 구간 연산자는 `exclude` 만 받는다(실행 IR 에 IS NULL 술어가 없다).
+- **적재량은 지원 판정에 들어가지 않는다(2026-08-08).** 행 수·적재 칸 수·실제 변화 건수·임계값을
+  만족할 가능성은 질의의 **답**이고, 컴파일러가 답하는 질문은 "지금 선언된 스키마로 이 의미를
+  SQL 로 표현할 수 있는가" 하나다. `coverage` 판정은 영수증(`coverage_status`/`missing_buckets`)에
+  남는 비차단 정보이며, 차단은 호출자가 명시적으로 켠 `CoveragePolicy.BLOCK` 또는 요청이 스스로
+  선언한 `missing_policy=error` 에서만 일어난다(자연어 경로는 둘 다 쓰지 않는다).
+- **기간 미명시의 처리는 연산자 선언이 소유한다.** `temporal_claims._OPERATOR_PLANS` 의 각 항목이
+  `missing_window` 를 `all_available_data` / `clarification` / `unsupported` 중 하나로 선언한다.
+  기본은 전체 가용 데이터 범위(`AllAvailableDataWindow`, 시간 필터를 만들지 않는다)이고, 칸 수가
+  판정의 재료인 연산(`EVERY_SUBINTERVAL`·`CONSECUTIVE_SUBINTERVALS`)만 되묻는다. 정책이 채운
+  구간과 사용자가 말한 구간은 `WindowSource`(`policy_default` / `user`)로 구분해 기록한다 —
+  구분이 없으면 의미 검증기가 자기 SQL 을 '원문에 없는 조건'으로 막는다.
 
 ## 확장 방법
 

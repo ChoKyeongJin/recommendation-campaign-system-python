@@ -57,7 +57,14 @@ EXPECTED_NODE_TYPES = {
     # 범용 값 노드다: tuple 은 다중 컬럼 키(구분자 CONCAT 의 충돌을 구조적으로 없앤다),
     # null_if 는 '이 값이면 없는 값' 가드(0 분모 안전 나눗셈의 절반)다.
     "literal", "field", "arithmetic", "tuple", "null_if", "aggregate",
+    # window/materialize/output 은 2026-08-08 에 추가됐다. 셋 다 **문장 하나를 위한 타입이
+    # 아니라** SQL 대수의 빠진 조각이다: window 는 정렬된 관측 사이를 보는 함수(LAG),
+    # materialize 는 파생 테이블 경계(윈도 값은 같은 SELECT 의 WHERE 에서 참조할 수 없다),
+    # output 은 그 파생 관계가 내보낸 별칭을 부르는 참조다. 이름 있는 출력을 만들 수는 있는데
+    # 부를 수는 없던 비대칭이 output 이 빠져 있던 증거다.
+    "window", "output",
     "source", "filter", "join", "group", "project", "summarize", "order", "limit",
+    "materialize",
     "comparison", "exists", "time_filter", "temporal_relation", "event_reference",
     "interval", "rolling", "relative", "duration",
 }

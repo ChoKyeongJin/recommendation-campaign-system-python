@@ -194,8 +194,14 @@ def test_latest_only_binding_refuses_arbitrary_occurrence_questions(runtime, con
     assert runtime.lower(latest, context).status == "compiled"
 
 
-def test_snapshot_cannot_claim_exact_change_counts(runtime, context) -> None:
-    """스냅샷에서 센 변화는 업무 변경 횟수가 아니다(§8) — 같은 이름으로 부르지 않는다."""
+def test_snapshot_change_count_measures_observed_changes(runtime, context) -> None:
+    """스냅샷의 변경 횟수는 **관측된 값 변화**를 센다 — 그 사실은 영수증이 말하고, SQL 은 낸다.
+
+    예전 계약은 같은 요청을 ``supports_intra_bucket_changes`` 미선언으로 닫았다. 그 플래그는
+    스키마 모양이 아니라 **적재 밀도**에 대한 진술이라(칸 안에서 몇 번 바뀌었는지 아는가),
+    답할 수 있는 질문("관측 사이에 값이 몇 번 달라졌는가")까지 함께 막혔다. 측정 의미의
+    한계는 결과를 읽을 때 필요한 사실이므로 ``measurement`` 로 고지하고 컴파일은 한다.
+    """
     condition = sir.TemporalCondition(
         metric="member.grade",
         binding=SNAPSHOT,
@@ -208,9 +214,31 @@ def test_snapshot_cannot_claim_exact_change_counts(runtime, context) -> None:
         evidence=EVIDENCE,
     )
     outcome = runtime.lower(condition, context)
-    assert outcome.status == "unsupported"
-    assert outcome.code == "temporal_capability_missing"
-    assert "supports_intra_bucket_changes" in outcome.message
+    assert outcome.status == "compiled", outcome
+    assert outcome.receipt.measurement == "observed_value_changes"
+    assert outcome.receipt.operator == "temporal.change_count"
+
+
+def test_change_count_needs_a_way_to_read_the_previous_value(runtime, context) -> None:
+    """직전 값을 읽을 방법이 **선언에** 없으면 그때가 미지원이다(데이터 양과 무관하다).
+
+    구매 이벤트에는 값 필드도 직전 값도 없다 — 그래서 이 관측은 애초에 이 연산자를 선언하지
+    않았고, 판정은 그 선언에서 나온다. 이것이 유지되어야 할 fail-close 다(§14).
+    """
+    condition = sir.TemporalCondition(
+        metric="member.purchase",
+        binding="member.purchase.events",
+        selector=sir.WindowSelector(window=_months(3)),
+        quantifier=sir.ExistsQuantifier(),
+        predicate=sir.ChangeCountPredicate(
+            transition=sir.AnyValueChange(),
+            comparison=sir.NumericComparison(operator=">=", value=Decimal("2")),
+        ),
+        evidence=EVIDENCE,
+    )
+    outcome = runtime.lower(condition, context)
+    assert outcome.status == "unsupported", outcome
+    assert outcome.code == "temporal_operator_unsupported_by_binding"
 
 
 def test_observed_values_equal_is_not_promoted_to_never_changed(runtime, semantic_catalog, context) -> None:
@@ -393,7 +421,7 @@ def test_lifetime_window_means_no_time_filter(runtime, semantic_catalog, context
     condition = sir.TemporalCondition(
         metric="member.purchase",
         binding="member.purchase.events",
-        selector=sir.WindowSelector(window=sir.LifetimeWindow()),
+        selector=sir.WindowSelector(window=sir.AllAvailableDataWindow()),
         quantifier=sir.ExistsQuantifier(),
         predicate=sir.OccurrencePredicate(),
         evidence=EVIDENCE,
@@ -408,7 +436,7 @@ def test_within_after_uses_the_declared_anchor_event(runtime, semantic_catalog, 
     condition = sir.TemporalCondition(
         metric="member.purchase",
         binding="member.purchase.events",
-        selector=sir.WindowSelector(window=sir.LifetimeWindow()),
+        selector=sir.WindowSelector(window=sir.AllAvailableDataWindow()),
         quantifier=sir.ExistsQuantifier(),
         predicate=sir.TemporalRelationPredicate(
             left_binding="member.purchase.events",
@@ -428,7 +456,7 @@ def test_repeat_purchase_requires_an_explicit_anchor_occurrence(runtime, semanti
     condition = sir.TemporalCondition(
         metric="member.purchase",
         binding="member.purchase.events",
-        selector=sir.WindowSelector(window=sir.LifetimeWindow()),
+        selector=sir.WindowSelector(window=sir.AllAvailableDataWindow()),
         quantifier=sir.ExistsQuantifier(),
         predicate=sir.TemporalRelationPredicate(
             left_binding="member.purchase.events",
@@ -823,7 +851,7 @@ def test_every_bucket_over_a_lifetime_window_returns_a_result_not_an_exception(
     """기대 칸 수가 없는 구간은 결과 타입으로 답한다 — 예외가 합성 전체를 죽이지 않는다."""
     condition = _as_of(
         sir.ReferenceAnchor(),
-        selector=sir.WindowSelector(window=sir.LifetimeWindow(), bucket=sir.TimeUnit.MONTH),
+        selector=sir.WindowSelector(window=sir.AllAvailableDataWindow(), bucket=sir.TimeUnit.MONTH),
         quantifier=sir.EveryBucketQuantifier(),
     )
     outcome = runtime.lower(condition, context)
@@ -835,7 +863,7 @@ def test_value_predicate_on_a_binding_without_a_value_field_is_a_result(runtime,
     condition = sir.TemporalCondition(
         metric="member.purchase",
         binding="member.purchase.events",
-        selector=sir.WindowSelector(window=sir.LifetimeWindow()),
+        selector=sir.WindowSelector(window=sir.AllAvailableDataWindow()),
         quantifier=sir.ExistsQuantifier(),
         predicate=_state(),
         evidence=EVIDENCE,
@@ -850,7 +878,7 @@ def test_relation_duration_must_convert_to_days_exactly(runtime, context) -> Non
     condition = sir.TemporalCondition(
         metric="member.purchase",
         binding="member.purchase.events",
-        selector=sir.WindowSelector(window=sir.LifetimeWindow()),
+        selector=sir.WindowSelector(window=sir.AllAvailableDataWindow()),
         quantifier=sir.ExistsQuantifier(),
         predicate=sir.TemporalRelationPredicate(
             left_binding="member.purchase.events",

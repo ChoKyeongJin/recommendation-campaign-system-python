@@ -480,6 +480,10 @@ class TemporalBindingSpec:
     value_field: str | None = None
     prev_value_field: str | None = None
     time_field: str | None = None
+    # 관측을 주체별로 **나누는** 필드(윈도 함수의 PARTITION BY). ``correlation_keys`` 는 물리
+    # 컬럼 이름이라 실행 IR 이 참조할 수 없다 — 그 자리에는 카탈로그 필드 심볼이 필요하다.
+    # 한 행에 직전 값이 함께 있는 표현에서는 필요하지 않으므로 선택 선언이다.
+    entity_key_field: str | None = None
     transition_metric: str | None = None
     semantic_grain: sir.TimeUnit = sir.TimeUnit.DAY
     storage_codec: str = ""
@@ -567,6 +571,7 @@ class TemporalBindingSpec:
             "value_field": self.value_field,
             "prev_value_field": self.prev_value_field,
             "time_field": self.time_field,
+            "entity_key_field": self.entity_key_field,
             "transition_metric": self.transition_metric,
             "semantic_grain": str(self.semantic_grain),
             "storage_codec": self.storage_codec,
@@ -609,6 +614,9 @@ class TemporalBindingSpec:
                 str(raw["prev_value_field"]) if raw.get("prev_value_field") else None
             ),
             time_field=(str(raw["time_field"]) if raw.get("time_field") else None),
+            entity_key_field=(
+                str(raw["entity_key_field"]) if raw.get("entity_key_field") else None
+            ),
             transition_metric=(
                 str(raw["transition_metric"]) if raw.get("transition_metric") else None
             ),
@@ -885,6 +893,25 @@ def _section(payload: Mapping[str, Any], name: str) -> dict[str, Any]:
     return {str(key): item for key, item in value.items() if not str(key).startswith("_")}
 
 
+def subject_key_field(
+    semantic_catalog: resolved_semantic_catalog.ResolvedSemanticCatalog,
+) -> str | None:
+    """주체 키를 가리키는 **필드 심볼**(없거나 여럿이면 ``None``).
+
+    파생 관계(윈도 함수)를 회원 행과 맞추는 조건은 실행 IR 에 드러나야 하고, 그러려면 주체
+    키를 부를 이름이 필요하다. 그 이름을 코드에 적지 않고 선언에서 찾는 이유는 이식성이다 —
+    주체 테이블과 키 컬럼은 배포마다 다르다.
+    """
+
+    subject = semantic_catalog.subject
+    matches = sorted(
+        symbol
+        for symbol, spec in semantic_catalog.fields.items()
+        if spec.source == subject.name and spec.compiler_field.column == subject.key
+    )
+    return matches[0] if len(matches) == 1 else None
+
+
 def validate_catalog(
     catalog: TemporalCatalog,
     semantic_catalog: resolved_semantic_catalog.ResolvedSemanticCatalog,
@@ -953,6 +980,38 @@ def _validate_binding(
                 f"binding {binding.id!r}.{label} {field_id!r} 의 값 도메인({spec.value_domain!r})이 "
                 f"metric {metric.id!r} 의 값 도메인({metric.value_domain!r})과 다릅니다",
                 symbol=field_id,
+            )
+
+    if binding.entity_key_field is not None:
+        key_spec = _field(
+            semantic_catalog, binding.entity_key_field, binding.id, "entity_key_field"
+        )
+        if key_spec.source != binding.source:
+            raise TemporalCatalogError(
+                "temporal_catalog_reference_mismatch",
+                f"binding {binding.id!r}.entity_key_field 가 다른 소스({key_spec.source!r})의 "
+                "필드입니다",
+                symbol=binding.entity_key_field,
+            )
+        if key_spec.compiler_field.column != binding.correlation_keys.get(
+            "source", key_spec.compiler_field.column
+        ):
+            raise TemporalCatalogError(
+                "temporal_catalog_reference_mismatch",
+                f"binding {binding.id!r}.entity_key_field 의 컬럼"
+                f"({key_spec.compiler_field.column!r})이 correlation_keys.source"
+                f"({binding.correlation_keys.get('source')!r})와 다릅니다 — 관측을 나누는 키와 "
+                "주체를 잇는 키가 다르면 같은 회원의 관측이 여러 조각으로 나뉩니다",
+                symbol=binding.entity_key_field,
+            )
+        if subject_key_field(semantic_catalog) is None:
+            raise TemporalCatalogError(
+                "temporal_catalog_reference_unresolved",
+                f"binding {binding.id!r} 이 entity_key_field 를 선언했지만 주체 키를 가리키는 "
+                f"필드 심볼(source={semantic_catalog.subject.name!r}, "
+                f"column={semantic_catalog.subject.key!r})이 카탈로그에 하나로 확정되지 "
+                "않습니다 — 파생 관계를 회원 행과 맞출 이름이 없습니다",
+                symbol=binding.entity_key_field,
             )
 
     if binding.time_field is not None:

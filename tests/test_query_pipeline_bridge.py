@@ -240,9 +240,87 @@ RATIO_AGGREGATE = {
     "evidence": EVIDENCE,
 }
 
+# 정렬된 관측 사이의 값 변화(관측된 변경 횟수). 윈도 함수(window)·파생 테이블(materialize)·
+# 관계 출력 참조(output)가 등장하는 유일한 왕복 표본이다 — 셋은 낮춤만 만들지만, 저장된 표현이
+# 되읽히는 경로가 있으므로 왕복은 다른 노드와 같은 계약을 받는다.
+OBSERVED_CHANGE_COUNT = {
+    "type": "comparison",
+    "operator": ">=",
+    "left": {
+        "type": "aggregate",
+        "function": "count",
+        "distinct": False,
+        "expression": None,
+        "relation": {
+            "type": "filter",
+            "relation": {
+                "type": "materialize",
+                "relation": {
+                    "type": "project",
+                    "relation": {
+                        "type": "source",
+                        "name": "member_month_snapshot",
+                        "correlation": "none",
+                    },
+                    "items": [
+                        {
+                            "name": "entity_key",
+                            "expression": {
+                                "type": "field",
+                                "name": "member_month_snapshot.member_no",
+                            },
+                        },
+                        {
+                            "name": "observed_value",
+                            "expression": {
+                                "type": "field",
+                                "name": "member_month_snapshot.grade",
+                            },
+                        },
+                        {
+                            "name": "previous_value",
+                            "expression": {
+                                "type": "window",
+                                "function": "lag",
+                                "expression": {
+                                    "type": "field",
+                                    "name": "member_month_snapshot.grade",
+                                },
+                                "partition_by": [
+                                    {
+                                        "type": "field",
+                                        "name": "member_month_snapshot.member_no",
+                                    }
+                                ],
+                                "order_by": [
+                                    {
+                                        "name": "member_month_snapshot.occurred_at",
+                                        "direction": "asc",
+                                    }
+                                ],
+                                "offset": 1,
+                            },
+                        },
+                    ],
+                },
+            },
+            "where": {
+                "type": "comparison",
+                "operator": "!=",
+                "left": {"type": "output", "name": "observed_value"},
+                "right": {"type": "output", "name": "previous_value"},
+                "evidence": EVIDENCE,
+            },
+        },
+    },
+    "right": {"type": "literal", "value": 2},
+    "evidence": EVIDENCE,
+}
+
 WIRES: dict[str, dict] = {
     "comparison": COMPARISON,
     "ratio_aggregate": RATIO_AGGREGATE,
+    "observed_change_count": OBSERVED_CHANGE_COUNT,
     "time_filter": TIME_FILTER,
     "exists": EXISTS,
     "aggregate": AGGREGATE_COMPARISON,

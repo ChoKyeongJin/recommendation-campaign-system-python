@@ -168,10 +168,12 @@ def resolve_window(
             return TimeInterval(bound, edge)
         return TimeInterval(edge, bound)
 
-    if isinstance(window, sir.LifetimeWindow):
-        # '평생'은 구간이 아니다 — 시간 필터를 만들지 않는 쪽이 그 뜻이며, 여기서 임의의 구간을
-        # 지어내면 lowering 이 만들지 않았을 경계가 생긴다.
-        raise CalendarError("시간 제한 없는 구간(lifetime)은 절대 구간으로 확정하지 않습니다")
+    if isinstance(window, sir.AllAvailableDataWindow):
+        # 전체 가용 범위는 구간이 아니다 — 시간 필터를 만들지 않는 쪽이 그 뜻이며, 여기서
+        # 적재 범위를 조회해 경계를 지어내면 같은 요청이 데이터 양에 따라 다른 SQL 이 된다.
+        raise CalendarError(
+            "전체 가용 데이터 범위(all_available_data)는 절대 구간으로 확정하지 않습니다"
+        )
 
     if window.mode is sir.WindowMode.ROLLING:
         # 롤링은 길이다 — 칸에 맞추지 않는다. 월/연은 그래도 달력으로 뺀다(90일 근사 금지).

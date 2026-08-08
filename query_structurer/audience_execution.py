@@ -62,6 +62,9 @@ from query_structurer.semantic_outcome import (
 
 AUDIENCE_REQUIREMENT_KEY = "audience_requirement"
 EVENT_EXPRESSION_KEY = "event_expression"
+# 시간·이력 절의 **선언된** 반려(코드·문장·근거·귀결 종류). 사용자 문구는 semantic_ir.message 가
+# 나르지만, 운영이 읽을 구조화 진단은 문장 하나로 뭉개지 않고 이 키에 그대로 남긴다.
+TEMPORAL_REJECTION_KEY = "audience_temporal_rejection"
 
 # LLM 계약이 쓸 수 있는 issue 코드. 손 목록이 아니라 code ↔ kind 표에서 **파생**한다 —
 # 예전에는 이 집합과 그 표가 각자 적혀 있었고, 그러면 한쪽만 늘어난 상태가 조용히 생긴다.
@@ -256,6 +259,14 @@ def _parse_audience_expression(raw: dict[str, Any], query: str) -> event_ir.Cond
         event_ir.validate_evidence(expression)
     except (event_ir.IrSchemaError, event_ir.SemanticLossError) as exc:
         raise AudienceValidationError(f"invalid audience expression: {exc}") from exc
+    lowering_only = event_ir.lowering_only_nodes(expression)
+    if lowering_only:
+        # 실행 계획(파생 테이블·윈도 함수·관계 출력 참조)은 낮춤이 만드는 것이다. 모델 표현에서
+        # 그것을 받으면 '검증된 의미'와 '검증되지 않은 SQL 모양'이 같은 자리에 섞인다.
+        raise AudienceValidationError(
+            "audience expression must not contain lowering-only nodes: "
+            + ", ".join(lowering_only)
+        )
     for atom, _negated in event_ir.iter_signed_atoms(expression):
         evidence = atom.evidence
         if evidence is None or not (
@@ -696,14 +707,11 @@ def _synthesis_for_issue(
     return None
 
 
-def _temporal_synthesis(
-    query: str, issue: Mapping[str, Any], *, current_date: str | None = None
-) -> _ApplicationOwnedSynthesis | None:
-    """모델이 표현하지 못한 시간·이력 절을 canonical Temporal IR 로 되살린다.
+def _temporal_outcome(query: str, *, current_date: str | None = None) -> Any:
+    """시간·이력 절의 판정 결과(합성 / 반려 / 해당 없음). 판정의 소유자는 :mod:`temporal_claims` 다.
 
-    ``None`` 을 돌려주는 세 경우를 구분하지 않는 것은 의도다 — 시간 조건이 없거나, 근거가
-    어긋나거나, 낮출 수 없으면 **모델의 미지원 신고가 그대로 남는다**. 그래야 절이 조용히
-    사라진 성공이 생기지 않는다(부분 SQL 금지).
+    두 소비자가 같은 판정을 봐야 한다 — 하나는 그 절을 되살리고(합성), 하나는 그 절이 왜 막혔는지
+    사용자에게 말한다(반려). 각자 부르면 같은 문장이 서로 다른 사유로 설명될 수 있다.
     """
 
     import audience_runtime  # noqa: PLC0415 - 지연 import(순환 방지)
@@ -718,15 +726,64 @@ def _temporal_synthesis(
         # 선언을 읽지 못하는 것은 '해당 없음'이 아니다. 그러나 이 경로의 결말은 어차피
         # 모델 신고 유지(SQL 없음)이므로, 판정 불가를 통과로 바꾸지 않고 그대로 둔다.
         return None
-
-    context = temporal_claims.request_context_for(current_date, timezone=_TIMEZONE)
-    outcome = temporal_claims.synthesize_temporal_claim(
+    return temporal_claims.synthesize_temporal_claim(
         query,
         snapshot=snapshot,
         catalog=catalog,
         runtime=runtime,
-        context=context,
+        context=temporal_claims.request_context_for(current_date, timezone=_TIMEZONE),
     )
+
+
+def temporal_claims_owner() -> str:
+    """반려 사유를 만든 판정 계층의 이름(진단 payload 에 그대로 실린다)."""
+
+    import temporal_claims  # 지연 import(순환 방지)
+
+    return temporal_claims.OWNER
+
+
+def _declared_temporal_rejection(
+    query: str, unsupported: Sequence[Mapping[str, Any]]
+) -> Any:
+    """이 신고들이 가리키는 절에 대해 판정 계층이 **선언한** 반려(없으면 ``None``).
+
+    근거 구간이 신고 안에 있을 것을 요구하는 이유는 다른 절의 사유로 이 신고를 설명하지 않기
+    위해서다 — 한 문장에 시간 절과 다른 절이 함께 있을 때 엉뚱한 문구가 나가면 사용자는 고칠
+    곳을 찾지 못한다.
+    """
+
+    import temporal_claims  # 지연 import(순환 방지)
+
+    try:
+        outcome = _temporal_outcome(query)
+    # 판정 자체를 할 수 없으면 사유를 지어내지 않는다(범용 문구가 그대로 남는다).
+    except Exception:
+        return None
+    if not isinstance(outcome, temporal_claims.TemporalClaimRejection):
+        return None
+    evidence = outcome.evidence
+    start, end = evidence.get("start"), evidence.get("end")
+    if not isinstance(start, int) or not isinstance(end, int):
+        return None
+    if not any(_issue_evidence_contains(item, start, end) for item in unsupported):
+        return None
+    return outcome
+
+
+def _temporal_synthesis(
+    query: str, issue: Mapping[str, Any], *, current_date: str | None = None
+) -> _ApplicationOwnedSynthesis | None:
+    """모델이 표현하지 못한 시간·이력 절을 canonical Temporal IR 로 되살린다.
+
+    ``None`` 을 돌려주는 세 경우를 구분하지 않는 것은 의도다 — 시간 조건이 없거나, 근거가
+    어긋나거나, 낮출 수 없으면 **모델의 미지원 신고가 그대로 남는다**. 그래야 절이 조용히
+    사라진 성공이 생기지 않는다(부분 SQL 금지).
+    """
+
+    import temporal_claims  # 지연 import(순환 방지)
+
+    outcome = _temporal_outcome(query, current_date=current_date)
     if not isinstance(outcome, temporal_claims.TemporalClaimSynthesis):
         return None
     # 합성의 근거가 모델이 신고한 구간 안에 있어야 그 신고를 반박할 수 있다.
@@ -1236,13 +1293,30 @@ def project_resolution_to_plan(
             if emission_failures:
                 _write_emission_failure(payload, emission_failures)
                 return True
+            # 판정 계층이 이 절을 **왜** 낮출 수 없는지 이미 알고 있다면 그 문장을 그대로 쓴다.
+            # 사유를 여기서 새로 추론하지 않는다 — 아래 문구는 아무것도 선언되지 않았을 때의
+            # 마지막 기본값이다. 이 갈래가 없던 동안, 이미 계산된 사유(기간이 없다 / 이 관측
+            # 선언으로는 답할 수 없다)가 응답에 도달하지 못하고 범용 문장으로 덮였다(실측 2026-08-08).
+            declared = _declared_temporal_rejection(resolution.query, unsupported)
+            if declared is not None:
+                payload[TEMPORAL_REJECTION_KEY] = {
+                    "code": declared.code,
+                    "message": declared.message,
+                    "disposition": declared.disposition,
+                    "evidence": dict(declared.evidence),
+                    "judge": temporal_claims_owner(),
+                }
             write_semantic_ir(
                 payload,
                 empty_semantic_ir(
                     status="unsupported",
                     # 사용자에게 나가는 문장은 **모델이 쓴 산문이 아니다**. 실측(2026-08-03) 30/30 이
                     # 모델 산문이었고 그 판정은 틀렸다 — 지어낸 kind 만 23종이었다.
-                    message="요청한 조건을 현재 실행 자산으로 표현할 수 없습니다.",
+                    message=(
+                        declared.message
+                        if declared is not None
+                        else "요청한 조건을 현재 실행 자산으로 표현할 수 없습니다."
+                    ),
                     failure_kind="unsupported",
                     unsupported_operations=[
                         {

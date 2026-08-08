@@ -153,13 +153,24 @@ def test_llm_schema_has_no_inexpressible_closed_empty_nodes() -> None:
 
 
 def test_audience_requirement_exposes_the_complete_fixed_event_ir_algebra() -> None:
+    """모델이 **요청 의미**를 표현할 수 있어야 한다 — 낮춤 전용 노드는 그 의미가 아니다.
+
+    비교 대상이 ``NODE_TYPES`` 전체에서 ``LOWERING_ONLY_NODE_TYPES`` 를 뺀 집합인 이유:
+    파생 테이블·윈도 함수·관계 출력 참조는 '무엇을 요청했는가'가 아니라 '그 요청을 어떤 SQL
+    모양으로 옮기는가'다. 그 셋을 노출하면 검증할 수 없는 실행 계획이 모델 출력으로 들어온다.
+    아래 두 번째 단정이 그 경계를 양방향으로 고정한다.
+    """
+
     expression_schema = CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA["properties"][
         "audience_requirement"
     ]["properties"]["expression"]
     discriminators = _discriminators(CAMPAIGN_QUERY_PLAN_V4_LLM_JSON_SCHEMA)
-    assert event_ir.NODE_TYPES <= discriminators, (
-        f"LLM Event IR 스키마에서 빠진 고정 대수 노드: {sorted(event_ir.NODE_TYPES - discriminators)}"
+    requestable = event_ir.NODE_TYPES - event_ir.LOWERING_ONLY_NODE_TYPES
+    assert requestable <= discriminators, (
+        f"LLM Event IR 스키마에서 빠진 고정 대수 노드: {sorted(requestable - discriminators)}"
     )
+    leaked = sorted(event_ir.LOWERING_ONLY_NODE_TYPES & discriminators)
+    assert not leaked, f"낮춤 전용 노드가 LLM 계약 표면에 노출됐다: {leaked}"
 
 
 def test_event_ir_catalog_symbols_are_canonical_strings_not_inline_enums() -> None:

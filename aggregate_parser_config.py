@@ -464,6 +464,29 @@ def number_word_value(rules: AggregateParserRules, surface: str) -> int | None:
     return rules.number_word_value(surface)
 
 
+def read_count_value(
+    text: str, *, active_rules: AggregateParserRules | None = None
+) -> Decimal | None:
+    """구절에서 **횟수 하나**를 읽는다('2회'·'두 번' → 2). 읽을 수 없으면 ``None``.
+
+    표기 문법(:func:`number_pattern`)과 수사 표(:func:`number_word_value`)를 그대로 쓰는
+    조회 함수다. 이 함수가 있는 이유는 소비자가 둘 이상이기 때문이다 — 지표 파서와 시간 조건
+    파서가 각자 ``\\d+`` 를 훑으면 '두 번 이상 구매'는 읽히는데 '두 번 이상 변경'은 읽히지
+    않는 상태가 생긴다(실측 2026-08-08). 어느 도메인의 낱말도 여기 없다.
+    """
+
+    resolved = active_rules or rules()
+    match = re.search(number_pattern(resolved), text or "")
+    if match is None:
+        return None
+    token = match.group(0).replace(",", "").strip()
+    try:
+        return Decimal(token)
+    except InvalidOperation:
+        word = number_word_value(resolved, token)
+        return None if word is None else Decimal(word)
+
+
 def prefix_operator_alternation(rules: AggregateParserRules) -> str:
     """숫자 앞 비교어('최소 10억')의 교체 문법. 선언이 없으면 절대 매치되지 않는 조각을 돌려준다."""
     return "|".join(re.escape(op.surface) for op in rules.prefix_operators) or r"(?!)"

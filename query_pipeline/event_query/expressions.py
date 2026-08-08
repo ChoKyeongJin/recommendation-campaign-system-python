@@ -253,13 +253,37 @@ class AggregateOperand(StrictModel):
         return self
 
 
+class OutputOperand(StrictModel):
+    """직전 관계가 내보낸 출력 별칭 참조(카탈로그 필드가 아니다).
+
+    :class:`AttributeOperand` 와 나누는 이유는 이름의 출처다 — 하나는 카탈로그가 보증하고
+    하나는 바로 아래 관계가 만든다. 합치면 카탈로그에 없는 이름이 미등록 필드로 신고된다.
+    """
+
+    kind: Literal["output"] = "output"
+    name: str = Field(min_length=1, pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+class WindowOperand(StrictModel):
+    """정렬된 관측 사이를 보는 윈도 함수(``lag``). 정렬 선언이 없으면 값이 재현되지 않는다."""
+
+    kind: Literal["window"] = "window"
+    function: Literal["lag"]
+    expression: EventOperand
+    partition_by: tuple[EventOperand, ...] = ()
+    order_by: tuple[RelationSortKey, ...] = Field(min_length=1)
+    offset: int = Field(default=1, ge=1)
+
+
 EventOperand: TypeAlias = Annotated[
     LiteralOperand
     | AttributeOperand
+    | OutputOperand
     | ArithmeticOperand
     | TupleOperand
     | NullIfOperand
-    | AggregateOperand,
+    | AggregateOperand
+    | WindowOperand,
     Field(discriminator="kind"),
 ]
 
@@ -349,6 +373,17 @@ class SummarizedRelation(StrictModel):
         return self
 
 
+class MaterializedRelation(StrictModel):
+    """파생 테이블 경계 — 안쪽 관계의 출력만 바깥에서 컬럼으로 보인다.
+
+    윈도 함수처럼 행 집합이 정해진 **뒤에** 계산되는 값은 같은 SELECT 의 WHERE 에서 참조할 수
+    없다. 그 경계를 노드로 세워야 어디서 서브쿼리가 생기는지가 표현에 드러난다.
+    """
+
+    kind: Literal["materialize"] = "materialize"
+    relation: EventRelation
+
+
 class OrderedRelation(StrictModel):
     kind: Literal["order"] = "order"
     relation: EventRelation
@@ -369,7 +404,7 @@ class LimitedRelation(StrictModel):
 
 
 EventRelation: TypeAlias = Annotated[
-    EntityRelation | FilteredRelation | JoinedRelation | GroupedRelation | ProjectedRelation | SummarizedRelation | OrderedRelation | LimitedRelation,
+    EntityRelation | FilteredRelation | JoinedRelation | GroupedRelation | ProjectedRelation | SummarizedRelation | MaterializedRelation | OrderedRelation | LimitedRelation,
     Field(discriminator="kind"),
 ]
 
@@ -477,6 +512,7 @@ for _model in (
     TupleOperand,
     NullIfOperand,
     AggregateOperand,
+    WindowOperand,
     NamedOperand,
     NamedMeasure,
     FilteredRelation,
@@ -484,6 +520,7 @@ for _model in (
     GroupedRelation,
     ProjectedRelation,
     SummarizedRelation,
+    MaterializedRelation,
     OrderedRelation,
     LimitedRelation,
     ComparisonExpression,
@@ -619,12 +656,14 @@ __all__ = [
     "LimitedRelation",
     "LiteralOperand",
     "LiteralValue",
+    "MaterializedRelation",
     "NamedMeasure",
     "NamedOperand",
     "NotExpression",
     "NullIfOperand",
     "OrExpression",
     "OrderedRelation",
+    "OutputOperand",
     "ProjectedRelation",
     "RelationCorrelation",
     "RelationSortKey",
@@ -639,6 +678,7 @@ __all__ = [
     "TimeWindow",
     "TimeWindowExpression",
     "TupleOperand",
+    "WindowOperand",
     "WindowUnit",
     "atoms",
     "attribute_operands",

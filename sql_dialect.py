@@ -17,6 +17,7 @@ base_entity.date_format 이 선언하는 스키마 사실이고, 여기는 그 �
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Literal
@@ -153,6 +154,38 @@ class SqlDialect:
 
     def concat(self, *parts: str) -> str:
         return f"CONCAT({', '.join(parts)})"
+
+    # ── 정렬된 관측 사이(윈도 함수) ─────────────────────────────────
+    # 지원 함수 어휘의 소유자는 :mod:`event_ir` (``WINDOW_FUNCTIONS``)이고 여기는 그 함수의
+    # **표기**만 안다. 기본 구현이 ANSI 표기 하나인 이유는 세 엔진(T-SQL 2012+, MySQL 8+,
+    # PostgreSQL)이 LAG/OVER 문법을 같게 쓰기 때문이다 — 다른 엔진이 들어오면 여기서 갈린다.
+    def window_function(
+        self,
+        function: str,
+        argument: str,
+        *,
+        partition_by: Sequence[str] = (),
+        order_by: Sequence[str] = (),
+        offset: int = 1,
+    ) -> str:
+        """``LAG(x, n) OVER (PARTITION BY … ORDER BY …)``.
+
+        ``order_by`` 를 요구하는 이유는 재현성이다. 정렬이 없으면 '직전 값'이 적재 순서에
+        좌우되고, 같은 데이터에서 같은 질의가 다른 답을 낸다(§63).
+        """
+        if function != "lag":
+            raise UnsupportedDialectFeatureError(
+                f"{self.name} dialect does not render the window function {function!r}"
+            )
+        if not order_by:
+            raise UnsupportedDialectFeatureError(
+                "window functions require an explicit ORDER BY — 정렬 없는 '직전'은 재현되지 않는다"
+            )
+        clauses = []
+        if partition_by:
+            clauses.append("PARTITION BY " + ", ".join(partition_by))
+        clauses.append("ORDER BY " + ", ".join(order_by))
+        return f"LAG({argument}, {int(offset)}) OVER ({' '.join(clauses)})"
 
     # ── 다중 컬럼 DISTINCT ─────────────────────────────────────────
     # 여기에 렌더 메서드를 두지 않는 것이 **결정**이다. 네이티브 문법의 NULL 규칙이 엔진마다

@@ -105,6 +105,19 @@ def _operand_to_ir(operand: expr.EventOperand) -> event_ir.Scalar:
             ),
             distinct=operand.distinct,
         )
+    if isinstance(operand, expr.OutputOperand):
+        return event_ir.OutputRef(name=operand.name)
+    if isinstance(operand, expr.WindowOperand):
+        return event_ir.WindowExpression(
+            function=operand.function,
+            expression=_operand_to_ir(operand.expression),
+            partition_by=tuple(_operand_to_ir(item) for item in operand.partition_by),
+            order_by=tuple(
+                event_ir.SortKey(name=key.name, direction=key.direction.value)
+                for key in operand.order_by
+            ),
+            offset=operand.offset,
+        )
     raise ExpressionBridgeError(f"알 수 없는 피연산자입니다: {operand!r}")
 
 
@@ -140,6 +153,29 @@ def _operand_from_ir(scalar: event_ir.Scalar) -> expr.EventOperand:
                 _operand_from_ir(scalar.expression) if scalar.expression is not None else None
             ),
             distinct=scalar.distinct,
+        )
+    if isinstance(scalar, event_ir.OutputRef):
+        return expr.OutputOperand(name=scalar.name)
+    if isinstance(scalar, event_ir.WindowExpression):
+        if scalar.function != "lag":
+            # 어휘의 소유자는 event_ir 이고 이 계층은 그 어휘를 **좁게** 미러링한다. 새 윈도
+            # 함수가 늘면 여기서 이름을 대며 멈춘다 — 조용히 lag 로 바꾸지 않는다.
+            raise ExpressionBridgeError(
+                f"이 계층이 아직 미러링하지 않는 윈도 함수입니다: {scalar.function!r}"
+            )
+        return expr.WindowOperand(
+            # 위 가드가 이미 이름을 확정했다 — 문자열을 그대로 넘기면 이 계층의 닫힌 어휘가
+            # 넓어진 것처럼 보인다(``cast`` 로 감추지 않고 확정된 값을 적는다).
+            function="lag",
+            expression=_operand_from_ir(scalar.expression),
+            partition_by=tuple(_operand_from_ir(item) for item in scalar.partition_by),
+            order_by=tuple(
+                expr.RelationSortKey(
+                    name=key.name, direction=expr.SortDirection(key.direction)
+                )
+                for key in scalar.order_by
+            ),
+            offset=scalar.offset,
         )
     raise ExpressionBridgeError(f"알 수 없는 스칼라 노드입니다: {scalar!r}")
 
@@ -230,6 +266,8 @@ def _relation_to_ir(relation: expr.EventRelation) -> event_ir.Relation:
                 for measure in relation.measures
             ),
         )
+    if isinstance(relation, expr.MaterializedRelation):
+        return event_ir.Materialize(relation=_relation_to_ir(relation.relation))
     if isinstance(relation, expr.OrderedRelation):
         return event_ir.Order(
             relation=_relation_to_ir(relation.relation),
@@ -311,6 +349,8 @@ def _relation_from_ir(relation: event_ir.Relation) -> expr.EventRelation:
                 for measure in relation.measures
             ),
         )
+    if isinstance(relation, event_ir.Materialize):
+        return expr.MaterializedRelation(relation=_relation_from_ir(relation.relation))
     if isinstance(relation, event_ir.Order):
         return expr.OrderedRelation(
             relation=_relation_from_ir(relation.relation),

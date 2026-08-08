@@ -137,7 +137,7 @@ ROUND_TRIP_CASES = {
         quantifier=sir.EveryBucketQuantifier(),
     ),
     "window_lifetime": _condition(
-        selector=sir.WindowSelector(window=sir.LifetimeWindow()),
+        selector=sir.WindowSelector(window=sir.AllAvailableDataWindow()),
         predicate=sir.OccurrencePredicate(),
     ),
     "window_open_ended": _condition(
@@ -177,7 +177,7 @@ ROUND_TRIP_CASES = {
     "temporal_relation": _condition(
         metric="member.purchase",
         binding="member.purchase.events",
-        selector=sir.WindowSelector(window=sir.LifetimeWindow()),
+        selector=sir.WindowSelector(window=sir.AllAvailableDataWindow()),
         predicate=sir.TemporalRelationPredicate(
             left_binding="member.purchase.events",
             right_binding="member.signup.event",

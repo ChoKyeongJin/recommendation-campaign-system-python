@@ -1788,6 +1788,10 @@ def refresh_canonical_unresolved(
         }
         for issue in issues
     ]
+    # 시간·이력 조건이 막혔다면 **판정이 선언한 사유**를 의무 영수증으로 남긴다. 이 호출이 없으면
+    # 아래 미귀결 목록이 범용 문구("컴파일했다는 근거가 없습니다")를 붙여서, 이미 계산된 원인
+    # (기간이 없다 / 이 관측 선언으로는 답할 수 없다)이 운영 진단에서도 사라진다.
+    record_temporal_obligation_rejection(plan, query, today=today)
     known = {str(item.get("id") or "") for item in unresolved}
     unresolved.extend(
         item
@@ -1842,11 +1846,56 @@ def discharge_legacy_ranked_obligations(
     )
 
 
+def record_temporal_obligation_rejection(
+    plan: dict[str, Any], query: str, *, today: date | None = None
+) -> str | None:
+    """시간·이력 조건을 낮출 수 없으면 그 **선언된 사유**를 의무 영수증으로 남긴다.
+
+    이것이 없으면 사용자는 "컴파일했다는 근거가 없습니다"라는 범용 문구만 본다 — 판정 계층이
+    이미 무엇이 왜 막혔는지 알고 있는데도(기간이 없다 / 이 관측 선언으로는 답할 수 없다) 그
+    문장이 응답에 도달하지 못했다(실측 2026-08-08). 사유를 새로 추론하지 않고 판정이 만든
+    코드·문장·근거 구간을 그대로 옮기며, 되묻기와 미지원의 구분도 판정이 선언한 것을 따른다.
+
+    낮춤이 성공했거나 시간 조건이 없으면 아무것도 하지 않는다(``None``).
+    """
+
+    try:
+        import audience_runtime  # noqa: PLC0415 - 지연 import(순환 방지)
+        import temporal_claims  # noqa: PLC0415
+        import temporal_ir  # noqa: PLC0415
+
+        catalog = audience_runtime.resolve_audience_catalog()
+        outcome = temporal_claims.synthesize_temporal_claim(
+            query,
+            snapshot=audience_runtime.catalog_snapshot(),
+            catalog=catalog,
+            runtime=temporal_ir.create_temporal_runtime(catalog),
+            context=temporal_claims.request_context_for(today),
+            today=today,
+        )
+    except (ImportError, ValueError, KeyError, TypeError):
+        # 판정 자체를 할 수 없으면 사유를 지어내지 않는다 — 범용 문구가 그대로 남는다.
+        return None
+    if not isinstance(outcome, temporal_claims.TemporalClaimRejection):
+        return None
+    semantic_requirements.discharge_source_semantic_obligations(
+        plan,
+        query,
+        kinds={semantic_requirements.TEMPORAL_QUALIFIER_KIND},
+        status=outcome.disposition,
+        compiler=temporal_claims.OWNER,
+        evidence=dict(outcome.evidence),
+        reason=f"{outcome.message} (사유 코드: {outcome.code})",
+    )
+    return outcome.code
+
+
 __all__ = [
     "canonical_claim_issues",
     "catalog_claim_issues",
     "catalog_value_claims",
     "discharge_legacy_ranked_obligations",
+    "record_temporal_obligation_rejection",
     "literal_claim_issues",
     "ranked_obligation_is_compiled",
     "ranked_window_scope_issues",

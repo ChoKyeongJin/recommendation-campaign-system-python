@@ -1,11 +1,11 @@
 {
  "description": "라이브 코퍼스 86종의 커밋된 기준선. 러너는 --baseline 로 이 파일과 대조한다. expectation(합의된 귀결)과 다른 축이다 — 이것은 마지막으로 **실측된** 귀결이라, 재현할 수 없는 수치가 기준선 노릇을 하던 상태(14/26 vs 0/26 vs 12/26)로 돌아가지 않게 한다. 행 id 집합은 코퍼스 id 집합과 **정확히 같아야** 하고 tests/test_live_prompt_baseline.py 가 그것을 고정한다 — 예전에는 코퍼스가 78종인데 이 파일은 77행이었고, 빠진 항목의 대조가 조용히 건너뛰어졌다(그 침묵은 '변화 없음'과 구분되지 않는다). 아직 재지 않은 항목은 행을 비우지 않고 outcome=\"unmeasured\" 로 이름을 대고 남긴다. 재현: docker restart ...-api-1 && python tools/live_prompt_baseline.py --base-url http://localhost:8000",
  "recorded_at": "2026-08-08",
- "reason": "member_state_history(시점·이력) 의무를 가진 20종만 재측정(repeat 3, API 재시작 후). 나머지 66행은 2026-08-06 전수 측정값 그대로이며 이번에 다시 재지 않았다 — 섞인 날짜를 숨기지 않으려고 여기에 적는다. 재측정 사유는 provenance/semantic 판정 분리와 evidence accounting 게이트 도입이고, 같은 20종의 직전(수정 전) 실측은 sql 1 / unsupported 5 / clarification 14 / failure 0 (unstable 7) 이었다. 재현: docker compose restart api && python tools/live_prompt_baseline.py --only 15,17,18,19,20,22,23,28,29,30,31,32,33,34,37,73,74,75,76,77 --repeat 3",
+ "reason": "member_state_history(시점·이력) 의무를 가진 20종만 재측정(repeat 3, API 재시작 후). 나머지 66행은 2026-08-06 전수 측정값 그대로이며 이번에 다시 재지 않았다 — 섞인 날짜를 숨기지 않으려고 여기에 적는다. 재측정 사유는 provenance/semantic 판정 분리와 evidence accounting 게이트 도입이고, 같은 20종의 직전(수정 전) 실측은 sql 1 / unsupported 5 / clarification 14 / failure 0 (unstable 7) 이었다. 재현: docker compose restart api && python tools/live_prompt_baseline.py --only 15,17,18,19,20,22,23,28,29,30,31,32,33,34,37,73,74,75,76,77 --repeat 3 2026-08-08 추가 측정: 17번 한 종만 재측정했다(repeat 4 + 코드 수정 후 repeat 3, 모두 API 재시작 뒤). sql 7/7 이며 PREV_ZTS_GRADE 절이 매회 SQL 에 있었다 — 값 쌍 없는 방향 전이(승급) 낮춤과, 맨 '최근'을 낮춤 가능성으로 판정하는 기간 소유권 판정을 함께 배선한 결과다. 나머지 85행은 이번에 재지 않았다.",
  "summary": {
-  "sql": 38,
+  "sql": 39,
   "unsupported": 14,
-  "clarification": 32,
+  "clarification": 31,
   "failure": 2
  },
  "rows": {
@@ -66,8 +66,7 @@
    "outcome": "sql"
   },
   "17": {
-   "outcome": "clarification",
-   "reason": "semantic_ir_needs_clarification"
+   "outcome": "sql"
   },
   "18": {
    "outcome": "unsupported",

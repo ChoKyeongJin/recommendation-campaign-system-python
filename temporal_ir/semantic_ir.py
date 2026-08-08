@@ -181,6 +181,18 @@ class CoveragePolicy(StrEnum):
     BLOCK = "block"  # 평가 불가로 답한다
 
 
+class WindowSource(StrEnum):
+    """이 구간을 **누가 골랐는가**. 값이 아니라 출처이므로 의미와 따로 기록한다.
+
+    같은 구간이라도 사용자가 말한 것과 정책이 채운 것은 다른 사건이다 — 응답을 읽는 쪽이
+    둘을 구분하지 못하면 "왜 SQL 에 이 창이 있는가"에 답할 수 없고, 의미 검증기는 정책이
+    채운 창을 원문에 없는 조건으로 신고한다.
+    """
+
+    USER = "user"  # 원문이 말한 구간
+    POLICY_DEFAULT = "policy_default"  # 원문이 말하지 않아 정책이 채운 구간
+
+
 COMPARISON_OPERATORS: frozenset[str] = event_ir.COMPARISON_OPERATORS
 
 
@@ -380,17 +392,29 @@ class RelativeWindow:
 
 
 @dataclass(frozen=True, slots=True)
-class LifetimeWindow:
-    """시간 제한 없음('구매 이력이 있는 회원').
+class AllAvailableDataWindow:
+    """**현재 query source 에 존재하는 전체 시간 범위**를 대상으로 한다.
 
-    구간의 부재를 ``None`` 으로 표현하지 않고 타입으로 세우는 이유: ``None`` 은 '평생'과 '구간을
-    아직 못 정했다'를 같은 값으로 만든다. 앞의 것은 완성된 의미이고 뒤의 것은 결핍이다.
+    구간의 부재를 ``None`` 으로 표현하지 않고 타입으로 세우는 이유: ``None`` 은 '전체 범위'와
+    '구간을 아직 못 정했다'를 같은 값으로 만든다. 앞의 것은 완성된 의미이고 뒤의 것은 결핍이다.
+
+    '평생(lifetime)'이라고 부르지 않는다. 이 창은 업무 주체의 생애가 아니라 **그 관측이 적재된
+    범위**를 뜻하고, 낮춤은 시간 필터를 만들지 않는 것으로 그것을 표현한다 — 적재가 한 달이면
+    한 달이 답이고 백 달이면 백 달이 답이다. 그 범위를 컴파일 시점에 조회하지도, 조건으로
+    쓰지도 않는다(적재량은 SQL 생성 가능성과 무관하다).
+
+    ``source`` 는 이 창을 누가 골랐는지다(:class:`WindowSource`). 원문이 기간을 말하지 않아
+    정책이 채운 경우와 원문이 '전체 기간'을 말한 경우가 같은 값으로 보이면 안 된다.
     """
 
-    kind: str = "lifetime"
+    source: WindowSource = WindowSource.POLICY_DEFAULT
+    kind: str = "all_available_data"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source", _enum(self.source, WindowSource, "window source"))
 
     def to_dict(self) -> dict[str, Any]:
-        return {"kind": "lifetime"}
+        return {"kind": "all_available_data", "source": str(self.source)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -419,7 +443,22 @@ class OpenEndedWindow:
         }
 
 
-TemporalWindow: TypeAlias = AbsoluteWindow | RelativeWindow | OpenEndedWindow | LifetimeWindow
+TemporalWindow: TypeAlias = (
+    AbsoluteWindow | RelativeWindow | OpenEndedWindow | AllAvailableDataWindow
+)
+
+
+def window_source(window: TemporalWindow) -> WindowSource:
+    """이 구간의 출처. 값을 말한 창은 원문에서만 나오므로 ``USER`` 다.
+
+    출처 필드를 모든 창 타입에 복제하지 않는 이유: 정책이 **발명할 수 있는** 창은
+    :class:`AllAvailableDataWindow` 하나다(나머지는 원문의 수량 표현에서만 만들어진다).
+    그래서 출처를 물어보는 자리는 하나로 두고, 그 답의 근거는 타입이 갖는다.
+    """
+
+    if isinstance(window, AllAvailableDataWindow):
+        return window.source
+    return WindowSource.USER
 
 
 def window_from_dict(raw: Any) -> TemporalWindow:
@@ -438,8 +477,17 @@ def window_from_dict(raw: Any) -> TemporalWindow:
             mode=_enum(raw.get("mode"), WindowMode, "relative window mode"),
             include_current=bool(raw.get("include_current")),
         )
+    if kind == "all_available_data":
+        return AllAvailableDataWindow(
+            source=_enum(
+                raw.get("source", WindowSource.POLICY_DEFAULT), WindowSource, "window source"
+            )
+        )
     if kind == "lifetime":
-        return LifetimeWindow()
+        # 예전 표기. 그 시절 이 창은 원문이 '이력이 있는'처럼 시간 제한 없음을 **말한** 경우에만
+        # 만들어졌으므로 출처는 사용자다 — 읽을 때 정책 기본값으로 바꾸면 없던 정책 적용이
+        # 영수증에 생긴다.
+        return AllAvailableDataWindow(source=WindowSource.USER)
     if kind == "open_ended":
         return OpenEndedWindow(
             anchor=anchor_from_dict(raw.get("anchor")),
@@ -1212,6 +1260,7 @@ class TemporalRequestContext:
 
 
 __all__ = [
+    "AllAvailableDataWindow",
     "AbsoluteAnchor",
     "AbsoluteWindow",
     "AllObservationsQuantifier",
@@ -1235,7 +1284,6 @@ __all__ = [
     "ExistsQuantifier",
     "LatestAtOrBefore",
     "LatestObservationQuantifier",
-    "LifetimeWindow",
     "MissingPolicy",
     "NoneQuantifier",
     "NullPolicy",
@@ -1270,6 +1318,7 @@ __all__ = [
     "ValueChange",
     "WindowMode",
     "WindowSelector",
+    "WindowSource",
     "anchor_from_dict",
     "anchor_of",
     "condition_from_dict",
@@ -1278,4 +1327,5 @@ __all__ = [
     "selector_from_dict",
     "strategy_from_dict",
     "window_from_dict",
+    "window_source",
 ]

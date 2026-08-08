@@ -319,6 +319,33 @@ COMPILE_CASES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "최근 6개월 내내 골드 등급을 유지한 회원",
         ("NOT EXISTS", "MS.ZTS_GRADE = 'MEM_GRADE_CD.GOLD'"),
     ),
+    (
+        # 변경 횟수: 값이 달라진 관측 행을 세고 임계값과 비교한다. 적재가 몇 달인지는 이 SQL 의
+        # **답**을 바꾸지만 SQL 을 만들 수 있는지는 바꾸지 않는다(2026-08-08 정책).
+        "최근 1년 동안 등급이 3회 이상 변경된 회원",
+        ("MS.ZTS_GRADE != MS.PREV_ZTS_GRADE", "HAVING COUNT(*) >= 3",
+         "MS.YYYYMM >= '202601'"),
+    ),
+    (
+        # 같은 문장에서 기간만 빠지면 시간 필터만 사라진다(의미 연산은 그대로).
+        "등급이 2회 이상 변경된 회원",
+        ("MS.ZTS_GRADE != MS.PREV_ZTS_GRADE", "HAVING COUNT(*) >= 2"),
+    ),
+    (
+        # 한글 수관형사도 같은 문법으로 읽는다('두 번' = 2).
+        "최근 3개월 동안 등급이 두 번 이상 변경된 회원",
+        ("MS.ZTS_GRADE != MS.PREV_ZTS_GRADE", "HAVING COUNT(*) >= 2"),
+    ),
+    (
+        # 축이 달라도 같은 연산자·같은 낮춤이다(도메인 독립).
+        "가치등급이 2회 이상 변경된 회원",
+        ("MS.WORTH_GRADE != MS.PREV_WORTH_GRADE", "HAVING COUNT(*) >= 2"),
+    ),
+    (
+        # 기간 없는 '한 번도 바뀌지 않은'도 전체 가용 범위로 읽는다.
+        "등급이 한 번도 바뀌지 않은 회원",
+        ("COUNT(DISTINCT MS.ZTS_GRADE)", "= 1"),
+    ),
 )
 
 
@@ -362,11 +389,11 @@ REJECTION_CASES: tuple[tuple[str, str], ...] = (
     ("골드에서 골드로 바뀐 회원", "transition_values_identical"),
     # 상태 축에는 전이 지표도 이력 소스도 선언이 없다.
     ("정상에서 휴면으로 바뀐 회원", temporal_claims.VALUE_COUNT_MISMATCH),
-    # 월 스냅샷은 칸 안의 변경을 관측하지 못한다 — '관측된 변화 수'는 업무 변경 횟수가 아니다.
-    ("최근 1년 동안 등급이 3회 이상 변경된 회원", "temporal_operator_unsupported_by_metric"),
     # 끊기지 않은 N칸은 주체별 정렬·간격 판정이 필요하고 실행 IR 에 그 primitive 가 없다.
     ("3개월 연속 골드 등급이었던 회원", "temporal_operator_unsupported_by_metric"),
-    # 구간이 없으면 '매월'이 어느 범위의 매월인지 정해지지 않는다(기본값을 지어내지 않는다).
+    # 구간이 없으면 '매월'이 **몇 칸**인지 정해지지 않는다. 칸 수가 판정의 재료인 연산은
+    # 전체 범위로 읽을 수 없으므로 되묻는다(다른 연산은 전체 범위로 읽는다 — 그 차이는
+    # 연산자 선언의 missing_window 정책이 소유한다).
     ("매월 골드 등급이었던 회원", temporal_claims.INTERVAL_MISSING),
 )
 
