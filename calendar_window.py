@@ -1476,6 +1476,96 @@ def duration_window_candidates(
     ]
 
 
+def compose_boundary_interval(
+    candidates: Sequence[DurationCandidate], *, today: date
+) -> tuple[dict[str, Any], tuple[int, int]] | None:
+    """``3개월 전부터 1개월 전까지`` 를 **하나의 구간**으로 합성한다. 못 하면 ``None``.
+
+    두 경계를 각자 창으로 읽으면 반쪽 구간이 나간다 — 시작만 읽으면 '3개월 전 이후 전부'가
+    되어 최근 한 달이 잘못 포함되고, 끝만 읽으면 '1개월 전까지 전부'가 되어 3개월보다 앞선
+    기간까지 들어온다. 감사 #85 가 반쪽을 내지 **않은** 것은 옳은 판단이었고, 없던 것은 합성이다.
+
+    분류는 이미 :data:`KIND_BOUNDARY_FROM` / :data:`KIND_BOUNDARY_UNTIL` 로 끝나 있다. 여기서
+    하는 일은 그 짝을 확정된 반개구간으로 접는 것뿐이고, 짝이 정확히 하나가 아니면 합성하지
+    않는다(추측 금지) — 경계가 셋 이상이면 어느 둘이 한 구간인지 어순만으로 알 수 없다.
+    """
+    starts = [item for item in candidates if item.kind == KIND_BOUNDARY_FROM]
+    ends = [item for item in candidates if item.kind == KIND_BOUNDARY_UNTIL]
+    if len(starts) != 1 or len(ends) != 1:
+        return None
+    start_candidate, end_candidate = starts[0], ends[0]
+    start_days = duration_candidate_days(start_candidate)
+    end_days = duration_candidate_days(end_candidate)
+    if start_days is None or end_days is None:
+        # 달·년은 달력 길이가 달라 일수로 접히지 않는다 — 월 오프셋으로 확정한다.
+        start_date = _offset_back(today, start_candidate)
+        end_date = _offset_back(today, end_candidate)
+        if start_date is None or end_date is None:
+            return None
+    else:
+        start_date = today - timedelta(days=start_days)
+        end_date = today - timedelta(days=end_days)
+    if start_date >= end_date:
+        # '1개월 전부터 3개월 전까지' 처럼 어순이 뒤집힌 표현. 뜻을 지어내지 않는다.
+        return None
+    window = _window(
+        ymd(start_date.year, start_date.month, start_date.day),
+        ymd(end_date.year, end_date.month, end_date.day),
+        f"{start_candidate.value}{start_candidate.unit} 전 ~ "
+        f"{end_candidate.value}{end_candidate.unit} 전",
+        "",
+    )
+    span = (
+        min(start_candidate.start, end_candidate.start),
+        max(start_candidate.end, end_candidate.end),
+    )
+    return window, span
+
+
+def _offset_back(today: date, candidate: DurationCandidate) -> date | None:
+    """기준일에서 후보만큼 과거로. 달·년은 달력 오프셋이다(``timedelta`` 로 접지 않는다 · §16)."""
+    if candidate.unit == "months":
+        year, month = _shift_month(today, -candidate.value)
+        return date(year, month, min(today.day, month_last_day(year, month)))
+    if candidate.unit == "years":
+        year = today.year - candidate.value
+        return date(year, today.month, min(today.day, month_last_day(year, today.month)))
+    days = duration_candidate_days(candidate)
+    return None if days is None else today - timedelta(days=days)
+
+
+# 하루보다 잘은 롤링 기간의 표면형('24시간'·'2시간'). 이 표를 여기 두는 이유는 기간 표면 문법의
+# 소유자가 이 모듈 하나이기 때문이다 — 다른 모듈이 '시간'을 따로 읽으면 사전이 두 벌이 된다.
+#
+# 이 단위를 :data:`NUMERIC_DURATION_PATTERN` 에 넣지 않는 것은 의도다. 그 표의 단위는 전부
+# **날짜 칸으로 표현 가능한** 것이고, 시각 해상도 롤링 창은 이 데이터 계약에서 표현되지 않는다.
+# 섞으면 ``24시간`` 이 조용히 ``1일`` 로 접혀 다른 대상이 나간다. 대신 **정직한 미지원**으로
+# 답할 수 있도록 표면만 인식한다(감사 #82: 사용자는 기간을 말했는데 '기간이 없다'고 되물었다).
+_SUBDAY_UNITS: dict[str, str] = {"시간": "hour", "분": "minute", "초": "second"}
+_SUBDAY_DURATION_RE = re.compile(
+    rf"(?<![\d.])(?P<value>\d+)\s*(?P<unit>{'|'.join(_SUBDAY_UNITS)})(?![가-힣A-Za-z0-9])"
+)
+
+
+def subday_duration_spans(text: str) -> list[tuple[int, int, int, str]]:
+    """하루보다 잘은 기간 표현의 (시작, 끝, 값, 단위). 없으면 빈 목록.
+
+    단위는 ``hour``/``minute``/``second`` 이고, 이 값을 창으로 만드는 경로는 **없다** —
+    호출자는 이것을 보고 "요청한 해상도를 담을 수 없다"고 정확히 답해야 한다.
+    """
+    if not isinstance(text, str) or not text:
+        return []
+    return [
+        (
+            match.start(),
+            match.end(),
+            int(match.group("value")),
+            _SUBDAY_UNITS[match.group("unit")],
+        )
+        for match in _SUBDAY_DURATION_RE.finditer(text)
+    ]
+
+
 def duration_candidate_days(candidate: DurationCandidate) -> int | None:
     """후보를 **정확히 환산되는** 일수로 옮긴다(달·년은 달력에 따라 길이가 달라 ``None``).
 

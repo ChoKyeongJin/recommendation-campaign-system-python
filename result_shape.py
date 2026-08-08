@@ -333,6 +333,65 @@ def shape_requirement_satisfied(shape: ResultShape | None, artifacts: Sequence[M
     )
 
 
+# ── 요청된 결과 **주체** ────────────────────────────────────────────────────────
+#
+# 형태(shape)와 주체(subject)는 다른 축이다. ``회원 수를 알려줘`` 는 형태가 스칼라이고 주체는
+# 회원이지만, ``구매 회원이 100명 이상인 브랜드를 알려줘`` 는 주체 자체가 회원이 아니다.
+#
+# 후자가 감사 #44 다. 실제 귀결은 ``failure``(``rules_fallback:required_candidate_not_constructed``)
+# 였고 ``clarification_questions`` 는 **비어 있었다** — 사용자와 운영자 모두 다음 행동이 없었다.
+# ``failure`` 는 귀결이 아니라 배선 결함의 이름이므로, 이 요청은 정직한 미지원이어야 한다.
+
+# 결과 주체를 읽는 창의 크기(글자). 지시어 바로 앞의 명사구만 본다 — 넓히면 조건절의 명사를
+# 결과 주체로 오인한다('브랜드를 2회 이상 구매한 회원을 찾아줘').
+_SUBJECT_WINDOW = 14
+
+
+def requested_non_subject_entity(query: str) -> tuple[str, int, int] | None:
+    """결과로 요청된 것이 **선언된 주체가 아닌** 엔터티면 (표면어, 시작, 끝). 아니면 ``None``.
+
+    규칙은 한국어 어순 하나다: 요청 지시어(``알려줘``·``추출해줘``) 바로 앞의 명사구가 결과
+    주체다. 그 자리에 카탈로그 엔터티 도메인 낱말이 있고 주체 낱말(회원·고객)이나 계수 명사
+    (수·인원)가 **없으면**, 사용자는 회원이 아닌 것을 행으로 달라고 한 것이다.
+
+    어휘의 소유자는 :mod:`lexicon_patterns` 다 — 여기에 낱말을 적지 않는다.
+    """
+    import lexicon_patterns  # 지연 import(순환 방지)
+
+    if not isinstance(query, str) or not query.strip():
+        return None
+    directives = sorted(
+        (match.start(), match.end())
+        for term in lexicon_patterns.vocabulary("request_directive")
+        if term
+        for match in re.finditer(re.escape(term), query)
+    )
+    if not directives:
+        return None
+    # 가장 뒤의 지시어가 요청의 머리다(앞쪽 지시어는 인용·수식일 수 있다).
+    directive_start = directives[-1][0]
+    window_start = max(0, directive_start - _SUBJECT_WINDOW)
+    window = query[window_start:directive_start]
+    if any(
+        term and term in window
+        for name in ("member_noun", "member_noun_honorific", "member_noun_informal",
+                     "count_result_noun")
+        for term in lexicon_patterns.vocabulary(name)
+    ):
+        return None
+    hits = sorted(
+        (window_start + match.start(), window_start + match.end(), term)
+        for term in lexicon_patterns.vocabulary("source_entity_domain")
+        if term
+        for match in re.finditer(re.escape(term), window)
+    )
+    if not hits:
+        return None
+    # 지시어에 가장 가까운 엔터티가 결과 주체다.
+    start, end, term = hits[-1]
+    return term, start, end
+
+
 __all__ = [
     "ENTITY_LIST_DEFAULT",
     "KINDS",

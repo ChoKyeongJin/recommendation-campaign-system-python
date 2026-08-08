@@ -314,6 +314,16 @@ def vocabulary(name: str) -> tuple[str, ...]:
     return tuple(value for value in values if isinstance(value, str) and value)
 
 
+def vocabulary_names() -> tuple[str, ...]:
+    """선언된 어휘 이름 전부(파일 ∪ 코드 폴백).
+
+    ``event_alias_<event>`` 처럼 **규약으로 묶인 어휘군**을 소비하는 쪽이 이름을 하드코딩
+    하지 않게 한다. 새 사건 별칭이 어휘에 늘면 소비자를 고치지 않아도 함께 열린다.
+    """
+    names = set(_section("vocabularies")) | set(_CODE_FALLBACK["vocabularies"])
+    return tuple(sorted(names))
+
+
 def _terms_for(spec: dict[str, Any]) -> tuple[str, ...]:
     """패턴 정의(include/extra/exclude) → 낱말 집합. 순서는 긴 것 우선으로 결정론 정렬."""
     collected: list[str] = []

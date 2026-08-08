@@ -1081,6 +1081,9 @@ def _event_spec(
             from_sql=str(declaration.get("from_sql") or ""),
             correlation_sql=str(declaration.get("correlation_sql") or ""),
             time_expression=str(declaration.get("time_expression") or ""),
+            # 하루 안의 시각 컬럼(선언이 있을 때만). 없으면 시각 경계는 미지원으로 닫힌다.
+            time_of_day_column=str(declaration.get("time_of_day_column") or ""),
+            time_of_day_format=str(declaration.get("time_of_day_format") or "char6"),
             # 컴파일러 전용 물리 바인딩(집합형 집계의 group key). Core IR 도 capability 도 아니다.
             group_subject_expression=str(declaration.get("group_subject_expression") or ""),
         )

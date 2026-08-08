@@ -191,6 +191,117 @@ def _requested_fields(
     return tuple(field_id for field_id in consent_fields if field_id in selected)
 
 
+@dataclass(frozen=True)
+class CardinalityClaim:
+    """집합 수준 카디널리티 주장 하나 — ``이메일, 문자, 앱푸시 중 정확히 두 개``.
+
+    이 타입이 있는 이유(감사 #47)
+    ----------------------------
+    이 축의 구제 진입이 모델이 ``"consent_count"`` 라는 **문자열을 정확히 썼는가**에 달려
+    있었다. 그 문자열은 모델 산문이고 회차마다 달라지므로, 같은 요청이 어휘 운에 따라 열리거나
+    닫혔다. 진입 조건은 문자열이 아니라 **의미의 종류**여야 한다: 이것이 카디널리티 주장인가,
+    그 도메인이 동의 채널인가.
+
+    ``evidence_span`` 이 **하나**인 것도 계약이다. 카디널리티는 개별 필드가 아니라 필드
+    **집합**에 걸리는 술어이므로, 세 멤버가 각자 독립된 근거 스팬을 가질 필요가 없다 —
+    그 어구 전체가 하나의 공유 근거다.
+    """
+
+    domain: str
+    members: tuple[str, ...]
+    operator: Literal["exact", "at_least"]
+    count: int
+    target_value: str
+    # 수량자 어구의 원문 구간(공유 근거).
+    quantifier_span: tuple[int, int]
+    # 이 주장이 원문에서 덮는 전체 구간(수량자 + 멤버 표면어). 리터럴 정산의 사정거리다.
+    footprint: tuple[int, int]
+
+    def owns(self, start: int, end: int) -> bool:
+        """원문 구간이 이 주장의 사정거리 안인가."""
+        return self.footprint[0] <= start and end <= self.footprint[1]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "domain": self.domain,
+            "members": list(self.members),
+            "operator": self.operator,
+            "count": self.count,
+            "target_value": self.target_value,
+            "quantifier_span": list(self.quantifier_span),
+            "footprint": list(self.footprint),
+        }
+
+
+# 이 주장이 사는 값 도메인. 카탈로그 선언 이름이므로 코드에 낱말을 적는 것이 아니다.
+CONSENT_CHANNEL_DOMAIN = "consent_flag"
+
+
+def _member_spans(
+    query: str,
+    field_ids: Iterable[str],
+    consent_fields: Mapping[str, Mapping[str, Any]],
+    values: Mapping[str, Any],
+) -> list[tuple[int, int]]:
+    """요청된 동의 필드들의 표면어가 원문에서 나타난 구간.
+
+    표면어는 압축 좌표(공백 제거)로 찾으므로 원문 좌표로 되돌린다 — 근거 구간은 원문 좌표계에서만
+    뜻이 있다.
+    """
+    offsets = [index for index, char in enumerate(query) if not char.isspace()]
+    compact = _compact(query)
+    all_value_terms = set().union(*_value_terms(values).values())
+    spans: list[tuple[int, int]] = []
+    for field_id in field_ids:
+        declaration = consent_fields.get(field_id)
+        if not isinstance(declaration, Mapping):
+            continue
+        for token in _field_tokens(declaration, all_value_terms):
+            start = compact.find(token)
+            while start >= 0:
+                end = start + len(token)
+                if end <= len(offsets):
+                    spans.append((offsets[start], offsets[end - 1] + 1))
+                start = compact.find(token, start + 1)
+    return spans
+
+
+def detect_cardinality_claim(
+    query: str, catalog: Mapping[str, Any]
+) -> CardinalityClaim | None:
+    """원문의 집합 수준 카디널리티 주장. 없으면 ``None``.
+
+    **표현을 보지 않는다.** 이것이 :func:`validate_consent_cardinality` 와 다른 점이고, 구제
+    진입을 문자열이 아니라 의미로 판정할 수 있게 하는 이유다 — 모델이 표현을 아예 내지 못했을
+    때도 이 주장은 원문에서 그대로 읽힌다.
+    """
+    quantifier = _quantifier(query)
+    contract = _catalog_contract(catalog)
+    if quantifier is None or contract is None:
+        return None
+    mode, count, match = quantifier
+    consent_fields, values = contract
+    fields = _requested_fields(query, consent_fields, values)
+    target_value = _target_value(query, values)
+    if mode == "all":
+        mode, count = "exact", len(fields)
+    if len(fields) < 2 or target_value is None or not isinstance(count, int):
+        return None
+    if not (0 < count <= len(fields)):
+        return None
+    spans = [(match.start(), match.end())]
+    spans.extend(_member_spans(query, fields, consent_fields, values))
+    return CardinalityClaim(
+        domain=CONSENT_CHANNEL_DOMAIN,
+        members=fields,
+        operator=mode,  # type: ignore[arg-type]
+        count=count,
+        target_value=target_value,
+        quantifier_span=(match.start(), match.end()),
+        footprint=(min(item[0] for item in spans), max(item[1] for item in spans)),
+    )
+
+
 class _InvalidConsentExpression(ValueError):
     pass
 
@@ -436,14 +547,38 @@ def synthesize_exact_consent_cardinality(
     validation = validate_consent_cardinality(query, expression, rows, catalog)
     if validation is None or not validation.equivalent:
         return None
-    if validation.consumed_binding_indices != frozenset(range(len(rows))):
+    # **이 주장이 소유한 리터럴만 정산한다.** 예전 조건은 *문장의 모든* 리터럴이 수량자 매치
+    # 안에 있을 것을 요구했고, 그래서 무관한 리터럴 하나(``최근 30일``)가 구제를 죽였다
+    # (감사 #47). 카디널리티는 집합 술어이므로 그 사정거리는 수량자 어구와 멤버 표면어이고,
+    # 그 밖의 리터럴은 **다른 절의 것**이다 — 다른 절을 이 주장이 책임질 수는 없다.
+    #
+    # 이 완화가 절을 잃지 않는 이유: 사정거리 밖 리터럴은 여전히 리터럴 정산
+    # (:func:`canonical_audience_claims.literal_claim_issues`)이 요구하므로, 그 절을 아무도
+    # 컴파일하지 않으면 문장은 그대로 막힌다. 여기서 푸는 것은 **엉뚱한 절의 책임**뿐이다.
+    claim = detect_cardinality_claim(query, catalog)
+    if claim is None:
+        return None
+    owned = frozenset(
+        index
+        for index, binding in enumerate(rows)
+        if isinstance(binding, Mapping)
+        and isinstance(binding.get("start"), int)
+        and isinstance(binding.get("end"), int)
+        and claim.owns(int(binding["start"]), int(binding["end"]))
+    )
+    # 빈 집합은 정상이다 — ``정확히 두 개`` 처럼 수량자가 한국어 수사면 리터럴 원자가 아예
+    # 없다. 정산할 것이 없다는 뜻이고, 이 축의 실제 안전장치는 진리표 증명이다.
+    if not owned <= validation.consumed_binding_indices:
         return None
     return expression
 
 
 __all__ = [
     "CONSENT_CARDINALITY_QUANTIFIER_RE",
+    "CONSENT_CHANNEL_DOMAIN",
+    "CardinalityClaim",
     "ConsentCardinalityValidation",
+    "detect_cardinality_claim",
     "synthesize_exact_consent_cardinality",
     "validate_consent_cardinality",
 ]

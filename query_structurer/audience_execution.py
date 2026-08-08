@@ -211,6 +211,205 @@ def _lowering_plan_conflicts(
     return conflicts
 
 
+# 판정자의 typed 답이 남는 자리. legacy 게이트와 판정자가 갈릴 때 **무엇이 갈렸는지**가
+# 응답에 남아야 다음 이관의 근거가 된다(Phase 3A shadow).
+PLANNER_RESOLUTION_KEY = "audience_planner_resolution"
+
+
+def _planner_resolution(payload: dict[str, Any], query: str) -> Any:
+    """판정자에게 "이 요청을 실행할 수 있는가"를 묻고 그 답을 payload 에 남긴다.
+
+    부르는 것 자체가 shadow evaluation 이다 — 기존 경로의 귀결은 바꾸지 않고 두 답을 나란히
+    기록한다. 판정자가 죽으면 shadow 도 없다(요청을 막지 않는다): 관측이 판정을 이기면 안 된다.
+    """
+
+    import lowering_planner  # 지연 import(순환 방지)
+
+    try:
+        resolution = lowering_planner.resolve_executable(query)
+    # 판정 자체를 못 하면 관측을 남기지 않는다. 넓게 잡는 이유는 이 호출이 **관측 전용**이라
+    # 여기서 던진 예외가 사용자 요청을 막아서는 안 되기 때문이다(귀결에 영향이 없다).
+    except Exception as exc:
+        payload[PLANNER_RESOLUTION_KEY] = {
+            "kind": "unavailable", "detail": f"{type(exc).__name__}: {exc}"
+        }
+        return None
+    record: dict[str, Any] = {"kind": type(resolution).__name__}
+    if isinstance(resolution, lowering_planner.Executable):
+        record["plans"] = [
+            {"obligation": type(plan.obligation).__name__, "sql": plan.sql}
+            for plan in resolution.plans
+        ]
+    elif isinstance(resolution, lowering_planner.Undetermined):
+        record["reason"] = resolution.reason
+    else:
+        diagnostic = getattr(resolution, "diagnostic", None)
+        if diagnostic is not None:
+            record["diagnostic"] = diagnostic.to_dict()
+    payload[PLANNER_RESOLUTION_KEY] = record
+    return resolution
+
+
+def _planner_capability_diagnostic(resolution: Any) -> Any:
+    """판정자가 **자산·주체의 한계**로 닫은 경우의 typed 진단. 아니면 ``None``.
+
+    이관된 첫 게이트다. 이 자리를 먼저 옮기는 이유: 능력 부재와 주체 불일치는 판정자만 아는
+    사실이고(선언과 대조해야 안다), 그 사실이 없으면 사용자는 "표현할 수 없습니다"라는 원인
+    없는 문장 — 또는 사유조차 없는 ``failure`` — 를 받는다. 귀결은 그대로 ``unsupported`` 이고
+    **이름만** 정확해진다.
+    """
+
+    import lowering_planner  # 지연 import(순환 방지)
+    import semantic_diagnostics
+
+    if not isinstance(
+        resolution, (lowering_planner.MissingCapability, lowering_planner.InvalidSemantics)
+    ):
+        return None
+    diagnostic = resolution.diagnostic
+    if diagnostic.outcome is not semantic_diagnostics.Outcome.UNSUPPORTED:
+        # 귀결 파생이 미지원이 아니면 이 자리에서 쓰지 않는다 — 귀결을 정하는 것은 진단이지
+        # 이 분기가 아니다.
+        return None
+    return diagnostic
+
+
+# 진단이 실린 자리. 사용자 문구는 진단이 만들고, 귀결은 Outcome Mapper 가 정한다.
+DIAGNOSTIC_KEY = "audience_diagnostic"
+
+# typed 귀결 → 이 저장소의 wire status. 파생의 소유자는 :mod:`semantic_diagnostics` 이고,
+# 여기서는 그 값을 wire 어휘로 옮기기만 한다(두 번째 판단을 만들지 않는다).
+_WIRE_STATUS: dict[str, str] = {
+    "clarification": "needs_clarification",
+    "unsupported": "unsupported",
+    "internal_failure": "needs_clarification",
+}
+
+
+def write_diagnostic(payload: dict[str, Any], diagnostic: Any) -> None:
+    """typed 진단 하나를 사용자 귀결로 옮긴다. **귀결을 여기서 고르지 않는다.**
+
+    상태·문구·사유가 전부 진단에서 나온다. 이 함수가 하는 일은 wire 어휘로의 번역뿐이고,
+    그래서 같은 원인이 경로마다 다른 귀결로 끝날 수 없다(Outcome Mapper 단일화).
+    """
+
+    import semantic_diagnostics
+    from query_structurer.campaign_plan_v4 import empty_semantic_ir
+
+    outcome = semantic_diagnostics.outcome_for(diagnostic)
+    status = _WIRE_STATUS[str(outcome)]
+    write_semantic_ir(
+        payload,
+        empty_semantic_ir(
+            status=status,
+            missing_fields=(
+                ["audience.requirement"] if status == "needs_clarification" else []
+            ),
+            message=diagnostic.user_action,
+            failure_kind=(
+                "unsupported"
+                if outcome is semantic_diagnostics.Outcome.UNSUPPORTED
+                else "system_failure"
+                if outcome is semantic_diagnostics.Outcome.INTERNAL_FAILURE
+                else "user_clarification"
+            ),
+            # 미지원 귀결에는 **무엇이** 미지원인지가 함께 실려야 한다(wire 계약). 진단의
+            # 코드가 곧 그 종류이므로 여기서 새 이름을 만들지 않는다.
+            unsupported_operations=(
+                [{
+                    "kind": diagnostic.code,
+                    "reason": diagnostic.developer_detail,
+                    "evidence": diagnostic.evidence or "",
+                }]
+                if outcome is semantic_diagnostics.Outcome.UNSUPPORTED
+                else []
+            ),
+        ),
+    )
+    payload[DIAGNOSTIC_KEY] = diagnostic.to_dict()
+
+
+def _write_capability_gap(payload: dict[str, Any], diagnostic: Any) -> None:
+    """능력 부재로 닫는다 — 귀결은 미지원이고 **이름은 그 능력**이다."""
+
+    write_diagnostic(payload, diagnostic)
+
+
+def _requested_subject_diagnostic(query: str) -> Any:
+    """결과 주체가 선언된 주체가 아니면 그 진단. 판정의 소유자는 :mod:`lowering_planner` 다."""
+
+    import lowering_planner  # 지연 import(순환 방지)
+
+    try:
+        return lowering_planner.unsupported_subject_diagnostic(query)
+    # 판정을 못 하면 주체를 문제 삼지 않는다(추측 금지) — 기존 경로가 그대로 답한다.
+    except Exception:
+        return None
+
+
+def _temporal_rejection_diagnostic(declared: Any) -> Any:
+    """판정 계층이 선언한 반려 → typed 진단. 표에 없는 코드면 ``None``(기존 경로 유지).
+
+    **순서가 계약이다(Phase 4).** 이 번역은 진단 생산자를 먼저 고친 뒤에만 안전하다. 잘못된
+    진단을 그대로 중앙화하면 귀결만 뒤집혀서, 고칠 수 없는 것을 고치라고 안내하게 된다 —
+    실측 #73 이 정확히 그 자리였다(값 결핍처럼 보이지만 실제로는 이력 소스 부재).
+
+    표에 없는 코드에 기본값을 주지 않는 이유도 같다. 모르는 사유를 되묻기로 접으면 없는
+    복구 경로를 광고하고, 미지원으로 접으면 없는 한계를 광고한다.
+    """
+
+    import semantic_diagnostics
+    import temporal_claims
+
+    code = _TEMPORAL_DIAGNOSTIC_CODES.get(str(getattr(declared, "code", "")))
+    if code is None:
+        return None
+    evidence = declared.evidence if isinstance(declared.evidence, Mapping) else {}
+    diagnostic = semantic_diagnostics.Diagnostic(
+        code=code,
+        user_action=str(declared.message),
+        developer_detail=(
+            f"temporal_claims.{declared.code} disposition={declared.disposition}"
+        ),
+        recoverability=(
+            semantic_diagnostics.Recoverability.USER
+            if declared.disposition == temporal_claims.CLARIFICATION
+            else semantic_diagnostics.Recoverability.DEPLOYMENT
+        ),
+        symbol=str(declared.code),
+        evidence=str(evidence.get("text") or "") or None,
+    )
+    # 선언된 귀결과 파생된 귀결이 어긋나면 **번역하지 않는다**. 둘 중 하나가 틀린 것이고,
+    # 어느 쪽인지는 이 자리에서 알 수 없다 — 추측해서 뒤집으면 조용한 귀결 변경이 된다.
+    expected = (
+        semantic_diagnostics.Outcome.CLARIFICATION
+        if declared.disposition == temporal_claims.CLARIFICATION
+        else semantic_diagnostics.Outcome.UNSUPPORTED
+    )
+    return diagnostic if diagnostic.outcome is expected else None
+
+
+# 판정 계층의 사유 코드 → typed 진단 코드. 왼쪽의 소유자는 :mod:`temporal_claims` 이고
+# 오른쪽은 :mod:`semantic_diagnostics` 다. 드리프트는 테스트가 고정한다.
+_TEMPORAL_DIAGNOSTIC_CODES: dict[str, str] = {
+    "temporal_value_count_mismatch": "missing_value",
+    "temporal_interval_missing": "missing_value",
+    "temporal_bucket_unit_missing": "missing_value",
+    "temporal_bucket_count_missing": "missing_value",
+    "temporal_change_count_value_missing": "missing_value",
+    "temporal_value_domain_unresolved": "ambiguous_meaning",
+    "temporal_domain_mixed": "ambiguous_meaning",
+    "temporal_metric_ambiguous": "ambiguous_meaning",
+    # 값 축에 시간 관측 지표가 없다 = 그 축의 **이력 소스가 없다**. 필드 부재가 아니다 —
+    # 필드는 있고(현재값), 없는 것은 시점을 가진 관측이다(감사 #73).
+    "temporal_metric_not_declared": "missing_history_source",
+    "temporal_interval_required_not_expressible": "unlowerable_temporal_constraint",
+    "temporal_interval_forbidden": "unlowerable_temporal_constraint",
+    "temporal_anchor_shape_unsupported": "unlowerable_temporal_constraint",
+    "temporal_operator_plan_missing": "unlowerable_temporal_constraint",
+}
+
+
 def _write_emission_failure(
     payload: dict[str, Any], failures: list[dict[str, Any]]
 ) -> None:
@@ -631,24 +830,28 @@ def _synthesis_for_issue(
     import audience_runtime
 
     catalog = audience_runtime.catalog_snapshot()
-    if (
-        code in {"ambiguous_requirement", "unsupported_semantics"}
-        and argument == "consent_count"
-    ):
-        expression = consent_cardinality.synthesize_exact_consent_cardinality(
-            query, literal_bindings, catalog
-        )
-        if expression is not None:
-            validation = consent_cardinality.validate_consent_cardinality(
-                query, expression, literal_bindings, catalog
+    if code in {"ambiguous_requirement", "unsupported_semantics"}:
+        # **진입 조건은 의미의 종류이지 모델이 쓴 문자열이 아니다.** 예전에는
+        # ``argument == "consent_count"`` 를 요구했고, 그 문자열은 모델 산문이라 같은 요청이
+        # 어휘 운에 따라 열리거나 닫혔다(감사 #47). 지금 묻는 것은 둘이다: 원문에 typed
+        # 카디널리티 주장이 있는가, 그 주장의 도메인이 동의 채널인가.
+        claim = consent_cardinality.detect_cardinality_claim(query, catalog)
+        if (
+            claim is not None
+            and claim.domain == consent_cardinality.CONSENT_CHANNEL_DOMAIN
+            # 공유 근거로 판정한다 — 세 멤버가 각자 스팬을 가질 필요가 없다. 그 어구 전체가
+            # 하나의 집합 술어를 증명한다.
+            and _issue_evidence_contains(issue, *claim.quantifier_span)
+        ):
+            expression = consent_cardinality.synthesize_exact_consent_cardinality(
+                query, literal_bindings, catalog
             )
-            if validation is not None and _issue_evidence_contains(
-                issue, validation.quantifier_start, validation.quantifier_end
-            ):
+            if expression is not None:
                 return _ApplicationOwnedSynthesis(
                     expression,
                     "consent_cardinality.exact_truth_table",
                     (_audience_issue_key(issue),),
+                    accounted_spans=(claim.footprint,),
                 )
 
     if code in {"ambiguous_requirement", "unsupported_semantics"}:
@@ -704,6 +907,14 @@ def _synthesis_for_issue(
         # 기간 대 기간 변화(크기 포함). 계획이 요구를 다 소비했을 때만 서므로, 여기 도달한
         # 합성은 '10% 이상'까지 실린 표현이다 — 크기가 빠진 형상은 애초에 계획이 없다.
         synthesis = _change_comparison_synthesis(query, issue, current_date=current_date)
+        if synthesis is not None:
+            return synthesis
+        # 절 의무(부재·칸별 발생·창을 가진 존재). 마지막에 두는 이유는 위 합성기들이 자기
+        # 축에 대해 더 좁은 증명을 갖고 있기 때문이다 — 넓은 판정이 좁은 증명을 가로채면
+        # 그 축이 가진 계약(진리표·리터럴 정산)이 우회된다.
+        synthesis = _clause_plan_synthesis(
+            query, issue, literal_bindings, current_date=current_date
+        )
         if synthesis is not None:
             return synthesis
 
@@ -822,6 +1033,57 @@ def _temporal_synthesis(
     )
 
 
+def _settle_threshold_grain(
+    query: str, expression: event_ir.Condition, payload: dict[str, Any]
+) -> event_ir.Condition:
+    """임계값의 **적용 grain** 을 원문이 말한 대로 맞춘다.
+
+    같은 금액·기간·연산자인데 뜻이 다른 두 문장이 있다(실측 2026-08-08, 라이브 id 42/43)::
+
+        …총 구매금액이 30만원 이상인 회원          회원별 합계   9,585명
+        …구매금액이 30만원 이상인 주문을 한 회원    그런 주문 존재   688명
+
+    두 문장은 **바이트 동일한 SQL** 을 냈다. 모델이 고른 트리 모양이 곧 grain 이었고, 그
+    선택이 원문과 맞는지 보는 자리가 없었기 때문이다.
+
+    여기서는 원문이 grain 을 **명시했을 때만** 개입한다. 명시가 없으면(``2019년에 이십만원
+    이상을 구매한 고객`` 처럼 원문이 실제로 모호한 자리) 아무것도 바꾸지 않는다 — 모호한
+    자리에 기본값을 넣는 것이 곧 추측이다(§12). 낮추지 못하는 모양도 그대로 둔다: 여기서
+    fail-close 하면 지금 나가던 SQL 이 사라진다.
+
+    바꾼 사실은 :mod:`plan_decisions` 에 남는다. 애플리케이션이 소유한 결정론 수정은
+    응답의 ``decisions`` 로 드러나야 한다 — 조용히 바꾸면 검증기가 자기 SQL 을 근거 없는
+    조건으로 되잡는다.
+    """
+    import grain_claims  # 지연 import(순환 방지)
+
+    try:
+        conflict = grain_claims.conflicting_grain(query, expression)
+    except Exception:  # 주장을 못 세우면 개입하지 않는다(추측 금지 · 요청을 막지 않는다)
+        return expression
+    if conflict is None:
+        return expression
+    claim, realized = conflict
+    if claim.grain != grain_claims.ROW:
+        # subject 주장인데 트리가 row 인 경우는 아직 낮추지 않는다 — 행 임계를 합계로
+        # 올리는 변환은 모집단 정의가 필요해서 이 자리에서 추측할 수 없다.
+        return expression
+    regrained = grain_claims.regrain_to_row(expression)
+    if regrained is None:
+        return expression
+    plan_decisions.record(
+        payload,
+        filter_name="grain_claims",
+        action=plan_decisions.SET,
+        slot=f"{EVENT_EXPRESSION_KEY}.grain",
+        reason="threshold_grain_declared_by_source_text",
+        value=claim.grain,
+        evidence=claim.evidence_text,
+        realized_before=sorted(realized),
+    )
+    return regrained
+
+
 def _change_comparison_synthesis(
     query: str, issue: Mapping[str, Any], *, current_date: str | None = None
 ) -> _ApplicationOwnedSynthesis | None:
@@ -909,6 +1171,7 @@ def _temporal_clause_already_compiled(
 def _conjoinable_synthesis(
     query: str,
     issues: list[dict[str, Any]],
+    literal_bindings: Sequence[Mapping[str, Any]] = (),
     *,
     current_date: str | None = None,
 ) -> _ApplicationOwnedSynthesis | None:
@@ -925,6 +1188,12 @@ def _conjoinable_synthesis(
             continue
         synthesis = _temporal_synthesis(query, anchor, current_date=current_date)
         if synthesis is None:
+            # 절 의무도 같은 성질을 갖는다 — 낮춘 원자가 자기 근거 구간을 그대로 들고 있고,
+            # 계획이 서지 않으면 아무 조각도 만들지 않는다(전부-또는-아무것도).
+            synthesis = _clause_plan_synthesis(
+                query, anchor, literal_bindings, current_date=current_date
+            )
+        if synthesis is None:
             continue
         # 결합 갈래에서도 규칙은 같다 — 남은 신고가 전부 이 합성으로 설명돼야 한다.
         # 하나라도 남으면 결합해서는 안 된다(설명되지 않은 절이 사라진 SQL 이 나간다).
@@ -932,6 +1201,64 @@ def _conjoinable_synthesis(
         if issue_keys is None:
             continue
         return replace(synthesis, issue_keys=issue_keys)
+    return None
+
+
+def _clause_plan_synthesis(
+    query: str,
+    issue: Mapping[str, Any],
+    literal_bindings: Sequence[Mapping[str, Any]] = (),
+    *,
+    current_date: str | None = None,
+) -> _ApplicationOwnedSynthesis | None:
+    """판정자가 **실제로 낮춘 절**로 모델의 미지원 신고를 되살린다.
+
+    라우팅에 모델의 argument 문자열을 쓰지 않는 이유는 이 저장소가 이미 그 대가를 치렀기
+    때문이다 — 같은 요청이 모델 어휘에 따라 열리기도 닫히기도 했다. 여기서 보는 것은 둘뿐이다:
+    판정자가 그 자리를 낮췄는가, 그 계획의 근거가 신고 구간 안에 있는가.
+
+    이 갈래가 감사 B(거짓 미지원)를 구조적으로 닫는다. ``최근 90일 동안 주문하지 않은`` ·
+    ``최근 3개월 동안 매월 한 번 이상 구매한`` 은 결정론 경로에서 정확한 SQL 이 나오는데도
+    "표현할 수 없다"로 끝나고 있었다 — 낮출 수 있다는 사실이 종결 판정에 도달하지 못했다.
+    """
+
+    import lowering_planner  # 지연 import(순환 방지)
+
+    evidence = issue.get("evidence")
+    if not isinstance(evidence, Mapping):
+        return None
+    start, end = evidence.get("start"), evidence.get("end")
+    if not (isinstance(start, int) and isinstance(end, int)):
+        return None
+    resolution = lowering_planner.resolve_executable(query, today=as_of_date(current_date))
+    if not isinstance(resolution, lowering_planner.Executable):
+        return None
+    for plan in resolution.plans:
+        if not isinstance(plan.obligation, lowering_planner.ClauseObligation):
+            continue
+        owned = [plan.obligation.source_span]
+        temporal = plan.obligation.clause.temporal
+        if temporal is not None and temporal.span is not None:
+            owned.append(temporal.span)
+        # 계획이 **소비한 구간 전부**가 신고 안에 있어야 그 신고를 반박할 수 있다. 조건 절만
+        # 보고 방면하면 그 옆의 창을 신고하지 않은 모델 응답에서도 창이 조용히 실려 나간다 —
+        # 이 저장소가 이미 세워 둔 계약(합성은 자기가 읽은 리터럴을 전부 소유해야 한다)이다.
+        if not (start <= min(item[0] for item in owned)
+                and max(item[1] for item in owned) <= end):
+            continue
+        if canonical_audience_claims.literal_claim_issues(
+            query, plan.expression, literal_bindings
+        ):
+            # 이 계획이 원문 리터럴을 전부 읽지 못했다 — 그 자리는 **더 좁은 증명을 가진**
+            # 합성기(구조 영수증·진리표)의 것이다. 여기서 통과시키면 읽지 않은 리터럴이 조용히
+            # 사라진 SQL 이 나간다(부분 SQL 금지).
+            continue
+        return _ApplicationOwnedSynthesis(
+            plan.expression,
+            f"lowering_planner.{plan.obligation.kind}",
+            (_audience_issue_key(issue),),
+            accounted_spans=tuple(owned),
+        )
     return None
 
 
@@ -1104,7 +1431,9 @@ def run_audience_resolver(
         # 가능한데도), 반대로 신고를 무시하면 절이 조용히 사라진 SQL 이 나간다.
         # 그래서 신고된 절을 합성해 **결합**하고, 결합 결과는 이후의 모든 검증을 그대로
         # 통과해야 한다 — 합성이 실패하면 신고가 남아 문장 전체가 막힌다.
-        conjunct = _conjoinable_synthesis(query, issues, current_date=current_date)
+        conjunct = _conjoinable_synthesis(
+            query, issues, literal_bindings or (), current_date=current_date
+        )
         if conjunct is not None:
             synthesis = conjunct
             model_expression = _parse_audience_expression(raw_expression, query)
@@ -1304,6 +1633,15 @@ def project_resolution_to_plan(
     requirement["expression"] = expression.to_dict() if expression is not None else None
     requirement["issues"] = issues
 
+    # **주체가 다른 요청은 신고 내용과 무관하게 여기서 닫힌다.** 아래 갈래들은 전부 "회원을
+    # 고르는 술어를 만들 수 있는가"를 묻는데, 결과 주체가 브랜드면 그 질문에 옳은 답이 없다.
+    # 조건 신고 유무로 갈리게 두면 같은 요청이 회차마다 `failure`(사유 없음) 와
+    # `unsupported`(사유 있음) 를 오간다 — 기준선에서 실제로 그렇게 뒤집혔다(#44).
+    subject_diagnostic = _requested_subject_diagnostic(resolution.query)
+    if subject_diagnostic is not None:
+        write_diagnostic(payload, subject_diagnostic)
+        return True
+
     if issues:
         payload.pop(EVENT_EXPRESSION_KEY, None)
         missing = sorted({
@@ -1322,6 +1660,19 @@ def project_resolution_to_plan(
             lowering_conflicts = _lowering_plan_conflicts(resolution.query, unsupported)
             if lowering_conflicts:
                 _write_emission_failure(payload, lowering_conflicts)
+                return True
+            # **판정자의 typed 답을 기록한다(Phase 3A shadow).** 부르는 것 자체가 관측이고,
+            # 아래에서 귀결을 뒤집는 것은 능력 부재 하나뿐이다.
+            planner = _planner_resolution(payload, resolution.query)
+            gap = _planner_capability_diagnostic(planner)
+            if gap is not None:
+                # **여기가 자산 대조보다 앞이어야 한다(Phase 4A).** 아래 갈래는 "자산은
+                # 선언돼 있는데 이 경로로 낼 수 없다"(레지스트리 구멍)고 말하는데, 능력이
+                # 없는 자리에서 그 문구가 나가면 원인이 뒤바뀐다 — 운영자는 없는 생산자를
+                # 찾게 되고, 실제로 없는 것은 그 질문에 답할 수 있는 **관측**이다.
+                # 실측(#68 `앱으로 로그인하지 않은 회원`): 이 순서가 아니면 사용자가 받는
+                # 문장이 `선언된 자산: app_user, inactivity_period` 였다.
+                _write_capability_gap(payload, gap)
                 return True
             # 계획이 서지 않는다면 그다음 질문은 "**이 관계를 구현하는 자산이 선언돼 있는가**"다.
             contradicted = [
@@ -1384,12 +1735,21 @@ def project_resolution_to_plan(
                     "evidence": dict(declared.evidence),
                     "judge": temporal_claims_owner(),
                 }
+                # **선언된 사유를 귀결로 존중한다(Phase 4B).** 생산자를 먼저 고쳤으므로
+                # 이제 안전하다 — 값 결핍은 되묻기로, 이력 소스 부재는 미지원으로 간다.
+                # 그 전까지 이 자리는 status 를 하드코딩해, 11곳에서 선언된 disposition 이
+                # 소비자 없이 죽어 있었다.
+                diagnostic = _temporal_rejection_diagnostic(declared)
+                if diagnostic is not None:
+                    write_diagnostic(payload, diagnostic)
+                    return True
             write_semantic_ir(
                 payload,
                 empty_semantic_ir(
                     status="unsupported",
                     # 사용자에게 나가는 문장은 **모델이 쓴 산문이 아니다**. 실측(2026-08-03) 30/30 이
                     # 모델 산문이었고 그 판정은 틀렸다 — 지어낸 kind 만 23종이었다.
+                    # 판정 계층이 이 절을 왜 낮출 수 없는지 선언했다면 그 문장을 그대로 쓴다.
                     message=(
                         declared.message
                         if declared is not None
@@ -1437,6 +1797,7 @@ def project_resolution_to_plan(
         return True
 
     assert expression is not None
+    expression = _settle_threshold_grain(resolution.query, expression, payload)
     payload[EVENT_EXPRESSION_KEY] = {
         "expression": expression.to_dict(),
         "source": AUDIENCE_REQUIREMENT_KEY,

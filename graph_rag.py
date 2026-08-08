@@ -13219,7 +13219,11 @@ def build_event_expression_sql_candidate(query_plan: dict[str, Any]) -> dict[str
         expression
     ):
         where_clauses.append(_member_active_state_predicate())
-    where_clauses.append(f"({condition_sql})" if isinstance(expression, event_ir.Or) else condition_sql)
+    # 이 목록은 아래에서 AND 로 이어붙는다. 조각을 감쌀지는 **조각의 사실**로 정한다 —
+    # 예전에는 최상위 IR 노드가 ``Or`` 인지로 추측했고, 그 추측은 틀렸다: ``And((Or(a, b),))``
+    # 는 노드가 ``And`` 인데 컴파일된 문자열은 최상위가 ``OR`` 이라(피연산자가 하나면 컴파일러가
+    # 그대로 돌려준다) 회원 상태 술어가 분기 밖으로 샜다.
+    where_clauses.append(event_compiler.as_raw_conjunct(condition_sql))
 
     output_contract = (
         query_plan.get("output_contract")

@@ -169,6 +169,115 @@ def _unscoped_duration_token_matches(
     )
 
 
+def _bucket_partition_duration_candidates(
+    binding: Mapping[str, Any],
+    atoms: list[tuple[event_ir.Condition, bool]],
+    token_rows: list[tuple[int, tuple[Any, ...], str, Any]],
+) -> list[tuple[int, tuple[Any, ...]]]:
+    """칸 전칭이 **롤링 기간을 칸으로 편** 영수증.
+
+    ``최근 3개월 동안 매월 한 번 이상 구매`` 는 세 달 각각의 존재 조건으로 낮아진다. 그 표현에
+    ``3개월`` 이라는 창 노드는 없지만 기간은 분명히 읽혔다 — **맞닿은 세 개의 월 구간**이 곧
+    그 3개월이다. 이 영수증이 없으면 낮춤이 정확한데도 리터럴 정산이 미소비로 신고해 문장이
+    막힌다(구현 중 실측).
+
+    증명은 구조뿐이고 기준일을 보지 않는다: 구간이 맞닿아 있고, 개수가 값과 같고, 각 구간이
+    그 단위의 칸 하나다. 셋이 다 맞으면 그 리터럴은 이 분할이 소비한 것이다.
+    """
+    if binding.get("kind") != "duration":
+        return []
+    normalized = binding.get("normalized")
+    if not isinstance(normalized, Mapping):
+        return []
+    unit = event_ir.canonical_unit(normalized.get("semantic_unit"))
+    value = normalized.get("value")
+    if (
+        unit not in event_ir.WINDOW_UNITS
+        or not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < 2
+    ):
+        # 칸이 하나면 분할이 아니다 — 그 모양은 기존 영수증들이 이미 답한다.
+        return []
+
+    intervals: list[tuple[date, date, int, tuple[Any, ...]]] = []
+    for atom_index, path, token_kind, _token_value in token_rows:
+        if token_kind != "date_window":
+            continue
+        node = _node_at_path(atoms[atom_index][0].to_dict(), path)
+        if not isinstance(node, Mapping) or node.get("type") != "interval":
+            continue
+        try:
+            start = date.fromisoformat(str(node.get("start")))
+            end_exclusive = date.fromisoformat(str(node.get("end_exclusive")))
+        except ValueError:
+            continue
+        intervals.append((start, end_exclusive, atom_index, path))
+
+    unique = sorted({(start, end) for start, end, _index, _path in intervals})
+    if len(unique) != value:
+        return []
+    for (_start, end), (next_start, _next_end) in zip(unique, unique[1:], strict=False):
+        if end != next_start:
+            return []
+    if not all(
+        _is_single_bucket(start, end, unit) for start, end in unique
+    ):
+        return []
+    return [(atom_index, path) for _start, _end, atom_index, path in intervals]
+
+
+def _is_single_bucket(start: date, end_exclusive: date, unit: str) -> bool:
+    """``[start, end_exclusive)`` 가 그 단위의 칸 **하나**인가.
+
+    달·해의 길이는 고정이 아니므로 ``timedelta`` 로 접지 않는다(§16) — 다음 칸의 시작이
+    맞는지로 판정한다.
+    """
+    if unit == "day":
+        return end_exclusive == start + timedelta(days=1)
+    if unit == "week":
+        return end_exclusive == start + timedelta(days=7)
+    if unit == "month":
+        if start.day != 1:
+            return False
+        year, month = (start.year + 1, 1) if start.month == 12 else (start.year, start.month + 1)
+        return end_exclusive == date(year, month, 1)
+    if unit == "year":
+        return start.month == 1 and start.day == 1 and end_exclusive == date(start.year + 1, 1, 1)
+    return False
+
+
+def _existence_quantifier_operator_candidates(
+    binding: Mapping[str, Any],
+    atoms: list[tuple[event_ir.Condition, bool]],
+) -> list[tuple[int, tuple[Any, ...]]]:
+    """'**한 번 이상**'의 ``이상`` 을 소비하는 존재 수량자 영수증.
+
+    ``최근 3개월 동안 매월 한 번 이상 구매`` 의 ``이상`` 은 임계 비교가 아니라 **존재**다 —
+    한 번 이상 = 있었다. 그래서 IR 에는 대응하는 ``>=`` 노드가 없고, 영수증이 없으면 정확한
+    낮춤이 미소비로 신고돼 문장이 막힌다(:func:`rolling_absence_claims.
+    consumed_literal_binding_indices` 가 미접속 축에서 이미 같은 일을 한다).
+
+    조건 셋이 전부 구조다: 연산자가 ``>=`` 이고, 그 구간이 ``Exists`` 원자의 근거 안에 있고,
+    그 원자 안에 **비교 노드가 하나도 없다**. 마지막 조건이 진짜 임계값을 가로채지 않게 한다.
+    """
+    if binding.get("kind") != "comparison_operator" or binding.get("normalized") != ">=":
+        return []
+    start, end = binding.get("start"), binding.get("end")
+    if not (isinstance(start, int) and isinstance(end, int)):
+        return []
+    found: list[tuple[int, tuple[Any, ...]]] = []
+    for atom_index, (atom, _negated) in enumerate(atoms):
+        if not isinstance(atom, event_ir.Exists) or atom.evidence is None:
+            continue
+        if not (atom.evidence.start <= start and end <= atom.evidence.end):
+            continue
+        if any(isinstance(node, event_ir.Comparison) for node in event_ir.walk(atom)):
+            continue
+        found.append((atom_index, ("__existence_quantifier__",)))
+    return found
+
+
 def _anchored_interval_duration_candidates(
     binding: Mapping[str, Any],
     atoms: list[tuple[event_ir.Condition, bool]],
@@ -293,6 +402,24 @@ def literal_claim_issues(
             ]
             if len(anchored_available) == 1:
                 available = anchored_available[0]
+        if available is None:
+            partition_available = [
+                candidate
+                for candidate in _bucket_partition_duration_candidates(
+                    binding, atoms, token_rows
+                )
+                if candidate not in consumed
+            ]
+            if partition_available:
+                available = partition_available[0]
+        if available is None:
+            existence_available = [
+                candidate
+                for candidate in _existence_quantifier_operator_candidates(binding, atoms)
+                if candidate not in consumed
+            ]
+            if existence_available:
+                available = existence_available[0]
         if available is not None:
             consumed.add(available)
             continue
@@ -1381,6 +1508,47 @@ def _temporal_satisfied(
     )
 
 
+def _recurrence_satisfied(
+    requirement: Any, expression: event_ir.Condition, context: Mapping[str, Any]
+) -> tuple[tuple[int, int], ...] | None:
+    """'매월 …'이 **칸별로 펴져** 컴파일됐는가.
+
+    이 의무의 위험은 이름이 말한다 — 주기 조건을 **총 기간 집계로 축소**하는 것이다
+    ('매월 한 번 이상' 을 '3개월 동안 3회 이상'으로 읽으면 한 달에 세 번 산 사람이 통과한다).
+    그래서 방면의 근거는 겹침이 아니라 구조다: 요구한 칸 단위의 구간이 **둘 이상**, 서로 맞닿아,
+    각각 자기 존재 조건을 갖고 있어야 한다.
+
+    구간이 하나뿐이면 축소된 것이므로 방면하지 않는다(fail-close).
+    """
+    span = semantic_requirements.requirement_span(requirement)
+    if span is None:
+        return None
+    value = getattr(requirement, "value", None)
+    bucket = (value or {}).get("bucket") if isinstance(value, Mapping) else None
+    unit = event_ir.canonical_unit(bucket) if isinstance(bucket, str) else None
+    if unit not in event_ir.WINDOW_UNITS:
+        return None
+    intervals = sorted({
+        (window.start, window.end_exclusive)
+        for atom, _negated in event_ir.iter_signed_atoms(expression)
+        if isinstance(atom, event_ir.Exists)
+        for window in event_ir.time_windows(atom)
+        if isinstance(window, event_ir.AbsoluteInterval)
+    })
+    if len(intervals) < 2:
+        return None
+    if not all(_is_single_bucket(start, end, unit) for start, end in intervals):
+        return None
+    if any(
+        end != next_start
+        for (_start, end), (next_start, _next_end) in zip(
+            intervals, intervals[1:], strict=False
+        )
+    ):
+        return None
+    return (span,)
+
+
 def _change_magnitude_satisfied(
     requirement: Any, expression: event_ir.Condition, context: Mapping[str, Any]
 ) -> tuple[tuple[int, int], ...] | None:
@@ -1423,6 +1591,7 @@ _OBLIGATION_SATISFACTION_PROVERS: dict[str, tuple[Any, str]] = {
         for kind in CANONICAL_COMPILED_OBLIGATION_KINDS
     },
     semantic_requirements.TEMPORAL_QUALIFIER_KIND: (_temporal_satisfied, "temporal_ir"),
+    "temporal_recurrence": (_recurrence_satisfied, "bucket_occurrence_lowering"),
     semantic_requirements.CHANGE_MAGNITUDE_KIND: (
         _change_magnitude_satisfied,
         "change_magnitude_lowering",

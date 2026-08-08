@@ -31,8 +31,9 @@ import json
 import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
+from enum import IntEnum
 from typing import Any
 
 import event_ir
@@ -117,10 +118,124 @@ class CompilerCapabilityResult:
     unsupported_node_ids: tuple[str, ...]
 
 
+class SqlPrecedence(IntEnum):
+    """조건 조각이 **얼마나 느슨하게 묶이는가**. 값이 작을수록 괄호가 더 자주 필요하다.
+
+    조각을 받는 쪽이 "감쌀지 말지"를 판단하려면 조각의 결합도를 알아야 한다. 이 값이 없던 동안
+    받는 쪽은 문자열만 보고 있었고, 그래서 감싸지 않았다(:func:`as_conjunct` 주석의 실측 참조).
+    """
+
+    OR = 0
+    AND = 1
+    #: 단일 술어이거나 이미 스스로 괄호에 싸인 조각. 어떤 문맥에도 그대로 들어간다.
+    ATOM = 2
+
+
 @dataclass
 class CompiledCondition:
     sql: str
     params: dict[str, Any] = field(default_factory=dict)
+    #: 이 조각의 최상위 연산자 결합도. 삽입하는 쪽이 괄호 여부를 이 값으로 정한다.
+    precedence: SqlPrecedence = SqlPrecedence.ATOM
+
+
+def _is_word_character(char: str) -> bool:
+    return char.isalnum() or char == "_"
+
+
+def has_top_level_disjunction(sql: str) -> bool:
+    """괄호 깊이 0 에 ``OR`` 연산자가 남아 있는가 — AND 로 이어붙이면 뜻이 바뀌는가.
+
+    카탈로그가 선언한 **원문 SQL** 처럼 :class:`CompiledCondition` 을 거치지 않아 결합도를
+    모르는 조각에 쓴다. IR 에서 만들어진 조각은 결합도가 실려 오므로 이 스캐너가 필요 없다.
+
+    연산자가 아닌 ``OR`` 은 세지 않는다 — 문자열 리터럴 안(``'X OR Y'``), 식별자의 일부
+    (``ORDER_ID``, ``SPONSOR``), 대괄호 식별자(``[OR]``).
+    """
+    depth = 0
+    index = 0
+    length = len(sql)
+    while index < length:
+        char = sql[index]
+        if char == "'":
+            index += 1
+            while index < length:
+                if sql[index] == "'":
+                    if index + 1 < length and sql[index + 1] == "'":
+                        index += 2  # 이스케이프된 따옴표 — 리터럴은 아직 닫히지 않았다.
+                        continue
+                    break
+                index += 1
+            index += 1
+            continue
+        if char == "[":  # T-SQL 대괄호 식별자 — 안쪽은 이름이지 연산자가 아니다.
+            closing = sql.find("]", index)
+            index = length if closing < 0 else closing + 1
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+        elif depth == 0 and sql[index : index + 2].upper() == "OR":
+            before = sql[index - 1] if index else " "
+            after = sql[index + 2] if index + 2 < length else " "
+            if not _is_word_character(before) and not _is_word_character(after):
+                return True
+        index += 1
+    return False
+
+
+def as_conjunct(condition: CompiledCondition) -> str:
+    """조각을 **AND 문맥**에 넣을 때의 SQL. 필요할 때만 괄호를 씌운다.
+
+    이 함수가 존재하는 이유(실측 2026-08-08, 라이브 id 55 ``사료, 간식, 장난감 중 하나라도
+    구매한 회원``): ``Filter`` 가 조건 조각을 상관 술어 옆에 그대로 이어붙였고, 그 조각의
+    최상위가 ``Or`` 이었다. ``AND`` 가 ``OR`` 보다 강하게 묶이므로 상관 술어
+    ``OD.MEMBER_NO = B.MEMBER_NO`` 는 첫 가지에만 붙었고, 나머지 가지는 회원과 무관한
+    전역 존재 판정이 됐다 — 실DB 에서 세그먼트가 정상 상태 전체 회원(69,308명)과 정확히
+    같아졌다.
+
+    잉여 괄호를 붙이지 않는 이유는 기존 SQL 을 바이트 단위로 보존하기 위해서다. 결합도가
+    ``AND`` 이상인 조각은 AND 문맥에서 뜻이 변하지 않는다.
+    """
+    if condition.precedence >= SqlPrecedence.AND:
+        return condition.sql
+    return f"({condition.sql})"
+
+
+def _assert_conjunction_safe(predicates: list[str]) -> None:
+    """AND 로 이어붙기 직전의 마지막 방벽.
+
+    생산자는 전부 :func:`as_conjunct` / :func:`as_raw_conjunct` 를 거치므로 이 검사는 **울리면
+    안 된다**. 울린다면 새 생산 경로가 그 두 함수를 우회했다는 뜻이고, 그것은 조용한 오답
+    (상관 술어 누수)으로 나가기 전에 멈춰야 하는 내부 불변식 위반이다 — 잘못된 세그먼트를
+    내보내는 것보다 컴파일에 실패하는 편이 낫다.
+    """
+    if len(predicates) < 2:
+        return  # 단독 술어는 AND 문맥이 아니다.
+    unsafe = [item for item in predicates if has_top_level_disjunction(item)]
+    if unsafe:
+        raise SqlCompileError(
+            "AND 로 결합되는 술어에 괄호 없는 OR 이 남아 있습니다"
+            f" (상관 술어가 분기 밖으로 샙니다): {unsafe[0]}",
+            reason="unsafe_boolean_precedence",
+        )
+
+
+def as_raw_conjunct(sql: str) -> str:
+    """결합도를 **잃어버린** SQL 문자열을 AND 문맥에 넣을 때의 SQL.
+
+    두 부류가 여기로 온다.
+
+    1. 카탈로그가 선언한 술어(``extra_predicates`` · ``correlation_sql``). 지금 저장소의
+       선언 중 최상위 ``OR`` 을 가진 것은 ``campaign_response.extra_predicates`` 하나이고
+       그것은 **사람이 손으로** 괄호를 씌워 두었다 — 그 기억에 기대지 않도록 구조로 바꾼다.
+    2. 모듈 경계를 넘으며 :class:`CompiledCondition` 을 잃은 조각. 결합도를 다시 **추측**
+       하지 말고 조각 자체에서 읽는다. 추측한 자리에서 실제로 틀렸다: 최상위 노드가 ``Or``
+       인지로 판단하던 소비자는 ``And((Or(a, b),))`` 를 놓쳤다 — ``_combine`` 이 피연산자가
+       하나면 그대로 돌려주므로 노드는 ``And`` 인데 문자열은 ``OR`` 이다.
+    """
+    return f"({sql})" if has_top_level_disjunction(sql) else sql
 
 
 # ── 레지스트리 ────────────────────────────────────────────────────────────────────
@@ -169,8 +284,16 @@ class EventSpec:
     # 비어 있고 correlation_sql 도 없으면 기본 상관식의 왼쪽인 ``{alias}.{event_subject_key}`` 로
     # 파생한다(선언과 파생이 어긋날 여지가 없는 유일한 경우).
     group_subject_expression: str = ""
-    # 발생 시각이 검증된 조인 대상에 있거나 계산식인 경우의 논리 시각 필드 바인딩.
+    # 발생 시각이 검증된 조인 대신 조인 대상에 있거나 계산식인 경우의 논리 시각 필드 바인딩.
     time_expression: str = ""
+    # **하루 안의 시각**을 담은 컬럼(``ORDER_TIME`` 처럼 ``HHMMSS``). 날짜 컬럼과 별개 축이다 —
+    # 날짜 컬럼 하나로는 '23시 59분 59초까지'를 표현할 수 없고, 근사하면 그날 하루 전체가 된다.
+    #
+    # 선언이 없으면 시각 경계는 **미지원으로 닫힌다**(근사하지 않는다). 선언이 있으면
+    # :func:`compile_time_window` 가 경계일에만 시각을 거는 술어로 낮춘다.
+    time_of_day_column: str = ""
+    # 그 컬럼의 저장 관례. 현재 지원하는 것은 ``char6``(``'HHMMSS'`` 문자열 비교)뿐이다.
+    time_of_day_format: str = "char6"
 
 
 @dataclass(frozen=True)
@@ -548,6 +671,113 @@ def _param_value(value: date, data_type: str) -> Any:
     return _time_grain(data_type).render(value)
 
 
+def _time_of_day_column(date_column: str, context: CompileContext) -> str | None:
+    """이 날짜 컬럼과 **같은 소스**가 선언한 시각 컬럼의 SQL. 선언이 없으면 ``None``.
+
+    날짜 컬럼의 별칭을 그대로 쓴다 — 두 컬럼은 같은 행에 있으므로 별칭이 같다. 별칭을 다시
+    계산하지 않는 이유는 그것이 컴파일 스코프의 것이고, 여기서 추측하면 파생 관계 안에서
+    엉뚱한 별칭이 붙는다.
+    """
+    alias, _, _column = date_column.rpartition(".")
+    if not alias:
+        return None
+    for spec in context.registry.values():
+        if not spec.time_of_day_column:
+            continue
+        # 이 소스의 날짜 컬럼과 이름이 같은 자리만 짝으로 인정한다. 별칭은 스코프가 정하므로
+        # 컬럼 이름으로 짝을 찾는다.
+        if _column == spec.time_column:
+            return f"{alias}.{spec.time_of_day_column}"
+    return None
+
+
+def _hhmmss(value: str) -> str:
+    """시각 경계를 ``HHMMSS`` 문자열 리터럴로.
+
+    자리 채움을 하지 않는 이유는 IR 이 이미 완전한 ``HHMMSS`` 만 받기 때문이다
+    (:func:`event_ir._time_bound`). 여기서 다시 채우면 그 검증이 두 곳에 생기고, 두 규칙이
+    어긋나는 순간 경계의 한 단위가 조용히 들어오거나 빠진다.
+    """
+    return _sql_quote(value)
+
+
+def _compile_interval_with_time_bounds(
+    date_column: str,
+    time_column: str,
+    window: AbsoluteInterval,
+    *,
+    grain: Any,
+    data_type: str,
+) -> CompiledCondition:
+    """시각 경계가 걸린 구간 → **경계일에만** 시각을 거는 술어.
+
+    두 날짜 사이에 낀 날은 하루 전체가 포함된다. 양 끝에 시각을 한꺼번에 걸면 그 날들이
+    잘린다 — ``7/1 09:00 ~ 7/2 18:30`` 에 ``time >= '090000' AND time <= '183000'`` 을 걸면
+    7월 1일 18:30 이후 주문이 사라진다(감사 #80 이 지목한 조용한 오답).
+
+    같은 날이면 하나의 AND 다::
+
+        date = D AND time >= start AND time <= end
+
+    여러 날이면 세 가지의 OR 이고, 없는 조각은 만들지 않는다::
+
+        (date = 첫날  AND time >= start)
+        OR (첫날 < date < 끝날)
+        OR (date = 끝날 AND time <= end)
+
+    결합도를 :class:`SqlPrecedence` 로 실어 보내므로 이 조각을 AND 문맥에 넣는 쪽이
+    :func:`as_conjunct` 로 괄호를 씌운다 — Phase 1 의 합성 안전성을 그대로 쓴다.
+    """
+    if not (grain.aligned(window.start) and grain.aligned(window.end_exclusive)):
+        raise SqlCompileError(
+            f"{grain.unit} 단위로 적재된 컬럼에는 그 경계에 맞는 기간만 걸 수 있습니다"
+            f"(요청 구간: {window.start.isoformat()} ~ {window.end_exclusive.isoformat()})"
+        )
+    first, last = window.start, window.inclusive_end
+    start_time, end_time = window.start_time, window.end_time
+    first_sql, last_sql = _render_date(first, data_type), _render_date(last, data_type)
+
+    if first == last:
+        parts = [f"{date_column} = {first_sql}"]
+        if start_time is not None:
+            parts.append(f"{time_column} >= {_hhmmss(start_time)}")
+        if end_time is not None:
+            parts.append(f"{time_column} <= {_hhmmss(end_time)}")
+        return CompiledCondition(
+            sql=" AND ".join(parts),
+            precedence=SqlPrecedence.AND if len(parts) > 1 else SqlPrecedence.ATOM,
+        )
+
+    branches: list[str] = []
+    # 첫날: 시작 시각이 있으면 그 이후만, 없으면 하루 전체다.
+    if start_time is not None:
+        branches.append(
+            f"({date_column} = {first_sql} AND "
+            f"{time_column} >= {_hhmmss(start_time)})"
+        )
+    # 가운데 날들: 하루 전체가 포함된다. 시각 경계가 한쪽만 있으면 그쪽 경계일만 제외한다.
+    middle_start = first if start_time is None else first + timedelta(days=1)
+    middle_end = last if end_time is None else last - timedelta(days=1)
+    if middle_start <= middle_end:
+        branches.append(
+            f"({date_column} >= {_render_date(middle_start, data_type)} AND "
+            f"{date_column} <= {_render_date(middle_end, data_type)})"
+        )
+    # 끝날: 끝 시각이 있으면 그 이전만.
+    if end_time is not None:
+        branches.append(
+            f"({date_column} = {last_sql} AND "
+            f"{time_column} <= {_hhmmss(end_time)})"
+        )
+    if not branches:  # pragma: no cover - has_time_bounds 가 참이면 한쪽은 있다
+        raise SqlCompileError("시각 경계가 있다고 선언된 구간에서 조각을 만들 수 없습니다")
+    if len(branches) == 1:
+        return CompiledCondition(sql=branches[0], precedence=SqlPrecedence.ATOM)
+    return CompiledCondition(
+        sql=" OR ".join(branches), precedence=SqlPrecedence.OR
+    )
+
+
 def compile_time_window(
     column: str, window: event_ir.TimeWindow, param_prefix: str, *,
     data_type: str, context: CompileContext,
@@ -564,13 +794,17 @@ def compile_time_window(
 
     if isinstance(window, AbsoluteInterval):
         if window.has_time_bounds:
-            # 시각 컬럼은 이 계층의 시간 바인딩(날짜 컬럼 하나)에 선언되어 있지 않다. 날짜만 걸면
-            # '23시 59분 59초까지'가 '그날 하루 전체'가 되므로 근사하지 않고 미지원으로 닫는다 —
-            # 시각을 표현할 수 있는 경로(주문 헤더 ORDER_TIME 술어)가 따로 있고, 그쪽으로 가야 한다.
-            raise SqlCompileError(
-                "시각 경계가 걸린 기간은 이 시간 바인딩(날짜 단위 컬럼)으로 표현할 수 없습니다"
-                f"(요청 구간: {window.start.isoformat()} {window.start_time or ''}"
-                f" ~ {window.inclusive_end.isoformat()} {window.end_time or ''})"
+            time_column = _time_of_day_column(column, context)
+            if time_column is None:
+                # 시각 컬럼이 이 소스에 **선언되어 있지 않다**. 날짜만 걸면 '23시 59분 59초까지'가
+                # '그날 하루 전체'가 되므로 근사하지 않고 미지원으로 닫는다.
+                raise SqlCompileError(
+                    "시각 경계가 걸린 기간은 이 시간 바인딩(날짜 단위 컬럼)으로 표현할 수 없습니다"
+                    f"(요청 구간: {window.start.isoformat()} {window.start_time or ''}"
+                    f" ~ {window.inclusive_end.isoformat()} {window.end_time or ''})"
+                )
+            return _compile_interval_with_time_bounds(
+                column, time_column, window, grain=grain, data_type=data_type
             )
         if not (grain.aligned(window.start) and grain.aligned(window.end_exclusive)):
             raise SqlCompileError(
@@ -675,7 +909,10 @@ def _correlation(
 ) -> str:
     active_alias = alias or spec.alias
     if spec.correlation_sql:
-        return _render_binding(spec.correlation_sql, spec, context, alias=active_alias)
+        # 상관식도 AND 문맥으로 간다 — 선언이 ``OR`` 을 가지면 상관이 조건 밖으로 샌다.
+        return as_raw_conjunct(
+            _render_binding(spec.correlation_sql, spec, context, alias=active_alias)
+        )
     return f"{active_alias}.{spec.event_subject_key} = {context.subject.alias}.{spec.subject_key}"
 
 
@@ -698,8 +935,9 @@ def _group_subject_sql(
 def _extra_predicates(
     spec: EventSpec, context: CompileContext, *, alias: str | None = None
 ) -> list[str]:
+    # 결과는 전부 AND 문맥(WHERE 목록)으로 간다. 선언이 최상위 ``OR`` 을 가지면 여기서 감싼다.
     return [
-        _render_binding(item, spec, context, alias=alias or spec.alias)
+        as_raw_conjunct(_render_binding(item, spec, context, alias=alias or spec.alias))
         for item in spec.extra_predicates
     ]
 
@@ -792,7 +1030,9 @@ def compile_relation(relation: event_ir.Relation, context: CompileContext) -> Re
         inner = _relation_context(plan, context)
         _validate_contains_filter_conjunction(relation.where, inner)
         compiled = compile_condition(relation.where, inner)
-        plan.where.append(compiled.sql)
+        # WHERE 목록은 AND 로 이어붙는다. 최상위가 ``Or`` 인 조각을 그대로 넣으면 상관 술어가
+        # 분기 밖으로 샌다(:func:`as_conjunct` 참조).
+        plan.where.append(as_conjunct(compiled))
         plan.params.update(compiled.params)
         return plan
 
@@ -1005,7 +1245,7 @@ def _compile_membership_join(
         bindings = {**left.field_bindings, **right.field_bindings}
         on_context = context.with_scope(scope).with_field_bindings(bindings)
         on_sql = compile_condition(relation.on, on_context)
-        right.where.append(on_sql.sql)
+        right.where.append(as_conjunct(on_sql))
         predicate = f"EXISTS ({_subquery(right, '1', context)})"
     if relation.kind == "anti":
         predicate = "NOT " + predicate
@@ -1048,6 +1288,7 @@ def _subquery(
         raise SqlCompileError(str(exc)) from exc
     parts = [f"SELECT {rendered_limit.prefix}{selected} FROM {plan.from_sql}"]
     if plan.where:
+        _assert_conjunction_safe(plan.where)
         parts.append("WHERE " + " AND ".join(plan.where))
     if plan.group_by:
         parts.append("GROUP BY " + ", ".join(plan.group_by))
@@ -1300,7 +1541,13 @@ def _combine(
         if duplicated:
             raise SqlCompileError(f"SQL 파라미터 이름이 중복되었습니다: {sorted(duplicated)}")
         params.update(item.params)
-    return CompiledCondition(sql=joiner.join(f"({item.sql})" for item in compiled), params=params)
+    # 피연산자는 전부 감싼다(기존 렌더 유지). 합성 **결과**는 감싸지 않고 결합도만 싣는다 —
+    # 잉여 괄호 없이도 받는 쪽이 :func:`as_conjunct` 로 옳게 판단할 수 있다.
+    return CompiledCondition(
+        sql=joiner.join(f"({item.sql})" for item in compiled),
+        params=params,
+        precedence=SqlPrecedence.OR if joiner == " OR " else SqlPrecedence.AND,
+    )
 
 
 def _compile_exists(condition: Exists, context: CompileContext) -> CompiledCondition:

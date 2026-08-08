@@ -66,6 +66,16 @@
       }
     },
     "login_channel": {"label": "마지막 로그인 채널", "source_category": "login_channel"},
+    "order_device": {
+      "label": "주문 디바이스",
+      "_comment": "물리 코드는 login_channel/signup_channel 과 같은 DEVICE_TYPE_CD.* 사전이지만(실측 CRMDW: 주문 헤더에 PC 116,530 · APP 69,195 · MW 44,717), 그 둘은 회원 컬럼(LAST_LOGIN_CHANNEL·REG_CHANNEL_CD)에 묶인 eq_filters 정체성이라 주문 헤더 컬럼을 대신 소유할 수 없다. 같은 코드 사전을 쓰는 별개의 축이므로 여기서 인라인으로 선언한다.",
+      "_alias_rule": "한 낱말 별칭이 다른 실재 표면어의 접두어가 되면 안 된다. '앱' 을 넣었더니 '앱푸시 수신 동의'의 '앱푸시' 안에서 매치돼 동의 축 4종이 catalog_value 극성 검증에서 깨졌다(실측 2026-08-08). '웹' 도 '모바일웹'의 부분이라 같은 이유로 뺀다. 두 토큰 이상은 순서보존 토큰 매칭이라 안전하다.",
+      "values": {
+        "app": {"physical": "DEVICE_TYPE_CD.APP", "aliases": ["모바일앱", "어플", "어플리케이션", "앱 주문", "앱 구매"]},
+        "mobile_web": {"physical": "DEVICE_TYPE_CD.MW", "aliases": ["모바일웹", "엠웹", "모바일 웹", "모바일브라우저"]},
+        "pc": {"physical": "DEVICE_TYPE_CD.PC", "aliases": ["PC", "피시", "컴퓨터", "데스크탑", "데스크톱"]}
+      }
+    },
     "consent_flag": {
       "label": "수신 동의 여부",
       "_comment": "순수 Y/N 플래그다. eq_filters 는 이 컬럼들을 '동의한 회원'이라는 **필터 정체성**으로 소유하지 그 자체가 값 사전은 아니므로, 여기서 인라인 값 도메인을 선언해도 이중 소유가 아니다.",
@@ -104,12 +114,15 @@
   },
   "sources": {
     "purchase": {
+      "_comment_time_of_day": "ORDER_TIME 은 nvarchar(6) 'HHMMSS'(실측 2026-08-08). 날짜 컬럼과 별개 축이며, 이 선언이 있어야 시각 경계('7월 1일 23시 59분 59초까지')가 경계일에만 걸리는 술어로 낮아진다 — 선언이 없으면 시각 경계는 근사하지 않고 미지원으로 닫힌다.",
       "table": "CRM_SL_ORDERHEADERMALL",
       "alias": "EO",
       "subject_key": "MEMBER_NO",
       "event_subject_key": "MEMBER_NO",
       "time_column": "ORDER_DATE",
       "time_format": "char8",
+      "time_of_day_column": "ORDER_TIME",
+      "time_of_day_format": "char6",
       "binding": "fact_table",
       "grain": "event",
       "label": "구매",
@@ -498,6 +511,15 @@
       "label": "기준월 가치등급",
       "aliases": ["가치등급", "가치 등급"]
     },
+    "member_month_snapshot.buy_due_date": {
+      "_comment": "구매예정일. 실측 2026-08-08: CRM_MB_MONTHCRMINFO.BUY_DUE_DATE 는 char8 이고 기준월보다 뒤의 날짜를 담는다(201701 스냅샷에 20170301 등). supports_future_values 는 그 사실의 선언이며, 미래 방향 창은 이 값이 참인 필드에만 걸린다 — 과거 사건 컬럼(ORDER_DATE)에 미래 창을 걸면 항상 0건이다.",
+      "source": "member_month_snapshot",
+      "column": "BUY_DUE_DATE",
+      "data_type": "date_char8",
+      "label": "구매예정일",
+      "aliases": ["구매예정일", "구매 예정일", "다음 구매 예정일"],
+      "supports_future_values": true
+    },
     "member_month_snapshot.prev_worth_grade": {
       "source": "member_month_snapshot",
       "column": "PREV_WORTH_GRADE",
@@ -528,6 +550,15 @@
       "label": "주문 시각",
       "aliases": ["주문 시간", "구매 시간"]
     },
+    "purchase.device": {
+      "_comment": "주문이 어느 디바이스에서 났는가. 회원측 last_login_channel/signup_channel 과 같은 코드 사전(DEVICE_TYPE_CD.*)을 쓰지만 축이 다르다 — 저 둘은 회원의 마지막 상태이고 이것은 주문 건의 속성이다. '앱과 PC 양쪽에서 모두 주문'은 이 필드의 값 둘에 대한 EXISTS 두 개이지 회원 스냅샷 비교가 아니다.",
+      "source": "purchase",
+      "column": "DEVICE_TYPE_CD",
+      "data_type": "string",
+      "value_domain": "order_device",
+      "label": "주문 디바이스",
+      "aliases": ["주문 채널", "구매 채널", "주문 디바이스", "구매 디바이스"]
+    },
     "purchase_line.product_id": {
       "source": "purchase_line",
       "column": "PRODUCT_ID",
@@ -536,6 +567,26 @@
       "literal_pattern": "^(?=.{1,20}$)(?=.*[0-9])[A-Za-z0-9][A-Za-z0-9._:-]*$",
       "label": "구매 상품 식별자",
       "aliases": ["상품 ID", "제품 ID", "상품 코드", "제품 코드"]
+    },
+    "purchase_line.brand_id": {
+      "source": "purchase_line",
+      "column": "BRAND_ID",
+      "expression": "{alias}_PRODUCT.BRAND_ID",
+      "data_type": "string",
+      "label": "구매 상품 브랜드 식별자",
+      "aliases": ["브랜드 ID", "브랜드 코드", "제조사 코드"]
+    },
+    "purchase_line.brand_name": {
+      "_comment": "브랜드는 상품마스터의 컬럼이고 그 조인은 purchase_line.from_sql 이 이미 갖고 있다 — 새 조인도 새 컴파일러 분기도 필요 없다. 서로 다른 브랜드 개수는 기존 범용 aggregate.count_distinct 로 낮춰진다(장바구니 상품 종류 세기와 같은 경로).",
+      "source": "purchase_line",
+      "column": "BRAND_NAME",
+      "expression": "{alias}_PRODUCT.BRAND_NAME",
+      "data_type": "string",
+      "match_mode": "contains",
+      "search_expressions": ["{alias}_PRODUCT.BRAND_NAME"],
+      "allowed_operators": ["=", "!="],
+      "label": "구매 상품 브랜드명 부분검색",
+      "aliases": ["브랜드", "브랜드명", "제조사", "메이커"]
     },
     "purchase_line.product_name": {
       "source": "purchase_line",

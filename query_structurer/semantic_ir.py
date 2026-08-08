@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from datetime import date, timedelta
 from typing import Any
 
+import audience_frame
 import calendar_window
 import event_ir
 from calendar_window import (
@@ -14,6 +15,7 @@ from calendar_window import (
     parse_calendar_window_spans,
 )
 import condition_normalizers
+import lexicon_patterns
 import semantic_domain_binding
 from semantic_normalizers import (
     AmountNormalizer,
@@ -92,8 +94,35 @@ _DURATION_SURFACE_PATTERN = "|".join(
     re.escape(unit)
     for unit in sorted(DURATION_UNIT_SEMANTICS, key=lambda item: (-len(item), item))
 ) or r"(?!)"
+# 단위 뒤에 올 수 있는 **조사·범위 표지**. 한국어에는 낱말 경계가 없으므로 "단위 뒤에 한글이
+# 오면 다른 낱말"이라는 규칙만으로는 ``30일에는`` 의 ``30일`` 을 놓친다 — 그리고 그 누락은
+# 그대로 ``기간 값이 없습니다`` 가 되어, 사용자가 **말한** 기간을 되묻게 된다(실측 2026-08-08
+# 감사 #62). 목록을 여기 적지 않고 어휘 선언에서 만드는 이유는 조사 목록이 이 저장소에 이미
+# 다섯 벌 있기 때문이다(§53) — 새 벌을 만들면 여섯 번째가 된다.
+_DURATION_TRAILING_PATTERN = "|".join(
+    re.escape(term)
+    for term in sorted(
+        {
+            term
+            for name in (
+                "frame_particle",
+                "bound_particle",
+                "range_opener",
+                "range_closer",
+                "temporal_within_marker",
+            )
+            for term in lexicon_patterns.vocabulary(name)
+            if term
+        },
+        key=lambda item: (-len(item), item),
+    )
+)
 DURATION_LITERAL_RE = re.compile(
-    rf"(?<![\d.])(?P<value>\d+)\s*(?P<unit>{_DURATION_SURFACE_PATTERN})(?![가-힣A-Za-z0-9])"
+    rf"(?<![\d.])(?P<value>\d+)\s*(?P<unit>{_DURATION_SURFACE_PATTERN})"
+    rf"(?![가-힣A-Za-z0-9])"
+    if not _DURATION_TRAILING_PATTERN
+    else rf"(?<![\d.])(?P<value>\d+)\s*(?P<unit>{_DURATION_SURFACE_PATTERN})"
+    rf"(?=(?:{_DURATION_TRAILING_PATTERN})|[^가-힣A-Za-z0-9]|$)"
 )
 # 평가 기준일은 일반 달력 창과 다르다. ``2026년 8월 3일 기준 최근 30일``의
 # 첫 날짜는 독립 사건 구간이 아니라 뒤 rolling window의 고정 anchor다. 이 역할은
@@ -282,6 +311,43 @@ def scan_literal_bindings(
                 match.group(0),
                 {"date": anchor.isoformat(), "role": "rolling_anchor"},
             )
+
+    # **두 상대 경계는 하나의 구간이다.** ``3개월 전부터 1개월 전까지`` 를 경계 둘로 두면
+    # 소비자가 반쪽만 읽어 다른 기간이 나간다(감사 #85). 합성은 달력 문법이 소유하고
+    # (:func:`calendar_window.compose_boundary_interval`) 여기서는 그 결과를 **원자 하나**로
+    # 옮긴다 — 원자를 하나로 만드는 것이 요점이다. 둘로 두면 리터럴 정산이 두 소비자를
+    # 요구하고, 구간 하나는 그중 하나만 소비할 수 있다.
+    if reference_date is not None:
+        composed = calendar_window.compose_boundary_interval(
+            [candidate for _start, _end, candidate in duration_candidates],
+            today=reference_date,
+        )
+        if composed is not None:
+            window, compact_span = composed
+            span = audience_frame.compact_to_source_span(query, *compact_span)
+            if span is not None and not _overlaps(span[0], span[1], occupied):
+                start_date = date(
+                    int(window["from"][:4]), int(window["from"][4:6]), int(window["from"][6:8])
+                )
+                inclusive_end = date(
+                    int(window["to"][:4]), int(window["to"][4:6]), int(window["to"][6:8])
+                )
+                append(
+                    "date_window",
+                    span[0],
+                    span[1],
+                    query[span[0]:span[1]],
+                    {
+                        "from": window["from"],
+                        "to": window["to"],
+                        "label": window.get("label"),
+                        "event_ir_window": {
+                            "type": "interval",
+                            "start": start_date.isoformat(),
+                            "end_exclusive": (inclusive_end + timedelta(days=1)).isoformat(),
+                        },
+                    },
+                )
 
     for window, start, end in _deterministic_calendar_window_spans(query, reference_date):
         if _overlaps(start, end, occupied):

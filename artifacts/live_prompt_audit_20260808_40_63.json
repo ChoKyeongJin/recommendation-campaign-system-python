@@ -1,0 +1,1565 @@
+{
+ "summary": {
+  "total": 24,
+  "outcomes": {
+   "sql": 14,
+   "unsupported": 2,
+   "clarification": 7,
+   "failure": 1,
+   "error": 0
+  },
+  "verdicts": {
+   "match": 0,
+   "improvement": 0,
+   "regression": 0,
+   "unknown": 24
+  },
+  "lanes": {
+   "sql_template:event_expression": 14
+  },
+  "lane_ids": {
+   "sql_template:event_expression": [
+    40,
+    42,
+    43,
+    45,
+    48,
+    49,
+    50,
+    55,
+    56,
+    58,
+    59,
+    60,
+    61,
+    63
+   ]
+  },
+  "unstable": [],
+  "semantic_unstable": [],
+  "regressions": [],
+  "improvements": []
+ },
+ "rows": [
+  {
+   "id": 40,
+   "prompt": "2019년에 이십만원 이상을 구매한고객에서 남자는 제외해.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_899bce7bef509a45585d"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 26.6,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_899bce7bef509a45585d",
+      "execution_fingerprint": "exe_01c2b20c78709e7be73b",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '20190101~20191231 구매 sum >= 200000' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND ((SELECT ISNULL(SUM(EO.PAYMENT_AMT), 0) FROM CRM_SL_ORDERHEADERMALL EO WHERE EO.MEMBER_NO = B.MEMBER_NO AND EO.ORDER_DATE >= '20190101' AND EO.ORDER_DATE < '20200101') >= 200000) AND (B.GENDER_CD != 'GENDER_CD.MALE')"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 41,
+   "prompt": "최근 캠페인 발송 성공 횟수가 3회 이상이고 구매반응이 없는 회원을 대상으로 재반응 유도 캠페인을 만들어줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    null
+   ],
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 26.0,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     },
+     "diagnostics": {
+      "status": "needs_clarification",
+      "failure_reason": "semantic_ir_needs_clarification",
+      "failure_stage": "condition_recognition",
+      "audience_diagnosis": "semantic_ir_needs_clarification",
+      "interpretation_status": "needs_clarification",
+      "semantic_fingerprint": null,
+      "execution_fingerprint": null,
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [
+       {
+        "policy_id": "period_binding",
+        "decision": "allow",
+        "reason_code": "bare_recency_without_duration"
+       }
+      ],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": null,
+      "coverage_verdict": null,
+      "unresolved_source_conditions": [
+       {
+        "code": "missing_argument",
+        "stage": null
+       }
+      ],
+      "sql_provenance": {
+       "candidate_id": null,
+       "candidate_source": null,
+       "candidate_count": 0,
+       "generation_source": null,
+       "audience_authority": null
+      },
+      "blocked_sql": null,
+      "sql": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 42,
+   "prompt": "최근 90일 동안 총 구매금액이 30만원 이상인 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_5976e34cb829d8cfd802"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 32.5,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_5976e34cb829d8cfd802",
+      "execution_fingerprint": "exe_662bf4e301b313751dbf",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 2,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '최근 90일 구매 sum >= 300000' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND (SELECT ISNULL(SUM(EO.PAYMENT_AMT), 0) FROM CRM_SL_ORDERHEADERMALL EO WHERE EO.MEMBER_NO = B.MEMBER_NO AND EO.ORDER_DATE >= CONVERT(CHAR(8), DATEADD(DAY, -90, GETDATE()), 112)) >= 300000"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_structurer_failure). 같은 배치의 '최근 90일 주문만 대상으로 총 구매금액이 30만원 이상인 회원을 찾아줘.'는 동의 표현이라 별도 추가하지 않음"
+  },
+  {
+   "id": 43,
+   "prompt": "최근 90일 동안 구매금액이 30만원 이상인 주문을 한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_a3ab8a08999965cc13e6"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 25.5,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_a3ab8a08999965cc13e6",
+      "execution_fingerprint": "exe_1a95b140ec512fe362b0",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 2,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '최근 90일 구매 sum >= 300000' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND (SELECT ISNULL(SUM(EO.PAYMENT_AMT), 0) FROM CRM_SL_ORDERHEADERMALL EO WHERE EO.MEMBER_NO = B.MEMBER_NO AND EO.ORDER_DATE >= CONVERT(CHAR(8), DATEADD(DAY, -90, GETDATE()), 112)) >= 300000"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 44,
+   "prompt": "구매 회원이 100명 이상인 브랜드를 알려줘.",
+   "expectation": "unknown",
+   "outcome": "failure",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_0f57391715c18407fe38"
+   ],
+   "observations": [
+    {
+     "outcome": "failure",
+     "reason": "rules_fallback:required_candidate_not_constructed",
+     "status": "no_verified_sql",
+     "elapsed_s": 32.2,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     },
+     "diagnostics": {
+      "status": "no_verified_sql",
+      "failure_reason": "rules_fallback:required_candidate_not_constructed",
+      "failure_stage": "condition_recognition",
+      "audience_diagnosis": "rules_fallback:required_candidate_not_constructed",
+      "interpretation_status": null,
+      "semantic_fingerprint": "sem_0f57391715c18407fe38",
+      "execution_fingerprint": "exe_56fc8dc43e1fa5d9eaf1",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [
+       {
+        "status": "compile_failure",
+        "stage": "rules_fallback",
+        "code": "required_candidate_not_constructed",
+        "requirement_ids": [],
+        "details": {
+         "recognized_symbols": [
+          "purchase"
+         ],
+         "audience_expression_present": false
+        }
+       }
+      ],
+      "result_shape": "entity_list",
+      "requirement_counts": null,
+      "coverage_verdict": null,
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": null,
+       "candidate_source": null,
+       "candidate_count": 0,
+       "generation_source": null,
+       "audience_authority": null
+      },
+      "blocked_sql": null,
+      "sql": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 45,
+   "prompt": "최근 90일 동안 정확히 세 번 주문한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_704a6107414bf2308ace"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 24.7,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_704a6107414bf2308ace",
+      "execution_fingerprint": "exe_ea15bcbef10501c41885",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 2,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '최근 90일 구매 count = 3' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND B.MEMBER_NO IN (SELECT EO.MEMBER_NO FROM CRM_SL_ORDERHEADERMALL EO WHERE EO.ORDER_DATE >= CONVERT(CHAR(8), DATEADD(DAY, -90, GETDATE()), 112) AND EO.MEMBER_NO IS NOT NULL GROUP BY EO.MEMBER_NO HAVING COUNT(DISTINCT EO.ORDER_ID) = 3)"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 46,
+   "prompt": "서로 다른 브랜드를 정확히 두 개 구매한 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    null
+   ],
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 17.9,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     },
+     "diagnostics": {
+      "status": "unsupported",
+      "failure_reason": "semantic_ir_unsupported",
+      "failure_stage": "real_db_mapping",
+      "audience_diagnosis": "semantic_ir_unsupported",
+      "interpretation_status": "unsupported",
+      "semantic_fingerprint": null,
+      "execution_fingerprint": null,
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": null,
+      "coverage_verdict": null,
+      "unresolved_source_conditions": [
+       {
+        "code": "unsupported_semantics",
+        "stage": null
+       }
+      ],
+      "sql_provenance": {
+       "candidate_id": null,
+       "candidate_source": null,
+       "candidate_count": 0,
+       "generation_source": null,
+       "audience_authority": null
+      },
+      "blocked_sql": null,
+      "sql": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 47,
+   "prompt": "이메일, 문자, 앱푸시 중 정확히 두 개 채널에 동의한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    null
+   ],
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 23.2,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     },
+     "diagnostics": {
+      "status": "needs_clarification",
+      "failure_reason": "semantic_ir_needs_clarification",
+      "failure_stage": "condition_recognition",
+      "audience_diagnosis": "semantic_ir_needs_clarification",
+      "interpretation_status": "needs_clarification",
+      "semantic_fingerprint": null,
+      "execution_fingerprint": null,
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": null,
+      "coverage_verdict": null,
+      "unresolved_source_conditions": [
+       {
+        "code": "ambiguous_requirement",
+        "stage": null
+       }
+      ],
+      "sql_provenance": {
+       "candidate_id": null,
+       "candidate_source": null,
+       "candidate_count": 0,
+       "generation_source": null,
+       "audience_authority": null
+      },
+      "blocked_sql": null,
+      "sql": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 48,
+   "prompt": "장바구니에 서로 다른 상품을 정확히 네 종류 담은 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_1050674a5ec3a28553e5"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 20.4,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_1050674a5ec3a28553e5",
+      "execution_fingerprint": "exe_31f1457aa704099e7abe",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '미결제 장바구니 count = 4' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND B.MEMBER_ID IN (SELECT EAC.CART_ID FROM ODS_MALL_OMS_CART EAC WHERE EAC.KEEP_YN = 'Y' AND EAC.CART_ID IS NOT NULL GROUP BY EAC.CART_ID HAVING COUNT(DISTINCT EAC.PRODUCT_ID) = 4)"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (query_plan_required_conditions_missing)"
+  },
+  {
+   "id": 49,
+   "prompt": "사료, 간식, 장난감을 모두 구매한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_6a1b7c4f34bdc583c80d"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 25.8,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_6a1b7c4f34bdc583c80d",
+      "execution_fingerprint": "exe_8c05984dd096818fa226",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '구매 상세 있음, 구매 상세 있음, 구매 상세 있음' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND (EXISTS (SELECT 1 FROM CRM_SL_ORDERDETAILMALL OD LEFT JOIN CRM_CM_PRODUCT OD_PRODUCT ON OD.PRODUCT_ID = OD_PRODUCT.PRODUCT_ID WHERE OD.MEMBER_NO = B.MEMBER_NO AND (OD_PRODUCT.PRODUCT_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORY LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYL_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYM_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYS_NAME LIKE N'%사료%' ESCAPE N'~'))) AND (EXISTS (SELECT 1 FROM CRM_SL_ORDERDETAILMALL OD LEFT JOIN CRM_CM_PRODUCT OD_PRODUCT ON OD.PRODUCT_ID = OD_PRODUCT.PRODUCT_ID WHERE OD.MEMBER_NO = B.MEMBER_NO AND (OD_PRODUCT.PRODUCT_NAME LIKE N'%간식%' ESCAPE N'~' OR OD_PRODUCT.CATEGORY LIKE N'%간식%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYL_NAME LIKE N'%간식%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYM_NAME LIKE N'%간식%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYS_NAME LIKE N'%간식%' ESCAPE N'~'))) AND (EXISTS (SELECT 1 FROM CRM_SL_ORDERDETAILMALL OD LEFT JOIN CRM_CM_PRODUCT OD_PRODUCT ON OD.PRODUCT_ID = OD_PRODUCT.PRODUCT_ID WHERE OD.MEMBER_NO = B.MEMBER_NO AND (OD_PRODUCT.PRODUCT_NAME LIKE N'%장난감%' ESCAPE N'~' OR OD_PRODUCT.CATEGORY LIKE N'%장난감%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYL_NAME LIKE N'%장난감%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYM_NAME LIKE N'%장난감%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYS_NAME LIKE N'%장난감%' ESCAPE N'~')))"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  },
+  {
+   "id": 50,
+   "prompt": "이메일, 문자, 앱푸시에 모두 동의한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_059504b7e4dda30cd05c"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 26.8,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_059504b7e4dda30cd05c",
+      "execution_fingerprint": "exe_6d2e696a16966615f685",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND (B.EMAIL_YN = 'Y') AND (B.SMS_YN = 'Y') AND (B.APP_PUSH_YN = 'Y')"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  },
+  {
+   "id": 51,
+   "prompt": "최근 3개월 동안 매월 한 번 이상 구매한 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "unsupported",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    null
+   ],
+   "observations": [
+    {
+     "outcome": "unsupported",
+     "reason": "semantic_ir_unsupported",
+     "status": "unsupported",
+     "elapsed_s": 30.2,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     },
+     "diagnostics": {
+      "status": "unsupported",
+      "failure_reason": "semantic_ir_unsupported",
+      "failure_stage": "real_db_mapping",
+      "audience_diagnosis": "semantic_ir_unsupported",
+      "interpretation_status": "unsupported",
+      "semantic_fingerprint": null,
+      "execution_fingerprint": null,
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": null,
+      "coverage_verdict": null,
+      "unresolved_source_conditions": [
+       {
+        "code": "unsupported_semantics",
+        "stage": null
+       },
+       {
+        "code": null,
+        "stage": null
+       }
+      ],
+      "sql_provenance": {
+       "candidate_id": null,
+       "candidate_source": null,
+       "candidate_count": 0,
+       "generation_source": null,
+       "audience_authority": null
+      },
+      "blocked_sql": null,
+      "sql": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_structurer_failure)"
+  },
+  {
+   "id": 52,
+   "prompt": "지정한 세 개 캠페인에 모두 반응한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    null
+   ],
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 21.7,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     },
+     "diagnostics": {
+      "status": "needs_clarification",
+      "failure_reason": "semantic_ir_needs_clarification",
+      "failure_stage": "condition_recognition",
+      "audience_diagnosis": "semantic_ir_needs_clarification",
+      "interpretation_status": "needs_clarification",
+      "semantic_fingerprint": null,
+      "execution_fingerprint": null,
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": null,
+      "coverage_verdict": null,
+      "unresolved_source_conditions": [
+       {
+        "code": "missing_argument",
+        "stage": null
+       }
+      ],
+      "sql_provenance": {
+       "candidate_id": null,
+       "candidate_source": null,
+       "candidate_count": 0,
+       "generation_source": null,
+       "audience_authority": null
+      },
+      "blocked_sql": null,
+      "sql": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 53,
+   "prompt": "앱과 PC 양쪽 채널에서 모두 주문한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    null
+   ],
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_registry_gap",
+     "status": "needs_clarification",
+     "elapsed_s": 21.8,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     },
+     "diagnostics": {
+      "status": "needs_clarification",
+      "failure_reason": "semantic_registry_gap",
+      "failure_stage": "condition_recognition",
+      "audience_diagnosis": "semantic_registry_gap",
+      "interpretation_status": "needs_clarification",
+      "semantic_fingerprint": null,
+      "execution_fingerprint": null,
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": null,
+      "coverage_verdict": null,
+      "unresolved_source_conditions": [
+       {
+        "code": "unsupported_semantics",
+        "stage": null
+       }
+      ],
+      "sql_provenance": {
+       "candidate_id": null,
+       "candidate_source": null,
+       "candidate_count": 0,
+       "generation_source": null,
+       "audience_authority": null
+      },
+      "blocked_sql": null,
+      "sql": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 54,
+   "prompt": "앱, 모바일웹, PC 중 하나의 채널로 주문한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    null
+   ],
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_registry_gap",
+     "status": "needs_clarification",
+     "elapsed_s": 34.0,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     },
+     "diagnostics": {
+      "status": "needs_clarification",
+      "failure_reason": "semantic_registry_gap",
+      "failure_stage": "condition_recognition",
+      "audience_diagnosis": "semantic_registry_gap",
+      "interpretation_status": "needs_clarification",
+      "semantic_fingerprint": null,
+      "execution_fingerprint": null,
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": null,
+      "coverage_verdict": null,
+      "unresolved_source_conditions": [
+       {
+        "code": "unsupported_semantics",
+        "stage": null
+       }
+      ],
+      "sql_provenance": {
+       "candidate_id": null,
+       "candidate_source": null,
+       "candidate_count": 0,
+       "generation_source": null,
+       "audience_authority": null
+      },
+      "blocked_sql": null,
+      "sql": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 55,
+   "prompt": "사료, 간식, 장난감 중 하나라도 구매한 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_f93bc1a0f7a4d81091e8"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 32.9,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_f93bc1a0f7a4d81091e8",
+      "execution_fingerprint": "exe_32ee07fa7099668143ae",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '구매 상세 있음' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND EXISTS (SELECT 1 FROM CRM_SL_ORDERDETAILMALL OD LEFT JOIN CRM_CM_PRODUCT OD_PRODUCT ON OD.PRODUCT_ID = OD_PRODUCT.PRODUCT_ID WHERE OD.MEMBER_NO = B.MEMBER_NO AND ((OD_PRODUCT.PRODUCT_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORY LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYL_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYM_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYS_NAME LIKE N'%사료%' ESCAPE N'~')) OR ((OD_PRODUCT.PRODUCT_NAME LIKE N'%간식%' ESCAPE N'~' OR OD_PRODUCT.CATEGORY LIKE N'%간식%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYL_NAME LIKE N'%간식%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYM_NAME LIKE N'%간식%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYS_NAME LIKE N'%간식%' ESCAPE N'~')) OR ((OD_PRODUCT.PRODUCT_NAME LIKE N'%장난감%' ESCAPE N'~' OR OD_PRODUCT.CATEGORY LIKE N'%장난감%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYL_NAME LIKE N'%장난감%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYM_NAME LIKE N'%장난감%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYS_NAME LIKE N'%장난감%' ESCAPE N'~')))"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_verification_failed)"
+  },
+  {
+   "id": 56,
+   "prompt": "이메일, 문자, 앱푸시 중 하나 이상에 동의한 회원을 보여줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_29743b23c9237d92181b"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 30.9,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_29743b23c9237d92181b",
+      "execution_fingerprint": "exe_0efc73bd5010d7d950ff",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND ((B.EMAIL_YN = 'Y') OR (B.SMS_YN = 'Y') OR (B.APP_PUSH_YN = 'Y'))"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 57,
+   "prompt": "최근 3개 캠페인 중 하나라도 구매 반응을 보인 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    null
+   ],
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 27.8,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     },
+     "diagnostics": {
+      "status": "needs_clarification",
+      "failure_reason": "semantic_ir_needs_clarification",
+      "failure_stage": "condition_recognition",
+      "audience_diagnosis": "semantic_ir_needs_clarification",
+      "interpretation_status": "needs_clarification",
+      "semantic_fingerprint": null,
+      "execution_fingerprint": null,
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [
+       {
+        "policy_id": "period_binding",
+        "decision": "allow",
+        "reason_code": "bare_recency_without_duration"
+       }
+      ],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": null,
+      "coverage_verdict": null,
+      "unresolved_source_conditions": [
+       {
+        "code": "missing_argument",
+        "stage": null
+       }
+      ],
+      "sql_provenance": {
+       "candidate_id": null,
+       "candidate_source": null,
+       "candidate_count": 0,
+       "generation_source": null,
+       "audience_authority": null
+      },
+      "blocked_sql": null,
+      "sql": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 58,
+   "prompt": "서울, 경기, 인천 중 한 지역에 거주하는 회원을 추출해줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_1d228c4a91bd86314ae4"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 21.4,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_1d228c4a91bd86314ae4",
+      "execution_fingerprint": "exe_054c16da6b20ff98f03f",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND ((B.SIDO = '서울') OR (B.SIDO = '경기') OR (B.SIDO = '인천'))"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 59,
+   "prompt": "사료를 구매하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_2d03db5d68a663ee2139"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 28.2,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_2d03db5d68a663ee2139",
+      "execution_fingerprint": "exe_15cfa4d089c1d932005f",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '구매 상세 없음' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND NOT EXISTS (SELECT 1 FROM CRM_SL_ORDERDETAILMALL OD LEFT JOIN CRM_CM_PRODUCT OD_PRODUCT ON OD.PRODUCT_ID = OD_PRODUCT.PRODUCT_ID WHERE OD.MEMBER_NO = B.MEMBER_NO AND (OD_PRODUCT.PRODUCT_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORY LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYL_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYM_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYS_NAME LIKE N'%사료%' ESCAPE N'~'))"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 60,
+   "prompt": "사료 외 상품을 구매한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_a47a4e9568bcf61cb156"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 22.2,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_a47a4e9568bcf61cb156",
+      "execution_fingerprint": "exe_0f40dcde3ca8a166c6a1",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '구매 상세 있음' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND EXISTS (SELECT 1 FROM CRM_SL_ORDERDETAILMALL OD LEFT JOIN CRM_CM_PRODUCT OD_PRODUCT ON OD.PRODUCT_ID = OD_PRODUCT.PRODUCT_ID WHERE OD.MEMBER_NO = B.MEMBER_NO AND (OD_PRODUCT.PRODUCT_NAME IS NOT NULL OR OD_PRODUCT.CATEGORY IS NOT NULL OR OD_PRODUCT.CATEGORYL_NAME IS NOT NULL OR OD_PRODUCT.CATEGORYM_NAME IS NOT NULL OR OD_PRODUCT.CATEGORYS_NAME IS NOT NULL) AND NOT (CASE WHEN ((OD_PRODUCT.PRODUCT_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORY LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYL_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYM_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYS_NAME LIKE N'%사료%' ESCAPE N'~')) THEN 1 ELSE 0 END = 1))"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: unsupported (semantic_ir_unsupported)"
+  },
+  {
+   "id": 61,
+   "prompt": "사료를 구매한 적은 없지만 다른 상품은 구매한 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_51e9f33dd0c34ffb1b6a"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 35.4,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_51e9f33dd0c34ffb1b6a",
+      "execution_fingerprint": "exe_92f766c2551654fdd6f9",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '구매 상세 없음, 구매 상세 있음' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND (NOT EXISTS (SELECT 1 FROM CRM_SL_ORDERDETAILMALL OD LEFT JOIN CRM_CM_PRODUCT OD_PRODUCT ON OD.PRODUCT_ID = OD_PRODUCT.PRODUCT_ID WHERE OD.MEMBER_NO = B.MEMBER_NO AND (OD_PRODUCT.PRODUCT_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORY LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYL_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYM_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYS_NAME LIKE N'%사료%' ESCAPE N'~'))) AND (EXISTS (SELECT 1 FROM CRM_SL_ORDERDETAILMALL OD LEFT JOIN CRM_CM_PRODUCT OD_PRODUCT ON OD.PRODUCT_ID = OD_PRODUCT.PRODUCT_ID WHERE OD.MEMBER_NO = B.MEMBER_NO AND (OD_PRODUCT.PRODUCT_NAME IS NOT NULL OR OD_PRODUCT.CATEGORY IS NOT NULL OR OD_PRODUCT.CATEGORYL_NAME IS NOT NULL OR OD_PRODUCT.CATEGORYM_NAME IS NOT NULL OR OD_PRODUCT.CATEGORYS_NAME IS NOT NULL) AND NOT (CASE WHEN ((OD_PRODUCT.PRODUCT_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORY LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYL_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYM_NAME LIKE N'%사료%' ESCAPE N'~' OR OD_PRODUCT.CATEGORYS_NAME LIKE N'%사료%' ESCAPE N'~')) THEN 1 ELSE 0 END = 1)))"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: no_verified_sql (presence_absence_conflict)"
+  },
+  {
+   "id": 62,
+   "prompt": "최근 30일에는 구매하지 않았지만 과거 구매 이력은 있는 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "clarification",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    null
+   ],
+   "observations": [
+    {
+     "outcome": "clarification",
+     "reason": "semantic_ir_needs_clarification",
+     "status": "needs_clarification",
+     "elapsed_s": 26.1,
+     "provenance": {
+      "candidate_id": null,
+      "candidate_source": null,
+      "candidate_count": 0,
+      "generation_source": null,
+      "audience_authority": null
+     },
+     "diagnostics": {
+      "status": "needs_clarification",
+      "failure_reason": "semantic_ir_needs_clarification",
+      "failure_stage": "condition_recognition",
+      "audience_diagnosis": "semantic_ir_needs_clarification",
+      "interpretation_status": "needs_clarification",
+      "semantic_fingerprint": null,
+      "execution_fingerprint": null,
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [
+       {
+        "policy_id": "period_binding",
+        "decision": "allow",
+        "reason_code": "bare_recency_without_duration"
+       }
+      ],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": null,
+      "coverage_verdict": null,
+      "unresolved_source_conditions": [
+       {
+        "code": "missing_argument",
+        "stage": null
+       }
+      ],
+      "sql_provenance": {
+       "candidate_id": null,
+       "candidate_source": null,
+       "candidate_count": 0,
+       "generation_source": null,
+       "audience_authority": null
+      },
+      "blocked_sql": null,
+      "sql": null
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  },
+  {
+   "id": 63,
+   "prompt": "모든 캠페인에 반응하지 않은 회원을 찾아줘.",
+   "expectation": "unknown",
+   "outcome": "sql",
+   "verdict": "unknown",
+   "unstable": false,
+   "semantic_unstable": false,
+   "semantic_fingerprints": [
+    "sem_2f27aa1d196d98e15738"
+   ],
+   "observations": [
+    {
+     "outcome": "sql",
+     "reason": "",
+     "status": "success",
+     "elapsed_s": 23.4,
+     "provenance": {
+      "candidate_id": "sql_template:event_expression",
+      "candidate_source": "sql_template",
+      "candidate_count": 1,
+      "generation_source": "sql_template",
+      "audience_authority": "event_ir"
+     },
+     "diagnostics": {
+      "status": "success",
+      "failure_reason": null,
+      "failure_stage": null,
+      "audience_diagnosis": null,
+      "interpretation_status": "resolved",
+      "semantic_fingerprint": "sem_2f27aa1d196d98e15738",
+      "execution_fingerprint": "exe_28ecd62b54f27db8da77",
+      "policy_version": "targeting-policy-v2",
+      "policy_decisions": [],
+      "compile_outcomes": [],
+      "result_shape": "entity_list",
+      "requirement_counts": {
+       "compiled": 1,
+       "explicit_unsupported": 0,
+       "policy_rejected": 0,
+       "user_clarification": 0,
+       "open": 0
+      },
+      "coverage_verdict": {
+       "is_shippable": true,
+       "reason_code": null,
+       "missing_requirement_ids": [],
+       "missing_canonical_kinds": [],
+       "traceability_gaps": []
+      },
+      "unresolved_source_conditions": [],
+      "sql_provenance": {
+       "candidate_id": "sql_template:event_expression",
+       "candidate_source": "sql_template",
+       "candidate_count": 1,
+       "generation_source": "sql_template",
+       "audience_authority": "event_ir"
+      },
+      "blocked_sql": null,
+      "sql": "SELECT DISTINCT B.MEMBER_NO AS CUST_ID, B.EMART_GRADE_CD AS member_grade, '캠페인 반응 없음' AS segment_label\nFROM CRM_MB_BASEINFO B\nWHERE B.MEMBER_STATE_CD = 'MEMBER_STATE_CD.NORMAL'\n  AND NOT EXISTS (SELECT 1 FROM MCS_CAMP_MBR_RSPN_FT R INNER JOIN Z_CAMPAIGN ZC ON ZC.CAMP_ID = R.CAMP_ID AND ZC.CAMP_EXEC_NO = R.CAMP_EXEC_NO WHERE TRY_CAST(R.MBR_NO AS BIGINT) = B.MEMBER_NO AND R.CGRP_TYPE_CD = 'T' AND (R.OFFR_RSPN_YN = 'Y' OR R.BUY_RSPN_YN = 'Y') AND ISNULL(ZC.CANCEL_YN, 'N') = 'N')"
+     }
+    }
+   ],
+   "note": "2026-08-02 /target-sql 실측: needs_clarification (semantic_ir_needs_clarification)"
+  }
+ ]
+}

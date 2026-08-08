@@ -394,7 +394,12 @@ REJECTION_CASES: tuple[tuple[str, str], ...] = (
     # 같은 값 둘은 변화가 아니다.
     ("골드에서 골드로 바뀐 회원", "transition_values_identical"),
     # 상태 축에는 전이 지표도 이력 소스도 선언이 없다.
-    ("정상에서 휴면으로 바뀐 회원", temporal_claims.VALUE_COUNT_MISMATCH),
+    #
+    # 사유 이름을 2026-08-08 에 고쳤다(감사 #73). 예전 이름은 ``VALUE_COUNT_MISMATCH``
+    # ("값 2개가 필요한데 1개")였는데, 그것은 사용자가 문장을 고치면 열린다는 뜻이라 틀렸다 —
+    # 두 값을 완벽히 적어도 이 축에는 시간 관측 지표가 없어서 열리지 않는다. **귀결(닫힘)은
+    # 그대로이고 이름만 정확해졌다.**
+    ("정상에서 휴면으로 바뀐 회원", temporal_claims.METRIC_NOT_DECLARED),
     # 끊기지 않은 N칸은 주체별 정렬·간격 판정이 필요하고 실행 IR 에 그 primitive 가 없다.
     ("3개월 연속 골드 등급이었던 회원", "temporal_operator_unsupported_by_metric"),
     # 구간이 없으면 '매월'이 **몇 칸**인지 정해지지 않는다. 칸 수가 판정의 재료인 연산은
@@ -610,7 +615,12 @@ def test_a_partial_transition_request_stays_closed(
 
     outcome = _synthesize(query, snapshot, semantic_catalog, runtime, context)
     assert isinstance(outcome, temporal_claims.TemporalClaimRejection), outcome
-    assert outcome.code == temporal_claims.VALUE_COUNT_MISMATCH
+    # `정상에서 휴면으로` 는 2026-08-08 에 사유 이름이 교정됐다(감사 #73) — 값이 모자란 것이
+    # 아니라 그 축에 시간 관측 지표가 없다. **닫힌다는 사실은 그대로**이고 이름만 정확해졌다.
+    assert outcome.code in {
+        temporal_claims.VALUE_COUNT_MISMATCH,
+        temporal_claims.METRIC_NOT_DECLARED,
+    }
 
 
 # ── 5. 코퍼스 커버리지: 문장이 아니라 연산으로 센다 ─────────────────────────────

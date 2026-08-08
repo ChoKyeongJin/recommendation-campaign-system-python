@@ -308,6 +308,30 @@ class _ValueHit:
 # ── 원문 조각 ────────────────────────────────────────────────────────────────────
 
 
+def _undeclared_metric_rejection(
+    query: str,
+    domain: str,
+    runtime: temporal_ir.TemporalRuntime,
+    marker_span: Span,
+) -> TemporalClaimRejection:
+    """값 축에 시간 관측 지표가 없다 — **이력 소스 부재**의 사유 하나.
+
+    두 소비자가 이 함수를 부른다. 하나는 값 개수를 세기 **전**이고(감사 #73: 두 값을 완벽히
+    적어도 열리지 않는 축에 "값이 하나 모자랍니다"라고 답하지 않기 위해), 하나는 축이 확정된
+    뒤다. 사유를 한 자리에서 만들지 않으면 같은 부재가 두 이름으로 설명된다.
+
+    귀결은 미지원이다(기본 disposition). 사용자가 문장을 고쳐서 열 수 있는 결핍이 아니다.
+    """
+    count = _domain_metric_count(runtime, domain)
+    code = METRIC_AMBIGUOUS if count > 1 else METRIC_NOT_DECLARED
+    message = (
+        f"값 도메인 '{domain}' 을 다루는 시간 지표 선언이 {count}개라 확정할 수 없습니다."
+        if count > 1
+        else f"값 도메인 '{domain}' 에는 시간 관측 지표가 선언되어 있지 않습니다."
+    )
+    return TemporalClaimRejection(code, message, _evidence_dict(query, *marker_span))
+
+
 def _evidence(query: str, start: int, end: int) -> sir.Evidence:
     return sir.Evidence(text=query[start:end], start=start, end=end)
 
@@ -944,6 +968,23 @@ def _plan_request(
 
     plan = _directional_plan(query, marker_span, plan, clause_hits) or plan
 
+    # **관측이 없는 축은 값을 더 말해도 열리지 않는다.** 그래서 값 개수보다 이 질문이 먼저다.
+    #
+    # 실측(2026-08-08 감사 #73) — `여성이면서 정상에서 휴면으로 바뀐 회원` 이 "선언된 값 2개를
+    # 요구하지만 확인된 값은 1개"로 반려됐다. 귀결(미지원)은 옳았지만 **이름이 틀렸다**: 회원
+    # 상태에는 시점·이력 지표 선언이 아예 없어서, 사용자가 두 값을 완벽히 적어도 열리지 않는다.
+    # 그 문구를 읽은 운영자는 고칠 수 없는 것을 고치라고 안내하게 된다.
+    axis_domains = {hit.domain for hit in clause_hits}
+    if not axis_domains:
+        axis = _axis_domain(query, marker_span, snapshot)
+        axis_domains = {axis} if axis is not None else set()
+    for axis in sorted(item for item in axis_domains if item):
+        if temporal_metric_for_domain(runtime, axis) is not None:
+            continue
+        # 사유를 여기서 새로 만들지 않는다 — 아래 `metric_id` 판정이 쓰는 것과 **같은** 코드와
+        # 문장이다. 달라진 것은 순서뿐이고, 순서가 곧 진단의 정확도다.
+        return _undeclared_metric_rejection(query, axis, runtime, marker_span)
+
     if plan.values:
         if len(clause_hits) != plan.values:
             start = min([marker.start, *(hit.start for hit in clause_hits)])
@@ -1036,14 +1077,7 @@ def _plan_request(
 
     metric_id = temporal_metric_for_domain(runtime, domain)
     if metric_id is None:
-        count = _domain_metric_count(runtime, domain)
-        code = METRIC_AMBIGUOUS if count > 1 else METRIC_NOT_DECLARED
-        message = (
-            f"값 도메인 '{domain}' 을 다루는 시간 지표 선언이 {count}개라 확정할 수 없습니다."
-            if count > 1
-            else f"값 도메인 '{domain}' 에는 시간 관측 지표가 선언되어 있지 않습니다."
-        )
-        return TemporalClaimRejection(code, message, _evidence_dict(query, *marker_span))
+        return _undeclared_metric_rejection(query, domain, runtime, marker_span)
 
     # ── 구간·시점 ─────────────────────────────────────────────────────────────
     period = clause_periods[0] if clause_periods else None

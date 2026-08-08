@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import functools
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
@@ -88,6 +89,45 @@ class ComparisonObligation:
 
 
 @dataclass(frozen=True)
+class ClauseObligation:
+    """절 하나가 주장하는 것 — 사건·극성·수량자·기간(:mod:`clause_semantics` 소유).
+
+    :class:`ComparisonObligation` 과 나란한 종류다. 저쪽이 '두 창의 지표 비교'라면 이쪽은
+    '이 사건이 이 구간에 있었는가 / 없었는가 / 칸마다 있었는가'다. 두 의무 모두 판정 근거는
+    이름이 아니라 :func:`try_plan_clause` 가 실제로 낮춰 본 결과다.
+    """
+
+    clause: Any  # clause_semantics.ClauseSemantics
+    kind: str = "clause_occurrence"
+
+    # 반환 타입이 ``Any`` 인 이유는 ``clause`` 가 ``Any`` 이기 때문이다(순환 import 회피).
+    # ``cast`` 로 좁히면 런타임 검증 없이 타입 오류를 숨긴다(§36) — 경계를 정직하게 남긴다.
+    @property
+    def source_span(self) -> Any:
+        return self.clause.span
+
+    @property
+    def source_text(self) -> Any:
+        return self.clause.evidence
+
+
+@dataclass(frozen=True)
+class FutureWindowObligation:
+    """미래 방향 창 하나 — ``향후 7일 안에 <미래 담는 필드>가 도래하는``.
+
+    :class:`ClauseObligation` 과 나란한 종류이고, 다른 점은 창의 **방향**이다. 방향은 확정
+    시점에만 쓰인다 — 실행 IR 은 여전히 절대 구간을 받는다(그래서 IR 을 열지 않았다).
+    """
+
+    field: str
+    window_start: date
+    window_end_exclusive: date
+    source_text: str
+    source_span: tuple[int, int]
+    kind: str = "future_window"
+
+
+@dataclass(frozen=True)
 class TemporalStateObligation:
     """속성의 시점·이력 조건 하나('지난달 말 기준 …'·'A에서 B로 …'·'N개월 내내 …').
 
@@ -101,7 +141,12 @@ class TemporalStateObligation:
     kind: str = MEMBER_STATE_HISTORY
 
 
-Obligation = ComparisonObligation | TemporalStateObligation
+Obligation = (
+    ComparisonObligation
+    | TemporalStateObligation
+    | ClauseObligation
+    | FutureWindowObligation
+)
 
 
 @dataclass(frozen=True)
@@ -820,6 +865,785 @@ def plan_satisfying_span(
     return None
 
 
+# ── 절 의무: 존재 / 부재 / 칸별 발생 ────────────────────────────────────────────────
+#
+# 이 갈래가 이 모듈에 있는 이유는 Phase 3 의 목표 그대로다 — 판정자가 **거부만** 하는 것이
+# 아니라 실행 가능한 계획을 스스로 생산해야 미지원 문구를 반박하는 것을 넘어 그 자리를 열 수
+# 있다. 낮춤은 전부 기존 범용 노드 조합이고 새 노드는 없다.
+
+
+def _binding_capabilities(event: str) -> tuple[frozenset[str], tuple[str, ...]] | None:
+    """이 카탈로그 사건을 관측하는 선언들이 **합쳐서** 갖는 능력. 선언이 없으면 ``None``.
+
+    합집합인 이유: 한 사건에 관측이 여럿일 수 있고(현재값 + 월별 스냅샷), 질문에 답할 수 있는
+    관측이 하나라도 있으면 그 질문은 답할 수 있다. 어느 관측이 쓰일지는 낮춤이 정한다.
+    """
+    import audience_runtime  # 지연 import — 판정자는 선언 로딩을 import 부작용으로 만들지 않는다
+    import temporal_ir
+
+    try:
+        catalog = temporal_ir.create_temporal_runtime(
+            audience_runtime.resolve_audience_catalog()
+        ).temporal_catalog
+    # 선언을 못 읽으면 판정하지 않는다(추측 금지). 넓게 잡지 않는 이유는 이 자리가 정확히
+    # 그 함정을 밟았기 때문이다 — 인자 하나가 빠진 호출을 ``except Exception`` 이 '선언 없음'
+    # 으로 위장해, 부재 능력 계약이 **한 번도 돌지 않은 채** 통과했다(구현 중 실측).
+    except temporal_ir.TemporalCatalogError:
+        return None
+    granted: set[str] = set()
+    binding_ids: list[str] = []
+    for binding_id, binding in catalog.bindings.items():
+        if str(getattr(binding, "source", "")) != event:
+            continue
+        binding_ids.append(str(binding_id))
+        capabilities = binding.observation_capabilities
+        granted.update(
+            name for name in capabilities.to_dict() if capabilities.has(name)
+        )
+    if not binding_ids:
+        return None
+    return frozenset(granted), tuple(sorted(binding_ids))
+
+
+def clause_capability_gap(clause: Any) -> Any:
+    """이 절의 수량자가 요구하는 능력을 어떤 관측도 갖고 있지 않으면 그 진단. 아니면 ``None``.
+
+    **부재(never)를 최종값 스냅샷으로 근사하지 않게 하는 자리다.** ``앱으로 로그인하지 않은
+    회원`` 을 ``LAST_LOGIN_CHANNEL != 'APP'`` 로 답하면 어제 앱으로 로그인한 회원이 대상에
+    들어간다 — 그 표현은 그 질문에 답할 수 없고, 답할 수 없다는 사실은 이미
+    ``observation_capabilities.supports_all_occurrences`` 로 선언돼 있다.
+    """
+    import semantic_diagnostics
+
+    required = clause.required_capabilities
+    if not required:
+        return None
+    resolved = _binding_capabilities(clause.event)
+    if resolved is None:
+        # 그 사건에 시간 관측 선언이 없다 — 능력 판정의 재료가 없으므로 반박도 차단도 하지
+        # 않는다(추측 금지). 이 자리는 다른 계층의 판정으로 넘어간다.
+        return None
+    granted, binding_ids = resolved
+    if required & granted:
+        # 하나라도 있으면 답할 수 있다. 맨 부재가 마지막 발생 시각만으로 답하는 자리다.
+        return None
+    label = _QUANTIFIER_LABELS.get(str(clause.quantifier), str(clause.quantifier))
+    qualifier = (
+        f"'{clause.qualifier_evidence}' 한정이 붙은 " if clause.qualified else ""
+    )
+    names = " 또는 ".join(sorted(required))
+    return semantic_diagnostics.missing_capability(
+        capability=names,
+        symbol=clause.event,
+        clause_id=clause.clause_id,
+        evidence=clause.evidence,
+        available=binding_ids,
+        user_action=(
+            f"'{clause.evidence}' 은(는) {qualifier}{label} 조건인데, "
+            f"'{clause.event}' 관측은 그 판정에 필요한 이력을 보관하지 않습니다"
+            f"(필요: {names}). 마지막 값으로 근사하면 뜻이 달라지므로 "
+            "이 조건은 지원하지 않습니다."
+        ),
+        developer_detail=(
+            f"quantifier={clause.quantifier} event={clause.event} "
+            f"qualified={clause.qualified} required={sorted(required)} "
+            f"bindings={list(binding_ids)} granted={sorted(granted)}"
+        ),
+    )
+
+
+# 수량자 → 사용자 문구에 쓰는 한국어 이름. 진단 생성자에 낱말을 적지 않기 위한 표 하나다.
+_QUANTIFIER_LABELS: dict[str, str] = {
+    "never": "부재(한 번도 없음)",
+    "every_bucket_occurrence": "칸별 전칭(각 기간마다 최소 1회)",
+    "every_bucket_state": "칸별 상태 전칭",
+}
+
+
+def _clause_window(clause: Any, *, query: str | None = None) -> Any:
+    """절이 소유한 기간 → IR 창. 기간이 없으면 ``None``(창 없는 술어는 정상이다).
+
+    **미래 방향 표지가 붙은 기간은 과거 창으로 만들지 않는다.** Event IR 의 창은 둘 다 과거를
+    보므로(``rolling``·``relative``) 미래 기간을 그 모양으로 옮기면 뜻이 뒤집힌다 — 구현 중
+    실측: ``향후 7일`` 이 ``>= 7일 전`` 으로 컴파일됐다. 그 부류가 가장 나쁜 결함이므로
+    (조용한 의미 반전) 여기서 fail-close 한다. 미래 창의 자리는
+    :func:`try_plan_future_window` 이고, 그쪽은 필드 능력 선언을 요구한다.
+    """
+    import event_ir
+
+    if clause.temporal is None or not clause.temporal.is_quantified:
+        return None
+    if isinstance(query, str) and query:
+        import calendar_window
+
+        span = clause.temporal.span
+        if span is not None and calendar_window.is_future_directed_duration(query, span[0]):
+            return None
+    wire = clause.temporal.clause.wire_window
+    if not isinstance(wire, dict):
+        return None
+    if wire.get("type") == "rolling":
+        unit = str(wire.get("unit") or "")
+        value = wire.get("value")
+        if unit not in event_ir.WINDOW_UNITS or not isinstance(value, int):
+            return None
+        return event_ir.RollingWindow(value=value, unit=unit)
+    if wire.get("type") == "interval":
+        start, end = wire.get("start"), wire.get("end_exclusive")
+        if not (isinstance(start, str) and isinstance(end, str)):
+            return None
+        try:
+            return event_ir.AbsoluteInterval(
+                start=date.fromisoformat(start), end_exclusive=date.fromisoformat(end)
+            )
+        except ValueError:
+            return None
+    return None
+
+
+def _occurrence_relation(event: str, window: Any) -> Any:
+    """``Source(event)`` + (창이 있으면) 시간 필터. 창이 없으면 소스 그대로."""
+    import event_ir
+
+    source = event_ir.Source(name=event)
+    if window is None:
+        return source
+    return event_ir.Filter(
+        relation=source,
+        where=event_ir.TimeFilter(
+            field=event_ir.FieldRef(name=f"{event}.occurred_at"), window=window
+        ),
+    )
+
+
+def _bucket_intervals(
+    clause: Any, *, today: date | None, query: str | None = None
+) -> tuple[Any, ...]:
+    """칸별 전칭의 각 칸을 **확정된 절대 구간**으로 편다. 못 펴면 빈 튜플.
+
+    ``최근 3개월 동안 매월`` = 세 달 각각이다. 칸의 경계 계산은 달력이 소유하므로
+    (:mod:`temporal_ir.calendar`) 여기서 날짜 산술을 다시 쓰지 않는다 — 달·분기의 길이는
+    ``timedelta`` 로 접히지 않는다(§16).
+    """
+    import event_ir
+    from datetime import datetime
+
+    from temporal_ir import calendar as tcal
+    from temporal_ir import semantic_ir as tsir
+
+    unit = clause.bucket_unit
+    if unit not in {item.value for item in tsir.TimeUnit}:
+        return ()
+    window = _clause_window(clause, query=query)
+    anchor = today or date.today()
+    if isinstance(window, event_ir.AbsoluteInterval):
+        start, end = window.start, window.end_exclusive
+    elif isinstance(window, event_ir.RollingWindow):
+        if window.unit != unit:
+            # 칸 단위와 창 단위가 다르면 칸 수가 정수로 떨어지지 않는다. 근사하면 요청하지
+            # 않은 칸이 들어가거나 빠지므로 펴지 않는다.
+            return ()
+        try:
+            time_unit = tsir.TimeUnit(unit)
+            zone = tcal.zone("UTC")
+            current = tcal.bucket_containing(
+                datetime(anchor.year, anchor.month, anchor.day, tzinfo=zone),
+                time_unit,
+                "UTC",
+            )
+            first = tcal.shift_bucket(current, time_unit, -(window.value - 1), "UTC")
+        except Exception:
+            return ()
+        start, end = first.start.date(), current.end_exclusive.date()
+    else:
+        return ()
+
+    try:
+        time_unit = tsir.TimeUnit(unit)
+        zone = tcal.zone("UTC")
+        buckets = tcal.enumerate_buckets(
+            tcal.TimeInterval(
+                start=datetime(start.year, start.month, start.day, tzinfo=zone),
+                end_exclusive=datetime(end.year, end.month, end.day, tzinfo=zone),
+            ),
+            time_unit,
+            "UTC",
+        )
+        return tuple(
+            event_ir.AbsoluteInterval(start=first_day, end_exclusive=last_day)
+            for bucket in buckets
+            for first_day, last_day in (bucket.dates(),)
+        )
+    except Exception:
+        return ()
+
+
+def try_plan_clause(
+    obligation: ClauseObligation,
+    *,
+    today: date | None = None,
+    query: str | None = None,
+) -> LoweringPlan | None:
+    """절 의무를 canonical Event IR 로 낮춘 계획. 낮출 수 없으면 ``None``.
+
+    세 수량자가 전부 **기존 범용 노드**로 내려간다.
+
+    ==========================  ==================================================
+    수량자                       canonical 표현
+    ==========================  ==================================================
+    ``exists``                   ``Exists(Filter(Source, TimeFilter))``
+    ``never``                    ``Not(Exists(...))``
+    ``every_bucket_occurrence``  ``And(Exists(칸_i) for i)`` — 칸마다 하나
+    ==========================  ==================================================
+
+    능력 계약을 **먼저** 본다. ``never`` 는 그 구간의 발생을 전부 볼 수 있는 관측에서만 뜻이
+    보존되므로, 능력이 없으면 계획을 세우지 않는다 — 여기서 계획을 내면 그것이 곧 근사다.
+    """
+    import audience_runtime
+    import clause_semantics
+    import event_compiler
+    import event_ir
+    import sql_dialect
+
+    clause = obligation.clause
+    if clause_capability_gap(clause) is not None:
+        return None
+
+    window = _clause_window(clause, query=query)
+    if window is None and clause.temporal is not None:
+        # **절이 기간을 말했는데 창을 만들지 못했다.** 그대로 낮추면 그 기간이 사라진 SQL 이
+        # 나가고(부재 조건에서는 대상이 통째로 달라진다), 경고도 남지 않는다. 구현 중 실측:
+        # 기준일이 전달되지 않아 창이 fail-close 된 문장이 **구간 없는** ``NOT EXISTS`` 로
+        # 컴파일됐다. 하드 의미 제약이 SQL 에서 사라지면 성공이 아니다.
+        return None
+    evidence = event_ir.Evidence(
+        text=clause.evidence, start=clause.span[0], end=clause.span[1]
+    )
+
+    quantifier = str(clause.quantifier)
+    expression: Any
+    if quantifier == clause_semantics.Quantifier.EVERY_BUCKET_OCCURRENCE:
+        intervals = _bucket_intervals(clause, today=today, query=query)
+        if len(intervals) < 2:
+            # 칸이 하나면 전칭이 아니라 존재다. 그 뜻은 다른 수량자가 이미 갖고 있으므로
+            # 여기서 만들면 같은 집합을 두 이름이 말하게 된다.
+            return None
+        expression = event_ir.And(
+            operands=tuple(
+                event_ir.Exists(
+                    relation=_occurrence_relation(clause.event, interval),
+                    evidence=evidence,
+                )
+                for interval in intervals
+            )
+        )
+    elif quantifier in {
+        clause_semantics.Quantifier.EXISTS,
+        clause_semantics.Quantifier.NEVER,
+    }:
+        exists = event_ir.Exists(
+            relation=_occurrence_relation(clause.event, window), evidence=evidence
+        )
+        expression = (
+            event_ir.Not(operand=exists)
+            if quantifier == clause_semantics.Quantifier.NEVER
+            else exists
+        )
+    else:
+        return None
+
+    try:
+        capabilities = event_ir.expression_capabilities(expression)
+        if event_compiler.unsupported_capabilities(expression):
+            return None
+        event_ir.validate_evidence(expression)
+        catalog = audience_runtime.resolve_audience_catalog()
+        context = catalog.compile_context(
+            dialect=sql_dialect.get_dialect("tsql"), literals=True
+        )
+        sql = event_compiler.compile_expression(expression, context=context).sql
+    except (event_ir.IrSchemaError, event_compiler.SqlCompileError, KeyError, ValueError):
+        # 낮출 수 없다는 **판정**이다(버그가 아니라 도메인 결과).
+        return None
+    if not sql.strip():
+        return None
+    return LoweringPlan(
+        obligation=obligation,
+        expression=expression,
+        capabilities=capabilities,
+        sql=sql,
+    )
+
+
+def clause_obligations(
+    query: str,
+    *,
+    literal_bindings: Sequence[Mapping[str, Any]] | None = None,
+    today: date | None = None,
+) -> tuple[ClauseObligation, ...]:
+    """원문의 절 의무. 캡처의 소유자는 :mod:`clause_semantics` 이므로 여기서 다시 읽지 않는다.
+
+    맨 존재 절(``exists`` + 창 없음)은 의무로 세지 않는다. 그 모양은 "이 사건을 한 적이 있는
+    회원"이라 거의 모든 문장에 있고, 의무로 세면 판정자가 문장마다 같은 계획을 내며 다른
+    계층의 정상 판정을 흔든다. 이 판정자가 답해야 하는 것은 **막히기 쉬운 모양**이다 —
+    부재·칸별 전칭·창을 가진 존재.
+    """
+    import audience_runtime
+    import clause_semantics
+
+    if not isinstance(query, str) or not query.strip():
+        return ()
+    try:
+        snapshot = audience_runtime.catalog_snapshot()
+    # 카탈로그를 못 읽으면 캡처하지 않는다(추측 금지).
+    except Exception:
+        return ()
+    rows = (
+        list(literal_bindings)
+        if literal_bindings is not None
+        else _literal_bindings(query, today=today)
+    )
+    owned = _stronger_obligation_spans(query)
+    found = []
+    for clause in clause_semantics.analyze_clauses(query, snapshot, rows):
+        if (
+            str(clause.quantifier) == clause_semantics.Quantifier.EXISTS
+            and not clause.has_period
+        ):
+            continue
+        if any(
+            start <= clause.span[0] and clause.span[1] <= end for start, end in owned
+        ):
+            # 같은 자리를 더 구체적인 의무가 이미 소유한다(두 기간의 지표 비교 · 시점 이력).
+            # 존재 조건으로 덮으면 그 의무가 읽은 뜻이 조용히 좁아진다 — 소유 대장의 규칙이다.
+            continue
+        found.append(ClauseObligation(clause=clause))
+    return tuple(found)
+
+
+def _stronger_obligation_spans(query: str) -> tuple[tuple[int, int], ...]:
+    """더 구체적인 의무가 소유한 원문 구간들. 캡처가 깨지면 빈 튜플(추측 금지).
+
+    '더 구체적'의 기준은 **읽은 요구의 수**다. 비교 의무는 창 둘·지표 하나·방향 하나를 읽고,
+    절 의무는 사건 하나와 창 하나를 읽는다. 겹칠 때 후자가 이기면 앞의 셋이 사라진다.
+    """
+    spans: list[tuple[int, int]] = []
+    try:
+        spans.extend(item.source_span for item in detect_comparison_obligations(query))
+        spans.extend(item.source_span for item in detect_temporal_state_obligations(query))
+    except Exception:
+        return ()
+    return tuple(sorted(spans))
+
+
+def _literal_bindings(query: str, *, today: date | None = None) -> list[Mapping[str, Any]]:
+    """원문의 리터럴 바인딩(결정론 추출). 못 읽으면 빈 목록(추측 금지).
+
+    ``today`` 를 반드시 넘긴다. 기준일 없이 부르면 기준일에 의존하는 창(``지난달``·
+    ``3개월 전부터 1개월 전까지``)이 fail-close 로 **사라지고**, 그 사실을 아래 계층은 알 수
+    없다 — 창이 없는 절로 보여 부재 조건이 **구간 없는** ``NOT EXISTS`` 로 컴파일됐다
+    (구현 중 실측: 사용자가 말한 기간이 조용히 사라진 SQL).
+    """
+    try:
+        from query_structurer.semantic_ir import extract_literal_bindings
+
+        return list(
+            extract_literal_bindings(
+                query, current_date=today.isoformat() if today is not None else None
+            )
+        )
+    except Exception:
+        return []
+
+
+# ── 지원 여부의 typed 답 ────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Resolution:
+    """"이 요청을 실행할 수 있는가"에 대한 **하나의** 답.
+
+    다섯 갈래로 나누는 이유는 귀결이 다르기 때문이다 — 사용자가 고칠 수 있는 것(되묻기), 지금
+    자산의 한계(미지원), 배선 결함(내부 실패)은 사용자에게 줄 다음 행동이 전부 다르다.
+    """
+
+
+@dataclass(frozen=True)
+class Executable(Resolution):
+    """낮출 수 있다. ``plans`` 가 그 증거이고, 각 계획은 이미 SQL 까지 통과했다."""
+
+    plans: tuple[LoweringPlan, ...]
+
+    def __post_init__(self) -> None:
+        if not self.plans:
+            raise ValueError("Executable 은 계획 없이 만들 수 없다(지원의 증거가 계획이다)")
+
+
+@dataclass(frozen=True)
+class NeedUserInput(Resolution):
+    """사용자가 말하지 않았거나 애매하다 — 문장을 고치면 열린다."""
+
+    diagnostic: Any  # semantic_diagnostics.Diagnostic
+
+
+@dataclass(frozen=True)
+class MissingCapability(Resolution):
+    """지금 실행 자산이 그 의미를 담지 못한다 — 문장을 고쳐도 열리지 않는다."""
+
+    diagnostic: Any  # semantic_diagnostics.Diagnostic
+
+
+@dataclass(frozen=True)
+class InvalidSemantics(Resolution):
+    """요청 자체가 성립하지 않는다(주체가 다르다 · 값이 모순이다)."""
+
+    diagnostic: Any  # semantic_diagnostics.Diagnostic
+
+
+@dataclass(frozen=True)
+class InternalFailure(Resolution):
+    """배선·불변식 결함. 사용자 요청의 의미적 결과가 아니다."""
+
+    diagnostic: Any  # semantic_diagnostics.Diagnostic
+
+
+@dataclass(frozen=True)
+class Undetermined(Resolution):
+    """이 판정자에게 **관할이 없다**. 반박도 차단도 하지 않는다.
+
+    이 갈래가 필요한 이유는 정직함이다. 판정자가 캡처하는 의무 종류는 아직 전부가 아니라서,
+    의무를 하나도 못 잡은 요청에 대해 "실행 가능하다"고도 "불가능하다"고도 말할 수 없다.
+    :data:`Undetermined` 는 모순 불변식(:func:`contradicts`)에서 **아무것도 주장하지 않는다** —
+    Phase 3 의 진척은 이 답이 줄어드는 것으로 측정된다.
+    """
+
+    reason: str
+
+
+def resolve_executable(
+    query: str, *, today: date | None = None,
+    literal_bindings: Sequence[Mapping[str, Any]] | None = None,
+) -> Resolution:
+    """**지원 여부의 단일 판정.** 목록을 조회하지 않고 실제로 낮춰 보고 답한다.
+
+    순서가 계약이다.
+
+    1. 절의 **능력 계약**을 먼저 본다. 근사로 답할 수 있는 모양(부재 → 최종값 부등호)이
+       여기서 걸리지 않으면, 아래 낮춤이 성공해 버려 조용한 오답이 지원으로 기록된다.
+    2. 그다음 캡처된 의무를 전부 낮춰 본다(비교·시점 이력·절).
+    3. 하나라도 낮춰지면 :class:`Executable`, 아니면 :class:`Undetermined` 다.
+
+    낮추지 못한 것을 곧바로 미지원이라 부르지 않는 이유는 이 판정자가 아직 모든 의무 종류를
+    캡처하지 않기 때문이다 — 관할 밖을 한계로 보고하면 없는 한계를 광고한다.
+    """
+    import semantic_diagnostics
+
+    if not isinstance(query, str) or not query.strip():
+        return Undetermined("빈 요청")
+
+    # **주체가 다르면 어떤 표현도 옳지 않다.** 그러므로 이 질문이 가장 먼저다 — 조건을 낮춰
+    # 보는 것은 그 조건이 회원을 고르는 술어일 때만 뜻이 있다. 감사 #44 가 이 자리다:
+    # 브랜드를 행으로 달라는 요청이 회원 세그먼트 경로에서 배선 결함(``failure``)으로 끝났고
+    # 사용자에게 줄 문장이 하나도 없었다.
+    subject = unsupported_subject_diagnostic(query)
+    if subject is not None:
+        return InvalidSemantics(subject)
+
+    # **시각 해상도는 이해와 표현이 다른 문제다.** ``최근 24시간`` 은 기간을 말한 문장이므로
+    # '기간 값이 없습니다'로 되물으면 사실이 아니다(감사 #82). 담을 수 없다는 것이 정확한
+    # 사실이고, 그 사실은 창 단위 선언에서 나온다.
+    precision = _subday_precision_gap(query)
+    if precision is not None:
+        return MissingCapability(precision)
+
+    rows = (
+        list(literal_bindings)
+        if literal_bindings is not None
+        else _literal_bindings(query, today=today)
+    )
+    try:
+        obligations = clause_obligations(query, literal_bindings=rows, today=today)
+    except Exception as exc:  # noqa: BLE001 - 판정자 배선 결함은 숨기지 않는다
+        return InternalFailure(
+            semantic_diagnostics.compiler_invariant_violation(
+                symbol="lowering_planner.clause_obligations",
+                developer_detail=f"{type(exc).__name__}: {exc}",
+            )
+        )
+
+    for obligation in obligations:
+        gap = clause_capability_gap(obligation.clause)
+        if gap is not None:
+            return MissingCapability(gap)
+
+    plans: list[LoweringPlan] = []
+    plans.extend(plans_for_query(query, today=today))
+    future = try_plan_future_window(query, today=today)
+    if future is not None:
+        plans.append(future)
+    plans.extend(
+        plan
+        for plan in (
+            try_plan_clause(item, today=today, query=query) for item in obligations
+        )
+        if plan is not None
+    )
+    if plans:
+        return Executable(tuple(plans))
+    return Undetermined("이 판정자가 캡처한 의무가 없다")
+
+
+def try_plan_future_window(query: str, *, today: date | None = None) -> LoweringPlan | None:
+    """미래 방향 창을 낮춘 계획. 낮출 수 없으면 ``None``.
+
+    ``direction="future"`` 를 모든 날짜 필드에 열지 않는다. 미래 창이 뜻을 갖는 것은 그 컬럼이
+    **미래 값을 담을 때**뿐이고, 그 사실은 카탈로그가 ``supports_future_values`` 로 선언한다 —
+    과거 사건 컬럼(``ORDER_DATE``)에 미래 창을 걸면 경고 없이 항상 0건이다.
+
+    표면 문법(``향후``·``앞으로``)의 소유자는 :mod:`calendar_window` 이고, 여기서는 그 판정
+    결과와 필드 선언을 맞춰 보기만 한다.
+    """
+    import calendar_window
+    import event_compiler
+    import event_ir
+    import sql_dialect
+
+    if not isinstance(query, str) or not query.strip():
+        return None
+    fields = future_capable_fields()
+    if not fields:
+        return None
+
+    anchor = today or date.today()
+    compact = query.replace(" ", "")
+    offsets = tuple(index for index, char in enumerate(query) if char != " ")
+    try:
+        candidates = calendar_window.duration_window_candidates(
+            compact, source=query, source_offsets=offsets if len(offsets) == len(compact) else None
+        )
+    except Exception:
+        return None
+    forward = [
+        candidate
+        for candidate in candidates
+        if candidate.kind == calendar_window.KIND_ROLLING
+        and calendar_window.is_future_directed_duration(compact, candidate.start)
+    ]
+    if len(forward) != 1:
+        # 미래 표지가 없거나 둘 이상이면 어느 구간이 미래인지 어순만으로 알 수 없다(추측 금지).
+        return None
+    candidate = forward[0]
+    days = calendar_window.duration_candidate_days(candidate)
+    if days is None or days <= 0:
+        return None
+
+    import audience_runtime
+
+    try:
+        catalog = audience_runtime.resolve_audience_catalog()
+        snapshot = audience_runtime.catalog_snapshot()
+    except Exception:
+        return None
+    declarations = snapshot.get("fields") if isinstance(snapshot, Mapping) else None
+    if not isinstance(declarations, Mapping):
+        return None
+    named = [
+        field_id
+        for field_id in sorted(fields)
+        if _field_surface_in(query, declarations.get(field_id))
+    ]
+    if len(named) != 1:
+        # 어느 미래 필드인지 원문이 지목하지 않았다 — 지어내면 없는 조건이 생긴다.
+        return None
+    field_id = named[0]
+
+    span = _compact_span_to_source(query, candidate)
+    if span is None:
+        return None
+    obligation = FutureWindowObligation(
+        field=field_id,
+        window_start=anchor,
+        window_end_exclusive=anchor + timedelta(days=days),
+        source_text=query[span[0]:span[1]],
+        source_span=span,
+    )
+    evidence = event_ir.Evidence(
+        text=obligation.source_text, start=span[0], end=span[1]
+    )
+    source = field_id.rpartition(".")[0]
+    if not source:
+        return None
+    # 필드가 사실 테이블에 있으면 그 관계를 스코프에 세워야 참조된다. 주체 컬럼이면 ``Exists``
+    # 가 필요 없지만, 그 구분을 여기서 추측하지 않고 **컴파일해 보고** 판정한다(이 모듈의 규칙).
+    bounds: Any = event_ir.And(operands=(
+        event_ir.Comparison(
+            operator=">=",
+            left=event_ir.FieldRef(name=field_id),
+            right=event_ir.Literal(value=obligation.window_start.strftime("%Y%m%d")),
+            evidence=evidence,
+        ),
+        event_ir.Comparison(
+            operator="<",
+            left=event_ir.FieldRef(name=field_id),
+            right=event_ir.Literal(
+                value=obligation.window_end_exclusive.strftime("%Y%m%d")
+            ),
+            evidence=evidence,
+        ),
+    ))
+    expression: Any = event_ir.Exists(
+        relation=event_ir.Filter(
+            relation=event_ir.Source(name=source), where=bounds
+        ),
+        evidence=evidence,
+    )
+    try:
+        capabilities = event_ir.expression_capabilities(expression)
+        if event_compiler.unsupported_capabilities(expression):
+            return None
+        event_ir.validate_evidence(expression)
+        context = catalog.compile_context(
+            dialect=sql_dialect.get_dialect("tsql"), literals=True
+        )
+        sql = event_compiler.compile_expression(expression, context=context).sql
+    except (event_ir.IrSchemaError, event_compiler.SqlCompileError, KeyError, ValueError):
+        return None
+    if not sql.strip():
+        return None
+    return LoweringPlan(
+        obligation=obligation, expression=expression, capabilities=capabilities, sql=sql
+    )
+
+
+def _field_surface_in(query: str, declaration: Any) -> bool:
+    """이 필드의 표면어가 원문에 있는가. 선언이 없으면 거짓(추측 금지)."""
+    if not isinstance(declaration, Mapping):
+        return False
+    aliases = declaration.get("aliases")
+    compact = query.replace(" ", "")
+    return any(
+        term and str(term).replace(" ", "") in compact
+        for term in (declaration.get("label"), *(aliases or ()))
+    )
+
+
+def _compact_span_to_source(query: str, candidate: Any) -> tuple[int, int] | None:
+    """압축 좌표 후보 → 원문 좌표 구간. 변환의 소유자는 :mod:`audience_frame` 이다."""
+    import audience_frame
+
+    try:
+        return audience_frame.compact_to_source_span(query, candidate.start, candidate.end)
+    except Exception:
+        return None
+
+
+def _subday_precision_gap(query: str) -> Any:
+    """하루보다 잘은 롤링 창을 요청했으면 그 진단. 아니면 ``None``.
+
+    ``최근 24시간`` 을 ``최근 1일`` 로 접지 않는다 — 롤링 24시간은 **기준 시각**부터 거슬러
+    세는 창이고, 날짜 칸으로 접으면 요청하지 않은 시간대가 들어온다. 그 접기가 가능한지는
+    시간 컬럼의 저장 단위(``time_format``)가 정하고, 지금 모든 사건 소스의 시간 컬럼은 날짜
+    단위다(``char8``/``char6``) — 그래서 이 요청은 이해되지만 표현되지 않는다.
+
+    구간이 함께 명시된 문장은 여기서 막지 않는다. 그때 시각은 창이 아니라 술어이고, 그 경로는
+    :func:`event_compiler.compile_time_window` 가 경계일 시각으로 이미 낮춘다.
+    """
+    import calendar_window
+    import semantic_diagnostics
+
+    try:
+        found = calendar_window.subday_duration_spans(query)
+    # 표면 문법을 못 읽으면 판정하지 않는다(추측 금지).
+    except Exception:
+        return None
+    if not found:
+        return None
+    try:
+        if calendar_window.parse_calendar_window_spans(query):
+            # 날짜 창이 함께 있으면 시각은 경계일 술어로 낮아진다 — 여기서 막을 일이 아니다.
+            return None
+    except Exception:
+        return None
+    start, end, value, unit = found[0]
+    return semantic_diagnostics.unsupported_temporal_precision(
+        requested=f"{value}{unit}",
+        supported="day",
+        evidence=query[start:end],
+    )
+
+
+# 미래 방향 창을 걸 수 있는 필드가 선언해야 하는 능력. ``ORDER_DATE`` 같은 과거 사건 컬럼에
+# 미래 창을 걸면 **항상 0건**이 되므로, 방향은 필드 선언이 허락한 자리에서만 열린다.
+FUTURE_VALUES_CAPABILITY = "supports_future_values"
+
+
+def future_capable_fields() -> frozenset[str]:
+    """미래 값을 담는다고 **선언된** 필드 심볼. 선언을 못 읽으면 빈 집합(fail-close).
+
+    코드에 컬럼 이름을 적지 않는다 — 어느 컬럼이 미래를 담는지는 카탈로그가 안다.
+    """
+    import audience_runtime
+
+    try:
+        snapshot = audience_runtime.catalog_snapshot()
+    except Exception:
+        return frozenset()
+    fields = snapshot.get("fields") if isinstance(snapshot, Mapping) else None
+    if not isinstance(fields, Mapping):
+        return frozenset()
+    return frozenset(
+        str(field_id)
+        for field_id, declaration in fields.items()
+        if isinstance(declaration, Mapping)
+        and bool(declaration.get(FUTURE_VALUES_CAPABILITY))
+    )
+
+
+def unsupported_subject_diagnostic(query: str) -> Any:
+    """결과 주체가 선언된 주체가 아니면 그 진단. 아니면 ``None``.
+
+    주체 어휘의 소유자는 :mod:`result_shape`(요청의 결과 축)이고 선언된 주체의 소유자는
+    카탈로그다. 이 함수는 둘을 맞춰 보기만 한다 — 여기서 낱말을 읽지 않는다.
+    """
+    import audience_runtime
+    import result_shape
+    import semantic_diagnostics
+
+    found = result_shape.requested_non_subject_entity(query)
+    if found is None:
+        return None
+    term, start, end = found
+    try:
+        catalog = audience_runtime.catalog_snapshot()
+    # 선언을 못 읽으면 판정하지 않는다(추측 금지).
+    except Exception:
+        return None
+    subject = catalog.get("subject") if isinstance(catalog, Mapping) else None
+    label = (
+        str(subject.get("label") or subject.get("entity") or "회원")
+        if isinstance(subject, Mapping)
+        else "회원"
+    )
+    if term == label:
+        return None
+    return semantic_diagnostics.unsupported_subject(
+        requested=term, supported=(label,), evidence=query[start:end]
+    )
+
+
+def contradicts(resolution: Resolution, final_outcome: str) -> bool:
+    """판정자가 실행 가능하다고 답했는데 최종 귀결이 미지원인가 — **금지된 상태**.
+
+    같은 canonical 요청이 낮춰지는데 미지원으로 끝나면 그것은 도메인 한계가 아니라 버그다.
+    :class:`Undetermined` 는 아무것도 주장하지 않으므로 어떤 귀결과도 모순되지 않는다.
+    """
+    import semantic_diagnostics
+
+    return isinstance(resolution, Executable) and final_outcome == str(
+        semantic_diagnostics.Outcome.UNSUPPORTED
+    )
+
+
 def clear_cache() -> None:
     _direction_pattern.cache_clear()
     _relative_direction_pattern.cache_clear()
@@ -829,17 +1653,35 @@ def clear_cache() -> None:
 __all__ = [
     "AGGREGATE_COMPARISON",
     "MEMBER_STATE_HISTORY",
+    "ClauseObligation",
     "ComparisonObligation",
+    "FUTURE_VALUES_CAPABILITY",
+    "FutureWindowObligation",
+    "Executable",
+    "InternalFailure",
+    "InvalidSemantics",
     "LoweringPlan",
+    "MissingCapability",
+    "NeedUserInput",
     "Obligation",
+    "Resolution",
     "TemporalStateObligation",
+    "Undetermined",
     "WindowOperand",
     "can_plan",
+    "clause_capability_gap",
+    "clause_obligations",
     "clear_cache",
+    "contradicts",
     "detect_comparison_obligations",
     "detect_temporal_state_obligations",
+    "future_capable_fields",
     "plan_satisfying_span",
     "plans_for_query",
+    "resolve_executable",
     "try_plan",
+    "try_plan_clause",
+    "try_plan_future_window",
+    "unsupported_subject_diagnostic",
     "unsettled_requirements",
 ]
