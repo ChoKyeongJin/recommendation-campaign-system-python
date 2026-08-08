@@ -897,6 +897,27 @@ def metric_recipe_candidate(
 EVENT_TIME_FIELD_HEADING = "[Event time fields]"
 
 
+def source_pins_its_time_column(source_id: str) -> bool:
+    """이 소스가 스냅샷을 한 칸에 고정하는가 — **기간 창을 걸 수 없는 소스**인가.
+
+    프롬프트가 "(기간 창 불가)"라고 광고하는 그 판정을 판정자(:mod:`lowering_planner`)도
+    같은 술어로 물을 수 있게 공개한다. 두 소비자가 같은 선언을 각자 읽으면 한쪽만 고쳐진
+    상태가 조용히 생긴다 — 그때 앱은 "이 지표는 기간을 못 건다"고 광고하면서 동시에 그
+    지표로 기간 비교 계획을 세워 자기모순 SQL 을 '지원됨'의 증거로 쓴다(실측 2026-08-08).
+    """
+    try:
+        snapshot = catalog_snapshot()
+    except Exception:  # 선언을 못 읽으면 아무것도 단언하지 않는다
+        return False
+    sources = snapshot.get("sources") if isinstance(snapshot, Mapping) else None
+    declaration = sources.get(source_id) if isinstance(sources, Mapping) else None
+    if not isinstance(declaration, Mapping):
+        return False
+    return _pins_its_own_time_column(
+        declaration, str(declaration.get("time_column") or "")
+    )
+
+
 def _pins_its_own_time_column(declaration: Mapping[str, Any], time_column: str) -> bool:
     """이 소스 선언이 **자기 시각 컬럼을 이미 한 값으로 고정**하는가.
 

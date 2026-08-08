@@ -642,6 +642,45 @@ def _shift_month(reference: date, offset: int) -> tuple[int, int]:
     return serial // 12, serial % 12 + 1
 
 
+# ── 상대 토큰 matcher 불변식 ──────────────────────────────────────────────────────────
+#
+# 한글에는 ``\b`` 가 성립하지 않아서, 어휘 alternation 을 그대로 finditer 하면 **더 긴 낱말의
+# 꼬리**가 토큰으로 잡힌다. '지지난달'의 (1,4) 가 '지난달'로 읽혀 한 달 어긋난 창이 경고 없이
+# 나갔다(실측 2026-08-08: 지지난달→지난달, 전전월→전월, 지지난주→지난주, 그그제→그제).
+#
+# 규칙 자체는 어휘 계층이 소유한다(:func:`lexicon_patterns.starts_new_token`) — 같은 파일의
+# :data:`_STANDALONE_YEAR_RE` 가 정규식으로 쓰는 그 규칙과 한 곳에서 갈라지지 않게 하기 위해서다.
+_starts_new_token = lexicon_patterns.starts_new_token
+
+
+def _resolve_overlapping_candidates(candidates: list[_Scanned]) -> list[_Scanned]:
+    """겹치는 상대 토큰 후보의 결정론적 해소. 스캐너마다 다시 적지 않는 단일 규칙이다.
+
+    규칙은 셋이고 순서가 곧 우선순위다.
+
+        1. 같은 시작점이면 **가장 긴** 유효 매치가 이긴다.
+        2. 다른 후보의 구간에 **완전히 포함된** 후보는 버린다(더 긴 토큰의 부분 매치).
+        3. 그래도 남는 겹침은 (시작, -길이, 구체성등급) 오름차순으로 **먼저 오는 것**이 이긴다 —
+           스캐너 등록 순서나 dict 순회 순서에 결과가 좌우되지 않게 하기 위해서다.
+
+    스캐너 내부의 지역 ``occupied`` 선점은 어휘 그룹 순서에만 의존해서 시작점이 다른 겹침을
+    풀지 못한다. 그 판정을 후보가 한자리에 모인 뒤로 옮긴 것이 이 함수다.
+    """
+    ordered = sorted(candidates, key=lambda item: (item[2], -(item[3] - item[2]), item[1]))
+    kept: list[_Scanned] = []
+    for candidate in ordered:
+        start, end = candidate[2], candidate[3]
+        if any(
+            chosen[2] <= start and end <= chosen[3] and (chosen[3] - chosen[2]) > (end - start)
+            for chosen in kept
+        ):
+            continue  # 규칙 2 — 더 긴 후보에 삼켜진 부분 매치
+        if any(start < chosen[3] and chosen[2] < end for chosen in kept):
+            continue  # 규칙 1·3 — 이미 확정된 후보와 겹친다
+        kept.append(candidate)
+    return sorted(kept, key=lambda item: item[2])
+
+
 def _scan_relative_calendar_days(
     text: str, label_suffix: str, reference: date
 ) -> list[_Scanned]:
@@ -684,6 +723,8 @@ def _scan_relative_calendar_days(
             continue
         pattern = re.compile("|".join(re.escape(word) for word in words))
         for match in pattern.finditer(text):
+            if not _starts_new_token(text, match.start()):
+                continue  # '그그제'의 '그제' — 더 긴 낱말의 꼬리는 토큰이 아니다
             if any(match.start() < end and start < match.end() for start, end in occupied):
                 continue
             if as_of_suffix is not None and as_of_suffix.match(text, match.end()):
@@ -727,6 +768,8 @@ def _scan_relative_calendar_weeks(
             continue
         pattern = re.compile("|".join(re.escape(word) for word in words))
         for match in pattern.finditer(text):
+            if not _starts_new_token(text, match.start()):
+                continue  # '지지난주'의 '지난주'
             if any(match.start() < end and start < match.end() for start, end in occupied):
                 continue
             monday = reference - timedelta(days=reference.weekday()) + timedelta(weeks=offset)
@@ -768,6 +811,8 @@ def _scan_relative_calendar_months(
             continue
         pattern = re.compile("|".join(re.escape(word) for word in words))
         for match in pattern.finditer(text):
+            if not _starts_new_token(text, match.start()):
+                continue  # '지지난달'의 '지난달', '전전월'의 '전월'
             if any(match.start() < end and start < match.end() for start, end in occupied):
                 continue
             year, month = _shift_month(reference, offset)
@@ -855,12 +900,14 @@ def _scan_calendar_windows(
         return []
     matches = list(_CAL_TOKEN_RE.finditer(text))
     fallback_year = next((y for y in (_token_year(m) for m in matches) if y is not None), None)
+    # 세 스캐너는 각자 지역 occupied 만 갖고 서로를 보지 않는다 — 겹침 해소는 후보가 한자리에
+    # 모인 여기서 단일 규칙으로 한다(_resolve_overlapping_candidates).
     out: list[tuple[dict[str, Any], int, int, int]] = (
-        [
+        _resolve_overlapping_candidates([
             *_scan_relative_calendar_days(text, label_suffix, today),
             *_scan_relative_calendar_weeks(text, label_suffix, today),
             *_scan_relative_calendar_months(text, label_suffix, today),
-        ]
+        ])
         if today is not None
         else []
     )

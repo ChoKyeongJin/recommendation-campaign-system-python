@@ -236,6 +236,96 @@ def render_ranked_entity_set_recipe(
     return "\n".join(lines)
 
 
+# 축별 안내 문구. **형상은 여기 없다** — 형상은 낮춤이 만든 표현을 그대로 싣는다. 여기 있는
+# 것은 그 형상을 어떻게 쓰라는 지시뿐이고, 새 축을 열 때 늘어나는 것도 이 표 한 항목이다.
+_MEMBER_STATE_HISTORY_RECIPE = {
+    "title": "[Member State History Recipe]",
+    "intro": (
+        "The obligations above include an attribute-state condition over time. The application "
+        "lowers each one to exactly this canonical Event IR — emit it verbatim in "
+        "audience_requirement.expression (evidence spans may cite any correct source range; "
+        "they are provenance, not meaning):"
+    ),
+    "outro": (
+        "Do not replace this with a current-value filter on the member profile: 'was X at that "
+        "time' and 'is X now' are different audiences. If you cannot restate the shape, return "
+        "expression=null with one unsupported_semantics issue whose evidence covers the clause."
+    ),
+}
+_AGGREGATE_COMPARISON_RECIPE = {
+    "title": "[Period Comparison Recipe]",
+    "intro": (
+        "The request compares the same metric across two periods. The application lowers it to "
+        "exactly this canonical Event IR — emit it verbatim in audience_requirement.expression "
+        "(evidence spans are provenance, not meaning):"
+    ),
+    "outro": (
+        "The magnitude of the change is part of the meaning: 'increased' and 'increased by at "
+        "least 10%' are different audiences. Ratios are lowered by cross multiplication "
+        "(L * denominator vs R * numerator) so no division or float appears, and the baseline is "
+        "guarded with 'R > 0' because a member with no baseline purchase is not a percentage "
+        "increase. Do not simplify either part away."
+    ),
+}
+
+
+def _lowering_recipe_plans(
+    query: str, *, current_date: str | None, kind: Mapping[str, str]
+) -> list[Any]:
+    """안내에 실을 계획 — **요구를 다 소비한 것만**, 그리고 모호하지 않은 것만.
+
+    같은 원문 구간에 계획이 둘 생길 수 있다(카탈로그가 같은 표면어에 지표를 둘 선언한 경우).
+    그때는 아무것도 싣지 않는다 — 같은 자리에 서로 다른 verbatim 지시 둘을 함께 보내면
+    모델이 무엇을 따르든 절반은 틀린 안내를 따른 것이 된다.
+    """
+    import lowering_planner  # 지연 import — 프롬프트 조립이 카탈로그 로딩을 강제하지 않는다
+
+    axis = (
+        lowering_planner.MEMBER_STATE_HISTORY
+        if kind is _MEMBER_STATE_HISTORY_RECIPE
+        else lowering_planner.AGGREGATE_COMPARISON
+    )
+    try:
+        plans = [
+            plan
+            for plan in lowering_planner.plans_for_query(query, today=_as_of(current_date))
+            if plan.obligation.kind == axis
+            and not lowering_planner.unsettled_requirements(query, plan)
+        ]
+    # 계획을 못 세우면 안내하지 않는다(추측 금지).
+    except Exception:
+        return []
+    by_span: dict[tuple[int, int], list[Any]] = {}
+    for plan in plans:
+        by_span.setdefault(tuple(plan.obligation.source_span), []).append(plan)
+    return [
+        candidates[0]
+        for candidates in by_span.values()
+        if len({
+            json.dumps(item.expression.to_dict(), sort_keys=True, default=str)
+            for item in candidates
+        }) == 1
+    ]
+
+
+def _render_lowering_recipe(
+    query: str, *, current_date: str | None, kind: Mapping[str, str]
+) -> str | None:
+    plans = _lowering_recipe_plans(query, current_date=current_date, kind=kind)
+    if not plans:
+        return None
+    lines = [kind["title"], kind["intro"]]
+    for plan in plans:
+        lines.append(
+            f"  - {plan.obligation.source_text!r}: "
+            + json.dumps(
+                plan.expression.to_dict(), ensure_ascii=False, sort_keys=True, default=str
+            )
+        )
+    lines.append(kind["outro"])
+    return "\n".join(lines)
+
+
 def render_temporal_state_recipe(
     query: str, *, current_date: str | None = None
 ) -> str | None:
@@ -254,41 +344,23 @@ def render_temporal_state_recipe(
     오디언스 검증기를 통과해야 하고, 따르지 않아도 애플리케이션 합성이 같은 자리를 낸다.
     """
 
-    import lowering_planner  # 지연 import — 프롬프트 조립이 카탈로그 로딩을 강제하지 않는다
-
-    try:
-        plans = [
-            plan
-            for plan in lowering_planner.plans_for_query(
-                query, today=_as_of(current_date)
-            )
-            if plan.obligation.kind == lowering_planner.MEMBER_STATE_HISTORY
-        ]
-    # 계획을 못 세우면 안내하지 않는다(추측 금지).
-    except Exception:
-        return None
-    if not plans:
-        return None
-    lines = [
-        "[Member State History Recipe]",
-        "The obligations above include an attribute-state condition over time. The application "
-        "lowers each one to exactly this canonical Event IR — emit it verbatim in "
-        "audience_requirement.expression (evidence spans may cite any correct source range; "
-        "they are provenance, not meaning):",
-    ]
-    for plan in plans:
-        lines.append(
-            f"  - {plan.obligation.source_text!r}: "
-            + json.dumps(
-                plan.expression.to_dict(), ensure_ascii=False, sort_keys=True, default=str
-            )
-        )
-    lines.append(
-        "Do not replace this with a current-value filter on the member profile: 'was X at that "
-        "time' and 'is X now' are different audiences. If you cannot restate the shape, return "
-        "expression=null with one unsupported_semantics issue whose evidence covers the clause."
+    return _render_lowering_recipe(
+        query, current_date=current_date, kind=_MEMBER_STATE_HISTORY_RECIPE
     )
-    return "\n".join(lines)
+
+
+def render_change_comparison_recipe(
+    query: str, *, current_date: str | None = None
+) -> str | None:
+    """기간 대 기간 변화(크기 포함)의 canonical 형상 계약.
+
+    :func:`render_temporal_state_recipe` 와 **같은 계약**이고 축만 다르다. 이 안내는 크기가
+    실제로 낮춰진 뒤에야 나온다 — 계획은 임계를 못 낮추면 서지 않으므로(:mod:`lowering_planner`),
+    '10% 이상'이 빠진 형상을 모델에게 가르칠 수 없다.
+    """
+    return _render_lowering_recipe(
+        query, current_date=current_date, kind=_AGGREGATE_COMPARISON_RECIPE
+    )
 
 
 def _as_of(current_date: str | None) -> date | None:
@@ -321,11 +393,16 @@ def build_campaign_query_plan_v4_user_prompt(input: QueryStructuringInput) -> st
     )
     if ranked_recipe:
         knowledge_sections.append(ranked_recipe)
-    temporal_recipe = render_temporal_state_recipe(
-        input.query, current_date=input.context.current_date
-    )
-    if temporal_recipe:
-        knowledge_sections.append(temporal_recipe)
+    for recipe in (
+        render_temporal_state_recipe(
+            input.query, current_date=input.context.current_date
+        ),
+        render_change_comparison_recipe(
+            input.query, current_date=input.context.current_date
+        ),
+    ):
+        if recipe:
+            knowledge_sections.append(recipe)
     if input.context.slot_vocabulary:
         knowledge_sections.append(
             "[Allowed Canonical Values]\n"
@@ -474,6 +551,11 @@ def build_campaign_query_plan_v4_retry_prompt(
         if has_query and isinstance(query, str)
         else None
     )
+    comparison_recipe = (
+        render_change_comparison_recipe(query, current_date=current_date)
+        if has_query and isinstance(query, str)
+        else None
+    )
     return "\n\n".join(
         section
         for section in [
@@ -508,6 +590,7 @@ def build_campaign_query_plan_v4_retry_prompt(
             ),
             ranked_recipe,
             temporal_recipe,
+            comparison_recipe,
             (
                 "Comparison evidence must be the exact query slice containing the comparison's source value "
                 "and comparison-operator wording. Use only catalog source/field IDs and preserve every "

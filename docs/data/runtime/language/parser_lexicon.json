@@ -267,6 +267,21 @@
       "까지",
       "사이"
     ],
+    "change_multiple_unit": [
+      "배"
+    ],
+    "change_half_word": [
+      "절반",
+      "반으로"
+    ],
+    "change_inclusive_bound": [
+      "이상",
+      "이하"
+    ],
+    "change_strict_bound": [
+      "초과",
+      "미만"
+    ],
     "clause_verb_stem": [
       "있",
       "했",

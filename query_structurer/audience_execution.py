@@ -169,30 +169,23 @@ def _lowering_plan_conflicts(
     CANONICAL_COMPILED_OBLIGATION_KINDS`)와 달리 이 판정은 목록을 조회하지 않는다 —
     :mod:`lowering_planner` 가 canonical 표현을 실제로 만들어 컴파일해 보고 답한다. 그러므로 새
     지표·새 기간 문법이 카탈로그에 들어오면 여기 한 줄도 고치지 않고 함께 판정된다.
+
+    **겹침은 후보를 찾는 데만 쓴다.** 계획의 구간이 신고 구간을 덮는다는 사실은 그 계획이 그
+    의미를 낼 수 있다는 뜻이 아니다 — 계획의 span 은 표지들의 hull 이라 구조가 읽지도 않은
+    텍스트까지 삼킨다. 그래서 반박은 :func:`lowering_planner.plan_satisfying_span` 이
+    **요구 정산**으로 답한다(hull 안 요구를 전부 소비한 계획만 반박한다).
     """
     if not isinstance(query, str) or not query.strip():
-        return []
-    try:
-        plans = lowering_planner.plans_for_query(query)
-    # 계획을 못 세우면 반박하지 않는다(추측 금지) — 카탈로그·달력 로딩 실패는 지원 없음의 근거가
-    # 아니라 판정 불가다.
-    except Exception:
-        return []
-    if not plans:
         return []
     conflicts: list[dict[str, Any]] = []
     for item in unsupported:
         evidence = item.get("evidence")
-        plan = next(
-            (
-                candidate
-                for candidate in plans
-                if semantic_requirements.spans_overlap(
-                    evidence, candidate.obligation.source_span
-                )
-            ),
-            None,
-        )
+        try:
+            plan = lowering_planner.plan_satisfying_span(query, evidence)
+        # 계획을 못 세우면 반박하지 않는다(추측 금지) — 카탈로그·달력 로딩 실패는 지원 없음의
+        # 근거가 아니라 판정 불가다.
+        except Exception:
+            return []
         if plan is None:
             continue
         conflicts.append({
@@ -693,6 +686,11 @@ def _synthesis_for_issue(
         synthesis = _temporal_synthesis(query, issue, current_date=current_date)
         if synthesis is not None:
             return synthesis
+        # 기간 대 기간 변화(크기 포함). 계획이 요구를 다 소비했을 때만 서므로, 여기 도달한
+        # 합성은 '10% 이상'까지 실린 표현이다 — 크기가 빠진 형상은 애초에 계획이 없다.
+        synthesis = _change_comparison_synthesis(query, issue, current_date=current_date)
+        if synthesis is not None:
+            return synthesis
 
     if code == "missing_argument" and argument == "period":
         # 맨 '최근'에 대한 기간 결핍 신고. 구조화기는 규칙대로 신고했지만, 그 절이 스스로 창을
@@ -805,6 +803,59 @@ def _temporal_synthesis(
         # 시간 합성은 자기가 읽은 원문 구간(표지·값·기간)을 전부 안다 — 그래서 같은 절을
         # 두고 쪼개진 다른 신고도 이 구간으로 설명할 수 있다.
         accounted_spans=outcome.spans,
+    )
+
+
+def _change_comparison_synthesis(
+    query: str, issue: Mapping[str, Any], *, current_date: str | None = None
+) -> _ApplicationOwnedSynthesis | None:
+    """모델이 표현하지 못한 기간 대 기간 변화를 canonical Event IR 로 되살린다.
+
+    :func:`_temporal_synthesis` 와 **같은 계약**이다. 다른 점은 하나뿐인데 그게 이 축의 핵심이다:
+    계획은 **자기 구간의 요구를 전부 소비했을 때만** 존재한다(:func:`lowering_planner.
+    unsettled_requirements`). 그래서 '10% 이상'이 빠진 형상을 애플리케이션이 스스로 출고하는
+    일이 구조적으로 생기지 않는다 — 크기를 못 낮추면 계획이 없고, 계획이 없으면 합성도 없고,
+    모델의 미지원 신고가 그대로 남아 fail-close 한다.
+
+    같은 구간에 계획이 둘이면(카탈로그가 같은 표면어에 지표를 둘 선언) 아무것도 내지 않는다.
+    어느 쪽을 고르든 절반은 틀린 오디언스이므로 고르지 않는 것이 옳다.
+    """
+
+    import lowering_planner  # 지연 import(순환 방지)
+
+    try:
+        plans = [
+            plan
+            for plan in lowering_planner.plans_for_query(query, today=as_of_date(current_date))
+            if plan.obligation.kind == lowering_planner.AGGREGATE_COMPARISON
+            and getattr(plan.obligation, "threshold", None) is not None
+            and not lowering_planner.unsettled_requirements(query, plan)
+        ]
+    except Exception:  # 계획을 못 세우면 합성하지 않는다(추측 금지)
+        return None
+    matched = [
+        plan
+        for plan in plans
+        if _issue_evidence_contains(issue, *plan.obligation.source_span)
+        or _issue_evidence_contains(issue, *plan.obligation.threshold.source_span)
+    ]
+    if len(matched) != 1:
+        return None
+    plan = matched[0]
+    same_span = [
+        candidate
+        for candidate in plans
+        if tuple(candidate.obligation.source_span) == tuple(plan.obligation.source_span)
+    ]
+    if len({item.sql for item in same_span}) != 1:
+        return None  # 같은 자리에 서로 다른 지표 — 고르지 않는다
+    spans = (tuple(plan.obligation.source_span),)
+    return _ApplicationOwnedSynthesis(
+        plan.expression,
+        "lowering_planner.aggregate_comparison",
+        (_audience_issue_key(issue),),
+        scalar_literal_spans=spans,
+        accounted_spans=spans,
     )
 
 

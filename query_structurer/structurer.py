@@ -174,7 +174,14 @@ def _lowering_plans(query: Any) -> tuple[Any, ...]:
     if not isinstance(query, str) or not query.strip():
         return ()
     try:
-        return lowering_planner.plans_for_query(query)
+        # **자기가 덮은 구간의 요구를 전부 소비한 계획만** 반박에 쓴다. 계획이 섰다는 사실과
+        # 그 자리의 의미를 다 냈다는 사실은 다르다 — 그 둘을 같게 본 것이 '10% 이상'을 버린
+        # 채 미지원 신고를 반박해 아무도 고칠 수 없는 방출 실패를 만든 원인이다.
+        return tuple(
+            plan
+            for plan in lowering_planner.plans_for_query(query)
+            if not lowering_planner.unsettled_requirements(query, plan)
+        )
     except Exception:  # noqa: BLE001 — 계획을 못 세우면 반박하지 않는다(추측 금지).
         return ()
 
@@ -239,6 +246,11 @@ def _audience_repair_error(raw: dict[str, Any], enriched: dict[str, Any]) -> str
             # **가장 강한 반박이 먼저다.** 아래 세 축은 모델이 무엇을 적었는지(이름·계산 종류)
             # 또는 의무 종류 allowlist 에 걸리지만, 이 축은 그 자리의 canonical 표현을 실제로
             # 만들어 컴파일해 본 결과다 — 낮출 수 있다면 그 신고는 종류를 따질 것도 없이 틀렸다.
+            #
+            # ``plans`` 는 이미 **요구를 다 소비한 계획만** 남은 목록이다(:func:`_lowering_plans`).
+            # 그래서 여기 겹침은 후보를 고르는 좌표일 뿐 지원의 근거가 아니다 — 재시도를 거는
+            # 조건과 미지원으로 닫는 조건(audience_execution._lowering_plan_conflicts)이 같은
+            # 축을 보게 하려면 정산이 두 곳의 공통 상류에 있어야 한다.
             plan = next(
                 (
                     candidate

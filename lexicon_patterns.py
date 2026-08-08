@@ -394,6 +394,26 @@ def alternation(*vocabularies: str, extra: Iterable[str] = ()) -> str:
     return "|".join(re.escape(word) for word in _terms_for({"include": list(vocabularies), "extra": list(extra)}))
 
 
+# ── 한글 낱말 경계 ────────────────────────────────────────────────────────────────────
+#
+# 한글에는 ``\b`` 가 성립하지 않는다. 어휘 교대를 그대로 finditer 하면 **더 긴 낱말의 꼬리**가
+# 토큰으로 잡힌다 — '지지난달'의 '지난달', '기반으로'의 '반으로'. 그 오매치는 조용하다:
+# 창이 한 달 어긋나거나 없는 임계값이 생기는데 경고가 하나도 안 나간다(실측 2026-08-08).
+#
+# 왼쪽만 막는다. 오른쪽은 조사가 정상적으로 뒤따른다('지난달에'·'절반으로'·'이번주부터').
+HANGUL_LEFT_BOUNDARY = r"(?<![가-힣])"
+_HANGUL_SYLLABLE_RE = re.compile(r"[가-힣]")
+
+
+def starts_new_token(text: str, start: int) -> bool:
+    """``start`` 가 낱말의 시작인가 — 앞 글자가 한글이면 더 긴 낱말의 일부다.
+
+    :data:`HANGUL_LEFT_BOUNDARY` 와 같은 규칙의 함수형이다. 교대를 직접 정규식에 끼우는 쪽은
+    상수를, 이미 만들어진 매치를 걸러내는 쪽은 이 함수를 쓴다.
+    """
+    return start <= 0 or _HANGUL_SYLLABLE_RE.match(text[start - 1]) is None
+
+
 def exclusions() -> dict[str, tuple[str, ...]]:
     """자기 어휘의 일부를 빼고 있는 패턴들 — "이 누락이 의도인가?" 검토 목록.
 

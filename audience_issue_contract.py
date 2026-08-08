@@ -156,7 +156,13 @@ def period_span_owned_by_lowered_clause(
     import lowering_planner  # 지연 import(순환 방지)
 
     try:
-        plans = lowering_planner.plans_for_query(query, today=today)
+        # 요구를 다 소비한 계획만 근거가 된다 — 계획이 섰다는 사실과 그 절의 의미를 다 냈다는
+        # 사실은 다르다(lowering_planner.unsettled_requirements 의 계약).
+        plans = tuple(
+            plan
+            for plan in lowering_planner.plans_for_query(query, today=today)
+            if not lowering_planner.unsettled_requirements(query, plan)
+        )
     # 계획을 못 세우면 반박하지 않는다(추측 금지) — 판정 불가는 결핍의 근거가 아니다.
     except Exception:
         return False
@@ -219,7 +225,13 @@ def period_issue_owned_by_lowered_clause(
     import lowering_planner  # 지연 import(순환 방지)
 
     try:
-        plans = lowering_planner.plans_for_query(query, today=today)
+        # 요구를 다 소비한 계획만 근거가 된다 — 계획이 섰다는 사실과 그 절의 의미를 다 냈다는
+        # 사실은 다르다(lowering_planner.unsettled_requirements 의 계약).
+        plans = tuple(
+            plan
+            for plan in lowering_planner.plans_for_query(query, today=today)
+            if not lowering_planner.unsettled_requirements(query, plan)
+        )
     # 계획을 못 세우면 반박하지 않는다(추측 금지) — 판정 불가는 결핍의 근거가 아니다.
     except Exception:
         return False

@@ -71,6 +71,11 @@ class ComparisonObligation:
 
     ``kind`` 는 소비자가 종류를 구별하기 위한 라벨일 뿐 판정 근거가 아니다 — 판정은
     :func:`try_plan` 이 이 구조를 실제로 낮춰 보고 답한다.
+
+    ``threshold`` 는 **변화의 크기**다(있을 때만). 없으면 방향만 있는 맨 비교이고, 있으면
+    그 크기까지 낮춰야 이 의무를 다 읽은 것이다. 이 자리가 비어 있던 동안 '10% 이상 증가'와
+    '증가'가 **같은 SQL** 로 컴파일됐다(실측: 바이트 동일). 크기를 의무에 싣는 것이
+    :attr:`satisfied_requirement_ids` 로 "다 읽었다"를 증명할 수 있게 하는 전제다.
     """
 
     left: WindowOperand
@@ -78,6 +83,7 @@ class ComparisonObligation:
     right: WindowOperand
     source_text: str
     source_span: tuple[int, int]
+    threshold: Any = None  # semantic_requirements.ChangeMagnitude | None
     kind: str = AGGREGATE_COMPARISON
 
 
@@ -100,12 +106,24 @@ Obligation = ComparisonObligation | TemporalStateObligation
 
 @dataclass(frozen=True)
 class LoweringPlan:
-    """의무를 낮춘 결과. 이 객체가 존재한다는 사실 자체가 '지원됨'의 증명이다."""
+    """의무를 낮춘 결과. **계획의 존재만으로는 지원의 증명이 아니다.**
+
+    예전 계약은 "이 객체가 있으면 그 자리는 지원됨"이었고, 그것이 이 저장소의 조용한 의미
+    손실 한 부류를 통째로 만들었다 — 계획의 ``source_span`` 은 표지들의 min/max hull 이라
+    ``10% 이상`` 처럼 **구조가 읽지 않은 텍스트까지 덮는데**, 소비자는 그 겹침만 보고 모델의
+    정직한 미지원 신고를 거짓이라고 단언했다. 근거(span)를 의미(support)로 착각한 것이다.
+
+    그래서 계획은 자기가 **무엇을 소비했는지** 함께 들고 다닌다. :attr:`satisfied_requirement_ids`
+    는 이 표현이 실제로 낮춘 source requirement 의 id 다. 지원 판정은 겹침이 아니라 이 집합과
+    hull 안 요구 전체의 정산으로 답한다(:func:`plan_satisfying_span`).
+    """
 
     obligation: Obligation
     expression: Any  # event_ir.Condition — 실제로 만들어져 검증을 통과한 canonical 표현
     capabilities: frozenset[str]
     sql: str
+    # 이 계획이 실제로 소비한 source requirement id. 비어 있을 수 있다(요구가 없는 맨 비교).
+    satisfied_requirement_ids: frozenset[str] = frozenset()
 
 
 # ── 표면 캡처(원문만 읽는다) ──────────────────────────────────────────────────────────
@@ -270,6 +288,10 @@ def detect_comparison_obligations(
     if not metric_hits:
         return ()
 
+    import semantic_requirements  # 지연 import — 원장이 소유한 크기 파싱을 그대로 쓴다
+
+    magnitudes = semantic_requirements.parse_change_magnitudes(query)
+
     # 같은 지표 표면어가 한 문장에 두 번 나오면('3월 구매금액이 2월 구매금액보다 큰') 같은 의무가
     # 두 번 잡힌다. 세는 것은 표면어가 아니라 **의무**이므로 구조가 같으면 하나로 접는다.
     obligations: dict[tuple[Any, ...], ComparisonObligation] = {}
@@ -290,6 +312,19 @@ def detect_comparison_obligations(
         span_sources = [
             left, right, (None, metric_start, metric_end), (None, *direction.span()),
         ]
+        # 크기가 이 비교에 속하려면 방향 낱말이 그 크기의 것이어야 한다 — 원장이 이미 크기와
+        # 방향을 한 요구로 묶어 두었으므로 여기서 어휘를 다시 읽지 않고 그 결과를 받는다.
+        threshold = next(
+            (
+                magnitude
+                for magnitude in magnitudes
+                if magnitude.source_span[0] <= direction.start()
+                and direction.end() <= magnitude.source_span[1]
+            ),
+            None,
+        )
+        if threshold is not None:
+            span_sources.append((None, *threshold.source_span))
         start = min(item[1] for item in span_sources)
         end = max(item[2] for item in span_sources)
         obligation = ComparisonObligation(
@@ -298,6 +333,7 @@ def detect_comparison_obligations(
             right=_operand(right, metric_id),
             source_text=query[start:end],
             source_span=(start, end),
+            threshold=threshold,
         )
         obligations.setdefault(
             (
@@ -371,7 +407,32 @@ _MARKER_GAP_BUDGET = 20
 # ── 판정(실제로 낮춰 본다) ────────────────────────────────────────────────────────────
 
 
-def try_plan(obligation: ComparisonObligation) -> LoweringPlan | None:
+def _requirement_ids_at(query: str | None, span: tuple[int, int]) -> frozenset[str]:
+    """``span`` 이 덮는 source requirement 의 id. 원장을 못 읽으면 빈 집합(fail-safe).
+
+    계획이 "이 요구를 내가 소비했다"고 말하는 유일한 통로다. 좌표로 찾되 **결과는 id** 라는
+    점이 중요하다 — 소비자는 좌표가 아니라 id 로 정산한다.
+    """
+    if not isinstance(query, str) or not query:
+        return frozenset()
+    import semantic_requirements  # 지연 import — 판정자는 원장 로딩을 import 부작용으로 만들지 않는다
+
+    try:
+        captured = semantic_requirements.capture_source_semantic_obligations(query)
+    # 원장을 못 읽으면 아무것도 소비하지 않은 것으로 둔다(추측 금지).
+    except Exception:
+        return frozenset()
+    found = set()
+    for requirement in captured:
+        bounds = semantic_requirements.requirement_span(requirement)
+        if bounds is not None and span[0] <= bounds[0] and bounds[1] <= span[1]:
+            found.add(str(requirement.id))
+    return frozenset(found)
+
+
+def try_plan(
+    obligation: ComparisonObligation, *, query: str | None = None
+) -> LoweringPlan | None:
     """의무를 canonical Event IR 로 낮춘 계획. 낮출 수 없으면 None.
 
     **여기가 이 모듈의 요점이다.** 지원 여부를 목록에서 조회하지 않고 표현을 실제로 만들어
@@ -403,6 +464,11 @@ def try_plan(obligation: ComparisonObligation) -> LoweringPlan | None:
     if allowed and obligation.operator not in allowed:
         return None
     source_spec = catalog.sources.get(getattr(spec, "source", ""))
+    # 선언이 자기 시각 컬럼을 한 값으로 고정한 스냅샷 소스에는 기간 창을 걸 수 없다. 컴파일은
+    # 성공하고 술어만 자기모순이 되어 **경고 없이 0명**이 되므로, 그 계획은 지원의 증거가 아니라
+    # 왜곡의 증거다. 프롬프트가 이미 "(기간 창 불가)"로 광고하는 그 판정을 판정자도 함께 본다.
+    if audience_runtime.source_pins_its_time_column(getattr(spec, "source", "")):
+        return None
     time_field = getattr(source_spec, "time_field", "") if source_spec is not None else ""
     # 집계 함수·집계 대상·시간 축 중 하나라도 선언돼 있지 않으면 이 지표는 창을 가진 집계로
     # 세울 수 없다. 비워 둔 자리를 추측해 채우면 뜻이 다른 SQL 이 조용히 나온다.
@@ -427,16 +493,31 @@ def try_plan(obligation: ComparisonObligation) -> LoweringPlan | None:
         )
 
     try:
-        expression = event_ir.Comparison(
-            operator=obligation.operator,
-            left=operand(obligation.left),
-            right=operand(obligation.right),
-            evidence=event_ir.Evidence(
-                text=obligation.source_text,
-                start=obligation.source_span[0],
-                end=obligation.source_span[1],
-            ),
+        evidence = event_ir.Evidence(
+            text=obligation.source_text,
+            start=obligation.source_span[0],
+            end=obligation.source_span[1],
         )
+        if obligation.threshold is None:
+            expression = event_ir.Comparison(
+                operator=obligation.operator,
+                left=operand(obligation.left),
+                right=operand(obligation.right),
+                evidence=evidence,
+            )
+        else:
+            lowered = _lower_change_threshold(
+                obligation.threshold,
+                left=operand(obligation.left),
+                right=operand(obligation.right),
+                evidence=evidence,
+                event_ir=event_ir,
+            )
+            if lowered is None:
+                # 크기를 못 낮추면 **계획을 세우지 않는다**. 방향만 담은 계획을 내면 그 계획이
+                # '이 자리는 지원된다'고 단언하면서 정작 크기는 버린다(조용한 의미 약화).
+                return None
+            expression = lowered
         capabilities = event_ir.expression_capabilities(expression)
         if event_compiler.unsupported_capabilities(expression):
             return None
@@ -452,13 +533,119 @@ def try_plan(obligation: ComparisonObligation) -> LoweringPlan | None:
     if not sql.strip():
         return None
     return LoweringPlan(
-        obligation=obligation, expression=expression, capabilities=capabilities, sql=sql
+        obligation=obligation,
+        expression=expression,
+        capabilities=capabilities,
+        sql=sql,
+        # 임계를 낮췄다면 그 크기 요구를 소비한 것이다. 임계가 없으면 소비할 요구도 없다.
+        satisfied_requirement_ids=_requirement_ids_at(
+            query, obligation.threshold.source_span
+        ) if obligation.threshold is not None else frozenset(),
     )
 
 
-def can_plan(obligation: ComparisonObligation) -> bool:
+def _integer_scale(amount: Any) -> tuple[int, int] | None:
+    """Decimal → (정수 값, 스케일). ``1234.56`` → ``(123456, 100)``.
+
+    :class:`event_ir.Literal` 은 ``Decimal`` 을 받지 않고(int|float|str|bool), 금액·비율에
+    float 를 쓰는 것은 CLAUDE.md §14 위반이다. 그래서 양변을 같은 정수배로 올려 **정수만으로**
+    같은 부등식을 만든다. 스케일이 정수로 떨어지지 않으면 낮추지 않는다(추측 금지).
+    """
+    from decimal import Decimal, InvalidOperation  # 지역 사용
+
+    if not isinstance(amount, Decimal):
+        return None
+    scale = 1
+    for _ in range(9):  # 소수 9자리까지 — 그 이상은 금액·비율 표현이 아니다
+        try:
+            scaled = (amount * scale).to_integral_exact()
+        except (InvalidOperation, ValueError):
+            return None
+        if scaled == amount * scale:
+            return int(scaled), scale
+        scale *= 10
+    return None
+
+
+def _lower_change_threshold(
+    threshold: Any,
+    *,
+    left: Any,
+    right: Any,
+    evidence: Any,
+    event_ir: Any,
+) -> Any | None:
+    """변화 크기를 canonical 표현으로 낮춘다. **나눗셈도 float 도 쓰지 않는다.**
+
+    비율은 교차곱이다 — ``L * denominator OP R * numerator``. 나눗셈형
+    ``(L-R)/NULLIF(R,0) >= 0.1`` 은 정수 지표에서 조용히 틀리고(실측 ``(11-10)/10 = 0``),
+    Decimal 리터럴은 IR 이 받지 않는다. 절대 증분은 뺄셈 비교다.
+
+    비교의 향은 **방향 낱말**이 정하고 경계 낱말('이상'/'초과')은 포함 여부만 정한다. 이 분리가
+    극성 반전을 구조적으로 막는다 — '20% 이상 감소'의 '이상'을 ``>=`` 로 읽으면 뜻이 뒤집힌다.
+
+    기준값 0 은 명시적으로 막는다(``right > 0``). ``ISNULL(SUM,0)`` 때문에 2월 무주문 회원은
+    ``0 >= 0 * 11/10`` 이 참이 되어 **비구매자 전원**이 뽑힌다(실측). '0 → 100' 을 몇 % 증가로
+    부를지는 정의되지 않았으므로 포함하지 않는다.
+    """
+    direction = getattr(threshold, "direction", "")
+    inclusive = bool(getattr(threshold, "inclusive", True))
+    if direction not in {"increase", "decrease"}:
+        return None
+    if direction == "increase":
+        operator = ">=" if inclusive else ">"
+    else:
+        operator = "<=" if inclusive else "<"
+
+    def scaled(operand: Any, factor: int) -> Any:
+        if factor == 1:
+            return operand
+        return event_ir.Arithmetic(
+            operator="*", left=operand, right=event_ir.Literal(value=factor)
+        )
+
+    kind = getattr(threshold, "kind", "")
+    if kind == "ratio":
+        numerator, denominator = threshold.numerator, threshold.denominator
+        if not isinstance(numerator, int) or not isinstance(denominator, int):
+            return None
+        if numerator <= 0 or denominator <= 0:
+            return None
+        core = event_ir.Comparison(
+            operator=operator,
+            left=scaled(left, denominator),
+            right=scaled(right, numerator),
+            evidence=evidence,
+        )
+        baseline = event_ir.Comparison(
+            operator=">", left=right, right=event_ir.Literal(value=0), evidence=evidence
+        )
+        return event_ir.And(operands=(baseline, core))
+
+    if kind == "absolute":
+        integral = _integer_scale(getattr(threshold, "amount", None))
+        if integral is None:
+            return None
+        value, scale = integral
+        if value <= 0:
+            return None
+        # 증가면 L-R, 감소면 R-L — 크기는 언제나 양수이고 방향은 뺄셈의 순서가 담는다.
+        earlier, later = (right, left) if direction == "increase" else (left, right)
+        delta = event_ir.Arithmetic(
+            operator="-", left=scaled(later, scale), right=scaled(earlier, scale)
+        )
+        return event_ir.Comparison(
+            operator=">=" if inclusive else ">",
+            left=delta,
+            right=event_ir.Literal(value=value),
+            evidence=evidence,
+        )
+    return None
+
+
+def can_plan(obligation: ComparisonObligation, *, query: str | None = None) -> bool:
     """이 의무를 지금 있는 실행 primitive 로 낮출 수 있는가."""
-    return try_plan(obligation) is not None
+    return try_plan(obligation, query=query) is not None
 
 
 def detect_temporal_state_obligations(
@@ -555,6 +742,10 @@ def _temporal_state_plans(
             expression=expression,
             capabilities=capabilities,
             sql=sql,
+            # 합성이 실제로 읽은 구간의 요구만 소비한 것이다.
+            satisfied_requirement_ids=frozenset().union(
+                *(_requirement_ids_at(query, span) for span in outcome.spans)
+            ) if outcome.spans else frozenset(),
         )
         for obligation in obligations
         # 합성이 실제로 읽은 구간만 그 의무를 덮는다. 한 문장에 시간 절이 둘인데 하나만
@@ -568,25 +759,64 @@ def _temporal_state_plans(
 
 def plans_for_query(query: str, *, today: date | None = None) -> tuple[LoweringPlan, ...]:
     """원문에서 캡처된 의무 중 **실제로 낮출 수 있는** 것들의 계획."""
-    plans = [try_plan(item) for item in detect_comparison_obligations(query, today=today)]
+    plans = [
+        try_plan(item, query=query)
+        for item in detect_comparison_obligations(query, today=today)
+    ]
     return (
         *(plan for plan in plans if plan is not None),
         *_temporal_state_plans(query, today=today),
     )
 
 
-def plan_covering_span(
+def unsettled_requirements(
+    query: str, plan: LoweringPlan
+) -> tuple[Any, ...]:
+    """계획이 덮은 구간 안에서 **그 계획이 소비하지 않은** source requirement.
+
+    비어 있어야 이 계획이 그 자리를 다 읽은 것이다. 하나라도 남으면 계획은 있어도 의미는
+    빠진 것이고, 그때 '지원됨'을 단언하면 옳은 미지원 신고를 거짓으로 뒤집는다.
+    """
+    import semantic_requirements
+
+    hull = plan.obligation.source_span
+    try:
+        captured = semantic_requirements.capture_source_semantic_obligations(query)
+    # 원장을 못 읽으면 정산할 것도 없다 — 반박하지 않는다(추측 금지).
+    except Exception:
+        return ()
+    unsettled = []
+    for requirement in captured:
+        if str(requirement.id) in plan.satisfied_requirement_ids:
+            continue
+        bounds = semantic_requirements.requirement_span(requirement)
+        if bounds is not None and hull[0] <= bounds[0] and bounds[1] <= hull[1]:
+            unsettled.append(requirement)
+    return tuple(unsettled)
+
+
+def plan_satisfying_span(
     query: str, span: Any, *, today: date | None = None
 ) -> LoweringPlan | None:
-    """주어진 원문 구간과 겹치는 계획. 없으면 None.
+    """그 자리를 **실제로 소비한** 계획. 없으면 None.
 
-    좌표로 묻는 이유는 하나다 — 모델이 그 자리를 무엇이라 부르든 판정이 흔들리지 않아야 한다.
+    좌표(``span``)는 후보를 찾는 데만 쓴다 — 모델이 그 자리를 무엇이라 부르든 판정이 흔들리지
+    않게 하려는 것이고, 그 이상의 권위는 없다. 지원 여부는 그다음 질문이 답한다:
+    **이 계획이 자기가 덮은 구간의 요구를 전부 소비했는가.**
+
+    이 두 질문을 하나로 합쳐 두었던 것이 조용한 의미 손실의 구조적 원인이었다(실측 2026-08-08).
+    ``2026년 2월과 3월의 구매금액차이가 10% 이상 증가`` 의 계획은 hull 이 '10% 이상'을 덮었지만
+    그 크기를 한 글자도 컴파일하지 않은 채 미지원 신고를 반박했고, 결과는 아무도 고칠 수 없는
+    ``semantic_emission_failure`` 였다.
     """
     import semantic_requirements
 
     for plan in plans_for_query(query, today=today):
-        if semantic_requirements.spans_overlap(span, plan.obligation.source_span):
-            return plan
+        if not semantic_requirements.spans_overlap(span, plan.obligation.source_span):
+            continue
+        if unsettled_requirements(query, plan):
+            continue
+        return plan
     return None
 
 
@@ -608,7 +838,8 @@ __all__ = [
     "clear_cache",
     "detect_comparison_obligations",
     "detect_temporal_state_obligations",
-    "plan_covering_span",
+    "plan_satisfying_span",
     "plans_for_query",
     "try_plan",
+    "unsettled_requirements",
 ]

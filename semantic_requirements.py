@@ -33,6 +33,7 @@ import common_utils
 
 import json
 import hashlib
+import math
 import re
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
@@ -797,6 +798,19 @@ def _span_bounds(span: Any) -> tuple[int, int] | None:
     return (start, end) if start < end else None
 
 
+def requirement_span(requirement: Any) -> tuple[int, int] | None:
+    """requirement 의 원문 구간 (start, end). 좌표가 없으면 None.
+
+    :class:`SourceRequirement` 와 원장 dict 를 둘 다 읽는다 — :func:`obligation_kind` 와 같은
+    이유다(소비자가 좌표 읽는 법을 각자 적으면 한쪽만 고쳐진 상태가 조용히 생긴다).
+    """
+    if isinstance(requirement, SourceRequirement):
+        return _span_bounds(requirement.source_span)
+    if isinstance(requirement, Mapping):
+        return _span_bounds(requirement.get("source_span"))
+    return _span_bounds(requirement)
+
+
 def spans_overlap(left: Any, right: Any) -> bool:
     """두 원문 구간이 실제로 겹치는가.
 
@@ -1409,6 +1423,370 @@ def _member_state_history_obligations(query: str) -> list[SourceRequirement]:
     ]
 
 
+# ── 변화의 크기(change magnitude) ─────────────────────────────────────────────────────
+#
+# '증가/감소'는 **방향**이고 '10% 이상'·'5만원 이상'·'2배'·'절반으로'는 **크기**다. 크기가
+# 어느 계층에서도 모델링되지 않던 동안, 방향만 담은 비교가 그 자리의 소유권까지 주장했다 —
+# 근거는 먹고 의미는 안 실은 채로. 그 결과 두 갈래의 피해가 났다(실측 2026-08-08).
+#
+#   숫자형('10% 이상')   리터럴 정산이 막아 SQL 0건 + 종결 불가 재시도
+#   낱말형('절반으로')   리터럴 원장에도 안 잡혀 **'조금이라도 줄어든 전원'이 그대로 출고**
+#
+# 그래서 크기는 리터럴이 있든 없든 **원문에서 먼저 의무로 기록**한다. 낮출 수 있으면 영수증으로
+# 방면되고, 못 낮추면 미귀결로 남아 출고를 막는다(fail-close). 이 파일이 이미 갖고 있는 계약을
+# 그대로 쓰는 것이고 새 게이트를 만들지 않는다.
+CHANGE_MAGNITUDE_KIND = "change_magnitude"
+
+# 크기와 방향 낱말이 같은 절 안에서 이 거리 이내에 있어야 한 요구로 묶는다. 랭킹 의무
+# (:func:`_member_metric_ranking_obligations`, 16자)와 같은 계열의 국소 인접 판정이다.
+_CHANGE_MAGNITUDE_ADJACENCY = 16
+
+
+@dataclass(frozen=True)
+class ChangeMagnitude:
+    """변화의 크기 하나. 비율은 **유리수**로, 절대 증분은 Decimal 로 들고 있는다.
+
+    비율에 float 를 쓰지 않는 이유는 CLAUDE.md §14 이자 실측이다 — 비율형
+    ``(L-R)/NULLIF(R,0) >= 0.1`` 은 정수 지표에서 조용히 틀리고(``(11-10)/10 = 0``),
+    :class:`event_ir.Literal` 은 애초에 ``Decimal`` 을 거부한다. 그래서 비교는 나눗셈 없이
+    **교차곱**으로 낮춘다(:mod:`lowering_planner`).
+
+        비율   ``L * denominator  OP  R * numerator``
+        절대   ``(L - R) OP amount``  (감소면 ``R - L``)
+
+    ``numerator/denominator`` 는 기준값에 곱할 배수다 — '10% 이상 증가'는 11/10, '20% 감소'는
+    4/5, '2배'는 2/1, '절반'은 1/2. 방향이 비교의 향을 정하고(증가 ``>=`` / 감소 ``<=``),
+    이상·초과 같은 경계 낱말은 **포함 여부만** 정한다. 이 분리가 극성 반전을 구조적으로 막는다.
+    """
+
+    kind: str  # "ratio" | "absolute"
+    direction: str  # "increase" | "decrease"
+    inclusive: bool
+    numerator: int | None
+    denominator: int | None
+    amount: Decimal | None
+    unit: str  # percent | multiple | fraction | 통화코드
+    source_text: str
+    source_span: tuple[int, int]
+
+    def to_value(self) -> dict[str, Any]:
+        """원장에 실을 JSON 값. ``Decimal`` 은 정확 문자열로 남긴다."""
+        value: dict[str, Any] = {
+            "magnitude_kind": self.kind,
+            "direction": self.direction,
+            "inclusive": self.inclusive,
+            "unit": self.unit,
+            "text": self.source_text,
+        }
+        if self.numerator is not None and self.denominator is not None:
+            value["numerator"] = self.numerator
+            value["denominator"] = self.denominator
+        if self.amount is not None:
+            value["amount"] = decimal_json_value(self.amount)
+        return value
+
+
+def _ratio_from_percent(percent: Decimal, direction: str) -> tuple[int, int] | None:
+    """퍼센트 변화 → 기준값에 곱할 유리수. 10%↑ → 11/10, 20%↓ → 4/5.
+
+    소수 퍼센트도 정확히 담는다('10.5%' → 2105/2000 → 421/400). 나눗셈을 쓰지 않으므로
+    자릿수가 늘 뿐 값이 흔들리지 않는다.
+    """
+    try:
+        scaled = (percent * 100).to_integral_exact()
+    except (InvalidOperation, ValueError):
+        return None
+    if scaled != percent * 100:
+        return None
+    delta = int(scaled)
+    if delta < 0:
+        return None
+    numerator = 10_000 + delta if direction == "increase" else 10_000 - delta
+    if numerator <= 0:
+        # '100% 이상 감소'는 0 이하가 되어 뜻이 서지 않는다 — 추측하지 않고 크기를 세우지 않는다.
+        return None
+    return _reduce_fraction(numerator, 10_000)
+
+
+def _reduce_fraction(numerator: int, denominator: int) -> tuple[int, int]:
+    divisor = math.gcd(numerator, denominator) or 1
+    return numerator // divisor, denominator // divisor
+
+
+@lru_cache(maxsize=1)
+def _change_bound_patterns() -> tuple[re.Pattern[str] | None, re.Pattern[str] | None]:
+    """경계 낱말('이상/이하' vs '초과/미만'). 포함 여부만 정하고 방향은 정하지 않는다."""
+
+    def compile_alternation(name: str) -> re.Pattern[str] | None:
+        alternation = lexicon_patterns.alternation(name)
+        return re.compile(alternation) if alternation else None
+
+    return compile_alternation("change_inclusive_bound"), compile_alternation("change_strict_bound")
+
+
+@lru_cache(maxsize=1)
+def _change_direction_pattern() -> re.Pattern[str] | None:
+    increase = lexicon_patterns.alternation("trend_increase")
+    decrease = lexicon_patterns.alternation("trend_decrease")
+    if not increase or not decrease:
+        return None
+    return re.compile(f"(?P<increase>{increase})|(?P<decrease>{decrease})")
+
+
+@lru_cache(maxsize=1)
+def _change_wordform_pattern() -> re.Pattern[str] | None:
+    """숫자 없이 크기를 말하는 낱말('절반으로'). 왼쪽 한글 경계가 필수다 — '기반으로' 오탐."""
+    alternation = lexicon_patterns.alternation("change_half_word")
+    if not alternation:
+        return None
+    return re.compile(f"{lexicon_patterns.HANGUL_LEFT_BOUNDARY}(?:{alternation})")
+
+
+@lru_cache(maxsize=1)
+def _change_multiple_pattern() -> re.Pattern[str] | None:
+    """'배' 단위. 리터럴 스캐너는 '2배'에서 숫자 2 만 주고 단위를 버린다."""
+    alternation = lexicon_patterns.alternation("change_multiple_unit")
+    return re.compile(f"(?:{alternation})") if alternation else None
+
+
+def _change_bound(query: str, position: int) -> tuple[bool, int] | None:
+    """``position`` 바로 뒤의 경계 낱말 → (포함 여부, 끝 위치). 없으면 None."""
+    inclusive_pattern, strict_pattern = _change_bound_patterns()
+    tail = re.match(r"\s*", query[position:])
+    cursor = position + (tail.end() if tail else 0)
+    for pattern, inclusive in ((inclusive_pattern, True), (strict_pattern, False)):
+        if pattern is None:
+            continue
+        found = pattern.match(query, cursor)
+        if found is not None:
+            return inclusive, found.end()
+    return None
+
+
+def _nearest_direction(
+    query: str, span: tuple[int, int]
+) -> tuple[str, tuple[int, int]] | None:
+    """크기 표면어와 같은 절 안의 가장 가까운 방향 낱말. 없으면 None(크기만으로는 요구가 아니다)."""
+    pattern = _change_direction_pattern()
+    if pattern is None:
+        return None
+    clause_start, clause_end = _clause_bounds_at(query, span[0], span[1])
+    best: tuple[int, str, tuple[int, int]] | None = None
+    for match in pattern.finditer(query, clause_start, clause_end):
+        distance = (
+            match.start() - span[1] if match.start() >= span[1] else span[0] - match.end()
+        )
+        if distance < 0 or distance > _CHANGE_MAGNITUDE_ADJACENCY:
+            continue
+        direction = "increase" if match.lastgroup == "increase" else "decrease"
+        if best is None or distance < best[0]:
+            best = (distance, direction, match.span())
+    return (best[1], best[2]) if best is not None else None
+
+
+def _change_magnitude_candidates(
+    query: str, owned: Sequence[tuple[int, int]]
+) -> list[ChangeMagnitude]:
+    """원문의 변화 크기 전부. 리터럴이 있는 형태와 낱말형을 **같은 의미축**으로 모은다.
+
+    ``owned`` 는 다른 의무가 이미 청구한 구간이다. 같은 리터럴을 두 의미가 청구하면 한 어구가
+    조건 둘이 된다 — '상위 10% 회원 중 … 증가한' 의 ``10%`` 는 랭킹의 것이지 변화 크기가
+    아니다(실측 오탐). 소유 대장이 이 저장소의 중복 해석 방지 원칙이다.
+    """
+    from query_structurer.semantic_ir import (  # 지연 import(순환 방지)
+        extract_literal_bindings,
+    )
+
+    try:
+        bindings = extract_literal_bindings(query)
+    except Exception:  # 리터럴 스캔 실패로 요구 기록이 죽으면 안 된다.
+        bindings = []
+
+    def owned_by_another(span: tuple[int, int]) -> bool:
+        return any(start <= span[0] and span[1] <= end for start, end in owned)
+
+    multiple_pattern = _change_multiple_pattern()
+    found: list[ChangeMagnitude] = []
+    claimed: list[tuple[int, int]] = []
+
+    def claim(span: tuple[int, int]) -> bool:
+        if any(span[0] < end and start < span[1] for start, end in claimed):
+            return False
+        claimed.append(span)
+        return True
+
+    for binding in bindings:
+        kind = binding.get("kind")
+        if kind not in {"percentage", "money", "number"}:
+            continue
+        start, end = int(binding.get("start", 0)), int(binding.get("end", 0))
+        if owned_by_another((start, end)):
+            continue  # 랭킹 '상위 10%' 등 다른 의미가 이미 청구한 리터럴
+        normalized = binding.get("normalized")
+        # '2배'처럼 숫자 뒤에 배수 단위가 붙으면 스캐너가 버린 단위를 여기서 되찾는다.
+        multiple_end = None
+        if multiple_pattern is not None:
+            tail = multiple_pattern.match(query, end)
+            multiple_end = tail.end() if tail is not None else None
+        if kind == "number" and multiple_end is None:
+            continue  # 맨 숫자는 크기가 아니다('상위 10명'의 10)
+        span_end = multiple_end if multiple_end is not None else end
+        bound = _change_bound(query, span_end)
+        if bound is not None:
+            span_end = bound[1]
+        direction = _nearest_direction(query, (start, span_end))
+        if direction is None:
+            continue
+        direction_name, direction_span = direction
+        inclusive = bound[0] if bound is not None else True
+        span = (min(start, direction_span[0]), max(span_end, direction_span[1]))
+
+        if multiple_end is not None:
+            raw = binding.get("value")
+            try:
+                multiple = exact_decimal(raw)
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            if multiple is None or multiple <= 0:
+                continue
+            fraction = _ratio_from_decimal(multiple)
+            if fraction is None or not claim(span):
+                continue
+            found.append(ChangeMagnitude(
+                kind="ratio", direction=direction_name, inclusive=inclusive,
+                numerator=fraction[0], denominator=fraction[1], amount=None,
+                unit="multiple", source_text=query[span[0]:span[1]], source_span=span,
+            ))
+            continue
+
+        if kind == "percentage":
+            raw = normalized.get("value") if isinstance(normalized, Mapping) else None
+            try:
+                percent = exact_decimal(raw)
+            except (InvalidOperation, TypeError, ValueError):
+                continue
+            if percent is None:
+                continue
+            fraction = _ratio_from_percent(percent, direction_name)
+            if fraction is None or not claim(span):
+                continue
+            found.append(ChangeMagnitude(
+                kind="ratio", direction=direction_name, inclusive=inclusive,
+                numerator=fraction[0], denominator=fraction[1], amount=None,
+                unit="percent", source_text=query[span[0]:span[1]], source_span=span,
+            ))
+            continue
+
+        raw = normalized.get("amount") if isinstance(normalized, Mapping) else None
+        currency = normalized.get("currency") if isinstance(normalized, Mapping) else None
+        try:
+            amount = exact_decimal(raw)
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if amount is None or not claim(span):
+            continue
+        found.append(ChangeMagnitude(
+            kind="absolute", direction=direction_name, inclusive=inclusive,
+            numerator=None, denominator=None, amount=amount,
+            unit=str(currency or "KRW"), source_text=query[span[0]:span[1]], source_span=span,
+        ))
+
+    wordform = _change_wordform_pattern()
+    if wordform is not None:
+        for match in wordform.finditer(query):
+            if owned_by_another(match.span()):
+                continue
+            direction = _nearest_direction(query, match.span())
+            if direction is None:
+                continue
+            direction_name, direction_span = direction
+            span = (min(match.start(), direction_span[0]), max(match.end(), direction_span[1]))
+            if not claim(span):
+                continue
+            found.append(ChangeMagnitude(
+                kind="ratio", direction=direction_name, inclusive=True,
+                numerator=1, denominator=2, amount=None, unit="fraction",
+                source_text=query[span[0]:span[1]], source_span=span,
+            ))
+
+    return sorted(found, key=lambda item: item.source_span)
+
+
+def _ratio_from_decimal(multiple: Decimal) -> tuple[int, int] | None:
+    """배수 Decimal → 유리수. '2배'→2/1, '1.5배'→3/2."""
+    try:
+        scaled = (multiple * 1000).to_integral_exact()
+    except (InvalidOperation, ValueError):
+        return None
+    if scaled != multiple * 1000:
+        return None
+    return _reduce_fraction(int(scaled), 1000)
+
+
+def _non_magnitude_obligations(query: str) -> list[SourceRequirement]:
+    """변화 크기를 뺀 나머지 의무 전부. 캡처 순서가 곧 소유권 우선순위다."""
+    return [
+        *_recurrence_obligations(query),
+        *_entity_set_obligations(query),
+        *_member_metric_ranking_obligations(query),
+        *_ranked_entity_set_obligations(query),
+        *_snapshot_obligations(query),
+        *_member_state_history_obligations(query),
+    ]
+
+
+def _obligation_spans(
+    requirements: Sequence[SourceRequirement],
+) -> tuple[tuple[int, int], ...]:
+    spans = []
+    for requirement in requirements:
+        bounds = _span_bounds(requirement.source_span)
+        if bounds is not None:
+            spans.append(bounds)
+    return tuple(spans)
+
+
+@lru_cache(maxsize=64)
+def _claimed_obligation_spans(query: str) -> tuple[tuple[int, int], ...]:
+    return _obligation_spans(_non_magnitude_obligations(query))
+
+
+def parse_change_magnitudes(
+    query: str, *, owned: Sequence[tuple[int, int]] | None = None
+) -> tuple[ChangeMagnitude, ...]:
+    """원문의 변화 크기 요구 전부(공개 API).
+
+    :mod:`lowering_planner` 가 이 결과를 그대로 :class:`ComparisonObligation` 의 임계로 싣는다 —
+    캡처와 낮춤이 **같은 파싱**을 보게 해서 "원장은 요구가 있다는데 계획은 모른다"가 생기지 않게
+    한다. 파싱 실패는 전부 fail-safe 로 빈 결과다(추측 금지).
+
+    ``owned`` 를 주지 않으면 다른 의무의 청구 구간을 직접 계산한다(캐시). 이미 계산해 둔
+    호출자는 그대로 넘겨 같은 일을 두 번 하지 않는다.
+    """
+    if not isinstance(query, str) or not query.strip():
+        return ()
+    try:
+        claimed = _claimed_obligation_spans(query) if owned is None else tuple(owned)
+        return tuple(_change_magnitude_candidates(query, claimed))
+    except Exception:  # 크기 파싱 실패로 원장 캡처 전체가 죽으면 안 된다.
+        return ()
+
+
+def _change_magnitude_obligations(
+    query: str, owned: Sequence[tuple[int, int]]
+) -> list[SourceRequirement]:
+    """변화 크기 → 의무. 숫자형·낱말형을 구별하지 않고 같은 kind 로 기록한다."""
+    return [
+        _semantic_obligation(
+            query,
+            kind=CHANGE_MAGNITUDE_KIND,
+            span=magnitude.source_span,
+            value=magnitude.to_value(),
+        )
+        for magnitude in parse_change_magnitudes(query, owned=owned)
+    ]
+
+
 def capture_source_semantic_obligations(
     query: str,
 ) -> tuple[SourceRequirement, ...]:
@@ -1420,14 +1798,10 @@ def capture_source_semantic_obligations(
     Only an explicit compiler receipt can do so.
     """
 
-    captured = [
-        *_recurrence_obligations(query),
-        *_entity_set_obligations(query),
-        *_member_metric_ranking_obligations(query),
-        *_ranked_entity_set_obligations(query),
-        *_snapshot_obligations(query),
-        *_member_state_history_obligations(query),
-    ]
+    # 변화 크기는 **마지막**이다 — 앞선 의무가 이미 청구한 리터럴을 다시 청구하지 않도록
+    # 그들의 구간을 소유 대장으로 넘긴다('상위 10%'의 10% 는 랭킹의 것이다).
+    others = _non_magnitude_obligations(query)
+    captured = [*others, *_change_magnitude_obligations(query, _obligation_spans(others))]
     unique: dict[str, SourceRequirement] = {}
     for requirement in captured:
         unique.setdefault(requirement.id, requirement)

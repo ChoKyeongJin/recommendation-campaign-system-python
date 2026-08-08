@@ -10,9 +10,11 @@ template and recognizes business vocabulary only through the semantic catalog.
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import unicodedata
 from collections.abc import Iterable, Mapping, MutableMapping, Sequence
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 
@@ -1301,6 +1303,220 @@ def temporal_obligation_compiled_spans(
         return ()
 
 
+# ── 요구 정산(generic receipt) ────────────────────────────────────────────────────────
+#
+# 예전에는 종류마다 면제 분기가 하나씩 늘었다(랭킹은 구조 대조, 시간은 컴파일 스팬 포함…).
+# 그 목록이 늘어나는 구조 자체가 결함이었다 — 새 의미축이 생기면 **아무도 그 분기를 추가하지
+# 않는 것이 기본값**이고, 그러면 그 요구는 조용히 방면된 것도 막힌 것도 아닌 상태가 된다.
+#
+# 그래서 질문을 하나로 바꾼다: *이 표현이 이 요구를 실제로 소비했는가.* 종류별 차이는 그
+# 질문에 답하는 **증명자(prover)** 안에만 있고, 정산 자리는 종류를 모른다. 새 축은 여기
+# 한 줄(증명자 등록)이면 되고, 등록하지 않으면 fail-close 다(면제 없음 = 출고 차단).
+
+
+def _strip_evidence(node: Any) -> Any:
+    """구조 대조용 정규화 — ``evidence`` 를 지운다.
+
+    근거(evidence)는 provenance 이지 의미가 아니다. 같은 뜻을 누가 어디를 가리키며 냈는지는
+    방면 판정과 무관하므로, 대조는 evidence 를 뺀 구조로만 한다.
+    """
+    if isinstance(node, Mapping):
+        return {
+            key: _strip_evidence(value)
+            for key, value in node.items()
+            if key != "evidence"
+        }
+    if isinstance(node, (list, tuple)):
+        return [_strip_evidence(item) for item in node]
+    return node
+
+
+def _structural_nodes(payload: Any) -> set[str]:
+    """표현 안의 모든 노드를 구조 문자열로. 부분 구조 포함 판정에 쓴다."""
+    found: set[str] = set()
+
+    def walk(node: Any) -> None:
+        if isinstance(node, Mapping):
+            if isinstance(node.get("type"), str):
+                found.add(json.dumps(_strip_evidence(node), sort_keys=True, ensure_ascii=False))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    return found
+
+
+# 증명자는 "소비했는가"에 **소비한 원문 구간**으로 답한다. ``None`` 이면 소비하지 않은 것이다.
+#
+# 구간까지 돌려받는 이유는 리터럴 정산 때문이다. 리터럴 신고는 요구 id 가 아니라 좌표로 달리고,
+# 컴파일러가 실제로 덮은 구간은 요구 구간보다 **넓을 수 있다**('3개월 연속 VIP를 유지'는 요구가
+# 둘인데 낮춤은 절 전체를 한 번에 덮는다). 요구 구간만 면제하면 그 사이의 리터럴이 미소비로
+# 남아 낮춰진 표현이 스스로 막힌다(실측 회귀).
+
+
+def _ranked_satisfied(
+    requirement: Any, expression: event_ir.Condition, context: Mapping[str, Any]
+) -> tuple[tuple[int, int], ...] | None:
+    value = requirement.value if isinstance(requirement.value, Mapping) else {}
+    if not _ranked_membership_matches(expression, value):
+        return None
+    span = semantic_requirements.requirement_span(requirement)
+    return (span,) if span is not None else ()
+
+
+def _temporal_satisfied(
+    requirement: Any, expression: event_ir.Condition, context: Mapping[str, Any]
+) -> tuple[tuple[int, int], ...] | None:
+    spans = tuple(context.get("temporal_spans") or ())
+    if not _span_covered(requirement.source_span, spans):
+        return None
+    # 낮춤이 덮은 구간 전체가 이 방면의 사정거리다(요구 구간보다 넓을 수 있다).
+    return tuple(
+        span
+        for span in spans
+        if _span_covered(requirement.source_span, (span,))
+    )
+
+
+def _change_magnitude_satisfied(
+    requirement: Any, expression: event_ir.Condition, context: Mapping[str, Any]
+) -> tuple[tuple[int, int], ...] | None:
+    """변화 크기가 이 표현에 **실제로 실렸는가**.
+
+    판정 근거는 낮춤 계획이 만든 canonical 구조다 — 같은 원문에 대해 계획을 세워 보고, 그
+    계획의 노드가 이 표현 안에 그대로 있으면 소비된 것이다. 종류 목록이 아니라 구조 대조라
+    새 임계 형태(비율·절대·배수)가 늘어도 이 함수는 그대로다.
+    """
+    span = semantic_requirements.requirement_span(requirement)
+    if span is None:
+        return None
+    nodes = context.get("expression_nodes")
+    if not isinstance(nodes, set):
+        return None
+    for plan in context.get("plans") or ():
+        threshold = getattr(plan.obligation, "threshold", None)
+        if threshold is None or tuple(threshold.source_span) != span:
+            continue
+        required = _structural_nodes(plan.expression.to_dict())
+        # 계획의 **최상위 구조**가 통째로 들어 있어야 한다. 일부만 겹치면(예: 기준값 가드 없이
+        # 비교만) 뜻이 다른 표현이므로 방면하지 않는다.
+        top = json.dumps(
+            _strip_evidence(plan.expression.to_dict()), sort_keys=True, ensure_ascii=False
+        )
+        if top in nodes or required <= nodes:
+            # 이 비교가 읽은 구간 전체(창·지표·방향·크기)가 방면의 사정거리다.
+            return (tuple(plan.obligation.source_span), span)
+    return None
+
+
+# 종류 → (증명자, 영수증에 남길 컴파일러 이름). **등록되지 않은 종류는 방면되지 않는다**(fail-close).
+#
+# 컴파일러 이름을 함께 두는 이유는 운영 추적이다 — 영수증만 보고 "어느 낮춤이 이 요구를
+# 소비했는가"를 알 수 있어야 한다. 이름은 provenance 이지 판정 근거가 아니므로 증명자와 한
+# 자리에 두되 판정에는 쓰지 않는다.
+_OBLIGATION_SATISFACTION_PROVERS: dict[str, tuple[Any, str]] = {
+    **{
+        kind: (_ranked_satisfied, "canonical_event_ir")
+        for kind in CANONICAL_COMPILED_OBLIGATION_KINDS
+    },
+    semantic_requirements.TEMPORAL_QUALIFIER_KIND: (_temporal_satisfied, "temporal_ir"),
+    semantic_requirements.CHANGE_MAGNITUDE_KIND: (
+        _change_magnitude_satisfied,
+        "change_magnitude_lowering",
+    ),
+}
+
+
+@dataclass(frozen=True)
+class RequirementSettlement:
+    """정산 결과 하나 — 무엇이 방면됐고(id), 그 방면이 원문의 어디까지 덮는가(spans).
+
+    ``by_compiler`` 는 영수증 attribution 용 provenance 다(판정 근거가 아니다).
+    """
+
+    ids: frozenset[str]
+    spans: tuple[tuple[int, int], ...]
+    by_compiler: Mapping[str, frozenset[str]]
+
+
+def settle_source_requirements(
+    query: str,
+    expression: event_ir.Condition | None,
+    *,
+    today: date | None = None,
+) -> RequirementSettlement:
+    """이 표현이 실제로 소비한 source requirement 전부(generic receipt).
+
+    정산의 단일 소유자다 — 리터럴 면제(:func:`canonical_claim_issues`)와 의무 면제
+    (:func:`semantic_obligation_issues`)와 영수증 발급(:func:`refresh_canonical_receipts`)이
+    같은 답을 보게 한다. 예전처럼 자리마다 종류별 예외를 적으면 셋이 조용히 갈라진다.
+    """
+    empty = RequirementSettlement(frozenset(), (), {})
+    if expression is None:
+        return empty
+    try:
+        requirements = semantic_requirements.capture_source_semantic_obligations(query)
+    except Exception:  # 원장을 못 읽으면 방면할 것도 없다(fail-close)
+        return empty
+    if not requirements:
+        return empty
+    context = {
+        "temporal_spans": temporal_obligation_compiled_spans(query, expression, today=today),
+        "expression_nodes": _structural_nodes(expression.to_dict()),
+        "plans": _change_magnitude_plans(query, today=today),
+    }
+    ids: set[str] = set()
+    spans: list[tuple[int, int]] = []
+    grouped: dict[str, set[str]] = {}
+    for requirement in requirements:
+        registered = _OBLIGATION_SATISFACTION_PROVERS.get(
+            semantic_requirements.obligation_kind(requirement)
+        )
+        if registered is None:
+            continue
+        prover, compiler = registered
+        try:
+            covered = prover(requirement, expression, context)
+        except Exception:  # 증명 실패는 방면 없음이지 오류가 아니다
+            continue
+        if covered is None:
+            continue
+        ids.add(str(requirement.id))
+        spans.extend(covered)
+        grouped.setdefault(compiler, set()).add(str(requirement.id))
+    return RequirementSettlement(
+        ids=frozenset(ids),
+        spans=tuple(dict.fromkeys(spans)),
+        by_compiler={name: frozenset(values) for name, values in grouped.items()},
+    )
+
+
+def satisfied_requirement_ids(
+    query: str,
+    expression: event_ir.Condition | None,
+    *,
+    today: date | None = None,
+) -> frozenset[str]:
+    """방면된 요구의 id 집합(:func:`settle_source_requirements` 의 얇은 래퍼)."""
+    return settle_source_requirements(query, expression, today=today).ids
+
+
+def _change_magnitude_plans(query: str, *, today: date | None = None) -> tuple[Any, ...]:
+    try:
+        import lowering_planner  # 지연 import(순환 방지)
+
+        return tuple(
+            plan
+            for plan in lowering_planner.plans_for_query(query, today=today)
+            if getattr(plan.obligation, "threshold", None) is not None
+        )
+    except Exception:  # 계획을 못 세우면 방면할 근거가 없다(fail-close)
+        return ()
+
+
 def semantic_obligation_issues(
     query: str,
     expression: event_ir.Condition,
@@ -1308,17 +1524,11 @@ def semantic_obligation_issues(
     today: date | None = None,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
-    temporal_spans = temporal_obligation_compiled_spans(query, expression, today=today)
+    satisfied = satisfied_requirement_ids(query, expression, today=today)
     for requirement in semantic_requirements.capture_source_semantic_obligations(query):
         kind = semantic_requirements.obligation_kind(requirement)
         value = requirement.value if isinstance(requirement.value, Mapping) else {}
-        if kind in CANONICAL_COMPILED_OBLIGATION_KINDS and _ranked_membership_matches(
-            expression, value
-        ):
-            continue
-        if kind == semantic_requirements.TEMPORAL_QUALIFIER_KIND and _span_covered(
-            requirement.source_span, temporal_spans
-        ):
+        if str(requirement.id) in satisfied:
             continue
         span = requirement.source_span
         start = span.get("start") if isinstance(span, Mapping) else None
@@ -1618,20 +1828,23 @@ def canonical_claim_issues(
             issue for issue in literal_issues
             if issue.get("argument") not in consumed
         ]
-    # 시간 조건이 컴파일한 구간의 리터럴·값은 **이미 증명된** 소비다. temporal 영수증은
-    # 낮춘 트리를 되읽어 소스·시간 조건·값 비교가 전부 있는지 확인한 뒤에만 발급되므로
-    # (temporal_ir.lowering._composition_gaps) 일반 청구 검사보다 강하다. 그 구간까지
-    # 미소비로 세면 '6개월'이 절대 구간으로 확정된 사실과 '내내'가 전칭으로 낮아진 사실이
-    # 리터럴 표면에 남지 않았다는 이유만으로 SQL 이 막힌다.
-    temporal_spans = temporal_obligation_compiled_spans(query, expression)
-    if temporal_spans:
+    # 방면된 요구가 덮은 구간의 리터럴·값은 **이미 증명된** 소비다. 영수증은 낮춘 트리를
+    # 되읽어 그 의미가 실제로 실렸는지 확인한 뒤에만 발급되므로(:func:`satisfied_requirement_ids`)
+    # 일반 청구 검사보다 강하다. 그 구간까지 미소비로 세면 '6개월'이 절대 구간으로 확정된
+    # 사실이나 '10% 이상'이 교차곱으로 낮아진 사실이 리터럴 표면에 남지 않았다는 이유만으로
+    # SQL 이 막힌다.
+    #
+    # 종류별 스팬 목록(temporal_compiled_spans / change_threshold_compiled_spans / …)을 여기
+    # 늘리지 않는다 — 면제의 근거는 **영수증 하나**이고, 그 영수증을 내는 증명자만 종류를 안다.
+    settled_spans = settle_source_requirements(query, expression).spans
+    if settled_spans:
         literal_issues = [
             issue for issue in literal_issues
-            if not _issue_span_covered(issue, temporal_spans)
+            if not _issue_span_covered(issue, settled_spans)
         ]
         catalog_issues = [
             issue for issue in catalog_issues
-            if not _issue_span_covered(issue, temporal_spans)
+            if not _issue_span_covered(issue, settled_spans)
         ]
     cardinality = (
         consent_cardinality.validate_consent_cardinality(
@@ -1718,35 +1931,19 @@ def refresh_canonical_unresolved(
                 plan,
                 semantic_requirements.capture_source_semantic_obligations(query),
             )
-        semantic_requirements.discharge_source_semantic_obligations(
-            plan,
-            query,
-            kinds=set(CANONICAL_COMPILED_OBLIGATION_KINDS),
-            status="compiled",
-            compiler="canonical_event_ir",
-            evidence=expression.to_dict(),
-            value_filter=lambda _kind, value: (
-                isinstance(value, Mapping)
-                and ranked_obligation_is_compiled(expression, value)
-            ),
-        )
-        # 시간·이력 의무는 **그 구간이 실제로 컴파일됐을 때만** 방면한다. 종류만 보고
-        # 통째로 면제하면 as_of·직전값·유지·변경횟수 마커가 만든 의무까지 함께 풀려,
-        # 낮춰지지 않은 표현이 검증을 통과한다.
-        temporal_spans = temporal_obligation_compiled_spans(
-            query, expression, today=today
-        )
-        if temporal_spans:
+        # 영수증은 **하나의 정산자**가 발급한다. 예전에는 종류마다 discharge 호출이 하나씩
+        # 늘었고(랭킹·시간…), 그래서 새 의미축은 아무도 발급하지 않는 것이 기본값이었다.
+        # 이제 종류별 차이는 증명자 안에만 있고, 여기는 "누가 소비됐는가"만 묻는다.
+        settlement = settle_source_requirements(query, expression, today=today)
+        for compiler, ids in settlement.by_compiler.items():
             semantic_requirements.discharge_source_semantic_obligations(
                 plan,
                 query,
-                kinds={semantic_requirements.TEMPORAL_QUALIFIER_KIND},
+                kinds=set(_OBLIGATION_SATISFACTION_PROVERS),
                 status="compiled",
-                compiler="temporal_ir",
+                compiler=compiler,
                 evidence=expression.to_dict(),
-                requirement_filter=lambda requirement: _span_covered(
-                    requirement.source_span, temporal_spans
-                ),
+                requirement_filter=lambda requirement, _ids=ids: str(requirement.id) in _ids,
             )
         bindings = plan.get("literal_bindings")
         if isinstance(bindings, list):
